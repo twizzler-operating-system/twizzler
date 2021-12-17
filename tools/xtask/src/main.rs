@@ -1,13 +1,11 @@
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-};
+use std::{env, process::Command};
+
+use cargo_metadata::MetadataCommand;
 
 type DynError = Box<dyn std::error::Error>;
 
 fn main() {
-    if let Err(e) = try_main() {
+    if let Err(_e) = try_main() {
         // eprintln!("{}", e);
         std::process::exit(101);
     }
@@ -18,6 +16,7 @@ fn try_main() -> Result<(), DynError> {
     match task.as_ref().map(|it| it.as_str()) {
         Some("build-all") => build_all()?,
         Some("check-all") => check_all()?,
+        Some("make-disk") => make_disk()?,
         _ => print_help(),
     }
     Ok(())
@@ -60,6 +59,9 @@ fn build_all() -> Result<(), DynError> {
         .args(&["build"])
         .status()?;
 
+    if !status.success() {
+        Err("cargo build failed")?;
+    }
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let status = Command::new(cargo)
         .args(&["build", "--workspace", "--exclude", "rustkernel"])
@@ -67,6 +69,20 @@ fn build_all() -> Result<(), DynError> {
 
     if !status.success() {
         Err("cargo build failed")?;
+    }
+    Ok(())
+}
+
+fn make_disk() -> Result<(), DynError> {
+    let path = "Cargo.toml";
+    let _meta = MetadataCommand::new().manifest_path(path).exec().unwrap();
+    build_all()?;
+    let status = Command::new("target/debug/image_builder")
+        .arg("target/x86_64-pc-none/debug/rustkernel")
+        .status()?;
+
+    if !status.success() {
+        Err("disk image creation failed")?;
     }
     Ok(())
 }

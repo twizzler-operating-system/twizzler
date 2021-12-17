@@ -178,7 +178,7 @@ KERNEL_PATH=boot:///kernel.elf
 
         // add add EFI system partition
         let partition_id = disk
-            .add_partition("boot", partition_size, gpt::partition_types::EFI, 0)
+            .add_partition("boot", partition_size, gpt::partition_types::EFI, 0, None)
             .context("failed to add boot partition")?;
 
         let partition = disk

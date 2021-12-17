@@ -1,6 +1,10 @@
 [workspace]
 members = [
     "tools/xtask",
+    "tools/image_builder",
     "src/bin/init",
     "src/kernel",
 ]
+
+[workspace.metadata]
+initrd-members = ["src/bin/init"]
