@@ -51,6 +51,16 @@ fn try_main() -> Result<(), DynError> {
         .takes_value(true)
         .help("Argument to pass straight through to QEMU");
 
+    let arg_workspace = Arg::with_name("workspace").long("workspace").hidden(true);
+    let arg_manifest = Arg::with_name("manifest-path")
+        .long("manifest-path")
+        .hidden(true)
+        .takes_value(true);
+    let arg_message_fmt = Arg::with_name("message-format")
+        .long("message-format")
+        .takes_value(true)
+        .hidden(true);
+
     let arg_qemu_profile = Arg::with_name("qemu-profile")
         .long("qemu-profile")
         .takes_value(true)
@@ -58,17 +68,30 @@ fn try_main() -> Result<(), DynError> {
         .possible_values(&["accel", "emu"])
         .help("Sets the QEMU base configuration");
 
-    let build = SubCommand::with_name("build-all").arg(arg_profile.clone());
-    let check = SubCommand::with_name("check-all").arg(arg_profile.clone());
-    let disk = SubCommand::with_name("make-disk").arg(arg_profile.clone());
+    let build = SubCommand::with_name("build-all")
+        .arg(arg_profile.clone())
+        .arg(arg_message_fmt.clone())
+        .arg(arg_workspace.clone())
+        .about("Run cargo build on all Twizzler components");
+    let check = SubCommand::with_name("check-all")
+        .arg(arg_profile.clone())
+        .arg(arg_message_fmt)
+        .arg(arg_workspace)
+        .arg(arg_manifest)
+        .about("Run cargo check on all Twizzler components");
+    let disk = SubCommand::with_name("make-disk")
+        .arg(arg_profile.clone())
+        .about("Create disk image from compiled Twizzler components");
     let qemu = SubCommand::with_name("start-qemu")
+        .about("Start QEMU instance using the disk image created with twizzler-xtask-make-disk")
         .arg(arg_profile.clone())
         .arg(arg_qemu_profile)
         .arg(arg_qemu);
 
     let app = App::new("twizzler-xtask")
         .version("0.1.0")
-        .about("Build system for Twizzler")
+        .about("Build system for Twizzler. This program correctly applies the right compiling rules (e.g. target, RUSTFLAGS, etc.) to Twizzler components.")
+        .author("Daniel Bittman <danielbittman1@gmail.com>")
         .subcommand(build)
         .subcommand(disk)
         .subcommand(qemu)
@@ -92,9 +115,16 @@ fn try_main() -> Result<(), DynError> {
 
     let path = "Cargo.toml";
     let meta = MetadataCommand::new().manifest_path(path).exec().unwrap();
-    let mut args = vec![];
+    let mut args = vec!["--workspace".to_owned()];
     if profile == Profile::Release {
         args.push("--release".to_owned());
+    }
+    if let Some(v) = sub_matches.value_of("message-format") {
+        args.push(format!("--message-format={}", v));
+    }
+    if let Some(v) = sub_matches.value_of("manifest-path") {
+        args.push("--manifest-path".to_owned());
+        args.push(v.to_owned());
     }
     let mut qemu_args = vec![];
     if let Some(q) = sub_matches.values_of("qemu-arg") {
