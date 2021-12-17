@@ -1,0 +1,223 @@
+use anyhow::{bail, Context};
+use std::{
+    convert::TryFrom,
+    fs::{self, File},
+    io::{self, Seek, Write},
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+const RUN_ARGS: &[&str] = &["--no-reboot", "-s", "-serial", "mon:stdio", "-vnc", ":0"];
+
+fn main() {
+    let mut args = std::env::args().skip(1); // skip executable name
+
+    let kernel_binary_path = {
+        let path = PathBuf::from(args.next().unwrap());
+        path.canonicalize().unwrap()
+    };
+    let no_boot = if let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--no-run" => true,
+            other => panic!("unexpected argument `{}`", other),
+        }
+    } else {
+        false
+    };
+
+    let bios = create_disk_images(&kernel_binary_path);
+
+    if no_boot {
+        // println!("Created disk image at `{}`", bios.display());
+        return;
+    }
+
+    let mut run_cmd = Command::new("qemu-system-x86_64");
+    run_cmd.arg("-enable-kvm");
+    run_cmd.arg("-m").arg("1024,slots=4,maxmem=8G");
+    run_cmd.arg("-bios").arg("/usr/share/edk2-ovmf/x64/OVMF.fd");
+    //run_cmd.arg("-cpu").arg("IvyBridge");
+    run_cmd
+        .arg("-cpu")
+        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+tsc_scale");
+    run_cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
+    run_cmd.arg("-d").arg("int,cpu_reset");
+    run_cmd
+        .arg("-drive")
+        .arg(format!("format=raw,file={}", bios.display()));
+    run_cmd.arg("-machine").arg("q35,nvdimm=on");
+    run_cmd
+        .arg("-object")
+        .arg("memory-backend-file,id=mem1,share=on,mem-path=pmem.img,size=4G");
+    run_cmd.arg("-device").arg("nvdimm,id=nvdimm1,memdev=mem1");
+    run_cmd.args(RUN_ARGS);
+
+    let exit_status = run_cmd.status().unwrap();
+    if !exit_status.success() {
+        std::process::exit(exit_status.code().unwrap_or(1));
+    }
+}
+
+pub fn create_disk_images(kernel_binary_path: &Path) -> PathBuf {
+    //let kernel_manifest_path = locate_cargo_manifest::locate_manifest().unwrap();
+
+    //let kernel_binary_name = kernel_binary_path.file_name().unwrap().to_str().unwrap();
+    if let Err(e) = create_uefi_disk_image(kernel_binary_path) {
+        panic!("failed to create disk image: {:?}", e);
+    }
+    let disk_image = kernel_binary_path.parent().unwrap().join("disk.img");
+    if !disk_image.exists() {
+        panic!(
+            "Disk image does not exist at {} after bootloader build",
+            disk_image.display()
+        );
+    }
+    disk_image
+}
+
+fn create_uefi_disk_image(kernel_binary_path: &Path) -> anyhow::Result<()> {
+    let efi_file = Path::new("/usr/share/limine/BOOTX64.EFI");
+    let efi_size = fs::metadata(&efi_file)
+        .context("failed to read metadata of efi file")?
+        .len();
+    let kernel_size = fs::metadata(&kernel_binary_path)
+        .context("failed to read metadata of efi file")?
+        .len();
+
+    let cfg_data = r#"
+TIMEOUT=1 
+DEFAULT_ENTRY=1
+:Twizzler
+RESOLUTION=800x600
+PROTOCOL=stivale2
+KERNEL_PATH=boot:///kernel.elf
+"#;
+    // create fat partition
+    let fat_file_path = {
+        const MB: u64 = 1024 * 1024;
+
+        let fat_path = kernel_binary_path.parent().unwrap().join("image.fat");
+        let fat_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&fat_path)
+            .context("Failed to create UEFI FAT file")?;
+        let efi_size_padded_and_rounded = ((efi_size + 1024 * 64 - 1) / MB + 1) * MB;
+        let kernel_size_padded_and_rounded = ((kernel_size + 1024 * 64 - 1) / MB + 1) * MB;
+        let cfg_size_padded_and_rounded = ((cfg_data.len() as u64 + 1024 * 64 - 1) / MB + 1) * MB;
+        fat_file
+            .set_len(
+                efi_size_padded_and_rounded
+                    + kernel_size_padded_and_rounded
+                    + cfg_size_padded_and_rounded,
+            )
+            .context("failed to set UEFI FAT file length")?;
+
+        // create new FAT partition
+        let format_options = fatfs::FormatVolumeOptions::new().volume_label(*b"FOOO       ");
+        fatfs::format_volume(&fat_file, format_options)
+            .context("Failed to format UEFI FAT file")?;
+
+        // copy EFI file to FAT filesystem
+        let partition = fatfs::FileSystem::new(&fat_file, fatfs::FsOptions::new())
+            .context("Failed to open FAT file system of UEFI FAT file")?;
+        let root_dir = partition.root_dir();
+        root_dir.create_dir("efi")?;
+        root_dir.create_dir("efi/boot")?;
+        let mut bootx64 = root_dir.create_file("efi/boot/bootx64.efi")?;
+        bootx64.truncate()?;
+        io::copy(&mut fs::File::open(&efi_file)?, &mut bootx64)?;
+        let mut kernel = root_dir.create_file("kernel.elf")?;
+        kernel.truncate()?;
+        io::copy(&mut fs::File::open(&kernel_binary_path)?, &mut kernel)?;
+        let mut cfg = root_dir.create_file("limine.cfg")?;
+        cfg.write(cfg_data.as_bytes())?;
+
+        fat_path
+    };
+
+    // create gpt disk
+    {
+        let image_path = fat_file_path.parent().unwrap().join("disk.img");
+        let mut image = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&image_path)
+            .context("failed to create UEFI disk image")?;
+
+        let partition_size: u64 = fs::metadata(&fat_file_path)
+            .context("failed to read metadata of UEFI FAT partition")?
+            .len();
+        let image_size = partition_size + 1024 * 64;
+        image
+            .set_len(image_size)
+            .context("failed to set length of UEFI disk image")?;
+
+        // Create a protective MBR at LBA0
+        let mbr = gpt::mbr::ProtectiveMBR::with_lb_size(
+            u32::try_from((image_size / 512) - 1).unwrap_or(0xFF_FF_FF_FF),
+        );
+        mbr.overwrite_lba0(&mut image)
+            .context("failed to write protective MBR")?;
+
+        // create new GPT in image file
+        let block_size = gpt::disk::LogicalBlockSize::Lb512;
+        let block_size_bytes: u64 = block_size.into();
+        let mut disk = gpt::GptConfig::new()
+            .writable(true)
+            .initialized(false)
+            .logical_block_size(block_size)
+            .create_from_device(Box::new(&mut image), None)
+            .context("failed to open UEFI disk image")?;
+        disk.update_partitions(Default::default())
+            .context("failed to initialize GPT partition table")?;
+
+        // add add EFI system partition
+        let partition_id = disk
+            .add_partition("boot", partition_size, gpt::partition_types::EFI, 0)
+            .context("failed to add boot partition")?;
+
+        let partition = disk
+            .partitions()
+            .get(&partition_id)
+            .ok_or_else(|| anyhow::anyhow!("Partition doesn't exist after adding it"))?;
+        let created_partition_size: u64 =
+            (partition.last_lba - partition.first_lba + 1u64) * block_size_bytes;
+        if created_partition_size != partition_size {
+            bail!(
+                "Created partition has invalid size (size is {:?}, expected {})",
+                created_partition_size,
+                partition_size
+            );
+        }
+        let start_offset = partition
+            .bytes_start(block_size)
+            .context("failed to retrieve partition start offset")?;
+
+        // Write the partition table
+        disk.write()
+            .context("failed to write GPT partition table to UEFI image file")?;
+
+        image
+            .seek(io::SeekFrom::Start(start_offset))
+            .context("failed to seek to boot partiiton start")?;
+        let bytes_written = io::copy(
+            &mut File::open(&fat_file_path).context("failed to open fat image")?,
+            &mut image,
+        )
+        .context("failed to write boot partition content")?;
+        if bytes_written != partition_size {
+            bail!(
+                "Invalid number of partition bytes written (expected {}, got {})",
+                partition_size,
+                bytes_written
+            );
+        }
+    }
+
+    Ok(())
+}

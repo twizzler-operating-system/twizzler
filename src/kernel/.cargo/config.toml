@@ -1,0 +1,17 @@
+[target.'cfg(target_os = "none")']
+runner = "cargo run --package simple_boot --"
+rustflags = [
+  "-C", "link-arg=--image-base=0xffffffff80100000", "-Cforce-unwind-tables", "-Cforce-frame-pointers=yes",
+  "-C", "link-arg=--no-gc-sections"
+]
+
+[env]
+CC = "clang"
+CXX = "clang++"
+
+[build]
+target = "x86_64-pc-none.json"
+
+[unstable]
+build-std = ["core","alloc"]
+build-std-features = ["compiler-builtins-mem"]
