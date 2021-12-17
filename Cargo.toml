@@ -7,4 +7,9 @@ members = [
 ]
 
 [workspace.metadata]
-initrd-members = ["src/bin/init"]
+initrd-members = ["init"]
+tools = ["image_builder"]
+kernel = ["twizzler-kernel"]
+
+[profile.release]
+debug = true
