@@ -4,10 +4,7 @@ use std::{
     fs::{self, File},
     io::{self, Seek, Write},
     path::{Path, PathBuf},
-    process::Command,
 };
-
-const RUN_ARGS: &[&str] = &["--no-reboot", "-s", "-serial", "mon:stdio", "-vnc", ":0"];
 
 fn main() {
     let mut args = std::env::args().skip(1); // skip executable name
@@ -16,51 +13,11 @@ fn main() {
         let path = PathBuf::from(args.next().unwrap());
         path.canonicalize().unwrap()
     };
-    let no_boot = if let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--no-run" => true,
-            other => panic!("unexpected argument `{}`", other),
-        }
-    } else {
-        false
-    };
-
-    let bios = create_disk_images(&kernel_binary_path);
-
-    if no_boot {
-        // println!("Created disk image at `{}`", bios.display());
-        return;
-    }
-
-    let mut run_cmd = Command::new("qemu-system-x86_64");
-    run_cmd.arg("-enable-kvm");
-    run_cmd.arg("-m").arg("1024,slots=4,maxmem=8G");
-    run_cmd.arg("-bios").arg("/usr/share/edk2-ovmf/x64/OVMF.fd");
-    //run_cmd.arg("-cpu").arg("IvyBridge");
-    run_cmd
-        .arg("-cpu")
-        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+tsc_scale");
-    run_cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
-    run_cmd.arg("-d").arg("int,cpu_reset");
-    run_cmd
-        .arg("-drive")
-        .arg(format!("format=raw,file={}", bios.display()));
-    run_cmd.arg("-machine").arg("q35,nvdimm=on");
-    run_cmd
-        .arg("-object")
-        .arg("memory-backend-file,id=mem1,share=on,mem-path=pmem.img,size=4G");
-    run_cmd.arg("-device").arg("nvdimm,id=nvdimm1,memdev=mem1");
-    run_cmd.args(RUN_ARGS);
-
-    let exit_status = run_cmd.status().unwrap();
-    if !exit_status.success() {
-        std::process::exit(exit_status.code().unwrap_or(1));
-    }
+    create_disk_images(&kernel_binary_path);
 }
 
 pub fn create_disk_images(kernel_binary_path: &Path) -> PathBuf {
     //let kernel_manifest_path = locate_cargo_manifest::locate_manifest().unwrap();
-
     //let kernel_binary_name = kernel_binary_path.file_name().unwrap().to_str().unwrap();
     if let Err(e) = create_uefi_disk_image(kernel_binary_path) {
         panic!("failed to create disk image: {:?}", e);

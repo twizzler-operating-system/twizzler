@@ -1,8 +1,6 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use alloc::{
-    boxed::Box,
-};
+use alloc::boxed::Box;
 
 use crate::{processor::current_processor, spinlock::Spinlock};
 
