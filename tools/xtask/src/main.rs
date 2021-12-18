@@ -1,4 +1,4 @@
-use std::{env, process::Command, str::FromStr, vec};
+use std::{ascii::AsciiExt, env, process::Command, str::FromStr, vec};
 
 use cargo_metadata::{Metadata, MetadataCommand};
 
@@ -88,7 +88,7 @@ fn try_main() -> Result<(), DynError> {
         .arg(arg_qemu_profile)
         .arg(arg_qemu);
 
-    let app = App::new("twizzler-xtask")
+    let mut app = App::new("twizzler-xtask")
         .version("0.1.0")
         .about("Build system for Twizzler. This program correctly applies the right compiling rules (e.g. target, RUSTFLAGS, etc.) to Twizzler components.")
         .author("Daniel Bittman <danielbittman1@gmail.com>")
@@ -96,8 +96,13 @@ fn try_main() -> Result<(), DynError> {
         .subcommand(disk)
         .subcommand(qemu)
         .subcommand(check);
-    let matches = app.get_matches();
+    let matches = app.clone().get_matches();
     let (sub_name, sub_matches) = matches.subcommand();
+
+    if sub_matches.is_none() {
+        app.print_long_help()?;
+        Err("")?;
+    }
 
     let sub_matches = sub_matches.unwrap();
     let profile = match sub_matches.value_of("profile").unwrap() {
@@ -149,6 +154,7 @@ fn cargo_cmd_collection(
     wd: &str,
     args: &[String],
     profile: Profile,
+    triple: Option<&str>,
 ) -> Result<(), DynError> {
     eprintln!(
         "== BUILDING COLLECTION {} ({:?}) ==",
@@ -168,10 +174,17 @@ fn cargo_cmd_collection(
         .flatten()
         .collect();
     //println!("{:?}", pkg_list);
-    let status = Command::new(cargo)
+    let mut target_args = vec![];
+    if let Some(triple) = triple {
+        target_args.push("--target".to_owned());
+        target_args.push(triple.to_owned());
+        target_args.push("-Zbuild-std".to_owned());
+    }
+    let mut status = Command::new(cargo)
         .current_dir(wd)
         .arg(cargo_cmd)
         .args(pkg_list)
+        .args(target_args)
         .args(args)
         .status()?;
 
@@ -187,9 +200,17 @@ fn cmd_all(
     cargo_cmd: &str,
     profile: Profile,
 ) -> Result<(), DynError> {
-    cargo_cmd_collection(meta, "tools", cargo_cmd, ".", args, profile)?;
-    cargo_cmd_collection(meta, "kernel", cargo_cmd, "src/kernel", args, profile)?;
-    cargo_cmd_collection(meta, "initrd-members", cargo_cmd, ".", args, profile)?;
+    cargo_cmd_collection(meta, "tools", cargo_cmd, ".", args, profile, None)?;
+    cargo_cmd_collection(meta, "kernel", cargo_cmd, "src/kernel", args, profile, None)?;
+    cargo_cmd_collection(
+        meta,
+        "twizzler-apps",
+        cargo_cmd,
+        ".",
+        args,
+        profile,
+        Some("x86_64-unknown-linux-gnu"),
+    )?;
     Ok(())
 }
 

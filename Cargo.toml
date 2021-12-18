@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.metadata]
-initrd-members = ["init"]
+twizzler-apps = ["init"]
 tools = ["image_builder"]
 kernel = ["twizzler-kernel"]
 
