@@ -1,9 +1,9 @@
 [package]
-name = "init"
+name = "twizzler-queue"
 version = "0.1.0"
 edition = "2021"
+authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-twizzler = {path = "../../lib/twizzler"}

@@ -283,6 +283,9 @@ dependencies = [
 [[package]]
 name = "init"
 version = "0.1.0"
+dependencies = [
+ "twizzler",
+]
 
 [[package]]
 name = "itoa"
@@ -569,6 +572,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "twizzler"
+version = "0.1.0"
+dependencies = [
+ "twizzler-abi",
+]
+
+[[package]]
+name = "twizzler-abi"
+version = "0.1.0"
+dependencies = [
+ "twizzler-queue",
+]
+
+[[package]]
 name = "twizzler-kernel"
 version = "0.1.0"
 dependencies = [
@@ -588,6 +605,10 @@ dependencies = [
  "x86_64",
  "xmas-elf",
 ]
+
+[[package]]
+name = "twizzler-queue"
+version = "0.1.0"
 
 [[package]]
 name = "uart_16550"

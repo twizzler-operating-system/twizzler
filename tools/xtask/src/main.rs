@@ -1,4 +1,4 @@
-use std::{ascii::AsciiExt, env, process::Command, str::FromStr, vec};
+use std::{env, process::Command, str::FromStr, vec};
 
 use cargo_metadata::{Metadata, MetadataCommand};
 
@@ -226,7 +226,7 @@ fn cargo_cmd_collection(
         target_args.push(triple.to_owned());
         target_args.push("-Zbuild-std".to_owned());
     }
-    let mut status = Command::new(cargo)
+    let status = Command::new(cargo)
         .current_dir(wd)
         .arg(cargo_cmd)
         .args(pkg_list)
