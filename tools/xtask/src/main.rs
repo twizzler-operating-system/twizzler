@@ -68,6 +68,13 @@ fn try_main() -> Result<(), DynError> {
         .possible_values(&["accel", "emu"])
         .help("Sets the QEMU base configuration");
 
+    let bootstrap_sc = SubCommand::with_name("bootstrap")
+        .about("Bootstrap the rust toolchain for Twizzler")
+        .arg(
+            Arg::with_name("skip-submodules")
+                .long("skip-submodules")
+                .help("Skips updating submodules before compiling rust toolchain"),
+        );
     let build = SubCommand::with_name("build-all")
         .arg(arg_profile.clone())
         .arg(arg_message_fmt.clone())
@@ -92,6 +99,7 @@ fn try_main() -> Result<(), DynError> {
         .version("0.1.0")
         .about("Build system for Twizzler. This program correctly applies the right compiling rules (e.g. target, RUSTFLAGS, etc.) to Twizzler components.")
         .author("Daniel Bittman <danielbittman1@gmail.com>")
+        .subcommand(bootstrap_sc)
         .subcommand(build)
         .subcommand(disk)
         .subcommand(qemu)
@@ -105,9 +113,10 @@ fn try_main() -> Result<(), DynError> {
     }
 
     let sub_matches = sub_matches.unwrap();
-    let profile = match sub_matches.value_of("profile").unwrap() {
-        "debug" => Profile::Debug,
-        "release" => Profile::Release,
+    let profile = match sub_matches.value_of("profile") {
+        Some("debug") => Profile::Debug,
+        Some("release") => Profile::Release,
+        None => Profile::Debug,
         _ => unreachable!(),
     };
 
@@ -138,12 +147,49 @@ fn try_main() -> Result<(), DynError> {
         }
     }
     match sub_name {
+        "bootstrap" => bootstrap(sub_matches.is_present("skip-submodules"))?,
         "build-all" => build_all(&meta, &args, profile)?,
         "check-all" => check_all(&meta, &args, profile)?,
         "make-disk" => make_disk(&meta, &args, profile)?,
         "start-qemu" => start_qemu(&meta, &args, profile, qemu_profile, &qemu_args)?,
         _ => unreachable!(),
     }
+    Ok(())
+}
+
+fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
+    if !skip_sm {
+        let status = Command::new("git")
+            .arg("submodule")
+            .arg("update")
+            .arg("--init")
+            .arg("--recursive")
+            .status()?;
+        if !status.success() {
+            Err("failed to update git submodules")?;
+        }
+    }
+
+    let res = std::fs::hard_link(
+        "toolchain/src/config.toml",
+        "toolchain/src/rust/config.toml",
+    );
+    match res {
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::AlreadyExists => {}
+            _ => Err("failed to create hardlink config.toml")?,
+        },
+        _ => {}
+    }
+
+    let status = Command::new("./x.py")
+        .arg("install")
+        .current_dir("toolchain/src/rust")
+        .status()?;
+    if !status.success() {
+        Err("failed to compile rust toolchain")?;
+    }
+
     Ok(())
 }
 

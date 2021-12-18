@@ -1,0 +1,18 @@
+# Includes one of the default files in src/bootstrap/defaults
+profile = "user"
+changelog-seen = 2
+
+[install]
+prefix = "../../"
+sysconfdir = "etc"
+
+[llvm]
+#download-ci-llvm = true
+
+[build]
+tools = ["cargo", "clippy", "rustfmt", "src"] # + "rust-demangler" if `profiler`
+docs = false
+
+[rust]
+lld = true
+llvm-tools = true
