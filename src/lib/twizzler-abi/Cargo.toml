@@ -8,6 +8,7 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 
 [dependencies]
 #twizzler-queue = { path = "../twizzler-queue" }
+bitflags = "*"
 
 [dependencies.compiler_builtins]
 optional = true
@@ -24,6 +25,8 @@ default-features = false
 version = "0.2.51"
 
 [features]
-default = []
+default = ["std"]
 docs = []
-rustc-dep-of-std = ["core", "compiler_builtins/rustc-dep-of-std", "libc/rustc-dep-of-std"]
+rt = []
+std = []
+rustc-dep-of-std = ["core", "compiler_builtins/rustc-dep-of-std", "libc/rustc-dep-of-std", "bitflags/rustc-dep-of-std", "rt"]
