@@ -7,4 +7,23 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-twizzler-queue = { path = "../twizzler-queue" }
+#twizzler-queue = { path = "../twizzler-queue" }
+
+[dependencies.compiler_builtins]
+optional = true
+version = "0.1"
+
+[dependencies.core]
+optional = true
+package = "rustc-std-workspace-core"
+version = "1.0.0"
+
+
+[dependencies.libc]
+default-features = false
+version = "0.2.51"
+
+[features]
+default = []
+docs = []
+rustc-dep-of-std = ["core", "compiler_builtins/rustc-dep-of-std", "libc/rustc-dep-of-std"]

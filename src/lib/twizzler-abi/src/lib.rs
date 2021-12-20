@@ -1,19 +1,9 @@
 #![no_std]
 #![feature(asm)]
+#![feature(naked_functions)]
 
 mod arch;
+mod rt1;
+pub mod syscall;
 
-#[derive(Copy, Clone, Debug)]
-#[repr(u64)]
-pub enum Syscall {
-    Null,
-    KernelConsoleIO,
-    ThreadSync,
-    ThreadCtrl,
-}
-
-impl Syscall {
-    pub fn num(&self) -> u64 {
-        *self as u64
-    }
-}
+pub fn ready() {}

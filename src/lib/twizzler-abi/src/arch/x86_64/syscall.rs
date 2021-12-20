@@ -1,5 +1,6 @@
-use crate::Syscall;
+use crate::syscall::Syscall;
 
+#[allow(dead_code)]
 pub unsafe fn raw_syscall(call: Syscall, args: &[u64]) -> (u64, u64) {
     let a0 = *args.get(0).unwrap_or(&0u64);
     let a1 = *args.get(1).unwrap_or(&0u64);
