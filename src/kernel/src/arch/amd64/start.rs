@@ -3,9 +3,10 @@ use stivale_boot::v2::{
     StivaleFramebufferHeaderTag, StivaleHeader, StivaleMemoryMapEntryType, StivaleStruct,
     StivaleUnmapNullHeaderTag,
 };
-use x86_64::VirtAddr;
+use x86_64::{PhysAddr, VirtAddr};
 
 use crate::{
+    initrd::BootModule,
     memory::{MemoryRegion, MemoryRegionKind},
     BootInfo,
 };
@@ -57,6 +58,7 @@ pub unsafe extern "C" fn ____start() -> ! {
 struct StivaleBootInfo {
     arch: &'static StivaleStruct,
     maps: Vec<MemoryRegion>,
+    modules: Vec<BootModule>,
 }
 
 pub enum BootInfoSystemTable {
@@ -114,6 +116,7 @@ extern "C" fn __stivale_start(info: &'static StivaleStruct) -> ! {
     let mut boot_info = StivaleBootInfo {
         arch: info,
         maps: alloc::vec![],
+        modules: alloc::vec![],
     };
     boot_info.maps = info
         .memory_map()
@@ -121,8 +124,17 @@ extern "C" fn __stivale_start(info: &'static StivaleStruct) -> ! {
         .iter()
         .map(|m| MemoryRegion {
             kind: m.entry_type().into(),
-            start: VirtAddr::new(m.base),
+            start: PhysAddr::new(m.base),
             length: m.length as usize,
+        })
+        .collect();
+    boot_info.modules = info
+        .modules()
+        .expect("no modules specified for kernel --- no way to start init")
+        .iter()
+        .map(|m| BootModule {
+            start: VirtAddr::new(m.start),
+            length: m.size() as usize,
         })
         .collect();
     crate::kernel_main(&mut boot_info);

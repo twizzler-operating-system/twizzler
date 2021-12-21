@@ -272,16 +272,38 @@ fn build_all(meta: &Metadata, args: &[String], profile: Profile) -> Result<(), D
 
 fn make_disk(meta: &Metadata, args: &[String], profile: Profile) -> Result<(), DynError> {
     build_all(meta, args, profile)?;
+    let pkg_list: Vec<String> = meta.workspace_metadata["initrd-members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.to_string().replace("\"", ""))
+        .collect();
+    println!("{:?}", pkg_list);
     let profile_path = match profile {
         Profile::Debug => "debug",
         Profile::Release => "release",
     };
+    let initrd_files: Vec<String> = pkg_list
+        .iter()
+        .map(|x| format!("target/x86_64-unknown-linux-gnu/{}/{}", profile_path, x))
+        .collect();
+    eprintln!("== BUILDING INITRD ({:?}) ==", profile);
+    println!("{:?}", initrd_files);
+    let status = Command::new(format!("target/{}/initrd_gen", profile_path))
+        .arg("--output")
+        .arg(format!("target/x86_64-pc-none/{}/initrd", profile_path))
+        .args(&initrd_files)
+        .status()?;
+    if !status.success() {
+        Err("failed to generate initrd")?;
+    }
     eprintln!("== BUILDING DISK IMAGE ({:?}) ==", profile);
     let status = Command::new(format!("target/{}/image_builder", profile_path))
         .arg(format!(
             "target/x86_64-pc-none/{}/twizzler-kernel",
             profile_path
         ))
+        .arg(format!("target/x86_64-pc-none/{}/initrd", profile_path))
         .status()?;
 
     if !status.success() {

@@ -9,17 +9,22 @@ use std::{
 fn main() {
     let mut args = std::env::args().skip(1); // skip executable name
 
+    /* TODO: better args processing */
     let kernel_binary_path = {
         let path = PathBuf::from(args.next().unwrap());
         path.canonicalize().unwrap()
     };
-    create_disk_images(&kernel_binary_path);
+    let initrd_path = {
+        let path = PathBuf::from(args.next().unwrap());
+        path.canonicalize().unwrap()
+    };
+    create_disk_images(&kernel_binary_path, &initrd_path);
 }
 
-pub fn create_disk_images(kernel_binary_path: &Path) -> PathBuf {
+pub fn create_disk_images(kernel_binary_path: &Path, initrd_path: &Path) -> PathBuf {
     //let kernel_manifest_path = locate_cargo_manifest::locate_manifest().unwrap();
     //let kernel_binary_name = kernel_binary_path.file_name().unwrap().to_str().unwrap();
-    if let Err(e) = create_uefi_disk_image(kernel_binary_path) {
+    if let Err(e) = create_uefi_disk_image(kernel_binary_path, initrd_path) {
         panic!("failed to create disk image: {:?}", e);
     }
     let disk_image = kernel_binary_path.parent().unwrap().join("disk.img");
@@ -32,13 +37,16 @@ pub fn create_disk_images(kernel_binary_path: &Path) -> PathBuf {
     disk_image
 }
 
-fn create_uefi_disk_image(kernel_binary_path: &Path) -> anyhow::Result<()> {
+fn create_uefi_disk_image(kernel_binary_path: &Path, initrd_path: &Path) -> anyhow::Result<()> {
     let efi_file = Path::new("/usr/share/limine/BOOTX64.EFI");
     let efi_size = fs::metadata(&efi_file)
         .context("failed to read metadata of efi file")?
         .len();
     let kernel_size = fs::metadata(&kernel_binary_path)
-        .context("failed to read metadata of efi file")?
+        .context("failed to read metadata of kernel file")?
+        .len();
+    let initrd_size = fs::metadata(&initrd_path)
+        .context("failed to read metadata of initrd file")?
         .len();
 
     let cfg_data = r#"
@@ -48,6 +56,7 @@ DEFAULT_ENTRY=1
 RESOLUTION=800x600
 PROTOCOL=stivale2
 KERNEL_PATH=boot:///kernel.elf
+MODULE_PATH=boot:///initrd
 "#;
     // create fat partition
     let fat_file_path = {
@@ -64,10 +73,12 @@ KERNEL_PATH=boot:///kernel.elf
         let efi_size_padded_and_rounded = ((efi_size + 1024 * 64 - 1) / MB + 1) * MB;
         let kernel_size_padded_and_rounded = ((kernel_size + 1024 * 64 - 1) / MB + 1) * MB;
         let cfg_size_padded_and_rounded = ((cfg_data.len() as u64 + 1024 * 64 - 1) / MB + 1) * MB;
+        let initrd_size_padded_and_rounded = ((initrd_size + 1024 * 64 - 1) / MB + 1) * MB;
         fat_file
             .set_len(
                 efi_size_padded_and_rounded
                     + kernel_size_padded_and_rounded
+                    + initrd_size_padded_and_rounded
                     + cfg_size_padded_and_rounded,
             )
             .context("failed to set UEFI FAT file length")?;
@@ -91,6 +102,9 @@ KERNEL_PATH=boot:///kernel.elf
         io::copy(&mut fs::File::open(&kernel_binary_path)?, &mut kernel)?;
         let mut cfg = root_dir.create_file("limine.cfg")?;
         cfg.write(cfg_data.as_bytes())?;
+        let mut initrd = root_dir.create_file("initrd")?;
+        initrd.truncate()?;
+        io::copy(&mut fs::File::open(&initrd_path)?, &mut initrd)?;
 
         fat_path
     };

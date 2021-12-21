@@ -15,7 +15,7 @@ pub enum MemoryRegionKind {
     BootloaderReserved,
 }
 pub struct MemoryRegion {
-    pub start: VirtAddr,
+    pub start: PhysAddr,
     pub length: usize,
     pub kind: MemoryRegionKind,
 }

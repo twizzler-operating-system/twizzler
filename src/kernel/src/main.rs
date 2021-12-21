@@ -20,6 +20,7 @@ pub mod log;
 pub mod arch;
 mod clock;
 mod image;
+mod initrd;
 mod interrupt;
 pub mod machine;
 mod memory;

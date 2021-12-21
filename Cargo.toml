@@ -2,14 +2,16 @@
 members = [
     "tools/xtask",
     "tools/image_builder",
+    "tools/initrd_gen",
     "src/bin/init",
     "src/kernel",
 ]
 
 [workspace.metadata]
 twizzler-apps = ["init"]
-tools = ["image_builder"]
+tools = ["image_builder", "initrd_gen"]
 kernel = ["twizzler-kernel"]
+initrd-members = ["init"]
 
 [profile.release]
 debug = true
