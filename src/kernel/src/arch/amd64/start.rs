@@ -71,6 +71,10 @@ impl BootInfo for StivaleBootInfo {
         unsafe { core::intrinsics::transmute(&self.maps[..]) }
     }
 
+    fn get_modules(&self) -> &'static [BootModule] {
+        unsafe { core::intrinsics::transmute(&self.modules[..]) }
+    }
+
     fn kernel_image_info(&self) -> (VirtAddr, usize) {
         let info = self
             .arch

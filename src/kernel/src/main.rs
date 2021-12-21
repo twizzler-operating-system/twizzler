@@ -35,6 +35,7 @@ extern crate alloc;
 
 extern crate bitflags;
 use arch::BootInfoSystemTable;
+use initrd::BootModule;
 use memory::MemoryRegion;
 use spin::Once;
 use thread::current_thread_ref;
@@ -46,6 +47,7 @@ pub trait BootInfo {
     fn memory_regions(&self) -> &'static [MemoryRegion];
     fn kernel_image_info(&self) -> (VirtAddr, usize);
     fn get_system_table(&self, table: BootInfoSystemTable) -> VirtAddr;
+    fn get_modules(&self) -> &'static [BootModule];
 }
 
 #[thread_local]
