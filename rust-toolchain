@@ -1,2 +1,2 @@
 [toolchain]
-path = "toolchain"
+path = "toolchain/install"

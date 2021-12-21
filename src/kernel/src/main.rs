@@ -75,6 +75,7 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
     logln!("donel");
     arch::init_interrupts();
 
+    initrd::init(boot_info.get_modules());
     logln!("enumerate CPUS");
     arch::processor::enumerate_cpus();
     processor::init_cpu(image::get_tls());

@@ -19,6 +19,7 @@ fixedbitset = {version = "*", default-features = false}
 acpi = "*"
 stivale-boot = "*"
 xmas-elf = "*"
+tar-no-std = "*"
 
 [dependencies.lazy_static]
 version = "1.0"

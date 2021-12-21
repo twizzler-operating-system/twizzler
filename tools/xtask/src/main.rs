@@ -224,7 +224,7 @@ fn cargo_cmd_collection(
     if let Some(triple) = triple {
         target_args.push("--target".to_owned());
         target_args.push(triple.to_owned());
-        target_args.push("-Zbuild-std".to_owned());
+        //target_args.push("-Zbuild-std".to_owned());
     }
     let status = Command::new(cargo)
         .current_dir(wd)
@@ -255,7 +255,7 @@ fn cmd_all(
         ".",
         args,
         profile,
-        Some("x86_64-unknown-linux-gnu"),
+        Some("x86_64-unknown-twizzler"),
     )?;
     Ok(())
 }
@@ -278,17 +278,15 @@ fn make_disk(meta: &Metadata, args: &[String], profile: Profile) -> Result<(), D
         .iter()
         .map(|x| x.to_string().replace("\"", ""))
         .collect();
-    println!("{:?}", pkg_list);
     let profile_path = match profile {
         Profile::Debug => "debug",
         Profile::Release => "release",
     };
     let initrd_files: Vec<String> = pkg_list
         .iter()
-        .map(|x| format!("target/x86_64-unknown-linux-gnu/{}/{}", profile_path, x))
+        .map(|x| format!("target/x86_64-unknown-twizzler/{}/{}", profile_path, x))
         .collect();
     eprintln!("== BUILDING INITRD ({:?}) ==", profile);
-    println!("{:?}", initrd_files);
     let status = Command::new(format!("target/{}/initrd_gen", profile_path))
         .arg("--output")
         .arg(format!("target/x86_64-pc-none/{}/initrd", profile_path))

@@ -68,6 +68,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6f8c380fa28aa1b36107cd97f0196474bb7241bb95a453c5c01a15ac74b2eac"
 
 [[package]]
+name = "arrayvec"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8da52d66c7071e2e3fa2a1e5c6d088fec47b593032b254f5e980de8ea54454d6"
+
+[[package]]
 name = "atty"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -615,6 +621,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tar-no-std"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "180e91b551965b47f29f54e7ce872edbf0d10f6a9e74219145500a4e3f4ec553"
+dependencies = [
+ "arrayvec",
+ "bitflags",
+ "log",
+]
+
+[[package]]
 name = "textwrap"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -665,6 +682,7 @@ dependencies = [
  "slabmalloc",
  "spin 0.9.2",
  "stivale-boot",
+ "tar-no-std",
  "uart_16550",
  "x86 0.43.0",
  "x86_64",
@@ -772,9 +790,9 @@ dependencies = [
 
 [[package]]
 name = "x86_64"
-version = "0.14.6"
+version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbc6ed1ed2cd4536b083c34041aff7b84448ee25ac4aa5e9d54802ce226f9815"
+checksum = "fb611915c917c6296d11e23f71ff1ecfe49c5766daba92cd3df52df6b58285b6"
 dependencies = [
  "bit_field",
  "bitflags",

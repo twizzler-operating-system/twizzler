@@ -1,0 +1,4 @@
+[submodule "toolchain/src/rust"]
+	path = toolchain/src/rust
+	url = git@github.com:dbittman/rust.git
+	branch = twizzler2
