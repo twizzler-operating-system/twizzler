@@ -1,4 +1,4 @@
-use std::{env, process::Command, str::FromStr, vec};
+use std::{env, fmt::Display, process::Command, str::FromStr, vec};
 
 use cargo_metadata::{Metadata, MetadataCommand};
 
@@ -15,6 +15,45 @@ fn main() {
 enum Profile {
     Debug,
     Release,
+}
+
+impl Profile {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Debug => "debug",
+            Self::Release => "release",
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum Arch {
+    X86,
+    Aarch64,
+}
+
+impl Arch {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::X86 => "x86_64",
+            Self::Aarch64 => "aarch64",
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum Platform {
+    Unknown,
+    Rpi3,
+}
+
+impl Platform {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Rpi3 => "rpi3",
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -36,6 +75,35 @@ impl QemuProfile {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BuildInfo {
+    profile: Profile,
+    arch: Arch,
+    platform: Platform,
+}
+
+impl Display for BuildInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}-{}::{}",
+            self.arch.as_str(),
+            self.platform.as_str(),
+            self.profile.as_str()
+        )
+    }
+}
+
+impl BuildInfo {
+    fn get_twizzler_triple(&self) -> String {
+        format!("{}-{}-twizzler", self.arch.as_str(), self.platform.as_str())
+    }
+
+    fn get_kernel_triple(&self) -> String {
+        format!("{}-{}-none", self.arch.as_str(), self.platform.as_str())
+    }
+}
+
 use clap::{App, Arg, SubCommand};
 fn try_main() -> Result<(), DynError> {
     let arg_profile = Arg::with_name("profile")
@@ -44,6 +112,20 @@ fn try_main() -> Result<(), DynError> {
         .default_value("debug")
         .possible_values(&["debug", "release"])
         .help("Set build profile");
+
+    let arg_arch = Arg::with_name("arch")
+        .long("arch")
+        .takes_value(true)
+        .default_value("x86_64")
+        .possible_values(&["x86_64", "aarch64"])
+        .help("Set target architecture");
+
+    let arg_platform = Arg::with_name("platform")
+        .long("platform")
+        .takes_value(true)
+        .default_value("unknown")
+        .possible_values(&["unknown", "rpi3"])
+        .help("Set target platform");
 
     let arg_qemu = Arg::with_name("qemu-arg")
         .long("qemu-arg")
@@ -77,21 +159,29 @@ fn try_main() -> Result<(), DynError> {
         );
     let build = SubCommand::with_name("build-all")
         .arg(arg_profile.clone())
+        .arg(arg_arch.clone())
+        .arg(arg_platform.clone())
         .arg(arg_message_fmt.clone())
         .arg(arg_workspace.clone())
         .about("Run cargo build on all Twizzler components");
     let check = SubCommand::with_name("check-all")
         .arg(arg_profile.clone())
+        .arg(arg_arch.clone())
+        .arg(arg_platform.clone())
         .arg(arg_message_fmt)
         .arg(arg_workspace)
         .arg(arg_manifest)
         .about("Run cargo check on all Twizzler components");
     let disk = SubCommand::with_name("make-disk")
         .arg(arg_profile.clone())
+        .arg(arg_arch.clone())
+        .arg(arg_platform.clone())
         .about("Create disk image from compiled Twizzler components");
     let qemu = SubCommand::with_name("start-qemu")
         .about("Start QEMU instance using the disk image created with twizzler-xtask-make-disk")
         .arg(arg_profile.clone())
+        .arg(arg_arch.clone())
+        .arg(arg_platform.clone())
         .arg(arg_qemu_profile)
         .arg(arg_qemu);
 
@@ -120,11 +210,31 @@ fn try_main() -> Result<(), DynError> {
         _ => unreachable!(),
     };
 
+    let arch = match sub_matches.value_of("arch") {
+        Some("x86_64") => Arch::X86,
+        Some("aarch64") => Arch::Aarch64,
+        None => Arch::X86,
+        _ => unreachable!(),
+    };
+
+    let platform = match sub_matches.value_of("platform") {
+        Some("unknown") => Platform::Unknown,
+        Some("rpi3") => Platform::Rpi3,
+        None => Platform::Unknown,
+        _ => unreachable!(),
+    };
+
     let qemu_profile = match sub_matches.value_of("qemu-profile") {
         Some("accel") => QemuProfile::Accel,
         Some("emu") => QemuProfile::Emu,
         None => QemuProfile::Accel,
         _ => unreachable!(),
+    };
+
+    let build_info = BuildInfo {
+        arch,
+        platform,
+        profile,
     };
 
     let path = "Cargo.toml";
@@ -148,10 +258,10 @@ fn try_main() -> Result<(), DynError> {
     }
     match sub_name {
         "bootstrap" => bootstrap(sub_matches.is_present("skip-submodules"))?,
-        "build-all" => build_all(&meta, &args, profile)?,
-        "check-all" => check_all(&meta, &args, profile)?,
-        "make-disk" => make_disk(&meta, &args, profile)?,
-        "start-qemu" => start_qemu(&meta, &args, profile, qemu_profile, &qemu_args)?,
+        "build-all" => build_all(&meta, &args, build_info)?,
+        "check-all" => check_all(&meta, &args, build_info)?,
+        "make-disk" => make_disk(&meta, &args, build_info)?,
+        "start-qemu" => start_qemu(&meta, &args, build_info, qemu_profile, &qemu_args)?,
         _ => unreachable!(),
     }
     Ok(())
@@ -199,12 +309,12 @@ fn cargo_cmd_collection(
     cargo_cmd: &str,
     wd: &str,
     args: &[String],
-    profile: Profile,
-    triple: Option<&str>,
+    build_info: BuildInfo,
+    triple: Option<String>,
 ) -> Result<(), DynError> {
     eprintln!(
-        "== BUILDING COLLECTION {} ({:?}) ==",
-        collection_name, profile
+        "== BUILDING COLLECTION {} ({}) ==",
+        collection_name, build_info
     );
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let pkg_list: Vec<String> = meta.workspace_metadata[collection_name]
@@ -219,12 +329,10 @@ fn cargo_cmd_collection(
         })
         .flatten()
         .collect();
-    //println!("{:?}", pkg_list);
     let mut target_args = vec![];
     if let Some(triple) = triple {
         target_args.push("--target".to_owned());
         target_args.push(triple.to_owned());
-        //target_args.push("-Zbuild-std".to_owned());
     }
     let status = Command::new(cargo)
         .current_dir(wd)
@@ -244,64 +352,82 @@ fn cmd_all(
     meta: &Metadata,
     args: &[String],
     cargo_cmd: &str,
-    profile: Profile,
+    build_info: BuildInfo,
 ) -> Result<(), DynError> {
-    cargo_cmd_collection(meta, "tools", cargo_cmd, ".", args, profile, None)?;
-    cargo_cmd_collection(meta, "kernel", cargo_cmd, "src/kernel", args, profile, None)?;
+    cargo_cmd_collection(meta, "tools", cargo_cmd, ".", args, build_info, None)?;
+    cargo_cmd_collection(
+        meta,
+        "kernel",
+        cargo_cmd,
+        "src/kernel",
+        args,
+        build_info,
+        None,
+    )?;
     cargo_cmd_collection(
         meta,
         "twizzler-apps",
         cargo_cmd,
         ".",
         args,
-        profile,
-        Some("x86_64-unknown-twizzler"),
+        build_info,
+        Some(build_info.get_twizzler_triple()),
     )?;
     Ok(())
 }
 
-fn check_all(meta: &Metadata, args: &[String], profile: Profile) -> Result<(), DynError> {
-    cmd_all(meta, args, "check", profile)?;
+fn check_all(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<(), DynError> {
+    cmd_all(meta, args, "check", build_info)?;
     Ok(())
 }
 
-fn build_all(meta: &Metadata, args: &[String], profile: Profile) -> Result<(), DynError> {
-    cmd_all(meta, args, "build", profile)?;
+fn build_all(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<(), DynError> {
+    cmd_all(meta, args, "build", build_info)?;
     Ok(())
 }
 
-fn make_disk(meta: &Metadata, args: &[String], profile: Profile) -> Result<(), DynError> {
-    build_all(meta, args, profile)?;
+fn make_path(build_info: BuildInfo, kernel: bool, name: &str) -> String {
+    format!(
+        "target/{}/{}/{}",
+        if kernel {
+            build_info.get_kernel_triple()
+        } else {
+            build_info.get_twizzler_triple()
+        },
+        build_info.profile.as_str(),
+        name
+    )
+}
+
+fn make_tool_path(build_info: BuildInfo, name: &str) -> String {
+    format!("target/{}/{}", build_info.profile.as_str(), name)
+}
+
+fn make_disk(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<(), DynError> {
+    build_all(meta, args, build_info)?;
     let pkg_list: Vec<String> = meta.workspace_metadata["initrd-members"]
         .as_array()
         .unwrap()
         .iter()
         .map(|x| x.to_string().replace("\"", ""))
         .collect();
-    let profile_path = match profile {
-        Profile::Debug => "debug",
-        Profile::Release => "release",
-    };
     let initrd_files: Vec<String> = pkg_list
         .iter()
-        .map(|x| format!("target/x86_64-unknown-twizzler/{}/{}", profile_path, x))
+        .map(|x| make_path(build_info, false, x))
         .collect();
-    eprintln!("== BUILDING INITRD ({:?}) ==", profile);
-    let status = Command::new(format!("target/{}/initrd_gen", profile_path))
+    eprintln!("== BUILDING INITRD ({}) ==", build_info);
+    let status = Command::new(make_tool_path(build_info, "initrd_gen"))
         .arg("--output")
-        .arg(format!("target/x86_64-pc-none/{}/initrd", profile_path))
+        .arg(make_path(build_info, true, "initrd"))
         .args(&initrd_files)
         .status()?;
     if !status.success() {
         Err("failed to generate initrd")?;
     }
-    eprintln!("== BUILDING DISK IMAGE ({:?}) ==", profile);
-    let status = Command::new(format!("target/{}/image_builder", profile_path))
-        .arg(format!(
-            "target/x86_64-pc-none/{}/twizzler-kernel",
-            profile_path
-        ))
-        .arg(format!("target/x86_64-pc-none/{}/initrd", profile_path))
+    eprintln!("== BUILDING DISK IMAGE ({}) ==", build_info);
+    let status = Command::new(make_tool_path(build_info, "image_builder"))
+        .arg(make_path(build_info, true, "twizzler-kernel"))
+        .arg(make_path(build_info, true, "initrd"))
         .status()?;
 
     if !status.success() {
@@ -313,22 +439,18 @@ fn make_disk(meta: &Metadata, args: &[String], profile: Profile) -> Result<(), D
 fn start_qemu(
     meta: &Metadata,
     args: &[String],
-    profile: Profile,
+    build_info: BuildInfo,
     qemu_profile: QemuProfile,
     qemu_args: &[String],
 ) -> Result<(), DynError> {
-    make_disk(meta, args, profile)?;
-    let profile_path = match profile {
-        Profile::Debug => "debug",
-        Profile::Release => "release",
-    };
+    make_disk(meta, args, build_info)?;
     let mut run_cmd = Command::new("qemu-system-x86_64");
     run_cmd.arg("-m").arg("1024,slots=4,maxmem=8G");
     run_cmd.arg("-bios").arg("/usr/share/edk2-ovmf/x64/OVMF.fd");
     run_cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
     run_cmd.arg("-drive").arg(format!(
-        "format=raw,file=target/x86_64-pc-none/{}/disk.img",
-        profile_path
+        "format=raw,file={}",
+        make_path(build_info, true, "disk.img")
     ));
     run_cmd.arg("-machine").arg("q35,nvdimm=on");
     run_cmd

@@ -10,7 +10,7 @@ CC = "clang"
 CXX = "clang++"
 
 [build]
-target = "x86_64-pc-none.json"
+target = "x86_64-unknown-none.json"
 
 [unstable]
 build-std = ["core","alloc"]
