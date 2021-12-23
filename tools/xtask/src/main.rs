@@ -453,9 +453,10 @@ fn start_qemu(
         make_path(build_info, true, "disk.img")
     ));
     run_cmd.arg("-machine").arg("q35,nvdimm=on");
-    run_cmd
-        .arg("-object")
-        .arg("memory-backend-file,id=mem1,share=on,mem-path=pmem.img,size=4G");
+    run_cmd.arg("-object").arg(format!(
+        "memory-backend-file,id=mem1,share=on,mem-path={},size=4G",
+        make_path(build_info, true, "pmem.img")
+    ));
     run_cmd.arg("-device").arg("nvdimm,id=nvdimm1,memdev=mem1");
     const RUN_ARGS: &[&str] = &["--no-reboot", "-s", "-serial", "mon:stdio", "-vnc", ":0"];
     run_cmd.args(RUN_ARGS);
