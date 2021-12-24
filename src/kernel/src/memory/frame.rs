@@ -1,3 +1,18 @@
+//! Manage physical frames.
+//!
+//! On kernel initialization, the system will call into [init] in this module to pass information
+//! about physical memory regions. Once that call completes, the physical frame allocator is ready
+//! for use. This has to happen before any fully-bootstrapped memory manager is ready to use. Note,
+//! though, that this module may have to perform memory allocation during initialization, so it'll
+//! have to make use of the bootstrap memory allocator.
+//!
+//! Physical frames are physical pages of memory, whose size depends on the architecture compiled
+//! for. A given physical frame can either be zeroed (that is, the physical memory the frame refers
+//! to contains only zeros), or it can be indeterminate. This distinction is maintained because it's
+//! common that we need to allocate zero pages AND pages that will be immediately overwritten. Upon
+//! allocation, the caller can request a zeroed frame or an indeterminate frame. The allocator will
+//! try to reserve known-zero frames for allocations that request them.
+
 use core::ops::Add;
 
 use alloc::vec::Vec;
@@ -46,14 +61,17 @@ unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
     }
 }
 
+#[doc(hidden)]
 #[repr(C)]
 struct FreeListNode {
     next: *mut FreeListNode,
     pages: [PhysAddr; 0x1000 / 8 - 1], //TODO: arch-dep
 }
 
+#[doc(hidden)]
 const MAX_PER_PAGE: usize = 0x1000 / 8 - 1;
 
+#[doc(hidden)]
 struct PageFreeList {
     start: *mut FreeListNode,
     index: usize,
@@ -100,6 +118,7 @@ impl PageFreeList {
     }
 }
 
+#[doc(hidden)]
 struct AllocationRegion {
     start: PhysAddr,
     pages: usize,
@@ -126,13 +145,17 @@ impl AllocationRegion {
     }
 }
 
-pub struct PhysicalFrameAllocator {
+#[doc(hidden)]
+struct PhysicalFrameAllocator {
     zeroed: PageFreeList,
     non_zeroed: PageFreeList,
     regions: Vec<AllocationRegion>,
     region_idx: usize,
 }
 
+/// A physical frame.
+///
+/// Contains a physical address and flags that indicate if the frame is zeroed or not.
 pub struct Frame {
     pa: PhysAddr,
     flags: PhysicalFrameFlags,
@@ -157,7 +180,10 @@ impl Frame {
 }
 
 bitflags::bitflags! {
+    /// Flags to control the state of a physical frame. Also used by the alloc functions to indicate
+    /// what kind of physical frame is being requested.
     pub struct PhysicalFrameFlags: u32 {
+        /// The frame is zeroed (or, allocate a zeroed frame)
         const ZEROED = 1;
     }
 }
@@ -229,6 +255,8 @@ impl PhysicalFrameAllocator {
 }
 
 unsafe impl Send for PageFreeList {}
+
+#[doc(hidden)]
 static PFA: Once<Spinlock<PhysicalFrameAllocator>> = Once::new();
 
 /// Initialize the global physical frame allocator.
@@ -239,6 +267,23 @@ pub fn init(regions: &[MemoryRegion]) {
     PFA.call_once(|| Spinlock::new(pfa));
 }
 
+/// Allocate a physical frame.
+///
+/// The `flags` argument allows one to control if the resulting frame is
+/// zeroed or not. Note that passing [PhysicalFrameFlags]::ZEROED guarantees that the returned frame
+/// is zeroed, but the converse is not true.
+///
+/// The returned frame will have its ZEROED flag cleared. In the future, this will probably change
+/// to reflect the correct state of the frame.
+///
+/// # Panic
+/// Will panic if out of physical memory. For this reason, you probably want to use [try_alloc_frame].
+///
+/// # Examples
+/// ```
+/// let uninitialized_frame = alloc_frame(PhysicalFrameFlags::empty());
+/// let zeroed_frame = alloc_frame(PhysicalFrameFlags::ZEROED);
+/// ```
 pub fn alloc_frame(flags: PhysicalFrameFlags) -> Frame {
     let mut frame = { PFA.wait().lock().alloc(flags) };
     if !frame.flags.contains(PhysicalFrameFlags::ZEROED)
@@ -251,10 +296,16 @@ pub fn alloc_frame(flags: PhysicalFrameFlags) -> Frame {
     frame
 }
 
+/// Try to allocate a physical frame. The flags argument is the same as in [alloc_frame]. Returns
+/// None if no physical frame is available.
 pub fn try_alloc_frame(flags: PhysicalFrameFlags) -> Option<Frame> {
     Some(alloc_frame(flags))
 }
 
+/// Free a physical frame.
+///
+/// If the frame's flags indicates that it is zeroed, it will be placed on
+/// the zeroed list.
 pub fn free_frame(frame: Frame) {
     PFA.wait().lock().free(frame);
 }
