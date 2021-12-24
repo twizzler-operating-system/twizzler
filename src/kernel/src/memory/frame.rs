@@ -166,7 +166,10 @@ impl Frame {
         Self { pa, flags }
     }
 
-    fn zero(&mut self) {
+    /// Zero a frame.
+    ///
+    /// This marks a frame as being zeroed and also set the underlying physical memory to zero.
+    pub fn zero(&mut self) {
         let virt = phys_to_virt(self.pa);
         let ptr: *mut u8 = virt.as_mut_ptr();
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr, 0x1000) };
@@ -174,8 +177,14 @@ impl Frame {
         self.flags.insert(PhysicalFrameFlags::ZEROED);
     }
 
-    fn set_not_zero(&mut self) {
+    /// Mark this frame as not being zeroed. Does not modify the physical memory controlled by this Frame.
+    pub fn set_not_zero(&mut self) {
         self.flags.remove(PhysicalFrameFlags::ZEROED);
+    }
+
+    /// Check if this frame is marked as zeroed. Does not look at the underlying physical memory.
+    pub fn is_zeroed(&self) -> bool {
+        self.flags.contains(PhysicalFrameFlags::ZEROED)
     }
 }
 
@@ -218,7 +227,7 @@ impl PhysicalFrameAllocator {
         }
     }
 
-    pub fn alloc(&mut self, flags: PhysicalFrameFlags) -> Frame {
+    fn alloc(&mut self, flags: PhysicalFrameFlags) -> Frame {
         let (primary, fallback) = if flags.contains(PhysicalFrameFlags::ZEROED) {
             (&mut self.zeroed, &mut self.non_zeroed)
         } else {
@@ -245,7 +254,7 @@ impl PhysicalFrameAllocator {
         )
     }
 
-    pub fn free(&mut self, frame: Frame) {
+    fn free(&mut self, frame: Frame) {
         if frame.flags.contains(PhysicalFrameFlags::ZEROED) {
             self.zeroed.push(frame.pa);
         } else {

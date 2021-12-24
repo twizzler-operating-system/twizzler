@@ -243,9 +243,6 @@ pub fn secondary_entry(id: u32, tcb_base: VirtAddr, kernel_stack_base: *mut u8) 
         CPU_ID = id;
         CURRENT_PROCESSOR = &**ALL_PROCESSORS[id as usize].as_ref().unwrap();
     }
-    logln!("secondary processor: {} {:?}", id, unsafe {
-        BOOT_KERNEL_STACK
-    });
     let topo_path = arch::processor::get_topology();
     current_processor().set_topology(topo_path);
     current_processor()
@@ -266,7 +263,7 @@ fn start_secondary_cpu(cpu: u32, tls_template: TlsInfo) {
         alloc::alloc::alloc_zeroed(layout)
     };
 
-    logln!("poking cpu {} {:?} {:?}", cpu, tcb_base, kernel_stack);
+    //logln!("poking cpu {} {:?} {:?}", cpu, tcb_base, kernel_stack);
     unsafe {
         crate::arch::lapic::poke_cpu(cpu, tcb_base, kernel_stack);
     }

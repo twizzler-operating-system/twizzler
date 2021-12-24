@@ -110,7 +110,6 @@ impl From<StivaleMemoryMapEntryType> for MemoryRegionKind {
 }
 
 extern "C" fn __stivale_start(info: &'static StivaleStruct) -> ! {
-    logln!("early print? {:p}", info);
     unsafe {
         let efer = x86::msr::rdmsr(x86::msr::IA32_EFER);
         x86::msr::wrmsr(x86::msr::IA32_EFER, efer | (1 << 11));

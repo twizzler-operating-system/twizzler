@@ -130,7 +130,6 @@ fn init_kernel_context(
     let mut new_context = MemoryContext::new(frame_allocator).unwrap();
 
     let phys_mem_offset = arch::memory::phys_to_virt(PhysAddr::new(0));
-    logln!("phys: {:x}", phys_mem_offset);
     /* TODO: map ALL of the physical address space */
     new_context
         .arch
@@ -155,10 +154,8 @@ fn init_kernel_context(
         .unwrap();
 
     for va in clone_regions {
-        logln!("{:?}", *va);
         new_context.clone_region(&ctx, *va, frame_allocator);
     }
-    logln!("aaa");
     unsafe {
         new_context.arch.switch();
     }
@@ -234,7 +231,6 @@ pub fn init<B: BootInfo>(boot_info: &B, clone_regions: &[VirtAddr]) {
     // let mut mapper = unsafe { arch::memory::init(VirtAddr::new(phys_mem_offset)) };
     let kernel_context = init_kernel_context(clone_regions, &mut frame_allocator);
 
-    logln!("here");
     unsafe {
         KERNEL_MEMORY_MANAGER = Box::into_raw(Box::new(KernelMemoryManager {
             inner: spin::Mutex::new(KernelMemoryManagerInner {
@@ -244,6 +240,5 @@ pub fn init<B: BootInfo>(boot_info: &B, clone_regions: &[VirtAddr]) {
         }))
     };
 
-    logln!("init alloc");
     allocator::init(kernel_memory_manager());
 }

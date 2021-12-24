@@ -6,8 +6,6 @@
 #![feature(global_asm)]
 #![feature(exclusive_range_pattern)]
 #![feature(naked_functions)]
-//#![feature(asm_const)]
-//#![feature(asm_sym)]
 #![allow(dead_code)]
 #![feature(map_first_last)]
 #![feature(const_fn_trait_bound)]
@@ -43,27 +41,26 @@ use x86_64::VirtAddr;
 
 use crate::processor::current_processor;
 
+/// A collection of information made available to the kernel by the bootloader or arch-dep modules.
 pub trait BootInfo {
+    /// Return a static array of memory regions for the system.
     fn memory_regions(&self) -> &'static [MemoryRegion];
+    /// Return the address and length of the whole kernel image.
     fn kernel_image_info(&self) -> (VirtAddr, usize);
+    /// Get a system table, the kinds available depend on the platform and architecture.
     fn get_system_table(&self, table: BootInfoSystemTable) -> VirtAddr;
+    /// Get a static array of the modules loaded by the bootloader
     fn get_modules(&self) -> &'static [BootModule];
 }
 
-#[thread_local]
-static FOO: u32 = 1234;
-//entry_point!(kernel_main);
 fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
     let kernel_image_reg = 0xffffffff80000000u64;
     let clone_regions = [VirtAddr::new(kernel_image_reg)];
-    logln!("early memory init");
+    arch::init(boot_info);
+    logln!("[kernel::mm] initializing memory management");
     memory::init(boot_info, &clone_regions);
 
-    arch::init(boot_info);
-    // memory::allocator::init_heap(&mut mapper, &mut frame_allocator)
-    // .expect("failed to initialize heap");
-
-    logln!("parsing debug image");
+    logln!("[kernel::debug] parsing kernel debug image");
     let (kernel_image_start, kernel_image_length) = boot_info.kernel_image_info();
     unsafe {
         let kernel_image =
@@ -72,19 +69,17 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
         panic::init(kernel_image);
     }
 
-    logln!("donel");
     arch::init_interrupts();
 
     initrd::init(boot_info.get_modules());
-    logln!("enumerate CPUS");
+    logln!("[kernel::cpu] enumerating and starting secondary CPUs");
     arch::processor::enumerate_cpus();
     processor::init_cpu(image::get_tls());
     arch::init_secondary();
-
     processor::boot_all_secondaries(image::get_tls());
-    logln!("done");
 
     clock::init();
+
     let lock = spinlock::Spinlock::<u32>::new(0);
     let mut v = lock.lock();
     *v = 2;
@@ -93,7 +88,6 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
 }
 
 pub fn init_threading() -> ! {
-    logln!("got here");
     //arch::schedule_oneshot_tick(1000000000);
     //loop {}
     sched::create_idle_thread();

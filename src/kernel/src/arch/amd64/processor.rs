@@ -31,7 +31,6 @@ impl GsScratch {
 }
 
 pub fn init(tls: VirtAddr) {
-    logln!("setting tls as {:?}", tls);
     unsafe {
         x86_64::registers::control::Efer::update(|f| f.insert(EferFlags::SYSTEM_CALL_EXTENSIONS))
     };

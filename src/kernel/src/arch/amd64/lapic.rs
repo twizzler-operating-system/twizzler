@@ -88,7 +88,6 @@ pub fn init(bsp: bool) {
             let apic_base = x86::msr::rdmsr(x86::msr::APIC_BASE) as u32;
             LAPIC_ADDR = phys_to_virt(PhysAddr::new((apic_base & 0xffff0000) as u64)).as_u64();
         }
-        logln!("apic address: {:x}", unsafe { LAPIC_ADDR });
         get_speeds();
     }
 
@@ -248,7 +247,6 @@ extern "C" fn trampoline_main_entry(id: u32, tcb: u64, stack_base: u64) -> ! {
 
 #[inline(never)]
 fn rust_entry_secondary(id: u32, tcb: u64, stack_base: u64) -> ! {
-    logln!("{} {:x} {:x}", id, tcb, stack_base);
     crate::processor::secondary_entry(id, VirtAddr::new(tcb), stack_base as *mut u8);
 }
 

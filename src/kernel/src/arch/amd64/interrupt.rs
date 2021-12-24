@@ -343,7 +343,6 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, _user: bool) {
             ctx
         );
     }
-    //logln!("interrupt! {} {:#?}", ct
     if number == 32 {
         unsafe {
             if current_processor().is_bsp() {
