@@ -23,7 +23,7 @@ mod image;
 mod initrd;
 mod interrupt;
 pub mod machine;
-mod memory;
+pub mod memory;
 mod mutex;
 mod panic;
 mod processor;

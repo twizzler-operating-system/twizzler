@@ -1,10 +1,12 @@
 use core::ops::Add;
 
 use alloc::vec::Vec;
+use spin::Once;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
 
 use crate::arch::memory::phys_to_virt;
+use crate::spinlock::Spinlock;
 
 use super::{MemoryRegion, MemoryRegionKind};
 
@@ -58,6 +60,13 @@ struct PageFreeList {
 }
 
 impl PageFreeList {
+    fn new() -> Self {
+        Self {
+            start: core::ptr::null_mut(),
+            index: 0,
+        }
+    }
+
     fn pop(&mut self) -> Option<(bool, PhysAddr)> {
         if self.start.is_null() {
             return None;
@@ -76,7 +85,7 @@ impl PageFreeList {
     }
 
     fn push(&mut self, addr: PhysAddr) {
-        if self.index == MAX_PER_PAGE {
+        if self.index == MAX_PER_PAGE || self.start.is_null() {
             let vaddr = phys_to_virt(addr);
             let node: &mut FreeListNode = unsafe { &mut *vaddr.as_mut_ptr() };
             node.next = self.start;
@@ -105,6 +114,15 @@ impl AllocationRegion {
         self.start = self.start.add(0x1000usize); //TODO: arch-dep
         self.pages -= 1;
         Some(pa)
+    }
+
+    fn new(m: &MemoryRegion) -> Self {
+        let start = m.start.align_up(0x1000u64);
+        let length = m.length - (start.as_u64() - m.start.as_u64()) as usize;
+        Self {
+            start,
+            pages: length / 0x1000,
+        }
     }
 }
 
@@ -145,7 +163,27 @@ bitflags::bitflags! {
 }
 
 impl PhysicalFrameAllocator {
+    fn new(memory_regions: &[MemoryRegion]) -> PhysicalFrameAllocator {
+        Self {
+            zeroed: PageFreeList::new(),
+            non_zeroed: PageFreeList::new(),
+            region_idx: 0,
+            regions: memory_regions
+                .iter()
+                .filter_map(|m| {
+                    if m.kind == MemoryRegionKind::UsableRam {
+                        Some(AllocationRegion::new(m))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        }
+    }
     fn fallback_alloc(&mut self) -> PhysAddr {
+        if self.region_idx >= self.regions.len() {
+            panic!("out of physical memory");
+        }
         if let Some(pa) = self.regions[self.region_idx].take() {
             pa
         } else {
@@ -171,14 +209,14 @@ impl PhysicalFrameAllocator {
             }
         };
 
-        let mut frame = Frame::new(frame, PhysicalFrameFlags::empty());
-        if maybe_needs_zero && flags.contains(PhysicalFrameFlags::ZEROED) {
-            frame.zero();
-        }
-        /* TODO: try to use the MMU to detect if a page is actually ever written to or not */
-        frame.set_not_zero();
-
-        frame
+        Frame::new(
+            frame,
+            if maybe_needs_zero {
+                PhysicalFrameFlags::empty()
+            } else {
+                PhysicalFrameFlags::ZEROED
+            },
+        )
     }
 
     pub fn free(&mut self, frame: Frame) {
@@ -188,4 +226,35 @@ impl PhysicalFrameAllocator {
             self.non_zeroed.push(frame.pa);
         }
     }
+}
+
+unsafe impl Send for PageFreeList {}
+static PFA: Once<Spinlock<PhysicalFrameAllocator>> = Once::new();
+
+/// Initialize the global physical frame allocator.
+/// # Arguments
+///  * `regions`: An array of memory regions passed from the boot info system.
+pub fn init(regions: &[MemoryRegion]) {
+    let pfa = PhysicalFrameAllocator::new(regions);
+    PFA.call_once(|| Spinlock::new(pfa));
+}
+
+pub fn alloc_frame(flags: PhysicalFrameFlags) -> Frame {
+    let mut frame = { PFA.wait().lock().alloc(flags) };
+    if !frame.flags.contains(PhysicalFrameFlags::ZEROED)
+        && flags.contains(PhysicalFrameFlags::ZEROED)
+    {
+        frame.zero();
+    }
+    /* TODO: try to use the MMU to detect if a page is actually ever written to or not */
+    frame.set_not_zero();
+    frame
+}
+
+pub fn try_alloc_frame(flags: PhysicalFrameFlags) -> Option<Frame> {
+    Some(alloc_frame(flags))
+}
+
+pub fn free_frame(frame: Frame) {
+    PFA.wait().lock().free(frame);
 }
