@@ -10,7 +10,7 @@ sysconfdir = "etc"
 #download-ci-llvm = true
 
 [build]
-tools = ["cargo", "clippy", "rustfmt", "src"] # + "rust-demangler" if `profiler`
+tools = ["clippy", "rustfmt", "src"] # + "rust-demangler" if `profiler`
 docs = false
 target = ["x86_64-unknown-linux-gnu", "x86_64-unknown-twizzler"]
 

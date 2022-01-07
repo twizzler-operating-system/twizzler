@@ -68,7 +68,9 @@ pub fn get_speeds() {
     }
     if let Some(cpu_speed_info) = cpuid.get_processor_frequency_info() {
         unsafe { FREQ_MHZ = cpu_speed_info.processor_base_frequency() as u64 };
-        return;
+        if cpu_speed_info.processor_base_frequency() > 0 {
+            return;
+        }
     }
     if let Some(speed) = cpuid
         .get_hypervisor_info()

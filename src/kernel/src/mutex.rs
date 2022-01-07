@@ -1,3 +1,18 @@
+//! Implementation of a mutex that sleeps threads when there is contention.
+//!
+//! When a mutex's lock function is called, it first tries to wait a bit to see if the mutex frees
+//! up, after which it will put the calling thread to sleep. When the current owner of the mutex
+//! calls the unlock function, a sleeping thread is chosen and rescheduled.
+//!
+//! *NOTE*: Because mutexes may sleep threads, mutexes may not be used in critical contexts, such as
+//! critical sections or interrupt context.
+//!
+//! Mutexes interact with the scheduler to perform priority forwarding so that if a high priority
+//! thread comes in and sleeps on a mutex owned by a lower priority thread, that lower priority
+//! thread will temporarily run with the priority of the thread that just called lock(). In general,
+//! a thread that holds a mutex will run with the highest of the priorities of all threads sleeping
+//! on that mutex.
+
 use core::{cell::UnsafeCell, sync::atomic::AtomicU64};
 
 use alloc::collections::VecDeque;
@@ -17,12 +32,14 @@ struct SleepQueue {
     owned: bool,
 }
 
+/// A container data structure to manage mutual exclusion.
 pub struct Mutex<T> {
     queue: Spinlock<SleepQueue>,
     cell: UnsafeCell<T>,
 }
 
 impl<T> Mutex<T> {
+    /// Create a new mutex, moving data `T` into it.
     pub fn new(data: T) -> Self {
         Self {
             queue: Spinlock::new(SleepQueue {
@@ -35,6 +52,8 @@ impl<T> Mutex<T> {
         }
     }
 
+    /// Lock the mutex and return a lock guard to manage a reference to the managed data. When the
+    /// lock guard goes out of scope, the lock will be released.
     pub fn lock(&self) -> LockGuard<'_, T> {
         let current_thread = current_thread_ref();
         let current_donated_priority = current_thread
@@ -96,6 +115,7 @@ impl<T> Mutex<T> {
     }
 }
 
+/// Manages a reference to the data controlled by a mutex.
 pub struct LockGuard<'a, T> {
     lock: &'a Mutex<T>,
     prev_donated_priority: Option<Priority>,
