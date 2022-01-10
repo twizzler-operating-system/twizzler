@@ -23,6 +23,7 @@ mod interrupt;
 pub mod machine;
 pub mod memory;
 mod mutex;
+mod obj;
 mod panic;
 mod processor;
 mod sched;
