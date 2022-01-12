@@ -85,6 +85,7 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
     let mut v = lock.lock();
     *v = 2;
 
+    thread::start_new(thread_main);
     init_threading();
 }
 
@@ -93,8 +94,8 @@ pub fn init_threading() -> ! {
     //loop {}
     sched::create_idle_thread();
     clock::schedule_oneshot_tick(1);
-    thread::start_new(thread_main);
-    thread::start_new(thread_main);
+    //thread::start_new(thread_main);
+    //thread::start_new(thread_main);
     idle_main();
 }
 
@@ -115,7 +116,7 @@ pub fn idle_main() -> ! {
 #[naked]
 unsafe extern "C" fn thread_user_main() {
     asm!(
-        "ahah: mov rax, 1234",
+        "ahah: mov rax, [0x1234]",
         "syscall",
         "jmp ahah",
         options(noreturn)

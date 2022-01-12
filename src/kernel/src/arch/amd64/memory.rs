@@ -36,6 +36,7 @@ pub unsafe fn translate_addr(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Optio
 
 use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, Size4KiB};
 
+use crate::memory::frame::{alloc_frame, PhysicalFrameFlags};
 use crate::memory::{MapFailed, MappingInfo};
 
 pub unsafe fn init(phys_mem_offset: VirtAddr) -> OffsetPageTable<'static> {
@@ -114,20 +115,9 @@ impl Table {
         }
     }
 
-    fn get_child(
-        &mut self,
-        idx: usize,
-        flags: u64,
-        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
-    ) -> Option<Table> {
+    fn get_child(&mut self, idx: usize, flags: u64) -> Option<Table> {
         if self.as_slice_mut()[idx] == 0 {
-            /* TODO: we should have a dedicated "allocate zerod frame" thing */
-            let frame = frame_allocator.allocate_frame()?;
-            let va = phys_to_virt(frame.start_address());
-            unsafe {
-                let p: *mut u8 = va.as_mut_ptr();
-                p.write_bytes(0, 0x1000);
-            }
+            let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
             self.as_slice_mut()[idx] = frame.start_address().as_u64() | flags;
         }
         let e = self.as_slice_mut()[idx];
@@ -205,16 +195,21 @@ const PAGE_SIZE_HUGE: usize = 1024 * 1024 * 1024;
 const PAGE_SIZE_LARGE: usize = 2 * 1024 * 1024;
 const PAGE_SIZE: usize = 0x1000;
 impl ArchMemoryContext {
-    pub fn new(frame_allocator: &mut impl FrameAllocator<Size4KiB>) -> Option<Self> {
-        let frame = frame_allocator.allocate_frame()?;
-        let va = phys_to_virt(frame.start_address());
-        unsafe {
-            let p: *mut u8 = va.as_mut_ptr();
-            p.write_bytes(0, 0x1000);
+    pub fn new_blank() -> Self {
+        let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
+        let mut table_root: Table = frame.start_address().into();
+        for i in 256..512 {
+            table_root.get_child(
+                i,
+                (MapFlags::EXECUTE
+                    | MapFlags::WRITE
+                    | MapFlags::READ
+                    | MapFlags::WIRED
+                    | MapFlags::GLOBAL)
+                    .table_bits(),
+            );
         }
-        Some(Self {
-            table_root: frame.start_address().into(),
-        })
+        Self { table_root }
     }
 
     pub fn root(&self) -> PhysAddr {
@@ -225,14 +220,11 @@ impl ArchMemoryContext {
         x86::controlregs::cr3_write(self.root().as_u64())
     }
 
-    pub fn clone_empty_user(
-        &self,
-        frame_allocator: &mut impl FrameAllocator<Size4KiB>,
-    ) -> Option<Self> {
-        let mut new = Self::new(frame_allocator)?;
+    pub fn clone_empty_user(&self) -> Self {
+        let mut new = Self::new_blank();
         let table = new.table_root.as_slice_mut();
         table[256..512].clone_from_slice(&self.table_root.as_slice()[256..512]);
-        Some(new)
+        new
     }
 
     pub fn from_existing_tables(table_root: PhysAddr) -> Self {
@@ -282,7 +274,6 @@ impl ArchMemoryContext {
         start: VirtAddr,
         length: usize,
         flags: MapFlags,
-        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> Result<(), MapFailed> {
         let end = start + length;
         let mut count = 0usize;
@@ -312,7 +303,7 @@ impl ArchMemoryContext {
             let mut table = self.table_root;
             for idx in indexes.iter().take(nr_recur) {
                 table = table
-                    .get_child((*idx).into(), flags.table_bits(), frame_allocator)
+                    .get_child((*idx).into(), flags.table_bits())
                     .ok_or(MapFailed::FrameAllocation)?
             }
             count += match nr_recur {
@@ -325,12 +316,7 @@ impl ArchMemoryContext {
         Ok(())
     }
 
-    pub fn unmap(
-        &mut self,
-        start: VirtAddr,
-        length: usize,
-        _frame_allocator: &mut impl FrameAllocator<Size4KiB>,
-    ) {
+    pub fn unmap(&mut self, start: VirtAddr, length: usize) {
         /* TODO: Free frames? */
         let end = start + length;
         let mut count = 0usize;
@@ -379,7 +365,6 @@ impl ArchMemoryContext {
         phys: PhysAddr,
         mut length: usize,
         flags: MapFlags,
-        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> Result<(), MapFailed> {
         if start.as_u64().checked_add(length as u64).is_none() {
             length -= PAGE_SIZE;
@@ -421,7 +406,7 @@ impl ArchMemoryContext {
             let mut table = self.table_root;
             for idx in indexes.iter().take(nr_recur) {
                 table = table
-                    .get_child((*idx).into(), flags.table_bits(), frame_allocator)
+                    .get_child((*idx).into(), flags.table_bits())
                     .ok_or(MapFailed::FrameAllocation)?
             }
             table.map(

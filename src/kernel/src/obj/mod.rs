@@ -4,8 +4,6 @@ use alloc::{collections::BTreeMap, sync::Arc};
 
 use crate::mutex::{LockGuard, Mutex};
 
-use self::pages::PageRef;
-
 pub mod pages;
 pub mod pagevec;
 pub mod range;
@@ -23,6 +21,14 @@ pub struct Object {
 #[repr(transparent)]
 pub struct PageNumber(usize);
 
+impl core::ops::Add for PageNumber {
+    type Output = usize;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        self.0 + rhs.0
+    }
+}
+
 impl core::ops::Sub for PageNumber {
     type Output = usize;
 
@@ -39,6 +45,10 @@ impl PageNumber {
     pub fn from_address(addr: x86_64::VirtAddr) -> Self {
         PageNumber(((addr.as_u64() % (1 << 30)) / 0x1000) as usize) //TODO: arch-dep
     }
+
+    pub fn next(&self) -> Self {
+        Self(self.0 + 1)
+    }
 }
 
 impl Object {
@@ -52,6 +62,11 @@ impl Object {
 
     pub fn lock_page_tree(&self) -> LockGuard<'_, range::RangeTree> {
         self.range_tree.lock()
+    }
+
+    pub fn add_page(&self, pn: PageNumber, page: pages::Page) {
+        let mut range_tree = self.range_tree.lock();
+        range_tree.add_page(pn, page);
     }
 }
 

@@ -8,6 +8,8 @@ use alloc::{boxed::Box, sync::Arc, vec};
 
 use crate::{
     interrupt,
+    memory::context::{MemoryContext, MemoryContextRef},
+    mutex::Mutex,
     processor::{get_processor, KERNEL_STACK_SIZE},
     sched::schedule_new_thread,
     spinlock::Spinlock,
@@ -60,7 +62,7 @@ pub struct Thread {
     pub switch_lock: AtomicU64,
     pub donated_priority: Spinlock<Option<Priority>>,
     pub current_processor_queue: AtomicI32,
-    //memory_context: Arc<MemoryContext>,
+    memory_context: Option<MemoryContextRef>,
     pub kernel_stack: Box<[u8; KERNEL_STACK_SIZE]>,
     pub stats: ThreadStats,
 }
@@ -111,6 +113,12 @@ fn release_thread_id(id: u64) {
     reuser.push(id);
 }
 
+pub fn current_memory_context() -> Option<MemoryContextRef> {
+    current_thread_ref()
+        .map(|t| t.memory_context.clone())
+        .flatten()
+}
+
 impl Thread {
     pub fn new() -> Self {
         /* TODO: dedicated kernel stack allocator, with guard page support */
@@ -135,7 +143,14 @@ impl Thread {
             donated_priority: Spinlock::new(None),
             current_processor_queue: AtomicI32::new(-1),
             stats: ThreadStats::default(),
+            memory_context: None,
         }
+    }
+
+    pub fn new_with_new_vm() -> Self {
+        let mut thread = Self::new();
+        thread.memory_context = Some(Arc::new(Mutex::new(MemoryContext::new())));
+        thread
     }
 
     pub fn new_idle() -> Self {
@@ -147,6 +162,11 @@ impl Thread {
     }
 
     pub fn switch_thread(&self, current: &Thread) {
+        if self != current {
+            if let Some(ref ctx) = self.memory_context {
+                ctx.lock().switch();
+            }
+        }
         self.arch_switch_to(current)
     }
 
@@ -388,7 +408,7 @@ impl Ord for Priority {
 }
 
 pub fn start_new(f: extern "C" fn()) {
-    let mut thread = Thread::new();
+    let mut thread = Thread::new_with_new_vm();
     logln!(
         "starting new thread {} with stack {:p}",
         thread.id,

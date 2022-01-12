@@ -93,7 +93,7 @@ impl<T> Mutex<T> {
                 reinsert
             };
 
-            sched::schedule(reinsert);
+                sched::schedule(reinsert);
         }
 
         LockGuard {

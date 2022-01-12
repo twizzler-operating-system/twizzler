@@ -2,7 +2,11 @@ use x86::current::rflags::RFlags;
 use x86_64::{instructions::segmentation::Segment64, VirtAddr};
 
 use crate::{
-    arch::lapic, interrupt::Destination, processor::current_processor, thread::current_thread_ref,
+    arch::lapic,
+    interrupt::Destination,
+    memory::fault::{PageFaultCause, PageFaultFlags},
+    processor::current_processor,
+    thread::current_thread_ref,
 };
 
 struct IsrContext {
@@ -336,7 +340,30 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, _user: bool) {
         );
     }
 
-    if number < 32 {
+    if number == Exception::PageFault as u64 {
+        let cr2 = unsafe { x86::controlregs::cr2() };
+        let err = ctx.err;
+        let cause = if err & (1 << 4) == 0 {
+            if err & (1 << 1) == 0 {
+                PageFaultCause::Read
+            } else {
+                PageFaultCause::Write
+            }
+        } else {
+            PageFaultCause::InstructionFetch
+        };
+        let mut flags = PageFaultFlags::empty();
+        if err & 1 != 0 {
+            flags.insert(PageFaultFlags::PRESENT);
+        }
+        if err & (1 << 2) != 0 {
+            flags.insert(PageFaultFlags::USER);
+        }
+        if err & (1 << 3) != 0 {
+            flags.insert(PageFaultFlags::INVALID);
+        }
+        crate::memory::fault::page_fault(VirtAddr::new(cr2 as u64), cause, flags);
+    } else if number < 32 {
         panic!(
             "caught unhandled exception {:?}: {:#?}",
             num_as_exception(number),

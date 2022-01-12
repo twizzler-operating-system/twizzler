@@ -166,6 +166,14 @@ impl Frame {
         Self { pa, flags }
     }
 
+    pub fn start_address(&self) -> PhysAddr {
+        self.pa
+    }
+
+    pub fn size(&self) -> usize {
+        4096 //TODO: arch-dep
+    }
+
     /// Zero a frame.
     ///
     /// This marks a frame as being zeroed and also set the underlying physical memory to zero.
