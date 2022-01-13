@@ -44,6 +44,12 @@ pub struct RangeTree {
 }
 
 impl RangeTree {
+    pub fn new() -> Self {
+        Self {
+            tree: NonOverlappingIntervalTree::new(),
+        }
+    }
+
     pub fn get(&self, pn: PageNumber) -> Option<&Range> {
         self.tree.get(&pn)
     }

@@ -72,11 +72,11 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
 
     arch::init_interrupts();
 
-    initrd::init(boot_info.get_modules());
     logln!("[kernel::cpu] enumerating and starting secondary CPUs");
     arch::processor::enumerate_cpus();
     processor::init_cpu(image::get_tls());
     arch::init_secondary();
+    initrd::init(boot_info.get_modules());
     processor::boot_all_secondaries(image::get_tls());
 
     clock::init();
@@ -85,7 +85,7 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
     let mut v = lock.lock();
     *v = 2;
 
-    thread::start_new(thread_main);
+    thread::start_new_init();
     init_threading();
 }
 

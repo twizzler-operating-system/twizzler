@@ -3,8 +3,6 @@ use crate::{clock::Nanoseconds, BootInfo};
 pub mod acpi;
 mod desctables;
 pub mod interrupt;
-//pub mod interrupts;
-//pub use interrupts as interrupt;
 pub mod ioapic;
 pub mod lapic;
 pub mod memory;

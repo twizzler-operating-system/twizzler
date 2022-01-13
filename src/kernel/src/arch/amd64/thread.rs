@@ -94,8 +94,7 @@ impl Thread {
         }
     }
 
-    pub unsafe fn init(&mut self, f: extern "C" fn()) {
-        let jmptarget = f as usize as u64;
+    pub unsafe fn init_va(&mut self, jmptarget: u64) {
         let stack = self.kernel_stack.as_ptr() as *mut u64;
         stack.add((KERNEL_STACK_SIZE / 8) - 2).write(jmptarget);
         stack.add((KERNEL_STACK_SIZE / 8) - 3).write(0);
@@ -106,5 +105,9 @@ impl Thread {
         stack.add((KERNEL_STACK_SIZE / 8) - 8).write(0);
         stack.add((KERNEL_STACK_SIZE / 8) - 9).write(0x202); //initial rflags: int-enabled, and reserved bit
         self.arch.rsp = core::cell::UnsafeCell::new(stack.add((KERNEL_STACK_SIZE / 8) - 9) as u64);
+    }
+
+    pub unsafe fn init(&mut self, f: extern "C" fn()) {
+        self.init_va(f as usize as u64);
     }
 }

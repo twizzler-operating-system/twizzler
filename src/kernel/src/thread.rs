@@ -1,10 +1,12 @@
 use core::{
     alloc::Layout,
     cell::RefCell,
+    ops::Add,
     sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
 };
 
 use alloc::{boxed::Box, sync::Arc, vec};
+use x86_64::VirtAddr;
 
 use crate::{
     interrupt,
@@ -407,15 +409,48 @@ impl Ord for Priority {
     }
 }
 
-pub fn start_new(f: extern "C" fn()) {
+extern "C"
+fn user_init() {
+    let vm = current_memory_context().unwrap();
+    let obj = match crate::obj::lookup_object(1, crate::obj::LookupFlags::empty()) {
+        crate::obj::LookupResult::NotFound => todo!(),
+        crate::obj::LookupResult::WasDeleted => todo!(),
+        crate::obj::LookupResult::Pending => todo!(),
+        crate::obj::LookupResult::Found(o) => o,
+    };
+    let page = obj.lock_page_tree().get_page(1.into()).unwrap();
+    let ptr: *const u8 = page.as_virtaddr().as_ptr();
+    let entry = unsafe { ptr.add(0x18) } as *const u64;
+    let entry_addr = unsafe { entry.read() };
+    unsafe {
+        logln!(
+            "---> {} {} {} :: {:x}",
+            ptr.read(),
+            ptr.add(1).read(),
+            ptr.add(2).read(),
+            entry.read(),
+        );
+    }
+    vm.lock().map_object(
+        0,
+        obj,
+        crate::memory::context::MappingPerms::READ | crate::memory::context::MappingPerms::EXECUTE,
+    );
+    unsafe {
+        crate::arch::jump_to_user(VirtAddr::new(entry_addr), VirtAddr::new(0), 0);
+    }
+}
+
+pub fn start_new_init() {
     let mut thread = Thread::new_with_new_vm();
+    let vm = thread.memory_context.as_ref().unwrap();
     logln!(
         "starting new thread {} with stack {:p}",
         thread.id,
         thread.kernel_stack
     );
     unsafe {
-        thread.init(f);
+        thread.init(user_init);
     }
     schedule_new_thread(thread);
 }

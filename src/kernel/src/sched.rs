@@ -263,20 +263,12 @@ fn select_cpu(thread: &ThreadRef) -> u32 {
         None,
     );
     if let Some(res) = res {
-        /*
-        logln!(
-            "found lowest interruptible cpu: {} with load {}",
-            res.cpuid,
-            res.load
-        );
-        */
         return res.cpuid;
     }
 
     /* 3: search for the least loaded */
     let res = find_cpu_from_topo(get_cpu_topology(), false, None, None)
         .expect("global CPU search should always produce results");
-    // logln!("found lowest cpu: {} with load {}", res.cpuid, res.load);
 
     res.cpuid
 }

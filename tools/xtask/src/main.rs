@@ -105,6 +105,7 @@ impl BuildInfo {
 }
 
 use clap::{App, Arg, SubCommand};
+use fs_extra::dir::CopyOptions;
 fn try_main() -> Result<(), DynError> {
     let arg_profile = Arg::with_name("profile")
         .long("profile")
@@ -291,7 +292,19 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
         },
         _ => {}
     }
-
+    let res = std::fs::remove_dir_all("toolchain/src/rust/library/twizzler-abi");
+    match res {
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound => {}
+            _ => Err("failed to remove softlink twizzler-abi")?,
+        },
+        _ => {}
+    }
+    let res = fs_extra::copy_items(
+        &["src/lib/twizzler-abi"],
+        "toolchain/src/rust/library/",
+        &CopyOptions::new(),
+    )?;
     let status = Command::new("./x.py")
         .arg("install")
         .current_dir("toolchain/src/rust")

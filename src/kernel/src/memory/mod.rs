@@ -42,10 +42,8 @@ impl<'a> MappingIter<'a> {
     }
 }
 
-use crate::arch::memory::MapFlags;
-
 use self::{
-    context::{MemoryContext, MemoryContextRef},
+    context::{MapFlags, MemoryContext, MemoryContextRef},
     frame::{alloc_frame, PhysicalFrameFlags},
 };
 #[derive(Clone, Copy, Debug)]

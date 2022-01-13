@@ -51,6 +51,13 @@ impl PageNumber {
     }
 }
 
+impl From<usize> for PageNumber {
+    fn from(x: usize) -> Self {
+        Self(x)
+    }
+}
+
+static OID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
 impl Object {
     pub fn is_pending_delete(&self) -> bool {
         self.flags.load(Ordering::SeqCst) & OBJ_DELETED != 0
@@ -67,6 +74,24 @@ impl Object {
     pub fn add_page(&self, pn: PageNumber, page: pages::Page) {
         let mut range_tree = self.range_tree.lock();
         range_tree.add_page(pn, page);
+    }
+
+    pub fn id(&self) -> ObjID {
+        self.id
+    }
+
+    pub fn new() -> Self {
+        Self {
+            id: OID.fetch_add(1, Ordering::SeqCst) as u128,
+            flags: AtomicU32::new(0),
+            range_tree: Mutex::new(range::RangeTree::new()),
+        }
+    }
+}
+
+impl PartialEq for Object {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
     }
 }
 
@@ -108,6 +133,11 @@ impl ObjectManager {
                 }
             })
     }
+
+    fn register_object(&self, obj: Object) {
+        // TODO: what if it returns an obj
+        self.map.lock().insert(obj.id(), Arc::new(obj));
+    }
 }
 
 lazy_static::lazy_static! {
@@ -117,4 +147,9 @@ lazy_static::lazy_static! {
 pub fn lookup_object(id: ObjID, flags: LookupFlags) -> LookupResult {
     let om = &OBJ_MANAGER;
     om.lookup_object(id, flags)
+}
+
+pub fn register_object(obj: Object) {
+    let om = &OBJ_MANAGER;
+    om.register_object(obj);
 }

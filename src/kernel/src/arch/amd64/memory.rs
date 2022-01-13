@@ -36,6 +36,7 @@ pub unsafe fn translate_addr(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Optio
 
 use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, Size4KiB};
 
+use crate::memory::context::MapFlags;
 use crate::memory::frame::{alloc_frame, PhysicalFrameFlags};
 use crate::memory::{MapFailed, MappingInfo};
 
@@ -61,7 +62,7 @@ pub fn phys_to_virt(pa: PhysAddr) -> VirtAddr {
 
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
-struct Table {
+pub struct Table {
     frame: PhysAddr,
 }
 
@@ -134,17 +135,6 @@ impl From<PhysAddr> for Table {
 }
 pub struct ArchMemoryContext {
     table_root: Table,
-}
-
-bitflags::bitflags! {
-    pub struct MapFlags: u64 {
-        const READ= 0x1;
-        const WRITE= 0x2;
-        const EXECUTE= 0x4;
-        const USER= 0x8;
-        const GLOBAL= 0x10;
-        const WIRED = 0x20;
-    }
 }
 
 impl MapFlags {
