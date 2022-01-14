@@ -12,6 +12,7 @@
 #![feature(core_intrinsics)]
 #![feature(derive_default_enum)]
 #![feature(const_btree_new)]
+#![feature(optimize_attribute)]
 
 #[macro_use]
 pub mod log;

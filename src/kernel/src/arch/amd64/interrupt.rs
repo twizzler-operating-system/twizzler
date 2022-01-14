@@ -362,7 +362,11 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, _user: bool) {
         if err & (1 << 3) != 0 {
             flags.insert(PageFaultFlags::INVALID);
         }
+        crate::thread::enter_kernel();
+        crate::interrupt::set(true);
         crate::memory::fault::page_fault(VirtAddr::new(cr2 as u64), cause, flags);
+        crate::interrupt::set(false);
+        crate::thread::exit_kernel();
     } else if number < 32 {
         panic!(
             "caught unhandled exception {:?}: {:#?}",

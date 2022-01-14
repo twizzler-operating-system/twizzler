@@ -144,7 +144,7 @@ impl KernelMemoryManager {
                 addr + count,
                 frame.start_address(),
                 frame.size() as usize,
-                MapFlags::READ | MapFlags::WRITE | MapFlags::GLOBAL,
+                MapFlags::READ | MapFlags::WRITE | MapFlags::GLOBAL | MapFlags::WIRED,
             );
             count += frame.size();
             if count >= length {
@@ -153,6 +153,20 @@ impl KernelMemoryManager {
         }
 
         Ok(())
+    }
+
+    pub fn premap(&self, start: VirtAddr, length: usize, page_size: usize) {
+        self.inner
+            .lock()
+            .kernel_context
+            .arch
+            .premap(
+                start,
+                length,
+                page_size,
+                MapFlags::READ | MapFlags::WRITE | MapFlags::GLOBAL | MapFlags::WIRED,
+            )
+            .unwrap();
     }
 }
 

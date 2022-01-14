@@ -6,10 +6,6 @@ use core::{
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 use slabmalloc::{AllocationError, Allocator, LargeObjectPage, ObjectPage, ZoneAllocator};
-use x86::bits32::paging::LARGE_PAGE_SIZE;
-
-//#[global_allocator]
-//static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
 #[alloc_error_handler]
 fn alloc_error_handler(layout: Layout) -> ! {
@@ -18,41 +14,19 @@ fn alloc_error_handler(layout: Layout) -> ! {
 
 /* TODO: arch-dep or machine-dep */
 pub const HEAP_START: usize = 0xffffff0000000000;
+pub const HEAP_LARGE_START: usize = 0xffffff1000000000;
 pub const HEAP_HUGE_START: usize = 0xfffffe0000000000;
+pub const HEAP_MAX_LEN: usize = 0x0000001000000000 / 16; //4GB
 
 use x86_64::VirtAddr;
 
 use super::KernelMemoryManager;
 
-/*
-pub fn init_heap(
-    mapper: &mut impl Mapper<Size4KiB>,
-    frame_allocator: &mut impl FrameAllocator<Size4KiB>,
-) -> Result<(), MapToError<Size4KiB>> {
-    let page_range = {
-        let heap_start = VirtAddr::new(HEAP_START as u64);
-        let heap_end = heap_start + (HEAP_SIZE - 1);
-        let heap_start_page = Page::containing_address(heap_start);
-        let heap_end_page = Page::containing_address(heap_end);
-        Page::range_inclusive(heap_start_page, heap_end_page)
-    };
-
-    for page in page_range {
-        let frame = frame_allocator
-            .allocate_frame()
-            .ok_or(MapToError::FrameAllocationFailed)?;
-        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-        unsafe { mapper.map_to(page, frame, flags, frame_allocator)?.flush() };
-    }
-
-    Ok(())
-}
-*/
-
 struct HeapPager {
     next_page: AtomicU64,
     next_large_page: AtomicU64,
     heap_start: u64,
+    heap_large_start: u64,
     huge_heap_start: u64,
     huge_heap_top: AtomicU64,
     memory_manager: Option<&'static KernelMemoryManager>,
@@ -64,23 +38,21 @@ impl HeapPager {
 
     fn hookup_kernel_memory_manager(&mut self, kmm: &'static KernelMemoryManager) {
         self.memory_manager = Some(kmm);
+        // TODO: we can do this in a more on-demand fashion.
+        self.memory_manager.unwrap().premap(
+            VirtAddr::new(self.heap_start),
+            HEAP_MAX_LEN,
+            Self::BASE_PAGE_SIZE,
+        );
+        self.memory_manager.unwrap().premap(
+            VirtAddr::new(self.heap_large_start),
+            HEAP_MAX_LEN,
+            Self::LARGE_PAGE_SIZE,
+        );
     }
 
     fn is_ready(&self) -> bool {
         self.memory_manager.is_some()
-    }
-
-    fn calc_page_offset(&self, num: u64, large: bool) -> u64 {
-        if large {
-            num * 2 * LARGE_PAGE_SIZE as u64 + self.heap_start
-        } else {
-            let num_sp = (LARGE_PAGE_SIZE / Self::BASE_PAGE_SIZE) as u64;
-            let large_idx = num / num_sp;
-            let large_off = num % num_sp;
-            ((large_idx * 2) + 1) * LARGE_PAGE_SIZE as u64
-                + large_off * Self::BASE_PAGE_SIZE as u64
-                + self.heap_start
-        }
     }
 
     fn map_offset(&self, offset: u64, large: bool) {
@@ -116,6 +88,7 @@ impl HeapPager {
             next_page: AtomicU64::new(0),
             next_large_page: AtomicU64::new(0),
             heap_start: HEAP_START as u64,
+            heap_large_start: HEAP_LARGE_START as u64,
             memory_manager: None,
             huge_heap_start: HEAP_HUGE_START as u64,
             huge_heap_top: AtomicU64::new(HEAP_HUGE_START as u64),
@@ -127,11 +100,21 @@ impl HeapPager {
         let next = if large {
             self.next_large_page
                 .fetch_add(1, core::sync::atomic::Ordering::SeqCst)
+                * Self::LARGE_PAGE_SIZE as u64
         } else {
             self.next_page
                 .fetch_add(1, core::sync::atomic::Ordering::SeqCst)
+                * Self::BASE_PAGE_SIZE as u64
         };
-        let offset = self.calc_page_offset(next, large);
+        if next >= HEAP_MAX_LEN as u64 {
+            // TODO
+            panic!("out of heap memory");
+        }
+        let offset = if large {
+            self.heap_large_start + next
+        } else {
+            self.heap_start + next
+        };
         self.map_offset(offset, large);
         Some(offset as *mut u8)
     }

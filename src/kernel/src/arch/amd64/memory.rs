@@ -67,16 +67,19 @@ pub struct Table {
 }
 
 impl Table {
+    #[optimize(speed)]
     fn as_slice_mut(&mut self) -> &mut [u64] {
         let va = phys_to_virt(self.frame);
         unsafe { core::slice::from_raw_parts_mut(va.as_mut_ptr(), 512) }
     }
 
+    #[optimize(speed)]
     fn as_slice(&self) -> &[u64] {
         let va = phys_to_virt(self.frame);
         unsafe { core::slice::from_raw_parts(va.as_ptr(), 512) }
     }
 
+    #[optimize(speed)]
     fn map(&mut self, idx: usize, entry: u64) {
         let existing = self.as_slice()[idx];
         assert!(existing == 0 || existing == entry);
@@ -87,11 +90,13 @@ impl Table {
         self.as_slice_mut()[idx] = 0;
     }
 
+    #[optimize(speed)]
     fn is_entry(&self, idx: usize, is_last: bool) -> bool {
         let e = self.as_slice()[idx];
         e != 0 && ((e & 0b10000000) != 0 || is_last)
     }
 
+    #[optimize(speed)]
     fn get_entry(&self, idx: usize, is_last: bool) -> Option<(PhysAddr, MapFlags)> {
         if !self.is_entry(idx, is_last) {
             return None;
@@ -102,6 +107,7 @@ impl Table {
         Some((PhysAddr::new(paddr), MapFlags::from_entry(flags)))
     }
 
+    #[optimize(speed)]
     fn get_child_noalloc(&self, idx: usize) -> Option<Table> {
         let e = self.as_slice()[idx];
         if e & 0b10000000 != 0 {
@@ -116,6 +122,7 @@ impl Table {
         }
     }
 
+    #[optimize(speed)]
     fn get_child(&mut self, idx: usize, flags: u64) -> Option<Table> {
         if self.as_slice_mut()[idx] == 0 {
             let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
@@ -138,6 +145,7 @@ pub struct ArchMemoryContext {
 }
 
 impl MapFlags {
+    #[optimize(speed)]
     fn entry_bits(&self) -> u64 {
         let mut flags = 1;
         if self.contains(Self::WRITE) {
@@ -155,6 +163,7 @@ impl MapFlags {
         flags
     }
 
+    #[optimize(speed)]
     fn table_bits(&self) -> u64 {
         let mut flags = 3;
         if self.contains(Self::USER) {
@@ -163,6 +172,7 @@ impl MapFlags {
         flags
     }
 
+    #[optimize(speed)]
     fn from_entry(e: u64) -> Self {
         let mut flags = Self::READ;
         if e & 0b10 != 0 {
@@ -259,10 +269,12 @@ impl ArchMemoryContext {
         None
     }
 
+    #[optimize(speed)]
     pub fn premap(
         &mut self,
         start: VirtAddr,
         length: usize,
+        page_size: usize,
         flags: MapFlags,
     ) -> Result<(), MapFailed> {
         let end = start + length;
@@ -278,18 +290,12 @@ impl ArchMemoryContext {
             if addr >= end {
                 break;
             }
-            let nr_recur = if addr.is_aligned(PAGE_SIZE_HUGE as u64)
-                && end.is_aligned(PAGE_SIZE_HUGE as u64)
-            {
-                1
-            } else if addr.is_aligned(PAGE_SIZE_LARGE as u64)
-                && end.is_aligned(PAGE_SIZE_LARGE as u64)
-            {
-                2
-            } else {
-                3
+            let nr_recur = match page_size {
+                PAGE_SIZE => 3,
+                PAGE_SIZE_LARGE => 2,
+                PAGE_SIZE_HUGE => 1,
+                _ => unimplemented!(),
             };
-
             let mut table = self.table_root;
             for idx in indexes.iter().take(nr_recur) {
                 table = table
