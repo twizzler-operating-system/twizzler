@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use nonoverlapping_interval_tree::{IntervalValue, NonOverlappingIntervalTree};
 
 use crate::mutex::Mutex;
@@ -10,9 +10,9 @@ use super::{
 };
 
 pub struct Range {
-    start: PageNumber,
-    length: usize,
-    offset: usize,
+    pub start: PageNumber,
+    pub length: usize,
+    pub offset: usize,
     pv: PageVecRef,
 }
 
@@ -23,6 +23,15 @@ impl Range {
             length: 0,
             offset: 0,
             pv: Arc::new(Mutex::new(PageVec::new())),
+        }
+    }
+
+    pub fn new_from(&self, new_start: PageNumber, new_offset: usize, new_length: usize) -> Self {
+        Self {
+            start: new_start,
+            length: new_length,
+            offset: new_offset,
+            pv: self.pv.clone(),
         }
     }
 
@@ -61,6 +70,14 @@ impl RangeTree {
     pub fn get_page(&self, pn: PageNumber) -> Option<PageRef> {
         let range = self.get(pn)?;
         Some(range.get_page(pn))
+    }
+
+    pub fn insert_replace(
+        &mut self,
+        k: core::ops::Range<PageNumber>,
+        r: Range,
+    ) -> Vec<(core::ops::Range<PageNumber>, Range)> {
+        self.tree.insert_replace(k, r)
     }
 
     pub fn range(
