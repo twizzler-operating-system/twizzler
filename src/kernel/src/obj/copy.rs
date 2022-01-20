@@ -46,9 +46,9 @@ fn copy_range_to_object_tree(
 }
 
 pub fn copy_ranges(
-    src: ObjectRef,
+    src: &ObjectRef,
     src_start: PageNumber,
-    dest: ObjectRef,
+    dest: &ObjectRef,
     dest_start: PageNumber,
     length: usize,
 ) {
@@ -64,5 +64,18 @@ pub fn copy_ranges(
         copy_range_to_object_tree(&mut dest_tree, dest_point, range.1.value(), offset, len);
         dest_point = dest_point.offset(len);
         rem -= len;
+    }
+}
+
+pub struct CopySpec {
+    src: ObjectRef,
+    src_start: PageNumber,
+    dest_start: PageNumber,
+    length: usize,
+}
+
+pub fn copy_objects(dest: &ObjectRef, srcs: &[CopySpec]) {
+    for src in srcs {
+        copy_ranges(&src.src, src.src_start, dest, src.dest_start, src.length);
     }
 }
