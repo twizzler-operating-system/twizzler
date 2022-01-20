@@ -103,7 +103,7 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
 
     crate::thread::enter_kernel();
     crate::interrupt::set(true);
-    crate::syscall::syscall_entry(unsafe { context.as_mut().unwrap() });
+    crate::syscall::syscall_entry(context.as_mut().unwrap());
     crate::interrupt::set(false);
     crate::thread::exit_kernel();
 

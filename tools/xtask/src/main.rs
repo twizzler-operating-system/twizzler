@@ -300,7 +300,7 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
         },
         _ => {}
     }
-    let res = fs_extra::copy_items(
+    fs_extra::copy_items(
         &["src/lib/twizzler-abi"],
         "toolchain/src/rust/library/",
         &CopyOptions::new(),

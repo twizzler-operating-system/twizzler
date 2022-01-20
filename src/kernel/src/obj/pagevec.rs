@@ -1,7 +1,4 @@
-use alloc::{
-    sync::Arc,
-    vec::{self, Vec},
-};
+use alloc::{sync::Arc, vec::Vec};
 
 use crate::mutex::Mutex;
 

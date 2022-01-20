@@ -1,9 +1,6 @@
 use x86_64::VirtAddr;
 
-use crate::{
-    obj::{ObjectRef, PageNumber},
-    thread::current_memory_context,
-};
+use crate::{obj::PageNumber, thread::current_memory_context};
 
 bitflags::bitflags! {
     pub struct PageFaultFlags : u32 {

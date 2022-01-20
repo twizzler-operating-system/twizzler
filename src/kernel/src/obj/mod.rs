@@ -3,11 +3,10 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
-    vec::Vec,
 };
 
 use crate::{
-    memory::context::{MappingRef, MemoryContextRef},
+    memory::context::MappingRef,
     mutex::{LockGuard, Mutex},
 };
 

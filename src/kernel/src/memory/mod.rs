@@ -1,10 +1,7 @@
-use alloc::{boxed::Box, sync::Arc};
-use x86_64::{
-    structures::paging::{FrameAllocator, Size4KiB},
-    PhysAddr, VirtAddr,
-};
+use alloc::boxed::Box;
+use x86_64::{PhysAddr, VirtAddr};
 
-use crate::{arch, mutex::Mutex, BootInfo};
+use crate::{arch, BootInfo};
 
 pub mod allocator;
 pub mod context;
@@ -43,7 +40,7 @@ impl<'a> MappingIter<'a> {
 }
 
 use self::{
-    context::{MapFlags, MemoryContext, MemoryContextRef},
+    context::{MapFlags, MemoryContext},
     frame::{alloc_frame, PhysicalFrameFlags},
 };
 #[derive(Clone, Copy, Debug)]

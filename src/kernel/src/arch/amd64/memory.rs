@@ -34,7 +34,7 @@ pub unsafe fn translate_addr(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Optio
     translate_addr_inner(addr, phys_mem_offset)
 }
 
-use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, Size4KiB};
+use x86_64::structures::paging::OffsetPageTable;
 
 use crate::memory::context::MapFlags;
 use crate::memory::frame::{alloc_frame, PhysicalFrameFlags};

@@ -1,11 +1,10 @@
 use core::{
     alloc::Layout,
     cell::RefCell,
-    ops::Add,
     sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
 };
 
-use alloc::{boxed::Box, sync::Arc, vec};
+use alloc::{boxed::Box, sync::Arc};
 use x86_64::VirtAddr;
 
 use crate::{
@@ -445,13 +444,15 @@ extern "C" fn user_init() {
         obj,
         vm.clone(),
         MappingPerms::READ | MappingPerms::EXECUTE,
-    );
+    )
+    .unwrap();
     crate::operations::map_object_into_context(
         2,
         obj2,
         vm,
         MappingPerms::READ | MappingPerms::WRITE,
-    );
+    )
+    .unwrap();
     unsafe {
         crate::arch::jump_to_user(
             VirtAddr::new(entry_addr),
@@ -463,7 +464,6 @@ extern "C" fn user_init() {
 
 pub fn start_new_init() {
     let mut thread = Thread::new_with_new_vm();
-    let vm = thread.memory_context.as_ref().unwrap();
     logln!(
         "starting new thread {} with stack {:p}",
         thread.id,

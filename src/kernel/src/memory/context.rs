@@ -1,10 +1,5 @@
-use core::sync::atomic::AtomicU64;
-
 use alloc::{collections::BTreeMap, sync::Arc};
-use x86_64::{
-    structures::paging::{FrameAllocator, Size4KiB},
-    VirtAddr,
-};
+use x86_64::VirtAddr;
 
 use crate::{
     arch::memory::ArchMemoryContext,
@@ -169,12 +164,14 @@ impl MemoryContext {
     }
 
     pub fn map_object_page(&mut self, addr: VirtAddr, page: PageRef, perms: MappingPerms) {
-        self.arch.map(
-            addr.align_down(0x1000u64),
-            page.physical_address(),
-            0x1000,
-            MapFlags::USER | perms.into(),
-        );
+        self.arch
+            .map(
+                addr.align_down(0x1000u64),
+                page.physical_address(),
+                0x1000,
+                MapFlags::USER | perms.into(),
+            )
+            .unwrap(); //TODO
     }
 
     pub fn insert_mapping(&mut self, mapping: MappingRef) {
