@@ -1,3 +1,5 @@
+use core::sync::atomic::AtomicU64;
+
 use alloc::{collections::BTreeMap, sync::Arc};
 use x86_64::{
     structures::paging::{FrameAllocator, Size4KiB},
@@ -6,17 +8,67 @@ use x86_64::{
 
 use crate::{
     arch::memory::ArchMemoryContext,
+    idcounter::{Id, IdCounter},
     mutex::Mutex,
     obj::{pages::PageRef, ObjectRef},
 };
 
+#[derive(Ord, PartialOrd, PartialEq, Eq)]
+pub struct Mapping {
+    pub obj: ObjectRef,
+    pub perms: MappingPerms,
+    pub vmc: MemoryContextRef,
+    pub slot: usize,
+}
+
+pub type MappingRef = Arc<Mapping>;
+
+impl Mapping {
+    pub fn new(obj: ObjectRef, vmc: MemoryContextRef, slot: usize, perms: MappingPerms) -> Self {
+        Self {
+            obj,
+            vmc,
+            slot,
+            perms,
+        }
+    }
+}
+
 use super::MappingIter;
 pub struct MemoryContext {
     pub arch: ArchMemoryContext,
-    slots: BTreeMap<usize, (ObjectRef, MappingPerms)>,
+    slots: BTreeMap<usize, MappingRef>,
+    id: Id<'static>,
+    thread_count: u64,
 }
 
 pub type MemoryContextRef = Arc<Mutex<MemoryContext>>;
+
+impl PartialEq for MemoryContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for MemoryContext {}
+
+impl PartialOrd for MemoryContext {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        self.id.partial_cmp(&other.id)
+    }
+}
+
+impl Ord for MemoryContext {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl crate::idcounter::StableId for MemoryContext {
+    fn id(&self) -> &crate::idcounter::Id<'_> {
+        &self.id
+    }
+}
 
 bitflags::bitflags! {
     pub struct MappingPerms : u32 {
@@ -57,11 +109,14 @@ pub fn addr_to_slot(addr: VirtAddr) -> usize {
     (addr.as_u64() / (1 << 30)) as usize //TODO: arch-dep
 }
 
+static ID_COUNTER: IdCounter = IdCounter::new();
 impl MemoryContext {
     pub fn new_blank() -> Self {
         Self {
             arch: ArchMemoryContext::new_blank(),
             slots: BTreeMap::new(),
+            id: ID_COUNTER.next(),
+            thread_count: 0,
         }
     }
 
@@ -70,6 +125,8 @@ impl MemoryContext {
             // TODO: this is inefficient
             arch: ArchMemoryContext::current_tables().clone_empty_user(),
             slots: BTreeMap::new(),
+            id: ID_COUNTER.next(),
+            thread_count: 0,
         }
     }
 
@@ -77,6 +134,23 @@ impl MemoryContext {
         Self {
             arch: ArchMemoryContext::current_tables(),
             slots: BTreeMap::new(),
+            id: ID_COUNTER.next(),
+            thread_count: 0,
+        }
+    }
+
+    fn clear_mappings(&mut self) {
+        self.slots.clear();
+    }
+
+    pub fn add_thread(&mut self) {
+        self.thread_count += 1;
+    }
+
+    pub fn remove_thread(&mut self) {
+        self.thread_count -= 1;
+        if self.thread_count == 0 {
+            self.clear_mappings();
         }
     }
 
@@ -90,7 +164,7 @@ impl MemoryContext {
         MappingIter::new(self, start)
     }
 
-    pub fn lookup_object(&self, addr: VirtAddr) -> Option<(ObjectRef, MappingPerms)> {
+    pub fn lookup_object(&self, addr: VirtAddr) -> Option<MappingRef> {
         self.slots.get(&addr_to_slot(addr)).map(Clone::clone)
     }
 
@@ -103,9 +177,9 @@ impl MemoryContext {
         );
     }
 
-    pub fn map_object(&mut self, slot: usize, obj: ObjectRef, perms: MappingPerms) {
+    pub fn insert_mapping(&mut self, mapping: MappingRef) {
         //TODO: return value
-        self.slots.insert(slot, (obj, perms));
+        self.slots.insert(mapping.slot, mapping);
     }
 
     pub fn clone_region(&mut self, other_ctx: &MemoryContext, addr: VirtAddr) {

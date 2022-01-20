@@ -20,7 +20,7 @@ acpi = "*"
 stivale-boot = "*"
 xmas-elf = "*"
 tar-no-std = "*"
-nonoverlapping_interval_tree = {version = "0.1.1", default-features = false}
+nonoverlapping_interval_tree = {version = "0.1.3", default-features = false}
 
 [dependencies.lazy_static]
 version = "1.0"

@@ -1,5 +1,7 @@
 use bitflags::bitflags;
 use core::fmt;
+
+use crate::arch::syscall::raw_syscall;
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
 /// All possible Synchronous syscalls into the Twizzler kernel.
@@ -59,7 +61,7 @@ impl std::error::Error for KernelConsoleReadError {
 
 bitflags! {
     /// Flags to pass to [sys_kernel_console_read].
-    pub struct KernelConsoleReadFlags: u32 {
+    pub struct KernelConsoleReadFlags: u64 {
         /// If the read would block, return instead.
         const NONBLOCKING = 1;
     }
@@ -110,7 +112,7 @@ impl std::error::Error for KernelConsoleReadBufferError {
 
 bitflags! {
     /// Flags to pass to [sys_kernel_console_read_buffer].
-    pub struct KernelConsoleReadBufferFlags: u32 {
+    pub struct KernelConsoleReadBufferFlags: u64 {
         /// If the operation would block, return instead.
         const NONBLOCKING = 1;
     }
@@ -132,7 +134,7 @@ pub fn sys_kernel_console_read_buffer(
 
 bitflags! {
     /// Flags to pass to [sys_kernel_console_write].
-    pub struct KernelConsoleWriteFlags: u32 {
+    pub struct KernelConsoleWriteFlags: u64 {
         /// If the buffer is full, discard this write instead of overwriting old data.
         const DISCARD_ON_FULL = 1;
     }
@@ -146,6 +148,11 @@ bitflags! {
 /// (circular) buffer, but this behavior can be controlled by the `flags` argument.
 ///
 /// This function cannot fail.
-pub fn sys_kernel_console_write(_buffer: &[u8], _flags: KernelConsoleWriteFlags) {
-    todo!()
+pub fn sys_kernel_console_write(buffer: &[u8], flags: KernelConsoleWriteFlags) {
+    let arg0 = buffer.as_ptr() as usize as u64;
+    let arg1 = buffer.len() as u64;
+    let arg2 = flags.bits();
+    unsafe {
+        raw_syscall(Syscall::KernelConsoleWrite, &[arg0, arg1, arg2]);
+    }
 }

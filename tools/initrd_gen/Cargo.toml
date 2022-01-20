@@ -8,4 +8,4 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 
 [dependencies]
 tar = "0.4"
-clap = "*"
+clap = "2.34.0"

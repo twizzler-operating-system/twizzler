@@ -18,6 +18,7 @@ use core::{cell::UnsafeCell, sync::atomic::AtomicU64};
 use alloc::collections::VecDeque;
 
 use crate::{
+    idcounter::StableId,
     sched,
     spinlock::Spinlock,
     thread::{current_thread_ref, Priority, ThreadRef, ThreadState},
@@ -93,7 +94,7 @@ impl<T> Mutex<T> {
                 reinsert
             };
 
-                sched::schedule(reinsert);
+            sched::schedule(reinsert);
         }
 
         LockGuard {
@@ -151,3 +152,36 @@ unsafe impl<T> Send for Mutex<T> where T: Send {}
 unsafe impl<T> Sync for Mutex<T> where T: Send {}
 unsafe impl<T> Send for LockGuard<'_, T> where T: Send {}
 unsafe impl<T> Sync for LockGuard<'_, T> where T: Send + Sync {}
+
+impl<T> PartialEq for Mutex<T>
+where
+    T: StableId,
+{
+    fn eq(&self, other: &Self) -> bool {
+        unsafe { (&*self.cell.get()).id() == (&*other.cell.get()).id() }
+    }
+}
+
+impl<T> Eq for Mutex<T> where T: StableId {}
+
+impl<T> PartialOrd for Mutex<T>
+where
+    T: StableId,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        unsafe {
+            (&*self.cell.get())
+                .id()
+                .partial_cmp(&(&*other.cell.get()).id())
+        }
+    }
+}
+
+impl<T> Ord for Mutex<T>
+where
+    T: StableId,
+{
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        unsafe { (&*self.cell.get()).id().cmp(&(&*other.cell.get()).id()) }
+    }
+}

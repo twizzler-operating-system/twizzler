@@ -9,8 +9,9 @@ use alloc::{boxed::Box, sync::Arc, vec};
 use x86_64::VirtAddr;
 
 use crate::{
+    idcounter::{Id, IdCounter},
     interrupt,
-    memory::context::{MemoryContext, MemoryContextRef},
+    memory::context::{MappingPerms, MemoryContext, MemoryContextRef},
     mutex::Mutex,
     processor::{get_processor, KERNEL_STACK_SIZE},
     sched::schedule_new_thread,
@@ -60,7 +61,7 @@ pub struct Thread {
     pub affinity: AtomicI32,
     pub state: AtomicU32,
     pub critical_counter: AtomicU64,
-    id: u64,
+    id: Id<'static>,
     pub switch_lock: AtomicU64,
     pub donated_priority: Spinlock<Option<Priority>>,
     pub current_processor_queue: AtomicI32,
@@ -76,6 +77,10 @@ pub type ThreadRef = Arc<Thread>;
 static CURRENT_THREAD: RefCell<Option<ThreadRef>> = RefCell::new(None);
 
 pub fn current_thread_ref() -> Option<ThreadRef> {
+    // TODO: make unlikely
+    if !crate::processor::tls_ready() {
+        return None;
+    }
     interrupt::with_disabled(|| CURRENT_THREAD.borrow().clone())
 }
 
@@ -94,26 +99,8 @@ pub fn exit_kernel() {
         thread.flags.fetch_and(!THREAD_IN_KERNEL, Ordering::SeqCst);
     }
 }
-static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-static ID_REUSE: spin::Mutex<vec::Vec<u64>> = spin::Mutex::new(vec![]);
 
-fn new_thread_id() -> u64 {
-    let reuser = ID_REUSE.try_lock();
-    if let Some(mut reuser) = reuser {
-        if let Some(id) = reuser.pop() {
-            return id;
-        }
-    }
-    ID_COUNTER.fetch_add(1, Ordering::SeqCst)
-}
-
-fn release_thread_id(id: u64) {
-    assert!(id > 0);
-    //TODO: we could optimize here by trying to subtract from ID_COUNTER using CAS if the thread ID
-    //is the current top value of the counter
-    let mut reuser = ID_REUSE.lock();
-    reuser.push(id);
-}
+static ID_COUNTER: IdCounter = IdCounter::new();
 
 pub fn current_memory_context() -> Option<MemoryContextRef> {
     current_thread_ref()
@@ -134,7 +121,7 @@ impl Thread {
                 class: PriorityClass::User,
                 adjust: AtomicI32::new(0),
             },
-            id: new_thread_id(),
+            id: ID_COUNTER.next(),
             flags: AtomicU32::new(THREAD_IN_KERNEL),
             state: AtomicU32::new(ThreadState::Starting as u32),
             kernel_stack: unsafe { Box::from_raw(core::intrinsics::transmute(kernel_stack)) },
@@ -152,6 +139,7 @@ impl Thread {
     pub fn new_with_new_vm() -> Self {
         let mut thread = Self::new();
         thread.memory_context = Some(Arc::new(Mutex::new(MemoryContext::new())));
+        thread.memory_context.as_ref().unwrap().lock().add_thread();
         thread
     }
 
@@ -306,7 +294,27 @@ impl Thread {
 
     #[inline]
     pub fn id(&self) -> u64 {
-        self.id
+        self.id.value()
+    }
+}
+
+impl Eq for Thread {}
+
+impl PartialEq for Thread {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl PartialOrd for Thread {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        self.id.partial_cmp(&other.id)
+    }
+}
+
+impl Ord for Thread {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.id.cmp(&other.id)
     }
 }
 
@@ -317,12 +325,6 @@ pub struct CriticalGuard<'a> {
 impl<'a> Drop for CriticalGuard<'a> {
     fn drop(&mut self) {
         self.thread.exit_critical();
-    }
-}
-
-impl PartialEq for Thread {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
     }
 }
 
@@ -409,14 +411,21 @@ impl Ord for Priority {
     }
 }
 
-extern "C"
-fn user_init() {
+extern "C" fn user_init() {
     let vm = current_memory_context().unwrap();
     let obj = match crate::obj::lookup_object(1, crate::obj::LookupFlags::empty()) {
         crate::obj::LookupResult::NotFound => todo!(),
         crate::obj::LookupResult::WasDeleted => todo!(),
         crate::obj::LookupResult::Pending => todo!(),
         crate::obj::LookupResult::Found(o) => o,
+    };
+    let obj2 = crate::obj::Object::new();
+    obj2.add_page(1.into(), crate::obj::pages::Page::new());
+    let id2 = obj2.id();
+    crate::obj::register_object(obj2);
+    let obj2 = match crate::obj::lookup_object(id2, crate::obj::LookupFlags::empty()) {
+        crate::obj::LookupResult::Found(o) => o,
+        _ => todo!(),
     };
     let page = obj.lock_page_tree().get_page(1.into()).unwrap();
     let ptr: *const u8 = page.as_virtaddr().as_ptr();
@@ -431,13 +440,24 @@ fn user_init() {
             entry.read(),
         );
     }
-    vm.lock().map_object(
+    crate::operations::map_object_into_context(
         0,
         obj,
-        crate::memory::context::MappingPerms::READ | crate::memory::context::MappingPerms::EXECUTE,
+        vm.clone(),
+        MappingPerms::READ | MappingPerms::EXECUTE,
+    );
+    crate::operations::map_object_into_context(
+        2,
+        obj2,
+        vm,
+        MappingPerms::READ | MappingPerms::WRITE,
     );
     unsafe {
-        crate::arch::jump_to_user(VirtAddr::new(entry_addr), VirtAddr::new(0), 0);
+        crate::arch::jump_to_user(
+            VirtAddr::new(entry_addr),
+            VirtAddr::new((1 << 30) * 2 + 0x2000),
+            0,
+        );
     }
 }
 

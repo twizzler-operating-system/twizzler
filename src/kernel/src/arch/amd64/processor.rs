@@ -203,3 +203,7 @@ impl Processor {
         );
     }
 }
+
+pub fn tls_ready() -> bool {
+    unsafe { x86::bits64::segmentation::rdfsbase() != 0 }
+}

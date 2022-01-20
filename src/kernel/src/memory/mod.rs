@@ -96,7 +96,7 @@ fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContext {
             phys_mem_offset,
             PhysAddr::new(0),
             0x100000000,
-            MapFlags::READ | MapFlags::WRITE | MapFlags::GLOBAL,
+            MapFlags::READ | MapFlags::WRITE | MapFlags::GLOBAL | MapFlags::WIRED,
         )
         .unwrap();
 
@@ -106,7 +106,11 @@ fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContext {
             VirtAddr::new(0),
             PhysAddr::new(0),
             0x100000000,
-            MapFlags::READ | MapFlags::WRITE | MapFlags::GLOBAL | MapFlags::EXECUTE,
+            MapFlags::READ
+                | MapFlags::WRITE
+                | MapFlags::GLOBAL
+                | MapFlags::EXECUTE
+                | MapFlags::WIRED,
         )
         .unwrap();
 
@@ -135,11 +139,6 @@ impl KernelMemoryManager {
         /* TODO: we could make this better, probably, by hooking more directly into arch-dep to allow it to map larger regions more automatically. */
         loop {
             let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
-            let va = arch::memory::phys_to_virt(frame.start_address());
-            unsafe {
-                let p: *mut u8 = va.as_mut_ptr();
-                p.write_bytes(0, 0x1000);
-            }
             let _res = inner.kernel_context.arch.map(
                 addr + count,
                 frame.start_address(),

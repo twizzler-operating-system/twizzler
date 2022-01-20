@@ -1,9 +1,17 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    vec::Vec,
+};
 
-use crate::mutex::{LockGuard, Mutex};
+use crate::{
+    memory::context::{MappingRef, MemoryContextRef},
+    mutex::{LockGuard, Mutex},
+};
 
+pub mod copy;
 pub mod pages;
 pub mod pagevec;
 pub mod range;
@@ -15,6 +23,7 @@ pub struct Object {
     id: ObjID,
     flags: AtomicU32,
     range_tree: Mutex<range::RangeTree>,
+    maplist: Mutex<BTreeSet<MappingRef>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq)]
@@ -49,6 +58,10 @@ impl PageNumber {
     pub fn next(&self) -> Self {
         Self(self.0 + 1)
     }
+
+    pub fn offset(&self, off: usize) -> Self {
+        Self(self.0 + off)
+    }
 }
 
 impl From<usize> for PageNumber {
@@ -80,11 +93,16 @@ impl Object {
         self.id
     }
 
+    pub fn insert_mapping(&self, mapping: MappingRef) {
+        self.maplist.lock().insert(mapping);
+    }
+
     pub fn new() -> Self {
         Self {
             id: OID.fetch_add(1, Ordering::SeqCst) as u128,
             flags: AtomicU32::new(0),
             range_tree: Mutex::new(range::RangeTree::new()),
+            maplist: Mutex::new(BTreeSet::new()),
         }
     }
 }
@@ -92,6 +110,20 @@ impl Object {
 impl PartialEq for Object {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
+    }
+}
+
+impl Eq for Object {}
+
+impl PartialOrd for Object {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        self.id.partial_cmp(&other.id)
+    }
+}
+
+impl Ord for Object {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.id.cmp(&other.id)
     }
 }
 

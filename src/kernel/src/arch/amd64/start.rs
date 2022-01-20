@@ -114,7 +114,10 @@ extern "C" fn __stivale_start(info: &'static StivaleStruct) -> ! {
         let efer = x86::msr::rdmsr(x86::msr::IA32_EFER);
         x86::msr::wrmsr(x86::msr::IA32_EFER, efer | (1 << 11));
         let cr4 = x86::controlregs::cr4();
-        x86::controlregs::cr4_write(cr4 | x86::controlregs::Cr4::CR4_ENABLE_GLOBAL_PAGES);
+        x86::controlregs::cr4_write(
+            cr4 | x86::controlregs::Cr4::CR4_ENABLE_GLOBAL_PAGES
+                | x86::controlregs::Cr4::CR4_ENABLE_FSGSBASE,
+        );
     }
     let mut boot_info = StivaleBootInfo {
         arch: info,

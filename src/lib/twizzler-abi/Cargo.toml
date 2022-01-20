@@ -19,13 +19,13 @@ optional = true
 package = "rustc-std-workspace-core"
 version = "1.0.0"
 
-
 [dependencies.libc]
+optional = true
 default-features = false
 version = "0.2.51"
 
 [features]
-default = ["std"]
+#default = ["std"]
 docs = []
 rt = []
 std = []

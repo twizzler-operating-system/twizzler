@@ -322,6 +322,7 @@ fn cargo_cmd_collection(
     cargo_cmd: &str,
     wd: &str,
     args: &[String],
+    rustflags: Option<String>,
     build_info: BuildInfo,
     triple: Option<String>,
 ) -> Result<(), DynError> {
@@ -347,14 +348,18 @@ fn cargo_cmd_collection(
         target_args.push("--target".to_owned());
         target_args.push(triple.to_owned());
     }
-    let status = Command::new(cargo)
+    let mut status = Command::new(cargo);
+    status
         .current_dir(wd)
         .arg(cargo_cmd)
         .args(pkg_list)
         .args(target_args)
-        .args(args)
-        .status()?;
+        .args(args);
+    if let Some(s) = rustflags {
+        status.env("RUSTFLAGS", s);
+    }
 
+    let status = status.status()?;
     if !status.success() {
         Err("failed to run cargo command")?;
     }
@@ -367,13 +372,14 @@ fn cmd_all(
     cargo_cmd: &str,
     build_info: BuildInfo,
 ) -> Result<(), DynError> {
-    cargo_cmd_collection(meta, "tools", cargo_cmd, ".", args, build_info, None)?;
+    cargo_cmd_collection(meta, "tools", cargo_cmd, ".", args, None, build_info, None)?;
     cargo_cmd_collection(
         meta,
         "kernel",
         cargo_cmd,
         "src/kernel",
         args,
+        None,
         build_info,
         None,
     )?;
@@ -383,6 +389,7 @@ fn cmd_all(
         cargo_cmd,
         ".",
         args,
+        Some("-C link-arg=--image-base=0x1000".to_owned()),
         build_info,
         Some(build_info.get_twizzler_triple()),
     )?;

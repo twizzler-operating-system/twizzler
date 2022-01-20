@@ -216,40 +216,40 @@ fn balance(topo: &CPUTopoNode) {
     let mut cpuset = topo.cpuset.clone();
     /* TODO: maximum number of iterations? */
     while cpuset.count_ones(..) > 0 {
-        let donar = find_cpu_from_topo(topo, true, None, Some(&cpuset))
+        let donor = find_cpu_from_topo(topo, true, None, Some(&cpuset))
             .expect("this should always give us a CPU");
         let recipient =
             find_cpu_from_topo(topo, false, None, None).expect("this should always give us a CPU");
-        /* remove the recipient from the allowed donar list */
+        /* remove the recipient from the allowed donor list */
         cpuset.set(recipient.cpuid as usize, false);
 
-        let donar = get_processor(donar.cpuid);
+        let donor = get_processor(donor.cpuid);
         let recipient = get_processor(recipient.cpuid);
-        let donar_load = donar.current_load();
-        // logln!("balance {:?} {}", cpuset, donar_load);
-        if donar_load <= 2 {
+        let donor_load = donor.current_load();
+        // logln!("balance {:?} {}", cpuset, donor_load);
+        if donor_load <= 2 {
             break;
         }
 
-        let thread = take_a_thread_from_cpu(donar);
+        let thread = take_a_thread_from_cpu(donor);
         if let Some(thread) = thread {
             schedule_thread_on_cpu(thread, recipient);
         } else {
-            cpuset.set(donar.id as usize, false);
+            cpuset.set(donor.id as usize, false);
         }
     }
 }
 
 fn select_cpu(thread: &ThreadRef) -> u32 {
-    /* TODO: take into acount SMT */
-    let last_cpuid = thread.last_cpu.load(Ordering::SeqCst);
+    /* TODO: restrict via cpu sets as step 0, and in global searches */
+    /* TODO: take SMT into acount */
+    let last_cpuid = thread.last_cpu.load(Ordering::Acquire);
     /* 1: if the thread can run on the last CPU it ran on, and that CPU is idle, then do that. */
     if last_cpuid >= 0 {
         let processor = get_processor(last_cpuid as u32);
         if processor.current_load() == 1 {
             return last_cpuid as u32;
         }
-        /* TODO: should we do this? */
         if thread.effective_priority() >= processor.current_priority() {
             return last_cpuid as u32;
         }

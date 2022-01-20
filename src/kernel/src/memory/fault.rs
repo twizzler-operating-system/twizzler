@@ -35,24 +35,31 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags) 
         panic!("page fault in thread with no memory context");
     }
     let vmc = vmc.unwrap();
-    let obj = { vmc.lock().lookup_object(addr) };
+    let mapping = { vmc.lock().lookup_object(addr) };
 
-    if let Some((obj, perms)) = obj {
-        let objid = obj.id();
+    if let Some(mapping) = mapping {
+        let objid = mapping.obj.id();
         let page_number = PageNumber::from_address(addr);
-        let obj_page_tree = obj.lock_page_tree();
+        let obj_page_tree = mapping.obj.lock_page_tree();
         let page = obj_page_tree
             .get_page(page_number)
             .expect("TODO: non present page");
         {
             let mut vmc = vmc.lock();
             /* check if mappings changed */
-            if vmc.lookup_object(addr).map_or(0, |o| o.0.id()) != objid {
+            if vmc.lookup_object(addr).map_or(0, |o| o.obj.id()) != objid {
                 drop(vmc);
                 drop(obj_page_tree);
                 return page_fault(addr, cause, flags);
             }
-            vmc.map_object_page(addr, page, perms);
+            //TODO: get these perms from the second lookup
+            let v: *const u8 = page.as_virtaddr().as_ptr();
+            unsafe {
+                let slice = core::slice::from_raw_parts(v, 0x1000);
+                logln!("{:?}", slice);
+            }
+
+            vmc.map_object_page(addr, page, mapping.perms);
         }
     } else {
         //TODO: fault

@@ -201,6 +201,11 @@ pub fn get_processor(id: u32) -> &'static Processor {
     unsafe { ALL_PROCESSORS[id as usize].as_ref().unwrap() }
 }
 
+#[inline]
+pub fn tls_ready() -> bool {
+    crate::arch::processor::tls_ready()
+}
+
 pub const KERNEL_STACK_SIZE: usize = 81920;
 
 fn init_tls(tls_template: TlsInfo) -> VirtAddr {

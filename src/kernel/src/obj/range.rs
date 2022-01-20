@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
+use nonoverlapping_interval_tree::{IntervalValue, NonOverlappingIntervalTree};
 
 use crate::mutex::Mutex;
 
@@ -61,6 +61,22 @@ impl RangeTree {
     pub fn get_page(&self, pn: PageNumber) -> Option<PageRef> {
         let range = self.get(pn)?;
         Some(range.get_page(pn))
+    }
+
+    pub fn range(
+        &self,
+        r: core::ops::Range<PageNumber>,
+    ) -> nonoverlapping_interval_tree::ValueRange<'_, PageNumber, IntervalValue<PageNumber, Range>>
+    {
+        self.tree.range(r)
+    }
+
+    pub fn range_mut(
+        &mut self,
+        r: core::ops::Range<PageNumber>,
+    ) -> nonoverlapping_interval_tree::ValueRangeMut<'_, PageNumber, IntervalValue<PageNumber, Range>>
+    {
+        self.tree.range_mut(r)
     }
 
     pub fn add_page(&mut self, pn: PageNumber, page: Page) {

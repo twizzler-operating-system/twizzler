@@ -1,10 +1,10 @@
 use x86_64::{instructions::segmentation::Segment64, VirtAddr};
 
-use crate::thread::current_thread_ref;
+use crate::{syscall::SyscallContext, thread::current_thread_ref};
 
 #[derive(Default)]
 #[repr(C)]
-pub struct SyscallContext {
+pub struct X86SyscallContext {
     rax: u64,
     rdi: u64,
     rsi: u64,
@@ -23,8 +23,8 @@ pub struct SyscallContext {
     rsp: u64,
 }
 
-impl SyscallContext {
-    pub fn create_jmp_context(target: VirtAddr, stack: VirtAddr, arg: u64) -> Self {
+impl SyscallContext for X86SyscallContext {
+    fn create_jmp_context(target: VirtAddr, stack: VirtAddr, arg: u64) -> Self {
         Self {
             rsp: stack.as_u64(),
             rcx: target.as_u64(),
@@ -33,32 +33,32 @@ impl SyscallContext {
         }
     }
 
-    pub unsafe fn num(&self) -> usize {
+    fn num(&self) -> usize {
         self.rax as usize
     }
-    pub unsafe fn arg0<T: From<u64>>(&self) -> T {
+    fn arg0<T: From<u64>>(&self) -> T {
         T::from(self.rdi)
     }
-    pub unsafe fn arg1<T: From<u64>>(&self) -> T {
+    fn arg1<T: From<u64>>(&self) -> T {
         T::from(self.rsi)
     }
-    pub unsafe fn arg2<T: From<u64>>(&self) -> T {
+    fn arg2<T: From<u64>>(&self) -> T {
         T::from(self.rdx)
     }
-    pub unsafe fn arg3<T: From<u64>>(&self) -> T {
+    fn arg3<T: From<u64>>(&self) -> T {
         T::from(self.r10)
     }
-    pub unsafe fn arg4<T: From<u64>>(&self) -> T {
+    fn arg4<T: From<u64>>(&self) -> T {
         T::from(self.r9)
     }
-    pub unsafe fn arg5<T: From<u64>>(&self) -> T {
+    fn arg5<T: From<u64>>(&self) -> T {
         T::from(self.r8)
     }
-    pub fn pc(&self) -> VirtAddr {
+    fn pc(&self) -> VirtAddr {
         VirtAddr::new(self.rcx)
     }
 
-    pub fn set_return_values<R1, R2>(&mut self, ret0: R1, ret1: R2)
+    fn set_return_values<R1, R2>(&mut self, ret0: R1, ret1: R2)
     where
         u64: From<R1>,
         u64: From<R2>,
@@ -69,7 +69,7 @@ impl SyscallContext {
 }
 
 #[allow(named_asm_labels)]
-pub unsafe fn return_to_user(context: *const SyscallContext) -> ! {
+pub unsafe fn return_to_user(context: *const X86SyscallContext) -> ! {
     asm!(
         "cli",
         "mov rax, [r11 + 0x00]",
@@ -96,14 +96,14 @@ pub unsafe fn return_to_user(context: *const SyscallContext) -> ! {
 }
 
 #[no_mangle]
-unsafe extern "C" fn syscall_entry_c(context: *mut SyscallContext, kernel_fs: u64) -> ! {
+unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs: u64) -> ! {
     /* TODO: avoid doing both of these? */
     x86_64::registers::segmentation::FS::write_base(VirtAddr::new(kernel_fs));
     x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
 
     crate::thread::enter_kernel();
     crate::interrupt::set(true);
-    //logln!("got syscall {}", context.as_mut().unwrap().num());
+    crate::syscall::syscall_entry(unsafe { context.as_mut().unwrap() });
     crate::interrupt::set(false);
     crate::thread::exit_kernel();
 

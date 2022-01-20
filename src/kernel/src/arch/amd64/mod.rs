@@ -36,12 +36,11 @@ pub fn start_clock(statclock_hz: u64, stat_cb: fn(Nanoseconds)) {
 }
 
 pub unsafe fn jump_to_user(target: VirtAddr, stack: VirtAddr, arg: u64) {
-    let ctx = syscall::SyscallContext::create_jmp_context(target, stack, arg);
+    use crate::syscall::SyscallContext;
+    let ctx = syscall::X86SyscallContext::create_jmp_context(target, stack, arg);
     crate::thread::exit_kernel();
-    syscall::return_to_user(&ctx as *const SyscallContext);
+    syscall::return_to_user(&ctx as *const syscall::X86SyscallContext);
 }
 
 pub use lapic::schedule_oneshot_tick;
 use x86_64::VirtAddr;
-
-use self::syscall::SyscallContext;
