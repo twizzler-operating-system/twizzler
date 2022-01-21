@@ -1,4 +1,6 @@
-use alloc::{sync::Arc, vec::Vec};
+use core::fmt::Display;
+
+use alloc::{format, string::String, sync::Arc, vec::Vec};
 use nonoverlapping_interval_tree::{IntervalValue, NonOverlappingIntervalTree};
 
 use crate::mutex::Mutex;
@@ -43,6 +45,7 @@ impl PageRange {
 
     fn add_page(&self, pn: PageNumber, page: Page) {
         assert!(pn >= self.start);
+        assert!(pn < self.start.offset(self.length));
         let off = pn - self.start;
         self.pv.lock().add_page(self.offset + off, page);
     }
@@ -93,6 +96,20 @@ impl PageRange {
 
     pub fn range(&self) -> core::ops::Range<PageNumber> {
         self.start..self.start.offset(self.length)
+    }
+}
+
+impl Display for PageRange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{{{}, {}, {}}} -> {} {}",
+            self.start,
+            self.length,
+            self.offset,
+            if self.is_shared() { "s" } else { "p" },
+            self.pv.lock().show_part(&self)
+        )
     }
 }
 
@@ -153,6 +170,8 @@ impl PageRangeTree {
         k: core::ops::Range<PageNumber>,
         r: PageRange,
     ) -> Vec<(core::ops::Range<PageNumber>, PageRange)> {
+        assert_ne!(r.length, 0);
+        assert_ne!(k.start, k.end);
         self.tree.insert_replace(k, r)
     }
 
@@ -183,9 +202,32 @@ impl PageRangeTree {
         if let Some(range) = range {
             range.add_page(pn, page);
         } else {
-            let range = PageRange::new(pn);
+            if let Some(prev) = pn.prev() {
+                let range = self.tree.remove(&prev);
+                if let Some(mut range) = range {
+                    range.length += 1;
+                    range.add_page(pn, page);
+                    self.tree.insert_replace(range.range(), range);
+                    return;
+                }
+            }
+            let mut range = PageRange::new(pn);
+            range.length = 1;
             range.add_page(pn, page);
             self.tree.insert_replace(pn..pn.next(), range);
+        }
+    }
+
+    pub fn print_tree(&self) {
+        let r = self.range(0.into()..usize::MAX.into());
+        for range in r {
+            let val = range.1.value();
+            logln!(
+                "  range [{}, {}) => {}",
+                range.0.num(),
+                range.0.offset(range.1.length).num(),
+                val
+            );
         }
     }
 }

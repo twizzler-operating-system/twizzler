@@ -1,4 +1,7 @@
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::{
+    fmt::Display,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use alloc::{
     collections::{BTreeMap, BTreeSet},
@@ -58,6 +61,14 @@ impl PageNumber {
         Self(self.0 + 1)
     }
 
+    pub fn prev(&self) -> Option<Self> {
+        if self.0 == 0 {
+            None
+        } else {
+            Some(Self(self.0 - 1))
+        }
+    }
+
     pub fn offset(&self, off: usize) -> Self {
         Self(self.0 + off)
     }
@@ -106,7 +117,18 @@ impl Object {
     }
 
     pub fn invalidate(&self, _range: core::ops::Range<PageNumber>) {
-        todo!()
+        //todo!()
+    }
+
+    pub fn print_page_tree(&self) {
+        logln!("=== PAGE TREE OBJECT {} ===", self.id());
+        self.range_tree.lock().print_tree();
+    }
+}
+
+impl Display for PageNumber {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 

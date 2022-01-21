@@ -60,15 +60,22 @@ pub fn copy_ranges(
     let (src_tree, mut dest_tree) = crate::utils::lock_two(&src.range_tree, &dest.range_tree);
 
     let mut dest_point = dest_start;
+    let mut src_point = src_start;
     let mut rem = length;
     let ranges = src_tree.range(src_start..src_start.offset(length));
     for range in ranges {
-        assert!(src_start >= *range.0);
-        let offset = src_start - *range.0;
+        if src_point < *range.0 {
+            /* TODO: we'll need to ensure all backing pages are present if we get here */
+            let diff = *range.0 - src_point;
+            dest_point = dest_point.offset(diff);
+            rem -= diff;
+        }
+        let offset = src_point.num().checked_sub(range.0.num()).unwrap_or(0);
         let len = core::cmp::min(range.1.value().length - offset, rem);
         copy_range_to_object_tree(&mut dest_tree, dest_point, range.1.value(), offset, len);
         dest_point = dest_point.offset(len);
         rem -= len;
+        src_point = src_point.offset(len);
     }
 
     src.invalidate(src_start..src_start.offset(length));

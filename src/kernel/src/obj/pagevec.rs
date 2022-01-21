@@ -1,8 +1,11 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{format, string::String, sync::Arc, vec::Vec};
 
 use crate::mutex::Mutex;
 
-use super::pages::{Page, PageRef};
+use super::{
+    pages::{Page, PageRef},
+    range::PageRange,
+};
 
 pub struct PageVec {
     pages: Vec<Option<PageRef>>,
@@ -15,6 +18,33 @@ impl PageVec {
         Self {
             pages: alloc::vec![],
         }
+    }
+
+    pub fn show_part(&self, range: &PageRange) -> String {
+        let mut str = String::new();
+        str += &format!("PV {:p} ", self);
+        if range.offset > 0 {
+            str += "[..., ";
+        } else {
+            str += "[";
+        }
+
+        let mut first = true;
+        for p in self.pages.iter().skip(range.offset).take(range.length) {
+            if !first {
+                str += ", ";
+            }
+            if let Some(p) = p {
+                str += &format!("{:x}", p.physical_address());
+            } else {
+                str += "None";
+            }
+            first = false;
+        }
+
+        str += ", ...]";
+
+        str
     }
 
     pub fn clone_pages(&self) -> Self {

@@ -25,6 +25,16 @@ impl Page {
         phys_to_virt(self.frame.start_address())
     }
 
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.as_virtaddr().as_ptr(), self.frame.size()) }
+    }
+
+    pub fn as_mut_slice(&self) -> &mut [u8] {
+        unsafe {
+            core::slice::from_raw_parts_mut(self.as_virtaddr().as_mut_ptr(), self.frame.size())
+        }
+    }
+
     pub fn physical_address(&self) -> PhysAddr {
         self.frame.start_address()
     }

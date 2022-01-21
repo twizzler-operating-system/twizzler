@@ -410,7 +410,47 @@ impl Ord for Priority {
     }
 }
 
+fn object_copy_test() {
+    let obj1 = crate::obj::Object::new();
+    let obj2 = crate::obj::Object::new();
+
+    let page = crate::obj::pages::Page::new();
+    let slice = page.as_mut_slice();
+    slice[0] = 9;
+    obj1.add_page(1.into(), crate::obj::pages::Page::new());
+
+    let page = crate::obj::pages::Page::new();
+    let slice = page.as_mut_slice();
+    slice[0] = 10;
+    obj1.add_page(2.into(), crate::obj::pages::Page::new());
+
+    let page = crate::obj::pages::Page::new();
+    let slice = page.as_mut_slice();
+    slice[0] = 11;
+    obj1.add_page(3.into(), crate::obj::pages::Page::new());
+
+    let page = crate::obj::pages::Page::new();
+    let slice = page.as_mut_slice();
+    slice[0] = 12;
+    obj1.add_page(5.into(), crate::obj::pages::Page::new());
+
+    let page = crate::obj::pages::Page::new();
+    let slice = page.as_mut_slice();
+    slice[0] = 13;
+    obj1.add_page(6.into(), crate::obj::pages::Page::new());
+
+    let obj1 = Arc::new(obj1);
+    let obj2 = Arc::new(obj2);
+
+    crate::obj::copy::copy_ranges(&obj1, 2.into(), &obj2, 8.into(), 4);
+
+    obj1.print_page_tree();
+    obj2.print_page_tree();
+}
+
 extern "C" fn user_init() {
+    object_copy_test();
+    loop {}
     let vm = current_memory_context().unwrap();
     let obj = match crate::obj::lookup_object(1, crate::obj::LookupFlags::empty()) {
         crate::obj::LookupResult::NotFound => todo!(),
