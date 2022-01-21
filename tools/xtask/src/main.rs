@@ -389,13 +389,12 @@ fn cmd_all(
         cargo_cmd,
         ".",
         args,
-        Some("-C link-arg=--image-base=0x1000".to_owned()),
+        None,
         build_info,
         Some(build_info.get_twizzler_triple()),
     )?;
     Ok(())
 }
-
 fn check_all(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<(), DynError> {
     cmd_all(meta, args, "check", build_info)?;
     Ok(())

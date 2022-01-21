@@ -410,6 +410,7 @@ impl Ord for Priority {
     }
 }
 
+/*
 fn object_copy_test() {
     let obj1 = crate::obj::Object::new();
     let obj2 = crate::obj::Object::new();
@@ -448,15 +449,14 @@ fn object_copy_test() {
     obj2.print_page_tree();
 
     logln!("====== TEST FAULT ======\n");
-    let res = obj2.lock_page_tree().get_page(9.into(), true);
+    let res = obj2.lock_page_tree().get_page(10.into(), true);
     logln!("fault => {:?}", res);
     obj1.print_page_tree();
     obj2.print_page_tree();
 }
+*/
 
 extern "C" fn user_init() {
-    object_copy_test();
-    loop {}
     let vm = current_memory_context().unwrap();
     let obj = match crate::obj::lookup_object(1, crate::obj::LookupFlags::empty()) {
         crate::obj::LookupResult::NotFound => todo!(),
