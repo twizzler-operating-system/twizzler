@@ -6,9 +6,9 @@ use crate::{
     memory::frame::{self, Frame, PhysicalFrameFlags},
 };
 
+#[derive(Debug)]
 pub struct Page {
     frame: Frame,
-    count: usize,
 }
 
 pub type PageRef = Arc<Page>;
@@ -17,7 +17,6 @@ impl Page {
     pub fn new() -> Self {
         Self {
             frame: frame::alloc_frame(PhysicalFrameFlags::ZEROED),
-            count: 1,
         }
     }
 
@@ -42,9 +41,6 @@ impl Page {
     pub fn copy_page(&self) -> Self {
         let mut new_frame = frame::alloc_frame(PhysicalFrameFlags::empty());
         new_frame.copy_contents_from(&self.frame);
-        Self {
-            frame: new_frame,
-            count: 1,
-        }
+        Self { frame: new_frame }
     }
 }

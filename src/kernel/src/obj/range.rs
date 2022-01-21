@@ -143,7 +143,11 @@ impl PageRangeTree {
         /* need to copy */
         let (r1, mut r2, r3) = range.split_at(pn);
         /* r2 is always the one we want */
-        r2.copy_pv();
+        let pv = Arc::new(Mutex::new(
+            r2.pv.lock().clone_pages_limited(r2.offset, r2.length),
+        ));
+        r2.pv = pv;
+        r2.offset = 0;
 
         if let Some(r1) = r1 {
             let res = self.insert_replace(r1.range(), r1);

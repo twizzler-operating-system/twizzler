@@ -156,6 +156,7 @@ struct PhysicalFrameAllocator {
 /// A physical frame.
 ///
 /// Contains a physical address and flags that indicate if the frame is zeroed or not.
+#[derive(Debug)]
 pub struct Frame {
     pa: PhysAddr,
     flags: PhysicalFrameFlags,

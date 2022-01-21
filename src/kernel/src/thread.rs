@@ -442,8 +442,14 @@ fn object_copy_test() {
     let obj1 = Arc::new(obj1);
     let obj2 = Arc::new(obj2);
 
-    crate::obj::copy::copy_ranges(&obj1, 2.into(), &obj2, 8.into(), 4);
+    crate::obj::copy::copy_ranges(&obj1, 1.into(), &obj2, 8.into(), 4);
 
+    obj1.print_page_tree();
+    obj2.print_page_tree();
+
+    logln!("====== TEST FAULT ======\n");
+    let res = obj2.lock_page_tree().get_page(9.into(), true);
+    logln!("fault => {:?}", res);
     obj1.print_page_tree();
     obj2.print_page_tree();
 }

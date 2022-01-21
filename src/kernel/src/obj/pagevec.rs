@@ -58,6 +58,19 @@ impl PageVec {
         pv
     }
 
+    pub fn clone_pages_limited(&self, start: usize, len: usize) -> Self {
+        let mut pv = Self::new();
+        let mut di = 0;
+        for si in start..(start + len) {
+            if let Some(page) = &self.pages[si] {
+                pv.pages.resize(di + 1, None);
+                pv.pages[di] = Some(Arc::new(page.copy_page()));
+            }
+            di += 1;
+        }
+        pv
+    }
+
     pub fn get_page(&mut self, offset: usize) -> PageRef {
         if offset >= self.pages.len() {
             self.pages.resize(offset + 1, None)
