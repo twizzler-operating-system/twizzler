@@ -180,7 +180,7 @@ impl Frame {
     pub fn zero(&mut self) {
         let virt = phys_to_virt(self.pa);
         let ptr: *mut u8 = virt.as_mut_ptr();
-        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, 0x1000) };
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
         slice.fill(0);
         self.flags.insert(PhysicalFrameFlags::ZEROED);
     }
@@ -193,6 +193,19 @@ impl Frame {
     /// Check if this frame is marked as zeroed. Does not look at the underlying physical memory.
     pub fn is_zeroed(&self) -> bool {
         self.flags.contains(PhysicalFrameFlags::ZEROED)
+    }
+
+    pub fn copy_contents_from(&mut self, other: &Frame) {
+        self.set_not_zero();
+        let virt = phys_to_virt(self.pa);
+        let ptr: *mut u8 = virt.as_mut_ptr();
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
+
+        let othervirt = phys_to_virt(other.pa);
+        let otherptr: *mut u8 = othervirt.as_mut_ptr();
+        let otherslice = unsafe { core::slice::from_raw_parts_mut(otherptr, self.size()) };
+
+        slice.copy_from_slice(otherslice);
     }
 }
 

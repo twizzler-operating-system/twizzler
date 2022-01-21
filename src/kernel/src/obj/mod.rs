@@ -21,7 +21,7 @@ const OBJ_DELETED: u32 = 1;
 pub struct Object {
     id: ObjID,
     flags: AtomicU32,
-    range_tree: Mutex<range::RangeTree>,
+    range_tree: Mutex<range::PageRangeTree>,
     maplist: Mutex<BTreeSet<MappingRef>>,
 }
 
@@ -79,7 +79,7 @@ impl Object {
         self.flags.fetch_or(OBJ_DELETED, Ordering::SeqCst);
     }
 
-    pub fn lock_page_tree(&self) -> LockGuard<'_, range::RangeTree> {
+    pub fn lock_page_tree(&self) -> LockGuard<'_, range::PageRangeTree> {
         self.range_tree.lock()
     }
 
@@ -100,9 +100,13 @@ impl Object {
         Self {
             id: OID.fetch_add(1, Ordering::SeqCst) as u128,
             flags: AtomicU32::new(0),
-            range_tree: Mutex::new(range::RangeTree::new()),
+            range_tree: Mutex::new(range::PageRangeTree::new()),
             maplist: Mutex::new(BTreeSet::new()),
         }
+    }
+
+    pub fn invalidate(&self, _range: core::ops::Range<PageNumber>) {
+        todo!()
     }
 }
 

@@ -426,8 +426,8 @@ extern "C" fn user_init() {
         crate::obj::LookupResult::Found(o) => o,
         _ => todo!(),
     };
-    let page = obj.lock_page_tree().get_page(1.into()).unwrap();
-    let ptr: *const u8 = page.as_virtaddr().as_ptr();
+    let page = obj.lock_page_tree().get_page(1.into(), false).unwrap();
+    let ptr: *const u8 = page.0.as_virtaddr().as_ptr();
     let entry = unsafe { ptr.add(0x18) } as *const u64;
     let entry_addr = unsafe { entry.read() };
     unsafe {

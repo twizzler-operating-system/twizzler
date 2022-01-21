@@ -1,11 +1,14 @@
 use crate::mutex::LockGuard;
 
 use super::{
-    range::{Range, RangeTree},
+    range::{PageRange, PageRangeTree},
     ObjectRef, PageNumber,
 };
 
-fn split_range(range: Range, out: core::ops::Range<PageNumber>) -> (Option<Range>, Option<Range>) {
+fn split_range(
+    range: PageRange,
+    out: core::ops::Range<PageNumber>,
+) -> (Option<PageRange>, Option<PageRange>) {
     let r1 = if range.start < out.start {
         Some(range.new_from(range.start, range.offset, out.start - range.start))
     } else {
@@ -22,9 +25,9 @@ fn split_range(range: Range, out: core::ops::Range<PageNumber>) -> (Option<Range
 }
 
 fn copy_range_to_object_tree(
-    dest_tree: &mut LockGuard<RangeTree>,
+    dest_tree: &mut LockGuard<PageRangeTree>,
     dest_point: PageNumber,
-    range: &Range,
+    range: &PageRange,
     offset: usize,
     length: usize,
 ) {
@@ -35,10 +38,12 @@ fn copy_range_to_object_tree(
     for k in kicked {
         let (r1, r2) = split_range(k.1, new_range_key.clone());
         if let Some(r1) = r1 {
+            r1.gc_pagevec();
             let res = dest_tree.insert_replace(r1.start..r1.start.offset(r1.length), r1);
             assert!(res.len() == 0);
         }
         if let Some(r2) = r2 {
+            r2.gc_pagevec();
             let res = dest_tree.insert_replace(r2.start..r2.start.offset(r2.length), r2);
             assert!(res.len() == 0);
         }
@@ -65,6 +70,9 @@ pub fn copy_ranges(
         dest_point = dest_point.offset(len);
         rem -= len;
     }
+
+    src.invalidate(src_start..src_start.offset(length));
+    dest.invalidate(dest_start..dest_start.offset(length));
 }
 
 pub struct CopySpec {

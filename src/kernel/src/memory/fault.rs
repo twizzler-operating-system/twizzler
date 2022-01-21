@@ -1,6 +1,6 @@
 use x86_64::VirtAddr;
 
-use crate::{obj::PageNumber, thread::current_memory_context};
+use crate::{memory::context::MappingPerms, obj::PageNumber, thread::current_memory_context};
 
 bitflags::bitflags! {
     pub struct PageFaultFlags : u32 {
@@ -10,7 +10,7 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PageFaultCause {
     InstructionFetch,
     Read,
@@ -37,10 +37,12 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags) 
     if let Some(mapping) = mapping {
         let objid = mapping.obj.id();
         let page_number = PageNumber::from_address(addr);
-        let obj_page_tree = mapping.obj.lock_page_tree();
-        let page = obj_page_tree
-            .get_page(page_number)
+        let mut obj_page_tree = mapping.obj.lock_page_tree();
+        let is_write = cause == PageFaultCause::Write;
+        let (page, cow) = obj_page_tree
+            .get_page(page_number, is_write)
             .expect("TODO: non present page");
+
         {
             let mut vmc = vmc.lock();
             /* check if mappings changed */
@@ -49,14 +51,19 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags) 
                 drop(obj_page_tree);
                 return page_fault(addr, cause, flags);
             }
-            //TODO: get these perms from the second lookup
             let v: *const u8 = page.as_virtaddr().as_ptr();
             unsafe {
-                let slice = core::slice::from_raw_parts(v, 0x1000);
-                logln!("{:?}", slice);
+                let _slice = core::slice::from_raw_parts(v, 0x1000);
+                //logln!("{:?}", slice);
             }
 
-            vmc.map_object_page(addr, page, mapping.perms);
+            //TODO: get these perms from the second lookup
+            let perms = if cow {
+                mapping.perms & MappingPerms::WRITE.complement()
+            } else {
+                mapping.perms
+            };
+            vmc.map_object_page(addr, page, perms);
         }
     } else {
         //TODO: fault

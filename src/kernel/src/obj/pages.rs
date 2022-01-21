@@ -28,4 +28,13 @@ impl Page {
     pub fn physical_address(&self) -> PhysAddr {
         self.frame.start_address()
     }
+
+    pub fn copy_page(&self) -> Self {
+        let mut new_frame = frame::alloc_frame(PhysicalFrameFlags::empty());
+        new_frame.copy_contents_from(&self.frame);
+        Self {
+            frame: new_frame,
+            count: 1,
+        }
+    }
 }
