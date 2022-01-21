@@ -152,6 +152,12 @@ impl Ord for Object {
     }
 }
 
+impl core::fmt::Debug for Object {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Object({})", self.id())
+    }
+}
+
 pub type ObjectRef = Arc<Object>;
 
 struct ObjectManager {
@@ -164,11 +170,22 @@ bitflags::bitflags! {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum LookupResult {
     NotFound,
     WasDeleted,
     Pending,
     Found(ObjectRef),
+}
+
+impl LookupResult {
+    pub fn unwrap(self) -> ObjectRef {
+        if let Self::Found(o) = self {
+            o
+        } else {
+            panic!("unwrap LookupResult failed: {:?}", self)
+        }
+    }
 }
 
 impl ObjectManager {

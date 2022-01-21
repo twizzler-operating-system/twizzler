@@ -6,12 +6,14 @@ use core::{
 
 use alloc::{boxed::Box, sync::Arc};
 use x86_64::VirtAddr;
+use xmas_elf::program::SegmentData;
 
 use crate::{
     idcounter::{Id, IdCounter},
     interrupt,
     memory::context::{MappingPerms, MemoryContext, MemoryContextRef},
     mutex::Mutex,
+    obj::ObjectRef,
     processor::{get_processor, KERNEL_STACK_SIZE},
     sched::schedule_new_thread,
     spinlock::Spinlock,
@@ -456,52 +458,69 @@ fn object_copy_test() {
 }
 */
 
+fn create_blank_object() -> ObjectRef {
+    let obj = crate::obj::Object::new();
+    let id = obj.id();
+    crate::obj::register_object(obj);
+    let obj = match crate::obj::lookup_object(id, crate::obj::LookupFlags::empty()) {
+        crate::obj::LookupResult::Found(o) => o,
+        _ => panic!("failed to lookup new object"),
+    };
+    obj
+}
+
 extern "C" fn user_init() {
     let vm = current_memory_context().unwrap();
-    let obj = match crate::obj::lookup_object(1, crate::obj::LookupFlags::empty()) {
-        crate::obj::LookupResult::NotFound => todo!(),
-        crate::obj::LookupResult::WasDeleted => todo!(),
-        crate::obj::LookupResult::Pending => todo!(),
-        crate::obj::LookupResult::Found(o) => o,
-    };
-    let obj2 = crate::obj::Object::new();
-    obj2.add_page(1.into(), crate::obj::pages::Page::new());
-    let id2 = obj2.id();
-    crate::obj::register_object(obj2);
-    let obj2 = match crate::obj::lookup_object(id2, crate::obj::LookupFlags::empty()) {
-        crate::obj::LookupResult::Found(o) => o,
-        _ => todo!(),
-    };
-    let page = obj.lock_page_tree().get_page(1.into(), false).unwrap();
-    let ptr: *const u8 = page.0.as_virtaddr().as_ptr();
-    let entry = unsafe { ptr.add(0x18) } as *const u64;
-    let entry_addr = unsafe { entry.read() };
-    unsafe {
-        logln!(
-            "---> {} {} {} :: {:x}",
-            ptr.read(),
-            ptr.add(1).read(),
-            ptr.add(2).read(),
-            entry.read(),
-        );
-    }
+    let boot_objects = crate::initrd::get_boot_objects();
+
+    let obj_text = create_blank_object();
+    let obj_data = create_blank_object();
+    let obj_stack = create_blank_object();
     crate::operations::map_object_into_context(
         0,
-        obj,
+        obj_text,
         vm.clone(),
         MappingPerms::READ | MappingPerms::EXECUTE,
     )
     .unwrap();
     crate::operations::map_object_into_context(
+        1,
+        obj_data,
+        vm.clone(),
+        MappingPerms::READ | MappingPerms::WRITE,
+    )
+    .unwrap();
+    crate::operations::map_object_into_context(
         2,
-        obj2,
+        obj_stack,
         vm,
         MappingPerms::READ | MappingPerms::WRITE,
     )
     .unwrap();
+    let obj1_data =
+        crate::operations::read_object(&boot_objects.init.as_ref().expect("no init found"));
+    let elf = xmas_elf::ElfFile::new(&obj1_data).unwrap();
+    for ph in elf.program_iter() {
+        if ph.get_type() == Ok(xmas_elf::program::Type::Load) {
+            let file_data = ph.get_data(&elf).unwrap();
+            if let SegmentData::Undefined(file_data) = file_data {
+                let memory_addr = VirtAddr::new(ph.virtual_addr());
+                let memory_slice: &mut [u8] = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        memory_addr.as_mut_ptr(),
+                        ph.mem_size() as usize,
+                    )
+                };
+
+                memory_slice.fill(0);
+                (&mut memory_slice[0..ph.file_size() as usize]).copy_from_slice(file_data);
+            }
+        }
+    }
+
     unsafe {
         crate::arch::jump_to_user(
-            VirtAddr::new(entry_addr),
+            VirtAddr::new(elf.header.pt2.entry_point()),
             VirtAddr::new((1 << 30) * 2 + 0x2000),
             0,
         );

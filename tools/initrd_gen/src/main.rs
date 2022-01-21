@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::{fs::File, path::Path};
 
 use clap::{App, Arg};
 use tar::Builder;
@@ -27,6 +27,9 @@ fn main() {
     let outfile = File::create(initrd_output).unwrap();
     let mut archive = Builder::new(outfile);
     for file in files.unwrap_or(clap::Values::default()) {
-        archive.append_path(file).unwrap();
+        let mut f = File::open(file).unwrap();
+        archive
+            .append_file(Path::new(file).file_name().unwrap(), &mut f)
+            .unwrap();
     }
 }

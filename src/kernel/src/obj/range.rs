@@ -1,6 +1,6 @@
 use core::fmt::Display;
 
-use alloc::{format, string::String, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use nonoverlapping_interval_tree::{IntervalValue, NonOverlappingIntervalTree};
 
 use crate::mutex::Mutex;

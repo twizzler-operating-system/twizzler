@@ -1,6 +1,10 @@
 use x86_64::VirtAddr;
 
-use crate::{memory::context::MappingPerms, obj::PageNumber, thread::current_memory_context};
+use crate::{
+    memory::context::MappingPerms,
+    obj::{pages::Page, PageNumber},
+    thread::current_memory_context,
+};
 
 bitflags::bitflags! {
     pub struct PageFaultFlags : u32 {
@@ -24,7 +28,9 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags) 
         cause,
         flags
     );
-    if !flags.contains(PageFaultFlags::USER) {
+    if !flags.contains(PageFaultFlags::USER) && addr.as_u64() >= 0xffff000000000000
+    /*TODO */
+    {
         panic!("kernel page fault")
     }
     let vmc = current_memory_context();
@@ -39,11 +45,8 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags) 
         let page_number = PageNumber::from_address(addr);
         let mut obj_page_tree = mapping.obj.lock_page_tree();
         let is_write = cause == PageFaultCause::Write;
-        let (page, cow) = obj_page_tree
-            .get_page(page_number, is_write)
-            .expect("TODO: non present page");
 
-        {
+        if let Some((page, cow)) = obj_page_tree.get_page(page_number, is_write) {
             let mut vmc = vmc.lock();
             /* check if mappings changed */
             if vmc.lookup_object(addr).map_or(0, |o| o.obj.id()) != objid {
@@ -64,6 +67,11 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags) 
                 mapping.perms
             };
             vmc.map_object_page(addr, page, perms);
+        } else {
+            let page = Page::new();
+            obj_page_tree.add_page(page_number, page);
+            drop(obj_page_tree);
+            page_fault(addr, cause, flags);
         }
     } else {
         //TODO: fault

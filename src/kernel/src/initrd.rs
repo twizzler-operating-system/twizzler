@@ -1,7 +1,8 @@
+use spin::Once;
 use x86_64::VirtAddr;
 
 use crate::obj::{self, pages::Page};
-
+use crate::obj::{LookupFlags, ObjectRef};
 pub struct BootModule {
     pub start: VirtAddr,
     pub length: usize,
@@ -14,7 +15,21 @@ impl BootModule {
     }
 }
 
+#[derive(Default)]
+pub struct BootObjects {
+    pub init: Option<ObjectRef>,
+}
+
+static BOOT_OBJECTS: Once<BootObjects> = Once::new();
+
+pub fn get_boot_objects() -> &'static BootObjects {
+    BOOT_OBJECTS
+        .poll()
+        .expect("tried to get BootObjects before processing modules")
+}
+
 pub fn init(modules: &[BootModule]) {
+    let mut boot_objects = BootObjects::default();
     for module in modules {
         let tar = tar_no_std::TarArchiveRef::new(module.as_slice());
         logln!("loading module...");
@@ -35,7 +50,15 @@ pub fn init(modules: &[BootModule]) {
                 total += thislen;
                 pagenr += 1;
             }
+            let id = obj.id();
             obj::register_object(obj);
+            match e.filename().as_str() {
+                "init" => {
+                    boot_objects.init = Some(obj::lookup_object(id, LookupFlags::empty()).unwrap())
+                }
+                _ => {}
+            }
         }
     }
+    BOOT_OBJECTS.call_once(|| boot_objects);
 }
