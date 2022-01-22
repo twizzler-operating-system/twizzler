@@ -2,6 +2,7 @@
 #![feature(lang_items)]
 #![feature(asm)]
 #![feature(naked_functions)]
+#![feature(thread_local)]
 //#![no_main]
 
 /*
@@ -22,7 +23,12 @@ pub fn __panic(_: &core::panic::PanicInfo) -> ! {
 }
 */
 
+#[thread_local]
+static mut FOO: u32 = 42;
+#[thread_local]
+static mut BAR: u32 = 0;
 fn main() {
+    println!("Hello, World {}", unsafe { FOO + BAR });
     loop {}
 }
 

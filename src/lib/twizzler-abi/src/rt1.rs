@@ -4,8 +4,8 @@ extern "C" {
 
 #[repr(C)]
 struct Phdr {
-    ty: u64,
-    flags: u64,
+    ty: u32,
+    flags: u32,
     off: u64,
     vaddr: u64,
     paddr: u64,
@@ -14,8 +14,49 @@ struct Phdr {
     align: u64,
 }
 
+struct TlsInfo {
+    template_start: *const u8,
+    memsz: usize,
+    filsz: usize,
+}
+
+static mut TLS_INFO: Option<TlsInfo> = None;
+
+use core::alloc::Layout;
+fn init_tls() -> Option<u64> {
+    unsafe {
+        TLS_INFO.as_ref().map(|info| {
+            let tls_size = info.memsz + core::mem::size_of::<*const u8>() + 16;
+            let layout = Layout::from_size_align(tls_size, 16).unwrap();
+            let tls = crate::alloc::global_alloc(layout);
+            if !tls.is_null() {
+                ptr::write_bytes(tls, 0x00, layout.size());
+            }
+            /* TODO: oom */
+            let tls = tls.add(16 - (info.memsz % 16));
+            core::ptr::copy_nonoverlapping(info.template_start, tls, info.filsz);
+            let tcb_base = tls as u64 + info.memsz as u64;
+            *(tcb_base as *mut u64) = tcb_base;
+            tcb_base
+        })
+    }
+}
+
+#[allow(unreachable_code)]
+#[allow(unused_variables)]
+#[allow(unused_mut)]
 fn process_phdrs(phdrs: &[Phdr]) {
-    for _ph in phdrs {}
+    for ph in phdrs {
+        if ph.ty == 7 {
+            unsafe {
+                TLS_INFO = Some(TlsInfo {
+                    template_start: ph.vaddr as *const u8,
+                    memsz: ph.memsz as usize,
+                    filsz: ph.filesz as usize,
+                })
+            }
+        }
+    }
 }
 
 /* This is essentially just a hook to get us out of the arch-specific code before calling into std.
@@ -25,6 +66,9 @@ fn process_phdrs(phdrs: &[Phdr]) {
  */
 use crate::aux::AuxEntry;
 use core::ptr;
+#[allow(unreachable_code)]
+#[allow(unused_variables)]
+#[allow(unused_mut)]
 pub(crate) extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
     let null_env: [*const i8; 4] = [ptr::null(), ptr::null(), ptr::null(), ptr::null()];
     unsafe {
@@ -36,6 +80,12 @@ pub(crate) extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! 
                 _ => {}
             }
             aux_array = aux_array.offset(1);
+        }
+    }
+    let tls = init_tls();
+    if let Some(_tls) = tls {
+        unsafe {
+            asm!("wrfsbase {}", in(reg) _tls);
         }
     }
     /* it's unsafe because it's an extern C function. */

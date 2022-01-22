@@ -27,7 +27,7 @@ fn sys_kernel_console_write(data: &[u8], flags: twizzler_abi::syscall::KernelCon
 }
 
 pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
-    logln!("syscall! {}", context.num());
+    //logln!("syscall! {}", context.num());
     match context.num().into() {
         Syscall::KernelConsoleWrite => {
             let ptr = context.arg0();

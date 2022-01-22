@@ -1,5 +1,5 @@
 #[repr(C)]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum AuxEntry {
     Null,
     ProgramHeaders(u64, usize),

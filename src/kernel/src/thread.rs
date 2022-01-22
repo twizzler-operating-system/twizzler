@@ -5,6 +5,7 @@ use core::{
 };
 
 use alloc::{boxed::Box, sync::Arc};
+use twizzler_abi::aux::AuxEntry;
 use x86_64::VirtAddr;
 use xmas_elf::program::SegmentData;
 
@@ -500,6 +501,7 @@ extern "C" fn user_init() {
     let obj1_data =
         crate::operations::read_object(&boot_objects.init.as_ref().expect("no init found"));
     let elf = xmas_elf::ElfFile::new(&obj1_data).unwrap();
+    let mut phinfo = None;
     for ph in elf.program_iter() {
         if ph.get_type() == Ok(xmas_elf::program::Type::Load) {
             let file_data = ph.get_data(&elf).unwrap();
@@ -516,13 +518,39 @@ extern "C" fn user_init() {
                 (&mut memory_slice[0..ph.file_size() as usize]).copy_from_slice(file_data);
             }
         }
+        if ph.get_type() == Ok(xmas_elf::program::Type::Phdr) {
+            phinfo = Some(ph);
+        }
     }
+
+    fn append_aux(aux: *mut AuxEntry, entry: AuxEntry) -> *mut AuxEntry {
+        unsafe {
+            *aux = entry;
+            aux.add(1)
+        }
+    }
+
+    let aux_start: u64 = (1 << 30) * 2 + 0x300000;
+    let aux_start = aux_start as *mut twizzler_abi::aux::AuxEntry;
+    let mut aux = aux_start;
+
+    if let Some(phinfo) = phinfo {
+        aux = append_aux(
+            aux,
+            AuxEntry::ProgramHeaders(
+                phinfo.virtual_addr(),
+                phinfo.mem_size() as usize / elf.header.pt2.ph_entry_size() as usize,
+            ),
+        )
+    }
+
+    append_aux(aux, AuxEntry::Null);
 
     unsafe {
         crate::arch::jump_to_user(
             VirtAddr::new(elf.header.pt2.entry_point()),
-            VirtAddr::new((1 << 30) * 2 + 0x2000),
-            0,
+            VirtAddr::new((1 << 30) * 2 + 0x200000),
+            aux_start as u64,
         );
     }
 }
