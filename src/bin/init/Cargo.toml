@@ -7,4 +7,4 @@ edition = "2021"
 
 [dependencies]
 #twizzler = {path = "../../lib/twizzler"}
-twizzler-abi = {path = "../../lib/twizzler-abi", default-features = false, features = ["rt"]}
+twizzler-abi = {path = "../../lib/twizzler-abi" }

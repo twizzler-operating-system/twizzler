@@ -15,12 +15,22 @@ pub enum Syscall {
     ThreadSync,
     /// General thread control functions.
     ThreadCtrl,
+    MaxSyscalls,
 }
 
 impl Syscall {
     /// Return the number associated with this syscall.
     pub fn num(&self) -> u64 {
         *self as u64
+    }
+}
+
+impl From<usize> for Syscall {
+    fn from(x: usize) -> Self {
+        if x >= Syscall::MaxSyscalls as usize {
+            return Syscall::Null;
+        }
+        unsafe { core::intrinsics::transmute(x as u32) }
     }
 }
 
@@ -155,4 +165,27 @@ pub fn sys_kernel_console_write(buffer: &[u8], flags: KernelConsoleWriteFlags) {
     unsafe {
         raw_syscall(Syscall::KernelConsoleWrite, &[arg0, arg1, arg2]);
     }
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u64)]
+/// Possible Thread Control operations
+pub enum ThreadControl {
+    /// Exit the thread. arg1 and arg2 should be code and location respectively, where code contains
+    /// a 64-bit value to write into *location, followed by the kernel performing a thread-wake
+    /// event on the memory word at location. If location is null, the write and thread-wake do not occur.
+    Exit,
+}
+
+/// Exit the thread. arg1 and arg2 should be code and location respectively, where code contains
+/// a 64-bit value to write into *location, followed by the kernel performing a thread-wake
+/// event on the memory word at location. If location is null, the write and thread-wake do not occur.
+pub fn sys_thread_exit(code: u64, location: *mut u64) -> ! {
+    unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[ThreadControl::Exit as u64, code, location as u64],
+        );
+    }
+    unreachable!()
 }

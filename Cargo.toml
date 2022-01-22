@@ -6,6 +6,7 @@ members = [
     "src/bin/init",
     "src/kernel",
 ]
+resolver = "2"
 
 [workspace.metadata]
 twizzler-apps = ["init"]
@@ -15,3 +16,6 @@ initrd-members = ["init"]
 
 [profile.release]
 debug = true
+
+[patch.'https://github.com/dbittman/twizzler-abi']
+twizzler-abi = { path = "src/lib/twizzler-abi" }

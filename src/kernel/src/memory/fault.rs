@@ -21,13 +21,15 @@ pub enum PageFaultCause {
     Write,
 }
 
-pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags) {
+pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, ip: VirtAddr) {
     logln!(
-        "page fault at {:?} cause {:?} flags {:?}",
+        "page fault at {:?} cause {:?} flags {:?}, at {:?}",
         addr,
         cause,
-        flags
+        flags,
+        ip
     );
+    /* TODO: null page */
     if !flags.contains(PageFaultFlags::USER) && addr.as_u64() >= 0xffff000000000000
     /*TODO */
     {
@@ -52,7 +54,7 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags) 
             if vmc.lookup_object(addr).map_or(0, |o| o.obj.id()) != objid {
                 drop(vmc);
                 drop(obj_page_tree);
-                return page_fault(addr, cause, flags);
+                return page_fault(addr, cause, flags, ip);
             }
             let v: *const u8 = page.as_virtaddr().as_ptr();
             unsafe {
@@ -71,7 +73,7 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags) 
             let page = Page::new();
             obj_page_tree.add_page(page_number, page);
             drop(obj_page_tree);
-            page_fault(addr, cause, flags);
+            page_fault(addr, cause, flags, ip);
         }
     } else {
         //TODO: fault

@@ -75,6 +75,16 @@ pub fn init(tls: VirtAddr) {
     unsafe { x86::msr::wrmsr(x86::msr::IA32_FS_BASE, tls.as_u64()) };
     unsafe { x86::msr::wrmsr(x86::msr::IA32_GS_BASE, gs_scratch as u64) };
     unsafe { x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, 0) };
+
+    unsafe {
+        let cr4 = x86::controlregs::cr4();
+        x86::controlregs::cr4_write(
+            cr4 | x86::controlregs::Cr4::CR4_ENABLE_SSE
+                | x86::controlregs::Cr4::CR4_ENABLE_OS_XSAVE,
+        );
+        let xcr0 = x86::controlregs::xcr0();
+        x86::controlregs::xcr0_write(xcr0 | x86::controlregs::Xcr0::XCR0_SSE_STATE);
+    }
 }
 
 pub fn enumerate_cpus() {

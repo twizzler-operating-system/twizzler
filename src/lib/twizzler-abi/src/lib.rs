@@ -4,6 +4,8 @@
 
 mod arch;
 
+pub mod alloc;
+pub mod aux;
 #[cfg(feature = "rt")]
 mod rt1;
 pub mod syscall;

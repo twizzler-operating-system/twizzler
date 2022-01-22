@@ -5,6 +5,7 @@ build-all = "run --package xtask -- build-all"
 make-disk = "run --package xtask -- make-disk"
 start-qemu = "run --package xtask -- start-qemu"
 bootstap = "run --package xtask -- bootstrap"
+build-std = "run --package xtask -- build-std"
 
 [build]
 rustdocflags = "-Zunstable-options --enable-index-page"

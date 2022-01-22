@@ -1,3 +1,4 @@
+use twizzler_abi::syscall::Syscall;
 use x86_64::VirtAddr;
 
 pub trait SyscallContext {
@@ -16,6 +17,25 @@ pub trait SyscallContext {
         u64: From<R2>;
 }
 
+unsafe fn create_user_slice<'a, T>(ptr: u64, len: u64) -> &'a [T] {
+    /* TODO: verify pointers */
+    core::slice::from_raw_parts(ptr as *const T, len as usize)
+}
+
+fn sys_kernel_console_write(data: &[u8], flags: twizzler_abi::syscall::KernelConsoleWriteFlags) {
+    let _res = crate::log::write_bytes(data, flags.into());
+}
+
 pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
-    logln!("syscall! {}", context.num())
+    logln!("syscall! {}", context.num());
+    match context.num().into() {
+        Syscall::KernelConsoleWrite => {
+            let ptr = context.arg0();
+            let len = context.arg1();
+            let flags =
+                twizzler_abi::syscall::KernelConsoleWriteFlags::from_bits_truncate(context.arg2());
+            sys_kernel_console_write(unsafe { create_user_slice(ptr, len) }, flags);
+        }
+        _ => {}
+    }
 }

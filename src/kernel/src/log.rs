@@ -56,6 +56,16 @@ bitflags::bitflags! {
     }
 }
 
+impl From<twizzler_abi::syscall::KernelConsoleWriteFlags> for KernelConsoleWriteFlags {
+    fn from(x: twizzler_abi::syscall::KernelConsoleWriteFlags) -> Self {
+        if x.contains(twizzler_abi::syscall::KernelConsoleWriteFlags::DISCARD_ON_FULL) {
+            Self::DISCARD_ON_FULL
+        } else {
+            Self::empty()
+        }
+    }
+}
+
 fn write_head(s: u64) -> u64 {
     (s >> 32) & 0xffff
 }
@@ -201,6 +211,10 @@ impl<T: KernelConsoleHardware> KernelConsole<T, NormalMessage> {
         self.hardware.write(data, flags);
         self.inner.write_buffer(data, flags)
     }
+}
+
+pub fn write_bytes(slice: &[u8], flags: KernelConsoleWriteFlags) -> Result<(), ConsoleWriteError> {
+    unsafe { NORMAL_CONSOLE.write(slice, flags) }
 }
 
 static mut EMERGENCY_CONSOLE: KernelConsole<

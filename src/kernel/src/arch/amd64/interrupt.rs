@@ -364,7 +364,12 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, _user: bool) {
         }
         crate::thread::enter_kernel();
         crate::interrupt::set(true);
-        crate::memory::fault::page_fault(VirtAddr::new(cr2 as u64), cause, flags);
+        crate::memory::fault::page_fault(
+            VirtAddr::new(cr2 as u64),
+            cause,
+            flags,
+            VirtAddr::new(ctx.rip),
+        );
         crate::interrupt::set(false);
         crate::thread::exit_kernel();
     } else if number < 32 {

@@ -1,2 +1,3 @@
 [toolchain]
 path = "toolchain/install"
+#path = "toolchain/src/rust/build/x86_64-unknown-linux-gnu/stage2"

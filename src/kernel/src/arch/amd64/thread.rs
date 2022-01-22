@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use x86_64::VirtAddr;
 
@@ -6,11 +6,15 @@ use crate::{
     arch::amd64::desctables::set_kernel_stack, processor::KERNEL_STACK_SIZE, thread::Thread,
 };
 
-#[derive(Default)]
+const XSAVE_LEN: usize = 512;
+
+#[repr(align(64))]
+struct AlignedXsaveRegion([u8; XSAVE_LEN]);
 pub struct ArchThread {
-    //simd_registers: SimdSaveRegion,
+    xsave_region: AlignedXsaveRegion,
     rsp: core::cell::UnsafeCell<u64>,
     pub user_fs: u64,
+    xsave_inited: AtomicBool,
     //user_gs: u64,
 }
 unsafe impl Sync for ArchThread {}
@@ -70,7 +74,12 @@ unsafe extern "C" fn __do_switch(
 
 impl ArchThread {
     pub fn new() -> Self {
-        Default::default()
+        Self {
+            xsave_region: AlignedXsaveRegion([0; XSAVE_LEN]),
+            rsp: core::cell::UnsafeCell::new(0),
+            user_fs: 0,
+            xsave_inited: AtomicBool::new(false),
+        }
     }
 }
 
@@ -79,7 +88,27 @@ impl Thread {
         unsafe {
             set_kernel_stack(
                 VirtAddr::new(self.kernel_stack.as_ref() as *const u8 as u64) + KERNEL_STACK_SIZE,
-            )
+            );
+            asm!("xsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
+            old_thread.arch.xsave_inited.store(true, Ordering::SeqCst);
+            if self.arch.xsave_inited.load(Ordering::SeqCst) {
+                asm!("xrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
+            } else {
+                let mut f: u16 = 0;
+                let mut x: u32 = 0;
+                asm!(
+                    "finit",
+                    "fstcw [rax]",
+                    "or qword ptr [rax], 0x33f",
+                    "fldcw [rax]",
+                    "stmxcsr [rdx]",
+                    "mfence",
+                    "or qword ptr [rdx], 0x1f80",
+                    "sfence",
+                    "ldmxcsr [rdx]",
+                    "stmxcsr [rdx]",
+                    in("rax") &mut f, in("rdx") &mut x);
+            }
         }
         let old_stack_save = old_thread.arch.rsp.get();
         let new_stack_save = self.arch.rsp.get();

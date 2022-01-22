@@ -1,7 +1,6 @@
 use crate::syscall::Syscall;
 
 #[allow(dead_code)]
-#[cfg(not(feature = "kernel"))]
 /// Call into the kernel to perform a synchronous system call.
 pub(crate) unsafe fn raw_syscall(call: Syscall, args: &[u64]) -> (u64, u64) {
     let a0 = *args.get(0).unwrap_or(&0u64);

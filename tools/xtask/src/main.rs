@@ -158,6 +158,8 @@ fn try_main() -> Result<(), DynError> {
                 .long("skip-submodules")
                 .help("Skips updating submodules before compiling rust toolchain"),
         );
+    let build_std_sc =
+        SubCommand::with_name("build-std").about("Recompile Rust libstd for Twizzler");
     let build = SubCommand::with_name("build-all")
         .arg(arg_profile.clone())
         .arg(arg_arch.clone())
@@ -194,6 +196,7 @@ fn try_main() -> Result<(), DynError> {
         .subcommand(build)
         .subcommand(disk)
         .subcommand(qemu)
+        .subcommand(build_std_sc)
         .subcommand(check);
     let matches = app.clone().get_matches();
     let (sub_name, sub_matches) = matches.subcommand();
@@ -263,6 +266,7 @@ fn try_main() -> Result<(), DynError> {
         "check-all" => check_all(&meta, &args, build_info)?,
         "make-disk" => make_disk(&meta, &args, build_info)?,
         "start-qemu" => start_qemu(&meta, &args, build_info, qemu_profile, &qemu_args)?,
+        "build-std" => build_std()?,
         _ => unreachable!(),
     }
     Ok(())
@@ -305,8 +309,49 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
         "toolchain/src/rust/library/",
         &CopyOptions::new(),
     )?;
+
     let status = Command::new("./x.py")
         .arg("install")
+        .current_dir("toolchain/src/rust")
+        .status()?;
+    if !status.success() {
+        Err("failed to compile rust toolchain")?;
+    }
+
+    Ok(())
+}
+
+fn build_std() -> Result<(), DynError> {
+    let res = std::fs::remove_dir_all("toolchain/src/rust/library/twizzler-abi");
+    match res {
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound => {}
+            _ => Err("failed to remove softlink twizzler-abi")?,
+        },
+        _ => {}
+    }
+    fs_extra::copy_items(
+        &["src/lib/twizzler-abi"],
+        "toolchain/src/rust/library/",
+        &CopyOptions::new(),
+    )?;
+
+    let status = Command::new("./x.py")
+        .arg("build")
+        .arg("--keep-stage")
+        .arg("0")
+        .arg("--keep-stage")
+        .arg("1")
+        .arg("--keep-stage-std")
+        .arg("0")
+        .arg("--keep-stage-std")
+        .arg("1")
+        .arg("--target")
+        .arg("x86_64-unknown-twizzler") //TODO
+        .arg("--incremental")
+        .arg("--stage")
+        .arg("2")
+        .arg("library/std")
         .current_dir("toolchain/src/rust")
         .status()?;
     if !status.success() {
@@ -383,18 +428,30 @@ fn cmd_all(
         build_info,
         None,
     )?;
+    if false {
+        let mut co = CopyOptions::new();
+        co.overwrite = true;
+        fs_extra::copy_items(
+            &["src/lib/twizzler-abi"],
+            "toolchain/install/lib/rustlib/src/rust/library/",
+            &co,
+        )?;
+    }
+    let args = args.to_vec();
+    //args.push("-vv".to_owned());
     cargo_cmd_collection(
         meta,
         "twizzler-apps",
         cargo_cmd,
         ".",
-        args,
+        &args,
         None,
         build_info,
         Some(build_info.get_twizzler_triple()),
     )?;
     Ok(())
 }
+
 fn check_all(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<(), DynError> {
     cmd_all(meta, args, "check", build_info)?;
     Ok(())
