@@ -24,7 +24,9 @@ pub enum Syscall {
     ObjectMap = 6,
     /// Returns system info
     SysInfo = 7,
-    MaxSyscalls = 8,
+    /// Spawn a new thread.
+    Spawn = 8,
+    MaxSyscalls = 9,
 }
 
 impl Syscall {
@@ -626,4 +628,76 @@ pub fn sys_info() -> SysInfo {
         );
         sysinfo.assume_init()
     }
+}
+
+bitflags! {
+    pub struct ThreadSpawnFlags: u32 {
+
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(C)]
+pub struct ThreadSpawnArgs {
+    entry: *const u8,
+    stack_base: *const u8,
+    stack_size: usize,
+    tls: *const u8,
+    arg: usize,
+    flags: ThreadSpawnFlags,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(u32)]
+pub enum ThreadSpawnError {
+    Unknown = 0,
+    InvalidArgument = 1,
+}
+
+impl ThreadSpawnError {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Unknown => "an unknown error occurred",
+            Self::InvalidArgument => "invalid argument",
+        }
+    }
+}
+
+impl Into<u64> for ThreadSpawnError {
+    fn into(self) -> u64 {
+        self as u64
+    }
+}
+
+impl From<u64> for ThreadSpawnError {
+    fn from(x: u64) -> Self {
+        match x {
+            1 => Self::InvalidArgument,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl fmt::Display for ThreadSpawnError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ThreadSpawnError {
+    fn description(&self) -> &str {
+        self.as_str()
+    }
+}
+
+pub unsafe fn sys_spawn(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
+    let (code, val) = raw_syscall(Syscall::Spawn, &[&args as *const ThreadSpawnArgs as u64]);
+    convert_codes_to_result(
+        code,
+        val,
+        |c, _| c == 0,
+        |c, v| crate::object::objid_from_parts(c, v),
+        |_, v| ThreadSpawnError::from(v),
+    )
 }

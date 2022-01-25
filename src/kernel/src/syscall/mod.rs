@@ -1,6 +1,8 @@
 use twizzler_abi::{
     object::{objid_from_parts, Protections},
-    syscall::{ObjectCreateError, ObjectMapError, SysInfo, Syscall, ThreadSyncError},
+    syscall::{
+        ObjectCreateError, ObjectMapError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
+    },
 };
 use x86_64::VirtAddr;
 
@@ -8,6 +10,7 @@ use twizzler_abi::object::ObjID;
 
 mod object;
 mod sync;
+mod thread;
 
 pub trait SyscallContext {
     fn create_jmp_context(target: VirtAddr, stack: VirtAddr, arg: u64) -> Self;
@@ -120,6 +123,17 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let result = type_sys_object_create(create, src_ptr, src_len, tie_ptr, tie_len);
             let (code, val) = convert_result_to_codes(result, |id| id.split(), zero_err);
             context.set_return_values(code, val);
+        }
+        Syscall::Spawn => {
+            let args = context.arg0();
+            let args = unsafe { create_user_ptr(args) };
+            if let Some(args) = args {
+                let result = thread::sys_spawn(args);
+                let (code, val) = convert_result_to_codes(result, |id| id.split(), zero_err);
+                context.set_return_values(code, val);
+            } else {
+                context.set_return_values(0u64, ThreadSpawnError::InvalidArgument as u64);
+            }
         }
         Syscall::ObjectMap => {
             let hi = context.arg0();
