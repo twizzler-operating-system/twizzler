@@ -8,6 +8,8 @@ use x86_64::VirtAddr;
 
 use twizzler_abi::object::ObjID;
 
+use self::thread::thread_ctrl;
+
 mod object;
 mod sync;
 mod thread;
@@ -166,6 +168,10 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             } else {
                 context.set_return_values(1u64, 0u64);
             }
+        }
+        Syscall::ThreadCtrl => {
+            let (code, val) = thread_ctrl(context.arg0::<u64>().into(), context.arg1());
+            context.set_return_values(code, val);
         }
         _ => {
             context.set_return_values(1u64, 0u64);

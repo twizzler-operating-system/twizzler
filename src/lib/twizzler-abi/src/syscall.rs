@@ -190,6 +190,19 @@ pub enum ThreadControl {
     /// hint to the kernel that this thread does not need to run right now. The kernel, of course,
     /// is free to ignore this hint.
     Yield = 1,
+    /// Set thread's TLS pointer
+    SetTls = 2,
+}
+
+impl From<u64> for ThreadControl {
+    fn from(x: u64) -> Self {
+        match x {
+            0 => Self::Exit,
+            1 => Self::Yield,
+            2 => Self::SetTls,
+            _ => Self::Yield,
+        }
+    }
 }
 
 /// Exit the thread. arg1 and arg2 should be code and location respectively, where code contains
@@ -214,10 +227,16 @@ pub fn sys_thread_yield() {
     }
 }
 
+pub fn sys_thread_settls(tls: u64) {
+    unsafe {
+        raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::SetTls as u64, tls]);
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(u32)]
 pub enum ThreadSyncOp {
-    Equal,
+    Equal = 0,
 }
 
 bitflags! {

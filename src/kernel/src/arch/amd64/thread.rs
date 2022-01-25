@@ -13,7 +13,7 @@ struct AlignedXsaveRegion([u8; XSAVE_LEN]);
 pub struct ArchThread {
     xsave_region: AlignedXsaveRegion,
     rsp: core::cell::UnsafeCell<u64>,
-    pub user_fs: u64,
+    pub user_fs: AtomicU64,
     xsave_inited: AtomicBool,
     //user_gs: u64,
 }
@@ -77,13 +77,17 @@ impl ArchThread {
         Self {
             xsave_region: AlignedXsaveRegion([0; XSAVE_LEN]),
             rsp: core::cell::UnsafeCell::new(0),
-            user_fs: 0,
+            user_fs: AtomicU64::new(0),
             xsave_inited: AtomicBool::new(false),
         }
     }
 }
 
 impl Thread {
+    pub fn set_tls(&self, tls: u64) {
+        self.arch.user_fs.store(tls, Ordering::SeqCst);
+    }
+
     pub extern "C" fn arch_switch_to(&self, old_thread: &Thread) {
         unsafe {
             set_kernel_stack(

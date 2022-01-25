@@ -108,7 +108,7 @@ impl Object {
 
     pub fn new() -> Self {
         Self {
-            id: (OID.fetch_add(1, Ordering::SeqCst) as u128).into(),
+            id: ((OID.fetch_add(1, Ordering::SeqCst) as u128) | (1u128 << 64)).into(),
             flags: AtomicU32::new(0),
             range_tree: Mutex::new(range::PageRangeTree::new()),
             maplist: Mutex::new(BTreeSet::new()),

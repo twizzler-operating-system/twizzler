@@ -23,6 +23,7 @@ struct TlsInfo {
 static mut TLS_INFO: Option<TlsInfo> = None;
 
 use core::alloc::Layout;
+#[allow(named_asm_labels)]
 fn init_tls() -> Option<u64> {
     unsafe {
         TLS_INFO.as_ref().map(|info| {
@@ -66,6 +67,7 @@ fn process_phdrs(phdrs: &[Phdr]) {
  */
 use crate::aux::AuxEntry;
 use core::ptr;
+#[allow(named_asm_labels)]
 #[allow(unreachable_code)]
 #[allow(unused_variables)]
 #[allow(unused_mut)]
@@ -83,10 +85,8 @@ pub(crate) extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! 
         }
     }
     let tls = init_tls();
-    if let Some(_tls) = tls {
-        unsafe {
-            asm!("wrfsbase {}", in(reg) _tls);
-        }
+    if let Some(tls) = tls {
+        crate::syscall::sys_thread_settls(tls);
     }
     /* it's unsafe because it's an extern C function. */
     /* TODO: pass env and args */

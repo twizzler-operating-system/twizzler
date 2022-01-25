@@ -1,3 +1,5 @@
+use core::sync::atomic::Ordering;
+
 use x86::current::rflags::RFlags;
 use x86_64::{instructions::segmentation::Segment64, VirtAddr};
 
@@ -78,7 +80,7 @@ unsafe extern "C" fn common_handler_entry(
 
     if user {
         let t = current_thread_ref().unwrap();
-        let user_fs = t.arch.user_fs;
+        let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
         x86_64::registers::segmentation::FS::write_base(VirtAddr::new(user_fs));
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
     }
