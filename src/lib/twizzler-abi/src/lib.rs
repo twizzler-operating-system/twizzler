@@ -8,6 +8,7 @@ pub mod alloc;
 pub mod aux;
 mod llalloc;
 pub mod object;
+pub mod time;
 #[cfg(feature = "rt")]
 mod rt1;
 pub mod simple_mutex;
