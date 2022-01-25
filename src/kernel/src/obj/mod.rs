@@ -7,6 +7,7 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+use twizzler_abi::object::ObjID;
 
 use crate::{
     memory::context::MappingRef,
@@ -17,8 +18,6 @@ pub mod copy;
 pub mod pages;
 pub mod pagevec;
 pub mod range;
-
-pub type ObjID = u128; //TODO: pull this in from twz-abi?
 
 const OBJ_DELETED: u32 = 1;
 pub struct Object {
@@ -109,7 +108,7 @@ impl Object {
 
     pub fn new() -> Self {
         Self {
-            id: OID.fetch_add(1, Ordering::SeqCst) as u128,
+            id: (OID.fetch_add(1, Ordering::SeqCst) as u128).into(),
             flags: AtomicU32::new(0),
             range_tree: Mutex::new(range::PageRangeTree::new()),
             maplist: Mutex::new(BTreeSet::new()),
@@ -186,6 +185,14 @@ impl LookupResult {
             panic!("unwrap LookupResult failed: {:?}", self)
         }
     }
+
+    pub fn ok_or<E>(self, e: E) -> Result<ObjectRef, E> {
+        if let Self::Found(o) = self {
+            Ok(o)
+        } else {
+            Err(e)
+        }
+    }
 }
 
 impl ObjectManager {
@@ -208,9 +215,9 @@ impl ObjectManager {
             })
     }
 
-    fn register_object(&self, obj: Object) {
+    fn register_object(&self, obj: Arc<Object>) {
         // TODO: what if it returns an obj
-        self.map.lock().insert(obj.id(), Arc::new(obj));
+        self.map.lock().insert(obj.id(), obj);
     }
 }
 
@@ -223,7 +230,7 @@ pub fn lookup_object(id: ObjID, flags: LookupFlags) -> LookupResult {
     om.lookup_object(id, flags)
 }
 
-pub fn register_object(obj: Object) {
+pub fn register_object(obj: Arc<Object>) {
     let om = &OBJ_MANAGER;
     om.register_object(obj);
 }

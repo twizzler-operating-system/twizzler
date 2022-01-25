@@ -1,8 +1,9 @@
+use alloc::sync::Arc;
 use spin::Once;
 use x86_64::VirtAddr;
 
+use crate::obj::ObjectRef;
 use crate::obj::{self, pages::Page};
-use crate::obj::{LookupFlags, ObjectRef};
 pub struct BootModule {
     pub start: VirtAddr,
     pub length: usize,
@@ -50,12 +51,10 @@ pub fn init(modules: &[BootModule]) {
                 total += thislen;
                 pagenr += 1;
             }
-            let id = obj.id();
-            obj::register_object(obj);
+            let obj = Arc::new(obj);
+            obj::register_object(obj.clone());
             match e.filename().as_str() {
-                "init" => {
-                    boot_objects.init = Some(obj::lookup_object(id, LookupFlags::empty()).unwrap())
-                }
+                "init" => boot_objects.init = Some(obj),
                 _ => {}
             }
         }

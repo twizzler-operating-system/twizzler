@@ -51,7 +51,7 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
         if let Some((page, cow)) = obj_page_tree.get_page(page_number, is_write) {
             let mut vmc = vmc.lock();
             /* check if mappings changed */
-            if vmc.lookup_object(addr).map_or(0, |o| o.obj.id()) != objid {
+            if vmc.lookup_object(addr).map_or(0.into(), |o| o.obj.id()) != objid {
                 drop(vmc);
                 drop(obj_page_tree);
                 return page_fault(addr, cause, flags, ip);

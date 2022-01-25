@@ -461,12 +461,8 @@ fn object_copy_test() {
 
 fn create_blank_object() -> ObjectRef {
     let obj = crate::obj::Object::new();
-    let id = obj.id();
-    crate::obj::register_object(obj);
-    let obj = match crate::obj::lookup_object(id, crate::obj::LookupFlags::empty()) {
-        crate::obj::LookupResult::Found(o) => o,
-        _ => panic!("failed to lookup new object"),
-    };
+    let obj = Arc::new(obj);
+    crate::obj::register_object(obj.clone());
     obj
 }
 

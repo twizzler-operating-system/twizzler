@@ -83,14 +83,24 @@ pub fn copy_ranges(
 }
 
 pub struct CopySpec {
-    src: ObjectRef,
-    src_start: PageNumber,
-    dest_start: PageNumber,
-    length: usize,
+    pub src: ObjectRef,
+    pub src_start: PageNumber,
+    pub dest_start: PageNumber,
+    pub length: usize,
 }
 
-pub fn copy_objects(dest: &ObjectRef, srcs: &[CopySpec]) {
-    for src in srcs {
-        copy_ranges(&src.src, src.src_start, dest, src.dest_start, src.length);
+impl CopySpec {
+    pub fn new(
+        src: ObjectRef,
+        src_start: PageNumber,
+        dest_start: PageNumber,
+        length: usize,
+    ) -> Self {
+        Self {
+            src,
+            src_start,
+            dest_start,
+            length,
+        }
     }
 }

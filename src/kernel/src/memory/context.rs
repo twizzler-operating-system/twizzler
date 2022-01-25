@@ -1,4 +1,5 @@
 use alloc::{collections::BTreeMap, sync::Arc};
+use twizzler_abi::object::Protections;
 use x86_64::VirtAddr;
 
 use crate::{
@@ -70,6 +71,22 @@ bitflags::bitflags! {
         const READ = 1;
         const WRITE = 2;
         const EXECUTE = 4;
+    }
+}
+
+impl From<Protections> for MappingPerms {
+    fn from(p: Protections) -> Self {
+        let mut s = MappingPerms::empty();
+        if p.contains(Protections::READ) {
+            s.insert(MappingPerms::READ)
+        }
+        if p.contains(Protections::WRITE) {
+            s.insert(MappingPerms::WRITE)
+        }
+        if p.contains(Protections::EXEC) {
+            s.insert(MappingPerms::EXECUTE)
+        }
+        s
     }
 }
 
