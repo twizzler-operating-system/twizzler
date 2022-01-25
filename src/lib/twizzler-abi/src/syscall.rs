@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use core::{fmt, ptr, sync::atomic::AtomicU64, time::Duration};
+use core::{fmt, num::NonZeroUsize, ptr, sync::atomic::AtomicU64, time::Duration};
 
 use crate::{
     arch::syscall::raw_syscall,
@@ -22,7 +22,9 @@ pub enum Syscall {
     ObjectCreate = 5,
     /// Map an object into address space.
     ObjectMap = 6,
-    MaxSyscalls = 7,
+    /// Returns system info
+    SysInfo = 7,
+    MaxSyscalls = 8,
 }
 
 impl Syscall {
@@ -182,6 +184,10 @@ pub enum ThreadControl {
     /// a 64-bit value to write into *location, followed by the kernel performing a thread-wake
     /// event on the memory word at location. If location is null, the write and thread-wake do not occur.
     Exit = 0,
+    /// Yield the thread's CPU time now. The actual effect of this is unspecified, but it acts as a
+    /// hint to the kernel that this thread does not need to run right now. The kernel, of course,
+    /// is free to ignore this hint.
+    Yield = 1,
 }
 
 /// Exit the thread. arg1 and arg2 should be code and location respectively, where code contains
@@ -195,6 +201,15 @@ pub fn sys_thread_exit(code: u64, location: *mut u64) -> ! {
         );
     }
     unreachable!()
+}
+
+/// Yield the thread's CPU time now. The actual effect of this is unspecified, but it acts as a
+/// hint to the kernel that this thread does not need to run right now. The kernel, of course,
+/// is free to ignore this hint.
+pub fn sys_thread_yield() {
+    unsafe {
+        raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::Yield as u64]);
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
@@ -581,4 +596,34 @@ pub fn sys_object_map(
     let args = [hi, lo, slot as u64, prot.bits() as u64, flags.bits() as u64];
     let (code, val) = unsafe { raw_syscall(Syscall::ObjectMap, &args) };
     convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, justval)
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(C)]
+pub struct SysInfo {
+    pub version: u32,
+    pub flags: u32,
+    pub cpu_count: usize,
+    pub page_size: usize,
+}
+
+impl SysInfo {
+    pub fn cpu_count(&self) -> NonZeroUsize {
+        NonZeroUsize::new(self.cpu_count).expect("CPU count from sysinfo should always be non-zero")
+    }
+
+    pub fn page_size(&self) -> usize {
+        self.page_size
+    }
+}
+
+pub fn sys_info() -> SysInfo {
+    let mut sysinfo = core::mem::MaybeUninit::<SysInfo>::zeroed();
+    unsafe {
+        raw_syscall(
+            Syscall::SysInfo,
+            &[&mut sysinfo as *mut core::mem::MaybeUninit<SysInfo> as u64],
+        );
+        sysinfo.assume_init()
+    }
 }

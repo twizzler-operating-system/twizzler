@@ -1,6 +1,6 @@
 use twizzler_abi::{
     object::{objid_from_parts, Protections},
-    syscall::{ObjectCreateError, ObjectMapError, Syscall, ThreadSyncError},
+    syscall::{ObjectCreateError, ObjectMapError, SysInfo, Syscall, ThreadSyncError},
 };
 use x86_64::VirtAddr;
 
@@ -62,6 +62,14 @@ fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<u64, Thre
     let timeout =
         unsafe { create_user_nullable_ptr(timeoutptr) }.ok_or(ThreadSyncError::InvalidArgument)?;
     sync::sys_thread_sync(slice, timeout)
+}
+
+fn write_sysinfo(info: &mut SysInfo) {
+    // TODO
+    info.cpu_count = 1;
+    info.flags = 0;
+    info.version = 1;
+    info.page_size = 0x1000;
 }
 
 #[inline]
@@ -134,6 +142,16 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let result = type_sys_thread_sync(ptr, len, timeout);
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
+        }
+        Syscall::SysInfo => {
+            let ptr = context.arg0();
+            let info: Option<&mut SysInfo> = unsafe { create_user_ptr(ptr) };
+            if let Some(info) = info {
+                write_sysinfo(info);
+                context.set_return_values(0u64, 0u64);
+            } else {
+                context.set_return_values(1u64, 0u64);
+            }
         }
         _ => {
             context.set_return_values(1u64, 0u64);
