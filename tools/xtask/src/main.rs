@@ -370,6 +370,7 @@ fn cargo_cmd_collection(
     rustflags: Option<String>,
     build_info: BuildInfo,
     triple: Option<String>,
+    use_toolchain: bool,
 ) -> Result<(), DynError> {
     eprintln!(
         "== BUILDING COLLECTION {} ({}) ==",
@@ -389,7 +390,7 @@ fn cargo_cmd_collection(
         .flatten()
         .collect();
     let mut target_args = vec![];
-    if let Some(triple) = triple {
+    if let Some(ref triple) = triple {
         target_args.push("--target".to_owned());
         target_args.push(triple.to_owned());
     }
@@ -402,6 +403,9 @@ fn cargo_cmd_collection(
         .args(args);
     if let Some(s) = rustflags {
         status.env("RUSTFLAGS", s);
+    }
+    if use_toolchain {
+        status.env("RUSTUP_TOOLCHAIN", "twizzler");
     }
 
     let status = status.status()?;
@@ -417,7 +421,9 @@ fn cmd_all(
     cargo_cmd: &str,
     build_info: BuildInfo,
 ) -> Result<(), DynError> {
-    cargo_cmd_collection(meta, "tools", cargo_cmd, ".", args, None, build_info, None)?;
+    cargo_cmd_collection(
+        meta, "tools", cargo_cmd, ".", args, None, build_info, None, false,
+    )?;
     cargo_cmd_collection(
         meta,
         "kernel",
@@ -427,6 +433,7 @@ fn cmd_all(
         None,
         build_info,
         None,
+        true,
     )?;
     if false {
         let mut co = CopyOptions::new();
@@ -448,6 +455,7 @@ fn cmd_all(
         None,
         build_info,
         Some(build_info.get_twizzler_triple()),
+        true,
     )?;
     Ok(())
 }

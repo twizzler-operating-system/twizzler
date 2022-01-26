@@ -227,6 +227,8 @@ pub fn sys_thread_yield() {
     }
 }
 
+/// Set the current kernel thread's TLS pointer. On x86_64, for example, this changes user's FS
+/// segment base to the supplies TLS value.
 pub fn sys_thread_settls(tls: u64) {
     unsafe {
         raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::SetTls as u64, tls]);
@@ -235,18 +237,26 @@ pub fn sys_thread_settls(tls: u64) {
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(u32)]
+/// Possible operations the kernel can perform when looking at the supplies reference and the
+/// supplied value. If the operation `*reference OP value` evaluates to true (or false if the INVERT
+/// flag is passed), then the thread is put
+/// to sleep.
 pub enum ThreadSyncOp {
+    /// Compare for equality
     Equal = 0,
 }
 
 bitflags! {
+    /// Flags to pass to sys_thread_sync.
     pub struct ThreadSyncFlags: u32 {
+        /// Invert the decision test for sleeping the thread.
         const INVERT = 1;
     }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
+/// A reference to a piece of data. May either be a non-realized persistent reference or a virtual address.
 pub enum ThreadSyncReference {
     ObjectRef(ObjID, u64),
     Virtual(*const AtomicU64),
@@ -254,6 +264,7 @@ pub enum ThreadSyncReference {
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
+/// Specification for a thread sleep request.
 pub struct ThreadSyncSleep {
     reference: ThreadSyncReference,
     value: u64,
@@ -263,12 +274,21 @@ pub struct ThreadSyncSleep {
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
+/// Specification for a thread wake request.
 pub struct ThreadSyncWake {
     reference: ThreadSyncReference,
     count: usize,
 }
 
 impl ThreadSyncSleep {
+    /// Construct a new thread sync sleep request. The kernel will compare the 64-bit data at
+    /// `*reference` with the passed `value` using `op` (and optionally inverting the result). If
+    /// true, the kernel will put the thread to sleep until another thread comes along and performs
+    /// a wake request on that same word of memory.
+    /// 
+    /// References always refer to a particular 64-bit value inside of an object. If a virtual
+    /// address is passed as a reference, it is first converted to an object-offset pair based on
+    /// the current object mapping of the address space.
     pub fn new(
         reference: ThreadSyncReference,
         value: u64,
@@ -285,6 +305,9 @@ impl ThreadSyncSleep {
 }
 
 impl ThreadSyncWake {
+    /// Construct a new thread wake request. The reference works the same was as in
+    /// [ThreadSyncSleep]. The kernel will wake up `count` threads that are sleeping on this
+    /// particular word of object memory. If you want to wake up all threads, you can supply `usize::MAX`.
     pub fn new(reference: ThreadSyncReference, count: usize) -> Self {
         Self { reference, count }
     }
@@ -292,9 +315,13 @@ impl ThreadSyncWake {
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(u64)]
+/// Possible error returns for [sys_thread_sync].
 pub enum ThreadSyncError {
+    /// An unknown error.
     Unknown = 0,
+    /// The reference was invalid.
     InvalidReference = 1,
+    /// An argument was invalid.
     InvalidArgument = 2,
 }
 
@@ -307,6 +334,7 @@ impl Into<u64> for ThreadSyncError {
 }
 
 impl ThreadSyncError {
+    /// Convert error to a human-readable string.
     fn as_str(&self) -> &str {
         match self {
             Self::Unknown => "an unknown error occurred",
@@ -341,15 +369,19 @@ impl std::error::Error for ThreadSyncError {
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
+/// Either a sleep or wake request. The syscall comprises of a number of either sleep or wake requests.
 pub enum ThreadSync {
     Sleep(ThreadSyncSleep, ThreadSyncResult),
     Wake(ThreadSyncWake, ThreadSyncResult),
 }
 
 impl ThreadSync {
+    /// Build a sleep request.
     pub fn new_sleep(sleep: ThreadSyncSleep) -> Self {
         Self::Sleep(sleep, Ok(0))
     }
+
+    /// Build a wake request.
     pub fn new_wake(wake: ThreadSyncWake) -> Self {
         Self::Wake(wake, Ok(0))
     }
@@ -374,6 +406,18 @@ fn justval<T: From<u64>>(_: u64, v: u64) -> T {
     v.into()
 }
 
+/// Perform a number of [ThreadSync] operations, either waking of threads waiting on words of
+/// memory, or sleeping this thread on one or more words of memory (or both). The order these
+/// requests are processed in is undefined.
+/// 
+/// The caller may optionally specify a timeout, causing this thread to sleep for at-most that
+/// Duration. However, the exact time is not guaranteed (it may be less if the thread is woken up,
+/// or slightly more due to scheduling uncertainty). If no operations are specified, the thread will
+/// sleep until the timeout expires.
+/// 
+/// Returns either Ok(bool), indicating if the timeout expired or not, or Err([ThreadSyncError]),
+/// indicating failure. After return, the kernel may have modified the ThreadSync entries to
+/// indicate additional information about each request (errors or status).
 pub fn sys_thread_sync(
     operations: &mut [ThreadSync],
     timeout: Option<Duration>,

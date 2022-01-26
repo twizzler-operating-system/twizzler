@@ -29,6 +29,7 @@ static mut FOO: u32 = 42;
 static mut BAR: u32 = 0;
 fn main() {
     println!("Hello, World {}", unsafe { FOO + BAR });
+    panic!("panic test");
     loop {}
 }
 
