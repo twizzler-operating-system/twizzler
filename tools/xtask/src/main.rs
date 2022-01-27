@@ -372,6 +372,8 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
         build_crtx("crtn", bi)?;
     }
 
+    /* add to toolchain */
+
     Ok(())
 }
 
@@ -487,7 +489,7 @@ fn cmd_all(
         None,
         build_info,
         None,
-        true,
+        false,
     )?;
     if false {
         let mut co = CopyOptions::new();
