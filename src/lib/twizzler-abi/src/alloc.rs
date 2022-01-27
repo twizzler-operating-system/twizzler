@@ -142,11 +142,23 @@ unsafe impl Send for TwzGlobalAlloc {}
 static mut TGA: TwzGlobalAlloc = TwzGlobalAlloc::new();
 static TGA_LOCK: Mutex = Mutex::new();
 
+fn adj_layout(layout: Layout) -> Layout {
+    Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), 16)).unwrap()
+    //TODO
+}
+
 pub fn global_alloc(layout: Layout) -> *mut u8 {
-   /* crate::syscall::sys_kernel_console_write(
+    let layout = adj_layout(layout);
+    /* crate::syscall::sys_kernel_console_write(
         b"alloc\n",
         crate::syscall::KernelConsoleWriteFlags::empty(),
     );
+    unsafe {
+        crate::arch::syscall::raw_syscall(
+            crate::syscall::Syscall::Null,
+            &[0, layout.size() as u64, layout.align() as u64],
+        );
+    }
     */
     let res = unsafe {
         TGA_LOCK.lock();
@@ -154,6 +166,14 @@ pub fn global_alloc(layout: Layout) -> *mut u8 {
         TGA_LOCK.unlock();
         res
     };
+    /*
+    unsafe {
+        crate::arch::syscall::raw_syscall(
+            crate::syscall::Syscall::Null,
+            &[res as u64, layout.size() as u64, layout.align() as u64],
+        );
+    }
+    */
     res
     /*
     let start = SCRATCH_PTR.load(Ordering::SeqCst);
@@ -177,6 +197,7 @@ pub fn global_alloc(layout: Layout) -> *mut u8 {
 }
 
 pub fn global_free(ptr: *mut u8, layout: Layout) {
+    let layout = adj_layout(layout);
     /*crate::syscall::sys_kernel_console_write(
         b"free\n",
         crate::syscall::KernelConsoleWriteFlags::empty(),
@@ -194,6 +215,7 @@ pub fn global_free(ptr: *mut u8, layout: Layout) {
 }
 
 pub fn global_realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+    let layout = adj_layout(layout);
     let new_layout = Layout::from_size_align(new_size, layout.align()).unwrap();
     let new = global_alloc(new_layout);
     unsafe {

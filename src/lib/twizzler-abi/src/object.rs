@@ -5,12 +5,18 @@ use core::fmt::{LowerHex, UpperHex};
 pub struct ObjID(u128);
 
 impl ObjID {
-    pub fn new(id: u128) -> Self {
+    pub const fn new(id: u128) -> Self {
         Self(id)
     }
 
     pub fn split(&self) -> (u64, u64) {
         ((self.0 >> 64) as u64, (self.0 & 0xffffffffffffffff) as u64)
+    }
+}
+
+impl core::convert::AsRef<ObjID> for ObjID {
+    fn as_ref(&self) -> &ObjID {
+        self
     }
 }
 

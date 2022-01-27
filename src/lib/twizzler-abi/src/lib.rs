@@ -7,6 +7,8 @@ mod arch;
 
 pub mod alloc;
 pub mod aux;
+#[cfg(feature = "rt")]
+pub mod exec;
 mod llalloc;
 pub mod object;
 #[cfg(feature = "rt")]

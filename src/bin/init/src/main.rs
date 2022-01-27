@@ -27,7 +27,9 @@ pub fn __panic(_: &core::panic::PanicInfo) -> ! {
 static mut FOO: u32 = 42;
 #[thread_local]
 static mut BAR: u32 = 0;
+#[allow(named_asm_labels)]
 fn main() {
+    let foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
     panic!("panic test");
     loop {}

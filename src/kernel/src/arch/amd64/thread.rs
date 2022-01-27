@@ -85,6 +85,7 @@ impl ArchThread {
 
 impl Thread {
     pub fn set_tls(&self, tls: u64) {
+        logln!("setting user fs to {}", tls);
         self.arch.user_fs.store(tls, Ordering::SeqCst);
     }
 

@@ -494,8 +494,8 @@ extern "C" fn user_init() {
         MappingPerms::READ | MappingPerms::WRITE,
     )
     .unwrap();
-    let obj1_data =
-        crate::operations::read_object(&boot_objects.init.as_ref().expect("no init found"));
+    let init_obj = boot_objects.init.as_ref().expect("no init found");
+    let obj1_data = crate::operations::read_object(&init_obj);
     let elf = xmas_elf::ElfFile::new(&obj1_data).unwrap();
     let mut phinfo = None;
     for ph in elf.program_iter() {
@@ -540,6 +540,7 @@ extern "C" fn user_init() {
         )
     }
 
+    aux = append_aux(aux, AuxEntry::ExecId(init_obj.id()));
     append_aux(aux, AuxEntry::Null);
 
     unsafe {

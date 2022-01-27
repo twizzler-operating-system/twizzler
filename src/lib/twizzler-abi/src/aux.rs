@@ -1,3 +1,5 @@
+use crate::object::ObjID;
+
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum AuxEntry {
@@ -5,4 +7,5 @@ pub enum AuxEntry {
     ProgramHeaders(u64, usize),
     Environment(u64),
     Arguments(u64),
+    ExecId(ObjID),
 }

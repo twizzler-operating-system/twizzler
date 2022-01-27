@@ -312,6 +312,16 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
 
     let status = Command::new("./x.py")
         .arg("install")
+        /*
+        .arg("--keep-stage")
+        .arg("0")
+        .arg("--keep-stage")
+        .arg("1")
+        .arg("--keep-stage-std")
+        .arg("0")
+        .arg("--keep-stage-std")
+        .arg("1")
+        */
         .current_dir("toolchain/src/rust")
         .status()?;
     if !status.success() {

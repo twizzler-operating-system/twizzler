@@ -107,6 +107,15 @@ fn zero_ok<T: Into<u64>>(t: T) -> (u64, u64) {
 pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
     //logln!("syscall! {}", context.num());
     match context.num().into() {
+        Syscall::Null => {
+            logln!(
+                "null call {:x} {:x} {:x}",
+                context.arg0::<u64>(),
+                context.arg1::<u64>(),
+                context.arg2::<u64>(),
+            );
+            context.set_return_values(0u64, 0u64);
+        }
         Syscall::KernelConsoleWrite => {
             let ptr = context.arg0();
             let len = context.arg1();
