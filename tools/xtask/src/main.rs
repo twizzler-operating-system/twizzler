@@ -373,6 +373,15 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
     }
 
     /* add to toolchain */
+    let status = Command::new("rustup")
+        .arg("toolchain")
+        .arg("link")
+        .arg("twizzler")
+        .arg("toolchain/install")
+        .status()?;
+    if !status.success() {
+        Err("failed to link rust Twizzler toolchain with rustup")?;
+    }
 
     Ok(())
 }
