@@ -2,8 +2,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 static C: AtomicUsize = AtomicUsize::new(10); //TODO
 
-pub fn global_allocate() -> usize {
-    C.fetch_add(1, Ordering::SeqCst)
+pub fn global_allocate() -> Option<usize> {
+    Some(C.fetch_add(1, Ordering::SeqCst))
 }
 
 pub fn to_vaddr_range(slot: usize) -> (usize, usize) {

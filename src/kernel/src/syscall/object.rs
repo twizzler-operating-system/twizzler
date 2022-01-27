@@ -42,6 +42,6 @@ pub fn sys_object_map(id: ObjID, slot: usize, prot: Protections) -> Result<usize
     };
     // TODO
     let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into());
-    logln!("mapping obj {} to {} with {:?}", id, slot, prot);
+    //logln!("mapping obj {} to {} with {:?}", id, slot, prot);
     Ok(slot)
 }

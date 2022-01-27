@@ -21,7 +21,12 @@ pub mod time;
 pub fn ready() {}
 
 #[no_mangle]
-pub unsafe extern "C" fn abort() -> ! {
+pub extern "C" fn abort() -> ! {
+    unsafe { internal_abort() }
+}
+
+#[inline]
+unsafe fn internal_abort() -> ! {
     core::intrinsics::abort();
 }
 
@@ -33,4 +38,13 @@ fn print_err(err: &str) {
 pub unsafe extern "C" fn __stack_chk_fail() {
     print_err("stack overflow -- aborting");
     abort();
+}
+
+fn internal_unwrap<T>(t: Option<T>, msg: &str) -> T {
+    if let Some(t) = t {
+        t
+    } else {
+        print_err(msg);
+        abort();
+    }
 }

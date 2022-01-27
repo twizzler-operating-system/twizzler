@@ -1,7 +1,15 @@
 use crate::object::ObjID;
 
 extern "C" {
-    fn std_runtime_start(env: *const *const i8);
+    fn std_runtime_start(env: *const *const i8) -> i32;
+
+    static __preinit_array_start: extern "C" fn();
+    static __preinit_array_end: extern "C" fn();
+    static __init_array_start: extern "C" fn();
+    static __init_array_end: extern "C" fn();
+
+    fn _init();
+
 }
 
 #[repr(C)]
@@ -64,9 +72,15 @@ fn init_tls() -> Option<u64> {
                 core::mem::size_of::<*const u8>() + tls_size + tls_align + MIN_TLS_ALIGN - 1
                     & ((!MIN_TLS_ALIGN) + 1);
 
-            let layout = Layout::from_size_align(full_tls_size, MIN_TLS_ALIGN).unwrap(); //TODO
+            let layout = crate::internal_unwrap(
+                Layout::from_size_align(full_tls_size, MIN_TLS_ALIGN).ok(),
+                "failed to unwrap TLS layout",
+            );
             let tls = crate::alloc::global_alloc(layout);
-            /* TODO: oom */
+            if tls.is_null() {
+                crate::print_err("failed to allocate TLS");
+                crate::abort();
+            }
             ptr::write_bytes(tls, 0x00, layout.size());
             let mem = tls.add(tls_size).sub((tls as usize) & (tls_align - 1));
             core::ptr::copy_nonoverlapping(info.template_start, mem.sub(offset), info.filsz);
@@ -133,9 +147,35 @@ pub(crate) extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! 
     if let Some(tls) = tls {
         crate::syscall::sys_thread_settls(tls);
     }
+
+    unsafe {
+        // Run preinit array
+        {
+            let mut f = &__preinit_array_start as *const _;
+            #[allow(clippy::op_ref)]
+            while f < &__preinit_array_end {
+                (*f)();
+                f = f.offset(1);
+            }
+        }
+
+        // Call init section
+        _init();
+
+        // Run init array
+        {
+            let mut f = &__init_array_start as *const _;
+            #[allow(clippy::op_ref)]
+            while f < &__init_array_end {
+                (*f)();
+                f = f.offset(1);
+            }
+        }
+    }
+
     /* it's unsafe because it's an extern C function. */
     /* TODO: pass env and args */
-    unsafe { std_runtime_start(&null_env as *const *const i8) };
-    // TODO: exit value
-    crate::syscall::sys_thread_exit(0, ptr::null_mut())
+    let code = unsafe { std_runtime_start(&null_env as *const *const i8) };
+    //TODO: exit val
+    crate::syscall::sys_thread_exit(code as u64, ptr::null_mut())
 }

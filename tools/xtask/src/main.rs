@@ -1,4 +1,4 @@
-use std::{env, fmt::Display, process::Command, str::FromStr, vec};
+use std::{env, fmt::Display, path::Path, process::Command, str::FromStr, vec};
 
 use cargo_metadata::{Metadata, MetadataCommand};
 
@@ -102,6 +102,14 @@ impl BuildInfo {
     fn get_kernel_triple(&self) -> String {
         format!("{}-{}-none", self.arch.as_str(), self.platform.as_str())
     }
+}
+
+fn all_supported_build_infos() -> Vec<BuildInfo> {
+    vec![BuildInfo {
+        profile: Profile::Debug,
+        platform: Platform::Unknown,
+        arch: Arch::X86,
+    }]
 }
 
 use clap::{App, Arg, SubCommand};
@@ -272,6 +280,37 @@ fn try_main() -> Result<(), DynError> {
     Ok(())
 }
 
+fn build_crtx(name: &str, build_info: &BuildInfo) -> Result<(), DynError> {
+    let objname = format!("{}.o", name);
+    let srcname = format!("{}.rs", name);
+    let sourcepath = Path::new("toolchain/src/").join(srcname);
+    let objpath = format!(
+        "toolchain/install/lib/rustlib/{}/lib/{}",
+        build_info.get_twizzler_triple(),
+        objname
+    );
+    let objpath = Path::new(&objpath);
+    println!("building {:?} => {:?}", sourcepath, objpath);
+    let status = Command::new("toolchain/install/bin/rustc")
+        .arg("--emit")
+        .arg("obj")
+        .arg("-o")
+        .arg(objpath)
+        .arg(sourcepath)
+        .arg("--crate-type")
+        .arg("staticlib")
+        .arg("-C")
+        .arg("panic=abort")
+        .arg("--target")
+        .arg(build_info.get_twizzler_triple())
+        .status()?;
+    if !status.success() {
+        Err("failed to compile crtx")?;
+    }
+
+    Ok(())
+}
+
 fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
     if !skip_sm {
         let status = Command::new("git")
@@ -326,6 +365,11 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
         .status()?;
     if !status.success() {
         Err("failed to compile rust toolchain")?;
+    }
+
+    for bi in &all_supported_build_infos() {
+        build_crtx("crti", bi)?;
+        build_crtx("crtn", bi)?;
     }
 
     Ok(())

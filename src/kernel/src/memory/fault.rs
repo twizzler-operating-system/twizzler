@@ -22,13 +22,15 @@ pub enum PageFaultCause {
 }
 
 pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, ip: VirtAddr) {
-    logln!(
-        "page fault at {:?} cause {:?} flags {:?}, at {:?}",
-        addr,
-        cause,
-        flags,
-        ip
-    );
+    if false {
+        logln!(
+            "page fault at {:?} cause {:?} flags {:?}, at {:?}",
+            addr,
+            cause,
+            flags,
+            ip
+        );
+    }
     /* TODO: null page */
     if !flags.contains(PageFaultFlags::USER) && addr.as_u64() >= 0xffff000000000000
     /*TODO */

@@ -30,15 +30,15 @@ struct AllocSlot {
 }
 
 impl AllocSlot {
-    pub fn new() -> Self {
-        let slot = crate::slot::global_allocate();
+    pub fn new() -> Option<Self> {
+        let slot = crate::slot::global_allocate()?;
         let create_spec = ObjectCreate::new(
             BackingType::Normal,
             LifetimeType::Volatile,
             None,
             ObjectCreateFlags::empty(),
         );
-        let obj = sys_object_create(create_spec, &[], &[] /* TODO: ties */).unwrap();
+        let obj = sys_object_create(create_spec, &[], &[] /* TODO: ties */).ok()?;
 
         sys_object_map(
             obj,
@@ -46,7 +46,7 @@ impl AllocSlot {
             Protections::READ | Protections::WRITE,
             MapFlags::empty(),
         )
-        .unwrap();
+        .ok()?;
         let (start, end) = crate::slot::to_vaddr_range(slot);
         let mut me = Self {
             slot,
@@ -55,7 +55,7 @@ impl AllocSlot {
         unsafe {
             me.heap.init(start, end);
         }
-        me
+        Some(me)
     }
 
     pub fn allocate(&mut self, layout: Layout) -> *mut u8 {
@@ -108,28 +108,45 @@ impl TwzGlobalAlloc {
 
     pub fn allocate(&mut self, layout: Layout) -> *mut u8 {
         if self.initial_slot.is_none() {
-            self.initial_slot = Some(AllocSlot::new());
+            self.initial_slot = AllocSlot::new();
+            if self.initial_slot.is_none() {
+                crate::print_err("failed to allocate initial allocation object");
+                crate::abort();
+            }
         }
-        let ptr = self.initial_slot.as_mut().unwrap().allocate(layout);
+        let ptr = crate::internal_unwrap(
+            self.initial_slot.as_mut(),
+            "failed to unwrap initial allocation object",
+        )
+        .allocate(layout);
         if !ptr.is_null() {
             return ptr;
         }
         let mut count = 0;
         loop {
             if self.other_slots[self.slot_counter].is_none() {
-                self.other_slots[self.slot_counter] = Some(AllocSlot::new());
+                self.other_slots[self.slot_counter] = AllocSlot::new();
+                if self.other_slots[self.slot_counter].is_none() {
+                    crate::print_err("failed to create allocation object");
+                    crate::abort();
+                }
             }
-            let ptr = self.other_slots[self.slot_counter]
-                .as_mut()
-                .unwrap()
-                .allocate(layout);
+            let ptr = crate::internal_unwrap(
+                self.other_slots[self.slot_counter].as_mut(),
+                "failed to unwrap allocation slot",
+            )
+            .allocate(layout);
             if !ptr.is_null() {
                 return ptr;
             }
             self.slot_counter += 1;
             count += 1;
             if count > NR_SLOTS {
-                let ptr = self.initial_slot.as_mut().unwrap().allocate(layout);
+                let ptr = crate::internal_unwrap(
+                    self.initial_slot.as_mut(),
+                    "failed to unwrap initial slot object",
+                )
+                .allocate(layout);
                 return ptr;
             }
         }
@@ -143,8 +160,10 @@ static mut TGA: TwzGlobalAlloc = TwzGlobalAlloc::new();
 static TGA_LOCK: Mutex = Mutex::new();
 
 fn adj_layout(layout: Layout) -> Layout {
-    Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), 16)).unwrap()
-    //TODO
+    crate::internal_unwrap(
+        Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), 16)).ok(),
+        "failed to crate Layout for allocation",
+    )
 }
 
 pub fn global_alloc(layout: Layout) -> *mut u8 {
@@ -216,7 +235,10 @@ pub fn global_free(ptr: *mut u8, layout: Layout) {
 
 pub fn global_realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
     let layout = adj_layout(layout);
-    let new_layout = Layout::from_size_align(new_size, layout.align()).unwrap();
+    let new_layout = crate::internal_unwrap(
+        Layout::from_size_align(new_size, layout.align()).ok(),
+        "failed to create Layout for realloc",
+    );
     let new = global_alloc(new_layout);
     unsafe {
         if layout.size() < new_size {
