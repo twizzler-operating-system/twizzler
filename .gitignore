@@ -1,1 +1,4 @@
-/target
+target
+toolchain/install
+.vscode
+workspace.code-workspace
