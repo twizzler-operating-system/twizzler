@@ -17,7 +17,9 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Keygen
-      run: echo "${{secrets.DOCS_KEY}}" > deploy_key
+      run: echo "$deploy_key_data" > deploy_key
+      env:
+        deploy_key_data: ${{secrets.DOCS_KEY}}
     - name: test
       run: cat deploy_key
     - name: Chmod
