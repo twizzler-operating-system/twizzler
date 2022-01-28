@@ -31,6 +31,12 @@ jobs:
       run: cargo doc --no-deps
     - name: Copy
       run: mkdir -p twizzler-operating-system.github.io/nightly && cp -r target/doc twizzler-operating-system.github.io/nightly/
+    - name: Install mdbook
+      run: cargo install mdbook
+    - name: Build Book
+      run: cd doc && mdbook
+    - name: Copy Book
+      run: cp -r doc/book twizzler-operating-system.github.io/nightly/
     - name: Config-1
       run: git config --global user.name "Deploy Actions"
     - name: Config-2
