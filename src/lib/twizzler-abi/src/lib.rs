@@ -1,18 +1,23 @@
+//! This library provides a common interface for applications that want to talk to the Twizzler
+//! kernel, and defines that interface for both applications and the kernel to follow. It's made of
+//! several parts:
+//!   1. The Runtime -- see [rt1]
+
 #![cfg_attr(not(feature = "std"), no_std)]
 #![feature(asm)]
 #![feature(naked_functions)]
 #![feature(core_intrinsics)]
 
-mod arch;
+pub mod arch;
 
 pub mod alloc;
 pub mod aux;
-#[cfg(feature = "rt")]
+#[cfg(any(doc, feature = "rt"))]
 pub mod exec;
 mod llalloc;
 pub mod object;
-#[cfg(feature = "rt")]
-mod rt1;
+#[cfg(any(doc, feature = "rt"))]
+pub mod rt1;
 pub mod simple_mutex;
 pub mod slot;
 pub mod syscall;

@@ -1,3 +1,3 @@
-#[cfg(feature = "rt")]
-mod rt0;
+#[cfg(any(doc, feature = "rt"))]
+pub(crate) mod rt0;
 pub mod syscall;
