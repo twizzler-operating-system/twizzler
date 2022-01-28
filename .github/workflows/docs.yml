@@ -16,14 +16,16 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
-    - name: Build
-      run: cargo doc --no-deps
     - name: Keygen
-      run: echo "{{ secrets.DOCS_KEY }}" > deploy_key
+      run: echo "{{secrets.DOCS_KEY}}" > deploy_key
+    - name: test
+      run: cat deploy_key
     - name: Chmod
       run: chmod 0600 deploy_key
     - name: Clone
       run: GIT_SSH_COMMAND='ssh -i deploy_key' git clone git@github.com:twizzler-operating-system/twizzler-operating-system.github.io.git
+    - name: Build
+      run: cargo doc --no-deps
     - name: Copy
       run: cp -r target/doc twizzler-operating-system.github.io/
     - name: Config-1
