@@ -15,13 +15,13 @@ See (https://twizzler.io/about.html) for more details.
 
 ## Building
 
-See docs/BUILD.md for details.
+See doc/src/BUILD.md for details.
 
 ## A Tour of the Repo
 
 ```
 <root>
-    docs -- documentation files
+    doc -- documentation files
     src
         bin -- Twizzler userspace programs
         kernel -- the Twizzler kernel itself

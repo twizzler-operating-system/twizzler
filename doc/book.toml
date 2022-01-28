@@ -1,0 +1,6 @@
+[book]
+authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
+language = "en"
+multilingual = false
+src = "src"
+title = "The Twizzler Operating System"
