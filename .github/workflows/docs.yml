@@ -21,7 +21,7 @@ jobs:
     - name: Keygen
       run: echo "{{ secrets.DOCS_KEY }}" > deploy_key
     - name: Clone
-      run: GIT_SSH_COMMAND='ssh -i ../deploy_key' git clone git@github.com:twizzler-operating-system/twizzler-operating-system.github.io.git
+      run: GIT_SSH_COMMAND='ssh -i deploy_key' git clone git@github.com:twizzler-operating-system/twizzler-operating-system.github.io.git
     - name: Copy
       run: cp -r target/doc twizzler-operating-system.github.io/
     - name: Config-1
