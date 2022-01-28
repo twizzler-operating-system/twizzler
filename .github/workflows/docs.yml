@@ -13,6 +13,7 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
+    environment: Docs Build
 
     steps:
     - uses: actions/checkout@v2
