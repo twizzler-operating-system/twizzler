@@ -1,0 +1,35 @@
+name: Docs
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Build
+      run: cargo docs --no-deps
+    - name: Clone
+      run: git clone git@github.com:twizzler-operating-system/twizzler-operating-system.github.io.git
+    - name: Copy
+      run: cp -r target/doc twizzler-operating-system.github.io/
+    - name: Config-1
+      run: git config --global user.name "Deploy Actions"
+    - name: Config-2
+      run: git config --global user.email "null@null.com"
+    - name: Keygen
+      run: echo "{{ secrets.DOCS_KEY }}" > deploy_key
+    - name: Commit
+      run: cd twizzler-operating-system.github.io && git add -A && git commit -am "Update"
+    - name: Push
+      run: cd twizzler-operating-system.github.io && GIT_SSH_COMMAND='ssh -i ../deploy_key' git push
+    
