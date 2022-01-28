@@ -74,9 +74,7 @@ impl HoleList {
             size = Self::min_size();
         }
         let size = align_up(size, mem::align_of::<Hole>());
-        let layout = Layout::from_size_align(size, layout.align()).unwrap();
-
-        layout
+        Layout::from_size_align(size, layout.align()).unwrap()
     }
 
     /// Searches the list for a big enough hole.
@@ -229,8 +227,8 @@ fn split_hole(hole: HoleInfo, required_layout: Layout) -> Option<Allocation> {
             addr: aligned_hole.addr,
             size: required_size,
         },
-        front_padding: front_padding,
-        back_padding: back_padding,
+        front_padding,
+        back_padding,
     })
 }
 
@@ -245,7 +243,7 @@ fn allocate_first_fit(mut previous: &mut Hole, layout: Layout) -> Result<HoleInf
         let allocation: Option<Allocation> = previous
             .next
             .as_mut()
-            .and_then(|current| split_hole(current.info(), layout.clone()));
+            .and_then(|current| split_hole(current.info(), layout));
         match allocation {
             Some(allocation) => {
                 // link the front/back padding
@@ -362,7 +360,7 @@ fn deallocate(mut hole: &mut Hole, addr: usize, mut size: usize) {
                 // after:   ___XXX__FFFF___    where F is the freed block
 
                 let new_hole = Hole {
-                    size: size,
+                    size,
                     next: hole.next.take(), // the reference to the Y block (if it exists)
                 };
                 // write the new hole to the freed memory

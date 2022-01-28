@@ -5,7 +5,8 @@
 //!   2. System Calls -- see [syscall] and [arch::syscall]
 //!   3. The rest, acting as support for the rust standard library.
 //!
-//! **Note**: All of these interfaces are potentially unstable and should not be used directly by most
+//! # Should I use these APIs?
+//! All of these interfaces are potentially unstable and should not be used directly by most
 //! programs. Instead, the twizzler crate can be used to access standard Twizzler object APIs, and
 //! the rust standard library should be used for general rust programming. Both of these wrap calls
 //! to this library in better, more easily consumed APIs.
@@ -51,6 +52,8 @@ fn print_err(err: &str) {
 
 /// We need to provide a basic hook for reporting stack check failure in case we link to a library
 /// that assumes stack protections works (libunwind).
+/// # Safety
+/// This function cannot be called safely, as it will abort unconditionally.
 #[no_mangle]
 pub unsafe extern "C" fn __stack_chk_fail() {
     print_err("stack overflow -- aborting");

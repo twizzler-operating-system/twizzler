@@ -1,3 +1,10 @@
+//! Global allocation. Used by the Rust standard library as the global allocator. Similar to
+//! malloc() and friends.
+//!
+//! Currently, we maintain a list of allocatable objects, adding as needed, that we can pull from.
+//! We used a simple linked-list allocator to perform allocation within objects. This whole system
+//! can be optimized dramatically.
+
 use core::{
     alloc::Layout,
     intrinsics::{copy_nonoverlapping, write_bytes},
@@ -13,9 +20,6 @@ use crate::{
         ObjectCreateFlags,
     },
 };
-
-//static mut SCRATCH: [u8; 4096] = [0; 4096];
-//static SCRATCH_PTR: AtomicUsize = AtomicUsize::new(0);
 
 const NR_SLOTS: usize = 1024;
 struct TwzGlobalAlloc {
@@ -95,12 +99,10 @@ impl TwzGlobalAlloc {
                 return;
             }
         }
-        for slot in &mut self.other_slots {
-            if let Some(ref mut slot) = slot {
-                if slot.is_in(ptr) {
-                    slot.free(ptr, layout);
-                    return;
-                }
+        for slot in &mut self.other_slots.iter_mut().flatten() {
+            if slot.is_in(ptr) {
+                slot.free(ptr, layout);
+                return;
             }
         }
         panic!("free for pointer that was not allocated by us");
@@ -166,56 +168,24 @@ fn adj_layout(layout: Layout) -> Layout {
     )
 }
 
-pub fn global_alloc(layout: Layout) -> *mut u8 {
+/// Allocate a region of memory as specified by `layout`. Minimum 16-byte alignment. If we are out
+/// of memory, return null.
+///
+/// # Safety
+/// The caller must ensure that the returned memory is freed at the right time.
+pub unsafe fn global_alloc(layout: Layout) -> *mut u8 {
     let layout = adj_layout(layout);
-    /* crate::syscall::sys_kernel_console_write(
-        b"alloc\n",
-        crate::syscall::KernelConsoleWriteFlags::empty(),
-    );
-    unsafe {
-        crate::arch::syscall::raw_syscall(
-            crate::syscall::Syscall::Null,
-            &[0, layout.size() as u64, layout.align() as u64],
-        );
-    }
-    */
-    let res = unsafe {
-        TGA_LOCK.lock();
-        let res = TGA.allocate(layout);
-        TGA_LOCK.unlock();
-        res
-    };
-    /*
-    unsafe {
-        crate::arch::syscall::raw_syscall(
-            crate::syscall::Syscall::Null,
-            &[res as u64, layout.size() as u64, layout.align() as u64],
-        );
-    }
-    */
+    TGA_LOCK.lock();
+    let res = TGA.allocate(layout);
+    TGA_LOCK.unlock();
     res
-    /*
-    let start = SCRATCH_PTR.load(Ordering::SeqCst);
-    let tstart = if start > 0 {
-        ((start - 1) & !(layout.align() - 1)) + layout.align()
-    } else {
-        start
-    };
-    let nstart = tstart + core::cmp::max(layout.size(), layout.align());
-    if SCRATCH_PTR
-        .compare_exchange(start, nstart, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return global_alloc(layout);
-    }
-    if tstart + layout.size() >= 4096 {
-        panic!("out of early memory");
-    }
-    return unsafe { SCRATCH.as_mut_ptr().add(start) };
-    */
 }
 
-pub fn global_free(ptr: *mut u8, layout: Layout) {
+/// Free a region of previously allocated memory. If ptr is null, do nothing.
+///
+/// # Safety
+/// The caller must ensure the prevention of use-after-free and double-free.
+pub unsafe fn global_free(ptr: *mut u8, layout: Layout) {
     let layout = adj_layout(layout);
     /*crate::syscall::sys_kernel_console_write(
         b"free\n",
@@ -225,28 +195,32 @@ pub fn global_free(ptr: *mut u8, layout: Layout) {
     if ptr.is_null() {
         return;
     }
-    unsafe {
-        TGA_LOCK.lock();
-        let res = TGA.free(ptr, layout);
-        TGA_LOCK.unlock();
-        res
-    }
+    TGA_LOCK.lock();
+    let res = TGA.free(ptr, layout);
+    TGA_LOCK.unlock();
+    res
 }
 
-pub fn global_realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+/// Reallocate a region of memory. Acts like realloc.
+///
+/// # Safety
+/// The caller must prevent use-after-free and double-free for ptr, and it must track the returned
+/// memory properly as in [global_alloc].
+pub unsafe fn global_realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
     let layout = adj_layout(layout);
     let new_layout = crate::internal_unwrap(
         Layout::from_size_align(new_size, layout.align()).ok(),
         "failed to create Layout for realloc",
     );
+    if ptr.is_null() {
+        return global_alloc(new_layout);
+    }
     let new = global_alloc(new_layout);
-    unsafe {
-        if layout.size() < new_size {
-            write_bytes(new.add(layout.size()), 0, new_size - layout.size());
-            copy_nonoverlapping(ptr, new, layout.size());
-        } else {
-            copy_nonoverlapping(ptr, new, new_size);
-        }
+    if layout.size() < new_size {
+        write_bytes(new.add(layout.size()), 0, new_size - layout.size());
+        copy_nonoverlapping(ptr, new, layout.size());
+    } else {
+        copy_nonoverlapping(ptr, new, new_size);
     }
     global_free(ptr, layout);
     new

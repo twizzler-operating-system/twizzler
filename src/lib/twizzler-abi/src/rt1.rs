@@ -1,13 +1,47 @@
+//! Runtime functions for Twizzler userspace. This part of the code is a bit arcane and somewhat
+//! tricky, so buckle up.
+//!
+//! We need to start executing in a _reasonable_ environment before we call into the Rust runtime
+//! init. Rust actually expects a fair bit of us right off the bat --- thread-local storage (TLS), env
+//! vars, args, etc. So our goal will be to set up an environment where we can serve the right
+//! underlying runtime to Rust.
+//!
+//! Execution will start at the _start symbol, provided in arch::_start. This will almost
+//! immediately call [twz_runtime_start]. From there, we:
+//!   1. Process the aux array.
+//!   2. Find the TLS template region and store that info.
+//!   3. Create a TLS region for ourselves, the main thread.
+//!   4. Set the TLS region via the kernel.
+//!   5. Run the pre-init array, _init(), and the init_array.
+//!   6. Call std_runtime_start, which jumps into the Rust standard lib.
+//!   7. Exit our thread should we return here.
+//!
+//! And all of that has to happen without a panic runtime, so any errors we encounter we need to
+//! abort(). This is what we get for not linking to libc.
+//!
+//! This does not encompass all of the runtime pieces. We also have:
+//!   1. crti and crtn, which we provide, see toolchain/src/crti.rs etc.
+//!   2. crtbegin and friends. These are provided by LLVM's crtstuff and distributed with the
+//!      toolchain. They have interesting linking requirements, see below.
+//!   3. libunwind. Not strictly required as part of the runtime, but we build with panic_unwind for
+//!      userspace by default, so I'm including it. This also comes from llvm.
+//!
+//! For information about linking order and how the linking actually happens, take a look at
+//! toolchain/src/rust/compiler/rustc_target/spec/{twizzler_base.rs, x86_64-unknown-twizzler.rs, x86_64-unknown-twizzler-linker-script.ld}.
+
 use crate::object::ObjID;
 
 extern "C" {
+    // Defined in the rust stdlib.
     fn std_runtime_start(env: *const *const i8) -> i32;
 
+    // These are defined in the linker script.
     static __preinit_array_start: extern "C" fn();
     static __preinit_array_end: extern "C" fn();
     static __init_array_start: extern "C" fn();
     static __init_array_end: extern "C" fn();
 
+    // Defined via crti and crtn.
     fn _init();
 
 }
@@ -111,18 +145,14 @@ fn process_phdrs(phdrs: &'static [Phdr]) {
     }
 }
 
-/* This is essentially just a hook to get us out of the arch-specific code before calling into std.
- * I don't know if we have a panic runtime yet, so I'm not going to try doing a catch panic kind of
- * deal. Instead, we expect the runtime start function to return an exit code, and we'll deal with
- * exiting the thread using that code.
- */
 use crate::aux::AuxEntry;
 use core::ptr;
 #[allow(named_asm_labels)]
 #[allow(unreachable_code)]
 #[allow(unused_variables)]
 #[allow(unused_mut)]
-pub(crate) extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
+/// Called from _start to initialize the runtime and pass control to the Rust stdlib.
+pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
     let null_env: [*const i8; 4] = [
         b"RUST_BACKTRACE=full\0".as_ptr() as *const i8,
         ptr::null(),

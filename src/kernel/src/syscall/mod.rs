@@ -1,12 +1,10 @@
 use twizzler_abi::{
-    object::{objid_from_parts, Protections},
+    object::{ObjID, Protections},
     syscall::{
         ObjectCreateError, ObjectMapError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
     },
 };
 use x86_64::VirtAddr;
-
-use twizzler_abi::object::ObjID;
 
 use self::thread::thread_ctrl;
 
@@ -151,7 +149,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let lo = context.arg1();
             let slot = context.arg2::<u64>() as usize;
             let prot = Protections::from_bits(context.arg3::<u64>() as u32);
-            let id = objid_from_parts(hi, lo);
+            let id = ObjID::new_from_parts(hi, lo);
             let result = prot
                 .map_or(Err(ObjectMapError::InvalidProtections), |prot| {
                     object::sys_object_map(id, slot, prot)
