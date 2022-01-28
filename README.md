@@ -1,5 +1,7 @@
 # The Twizzler Operating System
 
+NOTE: THIS REPO IS A NEW IMPLEMENTATION OF TWIZZLER AND IS NOT YET AT FEATURE PARITY WITH THE OLD VERSION.
+
 Twizzler is a research operating system designed to explore novel programming models for new memory
 hierarchy designs. We are focused on providing an environment designed around invariant data
 references and long-lived pointers, thus being well suited for byte-addressible non-volatile memory
