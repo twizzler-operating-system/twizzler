@@ -32,7 +32,7 @@ jobs:
     - name: Install mdbook
       run: cargo install mdbook
     - name: Build Book
-      run: cd doc && mdbook
+      run: cd doc && mdbook build
     - name: Copy Book
       run: cp -r doc/book twizzler-operating-system.github.io/nightly/
     - name: Config-1
