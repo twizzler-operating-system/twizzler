@@ -18,16 +18,16 @@ jobs:
     - uses: actions/checkout@v2
     - name: Build
       run: cargo doc --no-deps
+    - name: Keygen
+      run: echo "{{ secrets.DOCS_KEY }}" > deploy_key
     - name: Clone
-      run: git clone git@github.com:twizzler-operating-system/twizzler-operating-system.github.io.git
+      run: GIT_SSH_COMMAND='ssh -i ../deploy_key' git clone git@github.com:twizzler-operating-system/twizzler-operating-system.github.io.git
     - name: Copy
       run: cp -r target/doc twizzler-operating-system.github.io/
     - name: Config-1
       run: git config --global user.name "Deploy Actions"
     - name: Config-2
       run: git config --global user.email "null@null.com"
-    - name: Keygen
-      run: echo "{{ secrets.DOCS_KEY }}" > deploy_key
     - name: Commit
       run: cd twizzler-operating-system.github.io && git add -A && git commit -am "Update"
     - name: Push
