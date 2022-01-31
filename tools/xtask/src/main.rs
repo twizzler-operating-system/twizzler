@@ -526,6 +526,20 @@ fn cmd_all(
 }
 
 fn check_all(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<(), DynError> {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    for p in meta.workspace_metadata["checks"].as_array().unwrap().iter() {
+        let mut status = Command::new(&cargo);
+        let status = status
+            .current_dir(format!("src/lib/{}", p.as_str().unwrap()))
+            .arg("check")
+            .arg("-p")
+            .arg(p.as_str().unwrap())
+            .args(args)
+            .status()?;
+        if !status.success() {
+            // Err("failed to run cargo command")?;
+        }
+    }
     cmd_all(meta, args, "check", build_info)?;
     Ok(())
 }

@@ -697,6 +697,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "twizzler-queue-raw"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
 name = "uart_16550"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"

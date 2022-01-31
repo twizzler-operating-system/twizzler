@@ -5,6 +5,7 @@ members = [
     "tools/initrd_gen",
     "src/bin/init",
     "src/kernel",
+    "src/lib/twizzler-queue-raw"
 ]
 resolver = "2"
 
@@ -13,6 +14,7 @@ twizzler-apps = ["init"]
 tools = ["image_builder", "initrd_gen"]
 kernel = ["twizzler-kernel"]
 initrd-members = ["init"]
+checks = ["twizzler-queue-raw"]
 
 [profile.release]
 debug = true
