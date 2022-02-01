@@ -118,6 +118,7 @@ impl RawQueueHdr {
         self.waiters.fetch_sub(1, Ordering::SeqCst);
     }
 
+    #[inline]
     fn reserve_slot<W: Fn(&AtomicU64, u64)>(
         &self,
         flags: SubmissionFlags,
@@ -173,6 +174,7 @@ impl RawQueueHdr {
         }
     }
 
+    #[inline]
     fn get_next_ready<W: Fn(&AtomicU64, u64), T>(
         &self,
         wait: W,
@@ -183,7 +185,7 @@ impl RawQueueHdr {
         let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
         loop {
             let b = self.bell.load(Ordering::SeqCst);
-            let item = unsafe { raw_buf.add((t as usize) % self.len()) };
+            let item = unsafe { raw_buf.add((t as usize) & (self.len() - 1)) };
 
             if !self.is_empty(b, t) && self.is_turn(t, item) {
                 break;
@@ -261,7 +263,7 @@ impl<'a, T: Copy> RawQueue<'a, T> {
     fn get_buf(&self, off: usize) -> &mut QueueEntry<T> {
         unsafe {
             (*self.buf.get())
-                .add(off % self.hdr.len())
+                .add(off & (self.hdr.len() - 1))
                 .as_mut()
                 .unwrap()
         }
@@ -307,7 +309,7 @@ unsafe impl<'a, T: Send> Sync for RawQueue<'a, T> {}
 mod tests {
     #![allow(soft_unstable)]
     use std::process::Termination;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::AtomicU64;
 
     use syscalls::SyscallArgs;
 
@@ -324,7 +326,7 @@ mod tests {
     fn wait(x: &AtomicU64, v: u64) {
         // println!("wait");
         unsafe {
-            syscalls::syscall(
+            let _ = syscalls::syscall(
                 syscalls::SYS_futex,
                 &SyscallArgs::new(x as *const AtomicU64 as usize, 0, v as usize, 0, 0, 0),
             );
@@ -339,7 +341,7 @@ mod tests {
     fn wake(x: &AtomicU64) {
         //   println!("wake");
         unsafe {
-            syscalls::syscall(
+            let _ = syscalls::syscall(
                 syscalls::SYS_futex,
                 &SyscallArgs::new(x as *const AtomicU64 as usize, 1, !0, 0, 0, 0),
             );
@@ -350,7 +352,7 @@ mod tests {
     fn it_transmits() {
         let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
         let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
-        let mut q = RawQueue::new(&qh, buffer.as_mut_ptr());
+        let q = RawQueue::new(&qh, buffer.as_mut_ptr());
 
         for i in 0..100 {
             let res = q.submit(
@@ -371,7 +373,7 @@ mod tests {
     fn it_fills() {
         let qh = RawQueueHdr::new(2, std::mem::size_of::<QueueEntry<u32>>());
         let mut buffer = [QueueEntry::<i32>::default(); 1 << 2];
-        let mut q = RawQueue::new(&qh, buffer.as_mut_ptr());
+        let q = RawQueue::new(&qh, buffer.as_mut_ptr());
 
         let res = q.submit(QueueEntry::new(1, 7), wait, wake, SubmissionFlags::empty());
         assert_eq!(res, Ok(()));
@@ -394,7 +396,7 @@ mod tests {
     fn it_nonblock_receives() {
         let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
         let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
-        let mut q = RawQueue::new(&qh, buffer.as_mut_ptr());
+        let q = RawQueue::new(&qh, buffer.as_mut_ptr());
 
         let res = q.submit(QueueEntry::new(1, 7), wait, wake, SubmissionFlags::empty());
         assert_eq!(res, Ok(()));
@@ -406,27 +408,26 @@ mod tests {
         assert_eq!(res.unwrap_err(), ReceiveError::WouldBlock);
     }
 
-    use std::thread::Thread;
     extern crate crossbeam;
     extern crate test;
     #[bench]
     fn two_threads(b: &mut test::Bencher) -> impl Termination {
         let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
         let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
-        let mut q = RawQueue::new(
+        let q = RawQueue::new(
             unsafe { std::mem::transmute::<&RawQueueHdr, &'static RawQueueHdr>(&qh) },
             buffer.as_mut_ptr(),
         );
 
-        let count = AtomicU64::new(0);
+        //let count = AtomicU64::new(0);
         let x = crossbeam::scope(|s| {
-            let j = s.spawn(|_| loop {
+            s.spawn(|_| loop {
                 let res = q.receive(wait, wake, ReceiveFlags::empty());
                 assert!(res.is_ok());
                 if res.unwrap().info() == 2 {
                     break;
                 }
-                count.fetch_add(1, Ordering::SeqCst);
+                //count.fetch_add(1, Ordering::SeqCst);
             });
 
             b.iter(|| {
