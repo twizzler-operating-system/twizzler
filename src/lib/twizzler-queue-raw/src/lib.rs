@@ -19,35 +19,35 @@
 //! # Let's look at an insert
 //! Here's what the queue looks like to start with. The 0_ indicates that it's empty, and turn is
 //! set to 0.
-//! ```
+//! ```text
 //!  b
 //!  t
 //!  h
 //! [0_, 0_, 0_]
 //! ```
 //! When inserting, the thread first reserves space:
-//! ```
+//! ```text
 //!  b
 //!  t
 //!      h
 //! [0_, 0_, 0_]
 //! ```
 //! Then it fills out the data:
-//! ```
+//! ```text
 //!  b
 //!  t
 //!      h
 //! [0X, 0_, 0_]
 //! ```
 //! Then it toggles the turn bit:
-//! ```
+//! ```text
 //!  b
 //!  t
 //!      h
 //! [1X, 0_, 0_]
 //! ```
 //! Next, it bumps the doorbell (and maybe wakes up a waiting consumer):
-//! ```
+//! ```text
 //!      b
 //!  t
 //!      h
@@ -57,14 +57,14 @@
 //! Now, let's say the consumer comes along and dequeues. First, it checks if it's empty by
 //! comparing tail and bell, and finds it's not empty. Then it checks if it's the correct turn. This
 //! turn is 1, so yes. Next, it remove the data from the queue:
-//! ```
+//! ```text
 //!      b
 //!  t
 //!      h
 //! [1_, 0_, 0_]
 //! ```
 //! And then finally it increments the tail counter:
-//! ```
+//! ```text
 //!      b
 //!      t
 //!      h
@@ -297,12 +297,46 @@ impl RawQueueHdr {
         Ok(t)
     }
 
+    fn setup_rec_sleep<'a, T>(
+        &'a self,
+        sleep: bool,
+        raw_buf: *const QueueEntry<T>,
+        waiter: &mut (Option<&'a AtomicU64>, u64),
+    ) -> Result<u64, ReceiveError> {
+        let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
+        let b = self.bell.load(Ordering::SeqCst);
+        let item = unsafe { raw_buf.add((t as usize) & (self.len() - 1)) };
+        *waiter = (Some(&self.bell), b);
+        if self.is_empty(b, t) || !self.is_turn(t, item) {
+            if sleep {
+                self.consumer_set_waiting(true);
+                let b = self.bell.load(Ordering::SeqCst);
+                *waiter = (Some(&self.bell), b);
+                if !self.is_empty(b, t) && self.is_turn(t, item) {
+                    return Ok(t);
+                }
+            }
+            return Err(ReceiveError::WouldBlock);
+        } else {
+            return Ok(t);
+        }
+    }
+
     #[inline]
     fn advance_tail<R: Fn(&AtomicU64)>(&self, ring: R) {
         let t = self.tail.load(Ordering::SeqCst);
         self.tail.store((t + 1) & 0x7fffffff, Ordering::SeqCst);
         if self.submitter_waiting() {
             ring(&self.tail);
+        }
+    }
+
+    #[inline]
+    fn advance_tail_setup<'a>(&'a self, ringer: &mut Option<&'a AtomicU64>) {
+        let t = self.tail.load(Ordering::SeqCst);
+        self.tail.store((t + 1) & 0x7fffffff, Ordering::SeqCst);
+        if self.submitter_waiting() {
+            *ringer = Some(&self.tail);
         }
     }
 }
@@ -404,10 +438,101 @@ impl<'a, T: Copy> RawQueue<'a, T> {
         self.hdr.advance_tail(ring);
         Ok(item)
     }
+
+    pub fn setup_sleep(
+        &self,
+        sleep: bool,
+        output: &mut Option<QueueEntry<T>>,
+        waiter: &mut (Option<&'a AtomicU64>, u64),
+        ringer: &mut Option<&'a AtomicU64>,
+    ) -> Result<(), ReceiveError> {
+        let t = self
+            .hdr
+            .setup_rec_sleep(sleep, unsafe { *self.buf.get() }, waiter)?;
+        let buf_item = self.get_buf(t as usize);
+        let item = *buf_item;
+        *output = Some(item);
+        self.hdr.advance_tail_setup(ringer);
+        Ok(())
+    }
 }
 
 unsafe impl<'a, T: Send> Send for RawQueue<'a, T> {}
 unsafe impl<'a, T: Send> Sync for RawQueue<'a, T> {}
+
+#[cfg(any(feature = "std", test))]
+/// Wait for receiving on multiple raw queues. If any of the passed raw queues can return data, they
+/// will do so by writing it into the output array at the same index that they are in the `queues`
+/// variable. The queues and output arrays must be the same length. If no data is available in any
+/// queues, then the function will call back on multi_wait, which it expects to wait until **any** of
+/// the pairs (&x, y) meet the condition that *x != y. Before returning any data, the function will
+/// callback on multi_ring, to inform multiple queues that data was taken from them. It expects the
+/// multi_ring function to wake up any waiting threads on the supplied words of memory.
+///
+/// Note that both call backs specify the pointers as Option. In the case that an entry is None,
+/// there was no requested wait or wake operation for that queue, and that entry should be ignored.
+///
+/// If flags specifies [ReceiveFlags::NON_BLOCK], then if no data is available, the function returns
+/// immediately with Err([ReceiveError::WouldBlock]).
+///
+/// # Rationale
+/// This function is here to implement poll or select like functionality, wherein a given thread or
+/// program wants to wait on multiple incoming request channels and handle them itself, thus cutting
+/// down on the number of threads required. The maximum number of queues to use here is a trade-off
+/// --- more means fewer threads, but since this function is linear in the number of queues, each
+/// thread could take longer to service requests.
+///
+/// The complexity of the multi_wait and multi_ring callbacks is present to avoid calling into the
+/// kernel often for high-contention queues.
+///
+pub fn multi_receive<
+    'a,
+    T: Copy,
+    W: Fn(&[(Option<&AtomicU64>, u64)]),
+    R: Fn(&[Option<&AtomicU64>]),
+>(
+    queues: &[&RawQueue<'a, T>],
+    output: &mut [Option<QueueEntry<T>>],
+    multi_wait: W,
+    multi_ring: R,
+    flags: ReceiveFlags,
+) -> Result<usize, ReceiveError> {
+    if output.len() != queues.len() {
+        return Err(ReceiveError::Unknown);
+    }
+    /* TODO (opt): avoid this allocation until we have to sleep */
+    let mut waiters = Vec::new();
+    waiters.resize(queues.len(), Default::default());
+    let mut ringers = Vec::new();
+    ringers.resize(queues.len(), None);
+    let mut attempts = 100;
+    loop {
+        let mut count = 0;
+        for (i, q) in queues.iter().enumerate() {
+            let res = q.setup_sleep(
+                attempts == 0,
+                &mut output[i],
+                &mut waiters[i],
+                &mut ringers[i],
+            );
+            if res == Ok(()) {
+                count += 1;
+            }
+        }
+        if count > 0 {
+            multi_ring(&ringers);
+            return Ok(count);
+        }
+        if flags.contains(ReceiveFlags::NON_BLOCK) {
+            return Err(ReceiveError::WouldBlock);
+        }
+        if attempts > 0 {
+            attempts -= 1;
+        } else {
+            multi_wait(&waiters);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -417,6 +542,7 @@ mod tests {
 
     use syscalls::SyscallArgs;
 
+    use crate::multi_receive;
     use crate::ReceiveError;
     use crate::SubmissionError;
     use crate::{QueueEntry, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags};
@@ -510,6 +636,36 @@ mod tests {
         assert_eq!(res.unwrap().item(), 7);
         let res = q.receive(wait, wake, ReceiveFlags::NON_BLOCK);
         assert_eq!(res.unwrap_err(), ReceiveError::WouldBlock);
+    }
+
+    #[test]
+    fn it_multi_receives() {
+        let qh1 = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
+        let mut buffer1 = [QueueEntry::<i32>::default(); 1 << 4];
+        let q1 = RawQueue::new(&qh1, buffer1.as_mut_ptr());
+
+        let qh2 = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
+        let mut buffer2 = [QueueEntry::<i32>::default(); 1 << 4];
+        let q2 = RawQueue::new(&qh2, buffer2.as_mut_ptr());
+
+        let res = q1.submit(QueueEntry::new(1, 7), wait, wake, SubmissionFlags::empty());
+        assert_eq!(res, Ok(()));
+        let res = q2.submit(QueueEntry::new(2, 8), wait, wake, SubmissionFlags::empty());
+        assert_eq!(res, Ok(()));
+
+        let mut output = [None, None];
+        let res = multi_receive(
+            &[&q1, &q2],
+            &mut output,
+            |_| {},
+            |_| {},
+            ReceiveFlags::empty(),
+        );
+        assert_eq!(res, Ok(2));
+        assert_eq!(output[0].unwrap().info(), 1);
+        assert_eq!(output[0].unwrap().item(), 7);
+        assert_eq!(output[1].unwrap().info(), 2);
+        assert_eq!(output[1].unwrap().item(), 8);
     }
 
     extern crate crossbeam;
