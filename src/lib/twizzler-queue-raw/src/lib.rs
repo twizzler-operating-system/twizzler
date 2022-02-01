@@ -1,12 +1,89 @@
-#![feature(termination_trait_lib)]
-#![feature(test)]
+//! A raw queue interface for Twizzler, making no assumptions about where the underlying headers and
+//! circular buffers are located. This means you probably don't want to use this --- instead, I
+//! suggest you use the wrapped version of this library, twizzler-queue, since that actually
+//! interacts with the object system.
+//!
+//! This library exists to provide an underlying implementation of the concurrent data structure for
+//! each individual raw queue so that this complex code can be reused in both userspace and the kernel.
+//!
+//! The basic design of a raw queue is two parts:
+//!
+//!   1. A header, which contains things like head pointers, tail pointers, etc.
+//!   2. A buffer, which contains the items that are enqueued.
+//!
+//! The queue is an MPSC lock-free blocking data structure. Any thread may submit to a queue, but
+//! only one thread may receive on that queue at a time. The queue is implemented with a head
+//! pointer, a tail pointer, a doorbell, and a waiters counter. Additionally, the queue is
+//! maintained in terms of "turns", that indicate which "go around" of the queue we are on (mod 2).
+//!
+//! # Let's look at an insert
+//! Here's what the queue looks like to start with. The 0_ indicates that it's empty, and turn is
+//! set to 0.
+//! ```
+//!  b
+//!  t
+//!  h
+//! [0_, 0_, 0_]
+//! ```
+//! When inserting, the thread first reserves space:
+//! ```
+//!  b
+//!  t
+//!      h
+//! [0_, 0_, 0_]
+//! ```
+//! Then it fills out the data:
+//! ```
+//!  b
+//!  t
+//!      h
+//! [0X, 0_, 0_]
+//! ```
+//! Then it toggles the turn bit:
+//! ```
+//!  b
+//!  t
+//!      h
+//! [1X, 0_, 0_]
+//! ```
+//! Next, it bumps the doorbell (and maybe wakes up a waiting consumer):
+//! ```
+//!      b
+//!  t
+//!      h
+//! [1X, 0_, 0_]
+//! ```
+//!
+//! Now, let's say the consumer comes along and dequeues. First, it checks if it's empty by
+//! comparing tail and bell, and finds it's not empty. Then it checks if it's the correct turn. This
+//! turn is 1, so yes. Next, it remove the data from the queue:
+//! ```
+//!      b
+//!  t
+//!      h
+//! [1_, 0_, 0_]
+//! ```
+//! And then finally it increments the tail counter:
+//! ```
+//!      b
+//!      t
+//!      h
+//! [1_, 0_, 0_]
+//! ```
 
-use std::{
+#![cfg_attr(test, feature(termination_trait_lib))]
+#![cfg_attr(test, feature(test))]
+#![cfg_attr(not(any(feature = "std", test)), no_std)]
+
+use core::{
     cell::UnsafeCell,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 #[derive(Clone, Copy, Default, Debug)]
 #[repr(C)]
+/// A queue entry. All queues must be formed of these, as the queue algorithm uses data inside this
+/// struct as part of its operation. The cmd_slot is used internally to track turn, and the info is
+/// used by the full queue structure to manage completion. The data T is user data passed around the queue.
 pub struct QueueEntry<T> {
     cmd_slot: u32,
     info: u32,
@@ -27,15 +104,19 @@ impl<T> QueueEntry<T> {
     }
 
     #[inline]
+    /// Get the data item of a QueueEntry.
     pub fn item(self) -> T {
         self.data
     }
 
     #[inline]
+    /// Get the info tag of a QueueEntry.
     pub fn info(&self) -> u32 {
         self.info
     }
 
+    /// Construct a new QueueEntry. The `info` tag should be used to inform completion events in the
+    /// full queue.
     pub fn new(info: u32, item: T) -> Self {
         Self {
             cmd_slot: 0,
@@ -46,6 +127,7 @@ impl<T> QueueEntry<T> {
 }
 
 #[repr(C)]
+/// A raw queue header. This contains all the necessary counters and info to run the queue algorithm.
 pub struct RawQueueHdr {
     l2len: usize,
     stride: usize,
@@ -56,6 +138,7 @@ pub struct RawQueueHdr {
 }
 
 impl RawQueueHdr {
+    /// Construct a new raw queue header.
     pub fn new(l2len: usize, stride: usize) -> Self {
         Self {
             l2len,
@@ -224,34 +307,46 @@ impl RawQueueHdr {
     }
 }
 
+/// A raw queue, comprising of a header to track the algorithm and a buffer to hold queue entries.
 pub struct RawQueue<'a, T> {
     hdr: &'a RawQueueHdr,
     buf: UnsafeCell<*mut QueueEntry<T>>,
 }
 
 bitflags::bitflags! {
+    /// Flags to control how queue submission works.
     pub struct SubmissionFlags: u32 {
+        /// If the request would block, return Err([SubmissionError::WouldBlock]) instead.
         const NON_BLOCK = 1;
     }
 
+    /// Flags to control how queue receive works.
     pub struct ReceiveFlags: u32 {
+        /// If the request would block, return Err([ReceiveError::WouldBlock]) instead.
         const NON_BLOCK = 1;
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// Possible errors for submitting to a queue.
 pub enum SubmissionError {
+    /// An unknown error.
     Unknown,
+    /// The operation would have blocked, and non-blocking operation was specified.
     WouldBlock,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// Possible errors for receiving from a queue.
 pub enum ReceiveError {
+    /// An unknown error.
     Unknown,
+    /// The operation would have blocked, and non-blocking operation was specified.
     WouldBlock,
 }
 
 impl<'a, T: Copy> RawQueue<'a, T> {
+    /// Construct a new raw queue out of a header reference and a buffer pointer.
     pub fn new(hdr: &'a RawQueueHdr, buf: *mut QueueEntry<T>) -> Self {
         Self {
             hdr,
@@ -259,6 +354,8 @@ impl<'a, T: Copy> RawQueue<'a, T> {
         }
     }
 
+    // This is a bit unsafe, but it's because we're managing concurrency ourselves.
+    #[allow(clippy::mut_from_ref)]
     #[inline]
     fn get_buf(&self, off: usize) -> &mut QueueEntry<T> {
         unsafe {
@@ -269,6 +366,11 @@ impl<'a, T: Copy> RawQueue<'a, T> {
         }
     }
 
+    /// Submit a data item of type T, wrapped in a QueueEntry, to the queue. The two callbacks,
+    /// wait, and ring, are for implementing a rudimentary condvar, wherein if the queue needs to
+    /// block, we'll call wait(x, y), where we are supposed to wait until *x != y. Once we are done
+    /// inserting, if we need to wake up a consumer, we will call ring, which should wake up anyone
+    /// waiting on that word of memory.
     pub fn submit<W: Fn(&AtomicU64, u64), R: Fn(&AtomicU64)>(
         &self,
         item: QueueEntry<T>,
@@ -286,6 +388,8 @@ impl<'a, T: Copy> RawQueue<'a, T> {
         Ok(())
     }
 
+    /// Receive data from the queue, returning either that data or an error. The wait and ring
+    /// callbacks work similar to [RawQueue::submit].
     pub fn receive<W: Fn(&AtomicU64, u64), R: Fn(&AtomicU64)>(
         &self,
         wait: W,
