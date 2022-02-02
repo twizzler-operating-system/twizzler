@@ -5,7 +5,7 @@ use core::{
 };
 
 use alloc::{boxed::Box, sync::Arc};
-use twizzler_abi::{aux::AuxEntry, syscall::ThreadSpawnArgs};
+use twizzler_abi::{aux::AuxEntry, object::ObjID, syscall::ThreadSpawnArgs};
 use x86_64::VirtAddr;
 use xmas_elf::program::SegmentData;
 
@@ -72,6 +72,7 @@ pub struct Thread {
     pub kernel_stack: Box<[u8; KERNEL_STACK_SIZE]>,
     pub stats: ThreadStats,
     spawn_args: Option<ThreadSpawnArgs>,
+    pub repr: Option<ObjectRef>,
 }
 unsafe impl Send for Thread {}
 
@@ -138,6 +139,7 @@ impl Thread {
             stats: ThreadStats::default(),
             memory_context: None,
             spawn_args: None,
+            repr: None,
         }
     }
 
@@ -612,7 +614,7 @@ extern "C" fn user_new_start() {
     }
 }
 
-pub fn start_new_user(args: ThreadSpawnArgs) {
+pub fn start_new_user(args: ThreadSpawnArgs) -> ObjID {
     let mut thread = Thread::new_with_current_context(args);
     logln!(
         "starting new thread {} with stack {:p}",
@@ -622,7 +624,10 @@ pub fn start_new_user(args: ThreadSpawnArgs) {
     unsafe {
         thread.init(user_new_start);
     }
+    thread.repr = Some(create_blank_object());
+    let id = thread.repr.as_ref().unwrap().id();
     schedule_new_thread(thread);
+    id
 }
 
 pub fn start_new_init() {
@@ -635,5 +640,6 @@ pub fn start_new_init() {
     unsafe {
         thread.init(user_init);
     }
+    thread.repr = Some(create_blank_object());
     schedule_new_thread(thread);
 }

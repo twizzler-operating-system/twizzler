@@ -92,6 +92,10 @@ unsafe fn release_thread(id: u32) {
             slice[id as usize].tls_len,
             slice[id as usize].tls_align,
         );
+        if slice[id as usize].ptr.is_null() {
+            // already released
+            return;
+        }
         slice[id as usize].ptr = ptr::null_mut();
         slice[id as usize].objid = ObjID::new(0);
         slice[id as usize].internal_id = 0;

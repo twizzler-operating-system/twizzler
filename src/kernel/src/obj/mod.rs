@@ -18,6 +18,7 @@ pub mod copy;
 pub mod pages;
 pub mod pagevec;
 pub mod range;
+pub mod thread_sync;
 
 const OBJ_DELETED: u32 = 1;
 pub struct Object {
@@ -51,6 +52,8 @@ impl PageNumber {
     pub fn num(&self) -> usize {
         self.0
     }
+
+    pub const PAGE_SIZE: usize = 0x1000; //TODO: arch-dep
 
     pub fn from_address(addr: x86_64::VirtAddr) -> Self {
         PageNumber(((addr.as_u64() % (1 << 30)) / 0x1000) as usize) //TODO: arch-dep
