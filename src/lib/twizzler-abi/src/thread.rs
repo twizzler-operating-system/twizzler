@@ -1,4 +1,8 @@
-use core::{alloc::Layout, ptr};
+use core::{
+    alloc::Layout,
+    ptr,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use crate::{
     object::{ObjID, Protections},
@@ -7,7 +11,11 @@ use crate::{
 };
 
 #[repr(C)]
-pub struct ThreadRepr {}
+pub struct ThreadRepr {
+    version: u32,
+    flags: u32,
+    status: AtomicU64,
+}
 
 #[allow(dead_code)]
 struct Thread {
@@ -20,6 +28,12 @@ struct Thread {
     stack_base: *const u8,
     stack_len: usize,
     internal_id: u32,
+}
+
+impl Thread {
+    fn get_repr(&self) -> &ThreadRepr {
+        unsafe { self.ptr.as_ref().unwrap() }
+    }
 }
 
 static THREADS_LOCK: crate::simple_mutex::Mutex = crate::simple_mutex::Mutex::new();
@@ -143,6 +157,23 @@ pub unsafe fn spawn(stack_size: usize, entry: usize, arg: usize) -> Option<u32> 
 /// Wait until the specified thread terminates.
 pub unsafe fn join(id: u32) {
     THREADS_LOCK.lock();
+    loop {
+        let slice = core::slice::from_raw_parts(THREADS, THREADS_LEN);
+        let repr = slice[id as usize].get_repr();
+        if repr.status.load(Ordering::SeqCst) == 0 {
+            let ts = crate::syscall::ThreadSync::new_sleep(crate::syscall::ThreadSyncSleep::new(
+                crate::syscall::ThreadSyncReference::Virtual(&repr.status),
+                0,
+                crate::syscall::ThreadSyncOp::Equal,
+                crate::syscall::ThreadSyncFlags::empty(),
+            ));
+            THREADS_LOCK.unlock();
+            let _ = crate::syscall::sys_thread_sync(&mut [ts], None);
+            THREADS_LOCK.lock();
+        } else {
+            break;
+        }
+    }
     release_thread(id);
     THREADS_LOCK.unlock();
 }

@@ -29,14 +29,19 @@ static mut FOO: u32 = 42;
 static mut BAR: u32 = 0;
 #[allow(named_asm_labels)]
 fn main() {
-    let foo = unsafe { FOO + BAR };
+    let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
 
-    std::thread::spawn(|| {
+    let j = std::thread::spawn(|| {
         for i in 0..1 {
             println!("hello from thread");
         }
+        234
     });
+
+    println!("joining...");
+    let res = j.join();
+    println!("joined {:?}", res);
     //panic!("panic test");
     loop {}
 }
