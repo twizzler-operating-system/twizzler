@@ -23,6 +23,10 @@ impl Mutex {
         }
     }
 
+    pub fn is_locked(&self) -> bool {
+        self.lock.load(Ordering::SeqCst) != 0
+    }
+
     #[inline]
     /// Lock a mutex, which can be unlocked by calling [Mutex::unlock].
     /// # Safety

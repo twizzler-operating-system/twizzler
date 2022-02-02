@@ -753,12 +753,32 @@ bitflags! {
 #[repr(C)]
 /// Arguments to pass to [sys_spawn].
 pub struct ThreadSpawnArgs {
-    entry: *const u8,
-    stack_base: *const u8,
-    stack_size: usize,
-    tls: *const u8,
-    arg: usize,
-    flags: ThreadSpawnFlags,
+    pub entry: usize,
+    pub stack_base: usize,
+    pub stack_size: usize,
+    pub tls: usize,
+    pub arg: usize,
+    pub flags: ThreadSpawnFlags,
+}
+
+impl ThreadSpawnArgs {
+    /// Construct a new ThreadSpawnArgs.
+    pub fn new(
+        entry: usize,
+        stack: &[u8],
+        tls: usize,
+        arg: usize,
+        flags: ThreadSpawnFlags,
+    ) -> Self {
+        Self {
+            entry,
+            stack_base: stack.as_ptr() as usize,
+            stack_size: stack.len(),
+            tls,
+            arg,
+            flags,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]

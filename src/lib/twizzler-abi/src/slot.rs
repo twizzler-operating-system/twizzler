@@ -16,3 +16,6 @@ pub fn to_vaddr_range(slot: usize) -> (usize, usize) {
     let end = (slot + 1) * (1024 * 1024 * 1024) - 0x1000;
     (start, end)
 }
+
+/// Release a slot for reuse.
+pub fn global_release(_slot: usize) {}

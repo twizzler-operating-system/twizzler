@@ -15,7 +15,6 @@
 #![feature(asm)]
 #![feature(naked_functions)]
 #![feature(core_intrinsics)]
-
 pub mod arch;
 
 pub mod alloc;
@@ -26,9 +25,11 @@ mod llalloc;
 pub mod object;
 #[cfg(any(doc, feature = "rt"))]
 pub mod rt1;
+mod simple_idcounter;
 pub mod simple_mutex;
 pub mod slot;
 pub mod syscall;
+pub mod thread;
 pub mod time;
 
 /// Simple callback into twizzler_abi made by the standard library once it has initialized the

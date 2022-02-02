@@ -5,7 +5,7 @@ use core::{
 };
 
 use alloc::{boxed::Box, sync::Arc};
-use twizzler_abi::aux::AuxEntry;
+use twizzler_abi::{aux::AuxEntry, syscall::ThreadSpawnArgs};
 use x86_64::VirtAddr;
 use xmas_elf::program::SegmentData;
 
@@ -70,6 +70,7 @@ pub struct Thread {
     memory_context: Option<MemoryContextRef>,
     pub kernel_stack: Box<[u8; KERNEL_STACK_SIZE]>,
     pub stats: ThreadStats,
+    spawn_args: Option<ThreadSpawnArgs>,
 }
 unsafe impl Send for Thread {}
 
@@ -135,6 +136,7 @@ impl Thread {
             current_processor_queue: AtomicI32::new(-1),
             stats: ThreadStats::default(),
             memory_context: None,
+            spawn_args: None,
         }
     }
 
@@ -142,6 +144,14 @@ impl Thread {
         let mut thread = Self::new();
         thread.memory_context = Some(Arc::new(Mutex::new(MemoryContext::new())));
         thread.memory_context.as_ref().unwrap().lock().add_thread();
+        thread
+    }
+
+    pub fn new_with_current_context(spawn_args: ThreadSpawnArgs) -> Self {
+        let mut thread = Self::new();
+        thread.memory_context = Some(current_memory_context().unwrap().clone());
+        thread.memory_context.as_ref().unwrap().lock().add_thread();
+        thread.spawn_args = Some(spawn_args);
         thread
     }
 
@@ -550,6 +560,39 @@ extern "C" fn user_init() {
             aux_start as u64,
         );
     }
+}
+
+extern "C" fn user_new_start() {
+    let current = current_thread_ref().unwrap();
+    let args = current.spawn_args.as_ref().unwrap();
+    current.set_tls(args.tls as u64);
+    logln!(
+        "thread jtu {:x} {:x} {:x}",
+        args.entry,
+        args.stack_base + args.stack_size,
+        args.tls
+    );
+    unsafe {
+        crate::arch::jump_to_user(
+            VirtAddr::new(args.entry as u64),
+            /* TODO: this is x86 specific */
+            VirtAddr::new((args.stack_base + args.stack_size - 8) as u64),
+            args.arg as u64,
+        )
+    }
+}
+
+pub fn start_new_user(args: ThreadSpawnArgs) {
+    let mut thread = Thread::new_with_current_context(args);
+    logln!(
+        "starting new thread {} with stack {:p}",
+        thread.id,
+        thread.kernel_stack
+    );
+    unsafe {
+        thread.init(user_new_start);
+    }
+    schedule_new_thread(thread);
 }
 
 pub fn start_new_init() {

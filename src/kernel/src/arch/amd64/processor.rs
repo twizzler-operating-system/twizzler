@@ -83,7 +83,10 @@ pub fn init(tls: VirtAddr) {
                 | x86::controlregs::Cr4::CR4_ENABLE_OS_XSAVE,
         );
         let xcr0 = x86::controlregs::xcr0();
-        x86::controlregs::xcr0_write(xcr0 | x86::controlregs::Xcr0::XCR0_SSE_STATE);
+        x86::controlregs::xcr0_write(
+            xcr0 | x86::controlregs::Xcr0::XCR0_SSE_STATE
+                | x86::controlregs::Xcr0::XCR0_FPU_MMX_STATE,
+        );
     }
 }
 

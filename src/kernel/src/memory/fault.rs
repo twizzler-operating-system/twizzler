@@ -3,7 +3,7 @@ use x86_64::VirtAddr;
 use crate::{
     memory::context::MappingPerms,
     obj::{pages::Page, PageNumber},
-    thread::current_memory_context,
+    thread::{current_memory_context, current_thread_ref},
 };
 
 bitflags::bitflags! {
@@ -22,7 +22,7 @@ pub enum PageFaultCause {
 }
 
 pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, ip: VirtAddr) {
-    if false {
+    if true {
         logln!(
             "page fault at {:?} cause {:?} flags {:?}, at {:?}",
             addr,
@@ -79,6 +79,9 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
         }
     } else {
         //TODO: fault
+        if let Some(th) = current_thread_ref() {
+            logln!("user fs {:?}", th.arch.user_fs);
+        }
         panic!("page fault: no obj");
     }
 }

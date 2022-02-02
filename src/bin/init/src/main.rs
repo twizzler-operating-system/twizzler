@@ -31,7 +31,11 @@ static mut BAR: u32 = 0;
 fn main() {
     let foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
-    panic!("panic test");
+
+    std::thread::spawn(|| {
+        println!("hello from thread");
+    });
+    //panic!("panic test");
     loop {}
 }
 

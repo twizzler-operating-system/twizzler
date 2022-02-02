@@ -94,8 +94,12 @@ pub(crate) fn get_load_seg(nr: usize) -> Option<(usize, usize)> {
 
 const MIN_TLS_ALIGN: usize = 16;
 use core::alloc::Layout;
-#[allow(named_asm_labels)]
 fn init_tls() -> Option<u64> {
+    new_thread_tls().map(|(s, _, _, _)| s as u64)
+}
+
+//let (tls_set, tls_base, tls_len, tls_align) = crate::rt1::new_thread_tls();
+pub(crate) fn new_thread_tls() -> Option<(usize, *mut u8, usize, usize)> {
     unsafe {
         TLS_INFO.as_ref().map(|info| {
             let mut tls_size = info.memsz;
@@ -119,7 +123,7 @@ fn init_tls() -> Option<u64> {
             let mem = tls.add(tls_size).sub((tls as usize) & (tls_align - 1));
             core::ptr::copy_nonoverlapping(info.template_start, mem.sub(offset), info.filsz);
             *(mem as *mut u64) = mem as u64;
-            mem as u64
+            (mem as usize, tls, layout.size(), layout.align())
         })
     }
 }

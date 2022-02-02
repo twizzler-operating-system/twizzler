@@ -6,7 +6,7 @@ use crate::{
     arch::amd64::desctables::set_kernel_stack, processor::KERNEL_STACK_SIZE, thread::Thread,
 };
 
-const XSAVE_LEN: usize = 512;
+const XSAVE_LEN: usize = 1024;
 
 #[repr(align(64))]
 struct AlignedXsaveRegion([u8; XSAVE_LEN]);
@@ -94,7 +94,24 @@ impl Thread {
             set_kernel_stack(
                 VirtAddr::new(self.kernel_stack.as_ref() as *const u8 as u64) + KERNEL_STACK_SIZE,
             );
+            /*
+            logln!(
+                "switch {} -> {} {:?}",
+                old_thread.id(),
+                self.id(),
+                self.arch.xsave_region.0.as_ptr()
+            );
+            */
             asm!("xsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
+            /*
+            for (i, x) in old_thread.arch.xsave_region.0.iter().enumerate() {
+                if i % 16 == 0 {
+                    log!("\n{}: ", i);
+                }
+                log!("{:x} ", x);
+            }
+            logln!("");
+            */
             old_thread.arch.xsave_inited.store(true, Ordering::SeqCst);
             if self.arch.xsave_inited.load(Ordering::SeqCst) {
                 asm!("xrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
