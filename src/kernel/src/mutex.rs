@@ -137,7 +137,6 @@ impl<T> core::ops::DerefMut for LockGuard<'_, T> {
 
 impl<T> Drop for LockGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.release();
         if let Some(ref prev) = self.prev_donated_priority {
             if let Some(thread) = current_thread_ref() {
                 thread.donate_priority(prev.clone());
@@ -145,6 +144,7 @@ impl<T> Drop for LockGuard<'_, T> {
         } else if let Some(thread) = current_thread_ref() {
             thread.remove_donated_priority();
         }
+        self.lock.release();
     }
 }
 

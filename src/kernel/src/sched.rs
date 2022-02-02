@@ -274,6 +274,11 @@ fn select_cpu(thread: &ThreadRef) -> u32 {
 }
 
 static ALL_THREADS: Spinlock<BTreeMap<u64, ThreadRef>> = Spinlock::new(BTreeMap::new());
+
+pub fn remove_thread(id: u64) {
+    ALL_THREADS.lock().remove(&id);
+}
+
 pub fn schedule_new_thread(thread: Thread) {
     thread.set_state(ThreadState::Running);
     let thread = Arc::new(thread);
@@ -300,7 +305,7 @@ pub fn create_idle_thread() {
     set_current_thread(idle);
 }
 
-fn switch_to(thread: ThreadRef, old: &Thread) {
+fn switch_to(thread: ThreadRef, old: ThreadRef) {
     /*
     logln!(
         "{} switch to {} from {}",
@@ -318,7 +323,35 @@ fn switch_to(thread: ThreadRef, old: &Thread) {
     if !thread.is_idle_thread() {
         crate::clock::schedule_oneshot_tick(1);
     }
-    thread.switch_thread(old);
+    // logln!("t {} {}", old.id(), Arc::strong_count(&old));
+    /* Okay, so this is a little gross. Basically, we need to drop these references to make
+    sure the refcounts don't climb every time we switch_to(). But we still need a reference
+    to the underlying thread so we can do the switch_thread call.
+
+    So we manually decrement the refcounts while maintaining a raw pointer to the underlying.
+    Why is this safe?
+      1. For the old pointer, it's safe because this thread is either exiting, in which case it
+         is placed in the exit queue for THIS CPU, thus we can ensure that the reference will not
+         dangle, since that only gets cleaned up by THIS CPU on the next scheduling softtick. If
+         the thread is not exiting, then it must be either sleeping, and on a queue somewhere else,
+         or its on a different CPU queue. In both cases, the thread is on a different queue. Since
+         the switch_thread function internally must lock to handle SMP cross-cpu scheduling, and
+         after that lock is released, the old pointer is never used (this is part of the contract
+         of the swtich_thread function), we know the old pointer will live at least as long as that
+         lock is held through the switch_thread call, after which switch_to isn't allowed to look at
+         it anyway. Thus, the pointer will not dangle.
+      2. For the new (thread) pointer, we know this reference is safe because we just wrote it as
+         the current thread pointer for this CPU, so we know it won't dangle. */
+    let threadt = Arc::into_raw(thread);
+    let oldt = Arc::into_raw(old);
+    unsafe {
+        Arc::decrement_strong_count(oldt);
+        Arc::decrement_strong_count(threadt);
+        threadt
+            .as_ref()
+            .unwrap()
+            .switch_thread(oldt.as_ref().unwrap());
+    }
 }
 
 pub fn schedule(reinsert: bool) {
@@ -337,6 +370,10 @@ pub fn schedule(reinsert: bool) {
         // logln!("{} reinserting thread {}", processor.id, cur.id());
         schedule_thread(cur.clone());
     }
+    if cur.state() == ThreadState::Exiting {
+        //  logln!("thread {} exit", cur.id());
+        processor.sched.lock().push_exited(cur.clone());
+    }
     if !cur.is_idle_thread() {
         let res = processor.load.fetch_sub(1, Ordering::SeqCst);
         assert!(res > 1);
@@ -352,7 +389,7 @@ pub fn schedule(reinsert: bool) {
             return;
         }
         next.current_processor_queue.store(-1, Ordering::SeqCst);
-        switch_to(next, &cur);
+        switch_to(next, cur);
         interrupt::set(istate);
         return;
     }
@@ -361,7 +398,7 @@ pub fn schedule(reinsert: bool) {
         let cp = current_processor();
         cp.stats.steals.fetch_add(1, Ordering::SeqCst);
         // logln!("{} stole thread {}", current_processor().id, stolen.id());
-        switch_to(stolen, &cur);
+        switch_to(stolen, cur);
         interrupt::set(istate);
         return;
     }
@@ -370,7 +407,7 @@ pub fn schedule(reinsert: bool) {
         interrupt::set(istate);
         return;
     }
-    switch_to(processor.idle_thread.wait().clone(), &cur);
+    switch_to(processor.idle_thread.wait().clone(), cur);
     interrupt::set(istate);
 }
 
@@ -458,6 +495,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
 
     let s = STAT_COUNTER.fetch_add(1, Ordering::SeqCst);
     let cp = current_processor();
+    cp.sched.lock().cleanup_exited();
     let cur = current_thread_ref();
     if let Some(ref cur) = cur {
         if cur.is_idle_thread() {

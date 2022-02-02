@@ -56,6 +56,7 @@ const NR_QUEUES: usize = 32;
 pub struct SchedulingQueues {
     pub queues: [VecDeque<ThreadRef>; NR_QUEUES],
     pub last_chosen_priority: Option<Priority>,
+    exited: Vec<ThreadRef>,
 }
 
 impl SchedulingQueues {
@@ -138,6 +139,14 @@ impl SchedulingQueues {
             self.last_chosen_priority = None;
         }
         None
+    }
+
+    pub fn push_exited(&mut self, th: ThreadRef) {
+        self.exited.push(th);
+    }
+
+    pub fn cleanup_exited(&mut self) {
+        self.exited.clear();
     }
 }
 

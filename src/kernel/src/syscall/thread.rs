@@ -18,6 +18,7 @@ pub fn thread_ctrl(cmd: ThreadControl, arg: u64) -> (u64, u64) {
         ThreadControl::SetTls => {
             current_thread_ref().unwrap().set_tls(arg);
         }
+        ThreadControl::Exit => crate::thread::exit(),
         _ => todo!(),
     }
     (0, 0)

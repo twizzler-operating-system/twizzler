@@ -109,10 +109,13 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
     crate::interrupt::set(false);
     crate::thread::exit_kernel();
 
-    let t = current_thread_ref().unwrap();
-    let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
-    x86_64::registers::segmentation::FS::write_base(VirtAddr::new(user_fs));
-    x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+    /* We need this scope to drop the current thread reference before we return to user */
+    {
+        let t = current_thread_ref().unwrap();
+        let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
+        x86_64::registers::segmentation::FS::write_base(VirtAddr::new(user_fs));
+        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+    }
     /* TODO: check that rcx is canonical */
     return_to_user(context);
 }

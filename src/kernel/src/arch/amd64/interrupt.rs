@@ -83,6 +83,7 @@ unsafe extern "C" fn common_handler_entry(
         let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
         x86_64::registers::segmentation::FS::write_base(VirtAddr::new(user_fs));
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+        drop(t);
     }
 }
 

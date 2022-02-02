@@ -42,13 +42,16 @@ pub unsafe fn jump_to_user(target: VirtAddr, stack: VirtAddr, arg: u64) {
     let ctx = syscall::X86SyscallContext::create_jmp_context(target, stack, arg);
     crate::thread::exit_kernel();
 
-    let user_fs = current_thread_ref()
-        .unwrap()
-        .arch
-        .user_fs
-        .load(Ordering::SeqCst);
-    x86_64::registers::segmentation::FS::write_base(VirtAddr::new(user_fs));
-    x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+    {
+        /* we need this scope the drop the current thread ref before returning to user */
+        let user_fs = current_thread_ref()
+            .unwrap()
+            .arch
+            .user_fs
+            .load(Ordering::SeqCst);
+        x86_64::registers::segmentation::FS::write_base(VirtAddr::new(user_fs));
+        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+    }
     syscall::return_to_user(&ctx as *const syscall::X86SyscallContext);
 }
 

@@ -33,7 +33,9 @@ fn main() {
     println!("Hello, World {}", unsafe { FOO + BAR });
 
     std::thread::spawn(|| {
-        println!("hello from thread");
+        for i in 0..1 {
+            println!("hello from thread");
+        }
     });
     //panic!("panic test");
     loop {}

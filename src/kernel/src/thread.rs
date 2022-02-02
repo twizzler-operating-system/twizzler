@@ -43,6 +43,7 @@ pub enum ThreadState {
     Starting,
     Running,
     Blocked,
+    Exiting,
 }
 
 #[derive(Debug, Default)]
@@ -310,6 +311,15 @@ impl Thread {
     }
 }
 
+impl Drop for Thread {
+    fn drop(&mut self) {
+        //logln!("drop thread {}", self.id());
+        if let Some(ref vm) = self.memory_context {
+            vm.lock().remove_thread();
+        }
+    }
+}
+
 impl Eq for Thread {}
 
 impl PartialEq for Thread {
@@ -423,6 +433,16 @@ impl Ord for Priority {
     }
 }
 
+pub fn exit() {
+    {
+        let th = current_thread_ref().unwrap();
+        th.set_state(ThreadState::Exiting);
+        crate::sched::remove_thread(th.id());
+        drop(th);
+    }
+    crate::sched::schedule(false);
+}
+
 /*
 fn object_copy_test() {
     let obj1 = crate::obj::Object::new();
@@ -477,85 +497,89 @@ fn create_blank_object() -> ObjectRef {
 }
 
 extern "C" fn user_init() {
-    let vm = current_memory_context().unwrap();
-    let boot_objects = crate::initrd::get_boot_objects();
+    /* We need this scope to drop everything before we jump to user */
+    let (aux_start, entry) = {
+        let vm = current_memory_context().unwrap();
+        let boot_objects = crate::initrd::get_boot_objects();
 
-    let obj_text = create_blank_object();
-    let obj_data = create_blank_object();
-    let obj_stack = create_blank_object();
-    crate::operations::map_object_into_context(
-        0,
-        obj_text,
-        vm.clone(),
-        MappingPerms::READ | MappingPerms::EXECUTE,
-    )
-    .unwrap();
-    crate::operations::map_object_into_context(
-        1,
-        obj_data,
-        vm.clone(),
-        MappingPerms::READ | MappingPerms::WRITE,
-    )
-    .unwrap();
-    crate::operations::map_object_into_context(
-        2,
-        obj_stack,
-        vm,
-        MappingPerms::READ | MappingPerms::WRITE,
-    )
-    .unwrap();
-    let init_obj = boot_objects.init.as_ref().expect("no init found");
-    let obj1_data = crate::operations::read_object(&init_obj);
-    let elf = xmas_elf::ElfFile::new(&obj1_data).unwrap();
-    let mut phinfo = None;
-    for ph in elf.program_iter() {
-        if ph.get_type() == Ok(xmas_elf::program::Type::Load) {
-            let file_data = ph.get_data(&elf).unwrap();
-            if let SegmentData::Undefined(file_data) = file_data {
-                let memory_addr = VirtAddr::new(ph.virtual_addr());
-                let memory_slice: &mut [u8] = unsafe {
-                    core::slice::from_raw_parts_mut(
-                        memory_addr.as_mut_ptr(),
-                        ph.mem_size() as usize,
-                    )
-                };
+        let obj_text = create_blank_object();
+        let obj_data = create_blank_object();
+        let obj_stack = create_blank_object();
+        crate::operations::map_object_into_context(
+            0,
+            obj_text,
+            vm.clone(),
+            MappingPerms::READ | MappingPerms::EXECUTE,
+        )
+        .unwrap();
+        crate::operations::map_object_into_context(
+            1,
+            obj_data,
+            vm.clone(),
+            MappingPerms::READ | MappingPerms::WRITE,
+        )
+        .unwrap();
+        crate::operations::map_object_into_context(
+            2,
+            obj_stack,
+            vm,
+            MappingPerms::READ | MappingPerms::WRITE,
+        )
+        .unwrap();
+        let init_obj = boot_objects.init.as_ref().expect("no init found");
+        let obj1_data = crate::operations::read_object(&init_obj);
+        let elf = xmas_elf::ElfFile::new(&obj1_data).unwrap();
+        let mut phinfo = None;
+        for ph in elf.program_iter() {
+            if ph.get_type() == Ok(xmas_elf::program::Type::Load) {
+                let file_data = ph.get_data(&elf).unwrap();
+                if let SegmentData::Undefined(file_data) = file_data {
+                    let memory_addr = VirtAddr::new(ph.virtual_addr());
+                    let memory_slice: &mut [u8] = unsafe {
+                        core::slice::from_raw_parts_mut(
+                            memory_addr.as_mut_ptr(),
+                            ph.mem_size() as usize,
+                        )
+                    };
 
-                memory_slice.fill(0);
-                (&mut memory_slice[0..ph.file_size() as usize]).copy_from_slice(file_data);
+                    memory_slice.fill(0);
+                    (&mut memory_slice[0..ph.file_size() as usize]).copy_from_slice(file_data);
+                }
+            }
+            if ph.get_type() == Ok(xmas_elf::program::Type::Phdr) {
+                phinfo = Some(ph);
             }
         }
-        if ph.get_type() == Ok(xmas_elf::program::Type::Phdr) {
-            phinfo = Some(ph);
+
+        fn append_aux(aux: *mut AuxEntry, entry: AuxEntry) -> *mut AuxEntry {
+            unsafe {
+                *aux = entry;
+                aux.add(1)
+            }
         }
-    }
 
-    fn append_aux(aux: *mut AuxEntry, entry: AuxEntry) -> *mut AuxEntry {
-        unsafe {
-            *aux = entry;
-            aux.add(1)
+        let aux_start: u64 = (1 << 30) * 2 + 0x300000;
+        let aux_start = aux_start as *mut twizzler_abi::aux::AuxEntry;
+        let mut aux = aux_start;
+
+        if let Some(phinfo) = phinfo {
+            aux = append_aux(
+                aux,
+                AuxEntry::ProgramHeaders(
+                    phinfo.virtual_addr(),
+                    phinfo.mem_size() as usize / elf.header.pt2.ph_entry_size() as usize,
+                ),
+            )
         }
-    }
 
-    let aux_start: u64 = (1 << 30) * 2 + 0x300000;
-    let aux_start = aux_start as *mut twizzler_abi::aux::AuxEntry;
-    let mut aux = aux_start;
-
-    if let Some(phinfo) = phinfo {
-        aux = append_aux(
-            aux,
-            AuxEntry::ProgramHeaders(
-                phinfo.virtual_addr(),
-                phinfo.mem_size() as usize / elf.header.pt2.ph_entry_size() as usize,
-            ),
-        )
-    }
-
-    aux = append_aux(aux, AuxEntry::ExecId(init_obj.id()));
-    append_aux(aux, AuxEntry::Null);
+        aux = append_aux(aux, AuxEntry::ExecId(init_obj.id()));
+        append_aux(aux, AuxEntry::Null);
+        (aux_start, elf.header.pt2.entry_point())
+    };
 
     unsafe {
         crate::arch::jump_to_user(
-            VirtAddr::new(elf.header.pt2.entry_point()),
+            VirtAddr::new(entry),
             VirtAddr::new((1 << 30) * 2 + 0x200000),
             aux_start as u64,
         );
@@ -563,21 +587,27 @@ extern "C" fn user_init() {
 }
 
 extern "C" fn user_new_start() {
-    let current = current_thread_ref().unwrap();
-    let args = current.spawn_args.as_ref().unwrap();
-    current.set_tls(args.tls as u64);
-    logln!(
-        "thread jtu {:x} {:x} {:x}",
-        args.entry,
-        args.stack_base + args.stack_size,
-        args.tls
-    );
+    let (entry, stack_base, stack_size, arg) = {
+        /* we need this scope to drop the current thread ref before jumping to user */
+        let current = current_thread_ref().unwrap();
+        let args = current.spawn_args.as_ref().unwrap();
+        current.set_tls(args.tls as u64);
+        /*
+        logln!(
+            "thread jtu {:x} {:x} {:x}",
+            args.entry,
+            args.stack_base + args.stack_size,
+            args.tls
+        );
+        */
+        (args.entry, args.stack_base, args.stack_size, args.arg)
+    };
     unsafe {
         crate::arch::jump_to_user(
-            VirtAddr::new(args.entry as u64),
+            VirtAddr::new(entry as u64),
             /* TODO: this is x86 specific */
-            VirtAddr::new((args.stack_base + args.stack_size - 8) as u64),
-            args.arg as u64,
+            VirtAddr::new((stack_base + stack_size - 8) as u64),
+            arg as u64,
         )
     }
 }
