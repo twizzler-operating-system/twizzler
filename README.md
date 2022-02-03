@@ -1,13 +1,15 @@
 # The Twizzler Operating System
 
-Twizzler is a research operating system designed to explore novel programming models for new memory
-hierarchy designs. We are focused on providing an environment designed around invariant data
-references and long-lived pointers, thus being well suited for byte-addressible non-volatile memory
-and multi-node networked applications.
+Twizzler is a research operating system designed to explore novel
+programming models for new memory hierarchy designs. We are focused on
+providing an environment designed around invariant data references and
+long-lived pointers, thus being well suited for byte-addressible
+non-volatile memory and multi-node networked applications.
 
-This repo contains source code for the kernel and userspace, along with a build system that
-bootstraps a Twizzler userspace. You can write code for it and play around! We're not quite
-production ready, but we're getting there! :)
+This repo contains source code for the kernel and userspace, along
+with a build system that bootstraps a Twizzler userspace. You can
+write code for it and play around! We're not quite production ready,
+but we're getting there! :)
 
 See (https://twizzler.io/about.html) for more details.
 
