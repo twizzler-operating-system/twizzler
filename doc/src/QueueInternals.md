@@ -1,1 +1,0 @@
-# Queue Internals {#qinternals}
