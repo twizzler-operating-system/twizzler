@@ -1,7 +1,5 @@
 # The Twizzler Operating System
 
-NOTE: THIS REPO IS A NEW IMPLEMENTATION OF TWIZZLER AND IS NOT YET AT FEATURE PARITY WITH THE OLD VERSION.
-
 Twizzler is a research operating system designed to explore novel programming models for new memory
 hierarchy designs. We are focused on providing an environment designed around invariant data
 references and long-lived pointers, thus being well suited for byte-addressible non-volatile memory
@@ -12,6 +10,12 @@ bootstraps a Twizzler userspace. You can write code for it and play around! We'r
 production ready, but we're getting there! :)
 
 See (https://twizzler.io/about.html) for more details.
+
+NOTE: This repo has recently been rebuilt with our pure Rust
+implementation of the Twizzler kernel.  If you have previously forked
+or used Twizzler you may find that some features are changed or not at
+parity.  Please open an issue on our tracker if you find any
+deficiencies.
 
 ## Building
 
