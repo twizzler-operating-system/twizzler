@@ -69,11 +69,6 @@ impl<T> Mutex<T> {
         loop {
             let reinsert = {
                 let mut queue = self.queue.lock();
-                logln!(
-                    "checking queue {} {:p}",
-                    current_thread.as_ref().map_or(0, |x| x.id()),
-                    self
-                );
                 if !queue.owned {
                     queue.owned = true;
                     if let Some(ref thread) = current_thread {
@@ -81,11 +76,6 @@ impl<T> Mutex<T> {
                             thread.donate_priority(pri.clone());
                         }
                     }
-                    logln!(
-                        "got it {} {:p}",
-                        current_thread.as_ref().map_or(0, |x| x.id()),
-                        self
-                    );
                     queue.owner = current_thread;
                     break;
                 } else {
@@ -101,12 +91,6 @@ impl<T> Mutex<T> {
                 let mut reinsert = true;
                 if let Some(ref thread) = current_thread {
                     if !thread.is_idle_thread() {
-                        logln!(
-                            "thread {} block on {:p} (owned by {:?})",
-                            thread.id(),
-                            self,
-                            queue.owner.as_ref().map(|x| x.id())
-                        );
                         thread.set_state(ThreadState::Blocked);
                         queue.queue.push_back(thread.clone());
                         reinsert = false;
@@ -122,12 +106,6 @@ impl<T> Mutex<T> {
                 }
                 reinsert
             };
-
-            logln!(
-                "sched {} {:p}",
-                current_thread.as_ref().map_or(0, |x| x.id()),
-                self
-            );
             sched::schedule(reinsert);
         }
 
@@ -170,9 +148,6 @@ impl<T> core::ops::DerefMut for LockGuard<'_, T> {
 
 impl<T> Drop for LockGuard<'_, T> {
     fn drop(&mut self) {
-        if let Some(thread) = current_thread_ref() {
-            logln!("dropping mutex {:p} {}", self.lock, thread.id());
-        }
         if let Some(ref prev) = self.prev_donated_priority {
             if let Some(thread) = current_thread_ref() {
                 thread.donate_priority(prev.clone());

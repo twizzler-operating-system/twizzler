@@ -6,6 +6,7 @@ use fixedbitset::FixedBitSet;
 use crate::{
     clock::Nanoseconds,
     interrupt,
+    once::Once,
     processor::{current_processor, get_processor, Processor},
     spinlock::Spinlock,
     thread::{current_thread_ref, set_current_thread, Priority, Thread, ThreadRef, ThreadState},
@@ -78,14 +79,14 @@ impl CPUTopoNode {
     }
 }
 
-static CPU_TOPOLOGY_ROOT: spin::Once<CPUTopoNode> = spin::Once::new();
+static CPU_TOPOLOGY_ROOT: Once<CPUTopoNode> = Once::new();
 
 pub fn set_cpu_topology(root: CPUTopoNode) {
     CPU_TOPOLOGY_ROOT.call_once(|| root);
 }
 
 pub fn get_cpu_topology() -> &'static CPUTopoNode {
-    CPU_TOPOLOGY_ROOT.get().unwrap()
+    CPU_TOPOLOGY_ROOT.poll().unwrap()
 }
 
 #[thread_local]
@@ -307,12 +308,14 @@ pub fn create_idle_thread() {
 }
 
 fn switch_to(thread: ThreadRef, old: ThreadRef) {
+    /*
     logln!(
         "{} switch to {} from {}",
         current_processor().id,
         thread.id(),
         old.id()
     );
+    */
     let cp = current_processor();
     cp.stats.switches.fetch_add(1, Ordering::SeqCst);
     set_current_thread(thread.clone());
@@ -322,9 +325,8 @@ fn switch_to(thread: ThreadRef, old: ThreadRef) {
     if !thread.is_idle_thread() {
         crate::clock::schedule_oneshot_tick(1);
     }
-    /* TODO: is this logic actually needed? Perhaps the ref counts will drop just fine on their own, here. Gotta check. */
     /* Okay, so this is a little gross. Basically, we need to drop these references to make
-    sure the refcounts don't climb every time we switch_to(). But we still need a reference
+    sure the refcounts don't climb every time we switch_to() with an exiting thread. But we still need a reference
     to the underlying thread so we can do the switch_thread call.
 
     So we manually decrement the refcounts while maintaining a raw pointer to the underlying.
@@ -489,7 +491,7 @@ pub fn schedule_resched() {
 
 #[thread_local]
 static STAT_COUNTER: AtomicU64 = AtomicU64::new(0);
-const PRINT_STATS: bool = false;
+const PRINT_STATS: bool = true;
 pub fn schedule_stattick(dt: Nanoseconds) {
     schedule_maybe_rebalance(dt);
 

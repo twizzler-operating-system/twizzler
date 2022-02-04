@@ -51,10 +51,49 @@ fn test_thread_sync() {
 
     let reference = ThreadSyncReference::Virtual(&BAZ as *const AtomicU64);
     let wake = ThreadSync::new_wake(ThreadSyncWake::new(reference, 1));
+    let mut c = 0u64;
     loop {
-        println!("{:?} waking up", std::thread::current().id());
+        println!("{:?} waking up {}", std::thread::current().id(), c);
+        c += 1;
         let res = sys_thread_sync(&mut [wake], None);
+        for i in 0u64..40000u64 {}
         println!("done {:?}", res);
+    }
+}
+
+struct Foo {
+    x: u64,
+}
+
+fn test_mutex() {
+    let mutex: Arc<Mutex<Foo>> = Arc::new(Mutex::new(Foo { x: 0 }));
+    let mutex2 = mutex.clone();
+    std::thread::spawn(move || {
+        let mut c = 0u64;
+        loop {
+            let mut data = mutex.lock().unwrap();
+            data.x += 1;
+            let v = data.x;
+            c += 1;
+            if c % 1000000 == 0 {
+                println!("w {}", data.x);
+            }
+            assert_eq!(v, data.x);
+        }
+    });
+
+    let mut c = 0u64;
+    loop {
+        let mut data = mutex2.lock().unwrap();
+        data.x += 1;
+        c += 1;
+        let v = data.x;
+        // for i in 0..1000 {}
+        assert_eq!(v, data.x);
+        if c % 1000000 == 0 {
+            println!("a {}", data.x);
+        }
+        assert_eq!(v, data.x);
     }
 }
 
@@ -62,6 +101,7 @@ fn main() {
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
 
+    test_mutex();
     test_thread_sync();
     let j = std::thread::spawn(|| {
         for i in 0..1 {
@@ -85,7 +125,7 @@ extern "C" fn _start() -> ! {
 }
 */
 
-use std::sync::atomic::AtomicU64;
+use std::sync::{atomic::AtomicU64, Arc, Mutex};
 
 use twizzler_abi::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep,

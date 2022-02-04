@@ -7,7 +7,6 @@ edition = "2021"
 [dependencies]
 bitflags = "*"
 uart_16550 = "0.2.0"
-spin = "*"
 x86 = "*"
 x86_64 = "*"
 linked_list_allocator = "*"

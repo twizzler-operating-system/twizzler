@@ -29,6 +29,7 @@ pub mod machine;
 pub mod memory;
 mod mutex;
 mod obj;
+mod once;
 mod operations;
 mod panic;
 mod processor;
@@ -40,10 +41,10 @@ pub mod utils;
 extern crate alloc;
 
 extern crate bitflags;
+use crate::once::Once;
 use arch::BootInfoSystemTable;
 use initrd::BootModule;
 use memory::MemoryRegion;
-use spin::Once;
 use thread::current_thread_ref;
 use x86_64::VirtAddr;
 

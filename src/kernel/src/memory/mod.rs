@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use x86_64::{PhysAddr, VirtAddr};
 
-use crate::{arch, BootInfo};
+use crate::{arch, spinlock::Spinlock, BootInfo};
 
 pub mod allocator;
 pub mod context;
@@ -124,7 +124,8 @@ struct KernelMemoryManagerInner {
     kernel_context: MemoryContextInner,
 }
 pub struct KernelMemoryManager {
-    inner: spin::Mutex<KernelMemoryManagerInner>,
+    // TODO: spinlock or mutex?
+    inner: Spinlock<KernelMemoryManagerInner>,
 }
 
 impl KernelMemoryManager {
@@ -193,7 +194,7 @@ pub fn init<B: BootInfo>(boot_info: &B, clone_regions: &[VirtAddr]) {
 
     unsafe {
         KERNEL_MEMORY_MANAGER = Box::into_raw(Box::new(KernelMemoryManager {
-            inner: spin::Mutex::new(KernelMemoryManagerInner {
+            inner: Spinlock::new(KernelMemoryManagerInner {
                 kernel_context: kernel_context,
             }),
         }))

@@ -9,8 +9,9 @@ use x86_64::VirtAddr;
 use crate::{
     mutex::Mutex,
     obj::{LookupFlags, ObjectRef},
+    once::Once,
     spinlock::Spinlock,
-    thread::{current_memory_context, current_thread_ref, ThreadRef, ThreadState},
+    thread::{current_memory_context, current_thread_ref, CriticalGuard, ThreadRef, ThreadState},
 };
 
 struct Requeue {
@@ -18,7 +19,7 @@ struct Requeue {
 }
 
 /* TODO: make this thread-local */
-static mut REQUEUE: spin::Once<Requeue> = spin::Once::new();
+static mut REQUEUE: Once<Requeue> = Once::new();
 
 fn get_requeue_list() -> &'static Requeue {
     unsafe {
@@ -41,20 +42,23 @@ pub fn add_to_requeue(thread: ThreadRef) {
     requeue.list.lock().insert(thread.id(), thread);
 }
 
-fn finish_blocking() {
+// TODO: this is gross, we're manually trading out a critical guard with an interrupt guard because
+// we don't want to get interrupted... we need a better way to do this kind of consumable "don't
+// schedule until I say so".
+fn finish_blocking(guard: CriticalGuard) {
     let thread = current_thread_ref().unwrap();
-    thread.set_state(ThreadState::Blocked);
-    crate::sched::schedule(false);
-    thread.set_state(ThreadState::Running);
+    crate::interrupt::with_disabled(|| {
+        thread.set_state(ThreadState::Blocked);
+        drop(guard);
+        crate::sched::schedule(false);
+        thread.set_state(ThreadState::Running);
+    });
 }
 
 fn get_obj_and_offset(addr: VirtAddr) -> Result<(ObjectRef, usize), ThreadSyncError> {
-    let t = current_thread_ref().unwrap();
-    logln!("w{}", t.id());
+    // let t = current_thread_ref().unwrap();
     let vmc = current_memory_context().ok_or(ThreadSyncError::Unknown)?;
-    logln!("x{}", t.id());
     let mapping = { vmc.inner().lookup_object(addr) }.ok_or(ThreadSyncError::InvalidReference)?;
-    logln!("y");
     let offset = (addr.as_u64() as usize) % (1024 * 1024 * 1024); //TODO: arch-dep, centralize these calculations somewhere, see PageNumber
     Ok((mapping.obj.clone(), offset))
 }
@@ -94,7 +98,6 @@ fn undo_sleep(sleep: SleepEvent) {
 
 fn wakeup(wake: &ThreadSyncWake) -> Result<usize, ThreadSyncError> {
     let (obj, offset) = get_obj(wake.reference)?;
-    logln!("got ref");
     Ok(obj.wakeup_word(offset, wake.count))
 }
 
@@ -104,15 +107,16 @@ pub fn sys_thread_sync(
 ) -> Result<usize, ThreadSyncError> {
     let mut ready_count = 0;
     let mut unsleeps = Vec::new();
-    let ttt = current_thread_ref().unwrap();
-    logln!("{} thread_sync {:?}", ttt.id(), ops);
+    // let ttt = current_thread_ref().unwrap();
+    // logln!("{} thread_sync {:?}", ttt.id(), ops);
     for op in ops {
         match op {
             ThreadSync::Sleep(sleep, result) => match prep_sleep(sleep, unsleeps.len() == 0) {
                 Ok(se) => {
+                    // logln!("s {}", se.did_sleep);
                     *result = Ok(0);
                     if se.did_sleep {
-                        unsleeps.push(se)
+                        unsleeps.push(se);
                     } else {
                         ready_count += 1;
                     }
@@ -121,6 +125,7 @@ pub fn sys_thread_sync(
             },
             ThreadSync::Wake(wake, result) => match wakeup(wake) {
                 Ok(count) => {
+                    //logln!("w {}", count);
                     *result = Ok(count);
                     if count > 0 {
                         ready_count += 1;
@@ -133,7 +138,6 @@ pub fn sys_thread_sync(
         }
     }
     let thread = current_thread_ref().unwrap();
-    logln!("{} GOT HERE", thread.id());
     {
         let guard = thread.enter_critical();
         if unsleeps.len() > 0 {
@@ -141,15 +145,16 @@ pub fn sys_thread_sync(
         }
         requeue_all();
         if unsleeps.len() > 0 {
-            logln!("actually sleeping");
-            finish_blocking();
-            logln!("back from sleeping")
+            // logln!("actually sleeping");
+            finish_blocking(guard);
+            //  logln!("back from sleeping")
+        } else {
+            drop(guard);
         }
-        drop(guard);
     }
     for op in unsleeps {
         undo_sleep(op);
     }
-    logln!("  => ret {}", ready_count);
+    //logln!("  => ret {}", ready_count);
     Ok(ready_count)
 }

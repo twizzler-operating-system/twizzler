@@ -446,7 +446,7 @@ fn justval<T: From<u64>>(_: u64, v: u64) -> T {
 pub fn sys_thread_sync(
     operations: &mut [ThreadSync],
     timeout: Option<Duration>,
-) -> Result<bool, ThreadSyncError> {
+) -> Result<usize, ThreadSyncError> {
     let ptr = operations.as_mut_ptr();
     let count = operations.len();
     let timeout = timeout
@@ -463,7 +463,7 @@ pub fn sys_thread_sync(
         code,
         val,
         |c, _| c != 0,
-        |_, v| v > 0,
+        |_, v| v as usize,
         |_, v| ThreadSyncError::from(v),
     )
 }

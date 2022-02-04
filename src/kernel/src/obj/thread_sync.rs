@@ -34,8 +34,10 @@ impl SleepInfo {
     pub fn insert(&mut self, offset: usize, thread: ThreadRef) {
         if let Some(se) = self.words.get_mut(&offset) {
             se.threads.insert(thread.id(), thread);
+            //   logln!("inserted {}", se.threads.len());
         } else {
             self.words.insert(offset, SleepEntry::new(thread));
+            // logln!("inserted 1");
         }
     }
 
@@ -48,6 +50,7 @@ impl SleepInfo {
     pub fn wake_n(&mut self, offset: usize, max_count: usize) -> usize {
         let mut count = 0;
         if let Some(se) = self.words.get_mut(&offset) {
+            //  logln!("wake up {}/{} threads", max_count, se.threads.len());
             if max_count == 1 {
                 /* This is fairly common, so we can have a fast path */
                 let mut remove = None;
@@ -58,9 +61,10 @@ impl SleepInfo {
                     }
                 }
                 if let Some(ref id) = remove {
-                    crate::syscall::sync::add_to_requeue(se.threads.remove(id).unwrap())
+                    crate::syscall::sync::add_to_requeue(se.threads.remove(id).unwrap());
+                    return 1;
                 }
-                return 1;
+                return 0;
             }
             for (_, t) in se.threads.drain_filter(|_, v| {
                 let p = count < max_count && v.reset_sync_sleep();
