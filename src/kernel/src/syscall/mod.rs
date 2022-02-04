@@ -9,7 +9,8 @@ use x86_64::VirtAddr;
 use self::thread::thread_ctrl;
 
 mod object;
-mod sync;
+/* TODO: move the requeue stuff into sched and make this private */
+pub mod sync;
 mod thread;
 
 pub trait SyscallContext {
@@ -60,7 +61,7 @@ fn type_sys_object_create(
     object::sys_object_create(create, srcs, ties)
 }
 
-fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<u64, ThreadSyncError> {
+fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<usize, ThreadSyncError> {
     let slice = unsafe { create_user_slice(ptr, len) }.ok_or(ThreadSyncError::InvalidArgument)?;
     let timeout =
         unsafe { create_user_nullable_ptr(timeoutptr) }.ok_or(ThreadSyncError::InvalidArgument)?;
@@ -163,8 +164,8 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let len = context.arg1();
             let timeout = context.arg2();
             let result = type_sys_thread_sync(ptr, len, timeout);
-            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
-            context.set_return_values(code, val);
+            let (code, val) = convert_result_to_codes(result, |x| zero_ok(x as u64), one_err);
+                context.set_return_values(code, val);
         }
         Syscall::SysInfo => {
             let ptr = context.arg0();

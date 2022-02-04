@@ -56,6 +56,8 @@ pub struct ThreadStats {
 const THREAD_PROC_IDLE: u32 = 1;
 const THREAD_HAS_DONATED_PRIORITY: u32 = 2;
 const THREAD_IN_KERNEL: u32 = 4;
+const THREAD_IS_SYNC_SLEEP: u32 = 8;
+const THREAD_IS_SYNC_SLEEP_DONE: u32 = 16;
 pub struct Thread {
     pub arch: crate::arch::thread::ArchThread,
     pub priority: Priority,
@@ -145,15 +147,15 @@ impl Thread {
 
     pub fn new_with_new_vm() -> Self {
         let mut thread = Self::new();
-        thread.memory_context = Some(Arc::new(Mutex::new(MemoryContext::new())));
-        thread.memory_context.as_ref().unwrap().lock().add_thread();
+        thread.memory_context = Some(Arc::new(MemoryContext::new()));
+        thread.memory_context.as_ref().unwrap().inner().add_thread();
         thread
     }
 
     pub fn new_with_current_context(spawn_args: ThreadSpawnArgs) -> Self {
         let mut thread = Self::new();
         thread.memory_context = Some(current_memory_context().unwrap().clone());
-        thread.memory_context.as_ref().unwrap().lock().add_thread();
+        thread.memory_context.as_ref().unwrap().inner().add_thread();
         thread.spawn_args = Some(spawn_args);
         thread
     }
@@ -166,10 +168,33 @@ impl Thread {
         thread
     }
 
+    pub fn set_sync_sleep(&self) {
+        self.flags.fetch_or(THREAD_IS_SYNC_SLEEP, Ordering::SeqCst);
+    }
+
+    pub fn reset_sync_sleep(&self) -> bool {
+        let old = self
+            .flags
+            .fetch_and(!THREAD_IS_SYNC_SLEEP, Ordering::SeqCst);
+        (old & THREAD_IS_SYNC_SLEEP) != 0
+    }
+
+    pub fn set_sync_sleep_done(&self) {
+        self.flags
+            .fetch_or(THREAD_IS_SYNC_SLEEP_DONE, Ordering::SeqCst);
+    }
+
+    pub fn reset_sync_sleep_done(&self) -> bool {
+        let old = self
+            .flags
+            .fetch_and(!THREAD_IS_SYNC_SLEEP_DONE, Ordering::SeqCst);
+        (old & THREAD_IS_SYNC_SLEEP_DONE) != 0
+    }
+
     pub fn switch_thread(&self, current: &Thread) {
         if self != current {
             if let Some(ref ctx) = self.memory_context {
-                ctx.lock().switch();
+                ctx.switch();
             }
         }
         self.arch_switch_to(current)
@@ -317,7 +342,7 @@ impl Drop for Thread {
     fn drop(&mut self) {
         //logln!("drop thread {}", self.id());
         if let Some(ref vm) = self.memory_context {
-            vm.lock().remove_thread();
+            vm.inner().remove_thread();
         }
     }
 }

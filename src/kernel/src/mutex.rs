@@ -61,9 +61,19 @@ impl<T> Mutex<T> {
             .as_ref()
             .and_then(|t| t.get_donated_priority());
 
+        if let Some(ref current_thread) = current_thread {
+            /* TODO: maybe try to support critical threads by falling back to a spinloop? */
+            assert!(!current_thread.is_critical());
+        }
+
         loop {
             let reinsert = {
                 let mut queue = self.queue.lock();
+                logln!(
+                    "checking queue {} {:p}",
+                    current_thread.as_ref().map_or(0, |x| x.id()),
+                    self
+                );
                 if !queue.owned {
                     queue.owned = true;
                     if let Some(ref thread) = current_thread {
@@ -71,13 +81,32 @@ impl<T> Mutex<T> {
                             thread.donate_priority(pri.clone());
                         }
                     }
+                    logln!(
+                        "got it {} {:p}",
+                        current_thread.as_ref().map_or(0, |x| x.id()),
+                        self
+                    );
                     queue.owner = current_thread;
                     break;
+                } else {
+                    if let Some(ref cur_owner) = queue.owner {
+                        if let Some(ref cur_thread) = current_thread {
+                            if cur_thread.id() == cur_owner.id() {
+                                panic!("this mutex is not re-entrant");
+                            }
+                        }
+                    }
                 }
 
                 let mut reinsert = true;
                 if let Some(ref thread) = current_thread {
                     if !thread.is_idle_thread() {
+                        logln!(
+                            "thread {} block on {:p} (owned by {:?})",
+                            thread.id(),
+                            self,
+                            queue.owner.as_ref().map(|x| x.id())
+                        );
                         thread.set_state(ThreadState::Blocked);
                         queue.queue.push_back(thread.clone());
                         reinsert = false;
@@ -94,6 +123,11 @@ impl<T> Mutex<T> {
                 reinsert
             };
 
+            logln!(
+                "sched {} {:p}",
+                current_thread.as_ref().map_or(0, |x| x.id()),
+                self
+            );
             sched::schedule(reinsert);
         }
 
@@ -106,7 +140,6 @@ impl<T> Mutex<T> {
     fn release(&self) {
         let mut queue = self.queue.lock();
         if let Some(thread) = queue.queue.pop_front() {
-            thread.set_state(ThreadState::Running);
             sched::schedule_thread(thread);
         } else {
             queue.pri = None;
@@ -137,6 +170,9 @@ impl<T> core::ops::DerefMut for LockGuard<'_, T> {
 
 impl<T> Drop for LockGuard<'_, T> {
     fn drop(&mut self) {
+        if let Some(thread) = current_thread_ref() {
+            logln!("dropping mutex {:p} {}", self.lock, thread.id());
+        }
         if let Some(ref prev) = self.prev_donated_priority {
             if let Some(thread) = current_thread_ref() {
                 thread.donate_priority(prev.clone());

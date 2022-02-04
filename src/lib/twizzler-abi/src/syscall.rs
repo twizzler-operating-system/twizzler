@@ -248,6 +248,15 @@ pub enum ThreadSyncOp {
     Equal = 0,
 }
 
+impl ThreadSyncOp {
+    /// Apply the operation to two values, returning the result.
+    pub fn check<T: Eq + PartialEq + Ord + PartialOrd>(&self, a: T, b: T) -> bool {
+        match self {
+            Self::Equal => a == b,
+        }
+    }
+}
+
 bitflags! {
     /// Flags to pass to sys_thread_sync.
     pub struct ThreadSyncFlags: u32 {
@@ -260,7 +269,7 @@ bitflags! {
 #[repr(C)]
 /// A reference to a piece of data. May either be a non-realized persistent reference or a virtual address.
 pub enum ThreadSyncReference {
-    ObjectRef(ObjID, u64),
+    ObjectRef(ObjID, usize),
     Virtual(*const AtomicU64),
 }
 
@@ -268,18 +277,24 @@ pub enum ThreadSyncReference {
 #[repr(C)]
 /// Specification for a thread sleep request.
 pub struct ThreadSyncSleep {
-    reference: ThreadSyncReference,
-    value: u64,
-    op: ThreadSyncOp,
-    flags: ThreadSyncFlags,
+    /// Reference to an atomic u64 that we will compare to.
+    pub reference: ThreadSyncReference,
+    /// The value used for the comparison.
+    pub value: u64,
+    /// The operation to compare *reference and value to.
+    pub op: ThreadSyncOp,
+    /// Flags to apply to this sleep request.
+    pub flags: ThreadSyncFlags,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 /// Specification for a thread wake request.
 pub struct ThreadSyncWake {
-    reference: ThreadSyncReference,
-    count: usize,
+    /// Reference to the word for which we will wake up threads that have gone to sleep.
+    pub reference: ThreadSyncReference,
+    /// Number of threads to wake up.
+    pub count: usize,
 }
 
 impl ThreadSyncSleep {
@@ -327,7 +342,7 @@ pub enum ThreadSyncError {
     InvalidArgument = 2,
 }
 
-pub type ThreadSyncResult = Result<u64, ThreadSyncError>;
+pub type ThreadSyncResult = Result<usize, ThreadSyncError>;
 
 impl From<ThreadSyncError> for u64 {
     fn from(x: ThreadSyncError) -> Self {
@@ -387,6 +402,14 @@ impl ThreadSync {
     pub fn new_wake(wake: ThreadSyncWake) -> Self {
         Self::Wake(wake, Ok(0))
     }
+
+    /// Get the result of the thread sync operation.
+    pub fn get_result(&self) -> ThreadSyncResult {
+        match self {
+            ThreadSync::Sleep(_, e) => *e,
+            ThreadSync::Wake(_, e) => *e,
+        }
+    }
 }
 
 #[inline]
@@ -439,7 +462,7 @@ pub fn sys_thread_sync(
     convert_codes_to_result(
         code,
         val,
-        |c, _| c == 0,
+        |c, _| c != 0,
         |_, v| v > 0,
         |_, v| ThreadSyncError::from(v),
     )

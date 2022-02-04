@@ -291,6 +291,7 @@ pub fn schedule_new_thread(thread: Thread) {
 }
 
 pub fn schedule_thread(thread: ThreadRef) {
+    thread.set_state(ThreadState::Running);
     if thread.is_idle_thread() {
         return;
     }
@@ -306,14 +307,12 @@ pub fn create_idle_thread() {
 }
 
 fn switch_to(thread: ThreadRef, old: ThreadRef) {
-    /*
     logln!(
         "{} switch to {} from {}",
         current_processor().id,
         thread.id(),
         old.id()
     );
-    */
     let cp = current_processor();
     cp.stats.switches.fetch_add(1, Ordering::SeqCst);
     set_current_thread(thread.clone());
@@ -323,7 +322,7 @@ fn switch_to(thread: ThreadRef, old: ThreadRef) {
     if !thread.is_idle_thread() {
         crate::clock::schedule_oneshot_tick(1);
     }
-    // logln!("t {} {}", old.id(), Arc::strong_count(&old));
+    /* TODO: is this logic actually needed? Perhaps the ref counts will drop just fine on their own, here. Gotta check. */
     /* Okay, so this is a little gross. Basically, we need to drop these references to make
     sure the refcounts don't climb every time we switch_to(). But we still need a reference
     to the underlying thread so we can do the switch_thread call.
@@ -366,6 +365,7 @@ pub fn schedule(reinsert: bool) {
         return;
     }
 
+    cur.enter_critical();
     if !cur.is_idle_thread() && reinsert {
         // logln!("{} reinserting thread {}", processor.id, cur.id());
         schedule_thread(cur.clone());

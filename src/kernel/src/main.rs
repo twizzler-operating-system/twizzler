@@ -15,6 +15,7 @@
 #![feature(optimize_attribute)]
 #![feature(asm_sym)]
 #![feature(asm_const)]
+#![feature(btree_drain_filter)]
 
 #[macro_use]
 pub mod log;

@@ -24,13 +24,13 @@ pub enum MapFailed {
 }
 
 pub struct MappingIter<'a> {
-    ctx: &'a MemoryContext,
+    ctx: &'a MemoryContextInner,
     next: VirtAddr,
     done: bool,
 }
 
 impl<'a> MappingIter<'a> {
-    fn new(ctx: &'a MemoryContext, start: VirtAddr) -> Self {
+    fn new(ctx: &'a MemoryContextInner, start: VirtAddr) -> Self {
         Self {
             ctx,
             next: start,
@@ -40,7 +40,7 @@ impl<'a> MappingIter<'a> {
 }
 
 use self::{
-    context::{MapFlags, MemoryContext},
+    context::{MapFlags, MemoryContext, MemoryContextInner},
     frame::{alloc_frame, PhysicalFrameFlags},
 };
 #[derive(Clone, Copy, Debug)]
@@ -81,9 +81,9 @@ impl<'a> Iterator for MappingIter<'a> {
     }
 }
 
-fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContext {
-    let ctx = MemoryContext::current();
-    let mut new_context = MemoryContext::new_blank();
+fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContextInner {
+    let ctx = MemoryContextInner::current();
+    let mut new_context = MemoryContextInner::new_blank();
 
     let phys_mem_offset = arch::memory::phys_to_virt(PhysAddr::new(0));
     /* TODO: map ALL of the physical address space */
@@ -115,13 +115,13 @@ fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContext {
         new_context.clone_region(&ctx, *va);
     }
     unsafe {
-        new_context.arch.switch();
+        new_context.switch();
     }
     new_context
 }
 
 struct KernelMemoryManagerInner {
-    kernel_context: MemoryContext,
+    kernel_context: MemoryContextInner,
 }
 pub struct KernelMemoryManager {
     inner: spin::Mutex<KernelMemoryManagerInner>,

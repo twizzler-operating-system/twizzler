@@ -113,7 +113,9 @@ impl TwzGlobalAlloc {
             self.initial_slot = AllocSlot::new();
             if self.initial_slot.is_none() {
                 crate::print_err("failed to allocate initial allocation object");
-                crate::abort();
+                unsafe {
+                    crate::internal_abort();
+                }
             }
         }
         let ptr = crate::internal_unwrap(
@@ -130,7 +132,9 @@ impl TwzGlobalAlloc {
                 self.other_slots[self.slot_counter] = AllocSlot::new();
                 if self.other_slots[self.slot_counter].is_none() {
                     crate::print_err("failed to create allocation object");
-                    crate::abort();
+                    unsafe {
+                        crate::internal_abort();
+                    }
                 }
             }
             let ptr = crate::internal_unwrap(
