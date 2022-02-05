@@ -14,6 +14,8 @@ use crate::{
     mutex::{LockGuard, Mutex},
 };
 
+use self::thread_sync::SleepInfo;
+
 pub mod copy;
 pub mod pages;
 pub mod pagevec;
@@ -26,6 +28,7 @@ pub struct Object {
     flags: AtomicU32,
     range_tree: Mutex<range::PageRangeTree>,
     maplist: Mutex<BTreeSet<MappingRef>>,
+    sleep_info: Mutex<SleepInfo>,
 }
 
 #[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq)]
@@ -115,6 +118,7 @@ impl Object {
             flags: AtomicU32::new(0),
             range_tree: Mutex::new(range::PageRangeTree::new()),
             maplist: Mutex::new(BTreeSet::new()),
+            sleep_info: Mutex::new(SleepInfo::new()),
         }
     }
 

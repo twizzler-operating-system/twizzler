@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use alloc::sync::Arc;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -58,7 +60,7 @@ impl Page {
 }
 
 impl Object {
-    pub unsafe fn write_val_and_signal<T>(&self, offset: usize, val: T, wakeup_count: u64) {
+    pub unsafe fn write_val_and_signal<T>(&self, offset: usize, val: T, wakeup_count: usize) {
         {
             let mut obj_page_tree = self.lock_page_tree();
             let page_number = PageNumber::from_address(VirtAddr::new(offset as u64));
@@ -77,5 +79,22 @@ impl Object {
             drop(obj_page_tree);
         }
         self.wakeup_word(offset, wakeup_count);
+        crate::syscall::sync::requeue_all();
+    }
+
+    pub unsafe fn read_atomic_u64(&self, offset: usize) -> u64 {
+        let mut obj_page_tree = self.lock_page_tree();
+        let page_number = PageNumber::from_address(VirtAddr::new(offset as u64));
+        let page_offset = offset % PageNumber::PAGE_SIZE;
+
+        if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
+            let t = page.get_mut_to_val::<AtomicU64>(page_offset);
+            return t.load(Ordering::SeqCst);
+        } else {
+            let page = Page::new();
+            obj_page_tree.add_page(page_number, page);
+            drop(obj_page_tree);
+            return self.read_atomic_u64(offset);
+        }
     }
 }

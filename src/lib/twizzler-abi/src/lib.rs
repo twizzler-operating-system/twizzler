@@ -37,6 +37,7 @@ pub mod time;
 pub fn ready() {}
 
 /// We need to provide a no-mangled abort() call for things like libunwind.
+#[cfg(feature = "rt")]
 #[no_mangle]
 pub extern "C" fn abort() -> ! {
     unsafe { internal_abort() }
@@ -55,6 +56,7 @@ fn print_err(err: &str) {
 /// that assumes stack protections works (libunwind).
 /// # Safety
 /// This function cannot be called safely, as it will abort unconditionally.
+#[cfg(feature = "rt")]
 #[no_mangle]
 pub unsafe extern "C" fn __stack_chk_fail() {
     print_err("stack overflow -- aborting");
@@ -69,6 +71,8 @@ fn internal_unwrap<T>(t: Option<T>, msg: &str) -> T {
         t
     } else {
         print_err(msg);
-        abort();
+        unsafe {
+            internal_abort();
+        }
     }
 }

@@ -12,7 +12,7 @@ pub fn map_object_into_context(
     perms: MappingPerms,
 ) -> Result<(), ()> {
     let mapping = Arc::new(Mapping::new(obj.clone(), vmc.clone(), slot, perms));
-    let mut vmc = vmc.lock();
+    let mut vmc = vmc.inner();
     obj.insert_mapping(mapping.clone());
     vmc.insert_mapping(mapping);
 
