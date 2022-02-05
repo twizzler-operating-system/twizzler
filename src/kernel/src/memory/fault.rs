@@ -42,7 +42,7 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
         panic!("page fault in thread with no memory context");
     }
     let vmc = vmc.unwrap();
-    let mapping = { vmc.lock().lookup_object(addr) };
+    let mapping = { vmc.inner().lookup_object(addr) };
 
     if let Some(mapping) = mapping {
         let objid = mapping.obj.id();
@@ -51,7 +51,7 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
         let is_write = cause == PageFaultCause::Write;
 
         if let Some((page, cow)) = obj_page_tree.get_page(page_number, is_write) {
-            let mut vmc = vmc.lock();
+            let mut vmc = vmc.inner();
             /* check if mappings changed */
             if vmc.lookup_object(addr).map_or(0.into(), |o| o.obj.id()) != objid {
                 drop(vmc);

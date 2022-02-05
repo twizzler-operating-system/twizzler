@@ -4,8 +4,8 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+use crate::{once::Once, spinlock::Spinlock};
 use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
-use spin::{Mutex, Once};
 use x86_64::VirtAddr;
 
 use crate::{
@@ -42,7 +42,7 @@ pub struct ProcessorStats {
 
 pub struct Processor {
     pub arch: ArchProcessor,
-    pub sched: Mutex<SchedulingQueues>,
+    pub sched: Spinlock<SchedulingQueues>,
     running: AtomicBool,
     topology_path: Once<Vec<(usize, bool)>>,
     pub id: u32,
@@ -154,7 +154,7 @@ impl Processor {
     pub fn new(id: u32) -> Self {
         Self {
             arch: ArchProcessor::default(),
-            sched: Mutex::new(Default::default()),
+            sched: Spinlock::new(Default::default()),
             running: AtomicBool::new(false),
             topology_path: Once::new(),
             id,

@@ -3,13 +3,14 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use crate::once::Once;
 use alloc::vec::Vec;
 
 use crate::mutex::Mutex;
 
 pub struct IdCounter {
     counter: AtomicU64,
-    reuse: spin::Once<Mutex<Vec<u64>>>,
+    reuse: Once<Mutex<Vec<u64>>>,
 }
 
 pub struct Id<'a> {
@@ -21,7 +22,7 @@ impl IdCounter {
     pub const fn new() -> Self {
         Self {
             counter: AtomicU64::new(1),
-            reuse: spin::Once::new(),
+            reuse: Once::new(),
         }
     }
 

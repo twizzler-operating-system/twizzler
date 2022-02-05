@@ -1,7 +1,8 @@
 use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
-        ObjectCreateError, ObjectMapError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
+        KernelConsoleReadSource, ObjectCreateError, ObjectMapError, SysInfo, Syscall,
+        ThreadSpawnError, ThreadSyncError,
     },
 };
 use x86_64::VirtAddr;
@@ -9,7 +10,8 @@ use x86_64::VirtAddr;
 use self::thread::thread_ctrl;
 
 mod object;
-mod sync;
+/* TODO: move the requeue stuff into sched and make this private */
+pub mod sync;
 mod thread;
 
 pub trait SyscallContext {
@@ -60,7 +62,7 @@ fn type_sys_object_create(
     object::sys_object_create(create, srcs, ties)
 }
 
-fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<u64, ThreadSyncError> {
+fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<usize, ThreadSyncError> {
     let slice = unsafe { create_user_slice(ptr, len) }.ok_or(ThreadSyncError::InvalidArgument)?;
     let timeout =
         unsafe { create_user_nullable_ptr(timeoutptr) }.ok_or(ThreadSyncError::InvalidArgument)?;
@@ -123,6 +125,35 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
                 sys_kernel_console_write(slice, flags);
             }
         }
+        Syscall::KernelConsoleRead => {
+            let source = context.arg0::<u64>();
+            let ptr = context.arg1();
+            let len = context.arg2();
+            let source: KernelConsoleReadSource = source.into();
+            let res = if let Some(slice) = unsafe { create_user_slice(ptr, len) } {
+                match source {
+                    KernelConsoleReadSource::Console => {
+                        let flags =
+                            twizzler_abi::syscall::KernelConsoleReadFlags::from_bits_truncate(
+                                context.arg2(),
+                            );
+                        crate::log::read_bytes(slice, flags).map_err(|x| x.into())
+                    }
+                    KernelConsoleReadSource::Buffer => {
+                        let _flags =
+                            twizzler_abi::syscall::KernelConsoleReadBufferFlags::from_bits_truncate(
+                                context.arg2(),
+                            );
+                        crate::log::read_buffer_bytes(slice).map_err(|x| x.into())
+                    }
+                }
+            } else {
+                Err(0u64)
+            }
+            .map(|x| x as u64);
+            let (code, val) = convert_result_to_codes(res, zero_ok, one_err);
+            context.set_return_values(code, val);
+        }
         Syscall::ObjectCreate => {
             let create = context.arg0();
             let src_ptr = context.arg1();
@@ -163,7 +194,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let len = context.arg1();
             let timeout = context.arg2();
             let result = type_sys_thread_sync(ptr, len, timeout);
-            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
+            let (code, val) = convert_result_to_codes(result, |x| zero_ok(x as u64), one_err);
             context.set_return_values(code, val);
         }
         Syscall::SysInfo => {

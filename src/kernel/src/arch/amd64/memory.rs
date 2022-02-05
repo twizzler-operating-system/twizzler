@@ -191,6 +191,10 @@ impl MapFlags {
     }
 }
 
+pub struct ArchMemoryContextSwitchInfo {
+    target: u64,
+}
+
 const PAGE_SIZE_HUGE: usize = 1024 * 1024 * 1024;
 const PAGE_SIZE_LARGE: usize = 2 * 1024 * 1024;
 const PAGE_SIZE: usize = 0x1000;
@@ -216,8 +220,10 @@ impl ArchMemoryContext {
         self.table_root.frame
     }
 
-    pub unsafe fn switch(&self) {
-        x86::controlregs::cr3_write(self.root().as_u64())
+    pub fn get_switch_info(&self) -> ArchMemoryContextSwitchInfo {
+        ArchMemoryContextSwitchInfo {
+            target: self.root().as_u64(),
+        }
     }
 
     pub fn clone_empty_user(&self) -> Self {
@@ -417,5 +423,11 @@ impl ArchMemoryContext {
             };
         }
         Ok(())
+    }
+}
+
+impl ArchMemoryContextSwitchInfo {
+    pub unsafe fn switch(&self) {
+        x86::controlregs::cr3_write(self.target)
     }
 }

@@ -1,7 +1,8 @@
 use x86_64::VirtAddr;
 use xmas_elf::program::{self};
 
-static KERNEL_IMAGE: spin::Once<&'static [u8]> = spin::Once::new();
+use crate::once::Once;
+static KERNEL_IMAGE: Once<&'static [u8]> = Once::new();
 
 pub fn init(kernel_image: &'static [u8]) {
     KERNEL_IMAGE.call_once(|| kernel_image);

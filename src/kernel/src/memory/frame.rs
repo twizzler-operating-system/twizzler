@@ -15,8 +15,8 @@
 
 use core::ops::Add;
 
+use crate::once::Once;
 use alloc::vec::Vec;
-use spin::Once;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
 

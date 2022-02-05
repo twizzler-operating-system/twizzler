@@ -3,6 +3,8 @@ use core::ptr::NonNull;
 use acpi::AcpiTables;
 use x86_64::PhysAddr;
 
+use crate::once::Once;
+
 use super::memory::phys_to_virt;
 
 #[derive(Clone, Copy, Debug)]
@@ -27,7 +29,7 @@ impl acpi::AcpiHandler for AcpiHandlerImpl {
     fn unmap_physical_region<T>(_region: &acpi::PhysicalMapping<Self, T>) {}
 }
 
-static ACPI: spin::Once<acpi::AcpiTables<AcpiHandlerImpl>> = spin::Once::new();
+static ACPI: Once<acpi::AcpiTables<AcpiHandlerImpl>> = Once::new();
 static HANDLER: AcpiHandlerImpl = AcpiHandlerImpl {};
 
 pub fn init(rsdp: u64) {
@@ -35,6 +37,6 @@ pub fn init(rsdp: u64) {
 }
 
 pub fn get_acpi_root() -> &'static AcpiTables<AcpiHandlerImpl> {
-    ACPI.get()
+    ACPI.poll()
         .expect("need to call acpi::init before get_acpi_root")
 }

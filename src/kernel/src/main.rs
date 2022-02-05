@@ -15,11 +15,13 @@
 #![feature(optimize_attribute)]
 #![feature(asm_sym)]
 #![feature(asm_const)]
+#![feature(btree_drain_filter)]
 
 #[macro_use]
 pub mod log;
 pub mod arch;
 mod clock;
+mod condvar;
 mod idcounter;
 mod image;
 mod initrd;
@@ -28,6 +30,7 @@ pub mod machine;
 pub mod memory;
 mod mutex;
 mod obj;
+mod once;
 mod operations;
 mod panic;
 mod processor;
@@ -39,10 +42,10 @@ pub mod utils;
 extern crate alloc;
 
 extern crate bitflags;
+use crate::once::Once;
 use arch::BootInfoSystemTable;
 use initrd::BootModule;
 use memory::MemoryRegion;
-use spin::Once;
 use thread::current_thread_ref;
 use x86_64::VirtAddr;
 

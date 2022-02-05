@@ -1,5 +1,5 @@
+use crate::once::Once;
 use alloc::sync::Arc;
-use spin::Once;
 use x86_64::VirtAddr;
 
 use crate::obj::ObjectRef;

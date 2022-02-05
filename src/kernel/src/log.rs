@@ -3,6 +3,10 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use twizzler_abi::syscall::{
+    KernelConsoleReadBufferError, KernelConsoleReadError, KernelConsoleReadFlags,
+};
+
 use crate::interrupt;
 
 const KEC_BUFFER_LEN: usize = 4096;
@@ -34,6 +38,11 @@ static KERNEL_CONSOLE_MAIN: KernelConsoleInner = KernelConsoleInner {
 
 pub trait KernelConsoleHardware {
     fn write(&self, data: &[u8], flags: KernelConsoleWriteFlags);
+    fn read(
+        &self,
+        data: &mut [u8],
+        flags: KernelConsoleReadFlags,
+    ) -> Result<usize, KernelConsoleReadError>;
 }
 
 impl<T: KernelConsoleHardware> core::fmt::Write for KernelConsole<T, EmergencyMessage> {
@@ -147,7 +156,6 @@ impl KernelConsoleInner {
             .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
     }
-
     fn write_buffer(
         &self,
         data: &[u8],
@@ -213,8 +221,33 @@ impl<T: KernelConsoleHardware> KernelConsole<T, NormalMessage> {
     }
 }
 
+impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
+    fn read_buffer_bytes(&self, _slice: &mut [u8]) -> Result<usize, KernelConsoleReadBufferError> {
+        todo!()
+    }
+
+    fn read_bytes(
+        &self,
+        slice: &mut [u8],
+        flags: KernelConsoleReadFlags,
+    ) -> Result<usize, KernelConsoleReadError> {
+        self.hardware.read(slice, flags)
+    }
+}
+
 pub fn write_bytes(slice: &[u8], flags: KernelConsoleWriteFlags) -> Result<(), ConsoleWriteError> {
     unsafe { NORMAL_CONSOLE.write(slice, flags) }
+}
+
+pub fn read_bytes(
+    slice: &mut [u8],
+    flags: KernelConsoleReadFlags,
+) -> Result<usize, KernelConsoleReadError> {
+    unsafe { NORMAL_CONSOLE.read_bytes(slice, flags) }
+}
+
+pub fn read_buffer_bytes(slice: &mut [u8]) -> Result<usize, KernelConsoleReadBufferError> {
+    unsafe { NORMAL_CONSOLE.read_buffer_bytes(slice) }
 }
 
 static mut EMERGENCY_CONSOLE: KernelConsole<

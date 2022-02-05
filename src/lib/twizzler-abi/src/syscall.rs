@@ -51,20 +51,40 @@ impl From<usize> for Syscall {
 #[derive(Debug, Clone, Copy)]
 /// Possible errors returned by reading from the kernel console's input.
 pub enum KernelConsoleReadError {
+    /// Unknown error.
+    Unknown = 0,
     /// Operation would block, but non-blocking was requested.
-    WouldBlock = 0,
+    WouldBlock = 1,
     /// Failed to read because there was no input mechanism made available to the kernel.
-    NoSuchDevice = 1,
+    NoSuchDevice = 2,
     /// The input mechanism had an internal error.
-    IOError = 2,
+    IOError = 3,
 }
 
 impl KernelConsoleReadError {
     fn as_str(&self) -> &str {
         match self {
+            Self::Unknown => "unknown error",
             Self::WouldBlock => "operation would block",
             Self::NoSuchDevice => "no way to read from kernel console physical device",
             Self::IOError => "an IO error occurred",
+        }
+    }
+}
+
+impl From<KernelConsoleReadError> for u64 {
+    fn from(x: KernelConsoleReadError) -> Self {
+        x as u64
+    }
+}
+
+impl From<u64> for KernelConsoleReadError {
+    fn from(x: u64) -> Self {
+        match x {
+            1 => Self::WouldBlock,
+            2 => Self::NoSuchDevice,
+            3 => Self::IOError,
+            _ => Self::Unknown,
         }
     }
 }
@@ -90,6 +110,36 @@ bitflags! {
     }
 }
 
+#[repr(u64)]
+/// Possible sources for a kernel console read syscall.
+pub enum KernelConsoleReadSource {
+    /// Read from the console itself.
+    Console = 0,
+    /// Read from the kernel write buffer.
+    Buffer = 1,
+}
+
+impl From<KernelConsoleReadSource> for u64 {
+    fn from(x: KernelConsoleReadSource) -> Self {
+        x as u64
+    }
+}
+
+impl From<u64> for KernelConsoleReadSource {
+    fn from(x: u64) -> Self {
+        match x {
+            1 => Self::Buffer,
+            _ => Self::Console,
+        }
+    }
+}
+
+impl From<KernelConsoleReadFlags> for u64 {
+    fn from(x: KernelConsoleReadFlags) -> Self {
+        x.bits()
+    }
+}
+
 /// Read from the kernel console input, placing data into `buffer`.
 ///
 /// This is the INPUT mechanism, and not the BUFFER mechanism. For example, if the kernel console is
@@ -98,24 +148,53 @@ bitflags! {
 ///
 /// Returns the number of bytes read on success and [KernelConsoleReadError] on failure.
 pub fn sys_kernel_console_read(
-    _buffer: &mut [u8],
-    _flags: KernelConsoleReadFlags,
+    buffer: &mut [u8],
+    flags: KernelConsoleReadFlags,
 ) -> Result<usize, KernelConsoleReadError> {
-    todo!()
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::KernelConsoleRead,
+            &[
+                KernelConsoleReadSource::Console.into(),
+                buffer.as_mut_ptr() as u64,
+                buffer.len() as u64,
+                flags.into(),
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, |_, v| v.into())
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 /// Possible errors returned by reading from the kernel console's buffer.
 pub enum KernelConsoleReadBufferError {
+    /// Unknown error.
+    Unknown = 0,
     /// Operation would block, but non-blocking was requested.
-    WouldBlock = 0,
+    WouldBlock = 1,
 }
 
 impl KernelConsoleReadBufferError {
     fn as_str(&self) -> &str {
         match self {
+            Self::Unknown => "unknown error",
             Self::WouldBlock => "operation would block",
+        }
+    }
+}
+
+impl From<KernelConsoleReadBufferError> for u64 {
+    fn from(x: KernelConsoleReadBufferError) -> Self {
+        x as u64
+    }
+}
+
+impl From<u64> for KernelConsoleReadBufferError {
+    fn from(x: u64) -> Self {
+        match x {
+            1 => Self::WouldBlock,
+            _ => Self::Unknown,
         }
     }
 }
@@ -141,6 +220,12 @@ bitflags! {
     }
 }
 
+impl From<KernelConsoleReadBufferFlags> for u64 {
+    fn from(x: KernelConsoleReadBufferFlags) -> Self {
+        x.bits()
+    }
+}
+
 /// Read from the kernel console buffer, placing data into `buffer`.
 ///
 /// This is the BUFFER mechanism, and not the INPUT mechanism. All writes to the kernel console get
@@ -149,10 +234,21 @@ bitflags! {
 ///
 /// Returns the number of bytes read on success and [KernelConsoleReadBufferError] on failure.
 pub fn sys_kernel_console_read_buffer(
-    _buffer: &mut [u8],
-    _flags: KernelConsoleReadBufferFlags,
+    buffer: &mut [u8],
+    flags: KernelConsoleReadBufferFlags,
 ) -> Result<usize, KernelConsoleReadBufferError> {
-    todo!()
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::KernelConsoleRead,
+            &[
+                KernelConsoleReadSource::Buffer.into(),
+                buffer.as_mut_ptr() as u64,
+                buffer.len() as u64,
+                flags.into(),
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, |_, v| v.into())
 }
 
 bitflags! {
@@ -248,6 +344,15 @@ pub enum ThreadSyncOp {
     Equal = 0,
 }
 
+impl ThreadSyncOp {
+    /// Apply the operation to two values, returning the result.
+    pub fn check<T: Eq + PartialEq + Ord + PartialOrd>(&self, a: T, b: T) -> bool {
+        match self {
+            Self::Equal => a == b,
+        }
+    }
+}
+
 bitflags! {
     /// Flags to pass to sys_thread_sync.
     pub struct ThreadSyncFlags: u32 {
@@ -260,7 +365,7 @@ bitflags! {
 #[repr(C)]
 /// A reference to a piece of data. May either be a non-realized persistent reference or a virtual address.
 pub enum ThreadSyncReference {
-    ObjectRef(ObjID, u64),
+    ObjectRef(ObjID, usize),
     Virtual(*const AtomicU64),
 }
 
@@ -268,18 +373,24 @@ pub enum ThreadSyncReference {
 #[repr(C)]
 /// Specification for a thread sleep request.
 pub struct ThreadSyncSleep {
-    reference: ThreadSyncReference,
-    value: u64,
-    op: ThreadSyncOp,
-    flags: ThreadSyncFlags,
+    /// Reference to an atomic u64 that we will compare to.
+    pub reference: ThreadSyncReference,
+    /// The value used for the comparison.
+    pub value: u64,
+    /// The operation to compare *reference and value to.
+    pub op: ThreadSyncOp,
+    /// Flags to apply to this sleep request.
+    pub flags: ThreadSyncFlags,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 /// Specification for a thread wake request.
 pub struct ThreadSyncWake {
-    reference: ThreadSyncReference,
-    count: usize,
+    /// Reference to the word for which we will wake up threads that have gone to sleep.
+    pub reference: ThreadSyncReference,
+    /// Number of threads to wake up.
+    pub count: usize,
 }
 
 impl ThreadSyncSleep {
@@ -325,9 +436,11 @@ pub enum ThreadSyncError {
     InvalidReference = 1,
     /// An argument was invalid.
     InvalidArgument = 2,
+    /// The operation timed out.
+    Timeout = 3,
 }
 
-pub type ThreadSyncResult = Result<u64, ThreadSyncError>;
+pub type ThreadSyncResult = Result<usize, ThreadSyncError>;
 
 impl From<ThreadSyncError> for u64 {
     fn from(x: ThreadSyncError) -> Self {
@@ -342,6 +455,7 @@ impl ThreadSyncError {
             Self::Unknown => "an unknown error occurred",
             Self::InvalidArgument => "an argument was invalid",
             Self::InvalidReference => "a reference was invalid",
+            Self::Timeout => "the operation timed out",
         }
     }
 }
@@ -351,6 +465,7 @@ impl From<u64> for ThreadSyncError {
         match x {
             1 => Self::InvalidReference,
             2 => Self::InvalidArgument,
+            3 => Self::Timeout,
             _ => Self::Unknown,
         }
     }
@@ -387,6 +502,14 @@ impl ThreadSync {
     pub fn new_wake(wake: ThreadSyncWake) -> Self {
         Self::Wake(wake, Ok(0))
     }
+
+    /// Get the result of the thread sync operation.
+    pub fn get_result(&self) -> ThreadSyncResult {
+        match self {
+            ThreadSync::Sleep(_, e) => *e,
+            ThreadSync::Wake(_, e) => *e,
+        }
+    }
 }
 
 #[inline]
@@ -417,13 +540,18 @@ fn justval<T: From<u64>>(_: u64, v: u64) -> T {
 /// or slightly more due to scheduling uncertainty). If no operations are specified, the thread will
 /// sleep until the timeout expires.
 ///
-/// Returns either Ok(bool), indicating if the timeout expired or not, or Err([ThreadSyncError]),
+/// Returns either Ok(ready_count), indicating how many operations were immediately ready, or Err([ThreadSyncError]),
 /// indicating failure. After return, the kernel may have modified the ThreadSync entries to
-/// indicate additional information about each request (errors or status).
+/// indicate additional information about each request, with Err to indicate error and Ok(n) to
+/// indicate success. For sleep requests, n is 0 if the operation went to sleep or 1 otherwise. For
+/// wakeup requests, n indicates the number of threads woken up by this operation.
+///
+/// Note that spurious wakeups are possible, and that even if a timeout occurs the function may
+/// return Ok(0).
 pub fn sys_thread_sync(
     operations: &mut [ThreadSync],
     timeout: Option<Duration>,
-) -> Result<bool, ThreadSyncError> {
+) -> Result<usize, ThreadSyncError> {
     let ptr = operations.as_mut_ptr();
     let count = operations.len();
     let timeout = timeout
@@ -439,8 +567,8 @@ pub fn sys_thread_sync(
     convert_codes_to_result(
         code,
         val,
-        |c, _| c == 0,
-        |_, v| v > 0,
+        |c, _| c != 0,
+        |_, v| v as usize,
         |_, v| ThreadSyncError::from(v),
     )
 }

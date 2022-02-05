@@ -3,7 +3,7 @@ use twizzler_abi::{
     syscall::{ThreadControl, ThreadSpawnArgs, ThreadSpawnError},
 };
 
-use crate::{thread::current_thread_ref};
+use crate::thread::current_thread_ref;
 
 pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
     let id = crate::thread::start_new_user(*args);
@@ -20,7 +20,7 @@ pub fn thread_ctrl(cmd: ThreadControl, arg: u64) -> (u64, u64) {
                 let th = current_thread_ref().unwrap();
                 unsafe {
                     th.repr.as_ref().unwrap().write_val_and_signal(0x1000 /* TODO: object null page size */ + 8 /* TODO: thread repr status word */,
-                    1u64, u64::MAX);
+                    1u64, usize::MAX);
                 }
             }
             crate::thread::exit();
