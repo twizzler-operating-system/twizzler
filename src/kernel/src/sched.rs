@@ -280,7 +280,7 @@ pub fn remove_thread(id: u64) {
     ALL_THREADS.lock().remove(&id);
 }
 
-pub fn schedule_new_thread(thread: Thread) {
+pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
     thread.set_state(ThreadState::Running);
     let thread = Arc::new(thread);
     {
@@ -288,7 +288,8 @@ pub fn schedule_new_thread(thread: Thread) {
     }
     let cpuid = select_cpu(&thread);
     let processor = get_processor(cpuid);
-    schedule_thread_on_cpu(thread, processor);
+    schedule_thread_on_cpu(thread.clone(), processor);
+    thread
 }
 
 pub fn schedule_thread(thread: ThreadRef) {
@@ -491,7 +492,7 @@ pub fn schedule_resched() {
 
 #[thread_local]
 static STAT_COUNTER: AtomicU64 = AtomicU64::new(0);
-const PRINT_STATS: bool = true;
+const PRINT_STATS: bool = false;
 pub fn schedule_stattick(dt: Nanoseconds) {
     schedule_maybe_rebalance(dt);
 

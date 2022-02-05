@@ -378,6 +378,10 @@ impl<'a> Drop for CriticalGuard<'a> {
 }
 
 impl Priority {
+    pub const REALTIME: Self = Self {
+        class: PriorityClass::RealTime,
+        adjust: AtomicI32::new(0),
+    };
     pub fn queue_number<const NR_QUEUES: usize>(&self) -> usize {
         assert_eq!(NR_QUEUES % PriorityClass::ClassCount as usize, 0);
         let queues_per_class = NR_QUEUES / PriorityClass::ClassCount as usize;
@@ -667,4 +671,11 @@ pub fn start_new_init() {
     }
     thread.repr = Some(create_blank_object());
     schedule_new_thread(thread);
+}
+
+pub fn start_new_kernel(pri: Priority, start: extern "C" fn()) -> ThreadRef {
+    let mut thread = Thread::new();
+    thread.priority = pri;
+    unsafe { thread.init(start) }
+    schedule_new_thread(thread)
 }

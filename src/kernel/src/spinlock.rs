@@ -61,6 +61,7 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
         LockGuard {
             lock: self,
             interrupt_state,
+            dont_unlock_on_drop: false,
         }
     }
 
@@ -73,7 +74,10 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
 pub struct LockGuard<'a, T, Relax: RelaxStrategy> {
     lock: &'a GenericSpinlock<T, Relax>,
     interrupt_state: bool,
+    dont_unlock_on_drop: bool,
 }
+
+pub type SpinLockGuard<'a, T> = LockGuard<'a, T, SpinLoop>;
 
 impl<T, Relax: RelaxStrategy> core::ops::Deref for LockGuard<'_, T, Relax> {
     type Target = T;
@@ -90,8 +94,26 @@ impl<T, Relax: RelaxStrategy> core::ops::DerefMut for LockGuard<'_, T, Relax> {
 
 impl<T, Relax: RelaxStrategy> Drop for LockGuard<'_, T, Relax> {
     fn drop(&mut self) {
+        if !self.dont_unlock_on_drop {
+            self.lock.release();
+            crate::interrupt::set(self.interrupt_state);
+        }
+    }
+}
+
+impl<T, Relax: RelaxStrategy> LockGuard<'_, T, Relax> {
+    pub fn get_lock(&self) -> &GenericSpinlock<T, Relax> {
+        self.lock
+    }
+
+    pub unsafe fn force_unlock(&self) {
+        self.dont_unlock_on_drop = true;
         self.lock.release();
         crate::interrupt::set(self.interrupt_state);
+    }
+
+    pub unsafe fn force_relock(self) -> Self {
+        self.lock.lock()
     }
 }
 

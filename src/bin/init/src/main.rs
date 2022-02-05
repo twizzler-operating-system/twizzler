@@ -3,6 +3,7 @@
 #![feature(asm)]
 #![feature(naked_functions)]
 #![feature(thread_local)]
+#![feature(duration_constants)]
 //#![no_main]
 
 /*
@@ -61,6 +62,37 @@ fn test_thread_sync() {
     }
 }
 
+fn test_thread_sync_timeout() {
+    let j = std::thread::spawn(|| {
+        let reference = ThreadSyncReference::Virtual(&BAZ as *const AtomicU64);
+        let value = 0;
+        let wait = ThreadSync::new_sleep(ThreadSyncSleep::new(
+            reference,
+            value,
+            twizzler_abi::syscall::ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        ));
+
+        loop {
+            println!("{:?} going to sleep", std::thread::current().id());
+            let res = sys_thread_sync(&mut [wait], Some(Duration::SECOND));
+            println!("woke up: {:?} {:?}", res, wait.get_result());
+        }
+    });
+
+    let reference = ThreadSyncReference::Virtual(&BAZ as *const AtomicU64);
+    let wake = ThreadSync::new_wake(ThreadSyncWake::new(reference, 1));
+    let mut c = 0u64;
+    loop {
+
+        // println!("{:?} waking up {}", std::thread::current().id(), c);
+        // c += 1;
+        // let res = sys_thread_sync(&mut [wake], None);
+        // for i in 0u64..40000u64 {}
+        // println!("done {:?}", res);
+    }
+}
+
 struct Foo {
     x: u64,
 }
@@ -101,6 +133,7 @@ fn main() {
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
 
+    test_thread_sync_timeout();
     test_mutex();
     test_thread_sync();
     let j = std::thread::spawn(|| {
@@ -125,7 +158,10 @@ extern "C" fn _start() -> ! {
 }
 */
 
-use std::sync::{atomic::AtomicU64, Arc, Mutex};
+use std::{
+    sync::{atomic::AtomicU64, Arc, Mutex},
+    time::Duration,
+};
 
 use twizzler_abi::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep,

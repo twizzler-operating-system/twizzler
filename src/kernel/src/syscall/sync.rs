@@ -101,12 +101,30 @@ fn wakeup(wake: &ThreadSyncWake) -> Result<usize, ThreadSyncError> {
     Ok(obj.wakeup_word(offset, wake.count))
 }
 
+fn thread_sync_cb_timeout(thread: ThreadRef) {
+    logln!("timeout!");
+    if thread.reset_sync_sleep() {
+        add_to_requeue(thread);
+    }
+    requeue_all();
+}
+
 pub fn sys_thread_sync(
     ops: &mut [ThreadSync],
-    _timeout: Option<&mut Duration>,
+    timeout: Option<&mut Duration>,
 ) -> Result<usize, ThreadSyncError> {
     let mut ready_count = 0;
     let mut unsleeps = Vec::new();
+    if let Some(timeout) = timeout {
+        logln!("setting timeout");
+        let thread = current_thread_ref().unwrap();
+        crate::clock::register_timeout_callback(
+            // TODO: fix all our time types
+            timeout.as_nanos() as u64,
+            thread_sync_cb_timeout,
+            thread,
+        );
+    }
     // let ttt = current_thread_ref().unwrap();
     // logln!("{} thread_sync {:?}", ttt.id(), ops);
     for op in ops {

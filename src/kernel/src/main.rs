@@ -21,6 +21,7 @@
 pub mod log;
 pub mod arch;
 mod clock;
+mod condvar;
 mod idcounter;
 mod image;
 mod initrd;
