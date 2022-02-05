@@ -131,10 +131,20 @@ fn test_mutex() {
     }
 }
 
+fn get_user_input() {
+    println!("enter some text:");
+    let mut s = String::new();
+    std::io::stdin()
+        .read_line(&mut s)
+        .expect("Did not enter a correct string");
+    println!("you typed: {}", s);
+}
+
 fn main() {
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
 
+    get_user_input();
     test_thread_sync_timeout();
     test_mutex();
     test_thread_sync();

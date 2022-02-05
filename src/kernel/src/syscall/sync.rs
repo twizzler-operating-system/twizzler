@@ -108,6 +108,7 @@ fn thread_sync_cb_timeout(thread: ThreadRef) {
     requeue_all();
 }
 
+// TODO: on timeout, try to return Err(Timeout).
 pub fn sys_thread_sync(
     ops: &mut [ThreadSync],
     timeout: Option<&mut Duration>,
@@ -115,14 +116,11 @@ pub fn sys_thread_sync(
     let mut ready_count = 0;
     let mut unsleeps = Vec::new();
 
-    // let ttt = current_thread_ref().unwrap();
-    // logln!("{} thread_sync {:?}", ttt.id(), ops);
     for op in ops {
         match op {
             ThreadSync::Sleep(sleep, result) => match prep_sleep(sleep, unsleeps.len() == 0) {
                 Ok(se) => {
-                    // logln!("s {}", se.did_sleep);
-                    *result = Ok(0);
+                    *result = Ok(if se.did_sleep { 0 } else { 1 });
                     if se.did_sleep {
                         unsleeps.push(se);
                     } else {
@@ -133,7 +131,6 @@ pub fn sys_thread_sync(
             },
             ThreadSync::Wake(wake, result) => match wakeup(wake) {
                 Ok(count) => {
-                    //logln!("w {}", count);
                     *result = Ok(count);
                     if count > 0 {
                         ready_count += 1;
@@ -161,9 +158,7 @@ pub fn sys_thread_sync(
         }
         requeue_all();
         if unsleeps.len() > 0 {
-            // logln!("actually sleeping");
             finish_blocking(guard);
-            //  logln!("back from sleeping")
         } else {
             drop(guard);
         }
@@ -171,6 +166,5 @@ pub fn sys_thread_sync(
     for op in unsleeps {
         undo_sleep(op);
     }
-    //logln!("  => ret {}", ready_count);
     Ok(ready_count)
 }
