@@ -73,10 +73,12 @@ fn test_thread_sync_timeout() {
             ThreadSyncFlags::empty(),
         ));
 
+        let mut c = 0u64;
         loop {
-            println!("{:?} going to sleep", std::thread::current().id());
-            let res = sys_thread_sync(&mut [wait], Some(Duration::SECOND));
+            println!("{:?} going to sleep {}", std::thread::current().id(), c);
+            let res = sys_thread_sync(&mut [wait], Some(Duration::MILLISECOND * 1000));
             println!("woke up: {:?} {:?}", res, wait.get_result());
+            c += 1;
         }
     });
 

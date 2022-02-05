@@ -492,7 +492,7 @@ pub fn schedule_resched() {
 
 #[thread_local]
 static STAT_COUNTER: AtomicU64 = AtomicU64::new(0);
-const PRINT_STATS: bool = false;
+const PRINT_STATS: bool = true;
 pub fn schedule_stattick(dt: Nanoseconds) {
     schedule_maybe_rebalance(dt);
 
@@ -540,5 +540,6 @@ pub fn schedule_stattick(dt: Nanoseconds) {
                 logln!("thread {}: {:?}", t.id(), t.stats);
             }
         }
+        //crate::clock::print_info();
     }
 }

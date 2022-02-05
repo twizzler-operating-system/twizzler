@@ -6,6 +6,7 @@ use core::{
 use alloc::{boxed::Box, vec::Vec};
 
 use crate::{
+    condvar::CondVar,
     once::Once,
     processor::current_processor,
     spinlock::Spinlock,
@@ -47,6 +48,14 @@ struct TimeoutEntry {
     expire_ticks: u64,
 }
 
+impl core::fmt::Debug for TimeoutEntry {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TimeoutEntry")
+            .field("expire_ticks", &self.expire_ticks)
+            .finish()
+    }
+}
+
 impl TimeoutEntry {
     fn is_ready(&self, cur: u64) -> bool {
         cur >= self.expire_ticks
@@ -57,6 +66,7 @@ impl TimeoutEntry {
     }
 }
 
+#[derive(Debug)]
 struct TimeoutQueue {
     queues: [Vec<TimeoutEntry>; NR_WINDOWS],
     current: usize,
@@ -76,7 +86,18 @@ impl TimeoutQueue {
     }
 
     fn hard_advance(&mut self, ticks: usize) {
+        let mut wakeup = false;
+        for i in 0..(ticks + 1) {
+            let window = (self.current + i) % NR_WINDOWS;
+            if !self.queues[window].is_empty() {
+                wakeup = true;
+                break;
+            }
+        }
         self.current += ticks;
+        if wakeup {
+            TIMEOUT_THREAD_CONDVAR.signal();
+        }
     }
 
     fn get_next_ticks(&self) -> u64 {
@@ -101,24 +122,39 @@ impl TimeoutQueue {
             // TODO: signal CPU to wake up early
         }
     }
+    fn check_window(&mut self, window: usize) -> Option<TimeoutEntry> {
+        if self.queues[window].len() > 0 {
+            let index = self.queues[window]
+                .iter()
+                .position(|x| x.is_ready(self.current as u64));
+            return index.map(|index| self.queues[window].remove(index));
+        }
+        None
+    }
 
     fn soft_advance(&mut self) -> Option<TimeoutEntry> {
         while self.soft_current < self.current {
             let window = self.soft_current % NR_WINDOWS;
-            if self.queues[window].len() > 0 {
-                let index = self.queues[window]
-                    .iter()
-                    .position(|x| x.is_ready(self.current as u64));
-                return index.map(|index| self.queues[window].remove(index));
+            if let Some(t) = self.check_window(window) {
+                return Some(t);
             }
             self.soft_current += 1;
         }
-        None
+        let window = self.soft_current % NR_WINDOWS;
+        self.check_window(window)
     }
 }
 
 static TIMEOUT_QUEUE: Spinlock<TimeoutQueue> = Spinlock::new(TimeoutQueue::new());
 static TIMEOUT_THREAD: Once<ThreadRef> = Once::new();
+static TIMEOUT_THREAD_CONDVAR: CondVar = CondVar::new();
+
+pub fn print_info() {
+    if TIMEOUT_THREAD_CONDVAR.has_waiters() {
+        logln!("timeout thread is blocked");
+    }
+    logln!("timeout queue: {:?}", *TIMEOUT_QUEUE.lock());
+}
 
 fn timeout_thread_set_has_work() {}
 
@@ -134,17 +170,14 @@ pub fn register_timeout_callback<T: 'static + Send, F: FnOnce(T) + Send + 'stati
 extern "C" fn soft_timeout_clock() {
     /* TODO: use some heuristic to decide if we need to spend more time handling timeouts */
     loop {
-        //  logln!("soft timeout clock");
-        let timeout = {
-            TIMEOUT_QUEUE.lock().soft_advance()
-            // drop lock
-        };
-
+        let mut tq = TIMEOUT_QUEUE.lock();
+        let timeout = tq.soft_advance();
         if let Some(timeout) = timeout {
-            logln!("got timeout");
+            drop(tq);
             timeout.call();
+        } else {
+            TIMEOUT_THREAD_CONDVAR.wait(tq);
         }
-        crate::sched::schedule(true);
     }
 }
 

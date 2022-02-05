@@ -106,7 +106,7 @@ impl<T, Relax: RelaxStrategy> LockGuard<'_, T, Relax> {
         self.lock
     }
 
-    pub unsafe fn force_unlock(&self) {
+    pub unsafe fn force_unlock(&mut self) {
         self.dont_unlock_on_drop = true;
         self.lock.release();
         crate::interrupt::set(self.interrupt_state);

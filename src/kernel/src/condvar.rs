@@ -10,12 +10,17 @@ struct InnerCondVar {
     queue: Vec<ThreadRef>,
 }
 
-struct CondVar {
+pub struct CondVar {
     inner: Spinlock<InnerCondVar>,
 }
 
 impl CondVar {
-    pub fn wait<'a, T>(&self, guard: SpinLockGuard<'a, T>) -> SpinLockGuard<'a, T> {
+    pub const fn new() -> Self {
+        Self {
+            inner: Spinlock::new(InnerCondVar { queue: Vec::new() }),
+        }
+    }
+    pub fn wait<'a, T>(&self, mut guard: SpinLockGuard<'a, T>) -> SpinLockGuard<'a, T> {
         crate::interrupt::with_disabled(|| {
             let current_thread = current_thread_ref().unwrap();
             let mut inner = self.inner.lock();
@@ -34,5 +39,9 @@ impl CondVar {
         while let Some(t) = inner.queue.pop() {
             schedule_thread(t);
         }
+    }
+
+    pub fn has_waiters(&self) -> bool {
+        !self.inner.lock().queue.is_empty()
     }
 }
