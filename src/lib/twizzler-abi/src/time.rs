@@ -3,14 +3,18 @@
 
 use core::time::Duration;
 
-// TODO
+use crate::syscall::{sys_read_clock_info, ClockSource, ReadClockFlags};
+
 /// Return a Duration representing an instant in monotonic time.
 pub fn get_monotonic() -> Duration {
-    Duration::new(0, 0)
+    let clock_info = sys_read_clock_info(ClockSource::Monotonic, ReadClockFlags::empty())
+        .expect("failed to get monotonic time from kernel");
+    clock_info.current_value()
 }
 
-// TODO
 /// Return a Duration representing the time since the unix epoch.
 pub fn get_systemtime() -> Duration {
-    Duration::new(0, 0)
+    let clock_info = sys_read_clock_info(ClockSource::RealTime, ReadClockFlags::empty())
+        .expect("failed to get monotonic time from kernel");
+    clock_info.current_value()
 }
