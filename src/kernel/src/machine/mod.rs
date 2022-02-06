@@ -77,24 +77,3 @@ impl MachineConsoleHardware {
         }
     }
 }
-
-/*
-#[macro_export]
-macro_rules! sprint {
-    ($($arg:tt)*) => {
-        $crate::machine::serial::_print(format_args!($($arg)*))
-    };
-}
-
-macro_rules! sprintln {
-    () => {
-        $crate::sprint!("\n")
-    };
-    ($fmt:expr) => {
-        $crate::sprint!(concat!($fmt, "\n"))
-    };
-    ($fmt:expr, $($arg:tt)*) => {
-        $crate::sprint!(concat!($fmt, "\n"), $($arg)*)
-    };
-}
-*/
