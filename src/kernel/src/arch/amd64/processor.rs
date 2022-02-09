@@ -90,17 +90,21 @@ pub fn init(tls: VirtAddr) {
     }
 }
 
-pub fn enumerate_cpus() {
+pub fn enumerate_cpus() -> u32 {
     let acpi = get_acpi_root();
 
     let procinfo = acpi.platform_info().unwrap().processor_info.unwrap();
+
+    let bsp_id = procinfo.boot_processor.local_apic_id;
+
     crate::processor::register(
-        procinfo.boot_processor.local_apic_id,
-        !procinfo.boot_processor.is_ap,
+        procinfo.boot_processor.local_apic_id, bsp_id,
     );
     for p in procinfo.application_processors {
-        crate::processor::register(p.local_apic_id, !p.is_ap);
+        crate::processor::register(p.local_apic_id, bsp_id);
     }
+
+    bsp_id
 }
 
 pub fn get_topology() -> Vec<(usize, bool)> {
