@@ -163,7 +163,7 @@ pub struct Frame {
 }
 
 impl Frame {
-    fn new(pa: PhysAddr, flags: PhysicalFrameFlags) -> Self {
+    pub fn new(pa: PhysAddr, flags: PhysicalFrameFlags) -> Self {
         Self { pa, flags }
     }
 

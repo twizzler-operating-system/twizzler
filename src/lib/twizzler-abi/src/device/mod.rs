@@ -35,6 +35,26 @@ pub enum SubObjectType {
     Mmio = 1,
 }
 
+impl From<SubObjectType> for u8 {
+    fn from(x: SubObjectType) -> Self {
+        match x {
+            SubObjectType::Info => 0,
+            SubObjectType::Mmio => 1,
+        }
+    }
+}
+
+impl TryFrom<u8> for SubObjectType {
+    type Error = ();
+    fn try_from(x: u8) -> Result<Self, ()> {
+        Ok(match x {
+            0 => SubObjectType::Info,
+            1 => SubObjectType::Mmio,
+            _ => Err(())?,
+        })
+    }
+}
+
 bitflags::bitflags! {
     pub struct DeviceInterruptFlags: u16 {}
 }
