@@ -7,6 +7,7 @@ use core::{
 
 use crate::{
     arch::syscall::raw_syscall,
+    kso::{KactionError, KactionValue, KactionCmd, KactionFlags},
     object::{ObjID, Protections},
 };
 #[derive(Copy, Clone, Debug)]
@@ -32,7 +33,9 @@ pub enum Syscall {
     Spawn = 8,
     /// Read clock information
     ReadClockInfo = 9,
-    MaxSyscalls = 10,
+    /// Apply a kernel action to an object (used for device drivers).
+    Kaction = 10,
+    MaxSyscalls = 11,
 }
 
 impl Syscall {
@@ -1114,5 +1117,21 @@ pub fn sys_read_clock_info(
         |c, _| c != 0,
         |_, _| unsafe { clock_info.assume_init() },
         |_, v| v.into(),
+    )
+}
+
+pub fn sys_kaction(
+    cmd: KactionCmd,
+    id: Option<ObjID>,
+    flags: KactionFlags,
+) -> Result<KactionValue, KactionError> {
+    let (hi, lo) = id.map_or((0, 0), |id| id.split());
+    let (code, val) = unsafe { raw_syscall(Syscall::Kaction, &[cmd.into(), hi, lo, flags.bits()]) };
+    convert_codes_to_result(
+        code,
+        val,
+        |c, v| c == 0,
+        |c, v| KactionValue::from((c, v)),
+        |_, v| KactionError::from(v),
     )
 }
