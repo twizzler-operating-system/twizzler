@@ -140,10 +140,89 @@ fn get_user_input() {
     println!("you typed: {}", s);
 }
 
+fn list_subobjs(level: usize, id: ObjID) {
+    let mut n = 0;
+    loop {
+        let res = sys_kaction(
+            KactionCmd::Generic(KactionGenericCmd::GetSubObject(
+                SubObjectType::Info.into(),
+                n,
+            )),
+            Some(id),
+            KactionFlags::empty(),
+        );
+        if res.is_err() {
+            break;
+        } else {
+            if let KactionValue::ObjID(id) = res.unwrap() {
+                println!("  sub {:indent$}{}: {}", "", n, id, indent = level);
+            }
+        }
+        n = n + 1;
+    }
+
+    let mut n = 0;
+    loop {
+        let res = sys_kaction(
+            KactionCmd::Generic(KactionGenericCmd::GetSubObject(
+                SubObjectType::Mmio.into(),
+                n,
+            )),
+            Some(id),
+            KactionFlags::empty(),
+        );
+        if res.is_err() {
+            break;
+        } else {
+            if let KactionValue::ObjID(id) = res.unwrap() {
+                println!("  sub {:indent$}{}: {}", "", n, id, indent = level);
+            }
+        }
+        n = n + 1;
+    }
+}
+
+fn enumerate_children(level: usize, id: ObjID) {
+    let mut n = 0;
+    loop {
+        let res = sys_kaction(
+            KactionCmd::Generic(KactionGenericCmd::GetChild(n)),
+            Some(id),
+            KactionFlags::empty(),
+        );
+        if res.is_err() {
+            break;
+        } else {
+            if let KactionValue::ObjID(id) = res.unwrap() {
+                println!("{:indent$}{}: {}", "", n, id, indent = level);
+                list_subobjs(level, id);
+                enumerate_children(level + 4, id);
+            }
+        }
+        n = n + 1;
+    }
+}
+
+fn test_kaction() {
+    let res = sys_kaction(
+        KactionCmd::Generic(KactionGenericCmd::GetKsoRoot),
+        None,
+        KactionFlags::empty(),
+    );
+    println!("{:?}", res);
+    let id = match res.unwrap() {
+        KactionValue::U64(_) => todo!(),
+        KactionValue::ObjID(id) => id,
+    };
+
+    enumerate_children(0, id);
+}
+
 fn main() {
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
 
+    test_kaction();
     get_user_input();
     test_thread_sync_timeout();
     test_mutex();
@@ -175,7 +254,12 @@ use std::{
     time::Duration,
 };
 
-use twizzler_abi::syscall::{
-    sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep,
-    ThreadSyncWake,
+use twizzler_abi::{
+    device::SubObjectType,
+    kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue},
+    object::ObjID,
+    syscall::{
+        sys_kaction, sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncReference,
+        ThreadSyncSleep, ThreadSyncWake,
+    },
 };
