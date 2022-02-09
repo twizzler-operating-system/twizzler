@@ -97,4 +97,12 @@ impl Object {
             return self.read_atomic_u64(offset);
         }
     }
+
+    pub fn write_base<T>(&self, info: &T) {
+        todo!()
+    }
+
+    pub fn map_phys(&self, start: PhysAddr, end: PhysAddr) {
+        todo!()
+    }
 }
