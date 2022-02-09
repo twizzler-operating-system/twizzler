@@ -22,6 +22,7 @@ pub mod log;
 pub mod arch;
 mod clock;
 mod condvar;
+mod device;
 mod idcounter;
 mod image;
 mod initrd;
@@ -94,7 +95,6 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
     let mut v = lock.lock();
     *v = 2;
 
-    thread::start_new_init();
     init_threading();
 }
 
@@ -109,6 +109,10 @@ pub fn init_threading() -> ! {
 }
 
 pub fn idle_main() -> ! {
+    if current_processor().is_bsp() {
+        machine::machine_post_init();
+        thread::start_new_init();
+    }
     logln!(
         "processor {} entering main idle loop",
         current_processor().id

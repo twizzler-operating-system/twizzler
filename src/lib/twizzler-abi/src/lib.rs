@@ -19,8 +19,10 @@ pub mod arch;
 
 pub mod alloc;
 pub mod aux;
+pub mod device;
 #[cfg(any(doc, feature = "rt"))]
 pub mod exec;
+pub mod kso;
 mod llalloc;
 pub mod object;
 #[cfg(any(doc, feature = "rt"))]
