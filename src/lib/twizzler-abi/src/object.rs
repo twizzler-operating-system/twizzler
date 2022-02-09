@@ -3,7 +3,7 @@
 use core::fmt::{LowerHex, UpperHex};
 
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// An object ID, represented as a transparent wrapper type. Any value where the upper 64 bits are
 /// zero is invalid.
 pub struct ObjID(u128);
@@ -50,6 +50,12 @@ impl UpperHex for ObjID {
 }
 
 impl core::fmt::Display for ObjID {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ObjID({:x})", self.0)
+    }
+}
+
+impl core::fmt::Debug for ObjID {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "ObjID({:x})", self.0)
     }

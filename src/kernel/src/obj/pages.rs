@@ -1,4 +1,7 @@
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    ops::Add,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use alloc::sync::Arc;
 use x86_64::{PhysAddr, VirtAddr};
@@ -10,9 +13,16 @@ use crate::{
 
 use super::{Object, PageNumber};
 
+bitflags::bitflags! {
+    pub struct PageFlags:u32 {
+        const WIRED = 1;
+    }
+}
+
 #[derive(Debug)]
 pub struct Page {
     frame: Frame,
+    flags: PageFlags,
 }
 
 pub type PageRef = Arc<Page>;
@@ -21,6 +31,14 @@ impl Page {
     pub fn new() -> Self {
         Self {
             frame: frame::alloc_frame(PhysicalFrameFlags::ZEROED),
+            flags: PageFlags::empty(),
+        }
+    }
+
+    pub fn new_wired(pa: PhysAddr) -> Self {
+        Self {
+            frame: frame::Frame::new(pa, PhysicalFrameFlags::empty()),
+            flags: PageFlags::WIRED,
         }
     }
 
@@ -55,7 +73,10 @@ impl Page {
     pub fn copy_page(&self) -> Self {
         let mut new_frame = frame::alloc_frame(PhysicalFrameFlags::empty());
         new_frame.copy_contents_from(&self.frame);
-        Self { frame: new_frame }
+        Self {
+            frame: new_frame,
+            flags: PageFlags::empty(),
+        }
     }
 }
 
@@ -99,10 +120,34 @@ impl Object {
     }
 
     pub fn write_base<T>(&self, info: &T) {
+        let offset = 0x1000; //TODO: arch-dep
+        unsafe {
+            let mut obj_page_tree = self.lock_page_tree();
+            let page_number = PageNumber::from_address(VirtAddr::new(offset as u64));
+            let page_offset = offset % PageNumber::PAGE_SIZE;
+
+            if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
+                let t = page.get_mut_to_val::<T>(page_offset);
+                (t as *mut T).copy_from(info as *const T, 1);
+            } else {
+                let page = Page::new();
+                obj_page_tree.add_page(page_number, page);
+                drop(obj_page_tree);
+                return;
+            }
+            drop(obj_page_tree);
+        }
         todo!()
     }
 
     pub fn map_phys(&self, start: PhysAddr, end: PhysAddr) {
-        todo!()
+        let pn_start = PageNumber::from_address(VirtAddr::new(0x2000)); //TODO: arch-dep
+        let nr = (end.as_u64() - start.as_u64()) as usize / PageNumber::PAGE_SIZE;
+        for i in 0..nr {
+            let pn = pn_start.offset(i);
+            let addr = start + i * PageNumber::PAGE_SIZE;
+            let page = Page::new_wired(addr);
+            self.add_page(pn, page);
+        }
     }
 }

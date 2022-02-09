@@ -45,5 +45,4 @@ pub(super) fn init() {
     }
 
     logln!("done");
-    loop {}
 }
