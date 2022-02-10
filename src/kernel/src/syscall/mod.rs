@@ -78,14 +78,20 @@ fn write_sysinfo(info: &mut SysInfo) {
     info.page_size = 0x1000;
 }
 
-fn type_sys_kaction(cmd: u64, hi: u64, lo: u64, _flags: u64) -> Result<KactionValue, KactionError> {
+fn type_sys_kaction(
+    cmd: u64,
+    hi: u64,
+    lo: u64,
+    arg: u64,
+    _flags: u64,
+) -> Result<KactionValue, KactionError> {
     let cmd = KactionCmd::try_from(cmd)?;
     let objid = if hi == 0 {
         None
     } else {
         Some(ObjID::new_from_parts(hi, lo))
     };
-    crate::device::kaction(cmd, objid)
+    crate::device::kaction(cmd, objid, arg)
 }
 
 #[inline]
@@ -169,8 +175,9 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let cmd = context.arg0();
             let hi = context.arg1();
             let lo = context.arg2();
-            let flags = context.arg3();
-            let result = type_sys_kaction(cmd, hi, lo, flags);
+            let arg = context.arg3();
+            let flags = context.arg4();
+            let result = type_sys_kaction(cmd, hi, lo, arg, flags);
             let (code, val) = convert_result_to_codes(result, |v| v.into(), zero_err);
             context.set_return_values(code, val);
         }

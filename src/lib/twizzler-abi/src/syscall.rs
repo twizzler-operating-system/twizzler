@@ -7,7 +7,7 @@ use core::{
 
 use crate::{
     arch::syscall::raw_syscall,
-    kso::{KactionError, KactionValue, KactionCmd, KactionFlags},
+    kso::{KactionCmd, KactionError, KactionFlags, KactionValue},
     object::{ObjID, Protections},
 };
 #[derive(Copy, Clone, Debug)]
@@ -1123,10 +1123,12 @@ pub fn sys_read_clock_info(
 pub fn sys_kaction(
     cmd: KactionCmd,
     id: Option<ObjID>,
+    arg: u64,
     flags: KactionFlags,
 ) -> Result<KactionValue, KactionError> {
     let (hi, lo) = id.map_or((0, 0), |id| id.split());
-    let (code, val) = unsafe { raw_syscall(Syscall::Kaction, &[cmd.into(), hi, lo, flags.bits()]) };
+    let (code, val) =
+        unsafe { raw_syscall(Syscall::Kaction, &[cmd.into(), hi, lo, arg, flags.bits()]) };
     convert_codes_to_result(
         code,
         val,
