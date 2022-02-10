@@ -149,13 +149,14 @@ fn list_subobjs(level: usize, id: ObjID) {
                 n,
             )),
             Some(id),
+            0,
             KactionFlags::empty(),
         );
         if res.is_err() {
             break;
         } else {
             if let KactionValue::ObjID(id) = res.unwrap() {
-                println!("  sub {:indent$}{}: {}", "", n, id, indent = level);
+                println!("  sub {:indent$}info {}: {}", "", n, id, indent = level);
             }
         }
         n = n + 1;
@@ -169,13 +170,14 @@ fn list_subobjs(level: usize, id: ObjID) {
                 n,
             )),
             Some(id),
+            0,
             KactionFlags::empty(),
         );
         if res.is_err() {
             break;
         } else {
             if let KactionValue::ObjID(id) = res.unwrap() {
-                println!("  sub {:indent$}{}: {}", "", n, id, indent = level);
+                println!("  sub {:indent$}mmio {}: {}", "", n, id, indent = level);
             }
         }
         n = n + 1;
@@ -188,6 +190,7 @@ fn enumerate_children(level: usize, id: ObjID) {
         let res = sys_kaction(
             KactionCmd::Generic(KactionGenericCmd::GetChild(n)),
             Some(id),
+            0,
             KactionFlags::empty(),
         );
         if res.is_err() {
@@ -207,6 +210,7 @@ fn test_kaction() {
     let res = sys_kaction(
         KactionCmd::Generic(KactionGenericCmd::GetKsoRoot),
         None,
+        0,
         KactionFlags::empty(),
     );
     println!("{:?}", res);

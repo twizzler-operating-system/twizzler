@@ -1,6 +1,6 @@
 use acpi::{sdt::Signature, PhysicalMapping};
 use alloc::format;
-use twizzler_abi::device::bus::pcie::PcieInfo;
+use twizzler_abi::device::bus::pcie::{PcieInfo, PcieKactionSpecific};
 use twizzler_abi::{
     device::{BusType, DeviceType},
     kso::{KactionError, KactionValue},
@@ -12,8 +12,12 @@ use crate::{
     device::{Device, DeviceRef},
 };
 
-fn kaction(device: DeviceRef) -> Result<KactionValue, KactionError> {
-    todo!()
+fn kaction(device: DeviceRef, cmd: u32, arg: u64) -> Result<KactionValue, KactionError> {
+    let cmd: PcieKactionSpecific = cmd.try_into()?;
+    match cmd {
+        PcieKactionSpecific::RegisterDevice => todo!(),
+        PcieKactionSpecific::AllocateInterrupt => todo!(),
+    }
 }
 
 // TODO: we can't just assume every segment has bus 0..255.
@@ -40,9 +44,6 @@ pub(super) fn init() {
         let addr = cfg.physical_address(seg, 0, 0, 0);
         if let Some(addr) = addr {
             init_segment(seg, PhysAddr::new(addr));
-            logln!("found pcie {:x}", addr);
         }
     }
-
-    logln!("done");
 }
