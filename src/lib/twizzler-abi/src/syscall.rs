@@ -1132,7 +1132,7 @@ pub fn sys_kaction(
     convert_codes_to_result(
         code,
         val,
-        |c, v| c == 0,
+        |c, _| c == 0,
         |c, v| KactionValue::from((c, v)),
         |_, v| KactionError::from(v),
     )
