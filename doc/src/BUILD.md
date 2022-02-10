@@ -17,6 +17,7 @@ To run qemu through the build system, you'll need qemu installed.
 ## Overview
 
 Building Twizzler is done in several steps:
+
   0. Building xtask.
   1. Building the toolchain.
   2. Building Twizzler itself.
