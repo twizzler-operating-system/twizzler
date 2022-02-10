@@ -15,7 +15,7 @@ pub struct DeviceInner {
 
 pub struct Device {
     inner: Mutex<DeviceInner>,
-    kaction: fn(DeviceRef) -> Result<KactionValue, KactionError>,
+    kaction: fn(DeviceRef, cmd: u32, arg: u64) -> Result<KactionValue, KactionError>,
     bus_type: BusType,
     dev_type: DeviceType,
     id: ObjID,
@@ -53,8 +53,7 @@ fn get_kso_manager() -> &'static KsoManager {
     })
 }
 
-pub fn kaction(cmd: KactionCmd, id: Option<ObjID>) -> Result<KactionValue, KactionError> {
-    logln!("got {:?}", cmd);
+pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64) -> Result<KactionValue, KactionError> {
     match cmd {
         KactionCmd::Generic(cmd) => match cmd {
             KactionGenericCmd::GetKsoRoot => {
@@ -99,16 +98,22 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>) -> Result<KactionValue, Kacti
                 }
             }
         },
-        KactionCmd::Specific(cmd) => {
-            todo!()
-        }
+        KactionCmd::Specific(cmd) => id.map_or(Err(KactionError::InvalidArgument), |id| {
+            let dev = {
+                let dm = get_device_map().lock();
+                dm.get(&id).map(|d| d.clone())
+            };
+            dev.map_or(Err(KactionError::NotFound), |dev| {
+                (dev.kaction)(dev.clone(), cmd, arg)
+            })
+        }),
     }
 }
 
 pub fn create_busroot(
     name: &str,
     bt: BusType,
-    kaction: fn(DeviceRef) -> Result<KactionValue, KactionError>,
+    kaction: fn(DeviceRef, cmd: u32, arg: u64) -> Result<KactionValue, KactionError>,
 ) -> DeviceRef {
     let obj = Arc::new(crate::obj::Object::new());
     crate::obj::register_object(obj.clone());
@@ -135,7 +140,7 @@ pub fn create_device(
     name: &str,
     bt: BusType,
     id: DeviceId,
-    kaction: fn(DeviceRef) -> Result<KactionValue, KactionError>,
+    kaction: fn(DeviceRef, cmd: u32, arg: u64) -> Result<KactionValue, KactionError>,
 ) -> DeviceRef {
     let obj = Arc::new(crate::obj::Object::new());
     crate::obj::register_object(obj.clone());
