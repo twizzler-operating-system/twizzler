@@ -45,6 +45,7 @@ impl AllocSlot {
         let obj = sys_object_create(create_spec, &[], &[] /* TODO: ties */).ok()?;
 
         sys_object_map(
+            None,
             obj,
             slot,
             Protections::READ | Protections::WRITE,

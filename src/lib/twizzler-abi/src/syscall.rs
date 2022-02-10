@@ -35,7 +35,9 @@ pub enum Syscall {
     ReadClockInfo = 9,
     /// Apply a kernel action to an object (used for device drivers).
     Kaction = 10,
-    MaxSyscalls = 11,
+    /// New Handle
+    NewHandle = 11,
+    MaxSyscalls = 12,
 }
 
 impl Syscall {
@@ -778,6 +780,8 @@ pub enum ObjectMapError {
     InvalidSlot = 2,
     /// The specified protections were invalid.
     InvalidProtections = 3,
+    /// An argument was invalid.
+    InvalidArgument = 4,
 }
 
 impl ObjectMapError {
@@ -787,6 +791,7 @@ impl ObjectMapError {
             Self::InvalidProtections => "invalid protections",
             Self::InvalidSlot => "invalid slot",
             Self::ObjectNotFound => "object was not found",
+            Self::InvalidArgument => "invalid argument",
         }
     }
 }
@@ -803,6 +808,7 @@ impl From<u64> for ObjectMapError {
             1 => Self::ObjectNotFound,
             2 => Self::InvalidSlot,
             3 => Self::InvalidProtections,
+            4 => Self::InvalidArgument,
             _ => Self::Unknown,
         }
     }
@@ -829,13 +835,21 @@ bitflags! {
 
 /// Map an object into the address space with the specified protections.
 pub fn sys_object_map(
+    handle: Option<ObjID>,
     id: ObjID,
     slot: usize,
     prot: Protections,
     flags: MapFlags,
 ) -> Result<usize, ObjectMapError> {
     let (hi, lo) = id.split();
-    let args = [hi, lo, slot as u64, prot.bits() as u64, flags.bits() as u64];
+    let args = [
+        hi,
+        lo,
+        slot as u64,
+        prot.bits() as u64,
+        flags.bits() as u64,
+        &handle as *const Option<ObjID> as usize as u64,
+    ];
     let (code, val) = unsafe { raw_syscall(Syscall::ObjectMap, &args) };
     convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, justval)
 }
@@ -894,16 +908,19 @@ pub struct ThreadSpawnArgs {
     pub tls: usize,
     pub arg: usize,
     pub flags: ThreadSpawnFlags,
+    pub vm_context_handle: Option<ObjID>,
 }
 
 impl ThreadSpawnArgs {
-    /// Construct a new ThreadSpawnArgs.
+    /// Construct a new ThreadSpawnArgs. If vm_context_handle is Some(handle), then spawn the thread in the
+    /// VM context defined by handle. Otherwise spawn it in the same VM context as the spawner.
     pub fn new(
         entry: usize,
         stack: &[u8],
         tls: usize,
         arg: usize,
         flags: ThreadSpawnFlags,
+        vm_context_handle: Option<ObjID>,
     ) -> Self {
         Self {
             entry,
@@ -912,6 +929,7 @@ impl ThreadSpawnArgs {
             tls,
             arg,
             flags,
+            vm_context_handle,
         }
     }
 }
@@ -924,6 +942,8 @@ pub enum ThreadSpawnError {
     Unknown = 0,
     /// One of the arguments was invalid.   
     InvalidArgument = 1,
+    /// A specified object (handle) was not found.
+    NotFound = 2,
 }
 
 impl ThreadSpawnError {
@@ -931,6 +951,7 @@ impl ThreadSpawnError {
         match self {
             Self::Unknown => "an unknown error occurred",
             Self::InvalidArgument => "invalid argument",
+            Self::NotFound => "specified object was not found",
         }
     }
 }
@@ -951,6 +972,7 @@ impl Into<u64> for ThreadSpawnError {
 impl From<u64> for ThreadSpawnError {
     fn from(x: u64) -> Self {
         match x {
+            2 => Self::NotFound,
             1 => Self::InvalidArgument,
             _ => Self::Unknown,
         }
@@ -1008,13 +1030,6 @@ impl From<ReadClockInfoError> for u64 {
         x as u64
     }
 }
-/*
-impl Into<u64> for ThreadSpawnError {
-    fn into(self) -> u64 {
-        self as u64
-    }
-}
-*/
 
 impl From<u64> for ReadClockInfoError {
     fn from(x: u64) -> Self {
@@ -1032,7 +1047,7 @@ impl fmt::Display for ReadClockInfoError {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for ThreadSpawnError {
+impl std::error::Error for ReadClockInfoError {
     fn description(&self) -> &str {
         self.as_str()
     }
@@ -1136,4 +1151,94 @@ pub fn sys_kaction(
         |c, v| KactionValue::from((c, v)),
         |_, v| KactionError::from(v),
     )
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(u32)]
+/// Possible error values for [sys_read_clock_info].
+pub enum NewHandleError {
+    /// An unknown error occurred.
+    Unknown = 0,
+    /// One of the arguments was invalid.   
+    InvalidArgument = 1,
+    /// The specified object is already a handle.
+    AlreadyHandle = 2,
+    /// The specified object was not found.
+    NotFound = 3,
+}
+
+impl NewHandleError {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Unknown => "an unknown error occurred",
+            Self::InvalidArgument => "invalid argument",
+            Self::AlreadyHandle => "object is already a handle",
+            Self::NotFound => "object was not found",
+        }
+    }
+}
+
+impl From<NewHandleError> for u64 {
+    fn from(x: NewHandleError) -> Self {
+        x as u64
+    }
+}
+
+impl From<u64> for NewHandleError {
+    fn from(x: u64) -> Self {
+        match x {
+            1 => Self::InvalidArgument,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl fmt::Display for NewHandleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for NewHandleError {
+    fn description(&self) -> &str {
+        self.as_str()
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(u64)]
+pub enum HandleType {
+    VmContext = 0,
+}
+
+impl TryFrom<u64> for HandleType {
+    type Error = NewHandleError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::VmContext),
+            _ => Err(NewHandleError::InvalidArgument),
+        }
+    }
+}
+
+bitflags! {
+    pub struct NewHandleFlags: u64 {
+    }
+}
+
+pub fn sys_new_handle(
+    objid: ObjID,
+    handle_type: HandleType,
+    flags: NewHandleFlags,
+) -> Result<u64, NewHandleError> {
+    let (hi, lo) = objid.split();
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::NewHandle,
+            &[hi, lo, handle_type as u64, flags.bits()],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as u64, justval)
 }
