@@ -20,6 +20,7 @@ Installing the tools:
   1. sudo apt install build-essential
   2. sudo apt install python
   3. sudo apt install cmake
+  4. sudo apt install ninja-build
 
 Building Twizzler is done in several steps:
 
