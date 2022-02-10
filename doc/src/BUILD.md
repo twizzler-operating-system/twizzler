@@ -16,6 +16,9 @@ To run qemu through the build system, you'll need qemu installed.
 
 ## Overview
 
+Installing the tools:
+  1. sudo apt install build-essential
+
 Building Twizzler is done in several steps:
 
   0. Building xtask.
