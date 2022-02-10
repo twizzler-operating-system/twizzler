@@ -2,15 +2,16 @@ use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionValue},
     object::{ObjID, Protections},
     syscall::{
-        KernelConsoleReadSource, ObjectCreateError, ObjectMapError, SysInfo, Syscall,
+        HandleType, KernelConsoleReadSource, ObjectCreateError, ObjectMapError, SysInfo, Syscall,
         ThreadSpawnError, ThreadSyncError,
     },
 };
 use x86_64::VirtAddr;
 
-use self::thread::thread_ctrl;
+use self::{object::sys_new_handle, thread::thread_ctrl};
 
-mod object;
+// TODO: move the handle stuff into its own file and make this private.
+pub mod object;
 /* TODO: move the requeue stuff into sched and make this private */
 pub mod sync;
 mod thread;
@@ -181,6 +182,17 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let (code, val) = convert_result_to_codes(result, |v| v.into(), zero_err);
             context.set_return_values(code, val);
         }
+        Syscall::NewHandle => {
+            let hi = context.arg0();
+            let lo = context.arg1();
+            let handle_type = context.arg2::<u64>();
+            let _flags = context.arg3::<u64>();
+            let result = handle_type
+                .try_into()
+                .and_then(|nh: HandleType| sys_new_handle(ObjID::new_from_parts(hi, lo), nh));
+            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
+            context.set_return_values(code, val);
+        }
         Syscall::ObjectCreate => {
             let create = context.arg0();
             let src_ptr = context.arg1();
@@ -208,11 +220,16 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let slot = context.arg2::<u64>() as usize;
             let prot = Protections::from_bits(context.arg3::<u64>() as u32);
             let id = ObjID::new_from_parts(hi, lo);
-            let result = prot
-                .map_or(Err(ObjectMapError::InvalidProtections), |prot| {
-                    object::sys_object_map(id, slot, prot)
+            let handle = context.arg5();
+            let handle = unsafe { create_user_ptr(handle) };
+            let result = if let Some(handle) = handle {
+                prot.map_or(Err(ObjectMapError::InvalidProtections), |prot| {
+                    object::sys_object_map(id, slot, prot, *handle)
                 })
-                .map(|r| r as u64);
+                .map(|r| r as u64)
+            } else {
+                Err(ObjectMapError::InvalidArgument)
+            };
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
