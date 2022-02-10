@@ -1,5 +1,5 @@
-use alloc::{collections::BTreeMap, sync::Arc};
-use twizzler_abi::object::Protections;
+use alloc::{borrow::ToOwned, collections::BTreeMap, sync::Arc};
+use twizzler_abi::object::{ObjID, Protections};
 use x86_64::VirtAddr;
 
 use crate::{
@@ -7,6 +7,7 @@ use crate::{
     idcounter::{Id, IdCounter},
     mutex::{LockGuard, Mutex},
     obj::{pages::PageRef, ObjectRef},
+    once::Once,
 };
 
 #[derive(Ord, PartialOrd, PartialEq, Eq)]
@@ -270,5 +271,12 @@ impl MemoryContext {
 
     pub fn inner(&self) -> LockGuard<'_, MemoryContextInner> {
         self.inner.lock()
+    }
+}
+
+use crate::syscall::object::ObjectHandle;
+impl ObjectHandle for MemoryContextRef {
+    fn create_with_handle(obj: ObjectRef) -> Self {
+        Arc::new(MemoryContext::new())
     }
 }
