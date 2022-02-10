@@ -120,7 +120,7 @@ pub unsafe fn spawn(stack_size: usize, entry: usize, arg: usize) -> Option<u32> 
     let stack = core::slice::from_raw_parts(stack_base, stack_size);
     let (tls_set, tls_base, tls_len, tls_align) = crate::rt1::new_thread_tls().unwrap();
     let tls_layout = Layout::from_size_align(tls_len, tls_align).unwrap();
-    let args = ThreadSpawnArgs::new(entry, stack, tls_set, arg, ThreadSpawnFlags::empty());
+    let args = ThreadSpawnArgs::new(entry, stack, tls_set, arg, ThreadSpawnFlags::empty(), None);
     let slot = crate::slot::global_allocate().or_else(|| {
         crate::alloc::global_free(stack_base, stack_layout);
         crate::alloc::global_free(tls_base, tls_layout);
@@ -130,6 +130,7 @@ pub unsafe fn spawn(stack_size: usize, entry: usize, arg: usize) -> Option<u32> 
     let res = crate::syscall::sys_spawn(args);
     if let Ok(objid) = res {
         let mapres = crate::syscall::sys_object_map(
+            None,
             objid,
             slot,
             Protections::READ | Protections::WRITE,

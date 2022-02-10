@@ -5,7 +5,11 @@ use core::{
 };
 
 use alloc::{boxed::Box, sync::Arc};
-use twizzler_abi::{aux::AuxEntry, object::ObjID, syscall::ThreadSpawnArgs};
+use twizzler_abi::{
+    aux::AuxEntry,
+    object::ObjID,
+    syscall::{ThreadSpawnArgs, ThreadSpawnError},
+};
 use x86_64::VirtAddr;
 use xmas_elf::program::SegmentData;
 
@@ -18,6 +22,7 @@ use crate::{
     processor::{get_processor, KERNEL_STACK_SIZE},
     sched::schedule_new_thread,
     spinlock::Spinlock,
+    syscall::object::get_vmcontext_from_handle,
 };
 
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
@@ -145,6 +150,7 @@ impl Thread {
         }
     }
 
+    // TODO: cleanup all these new variants
     pub fn new_with_new_vm() -> Self {
         let mut thread = Self::new();
         thread.memory_context = Some(Arc::new(MemoryContext::new()));
@@ -155,6 +161,14 @@ impl Thread {
     pub fn new_with_current_context(spawn_args: ThreadSpawnArgs) -> Self {
         let mut thread = Self::new();
         thread.memory_context = Some(current_memory_context().unwrap().clone());
+        thread.memory_context.as_ref().unwrap().inner().add_thread();
+        thread.spawn_args = Some(spawn_args);
+        thread
+    }
+
+    pub fn new_with_handle_context(spawn_args: ThreadSpawnArgs, vmc: MemoryContextRef) -> Self {
+        let mut thread = Self::new();
+        thread.memory_context = Some(vmc);
         thread.memory_context.as_ref().unwrap().inner().add_thread();
         thread.spawn_args = Some(spawn_args);
         thread
@@ -643,8 +657,13 @@ extern "C" fn user_new_start() {
     }
 }
 
-pub fn start_new_user(args: ThreadSpawnArgs) -> ObjID {
-    let mut thread = Thread::new_with_current_context(args);
+pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
+    let mut thread = if let Some(handle) = args.vm_context_handle {
+        let vmc = get_vmcontext_from_handle(handle).ok_or(ThreadSpawnError::NotFound)?;
+        Thread::new_with_handle_context(args, vmc)
+    } else {
+        Thread::new_with_current_context(args)
+    };
     logln!(
         "starting new thread {} with stack {:p}",
         thread.id,
@@ -656,7 +675,7 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> ObjID {
     thread.repr = Some(create_blank_object());
     let id = thread.repr.as_ref().unwrap().id();
     schedule_new_thread(thread);
-    id
+    Ok(id)
 }
 
 pub fn start_new_init() {
