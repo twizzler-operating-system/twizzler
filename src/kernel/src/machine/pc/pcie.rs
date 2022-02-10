@@ -12,6 +12,14 @@ use crate::{
     device::{Device, DeviceRef},
 };
 
+fn register_device(seg: u16, bus: u8, device: u8, function: u8) -> Option<DeviceRef> {
+    let acpi = arch::acpi::get_acpi_root();
+    let cfg = acpi::mcfg::PciConfigRegions::new(acpi).ok()?;
+    let addr = cfg.physical_address(seg, bus, device, function)?;
+
+    todo!()
+}
+
 fn kaction(device: DeviceRef, cmd: u32, arg: u64) -> Result<KactionValue, KactionError> {
     let cmd: PcieKactionSpecific = cmd.try_into()?;
     match cmd {
