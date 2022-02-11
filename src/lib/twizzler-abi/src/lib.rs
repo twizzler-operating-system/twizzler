@@ -15,6 +15,7 @@
 #![feature(asm)]
 #![feature(naked_functions)]
 #![feature(core_intrinsics)]
+#![feature(int_roundings)]
 pub mod arch;
 
 pub mod alloc;
@@ -24,6 +25,7 @@ pub mod device;
 pub mod exec;
 pub mod kso;
 mod llalloc;
+pub mod load_elf;
 pub mod object;
 #[cfg(any(doc, feature = "rt"))]
 pub mod rt1;
