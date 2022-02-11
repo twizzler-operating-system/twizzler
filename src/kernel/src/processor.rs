@@ -170,6 +170,10 @@ impl Processor {
         self.id == self.bsp_id
     }
 
+    pub fn bsp_id(&self) -> u32 {
+        self.bsp_id
+    }
+
     pub fn current_priority(&self) -> Priority {
         /* TODO: optimize this by just keeping track of it outside the sched? */
         let sched = self.sched.lock();
