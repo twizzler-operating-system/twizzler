@@ -222,10 +222,16 @@ fn test_kaction() {
     enumerate_children(0, id);
 }
 
+fn test_load_elf() {
+    let elf = twizzler_abi::load_elf::spawn_new_executable(ObjID::new_from_parts(1, 2));
+    println!("ELF: {:?}", elf);
+}
+
 fn main() {
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
 
+    test_load_elf();
     test_kaction();
     get_user_input();
     test_thread_sync_timeout();
