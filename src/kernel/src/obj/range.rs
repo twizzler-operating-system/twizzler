@@ -59,7 +59,10 @@ impl PageRange {
     }
 
     pub fn gc_pagevec(&self) {
-        todo!()
+        // TODO
+
+        logln!("TODO: gc page vec");
+        //       todo!()
     }
 
     pub fn split_at(&self, pn: PageNumber) -> (Option<PageRange>, PageRange, Option<PageRange>) {
