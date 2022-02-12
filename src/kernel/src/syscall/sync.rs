@@ -7,7 +7,6 @@ use twizzler_abi::syscall::{
 use x86_64::VirtAddr;
 
 use crate::{
-    mutex::Mutex,
     obj::{LookupFlags, ObjectRef},
     once::Once,
     spinlock::Spinlock,

@@ -1,26 +1,22 @@
-use acpi::{sdt::Signature, PhysicalMapping};
 use alloc::format;
 use twizzler_abi::device::bus::pcie::{PcieInfo, PcieKactionSpecific};
 use twizzler_abi::{
-    device::{BusType, DeviceType},
+    device::BusType,
     kso::{KactionError, KactionValue},
 };
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::PhysAddr;
 
-use crate::{
-    arch,
-    device::{Device, DeviceRef},
-};
+use crate::{arch, device::DeviceRef};
 
 fn register_device(seg: u16, bus: u8, device: u8, function: u8) -> Option<DeviceRef> {
     let acpi = arch::acpi::get_acpi_root();
     let cfg = acpi::mcfg::PciConfigRegions::new(acpi).ok()?;
-    let addr = cfg.physical_address(seg, bus, device, function)?;
+    let _addr = cfg.physical_address(seg, bus, device, function)?;
 
     todo!()
 }
 
-fn kaction(device: DeviceRef, cmd: u32, arg: u64) -> Result<KactionValue, KactionError> {
+fn kaction(_device: DeviceRef, cmd: u32, _arg: u64) -> Result<KactionValue, KactionError> {
     let cmd: PcieKactionSpecific = cmd.try_into()?;
     match cmd {
         PcieKactionSpecific::RegisterDevice => todo!(),

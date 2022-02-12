@@ -2,8 +2,6 @@ pub mod pc;
 
 use core::cell::UnsafeCell;
 use core::fmt::Write;
-use core::sync::atomic::AtomicU32;
-use core::sync::atomic::Ordering;
 
 #[allow(unused_imports)]
 pub use pc::*;
