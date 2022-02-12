@@ -10,6 +10,7 @@ use crate::{
     arch::memory::phys_to_virt,
     clock::Nanoseconds,
     interrupt::{self, Destination},
+    processor,
 };
 
 static mut LAPIC_ADDR: u64 = 0;
@@ -255,7 +256,7 @@ fn rust_entry_secondary(id: u32, tcb: u64, stack_base: u64) -> ! {
 pub unsafe fn send_ipi(dest: Destination, vector: u32) {
     let (dest_short, dest_val) = match dest {
         Destination::Single(id) => (0, id << 24),
-        Destination::Bsp => (0, 0),
+        Destination::Bsp => (0, processor::current_processor().bsp_id() << 24),
         Destination::All => (2, 0),
         Destination::AllButSelf => (3, 0),
         _ => todo!(),
