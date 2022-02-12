@@ -4,6 +4,7 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[allow(unused_imports)]
 use crate::{
     object::{ObjID, Protections},
     simple_idcounter::IdCounter,
@@ -43,6 +44,7 @@ static mut THREAD_IDS: IdCounter = IdCounter::new(1);
 
 const STACK_ALIGN: usize = 32;
 
+#[allow(dead_code)]
 unsafe fn new_thread(
     objid: ObjID,
     base: *mut ThreadRepr,

@@ -193,12 +193,6 @@ pub fn spawn_new_executable(exe: ObjID) -> Option<ElfObject<'static>> {
     let obj_size = 1024 * 1024 * 1024; //TODO
     for phdr in elf.phdrs().filter(|p| p.phdr_type() == PhdrType::Load) {
         crate::print_err("got phdr\n");
-        let cs = ObjectCreate::new(
-            BackingType::Normal,
-            LifetimeType::Volatile,
-            None,
-            ObjectCreateFlags::empty(),
-        );
         let src_start = (phdr.offset & ((!page_size) + 1)) + null_page_size;
         let dest_start = phdr.vaddr & ((!page_size) + 1);
         let len = (phdr.filesz as u64 + (phdr.vaddr & (page_size - 1))) as usize;
@@ -292,6 +286,8 @@ pub fn spawn_new_executable(exe: ObjID) -> Option<ElfObject<'static>> {
     }
 
     aux = append_aux(aux, AuxEntry::ExecId(exe));
+
+    append_aux(aux, AuxEntry::Null);
 
     let ts = ThreadSpawnArgs::new(
         elf.entry() as usize,
