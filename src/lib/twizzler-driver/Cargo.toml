@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 twizzler = {path = "../twizzler"}
+twizzler-abi = {path = "../twizzler-abi"}
