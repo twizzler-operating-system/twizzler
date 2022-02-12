@@ -1,7 +1,4 @@
-use alloc::{
-    collections::BTreeMap,
-    vec::{self, Vec},
-};
+use alloc::collections::BTreeMap;
 use twizzler_abi::syscall::ThreadSyncOp;
 
 use crate::thread::{current_thread_ref, ThreadRef};

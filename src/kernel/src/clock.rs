@@ -1,7 +1,4 @@
-use core::{
-    marker::PhantomData,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::{boxed::Box, vec::Vec};
 

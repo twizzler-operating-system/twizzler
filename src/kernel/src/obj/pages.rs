@@ -1,7 +1,4 @@
-use core::{
-    ops::Add,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::sync::Arc;
 use x86_64::{PhysAddr, VirtAddr};

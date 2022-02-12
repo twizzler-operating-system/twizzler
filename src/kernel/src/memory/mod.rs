@@ -40,7 +40,7 @@ impl<'a> MappingIter<'a> {
 }
 
 use self::{
-    context::{MapFlags, MemoryContext, MemoryContextInner},
+    context::{MapFlags, MemoryContextInner},
     frame::{alloc_frame, PhysicalFrameFlags},
 };
 #[derive(Clone, Copy, Debug)]
@@ -114,9 +114,7 @@ fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContextInner {
     for va in clone_regions {
         new_context.clone_region(&ctx, *va);
     }
-    unsafe {
-        new_context.switch();
-    }
+    new_context.switch();
     new_context
 }
 
