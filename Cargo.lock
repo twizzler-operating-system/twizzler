@@ -297,6 +297,10 @@ dependencies = [
 [[package]]
 name = "devmgr"
 version = "0.1.0"
+dependencies = [
+ "twizzler",
+ "twizzler-driver",
+]
 
 [[package]]
 name = "fatfs"
@@ -757,6 +761,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "twizzler"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "twizzler-abi",
+]
+
+[[package]]
 name = "twizzler-abi"
 version = "0.1.0"
 dependencies = [
@@ -764,6 +776,13 @@ dependencies = [
  "compiler_builtins",
  "libc",
  "rustc-std-workspace-core",
+]
+
+[[package]]
+name = "twizzler-driver"
+version = "0.1.0"
+dependencies = [
+ "twizzler",
 ]
 
 [[package]]
