@@ -52,10 +52,10 @@ pub fn sys_object_map(
     id: ObjID,
     slot: usize,
     prot: Protections,
-    handle: Option<&ObjID>,
+    handle: Option<ObjID>,
 ) -> Result<usize, ObjectMapError> {
     let vm = if let Some(handle) = handle {
-        get_vmcontext_from_handle(*handle).ok_or(ObjectMapError::ObjectNotFound)?
+        get_vmcontext_from_handle(handle).ok_or(ObjectMapError::ObjectNotFound)?
     } else {
         current_memory_context().unwrap()
     };

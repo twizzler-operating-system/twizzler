@@ -621,7 +621,7 @@ fn start_qemu(
         make_path(build_info, true, "pmem.img")
     ));
     run_cmd.arg("-device").arg("nvdimm,id=nvdimm1,memdev=mem1");
-    const RUN_ARGS: &[&str] = &["--no-reboot", "-s", "-serial", "mon:stdio", "-vnc", ":0"];
+    const RUN_ARGS: &[&str] = &["--no-reboot", "-s", "-serial", "mon:stdio"]; //, "-vnc", ":0"];
     run_cmd.args(RUN_ARGS);
     run_cmd.args(qemu_profile.get_args());
     run_cmd.args(qemu_args);

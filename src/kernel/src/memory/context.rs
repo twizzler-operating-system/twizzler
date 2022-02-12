@@ -35,41 +35,21 @@ use super::MappingIter;
 pub struct MemoryContextInner {
     pub arch: ArchMemoryContext,
     slots: BTreeMap<usize, MappingRef>,
-    id: Id<'static>,
     thread_count: u64,
 }
 
 pub struct MemoryContext {
     inner: Mutex<MemoryContextInner>,
+    id: Id<'static>,
     switch_cache: ArchMemoryContextSwitchInfo,
 }
 
 pub type MemoryContextRef = Arc<MemoryContext>;
 
-impl PartialEq for MemoryContextInner {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl Eq for MemoryContextInner {}
-
-impl PartialOrd for MemoryContextInner {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        self.id.partial_cmp(&other.id)
-    }
-}
-
-impl Ord for MemoryContextInner {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.id.cmp(&other.id)
-    }
-}
-
 impl PartialEq for MemoryContext {
     fn eq(&self, other: &Self) -> bool {
-        let ida = { self.inner().id.value() };
-        let idb = { self.inner().id.value() };
+        let ida = { self.id.value() };
+        let idb = { self.id.value() };
         ida == idb
     }
 }
@@ -78,16 +58,16 @@ impl Eq for MemoryContext {}
 
 impl PartialOrd for MemoryContext {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        let ida = { self.inner().id.value() };
-        let idb = { self.inner().id.value() };
+        let ida = { self.id.value() };
+        let idb = { self.id.value() };
         ida.partial_cmp(&idb)
     }
 }
 
 impl Ord for MemoryContext {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        let ida = { self.inner().id.value() };
-        let idb = { self.inner().id.value() };
+        let ida = { self.id.value() };
+        let idb = { self.id.value() };
         ida.cmp(&idb)
     }
 }
@@ -153,7 +133,6 @@ impl MemoryContextInner {
         Self {
             arch: ArchMemoryContext::new_blank(),
             slots: BTreeMap::new(),
-            id: ID_COUNTER.next(),
             thread_count: 0,
         }
     }
@@ -163,7 +142,6 @@ impl MemoryContextInner {
             // TODO: this is inefficient
             arch: ArchMemoryContext::current_tables().clone_empty_user(),
             slots: BTreeMap::new(),
-            id: ID_COUNTER.next(),
             thread_count: 0,
         }
     }
@@ -172,7 +150,6 @@ impl MemoryContextInner {
         Self {
             arch: ArchMemoryContext::current_tables(),
             slots: BTreeMap::new(),
-            id: ID_COUNTER.next(),
             thread_count: 0,
         }
     }
@@ -242,6 +219,7 @@ impl MemoryContext {
         Self {
             inner,
             switch_cache,
+            id: ID_COUNTER.next(),
         }
     }
 
@@ -251,6 +229,7 @@ impl MemoryContext {
         Self {
             inner,
             switch_cache,
+            id: ID_COUNTER.next(),
         }
     }
 
@@ -260,6 +239,7 @@ impl MemoryContext {
         Self {
             inner,
             switch_cache,
+            id: ID_COUNTER.next(),
         }
     }
 
