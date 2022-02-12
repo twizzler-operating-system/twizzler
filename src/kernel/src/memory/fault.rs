@@ -24,7 +24,8 @@ pub enum PageFaultCause {
 pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, ip: VirtAddr) {
     if true {
         logln!(
-            "page fault at {:?} cause {:?} flags {:?}, at {:?}",
+            "(thrd {}) page fault at {:?} cause {:?} flags {:?}, at {:?}",
+            current_thread_ref().map(|t| t.id()).unwrap_or(0),
             addr,
             cause,
             flags,
@@ -71,6 +72,12 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
                 mapping.perms
             };
             vmc.map_object_page(addr, page, perms);
+            if flags.contains(PageFaultFlags::PRESENT) {
+                unsafe {
+                    // TODO
+                    asm!("mov rax, cr3", "mov cr3, rax", lateout("rax") _);
+                }
+            }
         } else {
             let page = Page::new();
             obj_page_tree.add_page(page_number, page);

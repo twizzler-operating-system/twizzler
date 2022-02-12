@@ -1,10 +1,11 @@
 use core::intrinsics::transmute;
 
 use crate::{
+    aux::AuxEntry,
     object::{ObjID, Protections},
     syscall::{
         BackingType, HandleType, LifetimeType, MapFlags, NewHandleFlags, ObjectCreate,
-        ObjectCreateFlags, ObjectSource,
+        ObjectCreateFlags, ObjectSource, ThreadSpawnArgs, ThreadSpawnFlags,
     },
 };
 
@@ -126,6 +127,14 @@ impl<'a> ElfObject<'a> {
         self.hdr.verify()
     }
 
+    fn entry(&self) -> u64 {
+        self.hdr.entry
+    }
+
+    fn ph_entry_size(&self) -> usize {
+        self.hdr.phentsize as usize
+    }
+
     fn get_phdr(&self, pos: usize) -> Option<&'a ElfPhdr> {
         if pos >= self.hdr.phnum as usize {
             return None;
@@ -154,6 +163,7 @@ impl<'a> ElfObject<'a> {
 extern crate alloc;
 pub fn spawn_new_executable(exe: ObjID) -> Option<ElfObject<'static>> {
     let slot = 1000; //TODO
+    let stackslot = 1001; //TODO
 
     crate::syscall::sys_object_map(None, exe, slot, Protections::READ, MapFlags::empty()).unwrap();
     let (start, _) = crate::slot::to_vaddr_range(slot);
@@ -218,8 +228,8 @@ pub fn spawn_new_executable(exe: ObjID) -> Option<ElfObject<'static>> {
 
     let text = crate::syscall::sys_object_create(cs, &text_copy, &[]).unwrap();
     let data = crate::syscall::sys_object_create(cs, &data_copy, &[]).unwrap();
+    let stack = crate::syscall::sys_object_create(cs, &[], &[]).unwrap();
 
-    return Some(elf);
     crate::syscall::sys_object_map(
         Some(vm_handle),
         text,
@@ -236,5 +246,64 @@ pub fn spawn_new_executable(exe: ObjID) -> Option<ElfObject<'static>> {
         MapFlags::empty(),
     )
     .unwrap();
+    crate::syscall::sys_object_map(
+        Some(vm_handle),
+        stack,
+        2,
+        Protections::WRITE | Protections::READ,
+        MapFlags::empty(),
+    )
+    .unwrap();
+
+    let stack_addr = 1024u64 * 1024 * 1024 * 2 + 0x1000;
+
+    let stackslice = unsafe { core::slice::from_raw_parts(stack_addr as *const u8, 0x200000) };
+
+    fn append_aux(aux: *mut AuxEntry, entry: AuxEntry) -> *mut AuxEntry {
+        unsafe {
+            *aux = entry;
+            aux.add(1)
+        }
+    }
+
+    crate::syscall::sys_object_map(
+        None,
+        stack,
+        stackslot,
+        Protections::WRITE | Protections::READ,
+        MapFlags::empty(),
+    )
+    .unwrap();
+
+    let aux_start: u64 = (1 << 30) * (stackslot as u64) + 0x300000;
+    let spawnaux_start = (1 << 30) * 2 + 0x300000;
+    let aux_start = aux_start as *mut AuxEntry;
+    let mut aux = aux_start;
+
+    if let Some(phinfo) = elf
+        .phdrs()
+        .filter(|p| p.phdr_type() == PhdrType::Phdr)
+        .next()
+    {
+        aux = append_aux(
+            aux,
+            AuxEntry::ProgramHeaders(phinfo.vaddr, phinfo.memsz as usize / elf.ph_entry_size()),
+        )
+    }
+
+    aux = append_aux(aux, AuxEntry::ExecId(exe));
+
+    let ts = ThreadSpawnArgs::new(
+        elf.entry() as usize,
+        stackslice,
+        0,
+        spawnaux_start,
+        ThreadSpawnFlags::empty(),
+        Some(vm_handle),
+    );
+    unsafe {
+        crate::syscall::sys_spawn(ts).unwrap();
+    }
+
     Some(elf)
 }

@@ -82,7 +82,7 @@ impl Table {
     #[optimize(speed)]
     fn map(&mut self, idx: usize, entry: u64) {
         let existing = self.as_slice()[idx];
-        assert!(existing == 0 || existing == entry);
+        //assert!(existing == 0 || existing == entry);
         self.as_slice_mut()[idx] = entry;
     }
 
