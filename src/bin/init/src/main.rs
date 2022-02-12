@@ -33,7 +33,7 @@ static mut BAR: u32 = 0;
 static BAZ: AtomicU64 = AtomicU64::new(0);
 
 fn test_thread_sync() {
-    let j = std::thread::spawn(|| {
+    let _j = std::thread::spawn(|| {
         let reference = ThreadSyncReference::Virtual(&BAZ as *const AtomicU64);
         let value = 0;
         let wait = ThreadSync::new_sleep(ThreadSyncSleep::new(
@@ -57,13 +57,13 @@ fn test_thread_sync() {
         println!("{:?} waking up {}", std::thread::current().id(), c);
         c += 1;
         let res = sys_thread_sync(&mut [wake], None);
-        for i in 0u64..40000u64 {}
+        for _i in 0u64..40000u64 {}
         println!("done {:?}", res);
     }
 }
 
 fn test_thread_sync_timeout() {
-    let j = std::thread::spawn(|| {
+    let _j = std::thread::spawn(|| {
         let reference = ThreadSyncReference::Virtual(&BAZ as *const AtomicU64);
         let value = 0;
         let wait = ThreadSync::new_sleep(ThreadSyncSleep::new(
@@ -83,8 +83,8 @@ fn test_thread_sync_timeout() {
     });
 
     let reference = ThreadSyncReference::Virtual(&BAZ as *const AtomicU64);
-    let wake = ThreadSync::new_wake(ThreadSyncWake::new(reference, 1));
-    let mut c = 0u64;
+    let _wake = ThreadSync::new_wake(ThreadSyncWake::new(reference, 1));
+    let mut _c = 0u64;
     loop {
 
         // println!("{:?} waking up {}", std::thread::current().id(), c);
@@ -238,7 +238,7 @@ fn main() {
     test_mutex();
     test_thread_sync();
     let j = std::thread::spawn(|| {
-        for i in 0..1 {
+        for _ in 0..1 {
             println!("hello from thread");
         }
         234

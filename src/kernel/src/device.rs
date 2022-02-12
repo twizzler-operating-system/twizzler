@@ -4,7 +4,7 @@ use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionGenericCmd, KactionValue, KsoHdr},
     object::ObjID,
 };
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::PhysAddr;
 
 use crate::{mutex::Mutex, obj::ObjectRef, once::Once};
 

@@ -1,5 +1,5 @@
-use alloc::{borrow::ToOwned, collections::BTreeMap, sync::Arc};
-use twizzler_abi::object::{ObjID, Protections};
+use alloc::{collections::BTreeMap, sync::Arc};
+use twizzler_abi::object::Protections;
 use x86_64::VirtAddr;
 
 use crate::{
@@ -7,7 +7,6 @@ use crate::{
     idcounter::{Id, IdCounter},
     mutex::{LockGuard, Mutex},
     obj::{pages::PageRef, ObjectRef},
-    once::Once,
 };
 
 #[derive(Ord, PartialOrd, PartialEq, Eq)]
@@ -49,7 +48,7 @@ pub type MemoryContextRef = Arc<MemoryContext>;
 impl PartialEq for MemoryContext {
     fn eq(&self, other: &Self) -> bool {
         let ida = { self.id.value() };
-        let idb = { self.id.value() };
+        let idb = { other.id.value() };
         ida == idb
     }
 }
@@ -59,7 +58,7 @@ impl Eq for MemoryContext {}
 impl PartialOrd for MemoryContext {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         let ida = { self.id.value() };
-        let idb = { self.id.value() };
+        let idb = { other.id.value() };
         ida.partial_cmp(&idb)
     }
 }
@@ -67,7 +66,7 @@ impl PartialOrd for MemoryContext {
 impl Ord for MemoryContext {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         let ida = { self.id.value() };
-        let idb = { self.id.value() };
+        let idb = { other.id.value() };
         ida.cmp(&idb)
     }
 }
@@ -256,7 +255,7 @@ impl MemoryContext {
 
 use crate::syscall::object::ObjectHandle;
 impl ObjectHandle for MemoryContextRef {
-    fn create_with_handle(obj: ObjectRef) -> Self {
+    fn create_with_handle(_obj: ObjectRef) -> Self {
         Arc::new(MemoryContext::new())
     }
 }

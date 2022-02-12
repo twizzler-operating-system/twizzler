@@ -17,7 +17,6 @@ use crate::{
     idcounter::{Id, IdCounter},
     interrupt,
     memory::context::{MappingPerms, MemoryContext, MemoryContextRef},
-    mutex::Mutex,
     obj::ObjectRef,
     processor::{get_processor, KERNEL_STACK_SIZE},
     sched::schedule_new_thread,
