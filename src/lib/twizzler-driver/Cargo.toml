@@ -1,10 +1,9 @@
 [package]
-name = "devmgr"
+name = "twizzler-driver"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-twizzler-driver = { path = "../../lib/twizzler-driver" }
-twizzler= { path = "../../lib/twizzler" }
+twizzler = {path = "../twizzler"}
