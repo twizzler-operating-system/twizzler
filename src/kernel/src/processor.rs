@@ -46,6 +46,7 @@ pub struct Processor {
     running: AtomicBool,
     topology_path: Once<Vec<(usize, bool)>>,
     pub id: u32,
+    bsp_id: u32,
     pub idle_thread: Once<ThreadRef>,
     pub load: AtomicU64,
     pub stats: ProcessorStats,
@@ -151,13 +152,14 @@ impl SchedulingQueues {
 }
 
 impl Processor {
-    pub fn new(id: u32) -> Self {
+    pub fn new(id: u32, bsp_id: u32) -> Self {
         Self {
             arch: ArchProcessor::default(),
             sched: Spinlock::new(Default::default()),
             running: AtomicBool::new(false),
             topology_path: Once::new(),
             id,
+            bsp_id,
             idle_thread: Once::new(),
             load: AtomicU64::new(1),
             stats: ProcessorStats::default(),
@@ -165,7 +167,11 @@ impl Processor {
     }
 
     pub fn is_bsp(&self) -> bool {
-        self.id == 0
+        self.id == self.bsp_id
+    }
+
+    pub fn bsp_id(&self) -> u32 {
+        self.bsp_id
     }
 
     pub fn current_priority(&self) -> Priority {
@@ -236,13 +242,13 @@ fn init_tls(tls_template: TlsInfo) -> VirtAddr {
     tcb_base
 }
 
-pub fn init_cpu(tls_template: TlsInfo) {
+pub fn init_cpu(tls_template: TlsInfo, bsp_id: u32) {
     let tcb_base = init_tls(tls_template);
     crate::arch::processor::init(tcb_base);
     unsafe {
         BOOT_KERNEL_STACK = 0xfffffff000001000u64 as *mut u8; //TODO: get this from bootloader config?
-        CPU_ID = 0; //TODO: we should fix this to avoid assuming BSP is ID 0
-        CURRENT_PROCESSOR = &**ALL_PROCESSORS[0].as_ref().unwrap();
+        CPU_ID = bsp_id;
+        CURRENT_PROCESSOR = &**ALL_PROCESSORS[CPU_ID as usize].as_ref().unwrap();
     }
     let topo_path = arch::processor::get_topology();
     current_processor().set_topology(topo_path);
@@ -321,16 +327,14 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
     CPU_MAIN_BARRIER.store(true, core::sync::atomic::Ordering::SeqCst);
 }
 
-pub fn register(id: u32, is_bsp: bool) {
+pub fn register(id: u32, bsp_id: u32) {
     if id as usize >= unsafe { &ALL_PROCESSORS }.len() {
         unimplemented!("processor ID too large");
     }
-    if id != 0 && is_bsp {
-        unimplemented!("we currently assume BSP is ID 0");
-    }
+
     unsafe {
-        ALL_PROCESSORS[id as usize] = Some(Box::new(Processor::new(id)));
-        if is_bsp {
+        ALL_PROCESSORS[id as usize] = Some(Box::new(Processor::new(id, bsp_id)));
+        if id == bsp_id {
             ALL_PROCESSORS[id as usize].as_ref().unwrap().set_running();
         }
     }
