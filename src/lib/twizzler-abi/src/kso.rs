@@ -51,6 +51,22 @@ impl From<KactionValue> for (u64, u64) {
     }
 }
 
+impl KactionValue {
+    pub fn unwrap_objid(self) -> ObjID {
+        match self {
+            KactionValue::U64(_) => panic!("failed to unwrap ObjID"),
+            KactionValue::ObjID(o) => o,
+        }
+    }
+
+    pub fn objid(self) -> Option<ObjID> {
+        match self {
+            KactionValue::U64(_) => None,
+            KactionValue::ObjID(o) => Some(o),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(C)]
 pub enum KactionError {
