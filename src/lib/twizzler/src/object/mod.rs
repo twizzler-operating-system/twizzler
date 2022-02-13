@@ -30,6 +30,7 @@ impl From<ObjectMapError> for ObjectInitError {
 
 pub struct Object<T> {
     slot: usize,
+    id: ObjID,
     _pd: PhantomData<T>,
 }
 
@@ -50,8 +51,13 @@ impl<T> Object<T> {
                 .map_err::<ObjectInitError, _>(|e| e.into())?;
         Ok(Self {
             slot,
+            id,
             _pd: PhantomData,
         })
+    }
+
+    pub fn id(&self) -> ObjID {
+        self.id
     }
 }
 
