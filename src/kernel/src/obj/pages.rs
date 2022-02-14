@@ -25,6 +25,7 @@ pub struct Page {
 pub type PageRef = Arc<Page>;
 
 impl Page {
+    // TODO: we should have a way of allocating non-zero pages, for pages that will be immediately overwritten.
     pub fn new() -> Self {
         Self {
             frame: frame::alloc_frame(PhysicalFrameFlags::ZEROED),
@@ -128,13 +129,18 @@ impl Object {
                 (t as *mut T).copy_from(info as *const T, 1);
             } else {
                 let page = Page::new();
+                let t = page.get_mut_to_val::<T>(page_offset);
+                (t as *mut T).copy_from(info as *const T, 1);
+                logln!(
+                    "WRITE BASE ADD PAGE {:?} {:?} {:?} :: {:?}",
+                    self.id(),
+                    page_number,
+                    page_offset,
+                    page.physical_address(),
+                );
                 obj_page_tree.add_page(page_number, page);
-                drop(obj_page_tree);
-                return;
             }
-            drop(obj_page_tree);
         }
-        todo!()
     }
 
     pub fn map_phys(&self, start: PhysAddr, end: PhysAddr) {

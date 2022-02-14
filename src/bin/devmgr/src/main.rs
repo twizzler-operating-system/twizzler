@@ -6,4 +6,9 @@ fn main() {
     unsafe {
         println!("Hello, world! {} {}", FOO, BAR.len());
     }
+
+    let device_root = twizzler_driver::device::get_bustree_root();
+    for device in device_root.children() {
+        println!("{}", device);
+    }
 }

@@ -25,6 +25,7 @@ pub mod device;
 pub mod exec;
 pub mod kso;
 mod llalloc;
+#[cfg(not(feature = "rt"))]
 pub mod load_elf;
 pub mod object;
 #[cfg(any(doc, feature = "rt"))]
