@@ -1,3 +1,5 @@
+use core::fmt::Display;
+
 use crate::object::ObjID;
 
 pub const KSO_NAME_MAX_LEN: usize = 512;
@@ -7,6 +9,17 @@ pub struct KsoHdr {
     flags: u16,
     name_len: u16,
     name: [u8; KSO_NAME_MAX_LEN],
+}
+
+impl Display for KsoHdr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{}",
+            core::str::from_utf8(&self.name[0..self.name_len as usize])
+                .map_err(|_| core::fmt::Error)?
+        )
+    }
 }
 
 impl KsoHdr {

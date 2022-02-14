@@ -8,6 +8,7 @@
 //!
 //! Execution will start at the _start symbol, provided in arch::_start. This will almost
 //! immediately call [twz_runtime_start]. From there, we:
+//!   0. Initialize global context.
 //!   1. Process the aux array.
 //!   2. Find the TLS template region and store that info.
 //!   3. Create a TLS region for ourselves, the main thread.
@@ -157,6 +158,7 @@ use core::ptr;
 #[allow(unused_mut)]
 /// Called from _start to initialize the runtime and pass control to the Rust stdlib.
 pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
+    crate::slot::runtime_init();
     let null_env: [*const i8; 4] = [
         b"RUST_BACKTRACE=full\0".as_ptr() as *const i8,
         ptr::null(),

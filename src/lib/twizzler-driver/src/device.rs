@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{fmt::Display, marker::PhantomData};
 
 use twizzler::object::{ObjID, ObjectInitError, ObjectInitFlags, Protections};
 pub use twizzler_abi::device::DeviceRepr;
@@ -9,6 +9,13 @@ use twizzler_abi::{
 
 pub struct Device {
     obj: twizzler::object::Object<DeviceRepr>,
+}
+
+impl Display for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let repr = self.repr();
+        repr.fmt(f)
+    }
 }
 
 pub struct InfoObject<T> {
@@ -46,6 +53,7 @@ impl Iterator for DeviceChildrenIterator {
         let result =
             twizzler_abi::syscall::sys_kaction(cmd, Some(self.id), 0, KactionFlags::empty())
                 .ok()?;
+        self.pos += 1;
         result.objid().map(|id| Device::new(id).ok()).flatten()
     }
 }
