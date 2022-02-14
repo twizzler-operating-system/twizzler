@@ -1,4 +1,5 @@
 use core::{
+    fmt::Display,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -88,6 +89,16 @@ pub struct DeviceRepr {
     bus_type: BusType,
     device_id: DeviceId,
     interrupts: [DeviceInterrupt; NUM_DEVICE_INTERRUPTS],
+}
+
+impl Display for DeviceRepr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "Device::{{{:?}, {:?}, {:?}}}({})",
+            self.device_type, self.bus_type, self.device_id, self.kso_hdr
+        )
+    }
 }
 
 impl DeviceRepr {

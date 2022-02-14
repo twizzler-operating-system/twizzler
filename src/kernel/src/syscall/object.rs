@@ -68,13 +68,15 @@ pub fn sys_object_map(
     };
     // TODO
     let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into());
-    logln!(
-        "mapping obj {} to {} with {:?} in {:?}",
-        id,
-        slot,
-        prot,
-        handle
-    );
+    if false {
+        logln!(
+            "mapping obj {} to {} with {:?} in {:?}",
+            id,
+            slot,
+            prot,
+            handle
+        );
+    }
     Ok(slot)
 }
 
