@@ -119,10 +119,17 @@ unsafe fn release_thread(id: u32) {
 pub unsafe fn spawn(stack_size: usize, entry: usize, arg: usize) -> Option<u32> {
     let stack_layout = Layout::from_size_align(stack_size, STACK_ALIGN).unwrap();
     let stack_base = crate::alloc::global_alloc(stack_layout);
-    let stack = core::slice::from_raw_parts(stack_base, stack_size);
     let (tls_set, tls_base, tls_len, tls_align) = crate::rt1::new_thread_tls().unwrap();
     let tls_layout = Layout::from_size_align(tls_len, tls_align).unwrap();
-    let args = ThreadSpawnArgs::new(entry, stack, tls_set, arg, ThreadSpawnFlags::empty(), None);
+    let args = ThreadSpawnArgs::new(
+        entry,
+        stack_base as usize,
+        stack_size,
+        tls_set,
+        arg,
+        ThreadSpawnFlags::empty(),
+        None,
+    );
     let slot = crate::slot::global_allocate().or_else(|| {
         crate::alloc::global_free(stack_base, stack_layout);
         crate::alloc::global_free(tls_base, tls_layout);

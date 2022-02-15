@@ -19,7 +19,7 @@ pub enum AuxEntry {
     /// A pointer to the env var array.
     Environment(u64),
     /// A pointer to the arguments array.
-    Arguments(u64),
+    Arguments(usize, u64),
     /// The object ID of the executable.
     ExecId(ObjID),
 }

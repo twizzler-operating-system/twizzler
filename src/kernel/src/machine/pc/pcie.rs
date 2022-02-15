@@ -1,4 +1,5 @@
 use alloc::format;
+use twizzler_abi::device::CacheType;
 use twizzler_abi::device::bus::pcie::{PcieInfo, PcieKactionSpecific};
 use twizzler_abi::{
     device::BusType,
@@ -34,7 +35,7 @@ fn init_segment(seg: u16, addr: PhysAddr) {
         seg_nr: seg,
     };
     dev.add_info(&info);
-    dev.add_mmio(addr, end_addr);
+    dev.add_mmio(addr, end_addr, CacheType::Uncachable);
 }
 
 pub(super) fn init() {

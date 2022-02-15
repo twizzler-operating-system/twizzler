@@ -1,3 +1,4 @@
+pub mod bus;
 pub mod device;
 
 #[cfg(test)]

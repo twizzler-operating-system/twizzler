@@ -1,6 +1,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::sync::Arc;
+use twizzler_abi::device::{CacheType, MMIO_OFFSET};
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::{
@@ -20,6 +21,7 @@ bitflags::bitflags! {
 pub struct Page {
     frame: Frame,
     flags: PageFlags,
+    cache_type: CacheType,
 }
 
 pub type PageRef = Arc<Page>;
@@ -30,13 +32,15 @@ impl Page {
         Self {
             frame: frame::alloc_frame(PhysicalFrameFlags::ZEROED),
             flags: PageFlags::empty(),
+            cache_type: CacheType::WriteBack,
         }
     }
 
-    pub fn new_wired(pa: PhysAddr) -> Self {
+    pub fn new_wired(pa: PhysAddr, cache_type: CacheType) -> Self {
         Self {
             frame: frame::Frame::new(pa, PhysicalFrameFlags::empty()),
             flags: PageFlags::WIRED,
+            cache_type,
         }
     }
 
@@ -74,7 +78,12 @@ impl Page {
         Self {
             frame: new_frame,
             flags: PageFlags::empty(),
+            cache_type: self.cache_type,
         }
+    }
+
+    pub fn cache_type(&self) -> CacheType {
+        self.cache_type
     }
 }
 
@@ -143,13 +152,13 @@ impl Object {
         }
     }
 
-    pub fn map_phys(&self, start: PhysAddr, end: PhysAddr) {
-        let pn_start = PageNumber::from_address(VirtAddr::new(0x2000)); //TODO: arch-dep
+    pub fn map_phys(&self, start: PhysAddr, end: PhysAddr, ct: CacheType) {
+        let pn_start = PageNumber::from_address(VirtAddr::new(MMIO_OFFSET as u64)); //TODO: arch-dep
         let nr = (end.as_u64() - start.as_u64()) as usize / PageNumber::PAGE_SIZE;
         for i in 0..nr {
             let pn = pn_start.offset(i);
             let addr = start + i * PageNumber::PAGE_SIZE;
-            let page = Page::new_wired(addr);
+            let page = Page::new_wired(addr, ct);
             self.add_page(pn, page);
         }
     }

@@ -56,6 +56,24 @@ impl TryFrom<u8> for SubObjectType {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+#[repr(u32)]
+pub enum CacheType {
+    WriteBack = 0,
+    WriteCombining = 1,
+    WriteThrough = 2,
+    Uncachable = 3,
+}
+
+#[derive(Debug)]
+#[repr(C)]
+pub struct MmioInfo {
+    pub length: u64,
+    pub cache_type: CacheType,
+}
+
+pub const MMIO_OFFSET: usize = 0x2000;
+
 bitflags::bitflags! {
     pub struct DeviceInterruptFlags: u16 {}
 }
@@ -85,9 +103,9 @@ struct DeviceInterrupt {
 #[repr(C)]
 pub struct DeviceRepr {
     kso_hdr: KsoHdr,
-    device_type: DeviceType,
-    bus_type: BusType,
-    device_id: DeviceId,
+    pub device_type: DeviceType,
+    pub bus_type: BusType,
+    pub device_id: DeviceId,
     interrupts: [DeviceInterrupt; NUM_DEVICE_INTERRUPTS],
 }
 

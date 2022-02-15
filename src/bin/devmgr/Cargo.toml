@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 twizzler-driver = { path = "../../lib/twizzler-driver" }
 twizzler= { path = "../../lib/twizzler" }
+pci-ids = "0.2.4"
