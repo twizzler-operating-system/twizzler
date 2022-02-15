@@ -69,11 +69,26 @@ pub unsafe extern "C" fn __stack_chk_fail() {
     abort();
 }
 
-/// During runtime init, we need to call functions that might fail, but if they do so, we should
-/// just abort. The standard unwrap() function for Option will call panic, but we can't use that, as
+/// during runtime init, we need to call functions that might fail, but if they do so, we should
+/// just abort. the standard unwrap() function for option will call panic, but we can't use that, as
 /// the runtime init stuff runs before the panic runtime is ready.
 fn internal_unwrap<T>(t: Option<T>, msg: &str) -> T {
     if let Some(t) = t {
+        t
+    } else {
+        print_err(msg);
+        unsafe {
+            internal_abort();
+        }
+    }
+}
+
+#[allow(dead_code)]
+/// during runtime init, we need to call functions that might fail, but if they do so, we should
+/// just abort. the standard unwrap() function for result will call panic, but we can't use that, as
+/// the runtime init stuff runs before the panic runtime is ready.
+fn internal_unwrap_result<T, E>(t: Result<T, E>, msg: &str) -> T {
+    if let Ok(t) = t {
         t
     } else {
         print_err(msg);

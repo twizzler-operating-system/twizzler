@@ -1,5 +1,5 @@
 use alloc::{collections::BTreeMap, sync::Arc};
-use twizzler_abi::object::Protections;
+use twizzler_abi::{device::CacheType, object::Protections};
 use x86_64::VirtAddr;
 
 use crate::{
@@ -182,6 +182,7 @@ impl MemoryContextInner {
                 page.physical_address(),
                 0x1000,
                 MapFlags::USER | perms.into(),
+                page.cache_type(),
             )
             .unwrap(); //TODO
     }
@@ -199,6 +200,7 @@ impl MemoryContextInner {
                     mapping.frame,
                     mapping.length,
                     mapping.flags | MapFlags::USER, //TODO,
+                    CacheType::WriteBack,
                 )
                 .unwrap();
         }

@@ -34,7 +34,7 @@ use crate::object::ObjID;
 
 extern "C" {
     // Defined in the rust stdlib.
-    fn std_runtime_start(env: *const *const i8) -> i32;
+    fn std_runtime_start(argc: usize, args: *const *const i8, env: *const *const i8) -> i32;
 
     // These are defined in the linker script.
     static __preinit_array_start: extern "C" fn();
@@ -165,6 +165,8 @@ pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
         ptr::null(),
         ptr::null(),
     ];
+    let mut arg_ptr = ptr::null();
+    let mut arg_count = 0;
     unsafe {
         while !aux_array.is_null() && *aux_array != AuxEntry::Null {
             match *aux_array {
@@ -173,6 +175,10 @@ pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
                 }
                 AuxEntry::ExecId(id) => {
                     EXEC_ID = id;
+                }
+                AuxEntry::Arguments(num, ptr) => {
+                    arg_count = num;
+                    arg_ptr = ptr as *const *const i8
                 }
                 _ => {}
             }
@@ -211,7 +217,7 @@ pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
 
     /* it's unsafe because it's an extern C function. */
     /* TODO: pass env and args */
-    let code = unsafe { std_runtime_start(&null_env as *const *const i8) };
+    let code = unsafe { std_runtime_start(arg_count, arg_ptr, &null_env as *const *const i8) };
     //TODO: exit val
     crate::syscall::sys_thread_exit(code as u64, ptr::null_mut())
 }

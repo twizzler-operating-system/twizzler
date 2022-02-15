@@ -1,3 +1,4 @@
+use twizzler_abi::device::CacheType;
 use x86_64::{structures::paging::PageTable, PhysAddr, VirtAddr};
 
 fn translate_addr_inner(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<PhysAddr> {
@@ -367,12 +368,19 @@ impl ArchMemoryContext {
         phys: PhysAddr,
         mut length: usize,
         flags: MapFlags,
+        cache_type: CacheType,
     ) -> Result<(), MapFailed> {
         if start.as_u64().checked_add(length as u64).is_none() {
             length -= PAGE_SIZE;
         }
         let end = start + length;
         let mut count = 0usize;
+        let cache_bits = match cache_type {
+            CacheType::WriteBack => 0,
+            CacheType::WriteCombining => 0, // TODO: is this correct?
+            CacheType::WriteThrough => (1 << 3),
+            CacheType::Uncachable => (1 << 4),
+        };
         loop {
             let addr = start.as_u64().checked_add(count as u64);
             let addr = if let Some(addr) = addr {
@@ -413,7 +421,10 @@ impl ArchMemoryContext {
             }
             table.map(
                 indexes[nr_recur].into(),
-                frame.as_u64() | flags.entry_bits() | if nr_recur < 3 { 0b10000000 } else { 0 },
+                frame.as_u64()
+                    | flags.entry_bits()
+                    | if nr_recur < 3 { 0b10000000 } else { 0 }
+                    | cache_bits,
             );
             count += match nr_recur {
                 1 => PAGE_SIZE_HUGE,
