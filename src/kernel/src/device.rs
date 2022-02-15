@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use twizzler_abi::{
-    device::{BusType, DeviceId, DeviceRepr, DeviceType, SubObjectType},
+    device::{BusType, CacheType, DeviceId, DeviceRepr, DeviceType, MmioInfo, SubObjectType},
     kso::{KactionCmd, KactionError, KactionGenericCmd, KactionValue, KsoHdr},
     object::ObjID,
 };
@@ -172,9 +172,14 @@ impl Device {
             .push((SubObjectType::Info, obj));
     }
 
-    pub fn add_mmio(&self, start: PhysAddr, end: PhysAddr) {
+    pub fn add_mmio(&self, start: PhysAddr, end: PhysAddr, ct: CacheType) {
         let obj = Arc::new(crate::obj::Object::new());
-        obj.map_phys(start, end);
+        obj.map_phys(start, end, ct);
+        let mmio_info = MmioInfo {
+            length: end - start,
+            cache_type: CacheType::Uncachable,
+        };
+        obj.write_base(&mmio_info);
         crate::obj::register_object(obj.clone());
         self.inner
             .lock()
@@ -196,12 +201,14 @@ impl Device {
 
     pub fn get_subobj_id(&self, t: u8, n: usize) -> Option<ObjID> {
         let t: SubObjectType = t.try_into().ok()?;
-        self.inner
+        let ret = self
+            .inner
             .lock()
             .sub_objects
             .iter()
             .filter(|(x, _)| *x == t)
             .nth(n)
-            .map(|x| x.1.id())
+            .map(|x| x.1.id());
+        ret
     }
 }

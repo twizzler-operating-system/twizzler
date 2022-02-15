@@ -916,7 +916,8 @@ impl ThreadSpawnArgs {
     /// VM context defined by handle. Otherwise spawn it in the same VM context as the spawner.
     pub fn new(
         entry: usize,
-        stack: &[u8],
+        stack_base: usize,
+        stack_size: usize,
         tls: usize,
         arg: usize,
         flags: ThreadSpawnFlags,
@@ -924,8 +925,8 @@ impl ThreadSpawnArgs {
     ) -> Self {
         Self {
             entry,
-            stack_base: stack.as_ptr() as usize,
-            stack_size: stack.len(),
+            stack_base,
+            stack_size,
             tls,
             arg,
             flags,

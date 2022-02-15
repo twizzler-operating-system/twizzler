@@ -12,11 +12,11 @@ struct Context {
 }
 
 #[allow(dead_code)]
-const RESERVED_TEXT: usize = 0;
+pub const RESERVED_TEXT: usize = 0;
 #[allow(dead_code)]
-const RESERVED_DATA: usize = 1;
+pub const RESERVED_DATA: usize = 1;
 #[allow(dead_code)]
-const RESERVED_STACK: usize = 2;
+pub const RESERVED_STACK: usize = 2;
 const RESERVED_CTX: usize = 7;
 const ALLOC_START: usize = 10;
 
