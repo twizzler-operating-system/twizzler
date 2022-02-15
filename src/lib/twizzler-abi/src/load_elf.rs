@@ -1,8 +1,12 @@
-use core::intrinsics::transmute;
+use core::{
+    intrinsics::{copy_nonoverlapping, transmute},
+    mem::size_of,
+};
 
 use crate::{
     aux::AuxEntry,
-    object::{ObjID, Protections},
+    object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    slot::{RESERVED_DATA, RESERVED_STACK, RESERVED_TEXT},
     syscall::{
         BackingType, HandleType, LifetimeType, MapFlags, NewHandleFlags, ObjectCreate,
         ObjectCreateFlags, ObjectSource, ThreadSpawnArgs, ThreadSpawnFlags,
@@ -105,6 +109,7 @@ impl ElfPhdr {
 pub struct ElfObject<'a> {
     hdr: &'a ElfHeader,
     base_raw: *const u8,
+    obj: &'a InternalObject<ElfHeader>,
 }
 
 struct PhdrIter<'a> {
@@ -143,10 +148,11 @@ impl<'a> ElfObject<'a> {
         Some(unsafe { transmute(self.base_raw.add(offset)) })
     }
 
-    fn from_raw_memroy(mem: *const u8) -> Option<Self> {
+    fn from_raw_memory(obj: &'a InternalObject<ElfHeader>, mem: *const u8) -> Option<Self> {
         let elf = Self {
             hdr: unsafe { transmute(mem) },
             base_raw: mem,
+            obj,
         };
         if elf.verify() {
             Some(elf)
@@ -155,25 +161,22 @@ impl<'a> ElfObject<'a> {
         }
     }
 
+    fn from_obj(obj: &'a InternalObject<ElfHeader>) -> Option<Self> {
+        let (start, _) = crate::slot::to_vaddr_range(obj.slot());
+        Self::from_raw_memory(obj, start as *const u8)
+    }
+
     fn phdrs(&self) -> PhdrIter {
         PhdrIter { elf: self, pos: 0 }
     }
 }
 
+const INITIAL_STACK_SIZE: usize = 1024 * 1024 * 4;
+
 extern crate alloc;
-pub fn spawn_new_executable(exe: ObjID) -> Option<ElfObject<'static>> {
-    let slot = 1000; //TODO
-    let stackslot = 1001; //TODO
-
-    crate::syscall::sys_object_map(None, exe, slot, Protections::READ, MapFlags::empty()).unwrap();
-    let (start, _) = crate::slot::to_vaddr_range(slot);
-    let elf = ElfObject::from_raw_memroy(start as *const u8);
-    if elf.is_none() {
-        crate::print_err("LOL\n");
-        return None;
-    }
-
-    let elf = elf.unwrap();
+pub fn spawn_new_executable(exe: ObjID, args: &[&[u8]], env: &[&[u8]]) -> Option<()> {
+    let exe = InternalObject::<ElfHeader>::map(exe, Protections::READ)?;
+    let elf = ElfObject::from_obj(&exe)?;
 
     let cs = ObjectCreate::new(
         BackingType::Normal,
@@ -188,23 +191,23 @@ pub fn spawn_new_executable(exe: ObjID) -> Option<ElfObject<'static>> {
     let mut text_copy = alloc::vec::Vec::new();
     let mut data_copy = alloc::vec::Vec::new();
     let mut data_zero = alloc::vec::Vec::new();
-    let page_size = 0x1000; //TODO
-    let null_page_size = 0x1000; //TODO
-    let obj_size = 1024 * 1024 * 1024; //TODO
+
+    let page_size = NULLPAGE_SIZE as u64;
+
     for phdr in elf.phdrs().filter(|p| p.phdr_type() == PhdrType::Load) {
-        crate::print_err("got phdr\n");
-        let src_start = (phdr.offset & ((!page_size) + 1)) + null_page_size;
+        let src_start = (phdr.offset & ((!page_size) + 1)) + NULLPAGE_SIZE as u64;
         let dest_start = phdr.vaddr & ((!page_size) + 1);
         let len = (phdr.filesz as u64 + (phdr.vaddr & (page_size - 1))) as usize;
         let aligned_len = len.checked_next_multiple_of(page_size as usize).unwrap();
-        let copy = ObjectSource::new(exe, src_start, dest_start, aligned_len);
+        let copy = ObjectSource::new(exe.id(), src_start, dest_start, aligned_len);
         let prot = phdr.prot();
+
         if prot.contains(Protections::WRITE) {
             let brk = (phdr.vaddr & (page_size - 1)) + phdr.filesz;
             let pgbrk = (brk + (page_size - 1)) & ((!page_size) + 1);
             let pgend = (brk + phdr.memsz - phdr.filesz + (page_size - 1)) & ((!page_size) + 1);
-            let dest_start = pgbrk & (obj_size - 1);
-            let dest_zero_start = brk & (obj_size - 1);
+            let dest_start = pgbrk & (MAX_SIZE as u64 - 1);
+            let dest_zero_start = brk & (MAX_SIZE as u64 - 1);
             data_copy.push(copy);
             if pgend > pgbrk {
                 data_copy.push(ObjectSource::new(
@@ -222,12 +225,12 @@ pub fn spawn_new_executable(exe: ObjID) -> Option<ElfObject<'static>> {
 
     let text = crate::syscall::sys_object_create(cs, &text_copy, &[]).unwrap();
     let data = crate::syscall::sys_object_create(cs, &data_copy, &[]).unwrap();
-    let stack = crate::syscall::sys_object_create(cs, &[], &[]).unwrap();
+    let stack = InternalObject::<()>::create_data_and_map()?;
 
     crate::syscall::sys_object_map(
         Some(vm_handle),
         text,
-        0,
+        RESERVED_TEXT,
         Protections::READ | Protections::EXEC,
         MapFlags::empty(),
     )
@@ -235,63 +238,74 @@ pub fn spawn_new_executable(exe: ObjID) -> Option<ElfObject<'static>> {
     crate::syscall::sys_object_map(
         Some(vm_handle),
         data,
-        1,
+        RESERVED_DATA,
         Protections::WRITE | Protections::READ,
         MapFlags::empty(),
     )
     .unwrap();
     crate::syscall::sys_object_map(
         Some(vm_handle),
-        stack,
-        2,
+        stack.id(),
+        RESERVED_STACK,
         Protections::WRITE | Protections::READ,
         MapFlags::empty(),
     )
     .unwrap();
 
-    let stack_addr = 1024u64 * 1024 * 1024 * 2 + 0x1000;
+    let (stack_base, _) = crate::slot::to_vaddr_range(RESERVED_STACK);
+    let spawnaux_start = stack_base + INITIAL_STACK_SIZE + page_size as usize;
+    let args_start = unsafe {
+        let args_start: &mut () =
+            stack.offset_from_base(INITIAL_STACK_SIZE + page_size as usize * 2);
+        core::slice::from_raw_parts_mut(args_start as *mut () as *mut usize, args.len() + 1)
+    };
+    let spawnargs_start = stack_base + INITIAL_STACK_SIZE + page_size as usize * 2;
 
-    let stackslice = unsafe { core::slice::from_raw_parts(stack_addr as *const u8, 0x200000) };
+    let args_data_start = unsafe {
+        let args_data_start: &mut () = stack.offset_from_base(
+            INITIAL_STACK_SIZE + page_size as usize * 2 + size_of::<*const u8>() * (args.len() + 1),
+        );
+        args_data_start as *mut () as *mut u8
+    };
+    let spawnargs_data_start = spawnargs_start + size_of::<*const u8>() * (args.len() + 1);
 
-    fn append_aux(aux: *mut AuxEntry, entry: AuxEntry) -> *mut AuxEntry {
+    let mut offset = 0;
+    for (i, arg) in args.iter().enumerate() {
+        let len = arg.len() + 1;
         unsafe {
-            *aux = entry;
-            aux.add(1)
+            copy_nonoverlapping(arg.as_ptr(), args_data_start.add(offset), len - 1);
+            args_data_start.add(offset + len - 1).write(0);
         }
+        args_start[i] = spawnargs_data_start + offset;
+        offset += len;
     }
+    args_start[args.len()] = 0;
 
-    crate::syscall::sys_object_map(
-        None,
-        stack,
-        stackslot,
-        Protections::WRITE | Protections::READ,
-        MapFlags::empty(),
-    )
-    .unwrap();
-
-    let aux_start: u64 = (1 << 30) * (stackslot as u64) + 0x300000;
-    let spawnaux_start = (1 << 30) * 2 + 0x300000;
-    let aux_start = aux_start as *mut AuxEntry;
-    let mut aux = aux_start;
+    let aux_array = unsafe {
+        stack.offset_from_base::<[AuxEntry; 32]>(INITIAL_STACK_SIZE + page_size as usize)
+    };
+    let mut idx = 0;
 
     if let Some(phinfo) = elf
         .phdrs()
         .filter(|p| p.phdr_type() == PhdrType::Phdr)
         .next()
     {
-        aux = append_aux(
-            aux,
-            AuxEntry::ProgramHeaders(phinfo.vaddr, phinfo.memsz as usize / elf.ph_entry_size()),
-        )
+        aux_array[idx] =
+            AuxEntry::ProgramHeaders(phinfo.vaddr, phinfo.memsz as usize / elf.ph_entry_size());
+        idx += 1;
     }
 
-    aux = append_aux(aux, AuxEntry::ExecId(exe));
-
-    append_aux(aux, AuxEntry::Null);
+    aux_array[idx] = AuxEntry::ExecId(exe.id());
+    idx += 1;
+    aux_array[idx] = AuxEntry::Arguments(args.len(), spawnargs_start as u64);
+    idx += 1;
+    aux_array[idx] = AuxEntry::Null;
 
     let ts = ThreadSpawnArgs::new(
         elf.entry() as usize,
-        stackslice,
+        stack_base,
+        INITIAL_STACK_SIZE,
         0,
         spawnaux_start,
         ThreadSpawnFlags::empty(),
@@ -300,6 +314,7 @@ pub fn spawn_new_executable(exe: ObjID) -> Option<ElfObject<'static>> {
     unsafe {
         crate::syscall::sys_spawn(ts).unwrap();
     }
+    //TODO: delete objects
 
-    Some(elf)
+    Some(())
 }

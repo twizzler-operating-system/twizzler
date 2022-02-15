@@ -223,7 +223,13 @@ fn test_kaction() {
 }
 
 fn test_load_elf() {
-    let _elf = twizzler_abi::load_elf::spawn_new_executable(ObjID::new_from_parts(1, 2));
+    let env: Vec<String> = std::env::vars()
+        .map(|(n, v)| format!("{}={}", n, v))
+        .collect();
+    let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
+    let args = vec!["test".as_bytes(), "foo".as_bytes()];
+    let _elf =
+        twizzler_abi::load_elf::spawn_new_executable(ObjID::new_from_parts(1, 2), &args, &env_ref);
     //println!("ELF: {:?}", elf);
 }
 

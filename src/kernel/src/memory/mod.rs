@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use twizzler_abi::device::CacheType;
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::{arch, spinlock::Spinlock, BootInfo};
@@ -94,6 +95,7 @@ fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContextInner {
             PhysAddr::new(0),
             0x100000000,
             MapFlags::READ | MapFlags::WRITE | MapFlags::GLOBAL | MapFlags::WIRED,
+            CacheType::WriteBack,
         )
         .unwrap();
 
@@ -108,6 +110,7 @@ fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContextInner {
                 | MapFlags::GLOBAL
                 | MapFlags::EXECUTE
                 | MapFlags::WIRED,
+            CacheType::WriteBack,
         )
         .unwrap();
 
@@ -140,6 +143,7 @@ impl KernelMemoryManager {
                 frame.start_address(),
                 frame.size() as usize,
                 MapFlags::READ | MapFlags::WRITE | MapFlags::GLOBAL | MapFlags::WIRED,
+                CacheType::WriteBack,
             );
             count += frame.size();
             if count >= length {

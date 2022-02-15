@@ -6,6 +6,14 @@ pub struct Volatile<T> {
     item: UnsafeCell<T>,
 }
 
+impl<T> core::fmt::Debug for Volatile<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Volatile")
+            .field("item", &self.item)
+            .finish()
+    }
+}
+
 impl<T> Volatile<T> {
     pub const fn new(item: T) -> Self {
         Volatile {
