@@ -167,6 +167,7 @@ pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
     ];
     let mut arg_ptr = ptr::null();
     let mut arg_count = 0;
+    let mut env_ptr = (&null_env).as_ptr();
     unsafe {
         while !aux_array.is_null() && *aux_array != AuxEntry::Null {
             match *aux_array {
@@ -179,6 +180,9 @@ pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
                 AuxEntry::Arguments(num, ptr) => {
                     arg_count = num;
                     arg_ptr = ptr as *const *const i8
+                }
+                AuxEntry::Environment(ptr) => {
+                    env_ptr = ptr as *const *const i8;
                 }
                 _ => {}
             }
@@ -217,7 +221,8 @@ pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
 
     /* it's unsafe because it's an extern C function. */
     /* TODO: pass env and args */
-    let code = unsafe { std_runtime_start(arg_count, arg_ptr, &null_env as *const *const i8) };
+    // let code = unsafe { std_runtime_start(arg_count, arg_ptr, &null_env as *const *const i8) };
+    let code = unsafe { std_runtime_start(arg_count, arg_ptr, env_ptr) };
     //TODO: exit val
     crate::syscall::sys_thread_exit(code as u64, ptr::null_mut())
 }
