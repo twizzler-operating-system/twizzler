@@ -13,6 +13,7 @@ pub struct TlsInfo {
     pub start_addr: VirtAddr,
     pub file_size: usize,
     pub mem_size: usize,
+    pub align: usize,
 }
 pub fn get_tls() -> TlsInfo {
     let elf = xmas_elf::ElfFile::new(*KERNEL_IMAGE.wait()).expect("failed to parse kernel image");
@@ -23,6 +24,7 @@ pub fn get_tls() -> TlsInfo {
                     start_addr: VirtAddr::new(ph.virtual_addr()),
                     file_size: ph.file_size() as usize,
                     mem_size: ph.mem_size() as usize,
+                    align: ph.align() as usize,
                 };
             }
             _ => {}
