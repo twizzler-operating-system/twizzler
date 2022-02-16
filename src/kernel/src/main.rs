@@ -114,7 +114,7 @@ pub fn idle_main() -> ! {
         thread::start_new_init();
     }
     logln!(
-        "processor {} entering main idle loop",
+        "[kernel::main] processor {} entering main idle loop",
         current_processor().id
     );
     interrupt::set(true);

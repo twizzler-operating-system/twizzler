@@ -663,11 +663,13 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> 
     } else {
         Thread::new_with_current_context(args)
     };
+    /*
     logln!(
         "starting new thread {} with stack {:p}",
         thread.id,
         thread.kernel_stack
     );
+    */
     unsafe {
         thread.init(user_new_start);
     }
@@ -679,11 +681,13 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> 
 
 pub fn start_new_init() {
     let mut thread = Thread::new_with_new_vm();
+    /*
     logln!(
         "starting new thread {} with stack {:p}",
         thread.id,
         thread.kernel_stack
     );
+    */
     unsafe {
         thread.init(user_init);
     }
