@@ -87,12 +87,14 @@ unsafe extern "C" fn common_handler_entry(
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn kernel_interrupt() {
     asm!("mov qword ptr [rsp - 8], 0", "sub rsp, 8", "xor rdx, rdx", "call {common}", "add rsp, 8", "jmp return_from_interrupt", common = sym common_handler_entry, options(noreturn));
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[allow(named_asm_labels)]
 #[no_mangle]
 #[naked]
@@ -108,6 +110,7 @@ pub unsafe extern "C" fn user_interrupt() {
         "jmp return_from_interrupt", common = sym common_handler_entry, options(noreturn));
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn return_from_interrupt() {
@@ -383,10 +386,8 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, _user: bool) {
         );
     }
     if number == 32 {
-        unsafe {
-            if current_processor().is_bsp() {
-                lapic::send_ipi(Destination::AllButSelf, 32);
-            }
+        if current_processor().is_bsp() {
+            lapic::send_ipi(Destination::AllButSelf, 32);
         }
         super::pit::timer_interrupt();
     }

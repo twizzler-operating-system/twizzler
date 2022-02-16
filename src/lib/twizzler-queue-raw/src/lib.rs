@@ -316,9 +316,9 @@ impl RawQueueHdr {
                     return Ok(t);
                 }
             }
-            return Err(ReceiveError::WouldBlock);
+            Err(ReceiveError::WouldBlock)
         } else {
-            return Ok(t);
+            Ok(t)
         }
     }
 

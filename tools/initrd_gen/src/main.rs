@@ -26,7 +26,7 @@ fn main() {
     let files = matches.values_of("files");
     let outfile = File::create(initrd_output).unwrap();
     let mut archive = Builder::new(outfile);
-    for file in files.unwrap_or(clap::Values::default()) {
+    for file in files.unwrap_or_default() {
         let mut f = File::open(file).unwrap();
         archive
             .append_file(Path::new(file).file_name().unwrap(), &mut f)

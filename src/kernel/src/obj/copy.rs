@@ -40,12 +40,12 @@ fn copy_range_to_object_tree(
         if let Some(r1) = r1 {
             r1.gc_pagevec();
             let res = dest_tree.insert_replace(r1.start..r1.start.offset(r1.length), r1);
-            assert!(res.len() == 0);
+            assert!(res.is_empty());
         }
         if let Some(r2) = r2 {
             r2.gc_pagevec();
             let res = dest_tree.insert_replace(r2.start..r2.start.offset(r2.length), r2);
-            assert!(res.len() == 0);
+            assert!(res.is_empty());
         }
     }
 }
@@ -70,7 +70,7 @@ pub fn copy_ranges(
             dest_point = dest_point.offset(diff);
             rem -= diff;
         }
-        let offset = src_point.num().checked_sub(range.0.num()).unwrap_or(0);
+        let offset = src_point.num().saturating_sub(range.0.num());
         let len = core::cmp::min(range.1.value().length - offset, rem);
         copy_range_to_object_tree(&mut dest_tree, dest_point, range.1.value(), offset, len);
         dest_point = dest_point.offset(len);

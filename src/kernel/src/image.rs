@@ -17,15 +17,12 @@ pub struct TlsInfo {
 pub fn get_tls() -> TlsInfo {
     let elf = xmas_elf::ElfFile::new(*KERNEL_IMAGE.wait()).expect("failed to parse kernel image");
     for ph in elf.program_iter() {
-        match ph.get_type() {
-            Ok(program::Type::Tls) => {
-                return TlsInfo {
-                    start_addr: VirtAddr::new(ph.virtual_addr()),
-                    file_size: ph.file_size() as usize,
-                    mem_size: ph.mem_size() as usize,
-                };
-            }
-            _ => {}
+        if let Ok(program::Type::Tls) = ph.get_type() {
+            return TlsInfo {
+                start_addr: VirtAddr::new(ph.virtual_addr()),
+                file_size: ph.file_size() as usize,
+                mem_size: ph.mem_size() as usize,
+            };
         }
     }
     panic!("failed to find TLS program header in kernel image");

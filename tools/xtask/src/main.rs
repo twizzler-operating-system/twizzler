@@ -211,7 +211,7 @@ fn try_main() -> Result<(), DynError> {
 
     if sub_matches.is_none() {
         app.print_long_help()?;
-        Err("")?;
+        return Err("".into());
     }
 
     let sub_matches = sub_matches.unwrap();
@@ -305,7 +305,7 @@ fn build_crtx(name: &str, build_info: &BuildInfo) -> Result<(), DynError> {
         .arg(build_info.get_twizzler_triple())
         .status()?;
     if !status.success() {
-        Err("failed to compile crtx")?;
+        return Err("failed to compile crtx".into());
     }
 
     Ok(())
@@ -320,7 +320,7 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
             .arg("--recursive")
             .status()?;
         if !status.success() {
-            Err("failed to update git submodules")?;
+            return Err("failed to update git submodules".into());
         }
     }
 
@@ -328,20 +328,16 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
         "toolchain/src/config.toml",
         "toolchain/src/rust/config.toml",
     );
-    match res {
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::AlreadyExists => {}
-            _ => Err("failed to create hardlink config.toml")?,
-        },
-        _ => {}
+    if let Err(e) = res {
+        if e.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err("failed to create hardlink config.toml".into());
+        }
     }
     let res = std::fs::remove_dir_all("toolchain/src/rust/library/twizzler-abi");
-    match res {
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => {}
-            _ => Err("failed to remove softlink twizzler-abi")?,
-        },
-        _ => {}
+    if let Err(e) = res {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err("failed to remove softlink twizzler-abi".into());
+        }
     }
     fs_extra::copy_items(
         &["src/lib/twizzler-abi"],
@@ -364,7 +360,7 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
         .current_dir("toolchain/src/rust")
         .status()?;
     if !status.success() {
-        Err("failed to compile rust toolchain")?;
+        return Err("failed to compile rust toolchain".into());
     }
 
     for bi in &all_supported_build_infos() {
@@ -380,7 +376,7 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
         .arg("toolchain/install")
         .status()?;
     if !status.success() {
-        Err("failed to link rust Twizzler toolchain with rustup")?;
+        return Err("failed to link rust Twizzler toolchain with rustup".into());
     }
 
     Ok(())
@@ -388,12 +384,10 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
 
 fn build_std() -> Result<(), DynError> {
     let res = std::fs::remove_dir_all("toolchain/src/rust/library/twizzler-abi");
-    match res {
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => {}
-            _ => Err("failed to remove softlink twizzler-abi")?,
-        },
-        _ => {}
+    if let Err(e) = res {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err("failed to remove softlink twizzler-abi".into());
+        }
     }
     fs_extra::copy_items(
         &["src/lib/twizzler-abi"],
@@ -420,12 +414,13 @@ fn build_std() -> Result<(), DynError> {
         .current_dir("toolchain/src/rust")
         .status()?;
     if !status.success() {
-        Err("failed to compile rust toolchain")?;
+        return Err("failed to compile rust toolchain".into());
     }
 
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cargo_cmd_collection(
     meta: &Metadata,
     collection_name: &str,
@@ -475,7 +470,7 @@ fn cargo_cmd_collection(
 
     let status = status.status()?;
     if !status.success() {
-        Err("failed to run cargo command")?;
+        return Err("failed to run cargo command".into());
     }
     Ok(())
 }
@@ -585,7 +580,7 @@ fn make_disk(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<
         .args(&initrd_files)
         .status()?;
     if !status.success() {
-        Err("failed to generate initrd")?;
+        return Err("failed to generate initrd".into());
     }
     eprintln!("== BUILDING DISK IMAGE ({}) ==", build_info);
     let status = Command::new(make_tool_path(build_info, "image_builder"))
@@ -594,7 +589,7 @@ fn make_disk(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<
         .status()?;
 
     if !status.success() {
-        Err("disk image creation failed")?;
+        return Err("disk image creation failed".into());
     }
     Ok(())
 }
@@ -628,7 +623,7 @@ fn start_qemu(
 
     let exit_status = run_cmd.status().unwrap();
     if !exit_status.success() {
-        Err("failed to run qemu")?;
+        return Err("failed to run qemu".into());
     }
     Ok(())
 }
