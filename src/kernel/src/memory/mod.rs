@@ -130,6 +130,7 @@ pub struct KernelMemoryManager {
 }
 
 impl KernelMemoryManager {
+    #[allow(clippy::result_unit_err)]
     pub fn map_zero_pages(&self, addr: VirtAddr, length: usize) -> Result<(), ()> {
         let mut innerm = self.inner.lock();
         let inner = &mut *innerm;
@@ -196,9 +197,7 @@ pub fn init<B: BootInfo>(boot_info: &B, clone_regions: &[VirtAddr]) {
 
     unsafe {
         KERNEL_MEMORY_MANAGER = Box::into_raw(Box::new(KernelMemoryManager {
-            inner: Spinlock::new(KernelMemoryManagerInner {
-                kernel_context: kernel_context,
-            }),
+            inner: Spinlock::new(KernelMemoryManagerInner { kernel_context }),
         }))
     };
 

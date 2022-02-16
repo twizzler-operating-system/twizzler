@@ -63,7 +63,7 @@ impl<T> Once<T> {
     }
 
     unsafe fn force_get(&self) -> &T {
-        return &*(*self.data.get()).as_ptr();
+        &*(*self.data.get()).as_ptr()
     }
 
     /// If the data is not ready, then return None, or return Some if the data is ready. If this

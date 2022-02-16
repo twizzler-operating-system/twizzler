@@ -78,12 +78,10 @@ impl<T> Mutex<T> {
                     }
                     queue.owner = current_thread;
                     break;
-                } else {
-                    if let Some(ref cur_owner) = queue.owner {
-                        if let Some(ref cur_thread) = current_thread {
-                            if cur_thread.id() == cur_owner.id() {
-                                panic!("this mutex is not re-entrant");
-                            }
+                } else if let Some(ref cur_owner) = queue.owner {
+                    if let Some(ref cur_thread) = current_thread {
+                        if cur_thread.id() == cur_owner.id() {
+                            panic!("this mutex is not re-entrant");
                         }
                     }
                 }
@@ -183,7 +181,7 @@ where
         unsafe {
             (&*self.cell.get())
                 .id()
-                .partial_cmp(&(&*other.cell.get()).id())
+                .partial_cmp((&*other.cell.get()).id())
         }
     }
 }
@@ -193,6 +191,6 @@ where
     T: StableId,
 {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        unsafe { (&*self.cell.get()).id().cmp(&(&*other.cell.get()).id()) }
+        unsafe { (&*self.cell.get()).id().cmp((&*other.cell.get()).id()) }
     }
 }

@@ -21,7 +21,7 @@ impl TryFrom<u32> for PcieKactionSpecific {
         Ok(match value {
             0 => PcieKactionSpecific::RegisterDevice,
             1 => PcieKactionSpecific::AllocateInterrupt,
-            _ => Err(KactionError::InvalidArgument)?,
+            _ => return Err(KactionError::InvalidArgument),
         })
     }
 }

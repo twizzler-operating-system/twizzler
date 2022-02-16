@@ -37,10 +37,22 @@ pub struct MemoryContextInner {
     thread_count: u64,
 }
 
+impl Default for MemoryContextInner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct MemoryContext {
     inner: Mutex<MemoryContextInner>,
     id: Id<'static>,
     switch_cache: ArchMemoryContextSwitchInfo,
+}
+
+impl Default for MemoryContext {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub type MemoryContextRef = Arc<MemoryContext>;

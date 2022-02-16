@@ -57,9 +57,8 @@ pub fn init(modules: &[BootModule]) {
             }
             let obj = Arc::new(obj);
             obj::register_object(obj.clone());
-            match e.filename().as_str() {
-                "init" => boot_objects.init = Some(obj),
-                _ => {}
+            if e.filename().as_str() == "init" {
+                boot_objects.init = Some(obj);
             }
         }
     }

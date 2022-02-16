@@ -1,7 +1,4 @@
-use core::{
-    intrinsics::{copy_nonoverlapping, transmute},
-    mem::size_of,
-};
+use core::{intrinsics::copy_nonoverlapping, mem::size_of};
 
 use crate::{
     aux::AuxEntry,
@@ -40,7 +37,7 @@ struct ElfHeader {
 
 impl ElfHeader {
     pub fn verify(&self) -> bool {
-        self.magic == [0x7f, 'E' as u8, 'L' as u8, 'F' as u8]
+        self.magic == [0x7f, b'E', b'L', b'F']
             && self.version == 1
             && self.ident_version == 1
             && self.class == 2 /* 64-bit */
@@ -67,7 +64,7 @@ impl TryFrom<u32> for PhdrType {
             3 => Self::Interp,
             6 => Self::Phdr,
             7 => Self::Tls,
-            _ => Err(())?,
+            _ => return Err(()),
         })
     }
 }
@@ -146,12 +143,12 @@ impl<'a> ElfObject<'a> {
             return None;
         }
         let offset = pos * self.hdr.phentsize as usize + self.hdr.phoff as usize;
-        Some(unsafe { transmute(self.base_raw.add(offset)) })
+        Some(unsafe { &*(self.base_raw.add(offset) as *const ElfPhdr) })
     }
 
     fn from_raw_memory(obj: &'a InternalObject<ElfHeader>, mem: *const u8) -> Option<Self> {
         let elf = Self {
-            hdr: unsafe { transmute(mem) },
+            hdr: unsafe { &*(mem as *const ElfHeader) },
             base_raw: mem,
             obj,
         };
@@ -239,7 +236,7 @@ pub fn spawn_new_executable(
 
     let text = crate::syscall::sys_object_create(cs, &text_copy, &[]).unwrap();
     let data = crate::syscall::sys_object_create(cs, &data_copy, &[]).unwrap();
-    let stack = InternalObject::<()>::create_data_and_map()
+    let mut stack = InternalObject::<()>::create_data_and_map()
         .ok_or(SpawnExecutableError::ObjectCreateFailed)?;
 
     crate::syscall::sys_object_map(
@@ -270,7 +267,11 @@ pub fn spawn_new_executable(
     let (stack_base, _) = crate::slot::to_vaddr_range(RESERVED_STACK);
     let spawnaux_start = stack_base + INITIAL_STACK_SIZE + page_size as usize;
 
-    fn copy_strings<T>(stack: &InternalObject<T>, strs: &[&[u8]], offset: usize) -> (usize, usize) {
+    fn copy_strings<T>(
+        stack: &mut InternalObject<T>,
+        strs: &[&[u8]],
+        offset: usize,
+    ) -> (usize, usize) {
         let offset = offset.checked_next_multiple_of(64).unwrap();
         let (stack_base, _) = crate::slot::to_vaddr_range(RESERVED_STACK);
         let args_start = unsafe {
@@ -306,19 +307,15 @@ pub fn spawn_new_executable(
         (spawnargs_start, total)
     }
 
-    let (spawnargs_start, args_len) = copy_strings(&stack, args, 0);
-    let (spawnenv_start, _) = copy_strings(&stack, env, args_len);
+    let (spawnargs_start, args_len) = copy_strings(&mut stack, args, 0);
+    let (spawnenv_start, _) = copy_strings(&mut stack, env, args_len);
 
     let aux_array = unsafe {
         stack.offset_from_base::<[AuxEntry; 32]>(INITIAL_STACK_SIZE + page_size as usize)
     };
     let mut idx = 0;
 
-    if let Some(phinfo) = elf
-        .phdrs()
-        .filter(|p| p.phdr_type() == PhdrType::Phdr)
-        .next()
-    {
+    if let Some(phinfo) = elf.phdrs().find(|p| p.phdr_type() == PhdrType::Phdr) {
         aux_array[idx] =
             AuxEntry::ProgramHeaders(phinfo.vaddr, phinfo.memsz as usize / elf.ph_entry_size());
         idx += 1;

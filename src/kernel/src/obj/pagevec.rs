@@ -60,13 +60,11 @@ impl PageVec {
 
     pub fn clone_pages_limited(&self, start: usize, len: usize) -> Self {
         let mut pv = Self::new();
-        let mut di = 0;
-        for si in start..(start + len) {
+        for (di, si) in (start..(start + len)).enumerate() {
             if let Some(page) = &self.pages[si] {
                 pv.pages.resize(di + 1, None);
                 pv.pages[di] = Some(Arc::new(page.copy_page()));
             }
-            di += 1;
         }
         pv
     }

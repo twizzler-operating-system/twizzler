@@ -67,7 +67,7 @@ fn get_obj(reference: ThreadSyncReference) -> Result<(ObjectRef, usize), ThreadS
         ThreadSyncReference::ObjectRef(id, offset) => {
             let obj = match crate::obj::lookup_object(id, LookupFlags::empty()) {
                 crate::obj::LookupResult::Found(o) => o,
-                _ => Err(ThreadSyncError::InvalidReference)?,
+                _ => return Err(ThreadSyncError::InvalidReference),
             };
             (obj, offset)
         }
@@ -117,7 +117,7 @@ pub fn sys_thread_sync(
 
     for op in ops {
         match op {
-            ThreadSync::Sleep(sleep, result) => match prep_sleep(sleep, unsleeps.len() == 0) {
+            ThreadSync::Sleep(sleep, result) => match prep_sleep(sleep, unsleeps.is_empty()) {
                 Ok(se) => {
                     *result = Ok(if se.did_sleep { 0 } else { 1 });
                     if se.did_sleep {
@@ -144,7 +144,7 @@ pub fn sys_thread_sync(
     let thread = current_thread_ref().unwrap();
     {
         let guard = thread.enter_critical();
-        if unsleeps.len() > 0 {
+        if !unsleeps.is_empty() {
             if let Some(timeout) = timeout {
                 crate::clock::register_timeout_callback(
                     // TODO: fix all our time types
@@ -156,7 +156,7 @@ pub fn sys_thread_sync(
             thread.set_sync_sleep_done();
         }
         requeue_all();
-        if unsleeps.len() > 0 {
+        if !unsleeps.is_empty() {
             finish_blocking(guard);
         } else {
             drop(guard);

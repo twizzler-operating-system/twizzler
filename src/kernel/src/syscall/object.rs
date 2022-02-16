@@ -96,7 +96,7 @@ impl<T: ObjectHandle + Clone> Handle<T> {
         let obj = crate::obj::lookup_object(id, LookupFlags::empty());
         let obj = match obj {
             crate::obj::LookupResult::Found(obj) => obj,
-            _ => Err(NewHandleError::NotFound)?,
+            _ => return Err(NewHandleError::NotFound),
         };
         Ok(Handle {
             obj: obj.clone(),

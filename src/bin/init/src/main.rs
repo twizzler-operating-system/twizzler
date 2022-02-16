@@ -154,12 +154,10 @@ fn list_subobjs(level: usize, id: ObjID) {
         );
         if res.is_err() {
             break;
-        } else {
-            if let KactionValue::ObjID(id) = res.unwrap() {
-                println!("  sub {:indent$}info {}: {}", "", n, id, indent = level);
-            }
+        } else if let KactionValue::ObjID(id) = res.unwrap() {
+            println!("  sub {:indent$}info {}: {}", "", n, id, indent = level);
         }
-        n = n + 1;
+        n += 1;
     }
 
     let mut n = 0;
@@ -175,12 +173,10 @@ fn list_subobjs(level: usize, id: ObjID) {
         );
         if res.is_err() {
             break;
-        } else {
-            if let KactionValue::ObjID(id) = res.unwrap() {
-                println!("  sub {:indent$}mmio {}: {}", "", n, id, indent = level);
-            }
+        } else if let KactionValue::ObjID(id) = res.unwrap() {
+            println!("  sub {:indent$}mmio {}: {}", "", n, id, indent = level);
         }
-        n = n + 1;
+        n += 1;
     }
 }
 
@@ -195,12 +191,10 @@ fn enumerate_children(level: usize, id: ObjID) {
         );
         if res.is_err() {
             break;
-        } else {
-            if let KactionValue::ObjID(id) = res.unwrap() {
-                println!("{:indent$}{}: {}", "", n, id, indent = level);
-                list_subobjs(level, id);
-                enumerate_children(level + 4, id);
-            }
+        } else if let KactionValue::ObjID(id) = res.unwrap() {
+            println!("{:indent$}{}: {}", "", n, id, indent = level);
+            list_subobjs(level, id);
+            enumerate_children(level + 4, id);
         }
         n = n + 1;
     }
@@ -234,6 +228,7 @@ fn test_load_elf() {
 }
 
 fn main() {
+    println!("[init] starting userspace");
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
 

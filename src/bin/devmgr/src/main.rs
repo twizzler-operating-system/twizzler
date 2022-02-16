@@ -1,12 +1,8 @@
 use pci_ids::FromId;
 use twizzler_driver::{
-    bus::pcie::{PcieFunctionHeader, PcieInfo},
+    bus::pcie::PcieFunctionHeader,
     device::{BusType, Device},
 };
-
-static FOO: u64 = 0;
-#[used]
-static mut BAR: [u8; 0x2111] = [0; 0x2111];
 
 fn get_pcie_offset(bus: u8, device: u8, function: u8) -> usize {
     ((bus as usize * 256) + (device as usize * 8) + function as usize) * 4096
@@ -29,7 +25,7 @@ fn print_info(bus: u8, slot: u8, function: u8, cfg: &PcieFunctionHeader) -> Opti
     let device = pci_ids::Device::from_vid_pid(cfg.vendor_id.get(), cfg.device_id.get())?;
     let vendor = device.vendor();
     let class = pci_ids::Class::from_id(cfg.class.get())?;
-    let subclass = pci_ids::Class::from_id(cfg.subclass.get())?;
+    //let subclass = pci_ids::Class::from_id(cfg.subclass.get())?;
     println!(
         "[devmgr] {:02x}:{:02x}.{:02x} {}: {} {}",
         bus,
@@ -45,7 +41,7 @@ fn print_info(bus: u8, slot: u8, function: u8, cfg: &PcieFunctionHeader) -> Opti
 
 fn start_pcie(bus: Device) {
     println!("[devmgr] scanning PCIe bus");
-    let info = unsafe { bus.get_info::<PcieInfo>(0).unwrap() };
+    //let info = unsafe { bus.get_info::<PcieInfo>(0).unwrap() };
     let mmio = bus.get_mmio(0).unwrap();
 
     for bus in 0..=255 {
