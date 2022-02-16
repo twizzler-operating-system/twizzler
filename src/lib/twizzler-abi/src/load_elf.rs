@@ -254,6 +254,44 @@ pub fn spawn_new_executable(exe: ObjID, args: &[&[u8]], env: &[&[u8]]) -> Option
 
     let (stack_base, _) = crate::slot::to_vaddr_range(RESERVED_STACK);
     let spawnaux_start = stack_base + INITIAL_STACK_SIZE + page_size as usize;
+
+    fn copy_strings<T>(stack: &InternalObject<T>, strs: &[&[u8]], offset: usize) -> (usize, usize) {
+        let offset = offset.checked_next_multiple_of(64).unwrap();
+        let (stack_base, _) = crate::slot::to_vaddr_range(RESERVED_STACK);
+        let args_start = unsafe {
+            let args_start: &mut () =
+                stack.offset_from_base(INITIAL_STACK_SIZE + NULLPAGE_SIZE * 2 + offset);
+            core::slice::from_raw_parts_mut(args_start as *mut () as *mut usize, strs.len() + 1)
+        };
+        let spawnargs_start = stack_base + INITIAL_STACK_SIZE + NULLPAGE_SIZE * 2 + offset;
+
+        let args_data_start = unsafe {
+            let args_data_start: &mut () = stack.offset_from_base(
+                INITIAL_STACK_SIZE
+                    + NULLPAGE_SIZE * 2
+                    + offset
+                    + size_of::<*const u8>() * (strs.len() + 1),
+            );
+            args_data_start as *mut () as *mut u8
+        };
+        let spawnargs_data_start = spawnargs_start + size_of::<*const u8>() * (strs.len() + 1);
+
+        let mut data_offset = 0;
+        for (i, arg) in strs.iter().enumerate() {
+            let len = arg.len() + 1;
+            unsafe {
+                copy_nonoverlapping((*arg).as_ptr(), args_data_start.add(data_offset), len - 1);
+                args_data_start.add(data_offset + len - 1).write(0);
+            }
+            args_start[i] = spawnargs_data_start + data_offset;
+            data_offset += len;
+        }
+        args_start[strs.len()] = 0;
+        let total = (spawnargs_data_start as usize + data_offset + 16) - spawnargs_start;
+        (spawnargs_start, total)
+    }
+
+    /*
     let args_start = unsafe {
         let args_start: &mut () =
             stack.offset_from_base(INITIAL_STACK_SIZE + page_size as usize * 2);
@@ -280,6 +318,9 @@ pub fn spawn_new_executable(exe: ObjID, args: &[&[u8]], env: &[&[u8]]) -> Option
         offset += len;
     }
     args_start[args.len()] = 0;
+    */
+    let (spawnargs_start, args_len) = copy_strings(&stack, args, 0);
+    let (spawnenv_start, _) = copy_strings(&stack, env, args_len);
 
     let aux_array = unsafe {
         stack.offset_from_base::<[AuxEntry; 32]>(INITIAL_STACK_SIZE + page_size as usize)
@@ -299,6 +340,8 @@ pub fn spawn_new_executable(exe: ObjID, args: &[&[u8]], env: &[&[u8]]) -> Option
     aux_array[idx] = AuxEntry::ExecId(exe.id());
     idx += 1;
     aux_array[idx] = AuxEntry::Arguments(args.len(), spawnargs_start as u64);
+    idx += 1;
+    aux_array[idx] = AuxEntry::Environment(spawnenv_start as u64);
     idx += 1;
     aux_array[idx] = AuxEntry::Null;
 
