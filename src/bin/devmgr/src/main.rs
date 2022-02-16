@@ -13,25 +13,29 @@ fn get_pcie_offset(bus: u8, device: u8, function: u8) -> usize {
 }
 
 fn print_info(bus: u8, slot: u8, function: u8, cfg: &PcieFunctionHeader) -> Option<()> {
-    println!(
-        "{} {} {}:: {:x} {:x} :: {:x} {:x} {:x}",
-        bus,
-        slot,
-        function,
-        cfg.vendor_id.get(),
-        cfg.device_id.get(),
-        cfg.class.get(),
-        cfg.subclass.get(),
-        cfg.progif.get(),
-    );
+    if false {
+        println!(
+            "{} {} {}:: {:x} {:x} :: {:x} {:x} {:x}",
+            bus,
+            slot,
+            function,
+            cfg.vendor_id.get(),
+            cfg.device_id.get(),
+            cfg.class.get(),
+            cfg.subclass.get(),
+            cfg.progif.get(),
+        );
+    }
     let device = pci_ids::Device::from_vid_pid(cfg.vendor_id.get(), cfg.device_id.get())?;
     let vendor = device.vendor();
     let class = pci_ids::Class::from_id(cfg.class.get())?;
     let subclass = pci_ids::Class::from_id(cfg.subclass.get())?;
     println!(
-        "   => {} {}: {} {}",
+        "[devmgr] {:02x}:{:02x}.{:02x} {}: {} {}",
+        bus,
+        slot,
+        function,
         class.name(),
-        subclass.name(),
         vendor.name(),
         device.name()
     );
@@ -40,9 +44,8 @@ fn print_info(bus: u8, slot: u8, function: u8, cfg: &PcieFunctionHeader) -> Opti
 }
 
 fn start_pcie(bus: Device) {
-    println!("found pcie!");
+    println!("[devmgr] scanning PCIe bus");
     let info = unsafe { bus.get_info::<PcieInfo>(0).unwrap() };
-    println!("{:?}", info.get_data());
     let mmio = bus.get_mmio(0).unwrap();
 
     for bus in 0..=255 {
@@ -68,25 +71,12 @@ fn start_pcie(bus: Device) {
             }
         }
     }
-    println!("done");
 }
 
 fn main() {
-    unsafe {
-        println!("Hello, world! {} {}", FOO, BAR.len());
-    }
-
-    for arg in std::env::args() {
-        println!("arg: {}", arg);
-    }
-
-    for env in std::env::vars() {
-        println!("env: {}={}", &env.0, &env.1);
-    }
-
+    println!("[devmgr] starting device manager");
     let device_root = twizzler_driver::device::get_bustree_root();
     for device in device_root.children() {
-        println!("{}", device);
         if device.is_bus() && device.bus_type() == BusType::Pcie {
             start_pcie(device);
         }

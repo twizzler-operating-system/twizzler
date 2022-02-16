@@ -33,10 +33,14 @@ pub fn init(modules: &[BootModule]) {
     let mut boot_objects = BootObjects::default();
     for module in modules {
         let tar = tar_no_std::TarArchiveRef::new(module.as_slice());
-        logln!("loading module...");
+        logln!("[kernel::initrd] loading module...");
         for e in tar.entries() {
             let obj = obj::Object::new();
-            logln!("  loading {:?} -> {:x}", e.filename(), obj.id());
+            logln!(
+                "[kernel::initrd]  loading {:?} -> {:x}",
+                e.filename(),
+                obj.id()
+            );
             let data = e.data();
             let mut total = 0;
             let mut pagenr = 1;

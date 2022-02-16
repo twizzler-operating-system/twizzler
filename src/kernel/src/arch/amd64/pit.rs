@@ -50,7 +50,7 @@ pub fn setup_freq(hz: u64, cb: fn(Nanoseconds)) {
         REAL_FREQ = CRYSTAL_HZ / count;
         CB = Some(cb);
         logln!(
-            "x86-pit: setting up for statclock with freq {} ({} ms)",
+            "[kernel::arch::x86-pit] setting up for statclock with freq {} ({} ms)",
             REAL_FREQ,
             (1000 / REAL_FREQ)
         );

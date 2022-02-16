@@ -1,5 +1,4 @@
-use std::ptr::NonNull;
-use std::{fmt::Display, marker::PhantomData};
+use std::fmt::Display;
 
 use twizzler::object::{ObjID, ObjectInitError, ObjectInitFlags, Protections};
 pub use twizzler_abi::device::BusType;

@@ -28,14 +28,16 @@ pub fn sys_object_create(
     for src in srcs {
         let so = crate::obj::lookup_object(src.id, LookupFlags::empty())
             .ok_or(ObjectCreateError::ObjectNotFound)?;
-        logln!(
-            "object copy ranges: {} => {} :: {:x} => {:x} {:x}",
-            src.id,
-            obj.id(),
-            src.src_start,
-            src.dest_start,
-            src.len
-        );
+        if false {
+            logln!(
+                "object copy ranges: {} => {} :: {:x} => {:x} {:x}",
+                src.id,
+                obj.id(),
+                src.src_start,
+                src.dest_start,
+                src.len
+            );
+        }
         let cs = CopySpec::new(
             so,
             PageNumber::from_address(VirtAddr::new(src.src_start)),
