@@ -132,6 +132,12 @@ impl Object {
     }
 }
 
+impl Default for Object {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Display for PageNumber {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.0)

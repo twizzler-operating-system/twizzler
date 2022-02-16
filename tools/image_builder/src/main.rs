@@ -101,7 +101,7 @@ MODULE_PATH=boot:///initrd
         kernel.truncate()?;
         io::copy(&mut fs::File::open(&kernel_binary_path)?, &mut kernel)?;
         let mut cfg = root_dir.create_file("limine.cfg")?;
-        cfg.write(cfg_data.as_bytes())?;
+        cfg.write_all(cfg_data.as_bytes())?;
         let mut initrd = root_dir.create_file("initrd")?;
         initrd.truncate()?;
         io::copy(&mut fs::File::open(&initrd_path)?, &mut initrd)?;

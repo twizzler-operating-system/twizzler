@@ -44,6 +44,7 @@ static mut THREAD_IDS: IdCounter = IdCounter::new(1);
 
 const STACK_ALIGN: usize = 32;
 
+#[allow(clippy::too_many_arguments)]
 #[allow(dead_code)]
 unsafe fn new_thread(
     objid: ObjID,
@@ -169,6 +170,8 @@ pub unsafe fn spawn(stack_size: usize, entry: usize, arg: usize) -> Option<u32> 
 }
 
 /// Wait until the specified thread terminates.
+/// # Safety
+/// The thread ID must be a valid thread ID.
 pub unsafe fn join(id: u32) {
     THREADS_LOCK.lock();
     loop {
@@ -192,6 +195,7 @@ pub unsafe fn join(id: u32) {
     THREADS_LOCK.unlock();
 }
 
-pub unsafe fn exit() -> ! {
+/// Exit the current thread.
+pub fn exit() -> ! {
     crate::syscall::sys_thread_exit(0, ptr::null_mut());
 }

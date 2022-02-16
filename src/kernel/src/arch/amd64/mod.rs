@@ -37,6 +37,9 @@ pub fn start_clock(statclock_hz: u64, stat_cb: fn(Nanoseconds)) {
     pit::setup_freq(statclock_hz, stat_cb);
 }
 
+/// Jump into userspace
+/// # Safety
+/// The stack and target must be valid addresses.
 pub unsafe fn jump_to_user(target: VirtAddr, stack: VirtAddr, arg: u64) {
     use crate::syscall::SyscallContext;
     let ctx = syscall::X86SyscallContext::create_jmp_context(target, stack, arg);

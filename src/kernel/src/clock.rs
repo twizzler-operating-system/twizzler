@@ -120,7 +120,7 @@ impl TimeoutQueue {
         }
     }
     fn check_window(&mut self, window: usize) -> Option<TimeoutEntry> {
-        if self.queues[window].len() > 0 {
+        if !self.queues[window].is_empty() {
             let index = self.queues[window]
                 .iter()
                 .position(|x| x.is_ready(self.current as u64));

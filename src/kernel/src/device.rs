@@ -101,7 +101,7 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64) -> Result<KactionVa
         KactionCmd::Specific(cmd) => id.map_or(Err(KactionError::InvalidArgument), |id| {
             let dev = {
                 let dm = get_device_map().lock();
-                dm.get(&id).map(|d| d.clone())
+                dm.get(&id).cloned()
             };
             dev.map_or(Err(KactionError::NotFound), |dev| {
                 (dev.kaction)(dev.clone(), cmd, arg)

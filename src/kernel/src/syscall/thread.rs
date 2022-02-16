@@ -6,8 +6,7 @@ use twizzler_abi::{
 use crate::thread::current_thread_ref;
 
 pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
-    let id = crate::thread::start_new_user(*args);
-    id
+    crate::thread::start_new_user(*args)
 }
 
 pub fn thread_ctrl(cmd: ThreadControl, arg: u64) -> (u64, u64) {
