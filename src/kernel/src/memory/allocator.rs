@@ -219,10 +219,11 @@ unsafe impl GlobalAlloc for SafeZoneAllocator {
                 match allocator.allocate_first_fit(layout) {
                     Ok(ptr) => ptr.as_ptr(),
                     Err(_) => {
+                        // TODO: something less wasteful
                         let len = (layout.align() + layout.size()) * 2;
-                        logln!("requesting {} bytes from huge allocator", len);
+                        //logln!("requesting {} bytes from huge allocator", len);
                         let len = PAGER.extend_huge_heap(len);
-                        logln!("now {} bytes from huge allocator", len);
+                        //logln!("now {} bytes from huge allocator", len);
                         allocator.extend(len);
                         allocator
                             .allocate_first_fit(layout)

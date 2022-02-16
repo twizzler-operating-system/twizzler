@@ -109,6 +109,7 @@ impl ElfPhdr {
 pub struct ElfObject<'a> {
     hdr: &'a ElfHeader,
     base_raw: *const u8,
+    #[allow(dead_code)]
     obj: &'a InternalObject<ElfHeader>,
 }
 
@@ -174,9 +175,22 @@ impl<'a> ElfObject<'a> {
 const INITIAL_STACK_SIZE: usize = 1024 * 1024 * 4;
 
 extern crate alloc;
-pub fn spawn_new_executable(exe: ObjID, args: &[&[u8]], env: &[&[u8]]) -> Option<()> {
-    let exe = InternalObject::<ElfHeader>::map(exe, Protections::READ)?;
-    let elf = ElfObject::from_obj(&exe)?;
+
+pub enum SpawnExecutableError {
+    ObjectCreateFailed,
+    InvalidExecutable,
+    MapFailed,
+    ThreadSpawnFailed,
+}
+
+pub fn spawn_new_executable(
+    exe: ObjID,
+    args: &[&[u8]],
+    env: &[&[u8]],
+) -> Result<ObjID, SpawnExecutableError> {
+    let exe = InternalObject::<ElfHeader>::map(exe, Protections::READ)
+        .ok_or(SpawnExecutableError::MapFailed)?;
+    let elf = ElfObject::from_obj(&exe).ok_or(SpawnExecutableError::InvalidExecutable)?;
 
     let cs = ObjectCreate::new(
         BackingType::Normal,
@@ -186,7 +200,7 @@ pub fn spawn_new_executable(exe: ObjID, args: &[&[u8]], env: &[&[u8]]) -> Option
     );
     let vm_handle = crate::syscall::sys_object_create(cs, &[], &[]).unwrap();
     crate::syscall::sys_new_handle(vm_handle, HandleType::VmContext, NewHandleFlags::empty())
-        .unwrap();
+        .map_err(|_| SpawnExecutableError::ObjectCreateFailed)?;
 
     let mut text_copy = alloc::vec::Vec::new();
     let mut data_copy = alloc::vec::Vec::new();
@@ -225,7 +239,8 @@ pub fn spawn_new_executable(exe: ObjID, args: &[&[u8]], env: &[&[u8]]) -> Option
 
     let text = crate::syscall::sys_object_create(cs, &text_copy, &[]).unwrap();
     let data = crate::syscall::sys_object_create(cs, &data_copy, &[]).unwrap();
-    let stack = InternalObject::<()>::create_data_and_map()?;
+    let stack = InternalObject::<()>::create_data_and_map()
+        .ok_or(SpawnExecutableError::ObjectCreateFailed)?;
 
     crate::syscall::sys_object_map(
         Some(vm_handle),
@@ -234,7 +249,7 @@ pub fn spawn_new_executable(exe: ObjID, args: &[&[u8]], env: &[&[u8]]) -> Option
         Protections::READ | Protections::EXEC,
         MapFlags::empty(),
     )
-    .unwrap();
+    .map_err(|_| SpawnExecutableError::MapFailed)?;
     crate::syscall::sys_object_map(
         Some(vm_handle),
         data,
@@ -242,7 +257,7 @@ pub fn spawn_new_executable(exe: ObjID, args: &[&[u8]], env: &[&[u8]]) -> Option
         Protections::WRITE | Protections::READ,
         MapFlags::empty(),
     )
-    .unwrap();
+    .map_err(|_| SpawnExecutableError::MapFailed)?;
     crate::syscall::sys_object_map(
         Some(vm_handle),
         stack.id(),
@@ -250,7 +265,7 @@ pub fn spawn_new_executable(exe: ObjID, args: &[&[u8]], env: &[&[u8]]) -> Option
         Protections::WRITE | Protections::READ,
         MapFlags::empty(),
     )
-    .unwrap();
+    .map_err(|_| SpawnExecutableError::MapFailed)?;
 
     let (stack_base, _) = crate::slot::to_vaddr_range(RESERVED_STACK);
     let spawnaux_start = stack_base + INITIAL_STACK_SIZE + page_size as usize;
@@ -291,34 +306,6 @@ pub fn spawn_new_executable(exe: ObjID, args: &[&[u8]], env: &[&[u8]]) -> Option
         (spawnargs_start, total)
     }
 
-    /*
-    let args_start = unsafe {
-        let args_start: &mut () =
-            stack.offset_from_base(INITIAL_STACK_SIZE + page_size as usize * 2);
-        core::slice::from_raw_parts_mut(args_start as *mut () as *mut usize, args.len() + 1)
-    };
-    let spawnargs_start = stack_base + INITIAL_STACK_SIZE + page_size as usize * 2;
-
-    let args_data_start = unsafe {
-        let args_data_start: &mut () = stack.offset_from_base(
-            INITIAL_STACK_SIZE + page_size as usize * 2 + size_of::<*const u8>() * (args.len() + 1),
-        );
-        args_data_start as *mut () as *mut u8
-    };
-    let spawnargs_data_start = spawnargs_start + size_of::<*const u8>() * (args.len() + 1);
-
-    let mut offset = 0;
-    for (i, arg) in args.iter().enumerate() {
-        let len = arg.len() + 1;
-        unsafe {
-            copy_nonoverlapping(arg.as_ptr(), args_data_start.add(offset), len - 1);
-            args_data_start.add(offset + len - 1).write(0);
-        }
-        args_start[i] = spawnargs_data_start + offset;
-        offset += len;
-    }
-    args_start[args.len()] = 0;
-    */
     let (spawnargs_start, args_len) = copy_strings(&stack, args, 0);
     let (spawnenv_start, _) = copy_strings(&stack, env, args_len);
 
@@ -354,10 +341,10 @@ pub fn spawn_new_executable(exe: ObjID, args: &[&[u8]], env: &[&[u8]]) -> Option
         ThreadSpawnFlags::empty(),
         Some(vm_handle),
     );
-    unsafe {
-        crate::syscall::sys_spawn(ts).unwrap();
-    }
+    let thr = unsafe {
+        crate::syscall::sys_spawn(ts).map_err(|_| SpawnExecutableError::ThreadSpawnFailed)?
+    };
     //TODO: delete objects
 
-    Some(())
+    Ok(thr)
 }
