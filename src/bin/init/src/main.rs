@@ -247,18 +247,6 @@ fn main() {
     }
 
     loop {}
-    let j = std::thread::spawn(|| {
-        for _ in 0..1 {
-            println!("hello from thread");
-        }
-        234
-    });
-
-    println!("joining...");
-    let res = j.join();
-    println!("joined {:?}", res);
-    //panic!("panic test");
-    loop {}
 }
 
 /*
