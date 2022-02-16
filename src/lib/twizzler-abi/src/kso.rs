@@ -141,7 +141,7 @@ impl TryFrom<u32> for KactionGenericCmd {
             0 => KactionGenericCmd::GetKsoRoot,
             1 => KactionGenericCmd::GetChild(l),
             2 => KactionGenericCmd::GetSubObject((l >> 8) as u8, l as u8),
-            _ => Err(KactionError::InvalidArgument)?,
+            _ => return Err(KactionError::InvalidArgument),
         };
         Ok(v)
     }
@@ -171,7 +171,7 @@ impl TryFrom<u64> for KactionCmd {
         let v = match h {
             0 => KactionCmd::Generic(KactionGenericCmd::try_from(l)?),
             1 => KactionCmd::Specific(l),
-            _ => Err(KactionError::InvalidArgument)?,
+            _ => return Err(KactionError::InvalidArgument),
         };
         Ok(v)
     }

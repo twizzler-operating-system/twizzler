@@ -31,7 +31,7 @@ fn translate_addr_inner(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<Phy
     Some(frame.start_address() + u64::from(addr.page_offset()))
 }
 
-pub unsafe fn translate_addr(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<PhysAddr> {
+pub fn translate_addr(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<PhysAddr> {
     translate_addr_inner(addr, phys_mem_offset)
 }
 
@@ -41,6 +41,7 @@ use crate::memory::context::MapFlags;
 use crate::memory::frame::{alloc_frame, PhysicalFrameFlags};
 use crate::memory::{MapFailed, MappingInfo};
 
+#[allow(clippy::missing_safety_doc)]
 pub unsafe fn init(phys_mem_offset: VirtAddr) -> OffsetPageTable<'static> {
     let level_4_table = active_level_4_table(phys_mem_offset);
     OffsetPageTable::new(level_4_table, phys_mem_offset)
@@ -438,6 +439,9 @@ impl ArchMemoryContext {
 }
 
 impl ArchMemoryContextSwitchInfo {
+    /// Switch context.
+    /// # Safety
+    /// The context must be valid.
     pub unsafe fn switch(&self) {
         x86::controlregs::cr3_write(self.target)
     }

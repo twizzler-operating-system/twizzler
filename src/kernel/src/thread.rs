@@ -159,7 +159,7 @@ impl Thread {
 
     pub fn new_with_current_context(spawn_args: ThreadSpawnArgs) -> Self {
         let mut thread = Self::new();
-        thread.memory_context = Some(current_memory_context().unwrap().clone());
+        thread.memory_context = Some(current_memory_context().unwrap());
         thread.memory_context.as_ref().unwrap().inner().add_thread();
         thread.spawn_args = Some(spawn_args);
         thread
@@ -391,6 +391,7 @@ impl<'a> Drop for CriticalGuard<'a> {
 }
 
 impl Priority {
+    #[allow(clippy::declare_interior_mutable_const)]
     pub const REALTIME: Self = Self {
         class: PriorityClass::RealTime,
         adjust: AtomicI32::new(0),
@@ -571,7 +572,7 @@ extern "C" fn user_init() {
         )
         .unwrap();
         let init_obj = boot_objects.init.as_ref().expect("no init found");
-        let obj1_data = crate::operations::read_object(&init_obj);
+        let obj1_data = crate::operations::read_object(init_obj);
         let elf = xmas_elf::ElfFile::new(&obj1_data).unwrap();
         let mut phinfo = None;
         for ph in elf.program_iter() {

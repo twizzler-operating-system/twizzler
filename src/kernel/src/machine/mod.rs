@@ -34,19 +34,19 @@ impl KernelConsoleHardware for MachineConsoleHardware {
     ) -> Result<usize, KernelConsoleReadError> {
         self.init();
         let mut c = 0;
-        for i in 0..data.len() {
+        for d in data {
             let v = unsafe { self.serial.wait().get().as_mut().unwrap().receive() };
             match v {
                 13 => {
                     log!("\n");
-                    data[i] = 10;
+                    *d = 10;
                     c += 1;
                     break;
                 }
                 4 => break,
                 _ => {
                     log!("{}", v as char);
-                    data[i] = v
+                    *d = v
                 }
             }
             c += 1;

@@ -51,7 +51,7 @@ impl TryFrom<u8> for SubObjectType {
         Ok(match x {
             0 => SubObjectType::Info,
             1 => SubObjectType::Mmio,
-            _ => Err(())?,
+            _ => return Err(()),
         })
     }
 }
@@ -126,6 +126,10 @@ impl DeviceRepr {
         bus_type: BusType,
         device_id: DeviceId,
     ) -> Self {
+        // Clippy complains about this, but I don't know another way to do it cleanly.
+        // There probably is one, but I don't know it. Anyways, this is fine because we're
+        // never writing to V.
+        #[allow(clippy::declare_interior_mutable_const)]
         const V: DeviceInterrupt = DeviceInterrupt {
             sync: AtomicU64::new(0),
             vec: InterruptVector(0),

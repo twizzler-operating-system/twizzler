@@ -83,6 +83,12 @@ impl ArchThread {
     }
 }
 
+impl Default for ArchThread {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Thread {
     pub fn set_tls(&self, tls: u64) {
         //logln!("setting user fs to {}", tls);

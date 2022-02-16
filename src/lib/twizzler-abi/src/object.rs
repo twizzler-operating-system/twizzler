@@ -147,7 +147,7 @@ impl<T> InternalObject<T> {
     }
 
     #[allow(dead_code)]
-    pub(crate) unsafe fn offset_from_base<D>(&self, offset: usize) -> &mut D {
+    pub(crate) unsafe fn offset_from_base<D>(&mut self, offset: usize) -> &mut D {
         let (start, _) = crate::slot::to_vaddr_range(self.slot);
         ((start + offset) as *mut D).as_mut().unwrap()
     }

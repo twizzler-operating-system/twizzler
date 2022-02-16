@@ -26,6 +26,12 @@ pub struct Page {
 
 pub type PageRef = Arc<Page>;
 
+impl Default for Page {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Page {
     // TODO: we should have a way of allocating non-zero pages, for pages that will be immediately overwritten.
     pub fn new() -> Self {
@@ -52,7 +58,7 @@ impl Page {
         unsafe { core::slice::from_raw_parts(self.as_virtaddr().as_ptr(), self.frame.size()) }
     }
 
-    pub unsafe fn get_mut_to_val<T>(&self, offset: usize) -> &mut T {
+    pub unsafe fn get_mut_to_val<T>(&self, offset: usize) -> *mut T {
         /* TODO: enforce alignment and size of offset */
         /* TODO: once we start optimizing frame zeroing, we need to make the frame as non-zeroed here */
         let va = self.as_virtaddr();
@@ -62,7 +68,7 @@ impl Page {
             .unwrap()
     }
 
-    pub fn as_mut_slice(&self) -> &mut [u8] {
+    pub fn as_mut_slice(&self) -> &[u8] {
         unsafe {
             core::slice::from_raw_parts_mut(self.as_virtaddr().as_mut_ptr(), self.frame.size())
         }
@@ -117,12 +123,12 @@ impl Object {
 
         if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
             let t = page.get_mut_to_val::<AtomicU64>(page_offset);
-            return t.load(Ordering::SeqCst);
+            (*t).load(Ordering::SeqCst)
         } else {
             let page = Page::new();
             obj_page_tree.add_page(page_number, page);
             drop(obj_page_tree);
-            return self.read_atomic_u64(offset);
+            self.read_atomic_u64(offset)
         }
     }
 

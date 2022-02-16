@@ -44,7 +44,11 @@ impl MmioObject {
         self.obj.base_raw()
     }
 
-    pub unsafe fn get_mmio_offset<T>(&self, offset: usize) -> &mut T {
+    /// Get the base of the memory mapped IO region.
+    /// # Safety
+    /// The type this returns is not verified in any way, so the caller must ensure that T is
+    /// the correct type for the underlying data.
+    pub unsafe fn get_mmio_offset<T>(&self, offset: usize) -> &T {
         let ptr = self.obj.base_raw() as *const MmioInfo as *const u8;
         // TODO
         (ptr.add(MMIO_OFFSET + offset).sub(0x1000) as *mut T)
@@ -110,6 +114,10 @@ impl Device {
         MmioObject::new(id).ok()
     }
 
+    /// Get an indexed info object for a device.
+    /// # Safety
+    /// The type T is not verified in any way, so the caller must ensure that T is correct
+    /// for the underlying data.
     pub unsafe fn get_info<T>(&self, idx: u8) -> Option<InfoObject<T>> {
         let id = self.get_subobj(SubObjectType::Info.into(), idx)?;
         InfoObject::new(id).ok()
