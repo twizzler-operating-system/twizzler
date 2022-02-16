@@ -80,6 +80,10 @@ fn main() {
         println!("arg: {}", arg);
     }
 
+    for env in std::env::vars() {
+        println!("env: {}={}", &env.0, &env.1);
+    }
+
     let device_root = twizzler_driver::device::get_bustree_root();
     for device in device_root.children() {
         println!("{}", device);
