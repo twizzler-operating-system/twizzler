@@ -116,7 +116,7 @@ impl TimeoutQueue {
             expire_ticks: expire_ticks as u64,
         });
         if expire_ticks < self.next_wake {
-            // TODO: signal CPU to wake up early
+            // TODO: #41 signal CPU to wake up early.
         }
     }
     fn check_window(&mut self, window: usize) -> Option<TimeoutEntry> {

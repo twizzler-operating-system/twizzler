@@ -50,7 +50,6 @@ impl MmioObject {
     /// the correct type for the underlying data.
     pub unsafe fn get_mmio_offset<T>(&self, offset: usize) -> &T {
         let ptr = self.obj.base_raw() as *const MmioInfo as *const u8;
-        // TODO
         (ptr.add(MMIO_OFFSET + offset).sub(0x1000) as *mut T)
             .as_mut()
             .unwrap()
