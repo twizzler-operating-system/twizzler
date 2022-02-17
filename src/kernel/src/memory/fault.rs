@@ -82,7 +82,7 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
             vmc.map_object_page(addr, page, perms);
             if flags.contains(PageFaultFlags::PRESENT) {
                 unsafe {
-                    // TODO
+                    // TODO: see #32
                     asm!("mov rax, cr3", "mov cr3, rax", lateout("rax") _);
                 }
             }

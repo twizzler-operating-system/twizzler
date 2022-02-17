@@ -107,7 +107,7 @@ fn thread_sync_cb_timeout(thread: ThreadRef) {
     requeue_all();
 }
 
-// TODO: on timeout, try to return Err(Timeout).
+// TODO: #42 on timeout, try to return Err(Timeout).
 pub fn sys_thread_sync(
     ops: &mut [ThreadSync],
     timeout: Option<&mut Duration>,

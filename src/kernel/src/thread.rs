@@ -88,8 +88,7 @@ pub type ThreadRef = Arc<Thread>;
 static CURRENT_THREAD: RefCell<Option<ThreadRef>> = RefCell::new(None);
 
 pub fn current_thread_ref() -> Option<ThreadRef> {
-    // TODO: make unlikely
-    if !crate::processor::tls_ready() {
+    if core::intrinsics::unlikely(!crate::processor::tls_ready()) {
         return None;
     }
     interrupt::with_disabled(|| CURRENT_THREAD.borrow().clone())
