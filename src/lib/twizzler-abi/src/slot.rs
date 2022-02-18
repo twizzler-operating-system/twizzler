@@ -17,6 +17,8 @@ pub const RESERVED_TEXT: usize = 0;
 pub const RESERVED_DATA: usize = 1;
 #[allow(dead_code)]
 pub const RESERVED_STACK: usize = 2;
+#[allow(dead_code)]
+pub const RESERVED_KERNEL_INIT: usize = 3;
 const RESERVED_CTX: usize = 7;
 const ALLOC_START: usize = 10;
 

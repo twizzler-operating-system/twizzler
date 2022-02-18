@@ -6,7 +6,7 @@ use core::{
 
 use alloc::{boxed::Box, sync::Arc};
 use twizzler_abi::{
-    aux::AuxEntry,
+    aux::{AuxEntry, KernelInitInfo, KernelInitName},
     object::ObjID,
     syscall::{ThreadSpawnArgs, ThreadSpawnError},
 };
@@ -15,6 +15,7 @@ use xmas_elf::program::SegmentData;
 
 use crate::{
     idcounter::{Id, IdCounter},
+    initrd::get_boot_objects,
     interrupt,
     memory::context::{MappingPerms, MemoryContext, MemoryContextRef},
     obj::ObjectRef,
@@ -540,34 +541,53 @@ fn create_blank_object() -> ObjectRef {
     obj
 }
 
+fn create_name_object() -> ObjectRef {
+    let boot_objects = get_boot_objects();
+    let obj = create_blank_object();
+    let mut init_info = KernelInitInfo::new();
+    for (name, obj) in &boot_objects.name_map {
+        init_info.add_name(KernelInitName::new(name, obj.id()));
+    }
+    obj.write_base(&init_info);
+    obj
+}
+
 extern "C" fn user_init() {
     /* We need this scope to drop everything before we jump to user */
     let (aux_start, entry) = {
         let vm = current_memory_context().unwrap();
-        let boot_objects = crate::initrd::get_boot_objects();
+        let boot_objects = get_boot_objects();
 
         let obj_text = create_blank_object();
         let obj_data = create_blank_object();
         let obj_stack = create_blank_object();
+        let obj_name = create_name_object();
         crate::operations::map_object_into_context(
-            0,
+            twizzler_abi::slot::RESERVED_TEXT,
             obj_text,
             vm.clone(),
             MappingPerms::READ | MappingPerms::EXECUTE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
-            1,
+            twizzler_abi::slot::RESERVED_DATA,
             obj_data,
             vm.clone(),
             MappingPerms::READ | MappingPerms::WRITE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
-            2,
+            twizzler_abi::slot::RESERVED_STACK,
             obj_stack,
-            vm,
+            vm.clone(),
             MappingPerms::READ | MappingPerms::WRITE,
+        )
+        .unwrap();
+        crate::operations::map_object_into_context(
+            twizzler_abi::slot::RESERVED_KERNEL_INIT,
+            obj_name,
+            vm,
+            MappingPerms::READ,
         )
         .unwrap();
         let init_obj = boot_objects.init.as_ref().expect("no init found");

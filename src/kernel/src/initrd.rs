@@ -1,9 +1,12 @@
 use crate::once::Once;
+use alloc::borrow::ToOwned;
 use alloc::sync::Arc;
 use x86_64::VirtAddr;
 
 use crate::obj::ObjectRef;
 use crate::obj::{self, pages::Page};
+use alloc::collections::BTreeMap;
+use alloc::string::String;
 pub struct BootModule {
     pub start: VirtAddr,
     pub length: usize,
@@ -19,6 +22,7 @@ impl BootModule {
 #[derive(Default)]
 pub struct BootObjects {
     pub init: Option<ObjectRef>,
+    pub name_map: BTreeMap<String, ObjectRef>,
 }
 
 static BOOT_OBJECTS: Once<BootObjects> = Once::new();
@@ -58,8 +62,11 @@ pub fn init(modules: &[BootModule]) {
             let obj = Arc::new(obj);
             obj::register_object(obj.clone());
             if e.filename().as_str() == "init" {
-                boot_objects.init = Some(obj);
+                boot_objects.init = Some(obj.clone());
             }
+            boot_objects
+                .name_map
+                .insert(e.filename().as_str().to_owned(), obj);
         }
     }
     BOOT_OBJECTS.call_once(|| boot_objects);
