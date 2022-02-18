@@ -48,3 +48,7 @@ pub enum Destination {
     AllButSelf,
     All,
 }
+
+pub fn external_interrupt_entry(_number: u32) {
+    //logln!("external device interrupt {}", number);
+}

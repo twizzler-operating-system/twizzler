@@ -1,6 +1,11 @@
 use core::sync::atomic::Ordering;
 
-use crate::{clock::Nanoseconds, thread::current_thread_ref, BootInfo};
+use crate::{
+    clock::Nanoseconds,
+    interrupt::{Destination, PinPolarity, TriggerMode},
+    thread::current_thread_ref,
+    BootInfo,
+};
 
 pub mod acpi;
 mod desctables;
@@ -60,3 +65,13 @@ pub unsafe fn jump_to_user(target: VirtAddr, stack: VirtAddr, arg: u64) {
 
 pub use lapic::schedule_oneshot_tick;
 use x86_64::{registers::segmentation::Segment64, VirtAddr};
+
+pub fn set_interrupt(
+    num: u32,
+    masked: bool,
+    trigger: TriggerMode,
+    polarity: PinPolarity,
+    destination: Destination,
+) {
+    ioapic::set_interrupt(num - 32, num, masked, trigger, polarity, destination);
+}

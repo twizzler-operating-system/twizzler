@@ -615,6 +615,7 @@ fn start_qemu(
         "memory-backend-file,id=mem1,share=on,mem-path={},size=4G",
         make_path(build_info, true, "pmem.img")
     ));
+    //run_cmd.arg("-d").arg("trace:*ioapic*");
     run_cmd.arg("-device").arg("nvdimm,id=nvdimm1,memdev=mem1");
     const RUN_ARGS: &[&str] = &["--no-reboot", "-s", "-serial", "mon:stdio"]; //, "-vnc", ":0"];
     run_cmd.args(RUN_ARGS);

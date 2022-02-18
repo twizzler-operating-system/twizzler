@@ -233,6 +233,9 @@ fn main() {
     println!("Hello, World {}", unsafe { FOO + BAR });
 
     test_load_elf();
+    loop {
+        get_user_input();
+    }
     if false {
         test_kaction();
         get_user_input();
