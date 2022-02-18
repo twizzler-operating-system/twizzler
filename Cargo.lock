@@ -504,6 +504,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
+name = "netmgr"
+version = "0.1.0"
+
+[[package]]
+name = "nettest"
+version = "0.1.0"
+
+[[package]]
 name = "nom"
 version = "7.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -926,6 +934,10 @@ dependencies = [
  "x86_64",
  "xmas-elf",
 ]
+
+[[package]]
+name = "twizzler-net"
+version = "0.1.0"
 
 [[package]]
 name = "twizzler-queue-raw"
