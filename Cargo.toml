@@ -5,16 +5,19 @@ members = [
     "tools/initrd_gen",
     "src/bin/init",
     "src/bin/devmgr",
+    "src/bin/netmgr",
+    "src/bin/nettest",
     "src/kernel",
-    "src/lib/twizzler-queue-raw"
+    "src/lib/twizzler-queue-raw",
+    "src/lib/twizzler-net"
 ]
 resolver = "2"
 
 [workspace.metadata]
-twizzler-apps = ["init", "devmgr"]
+twizzler-apps = ["init", "devmgr", "netmgr", "nettest"]
 tools = ["image_builder", "initrd_gen"]
 kernel = ["twizzler-kernel"]
-initrd-members = ["init", "devmgr"]
+initrd-members = ["init", "devmgr", "netmgr", "nettest"]
 checks = ["twizzler-queue-raw"]
 
 [profile.release]
