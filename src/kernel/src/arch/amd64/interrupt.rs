@@ -346,53 +346,64 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, _user: bool) {
         );
     }
 
-    if number == Exception::PageFault as u64 {
-        let cr2 = unsafe { x86::controlregs::cr2() };
-        let err = ctx.err;
-        let cause = if err & (1 << 4) == 0 {
-            if err & (1 << 1) == 0 {
-                PageFaultCause::Read
+    match number {
+        14 => {
+            let cr2 = unsafe { x86::controlregs::cr2() };
+            let err = ctx.err;
+            let cause = if err & (1 << 4) == 0 {
+                if err & (1 << 1) == 0 {
+                    PageFaultCause::Read
+                } else {
+                    PageFaultCause::Write
+                }
             } else {
-                PageFaultCause::Write
+                PageFaultCause::InstructionFetch
+            };
+            let mut flags = PageFaultFlags::empty();
+            if err & 1 != 0 {
+                flags.insert(PageFaultFlags::PRESENT);
             }
-        } else {
-            PageFaultCause::InstructionFetch
-        };
-        let mut flags = PageFaultFlags::empty();
-        if err & 1 != 0 {
-            flags.insert(PageFaultFlags::PRESENT);
+            if err & (1 << 2) != 0 {
+                flags.insert(PageFaultFlags::USER);
+            }
+            if err & (1 << 3) != 0 {
+                flags.insert(PageFaultFlags::INVALID);
+            }
+            crate::thread::enter_kernel();
+            crate::interrupt::set(true);
+            crate::memory::fault::page_fault(
+                VirtAddr::new(cr2 as u64),
+                cause,
+                flags,
+                VirtAddr::new(ctx.rip),
+            );
+            crate::interrupt::set(false);
+            crate::thread::exit_kernel();
         }
-        if err & (1 << 2) != 0 {
-            flags.insert(PageFaultFlags::USER);
+        n if n < 32 => {
+            panic!(
+                "caught unhandled exception {:?}: {:#?}",
+                num_as_exception(number),
+                ctx
+            );
         }
-        if err & (1 << 3) != 0 {
-            flags.insert(PageFaultFlags::INVALID);
+        32 => {
+            if current_processor().is_bsp() {
+                lapic::send_ipi(Destination::AllButSelf, 32);
+            }
+            super::pit::timer_interrupt();
         }
-        crate::thread::enter_kernel();
-        crate::interrupt::set(true);
-        crate::memory::fault::page_fault(
-            VirtAddr::new(cr2 as u64),
-            cause,
-            flags,
-            VirtAddr::new(ctx.rip),
-        );
-        crate::interrupt::set(false);
-        crate::thread::exit_kernel();
-    } else if number < 32 {
-        panic!(
-            "caught unhandled exception {:?}: {:#?}",
-            num_as_exception(number),
-            ctx
-        );
-    }
-    if number == 32 {
-        if current_processor().is_bsp() {
-            lapic::send_ipi(Destination::AllButSelf, 32);
+        0x80 => {}
+        n if n >= 240 => {
+            lapic::lapic_interrupt(number as u16);
         }
-        super::pit::timer_interrupt();
-    }
-    if number >= 240 {
-        lapic::lapic_interrupt(number as u16);
+        34 => {
+            // TODO (urgent): why is this being raised?
+        }
+        36 => {
+            crate::machine::serial::interrupt_handler();
+        }
+        _ => crate::interrupt::external_interrupt_entry(number as u32),
     }
     lapic::eoi();
     crate::interrupt::post_interrupt();

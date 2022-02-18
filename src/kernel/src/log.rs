@@ -7,7 +7,7 @@ use twizzler_abi::syscall::{
     KernelConsoleReadBufferError, KernelConsoleReadError, KernelConsoleReadFlags,
 };
 
-use crate::interrupt;
+use crate::{interrupt, spinlock::Spinlock};
 
 const KEC_BUFFER_LEN: usize = 4096;
 const MAX_SINGLE_WRITE: usize = KEC_BUFFER_LEN / 2;
@@ -23,10 +23,44 @@ pub struct NormalMessage;
 impl MessageLevel for NormalMessage {}
 
 pub struct ConsoleWriteError;
+
+const INPUT_BUFFER_SIZE: usize = 1024;
+pub struct KernelConsoleReadBuffer {
+    buf: [u8; INPUT_BUFFER_SIZE],
+    pos: usize,
+}
+
+impl KernelConsoleReadBuffer {
+    const fn new() -> Self {
+        Self {
+            buf: [0; INPUT_BUFFER_SIZE],
+            pos: 0,
+        }
+    }
+    pub fn push_input_byte(&mut self, byte: u8) {
+        if self.pos == INPUT_BUFFER_SIZE {
+            return;
+        }
+        self.buf[self.pos] = byte;
+        self.pos += 1;
+    }
+
+    pub fn read_byte(&mut self) -> Option<u8> {
+        if self.pos == 0 {
+            return None;
+        }
+        let byte = self.buf[0];
+        self.buf.copy_within(1.., 0);
+        self.pos -= 1;
+        Some(byte)
+    }
+}
+
 pub struct KernelConsole<T: KernelConsoleHardware, Level: MessageLevel> {
     inner: &'static KernelConsoleInner,
     hardware: T,
-    lock: crate::spinlock::Spinlock<()>,
+    lock: Spinlock<()>,
+    read_lock: Spinlock<KernelConsoleReadBuffer>,
     _pd: core::marker::PhantomData<Level>,
 }
 unsafe impl<T: KernelConsoleHardware, Level: MessageLevel> Sync for KernelConsole<T, Level> {}
@@ -38,11 +72,6 @@ static KERNEL_CONSOLE_MAIN: KernelConsoleInner = KernelConsoleInner {
 
 pub trait KernelConsoleHardware {
     fn write(&self, data: &[u8], flags: KernelConsoleWriteFlags);
-    fn read(
-        &self,
-        data: &mut [u8],
-        flags: KernelConsoleReadFlags,
-    ) -> Result<usize, KernelConsoleReadError>;
 }
 
 impl<T: KernelConsoleHardware> core::fmt::Write for KernelConsole<T, EmergencyMessage> {
@@ -87,15 +116,6 @@ fn read_head(s: u64) -> u64 {
     s & 0xffff
 }
 
-/*
-fn is_empty(s: u64) -> bool {
-    read_head(s) == write_head(s)
-}
-
-fn is_full(s: u64) -> bool {
-    (write_head(s) + 1) % (KEC_BUFFER_LEN as u64) == read_head(s)
-}
-*/
 fn new_state(rh: u64, wh: u64, wr: u64) -> u64 {
     ((rh % KEC_BUFFER_LEN as u64) & 0xffff)
         | (((wh % KEC_BUFFER_LEN as u64) & 0xffff) << 32)
@@ -231,7 +251,28 @@ impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
         slice: &mut [u8],
         flags: KernelConsoleReadFlags,
     ) -> Result<usize, KernelConsoleReadError> {
-        self.hardware.read(slice, flags)
+        let mut i = 0;
+        loop {
+            if i == slice.len() {
+                break;
+            }
+            let b = &mut slice[i];
+            if let Some(x) = self.read_lock.lock().read_byte() {
+                *b = match x {
+                    4 => return Ok(i),
+                    _ => x,
+                };
+                i += 1;
+            } else {
+                if flags.contains(KernelConsoleReadFlags::NONBLOCKING) || i > 0 {
+                    return Ok(i);
+                } else {
+                    // TODO: sleep
+                    crate::sched::schedule(true);
+                }
+            }
+        }
+        Ok(slice.len())
     }
 }
 
@@ -250,6 +291,17 @@ pub fn read_buffer_bytes(slice: &mut [u8]) -> Result<usize, KernelConsoleReadBuf
     unsafe { NORMAL_CONSOLE.read_buffer_bytes(slice) }
 }
 
+pub fn push_input_byte(byte: u8) {
+    unsafe {
+        let byte = match byte {
+            13 => 10,
+            x => x,
+        };
+        NORMAL_CONSOLE.read_lock.lock().push_input_byte(byte);
+        let _ = write_bytes(&[byte], KernelConsoleWriteFlags::DISCARD_ON_FULL);
+    }
+}
+
 static mut EMERGENCY_CONSOLE: KernelConsole<
     crate::machine::MachineConsoleHardware,
     EmergencyMessage,
@@ -257,7 +309,8 @@ static mut EMERGENCY_CONSOLE: KernelConsole<
     inner: &KERNEL_CONSOLE_MAIN,
     hardware: crate::machine::MachineConsoleHardware::new(),
     _pd: core::marker::PhantomData,
-    lock: crate::spinlock::Spinlock::new(()),
+    lock: Spinlock::new(()),
+    read_lock: Spinlock::new(KernelConsoleReadBuffer::new()),
 };
 
 static mut NORMAL_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, NormalMessage> =
@@ -265,7 +318,8 @@ static mut NORMAL_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware,
         inner: &KERNEL_CONSOLE_MAIN,
         hardware: crate::machine::MachineConsoleHardware::new(),
         _pd: core::marker::PhantomData,
-        lock: crate::spinlock::Spinlock::new(()),
+        lock: Spinlock::new(()),
+        read_lock: Spinlock::new(KernelConsoleReadBuffer::new()),
     };
 
 #[doc(hidden)]
