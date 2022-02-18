@@ -404,6 +404,7 @@ dependencies = [
 name = "init"
 version = "0.1.0"
 dependencies = [
+ "rprompt",
  "twizzler-abi",
 ]
 
@@ -684,6 +685,12 @@ checksum = "8383f39639269cde97d255a32bdb68c047337295414940c68bdd30c2e13203ff"
 dependencies = [
  "bitflags",
 ]
+
+[[package]]
+name = "rprompt"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b386f4748bdae2aefc96857f5fda07647f851d089420e577831e2a14b45230f8"
 
 [[package]]
 name = "rsdp"

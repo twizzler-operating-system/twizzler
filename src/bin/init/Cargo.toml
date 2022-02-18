@@ -6,3 +6,4 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 
 [dependencies]
 twizzler-abi = {path = "../../lib/twizzler-abi" }
+rprompt = "1.0.5"
