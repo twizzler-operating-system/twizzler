@@ -234,7 +234,9 @@ fn main() {
 
     test_load_elf();
     loop {
-        get_user_input();
+        let reply = rprompt::prompt_reply_stdout("> ").unwrap();
+        println!("got: <{}>", reply);
+        //  get_user_input();
     }
     if false {
         test_kaction();
