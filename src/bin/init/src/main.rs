@@ -216,15 +216,24 @@ fn test_kaction() {
     enumerate_children(0, id);
 }
 
-fn test_load_elf() {
+fn exec(name: &str, id: ObjID) {
     let env: Vec<String> = std::env::vars()
         .map(|(n, v)| format!("{}={}", n, v))
         .collect();
     let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
-    let args = vec!["test".as_bytes(), "foo".as_bytes()];
-    let _elf =
-        twizzler_abi::load_elf::spawn_new_executable(ObjID::new_from_parts(1, 2), &args, &env_ref);
+    let args = vec![name.as_bytes()];
+    let _elf = twizzler_abi::load_elf::spawn_new_executable(id, &args, &env_ref);
     //println!("ELF: {:?}", elf);
+}
+
+fn find_init_name(name: &str) -> Option<ObjID> {
+    let init_info = twizzler_abi::aux::get_kernel_init_info();
+    for n in init_info.names() {
+        if n.name() == name {
+            return Some(n.id());
+        }
+    }
+    None
 }
 
 fn main() {
@@ -232,7 +241,16 @@ fn main() {
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
 
-    test_load_elf();
+    if let Some(id) = find_init_name("devmgr") {
+        exec("devmgr", id);
+    } else {
+        eprintln!("[init] faild to start devmgr");
+    }
+    if let Some(id) = find_init_name("netmgr") {
+        exec("netmgr", id);
+    } else {
+        eprintln!("[init] faild to start netmgr");
+    }
     loop {
         let reply = rprompt::prompt_reply_stdout("> ").unwrap();
         println!("got: <{}>", reply);
