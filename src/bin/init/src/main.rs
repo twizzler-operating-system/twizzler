@@ -244,16 +244,25 @@ fn main() {
     if let Some(id) = find_init_name("devmgr") {
         exec("devmgr", id);
     } else {
-        eprintln!("[init] faild to start devmgr");
+        eprintln!("[init] failed to start devmgr");
     }
     if let Some(id) = find_init_name("netmgr") {
         exec("netmgr", id);
     } else {
-        eprintln!("[init] faild to start netmgr");
+        eprintln!("[init] failed to start netmgr");
     }
     loop {
         let reply = rprompt::prompt_reply_stdout("> ").unwrap();
         println!("got: <{}>", reply);
+        let cmd: Vec<&str> = reply.split(" ").collect();
+        if cmd.len() == 2 && cmd[0] == "run" {
+            if let Some(id) = find_init_name(cmd[1]) {
+                exec(cmd[1], id);
+            } else {
+                eprintln!("[init] failed to start {}", cmd[1]);
+            }
+        }
+
         //  get_user_input();
     }
     if false {

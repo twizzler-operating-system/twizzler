@@ -292,12 +292,17 @@ pub fn read_buffer_bytes(slice: &mut [u8]) -> Result<usize, KernelConsoleReadBuf
 }
 
 pub fn push_input_byte(byte: u8) {
+    //crate::logln!("got input {}", byte);
     unsafe {
         let byte = match byte {
             13 => 10,
+            127 => 8,
             x => x,
         };
         NORMAL_CONSOLE.read_lock.lock().push_input_byte(byte);
+        if byte == 8 {
+            let _ = write_bytes(&[8, b' '], KernelConsoleWriteFlags::DISCARD_ON_FULL);
+        }
         let _ = write_bytes(&[byte], KernelConsoleWriteFlags::DISCARD_ON_FULL);
     }
 }
