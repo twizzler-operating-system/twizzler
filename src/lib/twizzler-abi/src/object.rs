@@ -31,6 +31,10 @@ impl ObjID {
     pub fn new_from_parts(hi: u64, lo: u64) -> Self {
         ObjID::new(((hi as u128) << 64) | (lo as u128))
     }
+
+    pub fn as_u128(&self) -> u128 {
+        self.0
+    }
 }
 
 impl core::convert::AsRef<ObjID> for ObjID {

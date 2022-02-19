@@ -216,12 +216,14 @@ fn test_kaction() {
     enumerate_children(0, id);
 }
 
-fn exec(name: &str, id: ObjID) {
+fn exec(name: &str, id: ObjID, argid: ObjID) {
     let env: Vec<String> = std::env::vars()
         .map(|(n, v)| format!("{}={}", n, v))
         .collect();
     let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
-    let args = vec![name.as_bytes()];
+    let mut args = vec![name.as_bytes()];
+    let argstr = format!("{}", argid.as_u128());
+    args.push(argstr.as_bytes());
     let _elf = twizzler_abi::load_elf::spawn_new_executable(id, &args, &env_ref);
     //println!("ELF: {:?}", elf);
 }
@@ -241,13 +243,20 @@ fn main() {
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
 
+    let create = ObjectCreate::new(
+        BackingType::Normal,
+        LifetimeType::Volatile,
+        None,
+        ObjectCreateFlags::empty(),
+    );
+    let netid = twizzler_abi::syscall::sys_object_create(create, &[], &[]).unwrap();
     if let Some(id) = find_init_name("devmgr") {
-        exec("devmgr", id);
+        exec("devmgr", id, ObjID::new(0));
     } else {
         eprintln!("[init] failed to start devmgr");
     }
     if let Some(id) = find_init_name("netmgr") {
-        exec("netmgr", id);
+        exec("netmgr", id, netid);
     } else {
         eprintln!("[init] failed to start netmgr");
     }
@@ -257,7 +266,11 @@ fn main() {
         let cmd: Vec<&str> = reply.split(" ").collect();
         if cmd.len() == 2 && cmd[0] == "run" {
             if let Some(id) = find_init_name(cmd[1]) {
-                exec(cmd[1], id);
+                if cmd[1] == "nettest" {
+                    exec(cmd[1], id, netid);
+                } else {
+                    exec(cmd[1], id, ObjID::new(0));
+                }
             } else {
                 eprintln!("[init] failed to start {}", cmd[1]);
             }
@@ -294,7 +307,7 @@ use twizzler_abi::{
     kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue},
     object::ObjID,
     syscall::{
-        sys_kaction, sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncReference,
-        ThreadSyncSleep, ThreadSyncWake,
+        sys_kaction, sys_thread_sync, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
+        ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
     },
 };
