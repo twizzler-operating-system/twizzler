@@ -507,6 +507,7 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 name = "netmgr"
 version = "0.1.0"
 dependencies = [
+ "twizzler",
  "twizzler-net",
 ]
 
@@ -514,6 +515,7 @@ dependencies = [
 name = "nettest"
 version = "0.1.0"
 dependencies = [
+ "twizzler",
  "twizzler-net",
 ]
 
@@ -944,6 +946,10 @@ dependencies = [
 [[package]]
 name = "twizzler-net"
 version = "0.1.0"
+dependencies = [
+ "twizzler",
+ "twizzler-abi",
+]
 
 [[package]]
 name = "twizzler-queue-raw"

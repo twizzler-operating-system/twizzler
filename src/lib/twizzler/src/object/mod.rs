@@ -10,6 +10,7 @@ bitflags::bitflags! {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
 pub enum ObjectInitError {
     InvalidId,
     OutOfSlots,
@@ -38,6 +39,11 @@ impl<T> Object<T> {
     pub fn base_raw(&self) -> &T {
         let (start, _) = twizzler_abi::slot::to_vaddr_range(self.slot);
         unsafe { (start as *const T).as_ref().unwrap() }
+    }
+
+    pub fn base_raw_mut(&mut self) -> &mut T {
+        let (start, _) = twizzler_abi::slot::to_vaddr_range(self.slot);
+        unsafe { (start as *mut T).as_mut().unwrap() }
     }
 
     pub fn init_id(
