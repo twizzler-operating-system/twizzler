@@ -378,6 +378,17 @@ pub enum ThreadSyncReference {
     Virtual(*const AtomicU64),
 }
 
+impl ThreadSyncReference {
+    fn load(&self) -> u64 {
+        match self {
+            ThreadSyncReference::ObjectRef(_, _) => todo!(),
+            ThreadSyncReference::Virtual(p) => {
+                unsafe { &**p }.load(core::sync::atomic::Ordering::SeqCst)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 /// Specification for a thread sleep request.
@@ -422,6 +433,13 @@ impl ThreadSyncSleep {
             value,
             op,
             flags,
+        }
+    }
+
+    pub fn ready(&self) -> bool {
+        let st = self.reference.load();
+        match self.op {
+            ThreadSyncOp::Equal => st != self.value,
         }
     }
 }
@@ -517,6 +535,13 @@ impl ThreadSync {
         match self {
             ThreadSync::Sleep(_, e) => *e,
             ThreadSync::Wake(_, e) => *e,
+        }
+    }
+
+    pub fn ready(&self) -> bool {
+        match self {
+            ThreadSync::Sleep(o, _) => o.ready(),
+            ThreadSync::Wake(_, _) => true,
         }
     }
 }

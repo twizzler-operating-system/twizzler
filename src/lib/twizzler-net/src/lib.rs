@@ -1,19 +1,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use twizzler::object::{ObjID, ObjectInitFlags, Protections};
+use twizzler::object::{ObjID, Object, ObjectInitFlags, Protections};
 use twizzler_abi::syscall::{
     BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, ThreadSync, ThreadSyncFlags,
     ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
-}
 
 struct Rendezvous {
     ready: AtomicU64,
@@ -103,4 +94,41 @@ pub fn client_rendezvous(rid: ObjID) -> NmOpenObjects {
     };
     write_wake(&rendezvous.ready, 0);
     o
+}
+
+pub struct NmHandle {
+    tx_queue: Object<()>,
+    rx_queue: Object<()>,
+    tx_buf: Object<()>,
+    rx_buf: Object<()>,
+}
+
+pub fn open_nm_handle() -> Option<NmHandle> {
+    let id = std::env::var("NETOBJ").ok()?;
+    let id = id
+        .parse::<u128>()
+        .expect(&format!("failed to parse object ID string {}", id));
+    let id = ObjID::new(id);
+    let objs = client_rendezvous(id);
+    Some(NmHandle {
+        tx_queue: Object::init_id(
+            objs.tx_queue,
+            Protections::READ | Protections::WRITE,
+            ObjectInitFlags::empty(),
+        )
+        .ok()?,
+        rx_queue: Object::init_id(
+            objs.rx_queue,
+            Protections::READ | Protections::WRITE,
+            ObjectInitFlags::empty(),
+        )
+        .ok()?,
+        tx_buf: Object::init_id(
+            objs.tx_buf,
+            Protections::READ | Protections::WRITE,
+            ObjectInitFlags::empty(),
+        )
+        .ok()?,
+        rx_buf: Object::init_id(objs.rx_buf, Protections::READ, ObjectInitFlags::empty()).ok()?,
+    })
 }

@@ -9,7 +9,8 @@ members = [
     "src/bin/nettest",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
-    "src/lib/twizzler-net"
+    "src/lib/twizzler-net",
+    "src/lib/twizzler-async"
 ]
 resolver = "2"
 
