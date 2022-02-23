@@ -63,7 +63,7 @@ impl ThreadLocalExecutor {
                 event.notify();
             };
 
-            let (runnable, handle) = async_task::spawn_local(future, schedule, ());
+            let (runnable, handle) = async_task::spawn_local(future, schedule, 12345);
             runnable.schedule();
             Task(Some(handle))
         })

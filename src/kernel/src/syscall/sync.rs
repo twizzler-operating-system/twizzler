@@ -83,6 +83,17 @@ struct SleepEvent {
 
 fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent, ThreadSyncError> {
     let (obj, offset) = get_obj(sleep.reference)?;
+    logln!(
+        "{} sleep {} {:x}",
+        current_thread_ref().unwrap().id(),
+        obj.id(),
+        offset
+    );
+    if let ThreadSyncReference::Virtual(p) = &sleep.reference {
+        logln!("  => {:p} {}", *p, unsafe {
+            (**p).load(core::sync::atomic::Ordering::SeqCst)
+        });
+    }
     let did_sleep = obj.setup_sleep_word(offset, sleep.op, sleep.value, first_sleep);
     Ok(SleepEvent {
         obj,
@@ -128,17 +139,24 @@ pub fn sys_thread_sync(
                 }
                 Err(x) => *result = Err(x),
             },
-            ThreadSync::Wake(wake, result) => match wakeup(wake) {
-                Ok(count) => {
-                    *result = Ok(count);
-                    if count > 0 {
-                        ready_count += 1;
+            ThreadSync::Wake(wake, result) => {
+                if let ThreadSyncReference::Virtual(p) = &wake.reference {
+                    logln!(" wake => {:p} {}", *p, unsafe {
+                        (**p).load(core::sync::atomic::Ordering::SeqCst)
+                    });
+                }
+                match wakeup(wake) {
+                    Ok(count) => {
+                        *result = Ok(count);
+                        if count > 0 {
+                            ready_count += 1;
+                        }
+                    }
+                    Err(x) => {
+                        *result = Err(x);
                     }
                 }
-                Err(x) => {
-                    *result = Err(x);
-                }
-            },
+            }
         }
     }
     let thread = current_thread_ref().unwrap();

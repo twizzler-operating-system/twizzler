@@ -2,6 +2,7 @@ use std::{
     collections::VecDeque,
     sync::{Arc, Mutex, MutexGuard, Once},
     task::Waker,
+    time::Duration,
 };
 
 use stable_vec::StableVec;
@@ -56,44 +57,59 @@ impl Reactor {
             sources_guard: self.sources.try_lock().ok()?,
         })
     }
+
+    pub fn poll(&self, flag_events: &[&FlagEvent], try_only: bool) {
+        self.react(flag_events, false, try_only);
+    }
+
+    pub fn wait(&self, flag_events: &[&FlagEvent], try_only: bool) {
+        self.react(flag_events, true, try_only);
+    }
+
+    fn react(&self, flag_events: &[&FlagEvent], block: bool, try_only: bool) -> Option<()> {
+        let sources = if try_only {
+            self.sources.try_lock().ok()?
+        } else {
+            self.sources.lock().unwrap()
+        };
+        let mut events = vec![];
+        for (_, src) in &*sources {
+            if src.op.ready() {
+                src.wake_all();
+                return None;
+            }
+            events.push(ThreadSync::new_sleep(src.op));
+        }
+
+        if block || try_only {
+            return None;
+        }
+
+        for fe in flag_events {
+            let s = fe.setup_sleep();
+            if s.ready() {
+                return None;
+            }
+            events.push(ThreadSync::new_sleep(s));
+        }
+
+        drop(sources);
+        // TODO: check err
+        let _ = twizzler_abi::syscall::sys_thread_sync(events.as_mut_slice(), None);
+
+        let sources = self.sources.lock().unwrap();
+        for (_, src) in &*sources {
+            if src.op.ready() {
+                src.wake_all();
+            }
+        }
+        Some(())
+    }
 }
 
 pub(crate) struct ReactorLock<'a> {
     reactor: &'a Reactor,
     sources_guard: MutexGuard<'a, StableVec<Arc<Source>>>,
-}
-
-impl ReactorLock<'_> {
-    pub fn poll(&mut self, flag_events: &[&FlagEvent]) {
-        self.react(flag_events, false);
-    }
-
-    pub fn wait(&mut self, flag_events: &[&FlagEvent]) {
-        self.react(flag_events, true)
-    }
-
-    fn react(&mut self, flag_events: &[&FlagEvent], block: bool) {
-        if !block {
-            return;
-        }
-        let mut events = vec![];
-        for (_, src) in &*self.sources_guard {
-            events.push(ThreadSync::new_sleep(src.op));
-        }
-
-        for fe in flag_events {
-            events.push(ThreadSync::new_sleep(fe.setup_sleep()));
-        }
-
-        for ev in &events {
-            if ev.ready() {
-                return;
-            }
-        }
-
-        // TODO: check err
-        let _ = twizzler_abi::syscall::sys_thread_sync(events.as_mut_slice(), None);
-    }
 }
 
 pub(crate) struct Source {
@@ -110,6 +126,13 @@ impl Source {
             op,
             wakers: Mutex::new(vec![]),
             key,
+        }
+    }
+
+    fn wake_all(&self) {
+        let wakers = self.wakers.lock().unwrap();
+        for w in &*wakers {
+            w.wake_by_ref();
         }
     }
 }

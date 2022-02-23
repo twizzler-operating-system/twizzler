@@ -551,6 +551,7 @@ name = "netmgr"
 version = "0.1.0"
 dependencies = [
  "twizzler",
+ "twizzler-async",
  "twizzler-net",
 ]
 
