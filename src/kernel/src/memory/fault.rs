@@ -51,6 +51,10 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
         let mut obj_page_tree = mapping.obj.lock_page_tree();
         let is_write = cause == PageFaultCause::Write;
 
+        if page_number == PageNumber::from_address(VirtAddr::new(0)) {
+            panic!("zero-page fault {:?} ip: {:?} cause {:?}", addr, ip, cause);
+        }
+
         if let Some((page, cow)) = obj_page_tree.get_page(page_number, is_write) {
             let mut vmc = vmc.inner();
             /* check if mappings changed */

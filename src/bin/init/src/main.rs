@@ -250,11 +250,13 @@ fn main() {
         ObjectCreateFlags::empty(),
     );
     let netid = twizzler_abi::syscall::sys_object_create(create, &[], &[]).unwrap();
+    /*
     if let Some(id) = find_init_name("devmgr") {
         exec("devmgr", id, ObjID::new(0));
     } else {
         eprintln!("[init] failed to start devmgr");
     }
+    */
     if let Some(id) = find_init_name("netmgr") {
         exec("netmgr", id, netid);
     } else {

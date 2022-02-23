@@ -112,7 +112,7 @@ pub(crate) fn new_thread_tls() -> Option<(usize, *mut u8, usize, usize)> {
                     & ((!MIN_TLS_ALIGN) + 1);
 
             let layout = crate::internal_unwrap(
-                Layout::from_size_align(full_tls_size, MIN_TLS_ALIGN).ok(),
+                Layout::from_size_align(full_tls_size, tls_align).ok(),
                 "failed to unwrap TLS layout",
             );
             let tls = crate::alloc::global_alloc(layout);

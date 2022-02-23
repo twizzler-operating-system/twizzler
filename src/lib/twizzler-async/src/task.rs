@@ -4,9 +4,9 @@ use std::{
     task::{Context, Poll},
 };
 
-pub(crate) type Runnable = async_task::Task<()>;
+pub(crate) type Runnable = async_task::Task<u32>;
 
-pub struct Task<T>(pub(crate) Option<async_task::JoinHandle<T, ()>>);
+pub struct Task<T>(pub(crate) Option<async_task::JoinHandle<T, u32>>);
 
 impl<T: Send + 'static> Task<T> {
     pub fn spawn(future: impl Future<Output = T> + Send + 'static) -> Task<T> {
@@ -62,8 +62,8 @@ impl<T> Future for Task<T> {
     }
 }
 
-impl<T> Into<async_task::JoinHandle<T, ()>> for Task<T> {
-    fn into(mut self) -> async_task::JoinHandle<T, ()> {
+impl<T> Into<async_task::JoinHandle<T, u32>> for Task<T> {
+    fn into(mut self) -> async_task::JoinHandle<T, u32> {
         self.0.take().expect("task was already canceled or failed")
     }
 }

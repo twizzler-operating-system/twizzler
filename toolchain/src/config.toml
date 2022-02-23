@@ -20,3 +20,5 @@ submodules = false
 lld = true
 llvm-tools = true
 llvm-libunwind = 'in-tree'
+debug = true
+debuginfo-level = 1
