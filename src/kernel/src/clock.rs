@@ -180,7 +180,7 @@ extern "C" fn soft_timeout_clock() {
 
 // TODO: we could make Nanoseconds an actual type, and Ticks, and then make type-safe conversions
 // between them.
-fn ticks_to_nano(ticks: u64) -> Option<Nanoseconds> {
+pub fn ticks_to_nano(ticks: u64) -> Option<Nanoseconds> {
     ticks.checked_mul(1000000)
 }
 
@@ -192,6 +192,11 @@ fn nano_to_ticks(ticks: Nanoseconds) -> u64 {
 static NR_CPU_TICKS: AtomicU64 = AtomicU64::new(0);
 #[thread_local]
 static NEXT_TICK: AtomicU64 = AtomicU64::new(0);
+
+pub fn get_current_ticks() -> u64 {
+    // TODO: something real
+    NR_CPU_TICKS.load(Ordering::SeqCst)
+}
 
 pub fn schedule_oneshot_tick(next: u64) {
     let time = ticks_to_nano(next).unwrap();

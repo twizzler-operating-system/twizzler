@@ -1,12 +1,16 @@
+use core::{mem::MaybeUninit, time::Duration};
+
 use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionValue},
     object::{ObjID, Protections},
     syscall::{
-        HandleType, KernelConsoleReadSource, ObjectCreateError, ObjectMapError, SysInfo, Syscall,
-        ThreadSpawnError, ThreadSyncError,
+        ClockFlags, ClockInfo, ClockSource, HandleType, KernelConsoleReadSource, ObjectCreateError,
+        ObjectMapError, ReadClockInfoError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
     },
 };
 use x86_64::VirtAddr;
+
+use crate::clock::{get_current_ticks, ticks_to_nano};
 
 use self::{object::sys_new_handle, thread::thread_ctrl};
 
@@ -93,6 +97,27 @@ fn type_sys_kaction(
         Some(ObjID::new_from_parts(hi, lo))
     };
     crate::device::kaction(cmd, objid, arg)
+}
+
+fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClockInfoError> {
+    let source: ClockSource = src.try_into()?;
+    let info_ptr: &mut MaybeUninit<ClockInfo> =
+        unsafe { create_user_ptr(info) }.ok_or(ReadClockInfoError::InvalidArgument)?;
+
+    match source {
+        ClockSource::Monotonic => {
+            let ticks = get_current_ticks();
+            //TODO
+            let dur = Duration::from_nanos(ticks_to_nano(ticks).unwrap());
+            let precision = Duration::from_nanos(1000); //TODO
+            let flags = ClockFlags::MONOTONIC;
+            let source = ClockSource::Monotonic;
+            let info = ClockInfo::new(dur, precision, flags, source);
+            info_ptr.write(info);
+            Ok(0)
+        }
+        ClockSource::RealTime => Err(ReadClockInfoError::InvalidArgument),
+    }
 }
 
 #[inline]
@@ -253,6 +278,11 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
         }
         Syscall::ThreadCtrl => {
             let (code, val) = thread_ctrl(context.arg0::<u64>().into(), context.arg1());
+            context.set_return_values(code, val);
+        }
+        Syscall::ReadClockInfo => {
+            let result = type_read_clock_info(context.arg0(), context.arg1(), context.arg2());
+            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
         _ => {

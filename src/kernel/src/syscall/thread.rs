@@ -10,7 +10,6 @@ pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
 }
 
 pub fn thread_ctrl(cmd: ThreadControl, arg: u64) -> (u64, u64) {
-    logln!("thread ctrl: {:?}", cmd);
     match cmd {
         ThreadControl::SetUpcall => {
             let ctx = current_memory_context().unwrap();

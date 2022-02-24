@@ -1,5 +1,7 @@
 #![feature(thread_local)]
 
+use std::time::Duration;
+
 use twizzler::object::ObjID;
 
 async fn get7() -> i32 {
@@ -22,7 +24,7 @@ fn test_async() {
     let res = twizzler_async::run(get7());
     println!("async_run: {}", res);
 
-    let num_threads = 1;
+    let num_threads = 3;
     for _ in 0..num_threads {
         std::thread::spawn(|| twizzler_async::run(std::future::pending::<()>()));
     }
@@ -31,12 +33,21 @@ fn test_async() {
         let x = twizzler_async::Task::spawn(async {
             println!("hello from task thread {:?}", std::thread::current().id());
             let x = get7().await;
+            let timer = twizzler_async::timer::Timer::after(Duration::from_millis(100)).await;
             println!("here");
             x
         })
         .await;
+        let y = twizzler_async::Task::spawn(async {
+            println!("hello from task thread {:?}", std::thread::current().id());
+            let x = get7().await;
+            let timer = twizzler_async::timer::Timer::after(Duration::from_millis(1000)).await;
+            println!("here {:?}", timer);
+            x
+        })
+        .await;
         println!("here2");
-        x
+        x + y
     });
     println!("async_thread_pool: {}", res);
 }

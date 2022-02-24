@@ -1155,16 +1155,32 @@ pub enum ClockSource {
     RealTime = 1,
 }
 
+impl TryFrom<u64> for ClockSource {
+    type Error = ReadClockInfoError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Ok(match value {
+            0 => Self::Monotonic,
+            1 => Self::RealTime,
+            _ => return Err(ReadClockInfoError::InvalidArgument),
+        })
+    }
+}
+
 /// Read information about a give clock, as specified by clock source.
 pub fn sys_read_clock_info(
     clock_source: ClockSource,
     flags: ReadClockFlags,
 ) -> Result<ClockInfo, ReadClockInfoError> {
-    let clock_info = MaybeUninit::uninit();
+    let mut clock_info = MaybeUninit::uninit();
     let (code, val) = unsafe {
         raw_syscall(
             Syscall::ReadClockInfo,
-            &[clock_source as u64, flags.bits() as u64],
+            &[
+                clock_source as u64,
+                &mut clock_info as *mut MaybeUninit<ClockInfo> as usize as u64,
+                flags.bits() as u64,
+            ],
         )
     };
     convert_codes_to_result(
