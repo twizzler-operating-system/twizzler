@@ -36,6 +36,7 @@ pub mod slot;
 pub mod syscall;
 pub mod thread;
 pub mod time;
+pub mod upcall;
 pub mod vcell;
 
 /// Simple callback into twizzler_abi made by the standard library once it has initialized the

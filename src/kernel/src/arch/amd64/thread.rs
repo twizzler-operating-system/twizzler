@@ -1,12 +1,41 @@
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::{
+    cell::RefCell,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
+use alloc::vec::Vec;
+use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
 use x86_64::VirtAddr;
 
 use crate::{
-    arch::amd64::desctables::set_kernel_stack, processor::KERNEL_STACK_SIZE, thread::Thread,
+    arch::amd64::desctables::set_kernel_stack, processor::KERNEL_STACK_SIZE, spinlock::Spinlock,
+    thread::Thread,
 };
 
+use super::{interrupt::IsrContext, syscall::X86SyscallContext};
+
 const XSAVE_LEN: usize = 1024;
+
+#[derive(Copy, Clone)]
+pub enum Registers {
+    None,
+    Syscall(*mut X86SyscallContext, X86SyscallContext),
+    Interrupt(*mut IsrContext, IsrContext),
+}
+struct Context {
+    registers: Registers,
+    xsave: AlignedXsaveRegion,
+}
+
+impl Context {
+    pub fn new(registers: Registers) -> Self {
+        Self {
+            registers,
+            // TODO: save
+            xsave: AlignedXsaveRegion([0; XSAVE_LEN]),
+        }
+    }
+}
 
 #[repr(align(64))]
 struct AlignedXsaveRegion([u8; XSAVE_LEN]);
@@ -15,6 +44,9 @@ pub struct ArchThread {
     rsp: core::cell::UnsafeCell<u64>,
     pub user_fs: AtomicU64,
     xsave_inited: AtomicBool,
+    upcall: Option<(usize, UpcallInfo)>,
+    backup_context: Spinlock<Vec<Context>>,
+    entry_registers: RefCell<Registers>,
     //user_gs: u64,
 }
 unsafe impl Sync for ArchThread {}
@@ -79,6 +111,9 @@ impl ArchThread {
             rsp: core::cell::UnsafeCell::new(0),
             user_fs: AtomicU64::new(0),
             xsave_inited: AtomicBool::new(false),
+            upcall: None,
+            backup_context: Spinlock::new(Vec::new()),
+            entry_registers: RefCell::new(Registers::None),
         }
     }
 }
@@ -89,7 +124,73 @@ impl Default for ArchThread {
     }
 }
 
+pub trait UpcallAble {
+    fn set_upcall(&mut self, target: usize, frame: u64, info: u64, stack: u64);
+    fn get_stack_top(&self) -> u64;
+}
+pub fn set_upcall<T: UpcallAble + Copy>(regs: &mut T, target: usize, info: UpcallInfo)
+where
+    UpcallFrame: From<T>,
+{
+    let stack_top = regs.get_stack_top() - 512;
+    let stack_top = stack_top & (!15);
+
+    let info_size = core::mem::size_of::<UpcallInfo>();
+    let info_size = (info_size + 16) & !15;
+    let frame_size = core::mem::size_of::<UpcallFrame>();
+    let frame_size = (frame_size + 16) & !15;
+    let info_start = stack_top - info_size as u64;
+    let frame_start = info_start - frame_size as u64;
+
+    let info_ptr = info_start as usize as *mut UpcallInfo;
+    let frame_ptr = frame_start as usize as *mut UpcallFrame;
+
+    let frame = (*regs).into();
+
+    unsafe {
+        info_ptr.write(info);
+        frame_ptr.write(frame);
+    }
+    let stack_start = frame_start - 16;
+    let stack_start = stack_start & !15;
+    let stack_start = stack_start - 8;
+
+    logln!(
+        "setting upcall {:x} {:x} {:x} {:x}",
+        target,
+        frame_start,
+        info_start,
+        stack_start
+    );
+    regs.set_upcall(target, frame_start, info_start, stack_start);
+}
+
 impl Thread {
+    pub fn arch_queue_upcall(&self, target: usize, info: UpcallInfo) {
+        logln!("queue upcall!");
+        self.arch
+            .backup_context
+            .lock()
+            .push(Context::new(*self.arch.entry_registers.borrow()));
+        match *self.arch.entry_registers.borrow() {
+            Registers::None => {
+                panic!("tried to upcall to a thread that hasn't started yet");
+            }
+            Registers::Interrupt(int, _) => {
+                let int = unsafe { &mut *int };
+                set_upcall(int, target, info);
+            }
+            Registers::Syscall(sys, _) => {
+                let sys = unsafe { &mut *sys };
+                set_upcall(sys, target, info);
+            }
+        }
+    }
+
+    pub fn set_entry_registers(&self, regs: Registers) {
+        (*self.arch.entry_registers.borrow_mut()) = regs;
+    }
+
     pub fn set_tls(&self, tls: u64) {
         //logln!("setting user fs to {}", tls);
         self.arch.user_fs.store(tls, Ordering::SeqCst);

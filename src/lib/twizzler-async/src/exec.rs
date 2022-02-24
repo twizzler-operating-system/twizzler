@@ -1,5 +1,6 @@
 use std::{cell::Cell, collections::VecDeque, future::Future, sync::Mutex};
 
+use futures_util::__private::async_await;
 use scoped_tls_hkt::scoped_thread_local;
 
 use crate::{
@@ -43,12 +44,12 @@ impl Executor {
         &'static self,
         future: impl Future<Output = T> + Send + 'static,
     ) -> Task<T> {
-        let schedule = move |runnable| {
+        let schedule = move |runnable: async_task::Task<u32>| {
             {
-                println!("es1 {:?}", runnable);
+                println!("es1 {:?} {:p}", runnable, runnable.tag());
                 let mut queue = self.queue.lock().unwrap();
                 queue.push_front(runnable);
-                println!("es2");
+                println!("es2 {:?} {:p}", queue.as_slices().0[0], &*queue);
                 drop(queue);
             }
             self.notify_work();
@@ -56,6 +57,7 @@ impl Executor {
         };
         println!("spawning");
         let (runnable, handle) = async_task::spawn(future, schedule, 45678);
+        println!("spawned {:?} {:p}", runnable, runnable.tag());
         runnable.schedule();
         Task(Some(handle))
     }
@@ -74,14 +76,12 @@ pub(crate) struct Worker<'a> {
 }
 
 impl Worker<'_> {
-    /*
     pub fn enter<T>(&self, f: impl FnOnce() -> T) -> T {
         if WORKER.is_set() {
             panic!("cannot run an executor recursively");
         }
         WORKER.set(self, f)
     }
-    */
 
     pub fn execute(&self) -> bool {
         println!("x1");
@@ -100,7 +100,7 @@ impl Worker<'_> {
 
                         println!("x4");
                         if throttle::setup(|| {
-                            println!("x4r {:?}", r);
+                            println!("x4r {:?} {:p}", r, r.tag());
                             let x = r.run();
                             println!("x4r2");
                             x
@@ -131,6 +131,7 @@ impl Worker<'_> {
     }
     */
 
+    #[allow(named_asm_labels)]
     fn search(&self) -> Option<Runnable> {
         println!("s1");
         //if let Some(r) = self.current.take() {
@@ -141,7 +142,6 @@ impl Worker<'_> {
             println!("s2 {} {:p}", self.exec.queue.try_lock().is_ok(), self.exec);
         }
         let mut queue = self.exec.queue.lock().unwrap();
-        println!("s3");
         queue.pop_front()
     }
 }

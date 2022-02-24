@@ -1,3 +1,4 @@
+#![feature(asm)]
 mod block_on;
 mod event;
 mod exec;
