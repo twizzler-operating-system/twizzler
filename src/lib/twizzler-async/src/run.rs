@@ -4,14 +4,8 @@ use std::{
     thread,
 };
 
-use futures_util::future::Either;
-
 use crate::{
-    event::FlagEvent,
-    exec::Executor,
-    reactor::{Reactor, ReactorLock},
-    thread_local::ThreadLocalExecutor,
-    throttle,
+    event::FlagEvent, exec::Executor, reactor::Reactor, thread_local::ThreadLocalExecutor, throttle,
 };
 
 pub(crate) fn enter<T>(f: impl FnOnce() -> T) -> T {

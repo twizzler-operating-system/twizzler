@@ -16,6 +16,7 @@
 #![feature(naked_functions)]
 #![feature(core_intrinsics)]
 #![feature(int_roundings)]
+#![feature(thread_local)]
 pub mod arch;
 
 pub mod alloc;

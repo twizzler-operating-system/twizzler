@@ -119,20 +119,6 @@ impl Reactor {
         dur
     }
 
-    pub fn lock(&self) -> ReactorLock<'_> {
-        ReactorLock {
-            reactor: self,
-            sources_guard: self.sources.lock().unwrap(),
-        }
-    }
-
-    pub fn try_lock(&self) -> Option<ReactorLock<'_>> {
-        Some(ReactorLock {
-            reactor: self,
-            sources_guard: self.sources.try_lock().ok()?,
-        })
-    }
-
     pub fn poll(&self, flag_events: &[&FlagEvent], try_only: bool) {
         self.react(flag_events, false, try_only);
     }
@@ -183,7 +169,6 @@ impl Reactor {
 
         drop(sources);
         // TODO: check err
-        println!("sleep with timeout {:?}", timeout);
         if timeout != Some(Duration::from_nanos(0)) {
             let _ = twizzler_abi::syscall::sys_thread_sync(events.as_mut_slice(), timeout);
         }
@@ -197,11 +182,6 @@ impl Reactor {
         self.fire_timers();
         Some(())
     }
-}
-
-pub(crate) struct ReactorLock<'a> {
-    reactor: &'a Reactor,
-    sources_guard: MutexGuard<'a, StableVec<Arc<Source>>>,
 }
 
 pub(crate) struct Source {

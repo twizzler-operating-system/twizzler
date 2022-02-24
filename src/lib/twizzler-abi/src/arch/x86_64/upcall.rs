@@ -37,11 +37,35 @@ impl UpcallFrame {
     }
 }
 
+#[no_mangle]
+#[cfg(feature = "rt")]
+pub(crate) unsafe extern "C" fn upcall_entry2(
+    rdi: *const UpcallFrame,
+    rsi: *const UpcallInfo,
+) -> ! {
+    crate::upcall::upcall_rust_entry(&*rdi, &*rsi);
+    // TODO: resume
+    crate::syscall::sys_thread_exit(129, core::ptr::null_mut());
+}
+
 #[cfg(feature = "rt")]
 #[no_mangle]
 pub(crate) unsafe extern "C" fn upcall_entry(rdi: *const UpcallFrame, rsi: *const UpcallInfo) -> ! {
-    crate::upcall::upcall_rust_entry(&*rdi, &*rsi);
-
-    // TODO: resume
-    crate::syscall::sys_thread_exit(129, core::ptr::null_mut());
+    asm!(
+        ".cfi_signal_frame",
+        "mov rbp, rdx",
+        "push rax",
+        "push rbp",
+        "push rax",
+        ".cfi_def_cfa rsp, 0",
+        ".cfi_offset rbp, 8",
+        ".cfi_offset rip, 0",
+        ".cfi_return_column rip",
+        "jmp upcall_entry2",
+        in("rax") (&*rdi).rip,
+        in("rdx") (&*rdi).rbp,
+        in("rdi") rdi,
+        in("rsi") rsi,
+        options(noreturn)
+    );
 }
