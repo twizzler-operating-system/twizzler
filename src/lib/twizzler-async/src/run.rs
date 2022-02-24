@@ -36,34 +36,28 @@ pub fn run<T>(future: impl Future<Output = T>) -> T {
         let flag_events = [local.event(), exec.event()];
         loop {
             if let Poll::Ready(val) = throttle::setup(|| future.as_mut().poll(cx)) {
-                println!("-1 done");
                 return val;
             }
 
-            println!("0");
             let more_local = local.execute();
-            println!("1");
             let more_exec = worker.execute();
-            println!("2");
             react(reactor, &flag_events, more_exec || more_local, true);
-            println!("3");
             if more_exec || more_local {
                 yields = 0;
-                println!("3c");
                 continue;
             }
 
             yields += 1;
             if yields < 4 {
-                println!("3cc");
                 thread::yield_now();
                 continue;
             }
 
             yields = 0;
 
-            println!("4");
+            println!("sleeping");
             react(reactor, &flag_events, false, false);
+            println!("woke up");
         }
     })
 }
@@ -75,7 +69,6 @@ fn react(reactor: &Reactor, flag_events: &[&FlagEvent], mut more_tasks: bool, tr
         }
     }
 
-    println!("react {}", more_tasks);
     if more_tasks {
         reactor.poll(flag_events, try_only);
     } else {
