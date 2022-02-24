@@ -81,7 +81,7 @@ impl Reactor {
             events.push(ThreadSync::new_sleep(src.op));
         }
 
-        if block || try_only {
+        if !block || try_only {
             return None;
         }
 

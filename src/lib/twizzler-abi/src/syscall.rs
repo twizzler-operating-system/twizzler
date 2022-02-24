@@ -9,6 +9,7 @@ use crate::{
     arch::syscall::raw_syscall,
     kso::{KactionCmd, KactionError, KactionFlags, KactionValue},
     object::{ObjID, Protections},
+    upcall::{UpcallFrame, UpcallInfo},
 };
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
@@ -299,6 +300,8 @@ pub enum ThreadControl {
     Yield = 1,
     /// Set thread's TLS pointer
     SetTls = 2,
+    /// Set the thread's upcall pointer (child threads in the same virtual address space will inherit).
+    SetUpcall = 3,
 }
 
 impl From<u64> for ThreadControl {
@@ -307,6 +310,7 @@ impl From<u64> for ThreadControl {
             0 => Self::Exit,
             1 => Self::Yield,
             2 => Self::SetTls,
+            3 => Self::SetUpcall,
             _ => Self::Yield,
         }
     }
@@ -339,6 +343,17 @@ pub fn sys_thread_yield() {
 pub fn sys_thread_settls(tls: u64) {
     unsafe {
         raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::SetTls as u64, tls]);
+    }
+}
+
+pub fn sys_thread_set_upcall(
+    loc: unsafe extern "C" fn(*const UpcallFrame, *const UpcallInfo) -> !,
+) {
+    unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[ThreadControl::SetUpcall as u64, loc as u64],
+        );
     }
 }
 

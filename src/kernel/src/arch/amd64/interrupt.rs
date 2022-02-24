@@ -1,5 +1,6 @@
 use core::sync::atomic::Ordering;
 
+use twizzler_abi::upcall::{ExceptionInfo, UpcallFrame, UpcallInfo};
 use x86::current::rflags::RFlags;
 use x86_64::{instructions::segmentation::Segment64, VirtAddr};
 
@@ -11,7 +12,11 @@ use crate::{
     thread::current_thread_ref,
 };
 
-struct IsrContext {
+use super::thread::{Registers, UpcallAble};
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct IsrContext {
     r15: u64,
     r14: u64,
     r13: u64,
@@ -33,6 +38,44 @@ struct IsrContext {
     rflags: u64,
     rsp: u64,
     ss: u64,
+}
+
+impl UpcallAble for IsrContext {
+    fn set_upcall(&mut self, target: usize, frame: u64, info: u64, stack: u64) {
+        self.rip = target as u64;
+        self.rdi = frame;
+        self.rsi = info;
+        self.rsp = stack;
+    }
+
+    fn get_stack_top(&self) -> u64 {
+        self.rsp
+    }
+}
+
+impl From<IsrContext> for UpcallFrame {
+    fn from(int: IsrContext) -> Self {
+        Self {
+            rip: int.rip,
+            rflags: int.rflags,
+            rsp: int.rsp,
+            rbp: int.rbp,
+            rax: int.rax,
+            rbx: int.rbx,
+            rcx: int.rcx,
+            rdx: int.rdx,
+            rdi: int.rdi,
+            rsi: int.rsi,
+            r8: int.r8,
+            r9: int.r9,
+            r10: int.r10,
+            r11: int.r11,
+            r12: int.r12,
+            r13: int.r13,
+            r14: int.r14,
+            r15: int.r15,
+        }
+    }
 }
 
 impl core::fmt::Debug for IsrContext {
@@ -75,11 +118,14 @@ unsafe extern "C" fn common_handler_entry(
     if user {
         x86_64::registers::segmentation::FS::write_base(VirtAddr::new(kernel_fs));
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
+        let t = current_thread_ref().unwrap();
+        t.set_entry_registers(Registers::Interrupt(ctx, *ctx));
     }
     generic_isr_handler(ctx, number, user);
 
     if user {
         let t = current_thread_ref().unwrap();
+        t.set_entry_registers(Registers::None);
         let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
         x86_64::registers::segmentation::FS::write_base(VirtAddr::new(user_fs));
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
@@ -334,7 +380,7 @@ fn num_as_exception(n: u64) -> Exception {
     unsafe { core::intrinsics::transmute(n) }
 }
 
-fn generic_isr_handler(ctx: *mut IsrContext, number: u64, _user: bool) {
+fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
     assert!(!disable());
     let ctx = unsafe { ctx.as_mut().unwrap() };
     if number == Exception::DoubleFault as u64 || number == Exception::MachineCheck as u64 {
@@ -381,11 +427,18 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, _user: bool) {
             crate::thread::exit_kernel();
         }
         n if n < 32 => {
-            panic!(
-                "caught unhandled exception {:?}: {:#?}",
-                num_as_exception(number),
-                ctx
-            );
+            if user {
+                logln!("user exception {:#?} {:x}", ctx, ctx.rsp);
+                let t = current_thread_ref().unwrap();
+                let info = UpcallInfo::Exception(ExceptionInfo::new(n, ctx.err));
+                t.send_upcall(info);
+            } else {
+                panic!(
+                    "caught unhandled exception {:?}: {:#?}",
+                    num_as_exception(number),
+                    ctx
+                );
+            }
         }
         32 => {
             if current_processor().is_bsp() {

@@ -9,6 +9,7 @@ use twizzler_abi::{
     aux::{AuxEntry, KernelInitInfo, KernelInitName},
     object::ObjID,
     syscall::{ThreadSpawnArgs, ThreadSpawnError},
+    upcall::UpcallInfo,
 };
 use x86_64::VirtAddr;
 use xmas_elf::program::SegmentData;
@@ -348,6 +349,13 @@ impl Thread {
     #[inline]
     pub fn id(&self) -> u64 {
         self.id.value()
+    }
+
+    pub fn send_upcall(&self, info: UpcallInfo) {
+        // TODO
+        let ctx = current_memory_context().unwrap();
+        let upcall = ctx.get_upcall_address().unwrap();
+        self.arch_queue_upcall(upcall, info);
     }
 }
 
@@ -690,10 +698,12 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> 
     thread.repr = Some(create_blank_object());
     let id = thread.repr.as_ref().unwrap().id();
     logln!(
-        "starting new thread {} {} with stack {:p}",
+        "starting new thread {} {} with stack k={:p} u={:x},{:x}",
         thread.id,
         id,
-        thread.kernel_stack
+        thread.kernel_stack,
+        args.stack_base,
+        args.stack_size,
     );
     schedule_new_thread(thread);
     Ok(id)

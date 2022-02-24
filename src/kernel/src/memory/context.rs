@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use alloc::{collections::BTreeMap, sync::Arc};
 use twizzler_abi::{device::CacheType, object::Protections};
 use x86_64::VirtAddr;
@@ -47,6 +49,7 @@ pub struct MemoryContext {
     inner: Mutex<MemoryContextInner>,
     id: Id<'static>,
     switch_cache: ArchMemoryContextSwitchInfo,
+    upcall: AtomicUsize,
 }
 
 impl Default for MemoryContext {
@@ -233,6 +236,7 @@ impl MemoryContext {
             inner,
             switch_cache,
             id: ID_COUNTER.next(),
+            upcall: AtomicUsize::new(0),
         }
     }
 
@@ -243,6 +247,7 @@ impl MemoryContext {
             inner,
             switch_cache,
             id: ID_COUNTER.next(),
+            upcall: AtomicUsize::new(0),
         }
     }
 
@@ -253,6 +258,7 @@ impl MemoryContext {
             inner,
             switch_cache,
             id: ID_COUNTER.next(),
+            upcall: AtomicUsize::new(0),
         }
     }
 
@@ -264,6 +270,17 @@ impl MemoryContext {
 
     pub fn inner(&self) -> LockGuard<'_, MemoryContextInner> {
         self.inner.lock()
+    }
+
+    pub fn set_upcall_address(&self, target: usize) {
+        self.upcall.store(target, Ordering::SeqCst);
+    }
+
+    pub fn get_upcall_address(&self) -> Option<usize> {
+        match self.upcall.load(Ordering::SeqCst) {
+            0 => None,
+            n => Some(n),
+        }
     }
 }
 

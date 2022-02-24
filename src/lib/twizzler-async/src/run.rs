@@ -28,8 +28,8 @@ pub fn run<T>(future: impl Future<Output = T>) -> T {
     let cx = &mut Context::from_waker(&waker);
     futures_util::pin_mut!(future);
 
-    //let enter = |f| local.enter(|| enter(f));
-    //let enter = |f| worker.enter(|| enter(f));
+    let enter = |f| local.enter(|| enter(f));
+    let enter = |f| worker.enter(|| enter(f));
 
     enter(|| {
         let mut yields = 0;
@@ -75,6 +75,7 @@ fn react(reactor: &Reactor, flag_events: &[&FlagEvent], mut more_tasks: bool, tr
         }
     }
 
+    println!("react {}", more_tasks);
     if more_tasks {
         reactor.poll(flag_events, try_only);
     } else {
