@@ -49,6 +49,7 @@ fn main() {
     if std::env::args().len() < 10 {
         test_async();
     }
+    loop {}
     for _ in 0..4 {
         std::thread::spawn(|| println!("hello from thread {:?}", std::thread::current().id()));
     }
