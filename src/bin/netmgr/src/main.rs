@@ -30,24 +30,23 @@ fn test_async() {
     }
 
     let res = twizzler_async::block_on(async {
-        let x = twizzler_async::Task::spawn(async {
-            println!("hello from task thread {:?}", std::thread::current().id());
-            let x = get7().await;
-            let timer = twizzler_async::timer::Timer::after(Duration::from_millis(100)).await;
-            println!("here");
-            x
-        })
-        .await;
-        let y = twizzler_async::Task::spawn(async {
-            println!("hello from task thread {:?}", std::thread::current().id());
-            let x = get7().await;
-            let timer = twizzler_async::timer::Timer::after(Duration::from_millis(1000)).await;
-            println!("here {:?}", timer);
-            x
-        })
-        .await;
+        let mut total = 0;
+        let mut tasks = vec![];
+        for _ in 0..100 {
+            let x = twizzler_async::Task::spawn(async {
+                println!("hello from task thread {:?}", std::thread::current().id());
+                let x = get7().await;
+                let timer = twizzler_async::timer::Timer::after(Duration::from_millis(100)).await;
+                println!("here {:?}", timer);
+                x
+            });
+            tasks.push(x);
+        }
         println!("here2");
-        x + y
+        for t in tasks {
+            total += t.await;
+        }
+        total
     });
     println!("async_thread_pool: {}", res);
 }
