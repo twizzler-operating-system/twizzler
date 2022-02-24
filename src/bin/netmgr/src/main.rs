@@ -1,23 +1,121 @@
 #![feature(thread_local)]
 
-use std::time::Duration;
+use std::{
+    sync::{atomic::AtomicU64, Arc},
+    time::Duration,
+};
 
 use twizzler::object::ObjID;
+use twizzler_abi::syscall::{
+    ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+};
+use twizzler_async::{Async, AsyncSetup, Task};
+use twizzler_queue_raw::{QueueEntry, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags};
 
 async fn get7() -> i32 {
     println!("hello from async");
     4 + 3
 }
 
-#[thread_local]
-static AAA: [u8; 15] = [0; 15];
+fn wait(x: &AtomicU64, v: u64) {
+    println!("wait");
+    let op = ThreadSync::new_sleep(ThreadSyncSleep::new(
+        ThreadSyncReference::Virtual(x as *const AtomicU64),
+        v,
+        ThreadSyncOp::Equal,
+        ThreadSyncFlags::empty(),
+    ));
+    let _ = twizzler_abi::syscall::sys_thread_sync(&mut [op], None);
+    /*
+    while x.load(Ordering::SeqCst) == v {
+        core::hint::spin_loop();
+    }
+    */
+}
+
+fn wake(x: &AtomicU64) {
+    println!("wake");
+    let op = ThreadSync::new_wake(ThreadSyncWake::new(
+        ThreadSyncReference::Virtual(x as *const AtomicU64),
+        usize::MAX,
+    ));
+    let _ = twizzler_abi::syscall::sys_thread_sync(&mut [op], None);
+}
+
+struct Queue<T>(Arc<RawQueue<T>>);
+
+impl<T: Copy + Default> AsyncSetup for Queue<T> {
+    type Error = twizzler_queue_raw::QueueError;
+    const WOULD_BLOCK: Self::Error = Self::Error::WouldBlock;
+
+    fn setup_sleep(&self) -> ThreadSyncSleep {
+        let (ptr, val) = self.0.setup_sleep_simple();
+        ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(ptr as *const AtomicU64),
+            val,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        )
+    }
+}
+
+fn it_transmits() {
+    println!("queue test");
+    let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
+    let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
+    let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
+
+    let q = Arc::new(q);
+    let queue = Queue(q.clone());
+
+    let aq = Async::new(queue);
+
+    let t = Task::spawn(async move {
+        let mut i = 0;
+        loop {
+            let res = aq
+                .run_with(|q| {
+                    println!("q rec {:?}", std::thread::current().id());
+                    let x = q.0.receive(wait, wake, ReceiveFlags::NON_BLOCK);
+                    println!("internal rec got {:?}", x);
+                    x
+                })
+                .await;
+            i += 1;
+            println!("rec got {} {:?}", i, res);
+        }
+    });
+    println!("aq spawned");
+    for i in 0..1000 {
+        let res = q.submit(
+            QueueEntry::new(i as u32, i * 10),
+            wait,
+            wake,
+            SubmissionFlags::empty(),
+        );
+    }
+    loop {}
+
+    /*
+
+    for i in 0..100 {
+        let res = q.submit(
+            QueueEntry::new(i as u32, i * 10),
+            wait,
+            wake,
+            SubmissionFlags::empty(),
+        );
+        assert_eq!(res, Ok(()));
+        let res = q.receive(wait, wake, ReceiveFlags::empty());
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().info(), i as u32);
+        assert_eq!(res.unwrap().item(), i * 10);
+    }
+    */
+}
 
 fn test_async() {
-    println!(
-        "main thread id {:?} {}",
-        std::thread::current().id(),
-        AAA[1]
-    );
+    println!("main thread id {:?} ", std::thread::current().id(),);
     let res = twizzler_async::block_on(get7());
     println!("async_block: {}", res);
 
@@ -32,23 +130,30 @@ fn test_async() {
     let res = twizzler_async::block_on(async {
         let mut total = 0;
         let mut tasks = vec![];
-        for _ in 0..100 {
-            let x = twizzler_async::Task::spawn(async {
-                println!("hello from task thread {:?}", std::thread::current().id());
+        for i in 0..100 {
+            let x = twizzler_async::Task::spawn(async move {
+                println!(
+                    "hello from task thread {:?} {}",
+                    std::thread::current().id(),
+                    i
+                );
                 let x = get7().await;
-                let timer = twizzler_async::timer::Timer::after(Duration::from_millis(100)).await;
-                println!("here {:?}", timer);
+                let timer = twizzler_async::Timer::after(Duration::from_millis(100)).await;
+                println!("here {:?} {}", timer, i);
                 x
             });
             tasks.push(x);
         }
         println!("here2");
-        for t in tasks {
+        for (i, t) in tasks.into_iter().enumerate() {
+            println!("join {}", i);
             total += t.await;
         }
         total
     });
     println!("async_thread_pool: {}", res);
+
+    it_transmits();
 }
 
 fn main() {

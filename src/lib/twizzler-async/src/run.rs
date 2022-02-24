@@ -55,9 +55,9 @@ pub fn run<T>(future: impl Future<Output = T>) -> T {
 
             yields = 0;
 
-            println!("sleeping");
+            //  println!("sleeping");
             react(reactor, &flag_events, false, false);
-            println!("woke up");
+            // println!("woke up");
         }
     })
 }

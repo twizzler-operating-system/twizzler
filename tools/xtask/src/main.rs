@@ -605,7 +605,7 @@ fn start_qemu(
     let mut run_cmd = Command::new("qemu-system-x86_64");
     run_cmd.arg("-m").arg("1024,slots=4,maxmem=8G");
     run_cmd.arg("-bios").arg("/usr/share/qemu/OVMF.fd");
-    //run_cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
+    run_cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
     run_cmd.arg("-drive").arg(format!(
         "format=raw,file={}",
         make_path(build_info, true, "disk.img")

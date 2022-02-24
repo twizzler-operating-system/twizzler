@@ -392,6 +392,7 @@ pub enum ThreadSyncReference {
     ObjectRef(ObjID, usize),
     Virtual(*const AtomicU64),
 }
+unsafe impl Send for ThreadSyncReference {}
 
 impl ThreadSyncReference {
     fn load(&self) -> u64 {

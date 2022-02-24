@@ -537,7 +537,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
         if cp.id == 0 {
             let all_threads = ALL_THREADS.lock();
             for t in all_threads.values() {
-                logln!("thread {}: {:?}", t.id(), t.stats);
+                logln!("thread {}: {:?} {:?}", t.id(), t.stats, t.state);
             }
         }
         //crate::clock::print_info();
