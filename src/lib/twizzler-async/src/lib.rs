@@ -7,6 +7,7 @@ mod run;
 mod task;
 mod thread_local;
 mod throttle;
+pub mod timer;
 
 pub use self::block_on::block_on;
 pub use run::run;

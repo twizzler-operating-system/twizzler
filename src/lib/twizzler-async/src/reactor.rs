@@ -1,8 +1,11 @@
 use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex, MutexGuard, Once},
+    collections::{BTreeMap, VecDeque},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, MutexGuard, Once,
+    },
     task::Waker,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use stable_vec::StableVec;
@@ -14,12 +17,23 @@ lazy_static::lazy_static! {
     static ref REACTOR: Reactor = {
         Reactor {
             sources: Mutex::new(StableVec::new()),
+            timers: Mutex::new(BTreeMap::new()),
+            timer_ops: Mutex::new(VecDeque::new()),
+            timer_event: FlagEvent::new(),
         }
     };
 }
 
+enum TimerOp {
+    Insert(Instant, usize, Waker),
+    Remove(Instant, usize),
+}
+
 pub(crate) struct Reactor {
     sources: Mutex<StableVec<Arc<Source>>>,
+    timers: Mutex<BTreeMap<(Instant, usize), Waker>>,
+    timer_ops: Mutex<VecDeque<TimerOp>>,
+    timer_event: FlagEvent,
 }
 
 impl Reactor {
@@ -42,6 +56,60 @@ impl Reactor {
         let mut sources = self.sources.lock().unwrap();
         let res = sources.remove(source.key);
         assert!(res.is_some());
+    }
+
+    pub fn insert_timer(&self, when: Instant, waker: &Waker) -> usize {
+        static ID_GEN: AtomicUsize = AtomicUsize::new(1);
+        let id = ID_GEN.fetch_add(1, Ordering::SeqCst);
+
+        self.timer_ops
+            .lock()
+            .unwrap()
+            .push_back(TimerOp::Insert(when, id, waker.clone()));
+        self.timer_event.notify();
+        id
+    }
+
+    pub fn remove_timer(&self, when: Instant, id: usize) {
+        self.timer_ops
+            .lock()
+            .unwrap()
+            .push_back(TimerOp::Remove(when, id));
+    }
+
+    pub fn fire_timers(&self) -> Option<Duration> {
+        self.timer_event.clear();
+        let mut timers = self.timers.lock().unwrap();
+        let mut timer_ops = self.timer_ops.lock().unwrap();
+        while let Some(op) = timer_ops.pop_front() {
+            match op {
+                TimerOp::Insert(when, id, waker) => {
+                    timers.insert((when, id), waker);
+                }
+                TimerOp::Remove(when, id) => {
+                    timers.remove(&(when, id));
+                }
+            }
+        }
+
+        let now = Instant::now();
+        let pending = timers.split_off(&(now, 0));
+        let ready = core::mem::replace(&mut *timers, pending);
+
+        let dur = if ready.is_empty() {
+            timers
+                .keys()
+                .next()
+                .map(|(when, _)| when.saturating_duration_since(now))
+        } else {
+            Some(Duration::from_secs(0))
+        };
+
+        for (_, waker) in ready {
+            waker.wake();
+        }
+
+        dur
     }
 
     pub fn lock(&self) -> ReactorLock<'_> {
@@ -67,6 +135,12 @@ impl Reactor {
     }
 
     fn react(&self, flag_events: &[&FlagEvent], block: bool, try_only: bool) -> Option<()> {
+        let next_timer = self.fire_timers();
+        let timeout = if block {
+            next_timer
+        } else {
+            Some(Duration::from_secs(0))
+        };
         let sources = if try_only {
             self.sources.try_lock().ok()?
         } else {
@@ -93,9 +167,15 @@ impl Reactor {
             events.push(ThreadSync::new_sleep(s));
         }
 
+        let s = self.timer_event.setup_sleep();
+        if s.ready() {
+            return None;
+        }
+        events.push(ThreadSync::new_sleep(s));
+
         drop(sources);
         // TODO: check err
-        let _ = twizzler_abi::syscall::sys_thread_sync(events.as_mut_slice(), None);
+        let _ = twizzler_abi::syscall::sys_thread_sync(events.as_mut_slice(), timeout);
 
         let sources = self.sources.lock().unwrap();
         for (_, src) in &*sources {
@@ -103,6 +183,7 @@ impl Reactor {
                 src.wake_all();
             }
         }
+        self.fire_timers();
         Some(())
     }
 }
