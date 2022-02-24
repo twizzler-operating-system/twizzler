@@ -1,5 +1,5 @@
 #![feature(thread_local)]
-
+#![feature(asm)]
 use std::{
     sync::{atomic::AtomicU64, Arc},
     time::Duration,
@@ -161,6 +161,11 @@ fn main() {
     for arg in std::env::args() {
         println!("arg {}", arg);
     }
+    unsafe {
+        asm!("hlt");
+    }
+    loop {}
+
     if std::env::args().len() < 10 {
         test_async();
     }

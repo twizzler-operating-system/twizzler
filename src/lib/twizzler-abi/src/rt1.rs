@@ -158,7 +158,6 @@ use core::ptr;
 #[allow(unused_mut)]
 /// Called from _start to initialize the runtime and pass control to the Rust stdlib.
 pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
-    crate::syscall::sys_thread_set_upcall(crate::arch::upcall::upcall_entry);
     crate::slot::runtime_init();
     let null_env: [*const i8; 4] = [
         b"RUST_BACKTRACE=full\0".as_ptr() as *const i8,
@@ -194,6 +193,7 @@ pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
     if let Some(tls) = tls {
         crate::syscall::sys_thread_settls(tls);
     }
+    crate::syscall::sys_thread_set_upcall(crate::arch::upcall::upcall_entry);
 
     unsafe {
         // Run preinit array
