@@ -551,8 +551,10 @@ name = "netmgr"
 version = "0.1.0"
 dependencies = [
  "twizzler",
+ "twizzler-abi",
  "twizzler-async",
  "twizzler-net",
+ "twizzler-queue-raw",
 ]
 
 [[package]]

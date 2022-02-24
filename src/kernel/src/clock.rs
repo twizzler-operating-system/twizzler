@@ -14,7 +14,6 @@ pub type Nanoseconds = u64;
 
 pub fn statclock(dt: Nanoseconds) {
     crate::sched::schedule_stattick(dt);
-    //logln!("stat {} {}", current_processor().id, dt);
 }
 
 const NR_WINDOWS: usize = 1024;
@@ -193,9 +192,11 @@ static NR_CPU_TICKS: AtomicU64 = AtomicU64::new(0);
 #[thread_local]
 static NEXT_TICK: AtomicU64 = AtomicU64::new(0);
 
+static BSP_TICK: AtomicU64 = AtomicU64::new(0);
+
 pub fn get_current_ticks() -> u64 {
     // TODO: something real
-    NR_CPU_TICKS.load(Ordering::SeqCst)
+    BSP_TICK.load(Ordering::SeqCst)
 }
 
 pub fn schedule_oneshot_tick(next: u64) {
@@ -222,6 +223,7 @@ pub fn oneshot_clock_hardtick() {
     let ticks = NEXT_TICK.load(Ordering::SeqCst);
     NR_CPU_TICKS.fetch_add(ticks, Ordering::SeqCst);
     let to_next_tick = if current_processor().is_bsp() {
+        BSP_TICK.fetch_add(ticks, Ordering::SeqCst);
         let mut timeout_queue = TIMEOUT_QUEUE.lock();
         timeout_queue.hard_advance(ticks as usize);
         let next = timeout_queue.get_next_ticks();
@@ -241,7 +243,6 @@ pub fn oneshot_clock_hardtick() {
         to_next_tick
     );
     */
-
     let next = core::cmp::min(
         to_next_tick.unwrap_or(u64::MAX),
         sched_next_tick.unwrap_or(u64::MAX),
