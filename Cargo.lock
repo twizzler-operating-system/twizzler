@@ -554,7 +554,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-async",
  "twizzler-net",
- "twizzler-queue-raw",
+ "twizzler-queue",
 ]
 
 [[package]]
@@ -1046,6 +1046,16 @@ version = "0.1.0"
 dependencies = [
  "twizzler",
  "twizzler-abi",
+]
+
+[[package]]
+name = "twizzler-queue"
+version = "0.1.0"
+dependencies = [
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-async",
+ "twizzler-queue-raw",
 ]
 
 [[package]]

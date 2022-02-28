@@ -5,6 +5,11 @@ use std::{
     time::Duration,
 };
 
+use twizzler::object::Object;
+use twizzler_abi::syscall::LifetimeType;
+use twizzler_queue::{Queue, ReceiveFlags, SubmissionFlags};
+
+/*
 use twizzler::object::ObjID;
 use twizzler_abi::syscall::{
     ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
@@ -132,21 +137,13 @@ fn test_async() {
         let mut tasks = vec![];
         for i in 0..100 {
             let x = twizzler_async::Task::spawn(async move {
-                println!(
-                    "hello from task thread {:?} {}",
-                    std::thread::current().id(),
-                    i
-                );
                 let x = get7().await;
                 let timer = twizzler_async::Timer::after(Duration::from_millis(100)).await;
-                println!("here {:?} {}", timer, i);
                 x
             });
             tasks.push(x);
         }
-        println!("here2");
         for (i, t) in tasks.into_iter().enumerate() {
-            println!("join {}", i);
             total += t.await;
         }
         total
@@ -155,21 +152,72 @@ fn test_async() {
 
     it_transmits();
 }
+*/
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+struct Foo {
+    x: u32,
+    y: u32,
+}
+
+fn test_queue() {
+    let create = twizzler::object::CreateSpec::new(
+        LifetimeType::Volatile,
+        twizzler_abi::syscall::BackingType::Normal,
+    );
+    let queue = Queue::<Foo, Foo>::create(&create, 64, 64).unwrap();
+    let queue1 = Arc::new(queue);
+    let queue2 = queue1.clone();
+
+    std::thread::spawn(move || loop {
+        let (id, foo) = queue1.receive(ReceiveFlags::empty()).unwrap();
+        println!("got {} {:?}", id, foo);
+        let reply = Foo {
+            x: foo.x,
+            y: foo.y + 1,
+        };
+        queue1
+            .complete(id, reply, SubmissionFlags::empty())
+            .unwrap();
+    });
+
+    let mut i = 0;
+    loop {
+        queue2
+            .submit(i, Foo { x: 123, y: i }, SubmissionFlags::empty())
+            .unwrap();
+        let (id, reply) = queue2.get_completion(ReceiveFlags::empty()).unwrap();
+        println!("got complete {} {:?}", id, reply);
+        assert_eq!(reply.x, 123);
+        assert_eq!(reply.y, i + 1);
+        assert_eq!(id, i);
+        i += 1;
+    }
+
+    let res = queue.submit(123, Foo { x: 456, y: 111 }, SubmissionFlags::empty());
+    println!("sub res {:?}", res);
+    let res = queue.receive(ReceiveFlags::empty());
+    println!("rec res {:?}", res);
+    let res = queue.complete(123, Foo { x: 456, y: 999 }, SubmissionFlags::empty());
+    println!("com res {:?}", res);
+    let res = queue.get_completion(ReceiveFlags::empty());
+    println!("gcm res {:?}", res);
+}
 
 fn main() {
     println!("Hello, world from netmgr!");
     for arg in std::env::args() {
         println!("arg {}", arg);
     }
-    unsafe {
-        asm!("hlt");
-    }
+    test_queue();
     loop {}
 
     if std::env::args().len() < 10 {
-        test_async();
+        //test_async();
     }
     loop {}
+    /*
     for _ in 0..4 {
         std::thread::spawn(|| println!("hello from thread {:?}", std::thread::current().id()));
     }
@@ -187,4 +235,5 @@ fn main() {
         let o = twizzler_net::server_rendezvous(id);
         println!("[netmgr] got {:?}", o);
     }
+    */
 }

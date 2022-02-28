@@ -10,7 +10,7 @@ mod throttle;
 mod timer;
 
 pub use self::block_on::block_on;
-pub use async_source::{Async, AsyncSetup};
+pub use async_source::{Async, AsyncDuplex, AsyncDuplexSetup, AsyncSetup};
 pub use run::run;
 pub use task::Task;
 pub use timer::Timer;
