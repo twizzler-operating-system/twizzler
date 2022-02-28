@@ -10,4 +10,4 @@ twizzler-net = {path="../../lib/twizzler-net"}
 twizzler = {path="../../lib/twizzler"}
 twizzler-async = {path = "../../lib/twizzler-async"}
 twizzler-abi = {path = "../../lib/twizzler-abi"}
-twizzler-queue-raw = {path = "../../lib/twizzler-queue-raw"}
+twizzler-queue = {path = "../../lib/twizzler-queue"}

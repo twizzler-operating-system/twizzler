@@ -5,6 +5,9 @@ pub use twizzler_abi::object::Protections;
 use twizzler_abi::syscall::MapFlags;
 use twizzler_abi::syscall::ObjectMapError;
 
+mod create;
+pub use create::*;
+
 bitflags::bitflags! {
     pub struct ObjectInitFlags: u32 {
     }
@@ -44,6 +47,16 @@ impl<T> Object<T> {
     pub fn base_raw_mut(&mut self) -> &mut T {
         let (start, _) = twizzler_abi::slot::to_vaddr_range(self.slot);
         unsafe { (start as *mut T).as_mut().unwrap() }
+    }
+
+    pub fn raw_lea<P>(&self, off: usize) -> *const P {
+        let (start, _) = twizzler_abi::slot::to_vaddr_range(self.slot);
+        unsafe { ((start + off) as *const P).as_ref().unwrap() }
+    }
+
+    pub fn raw_lea_mut<P>(&self, off: usize) -> *mut P {
+        let (start, _) = twizzler_abi::slot::to_vaddr_range(self.slot);
+        unsafe { ((start + off) as *mut P).as_mut().unwrap() }
     }
 
     pub fn init_id(
