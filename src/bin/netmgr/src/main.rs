@@ -8,7 +8,7 @@ use std::{
 use twizzler::object::Object;
 use twizzler_abi::syscall::LifetimeType;
 use twizzler_queue::{Queue, ReceiveFlags, SubmissionFlags};
-
+mod arp;
 /*
 use twizzler::object::ObjID;
 use twizzler_abi::syscall::{
@@ -210,7 +210,8 @@ fn main() {
     for arg in std::env::args() {
         println!("arg {}", arg);
     }
-    test_queue();
+    arp::test_arp();
+    //test_queue();
     loop {}
 
     if std::env::args().len() < 10 {
