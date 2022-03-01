@@ -38,6 +38,17 @@ pub struct Object<T> {
     _pd: PhantomData<T>,
 }
 
+impl<T> Clone for Object<T> {
+    // TODO: increase slot ref count in twizzler_abi::slot
+    fn clone(&self) -> Self {
+        Self {
+            slot: self.slot,
+            id: self.id,
+            _pd: self._pd.clone(),
+        }
+    }
+}
+
 impl<T> Object<T> {
     pub fn base_raw(&self) -> &T {
         let (start, _) = twizzler_abi::slot::to_vaddr_range(self.slot);

@@ -1,4 +1,5 @@
 #![feature(thread_local)]
+#![feature(async_closure)]
 #![feature(asm)]
 use std::{
     sync::{atomic::AtomicU64, Arc},
@@ -7,7 +8,8 @@ use std::{
 
 use twizzler::object::Object;
 use twizzler_abi::syscall::LifetimeType;
-use twizzler_queue::{Queue, ReceiveFlags, SubmissionFlags};
+use twizzler_async::Task;
+use twizzler_queue::{CallbackQueueReceiver, Queue, QueueSender, ReceiveFlags, SubmissionFlags};
 mod arp;
 /*
 use twizzler::object::ObjID;
@@ -167,9 +169,39 @@ fn test_queue() {
         twizzler_abi::syscall::BackingType::Normal,
     );
     let queue = Queue::<Foo, Foo>::create(&create, 64, 64).unwrap();
-    let queue1 = Arc::new(queue);
-    let queue2 = queue1.clone();
+    let obj = queue.object().clone();
+    let cbq = Arc::new(CallbackQueueReceiver::new(queue));
+    let sq = QueueSender::new(obj.into());
 
+    let num_threads = 3;
+    for _ in 0..num_threads {
+        std::thread::spawn(|| twizzler_async::run(std::future::pending::<()>()));
+    }
+
+    Task::spawn(async move {
+        loop {
+            let r = cbq
+                .handle(async move |x, mut y| {
+                    println!("handle: {} {:?}", x, y);
+                    y.y += 1;
+                    y
+                })
+                .await;
+            println!("loop end {:?}", r);
+        }
+    })
+    .detach();
+
+    let res = twizzler_async::run(async {
+        let reply = sq.submit_and_wait(Foo { x: 123, y: 456 }).await;
+        println!("reply: {:?}", reply);
+        reply.unwrap()
+    });
+
+    println!("outside {:?}", res);
+    loop {}
+
+    /*
     std::thread::spawn(move || loop {
         let (id, foo) = queue1.receive(ReceiveFlags::empty()).unwrap();
         println!("got {} {:?}", id, foo);
@@ -203,6 +235,7 @@ fn test_queue() {
     println!("com res {:?}", res);
     let res = queue.get_completion(ReceiveFlags::empty());
     println!("gcm res {:?}", res);
+    */
 }
 
 fn main() {
@@ -210,8 +243,8 @@ fn main() {
     for arg in std::env::args() {
         println!("arg {}", arg);
     }
-    arp::test_arp();
-    //test_queue();
+    //arp::test_arp();
+    test_queue();
     loop {}
 
     if std::env::args().len() < 10 {

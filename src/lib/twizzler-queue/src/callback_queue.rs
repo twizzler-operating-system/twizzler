@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeMap,
     future::Future,
-    pin::Pin,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc, Mutex,
@@ -14,7 +13,7 @@ use twizzler_queue_raw::{QueueError, ReceiveFlags, SubmissionFlags};
 
 use crate::Queue;
 
-struct CallbackQueueSenderInner<S, C> {
+struct QueueSenderInner<S, C> {
     queue: Queue<S, C>,
 }
 
@@ -48,14 +47,14 @@ impl<'a, S: Copy, C: Copy> Future for WaitPointFuture<'a, S, C> {
     }
 }
 
-struct QueueSender<S, C> {
+pub struct QueueSender<S, C> {
     counter: AtomicU32,
     reuse: Mutex<Vec<u32>>,
-    inner: AsyncDuplex<CallbackQueueSenderInner<S, C>>,
+    inner: AsyncDuplex<QueueSenderInner<S, C>>,
     calls: Mutex<BTreeMap<u32, Arc<Mutex<WaitPoint<C>>>>>,
 }
 
-impl<S, C> AsyncDuplexSetup for CallbackQueueSenderInner<S, C> {
+impl<S: Copy, C: Copy> AsyncDuplexSetup for QueueSenderInner<S, C> {
     type ReadError = QueueError;
     type WriteError = QueueError;
 
@@ -63,15 +62,24 @@ impl<S, C> AsyncDuplexSetup for CallbackQueueSenderInner<S, C> {
     const WRITE_WOULD_BLOCK: Self::WriteError = QueueError::WouldBlock;
 
     fn setup_read_sleep(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        todo!()
+        self.queue.setup_read_com_sleep()
     }
 
     fn setup_write_sleep(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        todo!()
+        self.queue.setup_write_sub_sleep()
     }
 }
 
 impl<S: Copy, C: Copy> QueueSender<S, C> {
+    pub fn new(queue: Queue<S, C>) -> Self {
+        Self {
+            counter: AtomicU32::new(0),
+            reuse: Mutex::new(vec![]),
+            inner: AsyncDuplex::new(QueueSenderInner { queue }),
+            calls: Mutex::new(BTreeMap::new()),
+        }
+    }
+
     fn next_id(&self) -> u32 {
         let mut reuse = self.reuse.lock().unwrap();
         reuse
@@ -95,7 +103,7 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
 
     fn handle_completion(&self, id: u32, item: C) {
         let mut calls = self.calls.lock().unwrap();
-        let mut call = calls
+        let call = calls
             .remove(&id)
             .expect("failed to find registered callback");
         let mut call = call.lock().unwrap();
@@ -105,7 +113,7 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
         }
     }
 
-    pub async fn submit_and_wait<F, Fut, T>(&self, item: S) -> Result<C, crate::QueueError> {
+    pub async fn submit_and_wait(&self, item: S) -> Result<C, crate::QueueError> {
         let id = self.next_id();
         let state = Arc::new(Mutex::new(WaitPoint::<C> {
             item: None,
@@ -122,15 +130,26 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
             .write_with(|inner| inner.queue.submit(id, item, SubmissionFlags::NON_BLOCK))
             .await?;
 
+        println!("submitted");
         let waiter = WaitPointFuture::<S, C> {
             state,
             sender: self,
         };
         let item = Box::pin(waiter);
-        let recv = Box::pin(
-            self.inner
-                .read_with(|inner| inner.queue.get_completion(ReceiveFlags::NON_BLOCK)),
-        );
+        let recv = Box::pin(async {
+            loop {
+                let (id, item) = self
+                    .inner
+                    .read_with(|inner| {
+                        println!("get compl");
+                        inner.queue.get_completion(ReceiveFlags::NON_BLOCK)
+                    })
+                    .await
+                    .unwrap();
+                self.handle_completion(id, item);
+            }
+        });
+        println!("wait_first");
         let result = twizzler_async::wait_for_first(item, recv).await?;
         self.release_id(id);
         Ok(result.1)
@@ -141,11 +160,11 @@ struct CallbackQueueReceiverInner<S, C> {
     queue: Queue<S, C>,
 }
 
-struct CallbackQueueReceiver<S, C> {
+pub struct CallbackQueueReceiver<S, C> {
     inner: AsyncDuplex<CallbackQueueReceiverInner<S, C>>,
 }
 
-impl<S, C> AsyncDuplexSetup for CallbackQueueReceiverInner<S, C> {
+impl<S: Copy, C: Copy> AsyncDuplexSetup for CallbackQueueReceiverInner<S, C> {
     type ReadError = QueueError;
     type WriteError = QueueError;
 
@@ -153,15 +172,21 @@ impl<S, C> AsyncDuplexSetup for CallbackQueueReceiverInner<S, C> {
     const WRITE_WOULD_BLOCK: Self::WriteError = QueueError::WouldBlock;
 
     fn setup_read_sleep(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        todo!()
+        self.queue.setup_read_sub_sleep()
     }
 
     fn setup_write_sleep(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        todo!()
+        self.queue.setup_write_com_sleep()
     }
 }
 
 impl<S: Copy, C: Copy> CallbackQueueReceiver<S, C> {
+    pub fn new(queue: Queue<S, C>) -> Self {
+        Self {
+            inner: AsyncDuplex::new(CallbackQueueReceiverInner { queue }),
+        }
+    }
+
     pub async fn handle<F, Fut>(&self, f: F) -> Result<(), QueueError>
     where
         F: FnOnce(u32, S) -> Fut,

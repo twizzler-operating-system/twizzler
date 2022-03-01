@@ -138,4 +138,38 @@ impl<S: Copy, C: Copy> Queue<S, C> {
         self.with_guard(false, || self.completion.receive(wait, ring, flags))
             .map(|qe| (qe.info(), qe.item()))
     }
+
+    #[inline]
+    fn build_thread_sync(ptr: &AtomicU64, val: u64) -> ThreadSyncSleep {
+        ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(ptr as *const AtomicU64),
+            val,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        )
+    }
+
+    #[inline]
+    pub fn setup_read_com_sleep(&self) -> ThreadSyncSleep {
+        let (ptr, val) = self.completion.setup_sleep_simple();
+        Self::build_thread_sync(ptr, val)
+    }
+
+    #[inline]
+    pub fn setup_read_sub_sleep(&self) -> ThreadSyncSleep {
+        let (ptr, val) = self.submission.setup_sleep_simple();
+        Self::build_thread_sync(ptr, val)
+    }
+
+    #[inline]
+    pub fn setup_write_sub_sleep(&self) -> ThreadSyncSleep {
+        let (ptr, val) = self.submission.setup_send_sleep_simple();
+        Self::build_thread_sync(ptr, val)
+    }
+
+    #[inline]
+    pub fn setup_write_com_sleep(&self) -> ThreadSyncSleep {
+        let (ptr, val) = self.completion.setup_send_sleep_simple();
+        Self::build_thread_sync(ptr, val)
+    }
 }
