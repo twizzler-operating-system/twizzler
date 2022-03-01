@@ -3,12 +3,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use twizzler::object::{CreateError, CreateSpec, Object};
 use twizzler_abi::syscall::{
-    sys_thread_sync, ObjectCreate, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
+    sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
     ThreadSyncSleep, ThreadSyncWake,
 };
+use twizzler_queue_raw::RawQueue;
 use twizzler_queue_raw::{QueueEntry, RawQueueHdr};
-use twizzler_queue_raw::{QueueError, RawQueue};
 
+pub use twizzler_queue_raw::QueueError;
 pub use twizzler_queue_raw::ReceiveFlags;
 pub use twizzler_queue_raw::SubmissionFlags;
 

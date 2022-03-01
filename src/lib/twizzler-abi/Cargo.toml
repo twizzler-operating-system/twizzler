@@ -7,7 +7,6 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-#twizzler-queue = { path = "../twizzler-queue" }
 bitflags = "1.3.2"
 
 [dependencies.compiler_builtins]
