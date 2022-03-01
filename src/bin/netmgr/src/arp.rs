@@ -33,6 +33,8 @@ impl ArpTable {
             }
 
             println!("didn't find arp entry");
+            // a gotcha: you have to get the future here before releasing the entries mutex, and
+            // then you must await on it _after_ the lock has been released.
             let fut = self.inner.flag.wait();
             println!("future created");
             drop(entries);
@@ -48,7 +50,9 @@ impl ArpTable {
         let inner = self.inner.clone();
         std::thread::spawn(move || {
             println!("arp request sent...");
-            std::thread::sleep(Duration::from_millis(1000));
+            twizzler_async::block_on(async {
+                twizzler_async::Timer::after(Duration::from_millis(1000)).await;
+            });
             println!("inserting entry and signaling");
             inner.entries.lock().unwrap().insert(dst, 1234);
             inner.flag.signal_all();

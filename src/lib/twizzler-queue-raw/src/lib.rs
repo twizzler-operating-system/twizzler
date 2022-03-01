@@ -298,9 +298,17 @@ impl RawQueueHdr {
     }
 
     fn setup_rec_sleep_simple(&self) -> (&AtomicU64, u64) {
+        // TODO: an interface that undoes this.
         self.consumer_set_waiting(true);
         let b = self.bell.load(Ordering::SeqCst);
         (&self.bell, b)
+    }
+
+    fn setup_send_sleep_simple(&self) -> (&AtomicU64, u64) {
+        // TODO: an interface that undoes this.
+        self.submitter_waiting();
+        let t = self.tail.load(Ordering::SeqCst);
+        (&self.tail, t)
     }
 
     fn setup_rec_sleep<'a, T>(
@@ -458,8 +466,14 @@ impl<T: Copy> RawQueue<T> {
         Ok(())
     }
 
+    #[inline]
     pub fn setup_sleep_simple(&self) -> (&AtomicU64, u64) {
         self.hdr().setup_rec_sleep_simple()
+    }
+
+    #[inline]
+    pub fn setup_send_sleep_simple(&self) -> (&AtomicU64, u64) {
+        self.hdr().setup_send_sleep_simple()
     }
 }
 
