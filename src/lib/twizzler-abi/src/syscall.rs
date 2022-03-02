@@ -395,7 +395,7 @@ pub enum ThreadSyncReference {
 unsafe impl Send for ThreadSyncReference {}
 
 impl ThreadSyncReference {
-    fn load(&self) -> u64 {
+    pub fn load(&self) -> u64 {
         match self {
             ThreadSyncReference::ObjectRef(_, _) => todo!(),
             ThreadSyncReference::Virtual(p) => {

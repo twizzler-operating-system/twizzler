@@ -175,30 +175,50 @@ fn test_queue() {
 
     let num_threads = 3;
     for _ in 0..num_threads {
-        std::thread::spawn(|| twizzler_async::run(std::future::pending::<()>()));
+        // std::thread::spawn(|| twizzler_async::run(std::future::pending::<()>()));
     }
 
     Task::spawn(async move {
+        let mut i = 0;
         loop {
             let r = cbq
                 .handle(async move |x, mut y| {
                     println!("handle: {} {:?}", x, y);
+                    if i % 10 == 0 {
+                        twizzler_async::Timer::after(Duration::from_millis(100)).await;
+                    }
+                    println!("s1");
+                    if i % 3 == 0 {
+                        twizzler_async::Timer::after(Duration::from_millis(1)).await;
+                    }
+                    println!("======= s2");
+                    if i % 5 == 0 {
+                        twizzler_async::Timer::after(Duration::from_millis(10)).await;
+                    }
+                    println!(" _______________ s3");
+                    if i % 101 == 0 && i > 0 {
+                        twizzler_async::Timer::after(Duration::from_millis(1000)).await;
+                    }
+                    println!("$$$$$$$$$$$$$$$ replying");
                     y.y += 1;
                     y
                 })
                 .await;
+            i += 1;
             println!("loop end {:?}", r);
         }
     })
     .detach();
 
     let res = twizzler_async::run(async {
-        let reply = sq.submit_and_wait(Foo { x: 123, y: 456 }).await;
-        println!("reply: {:?}", reply);
-        reply.unwrap()
+        loop {
+            println!("submitting");
+            let reply = sq.submit_and_wait(Foo { x: 123, y: 456 }).await;
+            println!("reply: {:?}", reply);
+            reply.unwrap();
+        }
     });
 
-    println!("outside {:?}", res);
     loop {}
 
     /*

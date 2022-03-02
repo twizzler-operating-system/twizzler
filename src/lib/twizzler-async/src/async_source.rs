@@ -28,6 +28,12 @@ impl<T: AsyncSetup> Async<T> {
         self.handle.as_ref().unwrap()
     }
 
+    pub fn into_inner(mut self) -> T {
+        let handle = *self.handle.take().unwrap();
+        Reactor::get().remove_wait_op(&self.source);
+        handle
+    }
+
     pub async fn run_with<R>(
         &self,
         op: impl FnMut(&T) -> Result<R, T::Error>,
@@ -40,6 +46,15 @@ impl<T: AsyncSetup> Async<T> {
                 res => return res,
             }
             self.source.runnable(sleep_op).await;
+        }
+    }
+}
+
+impl<T> Drop for Async<T> {
+    fn drop(&mut self) {
+        if self.handle.is_some() {
+            let _ = Reactor::get().remove_wait_op(&self.source);
+            self.handle.take();
         }
     }
 }
@@ -67,6 +82,13 @@ impl<T: AsyncDuplexSetup> AsyncDuplex<T> {
             write_source: Reactor::get().insert_wait_op(handle.setup_write_sleep()),
             handle: Some(Box::new(handle)),
         }
+    }
+
+    pub fn into_inner(mut self) -> T {
+        let handle = *self.handle.take().unwrap();
+        Reactor::get().remove_wait_op(&self.read_source);
+        Reactor::get().remove_wait_op(&self.write_source);
+        handle
     }
 
     pub fn get_ref(&self) -> &T {
@@ -100,6 +122,16 @@ impl<T: AsyncDuplexSetup> AsyncDuplex<T> {
                 res => return res,
             }
             self.write_source.runnable(sleep_op).await;
+        }
+    }
+}
+
+impl<T> Drop for AsyncDuplex<T> {
+    fn drop(&mut self) {
+        if self.handle.is_some() {
+            let _ = Reactor::get().remove_wait_op(&self.read_source);
+            let _ = Reactor::get().remove_wait_op(&self.write_source);
+            self.handle.take();
         }
     }
 }
