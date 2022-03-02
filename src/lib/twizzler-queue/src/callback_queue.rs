@@ -129,7 +129,6 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
             .write_with(|inner| inner.queue.submit(id, item, SubmissionFlags::NON_BLOCK))
             .await?;
 
-        println!("submitted");
         let waiter = WaitPointFuture::<S, C> {
             state,
             sender: self,
@@ -148,7 +147,6 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
                 self.handle_completion(id, item);
             }
         });
-        println!("wait_first");
         let result = twizzler_async::wait_for_first(item, recv).await?;
         self.release_id(id);
         Ok(result.1)

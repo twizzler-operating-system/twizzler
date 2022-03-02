@@ -35,12 +35,10 @@ pub fn run<T>(future: impl Future<Output = T>) -> T {
 
             let more_local = local.execute();
             let more_exec = worker.execute();
-            println!("non_block react");
             react(reactor, &flag_events, more_exec || more_local, true);
-            println!("non_block react done");
-            looks like we're not knowing if we should exectute more???
-            let more_local = local.execute();
-            let more_exec = worker.execute();
+            //looks like we're not knowing if we should exectute more???
+            //let more_local = local.execute();
+            //let more_exec = worker.execute();
             if more_exec || more_local {
                 yields = 0;
                 continue;
@@ -54,9 +52,7 @@ pub fn run<T>(future: impl Future<Output = T>) -> T {
 
             yields = 0;
 
-            println!("sleeping");
             react(reactor, &flag_events, false, false);
-            println!("woke up");
         }
     })
 }
@@ -72,8 +68,10 @@ fn react(reactor: &Reactor, flag_events: &[&FlagEvent], mut more_tasks: bool, tr
         reactor.poll(flag_events, try_only);
     } else {
         reactor.wait(flag_events, try_only);
-        for ev in flag_events {
-            ev.clear();
+        if !try_only {
+            for ev in flag_events {
+                ev.clear();
+            }
         }
     }
 }

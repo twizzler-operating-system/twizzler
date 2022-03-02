@@ -100,11 +100,8 @@ impl Reactor {
             }
 
             let now = Instant::now();
-            println!("timers: {:?} {:?}", timers, now);
             let pending = timers.split_off(&(now, 0));
-            println!("pending: {:?}", pending);
             let ready = core::mem::replace(&mut *timers, pending);
-            println!("ready: {:?}", ready);
 
             let dur = if ready.is_empty() {
                 timers
@@ -144,38 +141,27 @@ impl Reactor {
         } else {
             self.sources.lock().unwrap()
         };
-        println!("A");
         let mut events = vec![];
         for (i, src) in &*sources {
             let mut inner = src.inner.lock().unwrap();
-            println!("source {}: {} {}", i, inner.active, inner.op.ready());
             if !inner.active {
                 continue;
             }
             if inner.op.ready() {
                 //inner.active = false;
-                println!(
-                    "Ax {} {:?} {}",
-                    src.key,
-                    inner.op,
-                    inner.op.reference.load()
-                );
                 inner.wake_all();
                 return None;
             }
             events.push(ThreadSync::new_sleep(inner.op));
         }
 
-        println!("B");
         if !block || try_only {
-            println!("Bx");
             return None;
         }
 
         for fe in flag_events {
             let s = fe.setup_sleep();
             if s.ready() {
-                println!("Bx2");
                 return None;
             }
             events.push(ThreadSync::new_sleep(s));
@@ -183,7 +169,6 @@ impl Reactor {
 
         let s = self.timer_event.setup_sleep();
         if s.ready() {
-            println!("Bx3");
             return None;
         }
         events.push(ThreadSync::new_sleep(s));
@@ -191,21 +176,16 @@ impl Reactor {
         drop(sources);
         // TODO: check err
         if timeout != Some(Duration::from_nanos(0)) {
-            println!("react sleep {:?} {:?}", events, timeout);
             let _ = twizzler_abi::syscall::sys_thread_sync(events.as_mut_slice(), timeout);
         }
 
-        println!("C");
         let sources = self.sources.lock().unwrap();
-        println!("D");
         for (_, src) in &*sources {
             let mut inner = src.inner.lock().unwrap();
-            println!("e");
             if inner.op.ready() {
                 //inner.active = false;
                 inner.wake_all();
             }
-            println!("f");
         }
         self.fire_timers();
         Some(())
@@ -253,13 +233,11 @@ impl Source {
         // TODO: this mutex shouldn't be necessary
         let tmp = Mutex::new(sleep_op);
         futures_util::future::poll_fn(|cx| {
-            println!("!!poll {} {}", self.key, polled);
             let mut inner = self.inner.lock().unwrap();
             if polled {
                 inner.active = false;
                 Poll::Ready(())
             } else {
-                println!("!!poll => {} {}", self.key, inner.active);
                 inner.active = true;
                 inner.op = *tmp.lock().unwrap();
                 if inner.wakers.iter().all(|w| !w.will_wake(cx.waker())) {
