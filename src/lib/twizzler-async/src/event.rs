@@ -69,6 +69,10 @@ impl FlagEvent {
         self.0.swap(0, Ordering::SeqCst) != 0
     }
 
+    pub fn is_ready(&self) -> bool {
+        self.0.load(Ordering::SeqCst) != 0
+    }
+
     pub fn setup_sleep(&self) -> ThreadSyncSleep {
         ThreadSyncSleep::new(
             ThreadSyncReference::Virtual(&*self.0 as *const AtomicU64),

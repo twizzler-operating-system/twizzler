@@ -40,20 +40,15 @@ impl<FutOne: Future + Unpin, FutTwo: Future + Unpin> Future for WaitForFirst<Fut
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        println!("poll A");
         if let Poll::Ready(e) = self.one.poll_unpin(cx) {
-        println!("poll B");
             return Poll::Ready(e);
         }
 
         if let Some(two) = &mut self.two {
-        println!("poll C");
             if let Poll::Ready(_) = two.poll_unpin(cx) {
-                println!("reseting two");
                 self.two = None;
             }
         }
-        println!("poll D");
 
         Poll::Pending
     }
