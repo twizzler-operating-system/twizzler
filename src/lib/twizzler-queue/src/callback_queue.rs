@@ -125,7 +125,6 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
         if let Some((id, item)) = self.poll_completions() {
             self.handle_completion(id, item);
         }
-
         self.inner
             .write_with(|inner| inner.queue.submit(id, item, SubmissionFlags::NON_BLOCK))
             .await?;

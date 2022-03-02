@@ -35,7 +35,12 @@ pub fn run<T>(future: impl Future<Output = T>) -> T {
 
             let more_local = local.execute();
             let more_exec = worker.execute();
+            println!("non_block react");
             react(reactor, &flag_events, more_exec || more_local, true);
+            println!("non_block react done");
+            looks like we're not knowing if we should exectute more???
+            let more_local = local.execute();
+            let more_exec = worker.execute();
             if more_exec || more_local {
                 yields = 0;
                 continue;
@@ -49,9 +54,9 @@ pub fn run<T>(future: impl Future<Output = T>) -> T {
 
             yields = 0;
 
-            //  println!("sleeping");
+            println!("sleeping");
             react(reactor, &flag_events, false, false);
-            // println!("woke up");
+            println!("woke up");
         }
     })
 }
