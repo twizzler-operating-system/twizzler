@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     collections::VecDeque,
-    sync::{atomic::AtomicU64, Arc, Mutex},
+    sync::{Arc, Mutex},
 };
 
 use std::thread::{self, ThreadId};

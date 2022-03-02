@@ -1,6 +1,5 @@
-use std::{cell::Cell, collections::VecDeque, future::Future, sync::Mutex};
+use std::{collections::VecDeque, future::Future, sync::Mutex};
 
-use futures_util::__private::async_await;
 use scoped_tls_hkt::scoped_thread_local;
 
 use crate::{

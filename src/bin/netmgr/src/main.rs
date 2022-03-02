@@ -175,7 +175,7 @@ fn test_queue() {
 
     let num_threads = 3;
     for _ in 0..num_threads {
-        // std::thread::spawn(|| twizzler_async::run(std::future::pending::<()>()));
+        //std::thread::spawn(|| twizzler_async::run(std::future::pending::<()>()));
     }
 
     Task::spawn(async move {
@@ -186,9 +186,6 @@ fn test_queue() {
                     println!("handle: {} {:?}", x, y);
                     if i % 10 == 0 {
                         twizzler_async::Timer::after(Duration::from_millis(100)).await;
-                    }
-                    if i % 3 == 0 {
-                        twizzler_async::Timer::after(Duration::from_millis(1)).await;
                     }
                     if i % 5 == 0 {
                         twizzler_async::Timer::after(Duration::from_millis(10)).await;
@@ -258,8 +255,8 @@ fn main() {
     for arg in std::env::args() {
         println!("arg {}", arg);
     }
-    //arp::test_arp();
-    test_queue();
+    arp::test_arp();
+    //test_queue();
     loop {}
 
     if std::env::args().len() < 10 {

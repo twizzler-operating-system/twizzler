@@ -4,8 +4,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use stable_vec::core::Core;
-
 pub struct Timer {
     id: Option<usize>,
     when: Instant,

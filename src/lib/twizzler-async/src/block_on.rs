@@ -40,13 +40,13 @@ impl Parker {
         self.unparker.inner.park(None);
     }
 
-    pub fn park_timeout(&self, timeout: Duration) {
-        self.unparker.inner.park(Some(timeout));
-    }
+    //pub fn park_timeout(&self, timeout: Duration) {
+    //    self.unparker.inner.park(Some(timeout));
+    //}
 
-    pub fn unparker(&self) -> &Unparker {
-        &self.unparker
-    }
+    //pub fn unparker(&self) -> &Unparker {
+    //    &self.unparker
+    //}
 }
 
 struct Unparker {
@@ -97,7 +97,7 @@ impl Inner {
                 let _old = self.state.swap(EMPTY, Ordering::SeqCst);
                 return;
             }
-            Err(n) => panic!("invalid park state"),
+            Err(_) => panic!("invalid park state"),
         }
 
         match timeout {
