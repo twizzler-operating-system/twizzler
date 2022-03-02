@@ -4,9 +4,17 @@ use std::{
     task::{Context, Poll},
 };
 
+use crate::thread_local::ThreadLocalExecutor;
+
 pub(crate) type Runnable = async_task::Task<u32>;
 
 pub struct Task<T>(pub(crate) Option<async_task::JoinHandle<T, u32>>);
+
+impl<T: 'static> Task<T> {
+    pub fn local(future: impl Future<Output = T> + 'static) -> Task<T> {
+        ThreadLocalExecutor::spawn(future)
+    }
+}
 
 impl<T: Send + 'static> Task<T> {
     pub fn spawn(future: impl Future<Output = T> + Send + 'static) -> Task<T> {

@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use twizzler_async::FlagBlock;
+use twizzler_async::{timeout_after, FlagBlock};
 
 struct ArpTableInner {
     entries: Mutex<BTreeMap<u32, u32>>,
@@ -51,7 +51,7 @@ impl ArpTable {
         std::thread::spawn(move || {
             println!("arp request sent...");
             twizzler_async::block_on(async {
-                twizzler_async::Timer::after(Duration::from_millis(1000)).await;
+                twizzler_async::Timer::after(Duration::from_millis(3000)).await;
             });
             println!("inserting entry and signaling");
             inner.entries.lock().unwrap().insert(dst, 1234);
@@ -68,7 +68,7 @@ impl ArpTable {
 pub fn test_arp() {
     let arp = ArpTable::new();
     twizzler_async::run(async {
-        let ent = arp.lookup(1).await;
-        println!("arp got: {}", ent);
+        let ent = timeout_after(arp.lookup(1), Duration::from_millis(2000)).await;
+        println!("arp got: {:?}", ent);
     });
 }

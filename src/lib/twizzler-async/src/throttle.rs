@@ -12,6 +12,7 @@ pub(crate) fn setup<T>(poll: impl FnOnce() -> T) -> T {
     BUDGET.set(&Cell::new(200), poll)
 }
 
+#[allow(dead_code)]
 pub(crate) fn poll(cx: &mut Context<'_>) -> Poll<()> {
     if BUDGET.is_set() && BUDGET.with(|b| b.replace(b.get().saturating_sub(1))) == 0 {
         cx.waker().wake_by_ref();

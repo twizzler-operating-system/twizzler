@@ -1,8 +1,8 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Mutex, MutexGuard, Once,
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, 
     },
     task::{Poll, Waker},
     time::{Duration, Instant},
@@ -11,7 +11,7 @@ use std::{
 use stable_vec::StableVec;
 use twizzler_abi::syscall::{ThreadSync, ThreadSyncSleep};
 
-use crate::event::{ExtEvent, FlagEvent};
+use crate::event::FlagEvent;
 
 lazy_static::lazy_static! {
     static ref REACTOR: Reactor = {
@@ -129,6 +129,7 @@ impl Reactor {
         self.react(flag_events, true, try_only);
     }
 
+    // TODO: one major optimization we could make is to keep separate lists of active sources.
     fn react(&self, flag_events: &[&FlagEvent], block: bool, try_only: bool) -> Option<()> {
         let next_timer = self.fire_timers();
         let timeout = if block {
@@ -142,13 +143,12 @@ impl Reactor {
             self.sources.lock().unwrap()
         };
         let mut events = vec![];
-        for (i, src) in &*sources {
-            let mut inner = src.inner.lock().unwrap();
+        for (_, src) in &*sources {
+            let inner = src.inner.lock().unwrap();
             if !inner.active {
                 continue;
             }
             if inner.op.ready() {
-                //inner.active = false;
                 inner.wake_all();
                 return None;
             }
@@ -181,9 +181,8 @@ impl Reactor {
 
         let sources = self.sources.lock().unwrap();
         for (_, src) in &*sources {
-            let mut inner = src.inner.lock().unwrap();
+            let inner = src.inner.lock().unwrap();
             if inner.op.ready() {
-                //inner.active = false;
                 inner.wake_all();
             }
         }

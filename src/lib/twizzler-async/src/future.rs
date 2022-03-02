@@ -2,9 +2,12 @@ use std::{
     future::Future,
     sync::{Arc, Mutex},
     task::{Poll, Waker},
+    time::{Duration, Instant},
 };
 
 use futures_util::FutureExt;
+
+use crate::Timer;
 
 pub struct WaitForFirst<FutOne, FutTwo> {
     one: FutOne,
@@ -116,4 +119,53 @@ impl<'a> Future for FlagBlockFuture<'a> {
             Poll::Pending
         }
     }
+}
+
+pub struct Timeout<T> {
+    value: T,
+    delay: Timer,
+}
+
+impl<T> Timeout<T> {
+    pub fn after(f: T, dur: Duration) -> Self {
+        Self {
+            value: f,
+            delay: Timer::after(dur),
+        }
+    }
+
+    pub fn at(f: T, at: Instant) -> Self {
+        Self {
+            value: f,
+            delay: Timer::at(at),
+        }
+    }
+}
+
+impl<T: Future + Unpin> Future for Timeout<T> {
+    type Output = Option<T::Output>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Self::Output> {
+        match self.value.poll_unpin(cx) {
+            Poll::Ready(res) => return Poll::Ready(Some(res)),
+            Poll::Pending => {}
+        }
+
+        match self.delay.poll_unpin(cx) {
+            Poll::Ready(_) => return Poll::Ready(None),
+            Poll::Pending => {}
+        }
+        Poll::Pending
+    }
+}
+
+pub async fn timeout_after<F: Future>(f: F, dur: Duration) -> Option<F::Output> {
+    Timeout::after(Box::pin(f), dur).await
+}
+
+pub async fn timeout_at<F: Future>(f: F, at: Instant) -> Option<F::Output> {
+    Timeout::at(Box::pin(f), at).await
 }
