@@ -1,7 +1,15 @@
-use std::{task::{Waker, Poll}, sync::{Mutex, Arc, atomic::{AtomicU32, Ordering}}, future::Future, collections::BTreeMap};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    },
+    task::{Poll, Waker},
+};
 
 use twizzler_async::{AsyncDuplex, AsyncDuplexSetup};
-use twizzler_queue_raw::{QueueError, SubmissionFlags, ReceiveFlags};
+use twizzler_queue_raw::{QueueError, ReceiveFlags, SubmissionFlags};
 
 use crate::Queue;
 
@@ -111,9 +119,11 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
             item: None,
             waker: None,
         }));
-        let mut calls = self.calls.lock().unwrap();
-        calls.insert(id, state.clone());
-        drop(calls);
+        {
+            let mut calls = self.calls.lock().unwrap();
+            calls.insert(id, state.clone());
+            drop(calls);
+        }
         if let Some((id, item)) = self.poll_completions() {
             self.handle_completion(id, item);
         }

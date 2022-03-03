@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 twizzler-net = {path="../../lib/twizzler-net"}
 twizzler = {path = "../../lib/twizzler"}
+twizzler-async = {path = "../../lib/twizzler-async"}

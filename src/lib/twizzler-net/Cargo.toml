@@ -8,3 +8,8 @@ edition = "2021"
 [dependencies]
 twizzler = {path = "../twizzler"}
 twizzler-abi = {path = "../twizzler-abi"}
+twizzler-async = {path="../twizzler-async"}
+twizzler-queue = {path="../twizzler-queue"}
+
+[features]
+manager = []

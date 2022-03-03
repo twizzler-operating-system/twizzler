@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-twizzler-net = {path="../../lib/twizzler-net"}
+twizzler-net = {path="../../lib/twizzler-net", features = ["manager"]}
 twizzler = {path="../../lib/twizzler"}
 twizzler-async = {path = "../../lib/twizzler-async"}
 twizzler-abi = {path = "../../lib/twizzler-abi"}
