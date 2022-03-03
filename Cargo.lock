@@ -562,6 +562,7 @@ name = "nettest"
 version = "0.1.0"
 dependencies = [
  "twizzler",
+ "twizzler-async",
  "twizzler-net",
 ]
 
@@ -1046,6 +1047,8 @@ version = "0.1.0"
 dependencies = [
  "twizzler",
  "twizzler-abi",
+ "twizzler-async",
+ "twizzler-queue",
 ]
 
 [[package]]
