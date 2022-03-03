@@ -113,6 +113,14 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
         }
     }
 
+    pub fn submit_no_wait(&self, item: S, flags: SubmissionFlags) {
+        let _ = self
+            .inner
+            .get_ref()
+            .queue
+            .submit(self.next_id(), item, flags);
+    }
+
     pub async fn submit_and_wait(&self, item: S) -> Result<C, crate::QueueError> {
         let id = self.next_id();
         let state = Arc::new(Mutex::new(WaitPoint::<C> {

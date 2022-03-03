@@ -8,7 +8,8 @@ use twizzler_abi::syscall::{
 #[cfg(feature = "manager")]
 use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags};
 
-mod buffer;
+pub mod addr;
+pub mod buffer;
 mod nm_handle;
 mod req;
 mod rx_req;
