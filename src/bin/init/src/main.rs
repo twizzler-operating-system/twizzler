@@ -4,6 +4,7 @@
 #![feature(naked_functions)]
 #![feature(thread_local)]
 #![feature(duration_constants)]
+#![allow(unreachable_code)]
 //#![no_main]
 
 /*

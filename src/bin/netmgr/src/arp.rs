@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -5,9 +8,24 @@ use std::{
 };
 
 use twizzler_async::{timeout_after, FlagBlock};
+use twizzler_net::addr::Ipv4Addr;
+
+use crate::ethernet::EthernetAddr;
+
+const ARP_TIMEOUT: Duration = Duration::from_millis(8000);
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
+pub struct ArpInfo {
+    eth_addr: EthernetAddr,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
+pub struct ArpKey {
+    addr: Ipv4Addr,
+}
 
 struct ArpTableInner {
-    entries: Mutex<BTreeMap<u32, u32>>,
+    entries: Mutex<BTreeMap<ArpKey, ArpInfo>>,
     flag: FlagBlock,
 }
 
@@ -15,8 +33,12 @@ struct ArpTable {
     inner: Arc<ArpTableInner>,
 }
 
+lazy_static::lazy_static! {
+    static ref ARP_TABLE: ArpTable = ArpTable::new();
+}
+
 impl ArpTable {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             inner: Arc::new(ArpTableInner {
                 entries: Mutex::new(BTreeMap::new()),
@@ -25,7 +47,7 @@ impl ArpTable {
         }
     }
 
-    pub async fn lookup(&self, dst: u32) -> u32 {
+    async fn lookup(&self, dst: ArpKey) -> ArpInfo {
         loop {
             let entries = self.inner.entries.lock().unwrap();
             if let Some(res) = entries.get(&dst) {
@@ -45,30 +67,16 @@ impl ArpTable {
         }
     }
 
-    fn fire_arp_request(&self, dst: u32) {
+    fn fire_arp_request(&self, _dst: ArpKey) {
         println!("fire arp request");
-        let inner = self.inner.clone();
-        std::thread::spawn(move || {
-            println!("arp request sent...");
-            twizzler_async::block_on(async {
-                twizzler_async::Timer::after(Duration::from_millis(3000)).await;
-            });
-            println!("inserting entry and signaling");
-            inner.entries.lock().unwrap().insert(dst, 1234);
-            inner.flag.signal_all();
-        });
     }
 
-    pub fn add_entry(&self, a: u32, b: u32) {
-        self.inner.entries.lock().unwrap().insert(a, b);
+    fn add_entry(&self, key: ArpKey, info: ArpInfo) {
+        self.inner.entries.lock().unwrap().insert(key, info);
         self.inner.flag.signal_all();
     }
 }
 
-pub fn test_arp() {
-    let arp = ArpTable::new();
-    twizzler_async::run(async {
-        let ent = timeout_after(arp.lookup(1), Duration::from_millis(2000)).await;
-        println!("arp got: {:?}", ent);
-    });
+pub async fn lookup_arp_info(key: ArpKey) -> Result<Option<ArpInfo>, ()> {
+    Ok(twizzler_async::timeout_after(ARP_TABLE.lookup(key), ARP_TIMEOUT).await)
 }

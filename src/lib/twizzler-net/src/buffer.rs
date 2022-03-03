@@ -81,7 +81,7 @@ impl<'a> ManagedBuffer<'a> {
 }
 
 impl BufferController {
-    pub fn new(mgr: bool, tx: bool, obj: Object<BufferBase>) -> Self {
+    pub(crate) fn new(mgr: bool, tx: bool, obj: Object<BufferBase>) -> Self {
         Self {
             mgr,
             tx,
@@ -92,17 +92,30 @@ impl BufferController {
     pub fn allocate(&self) -> ManagedBuffer<'_> {
         let mut obj = self.obj.lock().unwrap();
         let base = obj.base_raw_mut();
-        if base.pos == 0 {
+        let b = if base.pos == 0 {
             let b = ManagedBuffer::new(self, base.counter, 0);
             base.counter += 1;
             b
         } else {
             base.pos -= 1;
             ManagedBuffer::new(self, base.reuse[base.pos], 0)
-        }
+        };
+        println!(
+            "allocated buffer {} from {} {}",
+            b.idx,
+            if self.mgr { "mgr" } else { "client" },
+            if self.tx { "tx" } else { "rx" }
+        );
+        b
     }
 
     pub fn release(&self, idx: u32) {
+        println!(
+            "releasing buffer {} to {} {}",
+            idx,
+            if self.mgr { "mgr" } else { "client" },
+            if self.tx { "tx" } else { "rx" }
+        );
         let mut obj = self.obj.lock().unwrap();
         let base = obj.base_raw_mut();
         if base.counter == idx + 1 {
