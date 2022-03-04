@@ -493,7 +493,7 @@ unsafe impl<T: Send> Sync for RawQueue<T> {}
 /// there was no requested wait or wake operation for that queue, and that entry should be ignored.
 ///
 /// If flags specifies [ReceiveFlags::NON_BLOCK], then if no data is available, the function returns
-/// immediately with Err([ReceiveError::WouldBlock]).
+/// immediately with Err([QueueError::WouldBlock]).
 ///
 /// # Rationale
 /// This function is here to implement poll or select like functionality, wherein a given thread or

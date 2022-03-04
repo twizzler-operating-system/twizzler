@@ -24,7 +24,7 @@ struct Inner {
 }
 
 impl Parker {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             unparker: Unparker {
                 inner: Arc::new(Inner {
@@ -36,7 +36,7 @@ impl Parker {
         }
     }
 
-    pub fn park(&self) {
+    fn park(&self) {
         self.unparker.inner.park(None);
     }
 
@@ -137,6 +137,7 @@ impl Inner {
     }
 }
 
+/// Run a future to completion, sleeping the thread if there is no progress that can be made.
 pub fn block_on<T>(future: impl Future<Output = T>) -> T {
     thread_local! {
         static CACHE: RefCell<(Parker, Waker)> = {
