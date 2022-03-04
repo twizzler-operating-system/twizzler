@@ -20,7 +20,7 @@
 //! ```
 //! let result = Task::spawn(async { /* some async code */ }).await;
 //! ```
-//! Now, this does assume that there is a thread that has called [crate::run], eg:
+//! Now, this does assume that there is a thread that has called [mod@run()], eg:
 //! ```
 //! let result = run(async { Task::spawn(async { /* some async code */ }).await });
 //! ```
@@ -33,6 +33,18 @@
 //! Then, later on, you can spawn a Task and await it. You can also detach a Task with .detach(),
 //! which just places the thread on the runqueues and runs it without you having to await the result.
 //!
+//! # AsyncSetup, and Async<T>
+//! Traits and types for asynchronous operations on objects that have generic wait and signal events.
+//!
+//! For example, a queue might have the following interface presented to the user:
+//!    1. `async fn send(T)`
+//!    2. `async fn recv() -> T`
+//!
+//! Making these functions async requires defining some Future that can wait and be signaled when
+//! something happens -- say we send and want to wait if the queue is full, or recv and want to wait
+//! if the queue is empty, and of course we don't want to busy-wait. The queue can implement
+//! [AsyncDuplexSetup] so that we can wrap the queue in a [AsyncDuplex] and then use its functions
+//! to access the queue's underlying structures in a non-blocking way, automatically sleeping when necessary.
 
 mod async_source;
 mod block_on;
