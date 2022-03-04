@@ -96,7 +96,6 @@ pub async fn handle_incoming_ethernet_packets(buffers: &[Arc<NicBuffer>]) {
     println!("got incoming eth packets");
     for buffer in buffers {
         let eth = unsafe { buffer.get_minimal_header::<EthernetHeader>(0) };
-        println!("{:?}", buffer.as_bytes());
         // TODO: look at dest addr
         println!("ethernet packet type {:?}", eth.ethertype());
         if let Ok(et) = eth.ethertype() {

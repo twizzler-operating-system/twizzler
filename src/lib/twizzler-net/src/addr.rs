@@ -39,3 +39,13 @@ impl Display for Ipv4Addr {
         )
     }
 }
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
+pub enum NodeAddr {
+    Ipv4(Ipv4Addr),
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
+pub enum ServiceAddr {
+    TcpPort(u16),
+}
