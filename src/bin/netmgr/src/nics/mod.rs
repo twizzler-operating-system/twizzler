@@ -3,7 +3,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{ethernet::EthernetAddr, nic::NetworkInterface};
+use twizzler_async::Task;
+
+use crate::{
+    ethernet::{handle_incoming_ethernet_packets, EthernetAddr},
+    nic::NetworkInterface,
+};
 
 mod loopback;
 
@@ -31,8 +36,20 @@ impl NicManager {
 
 pub fn init() {
     let mut inner = NIC_MANAGER.inner.lock().unwrap();
-    let lo = loopback::Loopback::new();
-    inner.nics.insert(lo.get_ethernet_addr(), Arc::new(lo));
+    let lo = Arc::new(loopback::Loopback::new());
+    inner.nics.insert(lo.get_ethernet_addr(), lo.clone());
+    Task::spawn(async move {
+        loop {
+            let recv = lo.recv_ethernet().await;
+            if let Ok(recv) = recv {
+                handle_incoming_ethernet_packets(&recv).await;
+            } else {
+                eprintln!("loopback recv thread encountered an error: {:?}", recv);
+                break;
+            }
+        }
+    })
+    .detach();
 }
 
 pub fn lookup_nic(addr: &EthernetAddr) -> Option<Arc<dyn NetworkInterface + Send + Sync>> {

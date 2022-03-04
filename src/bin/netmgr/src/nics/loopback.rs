@@ -1,15 +1,17 @@
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use twizzler_async::FlagBlock;
-use twizzler_net::buffer::ManagedBuffer;
 
 use crate::{
     ethernet::{EthernetAddr, EthernetError},
-    nic::{NetworkInterface, NicBuffer},
+    nic::{NetworkInterface, NicBuffer, SendableBuffer},
 };
 
 struct LoopbackInner {
-    buffer: VecDeque<NicBuffer>,
+    buffer: VecDeque<Arc<NicBuffer>>,
 }
 
 pub(super) struct Loopback {
@@ -34,24 +36,36 @@ impl NetworkInterface for Loopback {
         EthernetAddr::from([0; 6])
     }
 
-    async fn send_ethernet(&self, buffers: &[ManagedBuffer]) -> Result<(), EthernetError> {
+    async fn send_ethernet(
+        &self,
+        header_buffer: NicBuffer,
+        buffers: &[SendableBuffer],
+    ) -> Result<(), EthernetError> {
         // yeah i know this is really slow
         let mut inner = self.inner.lock().unwrap();
+        let slice = header_buffer.as_bytes();
+        let total_len = buffers.iter().fold(0usize, |t, b| t + b.as_bytes().len()) + slice.len();
+        let mut nb = NicBuffer::allocate(total_len);
+        let nb_bytes = nb.as_bytes_mut();
+        nb_bytes[0..slice.len()].copy_from_slice(slice);
+        let mut off = slice.len();
         for buffer in buffers {
             let slice = buffer.as_bytes();
-            let mut nb = NicBuffer::allocate(slice.len());
-            nb.as_bytes_mut().copy_from_slice(slice);
-            inner.buffer.push_back(nb);
+            nb_bytes[off..(off + slice.len())].copy_from_slice(slice);
+            off += slice.len();
         }
+        inner.buffer.push_back(Arc::new(nb));
         self.flag.signal_all();
         Ok(())
     }
 
-    async fn recv_ethernet(&self) -> Result<Vec<NicBuffer>, EthernetError> {
+    async fn recv_ethernet(&self) -> Result<Vec<Arc<NicBuffer>>, EthernetError> {
         loop {
             let fut = {
                 let mut inner = self.inner.lock().unwrap();
+                println!("recv woke up");
                 if !inner.buffer.is_empty() {
+                    println!("recv has data");
                     let mut v = vec![];
                     while let Some(buf) = inner.buffer.pop_front() {
                         v.push(buf);

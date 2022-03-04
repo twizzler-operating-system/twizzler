@@ -4,6 +4,7 @@ use crate::{addr::Ipv4Addr, req::PacketData};
 pub enum TxRequest {
     Echo(PacketData),
     SendToIpv4(Ipv4Addr, PacketData),
+    ListenIpv4(Ipv4Addr),
     Close,
 }
 
