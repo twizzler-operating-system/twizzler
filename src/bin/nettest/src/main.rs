@@ -9,7 +9,7 @@ fn main() {
     println!("nettest got nm handle");
 
     twizzler_async::run(async move {
-        let mut buffer = handle.allocatable_buffer_controller().allocate();
+        let mut buffer = handle.allocatable_buffer_controller().allocate().await;
         buffer.copy_in(b"Some Packet Data");
         let packet_data = buffer.as_packet_data();
 
@@ -33,7 +33,7 @@ fn main() {
             twizzler_async::Timer::after(Duration::from_millis(1000)).await;
 
             println!("sending...");
-            let mut buffer = handle.allocatable_buffer_controller().allocate();
+            let mut buffer = handle.allocatable_buffer_controller().allocate().await;
             buffer.copy_in(b"Some Ipv4 Packet Data");
             let packet_data = buffer.as_packet_data();
             let res = handle

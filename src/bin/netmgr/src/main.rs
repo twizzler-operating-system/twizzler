@@ -57,7 +57,7 @@ async fn handler(handle: &Arc<NmHandleManager>, id: u32, req: TxRequest) -> TxCo
             let incoming_slice = buffer.as_bytes();
             let s = String::from_utf8(incoming_slice.to_vec());
             println!("incoming slice was {:?}", s);
-            let mut buffer = handle.allocatable_buffer_controller().allocate();
+            let mut buffer = handle.allocatable_buffer_controller().allocate().await;
             buffer.copy_in(b"Reply Packet Data");
             let packet_data = buffer.as_packet_data();
             let _ = handle.submit(RxRequest::EchoReply(packet_data)).await;

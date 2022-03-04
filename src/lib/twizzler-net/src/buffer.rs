@@ -89,7 +89,7 @@ impl BufferController {
         }
     }
 
-    pub fn allocate(&self) -> ManagedBuffer<'_> {
+    pub async fn allocate(&self) -> ManagedBuffer<'_> {
         let mut obj = self.obj.lock().unwrap();
         let base = obj.base_raw_mut();
         let b = if base.pos == 0 {

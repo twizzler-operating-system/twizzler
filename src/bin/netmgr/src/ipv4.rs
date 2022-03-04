@@ -14,6 +14,7 @@ use crate::{
     nic::{NicBuffer, SendableBuffer},
 };
 
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 struct Ipv4Header {
     info1: u8,
@@ -131,8 +132,12 @@ pub fn handle_incoming_ipv4_packet(offset: usize, buffer: &Arc<NicBuffer>) {
             let listener = listener.clone();
             let buffer = buffer.clone();
             Task::spawn(async move {
-                let mut send_buffer = listener.handle.allocatable_buffer_controller().allocate();
-                send_buffer.copy_in(buffer.as_bytes());
+                let mut send_buffer = listener
+                    .handle
+                    .allocatable_buffer_controller()
+                    .allocate()
+                    .await;
+                send_buffer.copy_in(&buffer.as_bytes()[(offset + header.len())..]);
                 println!("replying to client");
                 let _ = listener
                     .handle
