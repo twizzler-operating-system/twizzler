@@ -1,11 +1,18 @@
 use std::sync::Arc;
 
 use twizzler_async::Task;
-use twizzler_net::{NmHandleManager, RxRequest, TxCompletion, TxRequest};
+use twizzler_net::{addr::Ipv4Addr, NmHandleManager, RxRequest, TxCompletion, TxRequest};
+
+use crate::{
+    ipv4::setup_ipv4_listen,
+    nic::{NicBuffer, SendableBuffer},
+};
 
 mod arp;
 mod ethernet;
+mod header;
 mod ipv4;
+mod layer4;
 mod nic;
 mod nics;
 
@@ -58,7 +65,19 @@ async fn handler(handle: &Arc<NmHandleManager>, id: u32, req: TxRequest) -> TxCo
         }
         TxRequest::SendToIpv4(addr, data) => {
             let buffer = handle.get_incoming_buffer(data);
-            ipv4::send_to(handle, addr, buffer).await;
+            let _ = ipv4::send_to(
+                handle,
+                Ipv4Addr::localhost(), /* TODO */
+                addr,
+                &[SendableBuffer::ManagedBuffer(buffer)],
+                NicBuffer::allocate(0x1000), /* TODO */
+                None,
+            )
+            .await;
+            //TODO: complete with error or not.
+        }
+        TxRequest::ListenIpv4(addr) => {
+            setup_ipv4_listen(handle.clone(), addr);
         }
         TxRequest::Close => {
             handle.set_closed();
