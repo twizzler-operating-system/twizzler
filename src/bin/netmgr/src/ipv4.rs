@@ -1,11 +1,8 @@
-use std::{
-    collections::BTreeSet,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use byteorder::{ByteOrder, NetworkEndian};
 use twizzler_async::Task;
-use twizzler_net::{addr::Ipv4Addr, buffer::ManagedBuffer, NmHandleManager, RxRequest};
+use twizzler_net::{addr::Ipv4Addr, NmHandleManager, RxRequest};
 
 use crate::{
     ethernet::{EtherType, EthernetAddr, EthernetHeader},
@@ -40,7 +37,7 @@ impl Header for Ipv4Header {
         NetworkEndian::read_u16(&self.len) as usize
     }
 
-    fn update_csum(&mut self, header_buffer: NicBuffer, buffers: &[SendableBuffer]) {
+    fn update_csum(&mut self, _header_buffer: NicBuffer, _buffers: &[SendableBuffer]) {
         //no op
     }
 }
@@ -67,7 +64,7 @@ fn build_ipv4_header(source: Ipv4Addr, dest: Ipv4Addr, prot: Layer4Prot) -> Ipv4
 }
 
 pub async fn send_to(
-    handle: &Arc<NmHandleManager>,
+    _handle: &Arc<NmHandleManager>,
     source: Ipv4Addr,
     dest: Ipv4Addr,
     buffers: &[SendableBuffer<'_>],

@@ -20,6 +20,7 @@ impl From<[u8; 6]> for EthernetAddr {
 }
 
 impl EthernetAddr {
+    #[allow(dead_code)]
     pub fn broadcast() -> Self {
         Self { bytes: [0xff; 6] }
     }
@@ -85,8 +86,8 @@ impl Header for EthernetHeader {
 
     fn update_csum(
         &mut self,
-        header_buffer: crate::nic::NicBuffer,
-        buffers: &[crate::nic::SendableBuffer],
+        _header_buffer: crate::nic::NicBuffer,
+        _buffers: &[crate::nic::SendableBuffer],
     ) {
         //no-op
     }

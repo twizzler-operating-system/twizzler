@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Timer {
     id: Option<usize>,
     when: Instant,

@@ -9,6 +9,7 @@ use futures_util::FutureExt;
 
 use crate::Timer;
 
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct WaitForFirst<FutOne, FutTwo> {
     one: FutOne,
     two: Option<FutTwo>,
@@ -66,6 +67,7 @@ pub struct FlagBlock {
     inner: Arc<Mutex<FlagBlockInner>>,
 }
 
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct FlagBlockFuture<'a> {
     state: &'a FlagBlock,
     val: u64,
@@ -121,6 +123,7 @@ impl<'a> Future for FlagBlockFuture<'a> {
     }
 }
 
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Timeout<T> {
     value: T,
     delay: Timer,
