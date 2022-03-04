@@ -352,7 +352,7 @@ pub fn sys_thread_set_upcall(
     unsafe {
         raw_syscall(
             Syscall::ThreadCtrl,
-            &[ThreadControl::SetUpcall as u64, loc as u64],
+            &[ThreadControl::SetUpcall as u64, loc as usize as u64],
         );
     }
 }

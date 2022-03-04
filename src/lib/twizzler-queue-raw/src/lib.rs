@@ -386,6 +386,9 @@ pub enum QueueError {
 
 impl<T: Copy> RawQueue<T> {
     /// Construct a new raw queue out of a header reference and a buffer pointer.
+    /// # Safety
+    /// The caller must ensure that hdr and buf point to valid objects, and that the lifetime of the
+    /// RawQueue is exceeded by the objects pointed to.
     pub unsafe fn new(hdr: *const RawQueueHdr, buf: *mut QueueEntry<T>) -> Self {
         Self {
             hdr,
@@ -505,12 +508,7 @@ unsafe impl<T: Send> Sync for RawQueue<T> {}
 /// The complexity of the multi_wait and multi_ring callbacks is present to avoid calling into the
 /// kernel often for high-contention queues.
 ///
-pub fn multi_receive<
-    'a,
-    T: Copy,
-    W: Fn(&[(Option<&AtomicU64>, u64)]),
-    R: Fn(&[Option<&AtomicU64>]),
->(
+pub fn multi_receive<T: Copy, W: Fn(&[(Option<&AtomicU64>, u64)]), R: Fn(&[Option<&AtomicU64>])>(
     queues: &[&RawQueue<T>],
     output: &mut [Option<QueueEntry<T>>],
     multi_wait: W,

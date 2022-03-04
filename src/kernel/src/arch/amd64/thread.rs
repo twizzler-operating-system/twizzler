@@ -50,6 +50,7 @@ pub struct ArchThread {
     //user_gs: u64,
 }
 unsafe impl Sync for ArchThread {}
+unsafe impl Send for ArchThread {}
 
 #[allow(named_asm_labels)]
 #[no_mangle]

@@ -53,7 +53,7 @@ impl<FutOne: Future + Unpin, FutTwo: Future + Unpin> Future for WaitForFirst<Fut
         }
 
         if let Some(two) = &mut self.two {
-            if let Poll::Ready(_) = two.poll_unpin(cx) {
+            if two.poll_unpin(cx).is_ready() {
                 self.two = None;
             }
         }
@@ -62,11 +62,13 @@ impl<FutOne: Future + Unpin, FutTwo: Future + Unpin> Future for WaitForFirst<Fut
     }
 }
 
+#[derive(Default)]
 pub struct FlagBlockInner {
     wakers: Vec<Waker>,
     epoch: u64,
 }
 
+#[derive(Default)]
 /// A basic condition variable for async tasks. If you call wait() you get back a future that you
 /// can await on, which will complete once another tasks calls signal_all(). But there's a gotcha here.
 ///

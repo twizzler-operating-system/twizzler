@@ -263,13 +263,11 @@ impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
                     _ => x,
                 };
                 i += 1;
+            } else if flags.contains(KernelConsoleReadFlags::NONBLOCKING) || i > 0 {
+                return Ok(i);
             } else {
-                if flags.contains(KernelConsoleReadFlags::NONBLOCKING) || i > 0 {
-                    return Ok(i);
-                } else {
-                    // TODO: sleep
-                    crate::sched::schedule(true);
-                }
+                // TODO: sleep
+                crate::sched::schedule(true);
             }
         }
         Ok(slice.len())

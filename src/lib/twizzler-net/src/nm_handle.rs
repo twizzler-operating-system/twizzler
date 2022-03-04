@@ -199,6 +199,7 @@ impl Drop for NmHandle {
     }
 }
 
+#[cfg(feature = "manager")]
 impl Drop for NmHandleManager {
     fn drop(&mut self) {
         println!("dropping nm handle manager");
@@ -218,6 +219,7 @@ impl core::fmt::Debug for NmHandle {
     }
 }
 
+#[cfg(feature = "manager")]
 impl core::fmt::Debug for NmHandleManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NmHandleManager")
@@ -232,7 +234,7 @@ pub fn open_nm_handle(client_name: &str) -> Option<NmHandle> {
     let id = std::env::var("NETOBJ").ok()?;
     let id = id
         .parse::<u128>()
-        .expect(&format!("failed to parse object ID string {}", id));
+        .unwrap_or_else(|_| panic!("failed to parse object ID string {}", id));
     let id = ObjID::new(id);
     let objs = client_rendezvous(id, client_name);
     let client_id = objs.client_id;
@@ -281,13 +283,13 @@ pub fn server_open_nm_handle() -> Option<NmHandleManager> {
     let id = std::env::var("NETOBJ").ok()?;
     let id = id
         .parse::<u128>()
-        .expect(&format!("failed to parse object ID string {}", id));
+        .unwrap_or_else(|_| panic!("failed to parse object ID string {}", id));
     let id = ObjID::new(id);
     let objs = server_rendezvous(id);
     let client_name = CStr::from_bytes_with_nul(
         &objs.client_name[0..=objs.client_name.iter().position(|x| *x == 0).unwrap_or(0)],
     )
-    .unwrap_or(CStr::from_bytes_with_nul(&[0]).unwrap());
+    .unwrap_or_else(|_| CStr::from_bytes_with_nul(&[0]).unwrap());
     let client_name = client_name.to_str().unwrap_or("").to_owned();
     let client_id = objs.client_id;
     let objs = NmHandleObjects {

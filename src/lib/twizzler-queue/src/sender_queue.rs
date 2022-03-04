@@ -92,13 +92,11 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
     }
 
     fn poll_completions(&self) -> Option<(u32, C)> {
-        Some(
-            self.inner
-                .get_ref()
-                .queue
-                .get_completion(ReceiveFlags::NON_BLOCK)
-                .ok()?,
-        )
+        self.inner
+            .get_ref()
+            .queue
+            .get_completion(ReceiveFlags::NON_BLOCK)
+            .ok()
     }
 
     fn handle_completion(&self, id: u32, item: C) {

@@ -29,14 +29,23 @@ impl SerialPort {
     const LINE_STS: u16 = 5;
     const MODEM_STS: u16 = 6;
     const SCRATCH: u16 = 7;
+    /// Construct a new serial port.
+    /// # Safety
+    /// The supplied port must be a correct, functioning serial port on the system.
     pub unsafe fn new(port: u16) -> Self {
         Self { port }
     }
 
+    /// Write register.
+    /// # Safety
+    /// Must be a valid register in the serial port register space.
     pub unsafe fn write_reg(&self, reg: u16, val: u8) {
         x86::io::outb(self.port + reg, val);
     }
 
+    /// Read register.
+    /// # Safety
+    /// Must be a valid register in the serial port register space.
     pub unsafe fn read_reg(&self, reg: u16) -> u8 {
         x86::io::inb(self.port + reg)
     }
@@ -146,19 +155,15 @@ pub fn late_init() {
 
 pub fn interrupt_handler() {
     let mut serial = SERIAL1.lock();
-    loop {
-        let status = serial.read_iid();
-        match (status >> 1) & 7 {
-            0 => {
-                let _msr = serial.read_modem_status();
-            }
-            _ => {
-                let x = serial.receive();
-                drop(serial);
-                crate::log::push_input_byte(x);
-                return;
-            }
+    let status = serial.read_iid();
+    match (status >> 1) & 7 {
+        0 => {
+            let _msr = serial.read_modem_status();
         }
-        break;
+        _ => {
+            let x = serial.receive();
+            drop(serial);
+            crate::log::push_input_byte(x);
+        }
     }
 }
