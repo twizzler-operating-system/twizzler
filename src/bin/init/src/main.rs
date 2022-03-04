@@ -264,6 +264,16 @@ fn main() {
     } else {
         eprintln!("[init] failed to start netmgr");
     }
+
+    println!("waiting for network manager to come up");
+    twizzler_net::wait_until_network_manager_ready(netid);
+    println!("network manager is up!");
+
+    println!("Hi, welcome to the basic twizzler test console.");
+    println!("If you wanted line-editing, you've come to the wrong place.");
+    println!("A couple commands you can run:");
+    println!("   - 'nt': Run the nettest program");
+    println!("... and that's it, but you can add your OWN things with the magic of PROGRAMMING.");
     loop {
         let reply = rprompt::prompt_reply_stdout("> ").unwrap();
         println!("got: <{}>", reply);
@@ -277,6 +287,14 @@ fn main() {
                 }
             } else {
                 eprintln!("[init] failed to start {}", cmd[1]);
+            }
+        }
+
+        if cmd.len() == 1 && cmd[0] == "nt" {
+            if let Some(id) = find_init_name("nettest") {
+                exec("nettest", id, netid);
+            } else {
+                eprintln!("[init] failed to start nettest");
             }
         }
 

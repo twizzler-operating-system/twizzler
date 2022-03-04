@@ -63,9 +63,7 @@ impl NetworkInterface for Loopback {
         loop {
             let fut = {
                 let mut inner = self.inner.lock().unwrap();
-                println!("recv woke up");
                 if !inner.buffer.is_empty() {
-                    println!("recv has data");
                     let mut v = vec![];
                     while let Some(buf) = inner.buffer.pop_front() {
                         v.push(buf);

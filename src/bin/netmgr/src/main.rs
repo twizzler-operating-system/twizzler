@@ -28,7 +28,7 @@ fn main() {
 
     loop {
         let nm_handle = Arc::new(twizzler_net::server_open_nm_handle().unwrap());
-        println!("manager got new nm handle!");
+        println!("manager got new nm handle! {:?}", nm_handle);
         let _task = Task::spawn(async move {
             loop {
                 if nm_handle.handle(handler).await.is_err() {
