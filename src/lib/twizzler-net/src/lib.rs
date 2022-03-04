@@ -32,6 +32,7 @@ struct Rendezvous {
     client_id: u64,
 }
 
+#[allow(dead_code)]
 const NM_READY_NO_DATA: u64 = 1;
 const NM_READY_DATA: u64 = 2;
 const CLIENT_TAKING: u64 = 3;
@@ -44,6 +45,7 @@ pub struct NmOpenObjects {
     tx_queue: ObjID,
     rx_queue: ObjID,
     client_id: u64,
+    #[allow(dead_code)]
     client_name: [u8; 256],
 }
 

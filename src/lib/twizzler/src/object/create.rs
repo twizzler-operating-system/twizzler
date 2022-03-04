@@ -63,13 +63,13 @@ impl<T> Object<T> {
         spec: &CreateSpec,
         f: impl FnOnce(&mut Object<MaybeUninit<T>>),
     ) -> Result<Self, CreateError> {
-        let id = Self::raw_create(spec).map_err(|e| CreateError::Create(e))?;
+        let id = Self::raw_create(spec).map_err(CreateError::Create)?;
         let mut obj = Object::<MaybeUninit<T>>::init_id(
             id,
             Protections::READ | Protections::WRITE,
             ObjectInitFlags::empty(),
         )
-        .map_err(|e| CreateError::Init(e))?;
+        .map_err(CreateError::Init)?;
 
         f(&mut obj);
         // TODO: persistence barrier
@@ -77,13 +77,13 @@ impl<T> Object<T> {
     }
 
     pub fn create_with_base(spec: &CreateSpec, f: impl FnOnce() -> T) -> Result<Self, CreateError> {
-        let id = Self::raw_create(spec).map_err(|e| CreateError::Create(e))?;
+        let id = Self::raw_create(spec).map_err(CreateError::Create)?;
         let obj = Self::init_id(
             id,
             Protections::READ | Protections::WRITE,
             ObjectInitFlags::empty(),
         )
-        .map_err(|e| CreateError::Init(e))?;
+        .map_err(CreateError::Init)?;
         let base_raw: *mut T = obj.raw_lea_mut(0);
         unsafe {
             base_raw.write(f());

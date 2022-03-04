@@ -44,7 +44,7 @@ impl<T> Clone for Object<T> {
         Self {
             slot: self.slot,
             id: self.id,
-            _pd: self._pd.clone(),
+            _pd: self._pd,
         }
     }
 }

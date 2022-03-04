@@ -48,7 +48,7 @@ impl<'a> ManagedBuffer<'a> {
         }
     }
 
-    pub fn len(&self) -> usize {
+    pub fn buffer_len(&self) -> usize {
         self.len
     }
 
@@ -63,6 +63,7 @@ impl<'a> ManagedBuffer<'a> {
         self.controller.get_slice(self.idx, self.len)
     }
 
+    #[allow(clippy::mut_from_ref)]
     pub fn as_bytes_mut(&self) -> &mut [u8] {
         self.controller.get_slice_mut(self.idx, self.len)
     }
@@ -132,6 +133,7 @@ impl BufferController {
         unsafe { core::slice::from_raw_parts(ptr, len) }
     }
 
+    #[allow(clippy::mut_from_ref)]
     pub fn get_slice_mut(&self, idx: u32, len: usize) -> &mut [u8] {
         let obj = self.obj.lock().unwrap();
         let ptr = obj.raw_lea_mut(idx as usize * BUFFER_SIZE + 0x2000);

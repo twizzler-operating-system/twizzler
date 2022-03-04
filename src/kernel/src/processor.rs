@@ -237,19 +237,17 @@ fn init_tls(tls_template: TlsInfo) -> VirtAddr {
     tls_size += (((!tls_size) + 1) - (start_address_ptr as usize)) & (alignment - 1);
 
     let tls_align = core::cmp::max(alignment, MIN_TLS_ALIGN);
-    let full_tls_size =
-        core::mem::size_of::<*const u8>() + tls_size + tls_align + MIN_TLS_ALIGN - 1
-            & ((!MIN_TLS_ALIGN) + 1);
+    let full_tls_size = (core::mem::size_of::<*const u8>() + tls_size + tls_align + MIN_TLS_ALIGN
+        - 1)
+        & ((!MIN_TLS_ALIGN) + 1);
 
-    let layout = Layout::from_size_align(full_tls_size, tls_align)
-        .expect("failed to unwrap TLS layout");
+    let layout =
+        Layout::from_size_align(full_tls_size, tls_align).expect("failed to unwrap TLS layout");
 
     let tls = unsafe {
         let tls = alloc::alloc::alloc_zeroed(layout);
 
-        core::ptr::copy_nonoverlapping(
-            start_address_ptr, tls, tls_template.file_size,
-        );
+        core::ptr::copy_nonoverlapping(start_address_ptr, tls, tls_template.file_size);
 
         tls
     };

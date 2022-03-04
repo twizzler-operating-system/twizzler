@@ -103,14 +103,12 @@ impl Inner {
         match timeout {
             None => loop {
                 m = self.cvar.wait(m).unwrap();
-                match self.state.compare_exchange(
-                    NOTIFIED,
-                    EMPTY,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    Ok(_) => return,
-                    Err(_) => {}
+                if self
+                    .state
+                    .compare_exchange(NOTIFIED, EMPTY, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    return;
                 }
             },
             Some(timeout) => {
@@ -152,7 +150,7 @@ pub fn block_on<T>(future: impl Future<Output = T>) -> T {
         let (parker, waker) = &mut *cache.try_borrow_mut().expect("recursive block_on");
         crate::run::enter(|| {
             futures_util::pin_mut!(future);
-            let cx = &mut Context::from_waker(&waker);
+            let cx = &mut Context::from_waker(waker);
             loop {
                 match future.as_mut().poll(cx) {
                     Poll::Ready(output) => return output,

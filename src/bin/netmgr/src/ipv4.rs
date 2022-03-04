@@ -113,10 +113,7 @@ static ref LISTEN: GlobalListener = GlobalListener {
 
 pub fn setup_ipv4_listen(handle: Arc<NmHandleManager>, addr: Ipv4Addr) {
     let mut listeners = LISTEN.listeners.lock().unwrap();
-    listeners.push(Arc::new(Listener {
-        addr,
-        handle: handle,
-    }));
+    listeners.push(Arc::new(Listener { addr, handle }));
 }
 
 pub fn handle_incoming_ipv4_packet(offset: usize, buffer: &Arc<NicBuffer>) {

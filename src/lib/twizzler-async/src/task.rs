@@ -110,8 +110,8 @@ impl<T> Future for Task<T> {
     }
 }
 
-impl<T> Into<async_task::JoinHandle<T, u32>> for Task<T> {
-    fn into(mut self) -> async_task::JoinHandle<T, u32> {
-        self.0.take().expect("task was already canceled or failed")
+impl<T> From<Task<T>> for async_task::JoinHandle<T, u32> {
+    fn from(mut t: Task<T>) -> Self {
+        t.0.take().expect("task was already canceled or failed")
     }
 }
