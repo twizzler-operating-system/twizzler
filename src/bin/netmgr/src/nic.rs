@@ -89,6 +89,7 @@ unsafe impl Send for NicBuffer {}
 unsafe impl Sync for NicBuffer {}
 
 pub enum SendableBuffer<'a> {
+    #[allow(dead_code)]
     NicBuffer(NicBuffer),
     ManagedBuffer(ManagedBuffer<'a>),
 }
@@ -101,6 +102,7 @@ impl<'a> SendableBuffer<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn as_bytes_mut(&mut self) -> &mut [u8] {
         match self {
             SendableBuffer::NicBuffer(n) => n.as_bytes_mut(),

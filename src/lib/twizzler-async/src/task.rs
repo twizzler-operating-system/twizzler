@@ -8,6 +8,7 @@ use crate::thread_local::ThreadLocalExecutor;
 
 pub(crate) type Runnable = async_task::Task<u32>;
 
+#[must_use = "futures do nothing unless you `.await` or poll them (or for tasks, detach them)"]
 pub struct Task<T>(pub(crate) Option<async_task::JoinHandle<T, u32>>);
 
 impl<T: 'static> Task<T> {
