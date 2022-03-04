@@ -39,6 +39,8 @@ pub struct NmHandle {
     tx_bc: BufferController,
     rx_bc: BufferController,
     flags: AtomicU64,
+    client_name: String,
+    client_id: u64,
 }
 
 #[cfg(feature = "manager")]
@@ -49,6 +51,8 @@ pub struct NmHandleManager {
     tx_bc: BufferController,
     rx_bc: BufferController,
     flags: AtomicU64,
+    client_name: String,
+    client_id: u64,
 }
 
 impl NmHandle {
@@ -104,6 +108,14 @@ impl NmHandle {
 
     pub fn get_incoming_buffer(&self, pd: PacketData) -> ManagedBuffer {
         ManagedBuffer::new_unowned(&self.rx_bc, pd.buffer_idx, pd.buffer_len as usize)
+    }
+
+    pub fn id(&self) -> u64 {
+        self.client_id
+    }
+
+    pub fn client_name(&self) -> &str {
+        &self.client_name
     }
 }
 
@@ -168,6 +180,14 @@ impl NmHandleManager {
     pub fn get_incoming_buffer(&self, pd: PacketData) -> ManagedBuffer {
         ManagedBuffer::new_unowned(&self.tx_bc, pd.buffer_idx, pd.buffer_len as usize)
     }
+
+    pub fn id(&self) -> u64 {
+        self.client_id
+    }
+
+    pub fn client_name(&self) -> &str {
+        &self.client_name
+    }
 }
 
 impl Drop for NmHandle {
@@ -188,13 +208,34 @@ impl Drop for NmHandleManager {
     }
 }
 
-pub fn open_nm_handle() -> Option<NmHandle> {
+impl core::fmt::Debug for NmHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NmHandle")
+            .field("client_id", &self.client_id)
+            .field("client_name", &self.client_name)
+            .field("flags", &self.flags)
+            .finish()
+    }
+}
+
+impl core::fmt::Debug for NmHandleManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NmHandleManager")
+            .field("client_id", &self.client_id)
+            .field("client_name", &self.client_name)
+            .field("flags", &self.flags)
+            .finish()
+    }
+}
+
+pub fn open_nm_handle(client_name: &str) -> Option<NmHandle> {
     let id = std::env::var("NETOBJ").ok()?;
     let id = id
         .parse::<u128>()
         .expect(&format!("failed to parse object ID string {}", id));
     let id = ObjID::new(id);
-    let objs = client_rendezvous(id);
+    let objs = client_rendezvous(id, client_name);
+    let client_id = objs.client_id;
     let objs = NmHandleObjects {
         tx_queue: Object::init_id(
             objs.tx_queue,
@@ -227,18 +268,28 @@ pub fn open_nm_handle() -> Option<NmHandle> {
         tx_bc,
         rx_bc,
         flags: AtomicU64::new(0),
+        client_name: client_name.to_owned(),
+        client_id,
     };
     Some(handle)
 }
 
 #[cfg(feature = "manager")]
 pub fn server_open_nm_handle() -> Option<NmHandleManager> {
+    use std::ffi::CStr;
+
     let id = std::env::var("NETOBJ").ok()?;
     let id = id
         .parse::<u128>()
         .expect(&format!("failed to parse object ID string {}", id));
     let id = ObjID::new(id);
     let objs = server_rendezvous(id);
+    let client_name = CStr::from_bytes_with_nul(
+        &objs.client_name[0..=objs.client_name.iter().position(|x| *x == 0).unwrap_or(0)],
+    )
+    .unwrap_or(CStr::from_bytes_with_nul(&[0]).unwrap());
+    let client_name = client_name.to_str().unwrap_or("").to_owned();
+    let client_id = objs.client_id;
     let objs = NmHandleObjects {
         tx_queue: Object::init_id(
             objs.tx_queue,
@@ -271,6 +322,8 @@ pub fn server_open_nm_handle() -> Option<NmHandleManager> {
         tx_bc,
         rx_bc,
         flags: AtomicU64::new(0),
+        client_name,
+        client_id,
     };
     Some(handle)
 }

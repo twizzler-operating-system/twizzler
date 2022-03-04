@@ -5,8 +5,8 @@ use twizzler_net::{addr::Ipv4Addr, NmHandle, RxCompletion, RxRequest, TxRequest}
 
 fn main() {
     println!("Hello from nettest!");
-    let handle = Arc::new(twizzler_net::open_nm_handle().unwrap());
-    println!("nettest got nm handle");
+    let handle = Arc::new(twizzler_net::open_nm_handle("nettest").unwrap());
+    println!("nettest got nm handle: {:?}", handle);
 
     twizzler_async::run(async move {
         let mut buffer = handle.allocatable_buffer_controller().allocate().await;
