@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// A timer future that returns after a specified period of time.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Timer {
     id: Option<usize>,
@@ -11,10 +12,12 @@ pub struct Timer {
 }
 
 impl Timer {
+    /// Make a new timer future that returns Ready after a specified duration.
     pub fn after(dur: Duration) -> Timer {
         Timer::at(Instant::now() + dur)
     }
 
+    /// Make a new timer future that returns Ready at or after a specified instant in time.
     pub fn at(when: Instant) -> Timer {
         Timer { id: None, when }
     }

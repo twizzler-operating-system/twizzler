@@ -9,6 +9,7 @@ use futures_util::FutureExt;
 
 use crate::Timer;
 
+/// A future that waits on two sub-futures until the first completes.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct WaitForFirst<FutOne, FutTwo> {
     one: FutOne,
@@ -17,6 +18,9 @@ pub struct WaitForFirst<FutOne, FutTwo> {
 
 impl<FutOne: Unpin, FutTwo: Unpin> Unpin for WaitForFirst<FutOne, FutTwo> {}
 
+/// A future that waits on two sub-futures until the first one completes. If the second one
+/// completes first, this future will continue awaiting on the first future. If the first one
+/// completes first, this future returns immediately without continuing to wait on the second future.
 pub fn wait_for_first<FutOne, FutTwo, T, R>(
     one: FutOne,
     two: FutTwo,
@@ -63,6 +67,15 @@ pub struct FlagBlockInner {
     epoch: u64,
 }
 
+/// A basic condition variable for async tasks. If you call wait() you get back a future that you
+/// can await on, which will complete once another tasks calls signal_all(). But there's a gotcha here.
+///
+/// Okay so you know the rule with mutexes and condition variables? Like, you have some predicate
+/// that tells you "ready" or not, and this is tested with the mutex held, followed by waiting on
+/// the condition variable (which automatically releases and reaquires the lock).
+///
+/// We have something similar. You need to call wait() with that mutex held, and then _after_ you
+/// release the lock, you call await on the future returned by wait().
 pub struct FlagBlock {
     inner: Arc<Mutex<FlagBlockInner>>,
 }
@@ -75,6 +88,7 @@ pub struct FlagBlockFuture<'a> {
 }
 
 impl FlagBlock {
+    /// Construct a new FlagBlock.
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(FlagBlockInner {
@@ -84,6 +98,7 @@ impl FlagBlock {
         }
     }
 
+    /// Signal anyone waiting.
     pub fn signal_all(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.epoch += 1;
@@ -92,6 +107,7 @@ impl FlagBlock {
         }
     }
 
+    /// Return an awaitable future for the "readiness" of this condition variable.
     pub fn wait(&self) -> FlagBlockFuture {
         let inner = self.inner.lock().unwrap();
         FlagBlockFuture {
@@ -123,6 +139,7 @@ impl<'a> Future for FlagBlockFuture<'a> {
     }
 }
 
+/// A future that awaits a sub-future until a timeout occurs.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Timeout<T> {
     value: T,
@@ -165,10 +182,14 @@ impl<T: Future + Unpin> Future for Timeout<T> {
     }
 }
 
+/// Await a future until a timeout occurs (or that future completes). If the timeout happens, return
+/// None, otherwise return Some of the result of the future. This timeout expires after a duration.
 pub async fn timeout_after<F: Future>(f: F, dur: Duration) -> Option<F::Output> {
     Timeout::after(Box::pin(f), dur).await
 }
 
+/// Await a future until a timeout occurs (or that future completes). If the timeout happens, return
+/// None, otherwise return Some of the result of the future. This timeout expires at an instant in time.
 pub async fn timeout_at<F: Future>(f: F, at: Instant) -> Option<F::Output> {
     Timeout::at(Box::pin(f), at).await
 }
