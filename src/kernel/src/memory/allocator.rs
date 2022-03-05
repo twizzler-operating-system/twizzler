@@ -12,15 +12,10 @@ fn alloc_error_handler(layout: Layout) -> ! {
     panic!("allocation error: {:?}", layout)
 }
 
-/* TODO: arch-dep or machine-dep */
-pub const HEAP_START: usize = 0xffffff0000000000;
-pub const HEAP_LARGE_START: usize = 0xffffff1000000000;
-pub const HEAP_HUGE_START: usize = 0xfffffe0000000000;
-pub const HEAP_MAX_LEN: usize = 0x0000001000000000 / 16; //4GB
-
 use x86_64::VirtAddr;
 
 use crate::spinlock::Spinlock;
+use crate::arch::memory::KNOWN_MEMORY_SECTIONS;
 
 use super::KernelMemoryManager;
 
@@ -40,15 +35,17 @@ impl HeapPager {
 
     fn hookup_kernel_memory_manager(&mut self, kmm: &'static KernelMemoryManager) {
         self.memory_manager = Some(kmm);
+
+        let heap_section_info = KNOWN_MEMORY_SECTIONS.heap_section;
         // TODO: we can do this in a more on-demand fashion.
         self.memory_manager.unwrap().premap(
             VirtAddr::new(self.heap_start),
-            HEAP_MAX_LEN,
+            heap_section_info.size,
             Self::BASE_PAGE_SIZE,
         );
         self.memory_manager.unwrap().premap(
             VirtAddr::new(self.heap_large_start),
-            HEAP_MAX_LEN,
+            heap_section_info.size,
             Self::LARGE_PAGE_SIZE,
         );
     }
@@ -86,14 +83,15 @@ impl HeapPager {
     }
 
     const fn new() -> Self {
+        let huge_heap_section_start = KNOWN_MEMORY_SECTIONS.huge_heap_section.start as u64;
         Self {
             next_page: AtomicU64::new(0),
             next_large_page: AtomicU64::new(0),
-            heap_start: HEAP_START as u64,
-            heap_large_start: HEAP_LARGE_START as u64,
+            heap_start: KNOWN_MEMORY_SECTIONS.heap_section.start as u64,
+            heap_large_start: KNOWN_MEMORY_SECTIONS.large_heap_section.start as u64,
             memory_manager: None,
-            huge_heap_start: HEAP_HUGE_START as u64,
-            huge_heap_top: AtomicU64::new(HEAP_HUGE_START as u64),
+            huge_heap_start: huge_heap_section_start,
+            huge_heap_top: AtomicU64::new(huge_heap_section_start),
         }
     }
 
@@ -108,7 +106,7 @@ impl HeapPager {
                 .fetch_add(1, core::sync::atomic::Ordering::SeqCst)
                 * Self::BASE_PAGE_SIZE as u64
         };
-        if next >= HEAP_MAX_LEN as u64 {
+        if next >= KNOWN_MEMORY_SECTIONS.heap_section.size as u64 {
             // TODO
             panic!("out of heap memory");
         }

@@ -203,3 +203,17 @@ pub fn init<B: BootInfo>(boot_info: &B, clone_regions: &[VirtAddr]) {
 
     allocator::init(kernel_memory_manager());
 }
+
+
+pub struct MemorySection {
+    pub start: usize,
+    pub size: usize,
+}
+
+pub struct KnownMemorySectionsDescription {
+    pub heap_section: MemorySection,
+    pub large_heap_section: MemorySection,
+    pub huge_heap_section: MemorySection,
+
+    // stack_section: Option<MemorySection<'a>>,
+}

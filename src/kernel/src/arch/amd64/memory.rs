@@ -39,7 +39,7 @@ use x86_64::structures::paging::OffsetPageTable;
 
 use crate::memory::context::MapFlags;
 use crate::memory::frame::{alloc_frame, PhysicalFrameFlags};
-use crate::memory::{MapFailed, MappingInfo};
+use crate::memory::{MapFailed, MappingInfo, MemorySection, KnownMemorySectionsDescription};
 
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn init(phys_mem_offset: VirtAddr) -> OffsetPageTable<'static> {
@@ -446,3 +446,10 @@ impl ArchMemoryContextSwitchInfo {
         x86::controlregs::cr3_write(self.target)
     }
 }
+
+const HEAP_MAX_LEN: usize = 0x0000001000000000 / 16; //4GB
+pub const KNOWN_MEMORY_SECTIONS: KnownMemorySectionsDescription = KnownMemorySectionsDescription {
+    heap_section: MemorySection { start: 0xffffff0000000000, size: HEAP_MAX_LEN },
+    large_heap_section: MemorySection { start: 0xffffff1000000000, size: HEAP_MAX_LEN },
+    huge_heap_section: MemorySection { start: 0xfffffe0000000000, size: HEAP_MAX_LEN },
+};
