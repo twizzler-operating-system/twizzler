@@ -1,15 +1,14 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::BTreeMap, sync::Mutex};
 
 use twizzler_net::{
     addr::{NodeAddr, ProtType, ServiceAddr},
-    ConnectionFlags, ConnectionId, NmHandleManager,
+    ConnectionFlags, ConnectionId,
 };
 
+use crate::HandleRef;
+
 pub struct EndPoint {
-    handle: Arc<NmHandleManager>,
+    handle: HandleRef,
     conn_id: ConnectionId,
 }
 
@@ -47,7 +46,7 @@ lazy_static::lazy_static! {
     static ref ENDPOINTS: Mutex<BTreeMap<EndPointKey, BTreeMap<(u64, ConnectionId), EndPoint>>> = Mutex::new(BTreeMap::new());
 }
 
-pub fn foreach_endpoint(info: &EndPointKey, f: impl Fn(&Arc<NmHandleManager>, ConnectionId)) {
+pub fn foreach_endpoint(info: &EndPointKey, f: impl Fn(&HandleRef, ConnectionId)) {
     let endpoints = ENDPOINTS.lock().unwrap();
     if let Some(map) = endpoints.get(&info) {
         for item in map {
@@ -56,7 +55,7 @@ pub fn foreach_endpoint(info: &EndPointKey, f: impl Fn(&Arc<NmHandleManager>, Co
     }
 }
 
-pub fn add_endpoint(info: EndPointKey, handle: Arc<NmHandleManager>, conn_id: ConnectionId) {
+pub fn add_endpoint(info: EndPointKey, handle: HandleRef, conn_id: ConnectionId) {
     let mut endpoints = ENDPOINTS.lock().unwrap();
     if let Some(map) = endpoints.get_mut(&info) {
         map.insert((handle.id(), conn_id), EndPoint { handle, conn_id });

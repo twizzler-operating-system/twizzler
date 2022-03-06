@@ -10,6 +10,7 @@ use crate::{
     icmp::handle_icmp_packet,
     layer4::Layer4Prot,
     nic::{NicBuffer, SendableBuffer},
+    HandleRef,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -73,7 +74,7 @@ fn build_ipv4_header(source: Ipv4Addr, dest: Ipv4Addr, prot: Layer4Prot) -> Ipv4
 }
 
 pub async fn send_to(
-    _handle: &Arc<NmHandleManager>,
+    _handle: &HandleRef,
     source: Ipv4Addr,
     dest: Ipv4Addr,
     buffers: &[SendableBuffer<'_>],
@@ -123,7 +124,7 @@ pub enum Ipv4SendError {
 // TODO: This is all pretty slow probably
 struct Listener {
     addr: Ipv4Addr,
-    handle: Arc<NmHandleManager>,
+    handle: HandleRef,
 }
 
 struct GlobalListener {
@@ -136,7 +137,7 @@ static ref LISTEN: GlobalListener = GlobalListener {
 };
 }
 
-pub fn setup_ipv4_listen(handle: Arc<NmHandleManager>, addr: Ipv4Addr) {
+pub fn setup_ipv4_listen(handle: HandleRef, addr: Ipv4Addr) {
     let mut listeners = LISTEN.listeners.lock().unwrap();
     listeners.push(Arc::new(Listener { addr, handle }));
 }
