@@ -1,7 +1,84 @@
 use std::{sync::Arc, time::Duration};
 
 use twizzler_async::Task;
-use twizzler_net::{addr::Ipv4Addr, NmHandle, RxCompletion, RxRequest, TxRequest};
+use twizzler_net::{
+    addr::{Ipv4Addr, NodeAddr, ProtType, ServiceAddr},
+    buffer::ManagedBuffer,
+    ConnectionFlags, ConnectionInfo, NmHandle, RxCompletion, RxRequest, TxRequest,
+};
+
+fn handle_ping_recv(buffer: ManagedBuffer) {}
+
+fn fill_ping_buffer(idx: usize, buffer: &mut ManagedBuffer) {}
+
+fn ping(addr: Ipv4Addr) {
+    let handle = Arc::new(twizzler_net::open_nm_handle("ping test").unwrap());
+
+    // Run the async ping code.
+    twizzler_async::run(async {
+        // Build a new connection info. It's not really a "connection", more of a way to specify a
+        // place to listen at. For ping, that's ipv4+icmp, raw.
+        let conn_info = ConnectionInfo::new(
+            NodeAddr::Ipv4(addr),
+            ServiceAddr::Null,
+            ProtType::Icmp,
+            ConnectionFlags::RAW,
+        );
+
+        // Start listening here.
+        let tx_cmp = handle.submit(TxRequest::Listen(conn_info)).await.unwrap();
+
+        // In response, we get back a connection ID that we can use.
+        let listen_id = match tx_cmp {
+            twizzler_net::TxCompletion::ListenReady(conn_id) => conn_id,
+            _ => panic!("some err"),
+        };
+
+        // Clone the handle for use in the recv task.
+        let handle_clone = handle.clone();
+        // Create a receiver task. This task will receive ping responses and then print out ping
+        // status messages.
+        Task::spawn(async move {
+            // Loop until the handle call fails.
+            while handle_clone
+                .handle(|handle, _id, req| async move {
+                    // We got an RxRequest! See what it is.
+                    match req {
+                        RxRequest::Recv(conn_id, packet_data) => {
+                            if conn_id == listen_id {
+                                // It's a receive on our connection. Grab the incoming buffer and
+                                // handle the ping response.
+                                let buffer = handle.get_incoming_buffer(packet_data);
+                                handle_ping_recv(buffer);
+                            }
+                        }
+                        // If we need to close, then do so.
+                        RxRequest::Close => handle.set_closed(),
+                        _ => {}
+                    };
+                    // Respond to the net manager
+                    RxCompletion::Nothing
+                })
+                .await
+                .is_ok()
+            {}
+        })
+        .await;
+
+        // Meanwhile, submit some pings!
+        for i in 0..4 {
+            // Let's grab a buffer...
+            let mut buffer = handle.allocatable_buffer_controller().allocate().await;
+            // And fill out that buffer with a ping packet...
+            fill_ping_buffer(i, &mut buffer);
+            // ...and then submit it!
+            let _ = handle
+                .submit(TxRequest::Send(listen_id, buffer.as_packet_data()))
+                .await;
+            // TODO: or send-to?
+        }
+    });
+}
 
 fn main() {
     println!("Hello from nettest!");

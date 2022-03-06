@@ -1060,6 +1060,7 @@ dependencies = [
 name = "twizzler-net"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "twizzler",
  "twizzler-abi",
  "twizzler-async",

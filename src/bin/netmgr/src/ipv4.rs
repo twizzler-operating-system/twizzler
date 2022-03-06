@@ -7,6 +7,7 @@ use twizzler_net::{addr::Ipv4Addr, NmHandleManager, RxRequest};
 use crate::{
     ethernet::{EtherType, EthernetAddr, EthernetHeader},
     header::Header,
+    icmp::handle_icmp_packet,
     layer4::Layer4Prot,
     nic::{NicBuffer, SendableBuffer},
 };
@@ -29,6 +30,14 @@ struct Ipv4Header {
 impl Ipv4Header {
     pub fn dest_addr(&self) -> Ipv4Addr {
         NetworkEndian::read_u32(&self.dest).into()
+    }
+
+    pub fn source_addr(&self) -> Ipv4Addr {
+        NetworkEndian::read_u32(&self.source).into()
+    }
+
+    pub fn packet_len(&self) -> usize {
+        NetworkEndian::read_u16(&self.len) as usize
     }
 }
 
@@ -91,6 +100,22 @@ pub async fn send_to(
     todo!()
 }
 
+#[repr(u8)]
+pub enum Ipv4Prot {
+    Icmp = 0x01,
+}
+
+impl TryFrom<u8> for Ipv4Prot {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0x01 => Ok(Self::Icmp),
+            _ => Err(()),
+        }
+    }
+}
+
 pub enum Ipv4SendError {
     Unknown,
 }
@@ -117,31 +142,51 @@ pub fn setup_ipv4_listen(handle: Arc<NmHandleManager>, addr: Ipv4Addr) {
 }
 
 pub fn handle_incoming_ipv4_packet(offset: usize, buffer: &Arc<NicBuffer>) {
-    let listeners = LISTEN.listeners.lock().unwrap();
     let header = unsafe { buffer.get_minimal_header::<Ipv4Header>(offset) };
+    // TODO: checksum
     let dest_addr = header.dest_addr();
+    let source_addr = header.dest_addr();
     println!("got incoming ipv4 packet for {}", dest_addr);
-    for listener in listeners.iter() {
-        if dest_addr == listener.addr {
-            let listener = listener.clone();
-            let buffer = buffer.clone();
-            Task::spawn(async move {
-                let mut send_buffer = listener
-                    .handle
-                    .allocatable_buffer_controller()
-                    .allocate()
-                    .await;
-                send_buffer.copy_in(&buffer.as_bytes()[(offset + header.len())..]);
-                println!("replying to client");
-                let _ = listener
-                    .handle
-                    .submit(RxRequest::RecvFromIpv4(
-                        dest_addr,
-                        send_buffer.as_packet_data(),
-                    ))
-                    .await;
-            })
-            .detach();
+    {
+        let listeners = LISTEN.listeners.lock().unwrap();
+        for listener in listeners.iter() {
+            if dest_addr == listener.addr {
+                let listener = listener.clone();
+                let buffer = buffer.clone();
+                Task::spawn(async move {
+                    let mut send_buffer = listener
+                        .handle
+                        .allocatable_buffer_controller()
+                        .allocate()
+                        .await;
+                    send_buffer.copy_in(&buffer.as_bytes()[(offset + header.len())..]);
+                    println!("replying to client");
+                    let _ = listener
+                        .handle
+                        .submit(RxRequest::RecvFromIpv4(
+                            dest_addr,
+                            send_buffer.as_packet_data(),
+                        ))
+                        .await;
+                })
+                .detach();
+            }
+        }
+        drop(listeners);
+    }
+
+    let len = header.packet_len();
+    let header_len = header.len();
+    let prot: Result<Ipv4Prot, ()> = header.prot.try_into();
+    if let Ok(prot) = prot {
+        match prot {
+            Ipv4Prot::Icmp => handle_icmp_packet(
+                buffer,
+                offset + header_len,
+                len - header_len,
+                source_addr,
+                dest_addr,
+            ),
         }
     }
 }

@@ -47,5 +47,14 @@ pub enum NodeAddr {
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub enum ServiceAddr {
-    TcpPort(u16),
+    Null,
+    Port(u16),
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
+pub enum ProtType {
+    Raw,
+    Icmp,
+    Tcp,
+    Udp,
 }
