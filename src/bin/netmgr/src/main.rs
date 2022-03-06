@@ -15,8 +15,15 @@ mod header;
 mod icmp;
 mod ipv4;
 mod layer4;
+mod listen;
 mod nic;
 mod nics;
+
+#[derive(Default)]
+pub struct HandleData {}
+
+pub type Handle = NmHandleManager<HandleData>;
+pub type HandleRef = Arc<Handle>;
 
 fn main() {
     println!("Hello from netmgr");
@@ -29,7 +36,8 @@ fn main() {
     }
 
     loop {
-        let nm_handle = Arc::new(twizzler_net::server_open_nm_handle().unwrap());
+        let handle_data = HandleData::default();
+        let nm_handle = Arc::new(twizzler_net::server_open_nm_handle(handle_data).unwrap());
         println!("manager got new nm handle! {:?}", nm_handle);
         let _task = Task::spawn(async move {
             loop {
@@ -51,7 +59,7 @@ fn main() {
     }
 }
 
-async fn handler(handle: &Arc<NmHandleManager>, id: u32, req: TxRequest) -> TxCompletion {
+async fn handler(handle: &HandleRef, id: u32, req: TxRequest) -> TxCompletion {
     println!("got txreq {} {:?}", id, req);
     match req {
         TxRequest::Echo(incoming_data) => {
@@ -84,6 +92,7 @@ async fn handler(handle: &Arc<NmHandleManager>, id: u32, req: TxRequest) -> TxCo
         TxRequest::Close => {
             handle.set_closed();
         }
+        TxRequest::Listen(conn_info) => return listen::setup_listen(handle, conn_info),
         _ => {}
     }
     TxCompletion::Nothing

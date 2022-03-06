@@ -44,7 +44,7 @@ pub struct NmHandle {
 }
 
 #[cfg(feature = "manager")]
-pub struct NmHandleManager {
+pub struct NmHandleManager<T> {
     _objs: NmHandleObjects,
     handler: CallbackQueueReceiver<TxRequest, TxCompletion>,
     sender: QueueSender<RxRequest, RxCompletion>,
@@ -53,6 +53,7 @@ pub struct NmHandleManager {
     flags: AtomicU64,
     client_name: String,
     client_id: u64,
+    data: T,
 }
 
 impl NmHandle {
@@ -120,10 +121,17 @@ impl NmHandle {
 }
 
 #[cfg(feature = "manager")]
-impl NmHandleManager {
-    pub async fn handle<'a, F, Fut>(self: &'a Arc<NmHandleManager>, f: F) -> Result<(), QueueError>
+impl<T> NmHandleManager<T> {
+    pub fn data(&self) -> &T {
+        &self.data
+    }
+
+    pub async fn handle<'a, F, Fut>(
+        self: &'a Arc<NmHandleManager<T>>,
+        f: F,
+    ) -> Result<(), QueueError>
     where
-        F: Fn(&'a Arc<NmHandleManager>, u32, TxRequest) -> Fut,
+        F: Fn(&'a Arc<NmHandleManager<T>>, u32, TxRequest) -> Fut,
         Fut: Future<Output = TxCompletion>,
     {
         if self.is_terminated() {
@@ -200,7 +208,7 @@ impl Drop for NmHandle {
 }
 
 #[cfg(feature = "manager")]
-impl Drop for NmHandleManager {
+impl<T> Drop for NmHandleManager<T> {
     fn drop(&mut self) {
         println!("dropping nm handle manager");
         if !self.is_dead() {
@@ -220,7 +228,7 @@ impl core::fmt::Debug for NmHandle {
 }
 
 #[cfg(feature = "manager")]
-impl core::fmt::Debug for NmHandleManager {
+impl<T> core::fmt::Debug for NmHandleManager<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NmHandleManager")
             .field("client_id", &self.client_id)
@@ -277,7 +285,7 @@ pub fn open_nm_handle(client_name: &str) -> Option<NmHandle> {
 }
 
 #[cfg(feature = "manager")]
-pub fn server_open_nm_handle() -> Option<NmHandleManager> {
+pub fn server_open_nm_handle<T>(data: T) -> Option<NmHandleManager<T>> {
     use std::ffi::CStr;
 
     let id = std::env::var("NETOBJ").ok()?;
@@ -326,6 +334,7 @@ pub fn server_open_nm_handle() -> Option<NmHandleManager> {
         flags: AtomicU64::new(0),
         client_name,
         client_id,
+        data,
     };
     Some(handle)
 }
