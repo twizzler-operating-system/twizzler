@@ -9,8 +9,10 @@ use crate::{
 };
 
 mod arp;
+mod endpoint;
 mod ethernet;
 mod header;
+mod icmp;
 mod ipv4;
 mod layer4;
 mod nic;

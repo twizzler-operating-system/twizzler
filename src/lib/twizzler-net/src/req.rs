@@ -5,7 +5,6 @@ pub struct PacketData {
     pub(crate) buffer_len: u32,
 }
 
-#[repr(transparent)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub struct ConnectionId(u32);
 
