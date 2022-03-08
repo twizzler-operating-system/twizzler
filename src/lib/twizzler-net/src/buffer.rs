@@ -1,4 +1,7 @@
-use std::sync::Mutex;
+use std::{
+    mem::{size_of, MaybeUninit},
+    sync::Mutex,
+};
 
 use twizzler::object::Object;
 
@@ -77,6 +80,19 @@ impl<'a> ManagedBuffer<'a> {
         PacketData {
             buffer_idx: self.idx,
             buffer_len: self.len as u32,
+        }
+    }
+
+    pub fn get_data_mut<T>(&mut self, offset: usize) -> &mut MaybeUninit<T> {
+        if offset + size_of::<T>() >= BUFFER_SIZE {
+            panic!("tried to access buffer data out of bounds");
+        }
+        self.len = std::cmp::max(self.len, offset + size_of::<T>());
+        let bytes = self.as_bytes_mut();
+        unsafe {
+            ((&mut bytes[offset..(offset + size_of::<T>())]).as_mut_ptr() as *mut MaybeUninit<T>)
+                .as_mut()
+                .unwrap()
         }
     }
 }

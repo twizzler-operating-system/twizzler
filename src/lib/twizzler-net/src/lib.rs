@@ -14,9 +14,9 @@ mod nm_handle;
 mod req;
 mod rx_req;
 mod tx_req;
-pub use req::{CloseInfo, ConnectionId};
+pub use req::{CloseInfo, ConnectionId, PacketData};
 pub use rx_req::{RxCompletion, RxRequest};
-pub use tx_req::{ConnectionFlags, ConnectionInfo, TxCompletion, TxRequest};
+pub use tx_req::{ConnectionFlags, ConnectionInfo, TxCompletion, TxCompletionError, TxRequest};
 
 pub use nm_handle::{open_nm_handle, NmHandle};
 

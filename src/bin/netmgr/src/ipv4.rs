@@ -52,7 +52,7 @@ impl Header for Ipv4Header {
     }
 }
 
-fn build_ipv4_header(source: Ipv4Addr, dest: Ipv4Addr, prot: Layer4Prot) -> Ipv4Header {
+fn build_ipv4_header(source: Ipv4Addr, dest: Ipv4Addr, prot: Ipv4Prot) -> Ipv4Header {
     // TODO: we should take in other args as well for the other things in the header
     let mut hdr = Ipv4Header {
         info1: 4,
@@ -61,7 +61,7 @@ fn build_ipv4_header(source: Ipv4Addr, dest: Ipv4Addr, prot: Layer4Prot) -> Ipv4
         ident: Default::default(),
         flags_and_frag: Default::default(),
         ttl: 8, //??
-        prot: prot.into(),
+        prot: prot as u8,
         csum: Default::default(),
         source: Default::default(),
         dest: Default::default(),
@@ -77,13 +77,14 @@ pub async fn send_to(
     _handle: &HandleRef,
     source: Ipv4Addr,
     dest: Ipv4Addr,
+    prot: Ipv4Prot,
     buffers: &[SendableBuffer<'_>],
     mut header_buffer: NicBuffer,
     layer4_header: Option<&(dyn Header + Sync)>,
 ) -> Result<(), Ipv4SendError> {
     if dest.is_localhost() {
         let lo = crate::nics::lookup_nic(&EthernetAddr::local()).ok_or(Ipv4SendError::Unknown)?;
-        let header = build_ipv4_header(source, dest, Layer4Prot::None /* TODO */);
+        let header = build_ipv4_header(source, dest, prot);
 
         let eth_header = EthernetHeader::build_localhost(EtherType::Ipv4);
         let len = if let Some(l4) = layer4_header {

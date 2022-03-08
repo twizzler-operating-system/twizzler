@@ -10,6 +10,7 @@ use crate::HandleRef;
 pub struct EndPoint {
     handle: HandleRef,
     conn_id: ConnectionId,
+    info: EndPointKey,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -23,6 +24,22 @@ pub struct EndPointKey {
 }
 
 impl EndPointKey {
+    pub fn source_address(&self) -> (NodeAddr, ServiceAddr) {
+        (self.source, self.source_service)
+    }
+
+    pub fn dest_address(&self) -> (NodeAddr, ServiceAddr) {
+        (self.dest, self.dest_service)
+    }
+
+    pub fn protocol_type(&self) -> ProtType {
+        self.prot
+    }
+
+    pub fn flags(&self) -> ConnectionFlags {
+        self.flags
+    }
+
     pub fn new(
         source: NodeAddr,
         dest: NodeAddr,
@@ -58,10 +75,24 @@ pub fn foreach_endpoint(info: &EndPointKey, f: impl Fn(&HandleRef, ConnectionId)
 pub fn add_endpoint(info: EndPointKey, handle: HandleRef, conn_id: ConnectionId) {
     let mut endpoints = ENDPOINTS.lock().unwrap();
     if let Some(map) = endpoints.get_mut(&info) {
-        map.insert((handle.id(), conn_id), EndPoint { handle, conn_id });
+        map.insert(
+            (handle.id(), conn_id),
+            EndPoint {
+                handle,
+                conn_id,
+                info,
+            },
+        );
     } else {
         let mut map = BTreeMap::new();
-        map.insert((handle.id(), conn_id), EndPoint { handle, conn_id });
+        map.insert(
+            (handle.id(), conn_id),
+            EndPoint {
+                handle,
+                conn_id,
+                info,
+            },
+        );
         endpoints.insert(info, map);
     }
 }

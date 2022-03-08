@@ -47,6 +47,11 @@ impl<'a, S: Copy, C: Copy> Future for WaitPointFuture<'a, S, C> {
     }
 }
 
+/// An async-supported sending-half of a [Queue]. This is to support systems that want to
+/// asynchronously send items to a receiver, under the assumption that the receiver sends
+/// completions to indicate that a request has been finished, and that the send ID can be reused.
+///
+/// Thus, this queue interally allocates, sends, and reuses IDs for requests.
 pub struct QueueSender<S, C> {
     counter: AtomicU32,
     reuse: Mutex<Vec<u32>>,
@@ -71,6 +76,7 @@ impl<S: Copy, C: Copy> AsyncDuplexSetup for QueueSenderInner<S, C> {
 }
 
 impl<S: Copy, C: Copy> QueueSender<S, C> {
+    /// Build a new QueueSender from a [Queue].
     pub fn new(queue: Queue<S, C>) -> Self {
         Self {
             counter: AtomicU32::new(0),
@@ -111,6 +117,10 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
         }
     }
 
+    /// Submit a request and don't wait for a response. WARNING: This will burn a request ID,
+    /// preventing it from ever being reused. This function is mostly useful for signalling an "end
+    /// of communication" event across the queue. If you want to submit and not immediately await,
+    /// you probably should create a task for your async block instead.
     pub fn submit_no_wait(&self, item: S, flags: SubmissionFlags) {
         let _ = self
             .inner
@@ -119,6 +129,7 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
             .submit(self.next_id(), item, flags);
     }
 
+    /// Submit an item and await a completion.
     pub async fn submit_and_wait(&self, item: S) -> Result<C, crate::QueueError> {
         let id = self.next_id();
         let state = Arc::new(Mutex::new(WaitPoint::<C> {

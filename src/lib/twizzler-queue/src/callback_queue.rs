@@ -9,6 +9,7 @@ struct CallbackQueueReceiverInner<S, C> {
     queue: Queue<S, C>,
 }
 
+/// A receiver-side async-enabled queue abstraction.
 pub struct CallbackQueueReceiver<S, C> {
     inner: AsyncDuplex<CallbackQueueReceiverInner<S, C>>,
 }
@@ -30,12 +31,14 @@ impl<S: Copy, C: Copy> AsyncDuplexSetup for CallbackQueueReceiverInner<S, C> {
 }
 
 impl<S: Copy, C: Copy> CallbackQueueReceiver<S, C> {
+    /// Create a new CallbackQueueReceiver from a [Queue].
     pub fn new(queue: Queue<S, C>) -> Self {
         Self {
             inner: AsyncDuplex::new(CallbackQueueReceiverInner { queue }),
         }
     }
 
+    /// Handle a request in a closure that returns a completion.
     pub async fn handle<F, Fut>(&self, f: F) -> Result<(), QueueError>
     where
         F: FnOnce(u32, S) -> Fut,
@@ -50,5 +53,19 @@ impl<S: Copy, C: Copy> CallbackQueueReceiver<S, C> {
             .write_with(|inner| inner.queue.complete(id, reply, SubmissionFlags::NON_BLOCK))
             .await?;
         Ok(())
+    }
+
+    /// Receive a request without immediately returning a completion.
+    pub async fn receive(&self) -> Result<(u32, S), QueueError> {
+        self.inner
+            .read_with(|inner| inner.queue.receive(ReceiveFlags::NON_BLOCK))
+            .await
+    }
+
+    /// Send a completion back to the sender.
+    pub async fn complete(&self, id: u32, reply: C) -> Result<(), QueueError> {
+        self.inner
+            .write_with(|inner| inner.queue.complete(id, reply, SubmissionFlags::NON_BLOCK))
+            .await
     }
 }

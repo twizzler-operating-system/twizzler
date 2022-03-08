@@ -19,6 +19,18 @@ pub struct ConnectionInfo {
 }
 
 impl ConnectionInfo {
+    pub fn address(&self) -> (NodeAddr, ServiceAddr) {
+        (self.node_addr, self.service_addr)
+    }
+
+    pub fn protocol_type(&self) -> ProtType {
+        self.prot_type
+    }
+
+    pub fn flags(&self) -> ConnectionFlags {
+        self.conn_flags
+    }
+
     pub fn new(
         node_addr: NodeAddr,
         service_addr: ServiceAddr,
@@ -50,8 +62,17 @@ pub enum TxRequest {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
+pub enum TxCompletionError {
+    Unknown,
+    InvalidArgument,
+    NoSuchConnection,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
 pub enum TxCompletion {
     Nothing,
     ConnectionReady(ConnectionId),
     ListenReady(ConnectionId),
+    Error(TxCompletionError),
 }
