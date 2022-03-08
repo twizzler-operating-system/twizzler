@@ -1,15 +1,35 @@
 use std::{sync::Arc, time::Duration};
 
-use twizzler_async::Task;
+use twizzler_async::{Task, Timer};
 use twizzler_net::{
     addr::{Ipv4Addr, NodeAddr, ProtType, ServiceAddr},
     buffer::ManagedBuffer,
     ConnectionFlags, ConnectionInfo, NmHandle, RxCompletion, RxRequest, TxRequest,
 };
 
-fn handle_ping_recv(buffer: ManagedBuffer) {}
+#[repr(C)]
+struct IcmpHeader {
+    ty: u8,
+    code: u8,
+    csum: [u8; 2],
+    extra: [u8; 4],
+}
 
-fn fill_ping_buffer(idx: usize, buffer: &mut ManagedBuffer) {}
+const ICMP_ECHO_REQUEST: u8 = 8;
+
+fn handle_ping_recv(buffer: ManagedBuffer) {
+    println!("nettest ping recv");
+}
+
+fn fill_ping_buffer(idx: usize, buffer: &mut ManagedBuffer) {
+    let icmp_header = IcmpHeader {
+        ty: ICMP_ECHO_REQUEST,
+        code: 0,
+        csum: [0; 2],
+        extra: [0; 4],
+    };
+    buffer.get_data_mut(0).write(icmp_header);
+}
 
 fn ping(addr: Ipv4Addr) {
     let handle = Arc::new(twizzler_net::open_nm_handle("ping test").unwrap());
@@ -25,6 +45,7 @@ fn ping(addr: Ipv4Addr) {
             ConnectionFlags::RAW,
         );
 
+        println!("sending listen");
         // Start listening here.
         let tx_cmp = handle.submit(TxRequest::Listen(conn_info)).await.unwrap();
 
@@ -33,6 +54,8 @@ fn ping(addr: Ipv4Addr) {
             twizzler_net::TxCompletion::ListenReady(conn_id) => conn_id,
             _ => panic!("some err"),
         };
+
+        println!("got new listen id {:?}", listen_id);
 
         // Clone the handle for use in the recv task.
         let handle_clone = handle.clone();
@@ -63,7 +86,7 @@ fn ping(addr: Ipv4Addr) {
                 .is_ok()
             {}
         })
-        .await;
+        .detach();
 
         // Meanwhile, submit some pings!
         for i in 0..4 {
@@ -71,10 +94,12 @@ fn ping(addr: Ipv4Addr) {
             let mut buffer = handle.allocatable_buffer_controller().allocate().await;
             // And fill out that buffer with a ping packet...
             fill_ping_buffer(i, &mut buffer);
+            println!("sending ping buffer");
             // ...and then submit it!
             let _ = handle
                 .submit(TxRequest::Send(listen_id, buffer.as_packet_data()))
                 .await;
+            Timer::after(Duration::from_millis(1000)).await;
             // TODO: or send-to?
         }
     });
@@ -84,6 +109,9 @@ fn main() {
     println!("Hello from nettest!");
     let handle = Arc::new(twizzler_net::open_nm_handle("nettest").unwrap());
     println!("nettest got nm handle: {:?}", handle);
+
+    ping(Ipv4Addr::localhost());
+    loop {}
 
     twizzler_async::run(async move {
         let mut buffer = handle.allocatable_buffer_controller().allocate().await;

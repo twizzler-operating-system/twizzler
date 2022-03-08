@@ -126,18 +126,16 @@ impl<T> NmHandleManager<T> {
         &self.data
     }
 
-    pub async fn handle<'a, F, Fut>(
-        self: &'a Arc<NmHandleManager<T>>,
-        f: F,
-    ) -> Result<(), QueueError>
-    where
-        F: Fn(&'a Arc<NmHandleManager<T>>, u32, TxRequest) -> Fut,
-        Fut: Future<Output = TxCompletion>,
-    {
+    pub async fn receive(&self) -> Result<(u32, TxRequest), QueueError> {
         if self.is_terminated() {
-            return Err(QueueError::Unknown);
+            Err(QueueError::Unknown)
+        } else {
+            self.handler.receive().await
         }
-        self.handler.handle(move |id, req| f(self, id, req)).await
+    }
+
+    pub async fn complete(&self, id: u32, reply: TxCompletion) -> Result<(), QueueError> {
+        self.handler.complete(id, reply).await
     }
 
     pub async fn submit(&self, req: RxRequest) -> Result<RxCompletion, QueueError> {

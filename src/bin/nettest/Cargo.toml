@@ -9,3 +9,4 @@ edition = "2021"
 twizzler-net = {path="../../lib/twizzler-net"}
 twizzler = {path = "../../lib/twizzler"}
 twizzler-async = {path = "../../lib/twizzler-async"}
+byteorder = "1.4.3"

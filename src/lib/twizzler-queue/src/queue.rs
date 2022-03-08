@@ -13,6 +13,8 @@ pub use twizzler_queue_raw::QueueError;
 pub use twizzler_queue_raw::ReceiveFlags;
 pub use twizzler_queue_raw::SubmissionFlags;
 
+/// A single queue, holding two subqueues (sending and completion). Objects of type S are sent
+/// across the sending queue, and completions of type C are sent back.
 pub struct Queue<S, C> {
     submission: RawQueue<S>,
     completion: RawQueue<C>,
@@ -21,6 +23,8 @@ pub struct Queue<S, C> {
     object: Object<QueueBase<S, C>>,
 }
 
+/// The base info structure stored in a Twizzler queue object. Used to open Twizzler queue objects
+/// and create a [Queue].
 #[repr(C)]
 pub struct QueueBase<S, C> {
     sub_hdr: usize,
@@ -75,10 +79,12 @@ fn ring(pt: &AtomicU64) {
 }
 
 impl<S: Copy, C: Copy> Queue<S, C> {
+    /// Get a handle to the internal object that holds the queue data.
     pub fn object(&self) -> &Object<QueueBase<S, C>> {
         &self.object
     }
 
+    /// Create a new Twizzler queue object.
     pub fn create(
         create_spec: &CreateSpec,
         sub_queue_len: usize,
@@ -119,21 +125,25 @@ impl<S: Copy, C: Copy> Queue<S, C> {
         res
     }
 
+    /// Submit an item of type S across the sending subqueue, with a given id.
     pub fn submit(&self, id: u32, item: S, flags: SubmissionFlags) -> Result<(), QueueError> {
         self.submission
             .submit(QueueEntry::new(id, item), wait, ring, flags)
     }
 
+    /// Receive an item and request id from the sending subqueue.
     pub fn receive(&self, flags: ReceiveFlags) -> Result<(u32, S), QueueError> {
         self.with_guard(true, || self.submission.receive(wait, ring, flags))
             .map(|qe| (qe.info(), qe.item()))
     }
 
+    /// Submit a completion item of type C across the completion subqueue.
     pub fn complete(&self, id: u32, item: C, flags: SubmissionFlags) -> Result<(), QueueError> {
         self.completion
             .submit(QueueEntry::new(id, item), wait, ring, flags)
     }
 
+    /// Receive a completion item and id from the completion subqueue.
     pub fn get_completion(&self, flags: ReceiveFlags) -> Result<(u32, C), QueueError> {
         self.with_guard(false, || self.completion.receive(wait, ring, flags))
             .map(|qe| (qe.info(), qe.item()))
@@ -149,24 +159,28 @@ impl<S: Copy, C: Copy> Queue<S, C> {
         )
     }
 
+    /// Setup a sleep operation for reading the completion subqueue.
     #[inline]
     pub fn setup_read_com_sleep(&self) -> ThreadSyncSleep {
         let (ptr, val) = self.completion.setup_sleep_simple();
         Self::build_thread_sync(ptr, val)
     }
 
+    /// Setup a sleep operation for reading the sending subqueue.
     #[inline]
     pub fn setup_read_sub_sleep(&self) -> ThreadSyncSleep {
         let (ptr, val) = self.submission.setup_sleep_simple();
         Self::build_thread_sync(ptr, val)
     }
 
+    /// Setup a sleep operation for writing the sending subqueue.
     #[inline]
     pub fn setup_write_sub_sleep(&self) -> ThreadSyncSleep {
         let (ptr, val) = self.submission.setup_send_sleep_simple();
         Self::build_thread_sync(ptr, val)
     }
 
+    /// Setup a sleep operation for writing the completion subqueue.
     #[inline]
     pub fn setup_write_com_sleep(&self) -> ThreadSyncSleep {
         let (ptr, val) = self.completion.setup_send_sleep_simple();

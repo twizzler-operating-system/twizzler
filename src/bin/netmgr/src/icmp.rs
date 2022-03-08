@@ -3,13 +3,15 @@ use std::sync::Arc;
 use twizzler_async::Task;
 use twizzler_net::{
     addr::{Ipv4Addr, NodeAddr, ProtType, ServiceAddr},
-    ConnectionFlags, RxRequest,
+    ConnectionFlags, PacketData, RxRequest, TxCompletion,
 };
 
 use crate::{
     endpoint::{foreach_endpoint, EndPointKey},
     header::Header,
-    nic::NicBuffer,
+    ipv4::Ipv4Prot,
+    nic::{NicBuffer, SendableBuffer},
+    HandleRef,
 };
 
 #[repr(C)]
@@ -61,4 +63,33 @@ pub fn handle_icmp_packet(
         })
         .detach();
     });
+}
+
+pub async fn send_packet(
+    handle: &HandleRef,
+    info: EndPointKey,
+    packet_data: PacketData,
+) -> TxCompletion {
+    let dest_addr = info.dest_address();
+    let dest_addr = match dest_addr.0 {
+        NodeAddr::Ipv4(a) => a,
+    };
+    let source = Ipv4Addr::localhost();
+    let header_buffer = NicBuffer::allocate(0x2000 /* TODO */);
+    let handle = handle.clone();
+    Task::spawn(async move {
+        let buffer = handle.get_incoming_buffer(packet_data);
+        let _ = crate::ipv4::send_to(
+            &handle,
+            source,
+            dest_addr,
+            Ipv4Prot::Icmp,
+            &[SendableBuffer::ManagedBuffer(buffer)],
+            header_buffer,
+            None,
+        )
+        .await;
+    })
+    .detach();
+    TxCompletion::Nothing
 }

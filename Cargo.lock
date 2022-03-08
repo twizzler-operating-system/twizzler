@@ -576,6 +576,7 @@ dependencies = [
 name = "nettest"
 version = "0.1.0"
 dependencies = [
+ "byteorder",
  "twizzler",
  "twizzler-async",
  "twizzler-net",
