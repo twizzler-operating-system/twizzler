@@ -1,8 +1,6 @@
-use twizzler_net::{
-    buffer::ManagedBuffer, ConnectionId, PacketData, TxCompletion, TxCompletionError, TxRequest,
-};
+use twizzler_net::{ConnectionId, PacketData, TxCompletion, TxCompletionError};
 
-use crate::{icmp, HandleRef};
+use crate::HandleRef;
 
 pub async fn send_packet(
     handle: &HandleRef,
@@ -14,15 +12,10 @@ pub async fn send_packet(
         None => return TxCompletion::Error(TxCompletionError::NoSuchConnection),
     };
 
-    //let dest_addr = info.dest_address();
-    match info.protocol_type() {
-        twizzler_net::addr::ProtType::Raw => todo!(),
-        twizzler_net::addr::ProtType::Icmp => {
-            return icmp::send_packet(handle, info, packet_data).await
+    match info.dest_address().1 {
+        twizzler_net::addr::ServiceAddr::Null => {
+            crate::network::send_raw_packet(handle, info, packet_data).await
         }
-        twizzler_net::addr::ProtType::Tcp => todo!(),
-        twizzler_net::addr::ProtType::Udp => todo!(),
+        _ => crate::transport::send_packet(handle, info, packet_data).await,
     }
-
-    //TxCompletion::Nothing
 }

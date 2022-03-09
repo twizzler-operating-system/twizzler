@@ -1,47 +1,36 @@
 use crate::{
-    addr::{Ipv4Addr, NodeAddr, ProtType, ServiceAddr},
+    addr::{Ipv4Addr, NodeAddr, ServiceAddr},
     req::{CloseInfo, ConnectionId, PacketData},
 };
 
 bitflags::bitflags! {
-    pub struct ConnectionFlags: u32 {
+    pub struct ListenFlags: u32 {
         const RAW = 0x1;
     }
 }
 
 #[repr(C)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
-pub struct ConnectionInfo {
+pub struct ListenInfo {
     node_addr: NodeAddr,
     service_addr: ServiceAddr,
-    prot_type: ProtType,
-    conn_flags: ConnectionFlags,
+    flags: ListenFlags,
 }
 
-impl ConnectionInfo {
+impl ListenInfo {
     pub fn address(&self) -> (NodeAddr, ServiceAddr) {
         (self.node_addr, self.service_addr)
     }
 
-    pub fn protocol_type(&self) -> ProtType {
-        self.prot_type
+    pub fn flags(&self) -> ListenFlags {
+        self.flags
     }
 
-    pub fn flags(&self) -> ConnectionFlags {
-        self.conn_flags
-    }
-
-    pub fn new(
-        node_addr: NodeAddr,
-        service_addr: ServiceAddr,
-        prot_type: ProtType,
-        conn_flags: ConnectionFlags,
-    ) -> Self {
+    pub fn new(node_addr: NodeAddr, service_addr: ServiceAddr, flags: ListenFlags) -> Self {
         Self {
             node_addr,
             service_addr,
-            prot_type,
-            conn_flags,
+            flags,
         }
     }
 }
@@ -52,10 +41,10 @@ pub enum TxRequest {
     Echo(PacketData),
     SendToIpv4(Ipv4Addr, PacketData),
     ListenIpv4(Ipv4Addr),
-    Connect(ConnectionInfo),
+    Connect(ListenInfo),
     Send(ConnectionId, PacketData),
     CloseConnection(ConnectionId, CloseInfo),
-    Listen(ConnectionInfo),
+    Listen(ListenInfo),
     StopListen(ConnectionId),
     Close,
 }

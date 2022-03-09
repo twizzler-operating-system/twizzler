@@ -3,8 +3,8 @@ use std::{intrinsics::copy_nonoverlapping, mem::MaybeUninit, sync::Arc};
 use twizzler_net::buffer::ManagedBuffer;
 
 use crate::{
-    ethernet::{EthernetAddr, EthernetError},
     header::Header,
+    link::ethernet::{EthernetAddr, EthernetError},
 };
 
 #[async_trait::async_trait]
@@ -29,6 +29,10 @@ impl NicBuffer {
     #[allow(dead_code)]
     pub fn as_bytes(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.data, self.data_len) }
+    }
+
+    pub fn packet_len(&self) -> usize {
+        self.data_len
     }
 
     pub fn as_bytes_mut(&mut self) -> &mut [u8] {

@@ -48,13 +48,17 @@ pub enum NodeAddr {
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub enum ServiceAddr {
     Null,
-    Port(u16),
+    Icmp,
+    Tcp(u16),
+    Udp(u16),
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
-pub enum ProtType {
-    Raw,
-    Icmp,
-    Tcp,
-    Udp,
+impl ServiceAddr {
+    pub fn any(&self) -> Self {
+        match self {
+            ServiceAddr::Tcp(_) => ServiceAddr::Tcp(0),
+            ServiceAddr::Udp(_) => ServiceAddr::Udp(0),
+            _ => *self,
+        }
+    }
 }

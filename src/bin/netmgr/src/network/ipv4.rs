@@ -2,14 +2,19 @@ use std::sync::{Arc, Mutex};
 
 use byteorder::{ByteOrder, NetworkEndian};
 use twizzler_async::Task;
-use twizzler_net::{addr::Ipv4Addr, NmHandleManager, RxRequest};
+use twizzler_net::{
+    addr::{Ipv4Addr, ServiceAddr},
+    NmHandleManager, RxRequest,
+};
 
 use crate::{
-    ethernet::{EtherType, EthernetAddr, EthernetHeader},
     header::Header,
-    icmp::handle_icmp_packet,
-    layer4::Layer4Prot,
-    nic::{NicBuffer, SendableBuffer},
+    link::nic::{NicBuffer, SendableBuffer},
+    link::{
+        ethernet::{EtherType, EthernetAddr, EthernetHeader},
+        IncomingPacketInfo,
+    },
+    transport::{handle_packet, icmp::handle_icmp_packet},
     HandleRef,
 };
 
@@ -44,7 +49,7 @@ impl Ipv4Header {
 
 impl Header for Ipv4Header {
     fn len(&self) -> usize {
-        NetworkEndian::read_u16(&self.len) as usize
+        20 //TODO
     }
 
     fn update_csum(&mut self, _header_buffer: NicBuffer, _buffers: &[SendableBuffer]) {
@@ -107,6 +112,16 @@ pub enum Ipv4Prot {
     Icmp = 0x01,
 }
 
+impl TryFrom<Ipv4Prot> for ServiceAddr {
+    type Error = ();
+
+    fn try_from(value: Ipv4Prot) -> Result<Self, Self::Error> {
+        match value {
+            Ipv4Prot::Icmp => return Ok(ServiceAddr::Icmp),
+        }
+    }
+}
+
 impl TryFrom<u8> for Ipv4Prot {
     type Error = ();
 
@@ -143,52 +158,53 @@ pub fn setup_ipv4_listen(handle: HandleRef, addr: Ipv4Addr) {
     listeners.push(Arc::new(Listener { addr, handle }));
 }
 
-pub fn handle_incoming_ipv4_packet(offset: usize, buffer: &Arc<NicBuffer>) {
-    let header = unsafe { buffer.get_minimal_header::<Ipv4Header>(offset) };
-    // TODO: checksum
-    let dest_addr = header.dest_addr();
-    let source_addr = header.dest_addr();
-    println!("got incoming ipv4 packet for {}", dest_addr);
-    {
-        let listeners = LISTEN.listeners.lock().unwrap();
-        for listener in listeners.iter() {
-            if dest_addr == listener.addr {
-                let listener = listener.clone();
-                let buffer = buffer.clone();
-                Task::spawn(async move {
-                    let mut send_buffer = listener
-                        .handle
-                        .allocatable_buffer_controller()
-                        .allocate()
-                        .await;
-                    send_buffer.copy_in(&buffer.as_bytes()[(offset + header.len())..]);
-                    println!("replying to client");
-                    let _ = listener
-                        .handle
-                        .submit(RxRequest::RecvFromIpv4(
-                            dest_addr,
-                            send_buffer.as_packet_data(),
-                        ))
-                        .await;
-                })
-                .detach();
+pub async fn handle_incoming_ipv4_packet(mut info: IncomingPacketInfo) {
+    /*
+        let header = unsafe { buffer.get_minimal_header::<Ipv4Header>(offset) };
+        // TODO: checksum
+        let dest_addr = header.dest_addr();
+        let source_addr = header.dest_addr();
+        println!("got incoming ipv4 packet for {}", dest_addr);
+        {
+            let listeners = LISTEN.listeners.lock().unwrap();
+            for listener in listeners.iter() {
+                if dest_addr == listener.addr {
+                    let listener = listener.clone();
+                    let buffer = buffer.clone();
+                    Task::spawn(async move {
+                        let mut send_buffer = listener
+                            .handle
+                            .allocatable_buffer_controller()
+                            .allocate()
+                            .await;
+                        send_buffer.copy_in(&buffer.as_bytes()[(offset + header.len())..]);
+                        println!("replying to client");
+                        let _ = listener
+                            .handle
+                            .submit(RxRequest::RecvFromIpv4(
+                                dest_addr,
+                                send_buffer.as_packet_data(),
+                            ))
+                            .await;
+                    })
+                    .detach();
+                }
             }
+            drop(listeners);
         }
-        drop(listeners);
-    }
 
-    let len = header.packet_len();
-    let header_len = header.len();
-    let prot: Result<Ipv4Prot, ()> = header.prot.try_into();
-    if let Ok(prot) = prot {
-        match prot {
-            Ipv4Prot::Icmp => handle_icmp_packet(
-                buffer,
-                offset + header_len,
-                len - header_len,
-                source_addr,
-                dest_addr,
-            ),
+    */
+    let header = unsafe { info.get_network_hdr::<Ipv4Header>() };
+    if let Some(header) = header {
+        let len = header.packet_len();
+        let header_len = header.len();
+        if let Some(info) = info.update_for_transport(header_len, len) {
+            let prot: Result<Ipv4Prot, ()> = header.prot.try_into();
+            if let Ok(prot) = prot {
+                if let Ok(service_addr_any) = prot.try_into() {
+                    handle_packet(service_addr_any, info).await
+                }
+            }
         }
     }
 }

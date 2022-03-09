@@ -2,9 +2,9 @@ use std::{sync::Arc, time::Duration};
 
 use twizzler_async::{Task, Timer};
 use twizzler_net::{
-    addr::{Ipv4Addr, NodeAddr, ProtType, ServiceAddr},
+    addr::{Ipv4Addr, NodeAddr, ServiceAddr},
     buffer::ManagedBuffer,
-    ConnectionFlags, ConnectionInfo, NmHandle, RxCompletion, RxRequest, TxRequest,
+    ListenFlags, ListenInfo, NmHandle, RxCompletion, RxRequest, TxRequest,
 };
 
 #[repr(C)]
@@ -38,12 +38,7 @@ fn ping(addr: Ipv4Addr) {
     twizzler_async::run(async {
         // Build a new connection info. It's not really a "connection", more of a way to specify a
         // place to listen at. For ping, that's ipv4+icmp, raw.
-        let conn_info = ConnectionInfo::new(
-            NodeAddr::Ipv4(addr),
-            ServiceAddr::Null,
-            ProtType::Icmp,
-            ConnectionFlags::RAW,
-        );
+        let conn_info = ListenInfo::new(NodeAddr::Ipv4(addr), ServiceAddr::Icmp, ListenFlags::RAW);
 
         println!("sending listen");
         // Start listening here.

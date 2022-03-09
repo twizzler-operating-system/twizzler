@@ -1,4 +1,4 @@
-use crate::nic::{NicBuffer, SendableBuffer};
+use crate::link::nic::{NicBuffer, SendableBuffer};
 
 pub trait Header {
     fn len(&self) -> usize;
