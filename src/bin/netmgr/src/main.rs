@@ -15,15 +15,14 @@ use crate::client_request::handle_client_request;
 mod arp;
 mod client_request;
 mod endpoint;
-mod ethernet;
 mod header;
-mod icmp;
-mod ipv4;
-mod layer4;
+mod link;
 mod listen;
-mod nic;
+mod network;
 mod nics;
+mod route;
 mod send;
+mod transport;
 
 pub struct HandleData {
     conn_id: AtomicU64,

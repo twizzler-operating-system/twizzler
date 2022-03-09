@@ -3,9 +3,9 @@ use twizzler_net::{addr::Ipv4Addr, RxRequest, TxCompletion, TxRequest};
 use twizzler_queue::QueueError;
 
 use crate::{
-    ipv4::{self, setup_ipv4_listen},
+    link::nic::{NicBuffer, SendableBuffer},
     listen,
-    nic::{NicBuffer, SendableBuffer},
+    network::ipv4::{self, setup_ipv4_listen},
     send, HandleRef,
 };
 

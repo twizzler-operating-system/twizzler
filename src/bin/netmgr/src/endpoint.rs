@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, sync::Mutex};
 
 use twizzler_net::{
-    addr::{NodeAddr, ProtType, ServiceAddr},
-    ConnectionFlags, ConnectionId,
+    addr::{NodeAddr, ServiceAddr},
+    ConnectionId, ListenFlags,
 };
 
 use crate::HandleRef;
@@ -17,8 +17,7 @@ pub struct EndPoint {
 pub struct EndPointKey {
     source: NodeAddr,
     dest: NodeAddr,
-    prot: ProtType,
-    flags: ConnectionFlags,
+    flags: ListenFlags,
     source_service: ServiceAddr,
     dest_service: ServiceAddr,
 }
@@ -32,26 +31,20 @@ impl EndPointKey {
         (self.dest, self.dest_service)
     }
 
-    pub fn protocol_type(&self) -> ProtType {
-        self.prot
-    }
-
-    pub fn flags(&self) -> ConnectionFlags {
+    pub fn flags(&self) -> ListenFlags {
         self.flags
     }
 
     pub fn new(
         source: NodeAddr,
         dest: NodeAddr,
-        prot: ProtType,
-        flags: ConnectionFlags,
+        flags: ListenFlags,
         source_service: ServiceAddr,
         dest_service: ServiceAddr,
     ) -> Self {
         Self {
             source,
             dest,
-            prot,
             flags,
             source_service,
             dest_service,

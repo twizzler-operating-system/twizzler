@@ -10,7 +10,7 @@ use std::{
 use twizzler_async::{timeout_after, FlagBlock};
 use twizzler_net::addr::Ipv4Addr;
 
-use crate::ethernet::EthernetAddr;
+use crate::link::ethernet::EthernetAddr;
 
 const ARP_TIMEOUT: Duration = Duration::from_millis(8000);
 

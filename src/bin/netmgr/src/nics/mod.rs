@@ -6,8 +6,8 @@ use std::{
 use twizzler_async::Task;
 
 use crate::{
-    ethernet::{handle_incoming_ethernet_packets, EthernetAddr},
-    nic::NetworkInterface,
+    link::ethernet::{handle_incoming_ethernet_packets, EthernetAddr},
+    link::nic::NetworkInterface,
 };
 
 mod loopback;

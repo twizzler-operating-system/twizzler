@@ -4,8 +4,9 @@ use byteorder::ByteOrder;
 use byteorder::NetworkEndian;
 
 use crate::header::Header;
-use crate::ipv4::handle_incoming_ipv4_packet;
-use crate::nic::NicBuffer;
+use crate::link::nic::NicBuffer;
+use crate::link::IncomingPacketInfo;
+use crate::network::ipv4::handle_incoming_ipv4_packet;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Default)]
 #[repr(C)]
@@ -86,8 +87,8 @@ impl Header for EthernetHeader {
 
     fn update_csum(
         &mut self,
-        _header_buffer: crate::nic::NicBuffer,
-        _buffers: &[crate::nic::SendableBuffer],
+        _header_buffer: crate::link::nic::NicBuffer,
+        _buffers: &[crate::link::nic::SendableBuffer],
     ) {
         //no-op
     }
@@ -99,9 +100,16 @@ pub async fn handle_incoming_ethernet_packets(buffers: &[Arc<NicBuffer>]) {
         let eth = unsafe { buffer.get_minimal_header::<EthernetHeader>(0) };
         // TODO: look at dest addr
         println!("ethernet packet type {:?}", eth.ethertype());
-        if let Ok(et) = eth.ethertype() {
-            match et {
-                EtherType::Ipv4 => handle_incoming_ipv4_packet(eth.len(), buffer),
+        let incoming_info = IncomingPacketInfo::new(buffer.clone());
+        if let Some(incoming_info) = incoming_info.update_for_link(0, buffer.packet_len()) {
+            if let Some(incoming_info) =
+                incoming_info.update_for_network(14, buffer.packet_len() - 14)
+            {
+                if let Ok(et) = eth.ethertype() {
+                    match et {
+                        EtherType::Ipv4 => handle_incoming_ipv4_packet(incoming_info).await,
+                    }
+                }
             }
         }
     }

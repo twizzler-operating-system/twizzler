@@ -2,17 +2,45 @@ use std::sync::Arc;
 
 use twizzler_async::Task;
 use twizzler_net::{
-    addr::{Ipv4Addr, NodeAddr, ProtType, ServiceAddr},
-    ConnectionFlags, PacketData, RxRequest, TxCompletion,
+    addr::{Ipv4Addr, NodeAddr, ServiceAddr},
+    ListenFlags, PacketData, RxRequest, TxCompletion,
 };
 
 use crate::{
     endpoint::{foreach_endpoint, EndPointKey},
     header::Header,
-    ipv4::Ipv4Prot,
-    nic::{NicBuffer, SendableBuffer},
+    link::{nic::{NicBuffer, SendableBuffer}, IncomingPacketInfo},
+    network::ipv4::Ipv4Prot,
     HandleRef,
 };
+
+use super::TransportProto;
+
+pub struct Icmp;
+
+#[async_trait::async_trait]
+impl TransportProto for Icmp {
+    async fn send_packet(
+        &self,
+        handle: &HandleRef,
+        endpoint_info: EndPointKey,
+        packet_data: PacketData,
+    ) -> TxCompletion {
+        todo!()
+    }
+
+    async fn handle_packet(&self, info: IncomingPacketInfo) {
+        todo!()
+    }
+
+    fn raw_support(&self) -> super::RawSupport {
+        super::RawSupport::OnlyRaw
+    }
+}
+
+pub fn init() -> (ServiceAddr, Icmp) {
+    todo!()
+}
 
 #[repr(C)]
 struct IcmpHeader {
@@ -27,7 +55,11 @@ impl Header for IcmpHeader {
         8
     }
 
-    fn update_csum(&mut self, _header_buffer: NicBuffer, _buffers: &[crate::nic::SendableBuffer]) {
+    fn update_csum(
+        &mut self,
+        _header_buffer: NicBuffer,
+        _buffers: &[crate::link::nic::SendableBuffer],
+    ) {
         todo!()
     }
 }
@@ -45,10 +77,9 @@ pub fn handle_icmp_packet(
     let info = EndPointKey::new(
         NodeAddr::Ipv4(source_addr),
         NodeAddr::Ipv4(dest_addr),
-        ProtType::Icmp,
-        ConnectionFlags::RAW,
-        ServiceAddr::Null,
-        ServiceAddr::Null,
+        ListenFlags::RAW,
+        ServiceAddr::Icmp,
+        ServiceAddr::Icmp,
     );
     foreach_endpoint(&info, |handle, conn_id| {
         let handle = Arc::clone(handle);
@@ -79,7 +110,7 @@ pub async fn send_packet(
     let handle = handle.clone();
     Task::spawn(async move {
         let buffer = handle.get_incoming_buffer(packet_data);
-        let _ = crate::ipv4::send_to(
+        let _ = crate::network::ipv4::send_to(
             &handle,
             source,
             dest_addr,

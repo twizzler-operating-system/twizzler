@@ -1,11 +1,11 @@
 use twizzler_net::{
     addr::{Ipv4Addr, NodeAddr},
-    ConnectionInfo, TxCompletion,
+    ListenInfo, TxCompletion,
 };
 
 use crate::{endpoint, HandleRef};
 
-pub fn setup_listen(handle: &HandleRef, conn_info: ConnectionInfo) -> TxCompletion {
+pub fn setup_listen(handle: &HandleRef, conn_info: ListenInfo) -> TxCompletion {
     let conn_id = handle.data().new_conn_id();
     let address = conn_info.address();
     // TODO: get our address?
@@ -13,7 +13,6 @@ pub fn setup_listen(handle: &HandleRef, conn_info: ConnectionInfo) -> TxCompleti
     let key = endpoint::EndPointKey::new(
         address.0,
         our_address,
-        conn_info.protocol_type(),
         conn_info.flags(),
         address.1,
         address.1,
