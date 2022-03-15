@@ -4,6 +4,8 @@ use cargo_metadata::{Metadata, MetadataCommand};
 
 type DynError = Box<dyn std::error::Error>;
 
+use rand::Rng;
+use std::io::{Read, Write};
 fn main() {
     if let Err(e) = try_main() {
         eprintln!("{}", e);
@@ -311,6 +313,64 @@ fn build_crtx(name: &str, build_info: &BuildInfo) -> Result<(), DynError> {
     Ok(())
 }
 
+fn read_stamp() -> Option<String> {
+    let mut file = std::fs::File::open("toolchain/install/stamp").ok()?;
+    let mut rand = vec![];
+    file.read_to_end(&mut rand)
+        .expect("failed to read stamp file");
+    Some(String::from_utf8(rand).expect("stamp file corrupted"))
+}
+
+fn get_twizzler_toolchain_name() -> String {
+    let stamp = read_stamp().expect("failed to read stamp file -- did you run cargo bootstrap?");
+    format!("twizzler-{}", stamp)
+}
+
+fn create_stamp() -> String {
+    let rand: String = rand::thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(8)
+        .map(char::from)
+        .collect();
+    let mut file =
+        std::fs::File::create("toolchain/install/stamp").expect("failed to create stamp file");
+    file.write_all(rand.as_bytes())
+        .expect("failed to write stamp file");
+    rand
+}
+
+enum ReinstallReq {
+    No,
+    Yes,
+    YesAndSubmod,
+}
+
+fn needs_reinstall() -> ReinstallReq {
+    let stamp = std::fs::metadata("toolchain/install/stamp");
+    if stamp.is_err() {
+        return ReinstallReq::YesAndSubmod;
+    }
+    let stamp = stamp
+        .unwrap()
+        .modified()
+        .expect("failed to get system time from metadata");
+    for entry in walkdir::WalkDir::new("src/lib/twizzler-abi").min_depth(1) {
+        let entry = entry.expect("error walking directory");
+        let stat = entry.metadata().expect(&format!(
+            "failed to read metadata for {}",
+            entry.path().display()
+        ));
+        let mtime = stat
+            .modified()
+            .expect("failed to get system time from mtime");
+
+        if mtime >= stamp {
+            return ReinstallReq::Yes;
+        }
+    }
+    ReinstallReq::No
+}
+
 fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
     if !skip_sm {
         let status = Command::new("git")
@@ -347,16 +407,6 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
 
     let status = Command::new("./x.py")
         .arg("install")
-        /*
-        .arg("--keep-stage")
-        .arg("0")
-        .arg("--keep-stage")
-        .arg("1")
-        .arg("--keep-stage-std")
-        .arg("0")
-        .arg("--keep-stage-std")
-        .arg("1")
-        */
         .current_dir("toolchain/src/rust")
         .status()?;
     if !status.success() {
@@ -368,11 +418,16 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
         build_crtx("crtn", bi)?;
     }
 
+    let _stamp = create_stamp();
+    eprintln!(
+        "Adding toolchain {} => toolchain/install",
+        get_twizzler_toolchain_name()
+    );
     /* add to toolchain */
     let status = Command::new("rustup")
         .arg("toolchain")
         .arg("link")
-        .arg("twizzler")
+        .arg(&get_twizzler_toolchain_name())
         .arg("toolchain/install")
         .status()?;
     if !status.success() {
@@ -433,9 +488,32 @@ fn cargo_cmd_collection(
     use_toolchain: bool,
 ) -> Result<(), DynError> {
     eprintln!(
-        "== BUILDING COLLECTION {} ({}) ==",
-        collection_name, build_info
+        "== BUILDING COLLECTION {} ({}) [{}] ==",
+        collection_name,
+        build_info,
+        if use_toolchain {
+            get_twizzler_toolchain_name()
+        } else {
+            String::from("nightly")
+        }
     );
+    if use_toolchain {
+        let res = needs_reinstall();
+        match res {
+            ReinstallReq::Yes => {
+                eprintln!("ERROR: detected that files in twizzler-abi crate are newer than the installed toolchain. Please run `cargo bootstrap --skip-submodules' to update the toolchain.");
+                Err("toolchain not updated")?;
+            }
+            ReinstallReq::YesAndSubmod => {
+                eprintln!(
+                    "ERROR: did not detect installed toolchain Did you run `cargo bootstrap`?"
+                );
+                Err("toolchain not found")?;
+            }
+            ReinstallReq::No => {}
+        }
+    }
+
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let pkg_list: Vec<String> = meta.workspace_metadata[collection_name]
         .as_array()
@@ -465,7 +543,7 @@ fn cargo_cmd_collection(
         status.env("RUSTFLAGS", s);
     }
     if use_toolchain {
-        status.env("RUSTUP_TOOLCHAIN", "twizzler");
+        status.env("RUSTUP_TOOLCHAIN", get_twizzler_toolchain_name());
     }
 
     let status = status.status()?;
