@@ -25,13 +25,17 @@ jobs:
     - name: Chmod
       run: chmod 0600 deploy_key
     - name: Clone
-      run: GIT_SSH_COMMAND='ssh -i deploy_key' git clone git@github.com:twizzler-operating-system/twizzler-operating-system.github.io.git
+      run: GIT_SSH_COMMAND='ssh -i deploy_key' git clone
+      git@github.com:twizzler-operating-system/twizzler-operating-system.github.io.git
+    - name: Install mdbook
+      run: |
+        mkdir mdbook
+        curl -Lf https://github.com/rust-lang/mdBook/releases/download/v0.4.13/mdbook-v0.4.13-x86_64-unknown-linux-gnu.tar.gz | tar -xz --directory=./mdbook
+        echo `pwd`/mdbook >> $GITHUB_PATH
     - name: Build
       run: cargo doc --no-deps
     - name: Copy
       run: mkdir -p twizzler-operating-system.github.io/nightly && cp -r target/doc twizzler-operating-system.github.io/nightly/
-    - name: Install mdbook
-      run: cargo install mdbook
     - name: Build Book
       run: cd doc && mdbook build
     - name: Copy Book
