@@ -18,3 +18,22 @@ All pull requests should be against the 'main' branch.  From time to
 time there may be special exceptions but these must be coordinated
 with the project owners, listed on the main github page.
 
+# Example Workflow
+
+In order to create this set of documentation the following steps were
+carried out.
+
+```
+> git clone git@github.com:twizzler-operating-system/twizzler.git
+
+Create and edit file in doc/src/develop.md
+
+> git branch -b gnn-docs
+> git add doc/src/develop.md
+> git commit
+> git push --set-upstream origin gnn-docs
+
+The pull request was then submitted from the github page for the
+Twizzer project.
+
+Two reviewers were added at the time the PR was committed.
