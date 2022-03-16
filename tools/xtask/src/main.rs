@@ -1,3 +1,10 @@
+mod build;
+mod cargo;
+mod image;
+mod qemu;
+mod toolchain;
+mod triple;
+
 use std::{env, fmt::Display, path::Path, process::Command, str::FromStr, vec};
 
 use cargo_metadata::{Metadata, MetadataCommand};
