@@ -1300,3 +1300,10 @@ pub fn sys_new_handle(
     };
     convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as u64, justval)
 }
+
+#[deprecated]
+pub fn sys_debug_shutdown(code: u32) {
+    unsafe {
+        raw_syscall(Syscall::Null, &[0x12345678, code as u64]);
+    }
+}

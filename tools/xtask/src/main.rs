@@ -78,6 +78,11 @@ impl QemuProfile {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+struct BuildOptions {
+    build_tests: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct BuildInfo {
     profile: Profile,
     arch: Arch,
@@ -131,6 +136,10 @@ fn try_main() -> Result<(), DynError> {
         .possible_values(&["x86_64", "aarch64"])
         .help("Set target architecture");
 
+    let arg_tests = Arg::with_name("tests")
+        .long("tests")
+        .help("Build all test harnesses");
+
     let arg_platform = Arg::with_name("platform")
         .long("platform")
         .takes_value(true)
@@ -176,6 +185,7 @@ fn try_main() -> Result<(), DynError> {
         .arg(arg_platform.clone())
         .arg(arg_message_fmt.clone())
         .arg(arg_workspace.clone())
+        .arg(arg_tests.clone())
         .about("Run cargo build on all Twizzler components");
     let check = SubCommand::with_name("check-all")
         .arg(arg_profile.clone())
@@ -196,6 +206,7 @@ fn try_main() -> Result<(), DynError> {
         .arg(arg_arch.clone())
         .arg(arg_platform.clone())
         .arg(arg_qemu_profile)
+        .arg(arg_tests.clone())
         .arg(arg_qemu);
 
     let mut app = App::new("twizzler-xtask")
@@ -223,6 +234,8 @@ fn try_main() -> Result<(), DynError> {
         None => Profile::Debug,
         _ => unreachable!(),
     };
+
+    let build_tests = sub_matches.is_present("tests");
 
     let arch = match sub_matches.value_of("arch") {
         Some("x86_64") => Arch::X86,
@@ -264,6 +277,7 @@ fn try_main() -> Result<(), DynError> {
         args.push("--manifest-path".to_owned());
         args.push(v.to_owned());
     }
+    let build_options = BuildOptions { build_tests };
     let mut qemu_args = vec![];
     if let Some(q) = sub_matches.values_of("qemu-arg") {
         for item in q {
@@ -272,10 +286,19 @@ fn try_main() -> Result<(), DynError> {
     }
     match sub_name {
         "bootstrap" => bootstrap(sub_matches.is_present("skip-submodules"))?,
-        "build-all" => build_all(&meta, &args, build_info)?,
-        "check-all" => check_all(&meta, &args, build_info)?,
-        "make-disk" => make_disk(&meta, &args, build_info)?,
-        "start-qemu" => start_qemu(&meta, &args, build_info, qemu_profile, &qemu_args)?,
+        "build-all" => {
+            let _ = build_all(&meta, &args, build_info, build_options)?;
+        }
+        "check-all" => check_all(&meta, &args, build_info, build_options)?,
+        "make-disk" => make_disk(&meta, &args, build_info, build_options)?,
+        "start-qemu" => start_qemu(
+            &meta,
+            &args,
+            build_info,
+            qemu_profile,
+            &qemu_args,
+            build_options,
+        )?,
         "build-std" => build_std()?,
         _ => unreachable!(),
     }
@@ -486,7 +509,10 @@ fn cargo_cmd_collection(
     build_info: BuildInfo,
     triple: Option<String>,
     use_toolchain: bool,
-) -> Result<(), DynError> {
+    bin: bool,
+    build_options: BuildOptions,
+    capture_output: bool,
+) -> Result<Option<String>, DynError> {
     eprintln!(
         "== BUILDING COLLECTION {} ({}) [{}] ==",
         collection_name,
@@ -521,7 +547,11 @@ fn cargo_cmd_collection(
         .iter()
         .map(|x| {
             [
-                String::from_str("--bin").unwrap(),
+                if bin {
+                    String::from_str("--bin").unwrap()
+                } else {
+                    String::from_str("--lib").unwrap()
+                },
                 x.to_string().replace("\"", ""),
             ]
         })
@@ -532,6 +562,7 @@ fn cargo_cmd_collection(
         target_args.push("--target".to_owned());
         target_args.push(triple.to_owned());
     }
+    if build_options.build_tests && use_toolchain {}
     let mut status = Command::new(cargo);
     status
         .current_dir(wd)
@@ -546,11 +577,23 @@ fn cargo_cmd_collection(
         status.env("RUSTUP_TOOLCHAIN", get_twizzler_toolchain_name());
     }
 
+    if capture_output {
+        return Ok(Some({
+            let output = status
+                .output()
+                .map_err(|_| String::from("failed to run cargo command"))?;
+            if !output.status.success() {
+                eprintln!("{}", String::from_utf8(output.stderr).unwrap());
+                return Err("failed to run cargo command".into());
+            }
+            String::from_utf8(output.stdout).unwrap()
+        }));
+    }
     let status = status.status()?;
     if !status.success() {
         return Err("failed to run cargo command".into());
     }
-    Ok(())
+    Ok(None)
 }
 
 fn cmd_all(
@@ -558,9 +601,21 @@ fn cmd_all(
     args: &[String],
     cargo_cmd: &str,
     build_info: BuildInfo,
+    build_options: BuildOptions,
 ) -> Result<(), DynError> {
     cargo_cmd_collection(
-        meta, "tools", cargo_cmd, ".", args, None, build_info, None, false,
+        meta,
+        "tools",
+        cargo_cmd,
+        ".",
+        args,
+        None,
+        build_info,
+        None,
+        false,
+        true,
+        build_options,
+        false,
     )?;
     cargo_cmd_collection(
         meta,
@@ -571,6 +626,9 @@ fn cmd_all(
         None,
         build_info,
         None,
+        false,
+        true,
+        build_options,
         false,
     )?;
     if false {
@@ -594,11 +652,19 @@ fn cmd_all(
         build_info,
         Some(build_info.get_twizzler_triple()),
         true,
+        true,
+        build_options,
+        false,
     )?;
     Ok(())
 }
 
-fn check_all(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<(), DynError> {
+fn check_all(
+    meta: &Metadata,
+    args: &[String],
+    build_info: BuildInfo,
+    build_options: BuildOptions,
+) -> Result<(), DynError> {
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     for p in meta.workspace_metadata["checks"].as_array().unwrap().iter() {
         let mut status = Command::new(&cargo);
@@ -613,13 +679,53 @@ fn check_all(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<
             // Err("failed to run cargo command")?;
         }
     }
-    cmd_all(meta, args, "check", build_info)?;
+    cmd_all(meta, args, "check", build_info, build_options)?;
     Ok(())
 }
 
-fn build_all(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<(), DynError> {
-    cmd_all(meta, args, "build", build_info)?;
-    Ok(())
+fn build_all(
+    meta: &Metadata,
+    args: &[String],
+    build_info: BuildInfo,
+    build_options: BuildOptions,
+) -> Result<Option<Vec<String>>, DynError> {
+    cmd_all(meta, &args, "build", build_info, build_options)?;
+    if build_options.build_tests {
+        let mut args = args.to_vec();
+        args.push("--no-run".to_string());
+        args.push("--message-format=json".to_string());
+        let output = cargo_cmd_collection(
+            meta,
+            "tests-libs",
+            "test",
+            ".",
+            &args,
+            None,
+            build_info,
+            Some(build_info.get_twizzler_triple()),
+            true,
+            false,
+            build_options,
+            true,
+        )?
+        .unwrap();
+        let mut v = vec![];
+        for line in output.split("\n") {
+            let json = json::parse(&line);
+            if let Ok(json) = json {
+                if json["reason"] == "compiler-artifact" {
+                    let target = &json["target"];
+                    let exe = &json["executable"];
+                    let is_test = target["test"] == true;
+                    if is_test && !exe.is_null() {
+                        v.push(exe.to_string());
+                    }
+                }
+            }
+        }
+        return Ok(Some(v));
+    }
+    Ok(None)
 }
 
 fn make_path(build_info: BuildInfo, kernel: bool, name: &str) -> String {
@@ -639,18 +745,36 @@ fn make_tool_path(build_info: BuildInfo, name: &str) -> String {
     format!("target/{}/{}", build_info.profile.as_str(), name)
 }
 
-fn make_disk(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<(), DynError> {
-    build_all(meta, args, build_info)?;
+fn make_disk(
+    meta: &Metadata,
+    args: &[String],
+    build_info: BuildInfo,
+    build_options: BuildOptions,
+) -> Result<(), DynError> {
+    let test_bins = build_all(meta, args, build_info, build_options)?;
     let pkg_list: Vec<String> = meta.workspace_metadata["initrd-members"]
         .as_array()
         .unwrap()
         .iter()
         .map(|x| x.to_string().replace("\"", ""))
         .collect();
-    let initrd_files: Vec<String> = pkg_list
+    let mut initrd_files: Vec<String> = pkg_list
         .iter()
         .map(|x| make_path(build_info, false, x))
         .collect();
+    if let Some(test_bins) = test_bins {
+        for b in &test_bins {
+            initrd_files.push(b.to_string());
+        }
+        let mut f = std::fs::File::create(make_path(build_info, true, "test_bins")).unwrap();
+        let s = test_bins.iter().fold(String::new(), |mut x, y| {
+            let path = Path::new(y).file_name().unwrap();
+            x += &format!("{}\n", path.to_string_lossy());
+            x
+        });
+        f.write_all(s.as_bytes()).unwrap();
+        initrd_files.push(make_path(build_info, true, "test_bins"));
+    }
     eprintln!("== BUILDING INITRD ({}) ==", build_info);
     let status = Command::new(make_tool_path(build_info, "initrd_gen"))
         .arg("--output")
@@ -661,9 +785,15 @@ fn make_disk(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<
         return Err("failed to generate initrd".into());
     }
     eprintln!("== BUILDING DISK IMAGE ({}) ==", build_info);
+    let cmdline = if build_options.build_tests {
+        "--tests"
+    } else {
+        ""
+    };
     let status = Command::new(make_tool_path(build_info, "image_builder"))
         .arg(make_path(build_info, true, "twizzler-kernel"))
         .arg(make_path(build_info, true, "initrd"))
+        .arg(cmdline)
         .status()?;
 
     if !status.success() {
@@ -678,8 +808,9 @@ fn start_qemu(
     build_info: BuildInfo,
     qemu_profile: QemuProfile,
     qemu_args: &[String],
+    build_options: BuildOptions,
 ) -> Result<(), DynError> {
-    make_disk(meta, args, build_info)?;
+    make_disk(meta, args, build_info, build_options)?;
     let mut run_cmd = Command::new("qemu-system-x86_64");
     run_cmd.arg("-m").arg("1024,slots=4,maxmem=8G");
     run_cmd.arg("-bios").arg("/usr/share/qemu/OVMF.fd");
@@ -693,6 +824,11 @@ fn start_qemu(
         "memory-backend-file,id=mem1,share=on,mem-path={},size=4G",
         make_path(build_info, true, "pmem.img")
     ));
+    if build_options.build_tests {
+        run_cmd
+            .arg("-device")
+            .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
+    }
     //run_cmd.arg("-d").arg("trace:*ioapic*");
     run_cmd.arg("-device").arg("nvdimm,id=nvdimm1,memdev=mem1");
     const RUN_ARGS: &[&str] = &["--no-reboot", "-s", "-serial", "mon:stdio"]; //, "-vnc", ":0"];
@@ -701,6 +837,14 @@ fn start_qemu(
     run_cmd.args(qemu_args);
 
     let exit_status = run_cmd.status().unwrap();
+    if build_options.build_tests {
+        if exit_status.code().unwrap() == 1 {
+            eprintln!("TESTS PASSED");
+            return Ok(());
+        } else {
+            return Err("TESTS FAILED".into());
+        }
+    }
     if !exit_status.success() {
         return Err("failed to run qemu".into());
     }

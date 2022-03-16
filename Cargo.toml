@@ -21,6 +21,7 @@ tools = ["image_builder", "initrd_gen"]
 kernel = ["twizzler-kernel"]
 initrd-members = ["init", "devmgr", "netmgr", "nettest"]
 checks = ["twizzler-queue-raw"]
+tests-libs = ["twizzler-queue-raw"]
 
 [profile.release]
 debug = true

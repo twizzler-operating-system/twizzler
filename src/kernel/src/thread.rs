@@ -489,7 +489,7 @@ impl Ord for Priority {
 pub fn exit() {
     {
         let th = current_thread_ref().unwrap();
-        logln!("thread {} exited", th.id());
+        //logln!("thread {} exited", th.id());
         th.set_state(ThreadState::Exiting);
         crate::sched::remove_thread(th.id());
         drop(th);
@@ -697,6 +697,7 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> 
     }
     thread.repr = Some(create_blank_object());
     let id = thread.repr.as_ref().unwrap().id();
+    /*
     logln!(
         "starting new thread {} {} with stack k={:p} u={:x},{:x}",
         thread.id,
@@ -705,6 +706,7 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> 
         args.stack_base,
         args.stack_size,
     );
+    */
     schedule_new_thread(thread);
     Ok(id)
 }
