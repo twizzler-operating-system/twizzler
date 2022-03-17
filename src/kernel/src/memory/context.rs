@@ -1,11 +1,13 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use alloc::{collections::BTreeMap, sync::Arc};
-use twizzler_abi::object::Protections;
+use twizzler_abi::{device::CacheType, object::Protections};
 use x86_64::VirtAddr;
 
 use crate::{
-    arch::memory::ArchMemoryContext,
+    arch::memory::{ArchMemoryContext, ArchMemoryContextSwitchInfo},
     idcounter::{Id, IdCounter},
-    mutex::Mutex,
+    mutex::{LockGuard, Mutex},
     obj::{pages::PageRef, ObjectRef},
 };
 
@@ -31,18 +33,38 @@ impl Mapping {
 }
 
 use super::MappingIter;
-pub struct MemoryContext {
+pub struct MemoryContextInner {
     pub arch: ArchMemoryContext,
     slots: BTreeMap<usize, MappingRef>,
-    id: Id<'static>,
     thread_count: u64,
 }
 
-pub type MemoryContextRef = Arc<Mutex<MemoryContext>>;
+impl Default for MemoryContextInner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct MemoryContext {
+    inner: Mutex<MemoryContextInner>,
+    id: Id<'static>,
+    switch_cache: ArchMemoryContextSwitchInfo,
+    upcall: AtomicUsize,
+}
+
+impl Default for MemoryContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub type MemoryContextRef = Arc<MemoryContext>;
 
 impl PartialEq for MemoryContext {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        let ida = { self.id.value() };
+        let idb = { other.id.value() };
+        ida == idb
     }
 }
 
@@ -50,19 +72,17 @@ impl Eq for MemoryContext {}
 
 impl PartialOrd for MemoryContext {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        self.id.partial_cmp(&other.id)
+        let ida = { self.id.value() };
+        let idb = { other.id.value() };
+        ida.partial_cmp(&idb)
     }
 }
 
 impl Ord for MemoryContext {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.id.cmp(&other.id)
-    }
-}
-
-impl crate::idcounter::StableId for MemoryContext {
-    fn id(&self) -> &crate::idcounter::Id<'_> {
-        &self.id
+        let ida = { self.id.value() };
+        let idb = { other.id.value() };
+        ida.cmp(&idb)
     }
 }
 
@@ -122,12 +142,11 @@ pub fn addr_to_slot(addr: VirtAddr) -> usize {
 }
 
 static ID_COUNTER: IdCounter = IdCounter::new();
-impl MemoryContext {
+impl MemoryContextInner {
     pub fn new_blank() -> Self {
         Self {
             arch: ArchMemoryContext::new_blank(),
             slots: BTreeMap::new(),
-            id: ID_COUNTER.next(),
             thread_count: 0,
         }
     }
@@ -137,7 +156,6 @@ impl MemoryContext {
             // TODO: this is inefficient
             arch: ArchMemoryContext::current_tables().clone_empty_user(),
             slots: BTreeMap::new(),
-            id: ID_COUNTER.next(),
             thread_count: 0,
         }
     }
@@ -146,7 +164,6 @@ impl MemoryContext {
         Self {
             arch: ArchMemoryContext::current_tables(),
             slots: BTreeMap::new(),
-            id: ID_COUNTER.next(),
             thread_count: 0,
         }
     }
@@ -165,13 +182,6 @@ impl MemoryContext {
             self.clear_mappings();
         }
     }
-
-    pub fn switch(&self) {
-        unsafe {
-            self.arch.switch();
-        }
-    }
-
     pub fn mappings_iter(&self, start: VirtAddr) -> MappingIter {
         MappingIter::new(self, start)
     }
@@ -187,6 +197,7 @@ impl MemoryContext {
                 page.physical_address(),
                 0x1000,
                 MapFlags::USER | perms.into(),
+                page.cache_type(),
             )
             .unwrap(); //TODO
     }
@@ -196,7 +207,7 @@ impl MemoryContext {
         self.slots.insert(mapping.slot, mapping);
     }
 
-    pub fn clone_region(&mut self, other_ctx: &MemoryContext, addr: VirtAddr) {
+    pub fn clone_region(&mut self, other_ctx: &MemoryContextInner, addr: VirtAddr) {
         for mapping in other_ctx.mappings_iter(addr) {
             self.arch
                 .map(
@@ -204,8 +215,78 @@ impl MemoryContext {
                     mapping.frame,
                     mapping.length,
                     mapping.flags | MapFlags::USER, //TODO,
+                    CacheType::WriteBack,
                 )
                 .unwrap();
         }
+    }
+
+    pub fn switch(&self) {
+        unsafe {
+            self.arch.get_switch_info().switch();
+        }
+    }
+}
+
+impl MemoryContext {
+    pub fn new_blank() -> Self {
+        let inner = Mutex::new(MemoryContextInner::new_blank());
+        let switch_cache = { inner.lock().arch.get_switch_info() };
+        Self {
+            inner,
+            switch_cache,
+            id: ID_COUNTER.next(),
+            upcall: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn new() -> Self {
+        let inner = Mutex::new(MemoryContextInner::new());
+        let switch_cache = { inner.lock().arch.get_switch_info() };
+        Self {
+            inner,
+            switch_cache,
+            id: ID_COUNTER.next(),
+            upcall: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn current() -> Self {
+        let inner = Mutex::new(MemoryContextInner::current());
+        let switch_cache = { inner.lock().arch.get_switch_info() };
+        Self {
+            inner,
+            switch_cache,
+            id: ID_COUNTER.next(),
+            upcall: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn switch(&self) {
+        unsafe {
+            self.switch_cache.switch();
+        }
+    }
+
+    pub fn inner(&self) -> LockGuard<'_, MemoryContextInner> {
+        self.inner.lock()
+    }
+
+    pub fn set_upcall_address(&self, target: usize) {
+        self.upcall.store(target, Ordering::SeqCst);
+    }
+
+    pub fn get_upcall_address(&self) -> Option<usize> {
+        match self.upcall.load(Ordering::SeqCst) {
+            0 => None,
+            n => Some(n),
+        }
+    }
+}
+
+use crate::syscall::object::ObjectHandle;
+impl ObjectHandle for MemoryContextRef {
+    fn create_with_handle(_obj: ObjectRef) -> Self {
+        Arc::new(MemoryContext::new())
     }
 }

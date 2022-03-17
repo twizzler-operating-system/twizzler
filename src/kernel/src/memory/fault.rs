@@ -22,9 +22,10 @@ pub enum PageFaultCause {
 }
 
 pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, ip: VirtAddr) {
-    if true {
+    if false {
         logln!(
-            "page fault at {:?} cause {:?} flags {:?}, at {:?}",
+            "(thrd {}) page fault at {:?} cause {:?} flags {:?}, at {:?}",
+            current_thread_ref().map(|t| t.id()).unwrap_or(0),
             addr,
             cause,
             flags,
@@ -42,7 +43,7 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
         panic!("page fault in thread with no memory context");
     }
     let vmc = vmc.unwrap();
-    let mapping = { vmc.lock().lookup_object(addr) };
+    let mapping = { vmc.inner().lookup_object(addr) };
 
     if let Some(mapping) = mapping {
         let objid = mapping.obj.id();
@@ -50,8 +51,12 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
         let mut obj_page_tree = mapping.obj.lock_page_tree();
         let is_write = cause == PageFaultCause::Write;
 
+        if page_number == PageNumber::from_address(VirtAddr::new(0)) {
+            panic!("zero-page fault {:?} ip: {:?} cause {:?}", addr, ip, cause);
+        }
+
         if let Some((page, cow)) = obj_page_tree.get_page(page_number, is_write) {
-            let mut vmc = vmc.lock();
+            let mut vmc = vmc.inner();
             /* check if mappings changed */
             if vmc.lookup_object(addr).map_or(0.into(), |o| o.obj.id()) != objid {
                 drop(vmc);
@@ -70,7 +75,21 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
             } else {
                 mapping.perms
             };
+            if false {
+                logln!(
+                    "  => mapping {:?} page {:?} {:?}",
+                    objid,
+                    page_number,
+                    page.physical_address()
+                );
+            }
             vmc.map_object_page(addr, page, perms);
+            if flags.contains(PageFaultFlags::PRESENT) {
+                unsafe {
+                    // TODO: see #32
+                    asm!("mov rax, cr3", "mov cr3, rax", lateout("rax") _);
+                }
+            }
         } else {
             let page = Page::new();
             obj_page_tree.add_page(page_number, page);

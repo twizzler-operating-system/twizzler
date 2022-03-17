@@ -5,21 +5,20 @@ edition = "2021"
 
 
 [dependencies]
-bitflags = "*"
+bitflags = "1.3.2"
 uart_16550 = "0.2.0"
-spin = "*"
-x86 = "*"
-x86_64 = "*"
-linked_list_allocator = "*"
+x86 = "=0.44.0"
+x86_64 = "=0.14.7"
+linked_list_allocator = "0.9.1"
 backtracer_core = {git = "https://github.com/gz/backtracer"}
-object = {version = "0.27", default-features = false, features = ["read"]}
+object = {version = "=0.27.0", default-features = false, features = ["read"]}
 addr2line = { version = "0.16", default-features = false, features = ["rustc-demangle"] }
-slabmalloc = "*"
-fixedbitset = {version = "*", default-features = false}
-acpi = "*"
-stivale-boot = "*"
-xmas-elf = "*"
-tar-no-std = "*"
+slabmalloc = "0.10.0"
+fixedbitset = {version = "0.4.1", default-features = false}
+acpi = "4.1.0"
+stivale-boot = "0.2.6"
+xmas-elf = "0.8.0"
+tar-no-std = "0.1.7"
 nonoverlapping_interval_tree = {version = "0.1.3", default-features = false}
 twizzler-abi = { path = "../lib/twizzler-abi", default-features = false, features = ["kernel"]}
 

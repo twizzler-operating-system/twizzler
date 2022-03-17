@@ -1,3 +1,4 @@
+use twizzler_abi::device::CacheType;
 use x86_64::{structures::paging::PageTable, PhysAddr, VirtAddr};
 
 fn translate_addr_inner(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<PhysAddr> {
@@ -30,7 +31,7 @@ fn translate_addr_inner(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<Phy
     Some(frame.start_address() + u64::from(addr.page_offset()))
 }
 
-pub unsafe fn translate_addr(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<PhysAddr> {
+pub fn translate_addr(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<PhysAddr> {
     translate_addr_inner(addr, phys_mem_offset)
 }
 
@@ -40,6 +41,7 @@ use crate::memory::context::MapFlags;
 use crate::memory::frame::{alloc_frame, PhysicalFrameFlags};
 use crate::memory::{MapFailed, MappingInfo};
 
+#[allow(clippy::missing_safety_doc)]
 pub unsafe fn init(phys_mem_offset: VirtAddr) -> OffsetPageTable<'static> {
     let level_4_table = active_level_4_table(phys_mem_offset);
     OffsetPageTable::new(level_4_table, phys_mem_offset)
@@ -81,8 +83,8 @@ impl Table {
 
     #[optimize(speed)]
     fn map(&mut self, idx: usize, entry: u64) {
-        let existing = self.as_slice()[idx];
-        assert!(existing == 0 || existing == entry);
+        let _existing = self.as_slice()[idx];
+        //assert!(existing == 0 || existing == entry);
         self.as_slice_mut()[idx] = entry;
     }
 
@@ -191,6 +193,10 @@ impl MapFlags {
     }
 }
 
+pub struct ArchMemoryContextSwitchInfo {
+    target: u64,
+}
+
 const PAGE_SIZE_HUGE: usize = 1024 * 1024 * 1024;
 const PAGE_SIZE_LARGE: usize = 2 * 1024 * 1024;
 const PAGE_SIZE: usize = 0x1000;
@@ -216,8 +222,10 @@ impl ArchMemoryContext {
         self.table_root.frame
     }
 
-    pub unsafe fn switch(&self) {
-        x86::controlregs::cr3_write(self.root().as_u64())
+    pub fn get_switch_info(&self) -> ArchMemoryContextSwitchInfo {
+        ArchMemoryContextSwitchInfo {
+            target: self.root().as_u64(),
+        }
     }
 
     pub fn clone_empty_user(&self) -> Self {
@@ -361,12 +369,19 @@ impl ArchMemoryContext {
         phys: PhysAddr,
         mut length: usize,
         flags: MapFlags,
+        cache_type: CacheType,
     ) -> Result<(), MapFailed> {
         if start.as_u64().checked_add(length as u64).is_none() {
             length -= PAGE_SIZE;
         }
         let end = start + length;
         let mut count = 0usize;
+        let cache_bits = match cache_type {
+            CacheType::WriteBack => 0,
+            CacheType::WriteCombining => 0, // TODO: is this correct?
+            CacheType::WriteThrough => (1 << 3),
+            CacheType::Uncachable => (1 << 4),
+        };
         loop {
             let addr = start.as_u64().checked_add(count as u64);
             let addr = if let Some(addr) = addr {
@@ -407,7 +422,10 @@ impl ArchMemoryContext {
             }
             table.map(
                 indexes[nr_recur].into(),
-                frame.as_u64() | flags.entry_bits() | if nr_recur < 3 { 0b10000000 } else { 0 },
+                frame.as_u64()
+                    | flags.entry_bits()
+                    | if nr_recur < 3 { 0b10000000 } else { 0 }
+                    | cache_bits,
             );
             count += match nr_recur {
                 1 => PAGE_SIZE_HUGE,
@@ -417,5 +435,14 @@ impl ArchMemoryContext {
             };
         }
         Ok(())
+    }
+}
+
+impl ArchMemoryContextSwitchInfo {
+    /// Switch context.
+    /// # Safety
+    /// The context must be valid.
+    pub unsafe fn switch(&self) {
+        x86::controlregs::cr3_write(self.target)
     }
 }

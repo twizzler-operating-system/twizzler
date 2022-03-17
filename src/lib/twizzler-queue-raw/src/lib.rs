@@ -206,7 +206,7 @@ impl RawQueueHdr {
         &self,
         flags: SubmissionFlags,
         wait: W,
-    ) -> Result<u32, SubmissionError> {
+    ) -> Result<u32, QueueError> {
         let h = self.head.fetch_add(1, Ordering::SeqCst);
         let mut waiter = false;
         let mut attempts = 1000;
@@ -217,7 +217,7 @@ impl RawQueueHdr {
             }
 
             if flags.contains(SubmissionFlags::NON_BLOCK) {
-                return Err(SubmissionError::WouldBlock);
+                return Err(QueueError::WouldBlock);
             }
 
             if attempts != 0 {
@@ -263,7 +263,7 @@ impl RawQueueHdr {
         wait: W,
         flags: ReceiveFlags,
         raw_buf: *const QueueEntry<T>,
-    ) -> Result<u64, ReceiveError> {
+    ) -> Result<u64, QueueError> {
         let mut attempts = 1000;
         let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
         loop {
@@ -275,7 +275,7 @@ impl RawQueueHdr {
             }
 
             if flags.contains(ReceiveFlags::NON_BLOCK) {
-                return Err(ReceiveError::WouldBlock);
+                return Err(QueueError::WouldBlock);
             }
 
             if attempts != 0 {
@@ -297,12 +297,26 @@ impl RawQueueHdr {
         Ok(t)
     }
 
+    fn setup_rec_sleep_simple(&self) -> (&AtomicU64, u64) {
+        // TODO: an interface that undoes this.
+        self.consumer_set_waiting(true);
+        let b = self.bell.load(Ordering::SeqCst);
+        (&self.bell, b)
+    }
+
+    fn setup_send_sleep_simple(&self) -> (&AtomicU64, u64) {
+        // TODO: an interface that undoes this.
+        self.submitter_waiting();
+        let t = self.tail.load(Ordering::SeqCst);
+        (&self.tail, t)
+    }
+
     fn setup_rec_sleep<'a, T>(
         &'a self,
         sleep: bool,
         raw_buf: *const QueueEntry<T>,
         waiter: &mut (Option<&'a AtomicU64>, u64),
-    ) -> Result<u64, ReceiveError> {
+    ) -> Result<u64, QueueError> {
         let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
         let b = self.bell.load(Ordering::SeqCst);
         let item = unsafe { raw_buf.add((t as usize) & (self.len() - 1)) };
@@ -316,9 +330,9 @@ impl RawQueueHdr {
                     return Ok(t);
                 }
             }
-            return Err(ReceiveError::WouldBlock);
+            Err(QueueError::WouldBlock)
         } else {
-            return Ok(t);
+            Ok(t)
         }
     }
 
@@ -342,8 +356,8 @@ impl RawQueueHdr {
 }
 
 /// A raw queue, comprising of a header to track the algorithm and a buffer to hold queue entries.
-pub struct RawQueue<'a, T> {
-    hdr: &'a RawQueueHdr,
+pub struct RawQueue<T> {
+    hdr: *const RawQueueHdr,
     buf: UnsafeCell<*mut QueueEntry<T>>,
 }
 
@@ -363,29 +377,28 @@ bitflags::bitflags! {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// Possible errors for submitting to a queue.
-pub enum SubmissionError {
+pub enum QueueError {
     /// An unknown error.
     Unknown,
     /// The operation would have blocked, and non-blocking operation was specified.
     WouldBlock,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-/// Possible errors for receiving from a queue.
-pub enum ReceiveError {
-    /// An unknown error.
-    Unknown,
-    /// The operation would have blocked, and non-blocking operation was specified.
-    WouldBlock,
-}
-
-impl<'a, T: Copy> RawQueue<'a, T> {
+impl<T: Copy> RawQueue<T> {
     /// Construct a new raw queue out of a header reference and a buffer pointer.
-    pub fn new(hdr: &'a RawQueueHdr, buf: *mut QueueEntry<T>) -> Self {
+    /// # Safety
+    /// The caller must ensure that hdr and buf point to valid objects, and that the lifetime of the
+    /// RawQueue is exceeded by the objects pointed to.
+    pub unsafe fn new(hdr: *const RawQueueHdr, buf: *mut QueueEntry<T>) -> Self {
         Self {
             hdr,
             buf: UnsafeCell::new(buf),
         }
+    }
+
+    #[inline]
+    fn hdr(&self) -> &RawQueueHdr {
+        unsafe { &*self.hdr }
     }
 
     // This is a bit unsafe, but it's because we're managing concurrency ourselves.
@@ -394,7 +407,7 @@ impl<'a, T: Copy> RawQueue<'a, T> {
     fn get_buf(&self, off: usize) -> &mut QueueEntry<T> {
         unsafe {
             (*self.buf.get())
-                .add(off & (self.hdr.len() - 1))
+                .add(off & (self.hdr().len() - 1))
                 .as_mut()
                 .unwrap()
         }
@@ -411,14 +424,14 @@ impl<'a, T: Copy> RawQueue<'a, T> {
         wait: W,
         ring: R,
         flags: SubmissionFlags,
-    ) -> Result<(), SubmissionError> {
-        let h = self.hdr.reserve_slot(flags, wait)?;
+    ) -> Result<(), QueueError> {
+        let h = self.hdr().reserve_slot(flags, wait)?;
         let buf_item = self.get_buf(h as usize);
         *buf_item = item;
-        let turn = self.hdr.get_turn(h);
+        let turn = self.hdr().get_turn(h);
         buf_item.set_cmd_slot(h | if turn { 1u32 << 31 } else { 0 });
 
-        self.hdr.ring(ring);
+        self.hdr().ring(ring);
         Ok(())
     }
 
@@ -429,36 +442,46 @@ impl<'a, T: Copy> RawQueue<'a, T> {
         wait: W,
         ring: R,
         flags: ReceiveFlags,
-    ) -> Result<QueueEntry<T>, ReceiveError> {
+    ) -> Result<QueueEntry<T>, QueueError> {
         let t = self
-            .hdr
+            .hdr()
             .get_next_ready(wait, flags, unsafe { *self.buf.get() })?;
         let buf_item = self.get_buf(t as usize);
         let item = *buf_item;
-        self.hdr.advance_tail(ring);
+        self.hdr().advance_tail(ring);
         Ok(item)
     }
 
-    pub fn setup_sleep(
-        &self,
+    pub fn setup_sleep<'a>(
+        &'a self,
         sleep: bool,
         output: &mut Option<QueueEntry<T>>,
         waiter: &mut (Option<&'a AtomicU64>, u64),
         ringer: &mut Option<&'a AtomicU64>,
-    ) -> Result<(), ReceiveError> {
+    ) -> Result<(), QueueError> {
         let t = self
-            .hdr
+            .hdr()
             .setup_rec_sleep(sleep, unsafe { *self.buf.get() }, waiter)?;
         let buf_item = self.get_buf(t as usize);
         let item = *buf_item;
         *output = Some(item);
-        self.hdr.advance_tail_setup(ringer);
+        self.hdr().advance_tail_setup(ringer);
         Ok(())
+    }
+
+    #[inline]
+    pub fn setup_sleep_simple(&self) -> (&AtomicU64, u64) {
+        self.hdr().setup_rec_sleep_simple()
+    }
+
+    #[inline]
+    pub fn setup_send_sleep_simple(&self) -> (&AtomicU64, u64) {
+        self.hdr().setup_send_sleep_simple()
     }
 }
 
-unsafe impl<'a, T: Send> Send for RawQueue<'a, T> {}
-unsafe impl<'a, T: Send> Sync for RawQueue<'a, T> {}
+unsafe impl<T: Send> Send for RawQueue<T> {}
+unsafe impl<T: Send> Sync for RawQueue<T> {}
 
 #[cfg(any(feature = "std", test))]
 /// Wait for receiving on multiple raw queues. If any of the passed raw queues can return data, they
@@ -473,7 +496,7 @@ unsafe impl<'a, T: Send> Sync for RawQueue<'a, T> {}
 /// there was no requested wait or wake operation for that queue, and that entry should be ignored.
 ///
 /// If flags specifies [ReceiveFlags::NON_BLOCK], then if no data is available, the function returns
-/// immediately with Err([ReceiveError::WouldBlock]).
+/// immediately with Err([QueueError::WouldBlock]).
 ///
 /// # Rationale
 /// This function is here to implement poll or select like functionality, wherein a given thread or
@@ -485,20 +508,15 @@ unsafe impl<'a, T: Send> Sync for RawQueue<'a, T> {}
 /// The complexity of the multi_wait and multi_ring callbacks is present to avoid calling into the
 /// kernel often for high-contention queues.
 ///
-pub fn multi_receive<
-    'a,
-    T: Copy,
-    W: Fn(&[(Option<&AtomicU64>, u64)]),
-    R: Fn(&[Option<&AtomicU64>]),
->(
-    queues: &[&RawQueue<'a, T>],
+pub fn multi_receive<T: Copy, W: Fn(&[(Option<&AtomicU64>, u64)]), R: Fn(&[Option<&AtomicU64>])>(
+    queues: &[&RawQueue<T>],
     output: &mut [Option<QueueEntry<T>>],
     multi_wait: W,
     multi_ring: R,
     flags: ReceiveFlags,
-) -> Result<usize, ReceiveError> {
+) -> Result<usize, QueueError> {
     if output.len() != queues.len() {
-        return Err(ReceiveError::Unknown);
+        return Err(QueueError::Unknown);
     }
     /* TODO (opt): avoid this allocation until we have to sleep */
     let mut waiters = Vec::new();
@@ -524,7 +542,7 @@ pub fn multi_receive<
             return Ok(count);
         }
         if flags.contains(ReceiveFlags::NON_BLOCK) {
-            return Err(ReceiveError::WouldBlock);
+            return Err(QueueError::WouldBlock);
         }
         if attempts > 0 {
             attempts -= 1;
@@ -543,15 +561,8 @@ mod tests {
     use syscalls::SyscallArgs;
 
     use crate::multi_receive;
-    use crate::ReceiveError;
-    use crate::SubmissionError;
+    use crate::QueueError;
     use crate::{QueueEntry, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags};
-
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
 
     fn wait(x: &AtomicU64, v: u64) {
         // println!("wait");
@@ -582,7 +593,7 @@ mod tests {
     fn it_transmits() {
         let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
         let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
-        let q = RawQueue::new(&qh, buffer.as_mut_ptr());
+        let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
 
         for i in 0..100 {
             let res = q.submit(
@@ -603,7 +614,7 @@ mod tests {
     fn it_fills() {
         let qh = RawQueueHdr::new(2, std::mem::size_of::<QueueEntry<u32>>());
         let mut buffer = [QueueEntry::<i32>::default(); 1 << 2];
-        let q = RawQueue::new(&qh, buffer.as_mut_ptr());
+        let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
 
         let res = q.submit(QueueEntry::new(1, 7), wait, wake, SubmissionFlags::empty());
         assert_eq!(res, Ok(()));
@@ -626,7 +637,7 @@ mod tests {
     fn it_nonblock_receives() {
         let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
         let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
-        let q = RawQueue::new(&qh, buffer.as_mut_ptr());
+        let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
 
         let res = q.submit(QueueEntry::new(1, 7), wait, wake, SubmissionFlags::empty());
         assert_eq!(res, Ok(()));
@@ -642,11 +653,11 @@ mod tests {
     fn it_multi_receives() {
         let qh1 = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
         let mut buffer1 = [QueueEntry::<i32>::default(); 1 << 4];
-        let q1 = RawQueue::new(&qh1, buffer1.as_mut_ptr());
+        let q1 = unsafe { RawQueue::new(&qh1, buffer1.as_mut_ptr()) };
 
         let qh2 = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
         let mut buffer2 = [QueueEntry::<i32>::default(); 1 << 4];
-        let q2 = RawQueue::new(&qh2, buffer2.as_mut_ptr());
+        let q2 = unsafe { RawQueue::new(&qh2, buffer2.as_mut_ptr()) };
 
         let res = q1.submit(QueueEntry::new(1, 7), wait, wake, SubmissionFlags::empty());
         assert_eq!(res, Ok(()));
@@ -674,10 +685,12 @@ mod tests {
     fn two_threads(b: &mut test::Bencher) -> impl Termination {
         let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
         let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
-        let q = RawQueue::new(
-            unsafe { std::mem::transmute::<&RawQueueHdr, &'static RawQueueHdr>(&qh) },
-            buffer.as_mut_ptr(),
-        );
+        let q = unsafe {
+            RawQueue::new(
+                std::mem::transmute::<&RawQueueHdr, &'static RawQueueHdr>(&qh),
+                buffer.as_mut_ptr(),
+            )
+        };
 
         //let count = AtomicU64::new(0);
         let x = crossbeam::scope(|s| {

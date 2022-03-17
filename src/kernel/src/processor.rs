@@ -4,8 +4,8 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+use crate::{once::Once, spinlock::Spinlock};
 use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
-use spin::{Mutex, Once};
 use x86_64::VirtAddr;
 
 use crate::{
@@ -42,10 +42,11 @@ pub struct ProcessorStats {
 
 pub struct Processor {
     pub arch: ArchProcessor,
-    pub sched: Mutex<SchedulingQueues>,
+    pub sched: Spinlock<SchedulingQueues>,
     running: AtomicBool,
     topology_path: Once<Vec<(usize, bool)>>,
     pub id: u32,
+    bsp_id: u32,
     pub idle_thread: Once<ThreadRef>,
     pub load: AtomicU64,
     pub stats: ProcessorStats,
@@ -151,13 +152,14 @@ impl SchedulingQueues {
 }
 
 impl Processor {
-    pub fn new(id: u32) -> Self {
+    pub fn new(id: u32, bsp_id: u32) -> Self {
         Self {
             arch: ArchProcessor::default(),
-            sched: Mutex::new(Default::default()),
+            sched: Spinlock::new(Default::default()),
             running: AtomicBool::new(false),
             topology_path: Once::new(),
             id,
+            bsp_id,
             idle_thread: Once::new(),
             load: AtomicU64::new(1),
             stats: ProcessorStats::default(),
@@ -165,7 +167,11 @@ impl Processor {
     }
 
     pub fn is_bsp(&self) -> bool {
-        self.id == 0
+        self.id == self.bsp_id
+    }
+
+    pub fn bsp_id(&self) -> u32 {
+        self.bsp_id
     }
 
     pub fn current_priority(&self) -> Priority {
@@ -217,32 +223,48 @@ pub fn tls_ready() -> bool {
 
 pub const KERNEL_STACK_SIZE: usize = 81920;
 
+const MIN_TLS_ALIGN: usize = 16;
+
 fn init_tls(tls_template: TlsInfo) -> VirtAddr {
-    /* TODO: this is pretty specific to the x86_64 ELF TLS ABI. */
-    let tls_size = tls_template.mem_size + core::mem::size_of::<*const u8>() + 16;
-    let layout = Layout::from_size_align(tls_size, 16).unwrap();
+    let mut tls_size = tls_template.mem_size;
+    let alignment = tls_template.align;
+
+    let start_address_ptr = tls_template.start_addr.as_ptr();
+
+    // The rhs of the below expression essentially calculates the amount of padding
+    // we will have to introduce within the TLS region in order to achieve the desired
+    // alignment.
+    tls_size += (((!tls_size) + 1) - (start_address_ptr as usize)) & (alignment - 1);
+
+    let tls_align = core::cmp::max(alignment, MIN_TLS_ALIGN);
+    let full_tls_size = (core::mem::size_of::<*const u8>() + tls_size + tls_align + MIN_TLS_ALIGN
+        - 1)
+        & ((!MIN_TLS_ALIGN) + 1);
+
+    let layout =
+        Layout::from_size_align(full_tls_size, tls_align).expect("failed to unwrap TLS layout");
+
     let tls = unsafe {
         let tls = alloc::alloc::alloc_zeroed(layout);
-        let tls = tls.add(16 - (tls_template.mem_size % 16));
-        core::ptr::copy_nonoverlapping(
-            tls_template.start_addr.as_ptr(),
-            tls,
-            tls_template.file_size as usize,
-        );
+
+        core::ptr::copy_nonoverlapping(start_address_ptr, tls, tls_template.file_size);
+
         tls
     };
-    let tcb_base = VirtAddr::from_ptr(tls) + tls_template.mem_size;
+    let tcb_base = VirtAddr::from_ptr(tls) + full_tls_size;
+
     unsafe { *(tcb_base.as_mut_ptr()) = tcb_base.as_u64() };
+
     tcb_base
 }
 
-pub fn init_cpu(tls_template: TlsInfo) {
+pub fn init_cpu(tls_template: TlsInfo, bsp_id: u32) {
     let tcb_base = init_tls(tls_template);
     crate::arch::processor::init(tcb_base);
     unsafe {
         BOOT_KERNEL_STACK = 0xfffffff000001000u64 as *mut u8; //TODO: get this from bootloader config?
-        CPU_ID = 0; //TODO: we should fix this to avoid assuming BSP is ID 0
-        CURRENT_PROCESSOR = &**ALL_PROCESSORS[0].as_ref().unwrap();
+        CPU_ID = bsp_id;
+        CURRENT_PROCESSOR = &**ALL_PROCESSORS[CPU_ID as usize].as_ref().unwrap();
     }
     let topo_path = arch::processor::get_topology();
     current_processor().set_topology(topo_path);
@@ -321,16 +343,14 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
     CPU_MAIN_BARRIER.store(true, core::sync::atomic::Ordering::SeqCst);
 }
 
-pub fn register(id: u32, is_bsp: bool) {
+pub fn register(id: u32, bsp_id: u32) {
     if id as usize >= unsafe { &ALL_PROCESSORS }.len() {
         unimplemented!("processor ID too large");
     }
-    if id != 0 && is_bsp {
-        unimplemented!("we currently assume BSP is ID 0");
-    }
+
     unsafe {
-        ALL_PROCESSORS[id as usize] = Some(Box::new(Processor::new(id)));
-        if is_bsp {
+        ALL_PROCESSORS[id as usize] = Some(Box::new(Processor::new(id, bsp_id)));
+        if id == bsp_id {
             ALL_PROCESSORS[id as usize].as_ref().unwrap().set_running();
         }
     }

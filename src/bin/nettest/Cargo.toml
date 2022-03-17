@@ -1,0 +1,12 @@
+[package]
+name = "nettest"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+twizzler-net = {path="../../lib/twizzler-net"}
+twizzler = {path = "../../lib/twizzler"}
+twizzler-async = {path = "../../lib/twizzler-async"}
+byteorder = "1.4.3"

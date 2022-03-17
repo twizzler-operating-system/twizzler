@@ -5,19 +5,25 @@ use core::{
 };
 
 use alloc::{boxed::Box, sync::Arc};
-use twizzler_abi::{aux::AuxEntry, object::ObjID, syscall::ThreadSpawnArgs};
+use twizzler_abi::{
+    aux::{AuxEntry, KernelInitInfo, KernelInitName},
+    object::ObjID,
+    syscall::{ThreadSpawnArgs, ThreadSpawnError},
+    upcall::UpcallInfo,
+};
 use x86_64::VirtAddr;
 use xmas_elf::program::SegmentData;
 
 use crate::{
     idcounter::{Id, IdCounter},
+    initrd::get_boot_objects,
     interrupt,
     memory::context::{MappingPerms, MemoryContext, MemoryContextRef},
-    mutex::Mutex,
     obj::ObjectRef,
     processor::{get_processor, KERNEL_STACK_SIZE},
     sched::schedule_new_thread,
     spinlock::Spinlock,
+    syscall::object::get_vmcontext_from_handle,
 };
 
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
@@ -56,6 +62,8 @@ pub struct ThreadStats {
 const THREAD_PROC_IDLE: u32 = 1;
 const THREAD_HAS_DONATED_PRIORITY: u32 = 2;
 const THREAD_IN_KERNEL: u32 = 4;
+const THREAD_IS_SYNC_SLEEP: u32 = 8;
+const THREAD_IS_SYNC_SLEEP_DONE: u32 = 16;
 pub struct Thread {
     pub arch: crate::arch::thread::ArchThread,
     pub priority: Priority,
@@ -82,8 +90,7 @@ pub type ThreadRef = Arc<Thread>;
 static CURRENT_THREAD: RefCell<Option<ThreadRef>> = RefCell::new(None);
 
 pub fn current_thread_ref() -> Option<ThreadRef> {
-    // TODO: make unlikely
-    if !crate::processor::tls_ready() {
+    if core::intrinsics::unlikely(!crate::processor::tls_ready()) {
         return None;
     }
     interrupt::with_disabled(|| CURRENT_THREAD.borrow().clone())
@@ -143,17 +150,26 @@ impl Thread {
         }
     }
 
+    // TODO: cleanup all these new variants
     pub fn new_with_new_vm() -> Self {
         let mut thread = Self::new();
-        thread.memory_context = Some(Arc::new(Mutex::new(MemoryContext::new())));
-        thread.memory_context.as_ref().unwrap().lock().add_thread();
+        thread.memory_context = Some(Arc::new(MemoryContext::new()));
+        thread.memory_context.as_ref().unwrap().inner().add_thread();
         thread
     }
 
     pub fn new_with_current_context(spawn_args: ThreadSpawnArgs) -> Self {
         let mut thread = Self::new();
-        thread.memory_context = Some(current_memory_context().unwrap().clone());
-        thread.memory_context.as_ref().unwrap().lock().add_thread();
+        thread.memory_context = Some(current_memory_context().unwrap());
+        thread.memory_context.as_ref().unwrap().inner().add_thread();
+        thread.spawn_args = Some(spawn_args);
+        thread
+    }
+
+    pub fn new_with_handle_context(spawn_args: ThreadSpawnArgs, vmc: MemoryContextRef) -> Self {
+        let mut thread = Self::new();
+        thread.memory_context = Some(vmc);
+        thread.memory_context.as_ref().unwrap().inner().add_thread();
         thread.spawn_args = Some(spawn_args);
         thread
     }
@@ -166,10 +182,33 @@ impl Thread {
         thread
     }
 
+    pub fn set_sync_sleep(&self) {
+        self.flags.fetch_or(THREAD_IS_SYNC_SLEEP, Ordering::SeqCst);
+    }
+
+    pub fn reset_sync_sleep(&self) -> bool {
+        let old = self
+            .flags
+            .fetch_and(!THREAD_IS_SYNC_SLEEP, Ordering::SeqCst);
+        (old & THREAD_IS_SYNC_SLEEP) != 0
+    }
+
+    pub fn set_sync_sleep_done(&self) {
+        self.flags
+            .fetch_or(THREAD_IS_SYNC_SLEEP_DONE, Ordering::SeqCst);
+    }
+
+    pub fn reset_sync_sleep_done(&self) -> bool {
+        let old = self
+            .flags
+            .fetch_and(!THREAD_IS_SYNC_SLEEP_DONE, Ordering::SeqCst);
+        (old & THREAD_IS_SYNC_SLEEP_DONE) != 0
+    }
+
     pub fn switch_thread(&self, current: &Thread) {
         if self != current {
             if let Some(ref ctx) = self.memory_context {
-                ctx.lock().switch();
+                ctx.switch();
             }
         }
         self.arch_switch_to(current)
@@ -311,13 +350,20 @@ impl Thread {
     pub fn id(&self) -> u64 {
         self.id.value()
     }
+
+    pub fn send_upcall(&self, info: UpcallInfo) {
+        // TODO
+        let ctx = current_memory_context().unwrap();
+        let upcall = ctx.get_upcall_address().unwrap();
+        self.arch_queue_upcall(upcall, info);
+    }
 }
 
 impl Drop for Thread {
     fn drop(&mut self) {
         //logln!("drop thread {}", self.id());
         if let Some(ref vm) = self.memory_context {
-            vm.lock().remove_thread();
+            vm.inner().remove_thread();
         }
     }
 }
@@ -353,6 +399,11 @@ impl<'a> Drop for CriticalGuard<'a> {
 }
 
 impl Priority {
+    #[allow(clippy::declare_interior_mutable_const)]
+    pub const REALTIME: Self = Self {
+        class: PriorityClass::RealTime,
+        adjust: AtomicI32::new(0),
+    };
     pub fn queue_number<const NR_QUEUES: usize>(&self) -> usize {
         assert_eq!(NR_QUEUES % PriorityClass::ClassCount as usize, 0);
         let queues_per_class = NR_QUEUES / PriorityClass::ClassCount as usize;
@@ -438,6 +489,7 @@ impl Ord for Priority {
 pub fn exit() {
     {
         let th = current_thread_ref().unwrap();
+        logln!("thread {} exited", th.id());
         th.set_state(ThreadState::Exiting);
         crate::sched::remove_thread(th.id());
         drop(th);
@@ -498,38 +550,57 @@ fn create_blank_object() -> ObjectRef {
     obj
 }
 
+fn create_name_object() -> ObjectRef {
+    let boot_objects = get_boot_objects();
+    let obj = create_blank_object();
+    let mut init_info = KernelInitInfo::new();
+    for (name, obj) in &boot_objects.name_map {
+        init_info.add_name(KernelInitName::new(name, obj.id()));
+    }
+    obj.write_base(&init_info);
+    obj
+}
+
 extern "C" fn user_init() {
     /* We need this scope to drop everything before we jump to user */
     let (aux_start, entry) = {
         let vm = current_memory_context().unwrap();
-        let boot_objects = crate::initrd::get_boot_objects();
+        let boot_objects = get_boot_objects();
 
         let obj_text = create_blank_object();
         let obj_data = create_blank_object();
         let obj_stack = create_blank_object();
+        let obj_name = create_name_object();
         crate::operations::map_object_into_context(
-            0,
+            twizzler_abi::slot::RESERVED_TEXT,
             obj_text,
             vm.clone(),
             MappingPerms::READ | MappingPerms::EXECUTE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
-            1,
+            twizzler_abi::slot::RESERVED_DATA,
             obj_data,
             vm.clone(),
             MappingPerms::READ | MappingPerms::WRITE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
-            2,
+            twizzler_abi::slot::RESERVED_STACK,
             obj_stack,
-            vm,
+            vm.clone(),
             MappingPerms::READ | MappingPerms::WRITE,
         )
         .unwrap();
+        crate::operations::map_object_into_context(
+            twizzler_abi::slot::RESERVED_KERNEL_INIT,
+            obj_name,
+            vm,
+            MappingPerms::READ,
+        )
+        .unwrap();
         let init_obj = boot_objects.init.as_ref().expect("no init found");
-        let obj1_data = crate::operations::read_object(&init_obj);
+        let obj1_data = crate::operations::read_object(init_obj);
         let elf = xmas_elf::ElfFile::new(&obj1_data).unwrap();
         let mut phinfo = None;
         for ph in elf.program_iter() {
@@ -614,32 +685,49 @@ extern "C" fn user_new_start() {
     }
 }
 
-pub fn start_new_user(args: ThreadSpawnArgs) -> ObjID {
-    let mut thread = Thread::new_with_current_context(args);
-    logln!(
-        "starting new thread {} with stack {:p}",
-        thread.id,
-        thread.kernel_stack
-    );
+pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
+    let mut thread = if let Some(handle) = args.vm_context_handle {
+        let vmc = get_vmcontext_from_handle(handle).ok_or(ThreadSpawnError::NotFound)?;
+        Thread::new_with_handle_context(args, vmc)
+    } else {
+        Thread::new_with_current_context(args)
+    };
     unsafe {
         thread.init(user_new_start);
     }
     thread.repr = Some(create_blank_object());
     let id = thread.repr.as_ref().unwrap().id();
+    logln!(
+        "starting new thread {} {} with stack k={:p} u={:x},{:x}",
+        thread.id,
+        id,
+        thread.kernel_stack,
+        args.stack_base,
+        args.stack_size,
+    );
     schedule_new_thread(thread);
-    id
+    Ok(id)
 }
 
 pub fn start_new_init() {
     let mut thread = Thread::new_with_new_vm();
+    /*
     logln!(
         "starting new thread {} with stack {:p}",
         thread.id,
         thread.kernel_stack
     );
+    */
     unsafe {
         thread.init(user_init);
     }
     thread.repr = Some(create_blank_object());
     schedule_new_thread(thread);
+}
+
+pub fn start_new_kernel(pri: Priority, start: extern "C" fn()) -> ThreadRef {
+    let mut thread = Thread::new();
+    thread.priority = pri;
+    unsafe { thread.init(start) }
+    schedule_new_thread(thread)
 }

@@ -4,6 +4,7 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[allow(unused_imports)]
 use crate::{
     object::{ObjID, Protections},
     simple_idcounter::IdCounter,
@@ -43,6 +44,8 @@ static mut THREAD_IDS: IdCounter = IdCounter::new(1);
 
 const STACK_ALIGN: usize = 32;
 
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 unsafe fn new_thread(
     objid: ObjID,
     base: *mut ThreadRepr,
@@ -117,10 +120,17 @@ unsafe fn release_thread(id: u32) {
 pub unsafe fn spawn(stack_size: usize, entry: usize, arg: usize) -> Option<u32> {
     let stack_layout = Layout::from_size_align(stack_size, STACK_ALIGN).unwrap();
     let stack_base = crate::alloc::global_alloc(stack_layout);
-    let stack = core::slice::from_raw_parts(stack_base, stack_size);
     let (tls_set, tls_base, tls_len, tls_align) = crate::rt1::new_thread_tls().unwrap();
     let tls_layout = Layout::from_size_align(tls_len, tls_align).unwrap();
-    let args = ThreadSpawnArgs::new(entry, stack, tls_set, arg, ThreadSpawnFlags::empty());
+    let args = ThreadSpawnArgs::new(
+        entry,
+        stack_base as usize,
+        stack_size,
+        tls_set,
+        arg,
+        ThreadSpawnFlags::empty(),
+        None,
+    );
     let slot = crate::slot::global_allocate().or_else(|| {
         crate::alloc::global_free(stack_base, stack_layout);
         crate::alloc::global_free(tls_base, tls_layout);
@@ -130,6 +140,7 @@ pub unsafe fn spawn(stack_size: usize, entry: usize, arg: usize) -> Option<u32> 
     let res = crate::syscall::sys_spawn(args);
     if let Ok(objid) = res {
         let mapres = crate::syscall::sys_object_map(
+            None,
             objid,
             slot,
             Protections::READ | Protections::WRITE,
@@ -159,6 +170,8 @@ pub unsafe fn spawn(stack_size: usize, entry: usize, arg: usize) -> Option<u32> 
 }
 
 /// Wait until the specified thread terminates.
+/// # Safety
+/// The thread ID must be a valid thread ID.
 pub unsafe fn join(id: u32) {
     THREADS_LOCK.lock();
     loop {
@@ -182,6 +195,7 @@ pub unsafe fn join(id: u32) {
     THREADS_LOCK.unlock();
 }
 
-pub unsafe fn exit() -> ! {
+/// Exit the current thread.
+pub fn exit() -> ! {
     crate::syscall::sys_thread_exit(0, ptr::null_mut());
 }

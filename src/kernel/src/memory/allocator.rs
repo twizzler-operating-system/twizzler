@@ -20,6 +20,8 @@ pub const HEAP_MAX_LEN: usize = 0x0000001000000000 / 16; //4GB
 
 use x86_64::VirtAddr;
 
+use crate::spinlock::Spinlock;
+
 use super::KernelMemoryManager;
 
 struct HeapPager {
@@ -145,14 +147,15 @@ impl HeapPager {
     }
 }
 
+// TODO (urgent): Is it safe to use a spinlock here? Or a mutex here?
 static mut PAGER: HeapPager = HeapPager::new();
-static mut LL_BACKUP_ALLOCATOR: spin::Mutex<linked_list_allocator::Heap> =
-    spin::Mutex::new(linked_list_allocator::Heap::empty());
+static mut LL_BACKUP_ALLOCATOR: Spinlock<linked_list_allocator::Heap> =
+    Spinlock::new(linked_list_allocator::Heap::empty());
 
 const EARLY_ALLOCATION_SIZE: usize = 1024 * 1024 * 2;
 static mut EARLY_ALLOCATION_AREA: [u8; EARLY_ALLOCATION_SIZE] = [0; EARLY_ALLOCATION_SIZE];
 static EARLY_ALLOCATION_PTR: AtomicUsize = AtomicUsize::new(0);
-pub struct SafeZoneAllocator(spin::mutex::Mutex<ZoneAllocator<'static>>);
+pub struct SafeZoneAllocator(Spinlock<ZoneAllocator<'static>>);
 
 pub fn init(kmm: &'static KernelMemoryManager) {
     unsafe {
@@ -216,10 +219,11 @@ unsafe impl GlobalAlloc for SafeZoneAllocator {
                 match allocator.allocate_first_fit(layout) {
                     Ok(ptr) => ptr.as_ptr(),
                     Err(_) => {
+                        // TODO: something less wasteful
                         let len = (layout.align() + layout.size()) * 2;
-                        logln!("requesting {} bytes from huge allocator", len);
+                        //logln!("requesting {} bytes from huge allocator", len);
                         let len = PAGER.extend_huge_heap(len);
-                        logln!("now {} bytes from huge allocator", len);
+                        //logln!("now {} bytes from huge allocator", len);
                         allocator.extend(len);
                         allocator
                             .allocate_first_fit(layout)
@@ -260,5 +264,4 @@ unsafe impl GlobalAlloc for SafeZoneAllocator {
 }
 
 #[global_allocator]
-static SLAB_ALLOCATOR: SafeZoneAllocator =
-    SafeZoneAllocator(spin::Mutex::new(ZoneAllocator::new()));
+static SLAB_ALLOCATOR: SafeZoneAllocator = SafeZoneAllocator(Spinlock::new(ZoneAllocator::new()));

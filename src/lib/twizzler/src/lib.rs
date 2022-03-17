@@ -1,3 +1,5 @@
+pub mod object;
+
 #[cfg(test)]
 mod tests {
     #[test]

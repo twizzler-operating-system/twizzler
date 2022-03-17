@@ -1,4 +1,7 @@
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use alloc::sync::Arc;
+use twizzler_abi::device::{CacheType, MMIO_OFFSET};
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::{
@@ -8,17 +11,42 @@ use crate::{
 
 use super::{Object, PageNumber};
 
+bitflags::bitflags! {
+    pub struct PageFlags:u32 {
+        const WIRED = 1;
+    }
+}
+
 #[derive(Debug)]
 pub struct Page {
     frame: Frame,
+    flags: PageFlags,
+    cache_type: CacheType,
 }
 
 pub type PageRef = Arc<Page>;
 
+impl Default for Page {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Page {
+    // TODO: we should have a way of allocating non-zero pages, for pages that will be immediately overwritten.
     pub fn new() -> Self {
         Self {
             frame: frame::alloc_frame(PhysicalFrameFlags::ZEROED),
+            flags: PageFlags::empty(),
+            cache_type: CacheType::WriteBack,
+        }
+    }
+
+    pub fn new_wired(pa: PhysAddr, cache_type: CacheType) -> Self {
+        Self {
+            frame: frame::Frame::new(pa, PhysicalFrameFlags::empty()),
+            flags: PageFlags::WIRED,
+            cache_type,
         }
     }
 
@@ -30,7 +58,7 @@ impl Page {
         unsafe { core::slice::from_raw_parts(self.as_virtaddr().as_ptr(), self.frame.size()) }
     }
 
-    pub unsafe fn get_mut_to_val<T>(&self, offset: usize) -> &mut T {
+    pub unsafe fn get_mut_to_val<T>(&self, offset: usize) -> *mut T {
         /* TODO: enforce alignment and size of offset */
         /* TODO: once we start optimizing frame zeroing, we need to make the frame as non-zeroed here */
         let va = self.as_virtaddr();
@@ -40,7 +68,7 @@ impl Page {
             .unwrap()
     }
 
-    pub fn as_mut_slice(&self) -> &mut [u8] {
+    pub fn as_mut_slice(&self) -> &[u8] {
         unsafe {
             core::slice::from_raw_parts_mut(self.as_virtaddr().as_mut_ptr(), self.frame.size())
         }
@@ -53,12 +81,20 @@ impl Page {
     pub fn copy_page(&self) -> Self {
         let mut new_frame = frame::alloc_frame(PhysicalFrameFlags::empty());
         new_frame.copy_contents_from(&self.frame);
-        Self { frame: new_frame }
+        Self {
+            frame: new_frame,
+            flags: PageFlags::empty(),
+            cache_type: self.cache_type,
+        }
+    }
+
+    pub fn cache_type(&self) -> CacheType {
+        self.cache_type
     }
 }
 
 impl Object {
-    pub unsafe fn write_val_and_signal<T>(&self, offset: usize, val: T, wakeup_count: u64) {
+    pub unsafe fn write_val_and_signal<T>(&self, offset: usize, val: T, wakeup_count: usize) {
         {
             let mut obj_page_tree = self.lock_page_tree();
             let page_number = PageNumber::from_address(VirtAddr::new(offset as u64));
@@ -77,5 +113,52 @@ impl Object {
             drop(obj_page_tree);
         }
         self.wakeup_word(offset, wakeup_count);
+        crate::syscall::sync::requeue_all();
+    }
+
+    pub unsafe fn read_atomic_u64(&self, offset: usize) -> u64 {
+        let mut obj_page_tree = self.lock_page_tree();
+        let page_number = PageNumber::from_address(VirtAddr::new(offset as u64));
+        let page_offset = offset % PageNumber::PAGE_SIZE;
+
+        if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
+            let t = page.get_mut_to_val::<AtomicU64>(page_offset);
+            (*t).load(Ordering::SeqCst)
+        } else {
+            let page = Page::new();
+            obj_page_tree.add_page(page_number, page);
+            drop(obj_page_tree);
+            self.read_atomic_u64(offset)
+        }
+    }
+
+    pub fn write_base<T>(&self, info: &T) {
+        let offset = 0x1000; //TODO: arch-dep
+        unsafe {
+            let mut obj_page_tree = self.lock_page_tree();
+            let page_number = PageNumber::from_address(VirtAddr::new(offset as u64));
+            let page_offset = offset % PageNumber::PAGE_SIZE;
+
+            if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
+                let t = page.get_mut_to_val::<T>(page_offset);
+                (t as *mut T).copy_from(info as *const T, 1);
+            } else {
+                let page = Page::new();
+                let t = page.get_mut_to_val::<T>(page_offset);
+                (t as *mut T).copy_from(info as *const T, 1);
+                obj_page_tree.add_page(page_number, page);
+            }
+        }
+    }
+
+    pub fn map_phys(&self, start: PhysAddr, end: PhysAddr, ct: CacheType) {
+        let pn_start = PageNumber::from_address(VirtAddr::new(MMIO_OFFSET as u64)); //TODO: arch-dep
+        let nr = (end.as_u64() - start.as_u64()) as usize / PageNumber::PAGE_SIZE;
+        for i in 0..nr {
+            let pn = pn_start.offset(i);
+            let addr = start + i * PageNumber::PAGE_SIZE;
+            let page = Page::new_wired(addr, ct);
+            self.add_page(pn, page);
+        }
     }
 }

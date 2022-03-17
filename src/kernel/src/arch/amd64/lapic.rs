@@ -10,6 +10,7 @@ use crate::{
     arch::memory::phys_to_virt,
     clock::Nanoseconds,
     interrupt::{self, Destination},
+    processor,
 };
 
 static mut LAPIC_ADDR: u64 = 0;
@@ -252,25 +253,30 @@ fn rust_entry_secondary(id: u32, tcb: u64, stack_base: u64) -> ! {
     crate::processor::secondary_entry(id, VirtAddr::new(tcb), stack_base as *mut u8);
 }
 
-pub unsafe fn send_ipi(dest: Destination, vector: u32) {
+pub fn send_ipi(dest: Destination, vector: u32) {
     let (dest_short, dest_val) = match dest {
         Destination::Single(id) => (0, id << 24),
-        Destination::Bsp => (0, 0),
+        Destination::Bsp => (0, processor::current_processor().bsp_id() << 24),
         Destination::All => (2, 0),
         Destination::AllButSelf => (3, 0),
         _ => todo!(),
     };
-    write_lapic(LAPIC_ICRHI, dest_val);
-    write_lapic(LAPIC_ICRLO, vector | dest_short << 18);
+    unsafe {
+        write_lapic(LAPIC_ICRHI, dest_val);
+        write_lapic(LAPIC_ICRLO, vector | dest_short << 18);
 
-    while read_lapic(LAPIC_ICRLO) & LAPIC_ICRLO_STATUS_PEND != 0 {
-        asm!("pause")
+        while read_lapic(LAPIC_ICRLO) & LAPIC_ICRLO_STATUS_PEND != 0 {
+            asm!("pause")
+        }
     }
 }
 
 const TRAMPOLINE_ENTRY16: u32 = 0x7000;
 const TRAMPOLINE_ENTRY32: u32 = 0x7100;
 const TRAMPOLINE_ENTRY64: u32 = 0x7200;
+/// Start up a CPU.
+/// # Safety
+/// The tcb_base and kernel stack must both be valid memory regions for each thing.
 pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
     outb(0x70, 0xf);
     super::pit::wait_ns(100);

@@ -7,7 +7,7 @@ use crate::{
     spinlock::Spinlock,
 };
 
-use super::{acpi::get_acpi_root, memory::phys_to_virt};
+use super::{acpi::get_acpi_root, memory::phys_to_virt, processor::get_bsp_id};
 
 struct IOApic {
     address: PhysAddr,
@@ -75,7 +75,7 @@ fn construct_interrupt_data(
     } << 15;
     let mask = if masked { 1 } else { 0 } << 16;
     let destfield: u64 = (match destination {
-        Destination::Bsp => 0,
+        Destination::Bsp => get_bsp_id(None),
         Destination::Single(id) => id,
         Destination::LowestPriority => 0,
         _ => panic!("unsupported destination mode {:?} for IOAPIC", destination),
@@ -85,7 +85,7 @@ fn construct_interrupt_data(
     vector | delmod | intpol | inttrg | mask | destfield
 }
 
-fn set_interrupt(
+pub(super) fn set_interrupt(
     gsi: u32,
     vector: u32,
     masked: bool,
@@ -97,6 +97,7 @@ fn set_interrupt(
     for ioapic in &*ioapics {
         if let Some(reg) = ioapic.gsi_to_reg(gsi) {
             unsafe {
+                logln!("setting {} {} masked={}", gsi, vector, masked);
                 ioapic.write_vector_data(
                     reg,
                     construct_interrupt_data(vector, masked, trigger, polarity, destination),
@@ -108,6 +109,7 @@ fn set_interrupt(
 
 pub fn init() {
     let acpi = get_acpi_root();
+
     let madt = unsafe {
         acpi.get_sdt::<Madt>(Signature::MADT)
             .expect("unable to get MADT ACPI table")
@@ -152,7 +154,7 @@ pub fn init() {
     }
 
     for iso in &model.interrupt_source_overrides {
-        /* TODO: verify these mappings */
+        // TODO: verify these mappings
         let trigger = match iso.trigger_mode {
             acpi::platform::interrupt::TriggerMode::SameAsBus => TriggerMode::Edge,
             acpi::platform::interrupt::TriggerMode::Edge => TriggerMode::Edge,
@@ -163,6 +165,12 @@ pub fn init() {
             acpi::platform::interrupt::Polarity::ActiveHigh => PinPolarity::ActiveHigh,
             acpi::platform::interrupt::Polarity::ActiveLow => PinPolarity::ActiveLow,
         };
+
+        logln!(
+            "remap {} {}",
+            iso.global_system_interrupt,
+            iso.isa_source + 32
+        );
         set_interrupt(
             iso.global_system_interrupt,
             iso.isa_source as u32 + 32,

@@ -59,7 +59,10 @@ impl PageRange {
     }
 
     pub fn gc_pagevec(&self) {
-        todo!()
+        // TODO
+
+        logln!("TODO: gc page vec");
+        //       todo!()
     }
 
     pub fn split_at(&self, pn: PageNumber) -> (Option<PageRange>, PageRange, Option<PageRange>) {
@@ -108,11 +111,12 @@ impl Display for PageRange {
             self.length,
             self.offset,
             if self.is_shared() { "s" } else { "p" },
-            self.pv.lock().show_part(&self)
+            self.pv.lock().show_part(self)
         )
     }
 }
 
+#[derive(Default)]
 pub struct PageRangeTree {
     tree: NonOverlappingIntervalTree<PageNumber, PageRange>,
 }
@@ -165,7 +169,7 @@ impl PageRangeTree {
         let range = self.get(pn)?;
         let page = range.get_page(pn);
         let shared = range.is_shared();
-        assert_eq!(shared, false);
+        assert!(!shared);
         Some((page, false))
     }
 

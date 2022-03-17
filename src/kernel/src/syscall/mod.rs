@@ -1,15 +1,23 @@
+use core::{mem::MaybeUninit, time::Duration};
+
 use twizzler_abi::{
+    kso::{KactionCmd, KactionError, KactionValue},
     object::{ObjID, Protections},
     syscall::{
-        ObjectCreateError, ObjectMapError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
+        ClockFlags, ClockInfo, ClockSource, HandleType, KernelConsoleReadSource, ObjectCreateError,
+        ObjectMapError, ReadClockInfoError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
     },
 };
 use x86_64::VirtAddr;
 
-use self::thread::thread_ctrl;
+use crate::clock::{get_current_ticks, ticks_to_nano};
 
-mod object;
-mod sync;
+use self::{object::sys_new_handle, thread::thread_ctrl};
+
+// TODO: move the handle stuff into its own file and make this private.
+pub mod object;
+/* TODO: move the requeue stuff into sched and make this private */
+pub mod sync;
 mod thread;
 
 pub trait SyscallContext {
@@ -60,7 +68,7 @@ fn type_sys_object_create(
     object::sys_object_create(create, srcs, ties)
 }
 
-fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<u64, ThreadSyncError> {
+fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<usize, ThreadSyncError> {
     let slice = unsafe { create_user_slice(ptr, len) }.ok_or(ThreadSyncError::InvalidArgument)?;
     let timeout =
         unsafe { create_user_nullable_ptr(timeoutptr) }.ok_or(ThreadSyncError::InvalidArgument)?;
@@ -73,6 +81,43 @@ fn write_sysinfo(info: &mut SysInfo) {
     info.flags = 0;
     info.version = 1;
     info.page_size = 0x1000;
+}
+
+fn type_sys_kaction(
+    cmd: u64,
+    hi: u64,
+    lo: u64,
+    arg: u64,
+    _flags: u64,
+) -> Result<KactionValue, KactionError> {
+    let cmd = KactionCmd::try_from(cmd)?;
+    let objid = if hi == 0 {
+        None
+    } else {
+        Some(ObjID::new_from_parts(hi, lo))
+    };
+    crate::device::kaction(cmd, objid, arg)
+}
+
+fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClockInfoError> {
+    let source: ClockSource = src.try_into()?;
+    let info_ptr: &mut MaybeUninit<ClockInfo> =
+        unsafe { create_user_ptr(info) }.ok_or(ReadClockInfoError::InvalidArgument)?;
+
+    match source {
+        ClockSource::Monotonic => {
+            let ticks = get_current_ticks();
+            //TODO
+            let dur = Duration::from_nanos(ticks_to_nano(ticks).unwrap());
+            let precision = Duration::from_nanos(1000); //TODO
+            let flags = ClockFlags::MONOTONIC;
+            let source = ClockSource::Monotonic;
+            let info = ClockInfo::new(dur, precision, flags, source);
+            info_ptr.write(info);
+            Ok(0)
+        }
+        ClockSource::RealTime => Err(ReadClockInfoError::InvalidArgument),
+    }
 }
 
 #[inline]
@@ -123,6 +168,56 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
                 sys_kernel_console_write(slice, flags);
             }
         }
+        Syscall::KernelConsoleRead => {
+            let source = context.arg0::<u64>();
+            let ptr = context.arg1();
+            let len = context.arg2();
+            let source: KernelConsoleReadSource = source.into();
+            let res = if let Some(slice) = unsafe { create_user_slice(ptr, len) } {
+                match source {
+                    KernelConsoleReadSource::Console => {
+                        let flags =
+                            twizzler_abi::syscall::KernelConsoleReadFlags::from_bits_truncate(
+                                context.arg2(),
+                            );
+                        crate::log::read_bytes(slice, flags).map_err(|x| x.into())
+                    }
+                    KernelConsoleReadSource::Buffer => {
+                        let _flags =
+                            twizzler_abi::syscall::KernelConsoleReadBufferFlags::from_bits_truncate(
+                                context.arg2(),
+                            );
+                        crate::log::read_buffer_bytes(slice).map_err(|x| x.into())
+                    }
+                }
+            } else {
+                Err(0u64)
+            }
+            .map(|x| x as u64);
+            let (code, val) = convert_result_to_codes(res, zero_ok, one_err);
+            context.set_return_values(code, val);
+        }
+        Syscall::Kaction => {
+            let cmd = context.arg0();
+            let hi = context.arg1();
+            let lo = context.arg2();
+            let arg = context.arg3();
+            let flags = context.arg4();
+            let result = type_sys_kaction(cmd, hi, lo, arg, flags);
+            let (code, val) = convert_result_to_codes(result, |v| v.into(), zero_err);
+            context.set_return_values(code, val);
+        }
+        Syscall::NewHandle => {
+            let hi = context.arg0();
+            let lo = context.arg1();
+            let handle_type = context.arg2::<u64>();
+            let _flags = context.arg3::<u64>();
+            let result = handle_type
+                .try_into()
+                .and_then(|nh: HandleType| sys_new_handle(ObjID::new_from_parts(hi, lo), nh));
+            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
+            context.set_return_values(code, val);
+        }
         Syscall::ObjectCreate => {
             let create = context.arg0();
             let src_ptr = context.arg1();
@@ -150,11 +245,16 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let slot = context.arg2::<u64>() as usize;
             let prot = Protections::from_bits(context.arg3::<u64>() as u32);
             let id = ObjID::new_from_parts(hi, lo);
-            let result = prot
-                .map_or(Err(ObjectMapError::InvalidProtections), |prot| {
-                    object::sys_object_map(id, slot, prot)
+            let handle = context.arg5();
+            let handle = unsafe { create_user_ptr(handle) };
+            let result = if let Some(handle) = handle {
+                prot.map_or(Err(ObjectMapError::InvalidProtections), |prot| {
+                    object::sys_object_map(id, slot, prot, *handle)
                 })
-                .map(|r| r as u64);
+                .map(|r| r as u64)
+            } else {
+                Err(ObjectMapError::InvalidArgument)
+            };
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
@@ -163,7 +263,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let len = context.arg1();
             let timeout = context.arg2();
             let result = type_sys_thread_sync(ptr, len, timeout);
-            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
+            let (code, val) = convert_result_to_codes(result, |x| zero_ok(x as u64), one_err);
             context.set_return_values(code, val);
         }
         Syscall::SysInfo => {
@@ -178,6 +278,11 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
         }
         Syscall::ThreadCtrl => {
             let (code, val) = thread_ctrl(context.arg0::<u64>().into(), context.arg1());
+            context.set_return_values(code, val);
+        }
+        Syscall::ReadClockInfo => {
+            let result = type_read_clock_info(context.arg0(), context.arg1(), context.arg2());
+            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
         _ => {

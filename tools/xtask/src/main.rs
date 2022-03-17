@@ -4,6 +4,8 @@ use cargo_metadata::{Metadata, MetadataCommand};
 
 type DynError = Box<dyn std::error::Error>;
 
+use rand::Rng;
+use std::io::{Read, Write};
 fn main() {
     if let Err(e) = try_main() {
         eprintln!("{}", e);
@@ -211,7 +213,7 @@ fn try_main() -> Result<(), DynError> {
 
     if sub_matches.is_none() {
         app.print_long_help()?;
-        Err("")?;
+        return Err("".into());
     }
 
     let sub_matches = sub_matches.unwrap();
@@ -305,10 +307,68 @@ fn build_crtx(name: &str, build_info: &BuildInfo) -> Result<(), DynError> {
         .arg(build_info.get_twizzler_triple())
         .status()?;
     if !status.success() {
-        Err("failed to compile crtx")?;
+        return Err("failed to compile crtx".into());
     }
 
     Ok(())
+}
+
+fn read_stamp() -> Option<String> {
+    let mut file = std::fs::File::open("toolchain/install/stamp").ok()?;
+    let mut rand = vec![];
+    file.read_to_end(&mut rand)
+        .expect("failed to read stamp file");
+    Some(String::from_utf8(rand).expect("stamp file corrupted"))
+}
+
+fn get_twizzler_toolchain_name() -> String {
+    let stamp = read_stamp().expect("failed to read stamp file -- did you run cargo bootstrap?");
+    format!("twizzler-{}", stamp)
+}
+
+fn create_stamp() -> String {
+    let rand: String = rand::thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(8)
+        .map(char::from)
+        .collect();
+    let mut file =
+        std::fs::File::create("toolchain/install/stamp").expect("failed to create stamp file");
+    file.write_all(rand.as_bytes())
+        .expect("failed to write stamp file");
+    rand
+}
+
+enum ReinstallReq {
+    No,
+    Yes,
+    YesAndSubmod,
+}
+
+fn needs_reinstall() -> ReinstallReq {
+    let stamp = std::fs::metadata("toolchain/install/stamp");
+    if stamp.is_err() {
+        return ReinstallReq::YesAndSubmod;
+    }
+    let stamp = stamp
+        .unwrap()
+        .modified()
+        .expect("failed to get system time from metadata");
+    for entry in walkdir::WalkDir::new("src/lib/twizzler-abi").min_depth(1) {
+        let entry = entry.expect("error walking directory");
+        let stat = entry.metadata().expect(&format!(
+            "failed to read metadata for {}",
+            entry.path().display()
+        ));
+        let mtime = stat
+            .modified()
+            .expect("failed to get system time from mtime");
+
+        if mtime >= stamp {
+            return ReinstallReq::Yes;
+        }
+    }
+    ReinstallReq::No
 }
 
 fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
@@ -320,7 +380,7 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
             .arg("--recursive")
             .status()?;
         if !status.success() {
-            Err("failed to update git submodules")?;
+            return Err("failed to update git submodules".into());
         }
     }
 
@@ -328,20 +388,16 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
         "toolchain/src/config.toml",
         "toolchain/src/rust/config.toml",
     );
-    match res {
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::AlreadyExists => {}
-            _ => Err("failed to create hardlink config.toml")?,
-        },
-        _ => {}
+    if let Err(e) = res {
+        if e.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err("failed to create hardlink config.toml".into());
+        }
     }
     let res = std::fs::remove_dir_all("toolchain/src/rust/library/twizzler-abi");
-    match res {
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => {}
-            _ => Err("failed to remove softlink twizzler-abi")?,
-        },
-        _ => {}
+    if let Err(e) = res {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err("failed to remove softlink twizzler-abi".into());
+        }
     }
     fs_extra::copy_items(
         &["src/lib/twizzler-abi"],
@@ -351,20 +407,10 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
 
     let status = Command::new("./x.py")
         .arg("install")
-        /*
-        .arg("--keep-stage")
-        .arg("0")
-        .arg("--keep-stage")
-        .arg("1")
-        .arg("--keep-stage-std")
-        .arg("0")
-        .arg("--keep-stage-std")
-        .arg("1")
-        */
         .current_dir("toolchain/src/rust")
         .status()?;
     if !status.success() {
-        Err("failed to compile rust toolchain")?;
+        return Err("failed to compile rust toolchain".into());
     }
 
     for bi in &all_supported_build_infos() {
@@ -372,15 +418,20 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
         build_crtx("crtn", bi)?;
     }
 
+    let _stamp = create_stamp();
+    eprintln!(
+        "Adding toolchain {} => toolchain/install",
+        get_twizzler_toolchain_name()
+    );
     /* add to toolchain */
     let status = Command::new("rustup")
         .arg("toolchain")
         .arg("link")
-        .arg("twizzler")
+        .arg(&get_twizzler_toolchain_name())
         .arg("toolchain/install")
         .status()?;
     if !status.success() {
-        Err("failed to link rust Twizzler toolchain with rustup")?;
+        return Err("failed to link rust Twizzler toolchain with rustup".into());
     }
 
     Ok(())
@@ -388,12 +439,10 @@ fn bootstrap(skip_sm: bool) -> Result<(), DynError> {
 
 fn build_std() -> Result<(), DynError> {
     let res = std::fs::remove_dir_all("toolchain/src/rust/library/twizzler-abi");
-    match res {
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => {}
-            _ => Err("failed to remove softlink twizzler-abi")?,
-        },
-        _ => {}
+    if let Err(e) = res {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err("failed to remove softlink twizzler-abi".into());
+        }
     }
     fs_extra::copy_items(
         &["src/lib/twizzler-abi"],
@@ -420,12 +469,13 @@ fn build_std() -> Result<(), DynError> {
         .current_dir("toolchain/src/rust")
         .status()?;
     if !status.success() {
-        Err("failed to compile rust toolchain")?;
+        return Err("failed to compile rust toolchain".into());
     }
 
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cargo_cmd_collection(
     meta: &Metadata,
     collection_name: &str,
@@ -438,9 +488,32 @@ fn cargo_cmd_collection(
     use_toolchain: bool,
 ) -> Result<(), DynError> {
     eprintln!(
-        "== BUILDING COLLECTION {} ({}) ==",
-        collection_name, build_info
+        "== BUILDING COLLECTION {} ({}) [{}] ==",
+        collection_name,
+        build_info,
+        if use_toolchain {
+            get_twizzler_toolchain_name()
+        } else {
+            String::from("nightly")
+        }
     );
+    if use_toolchain {
+        let res = needs_reinstall();
+        match res {
+            ReinstallReq::Yes => {
+                eprintln!("ERROR: detected that files in twizzler-abi crate are newer than the installed toolchain. Please run `cargo bootstrap --skip-submodules' to update the toolchain.");
+                Err("toolchain not updated")?;
+            }
+            ReinstallReq::YesAndSubmod => {
+                eprintln!(
+                    "ERROR: did not detect installed toolchain Did you run `cargo bootstrap`?"
+                );
+                Err("toolchain not found")?;
+            }
+            ReinstallReq::No => {}
+        }
+    }
+
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let pkg_list: Vec<String> = meta.workspace_metadata[collection_name]
         .as_array()
@@ -470,12 +543,12 @@ fn cargo_cmd_collection(
         status.env("RUSTFLAGS", s);
     }
     if use_toolchain {
-        status.env("RUSTUP_TOOLCHAIN", "twizzler");
+        status.env("RUSTUP_TOOLCHAIN", get_twizzler_toolchain_name());
     }
 
     let status = status.status()?;
     if !status.success() {
-        Err("failed to run cargo command")?;
+        return Err("failed to run cargo command".into());
     }
     Ok(())
 }
@@ -585,7 +658,7 @@ fn make_disk(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<
         .args(&initrd_files)
         .status()?;
     if !status.success() {
-        Err("failed to generate initrd")?;
+        return Err("failed to generate initrd".into());
     }
     eprintln!("== BUILDING DISK IMAGE ({}) ==", build_info);
     let status = Command::new(make_tool_path(build_info, "image_builder"))
@@ -594,7 +667,7 @@ fn make_disk(meta: &Metadata, args: &[String], build_info: BuildInfo) -> Result<
         .status()?;
 
     if !status.success() {
-        Err("disk image creation failed")?;
+        return Err("disk image creation failed".into());
     }
     Ok(())
 }
@@ -610,7 +683,7 @@ fn start_qemu(
     let mut run_cmd = Command::new("qemu-system-x86_64");
     run_cmd.arg("-m").arg("1024,slots=4,maxmem=8G");
     run_cmd.arg("-bios").arg("/usr/share/qemu/OVMF.fd");
-    //run_cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
+    run_cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
     run_cmd.arg("-drive").arg(format!(
         "format=raw,file={}",
         make_path(build_info, true, "disk.img")
@@ -620,15 +693,16 @@ fn start_qemu(
         "memory-backend-file,id=mem1,share=on,mem-path={},size=4G",
         make_path(build_info, true, "pmem.img")
     ));
+    //run_cmd.arg("-d").arg("trace:*ioapic*");
     run_cmd.arg("-device").arg("nvdimm,id=nvdimm1,memdev=mem1");
-    const RUN_ARGS: &[&str] = &["--no-reboot", "-s", "-serial", "mon:stdio", "-vnc", ":0"];
+    const RUN_ARGS: &[&str] = &["--no-reboot", "-s", "-serial", "mon:stdio"]; //, "-vnc", ":0"];
     run_cmd.args(RUN_ARGS);
     run_cmd.args(qemu_profile.get_args());
     run_cmd.args(qemu_args);
 
     let exit_status = run_cmd.status().unwrap();
     if !exit_status.success() {
-        Err("failed to run qemu")?;
+        return Err("failed to run qemu".into());
     }
     Ok(())
 }

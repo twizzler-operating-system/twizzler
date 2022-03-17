@@ -1,13 +1,16 @@
 use crate::arch::{self, interrupt::InterProcessorInterrupt};
 
+#[inline]
 pub fn disable() -> bool {
     crate::arch::interrupt::disable()
 }
 
+#[inline]
 pub fn set(state: bool) {
     crate::arch::interrupt::set(state);
 }
 
+#[inline]
 pub fn with_disabled<T, F: FnOnce() -> T>(f: F) -> T {
     let tmp = disable();
     let t = f();
@@ -15,12 +18,14 @@ pub fn with_disabled<T, F: FnOnce() -> T>(f: F) -> T {
     t
 }
 
+#[inline]
 pub fn post_interrupt() {
     crate::sched::schedule_maybe_preempt();
 }
 
+#[inline]
 pub fn send_ipi(destination: Destination, ipi: InterProcessorInterrupt) {
-    unsafe { arch::lapic::send_ipi(destination, ipi as u32) }
+    arch::lapic::send_ipi(destination, ipi as u32)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -42,4 +47,8 @@ pub enum Destination {
     LowestPriority,
     AllButSelf,
     All,
+}
+
+pub fn external_interrupt_entry(_number: u32) {
+    //logln!("external device interrupt {}", number);
 }

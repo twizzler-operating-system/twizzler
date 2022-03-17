@@ -7,3 +7,7 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+twizzler-queue-raw = { path = "../twizzler-queue-raw" }
+twizzler-async = { path = "../twizzler-async" }
+twizzler-abi = { path = "../twizzler-abi" }
+twizzler = { path = "../twizzler" }

@@ -16,7 +16,14 @@ To run qemu through the build system, you'll need qemu installed.
 
 ## Overview
 
+Installing the tools:
+  1. sudo apt install build-essential
+  2. sudo apt install python
+  3. sudo apt install cmake
+  4. sudo apt install ninja-build
+
 Building Twizzler is done in several steps:
+
   0. Building xtask.
   1. Building the toolchain.
   2. Building Twizzler itself.

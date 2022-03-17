@@ -12,7 +12,7 @@ pub fn map_object_into_context(
     perms: MappingPerms,
 ) -> Result<(), ()> {
     let mapping = Arc::new(Mapping::new(obj.clone(), vmc.clone(), slot, perms));
-    let mut vmc = vmc.lock();
+    let mut vmc = vmc.inner();
     obj.insert_mapping(mapping.clone());
     vmc.insert_mapping(mapping);
 
@@ -23,12 +23,8 @@ pub fn read_object(obj: &ObjectRef) -> Vec<u8> {
     let mut tree = obj.lock_page_tree();
     let mut v = alloc::vec![];
     let mut pn = 1.into();
-    loop {
-        if let Some((p, _)) = tree.get_page(pn, false) {
-            v.extend_from_slice(p.as_slice());
-        } else {
-            break;
-        }
+    while let Some((p, _)) = tree.get_page(pn, false) {
+        v.extend_from_slice(p.as_slice());
         pn = pn.next();
     }
     v

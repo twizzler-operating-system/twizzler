@@ -1,10 +1,13 @@
 use core::sync::atomic::Ordering;
 
+use twizzler_abi::upcall::UpcallFrame;
 use x86_64::{instructions::segmentation::Segment64, VirtAddr};
 
 use crate::{syscall::SyscallContext, thread::current_thread_ref};
 
-#[derive(Default)]
+use super::thread::{Registers, UpcallAble};
+
+#[derive(Default, Clone, Copy)]
 #[repr(C)]
 pub struct X86SyscallContext {
     rax: u64,
@@ -23,6 +26,44 @@ pub struct X86SyscallContext {
     rbp: u64,
     rcx: u64,
     rsp: u64,
+}
+
+impl From<X86SyscallContext> for UpcallFrame {
+    fn from(int: X86SyscallContext) -> Self {
+        Self {
+            rip: int.rcx,
+            rflags: int.r11,
+            rsp: int.rsp,
+            rbp: int.rbp,
+            rax: int.rax,
+            rbx: int.rbx,
+            rcx: int.rcx,
+            rdx: int.rdx,
+            rdi: int.rdi,
+            rsi: int.rsi,
+            r8: int.r8,
+            r9: int.r9,
+            r10: int.r10,
+            r11: 0,
+            r12: int.r12,
+            r13: int.r13,
+            r14: int.r14,
+            r15: int.r15,
+        }
+    }
+}
+
+impl UpcallAble for X86SyscallContext {
+    fn set_upcall(&mut self, target: usize, frame: u64, info: u64, stack: u64) {
+        self.rcx = target as u64;
+        self.rdi = frame;
+        self.rsi = info;
+        self.rsp = stack;
+    }
+
+    fn get_stack_top(&self) -> u64 {
+        self.rsp
+    }
 }
 
 impl SyscallContext for X86SyscallContext {
@@ -102,12 +143,23 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
     /* TODO: avoid doing both of these? */
     x86_64::registers::segmentation::FS::write_base(VirtAddr::new(kernel_fs));
     x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
+    let t = current_thread_ref().unwrap();
+    t.set_entry_registers(Registers::Syscall(context, *context));
 
     crate::thread::enter_kernel();
     crate::interrupt::set(true);
+    if false {
+        logln!(
+            "syscall entry {} {} {:x}",
+            current_thread_ref().unwrap().id(),
+            (*context).rax,
+            (*context).rcx
+        );
+    }
     crate::syscall::syscall_entry(context.as_mut().unwrap());
     crate::interrupt::set(false);
     crate::thread::exit_kernel();
+    t.set_entry_registers(Registers::None);
 
     /* We need this scope to drop the current thread reference before we return to user */
     {

@@ -61,6 +61,11 @@ impl<T> Mutex<T> {
             .as_ref()
             .and_then(|t| t.get_donated_priority());
 
+        if let Some(ref current_thread) = current_thread {
+            /* TODO: maybe try to support critical threads by falling back to a spinloop? */
+            assert!(!current_thread.is_critical());
+        }
+
         loop {
             let reinsert = {
                 let mut queue = self.queue.lock();
@@ -73,6 +78,12 @@ impl<T> Mutex<T> {
                     }
                     queue.owner = current_thread;
                     break;
+                } else if let Some(ref cur_owner) = queue.owner {
+                    if let Some(ref cur_thread) = current_thread {
+                        if cur_thread.id() == cur_owner.id() {
+                            panic!("this mutex is not re-entrant");
+                        }
+                    }
                 }
 
                 let mut reinsert = true;
@@ -93,7 +104,6 @@ impl<T> Mutex<T> {
                 }
                 reinsert
             };
-
             sched::schedule(reinsert);
         }
 
@@ -106,7 +116,6 @@ impl<T> Mutex<T> {
     fn release(&self) {
         let mut queue = self.queue.lock();
         if let Some(thread) = queue.queue.pop_front() {
-            thread.set_state(ThreadState::Running);
             sched::schedule_thread(thread);
         } else {
             queue.pri = None;
@@ -172,7 +181,7 @@ where
         unsafe {
             (&*self.cell.get())
                 .id()
-                .partial_cmp(&(&*other.cell.get()).id())
+                .partial_cmp((&*other.cell.get()).id())
         }
     }
 }
@@ -182,6 +191,6 @@ where
     T: StableId,
 {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        unsafe { (&*self.cell.get()).id().cmp(&(&*other.cell.get()).id()) }
+        unsafe { (&*self.cell.get()).id().cmp((&*other.cell.get()).id()) }
     }
 }

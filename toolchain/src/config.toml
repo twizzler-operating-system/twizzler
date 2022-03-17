@@ -13,10 +13,12 @@ skip-rebuild = false
 [build]
 tools = ["clippy", "rustfmt", "src"] # + "rust-demangler" if `profiler`
 docs = false
-target = ["x86_64-unknown-twizzler"]
+target = ["x86_64-unknown-twizzler", "x86_64-unknown-linux-gnu"]
 submodules = false
 
 [rust]
 lld = true
 llvm-tools = true
 llvm-libunwind = 'in-tree'
+debug = true
+debuginfo-level = 1

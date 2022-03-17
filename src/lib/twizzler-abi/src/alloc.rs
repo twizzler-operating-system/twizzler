@@ -14,7 +14,7 @@ use core::{
 use crate::{
     llalloc::Heap,
     object::Protections,
-    simple_mutex::Mutex,
+    slot::get_context_object_mut,
     syscall::{
         sys_object_create, sys_object_map, BackingType, LifetimeType, MapFlags, ObjectCreate,
         ObjectCreateFlags,
@@ -22,7 +22,7 @@ use crate::{
 };
 
 const NR_SLOTS: usize = 1024;
-struct TwzGlobalAlloc {
+pub(crate) struct TwzGlobalAlloc {
     initial_slot: Option<AllocSlot>,
     other_slots: [Option<AllocSlot>; NR_SLOTS],
     slot_counter: usize,
@@ -45,6 +45,7 @@ impl AllocSlot {
         let obj = sys_object_create(create_spec, &[], &[] /* TODO: ties */).ok()?;
 
         sys_object_map(
+            None,
             obj,
             slot,
             Protections::READ | Protections::WRITE,
@@ -113,7 +114,9 @@ impl TwzGlobalAlloc {
             self.initial_slot = AllocSlot::new();
             if self.initial_slot.is_none() {
                 crate::print_err("failed to allocate initial allocation object");
-                crate::abort();
+                unsafe {
+                    crate::internal_abort();
+                }
             }
         }
         let ptr = crate::internal_unwrap(
@@ -130,7 +133,9 @@ impl TwzGlobalAlloc {
                 self.other_slots[self.slot_counter] = AllocSlot::new();
                 if self.other_slots[self.slot_counter].is_none() {
                     crate::print_err("failed to create allocation object");
-                    crate::abort();
+                    unsafe {
+                        crate::internal_abort();
+                    }
                 }
             }
             let ptr = crate::internal_unwrap(
@@ -158,8 +163,8 @@ impl TwzGlobalAlloc {
 unsafe impl Sync for TwzGlobalAlloc {}
 unsafe impl Send for TwzGlobalAlloc {}
 
-static mut TGA: TwzGlobalAlloc = TwzGlobalAlloc::new();
-static TGA_LOCK: Mutex = Mutex::new();
+//static mut TGA: TwzGlobalAlloc = TwzGlobalAlloc::new();
+//static TGA_LOCK: Mutex = Mutex::new();
 
 fn adj_layout(layout: Layout) -> Layout {
     crate::internal_unwrap(
@@ -175,9 +180,24 @@ fn adj_layout(layout: Layout) -> Layout {
 /// The caller must ensure that the returned memory is freed at the right time.
 pub unsafe fn global_alloc(layout: Layout) -> *mut u8 {
     let layout = adj_layout(layout);
-    TGA_LOCK.lock();
-    let res = TGA.allocate(layout);
-    TGA_LOCK.unlock();
+    /*
+    let mut sz = layout.size();
+    crate::syscall::sys_kernel_console_write(
+        b"ALLOC: ",
+        crate::syscall::KernelConsoleWriteFlags::empty(),
+    );
+    while sz > 0 {
+        crate::syscall::sys_kernel_console_write(
+            &[(sz & 0xf) as u8 + b'a', 0],
+            crate::syscall::KernelConsoleWriteFlags::empty(),
+        );
+        sz = sz >> 4;
+    }
+    */
+    let ctx = get_context_object_mut();
+    ctx.alloc_lock.lock();
+    let res = ctx.global_alloc.allocate(layout);
+    ctx.alloc_lock.unlock();
     res
 }
 
@@ -195,9 +215,10 @@ pub unsafe fn global_free(ptr: *mut u8, layout: Layout) {
     if ptr.is_null() {
         return;
     }
-    TGA_LOCK.lock();
-    let res = TGA.free(ptr, layout);
-    TGA_LOCK.unlock();
+    let ctx = get_context_object_mut();
+    ctx.alloc_lock.lock();
+    let res = ctx.global_alloc.free(ptr, layout);
+    ctx.alloc_lock.unlock();
     res
 }
 

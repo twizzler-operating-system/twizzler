@@ -1,9 +1,17 @@
 //! Low-level object APIs, mostly around IDs and basic things like protection definitions and metadata.
 
-use core::fmt::{LowerHex, UpperHex};
+use core::{
+    fmt::{LowerHex, UpperHex},
+    marker::PhantomData,
+};
+
+use crate::syscall::{MapFlags, ObjectCreate, ObjectCreateFlags};
+
+pub const MAX_SIZE: usize = 1024 * 1024 * 1024;
+pub const NULLPAGE_SIZE: usize = 0x1000;
 
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// An object ID, represented as a transparent wrapper type. Any value where the upper 64 bits are
 /// zero is invalid.
 pub struct ObjID(u128);
@@ -22,6 +30,10 @@ impl ObjID {
     /// Build a new ObjID out of a high part and a low part.
     pub fn new_from_parts(hi: u64, lo: u64) -> Self {
         ObjID::new(((hi as u128) << 64) | (lo as u128))
+    }
+
+    pub fn as_u128(&self) -> u128 {
+        self.0
     }
 }
 
@@ -55,6 +67,12 @@ impl core::fmt::Display for ObjID {
     }
 }
 
+impl core::fmt::Debug for ObjID {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ObjID({:x})", self.0)
+    }
+}
+
 bitflags::bitflags! {
     /// Mapping protections for mapping objects into the address space.
     pub struct Protections: u32 {
@@ -64,5 +82,83 @@ bitflags::bitflags! {
         const WRITE = 2;
         /// Exec allowed.
         const EXEC = 4;
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct InternalObject<T> {
+    slot: usize,
+    id: ObjID,
+    _pd: PhantomData<T>,
+}
+
+impl<T> InternalObject<T> {
+    #[allow(dead_code)]
+    pub(crate) fn base(&self) -> &T {
+        let (start, _) = crate::slot::to_vaddr_range(self.slot);
+        unsafe { (start as *const T).as_ref().unwrap() }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn id(&self) -> ObjID {
+        self.id
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn slot(&self) -> usize {
+        self.slot
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn create_data_and_map() -> Option<Self> {
+        let cs = ObjectCreate::new(
+            crate::syscall::BackingType::Normal,
+            crate::syscall::LifetimeType::Volatile,
+            None,
+            ObjectCreateFlags::empty(),
+        );
+        let id = crate::syscall::sys_object_create(cs, &[], &[]).ok()?;
+
+        let slot = crate::slot::global_allocate()?;
+
+        crate::syscall::sys_object_map(
+            None,
+            id,
+            slot,
+            Protections::READ | Protections::WRITE,
+            MapFlags::empty(),
+        )
+        .ok()?;
+
+        //TODO: delete
+        Some(Self {
+            id,
+            slot,
+            _pd: PhantomData,
+        })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn map(id: ObjID, prot: Protections) -> Option<Self> {
+        let slot = crate::slot::global_allocate()?;
+        crate::syscall::sys_object_map(None, id, slot, prot, MapFlags::empty()).ok()?;
+        Some(Self {
+            id,
+            slot,
+            _pd: PhantomData,
+        })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) unsafe fn offset_from_base<D>(&mut self, offset: usize) -> &mut D {
+        let (start, _) = crate::slot::to_vaddr_range(self.slot);
+        ((start + offset) as *mut D).as_mut().unwrap()
+    }
+}
+
+impl<T> Drop for InternalObject<T> {
+    fn drop(&mut self) {
+        crate::slot::global_release(self.slot);
     }
 }

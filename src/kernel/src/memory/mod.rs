@@ -1,7 +1,8 @@
 use alloc::boxed::Box;
+use twizzler_abi::device::CacheType;
 use x86_64::{PhysAddr, VirtAddr};
 
-use crate::{arch, BootInfo};
+use crate::{arch, spinlock::Spinlock, BootInfo};
 
 pub mod allocator;
 pub mod context;
@@ -24,13 +25,13 @@ pub enum MapFailed {
 }
 
 pub struct MappingIter<'a> {
-    ctx: &'a MemoryContext,
+    ctx: &'a MemoryContextInner,
     next: VirtAddr,
     done: bool,
 }
 
 impl<'a> MappingIter<'a> {
-    fn new(ctx: &'a MemoryContext, start: VirtAddr) -> Self {
+    fn new(ctx: &'a MemoryContextInner, start: VirtAddr) -> Self {
         Self {
             ctx,
             next: start,
@@ -40,7 +41,7 @@ impl<'a> MappingIter<'a> {
 }
 
 use self::{
-    context::{MapFlags, MemoryContext},
+    context::{MapFlags, MemoryContextInner},
     frame::{alloc_frame, PhysicalFrameFlags},
 };
 #[derive(Clone, Copy, Debug)]
@@ -81,9 +82,9 @@ impl<'a> Iterator for MappingIter<'a> {
     }
 }
 
-fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContext {
-    let ctx = MemoryContext::current();
-    let mut new_context = MemoryContext::new_blank();
+fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContextInner {
+    let ctx = MemoryContextInner::current();
+    let mut new_context = MemoryContextInner::new_blank();
 
     let phys_mem_offset = arch::memory::phys_to_virt(PhysAddr::new(0));
     /* TODO: map ALL of the physical address space */
@@ -94,6 +95,7 @@ fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContext {
             PhysAddr::new(0),
             0x100000000,
             MapFlags::READ | MapFlags::WRITE | MapFlags::GLOBAL | MapFlags::WIRED,
+            CacheType::WriteBack,
         )
         .unwrap();
 
@@ -108,26 +110,27 @@ fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContext {
                 | MapFlags::GLOBAL
                 | MapFlags::EXECUTE
                 | MapFlags::WIRED,
+            CacheType::WriteBack,
         )
         .unwrap();
 
     for va in clone_regions {
         new_context.clone_region(&ctx, *va);
     }
-    unsafe {
-        new_context.arch.switch();
-    }
+    new_context.switch();
     new_context
 }
 
 struct KernelMemoryManagerInner {
-    kernel_context: MemoryContext,
+    kernel_context: MemoryContextInner,
 }
 pub struct KernelMemoryManager {
-    inner: spin::Mutex<KernelMemoryManagerInner>,
+    // TODO: spinlock or mutex?
+    inner: Spinlock<KernelMemoryManagerInner>,
 }
 
 impl KernelMemoryManager {
+    #[allow(clippy::result_unit_err)]
     pub fn map_zero_pages(&self, addr: VirtAddr, length: usize) -> Result<(), ()> {
         let mut innerm = self.inner.lock();
         let inner = &mut *innerm;
@@ -141,6 +144,7 @@ impl KernelMemoryManager {
                 frame.start_address(),
                 frame.size() as usize,
                 MapFlags::READ | MapFlags::WRITE | MapFlags::GLOBAL | MapFlags::WIRED,
+                CacheType::WriteBack,
             );
             count += frame.size();
             if count >= length {
@@ -193,9 +197,7 @@ pub fn init<B: BootInfo>(boot_info: &B, clone_regions: &[VirtAddr]) {
 
     unsafe {
         KERNEL_MEMORY_MANAGER = Box::into_raw(Box::new(KernelMemoryManager {
-            inner: spin::Mutex::new(KernelMemoryManagerInner {
-                kernel_context: kernel_context,
-            }),
+            inner: Spinlock::new(KernelMemoryManagerInner { kernel_context }),
         }))
     };
 

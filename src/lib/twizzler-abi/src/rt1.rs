@@ -8,6 +8,7 @@
 //!
 //! Execution will start at the _start symbol, provided in arch::_start. This will almost
 //! immediately call [twz_runtime_start]. From there, we:
+//!   0. Initialize global context.
 //!   1. Process the aux array.
 //!   2. Find the TLS template region and store that info.
 //!   3. Create a TLS region for ourselves, the main thread.
@@ -33,7 +34,7 @@ use crate::object::ObjID;
 
 extern "C" {
     // Defined in the rust stdlib.
-    fn std_runtime_start(env: *const *const i8) -> i32;
+    fn std_runtime_start(argc: usize, args: *const *const i8, env: *const *const i8) -> i32;
 
     // These are defined in the linker script.
     static __preinit_array_start: extern "C" fn();
@@ -111,7 +112,7 @@ pub(crate) fn new_thread_tls() -> Option<(usize, *mut u8, usize, usize)> {
                     & ((!MIN_TLS_ALIGN) + 1);
 
             let layout = crate::internal_unwrap(
-                Layout::from_size_align(full_tls_size, MIN_TLS_ALIGN).ok(),
+                Layout::from_size_align(full_tls_size, tls_align).ok(),
                 "failed to unwrap TLS layout",
             );
             let tls = crate::alloc::global_alloc(layout);
@@ -157,12 +158,16 @@ use core::ptr;
 #[allow(unused_mut)]
 /// Called from _start to initialize the runtime and pass control to the Rust stdlib.
 pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
+    crate::slot::runtime_init();
     let null_env: [*const i8; 4] = [
         b"RUST_BACKTRACE=full\0".as_ptr() as *const i8,
         ptr::null(),
         ptr::null(),
         ptr::null(),
     ];
+    let mut arg_ptr = ptr::null();
+    let mut arg_count = 0;
+    let mut env_ptr = (&null_env).as_ptr();
     unsafe {
         while !aux_array.is_null() && *aux_array != AuxEntry::Null {
             match *aux_array {
@@ -171,6 +176,13 @@ pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
                 }
                 AuxEntry::ExecId(id) => {
                     EXEC_ID = id;
+                }
+                AuxEntry::Arguments(num, ptr) => {
+                    arg_count = num;
+                    arg_ptr = ptr as *const *const i8
+                }
+                AuxEntry::Environment(ptr) => {
+                    env_ptr = ptr as *const *const i8;
                 }
                 _ => {}
             }
@@ -181,6 +193,7 @@ pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
     if let Some(tls) = tls {
         crate::syscall::sys_thread_settls(tls);
     }
+    crate::syscall::sys_thread_set_upcall(crate::arch::upcall::upcall_entry);
 
     unsafe {
         // Run preinit array
@@ -209,7 +222,8 @@ pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
 
     /* it's unsafe because it's an extern C function. */
     /* TODO: pass env and args */
-    let code = unsafe { std_runtime_start(&null_env as *const *const i8) };
+    // let code = unsafe { std_runtime_start(arg_count, arg_ptr, &null_env as *const *const i8) };
+    let code = unsafe { std_runtime_start(arg_count, arg_ptr, env_ptr) };
     //TODO: exit val
     crate::syscall::sys_thread_exit(code as u64, ptr::null_mut())
 }

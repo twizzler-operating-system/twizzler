@@ -15,13 +15,19 @@
 #![feature(asm)]
 #![feature(naked_functions)]
 #![feature(core_intrinsics)]
+#![feature(int_roundings)]
+#![feature(thread_local)]
 pub mod arch;
 
 pub mod alloc;
 pub mod aux;
+pub mod device;
 #[cfg(any(doc, feature = "rt"))]
 pub mod exec;
+pub mod kso;
 mod llalloc;
+#[cfg(not(feature = "rt"))]
+pub mod load_elf;
 pub mod object;
 #[cfg(any(doc, feature = "rt"))]
 pub mod rt1;
@@ -31,12 +37,15 @@ pub mod slot;
 pub mod syscall;
 pub mod thread;
 pub mod time;
+pub mod upcall;
+pub mod vcell;
 
 /// Simple callback into twizzler_abi made by the standard library once it has initialized the
 /// environment. No panic runtime is available yet.
 pub fn ready() {}
 
 /// We need to provide a no-mangled abort() call for things like libunwind.
+#[cfg(feature = "rt")]
 #[no_mangle]
 pub extern "C" fn abort() -> ! {
     unsafe { internal_abort() }
@@ -55,20 +64,38 @@ fn print_err(err: &str) {
 /// that assumes stack protections works (libunwind).
 /// # Safety
 /// This function cannot be called safely, as it will abort unconditionally.
+#[cfg(feature = "rt")]
 #[no_mangle]
 pub unsafe extern "C" fn __stack_chk_fail() {
     print_err("stack overflow -- aborting");
     abort();
 }
 
-/// During runtime init, we need to call functions that might fail, but if they do so, we should
-/// just abort. The standard unwrap() function for Option will call panic, but we can't use that, as
+/// during runtime init, we need to call functions that might fail, but if they do so, we should
+/// just abort. the standard unwrap() function for option will call panic, but we can't use that, as
 /// the runtime init stuff runs before the panic runtime is ready.
 fn internal_unwrap<T>(t: Option<T>, msg: &str) -> T {
     if let Some(t) = t {
         t
     } else {
         print_err(msg);
-        abort();
+        unsafe {
+            internal_abort();
+        }
+    }
+}
+
+#[allow(dead_code)]
+/// during runtime init, we need to call functions that might fail, but if they do so, we should
+/// just abort. the standard unwrap() function for result will call panic, but we can't use that, as
+/// the runtime init stuff runs before the panic runtime is ready.
+fn internal_unwrap_result<T, E>(t: Result<T, E>, msg: &str) -> T {
+    if let Ok(t) = t {
+        t
+    } else {
+        print_err(msg);
+        unsafe {
+            internal_abort();
+        }
     }
 }

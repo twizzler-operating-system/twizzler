@@ -15,11 +15,14 @@
 #![feature(optimize_attribute)]
 #![feature(asm_sym)]
 #![feature(asm_const)]
+#![feature(btree_drain_filter)]
 
 #[macro_use]
 pub mod log;
 pub mod arch;
 mod clock;
+mod condvar;
+mod device;
 mod idcounter;
 mod image;
 mod initrd;
@@ -28,6 +31,7 @@ pub mod machine;
 pub mod memory;
 mod mutex;
 mod obj;
+mod once;
 mod operations;
 mod panic;
 mod processor;
@@ -39,10 +43,10 @@ pub mod utils;
 extern crate alloc;
 
 extern crate bitflags;
+use crate::once::Once;
 use arch::BootInfoSystemTable;
 use initrd::BootModule;
 use memory::MemoryRegion;
-use spin::Once;
 use thread::current_thread_ref;
 use x86_64::VirtAddr;
 
@@ -79,8 +83,8 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
     arch::init_interrupts();
 
     logln!("[kernel::cpu] enumerating and starting secondary CPUs");
-    arch::processor::enumerate_cpus();
-    processor::init_cpu(image::get_tls());
+    let bsp_id = arch::processor::enumerate_cpus();
+    processor::init_cpu(image::get_tls(), bsp_id);
     arch::init_secondary();
     initrd::init(boot_info.get_modules());
     processor::boot_all_secondaries(image::get_tls());
@@ -91,7 +95,6 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
     let mut v = lock.lock();
     *v = 2;
 
-    thread::start_new_init();
     init_threading();
 }
 
@@ -106,8 +109,12 @@ pub fn init_threading() -> ! {
 }
 
 pub fn idle_main() -> ! {
+    if current_processor().is_bsp() {
+        machine::machine_post_init();
+        thread::start_new_init();
+    }
     logln!(
-        "processor {} entering main idle loop",
+        "[kernel::main] processor {} entering main idle loop",
         current_processor().id
     );
     interrupt::set(true);
