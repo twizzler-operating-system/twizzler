@@ -22,6 +22,12 @@ kernel = ["twizzler-kernel"]
 initrd-members = ["init", "devmgr", "netmgr", "nettest"]
 checks = ["twizzler-queue-raw"]
 tests-libs = ["twizzler-queue-raw"]
+initrd = [
+    "crate:init",
+    "crate:devmgr",
+    "crate:netmgr",
+    "crate:nettest",
+]
 
 [profile.release]
 debug = true

@@ -29,7 +29,9 @@ pub async fn handle_client_request(
             TxCompletion::Nothing
         }
         TxRequest::SendToIpv4(addr, data) => {
+            #[allow(unused_variables)]
             let buffer = handle.get_incoming_buffer(data);
+            #[allow(unreachable_code)]
             let _ = ipv4::send_to(
                 handle,
                 Ipv4Addr::localhost(), /* TODO */

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cargo::{
     core::{
@@ -9,9 +9,11 @@ use cargo::{
     util::interning::InternedString,
     Config,
 };
+use ouroboros::self_referencing;
 
 struct OtherOptions {
     message_format: MessageFormat,
+    manifest_path: Option<PathBuf>,
 }
 
 use crate::{triple::Triple, BuildOptions, CheckOptions, Profile};
@@ -39,26 +41,27 @@ fn locate_packages<'a>(workspace: &'a Workspace, kind: Option<&str>) -> Vec<&'a 
         .collect()
 }
 
-fn build_tools(
-    workspace: &Workspace,
+fn build_tools<'a>(
+    workspace: &'a Workspace,
     mode: CompileMode,
     other_options: &OtherOptions,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Compilation<'a>> {
+    crate::print_status_line("collection: tools", None);
     let tools = locate_packages(&workspace, Some("tool"));
     let mut options = CompileOptions::new(workspace.config(), mode)?;
     options.spec = Packages::Packages(tools.iter().map(|p| p.name().to_string()).collect());
     options.build_config.requested_profile = InternedString::new("release");
     options.build_config.message_format = other_options.message_format;
-    cargo::ops::compile(workspace, &options)?;
-    Ok(())
+    cargo::ops::compile(workspace, &options)
 }
 
-fn build_twizzler(
-    workspace: &Workspace,
+fn build_twizzler<'a>(
+    workspace: &'a Workspace,
     mode: CompileMode,
     build_config: &crate::BuildConfig,
     other_options: &OtherOptions,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Compilation<'a>> {
+    crate::print_status_line("collection: userspace", Some(build_config));
     let triple = Triple::new(
         build_config.arch,
         build_config.machine,
@@ -72,8 +75,7 @@ fn build_twizzler(
         options.build_config.requested_profile = InternedString::new("release");
     }
     options.spec = Packages::Packages(tools.iter().map(|p| p.name().to_string()).collect());
-    cargo::ops::compile(workspace, &options)?;
-    Ok(())
+    cargo::ops::compile(workspace, &options)
 }
 
 fn build_kernel<'a>(
@@ -82,6 +84,7 @@ fn build_kernel<'a>(
     build_config: &crate::BuildConfig,
     other_options: &OtherOptions,
 ) -> anyhow::Result<Compilation<'a>> {
+    crate::print_status_line("collection: kernel", Some(build_config));
     let tools = locate_packages(&workspace, Some("kernel"));
     let mut options = CompileOptions::new(workspace.config(), mode)?;
     options.build_config.message_format = other_options.message_format;
@@ -92,14 +95,45 @@ fn build_kernel<'a>(
     cargo::ops::compile(workspace, &options)
 }
 
+#[self_referencing]
 pub(crate) struct TwizzlerCompilation {
-    pub kernel_image: PathBuf,
+    pub user_config: Config,
+    #[borrows(user_config)]
+    #[covariant]
+    pub user_workspace: Workspace<'this>,
+
+    pub kernel_config: Config,
+    #[borrows(kernel_config)]
+    #[covariant]
+    pub kernel_workspace: Workspace<'this>,
+
+    #[borrows(user_workspace)]
+    #[covariant]
+    pub tools_compilation: Compilation<'this>,
+    #[borrows(kernel_workspace)]
+    #[covariant]
+    pub kernel_compilation: Compilation<'this>,
+    #[borrows(user_workspace)]
+    #[covariant]
+    pub user_compilation: Compilation<'this>,
+}
+
+impl TwizzlerCompilation {
+    pub fn get_kernel_image(&self) -> &Path {
+        &self
+            .borrow_kernel_compilation()
+            .binaries
+            .iter()
+            .nth(0)
+            .unwrap()
+            .path
+    }
 }
 
 fn compile(
     bc: crate::BuildConfig,
     mode: CompileMode,
-    other_options: OtherOptions,
+    other_options: &OtherOptions,
 ) -> anyhow::Result<TwizzlerCompilation> {
     crate::toolchain::init_for_build()?;
     let mut config = Config::default()?;
@@ -107,29 +141,35 @@ fn compile(
     let mut kernel_config = Config::default()?;
     kernel_config.configure(0, false, None, false, false, false, &None, &[], &[])?;
     kernel_config.reload_rooted_at("src/kernel")?;
-    let workspace =
-        cargo::core::Workspace::new(&PathBuf::from("Cargo.toml").canonicalize()?, &config)?;
-    let kernel_workspace =
-        cargo::core::Workspace::new(&PathBuf::from("Cargo.toml").canonicalize()?, &kernel_config)?;
-    build_tools(&workspace, mode, &other_options)?;
-    let kernel_comp = build_kernel(&kernel_workspace, mode, &bc, &other_options)?;
-    build_twizzler(&workspace, mode, &bc, &other_options)?;
+    let manifest_path = other_options
+        .manifest_path
+        .as_ref()
+        .unwrap_or(&PathBuf::from("Cargo.toml"))
+        .clone()
+        .canonicalize()?;
 
-    Ok(TwizzlerCompilation {
-        kernel_image: kernel_comp.binaries.iter().nth(0).unwrap().path.clone(),
-    })
+    TwizzlerCompilation::try_new::<anyhow::Error>(
+        config,
+        |c| Workspace::new(&manifest_path, c),
+        kernel_config,
+        |c| Workspace::new(&manifest_path, c),
+        |w| build_tools(w, mode, other_options),
+        |w| build_kernel(w, mode, &bc, other_options),
+        |w| build_twizzler(w, mode, &bc, other_options),
+    )
 }
 
-pub(crate) fn do_build(cli: BuildOptions) -> anyhow::Result<TwizzlerCompilation> {
+pub(crate) fn do_build<'a>(cli: BuildOptions) -> anyhow::Result<TwizzlerCompilation> {
     let other_options = OtherOptions {
-        message_format: MessageFormat::Short,
+        message_format: MessageFormat::Human,
+        manifest_path: None,
     };
-    compile(cli.config, CompileMode::Build, other_options)
+    compile(cli.config, CompileMode::Build, &other_options)
 }
 
 pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
     let other_options = OtherOptions {
-        message_format: match cli.message_fmt {
+        message_format: match cli.message_format {
             crate::MessageFormat::Human => MessageFormat::Human,
             crate::MessageFormat::Short => MessageFormat::Short,
             crate::MessageFormat::Json => MessageFormat::Json {
@@ -141,7 +181,8 @@ pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
             crate::MessageFormat::JsonDiagnosticRenderedAnsi => todo!(),
             crate::MessageFormat::JsonRenderDiagnostics => todo!(),
         },
+        manifest_path: cli.manifest_path,
     };
-    compile(cli.config, CompileMode::Build, other_options)?;
+    compile(cli.config, CompileMode::Build, &other_options)?;
     Ok(())
 }

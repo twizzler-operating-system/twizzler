@@ -14,6 +14,7 @@ strum = "0.24.0"
 anyhow = "1.0.56"
 strum_macros = "0.24.0"
 cargo = { version = "0.60.0", features = ["vendored-openssl"] }
+ouroboros = "0.14.2"
 
 [package.metadata]
 twizzler-build = "xtask"

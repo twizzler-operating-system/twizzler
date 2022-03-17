@@ -1,11 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use byteorder::{ByteOrder, NetworkEndian};
-use twizzler_async::Task;
-use twizzler_net::{
-    addr::{Ipv4Addr, ServiceAddr},
-    NmHandleManager, RxRequest,
-};
+use twizzler_net::addr::{Ipv4Addr, ServiceAddr};
 
 use crate::{
     header::Header,
@@ -14,7 +10,7 @@ use crate::{
         ethernet::{EtherType, EthernetAddr, EthernetHeader},
         IncomingPacketInfo,
     },
-    transport::{handle_packet, icmp::handle_icmp_packet},
+    transport::handle_packet,
     HandleRef,
 };
 
@@ -34,10 +30,12 @@ struct Ipv4Header {
 }
 
 impl Ipv4Header {
+    #[allow(dead_code)]
     pub fn dest_addr(&self) -> Ipv4Addr {
         NetworkEndian::read_u32(&self.dest).into()
     }
 
+    #[allow(dead_code)]
     pub fn source_addr(&self) -> Ipv4Addr {
         NetworkEndian::read_u32(&self.source).into()
     }
@@ -137,6 +135,7 @@ pub enum Ipv4SendError {
     Unknown,
 }
 
+#[allow(dead_code)]
 // TODO: This is all pretty slow probably
 struct Listener {
     addr: Ipv4Addr,
@@ -158,7 +157,7 @@ pub fn setup_ipv4_listen(handle: HandleRef, addr: Ipv4Addr) {
     listeners.push(Arc::new(Listener { addr, handle }));
 }
 
-pub async fn handle_incoming_ipv4_packet(mut info: IncomingPacketInfo) {
+pub async fn handle_incoming_ipv4_packet(info: IncomingPacketInfo) {
     /*
         let header = unsafe { buffer.get_minimal_header::<Ipv4Header>(offset) };
         // TODO: checksum

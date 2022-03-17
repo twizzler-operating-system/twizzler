@@ -45,10 +45,7 @@ pub mod utils;
 extern crate alloc;
 
 extern crate bitflags;
-use core::{
-    cell::RefCell,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::once::Once;
 use arch::BootInfoSystemTable;

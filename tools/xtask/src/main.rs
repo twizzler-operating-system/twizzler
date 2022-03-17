@@ -1,3 +1,5 @@
+#![feature(explicit_generic_args_with_impl_trait)]
+
 mod build;
 mod image;
 mod qemu;
@@ -38,7 +40,7 @@ impl Default for Profile {
     }
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone, Copy)]
 struct BuildConfig {
     #[clap(short, long, arg_enum, default_value_t = Profile::Debug, help = "Select build profile.")]
     pub profile: Profile,
@@ -69,12 +71,14 @@ struct CheckOptions {
     #[clap(flatten)]
     pub config: BuildConfig,
     #[clap(long, short)]
-    pub manifest_path: PathBuf,
+    pub manifest_path: Option<PathBuf>,
     #[clap(long, short, arg_enum, default_value_t = MessageFormat::Human)]
-    pub message_fmt: MessageFormat,
+    pub message_format: MessageFormat,
+    #[clap(long, short)]
+    pub workspace: bool,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone, Copy)]
 struct ImageOptions {
     #[clap(flatten)]
     pub config: BuildConfig,
@@ -86,7 +90,7 @@ impl From<ImageOptions> for BuildOptions {
     }
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct QemuOptions {
     #[clap(flatten)]
     config: BuildConfig,
@@ -100,8 +104,8 @@ struct QemuOptions {
     test: bool,
 }
 
-impl From<QemuOptions> for ImageOptions {
-    fn from(qo: QemuOptions) -> Self {
+impl From<&QemuOptions> for ImageOptions {
+    fn from(qo: &QemuOptions) -> Self {
         Self { config: qo.config }
     }
 }
@@ -142,5 +146,19 @@ fn main() -> anyhow::Result<()> {
         }
     } else {
         anyhow::bail!("you must specify a subcommand.");
+    }
+}
+
+fn print_status_line(name: &str, config: Option<&BuildConfig>) {
+    if let Some(config) = config {
+        eprintln!(
+            "=== BUILDING {} [{}-{}::{}]",
+            name,
+            config.arch.to_string(),
+            config.machine.to_string(),
+            config.profile.to_string()
+        );
+    } else {
+        eprintln!("=== BUILDING {} [build::release]", name);
     }
 }
