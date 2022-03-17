@@ -13,3 +13,6 @@ anyhow = "*"
 fatfs = "*"
 gpt = "*"
 argh = "*"
+
+[package.metadata]
+twizzler-build = "tool"

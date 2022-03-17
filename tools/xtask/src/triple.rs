@@ -1,15 +1,15 @@
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, EnumIter)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, EnumIter, clap::ArgEnum)]
 pub enum Machine {
     Unknown,
     Rpi3,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, EnumIter)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, EnumIter, clap::ArgEnum)]
 pub enum Arch {
-    Amd64,
+    X86_64,
     Aarch64,
 }
 
@@ -41,7 +41,7 @@ impl TryFrom<&str> for Arch {
     fn try_from(s: &str) -> Result<Self, ()> {
         Ok(match s {
             "aarch64" => Self::Aarch64,
-            "x86_64" => Self::Amd64,
+            "x86_64" => Self::X86_64,
             _ => return Err(()),
         })
     }
@@ -50,7 +50,7 @@ impl TryFrom<&str> for Arch {
 impl From<&Arch> for String {
     fn from(a: &Arch) -> Self {
         match a {
-            Arch::Amd64 => "x86_64",
+            Arch::X86_64 => "x86_64",
             Arch::Aarch64 => "aarch64",
         }
         .to_string()
@@ -116,11 +116,20 @@ impl From<&Triple> for String {
 }
 
 impl Triple {
+    pub fn new(arch: Arch, machine: Machine, host: Host) -> Self {
+        Self {
+            machine,
+            arch,
+            host,
+        }
+    }
+
     pub fn to_string(&self) -> String {
         self.into()
     }
 }
 
+#[allow(dead_code)]
 pub fn all_possible_platforms(host: Host) -> Vec<Triple> {
     let mut triples = vec![];
     for arch in Arch::iter() {

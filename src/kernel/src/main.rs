@@ -14,8 +14,6 @@
 #![feature(const_btree_new)]
 #![feature(optimize_attribute)]
 #![feature(lang_items)]
-#![feature(asm_sym)]
-#![feature(asm_const)]
 #![feature(btree_drain_filter)]
 #![feature(custom_test_frameworks)]
 #![reexport_test_harness_main = "test_main"]
