@@ -1,11 +1,10 @@
 [alias]
-xtask = "run --package xtask --"
-check-all = "run --package xtask -- check-all"
-build-all = "run --package xtask -- build-all"
-make-disk = "run --package xtask -- make-disk"
-start-qemu = "run --package xtask -- start-qemu"
-bootstrap = "run --package xtask -- bootstrap"
-build-std = "run --package xtask -- build-std"
+xtask = "run --release --target-dir=.target-xtask --package xtask --"
+build-all = "run --release --target-dir=.target-xtask --package xtask -- build"
+check-all = "run --release --target-dir=.target-xtask --package xtask -- check"
+make-image = "run --release --target-dir=.target-xtask --package xtask -- make-image"
+start-qemu = "run --release --target-dir=.target-xtask --package xtask -- start-qemu"
+bootstrap = "run --release --target-dir=.target-xtask --package xtask -- bootstrap"
 
 [build]
 rustdocflags = "-Zunstable-options --enable-index-page"
