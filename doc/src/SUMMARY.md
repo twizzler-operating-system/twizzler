@@ -4,7 +4,7 @@
 
 [Building Twizzler](./BUILD.md)
 
-Fundamentals
+# Fundamentals
 
 - [Objects](./Object.md)
 
@@ -14,12 +14,14 @@ Fundamentals
 
 - [Permissions](./Permissions.md)
 
-Primitives
+# Primitives
 
 - [Views](./Views.md)
 
 - [Kernel State Objects](./KSO.md)
 
 - [Extensions](./Extensions.md)
+
+- [Gates](./Gates.md)
 
 <!-- - [Keyring](./Keyring.md) -->

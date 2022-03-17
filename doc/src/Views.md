@@ -1,4 +1,4 @@
-% Views
+# Views
 
 Views are an address space abstraction that sets an environment for threads to run in. Persistent objects are mapped into the view and given dereferenceable virtual pointers. These virtual pointers allow access to the object inside the view.
 
