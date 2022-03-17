@@ -1,4 +1,6 @@
 mod build;
+mod image;
+mod qemu;
 mod toolchain;
 mod triple;
 
@@ -78,6 +80,12 @@ struct ImageOptions {
     pub config: BuildConfig,
 }
 
+impl From<ImageOptions> for BuildOptions {
+    fn from(io: ImageOptions) -> Self {
+        Self { config: io.config }
+    }
+}
+
 #[derive(Args, Debug)]
 struct QemuOptions {
     #[clap(flatten)]
@@ -90,6 +98,12 @@ struct QemuOptions {
     qemu_options: Vec<String>,
     #[clap(long, short, help = "Run tests instead of booting normally.")]
     test: bool,
+}
+
+impl From<QemuOptions> for ImageOptions {
+    fn from(qo: QemuOptions) -> Self {
+        Self { config: qo.config }
+    }
 }
 
 #[derive(clap::Args, Debug)]
@@ -122,9 +136,9 @@ fn main() -> anyhow::Result<()> {
         match command {
             Commands::Bootstrap(x) => toolchain::do_bootstrap(x),
             Commands::Check(x) => build::do_check(x),
-            Commands::Build(x) => build::do_build(x),
-            Commands::MakeImage(_) => todo!(),
-            Commands::StartQemu(_) => todo!(),
+            Commands::Build(x) => build::do_build(x).map(|_| ()),
+            Commands::MakeImage(x) => image::do_make_image(x).map(|_| ()),
+            Commands::StartQemu(x) => qemu::do_start_qemu(x),
         }
     } else {
         anyhow::bail!("you must specify a subcommand.");

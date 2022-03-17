@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use cargo::{
     core::{
-        compiler::{BuildConfig, CompileMode, MessageFormat},
+        compiler::{BuildConfig, Compilation, CompileMode, MessageFormat},
         Package, Workspace,
     },
     ops::{CompileOptions, Packages},
@@ -76,12 +76,12 @@ fn build_twizzler(
     Ok(())
 }
 
-fn build_kernel(
-    workspace: &Workspace,
+fn build_kernel<'a>(
+    workspace: &'a Workspace,
     mode: CompileMode,
     build_config: &crate::BuildConfig,
     other_options: &OtherOptions,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Compilation<'a>> {
     let tools = locate_packages(&workspace, Some("kernel"));
     let mut options = CompileOptions::new(workspace.config(), mode)?;
     options.build_config.message_format = other_options.message_format;
@@ -89,15 +89,18 @@ fn build_kernel(
         options.build_config.requested_profile = InternedString::new("release");
     }
     options.spec = Packages::Packages(tools.iter().map(|p| p.name().to_string()).collect());
-    cargo::ops::compile(workspace, &options)?;
-    Ok(())
+    cargo::ops::compile(workspace, &options)
+}
+
+pub(crate) struct TwizzlerCompilation {
+    pub kernel_image: PathBuf,
 }
 
 fn compile(
     bc: crate::BuildConfig,
     mode: CompileMode,
     other_options: OtherOptions,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<TwizzlerCompilation> {
     crate::toolchain::init_for_build()?;
     let mut config = Config::default()?;
     config.configure(0, false, None, false, false, false, &None, &[], &[])?;
@@ -109,12 +112,15 @@ fn compile(
     let kernel_workspace =
         cargo::core::Workspace::new(&PathBuf::from("Cargo.toml").canonicalize()?, &kernel_config)?;
     build_tools(&workspace, mode, &other_options)?;
-    build_kernel(&kernel_workspace, mode, &bc, &other_options)?;
+    let kernel_comp = build_kernel(&kernel_workspace, mode, &bc, &other_options)?;
     build_twizzler(&workspace, mode, &bc, &other_options)?;
-    Ok(())
+
+    Ok(TwizzlerCompilation {
+        kernel_image: kernel_comp.binaries.iter().nth(0).unwrap().path.clone(),
+    })
 }
 
-pub(crate) fn do_build(cli: BuildOptions) -> anyhow::Result<()> {
+pub(crate) fn do_build(cli: BuildOptions) -> anyhow::Result<TwizzlerCompilation> {
     let other_options = OtherOptions {
         message_format: MessageFormat::Short,
     };
@@ -136,5 +142,6 @@ pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
             crate::MessageFormat::JsonRenderDiagnostics => todo!(),
         },
     };
-    compile(cli.config, CompileMode::Build, other_options)
+    compile(cli.config, CompileMode::Build, other_options)?;
+    Ok(())
 }
