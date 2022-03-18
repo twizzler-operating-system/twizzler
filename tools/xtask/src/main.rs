@@ -58,6 +58,12 @@ struct BuildOptions {
     tests: bool,
 }
 
+#[derive(Args, Debug)]
+struct DocOptions {
+    #[clap(flatten)]
+    pub config: BuildConfig,
+}
+
 #[derive(ArgEnum, Debug, Clone, Copy)]
 enum MessageFormat {
     Human,
@@ -143,6 +149,8 @@ enum Commands {
     #[clap(about = "Build the Twizzler system.")]
     Build(BuildOptions),
     #[clap(about = "Build a bootable disk image.")]
+    Doc(DocOptions),
+    #[clap(about = "Build a bootable disk image.")]
     MakeImage(ImageOptions),
     #[clap(about = "Boot a disk image in Qemu.")]
     StartQemu(QemuOptions),
@@ -155,6 +163,7 @@ fn main() -> anyhow::Result<()> {
             Commands::Bootstrap(x) => toolchain::do_bootstrap(x),
             Commands::Check(x) => build::do_check(x),
             Commands::Build(x) => build::do_build(x).map(|_| ()),
+            Commands::Doc(x) => build::do_docs(x).map(|_| ()),
             Commands::MakeImage(x) => image::do_make_image(x).map(|_| ()),
             Commands::StartQemu(x) => qemu::do_start_qemu(x),
         }

@@ -13,6 +13,11 @@ pub fn get_rustc_path() -> anyhow::Result<String> {
     Ok(format!("{}/bin/rustc", toolchain))
 }
 
+pub fn get_rustdoc_path() -> anyhow::Result<String> {
+    let toolchain = get_toolchain_path()?;
+    Ok(format!("{}/bin/rustdoc", toolchain))
+}
+
 fn create_stamp() {
     let mut file =
         std::fs::File::create("toolchain/install/stamp").expect("failed to create stamp file");
@@ -142,5 +147,6 @@ pub(crate) fn init_for_build() -> anyhow::Result<()> {
         anyhow::bail!("detected changes to twizzler-abi not reflected in current toolchain. This is probably because the twizzler-abi crate files were updated, so you need to run `cargo bootstrap --skip-submodules' again.");
     }
     std::env::set_var("RUSTC", &get_rustc_path()?);
+    std::env::set_var("RUSTDOC", &get_rustdoc_path()?);
     Ok(())
 }

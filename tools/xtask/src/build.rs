@@ -18,7 +18,7 @@ struct OtherOptions {
     needs_full_rebuild: bool,
 }
 
-use crate::{triple::Triple, BuildOptions, CheckOptions, Profile};
+use crate::{triple::Triple, BuildOptions, CheckOptions, DocOptions, Profile};
 
 fn locate_packages<'a>(workspace: &'a Workspace, kind: Option<&str>) -> Vec<&'a Package> {
     workspace
@@ -192,6 +192,16 @@ fn compile(
         |w| build_twizzler(w, mode, &bc, other_options),
         |w| maybe_build_tests(w, &bc, other_options),
     )
+}
+
+pub(crate) fn do_docs<'a>(cli: DocOptions) -> anyhow::Result<TwizzlerCompilation> {
+    let other_options = OtherOptions {
+        message_format: MessageFormat::Human,
+        manifest_path: None,
+        build_tests: false,
+        needs_full_rebuild: false,
+    };
+    compile(cli.config, CompileMode::Doc { deps: false }, &other_options)
 }
 
 pub(crate) fn do_build<'a>(cli: BuildOptions) -> anyhow::Result<TwizzlerCompilation> {

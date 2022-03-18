@@ -1,6 +1,7 @@
 [alias]
 xtask = "run --release --target-dir=.target-xtask --package xtask --"
 build-all = "run --release --target-dir=.target-xtask --package xtask -- build"
+doc-all = "run --release --target-dir=.target-xtask --package xtask -- doc"
 check-all = "run --release --target-dir=.target-xtask --package xtask -- check"
 make-image = "run --release --target-dir=.target-xtask --package xtask -- make-image"
 start-qemu = "run --release --target-dir=.target-xtask --package xtask -- start-qemu"
