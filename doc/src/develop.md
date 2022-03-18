@@ -1,9 +1,10 @@
 # Developing for Twizzler
 
 The Twizzler project welcomes people to contribute to this open source
-operating system.  We follow a branch and pull-request process, and
-while it's fine to also work in your own fork, it's probably easier to
-work within the main repo in your own branches.
+operating system.  We follow a branch and pull-request process.  For
+those without write access to the repo you will first have to fork the
+Twizzler repo, for those with write access it's easier to work within
+the main repo in your own branches.
 
 # Branch Naming
 
