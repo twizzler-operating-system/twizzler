@@ -1,4 +1,3 @@
-use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, EnumIter, clap::ArgEnum)]
@@ -129,17 +128,12 @@ impl Triple {
     }
 }
 
-#[allow(dead_code)]
-pub fn all_possible_platforms(host: Host) -> Vec<Triple> {
-    let mut triples = vec![];
-    for arch in Arch::iter() {
-        for machine in Machine::iter() {
-            triples.push(Triple {
-                machine,
-                arch,
-                host,
-            })
-        }
-    }
+pub fn all_possible_platforms() -> Vec<Triple> {
+    let triples = vec![Triple {
+        machine: Machine::Unknown,
+        arch: Arch::X86_64,
+        host: Host::Twizzler,
+    }];
+
     triples
 }

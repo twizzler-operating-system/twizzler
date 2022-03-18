@@ -15,6 +15,7 @@ struct OtherOptions {
     message_format: MessageFormat,
     manifest_path: Option<PathBuf>,
     build_tests: bool,
+    needs_full_rebuild: bool,
 }
 
 use crate::{triple::Triple, BuildOptions, CheckOptions, Profile};
@@ -76,6 +77,7 @@ fn build_twizzler<'a>(
         options.build_config.requested_profile = InternedString::new("release");
     }
     options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
+    options.build_config.force_rebuild = other_options.needs_full_rebuild;
     cargo::ops::compile(workspace, &options)
 }
 
@@ -102,6 +104,7 @@ fn maybe_build_tests<'a>(
         options.build_config.requested_profile = InternedString::new("release");
     }
     options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
+    options.build_config.force_rebuild = other_options.needs_full_rebuild;
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
 
@@ -119,6 +122,7 @@ fn build_kernel<'a>(
         options.build_config.requested_profile = InternedString::new("release");
     }
     options.spec = Packages::Packages(tools.iter().map(|p| p.name().to_string()).collect());
+    options.build_config.force_rebuild = other_options.needs_full_rebuild;
     cargo::ops::compile(workspace, &options)
 }
 
@@ -195,6 +199,7 @@ pub(crate) fn do_build<'a>(cli: BuildOptions) -> anyhow::Result<TwizzlerCompilat
         message_format: MessageFormat::Human,
         manifest_path: None,
         build_tests: cli.tests,
+        needs_full_rebuild: false,
     };
     compile(cli.config, CompileMode::Build, &other_options)
 }
@@ -215,6 +220,7 @@ pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
         },
         manifest_path: cli.manifest_path,
         build_tests: false,
+        needs_full_rebuild: false,
     };
     compile(cli.config, CompileMode::Build, &other_options)?;
     Ok(())
