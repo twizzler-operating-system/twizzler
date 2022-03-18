@@ -4,6 +4,24 @@
 
 [Building Twizzler](./BUILD.md)
 
-- [Chapter 1](./chapter_1.md)
+# Fundamentals
 
-- [Object Lifetime](./object_lifetime.md)
+- [Objects](./Object.md)
+
+- [Object Lifetime](./Lifetime.md)
+
+- [Pointers](./Pointer.md)
+
+- [Permissions](./Permissions.md)
+
+# Primitives
+
+- [Views](./Views.md)
+
+- [Kernel State Objects](./KSO.md)
+
+- [Extensions](./Extensions.md)
+
+- [Gates](./Gates.md)
+
+<!-- - [Keyring](./Keyring.md) -->
