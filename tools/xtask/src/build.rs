@@ -14,6 +14,7 @@ use ouroboros::self_referencing;
 struct OtherOptions {
     message_format: MessageFormat,
     manifest_path: Option<PathBuf>,
+    build_tests: bool,
 }
 
 use crate::{triple::Triple, BuildOptions, CheckOptions, Profile};
@@ -67,15 +68,41 @@ fn build_twizzler<'a>(
         build_config.machine,
         crate::triple::Host::Twizzler,
     );
-    let tools = locate_packages(&workspace, None);
+    let packages = locate_packages(&workspace, None);
     let mut options = CompileOptions::new(workspace.config(), mode)?;
     options.build_config = BuildConfig::new(workspace.config(), None, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
     }
-    options.spec = Packages::Packages(tools.iter().map(|p| p.name().to_string()).collect());
+    options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
     cargo::ops::compile(workspace, &options)
+}
+
+fn maybe_build_tests<'a>(
+    workspace: &'a Workspace,
+    build_config: &crate::BuildConfig,
+    other_options: &OtherOptions,
+) -> anyhow::Result<Option<Compilation<'a>>> {
+    let mode = CompileMode::Test;
+    if other_options.build_tests == false {
+        return Ok(None);
+    }
+    crate::print_status_line("collection: userspace::tests", Some(build_config));
+    let triple = Triple::new(
+        build_config.arch,
+        build_config.machine,
+        crate::triple::Host::Twizzler,
+    );
+    let packages = locate_packages(&workspace, None);
+    let mut options = CompileOptions::new(workspace.config(), mode)?;
+    options.build_config = BuildConfig::new(workspace.config(), None, &[triple.to_string()], mode)?;
+    options.build_config.message_format = other_options.message_format;
+    if build_config.profile == Profile::Release {
+        options.build_config.requested_profile = InternedString::new("release");
+    }
+    options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
+    Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
 
 fn build_kernel<'a>(
@@ -116,6 +143,9 @@ pub(crate) struct TwizzlerCompilation {
     #[borrows(user_workspace)]
     #[covariant]
     pub user_compilation: Compilation<'this>,
+    #[borrows(user_workspace)]
+    #[covariant]
+    pub test_compilation: Option<Compilation<'this>>,
 }
 
 impl TwizzlerCompilation {
@@ -156,6 +186,7 @@ fn compile(
         |w| build_tools(w, mode, other_options),
         |w| build_kernel(w, mode, &bc, other_options),
         |w| build_twizzler(w, mode, &bc, other_options),
+        |w| maybe_build_tests(w, &bc, other_options),
     )
 }
 
@@ -163,6 +194,7 @@ pub(crate) fn do_build<'a>(cli: BuildOptions) -> anyhow::Result<TwizzlerCompilat
     let other_options = OtherOptions {
         message_format: MessageFormat::Human,
         manifest_path: None,
+        build_tests: cli.tests,
     };
     compile(cli.config, CompileMode::Build, &other_options)
 }
@@ -182,6 +214,7 @@ pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
             crate::MessageFormat::JsonRenderDiagnostics => todo!(),
         },
         manifest_path: cli.manifest_path,
+        build_tests: false,
     };
     compile(cli.config, CompileMode::Build, &other_options)?;
     Ok(())

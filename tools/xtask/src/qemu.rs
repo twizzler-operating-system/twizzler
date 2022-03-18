@@ -41,10 +41,14 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
         .arg("-serial")
         .arg("mon:stdio");
 
+    if cli.tests {
+        run_cmd
+            .arg("-device")
+            .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
+    }
     run_cmd.args(cli.qemu_options);
     //run_cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
 
-    println!("starting QEMU: {:?}", run_cmd);
     let exit_status = run_cmd.status()?;
     /*
     if build_options.build_tests {
@@ -60,6 +64,15 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
     if exit_status.success() {
         Ok(())
     } else {
+        if cli.tests {
+            if exit_status.code().unwrap() == 1 {
+                eprintln!("qemu reports tests passed");
+                std::process::exit(0);
+            } else {
+                eprintln!("qemu reports tests failed");
+                std::process::exit(33);
+            }
+        }
         anyhow::bail!("qemu return with error");
     }
 }

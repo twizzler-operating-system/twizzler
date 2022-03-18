@@ -1,4 +1,6 @@
 use std::{
+    fs::File,
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -63,6 +65,24 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             x => panic!("invalid initrd spec {}", x),
         }
     }
+
+    if let Some(ref test_comp) = comp.borrow_test_compilation() {
+        if cli.tests {
+            let mut testlist = String::new();
+            for bin in test_comp.tests.iter() {
+                initrd_files.push(bin.path.clone());
+                testlist += &bin.path.file_name().unwrap().to_string_lossy();
+                testlist += "\n";
+            }
+            let test_file_path = get_genfile_path(&comp, "test_bins");
+            let mut file = File::create(&test_file_path)?;
+            file.write_all(testlist.as_bytes())?;
+            initrd_files.push(test_file_path);
+        }
+    } else {
+        assert!(!cli.tests);
+    }
+
     let initrd_path = get_genfile_path(&comp, "initrd");
     let status = Command::new(get_tool_path(&comp, "initrd_gen")?)
         .arg("--output")
@@ -81,7 +101,7 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     let initrd_path = build_initrd(&cli, &comp)?;
 
     crate::print_status_line("disk image", Some(&cli.config));
-    let cmdline = "";
+    let cmdline = if cli.tests { "--tests" } else { "" };
     let image_path = get_genfile_path(&comp, "disk.img");
     let status = Command::new(get_tool_path(&comp, "image_builder")?)
         .arg(comp.get_kernel_image())

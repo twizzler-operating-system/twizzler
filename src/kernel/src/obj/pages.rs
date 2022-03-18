@@ -68,7 +68,7 @@ impl Page {
             .unwrap()
     }
 
-    pub fn as_mut_slice(&self) -> &[u8] {
+    pub fn as_mut_slice(&self) -> &mut [u8] {
         unsafe {
             core::slice::from_raw_parts_mut(self.as_virtaddr().as_mut_ptr(), self.frame.size())
         }
@@ -133,20 +133,35 @@ impl Object {
     }
 
     pub fn write_base<T>(&self, info: &T) {
-        let offset = 0x1000; //TODO: arch-dep
+        let mut offset = 0x1000; //TODO: arch-dep
         unsafe {
             let mut obj_page_tree = self.lock_page_tree();
-            let page_number = PageNumber::from_address(VirtAddr::new(offset as u64));
-            let page_offset = offset % PageNumber::PAGE_SIZE;
+            let bytes = info as *const T as *const u8;
+            let len = core::mem::size_of::<T>();
+            let bytes = core::slice::from_raw_parts(bytes, len);
+            let mut count = 0;
+            while count < len {
+                let page_number = PageNumber::from_address(VirtAddr::new(offset as u64));
+                //let page_offset = offset % PageNumber::PAGE_SIZE;
 
-            if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
-                let t = page.get_mut_to_val::<T>(page_offset);
-                (t as *mut T).copy_from(info as *const T, 1);
-            } else {
-                let page = Page::new();
-                let t = page.get_mut_to_val::<T>(page_offset);
-                (t as *mut T).copy_from(info as *const T, 1);
-                obj_page_tree.add_page(page_number, page);
+                let thislen = core::cmp::min(0x1000, len - count);
+
+                if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
+                    let dest = &mut page.as_mut_slice()[0..thislen];
+                    dest.copy_from_slice(&bytes[count..(count + thislen)]);
+                    //let t = page.get_mut_to_val::<T>(page_offset);
+                    //(t as *mut T).copy_from(info as *const T, 1);
+                } else {
+                    let page = Page::new();
+                    let dest = &mut page.as_mut_slice()[0..thislen];
+                    dest.copy_from_slice(&bytes[count..(count + thislen)]);
+                    //let t = page.get_mut_to_val::<T>(page_offset);
+                    //(t as *mut T).copy_from(info as *const T, 1);
+                    obj_page_tree.add_page(page_number, page);
+                }
+
+                offset += thislen;
+                count += thislen;
             }
         }
     }

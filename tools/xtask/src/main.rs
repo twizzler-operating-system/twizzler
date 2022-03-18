@@ -54,6 +54,8 @@ struct BuildConfig {
 struct BuildOptions {
     #[clap(flatten)]
     pub config: BuildConfig,
+    #[clap(long, short, help = "Build tests-enabled system.")]
+    tests: bool,
 }
 
 #[derive(ArgEnum, Debug, Clone, Copy)]
@@ -82,11 +84,16 @@ struct CheckOptions {
 struct ImageOptions {
     #[clap(flatten)]
     pub config: BuildConfig,
+    #[clap(long, short, help = "Build tests-enabled system.")]
+    tests: bool,
 }
 
 impl From<ImageOptions> for BuildOptions {
     fn from(io: ImageOptions) -> Self {
-        Self { config: io.config }
+        Self {
+            config: io.config,
+            tests: io.tests,
+        }
     }
 }
 
@@ -101,12 +108,15 @@ struct QemuOptions {
     )]
     qemu_options: Vec<String>,
     #[clap(long, short, help = "Run tests instead of booting normally.")]
-    test: bool,
+    tests: bool,
 }
 
 impl From<&QemuOptions> for ImageOptions {
     fn from(qo: &QemuOptions) -> Self {
-        Self { config: qo.config }
+        Self {
+            config: qo.config,
+            tests: qo.tests,
+        }
     }
 }
 
