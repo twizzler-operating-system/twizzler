@@ -33,7 +33,8 @@ the "build system orchestrator". Essentially, building Twizzler requires using t
 target specification, and compile flags at the right times, so we've placed that complexity in an
 automation tool to make builds easier. To get an idea of what xtask is doing, you can run
 `cargo xtask --help`. Note that this repo's cargo config provides aliases for the common commands,
-as we will see below.
+as we will see below. In fact, it's advisable to NOT use the default cargo commands, and instead run
+everything through xtask.
 
 ## Step 1: Building the Toolchain
 
