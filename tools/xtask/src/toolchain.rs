@@ -143,6 +143,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         if !status.success() {
             anyhow::bail!("failed to update git submodules");
         }
+        fs_extra::dir::create_all("toolchain/install", false)?;
         let client = Client::new();
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
