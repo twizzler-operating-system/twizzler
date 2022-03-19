@@ -14,6 +14,10 @@ jobs:
     runs-on: self-hosted
 
     steps:
+    - name: Cleanup
+      run: |
+        ls -la
+        pwd
     - uses: actions/checkout@v2
     - name: Install latest nightly
       uses: actions-rs/toolchain@v1
