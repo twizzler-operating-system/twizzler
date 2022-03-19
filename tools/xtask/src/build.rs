@@ -169,7 +169,7 @@ fn compile(
     mode: CompileMode,
     other_options: &OtherOptions,
 ) -> anyhow::Result<TwizzlerCompilation> {
-    crate::toolchain::init_for_build()?;
+    crate::toolchain::init_for_build(mode.is_doc())?;
     let mut config = Config::default()?;
     config.configure(0, false, None, false, false, false, &None, &[], &[])?;
     let mut kernel_config = Config::default()?;
