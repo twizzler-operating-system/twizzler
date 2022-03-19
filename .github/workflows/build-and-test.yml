@@ -23,3 +23,7 @@ jobs:
       run: cargo bootstrap
     - name: Build
       run: cargo build-all
+    - name: Test
+      run: cargo start-qemu --tests
+    - name: Build Release
+      run: cargo start-qemu --profile release --tests
