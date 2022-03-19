@@ -9,7 +9,10 @@ use twizzler_net::{
 use crate::{
     endpoint::{foreach_endpoint, EndPointKey},
     header::Header,
-    link::{nic::{NicBuffer, SendableBuffer}, IncomingPacketInfo},
+    link::{
+        nic::{NicBuffer, SendableBuffer},
+        IncomingPacketInfo,
+    },
     network::ipv4::Ipv4Prot,
     HandleRef,
 };
@@ -22,14 +25,14 @@ pub struct Icmp;
 impl TransportProto for Icmp {
     async fn send_packet(
         &self,
-        handle: &HandleRef,
-        endpoint_info: EndPointKey,
-        packet_data: PacketData,
+        _handle: &HandleRef,
+        _endpoint_info: EndPointKey,
+        _packet_data: PacketData,
     ) -> TxCompletion {
         todo!()
     }
 
-    async fn handle_packet(&self, info: IncomingPacketInfo) {
+    async fn handle_packet(&self, _info: IncomingPacketInfo) {
         todo!()
     }
 
@@ -64,7 +67,7 @@ impl Header for IcmpHeader {
     }
 }
 
-pub fn handle_icmp_packet(
+pub fn _handle_icmp_packet(
     packet: &Arc<NicBuffer>,
     packet_start: usize,
     packet_len_inc_hdr: usize,
@@ -96,7 +99,7 @@ pub fn handle_icmp_packet(
     });
 }
 
-pub async fn send_packet(
+pub async fn _send_packet(
     handle: &HandleRef,
     info: EndPointKey,
     packet_data: PacketData,

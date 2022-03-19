@@ -61,7 +61,7 @@ impl PageRange {
     pub fn gc_pagevec(&self) {
         // TODO
 
-        logln!("TODO: gc page vec");
+        //logln!("TODO: gc page vec");
         //       todo!()
     }
 

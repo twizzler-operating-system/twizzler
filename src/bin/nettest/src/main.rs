@@ -17,11 +17,11 @@ struct IcmpHeader {
 
 const ICMP_ECHO_REQUEST: u8 = 8;
 
-fn handle_ping_recv(buffer: ManagedBuffer) {
+fn handle_ping_recv(_buffer: ManagedBuffer) {
     println!("nettest ping recv");
 }
 
-fn fill_ping_buffer(idx: usize, buffer: &mut ManagedBuffer) {
+fn fill_ping_buffer(_idx: usize, buffer: &mut ManagedBuffer) {
     let icmp_header = IcmpHeader {
         ty: ICMP_ECHO_REQUEST,
         code: 0,
@@ -106,7 +106,6 @@ fn main() {
     println!("nettest got nm handle: {:?}", handle);
 
     ping(Ipv4Addr::localhost());
-    loop {}
 
     twizzler_async::run(async move {
         let mut buffer = handle.allocatable_buffer_controller().allocate().await;

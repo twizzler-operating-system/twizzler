@@ -59,6 +59,7 @@ struct StivaleBootInfo {
     arch: &'static StivaleStruct,
     maps: Vec<MemoryRegion>,
     modules: Vec<BootModule>,
+    cmd: Option<u64>,
 }
 
 pub enum BootInfoSystemTable {
@@ -94,6 +95,17 @@ impl BootInfo for StivaleBootInfo {
             BootInfoSystemTable::Efi => todo!(),
         }
     }
+
+    fn get_cmd_line(&self) -> &'static str {
+        if let Some(cmd) = self.cmd {
+            let ptr = cmd as *const u8;
+            let slice = unsafe { core::slice::from_raw_parts(ptr, 0x1000) };
+            let slice = &slice[0..slice.iter().position(|r| *r == 0).unwrap_or(0)];
+            core::str::from_utf8(slice).unwrap()
+        } else {
+            ""
+        }
+    }
 }
 
 impl From<StivaleMemoryMapEntryType> for MemoryRegionKind {
@@ -123,7 +135,9 @@ extern "C" fn __stivale_start(info: &'static StivaleStruct) -> ! {
         arch: info,
         maps: alloc::vec![],
         modules: alloc::vec![],
+        cmd: None,
     };
+    boot_info.cmd = info.command_line().map(|cmd| cmd.command_line);
     boot_info.maps = info
         .memory_map()
         .expect("no memory map passed from bootloader")

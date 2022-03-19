@@ -7,6 +7,7 @@ use twizzler_net::{
 
 use crate::HandleRef;
 
+#[allow(dead_code)]
 pub struct EndPoint {
     handle: HandleRef,
     conn_id: ConnectionId,
@@ -56,6 +57,7 @@ lazy_static::lazy_static! {
     static ref ENDPOINTS: Mutex<BTreeMap<EndPointKey, BTreeMap<(u64, ConnectionId), EndPoint>>> = Mutex::new(BTreeMap::new());
 }
 
+#[allow(dead_code)]
 pub fn foreach_endpoint(info: &EndPointKey, f: impl Fn(&HandleRef, ConnectionId)) {
     let endpoints = ENDPOINTS.lock().unwrap();
     if let Some(map) = endpoints.get(&info) {

@@ -9,3 +9,6 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 [dependencies]
 tar = "0.4"
 clap = "2.34.0"
+
+[package.metadata]
+twizzler-build = "tool"

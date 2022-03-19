@@ -2,8 +2,10 @@ use core::{
     alloc::Layout,
     ptr,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
+use crate::syscall::{sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncSleep};
 #[allow(unused_imports)]
 use crate::{
     object::{ObjID, Protections},
@@ -16,6 +18,27 @@ pub struct ThreadRepr {
     version: u32,
     flags: u32,
     status: AtomicU64,
+    code: AtomicU64,
+}
+
+impl ThreadRepr {
+    pub fn wait(&self, timeout: Option<Duration>) -> Option<u64> {
+        while self.status.load(Ordering::SeqCst) == 0 {
+            let op = ThreadSync::new_sleep(ThreadSyncSleep::new(
+                crate::syscall::ThreadSyncReference::Virtual(&self.status as *const AtomicU64),
+                0,
+                ThreadSyncOp::Equal,
+                ThreadSyncFlags::empty(),
+            ));
+            sys_thread_sync(&mut [op], timeout).unwrap();
+            if timeout.is_some() {
+                if self.status.load(Ordering::SeqCst) == 0 {
+                    return None;
+                }
+            }
+        }
+        Some(self.code.load(Ordering::SeqCst))
+    }
 }
 
 #[allow(dead_code)]

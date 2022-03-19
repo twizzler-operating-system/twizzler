@@ -134,5 +134,14 @@ fn panic(info: &PanicInfo) -> ! {
     backtrace(!second_panic, None);
 
     emerglogln!("unrecoverable, halting processor.");
+
+    if crate::is_test_mode() {
+        emerglogln!("!!! TEST MODE PANIC -- RESETTING");
+        crate::arch::debug_shutdown(42);
+    }
+
     loop {}
 }
+
+#[lang = "eh_personality"]
+pub extern "C" fn rust_eh_personality() {}

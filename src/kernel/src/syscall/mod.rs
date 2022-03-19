@@ -148,9 +148,18 @@ fn zero_ok<T: Into<u64>>(t: T) -> (u64, u64) {
 }
 
 pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
-    //logln!("syscall! {}", context.num());
+    /*
+    logln!(
+        "syscall! {} {}",
+        crate::thread::current_thread_ref().unwrap().id(),
+        context.num()
+    );
+    */
     match context.num().into() {
         Syscall::Null => {
+            if context.arg0::<u64>() == 0x12345678 {
+                crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
+            }
             logln!(
                 "null call {:x} {:x} {:x}",
                 context.arg0::<u64>(),
