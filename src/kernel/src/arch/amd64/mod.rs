@@ -75,3 +75,9 @@ pub fn set_interrupt(
 ) {
     ioapic::set_interrupt(num - 32, num, masked, trigger, polarity, destination);
 }
+
+pub fn debug_shutdown(code: u32) {
+    unsafe {
+        x86::io::outw(0xf4, code as u16);
+    }
+}

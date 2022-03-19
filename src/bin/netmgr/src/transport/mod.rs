@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use twizzler_net::{addr::ServiceAddr, ListenFlags, PacketData, TxCompletion, TxCompletionError};
+use twizzler_net::{addr::ServiceAddr, PacketData, TxCompletion, TxCompletionError};
 
 use crate::{endpoint::EndPointKey, link::IncomingPacketInfo, HandleRef};
 
@@ -8,6 +8,7 @@ pub mod icmp;
 pub mod tcp;
 pub mod udp;
 
+#[allow(dead_code)]
 enum RawSupport {
     NoRaw,
     RawAllowed,
@@ -56,6 +57,6 @@ pub async fn send_packet(
 
 pub async fn handle_packet(addr: ServiceAddr, info: IncomingPacketInfo) {
     if let Some(proto) = PROTOS.get(&addr) {
-        proto.handle_packet(info);
+        let _ = proto.handle_packet(info);
     }
 }

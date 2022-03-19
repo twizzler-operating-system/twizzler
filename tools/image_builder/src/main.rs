@@ -18,13 +18,18 @@ fn main() {
         let path = PathBuf::from(args.next().unwrap());
         path.canonicalize().unwrap()
     };
-    create_disk_images(&kernel_binary_path, &initrd_path);
+    let cmdline = args.next().unwrap_or(String::new());
+    create_disk_images(&kernel_binary_path, &initrd_path, cmdline);
 }
 
-pub fn create_disk_images(kernel_binary_path: &Path, initrd_path: &Path) -> PathBuf {
+pub fn create_disk_images(
+    kernel_binary_path: &Path,
+    initrd_path: &Path,
+    cmdline: String,
+) -> PathBuf {
     //let kernel_manifest_path = locate_cargo_manifest::locate_manifest().unwrap();
     //let kernel_binary_name = kernel_binary_path.file_name().unwrap().to_str().unwrap();
-    if let Err(e) = create_uefi_disk_image(kernel_binary_path, initrd_path) {
+    if let Err(e) = create_uefi_disk_image(kernel_binary_path, initrd_path, cmdline) {
         panic!("failed to create disk image: {:?}", e);
     }
     let disk_image = kernel_binary_path.parent().unwrap().join("disk.img");
@@ -37,7 +42,11 @@ pub fn create_disk_images(kernel_binary_path: &Path, initrd_path: &Path) -> Path
     disk_image
 }
 
-fn create_uefi_disk_image(kernel_binary_path: &Path, initrd_path: &Path) -> anyhow::Result<()> {
+fn create_uefi_disk_image(
+    kernel_binary_path: &Path,
+    initrd_path: &Path,
+    cmdline: String,
+) -> anyhow::Result<()> {
     let efi_file = Path::new("/usr/share/limine/BOOTX64.EFI");
     let efi_size = fs::metadata(&efi_file)
         .context("failed to read metadata of efi file")?
@@ -49,7 +58,8 @@ fn create_uefi_disk_image(kernel_binary_path: &Path, initrd_path: &Path) -> anyh
         .context("failed to read metadata of initrd file")?
         .len();
 
-    let cfg_data = r#"
+    let cfg_data = format!(
+        r#"
 TIMEOUT=1 
 DEFAULT_ENTRY=1
 :Twizzler
@@ -57,7 +67,10 @@ RESOLUTION=800x600
 PROTOCOL=stivale2
 KERNEL_PATH=boot:///kernel.elf
 MODULE_PATH=boot:///initrd
-"#;
+KERNEL_CMDLINE={}
+"#,
+        cmdline
+    );
     // create fat partition
     let fat_file_path = {
         const MB: u64 = 1024 * 1024;

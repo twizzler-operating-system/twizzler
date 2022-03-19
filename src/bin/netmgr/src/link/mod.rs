@@ -56,6 +56,7 @@ impl IncomingPacketInfo {
         Some(self)
     }
 
+#[allow(dead_code)]
     pub fn packet_len(&self) -> usize {
         self.buffer.packet_len()
     }
@@ -68,6 +69,7 @@ impl IncomingPacketInfo {
         Some(self.buffer.get_minimal_header(info.0))
     }
 
+    #[allow(dead_code)]
     pub unsafe fn get_transport_hdr<T: Header>(&self) -> Option<T> {
         let info = self.transport_info.unwrap();
         if info.0 + std::mem::size_of::<T>() > info.1 {

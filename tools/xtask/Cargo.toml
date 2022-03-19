@@ -5,7 +5,14 @@ edition = "2021"
 
 [dependencies]
 cargo_metadata = "0.14.1"
-clap = "2.34.0"
+clap = { version = "3.1.6", features = ["derive"] }
 fs_extra = "1.2.0"
-rand = "0.8.5"
 walkdir = "2.3.2"
+strum = "0.24.0"
+anyhow = "1.0.56"
+strum_macros = "0.24.0"
+cargo = { version = "0.60.0", features = ["vendored-openssl"] }
+ouroboros = "0.14.2"
+
+[package.metadata]
+twizzler-build = "xtask"

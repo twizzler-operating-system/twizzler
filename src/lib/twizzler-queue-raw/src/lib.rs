@@ -555,10 +555,9 @@ pub fn multi_receive<T: Copy, W: Fn(&[(Option<&AtomicU64>, u64)]), R: Fn(&[Optio
 #[cfg(test)]
 mod tests {
     #![allow(soft_unstable)]
-    use std::process::Termination;
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    use syscalls::SyscallArgs;
+    //   use syscalls::SyscallArgs;
 
     use crate::multi_receive;
     use crate::QueueError;
@@ -566,27 +565,13 @@ mod tests {
 
     fn wait(x: &AtomicU64, v: u64) {
         // println!("wait");
-        unsafe {
-            let _ = syscalls::syscall(
-                syscalls::SYS_futex,
-                &SyscallArgs::new(x as *const AtomicU64 as usize, 0, v as usize, 0, 0, 0),
-            );
-        }
-        /*
         while x.load(Ordering::SeqCst) == v {
             core::hint::spin_loop();
         }
-        */
     }
 
-    fn wake(x: &AtomicU64) {
+    fn wake(_x: &AtomicU64) {
         //   println!("wake");
-        unsafe {
-            let _ = syscalls::syscall(
-                syscalls::SYS_futex,
-                &SyscallArgs::new(x as *const AtomicU64 as usize, 1, !0, 0, 0, 0),
-            );
-        }
     }
 
     #[test]
@@ -630,7 +615,7 @@ mod tests {
             wake,
             SubmissionFlags::NON_BLOCK,
         );
-        assert_eq!(res, Err(SubmissionError::WouldBlock));
+        assert_eq!(res, Err(QueueError::WouldBlock));
     }
 
     #[test]
@@ -646,7 +631,7 @@ mod tests {
         assert_eq!(res.unwrap().info(), 1);
         assert_eq!(res.unwrap().item(), 7);
         let res = q.receive(wait, wake, ReceiveFlags::NON_BLOCK);
-        assert_eq!(res.unwrap_err(), ReceiveError::WouldBlock);
+        assert_eq!(res.unwrap_err(), QueueError::WouldBlock);
     }
 
     #[test]
@@ -679,38 +664,43 @@ mod tests {
         assert_eq!(output[1].unwrap().item(), 8);
     }
 
-    extern crate crossbeam;
-    extern crate test;
-    #[bench]
-    fn two_threads(b: &mut test::Bencher) -> impl Termination {
-        let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
-        let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
-        let q = unsafe {
-            RawQueue::new(
-                std::mem::transmute::<&RawQueueHdr, &'static RawQueueHdr>(&qh),
-                buffer.as_mut_ptr(),
-            )
-        };
+    /*
+        #[cfg(not(target_os = "twizzler"))]
+        extern crate crossbeam;
+        #[cfg(not(target_os = "twizzler"))]
+        extern crate test;
+        #[cfg(not(target_os = "twizzler"))]
+        #[bench]
+        fn two_threads(b: &mut test::Bencher) -> impl Termination {
+            let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
+            let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
+            let q = unsafe {
+                RawQueue::new(
+                    std::mem::transmute::<&RawQueueHdr, &'static RawQueueHdr>(&qh),
+                    buffer.as_mut_ptr(),
+                )
+            };
 
-        //let count = AtomicU64::new(0);
-        let x = crossbeam::scope(|s| {
-            s.spawn(|_| loop {
-                let res = q.receive(wait, wake, ReceiveFlags::empty());
-                assert!(res.is_ok());
-                if res.unwrap().info() == 2 {
-                    break;
-                }
-                //count.fetch_add(1, Ordering::SeqCst);
-            });
+            //let count = AtomicU64::new(0);
+            let x = crossbeam::scope(|s| {
+                s.spawn(|_| loop {
+                    let res = q.receive(wait, wake, ReceiveFlags::empty());
+                    assert!(res.is_ok());
+                    if res.unwrap().info() == 2 {
+                        break;
+                    }
+                    //count.fetch_add(1, Ordering::SeqCst);
+                });
 
-            b.iter(|| {
-                let res = q.submit(QueueEntry::new(1, 2), wait, wake, SubmissionFlags::empty());
+                b.iter(|| {
+                    let res = q.submit(QueueEntry::new(1, 2), wait, wake, SubmissionFlags::empty());
+                    assert_eq!(res, Ok(()));
+                });
+                let res = q.submit(QueueEntry::new(2, 2), wait, wake, SubmissionFlags::empty());
                 assert_eq!(res, Ok(()));
             });
-            let res = q.submit(QueueEntry::new(2, 2), wait, wake, SubmissionFlags::empty());
-            assert_eq!(res, Ok(()));
-        });
 
-        x.unwrap();
-    }
+            x.unwrap();
+        }
+    */
 }

@@ -229,6 +229,16 @@ fn exec(name: &str, id: ObjID, argid: ObjID) {
     //println!("ELF: {:?}", elf);
 }
 
+fn exec2(name: &str, id: ObjID) -> Option<ObjID> {
+    let env: Vec<String> = std::env::vars()
+        .map(|(n, v)| format!("{}={}", n, v))
+        .collect();
+    let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
+    let args = vec![name.as_bytes()];
+    twizzler_abi::load_elf::spawn_new_executable(id, &args, &env_ref).ok()
+    //println!("ELF: {:?}", elf);
+}
+
 fn find_init_name(name: &str) -> Option<ObjID> {
     let init_info = twizzler_abi::aux::get_kernel_init_info();
     for n in init_info.names() {
@@ -268,6 +278,55 @@ fn main() {
     println!("waiting for network manager to come up");
     twizzler_net::wait_until_network_manager_ready(netid);
     println!("network manager is up!");
+
+    if let Some(id) = find_init_name("test_bins") {
+        println!("=== found init test list ===");
+        let slot = twizzler_abi::slot::global_allocate().unwrap();
+        twizzler_abi::syscall::sys_object_map(None, id, slot, Protections::READ, MapFlags::empty())
+            .unwrap();
+
+        let addr = twizzler_abi::slot::to_vaddr_range(slot).0;
+        let bytes = unsafe {
+            core::slice::from_raw_parts(addr as *const u8, twizzler_abi::object::MAX_SIZE)
+        };
+        let bytes = &bytes[0..bytes.iter().position(|r| *r == 0).unwrap_or(0)];
+        let str = String::from_utf8(bytes.to_vec()).unwrap();
+        let mut test_failed = false;
+        for line in str.split("\n").filter(|l| !l.is_empty()) {
+            println!("STARTING TEST {}", line);
+            if let Some(id) = find_init_name(line) {
+                let tid = exec2(line, id);
+                if let Some(tid) = tid {
+                    let slot = twizzler_abi::slot::global_allocate().unwrap();
+                    twizzler_abi::syscall::sys_object_map(
+                        None,
+                        tid,
+                        slot,
+                        Protections::READ,
+                        MapFlags::empty(),
+                    )
+                    .unwrap();
+                    let tr = twizzler_abi::slot::to_vaddr_range(slot).0 as *const ThreadRepr;
+                    unsafe {
+                        let val = tr.as_ref().unwrap().wait(None);
+                        if let Some(val) = val {
+                            if val != 0 {
+                                test_failed = true;
+                            }
+                        }
+                    }
+                }
+            } else {
+                println!("FAILED to start {}", line);
+                test_failed = true;
+            }
+        }
+        if test_failed {
+            println!("!!! TEST MODE FAILED");
+        }
+        #[allow(deprecated)]
+        twizzler_abi::syscall::sys_debug_shutdown(if test_failed { 1 } else { 0 });
+    }
 
     println!("Hi, welcome to the basic twizzler test console.");
     println!("If you wanted line-editing, you've come to the wrong place.");
@@ -327,9 +386,11 @@ use std::{
 use twizzler_abi::{
     device::SubObjectType,
     kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue},
-    object::ObjID,
+    object::{ObjID, Protections},
     syscall::{
-        sys_kaction, sys_thread_sync, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
-        ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+        sys_kaction, sys_thread_sync, BackingType, LifetimeType, MapFlags, ObjectCreate,
+        ObjectCreateFlags, ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep,
+        ThreadSyncWake,
     },
+    thread::ThreadRepr,
 };

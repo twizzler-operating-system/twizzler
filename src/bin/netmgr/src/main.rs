@@ -8,7 +8,7 @@ use std::{
 
 use endpoint::EndPointKey;
 use twizzler_async::Task;
-use twizzler_net::{ConnectionId, NmHandleManager, TxCompletion, TxRequest};
+use twizzler_net::{ConnectionId, NmHandleManager};
 
 use crate::client_request::handle_client_request;
 

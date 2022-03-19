@@ -16,11 +16,12 @@ members = [
 resolver = "2"
 
 [workspace.metadata]
-twizzler-apps = ["init", "devmgr", "netmgr", "nettest"]
-tools = ["image_builder", "initrd_gen"]
-kernel = ["twizzler-kernel"]
-initrd-members = ["init", "devmgr", "netmgr", "nettest"]
-checks = ["twizzler-queue-raw"]
+initrd = [
+    "crate:init",
+    "crate:devmgr",
+    "crate:netmgr",
+    "crate:nettest",
+]
 
 [profile.release]
 debug = true
