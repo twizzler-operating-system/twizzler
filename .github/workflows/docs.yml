@@ -31,6 +31,11 @@ jobs:
         mkdir mdbook
         curl -Lf https://github.com/rust-lang/mdBook/releases/download/v0.4.13/mdbook-v0.4.13-x86_64-unknown-linux-gnu.tar.gz | tar -xz --directory=./mdbook
         echo `pwd`/mdbook >> $GITHUB_PATH
+
+    - name: Install Toolchain
+      run: |
+        wget melete.soe.ucsc.edu:9000/toolchain-docs.tar.xz
+        cd toolchain && tar xf ../toolchain-docs.tar.xz && cd ..
     - name: Build
       run: cargo doc-all
     - name: Copy
