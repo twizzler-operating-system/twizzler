@@ -24,6 +24,6 @@ jobs:
     - name: Build
       run: cargo build-all
     - name: Test
-      run: cargo start-qemu --tests
+      run: cargo start-qemu --tests --qemu-options=--nographic
     - name: Build Release
-      run: cargo start-qemu --profile release --tests
+      run: cargo start-qemu --profile release --tests --qemu-options=--nographic
