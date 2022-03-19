@@ -1,6 +1,9 @@
-use std::{io::Write, path::Path, process::Command};
+use std::{any, fs::File, io::Write, path::Path, process::Command};
 
+use anyhow::Context;
 use fs_extra::dir::CopyOptions;
+use indicatif::{ProgressBar, ProgressStyle};
+use reqwest::Client;
 
 use crate::{triple::Triple, BootstrapOptions};
 
@@ -16,6 +19,38 @@ pub fn get_rustc_path() -> anyhow::Result<String> {
 pub fn get_rustdoc_path() -> anyhow::Result<String> {
     let toolchain = get_toolchain_path()?;
     Ok(format!("{}/bin/rustdoc", toolchain))
+}
+
+pub async fn download_file(client: &Client, url: &str, path: &str) -> anyhow::Result<()> {
+    use futures_util::StreamExt;
+    let res = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("failed to download {}", url))?;
+    let total_size = res
+        .content_length()
+        .with_context(|| format!("failed to get content-length for {}", url))?;
+    let pb = ProgressBar::new(total_size);
+    pb.set_style(ProgressStyle::default_bar().template("{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})").progress_chars("#>-"));
+
+    let msg = format!("Downloading {}", url);
+    pb.set_message(&msg);
+
+    let mut file = File::create(path).with_context(|| format!("failed to create file {}", path))?;
+    let mut downloaded: u64 = 0;
+    let mut stream = res.bytes_stream();
+
+    while let Some(item) = stream.next().await {
+        let chunk = item.with_context(|| format!("error while downloading file {}", url))?;
+        file.write_all(&chunk)
+            .with_context(|| format!("error while writing to file {}", path))?;
+        let new = std::cmp::min(downloaded + (chunk.len() as u64), total_size);
+        downloaded = new;
+        pb.set_position(new);
+    }
+    pb.finish_with_message(&format!("downloaded {} => {}", url, path));
+    Ok(())
 }
 
 fn create_stamp() {
@@ -81,6 +116,22 @@ fn build_crtx(name: &str, build_info: &Triple) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn download_files(client: &Client) -> anyhow::Result<()> {
+    download_file(
+        &client,
+        "http://melete.soe.ucsc.edu:9000/OVMF.fd",
+        "toolchain/install/OVMF.fd",
+    )
+    .await?;
+    download_file(
+        &client,
+        "http://melete.soe.ucsc.edu:9000/BOOTX64.EFI",
+        "toolchain/install/BOOTX64.EFI",
+    )
+    .await?;
+    Ok(())
+}
+
 pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     if !cli.skip_submodules {
         let status = Command::new("git")
@@ -92,6 +143,11 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         if !status.success() {
             anyhow::bail!("failed to update git submodules");
         }
+        let client = Client::new();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(download_files(&client))?;
     }
 
     let res = std::fs::hard_link(
