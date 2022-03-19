@@ -620,7 +620,6 @@ mod tests {
 
     #[test]
     fn it_nonblock_receives() {
-        panic!("test");
         let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
         let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
         let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
