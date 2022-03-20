@@ -14,6 +14,12 @@ jobs:
     runs-on: self-hosted
 
     steps:
+    - name: Cleanup
+      run: |
+        ls -la 
+        rm -rf ./* || true
+        rm -rf ./.??* || true
+        ls -la 
     - uses: actions/checkout@v2
     - name: Install latest nightly
       uses: actions-rs/toolchain@v1
@@ -23,3 +29,7 @@ jobs:
       run: cargo bootstrap
     - name: Build
       run: cargo build-all
+    - name: Test
+      run: cargo start-qemu --tests --qemu-options=--nographic
+    - name: Test Release
+      run: cargo start-qemu --profile release --tests --qemu-options=--nographic
