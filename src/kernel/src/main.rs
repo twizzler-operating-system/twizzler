@@ -121,7 +121,19 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
 }
 
 #[cfg(test)]
-pub fn test_runner(_tests: &[&dyn Fn()]) {}
+pub fn test_runner(tests: &[&dyn Fn()]) {
+    logln!("[kernel::test] running {} tests", tests.len());
+    for test in tests {
+        test();
+    }
+
+    logln!("[kernel::test] test result: ok.");
+}
+
+#[test_case]
+pub fn trivial_test() {
+    logln!("trivial test");
+}
 
 pub fn init_threading() -> ! {
     //arch::schedule_oneshot_tick(1000000000);
@@ -136,6 +148,11 @@ pub fn init_threading() -> ! {
 pub fn idle_main() -> ! {
     if current_processor().is_bsp() {
         machine::machine_post_init();
+
+        #[cfg(test)]
+        if is_test_mode() {
+            test_main();
+        }
         thread::start_new_init();
     }
     logln!(

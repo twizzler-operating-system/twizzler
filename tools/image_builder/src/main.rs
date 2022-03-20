@@ -10,6 +10,10 @@ fn main() {
     let mut args = std::env::args().skip(1); // skip executable name
 
     /* TODO: better args processing */
+    let disk_image_path = {
+        let path = PathBuf::from(args.next().unwrap());
+        path.canonicalize().unwrap()
+    };
     let kernel_binary_path = {
         let path = PathBuf::from(args.next().unwrap());
         path.canonicalize().unwrap()
@@ -19,30 +23,33 @@ fn main() {
         path.canonicalize().unwrap()
     };
     let cmdline = args.next().unwrap_or(String::new());
-    create_disk_images(&kernel_binary_path, &initrd_path, cmdline);
+    create_disk_images(&disk_image_path, &kernel_binary_path, &initrd_path, cmdline);
 }
 
 pub fn create_disk_images(
+    disk_image_path: &Path,
     kernel_binary_path: &Path,
     initrd_path: &Path,
     cmdline: String,
 ) -> PathBuf {
     //let kernel_manifest_path = locate_cargo_manifest::locate_manifest().unwrap();
     //let kernel_binary_name = kernel_binary_path.file_name().unwrap().to_str().unwrap();
-    if let Err(e) = create_uefi_disk_image(kernel_binary_path, initrd_path, cmdline) {
+    if let Err(e) =
+        create_uefi_disk_image(disk_image_path, kernel_binary_path, initrd_path, cmdline)
+    {
         panic!("failed to create disk image: {:?}", e);
     }
-    let disk_image = kernel_binary_path.parent().unwrap().join("disk.img");
-    if !disk_image.exists() {
+    if !disk_image_path.exists() {
         panic!(
             "Disk image does not exist at {} after bootloader build",
-            disk_image.display()
+            disk_image_path.display()
         );
     }
-    disk_image
+    disk_image_path.to_path_buf()
 }
 
 fn create_uefi_disk_image(
+    disk_image_path: &Path,
     kernel_binary_path: &Path,
     initrd_path: &Path,
     cmdline: String,
@@ -75,7 +82,7 @@ KERNEL_CMDLINE={}
     let fat_file_path = {
         const MB: u64 = 1024 * 1024;
 
-        let fat_path = kernel_binary_path.parent().unwrap().join("image.fat");
+        let fat_path = disk_image_path.parent().unwrap().join("image.fat");
         let fat_file = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -124,7 +131,7 @@ KERNEL_CMDLINE={}
 
     // create gpt disk
     {
-        let image_path = fat_file_path.parent().unwrap().join("disk.img");
+        let image_path = disk_image_path;
         let mut image = fs::OpenOptions::new()
             .create(true)
             .truncate(true)

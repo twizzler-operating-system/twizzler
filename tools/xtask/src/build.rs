@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::path::{Path, PathBuf};
 
 use cargo::{
@@ -49,7 +51,7 @@ fn build_tools<'a>(
     other_options: &OtherOptions,
 ) -> anyhow::Result<Compilation<'a>> {
     crate::print_status_line("collection: tools", None);
-    let tools = locate_packages(&workspace, Some("tool"));
+    let tools = locate_packages(workspace, Some("tool"));
     let mut options = CompileOptions::new(workspace.config(), mode)?;
     options.spec = Packages::Packages(tools.iter().map(|p| p.name().to_string()).collect());
     options.build_config.requested_profile = InternedString::new("release");
@@ -69,7 +71,7 @@ fn build_twizzler<'a>(
         build_config.machine,
         crate::triple::Host::Twizzler,
     );
-    let packages = locate_packages(&workspace, None);
+    let packages = locate_packages(workspace, None);
     let mut options = CompileOptions::new(workspace.config(), mode)?;
     options.build_config = BuildConfig::new(workspace.config(), None, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
@@ -87,7 +89,7 @@ fn maybe_build_tests<'a>(
     other_options: &OtherOptions,
 ) -> anyhow::Result<Option<Compilation<'a>>> {
     let mode = CompileMode::Test;
-    if other_options.build_tests == false {
+    if !other_options.build_tests {
         return Ok(None);
     }
     crate::print_status_line("collection: userspace::tests", Some(build_config));
@@ -96,9 +98,30 @@ fn maybe_build_tests<'a>(
         build_config.machine,
         crate::triple::Host::Twizzler,
     );
-    let packages = locate_packages(&workspace, None);
+    let packages = locate_packages(workspace, None);
     let mut options = CompileOptions::new(workspace.config(), mode)?;
     options.build_config = BuildConfig::new(workspace.config(), None, &[triple.to_string()], mode)?;
+    options.build_config.message_format = other_options.message_format;
+    if build_config.profile == Profile::Release {
+        options.build_config.requested_profile = InternedString::new("release");
+    }
+    options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
+    options.build_config.force_rebuild = other_options.needs_full_rebuild;
+    Ok(Some(cargo::ops::compile(workspace, &options)?))
+}
+
+fn maybe_build_kernel_tests<'a>(
+    workspace: &'a Workspace,
+    build_config: &crate::BuildConfig,
+    other_options: &OtherOptions,
+) -> anyhow::Result<Option<Compilation<'a>>> {
+    let mode = CompileMode::Test;
+    if !other_options.build_tests {
+        return Ok(None);
+    }
+    crate::print_status_line("collection: kernel::tests", Some(build_config));
+    let packages = locate_packages(workspace, Some("kernel"));
+    let mut options = CompileOptions::new(workspace.config(), mode)?;
     options.build_config.message_format = other_options.message_format;
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
@@ -115,13 +138,13 @@ fn build_kernel<'a>(
     other_options: &OtherOptions,
 ) -> anyhow::Result<Compilation<'a>> {
     crate::print_status_line("collection: kernel", Some(build_config));
-    let tools = locate_packages(&workspace, Some("kernel"));
+    let packages = locate_packages(workspace, Some("kernel"));
     let mut options = CompileOptions::new(workspace.config(), mode)?;
     options.build_config.message_format = other_options.message_format;
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
     }
-    options.spec = Packages::Packages(tools.iter().map(|p| p.name().to_string()).collect());
+    options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
     cargo::ops::compile(workspace, &options)
 }
@@ -150,17 +173,30 @@ pub(crate) struct TwizzlerCompilation {
     #[borrows(user_workspace)]
     #[covariant]
     pub test_compilation: Option<Compilation<'this>>,
+    #[borrows(kernel_workspace)]
+    #[covariant]
+    pub test_kernel_compilation: Option<Compilation<'this>>,
 }
 
 impl TwizzlerCompilation {
-    pub fn get_kernel_image(&self) -> &Path {
-        &self
-            .borrow_kernel_compilation()
-            .binaries
-            .iter()
-            .nth(0)
-            .unwrap()
-            .path
+    pub fn get_kernel_image(&self, tests: bool) -> &Path {
+        if tests {
+            &self
+                .borrow_test_kernel_compilation()
+                .as_ref()
+                .expect("failed to get kernel test compilation when tests requested")
+                .tests
+                .get(0)
+                .unwrap()
+                .path
+        } else {
+            &self
+                .borrow_kernel_compilation()
+                .binaries
+                .get(0)
+                .unwrap()
+                .path
+        }
     }
 }
 
@@ -191,10 +227,11 @@ fn compile(
         |w| build_kernel(w, mode, &bc, other_options),
         |w| build_twizzler(w, mode, &bc, other_options),
         |w| maybe_build_tests(w, &bc, other_options),
+        |w| maybe_build_kernel_tests(w, &bc, other_options),
     )
 }
 
-pub(crate) fn do_docs<'a>(cli: DocOptions) -> anyhow::Result<TwizzlerCompilation> {
+pub(crate) fn do_docs(cli: DocOptions) -> anyhow::Result<TwizzlerCompilation> {
     let other_options = OtherOptions {
         message_format: MessageFormat::Human,
         manifest_path: None,
@@ -204,7 +241,7 @@ pub(crate) fn do_docs<'a>(cli: DocOptions) -> anyhow::Result<TwizzlerCompilation
     compile(cli.config, CompileMode::Doc { deps: false }, &other_options)
 }
 
-pub(crate) fn do_build<'a>(cli: BuildOptions) -> anyhow::Result<TwizzlerCompilation> {
+pub(crate) fn do_build(cli: BuildOptions) -> anyhow::Result<TwizzlerCompilation> {
     let other_options = OtherOptions {
         message_format: MessageFormat::Human,
         manifest_path: None,
