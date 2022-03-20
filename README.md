@@ -21,7 +21,11 @@ deficiencies.
 
 ## Building
 
-See doc/src/BUILD.md for details.
+See [BUILD.md](doc/src/BUILD.md) for details.
+
+## Contributing
+
+See [develop.md](doc/src/develop.md) for details.
 
 ## A Tour of the Repo
 
