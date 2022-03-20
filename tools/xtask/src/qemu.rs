@@ -10,7 +10,7 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
     // Set up the basic stuff, memory and bios, etc.
     run_cmd.arg("-m").arg("1024,slots=4,maxmem=8G");
     run_cmd.arg("-enable-kvm");
-    run_cmd.arg("-bios").arg("/usr/share/qemu/OVMF.fd");
+    run_cmd.arg("-bios").arg("toolchain/install/OVMF.fd");
 
     run_cmd.arg("-machine").arg("q35,nvdimm=on");
     run_cmd
@@ -28,11 +28,6 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
         "memory-backend-file,id=mem1,share=on,mem-path={},size=4G",
         make_path(build_info, true, "pmem.img")
     ));
-    if build_options.build_tests {
-        run_cmd
-            .arg("-device")
-            .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
-    }
     run_cmd.arg("-device").arg("nvdimm,id=nvdimm1,memdev=mem1");
     */
     run_cmd
@@ -50,17 +45,6 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
     //run_cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
 
     let exit_status = run_cmd.status()?;
-    /*
-    if build_options.build_tests {
-        if exit_status.code().unwrap() == 1 {
-            eprintln!("TESTS PASSED");
-            return Ok(());
-        } else {
-            return Err("TESTS FAILED".into());
-        }
-    }
-    */
-
     if exit_status.success() {
         Ok(())
     } else {

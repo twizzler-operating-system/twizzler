@@ -47,7 +47,7 @@ fn create_uefi_disk_image(
     initrd_path: &Path,
     cmdline: String,
 ) -> anyhow::Result<()> {
-    let efi_file = Path::new("/usr/share/limine/BOOTX64.EFI");
+    let efi_file = Path::new("toolchain/install/BOOTX64.EFI");
     let efi_size = fs::metadata(&efi_file)
         .context("failed to read metadata of efi file")?
         .len();
