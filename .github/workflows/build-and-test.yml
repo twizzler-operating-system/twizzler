@@ -33,3 +33,12 @@ jobs:
       run: cargo start-qemu --tests --qemu-options=--nographic
     - name: Test Release
       run: cargo start-qemu --profile release --tests --qemu-options=--nographic
+    - name: Install mdbook
+      run: |
+        mkdir mdbook
+        curl -Lf https://github.com/rust-lang/mdBook/releases/download/v0.4.13/mdbook-v0.4.13-x86_64-unknown-linux-gnu.tar.gz | tar -xz --directory=./mdbook
+        echo `pwd`/mdbook >> $GITHUB_PATH
+    - name: Build Docs
+      run: cargo doc-all
+    - name: Build Book
+      run: cd doc && mdbook build
