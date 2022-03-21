@@ -59,10 +59,10 @@ fn create_stamp() {
     file.write_all(&[0]).expect("failed to write stamp file");
 }
 
-pub fn needs_reinstall() -> bool {
+pub fn needs_reinstall() -> anyhow::Result<bool> {
     let stamp = std::fs::metadata("toolchain/install/stamp");
     if stamp.is_err() {
-        return true;
+        return Ok(true);
     }
     let stamp = stamp
         .unwrap()
@@ -70,19 +70,18 @@ pub fn needs_reinstall() -> bool {
         .expect("failed to get system time from metadata");
     for entry in walkdir::WalkDir::new("src/lib/twizzler-abi").min_depth(1) {
         let entry = entry.expect("error walking directory");
-        let stat = entry.metadata().expect(&format!(
-            "failed to read metadata for {}",
-            entry.path().display()
-        ));
+        let stat = entry
+            .metadata()
+            .with_context(|| format!("failed to read metadata for {}", entry.path().display()))?;
         let mtime = stat
             .modified()
-            .expect("failed to get system time from mtime");
+            .context("failed to get system time from mtime")?;
 
         if mtime >= stamp {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 fn build_crtx(name: &str, build_info: &Triple) -> anyhow::Result<()> {
@@ -118,13 +117,13 @@ fn build_crtx(name: &str, build_info: &Triple) -> anyhow::Result<()> {
 
 async fn download_files(client: &Client) -> anyhow::Result<()> {
     download_file(
-        &client,
+        client,
         "http://melete.soe.ucsc.edu:9000/OVMF.fd",
         "toolchain/install/OVMF.fd",
     )
     .await?;
     download_file(
-        &client,
+        client,
         "http://melete.soe.ucsc.edu:9000/BOOTX64.EFI",
         "toolchain/install/BOOTX64.EFI",
     )
@@ -200,7 +199,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 }
 
 pub(crate) fn init_for_build(is_doc: bool) -> anyhow::Result<()> {
-    if needs_reinstall() && !is_doc {
+    if needs_reinstall()? && !is_doc {
         anyhow::bail!("detected changes to twizzler-abi not reflected in current toolchain. This is probably because the twizzler-abi crate files were updated, so you need to run `cargo bootstrap --skip-submodules' again.");
     }
     std::env::set_var("RUSTC", &get_rustc_path()?);

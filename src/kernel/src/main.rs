@@ -47,11 +47,9 @@ extern crate alloc;
 extern crate bitflags;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::once::Once;
 use arch::BootInfoSystemTable;
 use initrd::BootModule;
 use memory::MemoryRegion;
-use thread::current_thread_ref;
 use x86_64::VirtAddr;
 
 use crate::processor::current_processor;
@@ -121,21 +119,29 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
 }
 
 #[cfg(test)]
-pub fn test_runner(_tests: &[&dyn Fn()]) {}
+pub fn test_runner(tests: &[&dyn Fn()]) {
+    logln!("[kernel::test] running {} tests", tests.len());
+    for test in tests {
+        test();
+    }
+
+    logln!("[kernel::test] test result: ok.");
+}
 
 pub fn init_threading() -> ! {
-    //arch::schedule_oneshot_tick(1000000000);
-    //loop {}
     sched::create_idle_thread();
     clock::schedule_oneshot_tick(1);
-    //thread::start_new(thread_main);
-    //thread::start_new(thread_main);
     idle_main();
 }
 
 pub fn idle_main() -> ! {
     if current_processor().is_bsp() {
         machine::machine_post_init();
+
+        #[cfg(test)]
+        if is_test_mode() {
+            test_main();
+        }
         thread::start_new_init();
     }
     logln!(
@@ -146,51 +152,5 @@ pub fn idle_main() -> ! {
     loop {
         sched::schedule(true);
         arch::processor::halt_and_wait();
-    }
-}
-
-#[allow(named_asm_labels)]
-#[no_mangle]
-#[naked]
-unsafe extern "C" fn thread_user_main() {
-    asm!(
-        "ahah: mov rax, [0x1234]",
-        "syscall",
-        "jmp ahah",
-        options(noreturn)
-    );
-}
-
-static TEST: Once<mutex::Mutex<u32>> = Once::new();
-extern "C" fn thread_main() {
-    unsafe {
-        arch::jump_to_user(
-            VirtAddr::new(thread_user_main as usize as u64),
-            VirtAddr::new(0),
-            0,
-        );
-    }
-    let thread = current_thread_ref().unwrap();
-    TEST.call_once(|| mutex::Mutex::new(0));
-    let test = TEST.wait();
-    let mut i = 0u64;
-    loop {
-        // if i % 1000 == 0 {
-        let _v = {
-            let mut v = test.lock();
-            *v += 1;
-            *v
-        };
-        //  }
-        i = i.wrapping_add(1);
-        //let flags = x86_64::registers::rflags::read()
-        //   .contains(x86_64::registers::rflags::RFlags::INTERRUPT_FLAG);
-        //log!("{} {} {}\n", current_processor().id, thread.id(), flags);
-        //logln!("{} {} {}", current_processor().id, thread.id(), v);
-        //log!("{}", thread.id());
-        if i % 100000 == 0 {
-            logln!("{} {}", thread.id(), i);
-        }
-        // sched::schedule(true);
     }
 }
