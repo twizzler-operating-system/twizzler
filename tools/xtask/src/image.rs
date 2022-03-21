@@ -5,6 +5,8 @@ use std::{
     process::Command,
 };
 
+use anyhow::Context;
+
 use crate::{build::TwizzlerCompilation, ImageOptions};
 
 pub struct ImageInfo {
@@ -20,7 +22,7 @@ fn get_crate_initrd_files(
         .binaries
         .iter()
         .find(|item| item.unit.pkg.name() == crate_name)
-        .expect(&format!("failed to find initrd crate {}", crate_name));
+        .with_context(|| format!("failed to find initrd crate {}", crate_name))?;
 
     Ok(vec![unit.path.clone()])
 }
@@ -31,12 +33,12 @@ fn get_tool_path<'a>(comp: &'a TwizzlerCompilation, name: &str) -> anyhow::Resul
         .binaries
         .iter()
         .find(|item| item.unit.pkg.name() == name)
-        .expect(&format!("failed to find initrd crate {}", name));
+        .with_context(|| format!("failed to find initrd crate {}", name))?;
     Ok(&unit.path)
 }
 
 fn get_genfile_path(comp: &TwizzlerCompilation, name: &str) -> PathBuf {
-    let mut path = comp.get_kernel_image().parent().unwrap().to_path_buf();
+    let mut path = comp.get_kernel_image(false).parent().unwrap().to_path_buf();
     path.push(name);
     path
 }
@@ -56,7 +58,7 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
         .expect("initrd specification must be an array")
     {
         let spec = item.as_str().expect("initrd item must be a string");
-        let split: Vec<_> = spec.split(":").into_iter().collect();
+        let split: Vec<_> = spec.split(':').into_iter().collect();
         if split.len() != 2 {
             anyhow::bail!("initrd item must be of the form `x:y'");
         }
@@ -74,7 +76,7 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
                 testlist += &bin.path.file_name().unwrap().to_string_lossy();
                 testlist += "\n";
             }
-            let test_file_path = get_genfile_path(&comp, "test_bins");
+            let test_file_path = get_genfile_path(comp, "test_bins");
             let mut file = File::create(&test_file_path)?;
             file.write_all(testlist.as_bytes())?;
             initrd_files.push(test_file_path);
@@ -83,8 +85,8 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
         assert!(!cli.tests);
     }
 
-    let initrd_path = get_genfile_path(&comp, "initrd");
-    let status = Command::new(get_tool_path(&comp, "initrd_gen")?)
+    let initrd_path = get_genfile_path(comp, "initrd");
+    let status = Command::new(get_tool_path(comp, "initrd_gen")?)
         .arg("--output")
         .arg(&initrd_path)
         .args(&initrd_files)
@@ -104,7 +106,8 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     let cmdline = if cli.tests { "--tests" } else { "" };
     let image_path = get_genfile_path(&comp, "disk.img");
     let status = Command::new(get_tool_path(&comp, "image_builder")?)
-        .arg(comp.get_kernel_image())
+        .arg(&image_path)
+        .arg(comp.get_kernel_image(cli.tests))
         .arg(initrd_path)
         .arg(cmdline)
         .status()?;

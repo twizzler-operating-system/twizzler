@@ -23,8 +23,8 @@ fn get_build_host_name() -> &'static str {
     std::env::consts::OS
 }
 
-impl From<&Host> for String {
-    fn from(h: &Host) -> Self {
+impl From<Host> for String {
+    fn from(h: Host) -> Self {
         match h {
             Host::None => "none",
             Host::Twizzler => "twizzler",
@@ -46,8 +46,8 @@ impl TryFrom<&str> for Arch {
     }
 }
 
-impl From<&Arch> for String {
-    fn from(a: &Arch) -> Self {
+impl From<Arch> for String {
+    fn from(a: Arch) -> Self {
         match a {
             Arch::X86_64 => "x86_64",
             Arch::Aarch64 => "aarch64",
@@ -68,8 +68,8 @@ impl TryFrom<&str> for Machine {
     }
 }
 
-impl From<&Machine> for String {
-    fn from(m: &Machine) -> Self {
+impl From<Machine> for String {
+    fn from(m: Machine) -> Self {
         match m {
             Machine::Unknown => "unknown",
             Machine::Rpi3 => "rpi3",
@@ -78,21 +78,21 @@ impl From<&Machine> for String {
     }
 }
 
-impl Machine {
-    pub fn to_string(&self) -> String {
-        self.into()
+impl ToString for Machine {
+    fn to_string(&self) -> String {
+        (*self).into()
     }
 }
 
-impl Arch {
-    pub fn to_string(&self) -> String {
-        self.into()
+impl ToString for Arch {
+    fn to_string(&self) -> String {
+        (*self).into()
     }
 }
 
-impl Host {
-    pub fn to_string(&self) -> String {
-        self.into()
+impl ToString for Host {
+    fn to_string(&self) -> String {
+        (*self).into()
     }
 }
 
@@ -103,8 +103,8 @@ pub struct Triple {
     host: Host,
 }
 
-impl From<&Triple> for String {
-    fn from(t: &Triple) -> Self {
+impl From<Triple> for String {
+    fn from(t: Triple) -> Self {
         format!(
             "{}-{}-{}",
             t.arch.to_string(),
@@ -122,9 +122,11 @@ impl Triple {
             host,
         }
     }
+}
 
-    pub fn to_string(&self) -> String {
-        self.into()
+impl ToString for Triple {
+    fn to_string(&self) -> String {
+        (*self).into()
     }
 }
 
