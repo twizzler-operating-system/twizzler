@@ -2,7 +2,8 @@
 
 ## Introduction
 
-Since Twizzler is a microkernel, many operations handled by monolithic kernels are instead implemented in userspace. 
+This documentation is largely still a collection of notes based off the previous C-based Twizzler
+system, and is being updated to reflect new APIs.
 
 ## Where to begin
 
