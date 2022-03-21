@@ -12,7 +12,7 @@ fn main() {
     /* TODO: better args processing */
     let disk_image_path = {
         let path = PathBuf::from(args.next().unwrap());
-        path.canonicalize().unwrap()
+        path
     };
     let kernel_binary_path = {
         let path = PathBuf::from(args.next().unwrap());
