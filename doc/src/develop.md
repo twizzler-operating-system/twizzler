@@ -8,6 +8,9 @@ the main repo in your own branches.
 
 ## Getting Started
 
+Before reading this document make sure that you have worked through the build process, which is documented
+[here](https://github.com/twizzler-operating-system/twizzler/doc/src/BUILD.md).
+
 After reading this document, if you would like to work on an open issue,
 you can take a look at a
 [list of issues](https://github.com/twizzler-operating-system/twizzler/issues).
