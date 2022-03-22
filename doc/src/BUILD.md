@@ -21,6 +21,7 @@ Installing the tools:
   2. sudo apt install python
   3. sudo apt install cmake
   4. sudo apt install ninja-build
+  5. Install Rust https://www.rust-lang.org/tools/install
 
 Building Twizzler is done in several steps:
 
@@ -41,6 +42,7 @@ everything through xtask.
 This step takes the longest, but only has to happen once. Run
 
 ```
+cd where/you/cloned/twizzler
 cargo bootstrap
 ```
 
