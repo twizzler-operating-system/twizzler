@@ -48,6 +48,10 @@ jobs:
       run: git config --global user.name "Deploy Actions"
     - name: Config-2
       run: git config --global user.email "null@null.com"
+    - name: Stamp
+      run: |
+        echo "generated at '" $(date) "' from commit ID " $(git rev-parse HEAD) > twizzler-operating-system.github.io/stamp
+        cd twizzler-operating-system.github.io && git add stamp
     - name: Commit
       run: cd twizzler-operating-system.github.io && git add -A && git commit -am "Update"
     - name: Push
