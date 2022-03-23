@@ -87,3 +87,7 @@ which will bootup a qemu instance. If you want to run the release mode version, 
 ```
 cargo start-qemu --profile release
 ```
+
+## Step 4: Exiting Twizzler
+
+At the moment Twizzler does not have a shutdown command.  To exit the QEMU based simulation use the ```Ctrl-a X``` command which is a part of the simulator.
