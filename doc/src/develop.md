@@ -6,7 +6,59 @@ those without write access to the repo you will first have to fork the
 Twizzler repo, for those with write access it's easier to work within
 the main repo in your own branches.
 
-## Getting Started
+## Writing your First Twizzler Program
+
+Twizzler makes heavy use of Rust's Cargo system of crates in order to manage both kernel and user space programs.  To create a new program that
+runs on the Twizzler operating system you can follow these steps:
+
+  1. Change directories into the bin directory:
+
+```cd twizzler/src/bin```
+
+  2. Create a new program, named ```hello```.  The ```Cargo``` command will actually create the canonical ```Hello world``` program for you.
+```cargo new --bin hello```
+
+  3. Edit the Cargo.toml file in the root directory to add the program to the Twizzler build system.
+```vi ../../Cargo.toml```
+
+The following diff shows the two lines you need to add:
+
+```
+diff --git a/Cargo.toml b/Cargo.toml
+index 338455b..cb38fb5 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -7,6 +7,7 @@ members = [
+     "src/bin/devmgr",
+     "src/bin/netmgr",
+     "src/bin/nettest",
++    "src/bin/hello",
+     "src/kernel",
+     "src/lib/twizzler-queue-raw",
+     "src/lib/twizzler-queue",
+@@ -21,10 +22,11 @@ initrd = [
+     "crate:devmgr",
+     "crate:netmgr",
+     "crate:nettest",
++    "crate:hello",
+ ]
+ ```
+ 
+   4. Rebuild the system and start QEMU
+
+```cargo start-qemu```
+
+  5. From within Twizzler run your new program
+
+```
+run hello
+got: <run hello>
+> Hello, world!
+```
+
+  6. Exit the simulator with ```Ctrl-a x```
+
+## Picking an Issue to Work 
 
 After reading this document, if you would like to work on an open issue,
 you can take a look at a
