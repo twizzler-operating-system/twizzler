@@ -120,3 +120,14 @@ Code submitted to Twizzler must follow these guidelines:
 ## Documentation
 
 If you want to document code instead of writing it, thank you! Rust has a built-in documentation tool `rustdoc` which makes compiling documentation easier, and writing it directly in the code more natural. [Documentation explanation](https://doc.rust-lang.org/cargo/index.html). Contributions can be made through pull requests, just like for code, explained above.
+
+## Testing
+
+Twizzler supports an integrated testing system, where kernel test harnesses and userspace test
+programs for libraries and binaries are run on start-up. You can run Twizzler in test mode by adding
+the `--tests` argument to your cargo run commands.
+
+When developing for Twizzler, you should write tests that cover code you wrote. This includes both
+userspace and kernelspace code. Note that writing tests for the kernel is slightly different, in
+that a test-case failing causes the whole system to stop, and you need to write `#[test_case]`
+instead of `#[test]`.
