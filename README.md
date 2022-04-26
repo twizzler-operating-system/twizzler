@@ -27,6 +27,14 @@ See [BUILD.md](doc/src/BUILD.md) for details.
 
 See [develop.md](doc/src/develop.md) for details.
 
+## Reporting Bugs
+
+All bugs found and features requested must be reported through our [github issue tracker](https://github.com/twizzler-operating-system/twizzler/issues).
+Please add the appropriate label, ```bug``` or ```feature```, and also give as much detail as possible, including backtraces or such for bugs.
+
+If you find a security vulnerability that needs responsible disclosure please contact the administrators of the project directly and we
+will work with you on the fix and the disclosure credit.
+
 ## Code of Conduct
 
 See [conduct.md](doc/src/conduct.md) for details.
