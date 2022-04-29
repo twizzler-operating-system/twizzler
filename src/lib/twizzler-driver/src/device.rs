@@ -1,6 +1,5 @@
 use std::fmt::Display;
 
-use twizzler::object::{ObjID, ObjectInitError, ObjectInitFlags, Protections};
 pub use twizzler_abi::device::BusType;
 pub use twizzler_abi::device::DeviceRepr;
 pub use twizzler_abi::device::DeviceType;
@@ -10,9 +9,11 @@ use twizzler_abi::{
     device::SubObjectType,
     kso::{KactionCmd, KactionFlags, KactionGenericCmd},
 };
+use twizzler_object::object::Object;
+use twizzler_object::object::{ObjID, ObjectInitError, ObjectInitFlags, Protections};
 
 pub struct Device {
-    obj: twizzler::object::Object<DeviceRepr>,
+    obj: Object<DeviceRepr>,
 }
 
 impl Display for Device {
@@ -23,16 +24,16 @@ impl Display for Device {
 }
 
 pub struct InfoObject<T> {
-    obj: twizzler::object::Object<T>,
+    obj: Object<T>,
 }
 pub struct MmioObject {
-    obj: twizzler::object::Object<MmioInfo>,
+    obj: Object<MmioInfo>,
 }
 
 impl MmioObject {
     fn new(id: ObjID) -> Result<Self, ObjectInitError> {
         Ok(Self {
-            obj: twizzler::object::Object::init_id(
+            obj: Object::init_id(
                 id,
                 Protections::READ | Protections::WRITE,
                 ObjectInitFlags::empty(),
@@ -59,11 +60,7 @@ impl MmioObject {
 impl<T> InfoObject<T> {
     fn new(id: ObjID) -> Result<Self, ObjectInitError> {
         Ok(Self {
-            obj: twizzler::object::Object::init_id(
-                id,
-                Protections::READ,
-                ObjectInitFlags::empty(),
-            )?,
+            obj: Object::init_id(id, Protections::READ, ObjectInitFlags::empty())?,
         })
     }
 
@@ -92,7 +89,7 @@ impl Iterator for DeviceChildrenIterator {
 impl Device {
     fn new(id: ObjID) -> Result<Self, ObjectInitError> {
         Ok(Self {
-            obj: twizzler::object::Object::init_id(
+            obj: Object::init_id(
                 id,
                 Protections::WRITE | Protections::READ,
                 ObjectInitFlags::empty(),

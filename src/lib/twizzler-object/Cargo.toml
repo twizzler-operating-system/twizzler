@@ -1,5 +1,5 @@
 [package]
-name = "twizzler"
+name = "twizzler-object"
 version = "0.1.0"
 edition = "2021"
 authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
