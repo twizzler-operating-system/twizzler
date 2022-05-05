@@ -565,8 +565,8 @@ name = "devmgr"
 version = "0.1.0"
 dependencies = [
  "pci-ids",
- "twizzler",
  "twizzler-driver",
+ "twizzler-object",
 ]
 
 [[package]]
@@ -1355,10 +1355,10 @@ dependencies = [
  "async-trait",
  "byteorder",
  "lazy_static",
- "twizzler",
  "twizzler-abi",
  "twizzler-async",
  "twizzler-net",
+ "twizzler-object",
  "twizzler-queue",
 ]
 
@@ -1367,9 +1367,9 @@ name = "nettest"
 version = "0.1.0"
 dependencies = [
  "byteorder",
- "twizzler",
  "twizzler-async",
  "twizzler-net",
+ "twizzler-object",
 ]
 
 [[package]]
@@ -2309,14 +2309,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59547bce71d9c38b83d9c0e92b6066c4253371f15005def0c30d9657f50c7642"
 
 [[package]]
-name = "twizzler"
-version = "0.1.0"
-dependencies = [
- "bitflags",
- "twizzler-abi",
-]
-
-[[package]]
 name = "twizzler-abi"
 version = "0.1.0"
 dependencies = [
@@ -2342,8 +2334,8 @@ dependencies = [
 name = "twizzler-driver"
 version = "0.1.0"
 dependencies = [
- "twizzler",
  "twizzler-abi",
+ "twizzler-object",
 ]
 
 [[package]]
@@ -2374,19 +2366,27 @@ name = "twizzler-net"
 version = "0.1.0"
 dependencies = [
  "bitflags",
- "twizzler",
  "twizzler-abi",
  "twizzler-async",
+ "twizzler-object",
  "twizzler-queue",
+]
+
+[[package]]
+name = "twizzler-object"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "twizzler-abi",
 ]
 
 [[package]]
 name = "twizzler-queue"
 version = "0.1.0"
 dependencies = [
- "twizzler",
  "twizzler-abi",
  "twizzler-async",
+ "twizzler-object",
  "twizzler-queue-raw",
 ]
 
