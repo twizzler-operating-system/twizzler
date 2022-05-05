@@ -3,7 +3,7 @@ name = "twizzler-object"
 version = "0.1.0"
 edition = "2021"
 authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
-
+description = "Twizzler bindings for interacting with objects."
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
