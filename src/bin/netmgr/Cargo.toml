@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 twizzler-net = {path="../../lib/twizzler-net", features = ["manager"]}
-twizzler = {path="../../lib/twizzler"}
+twizzler-object = {path="../../lib/twizzler-object"}
 twizzler-async = {path = "../../lib/twizzler-async"}
 twizzler-abi = {path = "../../lib/twizzler-abi"}
 twizzler-queue = {path = "../../lib/twizzler-queue"}

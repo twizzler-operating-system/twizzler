@@ -3,7 +3,7 @@ use std::{
     sync::Mutex,
 };
 
-use twizzler::object::Object;
+use twizzler_object::object::Object;
 
 use crate::req::PacketData;
 

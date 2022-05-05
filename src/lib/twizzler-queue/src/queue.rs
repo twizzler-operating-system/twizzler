@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use twizzler::object::{CreateError, CreateSpec, Object};
+use twizzler_object::object::{CreateError, CreateSpec, Object};
 use twizzler_abi::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
     ThreadSyncSleep, ThreadSyncWake,

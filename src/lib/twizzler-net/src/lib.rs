@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use twizzler::object::{ObjID, ObjectInitFlags, Protections};
 use twizzler_abi::syscall::{
     ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
+use twizzler_object::object::{ObjID, Object, ObjectInitFlags, Protections};
 
 #[cfg(feature = "manager")]
 use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags};
@@ -104,7 +104,7 @@ fn new_obj() -> ObjID {
 
 #[cfg(feature = "manager")]
 fn new_q<S: Copy, C: Copy>() -> ObjID {
-    use twizzler::object::CreateSpec;
+    use twizzler_object::object::CreateSpec;
     use twizzler_queue::Queue;
     let create = CreateSpec::new(LifetimeType::Volatile, BackingType::Normal);
     let q: Queue<S, C> = Queue::create(&create, 64, 64).unwrap();
@@ -112,7 +112,7 @@ fn new_q<S: Copy, C: Copy>() -> ObjID {
 }
 
 pub fn wait_until_network_manager_ready(rid: ObjID) {
-    let mut obj = twizzler::object::Object::<Rendezvous>::init_id(
+    let mut obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
@@ -123,7 +123,7 @@ pub fn wait_until_network_manager_ready(rid: ObjID) {
 }
 
 pub fn is_network_manager_ready(rid: ObjID) -> bool {
-    let mut obj = twizzler::object::Object::<Rendezvous>::init_id(
+    let mut obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
@@ -136,7 +136,7 @@ pub fn is_network_manager_ready(rid: ObjID) -> bool {
 #[cfg(feature = "manager")]
 fn server_rendezvous(rid: ObjID) -> NmOpenObjects {
     static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-    let mut obj = twizzler::object::Object::<Rendezvous>::init_id(
+    let mut obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
@@ -175,7 +175,7 @@ fn server_rendezvous(rid: ObjID) -> NmOpenObjects {
 }
 
 fn client_rendezvous(rid: ObjID, client_name: &str) -> NmOpenObjects {
-    let mut obj = twizzler::object::Object::<Rendezvous>::init_id(
+    let mut obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
