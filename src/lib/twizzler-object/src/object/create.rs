@@ -92,3 +92,12 @@ impl<T> Object<T> {
         Ok(obj)
     }
 }
+
+impl<T> Object<T> {
+    pub fn init_by_id() -> T
+    where
+        T: crate::marker::BaseType + crate::marker::ObjSafe,
+    {
+        T::init(())
+    }
+}
