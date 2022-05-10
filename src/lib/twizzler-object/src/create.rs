@@ -8,7 +8,7 @@ use twizzler_abi::{
     }, marker::BaseType,
 };
 
-use super::{Object, ObjectInitError, ObjectInitFlags};
+use crate::{object::Object, init::{ObjectInitError, ObjectInitFlags}};
 
 pub struct CreateSpec {
     lifetime: LifetimeType,
@@ -74,22 +74,6 @@ impl<T> Object<T> {
         f(&mut obj);
         // TODO: persistence barrier
         Ok(unsafe { core::mem::transmute(obj) })
-    }
-
-    pub fn create_with_base(spec: &CreateSpec, f: impl FnOnce() -> T) -> Result<Self, CreateError> {
-        let id = Self::raw_create(spec).map_err(CreateError::Create)?;
-        let obj = Self::init_id(
-            id,
-            Protections::READ | Protections::WRITE,
-            ObjectInitFlags::empty(),
-        )
-        .map_err(CreateError::Init)?;
-        let base_raw: *mut T = obj.raw_lea_mut(0);
-        unsafe {
-            base_raw.write(f());
-        }
-        // TODO: persistence barrier
-        Ok(obj)
     }
 }
 

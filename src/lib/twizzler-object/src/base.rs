@@ -1,6 +1,5 @@
 use crate::{
-    marker::{BaseType, BaseVersion, ObjSafe},
-    Object,
+    marker::{BaseType, BaseVersion, ObjSafe}, object::Object,
 };
 
 #[derive(Debug)]
