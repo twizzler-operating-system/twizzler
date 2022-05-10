@@ -4,20 +4,21 @@
 #![feature(negative_impls)]
 
 use twizzler_abi::marker;
-pub mod tx;
 
 pub use twizzler_abi::object::ObjID;
 pub use twizzler_abi::object::Protections;
 
-mod create;
 mod base;
+pub mod cell;
+mod create;
 mod init;
 mod object;
 mod ptr;
+mod tx;
 
-pub use object::*;
 pub use create::*;
 pub use init::*;
+pub use object::*;
 struct Foo {
     _x: *const u32,
 }
