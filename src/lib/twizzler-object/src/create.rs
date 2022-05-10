@@ -5,7 +5,7 @@ use twizzler_abi::{
     syscall::{
         sys_object_create, BackingType, CreateTieFlags, CreateTieSpec, LifetimeType, ObjectCreate,
         ObjectCreateError, ObjectCreateFlags, ObjectSource,
-    },
+    }, marker::BaseType,
 };
 
 use super::{Object, ObjectInitError, ObjectInitFlags};
@@ -99,5 +99,23 @@ impl<T> Object<T> {
         T: crate::marker::BaseType + crate::marker::ObjSafe,
     {
         T::init(())
+    }
+}
+
+impl<T: BaseType> Object<T> {
+    pub fn create<A>(spec: &CreateSpec, args: A) -> Result<Self, CreateError> {
+        let id = Self::raw_create(spec).map_err(CreateError::Create)?;
+        let obj = Self::init_id(
+            id,
+            Protections::READ | Protections::WRITE,
+            ObjectInitFlags::empty(),
+        )
+        .map_err(CreateError::Init)?;
+        let base_raw: *mut T = obj.raw_lea_mut(0);
+        unsafe {
+            base_raw.write(T::init(args));
+        }
+        // TODO: persistence barrier
+        Ok(obj)
     }
 }

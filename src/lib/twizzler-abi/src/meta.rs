@@ -1,3 +1,7 @@
+use crate::object::ObjID;
+
+use crate::marker::{BaseTag, BaseVersion};
+
 #[repr(transparent)]
 struct MetaFlags(u32);
 
@@ -11,10 +15,14 @@ pub struct MetaInfo {
     flags: MetaFlags,
     fotcount: u16,
     extcount: u16,
+    tag: BaseTag,
+    version: BaseVersion,
 }
 
+#[repr(transparent)]
+pub struct MetaExtTag(u64);
 #[repr(C)]
-struct MetaExt {
+pub struct MetaExt {
     tag: MetaExtTag,
     value: u64,
 }

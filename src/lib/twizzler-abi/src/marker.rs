@@ -6,12 +6,17 @@ pub auto trait ObjSafe {}
 
 impl<T> !ObjSafe for *const T {}
 
+#[derive(Debug)]
+pub struct BaseVersion {}
+#[derive(Debug)]
+pub struct BaseTag {}
 #[rustc_on_unimplemented(
     message = "`{Self}` is not safe to be a base type for an object",
     label = "`{Self}` is not safe to be a base type for an object"
 )]
 pub trait BaseType {
     fn init<T>(_t: T) -> Self;
+    fn tags() -> &'static [(BaseVersion, BaseTag)];
 }
 
 /*
@@ -26,5 +31,4 @@ impl<T: Default + ObjSafe> BaseType for &[T] {
         <&[T]>::default()
     }
 }
-
 */

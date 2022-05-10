@@ -1,11 +1,12 @@
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use twizzler_object::object::{CreateError, CreateSpec, Object};
+use twizzler_abi::marker::BaseType;
 use twizzler_abi::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
     ThreadSyncSleep, ThreadSyncWake,
 };
+use twizzler_object::{CreateError, CreateSpec, Object};
 use twizzler_queue_raw::RawQueue;
 use twizzler_queue_raw::{QueueEntry, RawQueueHdr};
 
@@ -34,15 +35,28 @@ pub struct QueueBase<S, C> {
     _pd: PhantomData<(S, C)>,
 }
 
+impl<S, C> BaseType for QueueBase<S, C> {
+    fn init<T>(_t: T) -> Self {
+        todo!()
+    }
+
+    fn tags() -> &'static [(
+        twizzler_abi::marker::BaseVersion,
+        twizzler_abi::marker::BaseTag,
+    )] {
+        todo!()
+    }
+}
+
 fn get_raw_sub<S: Copy, C>(obj: &Object<QueueBase<S, C>>) -> RawQueue<S> {
-    let base = obj.base_raw();
+    let base = unsafe { obj.base_raw_unchecked() };
     let hdr = obj.raw_lea(base.sub_hdr);
     let buf = obj.raw_lea_mut(base.sub_buf);
     unsafe { RawQueue::new(hdr, buf) }
 }
 
 fn get_raw_com<S, C: Copy>(obj: &Object<QueueBase<S, C>>) -> RawQueue<C> {
-    let base = obj.base_raw();
+    let base = unsafe { obj.base_raw_unchecked() };
     let hdr = obj.raw_lea(base.com_hdr);
     let buf = obj.raw_lea_mut(base.com_buf);
     unsafe { RawQueue::new(hdr, buf) }
@@ -95,7 +109,7 @@ impl<S: Copy, C: Copy> Queue<S, C> {
             let sub_len = (core::mem::size_of::<S>() * sub_queue_len) * 2;
             //let com_len = (core::mem::size_of::<C>() * com_queue_len) * 2;
             {
-                let base: &mut QueueBase<S, C> = obj.base_raw_mut().assume_init_mut();
+                let base: &mut QueueBase<S, C> = obj.base_raw_mut_unchecked().assume_init_mut();
                 base.sub_hdr = 0x1000;
                 base.com_hdr = 0x2000;
                 base.sub_buf = 0x3000;

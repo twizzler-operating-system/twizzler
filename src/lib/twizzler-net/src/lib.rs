@@ -1,9 +1,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use twizzler_abi::syscall::{
-    ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+use twizzler_abi::{
+    marker::BaseType,
+    syscall::{
+        ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
+        ThreadSyncWake,
+    },
 };
-use twizzler_object::object::{ObjID, Object, ObjectInitFlags, Protections};
+use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
 #[cfg(feature = "manager")]
 use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags};
@@ -31,6 +35,19 @@ struct Rendezvous {
     rx_queue: ObjID,
     client_name: [u8; 256],
     client_id: u64,
+}
+
+impl BaseType for Rendezvous {
+    fn init<T>(_t: T) -> Self {
+        todo!()
+    }
+
+    fn tags() -> &'static [(
+        twizzler_abi::marker::BaseVersion,
+        twizzler_abi::marker::BaseTag,
+    )] {
+        todo!()
+    }
 }
 
 #[allow(dead_code)]
@@ -104,7 +121,7 @@ fn new_obj() -> ObjID {
 
 #[cfg(feature = "manager")]
 fn new_q<S: Copy, C: Copy>() -> ObjID {
-    use twizzler_object::object::CreateSpec;
+    use twizzler_object::CreateSpec;
     use twizzler_queue::Queue;
     let create = CreateSpec::new(LifetimeType::Volatile, BackingType::Normal);
     let q: Queue<S, C> = Queue::create(&create, 64, 64).unwrap();
@@ -118,7 +135,7 @@ pub fn wait_until_network_manager_ready(rid: ObjID) {
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let rendezvous = obj.base_raw_mut();
+    let rendezvous = obj.base_raw_mut().unwrap();
     wait_until_neq(&rendezvous.ready, 0);
 }
 
@@ -129,7 +146,7 @@ pub fn is_network_manager_ready(rid: ObjID) -> bool {
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let rendezvous = obj.base_raw_mut();
+    let rendezvous = obj.base_raw_mut().unwrap();
     rendezvous.ready.load(Ordering::SeqCst) != 0
 }
 
@@ -142,7 +159,7 @@ fn server_rendezvous(rid: ObjID) -> NmOpenObjects {
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let mut rendezvous = obj.base_raw_mut();
+    let mut rendezvous = obj.base_raw_mut().unwrap();
 
     if rendezvous.ready.load(Ordering::SeqCst) == 0 {
         write_wake(&rendezvous.ready, NM_READY_NO_DATA);
@@ -181,7 +198,7 @@ fn client_rendezvous(rid: ObjID, client_name: &str) -> NmOpenObjects {
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let rendezvous = obj.base_raw_mut();
+    let rendezvous = obj.base_raw_mut().unwrap();
     loop {
         wait_until_eq(&rendezvous.ready, NM_READY_DATA);
         if rendezvous.ready.swap(CLIENT_TAKING, Ordering::SeqCst) == NM_READY_DATA {
