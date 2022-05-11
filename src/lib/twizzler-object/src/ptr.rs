@@ -1,4 +1,14 @@
-use crate::Object;
+use std::marker::PhantomData;
+
+use crate::{refs::EffectiveAddress, Object};
+
+#[repr(transparent)]
+pub struct InvPtr<T> {
+    raw: u64,
+    _pd: PhantomData<T>,
+}
+
+impl<T> !Unpin for InvPtr<T> {}
 
 impl<T> Object<T> {
     pub fn raw_lea<P>(&self, off: usize) -> *const P {
@@ -11,5 +21,15 @@ impl<T> Object<T> {
         unsafe { ((start + off) as *mut P).as_mut().unwrap() }
     }
 
-}
+    pub(crate) fn get_fot_id<Target>(&self, fote: usize) -> &Object<Target> {
+        todo!()
+    }
 
+    pub(crate) fn ptr_lea<'a, Target>(
+        &'a self,
+        fote: usize,
+        offset: usize,
+    ) -> EffectiveAddress<'a, Target> {
+        todo!()
+    }
+}
