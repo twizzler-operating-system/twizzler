@@ -1,8 +1,12 @@
 use std::marker::PhantomData;
 
-use twizzler_abi::{object::{Protections, ObjID}, syscall::{MapFlags, ObjectMapError}};
+use twizzler_abi::{
+    object::ObjID,
+    syscall::{MapFlags, ObjectMapError},
+};
 
 use crate::object::Object;
+pub use twizzler_abi::object::Protections;
 
 bitflags::bitflags! {
     pub struct ObjectInitFlags: u32 {
@@ -45,4 +49,3 @@ impl<T> Object<T> {
         })
     }
 }
-

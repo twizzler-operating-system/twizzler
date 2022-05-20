@@ -2,30 +2,28 @@
 //#![feature(specialization)]
 #![feature(rustc_attrs)]
 #![feature(negative_impls)]
-
-use refs::InvRef;
-use twizzler_abi::marker;
+#![feature(option_result_unwrap_unchecked)]
 
 pub use twizzler_abi::object::ObjID;
-pub use twizzler_abi::object::Protections;
 
 mod base;
 pub mod cell;
 mod create;
 mod init;
+pub mod marker;
 mod meta;
 mod object;
 mod ptr;
-mod refs;
 mod tx;
+mod slot;
 
 pub use create::*;
 pub use init::*;
 pub use object::*;
-struct Foo<'a> {
-    x: InvRef<'a, Foo<'a>>,
+struct Foo {
+    x: u32,
 }
-impl<'a> marker::BaseType for Foo<'a> {
+impl marker::BaseType for Foo {
     fn init<T>(_t: T) -> Self {
         todo!()
     }

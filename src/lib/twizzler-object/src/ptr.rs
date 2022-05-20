@@ -1,10 +1,10 @@
 use std::marker::PhantomData;
 
-use crate::{refs::EffectiveAddress, Object};
+use crate::{cell::TxCell, Object};
 
 #[repr(transparent)]
 pub struct InvPtr<T> {
-    raw: u64,
+    raw: TxCell<u64>,
     _pd: PhantomData<T>,
 }
 
@@ -25,11 +25,11 @@ impl<T> Object<T> {
         todo!()
     }
 
-    pub(crate) fn ptr_lea<'a, Target>(
-        &'a self,
-        fote: usize,
-        offset: usize,
-    ) -> EffectiveAddress<'a, Target> {
+    pub(crate) fn ptr_lea<'a, Target>(&'a self, fote: usize, offset: usize) -> EffAddr<'a, Target> {
         todo!()
     }
+}
+
+pub struct EffAddr<'a, T> {
+    ptr: &'a T,
 }
