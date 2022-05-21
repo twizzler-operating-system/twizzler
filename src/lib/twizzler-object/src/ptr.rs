@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{marker::PhantomData, ops::DerefMut, sync::Arc};
 
 use crate::{cell::TxCell, slot::Slot, Object};
 
@@ -33,4 +33,28 @@ impl<T> Object<T> {
 pub struct EffAddr<'a, T> {
     ptr: &'a T,
     obj: Arc<Slot>,
+}
+
+impl<Target> InvPtr<Target> {
+    pub fn lea_obj<T>(&self, obj: &Object<T>) -> EffAddr<'_, Target> {
+        todo!()
+    }
+
+    pub fn lea(&self) -> EffAddr<'_, Target> {
+        todo!()
+    }
+}
+
+impl<'a, T> EffAddr<'a, T> {
+    pub fn obj<Base>(&self) -> Object<Base> {
+        todo!()
+    }
+}
+
+impl<'a, T> std::ops::Deref for EffAddr<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.ptr
+    }
 }
