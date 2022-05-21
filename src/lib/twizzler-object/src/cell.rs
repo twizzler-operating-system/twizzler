@@ -13,13 +13,11 @@ unsafe impl<T: ObjSafe> ObjSafe for TxCell<T> {}
 
 impl<T: ObjSafe> TxCell<T> {
     pub fn get_mut(&self, tx: impl TxHandle) -> Result<&mut T, TxError> {
-        tx.txcell_get_mut(&self)?;
-        Ok(unsafe { self.item.get().as_mut().unwrap_unchecked() })
+        tx.txcell_get_mut(&self)
     }
 
     pub fn get(&self, tx: impl TxHandle) -> Result<&T, TxError> {
-        tx.txcell_get(&self)?;
-        Ok(unsafe { self.item.get().as_ref().unwrap_unchecked() })
+        tx.txcell_get(&self)
     }
 
     pub unsafe fn get_unchecked(&self) -> &T {

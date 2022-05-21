@@ -11,7 +11,10 @@ members = [
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
     "src/lib/twizzler-net",
-    "src/lib/twizzler-async"
+    "src/lib/twizzler-async",
+    "src/lib/tx-engines/twizzler-volatile",
+    "src/lib/tx-engines/twizzler-pool",
+    "src/lib/twizzler-object"
 ]
 resolver = "2"
 

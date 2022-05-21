@@ -1,6 +1,6 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::Arc};
 
-use crate::{cell::TxCell, Object};
+use crate::{cell::TxCell, slot::Slot, Object};
 
 #[repr(transparent)]
 pub struct InvPtr<T> {
@@ -12,12 +12,12 @@ impl<T> !Unpin for InvPtr<T> {}
 
 impl<T> Object<T> {
     pub fn raw_lea<P>(&self, off: usize) -> *const P {
-        let (start, _) = twizzler_abi::slot::to_vaddr_range(self.slot);
+        let start = self.slot.vaddr_start();
         unsafe { ((start + off) as *const P).as_ref().unwrap() }
     }
 
     pub fn raw_lea_mut<P>(&self, off: usize) -> *mut P {
-        let (start, _) = twizzler_abi::slot::to_vaddr_range(self.slot);
+        let start = self.slot.vaddr_start();
         unsafe { ((start + off) as *mut P).as_mut().unwrap() }
     }
 
@@ -32,4 +32,5 @@ impl<T> Object<T> {
 
 pub struct EffAddr<'a, T> {
     ptr: &'a T,
+    obj: Arc<Slot>,
 }

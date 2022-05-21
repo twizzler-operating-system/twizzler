@@ -26,7 +26,7 @@ pub(crate) struct FotEntry {
 
 impl<T> Object<T> {
     pub(crate) fn get_fote(&self, idx: usize) -> &FotEntry {
-        let (_, end) = twizzler_abi::slot::to_vaddr_range(self.slot);
+        let end = self.slot.vaddr_meta();
         let off = idx * size_of::<FotEntry>();
         unsafe {
             (((end - off) + twizzler_abi::object::NULLPAGE_SIZE / 2) as *const FotEntry)
