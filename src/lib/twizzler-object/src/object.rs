@@ -23,3 +23,12 @@ impl<T> Object<T> {
         self.slot.id()
     }
 }
+
+impl<Base> From<Arc<Slot>> for Object<Base> {
+    fn from(s: Arc<Slot>) -> Self {
+        Self {
+            slot: s,
+            _pd: PhantomData,
+        }
+    }
+}

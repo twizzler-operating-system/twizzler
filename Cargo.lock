@@ -2405,6 +2405,9 @@ dependencies = [
 [[package]]
 name = "twizzler-volatile"
 version = "0.1.0"
+dependencies = [
+ "twizzler-object",
+]
 
 [[package]]
 name = "typenum"

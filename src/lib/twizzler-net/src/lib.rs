@@ -129,24 +129,24 @@ fn new_q<S: Copy, C: Copy>() -> ObjID {
 }
 
 pub fn wait_until_network_manager_ready(rid: ObjID) {
-    let mut obj = Object::<Rendezvous>::init_id(
+    let obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let rendezvous = obj.base_raw_mut().unwrap();
+    let rendezvous = obj.base_notx().unwrap();
     wait_until_neq(&rendezvous.ready, 0);
 }
 
 pub fn is_network_manager_ready(rid: ObjID) -> bool {
-    let mut obj = Object::<Rendezvous>::init_id(
+    let obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let rendezvous = obj.base_raw_mut().unwrap();
+    let rendezvous = obj.base_notx().unwrap();
     rendezvous.ready.load(Ordering::SeqCst) != 0
 }
 
@@ -159,7 +159,7 @@ fn server_rendezvous(rid: ObjID) -> NmOpenObjects {
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let mut rendezvous = obj.base_raw_mut().unwrap();
+    let mut rendezvous = unsafe { obj.base_mut_unchecked() };
 
     if rendezvous.ready.load(Ordering::SeqCst) == 0 {
         write_wake(&rendezvous.ready, NM_READY_NO_DATA);
@@ -198,7 +198,7 @@ fn client_rendezvous(rid: ObjID, client_name: &str) -> NmOpenObjects {
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let rendezvous = obj.base_raw_mut().unwrap();
+    let rendezvous = unsafe { obj.base_mut_unchecked() };
     loop {
         wait_until_eq(&rendezvous.ready, NM_READY_DATA);
         if rendezvous.ready.swap(CLIENT_TAKING, Ordering::SeqCst) == NM_READY_DATA {

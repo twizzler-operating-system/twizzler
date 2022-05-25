@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, RwLock, Weak},
+    sync::{Arc, Mutex, Weak}, mem::size_of,
 };
 
 use twizzler_abi::{
@@ -8,13 +8,12 @@ use twizzler_abi::{
     syscall::MapFlags,
 };
 
-use crate::ObjectInitError;
+use crate::{ObjectInitError, meta::FotEntry};
 
-pub(crate) struct Slot {
+pub struct Slot {
     n: usize,
     id: ObjID,
     prot: Protections,
-    fot_cache: RwLock<HashMap<usize, FotCacheEntry>>,
 }
 
 impl Slot {
@@ -22,12 +21,7 @@ impl Slot {
         let n = twizzler_abi::slot::global_allocate().ok_or(ObjectInitError::OutOfSlots)?;
         let _result = twizzler_abi::syscall::sys_object_map(None, id, n, prot, MapFlags::empty())
             .map_err::<ObjectInitError, _>(|e| e.into())?;
-        Ok(Self {
-            n,
-            id,
-            prot,
-            fot_cache: RwLock::new(HashMap::new()),
-        })
+        Ok(Self { n, id, prot })
     }
 
     pub fn id(&self) -> ObjID {
@@ -38,12 +32,38 @@ impl Slot {
         self.n
     }
 
+    pub fn prot(&self) -> Protections {
+        self.prot
+    }
+
     pub fn vaddr_start(&self) -> usize {
         twizzler_abi::slot::to_vaddr_range(self.n).0
     }
 
+    pub fn vaddr_null(&self) -> usize {
+        twizzler_abi::slot::to_vaddr_range(self.n).0 - twizzler_abi::object::NULLPAGE_SIZE
+    }
+
     pub fn vaddr_meta(&self) -> usize {
         twizzler_abi::slot::to_vaddr_range(self.n).1
+    }
+
+    pub fn raw_lea<P>(&self, off: usize) -> *const P {
+        let start = self.vaddr_start();
+        unsafe { ((start + off) as *const P).as_ref().unwrap() }
+    }
+
+    pub fn raw_lea_mut<P>(&self, off: usize) -> *mut P {
+        let start = self.vaddr_start();
+        unsafe { ((start + off) as *mut P).as_mut().unwrap() }
+    }
+
+    pub unsafe fn get_fote_unchecked(&self, idx: usize) -> &FotEntry {
+        let end = self.vaddr_meta();
+        let off = idx * size_of::<FotEntry>();
+        (((end - off) + twizzler_abi::object::NULLPAGE_SIZE / 2) as *const FotEntry)
+            .as_ref()
+            .unwrap()
     }
 }
 
@@ -51,7 +71,7 @@ lazy_static::lazy_static! {
 static ref SLOTS: Mutex<HashMap<(ObjID, Protections), Weak<Slot>>> = Mutex::new(HashMap::new());
 }
 
-pub(crate) fn get(id: ObjID, prot: Protections) -> Result<Arc<Slot>, ObjectInitError> {
+pub fn get(id: ObjID, prot: Protections) -> Result<Arc<Slot>, ObjectInitError> {
     let mut slots = SLOTS.lock().unwrap();
     if let Some(slot) = slots.get(&(id, prot)) {
         if let Some(slot) = slot.clone().upgrade() {
@@ -67,12 +87,12 @@ pub(crate) fn get(id: ObjID, prot: Protections) -> Result<Arc<Slot>, ObjectInitE
     Ok(slot)
 }
 
+pub(crate) fn vaddr_to_slot(_vaddr: usize) -> Arc<Slot> {
+    todo!()
+}
+
 impl Drop for Slot {
     fn drop(&mut self) {
         twizzler_abi::slot::global_release(self.n);
     }
-}
-
-struct FotCacheEntry {
-    target: Arc<Slot>,
 }

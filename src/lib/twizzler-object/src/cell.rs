@@ -12,18 +12,24 @@ pub struct TxCell<T> {
 unsafe impl<T: ObjSafe> ObjSafe for TxCell<T> {}
 
 impl<T: ObjSafe> TxCell<T> {
-    pub fn get_mut(&self, tx: impl TxHandle) -> Result<&mut T, TxError> {
+    #[inline]
+    pub fn get_mut(&self, tx: &impl TxHandle) -> Result<&mut T, TxError> {
         tx.txcell_get_mut(&self)
     }
 
-    pub fn get(&self, tx: impl TxHandle) -> Result<&T, TxError> {
+    #[inline]
+    pub fn get(&self, tx: &impl TxHandle) -> Result<&T, TxError> {
         tx.txcell_get(&self)
     }
+}
 
+impl<T> TxCell<T> {
+    #[inline]
     pub unsafe fn get_unchecked(&self) -> &T {
         self.item.get().as_ref().unwrap_unchecked()
     }
 
+    #[inline]
     pub unsafe fn get_mut_unchecked(&self) -> &mut T {
         self.item.get().as_mut().unwrap_unchecked()
     }

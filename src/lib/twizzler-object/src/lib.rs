@@ -13,31 +13,31 @@ mod init;
 pub mod marker;
 mod meta;
 mod object;
-mod ptr;
-mod tx;
-mod slot;
+pub mod ptr;
+pub mod slot;
+pub mod tx;
 
 pub use create::*;
 pub use init::*;
 pub use object::*;
-struct Foo {
-    x: u32,
-}
-impl marker::BaseType for Foo {
-    fn init<T>(_t: T) -> Self {
-        todo!()
-    }
 
-    fn tags() -> &'static [(marker::BaseVersion, marker::BaseTag)] {
-        todo!()
-    }
-}
 #[cfg(test)]
 mod tests {
     use twizzler_abi::object::Protections;
 
     use crate::{Object, ObjectInitFlags};
+    struct Foo {
+        x: u32,
+    }
+    impl marker::BaseType for Foo {
+        fn init<T>(_t: T) -> Self {
+            todo!()
+        }
 
+        fn tags() -> &'static [(marker::BaseVersion, marker::BaseTag)] {
+            todo!()
+        }
+    }
     #[test]
     fn it_works() {
         let o =

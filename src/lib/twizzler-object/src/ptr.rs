@@ -1,6 +1,11 @@
-use std::{marker::PhantomData, ops::DerefMut, sync::Arc};
+use std::{marker::PhantomData, sync::Arc};
 
-use crate::{cell::TxCell, slot::Slot, Object};
+use crate::{
+    cell::TxCell,
+    slot::{vaddr_to_slot, Slot},
+    tx::{TxError, TxHandle},
+    Object, ObjectInitError,
+};
 
 #[repr(transparent)]
 pub struct InvPtr<T> {
@@ -11,50 +16,93 @@ pub struct InvPtr<T> {
 impl<T> !Unpin for InvPtr<T> {}
 
 impl<T> Object<T> {
+    #[inline]
     pub fn raw_lea<P>(&self, off: usize) -> *const P {
-        let start = self.slot.vaddr_start();
-        unsafe { ((start + off) as *const P).as_ref().unwrap() }
+        self.slot.raw_lea(off)
     }
 
+    #[inline]
     pub fn raw_lea_mut<P>(&self, off: usize) -> *mut P {
-        let start = self.slot.vaddr_start();
-        unsafe { ((start + off) as *mut P).as_mut().unwrap() }
+        self.slot.raw_lea_mut(off)
     }
 
-    pub(crate) fn get_fot_id<Target>(&self, fote: usize) -> &Object<Target> {
-        todo!()
-    }
-
-    pub(crate) fn ptr_lea<'a, Target>(&'a self, fote: usize, offset: usize) -> EffAddr<'a, Target> {
-        todo!()
+    #[inline]
+    pub fn ptr_lea<'a, Target>(
+        &'a self,
+        ptr: InvPtr<Target>,
+        tx: &impl TxHandle,
+    ) -> Result<EffAddr<Target>, LeaError> {
+        ptr.lea_obj(self, tx)
     }
 }
 
-pub struct EffAddr<'a, T> {
-    ptr: &'a T,
-    obj: Arc<Slot>,
+pub struct EffAddr<T> {
+    ptr: *const T,
+    slot: Arc<Slot>,
+}
+
+fn ipoffset(raw: u64) -> u64 {
+    raw & 0x0000ffffffffffff
+}
+
+fn ipfote(raw: u64) -> u64 {
+    raw & 0x0000ffffffffffff
+}
+
+pub enum LeaError {
+    Tx(TxError),
+    Init(ObjectInitError),
+}
+
+impl From<TxError> for LeaError {
+    fn from(txe: TxError) -> Self {
+        Self::Tx(txe)
+    }
+}
+
+impl From<ObjectInitError> for LeaError {
+    fn from(init: ObjectInitError) -> Self {
+        Self::Init(init)
+    }
 }
 
 impl<Target> InvPtr<Target> {
-    pub fn lea_obj<T>(&self, obj: &Object<T>) -> EffAddr<'_, Target> {
-        todo!()
+    pub fn parts(&self, tx: &impl TxHandle) -> Result<(usize, u64), TxError> {
+        let raw = self.raw.get(tx)?;
+        Ok((ipfote(*raw) as usize, ipoffset(*raw)))
     }
 
-    pub fn lea(&self) -> EffAddr<'_, Target> {
-        todo!()
+    pub fn lea_obj<T>(
+        &self,
+        obj: &Object<T>,
+        tx: &impl TxHandle,
+    ) -> Result<EffAddr<Target>, LeaError> {
+        assert!(self as *const Self as usize >= obj.slot.vaddr_start());
+        assert!((self as *const Self as usize) < obj.slot.vaddr_meta());
+
+        tx.ptr_resolve(self, &obj.slot)
+    }
+
+    pub fn lea(&self, tx: &impl TxHandle) -> Result<EffAddr<Target>, LeaError> {
+        let slot = vaddr_to_slot(self as *const Self as usize);
+        tx.ptr_resolve(self, &slot)
     }
 }
 
-impl<'a, T> EffAddr<'a, T> {
+impl<T> EffAddr<T> {
     pub fn obj<Base>(&self) -> Object<Base> {
-        todo!()
+        self.slot.clone().into()
+    }
+
+    pub fn new(slot: Arc<Slot>, ptr: *const T) -> Self {
+        Self { ptr, slot }
     }
 }
 
-impl<'a, T> std::ops::Deref for EffAddr<'a, T> {
+impl<T> std::ops::Deref for EffAddr<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        self.ptr
+        unsafe { self.ptr.as_ref().unwrap_unchecked() }
     }
 }

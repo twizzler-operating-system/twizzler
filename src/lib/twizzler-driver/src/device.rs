@@ -45,7 +45,7 @@ impl MmioObject {
 
     // TODO: no unwrap
     pub fn get_info(&self) -> &MmioInfo {
-        self.obj.base_raw().unwrap()
+        self.obj.base_notx().unwrap()
     }
 
     /// Get the base of the memory mapped IO region.
@@ -53,7 +53,7 @@ impl MmioObject {
     /// The type this returns is not verified in any way, so the caller must ensure that T is
     /// the correct type for the underlying data.
     pub unsafe fn get_mmio_offset<T>(&self, offset: usize) -> &T {
-        let ptr = self.obj.base_raw().unwrap() as *const MmioInfo as *const u8;
+        let ptr = self.obj.base_notx().unwrap() as *const MmioInfo as *const u8;
         (ptr.add(MMIO_OFFSET + offset).sub(0x1000) as *mut T)
             .as_mut()
             .unwrap()
@@ -68,7 +68,7 @@ impl<T: BaseType + ObjSafe> InfoObject<T> {
     }
 
     pub fn get_data(&self) -> &T {
-        self.obj.base_raw().unwrap()
+        self.obj.base_notx().unwrap()
     }
 }
 
@@ -130,7 +130,7 @@ impl Device {
     }
 
     pub fn repr(&self) -> &DeviceRepr {
-        self.obj.base_raw().unwrap()
+        self.obj.base_notx().unwrap()
     }
 
     pub fn is_bus(&self) -> bool {

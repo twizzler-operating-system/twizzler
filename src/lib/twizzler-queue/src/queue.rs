@@ -49,14 +49,14 @@ impl<S, C> BaseType for QueueBase<S, C> {
 }
 
 fn get_raw_sub<S: Copy, C>(obj: &Object<QueueBase<S, C>>) -> RawQueue<S> {
-    let base = unsafe { obj.base_raw_unchecked() };
+    let base = unsafe { obj.base_unchecked() };
     let hdr = obj.raw_lea(base.sub_hdr);
     let buf = obj.raw_lea_mut(base.sub_buf);
     unsafe { RawQueue::new(hdr, buf) }
 }
 
 fn get_raw_com<S, C: Copy>(obj: &Object<QueueBase<S, C>>) -> RawQueue<C> {
-    let base = unsafe { obj.base_raw_unchecked() };
+    let base = unsafe { obj.base_unchecked() };
     let hdr = obj.raw_lea(base.com_hdr);
     let buf = obj.raw_lea_mut(base.com_buf);
     unsafe { RawQueue::new(hdr, buf) }
@@ -109,7 +109,7 @@ impl<S: Copy, C: Copy> Queue<S, C> {
             let sub_len = (core::mem::size_of::<S>() * sub_queue_len) * 2;
             //let com_len = (core::mem::size_of::<C>() * com_queue_len) * 2;
             {
-                let base: &mut QueueBase<S, C> = obj.base_raw_mut_unchecked().assume_init_mut();
+                let base: &mut QueueBase<S, C> = obj.base_mut_unchecked().assume_init_mut();
                 base.sub_hdr = 0x1000;
                 base.com_hdr = 0x2000;
                 base.sub_buf = 0x3000;

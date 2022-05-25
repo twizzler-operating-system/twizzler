@@ -121,7 +121,8 @@ impl BufferController {
 
     pub async fn allocate(&self) -> ManagedBuffer<'_> {
         let mut obj = self.obj.lock().unwrap();
-        let base = obj.base_raw_mut().unwrap();
+        // TODO: unsafe
+        let base = unsafe { obj.base_mut_unchecked() };
         let b = if base.pos == 0 {
             let b = ManagedBuffer::new(self, base.counter, 0);
             base.counter += 1;
@@ -147,7 +148,8 @@ impl BufferController {
             if self.tx { "tx" } else { "rx" }
         );
         let mut obj = self.obj.lock().unwrap();
-        let base = obj.base_raw_mut().unwrap();
+        // TODO: unsafe
+        let base = unsafe { obj.base_mut_unchecked() };
         if base.counter == idx + 1 {
             base.counter -= 1;
         } else {

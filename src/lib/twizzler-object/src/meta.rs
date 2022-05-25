@@ -1,8 +1,9 @@
-use std::mem::size_of;
+use twizzler_abi::{
+    meta::MetaInfo,
+    object::{ObjID, Protections},
+};
 
-use twizzler_abi::object::ObjID;
-
-use crate::Object;
+use crate::{ptr::LeaError, tx::TxHandle, Object};
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -18,20 +19,28 @@ union FotRef {
 }
 
 #[repr(C)]
-pub(crate) struct FotEntry {
+pub struct FotEntry {
     outgoing: FotRef,
-    flags: u64,
-    info: u64,
+    flags: u32,
+    info: u32,
+    refs: u32,
+    resv: u32,
 }
 
 impl<T> Object<T> {
-    pub(crate) fn get_fote(&self, idx: usize) -> &FotEntry {
+    pub unsafe fn meta_unchecked(&self) -> &MetaInfo {
         let end = self.slot.vaddr_meta();
-        let off = idx * size_of::<FotEntry>();
-        unsafe {
-            (((end - off) + twizzler_abi::object::NULLPAGE_SIZE / 2) as *const FotEntry)
-                .as_ref()
-                .unwrap()
-        }
+        ((end + twizzler_abi::object::NULLPAGE_SIZE / 2) as *const MetaInfo)
+            .as_ref()
+            .unwrap_unchecked()
+    }
+}
+
+impl FotEntry {
+    pub fn resolve(&self, _tx: &impl TxHandle) -> Result<(ObjID, Protections), LeaError> {
+        Ok((
+            unsafe { self.outgoing.id },
+            Protections::READ | Protections::WRITE,
+        ))
     }
 }
