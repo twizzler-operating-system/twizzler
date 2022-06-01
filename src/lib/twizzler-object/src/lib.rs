@@ -46,34 +46,3 @@ pub mod slot;
 pub use create::*;
 pub use init::*;
 pub use object::*;
-
-#[cfg(test)]
-mod tests {
-    use twizzler_abi::object::Protections;
-
-    use crate::{Object, ObjectInitFlags};
-    struct Foo {
-        x: u32,
-    }
-    impl marker::BaseType for Foo {
-        fn init<T>(_t: T) -> Self {
-            todo!()
-        }
-
-        fn tags() -> &'static [(marker::BaseVersion, marker::BaseTag)] {
-            todo!()
-        }
-    }
-    #[test]
-    fn it_works() {
-        let o =
-            Object::<crate::Foo>::init_id(0.into(), Protections::READ, ObjectInitFlags::empty())
-                .unwrap();
-
-        let base = o.base_raw().unwrap();
-        let p = base.x.lea();
-
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
-}
