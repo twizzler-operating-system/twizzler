@@ -56,23 +56,37 @@ impl<T> Object<T> {
             .into()
     }
 
+    /// Get the nonce of the object.
     pub fn meta_nonce(&self) -> Nonce {
         unsafe { self.meta().as_mut().nonce }
     }
 
+    /// Get the public key ID of the object.
     pub fn meta_kuid(&self) -> ObjID {
         unsafe { self.meta().as_mut().kuid }
     }
 
+    /// Get the meta flags of the object.
     pub fn meta_flags(&self) -> MetaFlags {
         unsafe { self.meta().as_mut().flags }
     }
 
+    /// Get the base tag of the object.
     pub fn meta_tag(&self) -> BaseTag {
         unsafe { self.meta().as_mut().tag }
     }
 
+    /// Get the base version of the object.
     pub fn meta_version(&self) -> BaseVersion {
         unsafe { self.meta().as_mut().version }
+    }
+
+    /// Get a mutable pointer to one of the object's FOT entries.
+    ///
+    /// # Safety
+    /// See this crate's base documentation ([Isolation Safety](crate)). Additionally, the caller
+    /// must ensure the index does not exceed the number of FOT entries in the object.
+    pub unsafe fn get_fote_unguarded(&self, idx: usize) -> *mut FotEntry {
+        self.slot.get_fote_unguarded(idx)
     }
 }

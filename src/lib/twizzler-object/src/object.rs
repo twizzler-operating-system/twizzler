@@ -4,6 +4,7 @@ use twizzler_abi::object::ObjID;
 
 use crate::slot::Slot;
 
+/// A handle for an object with base type T.
 pub struct Object<T> {
     pub(crate) slot: Arc<Slot>,
     pub(crate) _pd: PhantomData<T>,
@@ -19,8 +20,14 @@ impl<T> Clone for Object<T> {
 }
 
 impl<T> Object<T> {
+    /// Get the ID of this object.
     pub fn id(&self) -> ObjID {
         self.slot.id()
+    }
+
+    /// Get the slot of this object.
+    pub fn slot(&self) -> &Arc<Slot> {
+        &self.slot
     }
 }
 
