@@ -1,3 +1,8 @@
+//! Some docs comments.
+//!
+//! # Mutability Safety
+//! stuff.
+
 #![feature(auto_traits)]
 //#![feature(specialization)]
 #![feature(rustc_attrs)]
@@ -7,15 +12,13 @@
 pub use twizzler_abi::object::ObjID;
 
 mod base;
-pub mod cell;
 mod create;
 mod init;
 pub mod marker;
-mod meta;
+pub mod meta;
 mod object;
 pub mod ptr;
 pub mod slot;
-pub mod tx;
 
 pub use create::*;
 pub use init::*;

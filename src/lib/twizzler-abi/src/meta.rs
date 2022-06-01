@@ -2,23 +2,26 @@ use crate::object::ObjID;
 
 use crate::marker::{BaseTag, BaseVersion};
 
+#[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
-struct MetaFlags(u32);
+pub struct MetaFlags(u32);
 
+#[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
-struct Nonce(u128);
+pub struct Nonce(u128);
 
 #[repr(C)]
 pub struct MetaInfo {
-    nonce: Nonce,
-    kuid: ObjID,
-    flags: MetaFlags,
-    fotcount: u16,
-    extcount: u16,
-    tag: BaseTag,
-    version: BaseVersion,
+    pub nonce: Nonce,
+    pub kuid: ObjID,
+    pub flags: MetaFlags,
+    pub fotcount: u16,
+    pub extcount: u16,
+    pub tag: BaseTag,
+    pub version: BaseVersion,
 }
 
+#[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 pub struct MetaExtTag(u64);
 #[repr(C)]

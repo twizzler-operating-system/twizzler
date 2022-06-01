@@ -2362,6 +2362,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "twizzler-nando"
+version = "0.1.0"
+
+[[package]]
 name = "twizzler-net"
 version = "0.1.0"
 dependencies = [
@@ -2382,10 +2386,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "twizzler-pool"
-version = "0.1.0"
-
-[[package]]
 name = "twizzler-queue"
 version = "0.1.0"
 dependencies = [
@@ -2400,13 +2400,6 @@ name = "twizzler-queue-raw"
 version = "0.1.0"
 dependencies = [
  "bitflags",
-]
-
-[[package]]
-name = "twizzler-volatile"
-version = "0.1.0"
-dependencies = [
- "twizzler-object",
 ]
 
 [[package]]

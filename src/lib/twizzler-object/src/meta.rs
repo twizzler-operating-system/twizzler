@@ -1,9 +1,12 @@
+use std::{mem::size_of, ptr::NonNull};
+
 use twizzler_abi::{
-    meta::MetaInfo,
-    object::{ObjID, Protections},
+    marker::{BaseTag, BaseVersion},
+    meta::{MetaExt, MetaFlags, MetaInfo, Nonce},
+    object::ObjID,
 };
 
-use crate::{ptr::LeaError, tx::TxHandle, Object};
+use crate::Object;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -18,6 +21,7 @@ union FotRef {
     name: FotName,
 }
 
+/// An entry in the FOT.
 #[repr(C)]
 pub struct FotEntry {
     outgoing: FotRef,
@@ -28,19 +32,47 @@ pub struct FotEntry {
 }
 
 impl<T> Object<T> {
-    pub unsafe fn meta_unchecked(&self) -> &MetaInfo {
+    /// Get a mutable reference to the object's meta info struct.
+    ///
+    /// # Safety
+    /// See this crate's base documentation ([Isolation Safety](crate)).
+    pub unsafe fn meta(&self) -> NonNull<MetaInfo> {
         let end = self.slot.vaddr_meta();
-        ((end + twizzler_abi::object::NULLPAGE_SIZE / 2) as *const MetaInfo)
-            .as_ref()
+        ((end + twizzler_abi::object::NULLPAGE_SIZE / 2) as *mut MetaInfo)
+            .as_mut()
             .unwrap_unchecked()
+            .into()
     }
-}
 
-impl FotEntry {
-    pub fn resolve(&self, _tx: &impl TxHandle) -> Result<(ObjID, Protections), LeaError> {
-        Ok((
-            unsafe { self.outgoing.id },
-            Protections::READ | Protections::WRITE,
-        ))
+    /// Get a mutable reference to the object's first meta extension entry.
+    ///
+    /// # Safety
+    /// See this crate's base documentation ([Isolation Safety](crate)).
+    pub unsafe fn metaext(&self) -> NonNull<MetaExt> {
+        let end = self.slot.vaddr_meta();
+        ((end + twizzler_abi::object::NULLPAGE_SIZE / 2 + size_of::<MetaInfo>()) as *mut MetaExt)
+            .as_mut()
+            .unwrap_unchecked()
+            .into()
+    }
+
+    pub fn meta_nonce(&self) -> Nonce {
+        unsafe { self.meta().as_mut().nonce }
+    }
+
+    pub fn meta_kuid(&self) -> ObjID {
+        unsafe { self.meta().as_mut().kuid }
+    }
+
+    pub fn meta_flags(&self) -> MetaFlags {
+        unsafe { self.meta().as_mut().flags }
+    }
+
+    pub fn meta_tag(&self) -> BaseTag {
+        unsafe { self.meta().as_mut().tag }
+    }
+
+    pub fn meta_version(&self) -> BaseVersion {
+        unsafe { self.meta().as_mut().version }
     }
 }

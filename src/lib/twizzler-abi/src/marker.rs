@@ -6,6 +6,9 @@ use core::{
     },
 };
 
+/// This auto trait specifies that some type is "safe" to to store inside an object. This means that
+/// the type contains no non-invariant references nor any unsafe interior mutability not implemented
+/// via twizzler-nando.
 #[rustc_on_unimplemented(
     message = "`{Self}` is not safe to be stored in an object",
     label = "`{Self}` is not safe to be stored in an object"
@@ -29,16 +32,21 @@ unsafe impl ObjSafe for AtomicI64 {}
 unsafe impl ObjSafe for AtomicI8 {}
 unsafe impl ObjSafe for AtomicIsize {}
 
-#[derive(Debug)]
+/// Version for a base type.
+#[derive(Clone, Copy, Debug)]
 pub struct BaseVersion {}
-#[derive(Debug)]
+/// Tag for a base type. Each base type must have a unique tag.
+#[derive(Clone, Copy, Debug)]
 pub struct BaseTag {}
+/// Trait that all base types must implement.
 #[rustc_on_unimplemented(
     message = "`{Self}` is not safe to be a base type for an object",
     label = "`{Self}` is not safe to be a base type for an object"
 )]
 pub trait BaseType {
+    /// Construct a new base type.
     fn init<T>(_t: T) -> Self;
+    /// Returns a list of valid tags and versions for this type.
     fn tags() -> &'static [(BaseVersion, BaseTag)];
 }
 

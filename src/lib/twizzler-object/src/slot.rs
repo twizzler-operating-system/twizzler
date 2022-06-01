@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, Weak}, mem::size_of,
+    mem::size_of,
+    sync::{Arc, Mutex, Weak},
 };
 
 use twizzler_abi::{
@@ -8,7 +9,7 @@ use twizzler_abi::{
     syscall::MapFlags,
 };
 
-use crate::{ObjectInitError, meta::FotEntry};
+use crate::{meta::FotEntry, ObjectInitError};
 
 pub struct Slot {
     n: usize,
@@ -85,10 +86,6 @@ pub fn get(id: ObjID, prot: Protections) -> Result<Arc<Slot>, ObjectInitError> {
     let w = Arc::downgrade(&slot.clone());
     slots.insert((id, prot), w);
     Ok(slot)
-}
-
-pub(crate) fn vaddr_to_slot(_vaddr: usize) -> Arc<Slot> {
-    todo!()
 }
 
 impl Drop for Slot {

@@ -135,7 +135,7 @@ pub fn wait_until_network_manager_ready(rid: ObjID) {
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let rendezvous = obj.base_notx().unwrap();
+    let rendezvous = obj.base().unwrap();
     wait_until_neq(&rendezvous.ready, 0);
 }
 
@@ -146,14 +146,14 @@ pub fn is_network_manager_ready(rid: ObjID) -> bool {
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let rendezvous = obj.base_notx().unwrap();
+    let rendezvous = obj.base().unwrap();
     rendezvous.ready.load(Ordering::SeqCst) != 0
 }
 
 #[cfg(feature = "manager")]
 fn server_rendezvous(rid: ObjID) -> NmOpenObjects {
     static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-    let mut obj = Object::<Rendezvous>::init_id(
+    let obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
@@ -192,7 +192,7 @@ fn server_rendezvous(rid: ObjID) -> NmOpenObjects {
 }
 
 fn client_rendezvous(rid: ObjID, client_name: &str) -> NmOpenObjects {
-    let mut obj = Object::<Rendezvous>::init_id(
+    let obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),

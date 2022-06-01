@@ -1,44 +1,31 @@
-use std::{marker::PhantomData, sync::Arc};
-
-use crate::{
-    cell::TxCell,
-    slot::{vaddr_to_slot, Slot},
-    tx::{TxError, TxHandle},
-    Object, ObjectInitError,
+use std::{
+    marker::PhantomData,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
+use crate::Object;
+
+/// The raw invariant pointer, containing just a 64-bit packed FOT entry and offset.
 #[repr(transparent)]
 pub struct InvPtr<T> {
-    raw: TxCell<u64>,
+    raw: u64,
     _pd: PhantomData<T>,
 }
 
 impl<T> !Unpin for InvPtr<T> {}
 
 impl<T> Object<T> {
+    /// Get a raw pointer into an object given an offset.
     #[inline]
     pub fn raw_lea<P>(&self, off: usize) -> *const P {
         self.slot.raw_lea(off)
     }
 
+    /// Get a raw mutable pointer into an object given an offset.
     #[inline]
     pub fn raw_lea_mut<P>(&self, off: usize) -> *mut P {
         self.slot.raw_lea_mut(off)
     }
-
-    #[inline]
-    pub fn ptr_lea<'a, Target>(
-        &'a self,
-        ptr: InvPtr<Target>,
-        tx: &impl TxHandle,
-    ) -> Result<EffAddr<Target>, LeaError> {
-        ptr.lea_obj(self, tx)
-    }
-}
-
-pub struct EffAddr<T> {
-    ptr: *const T,
-    slot: Arc<Slot>,
 }
 
 fn ipoffset(raw: u64) -> u64 {
@@ -46,63 +33,108 @@ fn ipoffset(raw: u64) -> u64 {
 }
 
 fn ipfote(raw: u64) -> u64 {
-    raw & 0x0000ffffffffffff
-}
-
-pub enum LeaError {
-    Tx(TxError),
-    Init(ObjectInitError),
-}
-
-impl From<TxError> for LeaError {
-    fn from(txe: TxError) -> Self {
-        Self::Tx(txe)
-    }
-}
-
-impl From<ObjectInitError> for LeaError {
-    fn from(init: ObjectInitError) -> Self {
-        Self::Init(init)
-    }
+    (raw & !0x0000ffffffffffff) >> 48
 }
 
 impl<Target> InvPtr<Target> {
-    pub fn parts(&self, tx: &impl TxHandle) -> Result<(usize, u64), TxError> {
-        let raw = self.raw.get(tx)?;
-        Ok((ipfote(*raw) as usize, ipoffset(*raw)))
+    /// Read the invariant pointer into its raw parts.
+    ///
+    /// # Safety
+    /// See this crate's base documentation ([Isolation Safety](crate)).
+    pub unsafe fn parts_unguarded(&self) -> (usize, u64) {
+        let raw = self.raw;
+        (ipfote(raw) as usize, ipoffset(raw))
     }
 
-    pub fn lea_obj<T>(
-        &self,
-        obj: &Object<T>,
-        tx: &impl TxHandle,
-    ) -> Result<EffAddr<Target>, LeaError> {
-        assert!(self as *const Self as usize >= obj.slot.vaddr_start());
-        assert!((self as *const Self as usize) < obj.slot.vaddr_meta());
-
-        tx.ptr_resolve(self, &obj.slot)
+    /// Read the invariant pointer into its raw parts.
+    pub fn parts(&mut self) -> (usize, u64) {
+        let raw = self.raw;
+        (ipfote(raw) as usize, ipoffset(raw))
     }
 
-    pub fn lea(&self, tx: &impl TxHandle) -> Result<EffAddr<Target>, LeaError> {
-        let slot = vaddr_to_slot(self as *const Self as usize);
-        tx.ptr_resolve(self, &slot)
+    /// Construct an InvPtr from an FOT entry and an offset.
+    pub fn from_parts(fote: usize, off: u64) -> Self {
+        Self {
+            raw: (fote << 48) as u64 | (off & 0x0000ffffffffffff),
+            _pd: PhantomData,
+        }
+    }
+
+    /// Check if an invariant pointer is null.
+    ///
+    /// # Safety
+    /// See this crate's base documentation ([Isolation Safety](crate)).
+    pub unsafe fn is_null_unguarded(&self) -> bool {
+        self.raw == 0
+    }
+
+    /// Check if an invariant pointer is null.
+    pub fn is_null(&mut self) -> bool {
+        self.raw == 0
+    }
+
+    /// Construct a null raw pointer.
+    pub fn null() -> Self {
+        Self {
+            raw: 0,
+            _pd: PhantomData,
+        }
+    }
+
+    /// Get a reference to the inner raw 64 bits of the invariant pointer.
+    ///
+    /// # Safety
+    /// See this crate's base documentation ([Isolation Safety](crate)). Additionally, the caller is
+    /// expected to maintain the correct semantics of invariant pointers.
+    pub unsafe fn raw_inner(&mut self) -> *mut u64 {
+        &mut self.raw as *mut u64
     }
 }
 
-impl<T> EffAddr<T> {
-    pub fn obj<Base>(&self) -> Object<Base> {
-        self.slot.clone().into()
-    }
-
-    pub fn new(slot: Arc<Slot>, ptr: *const T) -> Self {
-        Self { ptr, slot }
-    }
+/// An atomic invariant pointer. Allows reading through an immutable reference without unsafe.
+#[repr(transparent)]
+pub struct AtomicInvPtr<T> {
+    raw: AtomicU64,
+    _pd: PhantomData<T>,
 }
 
-impl<T> std::ops::Deref for EffAddr<T> {
-    type Target = T;
+impl<T> !Unpin for AtomicInvPtr<T> {}
 
-    fn deref(&self) -> &Self::Target {
-        unsafe { self.ptr.as_ref().unwrap_unchecked() }
+impl<Target> AtomicInvPtr<Target> {
+    /// Read the invariant pointer into its raw parts.
+    pub fn parts(&self) -> (usize, u64) {
+        let raw = self.raw.load(Ordering::SeqCst);
+        (ipfote(raw) as usize, ipoffset(raw))
+    }
+
+    /// Construct an InvPtr from an FOT entry and an offset.
+    pub fn from_parts(fote: usize, off: u64) -> Self {
+        Self {
+            raw: AtomicU64::new((fote << 48) as u64 | (off & 0x0000ffffffffffff)),
+            _pd: PhantomData,
+        }
+    }
+
+    /// Check if an invariant pointer is null.
+    pub fn is_null(&self) -> bool {
+        let raw = self.raw.load(Ordering::SeqCst);
+        raw == 0
+    }
+
+    /// Construct a null raw pointer.
+    pub fn null() -> Self {
+        Self {
+            raw: AtomicU64::new(0),
+            _pd: PhantomData,
+        }
+    }
+
+    /// Get a reference to the inner raw 64 bits of the invariant pointer.
+    ///
+    /// # Safety
+    /// See this crate's base documentation ([Isolation Safety](crate)). Additionally, the caller is
+    /// expected to maintain the correct semantics of invariant pointers.
+    pub unsafe fn inner(&mut self) -> *mut AtomicU64 {
+        &mut self.raw as *mut AtomicU64
     }
 }
