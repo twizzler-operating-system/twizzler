@@ -11,7 +11,7 @@ pub const MAX_SIZE: usize = 1024 * 1024 * 1024;
 pub const NULLPAGE_SIZE: usize = 0x1000;
 
 #[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// An object ID, represented as a transparent wrapper type. Any value where the upper 64 bits are
 /// zero is invalid.
 pub struct ObjID(u128);

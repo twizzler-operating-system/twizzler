@@ -2362,6 +2362,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "twizzler-nando"
+version = "0.1.0"
+
+[[package]]
 name = "twizzler-net"
 version = "0.1.0"
 dependencies = [
@@ -2377,6 +2381,7 @@ name = "twizzler-object"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "lazy_static",
  "twizzler-abi",
 ]
 

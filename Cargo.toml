@@ -11,7 +11,9 @@ members = [
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
     "src/lib/twizzler-net",
-    "src/lib/twizzler-async"
+    "src/lib/twizzler-async",
+    "src/lib/twizzler-nando",
+    "src/lib/twizzler-object"
 ]
 resolver = "2"
 

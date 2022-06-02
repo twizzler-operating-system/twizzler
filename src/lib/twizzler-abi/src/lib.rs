@@ -17,6 +17,9 @@
 #![feature(core_intrinsics)]
 #![feature(int_roundings)]
 #![feature(thread_local)]
+#![feature(auto_traits)]
+#![feature(negative_impls)]
+#![feature(rustc_attrs)]
 pub mod arch;
 
 pub mod alloc;
@@ -28,6 +31,8 @@ pub mod kso;
 mod llalloc;
 #[cfg(not(feature = "rt"))]
 pub mod load_elf;
+pub mod marker;
+pub mod meta;
 pub mod object;
 #[cfg(any(doc, feature = "rt"))]
 pub mod rt1;

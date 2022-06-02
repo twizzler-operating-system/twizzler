@@ -5,12 +5,14 @@ pub use twizzler_abi::device::DeviceRepr;
 pub use twizzler_abi::device::DeviceType;
 use twizzler_abi::device::MmioInfo;
 use twizzler_abi::device::MMIO_OFFSET;
+use twizzler_abi::marker::BaseType;
+use twizzler_abi::marker::ObjSafe;
 use twizzler_abi::{
     device::SubObjectType,
     kso::{KactionCmd, KactionFlags, KactionGenericCmd},
 };
-use twizzler_object::object::Object;
-use twizzler_object::object::{ObjID, ObjectInitError, ObjectInitFlags, Protections};
+use twizzler_object::Object;
+use twizzler_object::{ObjID, ObjectInitError, ObjectInitFlags, Protections};
 
 pub struct Device {
     obj: Object<DeviceRepr>,
@@ -41,8 +43,9 @@ impl MmioObject {
         })
     }
 
+    // TODO: no unwrap
     pub fn get_info(&self) -> &MmioInfo {
-        self.obj.base_raw()
+        self.obj.base().unwrap()
     }
 
     /// Get the base of the memory mapped IO region.
@@ -50,14 +53,14 @@ impl MmioObject {
     /// The type this returns is not verified in any way, so the caller must ensure that T is
     /// the correct type for the underlying data.
     pub unsafe fn get_mmio_offset<T>(&self, offset: usize) -> &T {
-        let ptr = self.obj.base_raw() as *const MmioInfo as *const u8;
+        let ptr = self.obj.base().unwrap() as *const MmioInfo as *const u8;
         (ptr.add(MMIO_OFFSET + offset).sub(0x1000) as *mut T)
             .as_mut()
             .unwrap()
     }
 }
 
-impl<T> InfoObject<T> {
+impl<T: BaseType + ObjSafe> InfoObject<T> {
     fn new(id: ObjID) -> Result<Self, ObjectInitError> {
         Ok(Self {
             obj: Object::init_id(id, Protections::READ, ObjectInitFlags::empty())?,
@@ -65,7 +68,7 @@ impl<T> InfoObject<T> {
     }
 
     pub fn get_data(&self) -> &T {
-        self.obj.base_raw()
+        self.obj.base().unwrap()
     }
 }
 
@@ -114,7 +117,7 @@ impl Device {
     /// # Safety
     /// The type T is not verified in any way, so the caller must ensure that T is correct
     /// for the underlying data.
-    pub unsafe fn get_info<T>(&self, idx: u8) -> Option<InfoObject<T>> {
+    pub unsafe fn get_info<T: ObjSafe + BaseType>(&self, idx: u8) -> Option<InfoObject<T>> {
         let id = self.get_subobj(SubObjectType::Info.into(), idx)?;
         InfoObject::new(id).ok()
     }
@@ -127,7 +130,7 @@ impl Device {
     }
 
     pub fn repr(&self) -> &DeviceRepr {
-        self.obj.base_raw()
+        self.obj.base().unwrap()
     }
 
     pub fn is_bus(&self) -> bool {
