@@ -39,7 +39,7 @@ jobs:
     - name: Build
       run: cargo doc-all
     - name: Copy
-      run: mkdir -p twizzler-operating-system.github.io/nightly && cp -r target/doc twizzler-operating-system.github.io/nightly/
+      run: mkdir -p twizzler-operating-system.github.io/nightly && cp -r target/x86_64-unknown-twizzler/doc twizzler-operating-system.github.io/nightly/
     - name: Build Book
       run: cd doc && mdbook build
     - name: Copy Book

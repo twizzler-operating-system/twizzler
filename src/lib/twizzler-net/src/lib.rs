@@ -1,9 +1,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use twizzler_abi::syscall::{
-    ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+use twizzler_abi::{
+    marker::BaseType,
+    syscall::{
+        ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
+        ThreadSyncWake,
+    },
 };
-use twizzler_object::object::{ObjID, Object, ObjectInitFlags, Protections};
+use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
 #[cfg(feature = "manager")]
 use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags};
@@ -31,6 +35,19 @@ struct Rendezvous {
     rx_queue: ObjID,
     client_name: [u8; 256],
     client_id: u64,
+}
+
+impl BaseType for Rendezvous {
+    fn init<T>(_t: T) -> Self {
+        todo!()
+    }
+
+    fn tags() -> &'static [(
+        twizzler_abi::marker::BaseVersion,
+        twizzler_abi::marker::BaseTag,
+    )] {
+        todo!()
+    }
 }
 
 #[allow(dead_code)]
@@ -104,7 +121,7 @@ fn new_obj() -> ObjID {
 
 #[cfg(feature = "manager")]
 fn new_q<S: Copy, C: Copy>() -> ObjID {
-    use twizzler_object::object::CreateSpec;
+    use twizzler_object::CreateSpec;
     use twizzler_queue::Queue;
     let create = CreateSpec::new(LifetimeType::Volatile, BackingType::Normal);
     let q: Queue<S, C> = Queue::create(&create, 64, 64).unwrap();
@@ -112,37 +129,37 @@ fn new_q<S: Copy, C: Copy>() -> ObjID {
 }
 
 pub fn wait_until_network_manager_ready(rid: ObjID) {
-    let mut obj = Object::<Rendezvous>::init_id(
+    let obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let rendezvous = obj.base_raw_mut();
+    let rendezvous = obj.base().unwrap();
     wait_until_neq(&rendezvous.ready, 0);
 }
 
 pub fn is_network_manager_ready(rid: ObjID) -> bool {
-    let mut obj = Object::<Rendezvous>::init_id(
+    let obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let rendezvous = obj.base_raw_mut();
+    let rendezvous = obj.base().unwrap();
     rendezvous.ready.load(Ordering::SeqCst) != 0
 }
 
 #[cfg(feature = "manager")]
 fn server_rendezvous(rid: ObjID) -> NmOpenObjects {
     static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-    let mut obj = Object::<Rendezvous>::init_id(
+    let obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let mut rendezvous = obj.base_raw_mut();
+    let mut rendezvous = unsafe { obj.base_mut_unchecked() };
 
     if rendezvous.ready.load(Ordering::SeqCst) == 0 {
         write_wake(&rendezvous.ready, NM_READY_NO_DATA);
@@ -175,13 +192,13 @@ fn server_rendezvous(rid: ObjID) -> NmOpenObjects {
 }
 
 fn client_rendezvous(rid: ObjID, client_name: &str) -> NmOpenObjects {
-    let mut obj = Object::<Rendezvous>::init_id(
+    let obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let rendezvous = obj.base_raw_mut();
+    let rendezvous = unsafe { obj.base_mut_unchecked() };
     loop {
         wait_until_eq(&rendezvous.ready, NM_READY_DATA);
         if rendezvous.ready.swap(CLIENT_TAKING, Ordering::SeqCst) == NM_READY_DATA {

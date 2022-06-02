@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use twizzler_object::object::{ObjID, Object, ObjectInitFlags, Protections};
+use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 use twizzler_queue::{CallbackQueueReceiver, QueueBase, QueueError, QueueSender, SubmissionFlags};
 
 use crate::{

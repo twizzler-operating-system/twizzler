@@ -3,7 +3,7 @@ use std::{
     sync::Mutex,
 };
 
-use twizzler_object::object::Object;
+use twizzler_object::Object;
 
 use crate::req::PacketData;
 
@@ -12,6 +12,19 @@ pub struct BufferBase {
     counter: u32,
     pos: usize,
     reuse: [u32; 4096],
+}
+
+impl twizzler_abi::marker::BaseType for BufferBase {
+    fn init<T>(_t: T) -> Self {
+        todo!()
+    }
+
+    fn tags() -> &'static [(
+        twizzler_abi::marker::BaseVersion,
+        twizzler_abi::marker::BaseTag,
+    )] {
+        todo!()
+    }
 }
 
 pub struct BufferController {
@@ -107,8 +120,9 @@ impl BufferController {
     }
 
     pub async fn allocate(&self) -> ManagedBuffer<'_> {
-        let mut obj = self.obj.lock().unwrap();
-        let base = obj.base_raw_mut();
+        let obj = self.obj.lock().unwrap();
+        // TODO: unsafe
+        let base = unsafe { obj.base_mut_unchecked() };
         let b = if base.pos == 0 {
             let b = ManagedBuffer::new(self, base.counter, 0);
             base.counter += 1;
@@ -133,8 +147,9 @@ impl BufferController {
             if self.mgr { "mgr" } else { "client" },
             if self.tx { "tx" } else { "rx" }
         );
-        let mut obj = self.obj.lock().unwrap();
-        let base = obj.base_raw_mut();
+        let obj = self.obj.lock().unwrap();
+        // TODO: unsafe
+        let base = unsafe { obj.base_mut_unchecked() };
         if base.counter == idx + 1 {
             base.counter -= 1;
         } else {

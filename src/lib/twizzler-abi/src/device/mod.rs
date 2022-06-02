@@ -72,6 +72,15 @@ pub struct MmioInfo {
     pub cache_type: CacheType,
 }
 
+impl crate::marker::BaseType for MmioInfo {
+    fn init<T>(_t: T) -> Self {
+        todo!()
+    }
+
+    fn tags() -> &'static [(crate::marker::BaseVersion, crate::marker::BaseTag)] {
+        todo!()
+    }
+}
 pub const MMIO_OFFSET: usize = 0x2000;
 
 bitflags::bitflags! {
@@ -108,7 +117,15 @@ pub struct DeviceRepr {
     pub device_id: DeviceId,
     interrupts: [DeviceInterrupt; NUM_DEVICE_INTERRUPTS],
 }
+impl crate::marker::BaseType for DeviceRepr {
+    fn init<T>(_t: T) -> Self {
+        todo!()
+    }
 
+    fn tags() -> &'static [(crate::marker::BaseVersion, crate::marker::BaseTag)] {
+        todo!()
+    }
+}
 impl Display for DeviceRepr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
