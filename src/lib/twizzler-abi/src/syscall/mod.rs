@@ -6,6 +6,8 @@ mod handle;
 mod info;
 mod kaction;
 mod map;
+mod object_control;
+mod object_stat;
 mod spawn;
 mod thread_control;
 mod thread_sync;
@@ -29,17 +31,27 @@ pub enum Syscall {
     ObjectCreate = 5,
     /// Map an object into address space.
     ObjectMap = 6,
-    /// Returns system info
+    /// Returns system info.
     SysInfo = 7,
     /// Spawn a new thread.
     Spawn = 8,
-    /// Read clock information
+    /// Read clock information.
     ReadClockInfo = 9,
     /// Apply a kernel action to an object (used for device drivers).
     Kaction = 10,
-    /// New Handle
+    /// New Handle.
     NewHandle = 11,
-    MaxSyscalls = 12,
+    /// Unmap an object.
+    ObjectUnmap = 12,
+    /// Delete an object.
+    Delete = 13,
+    /// Manage in-kernel object properties.
+    ObjectCtrl = 14,
+    /// Get kernel information about an object.
+    ObjectStat = 15,
+    /// Read mapping information.
+    ObjectReadMap = 16,
+    MaxSyscalls = 19,
 }
 
 impl Syscall {
@@ -64,6 +76,8 @@ pub use handle::*;
 pub use info::*;
 pub use kaction::*;
 pub use map::*;
+pub use object_control::*;
+pub use object_stat::*;
 pub use spawn::*;
 pub use thread_control::*;
 pub use thread_sync::*;
