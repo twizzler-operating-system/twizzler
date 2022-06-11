@@ -35,10 +35,8 @@ impl ThreadRepr {
                 ThreadSyncFlags::empty(),
             ));
             sys_thread_sync(&mut [op], timeout).unwrap();
-            if timeout.is_some() {
-                if self.status.load(Ordering::SeqCst) == 0 {
-                    return None;
-                }
+            if timeout.is_some() && self.status.load(Ordering::SeqCst) == 0 {
+                return None;
             }
         }
         Some(self.code.load(Ordering::SeqCst))

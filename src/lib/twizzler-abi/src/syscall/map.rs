@@ -158,7 +158,7 @@ pub fn sys_object_unmap(
     slot: usize,
     flags: UnmapFlags,
 ) -> Result<(), ObjectUnmapError> {
-    let (hi, lo) = handle.unwrap_or(0.into()).split();
+    let (hi, lo) = handle.unwrap_or_else(|| 0.into()).split();
     let args = [hi, lo, slot as u64, flags.bits() as u64];
     let (code, val) = unsafe { raw_syscall(Syscall::ObjectUnmap, &args) };
     convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), justval)
@@ -235,7 +235,7 @@ pub fn sys_object_read_map(
     handle: Option<ObjID>,
     slot: usize,
 ) -> Result<MapInfo, ObjectReadMapError> {
-    let (hi, lo) = handle.unwrap_or(0.into()).split();
+    let (hi, lo) = handle.unwrap_or_else(|| 0.into()).split();
     let mut map_info = MaybeUninit::<MapInfo>::uninit();
     let args = [
         hi,
