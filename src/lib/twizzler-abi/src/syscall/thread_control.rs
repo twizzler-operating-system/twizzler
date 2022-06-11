@@ -1,4 +1,7 @@
-use crate::{arch::syscall::raw_syscall, upcall::{UpcallFrame, UpcallInfo}};
+use crate::{
+    arch::syscall::raw_syscall,
+    upcall::{UpcallFrame, UpcallInfo},
+};
 
 use super::Syscall;
 
@@ -62,6 +65,7 @@ pub fn sys_thread_settls(tls: u64) {
     }
 }
 
+/// Set the upcall location for this thread.
 pub fn sys_thread_set_upcall(
     loc: unsafe extern "C" fn(*const UpcallFrame, *const UpcallInfo) -> !,
 ) {

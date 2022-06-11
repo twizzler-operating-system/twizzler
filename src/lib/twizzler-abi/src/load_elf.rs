@@ -1,3 +1,5 @@
+//! Functions to start new executable programs.
+
 use core::{intrinsics::copy_nonoverlapping, mem::size_of};
 
 use crate::{
@@ -102,6 +104,7 @@ impl ElfPhdr {
     }
 }
 
+/// An object that contains an ELF file.
 #[derive(Debug)]
 pub struct ElfObject<'a> {
     hdr: &'a ElfHeader,
@@ -173,6 +176,7 @@ const INITIAL_STACK_SIZE: usize = 1024 * 1024 * 4;
 
 extern crate alloc;
 
+/// Possible errors for [spawn_new_executable].
 pub enum SpawnExecutableError {
     ObjectCreateFailed,
     InvalidExecutable,
@@ -180,6 +184,7 @@ pub enum SpawnExecutableError {
     ThreadSpawnFailed,
 }
 
+/// Start a new executable in a new address space.
 pub fn spawn_new_executable(
     exe: ObjID,
     args: &[&[u8]],

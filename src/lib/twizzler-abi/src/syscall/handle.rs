@@ -1,14 +1,13 @@
-
 use core::fmt;
 
 use bitflags::bitflags;
 
-use crate::{object::ObjID, arch::syscall::raw_syscall};
+use crate::{arch::syscall::raw_syscall, object::ObjID};
 
-use super::{Syscall, convert_codes_to_result, justval};
+use super::{convert_codes_to_result, justval, Syscall};
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(u32)]
-/// Possible error values for [sys_read_clock_info].
+/// Possible error values for [sys_new_handle].
 pub enum NewHandleError {
     /// An unknown error occurred.
     Unknown = 0,
@@ -59,6 +58,7 @@ impl std::error::Error for NewHandleError {
     }
 }
 
+/// Possible kernel handle types.
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(u64)]
 pub enum HandleType {
@@ -77,10 +77,12 @@ impl TryFrom<u64> for HandleType {
 }
 
 bitflags! {
+    /// Flags to pass to [sys_new_handle].
     pub struct NewHandleFlags: u64 {
     }
 }
 
+/// Make a new handle object.
 pub fn sys_new_handle(
     objid: ObjID,
     handle_type: HandleType,

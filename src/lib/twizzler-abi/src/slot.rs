@@ -35,6 +35,7 @@ pub(crate) unsafe fn get_context_object_mut() -> &'static mut Context {
     (start as *mut Context).as_mut().unwrap()
 }
 
+/// Init slot allocation and context runtime. Called during startup.
 pub fn runtime_init() {
     let cs = ObjectCreate::new(
         crate::syscall::BackingType::Normal,

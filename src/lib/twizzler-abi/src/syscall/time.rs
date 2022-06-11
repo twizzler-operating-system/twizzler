@@ -1,11 +1,10 @@
-
-use core::{fmt, time::Duration, mem::MaybeUninit};
+use core::{fmt, mem::MaybeUninit, time::Duration};
 
 use bitflags::bitflags;
 
 use crate::arch::syscall::raw_syscall;
 
-use super::{Syscall, convert_codes_to_result};
+use super::{convert_codes_to_result, Syscall};
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(u32)]
 /// Possible error values for [sys_read_clock_info].
@@ -107,6 +106,7 @@ impl ClockInfo {
     }
 }
 
+/// Possible clock sources.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum ClockSource {

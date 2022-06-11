@@ -61,6 +61,7 @@ bitflags::bitflags! {
     }
 }
 
+/// Possible object control commands for [sys_object_ctrl].
 #[derive(Clone, Copy, Debug)]
 pub enum ObjectControlCmd {
     /// Commit an object creation.

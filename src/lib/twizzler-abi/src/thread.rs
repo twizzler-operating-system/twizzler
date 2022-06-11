@@ -1,3 +1,5 @@
+//! Functions for manipulating threads.
+
 use core::{
     alloc::Layout,
     ptr,
@@ -13,6 +15,7 @@ use crate::{
     syscall::{MapFlags, ThreadSpawnArgs, ThreadSpawnFlags},
 };
 
+/// Base type for a thread object.
 #[repr(C)]
 pub struct ThreadRepr {
     version: u32,
@@ -22,6 +25,7 @@ pub struct ThreadRepr {
 }
 
 impl ThreadRepr {
+    /// Wait for a thread's status to change.
     pub fn wait(&self, timeout: Option<Duration>) -> Option<u64> {
         while self.status.load(Ordering::SeqCst) == 0 {
             let op = ThreadSync::new_sleep(ThreadSyncSleep::new(
@@ -67,6 +71,7 @@ static mut THREAD_IDS: IdCounter = IdCounter::new(1);
 
 const STACK_ALIGN: usize = 32;
 
+/// Build new thread internal tracking info.
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)]
 unsafe fn new_thread(
