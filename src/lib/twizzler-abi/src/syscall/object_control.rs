@@ -85,7 +85,7 @@ impl TryFrom<(u64, u64)> for ObjectControlCmd {
         Ok(match value.0 {
             0 => ObjectControlCmd::CreateCommit,
             1 => ObjectControlCmd::Delete(DeleteFlags::from_bits(value.1).ok_or(())?),
-            _ => Err(())?,
+            _ => return Err(()),
         })
     }
 }

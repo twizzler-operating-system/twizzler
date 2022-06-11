@@ -43,6 +43,7 @@ impl<BaseType> Object<BaseType> {
     ///
     /// # Safety
     /// The caller must ensure that the base of the object really is of type BaseType.
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn base_mut_unchecked(&self) -> &mut BaseType {
         let (start, _) = twizzler_abi::slot::to_vaddr_range(self.slot.slot());
         (start as *mut BaseType).as_mut().unwrap()
