@@ -24,6 +24,7 @@ pub enum AuxEntry {
     ExecId(ObjID),
 }
 
+/// Information about initrd object names.
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct KernelInitName {
@@ -34,6 +35,7 @@ pub struct KernelInitName {
 }
 
 impl KernelInitName {
+    /// Constructor for a null name.
     pub const fn null() -> Self {
         Self {
             name: [0; 256],
@@ -43,6 +45,7 @@ impl KernelInitName {
         }
     }
 
+    /// New mapping from name to ID.
     pub fn new(name: &str, id: ObjID) -> Self {
         let mut new = Self {
             name: [0; 256],
@@ -56,15 +59,18 @@ impl KernelInitName {
         new
     }
 
+    /// Get a name.
     pub fn name(&self) -> &str {
         unsafe { core::str::from_utf8_unchecked(&self.name[0..self.len]) }
     }
 
+    /// Get an ID.
     pub fn id(&self) -> ObjID {
         self.id
     }
 }
 
+/// Kernel init info, including initrd names.
 #[repr(C)]
 pub struct KernelInitInfo {
     version: u32,
@@ -74,6 +80,7 @@ pub struct KernelInitInfo {
 }
 
 impl KernelInitInfo {
+    /// Constructor.
     pub const fn new() -> Self {
         Self {
             version: 0,
@@ -83,16 +90,19 @@ impl KernelInitInfo {
         }
     }
 
+    /// Add a name to the name list.
     pub fn add_name(&mut self, name: KernelInitName) {
         self.boot_names[self.boot_names_len] = name;
         self.boot_names_len += 1;
     }
 
+    /// Get the name list.
     pub fn names(&self) -> &[KernelInitName] {
         &self.boot_names[0..self.boot_names_len]
     }
 }
 
+/// Get the initial kernel info for init. Only works for init.
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {
     let (start, _) = crate::slot::to_vaddr_range(crate::slot::RESERVED_KERNEL_INIT);
     unsafe { (start as *const KernelInitInfo).as_ref().unwrap() }

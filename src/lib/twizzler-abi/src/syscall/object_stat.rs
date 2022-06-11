@@ -6,7 +6,7 @@ use super::{convert_codes_to_result, justval, BackingType, LifetimeType, Syscall
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(u32)]
-/// Possible error values for [sys_object_unmap].
+/// Possible error values for [sys_object_stat].
 pub enum ObjectStatError {
     /// An unknown error occurred.
     Unknown = 0,

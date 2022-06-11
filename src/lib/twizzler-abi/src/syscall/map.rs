@@ -215,13 +215,18 @@ impl std::error::Error for ObjectReadMapError {
     }
 }
 
+/// Information about an object mapping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
 pub struct MapInfo {
-    id: ObjID,
-    prot: Protections,
-    slot: usize,
-    flags: MapFlags,
+    /// The mapped object ID.
+    pub id: ObjID,
+    /// The protections of the mapping.
+    pub prot: Protections,
+    /// The slot.
+    pub slot: usize,
+    /// The mapping flags.
+    pub flags: MapFlags,
 }
 
 /// Reads the map information about a given slot in the address space specified by `handle` (or

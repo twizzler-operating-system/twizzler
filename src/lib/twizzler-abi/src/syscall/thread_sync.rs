@@ -1,10 +1,10 @@
-use core::{sync::atomic::AtomicU64, fmt, time::Duration, ptr};
+use core::{fmt, ptr, sync::atomic::AtomicU64, time::Duration};
 
 use bitflags::bitflags;
 
-use crate::{object::ObjID, arch::syscall::raw_syscall};
+use crate::{arch::syscall::raw_syscall, object::ObjID};
 
-use super::{Syscall, convert_codes_to_result};
+use super::{convert_codes_to_result, Syscall};
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(u32)]
 /// Possible operations the kernel can perform when looking at the supplies reference and the
@@ -131,6 +131,7 @@ pub enum ThreadSyncError {
     Timeout = 3,
 }
 
+/// Result of sync operations.
 pub type ThreadSyncResult = Result<usize, ThreadSyncError>;
 
 impl From<ThreadSyncError> for u64 {

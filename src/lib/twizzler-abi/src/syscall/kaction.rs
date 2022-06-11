@@ -1,8 +1,12 @@
-use crate::{arch::syscall::raw_syscall, kso::{KactionValue, KactionError, KactionFlags, KactionCmd}, object::ObjID};
+use crate::{
+    arch::syscall::raw_syscall,
+    kso::{KactionCmd, KactionError, KactionFlags, KactionValue},
+    object::ObjID,
+};
 
 use super::{convert_codes_to_result, Syscall};
 
-
+/// Execute a kaction on an object.
 pub fn sys_kaction(
     cmd: KactionCmd,
     id: Option<ObjID>,

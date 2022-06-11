@@ -1,3 +1,5 @@
+//! Marker traits used to indicate safety for storing data in objects and using a struct as a base type.
+
 use core::{
     cell::UnsafeCell,
     sync::atomic::{

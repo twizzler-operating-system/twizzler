@@ -102,6 +102,7 @@ fn justval<T: From<u64>>(_: u64, v: u64) -> T {
     v.into()
 }
 
+/// Shutdown the computer.
 #[deprecated]
 pub fn sys_debug_shutdown(code: u32) {
     unsafe {
