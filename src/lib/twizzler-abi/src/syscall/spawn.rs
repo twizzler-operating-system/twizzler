@@ -1,9 +1,8 @@
-
 use core::fmt;
 
 use bitflags::bitflags;
 
-use crate::{object::ObjID, arch::syscall::raw_syscall};
+use crate::{arch::syscall::raw_syscall, object::ObjID};
 
 use super::{convert_codes_to_result, Syscall};
 bitflags! {

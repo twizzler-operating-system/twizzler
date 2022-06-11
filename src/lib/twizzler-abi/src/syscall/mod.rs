@@ -18,40 +18,38 @@ use crate::arch::syscall::raw_syscall;
 #[repr(C)]
 /// All possible Synchronous syscalls into the Twizzler kernel.
 pub enum Syscall {
-    Null = 0,
+    Null,
     /// Read data from the kernel console, either buffer or input.
-    KernelConsoleRead = 1,
+    KernelConsoleRead,
     /// Write data to the kernel console.
-    KernelConsoleWrite = 2,
+    KernelConsoleWrite,
     /// Sync a thread with other threads using some number of memory words.
-    ThreadSync = 3,
+    ThreadSync,
     /// General thread control functions.
-    ThreadCtrl = 4,
+    ThreadCtrl,
     /// Create new object.
-    ObjectCreate = 5,
+    ObjectCreate,
     /// Map an object into address space.
-    ObjectMap = 6,
+    ObjectMap,
     /// Returns system info.
-    SysInfo = 7,
+    SysInfo,
     /// Spawn a new thread.
-    Spawn = 8,
+    Spawn,
     /// Read clock information.
-    ReadClockInfo = 9,
+    ReadClockInfo,
     /// Apply a kernel action to an object (used for device drivers).
-    Kaction = 10,
+    Kaction,
     /// New Handle.
-    NewHandle = 11,
+    NewHandle,
     /// Unmap an object.
-    ObjectUnmap = 12,
-    /// Delete an object.
-    Delete = 13,
+    ObjectUnmap,
     /// Manage in-kernel object properties.
-    ObjectCtrl = 14,
+    ObjectCtrl,
     /// Get kernel information about an object.
-    ObjectStat = 15,
+    ObjectStat,
     /// Read mapping information.
-    ObjectReadMap = 16,
-    MaxSyscalls = 19,
+    ObjectReadMap,
+    NumSyscalls,
 }
 
 impl Syscall {
@@ -63,7 +61,7 @@ impl Syscall {
 
 impl From<usize> for Syscall {
     fn from(x: usize) -> Self {
-        if x >= Syscall::MaxSyscalls as usize {
+        if x >= Syscall::NumSyscalls as usize {
             return Syscall::Null;
         }
         unsafe { core::intrinsics::transmute(x as u32) }
