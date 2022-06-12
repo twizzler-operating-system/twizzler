@@ -1,6 +1,7 @@
 #[allow(unused_imports)]
 use crate::upcall::UpcallInfo;
 
+/// Arch-specific frame info for upcall.
 #[repr(C)]
 pub struct UpcallFrame {
     pub rip: u64,
@@ -24,14 +25,17 @@ pub struct UpcallFrame {
 }
 
 impl UpcallFrame {
+    /// Get the instruction pointer of the frame.
     pub fn ip(&self) -> usize {
         self.rip as usize
     }
 
+    /// Get the stack pointer of the frame.
     pub fn sp(&self) -> usize {
         self.rsp as usize
     }
 
+    /// Get the base pointer of the frame.
     pub fn bp(&self) -> usize {
         self.rbp as usize
     }

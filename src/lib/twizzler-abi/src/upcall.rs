@@ -1,20 +1,27 @@
+//! Functions for handling upcalls from the kernel.
+
 use core::sync::atomic::{AtomicBool, Ordering};
 
 pub use crate::arch::upcall::UpcallFrame;
 
+/// Information about an exception.
 #[derive(Debug)]
 #[repr(C)]
 pub struct ExceptionInfo {
-    code: u64,
-    info: u64,
+    /// CPU-reported exception code.
+    pub code: u64,
+    /// Arch-specific additional info.
+    pub info: u64,
 }
 
 impl ExceptionInfo {
+    /// Construct new exception info.
     pub fn new(code: u64, info: u64) -> Self {
         Self { code, info }
     }
 }
 
+/// Possible upcall reasons and info.
 #[derive(Debug)]
 #[repr(C)]
 pub enum UpcallInfo {

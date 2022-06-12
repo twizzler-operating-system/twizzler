@@ -205,7 +205,7 @@ fn compile(
     mode: CompileMode,
     other_options: &OtherOptions,
 ) -> anyhow::Result<TwizzlerCompilation> {
-    crate::toolchain::init_for_build(mode.is_doc())?;
+    crate::toolchain::init_for_build(mode.is_doc() || mode.is_check())?;
     let mut config = Config::default()?;
     config.configure(0, false, None, false, false, false, &None, &[], &[])?;
     let mut kernel_config = Config::default()?;
@@ -269,6 +269,6 @@ pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
         build_tests: false,
         needs_full_rebuild: false,
     };
-    compile(cli.config, CompileMode::Build, &other_options)?;
+    compile(cli.config, CompileMode::Check { test: false }, &other_options)?;
     Ok(())
 }

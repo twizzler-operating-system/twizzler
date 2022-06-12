@@ -93,12 +93,11 @@ pub fn get(id: ObjID, prot: Protections) -> Result<Arc<Slot>, ObjectInitError> {
         if let Some(slot) = slot.clone().upgrade() {
             return Ok(slot);
         } else {
-            drop(slot);
             slots.remove(&(id, prot));
         }
     }
     let slot = Arc::new(Slot::new(id, prot)?);
-    let w = Arc::downgrade(&slot.clone());
+    let w = Arc::downgrade(&slot);
     slots.insert((id, prot), w);
     Ok(slot)
 }
