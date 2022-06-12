@@ -1,4 +1,5 @@
 use crate::{kso::KactionError, vcell::Volatile};
+/// The base struct for an info sub-object for a PCIe device.
 #[allow(dead_code)]
 #[repr(C)]
 #[derive(Debug)]
@@ -8,9 +9,12 @@ pub struct PcieInfo {
     pub seg_nr: u16,
 }
 
+/// PCIe-specific [crate::kso::KactionGenericCmd] values.
 #[repr(u32)]
 pub enum PcieKactionSpecific {
+    /// Register a device ID.
     RegisterDevice = 0,
+    /// Allocate an interrupt for a device.
     AllocateInterrupt = 1,
 }
 
@@ -27,6 +31,8 @@ impl TryFrom<u32> for PcieKactionSpecific {
 }
 
 //TODO: can we move this out of this crate?
+/// The standard PCIe function header.
+/// See the PCI spec for more details.
 #[allow(dead_code)]
 #[repr(packed(4096))]
 pub struct PcieFunctionHeader {
@@ -44,6 +50,8 @@ pub struct PcieFunctionHeader {
     pub bist: Volatile<u8>,
 }
 
+/// The standard PCIe device header.
+/// See the PCI spec for more details.
 #[allow(dead_code)]
 #[repr(packed)]
 pub struct PcieDeviceHeader {
@@ -61,6 +69,8 @@ pub struct PcieDeviceHeader {
     pub max_latency: Volatile<u8>,
 }
 
+/// The standard PCIe bridge header.
+/// See the PCI spec for more details.
 #[allow(dead_code)]
 #[repr(packed)]
 pub struct PcieBridgeHeader {

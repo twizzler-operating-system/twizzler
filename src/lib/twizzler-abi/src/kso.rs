@@ -1,8 +1,13 @@
+//! Functions to deal with Kernel State Objects (KSOs). These are objects created by the kernel to
+//! describe the running state of the system and expose device memory to userspace.
+
 use core::fmt::Display;
 
 use crate::object::ObjID;
 
+/// Maximum name length for a KSO.
 pub const KSO_NAME_MAX_LEN: usize = 512;
+/// The base struct for any kernel state object.
 #[repr(C)]
 pub struct KsoHdr {
     version: u32,
@@ -23,6 +28,7 @@ impl Display for KsoHdr {
 }
 
 impl KsoHdr {
+    /// Construct a new kernel state object header.
     pub fn new(name: &str) -> Self {
         let b = name.as_bytes();
         let mut ret = Self {
@@ -38,6 +44,7 @@ impl KsoHdr {
     }
 }
 
+/// A value to pass for a KAction.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(C)]
 pub enum KactionValue {
@@ -65,6 +72,7 @@ impl From<KactionValue> for (u64, u64) {
 }
 
 impl KactionValue {
+    /// If the value is an object ID, return it, otherwise panic.
     pub fn unwrap_objid(self) -> ObjID {
         match self {
             KactionValue::U64(_) => panic!("failed to unwrap ObjID"),
@@ -72,6 +80,7 @@ impl KactionValue {
         }
     }
 
+    /// If the value is an object ID, return it, otherwise return None.
     pub fn objid(self) -> Option<ObjID> {
         match self {
             KactionValue::U64(_) => None,
@@ -80,11 +89,15 @@ impl KactionValue {
     }
 }
 
+/// Possible error values for KAction.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(C)]
 pub enum KactionError {
+    /// An unknown error.
     Unknown = 0,
+    /// An argument was invalid.
     InvalidArgument = 1,
+    /// The object was not found.
     NotFound = 2,
 }
 
@@ -109,16 +122,20 @@ impl From<KactionError> for u64 {
 }
 
 bitflags::bitflags! {
+    /// Possible flags for kaction.
     pub struct KactionFlags: u64 {
-
     }
 }
 
+/// A generic kaction command, applies to all KSOs.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(C)]
 pub enum KactionGenericCmd {
+    /// Get the root of the KSO tree.
     GetKsoRoot,
+    /// Get a child object.
     GetChild(u16),
+    /// Get a sub-object.
     GetSubObject(u8, u8),
 }
 
@@ -147,6 +164,7 @@ impl TryFrom<u32> for KactionGenericCmd {
     }
 }
 
+/// A KAction command, either generic or KSO-specific.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(C)]
 pub enum KactionCmd {

@@ -1,3 +1,5 @@
+//! Marker traits used to indicate safety for storing data in objects and using a struct as a base type.
+
 use core::{
     cell::UnsafeCell,
     sync::atomic::{
@@ -9,6 +11,9 @@ use core::{
 /// This auto trait specifies that some type is "safe" to to store inside an object. This means that
 /// the type contains no non-invariant references nor any unsafe interior mutability not implemented
 /// via twizzler-nando.
+///
+/// # Safety
+/// Manually marking type as safe requires that the programmer adhere to the rules set above.
 #[rustc_on_unimplemented(
     message = "`{Self}` is not safe to be stored in an object",
     label = "`{Self}` is not safe to be stored in an object"

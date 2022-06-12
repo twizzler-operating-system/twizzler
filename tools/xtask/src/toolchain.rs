@@ -198,8 +198,8 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn init_for_build(is_doc: bool) -> anyhow::Result<()> {
-    if needs_reinstall()? && !is_doc {
+pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
+    if needs_reinstall()? && !abi_changes_ok {
         anyhow::bail!("detected changes to twizzler-abi not reflected in current toolchain. This is probably because the twizzler-abi crate files were updated, so you need to run `cargo bootstrap --skip-submodules' again.");
     }
     std::env::set_var("RUSTC", &get_rustc_path()?);
