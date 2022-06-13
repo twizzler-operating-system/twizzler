@@ -62,7 +62,9 @@ impl std::error::Error for NewHandleError {
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(u64)]
 pub enum HandleType {
-    VmContext = 0,
+    VmContext,
+    KernelToPagerQueue,
+    PagerToKernelQueue,
 }
 
 impl TryFrom<u64> for HandleType {
@@ -71,6 +73,8 @@ impl TryFrom<u64> for HandleType {
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::VmContext),
+            1 => Ok(Self::KernelToPagerQueue),
+            2 => Ok(Self::PagerToKernelQueue),
             _ => Err(NewHandleError::InvalidArgument),
         }
     }

@@ -108,6 +108,8 @@ impl<T: ObjectHandle + Clone> Handle<T> {
 struct AllHandles {
     all: BTreeSet<ObjID>,
     vm_contexts: BTreeMap<ObjID, Handle<MemoryContextRef>>,
+    kernel_queue: Option<ObjID>,
+    pager_queue: Option<ObjID>,
 }
 
 static ALL_HANDLES: Once<Mutex<AllHandles>> = Once::new();
@@ -117,6 +119,8 @@ fn get_all_handles() -> &'static Mutex<AllHandles> {
         Mutex::new(AllHandles {
             all: BTreeSet::new(),
             vm_contexts: BTreeMap::new(),
+            kernel_queue: None,
+            pager_queue: None,
         })
     })
 }
@@ -126,14 +130,43 @@ pub fn get_vmcontext_from_handle(id: ObjID) -> Option<MemoryContextRef> {
     ah.lock().vm_contexts.get(&id).map(|x| x.item.clone())
 }
 
+fn setup_pager(kq: ObjID, pq: ObjID) {
+    logln!("kernel has kq and pq {} {}", kq, pq);
+}
+
 pub fn sys_new_handle(id: ObjID, handle_type: HandleType) -> Result<u64, NewHandleError> {
     let mut ah = get_all_handles().lock();
     if ah.all.contains(&id) {
         return Err(NewHandleError::AlreadyHandle);
     }
     match handle_type {
-        HandleType::VmContext => ah.vm_contexts.insert(id, Handle::new(id)?),
+        HandleType::VmContext => {
+            ah.vm_contexts.insert(id, Handle::new(id)?);
+        }
+        HandleType::KernelToPagerQueue => {
+            if ah.kernel_queue.is_some() {
+                return Err(NewHandleError::AlreadyHandle);
+            }
+            ah.kernel_queue = Some(id);
+        }
+        HandleType::PagerToKernelQueue => {
+            if ah.pager_queue.is_some() {
+                return Err(NewHandleError::AlreadyHandle);
+            }
+            ah.pager_queue = Some(id);
+        }
     };
     ah.all.insert(id);
+
+    if handle_type == HandleType::KernelToPagerQueue
+        || handle_type == HandleType::PagerToKernelQueue
+    {
+        if let Some(kq) = ah.kernel_queue {
+            if let Some(pq) = ah.pager_queue {
+                setup_pager(kq, pq);
+            }
+        }
+    }
+
     Ok(0)
 }

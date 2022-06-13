@@ -249,11 +249,44 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     None
 }
 
+fn start_pager() {
+    let create = twizzler_object::CreateSpec::new(LifetimeType::Volatile, BackingType::Normal);
+    let q1 = twizzler_queue::Queue::<KernelRequest, KernelCompletion>::create(&create, 1024, 1024)
+        .unwrap();
+    let q2 = twizzler_queue::Queue::<PagerRequest, PagerCompletion>::create(&create, 1024, 1024)
+        .unwrap();
+
+    twizzler_abi::syscall::sys_new_handle(
+        q1.object().id(),
+        twizzler_abi::syscall::HandleType::KernelToPagerQueue,
+        NewHandleFlags::empty(),
+    )
+    .unwrap();
+    twizzler_abi::syscall::sys_new_handle(
+        q2.object().id(),
+        twizzler_abi::syscall::HandleType::PagerToKernelQueue,
+        NewHandleFlags::empty(),
+    )
+    .unwrap();
+
+    std::env::set_var("PAGERQ1OBJ", format!("{}", q1.object().id().as_u128()));
+    std::env::set_var("PAGERQ2OBJ", format!("{}", q2.object().id().as_u128()));
+    if let Some(id) = find_init_name("pager") {
+        exec2("pager", id);
+    } else {
+        eprintln!("[init] failed to start netmgr");
+    }
+    std::env::remove_var("PAGERQ1OBJ");
+    std::env::remove_var("PAGERQ2OBJ");
+}
+
 fn main() {
     println!("[init] starting userspace");
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
 
+    println!("starting pager");
+    start_pager();
     let create = ObjectCreate::new(
         BackingType::Normal,
         LifetimeType::Volatile,
@@ -387,10 +420,11 @@ use twizzler_abi::{
     device::SubObjectType,
     kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue},
     object::{ObjID, Protections},
+    pager::{KernelCompletion, KernelRequest, PagerCompletion, PagerRequest},
     syscall::{
-        sys_kaction, sys_thread_sync, BackingType, LifetimeType, MapFlags, ObjectCreate,
-        ObjectCreateFlags, ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep,
-        ThreadSyncWake,
+        sys_kaction, sys_thread_sync, BackingType, LifetimeType, MapFlags, NewHandleFlags,
+        ObjectCreate, ObjectCreateFlags, ThreadSync, ThreadSyncFlags, ThreadSyncReference,
+        ThreadSyncSleep, ThreadSyncWake,
     },
     thread::ThreadRepr,
 };

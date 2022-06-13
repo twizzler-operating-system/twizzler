@@ -7,4 +7,6 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 [dependencies]
 twizzler-abi = {path = "../../lib/twizzler-abi" }
 twizzler-net = {path = "../../lib/twizzler-net" }
+twizzler-queue = {path = "../../lib/twizzler-queue"}
+twizzler-object = {path = "../../lib/twizzler-object"}
 rprompt = "1.0.5"

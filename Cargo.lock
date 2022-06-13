@@ -1099,6 +1099,8 @@ dependencies = [
  "rprompt",
  "twizzler-abi",
  "twizzler-net",
+ "twizzler-object",
+ "twizzler-queue",
 ]
 
 [[package]]
@@ -2362,6 +2364,7 @@ dependencies = [
  "stivale-boot",
  "tar-no-std",
  "twizzler-abi",
+ "twizzler-queue-raw",
  "uart_16550",
  "x86 0.44.0",
  "x86_64",
