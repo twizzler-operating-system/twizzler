@@ -1552,6 +1552,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pager"
+version = "0.1.0"
+dependencies = [
+ "twizzler-abi",
+]
+
+[[package]]
 name = "pci-ids"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -34,6 +34,8 @@ pub mod load_elf;
 pub mod marker;
 pub mod meta;
 pub mod object;
+#[cfg(not(feature = "rt"))]
+pub mod pager;
 #[cfg(any(doc, feature = "rt"))]
 pub mod rt1;
 mod simple_idcounter;
