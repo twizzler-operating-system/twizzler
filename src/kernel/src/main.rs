@@ -37,6 +37,7 @@ mod once;
 mod operations;
 mod panic;
 mod processor;
+mod queue;
 mod sched;
 mod spinlock;
 mod syscall;
