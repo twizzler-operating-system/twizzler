@@ -599,28 +599,28 @@ extern "C" fn user_init() {
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_TEXT,
             obj_text,
-            vm.clone(),
+            &vm,
             MappingPerms::READ | MappingPerms::EXECUTE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_DATA,
             obj_data,
-            vm.clone(),
+            &vm,
             MappingPerms::READ | MappingPerms::WRITE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_STACK,
             obj_stack,
-            vm.clone(),
+            &vm,
             MappingPerms::READ | MappingPerms::WRITE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_KERNEL_INIT,
             obj_name,
-            vm,
+            &vm,
             MappingPerms::READ,
         )
         .unwrap();

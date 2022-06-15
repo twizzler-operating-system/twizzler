@@ -61,13 +61,13 @@ impl Slot {
 
     /// Perform a raw load-effective-address for an offset into a slot.
     pub fn raw_lea<P>(&self, off: usize) -> *const P {
-        let start = self.vaddr_start();
+        let start = self.vaddr_null();
         unsafe { ((start + off) as *const P).as_ref().unwrap() }
     }
 
     /// Perform a raw load-effective-address for an offset into a slot.
     pub fn raw_lea_mut<P>(&self, off: usize) -> *mut P {
-        let start = self.vaddr_start();
+        let start = self.vaddr_null();
         unsafe { ((start + off) as *mut P).as_mut().unwrap() }
     }
 

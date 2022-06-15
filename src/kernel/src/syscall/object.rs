@@ -69,7 +69,7 @@ pub fn sys_object_map(
         crate::obj::LookupResult::Found(obj) => obj,
     };
     // TODO
-    let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into());
+    let _res = crate::operations::map_object_into_context(slot, obj, &vm, prot.into());
     if false {
         logln!(
             "mapping obj {} to {} with {:?} in {:?}",

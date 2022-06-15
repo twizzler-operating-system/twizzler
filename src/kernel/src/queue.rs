@@ -1,8 +1,10 @@
 use core::{fmt::Debug, sync::atomic::AtomicU64};
 
 use alloc::collections::BTreeMap;
-use twizzler_abi::object::ObjID;
-use twizzler_queue_raw::{QueueEntry, QueueError, RawQueue, ReceiveFlags, SubmissionFlags};
+use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_queue_raw::{
+    QueueEntry, QueueError, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags,
+};
 
 use crate::{
     idcounter::{Id, IdCounter},
@@ -17,15 +19,48 @@ struct Outstanding<D, C> {
 
 pub struct Queue<S, C, D> {
     id: ObjID,
+    slot: usize,
     raw_sub: RawQueue<S>,
     raw_cmp: RawQueue<C>,
     infos: IdCounter,
     outstanding: Mutex<BTreeMap<u32, Outstanding<D, C>>>,
 }
 
+#[derive(Debug)]
+// TODO: Get this from twizzler-abi.
+#[repr(C)]
+pub struct QueueBase {
+    sub_hdr: usize,
+    com_hdr: usize,
+    sub_buf: usize,
+    com_buf: usize,
+}
+
 impl<S: Copy, C: Copy + Debug, D> Queue<S, C, D> {
     fn wait(word: &AtomicU64, val: u64) {}
     fn ring(word: &AtomicU64) {}
+
+    pub unsafe fn init_from_slots(id: ObjID, slot: usize) -> Self {
+        let vaddr = slot * MAX_SIZE;
+        let hdr = ((vaddr + NULLPAGE_SIZE) as *const QueueBase)
+            .as_ref()
+            .unwrap();
+        logln!("init from slots: {:?}", hdr);
+        Self {
+            id,
+            slot,
+            raw_sub: RawQueue::new(
+                (vaddr + hdr.sub_hdr) as *const RawQueueHdr,
+                (vaddr + hdr.sub_buf) as *mut QueueEntry<S>,
+            ),
+            raw_cmp: RawQueue::new(
+                (vaddr + hdr.com_hdr) as *const RawQueueHdr,
+                (vaddr + hdr.com_buf) as *mut QueueEntry<C>,
+            ),
+            infos: IdCounter::new(),
+            outstanding: Mutex::new(BTreeMap::new()),
+        }
+    }
 
     pub fn receive(&self, flags: ReceiveFlags) -> Result<QueueEntry<S>, QueueError> {
         self.raw_sub.receive(Self::wait, Self::ring, flags)

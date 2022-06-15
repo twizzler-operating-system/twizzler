@@ -8,7 +8,7 @@ use crate::{
 pub fn map_object_into_context(
     slot: usize,
     obj: ObjectRef,
-    vmc: MemoryContextRef,
+    vmc: &MemoryContextRef,
     perms: MappingPerms,
 ) -> Result<(), ()> {
     let mapping = Arc::new(Mapping::new(obj.clone(), vmc.clone(), slot, perms));

@@ -190,10 +190,13 @@ pub fn spawn_new_executable(
     args: &[&[u8]],
     env: &[&[u8]],
 ) -> Result<ObjID, SpawnExecutableError> {
+    crate::print_err("0");
     let exe = InternalObject::<ElfHeader>::map(exe, Protections::READ)
         .ok_or(SpawnExecutableError::MapFailed)?;
+    crate::print_err("1");
     let elf = ElfObject::from_obj(&exe).ok_or(SpawnExecutableError::InvalidExecutable)?;
 
+    crate::print_err("A");
     let cs = ObjectCreate::new(
         BackingType::Normal,
         LifetimeType::Volatile,
@@ -204,6 +207,7 @@ pub fn spawn_new_executable(
     crate::syscall::sys_new_handle(vm_handle, HandleType::VmContext, NewHandleFlags::empty())
         .map_err(|_| SpawnExecutableError::ObjectCreateFailed)?;
 
+    crate::print_err("B");
     let mut text_copy = alloc::vec::Vec::new();
     let mut data_copy = alloc::vec::Vec::new();
     let mut data_zero = alloc::vec::Vec::new();
@@ -239,6 +243,7 @@ pub fn spawn_new_executable(
         }
     }
 
+    crate::print_err("C");
     let text = crate::syscall::sys_object_create(cs, &text_copy, &[]).unwrap();
     let data = crate::syscall::sys_object_create(cs, &data_copy, &[]).unwrap();
     let mut stack = InternalObject::<()>::create_data_and_map()
@@ -269,6 +274,7 @@ pub fn spawn_new_executable(
     )
     .map_err(|_| SpawnExecutableError::MapFailed)?;
 
+    crate::print_err("D");
     let (stack_base, _) = crate::slot::to_vaddr_range(RESERVED_STACK);
     let spawnaux_start = stack_base + INITIAL_STACK_SIZE + page_size as usize;
 
@@ -315,6 +321,7 @@ pub fn spawn_new_executable(
     let (spawnargs_start, args_len) = copy_strings(&mut stack, args, 0);
     let (spawnenv_start, _) = copy_strings(&mut stack, env, args_len);
 
+    crate::print_err("E");
     let aux_array = unsafe {
         stack.offset_from_base::<[AuxEntry; 32]>(INITIAL_STACK_SIZE + page_size as usize)
     };
@@ -334,6 +341,7 @@ pub fn spawn_new_executable(
     idx += 1;
     aux_array[idx] = AuxEntry::Null;
 
+    crate::print_err("F");
     let ts = ThreadSpawnArgs::new(
         elf.entry() as usize,
         stack_base,

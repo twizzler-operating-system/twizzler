@@ -16,6 +16,7 @@ pub fn thread_ctrl(cmd: ThreadControl, arg: u64) -> (u64, u64) {
             ctx.set_upcall_address(arg as usize);
         }
         ThreadControl::SetTls => {
+            logln!("setting tls {}", arg);
             current_thread_ref().unwrap().set_tls(arg);
         }
         ThreadControl::Exit => {
