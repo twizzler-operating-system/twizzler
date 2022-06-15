@@ -303,7 +303,7 @@ pub fn schedule_thread(thread: ThreadRef) {
 }
 
 pub fn create_idle_thread() {
-    let idle = Arc::new(Thread::new_idle());
+    let idle = Arc::new(Thread::new(crate::thread::ThreadNewKind::Idle, None));
     current_processor().set_idle_thread(idle.clone());
     set_current_thread(idle);
 }

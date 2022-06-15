@@ -120,19 +120,46 @@ pub fn current_memory_context() -> Option<MemoryContextRef> {
         .flatten()
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ThreadNewKind {
+    Idle,
+    Kernel(Priority, ThreadNewVMKind),
+    User(Priority, ThreadNewVMKind),
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ThreadNewVMKind {
+    None,
+    Current,
+    Blank,
+    Handle(MemoryContextRef),
+}
+
 impl Thread {
-    pub fn new() -> Self {
+    pub fn new(kind: ThreadNewKind, spawn_args: Option<ThreadSpawnArgs>) -> Self {
         /* TODO: dedicated kernel stack allocator, with guard page support */
         let kernel_stack = unsafe {
             let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
             alloc::alloc::alloc_zeroed(layout)
         };
-        Self {
+        let vm = match kind {
+            ThreadNewKind::Idle => ThreadNewVMKind::None,
+            ThreadNewKind::Kernel(_, ref k) => k.clone(),
+            ThreadNewKind::User(_, ref k) => {
+                if *k == ThreadNewVMKind::None {
+                    panic!("cannot create user thread with no VM context");
+                }
+                k.clone()
+            }
+        };
+        let priority = match kind {
+            ThreadNewKind::Idle => Priority::IDLE,
+            ThreadNewKind::Kernel(ref p, _) => p.clone(),
+            ThreadNewKind::User(ref p, _) => p.clone(),
+        };
+        let mut th = Self {
             arch: crate::arch::thread::ArchThread::new(),
-            priority: Priority {
-                class: PriorityClass::User,
-                adjust: AtomicI32::new(0),
-            },
+            priority,
             id: ID_COUNTER.next(),
             flags: AtomicU32::new(THREAD_IN_KERNEL),
             state: AtomicU32::new(ThreadState::Starting as u32),
@@ -144,42 +171,30 @@ impl Thread {
             donated_priority: Spinlock::new(None),
             current_processor_queue: AtomicI32::new(-1),
             stats: ThreadStats::default(),
-            memory_context: None,
-            spawn_args: None,
+            memory_context: match vm {
+                ThreadNewVMKind::None => None,
+                ThreadNewVMKind::Current => Some(current_memory_context().unwrap()),
+                ThreadNewVMKind::Blank => Some(Arc::new(MemoryContext::new())),
+                ThreadNewVMKind::Handle(c) => Some(c),
+            },
+            spawn_args,
             repr: None,
+        };
+        match kind {
+            ThreadNewKind::User(_, _) => {
+                th.repr = Some(create_blank_object());
+            }
+            ThreadNewKind::Idle => {
+                th.switch_lock.store(1, Ordering::SeqCst);
+                th.flags.fetch_or(THREAD_PROC_IDLE, Ordering::SeqCst);
+            }
+            _ => {}
         }
-    }
 
-    // TODO: cleanup all these new variants
-    pub fn new_with_new_vm() -> Self {
-        let mut thread = Self::new();
-        thread.memory_context = Some(Arc::new(MemoryContext::new()));
-        thread.memory_context.as_ref().unwrap().inner().add_thread();
-        thread
-    }
-
-    pub fn new_with_current_context(spawn_args: ThreadSpawnArgs) -> Self {
-        let mut thread = Self::new();
-        thread.memory_context = Some(current_memory_context().unwrap());
-        thread.memory_context.as_ref().unwrap().inner().add_thread();
-        thread.spawn_args = Some(spawn_args);
-        thread
-    }
-
-    pub fn new_with_handle_context(spawn_args: ThreadSpawnArgs, vmc: MemoryContextRef) -> Self {
-        let mut thread = Self::new();
-        thread.memory_context = Some(vmc);
-        thread.memory_context.as_ref().unwrap().inner().add_thread();
-        thread.spawn_args = Some(spawn_args);
-        thread
-    }
-
-    pub fn new_idle() -> Self {
-        let mut thread = Self::new();
-        thread.flags.fetch_or(THREAD_PROC_IDLE, Ordering::SeqCst);
-        thread.priority.class = PriorityClass::Idle;
-        thread.switch_lock.store(1, Ordering::SeqCst);
-        thread
+        if let Some(ref v) = th.memory_context {
+            v.as_ref().inner().add_thread();
+        }
+        th
     }
 
     pub fn set_sync_sleep(&self) {
@@ -402,6 +417,16 @@ impl Priority {
     #[allow(clippy::declare_interior_mutable_const)]
     pub const REALTIME: Self = Self {
         class: PriorityClass::RealTime,
+        adjust: AtomicI32::new(0),
+    };
+    #[allow(clippy::declare_interior_mutable_const)]
+    pub const IDLE: Self = Self {
+        class: PriorityClass::Idle,
+        adjust: AtomicI32::new(0),
+    };
+    #[allow(clippy::declare_interior_mutable_const)]
+    pub const USER: Self = Self {
+        class: PriorityClass::User,
         adjust: AtomicI32::new(0),
     };
     pub fn queue_number<const NR_QUEUES: usize>(&self) -> usize {
@@ -686,50 +711,42 @@ extern "C" fn user_new_start() {
 }
 
 pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
-    let mut thread = if let Some(handle) = args.vm_context_handle {
-        let vmc = get_vmcontext_from_handle(handle).ok_or(ThreadSpawnError::NotFound)?;
-        Thread::new_with_handle_context(args, vmc)
-    } else {
-        Thread::new_with_current_context(args)
-    };
+    let mut thread = Thread::new(
+        ThreadNewKind::User(
+            Priority::USER,
+            match args.vm_context_handle {
+                Some(handle) => ThreadNewVMKind::Handle(
+                    get_vmcontext_from_handle(handle).ok_or(ThreadSpawnError::NotFound)?,
+                ),
+                None => ThreadNewVMKind::Current,
+            },
+        ),
+        Some(args),
+    );
     unsafe {
         thread.init(user_new_start);
     }
-    thread.repr = Some(create_blank_object());
     let id = thread.repr.as_ref().unwrap().id();
-    /*
-    logln!(
-        "starting new thread {} {} with stack k={:p} u={:x},{:x}",
-        thread.id,
-        id,
-        thread.kernel_stack,
-        args.stack_base,
-        args.stack_size,
-    );
-    */
     schedule_new_thread(thread);
     Ok(id)
 }
 
-pub fn start_new_init() {
-    let mut thread = Thread::new_with_new_vm();
-    /*
-    logln!(
-        "starting new thread {} with stack {:p}",
-        thread.id,
-        thread.kernel_stack
-    );
-    */
+pub fn start_new_thread(
+    kind: ThreadNewKind,
+    args: Option<ThreadSpawnArgs>,
+    start: extern "C" fn(),
+) -> ThreadRef {
+    let mut thread = Thread::new(kind, args);
     unsafe {
-        thread.init(user_init);
+        thread.init(start);
     }
-    thread.repr = Some(create_blank_object());
-    schedule_new_thread(thread);
+    schedule_new_thread(thread)
 }
 
-pub fn start_new_kernel(pri: Priority, start: extern "C" fn()) -> ThreadRef {
-    let mut thread = Thread::new();
-    thread.priority = pri;
-    unsafe { thread.init(start) }
-    schedule_new_thread(thread)
+pub fn start_new_init() {
+    start_new_thread(
+        ThreadNewKind::User(Priority::USER, ThreadNewVMKind::Blank),
+        None,
+        user_init,
+    );
 }

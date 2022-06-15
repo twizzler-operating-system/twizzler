@@ -7,7 +7,7 @@ use crate::{
     once::Once,
     processor::current_processor,
     spinlock::Spinlock,
-    thread::{Priority, ThreadRef},
+    thread::{Priority, ThreadNewKind, ThreadNewVMKind, ThreadRef},
 };
 
 pub type Nanoseconds = u64;
@@ -255,6 +255,11 @@ pub fn oneshot_clock_hardtick() {
 
 pub fn init() {
     crate::arch::start_clock(127, statclock);
-    TIMEOUT_THREAD
-        .call_once(|| crate::thread::start_new_kernel(Priority::REALTIME, soft_timeout_clock));
+    TIMEOUT_THREAD.call_once(|| {
+        crate::thread::start_new_thread(
+            ThreadNewKind::Kernel(Priority::REALTIME, ThreadNewVMKind::None),
+            None,
+            soft_timeout_clock,
+        )
+    });
 }

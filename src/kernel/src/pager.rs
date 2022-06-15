@@ -16,7 +16,7 @@ use crate::{
     queue::Queue,
     sched::{schedule, schedule_thread},
     spinlock::Spinlock,
-    thread::{current_thread_ref, ThreadRef, self},
+    thread::{self, current_thread_ref, Priority, ThreadNewVMKind, ThreadRef},
 };
 
 static PAGER_READY: AtomicBool = AtomicBool::new(false);
@@ -43,6 +43,11 @@ struct InternalQueue {
 static INTQ: InternalQueue = todo!();
 
 pub extern "C" fn pager_completion_thread_main() {
+    thread::start_new_thread(
+        thread::ThreadNewKind::Kernel(Priority::REALTIME, ThreadNewVMKind::Current),
+        None,
+        pager_submitter_thread_main,
+    );
     loop {
         KERNEL_QUEUE.process_completions(false, ReceiveFlags::empty());
         logln!("pager completion thread exited processing loop");
@@ -94,7 +99,10 @@ fn submit_pager_request(key: PagerReqKey, req: KernelRequest) {
 
 pub fn init_pager(kq: ObjID, pq: ObjID) {
     logln!("kernel has kq and pq {} {}", kq, pq);
-    thread::start_new_kernel(thread::Priority::REALTIME, pager_completion_thread_main);
-    thread::start_new_kernel(thread::Priority::REALTIME, pager_submitter_thread_main);
+    thread::start_new_thread(
+        thread::ThreadNewKind::Kernel(Priority::REALTIME, ThreadNewVMKind::Blank),
+        None,
+        pager_completion_thread_main,
+    );
     PAGER_READY.store(true, Ordering::SeqCst);
 }
