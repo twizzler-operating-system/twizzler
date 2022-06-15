@@ -130,10 +130,6 @@ pub fn get_vmcontext_from_handle(id: ObjID) -> Option<MemoryContextRef> {
     ah.lock().vm_contexts.get(&id).map(|x| x.item.clone())
 }
 
-fn setup_pager(kq: ObjID, pq: ObjID) {
-    logln!("kernel has kq and pq {} {}", kq, pq);
-}
-
 pub fn sys_new_handle(id: ObjID, handle_type: HandleType) -> Result<u64, NewHandleError> {
     let mut ah = get_all_handles().lock();
     if ah.all.contains(&id) {
@@ -163,7 +159,7 @@ pub fn sys_new_handle(id: ObjID, handle_type: HandleType) -> Result<u64, NewHand
     {
         if let Some(kq) = ah.kernel_queue {
             if let Some(pq) = ah.pager_queue {
-                setup_pager(kq, pq);
+                crate::pager::init_pager(kq, pq);
             }
         }
     }

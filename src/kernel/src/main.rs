@@ -35,6 +35,7 @@ mod mutex;
 mod obj;
 mod once;
 mod operations;
+mod pager;
 mod panic;
 mod processor;
 mod queue;
@@ -53,7 +54,9 @@ use initrd::BootModule;
 use memory::MemoryRegion;
 use x86_64::VirtAddr;
 
-use crate::processor::current_processor;
+use crate::{
+    processor::current_processor,
+};
 
 /// A collection of information made available to the kernel by the bootloader or arch-dep modules.
 pub trait BootInfo {
@@ -143,6 +146,7 @@ pub fn idle_main() -> ! {
         if is_test_mode() {
             test_main();
         }
+
         thread::start_new_init();
     }
     logln!(

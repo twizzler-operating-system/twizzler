@@ -15,7 +15,7 @@ struct Outstanding<D, C> {
     callback: fn(D, C),
 }
 
-struct Queue<S, C, D> {
+pub struct Queue<S, C, D> {
     id: ObjID,
     raw_sub: RawQueue<S>,
     raw_cmp: RawQueue<C>,
@@ -27,16 +27,16 @@ impl<S: Copy, C: Copy + Debug, D> Queue<S, C, D> {
     fn wait(word: &AtomicU64, val: u64) {}
     fn ring(word: &AtomicU64) {}
 
-    fn receive(&self, flags: ReceiveFlags) -> Result<QueueEntry<S>, QueueError> {
+    pub fn receive(&self, flags: ReceiveFlags) -> Result<QueueEntry<S>, QueueError> {
         self.raw_sub.receive(Self::wait, Self::ring, flags)
     }
 
-    fn complete(&self, info: u32, cmp: C, flags: SubmissionFlags) -> Result<(), QueueError> {
+    pub fn complete(&self, info: u32, cmp: C, flags: SubmissionFlags) -> Result<(), QueueError> {
         self.raw_cmp
             .submit(QueueEntry::new(info, cmp), Self::wait, Self::ring, flags)
     }
 
-    fn handle_reqs(&self, handler: fn(item: S) -> C) {
+    pub fn handle_reqs(&self, handler: fn(item: S) -> C) {
         while let Ok(item) = self.receive(ReceiveFlags::empty()) {
             let info = item.info();
             let resp = handler(item.item());
@@ -44,7 +44,7 @@ impl<S: Copy, C: Copy + Debug, D> Queue<S, C, D> {
         }
     }
 
-    fn process_completions(&self, justone: bool, flags: ReceiveFlags) {
+    pub fn process_completions(&self, justone: bool, flags: ReceiveFlags) {
         while let Ok(entry) = self.raw_cmp.receive(Self::wait, Self::ring, flags) {
             let mut outstanding = self.outstanding.lock();
             if let Some(out) = outstanding.remove(&entry.info()) {
@@ -58,7 +58,7 @@ impl<S: Copy, C: Copy + Debug, D> Queue<S, C, D> {
         }
     }
 
-    fn submit(
+    pub fn submit(
         &'static self,
         item: S,
         data: D,
