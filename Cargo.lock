@@ -1558,6 +1558,9 @@ name = "pager"
 version = "0.1.0"
 dependencies = [
  "twizzler-abi",
+ "twizzler-async",
+ "twizzler-object",
+ "twizzler-queue",
 ]
 
 [[package]]

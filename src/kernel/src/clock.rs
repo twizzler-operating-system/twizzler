@@ -260,6 +260,7 @@ pub fn init() {
             ThreadNewKind::Kernel(Priority::REALTIME, ThreadNewVMKind::None),
             None,
             soft_timeout_clock,
+            Some("timer"),
         )
     });
 }

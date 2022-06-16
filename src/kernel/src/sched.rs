@@ -303,7 +303,11 @@ pub fn schedule_thread(thread: ThreadRef) {
 }
 
 pub fn create_idle_thread() {
-    let idle = Arc::new(Thread::new(crate::thread::ThreadNewKind::Idle, None));
+    let idle = Arc::new(Thread::new(
+        Some("idle"),
+        crate::thread::ThreadNewKind::Idle,
+        None,
+    ));
     current_processor().set_idle_thread(idle.clone());
     set_current_thread(idle);
 }
@@ -537,7 +541,13 @@ pub fn schedule_stattick(dt: Nanoseconds) {
         if cp.id == 0 {
             let all_threads = ALL_THREADS.lock();
             for t in all_threads.values() {
-                logln!("thread {}: {:?} {:?}", t.id(), t.stats, t.state);
+                logln!(
+                    "thread {} ({:?}): {:?} {:?}",
+                    t.id(),
+                    t.name,
+                    t.stats,
+                    t.state
+                );
             }
         }
         //crate::clock::print_info();

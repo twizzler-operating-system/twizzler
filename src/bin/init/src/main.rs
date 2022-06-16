@@ -271,13 +271,11 @@ fn start_pager() {
 
     std::env::set_var("PAGERQ1OBJ", format!("{}", q1.object().id().as_u128()));
     std::env::set_var("PAGERQ2OBJ", format!("{}", q2.object().id().as_u128()));
-    println!("here");
     if let Some(id) = find_init_name("pager") {
         exec2("pager", id);
     } else {
         eprintln!("[init] failed to start netmgr");
     }
-    println!("here2");
     std::env::remove_var("PAGERQ1OBJ");
     std::env::remove_var("PAGERQ2OBJ");
 }

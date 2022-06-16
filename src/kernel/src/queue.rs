@@ -1,7 +1,13 @@
 use core::{fmt::Debug, sync::atomic::AtomicU64};
 
 use alloc::collections::BTreeMap;
-use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_abi::{
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{
+        ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
+        ThreadSyncWake,
+    },
+};
 use twizzler_queue_raw::{
     QueueEntry, QueueError, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags,
 };
@@ -9,6 +15,7 @@ use twizzler_queue_raw::{
 use crate::{
     idcounter::{Id, IdCounter},
     mutex::Mutex,
+    syscall::sync::sys_thread_sync,
 };
 
 struct Outstanding<D, C> {
@@ -37,8 +44,24 @@ pub struct QueueBase {
 }
 
 impl<S: Copy, C: Copy + Debug, D> Queue<S, C, D> {
-    fn wait(word: &AtomicU64, val: u64) {}
-    fn ring(word: &AtomicU64) {}
+    fn wait(word: &AtomicU64, val: u64) {
+        logln!("wait: {:p} {}", word, val);
+        let op = ThreadSync::new_sleep(ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(word),
+            val,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        ));
+        sys_thread_sync(&mut [op], None).unwrap();
+    }
+    fn ring(word: &AtomicU64) {
+        logln!("ring: {:p}", word);
+        let op = ThreadSync::new_wake(ThreadSyncWake::new(
+            ThreadSyncReference::Virtual(word),
+            usize::MAX,
+        ));
+        sys_thread_sync(&mut [op], None).unwrap();
+    }
 
     pub unsafe fn init_from_slots(id: ObjID, slot: usize) -> Self {
         let vaddr = slot * MAX_SIZE;
@@ -80,7 +103,9 @@ impl<S: Copy, C: Copy + Debug, D> Queue<S, C, D> {
     }
 
     pub fn process_completions(&self, justone: bool, flags: ReceiveFlags) {
+        logln!("pc start2");
         while let Ok(entry) = self.raw_cmp.receive(Self::wait, Self::ring, flags) {
+            logln!("PC");
             let mut outstanding = self.outstanding.lock();
             if let Some(out) = outstanding.remove(&entry.info()) {
                 (out.callback)(out.data, entry.item());

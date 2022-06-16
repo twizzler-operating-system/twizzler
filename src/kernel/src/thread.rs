@@ -81,6 +81,7 @@ pub struct Thread {
     pub stats: ThreadStats,
     spawn_args: Option<ThreadSpawnArgs>,
     pub repr: Option<ObjectRef>,
+    pub name: Option<&'static str>,
 }
 unsafe impl Send for Thread {}
 
@@ -136,7 +137,11 @@ pub enum ThreadNewVMKind {
 }
 
 impl Thread {
-    pub fn new(kind: ThreadNewKind, spawn_args: Option<ThreadSpawnArgs>) -> Self {
+    pub fn new(
+        name: Option<&'static str>,
+        kind: ThreadNewKind,
+        spawn_args: Option<ThreadSpawnArgs>,
+    ) -> Self {
         /* TODO: dedicated kernel stack allocator, with guard page support */
         let kernel_stack = unsafe {
             let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
@@ -179,6 +184,7 @@ impl Thread {
             },
             spawn_args,
             repr: None,
+            name,
         };
         match kind {
             ThreadNewKind::User(_, _) => {
@@ -712,6 +718,7 @@ extern "C" fn user_new_start() {
 
 pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
     let mut thread = Thread::new(
+        None,
         ThreadNewKind::User(
             Priority::USER,
             match args.vm_context_handle {
@@ -735,8 +742,9 @@ pub fn start_new_thread(
     kind: ThreadNewKind,
     args: Option<ThreadSpawnArgs>,
     start: extern "C" fn(),
+    name: Option<&'static str>,
 ) -> ThreadRef {
-    let mut thread = Thread::new(kind, args);
+    let mut thread = Thread::new(name, kind, args);
     unsafe {
         thread.init(start);
     }
@@ -748,5 +756,6 @@ pub fn start_new_init() {
         ThreadNewKind::User(Priority::USER, ThreadNewVMKind::Blank),
         None,
         user_init,
+        Some("init"),
     );
 }
