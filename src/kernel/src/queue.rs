@@ -98,6 +98,7 @@ impl<S: Copy, C: Copy + Debug, D> Queue<S, C, D> {
         while let Ok(item) = self.receive(ReceiveFlags::empty()) {
             let info = item.info();
             let resp = handler(item.item());
+            logln!("sending completion {} {:?}", info, resp);
             self.complete(info, resp, SubmissionFlags::empty()).unwrap();
         }
     }

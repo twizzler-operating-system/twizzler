@@ -1,9 +1,9 @@
 use twizzler_abi::{
     object::ObjID,
-    pager::{KernelCompletion, KernelRequest},
+    pager::{KernelCompletion, KernelRequest, PagerCompletion, PagerRequest},
 };
 use twizzler_object::{Object, ObjectInitFlags, Protections};
-use twizzler_queue::{CallbackQueueReceiver, Queue};
+use twizzler_queue::{CallbackQueueReceiver, Queue, ReceiveFlags, SubmissionFlags};
 
 fn main() {
     let q1id = std::env::var("PAGERQ1OBJ").expect("failed to get kernel request queue ID");
@@ -24,9 +24,33 @@ fn main() {
         ObjectInitFlags::empty(),
     )
     .unwrap();
+    let pqo = Object::init_id(
+        q2id,
+        Protections::READ | Protections::WRITE,
+        ObjectInitFlags::empty(),
+    )
+    .unwrap();
 
     let kernel_queue =
         CallbackQueueReceiver::new(Queue::<KernelRequest, KernelCompletion>::from(kqo));
+    let pager_queue =
+        twizzler_queue::QueueSender::new(Queue::<PagerRequest, PagerCompletion>::from(pqo));
+
+    /*
+    let pager_q = Queue::<PagerRequest, PagerCompletion>::from(pqo);
+    pager_q
+        .submit(0, PagerRequest::Ping, SubmissionFlags::empty())
+        .unwrap();
+    let c = pager_q.get_completion(ReceiveFlags::empty());
+    println!("GOT {:?}", c);
+    */
+
+    std::thread::spawn(|| {
+        twizzler_async::run(async move {
+            let c = pager_queue.submit_and_wait(PagerRequest::Ping).await;
+            println!("Got {:?}", c);
+        });
+    });
 
     println!("pager waiting in handler loop");
     twizzler_async::block_on(async {

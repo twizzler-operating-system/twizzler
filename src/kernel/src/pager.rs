@@ -69,6 +69,12 @@ pub extern "C" fn pager_completion_thread_main() {
         pager_submitter_thread_main,
         Some("pager_subm"),
     );
+    thread::start_new_thread(
+        thread::ThreadNewKind::Kernel(Priority::REALTIME, ThreadNewVMKind::Current),
+        None,
+        pager_request_handler_thread,
+        Some("pager_req"),
+    );
     loop {
         logln!("pc start");
         KERNEL_QUEUE
@@ -94,6 +100,16 @@ pub extern "C" fn pager_submitter_thread_main() {
         }
         logln!("C2");
         intq.cv.wait(q);
+    }
+}
+
+pub extern "C" fn pager_request_handler_thread() {
+    loop {
+        PAGER_QUEUE.poll().unwrap().handle_reqs(|req| {
+            logln!("pager request handler: got {:?}", req);
+            PagerCompletion::Ok
+        });
+        logln!("pager request handler exited handling loop");
     }
 }
 
