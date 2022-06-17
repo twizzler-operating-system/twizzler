@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{fmt::Display, marker::PhantomData};
 
 use twizzler_abi::{object::ObjID, syscall::ObjectMapError};
 
@@ -25,6 +25,21 @@ pub enum ObjectInitError {
     /// The object doesn't exist.
     ObjectNotFound,
 }
+
+impl Display for ObjectInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ObjectInitError::InvalidId => "invalid ID",
+            ObjectInitError::OutOfSlots => "out of slots",
+            ObjectInitError::MappingFailed => "mapping failed",
+            ObjectInitError::InvalidProtections => "invalid protections",
+            ObjectInitError::ObjectNotFound => "object not found",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl std::error::Error for ObjectInitError {}
 
 impl From<ObjectMapError> for ObjectInitError {
     fn from(x: ObjectMapError) -> Self {

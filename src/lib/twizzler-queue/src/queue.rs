@@ -24,6 +24,9 @@ pub struct Queue<S, C> {
     object: Object<QueueBase<S, C>>,
 }
 
+unsafe impl<S, C> Sync for Queue<S, C> {}
+unsafe impl<S, C> Send for Queue<S, C> {}
+
 /// The base info structure stored in a Twizzler queue object. Used to open Twizzler queue objects
 /// and create a [Queue].
 #[repr(C)]

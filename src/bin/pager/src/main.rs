@@ -1,9 +1,10 @@
-use twizzler_abi::{
-    object::ObjID,
-    pager::{KernelCompletion, KernelRequest, PagerCompletion, PagerRequest},
-};
-use twizzler_object::{Object, ObjectInitFlags, Protections};
-use twizzler_queue::{CallbackQueueReceiver, Queue};
+#![feature(once_cell)]
+
+use twizzler_abi::{object::ObjID, pager::KernelCompletion};
+
+use crate::ctx::PagerContext;
+
+mod ctx;
 
 fn main() {
     let q1id = std::env::var("PAGERQ1OBJ").expect("failed to get kernel request queue ID");
@@ -16,52 +17,18 @@ fn main() {
         .parse::<u128>()
         .unwrap_or_else(|_| panic!("failed to parse object ID string {}", q2id));
     let q2id = ObjID::new(q2id);
-    println!("Hello, world from pager! {} {}", q1id, q2id);
+    println!("pager starting with queues {} {}", q1id, q2id);
 
-    let kqo = Object::init_id(
-        q1id,
-        Protections::READ | Protections::WRITE,
-        ObjectInitFlags::empty(),
-    )
-    .unwrap();
-    let pqo = Object::init_id(
-        q2id,
-        Protections::READ | Protections::WRITE,
-        ObjectInitFlags::empty(),
-    )
-    .unwrap();
+    let ctx = PagerContext::new(q1id, q2id).expect("failed to create pager context");
 
-    let kernel_queue =
-        CallbackQueueReceiver::new(Queue::<KernelRequest, KernelCompletion>::from(kqo));
-    let pager_queue =
-        twizzler_queue::QueueSender::new(Queue::<PagerRequest, PagerCompletion>::from(pqo));
-
-    /*
-    let pager_q = Queue::<PagerRequest, PagerCompletion>::from(pqo);
-    pager_q
-        .submit(0, PagerRequest::Ping, SubmissionFlags::empty())
-        .unwrap();
-    let c = pager_q.get_completion(ReceiveFlags::empty());
-    println!("GOT {:?}", c);
-    */
-
-    std::thread::spawn(|| {
-        twizzler_async::run(async move {
-            let c = pager_queue.submit_and_wait(PagerRequest::Ping).await;
-            println!("Got {:?}", c);
-        });
-    });
-
-    println!("pager waiting in handler loop");
-    twizzler_async::block_on(async {
+    twizzler_async::run(async move {
         loop {
-            kernel_queue
-                .handle(|info, req| async move {
-                    println!("got kreq: {} {:?}", info, req);
-                    KernelCompletion::Ok
-                })
-                .await
-                .unwrap();
+            ctx.handle_kernel_req(|_, req| async move {
+                println!("got {:?}", req);
+                KernelCompletion::Ok
+            })
+            .await
+            .unwrap();
         }
     });
 }
