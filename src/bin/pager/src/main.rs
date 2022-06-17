@@ -3,7 +3,7 @@ use twizzler_abi::{
     pager::{KernelCompletion, KernelRequest, PagerCompletion, PagerRequest},
 };
 use twizzler_object::{Object, ObjectInitFlags, Protections};
-use twizzler_queue::{CallbackQueueReceiver, Queue, ReceiveFlags, SubmissionFlags};
+use twizzler_queue::{CallbackQueueReceiver, Queue};
 
 fn main() {
     let q1id = std::env::var("PAGERQ1OBJ").expect("failed to get kernel request queue ID");

@@ -27,8 +27,9 @@ use crate::{
 
 static PAGER_READY: AtomicBool = AtomicBool::new(false);
 
-static KERNEL_QUEUE: Once<Queue<KernelRequest, KernelCompletion, PagerReqKey>> = Once::new();
-static PAGER_QUEUE: Once<Queue<PagerRequest, PagerCompletion, PagerReqKey>> = Once::new();
+static KERNEL_QUEUE: Once<Queue<KernelRequest, KernelCompletion, Option<PagerReqKey>>> =
+    Once::new();
+static PAGER_QUEUE: Once<Queue<PagerRequest, PagerCompletion, ()>> = Once::new();
 
 static QUEUE_IDS: Once<(ObjID, ObjID)> = Once::new();
 
@@ -45,7 +46,7 @@ struct Waiters {
 static WAITERS: Once<Waiters> = Once::new();
 
 struct InternalQueue {
-    queue: Spinlock<VecDeque<(PagerReqKey, KernelRequest)>>,
+    queue: Spinlock<VecDeque<(Option<PagerReqKey>, KernelRequest)>>,
     cv: CondVar,
 }
 
@@ -76,7 +77,6 @@ pub extern "C" fn pager_completion_thread_main() {
         Some("pager_req"),
     );
     loop {
-        logln!("pc start");
         KERNEL_QUEUE
             .wait()
             .process_completions(false, ReceiveFlags::empty());
@@ -85,51 +85,48 @@ pub extern "C" fn pager_completion_thread_main() {
 }
 
 pub extern "C" fn pager_submitter_thread_main() {
-    logln!("A");
     let intq = INTQ.wait();
-    logln!("B");
     loop {
-        logln!("C0");
         let mut q = intq.queue.lock();
         while let Some(item) = q.pop_front() {
-            logln!("C1");
             KERNEL_QUEUE
                 .wait()
                 .submit(item.1, item.0, handle_completion, SubmissionFlags::empty())
                 .unwrap();
         }
-        logln!("C2");
         intq.cv.wait(q);
     }
 }
 
 pub extern "C" fn pager_request_handler_thread() {
     loop {
-        PAGER_QUEUE.poll().unwrap().handle_reqs(|req| {
-            logln!("pager request handler: got {:?}", req);
+        PAGER_QUEUE.poll().unwrap().handle_reqs(|_req| {
+            // logln!("pager request handler: got {:?}", req);
             PagerCompletion::Ok
         });
         logln!("pager request handler exited handling loop");
     }
 }
 
-fn handle_completion(key: PagerReqKey, cmp: KernelCompletion) {
-    logln!("got completion {:?} for key {:?}", cmp, key);
-    let mut waiters = WAITERS.wait().map.lock();
-    if let Some(mut list) = waiters.remove(&key) {
-        while let Some(entry) = list.pop() {
-            schedule_thread(entry);
+fn handle_completion(key: Option<PagerReqKey>, _cmp: KernelCompletion) {
+    //logln!("got completion {:?} for key {:?}", cmp, key);
+    if let Some(key) = key {
+        let mut waiters = WAITERS.wait().map.lock();
+        if let Some(mut list) = waiters.remove(&key) {
+            while let Some(entry) = list.pop() {
+                schedule_thread(entry);
+            }
         }
     }
 }
 
-fn submit_pager_request(key: PagerReqKey, req: KernelRequest) {
-    logln!("submitting req {:?}", req);
+fn submit_pager_request(key: Option<PagerReqKey>, req: KernelRequest) {
+    //logln!("submitting req {:?}", req);
     if !PAGER_READY.load(Ordering::SeqCst) {
         panic!("tried to submit a paging request before pager initialized");
     }
     let intq = INTQ.wait();
-    let existing = {
+    let existing = if let Some(key) = key {
         let mut waiters = WAITERS.wait().map.lock();
         let existing = waiters.contains_key(&key);
         if !existing {
@@ -138,17 +135,21 @@ fn submit_pager_request(key: PagerReqKey, req: KernelRequest) {
         let list = waiters.get_mut(&key).unwrap();
         list.push(current_thread_ref().unwrap());
         existing
+    } else {
+        false
     };
     if !existing {
         let mut q = intq.queue.lock();
         q.push_back((key, req));
         intq.cv.signal();
     }
-    //schedule(false);
+    if key.is_some() {
+        schedule(false);
+    }
 }
 
 pub fn init_pager(kq: ObjID, pq: ObjID) {
-    logln!("kernel has kq and pq {} {}", kq, pq);
+    logln!("[kernel::pager] setting up pager queues {} and {}", kq, pq);
     QUEUE_IDS.call_once(|| (kq, pq));
     WAITERS.call_once(|| Waiters {
         map: Mutex::new(BTreeMap::new()),
@@ -164,12 +165,4 @@ pub fn init_pager(kq: ObjID, pq: ObjID) {
         Some("pager_compl"),
     );
     PAGER_READY.store(true, Ordering::SeqCst);
-
-    submit_pager_request(
-        PagerReqKey {
-            id: 123.into(),
-            pagenr: 456,
-        },
-        KernelRequest::Ping,
-    );
 }

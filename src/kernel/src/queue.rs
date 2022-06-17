@@ -45,7 +45,6 @@ pub struct QueueBase {
 
 impl<S: Copy, C: Copy + Debug, D> Queue<S, C, D> {
     fn wait(word: &AtomicU64, val: u64) {
-        logln!("wait: {:p} {}", word, val);
         let op = ThreadSync::new_sleep(ThreadSyncSleep::new(
             ThreadSyncReference::Virtual(word),
             val,
@@ -55,7 +54,6 @@ impl<S: Copy, C: Copy + Debug, D> Queue<S, C, D> {
         sys_thread_sync(&mut [op], None).unwrap();
     }
     fn ring(word: &AtomicU64) {
-        logln!("ring: {:p}", word);
         let op = ThreadSync::new_wake(ThreadSyncWake::new(
             ThreadSyncReference::Virtual(word),
             usize::MAX,
@@ -68,7 +66,6 @@ impl<S: Copy, C: Copy + Debug, D> Queue<S, C, D> {
         let hdr = ((vaddr + NULLPAGE_SIZE) as *const QueueBase)
             .as_ref()
             .unwrap();
-        logln!("init from slots: {:?}", hdr);
         Self {
             id,
             slot,
@@ -98,15 +95,12 @@ impl<S: Copy, C: Copy + Debug, D> Queue<S, C, D> {
         while let Ok(item) = self.receive(ReceiveFlags::empty()) {
             let info = item.info();
             let resp = handler(item.item());
-            logln!("sending completion {} {:?}", info, resp);
             self.complete(info, resp, SubmissionFlags::empty()).unwrap();
         }
     }
 
     pub fn process_completions(&self, justone: bool, flags: ReceiveFlags) {
-        logln!("pc start2");
         while let Ok(entry) = self.raw_cmp.receive(Self::wait, Self::ring, flags) {
-            logln!("PC");
             let mut outstanding = self.outstanding.lock();
             if let Some(out) = outstanding.remove(&entry.info()) {
                 (out.callback)(out.data, entry.item());
