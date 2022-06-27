@@ -1,10 +1,13 @@
 #![feature(once_cell)]
-
+#![feature(option_result_unwrap_unchecked)]
 use twizzler_abi::{object::ObjID, pager::KernelCompletion};
 
 use crate::ctx::PagerContext;
 
 mod ctx;
+mod device;
+mod memory;
+mod nvme;
 
 fn main() {
     let q1id = std::env::var("PAGERQ1OBJ").expect("failed to get kernel request queue ID");

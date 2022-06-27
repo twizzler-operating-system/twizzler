@@ -3,6 +3,7 @@
 #[repr(C)]
 pub enum PagerRequest {
     Ping,
+    GetMemoryPages(usize),
 }
 
 /// Completion data for pager to kernel queue.
@@ -11,6 +12,7 @@ pub enum PagerRequest {
 pub enum PagerCompletion {
     Ok,
     Err,
+    MemoryPages(MemoryPages),
 }
 
 /// Submission data from the kernel to the.
@@ -18,6 +20,7 @@ pub enum PagerCompletion {
 #[repr(C)]
 pub enum KernelRequest {
     Ping,
+    ReserveSlot,
 }
 
 /// Completion data for kernel to pager queue.
@@ -26,6 +29,7 @@ pub enum KernelRequest {
 pub enum KernelCompletion {
     Ok,
     Err,
+    Slot(usize),
 }
 
 bitflags::bitflags! {
@@ -33,10 +37,18 @@ bitflags::bitflags! {
     }
 }
 
-/// Completion data for kernel to pager queue.
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct PhysicalAddr(u64);
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct VirtualAddr(u64);
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub struct PhysicalAddr {
-    pub addr: u64,
-    pub flags: PhysicalAddrFlags,
+pub struct MemoryPages {
+    pub phys: PhysicalAddr,
+    pub virt: VirtualAddr,
+    pub num: usize,
 }

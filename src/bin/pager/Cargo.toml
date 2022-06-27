@@ -10,4 +10,6 @@ twizzler-abi = {path = "../../lib/twizzler-abi" }
 twizzler-queue = {path = "../../lib/twizzler-queue" }
 twizzler-object = {path = "../../lib/twizzler-object"}
 twizzler-async = {path = "../../lib/twizzler-async" }
+twizzler-driver = {path = "../../lib/twizzler-driver" }
 anyhow = "1.0.57"
+async-trait = "0.1.56"
