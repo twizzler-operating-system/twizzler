@@ -1,21 +1,51 @@
 use std::fmt::Display;
 
+use futures::stream::select_all;
+
+use futures::FutureExt;
+use futures::Stream;
 pub use twizzler_abi::device::BusType;
 pub use twizzler_abi::device::DeviceRepr;
 pub use twizzler_abi::device::DeviceType;
 use twizzler_abi::device::MmioInfo;
 use twizzler_abi::device::MMIO_OFFSET;
+use twizzler_abi::device::NUM_DEVICE_INTERRUPTS;
 use twizzler_abi::marker::BaseType;
 use twizzler_abi::marker::ObjSafe;
 use twizzler_abi::{
     device::SubObjectType,
     kso::{KactionCmd, KactionFlags, KactionGenericCmd},
 };
+use twizzler_async::Async;
+use twizzler_async::AsyncSetup;
 use twizzler_object::Object;
 use twizzler_object::{ObjID, ObjectInitError, ObjectInitFlags, Protections};
 
+#[derive(Debug)]
+struct InterruptDataInner {
+    repr: *const DeviceRepr,
+    inum: usize,
+}
+
+impl AsyncSetup for InterruptDataInner {
+    type Error = bool;
+
+    const WOULD_BLOCK: Self::Error = true;
+
+    fn setup_sleep(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+        let repr = unsafe { self.repr.as_ref().unwrap_unchecked() };
+        repr.setup_interrupt_sleep(self.inum)
+    }
+}
+
+#[derive(Debug)]
+struct InterruptData {
+    src: Async<InterruptDataInner>,
+}
+
 pub struct Device {
     obj: Object<DeviceRepr>,
+    ints: [InterruptData; NUM_DEVICE_INTERRUPTS],
 }
 
 impl Display for Device {
@@ -91,13 +121,23 @@ impl Iterator for DeviceChildrenIterator {
 
 impl Device {
     fn new(id: ObjID) -> Result<Self, ObjectInitError> {
-        Ok(Self {
-            obj: Object::init_id(
-                id,
-                Protections::WRITE | Protections::READ,
-                ObjectInitFlags::empty(),
-            )?,
-        })
+        let obj = Object::init_id(
+            id,
+            Protections::WRITE | Protections::READ,
+            ObjectInitFlags::empty(),
+        )?;
+        let ints = (0..NUM_DEVICE_INTERRUPTS)
+            .into_iter()
+            .map(|i| InterruptData {
+                src: Async::new(InterruptDataInner {
+                    repr: obj.base().unwrap() as *const DeviceRepr,
+                    inum: i,
+                }),
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        Ok(Self { obj, ints })
     }
 
     fn get_subobj(&self, ty: u8, idx: u8) -> Option<ObjID> {
@@ -140,6 +180,29 @@ impl Device {
 
     pub fn bus_type(&self) -> BusType {
         self.repr().bus_type
+    }
+
+    pub fn next_interrupt(
+        &self,
+        inum: usize,
+    ) -> impl Stream<Item = Result<(usize, u64), bool>> + '_ {
+        let repr = self.repr();
+        self.ints[inum]
+            .src
+            .run_with(move |inner| {
+                repr.check_for_interrupt(inum)
+                    .ok_or(true)
+                    .map(|x| (inner.inum, x))
+            })
+            .into_stream()
+    }
+
+    pub fn next_any_interrupt(&self) -> impl Stream<Item = Result<(usize, u64), bool>> + '_ {
+        select_all(
+            self.ints
+                .iter()
+                .map(|i| Box::pin(self.next_interrupt(i.src.get_ref().inum))),
+        )
     }
 }
 

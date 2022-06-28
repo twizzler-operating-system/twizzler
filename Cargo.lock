@@ -2334,7 +2334,9 @@ dependencies = [
 name = "twizzler-driver"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "twizzler-abi",
+ "twizzler-async",
  "twizzler-object",
 ]
 

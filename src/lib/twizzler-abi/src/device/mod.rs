@@ -13,7 +13,7 @@ use crate::{
 
 pub mod bus;
 
-const NUM_DEVICE_INTERRUPTS: usize = 32;
+pub const NUM_DEVICE_INTERRUPTS: usize = 32;
 
 /// Possible high-level device types.
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Debug)]
@@ -210,6 +210,15 @@ impl DeviceRepr {
             if res.is_err() {
                 return 0;
             }
+        }
+    }
+
+    pub fn setup_interrupt_sleep(&self, inum: usize) -> ThreadSyncSleep {
+        ThreadSyncSleep {
+            reference: ThreadSyncReference::Virtual(&self.interrupts[inum].sync),
+            value: 0,
+            op: ThreadSyncOp::Equal,
+            flags: ThreadSyncFlags::empty(),
         }
     }
 

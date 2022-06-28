@@ -1,4 +1,14 @@
-use crate::arch::{self, interrupt::InterProcessorInterrupt};
+use alloc::vec::Vec;
+
+use crate::{
+    arch::{
+        self,
+        interrupt::{InterProcessorInterrupt, NUM_VECTORS},
+    },
+    obj::ObjectRef,
+    once::Once,
+    spinlock::Spinlock,
+};
 
 #[inline]
 pub fn disable() -> bool {
@@ -49,6 +59,67 @@ pub enum Destination {
     All,
 }
 
-pub fn external_interrupt_entry(_number: u32) {
+struct WakeInfo {
+    obj: ObjectRef,
+    offset: usize,
+}
+
+impl WakeInfo {
+    pub fn wake(&self, val: u64) {
+        unsafe {
+            self.obj.write_val_and_signal(self.offset, val, usize::MAX);
+        }
+    }
+}
+
+struct InterruptInner {
+    target: Vec<WakeInfo>,
+}
+
+impl InterruptInner {
+    pub fn raise(&self, val: u64) {
+        for wi in &self.target {
+            wi.wake(val)
+        }
+    }
+}
+struct Interrupt {
+    inner: Spinlock<InterruptInner>,
+    vector: usize,
+}
+
+impl Interrupt {
+    pub fn raise(&self) {
+        self.inner.lock().raise(self.vector as u64);
+    }
+
+    fn add(&self, wi: WakeInfo) {
+        self.inner.lock().target.push(wi)
+    }
+
+    fn new(vector: usize) -> Self {
+        Self {
+            inner: Spinlock::new(InterruptInner { target: Vec::new() }),
+            vector,
+        }
+    }
+}
+
+struct GlobalInterruptState {
+    ints: Vec<Interrupt>,
+}
+
+static GLOBAL_INT: Once<GlobalInterruptState> = Once::new();
+fn get_global_interrupts() -> &'static GlobalInterruptState {
+    let mut v = Vec::new();
+    for i in 0..NUM_VECTORS {
+        v.push(Interrupt::new(i));
+    }
+    GLOBAL_INT.call_once(|| GlobalInterruptState { ints: v })
+}
+
+pub fn external_interrupt_entry(number: u32) {
+    let gi = get_global_interrupts();
+    gi.ints[number as usize].raise();
     //logln!("external device interrupt {}", number);
 }
