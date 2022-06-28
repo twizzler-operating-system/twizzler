@@ -18,6 +18,12 @@ pub enum PcieKactionSpecific {
     AllocateInterrupt = 1,
 }
 
+impl From<PcieKactionSpecific> for u32 {
+    fn from(x: PcieKactionSpecific) -> Self {
+        x as u32
+    }
+}
+
 impl TryFrom<u32> for PcieKactionSpecific {
     type Error = KactionError;
 

@@ -59,7 +59,7 @@ pub enum Destination {
     All,
 }
 
-struct WakeInfo {
+pub struct WakeInfo {
     obj: ObjectRef,
     offset: usize,
 }
@@ -69,6 +69,10 @@ impl WakeInfo {
         unsafe {
             self.obj.write_val_and_signal(self.offset, val, usize::MAX);
         }
+    }
+
+    pub fn new(obj: ObjectRef, offset: usize) -> Self {
+        Self { obj, offset }
     }
 }
 
@@ -116,6 +120,11 @@ fn get_global_interrupts() -> &'static GlobalInterruptState {
         v.push(Interrupt::new(i));
     }
     GLOBAL_INT.call_once(|| GlobalInterruptState { ints: v })
+}
+
+pub fn set_userspace_interrupt_wakeup(number: u32, wi: WakeInfo) {
+    let gi = get_global_interrupts();
+    gi.ints[number as usize].add(wi);
 }
 
 pub fn external_interrupt_entry(number: u32) {

@@ -1,6 +1,7 @@
 use pci_ids::FromId;
+use twizzler_abi::kso::{KactionCmd, KactionFlags};
 use twizzler_driver::{
-    bus::pcie::PcieFunctionHeader,
+    bus::pcie::{PcieFunctionHeader, PcieKactionSpecific},
     device::{BusType, Device},
 };
 
@@ -39,10 +40,18 @@ fn print_info(bus: u8, slot: u8, function: u8, cfg: &PcieFunctionHeader) -> Opti
     None
 }
 
-fn start_pcie(bus: Device) {
+fn start_pcie_device(seg: &Device, bus: u8, device: u8, function: u8) {
+    let _ = seg.kaction(
+        KactionCmd::Specific(PcieKactionSpecific::RegisterDevice.into()),
+        ((bus as u64) << 16) | ((device as u64) << 8) | (function as u64),
+        KactionFlags::empty(),
+    );
+}
+
+fn start_pcie(seg: Device) {
     println!("[devmgr] scanning PCIe bus");
     //let info = unsafe { bus.get_info::<PcieInfo>(0).unwrap() };
-    let mmio = bus.get_mmio(0).unwrap();
+    let mmio = seg.get_mmio(0).unwrap();
 
     for bus in 0..=255 {
         for device in 0..32 {
@@ -62,6 +71,7 @@ fn start_pcie(bus: Device) {
                     let cfg = unsafe { mmio.get_mmio_offset::<PcieFunctionHeader>(off) };
                     if cfg.vendor_id.get() != 0xffff {
                         print_info(bus, device, function, cfg);
+                        start_pcie_device(&seg, bus, device, function)
                     }
                 }
             }

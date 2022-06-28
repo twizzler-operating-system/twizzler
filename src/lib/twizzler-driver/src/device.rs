@@ -10,6 +10,8 @@ pub use twizzler_abi::device::DeviceType;
 use twizzler_abi::device::MmioInfo;
 use twizzler_abi::device::MMIO_OFFSET;
 use twizzler_abi::device::NUM_DEVICE_INTERRUPTS;
+use twizzler_abi::kso::KactionError;
+use twizzler_abi::kso::KactionValue;
 use twizzler_abi::marker::BaseType;
 use twizzler_abi::marker::ObjSafe;
 use twizzler_abi::{
@@ -203,6 +205,15 @@ impl Device {
                 .iter()
                 .map(|i| Box::pin(self.next_interrupt(i.src.get_ref().inum))),
         )
+    }
+
+    pub fn kaction(
+        &self,
+        action: KactionCmd,
+        value: u64,
+        flags: KactionFlags,
+    ) -> Result<KactionValue, KactionError> {
+        twizzler_abi::syscall::sys_kaction(action, Some(self.obj.id()), value, flags)
     }
 }
 

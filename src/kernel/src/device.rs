@@ -1,12 +1,23 @@
+use core::mem::size_of;
+
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use memoffset::offset_of;
 use twizzler_abi::{
-    device::{BusType, CacheType, DeviceId, DeviceRepr, DeviceType, MmioInfo, SubObjectType},
+    device::{
+        BusType, CacheType, DeviceId, DeviceInterrupt, DeviceRepr, DeviceType, MmioInfo,
+        SubObjectType,
+    },
     kso::{KactionCmd, KactionError, KactionGenericCmd, KactionValue, KsoHdr},
-    object::ObjID,
+    object::{ObjID, NULLPAGE_SIZE},
 };
 use x86_64::PhysAddr;
 
-use crate::{mutex::Mutex, obj::ObjectRef, once::Once};
+use crate::{
+    interrupt::WakeInfo,
+    mutex::Mutex,
+    obj::{lookup_object, LookupFlags, ObjectRef},
+    once::Once,
+};
 
 pub struct DeviceInner {
     sub_objects: Vec<(SubObjectType, ObjectRef)>,
@@ -162,6 +173,17 @@ pub fn create_device(
 }
 
 impl Device {
+    pub fn get_interrupt_wakeinfo(&self, num: usize) -> WakeInfo {
+        let obj = lookup_object(self.id, LookupFlags::empty()).unwrap();
+        WakeInfo::new(
+            obj,
+            NULLPAGE_SIZE
+                + offset_of!(DeviceRepr, interrupts)
+                + size_of::<DeviceInterrupt>() * num
+                + offset_of!(DeviceInterrupt, sync),
+        )
+    }
+
     pub fn add_info<T>(&self, info: &T) {
         let obj = Arc::new(crate::obj::Object::new());
         obj.write_base(info);

@@ -124,11 +124,11 @@ impl DeviceId {
 }
 
 #[repr(C)]
-struct DeviceInterrupt {
-    sync: AtomicU64,
-    vec: InterruptVector,
-    flags: DeviceInterruptFlags,
-    taken: u16,
+pub struct DeviceInterrupt {
+    pub sync: AtomicU64,
+    pub vec: InterruptVector,
+    pub flags: DeviceInterruptFlags,
+    pub taken: u16,
 }
 
 /// The base struct for a device object.
@@ -138,7 +138,7 @@ pub struct DeviceRepr {
     pub device_type: DeviceType,
     pub bus_type: BusType,
     pub device_id: DeviceId,
-    interrupts: [DeviceInterrupt; NUM_DEVICE_INTERRUPTS],
+    pub interrupts: [DeviceInterrupt; NUM_DEVICE_INTERRUPTS],
 }
 impl crate::marker::BaseType for DeviceRepr {
     fn init<T>(_t: T) -> Self {

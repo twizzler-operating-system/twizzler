@@ -1,6 +1,6 @@
 use alloc::format;
-use twizzler_abi::device::CacheType;
 use twizzler_abi::device::bus::pcie::{PcieInfo, PcieKactionSpecific};
+use twizzler_abi::device::CacheType;
 use twizzler_abi::{
     device::BusType,
     kso::{KactionError, KactionValue},
@@ -17,10 +17,16 @@ fn register_device(seg: u16, bus: u8, device: u8, function: u8) -> Option<Device
     todo!()
 }
 
-fn kaction(_device: DeviceRef, cmd: u32, _arg: u64) -> Result<KactionValue, KactionError> {
+fn kaction(_device: DeviceRef, cmd: u32, arg: u64) -> Result<KactionValue, KactionError> {
     let cmd: PcieKactionSpecific = cmd.try_into()?;
     match cmd {
-        PcieKactionSpecific::RegisterDevice => todo!(),
+        PcieKactionSpecific::RegisterDevice => {
+            let bus = (arg >> 16) & 0xff;
+            let dev = (arg >> 8) & 0xff;
+            let func = arg & 0xff;
+            logln!("register device {:x} {:x} {:x}", bus, dev, func);
+            Ok(KactionValue::ObjID(0.into()))
+        }
         PcieKactionSpecific::AllocateInterrupt => todo!(),
     }
 }
