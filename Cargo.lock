@@ -1100,6 +1100,7 @@ dependencies = [
  "rprompt",
  "twizzler-abi",
  "twizzler-net",
+ "twizzler-object",
 ]
 
 [[package]]

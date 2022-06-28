@@ -18,6 +18,12 @@ pub struct PcieDeviceInfo {
     pub bus_nr: u8,
     pub dev_nr: u8,
     pub func_nr: u8,
+    pub device_id: u16,
+    pub vendor_id: u16,
+    pub class: u8,
+    pub subclass: u8,
+    pub progif: u8,
+    pub revision: u8,
 }
 
 /// PCIe-specific [crate::kso::KactionGenericCmd] values.

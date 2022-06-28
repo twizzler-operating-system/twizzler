@@ -50,11 +50,23 @@ fn register_device(
         id,
         kaction,
     );
+    let cfg: &PcieFunctionHeader = unsafe {
+        phys_to_virt(PhysAddr::new(cfgaddr))
+            .as_ptr::<PcieFunctionHeader>()
+            .as_ref()
+            .unwrap()
+    };
     let info = PcieDeviceInfo {
         seg_nr: seg,
         bus_nr: bus,
         dev_nr: device,
         func_nr: function,
+        device_id: cfg.device_id.get(),
+        vendor_id: cfg.vendor_id.get(),
+        class: cfg.class.get(),
+        subclass: cfg.subclass.get(),
+        progif: cfg.progif.get(),
+        revision: cfg.revision.get(),
     };
     dev.add_info(&info);
     dev.add_mmio(
@@ -63,12 +75,6 @@ fn register_device(
         CacheType::Uncachable,
     );
 
-    let cfg: &PcieFunctionHeader = unsafe {
-        phys_to_virt(PhysAddr::new(cfgaddr))
-            .as_ptr::<PcieFunctionHeader>()
-            .as_ref()
-            .unwrap()
-    };
     let mut bars = Vec::new();
     match cfg.header_type.get() {
         0 => {
@@ -142,7 +148,7 @@ fn register_device(
         }
     }
     for bar in &bars {
-        //logln!("  got bar {:x}, {:x}, {}", bar.0, bar.1, bar.2);
+        // logln!("  got bar {:x}, {:x}, {}", bar.0, bar.1, bar.2);
         if bar.0 != 0 {
             dev.add_mmio(
                 PhysAddr::new(bar.0),

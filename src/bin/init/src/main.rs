@@ -261,11 +261,34 @@ fn main() {
         ObjectCreateFlags::empty(),
     );
     let netid = twizzler_abi::syscall::sys_object_create(create, &[], &[]).unwrap();
+    let devid = twizzler_abi::syscall::sys_object_create(create, &[], &[]).unwrap();
+    println!("starting device manager");
     if let Some(id) = find_init_name("devmgr") {
-        exec("devmgr", id, ObjID::new(0));
+        exec("devmgr", id, devid);
     } else {
         eprintln!("[init] failed to start devmgr");
     }
+
+    println!("waiting for device manager to come up");
+    let obj = Object::<std::sync::atomic::AtomicU64>::init_id(
+        devid,
+        Protections::WRITE | Protections::READ,
+        ObjectInitFlags::empty(),
+    )
+    .unwrap();
+    let base = unsafe { obj.base_unchecked() };
+    twizzler_abi::syscall::sys_thread_sync(
+        &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(base),
+            0,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        ))],
+        None,
+    )
+    .unwrap();
+    println!("device manager is up!");
+
     std::env::set_var("NETOBJ", format!("{}", netid.as_u128()));
     if let Some(id) = find_init_name("netmgr") {
         exec("netmgr", id, netid);
@@ -387,8 +410,9 @@ use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
         sys_kaction, sys_thread_sync, BackingType, LifetimeType, MapFlags, ObjectCreate,
-        ObjectCreateFlags, ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep,
-        ThreadSyncWake,
+        ObjectCreateFlags, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
+        ThreadSyncSleep, ThreadSyncWake,
     },
     thread::ThreadRepr,
 };
+use twizzler_object::{Object, ObjectInitFlags};
