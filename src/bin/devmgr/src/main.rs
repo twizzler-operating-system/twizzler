@@ -41,11 +41,12 @@ fn print_info(bus: u8, slot: u8, function: u8, cfg: &PcieFunctionHeader) -> Opti
 }
 
 fn start_pcie_device(seg: &Device, bus: u8, device: u8, function: u8) {
-    let _ = seg.kaction(
+    let kr = seg.kaction(
         KactionCmd::Specific(PcieKactionSpecific::RegisterDevice.into()),
         ((bus as u64) << 16) | ((device as u64) << 8) | (function as u64),
         KactionFlags::empty(),
     );
+    println!("got {:?} from kaction", kr);
 }
 
 fn start_pcie(seg: Device) {

@@ -25,15 +25,21 @@ impl<T> Volatile<T> {
         }
     }
 
+    #[allow(unaligned_references)]
     /// Volatile-read the cell.
     #[inline(always)]
     pub fn get(&self) -> T
     where
         T: Copy,
     {
-        unsafe { ptr::read_volatile(self.item.get()) }
+        #[allow(unaligned_references)]
+        unsafe {
+            #[allow(unaligned_references)]
+            ptr::read_volatile(self.item.get())
+        }
     }
 
+    #[allow(unaligned_references)]
     /// Volatile-write the cell.
     #[inline(always)]
     pub fn set(&self, item: T)

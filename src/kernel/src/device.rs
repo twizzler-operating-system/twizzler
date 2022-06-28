@@ -1,6 +1,6 @@
 use core::mem::size_of;
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use memoffset::offset_of;
 use twizzler_abi::{
     device::{
@@ -30,6 +30,7 @@ pub struct Device {
     bus_type: BusType,
     dev_type: DeviceType,
     id: ObjID,
+    name: String,
 }
 
 pub type DeviceRef = Arc<Device>;
@@ -137,6 +138,7 @@ pub fn create_busroot(
         bus_type: bt,
         dev_type: DeviceType::Bus,
         id: obj.id(),
+        name: name.to_owned(),
     });
     let info = DeviceRepr::new(KsoHdr::new(name), DeviceType::Bus, bt, DeviceId::new(0));
     obj.write_base(&info);
@@ -164,6 +166,7 @@ pub fn create_device(
         bus_type: bt,
         dev_type: DeviceType::Device,
         id: obj.id(),
+        name: name.to_owned(),
     });
     let info = DeviceRepr::new(KsoHdr::new(name), DeviceType::Device, bt, id);
     obj.write_base(&info);
@@ -173,6 +176,10 @@ pub fn create_device(
 }
 
 impl Device {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn get_interrupt_wakeinfo(&self, num: usize) -> WakeInfo {
         let obj = lookup_object(self.id, LookupFlags::empty()).unwrap();
         WakeInfo::new(

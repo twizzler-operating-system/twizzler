@@ -1,5 +1,5 @@
 use crate::{kso::KactionError, vcell::Volatile};
-/// The base struct for an info sub-object for a PCIe device.
+/// The base struct for an info sub-object for a PCIe bus.
 #[allow(dead_code)]
 #[repr(C)]
 #[derive(Debug)]
@@ -7,6 +7,17 @@ pub struct PcieInfo {
     pub bus_start: u8,
     pub bus_end: u8,
     pub seg_nr: u16,
+}
+
+/// The base struct for an info sub-object for a PCIe device.
+#[allow(dead_code)]
+#[repr(C)]
+#[derive(Debug)]
+pub struct PcieDeviceInfo {
+    pub seg_nr: u16,
+    pub bus_nr: u8,
+    pub dev_nr: u8,
+    pub func_nr: u8,
 }
 
 /// PCIe-specific [crate::kso::KactionGenericCmd] values.
@@ -80,26 +91,26 @@ pub struct PcieDeviceHeader {
 #[allow(dead_code)]
 #[repr(packed)]
 pub struct PcieBridgeHeader {
-    fnheader: PcieFunctionHeader,
-    bar: [Volatile<u32>; 2],
-    primary_bus_nr: Volatile<u8>,
-    secondary_bus_nr: Volatile<u8>,
-    subordinate_bus_nr: Volatile<u8>,
-    secondary_latency_timer: Volatile<u8>,
-    io_base: Volatile<u8>,
-    io_limit: Volatile<u8>,
-    secondary_status: Volatile<u8>,
-    memory_base: Volatile<u16>,
-    memory_limit: Volatile<u16>,
-    pref_memory_base: Volatile<u16>,
-    pref_memory_limit: Volatile<u16>,
-    pref_base_upper: Volatile<u32>,
-    pref_limit_upper: Volatile<u32>,
-    io_base_upper: Volatile<u16>,
-    io_limit_upper: Volatile<u16>,
-    cap_ptr: Volatile<u32>,
-    exprom_base: Volatile<u32>,
-    int_line: Volatile<u8>,
-    int_pin: Volatile<u8>,
-    bridge_control: Volatile<u16>,
+    pub fnheader: PcieFunctionHeader,
+    pub bar: [Volatile<u32>; 2],
+    pub primary_bus_nr: Volatile<u8>,
+    pub secondary_bus_nr: Volatile<u8>,
+    pub subordinate_bus_nr: Volatile<u8>,
+    pub secondary_latency_timer: Volatile<u8>,
+    pub io_base: Volatile<u8>,
+    pub io_limit: Volatile<u8>,
+    pub secondary_status: Volatile<u8>,
+    pub memory_base: Volatile<u16>,
+    pub memory_limit: Volatile<u16>,
+    pub pref_memory_base: Volatile<u16>,
+    pub pref_memory_limit: Volatile<u16>,
+    pub pref_base_upper: Volatile<u32>,
+    pub pref_limit_upper: Volatile<u32>,
+    pub io_base_upper: Volatile<u16>,
+    pub io_limit_upper: Volatile<u16>,
+    pub cap_ptr: Volatile<u32>,
+    pub exprom_base: Volatile<u32>,
+    pub int_line: Volatile<u8>,
+    pub int_pin: Volatile<u8>,
+    pub bridge_control: Volatile<u16>,
 }
