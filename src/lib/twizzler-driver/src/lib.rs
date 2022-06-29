@@ -1,4 +1,5 @@
 #![feature(option_result_unwrap_unchecked)]
+#![feature(generic_associated_types)]
 
 pub mod bus;
 pub mod device;

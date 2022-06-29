@@ -56,25 +56,6 @@ fn register_device(
             .as_ref()
             .unwrap()
     };
-    let info = PcieDeviceInfo {
-        seg_nr: seg,
-        bus_nr: bus,
-        dev_nr: device,
-        func_nr: function,
-        device_id: cfg.device_id.get(),
-        vendor_id: cfg.vendor_id.get(),
-        class: cfg.class.get(),
-        subclass: cfg.subclass.get(),
-        progif: cfg.progif.get(),
-        revision: cfg.revision.get(),
-    };
-    dev.add_info(&info);
-    dev.add_mmio(
-        PhysAddr::new(cfgaddr),
-        PhysAddr::new(cfgaddr + 0x1000),
-        CacheType::Uncachable,
-    );
-
     let mut bars = Vec::new();
     match cfg.header_type.get() {
         0 => {
@@ -84,6 +65,10 @@ fn register_device(
                     .as_ref()
                     .unwrap()
             };
+            if cfg.fnheader.status.get() & (1 << 4) != 0 {
+                let caps = cfg.cap_ptr.get();
+                logln!("caps {:x}", caps);
+            }
             let mut bar = 0;
             while bar < 6 {
                 let info = cfg.bars[bar].get();
@@ -147,17 +132,44 @@ fn register_device(
             logln!("[kernel::machine::pcie] unknown PCIe header type");
         }
     }
-    for bar in &bars {
-        // logln!("  got bar {:x}, {:x}, {}", bar.0, bar.1, bar.2);
-        if bar.0 != 0 {
+    let info = PcieDeviceInfo {
+        seg_nr: seg,
+        bus_nr: bus,
+        dev_nr: device,
+        func_nr: function,
+        device_id: cfg.device_id.get(),
+        vendor_id: cfg.vendor_id.get(),
+        class: cfg.class.get(),
+        subclass: cfg.subclass.get(),
+        progif: cfg.progif.get(),
+        revision: cfg.revision.get(),
+    };
+    dev.add_info(&info);
+    dev.add_mmio(
+        PhysAddr::new(cfgaddr),
+        PhysAddr::new(cfgaddr + 0x1000),
+        CacheType::Uncachable,
+        0xff,
+    );
+
+    for bar in bars.iter().enumerate() {
+        logln!(
+            "  got bar {} {:x}, {:x}, {}",
+            bar.0,
+            bar.1 .0,
+            bar.1 .1,
+            bar.1 .2
+        );
+        if bar.1 .0 != 0 {
             dev.add_mmio(
-                PhysAddr::new(bar.0),
-                PhysAddr::new(bar.0 + bar.1 as u64),
-                if bar.2 != 0 {
+                PhysAddr::new(bar.1 .0),
+                PhysAddr::new(bar.1 .0 + bar.1 .1 as u64),
+                if bar.1 .2 != 0 {
                     CacheType::WriteThrough
                 } else {
                     CacheType::Uncachable
                 },
+                bar.0 as u64,
             );
         }
     }
@@ -204,7 +216,7 @@ fn init_segment(seg: u16, addr: PhysAddr) {
         seg_nr: seg,
     };
     dev.add_info(&info);
-    dev.add_mmio(addr, end_addr, CacheType::Uncachable);
+    dev.add_mmio(addr, end_addr, CacheType::Uncachable, 0);
     DEVS.lock().insert(
         dev.objid(),
         PcieKernelInfo {

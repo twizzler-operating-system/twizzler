@@ -120,3 +120,10 @@ pub struct PcieBridgeHeader {
     pub int_pin: Volatile<u8>,
     pub bridge_control: Volatile<u16>,
 }
+
+#[allow(dead_code)]
+#[repr(packed)]
+pub struct PcieCapabilityHeader {
+    pub id: u8,
+    pub next: u8,
+}

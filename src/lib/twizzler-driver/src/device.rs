@@ -12,8 +12,6 @@ use twizzler_abi::device::MMIO_OFFSET;
 use twizzler_abi::device::NUM_DEVICE_INTERRUPTS;
 use twizzler_abi::kso::KactionError;
 use twizzler_abi::kso::KactionValue;
-use twizzler_abi::marker::BaseType;
-use twizzler_abi::marker::ObjSafe;
 use twizzler_abi::{
     device::SubObjectType,
     kso::{KactionCmd, KactionFlags, KactionGenericCmd},
@@ -92,7 +90,7 @@ impl MmioObject {
     }
 }
 
-impl<T: BaseType + ObjSafe> InfoObject<T> {
+impl<T> InfoObject<T> {
     fn new(id: ObjID) -> Result<Self, ObjectInitError> {
         Ok(Self {
             obj: Object::init_id(id, Protections::READ, ObjectInitFlags::empty())?,
@@ -100,7 +98,7 @@ impl<T: BaseType + ObjSafe> InfoObject<T> {
     }
 
     pub fn get_data(&self) -> &T {
-        self.obj.base().unwrap()
+        unsafe { self.obj.base_unchecked() }
     }
 }
 
@@ -159,7 +157,7 @@ impl Device {
     /// # Safety
     /// The type T is not verified in any way, so the caller must ensure that T is correct
     /// for the underlying data.
-    pub unsafe fn get_info<T: ObjSafe + BaseType>(&self, idx: u8) -> Option<InfoObject<T>> {
+    pub unsafe fn get_info<T>(&self, idx: u8) -> Option<InfoObject<T>> {
         let id = self.get_subobj(SubObjectType::Info.into(), idx)?;
         InfoObject::new(id).ok()
     }

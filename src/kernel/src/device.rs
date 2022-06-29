@@ -201,12 +201,13 @@ impl Device {
             .push((SubObjectType::Info, obj));
     }
 
-    pub fn add_mmio(&self, start: PhysAddr, end: PhysAddr, ct: CacheType) {
+    pub fn add_mmio(&self, start: PhysAddr, end: PhysAddr, ct: CacheType, info: u64) {
         let obj = Arc::new(crate::obj::Object::new());
         obj.map_phys(start, end, ct);
         let mmio_info = MmioInfo {
             length: end - start,
             cache_type: CacheType::Uncachable,
+            info,
         };
         obj.write_base(&mmio_info);
         crate::obj::register_object(obj.clone());

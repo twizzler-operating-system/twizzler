@@ -88,6 +88,8 @@ pub struct MmioInfo {
     pub length: u64,
     /// The cache type.
     pub cache_type: CacheType,
+    /// Device-specific info.
+    pub info: u64,
 }
 
 impl crate::marker::BaseType for MmioInfo {
