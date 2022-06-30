@@ -103,7 +103,7 @@ fn main() {
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let device_root = twizzler_driver::device::get_bustree_root();
+    let device_root = twizzler_driver::get_bustree_root();
     for device in device_root.children() {
         if device.is_bus() && device.bus_type() == BusType::Pcie {
             start_pcie(device);

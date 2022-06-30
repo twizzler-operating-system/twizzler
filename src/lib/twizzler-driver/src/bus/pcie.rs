@@ -7,7 +7,7 @@ use twizzler_abi::{
     vcell::Volatile,
 };
 
-use crate::device::{Device, InterruptAllocationError, MmioObject};
+use crate::device::{interrupts::InterruptAllocationError, mmio::MmioObject, Device};
 
 pub struct PcieCapabilityIterator {
     cfg: MmioObject,
