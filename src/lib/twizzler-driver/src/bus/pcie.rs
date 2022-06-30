@@ -51,9 +51,21 @@ impl MsixCapability {
         let info = self.table_offset_and_bir.get();
         ((info & 0x7) as u8, (info & !0x7) as usize)
     }
+
+    fn table_len(&self) -> usize {
+        (self.msg_ctrl.get() & 0x7ff) as usize
+    }
 }
 
-pub struct MsixTableEntry {}
+#[allow(unaligned_references)]
+#[derive(Debug)]
+#[repr(packed)]
+pub struct MsixTableEntry {
+    msg_addr_lo: Volatile<u32>,
+    msg_addr_hi: Volatile<u32>,
+    msg_data: Volatile<u32>,
+    vec_ctrl: Volatile<u32>,
+}
 
 #[derive(Debug)]
 pub enum PcieCapability {
@@ -84,6 +96,10 @@ impl Iterator for PcieCapabilityIterator {
             Some(ret)
         }
     }
+}
+
+fn calc_msg_info(vec: InterruptVector) -> (u64, u32) {
+    todo!()
 }
 
 impl Device {
@@ -122,7 +138,18 @@ impl Device {
         let mmio = self
             .find_mmio_bar(bar.into())
             .ok_or(InterruptAllocationError::Unsupported)?;
-        todo!()
+        let table = unsafe {
+            let start = mmio.get_mmio_offset::<MsixTableEntry>(offset) as *const MsixTableEntry
+                as *mut MsixTableEntry;
+            let len = msix.table_len();
+            core::slice::from_raw_parts_mut(start, len)
+        };
+        let (msg_addr, msg_data) = calc_msg_info(vec);
+        table[inum].msg_addr_lo.set(msg_addr as u32);
+        table[inum].msg_addr_hi.set((msg_addr >> 32) as u32);
+        table[inum].msg_data.set(msg_data);
+        table[inum].vec_ctrl.set(0);
+        Ok(inum as u32)
     }
 
     fn allocate_msi_interrupt(
