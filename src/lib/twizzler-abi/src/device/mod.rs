@@ -2,6 +2,7 @@
 
 use core::{
     fmt::Display,
+    num::TryFromIntError,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -113,6 +114,15 @@ bitflags::bitflags! {
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Debug)]
 #[repr(transparent)]
 pub struct InterruptVector(u32);
+
+impl TryFrom<u64> for InterruptVector {
+    type Error = TryFromIntError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        let u: u32 = value.try_into()?;
+        Ok(InterruptVector(u))
+    }
+}
 
 /// A per-bus device ID.
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Debug)]

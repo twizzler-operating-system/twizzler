@@ -1,10 +1,14 @@
 use std::fmt::Display;
+use std::sync::Mutex;
 
+use bitvec::array::BitArray;
 use futures::stream::select_all;
 
 use futures::FutureExt;
 use futures::Stream;
+use twizzler_abi::device::bus::pcie::PcieKactionSpecific;
 pub use twizzler_abi::device::BusType;
+use twizzler_abi::device::DeviceInterruptFlags;
 pub use twizzler_abi::device::DeviceRepr;
 pub use twizzler_abi::device::DeviceType;
 use twizzler_abi::device::MmioInfo;
@@ -46,6 +50,7 @@ struct InterruptData {
 pub struct Device {
     obj: Object<DeviceRepr>,
     ints: [InterruptData; NUM_DEVICE_INTERRUPTS],
+    taken_ints: Mutex<BitArray>,
 }
 
 impl Display for Device {
@@ -137,7 +142,11 @@ impl Device {
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
-        Ok(Self { obj, ints })
+        Ok(Self {
+            obj,
+            ints,
+            taken_ints: Mutex::new(BitArray::ZERO),
+        })
     }
 
     fn get_subobj(&self, ty: u8, idx: u8) -> Option<ObjID> {
@@ -171,6 +180,10 @@ impl Device {
 
     pub fn repr(&self) -> &DeviceRepr {
         self.obj.base().unwrap()
+    }
+
+    pub fn repr_mut(&self) -> &mut DeviceRepr {
+        unsafe { self.obj.base_mut_unchecked() }
     }
 
     pub fn is_bus(&self) -> bool {
@@ -213,6 +226,41 @@ impl Device {
     ) -> Result<KactionValue, KactionError> {
         twizzler_abi::syscall::sys_kaction(action, Some(self.obj.id()), value, flags)
     }
+
+    pub fn setup_interrupt(&self) -> Result<DeviceInterrupt<'_>, InterruptAllocationError> {
+        let repr = self.repr_mut();
+        let inum = {
+            let mut bv = self.taken_ints.lock().unwrap();
+            let inum = bv
+                .first_zero()
+                .ok_or(InterruptAllocationError::NoMoreInterrupts)?;
+            bv.set(inum, true);
+            inum
+        };
+
+        let (vec, devint) = match self.bus_type() {
+            BusType::Pcie => self.allocate_interrupt(inum)?,
+            _ => return Err(InterruptAllocationError::Unsupported),
+        };
+        repr.register_interrupt(inum, vec, DeviceInterruptFlags::empty());
+        Ok(DeviceInterrupt {
+            device: self,
+            index: inum,
+            device_vector: devint,
+        })
+    }
+}
+
+pub struct DeviceInterrupt<'a> {
+    device: &'a Device,
+    index: usize,
+    device_vector: u32,
+}
+
+pub enum InterruptAllocationError {
+    NoMoreInterrupts,
+    Unsupported,
+    KernelError(KactionError),
 }
 
 pub struct BusTreeRoot {

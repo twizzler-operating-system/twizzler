@@ -87,6 +87,22 @@ impl KactionValue {
             KactionValue::ObjID(o) => Some(o),
         }
     }
+
+    /// If the value is a u64, return it, otherwise panic.
+    pub fn unwrap_u64(self) -> u64 {
+        match self {
+            KactionValue::ObjID(_) => panic!("failed to unwrap ObjID"),
+            KactionValue::U64(o) => o,
+        }
+    }
+
+    /// If the value is a u64, return it, otherwise return None.
+    pub fn u64(self) -> Option<u64> {
+        match self {
+            KactionValue::U64(x) => Some(x),
+            KactionValue::ObjID(_) => None,
+        }
+    }
 }
 
 /// Possible error values for KAction.
