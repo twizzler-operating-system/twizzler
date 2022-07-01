@@ -576,6 +576,7 @@ dependencies = [
 name = "devmgr"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "pci-ids",
  "twizzler-abi",
  "twizzler-driver",

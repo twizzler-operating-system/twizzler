@@ -1,7 +1,7 @@
 use twizzler_abi::device::BusType;
 use twizzler_driver::{
     bus::pcie::PcieDeviceInfo,
-    request::{RequestDriver, Requester},
+    request::{RequestDriver, Requester, SubmitRequest},
 };
 
 struct NvmeController {}
@@ -11,38 +11,35 @@ struct NvmeQueue {}
 #[derive(Clone, Copy, Debug)]
 struct NvmeRequest {}
 
+#[async_trait::async_trait]
 impl RequestDriver for NvmeQueue {
     type Request = NvmeRequest;
     type Response = ();
 
     type SubmitError = ();
 
-    fn allocate(
+    async fn submit(
         &self,
-        len: usize,
-    ) -> Result<twizzler_driver::request::CircularRange, Self::SubmitError> {
-        todo!()
-    }
-
-    fn submit(
-        &self,
-        reqs: &[Self::Request],
-        ids: twizzler_driver::request::CircularRange,
-    ) -> Result<twizzler_driver::request::CircularRange, Self::SubmitError> {
-        todo!()
+        reqs: &[twizzler_driver::request::SubmitRequest<Self::Request>],
+    ) -> Result<(), Self::SubmitError> {
+        println!("submit called with {:?}", reqs);
+        Ok(())
     }
 
     fn flush(&self) {
         todo!()
     }
+
+    const NUM_IDS: usize = 8;
 }
 
 async fn test() {
     let nq = NvmeQueue {};
-    let req = NvmeRequest {};
+    let req = SubmitRequest::new(NvmeRequest {});
     let eng = Requester::new(nq);
 
-    let inflight = eng.submit(&[req]).await.unwrap();
+    let mut reqs = [req];
+    let inflight = eng.submit(&mut reqs, None).await.unwrap();
 
     let res = inflight.await;
 }
