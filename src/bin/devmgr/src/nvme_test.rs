@@ -1,7 +1,51 @@
 use twizzler_abi::device::BusType;
-use twizzler_driver::bus::pcie::PcieDeviceInfo;
+use twizzler_driver::{
+    bus::pcie::PcieDeviceInfo,
+    request::{RequestDriver, Requester},
+};
 
 struct NvmeController {}
+
+struct NvmeQueue {}
+
+#[derive(Clone, Copy, Debug)]
+struct NvmeRequest {}
+
+impl RequestDriver for NvmeQueue {
+    type Request = NvmeRequest;
+    type Response = ();
+
+    type SubmitError = ();
+
+    fn allocate(
+        &self,
+        len: usize,
+    ) -> Result<twizzler_driver::request::CircularRange, Self::SubmitError> {
+        todo!()
+    }
+
+    fn submit(
+        &self,
+        reqs: &[Self::Request],
+        ids: twizzler_driver::request::CircularRange,
+    ) -> Result<twizzler_driver::request::CircularRange, Self::SubmitError> {
+        todo!()
+    }
+
+    fn flush(&self) {
+        todo!()
+    }
+}
+
+async fn test() {
+    let nq = NvmeQueue {};
+    let req = NvmeRequest {};
+    let eng = Requester::new(nq);
+
+    let inflight = eng.submit(&[req]).await.unwrap();
+
+    let res = inflight.await;
+}
 
 pub fn start() {
     let device_root = twizzler_driver::get_bustree_root();

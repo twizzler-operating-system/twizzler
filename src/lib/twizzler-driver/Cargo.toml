@@ -11,3 +11,4 @@ twizzler-abi = {path = "../twizzler-abi"}
 twizzler-async = {path = "../twizzler-async"}
 futures = "0.3.21"
 bitvec = "1.0.0"
+async-trait = "0.1.56"

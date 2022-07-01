@@ -47,11 +47,13 @@ pub struct MsixCapability {
 }
 
 impl MsixCapability {
+#[allow(unaligned_references)]
     fn get_table_info(&self) -> (u8, usize) {
         let info = self.table_offset_and_bir.get();
         ((info & 0x7) as u8, (info & !0x7) as usize)
     }
 
+#[allow(unaligned_references)]
     fn table_len(&self) -> usize {
         (self.msg_ctrl.get() & 0x7ff) as usize
     }
@@ -128,6 +130,7 @@ impl Device {
         None
     }
 
+#[allow(unaligned_references)]
     fn allocate_msix_interrupt(
         &self,
         msix: &MsixCapability,

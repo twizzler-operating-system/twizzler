@@ -7,6 +7,7 @@ use twizzler_object::ObjID;
 
 pub mod bus;
 pub mod device;
+pub mod request;
 
 pub struct BusTreeRoot {
     root_id: ObjID,
