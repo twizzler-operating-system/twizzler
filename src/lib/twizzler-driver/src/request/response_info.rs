@@ -1,4 +1,5 @@
-pub struct ResponseInfo<R: Send> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ResponseInfo<R> {
     resp: R,
     is_err: bool,
     id: u64,

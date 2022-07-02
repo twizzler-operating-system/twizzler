@@ -7,7 +7,7 @@ mod summary;
 
 #[async_trait::async_trait]
 pub trait RequestDriver {
-    type Request;
+    type Request: Copy + Send;
     type Response: Copy + Send;
     type SubmitError;
     async fn submit(&self, reqs: &[SubmitRequest<Self::Request>]) -> Result<(), Self::SubmitError>;

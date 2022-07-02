@@ -1,19 +1,19 @@
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SubmitSummaryWithResponses<R> {
     Responses(Vec<R>),
     Errors(usize),
     Shutdown,
 }
 
-#[derive(Clone, Debug)]
-pub enum AnySubmitSummary<R> {
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum AnySubmitSummary<R> {
     Done,
     Responses(Vec<R>),
     Errors(usize),
     Shutdown,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SubmitSummary {
     Done,
     Errors(usize),
@@ -41,4 +41,3 @@ impl<R> From<AnySubmitSummary<R>> for SubmitSummaryWithResponses<R> {
         }
     }
 }
-

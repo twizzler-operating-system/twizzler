@@ -11,6 +11,7 @@ use super::{
     summary::{AnySubmitSummary, SubmitSummary, SubmitSummaryWithResponses},
 };
 
+#[derive(Debug)]
 struct InFlightInner<R> {
     waker: Option<Waker>,
     ready: Option<AnySubmitSummary<R>>,
@@ -49,8 +50,49 @@ impl<R> InFlightInner<R> {
             w.wake();
         }
     }
+
+    fn count(&self) -> usize {
+        self.count
+    }
+
+    fn calc_summary(&mut self) -> AnySubmitSummary<R> {
+        if self.first_err == usize::MAX {
+            if let Some(resps) = self.resps.take() {
+                let arr = resps.into_raw_parts();
+                let na = unsafe { Vec::from_raw_parts(arr.0 as *mut R, arr.1, arr.2) };
+                AnySubmitSummary::Responses(na)
+            } else {
+                AnySubmitSummary::Done
+            }
+        } else {
+            AnySubmitSummary::Errors(self.first_err)
+        }
+    }
+
+    fn tally_resp(&mut self, resp: &ResponseInfo<R>)
+    where
+        R: Send + Copy,
+    {
+        self.count += 1;
+
+        if self.resps.is_some() {
+            let idx = *self
+                .map
+                .get(&resp.id())
+                .expect("failed to lookup ID in ID map");
+            if resp.is_err() && self.first_err > idx {
+                self.first_err = idx;
+            }
+            self.resps.as_mut().unwrap()[idx] = MaybeUninit::new(*resp.data());
+        } else {
+            if resp.is_err() {
+                self.first_err = 0;
+            }
+        }
+    }
 }
 
+#[derive(Debug)]
 pub struct InFlight<R> {
     len: usize,
     inner: Arc<Mutex<InFlightInner<R>>>,
@@ -83,39 +125,15 @@ impl<R> InFlight<R> {
         R: Send + Copy,
     {
         let mut inner = self.inner.lock().unwrap();
-        inner.count += 1;
-
-        if inner.resps.is_some() {
-            let idx = *inner
-                .map
-                .get(&resp.id())
-                .expect("failed to lookup ID in ID map");
-            if resp.is_err() && inner.first_err > idx {
-                inner.first_err = idx;
-            }
-            inner.resps.as_mut().unwrap()[idx] = MaybeUninit::new(*resp.data());
-        } else {
-            if resp.is_err() {
-                inner.first_err = 0;
-            }
-        }
-        if inner.count == self.len {
-            let summ = if inner.first_err == usize::MAX {
-                if let Some(resps) = inner.resps.take() {
-                    let arr = resps.into_raw_parts();
-                    let na = unsafe { Vec::from_raw_parts(arr.0 as *mut R, arr.1, arr.2) };
-                    AnySubmitSummary::Responses(na)
-                } else {
-                    AnySubmitSummary::Done
-                }
-            } else {
-                AnySubmitSummary::Errors(inner.first_err)
-            };
+        inner.tally_resp(resp);
+        if inner.count() == self.len {
+            let summ = inner.calc_summary();
             inner.finish(summ);
         }
     }
 }
 
+#[derive(Debug)]
 pub struct InFlightFuture<R> {
     inflight: Arc<InFlight<R>>,
 }
@@ -149,6 +167,7 @@ impl<R> InFlightFutureWithResponses<R> {
     }
 }
 
+#[derive(Debug)]
 pub struct InFlightFutureWithResponses<R> {
     inflight: Arc<InFlight<R>>,
 }

@@ -70,8 +70,26 @@ impl<T: RequestDriver> Requester<T> {
                     panic!("tried to map existing in-flight request");
                 }
             }
-            inflight.insert_to_map(reqs, idx_off);
         }
+        inflight.insert_to_map(reqs, idx_off);
+    }
+
+    async fn do_submit(
+        &self,
+        inflight: Arc<InFlight<T::Response>>,
+        reqs: &mut [SubmitRequest<T::Request>],
+    ) -> Result<(), SubmitError<T::SubmitError>> {
+        let mut idx = 0;
+        while idx < reqs.len() {
+            let count = self.allocate_ids(&mut reqs[idx..]).await;
+            self.map_inflight(inflight.clone(), &reqs[idx..(idx + count)], idx);
+            self.driver
+                .submit(&reqs[idx..(idx + count)])
+                .await
+                .map_err(|e| SubmitError::DriverError(e))?;
+            idx += count;
+        }
+        Ok(())
     }
 
     pub async fn submit(
@@ -83,16 +101,7 @@ impl<T: RequestDriver> Requester<T> {
         }
         let inflight = Arc::new(InFlight::new(reqs.len(), false));
 
-        let mut idx = 0;
-        while idx < reqs.len() {
-            let count = self.allocate_ids(&mut reqs[idx..]).await;
-            self.map_inflight(inflight.clone(), &reqs[idx..(idx + count)], idx);
-            self.driver
-                .submit(&reqs[idx..(idx + count)])
-                .await
-                .map_err(|e| SubmitError::DriverError(e))?;
-            idx += count;
-        }
+        self.do_submit(inflight.clone(), reqs).await?;
         Ok(InFlightFuture::new(inflight))
     }
 
@@ -104,18 +113,7 @@ impl<T: RequestDriver> Requester<T> {
             return Err(SubmitError::IsShutdown);
         }
         let inflight = Arc::new(InFlight::new(reqs.len(), true));
-
-        let mut idx = 0;
-        while idx < reqs.len() {
-            let count = self.allocate_ids(&mut reqs[idx..]).await;
-            self.map_inflight(inflight.clone(), &reqs[idx..(idx + count)], idx);
-            self.driver
-                .submit(&reqs[idx..(idx + count)])
-                .await
-                .map_err(|e| SubmitError::DriverError(e))?;
-            self.driver.flush();
-            idx += count;
-        }
+        self.do_submit(inflight.clone(), reqs).await?;
         Ok(InFlightFutureWithResponses::new(inflight))
     }
 
