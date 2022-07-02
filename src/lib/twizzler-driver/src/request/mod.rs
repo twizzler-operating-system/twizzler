@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     mem::MaybeUninit,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    },
     task::{Poll, Waker},
 };
 
@@ -13,6 +16,7 @@ mod async_ids;
 pub enum SubmitSummaryWithResponses<R> {
     Responses(Vec<R>),
     Errors(usize),
+    Shutdown,
 }
 
 #[derive(Clone, Debug)]
@@ -20,12 +24,14 @@ pub enum AnySubmitSummary<R> {
     Done,
     Responses(Vec<R>),
     Errors(usize),
+    Shutdown,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum SubmitSummary {
     Done,
     Errors(usize),
+    Shutdown,
 }
 
 impl<R> From<AnySubmitSummary<R>> for SubmitSummary {
@@ -34,6 +40,7 @@ impl<R> From<AnySubmitSummary<R>> for SubmitSummary {
             AnySubmitSummary::Done => SubmitSummary::Done,
             AnySubmitSummary::Responses(_) => panic!("cannot convert"),
             AnySubmitSummary::Errors(e) => SubmitSummary::Errors(e),
+            AnySubmitSummary::Shutdown => SubmitSummary::Shutdown,
         }
     }
 }
@@ -44,6 +51,7 @@ impl<R> From<AnySubmitSummary<R>> for SubmitSummaryWithResponses<R> {
             AnySubmitSummary::Responses(r) => SubmitSummaryWithResponses::Responses(r),
             AnySubmitSummary::Done => panic!("cannot convert"),
             AnySubmitSummary::Errors(e) => SubmitSummaryWithResponses::Errors(e),
+            AnySubmitSummary::Shutdown => SubmitSummaryWithResponses::Shutdown,
         }
     }
 }
@@ -164,10 +172,13 @@ pub trait RequestDriver {
     const NUM_IDS: usize;
 }
 
+const OK: u32 = 0;
+const SHUTDOWN: u32 = 1;
 pub struct Requester<T: RequestDriver> {
     driver: T,
     inflights: Mutex<HashMap<u64, Arc<InFlight<T::Response>>>>,
     ids: AsyncIdAllocator,
+    state: AtomicU32,
 }
 
 pub struct ResponseInfo<R: Send> {
@@ -182,12 +193,23 @@ impl<R: Send> ResponseInfo<R> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SubmitError<E> {
+    DriverError(E),
+    IsShutdown,
+}
+
 impl<T: RequestDriver> Requester<T> {
+    pub fn is_shutdown(&self) -> bool {
+        self.state.load(Ordering::SeqCst) == SHUTDOWN
+    }
+
     pub fn new(driver: T) -> Self {
         Self {
             ids: AsyncIdAllocator::new(T::NUM_IDS),
             driver,
             inflights: Mutex::new(HashMap::new()),
+            state: AtomicU32::new(OK),
         }
     }
 
@@ -235,14 +257,20 @@ impl<T: RequestDriver> Requester<T> {
     pub async fn submit(
         &self,
         reqs: &mut [SubmitRequest<T::Request>],
-    ) -> Result<InFlightFuture<T::Response>, T::SubmitError> {
+    ) -> Result<InFlightFuture<T::Response>, SubmitError<T::SubmitError>> {
+        if self.is_shutdown() {
+            return Err(SubmitError::IsShutdown);
+        }
         let inflight = Arc::new(InFlight::new(reqs.len(), false));
 
         let mut idx = 0;
         while idx < reqs.len() {
             let count = self.allocate_ids(&mut reqs[idx..]).await;
             self.map_inflight(inflight.clone(), &reqs[idx..(idx + count)], idx);
-            self.driver.submit(&reqs[idx..(idx + count)]).await?;
+            self.driver
+                .submit(&reqs[idx..(idx + count)])
+                .await
+                .map_err(|e| SubmitError::DriverError(e))?;
             idx += count;
         }
         Ok(InFlightFuture { inflight })
@@ -251,18 +279,38 @@ impl<T: RequestDriver> Requester<T> {
     pub async fn submit_for_response(
         &self,
         reqs: &mut [SubmitRequest<T::Request>],
-    ) -> Result<InFlightFutureWithResponses<T::Response>, T::SubmitError> {
+    ) -> Result<InFlightFutureWithResponses<T::Response>, SubmitError<T::SubmitError>> {
+        if self.is_shutdown() {
+            return Err(SubmitError::IsShutdown);
+        }
         let inflight = Arc::new(InFlight::new(reqs.len(), true));
 
         let mut idx = 0;
         while idx < reqs.len() {
             let count = self.allocate_ids(&mut reqs[idx..]).await;
             self.map_inflight(inflight.clone(), &reqs[idx..(idx + count)], idx);
-            self.driver.submit(&reqs[idx..(idx + count)]).await?;
+            self.driver
+                .submit(&reqs[idx..(idx + count)])
+                .await
+                .map_err(|e| SubmitError::DriverError(e))?;
             self.driver.flush();
             idx += count;
         }
         Ok(InFlightFutureWithResponses { inflight })
+    }
+
+    pub fn shutdown(&self) {
+        self.state.store(SHUTDOWN, Ordering::SeqCst);
+        let mut inflights = self.inflights.lock().unwrap();
+        for (_, inflight) in inflights.drain() {
+            let mut inner = inflight.inner.lock().unwrap();
+            if inner.ready.is_none() {
+                inner.ready = Some(AnySubmitSummary::Shutdown);
+                if let Some(w) = inner.waker.take() {
+                    w.wake();
+                }
+            }
+        }
     }
 
     fn take_inflight(&self, id: u64) -> Option<Arc<InFlight<T::Response>>> {
@@ -270,6 +318,9 @@ impl<T: RequestDriver> Requester<T> {
     }
 
     pub fn finish(&self, resps: &[ResponseInfo<T::Response>]) {
+        if self.is_shutdown() {
+            return;
+        }
         for resp in resps {
             let inflight = self.take_inflight(resp.id);
             if let Some(inflight) = inflight {
@@ -314,3 +365,5 @@ impl<T: RequestDriver> Requester<T> {
         }
     }
 }
+
+// TODO: drop for inflight tracker, so we can remove it to save work?
