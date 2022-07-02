@@ -1,12 +1,19 @@
+use std::sync::{Arc, RwLock};
+
 use twizzler_abi::device::BusType;
 use twizzler_driver::{
     bus::pcie::PcieDeviceInfo,
-    request::{RequestDriver, Requester, SubmitRequest},
+    request::{RequestDriver, Requester, ResponseInfo, SubmitRequest},
 };
 
-struct NvmeController {}
+struct NvmeController {
+    requester: RwLock<Vec<Requester<NvmeQueue>>>,
+}
 
-struct NvmeQueue {}
+struct NvmeQueue {
+    idx: usize,
+    ctrl: Arc<NvmeController>,
+}
 
 #[derive(Clone, Copy, Debug)]
 struct NvmeRequest {}
@@ -15,7 +22,6 @@ struct NvmeRequest {}
 impl RequestDriver for NvmeQueue {
     type Request = NvmeRequest;
     type Response = ();
-
     type SubmitError = ();
 
     async fn submit(
@@ -23,6 +29,12 @@ impl RequestDriver for NvmeQueue {
         reqs: &[twizzler_driver::request::SubmitRequest<Self::Request>],
     ) -> Result<(), Self::SubmitError> {
         println!("submit called with {:?}", reqs);
+        let mut resps = Vec::new();
+        for r in reqs.iter().rev() {
+            let err = if r.id() == 3 { true } else { false };
+            resps.push(ResponseInfo::new((), r.id(), err));
+        }
+        self.ctrl.requester.read().unwrap()[0].finish(&resps);
         Ok(())
     }
 
@@ -33,15 +45,25 @@ impl RequestDriver for NvmeQueue {
     const NUM_IDS: usize = 8;
 }
 
-async fn test() {
-    let nq = NvmeQueue {};
-    let req = SubmitRequest::new(NvmeRequest {});
-    let eng = Requester::new(nq);
+async fn test<'a>(mut ctrl: Arc<NvmeController>) {
+    println!("starting req test");
+    let nq = NvmeQueue {
+        idx: 0,
+        ctrl: ctrl.clone(),
+    };
+    ctrl.requester.write().unwrap().push(Requester::new(nq));
 
-    let mut reqs = [req];
-    let inflight = eng.submit(&mut reqs, None).await.unwrap();
+    let mut reqs = Vec::new();
+    for i in 0..10 {
+        reqs.push(SubmitRequest::new(NvmeRequest {}));
+    }
+    let req = ctrl.requester.read().unwrap();
+    {
+        let inflight = req[0].submit(&mut reqs).await.unwrap();
 
-    let res = inflight.await;
+        let res = inflight.await;
+        println!("got summ {:?}", res);
+    }
 }
 
 pub fn start() {
@@ -60,6 +82,11 @@ pub fn start() {
                         info.get_data().dev_nr,
                         info.get_data().func_nr
                     );
+
+                    let ctrl = Arc::new(NvmeController {
+                        requester: RwLock::new(Vec::new()),
+                    });
+                    twizzler_async::run(test(ctrl));
                 }
             }
         }
