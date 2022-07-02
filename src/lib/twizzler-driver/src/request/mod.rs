@@ -9,10 +9,43 @@ use self::async_ids::AsyncIdAllocator;
 
 mod async_ids;
 
+#[derive(Clone, Debug)]
+pub enum SubmitSummaryWithResponses<R> {
+    Responses(Vec<R>),
+    Errors(usize),
+}
+
+#[derive(Clone, Debug)]
+pub enum AnySubmitSummary<R> {
+    Done,
+    Responses(Vec<R>),
+    Errors(usize),
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum SubmitSummary {
     Done,
     Errors(usize),
+}
+
+impl<R> From<AnySubmitSummary<R>> for SubmitSummary {
+    fn from(a: AnySubmitSummary<R>) -> Self {
+        match a {
+            AnySubmitSummary::Done => SubmitSummary::Done,
+            AnySubmitSummary::Responses(_) => panic!("cannot convert"),
+            AnySubmitSummary::Errors(e) => SubmitSummary::Errors(e),
+        }
+    }
+}
+
+impl<R> From<AnySubmitSummary<R>> for SubmitSummaryWithResponses<R> {
+    fn from(a: AnySubmitSummary<R>) -> Self {
+        match a {
+            AnySubmitSummary::Responses(r) => SubmitSummaryWithResponses::Responses(r),
+            AnySubmitSummary::Done => panic!("cannot convert"),
+            AnySubmitSummary::Errors(e) => SubmitSummaryWithResponses::Errors(e),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -37,7 +70,7 @@ impl<T> SubmitRequest<T> {
 
 struct InFlightInner<R> {
     waker: Option<Waker>,
-    ready: Option<SubmitSummary>,
+    ready: Option<AnySubmitSummary<R>>,
     count: usize,
     first_err: usize,
     resps: Option<Vec<MaybeUninit<R>>>,
@@ -92,7 +125,28 @@ impl<R> std::future::Future for InFlightFuture<R> {
     ) -> std::task::Poll<Self::Output> {
         let mut inner = self.inflight.inner.lock().unwrap();
         if let Some(out) = inner.ready.take() {
-            Poll::Ready(out)
+            Poll::Ready(out.into())
+        } else {
+            inner.waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
+pub struct InFlightFutureWithResponses<R> {
+    inflight: Arc<InFlight<R>>,
+}
+
+impl<R> std::future::Future for InFlightFutureWithResponses<R> {
+    type Output = SubmitSummaryWithResponses<R>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let mut inner = self.inflight.inner.lock().unwrap();
+        if let Some(out) = inner.ready.take() {
+            Poll::Ready(out.into())
         } else {
             inner.waker = Some(cx.waker().clone());
             Poll::Pending
@@ -182,7 +236,7 @@ impl<T: RequestDriver> Requester<T> {
         &self,
         reqs: &mut [SubmitRequest<T::Request>],
     ) -> Result<InFlightFuture<T::Response>, T::SubmitError> {
-        let inflight = Arc::new(InFlight::new(reqs.len(), true));
+        let inflight = Arc::new(InFlight::new(reqs.len(), false));
 
         let mut idx = 0;
         while idx < reqs.len() {
@@ -192,6 +246,23 @@ impl<T: RequestDriver> Requester<T> {
             idx += count;
         }
         Ok(InFlightFuture { inflight })
+    }
+
+    pub async fn submit_for_response(
+        &self,
+        reqs: &mut [SubmitRequest<T::Request>],
+    ) -> Result<InFlightFutureWithResponses<T::Response>, T::SubmitError> {
+        let inflight = Arc::new(InFlight::new(reqs.len(), true));
+
+        let mut idx = 0;
+        while idx < reqs.len() {
+            let count = self.allocate_ids(&mut reqs[idx..]).await;
+            self.map_inflight(inflight.clone(), &reqs[idx..(idx + count)], idx);
+            self.driver.submit(&reqs[idx..(idx + count)]).await?;
+            self.driver.flush();
+            idx += count;
+        }
+        Ok(InFlightFutureWithResponses { inflight })
     }
 
     fn take_inflight(&self, id: u64) -> Option<Arc<InFlight<T::Response>>> {
@@ -221,9 +292,17 @@ impl<T: RequestDriver> Requester<T> {
                 }
                 if inner.count == inflight.len {
                     inner.ready = Some(if inner.first_err == usize::MAX {
-                        SubmitSummary::Done
+                        if let Some(resps) = inner.resps.take() {
+                            let arr = resps.into_raw_parts();
+                            let na = unsafe {
+                                Vec::from_raw_parts(arr.0 as *mut T::Response, arr.1, arr.2)
+                            };
+                            AnySubmitSummary::Responses(na)
+                        } else {
+                            AnySubmitSummary::Done
+                        }
                     } else {
-                        SubmitSummary::Errors(inner.first_err)
+                        AnySubmitSummary::Errors(inner.first_err)
                     });
                     if let Some(w) = inner.waker.take() {
                         w.wake();

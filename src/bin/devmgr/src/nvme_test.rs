@@ -16,12 +16,19 @@ struct NvmeQueue {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct NvmeRequest {}
+struct NvmeRequest {
+    x: i32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NvmeResponse {
+    x: i32,
+}
 
 #[async_trait::async_trait]
 impl RequestDriver for NvmeQueue {
     type Request = NvmeRequest;
-    type Response = ();
+    type Response = NvmeResponse;
     type SubmitError = ();
 
     async fn submit(
@@ -30,16 +37,20 @@ impl RequestDriver for NvmeQueue {
     ) -> Result<(), Self::SubmitError> {
         println!("submit called with {:?}", reqs);
         let mut resps = Vec::new();
-        for r in reqs.iter().rev() {
-            let err = if r.id() == 3 { true } else { false };
-            resps.push(ResponseInfo::new((), r.id(), err));
+        for r in reqs {
+            let err = if r.id() == 3 { false } else { false };
+            resps.push(ResponseInfo::new(
+                NvmeResponse { x: r.data().x },
+                r.id(),
+                err,
+            ));
         }
-        self.ctrl.requester.read().unwrap()[0].finish(&resps);
+        self.ctrl.requester.read().unwrap()[self.idx].finish(&resps);
         Ok(())
     }
 
     fn flush(&self) {
-        todo!()
+        println!("flush called!");
     }
 
     const NUM_IDS: usize = 8;
@@ -55,11 +66,11 @@ async fn test<'a>(mut ctrl: Arc<NvmeController>) {
 
     let mut reqs = Vec::new();
     for i in 0..10 {
-        reqs.push(SubmitRequest::new(NvmeRequest {}));
+        reqs.push(SubmitRequest::new(NvmeRequest { x: i }));
     }
     let req = ctrl.requester.read().unwrap();
     {
-        let inflight = req[0].submit(&mut reqs).await.unwrap();
+        let inflight = req[0].submit_for_response(&mut reqs).await.unwrap();
 
         let res = inflight.await;
         println!("got summ {:?}", res);

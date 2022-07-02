@@ -1,6 +1,6 @@
 #![feature(option_result_unwrap_unchecked)]
 #![feature(generic_associated_types)]
-
+#![feature(vec_into_raw_parts)]
 use device::children::DeviceChildrenIterator;
 use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd};
 use twizzler_object::ObjID;
