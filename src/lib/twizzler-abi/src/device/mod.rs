@@ -143,6 +143,7 @@ pub struct DeviceInterrupt {
     pub taken: u16,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub enum MailboxPriority {
     Idle,
     Low,
@@ -150,6 +151,19 @@ pub enum MailboxPriority {
     Num,
 }
 
+impl TryFrom<usize> for MailboxPriority {
+    type Error = ();
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        Ok(match value {
+            0 => MailboxPriority::Idle,
+            1 => MailboxPriority::Low,
+            2 => MailboxPriority::High,
+            3 => MailboxPriority::Num,
+            _ => return Err(()),
+        })
+    }
+}
 /// The base struct for a device object.
 #[repr(C)]
 pub struct DeviceRepr {
