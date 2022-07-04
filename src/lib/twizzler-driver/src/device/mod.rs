@@ -3,16 +3,13 @@ use std::sync::Mutex;
 
 use bitvec::array::BitArray;
 
-use futures::FutureExt;
 pub use twizzler_abi::device::BusType;
 pub use twizzler_abi::device::DeviceRepr;
 pub use twizzler_abi::device::DeviceType;
 use twizzler_abi::device::NUM_DEVICE_INTERRUPTS;
 use twizzler_abi::kso::KactionError;
 use twizzler_abi::kso::KactionValue;
-use twizzler_abi::{
-    kso::{KactionCmd, KactionFlags, KactionGenericCmd},
-};
+use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd};
 use twizzler_async::Async;
 use twizzler_object::Object;
 use twizzler_object::{ObjID, ObjectInitError, ObjectInitFlags, Protections};
@@ -21,6 +18,7 @@ use self::interrupts::InterruptData;
 use self::interrupts::InterruptDataInner;
 
 pub mod children;
+pub mod events;
 pub mod info;
 pub mod interrupts;
 pub mod mmio;
@@ -71,7 +69,6 @@ impl Device {
         result.objid()
     }
 
-
     pub fn repr(&self) -> &DeviceRepr {
         self.obj.base().unwrap()
     }
@@ -97,5 +94,4 @@ impl Device {
     ) -> Result<KactionValue, KactionError> {
         twizzler_abi::syscall::sys_kaction(action, Some(self.obj.id()), value, flags)
     }
-
 }

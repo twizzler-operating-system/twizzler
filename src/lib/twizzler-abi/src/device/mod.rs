@@ -143,6 +143,13 @@ pub struct DeviceInterrupt {
     pub taken: u16,
 }
 
+pub enum MailboxPriority {
+    Idle,
+    Low,
+    High,
+    Num,
+}
+
 /// The base struct for a device object.
 #[repr(C)]
 pub struct DeviceRepr {
@@ -151,6 +158,7 @@ pub struct DeviceRepr {
     pub bus_type: BusType,
     pub device_id: DeviceId,
     pub interrupts: [DeviceInterrupt; NUM_DEVICE_INTERRUPTS],
+    pub mailboxes: [AtomicU64; MailboxPriority::Num as usize],
 }
 impl crate::marker::BaseType for DeviceRepr {
     fn init<T>(_t: T) -> Self {
@@ -189,12 +197,14 @@ impl DeviceRepr {
             flags: DeviceInterruptFlags::empty(),
             taken: 0,
         };
+        const M: AtomicU64 = AtomicU64::new(0);
         Self {
             kso_hdr,
             device_type,
             bus_type,
             device_id,
             interrupts: [V; NUM_DEVICE_INTERRUPTS],
+            mailboxes: [M; MailboxPriority::Num as usize],
         }
     }
 
@@ -237,6 +247,16 @@ impl DeviceRepr {
     /// Poll an interrupt vector to see if it has fired.
     pub fn check_for_interrupt(&self, inum: usize) -> Option<u64> {
         let val = self.interrupts[inum].sync.swap(0, Ordering::SeqCst);
+        if val == 0 {
+            None
+        } else {
+            Some(val)
+        }
+    }
+
+    /// Poll an interrupt vector to see if it has fired.
+    pub fn check_for_mailbox(&self, inum: usize) -> Option<u64> {
+        let val = self.mailboxes[inum].swap(0, Ordering::SeqCst);
         if val == 0 {
             None
         } else {
