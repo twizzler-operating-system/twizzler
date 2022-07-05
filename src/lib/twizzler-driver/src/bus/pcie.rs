@@ -7,7 +7,7 @@ use twizzler_abi::{
     vcell::Volatile,
 };
 
-use crate::device::{interrupts::InterruptAllocationError, mmio::MmioObject, Device};
+use crate::device::{events::InterruptAllocationError, mmio::MmioObject, Device};
 
 pub struct PcieCapabilityIterator {
     cfg: MmioObject,
@@ -47,13 +47,13 @@ pub struct MsixCapability {
 }
 
 impl MsixCapability {
-#[allow(unaligned_references)]
+    #[allow(unaligned_references)]
     fn get_table_info(&self) -> (u8, usize) {
         let info = self.table_offset_and_bir.get();
         ((info & 0x7) as u8, (info & !0x7) as usize)
     }
 
-#[allow(unaligned_references)]
+    #[allow(unaligned_references)]
     fn table_len(&self) -> usize {
         (self.msg_ctrl.get() & 0x7ff) as usize
     }
@@ -100,7 +100,7 @@ impl Iterator for PcieCapabilityIterator {
     }
 }
 
-fn calc_msg_info(vec: InterruptVector) -> (u64, u32) {
+fn calc_msg_info(_vec: InterruptVector) -> (u64, u32) {
     todo!()
 }
 
@@ -130,7 +130,7 @@ impl Device {
         None
     }
 
-#[allow(unaligned_references)]
+    #[allow(unaligned_references)]
     fn allocate_msix_interrupt(
         &self,
         msix: &MsixCapability,
@@ -157,8 +157,8 @@ impl Device {
 
     fn allocate_msi_interrupt(
         &self,
-        msix: &MsiCapability,
-        vec: InterruptVector,
+        _msi: &MsiCapability,
+        _vec: InterruptVector,
     ) -> Result<u32, InterruptAllocationError> {
         todo!()
     }

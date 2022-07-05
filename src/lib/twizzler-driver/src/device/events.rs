@@ -1,8 +1,15 @@
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{atomic::Ordering, Arc, Mutex},
+};
 
 use futures::future::select_all;
 use twizzler_abi::{
-    device::{DeviceRepr, MailboxPriority, NUM_DEVICE_INTERRUPTS},
+    device::{
+        BusType, DeviceInterruptFlags, DeviceRepr, InterruptVector, MailboxPriority,
+        NUM_DEVICE_INTERRUPTS,
+    },
+    kso::KactionError,
     syscall::{ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep},
 };
 use twizzler_async::{Async, AsyncSetup};
@@ -68,6 +75,12 @@ impl MailboxInner {
     }
 }
 
+pub enum InterruptAllocationError {
+    NoMoreInterrupts,
+    Unsupported,
+    KernelError(KactionError),
+}
+
 impl AsyncSetup for MailboxInner {
     type Error = bool;
 
@@ -84,30 +97,82 @@ impl AsyncSetup for MailboxInner {
 }
 
 pub struct DeviceEventStream {
-    device: Device,
     inner: Mutex<DeviceEventStreamInner>,
     repr: *const DeviceRepr,
     asyncs: Vec<Async<IntInner>>,
     async_mb: Vec<Async<MailboxInner>>,
+    device: Arc<Device>,
+}
+
+pub struct InterruptInfo<'a> {
+    es: &'a DeviceEventStream,
+    _vec: InterruptVector,
+    devint: u32,
+    inum: usize,
+}
+
+impl<'a> InterruptInfo<'a> {
+    pub async fn next(&self) -> Option<u64> {
+        self.es.next(self.inum).await
+    }
+
+    pub fn devint(&self) -> u32 {
+        self.devint
+    }
+}
+
+impl<'a> Drop for InterruptInfo<'a> {
+    fn drop(&mut self) {
+        self.es.free_interrupt(self)
+    }
 }
 
 impl DeviceEventStream {
-    pub fn new(device: Device) -> Self {
+    pub fn free_interrupt(&self, _ii: &InterruptInfo<'_>) {
+        // TODO
+    }
+
+    pub fn allocate_interrupt(&self) -> Result<InterruptInfo<'_>, InterruptAllocationError> {
+        // SAFETY: We grab ownership of the interrupt repr data via the atomic swap.
+        let repr = unsafe { (self.repr as *mut DeviceRepr).as_mut().unwrap() };
+        for i in 0..NUM_DEVICE_INTERRUPTS {
+            if repr.interrupts[i]
+                .taken
+                .swap(1, std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                let (vec, devint) = match self.device.bus_type() {
+                    BusType::Pcie => self.device.allocate_interrupt(i)?,
+                    _ => return Err(InterruptAllocationError::Unsupported),
+                };
+                repr.register_interrupt(i, vec, DeviceInterruptFlags::empty());
+                return Ok(InterruptInfo {
+                    es: self,
+                    _vec: vec,
+                    devint,
+                    inum: i,
+                });
+            }
+        }
+        Err(InterruptAllocationError::NoMoreInterrupts)
+    }
+
+    pub(crate) fn new(device: Arc<Device>) -> Self {
+        let repr = device.repr();
         let asyncs = (0..NUM_DEVICE_INTERRUPTS)
             .into_iter()
-            .map(|i| Async::new(IntInner::new(device.repr(), i)))
+            .map(|i| Async::new(IntInner::new(repr, i)))
             .collect();
         let async_mb = (0..(MailboxPriority::Num as usize))
             .into_iter()
-            .map(|i| Async::new(MailboxInner::new(device.repr(), i)))
+            .map(|i| Async::new(MailboxInner::new(repr, i)))
             .collect();
-        let repr = device.repr() as *const DeviceRepr;
         Self {
-            device,
             inner: Mutex::new(DeviceEventStreamInner::new()),
             repr,
             asyncs,
             async_mb,
+            device,
         }
     }
 
@@ -150,8 +215,8 @@ impl DeviceEventStream {
         }
     }
 
-    pub async fn next(&self, int: usize) -> Option<u64> {
-        if self.repr().interrupts[int].taken == 0 {
+    pub(crate) async fn next(&self, int: usize) -> Option<u64> {
+        if self.repr().interrupts[int].taken.load(Ordering::SeqCst) == 0 {
             return None;
         }
         if let Some(x) = self.repr().check_for_interrupt(int) {

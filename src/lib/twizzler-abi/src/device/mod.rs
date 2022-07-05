@@ -3,7 +3,7 @@
 use core::{
     fmt::Display,
     num::TryFromIntError,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU16, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -140,7 +140,7 @@ pub struct DeviceInterrupt {
     pub sync: AtomicU64,
     pub vec: InterruptVector,
     pub flags: DeviceInterruptFlags,
-    pub taken: u16,
+    pub taken: AtomicU16,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -209,7 +209,7 @@ impl DeviceRepr {
             sync: AtomicU64::new(0),
             vec: InterruptVector(0),
             flags: DeviceInterruptFlags::empty(),
-            taken: 0,
+            taken: AtomicU16::new(0),
         };
         const M: AtomicU64 = AtomicU64::new(0);
         Self {

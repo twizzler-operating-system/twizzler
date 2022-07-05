@@ -218,7 +218,7 @@ pub enum DmaAllocationError {
 }
 
 impl DmaAllocator {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             objs: Mutex::new(Vec::new()),
         }

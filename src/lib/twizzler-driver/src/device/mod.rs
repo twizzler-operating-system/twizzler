@@ -1,32 +1,23 @@
 use std::fmt::Display;
-use std::sync::Mutex;
-
-use bitvec::array::BitArray;
 
 pub use twizzler_abi::device::BusType;
 pub use twizzler_abi::device::DeviceRepr;
 pub use twizzler_abi::device::DeviceType;
-use twizzler_abi::device::NUM_DEVICE_INTERRUPTS;
 use twizzler_abi::kso::KactionError;
 use twizzler_abi::kso::KactionValue;
 use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd};
-use twizzler_async::Async;
 use twizzler_object::Object;
 use twizzler_object::{ObjID, ObjectInitError, ObjectInitFlags, Protections};
 
-use self::interrupts::InterruptData;
-use self::interrupts::InterruptDataInner;
+use crate::dma::DmaAllocator;
 
 pub mod children;
 pub mod events;
 pub mod info;
-pub mod interrupts;
 pub mod mmio;
 
 pub struct Device {
     obj: Object<DeviceRepr>,
-    ints: [InterruptData; NUM_DEVICE_INTERRUPTS],
-    taken_ints: Mutex<BitArray>,
 }
 
 impl Display for Device {
@@ -43,22 +34,8 @@ impl Device {
             Protections::WRITE | Protections::READ,
             ObjectInitFlags::empty(),
         )?;
-        let ints = (0..NUM_DEVICE_INTERRUPTS)
-            .into_iter()
-            .map(|i| InterruptData {
-                src: Async::new(InterruptDataInner {
-                    repr: obj.base().unwrap() as *const DeviceRepr,
-                    inum: i,
-                }),
-            })
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
-        Ok(Self {
-            obj,
-            ints,
-            taken_ints: Mutex::new(BitArray::ZERO),
-        })
+
+        Ok(Self { obj })
     }
 
     fn get_subobj(&self, ty: u8, idx: u8) -> Option<ObjID> {
@@ -93,5 +70,9 @@ impl Device {
         flags: KactionFlags,
     ) -> Result<KactionValue, KactionError> {
         twizzler_abi::syscall::sys_kaction(action, Some(self.obj.id()), value, flags)
+    }
+
+    pub fn new_dma_allocator(&self) -> DmaAllocator {
+        DmaAllocator::new()
     }
 }

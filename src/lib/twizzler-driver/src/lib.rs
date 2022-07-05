@@ -6,6 +6,7 @@ use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd};
 use twizzler_object::ObjID;
 
 pub mod bus;
+pub mod controller;
 pub mod device;
 pub mod dma;
 pub mod request;
