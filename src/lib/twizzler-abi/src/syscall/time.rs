@@ -161,3 +161,20 @@ pub fn sys_read_clock_info(
         |_, v| v.into(),
     )
 }
+
+/// Different kinds of clocks exposed by the kernel.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub enum ClockGroup {
+    Unknown,
+    Monotonic,
+    RealTime,
+}
+
+/// Discover a list of clock sources exposed by the kernel.
+pub fn sys_read_clock_list(
+    clock: ClockGroup,
+    flags: ReadClockFlags,
+) -> Result<VecDeque<Clock>, ReadClockError> {
+    todo!();
+}
