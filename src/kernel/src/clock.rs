@@ -8,6 +8,7 @@ use crate::{
     processor::current_processor,
     spinlock::Spinlock,
     thread::{Priority, ThreadRef},
+    time::{Ticks, ClockHardware},
 };
 
 pub type Nanoseconds = u64;
@@ -253,8 +254,21 @@ pub fn oneshot_clock_hardtick() {
     }
 }
 
+fn enumerate_hw_clocks() {
+    crate::time::register_clock(SoftClockTick {});
+//   crate::arch::processor::enumerate_clocks();
+}
+
+pub struct SoftClockTick;
+impl ClockHardware for SoftClockTick {
+    fn read(&self) -> Ticks {
+        Ticks { value: get_current_ticks(), rate: 0}
+    }
+}
+
 pub fn init() {
     crate::arch::start_clock(127, statclock);
     TIMEOUT_THREAD
         .call_once(|| crate::thread::start_new_kernel(Priority::REALTIME, soft_timeout_clock));
+    enumerate_hw_clocks();
 }

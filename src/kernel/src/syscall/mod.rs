@@ -11,6 +11,7 @@ use twizzler_abi::{
 use x86_64::VirtAddr;
 
 use crate::clock::{get_current_ticks, ticks_to_nano};
+use crate::time::{Ticks, TICK_SOURCES};
 
 use self::{object::sys_new_handle, thread::thread_ctrl};
 
@@ -106,9 +107,9 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClo
 
     match source {
         ClockSource::Monotonic => {
-            let ticks = get_current_ticks();
+            let ticks = unsafe { TICK_SOURCES[source as usize].read() };
             //TODO
-            let dur = Duration::from_nanos(ticks_to_nano(ticks).unwrap());
+            let dur = Duration::from_nanos(ticks_to_nano(ticks.value).unwrap());
             let precision = Duration::from_nanos(1000); //TODO
             let flags = ClockFlags::MONOTONIC;
             let source = ClockSource::Monotonic;
