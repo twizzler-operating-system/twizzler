@@ -64,12 +64,16 @@ bitflags! {
     }
 }
 
+#[repr(transparent)]
+struct FemtoSeconds(u64);
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 /// Information about a given clock source, including precision and current clock value.
 pub struct ClockInfo {
-    precision: Duration,
     current: Duration,
+    precision: FemtoSeconds,
+    resolution: FemtoSeconds,
     flags: ClockFlags,
     source: ClockSource,
 }
@@ -78,21 +82,28 @@ impl ClockInfo {
     /// Construct a new ClockInfo. You probably want to be getting these from [sys_read_clock_info], though.
     pub fn new(
         current: Duration,
-        precision: Duration,
+        precision: FemtoSeconds,
+        resolution: FemtoSeconds,
         flags: ClockFlags,
         source: ClockSource,
     ) -> Self {
         Self {
-            precision,
             current,
+            precision,
+            resolution,
             flags,
             source,
         }
     }
 
     /// Get the precision of a clock source.
-    pub fn precision(&self) -> Duration {
+    pub fn precision(&self) -> FemtoSeconds {
         self.precision
+    }
+
+    /// Get the resolution of a clock source.
+    pub fn resolution(&self) -> FemtoSeconds {
+        self.resolution
     }
 
     /// Get the current value of a clock source.
