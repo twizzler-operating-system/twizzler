@@ -1,5 +1,4 @@
 use core::{fmt, mem::MaybeUninit, time::Duration};
-
 use bitflags::bitflags;
 
 use crate::arch::syscall::raw_syscall;
@@ -64,8 +63,9 @@ bitflags! {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
-struct FemtoSeconds(u64);
+pub struct FemtoSeconds(pub u64);
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -171,10 +171,12 @@ pub enum ClockGroup {
     RealTime,
 }
 
+pub struct Clock;
+
 /// Discover a list of clock sources exposed by the kernel.
 pub fn sys_read_clock_list(
-    clock: ClockGroup,
-    flags: ReadClockFlags,
-) -> Result<VecDeque<Clock>, ReadClockError> {
+    _clock: ClockGroup,
+    _flags: ReadClockFlags,
+) -> Result<Clock, ReadClockInfoError> { // should be a list like Vec
     todo!();
 }

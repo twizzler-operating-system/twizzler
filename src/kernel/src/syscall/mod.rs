@@ -4,7 +4,7 @@ use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionValue},
     object::{ObjID, Protections},
     syscall::{
-        ClockFlags, ClockInfo, ClockSource, HandleType, KernelConsoleReadSource, ObjectCreateError,
+        ClockFlags, ClockInfo, ClockSource, FemtoSeconds, HandleType, KernelConsoleReadSource, ObjectCreateError,
         ObjectMapError, ReadClockInfoError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
     },
 };
@@ -110,10 +110,11 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClo
             let ticks = unsafe { TICK_SOURCES[source as usize].read() };
             //TODO
             let dur = Duration::from_nanos(ticks_to_nano(ticks.value).unwrap());
-            let precision = Duration::from_nanos(1000); //TODO
+            let precision = FemtoSeconds(1000); //TODO
+            let resolution = FemtoSeconds(1000); //TODO
             let flags = ClockFlags::MONOTONIC;
             let source = ClockSource::Monotonic;
-            let info = ClockInfo::new(dur, precision, flags, source);
+            let info = ClockInfo::new(dur, precision, resolution, flags, source);
             info_ptr.write(info);
             Ok(0)
         }
