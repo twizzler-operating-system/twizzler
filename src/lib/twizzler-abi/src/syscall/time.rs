@@ -75,7 +75,6 @@ pub struct ClockInfo {
     precision: FemtoSeconds,
     resolution: FemtoSeconds,
     flags: ClockFlags,
-    source: ClockSource,
 }
 
 impl ClockInfo {
@@ -85,14 +84,12 @@ impl ClockInfo {
         precision: FemtoSeconds,
         resolution: FemtoSeconds,
         flags: ClockFlags,
-        source: ClockSource,
     ) -> Self {
         Self {
             current,
             precision,
             resolution,
             flags,
-            source,
         }
     }
 
@@ -121,19 +118,28 @@ impl ClockInfo {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum ClockSource {
-    Monotonic = 0,
-    RealTime = 1,
+    BestMonotonic,
+    BestRealTime,
+    ID(ClockID)
 }
 
-impl TryFrom<u64> for ClockSource {
-    type Error = ReadClockInfoError;
+impl From<u64> for ClockSource {
+    fn from(value: u64) -> Self {
+        match value {
+            0 => Self::BestMonotonic,
+            1 => Self::BestRealTime,
+            _ => Self::ID(ClockID(value)),
+        }
+    }
+}
 
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        Ok(match value {
-            0 => Self::Monotonic,
-            1 => Self::RealTime,
-            _ => return Err(ReadClockInfoError::InvalidArgument),
-        })
+impl From<ClockSource> for u64 {
+    fn from(source: ClockSource) -> Self {
+        match source {
+            ClockSource::BestMonotonic => 0,
+            ClockSource::BestRealTime => 1,
+            ClockSource::ID(clk) => clk.0
+        }
     }
 }
 
@@ -147,7 +153,7 @@ pub fn sys_read_clock_info(
         raw_syscall(
             Syscall::ReadClockInfo,
             &[
-                clock_source as u64,
+                clock_source.into(),
                 &mut clock_info as *mut MaybeUninit<ClockInfo> as usize as u64,
                 flags.bits() as u64,
             ],
@@ -171,7 +177,17 @@ pub enum ClockGroup {
     RealTime,
 }
 
-pub struct Clock;
+/// ID used internally to read the appropriate clock source.
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct ClockID(pub u64);
+
+// abstract representation of a clock source
+pub struct Clock {
+    _info: ClockInfo,
+    _id: ClockID,
+    _group: ClockGroup
+}
 
 /// Discover a list of clock sources exposed by the kernel.
 pub fn sys_read_clock_list(
