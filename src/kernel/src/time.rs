@@ -3,13 +3,16 @@ use alloc::{
     vec::Vec
 };
 
+use twizzler_abi::syscall::{ClockInfo, FemtoSeconds};
+
 pub struct Ticks {
   pub value: u64,
-  pub rate: u64
+  pub rate: FemtoSeconds
 }
 
 pub trait ClockHardware {
   fn read(&self) -> Ticks;
+  fn info(&self) -> ClockInfo;
 }
 
 // struct DummySource;

@@ -1,4 +1,4 @@
-use core::{mem::MaybeUninit, time::Duration};
+use core::{mem::MaybeUninit};
 
 use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionValue},
@@ -109,11 +109,11 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClo
         ClockSource::BestMonotonic => {
             let ticks = unsafe { TICK_SOURCES[src as usize].read() };
             //TODO
-            let dur = Duration::from_nanos(ticks_to_nano(ticks.value).unwrap());
+            let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
             let precision = FemtoSeconds(1000); //TODO
             let resolution = FemtoSeconds(1000); //TODO
             let flags = ClockFlags::MONOTONIC;
-            let info = ClockInfo::new(dur, precision, resolution, flags);
+            let info = ClockInfo::new(span, precision, resolution, flags);
             info_ptr.write(info);
             Ok(0)
         }

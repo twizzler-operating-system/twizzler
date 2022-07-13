@@ -65,13 +65,26 @@ bitflags! {
 
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
+pub struct Seconds(pub u64);
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
 pub struct FemtoSeconds(pub u64);
+
+#[derive(Clone, Copy, Debug)]
+pub struct TimeSpan(Seconds, FemtoSeconds);
+
+impl From<TimeSpan> for Duration {
+    fn from(t: TimeSpan) -> Self {
+        Duration::new(t.0, t.1) // TODO: convert femtos to nanos
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 /// Information about a given clock source, including precision and current clock value.
 pub struct ClockInfo {
-    current: Duration,
+    current: TimeSpan,
     precision: FemtoSeconds,
     resolution: FemtoSeconds,
     flags: ClockFlags,
@@ -80,7 +93,7 @@ pub struct ClockInfo {
 impl ClockInfo {
     /// Construct a new ClockInfo. You probably want to be getting these from [sys_read_clock_info], though.
     pub fn new(
-        current: Duration,
+        current: TimeSpan,
         precision: FemtoSeconds,
         resolution: FemtoSeconds,
         flags: ClockFlags,
@@ -104,7 +117,7 @@ impl ClockInfo {
     }
 
     /// Get the current value of a clock source.
-    pub fn current_value(&self) -> Duration {
+    pub fn current_value(&self) -> TimeSpan {
         self.current
     }
 
