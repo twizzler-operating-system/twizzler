@@ -1,16 +1,17 @@
-use core::{mem::MaybeUninit, time::Duration};
+use core::{mem::MaybeUninit};
 
 use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionValue},
     object::{ObjID, Protections},
     syscall::{
-        ClockFlags, ClockInfo, ClockSource, HandleType, KernelConsoleReadSource, ObjectCreateError,
+        ClockFlags, ClockInfo, ClockSource, ClockGroup, FemtoSeconds, HandleType, KernelConsoleReadSource, ObjectCreateError,
         ObjectMapError, ReadClockInfoError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
     },
 };
 use x86_64::VirtAddr;
 
-use crate::clock::{get_current_ticks, ticks_to_nano};
+use crate::clock::ticks_to_nano;
+use crate::time::TICK_SOURCES;
 
 use self::{object::sys_new_handle, thread::thread_ctrl};
 
@@ -100,23 +101,23 @@ fn type_sys_kaction(
 }
 
 fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClockInfoError> {
-    let source: ClockSource = src.try_into()?;
+    let source: ClockSource = src.into();
     let info_ptr: &mut MaybeUninit<ClockInfo> =
         unsafe { create_user_ptr(info) }.ok_or(ReadClockInfoError::InvalidArgument)?;
 
     match source {
-        ClockSource::Monotonic => {
-            let ticks = get_current_ticks();
+        ClockSource::BestMonotonic => {
+            let ticks = unsafe { TICK_SOURCES[src as usize].read() };
             //TODO
-            let dur = Duration::from_nanos(ticks_to_nano(ticks).unwrap());
-            let precision = Duration::from_nanos(1000); //TODO
+            let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
+            let precision = FemtoSeconds(1000); //TODO
+            let resolution = FemtoSeconds(1000); //TODO
             let flags = ClockFlags::MONOTONIC;
-            let source = ClockSource::Monotonic;
-            let info = ClockInfo::new(dur, precision, flags, source);
+            let info = ClockInfo::new(span, precision, resolution, flags);
             info_ptr.write(info);
             Ok(0)
         }
-        ClockSource::RealTime => Err(ReadClockInfoError::InvalidArgument),
+        _ => Err(ReadClockInfoError::InvalidArgument),
     }
 }
 

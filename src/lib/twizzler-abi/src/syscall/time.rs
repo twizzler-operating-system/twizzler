@@ -1,5 +1,4 @@
 use core::{fmt, mem::MaybeUninit, time::Duration};
-
 use bitflags::bitflags;
 
 use crate::arch::syscall::raw_syscall;
@@ -65,38 +64,60 @@ bitflags! {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct Seconds(pub u64);
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct FemtoSeconds(pub u64);
+
+#[derive(Clone, Copy, Debug)]
+pub struct TimeSpan(Seconds, FemtoSeconds);
+
+impl From<TimeSpan> for Duration {
+    fn from(t: TimeSpan) -> Self {
+        Duration::new(t.0, t.1) // TODO: convert femtos to nanos
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 /// Information about a given clock source, including precision and current clock value.
 pub struct ClockInfo {
-    precision: Duration,
-    current: Duration,
+    current: TimeSpan,
+    precision: FemtoSeconds,
+    resolution: FemtoSeconds,
     flags: ClockFlags,
-    source: ClockSource,
 }
 
 impl ClockInfo {
     /// Construct a new ClockInfo. You probably want to be getting these from [sys_read_clock_info], though.
     pub fn new(
-        current: Duration,
-        precision: Duration,
+        current: TimeSpan,
+        precision: FemtoSeconds,
+        resolution: FemtoSeconds,
         flags: ClockFlags,
-        source: ClockSource,
     ) -> Self {
         Self {
-            precision,
             current,
+            precision,
+            resolution,
             flags,
-            source,
         }
     }
 
     /// Get the precision of a clock source.
-    pub fn precision(&self) -> Duration {
+    pub fn precision(&self) -> FemtoSeconds {
         self.precision
     }
 
+    /// Get the resolution of a clock source.
+    pub fn resolution(&self) -> FemtoSeconds {
+        self.resolution
+    }
+
     /// Get the current value of a clock source.
-    pub fn current_value(&self) -> Duration {
+    pub fn current_value(&self) -> TimeSpan {
         self.current
     }
 
@@ -110,19 +131,28 @@ impl ClockInfo {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum ClockSource {
-    Monotonic = 0,
-    RealTime = 1,
+    BestMonotonic,
+    BestRealTime,
+    ID(ClockID)
 }
 
-impl TryFrom<u64> for ClockSource {
-    type Error = ReadClockInfoError;
+impl From<u64> for ClockSource {
+    fn from(value: u64) -> Self {
+        match value {
+            0 => Self::BestMonotonic,
+            1 => Self::BestRealTime,
+            _ => Self::ID(ClockID(value)),
+        }
+    }
+}
 
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        Ok(match value {
-            0 => Self::Monotonic,
-            1 => Self::RealTime,
-            _ => return Err(ReadClockInfoError::InvalidArgument),
-        })
+impl From<ClockSource> for u64 {
+    fn from(source: ClockSource) -> Self {
+        match source {
+            ClockSource::BestMonotonic => 0,
+            ClockSource::BestRealTime => 1,
+            ClockSource::ID(clk) => clk.0
+        }
     }
 }
 
@@ -136,7 +166,7 @@ pub fn sys_read_clock_info(
         raw_syscall(
             Syscall::ReadClockInfo,
             &[
-                clock_source as u64,
+                clock_source.into(),
                 &mut clock_info as *mut MaybeUninit<ClockInfo> as usize as u64,
                 flags.bits() as u64,
             ],
@@ -149,4 +179,46 @@ pub fn sys_read_clock_info(
         |_, _| unsafe { clock_info.assume_init() },
         |_, v| v.into(),
     )
+}
+
+/// Different kinds of clocks exposed by the kernel.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub enum ClockGroup {
+    Unknown,
+    Monotonic,
+    RealTime,
+}
+
+/// ID used internally to read the appropriate clock source.
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct ClockID(pub u64);
+
+// abstract representation of a clock source
+pub struct Clock {
+    info: ClockInfo,
+    id: ClockID,
+    group: ClockGroup
+}
+
+impl Clock {
+    pub fn new(info: ClockInfo, id: ClockID, group: ClockGroup) {
+        Self {info, id, group}
+    }
+
+    pub fn read(&self) -> TimeSpan {}
+    
+    pub fn info(&self) -> ClockInfo {}
+
+    /// Returns a new instance of a Clock from the specified ClockGroup
+    pub fn get(group: ClockGroup) -> Clock {}
+}
+
+/// Discover a list of clock sources exposed by the kernel.
+pub fn sys_read_clock_list(
+    _clock: ClockGroup,
+    _flags: ReadClockFlags,
+) -> Result<Clock, ReadClockInfoError> { // should be a list like Vec
+    todo!();
 }

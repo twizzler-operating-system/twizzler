@@ -37,6 +37,8 @@ pub enum Syscall {
     Spawn,
     /// Read clock information.
     ReadClockInfo,
+    /// List clock sources.
+    ReadClockList,
     /// Apply a kernel action to an object (used for device drivers).
     Kaction,
     /// New Handle.
