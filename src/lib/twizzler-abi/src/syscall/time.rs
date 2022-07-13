@@ -197,9 +197,22 @@ pub struct ClockID(pub u64);
 
 // abstract representation of a clock source
 pub struct Clock {
-    _info: ClockInfo,
-    _id: ClockID,
-    _group: ClockGroup
+    info: ClockInfo,
+    id: ClockID,
+    group: ClockGroup
+}
+
+impl Clock {
+    pub fn new(info: ClockInfo, id: ClockID, group: ClockGroup) {
+        Self {info, id, group}
+    }
+
+    pub fn read(&self) -> TimeSpan {}
+    
+    pub fn info(&self) -> ClockInfo {}
+
+    /// Returns a new instance of a Clock from the specified ClockGroup
+    pub fn get(group: ClockGroup) -> Clock {}
 }
 
 /// Discover a list of clock sources exposed by the kernel.
