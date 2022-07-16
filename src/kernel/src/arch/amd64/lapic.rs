@@ -143,7 +143,9 @@ pub fn schedule_oneshot_tick(time: Nanoseconds) {
 }
 
 pub fn read_monotonic_nanoseconds() -> Nanoseconds {
-    let tsc = unsafe { x86::time::rdtscp() };
+    // TODO: should we use rdtsc or rdtscp here? (the latter will require a cpuid check once (only
+    // once, cache the result))
+    let tsc = unsafe { x86::time::rdtsc() };
     let f = unsafe { FREQ_MHZ };
     if unlikely(f == 0) {
         panic!("cannot read nanoseconds before TSC calibration");

@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use twizzler_abi::upcall::UpcallFrame;
-use x86_64::{instructions::segmentation::Segment64, VirtAddr};
+use x86_64::VirtAddr;
 
 use crate::{syscall::SyscallContext, thread::current_thread_ref};
 
@@ -140,8 +140,6 @@ pub unsafe fn return_to_user(context: *const X86SyscallContext) -> ! {
 
 #[no_mangle]
 unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs: u64) -> ! {
-    /* TODO: avoid doing both of these? */
-    x86_64::registers::segmentation::FS::write_base(VirtAddr::new(kernel_fs));
     x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
     let t = current_thread_ref().unwrap();
     t.set_entry_registers(Registers::Syscall(context, *context));
@@ -165,7 +163,6 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
     {
         let t = current_thread_ref().unwrap();
         let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
-        x86_64::registers::segmentation::FS::write_base(VirtAddr::new(user_fs));
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
     }
     /* TODO: check that rcx is canonical */

@@ -2,7 +2,7 @@ use core::sync::atomic::Ordering;
 
 use twizzler_abi::upcall::{ExceptionInfo, UpcallFrame, UpcallInfo};
 use x86::current::rflags::RFlags;
-use x86_64::{instructions::segmentation::Segment64, VirtAddr};
+use x86_64::VirtAddr;
 
 use crate::{
     arch::lapic,
@@ -116,7 +116,6 @@ unsafe extern "C" fn common_handler_entry(
 ) {
     let user = user != 0;
     if user {
-        x86_64::registers::segmentation::FS::write_base(VirtAddr::new(kernel_fs));
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
         let t = current_thread_ref().unwrap();
         t.set_entry_registers(Registers::Interrupt(ctx, *ctx));
@@ -127,7 +126,6 @@ unsafe extern "C" fn common_handler_entry(
         let t = current_thread_ref().unwrap();
         t.set_entry_registers(Registers::None);
         let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
-        x86_64::registers::segmentation::FS::write_base(VirtAddr::new(user_fs));
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
         drop(t);
     }
