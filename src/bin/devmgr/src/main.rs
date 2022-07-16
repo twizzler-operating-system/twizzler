@@ -11,6 +11,7 @@ use twizzler_driver::{
 };
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
+mod nvme_ds;
 mod nvme_test;
 
 fn get_pcie_offset(bus: u8, device: u8, function: u8) -> usize {
