@@ -2,7 +2,6 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use alloc::{boxed::Box, vec::Vec};
 use x86_64::{
-    instructions::segmentation::Segment64,
     registers::{control::Cr4Flags, model_specific::EferFlags},
     VirtAddr,
 };
@@ -61,32 +60,29 @@ pub fn init(tls: VirtAddr) {
     if let Some(ef) = cpuid {
         if ef.has_fsgsbase() {
             unsafe { x86_64::registers::control::Cr4::update(|f| f.insert(Cr4Flags::FSGSBASE)) };
-            unsafe {
-                x86_64::registers::segmentation::GS::write_base(VirtAddr::new(gs_scratch as u64))
-            };
-            unsafe { x86_64::registers::segmentation::FS::write_base(tls) };
-        } else {
-            /* we use these instruction in interrupt handling */
-            panic!("no support for rdfsbase and wrfsbase");
         }
-    } else {
-        panic!("no support for rdfsbase and wrfsbase");
     }
+    let has_xsave = x86::cpuid::CpuId::new()
+        .get_feature_info()
+        .map(|f| f.has_xsave())
+        .unwrap_or_default();
     unsafe { x86::msr::wrmsr(x86::msr::IA32_FS_BASE, tls.as_u64()) };
     unsafe { x86::msr::wrmsr(x86::msr::IA32_GS_BASE, gs_scratch as u64) };
     unsafe { x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, 0) };
 
     unsafe {
-        let cr4 = x86::controlregs::cr4();
-        x86::controlregs::cr4_write(
-            cr4 | x86::controlregs::Cr4::CR4_ENABLE_SSE
-                | x86::controlregs::Cr4::CR4_ENABLE_OS_XSAVE,
-        );
-        let xcr0 = x86::controlregs::xcr0();
-        x86::controlregs::xcr0_write(
-            xcr0 | x86::controlregs::Xcr0::XCR0_SSE_STATE
-                | x86::controlregs::Xcr0::XCR0_FPU_MMX_STATE,
-        );
+        let mut cr4 = x86::controlregs::cr4() | x86::controlregs::Cr4::CR4_ENABLE_SSE;
+        if has_xsave {
+            cr4 |= x86::controlregs::Cr4::CR4_ENABLE_OS_XSAVE;
+        }
+        x86::controlregs::cr4_write(cr4);
+        if has_xsave {
+            let xcr0 = x86::controlregs::xcr0();
+            x86::controlregs::xcr0_write(
+                xcr0 | x86::controlregs::Xcr0::XCR0_SSE_STATE
+                    | x86::controlregs::Xcr0::XCR0_FPU_MMX_STATE,
+            );
+        }
     }
 }
 
@@ -97,9 +93,7 @@ pub fn enumerate_cpus() -> u32 {
 
     let bsp_id = get_bsp_id(Some(&procinfo));
 
-    crate::processor::register(
-        procinfo.boot_processor.local_apic_id, bsp_id,
-    );
+    crate::processor::register(procinfo.boot_processor.local_apic_id, bsp_id);
     for p in procinfo.application_processors {
         crate::processor::register(p.local_apic_id, bsp_id);
     }
@@ -222,7 +216,8 @@ impl Processor {
 }
 
 pub fn tls_ready() -> bool {
-    unsafe { x86::bits64::segmentation::rdfsbase() != 0 }
+    unsafe { x86::msr::rdmsr(x86::msr::IA32_FS_BASE) != 0 }
+    //unsafe { x86::bits64::segmentation::rdfsbase() != 0 }
 }
 
 pub fn get_bsp_id(maybe_processor_info: Option<&acpi::platform::ProcessorInfo>) -> u32 {
@@ -232,7 +227,7 @@ pub fn get_bsp_id(maybe_processor_info: Option<&acpi::platform::ProcessorInfo>) 
             let processor_info = acpi.platform_info().unwrap().processor_info.unwrap();
 
             processor_info.boot_processor.local_apic_id
-        },
-        Some(p) => p.boot_processor.local_apic_id
+        }
+        Some(p) => p.boot_processor.local_apic_id,
     }
 }
