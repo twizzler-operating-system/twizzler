@@ -22,6 +22,7 @@ struct NvmeRequest {
 
 #[derive(Clone, Copy, Debug)]
 struct NvmeResponse {
+    #[allow(dead_code)]
     x: i32,
 }
 
@@ -56,7 +57,7 @@ impl RequestDriver for NvmeQueue {
     const NUM_IDS: usize = 8;
 }
 
-async fn test<'a>(mut ctrl: Arc<NvmeController>) {
+async fn test<'a>(ctrl: Arc<NvmeController>) {
     println!("starting req test");
     let nq = NvmeQueue {
         idx: 0,
@@ -77,6 +78,7 @@ async fn test<'a>(mut ctrl: Arc<NvmeController>) {
     }
 }
 
+#[allow(dead_code)]
 pub fn start() {
     let device_root = twizzler_driver::get_bustree_root();
     for device in device_root.children() {

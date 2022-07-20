@@ -12,3 +12,4 @@ twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-async = { path = "../../lib/twizzler-async" }
 pci-ids = "0.2.4"
 async-trait = "0.1.56"
+#nvme = { git = "https://github.com/dbittman/nvme-rs" }

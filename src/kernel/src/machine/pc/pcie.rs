@@ -65,10 +65,6 @@ fn register_device(
                     .as_ref()
                     .unwrap()
             };
-            if cfg.fnheader.status.get() & (1 << 4) != 0 {
-                let caps = cfg.cap_ptr.get();
-                logln!("caps {:x}", caps);
-            }
             let mut bar = 0;
             while bar < 6 {
                 let info = cfg.bars[bar].get();
@@ -153,13 +149,6 @@ fn register_device(
     );
 
     for bar in bars.iter().enumerate() {
-        logln!(
-            "  got bar {} {:x}, {:x}, {}",
-            bar.0,
-            bar.1 .0,
-            bar.1 .1,
-            bar.1 .2
-        );
         if bar.1 .0 != 0 {
             dev.add_mmio(
                 PhysAddr::new(bar.1 .0),
