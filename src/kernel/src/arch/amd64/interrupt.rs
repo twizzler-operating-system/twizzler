@@ -14,6 +14,10 @@ use crate::{
 
 use super::thread::{Registers, UpcallAble};
 
+pub const MIN_VECTOR: usize = 48;
+pub const MAX_VECTOR: usize = 239;
+pub const RESV_VECTORS: &[usize] = &[0x80];
+pub const NUM_VECTORS: usize = 256;
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct IsrContext {

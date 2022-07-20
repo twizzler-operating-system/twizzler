@@ -1,5 +1,3 @@
-
-
 use std::sync::Arc;
 
 use twizzler_abi::syscall::ThreadSyncSleep;
@@ -18,6 +16,7 @@ pub trait AsyncSetup {
     fn setup_sleep(&self) -> ThreadSyncSleep;
 }
 
+#[derive(Debug)]
 /// A wrapper type around some "handle" that we want to perform asynchronous operations on, where
 /// that handle must implement [AsyncSetup].
 pub struct Async<T> {
