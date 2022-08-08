@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, Mutex, 
+        Arc, Mutex,
     },
     task::{Poll, Waker},
     time::{Duration, Instant},
@@ -191,12 +191,14 @@ impl Reactor {
     }
 }
 
+#[derive(Debug)]
 struct SourceInner {
     op: ThreadSyncSleep,
     wakers: Vec<Waker>,
     active: bool,
 }
 
+#[derive(Debug)]
 pub(crate) struct Source {
     key: usize,
     inner: Mutex<SourceInner>,
