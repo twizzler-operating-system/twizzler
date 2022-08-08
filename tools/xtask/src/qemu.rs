@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::{fs::File, process::Command};
 
 use crate::QemuOptions;
 
@@ -30,6 +30,14 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
     ));
     run_cmd.arg("-device").arg("nvdimm,id=nvdimm1,memdev=mem1");
     */
+    File::create("target/nvme.img")
+        .and_then(|f| f.set_len(0x10000000))
+        .unwrap();
+    run_cmd
+        .arg("-drive")
+        .arg("file=target/nvme.img,if=none,id=nvme")
+        .arg("-device")
+        .arg("nvme,serial=deadbeef,drive=nvme");
     run_cmd
         .arg("--no-reboot")
         .arg("-s")
