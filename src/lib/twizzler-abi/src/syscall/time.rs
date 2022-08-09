@@ -72,11 +72,17 @@ pub struct Seconds(pub u64);
 pub struct FemtoSeconds(pub u64);
 
 #[derive(Clone, Copy, Debug)]
-pub struct TimeSpan(Seconds, FemtoSeconds);
+pub struct TimeSpan(pub Seconds, pub FemtoSeconds);
 
+impl TimeSpan {
+    pub const ZERO: TimeSpan = TimeSpan(
+        Seconds(0),
+        FemtoSeconds(0)
+    );
+}
 impl From<TimeSpan> for Duration {
     fn from(t: TimeSpan) -> Self {
-        Duration::new(t.0, t.1) // TODO: convert femtos to nanos
+        Duration::new(t.0.0, t.1.0 as u32) // TODO: convert femtos to nanos
     }
 }
 
@@ -91,8 +97,15 @@ pub struct ClockInfo {
 }
 
 impl ClockInfo {
+    pub const ZERO: ClockInfo = ClockInfo::new(
+        TimeSpan::ZERO,
+        FemtoSeconds(0),
+        FemtoSeconds(0),
+        ClockFlags::MONOTONIC
+    );
+
     /// Construct a new ClockInfo. You probably want to be getting these from [sys_read_clock_info], though.
-    pub fn new(
+    pub const fn new(
         current: TimeSpan,
         precision: FemtoSeconds,
         resolution: FemtoSeconds,
@@ -195,6 +208,7 @@ pub enum ClockGroup {
 #[repr(transparent)]
 pub struct ClockID(pub u64);
 
+#[allow(dead_code)]
 // abstract representation of a clock source
 pub struct Clock {
     info: ClockInfo,
@@ -203,16 +217,26 @@ pub struct Clock {
 }
 
 impl Clock {
-    pub fn new(info: ClockInfo, id: ClockID, group: ClockGroup) {
+    pub fn new(info: ClockInfo, id: ClockID, group: ClockGroup) -> Clock {
         Self {info, id, group}
     }
 
-    pub fn read(&self) -> TimeSpan {}
+    pub fn read(&self) -> TimeSpan {
+        TimeSpan::ZERO
+    }
     
-    pub fn info(&self) -> ClockInfo {}
+    pub fn info(&self) -> ClockInfo {
+        self.info
+    }
 
     /// Returns a new instance of a Clock from the specified ClockGroup
-    pub fn get(group: ClockGroup) -> Clock {}
+    pub fn get(_group: ClockGroup) -> Clock {
+        Clock {
+            group : ClockGroup::Monotonic,
+            id: ClockID(0),
+            info: ClockInfo::ZERO,
+        }
+    }
 }
 
 /// Discover a list of clock sources exposed by the kernel.

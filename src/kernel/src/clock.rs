@@ -11,6 +11,8 @@ use crate::{
     time::{Ticks, ClockHardware},
 };
 
+use twizzler_abi::syscall::{ClockInfo, FemtoSeconds};
+
 pub type Nanoseconds = u64;
 
 pub fn statclock(dt: Nanoseconds) {
@@ -262,7 +264,11 @@ fn enumerate_hw_clocks() {
 pub struct SoftClockTick;
 impl ClockHardware for SoftClockTick {
     fn read(&self) -> Ticks {
-        Ticks { value: get_current_ticks(), rate: 0}
+        Ticks { value: get_current_ticks(), rate: FemtoSeconds(0)}
+    }
+
+    fn info(&self) -> ClockInfo {
+        ClockInfo::ZERO
     }
 }
 

@@ -4,7 +4,7 @@ use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionValue},
     object::{ObjID, Protections},
     syscall::{
-        ClockFlags, ClockInfo, ClockSource, ClockGroup, FemtoSeconds, HandleType, KernelConsoleReadSource, ObjectCreateError,
+        ClockFlags, ClockInfo, ClockSource, ClockGroup, TimeSpan, Seconds, FemtoSeconds, HandleType, KernelConsoleReadSource, ObjectCreateError,
         ObjectMapError, ReadClockInfoError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
     },
 };
@@ -109,7 +109,10 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClo
         ClockSource::BestMonotonic => {
             let ticks = unsafe { TICK_SOURCES[src as usize].read() };
             //TODO
-            let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
+            let span = TimeSpan(
+                Seconds(ticks.value),
+                ticks.rate //ticks.value * ticks.rate; // multiplication operator returns TimeSpan
+            );
             let precision = FemtoSeconds(1000); //TODO
             let resolution = FemtoSeconds(1000); //TODO
             let flags = ClockFlags::MONOTONIC;
