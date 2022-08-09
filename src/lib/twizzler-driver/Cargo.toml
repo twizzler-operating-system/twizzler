@@ -8,3 +8,6 @@ edition = "2021"
 [dependencies]
 twizzler-object = {path = "../twizzler-object"}
 twizzler-abi = {path = "../twizzler-abi"}
+twizzler-async = {path = "../twizzler-async"}
+futures = "0.3.21"
+async-trait = "0.1.56"

@@ -57,14 +57,13 @@ pub unsafe fn jump_to_user(target: VirtAddr, stack: VirtAddr, arg: u64) {
             .arch
             .user_fs
             .load(Ordering::SeqCst);
-        x86_64::registers::segmentation::FS::write_base(VirtAddr::new(user_fs));
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
     }
     syscall::return_to_user(&ctx as *const syscall::X86SyscallContext);
 }
 
 pub use lapic::schedule_oneshot_tick;
-use x86_64::{registers::segmentation::Segment64, VirtAddr};
+use x86_64::VirtAddr;
 
 pub fn set_interrupt(
     num: u32,

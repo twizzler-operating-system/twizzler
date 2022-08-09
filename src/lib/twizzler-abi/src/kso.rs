@@ -87,6 +87,22 @@ impl KactionValue {
             KactionValue::ObjID(o) => Some(o),
         }
     }
+
+    /// If the value is a u64, return it, otherwise panic.
+    pub fn unwrap_u64(self) -> u64 {
+        match self {
+            KactionValue::ObjID(_) => panic!("failed to unwrap ObjID"),
+            KactionValue::U64(o) => o,
+        }
+    }
+
+    /// If the value is a u64, return it, otherwise return None.
+    pub fn u64(self) -> Option<u64> {
+        match self {
+            KactionValue::U64(x) => Some(x),
+            KactionValue::ObjID(_) => None,
+        }
+    }
 }
 
 /// Possible error values for KAction.
@@ -137,6 +153,8 @@ pub enum KactionGenericCmd {
     GetChild(u16),
     /// Get a sub-object.
     GetSubObject(u8, u8),
+    /// Allocate DMA memory.
+    AllocateDMA(u16),
 }
 
 impl From<KactionGenericCmd> for u32 {
@@ -145,6 +163,7 @@ impl From<KactionGenericCmd> for u32 {
             KactionGenericCmd::GetKsoRoot => (0, 0),
             KactionGenericCmd::GetChild(v) => (1, v),
             KactionGenericCmd::GetSubObject(t, v) => (2, ((t as u16) << 8) | (v as u16)),
+            KactionGenericCmd::AllocateDMA(v) => (3, v),
         };
         ((h as u32) << 16) | l as u32
     }
@@ -158,6 +177,7 @@ impl TryFrom<u32> for KactionGenericCmd {
             0 => KactionGenericCmd::GetKsoRoot,
             1 => KactionGenericCmd::GetChild(l),
             2 => KactionGenericCmd::GetSubObject((l >> 8) as u8, l as u8),
+            3 => KactionGenericCmd::AllocateDMA(l),
             _ => return Err(KactionError::InvalidArgument),
         };
         Ok(v)

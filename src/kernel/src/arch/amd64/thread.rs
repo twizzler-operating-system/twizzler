@@ -1,6 +1,6 @@
 use core::{
     cell::RefCell,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
 };
 
 use alloc::vec::Vec;
@@ -166,6 +166,23 @@ where
     regs.set_upcall(target, frame_start, info_start, stack_start);
 }
 
+fn use_xsave() -> bool {
+    static USE_XSAVE: AtomicU8 = AtomicU8::new(0);
+    let xs = USE_XSAVE.load(Ordering::SeqCst);
+    match xs {
+        0 => {
+            let has_xsave = x86::cpuid::CpuId::new()
+                .get_feature_info()
+                .map(|f| f.has_xsave())
+                .unwrap_or_default();
+            USE_XSAVE.store(if has_xsave { 2 } else { 1 }, Ordering::SeqCst);
+            has_xsave
+        }
+        1 => false,
+        _ => true,
+    }
+}
+
 impl Thread {
     pub fn arch_queue_upcall(&self, target: usize, info: UpcallInfo) {
         logln!("queue upcall!");
@@ -202,27 +219,19 @@ impl Thread {
             set_kernel_stack(
                 VirtAddr::new(self.kernel_stack.as_ref() as *const u8 as u64) + KERNEL_STACK_SIZE,
             );
-            /*
-            logln!(
-                "switch {} -> {} {:?}",
-                old_thread.id(),
-                self.id(),
-                self.arch.xsave_region.0.as_ptr()
-            );
-            */
-            asm!("xsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
-            /*
-            for (i, x) in old_thread.arch.xsave_region.0.iter().enumerate() {
-                if i % 16 == 0 {
-                    log!("\n{}: ", i);
-                }
-                log!("{:x} ", x);
+            let do_xsave = use_xsave();
+            if do_xsave {
+                asm!("xsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
+            } else {
+                asm!("fxsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr());
             }
-            logln!("");
-            */
             old_thread.arch.xsave_inited.store(true, Ordering::SeqCst);
             if self.arch.xsave_inited.load(Ordering::SeqCst) {
-                asm!("xrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
+                if do_xsave {
+                    asm!("xrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
+                } else {
+                    asm!("fxrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr());
+                }
             } else {
                 let mut f: u16 = 0;
                 let mut x: u32 = 0;

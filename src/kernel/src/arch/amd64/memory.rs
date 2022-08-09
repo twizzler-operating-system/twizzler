@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicU8, Ordering};
+
 use twizzler_abi::device::CacheType;
 use x86_64::{structures::paging::PageTable, PhysAddr, VirtAddr};
 
@@ -197,6 +199,24 @@ pub struct ArchMemoryContextSwitchInfo {
     target: u64,
 }
 
+// TODO: build a generic framework for "cached-feature-flag" (and use this for below and the one in amd64/thread.rs)
+fn has_huge_pages() -> bool {
+    static VAL: AtomicU8 = AtomicU8::new(0);
+    let val = VAL.load(Ordering::SeqCst);
+    match val {
+        0 => {
+            let x = x86::cpuid::CpuId::new()
+                .get_extended_processor_and_feature_identifiers()
+                .map(|f| f.has_1gib_pages())
+                .unwrap_or_default();
+            VAL.store(if x { 2 } else { 1 }, Ordering::SeqCst);
+            x
+        }
+        1 => false,
+        _ => true,
+    }
+}
+
 const PAGE_SIZE_HUGE: usize = 1024 * 1024 * 1024;
 const PAGE_SIZE_LARGE: usize = 2 * 1024 * 1024;
 const PAGE_SIZE: usize = 0x1000;
@@ -287,6 +307,9 @@ impl ArchMemoryContext {
     ) -> Result<(), MapFailed> {
         let end = start + length;
         let mut count = 0usize;
+        if page_size == PAGE_SIZE_HUGE && !has_huge_pages() {
+            panic!("tried to map huge pages on a CPU that doesn't support them");
+        }
         loop {
             let addr = start + count;
             let indexes = [
@@ -402,6 +425,7 @@ impl ArchMemoryContext {
             let nr_recur = if addr.is_aligned(PAGE_SIZE_HUGE as u64)
                 && end.is_aligned(PAGE_SIZE_HUGE as u64)
                 && frame.is_aligned(PAGE_SIZE_HUGE as u64)
+                && has_huge_pages()
             {
                 1
             } else if addr.is_aligned(PAGE_SIZE_LARGE as u64)

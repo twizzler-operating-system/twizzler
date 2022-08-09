@@ -2,7 +2,8 @@
 
 use core::{
     fmt::Display,
-    sync::atomic::{AtomicU64, Ordering},
+    num::TryFromIntError,
+    sync::atomic::{AtomicU16, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -13,7 +14,7 @@ use crate::{
 
 pub mod bus;
 
-const NUM_DEVICE_INTERRUPTS: usize = 32;
+pub const NUM_DEVICE_INTERRUPTS: usize = 32;
 
 /// Possible high-level device types.
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Debug)]
@@ -88,6 +89,8 @@ pub struct MmioInfo {
     pub length: u64,
     /// The cache type.
     pub cache_type: CacheType,
+    /// Device-specific info.
+    pub info: u64,
 }
 
 impl crate::marker::BaseType for MmioInfo {
@@ -112,6 +115,15 @@ bitflags::bitflags! {
 #[repr(transparent)]
 pub struct InterruptVector(u32);
 
+impl TryFrom<u64> for InterruptVector {
+    type Error = TryFromIntError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        let u: u32 = value.try_into()?;
+        Ok(InterruptVector(u))
+    }
+}
+
 /// A per-bus device ID.
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Debug)]
 #[repr(transparent)]
@@ -124,13 +136,34 @@ impl DeviceId {
 }
 
 #[repr(C)]
-struct DeviceInterrupt {
-    sync: AtomicU64,
-    vec: InterruptVector,
-    flags: DeviceInterruptFlags,
-    taken: u16,
+pub struct DeviceInterrupt {
+    pub sync: AtomicU64,
+    pub vec: InterruptVector,
+    pub flags: DeviceInterruptFlags,
+    pub taken: AtomicU16,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum MailboxPriority {
+    Idle,
+    Low,
+    High,
+    Num,
+}
+
+impl TryFrom<usize> for MailboxPriority {
+    type Error = ();
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        Ok(match value {
+            0 => MailboxPriority::Idle,
+            1 => MailboxPriority::Low,
+            2 => MailboxPriority::High,
+            3 => MailboxPriority::Num,
+            _ => return Err(()),
+        })
+    }
+}
 /// The base struct for a device object.
 #[repr(C)]
 pub struct DeviceRepr {
@@ -138,7 +171,8 @@ pub struct DeviceRepr {
     pub device_type: DeviceType,
     pub bus_type: BusType,
     pub device_id: DeviceId,
-    interrupts: [DeviceInterrupt; NUM_DEVICE_INTERRUPTS],
+    pub interrupts: [DeviceInterrupt; NUM_DEVICE_INTERRUPTS],
+    pub mailboxes: [AtomicU64; MailboxPriority::Num as usize],
 }
 impl crate::marker::BaseType for DeviceRepr {
     fn init<T>(_t: T) -> Self {
@@ -175,14 +209,16 @@ impl DeviceRepr {
             sync: AtomicU64::new(0),
             vec: InterruptVector(0),
             flags: DeviceInterruptFlags::empty(),
-            taken: 0,
+            taken: AtomicU16::new(0),
         };
+        const M: AtomicU64 = AtomicU64::new(0);
         Self {
             kso_hdr,
             device_type,
             bus_type,
             device_id,
             interrupts: [V; NUM_DEVICE_INTERRUPTS],
+            mailboxes: [M; MailboxPriority::Num as usize],
         }
     }
 
@@ -213,9 +249,28 @@ impl DeviceRepr {
         }
     }
 
+    pub fn setup_interrupt_sleep(&self, inum: usize) -> ThreadSyncSleep {
+        ThreadSyncSleep {
+            reference: ThreadSyncReference::Virtual(&self.interrupts[inum].sync),
+            value: 0,
+            op: ThreadSyncOp::Equal,
+            flags: ThreadSyncFlags::empty(),
+        }
+    }
+
     /// Poll an interrupt vector to see if it has fired.
     pub fn check_for_interrupt(&self, inum: usize) -> Option<u64> {
         let val = self.interrupts[inum].sync.swap(0, Ordering::SeqCst);
+        if val == 0 {
+            None
+        } else {
+            Some(val)
+        }
+    }
+
+    /// Poll an interrupt vector to see if it has fired.
+    pub fn check_for_mailbox(&self, inum: usize) -> Option<u64> {
+        let val = self.mailboxes[inum].swap(0, Ordering::SeqCst);
         if val == 0 {
             None
         } else {

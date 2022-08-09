@@ -1,12 +1,23 @@
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use core::mem::size_of;
+
+use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
+use memoffset::offset_of;
 use twizzler_abi::{
-    device::{BusType, CacheType, DeviceId, DeviceRepr, DeviceType, MmioInfo, SubObjectType},
+    device::{
+        BusType, CacheType, DeviceId, DeviceInterrupt, DeviceRepr, DeviceType, MmioInfo,
+        SubObjectType,
+    },
     kso::{KactionCmd, KactionError, KactionGenericCmd, KactionValue, KsoHdr},
-    object::ObjID,
+    object::{ObjID, NULLPAGE_SIZE},
 };
 use x86_64::PhysAddr;
 
-use crate::{mutex::Mutex, obj::ObjectRef, once::Once};
+use crate::{
+    interrupt::WakeInfo,
+    mutex::Mutex,
+    obj::{lookup_object, LookupFlags, ObjectRef},
+    once::Once,
+};
 
 pub struct DeviceInner {
     sub_objects: Vec<(SubObjectType, ObjectRef)>,
@@ -19,6 +30,7 @@ pub struct Device {
     bus_type: BusType,
     dev_type: DeviceType,
     id: ObjID,
+    name: String,
 }
 
 pub type DeviceRef = Arc<Device>;
@@ -56,6 +68,9 @@ fn get_kso_manager() -> &'static KsoManager {
 pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64) -> Result<KactionValue, KactionError> {
     match cmd {
         KactionCmd::Generic(cmd) => match cmd {
+            KactionGenericCmd::AllocateDMA(_np) => {
+                todo!()
+            }
             KactionGenericCmd::GetKsoRoot => {
                 let ksom = get_kso_manager();
                 Ok(KactionValue::ObjID(ksom.root.id()))
@@ -126,6 +141,7 @@ pub fn create_busroot(
         bus_type: bt,
         dev_type: DeviceType::Bus,
         id: obj.id(),
+        name: name.to_owned(),
     });
     let info = DeviceRepr::new(KsoHdr::new(name), DeviceType::Bus, bt, DeviceId::new(0));
     obj.write_base(&info);
@@ -153,6 +169,7 @@ pub fn create_device(
         bus_type: bt,
         dev_type: DeviceType::Device,
         id: obj.id(),
+        name: name.to_owned(),
     });
     let info = DeviceRepr::new(KsoHdr::new(name), DeviceType::Device, bt, id);
     obj.write_base(&info);
@@ -162,6 +179,21 @@ pub fn create_device(
 }
 
 impl Device {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn get_interrupt_wakeinfo(&self, num: usize) -> WakeInfo {
+        let obj = lookup_object(self.id, LookupFlags::empty()).unwrap();
+        WakeInfo::new(
+            obj,
+            NULLPAGE_SIZE
+                + offset_of!(DeviceRepr, interrupts)
+                + size_of::<DeviceInterrupt>() * num
+                + offset_of!(DeviceInterrupt, sync),
+        )
+    }
+
     pub fn add_info<T>(&self, info: &T) {
         let obj = Arc::new(crate::obj::Object::new());
         obj.write_base(info);
@@ -172,12 +204,13 @@ impl Device {
             .push((SubObjectType::Info, obj));
     }
 
-    pub fn add_mmio(&self, start: PhysAddr, end: PhysAddr, ct: CacheType) {
+    pub fn add_mmio(&self, start: PhysAddr, end: PhysAddr, ct: CacheType, info: u64) {
         let obj = Arc::new(crate::obj::Object::new());
         obj.map_phys(start, end, ct);
         let mmio_info = MmioInfo {
             length: end - start,
             cache_type: CacheType::Uncachable,
+            info,
         };
         obj.write_base(&mmio_info);
         crate::obj::register_object(obj.clone());
