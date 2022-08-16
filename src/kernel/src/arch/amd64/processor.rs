@@ -101,6 +101,22 @@ pub fn enumerate_cpus() -> u32 {
     bsp_id
 }
 
+/// Determine what hardware clock sources are available
+/// on the processor and register them in the time subsystem
+pub fn enumerate_clocks() {
+    // for now we only use the TSC
+    // in the future we will explore using other time sources
+
+    let cpuid = x86::cpuid::CpuId::new();
+
+    // check if processor has TSC
+    let has_tsc = cpuid.get_feature_info().map_or(false, |finfo| finfo.has_tsc());
+    if has_tsc {
+        // saves reference to tsc clock source into global array
+        crate::time::register_clock(super::tsc::TSC{});
+    }
+}
+
 pub fn get_topology() -> Vec<(usize, bool)> {
     let cpuid = x86::cpuid::CpuId::new();
     let vendor = cpuid.get_vendor_info().unwrap();

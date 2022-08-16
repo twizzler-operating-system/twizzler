@@ -258,7 +258,8 @@ pub fn oneshot_clock_hardtick() {
 
 fn enumerate_hw_clocks() {
     crate::time::register_clock(SoftClockTick {});
-//   crate::arch::processor::enumerate_clocks();
+    crate::arch::processor::enumerate_clocks();
+    crate::machine::enumerate_clocks();
 }
 
 pub struct SoftClockTick;
