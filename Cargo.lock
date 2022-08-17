@@ -2348,6 +2348,7 @@ name = "twizzler-driver"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bitflags",
  "futures",
  "twizzler-abi",
  "twizzler-async",
