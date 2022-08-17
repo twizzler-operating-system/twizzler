@@ -9,8 +9,6 @@ use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd};
 use twizzler_object::Object;
 use twizzler_object::{ObjID, ObjectInitError, ObjectInitFlags, Protections};
 
-use crate::dma::DmaAllocator;
-
 pub mod children;
 pub mod events;
 pub mod info;
@@ -70,9 +68,5 @@ impl Device {
         flags: KactionFlags,
     ) -> Result<KactionValue, KactionError> {
         twizzler_abi::syscall::sys_kaction(action, Some(self.obj.id()), value, flags)
-    }
-
-    pub fn new_dma_allocator(&self) -> DmaAllocator {
-        DmaAllocator::new()
     }
 }
