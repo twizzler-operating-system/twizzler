@@ -6,10 +6,13 @@ use core::{
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
+    vec::Vec,
 };
 use twizzler_abi::object::ObjID;
+use x86_64::PhysAddr;
 
 use crate::{
+    idcounter::{IdCounter, SimpleId},
     memory::context::MappingRef,
     mutex::{LockGuard, Mutex},
 };
@@ -29,6 +32,13 @@ pub struct Object {
     range_tree: Mutex<range::PageRangeTree>,
     maplist: Mutex<BTreeSet<MappingRef>>,
     sleep_info: Mutex<SleepInfo>,
+    pin_info: Mutex<PinInfo>,
+}
+
+#[derive(Default)]
+struct PinInfo {
+    id_counter: IdCounter,
+    pins: Vec<SimpleId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq)]
@@ -112,6 +122,25 @@ impl Object {
         self.maplist.lock().insert(mapping);
     }
 
+    pub fn pin(&self, start: PageNumber, len: usize) -> Option<(Vec<PhysAddr>, u32)> {
+        let mut tree = self.lock_page_tree();
+
+        let mut pin_info = self.pin_info.lock();
+
+        let mut v = Vec::new();
+        for i in 0..len {
+            // TODO: we'll need to handle failures here when we expand the paging system.
+            let p = tree.get_page(start.offset(i), true).unwrap();
+            v.push(p.0.physical_address());
+        }
+
+        let id = pin_info.id_counter.next_simple();
+        let token = id.value().try_into().ok()?;
+        pin_info.pins.push(id);
+
+        Some((v, token))
+    }
+
     pub fn new() -> Self {
         Self {
             id: ((OID.fetch_add(1, Ordering::SeqCst) as u128) | (1u128 << 64)).into(),
@@ -119,6 +148,7 @@ impl Object {
             range_tree: Mutex::new(range::PageRangeTree::new()),
             maplist: Mutex::new(BTreeSet::new()),
             sleep_info: Mutex::new(SleepInfo::new()),
+            pin_info: Mutex::new(PinInfo::default()),
         }
     }
 

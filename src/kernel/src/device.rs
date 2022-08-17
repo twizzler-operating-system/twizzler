@@ -9,6 +9,7 @@ use twizzler_abi::{
     },
     kso::{KactionCmd, KactionError, KactionGenericCmd, KactionValue, KsoHdr},
     object::{ObjID, NULLPAGE_SIZE},
+    syscall::PinnedPage,
 };
 use x86_64::PhysAddr;
 
@@ -17,6 +18,7 @@ use crate::{
     mutex::Mutex,
     obj::{lookup_object, LookupFlags, ObjectRef},
     once::Once,
+    syscall::create_user_slice,
 };
 
 pub struct DeviceInner {
@@ -69,12 +71,36 @@ pub fn kaction(
     cmd: KactionCmd,
     id: Option<ObjID>,
     arg: u64,
-    _arg2: u64,
+    arg2: u64,
 ) -> Result<KactionValue, KactionError> {
     match cmd {
         KactionCmd::Generic(cmd) => match cmd {
             KactionGenericCmd::PinPages(_np) => {
-                todo!()
+                let id = id.ok_or(KactionError::InvalidArgument)?;
+                let obj = lookup_object(id, LookupFlags::empty()).ok_or(KactionError::NotFound)?;
+
+                let start = (arg2 & 0xffffffff) as usize;
+                let len = arg2 >> 32;
+
+                let slice = unsafe { create_user_slice::<PinnedPage>(arg, len) }
+                    .ok_or(KactionError::InvalidArgument)?;
+
+                let (pins, token) = obj
+                    .pin(
+                        start
+                            .try_into()
+                            .map_err(|_| KactionError::InvalidArgument)?,
+                        slice.len(),
+                    )
+                    .ok_or(KactionError::Unknown)?;
+                let len: u32 = core::cmp::min(pins.len(), len as usize).try_into().unwrap();
+
+                for i in 0..(len as usize) {
+                    slice[i] = PinnedPage::new(pins[i].as_u64())
+                }
+
+                let retval = ((len as u64) << 32) | (token as u64);
+                Ok(KactionValue::U64(retval))
             }
             KactionGenericCmd::GetKsoRoot => {
                 let ksom = get_kso_manager();

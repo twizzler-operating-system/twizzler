@@ -34,3 +34,9 @@ pub fn sys_kaction(
 pub struct PinnedPage {
     phys: u64,
 }
+
+impl PinnedPage {
+    pub fn new(phys: u64) -> Self {
+        Self { phys }
+    }
+}

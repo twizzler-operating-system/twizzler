@@ -36,7 +36,7 @@ pub trait SyscallContext {
         u64: From<R2>;
 }
 
-unsafe fn create_user_slice<'a, T>(ptr: u64, len: u64) -> Option<&'a mut [T]> {
+pub unsafe fn create_user_slice<'a, T>(ptr: u64, len: u64) -> Option<&'a mut [T]> {
     /* TODO: verify pointers */
     Some(core::slice::from_raw_parts_mut(ptr as *mut T, len as usize))
 }
