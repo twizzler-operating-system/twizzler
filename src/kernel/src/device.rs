@@ -65,10 +65,15 @@ fn get_kso_manager() -> &'static KsoManager {
     })
 }
 
-pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64) -> Result<KactionValue, KactionError> {
+pub fn kaction(
+    cmd: KactionCmd,
+    id: Option<ObjID>,
+    arg: u64,
+    _arg2: u64,
+) -> Result<KactionValue, KactionError> {
     match cmd {
         KactionCmd::Generic(cmd) => match cmd {
-            KactionGenericCmd::AllocateDMA(_np) => {
+            KactionGenericCmd::PinPages(_np) => {
                 todo!()
             }
             KactionGenericCmd::GetKsoRoot => {

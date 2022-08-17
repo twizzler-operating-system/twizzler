@@ -38,9 +38,14 @@ impl Device {
 
     fn get_subobj(&self, ty: u8, idx: u8) -> Option<ObjID> {
         let cmd = KactionCmd::Generic(KactionGenericCmd::GetSubObject(ty, idx));
-        let result =
-            twizzler_abi::syscall::sys_kaction(cmd, Some(self.obj.id()), 0, KactionFlags::empty())
-                .ok()?;
+        let result = twizzler_abi::syscall::sys_kaction(
+            cmd,
+            Some(self.obj.id()),
+            0,
+            0,
+            KactionFlags::empty(),
+        )
+        .ok()?;
         result.objid()
     }
 
@@ -67,6 +72,6 @@ impl Device {
         value: u64,
         flags: KactionFlags,
     ) -> Result<KactionValue, KactionError> {
-        twizzler_abi::syscall::sys_kaction(action, Some(self.obj.id()), value, flags)
+        twizzler_abi::syscall::sys_kaction(action, Some(self.obj.id()), value, 0, flags)
     }
 }

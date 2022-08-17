@@ -26,7 +26,7 @@ impl BusTreeRoot {
 
 pub fn get_bustree_root() -> BusTreeRoot {
     let cmd = KactionCmd::Generic(KactionGenericCmd::GetKsoRoot);
-    let id = twizzler_abi::syscall::sys_kaction(cmd, None, 0, KactionFlags::empty())
+    let id = twizzler_abi::syscall::sys_kaction(cmd, None, 0, 0, KactionFlags::empty())
         .expect("failed to get device root")
         .unwrap_objid();
     BusTreeRoot { root_id: id }

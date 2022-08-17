@@ -151,6 +151,7 @@ fn list_subobjs(level: usize, id: ObjID) {
             )),
             Some(id),
             0,
+            0,
             KactionFlags::empty(),
         );
         if res.is_err() {
@@ -170,6 +171,7 @@ fn list_subobjs(level: usize, id: ObjID) {
             )),
             Some(id),
             0,
+            0,
             KactionFlags::empty(),
         );
         if res.is_err() {
@@ -188,6 +190,7 @@ fn enumerate_children(level: usize, id: ObjID) {
             KactionCmd::Generic(KactionGenericCmd::GetChild(n)),
             Some(id),
             0,
+            0,
             KactionFlags::empty(),
         );
         if res.is_err() {
@@ -205,6 +208,7 @@ fn test_kaction() {
     let res = sys_kaction(
         KactionCmd::Generic(KactionGenericCmd::GetKsoRoot),
         None,
+        0,
         0,
         KactionFlags::empty(),
     );

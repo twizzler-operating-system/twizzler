@@ -89,6 +89,7 @@ fn type_sys_kaction(
     lo: u64,
     arg: u64,
     _flags: u64,
+    arg2: u64,
 ) -> Result<KactionValue, KactionError> {
     let cmd = KactionCmd::try_from(cmd)?;
     let objid = if hi == 0 {
@@ -96,7 +97,7 @@ fn type_sys_kaction(
     } else {
         Some(ObjID::new_from_parts(hi, lo))
     };
-    crate::device::kaction(cmd, objid, arg)
+    crate::device::kaction(cmd, objid, arg, arg2)
 }
 
 fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClockInfoError> {
@@ -212,7 +213,8 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let lo = context.arg2();
             let arg = context.arg3();
             let flags = context.arg4();
-            let result = type_sys_kaction(cmd, hi, lo, arg, flags);
+            let arg2 = context.arg5();
+            let result = type_sys_kaction(cmd, hi, lo, arg, flags, arg2);
             let (code, val) = convert_result_to_codes(result, |v| v.into(), zero_err);
             context.set_return_values(code, val);
         }
