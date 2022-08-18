@@ -1,3 +1,4 @@
+use twizzler_abi::object::NULLPAGE_SIZE;
 use twizzler_object::Object;
 
 use super::{Access, DeviceSync, DmaArrayRegion, DmaOptions, DmaRegion};
@@ -13,7 +14,14 @@ impl DmaObject {
         access: Access,
         options: DmaOptions,
     ) -> DmaArrayRegion<'a, T> {
-        todo!()
+        DmaArrayRegion::new(
+            self,
+            core::mem::size_of::<T>() * len,
+            access,
+            options,
+            NULLPAGE_SIZE,
+            len,
+        )
     }
 
     pub fn region<'a, T: DeviceSync>(
@@ -21,15 +29,23 @@ impl DmaObject {
         access: Access,
         options: DmaOptions,
     ) -> DmaRegion<'a, T> {
-        todo!()
+        DmaRegion::new(
+            self,
+            core::mem::size_of::<T>(),
+            access,
+            options,
+            NULLPAGE_SIZE,
+        )
     }
 
     pub fn object(&self) -> &Object<()> {
         todo!()
     }
 
-    pub fn new<T>(&self, obj: Object<T>) -> Self {
-        todo!()
+    pub fn new<T>(obj: Object<T>) -> Self {
+        Self {
+            obj: unsafe { obj.transmute() },
+        }
     }
 }
 
@@ -41,6 +57,6 @@ impl Drop for DmaObject {
 
 impl<T> From<Object<T>> for DmaObject {
     fn from(obj: Object<T>) -> Self {
-        todo!()
+        Self::new(obj)
     }
 }

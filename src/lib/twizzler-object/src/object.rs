@@ -29,6 +29,10 @@ impl<T> Object<T> {
     pub fn slot(&self) -> &Arc<Slot> {
         &self.slot
     }
+
+    pub unsafe fn transmute<N>(self) -> Object<N> {
+        core::mem::transmute(self)
+    }
 }
 
 impl<Base> From<Arc<Slot>> for Object<Base> {

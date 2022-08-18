@@ -30,6 +30,7 @@ pub fn sys_kaction(
     )
 }
 
+#[derive(Clone, Copy, Debug, Hash, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 pub struct PinnedPage {
     phys: u64,
@@ -38,5 +39,9 @@ pub struct PinnedPage {
 impl PinnedPage {
     pub fn new(phys: u64) -> Self {
         Self { phys }
+    }
+
+    pub fn physical_address(&self) -> u64 {
+        self.phys
     }
 }

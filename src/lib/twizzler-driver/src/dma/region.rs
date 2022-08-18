@@ -1,15 +1,24 @@
 use core::marker::PhantomData;
 use core::ops::Range;
 
-use super::{Access, DeviceSync, DmaObject, DmaPin, SyncMode};
+use twizzler_abi::{
+    kso::{KactionCmd, KactionFlags, KactionGenericCmd},
+    syscall::{sys_kaction, PinnedPage},
+};
+
+use super::{
+    pin::{PhysInfo, PinError},
+    Access, DeviceSync, DmaObject, DmaOptions, DmaPin, SyncMode,
+};
 
 pub struct DmaRegion<'a, T: DeviceSync> {
     virt: *mut u8,
-    pin: Option<DmaPin<'a>>,
+    backing: Option<(Vec<PhysInfo>, u32)>,
     len: usize,
     access: Access,
-    mem_init: bool,
-    obj: &'a DmaObject,
+    dma: &'a DmaObject,
+    options: DmaOptions,
+    offset: usize,
     _pd: PhantomData<T>,
 }
 
@@ -19,6 +28,73 @@ pub struct DmaArrayRegion<'a, T: DeviceSync> {
 }
 
 impl<'a, T: DeviceSync> DmaRegion<'a, T> {
+    pub(super) fn new(
+        dma: &'a DmaObject,
+        len: usize,
+        access: Access,
+        options: DmaOptions,
+        offset: usize,
+    ) -> Self {
+        Self {
+            virt: unsafe { dma.object().base_mut_unchecked() as *mut () as *mut u8 },
+            len,
+            access,
+            dma,
+            options,
+            backing: None,
+            offset,
+            _pd: PhantomData,
+        }
+    }
+
+    pub fn nr_pages(&self) -> usize {
+        // TODO: arch-dep
+        (self.len - 1) / 0x1000 + 1
+    }
+
+    fn setup_backing(&mut self) -> Result<(), PinError> {
+        if self.backing.is_some() {
+            return Ok(());
+        }
+        let mut pins = Vec::new();
+        let len = self.nr_pages();
+        pins.resize(len, PinnedPage::new(0));
+
+        // TODO: arch-dep
+        let start = self.offset as u64 / 0x1000;
+
+        let ptr = (&pins).as_ptr() as u64;
+
+        let res = sys_kaction(
+            KactionCmd::Generic(KactionGenericCmd::PinPages(0)),
+            Some(self.dma.object().id()),
+            ptr,
+            start | ((len as u64) << 32),
+            KactionFlags::empty(),
+        )
+        .map_err(|_| PinError::InternalError)?
+        .u64()
+        .ok_or(PinError::InternalError)?;
+
+        let retlen = (res >> 32) as usize;
+        let token = (res & 0xffffffff) as u32;
+
+        if retlen < len {
+            return Err(PinError::Exhausted);
+        } else if retlen > len {
+            return Err(PinError::InternalError);
+        }
+
+        let backing: Result<Vec<_>, _> = pins
+            .iter()
+            .map(|p| p.physical_address().try_into().map(|pa| PhysInfo::new(pa)))
+            .collect();
+
+        self.backing = Some((backing.map_err(|_| PinError::InternalError)?, token));
+
+        Ok(())
+    }
+
     pub fn num_bytes(&self) -> usize {
         todo!()
     }
@@ -26,19 +102,21 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     pub fn access(&self) -> Access {
         todo!()
     }
+
     // Determines the backing information for region. This includes acquiring physical addresses for
     // the region and holding a pin for the pages.
-    fn pin(&mut self) -> DmaPin<'a> {
-        todo!()
+    pub fn pin(&mut self) -> Result<DmaPin<'_>, PinError> {
+        self.setup_backing()?;
+        Ok(DmaPin::new(&self.backing.as_ref().unwrap().0))
     }
 
     // Synchronize the region for cache coherence.
-    fn sync(&mut self, sync: SyncMode) {
+    pub fn sync(&mut self, sync: SyncMode) {
         todo!()
     }
 
     // Run a closure that takes a reference to the DMA data, ensuring coherence.
-    fn with<F, R>(&self, f: F) -> R
+    pub fn with<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&T) -> R,
     {
@@ -46,7 +124,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     }
 
     // Run a closure that takes a mutable reference to the DMA data, ensuring coherence.
-    fn with_mut<F, R>(&mut self, f: F) -> R
+    pub fn with_mut<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce(&mut T) -> R,
     {
@@ -65,7 +143,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     ///
     /// # Safety
     /// The caller must ensure coherence is applied.
-    unsafe fn get(&self) -> &T {
+    pub unsafe fn get(&self) -> &T {
         todo!()
     }
 
@@ -73,12 +151,26 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     ///
     /// # Safety
     /// The caller must ensure coherence is applied.
-    unsafe fn get_mut(&self) -> &mut T {
+    pub unsafe fn get_mut(&self) -> &mut T {
         todo!()
     }
 }
 
 impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
+    pub(super) fn new(
+        dma: &'a DmaObject,
+        nrbytes: usize,
+        access: Access,
+        options: DmaOptions,
+        offset: usize,
+        len: usize,
+    ) -> Self {
+        Self {
+            region: DmaRegion::new(dma, nrbytes, access, options, offset),
+            len,
+        }
+    }
+
     pub fn num_bytes(&self) -> usize {
         todo!()
     }
@@ -92,17 +184,17 @@ impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
     }
     // Determines the backing information for region. This includes acquiring physical addresses for
     // the region and holding a pin for the pages.
-    fn pin(&mut self) -> DmaPin<'a> {
-        todo!()
+    pub fn pin(&mut self) -> Result<DmaPin<'_>, PinError> {
+        self.region.pin()
     }
 
     // Synchronize the region for cache coherence.
-    fn sync(&mut self, sync: SyncMode) {
+    pub fn sync(&mut self, sync: SyncMode) {
         todo!()
     }
 
     // Run a closure that takes a reference to the DMA data, ensuring coherence.
-    fn with<F, R>(&self, range: Range<usize>, f: F) -> R
+    pub fn with<F, R>(&self, range: Range<usize>, f: F) -> R
     where
         F: FnOnce(&[T]) -> R,
     {
@@ -110,7 +202,7 @@ impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
     }
 
     // Run a closure that takes a mutable reference to the DMA data, ensuring coherence.
-    fn with_mut<F, R>(&mut self, range: Range<usize>, f: F) -> R
+    pub fn with_mut<F, R>(&mut self, range: Range<usize>, f: F) -> R
     where
         F: FnOnce(&mut [T]) -> R,
     {
@@ -129,7 +221,7 @@ impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
     ///
     /// # Safety
     /// The caller must ensure coherence is applied.
-    unsafe fn get(&self) -> &[T] {
+    pub unsafe fn get(&self) -> &[T] {
         todo!()
     }
 
@@ -137,7 +229,7 @@ impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
     ///
     /// # Safety
     /// The caller must ensure coherence is applied.
-    unsafe fn get_mut(&self) -> &mut [T] {
+    pub unsafe fn get_mut(&self) -> &mut [T] {
         todo!()
     }
 }
