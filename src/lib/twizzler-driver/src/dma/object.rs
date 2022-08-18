@@ -5,7 +5,7 @@ use twizzler_abi::{
     object::NULLPAGE_SIZE,
     syscall::sys_kaction,
 };
-use twizzler_object::Object;
+use twizzler_object::{ObjID, Object};
 
 use super::{Access, DeviceSync, DmaArrayRegion, DmaOptions, DmaRegion};
 
@@ -57,17 +57,21 @@ impl DmaObject {
     }
 }
 
+pub(crate) fn release_pin(id: ObjID, token: u32) {
+    let _ = sys_kaction(
+        KactionCmd::Generic(KactionGenericCmd::ReleasePin),
+        Some(id),
+        token as u64,
+        0,
+        KactionFlags::empty(),
+    );
+}
+
 impl Drop for DmaObject {
     fn drop(&mut self) {
         let pins = self.releasable_pins.lock().unwrap();
         for pin in &*pins {
-            let _ = sys_kaction(
-                KactionCmd::Generic(KactionGenericCmd::ReleasePin),
-                Some(self.object().id()),
-                *pin as u64,
-                0,
-                KactionFlags::empty(),
-            );
+            release_pin(self.object().id(), *pin);
         }
     }
 }
