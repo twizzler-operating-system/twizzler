@@ -112,6 +112,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
 
     // Synchronize the region for cache coherence.
     pub fn sync(&self, _sync: SyncMode) {
+        crate::arch::sync(self);
         todo!()
     }
 

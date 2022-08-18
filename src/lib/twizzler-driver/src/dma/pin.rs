@@ -89,6 +89,7 @@ pub enum PinError {
     Exhausted,
 }
 
+#[cfg(test)]
 mod tests {
     use twizzler_abi::syscall::{BackingType, LifetimeType};
     use twizzler_object::{CreateSpec, Object};

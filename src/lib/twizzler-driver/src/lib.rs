@@ -5,6 +5,7 @@ use device::children::DeviceChildrenIterator;
 use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd};
 use twizzler_object::ObjID;
 
+mod arch;
 pub mod bus;
 pub mod controller;
 pub mod device;
