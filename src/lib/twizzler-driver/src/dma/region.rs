@@ -236,12 +236,8 @@ impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
 
 impl<'a, T: DeviceSync> Drop for DmaRegion<'a, T> {
     fn drop(&mut self) {
-        todo!()
-    }
-}
-
-impl<'a, T: DeviceSync> Drop for DmaArrayRegion<'a, T> {
-    fn drop(&mut self) {
-        todo!()
+        if let Some((_, token)) = self.backing.as_ref() {
+            self.dma.releasable_pins.lock().unwrap().push(*token);
+        }
     }
 }

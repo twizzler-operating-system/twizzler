@@ -17,7 +17,7 @@ use crate::{
     mutex::{LockGuard, Mutex},
 };
 
-use self::thread_sync::SleepInfo;
+use self::{pages::Page, thread_sync::SleepInfo};
 
 pub mod copy;
 pub mod pages;
@@ -130,8 +130,14 @@ impl Object {
         let mut v = Vec::new();
         for i in 0..len {
             // TODO: we'll need to handle failures here when we expand the paging system.
-            let p = tree.get_page(start.offset(i), true).unwrap();
-            v.push(p.0.physical_address());
+            let p = tree.get_page(start.offset(i), true);
+            if let Some(p) = p {
+                v.push(p.0.physical_address());
+            } else {
+                let page = Page::new();
+                v.push(page.physical_address());
+                tree.add_page(start.offset(i), page);
+            }
         }
 
         let id = pin_info.id_counter.next_simple();
