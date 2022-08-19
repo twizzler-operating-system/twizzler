@@ -102,7 +102,7 @@ pub fn enumerate_cpus() -> u32 {
 }
 
 /// Determine what hardware clock sources are available
-/// on the processor and register them in the time subsystem
+/// on the processor and register them in the time subsystem.
 pub fn enumerate_clocks() {
     // for now we only use the TSC
     // in the future we will explore using other time sources
@@ -113,7 +113,7 @@ pub fn enumerate_clocks() {
     let has_tsc = cpuid.get_feature_info().map_or(false, |finfo| finfo.has_tsc());
     if has_tsc {
         // saves reference to tsc clock source into global array
-        crate::time::register_clock(super::tsc::TSC{});
+        crate::time::register_clock(super::tsc::Tsc::new());
     }
 }
 

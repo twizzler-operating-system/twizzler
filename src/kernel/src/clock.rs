@@ -257,8 +257,8 @@ pub fn oneshot_clock_hardtick() {
 }
 
 fn enumerate_hw_clocks() {
-    crate::time::register_clock(SoftClockTick {});
     crate::arch::processor::enumerate_clocks();
+    crate::time::register_clock(SoftClockTick {});
     crate::machine::enumerate_clocks();
 }
 
@@ -274,8 +274,8 @@ impl ClockHardware for SoftClockTick {
 }
 
 pub fn init() {
+    enumerate_hw_clocks();
     crate::arch::start_clock(127, statclock);
     TIMEOUT_THREAD
         .call_once(|| crate::thread::start_new_kernel(Priority::REALTIME, soft_timeout_clock));
-    enumerate_hw_clocks();
 }
