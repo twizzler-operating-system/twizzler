@@ -1,5 +1,7 @@
 use std::ops::Index;
 
+use crate::arch::DMA_PAGE_SIZE;
+
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub struct PhysAddr(u64);
 
@@ -43,7 +45,9 @@ impl TryFrom<u64> for PhysAddr {
     type Error = ();
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
-        // TODO: verify address
+        if value & (DMA_PAGE_SIZE as u64 - 1) != 0 {
+            return Err(());
+        }
         Ok(Self(value))
     }
 }

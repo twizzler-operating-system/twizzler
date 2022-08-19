@@ -15,6 +15,7 @@ impl DmaPool {
         todo!()
     }
 
+    // TODO: update so these are failable
     pub fn allocate<'a, T: DeviceSync>(&'a self, init: T) -> DmaRegion<'a, T> {
         todo!()
     }

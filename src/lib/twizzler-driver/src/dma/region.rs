@@ -6,6 +6,8 @@ use twizzler_abi::{
     syscall::{sys_kaction, PinnedPage},
 };
 
+use crate::arch::DMA_PAGE_SIZE;
+
 use super::{
     pin::{PhysInfo, PinError},
     Access, DeviceSync, DmaObject, DmaOptions, DmaPin, SyncMode,
@@ -48,8 +50,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     }
 
     pub fn nr_pages(&self) -> usize {
-        // TODO: arch-dep
-        (self.len - 1) / 0x1000 + 1
+        (self.len - 1) / DMA_PAGE_SIZE + 1
     }
 
     fn setup_backing(&mut self) -> Result<(), PinError> {
@@ -60,8 +61,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
         let len = self.nr_pages();
         pins.resize(len, PinnedPage::new(0));
 
-        // TODO: arch-dep
-        let start = self.offset as u64 / 0x1000;
+        let start = (self.offset / DMA_PAGE_SIZE) as u64;
 
         let ptr = (&pins).as_ptr() as u64;
 
@@ -111,9 +111,8 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     }
 
     // Synchronize the region for cache coherence.
-    pub fn sync(&self, _sync: SyncMode) {
-        crate::arch::sync(self);
-        todo!()
+    pub fn sync(&self, sync: SyncMode) {
+        crate::arch::sync(self, sync, 0, self.len);
     }
 
     // Run a closure that takes a reference to the DMA data, ensuring coherence.
@@ -135,9 +134,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
         F: FnOnce(&mut T) -> R,
     {
         if !self.options.contains(DmaOptions::UNSAFE_MANUAL_COHERENCE) {
-            // TODO: combine these (update RFC)
-            self.sync(SyncMode::PostDeviceToCpu);
-            self.sync(SyncMode::PreCpuToDevice);
+            self.sync(SyncMode::FullCoherence);
         }
         let data = unsafe { self.get_mut() };
         let ret = f(data);
@@ -205,7 +202,6 @@ impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
         self.len
     }
 
-    // TODO: update RFC
     // Determines the backing information for region. This includes acquiring physical addresses for
     // the region and holding a pin for the pages.
     #[inline]
@@ -214,9 +210,10 @@ impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
     }
 
     // Synchronize the region for cache coherence.
-    pub fn sync(&self, _range: Range<usize>, sync: SyncMode) {
-        // TODO: sync subset
-        self.region.sync(sync)
+    pub fn sync(&self, range: Range<usize>, sync: SyncMode) {
+        let start = range.start * core::mem::size_of::<T>();
+        let len = range.len() * core::mem::size_of::<T>();
+        crate::arch::sync(&self.region, sync, start, len);
     }
 
     // Run a closure that takes a reference to the DMA data, ensuring coherence.
@@ -241,14 +238,12 @@ impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
     where
         F: FnOnce(&mut [T]) -> R,
     {
-        // TODO: combine these (update RFC)
         if !self
             .region
             .options
             .contains(DmaOptions::UNSAFE_MANUAL_COHERENCE)
         {
-            self.sync(range.clone(), SyncMode::PostDeviceToCpu);
-            self.sync(range.clone(), SyncMode::PreCpuToDevice);
+            self.sync(range.clone(), SyncMode::FullCoherence);
         }
         let data = &mut unsafe { self.get_mut() }[range.clone()];
         let ret = f(data);

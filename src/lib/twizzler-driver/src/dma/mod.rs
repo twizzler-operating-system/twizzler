@@ -21,6 +21,7 @@ pub enum SyncMode {
     PostCpuToDevice,
     PreDeviceToCpu,
     PostDeviceToCpu,
+    FullCoherence,
 }
 
 bitflags::bitflags! {
