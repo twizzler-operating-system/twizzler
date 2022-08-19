@@ -66,10 +66,10 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
         let len = self.nr_pages();
         pins.resize(len, PinnedPage::new(0));
 
+        // The kaction call here compresses start and len into a u64, and returns the token and len
+        // in the return u64. This is all because of the limited registers in a syscall.
         let start = (self.offset / DMA_PAGE_SIZE) as u64;
-
         let ptr = (&pins).as_ptr() as u64;
-
         let res = sys_kaction(
             KactionCmd::Generic(KactionGenericCmd::PinPages(0)),
             Some(self.dma.object().id()),
