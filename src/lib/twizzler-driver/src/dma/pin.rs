@@ -3,18 +3,22 @@ use std::ops::Index;
 use crate::arch::DMA_PAGE_SIZE;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+/// A physical address. Must be aligned on [DMA_PAGE_SIZE].
 pub struct PhysAddr(u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+/// Information about a page of DMA memory, including it's physical address.
 pub struct PhysInfo {
     addr: PhysAddr,
 }
 
+/// An iterator over DMA memory pages, returning [PhysInfo].
 pub struct DmaPinIter<'a> {
     pin: &'a [PhysInfo],
     idx: usize,
 }
 
+/// A representation of some pinned memory for a region.
 pub struct DmaPin<'a> {
     backing: &'a [PhysInfo],
 }
@@ -26,10 +30,11 @@ impl<'a> DmaPin<'a> {
 }
 
 impl PhysInfo {
-    pub fn new(addr: PhysAddr) -> Self {
+    pub(crate) fn new(addr: PhysAddr) -> Self {
         Self { addr }
     }
 
+    /// Get the address of this DMA memory page.
     pub fn addr(&self) -> PhysAddr {
         self.addr
     }
@@ -88,8 +93,11 @@ impl<'a> Index<usize> for DmaPin<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+/// Possible failure modes for pinning memory.
 pub enum PinError {
+    /// An internal error occurred.
     InternalError,
+    /// Kernel resources are exhausted.
     Exhausted,
 }
 

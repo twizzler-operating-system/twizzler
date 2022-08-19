@@ -9,4 +9,4 @@ pub(crate) fn sync<'a, T: DeviceSync>(
     // x86 is already coherent
 }
 
-pub(crate) const DMA_PAGE_SIZE: usize = 0x1000;
+pub const DMA_PAGE_SIZE: usize = 0x1000;

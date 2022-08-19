@@ -13,6 +13,8 @@ use super::{
     Access, DeviceSync, DmaObject, DmaOptions, DmaPin, SyncMode,
 };
 
+/// A region of DMA memory, represented in virtual memory as type `T`, with a particular access mode
+/// and options.
 pub struct DmaRegion<'a, T: DeviceSync> {
     virt: *mut u8,
     backing: Option<(Vec<PhysInfo>, u32)>,
@@ -24,7 +26,9 @@ pub struct DmaRegion<'a, T: DeviceSync> {
     _pd: PhantomData<T>,
 }
 
-pub struct DmaArrayRegion<'a, T: DeviceSync> {
+/// A region of DMA memory, represented in virtual memory as type `[T; len]`, with a particular access mode
+/// and options.
+pub struct DmaSliceRegion<'a, T: DeviceSync> {
     region: DmaRegion<'a, T>,
     len: usize,
 }
@@ -49,6 +53,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
         }
     }
 
+    /// Calculate the number of pages this region covers.
     pub fn nr_pages(&self) -> usize {
         (self.len - 1) / DMA_PAGE_SIZE + 1
     }
@@ -95,10 +100,12 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
         Ok(())
     }
 
+    /// Return the number of bytes this region covers.
     pub fn num_bytes(&self) -> usize {
         self.len
     }
 
+    /// Return the access direction of this region.
     pub fn access(&self) -> Access {
         self.access
     }
@@ -121,7 +128,9 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
         F: FnOnce(&T) -> R,
     {
         if !self.options.contains(DmaOptions::UNSAFE_MANUAL_COHERENCE) {
-            self.sync(SyncMode::PostDeviceToCpu);
+            if self.access() != Access::HostToDevice {
+                self.sync(SyncMode::PostDeviceToCpu);
+            }
         }
         let data = unsafe { self.get() };
         let ret = f(data);
@@ -134,12 +143,18 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
         F: FnOnce(&mut T) -> R,
     {
         if !self.options.contains(DmaOptions::UNSAFE_MANUAL_COHERENCE) {
-            self.sync(SyncMode::FullCoherence);
+            match self.access() {
+                Access::HostToDevice => self.sync(SyncMode::PreCpuToDevice),
+                Access::DeviceToHost => self.sync(SyncMode::PostDeviceToCpu),
+                Access::BiDirectional => self.sync(SyncMode::FullCoherence),
+            }
         }
         let data = unsafe { self.get_mut() };
         let ret = f(data);
         if !self.options.contains(DmaOptions::UNSAFE_MANUAL_COHERENCE) {
-            self.sync(SyncMode::PostCpuToDevice);
+            if self.access() != Access::DeviceToHost {
+                self.sync(SyncMode::PostCpuToDevice);
+            }
         }
         ret
     }
@@ -174,7 +189,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     }
 }
 
-impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
+impl<'a, T: DeviceSync> DmaSliceRegion<'a, T> {
     pub(super) fn new(
         dma: &'a DmaObject,
         nrbytes: usize,
@@ -189,15 +204,18 @@ impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
         }
     }
 
+    /// Return the number of bytes this region covers.
     pub fn num_bytes(&self) -> usize {
         self.region.len
     }
 
     #[inline]
+    /// Return the access direction of this region.
     pub fn access(&self) -> Access {
         self.region.access()
     }
 
+    /// Return the number of elements in the slice that this region covers.
     pub fn len(&self) -> usize {
         self.len
     }
@@ -209,14 +227,14 @@ impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
         self.region.pin()
     }
 
-    // Synchronize the region for cache coherence.
+    // Synchronize a subslice of the region for cache coherence.
     pub fn sync(&self, range: Range<usize>, sync: SyncMode) {
         let start = range.start * core::mem::size_of::<T>();
         let len = range.len() * core::mem::size_of::<T>();
         crate::arch::sync(&self.region, sync, start, len);
     }
 
-    // Run a closure that takes a reference to the DMA data, ensuring coherence.
+    // Run a closure that takes a reference to a subslice of the DMA data, ensuring coherence.
     pub fn with<F, R>(&self, range: Range<usize>, f: F) -> R
     where
         F: FnOnce(&[T]) -> R,
@@ -226,14 +244,16 @@ impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
             .options
             .contains(DmaOptions::UNSAFE_MANUAL_COHERENCE)
         {
-            self.sync(range.clone(), SyncMode::PostDeviceToCpu);
+            if self.access() != Access::HostToDevice {
+                self.sync(range.clone(), SyncMode::PostDeviceToCpu);
+            }
         }
         let data = &unsafe { self.get() }[range];
         let ret = f(data);
         ret
     }
 
-    // Run a closure that takes a mutable reference to the DMA data, ensuring coherence.
+    // Run a closure that takes a mutable reference to a subslice of the DMA data, ensuring coherence.
     pub fn with_mut<F, R>(&mut self, range: Range<usize>, f: F) -> R
     where
         F: FnOnce(&mut [T]) -> R,
@@ -243,7 +263,11 @@ impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
             .options
             .contains(DmaOptions::UNSAFE_MANUAL_COHERENCE)
         {
-            self.sync(range.clone(), SyncMode::FullCoherence);
+            match self.access() {
+                Access::HostToDevice => self.sync(range.clone(), SyncMode::PreCpuToDevice),
+                Access::DeviceToHost => self.sync(range.clone(), SyncMode::PostDeviceToCpu),
+                Access::BiDirectional => self.sync(range.clone(), SyncMode::FullCoherence),
+            }
         }
         let data = &mut unsafe { self.get_mut() }[range.clone()];
         let ret = f(data);
@@ -252,7 +276,9 @@ impl<'a, T: DeviceSync> DmaArrayRegion<'a, T> {
             .options
             .contains(DmaOptions::UNSAFE_MANUAL_COHERENCE)
         {
-            self.sync(range, SyncMode::PostCpuToDevice);
+            if self.access() != Access::DeviceToHost {
+                self.sync(range, SyncMode::PostCpuToDevice);
+            }
         }
         ret
     }

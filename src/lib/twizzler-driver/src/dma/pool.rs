@@ -1,6 +1,6 @@
 use twizzler_object::CreateSpec;
 
-use super::{Access, DeviceSync, DmaArrayRegion, DmaOptions, DmaRegion};
+use super::{Access, DeviceSync, DmaOptions, DmaRegion, DmaSliceRegion};
 
 pub struct DmaPool {
     opts: DmaOptions,
@@ -24,14 +24,14 @@ impl DmaPool {
         todo!()
     }
 
-    pub fn allocate_array<'a, T: DeviceSync>(&'a self, init: T) -> DmaArrayRegion<'a, T> {
+    pub fn allocate_array<'a, T: DeviceSync>(&'a self, init: T) -> DmaSliceRegion<'a, T> {
         todo!()
     }
 
     pub fn allocate_array_with<'a, T: DeviceSync>(
         &'a self,
         init: impl Fn() -> T,
-    ) -> DmaArrayRegion<'a, T> {
+    ) -> DmaSliceRegion<'a, T> {
         todo!()
     }
 }

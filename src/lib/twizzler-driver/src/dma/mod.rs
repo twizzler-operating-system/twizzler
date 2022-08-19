@@ -1,31 +1,53 @@
+//! Module for managing DMA memory, using objects for DMA, and creating pools of DMA memory that can
+//! be allocated from. Internally, the DMA functions will interact with the kernel to ensure
+//! stability of physical addresses for DMA memory, and will also ensure proper coherence between
+//! the host and devices.
+
 mod object;
 mod pin;
 mod pool;
 mod region;
 
+pub use super::arch::DMA_PAGE_SIZE;
 pub use object::DmaObject;
-pub use pin::DmaPin;
+pub use pin::{DmaPin, PinError};
 pub use pool::DmaPool;
-pub use region::{DmaArrayRegion, DmaRegion};
+pub use region::{DmaRegion, DmaSliceRegion};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+/// Intended access direction for DMA memory.
 pub enum Access {
+    /// The memory is used for the host to write and the device to read. Device writes may not be coherent.
     HostToDevice,
+    /// The memory is used for the host to read and the device to write. Host writes may not be coherent.
     DeviceToHost,
+    /// The memory is accessed read/write by both device and host.
     BiDirectional,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+/// Mode of syncing to apply when calling `sync()`. These sync calls are unnecessary by default, and
+/// should only be used with utmost care.
 pub enum SyncMode {
+    /// Ensures coherence for the host to write to the device, ensuring that the memory is coherent
+    /// from the perspective of the CPU before the host writes.
     PreCpuToDevice,
+    /// Ensures coherence for the host to write to the device, ensuring that the memory is coherent
+    /// after the write.
     PostCpuToDevice,
+    /// Ensures coherence for the device to write to the host, ensuring that the memory is coherent
+    /// before the device performs an operation.
     PreDeviceToCpu,
+    /// Ensures coherence for the device to write to the host, ensuring that the memory is coherent
+    /// after the device performs an operation.
     PostDeviceToCpu,
+    /// Ensures that memory is fully coherent.
     FullCoherence,
 }
 
 bitflags::bitflags! {
     pub struct DmaOptions : u64 {
+        /// Region functions will not perform automatic coherence.
         const UNSAFE_MANUAL_COHERENCE = 1;
     }
 }
@@ -36,6 +58,8 @@ impl Default for DmaOptions {
     }
 }
 
+/// DMA types must implement this trait, which indicates that types can handle untyped updates from
+/// the device.
 pub trait DeviceSync {}
 
 impl DeviceSync for u8 {}
