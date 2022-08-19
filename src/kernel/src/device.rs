@@ -76,8 +76,10 @@ pub fn kaction(
     match cmd {
         KactionCmd::Generic(cmd) => match cmd {
             KactionGenericCmd::ReleasePin => {
-                // TODO
-                logln!("unimplemented: release pin");
+                let id = id.ok_or(KactionError::InvalidArgument)?;
+                let obj = lookup_object(id, LookupFlags::empty()).ok_or(KactionError::NotFound)?;
+                let pin = arg as u32;
+                obj.release_pin(pin);
                 Ok(KactionValue::U64(0))
             }
             KactionGenericCmd::PinPages(_np) => {

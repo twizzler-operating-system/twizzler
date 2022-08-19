@@ -122,6 +122,10 @@ impl Object {
         self.maplist.lock().insert(mapping);
     }
 
+    pub fn release_pin(&self, _pin: u32) {
+        // TODO: Currently we don't track pins. This will be changed in-future when we fully implement eviction.
+    }
+
     pub fn pin(&self, start: PageNumber, len: usize) -> Option<(Vec<PhysAddr>, u32)> {
         let mut tree = self.lock_page_tree();
 
