@@ -10,7 +10,7 @@ use twizzler_object::{ObjID, Object};
 use super::{Access, DeviceSync, DmaOptions, DmaRegion, DmaSliceRegion};
 
 /// A handle for an object that can be used to perform DMA, and is most useful directly as a way to
-/// perform DMA operations on a specific object. For an allocator-like DMA interface, see [crate::pool::DmaPool].
+/// perform DMA operations on a specific object. For an allocator-like DMA interface, see [crate::dma::DmaPool].
 pub struct DmaObject {
     obj: Object<()>,
     pub(crate) releasable_pins: Mutex<Vec<u32>>,

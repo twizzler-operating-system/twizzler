@@ -101,6 +101,7 @@ pub(super) struct AllocatableDmaObject {
     freelist: Mutex<Vec<SplitPageRange>>,
 }
 
+/// A pool for allocating DMA regions that all share a common access type and DMA options.
 pub struct DmaPool {
     opts: DmaOptions,
     spec: CreateSpec,
@@ -108,8 +109,12 @@ pub struct DmaPool {
     objects: Vec<Arc<AllocatableDmaObject>>,
 }
 
+/// Possible errors that can arise from a DMA pool allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AllocationError {
+    /// The requested region size was too large.
     TooBig,
+    /// An internal error occurred.
     InternalError,
 }
 
@@ -155,6 +160,7 @@ impl AllocatableDmaObject {
 
     fn new(spec: &CreateSpec) -> Result<AllocatableDmaObject, AllocationError> {
         Ok(AllocatableDmaObject {
+            // TODO: automatic object deletion.
             dma: DmaObject::new::<EmptyBase>(
                 Object::create::<EmptyBase>(spec, EmptyBase)
                     .map_err(|_| AllocationError::InternalError)?,
@@ -168,6 +174,9 @@ impl AllocatableDmaObject {
 }
 
 impl DmaPool {
+    /// Create a new DmaPool with access and DMA options, where each created underlying Twizzler
+    /// object is created using the provided [CreateSpec]. If default (volatile) options are
+    /// acceptable for the create spec, use the [crate::dma::DmaPool::default_spec] function.
     pub fn new(spec: CreateSpec, access: Access, opts: DmaOptions) -> Self {
         Self {
             opts,
@@ -177,6 +186,8 @@ impl DmaPool {
         }
     }
 
+    /// Generate a default [CreateSpec] for use in creating Twizzler DMA objects. By default,
+    /// Twizzler objects for DMA are placed in volatile memory with a volatile lifetime.
     pub fn default_spec() -> CreateSpec {
         CreateSpec::new(LifetimeType::Volatile, BackingType::Normal)
     }
@@ -203,6 +214,8 @@ impl DmaPool {
         self.do_allocate(len)
     }
 
+    /// Allocate a new [DmaRegion<T>] from the pool. The region will be initialized with the
+    /// provided initial value.
     pub fn allocate<'a, T: DeviceSync>(
         &'a mut self,
         init: T,
@@ -221,6 +234,8 @@ impl DmaPool {
         Ok(reg)
     }
 
+    /// Allocate a new [DmaSliceRegion<T>] from the pool. Each entry in the region's slice will
+    /// be initialized with the provided initial value.
     pub fn allocate_array<'a, T: DeviceSync + Clone>(
         &'a mut self,
         count: usize,
@@ -241,6 +256,8 @@ impl DmaPool {
         Ok(reg)
     }
 
+    /// Allocate a new [DmaSliceRegion<T>] from the pool. Each entry in the region's slice will
+    /// be initialized by running the provided closure.
     pub fn allocate_array_with<'a, T: DeviceSync>(
         &'a mut self,
         count: usize,
@@ -262,8 +279,20 @@ impl DmaPool {
     }
 }
 
-impl Drop for DmaPool {
-    fn drop(&mut self) {
-        todo!()
+#[cfg(test)]
+mod tests {
+    use crate::dma::{Access, DmaOptions};
+
+    use super::DmaPool;
+
+    #[test]
+    fn allocate() {
+        let mut pool = DmaPool::new(
+            DmaPool::default_spec(),
+            Access::BiDirectional,
+            DmaOptions::empty(),
+        );
+
+        let _res = pool.allocate(u32::MAX).unwrap();
     }
 }
