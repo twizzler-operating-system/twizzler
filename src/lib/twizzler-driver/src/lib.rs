@@ -5,6 +5,7 @@ use device::children::DeviceChildrenIterator;
 use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd};
 use twizzler_object::ObjID;
 
+mod arch;
 pub mod bus;
 pub mod controller;
 pub mod device;
@@ -26,7 +27,7 @@ impl BusTreeRoot {
 
 pub fn get_bustree_root() -> BusTreeRoot {
     let cmd = KactionCmd::Generic(KactionGenericCmd::GetKsoRoot);
-    let id = twizzler_abi::syscall::sys_kaction(cmd, None, 0, KactionFlags::empty())
+    let id = twizzler_abi::syscall::sys_kaction(cmd, None, 0, 0, KactionFlags::empty())
         .expect("failed to get device root")
         .unwrap_objid();
     BusTreeRoot { root_id: id }

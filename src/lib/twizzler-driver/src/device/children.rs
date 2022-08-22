@@ -13,7 +13,7 @@ impl Iterator for DeviceChildrenIterator {
     fn next(&mut self) -> Option<Self::Item> {
         let cmd = KactionCmd::Generic(KactionGenericCmd::GetChild(self.pos));
         let result =
-            twizzler_abi::syscall::sys_kaction(cmd, Some(self.id), 0, KactionFlags::empty())
+            twizzler_abi::syscall::sys_kaction(cmd, Some(self.id), 0, 0, KactionFlags::empty())
                 .ok()?;
         self.pos += 1;
         result.objid().map(|id| Device::new(id).ok()).flatten()
