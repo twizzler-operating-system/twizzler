@@ -19,7 +19,7 @@ translation on the bus before attempting to access host memory. There are two im
 considerations that are the result of this alternate (or no) translation:
 
  - **Contiguous addresses**. While object memory is contiguous (within an object), the physical memory that
-backs that object memory may not be. Thus devices and drivers need to be capable of handling access
+backs that object memory may not be. Devices and drivers need to be capable of handling access
 to memory in a scatter-gather manner.
  - **Access Control**. Access control can be applied differently between host-side driver software and
 devices. Thus driver software must be aware that it may have access to memory via the device that it
@@ -99,7 +99,7 @@ function on a `DmaRegion` or `DmaSliceRegion`. The `pin` function returns a `Dma
 provides an iterator over a list of `PhysInfo` types, which can provide the physical address of a
 page of memory.
 
-Thus a region of DMA memory that comprises some number of pages (contiguous in virtual memory) can
+A region of DMA memory that comprises some number of pages (contiguous in virtual memory) can
 list the (likely non-contiguous) physical pages that it maps to. The order that the pages are
 returned in is the order that they appear for backing the virtual region. In other words, the 4th
 `PhysInfo` entry in the iterator of a `DmaPin` for a region contains the physical address of the 4th
