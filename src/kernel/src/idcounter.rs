@@ -13,9 +13,28 @@ pub struct IdCounter {
     reuse: Once<Mutex<Vec<u64>>>,
 }
 
+impl Default for IdCounter {
+    fn default() -> Self {
+        Self {
+            counter: Default::default(),
+            reuse: Once::new(),
+        }
+    }
+}
+
 pub struct Id<'a> {
     id: u64,
     counter: &'a IdCounter,
+}
+
+pub struct SimpleId {
+    id: u64,
+}
+
+impl SimpleId {
+    pub fn value(&self) -> u64 {
+        self.id
+    }
 }
 
 impl IdCounter {
@@ -39,6 +58,19 @@ impl IdCounter {
         Id { id, counter: self }
     }
 
+    pub fn next_simple(&self) -> SimpleId {
+        /* TODO: use try lock */
+        let reuser = self.reuse.poll();
+        if let Some(reuser) = reuser {
+            let mut reuser = reuser.lock();
+            if let Some(id) = reuser.pop() {
+                return SimpleId { id };
+            }
+        }
+        let id = self.counter.fetch_add(1, Ordering::SeqCst);
+        SimpleId { id }
+    }
+
     fn release(&self, id: u64) {
         assert!(id > 0);
         self.reuse.call_once(|| Mutex::new(Vec::new()));
@@ -46,6 +78,10 @@ impl IdCounter {
         //is the current top value of the counter
         let mut reuser = self.reuse.wait().lock();
         reuser.push(id);
+    }
+
+    pub fn release_simple(&self, id: SimpleId) {
+        self.release(id.id);
     }
 }
 

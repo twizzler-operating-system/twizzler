@@ -153,8 +153,10 @@ pub enum KactionGenericCmd {
     GetChild(u16),
     /// Get a sub-object.
     GetSubObject(u8, u8),
-    /// Allocate DMA memory.
-    AllocateDMA(u16),
+    /// Pin pages of object memory.
+    PinPages(u16),
+    /// Release Pin
+    ReleasePin,
 }
 
 impl From<KactionGenericCmd> for u32 {
@@ -163,7 +165,8 @@ impl From<KactionGenericCmd> for u32 {
             KactionGenericCmd::GetKsoRoot => (0, 0),
             KactionGenericCmd::GetChild(v) => (1, v),
             KactionGenericCmd::GetSubObject(t, v) => (2, ((t as u16) << 8) | (v as u16)),
-            KactionGenericCmd::AllocateDMA(v) => (3, v),
+            KactionGenericCmd::PinPages(v) => (3, v),
+            KactionGenericCmd::ReleasePin => (4, 0),
         };
         ((h as u32) << 16) | l as u32
     }
@@ -177,7 +180,8 @@ impl TryFrom<u32> for KactionGenericCmd {
             0 => KactionGenericCmd::GetKsoRoot,
             1 => KactionGenericCmd::GetChild(l),
             2 => KactionGenericCmd::GetSubObject((l >> 8) as u8, l as u8),
-            3 => KactionGenericCmd::AllocateDMA(l),
+            3 => KactionGenericCmd::PinPages(l),
+            4 => KactionGenericCmd::ReleasePin,
             _ => return Err(KactionError::InvalidArgument),
         };
         Ok(v)
