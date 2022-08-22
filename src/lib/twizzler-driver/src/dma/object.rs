@@ -30,12 +30,13 @@ impl DmaObject {
             .expect("Value of len too large");
         assert!(nr_bytes < MAX_SIZE - NULLPAGE_SIZE * 2);
         DmaSliceRegion::new(
-            self,
+            Some(self),
             core::mem::size_of::<T>() * len,
             access,
             options,
             NULLPAGE_SIZE,
             len,
+            None,
         )
     }
 
@@ -47,11 +48,12 @@ impl DmaObject {
         options: DmaOptions,
     ) -> DmaRegion<'a, T> {
         DmaRegion::new(
-            self,
+            Some(self),
             core::mem::size_of::<T>(),
             access,
             options,
             NULLPAGE_SIZE,
+            None,
         )
     }
 

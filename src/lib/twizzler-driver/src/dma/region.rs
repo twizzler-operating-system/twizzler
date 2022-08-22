@@ -1,5 +1,6 @@
 use core::marker::PhantomData;
 use core::ops::Range;
+use std::sync::Arc;
 
 use twizzler_abi::{
     kso::{
@@ -13,6 +14,7 @@ use crate::arch::DMA_PAGE_SIZE;
 
 use super::{
     pin::{PhysInfo, PinError},
+    pool::{AllocatableDmaObject, SplitPageRange},
     Access, DeviceSync, DmaObject, DmaOptions, DmaPin, SyncMode,
 };
 
@@ -23,7 +25,8 @@ pub struct DmaRegion<'a, T: DeviceSync> {
     backing: Option<(Vec<PhysInfo>, u32)>,
     len: usize,
     access: Access,
-    dma: &'a DmaObject,
+    dma: Option<&'a DmaObject>,
+    pool: Option<(Arc<AllocatableDmaObject>, SplitPageRange)>,
     options: DmaOptions,
     offset: usize,
     _pd: PhantomData<T>,
@@ -38,22 +41,41 @@ pub struct DmaSliceRegion<'a, T: DeviceSync> {
 
 impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     pub(super) fn new(
-        dma: &'a DmaObject,
+        dma: Option<&'a DmaObject>,
         len: usize,
         access: Access,
         options: DmaOptions,
         offset: usize,
+        pool: Option<(Arc<AllocatableDmaObject>, SplitPageRange)>,
     ) -> Self {
         Self {
-            virt: unsafe { dma.object().base_mut_unchecked() as *mut () as *mut u8 },
+            virt: unsafe {
+                dma.unwrap_or(pool.as_ref().unwrap().0.dma_object())
+                    .object()
+                    .base_mut_unchecked() as *mut () as *mut u8
+            },
             len,
             access,
             dma,
             options,
             backing: None,
+            pool,
             offset,
             _pd: PhantomData,
         }
+    }
+
+    pub(super) fn fill(&mut self, init: T) {
+        let p = self.virt as *mut T;
+        unsafe {
+            p.write_volatile(init);
+            self.sync(SyncMode::FullCoherence);
+        }
+    }
+
+    fn dma_object(&self) -> &DmaObject {
+        self.dma
+            .unwrap_or(self.pool.as_ref().unwrap().0.dma_object())
     }
 
     /// Calculate the number of pages this region covers.
@@ -75,7 +97,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
         let ptr = (&pins).as_ptr() as u64;
         let res = sys_kaction(
             KactionCmd::Generic(KactionGenericCmd::PinPages(0)),
-            Some(self.dma.object().id()),
+            Some(self.dma_object().object().id()),
             ptr,
             pack_kaction_pin_start_and_len(start, len).ok_or(PinError::InternalError)?,
             KactionFlags::empty(),
@@ -168,7 +190,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     /// Caller must ensure that no device is using the information from any active pins for this region.
     pub unsafe fn release_pin(&mut self) {
         if let Some((_, token)) = self.backing {
-            super::object::release_pin(self.dma.object().id(), token);
+            super::object::release_pin(self.dma_object().object().id(), token);
             self.backing = None;
         }
     }
@@ -194,17 +216,41 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
 
 impl<'a, T: DeviceSync> DmaSliceRegion<'a, T> {
     pub(super) fn new(
-        dma: &'a DmaObject,
+        dma: Option<&'a DmaObject>,
         nrbytes: usize,
         access: Access,
         options: DmaOptions,
         offset: usize,
         len: usize,
+        pool: Option<(Arc<AllocatableDmaObject>, SplitPageRange)>,
     ) -> Self {
         Self {
-            region: DmaRegion::new(dma, nrbytes, access, options, offset),
+            region: DmaRegion::new(dma, nrbytes, access, options, offset, pool),
             len,
         }
+    }
+
+    pub(super) fn fill(&mut self, init: T)
+    where
+        T: Clone,
+    {
+        let p = self.region.virt as *mut T;
+        for idx in 0..self.len {
+            unsafe {
+                p.add(idx).write_volatile(init.clone());
+            }
+        }
+        self.sync(0..self.len, SyncMode::FullCoherence);
+    }
+
+    pub(super) fn fill_with(&mut self, init: impl Fn() -> T) {
+        let p = self.region.virt as *mut T;
+        for idx in 0..self.len {
+            unsafe {
+                p.add(idx).write_volatile(init());
+            }
+        }
+        self.sync(0..self.len, SyncMode::FullCoherence);
     }
 
     /// Return the number of bytes this region covers.
@@ -317,7 +363,15 @@ impl<'a, T: DeviceSync> DmaSliceRegion<'a, T> {
 impl<'a, T: DeviceSync> Drop for DmaRegion<'a, T> {
     fn drop(&mut self) {
         if let Some((_, token)) = self.backing.as_ref() {
-            self.dma.releasable_pins.lock().unwrap().push(*token);
+            self.dma_object()
+                .releasable_pins
+                .lock()
+                .unwrap()
+                .push(*token);
+        }
+
+        if let Some((ado, range)) = self.pool.take() {
+            ado.free(range);
         }
     }
 }
