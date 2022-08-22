@@ -50,7 +50,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     ) -> Self {
         Self {
             virt: unsafe {
-                dma.unwrap_or(pool.as_ref().unwrap().0.dma_object())
+                dma.unwrap_or_else(|| pool.as_ref().unwrap().0.dma_object())
                     .object()
                     .base_mut_unchecked() as *mut () as *mut u8
             },
@@ -75,7 +75,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
 
     fn dma_object(&self) -> &DmaObject {
         self.dma
-            .unwrap_or(self.pool.as_ref().unwrap().0.dma_object())
+            .unwrap_or_else(|| self.pool.as_ref().unwrap().0.dma_object())
     }
 
     /// Calculate the number of pages this region covers.
