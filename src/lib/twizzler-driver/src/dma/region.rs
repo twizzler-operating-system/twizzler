@@ -2,7 +2,10 @@ use core::marker::PhantomData;
 use core::ops::Range;
 
 use twizzler_abi::{
-    kso::{KactionCmd, KactionFlags, KactionGenericCmd},
+    kso::{
+        pack_kaction_pin_start_and_len, unpack_kaction_pin_token_and_len, KactionCmd, KactionFlags,
+        KactionGenericCmd,
+    },
     syscall::{sys_kaction, PinnedPage},
 };
 
@@ -74,15 +77,15 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
             KactionCmd::Generic(KactionGenericCmd::PinPages(0)),
             Some(self.dma.object().id()),
             ptr,
-            start | ((len as u64) << 32),
+            pack_kaction_pin_start_and_len(start, len).ok_or(PinError::InternalError)?,
             KactionFlags::empty(),
         )
         .map_err(|_| PinError::InternalError)?
         .u64()
         .ok_or(PinError::InternalError)?;
 
-        let retlen = (res >> 32) as usize;
-        let token = (res & 0xffffffff) as u32;
+        let (token, retlen) =
+            unpack_kaction_pin_token_and_len(res).ok_or(PinError::InternalError)?;
 
         if retlen < len {
             return Err(PinError::Exhausted);
