@@ -43,8 +43,56 @@ impl SplitPageRange {
         self.len
     }
 
+    #[cfg(test)]
+    fn start(&self) -> usize {
+        self.start
+    }
+
     fn offset(&self) -> usize {
         self.start * DMA_PAGE_SIZE
+    }
+}
+
+#[cfg(test)]
+pub mod tests_split_page_range {
+    use super::SplitPageRange;
+
+    #[test]
+    fn spr_split_multiple() {
+        let r = SplitPageRange::new(2, 7);
+        let split = r.split(4);
+        if let super::Split::Multiple(a, b) = split {
+            assert_eq!(a.len(), 4);
+            assert_eq!(a.start(), 2);
+            assert_eq!(b.len(), 3);
+            assert_eq!(b.start(), 6);
+        } else {
+            panic!("split broken");
+        }
+    }
+
+    #[test]
+    fn spr_split_single1() {
+        let r = SplitPageRange::new(2, 7);
+        let split = r.split(7);
+        if let super::Split::Single(r) = split {
+            assert_eq!(r.len(), 7);
+            assert_eq!(r.start(), 2);
+        } else {
+            panic!("split broken");
+        }
+    }
+
+    #[test]
+    fn spr_split_single2() {
+        let r = SplitPageRange::new(2, 7);
+        let split = r.split(0);
+        if let super::Split::Single(r) = split {
+            assert_eq!(r.len(), 7);
+            assert_eq!(r.start(), 2);
+        } else {
+            panic!("split broken");
+        }
     }
 }
 
