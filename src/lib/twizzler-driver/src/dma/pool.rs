@@ -221,24 +221,6 @@ impl DmaPool {
         Ok(reg)
     }
 
-    pub fn allocate_with<'a, T: DeviceSync>(
-        &'a mut self,
-        init: impl Fn() -> T,
-    ) -> Result<DmaRegion<'a, T>, AllocationError> {
-        let len = core::mem::size_of::<T>();
-        let (ado, range) = self.do_allocate(len)?;
-        let mut reg = DmaRegion::new(
-            None,
-            len,
-            self.access,
-            self.opts,
-            range.offset(),
-            Some((ado.clone(), range)),
-        );
-        reg.fill(init());
-        Ok(reg)
-    }
-
     pub fn allocate_array<'a, T: DeviceSync + Clone>(
         &'a mut self,
         count: usize,
