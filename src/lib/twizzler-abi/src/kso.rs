@@ -218,3 +218,36 @@ impl TryFrom<u64> for KactionCmd {
         Ok(v)
     }
 }
+
+const KACTION_PACK_MASK: u64 = 0xffffffff;
+const KACTION_PACK_BITS: u64 = 32;
+pub fn pack_kaction_pin_start_and_len(start: u64, len: usize) -> Option<u64> {
+    let len: u64 = len.try_into().ok()?;
+    if len > KACTION_PACK_MASK || start > KACTION_PACK_MASK {
+        return None;
+    }
+    Some(len << KACTION_PACK_BITS | start)
+}
+
+pub fn unpack_kaction_pin_start_and_len(val: u64) -> Option<(u64, usize)> {
+    Some((
+        val & KACTION_PACK_MASK,
+        (val >> KACTION_PACK_BITS).try_into().ok()?,
+    ))
+}
+
+pub fn pack_kaction_pin_token_and_len(token: u32, len: usize) -> Option<u64> {
+    let len: u64 = len.try_into().ok()?;
+    let token: u64 = token.into();
+    if len > KACTION_PACK_MASK {
+        return None;
+    }
+    Some(len << KACTION_PACK_BITS | token)
+}
+
+pub fn unpack_kaction_pin_token_and_len(val: u64) -> Option<(u32, usize)> {
+    Some((
+        (val & KACTION_PACK_MASK) as u32,
+        (val >> KACTION_PACK_BITS).try_into().ok()?,
+    ))
+}

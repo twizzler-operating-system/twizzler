@@ -7,7 +7,10 @@ use twizzler_abi::{
         BusType, CacheType, DeviceId, DeviceInterrupt, DeviceRepr, DeviceType, MmioInfo,
         SubObjectType,
     },
-    kso::{KactionCmd, KactionError, KactionGenericCmd, KactionValue, KsoHdr},
+    kso::{
+        pack_kaction_pin_token_and_len, unpack_kaction_pin_start_and_len, KactionCmd, KactionError,
+        KactionGenericCmd, KactionValue, KsoHdr,
+    },
     object::{ObjID, NULLPAGE_SIZE},
     syscall::PinnedPage,
 };
@@ -86,15 +89,15 @@ pub fn kaction(
                 let id = id.ok_or(KactionError::InvalidArgument)?;
                 let obj = lookup_object(id, LookupFlags::empty()).ok_or(KactionError::NotFound)?;
 
-                let start = (arg2 & 0xffffffff) as usize;
-                let len = arg2 >> 32;
+                let (start, len) =
+                    unpack_kaction_pin_start_and_len(arg2).ok_or(KactionError::InvalidArgument)?;
 
-                let slice = unsafe { create_user_slice::<PinnedPage>(arg, len) }
+                let slice = unsafe { create_user_slice::<PinnedPage>(arg, len as u64) }
                     .ok_or(KactionError::InvalidArgument)?;
 
                 let (pins, token) = obj
                     .pin(
-                        start
+                        (start as usize)
                             .try_into()
                             .map_err(|_| KactionError::InvalidArgument)?,
                         slice.len(),
@@ -106,7 +109,7 @@ pub fn kaction(
                     slice[i] = PinnedPage::new(pins[i].as_u64())
                 }
 
-                let retval = ((len as u64) << 32) | (token as u64);
+                let retval = pack_kaction_pin_token_and_len(token, len as usize).unwrap();
                 Ok(KactionValue::U64(retval))
             }
             KactionGenericCmd::GetKsoRoot => {
