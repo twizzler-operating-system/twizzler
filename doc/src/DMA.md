@@ -113,3 +113,12 @@ The reason for this somewhat conservative approach to releasing pins is to reduc
 memory corruption from accidental mis-programming. Another consideration for pinned memory lifetime
 is that it can leak if the driver crashes. Allowing for leaks in this case is intentional, as it
 makes it less likely that the device will stomp over memory in the case of a driver crash.
+
+### Pools
+
+While we can use a `DmaObject` to perform DMA on an existing Twizzler object, it is common for a
+device driver to need a simple pool of DMA-able memory that it can allocate from so that it may
+communicate with the device (e.g. DMA memory for a ring buffer). For this, twizzler-driver provides
+a `DmaPool` type that can be used to allocate DMA regions that share an access type and a set of
+`DmaOptions`. The pool will internally create new Twizzler objects that it uses to allocate DMA
+memory from, which it then uses to create DMA regions on-demand.
