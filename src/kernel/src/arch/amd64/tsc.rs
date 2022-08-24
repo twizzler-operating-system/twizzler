@@ -13,7 +13,7 @@ pub struct Tsc {
 
 impl Tsc {
     pub fn new() -> Self {
-        // calculate the frequency at which the Tsc is running
+        // calculate the frequency at which the TSC is running
         // in other words the resolution at which ticks occur
         let f = Tsc::get_tsc_frequency();
 
@@ -24,8 +24,8 @@ impl Tsc {
     }
 
     // returns frequency of the tsc as a u64 in Hz
-    // this is the nominal tsc frequency, as in what
-    // we would expect in an ideal world. But this value
+    // this value might be the nominal tsc frequency, 
+    // as in what we would expect in an ideal world. This
     // might need to be adjusted depending on the state
     // of the machine/crystal driving the tsc.
     fn get_tsc_frequency() -> u64 {
@@ -53,8 +53,9 @@ impl ClockHardware for Tsc {
 }
 
 #[derive(Debug)]
+#[repr(u32)]
 enum TscError {
-    LeafNotupported,
+    LeafNotupported(u32),
     CpuFeatureNotSupported,
 }
 
@@ -67,7 +68,7 @@ fn feature_info_frequency() -> Result<u64, TscError> {
     let tsc = match cpuid.get_tsc_info() {
         Some(x) => x,
         // we are probably on some old processor
-        None => return Err(TscError::LeafNotupported)
+        None => return Err(TscError::LeafNotupported(0x15))
         // unimplemented!("TSC leaf 0x15 not supported")
     };
 
@@ -98,9 +99,21 @@ fn feature_info_frequency() -> Result<u64, TscError> {
         }
     }
     
+    // cpuid leaf ranges 0x40000000-0x4FFFFFFF not used by the cpu.
+    // They can be used by software such as hypervisors to return
+    // information to the guest. Maybe the hypervisor can tell 
+    // us what the TSC frequency is. Frequency returned in kHz
+    if let Some(hyperv) = cpuid.get_hypervisor_info() {
+        match hyperv.tsc_frequency() {
+            Some(freq) => if freq > 0 { return Ok(1_000 * freq as u64) },
+            None => return Err(TscError::LeafNotupported(0x40000010))
+        }
+    }
+
     // if we reached this point, this might be on some unsupported
     // cpu which we do not take into account that does not report
-    // the tsc ratio via leaf 0x15
+    // the tsc ratio via leaf 0x15. Or the hypervisor does not support
+    // returning timing info
     Err(TscError::CpuFeatureNotSupported)
     // unimplemented!("unsupported cpu TSC frequency calculation");
 }
