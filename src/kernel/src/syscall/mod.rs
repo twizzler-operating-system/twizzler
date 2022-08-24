@@ -4,13 +4,13 @@ use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionValue},
     object::{ObjID, Protections},
     syscall::{
-        ClockFlags, ClockInfo, ClockSource, ClockGroup, TimeSpan, Seconds, FemtoSeconds, HandleType, KernelConsoleReadSource, ObjectCreateError,
-        ObjectMapError, ReadClockInfoError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
+        ClockFlags, ReadClockListFlags, ClockInfo, ClockSource, ClockGroup, FemtoSeconds, HandleType, KernelConsoleReadSource, 
+        ObjectCreateError, ObjectMapError, ReadClockInfoError, ReadClockListError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
     },
 };
 use x86_64::VirtAddr;
 
-use crate::clock::get_current_ticks;
+use crate::clock::{fill_with_every_first, fill_with_kind, fill_with_first_kind};
 use crate::time::TICK_SOURCES;
 
 use self::{object::sys_new_handle, thread::thread_ctrl};
@@ -118,6 +118,36 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClo
         }
         _ => Err(ReadClockInfoError::InvalidArgument),
     }
+}
+
+fn type_read_clock_list(
+    clock: u64,
+    clock_ptr: u64,
+    slice_len: u64,
+    start: u64,
+    flags: u64
+) -> Result<u64, ReadClockListError> {
+    // convert u64 back into things
+    let slice = match unsafe { create_user_slice(clock_ptr, slice_len) } {
+        Some(x) => x,
+        None => return Err(ReadClockListError::Unknown) // unknown error
+    }; // maybe use ok or
+
+    let kind: ClockGroup = clock.into();
+
+    let list_flags = match ReadClockListFlags::from_bits(flags as u32) {
+        Some(x) => x,
+        None => return Err(ReadClockListError::InvalidArgument) // invalid flag present
+    };
+
+    const EMPTY: ReadClockListFlags = ReadClockListFlags::empty();
+    match list_flags {
+        ReadClockListFlags::ALL_CLOCKS | EMPTY => fill_with_every_first(slice, start),
+        ReadClockListFlags::ONLY_KIND => fill_with_kind(slice, kind, start),
+        ReadClockListFlags::FIRST_KIND => fill_with_first_kind(slice, kind, start),
+        _ => Err(ReadClockListError::InvalidArgument) // invalid flag combination
+    }
+    .map(|x| x as u64)
 }
 
 #[inline]
@@ -291,6 +321,12 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
         }
         Syscall::ReadClockInfo => {
             let result = type_read_clock_info(context.arg0(), context.arg1(), context.arg2());
+            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
+            context.set_return_values(code, val);
+        }
+        Syscall::ReadClockList => {
+            let result = type_read_clock_list(
+                context.arg0(), context.arg1(), context.arg2(), context.arg3(), context.arg4());
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }

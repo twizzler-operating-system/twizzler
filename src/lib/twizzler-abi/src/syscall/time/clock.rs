@@ -73,6 +73,26 @@ pub enum ClockGroup {
     RealTime,
 }
 
+impl From<ClockGroup> for u64 {
+    fn from(clock: ClockGroup) -> Self {
+        match clock {
+            ClockGroup::Monotonic => 0,
+            ClockGroup::RealTime => 1,
+            ClockGroup::Unknown => 2
+        }
+    }
+}
+
+impl From<u64> for ClockGroup {
+    fn from(x: u64) -> Self {
+        match x {
+            0 => ClockGroup::Monotonic,
+            1 => ClockGroup::RealTime,
+            _ => ClockGroup::Unknown
+        }
+    }
+}
+
 /// ID used internally to read the appropriate clock source.
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]

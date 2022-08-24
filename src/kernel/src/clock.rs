@@ -11,7 +11,7 @@ use crate::{
     time::{Ticks, ClockHardware},
 };
 
-use twizzler_abi::syscall::{ClockInfo, FemtoSeconds};
+use twizzler_abi::syscall::{ClockInfo, FemtoSeconds, Clock, ClockGroup, ReadClockListError};
 
 pub type Nanoseconds = u64;
 
@@ -258,7 +258,7 @@ pub fn oneshot_clock_hardtick() {
 
 fn enumerate_hw_clocks() {
     crate::arch::processor::enumerate_clocks();
-    crate::time::register_clock(SoftClockTick {});
+    // crate::time::register_clock(SoftClockTick {});
     crate::machine::enumerate_clocks();
 }
 
@@ -271,6 +271,18 @@ impl ClockHardware for SoftClockTick {
     fn info(&self) -> ClockInfo {
         ClockInfo::ZERO
     }
+}
+
+pub fn fill_with_every_first(_slice: &mut [Clock], _start: u64) -> Result<usize, ReadClockListError> {
+    todo!()
+}
+
+pub fn fill_with_kind(_slice: &mut [Clock], _clock: ClockGroup, _start: u64) -> Result<usize, ReadClockListError> {
+    todo!()
+}
+
+pub fn fill_with_first_kind(_slice: &mut [Clock], _clock: ClockGroup, _start: u64) -> Result<usize, ReadClockListError> {
+    todo!()
 }
 
 pub fn init() {

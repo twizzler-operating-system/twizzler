@@ -6,7 +6,7 @@ pub use clock::*;
 pub use time::*;
 pub use units::*;
 
-use core::{fmt, mem::MaybeUninit, time::Duration};
+use core::{fmt, mem::MaybeUninit};
 use bitflags::bitflags;
 
 use crate::arch::syscall::raw_syscall;
@@ -60,10 +60,63 @@ impl std::error::Error for ReadClockInfoError {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+#[repr(u32)]
+/// Possible error values for [sys_read_clock_list].
+pub enum ReadClockListError {
+    /// An unknown error occurred.
+    Unknown = 0,
+    /// One of the arguments was invalid.   
+    InvalidArgument = 1,
+}
+
+impl ReadClockListError {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Unknown => "an unknown error occurred",
+            Self::InvalidArgument => "invalid argument",
+        }
+    }
+}
+
+impl From<ReadClockListError> for u64 {
+    fn from(e: ReadClockListError) -> Self {
+        e as u64
+    }
+}
+
+impl From<u64> for ReadClockListError {
+    fn from(x: u64) -> Self {
+        match x {
+            1 => Self::InvalidArgument,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl fmt::Display for ReadClockListError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ReadClockListError {
+    fn description(&self) -> &str {
+        self.as_str()
+    }
+}
+
 bitflags! {
     /// Flags to pass to [sys_read_clock_info].
     pub struct ReadClockFlags: u32 {
 
+    }
+
+    pub struct ReadClockListFlags: u32 {
+        const ALL_CLOCKS = 1 << 0;
+        const ONLY_KIND = 1 << 1;
+        const FIRST_KIND = 1 << 2;
     }
 }
 
@@ -123,8 +176,28 @@ pub fn sys_read_clock_info(
 
 /// Discover a list of clock sources exposed by the kernel.
 pub fn sys_read_clock_list(
-    _clock: ClockGroup,
-    _flags: ReadClockFlags,
-) -> Result<Clock, ReadClockInfoError> { // should be a list like Vec
-    todo!();
+    clock: ClockGroup,
+    clocks: &mut [Clock],
+    start: u64,
+    flags: ReadClockListFlags,
+) -> Result<usize, ReadClockListError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ReadClockList,
+            &[
+                clock.into(),
+                clocks.as_mut_ptr() as u64,
+                clocks.len() as u64,
+                start,
+                flags.bits() as u64,
+            ],
+        )
+    };
+    convert_codes_to_result(
+        code,
+        val,
+        |c, _| c != 0,
+        |_, v| v as usize,
+        |_, v| v.into(),
+    )
 }
