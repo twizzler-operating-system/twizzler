@@ -78,7 +78,7 @@ pub enum ClockGroup {
 #[repr(transparent)]
 pub struct ClockID(pub u64);
 
-// #[allow(dead_code)]
+#[allow(dead_code)]
 // abstract representation of a clock source to users
 pub struct Clock {
     pub info: ClockInfo,

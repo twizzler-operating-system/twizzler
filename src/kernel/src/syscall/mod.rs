@@ -10,7 +10,7 @@ use twizzler_abi::{
 };
 use x86_64::VirtAddr;
 
-use crate::clock::ticks_to_nano;
+use crate::clock::get_current_ticks;
 use crate::time::TICK_SOURCES;
 
 use self::{object::sys_new_handle, thread::thread_ctrl};
@@ -108,13 +108,9 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClo
     match source {
         ClockSource::BestMonotonic => {
             let ticks = unsafe { TICK_SOURCES[src as usize].read() };
-            //TODO
-            let span = TimeSpan(
-                Seconds(ticks.value),
-                ticks.rate //ticks.value * ticks.rate; // multiplication operator returns TimeSpan
-            );
-            let precision = FemtoSeconds(1000); //TODO
-            let resolution = FemtoSeconds(1000); //TODO
+            let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
+            let precision = FemtoSeconds(1000); // TODO
+            let resolution = ticks.rate;
             let flags = ClockFlags::MONOTONIC;
             let info = ClockInfo::new(span, precision, resolution, flags);
             info_ptr.write(info);
