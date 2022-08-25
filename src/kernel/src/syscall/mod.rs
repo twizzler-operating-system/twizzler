@@ -144,7 +144,7 @@ fn type_read_clock_list(
     match list_flags {
         ReadClockListFlags::ALL_CLOCKS | EMPTY => fill_with_every_first(slice, start),
         ReadClockListFlags::ONLY_KIND => fill_with_kind(slice, kind, start),
-        ReadClockListFlags::FIRST_KIND => fill_with_first_kind(slice, kind, start),
+        ReadClockListFlags::FIRST_KIND => fill_with_first_kind(slice, kind),
         _ => Err(ReadClockListError::InvalidArgument) // invalid flag combination
     }
     .map(|x| x as u64)

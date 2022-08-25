@@ -8,10 +8,10 @@ use crate::{
     processor::current_processor,
     spinlock::Spinlock,
     thread::{Priority, ThreadRef},
-    time::{Ticks, ClockHardware},
+    time::{Ticks, ClockHardware, TICK_SOURCES},
 };
 
-use twizzler_abi::syscall::{ClockInfo, FemtoSeconds, Clock, ClockGroup, ReadClockListError};
+use twizzler_abi::syscall::{ClockID, ClockInfo, FemtoSeconds, Clock, ClockGroup, ReadClockListError};
 
 pub type Nanoseconds = u64;
 
@@ -258,8 +258,48 @@ pub fn oneshot_clock_hardtick() {
 
 fn enumerate_hw_clocks() {
     crate::arch::processor::enumerate_clocks();
-    // crate::time::register_clock(SoftClockTick {});
+    crate::time::register_clock(SoftClockTick {});
     crate::machine::enumerate_clocks();
+}
+
+// create clocks exposed to userspace
+fn materialize_sw_clocks() {
+    // in the future we will do something a bit more clever
+    // that will take into account the properties of the hardware
+    // to map to a semantic clock type
+    organize_clock_sources(ClockGroup::Monotonic);
+    organize_clock_sources(ClockGroup::RealTime);
+    organize_clock_sources(ClockGroup::Unknown);
+}
+
+fn organize_clock_sources(group: ClockGroup) {
+    // 0 at this time maps to a monotonic clock source
+    // which at thus time is sufficient for the monotonic
+    // and real-time user clocks
+    match group {
+        ClockGroup::Monotonic => {
+            let mut v = Vec::new();
+            v.push(ClockID(0));
+            unsafe { USER_CLOCKS.push(v) }
+        }
+        ClockGroup::RealTime => {
+            let mut v = Vec::new();
+            v.push(ClockID(0));
+            unsafe { USER_CLOCKS.push(v) }
+        }
+        ClockGroup::Unknown => {
+            // contains every single clock source
+            // which could be used for anything
+            let mut v = Vec::new();
+            // nothing special here, just a bunch of integers
+            // representing the clock ids of the TICK_SOURCES
+            let num_clocks = unsafe { TICK_SOURCES.len() }.try_into().unwrap();
+            for i in 0..num_clocks {
+                v.push(ClockID(i))
+            }
+            unsafe { USER_CLOCKS.push(v) }
+        }
+    }
 }
 
 pub struct SoftClockTick;
@@ -273,20 +313,98 @@ impl ClockHardware for SoftClockTick {
     }
 }
 
-pub fn fill_with_every_first(_slice: &mut [Clock], _start: u64) -> Result<usize, ReadClockListError> {
-    todo!()
+// A list of user clocks that are exposed to user space
+static mut USER_CLOCKS: Vec<Vec<ClockID>> = Vec::new();
+static mut CLOCK_LEN: usize = 0;
+
+// fills the passed in slice with the first clock from each clock list
+pub fn fill_with_every_first(slice: &mut [Clock], start: u64) -> Result<usize, ReadClockListError> {
+    // error check bounds of start
+    // there are currently only 3 kinds of clocks exposed
+    if start >= 3 {
+        // index out of bounds
+        return Err(ReadClockListError::InvalidArgument)
+    }
+
+    let mut clocks_added = 0;
+    // determine what clock list we need to be in
+    unsafe {
+        for (i, clock_list) in USER_CLOCKS[start as usize..].iter().enumerate() {
+            // add first clock in this list to the user slice
+            // check that we don't go out of slice bounds
+            if clocks_added < slice.len() {
+                // does this allocate new kernel memory?
+                slice[clocks_added] = Clock::new(
+                    // each semantic clock will have at least one element
+                    TICK_SOURCES[clock_list.first().unwrap().0 as usize].info(),
+                    clock_list[0],
+                    (i as u64).into(),
+                );
+                clocks_added += 1;
+            } else {
+                break
+            }
+        }
+    }
+    return Ok(clocks_added)
+    // todo!()
 }
 
-pub fn fill_with_kind(_slice: &mut [Clock], _clock: ClockGroup, _start: u64) -> Result<usize, ReadClockListError> {
-    todo!()
+// fills the passed in slice with all clocks from a specified clock list
+pub fn fill_with_kind(slice: &mut [Clock], clock: ClockGroup, start: u64) -> Result<usize, ReadClockListError> {
+    // determine what clock list we need to be in
+    let i: u64 = clock.into();
+    let clock_list = unsafe { &USER_CLOCKS[i as usize] };
+    // error check bounds of start
+    if start as usize >= clock_list.len() {
+        // index out of bounds
+        return Err(ReadClockListError::InvalidArgument)
+    }
+    let mut clocks_added = 0;
+    // add each clock in this list to the user slice
+    for id in &clock_list[start as usize..] {
+        // check that we don't go out of slice bounds
+        if clocks_added < slice.len() {
+            // does this allocate new kernel memory?
+            // what about ownership of this?
+            slice[clocks_added] = Clock::new(
+                unsafe { TICK_SOURCES[id.0 as usize].info() },
+                *id,
+                clock,
+            );
+            clocks_added += 1;
+        } else {
+            break
+        }
+    }
+    return Ok(clocks_added)
 }
 
-pub fn fill_with_first_kind(_slice: &mut [Clock], _clock: ClockGroup, _start: u64) -> Result<usize, ReadClockListError> {
-    todo!()
+// fils the passed in slice with the first element of a specific clock type
+pub fn fill_with_first_kind(slice: &mut [Clock], clock: ClockGroup) -> Result<usize, ReadClockListError> {
+    // determine what clock list we need to be in
+    let i: u64 = clock.into();
+    let clock_list = unsafe { &USER_CLOCKS[i as usize] };
+    let clocks_added = 1;
+    // check that we don't go out of slice bounds
+    if slice.len() >= 1 {
+        let id = clock_list.first().unwrap();
+        // does this allocate new kernel memory?
+        // what about ownership of this?
+        slice[0] = Clock::new(
+            unsafe { TICK_SOURCES[id.0 as usize].info() },
+            *id,
+            clock,
+        );
+        return Ok(clocks_added)
+    } else {
+        return Err(ReadClockListError::InvalidArgument)
+    }
 }
 
 pub fn init() {
     enumerate_hw_clocks();
+    materialize_sw_clocks();
     crate::arch::start_clock(127, statclock);
     TIMEOUT_THREAD
         .call_once(|| crate::thread::start_new_kernel(Priority::REALTIME, soft_timeout_clock));
