@@ -194,14 +194,8 @@ impl BaseType for EmptyBase {
 // Merge adjacent regions by sorting, comparing pairs, and merging if they are adjacent.
 // Keep going until we cannot merge anymore.
 fn compact_range_list(list: &mut Vec<SplitPageRange>) {
+    list.sort();
     loop {
-        // You may be wondering why we sort each time and push merged chunks at the end of the
-        // vec, instead of inserting them into the sorted location. The current implementation
-        // of Rust's Vec's sort uses an algorithm that is fast for nearly-sorted Vecs or for
-        // Vecs that contain two concatenated sorted subsequences, which is what we'll end up
-        // with after each iteration. Additionally, doing an insert in the middle is O(n), so we
-        // prefer to do the swapping from the sort.
-        list.sort();
         let pairs: Vec<_> = list
             .windows(2)
             .enumerate()
@@ -218,11 +212,12 @@ fn compact_range_list(list: &mut Vec<SplitPageRange>) {
             break;
         }
 
-        for pair in pairs {
+        // Iterate in reverse to compact from top, so as to not mess up indices.
+        for pair in pairs.iter().rev() {
+            // Grab the second item first to not mess up indices.
             let second = list.remove(pair + 1);
-            let first = list.remove(pair);
-
-            list.push(first.merge(second));
+            let new = list[*pair].clone().merge(second);
+            list[*pair] = new;
         }
     }
 }
