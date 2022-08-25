@@ -9,6 +9,7 @@ use twizzler_object::{CreateSpec, Object};
 
 use super::{Access, DeviceSync, DmaObject, DmaOptions, DmaRegion, DmaSliceRegion, DMA_PAGE_SIZE};
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub(super) struct SplitPageRange {
     start: usize,
     len: usize,
@@ -39,6 +40,24 @@ impl SplitPageRange {
         )
     }
 
+    fn merge(self, other: Self) -> Self {
+        let (first, second) = if self.start < other.start {
+            (self, other)
+        } else {
+            (other, self)
+        };
+        assert!(first.adjacent_before(&second));
+
+        Self {
+            start: first.start,
+            len: first.len + second.len,
+        }
+    }
+
+    fn adjacent_before(&self, other: &Self) -> bool {
+        self.start < other.start && self.start + self.len == other.start
+    }
+
     fn len(&self) -> usize {
         self.len
     }
@@ -55,6 +74,8 @@ impl SplitPageRange {
 
 #[cfg(test)]
 pub mod tests_split_page_range {
+    use crate::dma::pool::compact_range_list;
+
     use super::SplitPageRange;
 
     #[test]
@@ -93,6 +114,43 @@ pub mod tests_split_page_range {
         } else {
             panic!("split broken");
         }
+    }
+
+    #[test]
+    fn spr_merge() {
+        let a = SplitPageRange::new(2, 4);
+        let b = SplitPageRange::new(6, 3);
+        let r = a.merge(b);
+        assert_eq!(r.start(), 2);
+        assert_eq!(r.len(), 7);
+    }
+
+    #[test]
+    fn spr_adj() {
+        let a = SplitPageRange::new(2, 4);
+        let b = SplitPageRange::new(1, 1);
+        let c = SplitPageRange::new(6, 4);
+
+        assert!(!a.adjacent_before(&b));
+        assert!(b.adjacent_before(&a));
+        assert!(!a.adjacent_before(&a));
+        assert!(a.adjacent_before(&c));
+    }
+
+    #[test]
+    fn spr_merge_alg() {
+        let a = SplitPageRange::new(2, 4);
+        let b = SplitPageRange::new(0, 1);
+        let c = SplitPageRange::new(6, 4);
+        let x = SplitPageRange::new(2, 8);
+        let mut list = vec![a.clone(), b.clone(), c.clone()];
+        let single_list = vec![a.clone()];
+        let slw: Vec<_> = single_list.windows(2).collect();
+        assert!(slw.is_empty());
+
+        compact_range_list(&mut list);
+
+        assert_eq!(list, vec![b, x]);
     }
 }
 
@@ -133,6 +191,42 @@ impl BaseType for EmptyBase {
     }
 }
 
+// Merge adjacent regions by sorting, comparing pairs, and merging if they are adjacent.
+// Keep going until we cannot merge anymore.
+fn compact_range_list(list: &mut Vec<SplitPageRange>) {
+    loop {
+        // You may be wondering why we sort each time and push merged chunks at the end of the
+        // vec, instead of inserting them into the sorted location. The current implementation
+        // of Rust's Vec's sort uses an algorithm that is fast for nearly-sorted Vecs or for
+        // Vecs that contain two concatenated sorted subsequences, which is what we'll end up
+        // with after each iteration. Additionally, doing an insert in the middle is O(n), so we
+        // prefer to do the swapping from the sort.
+        list.sort();
+        let pairs: Vec<_> = list
+            .windows(2)
+            .enumerate()
+            .filter_map(|(idx, ranges)| {
+                if ranges[0].adjacent_before(&ranges[1]) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if pairs.is_empty() {
+            break;
+        }
+
+        for pair in pairs {
+            let second = list.remove(pair + 1);
+            let first = list.remove(pair);
+
+            list.push(first.merge(second));
+        }
+    }
+}
+
 impl AllocatableDmaObject {
     pub(super) fn dma_object(&self) -> &DmaObject {
         &self.dma
@@ -141,6 +235,9 @@ impl AllocatableDmaObject {
     pub(super) fn free(&self, range: SplitPageRange) {
         let mut freelist = self.freelist.lock().unwrap();
         freelist.push(range);
+
+        compact_range_list(&mut freelist);
+        // TODO: consider that, if the entire object get free'd, we could delete the object.
     }
 
     fn allocate(&self, len: usize) -> Option<SplitPageRange> {
