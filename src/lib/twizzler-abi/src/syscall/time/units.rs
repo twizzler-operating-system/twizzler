@@ -34,7 +34,19 @@ impl Mul<u64> for Seconds {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(transparent)]
+pub struct MilliSeconds(pub u64);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(transparent)]
+pub struct MicroSeconds(pub u64);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(transparent)]
 pub struct NanoSeconds(pub u64);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(transparent)]
+pub struct PicoSeconds(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(transparent)]
@@ -145,7 +157,7 @@ mod tests {
 
     #[test]
     fn conversion() {
-        let mut femtos = FemtoSeconds(FEMTOS_PER_SEC * 3);
+        let femtos = FemtoSeconds(FEMTOS_PER_SEC * 3);
         let mut secs: Seconds = femtos.into();
 
         

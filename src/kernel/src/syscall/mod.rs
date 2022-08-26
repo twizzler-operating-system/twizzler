@@ -4,7 +4,7 @@ use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionValue},
     object::{ObjID, Protections},
     syscall::{
-        ClockFlags, ReadClockListFlags, ClockInfo, ClockSource, ClockGroup, FemtoSeconds, HandleType, KernelConsoleReadSource, 
+        ClockFlags, ReadClockListFlags, ClockInfo, ClockSource, ClockKind, FemtoSeconds, HandleType, KernelConsoleReadSource,
         ObjectCreateError, ObjectMapError, ReadClockInfoError, ReadClockListError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
     },
 };
@@ -133,7 +133,7 @@ fn type_read_clock_list(
         None => return Err(ReadClockListError::Unknown) // unknown error
     }; // maybe use ok or
 
-    let kind: ClockGroup = clock.into();
+    let kind: ClockKind = clock.into();
 
     let list_flags = match ReadClockListFlags::from_bits(flags as u32) {
         Some(x) => x,

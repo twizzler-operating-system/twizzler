@@ -176,7 +176,7 @@ pub fn sys_read_clock_info(
 
 /// Discover a list of clock sources exposed by the kernel.
 pub fn sys_read_clock_list(
-    clock: ClockGroup,
+    clock: ClockKind,
     clocks: &mut [Clock],
     start: u64,
     flags: ReadClockListFlags,

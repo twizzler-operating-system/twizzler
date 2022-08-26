@@ -11,7 +11,7 @@ use crate::{
     time::{Ticks, ClockHardware, TICK_SOURCES},
 };
 
-use twizzler_abi::syscall::{ClockID, ClockInfo, FemtoSeconds, Clock, ClockGroup, ReadClockListError};
+use twizzler_abi::syscall::{ClockID, ClockInfo, FemtoSeconds, Clock, ClockKind, ReadClockListError};
 
 pub type Nanoseconds = u64;
 
@@ -267,31 +267,31 @@ fn materialize_sw_clocks() {
     // in the future we will do something a bit more clever
     // that will take into account the properties of the hardware
     // to map to a semantic clock type
-    organize_clock_sources(ClockGroup::Monotonic);
-    organize_clock_sources(ClockGroup::RealTime);
-    organize_clock_sources(ClockGroup::Unknown);
+    organize_clock_sources(ClockKind::Monotonic);
+    organize_clock_sources(ClockKind::RealTime);
+    organize_clock_sources(ClockKind::Unknown);
 }
 
-fn organize_clock_sources(group: ClockGroup) {
+fn organize_clock_sources(kind: ClockKind) {
     // 0 at this time maps to a monotonic clock source
     // which at thus time is sufficient for the monotonic
     // and real-time user clocks
-    match group {
-        ClockGroup::Monotonic => {
+    match kind {
+        ClockKind::Monotonic => {
             let mut v = Vec::new();
             v.push(ClockID(0));
             {
                 USER_CLOCKS.lock().push(v)
             }
         }
-        ClockGroup::RealTime => {
+        ClockKind::RealTime => {
             let mut v = Vec::new();
             v.push(ClockID(0));
             {
                 USER_CLOCKS.lock().push(v)
             }
         }
-        ClockGroup::Unknown => {
+        ClockKind::Unknown => {
             // contains every single clock source
             // which could be used for anything
             let mut v = Vec::new();
@@ -353,11 +353,10 @@ pub fn fill_with_every_first(slice: &mut [Clock], start: u64) -> Result<usize, R
         }
     }
     return Ok(clocks_added)
-    // todo!()
 }
 
 // fills the passed in slice with all clocks from a specified clock list
-pub fn fill_with_kind(slice: &mut [Clock], clock: ClockGroup, start: u64) -> Result<usize, ReadClockListError> {
+pub fn fill_with_kind(slice: &mut [Clock], clock: ClockKind, start: u64) -> Result<usize, ReadClockListError> {
     // determine what clock list we need to be in
     let i: u64 = clock.into();
     let clock_list = &USER_CLOCKS.lock()[i as usize];
@@ -389,7 +388,7 @@ pub fn fill_with_kind(slice: &mut [Clock], clock: ClockGroup, start: u64) -> Res
 }
 
 // fils the passed in slice with the first element of a specific clock type
-pub fn fill_with_first_kind(slice: &mut [Clock], clock: ClockGroup) -> Result<usize, ReadClockListError> {
+pub fn fill_with_first_kind(slice: &mut [Clock], clock: ClockKind) -> Result<usize, ReadClockListError> {
     // determine what clock list we need to be in
     let i: u64 = clock.into();
     let clock_list = &USER_CLOCKS.lock()[i as usize];

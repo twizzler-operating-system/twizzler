@@ -67,28 +67,28 @@ impl ClockInfo {
 /// Different kinds of clocks exposed by the kernel.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub enum ClockGroup {
+pub enum ClockKind {
     Unknown,
     Monotonic,
     RealTime,
 }
 
-impl From<ClockGroup> for u64 {
-    fn from(clock: ClockGroup) -> Self {
+impl From<ClockKind> for u64 {
+    fn from(clock: ClockKind) -> Self {
         match clock {
-            ClockGroup::Monotonic => 0,
-            ClockGroup::RealTime => 1,
-            ClockGroup::Unknown => 2
+            ClockKind::Monotonic => 0,
+            ClockKind::RealTime => 1,
+            ClockKind::Unknown => 2
         }
     }
 }
 
-impl From<u64> for ClockGroup {
+impl From<u64> for ClockKind {
     fn from(x: u64) -> Self {
         match x {
-            0 => ClockGroup::Monotonic,
-            1 => ClockGroup::RealTime,
-            _ => ClockGroup::Unknown
+            0 => ClockKind::Monotonic,
+            1 => ClockKind::RealTime,
+            _ => ClockKind::Unknown
         }
     }
 }
@@ -104,18 +104,18 @@ pub struct ClockID(pub u64);
 pub struct Clock {
     pub info: ClockInfo,
     id: ClockID,
-    group: ClockGroup
+    kind: ClockKind
 }
 
 impl Clock {
     pub const ZERO: Clock = Clock {
         info: ClockInfo::ZERO,
         id: ClockID(0),
-        group: ClockGroup::Unknown
+        kind: ClockKind::Unknown
     };
 
-    pub fn new(info: ClockInfo, id: ClockID, group: ClockGroup) -> Clock {
-        Self {info, id, group}
+    pub fn new(info: ClockInfo, id: ClockID, kind: ClockKind) -> Clock {
+        Self {info, id, kind}
     }
 
     pub fn read(&self) -> TimeSpan {
@@ -129,10 +129,10 @@ impl Clock {
         self.info
     }
 
-    /// Returns a new instance of a Clock from the specified ClockGroup
-    pub fn get(group: ClockGroup) -> Clock {
+    /// Returns a new instance of a Clock from the specified ClockKind
+    pub fn get(kind: ClockKind) -> Clock {
         let mut clk = [Clock::ZERO];
-        if let Ok(filled) = super::sys_read_clock_list(group, &mut clk, 0, ReadClockListFlags::FIRST_KIND) {
+        if let Ok(filled) = super::sys_read_clock_list(kind, &mut clk, 0, ReadClockListFlags::FIRST_KIND) {
             if filled > 0 {
                 return clk[0]
             }
