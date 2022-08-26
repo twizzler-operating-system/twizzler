@@ -1,3 +1,5 @@
+//! Functions and types for managing a device.
+
 use std::fmt::Display;
 
 pub use twizzler_abi::device::BusType;
@@ -9,10 +11,14 @@ use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd};
 use twizzler_object::Object;
 use twizzler_object::{ObjID, ObjectInitError, ObjectInitFlags, Protections};
 
-pub mod children;
+mod children;
 pub mod events;
-pub mod info;
-pub mod mmio;
+mod info;
+mod mmio;
+
+pub use children::DeviceChildrenIterator;
+pub use info::InfoObject;
+pub use mmio::MmioObject;
 
 /// A handle for a device.
 pub struct Device {
