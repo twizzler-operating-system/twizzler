@@ -339,7 +339,7 @@ pub fn fill_with_every_first(slice: &mut [Clock], start: u64) -> Result<usize, R
         // check that we don't go out of slice bounds
         if clocks_added < slice.len() {
             // does this allocate new kernel memory?
-            slice[clocks_added] = Clock::new(
+            slice[clocks_added].set(
                 // each semantic clock will have at least one element
                 {
                     TICK_SOURCES.lock()[clock_list.first().unwrap().0 as usize].info()
@@ -370,9 +370,7 @@ pub fn fill_with_kind(slice: &mut [Clock], clock: ClockKind, start: u64) -> Resu
     for id in &clock_list[start as usize..] {
         // check that we don't go out of slice bounds
         if clocks_added < slice.len() {
-            // does this allocate new kernel memory?
-            // what about ownership of this?
-            slice[clocks_added] = Clock::new(
+            slice[clocks_added].set(
                 { 
                     TICK_SOURCES.lock()[id.0 as usize].info()
                 },
@@ -396,9 +394,7 @@ pub fn fill_with_first_kind(slice: &mut [Clock], clock: ClockKind) -> Result<usi
     // check that we don't go out of slice bounds
     if slice.len() >= 1 {
         let id = clock_list.first().unwrap();
-        // does this allocate new kernel memory?
-        // what about ownership of this?
-        slice[0] = Clock::new(
+        slice[0].set(
             {
                 TICK_SOURCES.lock()[id.0 as usize].info()
             },

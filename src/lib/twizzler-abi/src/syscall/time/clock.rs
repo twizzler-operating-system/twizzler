@@ -139,4 +139,10 @@ impl Clock {
         }
         Clock::ZERO
     }
+
+    pub fn set(&mut self, info: ClockInfo, id: ClockID, kind: ClockKind) {
+        self.info = info;
+        self.id = id;
+        self.kind = kind;
+    }
 }
