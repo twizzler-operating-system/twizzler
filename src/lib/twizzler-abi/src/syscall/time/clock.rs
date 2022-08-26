@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-use super::{TimeSpan, FemtoSeconds};
+use super::{ClockSource, ReadClockFlags, ReadClockListFlags, TimeSpan, FemtoSeconds};
 
 bitflags! {
     /// Flags about a given clock or clock read.
@@ -65,7 +65,7 @@ impl ClockInfo {
 
 
 /// Different kinds of clocks exposed by the kernel.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum ClockGroup {
     Unknown,
@@ -100,6 +100,7 @@ pub struct ClockID(pub u64);
 
 #[allow(dead_code)]
 // abstract representation of a clock source to users
+#[derive(Clone, Copy, Debug)]
 pub struct Clock {
     pub info: ClockInfo,
     id: ClockID,
@@ -107,12 +108,21 @@ pub struct Clock {
 }
 
 impl Clock {
+    pub const ZERO: Clock = Clock {
+        info: ClockInfo::ZERO,
+        id: ClockID(0),
+        group: ClockGroup::Unknown
+    };
+
     pub fn new(info: ClockInfo, id: ClockID, group: ClockGroup) -> Clock {
         Self {info, id, group}
     }
 
     pub fn read(&self) -> TimeSpan {
-        TimeSpan::ZERO
+        match super::sys_read_clock_info(ClockSource::BestMonotonic, ReadClockFlags::empty()) {
+            Ok(ci) => ci.current_value(),
+            _ => TimeSpan::ZERO
+        }
     }
     
     pub fn info(&self) -> ClockInfo {
@@ -121,10 +131,12 @@ impl Clock {
 
     /// Returns a new instance of a Clock from the specified ClockGroup
     pub fn get(group: ClockGroup) -> Clock {
-        Clock {
-            group : group,
-            id: ClockID(0),
-            info: ClockInfo::ZERO,
+        let mut clk = [Clock::ZERO];
+        if let Ok(filled) = super::sys_read_clock_list(group, &mut clk, 0, ReadClockListFlags::FIRST_KIND) {
+            if filled > 0 {
+                return clk[0]
+            }
         }
+        Clock::ZERO
     }
 }
