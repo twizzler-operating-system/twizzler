@@ -280,12 +280,16 @@ fn organize_clock_sources(group: ClockGroup) {
         ClockGroup::Monotonic => {
             let mut v = Vec::new();
             v.push(ClockID(0));
-            unsafe { USER_CLOCKS.push(v) }
+            {
+                USER_CLOCKS.lock().push(v)
+            }
         }
         ClockGroup::RealTime => {
             let mut v = Vec::new();
             v.push(ClockID(0));
-            unsafe { USER_CLOCKS.push(v) }
+            {
+                USER_CLOCKS.lock().push(v)
+            }
         }
         ClockGroup::Unknown => {
             // contains every single clock source
@@ -293,11 +297,13 @@ fn organize_clock_sources(group: ClockGroup) {
             let mut v = Vec::new();
             // nothing special here, just a bunch of integers
             // representing the clock ids of the TICK_SOURCES
-            let num_clocks = unsafe { TICK_SOURCES.len() }.try_into().unwrap();
+            let num_clocks = { TICK_SOURCES.lock().len() }.try_into().unwrap();
             for i in 0..num_clocks {
                 v.push(ClockID(i))
             }
-            unsafe { USER_CLOCKS.push(v) }
+            {
+                USER_CLOCKS.lock().push(v)
+            }
         }
     }
 }
@@ -314,7 +320,7 @@ impl ClockHardware for SoftClockTick {
 }
 
 // A list of user clocks that are exposed to user space
-static mut USER_CLOCKS: Vec<Vec<ClockID>> = Vec::new();
+static USER_CLOCKS: Spinlock<Vec<Vec<ClockID>>> = Spinlock::new(Vec::new());
 static mut CLOCK_LEN: usize = 0;
 
 // fills the passed in slice with the first clock from each clock list
@@ -328,22 +334,22 @@ pub fn fill_with_every_first(slice: &mut [Clock], start: u64) -> Result<usize, R
 
     let mut clocks_added = 0;
     // determine what clock list we need to be in
-    unsafe {
-        for (i, clock_list) in USER_CLOCKS[start as usize..].iter().enumerate() {
-            // add first clock in this list to the user slice
-            // check that we don't go out of slice bounds
-            if clocks_added < slice.len() {
-                // does this allocate new kernel memory?
-                slice[clocks_added] = Clock::new(
-                    // each semantic clock will have at least one element
-                    TICK_SOURCES[clock_list.first().unwrap().0 as usize].info(),
-                    clock_list[0],
-                    (i as u64).into(),
-                );
-                clocks_added += 1;
-            } else {
-                break
-            }
+    for (i, clock_list) in USER_CLOCKS.lock()[start as usize..].iter().enumerate() {
+        // add first clock in this list to the user slice
+        // check that we don't go out of slice bounds
+        if clocks_added < slice.len() {
+            // does this allocate new kernel memory?
+            slice[clocks_added] = Clock::new(
+                // each semantic clock will have at least one element
+                {
+                    TICK_SOURCES.lock()[clock_list.first().unwrap().0 as usize].info()
+                },
+                clock_list[0],
+                (i as u64).into(),
+            );
+            clocks_added += 1;
+        } else {
+            break
         }
     }
     return Ok(clocks_added)
@@ -354,7 +360,7 @@ pub fn fill_with_every_first(slice: &mut [Clock], start: u64) -> Result<usize, R
 pub fn fill_with_kind(slice: &mut [Clock], clock: ClockGroup, start: u64) -> Result<usize, ReadClockListError> {
     // determine what clock list we need to be in
     let i: u64 = clock.into();
-    let clock_list = unsafe { &USER_CLOCKS[i as usize] };
+    let clock_list = &USER_CLOCKS.lock()[i as usize];
     // error check bounds of start
     if start as usize >= clock_list.len() {
         // index out of bounds
@@ -368,7 +374,9 @@ pub fn fill_with_kind(slice: &mut [Clock], clock: ClockGroup, start: u64) -> Res
             // does this allocate new kernel memory?
             // what about ownership of this?
             slice[clocks_added] = Clock::new(
-                unsafe { TICK_SOURCES[id.0 as usize].info() },
+                { 
+                    TICK_SOURCES.lock()[id.0 as usize].info()
+                },
                 *id,
                 clock,
             );
@@ -384,7 +392,7 @@ pub fn fill_with_kind(slice: &mut [Clock], clock: ClockGroup, start: u64) -> Res
 pub fn fill_with_first_kind(slice: &mut [Clock], clock: ClockGroup) -> Result<usize, ReadClockListError> {
     // determine what clock list we need to be in
     let i: u64 = clock.into();
-    let clock_list = unsafe { &USER_CLOCKS[i as usize] };
+    let clock_list = &USER_CLOCKS.lock()[i as usize];
     let clocks_added = 1;
     // check that we don't go out of slice bounds
     if slice.len() >= 1 {
@@ -392,7 +400,9 @@ pub fn fill_with_first_kind(slice: &mut [Clock], clock: ClockGroup) -> Result<us
         // does this allocate new kernel memory?
         // what about ownership of this?
         slice[0] = Clock::new(
-            unsafe { TICK_SOURCES[id.0 as usize].info() },
+            {
+                TICK_SOURCES.lock()[id.0 as usize].info()
+            },
             *id,
             clock,
         );

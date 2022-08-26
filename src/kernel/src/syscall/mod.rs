@@ -107,7 +107,7 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClo
 
     match source {
         ClockSource::BestMonotonic => {
-            let ticks = unsafe { TICK_SOURCES[src as usize].read() };
+            let ticks = { TICK_SOURCES.lock()[src as usize].read() };
             let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
             let precision = FemtoSeconds(1000); // TODO
             let resolution = ticks.rate;
