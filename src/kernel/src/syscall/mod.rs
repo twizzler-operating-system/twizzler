@@ -116,7 +116,32 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClo
             info_ptr.write(info);
             Ok(0)
         }
-        _ => Err(ReadClockInfoError::InvalidArgument),
+        ClockSource::BestRealTime => {
+            let ticks = { TICK_SOURCES.lock()[src as usize].read() };
+            let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
+            let precision = FemtoSeconds(1000); // TODO
+            let resolution = ticks.rate;
+            let flags = ClockFlags::empty();
+            let info = ClockInfo::new(span, precision, resolution, flags);
+            info_ptr.write(info);
+            Ok(0)
+        }
+        ClockSource::ID(_) => {
+            let ticks = {
+                let clock_list = TICK_SOURCES.lock();
+                if src as usize > clock_list.len() {
+                    return Err(ReadClockInfoError::InvalidArgument)
+                }
+                clock_list[src as usize].read()
+            };
+            let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
+            let precision = FemtoSeconds(1000); // TODO
+            let resolution = ticks.rate;
+            let flags = ClockFlags::empty();
+            let info = ClockInfo::new(span, precision, resolution, flags);
+            info_ptr.write(info);
+            Ok(0)
+        }
     }
 }
 

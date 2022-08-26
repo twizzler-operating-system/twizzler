@@ -8,7 +8,7 @@ use crate::{
     processor::current_processor,
     spinlock::Spinlock,
     thread::{Priority, ThreadRef},
-    time::{Ticks, ClockHardware, TICK_SOURCES},
+    time::{Ticks, ClockHardware, TICK_SOURCES, CLOCK_OFFSET},
 };
 
 use twizzler_abi::syscall::{ClockID, ClockInfo, FemtoSeconds, Clock, ClockKind, ReadClockListError};
@@ -297,7 +297,7 @@ fn organize_clock_sources(kind: ClockKind) {
             let mut v = Vec::new();
             // nothing special here, just a bunch of integers
             // representing the clock ids of the TICK_SOURCES
-            let num_clocks = { TICK_SOURCES.lock().len() }.try_into().unwrap();
+            let num_clocks = { TICK_SOURCES.lock().len() - CLOCK_OFFSET }.try_into().unwrap();
             for i in 0..num_clocks {
                 v.push(ClockID(i))
             }

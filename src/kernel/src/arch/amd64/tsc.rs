@@ -1,6 +1,6 @@
 use crate::time::{ClockHardware, Ticks};
 
-use twizzler_abi::syscall::{ClockInfo, FemtoSeconds};
+use twizzler_abi::syscall::{ClockInfo, ClockFlags, FemtoSeconds, TimeSpan};
 
 // 1 ms = 1000000 ns
 // 200 milliseconds
@@ -8,7 +8,7 @@ const SLEEP_TIME: u64 = 200 * 1_000_000;
 
 // resolution expressed as a unit of time
 pub struct Tsc {
-    resolution: FemtoSeconds
+    info: ClockInfo,
 }
 
 impl Tsc {
@@ -19,7 +19,12 @@ impl Tsc {
 
         logln!("[kernel::arch::tsc] tsc frequency {} (Hz), {} fs", f, 1_000_000_000_000_000 / f);
         Self {
-            resolution: FemtoSeconds(1_000_000_000_000_000 / f)
+            info: ClockInfo::new(
+                TimeSpan::ZERO,
+                FemtoSeconds(0), // TODO
+                FemtoSeconds(1_000_000_000_000_000 / f),
+                ClockFlags::MONOTONIC,
+            )
         }
     }
 
@@ -44,11 +49,11 @@ impl ClockHardware for Tsc {
     fn read(&self) -> Ticks {
         Ticks{
             value: unsafe { x86::time::rdtsc() }, // raw timer ticks (unitless)
-            rate: self.resolution
+            rate: self.info.resolution()
         }
     }
     fn info(&self) -> ClockInfo {
-        ClockInfo::ZERO
+        self.info
     }
 }
 

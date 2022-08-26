@@ -119,7 +119,7 @@ impl Clock {
     }
 
     pub fn read(&self) -> TimeSpan {
-        match super::sys_read_clock_info(ClockSource::BestMonotonic, ReadClockFlags::empty()) {
+        match super::sys_read_clock_info(ClockSource::ID(self.id), ReadClockFlags::empty()) {
             Ok(ci) => ci.current_value(),
             _ => TimeSpan::ZERO
         }
