@@ -75,9 +75,13 @@ impl MailboxInner {
     }
 }
 
+/// Possible errors for interrupt allocation.
 pub enum InterruptAllocationError {
+    /// The device has run out of interrupt vectors that can be used.
     NoMoreInterrupts,
+    /// Some option was unsupported.
     Unsupported,
+    /// The kernel encountered an error.
     KernelError(KactionError),
 }
 
@@ -96,6 +100,7 @@ impl AsyncSetup for MailboxInner {
     }
 }
 
+/// A manager for device events, including interrupt handling.
 pub struct DeviceEventStream {
     inner: Mutex<DeviceEventStreamInner>,
     repr: *const DeviceRepr,
@@ -104,6 +109,7 @@ pub struct DeviceEventStream {
     device: Arc<Device>,
 }
 
+/// A handle for an allocated interrupt on a device.
 pub struct InterruptInfo<'a> {
     es: &'a DeviceEventStream,
     _vec: InterruptVector,
@@ -112,10 +118,12 @@ pub struct InterruptInfo<'a> {
 }
 
 impl<'a> InterruptInfo<'a> {
+    /// Wait until the next interrupt occurs.
     pub async fn next(&self) -> Option<u64> {
         self.es.next(self.inum).await
     }
 
+    /// Get the interrupt number for programming the device.
     pub fn devint(&self) -> u32 {
         self.devint
     }
@@ -128,10 +136,11 @@ impl<'a> Drop for InterruptInfo<'a> {
 }
 
 impl DeviceEventStream {
-    pub fn free_interrupt(&self, _ii: &InterruptInfo<'_>) {
+    pub(crate) fn free_interrupt(&self, _ii: &InterruptInfo<'_>) {
         // TODO
     }
 
+    /// Allocate a new interrupt on this device.
     pub fn allocate_interrupt(&self) -> Result<InterruptInfo<'_>, InterruptAllocationError> {
         // SAFETY: We grab ownership of the interrupt repr data via the atomic swap.
         let repr = unsafe { (self.repr as *mut DeviceRepr).as_mut().unwrap() };
@@ -180,6 +189,7 @@ impl DeviceEventStream {
         unsafe { self.repr.as_ref().unwrap_unchecked() }
     }
 
+    /// Poll a single mailbox. If there are no messages, returns None.
     pub fn check_mailbox(&self, pri: MailboxPriority) -> Option<u64> {
         let mut inner = self.inner.lock().unwrap();
         inner.msg_queue[pri as usize].pop_front()
@@ -227,6 +237,7 @@ impl DeviceEventStream {
         fut.await.ok().map(|x| x.1)
     }
 
+    /// Get the next message with a priority equal to or higher that `min`.
     pub async fn next_msg(&self, min: MailboxPriority) -> (MailboxPriority, u64) {
         loop {
             for i in 0..(MailboxPriority::Num as usize) {
