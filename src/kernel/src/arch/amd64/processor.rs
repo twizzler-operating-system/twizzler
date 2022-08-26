@@ -114,6 +114,8 @@ pub fn enumerate_clocks() {
     if has_tsc {
         // saves reference to tsc clock source into global array
         crate::time::register_clock(super::tsc::Tsc::new());
+    } else {
+        todo!("running on processor that does not have a TSC");
     }
 }
 
