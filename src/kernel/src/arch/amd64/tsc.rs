@@ -15,14 +15,14 @@ impl Tsc {
     pub fn new() -> Self {
         // calculate the frequency at which the TSC is running
         // in other words the resolution at which ticks occur
-        let f = Tsc::get_tsc_frequency();
+        let tsc_freq = Tsc::get_tsc_frequency();
 
-        logln!("[kernel::arch::tsc] tsc frequency {} (Hz), {} fs", f, 1_000_000_000_000_000 / f);
+        logln!("[kernel::arch::tsc] tsc frequency {} (Hz), {} fs", tsc_freq, 1_000_000_000_000_000 / tsc_freq);
         Self {
             info: ClockInfo::new(
                 TimeSpan::ZERO,
                 FemtoSeconds(0), // TODO
-                FemtoSeconds(1_000_000_000_000_000 / f),
+                FemtoSeconds(1_000_000_000_000_000 / tsc_freq),
                 ClockFlags::MONOTONIC,
             )
         }
@@ -36,7 +36,7 @@ impl Tsc {
     fn get_tsc_frequency() -> u64 {
         // attempt to calculate frequency using cpuid
         match feature_info_frequency() {
-           Ok(f) => return f,
+           Ok(freq) => return freq,
            Err(e) => logln!("[kernel::arch::tsc] switching to pit calibration: {:?}", e),
        }
 
@@ -74,7 +74,6 @@ fn feature_info_frequency() -> Result<u64, TscError> {
         Some(x) => x,
         // we are probably on some old processor
         None => return Err(TscError::LeafNotupported(0x15))
-        // unimplemented!("TSC leaf 0x15 not supported")
     };
 
     if let Some(freq) = tsc.tsc_frequency() {
@@ -120,7 +119,6 @@ fn feature_info_frequency() -> Result<u64, TscError> {
     // the tsc ratio via leaf 0x15. Or the hypervisor does not support
     // returning timing info
     Err(TscError::CpuFeatureNotSupported)
-    // unimplemented!("unsupported cpu TSC frequency calculation");
 }
 
 fn pit_frequency_estimation() -> u64 {

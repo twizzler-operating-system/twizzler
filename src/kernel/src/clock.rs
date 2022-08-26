@@ -274,36 +274,30 @@ fn materialize_sw_clocks() {
 
 fn organize_clock_sources(kind: ClockKind) {
     // 0 at this time maps to a monotonic clock source
-    // which at thus time is sufficient for the monotonic
+    // which at this time is sufficient for the monotonic
     // and real-time user clocks
     match kind {
         ClockKind::Monotonic => {
-            let mut v = Vec::new();
-            v.push(ClockID(0));
-            {
-                USER_CLOCKS.lock().push(v)
-            }
+            let mut clock_vec = Vec::new();
+            clock_vec.push(ClockID(0));
+            USER_CLOCKS.lock().push(clock_vec);
         }
         ClockKind::RealTime => {
-            let mut v = Vec::new();
-            v.push(ClockID(0));
-            {
-                USER_CLOCKS.lock().push(v)
-            }
+            let mut clock_vec = Vec::new();
+            clock_vec.push(ClockID(0));
+            USER_CLOCKS.lock().push(clock_vec);
         }
         ClockKind::Unknown => {
             // contains every single clock source
             // which could be used for anything
-            let mut v = Vec::new();
+            let mut clock_vec = Vec::new();
             // nothing special here, just a bunch of integers
             // representing the clock ids of the TICK_SOURCES
-            let num_clocks = { TICK_SOURCES.lock().len() - CLOCK_OFFSET }.try_into().unwrap();
-            for i in 0..num_clocks {
-                v.push(ClockID(i))
+            let num_clocks: u64 = { TICK_SOURCES.lock().len() }.try_into().unwrap();
+            for i in CLOCK_OFFSET as u64..num_clocks {
+                clock_vec.push(ClockID(i));
             }
-            {
-                USER_CLOCKS.lock().push(v)
-            }
+            USER_CLOCKS.lock().push(clock_vec)
         }
     }
 }
