@@ -1,3 +1,5 @@
+//! PCIe-specific functionality.
+
 use std::ptr::NonNull;
 
 pub use twizzler_abi::device::bus::pcie::*;
@@ -7,7 +9,7 @@ use twizzler_abi::{
     vcell::Volatile,
 };
 
-use crate::device::{events::InterruptAllocationError, mmio::MmioObject, Device};
+use crate::device::{events::InterruptAllocationError, Device, MmioObject};
 
 pub struct PcieCapabilityIterator {
     cfg: MmioObject,

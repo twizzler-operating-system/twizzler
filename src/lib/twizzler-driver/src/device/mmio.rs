@@ -1,8 +1,9 @@
-use twizzler_abi::device::{MmioInfo, MMIO_OFFSET, SubObjectType};
-use twizzler_object::{ObjectInitError, Object, Protections, ObjectInitFlags, ObjID};
+use twizzler_abi::device::{MmioInfo, SubObjectType, MMIO_OFFSET};
+use twizzler_object::{ObjID, Object, ObjectInitError, ObjectInitFlags, Protections};
 
 use super::Device;
 
+/// A handle to an MMIO subobject.
 pub struct MmioObject {
     obj: Object<MmioInfo>,
 }
@@ -18,7 +19,7 @@ impl MmioObject {
         })
     }
 
-    // TODO: no unwrap
+    /// Get a reference to an MMIO subobject's info data.
     pub fn get_info(&self) -> &MmioInfo {
         self.obj.base().unwrap()
     }
@@ -36,6 +37,7 @@ impl MmioObject {
 }
 
 impl Device {
+    /// Get a handle to a MMIO type subobject.
     pub fn get_mmio(&self, idx: u8) -> Option<MmioObject> {
         let id = self.get_subobj(SubObjectType::Mmio.into(), idx)?;
         MmioObject::new(id).ok()

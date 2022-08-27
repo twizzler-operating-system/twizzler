@@ -17,6 +17,8 @@ use super::{
 
 const OK: u32 = 0;
 const SHUTDOWN: u32 = 1;
+
+/// A wrapper for managing requests and responses for a given driver.
 pub struct Requester<T: RequestDriver> {
     driver: T,
     inflights: Mutex<HashMap<u64, Arc<InFlight<T::Response>>>>,
@@ -25,10 +27,12 @@ pub struct Requester<T: RequestDriver> {
 }
 
 impl<T: RequestDriver> Requester<T> {
+    /// Check if the requester is shutdown.
     pub fn is_shutdown(&self) -> bool {
         self.state.load(Ordering::SeqCst) == SHUTDOWN
     }
 
+    /// Construct a new request manager for a given driver.
     pub fn new(driver: T) -> Self {
         Self {
             ids: AsyncIdAllocator::new(T::NUM_IDS),
@@ -92,6 +96,9 @@ impl<T: RequestDriver> Requester<T> {
         Ok(())
     }
 
+    /// Submit a set of requests, for which we are **not** interested in the specific responses from the
+    /// device. Returns a future that awaits on an [InFlightFuture], so awaiting on this function
+    /// ensures that all requests are submitted, not necessarily handled.
     pub async fn submit(
         &self,
         reqs: &mut [SubmitRequest<T::Request>],
@@ -105,6 +112,9 @@ impl<T: RequestDriver> Requester<T> {
         Ok(InFlightFuture::new(inflight))
     }
 
+    /// Submit a set of requests, for which we **are** interested in the specific responses from the
+    /// device. Returns a future that awaits on an [InFlightFutureWithResponses], so awaiting on this function
+    /// ensures that all requests are submitted, not necessarily handled.
     pub async fn submit_for_response(
         &self,
         reqs: &mut [SubmitRequest<T::Request>],
@@ -117,6 +127,7 @@ impl<T: RequestDriver> Requester<T> {
         Ok(InFlightFutureWithResponses::new(inflight))
     }
 
+    /// Shutdown the request manager.
     pub fn shutdown(&self) {
         self.state.store(SHUTDOWN, Ordering::SeqCst);
         let mut inflights = self.inflights.lock().unwrap();
@@ -129,6 +140,9 @@ impl<T: RequestDriver> Requester<T> {
         self.inflights.lock().unwrap().remove(&id)
     }
 
+    /// Send back, from the driver, to the request manager, a set of responses to a previously
+    /// submitted set of requests. The responses need not be contiguous in ID, nor do they need all
+    /// be from the same set of requests.
     pub fn finish(&self, resps: &[ResponseInfo<T::Response>]) {
         if self.is_shutdown() {
             return;
