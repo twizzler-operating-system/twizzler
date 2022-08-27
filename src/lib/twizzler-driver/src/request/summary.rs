@@ -1,7 +1,12 @@
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// A summary of the result of submitting a collection of requests to the request manager and having
+/// the device respond. Contains responses.
 pub enum SubmitSummaryWithResponses<R> {
+    /// A vector of responses in the same order as the submitted requests.
     Responses(Vec<R>),
+    /// At least one error occurred. The usize value is the index of the first error.
     Errors(usize),
+    /// The request engine was shutdown while the requests were inflight.
     Shutdown,
 }
 
@@ -14,9 +19,14 @@ pub(crate) enum AnySubmitSummary<R> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// A summary of the result of submitting a collection of requests to the request manager and having
+/// the device respond. Does not contain responses.
 pub enum SubmitSummary {
+    /// All requests completed successfully.
     Done,
+    /// At least one error occurred. The usize value is the index of the first error.
     Errors(usize),
+    /// The request engine was shutdown while the requests were inflight.
     Shutdown,
 }
 

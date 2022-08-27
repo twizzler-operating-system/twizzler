@@ -3,6 +3,7 @@ use twizzler_object::ObjID;
 
 use super::Device;
 
+/// An iterator over the children of a device.
 pub struct DeviceChildrenIterator {
     pub(crate) id: ObjID,
     pub(crate) pos: u16,
@@ -21,6 +22,7 @@ impl Iterator for DeviceChildrenIterator {
 }
 
 impl Device {
+    /// Get an iterator over the children of this device.
     pub fn children(&self) -> DeviceChildrenIterator {
         DeviceChildrenIterator {
             id: self.obj.id(),

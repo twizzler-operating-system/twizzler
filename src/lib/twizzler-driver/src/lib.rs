@@ -1,22 +1,26 @@
 #![feature(option_result_unwrap_unchecked)]
 #![feature(generic_associated_types)]
 #![feature(vec_into_raw_parts)]
-use device::children::DeviceChildrenIterator;
+use device::DeviceChildrenIterator;
 use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd};
 use twizzler_object::ObjID;
 
 mod arch;
 pub mod bus;
-pub mod controller;
+mod controller;
 pub mod device;
 pub mod dma;
 pub mod request;
 
+pub use controller::DeviceController;
+
+/// A handle for the root of the bus tree.
 pub struct BusTreeRoot {
     root_id: ObjID,
 }
 
 impl BusTreeRoot {
+    /// Get the children of the bus tree.
     pub fn children(&self) -> DeviceChildrenIterator {
         DeviceChildrenIterator {
             id: self.root_id,
@@ -25,6 +29,7 @@ impl BusTreeRoot {
     }
 }
 
+/// Get a handle to the root of the bus tree.
 pub fn get_bustree_root() -> BusTreeRoot {
     let cmd = KactionCmd::Generic(KactionGenericCmd::GetKsoRoot);
     let id = twizzler_abi::syscall::sys_kaction(cmd, None, 0, 0, KactionFlags::empty())
