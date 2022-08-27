@@ -1,9 +1,11 @@
 pub mod pc;
+mod time;
 
 use core::fmt::Write;
 
 #[allow(unused_imports)]
 pub use pc::*;
+pub use time::*;
 
 use crate::log::KernelConsoleHardware;
 
