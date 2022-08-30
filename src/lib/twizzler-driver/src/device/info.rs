@@ -1,8 +1,9 @@
 use twizzler_abi::device::SubObjectType;
-use twizzler_object::{ObjID, Object, ObjectInitError, Protections, ObjectInitFlags};
+use twizzler_object::{ObjID, Object, ObjectInitError, ObjectInitFlags, Protections};
 
 use super::Device;
 
+/// A handle to an info subobject.
 pub struct InfoObject<T> {
     obj: Object<T>,
 }
@@ -14,6 +15,7 @@ impl<T> InfoObject<T> {
         })
     }
 
+    /// Get a reference to the data contained within an info type subobject.
     pub fn get_data(&self) -> &T {
         unsafe { self.obj.base_unchecked() }
     }

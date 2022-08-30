@@ -49,7 +49,7 @@ pub(super) struct AsyncIdAllocator {
 }
 
 impl AsyncIdAllocator {
-    pub fn new(num: usize) -> Self {
+    pub(super) fn new(num: usize) -> Self {
         if num == 0 {
             panic!("cannot set num IDs as 0");
         }
@@ -61,7 +61,8 @@ impl AsyncIdAllocator {
             },
         }
     }
-    pub fn try_next(&self) -> Option<u64> {
+
+    pub(super) fn try_next(&self) -> Option<u64> {
         if self.count.load(Ordering::SeqCst) <= self.max {
             let id = self.count.fetch_add(1, Ordering::SeqCst);
             if id <= self.max {
@@ -73,14 +74,14 @@ impl AsyncIdAllocator {
         inner.ids.pop()
     }
 
-    pub async fn next(&self) -> u64 {
+    pub(super) async fn next(&self) -> u64 {
         if let Some(id) = self.try_next() {
             return id;
         }
         self.bag.clone().await
     }
 
-    pub fn release_id(&self, id: u64) {
+    pub(super) fn release_id(&self, id: u64) {
         let mut inner = self.bag.bag_inner.lock().unwrap();
         inner.ids.push(id);
         while let Some(w) = inner.wakers.pop() {

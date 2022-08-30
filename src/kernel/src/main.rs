@@ -41,6 +41,7 @@ mod sched;
 mod spinlock;
 mod syscall;
 mod thread;
+mod time;
 pub mod utils;
 extern crate alloc;
 

@@ -15,7 +15,7 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
     run_cmd.arg("-machine").arg("q35,nvdimm=on");
     run_cmd
         .arg("-cpu")
-        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+tsc_scale");
+        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+tsc_scale,+rdtscp");
 
     // Connect disk image
     run_cmd.arg("-drive").arg(format!(

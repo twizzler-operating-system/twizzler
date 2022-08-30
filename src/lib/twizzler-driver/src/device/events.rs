@@ -1,3 +1,5 @@
+//! Manage events for a device, including mailbox messages and interrupts.
+
 use std::{
     collections::VecDeque,
     sync::{atomic::Ordering, Arc, Mutex},

@@ -18,6 +18,7 @@ pub mod processor;
 mod start;
 mod syscall;
 pub mod thread;
+mod tsc;
 pub use start::BootInfoSystemTable;
 pub fn init<B: BootInfo>(boot_info: &B) {
     desctables::init();
