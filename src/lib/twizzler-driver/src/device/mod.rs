@@ -1,3 +1,5 @@
+//! Functions and types for managing a device.
+
 use std::fmt::Display;
 
 pub use twizzler_abi::device::BusType;
@@ -9,11 +11,16 @@ use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd};
 use twizzler_object::Object;
 use twizzler_object::{ObjID, ObjectInitError, ObjectInitFlags, Protections};
 
-pub mod children;
+mod children;
 pub mod events;
-pub mod info;
-pub mod mmio;
+mod info;
+mod mmio;
 
+pub use children::DeviceChildrenIterator;
+pub use info::InfoObject;
+pub use mmio::MmioObject;
+
+/// A handle for a device.
 pub struct Device {
     obj: Object<DeviceRepr>,
 }
@@ -49,23 +56,28 @@ impl Device {
         result.objid()
     }
 
+    /// Get a reference to a device's representation data.
     pub fn repr(&self) -> &DeviceRepr {
         self.obj.base().unwrap()
     }
 
+    /// Get a mutable reference to a device's representation data.
     pub fn repr_mut(&self) -> &mut DeviceRepr {
         unsafe { self.obj.base_mut_unchecked() }
     }
 
+    /// Is this device a bus?
     pub fn is_bus(&self) -> bool {
         let repr = self.repr();
         repr.device_type == DeviceType::Bus
     }
 
+    /// Get the bus type of this device.
     pub fn bus_type(&self) -> BusType {
         self.repr().bus_type
     }
 
+    /// Execute a kaction operation on a device.
     pub fn kaction(
         &self,
         action: KactionCmd,
