@@ -199,6 +199,7 @@ impl Device {
                 KactionCmd::Specific(PcieKactionSpecific::AllocateInterrupt.into()),
                 0,
                 KactionFlags::empty(),
+                inum as u64,
             )
             .map_err(|e| InterruptAllocationError::KernelError(e))?;
         let vec = vec

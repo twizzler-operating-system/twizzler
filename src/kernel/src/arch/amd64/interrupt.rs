@@ -1,12 +1,15 @@
 use core::sync::atomic::Ordering;
 
-use twizzler_abi::upcall::{ExceptionInfo, UpcallFrame, UpcallInfo};
+use twizzler_abi::{
+    kso::{InterruptAllocateOptions, InterruptPriority},
+    upcall::{ExceptionInfo, UpcallFrame, UpcallInfo},
+};
 use x86::current::rflags::RFlags;
 use x86_64::VirtAddr;
 
 use crate::{
     arch::lapic,
-    interrupt::Destination,
+    interrupt::{Destination, DynamicInterrupt},
     memory::fault::{PageFaultCause, PageFaultFlags},
     processor::current_processor,
     thread::current_thread_ref,
@@ -1085,4 +1088,18 @@ pub fn set(state: bool) {
     let mut flags = x86::bits64::rflags::read();
     flags.set(RFlags::FLAGS_IF, state);
     x86::bits64::rflags::set(flags);
+}
+
+pub fn allocate_interrupt_vector(
+    _pri: InterruptPriority,
+    _opts: InterruptAllocateOptions,
+) -> Option<DynamicInterrupt> {
+    // TODO: Actually track interrupts, and allocate based on priority and flags.
+    Some(DynamicInterrupt::new(64))
+}
+
+impl Drop for DynamicInterrupt {
+    fn drop(&mut self) {
+        // TODO
+    }
 }

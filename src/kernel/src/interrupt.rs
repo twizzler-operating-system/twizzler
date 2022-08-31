@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use twizzler_abi::kso::{InterruptAllocateOptions, InterruptPriority};
 
 use crate::{
     arch::{
@@ -131,4 +132,25 @@ pub fn external_interrupt_entry(number: u32) {
     let gi = get_global_interrupts();
     gi.ints[number as usize].raise();
     //logln!("external device interrupt {}", number);
+}
+
+pub struct DynamicInterrupt {
+    vec: usize,
+}
+
+pub fn allocate_interrupt(
+    pri: InterruptPriority,
+    opts: InterruptAllocateOptions,
+) -> Option<DynamicInterrupt> {
+    crate::arch::interrupt::allocate_interrupt_vector(pri, opts)
+}
+
+impl DynamicInterrupt {
+    pub fn new(vec: usize) -> Self {
+        Self { vec }
+    }
+
+    pub fn num(&self) -> usize {
+        self.vec
+    }
 }

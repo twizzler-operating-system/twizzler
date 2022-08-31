@@ -115,6 +115,8 @@ pub enum KactionError {
     InvalidArgument = 1,
     /// The object was not found.
     NotFound = 2,
+    /// Out of resources.
+    OutOfResources = 3,
 }
 
 impl From<u64> for KactionError {
@@ -122,6 +124,7 @@ impl From<u64> for KactionError {
         match x {
             1 => KactionError::InvalidArgument,
             2 => KactionError::NotFound,
+            3 => KactionError::OutOfResources,
             _ => KactionError::Unknown,
         }
     }
@@ -133,6 +136,7 @@ impl From<KactionError> for u64 {
             KactionError::Unknown => 0,
             KactionError::InvalidArgument => 1,
             KactionError::NotFound => 2,
+            KactionError::OutOfResources => 3,
         }
     }
 }
@@ -250,4 +254,36 @@ pub fn unpack_kaction_pin_token_and_len(val: u64) -> Option<(u32, usize)> {
         (val & KACTION_PACK_MASK) as u32,
         (val >> KACTION_PACK_BITS).try_into().ok()?,
     ))
+}
+
+#[repr(u32)]
+pub enum InterruptPriority {
+    High,
+    Normal,
+    Low,
+}
+
+bitflags::bitflags! {
+    pub struct InterruptAllocateOptions:u32 {
+        const UNIQUE = 0x1;
+    }
+}
+
+pub fn pack_kaction_int_pri_and_opts(
+    pri: InterruptPriority,
+    opts: InterruptAllocateOptions,
+) -> u64 {
+    ((pri as u64) << KACTION_PACK_BITS) | opts.bits() as u64
+}
+
+pub fn unpack_kaction_int_pri_and_opts(
+    val: u64,
+) -> Option<(InterruptPriority, InterruptAllocateOptions)> {
+    let pri = match val >> KACTION_PACK_BITS {
+        1 => InterruptPriority::Low,
+        2 => InterruptPriority::High,
+        _ => InterruptPriority::Normal,
+    };
+    let opts = InterruptAllocateOptions::from_bits(val as u32)?;
+    Some((pri, opts))
 }

@@ -53,6 +53,7 @@ fn start_pcie_device(seg: &Device, bus: u8, device: u8, function: u8) {
         KactionCmd::Specific(PcieKactionSpecific::RegisterDevice.into()),
         ((bus as u64) << 16) | ((device as u64) << 8) | (function as u64),
         KactionFlags::empty(),
+        0,
     );
     match kr {
         Ok(_) => {}
@@ -110,7 +111,7 @@ fn main() {
         }
     }
 
-   // nvme_test::start();
+    // nvme_test::start();
 
     let base = unsafe { obj.base_unchecked() };
     base.store(1, std::sync::atomic::Ordering::SeqCst);

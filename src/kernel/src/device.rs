@@ -31,7 +31,7 @@ pub struct DeviceInner {
 
 pub struct Device {
     inner: Mutex<DeviceInner>,
-    kaction: fn(DeviceRef, cmd: u32, arg: u64) -> Result<KactionValue, KactionError>,
+    kaction: fn(DeviceRef, cmd: u32, arg: u64, arg2: u64) -> Result<KactionValue, KactionError>,
     bus_type: BusType,
     dev_type: DeviceType,
     id: ObjID,
@@ -160,7 +160,7 @@ pub fn kaction(
                 dm.get(&id).cloned()
             };
             dev.map_or(Err(KactionError::NotFound), |dev| {
-                (dev.kaction)(dev.clone(), cmd, arg)
+                (dev.kaction)(dev.clone(), cmd, arg, arg2)
             })
         }),
     }
@@ -169,7 +169,7 @@ pub fn kaction(
 pub fn create_busroot(
     name: &str,
     bt: BusType,
-    kaction: fn(DeviceRef, cmd: u32, arg: u64) -> Result<KactionValue, KactionError>,
+    kaction: fn(DeviceRef, cmd: u32, arg: u64, arg2: u64) -> Result<KactionValue, KactionError>,
 ) -> DeviceRef {
     let obj = Arc::new(crate::obj::Object::new());
     crate::obj::register_object(obj.clone());
@@ -197,7 +197,7 @@ pub fn create_device(
     name: &str,
     bt: BusType,
     id: DeviceId,
-    kaction: fn(DeviceRef, cmd: u32, arg: u64) -> Result<KactionValue, KactionError>,
+    kaction: fn(DeviceRef, cmd: u32, arg: u64, arg: u64) -> Result<KactionValue, KactionError>,
 ) -> DeviceRef {
     let obj = Arc::new(crate::obj::Object::new());
     crate::obj::register_object(obj.clone());
@@ -267,6 +267,10 @@ impl Device {
 
     pub fn objid(&self) -> ObjID {
         self.id
+    }
+
+    pub fn object(&self) -> ObjectRef {
+        lookup_object(self.objid(), LookupFlags::ALLOW_DELETED).unwrap()
     }
 
     pub fn get_child_id(&self, n: usize) -> Option<ObjID> {
