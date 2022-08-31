@@ -111,7 +111,7 @@ fn main() {
         }
     }
 
-    // nvme_test::start();
+    nvme_test::start();
 
     let base = unsafe { obj.base_unchecked() };
     base.store(1, std::sync::atomic::Ordering::SeqCst);

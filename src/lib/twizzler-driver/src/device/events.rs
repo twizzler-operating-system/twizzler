@@ -35,15 +35,15 @@ impl DeviceEventStreamInner {
 
 struct IntInner {
     inum: usize,
-    repr: *const DeviceRepr,
+    repr: Arc<Device>,
 }
 
 impl IntInner {
     fn repr(&self) -> &DeviceRepr {
-        unsafe { self.repr.as_ref().unwrap_unchecked() }
+        self.repr.repr()
     }
 
-    fn new(repr: *const DeviceRepr, inum: usize) -> Self {
+    fn new(repr: Arc<Device>, inum: usize) -> Self {
         Self { inum, repr }
     }
 }
@@ -60,7 +60,7 @@ impl AsyncSetup for IntInner {
 }
 
 struct MailboxInner {
-    repr: *const DeviceRepr,
+    repr: Arc<Device>,
     inum: usize,
 }
 
@@ -69,14 +69,15 @@ impl Unpin for IntInner {}
 
 impl MailboxInner {
     fn repr(&self) -> &DeviceRepr {
-        unsafe { self.repr.as_ref().unwrap_unchecked() }
+        self.repr.repr()
     }
 
-    fn new(repr: *const DeviceRepr, inum: usize) -> Self {
+    fn new(repr: Arc<Device>, inum: usize) -> Self {
         Self { inum, repr }
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// Possible errors for interrupt allocation.
 pub enum InterruptAllocationError {
     /// The device has run out of interrupt vectors that can be used.
@@ -105,7 +106,6 @@ impl AsyncSetup for MailboxInner {
 /// A manager for device events, including interrupt handling.
 pub struct DeviceEventStream {
     inner: Mutex<DeviceEventStreamInner>,
-    repr: *const DeviceRepr,
     asyncs: Vec<Async<IntInner>>,
     async_mb: Vec<Async<MailboxInner>>,
     device: Arc<Device>,
@@ -145,9 +145,8 @@ impl DeviceEventStream {
     /// Allocate a new interrupt on this device.
     pub fn allocate_interrupt(&self) -> Result<InterruptInfo<'_>, InterruptAllocationError> {
         // SAFETY: We grab ownership of the interrupt repr data via the atomic swap.
-        let repr = unsafe { (self.repr as *mut DeviceRepr).as_mut().unwrap() };
         for i in 0..NUM_DEVICE_INTERRUPTS {
-            if repr.interrupts[i]
+            if self.device.repr().interrupts[i]
                 .taken
                 .swap(1, std::sync::atomic::Ordering::SeqCst)
                 == 0
@@ -156,7 +155,9 @@ impl DeviceEventStream {
                     BusType::Pcie => self.device.allocate_interrupt(i)?,
                     _ => return Err(InterruptAllocationError::Unsupported),
                 };
-                repr.register_interrupt(i, vec, DeviceInterruptFlags::empty());
+                self.device
+                    .repr_mut()
+                    .register_interrupt(i, vec, DeviceInterruptFlags::empty());
                 return Ok(InterruptInfo {
                     es: self,
                     _vec: vec,
@@ -169,18 +170,16 @@ impl DeviceEventStream {
     }
 
     pub(crate) fn new(device: Arc<Device>) -> Self {
-        let repr = device.repr();
         let asyncs = (0..NUM_DEVICE_INTERRUPTS)
             .into_iter()
-            .map(|i| Async::new(IntInner::new(repr, i)))
+            .map(|i| Async::new(IntInner::new(device.clone(), i)))
             .collect();
         let async_mb = (0..(MailboxPriority::Num as usize))
             .into_iter()
-            .map(|i| Async::new(MailboxInner::new(repr, i)))
+            .map(|i| Async::new(MailboxInner::new(device.clone(), i)))
             .collect();
         Self {
             inner: Mutex::new(DeviceEventStreamInner::new()),
-            repr,
             asyncs,
             async_mb,
             device,
@@ -188,7 +187,7 @@ impl DeviceEventStream {
     }
 
     fn repr(&self) -> &DeviceRepr {
-        unsafe { self.repr.as_ref().unwrap_unchecked() }
+        self.device.repr()
     }
 
     /// Poll a single mailbox. If there are no messages, returns None.

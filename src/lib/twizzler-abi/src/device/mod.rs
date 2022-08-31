@@ -9,7 +9,10 @@ use core::{
 
 use crate::{
     kso::KsoHdr,
-    syscall::{ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep},
+    syscall::{
+        sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
+        ThreadSyncSleep, ThreadSyncWake,
+    },
 };
 
 pub mod bus;
@@ -256,6 +259,22 @@ impl DeviceRepr {
             op: ThreadSyncOp::Equal,
             flags: ThreadSyncFlags::empty(),
         }
+    }
+
+    pub fn submit_mailbox_msg(&self, mb: MailboxPriority, msg: u64) {
+        while self.mailboxes[mb as usize]
+            .compare_exchange(0, msg, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            core::hint::spin_loop()
+        }
+        let _ = sys_thread_sync(
+            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                ThreadSyncReference::Virtual(&self.mailboxes[mb as usize]),
+                usize::MAX,
+            ))],
+            None,
+        );
     }
 
     /// Poll an interrupt vector to see if it has fired.

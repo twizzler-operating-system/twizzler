@@ -1,13 +1,15 @@
 use std::sync::{Arc, RwLock};
 
-use twizzler_abi::device::BusType;
+use twizzler_abi::device::{BusType, MailboxPriority};
 use twizzler_driver::{
     bus::pcie::PcieDeviceInfo,
     request::{RequestDriver, Requester, ResponseInfo, SubmitRequest},
+    DeviceController,
 };
 
 struct NvmeController {
     requester: RwLock<Vec<Requester<NvmeQueue>>>,
+    device_ctrl: DeviceController,
 }
 
 struct NvmeQueue {
@@ -57,8 +59,30 @@ impl RequestDriver for NvmeQueue {
     const NUM_IDS: usize = 8;
 }
 
-async fn test<'a>(ctrl: Arc<NvmeController>) {
-    println!("starting req test");
+async fn test3<'a>(ctrl: Arc<NvmeController>) {
+    let int = ctrl.device_ctrl.events().allocate_interrupt().unwrap();
+}
+
+async fn test2<'a>(ctrl: Arc<NvmeController>) {
+    loop {
+        let (mp, msg) = ctrl
+            .device_ctrl
+            .events()
+            .next_msg(MailboxPriority::Idle)
+            .await;
+        println!("mailbox message: {:?} {}", mp, msg);
+    }
+}
+
+async fn test1<'a>(ctrl: Arc<NvmeController>) {
+    println!("submitting a mailbox message");
+    ctrl.device_ctrl
+        .device()
+        .repr()
+        .submit_mailbox_msg(MailboxPriority::Low, 1234);
+    //   println!("starting req test");
+
+    /*
     let nq = NvmeQueue {
         idx: 0,
         ctrl: ctrl.clone(),
@@ -76,6 +100,7 @@ async fn test<'a>(ctrl: Arc<NvmeController>) {
         let res = inflight.await;
         println!("got summ {:?}", res);
     }
+    */
 }
 
 #[allow(dead_code)]
@@ -98,8 +123,20 @@ pub fn start() {
 
                     let ctrl = Arc::new(NvmeController {
                         requester: RwLock::new(Vec::new()),
+                        device_ctrl: DeviceController::new_from_device(child),
                     });
-                    twizzler_async::run(test(ctrl));
+                    let c1 = ctrl.clone();
+                    let c2 = ctrl.clone();
+                    let c3 = ctrl.clone();
+                    std::thread::spawn(|| {
+                        twizzler_async::run(test1(c1));
+                    });
+                    std::thread::spawn(|| {
+                        twizzler_async::run(test2(c2));
+                    });
+                    std::thread::spawn(|| {
+                        twizzler_async::run(test3(c3));
+                    });
                 }
             }
         }
