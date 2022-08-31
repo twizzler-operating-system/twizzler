@@ -127,6 +127,12 @@ impl TryFrom<u64> for InterruptVector {
     }
 }
 
+impl From<InterruptVector> for u32 {
+    fn from(iv: InterruptVector) -> Self {
+        iv.0
+    }
+}
+
 /// A per-bus device ID.
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Debug)]
 #[repr(transparent)]
