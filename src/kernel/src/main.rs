@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 #![feature(map_first_last)]
 #![feature(const_fn_trait_bound)]
+#![feature(const_trait_impl)]
 #![feature(core_intrinsics)]
 #![feature(derive_default_enum)]
 #![feature(const_btree_new)]
@@ -37,6 +38,7 @@ mod once;
 mod operations;
 mod panic;
 mod processor;
+mod rwlock;
 mod sched;
 mod spinlock;
 mod syscall;
