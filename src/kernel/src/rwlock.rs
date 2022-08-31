@@ -34,6 +34,32 @@ pub trait RwLockInner {
 /// The implementation of this lock may or may not take into account (scheduling)
 /// priority as well.
 ///
+/// # Examples
+/// 
+/// We can use `RwLock` in local contexts:
+///
+/// ```no_run
+/// use crate:rwlock::{RwLock, ReadPrefer};
+/// // this initialization is valid
+/// let data = rwlock::new::<u64, ReadPrefer>(42u64);
+/// // or the compiler could infer the type parameters
+/// let data: RwLock<u64, ReadPrefer> = rwlock::new(42u64);
+/// ```
+///
+/// Or we can use it in a global context:
+///
+/// ```no_run
+/// use crate::rwlock::{RwLock, ReadPrefer};
+///
+/// static DATA: RwLock<u64, ReadPrefer> = rwlock::new(42u64);
+///
+/// fn read_data() -> u64 {
+///     let data = DATA.read();
+///     let value = *data;
+///     return value
+/// }
+/// ```
+///
 /// See also [`RwLockPreference`].
 pub struct RwLock<T, U> 
 where
