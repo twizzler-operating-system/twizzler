@@ -144,6 +144,7 @@ impl Device {
         inum: usize,
     ) -> Result<u32, InterruptAllocationError> {
         let (bar, offset) = msix.get_table_info();
+        msix.msg_ctrl.set(1 << 15);
         let mmio = self
             .find_mmio_bar(bar.into())
             .ok_or(InterruptAllocationError::Unsupported)?;

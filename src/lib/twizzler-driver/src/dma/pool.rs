@@ -164,7 +164,7 @@ pub struct DmaPool {
     opts: DmaOptions,
     spec: CreateSpec,
     access: Access,
-    objects: Vec<Arc<AllocatableDmaObject>>,
+    objects: Mutex<Vec<Arc<AllocatableDmaObject>>>,
 }
 
 /// Possible errors that can arise from a DMA pool allocation.
@@ -274,7 +274,7 @@ impl DmaPool {
             opts,
             spec,
             access,
-            objects: vec![],
+            objects: Mutex::new(vec![]),
         }
     }
 
@@ -284,32 +284,34 @@ impl DmaPool {
         CreateSpec::new(LifetimeType::Volatile, BackingType::Normal)
     }
 
-    fn new_object(&mut self) -> Result<(), AllocationError> {
+    fn new_object(&self) -> Result<Arc<AllocatableDmaObject>, AllocationError> {
         let obj = Arc::new(AllocatableDmaObject::new(&self.spec)?);
-        self.objects.push(obj);
-        Ok(())
+        Ok(obj)
     }
 
     fn do_allocate(
-        &mut self,
+        &self,
         len: usize,
     ) -> Result<(Arc<AllocatableDmaObject>, SplitPageRange), AllocationError> {
         if len > MAX_SIZE - NULLPAGE_SIZE * 2 {
             return Err(AllocationError::TooBig);
         }
-        for obj in &self.objects {
+        let mut objects = self.objects.lock().unwrap();
+        for obj in &*objects {
             if let Some(pagerange) = obj.allocate(len) {
                 return Ok((obj.clone(), pagerange));
             }
         }
-        self.new_object()?;
+        let obj = self.new_object()?;
+        objects.push(obj);
+        drop(objects);
         self.do_allocate(len)
     }
 
     /// Allocate a new [DmaRegion<T>] from the pool. The region will be initialized with the
     /// provided initial value.
     pub fn allocate<'a, T: DeviceSync>(
-        &'a mut self,
+        &'a self,
         init: T,
     ) -> Result<DmaRegion<'a, T>, AllocationError> {
         let len = core::mem::size_of::<T>();
@@ -329,7 +331,7 @@ impl DmaPool {
     /// Allocate a new [DmaSliceRegion<T>] from the pool. Each entry in the region's slice will
     /// be initialized with the provided initial value.
     pub fn allocate_array<'a, T: DeviceSync + Clone>(
-        &'a mut self,
+        &'a self,
         count: usize,
         init: T,
     ) -> Result<DmaSliceRegion<'a, T>, AllocationError> {
@@ -351,7 +353,7 @@ impl DmaPool {
     /// Allocate a new [DmaSliceRegion<T>] from the pool. Each entry in the region's slice will
     /// be initialized by running the provided closure.
     pub fn allocate_array_with<'a, T: DeviceSync>(
-        &'a mut self,
+        &'a self,
         count: usize,
         init: impl Fn() -> T,
     ) -> Result<DmaSliceRegion<'a, T>, AllocationError> {

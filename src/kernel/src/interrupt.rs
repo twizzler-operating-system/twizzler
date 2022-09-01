@@ -131,7 +131,9 @@ pub fn set_userspace_interrupt_wakeup(number: u32, wi: WakeInfo) {
 pub fn external_interrupt_entry(number: u32) {
     let gi = get_global_interrupts();
     gi.ints[number as usize].raise();
-    //logln!("external device interrupt {}", number);
+    if number != 43 {
+        logln!("external device interrupt {}", number);
+    }
 }
 
 pub struct DynamicInterrupt {

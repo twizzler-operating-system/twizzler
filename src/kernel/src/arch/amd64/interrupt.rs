@@ -15,7 +15,10 @@ use crate::{
     thread::current_thread_ref,
 };
 
-use super::thread::{Registers, UpcallAble};
+use super::{
+    set_interrupt,
+    thread::{Registers, UpcallAble},
+};
 
 pub const MIN_VECTOR: usize = 48;
 pub const MAX_VECTOR: usize = 239;
@@ -1095,6 +1098,13 @@ pub fn allocate_interrupt_vector(
     _opts: InterruptAllocateOptions,
 ) -> Option<DynamicInterrupt> {
     // TODO: Actually track interrupts, and allocate based on priority and flags.
+    set_interrupt(
+        64,
+        false,
+        crate::interrupt::TriggerMode::Edge,
+        crate::interrupt::PinPolarity::ActiveHigh,
+        Destination::Bsp,
+    );
     Some(DynamicInterrupt::new(64))
 }
 

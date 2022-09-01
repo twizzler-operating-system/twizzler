@@ -1,3 +1,5 @@
+#![feature(int_log)]
+
 use std::env::args;
 
 use pci_ids::FromId;
