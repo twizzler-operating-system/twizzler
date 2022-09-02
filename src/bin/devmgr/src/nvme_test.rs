@@ -1,17 +1,25 @@
 use std::{
     mem::size_of,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
 };
 
-use nvme::ds::{
-    controller::properties::config::ControllerConfig,
-    queue::{comentry::CommonCompletion, subentry::CommonCommand},
+use nvme::{
+    ds::{
+        controller::properties::config::ControllerConfig,
+        queue::{comentry::CommonCompletion, subentry::CommonCommand, CommandId},
+    },
+    hosted::memory::PhysicalPageCollection,
+    queue::{CompletionQueue, SubmissionQueue},
 };
-use twizzler_abi::device::{BusType, MailboxPriority};
-use twizzler_async::block_on;
+use twizzler_abi::{
+    device::{BusType, MailboxPriority},
+    vcell::Volatile,
+};
+use twizzler_async::{block_on, Task};
 use twizzler_driver::{
     bus::pcie::PcieDeviceInfo,
-    dma::{DeviceSync, DmaOptions, DmaPool},
+    device::events::InterruptInfo,
+    dma::{DeviceSync, DmaOptions, DmaPool, DmaRegion},
     request::{RequestDriver, Requester, ResponseInfo, SubmitRequest},
     DeviceController,
 };
@@ -46,7 +54,7 @@ impl RequestDriver for NvmeQueue {
 
     async fn submit(
         &self,
-        reqs: &[twizzler_driver::request::SubmitRequest<Self::Request>],
+        reqs: &mut [twizzler_driver::request::SubmitRequest<Self::Request>],
     ) -> Result<(), Self::SubmitError> {
         println!("submit called with {:?}", reqs);
         let mut resps = Vec::new();
@@ -84,6 +92,65 @@ async fn test2<'a>(ctrl: Arc<NvmeController>) {
     }
 }
 
+struct NvmeDmaRegion<'a, T: DeviceSync>(DmaRegion<'a, T>);
+
+impl<'a, T: DeviceSync> PhysicalPageCollection for NvmeDmaRegion<'a, T> {
+    fn get_prp_list_or_buffer(&mut self) -> Option<nvme::ds::cmd::PrpListOrBuffer> {
+        todo!()
+    }
+
+    fn get_dptr(&mut self, _sgl_allowed: bool) -> Option<nvme::ds::queue::subentry::Dptr> {
+        let pin = self.0.pin().unwrap();
+        Some(nvme::ds::queue::subentry::Dptr::Prp(
+            pin[0].addr().into(),
+            0,
+        ))
+    }
+}
+
+struct NvmeRequester {
+    subq: Mutex<SubmissionQueue>,
+    comq: CompletionQueue,
+    sub_bell: *const VolatileCell<u32>,
+    com_bell: *const VolatileCell<u32>,
+}
+
+unsafe impl Send for NvmeRequester {}
+unsafe impl Sync for NvmeRequester {}
+
+#[async_trait::async_trait]
+impl RequestDriver for NvmeRequester {
+    type Request = CommonCommand;
+
+    type Response = CommonCompletion;
+
+    type SubmitError = ();
+
+    async fn submit(
+        &self,
+        reqs: &mut [SubmitRequest<Self::Request>],
+    ) -> Result<(), Self::SubmitError> {
+        let mut sq = self.subq.lock().unwrap();
+        let mut tail = None;
+        for sr in reqs.iter_mut() {
+            let cid = (sr.id() as u16).into();
+            sr.data_mut().set_cid(cid);
+            tail = sq.submit(sr.data());
+            assert!(tail.is_some());
+        }
+        if let Some(tail) = tail {
+            unsafe {
+                self.sub_bell.as_ref().unwrap().set(tail as u32);
+            }
+        }
+        Ok(())
+    }
+
+    fn flush(&self) {}
+
+    const NUM_IDS: usize = 32;
+}
+
 fn init_controller(ctrl: &mut Arc<NvmeController>) {
     let bar = ctrl.device_ctrl.device().get_mmio(1).unwrap();
     let reg =
@@ -116,6 +183,9 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
 
     println!("{} {}", saq.num_bytes(), caq.num_bytes());
 
+    unsafe {
+        println!("{:p} {:p}", saq.get(), caq.get());
+    }
     let cpin = caq.pin().unwrap();
     let spin = saq.pin().unwrap();
 
@@ -155,10 +225,6 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
     }
     println!("controller init");
 
-    let ident = dma
-        .allocate(nvme::ds::identify::controller::IdentifyControllerDataStructure::default())
-        .unwrap();
-
     let smem = unsafe {
         core::slice::from_raw_parts_mut(
             saq.get_mut().as_mut_ptr() as *mut u8,
@@ -167,7 +233,7 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
     };
     const C_STRIDE: usize = size_of::<CommonCompletion>();
     const S_STRIDE: usize = size_of::<CommonCommand>();
-    let mut sq = nvme::queue::SubmissionQueue::<S_STRIDE>::new(smem, 32).unwrap();
+    let mut sq = nvme::queue::SubmissionQueue::new(smem, 32, S_STRIDE).unwrap();
 
     let cmem = unsafe {
         core::slice::from_raw_parts_mut(
@@ -175,23 +241,65 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
             32 * size_of::<CommonCompletion>(),
         )
     };
-    let cq = nvme::queue::CompletionQueue::<C_STRIDE>::new(cmem, 32).unwrap();
+    let mut cq = nvme::queue::CompletionQueue::new(cmem, 32, C_STRIDE).unwrap();
 
     let int = ctrl.device_ctrl.events().allocate_interrupt().unwrap();
-    let data = [0; S_STRIDE];
-    let tail = sq.submit(&data).unwrap();
+    let ident = dma
+        .allocate(nvme::ds::identify::controller::IdentifyControllerDataStructure::default())
+        .unwrap();
+    let mut ident = NvmeDmaRegion(ident);
+    let ident_cmd = nvme::admin::Identify::new(
+        CommandId::new(),
+        nvme::admin::IdentifyCNSValue::IdentifyController,
+        ident.get_dptr(false).unwrap(),
+        None,
+    );
+    let ident_cmd: CommonCommand = ident_cmd.into();
+
+    let data = [0u8; S_STRIDE];
+    let tail = sq.submit(&ident_cmd).unwrap();
 
     println!("head: {}", tail);
 
     let saq_bell = unsafe { bar.get_mmio_offset::<VolatileCell<u32>>(0x1000) };
     let caq_bell = unsafe {
-        bar.get_mmio_offset::<u32>(0x1000 + 1 * reg.capabilities.get().doorbell_stride_bytes())
+        bar.get_mmio_offset::<VolatileCell<u32>>(
+            0x1000 + 1 * reg.capabilities.get().doorbell_stride_bytes(),
+        )
     };
     saq_bell.set(tail as u32);
 
     let v = twizzler_async::run(async { int.next().await });
 
-    println!("{:?}", v);
+    let comp: (u16, CommonCompletion) = cq.get_completion().unwrap();
+    sq.update_head(comp.1.new_sq_head());
+
+    caq_bell.set(comp.0 as u32);
+
+    //println!("{:?}", comp.1);
+
+    ident.0.with(|ident| {
+        //    println!("{:#?}", ident);
+    });
+
+    let req = NvmeRequester {
+        subq: Mutex::new(sq),
+        comq: cq,
+        sub_bell: saq_bell as *const VolatileCell<u32>,
+        com_bell: caq_bell as *const VolatileCell<u32>,
+    };
+    let req = Requester::new(req);
+
+    let task = Task::spawn(async {
+        loop {
+            let i = int.next().await;
+        }
+    });
+
+    let mut reqs = [SubmitRequest::new(ident_cmd)];
+    let responses =
+        twizzler_async::run(async { req.submit_for_response(&mut reqs).await.unwrap().await });
+    println!("{:?}", responses);
 }
 
 async fn test1<'a>(ctrl: Arc<NvmeController>) {

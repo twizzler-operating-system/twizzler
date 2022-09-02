@@ -88,7 +88,7 @@ impl<T: RequestDriver> Requester<T> {
             let count = self.allocate_ids(&mut reqs[idx..]).await;
             self.map_inflight(inflight.clone(), &reqs[idx..(idx + count)], idx);
             self.driver
-                .submit(&reqs[idx..(idx + count)])
+                .submit(&mut reqs[idx..(idx + count)])
                 .await
                 .map_err(|e| SubmitError::DriverError(e))?;
             idx += count;
