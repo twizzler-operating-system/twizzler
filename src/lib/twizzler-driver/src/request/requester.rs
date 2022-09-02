@@ -27,6 +27,11 @@ pub struct Requester<T: RequestDriver> {
 }
 
 impl<T: RequestDriver> Requester<T> {
+    /// Get a reference to the driver.
+    pub fn driver(&self) -> &T {
+        &self.driver
+    }
+
     /// Check if the requester is shutdown.
     pub fn is_shutdown(&self) -> bool {
         self.state.load(Ordering::SeqCst) == SHUTDOWN
@@ -147,9 +152,11 @@ impl<T: RequestDriver> Requester<T> {
         if self.is_shutdown() {
             return;
         }
+        println!("finishing requests");
         for resp in resps {
             let inflight = self.take_inflight(resp.id());
             if let Some(inflight) = inflight {
+                println!("A");
                 inflight.handle_resp(resp);
             }
 

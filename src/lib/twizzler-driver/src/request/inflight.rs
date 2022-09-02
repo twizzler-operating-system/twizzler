@@ -42,11 +42,14 @@ impl<R> InFlightInner<R> {
     }
 
     fn finish(&mut self, val: AnySubmitSummary<R>) {
+        println!("finishing");
         if self.ready.is_some() {
+            println!("not waking");
             return;
         }
         self.ready = Some(val);
         if let Some(w) = self.waker.take() {
+            println!("waking");
             w.wake();
         }
     }
@@ -125,7 +128,9 @@ impl<R> InFlight<R> {
         R: Send + Copy,
     {
         let mut inner = self.inner.lock().unwrap();
+        println!("1 : {} {}", inner.count(), self.len);
         inner.tally_resp(resp);
+        println!("2 : {} {}", inner.count(), self.len);
         if inner.count() == self.len {
             let summ = inner.calc_summary();
             inner.finish(summ);
