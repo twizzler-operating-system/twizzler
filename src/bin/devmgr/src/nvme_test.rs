@@ -123,7 +123,7 @@ impl NvmeRequester {
         let mut new_bell = None;
         while let Some((bell, resp)) = comq.get_completion::<CommonCompletion>() {
             let id: u16 = resp.command_id().into();
-            println!("got completion for {} {} {}", resp.new_sq_head(), bell, id);
+            //println!("got completion for {} {} {}", resp.new_sq_head(), bell, id);
             resps.push(ResponseInfo::new(resp, id as u64, false));
             new_head = Some(resp.new_sq_head());
             new_bell = Some(bell);
@@ -156,11 +156,9 @@ impl RequestDriver for NvmeRequester {
         let mut sq = self.subq.lock().unwrap();
         let mut tail = None;
         for sr in reqs.iter_mut() {
-            println!("submitting {}", sr.id());
             let cid = (sr.id() as u16).into();
             sr.data_mut().set_cid(cid);
             tail = sq.submit(sr.data());
-            println!("got tail: {:?}", tail);
             assert!(tail.is_some());
         }
         if let Some(tail) = tail {
@@ -328,8 +326,10 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
     let mut reqs = [SubmitRequest::new(ident_cmd)];
     let submitter = Task::spawn(async move {
         loop {
-            let responses = req.submit_for_response(&mut reqs).await.unwrap().await;
-            println!("{:?}", responses);
+            let responses = req.submit_for_response(&mut reqs).await;
+            println!("requests submitted");
+            let responses = responses.unwrap().await;
+            println!("responses recieved {:?}", responses);
         }
     });
     twizzler_async::run(future::pending::<()>());
