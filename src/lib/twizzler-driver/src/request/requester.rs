@@ -152,11 +152,9 @@ impl<T: RequestDriver> Requester<T> {
         if self.is_shutdown() {
             return;
         }
-        println!("finishing requests");
         for resp in resps {
             let inflight = self.take_inflight(resp.id());
             if let Some(inflight) = inflight {
-                println!("A");
                 inflight.handle_resp(resp);
             }
 

@@ -1,4 +1,5 @@
 use std::{
+    future,
     mem::size_of,
     sync::{Arc, Mutex, RwLock},
 };
@@ -159,6 +160,7 @@ impl RequestDriver for NvmeRequester {
             let cid = (sr.id() as u16).into();
             sr.data_mut().set_cid(cid);
             tail = sq.submit(sr.data());
+            println!("got tail: {:?}", tail);
             assert!(tail.is_some());
         }
         if let Some(tail) = tail {
@@ -188,8 +190,8 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
     println!("version: {} {}", reg.version_maj(), reg.version_min());
 
     let aqa = nvme::ds::controller::properties::aqa::AdminQueueAttributes::new()
-        .with_completion_queue_size(32)
-        .with_submission_queue_size(32);
+        .with_completion_queue_size(32 - 1)
+        .with_submission_queue_size(32 - 1);
     reg.admin_queue_attr.set(aqa);
 
     let dma = DmaPool::new(
@@ -324,12 +326,13 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
     });
 
     let mut reqs = [SubmitRequest::new(ident_cmd)];
-    let responses = twizzler_async::run(async {
+    let submitter = Task::spawn(async move {
         loop {
             let responses = req.submit_for_response(&mut reqs).await.unwrap().await;
             println!("{:?}", responses);
         }
     });
+    twizzler_async::run(future::pending::<()>());
 }
 
 async fn test1<'a>(ctrl: Arc<NvmeController>) {
