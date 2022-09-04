@@ -2,3 +2,6 @@
 	path = toolchain/src/rust
 	url = ../rust.git
 	branch = twizzler2
+[submodule "src/lib/nvme-rs"]
+	path = src/lib/nvme-rs
+	url = ../nvme-rs.git

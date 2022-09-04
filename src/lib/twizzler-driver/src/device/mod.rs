@@ -83,7 +83,8 @@ impl Device {
         action: KactionCmd,
         value: u64,
         flags: KactionFlags,
+        value2: u64,
     ) -> Result<KactionValue, KactionError> {
-        twizzler_abi::syscall::sys_kaction(action, Some(self.obj.id()), value, 0, flags)
+        twizzler_abi::syscall::sys_kaction(action, Some(self.obj.id()), value, value2, flags)
     }
 }
