@@ -39,7 +39,10 @@ pub trait RequestDriver {
     type SubmitError;
     /// The actual submit function. The driver should perform whatever device-specific submission
     /// procedure it needs to to submit all requests.
-    async fn submit(&self, reqs: &[SubmitRequest<Self::Request>]) -> Result<(), Self::SubmitError>;
+    async fn submit(
+        &self,
+        reqs: &mut [SubmitRequest<Self::Request>],
+    ) -> Result<(), Self::SubmitError>;
     /// Manually flush any internal driver submission queue.
     fn flush(&self);
     /// The number of IDs to have in-flight at a time.

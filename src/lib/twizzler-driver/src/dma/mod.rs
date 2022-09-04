@@ -8,6 +8,8 @@ mod pin;
 mod pool;
 mod region;
 
+use std::cell::UnsafeCell;
+
 pub use super::arch::DMA_PAGE_SIZE;
 pub use object::DmaObject;
 pub use pin::{DmaPin, PinError};
@@ -61,7 +63,7 @@ impl Default for DmaOptions {
 
 /// DMA types must implement this trait, which indicates that types can handle untyped updates from
 /// the device.
-pub trait DeviceSync {}
+pub auto trait DeviceSync {}
 
 impl DeviceSync for u8 {}
 impl DeviceSync for u16 {}
@@ -71,3 +73,10 @@ impl DeviceSync for i8 {}
 impl DeviceSync for i16 {}
 impl DeviceSync for i32 {}
 impl DeviceSync for i64 {}
+
+impl<T> !DeviceSync for *const T {}
+impl<T> !DeviceSync for *mut T {}
+impl<T> !DeviceSync for &T {}
+impl<T> !DeviceSync for &mut T {}
+impl<T> !DeviceSync for UnsafeCell<T> {}
+impl<T> !DeviceSync for std::cell::Cell<T> {}

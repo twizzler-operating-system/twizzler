@@ -27,6 +27,10 @@ impl<'a> DmaPin<'a> {
     pub(super) fn new(backing: &'a [PhysInfo]) -> Self {
         Self { backing }
     }
+
+    pub fn len(&self) -> usize {
+        self.backing.len()
+    }
 }
 
 impl PhysInfo {
