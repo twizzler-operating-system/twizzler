@@ -111,6 +111,7 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
     processor::boot_all_secondaries(image::get_tls());
 
     clock::init();
+    interrupt::init();
 
     let lock = spinlock::Spinlock::<u32>::new(0);
     let mut v = lock.lock();

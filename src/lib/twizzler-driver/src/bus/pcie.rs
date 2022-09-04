@@ -102,8 +102,12 @@ impl Iterator for PcieCapabilityIterator {
     }
 }
 
-fn calc_msg_info(_vec: InterruptVector) -> (u64, u32) {
-    todo!()
+// TODO: allow for dest-ID and other options, and propegate all this stuff through the API.
+fn calc_msg_info(vec: InterruptVector, level: bool) -> (u64, u32) {
+    let addr = (0xfee << 20) | (0 << 12);
+    let data: u32 = vec.into();
+    let data = data | if level { 1 << 15 } else { 0 };
+    (addr, data)
 }
 
 impl Device {
@@ -140,6 +144,7 @@ impl Device {
         inum: usize,
     ) -> Result<u32, InterruptAllocationError> {
         let (bar, offset) = msix.get_table_info();
+        msix.msg_ctrl.set(1 << 15);
         let mmio = self
             .find_mmio_bar(bar.into())
             .ok_or(InterruptAllocationError::Unsupported)?;
@@ -149,7 +154,7 @@ impl Device {
             let len = msix.table_len();
             core::slice::from_raw_parts_mut(start, len)
         };
-        let (msg_addr, msg_data) = calc_msg_info(vec);
+        let (msg_addr, msg_data) = calc_msg_info(vec, false);
         table[inum].msg_addr_lo.set(msg_addr as u32);
         table[inum].msg_addr_hi.set((msg_addr >> 32) as u32);
         table[inum].msg_data.set(msg_data);
@@ -199,6 +204,7 @@ impl Device {
                 KactionCmd::Specific(PcieKactionSpecific::AllocateInterrupt.into()),
                 0,
                 KactionFlags::empty(),
+                inum as u64,
             )
             .map_err(|e| InterruptAllocationError::KernelError(e))?;
         let vec = vec

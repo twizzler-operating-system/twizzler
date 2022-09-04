@@ -27,6 +27,10 @@ impl<T> SubmitRequest<T> {
         &self.data
     }
 
+    /// Get a mutable reference to the data.
+    pub fn data_mut(&mut self) -> &mut T {
+        &mut self.data
+    }
     /// Get the ID of the request. Note that this number is only meaningful after the request has
     /// been submitted.
     pub fn id(&self) -> u64 {
