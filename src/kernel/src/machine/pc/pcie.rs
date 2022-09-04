@@ -207,8 +207,8 @@ fn allocate_interrupt(
     arg2: u64,
 ) -> Result<KactionValue, KactionError> {
     let (pri, opts) = unpack_kaction_int_pri_and_opts(arg).ok_or(KactionError::InvalidArgument)?;
-    let vector =
-        crate::interrupt::allocate_interrupt(pri, opts).ok_or(KactionError::OutOfResources)?;
+    let vector = crate::interrupt::allocate_interrupt(pri, opts)
+        .ok_or(KactionError::ResourceAllocationFailed)?;
 
     let mut maps = get_int_map().lock();
     let state = if let Some(x) = maps.get_mut(&device.objid()) {

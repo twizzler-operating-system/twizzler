@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn allocate() {
-        let mut pool = DmaPool::new(
+        let pool = DmaPool::new(
             DmaPool::default_spec(),
             Access::BiDirectional,
             DmaOptions::empty(),

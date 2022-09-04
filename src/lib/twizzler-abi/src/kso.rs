@@ -115,8 +115,10 @@ pub enum KactionError {
     InvalidArgument = 1,
     /// The object was not found.
     NotFound = 2,
-    /// Out of resources.
-    OutOfResources = 3,
+    /// Failed to allocate a resource due to exhaustion.
+    ResourceAllocationFailed = 3,
+    /// The request required a memory allocation that could not be satisfied.
+    OutOfMemory = 4,
 }
 
 impl From<u64> for KactionError {
@@ -124,7 +126,8 @@ impl From<u64> for KactionError {
         match x {
             1 => KactionError::InvalidArgument,
             2 => KactionError::NotFound,
-            3 => KactionError::OutOfResources,
+            3 => KactionError::ResourceAllocationFailed,
+            4 => KactionError::OutOfMemory,
             _ => KactionError::Unknown,
         }
     }
@@ -136,7 +139,8 @@ impl From<KactionError> for u64 {
             KactionError::Unknown => 0,
             KactionError::InvalidArgument => 1,
             KactionError::NotFound => 2,
-            KactionError::OutOfResources => 3,
+            KactionError::ResourceAllocationFailed => 3,
+            KactionError::OutOfMemory => 4,
         }
     }
 }
