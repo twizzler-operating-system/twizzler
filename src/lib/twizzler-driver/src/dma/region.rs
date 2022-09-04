@@ -7,6 +7,7 @@ use twizzler_abi::{
         pack_kaction_pin_start_and_len, unpack_kaction_pin_token_and_len, KactionCmd, KactionFlags,
         KactionGenericCmd,
     },
+    object::NULLPAGE_SIZE,
     syscall::{sys_kaction, PinnedPage},
 };
 
@@ -50,9 +51,11 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     ) -> Self {
         Self {
             virt: unsafe {
-                dma.unwrap_or_else(|| pool.as_ref().unwrap().0.dma_object())
+                (dma.unwrap_or_else(|| pool.as_ref().unwrap().0.dma_object())
                     .object()
-                    .base_mut_unchecked() as *mut () as *mut u8
+                    .base_mut_unchecked() as *mut () as *mut u8)
+                    .add(offset)
+                    .sub(NULLPAGE_SIZE)
             },
             len,
             access,
