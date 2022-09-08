@@ -13,7 +13,7 @@ use twizzler_driver::{
 };
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
-//mod nvme_test;
+mod nvme_drv;
 
 fn get_pcie_offset(bus: u8, device: u8, function: u8) -> usize {
     ((bus as usize * 256) + (device as usize * 8) + function as usize) * 4096
@@ -113,7 +113,7 @@ fn main() {
         }
     }
 
-    //nvme_test::start();
+    nvme_drv::start();
 
     let base = unsafe { obj.base_unchecked() };
     base.store(1, std::sync::atomic::Ordering::SeqCst);

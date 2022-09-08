@@ -55,6 +55,7 @@ pub use inflight::InFlightFuture;
 pub use inflight::InFlightFutureWithResponses;
 pub use requester::Requester;
 pub use response_info::ResponseInfo;
+pub use submit::SubmitError;
 pub use submit::SubmitRequest;
 pub use summary::SubmitSummary;
 pub use summary::SubmitSummaryWithResponses;
