@@ -5,7 +5,7 @@ pub enum SubmitSummaryWithResponses<R> {
     /// A vector of responses in the same order as the submitted requests.
     Responses(Vec<R>),
     /// At least one error occurred. The usize value is the index of the first error.
-    Errors(usize),
+    Errors(usize, Vec<R>),
     /// The request engine was shutdown while the requests were inflight.
     Shutdown,
 }
@@ -14,7 +14,7 @@ pub enum SubmitSummaryWithResponses<R> {
 pub(crate) enum AnySubmitSummary<R> {
     Done,
     Responses(Vec<R>),
-    Errors(usize),
+    Errors(usize, Option<Vec<R>>),
     Shutdown,
 }
 
@@ -35,7 +35,7 @@ impl<R> From<AnySubmitSummary<R>> for SubmitSummary {
         match a {
             AnySubmitSummary::Done => SubmitSummary::Done,
             AnySubmitSummary::Responses(_) => panic!("cannot convert"),
-            AnySubmitSummary::Errors(e) => SubmitSummary::Errors(e),
+            AnySubmitSummary::Errors(e, _) => SubmitSummary::Errors(e),
             AnySubmitSummary::Shutdown => SubmitSummary::Shutdown,
         }
     }
@@ -46,7 +46,7 @@ impl<R> From<AnySubmitSummary<R>> for SubmitSummaryWithResponses<R> {
         match a {
             AnySubmitSummary::Responses(r) => SubmitSummaryWithResponses::Responses(r),
             AnySubmitSummary::Done => panic!("cannot convert"),
-            AnySubmitSummary::Errors(e) => SubmitSummaryWithResponses::Errors(e),
+            AnySubmitSummary::Errors(e, r) => SubmitSummaryWithResponses::Errors(e, r.unwrap()),
             AnySubmitSummary::Shutdown => SubmitSummaryWithResponses::Shutdown,
         }
     }

@@ -310,10 +310,7 @@ impl DmaPool {
 
     /// Allocate a new [DmaRegion<T>] from the pool. The region will be initialized with the
     /// provided initial value.
-    pub fn allocate<'a, T: DeviceSync>(
-        &'a self,
-        init: T,
-    ) -> Result<DmaRegion<'a, T>, AllocationError> {
+    pub fn allocate<T: DeviceSync>(&self, init: T) -> Result<DmaRegion<T>, AllocationError> {
         let len = core::mem::size_of::<T>();
         let (ado, range) = self.do_allocate(len)?;
         let mut reg = DmaRegion::new(
@@ -330,11 +327,11 @@ impl DmaPool {
 
     /// Allocate a new [DmaSliceRegion<T>] from the pool. Each entry in the region's slice will
     /// be initialized with the provided initial value.
-    pub fn allocate_array<'a, T: DeviceSync + Clone>(
-        &'a self,
+    pub fn allocate_array<T: DeviceSync + Clone>(
+        &self,
         count: usize,
         init: T,
-    ) -> Result<DmaSliceRegion<'a, T>, AllocationError> {
+    ) -> Result<DmaSliceRegion<T>, AllocationError> {
         let len = core::mem::size_of::<T>() * count;
         let (ado, range) = self.do_allocate(len)?;
         let mut reg = DmaSliceRegion::new(
@@ -352,11 +349,11 @@ impl DmaPool {
 
     /// Allocate a new [DmaSliceRegion<T>] from the pool. Each entry in the region's slice will
     /// be initialized by running the provided closure.
-    pub fn allocate_array_with<'a, T: DeviceSync>(
-        &'a self,
+    pub fn allocate_array_with<T: DeviceSync>(
+        &self,
         count: usize,
         init: impl Fn() -> T,
-    ) -> Result<DmaSliceRegion<'a, T>, AllocationError> {
+    ) -> Result<DmaSliceRegion<T>, AllocationError> {
         let len = core::mem::size_of::<T>() * count;
         let (ado, range) = self.do_allocate(len)?;
         let mut reg = DmaSliceRegion::new(

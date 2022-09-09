@@ -40,7 +40,7 @@ impl<T: RequestDriver> Requester<T> {
     /// Construct a new request manager for a given driver.
     pub fn new(driver: T) -> Self {
         Self {
-            ids: AsyncIdAllocator::new(T::NUM_IDS),
+            ids: AsyncIdAllocator::new(driver.num_ids()),
             driver,
             inflights: Mutex::new(HashMap::new()),
             state: AtomicU32::new(OK),

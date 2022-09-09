@@ -46,7 +46,7 @@ pub trait RequestDriver {
     /// Manually flush any internal driver submission queue.
     fn flush(&self);
     /// The number of IDs to have in-flight at a time.
-    const NUM_IDS: usize;
+    fn num_ids(&self) -> usize;
 }
 
 // TODO: drop for inflight tracker, so we can remove it to save work?

@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 use core::ops::Range;
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
 use twizzler_abi::{
     kso::{
@@ -14,35 +14,39 @@ use twizzler_abi::{
 use crate::arch::DMA_PAGE_SIZE;
 
 use super::{
+    object::DmaObjectInner,
     pin::{PhysInfo, PinError},
     pool::{AllocatableDmaObject, SplitPageRange},
-    Access, DeviceSync, DmaObject, DmaOptions, DmaPin, SyncMode,
+    Access, DeviceSync, DmaOptions, DmaPin, SyncMode,
 };
 
 /// A region of DMA memory, represented in virtual memory as type `T`, with a particular access mode
 /// and options.
-pub struct DmaRegion<'a, T: DeviceSync> {
+pub struct DmaRegion<T: DeviceSync> {
     virt: *mut u8,
     backing: Option<(Vec<PhysInfo>, u32)>,
     len: usize,
     access: Access,
-    dma: Option<&'a DmaObject>,
+    dma: Option<Arc<DmaObjectInner>>,
     pool: Option<(Arc<AllocatableDmaObject>, SplitPageRange)>,
     options: DmaOptions,
     offset: usize,
     _pd: PhantomData<T>,
 }
 
+// TODO: is this okay?
+unsafe impl<T: DeviceSync> Send for DmaRegion<T> {}
+
 /// A region of DMA memory, represented in virtual memory as type `[T; len]`, with a particular access mode
 /// and options.
-pub struct DmaSliceRegion<'a, T: DeviceSync> {
-    region: DmaRegion<'a, T>,
+pub struct DmaSliceRegion<T: DeviceSync> {
+    region: DmaRegion<T>,
     len: usize,
 }
 
-impl<'a, T: DeviceSync> DmaRegion<'a, T> {
+impl<T: DeviceSync> DmaRegion<T> {
     pub(super) fn new(
-        dma: Option<&'a DmaObject>,
+        dma: Option<Arc<DmaObjectInner>>,
         len: usize,
         access: Access,
         options: DmaOptions,
@@ -51,8 +55,9 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     ) -> Self {
         Self {
             virt: unsafe {
-                (dma.unwrap_or_else(|| pool.as_ref().unwrap().0.dma_object())
-                    .object()
+                (dma.as_ref()
+                    .unwrap_or_else(|| &pool.as_ref().unwrap().0.dma_object().inner)
+                    .obj
                     .base_mut_unchecked() as *mut () as *mut u8)
                     .add(offset)
                     .sub(NULLPAGE_SIZE)
@@ -76,9 +81,10 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
         }
     }
 
-    fn dma_object(&self) -> &DmaObject {
+    fn dma_object(&self) -> &Arc<DmaObjectInner> {
         self.dma
-            .unwrap_or_else(|| self.pool.as_ref().unwrap().0.dma_object())
+            .as_ref()
+            .unwrap_or_else(|| &self.pool.as_ref().unwrap().0.dma_object().inner)
     }
 
     /// Calculate the number of pages this region covers.
@@ -100,7 +106,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
         let ptr = (&pins).as_ptr() as u64;
         let res = sys_kaction(
             KactionCmd::Generic(KactionGenericCmd::PinPages(0)),
-            Some(self.dma_object().object().id()),
+            Some(self.dma_object().obj.id()),
             ptr,
             pack_kaction_pin_start_and_len(start, len).ok_or(PinError::InternalError)?,
             KactionFlags::empty(),
@@ -193,7 +199,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     /// Caller must ensure that no device is using the information from any active pins for this region.
     pub unsafe fn release_pin(&mut self) {
         if let Some((_, token)) = self.backing {
-            super::object::release_pin(self.dma_object().object().id(), token);
+            super::object::release_pin(self.dma_object().obj.id(), token);
             self.backing = None;
         }
     }
@@ -217,9 +223,9 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     }
 }
 
-impl<'a, T: DeviceSync> DmaSliceRegion<'a, T> {
+impl<T: DeviceSync> DmaSliceRegion<T> {
     pub(super) fn new(
-        dma: Option<&'a DmaObject>,
+        dma: Option<Arc<DmaObjectInner>>,
         nrbytes: usize,
         access: Access,
         options: DmaOptions,
@@ -363,7 +369,7 @@ impl<'a, T: DeviceSync> DmaSliceRegion<'a, T> {
     }
 }
 
-impl<'a, T: DeviceSync> Drop for DmaRegion<'a, T> {
+impl<T: DeviceSync> Drop for DmaRegion<T> {
     fn drop(&mut self) {
         if let Some((_, token)) = self.backing.as_ref() {
             self.dma_object()
@@ -376,5 +382,19 @@ impl<'a, T: DeviceSync> Drop for DmaRegion<'a, T> {
         if let Some((ado, range)) = self.pool.take() {
             ado.free(range);
         }
+    }
+}
+
+impl<T: Debug + DeviceSync> Debug for DmaRegion<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.with(|p| {
+            f.debug_struct("DmaRegion")
+                .field("backing", &self.backing)
+                .field("len", &self.len)
+                .field("access", &self.access)
+                .field("options", &self.options)
+                .field("data", p)
+                .finish()
+        })
     }
 }

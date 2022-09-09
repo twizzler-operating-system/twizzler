@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use twizzler_abi::{
     kso::{KactionCmd, KactionFlags, KactionGenericCmd},
@@ -9,11 +9,15 @@ use twizzler_object::{ObjID, Object};
 
 use super::{Access, DeviceSync, DmaOptions, DmaRegion, DmaSliceRegion};
 
+pub(crate) struct DmaObjectInner {
+    pub(crate) releasable_pins: Mutex<Vec<u32>>,
+    pub(crate) obj: Object<()>,
+}
+
 /// A handle for an object that can be used to perform DMA, and is most useful directly as a way to
 /// perform DMA operations on a specific object. For an allocator-like DMA interface, see [crate::dma::DmaPool].
 pub struct DmaObject {
-    obj: Object<()>,
-    pub(crate) releasable_pins: Mutex<Vec<u32>>,
+    pub(crate) inner: Arc<DmaObjectInner>,
 }
 
 impl DmaObject {
@@ -24,13 +28,13 @@ impl DmaObject {
         len: usize,
         access: Access,
         options: DmaOptions,
-    ) -> DmaSliceRegion<'a, T> {
+    ) -> DmaSliceRegion<T> {
         let nr_bytes = core::mem::size_of::<T>()
             .checked_mul(len)
             .expect("Value of len too large");
         assert!(nr_bytes < MAX_SIZE - NULLPAGE_SIZE * 2);
         DmaSliceRegion::new(
-            Some(self),
+            Some(self.inner.clone()),
             core::mem::size_of::<T>() * len,
             access,
             options,
@@ -46,9 +50,9 @@ impl DmaObject {
         &'a self,
         access: Access,
         options: DmaOptions,
-    ) -> DmaRegion<'a, T> {
+    ) -> DmaRegion<T> {
         DmaRegion::new(
-            Some(self),
+            Some(self.inner.clone()),
             core::mem::size_of::<T>(),
             access,
             options,
@@ -59,14 +63,16 @@ impl DmaObject {
 
     /// Get a reference to the object handle.
     pub fn object(&self) -> &Object<()> {
-        &self.obj
+        &self.inner.obj
     }
 
     /// Create a new [DmaObject] from an existing object handle.
     pub fn new<T>(obj: Object<T>) -> Self {
         Self {
-            obj: unsafe { obj.transmute() },
-            releasable_pins: Mutex::new(Vec::new()),
+            inner: Arc::new(DmaObjectInner {
+                releasable_pins: Mutex::default(),
+                obj: unsafe { obj.transmute() },
+            }),
         }
     }
 }
@@ -81,11 +87,11 @@ pub(crate) fn release_pin(id: ObjID, token: u32) {
     );
 }
 
-impl Drop for DmaObject {
+impl Drop for DmaObjectInner {
     fn drop(&mut self) {
         let pins = self.releasable_pins.lock().unwrap();
         for pin in &*pins {
-            release_pin(self.object().id(), *pin);
+            release_pin(self.obj.id(), *pin);
         }
     }
 }

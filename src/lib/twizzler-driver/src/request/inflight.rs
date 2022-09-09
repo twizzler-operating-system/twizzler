@@ -65,7 +65,14 @@ impl<R> InFlightInner<R> {
                 AnySubmitSummary::Done
             }
         } else {
-            AnySubmitSummary::Errors(self.first_err)
+            let vec = if let Some(resps) = self.resps.take() {
+                let arr = resps.into_raw_parts();
+                let na = unsafe { Vec::from_raw_parts(arr.0 as *mut R, arr.1, arr.2) };
+                Some(na)
+            } else {
+                None
+            };
+            AnySubmitSummary::Errors(self.first_err, vec)
         }
     }
 

@@ -1,9 +1,9 @@
 use nvme::hosted::memory::PhysicalPageCollection;
 use twizzler_driver::dma::{DeviceSync, DmaRegion};
 
-pub struct NvmeDmaRegion<'a, T: DeviceSync>(DmaRegion<'a, T>);
+pub struct NvmeDmaRegion<T: DeviceSync>(DmaRegion<T>);
 
-impl<'a, T: DeviceSync> PhysicalPageCollection for NvmeDmaRegion<'a, T> {
+impl<T: DeviceSync> PhysicalPageCollection for NvmeDmaRegion<T> {
     fn get_prp_list_or_buffer(&mut self) -> Option<nvme::ds::cmd::PrpListOrBuffer> {
         todo!()
     }
@@ -17,8 +17,12 @@ impl<'a, T: DeviceSync> PhysicalPageCollection for NvmeDmaRegion<'a, T> {
     }
 }
 
-impl<'a, T: DeviceSync> NvmeDmaRegion<'a, T> {
-    pub fn new(inner: DmaRegion<'a, T>) -> Self {
+impl<T: DeviceSync> NvmeDmaRegion<T> {
+    pub fn new(inner: DmaRegion<T>) -> Self {
         Self(inner)
+    }
+
+    pub fn into_dma_reg(self) -> DmaRegion<T> {
+        self.0
     }
 }

@@ -1,5 +1,8 @@
+use std::future;
+
 use twizzler_abi::device::BusType;
 
+use twizzler_async::Task;
 use twizzler_driver::bus::pcie::PcieDeviceInfo;
 
 use self::controller::NvmeController;
@@ -28,7 +31,15 @@ pub fn start() {
 
                     let ctrl = NvmeController::new(child);
 
-                    return;
+                    let _task = Task::spawn(async move {
+                        ctrl.init_controller().await;
+
+                        let res = ctrl.identify_controller().await;
+
+                        println!("{:?}", res);
+                    });
+
+                    twizzler_async::run(future::pending::<()>());
                 }
             }
         }
