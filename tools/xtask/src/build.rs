@@ -18,6 +18,7 @@ struct OtherOptions {
     manifest_path: Option<PathBuf>,
     build_tests: bool,
     needs_full_rebuild: bool,
+    build_twizzler: bool,
 }
 
 use crate::{triple::Triple, BuildOptions, CheckOptions, DocOptions, Profile};
@@ -64,7 +65,10 @@ fn build_twizzler<'a>(
     mode: CompileMode,
     build_config: &crate::BuildConfig,
     other_options: &OtherOptions,
-) -> anyhow::Result<Compilation<'a>> {
+) -> anyhow::Result<Option<Compilation<'a>>> {
+    if !other_options.build_twizzler {
+        return Ok(None);
+    }
     crate::print_status_line("collection: userspace", Some(build_config));
     let triple = Triple::new(
         build_config.arch,
@@ -80,7 +84,7 @@ fn build_twizzler<'a>(
     }
     options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
-    cargo::ops::compile(workspace, &options)
+    Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
 
 fn maybe_build_tests<'a>(
@@ -89,7 +93,7 @@ fn maybe_build_tests<'a>(
     other_options: &OtherOptions,
 ) -> anyhow::Result<Option<Compilation<'a>>> {
     let mode = CompileMode::Test;
-    if !other_options.build_tests {
+    if !other_options.build_tests || !other_options.build_twizzler {
         return Ok(None);
     }
     crate::print_status_line("collection: userspace::tests", Some(build_config));
@@ -169,7 +173,7 @@ pub(crate) struct TwizzlerCompilation {
     pub kernel_compilation: Compilation<'this>,
     #[borrows(user_workspace)]
     #[covariant]
-    pub user_compilation: Compilation<'this>,
+    pub user_compilation: Option<Compilation<'this>>,
     #[borrows(user_workspace)]
     #[covariant]
     pub test_compilation: Option<Compilation<'this>>,
@@ -237,6 +241,7 @@ pub(crate) fn do_docs(cli: DocOptions) -> anyhow::Result<TwizzlerCompilation> {
         manifest_path: None,
         build_tests: false,
         needs_full_rebuild: false,
+        build_twizzler: true,
     };
     compile(cli.config, CompileMode::Doc { deps: false }, &other_options)
 }
@@ -247,6 +252,7 @@ pub(crate) fn do_build(cli: BuildOptions) -> anyhow::Result<TwizzlerCompilation>
         manifest_path: None,
         build_tests: cli.tests,
         needs_full_rebuild: false,
+        build_twizzler: !cli.kernel,
     };
     compile(cli.config, CompileMode::Build, &other_options)
 }
@@ -268,6 +274,7 @@ pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
         manifest_path: cli.manifest_path,
         build_tests: false,
         needs_full_rebuild: false,
+        build_twizzler: !cli.kernel,
     };
     compile(cli.config, CompileMode::Check { test: false }, &other_options)?;
     Ok(())
