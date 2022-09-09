@@ -19,6 +19,8 @@ fn get_crate_initrd_files(
 ) -> anyhow::Result<Vec<PathBuf>> {
     let unit = comp
         .borrow_user_compilation()
+        .as_ref()
+        .expect("user space not compiled")
         .binaries
         .iter()
         .find(|item| item.unit.pkg.name() == crate_name)

@@ -56,6 +56,8 @@ struct BuildOptions {
     pub config: BuildConfig,
     #[clap(long, short, help = "Build tests-enabled system.")]
     tests: bool,
+    #[clap(long, short, help = "Only build kernel part of system.")]
+    kernel: bool,
 }
 
 #[derive(Args, Debug)]
@@ -84,6 +86,8 @@ struct CheckOptions {
     pub message_format: MessageFormat,
     #[clap(long, short)]
     pub workspace: bool,
+    #[clap(long, short, help = "Only build kernel part of system.")]
+    kernel: bool,
 }
 
 #[derive(Args, Debug, Clone, Copy)]
@@ -92,6 +96,8 @@ struct ImageOptions {
     pub config: BuildConfig,
     #[clap(long, short, help = "Build tests-enabled system.")]
     tests: bool,
+    #[clap(long, short, help = "Only build kernel part of system.")]
+    kernel: bool,
 }
 
 impl From<ImageOptions> for BuildOptions {
@@ -99,6 +105,7 @@ impl From<ImageOptions> for BuildOptions {
         Self {
             config: io.config,
             tests: io.tests,
+            kernel: io.kernel,
         }
     }
 }
@@ -122,6 +129,7 @@ impl From<&QemuOptions> for ImageOptions {
         Self {
             config: qo.config,
             tests: qo.tests,
+            kernel: false,
         }
     }
 }
