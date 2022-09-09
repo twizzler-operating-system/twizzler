@@ -1,4 +1,4 @@
-use std::future;
+use std::{future, time::Duration};
 
 use twizzler_abi::device::BusType;
 
@@ -32,11 +32,20 @@ pub fn start() {
                     let ctrl = NvmeController::new(child);
 
                     let _task = Task::spawn(async move {
-                        ctrl.init_controller().await;
+                        let res = twizzler_async::timeout_after(
+                            ctrl.init_controller(),
+                            Duration::from_millis(1000),
+                        )
+                        .await;
 
-                        let res = ctrl.identify_controller().await;
-
-                        println!("{:?}", res);
+                        if res.is_some() {
+                            let res = twizzler_async::timeout_after(
+                                ctrl.identify_controller(),
+                                Duration::from_millis(200),
+                            )
+                            .await;
+                            println!("{:?}", res);
+                        }
                     });
 
                     twizzler_async::run(future::pending::<()>());
