@@ -1,8 +1,9 @@
-pub mod pc;
 mod time;
 
-use core::fmt::Write;
+#[cfg(target_arch = "x86_64")]
+pub mod pc;
 
+#[cfg(target_arch = "x86_64")]
 #[allow(unused_imports)]
 pub use pc::*;
 pub use time::*;
@@ -12,12 +13,8 @@ use crate::log::KernelConsoleHardware;
 pub struct MachineConsoleHardware;
 
 impl KernelConsoleHardware for MachineConsoleHardware {
-    fn write(&self, data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
-        unsafe {
-            let _ = serial::SERIAL1
-                .lock()
-                .write_str(core::str::from_utf8_unchecked(data));
-        }
+    fn write(&self, data: &[u8], flags: crate::log::KernelConsoleWriteFlags) {
+        serial::write(data, flags);
     }
 }
 
