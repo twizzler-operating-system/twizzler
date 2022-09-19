@@ -144,6 +144,23 @@ fn build_kernel<'a>(
     crate::print_status_line("collection: kernel", Some(build_config));
     let packages = locate_packages(workspace, Some("kernel"));
     let mut options = CompileOptions::new(workspace.config(), mode)?;
+
+    if !build_config.is_default_target() {
+        let triple = Triple::new(
+            build_config.arch,
+            build_config.machine,
+            crate::triple::Host::None,
+        );
+
+        let mut target_spec = triple.to_string();
+        target_spec.insert_str(0, "src/kernel/target-spec/");
+        target_spec.push_str(".json");
+
+        let bc = BuildConfig::new(workspace.config(), None, &[target_spec], mode)?;
+
+        options.build_config = bc;
+    }
+
     options.build_config.message_format = other_options.message_format;
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
