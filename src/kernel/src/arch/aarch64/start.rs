@@ -2,9 +2,11 @@ use core::arch::asm;
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // let's set some random value in the register
-    unsafe { asm!("movz x15, 0xAAAA");}
+    // let's set the stack
+    unsafe { asm!(
+        "ldr x30, =__stack_top",
+        "mov sp, x30"
+    );}
 
-    // spin in software for now
-    loop { }
+    crate::arch::kernel_main();
 }
