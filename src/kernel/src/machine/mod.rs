@@ -1,5 +1,11 @@
 mod time;
 
+#[cfg(target_arch = "aarch64")]
+mod arm;
+
+#[cfg(target_arch = "aarch64")]
+pub use arm::*;
+
 #[cfg(target_arch = "x86_64")]
 pub mod pc;
 

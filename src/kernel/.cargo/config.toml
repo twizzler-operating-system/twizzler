@@ -5,6 +5,11 @@ rustflags = [
   "-C", "link-arg=--no-gc-sections"
 ]
 
+[target.aarch64-unknown-none]
+rustflags = [
+  "-C", "link-args=-Tsrc/kernel/src/machine/arm/linker.ld"
+]
+
 [env]
 CC = "clang"
 CXX = "clang++"
