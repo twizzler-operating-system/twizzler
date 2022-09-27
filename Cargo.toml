@@ -7,6 +7,7 @@ members = [
     "src/bin/devmgr",
     "src/bin/netmgr",
     "src/bin/nettest",
+    "src/bin/testing",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
@@ -23,6 +24,7 @@ initrd = [
     "crate:devmgr",
     "crate:netmgr",
     "crate:nettest",
+    "crate:testing",
 ]
 
 [profile.release]

@@ -113,7 +113,7 @@ fn main() {
         }
     }
 
-    nvme_drv::start();
+    //nvme_drv::start();
 
     let base = unsafe { obj.base_unchecked() };
     base.store(1, std::sync::atomic::Ordering::SeqCst);

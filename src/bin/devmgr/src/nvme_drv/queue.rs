@@ -50,6 +50,7 @@ impl NvmeQueueDriver {
             }
             (new_head, new_bell, resps)
         };
+        println!("do we need to be more careful about the head update?");
 
         if let Some(head) = new_head {
             self.subq.lock().unwrap().update_head(head);

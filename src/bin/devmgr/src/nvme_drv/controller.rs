@@ -74,15 +74,20 @@ impl NvmeControllerInner {
         admin: bool,
         outer: &NvmeControllerRef,
     ) -> QueueId {
+        const C_STRIDE: usize = size_of::<CommonCompletion>();
+        const S_STRIDE: usize = size_of::<CommonCommand>();
+
         if !self.queues.is_empty() && admin {
             panic!("admin queue already created");
         }
 
+        // Create a DMA region for the submission queue.
         let mut sq_reg = self
             .dma
             .allocate_array(sqlen, nvme::ds::queue::subentry::CommonCommand::default())
             .unwrap();
 
+        // Create a DMA region for the completion queue.
         let mut cq_reg = self
             .dma
             .allocate_array(
@@ -91,19 +96,17 @@ impl NvmeControllerInner {
             )
             .unwrap();
 
+        // Create a slice from the DMA region and pass it to the nvme library to make a handle.
         let smem = unsafe {
             core::slice::from_raw_parts_mut(
                 sq_reg.get_mut().as_mut_ptr() as *mut u8,
                 sqlen * size_of::<CommonCommand>(),
             )
         };
-
-        const C_STRIDE: usize = size_of::<CommonCompletion>();
-        const S_STRIDE: usize = size_of::<CommonCommand>();
-
         let sq =
             nvme::queue::SubmissionQueue::new(smem, sqlen.try_into().unwrap(), S_STRIDE).unwrap();
 
+        // Same for completion queue memory.
         let cmem = unsafe {
             core::slice::from_raw_parts_mut(
                 cq_reg.get_mut().as_mut_ptr() as *mut u8,
@@ -113,17 +116,19 @@ impl NvmeControllerInner {
         let cq =
             nvme::queue::CompletionQueue::new(cmem, cqlen.try_into().unwrap(), C_STRIDE).unwrap();
 
+        // If we're creating the admin queue, then use the hardcoded ID, otherwise allocate one.
         let id = if admin {
             QueueId::ADMIN
         } else {
             self.allocate_queue_id()
         };
+
+        // Create the requester framework and the new NvmeQueue.
         let queue_driver = NvmeQueueDriver::new(sq, cq, outer.clone(), id);
-
         let queue_req = Requester::new(queue_driver);
-
         let queue = NvmeQueue::new(queue_req, sq_reg, cq_reg);
 
+        // Push this onto our list.
         self.queues.push(queue);
         id
     }
@@ -193,15 +198,15 @@ impl NvmeController {
     }
 
     pub async fn identify_controller(
-        &self,
+        self: &NvmeControllerRef,
     ) -> Result<DmaRegion<IdentifyControllerDataStructure>, RequestError> {
         let inner = self.inner.read().await;
         let ident = inner
             .dma
-            .allocate(nvme::ds::identify::controller::IdentifyControllerDataStructure::default())
+            .allocate(IdentifyControllerDataStructure::default())
             .unwrap();
 
-        let mut ident = NvmeDmaRegion::new(ident);
+        let mut ident = NvmeDmaRegion::new(ident, self);
         let ident_cmd = nvme::admin::Identify::new(
             CommandId::new(),
             nvme::admin::IdentifyCNSValue::IdentifyController,
