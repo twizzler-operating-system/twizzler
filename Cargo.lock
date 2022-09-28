@@ -1402,6 +1402,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lock_api"
+version = "0.4.9"
+source = "git+https://github.com/twizzler-operating-system/parking_lot#15142903ff3d8e8ba9390acc24fbce9ce3860afc"
+dependencies = [
+ "autocfg",
+ "scopeguard",
+]
+
+[[package]]
 name = "log"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1781,23 +1790,22 @@ dependencies = [
 [[package]]
 name = "parking_lot"
 version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3742b2c103b9f06bc9fff0a37ff4912935851bee6d36f3c02bcc755bcfec228f"
+source = "git+https://github.com/twizzler-operating-system/parking_lot#15142903ff3d8e8ba9390acc24fbce9ce3860afc"
 dependencies = [
- "lock_api",
+ "lock_api 0.4.9",
  "parking_lot_core",
 ]
 
 [[package]]
 name = "parking_lot_core"
 version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09a279cbf25cb0757810394fbc1e359949b59e348145c643a939a525692e6929"
+source = "git+https://github.com/twizzler-operating-system/parking_lot#15142903ff3d8e8ba9390acc24fbce9ce3860afc"
 dependencies = [
  "cfg-if 1.0.0",
  "libc",
  "redox_syscall",
  "smallvec",
+ "twizzler-abi",
  "windows-sys",
 ]
 
@@ -2438,7 +2446,7 @@ version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75adad84ee84b521fb2cca2d4fd0f1dab1d8d026bda3c5bea4ca63b5f9f9293c"
 dependencies = [
- "lock_api",
+ "lock_api 0.4.6",
 ]
 
 [[package]]

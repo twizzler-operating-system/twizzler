@@ -33,6 +33,10 @@ debug = true
 [patch.'https://github.com/dbittman/twizzler-abi']
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 
+[patch.'https://github.com/twizzler-operating-system/twizzler-abi']
+twizzler-abi = { path = "src/lib/twizzler-abi" }
+
 [patch.crates-io]
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 num_cpus = { git = "https://github.com/twizzler-operating-system/num_cpus" }
+parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot" }
