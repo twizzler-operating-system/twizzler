@@ -5,12 +5,11 @@ use twizzler_abi::{
     upcall::{ExceptionInfo, UpcallFrame, UpcallInfo},
 };
 use x86::current::rflags::RFlags;
-use x86_64::VirtAddr;
 
 use crate::{
     arch::lapic,
     interrupt::{Destination, DynamicInterrupt},
-    memory::fault::{PageFaultCause, PageFaultFlags},
+    memory::{VirtAddr, fault::{PageFaultCause, PageFaultFlags}},
     processor::current_processor,
     thread::current_thread_ref,
 };

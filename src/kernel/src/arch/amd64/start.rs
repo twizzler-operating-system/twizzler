@@ -3,11 +3,10 @@ use stivale_boot::v2::{
     StivaleFramebufferHeaderTag, StivaleHeader, StivaleMemoryMapEntryType, StivaleStruct,
     StivaleUnmapNullHeaderTag,
 };
-use x86_64::{PhysAddr, VirtAddr};
 
 use crate::{
     initrd::BootModule,
-    memory::{MemoryRegion, MemoryRegionKind},
+    memory::{MemoryRegion, MemoryRegionKind, PhysAddr, VirtAddr},
     BootInfo,
 };
 

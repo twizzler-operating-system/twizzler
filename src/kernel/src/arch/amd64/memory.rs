@@ -1,9 +1,12 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use twizzler_abi::device::CacheType;
-use x86_64::{structures::paging::PageTable, PhysAddr, VirtAddr};
+use x86_64::{structures::paging::PageTable};
+use crate::memory::{VirtAddr as GenericVirtAddr, PhysAddr as GenericPhysAddr};
 
-fn translate_addr_inner(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<PhysAddr> {
+pub use x86_64::{PhysAddr as ArchPhysAddr, VirtAddr as ArchVirtAddr};
+
+fn translate_addr_inner(addr: ArchVirtAddr, phys_mem_offset: ArchVirtAddr) -> Option<GenericPhysAddr> {
     use x86_64::registers::control::Cr3;
     use x86_64::structures::paging::page_table::FrameError;
 
@@ -30,11 +33,11 @@ fn translate_addr_inner(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<Phy
         };
     }
 
-    Some(frame.start_address() + u64::from(addr.page_offset()))
+    Some(GenericPhysAddr::from(frame.start_address() + u64::from(addr.page_offset())))
 }
 
-pub fn translate_addr(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<PhysAddr> {
-    translate_addr_inner(addr, phys_mem_offset)
+pub fn translate_addr(addr: GenericVirtAddr, phys_mem_offset: GenericVirtAddr) -> Option<GenericPhysAddr> {
+    translate_addr_inner(addr.into(), phys_mem_offset.into())
 }
 
 use x86_64::structures::paging::OffsetPageTable;
@@ -44,12 +47,13 @@ use crate::memory::frame::{alloc_frame, PhysicalFrameFlags};
 use crate::memory::{MapFailed, MappingInfo};
 
 #[allow(clippy::missing_safety_doc)]
-pub unsafe fn init(phys_mem_offset: VirtAddr) -> OffsetPageTable<'static> {
+// this is unused
+pub unsafe fn init(phys_mem_offset: ArchVirtAddr) -> OffsetPageTable<'static> {
     let level_4_table = active_level_4_table(phys_mem_offset);
     OffsetPageTable::new(level_4_table, phys_mem_offset)
 }
 
-unsafe fn active_level_4_table(phys_mem_offset: VirtAddr) -> &'static mut PageTable {
+unsafe fn active_level_4_table(phys_mem_offset: ArchVirtAddr) -> &'static mut PageTable {
     use x86_64::registers::control::Cr3;
     let (level_4_table_frame, _) = Cr3::read();
     let phys = level_4_table_frame.start_address();
@@ -60,26 +64,26 @@ unsafe fn active_level_4_table(phys_mem_offset: VirtAddr) -> &'static mut PageTa
 
 const PHYS_MEM_OFFSET: u64 = 0xffff800000000000;
 /* TODO: hide this */
-pub fn phys_to_virt(pa: PhysAddr) -> VirtAddr {
-    VirtAddr::new(pa.as_u64() + PHYS_MEM_OFFSET)
+pub fn phys_to_virt(pa: GenericPhysAddr) -> GenericVirtAddr {
+    GenericVirtAddr::new(pa.as_u64() + PHYS_MEM_OFFSET)
 }
 
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 pub struct Table {
-    frame: PhysAddr,
+    frame: ArchPhysAddr,
 }
 
 impl Table {
     #[optimize(speed)]
     fn as_slice_mut(&mut self) -> &mut [u64] {
-        let va = phys_to_virt(self.frame);
+        let va = phys_to_virt(self.frame.into());
         unsafe { core::slice::from_raw_parts_mut(va.as_mut_ptr(), 512) }
     }
 
     #[optimize(speed)]
     fn as_slice(&self) -> &[u64] {
-        let va = phys_to_virt(self.frame);
+        let va = phys_to_virt(self.frame.into());
         unsafe { core::slice::from_raw_parts(va.as_ptr(), 512) }
     }
 
@@ -101,14 +105,14 @@ impl Table {
     }
 
     #[optimize(speed)]
-    fn get_entry(&self, idx: usize, is_last: bool) -> Option<(PhysAddr, MapFlags)> {
+    fn get_entry(&self, idx: usize, is_last: bool) -> Option<(ArchPhysAddr, MapFlags)> {
         if !self.is_entry(idx, is_last) {
             return None;
         }
         let e = self.as_slice()[idx];
         let paddr = e & 0x7ffffffffffff000;
         let flags = e & !0x7ffffffffffff000;
-        Some((PhysAddr::new(paddr), MapFlags::from_entry(flags)))
+        Some((ArchPhysAddr::new(paddr), MapFlags::from_entry(flags)))
     }
 
     #[optimize(speed)]
@@ -122,7 +126,7 @@ impl Table {
             None
         } else {
             let paddr = e & 0x7ffffffffffff000;
-            Some(PhysAddr::new(paddr).into())
+            Some(ArchPhysAddr::new(paddr).into())
         }
     }
 
@@ -135,12 +139,12 @@ impl Table {
         let e = self.as_slice_mut()[idx];
         assert!(e & 0b10000000 == 0);
         let paddr = e & 0x7ffffffffffff000;
-        Some(PhysAddr::new(paddr).into())
+        Some(ArchPhysAddr::new(paddr).into())
     }
 }
 
-impl From<PhysAddr> for Table {
-    fn from(frame: PhysAddr) -> Self {
+impl From<ArchPhysAddr> for Table {
+    fn from(frame: ArchPhysAddr) -> Self {
         Self { frame }
     }
 }
@@ -223,7 +227,7 @@ const PAGE_SIZE: usize = 0x1000;
 impl ArchMemoryContext {
     pub fn new_blank() -> Self {
         let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
-        let mut table_root: Table = frame.start_address().into();
+        let mut table_root: Table = ArchPhysAddr::from(frame.start_address()).into();
         for i in 256..512 {
             table_root.get_child(
                 i,
@@ -238,7 +242,7 @@ impl ArchMemoryContext {
         Self { table_root }
     }
 
-    pub fn root(&self) -> PhysAddr {
+    pub fn root(&self) -> ArchPhysAddr {
         self.table_root.frame
     }
 
@@ -255,17 +259,18 @@ impl ArchMemoryContext {
         new
     }
 
-    pub fn from_existing_tables(table_root: PhysAddr) -> Self {
+    pub fn from_existing_tables(table_root: GenericPhysAddr) -> Self {
         Self {
-            table_root: table_root.into(),
+            table_root: ArchPhysAddr::from(table_root).into(),
         }
     }
 
     pub fn current_tables() -> Self {
-        unsafe { Self::from_existing_tables(PhysAddr::new(x86::controlregs::cr3())) }
+        unsafe { Self::from_existing_tables(GenericPhysAddr::new(x86::controlregs::cr3())) }
     }
 
-    pub fn get_map(&self, addr: VirtAddr) -> Option<MappingInfo> {
+    pub fn get_map(&self, va: GenericVirtAddr) -> Option<MappingInfo> {
+        let addr: ArchVirtAddr = va.into();
         let indexes = [
             addr.p4_index(),
             addr.p3_index(),
@@ -286,7 +291,7 @@ impl ArchMemoryContext {
             }
             if let Some((phys, flags)) = info {
                 assert!(len > 0);
-                return Some(MappingInfo::new(addr, phys, len, flags));
+                return Some(MappingInfo::new(va, phys.into(), len, flags));
             }
             if let Some(next_table) = table.get_child_noalloc((*idx).into()) {
                 table = next_table;
@@ -300,7 +305,7 @@ impl ArchMemoryContext {
     #[optimize(speed)]
     pub fn premap(
         &mut self,
-        start: VirtAddr,
+        start: ArchVirtAddr,
         length: usize,
         page_size: usize,
         flags: MapFlags,
@@ -343,7 +348,7 @@ impl ArchMemoryContext {
         Ok(())
     }
 
-    pub fn unmap(&mut self, start: VirtAddr, length: usize) {
+    pub fn unmap(&mut self, start: ArchVirtAddr, length: usize) {
         /* TODO: Free frames? */
         let end = start + length;
         let mut count = 0usize;
@@ -388,8 +393,8 @@ impl ArchMemoryContext {
 
     pub fn map(
         &mut self,
-        start: VirtAddr,
-        phys: PhysAddr,
+        start: ArchVirtAddr,
+        phys: ArchPhysAddr,
         mut length: usize,
         flags: MapFlags,
         cache_type: CacheType,
@@ -408,7 +413,7 @@ impl ArchMemoryContext {
         loop {
             let addr = start.as_u64().checked_add(count as u64);
             let addr = if let Some(addr) = addr {
-                VirtAddr::new(addr)
+                ArchVirtAddr::new(addr)
             } else {
                 return Ok(());
             };

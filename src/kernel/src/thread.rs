@@ -11,14 +11,13 @@ use twizzler_abi::{
     syscall::{ThreadSpawnArgs, ThreadSpawnError},
     upcall::UpcallInfo,
 };
-use x86_64::VirtAddr;
 use xmas_elf::program::SegmentData;
 
 use crate::{
     idcounter::{Id, IdCounter},
     initrd::get_boot_objects,
     interrupt,
-    memory::context::{MappingPerms, MemoryContext, MemoryContextRef},
+    memory::{VirtAddr, context::{MappingPerms, MemoryContext, MemoryContextRef}},
     obj::ObjectRef,
     processor::{get_processor, KERNEL_STACK_SIZE},
     sched::schedule_new_thread,

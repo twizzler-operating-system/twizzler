@@ -1,9 +1,9 @@
 use acpi::{madt::Madt, sdt::Signature, InterruptModel};
 use alloc::vec::Vec;
-use x86_64::PhysAddr;
 
 use crate::{
     interrupt::{Destination, PinPolarity, TriggerMode},
+    memory::PhysAddr,
     spinlock::Spinlock,
 };
 

@@ -1,8 +1,8 @@
 use crate::once::Once;
 use alloc::borrow::ToOwned;
 use alloc::sync::Arc;
-use x86_64::VirtAddr;
 
+use crate::memory::VirtAddr;
 use crate::obj::ObjectRef;
 use crate::obj::{self, pages::Page};
 use alloc::collections::BTreeMap;

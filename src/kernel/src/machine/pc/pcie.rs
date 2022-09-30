@@ -15,10 +15,10 @@ use twizzler_abi::{
     device::BusType,
     kso::{KactionError, KactionValue},
 };
-use x86_64::PhysAddr;
 
 use crate::arch::memory::phys_to_virt;
 use crate::interrupt::{DynamicInterrupt, WakeInfo};
+use crate::memory::PhysAddr;
 use crate::mutex::Mutex;
 use crate::once::Once;
 use crate::{arch, device::DeviceRef};

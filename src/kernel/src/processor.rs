@@ -6,11 +6,11 @@ use core::{
 
 use crate::{once::Once, spinlock::Spinlock};
 use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
-use x86_64::VirtAddr;
 
 use crate::{
     arch::{self, processor::ArchProcessor},
     image::TlsInfo,
+    memory::VirtAddr,
     sched::{CPUTopoNode, CPUTopoType},
     thread::{Priority, Thread, ThreadRef},
 };

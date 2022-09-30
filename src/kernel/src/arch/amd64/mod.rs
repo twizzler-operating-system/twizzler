@@ -3,6 +3,7 @@ use core::sync::atomic::Ordering;
 use crate::{
     clock::Nanoseconds,
     interrupt::{Destination, PinPolarity, TriggerMode},
+    memory::VirtAddr,
     thread::current_thread_ref,
     BootInfo,
 };
@@ -64,7 +65,6 @@ pub unsafe fn jump_to_user(target: VirtAddr, stack: VirtAddr, arg: u64) {
 }
 
 pub use lapic::schedule_oneshot_tick;
-use x86_64::VirtAddr;
 
 pub fn set_interrupt(
     num: u32,

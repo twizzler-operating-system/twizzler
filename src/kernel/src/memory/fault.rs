@@ -1,7 +1,5 @@
-use x86_64::VirtAddr;
-
 use crate::{
-    memory::context::MappingPerms,
+    memory::{VirtAddr, context::MappingPerms},
     obj::{pages::Page, PageNumber},
     thread::{current_memory_context, current_thread_ref},
 };

@@ -50,8 +50,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use arch::BootInfoSystemTable;
 use initrd::BootModule;
-use memory::MemoryRegion;
-use x86_64::VirtAddr;
+use memory::{MemoryRegion, VirtAddr};
 
 use crate::processor::current_processor;
 

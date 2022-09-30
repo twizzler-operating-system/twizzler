@@ -18,8 +18,7 @@ pub const HEAP_LARGE_START: usize = 0xffffff1000000000;
 pub const HEAP_HUGE_START: usize = 0xfffffe0000000000;
 pub const HEAP_MAX_LEN: usize = 0x0000001000000000 / 16; //4GB
 
-use x86_64::VirtAddr;
-
+use crate::memory::VirtAddr;
 use crate::spinlock::Spinlock;
 
 use super::KernelMemoryManager;
