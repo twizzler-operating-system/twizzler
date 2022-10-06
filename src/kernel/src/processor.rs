@@ -301,7 +301,7 @@ fn start_secondary_cpu(cpu: u32, tls_template: TlsInfo) {
 
     //logln!("poking cpu {} {:?} {:?}", cpu, tcb_base, kernel_stack);
     unsafe {
-        crate::arch::lapic::poke_cpu(cpu, tcb_base, kernel_stack);
+        crate::arch::poke_cpu(cpu, tcb_base, kernel_stack);
     }
 }
 

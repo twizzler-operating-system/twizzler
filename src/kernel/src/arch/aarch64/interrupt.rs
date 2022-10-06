@@ -3,7 +3,7 @@ use twizzler_abi::{
     upcall::{UpcallFrame},
 };
 
-use crate::interrupt::DynamicInterrupt;
+use crate::interrupt::{DynamicInterrupt, Destination};
 
 use super::{
     // set_interrupt,
@@ -141,4 +141,8 @@ impl Drop for DynamicInterrupt {
     fn drop(&mut self) {
         // TODO
     }
+}
+
+pub fn send_ipi(_dest: Destination, _vector: u32) {
+    todo!("send an ipi")
 }

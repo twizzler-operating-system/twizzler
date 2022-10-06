@@ -6,7 +6,6 @@ use crate::{
 };
 
 pub mod interrupt;
-pub mod lapic;
 pub mod memory;
 pub mod processor;
 mod syscall;
@@ -14,6 +13,7 @@ pub mod thread;
 mod start;
 
 pub use start::BootInfoSystemTable;
+pub use interrupt::send_ipi;
 
 pub fn kernel_main() -> ! {
     crate::machine::serial::print_str(b"[kernel] hello world!!\n");
@@ -59,4 +59,11 @@ pub unsafe fn jump_to_user(_target: VirtAddr, _stack: VirtAddr, _arg: u64) {
 
 pub fn debug_shutdown(_code: u32) {
     todo!()
+}
+
+/// Start up a CPU.
+/// # Safety
+/// The tcb_base and kernel stack must both be valid memory regions for each thing.
+pub unsafe fn poke_cpu(_cpu: u32, _tcb_base: VirtAddr, _kernel_stack: *mut u8) {
+    todo!("start up a cpu")
 }

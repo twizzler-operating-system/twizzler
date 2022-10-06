@@ -21,6 +21,7 @@ mod syscall;
 pub mod thread;
 mod tsc;
 pub use start::BootInfoSystemTable;
+pub use lapic::{poke_cpu, send_ipi, schedule_oneshot_tick};
 pub fn init<B: BootInfo>(boot_info: &B) {
     desctables::init();
     interrupt::init_idt();
@@ -63,8 +64,6 @@ pub unsafe fn jump_to_user(target: VirtAddr, stack: VirtAddr, arg: u64) {
     }
     syscall::return_to_user(&ctx as *const syscall::X86SyscallContext);
 }
-
-pub use lapic::schedule_oneshot_tick;
 
 pub fn set_interrupt(
     num: u32,
