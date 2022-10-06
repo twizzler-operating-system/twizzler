@@ -168,3 +168,7 @@ impl ArchMemoryContextSwitchInfo {
         todo!()
     }
 }
+
+pub unsafe fn flush_tlb() {
+    todo!()
+}

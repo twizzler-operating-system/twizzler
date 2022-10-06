@@ -190,8 +190,7 @@ pub fn finish_setup() {
         .arch
         .unmap(VirtAddr::new(0).into(), 0x100000000 /*TODO */);
     unsafe {
-        let cr3 = x86::controlregs::cr3();
-        x86::controlregs::cr3_write(cr3);
+        arch::memory::flush_tlb();
     }
 }
 

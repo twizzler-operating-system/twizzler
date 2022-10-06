@@ -475,3 +475,13 @@ impl ArchMemoryContextSwitchInfo {
         x86::controlregs::cr3_write(self.target)
     }
 }
+
+// flush the tlb, on x86 we can do this by overwriting cr3
+// with the same value this is not that efficient however
+// See Issue #32
+pub unsafe fn flush_tlb() {
+    // asm!("mov rax, cr3", "mov cr3, rax", lateout("rax") _);
+
+    let cr3 = x86::controlregs::cr3();
+    x86::controlregs::cr3_write(cr3);
+}
