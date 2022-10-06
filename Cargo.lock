@@ -142,15 +142,15 @@ checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 
 [[package]]
 name = "backtracer_core"
-version = "0.0.4"
-source = "git+https://github.com/gz/backtracer#e86e8aac106e1744bb0b600fe4fcdcd8f21db913"
+version = "0.0.5"
+source = "git+https://github.com/gz/backtracer#883b669e414d6ef7b4218a3b610febf03a1be770"
 dependencies = [
  "addr2line",
  "cfg-if 0.1.10",
  "gimli",
  "log",
  "stable_deref_trait",
- "x86 0.37.0",
+ "x86 0.47.0",
 ]
 
 [[package]]
@@ -1735,15 +1735,6 @@ dependencies = [
 
 [[package]]
 name = "raw-cpuid"
-version = "9.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1733f6f80c9c24268736a501cd00d41a9849b4faa7a9f9334c096e5d10553206"
-dependencies = [
- "bitflags",
-]
-
-[[package]]
-name = "raw-cpuid"
 version = "10.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "929f54e29691d4e6a9cc558479de70db7aa3d98cd6fe7ab86d7507aa2886b9d2"
@@ -2037,9 +2028,9 @@ checksum = "9def91fd1e018fe007022791f865d0ccc9b3a0d5001e01aabb8b40e46000afb5"
 
 [[package]]
 name = "slabmalloc"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47c3c80fc5058288346b67f19c9d57677bfabb4930386dcb9eeb23d14d1e10f0"
+checksum = "52b274c61b9873a19293c96f2bf132ebc51fe21f507a91a0e5df0ba6989073b7"
 dependencies = [
  "log",
 ]
@@ -2714,24 +2705,24 @@ dependencies = [
 
 [[package]]
 name = "x86"
-version = "0.37.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4fd9298cd1b1f88546fc0a5e8faa3354013cd010589299c624fde436aad76cc"
-dependencies = [
- "bit_field",
- "bitflags",
- "raw-cpuid 9.1.1",
-]
-
-[[package]]
-name = "x86"
 version = "0.44.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "445c3c61eedec88b632682ed03556550e2b3d5b421a87a4f0c800fce485f9b8c"
 dependencies = [
  "bit_field",
  "bitflags",
- "raw-cpuid 10.2.0",
+ "raw-cpuid",
+]
+
+[[package]]
+name = "x86"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "55b5be8cc34d017d8aabec95bc45a43d0f20e8b2a31a453cabc804fe996f8dca"
+dependencies = [
+ "bit_field",
+ "bitflags",
+ "raw-cpuid",
 ]
 
 [[package]]
