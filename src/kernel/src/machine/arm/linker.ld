@@ -18,6 +18,6 @@ SECTIONS {
     .bss : { *(.bss) }
     . = ALIGN(8);
     
-    . += 0x4000; /* 16384 mem stack */
+    . += 0x4000;
     __stack_top = .;
 }

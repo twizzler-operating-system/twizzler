@@ -10,6 +10,6 @@ pub fn print_str(s: &[u8]) {
     }
 }
 
-// pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
-//     print_str(data)
-// }
+pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
+    print_str(data)
+}

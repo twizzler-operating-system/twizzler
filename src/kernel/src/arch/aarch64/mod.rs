@@ -1,6 +1,62 @@
+use crate::{
+    clock::Nanoseconds,
+    interrupt::{Destination, PinPolarity, TriggerMode},
+    memory::VirtAddr,
+    BootInfo,
+};
+
+pub mod interrupt;
+pub mod lapic;
+pub mod memory;
+pub mod processor;
+mod syscall;
+pub mod thread;
 mod start;
 
+pub use start::BootInfoSystemTable;
+
 pub fn kernel_main() -> ! {
-    crate::machine::serial::print_str(b"[kernel] hello world!!");
+    crate::machine::serial::print_str(b"[kernel] hello world!!\n");
     loop {}
+}
+
+pub fn init<B: BootInfo>(_boot_info: &B) {
+    todo!();
+}
+
+pub fn init_secondary() {
+    todo!();
+}
+
+pub fn init_interrupts() {
+    todo!()
+}
+
+pub fn set_interrupt(
+    _num: u32,
+    _masked: bool,
+    _trigger: TriggerMode,
+    _polarity: PinPolarity,
+    _destination: Destination,
+) {
+    todo!();
+}
+
+pub fn start_clock(_statclock_hz: u64, _stat_cb: fn(Nanoseconds)) {
+    todo!();
+}
+
+pub fn schedule_oneshot_tick(_time: Nanoseconds) {
+    todo!()
+}
+
+/// Jump into userspace
+/// # Safety
+/// The stack and target must be valid addresses.
+pub unsafe fn jump_to_user(_target: VirtAddr, _stack: VirtAddr, _arg: u64) {
+    todo!();
+}
+
+pub fn debug_shutdown(_code: u32) {
+    todo!()
 }
