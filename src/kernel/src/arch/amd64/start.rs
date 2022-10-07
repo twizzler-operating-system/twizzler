@@ -11,7 +11,7 @@ use crate::{
     BootInfo,
 };
 
-global_asm!(
+core::arch::global_asm!(
     ".section .rodata",
     "mb2_hdr_start:",
     ".long 0x85250D6", //multiboot2 magic
@@ -48,7 +48,7 @@ global_asm!(
 #[allow(named_asm_labels)]
 #[export_name = "_start"]
 pub unsafe extern "C" fn ____start() -> ! {
-    asm!(
+    core::arch::asm!(
         "kernel_multiboot_entry: jmp kernel_multiboot_entry",
         ".align 8",
         options(noreturn)
