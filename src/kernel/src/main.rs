@@ -75,7 +75,7 @@ pub fn is_test_mode() -> bool {
 }
 
 fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
-    let kernel_image_reg = 0xffffffff80000000u64;
+    let kernel_image_reg = 0xffffffff80100000u64;
     let clone_regions = [VirtAddr::new(kernel_image_reg)];
     arch::init(boot_info);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());

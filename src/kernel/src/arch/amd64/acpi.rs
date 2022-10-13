@@ -16,7 +16,9 @@ impl acpi::AcpiHandler for AcpiHandlerImpl {
         physical_address: usize,
         size: usize,
     ) -> acpi::PhysicalMapping<Self, T> {
-        let virtual_address = phys_to_virt(PhysAddr::new(physical_address as u64));
+        let phys_frame = physical_address & (!0xfff);
+        let phys_off = physical_address % 0x1000;
+        let virtual_address = phys_to_virt(PhysAddr::new(phys_frame as u64)) + phys_off;
         acpi::PhysicalMapping::new(
             physical_address,
             NonNull::new(virtual_address.as_mut_ptr()).unwrap(),
