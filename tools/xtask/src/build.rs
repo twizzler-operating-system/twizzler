@@ -153,16 +153,20 @@ fn build_kernel<'a>(
     cargo::ops::compile(workspace, &options)
 }
 
+#[allow(dead_code)]
 #[self_referencing]
 pub(crate) struct TwizzlerCompilation {
+    #[allow(dead_code)]
     pub user_config: Config,
     #[borrows(user_config)]
     #[covariant]
     pub user_workspace: Workspace<'this>,
 
+    #[allow(dead_code)]
     pub kernel_config: Config,
     #[borrows(kernel_config)]
     #[covariant]
+    #[allow(dead_code)]
     pub kernel_workspace: Workspace<'this>,
 
     #[borrows(user_workspace)]
@@ -276,6 +280,10 @@ pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
         needs_full_rebuild: false,
         build_twizzler: !cli.kernel,
     };
-    compile(cli.config, CompileMode::Check { test: false }, &other_options)?;
+    compile(
+        cli.config,
+        CompileMode::Check { test: false },
+        &other_options,
+    )?;
     Ok(())
 }

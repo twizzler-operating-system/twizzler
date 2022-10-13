@@ -193,7 +193,7 @@ fn limine_entry() -> ! {
         .expect("no modules specified for kernel -- no way to start init")
         .iter()
         .map(|m| BootModule {
-            start: VirtAddr::new(unsafe { m.base.as_ptr().unwrap() as u64 }),
+            start: VirtAddr::new(m.base.as_ptr().unwrap() as u64),
             length: m.length as usize,
         })
         .collect();
