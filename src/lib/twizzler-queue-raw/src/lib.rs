@@ -71,7 +71,6 @@
 //! [1_, 0_, 0_]
 //! ```
 
-#![cfg_attr(test, feature(termination_trait_lib))]
 #![cfg_attr(test, feature(test))]
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 
