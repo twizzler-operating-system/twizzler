@@ -14,7 +14,6 @@ use crate::{
 };
 
 struct LimineBootInfo {
-    //arch: &'static StivaleStruct,
     kernel: &'static LimineFile,
     maps: Vec<MemoryRegion>,
     modules: Vec<BootModule>,
@@ -65,77 +64,12 @@ impl From<LimineMemoryMapEntryType> for MemoryRegionKind {
     fn from(st: LimineMemoryMapEntryType) -> Self {
         match st {
             LimineMemoryMapEntryType::Usable => MemoryRegionKind::UsableRam,
-            // LimineMemoryMapEntryType::AcpiReclaimable => ,
-            // LimineMemoryMapEntryType::AcpiNvs => todo!(),
-            // LimineMemoryMapEntryType::BadMemory => todo!(),
-            // LimineMemoryMapEntryType::BootloaderReclaimable => todo!(),
             LimineMemoryMapEntryType::KernelAndModules => MemoryRegionKind::BootloaderReserved,
-            //LimineMemoryMapEntryType::Framebuffer => todo!(),
             _ => MemoryRegionKind::Reserved,
-            /*
-            StivaleMemoryMapEntryType::Usable => MemoryRegionKind::UsableRam,
-            StivaleMemoryMapEntryType::BootloaderReclaimable => {
-                MemoryRegionKind::BootloaderReserved
-            }
-            StivaleMemoryMapEntryType::Kernel => MemoryRegionKind::BootloaderReserved,
-            _ => MemoryRegionKind::Reserved,
-            */
         }
     }
 }
 
-/*
-extern "C" fn __stivale_start(info: &'static StivaleStruct) -> ! {
-    unsafe {
-        let efer = x86::msr::rdmsr(x86::msr::IA32_EFER);
-        x86::msr::wrmsr(x86::msr::IA32_EFER, efer | (1 << 11));
-        let cr4 = x86::controlregs::cr4();
-        x86::controlregs::cr4_write(cr4 | x86::controlregs::Cr4::CR4_ENABLE_GLOBAL_PAGES);
-    }
-    let mut boot_info = StivaleBootInfo {
-        arch: info,
-        maps: alloc::vec![],
-        modules: alloc::vec![],
-        cmd: None,
-    };
-    boot_info.cmd = info.command_line().map(|cmd| cmd.command_line);
-    boot_info.maps = info
-        .memory_map()
-        .expect("no memory map passed from bootloader")
-        .iter()
-        .map(|m| MemoryRegion {
-            kind: m.entry_type().into(),
-            start: PhysAddr::new(m.base),
-            length: m.length as usize,
-        })
-        .collect();
-    boot_info.modules = info
-        .modules()
-        .expect("no modules specified for kernel --- no way to start init")
-        .iter()
-        .map(|m| BootModule {
-            start: VirtAddr::new(m.start),
-            length: m.size() as usize,
-        })
-        .collect();
-    crate::kernel_main(&mut boot_info);
-}
-
-#[link_section = ".stivale2hdr"]
-#[used]
-#[no_mangle]
-static STIVALE_HDR: StivaleHeader = StivaleHeader::new()
-    .entry_point(__stivale_start)
-    .stack(&STACK.0[STACK_SIZE - 4096] as *const u8)
-    .tags((&FRAMEBUFFER_TAG as *const StivaleFramebufferHeaderTag).cast());
-
-static UNMAP_NULL: StivaleUnmapNullHeaderTag = StivaleUnmapNullHeaderTag::new();
-
-static FRAMEBUFFER_TAG: StivaleFramebufferHeaderTag = StivaleFramebufferHeaderTag::new()
-    .framebuffer_bpp(24)
-    .next((&UNMAP_NULL as *const StivaleUnmapNullHeaderTag).cast());
-
-    */
 const STACK_SIZE: usize = 4096 * 16;
 #[repr(C, align(4096))]
 struct P2Align12<T>(T);
@@ -203,12 +137,9 @@ fn limine_entry() -> ! {
 static LIMINE_BOOTINFO: LimineBootInfoRequest = LimineBootInfoRequest::new(0);
 static LIMINE_ENTRY: LimineEntryPointRequest =
     LimineEntryPointRequest::new(0).entry(LiminePtr::new(limine_entry));
-//#[link_section = ".data"]
 static LIMINE_FB: LimineFramebufferRequest = LimineFramebufferRequest::new(0);
 static LIMINE_MOD: LimineModuleRequest = LimineModuleRequest::new(0);
-//#[link_section = ".data"]
 static LIMINE_MEM: LimineMmapRequest = LimineMmapRequest::new(0);
-//#[link_section = ".data"]
 static LIMINE_KERNEL: LimineKernelFileRequest = LimineKernelFileRequest::new(0);
 static LIMINE_TABLE: LimineRsdpRequest = LimineRsdpRequest::new(0);
 

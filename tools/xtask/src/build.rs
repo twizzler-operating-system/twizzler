@@ -1,4 +1,5 @@
 #![allow(clippy::too_many_arguments)]
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 
@@ -153,7 +154,6 @@ fn build_kernel<'a>(
     cargo::ops::compile(workspace, &options)
 }
 
-#[allow(dead_code)]
 #[self_referencing]
 pub(crate) struct TwizzlerCompilation {
     #[allow(dead_code)]

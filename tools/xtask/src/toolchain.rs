@@ -124,7 +124,7 @@ async fn download_files(client: &Client) -> anyhow::Result<()> {
     .await?;
     download_file(
         client,
-        "http://melete.soe.ucsc.edu:9000/BOOTX64.EFI",
+        "http://melete.soe.ucsc.edu:9000/Liminev4BOOTX64.EFI",
         "toolchain/install/BOOTX64.EFI",
     )
     .await?;
