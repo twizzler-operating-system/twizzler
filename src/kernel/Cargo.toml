@@ -7,12 +7,12 @@ edition = "2021"
 bitflags = "1.3.2"
 uart_16550 = "0.2.0"
 x86 = "=0.51.0"
-x86_64 = "=0.14.7"
-linked_list_allocator = "0.9.1"
+x86_64 = "0.14.10"
+linked_list_allocator = "0.10.4"
 backtracer_core = {git = "https://github.com/twizzler-operating-system/backtracer", branch = "twizzler"}
-object = {version = "=0.27.0", default-features = false, features = ["read"]}
-addr2line = { version = "0.16", default-features = false, features = ["rustc-demangle"] }
-slabmalloc = "0.10.0"
+object = {version = "0.29.0", default-features = false, features = ["read"]}
+addr2line = { version = "0.16.0", default-features = false, features = ["rustc-demangle"] }
+slabmalloc = "0.11.0"
 fixedbitset = {version = "0.4.1", default-features = false}
 acpi = "4.1.0"
 xmas-elf = "0.8.0"
