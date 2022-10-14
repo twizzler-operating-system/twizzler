@@ -78,7 +78,8 @@ fn build_twizzler<'a>(
     );
     let packages = locate_packages(workspace, None);
     let mut options = CompileOptions::new(workspace.config(), mode)?;
-    options.build_config = BuildConfig::new(workspace.config(), None, &[triple.to_string()], mode)?;
+    options.build_config =
+        BuildConfig::new(workspace.config(), None, false, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
@@ -105,7 +106,8 @@ fn maybe_build_tests<'a>(
     );
     let packages = locate_packages(workspace, None);
     let mut options = CompileOptions::new(workspace.config(), mode)?;
-    options.build_config = BuildConfig::new(workspace.config(), None, &[triple.to_string()], mode)?;
+    options.build_config =
+        BuildConfig::new(workspace.config(), None, false, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
