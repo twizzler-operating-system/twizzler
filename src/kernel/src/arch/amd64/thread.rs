@@ -61,7 +61,7 @@ unsafe extern "C" fn __do_switch(
     newlock: *mut AtomicU64, //rdx
     oldlock: *mut AtomicU64, //rcx
 ) {
-    asm!(
+    core::arch::asm!(
         /* save registers */
         "push rbp",
         "push rbx",
@@ -221,21 +221,21 @@ impl Thread {
             );
             let do_xsave = use_xsave();
             if do_xsave {
-                asm!("xsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
+                core::arch::asm!("xsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
             } else {
-                asm!("fxsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr());
+                core::arch::asm!("fxsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr());
             }
             old_thread.arch.xsave_inited.store(true, Ordering::SeqCst);
             if self.arch.xsave_inited.load(Ordering::SeqCst) {
                 if do_xsave {
-                    asm!("xrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
+                    core::arch::asm!("xrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
                 } else {
-                    asm!("fxrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr());
+                    core::arch::asm!("fxrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr());
                 }
             } else {
                 let mut f: u16 = 0;
                 let mut x: u32 = 0;
-                asm!(
+                core::arch::asm!(
                     "finit",
                     "fstcw [rax]",
                     "or qword ptr [rax], 0x33f",

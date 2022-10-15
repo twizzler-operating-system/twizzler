@@ -15,6 +15,9 @@ members = [
     "src/lib/twizzler-nando",
     "src/lib/twizzler-object"
 ]
+exclude = [
+    "toolchain/src/rust",
+]
 resolver = "2"
 
 [workspace.metadata]
@@ -24,6 +27,7 @@ initrd = [
     "crate:netmgr",
     "crate:nettest",
 ]
+
 
 [profile.release]
 debug = true

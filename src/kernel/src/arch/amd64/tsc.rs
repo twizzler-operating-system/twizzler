@@ -1,10 +1,10 @@
 use crate::time::{ClockHardware, Ticks};
 
-use twizzler_abi::syscall::{ClockInfo, ClockFlags, FemtoSeconds, TimeSpan};
+use twizzler_abi::syscall::{ClockFlags, ClockInfo, FemtoSeconds, TimeSpan};
 
 // 1 ms = 1000000 ns
 // 200 milliseconds
-const SLEEP_TIME: u64 = 200 * 1_000_000; 
+const SLEEP_TIME: u64 = 200 * 1_000_000;
 
 // resolution expressed as a unit of time
 pub struct Tsc {
@@ -17,39 +17,43 @@ impl Tsc {
         // in other words the resolution at which ticks occur
         let tsc_freq = Tsc::get_tsc_frequency();
 
-        logln!("[kernel::arch::tsc] tsc frequency {} (Hz), {} fs", tsc_freq, 1_000_000_000_000_000 / tsc_freq);
+        logln!(
+            "[kernel::arch::tsc] tsc frequency {} (Hz), {} fs",
+            tsc_freq,
+            1_000_000_000_000_000 / tsc_freq
+        );
         Self {
             info: ClockInfo::new(
                 TimeSpan::ZERO,
                 FemtoSeconds(0), // TODO
                 FemtoSeconds(1_000_000_000_000_000 / tsc_freq),
                 ClockFlags::MONOTONIC,
-            )
+            ),
         }
     }
 
     // returns frequency of the tsc as a u64 in Hz
-    // this value might be the nominal tsc frequency, 
+    // this value might be the nominal tsc frequency,
     // as in what we would expect in an ideal world. This
     // might need to be adjusted depending on the state
     // of the machine/crystal driving the tsc.
     fn get_tsc_frequency() -> u64 {
         // attempt to calculate frequency using cpuid
         match feature_info_frequency() {
-           Ok(freq) => return freq,
-           Err(e) => logln!("[kernel::arch::tsc] switching to pit calibration: {:?}", e),
-       }
+            Ok(freq) => return freq,
+            Err(e) => logln!("[kernel::arch::tsc] switching to pit calibration: {:?}", e),
+        }
 
-       // calculate frequency using pit timer
-       return pit_frequency_estimation();
+        // calculate frequency using pit timer
+        return pit_frequency_estimation();
     }
 }
 
 impl ClockHardware for Tsc {
     fn read(&self) -> Ticks {
-        Ticks{
+        Ticks {
             value: unsafe { x86::time::rdtsc() }, // raw timer ticks (unitless)
-            rate: self.info.resolution()
+            rate: self.info.resolution(),
         }
     }
     fn info(&self) -> ClockInfo {
@@ -66,18 +70,18 @@ enum TscError {
 
 fn feature_info_frequency() -> Result<u64, TscError> {
     let cpuid = x86::cpuid::CpuId::new();
-        
-    // According to the Intel x86_64 manual, 
-    // Volume 3, Section 18.7.3: 
+
+    // According to the Intel x86_64 manual,
+    // Volume 3, Section 18.7.3:
     // TSC Freq = (ecx * ebx) / eax (for leaf 0x15)
     let tsc = match cpuid.get_tsc_info() {
         Some(x) => x,
         // we are probably on some old processor
-        None => return Err(TscError::LeafNotupported(0x15))
+        None => return Err(TscError::LeafNotupported(0x15)),
     };
 
     if let Some(freq) = tsc.tsc_frequency() {
-        return Ok(freq)
+        return Ok(freq);
     }
 
     // most likely this means that 0x15.eax was 0
@@ -85,32 +89,35 @@ fn feature_info_frequency() -> Result<u64, TscError> {
     // was not reported. We might still be able to use the
     // TSC/crystal core ratio if enumerated
     if tsc.numerator() != 0 && tsc.denominator() != 0 {
-        // We refer to Table 18-85 here to provide us the 
+        // We refer to Table 18-85 here to provide us the
         // core crystal clock frequency.
         let feature = match cpuid.get_feature_info() {
             Some(x) => x,
-            None => unimplemented!()
+            None => unimplemented!(),
         };
 
         // for certian Xeon processors, we can use a core
         // crystal clock frequency of 25 MHz.
         if feature.family_id() == 0x06 && feature.model_id() == 0x55 {
             let crystal: u32 = 25 * 1_000_000; // in Hz
-            let freq: u64 = ((crystal as u64 * 
-                tsc.numerator() as u64) / tsc.denominator() as u64)
-                .into();
-            return Ok(freq)
+            let freq: u64 =
+                ((crystal as u64 * tsc.numerator() as u64) / tsc.denominator() as u64).into();
+            return Ok(freq);
         }
     }
-    
+
     // cpuid leaf ranges 0x40000000-0x4FFFFFFF not used by the cpu.
     // They can be used by software such as hypervisors to return
-    // information to the guest. Maybe the hypervisor can tell 
+    // information to the guest. Maybe the hypervisor can tell
     // us what the TSC frequency is. Frequency returned in kHz
     if let Some(hyperv) = cpuid.get_hypervisor_info() {
         match hyperv.tsc_frequency() {
-            Some(freq) => if freq > 0 { return Ok(1_000 * freq as u64) },
-            None => return Err(TscError::LeafNotupported(0x40000010))
+            Some(freq) => {
+                if freq > 0 {
+                    return Ok(1_000 * freq as u64);
+                }
+            }
+            None => return Err(TscError::LeafNotupported(0x40000010)),
         }
     }
 
@@ -124,7 +131,7 @@ fn feature_info_frequency() -> Result<u64, TscError> {
 fn pit_frequency_estimation() -> u64 {
     let start = unsafe { x86::time::rdtsc() };
     super::pit::wait_ns(SLEEP_TIME);
-    let end = unsafe { x86::time::rdtscp() };
+    let (end, _) = unsafe { x86::time::rdtscp() };
     // nano is 1e-9, multiply by 1e9 to get Hz
     return ((end - start) * 1_000_000_000) / SLEEP_TIME;
 }

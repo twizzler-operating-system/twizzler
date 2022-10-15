@@ -72,6 +72,7 @@ fn get_obj(reference: ThreadSyncReference) -> Result<(ObjectRef, usize), ThreadS
             (obj, offset)
         }
         ThreadSyncReference::Virtual(addr) => get_obj_and_offset(VirtAddr::new(addr as u64))?,
+        ThreadSyncReference::Virtual32(addr) => get_obj_and_offset(VirtAddr::new(addr as u64))?,
     })
 }
 
@@ -83,7 +84,7 @@ struct SleepEvent {
 
 fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent, ThreadSyncError> {
     let (obj, offset) = get_obj(sleep.reference)?;
-    /* 
+    /*
     logln!(
         "{} sleep {} {:x}",
         current_thread_ref().unwrap().id(),

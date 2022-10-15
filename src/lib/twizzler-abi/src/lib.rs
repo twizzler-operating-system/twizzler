@@ -12,7 +12,6 @@
 //! to this library in better, more easily consumed APIs.
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![feature(asm)]
 #![feature(naked_functions)]
 #![feature(core_intrinsics)]
 #![feature(int_roundings)]
@@ -20,6 +19,7 @@
 #![feature(auto_traits)]
 #![feature(negative_impls)]
 #![feature(rustc_attrs)]
+#![feature(asm_sym)]
 pub mod arch;
 
 pub mod alloc;

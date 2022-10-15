@@ -145,7 +145,7 @@ unsafe extern "C" fn common_handler_entry(
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn kernel_interrupt() {
-    asm!("mov qword ptr [rsp - 8], 0", "sub rsp, 8", "xor rdx, rdx", "call {common}", "add rsp, 8", "jmp return_from_interrupt", common = sym common_handler_entry, options(noreturn));
+    core::arch::asm!("mov qword ptr [rsp - 8], 0", "sub rsp, 8", "xor rdx, rdx", "call {common}", "add rsp, 8", "jmp return_from_interrupt", common = sym common_handler_entry, options(noreturn));
 }
 
 #[allow(clippy::missing_safety_doc)]
@@ -153,7 +153,7 @@ pub unsafe extern "C" fn kernel_interrupt() {
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn user_interrupt() {
-    asm!(
+    core::arch::asm!(
         "swapgs",
         "mov rcx, gs:8",
         "mov rdx, 1",
@@ -168,7 +168,7 @@ pub unsafe extern "C" fn user_interrupt() {
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn return_from_interrupt() {
-    asm!(
+    core::arch::asm!(
         "pop r15",
         "pop r14",
         "pop r13",
@@ -195,7 +195,7 @@ macro_rules! interrupt {
         #[naked]
         #[allow(named_asm_labels)]
         unsafe extern "C" fn $name() {
-            asm!(
+            core::arch::asm!(
                 "mov qword ptr [rsp - 8], 0",
                 "sub rsp, 8",
                 "push rax",
@@ -228,7 +228,7 @@ macro_rules! interrupt_err {
         #[naked]
         #[allow(named_asm_labels)]
         unsafe extern "C" fn $name() {
-            asm!(
+            core::arch::asm!(
                 "push rax",
                 "push rbx",
                 "push rcx",
@@ -332,7 +332,7 @@ impl InterruptDescriptorTable {
             base: ptr as u64,
         };
 
-        asm!("lidt [{}]", in(reg) &idtp, options(readonly, nostack, preserves_flags));
+        core::arch::asm!("lidt [{}]", in(reg) &idtp, options(readonly, nostack, preserves_flags));
     }
 }
 

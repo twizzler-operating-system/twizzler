@@ -10,7 +10,7 @@ fn main() {
         .arg(
             Arg::with_name("output")
                 .long("output")
-                .short("o")
+                .short('o')
                 .value_name("FILE")
                 .help("Output file, the final initrd")
                 .takes_value(true)

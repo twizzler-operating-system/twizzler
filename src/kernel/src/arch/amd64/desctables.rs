@@ -94,6 +94,6 @@ pub fn init_secondary() {
 
 pub unsafe fn set_kernel_stack(stack: VirtAddr) {
     STSS.as_mut().unwrap().privilege_stack_table[0] = stack;
-    asm!("mov gs:0, rax", in("rax") stack.as_u64());
-    asm!("mfence");
+    core::arch::asm!("mov gs:0, rax", in("rax") stack.as_u64());
+    core::arch::asm!("mfence");
 }

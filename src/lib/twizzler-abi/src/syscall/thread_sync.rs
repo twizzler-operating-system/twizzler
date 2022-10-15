@@ -1,4 +1,8 @@
-use core::{fmt, ptr, sync::atomic::AtomicU64, time::Duration};
+use core::{
+    fmt, ptr,
+    sync::atomic::{AtomicU32, AtomicU64},
+    time::Duration,
+};
 
 use bitflags::bitflags;
 
@@ -39,6 +43,7 @@ bitflags! {
 pub enum ThreadSyncReference {
     ObjectRef(ObjID, usize),
     Virtual(*const AtomicU64),
+    Virtual32(*const AtomicU32),
 }
 unsafe impl Send for ThreadSyncReference {}
 
@@ -49,6 +54,9 @@ impl ThreadSyncReference {
             ThreadSyncReference::Virtual(p) => {
                 unsafe { &**p }.load(core::sync::atomic::Ordering::SeqCst)
             }
+            ThreadSyncReference::Virtual32(p) => unsafe { &**p }
+                .load(core::sync::atomic::Ordering::SeqCst)
+                .into(),
         }
     }
 }

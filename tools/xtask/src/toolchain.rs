@@ -31,11 +31,9 @@ pub async fn download_file(client: &Client, url: &str, path: &str) -> anyhow::Re
     let total_size = res
         .content_length()
         .with_context(|| format!("failed to get content-length for {}", url))?;
+    println!("downloading {}", url);
     let pb = ProgressBar::new(total_size);
-    pb.set_style(ProgressStyle::default_bar().template("{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})").progress_chars("#>-"));
-
-    let msg = format!("Downloading {}", url);
-    pb.set_message(&msg);
+    pb.set_style(ProgressStyle::default_bar().template("{prefix}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")?.progress_chars("#>-"));
 
     let mut file = File::create(path).with_context(|| format!("failed to create file {}", path))?;
     let mut downloaded: u64 = 0;
@@ -49,7 +47,8 @@ pub async fn download_file(client: &Client, url: &str, path: &str) -> anyhow::Re
         downloaded = new;
         pb.set_position(new);
     }
-    pb.finish_with_message(&format!("downloaded {} => {}", url, path));
+    pb.finish_and_clear();
+    println!("downloaded {} => {}", url, path);
     Ok(())
 }
 
@@ -124,7 +123,7 @@ async fn download_files(client: &Client) -> anyhow::Result<()> {
     .await?;
     download_file(
         client,
-        "http://melete.soe.ucsc.edu:9000/BOOTX64.EFI",
+        "http://melete.soe.ucsc.edu:9000/Liminev4BOOTX64.EFI",
         "toolchain/install/BOOTX64.EFI",
     )
     .await?;

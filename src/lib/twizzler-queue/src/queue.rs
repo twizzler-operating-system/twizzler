@@ -117,9 +117,9 @@ impl<S: Copy, C: Copy> Queue<S, C> {
             }
             let srq: *mut RawQueueHdr = obj.raw_lea_mut(0x1000);
             let crq: *mut RawQueueHdr = obj.raw_lea_mut(0x2000);
-            let l2len = sub_queue_len.next_power_of_two().log2();
+            let l2len = sub_queue_len.next_power_of_two().ilog2();
             srq.write(RawQueueHdr::new(l2len as usize, core::mem::size_of::<S>()));
-            let l2len = com_queue_len.next_power_of_two().log2();
+            let l2len = com_queue_len.next_power_of_two().ilog2();
             crq.write(RawQueueHdr::new(l2len as usize, core::mem::size_of::<C>()));
         })?;
         Ok(obj.into())

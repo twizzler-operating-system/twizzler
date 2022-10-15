@@ -87,7 +87,7 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
             if flags.contains(PageFaultFlags::PRESENT) {
                 unsafe {
                     // TODO: see #32
-                    asm!("mov rax, cr3", "mov cr3, rax", lateout("rax") _);
+                    core::arch::asm!("mov rax, cr3", "mov cr3, rax", lateout("rax") _);
                 }
             }
         } else {

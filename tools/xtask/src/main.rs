@@ -1,5 +1,3 @@
-#![feature(explicit_generic_args_with_impl_trait)]
-
 mod build;
 mod image;
 mod qemu;

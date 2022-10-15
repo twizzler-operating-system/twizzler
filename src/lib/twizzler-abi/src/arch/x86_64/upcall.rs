@@ -55,7 +55,7 @@ pub(crate) unsafe extern "C" fn upcall_entry2(
 #[cfg(feature = "rt")]
 #[no_mangle]
 pub(crate) unsafe extern "C" fn upcall_entry(rdi: *const UpcallFrame, rsi: *const UpcallInfo) -> ! {
-    asm!(
+    core::arch::asm!(
         ".cfi_signal_frame",
         "mov rbp, rdx",
         "push rax",
