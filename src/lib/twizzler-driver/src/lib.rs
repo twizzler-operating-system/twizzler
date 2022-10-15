@@ -1,5 +1,3 @@
-#![feature(option_result_unwrap_unchecked)]
-#![feature(generic_associated_types)]
 #![feature(vec_into_raw_parts)]
 #![feature(auto_traits)]
 #![feature(negative_impls)]

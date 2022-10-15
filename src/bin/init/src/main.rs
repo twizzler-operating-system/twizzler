@@ -1,6 +1,5 @@
 //#![no_std]
 #![feature(lang_items)]
-#![feature(asm)]
 #![feature(naked_functions)]
 #![feature(thread_local)]
 #![feature(duration_constants)]
