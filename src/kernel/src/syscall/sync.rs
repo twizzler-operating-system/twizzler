@@ -121,11 +121,32 @@ fn thread_sync_cb_timeout(thread: ThreadRef) {
     requeue_all();
 }
 
+fn simple_timed_sleep(timeout: &&mut Duration) {
+    let thread = current_thread_ref().unwrap();
+    let guard = thread.enter_critical();
+    thread.set_sync_sleep();
+    crate::clock::register_timeout_callback(
+        // TODO: fix all our time types
+        timeout.as_nanos() as u64,
+        thread_sync_cb_timeout,
+        thread.clone(),
+    );
+    thread.set_sync_sleep_done();
+    requeue_all();
+    finish_blocking(guard);
+}
+
 // TODO: #42 on timeout, try to return Err(Timeout).
 pub fn sys_thread_sync(
     ops: &mut [ThreadSync],
     timeout: Option<&mut Duration>,
 ) -> Result<usize, ThreadSyncError> {
+    if let Some(ref timeout) = timeout {
+        if ops.is_empty() {
+            simple_timed_sleep(timeout);
+            return Ok(0);
+        }
+    }
     let mut ready_count = 0;
     let mut unsleeps = Vec::new();
 
