@@ -1,7 +1,7 @@
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn _start() {
-    asm!(
+    core::arch::asm!(
         "and rsp, 0xfffffffffffffff0",
         "call {entry}",
         "ud2",

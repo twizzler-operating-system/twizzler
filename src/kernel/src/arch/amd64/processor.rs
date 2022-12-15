@@ -110,7 +110,9 @@ pub fn enumerate_clocks() {
     let cpuid = x86::cpuid::CpuId::new();
 
     // check if processor has TSC
-    let has_tsc = cpuid.get_feature_info().map_or(false, |finfo| finfo.has_tsc());
+    let has_tsc = cpuid
+        .get_feature_info()
+        .map_or(false, |finfo| finfo.has_tsc());
     if has_tsc {
         // saves reference to tsc clock source into global array
         crate::time::register_clock(super::tsc::Tsc::new());
@@ -195,14 +197,14 @@ pub fn halt_and_wait() {
             {
                 let sched = proc.sched.lock();
                 unsafe {
-                    asm!("monitor", "mfence", in("rax") &proc.arch.wait_word, in("rcx") 0, in("rdx") 0);
+                    core::arch::asm!("monitor", "mfence", in("rax") &proc.arch.wait_word, in("rcx") 0, in("rdx") 0);
                 }
                 if sched.has_work() {
                     return;
                 }
             }
             unsafe {
-                asm!("mwait", in("rax") 0, in("rcx") 1);
+                core::arch::asm!("mwait", in("rax") 0, in("rcx") 1);
             }
         }
     } else {
@@ -213,7 +215,7 @@ pub fn halt_and_wait() {
             }
         }
         unsafe {
-            asm!("sti", "hlt", "cli");
+            core::arch::asm!("sti", "hlt", "cli");
         }
     }
 }

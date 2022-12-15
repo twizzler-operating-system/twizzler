@@ -112,7 +112,7 @@ impl SyscallContext for X86SyscallContext {
 
 #[allow(named_asm_labels)]
 pub unsafe fn return_to_user(context: *const X86SyscallContext) -> ! {
-    asm!(
+    core::arch::asm!(
         "cli",
         "mov rax, [r11 + 0x00]",
         "mov rdi, [r11 + 0x08]",
@@ -171,7 +171,7 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
 #[allow(named_asm_labels)]
 #[naked]
 pub unsafe extern "C" fn syscall_entry() -> ! {
-    asm!(
+    core::arch::asm!(
         /* syscall can only come from userspace, so we can safely blindly swapgs */
         "swapgs",
         "mov gs:16, r11",     //backup r11, which contains rflags

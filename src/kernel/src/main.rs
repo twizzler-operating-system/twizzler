@@ -2,19 +2,16 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 #![feature(thread_local)]
-#![feature(asm)]
-#![feature(global_asm)]
 #![feature(exclusive_range_pattern)]
 #![feature(naked_functions)]
 #![allow(dead_code)]
 #![feature(map_first_last)]
-#![feature(const_fn_trait_bound)]
 #![feature(core_intrinsics)]
-#![feature(derive_default_enum)]
-#![feature(const_btree_new)]
 #![feature(optimize_attribute)]
 #![feature(lang_items)]
 #![feature(btree_drain_filter)]
+#![feature(asm_const)]
+#![feature(asm_sym)]
 #![feature(custom_test_frameworks)]
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(crate::test_runner)]
@@ -74,7 +71,7 @@ pub fn is_test_mode() -> bool {
 }
 
 fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
-    let kernel_image_reg = 0xffffffff80000000u64;
+    let kernel_image_reg = 0xffffffff80100000u64;
     let clone_regions = [VirtAddr::new(kernel_image_reg)];
     arch::init(boot_info);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());

@@ -67,11 +67,13 @@ fn create_uefi_disk_image(
 
     let cfg_data = format!(
         r#"
+SERIAL=yes
+VERBOSE=yes
 TIMEOUT=1 
 DEFAULT_ENTRY=1
 :Twizzler
 RESOLUTION=800x600
-PROTOCOL=stivale2
+PROTOCOL=limine
 KERNEL_PATH=boot:///kernel.elf
 MODULE_PATH=boot:///initrd
 KERNEL_CMDLINE={}

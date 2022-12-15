@@ -156,7 +156,7 @@ pub fn read_monotonic_nanoseconds() -> Nanoseconds {
 #[naked]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn trampoline_entry_code16() {
-    asm!(
+    core::arch::asm!(
         ".code16gcc",
         "mov ax, [0x6f18]",
         "cli",
@@ -182,7 +182,7 @@ unsafe extern "C" fn trampoline_entry_code16() {
 #[naked]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn trampoline_entry_code32() {
-    asm!(
+    core::arch::asm!(
         ".code32",
         "mov ax, 16",
         "mov ds, ax",
@@ -222,7 +222,7 @@ unsafe extern "C" fn trampoline_entry_code32() {
 #[naked]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn trampoline_entry_code64() {
-    asm!(
+    core::arch::asm!(
         "lgdt [0x6f68]",
         "mov ax, 0x10",
         "mov ds, ax",
@@ -268,7 +268,7 @@ pub fn send_ipi(dest: Destination, vector: u32) {
         write_lapic(LAPIC_ICRLO, vector | dest_short << 18);
 
         while read_lapic(LAPIC_ICRLO) & LAPIC_ICRLO_STATUS_PEND != 0 {
-            asm!("pause")
+            core::arch::asm!("pause")
         }
     }
 }
@@ -350,7 +350,7 @@ pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
     let tcb = (0x6fb0 + phys_mem_offset) as *mut u64;
     *tcb = tcb_base.as_u64();
     assert!(*pagetables >> 32 == 0);
-    asm!("mfence");
+    core::arch::asm!("mfence");
 
     write_lapic(LAPIC_ESR, 0);
     send_ipi(

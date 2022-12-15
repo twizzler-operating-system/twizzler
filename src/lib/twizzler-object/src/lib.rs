@@ -30,7 +30,6 @@
 //#![feature(specialization)]
 #![feature(rustc_attrs)]
 #![feature(negative_impls)]
-#![feature(option_result_unwrap_unchecked)]
 
 pub use twizzler_abi::object::ObjID;
 

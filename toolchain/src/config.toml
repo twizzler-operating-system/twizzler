@@ -19,6 +19,12 @@ submodules = false
 [rust]
 lld = true
 llvm-tools = true
-llvm-libunwind = 'in-tree'
 debug = true
 debuginfo-level = 1
+
+[target.x86_64-unknown-linux-gnu]
+llvm-has-rust-patches = true
+
+[target.x86_64-unknown-twizzler]
+llvm-has-rust-patches = true
+llvm-libunwind = 'in-tree'

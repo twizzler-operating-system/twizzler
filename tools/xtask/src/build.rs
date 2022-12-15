@@ -1,4 +1,5 @@
 #![allow(clippy::too_many_arguments)]
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 
@@ -77,7 +78,8 @@ fn build_twizzler<'a>(
     );
     let packages = locate_packages(workspace, None);
     let mut options = CompileOptions::new(workspace.config(), mode)?;
-    options.build_config = BuildConfig::new(workspace.config(), None, &[triple.to_string()], mode)?;
+    options.build_config =
+        BuildConfig::new(workspace.config(), None, false, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
@@ -104,7 +106,8 @@ fn maybe_build_tests<'a>(
     );
     let packages = locate_packages(workspace, None);
     let mut options = CompileOptions::new(workspace.config(), mode)?;
-    options.build_config = BuildConfig::new(workspace.config(), None, &[triple.to_string()], mode)?;
+    options.build_config =
+        BuildConfig::new(workspace.config(), None, false, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
@@ -172,14 +175,17 @@ fn build_kernel<'a>(
 
 #[self_referencing]
 pub(crate) struct TwizzlerCompilation {
+    #[allow(dead_code)]
     pub user_config: Config,
     #[borrows(user_config)]
     #[covariant]
     pub user_workspace: Workspace<'this>,
 
+    #[allow(dead_code)]
     pub kernel_config: Config,
     #[borrows(kernel_config)]
     #[covariant]
+    #[allow(dead_code)]
     pub kernel_workspace: Workspace<'this>,
 
     #[borrows(user_workspace)]
@@ -293,6 +299,10 @@ pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
         needs_full_rebuild: false,
         build_twizzler: !cli.kernel,
     };
-    compile(cli.config, CompileMode::Check { test: false }, &other_options)?;
+    compile(
+        cli.config,
+        CompileMode::Check { test: false },
+        &other_options,
+    )?;
     Ok(())
 }

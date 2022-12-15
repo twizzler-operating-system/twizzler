@@ -5,24 +5,24 @@ edition = "2021"
 
 [dependencies]
 bitflags = "1.3.2"
-twizzler-abi = { path = "../lib/twizzler-abi", default-features = false, features = ["kernel"]}
 memoffset = "0.6.5"
 xmas-elf = "0.8.0"
 slabmalloc = "0.11.0"
 nonoverlapping_interval_tree = {version = "0.1.3", default-features = false}
+twizzler-abi = { path = "../lib/twizzler-abi", default-features = false, features = ["kernel"]}
 fixedbitset = {version = "0.4.1", default-features = false}
-linked_list_allocator = "0.9.1"
+linked_list_allocator = "0.10.4"
 tar-no-std = "0.1.7"
-object = {version = "=0.27.0", default-features = false, features = ["read"]}
-addr2line = { version = "0.16", default-features = false, features = ["rustc-demangle"] }
+object = {version = "0.29.0", default-features = false, features = ["read"]}
+addr2line = { version = "0.16.0", default-features = false, features = ["rustc-demangle"] }
+backtracer_core = {git = "https://github.com/twizzler-operating-system/backtracer", branch = "twizzler"}
 
 [target.x86_64-unknown-none.dependencies]
 uart_16550 = "0.2.0"
-x86 = "=0.44.0"
-x86_64 = "=0.14.7"
+x86 = "=0.51.0"
+x86_64 = "0.14.10"
 acpi = "4.1.0"
-stivale-boot = "0.2.6"
-backtracer_core = {git = "https://github.com/gz/backtracer"}
+limine = "0.1.8"
 
 [dependencies.lazy_static]
 version = "1.0"

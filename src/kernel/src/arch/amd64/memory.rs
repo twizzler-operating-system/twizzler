@@ -407,8 +407,8 @@ impl ArchMemoryContext {
         let cache_bits = match cache_type {
             CacheType::WriteBack => 0,
             CacheType::WriteCombining => 0, // TODO: is this correct?
-            CacheType::WriteThrough => (1 << 3),
-            CacheType::Uncachable => (1 << 4),
+            CacheType::WriteThrough => 1 << 3,
+            CacheType::Uncachable => 1 << 4,
         };
         loop {
             let addr = start.as_u64().checked_add(count as u64);
