@@ -159,7 +159,7 @@ fn build_kernel<'a>(
         target_spec.insert_str(0, "src/kernel/target-spec/");
         target_spec.push_str(".json");
 
-        let bc = BuildConfig::new(workspace.config(), None, &[target_spec], mode)?;
+        let bc = BuildConfig::new(workspace.config(), None, false, &[target_spec], mode)?;
 
         options.build_config = bc;
     }
@@ -232,7 +232,7 @@ fn compile(
     mode: CompileMode,
     other_options: &OtherOptions,
 ) -> anyhow::Result<TwizzlerCompilation> {
-    crate::toolchain::init_for_build(mode.is_doc() || mode.is_check())?;
+    crate::toolchain::init_for_build(mode.is_doc() || mode.is_check() || !other_options.build_twizzler)?;
     let mut config = Config::default()?;
     config.configure(0, false, None, false, false, false, &None, &[], &[])?;
     let mut kernel_config = Config::default()?;
