@@ -43,26 +43,29 @@ impl core::fmt::Debug for IsrContext {
     }
 }
 
-#[allow(unsupported_naked_functions)] // DEBUG
+// #[allow(unsupported_naked_functions)] // DEBUG
 #[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn kernel_interrupt() {
+    core::arch::asm!("nop", options(noreturn))
 }
 
-#[allow(unsupported_naked_functions)] // DEBUG
+// #[allow(unsupported_naked_functions)] // DEBUG
 #[allow(clippy::missing_safety_doc)]
 #[allow(named_asm_labels)]
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn user_interrupt() {
+    core::arch::asm!("nop", options(noreturn))
 }
 
-#[allow(unsupported_naked_functions)] // DEBUG
+// #[allow(unsupported_naked_functions)] // DEBUG
 #[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn return_from_interrupt() {
+    core::arch::asm!("nop", options(noreturn))
 }
 
 #[allow(unused_macros)] // DEBUG

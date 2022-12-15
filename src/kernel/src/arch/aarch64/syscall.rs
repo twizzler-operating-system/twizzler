@@ -68,9 +68,9 @@ pub unsafe fn return_to_user(_context: *const Armv8SyscallContext) -> ! {
     todo!()
 }
 
-#[allow(unsupported_naked_functions)] // DEBUG
+// #[allow(unsupported_naked_functions)] // DEBUG
 #[allow(named_asm_labels)]
 #[naked]
 pub unsafe extern "C" fn syscall_entry() -> ! {
-    todo!()
+    core::arch::asm!("nop", options(noreturn))
 }

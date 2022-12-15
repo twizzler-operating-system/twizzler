@@ -1,4 +1,4 @@
-use core::arch::asm;
+use limine::*;
 
 use crate::{
     initrd::BootModule,
@@ -34,15 +34,19 @@ impl BootInfo for Armv8BootInfo {
     }
 }
 
+#[used]
+static ENTRY_POINT: LimineEntryPointRequest = LimineEntryPointRequest::new(0)
+    .entry(LiminePtr::new(limine_entry));
 
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
-    // let's set the stack
-    unsafe { asm!(
-        "ldr x30, =__stack_top",
-        "mov sp, x30"
-    );}
+#[link_section = ".limine_reqs"]
+#[used]
+static F2: &'static LimineEntryPointRequest = &ENTRY_POINT;
 
-    crate::arch::kernel_main();
-    // crate::kernel_main(&mut Armv8BootInfo {})
+// the kernel's entry point function from the limine bootloader
+fn limine_entry() -> ! {
+    // writing out a value to a register
+    unsafe { core::arch::asm!("mov x15, 0xAAAA");  }
+
+    // let's do something more interesting
+    crate::arch::kernel_main()
 }

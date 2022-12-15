@@ -16,13 +16,13 @@ tar-no-std = "0.1.7"
 object = {version = "0.29.0", default-features = false, features = ["read"]}
 addr2line = { version = "0.16.0", default-features = false, features = ["rustc-demangle"] }
 backtracer_core = {git = "https://github.com/twizzler-operating-system/backtracer", branch = "twizzler"}
+limine = "0.1.8"
 
 [target.x86_64-unknown-none.dependencies]
 uart_16550 = "0.2.0"
 x86 = "=0.51.0"
 x86_64 = "0.14.10"
 acpi = "4.1.0"
-limine = "0.1.8"
 
 [dependencies.lazy_static]
 version = "1.0"

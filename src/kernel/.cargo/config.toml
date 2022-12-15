@@ -7,7 +7,8 @@ rustflags = [
 
 [target.aarch64-unknown-none]
 rustflags = [
-  "-C", "link-args=-Tsrc/kernel/src/machine/arm/linker.ld"
+  "-C", "link-args=-Tsrc/kernel/src/machine/arm/linker.ld",
+  "-C", "link-arg=--image-base=0xffffffff80100000"
 ]
 
 [env]
