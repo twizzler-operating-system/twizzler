@@ -21,6 +21,9 @@ struct Args {
   /// Command line string to be passed to kernel
   #[clap(short, long, default_value = "")]
   cmdline: String,
+  /// EFI application binary used by bootloader
+  #[clap(short, long)]
+  efi_binary: String,
 }
 
 fn main() {
@@ -34,7 +37,7 @@ fn main() {
         let path = PathBuf::from(args.initrd_path);
         path.canonicalize().unwrap()
     };
-    create_disk_images(&disk_image_path, &kernel_binary_path, &initrd_path, args.cmdline);
+    create_disk_images(&disk_image_path, &kernel_binary_path, &initrd_path, args.cmdline, args.efi_binary);
 }
 
 pub fn create_disk_images(
@@ -42,11 +45,12 @@ pub fn create_disk_images(
     kernel_binary_path: &Path,
     initrd_path: &Path,
     cmdline: String,
+    efi_binary: String,
 ) -> PathBuf {
     //let kernel_manifest_path = locate_cargo_manifest::locate_manifest().unwrap();
     //let kernel_binary_name = kernel_binary_path.file_name().unwrap().to_str().unwrap();
     if let Err(e) =
-        create_uefi_disk_image(disk_image_path, kernel_binary_path, initrd_path, cmdline)
+        create_uefi_disk_image(disk_image_path, kernel_binary_path, initrd_path, cmdline, efi_binary)
     {
         panic!("failed to create disk image: {:?}", e);
     }
@@ -64,8 +68,9 @@ fn create_uefi_disk_image(
     kernel_binary_path: &Path,
     initrd_path: &Path,
     cmdline: String,
+    efi_binary: String,
 ) -> anyhow::Result<()> {
-    let efi_file = Path::new("toolchain/install/BOOTX64.EFI");
+    let efi_file = Path::new(&efi_binary);
     let efi_size = fs::metadata(&efi_file)
         .context("failed to read metadata of efi file")?
         .len();
@@ -76,6 +81,7 @@ fn create_uefi_disk_image(
         .context("failed to read metadata of initrd file")?
         .len();
 
+    // limine.cfg file
     let cfg_data = format!(
         r#"
 SERIAL=yes
@@ -127,9 +133,15 @@ KERNEL_CMDLINE={}
         let root_dir = partition.root_dir();
         root_dir.create_dir("efi")?;
         root_dir.create_dir("efi/boot")?;
-        let mut bootx64 = root_dir.create_file("efi/boot/bootx64.efi")?;
-        bootx64.truncate()?;
-        io::copy(&mut fs::File::open(&efi_file)?, &mut bootx64)?;
+        // use the same file name as the efi binary
+        let boot_bin_path = "efi/boot/".to_string() + efi_file
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let mut boot_bin = root_dir.create_file(boot_bin_path.as_str())?;
+        boot_bin.truncate()?;
+        io::copy(&mut fs::File::open(&efi_file)?, &mut boot_bin)?;
         let mut kernel = root_dir.create_file("kernel.elf")?;
         kernel.truncate()?;
         io::copy(&mut fs::File::open(&kernel_binary_path)?, &mut kernel)?;
