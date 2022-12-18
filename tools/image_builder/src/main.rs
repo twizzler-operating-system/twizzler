@@ -5,25 +5,36 @@ use std::{
     io::{self, Seek, Write},
     path::{Path, PathBuf},
 };
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+struct Args {
+  /// Path where disk image should be created
+  #[clap(short, long)]
+  disk_path: String,
+  /// Path to kernel binary
+  #[clap(short, long)]
+  kernel_path: String,
+  /// Path to initial ram disk
+  #[clap(short, long)]
+  initrd_path: String,
+  /// Command line string to be passed to kernel
+  #[clap(short, long, default_value = "")]
+  cmdline: String,
+}
 
 fn main() {
-    let mut args = std::env::args().skip(1); // skip executable name
-
-    /* TODO: better args processing */
-    let disk_image_path = {
-        let path = PathBuf::from(args.next().unwrap());
-        path
-    };
+    let args = Args::parse();
+    let disk_image_path = PathBuf::from(args.disk_path);
     let kernel_binary_path = {
-        let path = PathBuf::from(args.next().unwrap());
+        let path = PathBuf::from(args.kernel_path);
         path.canonicalize().unwrap()
     };
     let initrd_path = {
-        let path = PathBuf::from(args.next().unwrap());
+        let path = PathBuf::from(args.initrd_path);
         path.canonicalize().unwrap()
     };
-    let cmdline = args.next().unwrap_or(String::new());
-    create_disk_images(&disk_image_path, &kernel_binary_path, &initrd_path, cmdline);
+    create_disk_images(&disk_image_path, &kernel_binary_path, &initrd_path, args.cmdline);
 }
 
 pub fn create_disk_images(

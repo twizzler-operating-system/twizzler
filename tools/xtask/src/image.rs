@@ -108,9 +108,13 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     let cmdline = if cli.tests { "--tests" } else { "" };
     let image_path = get_genfile_path(&comp, "disk.img");
     let status = Command::new(get_tool_path(&comp, "image_builder")?)
+        .arg("--disk-path")
         .arg(&image_path)
+        .arg("--kernel-path")
         .arg(comp.get_kernel_image(cli.tests))
+        .arg("--initrd-path")
         .arg(initrd_path)
+        .arg("--cmdline")
         .arg(cmdline)
         .status()?;
 
