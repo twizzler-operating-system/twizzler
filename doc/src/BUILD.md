@@ -48,11 +48,7 @@ cargo bootstrap
 
 and then wait, while you sip your tea. This will compile llvm and bootstrap the rust compiler, both
 of which take a long time. At the end, you should see a "build completed successfully" message,
-followed by a few lines about building crti and friends. This process ends by linking the toolchain
-to rustup, which you can verify through `rustup show`, which should list `twizzer` under the
-installed toolchains.
-
-Note that this use of rustup means that there can only be one active twizzler toolchain at a time.
+followed by a few lines about building crti and friends.
 
 ## Step 2: Building Twizzler
 
