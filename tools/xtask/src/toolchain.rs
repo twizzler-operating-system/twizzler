@@ -117,13 +117,13 @@ fn build_crtx(name: &str, build_info: &Triple) -> anyhow::Result<()> {
 async fn download_files(client: &Client) -> anyhow::Result<()> {
     download_file(
         client,
-        "http://melete.soe.ucsc.edu:9000/OVMF.fd",
+        "http://twizzler.io/dist/bootfiles/OVMF.fd",
         "toolchain/install/OVMF.fd",
     )
     .await?;
     download_file(
         client,
-        "http://melete.soe.ucsc.edu:9000/Liminev4BOOTX64.EFI",
+        "http://twizzler.io/dist/bootfiles/BOOTX64.EFI",
         "toolchain/install/BOOTX64.EFI",
     )
     .await?;
