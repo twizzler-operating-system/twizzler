@@ -34,7 +34,7 @@ jobs:
 
     - name: Install Toolchain
       run: |
-        wget melete.soe.ucsc.edu:9000/toolchain-docs.tar.xz
+        wget https://pub-d8f8c73a41d343bca09da51d805aedac.r2.dev/toolchain-docs.tar.xz
         cd toolchain && tar xf ../toolchain-docs.tar.xz && cd ..
     - name: Build
       run: cargo doc-all
