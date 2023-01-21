@@ -11,6 +11,7 @@ use crate::{
 
 pub mod acpi;
 pub mod address;
+pub mod context;
 mod desctables;
 pub mod interrupt;
 pub mod ioapic;
