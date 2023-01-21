@@ -88,8 +88,8 @@ impl Table {
     }
 
     pub fn unmap_leaf(&mut self, index: usize) -> Option<Entry> {
-        let entry = &mut self[index];
         let old_count = self.read_count();
+        let entry = &mut self[index];
         let ret = entry.clone();
         let flags = todo!();
         let addr = todo!();
@@ -151,11 +151,12 @@ impl Table {
                 level,
             })
         } else {
+            let our_entry = self[index].clone();
             if let Some(next_table) = self.next_table_mut(index) {
                 let res = next_table
                     .recur_op(addr, level - 1, None, f)
                     .map(|mut data| {
-                        data.entries[level] = self[index].clone();
+                        data.entries[level] = our_entry;
                         data
                     });
                 if next_table.read_count() == 0 {
