@@ -274,12 +274,12 @@ pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
                 ansi: false,
             },
             crate::MessageFormat::JsonDiagnosticShort => MessageFormat::Json {
-                render_diagnostics: true,
+                render_diagnostics: false,
                 short: true,
                 ansi: false,
             },
             crate::MessageFormat::JsonDiagnosticRenderedAnsi => MessageFormat::Json {
-                render_diagnostics: true,
+                render_diagnostics: false,
                 short: false,
                 ansi: true,
             },
