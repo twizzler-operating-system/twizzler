@@ -2,44 +2,23 @@ use core::ops::{Index, IndexMut};
 
 use crate::arch::{
     address::{PhysAddr, VirtAddr},
+    context::{ArchCacheLineMgr, ArchTlbMgr},
     pagetables::{Entry, EntryFlags, PAGE_TABLE_ENTRIES},
 };
 
-use super::map::Mapping;
+use super::{
+    context::MappingPerms,
+    map::{CacheType, Mapping},
+};
 
 #[repr(transparent)]
 pub struct Table {
     entries: [Entry; PAGE_TABLE_ENTRIES],
 }
 
-pub struct TableOpData {
-    entries: [Entry; 5],
-    level: usize,
-}
-
-impl TableOpData {
-    fn new() -> Self {
-        Self {
-            entries: [Entry::new_unused(); 5],
-            level: 4,
-        }
-    }
-
-    fn level(&self) -> usize {
-        self.level
-    }
-
-    fn final_entry(&self) -> &Entry {
-        &self.entries[0]
-    }
-
-    fn non_final_entries(&self) -> &[Entry] {
-        &self.entries[1..]
-    }
-}
-
 impl Table {
     pub fn set_count(&mut self, count: usize) {
+        // NOTE: this function doesn't need cache line or TLB flushing because the hardware never reads these bits.
         for b in 0..16 {
             if count & (1 << b) == 0 {
                 self[b].set_avail_bit(false);
@@ -58,55 +37,6 @@ impl Table {
         count
     }
 
-    pub fn zero(&mut self) {
-        todo!()
-    }
-
-    pub fn map_leaf(&mut self, index: usize, mapping: &Mapping, off: usize) -> Option<Entry> {
-        let old_count = self.read_count();
-        let entry = &mut self[index];
-        let ret = entry.clone();
-        let flags = todo!();
-        let addr = todo!();
-        *entry = Entry::new(addr, flags);
-        if ret.is_unused() {
-            self.set_count(old_count + 1);
-            None
-        } else {
-            Some(ret)
-        }
-    }
-
-    pub fn read_leaf(&mut self, index: usize) -> Option<Entry> {
-        let entry = &mut self[index];
-        let ret = entry.clone();
-        if ret.is_unused() {
-            None
-        } else {
-            Some(ret)
-        }
-    }
-
-    pub fn unmap_leaf(&mut self, index: usize) -> Option<Entry> {
-        let old_count = self.read_count();
-        let entry = &mut self[index];
-        let ret = entry.clone();
-        let flags = todo!();
-        let addr = todo!();
-        *entry = Entry::new_unused();
-        if ret.is_unused() {
-            None
-        } else {
-            assert!(old_count > 0);
-            self.set_count(old_count - 1);
-            Some(ret)
-        }
-    }
-
-    fn destroy(&mut self) {
-        todo!()
-    }
-
     fn is_leaf(addr: VirtAddr, level: usize) -> bool {
         level == 0 || addr.is_aligned_to(1 << (12 + 9 * level))
     }
@@ -123,73 +53,27 @@ impl Table {
         1 << (12 + 9 * level)
     }
 
-    pub fn recur_op<F>(
-        &mut self,
-        addr: VirtAddr,
-        level: usize,
-        pop: Option<EntryFlags>,
-        f: F,
-    ) -> Option<TableOpData>
-    where
-        F: Fn(&mut Table, usize) -> Option<Entry>,
-    {
-        let index = Self::get_index(addr, level);
-        if let Some(flags) = pop {
-            self.populate(index, flags);
+    pub fn next_table_mut(&mut self, index: usize) -> Option<&mut Table> {
+        let entry = self[index];
+        if entry.is_unused() || entry.is_huge() {
+            return None;
         }
-        let is_leaf = Self::is_leaf(addr, level);
-        if is_leaf {
-            let entry = f(self, index)?;
-            Some(TableOpData {
-                entries: [
-                    entry,
-                    Entry::new_unused(),
-                    Entry::new_unused(),
-                    Entry::new_unused(),
-                    Entry::new_unused(),
-                ],
-                level,
-            })
-        } else {
-            let our_entry = self[index].clone();
-            if let Some(next_table) = self.next_table_mut(index) {
-                let res = next_table
-                    .recur_op(addr, level - 1, None, f)
-                    .map(|mut data| {
-                        data.entries[level] = our_entry;
-                        data
-                    });
-                if next_table.read_count() == 0 {
-                    next_table.destroy();
-                    let old_count = self.read_count();
-                    self[index] = Entry::new_unused();
-                    self.set_count(old_count - 1);
-                }
-                res
-            } else {
-                None
-            }
-        }
+        let addr = entry.addr().kernel_vaddr();
+        unsafe { Some(&mut *(addr.as_mut_ptr::<Table>())) }
     }
 
-    pub fn map(&mut self, mapping: &Mapping, off: usize) -> Option<TableOpData> {
-        // TODO: what happens if we map a 2MB on top of an existing 4KB?
-        let addr = mapping
-            .vaddr_start()
-            .offset(off.try_into().unwrap())
-            .unwrap();
-        self.recur_op(addr, 3, Some(mapping.non_leaf_flags()), |table, index| {
-            table.map_leaf(index, mapping, off)
-        })
+    fn can_map_at_level(level: usize) -> bool {
+        todo!()
     }
 
-    pub fn unmap(&mut self, addr: VirtAddr) -> Option<TableOpData> {
-        self.recur_op(addr, 3, None, |table, index| table.unmap_leaf(index))
+    fn can_map_at(vaddr: VirtAddr, paddr: PhysFrame, remain: usize, level: usize) -> bool {
+        let page_size = Table::level_to_page_size(level);
+        vaddr.is_aligned_to(page_size)
+            && remain >= page_size
+            && paddr.addr.is_aligned_to(page_size)
+            && Self::can_map_at_level(level)
+            && paddr.len >= page_size
     }
-
-    //pub fn readmap(&mut self, addr: VirtAddr) -> Option<TableOpData> {
-    //    self.recur_op(addr, 3, None, |table, index| table.read_leaf(index))
-    //}
 
     fn populate(&mut self, index: usize, flags: EntryFlags) {
         let entry = &mut self[index];
@@ -200,13 +84,108 @@ impl Table {
         }
     }
 
-    pub fn next_table_mut(&mut self, index: usize) -> Option<&mut Table> {
-        let entry = self[index];
-        if entry.is_unused() || entry.is_huge() {
-            return None;
+    fn update_entry(
+        &mut self,
+        consist: &mut Consistency,
+        index: usize,
+        new_entry: Entry,
+        vaddr: VirtAddr,
+        was_terminal: bool,
+        level: usize,
+    ) {
+        let count = self.read_count();
+        let entry = &mut self[index];
+        // TODO: check if we are doing a no-op, and early return
+
+        let was_present = entry.is_present();
+        let was_global = entry.is_global();
+        *entry = new_entry;
+        let entry_addr = VirtAddr::from(entry);
+        consist.cl.flush(entry_addr);
+
+        if was_present {
+            consist.tlb.enqueue(vaddr, was_global, was_terminal, level)
         }
-        let addr = entry.addr().kernel_vaddr();
-        unsafe { Some(&mut *(addr.as_mut_ptr::<Table>())) }
+
+        if was_present && !new_entry.is_present() {
+            self.set_count(count - 1);
+        } else if !was_present && new_entry.is_present() {
+            self.set_count(count + 1);
+        } else {
+            // TODO: we may be able to remove this write if we know we're not modifying entries whose avail bits we use.
+            self.set_count(count);
+        }
+    }
+
+    fn map(
+        &mut self,
+        consist: &mut Consistency,
+        mut cursor: MappingCursor,
+        level: usize,
+        mut phys: &mut impl PhysAddrProvider,
+        perms: MappingPerms,
+        cache: CacheType,
+    ) {
+        let start_index = Self::get_index(cursor.start, level);
+        for idx in start_index..PAGE_TABLE_ENTRIES {
+            let entry = &mut self[idx];
+
+            if entry.is_present() && (entry.is_huge() || level == 0) {
+                phys.consume(Self::level_to_page_size(level));
+                continue;
+            }
+
+            let paddr = phys.peek();
+            if let Ok(vaddr) = cursor
+                .start
+                .offset((idx * Self::level_to_page_size(level)).try_into().unwrap())
+            {
+                if Self::can_map_at(vaddr, paddr, cursor.remaining(), level) {
+                    self.update_entry(
+                        consist,
+                        idx,
+                        Entry::new(paddr.addr, EntryFlags::new(perms, cache)),
+                        vaddr,
+                        true,
+                        level,
+                    );
+                    phys.consume(Self::level_to_page_size(level));
+                } else {
+                    assert_ne!(level, 0);
+                    self.populate(idx, EntryFlags::intermediate());
+                    let next_table = self.next_table_mut(idx).unwrap();
+                    next_table.map(consist, cursor, level - 1, phys, perms, cache);
+                }
+
+                if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
+                    cursor = next;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn unmap(&mut self, consist: &mut Consistency, mut cursor: MappingCursor, level: usize) {
+        let start_index = Self::get_index(cursor.start, level);
+        for idx in start_index..PAGE_TABLE_ENTRIES {
+            let entry = &mut self[idx];
+
+            if let Ok(vaddr) = cursor
+                .start
+                .offset((idx * Self::level_to_page_size(level)).try_into().unwrap())
+            {
+                if entry.is_present() && (entry.is_huge() || level == 0) {
+                    self.update_entry(consist, idx, Entry::new_unused(), vaddr, true, level);
+                }
+
+                if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
+                    cursor = next;
+                } else {
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -224,63 +203,93 @@ impl IndexMut<usize> for Table {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PhysFrame {
+    addr: PhysAddr,
+    len: usize,
+}
+
+pub trait PhysAddrProvider {
+    fn peek(&mut self) -> PhysFrame;
+    fn consume(&mut self, len: usize);
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MappingCursor {
+    start: VirtAddr,
+    len: usize,
+}
+
+impl MappingCursor {
+    fn advance(mut self, len: usize) -> Option<Self> {
+        if self.len < len {
+            return None;
+        }
+        let vaddr = self.start.offset(len as isize).ok()?;
+        self.start = vaddr;
+        self.len -= len;
+        Some(self)
+    }
+
+    fn remaining(&self) -> usize {
+        self.len
+    }
+}
+
 pub struct Mapper {
     root: PhysAddr,
+    start_level: usize,
 }
 
 impl Mapper {
     pub fn new(root: PhysAddr) -> Self {
-        Self { root }
+        Self {
+            root,
+            start_level: 3, /* TODO: arch-dep */
+        }
     }
 
-    pub fn root_mut(&self) -> &mut Table {
+    pub fn root_mut(&mut self) -> &mut Table {
         unsafe { &mut *(self.root.kernel_vaddr().as_mut_ptr::<Table>()) }
     }
 
-    fn can_map_at(mapping: &Mapping, off: usize, level: usize) -> bool {
-        let this_addr = mapping
-            .vaddr_start()
-            .offset(off.try_into().unwrap())
-            .unwrap();
-        let this_phys = mapping
-            .paddr_start()
-            .offset(off.try_into().unwrap())
-            .unwrap();
-        let remain = mapping.length() - off;
-        let page_size = Table::level_to_page_size(level);
-        this_addr.is_aligned_to(page_size)
-            && remain >= page_size
-            && this_phys.is_aligned_to(page_size)
+    pub fn map(
+        &mut self,
+        cursor: MappingCursor,
+        phys: &mut impl PhysAddrProvider,
+        perms: MappingPerms,
+        cache: CacheType,
+    ) {
+        let mut consist = Consistency::new(self.root);
+        let level = self.start_level;
+        let root = self.root_mut();
+        root.map(&mut consist, cursor, level, phys, perms, cache);
     }
 
-    pub fn map(&mut self, mapping: &Mapping) {
+    pub fn unmap(&mut self, cursor: MappingCursor) {
+        let mut consist = Consistency::new(self.root);
+        let level = self.start_level;
         let root = self.root_mut();
-        let mut off = 0;
-        while off < mapping.length() {
-            let remain = mapping.length() - off;
-            let this_level = if Self::can_map_at(mapping, off, 2) {
-                2
-            } else if Self::can_map_at(mapping, off, 1) {
-                1
-            } else {
-                0
-            };
-            let this_len = Table::level_to_page_size(this_level);
-            root.map(mapping, off);
-            off += this_len;
+        root.unmap(&mut consist, cursor, level);
+    }
+}
+
+struct Consistency {
+    cl: ArchCacheLineMgr,
+    tlb: ArchTlbMgr,
+}
+
+impl Consistency {
+    fn new(target: PhysAddr) -> Self {
+        Self {
+            cl: ArchCacheLineMgr::default(),
+            tlb: ArchTlbMgr::new(target),
         }
     }
+}
 
-    pub fn unmap(&mut self, addr: VirtAddr, len: usize) {
-        let root = self.root_mut();
-        let mut off = 0;
-        while off < len {
-            let entry = root.unmap(addr.offset(off.try_into().unwrap()).unwrap());
-            off += if let Some(entry) = entry {
-                Table::level_to_page_size(entry.level())
-            } else {
-                4096
-            };
-        }
+impl Drop for Consistency {
+    fn drop(&mut self) {
+        self.tlb.finish();
     }
 }

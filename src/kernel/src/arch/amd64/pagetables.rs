@@ -1,3 +1,5 @@
+use crate::memory::{context::MappingPerms, map::CacheType};
+
 use super::address::PhysAddr;
 
 #[derive(Debug, Clone, Copy)]
@@ -38,6 +40,14 @@ impl Entry {
         self.flags().contains(EntryFlags::HUGE_PAGE)
     }
 
+    pub fn is_present(&self) -> bool {
+        self.flags().contains(EntryFlags::PRESENT)
+    }
+
+    pub fn is_global(&self) -> bool {
+        self.flags().contains(EntryFlags::GLOBAL)
+    }
+
     pub fn addr(&self) -> PhysAddr {
         PhysAddr::new(self.0 & 0x000fffff_fffff000).unwrap()
     }
@@ -73,5 +83,15 @@ bitflags::bitflags! {
         const GLOBAL = 1 << 8;
         const AVAIL_1 = 1 << 8;
         const NO_EXECUTE = 1 << 63;
+    }
+}
+
+impl EntryFlags {
+    pub fn new(perms: MappingPerms, cache: CacheType) -> Self {
+        todo!()
+    }
+
+    pub fn intermediate() -> Self {
+        todo!()
     }
 }

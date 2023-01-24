@@ -36,6 +36,18 @@ impl VirtAddr {
     }
 }
 
+impl<T> From<&mut T> for VirtAddr {
+    fn from(x: &mut T) -> Self {
+        Self((x as *mut T) as usize as u64)
+    }
+}
+
+impl<T> From<&T> for VirtAddr {
+    fn from(x: &T) -> Self {
+        Self((x as *const T) as usize as u64)
+    }
+}
+
 impl TryFrom<u64> for VirtAddr {
     type Error = NonCanonical;
 
