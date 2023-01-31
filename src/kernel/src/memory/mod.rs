@@ -199,6 +199,7 @@ pub fn init<B: BootInfo>(boot_info: &B, clone_regions: &[VirtAddr]) {
     frame::init(boot_info.memory_regions());
     let kernel_context = init_kernel_context(clone_regions);
 
+    logln!("setting up memory allocator...");
     unsafe {
         KERNEL_MEMORY_MANAGER = Box::into_raw(Box::new(KernelMemoryManager {
             inner: Spinlock::new(KernelMemoryManagerInner { kernel_context }),

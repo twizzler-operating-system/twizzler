@@ -5,7 +5,7 @@ use crate::arch::{
 
 use super::context::MappingPerms;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default, PartialOrd, Ord)]
 pub enum CacheType {
     #[default]
     WriteBack,

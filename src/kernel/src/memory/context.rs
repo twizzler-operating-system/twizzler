@@ -209,12 +209,13 @@ impl MemoryContextInner {
 
     pub fn clone_region(&mut self, other_ctx: &MemoryContextInner, addr: VirtAddr) {
         for mapping in other_ctx.mappings_iter(addr) {
+            //logln!("map {:?}", mapping);
             self.arch
                 .map(
                     mapping.addr.into(),
                     mapping.frame.into(),
                     mapping.length,
-                    mapping.flags | MapFlags::USER, //TODO,
+                    mapping.flags, // | MapFlags::USER, //TODO,
                     CacheType::WriteBack,
                 )
                 .unwrap();

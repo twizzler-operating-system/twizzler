@@ -61,12 +61,8 @@ struct TlbInvData {
 
 fn tlb_non_global_inv() {
     unsafe {
-        core::arch::asm!(
-            "mov %cr3, %rax
-            mov %rax, %cr3",
-            "rax",
-            "volatile"
-        )
+        let x = x86::controlregs::cr3();
+        x86::controlregs::cr3_write(x);
     }
 }
 
@@ -180,7 +176,7 @@ impl InvInstruction {
     fn execute(&self) {
         let addr: u64 = self.addr().into();
         unsafe {
-            core::arch::asm!("invlpg ({addr})", addr = in(reg) addr);
+            core::arch::asm!("invlpg [{addr}]", addr = in(reg) addr);
         }
     }
 }
@@ -192,7 +188,7 @@ impl ArchCacheLineMgr {
     pub fn flush(&self, line: VirtAddr) {
         let addr: u64 = line.into();
         unsafe {
-            core::arch::asm!("clflush ({addr})", addr = in(reg) addr);
+            core::arch::asm!("clflush [{addr}]", addr = in(reg) addr);
         }
     }
 }
@@ -231,5 +227,6 @@ impl ArchTlbMgr {
         unsafe {
             self.data.do_invalidation();
         }
+        logln!("TODO: invalidation across all cpus");
     }
 }

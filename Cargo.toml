@@ -1,3 +1,6 @@
+
+cargo-features = ["profile-rustflags"] 
+
 [workspace]
 members = [
     "tools/xtask",

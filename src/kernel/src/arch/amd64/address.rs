@@ -1,8 +1,10 @@
-#[derive(Debug, Clone, Copy)]
+use super::memory::phys_to_virt;
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(transparent)]
 pub struct VirtAddr(u64);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(transparent)]
 pub struct PhysAddr(u64);
 
@@ -87,7 +89,11 @@ impl PhysAddr {
     }
 
     pub fn kernel_vaddr(&self) -> VirtAddr {
-        todo!()
+        // TODO
+        phys_to_virt(x86_64::PhysAddr::new(self.0))
+            .as_u64()
+            .try_into()
+            .unwrap()
     }
 
     pub fn offset(&self, offset: isize) -> Result<Self, NonCanonical> {

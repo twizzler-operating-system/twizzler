@@ -1,4 +1,4 @@
-use crate::memory::{context::MappingPerms, map::CacheType};
+use crate::memory::{context::MappingPerms, map::CacheType, pagetables::Table};
 
 use super::address::PhysAddr;
 
@@ -88,10 +88,61 @@ bitflags::bitflags! {
 
 impl EntryFlags {
     pub fn new(perms: MappingPerms, cache: CacheType) -> Self {
-        todo!()
+        let c = match cache {
+            CacheType::WriteBack => EntryFlags::empty(),
+            CacheType::WriteThrough => EntryFlags::WRITE_THROUGH,
+            CacheType::WriteCombining => EntryFlags::empty(),
+            CacheType::Uncacheable => EntryFlags::CACHE_DISABLE,
+        };
+        let mut p = EntryFlags::empty();
+        if perms.contains(MappingPerms::WRITE) {
+            p |= EntryFlags::WRITE;
+        }
+        if !perms.contains(MappingPerms::EXECUTE) {
+            p |= EntryFlags::NO_EXECUTE;
+        }
+        p | c
+    }
+
+    pub fn perms(&self) -> MappingPerms {
+        let rw = if self.contains(Self::WRITE) {
+            MappingPerms::WRITE | MappingPerms::READ
+        } else {
+            MappingPerms::READ
+        };
+        let ex = if self.contains(Self::NO_EXECUTE) {
+            MappingPerms::empty()
+        } else {
+            MappingPerms::EXECUTE
+        };
+        rw | ex
+    }
+
+    pub fn cache_type(&self) -> CacheType {
+        if self.contains(Self::CACHE_DISABLE) {
+            CacheType::Uncacheable
+        } else {
+            if self.contains(Self::WRITE_THROUGH) {
+                CacheType::WriteThrough
+            } else {
+                CacheType::WriteBack
+            }
+        }
     }
 
     pub fn intermediate() -> Self {
-        todo!()
+        Self::USER | Self::WRITE | Self::PRESENT
+    }
+}
+
+impl Table {
+    pub fn can_map_at_level(level: usize) -> bool {
+        match level {
+            0 => true,
+            1 => true,
+            // TODO: check cpuid
+            2 => true,
+            _ => false,
+        }
     }
 }

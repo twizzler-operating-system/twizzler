@@ -8,6 +8,7 @@ use crate::arch::{
 
 use super::{
     context::MappingPerms,
+    frame::PhysicalFrameFlags,
     map::{CacheType, Mapping},
 };
 
@@ -62,11 +63,17 @@ impl Table {
         unsafe { Some(&mut *(addr.as_mut_ptr::<Table>())) }
     }
 
-    fn can_map_at_level(level: usize) -> bool {
-        todo!()
+    pub fn next_table(&self, index: usize) -> Option<&Table> {
+        let entry = self[index];
+        if entry.is_unused() || entry.is_huge() {
+            return None;
+        }
+        let addr = entry.addr().kernel_vaddr();
+        unsafe { Some(&*(addr.as_ptr::<Table>())) }
     }
 
     fn can_map_at(vaddr: VirtAddr, paddr: PhysFrame, remain: usize, level: usize) -> bool {
+        logln!("==> {:?} {:?} {} {}", vaddr, paddr, remain, level);
         let page_size = Table::level_to_page_size(level);
         vaddr.is_aligned_to(page_size)
             && remain >= page_size
@@ -76,10 +83,11 @@ impl Table {
     }
 
     fn populate(&mut self, index: usize, flags: EntryFlags) {
+        let count = self.read_count();
         let entry = &mut self[index];
         if entry.is_unused() {
-            let count = self.read_count();
-            *entry = Entry::new(todo!(), flags);
+            let frame = crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED);
+            *entry = Entry::new(frame.start_address().as_u64().try_into().unwrap(), flags);
             self.set_count(count + 1);
         }
     }
@@ -136,55 +144,70 @@ impl Table {
             }
 
             let paddr = phys.peek();
-            if let Ok(vaddr) = cursor
-                .start
-                .offset((idx * Self::level_to_page_size(level)).try_into().unwrap())
-            {
-                if Self::can_map_at(vaddr, paddr, cursor.remaining(), level) {
-                    self.update_entry(
-                        consist,
-                        idx,
-                        Entry::new(paddr.addr, EntryFlags::new(perms, cache)),
-                        vaddr,
-                        true,
-                        level,
-                    );
-                    phys.consume(Self::level_to_page_size(level));
-                } else {
-                    assert_ne!(level, 0);
-                    self.populate(idx, EntryFlags::intermediate());
-                    let next_table = self.next_table_mut(idx).unwrap();
-                    next_table.map(consist, cursor, level - 1, phys, perms, cache);
-                }
 
-                if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
-                    cursor = next;
-                } else {
-                    break;
-                }
+            if Self::can_map_at(cursor.start, paddr, cursor.remaining(), level) {
+                panic!("TODO: flags (global, etc), and present");
+                self.update_entry(
+                    consist,
+                    idx,
+                    Entry::new(paddr.addr, EntryFlags::new(perms, cache)),
+                    cursor.start,
+                    true,
+                    level,
+                );
+                phys.consume(Self::level_to_page_size(level));
+            } else {
+                assert_ne!(level, 0);
+                self.populate(idx, EntryFlags::intermediate());
+                let next_table = self.next_table_mut(idx).unwrap();
+                next_table.map(consist, cursor, level - 1, phys, perms, cache);
+            }
+
+            if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
+                cursor = next;
+            } else {
+                break;
             }
         }
     }
 
+    // TODO: freeing
     fn unmap(&mut self, consist: &mut Consistency, mut cursor: MappingCursor, level: usize) {
         let start_index = Self::get_index(cursor.start, level);
         for idx in start_index..PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
 
-            if let Ok(vaddr) = cursor
-                .start
-                .offset((idx * Self::level_to_page_size(level)).try_into().unwrap())
-            {
-                if entry.is_present() && (entry.is_huge() || level == 0) {
-                    self.update_entry(consist, idx, Entry::new_unused(), vaddr, true, level);
-                }
-
-                if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
-                    cursor = next;
-                } else {
-                    break;
-                }
+            if entry.is_present() && (entry.is_huge() || level == 0) {
+                self.update_entry(consist, idx, Entry::new_unused(), cursor.start, true, level);
+            } else if entry.is_present() && level != 0 {
+                let next_table = self.next_table_mut(idx).unwrap();
+                next_table.unmap(consist, cursor, level - 1);
             }
+
+            if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
+                cursor = next;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn readmap(&self, cursor: &MappingCursor, level: usize) -> Option<MapInfo> {
+        let index = Self::get_index(cursor.start, level);
+        let entry = &self[index];
+        if entry.is_present() && (entry.is_huge() || level == 0) {
+            Some(MapInfo {
+                vaddr: cursor.start,
+                paddr: entry.addr(),
+                perms: entry.flags().perms(),
+                cache: entry.flags().cache_type(),
+                psize: Self::level_to_page_size(level),
+            })
+        } else if entry.is_present() && level != 0 {
+            let next_table = self.next_table(index).unwrap();
+            next_table.readmap(cursor, level - 1)
+        } else {
+            None
         }
     }
 }
@@ -221,8 +244,12 @@ pub struct MappingCursor {
 }
 
 impl MappingCursor {
+    pub fn new(start: VirtAddr, len: usize) -> Self {
+        Self { start, len }
+    }
+
     fn advance(mut self, len: usize) -> Option<Self> {
-        if self.len < len {
+        if self.len <= len {
             return None;
         }
         let vaddr = self.start.offset(len as isize).ok()?;
@@ -253,6 +280,10 @@ impl Mapper {
         unsafe { &mut *(self.root.kernel_vaddr().as_mut_ptr::<Table>()) }
     }
 
+    pub fn root(&self) -> &Table {
+        unsafe { &*(self.root.kernel_vaddr().as_ptr::<Table>()) }
+    }
+
     pub fn map(
         &mut self,
         cursor: MappingCursor,
@@ -271,6 +302,82 @@ impl Mapper {
         let level = self.start_level;
         let root = self.root_mut();
         root.unmap(&mut consist, cursor, level);
+    }
+
+    pub fn readmap(&self, cursor: MappingCursor) -> MapReader<'_> {
+        MapReader {
+            mapper: self,
+            cursor,
+        }
+    }
+
+    fn do_read_map(&self, cursor: &MappingCursor) -> Option<MapInfo> {
+        let level = self.start_level;
+        let root = self.root();
+        root.readmap(cursor, level)
+    }
+}
+
+pub struct MapReader<'a> {
+    mapper: &'a Mapper,
+    cursor: MappingCursor,
+}
+
+impl<'a> Iterator for MapReader<'a> {
+    type Item = MapInfo;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let info = self.mapper.do_read_map(&self.cursor);
+        if let Some(info) = info {
+            self.cursor = self.cursor.advance(info.psize)?;
+            Some(info)
+        } else {
+            self.cursor = self.cursor.advance(Table::level_to_page_size(0))?;
+            None
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, PartialOrd)]
+pub struct MapInfo {
+    vaddr: VirtAddr,
+    paddr: PhysAddr,
+    perms: MappingPerms,
+    cache: CacheType,
+    psize: usize,
+}
+
+impl MapInfo {
+    pub fn new(
+        vaddr: VirtAddr,
+        paddr: PhysAddr,
+        perms: MappingPerms,
+        cache: CacheType,
+        psize: usize,
+    ) -> Self {
+        Self {
+            vaddr,
+            paddr,
+            perms,
+            cache,
+            psize,
+        }
+    }
+
+    pub fn vaddr(&self) -> VirtAddr {
+        self.vaddr
+    }
+
+    pub fn perms(&self) -> MappingPerms {
+        self.perms
+    }
+
+    pub fn cache(&self) -> CacheType {
+        self.cache
+    }
+
+    pub fn psize(&self) -> usize {
+        self.psize
     }
 }
 
@@ -291,5 +398,69 @@ impl Consistency {
 impl Drop for Consistency {
     fn drop(&mut self) {
         self.tlb.finish();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::memory::frame::PhysicalFrameFlags;
+
+    use super::*;
+    struct SimpleP {
+        next: Option<PhysFrame>,
+    }
+
+    impl PhysAddrProvider for SimpleP {
+        fn peek(&mut self) -> PhysFrame {
+            if let Some(ref next) = self.next {
+                return next.clone();
+            } else {
+                let f = crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED);
+                self.next = Some(PhysFrame {
+                    addr: f.start_address().as_u64().try_into().unwrap(),
+                    len: f.size(),
+                });
+                self.peek()
+            }
+        }
+
+        fn consume(&mut self, _len: usize) {
+            self.next = None;
+        }
+    }
+    #[test_case]
+    fn test_mapper() {
+        logln!("testing mapping");
+        let mut m = Mapper::new(
+            crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED)
+                .start_address()
+                .as_u64()
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(
+            m.readmap(MappingCursor::new(VirtAddr::new(0).unwrap(), 0))
+                .next(),
+            None
+        );
+        assert_eq!(
+            m.readmap(MappingCursor::new(VirtAddr::new(0).unwrap(), usize::MAX))
+                .next(),
+            None
+        );
+
+        // TODO: magic numbers
+        let cur = MappingCursor::new(VirtAddr::new(0).unwrap(), 0x1000);
+        let mut phys = SimpleP { next: None };
+        m.map(cur, &mut phys, MappingPerms::READ, CacheType::WriteBack);
+
+        let mut reader = m.readmap(cur);
+        let read = reader.next().unwrap();
+        assert_eq!(read.vaddr(), VirtAddr::new(0).unwrap());
+        assert_eq!(read.psize(), 0x1000);
+        assert_eq!(read.cache(), CacheType::WriteBack);
+        assert_eq!(read.perms(), MappingPerms::READ);
+
+        assert_eq!(reader.next(), None);
     }
 }
