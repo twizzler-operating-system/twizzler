@@ -258,10 +258,11 @@ fn rust_entry_secondary(id: u32, tcb: u64, stack_base: u64) -> ! {
 pub fn send_ipi(dest: Destination, vector: u32) {
     let (dest_short, dest_val) = match dest {
         Destination::Single(id) => (0, id << 24),
-        Destination::Bsp => (0, processor::current_processor().bsp_id() << 24),
+        Destination::Bsp | Destination::LowestPriority => {
+            (0, processor::current_processor().bsp_id() << 24)
+        }
         Destination::All => (2, 0),
         Destination::AllButSelf => (3, 0),
-        _ => todo!(),
     };
     unsafe {
         write_lapic(LAPIC_ICRHI, dest_val);
