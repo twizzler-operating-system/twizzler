@@ -81,3 +81,5 @@ pub fn debug_shutdown(code: u32) {
         x86::io::outw(0xf4, code as u16);
     }
 }
+
+pub use lapic::send_ipi;
