@@ -19,8 +19,8 @@ struct Args {
   #[clap(short, long)]
   initrd_path: String,
   /// Command line string to be passed to kernel
-  #[clap(short, long, default_value = "")]
-  cmdline: String,
+  #[clap(short, long)]
+  cmdline: Vec<String>,
   /// EFI application binary used by bootloader
   #[clap(short, long)]
   efi_binary: String,
@@ -37,7 +37,7 @@ fn main() {
         let path = PathBuf::from(args.initrd_path);
         path.canonicalize().unwrap()
     };
-    create_disk_images(&disk_image_path, &kernel_binary_path, &initrd_path, args.cmdline, args.efi_binary);
+    create_disk_images(&disk_image_path, &kernel_binary_path, &initrd_path, args.cmdline.join(" "), args.efi_binary);
 }
 
 pub fn create_disk_images(

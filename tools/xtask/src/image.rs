@@ -118,8 +118,7 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
         .arg(comp.get_kernel_image(cli.tests))
         .arg("--initrd-path")
         .arg(initrd_path)
-        .arg("--cmdline")
-        .arg(cmdline)
+        .arg(format!("--cmdline={}", cmdline))
         .arg("--efi-binary")
         .arg(efi_binary)
         .status()?;
