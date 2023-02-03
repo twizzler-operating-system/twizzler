@@ -16,7 +16,7 @@ pub use start::BootInfoSystemTable;
 pub use interrupt::send_ipi;
 
 pub fn kernel_main() -> ! {
-    crate::machine::serial::print_str(b"[kernel] hello world!!\n");
+    emerglogln!("[kernel] hello world!!");
     loop {}
 }
 
