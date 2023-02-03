@@ -4,7 +4,7 @@ use crate::{
     memory::{
         context::MappingPerms,
         map::{CacheType, Mapping},
-        pagetables::{Mapper, MappingCursor, PhysAddrProvider},
+        pagetables::{Mapper, MappingCursor, MappingSettings, PhysAddrProvider},
     },
     mutex::Mutex,
 };
@@ -24,10 +24,9 @@ impl ArchContext {
         &self,
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
-        perms: MappingPerms,
-        cache: CacheType,
+        settings: &MappingSettings,
     ) {
-        self.inner.lock().map(cursor, phys, perms, cache);
+        self.inner.lock().map(cursor, phys, settings);
     }
 
     pub fn unmap(&self, cursor: MappingCursor) {
@@ -40,10 +39,9 @@ impl ArchContextInner {
         &mut self,
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
-        perms: MappingPerms,
-        cache: CacheType,
+        settings: &MappingSettings,
     ) {
-        self.mapper.map(cursor, phys, perms, cache);
+        self.mapper.map(cursor, phys, settings);
     }
 
     fn unmap(&mut self, cursor: MappingCursor) {

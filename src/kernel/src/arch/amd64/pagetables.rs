@@ -1,4 +1,8 @@
-use crate::memory::{context::MappingPerms, map::CacheType, pagetables::Table};
+use crate::memory::{
+    context::MappingPerms,
+    map::CacheType,
+    pagetables::{MappingFlags, MappingSettings, Table},
+};
 
 use super::address::PhysAddr;
 
@@ -11,7 +15,11 @@ pub const PAGE_TABLE_ENTRIES: usize = 512;
 impl Entry {
     pub fn new(addr: PhysAddr, flags: EntryFlags) -> Self {
         let addr: u64 = addr.into();
-        Self(addr | flags.bits())
+        Self(addr | flags.bits() | EntryFlags::PRESENT.bits())
+    }
+
+    pub fn raw(&self) -> u64 {
+        self.0
     }
 
     pub fn new_unused() -> Self {
@@ -44,10 +52,6 @@ impl Entry {
         self.flags().contains(EntryFlags::PRESENT)
     }
 
-    pub fn is_global(&self) -> bool {
-        self.flags().contains(EntryFlags::GLOBAL)
-    }
-
     pub fn addr(&self) -> PhysAddr {
         PhysAddr::new(self.0 & 0x000fffff_fffff000).unwrap()
     }
@@ -56,7 +60,7 @@ impl Entry {
         *self = Entry::new(addr, self.flags());
     }
 
-    pub fn set_unused(&mut self) {
+    pub fn clear(&mut self) {
         let ab = self.get_avail_bit();
         self.0 = if ab { 1 << 9 } else { 0 };
     }
@@ -81,27 +85,22 @@ bitflags::bitflags! {
         const DIRTY = 1 << 6;
         const HUGE_PAGE = 1 << 7;
         const GLOBAL = 1 << 8;
-        const AVAIL_1 = 1 << 8;
+        const AVAIL_1 = 1 << 9;
         const NO_EXECUTE = 1 << 63;
     }
 }
 
 impl EntryFlags {
-    pub fn new(perms: MappingPerms, cache: CacheType) -> Self {
-        let c = match cache {
-            CacheType::WriteBack => EntryFlags::empty(),
-            CacheType::WriteThrough => EntryFlags::WRITE_THROUGH,
-            CacheType::WriteCombining => EntryFlags::empty(),
-            CacheType::Uncacheable => EntryFlags::CACHE_DISABLE,
-        };
-        let mut p = EntryFlags::empty();
-        if perms.contains(MappingPerms::WRITE) {
-            p |= EntryFlags::WRITE;
+    pub fn settings(&self) -> MappingSettings {
+        MappingSettings::new(self.perms(), self.cache_type(), self.flags())
+    }
+
+    pub fn flags(&self) -> MappingFlags {
+        if self.contains(EntryFlags::GLOBAL) {
+            MappingFlags::GLOBAL
+        } else {
+            MappingFlags::empty()
         }
-        if !perms.contains(MappingPerms::EXECUTE) {
-            p |= EntryFlags::NO_EXECUTE;
-        }
-        p | c
     }
 
     pub fn perms(&self) -> MappingPerms {
@@ -132,6 +131,30 @@ impl EntryFlags {
 
     pub fn intermediate() -> Self {
         Self::USER | Self::WRITE | Self::PRESENT
+    }
+}
+
+impl From<&MappingSettings> for EntryFlags {
+    fn from(settings: &MappingSettings) -> Self {
+        let c = match settings.cache() {
+            CacheType::WriteBack => EntryFlags::empty(),
+            CacheType::WriteThrough => EntryFlags::WRITE_THROUGH,
+            CacheType::WriteCombining => EntryFlags::empty(),
+            CacheType::Uncacheable => EntryFlags::CACHE_DISABLE,
+        };
+        let mut p = EntryFlags::empty();
+        if settings.perms().contains(MappingPerms::WRITE) {
+            p |= EntryFlags::WRITE;
+        }
+        if !settings.perms().contains(MappingPerms::EXECUTE) {
+            p |= EntryFlags::NO_EXECUTE;
+        }
+        let f = if settings.flags().contains(MappingFlags::GLOBAL) {
+            EntryFlags::GLOBAL
+        } else {
+            EntryFlags::empty()
+        };
+        p | c | f
     }
 }
 

@@ -73,7 +73,7 @@ impl Table {
     }
 
     fn can_map_at(vaddr: VirtAddr, paddr: PhysFrame, remain: usize, level: usize) -> bool {
-        logln!("==> {:?} {:?} {} {}", vaddr, paddr, remain, level);
+        //logln!("==> {:?} {:?} {} {}", vaddr, paddr, remain, level);
         let page_size = Table::level_to_page_size(level);
         vaddr.is_aligned_to(page_size)
             && remain >= page_size
@@ -106,7 +106,13 @@ impl Table {
         // TODO: check if we are doing a no-op, and early return
 
         let was_present = entry.is_present();
-        let was_global = entry.is_global();
+        let was_global = entry
+            .flags()
+            .settings()
+            .flags()
+            .contains(MappingFlags::GLOBAL);
+
+        //logln!("update entry {:x}", new_entry.raw());
         *entry = new_entry;
         let entry_addr = VirtAddr::from(entry);
         consist.cl.flush(entry_addr);
@@ -131,8 +137,7 @@ impl Table {
         mut cursor: MappingCursor,
         level: usize,
         mut phys: &mut impl PhysAddrProvider,
-        perms: MappingPerms,
-        cache: CacheType,
+        settings: &MappingSettings,
     ) {
         let start_index = Self::get_index(cursor.start, level);
         for idx in start_index..PAGE_TABLE_ENTRIES {
@@ -146,11 +151,10 @@ impl Table {
             let paddr = phys.peek();
 
             if Self::can_map_at(cursor.start, paddr, cursor.remaining(), level) {
-                panic!("TODO: flags (global, etc), and present");
                 self.update_entry(
                     consist,
                     idx,
-                    Entry::new(paddr.addr, EntryFlags::new(perms, cache)),
+                    Entry::new(paddr.addr, EntryFlags::from(settings)),
                     cursor.start,
                     true,
                     level,
@@ -160,7 +164,7 @@ impl Table {
                 assert_ne!(level, 0);
                 self.populate(idx, EntryFlags::intermediate());
                 let next_table = self.next_table_mut(idx).unwrap();
-                next_table.map(consist, cursor, level - 1, phys, perms, cache);
+                next_table.map(consist, cursor, level - 1, phys, settings);
             }
 
             if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
@@ -193,14 +197,14 @@ impl Table {
     }
 
     fn readmap(&self, cursor: &MappingCursor, level: usize) -> Option<MapInfo> {
+        let start: u64 = cursor.start.into();
         let index = Self::get_index(cursor.start, level);
         let entry = &self[index];
         if entry.is_present() && (entry.is_huge() || level == 0) {
             Some(MapInfo {
                 vaddr: cursor.start,
                 paddr: entry.addr(),
-                perms: entry.flags().perms(),
-                cache: entry.flags().cache_type(),
+                settings: entry.flags().settings(),
                 psize: Self::level_to_page_size(level),
             })
         } else if entry.is_present() && level != 0 {
@@ -288,13 +292,12 @@ impl Mapper {
         &mut self,
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
-        perms: MappingPerms,
-        cache: CacheType,
+        settings: &MappingSettings,
     ) {
         let mut consist = Consistency::new(self.root);
         let level = self.start_level;
         let root = self.root_mut();
-        root.map(&mut consist, cursor, level, phys, perms, cache);
+        root.map(&mut consist, cursor, level, phys, settings);
     }
 
     pub fn unmap(&mut self, cursor: MappingCursor) {
@@ -307,7 +310,7 @@ impl Mapper {
     pub fn readmap(&self, cursor: MappingCursor) -> MapReader<'_> {
         MapReader {
             mapper: self,
-            cursor,
+            cursor: Some(cursor),
         }
     }
 
@@ -320,19 +323,26 @@ impl Mapper {
 
 pub struct MapReader<'a> {
     mapper: &'a Mapper,
-    cursor: MappingCursor,
+    cursor: Option<MappingCursor>,
 }
 
 impl<'a> Iterator for MapReader<'a> {
     type Item = MapInfo;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let info = self.mapper.do_read_map(&self.cursor);
-        if let Some(info) = info {
-            self.cursor = self.cursor.advance(info.psize)?;
-            Some(info)
+        if let Some(cursor) = self.cursor {
+            if cursor.len == 0 {
+                return None;
+            }
+            let info = self.mapper.do_read_map(&cursor);
+            if let Some(info) = info {
+                self.cursor = cursor.advance(info.psize);
+                Some(info)
+            } else {
+                self.cursor = cursor.advance(Table::level_to_page_size(0));
+                self.next()
+            }
         } else {
-            self.cursor = self.cursor.advance(Table::level_to_page_size(0))?;
             None
         }
     }
@@ -342,30 +352,30 @@ impl<'a> Iterator for MapReader<'a> {
 pub struct MapInfo {
     vaddr: VirtAddr,
     paddr: PhysAddr,
-    perms: MappingPerms,
-    cache: CacheType,
+    settings: MappingSettings,
     psize: usize,
 }
 
-impl MapInfo {
-    pub fn new(
-        vaddr: VirtAddr,
-        paddr: PhysAddr,
-        perms: MappingPerms,
-        cache: CacheType,
-        psize: usize,
-    ) -> Self {
+bitflags::bitflags! {
+    pub struct MappingFlags : u64 {
+        const GLOBAL = 1;
+    }
+}
+
+#[derive(Debug, PartialEq, PartialOrd)]
+pub struct MappingSettings {
+    perms: MappingPerms,
+    cache: CacheType,
+    flags: MappingFlags,
+}
+
+impl MappingSettings {
+    pub fn new(perms: MappingPerms, cache: CacheType, flags: MappingFlags) -> Self {
         Self {
-            vaddr,
-            paddr,
             perms,
             cache,
-            psize,
+            flags,
         }
-    }
-
-    pub fn vaddr(&self) -> VirtAddr {
-        self.vaddr
     }
 
     pub fn perms(&self) -> MappingPerms {
@@ -376,8 +386,31 @@ impl MapInfo {
         self.cache
     }
 
+    pub fn flags(&self) -> MappingFlags {
+        self.flags
+    }
+}
+
+impl MapInfo {
+    pub fn new(vaddr: VirtAddr, paddr: PhysAddr, settings: MappingSettings, psize: usize) -> Self {
+        Self {
+            vaddr,
+            paddr,
+            settings,
+            psize,
+        }
+    }
+
+    pub fn vaddr(&self) -> VirtAddr {
+        self.vaddr
+    }
+
     pub fn psize(&self) -> usize {
         self.psize
+    }
+
+    pub fn settings(&self) -> &MappingSettings {
+        &self.settings
     }
 }
 
@@ -428,6 +461,25 @@ mod test {
             self.next = None;
         }
     }
+
+    #[test_case]
+    fn test_count() {
+        let mut m = Mapper::new(
+            crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED)
+                .start_address()
+                .as_u64()
+                .try_into()
+                .unwrap(),
+        );
+        for i in 0..PAGE_TABLE_ENTRIES {
+            let c = m.root().read_count();
+            assert_eq!(c, i);
+            m.root_mut().set_count(i + 1);
+            let c = m.root().read_count();
+            assert_eq!(c, i + 1);
+        }
+    }
+
     #[test_case]
     fn test_mapper() {
         logln!("testing mapping");
@@ -444,7 +496,7 @@ mod test {
             None
         );
         assert_eq!(
-            m.readmap(MappingCursor::new(VirtAddr::new(0).unwrap(), usize::MAX))
+            m.readmap(MappingCursor::new(VirtAddr::new(0).unwrap(), 0x1000 * 100))
                 .next(),
             None
         );
@@ -452,14 +504,20 @@ mod test {
         // TODO: magic numbers
         let cur = MappingCursor::new(VirtAddr::new(0).unwrap(), 0x1000);
         let mut phys = SimpleP { next: None };
-        m.map(cur, &mut phys, MappingPerms::READ, CacheType::WriteBack);
+        let settings = MappingSettings::new(
+            MappingPerms::READ,
+            CacheType::WriteBack,
+            MappingFlags::empty(),
+        );
+        m.map(cur, &mut phys, &settings);
 
         let mut reader = m.readmap(cur);
-        let read = reader.next().unwrap();
+        let read = reader.nth(0).unwrap();
         assert_eq!(read.vaddr(), VirtAddr::new(0).unwrap());
         assert_eq!(read.psize(), 0x1000);
-        assert_eq!(read.cache(), CacheType::WriteBack);
-        assert_eq!(read.perms(), MappingPerms::READ);
+        assert_eq!(read.settings().cache(), CacheType::WriteBack);
+        assert_eq!(read.settings().perms(), MappingPerms::READ);
+        assert_eq!(read.settings().flags(), MappingFlags::empty());
 
         assert_eq!(reader.next(), None);
     }
