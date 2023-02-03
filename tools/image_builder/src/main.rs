@@ -134,12 +134,8 @@ KERNEL_CMDLINE={}
         root_dir.create_dir("efi")?;
         root_dir.create_dir("efi/boot")?;
         // use the same file name as the efi binary
-        let boot_bin_path = "efi/boot/".to_string() + efi_file
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap();
-        let mut boot_bin = root_dir.create_file(boot_bin_path.as_str())?;
+        let boot_bin_path = Path::new("efi/boot/").join(efi_file.file_name().unwrap());
+        let mut boot_bin = root_dir.create_file(boot_bin_path.as_path().to_str().unwrap())?;
         boot_bin.truncate()?;
         io::copy(&mut fs::File::open(&efi_file)?, &mut boot_bin)?;
         let mut kernel = root_dir.create_file("kernel.elf")?;
