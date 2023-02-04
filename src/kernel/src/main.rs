@@ -15,6 +15,9 @@
 #![feature(custom_test_frameworks)]
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(crate::test_runner)]
+#![feature(let_chains)]
+#![feature(ptr_metadata)]
+#![feature(fn_traits)]
 
 #[macro_use]
 pub mod log;
@@ -43,6 +46,7 @@ pub mod utils;
 extern crate alloc;
 
 extern crate bitflags;
+
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use arch::BootInfoSystemTable;
@@ -118,13 +122,21 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
 }
 
 #[cfg(test)]
-pub fn test_runner(tests: &[&dyn Fn()]) {
+pub fn test_runner(tests: &[&(&str, &dyn Fn())]) {
     logln!("[kernel::test] running {} tests", tests.len());
     for test in tests {
-        test();
+        log!("test {} ... ", test.0);
+        (test.1)();
+        logln!("ok");
     }
 
     logln!("[kernel::test] test result: ok.");
+    loop {}
+}
+
+#[twizzler_kernel_macros::kernel_test]
+fn trivial_test() {
+    assert_eq!(0, 0);
 }
 
 pub fn init_threading() -> ! {
