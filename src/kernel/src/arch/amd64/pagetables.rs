@@ -13,9 +13,13 @@ pub struct Entry(u64);
 pub const PAGE_TABLE_ENTRIES: usize = 512;
 
 impl Entry {
-    pub fn new(addr: PhysAddr, flags: EntryFlags) -> Self {
+    fn new_internal(addr: PhysAddr, flags: EntryFlags) -> Self {
         let addr: u64 = addr.into();
-        Self(addr | flags.bits() | EntryFlags::PRESENT.bits())
+        Self(addr | flags.bits())
+    }
+
+    pub fn new(addr: PhysAddr, flags: EntryFlags) -> Self {
+        Self::new_internal(addr, flags | EntryFlags::PRESENT)
     }
 
     pub fn raw(&self) -> u64 {
@@ -57,7 +61,7 @@ impl Entry {
     }
 
     pub fn set_addr(&mut self, addr: PhysAddr) {
-        *self = Entry::new(addr, self.flags());
+        *self = Entry::new_internal(addr, self.flags());
     }
 
     pub fn clear(&mut self) {
@@ -70,7 +74,7 @@ impl Entry {
     }
 
     pub fn set_flags(&mut self, flags: EntryFlags) {
-        *self = Entry::new(self.addr(), flags);
+        *self = Entry::new_internal(self.addr(), flags);
     }
 }
 
