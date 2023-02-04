@@ -15,9 +15,6 @@
 #![feature(custom_test_frameworks)]
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(crate::test_runner)]
-#![feature(let_chains)]
-#![feature(ptr_metadata)]
-#![feature(fn_traits)]
 
 #[macro_use]
 pub mod log;
@@ -131,12 +128,6 @@ pub fn test_runner(tests: &[&(&str, &dyn Fn())]) {
     }
 
     logln!("[kernel::test] test result: ok.");
-    loop {}
-}
-
-#[twizzler_kernel_macros::kernel_test]
-fn trivial_test() {
-    assert_eq!(0, 0);
 }
 
 pub fn init_threading() -> ! {
