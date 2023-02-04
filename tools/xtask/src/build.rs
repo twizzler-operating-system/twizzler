@@ -112,7 +112,18 @@ fn maybe_build_tests<'a>(
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
     }
-    options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
+    options.spec = Packages::Packages(
+        packages
+            .iter()
+            .filter_map(|p| {
+                if p.name() == "twizzler-kernel-macros" {
+                    None
+                } else {
+                    Some(p.name().to_string())
+                }
+            })
+            .collect(),
+    );
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }

@@ -129,5 +129,5 @@ the `--tests` argument to your cargo run commands.
 
 When developing for Twizzler, you should write tests that cover code you wrote. This includes both
 userspace and kernelspace code. Note that writing tests for the kernel is slightly different, in
-that a test-case failing causes the whole system to stop, and you need to write `#[test_case]`
-instead of `#[test]`.
+that a test-case failing causes the whole system to stop, and you need to use the `#[kernel_test]`
+attribute from the `twizzler-kernel-macros` crate instead of `#[test]`.
