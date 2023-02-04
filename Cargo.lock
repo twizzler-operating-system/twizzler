@@ -1761,9 +1761,9 @@ dependencies = [
 
 [[package]]
 name = "quote"
-version = "1.0.15"
+version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "864d3e96a899863136fc6e99f3d7cae289dafe43bf2c5ac19b70df7210c0a145"
+checksum = "8856d8364d252a14d474036ea1358d63c9e6965c8e5c1885c18f73d70bff9c7b"
 dependencies = [
  "proc-macro2",
 ]
@@ -2471,11 +2471,16 @@ dependencies = [
  "slabmalloc",
  "tar-no-std",
  "twizzler-abi",
+ "twizzler-kernel-macros",
  "uart_16550",
  "x86",
  "x86_64",
  "xmas-elf",
 ]
+
+[[package]]
+name = "twizzler-kernel-macros"
+version = "0.0.0"
 
 [[package]]
 name = "twizzler-nando"

@@ -461,12 +461,13 @@ mod test {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use alloc::{boxed::Box, sync::Arc};
+    use twizzler_kernel_macros::kernel_test;
 
     use crate::interrupt::Destination;
 
     use super::ALL_PROCESSORS;
 
-    #[test_case]
+    #[kernel_test]
     fn ipi_test() {
         let nr_cpus = unsafe { &ALL_PROCESSORS }.iter().flatten().count();
         let counter = Arc::new(AtomicUsize::new(0));
