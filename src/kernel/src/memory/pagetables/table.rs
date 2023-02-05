@@ -11,7 +11,7 @@ use super::{
 };
 
 impl Table {
-    pub fn next_table_mut(&mut self, index: usize) -> Option<&mut Table> {
+    fn next_table_mut(&mut self, index: usize) -> Option<&mut Table> {
         let entry = self[index];
         if !entry.is_present() || entry.is_huge() {
             return None;
@@ -20,7 +20,7 @@ impl Table {
         unsafe { Some(&mut *(addr.as_mut_ptr::<Table>())) }
     }
 
-    pub fn next_table(&self, index: usize) -> Option<&Table> {
+    fn next_table(&self, index: usize) -> Option<&Table> {
         let entry = self[index];
         if !entry.is_present() || entry.is_huge() {
             return None;
@@ -88,7 +88,7 @@ impl Table {
         }
     }
 
-    pub fn map(
+    pub(super) fn map(
         &mut self,
         consist: &mut Consistency,
         mut cursor: MappingCursor,
@@ -133,7 +133,12 @@ impl Table {
     }
 
     // TODO: freeing
-    pub fn unmap(&mut self, consist: &mut Consistency, mut cursor: MappingCursor, level: usize) {
+    pub(super) fn unmap(
+        &mut self,
+        consist: &mut Consistency,
+        mut cursor: MappingCursor,
+        level: usize,
+    ) {
         let start_index = Self::get_index(cursor.start(), level);
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
@@ -160,7 +165,7 @@ impl Table {
         }
     }
 
-    pub fn change(
+    pub(super) fn change(
         &mut self,
         consist: &mut Consistency,
         mut cursor: MappingCursor,
@@ -196,7 +201,7 @@ impl Table {
         }
     }
 
-    pub fn readmap(&self, cursor: &MappingCursor, level: usize) -> Option<MapInfo> {
+    pub(super) fn readmap(&self, cursor: &MappingCursor, level: usize) -> Option<MapInfo> {
         let index = Self::get_index(cursor.start(), level);
         let entry = &self[index];
         if entry.is_present() && (entry.is_huge() || level == 0) {

@@ -1,17 +1,7 @@
-use alloc::boxed::Box;
-use x86::controlregs::Cr4;
-
 use crate::{
-    interrupt::Destination,
-    memory::{
-        context::MappingPerms,
-        map::{CacheType, Mapping},
-        pagetables::{Mapper, MappingCursor, MappingSettings, PhysAddrProvider},
-    },
+    memory::pagetables::{Mapper, MappingCursor, MappingSettings, PhysAddrProvider},
     mutex::Mutex,
 };
-
-use super::address::{PhysAddr, VirtAddr};
 
 pub struct ArchContextInner {
     mapper: Mapper,
@@ -50,4 +40,3 @@ impl ArchContextInner {
         self.mapper.unmap(cursor);
     }
 }
-

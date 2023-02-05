@@ -3,24 +3,33 @@ use crate::arch::{
     memory::pagetables::{ArchCacheLineMgr, ArchTlbMgr},
 };
 
-pub struct Consistency {
+/// Management for consistency, wrapping any cache-line flushing and TLB coherence into a single object.
+pub(super) struct Consistency {
     cl: ArchCacheLineMgr,
     tlb: ArchTlbMgr,
 }
 
 impl Consistency {
-    pub fn new(target: PhysAddr) -> Self {
+    pub(super) fn new(target: PhysAddr) -> Self {
         Self {
             cl: ArchCacheLineMgr::default(),
             tlb: ArchTlbMgr::new(target),
         }
     }
 
-    pub fn enqueue(&mut self, addr: VirtAddr, is_global: bool, is_terminal: bool, level: usize) {
+    /// Enqueue a TLB invalidation.
+    pub(super) fn enqueue(
+        &mut self,
+        addr: VirtAddr,
+        is_global: bool,
+        is_terminal: bool,
+        level: usize,
+    ) {
         self.tlb.enqueue(addr, is_global, is_terminal, level)
     }
 
-    pub fn flush(&self, addr: VirtAddr) {
+    /// Flush a cache-line.
+    pub(super) fn flush(&self, addr: VirtAddr) {
         self.cl.flush(addr);
     }
 }
