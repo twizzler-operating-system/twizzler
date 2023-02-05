@@ -17,7 +17,6 @@ pub mod interrupt;
 pub mod ioapic;
 pub mod lapic;
 pub mod memory;
-pub mod pagetables;
 mod pit;
 pub mod processor;
 mod start;

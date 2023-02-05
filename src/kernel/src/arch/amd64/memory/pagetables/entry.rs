@@ -1,18 +1,15 @@
-use core::ops::{Index, IndexMut};
-
-use crate::memory::{
-    context::MappingPerms,
-    map::CacheType,
-    pagetables::{MappingFlags, MappingSettings},
+use crate::{
+    arch::address::PhysAddr,
+    memory::{
+        context::MappingPerms,
+        map::CacheType,
+        pagetables::{MappingFlags, MappingSettings},
+    },
 };
-
-use super::address::PhysAddr;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
 pub struct Entry(u64);
-
-pub const PAGE_TABLE_ENTRIES: usize = 512;
 
 impl Entry {
     fn new_internal(addr: PhysAddr, flags: EntryFlags) -> Self {
@@ -32,11 +29,11 @@ impl Entry {
         Self(0)
     }
 
-    pub fn get_avail_bit(&self) -> bool {
+    pub(super) fn get_avail_bit(&self) -> bool {
         self.flags().contains(EntryFlags::AVAIL_1)
     }
 
-    pub fn set_avail_bit(&mut self, value: bool) {
+    pub(super) fn set_avail_bit(&mut self, value: bool) {
         let mut flags = self.flags();
         if value {
             flags.insert(EntryFlags::AVAIL_1);
@@ -44,10 +41,6 @@ impl Entry {
             flags.remove(EntryFlags::AVAIL_1);
         }
         self.set_flags(flags);
-    }
-
-    pub fn is_unused(&self) -> bool {
-        self.0 & !(EntryFlags::AVAIL_1.bits()) == 0
     }
 
     pub fn is_huge(&self) -> bool {
@@ -161,36 +154,5 @@ impl From<&MappingSettings> for EntryFlags {
             EntryFlags::empty()
         };
         p | c | f
-    }
-}
-
-#[repr(transparent)]
-pub struct Table {
-    entries: [Entry; PAGE_TABLE_ENTRIES],
-}
-
-impl Table {
-    pub fn can_map_at_level(level: usize) -> bool {
-        match level {
-            0 => true,
-            1 => true,
-            // TODO: check cpuid
-            2 => true,
-            _ => false,
-        }
-    }
-}
-
-impl Index<usize> for Table {
-    type Output = Entry;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.entries[index]
-    }
-}
-
-impl IndexMut<usize> for Table {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.entries[index]
     }
 }

@@ -3,7 +3,7 @@ mod test {
     use twizzler_kernel_macros::kernel_test;
 
     use crate::{
-        arch::{address::VirtAddr, pagetables::PAGE_TABLE_ENTRIES},
+        arch::{address::VirtAddr, memory::pagetables::Table},
         memory::{
             context::MappingPerms,
             frame::PhysicalFrameFlags,
@@ -46,7 +46,7 @@ mod test {
                 .try_into()
                 .unwrap(),
         );
-        for i in 0..PAGE_TABLE_ENTRIES {
+        for i in 0..Table::PAGE_TABLE_ENTRIES {
             let c = m.root().read_count();
             assert_eq!(c, i);
             m.root_mut().set_count(i + 1);

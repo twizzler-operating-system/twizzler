@@ -1,8 +1,6 @@
-use crate::arch::address::PhysAddr;
+use crate::arch::{address::PhysAddr, memory::pagetables::Table};
 
-use super::{
-    consistency::Consistency, MapInfo, MappingCursor, MappingSettings, PhysAddrProvider, Table,
-};
+use super::{consistency::Consistency, MapInfo, MappingCursor, MappingSettings, PhysAddrProvider};
 
 pub struct Mapper {
     root: PhysAddr,
@@ -13,7 +11,7 @@ impl Mapper {
     pub fn new(root: PhysAddr) -> Self {
         Self {
             root,
-            start_level: 3, /* TODO: arch-dep */
+            start_level: Table::top_level(),
         }
     }
 

@@ -1,6 +1,9 @@
-use crate::arch::address::{PhysAddr, VirtAddr};
+use crate::arch::{
+    address::{PhysAddr, VirtAddr},
+    memory::pagetables::Table,
+};
 
-use super::{Mapper, MappingCursor, MappingSettings, Table};
+use super::{Mapper, MappingCursor, MappingSettings};
 
 pub struct MapReader<'a> {
     mapper: &'a Mapper,

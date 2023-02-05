@@ -1,6 +1,6 @@
 use crate::arch::{
     address::{PhysAddr, VirtAddr},
-    pagetables::EntryFlags,
+    memory::pagetables::EntryFlags,
 };
 
 use super::context::MappingPerms;

@@ -11,7 +11,7 @@ mod table;
 
 pub use cursor::MappingCursor;
 
-pub use crate::arch::pagetables::Table;
+pub use crate::arch::memory::pagetables::Table;
 pub use mapper::Mapper;
 pub use phys_provider::{PhysAddrProvider, PhysFrame};
 pub use reader::{MapInfo, MapReader};

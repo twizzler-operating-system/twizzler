@@ -1,6 +1,6 @@
 use crate::arch::{
     address::{PhysAddr, VirtAddr},
-    context::{ArchCacheLineMgr, ArchTlbMgr},
+    memory::pagetables::{ArchCacheLineMgr, ArchTlbMgr},
 };
 
 pub struct Consistency {

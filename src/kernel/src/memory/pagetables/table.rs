@@ -1,7 +1,7 @@
 use crate::{
     arch::{
         address::VirtAddr,
-        pagetables::{Entry, EntryFlags, Table, PAGE_TABLE_ENTRIES},
+        memory::pagetables::{Entry, EntryFlags, Table},
     },
     memory::{frame::PhysicalFrameFlags, pagetables::MappingFlags},
 };
@@ -11,45 +11,9 @@ use super::{
 };
 
 impl Table {
-    pub fn set_count(&mut self, count: usize) {
-        // NOTE: this function doesn't need cache line or TLB flushing because the hardware never reads these bits.
-        for b in 0..16 {
-            if count & (1 << b) == 0 {
-                self[b].set_avail_bit(false);
-            } else {
-                self[b].set_avail_bit(true);
-            }
-        }
-    }
-
-    pub fn read_count(&self) -> usize {
-        let mut count = 0;
-        for b in 0..16 {
-            let bit = self[b].get_avail_bit();
-            count |= if bit { 1 } else { 0 } << b;
-        }
-        count
-    }
-
-    fn is_leaf(addr: VirtAddr, level: usize) -> bool {
-        level == 0 || addr.is_aligned_to(1 << (12 + 9 * level))
-    }
-
-    fn get_index(addr: VirtAddr, level: usize) -> usize {
-        let shift = 12 + 9 * level;
-        (u64::from(addr) >> shift) as usize & 0x1ff
-    }
-
-    pub fn level_to_page_size(level: usize) -> usize {
-        if level > 3 {
-            panic!("invalid level");
-        }
-        1 << (12 + 9 * level)
-    }
-
     pub fn next_table_mut(&mut self, index: usize) -> Option<&mut Table> {
         let entry = self[index];
-        if entry.is_unused() || entry.is_huge() {
+        if !entry.is_present() || entry.is_huge() {
             return None;
         }
         let addr = entry.addr().kernel_vaddr();
@@ -58,7 +22,7 @@ impl Table {
 
     pub fn next_table(&self, index: usize) -> Option<&Table> {
         let entry = self[index];
-        if entry.is_unused() || entry.is_huge() {
+        if !entry.is_present() || entry.is_huge() {
             return None;
         }
         let addr = entry.addr().kernel_vaddr();
@@ -78,7 +42,7 @@ impl Table {
     fn populate(&mut self, index: usize, flags: EntryFlags) {
         let count = self.read_count();
         let entry = &mut self[index];
-        if entry.is_unused() {
+        if !entry.is_present() {
             let frame = crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED);
             *entry = Entry::new(frame.start_address().as_u64().try_into().unwrap(), flags);
             self.set_count(count + 1);
@@ -133,7 +97,7 @@ impl Table {
         settings: &MappingSettings,
     ) {
         let start_index = Self::get_index(cursor.start(), level);
-        for idx in start_index..PAGE_TABLE_ENTRIES {
+        for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
 
             if entry.is_present() && (entry.is_huge() || level == 0) {
@@ -171,7 +135,7 @@ impl Table {
     // TODO: freeing
     pub fn unmap(&mut self, consist: &mut Consistency, mut cursor: MappingCursor, level: usize) {
         let start_index = Self::get_index(cursor.start(), level);
-        for idx in start_index..PAGE_TABLE_ENTRIES {
+        for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
 
             if entry.is_present() && (entry.is_huge() || level == 0) {
@@ -204,7 +168,7 @@ impl Table {
         settings: &MappingSettings,
     ) {
         let start_index = Self::get_index(cursor.start(), level);
-        for idx in start_index..PAGE_TABLE_ENTRIES {
+        for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
             let is_present = entry.is_present();
             let is_huge = entry.is_huge();
