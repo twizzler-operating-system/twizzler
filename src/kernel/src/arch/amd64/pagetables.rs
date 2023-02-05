@@ -1,7 +1,9 @@
+use core::ops::{Index, IndexMut};
+
 use crate::memory::{
     context::MappingPerms,
     map::CacheType,
-    pagetables::{MappingFlags, MappingSettings, Table},
+    pagetables::{MappingFlags, MappingSettings},
 };
 
 use super::address::PhysAddr;
@@ -162,6 +164,11 @@ impl From<&MappingSettings> for EntryFlags {
     }
 }
 
+#[repr(transparent)]
+pub struct Table {
+    entries: [Entry; PAGE_TABLE_ENTRIES],
+}
+
 impl Table {
     pub fn can_map_at_level(level: usize) -> bool {
         match level {
@@ -171,5 +178,19 @@ impl Table {
             2 => true,
             _ => false,
         }
+    }
+}
+
+impl Index<usize> for Table {
+    type Output = Entry;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.entries[index]
+    }
+}
+
+impl IndexMut<usize> for Table {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.entries[index]
     }
 }
