@@ -3,6 +3,8 @@ use crate::arch::{
     memory::pagetables::{ArchCacheLineMgr, ArchTlbMgr},
 };
 
+use super::PhysFrame;
+
 /// Management for consistency, wrapping any cache-line flushing and TLB coherence into a single object.
 pub(super) struct Consistency {
     cl: ArchCacheLineMgr,
@@ -32,10 +34,16 @@ impl Consistency {
     pub(super) fn flush(&mut self, addr: VirtAddr) {
         self.cl.flush(addr);
     }
+
+    /// Enqueue a page for freeing.
+    pub fn free_page(&mut self, frame: PhysFrame) {
+        todo!()
+    }
 }
 
 impl Drop for Consistency {
     fn drop(&mut self) {
         self.tlb.finish();
+        todo!("implement page freeing");
     }
 }

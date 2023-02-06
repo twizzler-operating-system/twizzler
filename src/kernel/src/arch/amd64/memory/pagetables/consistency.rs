@@ -160,11 +160,15 @@ impl InvInstruction {
 }
 
 #[derive(Default)]
+/// An object that manages cache line invalidations during page table updates.
 pub struct ArchCacheLineMgr {
     dirty: Option<u64>,
 }
 
 impl ArchCacheLineMgr {
+    /// Flush a given cache line when this [ArchCacheLineMgr] is dropped. Subsequent flush requests for the same cache
+    /// line will be batched. Flushes for different cache lines will cause older requests to flush immediately, and the
+    /// new request will be flushed when this object is dropped.
     pub fn flush(&mut self, line: VirtAddr) {
         let addr: u64 = line.into();
         // TODO: get the cache line size dynamically?
@@ -194,11 +198,13 @@ impl Drop for ArchCacheLineMgr {
     }
 }
 
+/// A management object for TLB invalidations that occur during a page table operation.
 pub struct ArchTlbMgr {
     data: TlbInvData,
 }
 
 impl ArchTlbMgr {
+    /// Construct a new [ArchTlbMgr].
     pub fn new(target: PhysAddr) -> Self {
         Self {
             data: TlbInvData {
@@ -215,6 +221,8 @@ impl ArchTlbMgr {
         }
     }
 
+    /// Enqueue a new TLB invalidation. is_global should be set iff the page is global, and is_terminal should be set
+    /// iff the invalidation is for a leaf.
     pub fn enqueue(&mut self, addr: VirtAddr, is_global: bool, is_terminal: bool, level: usize) {
         self.data.enqueue(InvInstruction::new(
             addr,
@@ -224,6 +232,7 @@ impl ArchTlbMgr {
         ));
     }
 
+    /// Execute all queued invalidations.
     pub fn finish(&mut self) {
         let data = self.data.clone();
         crate::processor::ipi_exec(
@@ -233,5 +242,6 @@ impl ArchTlbMgr {
         unsafe {
             self.data.do_invalidation();
         }
+        *self = Self::new(self.data.target().try_into().unwrap());
     }
 }

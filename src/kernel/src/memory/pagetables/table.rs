@@ -45,6 +45,7 @@ impl Table {
         if !entry.is_present() {
             let frame = crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED);
             *entry = Entry::new(frame.start_address().as_u64().try_into().unwrap(), flags);
+            // Synchronization with other TLBs 
             self.set_count(count + 1);
         }
     }

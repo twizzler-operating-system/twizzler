@@ -9,6 +9,7 @@ use crate::{
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
+/// The type of a single entry in a page table.
 pub struct Entry(u64);
 
 impl Entry {
@@ -17,14 +18,17 @@ impl Entry {
         Self(addr | flags.bits())
     }
 
+    /// Construct a new _present_ [Entry] out of an address and flags.
     pub fn new(addr: PhysAddr, flags: EntryFlags) -> Self {
         Self::new_internal(addr, flags | EntryFlags::PRESENT)
     }
 
+    /// Get the raw u64.
     pub fn raw(&self) -> u64 {
         self.0
     }
 
+    /// Construct a new, unused [Entry].
     pub fn new_unused() -> Self {
         Self(0)
     }
@@ -43,37 +47,45 @@ impl Entry {
         self.set_flags(flags);
     }
 
+    /// Is this a huge page, or a page table?
     pub fn is_huge(&self) -> bool {
         self.flags().contains(EntryFlags::HUGE_PAGE)
     }
 
+    /// Is the entry mapped Present?
     pub fn is_present(&self) -> bool {
         self.flags().contains(EntryFlags::PRESENT)
     }
 
+    /// Address contained in the [Entry].
     pub fn addr(&self) -> PhysAddr {
         PhysAddr::new(self.0 & 0x000fffff_fffff000).unwrap()
     }
 
+    /// Set the address.
     pub fn set_addr(&mut self, addr: PhysAddr) {
         *self = Entry::new_internal(addr, self.flags());
     }
 
+    /// Clear the entry.
     pub fn clear(&mut self) {
         let ab = self.get_avail_bit();
         self.0 = if ab { 1 << 9 } else { 0 };
     }
 
+    /// Get the flags.
     pub fn flags(&self) -> EntryFlags {
         EntryFlags::from_bits_truncate(self.0)
     }
 
+    /// Set the flags.
     pub fn set_flags(&mut self, flags: EntryFlags) {
         *self = Entry::new_internal(self.addr(), flags);
     }
 }
 
 bitflags::bitflags! {
+    /// The possible flags in an X86 page table entry.
     pub struct EntryFlags: u64 {
         const PRESENT = 1 << 0;
         const WRITE = 1 << 1;
@@ -90,10 +102,12 @@ bitflags::bitflags! {
 }
 
 impl EntryFlags {
+    /// Convert the flags to a [MappingSettings].
     pub fn settings(&self) -> MappingSettings {
         MappingSettings::new(self.perms(), self.cache_type(), self.flags())
     }
 
+    /// Extract the [MappingFlags].
     pub fn flags(&self) -> MappingFlags {
         if self.contains(EntryFlags::GLOBAL) {
             MappingFlags::GLOBAL
@@ -102,6 +116,7 @@ impl EntryFlags {
         }
     }
 
+    /// Get the represented permissions as a [MappingPerms].
     pub fn perms(&self) -> MappingPerms {
         let rw = if self.contains(Self::WRITE) {
             MappingPerms::WRITE | MappingPerms::READ
@@ -116,6 +131,7 @@ impl EntryFlags {
         rw | ex
     }
 
+    /// Retrieve the [CacheType].
     pub fn cache_type(&self) -> CacheType {
         if self.contains(Self::CACHE_DISABLE) {
             CacheType::Uncacheable
@@ -128,6 +144,7 @@ impl EntryFlags {
         }
     }
 
+    /// Get the set of flags to use for an intermediate (page table) entry.
     pub fn intermediate() -> Self {
         Self::USER | Self::WRITE | Self::PRESENT
     }
