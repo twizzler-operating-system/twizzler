@@ -12,6 +12,18 @@
 //! common that we need to allocate zero pages AND pages that will be immediately overwritten. Upon
 //! allocation, the caller can request a zeroed frame or an indeterminate frame. The allocator will
 //! try to reserve known-zero frames for allocations that request them.
+//!
+//! Allocation returns a [FrameRef], which is a static-lifetime reference to a [Frame]. The [Frame]
+//! is a bit of metadata associated with each physical frame in the system. One can efficiently get
+//! the [FrameRef] given a physical address, and vice versa.
+//!
+//! Note: this code is somewhat cursed, since it needs to do a bunch of funky low-level memory
+//! management without ever triggering the memory manager (can't allocate memory, since that could
+//! recurse or deadlock), and we'll need the ability to store sets of pages without allocating memory
+//! outside of this module as well, hence the intrusive linked list design. Additionally, the kernel
+//! needs to be able to access frame data from possibly any CPU, so the whole type must be both Sync
+//! and Send. This would be easy with the lock-around-inner trick, but this plays badly with the
+//! intrusive list, and so we do some cursed manual locking to ensure write isolation.
 
 use core::{
     intrinsics::size_of,
@@ -41,6 +53,7 @@ struct AllocationRegion {
     frame_array_len: usize,
 }
 
+// Safety: this is needed because of the raw pointer, but the raw pointer is static for the life of the kernel.
 unsafe impl Send for AllocationRegion {}
 
 impl AllocationRegion {
@@ -63,6 +76,7 @@ impl AllocationRegion {
         let index = (pa - self.start) / 0x1000; // TODO: arch-dep
         assert!((index as usize) < self.frame_array_len);
         let frame = &self.frame_array()[index as usize];
+        // Safety: the frame array is static for the life of the kernel
         Some(unsafe { transmute(frame) })
     }
 
@@ -73,6 +87,7 @@ impl AllocationRegion {
         let index = (pa - self.start) / 0x1000; // TODO: arch-dep
         assert!((index as usize) < self.frame_array_len);
         let frame = &mut self.frame_array_mut()[index as usize];
+        // Safety: the frame array is static for the life of the kernel
         Some(unsafe { transmute(frame) })
     }
 
@@ -85,6 +100,7 @@ impl AllocationRegion {
 
         // Unwrap-Ok: we know this address is in this region already
         let frame = self.get_frame_mut(next).unwrap();
+        // Safety: the frame can be reset since during admit_one we are the only ones with access to the frame data.
         unsafe { frame.reset(next) };
         frame.set_admitted();
         frame.set_free();
@@ -106,6 +122,7 @@ impl AllocationRegion {
 
     fn allocate(&mut self, try_zero: bool, only_zero: bool) -> Option<FrameRef> {
         let frame = self.__do_allocate(try_zero, only_zero)?;
+        assert!(!frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
         frame.set_allocated();
         Some(frame)
     }
@@ -242,10 +259,12 @@ impl Frame {
         self.lock.store(0, Ordering::SeqCst);
     }
 
+    /// Get the start address of the frame.
     pub fn start_address(&self) -> PhysAddr {
         self.pa
     }
 
+    /// Get the length of the frame in bytes.
     pub fn size(&self) -> usize {
         4096 //TODO: arch-dep
     }
@@ -278,24 +297,25 @@ impl Frame {
         z
     }
 
-    pub fn set_admitted(&self) {
+    fn set_admitted(&self) {
         let this = self.lock();
         this.flags.insert(PhysicalFrameFlags::ADMITTED);
         this.unlock();
     }
 
-    pub fn set_free(&self) {
+    fn set_free(&self) {
         let this = self.lock();
         this.flags.remove(PhysicalFrameFlags::ALLOCATED);
         this.unlock();
     }
 
-    pub fn set_allocated(&self) {
+    fn set_allocated(&self) {
         let this = self.lock();
         this.flags.insert(PhysicalFrameFlags::ALLOCATED);
         this.unlock();
     }
 
+    /// Get the current flags.
     pub fn get_flags(&self) -> PhysicalFrameFlags {
         let this = self.lock();
         let flags = this.flags;
@@ -303,6 +323,8 @@ impl Frame {
         flags
     }
 
+    /// Copy contents of one frame into another. If the other frame is marked as zeroed, copying will not happen. Both
+    /// frames are locked first.
     pub fn copy_contents_from(&self, other: &Frame) {
         let (this, other) = lock_two_frames(self, other);
         if other.flags.contains(PhysicalFrameFlags::ZEROED) {
@@ -333,6 +355,7 @@ impl Frame {
         other.unlock();
     }
 
+    /// Copy from another physical address into this frame.
     pub fn copy_contents_from_physaddr(&self, other: PhysAddr) {
         let this = self.lock();
         this.flags.remove(PhysicalFrameFlags::ZEROED);
