@@ -236,10 +236,13 @@ where
 }
 
 impl Frame {
+    // Safety: must only be called once, during admit_one, when the frame has not been initialized yet.
     unsafe fn reset(&mut self, pa: PhysAddr) {
         self.flags = PhysicalFrameFlags::empty();
         self.link.force_unlink();
         self.pa = pa;
+        // This store acts as a release for pa as well, which synchronizes with a load in lock (or unlock), which is always called
+        // at least once during allocation, so any thread that accesses a frame syncs-with this write.
         self.lock.store(0, Ordering::SeqCst);
     }
 
@@ -252,6 +255,9 @@ impl Frame {
             core::hint::spin_loop();
         }
         let this = self as *const _ as *mut Self;
+        // Safety: okay, so this is cursed. The 'inner' pattern breaks the intrusive list system here. What we really
+        // need is to ensure that only locked holders of the frame can access the fields (except pa, which is constant,
+        // and syncs with the store to lock on reset (see Frame::reset)).
         unsafe { this.as_mut().unwrap() }
     }
 
