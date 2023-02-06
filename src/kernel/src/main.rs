@@ -15,6 +15,7 @@
 #![feature(custom_test_frameworks)]
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(crate::test_runner)]
+#![feature(stmt_expr_attributes)]
 
 #[macro_use]
 pub mod log;

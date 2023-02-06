@@ -13,104 +13,162 @@
 //! allocation, the caller can request a zeroed frame or an indeterminate frame. The allocator will
 //! try to reserve known-zero frames for allocations that request them.
 
-use core::ops::Add;
+use core::{
+    intrinsics::size_of,
+    mem::transmute,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use crate::once::Once;
 use alloc::vec::Vec;
+use intrusive_collections::{intrusive_adapter, LinkedList, LinkedListLink};
 
 use crate::arch::memory::phys_to_virt;
 use crate::spinlock::Spinlock;
 
 use super::{MemoryRegion, MemoryRegionKind, PhysAddr};
 
-#[doc(hidden)]
-#[repr(C)]
-struct FreeListNode {
-    next: *mut FreeListNode,
-    pages: [PhysAddr; 0x1000 / 8 - 1], //TODO: arch-dep
-}
-
-#[doc(hidden)]
-const MAX_PER_PAGE: usize = 0x1000 / 8 - 1;
-
-#[doc(hidden)]
-struct PageFreeList {
-    start: *mut FreeListNode,
-    index: usize,
-}
-
-impl PageFreeList {
-    fn new() -> Self {
-        Self {
-            start: core::ptr::null_mut(),
-            index: 0,
-        }
-    }
-
-    fn pop(&mut self) -> Option<(bool, PhysAddr)> {
-        if self.start.is_null() {
-            return None;
-        }
-        if self.index == 0 {
-            let addr = self.start as u64;
-            self.start = unsafe { &*self.start }.next;
-            self.index = MAX_PER_PAGE;
-            let vtop = phys_to_virt(PhysAddr::new(0)).as_u64();
-            let paddr = addr - vtop;
-            Some((true, PhysAddr::new(paddr)))
-        } else {
-            self.index -= 1;
-            Some((false, unsafe { &*self.start }.pages[self.index]))
-        }
-    }
-
-    fn push(&mut self, addr: PhysAddr) {
-        if self.index == MAX_PER_PAGE || self.start.is_null() {
-            let vaddr = phys_to_virt(addr);
-            let node: &mut FreeListNode = unsafe { &mut *vaddr.as_mut_ptr() };
-            node.next = self.start;
-            /* TODO: we probably can avoid this assignment */
-            node.pages = [PhysAddr::new(0); 0x1000 / 8 - 1];
-            self.index = 0;
-            self.start = node as *mut FreeListNode;
-        } else {
-            unsafe { &mut *self.start }.pages[self.index] = addr;
-            self.index += 1;
-        }
-    }
-}
+pub type FrameRef = &'static Frame;
 
 #[doc(hidden)]
 struct AllocationRegion {
     start: PhysAddr,
+    next_for_init: PhysAddr,
     pages: usize,
+    zeroed: LinkedList<FrameAdapter>,
+    non_zeroed: LinkedList<FrameAdapter>,
+    frame_array_ptr: *mut Frame,
+    frame_array_len: usize,
 }
 
+unsafe impl Send for AllocationRegion {}
+
 impl AllocationRegion {
-    fn take(&mut self) -> Option<PhysAddr> {
-        if self.pages == 0 {
-            return None;
-        }
-        let pa = self.start;
-        self.start = self.start.add(0x1000usize); //TODO: arch-dep, page size
-        self.pages -= 1;
-        Some(pa)
+    fn frame_array(&self) -> &[Frame] {
+        unsafe { core::slice::from_raw_parts(self.frame_array_ptr, self.frame_array_len) }
     }
 
-    fn new(m: &MemoryRegion) -> Self {
+    fn frame_array_mut(&mut self) -> &mut [Frame] {
+        unsafe { core::slice::from_raw_parts_mut(self.frame_array_ptr, self.frame_array_len) }
+    }
+
+    fn contains(&self, pa: PhysAddr) -> bool {
+        pa >= self.start && pa < (self.start + self.pages * 0x1000) // TODO: arch-dep
+    }
+
+    fn get_frame(&self, pa: PhysAddr) -> Option<FrameRef> {
+        if !self.contains(pa) {
+            return None;
+        }
+        let index = (pa - self.start) / 0x1000; // TODO: arch-dep
+        assert!((index as usize) < self.frame_array_len);
+        let frame = &self.frame_array()[index as usize];
+        Some(unsafe { transmute(frame) })
+    }
+
+    fn get_frame_mut(&mut self, pa: PhysAddr) -> Option<&'static mut Frame> {
+        if !self.contains(pa) {
+            return None;
+        }
+        let index = (pa - self.start) / 0x1000; // TODO: arch-dep
+        assert!((index as usize) < self.frame_array_len);
+        let frame = &mut self.frame_array_mut()[index as usize];
+        Some(unsafe { transmute(frame) })
+    }
+
+    fn admit_one(&mut self) -> bool {
+        let next = self.next_for_init;
+        if !self.contains(next) {
+            return false;
+        }
+        self.next_for_init += 0x1000usize; // TODO: arch-dep
+
+        // Unwrap-Ok: we know this address is in this region already
+        let frame = self.get_frame_mut(next).unwrap();
+        unsafe { frame.reset(next) };
+        frame.set_admitted();
+        frame.set_free();
+        self.non_zeroed.push_back(frame);
+        true
+    }
+
+    fn free(&mut self, frame: FrameRef) {
+        if !self.contains(frame.start_address()) {
+            return;
+        }
+        frame.set_free();
+        if frame.is_zeroed() {
+            self.zeroed.push_back(frame);
+        } else {
+            self.non_zeroed.push_back(frame);
+        }
+    }
+
+    fn allocate(&mut self, try_zero: bool, only_zero: bool) -> Option<FrameRef> {
+        let frame = self.__do_allocate(try_zero, only_zero)?;
+        frame.set_allocated();
+        Some(frame)
+    }
+
+    fn __do_allocate(&mut self, try_zero: bool, only_zero: bool) -> Option<FrameRef> {
+        if only_zero {
+            if let Some(f) = self.zeroed.pop_back() {
+                return Some(f);
+            }
+            return None;
+        }
+        if let Some(f) = self.non_zeroed.pop_back() {
+            return Some(f);
+        }
+        if try_zero {
+            if let Some(f) = self.zeroed.pop_back() {
+                return Some(f);
+            }
+        }
+        for i in 0..16 {
+            if !self.admit_one() {
+                if i == 0 {
+                    return None;
+                }
+                break;
+            }
+        }
+        self.non_zeroed.pop_back()
+    }
+
+    fn new(m: &MemoryRegion) -> Option<Self> {
         let start = m.start.align_up(0x1000u64);
         let length = m.length - (start.as_u64() - m.start.as_u64()) as usize;
-        Self {
-            start,
-            pages: length / 0x1000,
+        let nr_pages = length / 0x1000; // TODO: arch-dep
+        if nr_pages <= 1 {
+            return None;
         }
+        let frame_array_len = size_of::<Frame>() * nr_pages;
+        let array_pages = ((frame_array_len - 1) / 0x1000) + 1;
+        if array_pages >= nr_pages {
+            return None;
+        }
+
+        let frame_array_ptr = phys_to_virt(start).as_mut_ptr();
+
+        let mut this = Self {
+            start: start + array_pages * 0x1000,         // TODO: arch-dep
+            next_for_init: start + array_pages * 0x1000, // TODO: arch-dep
+            pages: nr_pages - array_pages,
+            zeroed: LinkedList::new(FrameAdapter::NEW),
+            non_zeroed: LinkedList::new(FrameAdapter::NEW),
+            frame_array_ptr,
+            frame_array_len,
+        };
+        for _ in 0..16 {
+            this.admit_one();
+        }
+        Some(this)
     }
 }
 
 #[doc(hidden)]
 struct PhysicalFrameAllocator {
-    zeroed: PageFreeList,
-    non_zeroed: PageFreeList,
     regions: Vec<AllocationRegion>,
     region_idx: usize,
 }
@@ -118,15 +176,70 @@ struct PhysicalFrameAllocator {
 /// A physical frame.
 ///
 /// Contains a physical address and flags that indicate if the frame is zeroed or not.
-#[derive(Debug)]
 pub struct Frame {
     pa: PhysAddr,
     flags: PhysicalFrameFlags,
+    lock: AtomicU32,
+    link: LinkedListLink,
+}
+intrusive_adapter!(FrameAdapter = &'static Frame: Frame { link: LinkedListLink });
+
+unsafe impl Send for Frame {}
+unsafe impl Sync for Frame {}
+
+impl core::fmt::Debug for Frame {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let this = self.lock();
+        let r = f
+            .debug_struct("Frame")
+            .field("pa", &this.pa)
+            .field("flags", &this.flags)
+            .finish();
+        this.unlock();
+        r
+    }
+}
+
+pub fn lock_two_frames<'a, 'b>(a: &'a Frame, b: &'b Frame) -> (&'a mut Frame, &'a mut Frame)
+where
+    'b: 'a,
+{
+    let a_val = a as *const Frame as usize;
+    let b_val = b as *const Frame as usize;
+    assert_ne!(a_val, b_val);
+    if a_val > b_val {
+        let lg_b = b.lock();
+        let lg_a = a.lock();
+        (lg_a, lg_b)
+    } else {
+        let lg_a = a.lock();
+        let lg_b = b.lock();
+        (lg_a, lg_b)
+    }
 }
 
 impl Frame {
-    pub fn new(pa: PhysAddr, flags: PhysicalFrameFlags) -> Self {
-        Self { pa, flags }
+    unsafe fn reset(&mut self, pa: PhysAddr) {
+        self.flags = PhysicalFrameFlags::empty();
+        self.link.force_unlink();
+        self.pa = pa;
+        self.lock.store(0, Ordering::SeqCst);
+    }
+
+    fn lock(&self) -> &mut Self {
+        while self
+            .lock
+            .compare_exchange_weak(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        let this = self as *const _ as *mut Self;
+        unsafe { this.as_mut().unwrap() }
+    }
+
+    fn unlock(&mut self) {
+        self.lock.store(0, Ordering::SeqCst);
     }
 
     pub fn start_address(&self) -> PhysAddr {
@@ -140,26 +253,73 @@ impl Frame {
     /// Zero a frame.
     ///
     /// This marks a frame as being zeroed and also set the underlying physical memory to zero.
-    pub fn zero(&mut self) {
+    pub fn zero(&self) {
+        let this = self.lock();
         let virt = phys_to_virt(self.pa);
         let ptr: *mut u8 = virt.as_mut_ptr();
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
         slice.fill(0);
-        self.flags.insert(PhysicalFrameFlags::ZEROED);
+        this.flags.insert(PhysicalFrameFlags::ZEROED);
+        this.unlock();
     }
 
     /// Mark this frame as not being zeroed. Does not modify the physical memory controlled by this Frame.
-    pub fn set_not_zero(&mut self) {
-        self.flags.remove(PhysicalFrameFlags::ZEROED);
+    pub fn set_not_zero(&self) {
+        let this = self.lock();
+        this.flags.remove(PhysicalFrameFlags::ZEROED);
+        this.unlock();
     }
 
     /// Check if this frame is marked as zeroed. Does not look at the underlying physical memory.
     pub fn is_zeroed(&self) -> bool {
-        self.flags.contains(PhysicalFrameFlags::ZEROED)
+        let this = self.lock();
+        let z = this.flags.contains(PhysicalFrameFlags::ZEROED);
+        this.unlock();
+        z
     }
 
-    pub fn copy_contents_from(&mut self, other: &Frame) {
-        self.set_not_zero();
+    pub fn set_admitted(&self) {
+        let this = self.lock();
+        this.flags.insert(PhysicalFrameFlags::ADMITTED);
+        this.unlock();
+    }
+
+    pub fn set_free(&self) {
+        let this = self.lock();
+        this.flags.remove(PhysicalFrameFlags::ALLOCATED);
+        this.unlock();
+    }
+
+    pub fn set_allocated(&self) {
+        let this = self.lock();
+        this.flags.insert(PhysicalFrameFlags::ALLOCATED);
+        this.unlock();
+    }
+
+    pub fn get_flags(&self) -> PhysicalFrameFlags {
+        let this = self.lock();
+        let flags = this.flags;
+        this.unlock();
+        flags
+    }
+
+    pub fn copy_contents_from(&self, other: &Frame) {
+        let (this, other) = lock_two_frames(self, other);
+        if other.flags.contains(PhysicalFrameFlags::ZEROED) {
+            // if both are zero, do nothing
+            if this.flags.contains(PhysicalFrameFlags::ZEROED) {
+                return;
+            }
+            // if other is zero and we aren't, just zero instead of copy
+            let virt = phys_to_virt(self.pa);
+            let ptr: *mut u8 = virt.as_mut_ptr();
+            let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
+            slice.fill(0);
+            this.flags.insert(PhysicalFrameFlags::ZEROED);
+            return;
+        }
+
+        this.flags.remove(PhysicalFrameFlags::ZEROED);
         let virt = phys_to_virt(self.pa);
         let ptr: *mut u8 = virt.as_mut_ptr();
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
@@ -169,6 +329,23 @@ impl Frame {
         let otherslice = unsafe { core::slice::from_raw_parts_mut(otherptr, self.size()) };
 
         slice.copy_from_slice(otherslice);
+        this.unlock();
+        other.unlock();
+    }
+
+    pub fn copy_contents_from_physaddr(&self, other: PhysAddr) {
+        let this = self.lock();
+        this.flags.remove(PhysicalFrameFlags::ZEROED);
+        let virt = phys_to_virt(self.pa);
+        let ptr: *mut u8 = virt.as_mut_ptr();
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
+
+        let othervirt = phys_to_virt(other);
+        let otherptr: *mut u8 = othervirt.as_mut_ptr();
+        let otherslice = unsafe { core::slice::from_raw_parts_mut(otherptr, self.size()) };
+
+        slice.copy_from_slice(otherslice);
+        this.unlock();
     }
 }
 
@@ -178,20 +355,22 @@ bitflags::bitflags! {
     pub struct PhysicalFrameFlags: u32 {
         /// The frame is zeroed (or, allocate a zeroed frame)
         const ZEROED = 1;
+        /// The frame has been allocated by the system.
+        const ALLOCATED = 2;
+        /// (internal) The frame has been admitted into the frame tracking system.
+        const ADMITTED = 4;
     }
 }
 
 impl PhysicalFrameAllocator {
     fn new(memory_regions: &[MemoryRegion]) -> PhysicalFrameAllocator {
         Self {
-            zeroed: PageFreeList::new(),
-            non_zeroed: PageFreeList::new(),
             region_idx: 0,
             regions: memory_regions
                 .iter()
                 .filter_map(|m| {
                     if m.kind == MemoryRegionKind::UsableRam {
-                        Some(AllocationRegion::new(m))
+                        AllocationRegion::new(m)
                     } else {
                         None
                     }
@@ -199,55 +378,51 @@ impl PhysicalFrameAllocator {
                 .collect(),
         }
     }
-    fn fallback_alloc(&mut self) -> PhysAddr {
-        if self.region_idx >= self.regions.len() {
-            panic!("out of physical memory");
-        }
-        if let Some(pa) = self.regions[self.region_idx].take() {
-            pa
+
+    fn alloc(&mut self, flags: PhysicalFrameFlags, fallback: bool) -> Option<FrameRef> {
+        let frame = if fallback {
+            Some(self.__do_alloc_fallback())
         } else {
-            self.region_idx += 1;
-            self.fallback_alloc()
+            self.__do_alloc(flags)
+        }?;
+        if flags.contains(PhysicalFrameFlags::ZEROED) && !frame.is_zeroed() {
+            frame.zero();
         }
+        Some(frame)
     }
 
-    fn alloc(&mut self, flags: PhysicalFrameFlags) -> Frame {
-        let (primary, fallback) = if flags.contains(PhysicalFrameFlags::ZEROED) {
-            (&mut self.zeroed, &mut self.non_zeroed)
-        } else {
-            (&mut self.non_zeroed, &mut self.zeroed)
-        };
-
-        let (maybe_needs_zero, frame) = {
-            if let Some(res) = primary.pop() {
-                res
-            } else if let Some(res) = fallback.pop() {
-                (true, res.1)
-            } else {
-                (true, self.fallback_alloc())
+    fn __do_alloc_fallback(&mut self) -> FrameRef {
+        // fallback
+        for reg in &mut self.regions {
+            let frame = reg.allocate(true, false);
+            if let Some(frame) = frame {
+                return frame;
             }
-        };
-
-        Frame::new(
-            frame,
-            if maybe_needs_zero {
-                PhysicalFrameFlags::empty()
-            } else {
-                PhysicalFrameFlags::ZEROED
-            },
-        )
+        }
+        panic!("out of memory");
     }
 
-    fn free(&mut self, frame: Frame) {
-        if frame.flags.contains(PhysicalFrameFlags::ZEROED) {
-            self.zeroed.push(frame.pa);
-        } else {
-            self.non_zeroed.push(frame.pa);
+    fn __do_alloc(&mut self, flags: PhysicalFrameFlags) -> Option<FrameRef> {
+        let needs_zero = flags.contains(PhysicalFrameFlags::ZEROED);
+        // try to find an exact match
+        for reg in &mut self.regions {
+            let frame = reg.allocate(false, needs_zero);
+            if frame.is_some() {
+                return frame;
+            }
+        }
+        None
+    }
+
+    fn free(&mut self, frame: FrameRef) {
+        for reg in &mut self.regions {
+            if reg.contains(frame.start_address()) {
+                reg.free(frame);
+                return;
+            }
         }
     }
 }
-
-unsafe impl Send for PageFreeList {}
 
 #[doc(hidden)]
 static PFA: Once<Spinlock<PhysicalFrameAllocator>> = Once::new();
@@ -277,21 +452,22 @@ pub fn init(regions: &[MemoryRegion]) {
 /// let uninitialized_frame = alloc_frame(PhysicalFrameFlags::empty());
 /// let zeroed_frame = alloc_frame(PhysicalFrameFlags::ZEROED);
 /// ```
-pub fn alloc_frame(flags: PhysicalFrameFlags) -> Frame {
-    let mut frame = { PFA.wait().lock().alloc(flags) };
-    if !frame.flags.contains(PhysicalFrameFlags::ZEROED)
-        && flags.contains(PhysicalFrameFlags::ZEROED)
-    {
-        frame.zero();
+pub fn alloc_frame(flags: PhysicalFrameFlags) -> FrameRef {
+    let mut frame = { PFA.wait().lock().alloc(flags, false) };
+    if frame.is_none() {
+        frame = PFA.wait().lock().alloc(flags, true);
     }
+    let frame = frame.expect("out of memory");
     /* TODO: try to use the MMU to detect if a page is actually ever written to or not */
     frame.set_not_zero();
+    assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
+    assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
     frame
 }
 
 /// Try to allocate a physical frame. The flags argument is the same as in [alloc_frame]. Returns
 /// None if no physical frame is available.
-pub fn try_alloc_frame(flags: PhysicalFrameFlags) -> Option<Frame> {
+pub fn try_alloc_frame(flags: PhysicalFrameFlags) -> Option<FrameRef> {
     Some(alloc_frame(flags))
 }
 
@@ -299,6 +475,8 @@ pub fn try_alloc_frame(flags: PhysicalFrameFlags) -> Option<Frame> {
 ///
 /// If the frame's flags indicates that it is zeroed, it will be placed on
 /// the zeroed list.
-pub fn free_frame(frame: Frame) {
+pub fn free_frame(frame: FrameRef) {
+    assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
+    assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
     PFA.wait().lock().free(frame);
 }

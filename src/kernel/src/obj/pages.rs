@@ -5,21 +5,24 @@ use twizzler_abi::device::{CacheType, MMIO_OFFSET};
 
 use crate::{
     arch::memory::phys_to_virt,
-    memory::{PhysAddr, VirtAddr, frame::{self, Frame, PhysicalFrameFlags}},
+    memory::frame::{self, FrameRef, PhysicalFrameFlags},
+    memory::{
+        frame::{self, Frame, PhysicalFrameFlags},
+        PhysAddr, VirtAddr,
+    },
 };
 
 use super::{Object, PageNumber};
 
-bitflags::bitflags! {
-    pub struct PageFlags:u32 {
-        const WIRED = 1;
-    }
+#[derive(Debug)]
+enum FrameOrWired {
+    Frame(FrameRef),
+    Wired(PhysAddr),
 }
 
 #[derive(Debug)]
 pub struct Page {
-    frame: Frame,
-    flags: PageFlags,
+    frame: FrameOrWired,
     cache_type: CacheType,
 }
 
@@ -35,26 +38,28 @@ impl Page {
     // TODO: we should have a way of allocating non-zero pages, for pages that will be immediately overwritten.
     pub fn new() -> Self {
         Self {
-            frame: frame::alloc_frame(PhysicalFrameFlags::ZEROED),
-            flags: PageFlags::empty(),
+            frame: FrameOrWired::Frame(frame::alloc_frame(PhysicalFrameFlags::ZEROED)),
             cache_type: CacheType::WriteBack,
         }
     }
 
     pub fn new_wired(pa: PhysAddr, cache_type: CacheType) -> Self {
         Self {
-            frame: frame::Frame::new(pa, PhysicalFrameFlags::empty()),
-            flags: PageFlags::WIRED,
+            frame: FrameOrWired::Wired(pa),
             cache_type,
         }
     }
 
     pub fn as_virtaddr(&self) -> VirtAddr {
-        phys_to_virt(self.frame.start_address())
+        phys_to_virt(self.physical_address())
     }
 
     pub fn as_slice(&self) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.as_virtaddr().as_ptr(), self.frame.size()) }
+        let len = match self.frame {
+            FrameOrWired::Frame(f) => f.size(),
+            FrameOrWired::Wired(_) => 0x1000, // TODO: arch-dep
+        };
+        unsafe { core::slice::from_raw_parts(self.as_virtaddr().as_ptr(), len) }
     }
 
     pub unsafe fn get_mut_to_val<T>(&self, offset: usize) -> *mut T {
@@ -68,21 +73,29 @@ impl Page {
     }
 
     pub fn as_mut_slice(&self) -> &mut [u8] {
-        unsafe {
-            core::slice::from_raw_parts_mut(self.as_virtaddr().as_mut_ptr(), self.frame.size())
-        }
+        let len = match self.frame {
+            FrameOrWired::Frame(f) => f.size(),
+            FrameOrWired::Wired(_) => 0x1000, // TODO: arch-dep
+        };
+        unsafe { core::slice::from_raw_parts_mut(self.as_virtaddr().as_mut_ptr(), len) }
     }
 
     pub fn physical_address(&self) -> PhysAddr {
-        self.frame.start_address()
+        match self.frame {
+            FrameOrWired::Frame(f) => f.start_address(),
+            FrameOrWired::Wired(p) => p,
+        }
     }
 
     pub fn copy_page(&self) -> Self {
-        let mut new_frame = frame::alloc_frame(PhysicalFrameFlags::empty());
-        new_frame.copy_contents_from(&self.frame);
+        let new_frame = frame::alloc_frame(PhysicalFrameFlags::empty());
+        match self.frame {
+            FrameOrWired::Frame(f) => new_frame.copy_contents_from(f),
+            FrameOrWired::Wired(p) => new_frame.copy_contents_from_physaddr(p),
+        }
         Self {
-            frame: new_frame,
-            flags: PageFlags::empty(),
+            frame: FrameOrWired::Frame(new_frame),
+            // TODO: maybe this should default to write-back instead?
             cache_type: self.cache_type,
         }
     }
