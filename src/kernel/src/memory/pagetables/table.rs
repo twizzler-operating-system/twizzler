@@ -29,6 +29,14 @@ impl Table {
         unsafe { Some(&*(addr.as_ptr::<Table>())) }
     }
 
+    fn next_table_frame(&self, index: usize) -> Option<PhysFrame> {
+        let entry = self[index];
+        if !entry.is_present() || entry.is_huge() {
+            return None;
+        }
+        Some(PhysFrame::new(entry.addr(), Self::level_to_page_size(0)))
+    }
+
     fn can_map_at(vaddr: VirtAddr, paddr: PhysFrame, remain: usize, level: usize) -> bool {
         //logln!("==> {:?} {:?} {} {}", vaddr, paddr, remain, level);
         let page_size = Table::level_to_page_size(level);
@@ -45,7 +53,7 @@ impl Table {
         if !entry.is_present() {
             let frame = crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED);
             *entry = Entry::new(frame.start_address().as_u64().try_into().unwrap(), flags);
-            // Synchronization with other TLBs 
+            // Synchronization with other TLBs
             self.set_count(count + 1);
         }
     }
@@ -133,7 +141,6 @@ impl Table {
         }
     }
 
-    // TODO: freeing
     pub(super) fn unmap(
         &mut self,
         consist: &mut Consistency,
@@ -156,6 +163,10 @@ impl Table {
             } else if entry.is_present() && level != 0 {
                 let next_table = self.next_table_mut(idx).unwrap();
                 next_table.unmap(consist, cursor, level - 1);
+                if next_table.read_count() == 0 {
+                    // Unwrap-Ok: The entry is present, and not a leaf, so it must be a table.
+                    consist.free_page(self.next_table_frame(idx).unwrap());
+                }
             }
 
             if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
