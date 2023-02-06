@@ -1,7 +1,10 @@
 use alloc::boxed::Box;
 use x86::controlregs::Cr4;
 
-use crate::{arch::address::{VirtAddr, PhysAddr}, interrupt::Destination};
+use crate::{
+    arch::address::{PhysAddr, VirtAddr},
+    interrupt::Destination,
+};
 
 const MAX_INVALIDATION_INSTRUCTIONS: usize = 16;
 #[derive(Clone)]
@@ -157,16 +160,37 @@ impl InvInstruction {
 }
 
 #[derive(Default)]
-pub struct ArchCacheLineMgr {}
+pub struct ArchCacheLineMgr {
+    dirty: Option<u64>,
+}
 
 impl ArchCacheLineMgr {
-    pub fn flush(&self, line: VirtAddr) {
+    pub fn flush(&mut self, line: VirtAddr) {
         let addr: u64 = line.into();
-        // TODO: finish this
-        // TODO: do we need to flush page table lines?
-        unsafe {
-            core::arch::asm!("clflush [{addr}]", addr = in(reg) addr);
+        // TODO: get the cache line size dynamically?
+        let addr = addr & !0x3f;
+        if let Some(dirty) = self.dirty {
+            if dirty != addr {
+                self.do_flush();
+                self.dirty = Some(addr);
+            }
+        } else {
+            self.dirty = Some(addr);
         }
+    }
+
+    fn do_flush(&mut self) {
+        if let Some(addr) = self.dirty.take() {
+            unsafe {
+                core::arch::asm!("clflush [{addr}]", addr = in(reg) addr);
+            }
+        }
+    }
+}
+
+impl Drop for ArchCacheLineMgr {
+    fn drop(&mut self) {
+        self.do_flush();
     }
 }
 

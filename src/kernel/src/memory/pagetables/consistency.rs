@@ -29,7 +29,7 @@ impl Consistency {
     }
 
     /// Flush a cache-line.
-    pub(super) fn flush(&self, addr: VirtAddr) {
+    pub(super) fn flush(&mut self, addr: VirtAddr) {
         self.cl.flush(addr);
     }
 }
