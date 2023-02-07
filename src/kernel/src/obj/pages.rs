@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use twizzler_abi::device::{CacheType, MMIO_OFFSET};
 
 use crate::{
-    arch::memory::phys_to_virt,
+    arch::memory::{frame::FRAME_SIZE, phys_to_virt},
     memory::frame::{self, FrameRef, PhysicalFrameFlags},
     memory::{
         frame::{self, Frame, PhysicalFrameFlags},
@@ -75,7 +75,7 @@ impl Page {
     pub fn as_mut_slice(&self) -> &mut [u8] {
         let len = match self.frame {
             FrameOrWired::Frame(f) => f.size(),
-            FrameOrWired::Wired(_) => 0x1000, // TODO: arch-dep
+            FrameOrWired::Wired(_) => FRAME_SIZE,
         };
         unsafe { core::slice::from_raw_parts_mut(self.as_virtaddr().as_mut_ptr(), len) }
     }
