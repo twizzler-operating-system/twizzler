@@ -1,15 +1,18 @@
+use intrusive_collections::LinkedList;
+
 use crate::{
     arch::{
         address::{PhysAddr, VirtAddr},
         memory::pagetables::{ArchCacheLineMgr, ArchTlbMgr},
     },
-    memory::frame::FrameRef,
+    memory::frame::{free_frame, FrameAdapter, FrameRef},
 };
 
 /// Management for consistency, wrapping any cache-line flushing and TLB coherence into a single object.
 pub(super) struct Consistency {
     cl: ArchCacheLineMgr,
     tlb: ArchTlbMgr,
+    pages: LinkedList<FrameAdapter>,
 }
 
 impl Consistency {
@@ -17,6 +20,7 @@ impl Consistency {
         Self {
             cl: ArchCacheLineMgr::default(),
             tlb: ArchTlbMgr::new(target),
+            pages: LinkedList::new(FrameAdapter::NEW),
         }
     }
 
@@ -38,13 +42,19 @@ impl Consistency {
 
     /// Enqueue a page for freeing.
     pub fn free_frame(&mut self, frame: FrameRef) {
-        todo!()
+        self.pages.push_back(frame);
+    }
+
+    /// Flush the TLB invalidations.
+    fn flush_invalidations(&mut self) {
+        self.tlb.finish();
     }
 }
 
 impl Drop for Consistency {
     fn drop(&mut self) {
-        self.tlb.finish();
-        todo!("implement page freeing");
+        while let Some(item) = self.pages.pop_back() {
+            free_frame(item);
+        }
     }
 }

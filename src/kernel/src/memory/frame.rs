@@ -184,7 +184,7 @@ pub struct Frame {
     lock: AtomicU8,
     link: LinkedListLink,
 }
-intrusive_adapter!(FrameAdapter = &'static Frame: Frame { link: LinkedListLink });
+intrusive_adapter!(pub FrameAdapter = &'static Frame: Frame { link: LinkedListLink });
 
 unsafe impl Send for Frame {}
 unsafe impl Sync for Frame {}

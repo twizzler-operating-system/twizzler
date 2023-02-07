@@ -1,6 +1,6 @@
 use crate::{
     arch::address::PhysAddr,
-    memory::frame::{FrameRef, PhysicalFrameFlags},
+    memory::frame::{free_frame, FrameRef, PhysicalFrameFlags},
 };
 
 /// A trait for providing a set of physical pages to the mapping function.
@@ -44,8 +44,7 @@ impl Drop for ZeroPageProvider {
     fn drop(&mut self) {
         // TODO: This can be cleaned up once we merge Allen's work on addresses.
         if let Some(f) = self.current.take() {
-            let x: u64 = f.start_address().as_u64();
-            todo!();
+            free_frame(f);
         }
     }
 }

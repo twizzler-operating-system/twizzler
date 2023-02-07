@@ -4,7 +4,7 @@ use crate::{
         memory::pagetables::{Entry, EntryFlags, Table},
     },
     memory::{
-        frame::{FrameRef, PhysicalFrameFlags},
+        frame::{get_frame, FrameRef, PhysicalFrameFlags},
         pagetables::MappingFlags,
     },
 };
@@ -35,7 +35,8 @@ impl Table {
         if !entry.is_present() || entry.is_huge() {
             return None;
         }
-        todo!()
+        let addr: u64 = entry.addr().into();
+        get_frame(x86_64::PhysAddr::new(addr))
     }
 
     fn can_map_at(
