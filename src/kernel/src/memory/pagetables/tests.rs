@@ -8,34 +8,9 @@ mod test {
             context::MappingPerms,
             frame::PhysicalFrameFlags,
             map::CacheType,
-            pagetables::{
-                Mapper, MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider, PhysFrame,
-            },
+            pagetables::{phys_provider, Mapper, MappingCursor, MappingFlags, MappingSettings},
         },
     };
-
-    struct SimpleP {
-        next: Option<PhysFrame>,
-    }
-
-    impl PhysAddrProvider for SimpleP {
-        fn peek(&mut self) -> PhysFrame {
-            if let Some(ref next) = self.next {
-                return next.clone();
-            } else {
-                let f = crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED);
-                self.next = Some(PhysFrame::new(
-                    f.start_address().as_u64().try_into().unwrap(),
-                    f.size(),
-                ));
-                self.peek()
-            }
-        }
-
-        fn consume(&mut self, _len: usize) {
-            self.next = None;
-        }
-    }
 
     #[kernel_test]
     fn test_count() {
@@ -77,7 +52,7 @@ mod test {
 
         // TODO: magic numbers
         let cur = MappingCursor::new(VirtAddr::new(0).unwrap(), 0x1000);
-        let mut phys = SimpleP { next: None };
+        let mut phys = phys_provider::ZeroPageProvider::default();
         let settings = MappingSettings::new(
             MappingPerms::WRITE | MappingPerms::READ,
             CacheType::WriteBack,

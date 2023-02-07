@@ -1,14 +1,15 @@
 use crate::{
     arch::{
-        address::VirtAddr,
+        address::{PhysAddr, VirtAddr},
         memory::pagetables::{Entry, EntryFlags, Table},
     },
-    memory::{frame::PhysicalFrameFlags, pagetables::MappingFlags},
+    memory::{
+        frame::{FrameRef, PhysicalFrameFlags},
+        pagetables::MappingFlags,
+    },
 };
 
-use super::{
-    consistency::Consistency, MapInfo, MappingCursor, MappingSettings, PhysAddrProvider, PhysFrame,
-};
+use super::{consistency::Consistency, MapInfo, MappingCursor, MappingSettings, PhysAddrProvider};
 
 impl Table {
     fn next_table_mut(&mut self, index: usize) -> Option<&mut Table> {
@@ -29,22 +30,27 @@ impl Table {
         unsafe { Some(&*(addr.as_ptr::<Table>())) }
     }
 
-    fn next_table_frame(&self, index: usize) -> Option<PhysFrame> {
+    fn next_table_frame(&self, index: usize) -> Option<FrameRef> {
         let entry = self[index];
         if !entry.is_present() || entry.is_huge() {
             return None;
         }
-        Some(PhysFrame::new(entry.addr(), Self::level_to_page_size(0)))
+        todo!()
     }
 
-    fn can_map_at(vaddr: VirtAddr, paddr: PhysFrame, remain: usize, level: usize) -> bool {
-        //logln!("==> {:?} {:?} {} {}", vaddr, paddr, remain, level);
+    fn can_map_at(
+        vaddr: VirtAddr,
+        paddr: PhysAddr,
+        remain: usize,
+        phys_len: usize,
+        level: usize,
+    ) -> bool {
         let page_size = Table::level_to_page_size(level);
         vaddr.is_aligned_to(page_size)
             && remain >= page_size
-            && paddr.addr().is_aligned_to(page_size)
+            && paddr.is_aligned_to(page_size)
             && Self::can_map_at_level(level)
-            && paddr.len() >= page_size
+            && phys_len >= page_size
     }
 
     fn populate(&mut self, index: usize, flags: EntryFlags) {
@@ -53,7 +59,6 @@ impl Table {
         if !entry.is_present() {
             let frame = crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED);
             *entry = Entry::new(frame.start_address().as_u64().try_into().unwrap(), flags);
-            // Synchronization with other TLBs
             self.set_count(count + 1);
         }
     }
@@ -78,7 +83,6 @@ impl Table {
             .flags()
             .contains(MappingFlags::GLOBAL);
 
-        logln!("update entry {:x}", new_entry.raw());
         *entry = new_entry;
         let entry_addr = VirtAddr::from(entry);
         consist.flush(entry_addr);
@@ -116,11 +120,11 @@ impl Table {
 
             let paddr = phys.peek();
 
-            if Self::can_map_at(cursor.start(), paddr, cursor.remaining(), level) {
+            if Self::can_map_at(cursor.start(), paddr.0, cursor.remaining(), paddr.1, level) {
                 self.update_entry(
                     consist,
                     idx,
-                    Entry::new(paddr.addr(), EntryFlags::from(settings)),
+                    Entry::new(paddr.0, EntryFlags::from(settings)),
                     cursor.start(),
                     true,
                     level,
@@ -165,7 +169,7 @@ impl Table {
                 next_table.unmap(consist, cursor, level - 1);
                 if next_table.read_count() == 0 {
                     // Unwrap-Ok: The entry is present, and not a leaf, so it must be a table.
-                    consist.free_page(self.next_table_frame(idx).unwrap());
+                    consist.free_frame(self.next_table_frame(idx).unwrap());
                 }
             }
 

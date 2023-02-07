@@ -1,9 +1,10 @@
-use crate::arch::{
-    address::{PhysAddr, VirtAddr},
-    memory::pagetables::{ArchCacheLineMgr, ArchTlbMgr},
+use crate::{
+    arch::{
+        address::{PhysAddr, VirtAddr},
+        memory::pagetables::{ArchCacheLineMgr, ArchTlbMgr},
+    },
+    memory::frame::FrameRef,
 };
-
-use super::PhysFrame;
 
 /// Management for consistency, wrapping any cache-line flushing and TLB coherence into a single object.
 pub(super) struct Consistency {
@@ -36,7 +37,7 @@ impl Consistency {
     }
 
     /// Enqueue a page for freeing.
-    pub fn free_page(&mut self, frame: PhysFrame) {
+    pub fn free_frame(&mut self, frame: FrameRef) {
         todo!()
     }
 }
