@@ -28,7 +28,7 @@
 use core::{
     intrinsics::size_of,
     mem::transmute,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicU8, Ordering},
 };
 
 use crate::{arch::memory::frame::FRAME_SIZE, once::Once};
@@ -173,8 +173,8 @@ struct PhysicalFrameAllocator {
 /// Contains a physical address and flags that indicate if the frame is zeroed or not.
 pub struct Frame {
     pa: PhysAddr,
-    flags: PhysicalFrameFlags,
-    lock: AtomicU32,
+    flags: AtomicU8,
+    lock: AtomicU8,
     link: LinkedListLink,
 }
 intrusive_adapter!(FrameAdapter = &'static Frame: Frame { link: LinkedListLink });
@@ -184,32 +184,10 @@ unsafe impl Sync for Frame {}
 
 impl core::fmt::Debug for Frame {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let this = self.lock();
-        let r = f
-            .debug_struct("Frame")
-            .field("pa", &this.pa)
-            .field("flags", &this.flags)
-            .finish();
-        this.unlock();
-        r
-    }
-}
-
-pub fn lock_two_frames<'a, 'b>(a: &'a Frame, b: &'b Frame) -> (&'a mut Frame, &'a mut Frame)
-where
-    'b: 'a,
-{
-    let a_val = a as *const Frame as usize;
-    let b_val = b as *const Frame as usize;
-    assert_ne!(a_val, b_val);
-    if a_val > b_val {
-        let lg_b = b.lock();
-        let lg_a = a.lock();
-        (lg_a, lg_b)
-    } else {
-        let lg_a = a.lock();
-        let lg_b = b.lock();
-        (lg_a, lg_b)
+        f.debug_struct("Frame")
+            .field("pa", &self.pa)
+            .field("flags", &self.flags.load(Ordering::SeqCst))
+            .finish()
     }
 }
 
@@ -217,16 +195,28 @@ impl Frame {
     // Safety: must only be called once, during admit_one, when the frame has not been initialized yet.
     unsafe fn reset(&self, pa: PhysAddr) {
         self.lock.store(0, Ordering::SeqCst);
-        let this = self.lock();
-        this.flags = PhysicalFrameFlags::empty();
-        this.link.force_unlink();
-        this.pa = pa;
+        self.flags.store(0, Ordering::SeqCst);
+        let pa_ptr = &self.pa as *const _ as *mut _;
+        *pa_ptr = pa;
+        self.link.force_unlink();
         // This store acts as a release for pa as well, which synchronizes with a load in lock (or unlock), which is always called
         // at least once during allocation, so any thread that accesses a frame syncs-with this write.
-        this.unlock();
+        self.unlock();
     }
 
-    fn lock(&self) -> &mut Self {
+    pub fn with_link<R>(&self, f: impl FnOnce(&mut LinkedListLink) -> R) -> R {
+        self.lock();
+        let link = unsafe {
+            (&self.link as *const _ as *mut LinkedListLink)
+                .as_mut()
+                .unwrap()
+        };
+        let r = f(link);
+        self.unlock();
+        r
+    }
+
+    fn lock(&self) {
         while self
             .lock
             .compare_exchange_weak(0, 1, Ordering::SeqCst, Ordering::SeqCst)
@@ -234,14 +224,9 @@ impl Frame {
         {
             core::hint::spin_loop();
         }
-        let this = self as *const _ as *mut Self;
-        // Safety: okay, so this is cursed. The 'inner' pattern breaks the intrusive list system here. What we really
-        // need is to ensure that only locked holders of the frame can access the fields (except pa, which is constant,
-        // and syncs with the store to lock on reset (see Frame::reset)).
-        unsafe { this.as_mut().unwrap() }
     }
 
-    fn unlock(&mut self) {
+    fn unlock(&self) {
         self.lock.store(0, Ordering::SeqCst);
     }
 
@@ -259,63 +244,59 @@ impl Frame {
     ///
     /// This marks a frame as being zeroed and also set the underlying physical memory to zero.
     pub fn zero(&self) {
-        let this = self.lock();
+        self.lock();
         let virt = phys_to_virt(self.pa);
         let ptr: *mut u8 = virt.as_mut_ptr();
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
         slice.fill(0);
-        this.flags.insert(PhysicalFrameFlags::ZEROED);
-        this.unlock();
+        self.flags
+            .fetch_or(PhysicalFrameFlags::ZEROED.bits(), Ordering::SeqCst);
+        self.unlock();
     }
 
     /// Mark this frame as not being zeroed. Does not modify the physical memory controlled by this Frame.
     pub fn set_not_zero(&self) {
-        let this = self.lock();
-        this.flags.remove(PhysicalFrameFlags::ZEROED);
-        this.unlock();
+        self.lock();
+        self.flags
+            .fetch_and(!PhysicalFrameFlags::ZEROED.bits(), Ordering::SeqCst);
+        self.unlock();
     }
 
     /// Check if this frame is marked as zeroed. Does not look at the underlying physical memory.
     pub fn is_zeroed(&self) -> bool {
-        let this = self.lock();
-        let z = this.flags.contains(PhysicalFrameFlags::ZEROED);
-        this.unlock();
-        z
+        self.get_flags().contains(PhysicalFrameFlags::ZEROED)
     }
 
     fn set_admitted(&self) {
-        let this = self.lock();
-        this.flags.insert(PhysicalFrameFlags::ADMITTED);
-        this.unlock();
+        self.flags
+            .fetch_or(PhysicalFrameFlags::ADMITTED.bits(), Ordering::SeqCst);
     }
 
     fn set_free(&self) {
-        let this = self.lock();
-        this.flags.remove(PhysicalFrameFlags::ALLOCATED);
-        this.unlock();
+        self.flags
+            .fetch_and(!PhysicalFrameFlags::ALLOCATED.bits(), Ordering::SeqCst);
     }
 
     fn set_allocated(&self) {
-        let this = self.lock();
-        this.flags.insert(PhysicalFrameFlags::ALLOCATED);
-        this.unlock();
+        self.flags
+            .fetch_or(PhysicalFrameFlags::ALLOCATED.bits(), Ordering::SeqCst);
     }
 
     /// Get the current flags.
     pub fn get_flags(&self) -> PhysicalFrameFlags {
-        let this = self.lock();
-        let flags = this.flags;
-        this.unlock();
-        flags
+        PhysicalFrameFlags::from_bits_truncate(self.flags.load(Ordering::SeqCst))
     }
 
     /// Copy contents of one frame into another. If the other frame is marked as zeroed, copying will not happen. Both
     /// frames are locked first.
     pub fn copy_contents_from(&self, other: &Frame) {
-        let (this, other) = lock_two_frames(self, other);
-        if other.flags.contains(PhysicalFrameFlags::ZEROED) {
+        self.lock();
+        // We don't need to lock the other frame, since if its contents aren't synchronized with this operation, it
+        // could have reordered to before or after.
+        if other.is_zeroed() {
             // if both are zero, do nothing
-            if this.flags.contains(PhysicalFrameFlags::ZEROED) {
+            if self.is_zeroed() {
+                self.unlock();
                 return;
             }
             // if other is zero and we aren't, just zero instead of copy
@@ -323,11 +304,14 @@ impl Frame {
             let ptr: *mut u8 = virt.as_mut_ptr();
             let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
             slice.fill(0);
-            this.flags.insert(PhysicalFrameFlags::ZEROED);
+            self.flags
+                .fetch_or(PhysicalFrameFlags::ZEROED.bits(), Ordering::SeqCst);
+            self.unlock();
             return;
         }
 
-        this.flags.remove(PhysicalFrameFlags::ZEROED);
+        self.flags
+            .fetch_and(!PhysicalFrameFlags::ZEROED.bits(), Ordering::SeqCst);
         let virt = phys_to_virt(self.pa);
         let ptr: *mut u8 = virt.as_mut_ptr();
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
@@ -337,14 +321,14 @@ impl Frame {
         let otherslice = unsafe { core::slice::from_raw_parts_mut(otherptr, self.size()) };
 
         slice.copy_from_slice(otherslice);
-        this.unlock();
-        other.unlock();
+        self.unlock();
     }
 
     /// Copy from another physical address into this frame.
     pub fn copy_contents_from_physaddr(&self, other: PhysAddr) {
-        let this = self.lock();
-        this.flags.remove(PhysicalFrameFlags::ZEROED);
+        self.lock();
+        self.flags
+            .fetch_and(!PhysicalFrameFlags::ZEROED.bits(), Ordering::SeqCst);
         let virt = phys_to_virt(self.pa);
         let ptr: *mut u8 = virt.as_mut_ptr();
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
@@ -354,14 +338,14 @@ impl Frame {
         let otherslice = unsafe { core::slice::from_raw_parts_mut(otherptr, self.size()) };
 
         slice.copy_from_slice(otherslice);
-        this.unlock();
+        self.unlock();
     }
 }
 
 bitflags::bitflags! {
     /// Flags to control the state of a physical frame. Also used by the alloc functions to indicate
     /// what kind of physical frame is being requested.
-    pub struct PhysicalFrameFlags: u32 {
+    pub struct PhysicalFrameFlags: u8 {
         /// The frame is zeroed (or, allocate a zeroed frame)
         const ZEROED = 1;
         /// The frame has been allocated by the system.

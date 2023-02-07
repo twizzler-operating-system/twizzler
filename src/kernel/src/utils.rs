@@ -12,6 +12,13 @@ pub fn align<T: From<usize> + Into<usize>>(val: T, align: usize) -> T {
     res.into()
 }
 
+/// Lock two mutexes in a stable order such that no deadlock cycles are created.
+///
+/// This is VITAL if you want to lock multiple mutexes for objects where you cannot
+/// statically ensure ordering to avoid deadlock. It ensures that any two given mutexes
+/// will be locked in the same order even if you permute the arguments to this function.
+/// It does so by inspecting the addresses of the mutexes themselves to project a total
+/// order onto the locks.
 pub fn lock_two<'a, 'b, A, B>(
     a: &'a Mutex<A>,
     b: &'b Mutex<B>,
@@ -29,7 +36,13 @@ pub fn lock_two<'a, 'b, A, B>(
         (lg_a, lg_b)
     }
 }
-
+/// Lock two spinlocks in a stable order such that no deadlock cycles are created.
+///
+/// This is VITAL if you want to lock multiple mutexes for objects where you cannot
+/// statically ensure ordering to avoid deadlock. It ensures that any two given spinlocks
+/// will be locked in the same order even if you permute the arguments to this function.
+/// It does so by inspecting the addresses of the spinlocks themselves to project a total
+/// order onto the locks.
 pub fn spinlock_two<'a, 'b, A, B, R: RelaxStrategy>(
     a: &'a GenericSpinlock<A, R>,
     b: &'b GenericSpinlock<B, R>,
