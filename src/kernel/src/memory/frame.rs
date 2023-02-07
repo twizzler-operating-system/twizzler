@@ -44,51 +44,23 @@ pub type FrameRef = &'static Frame;
 
 #[doc(hidden)]
 struct AllocationRegion {
-    start: PhysAddr,
+    indexer: FrameIndexer,
     next_for_init: PhysAddr,
     pages: usize,
     zeroed: LinkedList<FrameAdapter>,
     non_zeroed: LinkedList<FrameAdapter>,
-    frame_array_ptr: *mut Frame,
-    frame_array_len: usize,
 }
 
 // Safety: this is needed because of the raw pointer, but the raw pointer is static for the life of the kernel.
 unsafe impl Send for AllocationRegion {}
 
 impl AllocationRegion {
-    fn frame_array(&self) -> &[Frame] {
-        unsafe { core::slice::from_raw_parts(self.frame_array_ptr, self.frame_array_len) }
-    }
-
-    fn frame_array_mut(&mut self) -> &mut [Frame] {
-        unsafe { core::slice::from_raw_parts_mut(self.frame_array_ptr, self.frame_array_len) }
-    }
-
     fn contains(&self, pa: PhysAddr) -> bool {
-        pa >= self.start && pa < (self.start + self.pages * FRAME_SIZE)
+        self.indexer.contains(pa)
     }
 
     fn get_frame(&self, pa: PhysAddr) -> Option<FrameRef> {
-        if !self.contains(pa) {
-            return None;
-        }
-        let index = (pa - self.start) / FRAME_SIZE as u64;
-        assert!((index as usize) < self.frame_array_len);
-        let frame = &self.frame_array()[index as usize];
-        // Safety: the frame array is static for the life of the kernel
-        Some(unsafe { transmute(frame) })
-    }
-
-    fn get_frame_mut(&mut self, pa: PhysAddr) -> Option<&'static mut Frame> {
-        if !self.contains(pa) {
-            return None;
-        }
-        let index = (pa - self.start) / FRAME_SIZE as u64;
-        assert!((index as usize) < self.frame_array_len);
-        let frame = &mut self.frame_array_mut()[index as usize];
-        // Safety: the frame array is static for the life of the kernel
-        Some(unsafe { transmute(frame) })
+        self.indexer.get_frame(pa)
     }
 
     fn admit_one(&mut self) -> bool {
@@ -99,7 +71,7 @@ impl AllocationRegion {
         self.next_for_init += FRAME_SIZE;
 
         // Unwrap-Ok: we know this address is in this region already
-        let frame = self.get_frame_mut(next).unwrap();
+        let frame = self.get_frame(next).unwrap();
         // Safety: the frame can be reset since during admit_one we are the only ones with access to the frame data.
         unsafe { frame.reset(next) };
         frame.set_admitted();
@@ -169,13 +141,19 @@ impl AllocationRegion {
         let frame_array_ptr = phys_to_virt(start).as_mut_ptr();
 
         let mut this = Self {
-            start: start + array_pages * FRAME_SIZE,
+            // Safety: the pointer is to a static region of reserved memory.
+            indexer: unsafe {
+                FrameIndexer::new(
+                    start + array_pages * FRAME_SIZE,
+                    (nr_pages - array_pages) * FRAME_SIZE,
+                    frame_array_ptr,
+                    frame_array_len,
+                )
+            },
             next_for_init: start + array_pages * FRAME_SIZE,
             pages: nr_pages - array_pages,
             zeroed: LinkedList::new(FrameAdapter::NEW),
             non_zeroed: LinkedList::new(FrameAdapter::NEW),
-            frame_array_ptr,
-            frame_array_len,
         };
         for _ in 0..16 {
             this.admit_one();
@@ -237,13 +215,15 @@ where
 
 impl Frame {
     // Safety: must only be called once, during admit_one, when the frame has not been initialized yet.
-    unsafe fn reset(&mut self, pa: PhysAddr) {
-        self.flags = PhysicalFrameFlags::empty();
-        self.link.force_unlink();
-        self.pa = pa;
+    unsafe fn reset(&self, pa: PhysAddr) {
+        self.lock.store(0, Ordering::SeqCst);
+        let this = self.lock();
+        this.flags = PhysicalFrameFlags::empty();
+        this.link.force_unlink();
+        this.pa = pa;
         // This store acts as a release for pa as well, which synchronizes with a load in lock (or unlock), which is always called
         // at least once during allocation, so any thread that accesses a frame syncs-with this write.
-        self.lock.store(0, Ordering::SeqCst);
+        this.unlock();
     }
 
     fn lock(&self) -> &mut Self {
@@ -456,11 +436,65 @@ impl PhysicalFrameAllocator {
 #[doc(hidden)]
 static PFA: Once<Spinlock<PhysicalFrameAllocator>> = Once::new();
 
+#[derive(Clone)]
+struct FrameIndexer {
+    start: PhysAddr,
+    len: usize,
+    frame_array_ptr: *const Frame,
+    frame_array_len: usize,
+}
+
+impl FrameIndexer {
+    /// Build a new frame indexer.
+    ///
+    /// # Safety: The passed pointer and len must point to a valid section of memory reserved for the frame slice, which will last the lifetime of the kernel.
+    unsafe fn new(
+        start: PhysAddr,
+        len: usize,
+        frame_array_ptr: *const Frame,
+        frame_array_len: usize,
+    ) -> Self {
+        Self {
+            start,
+            len,
+            frame_array_ptr,
+            frame_array_len,
+        }
+    }
+
+    fn frame_array(&self) -> &[Frame] {
+        unsafe { core::slice::from_raw_parts(self.frame_array_ptr, self.frame_array_len) }
+    }
+
+    fn get_frame(&self, pa: PhysAddr) -> Option<FrameRef> {
+        if !self.contains(pa) {
+            return None;
+        }
+        let index = (pa - self.start) / FRAME_SIZE as u64;
+        assert!((index as usize) < self.frame_array_len);
+        let frame = &self.frame_array()[index as usize];
+        // Safety: the frame array is static for the life of the kernel
+        Some(unsafe { transmute(frame) })
+    }
+
+    fn contains(&self, pa: PhysAddr) -> bool {
+        pa >= self.start && pa < (self.start + self.len)
+    }
+}
+
+// Safety: this is needed because of the raw pointer, but the raw pointer is static for the life of the kernel.
+unsafe impl Send for FrameIndexer {}
+unsafe impl Sync for FrameIndexer {}
+
+#[doc(hidden)]
+static FI: Once<Vec<FrameIndexer>> = Once::new();
+
 /// Initialize the global physical frame allocator.
 /// # Arguments
 ///  * `regions`: An array of memory regions passed from the boot info system.
 pub fn init(regions: &[MemoryRegion]) {
     let pfa = PhysicalFrameAllocator::new(regions);
+    FI.call_once(|| pfa.regions.iter().map(|r| r.indexer.clone()).collect());
     PFA.call_once(|| Spinlock::new(pfa));
 }
 
@@ -508,4 +542,31 @@ pub fn free_frame(frame: FrameRef) {
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
     PFA.wait().lock().free(frame);
+}
+
+/// Get a FrameRef from a physical address.
+pub fn get_frame(pa: PhysAddr) -> Option<FrameRef> {
+    let fi = FI.wait();
+    for fi in fi {
+        let f = fi.get_frame(pa);
+        if f.is_some() {
+            return f;
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use twizzler_kernel_macros::kernel_test;
+
+    use super::{alloc_frame, get_frame, PhysicalFrameFlags};
+
+    #[kernel_test]
+    fn test_get_frame() {
+        let frame = alloc_frame(PhysicalFrameFlags::empty());
+        let addr = frame.start_address();
+        let test_frame = get_frame(addr).unwrap();
+        assert!(core::ptr::eq(frame as *const _, test_frame as *const _));
+    }
 }
