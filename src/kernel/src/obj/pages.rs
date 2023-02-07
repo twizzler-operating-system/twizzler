@@ -57,7 +57,7 @@ impl Page {
     pub fn as_slice(&self) -> &[u8] {
         let len = match self.frame {
             FrameOrWired::Frame(f) => f.size(),
-            FrameOrWired::Wired(_) => 0x1000, // TODO: arch-dep
+            FrameOrWired::Wired(_) => FRAME_SIZE,
         };
         unsafe { core::slice::from_raw_parts(self.as_virtaddr().as_ptr(), len) }
     }
@@ -145,7 +145,7 @@ impl Object {
     }
 
     pub fn write_base<T>(&self, info: &T) {
-        let mut offset = 0x1000; //TODO: arch-dep
+        let mut offset = FRAME_SIZE;
         unsafe {
             let mut obj_page_tree = self.lock_page_tree();
             let bytes = info as *const T as *const u8;
