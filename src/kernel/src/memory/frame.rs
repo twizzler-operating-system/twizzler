@@ -31,7 +31,7 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use crate::once::Once;
+use crate::{arch::memory::frame::FRAME_SIZE, once::Once};
 use alloc::vec::Vec;
 use intrusive_collections::{intrusive_adapter, LinkedList, LinkedListLink};
 
@@ -66,14 +66,14 @@ impl AllocationRegion {
     }
 
     fn contains(&self, pa: PhysAddr) -> bool {
-        pa >= self.start && pa < (self.start + self.pages * 0x1000) // TODO: arch-dep
+        pa >= self.start && pa < (self.start + self.pages * FRAME_SIZE)
     }
 
     fn get_frame(&self, pa: PhysAddr) -> Option<FrameRef> {
         if !self.contains(pa) {
             return None;
         }
-        let index = (pa - self.start) / 0x1000; // TODO: arch-dep
+        let index = (pa - self.start) / FRAME_SIZE as u64;
         assert!((index as usize) < self.frame_array_len);
         let frame = &self.frame_array()[index as usize];
         // Safety: the frame array is static for the life of the kernel
@@ -84,7 +84,7 @@ impl AllocationRegion {
         if !self.contains(pa) {
             return None;
         }
-        let index = (pa - self.start) / 0x1000; // TODO: arch-dep
+        let index = (pa - self.start) / FRAME_SIZE as u64;
         assert!((index as usize) < self.frame_array_len);
         let frame = &mut self.frame_array_mut()[index as usize];
         // Safety: the frame array is static for the life of the kernel
@@ -96,7 +96,7 @@ impl AllocationRegion {
         if !self.contains(next) {
             return false;
         }
-        self.next_for_init += 0x1000usize; // TODO: arch-dep
+        self.next_for_init += FRAME_SIZE;
 
         // Unwrap-Ok: we know this address is in this region already
         let frame = self.get_frame_mut(next).unwrap();
@@ -154,14 +154,14 @@ impl AllocationRegion {
     }
 
     fn new(m: &MemoryRegion) -> Option<Self> {
-        let start = m.start.align_up(0x1000u64);
+        let start = m.start.align_up(FRAME_SIZE as u64);
         let length = m.length - (start.as_u64() - m.start.as_u64()) as usize;
-        let nr_pages = length / 0x1000; // TODO: arch-dep
+        let nr_pages = length / FRAME_SIZE;
         if nr_pages <= 1 {
             return None;
         }
         let frame_array_len = size_of::<Frame>() * nr_pages;
-        let array_pages = ((frame_array_len - 1) / 0x1000) + 1;
+        let array_pages = ((frame_array_len - 1) / FRAME_SIZE) + 1;
         if array_pages >= nr_pages {
             return None;
         }
@@ -169,8 +169,8 @@ impl AllocationRegion {
         let frame_array_ptr = phys_to_virt(start).as_mut_ptr();
 
         let mut this = Self {
-            start: start + array_pages * 0x1000,         // TODO: arch-dep
-            next_for_init: start + array_pages * 0x1000, // TODO: arch-dep
+            start: start + array_pages * FRAME_SIZE,
+            next_for_init: start + array_pages * FRAME_SIZE,
             pages: nr_pages - array_pages,
             zeroed: LinkedList::new(FrameAdapter::NEW),
             non_zeroed: LinkedList::new(FrameAdapter::NEW),
@@ -272,7 +272,7 @@ impl Frame {
 
     /// Get the length of the frame in bytes.
     pub fn size(&self) -> usize {
-        4096 //TODO: arch-dep
+        FRAME_SIZE
     }
 
     /// Zero a frame.
