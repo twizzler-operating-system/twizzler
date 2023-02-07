@@ -148,6 +148,11 @@ impl EntryFlags {
     pub fn intermediate() -> Self {
         Self::USER | Self::WRITE | Self::PRESENT
     }
+
+    /// Get the flags needed to indicate a huge page.
+    pub fn huge() -> Self {
+        Self::HUGE_PAGE
+    }
 }
 
 impl From<&MappingSettings> for EntryFlags {

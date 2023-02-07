@@ -36,6 +36,10 @@ impl VirtAddr {
     pub fn offset(&self, offset: isize) -> Result<Self, NonCanonical> {
         Self::new(self.0.wrapping_add(offset as u64))
     }
+
+    pub fn raw(&self) -> u64 {
+        self.0
+    }
 }
 
 impl<T> From<&mut T> for VirtAddr {

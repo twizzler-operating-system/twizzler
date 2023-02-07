@@ -120,12 +120,19 @@ impl Table {
             }
 
             let paddr = phys.peek();
-
             if Self::can_map_at(cursor.start(), paddr.0, cursor.remaining(), paddr.1, level) {
                 self.update_entry(
                     consist,
                     idx,
-                    Entry::new(paddr.0, EntryFlags::from(settings)),
+                    Entry::new(
+                        paddr.0,
+                        EntryFlags::from(settings)
+                            | if level != 0 {
+                                EntryFlags::huge()
+                            } else {
+                                EntryFlags::empty()
+                            },
+                    ),
                     cursor.start(),
                     true,
                     level,
@@ -156,7 +163,7 @@ impl Table {
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
 
-            if entry.is_present() && (entry.is_huge() || level == 0) {
+            if entry.is_present() && (entry.is_huge() || level != 0) {
                 self.update_entry(
                     consist,
                     idx,
@@ -200,7 +207,15 @@ impl Table {
                 self.update_entry(
                     consist,
                     idx,
-                    Entry::new(addr, EntryFlags::from(settings)),
+                    Entry::new(
+                        addr,
+                        EntryFlags::from(settings)
+                            | if level != 0 {
+                                EntryFlags::huge()
+                            } else {
+                                EntryFlags::empty()
+                            },
+                    ),
                     cursor.start(),
                     true,
                     level,
