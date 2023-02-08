@@ -14,6 +14,8 @@ use crate::{
 
 use super::{Object, PageNumber};
 
+/// An object page can be either a physical frame (allocatable memory) or a static physical address (wired). This will likely be
+/// overhauled soon.
 #[derive(Debug)]
 enum FrameOrWired {
     Frame(FrameRef),
