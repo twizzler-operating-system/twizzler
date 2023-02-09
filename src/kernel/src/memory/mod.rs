@@ -8,9 +8,8 @@ pub mod allocator;
 pub mod context;
 pub mod fault;
 pub mod frame;
-mod address;
 
-pub use address::*;
+pub use arch::{VirtAddr, PhysAddr};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MemoryRegionKind {

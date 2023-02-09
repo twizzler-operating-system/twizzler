@@ -1,92 +1,24 @@
 use twizzler_abi::device::CacheType;
 
-use crate::memory::{VirtAddr as GenericVirtAddr, PhysAddr as GenericPhysAddr};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ArchPhysAddr;
-
-impl ArchPhysAddr {
-    pub fn new(_address: u64) -> Self {
-        todo!()
-    }
-
-    pub fn as_u64(self) -> u64 {
-        todo!()
-    }
-
-    pub fn align_up<U>(self, _alignment: U) -> Self
-    where
-        U: Into<u64>
-    {
-        todo!()
-    }
-
-    pub fn align_down<U>(self, _alignment: U) -> Self
-    where
-        U: Into<u64>
-    {
-        todo!()
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ArchVirtAddr;
-
-impl ArchVirtAddr {
-    pub fn new(_address: u64) -> Self {
-        todo!()
-    }
-
-    pub fn as_u64(self) -> u64 {
-        todo!()
-    }
-
-    pub fn from_ptr<T>(_ptr: *const T) -> Self {
-        todo!()
-    }
-
-    pub fn as_ptr<T>(self) -> *const T {
-        todo!()
-    } 
-
-    pub fn as_mut_ptr<T>(self) -> *mut T {
-        todo!()
-    }
-
-    pub fn align_up<U>(self, _alignment: U) -> Self
-    where
-        U: Into<u64>
-    {
-        todo!()
-    }
-
-    pub fn align_down<U>(self, _alignment: U) -> Self
-    where
-        U: Into<u64>
-    {
-        todo!()
-    }
-}
-
 use crate::memory::context::MapFlags;
-use crate::memory::{MapFailed, MappingInfo};
+use crate::memory::{VirtAddr, PhysAddr, MapFailed, MappingInfo};
 
 // start offset into physical memory
 const PHYS_MEM_OFFSET: u64 = 0x0;
 
 /* TODO: hide this */
-pub fn phys_to_virt(pa: GenericPhysAddr) -> GenericVirtAddr {
-    GenericVirtAddr::new(pa.as_u64() + PHYS_MEM_OFFSET)
+pub fn phys_to_virt(_pa: PhysAddr) -> VirtAddr {
+    todo!()
 }
 
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 pub struct Table {
-    frame: ArchPhysAddr,
+    frame: PhysAddr,
 }
 
-impl From<ArchPhysAddr> for Table {
-    fn from(frame: ArchPhysAddr) -> Self {
+impl From<PhysAddr> for Table {
+    fn from(frame: PhysAddr) -> Self {
         Self { frame }
     }
 }
@@ -108,7 +40,7 @@ impl ArchMemoryContext {
         todo!()
     }
 
-    pub fn root(&self) -> ArchPhysAddr {
+    pub fn root(&self) -> PhysAddr {
         self.table_root.frame
     }
 
@@ -120,7 +52,7 @@ impl ArchMemoryContext {
         todo!()
     }
 
-    pub fn from_existing_tables(_table_root: GenericPhysAddr) -> Self {
+    pub fn from_existing_tables(_table_root: PhysAddr) -> Self {
         todo!()
     }
 
@@ -128,14 +60,14 @@ impl ArchMemoryContext {
         todo!()
     }
 
-    pub fn get_map(&self, _va: GenericVirtAddr) -> Option<MappingInfo> {
+    pub fn get_map(&self, _va: VirtAddr) -> Option<MappingInfo> {
         todo!()
     }
 
     #[optimize(speed)]
     pub fn premap(
         &mut self,
-        _start: ArchVirtAddr,
+        _start: VirtAddr,
         _length: usize,
         _page_size: usize,
         _flags: MapFlags,
@@ -143,15 +75,15 @@ impl ArchMemoryContext {
         todo!()
     }
 
-    pub fn unmap(&mut self, _start: ArchVirtAddr, _length: usize) {
+    pub fn unmap(&mut self, _start: VirtAddr, _length: usize) {
         /* TODO: Free frames? */
         todo!()
     }
 
     pub fn map(
         &mut self,
-        _start: ArchVirtAddr,
-        _phys: ArchPhysAddr,
+        _start: VirtAddr,
+        _phys: PhysAddr,
         mut _length: usize,
         _flags: MapFlags,
         _cache_type: CacheType,

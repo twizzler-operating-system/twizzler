@@ -1,10 +1,10 @@
 use crate::{
     clock::Nanoseconds,
     interrupt::{Destination, PinPolarity, TriggerMode},
-    memory::VirtAddr,
     BootInfo,
 };
 
+mod address;
 pub mod interrupt;
 pub mod memory;
 pub mod processor;
@@ -12,8 +12,9 @@ mod syscall;
 pub mod thread;
 mod start;
 
-pub use start::BootInfoSystemTable;
+pub use address::{VirtAddr, PhysAddr};
 pub use interrupt::send_ipi;
+pub use start::BootInfoSystemTable;
 
 pub fn kernel_main() -> ! {
     emerglogln!("[kernel] hello world!!");
@@ -53,7 +54,7 @@ pub fn schedule_oneshot_tick(_time: Nanoseconds) {
 /// Jump into userspace
 /// # Safety
 /// The stack and target must be valid addresses.
-pub unsafe fn jump_to_user(_target: VirtAddr, _stack: VirtAddr, _arg: u64) {
+pub unsafe fn jump_to_user(_target: crate::memory::VirtAddr, _stack: crate::memory::VirtAddr, _arg: u64) {
     todo!();
 }
 
@@ -64,6 +65,6 @@ pub fn debug_shutdown(_code: u32) {
 /// Start up a CPU.
 /// # Safety
 /// The tcb_base and kernel stack must both be valid memory regions for each thing.
-pub unsafe fn poke_cpu(_cpu: u32, _tcb_base: VirtAddr, _kernel_stack: *mut u8) {
+pub unsafe fn poke_cpu(_cpu: u32, _tcb_base: crate::memory::VirtAddr, _kernel_stack: *mut u8) {
     todo!("start up a cpu")
 }

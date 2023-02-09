@@ -1,9 +1,10 @@
 use core::sync::atomic::Ordering;
 
+pub use x86_64::{VirtAddr, PhysAddr};
+
 use crate::{
     clock::Nanoseconds,
     interrupt::{Destination, PinPolarity, TriggerMode},
-    memory::VirtAddr,
     thread::current_thread_ref,
     BootInfo,
 };
@@ -48,7 +49,7 @@ pub fn start_clock(statclock_hz: u64, stat_cb: fn(Nanoseconds)) {
 /// Jump into userspace
 /// # Safety
 /// The stack and target must be valid addresses.
-pub unsafe fn jump_to_user(target: VirtAddr, stack: VirtAddr, arg: u64) {
+pub unsafe fn jump_to_user(target: crate::memory::VirtAddr, stack: crate::memory::VirtAddr, arg: u64) {
     use crate::syscall::SyscallContext;
     let ctx = syscall::X86SyscallContext::create_jmp_context(target, stack, arg);
     crate::thread::exit_kernel();
