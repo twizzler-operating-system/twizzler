@@ -4,8 +4,13 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use crate::{once::Once, spinlock::Spinlock};
-use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
+use crate::{
+    arch::interrupt::GENERIC_IPI_VECTOR,
+    interrupt::{self, Destination},
+    once::Once,
+    spinlock::Spinlock,
+};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 
 use crate::{
     arch::{self, processor::ArchProcessor},
@@ -15,11 +20,6 @@ use crate::{
     thread::{Priority, Thread, ThreadRef},
 };
 
-pub enum IPIDest {
-    Single(u32),
-    Others,
-    All,
-}
 #[thread_local]
 static mut BOOT_KERNEL_STACK: *mut u8 = core::ptr::null_mut();
 
@@ -40,6 +40,11 @@ pub struct ProcessorStats {
     pub switches: AtomicU64,
 }
 
+struct IpiTask {
+    outstanding: AtomicU64,
+    func: Box<dyn Fn() + Sync + Send>,
+}
+
 pub struct Processor {
     pub arch: ArchProcessor,
     pub sched: Spinlock<SchedulingQueues>,
@@ -50,6 +55,7 @@ pub struct Processor {
     pub idle_thread: Once<ThreadRef>,
     pub load: AtomicU64,
     pub stats: ProcessorStats,
+    ipi_tasks: Spinlock<Vec<Arc<IpiTask>>>,
 }
 
 const NR_QUEUES: usize = 32;
@@ -163,6 +169,7 @@ impl Processor {
             idle_thread: Once::new(),
             load: AtomicU64::new(1),
             stats: ProcessorStats::default(),
+            ipi_tasks: Spinlock::new(Vec::new()),
         }
     }
 
@@ -198,8 +205,25 @@ impl Processor {
             .store(true, core::sync::atomic::Ordering::SeqCst);
     }
 
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
     pub fn set_idle_thread(&self, idle: ThreadRef) {
         self.idle_thread.call_once(|| idle);
+    }
+
+    fn enqueue_ipi_task(&self, task: Arc<IpiTask>) {
+        task.outstanding.fetch_add(1, Ordering::SeqCst);
+        self.ipi_tasks.lock().push(task);
+    }
+
+    fn run_ipi_tasks(&self) {
+        let mut tasks = self.ipi_tasks.lock();
+        for task in tasks.drain(..) {
+            (task.func)();
+            task.outstanding.fetch_sub(1, Ordering::Release);
+        }
     }
 }
 
@@ -310,7 +334,9 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
         if !p.running.load(core::sync::atomic::Ordering::SeqCst) {
             start_secondary_cpu(p.id, tls_template);
         }
-        while !p.running.load(core::sync::atomic::Ordering::SeqCst) {}
+        while !p.running.load(core::sync::atomic::Ordering::SeqCst) {
+            core::hint::spin_loop();
+        }
     }
 
     let mut cpu_topo_root = CPUTopoNode::new(CPUTopoType::System);
@@ -353,5 +379,145 @@ pub fn register(id: u32, bsp_id: u32) {
         if id == bsp_id {
             ALL_PROCESSORS[id as usize].as_ref().unwrap().set_running();
         }
+    }
+}
+
+fn enqueue_ipi_task_many(incl_self: bool, task: &Arc<IpiTask>) {
+    let current = current_processor();
+    for p in unsafe { &ALL_PROCESSORS }.iter().flatten() {
+        if p.id != current.id || incl_self {
+            p.enqueue_ipi_task(task.clone());
+        }
+    }
+}
+
+/// Run a closure on some set of CPUs, waiting for all invocations to complete.
+pub fn ipi_exec(target: Destination, f: Box<dyn Fn() + Send + Sync>) {
+    let task = Arc::new(IpiTask {
+        outstanding: AtomicU64::new(0),
+        func: f,
+    });
+
+    // We need to disable interrupts to prevent our current CPU from changing until we've submitted the IPIs.
+    let int_state = interrupt::disable();
+    let current = current_processor();
+    match target {
+        // Lowest priority doesn't really make sense in IPIs, so we just pretend it goes to BSP.
+        Destination::Bsp | Destination::LowestPriority => {
+            get_processor(current.bsp_id()).enqueue_ipi_task(task.clone());
+        }
+        Destination::Single(id) => {
+            let proc = get_processor(id);
+            if !proc.is_running() {
+                logln!("tried to send IPI to non-running CPU");
+                interrupt::set(int_state);
+                return;
+            }
+            if proc.id == current.id {
+                // We are the only recipients, so just run the closure.
+                (task.func)();
+                interrupt::set(int_state);
+                return;
+            }
+            proc.enqueue_ipi_task(task.clone());
+        }
+        Destination::AllButSelf => enqueue_ipi_task_many(false, &task),
+        Destination::All => enqueue_ipi_task_many(true, &task),
+    }
+
+    // No point using the IPI hardware to send ourselves a message, so just run it manually if current CPU is included.
+    let (target, target_self) = match target {
+        Destination::All => (Destination::AllButSelf, true),
+        x => (x, false),
+    };
+    arch::send_ipi(target, GENERIC_IPI_VECTOR);
+
+    if target_self {
+        current.run_ipi_tasks();
+    }
+
+    // We can take interrupts while we wait for other CPUs to execute.
+    interrupt::set(int_state);
+
+    while task.outstanding.load(Ordering::SeqCst) != 0 {
+        // If interrupts are disabled, we could deadlock if another CPU asks to run IPIs on us. So check if we have
+        // outstanding tasks while we wait.
+        if !int_state {
+            current.run_ipi_tasks();
+        }
+        core::hint::spin_loop();
+    }
+    core::sync::atomic::fence(Ordering::SeqCst);
+}
+
+pub fn generic_ipi_handler() {
+    let current = current_processor();
+    current.run_ipi_tasks();
+    core::sync::atomic::fence(Ordering::SeqCst);
+}
+
+#[cfg(test)]
+mod test {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use alloc::{boxed::Box, sync::Arc};
+    use twizzler_kernel_macros::kernel_test;
+
+    use crate::interrupt::Destination;
+
+    use super::ALL_PROCESSORS;
+
+    #[kernel_test]
+    fn ipi_test() {
+        let nr_cpus = unsafe { &ALL_PROCESSORS }.iter().flatten().count();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter2 = counter.clone();
+        super::ipi_exec(
+            Destination::All,
+            Box::new(move || {
+                counter2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        assert_eq!(nr_cpus, counter.load(Ordering::SeqCst));
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter2 = counter.clone();
+        super::ipi_exec(
+            Destination::AllButSelf,
+            Box::new(move || {
+                counter2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        assert_eq!(nr_cpus, counter.load(Ordering::SeqCst) + 1);
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter2 = counter.clone();
+        super::ipi_exec(
+            Destination::Bsp,
+            Box::new(move || {
+                counter2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        assert_eq!(1, counter.load(Ordering::SeqCst));
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter2 = counter.clone();
+        super::ipi_exec(
+            Destination::Single(0),
+            Box::new(move || {
+                counter2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        assert_eq!(1, counter.load(Ordering::SeqCst));
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter2 = counter.clone();
+        super::ipi_exec(
+            Destination::LowestPriority,
+            Box::new(move || {
+                counter2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        assert_eq!(1, counter.load(Ordering::SeqCst));
     }
 }

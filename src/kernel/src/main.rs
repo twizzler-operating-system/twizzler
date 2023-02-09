@@ -43,6 +43,7 @@ pub mod utils;
 extern crate alloc;
 
 extern crate bitflags;
+
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use arch::BootInfoSystemTable;
@@ -117,10 +118,12 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
 }
 
 #[cfg(test)]
-pub fn test_runner(tests: &[&dyn Fn()]) {
+pub fn test_runner(tests: &[&(&str, &dyn Fn())]) {
     logln!("[kernel::test] running {} tests", tests.len());
     for test in tests {
-        test();
+        log!("test {} ... ", test.0);
+        (test.1)();
+        logln!("ok");
     }
 
     logln!("[kernel::test] test result: ok.");

@@ -15,11 +15,14 @@ use crate::{
 
 #[inline]
 pub fn disable() -> bool {
-    crate::arch::interrupt::disable()
+    let state = crate::arch::interrupt::disable();
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    state
 }
 
 #[inline]
 pub fn set(state: bool) {
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     crate::arch::interrupt::set(state);
 }
 

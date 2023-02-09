@@ -112,7 +112,18 @@ fn maybe_build_tests<'a>(
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
     }
-    options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
+    options.spec = Packages::Packages(
+        packages
+            .iter()
+            .filter_map(|p| {
+                if p.name() == "twizzler-kernel-macros" {
+                    None
+                } else {
+                    Some(p.name().to_string())
+                }
+            })
+            .collect(),
+    );
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
@@ -290,9 +301,21 @@ pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
                 short: false,
                 ansi: false,
             },
-            crate::MessageFormat::JsonDiagnosticShort => todo!(),
-            crate::MessageFormat::JsonDiagnosticRenderedAnsi => todo!(),
-            crate::MessageFormat::JsonRenderDiagnostics => todo!(),
+            crate::MessageFormat::JsonDiagnosticShort => MessageFormat::Json {
+                render_diagnostics: false,
+                short: true,
+                ansi: false,
+            },
+            crate::MessageFormat::JsonDiagnosticRenderedAnsi => MessageFormat::Json {
+                render_diagnostics: false,
+                short: false,
+                ansi: true,
+            },
+            crate::MessageFormat::JsonRenderDiagnostics => MessageFormat::Json {
+                render_diagnostics: true,
+                short: false,
+                ansi: false,
+            },
         },
         manifest_path: cli.manifest_path,
         build_tests: false,

@@ -19,9 +19,10 @@ use super::{
     thread::{Registers, UpcallAble},
 };
 
+pub const GENERIC_IPI_VECTOR: u32 = 200;
 pub const MIN_VECTOR: usize = 48;
 pub const MAX_VECTOR: usize = 239;
-pub const RESV_VECTORS: &[usize] = &[0x80];
+pub const RESV_VECTORS: &[usize] = &[0x80, GENERIC_IPI_VECTOR as usize];
 pub const NUM_VECTORS: usize = 256;
 #[derive(Copy, Clone)]
 #[repr(C)]
@@ -399,7 +400,7 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         );
     }
 
-    match number {
+    match number as u32 {
         14 => {
             let cr2 = unsafe { x86::controlregs::cr2() };
             let err = ctx.err;
@@ -437,7 +438,7 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             if user {
                 logln!("user exception {:#?} {:x}", ctx, ctx.rsp);
                 let t = current_thread_ref().unwrap();
-                let info = UpcallInfo::Exception(ExceptionInfo::new(n, ctx.err));
+                let info = UpcallInfo::Exception(ExceptionInfo::new(n.into(), ctx.err));
                 t.send_upcall(info);
             } else {
                 panic!(
@@ -454,6 +455,9 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             super::pit::timer_interrupt();
         }
         0x80 => {}
+        GENERIC_IPI_VECTOR => {
+            crate::processor::generic_ipi_handler();
+        }
         n if n >= 240 => {
             lapic::lapic_interrupt(number as u16);
         }
