@@ -11,6 +11,7 @@ use super::{
 };
 
 // interrupt vector table size/num vectors
+pub const GENERIC_IPI_VECTOR: u32 = 0;
 pub const MIN_VECTOR: usize = 0;
 pub const MAX_VECTOR: usize = 0;
 pub const RESV_VECTORS: &[usize] = &[0x0];

@@ -82,4 +82,3 @@ pub fn debug_shutdown(code: u32) {
     }
 }
 
-pub use lapic::send_ipi;
