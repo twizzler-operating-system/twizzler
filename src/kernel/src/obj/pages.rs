@@ -7,7 +7,6 @@ use crate::{
     arch::memory::{frame::FRAME_SIZE, phys_to_virt},
     memory::frame::{self, FrameRef, PhysicalFrameFlags},
     memory::{
-        frame::{self, Frame, PhysicalFrameFlags},
         PhysAddr, VirtAddr,
     },
 };

@@ -560,4 +560,11 @@ mod tests {
         let test_frame = get_frame(addr).unwrap();
         assert!(core::ptr::eq(frame as *const _, test_frame as *const _));
     }
+
+    #[kernel_test]
+    fn stress_test_pmm() {
+        for _ in 0..100000 {
+            let x = quick_random();
+        }
+    }
 }
