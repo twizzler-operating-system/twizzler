@@ -1,4 +1,5 @@
 use lazy_static::lazy_static;
+use core::fmt::Write;
 
 use crate::{
     interrupt::{Destination, TriggerMode},
@@ -136,7 +137,6 @@ lazy_static! {
 
 #[doc(hidden)]
 pub fn _print(args: ::core::fmt::Arguments) {
-    use core::fmt::Write;
     SERIAL1
         .lock()
         .write_fmt(args)
@@ -165,5 +165,13 @@ pub fn interrupt_handler() {
             drop(serial);
             crate::log::push_input_byte(x);
         }
+    }
+}
+
+pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
+    unsafe {
+        let _ = SERIAL1
+            .lock()
+            .write_str(core::str::from_utf8_unchecked(data));
     }
 }

@@ -8,9 +8,9 @@ use twizzler_abi::{
         ObjectCreateError, ObjectMapError, ReadClockInfoError, ReadClockListError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
     },
 };
-use x86_64::VirtAddr;
 
 use crate::clock::{fill_with_every_first, fill_with_kind, fill_with_first_kind};
+use crate::memory::VirtAddr;
 use crate::time::TICK_SOURCES;
 
 use self::{object::sys_new_handle, thread::thread_ctrl};

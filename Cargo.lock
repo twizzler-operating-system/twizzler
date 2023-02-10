@@ -134,7 +134,7 @@ checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 [[package]]
 name = "backtracer_core"
 version = "0.0.5"
-source = "git+https://github.com/twizzler-operating-system/backtracer?branch=twizzler#234531fc36634023cdee71fd0dccd610cfe54002"
+source = "git+https://github.com/twizzler-operating-system/backtracer?branch=twizzler#a84f7f986bbdf5ffa172364ba6b1b3deac51b4b0"
 dependencies = [
  "addr2line",
  "cfg-if 0.1.10",

@@ -5,11 +5,9 @@ use limine::{
     LiminePtr, LimineRsdpRequest,
 };
 
-use x86_64::{PhysAddr, VirtAddr};
-
 use crate::{
     initrd::BootModule,
-    memory::{MemoryRegion, MemoryRegionKind},
+    memory::{MemoryRegion, MemoryRegionKind, PhysAddr, VirtAddr},
     BootInfo,
 };
 

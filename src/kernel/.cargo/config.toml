@@ -1,8 +1,14 @@
-[target.'cfg(target_os = "none")']
+[target.x86_64-unknown-none]
 runner = "cargo run --package simple_boot --"
 rustflags = [
   "-C", "link-arg=--image-base=0xffffffff80100000", "-Cforce-unwind-tables", "-Cforce-frame-pointers=yes",
   "-C", "link-arg=--no-gc-sections"
+]
+
+[target.aarch64-unknown-none]
+rustflags = [
+  "-C", "link-args=-Tsrc/kernel/src/machine/arm/linker.ld",
+  "-C", "link-arg=--image-base=0xffffffff80100000"
 ]
 
 [env]

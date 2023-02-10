@@ -17,12 +17,11 @@ use core::ops::Add;
 
 use crate::once::Once;
 use alloc::vec::Vec;
-use x86_64::PhysAddr;
 
 use crate::arch::memory::phys_to_virt;
 use crate::spinlock::Spinlock;
 
-use super::{MemoryRegion, MemoryRegionKind};
+use super::{MemoryRegion, MemoryRegionKind, PhysAddr};
 
 #[doc(hidden)]
 #[repr(C)]
@@ -93,7 +92,7 @@ impl AllocationRegion {
             return None;
         }
         let pa = self.start;
-        self.start = self.start.add(0x1000usize); //TODO: arch-dep
+        self.start = self.start.add(0x1000usize); //TODO: arch-dep, page size
         self.pages -= 1;
         Some(pa)
     }

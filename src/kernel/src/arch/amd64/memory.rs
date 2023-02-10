@@ -1,7 +1,8 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use twizzler_abi::device::CacheType;
-use x86_64::{structures::paging::PageTable, PhysAddr, VirtAddr};
+use x86_64::{structures::paging::PageTable};
+use crate::memory::{VirtAddr, PhysAddr};
 
 fn translate_addr_inner(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<PhysAddr> {
     use x86_64::registers::control::Cr3;
@@ -30,11 +31,11 @@ fn translate_addr_inner(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<Phy
         };
     }
 
-    Some(frame.start_address() + u64::from(addr.page_offset()))
+    Some(PhysAddr::from(frame.start_address() + u64::from(addr.page_offset())))
 }
 
 pub fn translate_addr(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<PhysAddr> {
-    translate_addr_inner(addr, phys_mem_offset)
+    translate_addr_inner(addr.into(), phys_mem_offset.into())
 }
 
 use x86_64::structures::paging::OffsetPageTable;
@@ -44,6 +45,7 @@ use crate::memory::frame::{alloc_frame, PhysicalFrameFlags};
 use crate::memory::{MapFailed, MappingInfo};
 
 #[allow(clippy::missing_safety_doc)]
+// this is unused
 pub unsafe fn init(phys_mem_offset: VirtAddr) -> OffsetPageTable<'static> {
     let level_4_table = active_level_4_table(phys_mem_offset);
     OffsetPageTable::new(level_4_table, phys_mem_offset)
@@ -73,13 +75,13 @@ pub struct Table {
 impl Table {
     #[optimize(speed)]
     fn as_slice_mut(&mut self) -> &mut [u64] {
-        let va = phys_to_virt(self.frame);
+        let va = phys_to_virt(self.frame.into());
         unsafe { core::slice::from_raw_parts_mut(va.as_mut_ptr(), 512) }
     }
 
     #[optimize(speed)]
     fn as_slice(&self) -> &[u64] {
-        let va = phys_to_virt(self.frame);
+        let va = phys_to_virt(self.frame.into());
         unsafe { core::slice::from_raw_parts(va.as_ptr(), 512) }
     }
 
@@ -223,7 +225,7 @@ const PAGE_SIZE: usize = 0x1000;
 impl ArchMemoryContext {
     pub fn new_blank() -> Self {
         let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
-        let mut table_root: Table = frame.start_address().into();
+        let mut table_root: Table = PhysAddr::from(frame.start_address()).into();
         for i in 256..512 {
             table_root.get_child(
                 i,
@@ -257,7 +259,7 @@ impl ArchMemoryContext {
 
     pub fn from_existing_tables(table_root: PhysAddr) -> Self {
         Self {
-            table_root: table_root.into(),
+            table_root: PhysAddr::from(table_root).into(),
         }
     }
 
@@ -265,7 +267,8 @@ impl ArchMemoryContext {
         unsafe { Self::from_existing_tables(PhysAddr::new(x86::controlregs::cr3())) }
     }
 
-    pub fn get_map(&self, addr: VirtAddr) -> Option<MappingInfo> {
+    pub fn get_map(&self, va: VirtAddr) -> Option<MappingInfo> {
+        let addr: VirtAddr = va.into();
         let indexes = [
             addr.p4_index(),
             addr.p3_index(),
@@ -286,7 +289,7 @@ impl ArchMemoryContext {
             }
             if let Some((phys, flags)) = info {
                 assert!(len > 0);
-                return Some(MappingInfo::new(addr, phys, len, flags));
+                return Some(MappingInfo::new(va, phys.into(), len, flags));
             }
             if let Some(next_table) = table.get_child_noalloc((*idx).into()) {
                 table = next_table;
@@ -469,4 +472,14 @@ impl ArchMemoryContextSwitchInfo {
     pub unsafe fn switch(&self) {
         x86::controlregs::cr3_write(self.target)
     }
+}
+
+// flush the tlb, on x86 we can do this by overwriting cr3
+// with the same value this is not that efficient however
+// See Issue #32
+pub unsafe fn flush_tlb() {
+    // asm!("mov rax, cr3", "mov cr3, rax", lateout("rax") _);
+
+    let cr3 = x86::controlregs::cr3();
+    x86::controlregs::cr3_write(cr3);
 }

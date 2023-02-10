@@ -4,9 +4,9 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use twizzler_abi::syscall::{
     ThreadSync, ThreadSyncError, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
-use x86_64::VirtAddr;
 
 use crate::{
+    memory::VirtAddr,
     obj::{LookupFlags, ObjectRef},
     once::Once,
     spinlock::Spinlock,

@@ -1,5 +1,7 @@
 use core::sync::atomic::Ordering;
 
+pub use x86_64::{VirtAddr, PhysAddr};
+
 use crate::{
     clock::Nanoseconds,
     interrupt::{Destination, PinPolarity, TriggerMode},
@@ -20,6 +22,7 @@ mod syscall;
 pub mod thread;
 mod tsc;
 pub use start::BootInfoSystemTable;
+pub use lapic::{poke_cpu, send_ipi, schedule_oneshot_tick};
 pub fn init<B: BootInfo>(boot_info: &B) {
     desctables::init();
     interrupt::init_idt();
@@ -46,7 +49,7 @@ pub fn start_clock(statclock_hz: u64, stat_cb: fn(Nanoseconds)) {
 /// Jump into userspace
 /// # Safety
 /// The stack and target must be valid addresses.
-pub unsafe fn jump_to_user(target: VirtAddr, stack: VirtAddr, arg: u64) {
+pub unsafe fn jump_to_user(target: crate::memory::VirtAddr, stack: crate::memory::VirtAddr, arg: u64) {
     use crate::syscall::SyscallContext;
     let ctx = syscall::X86SyscallContext::create_jmp_context(target, stack, arg);
     crate::thread::exit_kernel();
@@ -62,9 +65,6 @@ pub unsafe fn jump_to_user(target: VirtAddr, stack: VirtAddr, arg: u64) {
     }
     syscall::return_to_user(&ctx as *const syscall::X86SyscallContext);
 }
-
-pub use lapic::schedule_oneshot_tick;
-use x86_64::VirtAddr;
 
 pub fn set_interrupt(
     num: u32,
@@ -82,4 +82,3 @@ pub fn debug_shutdown(code: u32) {
     }
 }
 
-pub use lapic::send_ipi;

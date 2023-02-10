@@ -9,10 +9,9 @@ use twizzler_abi::{
         ObjectSource,
     },
 };
-use x86_64::VirtAddr;
 
 use crate::{
-    memory::context::MemoryContextRef,
+    memory::{VirtAddr, context::MemoryContextRef},
     mutex::Mutex,
     obj::{copy::CopySpec, LookupFlags, Object, ObjectRef, PageNumber},
     once::Once,

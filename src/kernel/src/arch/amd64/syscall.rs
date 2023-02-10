@@ -1,9 +1,8 @@
 use core::sync::atomic::Ordering;
 
 use twizzler_abi::upcall::UpcallFrame;
-use x86_64::VirtAddr;
 
-use crate::{syscall::SyscallContext, thread::current_thread_ref};
+use crate::{memory::VirtAddr, syscall::SyscallContext, thread::current_thread_ref};
 
 use super::thread::{Registers, UpcallAble};
 

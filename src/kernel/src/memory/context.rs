@@ -2,11 +2,11 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use alloc::{collections::BTreeMap, sync::Arc};
 use twizzler_abi::{device::CacheType, object::Protections};
-use x86_64::VirtAddr;
 
 use crate::{
     arch::memory::{ArchMemoryContext, ArchMemoryContextSwitchInfo},
     idcounter::{Id, IdCounter},
+    memory::VirtAddr,
     mutex::{LockGuard, Mutex},
     obj::{pages::PageRef, ObjectRef},
 };
@@ -193,8 +193,8 @@ impl MemoryContextInner {
     pub fn map_object_page(&mut self, addr: VirtAddr, page: PageRef, perms: MappingPerms) {
         self.arch
             .map(
-                addr.align_down(0x1000u64),
-                page.physical_address(),
+                addr.align_down(0x1000u64).into(),
+                page.physical_address().into(),
                 0x1000,
                 MapFlags::USER | perms.into(),
                 page.cache_type(),
@@ -211,8 +211,8 @@ impl MemoryContextInner {
         for mapping in other_ctx.mappings_iter(addr) {
             self.arch
                 .map(
-                    mapping.addr,
-                    mapping.frame,
+                    mapping.addr.into(),
+                    mapping.frame.into(),
                     mapping.length,
                     mapping.flags | MapFlags::USER, //TODO,
                     CacheType::WriteBack,

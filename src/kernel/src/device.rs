@@ -14,10 +14,10 @@ use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     syscall::PinnedPage,
 };
-use x86_64::PhysAddr;
 
 use crate::{
     interrupt::WakeInfo,
+    memory::PhysAddr,
     mutex::Mutex,
     obj::{lookup_object, LookupFlags, ObjectRef},
     once::Once,

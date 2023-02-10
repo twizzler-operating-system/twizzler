@@ -4,12 +4,12 @@ use x86::{
     io::outb,
     segmentation::{BuildDescriptor, Descriptor, SegmentDescriptorBuilder},
 };
-use x86_64::{PhysAddr, VirtAddr};
 
 use crate::{
     arch::memory::phys_to_virt,
     clock::Nanoseconds,
     interrupt::{self, Destination},
+    memory::{PhysAddr, VirtAddr},
     processor,
 };
 

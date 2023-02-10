@@ -1,6 +1,6 @@
-use x86_64::VirtAddr;
 use xmas_elf::program::{self};
 
+use crate::memory::VirtAddr;
 use crate::once::Once;
 static KERNEL_IMAGE: Once<&'static [u8]> = Once::new();
 
