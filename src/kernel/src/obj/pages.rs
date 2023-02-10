@@ -2,11 +2,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::sync::Arc;
 use twizzler_abi::device::{CacheType, MMIO_OFFSET};
-use x86_64::{PhysAddr, VirtAddr};
 
 use crate::{
     arch::memory::phys_to_virt,
-    memory::frame::{self, Frame, PhysicalFrameFlags},
+    memory::{PhysAddr, VirtAddr, frame::{self, Frame, PhysicalFrameFlags}},
 };
 
 use super::{Object, PageNumber};

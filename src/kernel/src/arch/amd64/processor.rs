@@ -3,11 +3,11 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use alloc::{boxed::Box, vec::Vec};
 use x86_64::{
     registers::{control::Cr4Flags, model_specific::EferFlags},
-    VirtAddr,
 };
 
 use crate::{
     interrupt::Destination,
+    memory::VirtAddr,
     processor::{current_processor, Processor},
 };
 

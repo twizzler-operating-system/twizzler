@@ -1,9 +1,9 @@
 use core::ptr::NonNull;
 
 use acpi::AcpiTables;
-use x86_64::PhysAddr;
 
 use crate::once::Once;
+use crate::memory::PhysAddr;
 
 use super::memory::phys_to_virt;
 

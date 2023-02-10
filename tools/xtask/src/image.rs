@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::Context;
 
-use crate::{build::TwizzlerCompilation, ImageOptions};
+use crate::{build::TwizzlerCompilation, ImageOptions, triple::Arch};
 
 pub struct ImageInfo {
     pub disk_image: PathBuf,
@@ -106,12 +106,21 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
 
     crate::print_status_line("disk image", Some(&cli.config));
     let cmdline = if cli.tests { "--tests" } else { "" };
+    let efi_binary = match cli.config.arch {
+        Arch::X86_64 => "toolchain/install/BOOTX64.EFI",
+        Arch::Aarch64  => "toolchain/install/BOOTAA64.EFI",
+    };
     let image_path = get_genfile_path(&comp, "disk.img");
     let status = Command::new(get_tool_path(&comp, "image_builder")?)
+        .arg("--disk-path")
         .arg(&image_path)
+        .arg("--kernel-path")
         .arg(comp.get_kernel_image(cli.tests))
+        .arg("--initrd-path")
         .arg(initrd_path)
-        .arg(cmdline)
+        .arg(format!("--cmdline={}", cmdline))
+        .arg("--efi-binary")
+        .arg(efi_binary)
         .status()?;
 
     if status.success() {

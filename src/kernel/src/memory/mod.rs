@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
+use core::ops::Add;
 use twizzler_abi::device::CacheType;
-use x86_64::{PhysAddr, VirtAddr};
 
 use crate::{arch, spinlock::Spinlock, BootInfo};
 
@@ -8,6 +8,9 @@ pub mod allocator;
 pub mod context;
 pub mod fault;
 pub mod frame;
+
+pub use arch::{VirtAddr, PhysAddr};
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MemoryRegionKind {
     UsableRam,
@@ -91,8 +94,8 @@ fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContextInner {
     new_context
         .arch
         .map(
-            phys_mem_offset,
-            PhysAddr::new(0),
+            phys_mem_offset.into(),
+            PhysAddr::new(0).into(),
             0x100000000,
             MapFlags::READ | MapFlags::WRITE | MapFlags::GLOBAL | MapFlags::WIRED,
             CacheType::WriteBack,
@@ -102,8 +105,8 @@ fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContextInner {
     new_context
         .arch
         .map(
-            VirtAddr::new(0),
-            PhysAddr::new(0),
+            VirtAddr::new(0).into(),
+            PhysAddr::new(0).into(),
             0x100000000,
             MapFlags::READ
                 | MapFlags::WRITE
@@ -135,13 +138,13 @@ impl KernelMemoryManager {
         let mut innerm = self.inner.lock();
         let inner = &mut *innerm;
 
-        let mut count = 0;
+        let mut count: usize = 0;
         /* TODO: we could make this better, probably, by hooking more directly into arch-dep to allow it to map larger regions more automatically. */
         loop {
             let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
             let _res = inner.kernel_context.arch.map(
-                addr + count,
-                frame.start_address(),
+                addr.add(count).into(),
+                frame.start_address().into(),
                 frame.size() as usize,
                 MapFlags::READ | MapFlags::WRITE | MapFlags::GLOBAL | MapFlags::WIRED,
                 CacheType::WriteBack,
@@ -161,7 +164,7 @@ impl KernelMemoryManager {
             .kernel_context
             .arch
             .premap(
-                start,
+                start.into(),
                 length,
                 page_size,
                 MapFlags::READ | MapFlags::WRITE | MapFlags::GLOBAL | MapFlags::WIRED,
@@ -184,10 +187,9 @@ pub fn finish_setup() {
     let kc = &mut *kernel_memory_manager().inner.lock();
     kc.kernel_context
         .arch
-        .unmap(VirtAddr::new(0), 0x100000000 /*TODO */);
+        .unmap(VirtAddr::new(0).into(), 0x100000000 /*TODO */);
     unsafe {
-        let cr3 = x86::controlregs::cr3();
-        x86::controlregs::cr3_write(cr3);
+        arch::memory::flush_tlb();
     }
 }
 

@@ -48,6 +48,20 @@ struct BuildConfig {
     pub machine: Machine,
 }
 
+impl BuildConfig {
+    fn is_default_arch(&self) -> bool {
+        self.arch == Arch::X86_64
+    }
+
+    fn is_default_machine(&self) -> bool {
+        self.machine == Machine::Unknown
+    }
+
+    pub fn is_default_target(&self) -> bool {
+        self.is_default_arch() && self.is_default_machine()
+    }
+}
+
 #[derive(Args, Debug)]
 struct BuildOptions {
     #[clap(flatten)]

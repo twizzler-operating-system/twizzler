@@ -1,7 +1,5 @@
-use x86_64::VirtAddr;
-
 use crate::{
-    memory::context::MappingPerms,
+    memory::{VirtAddr, context::MappingPerms},
     obj::{pages::Page, PageNumber},
     thread::{current_memory_context, current_thread_ref},
 };
@@ -87,7 +85,7 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
             if flags.contains(PageFaultFlags::PRESENT) {
                 unsafe {
                     // TODO: see #32
-                    core::arch::asm!("mov rax, cr3", "mov cr3, rax", lateout("rax") _);
+                    crate::arch::memory::flush_tlb();
                 }
             }
         } else {

@@ -41,7 +41,7 @@ pub fn post_interrupt() {
 
 #[inline]
 pub fn send_ipi(destination: Destination, ipi: InterProcessorInterrupt) {
-    arch::lapic::send_ipi(destination, ipi as u32)
+    arch::send_ipi(destination, ipi as u32)
 }
 
 #[derive(Debug, Clone, Copy)]

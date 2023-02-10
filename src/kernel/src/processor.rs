@@ -11,11 +11,11 @@ use crate::{
     spinlock::Spinlock,
 };
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
-use x86_64::VirtAddr;
 
 use crate::{
     arch::{self, processor::ArchProcessor},
     image::TlsInfo,
+    memory::VirtAddr,
     sched::{CPUTopoNode, CPUTopoType},
     thread::{Priority, Thread, ThreadRef},
 };
@@ -325,7 +325,7 @@ fn start_secondary_cpu(cpu: u32, tls_template: TlsInfo) {
 
     //logln!("poking cpu {} {:?} {:?}", cpu, tcb_base, kernel_stack);
     unsafe {
-        crate::arch::lapic::poke_cpu(cpu, tcb_base, kernel_stack);
+        crate::arch::poke_cpu(cpu, tcb_base, kernel_stack);
     }
 }
 
