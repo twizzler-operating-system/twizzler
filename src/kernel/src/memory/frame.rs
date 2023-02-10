@@ -549,9 +549,12 @@ pub fn get_frame(pa: PhysAddr) -> Option<FrameRef> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
     use twizzler_kernel_macros::kernel_test;
 
-    use super::{alloc_frame, get_frame, PhysicalFrameFlags};
+    use crate::utils::quick_random;
+
+    use super::{alloc_frame, free_frame, get_frame, PhysicalFrameFlags};
 
     #[kernel_test]
     fn test_get_frame() {
@@ -563,8 +566,26 @@ mod tests {
 
     #[kernel_test]
     fn stress_test_pmm() {
+        let mut stack = Vec::new();
         for _ in 0..100000 {
             let x = quick_random();
+            let y = quick_random();
+            let z = quick_random();
+            if x % 2 == 0 && stack.len() < 1000 {
+                let frame = if y % 3 == 0 {
+                    alloc_frame(PhysicalFrameFlags::ZEROED)
+                } else {
+                    alloc_frame(PhysicalFrameFlags::empty())
+                };
+                if z % 5 == 0 {
+                    frame.zero();
+                }
+                stack.push(frame);
+            } else {
+                if let Some(frame) = stack.pop() {
+                    free_frame(frame);
+                }
+            }
         }
     }
 }
