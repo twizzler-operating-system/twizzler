@@ -1,5 +1,6 @@
 use crate::{
     mutex::{LockGuard, Mutex},
+    processor::current_processor,
     spinlock::{self, GenericSpinlock, RelaxStrategy},
 };
 
@@ -59,4 +60,20 @@ pub fn spinlock_two<'a, 'b, A, B, R: RelaxStrategy>(
         let lg_b = b.lock();
         (lg_a, lg_b)
     }
+}
+
+#[thread_local]
+static mut RAND_STATE: u32 = 0;
+
+/// A quick, but poor, NON CRYPTOGRAPHIC random number generator.
+pub fn quick_random() -> u32 {
+    let mut state = unsafe { RAND_STATE };
+    if state == 0 {
+        state = current_processor().id;
+    }
+    let newstate = state.wrapping_mul(69069).wrapping_add(5);
+    unsafe {
+        RAND_STATE = newstate;
+    }
+    newstate >> 16
 }

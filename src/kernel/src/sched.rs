@@ -10,6 +10,7 @@ use crate::{
     processor::{current_processor, get_processor, Processor},
     spinlock::Spinlock,
     thread::{current_thread_ref, set_current_thread, Priority, Thread, ThreadRef, ThreadState},
+    utils::quick_random,
 };
 
 #[derive(Clone, Debug, Copy)]
@@ -87,21 +88,6 @@ pub fn set_cpu_topology(root: CPUTopoNode) {
 
 pub fn get_cpu_topology() -> &'static CPUTopoNode {
     CPU_TOPOLOGY_ROOT.poll().unwrap()
-}
-
-#[thread_local]
-static mut RAND_STATE: u32 = 0;
-
-fn quick_random() -> u32 {
-    let mut state = unsafe { RAND_STATE };
-    if state == 0 {
-        state = current_processor().id;
-    }
-    let newstate = state.wrapping_mul(69069).wrapping_add(5);
-    unsafe {
-        RAND_STATE = newstate;
-    }
-    newstate >> 16
 }
 
 struct SearchCPUResult {
