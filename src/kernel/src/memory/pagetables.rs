@@ -12,6 +12,7 @@ mod table;
 pub use cursor::MappingCursor;
 
 pub use crate::arch::memory::pagetables::Table;
+pub use consistency::DeferredUnmappingOps;
 pub use mapper::Mapper;
 pub use phys_provider::PhysAddrProvider;
 pub use reader::{MapInfo, MapReader};

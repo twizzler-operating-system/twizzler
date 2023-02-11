@@ -293,12 +293,16 @@ impl ObjectHandle for MemoryContextRef {
     }
 }
 
+pub mod virtmem;
+
 /// A trait that defines the operations expected by higher-level object management routines. An architecture-dependent
 /// type can be created that implements Context, which can then be used by the rest of the kernel to manage objects in a
 /// context (e.g. an address space).
 trait Context {
     /// The type that is expected for upcall information (e.g. an entry address).
     type UpcallInfo;
+    /// The type that is expected for informing the context how to map the object (e.g. a slot number).
+    type MappingInfo;
 
     /// Set the context's upcall information.
     fn set_upcall(&self, target: Self::UpcallInfo);
@@ -312,14 +316,17 @@ trait Context {
     fn insert_object(
         &self,
         obj: ObjectRef,
-        start: usize,
-        len: usize,
+        mapping_info: Self::MappingInfo,
         perms: MappingPerms,
-        cache: CacheType,
-    );
+        cache: crate::memory::map::CacheType,
+    ) -> Result<(), InsertError>;
     /// Remove an object's mapping from the context.
     fn remove_object(&self, obj: ObjID, start: usize, len: usize);
     /// Write protect a region of the object's mapping. For correctness, the implementation must ensure that the region
     /// is, indeed, write protected. If this means protecting the entire object, so be it.
     fn write_protect(&self, obj: ObjID, start: usize, len: usize);
+}
+
+pub enum InsertError {
+    Occupied,
 }

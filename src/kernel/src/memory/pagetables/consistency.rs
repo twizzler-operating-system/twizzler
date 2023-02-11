@@ -49,12 +49,26 @@ impl Consistency {
     fn flush_invalidations(&mut self) {
         self.tlb.finish();
     }
+
+    pub(super) fn into_deferred(self) -> DeferredUnmappingOps {
+        DeferredUnmappingOps { pages: self.pages }
+    }
 }
 
-impl Drop for Consistency {
+pub struct DeferredUnmappingOps {
+    pages: LinkedList<FrameAdapter>,
+}
+
+impl Drop for DeferredUnmappingOps {
     fn drop(&mut self) {
-        while let Some(item) = self.pages.pop_back() {
-            free_frame(item);
+        assert!(self.pages.is_empty());
+    }
+}
+
+impl DeferredUnmappingOps {
+    pub fn run_all(mut self) {
+        for page in self.pages.pop_back() {
+            free_frame(page)
         }
     }
 }
