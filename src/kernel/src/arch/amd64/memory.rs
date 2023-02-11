@@ -4,6 +4,8 @@ use twizzler_abi::device::CacheType;
 use x86_64::{structures::paging::PageTable};
 use crate::memory::{VirtAddr, PhysAddr};
 
+pub mod frame;
+
 fn translate_addr_inner(addr: VirtAddr, phys_mem_offset: VirtAddr) -> Option<PhysAddr> {
     use x86_64::registers::control::Cr3;
     use x86_64::structures::paging::page_table::FrameError;
