@@ -1,17 +1,13 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use super::VirtAddr;
 use alloc::{collections::BTreeMap, sync::Arc};
+use twizzler_abi::object::ObjID;
 use twizzler_abi::{device::CacheType, object::Protections};
-use twizzler_abi::{
-    device::CacheType,
-    object::{ObjID, Protections},
-};
-use x86_64::VirtAddr;
 
 use crate::{
     arch::memory::{ArchMemoryContext, ArchMemoryContextSwitchInfo},
     idcounter::{Id, IdCounter},
-    memory::VirtAddr,
     mutex::{LockGuard, Mutex},
     obj::{pages::PageRef, ObjectRef},
 };
