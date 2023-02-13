@@ -327,6 +327,7 @@ trait Context {
     fn write_protect(&self, obj: ObjID, start: usize, len: usize);
 }
 
+/// Errors for inserting objects into a [Context].
 pub enum InsertError {
     Occupied,
 }

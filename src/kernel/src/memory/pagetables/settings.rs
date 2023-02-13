@@ -3,7 +3,10 @@ use crate::memory::{context::MappingPerms, map::CacheType};
 bitflags::bitflags! {
     /// A collection of flags commonly used for mapping.
     pub struct MappingFlags : u64 {
+        /// The mapping is global, and may persist in the TLB across context switches.
         const GLOBAL = 1;
+        /// The mapping is accessible by userspace.
+        const USER = 2;
     }
 }
 
