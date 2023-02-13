@@ -60,7 +60,7 @@ impl PhysAddrProvider for ObjectPageProvider {
         todo!()
     }
 
-    fn consume(&mut self, len: usize) {
+    fn consume(&mut self, _len: usize) {
         todo!()
     }
 }
@@ -129,7 +129,7 @@ impl Context for VirtContext {
         Ok(())
     }
 
-    fn remove_object(&self, obj: twizzler_abi::object::ObjID, start: usize, len: usize) {
+    fn remove_object(&self, _obj: twizzler_abi::object::ObjID, _start: usize, _len: usize) {
         todo!()
     }
 
