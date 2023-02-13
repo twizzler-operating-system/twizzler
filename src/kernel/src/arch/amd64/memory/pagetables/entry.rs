@@ -109,11 +109,14 @@ impl EntryFlags {
 
     /// Extract the [MappingFlags].
     pub fn flags(&self) -> MappingFlags {
+        let mut flags = MappingFlags::empty();
         if self.contains(EntryFlags::GLOBAL) {
-            MappingFlags::GLOBAL
-        } else {
-            MappingFlags::empty()
+            flags.insert(MappingFlags::GLOBAL);
         }
+        if self.contains(EntryFlags::USER) {
+            flags.insert(MappingFlags::USER);
+        }
+        flags
     }
 
     /// Get the represented permissions as a [MappingPerms].
@@ -175,6 +178,11 @@ impl From<&MappingSettings> for EntryFlags {
         } else {
             EntryFlags::empty()
         };
-        p | c | f
+        let u = if settings.flags().contains(MappingFlags::USER) {
+            EntryFlags::USER
+        } else {
+            EntryFlags::empty()
+        };
+        p | c | f | u
     }
 }

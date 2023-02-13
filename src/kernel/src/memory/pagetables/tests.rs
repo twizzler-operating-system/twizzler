@@ -98,7 +98,7 @@ mod test {
         assert_eq!(read.settings().perms(), settings2.perms());
         assert_eq!(read.settings().flags(), settings2.flags());
 
-        m.unmap(cur);
+        let _ = m.unmap(cur);
 
         let mut reader = m.readmap(cur);
         assert_eq!(reader.next(), None);
@@ -160,7 +160,7 @@ mod test {
         assert_eq!(read.settings().perms(), settings2.perms());
         assert_eq!(read.settings().flags(), settings2.flags());
 
-        m.unmap(cur);
+        let _ = m.unmap(cur);
 
         let mut reader = m.readmap(cur);
         assert_eq!(reader.next(), None);
