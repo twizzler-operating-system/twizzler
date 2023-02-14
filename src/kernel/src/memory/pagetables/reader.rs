@@ -15,20 +15,22 @@ impl<'a> Iterator for MapReader<'a> {
     type Item = MapInfo;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(cursor) = self.cursor {
-            if cursor.remaining() == 0 {
+        loop {
+            if let Some(cursor) = self.cursor {
+                if cursor.remaining() == 0 {
+                    return None;
+                }
+                let info = self.mapper.do_read_map(&cursor);
+                if let Some(info) = info {
+                    self.cursor = cursor.advance(info.psize);
+                    return Some(info);
+                } else {
+                    self.cursor = cursor.advance(Table::level_to_page_size(0));
+                    continue;
+                }
+            } else {
                 return None;
             }
-            let info = self.mapper.do_read_map(&cursor);
-            if let Some(info) = info {
-                self.cursor = cursor.advance(info.psize);
-                Some(info)
-            } else {
-                self.cursor = cursor.advance(Table::level_to_page_size(0));
-                self.next()
-            }
-        } else {
-            None
         }
     }
 }
