@@ -8,8 +8,10 @@ pub mod allocator;
 pub mod context;
 pub mod fault;
 pub mod frame;
+pub mod map;
+pub mod pagetables;
 
-pub use arch::{VirtAddr, PhysAddr};
+pub use arch::{PhysAddr, VirtAddr};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MemoryRegionKind {
