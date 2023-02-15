@@ -1,3 +1,4 @@
+use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::VirtAddr;
@@ -330,4 +331,14 @@ trait Context {
 /// Errors for inserting objects into a [Context].
 pub enum InsertError {
     Occupied,
+}
+
+/// A trait for kernel-related memory context actions.
+pub(super) trait KernelMemoryContext {
+    /// Allocate a contiguous chunk of memory. This is not expected to be good for small allocations, this should be
+    /// used to grab large chunks of memory to then serve pieces of using an actual allocator. Returns a pointer to the
+    /// allocated memory and the size of the allocation (must be greater than layout's size).
+    fn allocate_chunk(&self, layout: Layout) -> *mut u8;
+    /// Deallocate a previously allocated chunk.
+    fn deallocate_chunk(&self, layout: Layout, ptr: *mut u8);
 }

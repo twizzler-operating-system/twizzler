@@ -205,5 +205,5 @@ pub fn init<B: BootInfo>(boot_info: &B, clone_regions: &[VirtAddr]) {
         }))
     };
 
-    allocator::init(kernel_memory_manager());
+    //allocator::init(kernel_memory_manager());
 }

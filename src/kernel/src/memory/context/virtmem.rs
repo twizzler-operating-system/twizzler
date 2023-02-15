@@ -1,7 +1,7 @@
 use alloc::collections::BTreeMap;
 use twizzler_abi::object::{ObjID, MAX_SIZE};
 
-use super::{Context, InsertError, MappingPerms};
+use super::{Context, InsertError, KernelMemoryContext, MappingPerms};
 use crate::{
     arch::{address::VirtAddr, context::ArchContext},
     memory::{
@@ -170,5 +170,15 @@ impl VirtContextSlot {
         ObjectPageProvider {
             obj: self.obj.clone(),
         }
+    }
+}
+
+impl KernelMemoryContext for VirtContext {
+    fn allocate_chunk(&self, layout: core::alloc::Layout) -> *mut u8 {
+        todo!()
+    }
+
+    fn deallocate_chunk(&self, layout: core::alloc::Layout, ptr: *mut u8) {
+        todo!()
     }
 }
