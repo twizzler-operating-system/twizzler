@@ -1,15 +1,14 @@
 use alloc::alloc::{GlobalAlloc, Layout};
 use core::{
-    intrinsics::transmute,
     panic,
-    ptr::{self, NonNull},
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    ptr::NonNull,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 use slabmalloc::{AllocationError, Allocator, LargeObjectPage, ObjectPage, ZoneAllocator};
 
 use crate::spinlock::Spinlock;
 
-use super::context::KernelMemoryContext;
+use super::context::{virtmem::VirtContext, KernelMemoryContext};
 
 #[alloc_error_handler]
 fn alloc_error_handler(layout: Layout) -> ! {
@@ -43,35 +42,41 @@ impl<Ctx: KernelMemoryContext> KernelAllocator<Ctx> {
 
 impl<Ctx: KernelMemoryContext> KernelAllocatorInner<Ctx> {
     fn allocate_page(&mut self) -> &'static mut ObjectPage<'static> {
-        let chunk = self.ctx.allocate_chunk(
-            Layout::from_size_align(
-                ZoneAllocator::MAX_BASE_ALLOC_SIZE,
-                ZoneAllocator::MAX_BASE_ALLOC_SIZE,
+        let chunk = self
+            .ctx
+            .allocate_chunk(
+                Layout::from_size_align(
+                    ZoneAllocator::MAX_BASE_ALLOC_SIZE,
+                    ZoneAllocator::MAX_BASE_ALLOC_SIZE,
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        );
+            .as_ptr();
         unsafe { &mut *(chunk as *mut ObjectPage<'static>) }
     }
 
     fn allocate_large_page(&mut self) -> &'static mut LargeObjectPage<'static> {
-        let chunk = self.ctx.allocate_chunk(
-            Layout::from_size_align(
-                ZoneAllocator::MAX_BASE_ALLOC_SIZE,
-                ZoneAllocator::MAX_BASE_ALLOC_SIZE,
+        let chunk = self
+            .ctx
+            .allocate_chunk(
+                Layout::from_size_align(
+                    ZoneAllocator::MAX_BASE_ALLOC_SIZE,
+                    ZoneAllocator::MAX_BASE_ALLOC_SIZE,
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        );
+            .as_ptr();
         unsafe { &mut *(chunk as *mut LargeObjectPage<'static>) }
     }
 }
 
 unsafe impl<Ctx: KernelMemoryContext> GlobalAlloc for KernelAllocator<Ctx> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let inner = self.inner.lock();
+        let mut inner = self.inner.lock();
         if inner.is_none() {
             return self.early_alloc(layout);
         }
-        let inner = inner.as_ref().unwrap();
+        let inner = inner.as_mut().unwrap();
         match layout.size() {
             0..=ZoneAllocator::MAX_ALLOC_SIZE => match inner.zone.allocate(layout) {
                 Ok(nptr) => nptr.as_ptr(),
@@ -104,31 +109,36 @@ unsafe impl<Ctx: KernelMemoryContext> GlobalAlloc for KernelAllocator<Ctx> {
                     panic!("cannot allocate this layout {:?}", layout)
                 }
             },
-            _ => inner.ctx.allocate_chunk(layout),
+            _ => inner.ctx.allocate_chunk(layout).as_ptr(),
         }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let inner = self.inner.lock();
+        let mut inner = self.inner.lock();
         if inner.is_none() {
             /* freeing memory in early init. Sadly, we just have to leak it. */
             return;
         }
-        let inner = inner.as_ref().unwrap();
-        let nonnull = ptr.as_ref();
-        if nonnull.is_none() {
+        let inner = inner.as_mut().unwrap();
+        if ptr.is_null() {
             return;
         }
+        let nn = NonNull::new(ptr).unwrap();
         match layout.size() {
             0..=ZoneAllocator::MAX_ALLOC_SIZE => {
-                if let Some(nptr) = NonNull::new(ptr) {
-                    inner
-                        .zone
-                        .deallocate(nptr, layout)
-                        .expect("failed to deallocate memory");
-                }
+                inner
+                    .zone
+                    .deallocate(nn, layout)
+                    .expect("failed to deallocate memory");
             }
-            _ => inner.ctx.deallocate_chunk(layout, ptr),
+            _ => inner
+                .ctx
+                .deallocate_chunk(layout, NonNull::new(ptr).unwrap()),
         }
     }
 }
+
+#[global_allocator]
+static SLAB_ALLOCATOR: KernelAllocator<VirtContext> = KernelAllocator {
+    inner: Spinlock::new(None),
+};

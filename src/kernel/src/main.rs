@@ -16,6 +16,9 @@
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(crate::test_runner)]
 #![feature(stmt_expr_attributes)]
+#![feature(int_roundings)]
+#![feature(const_result_drop)]
+#![feature(const_option)]
 
 #[macro_use]
 pub mod log;

@@ -12,12 +12,12 @@ pub struct PhysAddr(u64);
 pub enum NonCanonical {}
 
 impl VirtAddr {
-    pub fn new(addr: u64) -> Result<Self, NonCanonical> {
+    pub const fn new(addr: u64) -> Result<Self, NonCanonical> {
         // TODO: Check if the address is canonical
         Ok(Self(addr))
     }
 
-    pub unsafe fn new_unchecked(addr: u64) -> Self {
+    pub const unsafe fn new_unchecked(addr: u64) -> Self {
         Self(addr)
     }
 

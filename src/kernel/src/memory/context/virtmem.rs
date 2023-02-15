@@ -1,3 +1,5 @@
+use core::ptr::NonNull;
+
 use alloc::collections::BTreeMap;
 use twizzler_abi::object::{ObjID, MAX_SIZE};
 
@@ -6,7 +8,9 @@ use crate::{
     arch::{address::VirtAddr, context::ArchContext},
     memory::{
         map::CacheType,
-        pagetables::{MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider},
+        pagetables::{
+            MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider, ZeroPageProvider,
+        },
     },
     mutex::Mutex,
     obj::ObjectRef,
@@ -173,12 +177,54 @@ impl VirtContextSlot {
     }
 }
 
+// TODO: arch-dep
+pub const HEAP_START: u64 = 0xffffff0000000000;
+
+struct GlobalPageAlloc {
+    alloc: linked_list_allocator::Heap,
+    end: VirtAddr,
+}
+
+// Safety: the internal heap contains raw pointers, which are not Send. However, the heap is globally mapped and static
+// for the lifetime of the kernel.
+unsafe impl Send for GlobalPageAlloc {}
+
+static GLOBAL_PAGE_ALLOC: Spinlock<GlobalPageAlloc> = Spinlock::new(GlobalPageAlloc {
+    alloc: linked_list_allocator::Heap::empty(),
+    end: VirtAddr::new(HEAP_START).ok().unwrap(),
+});
+
 impl KernelMemoryContext for VirtContext {
-    fn allocate_chunk(&self, layout: core::alloc::Layout) -> *mut u8 {
-        todo!()
+    fn allocate_chunk(&self, layout: core::alloc::Layout) -> NonNull<u8> {
+        let size = layout
+            .size()
+            .next_multiple_of(crate::memory::pagetables::Table::level_to_page_size(0));
+        let mut glb = GLOBAL_PAGE_ALLOC.lock();
+        let res = glb.alloc.allocate_first_fit(layout);
+        match res {
+            Err(_) => {
+                let cursor = MappingCursor::new(glb.end, size);
+                let mut phys = ZeroPageProvider::default();
+                let settings = MappingSettings::new(
+                    MappingPerms::READ | MappingPerms::WRITE,
+                    CacheType::WriteBack,
+                    MappingFlags::GLOBAL,
+                );
+                self.arch.map(cursor, &mut phys, &settings);
+                glb.end = glb.end.offset(size.try_into().unwrap()).unwrap();
+                // Safety: the extension is backed by memory that is directly after the previous call to extend.
+                unsafe {
+                    glb.alloc.extend(size);
+                }
+                glb.alloc.allocate_first_fit(layout).unwrap()
+            }
+            Ok(x) => x,
+        }
     }
 
-    fn deallocate_chunk(&self, layout: core::alloc::Layout, ptr: *mut u8) {
-        todo!()
+    unsafe fn deallocate_chunk(&self, layout: core::alloc::Layout, ptr: NonNull<u8>) {
+        let mut glb = GLOBAL_PAGE_ALLOC.lock();
+        // TODO: reclaim and unmap?
+        glb.alloc.deallocate(ptr, layout);
     }
 }

@@ -1,4 +1,5 @@
 use core::alloc::Layout;
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::VirtAddr;
@@ -338,7 +339,11 @@ pub(super) trait KernelMemoryContext {
     /// Allocate a contiguous chunk of memory. This is not expected to be good for small allocations, this should be
     /// used to grab large chunks of memory to then serve pieces of using an actual allocator. Returns a pointer to the
     /// allocated memory and the size of the allocation (must be greater than layout's size).
-    fn allocate_chunk(&self, layout: Layout) -> *mut u8;
+    fn allocate_chunk(&self, layout: Layout) -> NonNull<u8>;
     /// Deallocate a previously allocated chunk.
-    fn deallocate_chunk(&self, layout: Layout, ptr: *mut u8);
+    ///
+    /// # Safety
+    /// The call must ensure that the passed in pointer came from a call to [Self::allocate_chunk] and has the same
+    /// layout data as was passed to that allocation call.
+    unsafe fn deallocate_chunk(&self, layout: Layout, ptr: NonNull<u8>);
 }
