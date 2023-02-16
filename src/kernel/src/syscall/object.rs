@@ -11,7 +11,7 @@ use twizzler_abi::{
 };
 
 use crate::{
-    memory::{VirtAddr, context::MemoryContextRef},
+    memory::{context::MemoryContextRef, VirtAddr},
     mutex::Mutex,
     obj::{copy::CopySpec, LookupFlags, Object, ObjectRef, PageNumber},
     once::Once,
@@ -39,8 +39,8 @@ pub fn sys_object_create(
         }
         let cs = CopySpec::new(
             so,
-            PageNumber::from_address(VirtAddr::new(src.src_start)),
-            PageNumber::from_address(VirtAddr::new(src.dest_start)),
+            PageNumber::from_address(VirtAddr::new(src.src_start).unwrap()),
+            PageNumber::from_address(VirtAddr::new(src.dest_start).unwrap()),
             src.len,
         );
         crate::obj::copy::copy_ranges(&cs.src, cs.src_start, &obj, cs.dest_start, cs.length)

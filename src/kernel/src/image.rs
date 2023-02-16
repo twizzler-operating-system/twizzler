@@ -20,7 +20,7 @@ pub fn get_tls() -> TlsInfo {
     for ph in elf.program_iter() {
         if let Ok(program::Type::Tls) = ph.get_type() {
             return TlsInfo {
-                start_addr: VirtAddr::new(ph.virtual_addr()),
+                start_addr: VirtAddr::new(ph.virtual_addr()).unwrap(),
                 file_size: ph.file_size() as usize,
                 mem_size: ph.mem_size() as usize,
                 align: ph.align() as usize,

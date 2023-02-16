@@ -58,7 +58,7 @@ fn get_obj_and_offset(addr: VirtAddr) -> Result<(ObjectRef, usize), ThreadSyncEr
     // let t = current_thread_ref().unwrap();
     let vmc = current_memory_context().ok_or(ThreadSyncError::Unknown)?;
     let mapping = { vmc.inner().lookup_object(addr) }.ok_or(ThreadSyncError::InvalidReference)?;
-    let offset = (addr.as_u64() as usize) % (1024 * 1024 * 1024); //TODO: arch-dep, centralize these calculations somewhere, see PageNumber
+    let offset = (addr.raw() as usize) % (1024 * 1024 * 1024); //TODO: arch-dep, centralize these calculations somewhere, see PageNumber
     Ok((mapping.obj.clone(), offset))
 }
 
@@ -71,8 +71,12 @@ fn get_obj(reference: ThreadSyncReference) -> Result<(ObjectRef, usize), ThreadS
             };
             (obj, offset)
         }
-        ThreadSyncReference::Virtual(addr) => get_obj_and_offset(VirtAddr::new(addr as u64))?,
-        ThreadSyncReference::Virtual32(addr) => get_obj_and_offset(VirtAddr::new(addr as u64))?,
+        ThreadSyncReference::Virtual(addr) => {
+            get_obj_and_offset(VirtAddr::new(addr as u64).unwrap())?
+        }
+        ThreadSyncReference::Virtual32(addr) => {
+            get_obj_and_offset(VirtAddr::new(addr as u64).unwrap())?
+        }
     })
 }
 

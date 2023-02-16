@@ -68,8 +68,8 @@ impl UpcallAble for X86SyscallContext {
 impl SyscallContext for X86SyscallContext {
     fn create_jmp_context(target: VirtAddr, stack: VirtAddr, arg: u64) -> Self {
         Self {
-            rsp: stack.as_u64(),
-            rcx: target.as_u64(),
+            rsp: stack.into(),
+            rcx: target.into(),
             rdi: arg,
             ..Default::default()
         }
@@ -78,26 +78,34 @@ impl SyscallContext for X86SyscallContext {
     fn num(&self) -> usize {
         self.rax as usize
     }
+
     fn arg0<T: From<u64>>(&self) -> T {
         T::from(self.rdi)
     }
+
     fn arg1<T: From<u64>>(&self) -> T {
         T::from(self.rsi)
     }
+
     fn arg2<T: From<u64>>(&self) -> T {
         T::from(self.rdx)
     }
+
     fn arg3<T: From<u64>>(&self) -> T {
         T::from(self.r10)
     }
+
     fn arg4<T: From<u64>>(&self) -> T {
         T::from(self.r9)
     }
+
     fn arg5<T: From<u64>>(&self) -> T {
         T::from(self.r8)
     }
+
     fn pc(&self) -> VirtAddr {
-        VirtAddr::new(self.rcx)
+        // TODO: check if this allows userspace to cause a kernel panic
+        VirtAddr::new(self.rcx).unwrap()
     }
 
     fn set_return_values<R1, R2>(&mut self, ret0: R1, ret1: R2)

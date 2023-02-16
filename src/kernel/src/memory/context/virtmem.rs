@@ -211,7 +211,7 @@ impl KernelMemoryContext for VirtContext {
                     MappingFlags::GLOBAL,
                 );
                 self.arch.map(cursor, &mut phys, &settings);
-                glb.end = glb.end.offset(size.try_into().unwrap()).unwrap();
+                glb.end = glb.end.offset(size).unwrap();
                 // Safety: the extension is backed by memory that is directly after the previous call to extend.
                 unsafe {
                     glb.alloc.extend(size);

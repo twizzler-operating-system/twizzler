@@ -17,7 +17,10 @@ use crate::{
     idcounter::{Id, IdCounter},
     initrd::get_boot_objects,
     interrupt,
-    memory::{VirtAddr, context::{MappingPerms, MemoryContext, MemoryContextRef}},
+    memory::{
+        context::{MappingPerms, MemoryContext, MemoryContextRef},
+        VirtAddr,
+    },
     obj::ObjectRef,
     processor::{get_processor, KERNEL_STACK_SIZE},
     sched::schedule_new_thread,
@@ -606,7 +609,7 @@ extern "C" fn user_init() {
             if ph.get_type() == Ok(xmas_elf::program::Type::Load) {
                 let file_data = ph.get_data(&elf).unwrap();
                 if let SegmentData::Undefined(file_data) = file_data {
-                    let memory_addr = VirtAddr::new(ph.virtual_addr());
+                    let memory_addr = VirtAddr::new(ph.virtual_addr()).unwrap();
                     let memory_slice: &mut [u8] = unsafe {
                         core::slice::from_raw_parts_mut(
                             memory_addr.as_mut_ptr(),
@@ -651,8 +654,8 @@ extern "C" fn user_init() {
 
     unsafe {
         crate::arch::jump_to_user(
-            VirtAddr::new(entry),
-            VirtAddr::new((1 << 30) * 2 + 0x200000),
+            VirtAddr::new(entry).unwrap(),
+            VirtAddr::new((1 << 30) * 2 + 0x200000).unwrap(),
             aux_start as u64,
         );
     }
@@ -676,9 +679,9 @@ extern "C" fn user_new_start() {
     };
     unsafe {
         crate::arch::jump_to_user(
-            VirtAddr::new(entry as u64),
+            VirtAddr::new(entry as u64).unwrap(),
             /* TODO: this is x86 specific */
-            VirtAddr::new((stack_base + stack_size - 8) as u64),
+            VirtAddr::new((stack_base + stack_size - 8) as u64).unwrap(),
             arg as u64,
         )
     }

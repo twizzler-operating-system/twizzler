@@ -5,11 +5,10 @@ use core::{
 
 use alloc::vec::Vec;
 use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
-use x86_64::VirtAddr;
 
 use crate::{
-    arch::amd64::desctables::set_kernel_stack, processor::KERNEL_STACK_SIZE, spinlock::Spinlock,
-    thread::Thread,
+    arch::amd64::gdt::set_kernel_stack, memory::VirtAddr, processor::KERNEL_STACK_SIZE,
+    spinlock::Spinlock, thread::Thread,
 };
 
 use super::{interrupt::IsrContext, syscall::X86SyscallContext};
@@ -217,7 +216,10 @@ impl Thread {
     pub extern "C" fn arch_switch_to(&self, old_thread: &Thread) {
         unsafe {
             set_kernel_stack(
-                VirtAddr::new(self.kernel_stack.as_ref() as *const u8 as u64) + KERNEL_STACK_SIZE,
+                VirtAddr::new(self.kernel_stack.as_ref() as *const u8 as u64)
+                    .unwrap()
+                    .offset(KERNEL_STACK_SIZE)
+                    .unwrap(),
             );
             let do_xsave = use_xsave();
             if do_xsave {

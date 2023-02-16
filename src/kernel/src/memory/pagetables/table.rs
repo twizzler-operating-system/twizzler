@@ -36,7 +36,7 @@ impl Table {
             return None;
         }
         let addr: u64 = entry.addr().into();
-        get_frame(x86_64::PhysAddr::new(addr))
+        get_frame(PhysAddr::new(addr).unwrap())
     }
 
     fn can_map_at(
@@ -59,7 +59,7 @@ impl Table {
         let entry = &mut self[index];
         if !entry.is_present() {
             let frame = crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED);
-            *entry = Entry::new(frame.start_address().as_u64().try_into().unwrap(), flags);
+            *entry = Entry::new(frame.start_address(), flags);
             self.set_count(count + 1);
         }
     }

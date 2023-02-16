@@ -1,6 +1,6 @@
 use core::sync::atomic::Ordering;
 
-pub use x86_64::{VirtAddr, PhysAddr};
+pub use address::{PhysAddr, VirtAddr};
 
 use crate::{
     clock::Nanoseconds,
@@ -12,7 +12,8 @@ use crate::{
 pub mod acpi;
 pub mod address;
 pub mod context;
-mod desctables;
+//mod desctables;
+mod gdt;
 pub mod interrupt;
 pub mod ioapic;
 pub mod lapic;
@@ -23,19 +24,19 @@ mod start;
 mod syscall;
 pub mod thread;
 mod tsc;
+pub use lapic::{poke_cpu, schedule_oneshot_tick, send_ipi};
 pub use start::BootInfoSystemTable;
-pub use lapic::{poke_cpu, send_ipi, schedule_oneshot_tick};
 pub fn init<B: BootInfo>(boot_info: &B) {
-    desctables::init();
+    gdt::init();
     interrupt::init_idt();
     lapic::init(true);
 
     let rsdp = boot_info.get_system_table(BootInfoSystemTable::Rsdp);
-    acpi::init(rsdp.as_u64());
+    acpi::init(rsdp.raw());
 }
 
 pub fn init_secondary() {
-    desctables::init_secondary();
+    gdt::init_secondary();
     interrupt::init_idt();
     lapic::init(false);
 }
@@ -51,7 +52,11 @@ pub fn start_clock(statclock_hz: u64, stat_cb: fn(Nanoseconds)) {
 /// Jump into userspace
 /// # Safety
 /// The stack and target must be valid addresses.
-pub unsafe fn jump_to_user(target: crate::memory::VirtAddr, stack: crate::memory::VirtAddr, arg: u64) {
+pub unsafe fn jump_to_user(
+    target: crate::memory::VirtAddr,
+    stack: crate::memory::VirtAddr,
+    arg: u64,
+) {
     use crate::syscall::SyscallContext;
     let ctx = syscall::X86SyscallContext::create_jmp_context(target, stack, arg);
     crate::thread::exit_kernel();
@@ -83,4 +88,3 @@ pub fn debug_shutdown(code: u32) {
         x86::io::outw(0xf4, code as u16);
     }
 }
-

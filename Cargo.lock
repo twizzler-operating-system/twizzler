@@ -141,7 +141,7 @@ dependencies = [
  "gimli",
  "log",
  "stable_deref_trait",
- "x86",
+ "x86 0.51.0",
 ]
 
 [[package]]
@@ -2508,8 +2508,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-kernel-macros",
  "uart_16550",
- "x86",
- "x86_64",
+ "x86 0.52.0",
  "xmas-elf",
 ]
 
@@ -2899,6 +2898,17 @@ name = "x86"
 version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa7477e4af519a58818c1f0ab4b149d0ce3304e625be8fe56c8484cac50b0532"
+dependencies = [
+ "bit_field",
+ "bitflags",
+ "raw-cpuid",
+]
+
+[[package]]
+name = "x86"
+version = "0.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2781db97787217ad2a2845c396a5efe286f87467a5810836db6d74926e94a385"
 dependencies = [
  "bit_field",
  "bitflags",

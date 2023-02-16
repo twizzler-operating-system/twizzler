@@ -1,3 +1,5 @@
+use core::{fmt::LowerHex, ops::Sub};
+
 use super::memory::phys_to_virt;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
@@ -33,12 +35,49 @@ impl VirtAddr {
         self.0 % alignment as u64 == 0
     }
 
-    pub fn offset(&self, offset: isize) -> Result<Self, NonCanonical> {
-        Self::new(self.0.wrapping_add(offset as u64))
+    pub fn offset<U: Into<Offset>>(&self, offset: U) -> Result<Self, NonCanonical> {
+        let offset = offset.into();
+        match offset {
+            Offset::Usize(u) => Self::new(self.0.wrapping_add(u as u64)),
+            Offset::Isize(u) => {
+                let abs = u.abs();
+                let neg = u < 0;
+                if neg {
+                    Self::new(self.0.wrapping_sub(abs as u64))
+                } else {
+                    Self::new(self.0.wrapping_add(abs as u64))
+                }
+            }
+        }
     }
 
     pub fn raw(&self) -> u64 {
         self.0
+    }
+
+    pub fn from_ptr<T>(ptr: *const T) -> Self {
+        Self(ptr as u64)
+    }
+
+    pub fn align_down<U: Into<u64>>(&self, align: U) -> Result<Self, NonCanonical> {
+        let align = align.into();
+        assert!(align.is_power_of_two(), "`align` must be a power of two");
+        Self::new(self.raw() & !(align - 1))
+    }
+
+    pub fn align_up<U: Into<u64>>(&self, align: U) -> Result<Self, NonCanonical> {
+        let align = align.into();
+        assert!(align.is_power_of_two(), "`align` must be a power of two");
+        let mask = align - 1;
+        if self.raw() & mask == 0 {
+            Ok(*self)
+        } else {
+            if let Some(aligned) = (self.raw() | mask).checked_add(1) {
+                Self::new(aligned)
+            } else {
+                panic!("added with overflow")
+            }
+        }
     }
 }
 
@@ -93,19 +132,52 @@ impl PhysAddr {
     }
 
     pub fn kernel_vaddr(&self) -> VirtAddr {
-        // TODO
-        phys_to_virt(x86_64::PhysAddr::new(self.0))
-            .as_u64()
-            .try_into()
-            .unwrap()
+        phys_to_virt(*self)
     }
 
-    pub fn offset(&self, offset: isize) -> Result<Self, NonCanonical> {
-        Self::new(self.0.wrapping_add(offset as u64))
+    pub fn offset<U: Into<Offset>>(&self, offset: U) -> Result<Self, NonCanonical> {
+        let offset = offset.into();
+        match offset {
+            Offset::Usize(u) => Self::new(self.0.wrapping_add(u as u64)),
+            Offset::Isize(u) => {
+                let abs = u.abs();
+                let neg = u < 0;
+                if neg {
+                    Self::new(self.0.wrapping_sub(abs as u64))
+                } else {
+                    Self::new(self.0.wrapping_add(abs as u64))
+                }
+            }
+        }
     }
 
     pub fn is_aligned_to(&self, alignment: usize) -> bool {
         self.0 % alignment as u64 == 0
+    }
+
+    pub fn raw(&self) -> u64 {
+        self.0
+    }
+
+    pub fn align_down<U: Into<u64>>(&self, align: U) -> Result<Self, NonCanonical> {
+        let align = align.into();
+        assert!(align.is_power_of_two(), "`align` must be a power of two");
+        Self::new(self.raw() & !(align - 1))
+    }
+
+    pub fn align_up<U: Into<u64>>(&self, align: U) -> Result<Self, NonCanonical> {
+        let align = align.into();
+        assert!(align.is_power_of_two(), "`align` must be a power of two");
+        let mask = align - 1;
+        if self.raw() & mask == 0 {
+            Ok(*self)
+        } else {
+            if let Some(aligned) = (self.raw() | mask).checked_add(1) {
+                Self::new(aligned)
+            } else {
+                panic!("added with overflow")
+            }
+        }
     }
 }
 
@@ -134,5 +206,36 @@ impl From<PhysAddr> for u64 {
 impl From<PhysAddr> for usize {
     fn from(addr: PhysAddr) -> Self {
         addr.0 as usize
+    }
+}
+
+pub enum Offset {
+    Usize(usize),
+    Isize(isize),
+}
+
+impl From<isize> for Offset {
+    fn from(x: isize) -> Self {
+        Self::Isize(x)
+    }
+}
+
+impl From<usize> for Offset {
+    fn from(x: usize) -> Self {
+        Self::Usize(x)
+    }
+}
+
+impl Sub<PhysAddr> for PhysAddr {
+    type Output = usize;
+
+    fn sub(self, rhs: PhysAddr) -> Self::Output {
+        (self.0.checked_sub(rhs.0).unwrap()) as usize
+    }
+}
+
+impl LowerHex for PhysAddr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        LowerHex::fmt(&self.0, f)
     }
 }

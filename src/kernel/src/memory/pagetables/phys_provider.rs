@@ -20,17 +20,11 @@ pub struct ZeroPageProvider {
 impl PhysAddrProvider for ZeroPageProvider {
     fn peek(&mut self) -> (PhysAddr, usize) {
         match self.current {
-            Some(frame) => (
-                frame.start_address().as_u64().try_into().unwrap(),
-                frame.size(),
-            ),
+            Some(frame) => (frame.start_address(), frame.size()),
             None => {
                 let frame = crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED).into();
                 self.current = Some(frame);
-                (
-                    frame.start_address().as_u64().try_into().unwrap(),
-                    frame.size(),
-                )
+                (frame.start_address(), frame.size())
             }
         }
     }

@@ -8,7 +8,6 @@ use twizzler_abi::object::ObjID;
 use twizzler_abi::{device::CacheType, object::Protections};
 
 use crate::{
-    arch::memory::{ArchMemoryContext, ArchMemoryContextSwitchInfo},
     idcounter::{Id, IdCounter},
     mutex::{LockGuard, Mutex},
     obj::{pages::PageRef, ObjectRef},
@@ -37,7 +36,6 @@ impl Mapping {
 
 use super::MappingIter;
 pub struct MemoryContextInner {
-    pub arch: ArchMemoryContext,
     slots: BTreeMap<usize, MappingRef>,
     thread_count: u64,
 }
@@ -51,7 +49,6 @@ impl Default for MemoryContextInner {
 pub struct MemoryContext {
     inner: Mutex<MemoryContextInner>,
     id: Id<'static>,
-    switch_cache: ArchMemoryContextSwitchInfo,
     upcall: AtomicUsize,
 }
 
@@ -141,34 +138,21 @@ impl From<MappingPerms> for MapFlags {
 }
 
 pub fn addr_to_slot(addr: VirtAddr) -> usize {
-    (addr.as_u64() / (1 << 30)) as usize //TODO: arch-dep
+    (addr.raw() / (1 << 30)) as usize //TODO: arch-dep
 }
 
 static ID_COUNTER: IdCounter = IdCounter::new();
 impl MemoryContextInner {
     pub fn new_blank() -> Self {
-        Self {
-            arch: ArchMemoryContext::new_blank(),
-            slots: BTreeMap::new(),
-            thread_count: 0,
-        }
+        todo!()
     }
 
     pub fn new() -> Self {
-        Self {
-            // TODO: this is inefficient
-            arch: ArchMemoryContext::current_tables().clone_empty_user(),
-            slots: BTreeMap::new(),
-            thread_count: 0,
-        }
+        todo!()
     }
 
     pub fn current() -> Self {
-        Self {
-            arch: ArchMemoryContext::current_tables(),
-            slots: BTreeMap::new(),
-            thread_count: 0,
-        }
+        todo!()
     }
 
     fn clear_mappings(&mut self) {
@@ -194,15 +178,7 @@ impl MemoryContextInner {
     }
 
     pub fn map_object_page(&mut self, addr: VirtAddr, page: PageRef, perms: MappingPerms) {
-        self.arch
-            .map(
-                addr.align_down(0x1000u64).into(),
-                page.physical_address().into(),
-                0x1000,
-                MapFlags::USER | perms.into(),
-                page.cache_type(),
-            )
-            .unwrap(); //TODO
+        todo!()
     }
 
     pub fn insert_mapping(&mut self, mapping: MappingRef) {
@@ -211,65 +187,29 @@ impl MemoryContextInner {
     }
 
     pub fn clone_region(&mut self, other_ctx: &MemoryContextInner, addr: VirtAddr) {
-        for mapping in other_ctx.mappings_iter(addr) {
-            //logln!("map {:?}", mapping);
-            self.arch
-                .map(
-                    mapping.addr.into(),
-                    mapping.frame.into(),
-                    mapping.length,
-                    mapping.flags, // | MapFlags::USER, //TODO,
-                    CacheType::WriteBack,
-                )
-                .unwrap();
-        }
+        todo!()
     }
 
     pub fn switch(&self) {
-        unsafe {
-            self.arch.get_switch_info().switch();
-        }
+        todo!()
     }
 }
 
 impl MemoryContext {
     pub fn new_blank() -> Self {
-        let inner = Mutex::new(MemoryContextInner::new_blank());
-        let switch_cache = { inner.lock().arch.get_switch_info() };
-        Self {
-            inner,
-            switch_cache,
-            id: ID_COUNTER.next(),
-            upcall: AtomicUsize::new(0),
-        }
+        todo!()
     }
 
     pub fn new() -> Self {
-        let inner = Mutex::new(MemoryContextInner::new());
-        let switch_cache = { inner.lock().arch.get_switch_info() };
-        Self {
-            inner,
-            switch_cache,
-            id: ID_COUNTER.next(),
-            upcall: AtomicUsize::new(0),
-        }
+        todo!()
     }
 
     pub fn current() -> Self {
-        let inner = Mutex::new(MemoryContextInner::current());
-        let switch_cache = { inner.lock().arch.get_switch_info() };
-        Self {
-            inner,
-            switch_cache,
-            id: ID_COUNTER.next(),
-            upcall: AtomicUsize::new(0),
-        }
+        todo!()
     }
 
     pub fn switch(&self) {
-        unsafe {
-            self.switch_cache.switch();
-        }
+        todo!()
     }
 
     pub fn inner(&self) -> LockGuard<'_, MemoryContextInner> {

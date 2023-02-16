@@ -75,7 +75,7 @@ impl AllocationRegion {
         if !self.contains(next) {
             return false;
         }
-        self.next_for_init += FRAME_SIZE;
+        self.next_for_init = self.next_for_init.offset(FRAME_SIZE).unwrap();
 
         // Unwrap-Ok: we know this address is in this region already
         let frame = self.get_frame(next).unwrap();
@@ -133,8 +133,8 @@ impl AllocationRegion {
     }
 
     fn new(m: &MemoryRegion) -> Option<Self> {
-        let start = m.start.align_up(FRAME_SIZE as u64);
-        let length = m.length - (start.as_u64() - m.start.as_u64()) as usize;
+        let start = m.start.align_up(FRAME_SIZE as u64).unwrap();
+        let length = m.length - (start.raw() - m.start.raw()) as usize;
         let nr_pages = length / FRAME_SIZE;
         if nr_pages <= 1 {
             return None;
@@ -151,13 +151,13 @@ impl AllocationRegion {
             // Safety: the pointer is to a static region of reserved memory.
             indexer: unsafe {
                 FrameIndexer::new(
-                    start + array_pages * FRAME_SIZE,
+                    start.offset(array_pages * FRAME_SIZE).unwrap(),
                     (nr_pages - array_pages) * FRAME_SIZE,
                     frame_array_ptr,
                     frame_array_len,
                 )
             },
-            next_for_init: start + array_pages * FRAME_SIZE,
+            next_for_init: start.offset(array_pages * FRAME_SIZE).unwrap(),
             pages: nr_pages - array_pages,
             zeroed: LinkedList::new(FrameAdapter::NEW),
             non_zeroed: LinkedList::new(FrameAdapter::NEW),
@@ -461,15 +461,15 @@ impl FrameIndexer {
         if !self.contains(pa) {
             return None;
         }
-        let index = (pa - self.start) / FRAME_SIZE as u64;
-        assert!((index as usize) < self.frame_array_len);
+        let index = (pa - self.start) / FRAME_SIZE;
+        assert!(index < self.frame_array_len);
         let frame = &self.frame_array()[index as usize];
         // Safety: the frame array is static for the life of the kernel
         Some(unsafe { transmute(frame) })
     }
 
     fn contains(&self, pa: PhysAddr) -> bool {
-        pa >= self.start && pa < (self.start + self.len)
+        pa >= self.start && pa < (self.start.offset(self.len).unwrap())
     }
 }
 

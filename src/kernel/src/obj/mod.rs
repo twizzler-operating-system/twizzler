@@ -12,7 +12,7 @@ use twizzler_abi::object::ObjID;
 
 use crate::{
     idcounter::{IdCounter, SimpleId},
-    memory::{VirtAddr, PhysAddr, context::MappingRef},
+    memory::{context::MappingRef, PhysAddr, VirtAddr},
     mutex::{LockGuard, Mutex},
 };
 
@@ -68,7 +68,7 @@ impl PageNumber {
     pub const PAGE_SIZE: usize = 0x1000; //TODO: arch-dep
 
     pub fn from_address(addr: VirtAddr) -> Self {
-        PageNumber(((addr.as_u64() % (1 << 30)) / 0x1000) as usize) //TODO: arch-dep
+        PageNumber(((addr.raw() % (1 << 30)) / 0x1000) as usize) //TODO: arch-dep
     }
 
     pub fn next(&self) -> Self {

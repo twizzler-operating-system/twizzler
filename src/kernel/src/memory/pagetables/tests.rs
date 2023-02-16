@@ -24,13 +24,8 @@ mod test {
 
     #[kernel_test]
     fn test_count() {
-        let mut m = Mapper::new(
-            crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED)
-                .start_address()
-                .as_u64()
-                .try_into()
-                .unwrap(),
-        );
+        let mut m =
+            Mapper::new(crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
         for i in 0..Table::PAGE_TABLE_ENTRIES {
             let c = m.root().read_count();
             assert_eq!(c, i);
@@ -46,13 +41,8 @@ mod test {
             return;
         }
         let page_size = Table::level_to_page_size(level);
-        let mut m = Mapper::new(
-            crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED)
-                .start_address()
-                .as_u64()
-                .try_into()
-                .unwrap(),
-        );
+        let mut m =
+            Mapper::new(crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
         assert_eq!(
             m.readmap(MappingCursor::new(VirtAddr::new(0).unwrap(), 0))
                 .next(),

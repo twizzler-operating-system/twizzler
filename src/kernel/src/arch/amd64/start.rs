@@ -34,14 +34,14 @@ impl BootInfo for LimineBootInfo {
 
     fn kernel_image_info(&self) -> (VirtAddr, usize) {
         (
-            VirtAddr::new(self.kernel.base.as_ptr().unwrap() as u64),
+            VirtAddr::from_ptr(self.kernel.base.as_ptr().unwrap()),
             self.kernel.length as usize,
         )
     }
 
     fn get_system_table(&self, table: BootInfoSystemTable) -> VirtAddr {
         match table {
-            BootInfoSystemTable::Rsdp => VirtAddr::new(self.rsdp.unwrap()),
+            BootInfoSystemTable::Rsdp => VirtAddr::new(self.rsdp.unwrap()).unwrap(),
             BootInfoSystemTable::Efi => todo!(),
         }
     }
@@ -113,7 +113,7 @@ fn limine_entry() -> ! {
         .iter()
         .map(|m| MemoryRegion {
             kind: m.typ.into(),
-            start: PhysAddr::new(m.base),
+            start: PhysAddr::new(m.base).unwrap(),
             length: m.len as usize,
         })
         .collect();
@@ -125,7 +125,7 @@ fn limine_entry() -> ! {
         .expect("no modules specified for kernel -- no way to start init")
         .iter()
         .map(|m| BootModule {
-            start: VirtAddr::new(m.base.as_ptr().unwrap() as u64),
+            start: VirtAddr::new(m.base.as_ptr().unwrap() as u64).unwrap(),
             length: m.length as usize,
         })
         .collect();

@@ -1,5 +1,5 @@
 use crate::{
-    memory::{VirtAddr, context::MappingPerms},
+    memory::{context::MappingPerms, VirtAddr},
     obj::{pages::Page, PageNumber},
     thread::{current_memory_context, current_thread_ref},
 };
@@ -31,7 +31,7 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
         );
     }
     /* TODO: null page */
-    if !flags.contains(PageFaultFlags::USER) && addr.as_u64() >= 0xffff000000000000
+    if !flags.contains(PageFaultFlags::USER) && addr.raw() >= 0xffff000000000000
     /*TODO */
     {
         panic!("kernel page fault")
@@ -49,7 +49,7 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
         let mut obj_page_tree = mapping.obj.lock_page_tree();
         let is_write = cause == PageFaultCause::Write;
 
-        if page_number == PageNumber::from_address(VirtAddr::new(0)) {
+        if page_number == PageNumber::from_address(VirtAddr::new(0).unwrap()) {
             panic!("zero-page fault {:?} ip: {:?} cause {:?}", addr, ip, cause);
         }
 
@@ -82,12 +82,6 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
                 );
             }
             vmc.map_object_page(addr, page, perms);
-            if flags.contains(PageFaultFlags::PRESENT) {
-                unsafe {
-                    // TODO: see #32
-                    crate::arch::memory::flush_tlb();
-                }
-            }
         } else {
             let page = Page::new();
             obj_page_tree.add_page(page_number, page);

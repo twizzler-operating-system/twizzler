@@ -57,7 +57,7 @@ fn register_device(
         kaction,
     );
     let cfg: &PcieFunctionHeader = unsafe {
-        phys_to_virt(PhysAddr::new(cfgaddr))
+        phys_to_virt(PhysAddr::new(cfgaddr).unwrap())
             .as_ptr::<PcieFunctionHeader>()
             .as_ref()
             .unwrap()
@@ -66,7 +66,7 @@ fn register_device(
     match cfg.header_type.get() {
         0 => {
             let cfg: &PcieDeviceHeader = unsafe {
-                phys_to_virt(PhysAddr::new(cfgaddr))
+                phys_to_virt(PhysAddr::new(cfgaddr).unwrap())
                     .as_ptr::<PcieDeviceHeader>()
                     .as_ref()
                     .unwrap()
@@ -101,7 +101,7 @@ fn register_device(
         }
         1 => {
             let cfg: &PcieBridgeHeader = unsafe {
-                phys_to_virt(PhysAddr::new(cfgaddr))
+                phys_to_virt(PhysAddr::new(cfgaddr).unwrap())
                     .as_ptr::<PcieBridgeHeader>()
                     .as_ref()
                     .unwrap()
@@ -148,8 +148,8 @@ fn register_device(
     };
     dev.add_info(&info);
     dev.add_mmio(
-        PhysAddr::new(cfgaddr),
-        PhysAddr::new(cfgaddr + 0x1000),
+        PhysAddr::new(cfgaddr).unwrap(),
+        PhysAddr::new(cfgaddr + 0x1000).unwrap(),
         CacheType::Uncachable,
         0xff,
     );
@@ -157,8 +157,8 @@ fn register_device(
     for bar in bars.iter().enumerate() {
         if bar.1 .0 != 0 {
             dev.add_mmio(
-                PhysAddr::new(bar.1 .0),
-                PhysAddr::new(bar.1 .0 + bar.1 .1 as u64),
+                PhysAddr::new(bar.1 .0).unwrap(),
+                PhysAddr::new(bar.1 .0 + bar.1 .1 as u64).unwrap(),
                 if bar.1 .2 != 0 {
                     CacheType::WriteThrough
                 } else {
@@ -253,7 +253,7 @@ fn kaction(device: DeviceRef, cmd: u32, arg: u64, arg2: u64) -> Result<KactionVa
 // TODO: we can't just assume every segment has bus 0..255.
 fn init_segment(seg: u16, addr: PhysAddr) {
     let dev = crate::device::create_busroot(&format!("pcie_root({})", seg), BusType::Pcie, kaction);
-    let end_addr = addr + (255u64 << 20 | 32 << 15 | 8 << 12);
+    let end_addr = addr.offset(255usize << 20 | 32 << 15 | 8 << 12).unwrap();
     let info = PcieInfo {
         bus_start: 0,
         bus_end: 0xff,
@@ -280,7 +280,7 @@ pub(super) fn init() {
     for seg in 0..0xffff {
         let addr = cfg.physical_address(seg, 0, 0, 0);
         if let Some(addr) = addr {
-            init_segment(seg, PhysAddr::new(addr));
+            init_segment(seg, PhysAddr::new(addr).unwrap());
         }
     }
 }

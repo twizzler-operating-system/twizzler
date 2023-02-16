@@ -9,7 +9,10 @@ use x86::current::rflags::RFlags;
 use crate::{
     arch::lapic,
     interrupt::{Destination, DynamicInterrupt},
-    memory::{VirtAddr, fault::{PageFaultCause, PageFaultFlags}},
+    memory::{
+        fault::{PageFaultCause, PageFaultFlags},
+        VirtAddr,
+    },
     processor::current_processor,
     thread::current_thread_ref,
 };
@@ -425,12 +428,20 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             }
             crate::thread::enter_kernel();
             crate::interrupt::set(true);
+            if let Ok(cr2_va) = VirtAddr::new(cr2 as u64) && let Ok(rip_va) = VirtAddr::new(ctx.rip) {
             crate::memory::fault::page_fault(
-                VirtAddr::new(cr2 as u64),
+                cr2_va,
                 cause,
                 flags,
-                VirtAddr::new(ctx.rip),
+                rip_va,
             );
+            } else {
+                // TODO: do we need to do something better?
+                let t = current_thread_ref().unwrap();
+                let info = UpcallInfo::Exception(ExceptionInfo::new(14, ctx.err));
+                t.send_upcall(info);
+            }
+
             crate::interrupt::set(false);
             crate::thread::exit_kernel();
         }
@@ -766,7 +777,7 @@ fn set_handlers(idt: &mut InterruptDescriptorTable) {
         Exception::DoubleFault.as_idx(),
         double_fault_handler,
         false,
-        Some(super::desctables::DOUBLE_FAULT_IST_INDEX.into()),
+        Some(super::gdt::DOUBLE_FAULT_IST_INDEX.into()),
     );
     idt.set_handler(
         Exception::InvalidTSS.as_idx(),

@@ -275,9 +275,9 @@ fn init_tls(tls_template: TlsInfo) -> VirtAddr {
 
         tls
     };
-    let tcb_base = VirtAddr::from_ptr(tls) + full_tls_size;
+    let tcb_base = VirtAddr::from_ptr(tls).offset(full_tls_size).unwrap();
 
-    unsafe { *(tcb_base.as_mut_ptr()) = tcb_base.as_u64() };
+    unsafe { *(tcb_base.as_mut_ptr()) = tcb_base.raw() };
 
     tcb_base
 }
