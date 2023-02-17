@@ -287,3 +287,5 @@ pub(super) trait KernelMemoryContext {
     /// layout data as was passed to that allocation call.
     unsafe fn deallocate_chunk(&self, layout: Layout, ptr: NonNull<u8>);
 }
+
+static KERNEL_CONTEXT: virtmem::VirtContext = virtmem::VirtContext::new();

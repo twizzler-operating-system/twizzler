@@ -65,8 +65,10 @@ impl Mapper {
         root.change(&mut consist, cursor, level, settings);
     }
 
-    /// Read the map of a single address (the start of the cursor).
-    pub(super) fn do_read_map(&self, cursor: &MappingCursor) -> Option<MapInfo> {
+    /// Read the map of a single address (the start of the cursor). If there is a mapping at the specified location,
+    /// return the mapping information. Otherwise, return Err with a length that specifies how much the cursor may
+    /// advance before calling this function again to check for a new mapping.
+    pub(super) fn do_read_map(&self, cursor: &MappingCursor) -> Result<MapInfo, usize> {
         let level = self.start_level;
         let root = self.root();
         root.readmap(cursor, level)

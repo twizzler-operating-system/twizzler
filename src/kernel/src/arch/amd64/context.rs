@@ -1,3 +1,5 @@
+use core::panic;
+
 use crate::{
     memory::pagetables::{
         DeferredUnmappingOps, Mapper, MappingCursor, MappingSettings, PhysAddrProvider,
@@ -15,8 +17,19 @@ pub struct ArchContext {
 }
 
 impl ArchContext {
+    pub fn new_kernel() -> Self {
+        let inner = ArchContextInner::new_kernel();
+        let target = inner.mapper.root_address().into();
+        Self {
+            target,
+            inner: Mutex::new(inner),
+        }
+    }
+
     pub fn switch_to(&self) {
-        todo!()
+        unsafe {
+            x86::controlregs::cr3_write(self.target);
+        }
     }
 
     pub fn map(
@@ -39,12 +52,17 @@ impl ArchContext {
 }
 
 impl ArchContextInner {
+    fn new_kernel() -> Self {
+        Self { mapper: todo!() }
+    }
+
     fn map(
         &mut self,
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
         settings: &MappingSettings,
     ) {
+        panic!("todo: should check to see if we are in kernel mem, and use kernel mapper");
         self.mapper.map(cursor, phys, settings);
     }
 

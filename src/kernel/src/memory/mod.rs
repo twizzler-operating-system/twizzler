@@ -29,54 +29,8 @@ pub enum MapFailed {
     FrameAllocation,
 }
 
-pub struct MappingIter<'a> {
-    ctx: &'a MemoryContextInner,
-    next: VirtAddr,
-    done: bool,
-}
-
-impl<'a> MappingIter<'a> {
-    fn new(ctx: &'a MemoryContextInner, start: VirtAddr) -> Self {
-        Self {
-            ctx,
-            next: start,
-            done: false,
-        }
-    }
-}
-
-use self::{
-    context::{MapFlags, MemoryContextInner},
-    frame::{alloc_frame, PhysicalFrameFlags},
-};
-#[derive(Clone, Copy, Debug)]
-pub struct MappingInfo {
-    pub addr: VirtAddr,
-    pub frame: PhysAddr,
-    pub length: usize,
-    pub flags: MapFlags,
-}
-
-impl MappingInfo {
-    pub fn new(addr: VirtAddr, frame: PhysAddr, length: usize, flags: MapFlags) -> Self {
-        Self {
-            addr,
-            frame,
-            length,
-            flags,
-        }
-    }
-}
-
-impl<'a> Iterator for MappingIter<'a> {
-    type Item = MappingInfo;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        todo!()
-    }
-}
-
 fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContextInner {
+    loop {}
     let ctx = MemoryContextInner::current();
     let mut new_context = MemoryContextInner::new_blank();
 

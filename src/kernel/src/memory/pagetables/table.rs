@@ -233,11 +233,11 @@ impl Table {
         }
     }
 
-    pub(super) fn readmap(&self, cursor: &MappingCursor, level: usize) -> Option<MapInfo> {
+    pub(super) fn readmap(&self, cursor: &MappingCursor, level: usize) -> Result<MapInfo, usize> {
         let index = Self::get_index(cursor.start(), level);
         let entry = &self[index];
         if entry.is_present() && (entry.is_huge() || level == 0) {
-            Some(MapInfo::new(
+            Ok(MapInfo::new(
                 cursor.start(),
                 entry.addr(),
                 entry.flags().settings(),
@@ -247,7 +247,7 @@ impl Table {
             let next_table = self.next_table(index).unwrap();
             next_table.readmap(cursor, level - 1)
         } else {
-            None
+            Err(Table::level_to_page_size(level))
         }
     }
 }

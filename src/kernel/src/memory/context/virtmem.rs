@@ -24,6 +24,7 @@ pub struct VirtContext {
     slots: Mutex<SlotMgr>,
 }
 
+#[derive(Default)]
 struct SlotMgr {
     slots: BTreeMap<usize, VirtContextSlot>,
     objs: BTreeMap<ObjID, usize>,
@@ -90,6 +91,18 @@ impl VirtContext {
                 &info.mapping_settings(true),
             );
         }
+    }
+
+    fn __new(arch: ArchContext) -> Self {
+        Self {
+            arch,
+            upcall: Spinlock::new(None),
+            slots: Mutex::new(SlotMgr::default()),
+        }
+    }
+
+    pub fn new_kernel() -> Self {
+        Self::__new(ArchContext::new_kernel())
     }
 }
 

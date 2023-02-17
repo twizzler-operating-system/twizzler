@@ -21,12 +21,15 @@ impl<'a> Iterator for MapReader<'a> {
                     return None;
                 }
                 let info = self.mapper.do_read_map(&cursor);
-                if let Some(info) = info {
-                    self.cursor = cursor.advance(info.psize);
-                    return Some(info);
-                } else {
-                    self.cursor = cursor.advance(Table::level_to_page_size(0));
-                    continue;
+                match info {
+                    Ok(info) => {
+                        self.cursor = cursor.advance(info.psize);
+                        return Some(info);
+                    }
+                    Err(skip) => {
+                        self.cursor = cursor.advance(skip);
+                        continue;
+                    }
                 }
             } else {
                 return None;
