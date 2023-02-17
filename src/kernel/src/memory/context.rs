@@ -34,7 +34,6 @@ impl Mapping {
     }
 }
 
-use super::MappingIter;
 pub struct MemoryContextInner {
     slots: BTreeMap<usize, MappingRef>,
     thread_count: u64,
@@ -169,9 +168,10 @@ impl MemoryContextInner {
             self.clear_mappings();
         }
     }
-    pub fn mappings_iter(&self, start: VirtAddr) -> MappingIter {
-        MappingIter::new(self, start)
-    }
+
+    //   pub fn mappings_iter(&self, start: VirtAddr) -> MappingIter {
+    //     MappingIter::new(self, start)
+    //   }
 
     pub fn lookup_object(&self, addr: VirtAddr) -> Option<MappingRef> {
         self.slots.get(&addr_to_slot(addr)).map(Clone::clone)
@@ -240,7 +240,7 @@ pub mod virtmem;
 /// A trait that defines the operations expected by higher-level object management routines. An architecture-dependent
 /// type can be created that implements Context, which can then be used by the rest of the kernel to manage objects in a
 /// context (e.g. an address space).
-trait Context {
+pub trait Context {
     /// The type that is expected for upcall information (e.g. an entry address).
     type UpcallInfo;
     /// The type that is expected for informing the context how to map the object (e.g. a slot number).
@@ -288,4 +288,15 @@ pub(super) trait KernelMemoryContext {
     unsafe fn deallocate_chunk(&self, layout: Layout, ptr: NonNull<u8>);
 }
 
-static KERNEL_CONTEXT: virtmem::VirtContext = virtmem::VirtContext::new();
+lazy_static::lazy_static! {
+    // TODO: make these more like impl Context (or conditional compilation).
+    static ref KERNEL_CONTEXT: virtmem::VirtContext = {
+        let c = virtmem::VirtContext::new_kernel();
+        c.init_kernel_context();
+        c
+    };
+}
+
+pub fn kernel_context() -> &'static virtmem::VirtContext {
+    &KERNEL_CONTEXT
+}

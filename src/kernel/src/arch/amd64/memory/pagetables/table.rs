@@ -1,6 +1,6 @@
 use core::ops::{Index, IndexMut};
 
-use crate::arch::address::VirtAddr;
+use crate::{arch::address::VirtAddr, memory::PhysAddr};
 
 use super::Entry;
 
@@ -13,6 +13,12 @@ pub struct Table {
 impl Table {
     /// The number of entries in this table.
     pub const PAGE_TABLE_ENTRIES: usize = 512;
+
+    /// Get the current root table.
+    pub fn current() -> PhysAddr {
+        let cr3 = unsafe { x86::controlregs::cr3() };
+        PhysAddr::new(cr3).unwrap()
+    }
 
     /// The top level of a complete set of page tables.
     pub fn top_level() -> usize {

@@ -13,6 +13,8 @@ pub mod pagetables;
 
 pub use arch::{PhysAddr, VirtAddr};
 
+use self::context::Context;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MemoryRegionKind {
     UsableRam,
@@ -29,26 +31,13 @@ pub enum MapFailed {
     FrameAllocation,
 }
 
-fn init_kernel_context(clone_regions: &[VirtAddr]) -> MemoryContextInner {
-    loop {}
-    let ctx = MemoryContextInner::current();
-    let mut new_context = MemoryContextInner::new_blank();
-
-    let phys_mem_offset = arch::memory::phys_to_virt(PhysAddr::new(0).unwrap());
-    /* TODO: map ALL of the physical address space */
-
-    todo!()
-}
-
 pub fn finish_setup() {
-    todo!()
+    //todo!()
 }
 
 pub fn init<B: BootInfo>(boot_info: &B, clone_regions: &[VirtAddr]) {
     frame::init(boot_info.memory_regions());
-    let kernel_context = init_kernel_context(clone_regions);
-
-    todo!()
-
-    //allocator::init(kernel_memory_manager());
+    let kc = context::kernel_context();
+    kc.switch_to();
+    allocator::init(kc);
 }

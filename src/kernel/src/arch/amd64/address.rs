@@ -2,21 +2,28 @@ use core::{fmt::LowerHex, ops::Sub};
 
 use super::memory::phys_to_virt;
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(transparent)]
 pub struct VirtAddr(u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(transparent)]
 pub struct PhysAddr(u64);
 
 #[derive(Debug, Clone, Copy)]
-pub enum NonCanonical {}
+pub struct NonCanonical;
 
 impl VirtAddr {
+    pub const fn start_kernel_memory() -> Self {
+        Self(0xffff800000000000)
+    }
+
     pub const fn new(addr: u64) -> Result<Self, NonCanonical> {
-        // TODO: Check if the address is canonical
-        Ok(Self(addr))
+        if addr >= 0xFFFF800000000000 || addr <= 0x00007fffffffffff {
+            Ok(Self(addr))
+        } else {
+            Err(NonCanonical)
+        }
     }
 
     pub const unsafe fn new_unchecked(addr: u64) -> Self {
@@ -35,17 +42,20 @@ impl VirtAddr {
         self.0 % alignment as u64 == 0
     }
 
+    pub fn is_kernel(&self) -> bool {
+        self.0 >= 0xffff800000000000
+    }
+
     pub fn offset<U: Into<Offset>>(&self, offset: U) -> Result<Self, NonCanonical> {
         let offset = offset.into();
         match offset {
-            Offset::Usize(u) => Self::new(self.0.wrapping_add(u as u64)),
+            Offset::Usize(u) => Self::new(self.0.checked_add(u as u64).ok_or(NonCanonical)?),
             Offset::Isize(u) => {
                 let abs = u.abs();
-                let neg = u < 0;
-                if neg {
-                    Self::new(self.0.wrapping_sub(abs as u64))
+                if u < 0 {
+                    Self::new(self.0.checked_sub(abs as u64).ok_or(NonCanonical)?)
                 } else {
-                    Self::new(self.0.wrapping_add(abs as u64))
+                    Self::new(self.0.checked_add(abs as u64).ok_or(NonCanonical)?)
                 }
             }
         }
@@ -75,7 +85,7 @@ impl VirtAddr {
             if let Some(aligned) = (self.raw() | mask).checked_add(1) {
                 Self::new(aligned)
             } else {
-                panic!("added with overflow")
+                Err(NonCanonical)
             }
         }
     }
@@ -138,14 +148,13 @@ impl PhysAddr {
     pub fn offset<U: Into<Offset>>(&self, offset: U) -> Result<Self, NonCanonical> {
         let offset = offset.into();
         match offset {
-            Offset::Usize(u) => Self::new(self.0.wrapping_add(u as u64)),
+            Offset::Usize(u) => Self::new(self.0.checked_add(u as u64).ok_or(NonCanonical)?),
             Offset::Isize(u) => {
                 let abs = u.abs();
-                let neg = u < 0;
-                if neg {
-                    Self::new(self.0.wrapping_sub(abs as u64))
+                if u < 0 {
+                    Self::new(self.0.checked_sub(abs as u64).ok_or(NonCanonical)?)
                 } else {
-                    Self::new(self.0.wrapping_add(abs as u64))
+                    Self::new(self.0.checked_add(abs as u64).ok_or(NonCanonical)?)
                 }
             }
         }
@@ -237,5 +246,17 @@ impl Sub<PhysAddr> for PhysAddr {
 impl LowerHex for PhysAddr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         LowerHex::fmt(&self.0, f)
+    }
+}
+
+impl core::fmt::Debug for VirtAddr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "V(0x{:x})", self.0)
+    }
+}
+
+impl core::fmt::Debug for PhysAddr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "PHYS(0x{:x})", self.0)
     }
 }

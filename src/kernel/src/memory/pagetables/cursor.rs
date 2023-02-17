@@ -18,7 +18,7 @@ impl MappingCursor {
         if self.len <= len {
             return None;
         }
-        let vaddr = self.start.offset(len as isize).ok()?;
+        let vaddr = self.start.offset(len).ok()?;
         self.start = vaddr;
         self.len -= len;
         Some(self)

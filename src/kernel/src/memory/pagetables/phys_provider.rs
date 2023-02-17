@@ -1,6 +1,6 @@
 use crate::{
     arch::address::PhysAddr,
-    memory::frame::{free_frame, FrameRef, PhysicalFrameFlags},
+    memory::frame::{alloc_frame, free_frame, FrameRef, PhysicalFrameFlags},
 };
 
 /// A trait for providing a set of physical pages to the mapping function.
@@ -22,7 +22,7 @@ impl PhysAddrProvider for ZeroPageProvider {
         match self.current {
             Some(frame) => (frame.start_address(), frame.size()),
             None => {
-                let frame = crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED).into();
+                let frame = alloc_frame(PhysicalFrameFlags::ZEROED).into();
                 self.current = Some(frame);
                 (frame.start_address(), frame.size())
             }
@@ -40,5 +40,32 @@ impl Drop for ZeroPageProvider {
         if let Some(f) = self.current.take() {
             free_frame(f);
         }
+    }
+}
+
+/// Implements [PhysAddrProvider] by providing physical addresses within a given range.
+pub struct ContiguousProvider {
+    next: PhysAddr,
+    rem: usize,
+}
+
+impl ContiguousProvider {
+    /// Construct a new [ContiguousProvider].
+    pub fn new(start: PhysAddr, len: usize) -> Self {
+        Self {
+            next: start,
+            rem: len,
+        }
+    }
+}
+
+impl PhysAddrProvider for ContiguousProvider {
+    fn peek(&mut self) -> (PhysAddr, usize) {
+        (self.next, self.rem)
+    }
+
+    fn consume(&mut self, len: usize) {
+        self.next = self.next.offset(len).unwrap();
+        self.rem = self.rem.saturating_sub(len);
     }
 }

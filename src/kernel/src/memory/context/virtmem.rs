@@ -5,11 +5,12 @@ use twizzler_abi::object::{ObjID, MAX_SIZE};
 
 use super::{Context, InsertError, KernelMemoryContext, MappingPerms};
 use crate::{
-    arch::{address::VirtAddr, context::ArchContext},
+    arch::{address::VirtAddr, context::ArchContext, memory::pagetables::Table},
     memory::{
         map::CacheType,
         pagetables::{
-            MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider, ZeroPageProvider,
+            ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
+            PhysAddrProvider, ZeroPageProvider,
         },
     },
     mutex::Mutex,
@@ -103,6 +104,20 @@ impl VirtContext {
 
     pub fn new_kernel() -> Self {
         Self::__new(ArchContext::new_kernel())
+    }
+
+    pub(super) fn init_kernel_context(&self) {
+        let proto = unsafe { Mapper::current() };
+        let rm = proto.readmap(MappingCursor::new(
+            VirtAddr::start_kernel_memory(),
+            usize::MAX,
+        ));
+        for map in rm.coalesce() {
+            logln!("{:?}", map);
+            let cursor = MappingCursor::new(map.vaddr(), map.len());
+            let mut phys = ContiguousProvider::new(map.paddr(), map.len());
+            self.arch.map(cursor, &mut phys, map.settings());
+        }
     }
 }
 

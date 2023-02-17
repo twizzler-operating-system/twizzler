@@ -1,10 +1,15 @@
 use core::panic;
 
 use crate::{
-    memory::pagetables::{
-        DeferredUnmappingOps, Mapper, MappingCursor, MappingSettings, PhysAddrProvider,
+    arch::memory::pagetables::{Entry, EntryFlags},
+    memory::{
+        frame::{alloc_frame, PhysicalFrameFlags},
+        pagetables::{
+            DeferredUnmappingOps, Mapper, MappingCursor, MappingSettings, PhysAddrProvider,
+        },
     },
     mutex::Mutex,
+    spinlock::Spinlock,
 };
 
 pub struct ArchContextInner {
@@ -16,9 +21,23 @@ pub struct ArchContext {
     inner: Mutex<ArchContextInner>,
 }
 
+lazy_static::lazy_static! {
+    static ref KERNEL_MAPPER: Spinlock<Mapper> = {
+        let mut m = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
+        for idx in 256..512 {
+            m.set_top_level_table(idx, Entry::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address(), EntryFlags::intermediate()));
+        }
+        Spinlock::new(m)
+    };
+}
+
 impl ArchContext {
     pub fn new_kernel() -> Self {
-        let inner = ArchContextInner::new_kernel();
+        Self::new()
+    }
+
+    pub fn new() -> Self {
+        let inner = ArchContextInner::new();
         let target = inner.mapper.root_address().into();
         Self {
             target,
@@ -38,22 +57,39 @@ impl ArchContext {
         phys: &mut impl PhysAddrProvider,
         settings: &MappingSettings,
     ) {
-        self.inner.lock().map(cursor, phys, settings);
+        if cursor.start().is_kernel() {
+            KERNEL_MAPPER.lock().map(cursor, phys, settings);
+        } else {
+            self.inner.lock().map(cursor, phys, settings);
+        }
     }
 
     pub fn change(&self, cursor: MappingCursor, settings: &MappingSettings) {
-        self.inner.lock().change(cursor, settings);
+        if cursor.start().is_kernel() {
+            KERNEL_MAPPER.lock().change(cursor, settings);
+        } else {
+            self.inner.lock().change(cursor, settings);
+        }
     }
 
     pub fn unmap(&self, cursor: MappingCursor) {
-        let ops = { self.inner.lock().unmap(cursor) };
+        let ops = if cursor.start().is_kernel() {
+            KERNEL_MAPPER.lock().unmap(cursor)
+        } else {
+            self.inner.lock().unmap(cursor)
+        };
         ops.run_all();
     }
 }
 
 impl ArchContextInner {
-    fn new_kernel() -> Self {
-        Self { mapper: todo!() }
+    fn new() -> Self {
+        let mut mapper = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
+        let km = KERNEL_MAPPER.lock();
+        for idx in 256..512 {
+            mapper.set_top_level_table(idx, km.get_top_level_table(idx));
+        }
+        Self { mapper }
     }
 
     fn map(
@@ -62,7 +98,6 @@ impl ArchContextInner {
         phys: &mut impl PhysAddrProvider,
         settings: &MappingSettings,
     ) {
-        panic!("todo: should check to see if we are in kernel mem, and use kernel mapper");
         self.mapper.map(cursor, phys, settings);
     }
 

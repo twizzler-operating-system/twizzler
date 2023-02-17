@@ -4,7 +4,7 @@ use crate::{
         memory::pagetables::{Entry, EntryFlags, Table},
     },
     memory::{
-        frame::{get_frame, FrameRef, PhysicalFrameFlags},
+        frame::{alloc_frame, get_frame, FrameRef, PhysicalFrameFlags},
         pagetables::MappingFlags,
     },
 };
@@ -58,7 +58,7 @@ impl Table {
         let count = self.read_count();
         let entry = &mut self[index];
         if !entry.is_present() {
-            let frame = crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED);
+            let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
             *entry = Entry::new(frame.start_address(), flags);
             self.set_count(count + 1);
         }

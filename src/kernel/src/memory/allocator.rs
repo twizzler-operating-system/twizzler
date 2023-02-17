@@ -19,16 +19,16 @@ const EARLY_ALLOCATION_SIZE: usize = 1024 * 1024 * 2;
 static mut EARLY_ALLOCATION_AREA: [u8; EARLY_ALLOCATION_SIZE] = [0; EARLY_ALLOCATION_SIZE];
 static EARLY_ALLOCATION_PTR: AtomicUsize = AtomicUsize::new(0);
 
-struct KernelAllocatorInner<Ctx: KernelMemoryContext> {
-    ctx: Ctx,
+struct KernelAllocatorInner<Ctx: KernelMemoryContext + 'static> {
+    ctx: &'static Ctx,
     zone: ZoneAllocator<'static>,
 }
 
-struct KernelAllocator<Ctx: KernelMemoryContext> {
+struct KernelAllocator<Ctx: KernelMemoryContext + 'static> {
     inner: Spinlock<Option<KernelAllocatorInner<Ctx>>>,
 }
 
-impl<Ctx: KernelMemoryContext> KernelAllocator<Ctx> {
+impl<Ctx: KernelMemoryContext + 'static> KernelAllocator<Ctx> {
     fn early_alloc(&self, layout: Layout) -> *mut u8 {
         let start = EARLY_ALLOCATION_PTR.load(Ordering::SeqCst);
         let start = crate::utils::align(start, layout.align());
@@ -40,7 +40,7 @@ impl<Ctx: KernelMemoryContext> KernelAllocator<Ctx> {
     }
 }
 
-impl<Ctx: KernelMemoryContext> KernelAllocatorInner<Ctx> {
+impl<Ctx: KernelMemoryContext + 'static> KernelAllocatorInner<Ctx> {
     fn allocate_page(&mut self) -> &'static mut ObjectPage<'static> {
         let chunk = self
             .ctx
@@ -70,7 +70,7 @@ impl<Ctx: KernelMemoryContext> KernelAllocatorInner<Ctx> {
     }
 }
 
-unsafe impl<Ctx: KernelMemoryContext> GlobalAlloc for KernelAllocator<Ctx> {
+unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<Ctx> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let mut inner = self.inner.lock();
         if inner.is_none() {
@@ -139,6 +139,14 @@ unsafe impl<Ctx: KernelMemoryContext> GlobalAlloc for KernelAllocator<Ctx> {
 }
 
 #[global_allocator]
+// TODO: virtcontext => impl Context?
 static SLAB_ALLOCATOR: KernelAllocator<VirtContext> = KernelAllocator {
     inner: Spinlock::new(None),
 };
+
+pub fn init(ctx: &'static VirtContext) {
+    *SLAB_ALLOCATOR.inner.lock() = Some(KernelAllocatorInner {
+        ctx,
+        zone: ZoneAllocator::new(),
+    });
+}
