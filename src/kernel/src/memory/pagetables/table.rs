@@ -145,7 +145,7 @@ impl Table {
                 next_table.map(consist, cursor, level - 1, phys, settings);
             }
 
-            if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
+            if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
                 cursor = next;
             } else {
                 break;
@@ -181,7 +181,7 @@ impl Table {
                 }
             }
 
-            if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
+            if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
                 cursor = next;
             } else {
                 break;
@@ -225,7 +225,7 @@ impl Table {
                 next_table.change(consist, cursor, level - 1, settings);
             }
 
-            if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
+            if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
                 cursor = next;
             } else {
                 break;

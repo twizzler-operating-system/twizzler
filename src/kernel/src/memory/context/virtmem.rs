@@ -116,7 +116,12 @@ impl VirtContext {
             logln!("{:?}", map);
             let cursor = MappingCursor::new(map.vaddr(), map.len());
             let mut phys = ContiguousProvider::new(map.paddr(), map.len());
-            self.arch.map(cursor, &mut phys, map.settings());
+            let settings = MappingSettings::new(
+                map.settings().perms(),
+                map.settings().cache(),
+                map.settings().flags() | MappingFlags::GLOBAL,
+            );
+            self.arch.map(cursor, &mut phys, &settings);
         }
     }
 }

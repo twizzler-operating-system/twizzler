@@ -24,6 +24,22 @@ impl MappingCursor {
         Some(self)
     }
 
+    /// Advance the cursor by up to `len`, so we end up aligned on len. Should the resulting address be non-canonical, `None` is returned.
+    pub fn align_advance(mut self, len: usize) -> Option<Self> {
+        if self.len <= len {
+            return None;
+        }
+        let vaddr = self.start.align_up(len as u64).ok()?;
+        if vaddr == self.start {
+            self.start = self.start.offset(len).ok()?;
+            self.len -= len;
+        } else {
+            self.len -= vaddr - self.start;
+            self.start = vaddr;
+        }
+        Some(self)
+    }
+
     /// How many bytes remain?
     pub fn remaining(&self) -> usize {
         self.len

@@ -243,6 +243,14 @@ impl Sub<PhysAddr> for PhysAddr {
     }
 }
 
+impl Sub<VirtAddr> for VirtAddr {
+    type Output = usize;
+
+    fn sub(self, rhs: VirtAddr) -> Self::Output {
+        (self.0.checked_sub(rhs.0).unwrap()) as usize
+    }
+}
+
 impl LowerHex for PhysAddr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         LowerHex::fmt(&self.0, f)

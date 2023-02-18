@@ -512,6 +512,9 @@ pub fn alloc_frame(flags: PhysicalFrameFlags) -> FrameRef {
         frame = PFA.wait().lock().alloc(flags, true);
     }
     let frame = frame.expect("out of memory");
+    if flags.contains(PhysicalFrameFlags::ZEROED) {
+        assert!(frame.is_zeroed());
+    }
     /* TODO: try to use the MMU to detect if a page is actually ever written to or not */
     frame.set_not_zero();
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
