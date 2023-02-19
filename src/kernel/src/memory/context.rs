@@ -276,6 +276,8 @@ pub enum InsertError {
 
 /// A trait for kernel-related memory context actions.
 pub(super) trait KernelMemoryContext {
+    /// Called once during initialization, after which calls to the other function in this trait may be called.
+    fn init_allocator(&self);
     /// Allocate a contiguous chunk of memory. This is not expected to be good for small allocations, this should be
     /// used to grab large chunks of memory to then serve pieces of using an actual allocator. Returns a pointer to the
     /// allocated memory and the size of the allocation (must be greater than layout's size).

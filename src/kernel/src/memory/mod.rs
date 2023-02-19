@@ -1,8 +1,4 @@
-use alloc::boxed::Box;
-use core::ops::Add;
-use twizzler_abi::device::CacheType;
-
-use crate::{arch, spinlock::Spinlock, BootInfo};
+use crate::{arch, BootInfo};
 
 pub mod allocator;
 pub mod context;
@@ -13,7 +9,7 @@ pub mod pagetables;
 
 pub use arch::{PhysAddr, VirtAddr};
 
-use self::context::Context;
+use self::context::{Context, KernelMemoryContext};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MemoryRegionKind {
@@ -35,9 +31,10 @@ pub fn finish_setup() {
     //todo!()
 }
 
-pub fn init<B: BootInfo>(boot_info: &B, clone_regions: &[VirtAddr]) {
+pub fn init<B: BootInfo>(boot_info: &B) {
     frame::init(boot_info.memory_regions());
     let kc = context::kernel_context();
     kc.switch_to();
+    kc.init_allocator();
     allocator::init(kc);
 }

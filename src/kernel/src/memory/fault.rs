@@ -31,10 +31,13 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
         );
     }
     /* TODO: null page */
-    if !flags.contains(PageFaultFlags::USER) && addr.raw() >= 0xffff000000000000
+    if !flags.contains(PageFaultFlags::USER) && addr.is_kernel()
     /*TODO */
     {
-        panic!("kernel page fault")
+        panic!(
+            "kernel page fault addr={:?} {:?} {:?} ip={:?}",
+            addr, cause, flags, ip
+        )
     }
     let vmc = current_memory_context();
     if vmc.is_none() {

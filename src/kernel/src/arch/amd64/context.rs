@@ -1,5 +1,3 @@
-use core::panic;
-
 use crate::{
     arch::memory::pagetables::{Entry, EntryFlags},
     memory::{

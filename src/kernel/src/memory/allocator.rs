@@ -1,5 +1,6 @@
 use alloc::alloc::{GlobalAlloc, Layout};
 use core::{
+    mem::size_of,
     panic,
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
@@ -42,29 +43,19 @@ impl<Ctx: KernelMemoryContext + 'static> KernelAllocator<Ctx> {
 
 impl<Ctx: KernelMemoryContext + 'static> KernelAllocatorInner<Ctx> {
     fn allocate_page(&mut self) -> &'static mut ObjectPage<'static> {
+        let size = size_of::<ObjectPage>();
         let chunk = self
             .ctx
-            .allocate_chunk(
-                Layout::from_size_align(
-                    ZoneAllocator::MAX_BASE_ALLOC_SIZE,
-                    ZoneAllocator::MAX_BASE_ALLOC_SIZE,
-                )
-                .unwrap(),
-            )
+            .allocate_chunk(Layout::from_size_align(size, size).unwrap())
             .as_ptr();
         unsafe { &mut *(chunk as *mut ObjectPage<'static>) }
     }
 
     fn allocate_large_page(&mut self) -> &'static mut LargeObjectPage<'static> {
+        let size = size_of::<LargeObjectPage>();
         let chunk = self
             .ctx
-            .allocate_chunk(
-                Layout::from_size_align(
-                    ZoneAllocator::MAX_BASE_ALLOC_SIZE,
-                    ZoneAllocator::MAX_BASE_ALLOC_SIZE,
-                )
-                .unwrap(),
-            )
+            .allocate_chunk(Layout::from_size_align(size, size).unwrap())
             .as_ptr();
         unsafe { &mut *(chunk as *mut LargeObjectPage<'static>) }
     }
