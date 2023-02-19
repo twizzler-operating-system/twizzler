@@ -3,7 +3,8 @@ use crate::{
     memory::{
         frame::{alloc_frame, PhysicalFrameFlags},
         pagetables::{
-            DeferredUnmappingOps, Mapper, MappingCursor, MappingSettings, PhysAddrProvider,
+            DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
+            PhysAddrProvider,
         },
     },
     mutex::Mutex,
@@ -43,6 +44,7 @@ impl ArchContext {
         }
     }
 
+    #[allow(named_asm_labels)]
     pub fn switch_to(&self) {
         unsafe {
             x86::controlregs::cr3_write(self.target);
@@ -77,6 +79,15 @@ impl ArchContext {
             self.inner.lock().unmap(cursor)
         };
         ops.run_all();
+    }
+
+    pub fn readmap<R>(&self, cursor: MappingCursor, f: impl Fn(MapReader) -> R) -> R {
+        let r = if cursor.start().is_kernel() {
+            f(KERNEL_MAPPER.lock().readmap(cursor))
+        } else {
+            f(self.inner.lock().mapper.readmap(cursor))
+        };
+        r
     }
 }
 
