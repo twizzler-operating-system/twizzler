@@ -3,7 +3,7 @@ use core::ptr::NonNull;
 use alloc::collections::BTreeMap;
 use twizzler_abi::object::{ObjID, MAX_SIZE};
 
-use super::{Context, InsertError, KernelMemoryContext, MappingPerms};
+use super::{InsertError, KernelMemoryContext, MappingPerms, UserContext};
 use crate::{
     arch::{address::VirtAddr, context::ArchContext},
     memory::{
@@ -106,6 +106,10 @@ impl VirtContext {
         Self::__new(ArchContext::new_kernel())
     }
 
+    pub fn new() -> Self {
+        Self::__new(ArchContext::new())
+    }
+
     pub(super) fn init_kernel_context(&self) {
         let proto = unsafe { Mapper::current() };
         let rm = proto.readmap(MappingCursor::new(
@@ -125,7 +129,7 @@ impl VirtContext {
     }
 }
 
-impl Context for VirtContext {
+impl UserContext for VirtContext {
     type UpcallInfo = VirtAddr;
     type MappingInfo = usize;
 

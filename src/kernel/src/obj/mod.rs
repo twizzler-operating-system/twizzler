@@ -12,7 +12,7 @@ use twizzler_abi::object::ObjID;
 
 use crate::{
     idcounter::{IdCounter, SimpleId},
-    memory::{context::MappingRef, PhysAddr, VirtAddr},
+    memory::{PhysAddr, VirtAddr},
     mutex::{LockGuard, Mutex},
 };
 

@@ -9,7 +9,7 @@ pub mod pagetables;
 
 pub use arch::{PhysAddr, VirtAddr};
 
-use self::context::{Context, KernelMemoryContext};
+use self::context::{KernelMemoryContext, UserContext};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MemoryRegionKind {

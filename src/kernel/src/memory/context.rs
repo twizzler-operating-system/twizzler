@@ -13,6 +13,7 @@ use crate::{
     obj::{pages::PageRef, ObjectRef},
 };
 
+/*
 #[derive(Ord, PartialOrd, PartialEq, Eq)]
 pub struct Mapping {
     pub obj: ObjectRef,
@@ -85,29 +86,7 @@ impl Ord for MemoryContext {
     }
 }
 
-bitflags::bitflags! {
-    pub struct MappingPerms : u32 {
-        const READ = 1;
-        const WRITE = 2;
-        const EXECUTE = 4;
-    }
-}
 
-impl From<Protections> for MappingPerms {
-    fn from(p: Protections) -> Self {
-        let mut s = MappingPerms::empty();
-        if p.contains(Protections::READ) {
-            s.insert(MappingPerms::READ)
-        }
-        if p.contains(Protections::WRITE) {
-            s.insert(MappingPerms::WRITE)
-        }
-        if p.contains(Protections::EXEC) {
-            s.insert(MappingPerms::EXECUTE)
-        }
-        s
-    }
-}
 
 bitflags::bitflags! {
     pub struct MapFlags: u64 {
@@ -228,19 +207,48 @@ impl MemoryContext {
     }
 }
 
+*/
+
 use crate::syscall::object::ObjectHandle;
-impl ObjectHandle for MemoryContextRef {
+impl ObjectHandle for ContextRef {
     fn create_with_handle(_obj: ObjectRef) -> Self {
-        Arc::new(MemoryContext::new())
+        Arc::new(Context::new())
+    }
+}
+
+bitflags::bitflags! {
+    pub struct MappingPerms : u32 {
+        const READ = 1;
+        const WRITE = 2;
+        const EXECUTE = 4;
+    }
+}
+
+impl From<Protections> for MappingPerms {
+    fn from(p: Protections) -> Self {
+        let mut s = MappingPerms::empty();
+        if p.contains(Protections::READ) {
+            s.insert(MappingPerms::READ)
+        }
+        if p.contains(Protections::WRITE) {
+            s.insert(MappingPerms::WRITE)
+        }
+        if p.contains(Protections::EXEC) {
+            s.insert(MappingPerms::EXECUTE)
+        }
+        s
     }
 }
 
 pub mod virtmem;
 
+pub type Context = virtmem::VirtContext;
+pub type ContextRef = Arc<Context>;
+
 /// A trait that defines the operations expected by higher-level object management routines. An architecture-dependent
 /// type can be created that implements Context, which can then be used by the rest of the kernel to manage objects in a
 /// context (e.g. an address space).
-pub trait Context {
+pub trait UserContext {
     /// The type that is expected for upcall information (e.g. an entry address).
     type UpcallInfo;
     /// The type that is expected for informing the context how to map the object (e.g. a slot number).
@@ -291,14 +299,13 @@ pub(super) trait KernelMemoryContext {
 }
 
 lazy_static::lazy_static! {
-    // TODO: make these more like impl Context (or conditional compilation).
-    static ref KERNEL_CONTEXT: virtmem::VirtContext = {
+    static ref KERNEL_CONTEXT: ContextRef = {
         let c = virtmem::VirtContext::new_kernel();
         c.init_kernel_context();
-        c
+        Arc::new(c)
     };
 }
 
-pub fn kernel_context() -> &'static virtmem::VirtContext {
+pub fn kernel_context() -> &'static ContextRef {
     &KERNEL_CONTEXT
 }

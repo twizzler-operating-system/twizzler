@@ -11,7 +11,7 @@ use twizzler_abi::{
 };
 
 use crate::{
-    memory::{context::MemoryContextRef, VirtAddr},
+    memory::{context::ContextRef, VirtAddr},
     mutex::Mutex,
     obj::{copy::CopySpec, LookupFlags, Object, ObjectRef, PageNumber},
     once::Once,
@@ -106,7 +106,7 @@ impl<T: ObjectHandle + Clone> Handle<T> {
 
 struct AllHandles {
     all: BTreeSet<ObjID>,
-    vm_contexts: BTreeMap<ObjID, Handle<MemoryContextRef>>,
+    vm_contexts: BTreeMap<ObjID, Handle<ContextRef>>,
 }
 
 static ALL_HANDLES: Once<Mutex<AllHandles>> = Once::new();
@@ -120,7 +120,7 @@ fn get_all_handles() -> &'static Mutex<AllHandles> {
     })
 }
 
-pub fn get_vmcontext_from_handle(id: ObjID) -> Option<MemoryContextRef> {
+pub fn get_vmcontext_from_handle(id: ObjID) -> Option<ContextRef> {
     let ah = get_all_handles();
     ah.lock().vm_contexts.get(&id).map(|x| x.item.clone())
 }

@@ -53,8 +53,8 @@ impl From<X86SyscallContext> for UpcallFrame {
 }
 
 impl UpcallAble for X86SyscallContext {
-    fn set_upcall(&mut self, target: usize, frame: u64, info: u64, stack: u64) {
-        self.rcx = target as u64;
+    fn set_upcall(&mut self, target: VirtAddr, frame: u64, info: u64, stack: u64) {
+        self.rcx = target.into();
         self.rdi = frame;
         self.rsi = info;
         self.rsp = stack;

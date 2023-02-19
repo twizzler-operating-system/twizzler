@@ -18,7 +18,7 @@ use crate::{
     initrd::get_boot_objects,
     interrupt,
     memory::{
-        context::{MappingPerms, MemoryContext, MemoryContextRef},
+        context::{Context, ContextRef, MappingPerms, UserContext},
         VirtAddr,
     },
     obj::ObjectRef,
@@ -78,7 +78,7 @@ pub struct Thread {
     pub switch_lock: AtomicU64,
     pub donated_priority: Spinlock<Option<Priority>>,
     pub current_processor_queue: AtomicI32,
-    memory_context: Option<MemoryContextRef>,
+    memory_context: Option<ContextRef>,
     pub kernel_stack: Box<[u8; KERNEL_STACK_SIZE]>,
     pub stats: ThreadStats,
     spawn_args: Option<ThreadSpawnArgs>,
@@ -116,7 +116,7 @@ pub fn exit_kernel() {
 
 static ID_COUNTER: IdCounter = IdCounter::new();
 
-pub fn current_memory_context() -> Option<MemoryContextRef> {
+pub fn current_memory_context() -> Option<ContextRef> {
     current_thread_ref()
         .map(|t| t.memory_context.clone())
         .flatten()
@@ -155,23 +155,20 @@ impl Thread {
     // TODO: cleanup all these new variants
     pub fn new_with_new_vm() -> Self {
         let mut thread = Self::new();
-        thread.memory_context = Some(Arc::new(MemoryContext::new()));
-        thread.memory_context.as_ref().unwrap().inner().add_thread();
+        thread.memory_context = Some(Arc::new(Context::new()));
         thread
     }
 
     pub fn new_with_current_context(spawn_args: ThreadSpawnArgs) -> Self {
         let mut thread = Self::new();
         thread.memory_context = Some(current_memory_context().unwrap());
-        thread.memory_context.as_ref().unwrap().inner().add_thread();
         thread.spawn_args = Some(spawn_args);
         thread
     }
 
-    pub fn new_with_handle_context(spawn_args: ThreadSpawnArgs, vmc: MemoryContextRef) -> Self {
+    pub fn new_with_handle_context(spawn_args: ThreadSpawnArgs, vmc: ContextRef) -> Self {
         let mut thread = Self::new();
         thread.memory_context = Some(vmc);
-        thread.memory_context.as_ref().unwrap().inner().add_thread();
         thread.spawn_args = Some(spawn_args);
         thread
     }
@@ -210,7 +207,7 @@ impl Thread {
     pub fn switch_thread(&self, current: &Thread) {
         if self != current {
             if let Some(ref ctx) = self.memory_context {
-                ctx.switch();
+                ctx.switch_to();
             }
         }
         self.arch_switch_to(current)
@@ -356,7 +353,7 @@ impl Thread {
     pub fn send_upcall(&self, info: UpcallInfo) {
         // TODO
         let ctx = current_memory_context().unwrap();
-        let upcall = ctx.get_upcall_address().unwrap();
+        let upcall = ctx.get_upcall().unwrap();
         self.arch_queue_upcall(upcall, info);
     }
 }
@@ -364,9 +361,6 @@ impl Thread {
 impl Drop for Thread {
     fn drop(&mut self) {
         //logln!("drop thread {}", self.id());
-        if let Some(ref vm) = self.memory_context {
-            vm.inner().remove_thread();
-        }
     }
 }
 
