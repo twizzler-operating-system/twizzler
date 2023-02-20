@@ -6,7 +6,7 @@ use twizzler_abi::syscall::{
 };
 
 use crate::{
-    memory::VirtAddr,
+    memory::{context::UserContext, VirtAddr},
     obj::{LookupFlags, ObjectRef},
     once::Once,
     spinlock::Spinlock,
@@ -54,12 +54,18 @@ fn finish_blocking(guard: CriticalGuard) {
     });
 }
 
+// TODO: uses-virtaddr
 fn get_obj_and_offset(addr: VirtAddr) -> Result<(ObjectRef, usize), ThreadSyncError> {
     // let t = current_thread_ref().unwrap();
     let vmc = current_memory_context().ok_or(ThreadSyncError::Unknown)?;
-    let mapping = { vmc.inner().lookup_object(addr) }.ok_or(ThreadSyncError::InvalidReference)?;
+    let mapping = vmc
+        .lookup_object(
+            addr.try_into()
+                .map_err(|_| ThreadSyncError::InvalidReference)?,
+        )
+        .ok_or(ThreadSyncError::InvalidReference)?;
     let offset = (addr.raw() as usize) % (1024 * 1024 * 1024); //TODO: arch-dep, centralize these calculations somewhere, see PageNumber
-    Ok((mapping.obj.clone(), offset))
+    Ok((mapping.object().clone(), offset))
 }
 
 fn get_obj(reference: ThreadSyncReference) -> Result<(ObjectRef, usize), ThreadSyncError> {

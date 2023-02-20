@@ -1,22 +1,17 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    memory::context::{Mapping, MappingPerms, MemoryContextRef},
+    memory::context::{ContextRef, MappingPerms},
     obj::ObjectRef,
 };
 
 pub fn map_object_into_context(
     slot: usize,
     obj: ObjectRef,
-    vmc: MemoryContextRef,
+    vmc: ContextRef,
     perms: MappingPerms,
 ) -> Result<(), ()> {
-    let mapping = Arc::new(Mapping::new(obj.clone(), vmc.clone(), slot, perms));
-    let mut vmc = vmc.inner();
-    obj.insert_mapping(mapping.clone());
-    vmc.insert_mapping(mapping);
-
-    Ok(())
+    todo!()
 }
 
 pub fn read_object(obj: &ObjectRef) -> Vec<u8> {

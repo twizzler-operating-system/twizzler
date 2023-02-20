@@ -2,7 +2,6 @@ use crate::{arch, BootInfo};
 
 pub mod allocator;
 pub mod context;
-pub mod fault;
 pub mod frame;
 pub mod map;
 pub mod pagetables;

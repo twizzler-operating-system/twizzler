@@ -29,7 +29,6 @@ pub struct Object {
     id: ObjID,
     flags: AtomicU32,
     range_tree: Mutex<range::PageRangeTree>,
-    maplist: Mutex<BTreeSet<MappingRef>>,
     sleep_info: Mutex<SleepInfo>,
     pin_info: Mutex<PinInfo>,
 }
@@ -117,10 +116,6 @@ impl Object {
         self.id
     }
 
-    pub fn insert_mapping(&self, mapping: MappingRef) {
-        self.maplist.lock().insert(mapping);
-    }
-
     pub fn release_pin(&self, _pin: u32) {
         // TODO: Currently we don't track pins. This will be changed in-future when we fully implement eviction.
     }
@@ -155,7 +150,6 @@ impl Object {
             id: ((OID.fetch_add(1, Ordering::SeqCst) as u128) | (1u128 << 64)).into(),
             flags: AtomicU32::new(0),
             range_tree: Mutex::new(range::PageRangeTree::new()),
-            maplist: Mutex::new(BTreeSet::new()),
             sleep_info: Mutex::new(SleepInfo::new()),
             pin_info: Mutex::new(PinInfo::default()),
         }

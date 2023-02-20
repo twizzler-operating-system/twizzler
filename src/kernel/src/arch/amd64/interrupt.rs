@@ -10,7 +10,7 @@ use crate::{
     arch::lapic,
     interrupt::{Destination, DynamicInterrupt},
     memory::{
-        fault::{PageFaultCause, PageFaultFlags},
+        context::virtmem::{PageFaultCause, PageFaultFlags},
         VirtAddr,
     },
     processor::current_processor,
@@ -429,7 +429,7 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             crate::thread::enter_kernel();
             crate::interrupt::set(true);
             if let Ok(cr2_va) = VirtAddr::new(cr2 as u64) && let Ok(rip_va) = VirtAddr::new(ctx.rip) {
-            crate::memory::fault::page_fault(
+            crate::memory::context::virtmem::page_fault(
                 cr2_va,
                 cause,
                 flags,

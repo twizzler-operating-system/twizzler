@@ -3,7 +3,7 @@ use core::ptr::NonNull;
 use alloc::collections::BTreeMap;
 use twizzler_abi::object::{ObjID, MAX_SIZE};
 
-use super::{InsertError, KernelMemoryContext, MappingPerms, UserContext};
+use super::{InsertError, KernelMemoryContext, MappingPerms, ObjectContextInfo, UserContext};
 use crate::{
     arch::{address::VirtAddr, context::ArchContext},
     memory::{
@@ -18,6 +18,11 @@ use crate::{
     spinlock::Spinlock,
 };
 
+use crate::{
+    obj::{pages::Page, PageNumber},
+    thread::{current_memory_context, current_thread_ref},
+};
+
 /// A type that implements [Context] for virtual memory systems.
 pub struct VirtContext {
     arch: ArchContext,
@@ -27,34 +32,57 @@ pub struct VirtContext {
 
 #[derive(Default)]
 struct SlotMgr {
-    slots: BTreeMap<usize, VirtContextSlot>,
-    objs: BTreeMap<ObjID, usize>,
+    slots: BTreeMap<Slot, VirtContextSlot>,
+    objs: BTreeMap<ObjID, Slot>,
+}
+
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
+pub struct Slot(usize);
+
+impl Slot {
+    fn start_vaddr(&self) -> VirtAddr {
+        // TODO
+        VirtAddr::new((self.0 * MAX_SIZE) as u64).unwrap()
+    }
+
+    fn raw(&self) -> usize {
+        self.0
+    }
+}
+
+impl TryFrom<VirtAddr> for Slot {
+    type Error = ();
+
+    fn try_from(value: VirtAddr) -> Result<Self, Self::Error> {
+        if value.is_kernel() {
+            Err(())
+        } else {
+            // TODO
+            Ok(Self((value.raw() / MAX_SIZE as u64) as usize))
+        }
+    }
 }
 
 impl SlotMgr {
-    fn get(&self, slot: usize) -> Option<&VirtContextSlot> {
+    fn get(&self, slot: Slot) -> Option<&VirtContextSlot> {
         self.slots.get(&slot)
     }
 
-    fn insert(&mut self, slot: usize, id: ObjID, info: VirtContextSlot) {
+    fn insert(&mut self, slot: Slot, id: ObjID, info: VirtContextSlot) {
         self.slots.insert(slot, info);
         self.objs.insert(id, slot);
     }
 
-    fn remove(&mut self, slot: usize) {
+    fn remove(&mut self, slot: Slot) {
         if let Some(info) = self.slots.remove(&slot) {
             self.objs.remove(&info.obj.id());
         }
     }
 
-    fn obj_to_slot(&self, id: ObjID) -> Option<usize> {
+    fn obj_to_slot(&self, id: ObjID) -> Option<Slot> {
         self.objs.get(&id).cloned()
     }
-}
-
-fn slot_to_vaddr(slot: usize) -> VirtAddr {
-    // TODO
-    VirtAddr::new((slot * MAX_SIZE) as u64).unwrap()
 }
 
 struct ObjectPageProvider {
@@ -72,7 +100,7 @@ impl PhysAddrProvider for ObjectPageProvider {
 }
 
 impl VirtContext {
-    fn map_slot(&self, slot: usize, start: usize, len: usize) {
+    fn map_slot(&self, slot: Slot, start: usize, len: usize) {
         let slots = self.slots.lock();
         if let Some(info) = slots.get(slot) {
             let mut phys = info.phys_provider();
@@ -84,7 +112,7 @@ impl VirtContext {
         }
     }
 
-    fn wp_slot(&self, slot: usize, start: usize, len: usize) {
+    fn wp_slot(&self, slot: Slot, start: usize, len: usize) {
         let slots = self.slots.lock();
         if let Some(info) = slots.get(slot) {
             self.arch.change(
@@ -131,7 +159,7 @@ impl VirtContext {
 
 impl UserContext for VirtContext {
     type UpcallInfo = VirtAddr;
-    type MappingInfo = usize;
+    type MappingInfo = Slot;
 
     fn set_upcall(&self, target: Self::UpcallInfo) {
         *self.upcall.lock() = Some(target);
@@ -147,16 +175,14 @@ impl UserContext for VirtContext {
 
     fn insert_object(
         &self,
-        obj: ObjectRef,
-        slot: usize,
-        perms: MappingPerms,
-        cache: CacheType,
+        slot: Slot,
+        object_info: &ObjectContextInfo,
     ) -> Result<(), InsertError> {
         let new_slot_info = VirtContextSlot {
-            obj: obj.clone(),
+            obj: object_info.object().clone(),
             slot,
-            perms,
-            cache,
+            perms: object_info.perms(),
+            cache: object_info.cache(),
         };
         let mut slots = self.slots.lock();
         if let Some(info) = slots.get(slot) {
@@ -165,7 +191,7 @@ impl UserContext for VirtContext {
             }
             return Ok(());
         }
-        slots.insert(slot, obj.id(), new_slot_info);
+        slots.insert(slot, object_info.object().id(), new_slot_info);
         Ok(())
     }
 
@@ -179,12 +205,16 @@ impl UserContext for VirtContext {
             self.wp_slot(slot, start, len);
         }
     }
+
+    fn lookup_object(&self, info: Self::MappingInfo) -> Option<ObjectContextInfo> {
+        todo!()
+    }
 }
 
 #[derive(Eq, PartialEq, Ord, PartialOrd)]
 struct VirtContextSlot {
     obj: ObjectRef,
-    slot: usize,
+    slot: Slot,
     perms: MappingPerms,
     cache: CacheType,
 }
@@ -192,10 +222,7 @@ struct VirtContextSlot {
 impl VirtContextSlot {
     fn mapping_cursor(&self, start: usize, len: usize) -> MappingCursor {
         // TODO
-        MappingCursor::new(
-            slot_to_vaddr(self.slot).offset(start as isize).unwrap(),
-            len,
-        )
+        MappingCursor::new(self.slot.start_vaddr().offset(start as isize).unwrap(), len)
     }
 
     fn mapping_settings(&self, wp: bool) -> MappingSettings {
@@ -293,5 +320,94 @@ impl KernelMemoryContext for VirtContext {
     fn init_allocator(&self) {
         let mut glb = GLOBAL_PAGE_ALLOC.lock();
         glb.init(self);
+    }
+}
+bitflags::bitflags! {
+    pub struct PageFaultFlags : u32 {
+        const USER = 1;
+        const INVALID = 2;
+        const PRESENT = 4;
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum PageFaultCause {
+    InstructionFetch,
+    Read,
+    Write,
+}
+
+pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, ip: VirtAddr) {
+    if false {
+        logln!(
+            "(thrd {}) page fault at {:?} cause {:?} flags {:?}, at {:?}",
+            current_thread_ref().map(|t| t.id()).unwrap_or(0),
+            addr,
+            cause,
+            flags,
+            ip
+        );
+    }
+    /* TODO: null page */
+    if !flags.contains(PageFaultFlags::USER) && addr.is_kernel()
+    /*TODO */
+    {
+        panic!(
+            "kernel page fault addr={:?} {:?} {:?} ip={:?}",
+            addr, cause, flags, ip
+        )
+    }
+    let vmc = current_memory_context();
+    if vmc.is_none() {
+        panic!("page fault in thread with no memory context");
+    }
+    let vmc = vmc.unwrap();
+    let mapping = { vmc.inner().lookup_object(addr) };
+
+    if let Some(mapping) = mapping {
+        let objid = mapping.obj.id();
+        let page_number = PageNumber::from_address(addr);
+        let mut obj_page_tree = mapping.obj.lock_page_tree();
+        let is_write = cause == PageFaultCause::Write;
+
+        if page_number == PageNumber::from_address(VirtAddr::new(0).unwrap()) {
+            panic!("zero-page fault {:?} ip: {:?} cause {:?}", addr, ip, cause);
+        }
+
+        if let Some((page, cow)) = obj_page_tree.get_page(page_number, is_write) {
+            let mut vmc = vmc.inner();
+            /* check if mappings changed */
+            if vmc.lookup_object(addr).map_or(0.into(), |o| o.obj.id()) != objid {
+                drop(vmc);
+                drop(obj_page_tree);
+                return page_fault(addr, cause, flags, ip);
+            }
+            //TODO: get these perms from the second lookup
+            let perms = if cow {
+                mapping.perms & MappingPerms::WRITE.complement()
+            } else {
+                mapping.perms
+            };
+            if false {
+                logln!(
+                    "  => mapping {:?} page {:?} {:?}",
+                    objid,
+                    page_number,
+                    page.physical_address()
+                );
+            }
+            vmc.map_object_page(addr, page, perms);
+        } else {
+            let page = Page::new();
+            obj_page_tree.add_page(page_number, page);
+            drop(obj_page_tree);
+            page_fault(addr, cause, flags, ip);
+        }
+    } else {
+        //TODO: fault
+        if let Some(th) = current_thread_ref() {
+            logln!("user fs {:?}", th.arch.user_fs);
+        }
+        panic!("page fault: no obj");
     }
 }

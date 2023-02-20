@@ -240,9 +240,12 @@ impl From<Protections> for MappingPerms {
     }
 }
 
+// TODO: does this need to be pub?
 pub mod virtmem;
 
+/// The context type for this system (e.g. [virtmem::VirtContext] for x86).
 pub type Context = virtmem::VirtContext;
+/// The [Context] type wrapped in an [Arc].
 pub type ContextRef = Arc<Context>;
 
 /// A trait that defines the operations expected by higher-level object management routines. An architecture-dependent
@@ -265,16 +268,49 @@ pub trait UserContext {
     /// the fault by correctly mapping the object as requested.
     fn insert_object(
         &self,
-        obj: ObjectRef,
         mapping_info: Self::MappingInfo,
-        perms: MappingPerms,
-        cache: crate::memory::map::CacheType,
+        object_info: &ObjectContextInfo,
     ) -> Result<(), InsertError>;
     /// Remove an object's mapping from the context.
     fn remove_object(&self, obj: ObjID, start: usize, len: usize);
     /// Write protect a region of the object's mapping. For correctness, the implementation must ensure that the region
     /// is, indeed, write protected. If this means protecting the entire object, so be it.
     fn write_protect(&self, obj: ObjID, start: usize, len: usize);
+    /// Lookup an object within this context. Once this function returns, no guarantees are made about if the object
+    /// remains mapped as is.
+    fn lookup_object(&self, info: Self::MappingInfo) -> Option<ObjectContextInfo>;
+}
+
+/// A struct containing information about how an object is inserted within a context.
+pub struct ObjectContextInfo {
+    object: ObjectRef,
+    perms: MappingPerms,
+    cache: CacheType,
+}
+
+impl ObjectContextInfo {
+    pub fn new(object: ObjectRef, perms: MappingPerms, cache: CacheType) -> Self {
+        Self {
+            object,
+            perms,
+            cache,
+        }
+    }
+
+    /// The object.
+    pub fn object(&self) -> &ObjectRef {
+        &self.object
+    }
+
+    /// The permissions.
+    pub fn perms(&self) -> MappingPerms {
+        self.perms
+    }
+
+    /// The caching type.
+    pub fn cache(&self) -> CacheType {
+        self.cache
+    }
 }
 
 /// Errors for inserting objects into a [Context].
