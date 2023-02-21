@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod test {
     use phys_provider::PhysAddrProvider;
+    use twizzler_abi::device::CacheType;
     use twizzler_kernel_macros::kernel_test;
 
     use crate::{
@@ -8,7 +9,6 @@ mod test {
         memory::{
             context::MappingPerms,
             frame::{alloc_frame, PhysicalFrameFlags},
-            map::CacheType,
             pagetables::{phys_provider, Mapper, MappingCursor, MappingFlags, MappingSettings},
         },
     };

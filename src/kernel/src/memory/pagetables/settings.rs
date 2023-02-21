@@ -1,4 +1,6 @@
-use crate::memory::{context::MappingPerms, map::CacheType};
+use twizzler_abi::device::CacheType;
+
+use crate::memory::context::MappingPerms;
 
 bitflags::bitflags! {
     /// A collection of flags commonly used for mapping.

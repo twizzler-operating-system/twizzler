@@ -1,17 +1,17 @@
 use core::ptr::NonNull;
 
 use alloc::collections::BTreeMap;
-use twizzler_abi::object::{ObjID, MAX_SIZE};
+use twizzler_abi::{
+    device::CacheType,
+    object::{ObjID, MAX_SIZE},
+};
 
 use super::{InsertError, KernelMemoryContext, MappingPerms, ObjectContextInfo, UserContext};
 use crate::{
     arch::{address::VirtAddr, context::ArchContext},
-    memory::{
-        map::CacheType,
-        pagetables::{
-            ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
-            PhysAddrProvider, ZeroPageProvider,
-        },
+    memory::pagetables::{
+        ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider,
+        ZeroPageProvider,
     },
     mutex::Mutex,
     obj::ObjectRef,
@@ -87,7 +87,10 @@ impl SlotMgr {
 
 struct ObjectPageProvider {
     obj: ObjectRef,
+    //start: usize,
 }
+
+impl ObjectPageProvider {}
 
 impl PhysAddrProvider for ObjectPageProvider {
     fn peek(&mut self) -> (crate::arch::address::PhysAddr, usize) {
@@ -230,7 +233,7 @@ impl VirtContextSlot {
         if wp {
             perms.remove(MappingPerms::WRITE);
         }
-        MappingSettings::new(perms, self.cache, MappingFlags::empty())
+        MappingSettings::new(perms, self.cache, MappingFlags::USER)
     }
 
     fn phys_provider(&self) -> ObjectPageProvider {
@@ -338,76 +341,46 @@ pub enum PageFaultCause {
 }
 
 pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, ip: VirtAddr) {
-    if false {
-        logln!(
-            "(thrd {}) page fault at {:?} cause {:?} flags {:?}, at {:?}",
-            current_thread_ref().map(|t| t.id()).unwrap_or(0),
-            addr,
-            cause,
-            flags,
-            ip
-        );
-    }
-    /* TODO: null page */
-    if !flags.contains(PageFaultFlags::USER) && addr.is_kernel()
-    /*TODO */
-    {
-        panic!(
-            "kernel page fault addr={:?} {:?} {:?} ip={:?}",
-            addr, cause, flags, ip
-        )
-    }
-    let vmc = current_memory_context();
-    if vmc.is_none() {
-        panic!("page fault in thread with no memory context");
-    }
-    let vmc = vmc.unwrap();
-    let mapping = { vmc.inner().lookup_object(addr) };
-
-    if let Some(mapping) = mapping {
-        let objid = mapping.obj.id();
-        let page_number = PageNumber::from_address(addr);
-        let mut obj_page_tree = mapping.obj.lock_page_tree();
-        let is_write = cause == PageFaultCause::Write;
-
-        if page_number == PageNumber::from_address(VirtAddr::new(0).unwrap()) {
-            panic!("zero-page fault {:?} ip: {:?} cause {:?}", addr, ip, cause);
-        }
-
-        if let Some((page, cow)) = obj_page_tree.get_page(page_number, is_write) {
-            let mut vmc = vmc.inner();
-            /* check if mappings changed */
-            if vmc.lookup_object(addr).map_or(0.into(), |o| o.obj.id()) != objid {
-                drop(vmc);
-                drop(obj_page_tree);
-                return page_fault(addr, cause, flags, ip);
-            }
-            //TODO: get these perms from the second lookup
-            let perms = if cow {
-                mapping.perms & MappingPerms::WRITE.complement()
-            } else {
-                mapping.perms
-            };
-            if false {
-                logln!(
-                    "  => mapping {:?} page {:?} {:?}",
-                    objid,
-                    page_number,
-                    page.physical_address()
-                );
-            }
-            vmc.map_object_page(addr, page, perms);
-        } else {
-            let page = Page::new();
-            obj_page_tree.add_page(page_number, page);
-            drop(obj_page_tree);
-            page_fault(addr, cause, flags, ip);
-        }
+    if !flags.contains(PageFaultFlags::USER) {
+        /* kernel page fault */
     } else {
-        //TODO: fault
-        if let Some(th) = current_thread_ref() {
-            logln!("user fs {:?}", th.arch.user_fs);
+        if addr.is_kernel() {
+            todo!();
+            return;
         }
-        panic!("page fault: no obj");
+
+        let ctx = current_memory_context().expect("page fault in userland with no memory context");
+        let slot = match addr.try_into() {
+            Ok(s) => s,
+            Err(_) => todo!(),
+        };
+
+        let slot_mgr = ctx.slots.lock();
+
+        if let Some(info) = slot_mgr.get(slot) {
+            let page_number = PageNumber::from_address(addr);
+            let mut obj_page_tree = info.obj.lock_page_tree();
+            if page_number.is_zero() {
+                panic!("zero-page fault {:?} ip: {:?} cause {:?}", addr, ip, cause);
+            }
+
+            if let Some((page, cow)) =
+                obj_page_tree.get_page(page_number, cause == PageFaultCause::Write)
+            {
+                ctx.arch.map(
+                    info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
+                    &mut info.phys_provider(),
+                    &info.mapping_settings(cow),
+                );
+            } else {
+                let page = Page::new();
+                obj_page_tree.add_page(page_number, page);
+                drop(obj_page_tree);
+                drop(slot_mgr);
+                page_fault(addr, cause, flags, ip);
+            }
+        } else {
+            todo!()
+        }
     }
 }

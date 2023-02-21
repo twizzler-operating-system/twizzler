@@ -250,7 +250,7 @@ impl Device {
         obj.map_phys(start, end, ct);
         let mmio_info = MmioInfo {
             length: (end - start) as u64,
-            cache_type: CacheType::Uncachable,
+            cache_type: CacheType::Uncacheable,
             info,
         };
         obj.write_base(&mmio_info);

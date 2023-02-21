@@ -66,6 +66,14 @@ impl PageNumber {
 
     pub const PAGE_SIZE: usize = 0x1000; //TODO: arch-dep
 
+    pub fn is_zero(&self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn as_byte_offset(&self) -> usize {
+        self.0 * Self::PAGE_SIZE
+    }
+
     pub fn from_address(addr: VirtAddr) -> Self {
         PageNumber(((addr.raw() % (1 << 30)) / 0x1000) as usize) //TODO: arch-dep
     }

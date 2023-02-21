@@ -3,7 +3,6 @@ use crate::{arch, BootInfo};
 pub mod allocator;
 pub mod context;
 pub mod frame;
-pub mod map;
 pub mod pagetables;
 
 pub use arch::{PhysAddr, VirtAddr};
@@ -16,14 +15,11 @@ pub enum MemoryRegionKind {
     Reserved,
     BootloaderReserved,
 }
+
 pub struct MemoryRegion {
     pub start: PhysAddr,
     pub length: usize,
     pub kind: MemoryRegionKind,
-}
-#[derive(Debug)]
-pub enum MapFailed {
-    FrameAllocation,
 }
 
 pub fn finish_setup() {

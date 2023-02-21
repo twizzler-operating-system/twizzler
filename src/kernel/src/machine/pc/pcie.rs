@@ -150,7 +150,7 @@ fn register_device(
     dev.add_mmio(
         PhysAddr::new(cfgaddr).unwrap(),
         PhysAddr::new(cfgaddr + 0x1000).unwrap(),
-        CacheType::Uncachable,
+        CacheType::Uncacheable,
         0xff,
     );
 
@@ -162,7 +162,7 @@ fn register_device(
                 if bar.1 .2 != 0 {
                     CacheType::WriteThrough
                 } else {
-                    CacheType::Uncachable
+                    CacheType::Uncacheable
                 },
                 bar.0 as u64,
             );
@@ -260,7 +260,7 @@ fn init_segment(seg: u16, addr: PhysAddr) {
         seg_nr: seg,
     };
     dev.add_info(&info);
-    dev.add_mmio(addr, end_addr, CacheType::Uncachable, 0);
+    dev.add_mmio(addr, end_addr, CacheType::Uncacheable, 0);
     DEVS.lock().insert(
         dev.objid(),
         PcieKernelInfo {

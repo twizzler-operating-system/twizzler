@@ -1,8 +1,9 @@
+use twizzler_abi::device::CacheType;
+
 use crate::{
     arch::address::PhysAddr,
     memory::{
         context::MappingPerms,
-        map::CacheType,
         pagetables::{MappingFlags, MappingSettings},
     },
 };
