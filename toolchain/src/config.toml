@@ -10,6 +10,7 @@ sysconfdir = "etc"
 #download-ci-llvm = true
 skip-rebuild = false
 targets = "AArch64;X86"
+experimental-targets = ""
 
 [build]
 tools = ["clippy", "rustfmt", "src"] # + "rust-demangler" if `profiler`
