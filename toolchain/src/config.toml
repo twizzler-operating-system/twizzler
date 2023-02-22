@@ -1,5 +1,3 @@
-# Includes one of the default files in src/bootstrap/defaults
-profile = "user"
 changelog-seen = 2
 
 [install]
@@ -7,11 +5,15 @@ prefix = "../../install"
 sysconfdir = "etc"
 
 [llvm]
-#download-ci-llvm = true
+download-ci-llvm = false
 skip-rebuild = false
+targets = "AArch64;X86"
+experimental-targets = ""
 
 [build]
-tools = ["clippy", "rustfmt", "src"] # + "rust-demangler" if `profiler`
+build-stage = 2
+test-stage = 2
+doc-stage = 2
 docs = false
 target = ["x86_64-unknown-twizzler", "x86_64-unknown-linux-gnu"]
 submodules = false
