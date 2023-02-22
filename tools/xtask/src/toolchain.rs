@@ -137,6 +137,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             .arg("update")
             .arg("--init")
             .arg("--recursive")
+            .arg("--depth=1")
             .status()?;
         if !status.success() {
             anyhow::bail!("failed to update git submodules");
@@ -169,7 +170,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         "toolchain/src/rust/library/",
         &CopyOptions::new(),
     )?;
-    
+
     let status = Command::new("./x.py")
         .arg("install")
         .current_dir("toolchain/src/rust")
@@ -187,8 +188,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         anyhow::bail!("failed to install rust source");
     }
 
-
-       for target in &crate::triple::all_possible_platforms() {
+    for target in &crate::triple::all_possible_platforms() {
         build_crtx("crti", target)?;
         build_crtx("crtn", target)?;
     }
