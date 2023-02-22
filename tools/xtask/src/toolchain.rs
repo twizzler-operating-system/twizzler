@@ -137,6 +137,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             .arg("update")
             .arg("--init")
             .arg("--recursive")
+            .arg("--depth=1")
             .status()?;
         if !status.success() {
             anyhow::bail!("failed to update git submodules");
@@ -176,6 +177,15 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         .status()?;
     if !status.success() {
         anyhow::bail!("failed to compile rust toolchain");
+    }
+
+    let src_status = Command::new("./x.py")
+        .arg("install")
+        .arg("src")
+        .current_dir("toolchain/src/rust")
+        .status()?;
+    if !src_status.success() {
+        anyhow::bail!("failed to install rust source");
     }
 
     for target in &crate::triple::all_possible_platforms() {
