@@ -2,7 +2,7 @@ use crate::mutex::LockGuard;
 
 use super::{
     range::{PageRange, PageRangeTree},
-    ObjectRef, PageNumber,
+    InvalidateMode, ObjectRef, PageNumber,
 };
 
 fn split_range(
@@ -78,8 +78,11 @@ pub fn copy_ranges(
         src_point = src_point.offset(len);
     }
 
-    src.invalidate(src_start..src_start.offset(length));
-    dest.invalidate(dest_start..dest_start.offset(length));
+    src.invalidate(
+        src_start..src_start.offset(length),
+        InvalidateMode::WriteProtect,
+    );
+    dest.invalidate(dest_start..dest_start.offset(length), InvalidateMode::Full);
 }
 
 pub struct CopySpec {

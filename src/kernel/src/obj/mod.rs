@@ -4,15 +4,18 @@ use core::{
 };
 
 use alloc::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
     sync::Arc,
     vec::Vec,
 };
 use twizzler_abi::object::ObjID;
 
 use crate::{
-    idcounter::{IdCounter, SimpleId},
-    memory::{PhysAddr, VirtAddr},
+    idcounter::{Id, IdCounter, SimpleId, StableId},
+    memory::{
+        context::{ContextRef, UserContext},
+        PhysAddr, VirtAddr,
+    },
     mutex::{LockGuard, Mutex},
 };
 
@@ -31,8 +34,32 @@ pub struct Object {
     range_tree: Mutex<range::PageRangeTree>,
     sleep_info: Mutex<SleepInfo>,
     pin_info: Mutex<PinInfo>,
+    contexts: Mutex<ContextInfo>,
 }
 
+#[derive(Default)]
+struct ContextInfo {
+    contexts: BTreeMap<u64, (ContextRef, usize)>,
+}
+
+impl ContextInfo {
+    fn insert(&mut self, ctx: ContextRef) {
+        let mut entry = self
+            .contexts
+            .entry(ctx.id().value())
+            .or_insert_with(|| (ctx, 0));
+        entry.1 += 1;
+    }
+
+    fn remove(&mut self, ctx: ContextRef) {
+        if let Entry::Occupied(mut x) = self.contexts.entry(ctx.id().value()) {
+            x.get_mut().1 -= 1;
+            if x.get().1 == 0 {
+                x.remove();
+            }
+        }
+    }
+}
 #[derive(Default)]
 struct PinInfo {
     id_counter: IdCounter,
@@ -160,17 +187,35 @@ impl Object {
             range_tree: Mutex::new(range::PageRangeTree::new()),
             sleep_info: Mutex::new(SleepInfo::new()),
             pin_info: Mutex::new(PinInfo::default()),
+            contexts: Mutex::new(ContextInfo::default()),
         }
     }
 
-    pub fn invalidate(&self, _range: core::ops::Range<PageNumber>) {
-        //todo!()
+    pub fn add_context(&self, ctx: ContextRef) {
+        self.contexts.lock().insert(ctx)
+    }
+
+    pub fn remove_context(&self, ctx: ContextRef) {
+        self.contexts.lock().remove(ctx)
+    }
+
+    pub fn invalidate(&self, range: core::ops::Range<PageNumber>, mode: InvalidateMode) {
+        let contexts = self.contexts.lock();
+        for ctx in contexts.contexts.values() {
+            ctx.0.invalidate_object(self.id(), &range, mode);
+        }
     }
 
     pub fn print_page_tree(&self) {
         logln!("=== PAGE TREE OBJECT {} ===", self.id());
         self.range_tree.lock().print_tree();
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum InvalidateMode {
+    Full,
+    WriteProtect,
 }
 
 impl Default for Object {

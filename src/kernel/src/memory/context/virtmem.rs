@@ -1,6 +1,6 @@
 use core::ptr::NonNull;
 
-use alloc::collections::BTreeMap;
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, MAX_SIZE},
@@ -9,6 +9,7 @@ use twizzler_abi::{
 use super::{InsertError, KernelMemoryContext, MappingPerms, ObjectContextInfo, UserContext};
 use crate::{
     arch::{address::VirtAddr, context::ArchContext},
+    idcounter::{Id, IdCounter, StableId},
     memory::pagetables::{
         ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider,
         ZeroPageProvider,
@@ -28,12 +29,15 @@ pub struct VirtContext {
     arch: ArchContext,
     upcall: Spinlock<Option<VirtAddr>>,
     slots: Mutex<SlotMgr>,
+    id: Id<'static>,
 }
+
+static CONTEXT_IDS: IdCounter = IdCounter::new();
 
 #[derive(Default)]
 struct SlotMgr {
     slots: BTreeMap<Slot, VirtContextSlot>,
-    objs: BTreeMap<ObjID, Slot>,
+    objs: BTreeMap<ObjID, Vec<Slot>>,
 }
 
 #[repr(transparent)]
@@ -74,13 +78,14 @@ impl TryFrom<VirtAddr> for Slot {
 }
 
 impl SlotMgr {
-    fn get(&self, slot: Slot) -> Option<&VirtContextSlot> {
-        self.slots.get(&slot)
+    fn get(&self, slot: &Slot) -> Option<&VirtContextSlot> {
+        self.slots.get(slot)
     }
 
     fn insert(&mut self, slot: Slot, id: ObjID, info: VirtContextSlot) {
         self.slots.insert(slot, info);
-        self.objs.insert(id, slot);
+        let list = self.objs.entry(id).or_default();
+        list.push(slot);
     }
 
     fn remove(&mut self, slot: Slot) {
@@ -89,8 +94,8 @@ impl SlotMgr {
         }
     }
 
-    fn obj_to_slot(&self, id: ObjID) -> Option<Slot> {
-        self.objs.get(&id).cloned()
+    fn obj_to_slots<'a>(&'a self, id: ObjID) -> Option<&[Slot]> {
+        self.objs.get(&id).map(|x| x.as_slice())
     }
 }
 
@@ -111,33 +116,12 @@ impl<'a> PhysAddrProvider for ObjectPageProvider<'a> {
 }
 
 impl VirtContext {
-    fn _XXmap_slot(&self, slot: Slot, start: usize, len: usize) {
-        let slots = self.slots.lock();
-        if let Some(info) = slots.get(slot) {
-            let mut phys = info.phys_provider(todo!());
-            self.arch.map(
-                info.mapping_cursor(start, len),
-                &mut phys,
-                &info.mapping_settings(false),
-            );
-        }
-    }
-
-    fn wp_slot(&self, slot: Slot, start: usize, len: usize) {
-        let slots = self.slots.lock();
-        if let Some(info) = slots.get(slot) {
-            self.arch.change(
-                info.mapping_cursor(start, len),
-                &info.mapping_settings(true),
-            );
-        }
-    }
-
     fn __new(arch: ArchContext) -> Self {
         Self {
             arch,
             upcall: Spinlock::new(None),
             slots: Mutex::new(SlotMgr::default()),
+            id: CONTEXT_IDS.next(),
         }
     }
 
@@ -185,7 +169,7 @@ impl UserContext for VirtContext {
     }
 
     fn insert_object(
-        &self,
+        self: &Arc<Self>,
         slot: Slot,
         object_info: &ObjectContextInfo,
     ) -> Result<(), InsertError> {
@@ -195,8 +179,9 @@ impl UserContext for VirtContext {
             perms: object_info.perms(),
             cache: object_info.cache(),
         };
+        object_info.object().add_context(self.clone());
         let mut slots = self.slots.lock();
-        if let Some(info) = slots.get(slot) {
+        if let Some(info) = slots.get(&slot) {
             if info != &new_slot_info {
                 return Err(InsertError::Occupied);
             }
@@ -206,20 +191,47 @@ impl UserContext for VirtContext {
         Ok(())
     }
 
-    fn remove_object(&self, _obj: twizzler_abi::object::ObjID, _start: usize, _len: usize) {
-        todo!()
-    }
-
-    fn write_protect(&self, obj: ObjID, start: usize, len: usize) {
-        let slots = self.slots.lock();
-        if let Some(slot) = slots.obj_to_slot(obj) {
-            self.wp_slot(slot, start, len);
-        }
-    }
-
     fn lookup_object(&self, info: Self::MappingInfo) -> Option<ObjectContextInfo> {
         let slots = self.slots.lock();
-        slots.get(info).map(|info| info.into())
+        slots.get(&info).map(|info| info.into())
+    }
+
+    fn invalidate_object(
+        &self,
+        obj: ObjID,
+        range: &core::ops::Range<PageNumber>,
+        mode: obj::InvalidateMode,
+    ) {
+        /*
+        logln!(
+            "object invalidation in context {}: {} {:?} {:?}",
+            self.id(),
+            obj,
+            range,
+            mode
+        );
+        */
+        let start = range.start.as_byte_offset();
+        let len = range.end.as_byte_offset() - start;
+        let slots = self.slots.lock();
+        if let Some(maps) = slots.obj_to_slots(obj) {
+            for map in maps {
+                let info = slots
+                    .get(map)
+                    .expect("invalid slot info for a mapped object");
+                match mode {
+                    obj::InvalidateMode::Full => {
+                        self.arch.unmap(info.mapping_cursor(start, len));
+                    }
+                    obj::InvalidateMode::WriteProtect => {
+                        self.arch.change(
+                            info.mapping_cursor(start, len),
+                            &info.mapping_settings(true),
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -338,6 +350,13 @@ impl KernelMemoryContext for VirtContext {
         glb.init(self);
     }
 }
+
+impl StableId for VirtContext {
+    fn id(&self) -> &Id<'_> {
+        &self.id
+    }
+}
+
 bitflags::bitflags! {
     pub struct PageFaultFlags : u32 {
         const USER = 1;
@@ -372,7 +391,7 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
 
         let slot_mgr = ctx.slots.lock();
 
-        if let Some(info) = slot_mgr.get(slot) {
+        if let Some(info) = slot_mgr.get(&slot) {
             let page_number = PageNumber::from_address(addr);
             let mut obj_page_tree = info.obj.lock_page_tree();
             if page_number.is_zero() {
