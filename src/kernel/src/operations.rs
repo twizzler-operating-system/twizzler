@@ -1,7 +1,7 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 
 use crate::{
-    memory::context::{ContextRef, MappingPerms},
+    memory::context::{ContextRef, MappingPerms, ObjectContextInfo, UserContext},
     obj::ObjectRef,
 };
 
@@ -11,7 +11,11 @@ pub fn map_object_into_context(
     vmc: ContextRef,
     perms: MappingPerms,
 ) -> Result<(), ()> {
-    todo!()
+    let r = vmc.insert_object(
+        slot.try_into()?,
+        &ObjectContextInfo::new(obj, perms, twizzler_abi::device::CacheType::WriteBack),
+    );
+    r.map_err(|_| ())
 }
 
 pub fn read_object(obj: &ObjectRef) -> Vec<u8> {

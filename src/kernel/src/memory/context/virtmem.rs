@@ -14,7 +14,7 @@ use crate::{
         ZeroPageProvider,
     },
     mutex::Mutex,
-    obj::ObjectRef,
+    obj::{self, range::PageRangeTree, ObjectRef},
     spinlock::Spinlock,
 };
 
@@ -48,6 +48,15 @@ impl Slot {
 
     fn raw(&self) -> usize {
         self.0
+    }
+}
+
+impl TryFrom<usize> for Slot {
+    type Error = ();
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        let vaddr = VirtAddr::new((value * MAX_SIZE) as u64).map_err(|_| ())?;
+        vaddr.try_into()
     }
 }
 
@@ -85,28 +94,27 @@ impl SlotMgr {
     }
 }
 
-struct ObjectPageProvider {
-    obj: ObjectRef,
+// TODO: would be nice if this could map multiple pages and does the add_page internally.
+struct ObjectPageProvider<'a> {
+    page: &'a Page,
+    //obj: ObjectRef,
+    //page_tree: &'a mut PageRangeTree,
     //start: usize,
 }
 
-impl ObjectPageProvider {}
-
-impl PhysAddrProvider for ObjectPageProvider {
+impl<'a> PhysAddrProvider for ObjectPageProvider<'a> {
     fn peek(&mut self) -> (crate::arch::address::PhysAddr, usize) {
-        todo!()
+        (self.page.physical_address(), PageNumber::PAGE_SIZE)
     }
 
-    fn consume(&mut self, _len: usize) {
-        todo!()
-    }
+    fn consume(&mut self, _len: usize) {}
 }
 
 impl VirtContext {
-    fn map_slot(&self, slot: Slot, start: usize, len: usize) {
+    fn _XXmap_slot(&self, slot: Slot, start: usize, len: usize) {
         let slots = self.slots.lock();
         if let Some(info) = slots.get(slot) {
-            let mut phys = info.phys_provider();
+            let mut phys = info.phys_provider(todo!());
             self.arch.map(
                 info.mapping_cursor(start, len),
                 &mut phys,
@@ -210,7 +218,8 @@ impl UserContext for VirtContext {
     }
 
     fn lookup_object(&self, info: Self::MappingInfo) -> Option<ObjectContextInfo> {
-        todo!()
+        let slots = self.slots.lock();
+        slots.get(info).map(|info| info.into())
     }
 }
 
@@ -220,6 +229,12 @@ struct VirtContextSlot {
     slot: Slot,
     perms: MappingPerms,
     cache: CacheType,
+}
+
+impl From<&VirtContextSlot> for ObjectContextInfo {
+    fn from(info: &VirtContextSlot) -> Self {
+        ObjectContextInfo::new(info.obj.clone(), info.perms, info.cache)
+    }
 }
 
 impl VirtContextSlot {
@@ -236,10 +251,8 @@ impl VirtContextSlot {
         MappingSettings::new(perms, self.cache, MappingFlags::USER)
     }
 
-    fn phys_provider(&self) -> ObjectPageProvider {
-        ObjectPageProvider {
-            obj: self.obj.clone(),
-        }
+    fn phys_provider<'a>(&self, page: &'a Page) -> ObjectPageProvider<'a> {
+        ObjectPageProvider { page }
     }
 }
 
@@ -341,8 +354,10 @@ pub enum PageFaultCause {
 }
 
 pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, ip: VirtAddr) {
-    if !flags.contains(PageFaultFlags::USER) {
+    //logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
+    if !flags.contains(PageFaultFlags::USER) && addr.is_kernel() {
         /* kernel page fault */
+        todo!();
     } else {
         if addr.is_kernel() {
             todo!();
@@ -369,15 +384,20 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
             {
                 ctx.arch.map(
                     info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
-                    &mut info.phys_provider(),
+                    &mut info.phys_provider(&page),
                     &info.mapping_settings(cow),
                 );
             } else {
                 let page = Page::new();
                 obj_page_tree.add_page(page_number, page);
-                drop(obj_page_tree);
-                drop(slot_mgr);
-                page_fault(addr, cause, flags, ip);
+                let (page, cow) = obj_page_tree
+                    .get_page(page_number, cause == PageFaultCause::Write)
+                    .unwrap();
+                ctx.arch.map(
+                    info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
+                    &mut info.phys_provider(&page),
+                    &info.mapping_settings(cow),
+                );
             }
         } else {
             todo!()
