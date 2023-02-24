@@ -9,7 +9,7 @@ use slabmalloc::{AllocationError, Allocator, LargeObjectPage, ObjectPage, ZoneAl
 
 use crate::spinlock::Spinlock;
 
-use super::context::{virtmem::VirtContext, KernelMemoryContext};
+use super::context::{Context, KernelMemoryContext};
 
 #[alloc_error_handler]
 fn alloc_error_handler(layout: Layout) -> ! {
@@ -130,12 +130,11 @@ unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<
 }
 
 #[global_allocator]
-// TODO: virtcontext => impl Context?
-static SLAB_ALLOCATOR: KernelAllocator<VirtContext> = KernelAllocator {
+static SLAB_ALLOCATOR: KernelAllocator<Context> = KernelAllocator {
     inner: Spinlock::new(None),
 };
 
-pub fn init(ctx: &'static VirtContext) {
+pub fn init(ctx: &'static Context) {
     *SLAB_ALLOCATOR.inner.lock() = Some(KernelAllocatorInner {
         ctx,
         zone: ZoneAllocator::new(),

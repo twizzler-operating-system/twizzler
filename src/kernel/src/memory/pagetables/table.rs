@@ -75,7 +75,9 @@ impl Table {
     ) {
         let count = self.read_count();
         let entry = &mut self[index];
-        // TODO: check if we are doing a no-op, and early return
+        if *entry == new_entry {
+            return;
+        }
 
         let was_present = entry.is_present();
         let was_global = entry
@@ -97,7 +99,6 @@ impl Table {
         } else if !was_present && new_entry.is_present() {
             self.set_count(count + 1);
         } else {
-            // TODO: we may be able to remove this write if we know we're not modifying entries whose avail bits we use.
             self.set_count(count);
         }
     }

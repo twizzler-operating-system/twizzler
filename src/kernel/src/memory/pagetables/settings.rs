@@ -13,7 +13,6 @@ bitflags::bitflags! {
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
 /// A collection of all the settings for a given mapping.
 pub struct MappingSettings {
-    // TODO: user perms?
     perms: Protections,
     cache: CacheType,
     flags: MappingFlags,

@@ -36,7 +36,6 @@ impl PhysAddrProvider for ZeroPageProvider {
 
 impl Drop for ZeroPageProvider {
     fn drop(&mut self) {
-        // TODO: This can be cleaned up once we merge Allen's work on addresses.
         if let Some(f) = self.current.take() {
             free_frame(f);
         }

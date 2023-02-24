@@ -5,7 +5,7 @@ use crate::{
     memory::pagetables::{MappingFlags, MappingSettings},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(transparent)]
 /// The type of a single entry in a page table.
 pub struct Entry(u64);
