@@ -7,8 +7,9 @@ use crate::{
     object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     slot::{RESERVED_DATA, RESERVED_STACK, RESERVED_TEXT},
     syscall::{
-        BackingType, HandleType, LifetimeType, MapFlags, NewHandleFlags, ObjectCreate,
-        ObjectCreateFlags, ObjectSource, ThreadSpawnArgs, ThreadSpawnFlags,
+        sys_unbind_handle, BackingType, HandleType, LifetimeType, MapFlags, NewHandleFlags,
+        ObjectCreate, ObjectCreateFlags, ObjectSource, ThreadSpawnArgs, ThreadSpawnFlags,
+        UnbindHandleFlags,
     },
 };
 
@@ -346,6 +347,9 @@ pub fn spawn_new_executable(
     let thr = unsafe {
         crate::syscall::sys_spawn(ts).map_err(|_| SpawnExecutableError::ThreadSpawnFailed)?
     };
+
+    sys_unbind_handle(vm_handle, UnbindHandleFlags::empty());
+
     //TODO: delete objects
 
     Ok(thr)

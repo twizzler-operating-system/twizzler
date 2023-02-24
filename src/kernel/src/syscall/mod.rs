@@ -1,19 +1,28 @@
-use core::{mem::MaybeUninit};
+use core::mem::MaybeUninit;
 
+use alloc::sync::Arc;
 use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionValue},
     object::{ObjID, Protections},
     syscall::{
-        ClockFlags, ReadClockListFlags, ClockInfo, ClockSource, ClockKind, FemtoSeconds, HandleType, KernelConsoleReadSource,
-        ObjectCreateError, ObjectMapError, ReadClockInfoError, ReadClockListError, SysInfo, Syscall, ThreadSpawnError, ThreadSyncError,
+        ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, HandleType,
+        KernelConsoleReadSource, ObjectCreateError, ObjectMapError, ReadClockInfoError,
+        ReadClockListError, ReadClockListFlags, SysInfo, Syscall, ThreadSpawnError,
+        ThreadSyncError,
     },
 };
 
-use crate::clock::{fill_with_every_first, fill_with_kind, fill_with_first_kind};
 use crate::memory::VirtAddr;
 use crate::time::TICK_SOURCES;
+use crate::{
+    clock::{fill_with_every_first, fill_with_first_kind, fill_with_kind},
+    thread::current_thread_ref,
+};
 
-use self::{object::sys_new_handle, thread::thread_ctrl};
+use self::{
+    object::{sys_new_handle, sys_unbind_handle},
+    thread::thread_ctrl,
+};
 
 // TODO: move the handle stuff into its own file and make this private.
 pub mod object;
@@ -131,7 +140,7 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClo
             let ticks = {
                 let clock_list = TICK_SOURCES.lock();
                 if src as usize > clock_list.len() {
-                    return Err(ReadClockInfoError::InvalidArgument)
+                    return Err(ReadClockInfoError::InvalidArgument);
                 }
                 clock_list[src as usize].read()
             };
@@ -151,19 +160,19 @@ fn type_read_clock_list(
     clock_ptr: u64,
     slice_len: u64,
     start: u64,
-    flags: u64
+    flags: u64,
 ) -> Result<u64, ReadClockListError> {
     // convert u64 back into things
     let slice = match unsafe { create_user_slice(clock_ptr, slice_len) } {
         Some(x) => x,
-        None => return Err(ReadClockListError::Unknown) // unknown error
+        None => return Err(ReadClockListError::Unknown), // unknown error
     }; // maybe use ok or
 
     let kind: ClockKind = clock.into();
 
     let list_flags = match ReadClockListFlags::from_bits(flags as u32) {
         Some(x) => x,
-        None => return Err(ReadClockListError::InvalidArgument) // invalid flag present
+        None => return Err(ReadClockListError::InvalidArgument), // invalid flag present
     };
 
     const EMPTY: ReadClockListFlags = ReadClockListFlags::empty();
@@ -171,7 +180,7 @@ fn type_read_clock_list(
         ReadClockListFlags::ALL_CLOCKS | EMPTY => fill_with_every_first(slice, start),
         ReadClockListFlags::ONLY_KIND => fill_with_kind(slice, kind, start),
         ReadClockListFlags::FIRST_KIND => fill_with_first_kind(slice, kind),
-        _ => Err(ReadClockListError::InvalidArgument) // invalid flag combination
+        _ => Err(ReadClockListError::InvalidArgument), // invalid flag combination
     }
     .map(|x| x as u64)
 }
@@ -210,6 +219,15 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
         crate::thread::current_thread_ref().unwrap().id(),
         context.num()
     );
+    let cur = current_thread_ref().unwrap();
+    logln!(
+        "syscall {} from thread {} ({})",
+        context.num(),
+        cur.id(),
+        Arc::strong_count(&cur)
+    );
+    let count = Arc::strong_count(&cur);
+    drop(cur);
     */
     match context.num().into() {
         Syscall::Null => {
@@ -284,6 +302,14 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
+        Syscall::UnbindHandle => {
+            let hi = context.arg0();
+            let lo = context.arg1();
+            let _flags = context.arg2::<u64>();
+            let id = ObjID::new_from_parts(hi, lo);
+            sys_unbind_handle(id);
+            context.set_return_values(0u64, 0u64);
+        }
         Syscall::ObjectCreate => {
             let create = context.arg0();
             let src_ptr = context.arg1();
@@ -345,6 +371,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
         Syscall::ThreadCtrl => {
             let (code, val) = thread_ctrl(context.arg0::<u64>().into(), context.arg1());
             context.set_return_values(code, val);
+            return;
         }
         Syscall::ReadClockInfo => {
             let result = type_read_clock_info(context.arg0(), context.arg1(), context.arg2());
@@ -353,7 +380,12 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
         }
         Syscall::ReadClockList => {
             let result = type_read_clock_list(
-                context.arg0(), context.arg1(), context.arg2(), context.arg3(), context.arg4());
+                context.arg0(),
+                context.arg1(),
+                context.arg2(),
+                context.arg3(),
+                context.arg4(),
+            );
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
@@ -361,4 +393,17 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             context.set_return_values(1u64, 0u64);
         }
     }
+
+    /*
+    let cur = current_thread_ref().unwrap();
+    if count != Arc::strong_count(&cur) {
+        logln!(
+            "    COUNT MISMATCH exit syscall {} from thread {} ({} => {})",
+            context.num(),
+            cur.id(),
+            count,
+            Arc::strong_count(&cur),
+        );
+    }
+    */
 }

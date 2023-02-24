@@ -99,7 +99,10 @@ pub fn current_thread_ref() -> Option<ThreadRef> {
 }
 
 pub fn set_current_thread(thread: ThreadRef) {
-    interrupt::with_disabled(move || CURRENT_THREAD.replace(Some(thread)));
+    interrupt::with_disabled(move || {
+        let old = CURRENT_THREAD.replace(Some(thread));
+        drop(old);
+    });
 }
 
 pub fn enter_kernel() {
@@ -485,8 +488,9 @@ impl Ord for Priority {
 pub fn exit() {
     {
         let th = current_thread_ref().unwrap();
-        //logln!("thread {} exited", th.id());
+        crate::interrupt::disable();
         th.set_state(ThreadState::Exiting);
+        crate::syscall::sync::remove_from_requeue(&th);
         crate::sched::remove_thread(th.id());
         drop(th);
     }

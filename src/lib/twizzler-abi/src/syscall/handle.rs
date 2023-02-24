@@ -82,6 +82,12 @@ bitflags! {
     }
 }
 
+bitflags! {
+    /// Flags to pass to [sys_unbind_handle].
+    pub struct UnbindHandleFlags: u64 {
+    }
+}
+
 /// Make a new handle object.
 pub fn sys_new_handle(
     objid: ObjID,
@@ -96,4 +102,12 @@ pub fn sys_new_handle(
         )
     };
     convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as u64, justval)
+}
+
+/// Unbind an object from handle status.
+pub fn sys_unbind_handle(objid: ObjID, flags: UnbindHandleFlags) {
+    let (hi, lo) = objid.split();
+    unsafe {
+        raw_syscall(Syscall::UnbindHandle, &[hi, lo, flags.bits()]);
+    }
 }

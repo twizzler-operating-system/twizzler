@@ -5,7 +5,7 @@ use core::{
 
 use alloc::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
-    sync::Arc,
+    sync::{Arc, Weak},
     vec::Vec,
 };
 use twizzler_abi::object::ObjID;
@@ -13,7 +13,7 @@ use twizzler_abi::object::ObjID;
 use crate::{
     idcounter::{Id, IdCounter, SimpleId, StableId},
     memory::{
-        context::{ContextRef, UserContext},
+        context::{Context, ContextRef, UserContext},
         PhysAddr, VirtAddr,
     },
     mutex::{LockGuard, Mutex},
@@ -39,20 +39,20 @@ pub struct Object {
 
 #[derive(Default)]
 struct ContextInfo {
-    contexts: BTreeMap<u64, (ContextRef, usize)>,
+    contexts: BTreeMap<u64, (Weak<Context>, usize)>,
 }
 
 impl ContextInfo {
-    fn insert(&mut self, ctx: ContextRef) {
+    fn insert(&mut self, ctx: &ContextRef) {
         let mut entry = self
             .contexts
             .entry(ctx.id().value())
-            .or_insert_with(|| (ctx, 0));
+            .or_insert_with(|| (Arc::downgrade(ctx), 0));
         entry.1 += 1;
     }
 
-    fn remove(&mut self, ctx: ContextRef) {
-        if let Entry::Occupied(mut x) = self.contexts.entry(ctx.id().value()) {
+    fn remove(&mut self, ctx: u64) {
+        if let Entry::Occupied(mut x) = self.contexts.entry(ctx) {
             x.get_mut().1 -= 1;
             if x.get().1 == 0 {
                 x.remove();
@@ -191,18 +191,20 @@ impl Object {
         }
     }
 
-    pub fn add_context(&self, ctx: ContextRef) {
+    pub fn add_context(&self, ctx: &ContextRef) {
         self.contexts.lock().insert(ctx)
     }
 
-    pub fn remove_context(&self, ctx: ContextRef) {
-        self.contexts.lock().remove(ctx)
+    pub fn remove_context(&self, id: u64) {
+        self.contexts.lock().remove(id)
     }
 
     pub fn invalidate(&self, range: core::ops::Range<PageNumber>, mode: InvalidateMode) {
         let contexts = self.contexts.lock();
         for ctx in contexts.contexts.values() {
-            ctx.0.invalidate_object(self.id(), &range, mode);
+            if let Some(ctx) = ctx.0.upgrade() {
+                ctx.invalidate_object(self.id(), &range, mode);
+            }
         }
     }
 

@@ -297,10 +297,12 @@ pub fn create_idle_thread() {
 fn switch_to(thread: ThreadRef, old: ThreadRef) {
     /*
     logln!(
-        "{} switch to {} from {}",
+        "{} switch to {} from {} ({} {})",
         current_processor().id,
         thread.id(),
-        old.id()
+        old.id(),
+        Arc::strong_count(&thread),
+        Arc::strong_count(&old),
     );
     */
     let cp = current_processor();
@@ -347,6 +349,16 @@ pub fn schedule(reinsert: bool) {
     /* TODO: if we preempt, just put the thread back on our list (or decide to not resched) */
     let istate = interrupt::disable();
     let cur = current_thread_ref().unwrap();
+    /*
+    logln!(
+        "sched {}: {} ({} {} {})",
+        cur.id(),
+        Arc::strong_count(&cur),
+        cur.is_critical(),
+        cur.is_idle_thread(),
+        reinsert
+    );
+    */
     let processor = current_processor();
     if cur.is_critical() {
         interrupt::set(istate);
@@ -360,7 +372,6 @@ pub fn schedule(reinsert: bool) {
         schedule_thread(cur.clone());
     }
     if cur.state() == ThreadState::Exiting {
-        //  logln!("thread {} exit", cur.id());
         processor.sched.lock().push_exited(cur.clone());
     }
     if !cur.is_idle_thread() {

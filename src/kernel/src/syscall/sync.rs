@@ -41,6 +41,11 @@ pub fn add_to_requeue(thread: ThreadRef) {
     requeue.list.lock().insert(thread.id(), thread);
 }
 
+pub fn remove_from_requeue(thread: &ThreadRef) {
+    let requeue = get_requeue_list();
+    requeue.list.lock().remove(&thread.id());
+}
+
 // TODO: this is gross, we're manually trading out a critical guard with an interrupt guard because
 // we don't want to get interrupted... we need a better way to do this kind of consumable "don't
 // schedule until I say so".

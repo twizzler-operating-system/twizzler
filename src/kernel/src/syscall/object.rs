@@ -136,3 +136,13 @@ pub fn sys_new_handle(id: ObjID, handle_type: HandleType) -> Result<u64, NewHand
     ah.all.insert(id);
     Ok(0)
 }
+
+pub fn sys_unbind_handle(id: ObjID) {
+    let mut ah = get_all_handles().lock();
+    if !ah.all.contains(&id) {
+        return;
+    }
+    // TODO: we'll need to fix this for having many kinds of handles.
+    ah.all.remove(&id);
+    ah.vm_contexts.remove(&id).unwrap();
+}

@@ -15,13 +15,13 @@ use crate::{
         ZeroPageProvider,
     },
     mutex::Mutex,
-    obj::{self, range::PageRangeTree, ObjectRef},
+    obj::{self, ObjectRef},
     spinlock::Spinlock,
 };
 
 use crate::{
     obj::{pages::Page, PageNumber},
-    thread::{current_memory_context, current_thread_ref},
+    thread::current_memory_context,
 };
 
 /// A type that implements [Context] for virtual memory systems.
@@ -179,7 +179,7 @@ impl UserContext for VirtContext {
             perms: object_info.perms(),
             cache: object_info.cache(),
         };
-        object_info.object().add_context(self.clone());
+        object_info.object().add_context(self);
         let mut slots = self.slots.lock();
         if let Some(info) = slots.get(&slot) {
             if info != &new_slot_info {
@@ -265,6 +265,16 @@ impl VirtContextSlot {
 
     fn phys_provider<'a>(&self, page: &'a Page) -> ObjectPageProvider<'a> {
         ObjectPageProvider { page }
+    }
+}
+
+impl Drop for VirtContext {
+    fn drop(&mut self) {
+        let id = self.id().value();
+        // cleanup and object's context info
+        for info in self.slots.get_mut().slots.values() {
+            info.obj.remove_context(id)
+        }
     }
 }
 
