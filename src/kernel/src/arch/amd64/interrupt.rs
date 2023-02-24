@@ -2,17 +2,14 @@ use core::sync::atomic::Ordering;
 
 use twizzler_abi::{
     kso::{InterruptAllocateOptions, InterruptPriority},
-    upcall::{ExceptionInfo, UpcallFrame, UpcallInfo},
+    upcall::{ExceptionInfo, MemoryAccessKind, UpcallFrame, UpcallInfo},
 };
 use x86::current::rflags::RFlags;
 
 use crate::{
     arch::lapic,
     interrupt::{Destination, DynamicInterrupt},
-    memory::{
-        context::virtmem::{PageFaultCause, PageFaultFlags},
-        VirtAddr,
-    },
+    memory::{context::virtmem::PageFaultFlags, VirtAddr},
     processor::current_processor,
     thread::current_thread_ref,
 };
@@ -409,12 +406,12 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             let err = ctx.err;
             let cause = if err & (1 << 4) == 0 {
                 if err & (1 << 1) == 0 {
-                    PageFaultCause::Read
+                    MemoryAccessKind::Read
                 } else {
-                    PageFaultCause::Write
+                    MemoryAccessKind::Write
                 }
             } else {
-                PageFaultCause::InstructionFetch
+                MemoryAccessKind::InstructionFetch
             };
             let mut flags = PageFaultFlags::empty();
             if err & 1 != 0 {

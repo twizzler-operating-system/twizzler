@@ -4,6 +4,10 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, MAX_SIZE},
+    upcall::{
+        ExceptionInfo, MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError,
+        ObjectMemoryFaultInfo, UpcallInfo,
+    },
 };
 
 use super::{InsertError, KernelMemoryContext, MappingPerms, ObjectContextInfo, UserContext};
@@ -17,6 +21,7 @@ use crate::{
     mutex::Mutex,
     obj::{self, ObjectRef},
     spinlock::Spinlock,
+    thread::current_thread_ref,
 };
 
 use crate::{
@@ -375,28 +380,37 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum PageFaultCause {
-    InstructionFetch,
-    Read,
-    Write,
-}
-
-pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, ip: VirtAddr) {
+pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
     //logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
+    if flags.contains(PageFaultFlags::INVALID) {
+        panic!("page table contains invalid bits for address {:?}", addr);
+    }
     if !flags.contains(PageFaultFlags::USER) && addr.is_kernel() {
-        /* kernel page fault */
-        todo!();
+        panic!(
+            "kernel page-fault at IP {:?} caused by {:?} to/from {:?} with flags {:?}",
+            ip, cause, addr, flags
+        );
     } else {
         if addr.is_kernel() {
-            todo!();
+            current_thread_ref()
+                .unwrap()
+                .send_upcall(UpcallInfo::MemoryContextViolation(
+                    MemoryContextViolationInfo::new(addr.raw(), cause.into()),
+                ));
             return;
         }
 
         let ctx = current_memory_context().expect("page fault in userland with no memory context");
         let slot = match addr.try_into() {
             Ok(s) => s,
-            Err(_) => todo!(),
+            Err(_) => {
+                current_thread_ref()
+                    .unwrap()
+                    .send_upcall(UpcallInfo::MemoryContextViolation(
+                        MemoryContextViolationInfo::new(addr.raw(), cause.into()),
+                    ));
+                return;
+            }
         };
 
         let slot_mgr = ctx.slots.lock();
@@ -405,11 +419,28 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
             let page_number = PageNumber::from_address(addr);
             let mut obj_page_tree = info.obj.lock_page_tree();
             if page_number.is_zero() {
-                panic!("zero-page fault {:?} ip: {:?} cause {:?}", addr, ip, cause);
+                current_thread_ref()
+                    .unwrap()
+                    .send_upcall(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
+                        info.obj.id(),
+                        ObjectMemoryError::NullPageAccess,
+                        cause,
+                    )));
+                return;
+            }
+            if page_number.as_byte_offset() >= MAX_SIZE {
+                current_thread_ref()
+                    .unwrap()
+                    .send_upcall(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
+                        info.obj.id(),
+                        ObjectMemoryError::OutOfBounds(page_number.as_byte_offset()),
+                        cause,
+                    )));
+                return;
             }
 
             if let Some((page, cow)) =
-                obj_page_tree.get_page(page_number, cause == PageFaultCause::Write)
+                obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write)
             {
                 ctx.arch.map(
                     info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
@@ -420,7 +451,7 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
                 let page = Page::new();
                 obj_page_tree.add_page(page_number, page);
                 let (page, cow) = obj_page_tree
-                    .get_page(page_number, cause == PageFaultCause::Write)
+                    .get_page(page_number, cause == MemoryAccessKind::Write)
                     .unwrap();
                 ctx.arch.map(
                     info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
@@ -429,7 +460,11 @@ pub fn page_fault(addr: VirtAddr, cause: PageFaultCause, flags: PageFaultFlags, 
                 );
             }
         } else {
-            todo!()
+            current_thread_ref()
+                .unwrap()
+                .send_upcall(UpcallInfo::MemoryContextViolation(
+                    MemoryContextViolationInfo::new(addr.raw(), cause.into()),
+                ));
         }
     }
 }
