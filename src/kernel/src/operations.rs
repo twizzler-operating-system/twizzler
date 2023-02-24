@@ -1,7 +1,8 @@
 use alloc::vec::Vec;
+use twizzler_abi::object::Protections;
 
 use crate::{
-    memory::context::{ContextRef, MappingPerms, ObjectContextInfo, UserContext},
+    memory::context::{ContextRef, ObjectContextInfo, UserContext},
     obj::ObjectRef,
 };
 
@@ -9,7 +10,7 @@ pub fn map_object_into_context(
     slot: usize,
     obj: ObjectRef,
     vmc: ContextRef,
-    perms: MappingPerms,
+    perms: Protections,
 ) -> Result<(), ()> {
     let r = vmc.insert_object(
         slot.try_into()?,

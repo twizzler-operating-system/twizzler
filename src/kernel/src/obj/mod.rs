@@ -4,14 +4,14 @@ use core::{
 };
 
 use alloc::{
-    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    collections::{btree_map::Entry, BTreeMap},
     sync::{Arc, Weak},
     vec::Vec,
 };
 use twizzler_abi::object::ObjID;
 
 use crate::{
-    idcounter::{Id, IdCounter, SimpleId, StableId},
+    idcounter::{IdCounter, SimpleId, StableId},
     memory::{
         context::{Context, ContextRef, UserContext},
         PhysAddr, VirtAddr,

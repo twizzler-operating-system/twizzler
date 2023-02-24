@@ -22,14 +22,15 @@ pub struct MemoryRegion {
     pub kind: MemoryRegionKind,
 }
 
-pub fn finish_setup() {
-    //todo!()
-}
-
 pub fn init<B: BootInfo>(boot_info: &B) {
     frame::init(boot_info.memory_regions());
     let kc = context::kernel_context();
     kc.switch_to();
     kc.init_allocator();
     allocator::init(kc);
+}
+
+pub fn prep_smp() {
+    let kc = context::kernel_context();
+    kc.prep_smp();
 }

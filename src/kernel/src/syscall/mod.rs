@@ -1,6 +1,5 @@
 use core::mem::MaybeUninit;
 
-use alloc::sync::Arc;
 use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionValue},
     object::{ObjID, Protections},
@@ -12,12 +11,9 @@ use twizzler_abi::{
     },
 };
 
+use crate::clock::{fill_with_every_first, fill_with_first_kind, fill_with_kind};
 use crate::memory::VirtAddr;
 use crate::time::TICK_SOURCES;
-use crate::{
-    clock::{fill_with_every_first, fill_with_first_kind, fill_with_kind},
-    thread::current_thread_ref,
-};
 
 use self::{
     object::{sys_new_handle, sys_unbind_handle},
@@ -213,22 +209,6 @@ fn zero_ok<T: Into<u64>>(t: T) -> (u64, u64) {
 }
 
 pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
-    /*
-    logln!(
-        "syscall! {} {}",
-        crate::thread::current_thread_ref().unwrap().id(),
-        context.num()
-    );
-    let cur = current_thread_ref().unwrap();
-    logln!(
-        "syscall {} from thread {} ({})",
-        context.num(),
-        cur.id(),
-        Arc::strong_count(&cur)
-    );
-    let count = Arc::strong_count(&cur);
-    drop(cur);
-    */
     match context.num().into() {
         Syscall::Null => {
             if context.arg0::<u64>() == 0x12345678 {
@@ -393,17 +373,4 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             context.set_return_values(1u64, 0u64);
         }
     }
-
-    /*
-    let cur = current_thread_ref().unwrap();
-    if count != Arc::strong_count(&cur) {
-        logln!(
-            "    COUNT MISMATCH exit syscall {} from thread {} ({} => {})",
-            context.num(),
-            cur.id(),
-            count,
-            Arc::strong_count(&cur),
-        );
-    }
-    */
 }

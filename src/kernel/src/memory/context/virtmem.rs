@@ -3,14 +3,14 @@ use core::ptr::NonNull;
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use twizzler_abi::{
     device::CacheType,
-    object::{ObjID, MAX_SIZE},
+    object::{ObjID, Protections, MAX_SIZE},
     upcall::{
-        ExceptionInfo, MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError,
-        ObjectMemoryFaultInfo, UpcallInfo,
+        MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
+        UpcallInfo,
     },
 };
 
-use super::{InsertError, KernelMemoryContext, MappingPerms, ObjectContextInfo, UserContext};
+use super::{InsertError, KernelMemoryContext, ObjectContextInfo, UserContext};
 use crate::{
     arch::{address::VirtAddr, context::ArchContext},
     idcounter::{Id, IdCounter, StableId},
@@ -104,12 +104,8 @@ impl SlotMgr {
     }
 }
 
-// TODO: would be nice if this could map multiple pages and does the add_page internally.
 struct ObjectPageProvider<'a> {
     page: &'a Page,
-    //obj: ObjectRef,
-    //page_tree: &'a mut PageRangeTree,
-    //start: usize,
 }
 
 impl<'a> PhysAddrProvider for ObjectPageProvider<'a> {
@@ -181,7 +177,7 @@ impl UserContext for VirtContext {
         let new_slot_info = VirtContextSlot {
             obj: object_info.object().clone(),
             slot,
-            perms: object_info.perms(),
+            prot: object_info.prot(),
             cache: object_info.cache(),
         };
         object_info.object().add_context(self);
@@ -244,13 +240,13 @@ impl UserContext for VirtContext {
 struct VirtContextSlot {
     obj: ObjectRef,
     slot: Slot,
-    perms: MappingPerms,
+    prot: Protections,
     cache: CacheType,
 }
 
 impl From<&VirtContextSlot> for ObjectContextInfo {
     fn from(info: &VirtContextSlot) -> Self {
-        ObjectContextInfo::new(info.obj.clone(), info.perms, info.cache)
+        ObjectContextInfo::new(info.obj.clone(), info.prot, info.cache)
     }
 }
 
@@ -261,11 +257,11 @@ impl VirtContextSlot {
     }
 
     fn mapping_settings(&self, wp: bool) -> MappingSettings {
-        let mut perms = self.perms;
+        let mut prot = self.prot;
         if wp {
-            perms.remove(MappingPerms::WRITE);
+            prot.remove(Protections::WRITE);
         }
-        MappingSettings::new(perms, self.cache, MappingFlags::USER)
+        MappingSettings::new(prot, self.cache, MappingFlags::USER)
     }
 
     fn phys_provider<'a>(&self, page: &'a Page) -> ObjectPageProvider<'a> {
@@ -297,7 +293,7 @@ impl GlobalPageAlloc {
         let cursor = MappingCursor::new(self.end, len);
         let mut phys = ZeroPageProvider::default();
         let settings = MappingSettings::new(
-            MappingPerms::READ | MappingPerms::WRITE,
+            Protections::READ | Protections::WRITE,
             CacheType::WriteBack,
             MappingFlags::GLOBAL,
         );
@@ -314,7 +310,7 @@ impl GlobalPageAlloc {
         let cursor = MappingCursor::new(self.end, len);
         let mut phys = ZeroPageProvider::default();
         let settings = MappingSettings::new(
-            MappingPerms::READ | MappingPerms::WRITE,
+            Protections::READ | Protections::WRITE,
             CacheType::WriteBack,
             MappingFlags::GLOBAL,
         );
@@ -363,6 +359,13 @@ impl KernelMemoryContext for VirtContext {
     fn init_allocator(&self) {
         let mut glb = GLOBAL_PAGE_ALLOC.lock();
         glb.init(self);
+    }
+
+    fn prep_smp(&self) {
+        self.arch.unmap(MappingCursor::new(
+            VirtAddr::start_user_memory(),
+            VirtAddr::end_user_memory() - VirtAddr::start_user_memory(),
+        ));
     }
 }
 

@@ -1,11 +1,8 @@
-use twizzler_abi::device::CacheType;
+use twizzler_abi::{device::CacheType, object::Protections};
 
 use crate::{
     arch::address::PhysAddr,
-    memory::{
-        context::MappingPerms,
-        pagetables::{MappingFlags, MappingSettings},
-    },
+    memory::pagetables::{MappingFlags, MappingSettings},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -120,17 +117,17 @@ impl EntryFlags {
         flags
     }
 
-    /// Get the represented permissions as a [MappingPerms].
-    pub fn perms(&self) -> MappingPerms {
+    /// Get the represented permissions as a [Protections].
+    pub fn perms(&self) -> Protections {
         let rw = if self.contains(Self::WRITE) {
-            MappingPerms::WRITE | MappingPerms::READ
+            Protections::WRITE | Protections::READ
         } else {
-            MappingPerms::READ
+            Protections::READ
         };
         let ex = if self.contains(Self::NO_EXECUTE) {
-            MappingPerms::empty()
+            Protections::empty()
         } else {
-            MappingPerms::EXECUTE
+            Protections::EXEC
         };
         rw | ex
     }
@@ -168,10 +165,10 @@ impl From<&MappingSettings> for EntryFlags {
             CacheType::Uncacheable => EntryFlags::CACHE_DISABLE,
         };
         let mut p = EntryFlags::empty();
-        if settings.perms().contains(MappingPerms::WRITE) {
+        if settings.perms().contains(Protections::WRITE) {
             p |= EntryFlags::WRITE;
         }
-        if !settings.perms().contains(MappingPerms::EXECUTE) {
+        if !settings.perms().contains(Protections::EXEC) {
             p |= EntryFlags::NO_EXECUTE;
         }
         let f = if settings.flags().contains(MappingFlags::GLOBAL) {

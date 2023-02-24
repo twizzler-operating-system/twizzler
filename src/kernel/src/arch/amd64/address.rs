@@ -18,6 +18,14 @@ impl VirtAddr {
         Self(0xffff800000000000)
     }
 
+    pub const fn start_user_memory() -> Self {
+        Self(0x0)
+    }
+
+    pub const fn end_user_memory() -> Self {
+        Self(0x0000800000000000)
+    }
+
     pub const fn new(addr: u64) -> Result<Self, NonCanonical> {
         if addr >= 0xFFFF800000000000 || addr <= 0x00007fffffffffff {
             Ok(Self(addr))

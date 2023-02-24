@@ -1,13 +1,12 @@
 #[cfg(test)]
 mod test {
     use phys_provider::PhysAddrProvider;
-    use twizzler_abi::device::CacheType;
+    use twizzler_abi::{device::CacheType, object::Protections};
     use twizzler_kernel_macros::kernel_test;
 
     use crate::{
         arch::{address::VirtAddr, memory::pagetables::Table},
         memory::{
-            context::MappingPerms,
             frame::{alloc_frame, PhysicalFrameFlags},
             pagetables::{phys_provider, Mapper, MappingCursor, MappingFlags, MappingSettings},
         },
@@ -59,7 +58,7 @@ mod test {
         let cur = MappingCursor::new(VirtAddr::new(0).unwrap(), len);
         let mut phys = StaticProvider {};
         let settings = MappingSettings::new(
-            MappingPerms::WRITE | MappingPerms::READ,
+            Protections::WRITE | Protections::READ,
             CacheType::WriteBack,
             MappingFlags::empty(),
         );
@@ -76,7 +75,7 @@ mod test {
         assert_eq!(reader.next(), None);
 
         let settings2 = MappingSettings::new(
-            MappingPerms::EXECUTE | MappingPerms::READ,
+            Protections::EXEC | Protections::READ,
             CacheType::WriteBack,
             MappingFlags::GLOBAL,
         );

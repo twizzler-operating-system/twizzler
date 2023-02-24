@@ -7,7 +7,7 @@ use core::{
 use alloc::{boxed::Box, sync::Arc};
 use twizzler_abi::{
     aux::{AuxEntry, KernelInitInfo, KernelInitName},
-    object::ObjID,
+    object::{ObjID, Protections},
     syscall::{ThreadSpawnArgs, ThreadSpawnError},
     upcall::UpcallInfo,
 };
@@ -18,7 +18,7 @@ use crate::{
     initrd::get_boot_objects,
     interrupt,
     memory::{
-        context::{Context, ContextRef, MappingPerms, UserContext},
+        context::{Context, ContextRef, UserContext},
         VirtAddr,
     },
     obj::ObjectRef,
@@ -575,28 +575,28 @@ extern "C" fn user_init() {
             twizzler_abi::slot::RESERVED_TEXT,
             obj_text,
             vm.clone(),
-            MappingPerms::READ | MappingPerms::EXECUTE,
+            Protections::READ | Protections::EXEC,
         )
         .unwrap();
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_DATA,
             obj_data,
             vm.clone(),
-            MappingPerms::READ | MappingPerms::WRITE,
+            Protections::READ | Protections::WRITE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_STACK,
             obj_stack,
             vm.clone(),
-            MappingPerms::READ | MappingPerms::WRITE,
+            Protections::READ | Protections::WRITE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_KERNEL_INIT,
             obj_name,
             vm,
-            MappingPerms::READ,
+            Protections::READ,
         )
         .unwrap();
         let init_obj = boot_objects.init.as_ref().expect("no init found");

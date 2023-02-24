@@ -295,16 +295,6 @@ pub fn create_idle_thread() {
 }
 
 fn switch_to(thread: ThreadRef, old: ThreadRef) {
-    /*
-    logln!(
-        "{} switch to {} from {} ({} {})",
-        current_processor().id,
-        thread.id(),
-        old.id(),
-        Arc::strong_count(&thread),
-        Arc::strong_count(&old),
-    );
-    */
     let cp = current_processor();
     cp.stats.switches.fetch_add(1, Ordering::SeqCst);
     set_current_thread(thread.clone());
@@ -349,26 +339,14 @@ pub fn schedule(reinsert: bool) {
     /* TODO: if we preempt, just put the thread back on our list (or decide to not resched) */
     let istate = interrupt::disable();
     let cur = current_thread_ref().unwrap();
-    /*
-    logln!(
-        "sched {}: {} ({} {} {})",
-        cur.id(),
-        Arc::strong_count(&cur),
-        cur.is_critical(),
-        cur.is_idle_thread(),
-        reinsert
-    );
-    */
     let processor = current_processor();
     if cur.is_critical() {
         interrupt::set(istate);
-        // logln!("{} not scheduling due to critical region", processor.id);
         return;
     }
 
     cur.enter_critical();
     if !cur.is_idle_thread() && reinsert {
-        // logln!("{} reinserting thread {}", processor.id, cur.id());
         schedule_thread(cur.clone());
     }
     if cur.state() == ThreadState::Exiting {
@@ -397,7 +375,6 @@ pub fn schedule(reinsert: bool) {
     if let Some(stolen) = try_steal() {
         let cp = current_processor();
         cp.stats.steals.fetch_add(1, Ordering::SeqCst);
-        // logln!("{} stole thread {}", current_processor().id, stolen.id());
         switch_to(stolen, cur);
         interrupt::set(istate);
         return;
