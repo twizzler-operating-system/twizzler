@@ -85,7 +85,7 @@ impl Table {
             .contains(MappingFlags::GLOBAL);
 
         *entry = new_entry;
-        let entry_addr = VirtAddr::from(entry);
+        let entry_addr = VirtAddr::from(entry as *const _);
         consist.flush(entry_addr);
 
         if was_present {

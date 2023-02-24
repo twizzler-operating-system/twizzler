@@ -14,6 +14,8 @@ pub struct PhysAddr(u64);
 pub struct NonCanonical;
 
 impl VirtAddr {
+    pub const HEAP_START: Self = Self(0xffffff0000000000);
+
     pub const fn start_kernel_memory() -> Self {
         Self(0xffff800000000000)
     }
@@ -99,15 +101,15 @@ impl VirtAddr {
     }
 }
 
-impl<T> From<&mut T> for VirtAddr {
-    fn from(x: &mut T) -> Self {
-        Self((x as *mut T) as usize as u64)
+impl<T> From<*mut T> for VirtAddr {
+    fn from(x: *mut T) -> Self {
+        Self(x as usize as u64)
     }
 }
 
-impl<T> From<&T> for VirtAddr {
-    fn from(x: &T) -> Self {
-        Self((x as *const T) as usize as u64)
+impl<T> From<*const T> for VirtAddr {
+    fn from(x: *const T) -> Self {
+        Self(x as usize as u64)
     }
 }
 

@@ -51,7 +51,6 @@ pub struct Slot(usize);
 
 impl Slot {
     fn start_vaddr(&self) -> VirtAddr {
-        // TODO
         VirtAddr::new((self.0 * MAX_SIZE) as u64).unwrap()
     }
 
@@ -76,8 +75,7 @@ impl TryFrom<VirtAddr> for Slot {
         if value.is_kernel() {
             Err(())
         } else {
-            // TODO
-            Ok(Self((value.raw() / MAX_SIZE as u64) as usize))
+            Ok(Self(value.raw() as usize / MAX_SIZE))
         }
     }
 }
@@ -93,9 +91,12 @@ impl SlotMgr {
         list.push(slot);
     }
 
-    fn remove(&mut self, slot: Slot) {
+    fn remove(&mut self, slot: Slot) -> Option<VirtContextSlot> {
         if let Some(info) = self.slots.remove(&slot) {
             self.objs.remove(&info.obj.id());
+            Some(info)
+        } else {
+            None
         }
     }
 
@@ -234,6 +235,13 @@ impl UserContext for VirtContext {
             }
         }
     }
+
+    fn remove_object(&self, info: Self::MappingInfo) {
+        let mut slots = self.slots.lock();
+        if let Some(slot) = slots.remove(info) {
+            slot.obj.remove_context(self.id.value());
+        }
+    }
 }
 
 #[derive(Eq, PartialEq, Ord, PartialOrd)]
@@ -252,8 +260,7 @@ impl From<&VirtContextSlot> for ObjectContextInfo {
 
 impl VirtContextSlot {
     fn mapping_cursor(&self, start: usize, len: usize) -> MappingCursor {
-        // TODO
-        MappingCursor::new(self.slot.start_vaddr().offset(start as isize).unwrap(), len)
+        MappingCursor::new(self.slot.start_vaddr().offset(start).unwrap(), len)
     }
 
     fn mapping_settings(&self, wp: bool) -> MappingSettings {
@@ -279,8 +286,6 @@ impl Drop for VirtContext {
     }
 }
 
-// TODO: arch-dep
-pub const HEAP_START: u64 = 0xffffff0000000000;
 pub const HEAP_MAX_LEN: usize = 0x0000001000000000 / 16; //4GB
 
 struct GlobalPageAlloc {
@@ -318,7 +323,7 @@ impl GlobalPageAlloc {
         self.end = self.end.offset(len).unwrap();
         // Safety: the initial is backed by memory.
         unsafe {
-            self.alloc.init(HEAP_START as *mut u8, len);
+            self.alloc.init(VirtAddr::HEAP_START.as_mut_ptr(), len);
         }
     }
 }
@@ -329,7 +334,7 @@ unsafe impl Send for GlobalPageAlloc {}
 
 static GLOBAL_PAGE_ALLOC: Spinlock<GlobalPageAlloc> = Spinlock::new(GlobalPageAlloc {
     alloc: linked_list_allocator::Heap::empty(),
-    end: VirtAddr::new(HEAP_START).ok().unwrap(),
+    end: VirtAddr::HEAP_START,
 });
 
 impl KernelMemoryContext for VirtContext {
@@ -352,7 +357,6 @@ impl KernelMemoryContext for VirtContext {
 
     unsafe fn deallocate_chunk(&self, layout: core::alloc::Layout, ptr: NonNull<u8>) {
         let mut glb = GLOBAL_PAGE_ALLOC.lock();
-        // TODO: reclaim and unmap?
         glb.alloc.deallocate(ptr, layout);
     }
 

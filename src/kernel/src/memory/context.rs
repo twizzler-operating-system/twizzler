@@ -52,6 +52,8 @@ pub trait UserContext {
     fn lookup_object(&self, info: Self::MappingInfo) -> Option<ObjectContextInfo>;
     /// Invalidate any mappings for a particular object.
     fn invalidate_object(&self, obj: ObjID, range: &Range<PageNumber>, mode: InvalidateMode);
+    /// Remove an object from the context.
+    fn remove_object(&self, info: Self::MappingInfo);
 }
 
 /// A struct containing information about how an object is inserted within a context.
