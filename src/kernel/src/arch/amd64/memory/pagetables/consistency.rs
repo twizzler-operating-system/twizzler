@@ -79,6 +79,7 @@ impl TlbInvData {
 
     unsafe fn do_invalidation(&self) {
         let our_cr3 = x86::controlregs::cr3();
+        /*
         logln!(
             "invalidation started on CPU {}: target = {} ({}) {}",
             crate::processor::current_processor().id,
@@ -94,6 +95,7 @@ impl TlbInvData {
             },
             if self.full() { "FULL" } else { "" }
         );
+        */
         if our_cr3 != self.target() && !self.global() {
             return;
         }
@@ -146,13 +148,6 @@ impl InvInstruction {
 
     fn execute(&self) {
         let addr: u64 = self.addr().into();
-        logln!(
-            "inv {:x} {}{} {}",
-            addr,
-            if self.is_global() { 'g' } else { '-' },
-            if self.is_terminal() { 't' } else { '-' },
-            self.level()
-        );
         unsafe {
             core::arch::asm!("invlpg [{addr}]", addr = in(reg) addr);
         }
