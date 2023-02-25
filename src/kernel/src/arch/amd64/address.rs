@@ -1,5 +1,7 @@
 use core::{fmt::LowerHex, ops::Sub};
 
+use crate::once::Once;
+
 use super::memory::phys_to_virt;
 
 /// A representation of a canonical virtual address.
@@ -148,10 +150,25 @@ impl From<VirtAddr> for usize {
     }
 }
 
+static PHYS_ADDR_WIDTH: Once<u64> = Once::new();
 impl PhysAddr {
+    fn get_phys_addr_width() -> u64 {
+        *PHYS_ADDR_WIDTH.call_once(|| {
+            x86::cpuid::CpuId::new()
+                .get_processor_capacity_feature_info()
+                .unwrap()
+                .physical_address_bits()
+                .into()
+        })
+    }
+
     pub fn new(addr: u64) -> Result<Self, NonCanonical> {
-        //TODO: Check if the address is canonical
-        Ok(Self(addr))
+        let bits = Self::get_phys_addr_width();
+        if bits == 64 || addr < 1 << bits {
+            Ok(Self(addr))
+        } else {
+            Err(NonCanonical)
+        }
     }
 
     /// Construct a new physical address from a u64 without verifying that it is a valid physical address.
