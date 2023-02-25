@@ -58,7 +58,7 @@ impl Table {
         let mut count = 0;
         for b in 0..16 {
             let bit = self[b].get_avail_bit();
-            count |= if bit { 1 } else { 0 } << b;
+            count |= usize::from(bit) << b;
         }
         count
     }

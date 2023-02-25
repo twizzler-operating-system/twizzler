@@ -57,11 +57,10 @@ impl<'a> Iterator for MapCoalescer<'a> {
             let next = self.reader.next();
             if let Some(next) = next {
                 if let Some(last) = &mut self.last {
-                    if let Ok(last_next) = last.vaddr().offset(last.len()) && let Ok(last_next_phys) = last.paddr().offset(last.len()) {
-                        if last_next == next.vaddr() && last.settings() == next.settings() && last_next_phys == next.paddr() {
+                    if let Ok(last_next) = last.vaddr().offset(last.len()) && let Ok(last_next_phys) = last.paddr().offset(last.len())
+                        && last_next == next.vaddr() && last.settings() == next.settings() && last_next_phys == next.paddr() {
                             last.psize += next.len();
                             continue;
-                        }
                     }
 
                     let ret = last.clone();
@@ -120,6 +119,11 @@ impl MapInfo {
     /// Length of this individual mapping (corresponds to the length of physical and virtual memory covered by this mapping).
     pub fn len(&self) -> usize {
         self.psize
+    }
+
+    /// Is the mapping empty?
+    pub fn is_empty(&self) -> bool {
+        self.psize == 0
     }
 
     /// Map settings.

@@ -1,3 +1,5 @@
+//! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
+
 use core::ptr::NonNull;
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
@@ -45,6 +47,7 @@ struct SlotMgr {
     objs: BTreeMap<ObjID, Vec<Slot>>,
 }
 
+/// A representation of a slot number.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 pub struct Slot(usize);
@@ -100,7 +103,7 @@ impl SlotMgr {
         }
     }
 
-    fn obj_to_slots<'a>(&'a self, id: ObjID) -> Option<&[Slot]> {
+    fn obj_to_slots(&self, id: ObjID) -> Option<&[Slot]> {
         self.objs.get(&id).map(|x| x.as_slice())
     }
 }
@@ -117,6 +120,12 @@ impl<'a> PhysAddrProvider for ObjectPageProvider<'a> {
     fn consume(&mut self, _len: usize) {}
 }
 
+impl Default for VirtContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VirtContext {
     fn __new(arch: ArchContext) -> Self {
         Self {
@@ -127,14 +136,17 @@ impl VirtContext {
         }
     }
 
+    /// Construct a new context for the kernel.
     pub fn new_kernel() -> Self {
         Self::__new(ArchContext::new_kernel())
     }
 
+    /// Construct a new context for userspace.
     pub fn new() -> Self {
         Self::__new(ArchContext::new())
     }
 
+    /// Init a context for being the kernel context, and clone the mappings from the bootstrap context.
     pub(super) fn init_kernel_context(&self) {
         let proto = unsafe { Mapper::current() };
         let rm = proto.readmap(MappingCursor::new(
@@ -204,15 +216,6 @@ impl UserContext for VirtContext {
         range: &core::ops::Range<PageNumber>,
         mode: obj::InvalidateMode,
     ) {
-        /*
-        logln!(
-            "object invalidation in context {}: {} {:?} {:?}",
-            self.id(),
-            obj,
-            range,
-            mode
-        );
-        */
         let start = range.start.as_byte_offset();
         let len = range.end.as_byte_offset() - start;
         let slots = self.slots.lock();
@@ -402,7 +405,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
             current_thread_ref()
                 .unwrap()
                 .send_upcall(UpcallInfo::MemoryContextViolation(
-                    MemoryContextViolationInfo::new(addr.raw(), cause.into()),
+                    MemoryContextViolationInfo::new(addr.raw(), cause),
                 ));
             return;
         }
@@ -414,7 +417,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 current_thread_ref()
                     .unwrap()
                     .send_upcall(UpcallInfo::MemoryContextViolation(
-                        MemoryContextViolationInfo::new(addr.raw(), cause.into()),
+                        MemoryContextViolationInfo::new(addr.raw(), cause),
                     ));
                 return;
             }
@@ -470,7 +473,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
             current_thread_ref()
                 .unwrap()
                 .send_upcall(UpcallInfo::MemoryContextViolation(
-                    MemoryContextViolationInfo::new(addr.raw(), cause.into()),
+                    MemoryContextViolationInfo::new(addr.raw(), cause),
                 ));
         }
     }

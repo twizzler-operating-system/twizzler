@@ -57,7 +57,7 @@ impl Entry {
 
     /// Address contained in the [Entry].
     pub fn addr(&self) -> PhysAddr {
-        PhysAddr::new(self.0 & 0x000fffff_fffff000).unwrap()
+        PhysAddr::new(self.0 & 0x000f_ffff_ffff_f000).unwrap()
     }
 
     /// Set the address.
@@ -136,12 +136,10 @@ impl EntryFlags {
     pub fn cache_type(&self) -> CacheType {
         if self.contains(Self::CACHE_DISABLE) {
             CacheType::Uncacheable
+        } else if self.contains(Self::WRITE_THROUGH) {
+            CacheType::WriteThrough
         } else {
-            if self.contains(Self::WRITE_THROUGH) {
-                CacheType::WriteThrough
-            } else {
-                CacheType::WriteBack
-            }
+            CacheType::WriteBack
         }
     }
 

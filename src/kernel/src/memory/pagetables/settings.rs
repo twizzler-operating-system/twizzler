@@ -10,7 +10,7 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, PartialOrd, Clone)]
+#[derive(Debug, PartialEq, PartialOrd, Clone, Eq)]
 /// A collection of all the settings for a given mapping.
 pub struct MappingSettings {
     perms: Protections,

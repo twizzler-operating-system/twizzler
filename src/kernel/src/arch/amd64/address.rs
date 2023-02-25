@@ -36,6 +36,10 @@ impl VirtAddr {
         }
     }
 
+    /// Construct a new virtual address from a u64 without verifying that it is a valid virtual address.
+    ///
+    /// # Safety
+    /// The provided address must be canonical.
     pub const unsafe fn new_unchecked(addr: u64) -> Self {
         Self(addr)
     }
@@ -91,12 +95,10 @@ impl VirtAddr {
         let mask = align - 1;
         if self.raw() & mask == 0 {
             Ok(*self)
+        } else if let Some(aligned) = (self.raw() | mask).checked_add(1) {
+            Self::new(aligned)
         } else {
-            if let Some(aligned) = (self.raw() | mask).checked_add(1) {
-                Self::new(aligned)
-            } else {
-                Err(NonCanonical)
-            }
+            Err(NonCanonical)
         }
     }
 }
@@ -147,6 +149,10 @@ impl PhysAddr {
         Ok(Self(addr))
     }
 
+    /// Construct a new physical address from a u64 without verifying that it is a valid physical address.
+    ///
+    /// # Safety
+    /// The provided address must be a valid address.
     pub unsafe fn new_unchecked(addr: u64) -> Self {
         Self(addr)
     }
@@ -190,12 +196,10 @@ impl PhysAddr {
         let mask = align - 1;
         if self.raw() & mask == 0 {
             Ok(*self)
+        } else if let Some(aligned) = (self.raw() | mask).checked_add(1) {
+            Self::new(aligned)
         } else {
-            if let Some(aligned) = (self.raw() | mask).checked_add(1) {
-                Self::new(aligned)
-            } else {
-                panic!("added with overflow")
-            }
+            panic!("added with overflow")
         }
     }
 }

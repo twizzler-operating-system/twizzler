@@ -22,7 +22,7 @@ impl PhysAddrProvider for ZeroPageProvider {
         match self.current {
             Some(frame) => (frame.start_address(), frame.size()),
             None => {
-                let frame = alloc_frame(PhysicalFrameFlags::ZEROED).into();
+                let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
                 self.current = Some(frame);
                 (frame.start_address(), frame.size())
             }

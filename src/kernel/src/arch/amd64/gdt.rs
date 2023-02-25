@@ -79,7 +79,7 @@ impl GlobalDescriptorTable {
         if self.len > 7 {
             panic!("increase GDT size");
         }
-        self.entries[self.len] = entry.into();
+        self.entries[self.len] = entry;
         let r = self.len;
         self.len += 1;
         r

@@ -30,6 +30,12 @@ lazy_static::lazy_static! {
     };
 }
 
+impl Default for ArchContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ArchContext {
     pub fn new_kernel() -> Self {
         Self::new()

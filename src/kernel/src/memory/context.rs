@@ -1,3 +1,9 @@
+//! A memory context is the primary abstraction the kernel uses for manipulating whatever memory system this machine
+//! has. This includes both kernel memory management (kernel memory allocator) and management of userland resources. The
+//! rest of the kernel can interact with the functions in [UserContext] to operate on userland-visible memory state
+//! (e.g. objects' slots mappings in x86), and the functions in [KernelMemoryContext] to operate on kernel memory state
+//! (e.g. the allocator and kernel mappings in the higher-half on x86).
+
 use core::alloc::Layout;
 use core::ops::Range;
 use core::ptr::NonNull;
@@ -120,6 +126,9 @@ lazy_static::lazy_static! {
     };
 }
 
+/// Return a reference to the kernel context. The kernel context is the default context that a thread is in if it's not
+/// a userland thread. It's the main context used during init and during secondary processor initialization. It may be
+/// used to manipulate kernel memory mappings the same as any other context.
 pub fn kernel_context() -> &'static ContextRef {
     &KERNEL_CONTEXT
 }
