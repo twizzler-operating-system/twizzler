@@ -2,10 +2,12 @@ use core::{fmt::LowerHex, ops::Sub};
 
 use super::memory::phys_to_virt;
 
+/// A representation of a canonical virtual address.
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(transparent)]
 pub struct VirtAddr(u64);
 
+/// A representation of a valid physical address.
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(transparent)]
 pub struct PhysAddr(u64);
@@ -14,6 +16,7 @@ pub struct PhysAddr(u64);
 pub struct NonCanonical;
 
 impl VirtAddr {
+    /// The start of the kernel memory heap.
     pub const HEAP_START: Self = Self(0xffffff0000000000);
 
     pub const fn start_kernel_memory() -> Self {
@@ -28,6 +31,8 @@ impl VirtAddr {
         Self(0x0000800000000000)
     }
 
+    /// Construct a new virtual address from the provided addr value, only if the provided value is a valid, canonical
+    /// address. If not, returns Err.
     pub const fn new(addr: u64) -> Result<Self, NonCanonical> {
         if addr >= 0xFFFF800000000000 || addr <= 0x00007fffffffffff {
             Ok(Self(addr))
