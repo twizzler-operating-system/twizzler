@@ -160,14 +160,14 @@ pub struct ArchCacheLineMgr {
     dirty: Option<u64>,
 }
 
+const CACHE_LINE_SIZE: u64 = 64;
 impl ArchCacheLineMgr {
     /// Flush a given cache line when this [ArchCacheLineMgr] is dropped. Subsequent flush requests for the same cache
     /// line will be batched. Flushes for different cache lines will cause older requests to flush immediately, and the
     /// new request will be flushed when this object is dropped.
     pub fn flush(&mut self, line: VirtAddr) {
         let addr: u64 = line.into();
-        // TODO: get the cache line size dynamically?
-        let addr = addr & !0x3f;
+        let addr = addr & !(CACHE_LINE_SIZE - 1);
         if let Some(dirty) = self.dirty {
             if dirty != addr {
                 self.do_flush();
