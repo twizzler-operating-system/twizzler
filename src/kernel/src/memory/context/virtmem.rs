@@ -16,9 +16,12 @@ use super::{InsertError, KernelMemoryContext, ObjectContextInfo, UserContext};
 use crate::{
     arch::{address::VirtAddr, context::ArchContext},
     idcounter::{Id, IdCounter, StableId},
-    memory::pagetables::{
-        ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider,
-        ZeroPageProvider,
+    memory::{
+        pagetables::{
+            ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
+            PhysAddrProvider, Table, ZeroPageProvider,
+        },
+        PhysAddr,
     },
     mutex::Mutex,
     obj::{self, ObjectRef},
@@ -163,6 +166,24 @@ impl VirtContext {
             );
             self.arch.map(cursor, &mut phys, &settings);
         }
+
+        // ID-map the lower memory. This is needed by some systems to boot secondary CPUs. This mapping is cleared by
+        // the call to prep_smp later.
+        let id_len = 0x100000000; // 4GB
+        let cursor = MappingCursor::new(
+            VirtAddr::new(Table::level_to_page_size(0).try_into().unwrap()).unwrap(),
+            id_len,
+        );
+        let mut phys = ContiguousProvider::new(
+            PhysAddr::new(Table::level_to_page_size(0).try_into().unwrap()).unwrap(),
+            id_len,
+        );
+        let settings = MappingSettings::new(
+            Protections::READ | Protections::WRITE | Protections::EXEC,
+            CacheType::WriteBack,
+            MappingFlags::empty(),
+        );
+        self.arch.map(cursor, &mut phys, &settings);
     }
 }
 
@@ -410,7 +431,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
             return;
         }
 
-        let ctx = current_memory_context().expect("page fault in userland with no memory context");
+        let ctx = current_memory_context().unwrap_or_else(|| panic!("page fault in userland with no memory context at IP {:?} caused by {:?} to/from {:?} with flags {:?}", ip, cause, addr, flags));
         let slot = match addr.try_into() {
             Ok(s) => s,
             Err(_) => {

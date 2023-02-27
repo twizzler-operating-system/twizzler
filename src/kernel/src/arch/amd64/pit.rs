@@ -31,7 +31,9 @@ static mut CB: Option<fn(Nanoseconds)> = None;
 
 pub fn timer_interrupt() {
     unsafe {
-        CB.unwrap()(1000000000 / REAL_FREQ);
+        if let Some(cb) = CB {
+            cb(1000000000 / REAL_FREQ);
+        }
     }
 }
 
