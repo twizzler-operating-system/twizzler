@@ -2507,6 +2507,7 @@ dependencies = [
  "tar-no-std",
  "twizzler-abi",
  "twizzler-kernel-macros",
+ "twizzler-queue-raw",
  "uart_16550",
  "x86 0.52.0",
  "xmas-elf",
@@ -2555,6 +2556,7 @@ name = "twizzler-queue-raw"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "twizzler-abi",
 ]
 
 [[package]]

@@ -1,7 +1,5 @@
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use twizzler_abi::marker::BaseType;
 use twizzler_abi::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
     ThreadSyncSleep, ThreadSyncWake,
@@ -10,6 +8,7 @@ use twizzler_object::{CreateError, CreateSpec, Object};
 use twizzler_queue_raw::RawQueue;
 use twizzler_queue_raw::{QueueEntry, RawQueueHdr};
 
+pub use twizzler_queue_raw::QueueBase;
 pub use twizzler_queue_raw::QueueError;
 pub use twizzler_queue_raw::ReceiveFlags;
 pub use twizzler_queue_raw::SubmissionFlags;
@@ -22,30 +21,6 @@ pub struct Queue<S, C> {
     sub_rec_count: AtomicBool,
     com_rec_count: AtomicBool,
     object: Object<QueueBase<S, C>>,
-}
-
-/// The base info structure stored in a Twizzler queue object. Used to open Twizzler queue objects
-/// and create a [Queue].
-#[repr(C)]
-pub struct QueueBase<S, C> {
-    sub_hdr: usize,
-    com_hdr: usize,
-    sub_buf: usize,
-    com_buf: usize,
-    _pd: PhantomData<(S, C)>,
-}
-
-impl<S, C> BaseType for QueueBase<S, C> {
-    fn init<T>(_t: T) -> Self {
-        todo!()
-    }
-
-    fn tags() -> &'static [(
-        twizzler_abi::marker::BaseVersion,
-        twizzler_abi::marker::BaseTag,
-    )] {
-        todo!()
-    }
 }
 
 fn get_raw_sub<S: Copy, C>(obj: &Object<QueueBase<S, C>>) -> RawQueue<S> {
