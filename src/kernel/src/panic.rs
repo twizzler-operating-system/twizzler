@@ -137,7 +137,7 @@ fn panic(info: &PanicInfo) -> ! {
 
     if crate::is_test_mode() {
         emerglogln!("!!! TEST MODE PANIC -- RESETTING");
-        crate::arch::debug_shutdown(42);
+        //crate::arch::debug_shutdown(42);
     }
 
     loop {}

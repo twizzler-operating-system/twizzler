@@ -67,7 +67,7 @@ impl Drop for DeferredUnmappingOps {
 
 impl DeferredUnmappingOps {
     pub fn run_all(mut self) {
-        for page in self.pages.pop_back() {
+        while let Some(page) = self.pages.pop_back() {
             free_frame(page)
         }
     }

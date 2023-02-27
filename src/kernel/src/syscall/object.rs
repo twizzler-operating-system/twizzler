@@ -11,7 +11,7 @@ use twizzler_abi::{
 };
 
 use crate::{
-    memory::{VirtAddr, context::MemoryContextRef},
+    memory::{context::ContextRef, VirtAddr},
     mutex::Mutex,
     obj::{copy::CopySpec, LookupFlags, Object, ObjectRef, PageNumber},
     once::Once,
@@ -39,8 +39,8 @@ pub fn sys_object_create(
         }
         let cs = CopySpec::new(
             so,
-            PageNumber::from_address(VirtAddr::new(src.src_start)),
-            PageNumber::from_address(VirtAddr::new(src.dest_start)),
+            PageNumber::from_address(VirtAddr::new(src.src_start).unwrap()),
+            PageNumber::from_address(VirtAddr::new(src.dest_start).unwrap()),
             src.len,
         );
         crate::obj::copy::copy_ranges(&cs.src, cs.src_start, &obj, cs.dest_start, cs.length)
@@ -106,7 +106,7 @@ impl<T: ObjectHandle + Clone> Handle<T> {
 
 struct AllHandles {
     all: BTreeSet<ObjID>,
-    vm_contexts: BTreeMap<ObjID, Handle<MemoryContextRef>>,
+    vm_contexts: BTreeMap<ObjID, Handle<ContextRef>>,
 }
 
 static ALL_HANDLES: Once<Mutex<AllHandles>> = Once::new();
@@ -120,7 +120,7 @@ fn get_all_handles() -> &'static Mutex<AllHandles> {
     })
 }
 
-pub fn get_vmcontext_from_handle(id: ObjID) -> Option<MemoryContextRef> {
+pub fn get_vmcontext_from_handle(id: ObjID) -> Option<ContextRef> {
     let ah = get_all_handles();
     ah.lock().vm_contexts.get(&id).map(|x| x.item.clone())
 }
@@ -135,4 +135,14 @@ pub fn sys_new_handle(id: ObjID, handle_type: HandleType) -> Result<u64, NewHand
     };
     ah.all.insert(id);
     Ok(0)
+}
+
+pub fn sys_unbind_handle(id: ObjID) {
+    let mut ah = get_all_handles().lock();
+    if !ah.all.contains(&id) {
+        return;
+    }
+    // TODO: we'll need to fix this for having many kinds of handles.
+    ah.all.remove(&id);
+    ah.vm_contexts.remove(&id).unwrap();
 }

@@ -89,7 +89,8 @@ pub fn init(bsp: bool) {
     if bsp {
         unsafe {
             let apic_base = x86::msr::rdmsr(x86::msr::APIC_BASE) as u32;
-            LAPIC_ADDR = phys_to_virt(PhysAddr::new((apic_base & 0xffff0000) as u64)).as_u64();
+            LAPIC_ADDR =
+                phys_to_virt(PhysAddr::new((apic_base & 0xffff0000) as u64).unwrap()).raw();
         }
         get_speeds();
     }
@@ -252,7 +253,7 @@ extern "C" fn trampoline_main_entry(id: u32, tcb: u64, stack_base: u64) -> ! {
 
 #[inline(never)]
 fn rust_entry_secondary(id: u32, tcb: u64, stack_base: u64) -> ! {
-    crate::processor::secondary_entry(id, VirtAddr::new(tcb), stack_base as *mut u8);
+    crate::processor::secondary_entry(id, VirtAddr::new(tcb).unwrap(), stack_base as *mut u8);
 }
 
 pub fn send_ipi(dest: Destination, vector: u32) {
@@ -286,7 +287,7 @@ pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
     outb(0x71, 0x0a);
     super::pit::wait_ns(100);
 
-    let phys_mem_offset = phys_to_virt(PhysAddr::new(0)).as_u64();
+    let phys_mem_offset = phys_to_virt(PhysAddr::new(0).unwrap()).raw();
 
     let bios_reset = (phys_mem_offset + 0x467) as *mut u32;
     *bios_reset = (TRAMPOLINE_ENTRY16 & 0xff000) << 12;
@@ -349,7 +350,7 @@ pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
     let id = (0x6fa8 + phys_mem_offset) as *mut u32;
     *id = cpu;
     let tcb = (0x6fb0 + phys_mem_offset) as *mut u64;
-    *tcb = tcb_base.as_u64();
+    *tcb = tcb_base.raw();
     assert!(*pagetables >> 32 == 0);
     core::arch::asm!("mfence");
 

@@ -6,7 +6,7 @@ use twizzler_abi::syscall::{
 };
 
 use crate::{
-    memory::VirtAddr,
+    memory::{context::UserContext, VirtAddr},
     obj::{LookupFlags, ObjectRef},
     once::Once,
     spinlock::Spinlock,
@@ -41,6 +41,11 @@ pub fn add_to_requeue(thread: ThreadRef) {
     requeue.list.lock().insert(thread.id(), thread);
 }
 
+pub fn remove_from_requeue(thread: &ThreadRef) {
+    let requeue = get_requeue_list();
+    requeue.list.lock().remove(&thread.id());
+}
+
 // TODO: this is gross, we're manually trading out a critical guard with an interrupt guard because
 // we don't want to get interrupted... we need a better way to do this kind of consumable "don't
 // schedule until I say so".
@@ -54,12 +59,18 @@ fn finish_blocking(guard: CriticalGuard) {
     });
 }
 
+// TODO: uses-virtaddr
 fn get_obj_and_offset(addr: VirtAddr) -> Result<(ObjectRef, usize), ThreadSyncError> {
     // let t = current_thread_ref().unwrap();
     let vmc = current_memory_context().ok_or(ThreadSyncError::Unknown)?;
-    let mapping = { vmc.inner().lookup_object(addr) }.ok_or(ThreadSyncError::InvalidReference)?;
-    let offset = (addr.as_u64() as usize) % (1024 * 1024 * 1024); //TODO: arch-dep, centralize these calculations somewhere, see PageNumber
-    Ok((mapping.obj.clone(), offset))
+    let mapping = vmc
+        .lookup_object(
+            addr.try_into()
+                .map_err(|_| ThreadSyncError::InvalidReference)?,
+        )
+        .ok_or(ThreadSyncError::InvalidReference)?;
+    let offset = (addr.raw() as usize) % (1024 * 1024 * 1024); //TODO: arch-dep, centralize these calculations somewhere, see PageNumber
+    Ok((mapping.object().clone(), offset))
 }
 
 fn get_obj(reference: ThreadSyncReference) -> Result<(ObjectRef, usize), ThreadSyncError> {
@@ -71,8 +82,12 @@ fn get_obj(reference: ThreadSyncReference) -> Result<(ObjectRef, usize), ThreadS
             };
             (obj, offset)
         }
-        ThreadSyncReference::Virtual(addr) => get_obj_and_offset(VirtAddr::new(addr as u64))?,
-        ThreadSyncReference::Virtual32(addr) => get_obj_and_offset(VirtAddr::new(addr as u64))?,
+        ThreadSyncReference::Virtual(addr) => {
+            get_obj_and_offset(VirtAddr::new(addr as u64).unwrap())?
+        }
+        ThreadSyncReference::Virtual32(addr) => {
+            get_obj_and_offset(VirtAddr::new(addr as u64).unwrap())?
+        }
     })
 }
 

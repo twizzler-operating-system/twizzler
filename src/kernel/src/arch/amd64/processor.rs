@@ -1,9 +1,6 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use alloc::{boxed::Box, vec::Vec};
-use x86_64::{
-    registers::{control::Cr4Flags, model_specific::EferFlags},
-};
 
 use crate::{
     interrupt::Destination,
@@ -31,7 +28,8 @@ impl GsScratch {
 
 pub fn init(tls: VirtAddr) {
     unsafe {
-        x86_64::registers::control::Efer::update(|f| f.insert(EferFlags::SYSTEM_CALL_EXTENSIONS))
+        let efer = x86::msr::rdmsr(x86::msr::IA32_EFER);
+        x86::msr::wrmsr(x86::msr::IA32_EFER, efer | 1);
     };
 
     unsafe {
@@ -55,18 +53,21 @@ pub fn init(tls: VirtAddr) {
     };*/
     let cpuid = x86::cpuid::CpuId::new().get_extended_feature_info();
     let mut gs_scratch = Box::new(GsScratch::new());
-    gs_scratch.kernel_fs = tls.as_u64();
+    gs_scratch.kernel_fs = tls.raw();
     let gs_scratch = Box::into_raw(gs_scratch);
     if let Some(ef) = cpuid {
         if ef.has_fsgsbase() {
-            unsafe { x86_64::registers::control::Cr4::update(|f| f.insert(Cr4Flags::FSGSBASE)) };
+            unsafe {
+                let cr4 = x86::controlregs::cr4();
+                x86::controlregs::cr4_write(cr4 | x86::controlregs::Cr4::CR4_ENABLE_FSGSBASE);
+            }
         }
     }
     let has_xsave = x86::cpuid::CpuId::new()
         .get_feature_info()
         .map(|f| f.has_xsave())
         .unwrap_or_default();
-    unsafe { x86::msr::wrmsr(x86::msr::IA32_FS_BASE, tls.as_u64()) };
+    unsafe { x86::msr::wrmsr(x86::msr::IA32_FS_BASE, tls.raw()) };
     unsafe { x86::msr::wrmsr(x86::msr::IA32_GS_BASE, gs_scratch as u64) };
     unsafe { x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, 0) };
 

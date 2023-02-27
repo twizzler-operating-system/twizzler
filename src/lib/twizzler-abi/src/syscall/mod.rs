@@ -51,6 +51,8 @@ pub enum Syscall {
     ObjectStat,
     /// Read mapping information.
     ObjectReadMap,
+    /// Remove an object as a handle.
+    UnbindHandle,
     NumSyscalls,
 }
 

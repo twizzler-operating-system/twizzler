@@ -1,4 +1,7 @@
-use crate::arch::{address::PhysAddr, memory::pagetables::Table};
+use crate::arch::{
+    address::PhysAddr,
+    memory::pagetables::{Entry, Table},
+};
 
 use super::{
     consistency::{Consistency, DeferredUnmappingOps},
@@ -20,12 +23,34 @@ impl Mapper {
         }
     }
 
+    /// Create a mapper for the current table.
+    ///
+    /// # Safety
+    /// This function is VERY UNSAFE because it allows RW and WW conflicts. It
+    /// must only be used during initialization of the system.
+    pub unsafe fn current() -> Mapper {
+        Self::new(Table::current())
+    }
+
     pub(super) fn root_mut(&mut self) -> &mut Table {
         unsafe { &mut *(self.root.kernel_vaddr().as_mut_ptr::<Table>()) }
     }
 
     pub(super) fn root(&self) -> &Table {
         unsafe { &*(self.root.kernel_vaddr().as_ptr::<Table>()) }
+    }
+
+    /// Set a top level table to a direct value. Useful for creating large regions of global memory (like the kernel's
+    /// vaddr memory range). Does not perform any consistency operations.
+    pub fn set_top_level_table(&mut self, index: usize, entry: Entry) {
+        let root = self.root_mut();
+        root[index] = entry;
+    }
+
+    /// Get a top level table entry's value. Useful for cloning large regions during creation (e.g. the kernel's memory region).
+    pub fn get_top_level_table(&self, index: usize) -> Entry {
+        let root = self.root();
+        root[index]
     }
 
     /// Get the root of the page tables as a physical address.
@@ -65,8 +90,10 @@ impl Mapper {
         root.change(&mut consist, cursor, level, settings);
     }
 
-    /// Read the map of a single address (the start of the cursor).
-    pub(super) fn do_read_map(&self, cursor: &MappingCursor) -> Option<MapInfo> {
+    /// Read the map of a single address (the start of the cursor). If there is a mapping at the specified location,
+    /// return the mapping information. Otherwise, return Err with a length that specifies how much the cursor may
+    /// advance before calling this function again to check for a new mapping.
+    pub(super) fn do_read_map(&self, cursor: &MappingCursor) -> Result<MapInfo, usize> {
         let level = self.start_level;
         let root = self.root();
         root.readmap(cursor, level)

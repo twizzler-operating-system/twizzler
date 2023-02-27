@@ -23,8 +23,7 @@ intrusive-collections = "0.9.5"
 
 [target.x86_64-unknown-none.dependencies]
 uart_16550 = "0.2.0"
-x86 = "=0.51.0"
-x86_64 = "0.14.10"
+x86 = "0.52.0"
 acpi = "4.1.0"
 
 [dependencies.lazy_static]

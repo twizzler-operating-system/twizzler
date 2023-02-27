@@ -1,14 +1,13 @@
 #[cfg(test)]
 mod test {
     use phys_provider::PhysAddrProvider;
+    use twizzler_abi::{device::CacheType, object::Protections};
     use twizzler_kernel_macros::kernel_test;
 
     use crate::{
         arch::{address::VirtAddr, memory::pagetables::Table},
         memory::{
-            context::MappingPerms,
-            frame::PhysicalFrameFlags,
-            map::CacheType,
+            frame::{alloc_frame, PhysicalFrameFlags},
             pagetables::{phys_provider, Mapper, MappingCursor, MappingFlags, MappingSettings},
         },
     };
@@ -24,13 +23,7 @@ mod test {
 
     #[kernel_test]
     fn test_count() {
-        let mut m = Mapper::new(
-            crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED)
-                .start_address()
-                .as_u64()
-                .try_into()
-                .unwrap(),
-        );
+        let mut m = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
         for i in 0..Table::PAGE_TABLE_ENTRIES {
             let c = m.root().read_count();
             assert_eq!(c, i);
@@ -46,13 +39,7 @@ mod test {
             return;
         }
         let page_size = Table::level_to_page_size(level);
-        let mut m = Mapper::new(
-            crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED)
-                .start_address()
-                .as_u64()
-                .try_into()
-                .unwrap(),
-        );
+        let mut m = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
         assert_eq!(
             m.readmap(MappingCursor::new(VirtAddr::new(0).unwrap(), 0))
                 .next(),
@@ -71,7 +58,7 @@ mod test {
         let cur = MappingCursor::new(VirtAddr::new(0).unwrap(), len);
         let mut phys = StaticProvider {};
         let settings = MappingSettings::new(
-            MappingPerms::WRITE | MappingPerms::READ,
+            Protections::WRITE | Protections::READ,
             CacheType::WriteBack,
             MappingFlags::empty(),
         );
@@ -80,7 +67,7 @@ mod test {
         let mut reader = m.readmap(cur);
         let read = reader.nth(0).unwrap();
         assert_eq!(read.vaddr(), VirtAddr::new(0).unwrap());
-        assert_eq!(read.psize(), page_size);
+        assert_eq!(read.len(), page_size);
         assert_eq!(read.settings().cache(), settings.cache());
         assert_eq!(read.settings().perms(), settings.perms());
         assert_eq!(read.settings().flags(), settings.flags());
@@ -88,7 +75,7 @@ mod test {
         assert_eq!(reader.next(), None);
 
         let settings2 = MappingSettings::new(
-            MappingPerms::EXECUTE | MappingPerms::READ,
+            Protections::EXEC | Protections::READ,
             CacheType::WriteBack,
             MappingFlags::GLOBAL,
         );
@@ -97,7 +84,7 @@ mod test {
         let mut reader = m.readmap(cur);
         let read = reader.nth(0).unwrap();
         assert_eq!(read.vaddr(), VirtAddr::new(0).unwrap());
-        assert_eq!(read.psize(), page_size);
+        assert_eq!(read.len(), page_size);
         assert_eq!(read.settings().cache(), settings2.cache());
         assert_eq!(read.settings().perms(), settings2.perms());
         assert_eq!(read.settings().flags(), settings2.flags());

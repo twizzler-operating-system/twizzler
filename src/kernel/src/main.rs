@@ -16,6 +16,10 @@
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(crate::test_runner)]
 #![feature(stmt_expr_attributes)]
+#![feature(int_roundings)]
+#![feature(const_result_drop)]
+#![feature(const_option)]
+#![feature(let_chains)]
 
 #[macro_use]
 pub mod log;
@@ -73,8 +77,6 @@ pub fn is_test_mode() -> bool {
 }
 
 fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
-    let kernel_image_reg = 0xffffffff80100000u64;
-    let clone_regions = [VirtAddr::new(kernel_image_reg)];
     arch::init(boot_info);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
     let cmdline = boot_info.get_cmd_line();
@@ -88,7 +90,7 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
         logln!("!!! TEST MODE ACTIVE");
     }
     logln!("[kernel::mm] initializing memory management");
-    memory::init(boot_info, &clone_regions);
+    memory::init(boot_info);
 
     logln!("[kernel::debug] parsing kernel debug image");
     let (kernel_image_start, kernel_image_length) = boot_info.kernel_image_info();

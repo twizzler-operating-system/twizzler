@@ -75,13 +75,13 @@ impl TryFrom<u8> for SubObjectType {
 }
 
 /// For MMIO registers, we may need to specify the caching type.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u32)]
 pub enum CacheType {
     WriteBack = 0,
     WriteCombining = 1,
     WriteThrough = 2,
-    Uncachable = 3,
+    Uncacheable = 3,
 }
 
 /// Info struct at the base of an mmio sub-object.

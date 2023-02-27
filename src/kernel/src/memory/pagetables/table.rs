@@ -4,7 +4,7 @@ use crate::{
         memory::pagetables::{Entry, EntryFlags, Table},
     },
     memory::{
-        frame::{get_frame, FrameRef, PhysicalFrameFlags},
+        frame::{alloc_frame, get_frame, FrameRef, PhysicalFrameFlags},
         pagetables::MappingFlags,
     },
 };
@@ -36,7 +36,7 @@ impl Table {
             return None;
         }
         let addr: u64 = entry.addr().into();
-        get_frame(x86_64::PhysAddr::new(addr))
+        get_frame(PhysAddr::new(addr).unwrap())
     }
 
     fn can_map_at(
@@ -58,8 +58,8 @@ impl Table {
         let count = self.read_count();
         let entry = &mut self[index];
         if !entry.is_present() {
-            let frame = crate::memory::alloc_frame(PhysicalFrameFlags::ZEROED);
-            *entry = Entry::new(frame.start_address().as_u64().try_into().unwrap(), flags);
+            let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
+            *entry = Entry::new(frame.start_address(), flags);
             self.set_count(count + 1);
         }
     }
@@ -75,7 +75,9 @@ impl Table {
     ) {
         let count = self.read_count();
         let entry = &mut self[index];
-        // TODO: check if we are doing a no-op, and early return
+        if *entry == new_entry {
+            return;
+        }
 
         let was_present = entry.is_present();
         let was_global = entry
@@ -85,7 +87,7 @@ impl Table {
             .contains(MappingFlags::GLOBAL);
 
         *entry = new_entry;
-        let entry_addr = VirtAddr::from(entry);
+        let entry_addr = VirtAddr::from(entry as *const _);
         consist.flush(entry_addr);
 
         if was_present {
@@ -97,7 +99,6 @@ impl Table {
         } else if !was_present && new_entry.is_present() {
             self.set_count(count + 1);
         } else {
-            // TODO: we may be able to remove this write if we know we're not modifying entries whose avail bits we use.
             self.set_count(count);
         }
     }
@@ -145,7 +146,7 @@ impl Table {
                 next_table.map(consist, cursor, level - 1, phys, settings);
             }
 
-            if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
+            if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
                 cursor = next;
             } else {
                 break;
@@ -181,7 +182,7 @@ impl Table {
                 }
             }
 
-            if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
+            if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
                 cursor = next;
             } else {
                 break;
@@ -225,7 +226,7 @@ impl Table {
                 next_table.change(consist, cursor, level - 1, settings);
             }
 
-            if let Some(next) = cursor.advance(Self::level_to_page_size(level)) {
+            if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
                 cursor = next;
             } else {
                 break;
@@ -233,11 +234,11 @@ impl Table {
         }
     }
 
-    pub(super) fn readmap(&self, cursor: &MappingCursor, level: usize) -> Option<MapInfo> {
+    pub(super) fn readmap(&self, cursor: &MappingCursor, level: usize) -> Result<MapInfo, usize> {
         let index = Self::get_index(cursor.start(), level);
         let entry = &self[index];
         if entry.is_present() && (entry.is_huge() || level == 0) {
-            Some(MapInfo::new(
+            Ok(MapInfo::new(
                 cursor.start(),
                 entry.addr(),
                 entry.flags().settings(),
@@ -247,7 +248,7 @@ impl Table {
             let next_table = self.next_table(index).unwrap();
             next_table.readmap(cursor, level - 1)
         } else {
-            None
+            Err(Table::level_to_page_size(level))
         }
     }
 }

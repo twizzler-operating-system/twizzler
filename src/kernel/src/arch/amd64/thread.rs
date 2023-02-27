@@ -5,11 +5,10 @@ use core::{
 
 use alloc::vec::Vec;
 use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
-use x86_64::VirtAddr;
 
 use crate::{
-    arch::amd64::desctables::set_kernel_stack, processor::KERNEL_STACK_SIZE, spinlock::Spinlock,
-    thread::Thread,
+    arch::amd64::gdt::set_kernel_stack, memory::VirtAddr, processor::KERNEL_STACK_SIZE,
+    spinlock::Spinlock, thread::Thread,
 };
 
 use super::{interrupt::IsrContext, syscall::X86SyscallContext};
@@ -126,10 +125,10 @@ impl Default for ArchThread {
 }
 
 pub trait UpcallAble {
-    fn set_upcall(&mut self, target: usize, frame: u64, info: u64, stack: u64);
+    fn set_upcall(&mut self, target: VirtAddr, frame: u64, info: u64, stack: u64);
     fn get_stack_top(&self) -> u64;
 }
-pub fn set_upcall<T: UpcallAble + Copy>(regs: &mut T, target: usize, info: UpcallInfo)
+pub fn set_upcall<T: UpcallAble + Copy>(regs: &mut T, target: VirtAddr, info: UpcallInfo)
 where
     UpcallFrame: From<T>,
 {
@@ -158,7 +157,7 @@ where
 
     logln!(
         "setting upcall {:x} {:x} {:x} {:x}",
-        target,
+        target.raw(),
         frame_start,
         info_start,
         stack_start
@@ -184,7 +183,7 @@ fn use_xsave() -> bool {
 }
 
 impl Thread {
-    pub fn arch_queue_upcall(&self, target: usize, info: UpcallInfo) {
+    pub fn arch_queue_upcall(&self, target: VirtAddr, info: UpcallInfo) {
         logln!("queue upcall!");
         self.arch
             .backup_context
@@ -217,7 +216,10 @@ impl Thread {
     pub extern "C" fn arch_switch_to(&self, old_thread: &Thread) {
         unsafe {
             set_kernel_stack(
-                VirtAddr::new(self.kernel_stack.as_ref() as *const u8 as u64) + KERNEL_STACK_SIZE,
+                VirtAddr::new(self.kernel_stack.as_ref() as *const u8 as u64)
+                    .unwrap()
+                    .offset(KERNEL_STACK_SIZE)
+                    .unwrap(),
             );
             let do_xsave = use_xsave();
             if do_xsave {
