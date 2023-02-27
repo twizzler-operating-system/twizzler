@@ -53,8 +53,8 @@ impl From<X86SyscallContext> for UpcallFrame {
 }
 
 impl UpcallAble for X86SyscallContext {
-    fn set_upcall(&mut self, target: usize, frame: u64, info: u64, stack: u64) {
-        self.rcx = target as u64;
+    fn set_upcall(&mut self, target: VirtAddr, frame: u64, info: u64, stack: u64) {
+        self.rcx = target.into();
         self.rdi = frame;
         self.rsi = info;
         self.rsp = stack;
@@ -68,8 +68,8 @@ impl UpcallAble for X86SyscallContext {
 impl SyscallContext for X86SyscallContext {
     fn create_jmp_context(target: VirtAddr, stack: VirtAddr, arg: u64) -> Self {
         Self {
-            rsp: stack.as_u64(),
-            rcx: target.as_u64(),
+            rsp: stack.into(),
+            rcx: target.into(),
             rdi: arg,
             ..Default::default()
         }
@@ -78,26 +78,34 @@ impl SyscallContext for X86SyscallContext {
     fn num(&self) -> usize {
         self.rax as usize
     }
+
     fn arg0<T: From<u64>>(&self) -> T {
         T::from(self.rdi)
     }
+
     fn arg1<T: From<u64>>(&self) -> T {
         T::from(self.rsi)
     }
+
     fn arg2<T: From<u64>>(&self) -> T {
         T::from(self.rdx)
     }
+
     fn arg3<T: From<u64>>(&self) -> T {
         T::from(self.r10)
     }
+
     fn arg4<T: From<u64>>(&self) -> T {
         T::from(self.r9)
     }
+
     fn arg5<T: From<u64>>(&self) -> T {
         T::from(self.r8)
     }
+
     fn pc(&self) -> VirtAddr {
-        VirtAddr::new(self.rcx)
+        // TODO: check if this allows userspace to cause a kernel panic
+        VirtAddr::new(self.rcx).unwrap()
     }
 
     fn set_return_values<R1, R2>(&mut self, ret0: R1, ret1: R2)
@@ -153,14 +161,16 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
             (*context).rcx
         );
     }
+    drop(t);
+
     crate::syscall::syscall_entry(context.as_mut().unwrap());
     crate::interrupt::set(false);
     crate::thread::exit_kernel();
-    t.set_entry_registers(Registers::None);
 
     /* We need this scope to drop the current thread reference before we return to user */
     {
         let t = current_thread_ref().unwrap();
+        t.set_entry_registers(Registers::None);
         let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
     }

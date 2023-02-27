@@ -79,6 +79,7 @@ impl TlbInvData {
 
     unsafe fn do_invalidation(&self) {
         let our_cr3 = x86::controlregs::cr3();
+        /*
         logln!(
             "invalidation started on CPU {}: target = {} ({}) {}",
             crate::processor::current_processor().id,
@@ -94,6 +95,7 @@ impl TlbInvData {
             },
             if self.full() { "FULL" } else { "" }
         );
+        */
         if our_cr3 != self.target() && !self.global() {
             return;
         }
@@ -146,13 +148,6 @@ impl InvInstruction {
 
     fn execute(&self) {
         let addr: u64 = self.addr().into();
-        logln!(
-            "inv {:x} {}{} {}",
-            addr,
-            if self.is_global() { 'g' } else { '-' },
-            if self.is_terminal() { 't' } else { '-' },
-            self.level()
-        );
         unsafe {
             core::arch::asm!("invlpg [{addr}]", addr = in(reg) addr);
         }
@@ -165,14 +160,14 @@ pub struct ArchCacheLineMgr {
     dirty: Option<u64>,
 }
 
+const CACHE_LINE_SIZE: u64 = 64;
 impl ArchCacheLineMgr {
     /// Flush a given cache line when this [ArchCacheLineMgr] is dropped. Subsequent flush requests for the same cache
     /// line will be batched. Flushes for different cache lines will cause older requests to flush immediately, and the
     /// new request will be flushed when this object is dropped.
     pub fn flush(&mut self, line: VirtAddr) {
         let addr: u64 = line.into();
-        // TODO: get the cache line size dynamically?
-        let addr = addr & !0x3f;
+        let addr = addr & !(CACHE_LINE_SIZE - 1);
         if let Some(dirty) = self.dirty {
             if dirty != addr {
                 self.do_flush();

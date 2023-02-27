@@ -2,14 +2,14 @@ use core::sync::atomic::Ordering;
 
 use twizzler_abi::{
     kso::{InterruptAllocateOptions, InterruptPriority},
-    upcall::{ExceptionInfo, UpcallFrame, UpcallInfo},
+    upcall::{ExceptionInfo, MemoryAccessKind, UpcallFrame, UpcallInfo},
 };
 use x86::current::rflags::RFlags;
 
 use crate::{
     arch::lapic,
     interrupt::{Destination, DynamicInterrupt},
-    memory::{VirtAddr, fault::{PageFaultCause, PageFaultFlags}},
+    memory::{context::virtmem::PageFaultFlags, VirtAddr},
     processor::current_processor,
     thread::current_thread_ref,
 };
@@ -51,8 +51,8 @@ pub struct IsrContext {
 }
 
 impl UpcallAble for IsrContext {
-    fn set_upcall(&mut self, target: usize, frame: u64, info: u64, stack: u64) {
-        self.rip = target as u64;
+    fn set_upcall(&mut self, target: VirtAddr, frame: u64, info: u64, stack: u64) {
+        self.rip = target.into();
         self.rdi = frame;
         self.rsi = info;
         self.rsp = stack;
@@ -406,12 +406,12 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             let err = ctx.err;
             let cause = if err & (1 << 4) == 0 {
                 if err & (1 << 1) == 0 {
-                    PageFaultCause::Read
+                    MemoryAccessKind::Read
                 } else {
-                    PageFaultCause::Write
+                    MemoryAccessKind::Write
                 }
             } else {
-                PageFaultCause::InstructionFetch
+                MemoryAccessKind::InstructionFetch
             };
             let mut flags = PageFaultFlags::empty();
             if err & 1 != 0 {
@@ -425,12 +425,20 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             }
             crate::thread::enter_kernel();
             crate::interrupt::set(true);
-            crate::memory::fault::page_fault(
-                VirtAddr::new(cr2 as u64),
+            if let Ok(cr2_va) = VirtAddr::new(cr2 as u64) && let Ok(rip_va) = VirtAddr::new(ctx.rip) {
+            crate::memory::context::virtmem::page_fault(
+                cr2_va,
                 cause,
                 flags,
-                VirtAddr::new(ctx.rip),
+                rip_va,
             );
+            } else {
+                // TODO: do we need to do something better?
+                let t = current_thread_ref().unwrap();
+                let info = UpcallInfo::Exception(ExceptionInfo::new(14, ctx.err));
+                t.send_upcall(info);
+            }
+
             crate::interrupt::set(false);
             crate::thread::exit_kernel();
         }
@@ -766,7 +774,7 @@ fn set_handlers(idt: &mut InterruptDescriptorTable) {
         Exception::DoubleFault.as_idx(),
         double_fault_handler,
         false,
-        Some(super::desctables::DOUBLE_FAULT_IST_INDEX.into()),
+        Some(super::gdt::DOUBLE_FAULT_IST_INDEX.into()),
     );
     idt.set_handler(
         Exception::InvalidTSS.as_idx(),

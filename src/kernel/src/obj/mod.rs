@@ -4,15 +4,18 @@ use core::{
 };
 
 use alloc::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    collections::{btree_map::Entry, BTreeMap},
+    sync::{Arc, Weak},
     vec::Vec,
 };
 use twizzler_abi::object::ObjID;
 
 use crate::{
-    idcounter::{IdCounter, SimpleId},
-    memory::{VirtAddr, PhysAddr, context::MappingRef},
+    idcounter::{IdCounter, SimpleId, StableId},
+    memory::{
+        context::{Context, ContextRef, UserContext},
+        PhysAddr, VirtAddr,
+    },
     mutex::{LockGuard, Mutex},
 };
 
@@ -29,11 +32,34 @@ pub struct Object {
     id: ObjID,
     flags: AtomicU32,
     range_tree: Mutex<range::PageRangeTree>,
-    maplist: Mutex<BTreeSet<MappingRef>>,
     sleep_info: Mutex<SleepInfo>,
     pin_info: Mutex<PinInfo>,
+    contexts: Mutex<ContextInfo>,
 }
 
+#[derive(Default)]
+struct ContextInfo {
+    contexts: BTreeMap<u64, (Weak<Context>, usize)>,
+}
+
+impl ContextInfo {
+    fn insert(&mut self, ctx: &ContextRef) {
+        let mut entry = self
+            .contexts
+            .entry(ctx.id().value())
+            .or_insert_with(|| (Arc::downgrade(ctx), 0));
+        entry.1 += 1;
+    }
+
+    fn remove(&mut self, ctx: u64) {
+        if let Entry::Occupied(mut x) = self.contexts.entry(ctx) {
+            x.get_mut().1 -= 1;
+            if x.get().1 == 0 {
+                x.remove();
+            }
+        }
+    }
+}
 #[derive(Default)]
 struct PinInfo {
     id_counter: IdCounter,
@@ -67,8 +93,16 @@ impl PageNumber {
 
     pub const PAGE_SIZE: usize = 0x1000; //TODO: arch-dep
 
+    pub fn is_zero(&self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn as_byte_offset(&self) -> usize {
+        self.0 * Self::PAGE_SIZE
+    }
+
     pub fn from_address(addr: VirtAddr) -> Self {
-        PageNumber(((addr.as_u64() % (1 << 30)) / 0x1000) as usize) //TODO: arch-dep
+        PageNumber(((addr.raw() % (1 << 30)) / 0x1000) as usize) //TODO: arch-dep
     }
 
     pub fn next(&self) -> Self {
@@ -117,10 +151,6 @@ impl Object {
         self.id
     }
 
-    pub fn insert_mapping(&self, mapping: MappingRef) {
-        self.maplist.lock().insert(mapping);
-    }
-
     pub fn release_pin(&self, _pin: u32) {
         // TODO: Currently we don't track pins. This will be changed in-future when we fully implement eviction.
     }
@@ -155,20 +185,39 @@ impl Object {
             id: ((OID.fetch_add(1, Ordering::SeqCst) as u128) | (1u128 << 64)).into(),
             flags: AtomicU32::new(0),
             range_tree: Mutex::new(range::PageRangeTree::new()),
-            maplist: Mutex::new(BTreeSet::new()),
             sleep_info: Mutex::new(SleepInfo::new()),
             pin_info: Mutex::new(PinInfo::default()),
+            contexts: Mutex::new(ContextInfo::default()),
         }
     }
 
-    pub fn invalidate(&self, _range: core::ops::Range<PageNumber>) {
-        //todo!()
+    pub fn add_context(&self, ctx: &ContextRef) {
+        self.contexts.lock().insert(ctx)
+    }
+
+    pub fn remove_context(&self, id: u64) {
+        self.contexts.lock().remove(id)
+    }
+
+    pub fn invalidate(&self, range: core::ops::Range<PageNumber>, mode: InvalidateMode) {
+        let contexts = self.contexts.lock();
+        for ctx in contexts.contexts.values() {
+            if let Some(ctx) = ctx.0.upgrade() {
+                ctx.invalidate_object(self.id(), &range, mode);
+            }
+        }
     }
 
     pub fn print_page_tree(&self) {
         logln!("=== PAGE TREE OBJECT {} ===", self.id());
         self.range_tree.lock().print_tree();
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum InvalidateMode {
+    Full,
+    WriteProtect,
 }
 
 impl Default for Object {

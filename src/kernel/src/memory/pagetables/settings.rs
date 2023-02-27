@@ -1,4 +1,4 @@
-use crate::memory::{context::MappingPerms, map::CacheType};
+use twizzler_abi::{device::CacheType, object::Protections};
 
 bitflags::bitflags! {
     /// A collection of flags commonly used for mapping.
@@ -10,18 +10,17 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, PartialEq, PartialOrd, Clone, Eq)]
 /// A collection of all the settings for a given mapping.
 pub struct MappingSettings {
-    // TODO: user perms?
-    perms: MappingPerms,
+    perms: Protections,
     cache: CacheType,
     flags: MappingFlags,
 }
 
 impl MappingSettings {
     /// Constructor for [MappingSettings].
-    pub fn new(perms: MappingPerms, cache: CacheType, flags: MappingFlags) -> Self {
+    pub fn new(perms: Protections, cache: CacheType, flags: MappingFlags) -> Self {
         Self {
             perms,
             cache,
@@ -30,7 +29,7 @@ impl MappingSettings {
     }
 
     /// Get the setting's permissions.
-    pub fn perms(&self) -> MappingPerms {
+    pub fn perms(&self) -> Protections {
         self.perms
     }
 

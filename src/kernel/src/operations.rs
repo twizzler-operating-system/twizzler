@@ -1,22 +1,22 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
+use twizzler_abi::object::Protections;
 
 use crate::{
-    memory::context::{Mapping, MappingPerms, MemoryContextRef},
+    memory::context::{ContextRef, ObjectContextInfo, UserContext},
     obj::ObjectRef,
 };
 
 pub fn map_object_into_context(
     slot: usize,
     obj: ObjectRef,
-    vmc: MemoryContextRef,
-    perms: MappingPerms,
+    vmc: ContextRef,
+    perms: Protections,
 ) -> Result<(), ()> {
-    let mapping = Arc::new(Mapping::new(obj.clone(), vmc.clone(), slot, perms));
-    let mut vmc = vmc.inner();
-    obj.insert_mapping(mapping.clone());
-    vmc.insert_mapping(mapping);
-
-    Ok(())
+    let r = vmc.insert_object(
+        slot.try_into()?,
+        &ObjectContextInfo::new(obj, perms, twizzler_abi::device::CacheType::WriteBack),
+    );
+    r.map_err(|_| ())
 }
 
 pub fn read_object(obj: &ObjectRef) -> Vec<u8> {

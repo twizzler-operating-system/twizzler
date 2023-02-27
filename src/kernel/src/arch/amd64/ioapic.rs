@@ -133,7 +133,7 @@ pub fn init() {
     for ioapic in &model.io_apics {
         let ioapic = IOApic::new(
             ioapic.id,
-            PhysAddr::new(ioapic.address as u64),
+            PhysAddr::new(ioapic.address as u64).unwrap(),
             ioapic.global_system_interrupt_base,
         );
         for i in 0..24 {

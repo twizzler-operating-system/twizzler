@@ -53,6 +53,12 @@ impl<T> Mutex<T> {
         }
     }
 
+    /// Get a mut reference to the contained data. Does not perform locking, but is safe because we have a mut reference
+    /// to the mutex itself.
+    pub fn get_mut(&mut self) -> &mut T {
+        self.cell.get_mut()
+    }
+
     /// Lock the mutex and return a lock guard to manage a reference to the managed data. When the
     /// lock guard goes out of scope, the lock will be released.
     pub fn lock(&self) -> LockGuard<'_, T> {

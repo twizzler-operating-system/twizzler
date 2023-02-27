@@ -106,7 +106,7 @@ pub fn kaction(
                 let len: u32 = core::cmp::min(pins.len(), len as usize).try_into().unwrap();
 
                 for i in 0..(len as usize) {
-                    slice[i] = PinnedPage::new(pins[i].as_u64())
+                    slice[i] = PinnedPage::new(pins[i].into())
                 }
 
                 let retval = pack_kaction_pin_token_and_len(token, len as usize).unwrap();
@@ -249,8 +249,8 @@ impl Device {
         let obj = Arc::new(crate::obj::Object::new());
         obj.map_phys(start, end, ct);
         let mmio_info = MmioInfo {
-            length: end - start,
-            cache_type: CacheType::Uncachable,
+            length: (end - start) as u64,
+            cache_type: CacheType::Uncacheable,
             info,
         };
         obj.write_base(&mmio_info);

@@ -1,13 +1,11 @@
+use twizzler_abi::{device::CacheType, object::Protections};
+
 use crate::{
     arch::address::PhysAddr,
-    memory::{
-        context::MappingPerms,
-        map::CacheType,
-        pagetables::{MappingFlags, MappingSettings},
-    },
+    memory::pagetables::{MappingFlags, MappingSettings},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(transparent)]
 /// The type of a single entry in a page table.
 pub struct Entry(u64);
@@ -59,7 +57,7 @@ impl Entry {
 
     /// Address contained in the [Entry].
     pub fn addr(&self) -> PhysAddr {
-        PhysAddr::new(self.0 & 0x000fffff_fffff000).unwrap()
+        PhysAddr::new(self.0 & 0x000f_ffff_ffff_f000).unwrap()
     }
 
     /// Set the address.
@@ -119,17 +117,17 @@ impl EntryFlags {
         flags
     }
 
-    /// Get the represented permissions as a [MappingPerms].
-    pub fn perms(&self) -> MappingPerms {
+    /// Get the represented permissions as a [Protections].
+    pub fn perms(&self) -> Protections {
         let rw = if self.contains(Self::WRITE) {
-            MappingPerms::WRITE | MappingPerms::READ
+            Protections::WRITE | Protections::READ
         } else {
-            MappingPerms::READ
+            Protections::READ
         };
         let ex = if self.contains(Self::NO_EXECUTE) {
-            MappingPerms::empty()
+            Protections::empty()
         } else {
-            MappingPerms::EXECUTE
+            Protections::EXEC
         };
         rw | ex
     }
@@ -138,12 +136,10 @@ impl EntryFlags {
     pub fn cache_type(&self) -> CacheType {
         if self.contains(Self::CACHE_DISABLE) {
             CacheType::Uncacheable
+        } else if self.contains(Self::WRITE_THROUGH) {
+            CacheType::WriteThrough
         } else {
-            if self.contains(Self::WRITE_THROUGH) {
-                CacheType::WriteThrough
-            } else {
-                CacheType::WriteBack
-            }
+            CacheType::WriteBack
         }
     }
 
@@ -167,10 +163,10 @@ impl From<&MappingSettings> for EntryFlags {
             CacheType::Uncacheable => EntryFlags::CACHE_DISABLE,
         };
         let mut p = EntryFlags::empty();
-        if settings.perms().contains(MappingPerms::WRITE) {
+        if settings.perms().contains(Protections::WRITE) {
             p |= EntryFlags::WRITE;
         }
-        if !settings.perms().contains(MappingPerms::EXECUTE) {
+        if !settings.perms().contains(Protections::EXEC) {
             p |= EntryFlags::NO_EXECUTE;
         }
         let f = if settings.flags().contains(MappingFlags::GLOBAL) {

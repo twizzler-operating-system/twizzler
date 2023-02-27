@@ -6,9 +6,7 @@ use twizzler_abi::device::{CacheType, MMIO_OFFSET};
 use crate::{
     arch::memory::{frame::FRAME_SIZE, phys_to_virt},
     memory::frame::{self, FrameRef, PhysicalFrameFlags},
-    memory::{
-        PhysAddr, VirtAddr,
-    },
+    memory::{PhysAddr, VirtAddr},
 };
 
 use super::{Object, PageNumber};
@@ -110,7 +108,7 @@ impl Object {
     pub unsafe fn write_val_and_signal<T>(&self, offset: usize, val: T, wakeup_count: usize) {
         {
             let mut obj_page_tree = self.lock_page_tree();
-            let page_number = PageNumber::from_address(VirtAddr::new(offset as u64));
+            let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
             let page_offset = offset % PageNumber::PAGE_SIZE;
 
             if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
@@ -131,7 +129,7 @@ impl Object {
 
     pub unsafe fn read_atomic_u64(&self, offset: usize) -> u64 {
         let mut obj_page_tree = self.lock_page_tree();
-        let page_number = PageNumber::from_address(VirtAddr::new(offset as u64));
+        let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
         let page_offset = offset % PageNumber::PAGE_SIZE;
 
         if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
@@ -154,7 +152,7 @@ impl Object {
             let bytes = core::slice::from_raw_parts(bytes, len);
             let mut count = 0;
             while count < len {
-                let page_number = PageNumber::from_address(VirtAddr::new(offset as u64));
+                let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
                 //let page_offset = offset % PageNumber::PAGE_SIZE;
 
                 let thislen = core::cmp::min(0x1000, len - count);
@@ -180,11 +178,11 @@ impl Object {
     }
 
     pub fn map_phys(&self, start: PhysAddr, end: PhysAddr, ct: CacheType) {
-        let pn_start = PageNumber::from_address(VirtAddr::new(MMIO_OFFSET as u64)); //TODO: arch-dep
-        let nr = (end.as_u64() - start.as_u64()) as usize / PageNumber::PAGE_SIZE;
+        let pn_start = PageNumber::from_address(VirtAddr::new(MMIO_OFFSET as u64).unwrap()); //TODO: arch-dep
+        let nr = (end.raw() - start.raw()) as usize / PageNumber::PAGE_SIZE;
         for i in 0..nr {
             let pn = pn_start.offset(i);
-            let addr = start + i * PageNumber::PAGE_SIZE;
+            let addr = start.offset(i * PageNumber::PAGE_SIZE).unwrap();
             let page = Page::new_wired(addr, ct);
             self.add_page(pn, page);
         }

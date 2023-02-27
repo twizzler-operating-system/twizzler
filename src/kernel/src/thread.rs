@@ -7,7 +7,7 @@ use core::{
 use alloc::{boxed::Box, sync::Arc};
 use twizzler_abi::{
     aux::{AuxEntry, KernelInitInfo, KernelInitName},
-    object::ObjID,
+    object::{ObjID, Protections},
     syscall::{ThreadSpawnArgs, ThreadSpawnError},
     upcall::UpcallInfo,
 };
@@ -17,7 +17,10 @@ use crate::{
     idcounter::{Id, IdCounter},
     initrd::get_boot_objects,
     interrupt,
-    memory::{VirtAddr, context::{MappingPerms, MemoryContext, MemoryContextRef}},
+    memory::{
+        context::{Context, ContextRef, UserContext},
+        VirtAddr,
+    },
     obj::ObjectRef,
     processor::{get_processor, KERNEL_STACK_SIZE},
     sched::schedule_new_thread,
@@ -75,7 +78,7 @@ pub struct Thread {
     pub switch_lock: AtomicU64,
     pub donated_priority: Spinlock<Option<Priority>>,
     pub current_processor_queue: AtomicI32,
-    memory_context: Option<MemoryContextRef>,
+    memory_context: Option<ContextRef>,
     pub kernel_stack: Box<[u8; KERNEL_STACK_SIZE]>,
     pub stats: ThreadStats,
     spawn_args: Option<ThreadSpawnArgs>,
@@ -96,7 +99,10 @@ pub fn current_thread_ref() -> Option<ThreadRef> {
 }
 
 pub fn set_current_thread(thread: ThreadRef) {
-    interrupt::with_disabled(move || CURRENT_THREAD.replace(Some(thread)));
+    interrupt::with_disabled(move || {
+        let old = CURRENT_THREAD.replace(Some(thread));
+        drop(old);
+    });
 }
 
 pub fn enter_kernel() {
@@ -113,7 +119,7 @@ pub fn exit_kernel() {
 
 static ID_COUNTER: IdCounter = IdCounter::new();
 
-pub fn current_memory_context() -> Option<MemoryContextRef> {
+pub fn current_memory_context() -> Option<ContextRef> {
     current_thread_ref()
         .map(|t| t.memory_context.clone())
         .flatten()
@@ -152,23 +158,20 @@ impl Thread {
     // TODO: cleanup all these new variants
     pub fn new_with_new_vm() -> Self {
         let mut thread = Self::new();
-        thread.memory_context = Some(Arc::new(MemoryContext::new()));
-        thread.memory_context.as_ref().unwrap().inner().add_thread();
+        thread.memory_context = Some(Arc::new(Context::new()));
         thread
     }
 
     pub fn new_with_current_context(spawn_args: ThreadSpawnArgs) -> Self {
         let mut thread = Self::new();
         thread.memory_context = Some(current_memory_context().unwrap());
-        thread.memory_context.as_ref().unwrap().inner().add_thread();
         thread.spawn_args = Some(spawn_args);
         thread
     }
 
-    pub fn new_with_handle_context(spawn_args: ThreadSpawnArgs, vmc: MemoryContextRef) -> Self {
+    pub fn new_with_handle_context(spawn_args: ThreadSpawnArgs, vmc: ContextRef) -> Self {
         let mut thread = Self::new();
         thread.memory_context = Some(vmc);
-        thread.memory_context.as_ref().unwrap().inner().add_thread();
         thread.spawn_args = Some(spawn_args);
         thread
     }
@@ -207,7 +210,7 @@ impl Thread {
     pub fn switch_thread(&self, current: &Thread) {
         if self != current {
             if let Some(ref ctx) = self.memory_context {
-                ctx.switch();
+                ctx.switch_to();
             }
         }
         self.arch_switch_to(current)
@@ -353,7 +356,7 @@ impl Thread {
     pub fn send_upcall(&self, info: UpcallInfo) {
         // TODO
         let ctx = current_memory_context().unwrap();
-        let upcall = ctx.get_upcall_address().unwrap();
+        let upcall = ctx.get_upcall().unwrap();
         self.arch_queue_upcall(upcall, info);
     }
 }
@@ -361,9 +364,6 @@ impl Thread {
 impl Drop for Thread {
     fn drop(&mut self) {
         //logln!("drop thread {}", self.id());
-        if let Some(ref vm) = self.memory_context {
-            vm.inner().remove_thread();
-        }
     }
 }
 
@@ -488,8 +488,9 @@ impl Ord for Priority {
 pub fn exit() {
     {
         let th = current_thread_ref().unwrap();
-        //logln!("thread {} exited", th.id());
+        crate::interrupt::disable();
         th.set_state(ThreadState::Exiting);
+        crate::syscall::sync::remove_from_requeue(&th);
         crate::sched::remove_thread(th.id());
         drop(th);
     }
@@ -574,28 +575,28 @@ extern "C" fn user_init() {
             twizzler_abi::slot::RESERVED_TEXT,
             obj_text,
             vm.clone(),
-            MappingPerms::READ | MappingPerms::EXECUTE,
+            Protections::READ | Protections::EXEC,
         )
         .unwrap();
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_DATA,
             obj_data,
             vm.clone(),
-            MappingPerms::READ | MappingPerms::WRITE,
+            Protections::READ | Protections::WRITE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_STACK,
             obj_stack,
             vm.clone(),
-            MappingPerms::READ | MappingPerms::WRITE,
+            Protections::READ | Protections::WRITE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_KERNEL_INIT,
             obj_name,
             vm,
-            MappingPerms::READ,
+            Protections::READ,
         )
         .unwrap();
         let init_obj = boot_objects.init.as_ref().expect("no init found");
@@ -606,7 +607,7 @@ extern "C" fn user_init() {
             if ph.get_type() == Ok(xmas_elf::program::Type::Load) {
                 let file_data = ph.get_data(&elf).unwrap();
                 if let SegmentData::Undefined(file_data) = file_data {
-                    let memory_addr = VirtAddr::new(ph.virtual_addr());
+                    let memory_addr = VirtAddr::new(ph.virtual_addr()).unwrap();
                     let memory_slice: &mut [u8] = unsafe {
                         core::slice::from_raw_parts_mut(
                             memory_addr.as_mut_ptr(),
@@ -651,8 +652,8 @@ extern "C" fn user_init() {
 
     unsafe {
         crate::arch::jump_to_user(
-            VirtAddr::new(entry),
-            VirtAddr::new((1 << 30) * 2 + 0x200000),
+            VirtAddr::new(entry).unwrap(),
+            VirtAddr::new((1 << 30) * 2 + 0x200000).unwrap(),
             aux_start as u64,
         );
     }
@@ -676,9 +677,9 @@ extern "C" fn user_new_start() {
     };
     unsafe {
         crate::arch::jump_to_user(
-            VirtAddr::new(entry as u64),
+            VirtAddr::new(entry as u64).unwrap(),
             /* TODO: this is x86 specific */
-            VirtAddr::new((stack_base + stack_size - 8) as u64),
+            VirtAddr::new((stack_base + stack_size - 8) as u64).unwrap(),
             arg as u64,
         )
     }

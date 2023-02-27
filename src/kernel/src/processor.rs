@@ -275,9 +275,9 @@ fn init_tls(tls_template: TlsInfo) -> VirtAddr {
 
         tls
     };
-    let tcb_base = VirtAddr::from_ptr(tls) + full_tls_size;
+    let tcb_base = VirtAddr::from_ptr(tls).offset(full_tls_size).unwrap();
 
-    unsafe { *(tcb_base.as_mut_ptr()) = tcb_base.as_u64() };
+    unsafe { *(tcb_base.as_mut_ptr()) = tcb_base.raw() };
 
     tcb_base
 }
@@ -365,7 +365,7 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
         }
     }
     crate::sched::set_cpu_topology(cpu_topo_root);
-    crate::memory::finish_setup();
+    crate::memory::prep_smp();
     CPU_MAIN_BARRIER.store(true, core::sync::atomic::Ordering::SeqCst);
 }
 
