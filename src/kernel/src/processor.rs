@@ -365,8 +365,8 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
         }
     }
     crate::sched::set_cpu_topology(cpu_topo_root);
-    crate::memory::prep_smp();
     CPU_MAIN_BARRIER.store(true, core::sync::atomic::Ordering::SeqCst);
+    crate::memory::prep_smp();
 }
 
 pub fn register(id: u32, bsp_id: u32) {
