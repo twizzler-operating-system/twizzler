@@ -1,10 +1,11 @@
-use lazy_static::lazy_static;
-use core::fmt::Write;
-
-use crate::{
-    interrupt::{Destination, TriggerMode},
-    spinlock::Spinlock,
+use core::{
+    cell::UnsafeCell,
+    fmt::Write,
+    sync::atomic::{AtomicBool, Ordering},
 };
+use lazy_static::lazy_static;
+
+use crate::interrupt::{Destination, TriggerMode};
 
 pub struct SerialPort {
     port: u16,
@@ -127,20 +128,67 @@ impl core::fmt::Write for SerialPort {
     }
 }
 
-lazy_static! {
-    pub static ref SERIAL1: Spinlock<SerialPort> = {
-        let mut serial_port = unsafe { SerialPort::new(0x3f8) };
-        serial_port.init();
-        Spinlock::new(serial_port)
-    };
+struct SimpleLock<T> {
+    data: UnsafeCell<T>,
+    state: AtomicBool,
 }
 
-#[doc(hidden)]
-pub fn _print(args: ::core::fmt::Arguments) {
-    SERIAL1
-        .lock()
-        .write_fmt(args)
-        .expect("printing to serial failed");
+impl<T> SimpleLock<T> {
+    fn new(item: T) -> Self {
+        Self {
+            state: AtomicBool::new(false),
+            data: UnsafeCell::new(item),
+        }
+    }
+    fn lock(&self) -> SimpleGuard<'_, T> {
+        let int = crate::interrupt::disable();
+        while self
+            .state
+            .compare_exchange_weak(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            core::hint::spin_loop()
+        }
+        SimpleGuard { lock: self, int }
+    }
+}
+
+struct SimpleGuard<'a, T> {
+    lock: &'a SimpleLock<T>,
+    int: bool,
+}
+
+impl<'a, T> Drop for SimpleGuard<'a, T> {
+    fn drop(&mut self) {
+        self.lock.state.store(false, Ordering::SeqCst);
+        crate::interrupt::set(self.int);
+    }
+}
+
+impl<T> core::ops::Deref for SimpleGuard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.lock.data.get() }
+    }
+}
+
+impl<T> core::ops::DerefMut for SimpleGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.lock.data.get() }
+    }
+}
+
+unsafe impl<T> Send for SimpleLock<T> where T: Send {}
+unsafe impl<T> Sync for SimpleLock<T> where T: Send {}
+unsafe impl<T> Send for SimpleGuard<'_, T> where T: Send {}
+unsafe impl<T> Sync for SimpleGuard<'_, T> where T: Send + Sync {}
+
+lazy_static! {
+    static ref SERIAL1: SimpleLock<SerialPort> = {
+        let mut serial_port = unsafe { SerialPort::new(0x3f8) };
+        serial_port.init();
+        SimpleLock::new(serial_port)
+    };
 }
 
 pub fn late_init() {

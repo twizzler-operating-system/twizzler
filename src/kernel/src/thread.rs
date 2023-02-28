@@ -52,6 +52,7 @@ pub enum ThreadState {
     Running,
     Blocked,
     Exiting,
+    Exited,
 }
 
 #[derive(Debug, Default)]
@@ -232,7 +233,7 @@ impl Thread {
     }
 
     #[inline]
-    fn exit_critical(&self) {
+    pub fn exit_critical(&self) {
         let res = self.critical_counter.fetch_sub(1, Ordering::SeqCst);
         assert!(res > 0);
     }
@@ -244,7 +245,7 @@ impl Thread {
     }
 
     #[inline]
-    fn enter_critical_unguarded(&self) {
+    pub fn enter_critical_unguarded(&self) {
         self.critical_counter.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -316,7 +317,7 @@ impl Thread {
         }
         let ccpu = ccpu as u32;
         let proc = get_processor(ccpu);
-        let resched = proc.sched.lock().check_priority_change(self);
+        let resched = proc.schedlock().check_priority_change(self);
         if resched {
             interrupt::with_disabled(|| proc.wakeup(true));
         }

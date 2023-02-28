@@ -1,6 +1,7 @@
 use core::{
     cell::UnsafeCell,
     marker::PhantomData,
+    panic::Location,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -33,6 +34,7 @@ pub struct GenericSpinlock<T, Relax: RelaxStrategy> {
     next_ticket: AlignedAtomicU64,
     current: AlignedAtomicU64,
     cell: UnsafeCell<T>,
+    locked_from: UnsafeCell<Option<Location<'static>>>,
     _pd: PhantomData<Relax>,
 }
 
@@ -45,10 +47,12 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
             next_ticket: AlignedAtomicU64(AtomicU64::new(0)),
             current: AlignedAtomicU64(AtomicU64::new(0)),
             cell: UnsafeCell::new(data),
+            locked_from: UnsafeCell::new(None),
             _pd: PhantomData,
         }
     }
 
+    #[track_caller]
     pub fn lock(&self) -> LockGuard<'_, T, Relax> {
         /* TODO: do we need to set thread critical for this? */
         let interrupt_state = crate::interrupt::disable();
@@ -57,7 +61,16 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
         while self.current.0.load(Ordering::Acquire) != ticket {
             Relax::relax(iters);
             iters += 1;
+            if false && iters == 100000 {
+                emerglogln!(
+                    "DEADLOCK {:?} :: owned by {:?}",
+                    core::panic::Location::caller(),
+                    unsafe { self.locked_from.get().as_ref().unwrap().unwrap() }
+                );
+            }
         }
+        let caller = core::panic::Location::caller().clone();
+        unsafe { *self.locked_from.get().as_mut().unwrap() = Some(caller) };
         LockGuard {
             lock: self,
             interrupt_state,
@@ -67,6 +80,7 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
 
     fn release(&self) {
         let next = self.current.0.load(Ordering::Relaxed) + 1;
+        unsafe { *self.locked_from.get().as_mut().unwrap() = None };
         self.current.0.store(next, Ordering::Release);
     }
 }

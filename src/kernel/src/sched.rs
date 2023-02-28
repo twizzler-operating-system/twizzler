@@ -154,7 +154,7 @@ fn find_cpu_from_topo(
 }
 
 fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor) {
-    let mut sched = processor.sched.lock();
+    let mut sched = processor.schedlock();
     let should_signal = processor.id != current_processor().id
         && sched.should_preempt(&thread.effective_priority(), false);
     processor.load.fetch_add(1, Ordering::SeqCst);
@@ -168,7 +168,7 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor) {
 }
 
 fn take_a_thread_from_cpu(processor: &Processor) -> Option<ThreadRef> {
-    let mut sched = processor.sched.lock();
+    let mut sched = processor.schedlock();
     let thread = sched.choose_next(false);
     if let Some(ref thread) = thread {
         thread.current_processor_queue.store(-1, Ordering::SeqCst);
@@ -350,14 +350,15 @@ pub fn schedule(reinsert: bool) {
         schedule_thread(cur.clone());
     }
     if cur.state() == ThreadState::Exiting {
-        processor.sched.lock().push_exited(cur.clone());
+        cur.set_state(ThreadState::Exited);
+        processor.push_exited(cur.clone());
     }
     if !cur.is_idle_thread() {
         let res = processor.load.fetch_sub(1, Ordering::SeqCst);
         assert!(res > 1);
     }
     let next = {
-        let mut scheduler = processor.sched.lock();
+        let mut scheduler = processor.schedlock();
         scheduler.choose_next(true)
     };
 
@@ -400,7 +401,7 @@ pub fn needs_reschedule(ticking: bool) -> bool {
     if cur.is_critical() {
         return false;
     }
-    let sched = processor.sched.lock();
+    let sched = processor.schedlock();
     sched.should_preempt(&cur.effective_priority(), ticking)
 }
 
@@ -472,7 +473,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
 
     let s = STAT_COUNTER.fetch_add(1, Ordering::SeqCst);
     let cp = current_processor();
-    cp.sched.lock().cleanup_exited();
+    cp.cleanup_exited();
     let cur = current_thread_ref();
     if let Some(ref cur) = cur {
         if cur.is_idle_thread() {
