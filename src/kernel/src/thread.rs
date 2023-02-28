@@ -5,6 +5,7 @@ use core::{
 };
 
 use alloc::{boxed::Box, sync::Arc};
+use intrusive_collections::linked_list::AtomicLink;
 use twizzler_abi::{
     aux::{AuxEntry, KernelInitInfo, KernelInitName},
     object::{ObjID, Protections},
@@ -84,6 +85,7 @@ pub struct Thread {
     pub stats: ThreadStats,
     spawn_args: Option<ThreadSpawnArgs>,
     pub repr: Option<ObjectRef>,
+    pub sched_link: AtomicLink,
 }
 unsafe impl Send for Thread {}
 
@@ -153,6 +155,7 @@ impl Thread {
             memory_context: None,
             spawn_args: None,
             repr: None,
+            sched_link: AtomicLink::default(),
         }
     }
 
