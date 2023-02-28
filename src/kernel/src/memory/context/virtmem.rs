@@ -44,6 +44,7 @@ pub struct VirtContext {
     upcall: Spinlock<Option<VirtAddr>>,
     slots: Mutex<SlotMgr>,
     id: Id<'static>,
+    is_kernel: bool,
 }
 
 static CONTEXT_IDS: IdCounter = IdCounter::new();
@@ -148,23 +149,24 @@ impl Default for VirtContext {
 }
 
 impl VirtContext {
-    fn __new(arch: ArchContext) -> Self {
+    fn __new(arch: ArchContext, is_kernel: bool) -> Self {
         Self {
             arch,
             upcall: Spinlock::new(None),
             slots: Mutex::new(SlotMgr::default()),
+            is_kernel,
             id: CONTEXT_IDS.next(),
         }
     }
 
     /// Construct a new context for the kernel.
     pub fn new_kernel() -> Self {
-        Self::__new(ArchContext::new_kernel())
+        Self::__new(ArchContext::new_kernel(), true)
     }
 
     /// Construct a new context for userspace.
     pub fn new() -> Self {
-        Self::__new(ArchContext::new())
+        Self::__new(ArchContext::new(), false)
     }
 
     /// Init a context for being the kernel context, and clone the mappings from the bootstrap context.
@@ -270,7 +272,7 @@ impl UserContext for VirtContext {
                     obj::InvalidateMode::WriteProtect => {
                         self.arch.change(
                             info.mapping_cursor(start, len),
-                            &info.mapping_settings(true),
+                            &info.mapping_settings(true, self.is_kernel),
                         );
                     }
                 }
@@ -306,12 +308,20 @@ impl VirtContextSlot {
         MappingCursor::new(self.slot.start_vaddr().offset(start).unwrap(), len)
     }
 
-    fn mapping_settings(&self, wp: bool) -> MappingSettings {
+    fn mapping_settings(&self, wp: bool, is_kern_obj: bool) -> MappingSettings {
         let mut prot = self.prot;
         if wp {
             prot.remove(Protections::WRITE);
         }
-        MappingSettings::new(prot, self.cache, MappingFlags::USER)
+        MappingSettings::new(
+            prot,
+            self.cache,
+            if is_kern_obj {
+                MappingFlags::GLOBAL
+            } else {
+                MappingFlags::USER
+            },
+        )
     }
 
     fn phys_provider<'a>(&self, page: &'a Page) -> ObjectPageProvider<'a> {
@@ -526,7 +536,7 @@ impl<T: BaseType> KernelObjectHandle<T> for KernelObjectVirtHandle<T> {
         }
     }
 
-    fn lea_raw_mut<R>(&mut self, iptr: *mut R) -> Option<&mut R> {
+    fn lea_raw_mut<R>(&self, iptr: *mut R) -> Option<&mut R> {
         let offset = iptr as usize;
         let size = size_of::<R>();
         if offset >= MAX_SIZE || offset.checked_add(size)? >= MAX_SIZE {
@@ -581,12 +591,12 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
         }
 
         let user_ctx = current_memory_context();
-        let ctx = if addr.is_kernel_object_memory() {
+        let (ctx, is_kern_obj) = if addr.is_kernel_object_memory() {
             assert!(!flags.contains(PageFaultFlags::USER));
-            kernel_context()
+            (kernel_context(), true)
         } else {
-            user_ctx.as_ref().unwrap_or_else(||
-            panic!("page fault in userland with no memory context at IP {:?} caused by {:?} to/from {:?} with flags {:?}", ip, cause, addr, flags))
+            (user_ctx.as_ref().unwrap_or_else(||
+            panic!("page fault in userland with no memory context at IP {:?} caused by {:?} to/from {:?} with flags {:?}", ip, cause, addr, flags)), false)
         };
         let slot = match addr.try_into() {
             Ok(s) => s,
@@ -632,7 +642,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 ctx.arch.map(
                     info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
                     &mut info.phys_provider(&page),
-                    &info.mapping_settings(cow),
+                    &info.mapping_settings(cow, is_kern_obj),
                 );
             } else {
                 let page = Page::new();
@@ -643,7 +653,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 ctx.arch.map(
                     info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
                     &mut info.phys_provider(&page),
-                    &info.mapping_settings(cow),
+                    &info.mapping_settings(cow, is_kern_obj),
                 );
             }
         } else {

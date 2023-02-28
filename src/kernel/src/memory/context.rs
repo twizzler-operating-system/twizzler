@@ -127,7 +127,7 @@ pub trait KernelObjectHandle<T> {
     fn base(&self) -> &T;
     fn base_mut(&mut self) -> &mut T;
     fn lea_raw<R>(&self, iptr: *const R) -> Option<&R>;
-    fn lea_raw_mut<R>(&mut self, iptr: *mut R) -> Option<&mut R>;
+    fn lea_raw_mut<R>(&self, iptr: *mut R) -> Option<&mut R>;
 }
 
 lazy_static::lazy_static! {

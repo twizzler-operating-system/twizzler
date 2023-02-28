@@ -17,6 +17,8 @@ pub enum NewHandleError {
     AlreadyHandle = 2,
     /// The specified object was not found.
     NotFound = 3,
+    /// The specified handle type is already saturated.
+    HandleSaturated = 4,
 }
 
 impl NewHandleError {
@@ -26,6 +28,7 @@ impl NewHandleError {
             Self::InvalidArgument => "invalid argument",
             Self::AlreadyHandle => "object is already a handle",
             Self::NotFound => "object was not found",
+            Self::HandleSaturated => "handle cannot support any more objects",
         }
     }
 }
@@ -40,6 +43,9 @@ impl From<u64> for NewHandleError {
     fn from(x: u64) -> Self {
         match x {
             1 => Self::InvalidArgument,
+            2 => Self::AlreadyHandle,
+            3 => Self::NotFound,
+            4 => Self::HandleSaturated,
             _ => Self::Unknown,
         }
     }
@@ -63,6 +69,7 @@ impl std::error::Error for NewHandleError {
 #[repr(u64)]
 pub enum HandleType {
     VmContext = 0,
+    PagerQueue = 1,
 }
 
 impl TryFrom<u64> for HandleType {
