@@ -8,7 +8,8 @@ use crate::{
     arch::interrupt::GENERIC_IPI_VECTOR,
     interrupt::{self, Destination},
     once::Once,
-    spinlock::Spinlock,
+    spinlock::{LockGuard, SpinLoop, Spinlock},
+    thread::current_thread_ref,
 };
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 
@@ -47,7 +48,7 @@ struct IpiTask {
 
 pub struct Processor {
     pub arch: ArchProcessor,
-    pub sched: Spinlock<SchedulingQueues>,
+    sched: Spinlock<SchedulingQueues>,
     running: AtomicBool,
     topology_path: Once<Vec<(usize, bool)>>,
     pub id: u32,
@@ -56,6 +57,7 @@ pub struct Processor {
     pub load: AtomicU64,
     pub stats: ProcessorStats,
     ipi_tasks: Spinlock<Vec<Arc<IpiTask>>>,
+    exited: Spinlock<Vec<ThreadRef>>,
 }
 
 const NR_QUEUES: usize = 32;
@@ -63,7 +65,29 @@ const NR_QUEUES: usize = 32;
 pub struct SchedulingQueues {
     pub queues: [VecDeque<ThreadRef>; NR_QUEUES],
     pub last_chosen_priority: Option<Priority>,
-    exited: Vec<ThreadRef>,
+}
+
+pub struct SchedLockGuard<'a> {
+    queues: LockGuard<'a, SchedulingQueues, SpinLoop>,
+}
+
+impl core::ops::Deref for SchedLockGuard<'_> {
+    type Target = SchedulingQueues;
+    fn deref(&self) -> &Self::Target {
+        &*self.queues
+    }
+}
+
+impl core::ops::DerefMut for SchedLockGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.queues
+    }
+}
+
+impl Drop for SchedLockGuard<'_> {
+    fn drop(&mut self) {
+        current_thread_ref().map(|c| c.exit_critical());
+    }
 }
 
 impl SchedulingQueues {
@@ -74,6 +98,7 @@ impl SchedulingQueues {
         } else {
             false
         };
+        // TODO: need to rework this so as to ensure we don't allocate memory in here.
         self.queues[queue_number].push_back(thread);
         needs_preempt
     }
@@ -147,14 +172,6 @@ impl SchedulingQueues {
         }
         None
     }
-
-    pub fn push_exited(&mut self, th: ThreadRef) {
-        self.exited.push(th);
-    }
-
-    pub fn cleanup_exited(&mut self) {
-        self.exited.clear();
-    }
 }
 
 impl Processor {
@@ -170,6 +187,7 @@ impl Processor {
             load: AtomicU64::new(1),
             stats: ProcessorStats::default(),
             ipi_tasks: Spinlock::new(Vec::new()),
+            exited: Spinlock::new(Vec::new()),
         }
     }
 
@@ -181,9 +199,15 @@ impl Processor {
         self.bsp_id
     }
 
+    pub fn schedlock(&self) -> SchedLockGuard {
+        current_thread_ref().map(|c| c.enter_critical_unguarded());
+        let queues = self.sched.lock();
+        SchedLockGuard { queues }
+    }
+
     pub fn current_priority(&self) -> Priority {
         /* TODO: optimize this by just keeping track of it outside the sched? */
-        let sched = self.sched.lock();
+        let sched = self.schedlock();
         let queue_pri = Priority::from_queue_number::<NR_QUEUES>(sched.get_min_non_empty());
         if let Some(ref pri) = sched.last_chosen_priority {
             core::cmp::max(queue_pri, pri.clone())
@@ -224,6 +248,15 @@ impl Processor {
             (task.func)();
             task.outstanding.fetch_sub(1, Ordering::Release);
         }
+    }
+
+    pub fn push_exited(&self, th: ThreadRef) {
+        self.exited.lock().push(th);
+    }
+
+    pub fn cleanup_exited(&self) {
+        let item = self.exited.lock().pop();
+        drop(item);
     }
 }
 

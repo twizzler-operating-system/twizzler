@@ -196,7 +196,7 @@ pub fn halt_and_wait() {
     if has_mwait() {
         {
             {
-                let sched = proc.sched.lock();
+                let sched = proc.schedlock();
                 unsafe {
                     core::arch::asm!("monitor", "mfence", in("rax") &proc.arch.wait_word, in("rcx") 0, in("rdx") 0);
                 }
@@ -210,7 +210,7 @@ pub fn halt_and_wait() {
         }
     } else {
         {
-            let sched = proc.sched.lock();
+            let sched = proc.schedlock();
             if sched.has_work() {
                 return;
             }
