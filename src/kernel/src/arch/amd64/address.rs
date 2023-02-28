@@ -25,6 +25,14 @@ impl VirtAddr {
         Self(0xffff800000000000)
     }
 
+    pub const fn start_kernel_object_memory() -> Self {
+        Self(0xfffff00000000000)
+    }
+
+    pub const fn end_kernel_object_memory() -> Self {
+        Self(0xffffff0000000000)
+    }
+
     pub const fn start_user_memory() -> Self {
         Self(0x0)
     }

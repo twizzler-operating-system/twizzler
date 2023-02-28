@@ -1,18 +1,22 @@
 //! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
 
-use core::ptr::NonNull;
+use core::{intrinsics::size_of, marker::PhantomData, ptr::NonNull};
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use twizzler_abi::{
     device::CacheType,
-    object::{ObjID, Protections, MAX_SIZE},
+    marker::BaseType,
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
         UpcallInfo,
     },
 };
 
-use super::{InsertError, KernelMemoryContext, ObjectContextInfo, UserContext};
+use super::{
+    kernel_context, InsertError, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo,
+    UserContext,
+};
 use crate::{
     arch::{address::VirtAddr, context::ArchContext},
     idcounter::{Id, IdCounter, StableId},
@@ -45,9 +49,19 @@ pub struct VirtContext {
 static CONTEXT_IDS: IdCounter = IdCounter::new();
 
 #[derive(Default)]
+struct KernelSlotCounter {
+    cur_kernel_slot: usize,
+    kernel_slots_nums: Vec<Slot>,
+}
+
+#[derive(Default)]
 struct SlotMgr {
     slots: BTreeMap<Slot, VirtContextSlot>,
     objs: BTreeMap<ObjID, Vec<Slot>>,
+}
+
+lazy_static::lazy_static! {
+    static ref KERNEL_SLOT_COUNTER: Mutex<KernelSlotCounter> = Mutex::new(KernelSlotCounter::default());
 }
 
 /// A representation of a slot number.
@@ -99,7 +113,9 @@ impl SlotMgr {
 
     fn remove(&mut self, slot: Slot) -> Option<VirtContextSlot> {
         if let Some(info) = self.slots.remove(&slot) {
-            self.objs.remove(&info.obj.id());
+            let v = self.objs.get_mut(&info.obj.id()).unwrap();
+            let pos = v.iter().position(|item| *item == slot).unwrap();
+            v.remove(pos);
             Some(info)
         } else {
             None
@@ -395,6 +411,124 @@ impl KernelMemoryContext for VirtContext {
             VirtAddr::start_user_memory(),
             VirtAddr::end_user_memory() - VirtAddr::start_user_memory(),
         ));
+    }
+
+    type Handle<T: BaseType> = KernelObjectVirtHandle<T>;
+
+    fn insert_object<T: BaseType>(&self, info: ObjectContextInfo) -> Self::Handle<T> {
+        let mut slots = self.slots.lock();
+        let mut kernel_slots_counter = KERNEL_SLOT_COUNTER.lock();
+        let slot = kernel_slots_counter
+            .kernel_slots_nums
+            .pop()
+            .unwrap_or_else(|| {
+                let cur = kernel_slots_counter.cur_kernel_slot;
+                kernel_slots_counter.cur_kernel_slot += 1;
+                let num = (VirtAddr::end_kernel_object_memory()
+                    - VirtAddr::start_kernel_object_memory())
+                    / MAX_SIZE;
+                if cur >= num {
+                    panic!("out of kernel object slots");
+                }
+                Slot(cur)
+            });
+        let new_slot_info = VirtContextSlot {
+            obj: info.object().clone(),
+            slot,
+            prot: info.prot(),
+            cache: info.cache(),
+        };
+        slots.insert(slot, info.object().id(), new_slot_info);
+        KernelObjectVirtHandle {
+            info,
+            slot,
+            _pd: PhantomData,
+        }
+    }
+}
+
+pub struct KernelObjectVirtHandle<T> {
+    info: ObjectContextInfo,
+    slot: Slot,
+    _pd: PhantomData<T>,
+}
+
+impl<T> KernelObjectVirtHandle<T> {
+    fn start_addr(&self) -> VirtAddr {
+        VirtAddr::start_kernel_object_memory()
+            .offset(self.slot.raw() * MAX_SIZE)
+            .unwrap()
+    }
+}
+
+impl<T> Drop for KernelObjectVirtHandle<T> {
+    fn drop(&mut self) {
+        let kctx = kernel_context();
+        kctx.remove_object(self.slot);
+        kctx.arch
+            .unmap(MappingCursor::new(self.start_addr(), MAX_SIZE));
+        KERNEL_SLOT_COUNTER.lock().kernel_slots_nums.push(self.slot);
+    }
+}
+
+impl<T: BaseType> KernelObjectHandle<T> for KernelObjectVirtHandle<T> {
+    fn base(&self) -> &T {
+        // TODO: check basetype
+        unsafe {
+            self.start_addr()
+                .offset(NULLPAGE_SIZE)
+                .unwrap()
+                .as_ptr::<T>()
+                .as_ref()
+                .unwrap()
+        }
+    }
+
+    fn base_mut(&mut self) -> &mut T {
+        unsafe {
+            self.start_addr()
+                .offset(NULLPAGE_SIZE)
+                .unwrap()
+                .as_mut_ptr::<T>()
+                .as_mut()
+                .unwrap()
+        }
+    }
+
+    fn lea_raw<R>(&self, iptr: *const R) -> Option<&R> {
+        let offset = iptr as usize;
+        let size = size_of::<R>();
+        if offset >= MAX_SIZE || offset.checked_add(size)? >= MAX_SIZE {
+            return None;
+        }
+        unsafe {
+            Some(
+                self.start_addr()
+                    .offset(offset)
+                    .unwrap()
+                    .as_ptr::<R>()
+                    .as_ref()
+                    .unwrap(),
+            )
+        }
+    }
+
+    fn lea_raw_mut<R>(&mut self, iptr: *mut R) -> Option<&mut R> {
+        let offset = iptr as usize;
+        let size = size_of::<R>();
+        if offset >= MAX_SIZE || offset.checked_add(size)? >= MAX_SIZE {
+            return None;
+        }
+        unsafe {
+            Some(
+                self.start_addr()
+                    .offset(offset)
+                    .unwrap()
+                    .as_mut_ptr::<R>()
+                    .as_mut()
+                    .unwrap(),
+            )
+        }
     }
 }
 

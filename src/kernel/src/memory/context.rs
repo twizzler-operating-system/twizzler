@@ -9,6 +9,7 @@ use core::ops::Range;
 use core::ptr::NonNull;
 
 use alloc::sync::Arc;
+use twizzler_abi::marker::BaseType;
 use twizzler_abi::object::ObjID;
 use twizzler_abi::{device::CacheType, object::Protections};
 
@@ -100,7 +101,8 @@ pub enum InsertError {
 }
 
 /// A trait for kernel-related memory context actions.
-pub(super) trait KernelMemoryContext {
+pub trait KernelMemoryContext {
+    type Handle<T: BaseType>: KernelObjectHandle<T>;
     /// Called once during initialization, after which calls to the other function in this trait may be called.
     fn init_allocator(&self);
     /// Allocate a contiguous chunk of memory. This is not expected to be good for small allocations, this should be
@@ -116,6 +118,16 @@ pub(super) trait KernelMemoryContext {
     /// Called once after all secondary processors have been booted and are waiting at their main barrier. Should finish
     /// any setup needed in the kernel context before all CPUs can freely use this context.
     fn prep_smp(&self);
+    /// Insert object into kernel space. The context need only support a small number of kernel-memory-mapped objects.
+    /// The mapping is released when the returned handle is dropped.
+    fn insert_object<T: BaseType>(&self, info: ObjectContextInfo) -> Self::Handle<T>;
+}
+
+pub trait KernelObjectHandle<T> {
+    fn base(&self) -> &T;
+    fn base_mut(&mut self) -> &mut T;
+    fn lea_raw<R>(&self, iptr: *const R) -> Option<&R>;
+    fn lea_raw_mut<R>(&mut self, iptr: *mut R) -> Option<&mut R>;
 }
 
 lazy_static::lazy_static! {

@@ -200,3 +200,9 @@ where
         unsafe { (&*self.cell.get()).id().cmp((&*other.cell.get()).id()) }
     }
 }
+
+impl<T: Default> Default for Mutex<T> {
+    fn default() -> Self {
+        Self::new(T::default())
+    }
+}
