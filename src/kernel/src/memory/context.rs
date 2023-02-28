@@ -120,7 +120,7 @@ pub trait KernelMemoryContext {
     fn prep_smp(&self);
     /// Insert object into kernel space. The context need only support a small number of kernel-memory-mapped objects.
     /// The mapping is released when the returned handle is dropped.
-    fn insert_object<T: BaseType>(&self, info: ObjectContextInfo) -> Self::Handle<T>;
+    fn insert_kernel_object<T: BaseType>(&self, info: ObjectContextInfo) -> Self::Handle<T>;
 }
 
 pub trait KernelObjectHandle<T> {

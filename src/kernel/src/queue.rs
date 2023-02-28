@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 
 use twizzler_queue_raw::{QueueEntry, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags};
 

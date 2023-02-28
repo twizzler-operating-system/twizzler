@@ -75,6 +75,11 @@ impl VirtAddr {
         self.0 >= 0xffff800000000000
     }
 
+    pub fn is_kernel_object_memory(&self) -> bool {
+        self.0 >= Self::start_kernel_object_memory().0
+            && self.0 < Self::end_kernel_object_memory().0
+    }
+
     pub fn offset<U: Into<Offset>>(&self, offset: U) -> Result<Self, NonCanonical> {
         let offset = offset.into();
         match offset {
