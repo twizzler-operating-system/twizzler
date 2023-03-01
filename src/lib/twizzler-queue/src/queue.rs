@@ -85,13 +85,13 @@ impl<S: Copy, C: Copy> Queue<S, C> {
             //let com_len = (core::mem::size_of::<C>() * com_queue_len) * 2;
             {
                 let base: &mut QueueBase<S, C> = obj.base_mut_unchecked().assume_init_mut();
-                base.sub_hdr = 0x1000;
-                base.com_hdr = 0x2000;
-                base.sub_buf = 0x3000;
-                base.com_buf = 0x4000 + sub_len;
+                base.sub_hdr = 0x2000;
+                base.com_hdr = 0x3000;
+                base.sub_buf = 0x4000;
+                base.com_buf = 0x5000 + sub_len;
             }
-            let srq: *mut RawQueueHdr = obj.raw_lea_mut(0x1000);
-            let crq: *mut RawQueueHdr = obj.raw_lea_mut(0x2000);
+            let srq: *mut RawQueueHdr = obj.raw_lea_mut(0x2000);
+            let crq: *mut RawQueueHdr = obj.raw_lea_mut(0x3000);
             let l2len = sub_queue_len.next_power_of_two().ilog2();
             srq.write(RawQueueHdr::new(l2len as usize, core::mem::size_of::<S>()));
             let l2len = com_queue_len.next_power_of_two().ilog2();

@@ -6,7 +6,10 @@ use twizzler_abi::syscall::{
 };
 
 use crate::{
-    memory::{context::UserContext, VirtAddr},
+    memory::{
+        context::{kernel_context, UserContext},
+        VirtAddr,
+    },
     obj::{LookupFlags, ObjectRef},
     once::Once,
     spinlock::Spinlock,
@@ -62,7 +65,13 @@ fn finish_blocking(guard: CriticalGuard) {
 // TODO: uses-virtaddr
 fn get_obj_and_offset(addr: VirtAddr) -> Result<(ObjectRef, usize), ThreadSyncError> {
     // let t = current_thread_ref().unwrap();
-    let vmc = current_memory_context().ok_or(ThreadSyncError::Unknown)?;
+    // TODO: prevent user from waiting on kernel object memory
+    let user_vmc = current_memory_context();
+    let vmc = user_vmc
+        .as_ref()
+        .map(|x| &**x)
+        .unwrap_or_else(|| &kernel_context());
+    logln!("lookup: {:?}", addr);
     let mapping = vmc
         .lookup_object(
             addr.try_into()

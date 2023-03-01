@@ -24,6 +24,17 @@ extern "C" fn pager_entry() {
     pager_main();
 }
 
+extern "C" fn pager_compl_handler_entry() {
+    pager_compl_handler_main();
+}
+
+fn pager_compl_handler_main() {
+    let sender = unsafe { PAGER_QUEUES.sender.as_ref().unwrap() };
+    loop {
+        sender.process_completion();
+    }
+}
+
 fn pager_main() {
     logln!("hello from pager thread");
     let sender = unsafe { PAGER_QUEUES.sender.as_ref().unwrap() };
@@ -49,11 +60,8 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
         id
     );
     if outgoing {
-        logln!("0");
         let queue = QueueObject::<RequestFromKernel, CompletionToKernel>::from_object(obj);
-        logln!("1");
         let sender = ManagedQueueSender::new(queue);
-        logln!("2");
         unsafe { PAGER_QUEUES.sender = Some(sender) };
     } else {
         let queue = QueueObject::<(), ()>::from_object(obj);
@@ -62,5 +70,6 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
     }
     if unsafe { PAGER_QUEUES.receiver.is_some() && PAGER_QUEUES.sender.is_some() } {
         start_new_kernel(Priority::REALTIME, pager_entry);
+        start_new_kernel(Priority::REALTIME, pager_compl_handler_entry);
     }
 }

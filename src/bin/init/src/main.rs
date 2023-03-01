@@ -300,28 +300,24 @@ fn main() {
     )
     .unwrap();
 
-    println!("b");
     sys_new_handle(
         queue.object().id(),
         twizzler_abi::syscall::HandleType::PagerQueue,
         NewHandleFlags::empty(),
     )
     .unwrap();
-    println!("a");
     let queue2 = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
         &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
         1024,
         1024,
     )
     .unwrap();
-    println!("c");
     sys_new_handle(
         queue2.object().id(),
         twizzler_abi::syscall::HandleType::PagerQueue,
         NewHandleFlags::empty(),
     )
     .unwrap();
-    println!("d");
     if let Some(id) = find_init_name("pager") {
         exec("pager", id, queue.object().id());
     } else {

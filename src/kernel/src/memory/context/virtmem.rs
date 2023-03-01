@@ -247,8 +247,19 @@ impl UserContext for VirtContext {
     }
 
     fn lookup_object(&self, info: Self::MappingInfo) -> Option<ObjectContextInfo> {
-        let slots = self.slots.lock();
-        slots.get(&info).map(|info| info.into())
+        if info.start_vaddr().is_kernel_object_memory() && !self.is_kernel {
+            let x = kernel_context().lookup_object(info);
+            logln!(
+                "looking up object: {} {:?} {:?}",
+                info.raw(),
+                info.start_vaddr(),
+                x.as_ref().unwrap().object().id()
+            );
+            x
+        } else {
+            let slots = self.slots.lock();
+            slots.get(&info).map(|info| info.into())
+        }
     }
 
     fn invalidate_object(
@@ -570,7 +581,7 @@ bitflags::bitflags! {
 }
 
 pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
-    logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
+    //logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
     if flags.contains(PageFaultFlags::INVALID) {
         panic!("page table contains invalid bits for address {:?}", addr);
     }

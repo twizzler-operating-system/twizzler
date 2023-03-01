@@ -4,7 +4,14 @@ use core::{
 };
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use twizzler_abi::{device::CacheType, object::Protections};
+use twizzler_abi::{
+    device::CacheType,
+    object::Protections,
+    syscall::{
+        ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
+        ThreadSyncWake,
+    },
+};
 use twizzler_queue_raw::{
     QueueBase, QueueEntry, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags,
 };
@@ -17,6 +24,7 @@ use crate::{
     mutex::Mutex,
     obj::ObjectRef,
     spinlock::Spinlock,
+    syscall::sync::sys_thread_sync,
 };
 
 struct Queue<T> {
@@ -42,12 +50,27 @@ impl<T: Copy> Queue<T> {
             .submit(
                 QueueEntry::new(info, item),
                 |word, val| {
-                    let guard = self.lock.lock();
-                    if word.load(Ordering::SeqCst) == val {
-                        self.cv.wait(guard);
-                    }
+                    sys_thread_sync(
+                        &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
+                            ThreadSyncReference::Virtual(word),
+                            val,
+                            ThreadSyncOp::Equal,
+                            ThreadSyncFlags::empty(),
+                        ))],
+                        None,
+                    )
+                    .unwrap();
                 },
-                |_word| self.cv.signal(),
+                |word| {
+                    sys_thread_sync(
+                        &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                            ThreadSyncReference::Virtual(word),
+                            usize::MAX,
+                        ))],
+                        None,
+                    )
+                    .unwrap();
+                },
                 SubmissionFlags::empty(),
             )
             .unwrap();
@@ -58,12 +81,28 @@ impl<T: Copy> Queue<T> {
             .raw
             .receive(
                 |word, val| {
-                    let guard = self.lock.lock();
-                    if word.load(Ordering::SeqCst) == val {
-                        self.cv.wait(guard);
-                    }
+                    logln!("sleeping {:p}", word);
+                    sys_thread_sync(
+                        &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
+                            ThreadSyncReference::Virtual(word),
+                            val,
+                            ThreadSyncOp::Equal,
+                            ThreadSyncFlags::empty(),
+                        ))],
+                        None,
+                    )
+                    .unwrap();
                 },
-                |_word| self.cv.signal(),
+                |word| {
+                    sys_thread_sync(
+                        &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                            ThreadSyncReference::Virtual(word),
+                            usize::MAX,
+                        ))],
+                        None,
+                    )
+                    .unwrap();
+                },
                 ReceiveFlags::empty(),
             )
             .unwrap();
@@ -87,14 +126,16 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
                 Protections::READ | Protections::WRITE,
                 CacheType::WriteBack,
             ));
-        logln!("got hand");
         let base = handle.base();
-        logln!("base?");
         let sub = unsafe {
+            logln!(
+                "set => {:p}",
+                handle.lea_raw(base.sub_hdr as *const RawQueueHdr).unwrap()
+            );
             Queue::new(
                 handle.lea_raw(base.sub_hdr as *const RawQueueHdr).unwrap(),
                 handle
-                    .lea_raw_mut(base.sub_hdr as *mut QueueEntry<S>)
+                    .lea_raw_mut(base.sub_buf as *mut QueueEntry<S>)
                     .unwrap(),
             )
         };
@@ -102,7 +143,7 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
             Queue::new(
                 handle.lea_raw(base.com_hdr as *const RawQueueHdr).unwrap(),
                 handle
-                    .lea_raw_mut(base.com_hdr as *mut QueueEntry<C>)
+                    .lea_raw_mut(base.com_buf as *mut QueueEntry<C>)
                     .unwrap(),
             )
         };
@@ -211,9 +252,12 @@ impl<S: Copy, C: Copy> ManagedQueueSender<S, C> {
     }
 
     pub fn process_completion(&self) {
+        logln!("waiting for compl");
         let (id, item) = self.queue.recv_completion();
+        logln!("got compl {}", id);
         let mut outstanding = self.outstanding.lock();
         if let Some(out) = outstanding.remove(&id) {
+            logln!("out!");
             out.set(item);
         }
         self.release_id(id);

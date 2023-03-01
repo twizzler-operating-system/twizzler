@@ -140,7 +140,6 @@ pub fn sys_new_handle(id: ObjID, handle_type: HandleType) -> Result<u64, NewHand
             }
             ah.pager_q_count += 1;
             crate::pager::init_pager_queue(id, ah.pager_q_count == 1);
-            logln!("eh");
             return Ok(0);
         }
     };
