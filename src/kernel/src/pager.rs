@@ -1,14 +1,66 @@
-use twizzler_abi::object::ObjID;
+use twizzler_abi::{
+    object::ObjID,
+    pager::{CompletionToKernel, RequestFromKernel},
+};
 
 use crate::{
     obj::{lookup_object, LookupFlags},
-    queue::QueueObject,
+    queue::{ManagedQueueReceiver, ManagedQueueSender, QueueObject},
+    sched::schedule,
+    thread::{start_new_kernel, Priority},
 };
+
+struct PagerQueues {
+    sender: Option<ManagedQueueSender<RequestFromKernel, CompletionToKernel>>,
+    receiver: Option<ManagedQueueReceiver<(), ()>>,
+}
+
+static mut PAGER_QUEUES: PagerQueues = PagerQueues {
+    sender: None,
+    receiver: None,
+};
+
+extern "C" fn pager_entry() {
+    pager_main();
+}
+
+fn pager_main() {
+    logln!("hello from pager thread");
+    let sender = unsafe { PAGER_QUEUES.sender.as_ref().unwrap() };
+    loop {
+        let out = sender.submit(RequestFromKernel::new(
+            twizzler_abi::pager::KernelCommand::EchoReq,
+        ));
+        logln!("submitted request");
+        let resp = out.wait();
+        logln!("got response: {:?}", resp);
+        schedule(false);
+    }
+}
 
 pub fn init_pager_queue(id: ObjID, outgoing: bool) {
     let obj = match lookup_object(id, LookupFlags::empty()) {
         crate::obj::LookupResult::Found(o) => o,
         _ => panic!("pager queue not found"),
     };
-    let queue = QueueObject::<(), ()>::from_object(obj);
+    logln!(
+        "[kernel-pager] registered {} pager queue: {}",
+        if outgoing { "sender" } else { "receiver" },
+        id
+    );
+    if outgoing {
+        logln!("0");
+        let queue = QueueObject::<RequestFromKernel, CompletionToKernel>::from_object(obj);
+        logln!("1");
+        let sender = ManagedQueueSender::new(queue);
+        logln!("2");
+        unsafe { PAGER_QUEUES.sender = Some(sender) };
+    } else {
+        let queue = QueueObject::<(), ()>::from_object(obj);
+        let receiver = ManagedQueueReceiver::new(queue);
+        unsafe { PAGER_QUEUES.receiver = Some(receiver) };
+    }
+    if unsafe { PAGER_QUEUES.receiver.is_some() && PAGER_QUEUES.sender.is_some() } {
+        start_new_kernel(Priority::REALTIME, pager_entry);
+    }
 }

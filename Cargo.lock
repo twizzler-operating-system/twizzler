@@ -1166,6 +1166,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-net",
  "twizzler-object",
+ "twizzler-queue",
 ]
 
 [[package]]
@@ -1671,6 +1672,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "pager"
+version = "0.1.0"
+dependencies = [
+ "twizzler-abi",
+ "twizzler-async",
+ "twizzler-net",
+ "twizzler-object",
+ "twizzler-queue",
 ]
 
 [[package]]

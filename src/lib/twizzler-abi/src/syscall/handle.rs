@@ -78,6 +78,7 @@ impl TryFrom<u64> for HandleType {
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::VmContext),
+            1 => Ok(Self::PagerQueue),
             _ => Err(NewHandleError::InvalidArgument),
         }
     }

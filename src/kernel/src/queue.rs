@@ -1,4 +1,7 @@
-use core::{cell::RefCell, sync::atomic::Ordering};
+use core::{
+    cell::RefCell,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use twizzler_abi::{device::CacheType, object::Protections};
@@ -12,9 +15,8 @@ use crate::{
         kernel_context, Context, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo,
     },
     mutex::Mutex,
-    obj::{copy, ObjectRef},
+    obj::ObjectRef,
     spinlock::Spinlock,
-    thread::{start_new_kernel, Priority, ThreadRef},
 };
 
 struct Queue<T> {
@@ -22,6 +24,9 @@ struct Queue<T> {
     cv: CondVar,
     lock: Spinlock<()>,
 }
+
+unsafe impl<T: Copy> Send for Queue<T> {}
+unsafe impl<T: Copy> Sync for Queue<T> {}
 
 impl<T: Copy> Queue<T> {
     unsafe fn new(hdr: *const RawQueueHdr, buf: *mut QueueEntry<T>) -> Self {
@@ -48,7 +53,7 @@ impl<T: Copy> Queue<T> {
             .unwrap();
     }
 
-    fn recv(&mut self) -> (u32, T) {
+    fn recv(&self) -> (u32, T) {
         let item = self
             .raw
             .receive(
@@ -68,8 +73,10 @@ impl<T: Copy> Queue<T> {
 
 pub struct QueueObject<S, C> {
     handle: <Context as KernelMemoryContext>::Handle<QueueBase<S, C>>,
-    submissions: RefCell<Queue<S>>,
-    completions: RefCell<Queue<C>>,
+    submissions: Queue<S>,
+    completions: Queue<C>,
+    sguard: AtomicBool,
+    cguard: AtomicBool,
 }
 
 impl<S: Copy, C: Copy> QueueObject<S, C> {
@@ -80,7 +87,9 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
                 Protections::READ | Protections::WRITE,
                 CacheType::WriteBack,
             ));
+        logln!("got hand");
         let base = handle.base();
+        logln!("base?");
         let sub = unsafe {
             Queue::new(
                 handle.lea_raw(base.sub_hdr as *const RawQueueHdr).unwrap(),
@@ -99,29 +108,41 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
         };
         Self {
             handle,
-            submissions: RefCell::new(sub),
-            completions: RefCell::new(com),
+            submissions: sub,
+            completions: com,
+            sguard: Default::default(),
+            cguard: Default::default(),
         }
     }
 
     pub fn submit(&self, item: S, info: u32) {
-        self.submissions.borrow().send(item, info)
+        self.submissions.send(item, info)
     }
 
     pub fn complete(&self, item: C, info: u32) {
-        self.completions.borrow().send(item, info)
+        self.completions.send(item, info)
     }
 
     pub fn recv(&self) -> (u32, S) {
-        self.submissions.borrow_mut().recv()
+        while self.sguard.swap(true, Ordering::SeqCst) {
+            core::hint::spin_loop()
+        }
+        let r = self.submissions.recv();
+        self.sguard.store(false, Ordering::SeqCst);
+        r
     }
 
     pub fn recv_completion(&self) -> (u32, C) {
-        self.completions.borrow_mut().recv()
+        while self.cguard.swap(true, Ordering::SeqCst) {
+            core::hint::spin_loop()
+        }
+        let r = self.completions.recv();
+        self.cguard.store(false, Ordering::SeqCst);
+        r
     }
 }
 
-struct Outstanding<C> {
+pub struct Outstanding<C> {
     data: Spinlock<Option<C>>,
     cv: CondVar,
 }
@@ -136,7 +157,7 @@ impl<C> Default for Outstanding<C> {
 }
 
 impl<C: Copy> Outstanding<C> {
-    fn wait(&self) -> C {
+    pub fn wait(&self) -> C {
         let mut data = self.data.lock();
         loop {
             if let Some(c) = &*data {
@@ -181,7 +202,7 @@ impl<S: Copy, C: Copy> ManagedQueueSender<S, C> {
         stack.1.push(id);
     }
 
-    fn submit(&self, item: S) -> Arc<Outstanding<C>> {
+    pub fn submit(&self, item: S) -> Arc<Outstanding<C>> {
         let id = self.alloc_id();
         let outstanding = Arc::new(Outstanding::default());
         self.outstanding.lock().insert(id, outstanding.clone());
@@ -189,7 +210,7 @@ impl<S: Copy, C: Copy> ManagedQueueSender<S, C> {
         outstanding
     }
 
-    fn process_completion(&self) {
+    pub fn process_completion(&self) {
         let (id, item) = self.queue.recv_completion();
         let mut outstanding = self.outstanding.lock();
         if let Some(out) = outstanding.remove(&id) {
@@ -204,12 +225,16 @@ pub struct ManagedQueueReceiver<S, C> {
 }
 
 impl<S: Copy, C: Copy> ManagedQueueReceiver<S, C> {
+    pub fn new(queue: QueueObject<S, C>) -> Self {
+        Self { queue }
+    }
+
     fn handle_request<F>(&self, f: F)
     where
         F: FnOnce(u32, S) -> C,
     {
         let (id, item) = self.queue.recv();
         let resp = f(id, item);
-        self.queue.complete(item, id);
+        self.queue.complete(resp, id);
     }
 }

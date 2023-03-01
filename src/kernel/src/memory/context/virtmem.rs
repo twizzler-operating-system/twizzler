@@ -570,7 +570,7 @@ bitflags::bitflags! {
 }
 
 pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
-    //logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
+    logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
     if flags.contains(PageFaultFlags::INVALID) {
         panic!("page table contains invalid bits for address {:?}", addr);
     }

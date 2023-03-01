@@ -292,6 +292,42 @@ fn main() {
     .unwrap();
     println!("device manager is up!");
 
+    println!("starting pager");
+    let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
+        &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
+        1024,
+        1024,
+    )
+    .unwrap();
+
+    println!("b");
+    sys_new_handle(
+        queue.object().id(),
+        twizzler_abi::syscall::HandleType::PagerQueue,
+        NewHandleFlags::empty(),
+    )
+    .unwrap();
+    println!("a");
+    let queue2 = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
+        &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
+        1024,
+        1024,
+    )
+    .unwrap();
+    println!("c");
+    sys_new_handle(
+        queue2.object().id(),
+        twizzler_abi::syscall::HandleType::PagerQueue,
+        NewHandleFlags::empty(),
+    )
+    .unwrap();
+    println!("d");
+    if let Some(id) = find_init_name("pager") {
+        exec("pager", id, queue.object().id());
+    } else {
+        eprintln!("[init] failed to start pager");
+    }
+
     std::env::set_var("NETOBJ", format!("{}", netid.as_u128()));
     if let Some(id) = find_init_name("netmgr") {
         exec("netmgr", id, netid);
@@ -411,11 +447,12 @@ use twizzler_abi::{
     device::SubObjectType,
     kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue},
     object::{ObjID, Protections},
+    pager::{CompletionToKernel, RequestFromKernel},
     syscall::{
-        sys_kaction, sys_thread_sync, BackingType, LifetimeType, MapFlags, ObjectCreate,
-        ObjectCreateFlags, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
-        ThreadSyncSleep, ThreadSyncWake,
+        sys_kaction, sys_new_handle, sys_thread_sync, BackingType, LifetimeType, MapFlags,
+        NewHandleFlags, ObjectCreate, ObjectCreateFlags, ThreadSync, ThreadSyncFlags, ThreadSyncOp,
+        ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
     },
     thread::ThreadRepr,
 };
-use twizzler_object::{Object, ObjectInitFlags};
+use twizzler_object::{CreateSpec, Object, ObjectInitFlags};
