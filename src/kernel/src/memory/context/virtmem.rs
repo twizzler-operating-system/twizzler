@@ -263,6 +263,7 @@ impl UserContext for VirtContext {
     fn remove_object(&self, info: Self::MappingInfo) {
         let mut slots = self.slots.lock();
         if let Some(slot) = slots.remove(info) {
+            self.arch.unmap(slot.mapping_cursor(0, MAX_SIZE));
             slot.obj.remove_context(self.id.value());
         }
     }
