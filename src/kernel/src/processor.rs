@@ -11,7 +11,8 @@ use crate::{
     spinlock::{LockGuard, SpinLoop, Spinlock},
     thread::current_thread_ref,
 };
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use intrusive_collections::{intrusive_adapter, LinkedList};
 
 use crate::{
     arch::{self, processor::ArchProcessor},
@@ -63,9 +64,11 @@ pub struct Processor {
 const NR_QUEUES: usize = 32;
 #[derive(Default)]
 pub struct SchedulingQueues {
-    pub queues: [VecDeque<ThreadRef>; NR_QUEUES],
+    pub queues: [LinkedList<SchedLinkAdapter>; NR_QUEUES],
     pub last_chosen_priority: Option<Priority>,
 }
+
+intrusive_adapter!(pub SchedLinkAdapter = ThreadRef: Thread { sched_link: intrusive_collections::linked_list::AtomicLink });
 
 pub struct SchedLockGuard<'a> {
     queues: LockGuard<'a, SchedulingQueues, SpinLoop>,
@@ -98,7 +101,6 @@ impl SchedulingQueues {
         } else {
             false
         };
-        // TODO: need to rework this so as to ensure we don't allocate memory in here.
         self.queues[queue_number].push_back(thread);
         needs_preempt
     }
@@ -106,11 +108,16 @@ impl SchedulingQueues {
     pub fn check_priority_change(&mut self, thread: &Thread) -> bool {
         for i in 0..NR_QUEUES {
             let queue = &mut self.queues[i];
-            for j in 0..queue.len() {
-                if queue[j].id() == thread.id() {
-                    let found = queue.remove(j).unwrap();
-                    return self.reinsert_thread(found);
+
+            let mut cursor = queue.front_mut();
+            while let Some(item) = cursor.get() {
+                if item.id() == thread.id() {
+                    let item = cursor.remove().unwrap();
+                    drop(cursor);
+                    drop(queue);
+                    return self.reinsert_thread(item);
                 }
+                cursor.move_next();
             }
         }
         false
