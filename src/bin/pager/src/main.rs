@@ -26,11 +26,13 @@ fn main() {
         std::thread::spawn(|| twizzler_async::run(std::future::pending::<()>()));
     }
     twizzler_async::Task::spawn(async move {
-        let (id, request) = rq.receive().await.unwrap();
-        println!("got req from kernel: {} {:?}", id, request);
-        let reply = handle_request(request).await;
-        if let Some(reply) = reply {
-            rq.complete(id, reply).await.unwrap();
+        loop {
+            let (id, request) = rq.receive().await.unwrap();
+            println!("got req from kernel: {} {:?}", id, request);
+            let reply = handle_request(request).await;
+            if let Some(reply) = reply {
+                rq.complete(id, reply).await.unwrap();
+            }
         }
     })
     .detach();

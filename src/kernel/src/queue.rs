@@ -1,7 +1,4 @@
-use core::{
-    cell::RefCell,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use twizzler_abi::{
@@ -81,7 +78,6 @@ impl<T: Copy> Queue<T> {
             .raw
             .receive(
                 |word, val| {
-                    logln!("sleeping {:p}", word);
                     sys_thread_sync(
                         &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
                             ThreadSyncReference::Virtual(word),
@@ -128,10 +124,6 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
             ));
         let base = handle.base();
         let sub = unsafe {
-            logln!(
-                "set => {:p}",
-                handle.lea_raw(base.sub_hdr as *const RawQueueHdr).unwrap()
-            );
             Queue::new(
                 handle.lea_raw(base.sub_hdr as *const RawQueueHdr).unwrap(),
                 handle
@@ -252,12 +244,9 @@ impl<S: Copy, C: Copy> ManagedQueueSender<S, C> {
     }
 
     pub fn process_completion(&self) {
-        logln!("waiting for compl");
         let (id, item) = self.queue.recv_completion();
-        logln!("got compl {}", id);
         let mut outstanding = self.outstanding.lock();
         if let Some(out) = outstanding.remove(&id) {
-            logln!("out!");
             out.set(item);
         }
         self.release_id(id);

@@ -248,14 +248,7 @@ impl UserContext for VirtContext {
 
     fn lookup_object(&self, info: Self::MappingInfo) -> Option<ObjectContextInfo> {
         if info.start_vaddr().is_kernel_object_memory() && !self.is_kernel {
-            let x = kernel_context().lookup_object(info);
-            logln!(
-                "looking up object: {} {:?} {:?}",
-                info.raw(),
-                info.start_vaddr(),
-                x.as_ref().unwrap().object().id()
-            );
-            x
+            kernel_context().lookup_object(info)
         } else {
             let slots = self.slots.lock();
             slots.get(&info).map(|info| info.into())
@@ -439,7 +432,6 @@ impl KernelMemoryContext for VirtContext {
     type Handle<T: BaseType> = KernelObjectVirtHandle<T>;
 
     fn insert_kernel_object<T: BaseType>(&self, info: ObjectContextInfo) -> Self::Handle<T> {
-        // TODO: ensure an object can't be mapped writable multiple times? Or ensure safety object contents?
         let mut slots = self.slots.lock();
         let mut kernel_slots_counter = KERNEL_SLOT_COUNTER.lock();
         let slot = kernel_slots_counter
@@ -507,7 +499,6 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
 
 impl<T: BaseType> KernelObjectHandle<T> for KernelObjectVirtHandle<T> {
     fn base(&self) -> &T {
-        // TODO: check basetype
         unsafe {
             self.start_addr()
                 .offset(NULLPAGE_SIZE)

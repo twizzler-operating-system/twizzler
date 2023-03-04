@@ -71,7 +71,6 @@ fn get_obj_and_offset(addr: VirtAddr) -> Result<(ObjectRef, usize), ThreadSyncEr
         .as_ref()
         .map(|x| &**x)
         .unwrap_or_else(|| &kernel_context());
-    logln!("lookup: {:?}", addr);
     let mapping = vmc
         .lookup_object(
             addr.try_into()
