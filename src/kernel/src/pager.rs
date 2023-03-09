@@ -1,6 +1,6 @@
 use twizzler_abi::{
     object::ObjID,
-    pager::{CompletionToKernel, RequestFromKernel},
+    pager::{CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager},
 };
 
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
 
 struct PagerQueues {
     sender: Option<ManagedQueueSender<RequestFromKernel, CompletionToKernel>>,
-    receiver: Option<ManagedQueueReceiver<(), ()>>,
+    receiver: Option<ManagedQueueReceiver<RequestFromPager, CompletionToPager>>,
 }
 
 static mut PAGER_QUEUES: PagerQueues = PagerQueues {
@@ -26,6 +26,20 @@ extern "C" fn pager_entry() {
 
 extern "C" fn pager_compl_handler_entry() {
     pager_compl_handler_main();
+}
+
+extern "C" fn pager_request_handler_entry() {
+    pager_request_handler_main();
+}
+
+fn pager_request_handler_main() {
+    let receiver = unsafe { PAGER_QUEUES.receiver.as_ref().unwrap() };
+    loop {
+        receiver.handle_request(|id, req| {
+            logln!("kernel got req {}:{:?} from pager", id, req);
+            CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
+        });
+    }
 }
 
 fn pager_compl_handler_main() {
@@ -64,12 +78,13 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
         let sender = ManagedQueueSender::new(queue);
         unsafe { PAGER_QUEUES.sender = Some(sender) };
     } else {
-        let queue = QueueObject::<(), ()>::from_object(obj);
+        let queue = QueueObject::<RequestFromPager, CompletionToPager>::from_object(obj);
         let receiver = ManagedQueueReceiver::new(queue);
         unsafe { PAGER_QUEUES.receiver = Some(receiver) };
     }
     if unsafe { PAGER_QUEUES.receiver.is_some() && PAGER_QUEUES.sender.is_some() } {
         start_new_kernel(Priority::REALTIME, pager_entry);
         start_new_kernel(Priority::REALTIME, pager_compl_handler_entry);
+        start_new_kernel(Priority::REALTIME, pager_request_handler_entry);
     }
 }

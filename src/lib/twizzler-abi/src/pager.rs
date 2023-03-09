@@ -37,3 +37,43 @@ impl CompletionToKernel {
 pub enum KernelCompletionData {
     EchoResp,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+pub struct RequestFromPager {
+    cmd: PagerRequest,
+}
+
+impl RequestFromPager {
+    pub fn new(cmd: PagerRequest) -> Self {
+        Self { cmd }
+    }
+
+    pub fn cmd(&self) -> PagerRequest {
+        self.cmd
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+pub enum PagerRequest {
+    EchoReq,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+pub struct CompletionToPager {
+    data: PagerCompletionData,
+}
+
+impl CompletionToPager {
+    pub fn new(data: PagerCompletionData) -> Self {
+        Self { data }
+    }
+
+    pub fn data(&self) -> PagerCompletionData {
+        self.data
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+pub enum PagerCompletionData {
+    EchoResp,
+}
