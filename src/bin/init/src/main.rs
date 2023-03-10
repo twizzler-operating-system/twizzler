@@ -293,10 +293,11 @@ fn main() {
     println!("device manager is up!");
 
     println!("starting pager");
+    const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
     let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
         &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
-        1024,
-        1024,
+        DEFAULT_PAGER_QUEUE_LEN,
+        DEFAULT_PAGER_QUEUE_LEN,
     )
     .unwrap();
 
@@ -308,8 +309,8 @@ fn main() {
     .unwrap();
     let queue2 = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
         &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
-        1024,
-        1024,
+        DEFAULT_PAGER_QUEUE_LEN,
+        DEFAULT_PAGER_QUEUE_LEN,
     )
     .unwrap();
     sys_new_handle(

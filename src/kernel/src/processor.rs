@@ -507,9 +507,10 @@ mod test {
 
     use super::ALL_PROCESSORS;
 
+    const NR_IPI_TEST_ITERS: usize = 1000;
     #[kernel_test]
     fn ipi_test() {
-        for _ in 0..1000 {
+        for _ in 0..NR_IPI_TEST_ITERS {
             let nr_cpus = unsafe { &ALL_PROCESSORS }.iter().flatten().count();
             let counter = Arc::new(AtomicUsize::new(0));
             let counter2 = counter.clone();
