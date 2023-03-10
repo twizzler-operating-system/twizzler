@@ -1,18 +1,22 @@
 //! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
 
-use core::ptr::NonNull;
+use core::{intrinsics::size_of, marker::PhantomData, ptr::NonNull};
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use twizzler_abi::{
     device::CacheType,
-    object::{ObjID, Protections, MAX_SIZE},
+    marker::BaseType,
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
         UpcallInfo,
     },
 };
 
-use super::{InsertError, KernelMemoryContext, ObjectContextInfo, UserContext};
+use super::{
+    kernel_context, InsertError, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo,
+    UserContext,
+};
 use crate::{
     arch::{address::VirtAddr, context::ArchContext},
     idcounter::{Id, IdCounter, StableId},
@@ -40,14 +44,27 @@ pub struct VirtContext {
     upcall: Spinlock<Option<VirtAddr>>,
     slots: Mutex<SlotMgr>,
     id: Id<'static>,
+    is_kernel: bool,
 }
 
 static CONTEXT_IDS: IdCounter = IdCounter::new();
+
+struct KernelSlotCounter {
+    cur_kernel_slot: usize,
+    kernel_slots_nums: Vec<Slot>,
+}
 
 #[derive(Default)]
 struct SlotMgr {
     slots: BTreeMap<Slot, VirtContextSlot>,
     objs: BTreeMap<ObjID, Vec<Slot>>,
+}
+
+lazy_static::lazy_static! {
+    static ref KERNEL_SLOT_COUNTER: Mutex<KernelSlotCounter> = Mutex::new(KernelSlotCounter {
+        cur_kernel_slot: Slot::try_from(VirtAddr::start_kernel_object_memory()).unwrap().raw(),
+        kernel_slots_nums: Vec::new(),
+    });
 }
 
 /// A representation of a slot number.
@@ -78,7 +95,7 @@ impl TryFrom<VirtAddr> for Slot {
     type Error = ();
 
     fn try_from(value: VirtAddr) -> Result<Self, Self::Error> {
-        if value.is_kernel() {
+        if value.is_kernel() && !value.is_kernel_object_memory() {
             Err(())
         } else {
             Ok(Self(value.raw() as usize / MAX_SIZE))
@@ -99,7 +116,9 @@ impl SlotMgr {
 
     fn remove(&mut self, slot: Slot) -> Option<VirtContextSlot> {
         if let Some(info) = self.slots.remove(&slot) {
-            self.objs.remove(&info.obj.id());
+            let v = self.objs.get_mut(&info.obj.id()).unwrap();
+            let pos = v.iter().position(|item| *item == slot).unwrap();
+            v.remove(pos);
             Some(info)
         } else {
             None
@@ -130,23 +149,24 @@ impl Default for VirtContext {
 }
 
 impl VirtContext {
-    fn __new(arch: ArchContext) -> Self {
+    fn __new(arch: ArchContext, is_kernel: bool) -> Self {
         Self {
             arch,
             upcall: Spinlock::new(None),
             slots: Mutex::new(SlotMgr::default()),
+            is_kernel,
             id: CONTEXT_IDS.next(),
         }
     }
 
     /// Construct a new context for the kernel.
     pub fn new_kernel() -> Self {
-        Self::__new(ArchContext::new_kernel())
+        Self::__new(ArchContext::new_kernel(), true)
     }
 
     /// Construct a new context for userspace.
     pub fn new() -> Self {
-        Self::__new(ArchContext::new())
+        Self::__new(ArchContext::new(), false)
     }
 
     /// Init a context for being the kernel context, and clone the mappings from the bootstrap context.
@@ -227,8 +247,12 @@ impl UserContext for VirtContext {
     }
 
     fn lookup_object(&self, info: Self::MappingInfo) -> Option<ObjectContextInfo> {
-        let slots = self.slots.lock();
-        slots.get(&info).map(|info| info.into())
+        if info.start_vaddr().is_kernel_object_memory() && !self.is_kernel {
+            kernel_context().lookup_object(info)
+        } else {
+            let slots = self.slots.lock();
+            slots.get(&info).map(|info| info.into())
+        }
     }
 
     fn invalidate_object(
@@ -252,7 +276,7 @@ impl UserContext for VirtContext {
                     obj::InvalidateMode::WriteProtect => {
                         self.arch.change(
                             info.mapping_cursor(start, len),
-                            &info.mapping_settings(true),
+                            &info.mapping_settings(true, self.is_kernel),
                         );
                     }
                 }
@@ -288,12 +312,20 @@ impl VirtContextSlot {
         MappingCursor::new(self.slot.start_vaddr().offset(start).unwrap(), len)
     }
 
-    fn mapping_settings(&self, wp: bool) -> MappingSettings {
+    fn mapping_settings(&self, wp: bool, is_kern_obj: bool) -> MappingSettings {
         let mut prot = self.prot;
         if wp {
             prot.remove(Protections::WRITE);
         }
-        MappingSettings::new(prot, self.cache, MappingFlags::USER)
+        MappingSettings::new(
+            prot,
+            self.cache,
+            if is_kern_obj {
+                MappingFlags::GLOBAL
+            } else {
+                MappingFlags::USER
+            },
+        )
     }
 
     fn phys_provider<'a>(&self, page: &'a Page) -> ObjectPageProvider<'a> {
@@ -396,6 +428,133 @@ impl KernelMemoryContext for VirtContext {
             VirtAddr::end_user_memory() - VirtAddr::start_user_memory(),
         ));
     }
+
+    type Handle<T: BaseType> = KernelObjectVirtHandle<T>;
+
+    fn insert_kernel_object<T: BaseType>(&self, info: ObjectContextInfo) -> Self::Handle<T> {
+        let mut slots = self.slots.lock();
+        let mut kernel_slots_counter = KERNEL_SLOT_COUNTER.lock();
+        let slot = kernel_slots_counter
+            .kernel_slots_nums
+            .pop()
+            .unwrap_or_else(|| {
+                let cur = kernel_slots_counter.cur_kernel_slot;
+                kernel_slots_counter.cur_kernel_slot += 1;
+                let max = Slot::try_from(
+                    VirtAddr::end_kernel_object_memory()
+                        .offset(-1isize)
+                        .unwrap(),
+                )
+                .unwrap()
+                .raw();
+                if cur > max {
+                    panic!("out of kernel object slots");
+                }
+                Slot(cur)
+            });
+        let new_slot_info = VirtContextSlot {
+            obj: info.object().clone(),
+            slot,
+            prot: info.prot(),
+            cache: info.cache(),
+        };
+        slots.insert(slot, info.object().id(), new_slot_info);
+        KernelObjectVirtHandle {
+            info,
+            slot,
+            _pd: PhantomData,
+        }
+    }
+}
+
+pub struct KernelObjectVirtHandle<T> {
+    info: ObjectContextInfo,
+    slot: Slot,
+    _pd: PhantomData<T>,
+}
+
+impl<T> KernelObjectVirtHandle<T> {
+    fn start_addr(&self) -> VirtAddr {
+        VirtAddr::new(0)
+            .unwrap()
+            .offset(self.slot.raw() * MAX_SIZE)
+            .unwrap()
+    }
+}
+
+impl<T> Drop for KernelObjectVirtHandle<T> {
+    fn drop(&mut self) {
+        let kctx = kernel_context();
+        {
+            let mut slots = kctx.slots.lock();
+            // We don't need to tell the object that it's no longer mapped in the kernel context, since object
+            // invalidation always informs the kernel context.
+            slots.remove(self.slot);
+        }
+        kctx.arch
+            .unmap(MappingCursor::new(self.start_addr(), MAX_SIZE));
+        KERNEL_SLOT_COUNTER.lock().kernel_slots_nums.push(self.slot);
+    }
+}
+
+impl<T: BaseType> KernelObjectHandle<T> for KernelObjectVirtHandle<T> {
+    fn base(&self) -> &T {
+        unsafe {
+            self.start_addr()
+                .offset(NULLPAGE_SIZE)
+                .unwrap()
+                .as_ptr::<T>()
+                .as_ref()
+                .unwrap()
+        }
+    }
+
+    fn base_mut(&mut self) -> &mut T {
+        unsafe {
+            self.start_addr()
+                .offset(NULLPAGE_SIZE)
+                .unwrap()
+                .as_mut_ptr::<T>()
+                .as_mut()
+                .unwrap()
+        }
+    }
+
+    fn lea_raw<R>(&self, iptr: *const R) -> Option<&R> {
+        let offset = iptr as usize;
+        let size = size_of::<R>();
+        if offset >= MAX_SIZE || offset.checked_add(size)? >= MAX_SIZE {
+            return None;
+        }
+        unsafe {
+            Some(
+                self.start_addr()
+                    .offset(offset)
+                    .unwrap()
+                    .as_ptr::<R>()
+                    .as_ref()
+                    .unwrap(),
+            )
+        }
+    }
+
+    fn lea_raw_mut<R>(&self, iptr: *mut R) -> Option<&mut R> {
+        let offset = iptr as usize;
+        let size = size_of::<R>();
+        if offset >= MAX_SIZE || offset.checked_add(size)? >= MAX_SIZE {
+            return None;
+        }
+        unsafe {
+            Some(
+                self.start_addr()
+                    .offset(offset)
+                    .unwrap()
+                    .as_mut_ptr::<R>()
+                    .as_mut()
+                    .unwrap(),
+            )
+        }
+    }
 }
 
 impl StableId for VirtContext {
@@ -417,13 +576,14 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
     if flags.contains(PageFaultFlags::INVALID) {
         panic!("page table contains invalid bits for address {:?}", addr);
     }
-    if !flags.contains(PageFaultFlags::USER) && addr.is_kernel() {
+    if !flags.contains(PageFaultFlags::USER) && addr.is_kernel() && !addr.is_kernel_object_memory()
+    {
         panic!(
             "kernel page-fault at IP {:?} caused by {:?} to/from {:?} with flags {:?}",
             ip, cause, addr, flags
         );
     } else {
-        if addr.is_kernel() {
+        if flags.contains(PageFaultFlags::USER) && addr.is_kernel() {
             current_thread_ref()
                 .unwrap()
                 .send_upcall(UpcallInfo::MemoryContextViolation(
@@ -432,7 +592,14 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
             return;
         }
 
-        let ctx = current_memory_context().unwrap_or_else(|| panic!("page fault in userland with no memory context at IP {:?} caused by {:?} to/from {:?} with flags {:?}", ip, cause, addr, flags));
+        let user_ctx = current_memory_context();
+        let (ctx, is_kern_obj) = if addr.is_kernel_object_memory() {
+            assert!(!flags.contains(PageFaultFlags::USER));
+            (kernel_context(), true)
+        } else {
+            (user_ctx.as_ref().unwrap_or_else(||
+            panic!("page fault in userland with no memory context at IP {:?} caused by {:?} to/from {:?} with flags {:?}", ip, cause, addr, flags)), false)
+        };
         let slot = match addr.try_into() {
             Ok(s) => s,
             Err(_) => {
@@ -477,7 +644,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 ctx.arch.map(
                     info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
                     &mut info.phys_provider(&page),
-                    &info.mapping_settings(cow),
+                    &info.mapping_settings(cow, is_kern_obj),
                 );
             } else {
                 let page = Page::new();
@@ -488,7 +655,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 ctx.arch.map(
                     info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
                     &mut info.phys_provider(&page),
-                    &info.mapping_settings(cow),
+                    &info.mapping_settings(cow, is_kern_obj),
                 );
             }
         } else {
@@ -498,5 +665,49 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                     MemoryContextViolationInfo::new(addr.raw(), cause),
                 ));
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use alloc::sync::Arc;
+    use twizzler_abi::{marker::BaseType, object::Protections};
+    use twizzler_kernel_macros::kernel_test;
+
+    use crate::memory::context::{
+        kernel_context, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo,
+    };
+
+    struct Foo {
+        x: u32,
+    }
+
+    impl BaseType for Foo {
+        fn init<T>(_t: T) -> Self {
+            Foo { x: 0 }
+        }
+
+        fn tags() -> &'static [(
+            twizzler_abi::marker::BaseVersion,
+            twizzler_abi::marker::BaseTag,
+        )] {
+            todo!()
+        }
+    }
+
+    #[kernel_test]
+    fn test_kernel_object() {
+        let obj = crate::obj::Object::new();
+        let obj = Arc::new(obj);
+        crate::obj::register_object(obj.clone());
+
+        let ctx = kernel_context();
+        let mut handle = ctx.insert_kernel_object(ObjectContextInfo::new(
+            obj,
+            Protections::READ | Protections::WRITE,
+            twizzler_abi::device::CacheType::WriteBack,
+        ));
+
+        *handle.base_mut() = Foo { x: 42 };
     }
 }

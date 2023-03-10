@@ -13,7 +13,7 @@ use twizzler_abi::object::ObjID;
 use crate::{
     idcounter::{IdCounter, SimpleId, StableId},
     memory::{
-        context::{Context, ContextRef, UserContext},
+        context::{kernel_context, Context, ContextRef, UserContext},
         PhysAddr, VirtAddr,
     },
     mutex::{LockGuard, Mutex},
@@ -206,6 +206,7 @@ impl Object {
                 ctx.invalidate_object(self.id(), &range, mode);
             }
         }
+        kernel_context().invalidate_object(self.id(), &range, mode);
     }
 
     pub fn print_page_tree(&self) {

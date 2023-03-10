@@ -176,6 +176,7 @@ impl KernelConsoleInner {
             .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
     }
+
     fn write_buffer(
         &self,
         data: &[u8],

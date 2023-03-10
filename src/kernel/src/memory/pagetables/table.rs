@@ -117,6 +117,11 @@ impl Table {
 
             if entry.is_present() && (entry.is_huge() || level == 0) {
                 phys.consume(Self::level_to_page_size(level));
+                if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
+                    cursor = next;
+                } else {
+                    break;
+                }
                 continue;
             }
 
@@ -164,7 +169,7 @@ impl Table {
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
 
-            if entry.is_present() && (entry.is_huge() || level != 0) {
+            if entry.is_present() && (entry.is_huge() || level == 0) {
                 self.update_entry(
                     consist,
                     idx,
@@ -176,9 +181,17 @@ impl Table {
             } else if entry.is_present() && level != 0 {
                 let next_table = self.next_table_mut(idx).unwrap();
                 next_table.unmap(consist, cursor, level - 1);
-                if next_table.read_count() == 0 {
+                if next_table.read_count() == 0 && level < Table::top_level() {
                     // Unwrap-Ok: The entry is present, and not a leaf, so it must be a table.
                     consist.free_frame(self.next_table_frame(idx).unwrap());
+                    self.update_entry(
+                        consist,
+                        idx,
+                        Entry::new_unused(),
+                        cursor.start(),
+                        false,
+                        level,
+                    );
                 }
             }
 

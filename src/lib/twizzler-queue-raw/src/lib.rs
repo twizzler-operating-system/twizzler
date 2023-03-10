@@ -76,8 +76,11 @@
 
 use core::{
     cell::UnsafeCell,
+    marker::PhantomData,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
+
+use twizzler_abi::marker::BaseType;
 #[derive(Clone, Copy, Default, Debug)]
 #[repr(C)]
 /// A queue entry. All queues must be formed of these, as the queue algorithm uses data inside this
@@ -122,6 +125,30 @@ impl<T> QueueEntry<T> {
             info,
             data: item,
         }
+    }
+}
+
+/// The base info structure stored in a Twizzler queue object. Used to open Twizzler queue objects
+/// and create a [Queue].
+#[repr(C)]
+pub struct QueueBase<S, C> {
+    pub sub_hdr: usize,
+    pub com_hdr: usize,
+    pub sub_buf: usize,
+    pub com_buf: usize,
+    _pd: PhantomData<(S, C)>,
+}
+
+impl<S, C> BaseType for QueueBase<S, C> {
+    fn init<T>(_t: T) -> Self {
+        todo!()
+    }
+
+    fn tags() -> &'static [(
+        twizzler_abi::marker::BaseVersion,
+        twizzler_abi::marker::BaseTag,
+    )] {
+        todo!()
     }
 }
 

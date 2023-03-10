@@ -507,57 +507,60 @@ mod test {
 
     use super::ALL_PROCESSORS;
 
+    const NR_IPI_TEST_ITERS: usize = 1000;
     #[kernel_test]
     fn ipi_test() {
-        let nr_cpus = unsafe { &ALL_PROCESSORS }.iter().flatten().count();
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter2 = counter.clone();
-        super::ipi_exec(
-            Destination::All,
-            Box::new(move || {
-                counter2.fetch_add(1, Ordering::SeqCst);
-            }),
-        );
-        assert_eq!(nr_cpus, counter.load(Ordering::SeqCst));
+        for _ in 0..NR_IPI_TEST_ITERS {
+            let nr_cpus = unsafe { &ALL_PROCESSORS }.iter().flatten().count();
+            let counter = Arc::new(AtomicUsize::new(0));
+            let counter2 = counter.clone();
+            super::ipi_exec(
+                Destination::All,
+                Box::new(move || {
+                    counter2.fetch_add(1, Ordering::SeqCst);
+                }),
+            );
+            assert_eq!(nr_cpus, counter.load(Ordering::SeqCst));
 
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter2 = counter.clone();
-        super::ipi_exec(
-            Destination::AllButSelf,
-            Box::new(move || {
-                counter2.fetch_add(1, Ordering::SeqCst);
-            }),
-        );
-        assert_eq!(nr_cpus, counter.load(Ordering::SeqCst) + 1);
+            let counter = Arc::new(AtomicUsize::new(0));
+            let counter2 = counter.clone();
+            super::ipi_exec(
+                Destination::AllButSelf,
+                Box::new(move || {
+                    counter2.fetch_add(1, Ordering::SeqCst);
+                }),
+            );
+            assert_eq!(nr_cpus, counter.load(Ordering::SeqCst) + 1);
 
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter2 = counter.clone();
-        super::ipi_exec(
-            Destination::Bsp,
-            Box::new(move || {
-                counter2.fetch_add(1, Ordering::SeqCst);
-            }),
-        );
-        assert_eq!(1, counter.load(Ordering::SeqCst));
+            let counter = Arc::new(AtomicUsize::new(0));
+            let counter2 = counter.clone();
+            super::ipi_exec(
+                Destination::Bsp,
+                Box::new(move || {
+                    counter2.fetch_add(1, Ordering::SeqCst);
+                }),
+            );
+            assert_eq!(1, counter.load(Ordering::SeqCst));
 
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter2 = counter.clone();
-        super::ipi_exec(
-            Destination::Single(0),
-            Box::new(move || {
-                counter2.fetch_add(1, Ordering::SeqCst);
-            }),
-        );
-        assert_eq!(1, counter.load(Ordering::SeqCst));
+            let counter = Arc::new(AtomicUsize::new(0));
+            let counter2 = counter.clone();
+            super::ipi_exec(
+                Destination::Single(0),
+                Box::new(move || {
+                    counter2.fetch_add(1, Ordering::SeqCst);
+                }),
+            );
+            assert_eq!(1, counter.load(Ordering::SeqCst));
 
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter2 = counter.clone();
-        super::ipi_exec(
-            Destination::LowestPriority,
-            Box::new(move || {
-                counter2.fetch_add(1, Ordering::SeqCst);
-            }),
-        );
-        assert_eq!(1, counter.load(Ordering::SeqCst));
+            let counter = Arc::new(AtomicUsize::new(0));
+            let counter2 = counter.clone();
+            super::ipi_exec(
+                Destination::LowestPriority,
+                Box::new(move || {
+                    counter2.fetch_add(1, Ordering::SeqCst);
+                }),
+            );
+            assert_eq!(1, counter.load(Ordering::SeqCst));
+        }
     }
 }

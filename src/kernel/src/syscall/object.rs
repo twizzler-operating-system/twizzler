@@ -106,6 +106,7 @@ impl<T: ObjectHandle + Clone> Handle<T> {
 
 struct AllHandles {
     all: BTreeSet<ObjID>,
+    pager_q_count: u8,
     vm_contexts: BTreeMap<ObjID, Handle<ContextRef>>,
 }
 
@@ -116,6 +117,7 @@ fn get_all_handles() -> &'static Mutex<AllHandles> {
         Mutex::new(AllHandles {
             all: BTreeSet::new(),
             vm_contexts: BTreeMap::new(),
+            pager_q_count: 0,
         })
     })
 }
@@ -132,6 +134,14 @@ pub fn sys_new_handle(id: ObjID, handle_type: HandleType) -> Result<u64, NewHand
     }
     match handle_type {
         HandleType::VmContext => ah.vm_contexts.insert(id, Handle::new(id)?),
+        HandleType::PagerQueue => {
+            if ah.pager_q_count == 2 {
+                return Err(NewHandleError::HandleSaturated);
+            }
+            ah.pager_q_count += 1;
+            crate::pager::init_pager_queue(id, ah.pager_q_count == 1);
+            return Ok(0);
+        }
     };
     ah.all.insert(id);
     Ok(0)

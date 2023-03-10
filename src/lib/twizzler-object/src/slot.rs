@@ -5,7 +5,7 @@ use std::{
 };
 
 use twizzler_abi::{
-    object::{ObjID, Protections},
+    object::{ObjID, Protections, NULLPAGE_SIZE},
     syscall::MapFlags,
 };
 
@@ -62,13 +62,17 @@ impl Slot {
     /// Perform a raw load-effective-address for an offset into a slot.
     pub fn raw_lea<P>(&self, off: usize) -> *const P {
         let start = self.vaddr_start();
-        unsafe { ((start + off) as *const P).as_ref().unwrap() }
+        unsafe {
+            ((start + off - NULLPAGE_SIZE) as *const P)
+                .as_ref()
+                .unwrap()
+        }
     }
 
     /// Perform a raw load-effective-address for an offset into a slot.
     pub fn raw_lea_mut<P>(&self, off: usize) -> *mut P {
         let start = self.vaddr_start();
-        unsafe { ((start + off) as *mut P).as_mut().unwrap() }
+        unsafe { ((start + off - NULLPAGE_SIZE) as *mut P).as_mut().unwrap() }
     }
 
     /// Get a mutable pointer to one of the slot's object's FOT entries.
