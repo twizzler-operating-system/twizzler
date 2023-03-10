@@ -20,22 +20,38 @@ pub struct NonCanonical;
 impl VirtAddr {
     /// The start of the kernel memory heap.
     pub const HEAP_START: Self = Self(0xffffff0000000000);
+    /// The start of the kernel object mapping.
+    const KOBJ_START: Self = Self(0xfffff00000000000);
+    /// The start of the physical mapping.
+    const PHYS_START: Self = Self(0xffff800000000000);
 
     pub const fn start_kernel_memory() -> Self {
+        // This is defined by the definitions of the two canonical regions of the virtual memory space.
         Self(0xffff800000000000)
     }
 
+    pub const fn start_kernel_object_memory() -> Self {
+        Self::KOBJ_START
+    }
+
+    pub const fn end_kernel_object_memory() -> Self {
+        Self::HEAP_START
+    }
+
     pub const fn start_user_memory() -> Self {
+        // This is defined by the definitions of the two canonical regions of the virtual memory space.
         Self(0x0)
     }
 
     pub const fn end_user_memory() -> Self {
+        // This is defined by the definitions of the two canonical regions of the virtual memory space.
         Self(0x0000800000000000)
     }
 
     /// Construct a new virtual address from the provided addr value, only if the provided value is a valid, canonical
     /// address. If not, returns Err.
     pub const fn new(addr: u64) -> Result<Self, NonCanonical> {
+        // This is defined by the definitions of the two canonical regions of the virtual memory space.
         if addr >= 0xFFFF800000000000 || addr <= 0x00007fffffffffff {
             Ok(Self(addr))
         } else {
@@ -64,7 +80,13 @@ impl VirtAddr {
     }
 
     pub fn is_kernel(&self) -> bool {
+        // This is defined by the definitions of the two canonical regions of the virtual memory space.
         self.0 >= 0xffff800000000000
+    }
+
+    pub fn is_kernel_object_memory(&self) -> bool {
+        self.0 >= Self::start_kernel_object_memory().0
+            && self.0 < Self::end_kernel_object_memory().0
     }
 
     pub fn offset<U: Into<Offset>>(&self, offset: U) -> Result<Self, NonCanonical> {

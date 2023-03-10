@@ -44,7 +44,16 @@ impl Mapper {
     /// vaddr memory range). Does not perform any consistency operations.
     pub fn set_top_level_table(&mut self, index: usize, entry: Entry) {
         let root = self.root_mut();
+        let was_present = root[index].is_present();
+        let count = root.read_count();
         root[index] = entry;
+        if was_present && !entry.is_present() {
+            root.set_count(count - 1)
+        } else if !was_present && entry.is_present() {
+            root.set_count(count + 1)
+        } else {
+            root.set_count(count)
+        }
     }
 
     /// Get a top level table entry's value. Useful for cloning large regions during creation (e.g. the kernel's memory region).

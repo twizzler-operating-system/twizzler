@@ -10,9 +10,9 @@ checksum = "fe438c63458706e03479442743baae6c88256498e6431708f6dfc520a26515d3"
 
 [[package]]
 name = "acpi"
-version = "4.1.0"
+version = "4.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55237649c6e747ea67e5ed45125af5e6a35ea1250c5e44995eb6049a955bd004"
+checksum = "654f48ab3178632ea535be1765073b990895cb62f70a7e5671975d7150c26d15"
 dependencies = [
  "bit_field",
  "log",
@@ -1167,6 +1167,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-net",
  "twizzler-object",
+ "twizzler-queue",
 ]
 
 [[package]]
@@ -1682,6 +1683,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "pager"
+version = "0.1.0"
+dependencies = [
+ "twizzler-abi",
+ "twizzler-async",
+ "twizzler-net",
+ "twizzler-object",
+ "twizzler-queue",
 ]
 
 [[package]]
@@ -2518,6 +2530,7 @@ dependencies = [
  "tar-no-std",
  "twizzler-abi",
  "twizzler-kernel-macros",
+ "twizzler-queue-raw",
  "uart_16550",
  "x86 0.52.0",
  "xmas-elf",
@@ -2566,6 +2579,7 @@ name = "twizzler-queue-raw"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "twizzler-abi",
 ]
 
 [[package]]

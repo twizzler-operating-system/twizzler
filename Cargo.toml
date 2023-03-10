@@ -10,6 +10,7 @@ members = [
     "src/bin/devmgr",
     "src/bin/netmgr",
     "src/bin/nettest",
+    "src/bin/pager",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
@@ -29,6 +30,7 @@ initrd = [
     "crate:devmgr",
     "crate:netmgr",
     "crate:nettest",
+    "crate:pager",
 ]
 
 

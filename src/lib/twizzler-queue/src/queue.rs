@@ -1,7 +1,6 @@
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use twizzler_abi::marker::BaseType;
+use twizzler_abi::object::NULLPAGE_SIZE;
 use twizzler_abi::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
     ThreadSyncSleep, ThreadSyncWake,
@@ -10,6 +9,7 @@ use twizzler_object::{CreateError, CreateSpec, Object};
 use twizzler_queue_raw::RawQueue;
 use twizzler_queue_raw::{QueueEntry, RawQueueHdr};
 
+pub use twizzler_queue_raw::QueueBase;
 pub use twizzler_queue_raw::QueueError;
 pub use twizzler_queue_raw::ReceiveFlags;
 pub use twizzler_queue_raw::SubmissionFlags;
@@ -22,30 +22,6 @@ pub struct Queue<S, C> {
     sub_rec_count: AtomicBool,
     com_rec_count: AtomicBool,
     object: Object<QueueBase<S, C>>,
-}
-
-/// The base info structure stored in a Twizzler queue object. Used to open Twizzler queue objects
-/// and create a [Queue].
-#[repr(C)]
-pub struct QueueBase<S, C> {
-    sub_hdr: usize,
-    com_hdr: usize,
-    sub_buf: usize,
-    com_buf: usize,
-    _pd: PhantomData<(S, C)>,
-}
-
-impl<S, C> BaseType for QueueBase<S, C> {
-    fn init<T>(_t: T) -> Self {
-        todo!()
-    }
-
-    fn tags() -> &'static [(
-        twizzler_abi::marker::BaseVersion,
-        twizzler_abi::marker::BaseTag,
-    )] {
-        todo!()
-    }
 }
 
 fn get_raw_sub<S: Copy, C>(obj: &Object<QueueBase<S, C>>) -> RawQueue<S> {
@@ -104,19 +80,21 @@ impl<S: Copy, C: Copy> Queue<S, C> {
         sub_queue_len: usize,
         com_queue_len: usize,
     ) -> Result<Self, CreateError> {
+        const HDR_LEN: usize = 0x1000;
         let obj: Object<QueueBase<S, C>> = Object::create_with(create_spec, |obj| unsafe {
             // TODO: verify things
             let sub_len = (core::mem::size_of::<S>() * sub_queue_len) * 2;
             //let com_len = (core::mem::size_of::<C>() * com_queue_len) * 2;
-            {
+            let (sub_hdr, com_hdr) = {
                 let base: &mut QueueBase<S, C> = obj.base_mut_unchecked().assume_init_mut();
-                base.sub_hdr = 0x1000;
-                base.com_hdr = 0x2000;
-                base.sub_buf = 0x3000;
-                base.com_buf = 0x4000 + sub_len;
-            }
-            let srq: *mut RawQueueHdr = obj.raw_lea_mut(0x1000);
-            let crq: *mut RawQueueHdr = obj.raw_lea_mut(0x2000);
+                base.sub_hdr = NULLPAGE_SIZE + HDR_LEN;
+                base.com_hdr = base.sub_hdr + HDR_LEN;
+                base.sub_buf = base.com_hdr + HDR_LEN;
+                base.com_buf = base.sub_buf + sub_len;
+                (base.sub_hdr, base.com_hdr)
+            };
+            let srq: *mut RawQueueHdr = obj.raw_lea_mut(sub_hdr);
+            let crq: *mut RawQueueHdr = obj.raw_lea_mut(com_hdr);
             let l2len = sub_queue_len.next_power_of_two().ilog2();
             srq.write(RawQueueHdr::new(l2len as usize, core::mem::size_of::<S>()));
             let l2len = com_queue_len.next_power_of_two().ilog2();
