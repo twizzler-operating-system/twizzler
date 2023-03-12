@@ -1,3 +1,4 @@
+#![feature(int_log)]
 use std::time::Duration;
 
 use twizzler_abi::pager::{
@@ -6,7 +7,14 @@ use twizzler_abi::pager::{
 };
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
-async fn handle_request(_request: RequestFromKernel) -> Option<CompletionToKernel> {
+use std::hint::black_box;
+
+use crate::store::{KeyValueStore, Storage, BLOCK_SIZE};
+
+mod nvme;
+mod store;
+
+async fn handle_request(request: RequestFromKernel) -> Option<CompletionToKernel> {
     Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
 }
 
@@ -39,7 +47,7 @@ fn main() {
     let kqueue = twizzler_queue::Queue::<RequestFromPager, CompletionToPager>::from(kobject);
     let sq = twizzler_queue::QueueSender::new(kqueue);
 
-    let num_threads = 1;
+    let num_threads = 2;
     for _ in 0..(num_threads - 1) {
         std::thread::spawn(|| twizzler_async::run(std::future::pending::<()>()));
     }
@@ -58,6 +66,17 @@ fn main() {
         }
     })
     .detach();
+    let nvme_ctrl = nvme::init_nvme();
+    println!("a :: {}", twizzler_async::block_on(nvme_ctrl.flash_len()));
+    let storage = Storage::new(nvme_ctrl);
+    let mut read_buffer = [0; BLOCK_SIZE];
+    let kv = KeyValueStore::new(storage, &mut read_buffer, 4096 * 1000);
+    let kv = black_box(kv).unwrap();
+    let mut buf = [0; BLOCK_SIZE];
+    println!(":: {:?}", kv.get(1, &mut buf));
+
+    let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::from(object);
+    let rq = twizzler_queue::CallbackQueueReceiver::new(queue);
 
     twizzler_async::Task::spawn(async move {
         loop {

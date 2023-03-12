@@ -1,5 +1,5 @@
+use core::panic;
 use std::{
-    future,
     mem::size_of,
     sync::{Arc, Mutex, RwLock},
 };
@@ -7,33 +7,29 @@ use std::{
 use nvme::{
     ds::{
         controller::properties::config::ControllerConfig,
+        identify::controller::IdentifyControllerDataStructure,
+        namespace::{NamespaceId, NamespaceList},
         queue::{comentry::CommonCompletion, subentry::CommonCommand, CommandId},
     },
     hosted::memory::PhysicalPageCollection,
     queue::{CompletionQueue, SubmissionQueue},
 };
-use twizzler_abi::{
-    device::{BusType, MailboxPriority},
-    vcell::Volatile,
-};
-use twizzler_async::{block_on, Task};
+use twizzler_abi::device::BusType;
+use twizzler_async::Task;
 use twizzler_driver::{
     bus::pcie::PcieDeviceInfo,
-    device::events::InterruptInfo,
     dma::{DeviceSync, DmaOptions, DmaPool, DmaRegion},
     request::{RequestDriver, Requester, ResponseInfo, SubmitRequest},
     DeviceController,
 };
 use volatile_cell::VolatileCell;
 
-struct NvmeController {
-    requester: RwLock<Vec<Requester<NvmeQueue>>>,
+pub struct NvmeController {
+    requester: RwLock<Vec<Requester<NvmeRequester>>>,
+    admin_requester: RwLock<Option<Arc<Requester<NvmeRequester>>>>,
+    int_tasks: Mutex<Vec<Task<()>>>,
     device_ctrl: DeviceController,
-}
-
-struct NvmeQueue {
-    idx: usize,
-    ctrl: Arc<NvmeController>,
+    dma_pool: DmaPool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -45,48 +41,6 @@ struct NvmeRequest {
 struct NvmeResponse {
     #[allow(dead_code)]
     x: i32,
-}
-
-#[async_trait::async_trait]
-impl RequestDriver for NvmeQueue {
-    type Request = NvmeRequest;
-    type Response = NvmeResponse;
-    type SubmitError = ();
-
-    async fn submit(
-        &self,
-        reqs: &mut [twizzler_driver::request::SubmitRequest<Self::Request>],
-    ) -> Result<(), Self::SubmitError> {
-        println!("submit called with {:?}", reqs);
-        let mut resps = Vec::new();
-        for r in reqs {
-            let err = if r.id() == 3 { false } else { false };
-            resps.push(ResponseInfo::new(
-                NvmeResponse { x: r.data().x },
-                r.id(),
-                err,
-            ));
-        }
-        self.ctrl.requester.read().unwrap()[self.idx].finish(&resps);
-        Ok(())
-    }
-
-    fn flush(&self) {
-        println!("flush called!");
-    }
-
-    const NUM_IDS: usize = 8;
-}
-
-async fn test3<'a>(ctrl: Arc<NvmeController>) {
-    let int = ctrl.device_ctrl.allocate_interrupt().unwrap();
-}
-
-async fn test2<'a>(ctrl: Arc<NvmeController>) {
-    loop {
-        let (mp, msg) = ctrl.device_ctrl.next_msg(MailboxPriority::Idle).await;
-        println!("mailbox message: {:?} {}", mp, msg);
-    }
 }
 
 struct NvmeDmaRegion<'a, T: DeviceSync>(DmaRegion<'a, T>);
@@ -193,15 +147,12 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
         .with_submission_queue_size(32 - 1);
     reg.admin_queue_attr.set(aqa);
 
-    let dma = DmaPool::new(
-        DmaPool::default_spec(),
-        twizzler_driver::dma::Access::BiDirectional,
-        DmaOptions::empty(),
-    );
-    let mut saq = dma
+    let mut saq = ctrl
+        .dma_pool
         .allocate_array(32, nvme::ds::queue::subentry::CommonCommand::default())
         .unwrap();
-    let mut caq = dma
+    let mut caq = ctrl
+        .dma_pool
         .allocate_array(32, nvme::ds::queue::comentry::CommonCompletion::default())
         .unwrap();
 
@@ -257,7 +208,7 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
     };
     const C_STRIDE: usize = size_of::<CommonCompletion>();
     const S_STRIDE: usize = size_of::<CommonCommand>();
-    let mut sq = nvme::queue::SubmissionQueue::new(smem, 32, S_STRIDE).unwrap();
+    let sq = nvme::queue::SubmissionQueue::new(smem, 32, S_STRIDE).unwrap();
 
     let cmem = unsafe {
         core::slice::from_raw_parts_mut(
@@ -265,24 +216,7 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
             32 * size_of::<CommonCompletion>(),
         )
     };
-    let mut cq = nvme::queue::CompletionQueue::new(cmem, 32, C_STRIDE).unwrap();
-
-    let ident = dma
-        .allocate(nvme::ds::identify::controller::IdentifyControllerDataStructure::default())
-        .unwrap();
-    let mut ident = NvmeDmaRegion(ident);
-    let ident_cmd = nvme::admin::Identify::new(
-        CommandId::new(),
-        nvme::admin::IdentifyCNSValue::IdentifyController,
-        ident.get_dptr(false).unwrap(),
-        None,
-    );
-    let ident_cmd: CommonCommand = ident_cmd.into();
-
-    let data = [0u8; S_STRIDE];
-    let tail = sq.submit(&ident_cmd).unwrap();
-
-    println!("head: {}", tail);
+    let cq = nvme::queue::CompletionQueue::new(cmem, 32, C_STRIDE).unwrap();
 
     let saq_bell = unsafe { bar.get_mmio_offset::<VolatileCell<u32>>(0x1000) };
     let caq_bell = unsafe {
@@ -290,20 +224,6 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
             0x1000 + 1 * reg.capabilities.get().doorbell_stride_bytes(),
         )
     };
-    saq_bell.set(tail as u32);
-
-    let v = twizzler_async::run(async { int.next().await });
-
-    let comp: (u16, CommonCompletion) = cq.get_completion().unwrap();
-    sq.update_head(comp.1.new_sq_head());
-
-    caq_bell.set(comp.0 as u32);
-
-    //println!("{:?}", comp.1);
-
-    ident.0.with(|ident| {
-        //    println!("{:#?}", ident);
-    });
 
     let req = NvmeRequester {
         subq: Mutex::new(sq),
@@ -316,57 +236,18 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
     let req2 = req.clone();
     let task = Task::spawn(async move {
         loop {
-            let i = int.next().await;
+            let _i = int.next().await;
             println!("got interrupt");
             let resps = req2.driver().check_completions();
             req2.finish(&resps);
         }
     });
+    ctrl.int_tasks.lock().unwrap().push(task);
 
-    let mut reqs = [SubmitRequest::new(ident_cmd)];
-    let submitter = Task::spawn(async move {
-        loop {
-            let responses = req.submit_for_response(&mut reqs).await;
-            println!("requests submitted");
-            let responses = responses.unwrap().await;
-            println!("responses recieved {:?}", responses);
-        }
-    });
-    twizzler_async::run(future::pending::<()>());
+    *ctrl.admin_requester.write().unwrap() = Some(req);
 }
 
-async fn test1<'a>(ctrl: Arc<NvmeController>) {
-    println!("submitting a mailbox message");
-    ctrl.device_ctrl
-        .device()
-        .repr()
-        .submit_mailbox_msg(MailboxPriority::Low, 1234);
-
-    //   println!("starting req test");
-
-    /*
-    let nq = NvmeQueue {
-        idx: 0,
-        ctrl: ctrl.clone(),
-    };
-    ctrl.requester.write().unwrap().push(Requester::new(nq));
-
-    let mut reqs = Vec::new();
-    for i in 0..10 {
-        reqs.push(SubmitRequest::new(NvmeRequest { x: i }));
-    }
-    let req = ctrl.requester.read().unwrap();
-    {
-        let inflight = req[0].submit_for_response(&mut reqs).await.unwrap();
-
-        let res = inflight.await;
-        println!("got summ {:?}", res);
-    }
-    */
-}
-
-#[allow(dead_code)]
-pub fn start() {
+pub fn init_nvme() -> Arc<NvmeController> {
     let device_root = twizzler_driver::get_bustree_root();
     for device in device_root.children() {
         if device.is_bus() && device.bus_type() == BusType::Pcie {
@@ -384,25 +265,122 @@ pub fn start() {
                     );
 
                     let mut ctrl = Arc::new(NvmeController {
+                        int_tasks: Mutex::default(),
+                        dma_pool: DmaPool::new(
+                            DmaPool::default_spec(),
+                            twizzler_driver::dma::Access::BiDirectional,
+                            DmaOptions::empty(),
+                        ),
                         requester: RwLock::new(Vec::new()),
                         device_ctrl: DeviceController::new_from_device(child),
+                        admin_requester: RwLock::new(None),
                     });
                     init_controller(&mut ctrl);
-                    return;
-                    let c1 = ctrl.clone();
-                    let c2 = ctrl.clone();
-                    let c3 = ctrl.clone();
-                    std::thread::spawn(|| {
-                        twizzler_async::run(test1(c1));
-                    });
-                    std::thread::spawn(|| {
-                        twizzler_async::run(test2(c2));
-                    });
-                    std::thread::spawn(|| {
-                        twizzler_async::run(test3(c3));
-                    });
+                    return ctrl;
                 }
             }
         }
+    }
+    panic!("no nvme controller found");
+}
+
+impl NvmeController {
+    pub async fn identify_controller(&self) -> IdentifyControllerDataStructure {
+        let ident = self
+            .dma_pool
+            .allocate(nvme::ds::identify::controller::IdentifyControllerDataStructure::default())
+            .unwrap();
+        let mut ident = NvmeDmaRegion(ident);
+        let ident_cmd = nvme::admin::Identify::new(
+            CommandId::new(),
+            nvme::admin::IdentifyCNSValue::IdentifyController,
+            ident.get_dptr(false).unwrap(),
+            None,
+        );
+        let ident_cmd: CommonCommand = ident_cmd.into();
+        let responses = self
+            .admin_requester
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .submit_for_response(&mut [SubmitRequest::new(ident_cmd)])
+            .await;
+        let responses = responses.unwrap().await;
+        match responses {
+            twizzler_driver::request::SubmitSummaryWithResponses::Responses(_resp) => {}
+            _ => panic!("got err for ident"),
+        }
+
+        ident.0.with(|ident| ident.clone())
+    }
+
+    pub async fn identify_namespace(
+        &self,
+    ) -> nvme::ds::identify::namespace::IdentifyNamespaceDataStructure {
+        let nslist = self.dma_pool.allocate([0u8; 4096]).unwrap();
+        let mut nslist = NvmeDmaRegion(nslist);
+        let nslist_cmd = nvme::admin::Identify::new(
+            CommandId::new(),
+            nvme::admin::IdentifyCNSValue::ActiveNamespaceIdList(NamespaceId::default()),
+            nslist.get_dptr(false).unwrap(),
+            None,
+        );
+        let nslist_cmd: CommonCommand = nslist_cmd.into();
+        let responses = self
+            .admin_requester
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .submit_for_response(&mut [SubmitRequest::new(nslist_cmd)])
+            .await;
+        let responses = responses.unwrap().await;
+        match responses {
+            twizzler_driver::request::SubmitSummaryWithResponses::Responses(_resp) => {}
+            _ => panic!("got err for ident"),
+        }
+
+        nslist.0.with(|nslist| {
+            let lslist = NamespaceList::new(nslist);
+            for _id in lslist.into_iter() {
+                // TODO: do something with IDs
+            }
+        });
+
+        let ident = self
+            .dma_pool
+            .allocate(nvme::ds::identify::namespace::IdentifyNamespaceDataStructure::default())
+            .unwrap();
+        let mut ident = NvmeDmaRegion(ident);
+        let ident_cmd = nvme::admin::Identify::new(
+            CommandId::new(),
+            nvme::admin::IdentifyCNSValue::IdentifyNamespace(NamespaceId::new(1u32)),
+            ident.get_dptr(false).unwrap(),
+            None,
+        );
+        let ident_cmd: CommonCommand = ident_cmd.into();
+        let responses = self
+            .admin_requester
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .submit_for_response(&mut [SubmitRequest::new(ident_cmd)])
+            .await;
+        let responses = responses.unwrap().await;
+        match responses {
+            twizzler_driver::request::SubmitSummaryWithResponses::Responses(_resp) => {}
+            _ => panic!("got err for ident"),
+        }
+
+        ident.0.with(|ident| ident.clone())
+    }
+
+    pub async fn flash_len(&self) -> usize {
+        self.identify_controller().await;
+        let ns = self.identify_namespace().await;
+        let block_size = ns.lba_formats()[ns.formatted_lba_size.index()].data_size();
+        block_size * ns.capacity as usize
     }
 }

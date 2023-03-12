@@ -144,6 +144,7 @@ impl Device {
         inum: usize,
     ) -> Result<u32, InterruptAllocationError> {
         let (bar, offset) = msix.get_table_info();
+        println!(":: {} {:x}", bar, offset);
         msix.msg_ctrl.set(1 << 15);
         let mmio = self
             .find_mmio_bar(bar.into())
@@ -152,9 +153,11 @@ impl Device {
             let start = mmio.get_mmio_offset::<MsixTableEntry>(offset) as *const MsixTableEntry
                 as *mut MsixTableEntry;
             let len = msix.table_len();
+            println!(":::: {:p} {}", start, len);
             core::slice::from_raw_parts_mut(start, len)
         };
         let (msg_addr, msg_data) = calc_msg_info(vec, false);
+        println!("setting msg {:x} {:x}", msg_addr, msg_data);
         table[inum].msg_addr_lo.set(msg_addr as u32);
         table[inum].msg_addr_hi.set((msg_addr >> 32) as u32);
         table[inum].msg_data.set(msg_data);
@@ -170,6 +173,7 @@ impl Device {
         todo!()
     }
 
+    #[allow(unaligned_references)]
     fn allocate_pcie_interrupt(
         &self,
         vec: InterruptVector,
@@ -181,6 +185,15 @@ impl Device {
             .ok_or(InterruptAllocationError::Unsupported)?
         {
             if let PcieCapability::MsiX(m) = cap {
+                for msitest in self
+                    .pcie_capabilities()
+                    .ok_or(InterruptAllocationError::Unsupported)?
+                {
+                    if let PcieCapability::Msi(m) = msitest {
+                        let msi = unsafe { m.as_ref() };
+                        msi.msg_ctrl.set(0);
+                    }
+                }
                 return unsafe { self.allocate_msix_interrupt(m.as_ref(), vec, inum) };
             }
         }

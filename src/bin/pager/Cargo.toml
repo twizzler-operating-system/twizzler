@@ -11,3 +11,8 @@ twizzler-net = {path = "../../lib/twizzler-net" }
 twizzler-object = {path = "../../lib/twizzler-object" }
 twizzler-queue = {path = "../../lib/twizzler-queue"}
 twizzler-async = {path = "../../lib/twizzler-async"}
+twizzler-driver = {path = "../../lib/twizzler-driver"}
+nvme = { path = "../../lib/nvme-rs" }
+tickv = { version = "1.0.0" }
+async-trait = "0.1.66"
+volatile_cell = "1.0.0"
