@@ -66,7 +66,7 @@ fn main() {
         }
     })
     .detach();
-    let nvme_ctrl = nvme::init_nvme();
+    let nvme_ctrl = twizzler_async::block_on(nvme::init_nvme());
     println!("a :: {}", twizzler_async::block_on(nvme_ctrl.flash_len()));
     let storage = Storage::new(nvme_ctrl);
     let mut read_buffer = [0; BLOCK_SIZE];

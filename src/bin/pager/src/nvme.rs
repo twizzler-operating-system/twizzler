@@ -15,7 +15,7 @@ mod requester;
 
 pub use controller::NvmeController;
 
-pub fn init_nvme() -> Arc<NvmeController> {
+pub async fn init_nvme() -> Arc<NvmeController> {
     let device_root = twizzler_driver::get_bustree_root();
     for device in device_root.children() {
         if device.is_bus() && device.bus_type() == BusType::Pcie {
@@ -35,7 +35,7 @@ pub fn init_nvme() -> Arc<NvmeController> {
                     let mut ctrl = Arc::new(NvmeController::new(
                         DeviceController::new_from_device(child),
                     ));
-                    controller::init_controller(&mut ctrl);
+                    controller::init_controller(&mut ctrl).await;
                     return ctrl;
                 }
             }
