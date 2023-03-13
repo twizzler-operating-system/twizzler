@@ -262,7 +262,7 @@ impl<S: Copy, C: Copy> ManagedQueueReceiver<S, C> {
         Self { queue }
     }
 
-    fn handle_request<F>(&self, f: F)
+    pub fn handle_request<F>(&self, f: F)
     where
         F: FnOnce(u32, S) -> C,
     {
