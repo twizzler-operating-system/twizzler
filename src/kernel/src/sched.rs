@@ -473,9 +473,11 @@ pub fn schedule_stattick(dt: Nanoseconds) {
 
     let s = STAT_COUNTER.fetch_add(1, Ordering::SeqCst);
     let cp = current_processor();
-    cp.cleanup_exited();
     let cur = current_thread_ref();
     if let Some(ref cur) = cur {
+        if !cur.is_critical() {
+            cp.cleanup_exited();
+        }
         if cur.is_idle_thread() {
             cp.stats.idle.fetch_add(1, Ordering::SeqCst);
         } else {
