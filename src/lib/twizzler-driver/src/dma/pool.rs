@@ -313,11 +313,10 @@ impl DmaPool {
     pub fn allocate<'a, T: DeviceSync>(
         &'a self,
         init: T,
-    ) -> Result<DmaRegion<'a, T>, AllocationError> {
+    ) -> Result<DmaRegion<T>, AllocationError> {
         let len = core::mem::size_of::<T>();
         let (ado, range) = self.do_allocate(len)?;
         let mut reg = DmaRegion::new(
-            None,
             len,
             self.access,
             self.opts,
@@ -334,11 +333,10 @@ impl DmaPool {
         &'a self,
         count: usize,
         init: T,
-    ) -> Result<DmaSliceRegion<'a, T>, AllocationError> {
+    ) -> Result<DmaSliceRegion<T>, AllocationError> {
         let len = core::mem::size_of::<T>() * count;
         let (ado, range) = self.do_allocate(len)?;
         let mut reg = DmaSliceRegion::new(
-            None,
             len,
             self.access,
             self.opts,
@@ -356,11 +354,10 @@ impl DmaPool {
         &'a self,
         count: usize,
         init: impl Fn() -> T,
-    ) -> Result<DmaSliceRegion<'a, T>, AllocationError> {
+    ) -> Result<DmaSliceRegion<T>, AllocationError> {
         let len = core::mem::size_of::<T>() * count;
         let (ado, range) = self.do_allocate(len)?;
         let mut reg = DmaSliceRegion::new(
-            None,
             len,
             self.access,
             self.opts,

@@ -17,20 +17,20 @@ pub struct DmaObject {
 }
 
 impl DmaObject {
+    /// TODO: support
     /// Create a [DmaSliceRegion] from the base of this object, where the region represents memory
     /// of type `[T; len]`.
-    pub fn slice_region<'a, T: DeviceSync>(
-        &'a self,
+    fn _slice_region<T: DeviceSync>(
+        &self,
         len: usize,
         access: Access,
         options: DmaOptions,
-    ) -> DmaSliceRegion<'a, T> {
+    ) -> DmaSliceRegion<T> {
         let nr_bytes = core::mem::size_of::<T>()
             .checked_mul(len)
             .expect("Value of len too large");
         assert!(nr_bytes < MAX_SIZE - NULLPAGE_SIZE * 2);
         DmaSliceRegion::new(
-            Some(self),
             core::mem::size_of::<T>() * len,
             access,
             options,
@@ -40,15 +40,11 @@ impl DmaObject {
         )
     }
 
+    /// TODO: support
     /// Create a [DmaRegion] from the base of this object, where the region represents memory
     /// of type `T`.
-    pub fn region<'a, T: DeviceSync>(
-        &'a self,
-        access: Access,
-        options: DmaOptions,
-    ) -> DmaRegion<'a, T> {
+    fn _region<T: DeviceSync>(&self, access: Access, options: DmaOptions) -> DmaRegion<T> {
         DmaRegion::new(
-            Some(self),
             core::mem::size_of::<T>(),
             access,
             options,

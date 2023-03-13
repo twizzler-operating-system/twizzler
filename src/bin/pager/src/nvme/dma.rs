@@ -1,35 +1,47 @@
 use nvme::{ds::cmd::PrpListOrBuffer, hosted::memory::PhysicalPageCollection};
 use twizzler_driver::dma::{DeviceSync, DmaPin, DmaPool, DmaRegion, DmaSliceRegion, DMA_PAGE_SIZE};
 
-struct PrpMgr<'a> {
-    list: Vec<DmaSliceRegion<'a, u64>>,
+struct PrpMgr {
+    list: Vec<DmaSliceRegion<u64>>,
     start: u64,
+    embed_len: usize,
 }
 
-pub struct NvmeDmaRegion<'a, T: DeviceSync> {
-    reg: DmaRegion<'a, T>,
-    prp: Option<PrpMgr<'a>>,
+pub struct NvmeDmaRegion<T: DeviceSync> {
+    reg: DmaRegion<T>,
+    prp: Option<PrpMgr>,
 }
 
-impl<'a, T: DeviceSync> NvmeDmaRegion<'a, T> {
-    pub fn new(region: DmaRegion<'a, T>) -> Self {
+impl<'a, T: DeviceSync> NvmeDmaRegion<T> {
+    pub fn new(region: DmaRegion<T>) -> Self {
         Self {
             reg: region,
             prp: None,
         }
     }
 
-    pub fn dma_region(&self) -> &DmaRegion<'_, T> {
+    pub fn dma_region(&self) -> &DmaRegion<T> {
         &self.reg
     }
 }
 
-fn __get_prp_list_or_buffer<'a>(pin: DmaPin, dma: &'a DmaPool) -> PrpMgr<'a> {
+fn __get_prp_list_or_buffer(pin: DmaPin, prp_embed: &mut [u64], dma: &DmaPool) -> PrpMgr {
     let entries_per_page = DMA_PAGE_SIZE / 8;
     let pin_len = pin.len();
     let first_prp_page = dma.allocate_array(entries_per_page, 0u64).unwrap();
     let mut list = vec![first_prp_page];
-    for (num, page) in pin.into_iter().enumerate() {
+    let mut pin_iter = pin.into_iter();
+    for idx in 0..pin_len {
+        if idx < prp_embed.len() {
+            prp_embed[idx] = pin_iter.next().unwrap().addr().into();
+            println!("prp embed num {}: {:?}", idx, prp_embed[idx]);
+        } else {
+            break;
+        }
+    }
+
+    for (num, page) in pin_iter.enumerate() {
+        println!("prp num {}: {:?}", num, page);
         let index = num % entries_per_page;
         if (num + 1) % entries_per_page == 0 && num != pin_len - 1 {
             // Last entry with more to record, chain.
@@ -56,12 +68,14 @@ fn __get_prp_list_or_buffer<'a>(pin: DmaPin, dma: &'a DmaPool) -> PrpMgr<'a> {
     PrpMgr {
         list,
         start: first_prp_addr.into(),
+        embed_len: prp_embed.len(),
     }
 }
 
-impl<'a, T: DeviceSync> PhysicalPageCollection for NvmeDmaRegion<'a, T> {
+impl<'a, T: DeviceSync> PhysicalPageCollection for &'a mut NvmeDmaRegion<T> {
     fn get_prp_list_or_buffer(
         &mut self,
+        prp_embed: &mut [u64],
         dma: Self::DmaType,
     ) -> Option<nvme::ds::cmd::PrpListOrBuffer> {
         let pin = self.reg.pin().unwrap();
@@ -70,7 +84,12 @@ impl<'a, T: DeviceSync> PhysicalPageCollection for NvmeDmaRegion<'a, T> {
                 pin.into_iter().next().unwrap().addr().into(),
             ));
         }
-        let prp = __get_prp_list_or_buffer(pin, dma);
+        if let Some(ref prp) = self.prp {
+            if prp.embed_len == prp_embed.len() {
+                return Some(PrpListOrBuffer::PrpList(prp.start));
+            }
+        }
+        let prp = __get_prp_list_or_buffer(pin, prp_embed, dma);
         self.prp = Some(prp);
         Some(PrpListOrBuffer::PrpList(self.prp.as_ref().unwrap().start))
     }
@@ -86,27 +105,28 @@ impl<'a, T: DeviceSync> PhysicalPageCollection for NvmeDmaRegion<'a, T> {
     type DmaType = &'a DmaPool;
 }
 
-pub struct NvmeDmaSliceRegion<'a, T: DeviceSync> {
-    reg: DmaSliceRegion<'a, T>,
-    prp: Option<PrpMgr<'a>>,
+pub struct NvmeDmaSliceRegion<T: DeviceSync> {
+    reg: DmaSliceRegion<T>,
+    prp: Option<PrpMgr>,
 }
 
-impl<'a, T: DeviceSync> NvmeDmaSliceRegion<'a, T> {
-    pub fn new(region: DmaSliceRegion<'a, T>) -> Self {
+impl<'a, T: DeviceSync> NvmeDmaSliceRegion<T> {
+    pub fn new(region: DmaSliceRegion<T>) -> Self {
         Self {
             reg: region,
             prp: None,
         }
     }
 
-    pub fn dma_region(&self) -> &DmaSliceRegion<'_, T> {
+    pub fn dma_region(&self) -> &DmaSliceRegion<T> {
         &self.reg
     }
 }
 
-impl<'a, T: DeviceSync> PhysicalPageCollection for NvmeDmaSliceRegion<'a, T> {
+impl<'a, T: DeviceSync> PhysicalPageCollection for &'a mut NvmeDmaSliceRegion<T> {
     fn get_prp_list_or_buffer(
         &mut self,
+        prp_embed: &mut [u64],
         dma: Self::DmaType,
     ) -> Option<nvme::ds::cmd::PrpListOrBuffer> {
         let pin = self.reg.pin().unwrap();
@@ -115,7 +135,12 @@ impl<'a, T: DeviceSync> PhysicalPageCollection for NvmeDmaSliceRegion<'a, T> {
                 pin.into_iter().next().unwrap().addr().into(),
             ));
         }
-        let prp = __get_prp_list_or_buffer(pin, dma);
+        if let Some(ref prp) = self.prp {
+            if prp.embed_len == prp_embed.len() {
+                return Some(PrpListOrBuffer::PrpList(prp.start));
+            }
+        }
+        let prp = __get_prp_list_or_buffer(pin, prp_embed, dma);
         self.prp = Some(prp);
         Some(PrpListOrBuffer::PrpList(self.prp.as_ref().unwrap().start))
     }

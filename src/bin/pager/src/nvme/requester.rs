@@ -7,6 +7,8 @@ use nvme::{
 use twizzler_driver::request::{RequestDriver, ResponseInfo, SubmitRequest};
 use volatile_cell::VolatileCell;
 
+use super::dma::NvmeDmaRegion;
+
 pub struct NvmeRequester {
     subq: Mutex<SubmissionQueue>,
     comq: Mutex<CompletionQueue>,
