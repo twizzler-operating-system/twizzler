@@ -242,6 +242,17 @@ fn exec2(name: &str, id: ObjID) -> Option<ObjID> {
     //println!("ELF: {:?}", elf);
 }
 
+fn exec_n(name: &str, id: ObjID, args: &[&str]) {
+    let env: Vec<String> = std::env::vars()
+        .map(|(n, v)| format!("{}={}", n, v))
+        .collect();
+    let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
+    let mut fullargs = vec![name.as_bytes()];
+    fullargs.extend(args.iter().map(|x| x.as_bytes()));
+    let _elf = twizzler_abi::load_elf::spawn_new_executable(id, &fullargs, &env_ref);
+    //println!("ELF: {:?}", elf);
+}
+
 fn find_init_name(name: &str) -> Option<ObjID> {
     let init_info = twizzler_abi::aux::get_kernel_init_info();
     for n in init_info.names() {
@@ -320,7 +331,14 @@ fn main() {
     )
     .unwrap();
     if let Some(id) = find_init_name("pager") {
-        exec("pager", id, queue.object().id());
+        exec_n(
+            "pager",
+            id,
+            &[
+                &queue.object().id().as_u128().to_string(),
+                &queue2.object().id().as_u128().to_string(),
+            ],
+        );
     } else {
         eprintln!("[init] failed to start pager");
     }
