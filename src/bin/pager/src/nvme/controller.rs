@@ -16,12 +16,12 @@ use nvme::{
         InterruptVector,
     },
     hosted::memory::PrpMode,
-    nvm::ReadDword13,
+    nvm::{ReadDword13, WriteDword13},
 };
 use nvme::{admin::CreateIOSubmissionQueue, hosted::memory::PhysicalPageCollection};
 use twizzler_async::Task;
 use twizzler_driver::{
-    dma::{DmaOptions, DmaPool},
+    dma::{DmaOptions, DmaPool, DMA_PAGE_SIZE},
     request::{Requester, SubmitRequest, SubmitSummaryWithResponses},
     DeviceController,
 };
@@ -429,9 +429,14 @@ impl NvmeController {
         block_size * ns.capacity as usize
     }
 
-    pub async fn _read_block(&self, _block: u64) {
-        const NR_BLOCKS: usize = 8 * 4;
-        let buffer = self.dma_pool.allocate([0u8; 512 * NR_BLOCKS]).unwrap();
+    pub async fn read_page(
+        &self,
+        lba_start: u64,
+        out_buffer: &mut [u8],
+        offset: usize,
+    ) -> Result<(), ()> {
+        let nr_blocks = DMA_PAGE_SIZE / self.get_lba_size().await;
+        let buffer = self.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
         let mut buffer = NvmeDmaRegion::new(buffer);
         let dptr = (&mut buffer)
             .get_dptr(
@@ -443,23 +448,98 @@ impl NvmeController {
             CommandId::new(),
             NamespaceId::new(1u32),
             dptr,
-            _block,
-            NR_BLOCKS as u16,
+            lba_start,
+            nr_blocks as u16,
             ReadDword13::default(),
         );
         let cmd: CommonCommand = cmd.into();
         let responses = self.requester.read().unwrap()[0]
             .submit_for_response(&mut [SubmitRequest::new(cmd)])
             .await;
-        let responses = responses.unwrap().await;
-        println!("got read resp {:?}", responses);
-        match responses {
+        match responses.unwrap().await {
             SubmitSummaryWithResponses::Responses(_) => buffer.dma_region().with(|data| {
-                for x in data {
-                    print!("{:x} ", x);
-                }
-                println!();
+                out_buffer.copy_from_slice(&data[offset..DMA_PAGE_SIZE]);
+                Ok(())
             }),
+            SubmitSummaryWithResponses::Errors(_, r) => Err(()),
+            SubmitSummaryWithResponses::Shutdown => Err(()),
+        }
+    }
+
+    pub async fn write_page(
+        &self,
+        lba_start: u64,
+        in_buffer: &[u8],
+        offset: usize,
+    ) -> Result<(), ()> {
+        let nr_blocks = DMA_PAGE_SIZE / self.get_lba_size().await;
+        let mut buffer = self.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
+
+        let len = in_buffer.len();
+        if offset + len > DMA_PAGE_SIZE {
+            panic!("cannot write past a page");
+        }
+        if offset != 0 || len != DMA_PAGE_SIZE {
+            unsafe { self.read_page(lba_start, buffer.get_mut(), 0).await? };
+        }
+        buffer.with_mut(|data| data[offset..(offset + len)].copy_from_slice(in_buffer));
+
+        let mut buffer = NvmeDmaRegion::new(buffer);
+        let dptr = (&mut buffer)
+            .get_dptr(
+                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
+                &self.dma_pool,
+            )
+            .unwrap();
+        let cmd = nvme::nvm::WriteCommand::new(
+            CommandId::new(),
+            NamespaceId::new(1u32),
+            dptr,
+            lba_start,
+            nr_blocks as u16,
+            WriteDword13::default(),
+        );
+        let cmd: CommonCommand = cmd.into();
+        let responses = self.requester.read().unwrap()[0]
+            .submit_for_response(&mut [SubmitRequest::new(cmd)])
+            .await;
+        match responses.unwrap().await {
+            SubmitSummaryWithResponses::Responses(_) => Ok(()),
+            SubmitSummaryWithResponses::Errors(_, r) => Err(()),
+            SubmitSummaryWithResponses::Shutdown => Err(()),
+        }
+    }
+
+    pub async fn get_lba_size(&self) -> usize {
+        // TODO
+        512
+    }
+
+    pub async fn _write_block(&self, _block: u64) {
+        let buffer = self.dma_pool.allocate([1u8; BLOCK_SIZE]).unwrap();
+        let mut buffer = NvmeDmaRegion::new(buffer);
+        let dptr = (&mut buffer)
+            .get_dptr(
+                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
+                &self.dma_pool,
+            )
+            .unwrap();
+        let cmd = nvme::nvm::WriteCommand::new(
+            CommandId::new(),
+            NamespaceId::new(1u32),
+            dptr,
+            _block,
+            (BLOCK_SIZE / self.get_lba_size().await) as u16,
+            WriteDword13::default(),
+        );
+        let cmd: CommonCommand = cmd.into();
+        let responses = self.requester.read().unwrap()[0]
+            .submit_for_response(&mut [SubmitRequest::new(cmd)])
+            .await;
+        let responses = responses.unwrap().await;
+        println!("got write resp {:?}", responses);
+        match responses {
+            SubmitSummaryWithResponses::Responses(_) => {}
             SubmitSummaryWithResponses::Errors(_, r) => {
                 println!("::: {:?}", r);
             }

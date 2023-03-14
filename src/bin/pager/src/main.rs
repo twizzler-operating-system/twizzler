@@ -9,6 +9,8 @@ use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
 use std::hint::black_box;
 
+use twizzler_driver::dma::DMA_PAGE_SIZE;
+
 use crate::store::{KeyValueStore, Storage, BLOCK_SIZE};
 
 mod nvme;
@@ -69,7 +71,30 @@ fn main() {
     let nvme_ctrl = twizzler_async::block_on(nvme::init_nvme());
     println!("a :: {}", twizzler_async::block_on(nvme_ctrl.flash_len()));
 
-    twizzler_async::block_on(nvme_ctrl._read_block(0));
+    let mut buffer = [0u8; DMA_PAGE_SIZE];
+    let mut buffer2 = [1u8; DMA_PAGE_SIZE];
+    twizzler_async::block_on(nvme_ctrl.read_page(0, &mut buffer[0..(DMA_PAGE_SIZE - 1)], 1))
+        .unwrap();
+
+    for b in buffer.iter().enumerate() {
+        if b.0 != 0 && b.0 % 16 == 0 {
+            println!();
+        }
+        print!("{:2x} ", b.1);
+    }
+    println!();
+
+    twizzler_async::block_on(nvme_ctrl.write_page(0, &mut buffer2[4..8], 4)).unwrap();
+
+    twizzler_async::block_on(nvme_ctrl.read_page(0, &mut buffer, 0)).unwrap();
+
+    for b in buffer.iter().enumerate() {
+        if b.0 != 0 && b.0 % 16 == 0 {
+            println!();
+        }
+        print!("{:2x} ", b.1);
+    }
+    println!();
 
     loop {}
     let storage = Storage::new(nvme_ctrl);
