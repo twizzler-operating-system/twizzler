@@ -15,6 +15,7 @@ use nvme::{
         },
         InterruptVector,
     },
+    nvm::ReadDword13,
 };
 use nvme::{admin::CreateIOSubmissionQueue, hosted::memory::PhysicalPageCollection};
 use twizzler_async::Task;
@@ -143,12 +144,17 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
     let req = Arc::new(Requester::new(req));
 
     let req2 = req.clone();
+    let ctrl2 = ctrl.clone();
     let task = Task::spawn(async move {
         loop {
             let _i = int.next().await;
             println!("got interrupt");
             let resps = req2.driver().check_completions();
             req2.finish(&resps);
+            for r in ctrl2.requester.read().unwrap().iter() {
+                let c = r.driver().check_completions();
+                r.finish(&c);
+            }
         }
     });
     ctrl.int_tasks.lock().unwrap().push(task);
@@ -407,8 +413,31 @@ impl NvmeController {
         block_size * ns.capacity as usize
     }
 
-    pub async fn _read_data(&self, _block: u64) {
+    pub async fn _read_block(&self, _block: u64) {
         let buffer = self.dma_pool.allocate([0u8; BLOCK_SIZE]).unwrap();
-        let _buffer = NvmeDmaRegion::new(buffer);
+        let mut buffer = NvmeDmaRegion::new(buffer);
+        let mut embed = [0u64; 2];
+        let _prp = (&mut buffer).get_prp_list_or_buffer(&mut embed, &self.dma_pool);
+        let dptr = nvme::ds::queue::subentry::Dptr::Prp(embed[0], embed[1]);
+        let cmd = nvme::nvm::ReadCommand::new(
+            CommandId::new(),
+            NamespaceId::new(1u32),
+            dptr,
+            _block,
+            ReadDword13::default(),
+        );
+        let cmd: CommonCommand = cmd.into();
+        let responses = self.requester.read().unwrap()[0]
+            .submit_for_response(&mut [SubmitRequest::new(cmd)])
+            .await;
+        let responses = responses.unwrap().await;
+        println!("got read resp {:?}", responses);
+        match responses {
+            SubmitSummaryWithResponses::Responses(_) => todo!(),
+            SubmitSummaryWithResponses::Errors(_, r) => {
+                println!("::: {:?}", r);
+            }
+            SubmitSummaryWithResponses::Shutdown => todo!(),
+        }
     }
 }
