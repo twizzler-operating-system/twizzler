@@ -15,6 +15,7 @@ use nvme::{
         },
         InterruptVector,
     },
+    hosted::memory::PrpMode,
     nvm::ReadDword13,
 };
 use nvme::{admin::CreateIOSubmissionQueue, hosted::memory::PhysicalPageCollection};
@@ -239,7 +240,7 @@ impl NvmeController {
                 CommandId::new(),
                 cqid,
                 (&mut NvmeDmaSliceRegion::new(caq))
-                    .get_prp_list_or_buffer(&mut [], &self.dma_pool)
+                    .get_prp_list_or_buffer(PrpMode::Single, &self.dma_pool)
                     .unwrap(),
                 ((queue_len - 1) as u16).into(),
                 0,
@@ -266,7 +267,7 @@ impl NvmeController {
                 CommandId::new(),
                 sqid,
                 (&mut NvmeDmaSliceRegion::new(saq))
-                    .get_prp_list_or_buffer(&mut [], &self.dma_pool)
+                    .get_prp_list_or_buffer(PrpMode::Single, &self.dma_pool)
                     .unwrap(),
                 ((queue_len - 1) as u16).into(),
                 cqid,
@@ -323,7 +324,12 @@ impl NvmeController {
         let ident_cmd = nvme::admin::Identify::new(
             CommandId::new(),
             nvme::admin::IdentifyCNSValue::IdentifyController,
-            (&mut ident).get_dptr(false).unwrap(),
+            (&mut ident)
+                .get_dptr(
+                    nvme::hosted::memory::DptrMode::Prp(PrpMode::Single),
+                    &self.dma_pool,
+                )
+                .unwrap(),
             None,
         );
         let ident_cmd: CommonCommand = ident_cmd.into();
@@ -352,7 +358,12 @@ impl NvmeController {
         let nslist_cmd = nvme::admin::Identify::new(
             CommandId::new(),
             nvme::admin::IdentifyCNSValue::ActiveNamespaceIdList(NamespaceId::default()),
-            (&mut nslist).get_dptr(false).unwrap(),
+            (&mut nslist)
+                .get_dptr(
+                    nvme::hosted::memory::DptrMode::Prp(PrpMode::Single),
+                    &self.dma_pool,
+                )
+                .unwrap(),
             None,
         );
         let nslist_cmd: CommonCommand = nslist_cmd.into();
@@ -385,7 +396,12 @@ impl NvmeController {
         let ident_cmd = nvme::admin::Identify::new(
             CommandId::new(),
             nvme::admin::IdentifyCNSValue::IdentifyNamespace(NamespaceId::new(1u32)),
-            (&mut ident).get_dptr(false).unwrap(),
+            (&mut ident)
+                .get_dptr(
+                    nvme::hosted::memory::DptrMode::Prp(PrpMode::Single),
+                    &self.dma_pool,
+                )
+                .unwrap(),
             None,
         );
         let ident_cmd: CommonCommand = ident_cmd.into();
@@ -414,16 +430,21 @@ impl NvmeController {
     }
 
     pub async fn _read_block(&self, _block: u64) {
-        let buffer = self.dma_pool.allocate([0u8; BLOCK_SIZE]).unwrap();
+        const NR_BLOCKS: usize = 8 * 4;
+        let buffer = self.dma_pool.allocate([0u8; 512 * NR_BLOCKS]).unwrap();
         let mut buffer = NvmeDmaRegion::new(buffer);
-        let mut embed = [0u64; 2];
-        let _prp = (&mut buffer).get_prp_list_or_buffer(&mut embed, &self.dma_pool);
-        let dptr = nvme::ds::queue::subentry::Dptr::Prp(embed[0], embed[1]);
+        let dptr = (&mut buffer)
+            .get_dptr(
+                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
+                &self.dma_pool,
+            )
+            .unwrap();
         let cmd = nvme::nvm::ReadCommand::new(
             CommandId::new(),
             NamespaceId::new(1u32),
             dptr,
             _block,
+            NR_BLOCKS as u16,
             ReadDword13::default(),
         );
         let cmd: CommonCommand = cmd.into();
@@ -433,7 +454,12 @@ impl NvmeController {
         let responses = responses.unwrap().await;
         println!("got read resp {:?}", responses);
         match responses {
-            SubmitSummaryWithResponses::Responses(_) => todo!(),
+            SubmitSummaryWithResponses::Responses(_) => buffer.dma_region().with(|data| {
+                for x in data {
+                    print!("{:x} ", x);
+                }
+                println!();
+            }),
             SubmitSummaryWithResponses::Errors(_, r) => {
                 println!("::: {:?}", r);
             }
