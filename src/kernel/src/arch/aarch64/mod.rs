@@ -4,7 +4,8 @@ use crate::{
     BootInfo,
 };
 
-mod address;
+pub mod address;
+pub mod context;
 pub mod interrupt;
 pub mod memory;
 pub mod processor;
