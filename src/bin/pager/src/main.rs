@@ -71,6 +71,7 @@ fn main() {
     let nvme_ctrl = twizzler_async::block_on(nvme::init_nvme());
     println!("a :: {}", twizzler_async::block_on(nvme_ctrl.flash_len()));
 
+    /*
     let mut buffer = [0u8; DMA_PAGE_SIZE];
     let mut buffer2 = [1u8; DMA_PAGE_SIZE];
     twizzler_async::block_on(nvme_ctrl.read_page(0, &mut buffer[0..(DMA_PAGE_SIZE - 1)], 1))
@@ -95,14 +96,18 @@ fn main() {
         print!("{:2x} ", b.1);
     }
     println!();
+    */
 
-    loop {}
+    //loop {}
     let storage = Storage::new(nvme_ctrl);
     let mut read_buffer = [0; BLOCK_SIZE];
     let kv = KeyValueStore::new(storage, &mut read_buffer, 4096 * 1000);
     let kv = black_box(kv).unwrap();
     let mut buf = [0; BLOCK_SIZE];
     println!(":: {:?}", kv.get(1, &mut buf));
+    kv.put(1, b"hello world").unwrap();
+    println!("2:: {:?}", kv.get(1, &mut buf));
+    println!(" ==> {:?}", buf);
 
     let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::from(object);
     let rq = twizzler_queue::CallbackQueueReceiver::new(queue);

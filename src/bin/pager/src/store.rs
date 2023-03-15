@@ -23,15 +23,29 @@ impl FlashController<BLOCK_SIZE> for Storage {
         offset: usize,
         buf: &mut [u8; BLOCK_SIZE],
     ) -> Result<(), tickv::ErrorCode> {
-        todo!()
+        println!("read: {} {}", region_number, offset);
+        twizzler_async::block_on(self.nvme.read_page(region_number as u64 * 8, buf, offset))
+            .map_err(|_| tickv::ErrorCode::ReadFail)
     }
 
     fn write(&self, address: usize, buf: &[u8]) -> Result<(), tickv::ErrorCode> {
-        todo!()
+        println!("write: {} {}", address, buf.len());
+        twizzler_async::block_on(self.nvme.write_page(
+            (address / BLOCK_SIZE) as u64 * 8,
+            buf,
+            address % BLOCK_SIZE,
+        ))
+        .map_err(|_| tickv::ErrorCode::WriteFail)
     }
 
     fn erase_region(&self, region_number: usize) -> Result<(), tickv::ErrorCode> {
-        todo!()
+        println!("erase: {}", region_number);
+        twizzler_async::block_on(self.nvme.write_page(
+            region_number as u64 * 8,
+            &[0xffu8; BLOCK_SIZE],
+            0,
+        ))
+        .map_err(|_| tickv::ErrorCode::WriteFail)
     }
 }
 

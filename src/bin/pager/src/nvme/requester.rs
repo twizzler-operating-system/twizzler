@@ -41,22 +41,23 @@ impl NvmeRequester {
         let mut new_bell = None;
         while let Some((bell, resp)) = comq.get_completion::<CommonCompletion>() {
             let id: u16 = resp.command_id().into();
-            /*
-                        println!(
-                            "got completion for {} {} {} :: {}",
-                            resp.new_sq_head(),
-                            bell,
-                            id,
-                            resp.status().is_error()
-                        );
-            */
+            println!(
+                "got completion for {} {} {} :: {}",
+                resp.new_sq_head(),
+                bell,
+                id,
+                resp.status().is_error()
+            );
             resps.push(ResponseInfo::new(resp, id as u64, resp.status().is_error()));
+            // TODO: max?
             new_head = Some(resp.new_sq_head());
             new_bell = Some(bell);
         }
 
         if let Some(head) = new_head {
+            //if head <= 31 {
             self.subq.lock().unwrap().update_head(head);
+            //}
         }
 
         if let Some(bell) = new_bell {
