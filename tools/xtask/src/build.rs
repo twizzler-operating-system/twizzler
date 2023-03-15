@@ -47,6 +47,38 @@ fn locate_packages<'a>(workspace: &'a Workspace, kind: Option<&str>) -> Vec<&'a 
         .collect()
 }
 
+fn get_cli_configs(build_config: crate::BuildConfig, _other_options: &OtherOptions) -> anyhow::Result<Vec<String>> {
+    // in the future from the cli we might want enable arbitrary --cfg options
+    
+    // bring trait with write_fmt for write! to be used in scope
+    use std::fmt::Write;
+    
+    // the currently supported build target specs
+    // have a value of "unknown" for the machine, but
+    // we specify the machine for conditional compilation
+    // in the kernel via xtask cli
+    let triple = Triple::new(
+        build_config.arch,
+        crate::triple::Machine::Unknown,
+        crate::triple::Host::None,
+    );
+    let target_machine = build_config.machine.to_string();
+
+    // start building the config
+    let mut configs  = format!(r#"target.{}.rustflags=["#, triple.to_string());
+
+    // add in definition for machine target
+    write!(configs, r#""--cfg=machine=\"{}\"""#, target_machine)?;
+    
+    // finish the cfg string
+    write!(configs, "]")?;
+
+    // print the output
+    // println!("----{}----", configs);
+
+    Ok(vec![configs])
+}
+
 fn build_tools<'a>(
     workspace: &'a Workspace,
     mode: CompileMode,
@@ -160,9 +192,13 @@ fn build_kernel<'a>(
     let mut options = CompileOptions::new(workspace.config(), mode)?;
 
     if !build_config.is_default_target() {
+        // the currently supported build target specs
+        // have a value of "unknown" for the machine, but
+        // we specify the machine for conditional compilation
+        // in the kernel via xtask cli
         let triple = Triple::new(
             build_config.arch,
-            build_config.machine,
+            crate::triple::Machine::Unknown,
             crate::triple::Host::None,
         );
 
@@ -247,7 +283,9 @@ fn compile(
     let mut config = Config::default()?;
     config.configure(0, false, None, false, false, false, &None, &[], &[])?;
     let mut kernel_config = Config::default()?;
-    kernel_config.configure(0, false, None, false, false, false, &None, &[], &[])?;
+    // add in a feature flags to be used in the kernel
+    let cli_config = get_cli_configs(bc, other_options).unwrap();
+    kernel_config.configure(0, false, None, false, false, false, &None, &[], &cli_config)?;
     kernel_config.reload_rooted_at("src/kernel")?;
     let manifest_path = other_options
         .manifest_path
