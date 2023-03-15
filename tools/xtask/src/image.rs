@@ -47,56 +47,70 @@ fn get_genfile_path(comp: &TwizzlerCompilation, name: &str) -> PathBuf {
 
 fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Result<PathBuf> {
     crate::print_status_line("initrd", Some(&cli.config));
-    let initrd_meta = comp
-        .borrow_user_workspace()
-        .custom_metadata()
-        .expect("no initrd specification in Cargo.toml")
-        .get("initrd")
-        .expect("no initrd specification in Cargo.toml");
-
-    let mut initrd_files = vec![];
-    for item in initrd_meta
-        .as_array()
-        .expect("initrd specification must be an array")
-    {
-        let spec = item.as_str().expect("initrd item must be a string");
-        let split: Vec<_> = spec.split(':').into_iter().collect();
-        if split.len() != 2 {
-            anyhow::bail!("initrd item must be of the form `x:y'");
+    // Create an empty initrd if we are building just the kernel.
+    // No user space components are required to run the code, but
+    // the bootloader (limine) is configured to expect initrd, 
+    // even if we are not going to use it.
+    if cli.kernel {
+        let initrd_path = get_genfile_path(comp, "initrd");
+        let result = File::create(&initrd_path);
+        if result.is_ok() {
+            Ok(initrd_path)
+        } else {
+            anyhow::bail!("failed to generate initrd");
         }
-        match split[0] {
-            "crate" => initrd_files.append(&mut get_crate_initrd_files(comp, split[1])?),
-            x => panic!("invalid initrd spec {}", x),
-        }
-    }
+    } else {
+        let initrd_meta = comp
+            .borrow_user_workspace()
+            .custom_metadata()
+            .expect("no initrd specification in Cargo.toml")
+            .get("initrd")
+            .expect("no initrd specification in Cargo.toml");
 
-    if let Some(ref test_comp) = comp.borrow_test_compilation() {
-        if cli.tests {
-            let mut testlist = String::new();
-            for bin in test_comp.tests.iter() {
-                initrd_files.push(bin.path.clone());
-                testlist += &bin.path.file_name().unwrap().to_string_lossy();
-                testlist += "\n";
+        let mut initrd_files = vec![];
+        for item in initrd_meta
+            .as_array()
+            .expect("initrd specification must be an array")
+        {
+            let spec = item.as_str().expect("initrd item must be a string");
+            let split: Vec<_> = spec.split(':').into_iter().collect();
+            if split.len() != 2 {
+                anyhow::bail!("initrd item must be of the form `x:y'");
             }
-            let test_file_path = get_genfile_path(comp, "test_bins");
-            let mut file = File::create(&test_file_path)?;
-            file.write_all(testlist.as_bytes())?;
-            initrd_files.push(test_file_path);
+            match split[0] {
+                "crate" => initrd_files.append(&mut get_crate_initrd_files(comp, split[1])?),
+                x => panic!("invalid initrd spec {}", x),
+            }
         }
-    } else {
-        assert!(!cli.tests);
-    }
 
-    let initrd_path = get_genfile_path(comp, "initrd");
-    let status = Command::new(get_tool_path(comp, "initrd_gen")?)
-        .arg("--output")
-        .arg(&initrd_path)
-        .args(&initrd_files)
-        .status()?;
-    if status.success() {
-        Ok(initrd_path)
-    } else {
-        anyhow::bail!("failed to generate initrd");
+        if let Some(ref test_comp) = comp.borrow_test_compilation() {
+            if cli.tests {
+                let mut testlist = String::new();
+                for bin in test_comp.tests.iter() {
+                    initrd_files.push(bin.path.clone());
+                    testlist += &bin.path.file_name().unwrap().to_string_lossy();
+                    testlist += "\n";
+                }
+                let test_file_path = get_genfile_path(comp, "test_bins");
+                let mut file = File::create(&test_file_path)?;
+                file.write_all(testlist.as_bytes())?;
+                initrd_files.push(test_file_path);
+            }
+        } else {
+            assert!(!cli.tests);
+        }
+
+        let initrd_path = get_genfile_path(comp, "initrd");
+        let status = Command::new(get_tool_path(comp, "initrd_gen")?)
+            .arg("--output")
+            .arg(&initrd_path)
+            .args(&initrd_files)
+            .status()?;
+        if status.success() {
+            Ok(initrd_path)
+        } else {
+            anyhow::bail!("failed to generate initrd");
+        }
     }
 }
 
