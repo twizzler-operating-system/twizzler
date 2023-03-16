@@ -11,9 +11,7 @@ use nvme::{
         namespace::{NamespaceId, NamespaceList},
         queue::{
             comentry::CommonCompletion, subentry::CommonCommand, CommandId, QueueId, QueuePriority,
-            QueueSize,
         },
-        InterruptVector,
     },
     hosted::memory::PrpMode,
     nvm::{ReadDword13, WriteDword13},
@@ -149,12 +147,12 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
     let task = Task::spawn(async move {
         loop {
             let _i = int.next().await;
-            println!("got interrupt");
-            println!("=== admin ===");
+            //println!("got interrupt");
+            //println!("=== admin ===");
             let resps = req2.driver().check_completions();
             req2.finish(&resps);
             for r in ctrl2.requester.read().unwrap().iter() {
-                println!("=== i/o ===");
+                //println!("=== i/o ===");
                 let c = r.driver().check_completions();
                 r.finish(&c);
             }
@@ -215,8 +213,6 @@ impl NvmeController {
         let spin = saq.dma_region_mut().pin().unwrap();
         assert_eq!(cpin.len(), 1);
         assert_eq!(spin.len(), 1);
-        let cpin_addr = cpin[0].addr();
-        let spin_addr = spin[0].addr();
 
         let smem = unsafe {
             core::slice::from_raw_parts_mut(
@@ -467,7 +463,7 @@ impl NvmeController {
                 out_buffer.copy_from_slice(&data[offset..DMA_PAGE_SIZE]);
                 Ok(())
             }),
-            SubmitSummaryWithResponses::Errors(_, r) => Err(()),
+            SubmitSummaryWithResponses::Errors(_, _r) => Err(()),
             SubmitSummaryWithResponses::Shutdown => Err(()),
         }
     }
@@ -512,7 +508,7 @@ impl NvmeController {
             .await;
         match responses.unwrap().await {
             SubmitSummaryWithResponses::Responses(_) => Ok(()),
-            SubmitSummaryWithResponses::Errors(_, r) => Err(()),
+            SubmitSummaryWithResponses::Errors(_, _r) => Err(()),
             SubmitSummaryWithResponses::Shutdown => Err(()),
         }
     }
