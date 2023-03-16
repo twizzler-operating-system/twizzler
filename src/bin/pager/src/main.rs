@@ -107,7 +107,9 @@ fn main() {
     println!(":: {:?}", kv.get(1, &mut buf));
     kv.put(1, b"hello world").unwrap();
     println!("2:: {:?}", kv.get(1, &mut buf));
-    println!(" ==> {:?}", buf);
+    println!(" ==> {:?}", &buf[0..8]);
+    //kv.del(1).unwrap();
+    //println!("3:: {:?}", kv.get(1, &mut buf));
 
     let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::from(object);
     let rq = twizzler_queue::CallbackQueueReceiver::new(queue);

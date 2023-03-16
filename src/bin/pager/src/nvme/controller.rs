@@ -25,7 +25,7 @@ use twizzler_driver::{
 };
 use volatile_cell::VolatileCell;
 
-use crate::{nvme::dma::NvmeDmaSliceRegion, store::BLOCK_SIZE};
+use crate::nvme::dma::NvmeDmaSliceRegion;
 
 use super::{dma::NvmeDmaRegion, requester::NvmeRequester};
 
@@ -49,7 +49,6 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
     while reg.status.get().ready() {
         core::hint::spin_loop();
     }
-    println!("version: {} {}", reg.version_maj(), reg.version_min());
 
     let aqa = nvme::ds::controller::properties::aqa::AdminQueueAttributes::new()
         .with_completion_queue_size(32 - 1)
@@ -105,7 +104,6 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
     while !reg.status.get().ready() {
         core::hint::spin_loop();
     }
-    println!("controller init");
 
     let smem = unsafe {
         core::slice::from_raw_parts_mut(
@@ -482,7 +480,6 @@ impl NvmeController {
             panic!("cannot write past a page");
         }
         if offset != 0 || len != DMA_PAGE_SIZE {
-            println!("had to read {} {}", offset, in_buffer.len());
             unsafe { self.read_page(lba_start, buffer.get_mut(), 0).await? };
         }
         buffer.with_mut(|data| data[offset..(offset + len)].copy_from_slice(in_buffer));
@@ -516,37 +513,5 @@ impl NvmeController {
     pub async fn get_lba_size(&self) -> usize {
         // TODO
         512
-    }
-
-    pub async fn _write_block(&self, _block: u64) {
-        let buffer = self.dma_pool.allocate([1u8; BLOCK_SIZE]).unwrap();
-        let mut buffer = NvmeDmaRegion::new(buffer);
-        let dptr = (&mut buffer)
-            .get_dptr(
-                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
-                &self.dma_pool,
-            )
-            .unwrap();
-        let cmd = nvme::nvm::WriteCommand::new(
-            CommandId::new(),
-            NamespaceId::new(1u32),
-            dptr,
-            _block,
-            (BLOCK_SIZE / self.get_lba_size().await) as u16,
-            WriteDword13::default(),
-        );
-        let cmd: CommonCommand = cmd.into();
-        let responses = self.requester.read().unwrap()[0]
-            .submit_for_response(&mut [SubmitRequest::new(cmd)])
-            .await;
-        let responses = responses.unwrap().await;
-        println!("got write resp {:?}", responses);
-        match responses {
-            SubmitSummaryWithResponses::Responses(_) => {}
-            SubmitSummaryWithResponses::Errors(_, r) => {
-                println!("::: {:?}", r);
-            }
-            SubmitSummaryWithResponses::Shutdown => todo!(),
-        }
     }
 }

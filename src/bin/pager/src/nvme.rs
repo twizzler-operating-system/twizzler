@@ -1,12 +1,8 @@
 use core::panic;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 
 use twizzler_abi::device::BusType;
-use twizzler_driver::{
-    bus::pcie::PcieDeviceInfo,
-    dma::{DmaOptions, DmaPool},
-    DeviceController,
-};
+use twizzler_driver::{bus::pcie::PcieDeviceInfo, DeviceController};
 
 mod controller;
 mod dma;

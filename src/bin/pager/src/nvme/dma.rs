@@ -5,7 +5,7 @@ use nvme::{
 use twizzler_driver::dma::{DeviceSync, DmaPin, DmaPool, DmaRegion, DmaSliceRegion, DMA_PAGE_SIZE};
 
 struct PrpMgr {
-    list: Vec<DmaSliceRegion<u64>>,
+    _list: Vec<DmaSliceRegion<u64>>,
     mode: PrpMode,
     buffer: bool,
     embed: [u64; 2],
@@ -36,19 +36,17 @@ impl<'a, T: DeviceSync> NvmeDmaRegion<T> {
 fn __get_prp_list_or_buffer2(pin: DmaPin, dma: &DmaPool, mode: PrpMode) -> PrpMgr {
     let entries_per_page = DMA_PAGE_SIZE / 8;
     let pin_len = pin.len();
-    let first_prp_page = dma.allocate_array(entries_per_page, 0u64).unwrap();
-    let mut list = vec![first_prp_page];
     let mut pin_iter = pin.into_iter();
 
     let prp = match pin_len {
         1 => PrpMgr {
-            list: vec![],
+            _list: vec![],
             embed: [pin_iter.next().unwrap().addr().into(), 0],
             mode,
             buffer: true,
         },
         2 if mode == PrpMode::Double => PrpMgr {
-            list: vec![],
+            _list: vec![],
             embed: [
                 pin_iter.next().unwrap().addr().into(),
                 pin_iter.next().unwrap().addr().into(),
@@ -68,9 +66,7 @@ fn __get_prp_list_or_buffer2(pin: DmaPin, dma: &DmaPool, mode: PrpMode) -> PrpMg
                 .into();
             let mut list = vec![first_prp_page];
             let embed = [pin_iter.next().unwrap().addr().into(), start];
-            println!("page 0: {:x}", embed[0]);
             for (num, page) in pin_iter.enumerate() {
-                println!("page {}: {:x}", num + 1, u64::from(page.addr()));
                 let index = num % entries_per_page;
                 if (num + 1) % entries_per_page == 0 && num != pin_len - 1 {
                     // Last entry with more to record, chain.
@@ -94,7 +90,7 @@ fn __get_prp_list_or_buffer2(pin: DmaPin, dma: &DmaPool, mode: PrpMode) -> PrpMg
                     });
             }
             PrpMgr {
-                list,
+                _list: list,
                 mode,
                 embed,
                 buffer: false,

@@ -1,7 +1,11 @@
+<<<<<<< HEAD
 use std::{
     path::Path,
     process::{Command, ExitStatus},
 };
+=======
+use std::{fs::File, io::ErrorKind, process::Command};
+>>>>>>> 858e267 (kv hooked up.)
 
 use crate::{image::ImageInfo, triple::Arch, QemuOptions};
 

@@ -1,4 +1,4 @@
-use std::{collections::hash_map::DefaultHasher, hash::Hasher, sync::Arc};
+use std::{cmp::min, collections::hash_map::DefaultHasher, hash::Hasher, sync::Arc};
 
 use tickv::{ErrorCode, FlashController};
 
@@ -23,23 +23,26 @@ impl FlashController<BLOCK_SIZE> for Storage {
         offset: usize,
         buf: &mut [u8; BLOCK_SIZE],
     ) -> Result<(), tickv::ErrorCode> {
-        println!("read: {} {}", region_number, offset);
         twizzler_async::block_on(self.nvme.read_page(region_number as u64 * 8, buf, offset))
             .map_err(|_| tickv::ErrorCode::ReadFail)
     }
 
-    fn write(&self, address: usize, buf: &[u8]) -> Result<(), tickv::ErrorCode> {
-        println!("write: {} {}", address, buf.len());
-        twizzler_async::block_on(self.nvme.write_page(
-            (address / BLOCK_SIZE) as u64 * 8,
-            buf,
-            address % BLOCK_SIZE,
-        ))
-        .map_err(|_| tickv::ErrorCode::WriteFail)
+    fn write(&self, mut address: usize, mut buf: &[u8]) -> Result<(), tickv::ErrorCode> {
+        while !buf.is_empty() {
+            let offset = address % BLOCK_SIZE;
+            let start = (address / BLOCK_SIZE) * 8;
+            let thislen = min(BLOCK_SIZE - offset, buf.len());
+
+            twizzler_async::block_on(self.nvme.write_page(start as u64, &buf[0..thislen], offset))
+                .map_err(|_| tickv::ErrorCode::WriteFail)?;
+
+            buf = &buf[thislen..buf.len()];
+            address += thislen;
+        }
+        Ok(())
     }
 
     fn erase_region(&self, region_number: usize) -> Result<(), tickv::ErrorCode> {
-        println!("erase: {}", region_number);
         twizzler_async::block_on(self.nvme.write_page(
             region_number as u64 * 8,
             &[0xffu8; BLOCK_SIZE],
