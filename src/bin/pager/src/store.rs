@@ -1,6 +1,13 @@
-use std::{cmp::min, collections::hash_map::DefaultHasher, hash::Hasher, sync::Arc};
+use std::{
+    cmp::min,
+    collections::hash_map::DefaultHasher,
+    hash::Hasher,
+    mem::{size_of, MaybeUninit},
+    sync::Arc,
+};
 
-use tickv::{ErrorCode, FlashController};
+use tickv::{success_codes::SuccessCode, ErrorCode, FlashController};
+use twizzler_object::ObjID;
 
 use crate::nvme::NvmeController;
 
@@ -53,13 +60,39 @@ impl FlashController<BLOCK_SIZE> for Storage {
 }
 
 pub struct KeyValueStore<'a> {
-    internal: tickv::tickv::TicKV<'a, Storage, BLOCK_SIZE>,
+    pub internal: tickv::tickv::TicKV<'a, Storage, BLOCK_SIZE>,
 }
 
-pub fn hasher<T: std::hash::Hash>(t: T) -> u64 {
+pub fn hasher<T: std::hash::Hash>(t: &T) -> u64 {
     let mut h = DefaultHasher::new();
     t.hash(&mut h);
-    h.finish()
+    let x = h.finish();
+    match x {
+        0 => 2,
+        u64::MAX => u64::MAX - 2,
+        m => m,
+    }
+}
+
+#[derive(Clone, Copy, Hash, PartialEq, PartialOrd, Ord, Eq, Debug)]
+#[repr(C)]
+pub struct Key {
+    pub id: ObjID,
+    pub info: u32,
+    pub kind: KeyKind,
+}
+
+impl Key {
+    pub fn new(id: ObjID, info: u32, kind: KeyKind) -> Self {
+        Self { id, info, kind }
+    }
+}
+
+#[derive(Clone, Copy, Hash, PartialEq, PartialOrd, Ord, Eq, Debug)]
+#[repr(u32)]
+pub enum KeyKind {
+    ObjectInfo = 10,
+    Tombstone = 42,
 }
 
 impl<'a> KeyValueStore<'a> {
@@ -75,23 +108,117 @@ impl<'a> KeyValueStore<'a> {
         Ok(this)
     }
 
-    pub fn get(
-        &self,
-        hash: u64,
-        buf: &mut [u8],
-    ) -> Result<tickv::success_codes::SuccessCode, tickv::ErrorCode> {
-        self.internal.get_key(hash, buf)
+    pub fn do_get(&self, hash: u64, buf_size: usize) -> Result<(SuccessCode, Vec<u8>), ErrorCode> {
+        let mut buf = Vec::new();
+        buf.resize(buf_size, 0u8);
+        match self.internal.get_key(hash, &mut buf) {
+            Ok(s) => Ok((s, buf)),
+            Err(ErrorCode::BufferTooSmall(l)) => self.do_get(hash, l),
+            Err(e) => Err(e),
+        }
     }
 
-    pub fn put(
-        &self,
-        hash: u64,
-        buf: &[u8],
-    ) -> Result<tickv::success_codes::SuccessCode, tickv::ErrorCode> {
-        self.internal.append_key(hash, buf)
+    fn convert<T: Copy>(buf: &[u8]) -> T {
+        let mut mu = MaybeUninit::uninit();
+        let num_bytes = std::mem::size_of::<T>();
+        unsafe {
+            let buffer = std::slice::from_raw_parts_mut(
+                &mut mu as *mut MaybeUninit<T> as *mut u8,
+                num_bytes,
+            );
+            buffer.copy_from_slice(&buf[0..num_bytes]);
+            drop(buffer);
+            mu.assume_init()
+        }
     }
 
-    pub fn del(&self, hash: u64) -> Result<tickv::success_codes::SuccessCode, tickv::ErrorCode> {
-        self.internal.invalidate_key(hash)
+    pub fn get<V: Copy>(&self, key: Key) -> Result<V, tickv::ErrorCode> {
+        let mut hash = hasher(&key);
+        let prev = hash.wrapping_sub(1);
+        let size = size_of::<Key>() + size_of::<V>();
+        while hash != prev {
+            if hash == 0 || hash == u64::MAX {
+                hash = hash.wrapping_add(1);
+                continue;
+            }
+            let data = self.do_get(hash, size)?;
+            let thiskey: Key = Self::convert(&data.1);
+            if key == thiskey {
+                return Ok(Self::convert(&data.1[size_of::<Key>()..]));
+            }
+            hash = hash.wrapping_add(1);
+        }
+        Err(ErrorCode::KeyNotFound)
+    }
+
+    pub fn put<V: Copy>(
+        &mut self,
+        key: Key,
+        value: V,
+    ) -> Result<tickv::success_codes::SuccessCode, tickv::ErrorCode> {
+        let mut hash = hasher(&key);
+        let prev = hash.wrapping_sub(1);
+        let size = size_of::<Key>() + size_of::<V>();
+        let mut raw_value = Vec::new();
+        let key_slice = unsafe {
+            std::slice::from_raw_parts(&key as *const Key as *const u8, size_of::<Key>())
+        };
+        let val_slice =
+            unsafe { std::slice::from_raw_parts(&value as *const V as *const u8, size_of::<V>()) };
+        raw_value.extend_from_slice(key_slice);
+        raw_value.extend_from_slice(val_slice);
+        while hash != prev {
+            if hash == 0 || hash == u64::MAX {
+                hash = hash.wrapping_add(1);
+                continue;
+            }
+            let data = self.do_get(hash, size);
+            if let Ok(data) = data {
+                let thiskey: Key = Self::convert(&data.1);
+                if key == thiskey {
+                    return Err(ErrorCode::KeyAlreadyExists);
+                }
+            } else {
+                return self.internal.append_key(hash, &raw_value);
+            }
+
+            hash = hash.wrapping_add(1);
+        }
+        Err(ErrorCode::KeyNotFound)
+    }
+
+    pub fn del(&mut self, key: Key) -> Result<SuccessCode, ErrorCode> {
+        let mut hash = hasher(&key);
+        let prev = hash.wrapping_sub(1);
+        let size = size_of::<Key>();
+        while hash != prev {
+            if hash == 0 || hash == u64::MAX {
+                hash = hash.wrapping_add(1);
+                continue;
+            }
+            let data = self.do_get(hash, size)?;
+            let thiskey: Key = Self::convert(&data.1);
+            if key == thiskey {
+                return self.do_del(hash);
+            }
+            hash = hash.wrapping_add(1);
+        }
+        Err(ErrorCode::KeyNotFound)
+    }
+
+    pub fn do_del(&self, hash: u64) -> Result<tickv::success_codes::SuccessCode, tickv::ErrorCode> {
+        let next = hash.wrapping_add(1);
+        let res = self.internal.get_key(next, &mut []);
+        if let Err(ErrorCode::BufferTooSmall(_)) = res {
+            // leave a tombstone
+            let t = Key::new(0.into(), 0, KeyKind::Tombstone);
+            let t_slice = unsafe {
+                std::slice::from_raw_parts(&t as *const Key as *const u8, size_of::<Key>())
+            };
+            self.internal.invalidate_key(hash).unwrap();
+            self.internal.append_key(hash, t_slice)
+        } else {
+            self.internal.invalidate_key(hash)
+        }
     }
 }

@@ -1,6 +1,6 @@
 use std::{
     mem::size_of,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, OnceLock, RwLock},
 };
 
 use nvme::{
@@ -35,6 +35,8 @@ pub struct NvmeController {
     int_tasks: Mutex<Vec<Task<()>>>,
     device_ctrl: DeviceController,
     dma_pool: DmaPool,
+    capacity: OnceLock<usize>,
+    block_size: OnceLock<usize>,
 }
 
 pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
@@ -180,6 +182,8 @@ impl NvmeController {
                 twizzler_driver::dma::Access::BiDirectional,
                 DmaOptions::empty(),
             ),
+            capacity: OnceLock::new(),
+            block_size: OnceLock::new(),
         }
     }
 
@@ -423,10 +427,15 @@ impl NvmeController {
     }
 
     pub async fn flash_len(&self) -> usize {
-        self.identify_controller().await;
-        let ns = self.identify_namespace().await;
-        let block_size = ns.lba_formats()[ns.formatted_lba_size.index()].data_size();
-        block_size * ns.capacity as usize
+        if let Some(sz) = self.capacity.get() {
+            *sz
+        } else {
+            self.identify_controller().await;
+            let ns = self.identify_namespace().await;
+            let block_size = ns.lba_formats()[ns.formatted_lba_size.index()].data_size();
+            let _ = self.capacity.set(block_size * ns.capacity as usize);
+            block_size * ns.capacity as usize
+        }
     }
 
     pub async fn read_page(
@@ -511,7 +520,14 @@ impl NvmeController {
     }
 
     pub async fn get_lba_size(&self) -> usize {
-        // TODO
-        512
+        if let Some(sz) = self.block_size.get() {
+            *sz
+        } else {
+            self.identify_controller().await;
+            let ns = self.identify_namespace().await;
+            let block_size = ns.lba_formats()[ns.formatted_lba_size.index()].data_size();
+            let _ = self.block_size.set(block_size);
+            block_size
+        }
     }
 }

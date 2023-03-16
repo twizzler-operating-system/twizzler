@@ -1,4 +1,5 @@
 #![feature(int_log)]
+#![feature(once_cell)]
 use std::time::Duration;
 
 use twizzler_abi::pager::{
@@ -7,17 +8,24 @@ use twizzler_abi::pager::{
 };
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
-use std::hint::black_box;
+use std::collections::BTreeMap;
 
+use tickv::{success_codes::SuccessCode, ErrorCode};
 use twizzler_driver::dma::DMA_PAGE_SIZE;
 
-use crate::store::{KeyValueStore, Storage, BLOCK_SIZE};
+use crate::store::{Key, KeyValueStore, Storage, BLOCK_SIZE};
 
 mod nvme;
 mod store;
 
-async fn handle_request(request: RequestFromKernel) -> Option<CompletionToKernel> {
+async fn handle_request(_request: RequestFromKernel) -> Option<CompletionToKernel> {
     Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Foo {
+    x: u32,
 }
 
 fn main() {
@@ -69,47 +77,15 @@ fn main() {
     })
     .detach();
     let nvme_ctrl = twizzler_async::block_on(nvme::init_nvme());
-    println!("a :: {}", twizzler_async::block_on(nvme_ctrl.flash_len()));
+    println!("a");
+    let len = twizzler_async::block_on(nvme_ctrl.flash_len());
+    println!("b");
+    //let len = 0x100000;
 
-    /*
-    let mut buffer = [0u8; DMA_PAGE_SIZE];
-    let mut buffer2 = [1u8; DMA_PAGE_SIZE];
-    twizzler_async::block_on(nvme_ctrl.read_page(0, &mut buffer[0..(DMA_PAGE_SIZE - 1)], 1))
-        .unwrap();
-
-    for b in buffer.iter().enumerate() {
-        if b.0 != 0 && b.0 % 16 == 0 {
-            println!();
-        }
-        print!("{:2x} ", b.1);
-    }
-    println!();
-
-    twizzler_async::block_on(nvme_ctrl.write_page(0, &mut buffer2[4..8], 4)).unwrap();
-
-    twizzler_async::block_on(nvme_ctrl.read_page(0, &mut buffer, 0)).unwrap();
-
-    for b in buffer.iter().enumerate() {
-        if b.0 != 0 && b.0 % 16 == 0 {
-            println!();
-        }
-        print!("{:2x} ", b.1);
-    }
-    println!();
-    */
-
-    //loop {}
     let storage = Storage::new(nvme_ctrl);
     let mut read_buffer = [0; BLOCK_SIZE];
-    let kv = KeyValueStore::new(storage, &mut read_buffer, 4096 * 1000);
-    let kv = black_box(kv).unwrap();
-    let mut buf = [0; BLOCK_SIZE];
-    println!(":: {:?}", kv.get(1, &mut buf));
-    kv.put(1, b"hello world").unwrap();
-    println!("2:: {:?}", kv.get(1, &mut buf));
-    println!(" ==> {:?}", &buf[0..8]);
-    //kv.del(1).unwrap();
-    //println!("3:: {:?}", kv.get(1, &mut buf));
+    let _kv = KeyValueStore::new(storage, &mut read_buffer, len).unwrap();
+    println!("done ");
 
     let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::from(object);
     let rq = twizzler_queue::CallbackQueueReceiver::new(queue);
@@ -126,4 +102,86 @@ fn main() {
     })
     .detach();
     twizzler_async::run(std::future::pending::<()>());
+}
+
+static mut RAND_STATE: u32 = 0;
+pub fn quick_random() -> u32 {
+    let state = unsafe { RAND_STATE };
+    let newstate = state.wrapping_mul(69069).wrapping_add(5);
+    unsafe {
+        RAND_STATE = newstate;
+    }
+    newstate >> 16
+}
+
+struct Tester<'a> {
+    kv: KeyValueStore<'a>,
+    truth: BTreeMap<Key, Foo>,
+}
+
+#[allow(dead_code)]
+impl<'a> Tester<'a> {
+    fn test(&mut self) {
+        for i in 0..100000 {
+            if i % 100 == 0 {
+                //print!("progress: {}           \r", i as f32 / 1000.0);
+            }
+            if i % 2000 == 0 {
+                println!("validate has all {}", i as f32 / 1000.0);
+                self.validate_has_all();
+            }
+            let x = i % (10001 + i / 1000);
+            let k = Key::new(ObjID::new(0), x, store::KeyKind::ObjectInfo);
+            let _ = self.get(k);
+            let num = quick_random() % 3;
+            if num == 0 || num == 2 {
+                let _ = self.put(k, Foo { x: x });
+            } else if num == 1 {
+                let _ = self.del(k);
+            }
+        }
+    }
+
+    fn validate_has_all(&self) {
+        for (key, val) in self.truth.iter() {
+            let res: Foo = self.kv.get(*key).unwrap();
+            assert_eq!(res, *val);
+        }
+    }
+
+    fn get(&self, key: Key) -> Result<Foo, ErrorCode> {
+        //println!("get: {:?}", key);
+        let r = self.kv.get(key);
+        if r.is_ok() {
+            assert!(self.truth.contains_key(&key));
+            let t = self.truth.get(&key).unwrap();
+            assert_eq!(t, r.as_ref().unwrap());
+        } else {
+            assert!(!self.truth.contains_key(&key));
+        }
+        r
+    }
+
+    fn put(&mut self, key: Key, v: Foo) -> Result<SuccessCode, ErrorCode> {
+        //println!("put: {:?} {}", key, hasher(&key));
+        let r = self.kv.put(key, v);
+        if r.is_ok() {
+            assert!(!self.truth.contains_key(&key));
+            self.truth.insert(key, v);
+        } else {
+            assert!(self.truth.contains_key(&key));
+        }
+        r
+    }
+
+    fn del(&mut self, key: Key) -> Result<SuccessCode, ErrorCode> {
+        //println!("del: {:?} {}", key, hasher(&key));
+        let res = self.kv.del(key);
+        if res.is_err() {
+            assert!(!self.truth.contains_key(&key));
+        } else {
+            self.truth.remove(&key).unwrap();
+        }
+        res
+    }
 }
