@@ -1,6 +1,8 @@
-pub mod serial;
-mod uart;
+/// QEMU virt target for aarch64
+#[cfg(machine = "virt")]
+mod virt;
 
-pub fn machine_post_init() {
-    // TODO?
-}
+#[cfg(machine = "virt")]
+pub use virt::*;
+
+mod uart;

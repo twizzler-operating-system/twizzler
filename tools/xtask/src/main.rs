@@ -53,7 +53,7 @@ impl BuildConfig {
         self.arch == Arch::X86_64
     }
 
-    fn is_default_machine(&self) -> bool {
+    pub fn is_default_machine(&self) -> bool {
         self.machine == Machine::Unknown
     }
 
@@ -134,6 +134,8 @@ struct QemuOptions {
     qemu_options: Vec<String>,
     #[clap(long, short, help = "Run tests instead of booting normally.")]
     tests: bool,
+    #[clap(long, short, help = "Only build kernel part of system.")]
+    kernel: bool,
 }
 
 impl From<&QemuOptions> for ImageOptions {
@@ -141,7 +143,7 @@ impl From<&QemuOptions> for ImageOptions {
         Self {
             config: qo.config,
             tests: qo.tests,
-            kernel: false,
+            kernel: qo.kernel,
         }
     }
 }
