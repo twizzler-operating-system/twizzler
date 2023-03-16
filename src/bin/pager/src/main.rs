@@ -77,15 +77,11 @@ fn main() {
     })
     .detach();
     let nvme_ctrl = twizzler_async::block_on(nvme::init_nvme());
-    println!("a");
     let len = twizzler_async::block_on(nvme_ctrl.flash_len());
-    println!("b");
-    //let len = 0x100000;
 
     let storage = Storage::new(nvme_ctrl);
     let mut read_buffer = [0; BLOCK_SIZE];
     let _kv = KeyValueStore::new(storage, &mut read_buffer, len).unwrap();
-    println!("done ");
 
     let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::from(object);
     let rq = twizzler_queue::CallbackQueueReceiver::new(queue);
