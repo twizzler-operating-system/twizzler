@@ -1,56 +1,114 @@
-use std::{fs::File, process::Command};
+use std::{path::Path, process::{Command, ExitStatus}};
 
-use crate::QemuOptions;
+use crate::{QemuOptions, triple::Arch, image::ImageInfo};
+
+struct QemuCommand {
+    cmd: Command,
+    arch: Arch,
+}
+
+impl QemuCommand {
+    pub fn new(cli: &QemuOptions) -> Self {
+        let cmd = match cli.config.arch {
+            Arch::X86_64 => "qemu-system-x86_64",
+            Arch::Aarch64 => "qemu-system-aarch64",
+        };
+        Self {
+            cmd: Command::new(cmd),
+            arch: cli.config.arch,
+        }
+    }
+
+    pub fn config(&mut self, options: &QemuOptions, image_info: ImageInfo) {
+        // Set up the basic stuff, memory and bios, etc.
+        self.cmd.arg("-m").arg("1024,slots=4,maxmem=8G");
+
+        // configure architechture specific parameters
+        self.arch_config(options);
+
+        // Connect disk image
+        self.cmd.arg("-drive").arg(format!(
+            "format=raw,file={}",
+            image_info.disk_image.as_path().display()
+        ));
+        
+        self.cmd
+            .arg("--no-reboot") // exit instead of rebooting
+            .arg("-s") // shorthand for -gdb tcp::1234
+            .arg("-serial")
+            .arg("mon:stdio");
+        //-serial mon:stdio creates a multiplexed stdio backend connected 
+        // to the serial port and the QEMU monitor, and 
+        // -nographic also multiplexes the console and the monitor to stdio.
+
+        // add additional options for qemu
+        self.cmd.args(&options.qemu_options);
+
+        //self.cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
+    }
+
+    fn arch_config(&mut self, options: &QemuOptions) {
+        match self.arch {
+            Arch::X86_64 => {
+                // bios, cpu, platform
+                self.cmd.arg("-bios").arg("toolchain/install/OVMF.fd");
+                self.cmd.arg("-machine").arg("q35,nvdimm=on");
+                self.cmd
+                    .arg("-cpu")
+                    .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+tsc_scale,+rdtscp");
+                // add qemu exit device for testing
+                if options.tests { // x86 specific
+                    self.cmd
+                        .arg("-device")
+                        .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
+                }
+
+                // check if host is same as qemu, and if kvm exists
+                if std::env::consts::ARCH == self.arch.to_string()
+                    && Path::new("/dev/kvm").exists() 
+                {
+                    self.cmd.arg("-enable-kvm"); // machine specific 
+                }
+
+                // Connect some nvdimms
+                /*
+                self.cmd.arg("-object").arg(format!(
+                    "memory-backend-file,id=mem1,share=on,mem-path={},size=4G",
+                    make_path(build_info, true, "pmem.img")
+                ));
+                self.cmd.arg("-device").arg("nvdimm,id=nvdimm1,memdev=mem1");
+                */
+                // File::create("target/nvme.img")
+                // .and_then(|f| f.set_len(0x10000000))
+                // .unwrap();
+                // self.cmd
+                //     .arg("-drive")
+                //     .arg("file=target/nvme.img,if=none,id=nvme")
+                //     .arg("-device")
+                //     .arg("nvme,serial=deadbeef,drive=nvme");
+            },
+            Arch::Aarch64 => {
+                self.cmd.arg("-bios").arg("toolchain/install/OVMF-AA64.fd");
+                self.cmd.arg("-net").arg("none");
+                // use qemu virt machine by default
+                self.cmd.arg("-machine").arg("virt");//,gic-version=max");
+                self.cmd
+                    .arg("-cpu").arg("cortex-a72");
+                self.cmd.arg("-nographic");
+            }
+        }
+    }
+
+    pub fn status(&mut self) -> std::io::Result<ExitStatus> {
+        self.cmd.status()
+    }
+}
 
 pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
     let image_info = crate::image::do_make_image((&cli).into())?;
 
-    let mut run_cmd = Command::new("qemu-system-x86_64");
-
-    // Set up the basic stuff, memory and bios, etc.
-    run_cmd.arg("-m").arg("1024,slots=4,maxmem=8G");
-    run_cmd.arg("-enable-kvm");
-    run_cmd.arg("-bios").arg("toolchain/install/OVMF.fd");
-
-    run_cmd.arg("-machine").arg("q35,nvdimm=on");
-    run_cmd
-        .arg("-cpu")
-        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+tsc_scale,+rdtscp");
-
-    // Connect disk image
-    run_cmd.arg("-drive").arg(format!(
-        "format=raw,file={}",
-        image_info.disk_image.as_path().display()
-    ));
-    // Connect some nvdimms
-    /*
-    run_cmd.arg("-object").arg(format!(
-        "memory-backend-file,id=mem1,share=on,mem-path={},size=4G",
-        make_path(build_info, true, "pmem.img")
-    ));
-    run_cmd.arg("-device").arg("nvdimm,id=nvdimm1,memdev=mem1");
-    */
-    File::create("target/nvme.img")
-        .and_then(|f| f.set_len(0x10000000))
-        .unwrap();
-    run_cmd
-        .arg("-drive")
-        .arg("file=target/nvme.img,if=none,id=nvme")
-        .arg("-device")
-        .arg("nvme,serial=deadbeef,drive=nvme");
-    run_cmd
-        .arg("--no-reboot")
-        .arg("-s")
-        .arg("-serial")
-        .arg("mon:stdio");
-
-    if cli.tests {
-        run_cmd
-            .arg("-device")
-            .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
-    }
-    run_cmd.args(cli.qemu_options);
-    //run_cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
+    let mut run_cmd = QemuCommand::new(&cli);
+    run_cmd.config(&cli, image_info);
 
     let exit_status = run_cmd.status()?;
     if exit_status.success() {

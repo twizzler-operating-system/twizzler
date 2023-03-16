@@ -9,6 +9,7 @@ PHDRS
     text    PT_LOAD    FLAGS((1 << 0) | (1 << 2)) ; /* Execute + Read */
     rodata  PT_LOAD    FLAGS((1 << 2)) ;            /* Read only */
     data    PT_LOAD    FLAGS((1 << 1) | (1 << 2)) ; /* Write + Read */
+    tls     PT_TLS     FLAGS((1 << 2)) ;            /* Read only */
 }
 
 SECTIONS
@@ -31,6 +32,16 @@ SECTIONS
     .rodata : {
         *(.rodata .rodata.*)
     } :rodata
+
+    /* Thread Local Storage sections  */
+    .tdata : { 
+            *(.tdata .tdata.*) 
+    } :tls
+
+    .tbss : {
+        *(.tbss .tbss.*) 
+        *(.tcommon) 
+    } :tls
 
     /* Move to the next memory page for .data */
     . += CONSTANT(MAXPAGESIZE);

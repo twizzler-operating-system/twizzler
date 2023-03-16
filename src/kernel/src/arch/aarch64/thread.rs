@@ -49,7 +49,7 @@ where
 }
 
 impl Thread {
-    pub fn arch_queue_upcall(&self, _target: usize, _info: UpcallInfo) {
+    pub fn arch_queue_upcall(&self, _target: super::address::VirtAddr, _info: UpcallInfo) {
         todo!()
     }
 
