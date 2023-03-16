@@ -27,6 +27,10 @@ impl<'a, T: DeviceSync> NvmeDmaRegion<T> {
     pub fn dma_region(&self) -> &DmaRegion<T> {
         &self.reg
     }
+
+    pub fn dma_region_mut(&mut self) -> &mut DmaRegion<T> {
+        &mut self.reg
+    }
 }
 
 fn __get_prp_list_or_buffer2(pin: DmaPin, dma: &DmaPool, mode: PrpMode) -> PrpMgr {
@@ -156,6 +160,10 @@ impl<'a, T: DeviceSync> NvmeDmaSliceRegion<T> {
 
     pub fn dma_region(&self) -> &DmaSliceRegion<T> {
         &self.reg
+    }
+
+    pub fn dma_region_mut(&mut self) -> &mut DmaSliceRegion<T> {
+        &mut self.reg
     }
 }
 

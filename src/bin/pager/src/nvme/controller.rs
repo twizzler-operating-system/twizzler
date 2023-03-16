@@ -58,22 +58,20 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
         .with_submission_queue_size(32 - 1);
     reg.admin_queue_attr.set(aqa);
 
-    let mut saq = ctrl
+    let saq = ctrl
         .dma_pool
         .allocate_array(32, nvme::ds::queue::subentry::CommonCommand::default())
         .unwrap();
-    let mut caq = ctrl
+    let caq = ctrl
         .dma_pool
         .allocate_array(32, nvme::ds::queue::comentry::CommonCompletion::default())
         .unwrap();
 
-    println!("{} {}", saq.num_bytes(), caq.num_bytes());
+    let mut saq = NvmeDmaSliceRegion::new(saq);
+    let mut caq = NvmeDmaSliceRegion::new(caq);
 
-    unsafe {
-        println!("{:p} {:p}", saq.get(), caq.get());
-    }
-    let cpin = caq.pin().unwrap();
-    let spin = saq.pin().unwrap();
+    let cpin = caq.dma_region_mut().pin().unwrap();
+    let spin = saq.dma_region_mut().pin().unwrap();
 
     assert_eq!(cpin.len(), 1);
     assert_eq!(spin.len(), 1);
@@ -113,7 +111,7 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
 
     let smem = unsafe {
         core::slice::from_raw_parts_mut(
-            saq.get_mut().as_mut_ptr() as *mut u8,
+            saq.dma_region_mut().get_mut().as_mut_ptr() as *mut u8,
             32 * size_of::<CommonCommand>(),
         )
     };
@@ -123,7 +121,7 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
 
     let cmem = unsafe {
         core::slice::from_raw_parts_mut(
-            caq.get_mut().as_mut_ptr() as *mut u8,
+            caq.dma_region_mut().get_mut().as_mut_ptr() as *mut u8,
             32 * size_of::<CommonCompletion>(),
         )
     };
@@ -141,6 +139,8 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
         Mutex::new(cq),
         saq_bell as *const VolatileCell<u32>,
         caq_bell as *const VolatileCell<u32>,
+        saq,
+        caq,
     );
     let req = Arc::new(Requester::new(req));
 
@@ -150,9 +150,11 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
         loop {
             let _i = int.next().await;
             println!("got interrupt");
+            println!("=== admin ===");
             let resps = req2.driver().check_completions();
             req2.finish(&resps);
             for r in ctrl2.requester.read().unwrap().iter() {
+                println!("=== i/o ===");
                 let c = r.driver().check_completions();
                 r.finish(&c);
             }
@@ -192,23 +194,25 @@ impl NvmeController {
         priority: QueuePriority,
         queue_len: usize,
     ) -> Requester<NvmeRequester> {
-        let mut saq = self
+        let saq = self
             .dma_pool
             .allocate_array(
                 queue_len,
                 nvme::ds::queue::subentry::CommonCommand::default(),
             )
             .unwrap();
-        let mut caq = self
+        let caq = self
             .dma_pool
             .allocate_array(
                 queue_len,
                 nvme::ds::queue::comentry::CommonCompletion::default(),
             )
             .unwrap();
+        let mut saq = NvmeDmaSliceRegion::new(saq);
+        let mut caq = NvmeDmaSliceRegion::new(caq);
 
-        let cpin = caq.pin().unwrap();
-        let spin = saq.pin().unwrap();
+        let cpin = caq.dma_region_mut().pin().unwrap();
+        let spin = saq.dma_region_mut().pin().unwrap();
         assert_eq!(cpin.len(), 1);
         assert_eq!(spin.len(), 1);
         let cpin_addr = cpin[0].addr();
@@ -216,7 +220,7 @@ impl NvmeController {
 
         let smem = unsafe {
             core::slice::from_raw_parts_mut(
-                saq.get_mut().as_mut_ptr() as *mut u8,
+                saq.dma_region_mut().get_mut().as_mut_ptr() as *mut u8,
                 32 * size_of::<CommonCommand>(),
             )
         };
@@ -227,7 +231,7 @@ impl NvmeController {
 
         let cmem = unsafe {
             core::slice::from_raw_parts_mut(
-                caq.get_mut().as_mut_ptr() as *mut u8,
+                caq.dma_region_mut().get_mut().as_mut_ptr() as *mut u8,
                 32 * size_of::<CommonCompletion>(),
             )
         };
@@ -239,7 +243,7 @@ impl NvmeController {
             let cmd = CreateIOCompletionQueue::new(
                 CommandId::new(),
                 cqid,
-                (&mut NvmeDmaSliceRegion::new(caq))
+                (&mut caq)
                     .get_prp_list_or_buffer(PrpMode::Single, &self.dma_pool)
                     .unwrap(),
                 ((queue_len - 1) as u16).into(),
@@ -266,7 +270,7 @@ impl NvmeController {
             let cmd = CreateIOSubmissionQueue::new(
                 CommandId::new(),
                 sqid,
-                (&mut NvmeDmaSliceRegion::new(saq))
+                (&mut saq)
                     .get_prp_list_or_buffer(PrpMode::Single, &self.dma_pool)
                     .unwrap(),
                 ((queue_len - 1) as u16).into(),
@@ -311,6 +315,8 @@ impl NvmeController {
             Mutex::new(cq),
             saq_bell as *const VolatileCell<u32>,
             caq_bell as *const VolatileCell<u32>,
+            saq,
+            caq,
         );
         Requester::new(req)
     }
@@ -480,6 +486,7 @@ impl NvmeController {
             panic!("cannot write past a page");
         }
         if offset != 0 || len != DMA_PAGE_SIZE {
+            println!("had to read {} {}", offset, in_buffer.len());
             unsafe { self.read_page(lba_start, buffer.get_mut(), 0).await? };
         }
         buffer.with_mut(|data| data[offset..(offset + len)].copy_from_slice(in_buffer));

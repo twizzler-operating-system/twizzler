@@ -7,13 +7,15 @@ use nvme::{
 use twizzler_driver::request::{RequestDriver, ResponseInfo, SubmitRequest};
 use volatile_cell::VolatileCell;
 
-use super::dma::NvmeDmaRegion;
+use super::dma::{NvmeDmaRegion, NvmeDmaSliceRegion};
 
 pub struct NvmeRequester {
     subq: Mutex<SubmissionQueue>,
     comq: Mutex<CompletionQueue>,
     sub_bell: *const VolatileCell<u32>,
     com_bell: *const VolatileCell<u32>,
+    sub_dma: NvmeDmaSliceRegion<CommonCommand>,
+    com_dma: NvmeDmaSliceRegion<CommonCompletion>,
 }
 
 unsafe impl Send for NvmeRequester {}
@@ -25,12 +27,16 @@ impl NvmeRequester {
         comq: Mutex<CompletionQueue>,
         sub_bell: *const VolatileCell<u32>,
         com_bell: *const VolatileCell<u32>,
+        sub_dma: NvmeDmaSliceRegion<CommonCommand>,
+        com_dma: NvmeDmaSliceRegion<CommonCompletion>,
     ) -> Self {
         Self {
             subq,
             comq,
             sub_bell,
             com_bell,
+            sub_dma,
+            com_dma,
         }
     }
 
@@ -42,14 +48,15 @@ impl NvmeRequester {
         while let Some((bell, resp)) = comq.get_completion::<CommonCompletion>() {
             let id: u16 = resp.command_id().into();
             println!(
-                "got completion for {} {} {} :: {}",
+                "got completion for {} {} {} :: p={} e={} :: {:?}",
                 resp.new_sq_head(),
                 bell,
                 id,
-                resp.status().is_error()
+                resp.phase(),
+                resp.status().is_error(),
+                resp
             );
             resps.push(ResponseInfo::new(resp, id as u64, resp.status().is_error()));
-            // TODO: max?
             new_head = Some(resp.new_sq_head());
             new_bell = Some(bell);
         }
