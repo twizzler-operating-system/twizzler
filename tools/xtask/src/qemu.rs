@@ -1,11 +1,8 @@
-<<<<<<< HEAD
 use std::{
+    fs::File,
     path::Path,
     process::{Command, ExitStatus},
 };
-=======
-use std::{fs::File, io::ErrorKind, process::Command};
->>>>>>> 858e267 (kv hooked up.)
 
 use crate::{image::ImageInfo, triple::Arch, QemuOptions};
 
@@ -38,6 +35,15 @@ impl QemuCommand {
             "format=raw,file={}",
             image_info.disk_image.as_path().display()
         ));
+
+        File::create("target/nvme.img")
+            .and_then(|f| f.set_len(0x1000000))
+            .unwrap();
+        self.cmd
+            .arg("-drive")
+            .arg("file=target/nvme.img,if=none,id=nvme")
+            .arg("-device")
+            .arg("nvme,serial=deadbeef,drive=nvme");
 
         self.cmd
             .arg("--no-reboot") // exit instead of rebooting
@@ -85,14 +91,6 @@ impl QemuCommand {
                 ));
                 self.cmd.arg("-device").arg("nvdimm,id=nvdimm1,memdev=mem1");
                 */
-                // File::create("target/nvme.img")
-                // .and_then(|f| f.set_len(0x10000000))
-                // .unwrap();
-                // self.cmd
-                //     .arg("-drive")
-                //     .arg("file=target/nvme.img,if=none,id=nvme")
-                //     .arg("-device")
-                //     .arg("nvme,serial=deadbeef,drive=nvme");
             }
             Arch::Aarch64 => {
                 self.cmd.arg("-bios").arg("toolchain/install/OVMF-AA64.fd");

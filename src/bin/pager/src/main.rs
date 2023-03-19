@@ -83,9 +83,6 @@ fn main() {
     let mut read_buffer = [0; BLOCK_SIZE];
     let _kv = KeyValueStore::new(storage, &mut read_buffer, len).unwrap();
 
-    let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::from(object);
-    let rq = twizzler_queue::CallbackQueueReceiver::new(queue);
-
     twizzler_async::Task::spawn(async move {
         loop {
             let (id, request) = rq.receive().await.unwrap();
