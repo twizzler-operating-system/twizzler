@@ -132,7 +132,7 @@ impl<'a> KeyValueStore<'a> {
         }
     }
 
-    pub fn get<V: Copy>(&self, key: Key) -> Result<V, tickv::ErrorCode> {
+    pub fn get<V: Copy>(&self, key: Key) -> Result<V, ErrorCode> {
         let mut hash = hasher(&key);
         let prev = hash.wrapping_sub(1);
         let size = size_of::<Key>() + size_of::<V>();
@@ -151,11 +151,7 @@ impl<'a> KeyValueStore<'a> {
         Err(ErrorCode::KeyNotFound)
     }
 
-    pub fn put<V: Copy>(
-        &mut self,
-        key: Key,
-        value: V,
-    ) -> Result<tickv::success_codes::SuccessCode, tickv::ErrorCode> {
+    pub fn put<V: Copy>(&mut self, key: Key, value: V) -> Result<SuccessCode, ErrorCode> {
         let mut hash = hasher(&key);
         let prev = hash.wrapping_sub(1);
         let size = size_of::<Key>() + size_of::<V>();
@@ -206,7 +202,7 @@ impl<'a> KeyValueStore<'a> {
         Err(ErrorCode::KeyNotFound)
     }
 
-    pub fn do_del(&self, hash: u64) -> Result<tickv::success_codes::SuccessCode, tickv::ErrorCode> {
+    pub fn do_del(&self, hash: u64) -> Result<SuccessCode, ErrorCode> {
         let next = hash.wrapping_add(1);
         let res = self.internal.get_key(next, &mut []);
         if let Err(ErrorCode::BufferTooSmall(_)) = res {
