@@ -114,12 +114,10 @@ struct Tester<'a> {
 #[allow(dead_code)]
 impl<'a> Tester<'a> {
     fn test(&mut self) {
-        for i in 0..100000 {
-            if i % 100 == 0 {
-                //print!("progress: {}           \r", i as f32 / 1000.0);
-            }
+        const TEST_ITERS: u32 = 100000;
+        for i in 0..TEST_ITERS {
+            // Every once in a while, validate some things.
             if i % 2000 == 0 {
-                println!("validate has all {}", i as f32 / 1000.0);
                 self.validate_has_all();
             }
             let x = i % (10001 + i / 1000);
@@ -142,7 +140,6 @@ impl<'a> Tester<'a> {
     }
 
     fn get(&self, key: Key) -> Result<Foo, ErrorCode> {
-        //println!("get: {:?}", key);
         let r = self.kv.get(key);
         if r.is_ok() {
             assert!(self.truth.contains_key(&key));
@@ -155,7 +152,6 @@ impl<'a> Tester<'a> {
     }
 
     fn put(&mut self, key: Key, v: Foo) -> Result<SuccessCode, ErrorCode> {
-        //println!("put: {:?} {}", key, hasher(&key));
         let r = self.kv.put(key, v);
         if r.is_ok() {
             assert!(!self.truth.contains_key(&key));
@@ -167,7 +163,6 @@ impl<'a> Tester<'a> {
     }
 
     fn del(&mut self, key: Key) -> Result<SuccessCode, ErrorCode> {
-        //println!("del: {:?} {}", key, hasher(&key));
         let res = self.kv.del(key);
         if res.is_err() {
             assert!(!self.truth.contains_key(&key));

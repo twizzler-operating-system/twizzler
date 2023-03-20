@@ -22,6 +22,8 @@ impl Storage {
 }
 
 pub const BLOCK_SIZE: usize = 4096;
+// TODO: don't hardcode this
+pub const SECTORS_TO_BLOCK: usize = 8;
 
 impl FlashController<BLOCK_SIZE> for Storage {
     fn read_region(
@@ -37,7 +39,7 @@ impl FlashController<BLOCK_SIZE> for Storage {
     fn write(&self, mut address: usize, mut buf: &[u8]) -> Result<(), tickv::ErrorCode> {
         while !buf.is_empty() {
             let offset = address % BLOCK_SIZE;
-            let start = (address / BLOCK_SIZE) * 8;
+            let start = (address / BLOCK_SIZE) * SECTORS_TO_BLOCK;
             let thislen = min(BLOCK_SIZE - offset, buf.len());
 
             twizzler_async::block_on(self.nvme.write_page(start as u64, &buf[0..thislen], offset))
@@ -51,7 +53,7 @@ impl FlashController<BLOCK_SIZE> for Storage {
 
     fn erase_region(&self, region_number: usize) -> Result<(), tickv::ErrorCode> {
         twizzler_async::block_on(self.nvme.write_page(
-            region_number as u64 * 8,
+            (region_number * SECTORS_TO_BLOCK) as u64,
             &[0xffu8; BLOCK_SIZE],
             0,
         ))
@@ -67,6 +69,7 @@ pub fn hasher<T: std::hash::Hash>(t: &T) -> u64 {
     let mut h = DefaultHasher::new();
     t.hash(&mut h);
     let x = h.finish();
+    // Don't ever hash to 0, 1, MAX, or MAX-1. Makes the open addressing easier, and 0 and MAX-1 are required for tickv.
     match x {
         0 => 2,
         u64::MAX => u64::MAX - 2,
