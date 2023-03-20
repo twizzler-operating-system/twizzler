@@ -11,7 +11,6 @@ use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 use std::collections::BTreeMap;
 
 use tickv::{success_codes::SuccessCode, ErrorCode};
-use twizzler_driver::dma::DMA_PAGE_SIZE;
 
 use crate::store::{Key, KeyValueStore, Storage, BLOCK_SIZE};
 
