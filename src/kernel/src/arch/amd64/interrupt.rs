@@ -400,6 +400,7 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         );
     }
 
+    lapic::eoi();
     match number as u32 {
         14 => {
             let cr2 = unsafe { x86::controlregs::cr2() };
@@ -477,7 +478,6 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         }
         _ => crate::interrupt::external_interrupt_entry(number as u32),
     }
-    lapic::eoi();
     crate::interrupt::post_interrupt();
 }
 

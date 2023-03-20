@@ -105,9 +105,9 @@ checksum = "c17772156ef2829aadc587461c7753af20b7e8db1529bc66855add962a3b35d3"
 
 [[package]]
 name = "async-trait"
-version = "0.1.56"
+version = "0.1.66"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96cf8829f67d2eab0b2dfa42c5d0ef737e0724e4a82b01b3e292456202b19716"
+checksum = "b84f9ebcc6c1f5b8cb160f6990096a5c127f423fcb6e1ccc46c370cbdfb75dfc"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1470,6 +1470,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "modular-bitfield"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a53d79ba8304ac1c4f9eb3b9d281f21f7be9d4626f72ce7df4ad8fbde4f38a74"
+dependencies = [
+ "modular-bitfield-impl",
+ "static_assertions",
+]
+
+[[package]]
+name = "modular-bitfield-impl"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a7d5f7076603ebc68de2dc6a650ec331a062a13abaa346975be747bbfa4b789"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "native-tls"
 version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1567,6 +1588,15 @@ name = "number_prefix"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
+
+[[package]]
+name = "nvme"
+version = "0.1.0"
+source = "git+https://github.com/twizzler-operating-system/nvme-rs#9fae704ef4ff2db16945303035691c2bfeab153d"
+dependencies = [
+ "modular-bitfield",
+ "volatile_cell",
+]
 
 [[package]]
 name = "object"
@@ -1689,11 +1719,16 @@ dependencies = [
 name = "pager"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "nvme",
+ "tickv",
  "twizzler-abi",
  "twizzler-async",
+ "twizzler-driver",
  "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
+ "volatile_cell",
 ]
 
 [[package]]
@@ -2356,6 +2391,12 @@ checksum = "5516c27b78311c50bf42c071425c560ac799b11c30b31f87e3081965fe5e0180"
 dependencies = [
  "once_cell",
 ]
+
+[[package]]
+name = "tickv"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c61f292d344c68f447d717efc2ebb9b5e9de3c859fef183dd2ab69fa5897f08a"
 
 [[package]]
 name = "time"

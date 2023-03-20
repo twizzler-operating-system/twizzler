@@ -179,6 +179,7 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
     let reg =
         unsafe { bar.get_mmio_offset::<nvme::ds::controller::properties::ControllerProperties>(0) };
 
+    let int = ctrl.device_ctrl.allocate_interrupt().unwrap();
     let config = ControllerConfig::new();
     reg.configuration.set(config);
 
@@ -230,14 +231,14 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
         .with_io_completion_queue_entry_size(
             size_of::<CommonCompletion>()
                 .next_power_of_two()
-                .log2()
+                .ilog2()
                 .try_into()
                 .unwrap(),
         )
         .with_io_submission_queue_entry_size(
             size_of::<CommonCommand>()
                 .next_power_of_two()
-                .log2()
+                .ilog2()
                 .try_into()
                 .unwrap(),
         );
@@ -266,7 +267,6 @@ fn init_controller(ctrl: &mut Arc<NvmeController>) {
     };
     let mut cq = nvme::queue::CompletionQueue::new(cmem, 32, C_STRIDE).unwrap();
 
-    let int = ctrl.device_ctrl.allocate_interrupt().unwrap();
     let ident = dma
         .allocate(nvme::ds::identify::controller::IdentifyControllerDataStructure::default())
         .unwrap();
