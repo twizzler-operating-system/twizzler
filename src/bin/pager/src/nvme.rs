@@ -6,7 +6,6 @@ use twizzler_driver::{bus::pcie::PcieDeviceInfo, DeviceController};
 
 mod controller;
 mod dma;
-mod queue;
 mod requester;
 
 pub use controller::NvmeController;

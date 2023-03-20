@@ -33,7 +33,7 @@ impl<'a, T: DeviceSync> NvmeDmaRegion<T> {
     }
 }
 
-fn __get_prp_list_or_buffer2(pin: DmaPin, dma: &DmaPool, mode: PrpMode) -> PrpMgr {
+fn __get_prp_list_or_buffer(pin: DmaPin, dma: &DmaPool, mode: PrpMode) -> PrpMgr {
     let entries_per_page = DMA_PAGE_SIZE / 8;
     let pin_len = pin.len();
     let mut pin_iter = pin.into_iter();
@@ -134,7 +134,7 @@ impl<'a, T: DeviceSync> PhysicalPageCollection for &'a mut NvmeDmaRegion<T> {
         }
 
         let pin = self.reg.pin().unwrap();
-        self.prp = Some(__get_prp_list_or_buffer2(pin, dma, mode));
+        self.prp = Some(__get_prp_list_or_buffer(pin, dma, mode));
         Some(self.prp.as_ref().unwrap().prp_list_or_buffer())
     }
 
@@ -176,7 +176,7 @@ impl<'a, T: DeviceSync> PhysicalPageCollection for &'a mut NvmeDmaSliceRegion<T>
         }
 
         let pin = self.reg.pin().unwrap();
-        self.prp = Some(__get_prp_list_or_buffer2(pin, dma, mode));
+        self.prp = Some(__get_prp_list_or_buffer(pin, dma, mode));
         Some(self.prp.as_ref().unwrap().prp_list_or_buffer())
     }
 
