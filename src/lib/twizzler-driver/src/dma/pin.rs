@@ -108,18 +108,18 @@ pub enum PinError {
 #[cfg(test)]
 mod tests {
     use twizzler_abi::syscall::{BackingType, LifetimeType};
-    use twizzler_object::{CreateSpec, Object};
+    use twizzler_object::CreateSpec;
 
-    use crate::dma::{Access, DmaObject, DmaOptions};
+    use crate::dma::{Access, DmaOptions, DmaPool};
 
-    fn make_object() -> Object<()> {
-        let spec = CreateSpec::new(LifetimeType::Volatile, BackingType::Normal);
-        Object::create_with(&spec, |_| {}).unwrap()
-    }
     #[test]
     fn pin_kaction() {
-        let dma = DmaObject::new(make_object());
-        let mut reg = dma.region::<u32>(Access::BiDirectional, DmaOptions::default());
+        let pool = DmaPool::new(
+            CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
+            Access::BiDirectional,
+            DmaOptions::default(),
+        );
+        let mut reg = pool.allocate(0u32).unwrap();
         let pin = reg.pin().unwrap();
         for phys in pin {
             let addr = phys.addr();

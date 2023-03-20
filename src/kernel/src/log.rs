@@ -258,7 +258,8 @@ impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
                 break;
             }
             let b = &mut slice[i];
-            if let Some(x) = self.read_lock.lock().read_byte() {
+            let read = self.read_lock.lock().read_byte();
+            if let Some(x) = read {
                 *b = match x {
                     4 => return Ok(i),
                     _ => x,
@@ -291,7 +292,6 @@ pub fn read_buffer_bytes(slice: &mut [u8]) -> Result<usize, KernelConsoleReadBuf
 }
 
 pub fn push_input_byte(byte: u8) {
-    //crate::logln!("got input {}", byte);
     unsafe {
         let byte = match byte {
             13 => 10,

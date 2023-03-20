@@ -21,12 +21,12 @@ use super::{
 
 /// A region of DMA memory, represented in virtual memory as type `T`, with a particular access mode
 /// and options.
-pub struct DmaRegion<'a, T: DeviceSync> {
+pub struct DmaRegion<T: DeviceSync> {
     virt: *mut u8,
     backing: Option<(Vec<PhysInfo>, u32)>,
     len: usize,
     access: Access,
-    dma: Option<&'a DmaObject>,
+    //dma: Option<&'a DmaObject>,
     pool: Option<(Arc<AllocatableDmaObject>, SplitPageRange)>,
     options: DmaOptions,
     offset: usize,
@@ -35,14 +35,13 @@ pub struct DmaRegion<'a, T: DeviceSync> {
 
 /// A region of DMA memory, represented in virtual memory as type `[T; len]`, with a particular access mode
 /// and options.
-pub struct DmaSliceRegion<'a, T: DeviceSync> {
-    region: DmaRegion<'a, T>,
+pub struct DmaSliceRegion<T: DeviceSync> {
+    region: DmaRegion<T>,
     len: usize,
 }
 
-impl<'a, T: DeviceSync> DmaRegion<'a, T> {
+impl<'a, T: DeviceSync> DmaRegion<T> {
     pub(super) fn new(
-        dma: Option<&'a DmaObject>,
         len: usize,
         access: Access,
         options: DmaOptions,
@@ -51,7 +50,11 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     ) -> Self {
         Self {
             virt: unsafe {
-                (dma.unwrap_or_else(|| pool.as_ref().unwrap().0.dma_object())
+                (pool
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .dma_object()
                     .object()
                     .base_mut_unchecked() as *mut () as *mut u8)
                     .add(offset)
@@ -59,7 +62,6 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
             },
             len,
             access,
-            dma,
             options,
             backing: None,
             pool,
@@ -77,8 +79,7 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     }
 
     fn dma_object(&self) -> &DmaObject {
-        self.dma
-            .unwrap_or_else(|| self.pool.as_ref().unwrap().0.dma_object())
+        self.pool.as_ref().unwrap().0.dma_object()
     }
 
     /// Calculate the number of pages this region covers.
@@ -217,9 +218,8 @@ impl<'a, T: DeviceSync> DmaRegion<'a, T> {
     }
 }
 
-impl<'a, T: DeviceSync> DmaSliceRegion<'a, T> {
+impl<'a, T: DeviceSync> DmaSliceRegion<T> {
     pub(super) fn new(
-        dma: Option<&'a DmaObject>,
         nrbytes: usize,
         access: Access,
         options: DmaOptions,
@@ -228,7 +228,7 @@ impl<'a, T: DeviceSync> DmaSliceRegion<'a, T> {
         pool: Option<(Arc<AllocatableDmaObject>, SplitPageRange)>,
     ) -> Self {
         Self {
-            region: DmaRegion::new(dma, nrbytes, access, options, offset, pool),
+            region: DmaRegion::new(nrbytes, access, options, offset, pool),
             len,
         }
     }
@@ -363,7 +363,7 @@ impl<'a, T: DeviceSync> DmaSliceRegion<'a, T> {
     }
 }
 
-impl<'a, T: DeviceSync> Drop for DmaRegion<'a, T> {
+impl<'a, T: DeviceSync> Drop for DmaRegion<T> {
     fn drop(&mut self) {
         if let Some((_, token)) = self.backing.as_ref() {
             self.dma_object()

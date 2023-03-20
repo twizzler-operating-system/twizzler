@@ -2,8 +2,8 @@ use std::sync::atomic::Ordering;
 
 use crate::dma::{DeviceSync, DmaRegion, SyncMode};
 
-pub(crate) fn sync<'a, T: DeviceSync>(
-    _region: &DmaRegion<'a, T>,
+pub(crate) fn sync<T: DeviceSync>(
+    _region: &DmaRegion<T>,
     _mode: SyncMode,
     _offset: usize,
     _len: usize,

@@ -170,6 +170,7 @@ impl Device {
         todo!()
     }
 
+    #[allow(unaligned_references)]
     fn allocate_pcie_interrupt(
         &self,
         vec: InterruptVector,
@@ -181,6 +182,15 @@ impl Device {
             .ok_or(InterruptAllocationError::Unsupported)?
         {
             if let PcieCapability::MsiX(m) = cap {
+                for msitest in self
+                    .pcie_capabilities()
+                    .ok_or(InterruptAllocationError::Unsupported)?
+                {
+                    if let PcieCapability::Msi(m) = msitest {
+                        let msi = unsafe { m.as_ref() };
+                        msi.msg_ctrl.set(0);
+                    }
+                }
                 return unsafe { self.allocate_msix_interrupt(m.as_ref(), vec, inum) };
             }
         }
