@@ -47,17 +47,6 @@ impl NvmeRequester {
         let mut new_bell = None;
         while let Some((bell, resp)) = comq.get_completion::<CommonCompletion>() {
             let id: u16 = resp.command_id().into();
-            /*
-            println!(
-                "got completion for {} {} {} :: p={} e={} :: {:?}",
-                resp.new_sq_head(),
-                bell,
-                id,
-                resp.phase(),
-                resp.status().is_error(),
-                resp
-            );
-            */
             resps.push(ResponseInfo::new(resp, id as u64, resp.status().is_error()));
             new_head = Some(resp.new_sq_head());
             new_bell = Some(bell);

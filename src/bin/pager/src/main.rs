@@ -152,14 +152,14 @@ impl<'a> Tester<'a> {
     }
 
     fn put(&mut self, key: Key, v: Foo) -> Result<SuccessCode, ErrorCode> {
-        let r = self.kv.put(key, v);
-        if r.is_ok() {
+        let res = self.kv.put(key, v);
+        if res.is_ok() {
             assert!(!self.truth.contains_key(&key));
             self.truth.insert(key, v);
         } else {
             assert!(self.truth.contains_key(&key));
         }
-        r
+        res
     }
 
     fn del(&mut self, key: Key) -> Result<SuccessCode, ErrorCode> {
