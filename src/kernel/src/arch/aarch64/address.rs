@@ -24,7 +24,14 @@ impl VirtAddr {
     pub const fn start_kernel_memory() -> Self {
         todo!()
     }
+    
+    pub const fn start_kernel_object_memory() -> Self {
+        todo!()
+    }
 
+    pub const fn end_kernel_object_memory() -> Self {
+        todo!()
+    }
     pub const fn start_user_memory() -> Self {
         todo!()
     }
@@ -60,6 +67,10 @@ impl VirtAddr {
     }
 
     pub fn is_kernel(&self) -> bool {
+        todo!()
+    }
+
+    pub fn is_kernel_object_memory(&self) -> bool {
         todo!()
     }
 
