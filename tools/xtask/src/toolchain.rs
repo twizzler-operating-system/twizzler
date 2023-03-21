@@ -115,6 +115,7 @@ fn build_crtx(name: &str, build_info: &Triple) -> anyhow::Result<()> {
 }
 
 async fn download_files(client: &Client) -> anyhow::Result<()> {
+    // efi binaries for x86 machines
     download_file(
         client,
         "http://twizzler.io/dist/bootfiles/OVMF.fd",
@@ -127,6 +128,20 @@ async fn download_files(client: &Client) -> anyhow::Result<()> {
         "toolchain/install/BOOTX64.EFI",
     )
     .await?;
+    // efi binaries for aarch64 machines
+    download_file(
+        client,
+        "http://twizzler.io/dist/bootfiles/QEMU_EFI.fd",
+        "toolchain/install/OVMF-AA64.fd",
+    )
+    .await?;
+    download_file(
+        client,
+        "http://twizzler.io/dist/bootfiles/BOOTAA64.EFI",
+        "toolchain/install/BOOTAA64.EFI",
+    )
+    .await?;
+
     Ok(())
 }
 
