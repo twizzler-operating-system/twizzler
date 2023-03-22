@@ -31,11 +31,11 @@ initrd = [
     "crate:netmgr",
     "crate:nettest",
     "crate:pager",
-    "third-party:hello-world-rs"
+    #"third-party:hello-world-rs"
 ]
 
 [workspace.metadata.third-party]
-hello-world-rs = "1.0.0"
+# hello-world-rs = "1.0.0"
 
 
 [profile.release]
