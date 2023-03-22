@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::Context;
 
-use crate::{build::TwizzlerCompilation, ImageOptions, triple::Arch};
+use crate::{build::TwizzlerCompilation, triple::Arch, ImageOptions};
 
 pub struct ImageInfo {
     pub disk_image: PathBuf,
@@ -27,6 +27,22 @@ fn get_crate_initrd_files(
         .with_context(|| format!("failed to find initrd crate {}", crate_name))?;
 
     Ok(vec![unit.path.clone()])
+}
+
+fn get_third_party_initrd_files(
+    comp: &TwizzlerCompilation,
+    crate_name: &str,
+) -> anyhow::Result<Vec<PathBuf>> {
+    comp.borrow_third_party_compilation()
+        .iter()
+        .map(|c| {
+            c.binaries
+                .iter()
+                .find(|item| item.unit.pkg.name() == crate_name)
+                .with_context(|| format!("failed to find initrd third-party crate {}", crate_name))
+                .map(|x| x.path.clone())
+        })
+        .collect()
 }
 
 fn get_tool_path<'a>(comp: &'a TwizzlerCompilation, name: &str) -> anyhow::Result<&'a Path> {
@@ -49,7 +65,7 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
     crate::print_status_line("initrd", Some(&cli.config));
     // Create an empty initrd if we are building just the kernel.
     // No user space components are required to run the code, but
-    // the bootloader (limine) is configured to expect initrd, 
+    // the bootloader (limine) is configured to expect initrd,
     // even if we are not going to use it.
     if cli.kernel {
         let initrd_path = get_genfile_path(comp, "initrd");
@@ -79,6 +95,9 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             }
             match split[0] {
                 "crate" => initrd_files.append(&mut get_crate_initrd_files(comp, split[1])?),
+                "third-party" => {
+                    initrd_files.append(&mut get_third_party_initrd_files(comp, split[1])?)
+                }
                 x => panic!("invalid initrd spec {}", x),
             }
         }
@@ -122,7 +141,7 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     let cmdline = if cli.tests { "--tests" } else { "" };
     let efi_binary = match cli.config.arch {
         Arch::X86_64 => "toolchain/install/BOOTX64.EFI",
-        Arch::Aarch64  => "toolchain/install/BOOTAA64.EFI",
+        Arch::Aarch64 => "toolchain/install/BOOTAA64.EFI",
     };
     let image_path = get_genfile_path(&comp, "disk.img");
     let status = Command::new(get_tool_path(&comp, "image_builder")?)

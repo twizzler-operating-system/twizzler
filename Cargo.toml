@@ -17,7 +17,7 @@ members = [
     "src/lib/twizzler-net",
     "src/lib/twizzler-async",
     "src/lib/twizzler-nando",
-    "src/lib/twizzler-object"
+    "src/lib/twizzler-object",
 ]
 exclude = [
     "toolchain/src/rust",
@@ -31,7 +31,11 @@ initrd = [
     "crate:netmgr",
     "crate:nettest",
     "crate:pager",
+    #"third-party:hello-world-rs"
 ]
+
+[workspace.metadata.third-party]
+# hello-world-rs = "1.0.0"
 
 
 [profile.release]
