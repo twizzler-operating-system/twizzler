@@ -6,9 +6,11 @@ use std::path::{Path, PathBuf};
 use cargo::{
     core::{
         compiler::{BuildConfig, Compilation, CompileMode, MessageFormat},
-        Package, Workspace,
+        registry::PackageRegistry,
+        Package, PackageId, SourceId, Workspace,
     },
     ops::{CompileOptions, Packages},
+    sources::RegistrySource,
     util::interning::InternedString,
     Config,
 };
@@ -24,7 +26,7 @@ struct OtherOptions {
 
 use crate::{triple::Triple, BuildOptions, CheckOptions, DocOptions, Profile};
 
-fn locate_packages<'a>(workspace: &'a Workspace, kind: Option<&str>) -> Vec<&'a Package> {
+fn locate_packages<'a>(workspace: &'a Workspace, kind: Option<&str>) -> Vec<Package> {
     workspace
         .members()
         .filter(|p| {
@@ -44,15 +46,19 @@ fn locate_packages<'a>(workspace: &'a Workspace, kind: Option<&str>) -> Vec<&'a 
                 kind.is_none()
             }
         })
+        .cloned()
         .collect()
 }
 
-fn get_cli_configs(build_config: crate::BuildConfig, _other_options: &OtherOptions) -> anyhow::Result<Vec<String>> {
+fn get_cli_configs(
+    build_config: crate::BuildConfig,
+    _other_options: &OtherOptions,
+) -> anyhow::Result<Vec<String>> {
     // in the future from the cli we might want enable arbitrary --cfg options
-    
+
     // bring trait with write_fmt for write! to be used in scope
     use std::fmt::Write;
-    
+
     // the currently supported build target specs
     // have a value of "unknown" for the machine, but
     // we specify the machine for conditional compilation
@@ -65,11 +71,11 @@ fn get_cli_configs(build_config: crate::BuildConfig, _other_options: &OtherOptio
     let target_machine = build_config.machine.to_string();
 
     // start building the config
-    let mut configs  = format!(r#"target.{}.rustflags=["#, triple.to_string());
+    let mut configs = format!(r#"target.{}.rustflags=["#, triple.to_string());
 
     // add in definition for machine target
     write!(configs, r#""--cfg=machine=\"{}\"""#, target_machine)?;
-    
+
     // finish the cfg string
     write!(configs, "]")?;
 
@@ -77,6 +83,78 @@ fn get_cli_configs(build_config: crate::BuildConfig, _other_options: &OtherOptio
     // println!("----{}----", configs);
 
     Ok(vec![configs])
+}
+
+fn build_third_party<'a>(
+    user_workspace: &'a Workspace,
+    mode: CompileMode,
+    build_config: &crate::BuildConfig,
+    other_options: &OtherOptions,
+) -> anyhow::Result<Vec<Compilation<'a>>> {
+    let config = user_workspace.config();
+    let mut registry = PackageRegistry::new(config).unwrap();
+    let _g = config.acquire_package_cache_lock().unwrap();
+    let meta = user_workspace
+        .custom_metadata()
+        .expect("no third-party specification in Cargo.toml")
+        .get("third-party")
+        .expect("no third-party specification in Cargo.toml");
+
+    if meta.as_table().unwrap().is_empty() {
+        return Ok(vec![]);
+    }
+    crate::print_status_line("collection: third-party", Some(build_config));
+    let ids: Vec<PackageId> = meta
+        .as_table()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            PackageId::new(
+                item.0,
+                item.1.as_str().unwrap(),
+                SourceId::crates_io(config).unwrap(),
+            )
+            .unwrap()
+        })
+        .collect();
+
+    registry
+        .add_sources(Some(SourceId::crates_io(config).unwrap()))
+        .unwrap();
+    let rs = RegistrySource::remote(
+        SourceId::crates_io(config).unwrap(),
+        &Default::default(),
+        config,
+    )
+    .unwrap();
+
+    let ps = registry.get(&ids).unwrap();
+    ps.sources_mut().insert(Box::new(rs));
+    let packs = ps.get_many(ids.iter().cloned()).unwrap();
+
+    let triple = Triple::new(
+        build_config.arch,
+        build_config.machine,
+        crate::triple::Host::Twizzler,
+    );
+    let mut options = CompileOptions::new(config, mode)?;
+    options.build_config = BuildConfig::new(config, None, false, &[triple.to_string()], mode)?;
+    options.build_config.message_format = other_options.message_format;
+    if build_config.profile == Profile::Release {
+        options.build_config.requested_profile = InternedString::new("release");
+    }
+    options.build_config.force_rebuild = other_options.needs_full_rebuild;
+
+    packs
+        .into_iter()
+        .cloned()
+        .map(|item| {
+            options.spec = Packages::Packages(vec![item.name().to_string()]);
+            let ws =
+                Workspace::ephemeral(item, config, config.target_dir().unwrap(), false).unwrap();
+            cargo::ops::compile(&ws, &options)
+        })
+        .collect()
 }
 
 fn build_tools<'a>(
@@ -250,6 +328,9 @@ pub(crate) struct TwizzlerCompilation {
     #[borrows(kernel_workspace)]
     #[covariant]
     pub test_kernel_compilation: Option<Compilation<'this>>,
+    #[borrows(user_workspace)]
+    #[covariant]
+    pub third_party_compilation: Vec<Compilation<'this>>,
 }
 
 impl TwizzlerCompilation {
@@ -279,7 +360,9 @@ fn compile(
     mode: CompileMode,
     other_options: &OtherOptions,
 ) -> anyhow::Result<TwizzlerCompilation> {
-    crate::toolchain::init_for_build(mode.is_doc() || mode.is_check() || !other_options.build_twizzler)?;
+    crate::toolchain::init_for_build(
+        mode.is_doc() || mode.is_check() || !other_options.build_twizzler,
+    )?;
     let mut config = Config::default()?;
     config.configure(0, false, None, false, false, false, &None, &[], &[])?;
     let mut kernel_config = Config::default()?;
@@ -304,6 +387,7 @@ fn compile(
         |w| build_twizzler(w, mode, &bc, other_options),
         |w| maybe_build_tests(w, &bc, other_options),
         |w| maybe_build_kernel_tests(w, &bc, other_options),
+        |w| build_third_party(w, mode, &bc, other_options),
     )
 }
 
