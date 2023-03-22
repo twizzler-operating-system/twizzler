@@ -91,6 +91,9 @@ fn build_third_party<'a>(
     build_config: &crate::BuildConfig,
     other_options: &OtherOptions,
 ) -> anyhow::Result<Vec<Compilation<'a>>> {
+    if !other_options.build_twizzler {
+        return Ok(vec![]);
+    }
     let config = user_workspace.config();
     let mut registry = PackageRegistry::new(config).unwrap();
     let _g = config.acquire_package_cache_lock().unwrap();
