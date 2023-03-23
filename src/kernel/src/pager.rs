@@ -35,10 +35,7 @@ extern "C" fn pager_request_handler_entry() {
 fn pager_request_handler_main() {
     let receiver = unsafe { PAGER_QUEUES.receiver.as_ref().unwrap() };
     loop {
-        receiver.handle_request(|id, req| {
-            logln!("kernel got req {}:{:?} from pager", id, req);
-            CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
-        });
+        receiver.handle_request(|id, req| todo!());
     }
 }
 
@@ -53,12 +50,6 @@ fn pager_main() {
     logln!("hello from pager thread");
     let sender = unsafe { PAGER_QUEUES.sender.as_ref().unwrap() };
     loop {
-        let out = sender.submit(RequestFromKernel::new(
-            twizzler_abi::pager::KernelCommand::EchoReq,
-        ));
-        logln!("submitted request");
-        let resp = out.wait();
-        logln!("got response: {:?}", resp);
         schedule(false);
     }
 }

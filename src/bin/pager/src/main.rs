@@ -14,11 +14,12 @@ use tickv::{success_codes::SuccessCode, ErrorCode};
 
 use crate::store::{Key, KeyValueStore, Storage, BLOCK_SIZE};
 
+mod kernel;
 mod nvme;
 mod store;
 
 async fn handle_request(_request: RequestFromKernel) -> Option<CompletionToKernel> {
-    Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
+    todo!()
 }
 
 #[repr(C, packed)]
@@ -64,13 +65,6 @@ fn main() {
     twizzler_async::Task::spawn(async move {
         loop {
             let timeout = twizzler_async::Timer::after(Duration::from_millis(1000));
-            println!("pager submitting request");
-            let res = sq.submit_and_wait(RequestFromPager::new(
-                twizzler_abi::pager::PagerRequest::EchoReq,
-            ));
-            let x = res.await;
-            println!("pager got {:?} in response", x);
-            timeout.await;
             break;
         }
     })
