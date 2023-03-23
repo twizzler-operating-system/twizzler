@@ -1721,6 +1721,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "nvme",
+ "ouroboros",
  "tickv",
  "twizzler-abi",
  "twizzler-async",

@@ -1,10 +1,9 @@
 #![feature(int_log)]
 #![feature(once_cell)]
-use std::time::Duration;
+use std::sync::Arc;
 
 use twizzler_abi::pager::{
-    CompletionToKernel, CompletionToPager, KernelCompletionData, RequestFromKernel,
-    RequestFromPager,
+    CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager,
 };
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
@@ -12,40 +11,32 @@ use std::collections::BTreeMap;
 
 use tickv::{success_codes::SuccessCode, ErrorCode};
 
-use crate::store::{Key, KeyValueStore, Storage, BLOCK_SIZE};
+use crate::{
+    datamgr::DataMgr,
+    kernel::{KernelCommandQueue, PagerRequestQueue},
+    memory::DramMgr,
+    pager::Pager,
+    store::{Key, KeyValueStore, Storage},
+};
 
+mod datamgr;
 mod kernel;
+mod memory;
 mod nvme;
+mod pager;
 mod store;
-
-async fn handle_request(_request: RequestFromKernel) -> Option<CompletionToKernel> {
-    todo!()
-}
-
-#[repr(C, packed)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Foo {
-    x: u32,
-}
 
 fn main() {
     let idstr = std::env::args().nth(1).unwrap();
     let kidstr = std::env::args().nth(2).unwrap();
-    println!("Hello, world from pager: {} {}", idstr, kidstr);
     let id = idstr.parse::<u128>().unwrap();
     let kid = kidstr.parse::<u128>().unwrap();
 
     let id = ObjID::new(id);
     let kid = ObjID::new(kid);
+
     let object = Object::init_id(
         id,
-        Protections::READ | Protections::WRITE,
-        ObjectInitFlags::empty(),
-    )
-    .unwrap();
-
-    let kobject = Object::init_id(
-        kid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
     )
@@ -54,36 +45,43 @@ fn main() {
     let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::from(object);
     let rq = twizzler_queue::CallbackQueueReceiver::new(queue);
 
-    let kqueue = twizzler_queue::Queue::<RequestFromPager, CompletionToPager>::from(kobject);
-    let sq = twizzler_queue::QueueSender::new(kqueue);
+    let object = Object::init_id(
+        kid,
+        Protections::READ | Protections::WRITE,
+        ObjectInitFlags::empty(),
+    )
+    .unwrap();
+    let queue = twizzler_queue::Queue::<RequestFromPager, CompletionToPager>::from(object);
+    let sq = twizzler_queue::QueueSender::new(queue);
 
-    let num_threads = 2;
+    let num_threads = std::thread::available_parallelism().unwrap().get();
     for _ in 0..(num_threads - 1) {
         std::thread::spawn(|| twizzler_async::run(std::future::pending::<()>()));
     }
 
+    let nvme_ctrl = twizzler_async::block_on(nvme::init_nvme());
+    let len = twizzler_async::block_on(nvme_ctrl.flash_len());
+    let storage = Storage::new(nvme_ctrl);
+
+    let pager = Arc::new(Pager::new(
+        KernelCommandQueue::new(rq),
+        PagerRequestQueue::new(sq),
+        DramMgr::default(),
+        DataMgr::new(storage, len).unwrap(),
+    ));
+
+    let pager_m = pager.clone();
     twizzler_async::Task::spawn(async move {
         loop {
-            let timeout = twizzler_async::Timer::after(Duration::from_millis(1000));
-            break;
+            pager_m.handler_main().await;
         }
     })
     .detach();
-    let nvme_ctrl = twizzler_async::block_on(nvme::init_nvme());
-    let len = twizzler_async::block_on(nvme_ctrl.flash_len());
 
-    let storage = Storage::new(nvme_ctrl);
-    let mut read_buffer = [0; BLOCK_SIZE];
-    let _kv = KeyValueStore::new(storage, &mut read_buffer, len).unwrap();
-
+    let pager_d = pager.clone();
     twizzler_async::Task::spawn(async move {
         loop {
-            let (id, request) = rq.receive().await.unwrap();
-            println!("got req from kernel: {} {:?}", id, request);
-            let reply = handle_request(request).await;
-            if let Some(reply) = reply {
-                rq.complete(id, reply).await.unwrap();
-            }
+            pager_d.dram_manager_main().await;
         }
     })
     .detach();
@@ -100,6 +98,11 @@ pub fn quick_random() -> u32 {
     newstate >> 16
 }
 
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Foo {
+    x: u32,
+}
 struct Tester<'a> {
     kv: KeyValueStore<'a>,
     truth: BTreeMap<Key, Foo>,

@@ -95,6 +95,7 @@ impl Key {
 #[repr(u32)]
 pub enum KeyKind {
     ObjectInfo = 10,
+    PageInfo = 11,
     Tombstone = 42,
 }
 
@@ -219,5 +220,14 @@ impl<'a> KeyValueStore<'a> {
         } else {
             self.internal.invalidate_key(hash)
         }
+    }
+
+    pub fn update<V: Copy>(&mut self, key: Key, val: V) -> Result<SuccessCode, ErrorCode> {
+        match self.del(key) {
+            Ok(_) => {}
+            Err(ErrorCode::KeyNotFound) => {}
+            Err(e) => return Err(e),
+        }
+        self.put(key, val)
     }
 }
