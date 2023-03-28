@@ -27,6 +27,10 @@ uart_16550 = "0.2.0"
 x86 = "0.52.0"
 acpi = "4.1.1"
 
+[target.aarch64-unknown-none.dependencies]
+arm64 = {package = "aarch64-cpu", version = "9.3.1"}
+registers = {package = "tock-registers", version = "0.8.x"}
+
 [dependencies.lazy_static]
 version = "1.0"
 features = ["spin_no_std"]
