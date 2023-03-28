@@ -1,3 +1,8 @@
+/// Handling of external interrupt sources (e.g, IRQ).
+///
+/// External interrupt sources, or simply interrupts in
+/// general orignate from a device or another processor
+/// which can be routed by an interrupt controller
 use twizzler_abi::{
     kso::{InterruptAllocateOptions, InterruptPriority},
     upcall::{UpcallFrame},
@@ -127,10 +132,12 @@ pub fn init_idt() {
 
 pub fn disable() -> bool {
     todo!("disable interrupts")
+    //   MSR DAIFSet, #imm (0b1111)
 }
 
 pub fn set(_state: bool) {
     todo!("enable interrupts")
+    //   MSR DAIFClr, #imm (0b1111)
 }
 
 pub fn allocate_interrupt_vector(

@@ -10,7 +10,7 @@ pub enum BootInfoSystemTable {
     Unknown
 }
 
-struct Armv8BootInfo;
+pub struct Armv8BootInfo;
 
 impl BootInfo for Armv8BootInfo {
     fn memory_regions(&self) -> &'static [MemoryRegion] {
@@ -40,13 +40,11 @@ static ENTRY_POINT: LimineEntryPointRequest = LimineEntryPointRequest::new(0)
 
 #[link_section = ".limine_reqs"]
 #[used]
-static F2: &'static LimineEntryPointRequest = &ENTRY_POINT;
+static LR1: &'static LimineEntryPointRequest = &ENTRY_POINT;
 
 // the kernel's entry point function from the limine bootloader
+// limine ensures we are in el1 (kernel mode)
 fn limine_entry() -> ! {
-    // writing out a value to a register
-    unsafe { core::arch::asm!("mov x15, 0xAAAA");  }
-
     // let's do something more interesting
     crate::arch::kernel_main()
 }
