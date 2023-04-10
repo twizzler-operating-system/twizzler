@@ -23,7 +23,7 @@ global_asm!(r#"
 // The vector table contains actual code for exception handlers.
 // The table is organized into 4 sections, with 4 entries each.
 // Each entry is 128 bytes, and thus aligned on such a boundary
-// The entries are for handling Synnchronous, IRQ, FIQ, or SError.
+// The entries are for handling Synchronous, IRQ, FIQ, or SError.
 // The virtual address of the EVT is stored in the VBAR register.
 //
 // Currently we only handle exceptions while in the kernel (EL1)

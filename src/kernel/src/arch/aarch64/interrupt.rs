@@ -130,14 +130,42 @@ pub fn init_idt() {
     todo!()
 }
 
+bitflags::bitflags! {
+    /// Interrupt mask bits for the DAIF register which changes PSTATE.
+    pub struct DAIFMaskBits: u8 {
+        /// Watchpoint, Breakpoint, and Software Step exceptions
+        const D = 1 << 3;
+        /// SError exceptions
+        const A = 1 << 2;
+        /// IRQ exceptions
+        const I = 1 << 1;
+        /// FIQ exceptions
+        const F = 1 << 0;
+    }
+}
+
 pub fn disable() -> bool {
-    todo!("disable interrupts")
-    //   MSR DAIFSet, #imm (0b1111)
+    unsafe {
+        core::arch::asm!(
+            "msr DAIFSet, {DISABLE_MASK}",
+            DISABLE_MASK = const DAIFMaskBits::I.bits(),
+        );
+    }
+    // TODO: We need the current interrupt state,
+    // for now we return true. Since the interrupt state
+    // for aarch64 is more complex, maybe we need this
+    // to be a type. Or we since we are only toggling a bit,
+    // we could keep the bool representation
+    true
 }
 
 pub fn set(_state: bool) {
-    todo!("enable interrupts")
-    //   MSR DAIFClr, #imm (0b1111)
+    unsafe {
+        core::arch::asm!(
+            "msr DAIFClr, {ENABLE_MASK}",
+           ENABLE_MASK = const DAIFMaskBits::I.bits(),
+        );
+    }
 }
 
 pub fn allocate_interrupt_vector(
