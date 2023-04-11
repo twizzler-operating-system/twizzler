@@ -133,14 +133,14 @@ pub fn init_idt() {
 bitflags::bitflags! {
     /// Interrupt mask bits for the DAIF register which changes PSTATE.
     pub struct DAIFMaskBits: u8 {
-        /// Watchpoint, Breakpoint, and Software Step exceptions
-        const D = 1 << 3;
-        /// SError exceptions
-        const A = 1 << 2;
-        /// IRQ exceptions
-        const I = 1 << 1;
-        /// FIQ exceptions
-        const F = 1 << 0;
+        /// D bit: Watchpoint, Breakpoint, and Software Step exceptions
+        const DEBUG = 1 << 3;
+        /// A bit: SError exceptions
+        const SERROR = 1 << 2;
+        /// I bit: IRQ exceptions
+        const IRQ = 1 << 1;
+        /// F bit: FIQ exceptions
+        const FIQ = 1 << 0;
     }
 }
 
@@ -148,7 +148,7 @@ pub fn disable() -> bool {
     unsafe {
         core::arch::asm!(
             "msr DAIFSet, {DISABLE_MASK}",
-            DISABLE_MASK = const DAIFMaskBits::I.bits(),
+            DISABLE_MASK = const DAIFMaskBits::IRQ.bits(),
         );
     }
     // TODO: We need the current interrupt state,
@@ -163,7 +163,7 @@ pub fn set(_state: bool) {
     unsafe {
         core::arch::asm!(
             "msr DAIFClr, {ENABLE_MASK}",
-           ENABLE_MASK = const DAIFMaskBits::I.bits(),
+           ENABLE_MASK = const DAIFMaskBits::IRQ.bits(),
         );
     }
 }
