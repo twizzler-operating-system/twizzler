@@ -18,27 +18,8 @@ pub use address::{VirtAddr, PhysAddr};
 pub use interrupt::send_ipi;
 pub use start::BootInfoSystemTable;
 
-pub fn kernel_main() -> ! {
-    emerglogln!("[kernel] hello world!!");
-    let boot_info = start::Armv8BootInfo {};
-    init(&boot_info);
-    emerglogln!("[kernel] generating an exception");
-    // generate an exception by executing a
-    // supervisor call (SVC). Value 42 is passed
-    // to the exception handler
-    unsafe {
-        core::arch::asm!(
-            "mov x0, 0xAAAA",
-            "mov x16, 0xBBBC",
-            "svc 42",
-        );
-    }
-    emerglogln!("[kernel] return from exception");
-    loop {}
-}
-
 pub fn init<B: BootInfo>(_boot_info: &B) {
-    emerglogln!("[kernel] initializing exceptions");
+    logln!("[arch::init] initializing exceptions");
     exception::init();
 }
 
