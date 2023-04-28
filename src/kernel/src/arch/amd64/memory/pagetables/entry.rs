@@ -56,7 +56,7 @@ impl Entry {
     }
 
     /// Address contained in the [Entry].
-    pub fn addr(&self) -> PhysAddr {
+    pub fn addr(&self, _level: usize) -> PhysAddr {
         PhysAddr::new(self.0 & 0x000f_ffff_ffff_f000).unwrap()
     }
 
@@ -78,7 +78,12 @@ impl Entry {
 
     /// Set the flags.
     pub fn set_flags(&mut self, flags: EntryFlags) {
-        *self = Entry::new_internal(self.addr(), flags);
+        *self = Entry::new_internal(self.addr(0), flags);
+    }
+
+    /// Get the base address of the next page table.
+    pub fn table_addr(&self) -> PhysAddr {
+        self.addr(0)
     }
 }
 

@@ -81,6 +81,16 @@ impl Table {
         }
         1 << (12 + 9 * level)
     }
+
+    /// Get the level of the last page table.
+    pub fn last_level() -> usize {
+        0
+    }
+
+    /// Get the value of the next level given the current level.
+    pub fn next_level(level: usize) -> usize {
+        level - 1
+    }
 }
 
 impl Index<usize> for Table {
