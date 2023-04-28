@@ -11,7 +11,7 @@ with a build system that bootstraps a Twizzler userspace. You can
 write code for it and play around! We're not quite production ready,
 but we're getting there! :)
 
-See (https://twizzler.io/about.html) for more details.
+See (https://twizzler.io/about/) for more details.
 
 NOTE: This repo has recently been rebuilt with our pure Rust
 implementation of the Twizzler kernel.  If you have previously forked
