@@ -17,7 +17,7 @@ impl Table {
         if !entry.is_present() || entry.is_huge() {
             return None;
         }
-        let addr = entry.addr().kernel_vaddr();
+        let addr = entry.table_addr().kernel_vaddr();
         unsafe { Some(&mut *(addr.as_mut_ptr::<Table>())) }
     }
 
@@ -26,7 +26,7 @@ impl Table {
         if !entry.is_present() || entry.is_huge() {
             return None;
         }
-        let addr = entry.addr().kernel_vaddr();
+        let addr = entry.table_addr().kernel_vaddr();
         unsafe { Some(&*(addr.as_ptr::<Table>())) }
     }
 
@@ -35,7 +35,7 @@ impl Table {
         if !entry.is_present() || entry.is_huge() {
             return None;
         }
-        let addr: u64 = entry.addr().into();
+        let addr: u64 = entry.table_addr().into();
         get_frame(PhysAddr::new(addr).unwrap())
     }
 
@@ -215,7 +215,7 @@ impl Table {
             let entry = &mut self[idx];
             let is_present = entry.is_present();
             let is_huge = entry.is_huge();
-            let addr = entry.addr();
+            let addr = entry.addr(level);
 
             if is_present && (is_huge || level == 0) {
                 self.update_entry(
@@ -253,7 +253,7 @@ impl Table {
         if entry.is_present() && (entry.is_huge() || level == 0) {
             Ok(MapInfo::new(
                 cursor.start(),
-                entry.addr(),
+                entry.addr(level),
                 entry.flags().settings(),
                 Self::level_to_page_size(level),
             ))
