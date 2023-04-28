@@ -209,8 +209,6 @@ bitflags::bitflags! {
         //   - IGNORED if FEAT_HPDS2 is not implemented
         //   - Page based hardware attributes
         // [63] => Ignored
-        const WRITE_THROUGH = 0;
-        const CACHE_DISABLE = 0;
     }
 }
 

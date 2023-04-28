@@ -148,7 +148,7 @@ impl Table {
                 assert_ne!(level, Self::last_level());
                 self.populate(idx, EntryFlags::intermediate());
                 let next_table = self.next_table_mut(idx).unwrap();
-                next_table.map(consist, cursor, Self:;next_level(level), phys, settings);
+                next_table.map(consist, cursor, Self::next_level(level), phys, settings);
             }
 
             if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {

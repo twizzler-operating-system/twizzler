@@ -9,6 +9,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe438c63458706e03479442743baae6c88256498e6431708f6dfc520a26515d3"
 
 [[package]]
+name = "aarch64-cpu"
+version = "9.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb711c57d60565ba8f6523eb371e6243639617d817b4df1ae09af250af1af411"
+dependencies = [
+ "tock-registers",
+]
+
+[[package]]
 name = "acpi"
 version = "4.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2514,6 +2523,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
 
 [[package]]
+name = "tock-registers"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "696941a0aee7e276a165a978b37918fd5d22c55c3d6bda197813070ca9c0f21c"
+
+[[package]]
 name = "tokio"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2645,6 +2660,7 @@ dependencies = [
 name = "twizzler-kernel"
 version = "0.1.0"
 dependencies = [
+ "aarch64-cpu",
  "acpi",
  "addr2line",
  "backtracer_core",
@@ -2659,6 +2675,7 @@ dependencies = [
  "object",
  "slabmalloc",
  "tar-no-std",
+ "tock-registers",
  "twizzler-abi",
  "twizzler-kernel-macros",
  "twizzler-queue-raw",
