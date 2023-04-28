@@ -1,5 +1,6 @@
 use rand::{CryptoRng, RngCore};
 
+#[derive(Clone, Copy)]
 pub struct BadRng {
     state: u32,
 }

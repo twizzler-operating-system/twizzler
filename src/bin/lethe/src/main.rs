@@ -4,10 +4,27 @@ use hash::BadHasher;
 mod rng;
 use rng::BadRng;
 
-use khf::Khf;
 use kms::KeyManagementScheme;
+use lethe::Lethe;
 
 fn main() {
-    let mut forest: Khf<BadRng, BadHasher<32>, 32> = Khf::new(BadRng::new(), &[2, 2]);
-    println!("{}", hex::encode(forest.derive(0).unwrap()));
+    let keyid @ (objid, blkid) = (0, 0);
+    let mut lethe: Lethe<BadRng, BadHasher<32>, 32> = Lethe::new(BadRng::new());
+
+    println!(
+        "[derive] objid={objid}, blkid={blkid} => {}",
+        hex::encode(lethe.derive(keyid).unwrap())
+    );
+
+    println!(
+        "[update] objid={objid}, blkid={blkid} => {}",
+        hex::encode(lethe.update(keyid).unwrap())
+    );
+
+    println!("[commit] => {:?}", lethe.commit());
+
+    println!(
+        "[derive] objid={objid}, blkid={blkid} => {}",
+        hex::encode(lethe.derive(keyid).unwrap())
+    );
 }
