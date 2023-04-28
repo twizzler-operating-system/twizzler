@@ -1,5 +1,5 @@
 
-#cargo-features = ["profile-rustflags"] 
+#cargo-features = ["profile-rustflags"]
 
 [workspace]
 members = [
@@ -11,6 +11,7 @@ members = [
     "src/bin/netmgr",
     "src/bin/nettest",
     "src/bin/pager",
+    "src/bin/lethe",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
@@ -31,6 +32,7 @@ initrd = [
     "crate:netmgr",
     "crate:nettest",
     "crate:pager",
+    "crate:lethe",
     #"third-party:hello-world-rs"
 ]
 

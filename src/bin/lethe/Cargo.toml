@@ -1,0 +1,11 @@
+[package]
+name = "lethe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crypter = { git = "https://github.com/lemosyne/crypter.git" }
+embedded-io = "0.4.0"
+hasher = { git = "https://github.com/lemosyne/hasher.git" }
+khf = { git = "https://github.com/lemosyne/khf.git" }
+kms = { git = "https://github.com/lemosyne/kms.git" }
