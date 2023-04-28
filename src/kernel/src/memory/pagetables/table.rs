@@ -114,8 +114,8 @@ impl Table {
         let start_index = Self::get_index(cursor.start(), level);
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
-
-            if entry.is_present() && (entry.is_huge() || level == Self::last_level()) {
+            let is_huge = entry.is_huge() && Self::can_map_at_level(level);
+            if entry.is_present() && (is_huge || level == Self::last_level()) {
                 phys.consume(Self::level_to_page_size(level));
                 if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
                     cursor = next;
@@ -168,8 +168,8 @@ impl Table {
         let start_index = Self::get_index(cursor.start(), level);
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
-
-            if entry.is_present() && (entry.is_huge() || level == Self::last_level()) {
+            let is_huge = entry.is_huge() && Self::can_map_at_level(level);
+            if entry.is_present() && (is_huge || level == Self::last_level()) {
                 self.update_entry(
                     consist,
                     idx,
@@ -214,7 +214,7 @@ impl Table {
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
             let is_present = entry.is_present();
-            let is_huge = entry.is_huge();
+            let is_huge = entry.is_huge() && Self::can_map_at_level(level);
             let addr = entry.addr(level);
 
             if is_present && (is_huge || level == Self::last_level()) {
@@ -250,7 +250,8 @@ impl Table {
     pub(super) fn readmap(&self, cursor: &MappingCursor, level: usize) -> Result<MapInfo, usize> {
         let index = Self::get_index(cursor.start(), level);
         let entry = &self[index];
-        if entry.is_present() && (entry.is_huge() || level == Self::last_level()) {
+        let is_huge = entry.is_huge() && Self::can_map_at_level(level);
+        if entry.is_present() && (is_huge || level == Self::last_level()) {
             Ok(MapInfo::new(
                 cursor.start(),
                 entry.addr(level),
