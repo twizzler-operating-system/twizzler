@@ -26,18 +26,21 @@ struct Args {
   efi_binary: String,
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let disk_image_path = PathBuf::from(args.disk_path);
     let kernel_binary_path = {
         let path = PathBuf::from(args.kernel_path);
-        path.canonicalize().unwrap()
+        path
+            .canonicalize()
+            .with_context(|| format!("failed to find kernel binary: {}", path.as_path().display()))?
     };
     let initrd_path = {
         let path = PathBuf::from(args.initrd_path);
         path.canonicalize().unwrap()
     };
     create_disk_images(&disk_image_path, &kernel_binary_path, &initrd_path, args.cmdline.join(" "), args.efi_binary);
+    Ok(())
 }
 
 pub fn create_disk_images(
