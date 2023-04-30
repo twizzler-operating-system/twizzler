@@ -11,4 +11,5 @@ hex = "0.4.3"
 khf = { git = "https://github.com/lemosyne/khf.git" }
 kms = { git = "https://github.com/lemosyne/kms.git" }
 rand = { version = "0.8.5", default-features = false }
+rand_chacha = "0.3.1"
 thiserror = "1.0.40"

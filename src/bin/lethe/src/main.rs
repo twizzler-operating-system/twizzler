@@ -1,15 +1,15 @@
 mod hash;
+
 use hash::BadHasher;
-
-mod rng;
-use rng::BadRng;
-
 use kms::KeyManagementScheme;
 use lethe::Lethe;
+use rand::SeedableRng;
+use rand_chacha::ChaChaRng;
 
 fn main() {
     let keyid @ (objid, blkid) = (0, 0);
-    let mut lethe: Lethe<BadRng, BadHasher<32>, 32> = Lethe::new(BadRng::new());
+    let rng = ChaChaRng::seed_from_u64(0);
+    let mut lethe: Lethe<ChaChaRng, BadHasher<32>, 32> = Lethe::new(rng);
 
     println!(
         "[derive] objid={objid}, blkid={blkid} => {}",

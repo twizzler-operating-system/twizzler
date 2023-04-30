@@ -1607,6 +1607,7 @@ dependencies = [
  "khf",
  "kms",
  "rand",
+ "rand_chacha",
  "thiserror",
 ]
 
