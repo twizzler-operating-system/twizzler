@@ -14,6 +14,12 @@ impl Table {
     /// The number of entries in this table.
     pub const PAGE_TABLE_ENTRIES: usize = 512;
 
+    /// The top level of a set of page tables.
+    const TOP_LEVEL: usize = 3;
+
+    /// The last level of a set of page tables.
+    const LAST_LEVEL: usize = 0;
+
     /// Get the current root table.
     pub fn current() -> PhysAddr {
         let cr3 = unsafe { x86::controlregs::cr3() };
@@ -23,7 +29,7 @@ impl Table {
     /// The top level of a complete set of page tables.
     pub fn top_level() -> usize {
         // TODO: support 5-level paging
-        3
+        Self::TOP_LEVEL
     }
 
     /// Does this system support mapping a huge page at this level?
@@ -65,7 +71,7 @@ impl Table {
 
     /// Is this a leaf (a huge page or page aligned) at a given level
     pub fn is_leaf(addr: VirtAddr, level: usize) -> bool {
-        level == 0 || addr.is_aligned_to(1 << (12 + 9 * level))
+        level == Self::LAST_LEVEL || addr.is_aligned_to(1 << (12 + 9 * level))
     }
 
     /// Get the index for the next table for an address.
@@ -76,10 +82,22 @@ impl Table {
 
     /// Get the page size of a given level.
     pub fn level_to_page_size(level: usize) -> usize {
-        if level > 3 {
+        if level > Self::TOP_LEVEL {
             panic!("invalid level");
         }
+        // frame size * (num entries) ^ level
+        // 4096 * 512 ^ (level)
         1 << (12 + 9 * level)
+    }
+
+    /// Get the level of the last page table.
+    pub fn last_level() -> usize {
+        Self::LAST_LEVEL
+    }
+
+    /// Get the value of the next level given the current level.
+    pub fn next_level(level: usize) -> usize {
+        level - 1
     }
 }
 
