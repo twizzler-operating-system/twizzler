@@ -4,13 +4,14 @@ use super::address::{PhysAddr, VirtAddr};
 pub mod frame;
 pub mod pagetables;
 
-// start offset into physical memory. 
-// 
-// in the future we should determine this at runtime 
-// since we don't know what the CPU supports. We might
-// go about this by making `PhysAddr::get_phys_addr_width()`
-// public and then calculate it that way. For now we assume
-// a 48-bit physical address space.
+/// The start offset into physical memory.
+///
+/// The kernel is designed to run in the higher
+/// half of the virtual address space, and as such expects
+/// a region of virtual memory to identity map
+/// all physical memory. This is convenient since
+/// calculating a physical to virtual address is simply
+/// va = base + offset
 const PHYS_MEM_OFFSET: u64 = 0xffff800000000000;
 
 /* TODO: hide this */

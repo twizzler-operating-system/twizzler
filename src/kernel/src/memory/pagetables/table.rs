@@ -17,7 +17,7 @@ impl Table {
         if !entry.is_present() || entry.is_huge() {
             return None;
         }
-        let addr = entry.addr().kernel_vaddr();
+        let addr = entry.table_addr().kernel_vaddr();
         unsafe { Some(&mut *(addr.as_mut_ptr::<Table>())) }
     }
 
@@ -26,7 +26,7 @@ impl Table {
         if !entry.is_present() || entry.is_huge() {
             return None;
         }
-        let addr = entry.addr().kernel_vaddr();
+        let addr = entry.table_addr().kernel_vaddr();
         unsafe { Some(&*(addr.as_ptr::<Table>())) }
     }
 
@@ -35,7 +35,7 @@ impl Table {
         if !entry.is_present() || entry.is_huge() {
             return None;
         }
-        let addr: u64 = entry.addr().into();
+        let addr: u64 = entry.table_addr().into();
         get_frame(PhysAddr::new(addr).unwrap())
     }
 
@@ -114,8 +114,8 @@ impl Table {
         let start_index = Self::get_index(cursor.start(), level);
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
-
-            if entry.is_present() && (entry.is_huge() || level == 0) {
+            let is_huge = entry.is_huge() && Self::can_map_at_level(level);
+            if entry.is_present() && (is_huge || level == Self::last_level()) {
                 phys.consume(Self::level_to_page_size(level));
                 if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
                     cursor = next;
@@ -133,7 +133,7 @@ impl Table {
                     Entry::new(
                         paddr.0,
                         EntryFlags::from(settings)
-                            | if level != 0 {
+                            | if level != Self::last_level() {
                                 EntryFlags::huge()
                             } else {
                                 EntryFlags::empty()
@@ -145,10 +145,10 @@ impl Table {
                 );
                 phys.consume(Self::level_to_page_size(level));
             } else {
-                assert_ne!(level, 0);
+                assert_ne!(level, Self::last_level());
                 self.populate(idx, EntryFlags::intermediate());
                 let next_table = self.next_table_mut(idx).unwrap();
-                next_table.map(consist, cursor, level - 1, phys, settings);
+                next_table.map(consist, cursor, Self::next_level(level), phys, settings);
             }
 
             if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
@@ -168,8 +168,8 @@ impl Table {
         let start_index = Self::get_index(cursor.start(), level);
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
-
-            if entry.is_present() && (entry.is_huge() || level == 0) {
+            let is_huge = entry.is_huge() && Self::can_map_at_level(level);
+            if entry.is_present() && (is_huge || level == Self::last_level()) {
                 self.update_entry(
                     consist,
                     idx,
@@ -178,10 +178,10 @@ impl Table {
                     true,
                     level,
                 );
-            } else if entry.is_present() && level != 0 {
+            } else if entry.is_present() && level != Self::last_level() {
                 let next_table = self.next_table_mut(idx).unwrap();
-                next_table.unmap(consist, cursor, level - 1);
-                if next_table.read_count() == 0 && level < Table::top_level() {
+                next_table.unmap(consist, cursor, Self::next_level(level));
+                if next_table.read_count() == 0 && level != Table::top_level() {
                     // Unwrap-Ok: The entry is present, and not a leaf, so it must be a table.
                     consist.free_frame(self.next_table_frame(idx).unwrap());
                     self.update_entry(
@@ -214,17 +214,17 @@ impl Table {
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
             let is_present = entry.is_present();
-            let is_huge = entry.is_huge();
-            let addr = entry.addr();
+            let is_huge = entry.is_huge() && Self::can_map_at_level(level);
+            let addr = entry.addr(level);
 
-            if is_present && (is_huge || level == 0) {
+            if is_present && (is_huge || level == Self::last_level()) {
                 self.update_entry(
                     consist,
                     idx,
                     Entry::new(
                         addr,
                         EntryFlags::from(settings)
-                            | if level != 0 {
+                            | if level != Self::last_level() {
                                 EntryFlags::huge()
                             } else {
                                 EntryFlags::empty()
@@ -234,9 +234,9 @@ impl Table {
                     true,
                     level,
                 );
-            } else if is_present && level != 0 {
+            } else if is_present && level != Self::last_level() {
                 let next_table = self.next_table_mut(idx).unwrap();
-                next_table.change(consist, cursor, level - 1, settings);
+                next_table.change(consist, cursor, Self::next_level(level), settings);
             }
 
             if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
@@ -250,16 +250,17 @@ impl Table {
     pub(super) fn readmap(&self, cursor: &MappingCursor, level: usize) -> Result<MapInfo, usize> {
         let index = Self::get_index(cursor.start(), level);
         let entry = &self[index];
-        if entry.is_present() && (entry.is_huge() || level == 0) {
+        let is_huge = entry.is_huge() && Self::can_map_at_level(level);
+        if entry.is_present() && (is_huge || level == Self::last_level()) {
             Ok(MapInfo::new(
                 cursor.start(),
-                entry.addr(),
+                entry.addr(level),
                 entry.flags().settings(),
                 Self::level_to_page_size(level),
             ))
-        } else if entry.is_present() && level != 0 {
+        } else if entry.is_present() && level != Self::last_level() {
             let next_table = self.next_table(index).unwrap();
-            next_table.readmap(cursor, level - 1)
+            next_table.readmap(cursor, Self::next_level(level))
         } else {
             Err(Table::level_to_page_size(level))
         }

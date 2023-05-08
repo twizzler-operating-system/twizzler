@@ -1,35 +1,20 @@
 use crate::{
     // arch::memory::pagetables::{Entry, EntryFlags},
     memory::{
-        frame::{alloc_frame, PhysicalFrameFlags},
+        // frame::{alloc_frame, PhysicalFrameFlags},
         pagetables::{
-            DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
+            DeferredUnmappingOps, MapReader, MappingCursor, MappingSettings,
             PhysAddrProvider,
         },
     },
-    mutex::Mutex,
-    spinlock::Spinlock,
+    // mutex::Mutex,
+    // spinlock::Spinlock,
 };
 
-pub struct ArchContextInner {
-    mapper: Mapper,
-}
+// this does not need to be pub
+pub struct ArchContextInner;
 
-pub struct ArchContext {
-    target: u64,
-    inner: Mutex<ArchContextInner>,
-}
-
-lazy_static::lazy_static! {
-    static ref KERNEL_MAPPER: Spinlock<Mapper> = {
-        let m = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
-        // TODO ?
-        // for idx in 256..512 {
-        //     m.set_top_level_table(idx, Entry::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address(), EntryFlags::intermediate()));
-        // }
-        Spinlock::new(m)
-    };
-}
+pub struct ArchContext;
 
 impl Default for ArchContext {
     fn default() -> Self {
@@ -43,84 +28,55 @@ impl ArchContext {
     }
 
     pub fn new() -> Self {
-        let inner = ArchContextInner::new();
-        let target = inner.mapper.root_address().into();
-        Self {
-            target,
-            inner: Mutex::new(inner),
-        }
+        Self {}
     }
 
     #[allow(named_asm_labels)]
     pub fn switch_to(&self) {
-        todo!()
+        todo!("switch_to")
     }
 
     pub fn map(
         &self,
-        cursor: MappingCursor,
-        phys: &mut impl PhysAddrProvider,
-        settings: &MappingSettings,
+        _cursor: MappingCursor,
+        _phys: &mut impl PhysAddrProvider,
+        _settings: &MappingSettings,
     ) {
-        if cursor.start().is_kernel() {
-            KERNEL_MAPPER.lock().map(cursor, phys, settings);
-        } else {
-            self.inner.lock().map(cursor, phys, settings);
-        }
+        todo!("map")
     }
 
-    pub fn change(&self, cursor: MappingCursor, settings: &MappingSettings) {
-        if cursor.start().is_kernel() {
-            KERNEL_MAPPER.lock().change(cursor, settings);
-        } else {
-            self.inner.lock().change(cursor, settings);
-        }
+    pub fn change(&self, _cursor: MappingCursor, _settings: &MappingSettings) {
+        todo!("change")
     }
 
-    pub fn unmap(&self, cursor: MappingCursor) {
-        let ops = if cursor.start().is_kernel() {
-            KERNEL_MAPPER.lock().unmap(cursor)
-        } else {
-            self.inner.lock().unmap(cursor)
-        };
-        ops.run_all();
+    pub fn unmap(&self, _cursor: MappingCursor) {
+        todo!("unmap")
     }
 
-    pub fn readmap<R>(&self, cursor: MappingCursor, f: impl Fn(MapReader) -> R) -> R {
-        let r = if cursor.start().is_kernel() {
-            f(KERNEL_MAPPER.lock().readmap(cursor))
-        } else {
-            f(self.inner.lock().mapper.readmap(cursor))
-        };
-        r
+    pub fn readmap<R>(&self, _cursor: MappingCursor, _f: impl Fn(MapReader) -> R) -> R {
+        todo!("readmap")
     }
 }
 
 impl ArchContextInner {
     fn new() -> Self {
-        let mapper = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
-        // let km = KERNEL_MAPPER.lock();
-        // TODO ?
-        // for idx in 256..512 {
-        //     mapper.set_top_level_table(idx, km.get_top_level_table(idx));
-        // }
-        Self { mapper }
+        todo!()
     }
 
     fn map(
         &mut self,
-        cursor: MappingCursor,
-        phys: &mut impl PhysAddrProvider,
-        settings: &MappingSettings,
+        _cursor: MappingCursor,
+        _phys: &mut impl PhysAddrProvider,
+        _settings: &MappingSettings,
     ) {
-        self.mapper.map(cursor, phys, settings);
+        todo!()
     }
 
-    fn change(&mut self, cursor: MappingCursor, settings: &MappingSettings) {
-        self.mapper.change(cursor, settings);
+    fn change(&mut self, _cursor: MappingCursor, _settings: &MappingSettings) {
+        todo!()
     }
 
-    fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
-        self.mapper.unmap(cursor)
+    fn unmap(&mut self, _cursor: MappingCursor) -> DeferredUnmappingOps {
+        todo!()
     }
 }

@@ -4,7 +4,7 @@
 /// and the Arm Architecture Reference Manual for A-profile architecture
 /// https://developer.arm.com/documentation/ddi0487/latest
 
-use core::{fmt::LowerHex, ops::Sub};
+use core::{fmt::LowerHex, ops::{Sub, RangeInclusive}};
 
 use arm64::registers::ID_AA64MMFR0_EL1;
 use registers::interfaces::Readable;
@@ -36,23 +36,25 @@ impl VirtAddr {
     // TTBR0_EL1 points to a page table root for addresses ranging from
     // 0x0 to 0x0000_FFFF_FFFF_FFFF. Generally this is used to cover
     // user accessible memory (EL0).
-    
-    /// The start range of valid addresses that TTBR0 covers
-    const TTBR0_EL1_START: u64 = 0x0000_0000_0000_0000;
-    /// The end range of valid addresses that TTBR0 covers
-    const TTBR0_EL1_END: u64 = 0x0000_FFFF_FFFF_FFFF;
+    const TTBR0_EL1: RangeInclusive<u64> = RangeInclusive::new(
+        // The start range of valid addresses that TTBR0 covers
+        0x0000_0000_0000_0000,
+        // The end range of valid addresses that TTBR0 covers
+        0x0000_FFFF_FFFF_FFFF
+    );
 
     // TTBR1_EL1 -> a pt root for addresses ranging from
     // 0xFFFF_FFFF_FFFF_FFFF to 0xFFFF_0000_0000_0000
     // Generally this is used to cover exclusively 
     // kernel accessible memory (EL1).
-    
-    /// The start range of valid addresses that TTBR1 covers
-    const TTBR1_EL1_START: u64 = 0xFFFF_0000_0000_0000;
-    /// The start range of valid addresses that TTBR1 covers
-    const TTBR1_EL1_END: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+    const TTBR1_EL1: RangeInclusive<u64> = RangeInclusive::new(
+        // The start range of valid addresses that TTBR1 covers
+        0xFFFF_0000_0000_0000,
+        // The end range of valid addresses that TTBR1 covers
+        0xFFFF_FFFF_FFFF_FFFF
+    );
 
-    // /// The bits that are valid which are used in address translation
+    /// The bits that are valid which are used in address translation
     const VALID_ADDR_BITS: u32 = 48;
     /// The valid value for the upper bits of a high address
     const VALID_HIGH_ADDRESS: u64 = 0xFFFF;
@@ -60,7 +62,7 @@ impl VirtAddr {
     const VALID_LOW_ADDRESS: u64 = 0x0;
  
     pub const fn start_kernel_memory() -> Self {
-        Self(Self::TTBR0_EL1_START)
+        Self(*Self::TTBR1_EL1.start())
     }
     
     pub const fn start_kernel_object_memory() -> Self {
@@ -74,13 +76,13 @@ impl VirtAddr {
     pub const fn start_user_memory() -> Self {
         // Assuming that user memory is mapped in the lower half of the
         // virtual address space, we utilize the valid ranges for TTRBR0_EL1
-        Self(Self::TTBR0_EL1_START)
+        Self(*Self::TTBR0_EL1.start())
     }
 
     pub const fn end_user_memory() -> Self {
         // Assuming that user memory is mapped in the lower half of the
         // virtual address space, we utilize the valid ranges for TTRBR0_EL1
-        Self(Self::TTBR0_EL1_END)
+        Self(*Self::TTBR0_EL1.end())
     }
 
     /// Construct a new virtual address from the provided addr value, only if the provided value is a valid, canonical
@@ -119,8 +121,7 @@ impl VirtAddr {
     }
 
     pub fn is_kernel(&self) -> bool {
-        // TODO: should this  be bound by TTBR1_EL1_END
-        self.0 >= Self::TTBR1_EL1_START
+        Self::TTBR1_EL1.contains(&self.0)
     }
 
     pub fn is_kernel_object_memory(&self) -> bool {
