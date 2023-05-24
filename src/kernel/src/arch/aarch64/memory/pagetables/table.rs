@@ -63,6 +63,8 @@ impl Table {
             1 => true,
             // 2 MiB
             2 => true,
+            // semantically does not make sense, see note from other, etc.
+            3 => true, // but technically allowed to map here
             _ => false,
         }
     }
@@ -79,7 +81,13 @@ impl Table {
 
     /// Read the current count of used entries.
     pub fn read_count(&self) -> usize {
-        todo!("read count")
+        let mut count = 0;
+        for entry in self.entries {
+            if entry.is_present() {
+                count += 1;
+            }
+        }
+        count
     }
 
     /// Is this a leaf (a huge page or page aligned) at a given level

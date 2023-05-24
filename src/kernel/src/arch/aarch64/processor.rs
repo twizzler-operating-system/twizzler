@@ -46,5 +46,7 @@ impl Processor {
 }
 
 pub fn tls_ready() -> bool {
-    todo!()
+    // TODO: initlialize tls
+    // see TPIDR_EL1
+    false
 }
