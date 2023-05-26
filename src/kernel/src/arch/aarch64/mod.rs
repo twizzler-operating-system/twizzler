@@ -5,6 +5,7 @@ use crate::{
 };
 
 pub mod address;
+mod cntp;
 pub mod context;
 mod exception;
 pub mod interrupt;
@@ -21,6 +22,30 @@ pub use start::BootInfoSystemTable;
 pub fn init<B: BootInfo>(_boot_info: &B) {
     logln!("[arch::init] initializing exceptions");
     exception::init();
+
+    // intialize an instance of the timer
+    processor::enumerate_clocks();
+
+    use crate::time::TICK_SOURCES;
+    use twizzler_abi::syscall::{NanoSeconds, ClockSource};
+
+    let clk_src: u64 = ClockSource::BestMonotonic.into();
+    let cntp = &TICK_SOURCES.lock()[clk_src as usize];
+
+    let info = cntp.info();
+    logln!("[arch::timer] frequency: {} Hz, {} fs, {} ns", 
+        1_000_000_000_000_000 / info.resolution().0, info.resolution().0, {
+            let femtos = info.resolution();
+            let nanos: NanoSeconds = femtos.into();
+            nanos.0
+        }
+    );
+
+    // read the timer
+    let t = cntp.read();
+    logln!("[arch::timer] current timer count: {}, uptime: {:?}",
+        t.value, t.value * t.rate
+    );
 }
 
 pub fn init_secondary() {
