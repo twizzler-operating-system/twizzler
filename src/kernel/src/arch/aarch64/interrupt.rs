@@ -4,6 +4,8 @@
 /// general orignate from a device or another processor
 /// which can be routed by an interrupt controller
 
+mod controller;
+
 use twizzler_abi::{
     kso::{InterruptAllocateOptions, InterruptPriority},
 };
@@ -119,6 +121,31 @@ impl Drop for DynamicInterrupt {
     }
 }
 
+pub fn init_interrupts() {
+    logln!("[arch::exceptions] initializing interrupts");
+    
+    // initialize interrupt controller
+    use crate::machine::interrupt::GICv2;
+    use crate::memory::PhysAddr;
+
+    // base address of the GIC distributor
+    const GICD_BASE_ADDR: u64 = 0x08000000;
+    let gic_base = PhysAddr::new(GICD_BASE_ADDR).unwrap();
+    let gicd_vbase = gic_base.kernel_vaddr();
+
+    // the GIC cpu interface in QEMU exists at
+    // an 0x00010000 offset from the base
+    const GIC_CPU_OFF: usize = 0x00010000;
+    let gicc_vbase = gicd_vbase.offset(GIC_CPU_OFF).unwrap();
+
+    let gic = GICv2::new(gicd_vbase, gicc_vbase);
+
+    gic.print_config();
+
+    gic.configure();
+
+    gic.print_config();
+}
 
 // in crate::arch::aarch64
 // pub fn set_interrupt(

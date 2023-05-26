@@ -1,2 +1,1 @@
-
-use super::super::gicv2::GICv2;
+pub use super::super::gicv2::GICv2;

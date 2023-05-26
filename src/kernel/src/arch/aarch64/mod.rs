@@ -16,7 +16,7 @@ pub mod thread;
 mod start;
 
 pub use address::{VirtAddr, PhysAddr};
-pub use interrupt::send_ipi;
+pub use interrupt::{send_ipi, init_interrupts};
 pub use start::BootInfoSystemTable;
 
 pub fn init<B: BootInfo>(_boot_info: &B) {
@@ -46,14 +46,12 @@ pub fn init<B: BootInfo>(_boot_info: &B) {
     logln!("[arch::timer] current timer count: {}, uptime: {:?}",
         t.value, t.value * t.rate
     );
+
+    init_interrupts();
 }
 
 pub fn init_secondary() {
     todo!();
-}
-
-pub fn init_interrupts() {
-    todo!()
 }
 
 pub fn set_interrupt(
