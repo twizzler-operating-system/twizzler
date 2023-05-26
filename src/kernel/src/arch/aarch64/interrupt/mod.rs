@@ -3,51 +3,21 @@
 /// External interrupt sources, or simply interrupts in
 /// general orignate from a device or another processor
 /// which can be routed by an interrupt controller
+
 use twizzler_abi::{
     kso::{InterruptAllocateOptions, InterruptPriority},
-    upcall::{UpcallFrame},
 };
 
 use crate::interrupt::{DynamicInterrupt, Destination};
 
-use super::{
-    // set_interrupt,
-    thread::UpcallAble,
-};
+use super::exception::{exception_handler, ExceptionContext};
 
 // interrupt vector table size/num vectors
-pub const GENERIC_IPI_VECTOR: u32 = 0;
+pub const GENERIC_IPI_VECTOR: u32 = 0; // Used for IPI
 pub const MIN_VECTOR: usize = 0;
 pub const MAX_VECTOR: usize = 0;
 pub const RESV_VECTORS: &[usize] = &[0x0];
-pub const NUM_VECTORS: usize = 0;
-
-// interrupt service routine (isr) context
-#[derive(Copy, Clone)]
-#[repr(C)]
-pub struct IsrContext;
-
-impl UpcallAble for IsrContext {
-    fn set_upcall(&mut self, _target: usize, _frame: u64, _info: u64, _stack: u64) {
-        todo!("set_upcall for IsrContext")
-    }
-
-    fn get_stack_top(&self) -> u64 {
-        todo!("get_stat for IsrContext")
-    }
-}
-
-impl From<IsrContext> for UpcallFrame {
-    fn from(_int: IsrContext) -> Self {
-        todo!("conversion from IsrContext to UpcallFrame")
-    }
-}
-
-impl core::fmt::Debug for IsrContext {
-    fn fmt(&self, _f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        todo!("actually add debug info for IsrContext");
-    }
-}
+pub const NUM_VECTORS: usize = 0; // Used to interrupt generic code
 
 // #[allow(unsupported_naked_functions)] // DEBUG
 #[allow(clippy::missing_safety_doc)]
@@ -72,62 +42,6 @@ pub unsafe extern "C" fn user_interrupt() {
 #[naked]
 pub unsafe extern "C" fn return_from_interrupt() {
     core::arch::asm!("nop", options(noreturn))
-}
-
-#[allow(unused_macros)] // DEBUG
-// implement interrupt number specific interrupt handlers
-macro_rules! interrupt {
-    ($name:ident, $num:expr) => {
-        #[naked]
-        #[allow(named_asm_labels)]
-        unsafe extern "C" fn $name() {
-            /* TODO */
-        }
-    };
-}
-
-#[allow(unused_macros)] // DEBUG
-// exception number specific interrupt error handlers
-macro_rules! interrupt_err {
-    ($name:ident, $num:expr) => {
-        #[naked]
-        #[allow(named_asm_labels)]
-        unsafe extern "C" fn $name() {
-            /* TODO */
-        }
-    };
-}
-
-// private interrupt descriptor table entry
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct IDTEntry;
-
-// private representation of interrupt descriptor table
-#[repr(align(16), C)]
-struct InterruptDescriptorTable;
-
-// private representation of a pointer to the interrupt descriptor table
-#[repr(C, packed)]
-struct InterruptDescriptorTablePointer;
-
-// private representation of exceptions
-#[derive(Debug, Clone, Copy)]
-#[repr(u64)]
-enum Exception { 
-    Unknown
-}
-
-// code for IPI signal to send 
-pub enum InterProcessorInterrupt {
-    Reschedule = 0, /* TODO */
-}
-
-// map handler function to a specific number into the interrupt descriptor table
-
-// initialize arch-specific interrupt descriptor table
-pub fn init_idt() {
-    todo!()
 }
 
 bitflags::bitflags! {
@@ -168,6 +82,23 @@ pub fn set(_state: bool) {
     }
 }
 
+// The top level interrupt request (IRQ) handler. Deals with
+// interacting with the interrupt controller and acknowledging
+// device interrupts.
+exception_handler!(interrupt_request_handler, irq_exception_handler);
+
+pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
+    todo!("[arch::irq] Interrupt requested!!!");
+}
+
+//----------------------------
+//  interrupt controller APIs
+//----------------------------
+pub fn send_ipi(_dest: Destination, _vector: u32) {
+    todo!("send an ipi")
+}
+
+// like register, used by generic code
 pub fn allocate_interrupt_vector(
     _pri: InterruptPriority,
     _opts: InterruptAllocateOptions,
@@ -176,12 +107,26 @@ pub fn allocate_interrupt_vector(
     todo!()
 }
 
+// code for IPI signal to send 
+// needed by generic IPI code
+pub enum InterProcessorInterrupt {
+    Reschedule = 0, /* TODO */
+}
+
 impl Drop for DynamicInterrupt {
     fn drop(&mut self) {
         // TODO
     }
 }
 
-pub fn send_ipi(_dest: Destination, _vector: u32) {
-    todo!("send an ipi")
-}
+
+// in crate::arch::aarch64
+// pub fn set_interrupt(
+//     _num: u32,
+//     _masked: bool,
+//     _trigger: TriggerMode,
+//     _polarity: PinPolarity,
+//     _destination: Destination,
+// ) {
+//     todo!();
+// }

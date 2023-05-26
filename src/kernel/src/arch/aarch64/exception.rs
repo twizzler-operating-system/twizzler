@@ -6,15 +6,20 @@
 ///
 /// We currently do not handle nested exceptions.
 
-use core::arch::{asm, global_asm};
 use core::fmt::{Display, Formatter, Result};
+
 use arm64::registers::{VBAR_EL1, ESR_EL1};
 use registers::{
     registers::InMemoryRegister,
     interfaces::{Readable, Writeable},
 };
 
-global_asm!(r#"
+use twizzler_abi::upcall::UpcallFrame;
+use super::thread::UpcallAble;
+
+// TODO: Change SPSel so that we take exceptions
+// using SP_ELx, instead of using SP_EL0
+core::arch::global_asm!(r#"
 /// Exception Vector Table Definition for EL1 (Kernel)
 
 // Table must be aligned on a 2048 byte boundary (0x800)
@@ -32,7 +37,7 @@ __exception_vector_table:
 // Handlers for exceptions using the current EL with SP_EL0 (user)
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
-b default_exception_handler
+b interrupt_request_handler
 .align {VECTOR_ALIGNMENT}
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
@@ -78,8 +83,8 @@ VECTOR_ALIGNMENT = const 7, // 2^7 = 128 = 0x80
 );
 
 /// Registers that are save/resored when handling an exception
-#[derive(Debug)]
-struct ExceptionContext {
+#[derive(Debug, Copy, Clone)]
+pub struct ExceptionContext {
     x0: u64,
     x1: u64,
     x2: u64,
@@ -127,6 +132,22 @@ impl Display for ExceptionContext {
     }
 }
 
+impl UpcallAble for ExceptionContext {
+    fn set_upcall(&mut self, _target: usize, _frame: u64, _info: u64, _stack: u64) {
+        todo!("set_upcall for ExceptionContext")
+    }
+
+    fn get_stack_top(&self) -> u64 {
+        todo!("get_stat for ExceptionContext")
+    }
+}
+
+impl From<ExceptionContext> for UpcallFrame {
+    fn from(_ctx: ExceptionContext) -> Self {
+        todo!("conversion from ExceptionContext to UpcallFrame")
+    }
+}
+
 /// macro creates a high level exception handler
 /// to be used in the exception vector table.
 /// saves/restores regs and calls the specified handler
@@ -134,8 +155,8 @@ macro_rules! exception_handler {
     ($name:ident, $handler:ident) => {
         #[naked]
         #[no_mangle]
-        unsafe extern "C" fn $name() {
-            asm!(
+        pub(super) unsafe extern "C" fn $name() {
+            core::arch::asm!(
                 // save all general purpose registers (x0-x30)
                 // modify the stack pointer base
                 "sub sp, sp, {FRAME_SIZE}",
@@ -191,6 +212,8 @@ macro_rules! exception_handler {
         }
     };
 }
+// export macro to be used, but only in the parent module
+pub(super) use exception_handler;
 
 // Default exception handler simply prints out 
 // verbose debug information to the kernel console.
