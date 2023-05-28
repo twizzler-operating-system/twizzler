@@ -40,7 +40,7 @@ impl GICv2 {
     }
 
     // Enables the interrupt with a given ID to be routed to CPUs.
-    fn enable_interrupt(&self, int_id: u32) {
+    pub fn enable_interrupt(&self, int_id: u32) {
         self.global.enable_interrupt(int_id);
 
         // TODO: set the priority for the corresponding interrupt? see GICD_IPRIORITYRn
@@ -56,12 +56,12 @@ impl GICv2 {
 
     /// Returns the pending interrupt ID from the controller, and
     /// acknowledges the interrupt.
-    fn pending_interrupt(&self) -> u32 {
+    pub fn pending_interrupt(&self) -> u32 {
         self.local.get_pending_interrupt_number()
     }
 
     /// Signal the controller that we have serviced the interrupt
-    fn finish_active_interrupt(&self, int_id: u32) {
+    pub fn finish_active_interrupt(&self, int_id: u32) {
         self.local.finish_active_interrupt(int_id);
     }
 
@@ -71,3 +71,4 @@ impl GICv2 {
         self.local.print_config();
     }
 }
+

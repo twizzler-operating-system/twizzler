@@ -21,3 +21,6 @@ impl<T> Deref for MmioRef<T> {
         unsafe { &*self.address }
     }
 }
+
+unsafe impl<T> Send for MmioRef<T> {}
+unsafe impl<T> Sync for MmioRef<T> {}

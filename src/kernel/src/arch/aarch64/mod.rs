@@ -18,6 +18,7 @@ mod start;
 pub use address::{VirtAddr, PhysAddr};
 pub use interrupt::{send_ipi, init_interrupts};
 pub use start::BootInfoSystemTable;
+use twizzler_abi::syscall::TimeSpan;
 
 pub fn init<B: BootInfo>(_boot_info: &B) {
     logln!("[arch::init] initializing exceptions");
@@ -27,14 +28,14 @@ pub fn init<B: BootInfo>(_boot_info: &B) {
     processor::enumerate_clocks();
 
     use crate::time::TICK_SOURCES;
-    use twizzler_abi::syscall::{NanoSeconds, ClockSource};
+    use twizzler_abi::syscall::{NanoSeconds, ClockSource, NANOS_PER_SEC, FEMTOS_PER_SEC};
 
     let clk_src: u64 = ClockSource::BestMonotonic.into();
     let cntp = &TICK_SOURCES.lock()[clk_src as usize];
 
     let info = cntp.info();
     logln!("[arch::timer] frequency: {} Hz, {} fs, {} ns", 
-        1_000_000_000_000_000 / info.resolution().0, info.resolution().0, {
+        FEMTOS_PER_SEC / info.resolution().0, info.resolution().0, {
             let femtos = info.resolution();
             let nanos: NanoSeconds = femtos.into();
             nanos.0
@@ -48,6 +49,49 @@ pub fn init<B: BootInfo>(_boot_info: &B) {
     );
 
     init_interrupts();
+
+    // set the timer interrupt to be routed to us
+    crate::machine::interrupt::INTERRUPT_CONTROLLER
+        .enable_interrupt(cntp::PhysicalTimer::INTERRUPT_ID);
+
+    // configure the timer to fire off interrupts
+    const WAIT_TIME: TimeSpan = TimeSpan::from_secs(3);
+
+    let phys_timer = cntp::PhysicalTimer::new();
+    phys_timer.set_timer(WAIT_TIME);
+
+    logln!("[arch::timer] firing off an interrupt in {} seconds...", WAIT_TIME.0.0);
+
+    logln!("[kernel::arch] looping forever");
+    let mut count = 0;
+    let mut tick0 = cntp.read();
+    loop {
+        // record start timestamp
+        let start_time = tick0.value * tick0.rate;
+        let mut tick1;
+        let mut end_time;
+        // check if half a second passed
+        loop {
+            tick1 = cntp.read();
+            end_time = tick1.value * tick1.rate;
+            if (end_time - start_time).as_nanos() >= (NANOS_PER_SEC / 2).into() {
+                // reset starting timestamp
+                tick0 = cntp.read();
+                // increment half second counts
+                count += 1;
+                logln!("[kernel:test] 1/2 second has passed: {}", count);
+                break
+            }
+        }
+        // if 6 seconds have passed
+        if count >= 12 {
+            // reset the interrupt timer count to 5 seconds later
+            logln!("[kernel::test] setting timer to fire in 5 seconds");
+            phys_timer.set_timer(TimeSpan::from_secs(5));
+
+            count = 0;
+        }
+    }
 }
 
 pub fn init_secondary() {

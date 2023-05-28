@@ -9,6 +9,7 @@ use twizzler_abi::{
 };
 
 use crate::interrupt::{DynamicInterrupt, Destination};
+use crate::machine::interrupt::INTERRUPT_CONTROLLER;
 
 use super::exception::{exception_handler, ExceptionContext};
 
@@ -87,8 +88,30 @@ pub fn set(_state: bool) {
 // device interrupts.
 exception_handler!(interrupt_request_handler, irq_exception_handler);
 
+/// Exception handler manages IRQs and calls the appropriate
+/// handler for a given IRQ number. This handler manages state
+/// in the interrupt controller.
 pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
-    todo!("[arch::irq] Interrupt requested!!!");
+    // TODO: for compatability, ARM recommends reading the entire
+    // GICC_IAR register and writing that to GICC_EOIR
+
+    // Get pending IRQ number from GIC CPU Interface.
+    // Doing so acknowledges the pending interrupt.
+    let irq_number = INTERRUPT_CONTROLLER.pending_interrupt();
+    emerglogln!("[arch::irq] interrupt: {}", irq_number);
+    
+    match irq_number {
+        super::cntp::PhysicalTimer::INTERRUPT_ID => {
+            // call timer interrupt handler
+            super::cntp::cntp_interrupt_handler();
+        },
+        _ => panic!("unknown reason!")
+    }
+    // signal the GIC that we have serviced the IRQ
+    INTERRUPT_CONTROLLER.finish_active_interrupt(irq_number);
+
+    // TODO: maybe call crate::interrupt::post_interrupt()
+    // so that we can preempt this thread
 }
 
 //----------------------------
@@ -120,22 +143,14 @@ impl Drop for DynamicInterrupt {
 }
 
 pub fn init_interrupts() {
-    logln!("[arch::exceptions] initializing interrupts");
+    logln!("[arch::interrupt] initializing interrupts");
     
     // initialize interrupt controller
-    use crate::machine::interrupt::GICv2;
-    use crate::machine::memory::mmio::{GICV2_DISTRIBUTOR, GICV2_CPU_INTERFACE};
+    INTERRUPT_CONTROLLER.print_config();
 
-    let gic = GICv2::new(
-        GICV2_DISTRIBUTOR.start.kernel_vaddr(),
-        GICV2_CPU_INTERFACE.start.kernel_vaddr(),
-    );
+    INTERRUPT_CONTROLLER.configure();
 
-    gic.print_config();
-
-    gic.configure();
-
-    gic.print_config();
+    INTERRUPT_CONTROLLER.print_config();
 }
 
 // in crate::arch::aarch64
