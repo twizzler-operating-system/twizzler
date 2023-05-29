@@ -244,7 +244,7 @@ impl PhysAddr {
     ///
     /// # Safety
     /// The provided address must be a valid address.
-    pub unsafe fn new_unchecked(addr: u64) -> Self {
+    pub const unsafe fn new_unchecked(addr: u64) -> Self {
         Self(addr)
     }
 

@@ -6,13 +6,13 @@ use crate::{
     thread::Thread,
 };
 
-use super::{interrupt::IsrContext, syscall::Armv8SyscallContext};
+use super::{exception::ExceptionContext, syscall::Armv8SyscallContext};
 
 #[derive(Copy, Clone)]
 pub enum Registers {
     None,
     Syscall(*mut Armv8SyscallContext, Armv8SyscallContext),
-    Interrupt(*mut IsrContext, IsrContext),
+    Interrupt(*mut ExceptionContext, ExceptionContext),
 }
 
 // arch specific thread state

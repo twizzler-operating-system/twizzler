@@ -21,7 +21,10 @@ pub fn enumerate_cpus() -> u32 {
 /// Determine what hardware clock sources are available
 /// on the processor and register them in the time subsystem.
 pub fn enumerate_clocks() {
-    todo!()
+    // for now we utlize the physical timer (CNTPCT_EL0)
+    
+    // save reference to the CNTP clock source into global array
+    crate::time::register_clock(super::cntp::PhysicalTimer::new());
 }
 
 // map out topology of hardware
