@@ -6,3 +6,4 @@ mod virt;
 pub use virt::*;
 
 mod uart;
+mod gicv2;
