@@ -209,17 +209,65 @@ fn debug_handler(ctx: &mut ExceptionContext) {
     // ec: exception class
     let esr_reg: InMemoryRegister<u64, ESR_EL1::Register> = InMemoryRegister::new(esr);
     emerglogln!("ESR[31:26] = {:#x} ==> EC (Exception Class)", esr_reg.read(ESR_EL1::EC));
+    let mut data_abort = false;
     emerglogln!("\t{}", 
         match esr_reg.read_as_enum(ESR_EL1::EC) {
             Some(ESR_EL1::EC::Value::SVC64) => "SVC instruction execution in AArch64 state.",
+            Some(ESR_EL1::EC::Value::DataAbortCurrentEL) => {
+                data_abort = true;
+                "Data Abort taken without a change in Exception level."
+            },
             Some(ESR_EL1::EC::Value::Unknown) | _ => "Unknown reason.",
         }
     );
     // iss: syndrome
-    emerglogln!("ESR[24:0] = {:#x} ==> ISS (Instruction Specific Syndrome)", esr_reg.read(ESR_EL1::ISS));
+    let iss = esr_reg.read(ESR_EL1::ISS);
+    emerglogln!("ESR[24:0] = {:#x} ==> ISS (Instruction Specific Syndrome)", iss);
     
-    // TODO:
-    // print faulting address (ELR/FAR)
+    // if a page fault occured, then decode the ISS accordingly
+    if data_abort {
+        // is the syndrome information in ISS[23:14] valid?
+        let isv = iss & (1 << 24) != 0;
+        emerglogln!("\tISS[24] = {:#x} ==> ISV (Instruction Syndrome Valid)", (iss >> 24) & 0x1);
+        emerglogln!("\t\tSyndrome information in ISS[23:14] is{}valid", 
+            if isv {
+                " "
+            } else {
+                " not "
+            }
+        );
+
+        // is the fault address register valid?
+        let far_valid = iss & (1 << 10) == 0;
+        emerglogln!("\tISS[10] = {:#x} ==> FnV (FAR not Valid)", (iss >> 10 & 0x1));
+        if far_valid {
+            emerglogln!("\t\tFault Address Register is valid"); 
+            // print faulting address (ELR/FAR)
+            emerglogln!("\t\tFAR value = {:#018x}", arm64::registers::FAR_EL1.get());
+        }
+
+        // was fault caused by a write to memory or a read?
+        let write_fault = iss & (1 << 6) != 0;
+        emerglogln!("\tISS[6] = {:#x} ==> WnR (Write not Read)", (iss >> 6 & 0x1));
+        emerglogln!("\t\tAbort caused by a memory {}",
+            if write_fault {
+                "write"
+            } else {
+                "read"
+            }
+        );
+
+        // DFSC bits[5:0] indicate the type of fault
+        let dfsc = iss & 0b111111;
+        emerglogln!("\tISS[5:0] = {:#x} ==> DFSC (Data Fault Status Code)", dfsc);
+        if dfsc & 0b111100 == 0b001000 {
+            // we have an access fault
+            let level = dfsc & 0b11;
+            emerglogln!("\t\tAccess flag fault, level {}", level);
+            // TODO: set the access flag
+        }
+    }
+
     // print other system registers: PSTATE/SPSR
 
     // print registers
