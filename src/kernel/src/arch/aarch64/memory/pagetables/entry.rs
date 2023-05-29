@@ -21,13 +21,24 @@ use crate::{
 pub struct Entry(u64);
 
 impl Entry {
-    fn new_internal(_addr: PhysAddr, _flags: EntryFlags) -> Self {
-        todo!("new_internal")
+    fn new_internal(addr: PhysAddr, flags: EntryFlags) -> Self {
+        Self(addr.raw() | flags.bits())
     }
 
     /// Construct a new _present_ [Entry] out of an address and flags.
     pub fn new(addr: PhysAddr, flags: EntryFlags) -> Self {
-        Self::new_internal(addr, flags | EntryFlags::PRESENT)
+        // Table descriptor bits [11:2] are ignored
+        // so it is safe to always add these flags
+        Self::new_internal(addr, flags 
+            | EntryFlags::PRESENT
+            | EntryFlags::SH1_SHAREABLE
+            | EntryFlags::SH0_INNER_OR_OUTER
+            // TODO: access flag is managed by software on base
+            // ARMv8-A. This only works since these entries were
+            // already present before when switching from bootstrap
+            // mappings.
+            | EntryFlags::ACCESS
+        )
     }
 
     /// Get the raw u64.
@@ -103,8 +114,15 @@ impl Entry {
     }
 
     /// Set the flags.
-    pub fn set_flags(&mut self, _flags: EntryFlags) {
-        todo!("setting the flags on aarch64 depends on the level")
+    pub fn set_flags(&mut self, flags: EntryFlags) {
+        // todo!("setting the flags on aarch64 depends on the level")
+        // does it tho? I think for some yes, but not all ... 
+        // depends on the level, since this creates a new address
+        // TODO: setting the address depends on the level.
+        // For now we assume that we are setting the address for a leaf
+        
+        // for now assume that we do a leaf
+        *self = Entry::new_internal(self.addr(super::Table::last_level()), flags);
     }
 
     const NEXT_LVL_TABLE_ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000;
@@ -160,8 +178,14 @@ bitflags::bitflags! {
         /// Access permission bit 2: Read only or read-write permission.
         const AP2_READ_OR_RW = 1 << 7;
 
-        // [9:8] => OA[51:50]
-        //   - if the Effective value of TCR_Elx.DS is 1.
+        // [9:8] => 
+        //   - Shareability Field(SH[1:0]): if the Effective value of TCR_Elx.DS is 0.
+        //   - Output Address(OA[51:50]): if the Effective value of TCR_Elx.DS is 1.
+
+        /// Shareability attribute bit 0: Inner or Outer shareable
+        const SH0_INNER_OR_OUTER = 1 << 8;
+        /// Shareability attribute bit 1: Shareable or non-shareable/reserved
+        const SH1_SHAREABLE = 1 << 9;
 
         // [10] => AF
         //   - access flag, memory region accessed since last set to 0
@@ -299,12 +323,27 @@ impl EntryFlags {
 
     /// Get the set of flags to use for an intermediate (page table) entry.
     pub fn intermediate() -> Self {
-        todo!("intermediate flags")
+        // we want the table to be: readable, writeable, valid,
+        // marked as a table descriptor, and be kernel-only
+        //
+        // NOTE: not setting AP1_USER_OR_KERNEL/AP2_READ_OR_RW
+        // means that AP[2:1] = 0, so the mapping is kernel only with
+        // read/write access
+        Self::PRESENT | Self::TABLE_OR_HUGE_PAGE
     }
 
     /// Get the flags needed to indicate a huge page.
     pub fn huge() -> Self {
-        todo!("huge page flags")
+        // huge pages are indicated by the absence of
+        // the TABLE_OR_HUGE_PAGE bit flag
+        EntryFlags::empty()
+    }
+
+    /// Get the flags needed to indacate a leaf (i.e. page)
+    pub fn leaf() -> Self {
+        // If this bit is set at level 3, then we are
+        // looking at a page.
+        Self::TABLE_OR_HUGE_PAGE
     }
 }
 

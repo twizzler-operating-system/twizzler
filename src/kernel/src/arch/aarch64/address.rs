@@ -249,7 +249,7 @@ impl PhysAddr {
     }
 
     pub fn kernel_vaddr(&self) -> VirtAddr {
-        phys_to_virt(*self) // maybe???
+        phys_to_virt(*self)
     }
 
     pub fn offset<U: Into<Offset>>(&self, offset: U) -> Result<Self, NonCanonical> {

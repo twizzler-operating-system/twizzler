@@ -157,6 +157,11 @@ impl EntryFlags {
     pub fn huge() -> Self {
         Self::HUGE_PAGE
     }
+
+    /// Get the flags needed to indacate a leaf (i.e. page)
+    pub fn leaf() -> Self {
+        EntryFlags::empty()
+    }
 }
 
 impl From<&MappingSettings> for EntryFlags {

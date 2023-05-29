@@ -191,11 +191,11 @@ impl VirtContext {
         // the call to prep_smp later.
         let id_len = 0x100000000; // 4GB
         let cursor = MappingCursor::new(
-            VirtAddr::new(Table::level_to_page_size(0).try_into().unwrap()).unwrap(),
+            VirtAddr::new(Table::level_to_page_size(Table::last_level()).try_into().unwrap()).unwrap(),
             id_len,
         );
         let mut phys = ContiguousProvider::new(
-            PhysAddr::new(Table::level_to_page_size(0).try_into().unwrap()).unwrap(),
+            PhysAddr::new(Table::level_to_page_size(Table::last_level()).try_into().unwrap()).unwrap(),
             id_len,
         );
         let settings = MappingSettings::new(

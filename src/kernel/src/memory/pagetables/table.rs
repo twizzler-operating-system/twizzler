@@ -85,7 +85,6 @@ impl Table {
             .settings()
             .flags()
             .contains(MappingFlags::GLOBAL);
-
         *entry = new_entry;
         let entry_addr = VirtAddr::from(entry as *const _);
         consist.flush(entry_addr);
@@ -136,7 +135,7 @@ impl Table {
                             | if level != Self::last_level() {
                                 EntryFlags::huge()
                             } else {
-                                EntryFlags::empty()
+                                EntryFlags::leaf()
                             },
                     ),
                     cursor.start(),
@@ -227,7 +226,7 @@ impl Table {
                             | if level != Self::last_level() {
                                 EntryFlags::huge()
                             } else {
-                                EntryFlags::empty()
+                                EntryFlags::leaf()
                             },
                     ),
                     cursor.start(),

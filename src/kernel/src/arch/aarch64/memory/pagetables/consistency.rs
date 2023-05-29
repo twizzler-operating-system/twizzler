@@ -10,9 +10,12 @@ const MAX_INVALIDATION_INSTRUCTIONS: usize = 0;
 #[derive(Clone)]
 struct TlbInvData {
     // target_cr3: u64,
-    instructions: [InvInstruction; MAX_INVALIDATION_INSTRUCTIONS],
+    // instructions: [InvInstruction; MAX_INVALIDATION_INSTRUCTIONS],
     len: u8,
-    flags: u8,
+    // flags: u8,
+    addresses: [
+        VirtAddr; Self::MAX_OUTSTANDING_INVALIDATIONS
+    ],
 }
 
 fn tlb_non_global_inv() {
@@ -28,47 +31,51 @@ impl TlbInvData {
     const GLOBAL: u8 = 0;
     const FULL: u8 = 0;
 
-    fn set_global(&mut self) {
-        self.flags |= Self::GLOBAL;
-    }
+    // the maximum number of tlb invalidations that can
+    // be enqueued
+    const MAX_OUTSTANDING_INVALIDATIONS: usize = 16;
 
-    fn set_full(&mut self) {
-        self.flags |= Self::FULL;
-    }
+    // fn set_global(&mut self) {
+    //     self.flags |= Self::GLOBAL;
+    // }
 
-    fn full(&self) -> bool {
-        self.flags & Self::FULL != 0
-    }
+    // fn set_full(&mut self) {
+    //     self.flags |= Self::FULL;
+    // }
 
-    fn global(&self) -> bool {
-        self.flags & Self::GLOBAL != 0
-    }
+    // fn full(&self) -> bool {
+    //     self.flags & Self::FULL != 0
+    // }
 
-    fn target(&self) -> u64 {
-        todo!()
-    }
+    // fn global(&self) -> bool {
+    //     self.flags & Self::GLOBAL != 0
+    // }
 
-    fn instructions(&self) -> &[InvInstruction] {
-        &self.instructions[0..(self.len as usize)]
-    }
+    // fn target(&self) -> u64 {
+    //     todo!()
+    // }
 
-    fn enqueue(&mut self, inst: InvInstruction) {
-        if inst.is_global() {
-            self.set_global();
-        }
+    // fn instructions(&self) -> &[InvInstruction] {
+    //     &self.instructions[0..(self.len as usize)]
+    // }
 
-        if self.len as usize == MAX_INVALIDATION_INSTRUCTIONS {
-            self.set_full();
-            return;
-        }
+    // fn enqueue(&mut self, inst: InvInstruction) {
+    //     if inst.is_global() {
+    //         self.set_global();
+    //     }
 
-        self.instructions[self.len as usize] = inst;
-        self.len += 1;
-    }
+    //     if self.len as usize == MAX_INVALIDATION_INSTRUCTIONS {
+    //         self.set_full();
+    //         return;
+    //     }
 
-    unsafe fn do_invalidation(&self) {
-        todo!()
-    }
+    //     self.instructions[self.len as usize] = inst;
+    //     self.len += 1;
+    // }
+
+    // unsafe fn do_invalidation(&self) {
+    //     todo!()
+    // }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -104,21 +111,46 @@ impl InvInstruction {
 #[derive(Default)]
 /// An object that manages cache line invalidations during page table updates.
 pub struct ArchCacheLineMgr {
-    dirty: Option<u64>,
+    dirty: Option<u64>, // a single cacheline address to flush
 }
 
 // TODO:
-const CACHE_LINE_SIZE: u64 = 0;
+const CACHE_LINE_SIZE: u64 = 64;
 impl ArchCacheLineMgr {
     /// Flush a given cache line when this [ArchCacheLineMgr] is dropped. Subsequent flush requests for the same cache
     /// line will be batched. Flushes for different cache lines will cause older requests to flush immediately, and the
     /// new request will be flushed when this object is dropped.
-    pub fn flush(&mut self, _line: VirtAddr) {
-        todo!()
+    pub fn flush(&mut self, line: VirtAddr) {
+        // logln!("[arch::cacheln] flush called on: {:#018x}", line.raw());
+        let addr: u64 = line.into();
+        // TODO: not sure if we need this step
+        // let addr = addr & !(CACHE_LINE_SIZE - 1);
+        if let Some(dirty) = self.dirty {
+            if dirty != addr {
+                self.do_flush();
+                self.dirty = Some(addr);
+            }
+        } else {
+            self.dirty = Some(addr);
+        }
     }
 
     fn do_flush(&mut self) {
-        todo!()
+        if let Some(_addr) = self.dirty {
+            // logln!("[arch::cacheln] flush something: {:#018x}", addr);
+            unsafe {
+                core::arch::asm!(
+                    // flush the data part of the cache line
+                    // TODO: do we need to use `dc cvac addr`?
+                    // ensure the change to the table entry is visible to the MMU
+                    "dsb ishst",
+                    // ensure that the dsb has completed before the next instruction
+                    "isb",
+                );
+            }
+        } else {
+            // logln!("[arch::cacheln] flush something: None");
+        }
     }
 }
 
@@ -131,12 +163,23 @@ impl Drop for ArchCacheLineMgr {
 /// A management object for TLB invalidations that occur during a page table operation.
 pub struct ArchTlbMgr {
     data: TlbInvData,
+    root: PhysAddr
 }
 
 impl ArchTlbMgr {
     /// Construct a new [ArchTlbMgr].
-    pub fn new(_target: PhysAddr) -> Self {
-        todo!()
+    pub fn new(table_root: PhysAddr) -> Self {
+        Self {
+            data: TlbInvData { 
+                addresses: [
+                    unsafe {
+                        VirtAddr::new_unchecked(0)
+                    }; TlbInvData::MAX_OUTSTANDING_INVALIDATIONS
+                ],
+                len: 0,
+            },
+            root: table_root,
+        }
     }
 
     /// Enqueue a new TLB invalidation. is_global should be set iff the page is global, and is_terminal should be set
