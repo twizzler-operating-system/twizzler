@@ -1,4 +1,13 @@
-/// GICv2 CPU Interface
+/// A Generic Interrupt Controller (GIC) v2 CPU Interface
+/// 
+/// The full specification can be found here:
+///     https://developer.arm.com/documentation/ihi0048/b?lang=en
+///
+/// Relevant sections include, but are not limited to: 2.3, 4.1.3, 4.3
+///
+/// A summary of its functionality can be found in section 10.6
+/// "ARM Cortex-A Series Programmer’s Guide for ARMv8-A":
+///     https://developer.arm.com/documentation/den0024/a/
 
 use registers::{
     interfaces::{Readable, Writeable},

@@ -1,3 +1,12 @@
+/// A Generic Interrupt Controller (GIC) v2 driver interface
+/// 
+/// The full specification can be found here:
+///     https://developer.arm.com/documentation/ihi0048/b?lang=en
+///
+/// A summary of its functionality can be found in section 10.6
+/// "ARM Cortex-A Series Programmer’s Guide for ARMv8-A":
+///     https://developer.arm.com/documentation/den0024/a/
+
 mod gicd;
 mod gicc;
 mod mmio;
@@ -7,6 +16,7 @@ use gicc::GICC;
 
 use crate::memory::VirtAddr;
 
+/// A representation of the Generic Interrupt Controller (GIC) v2
 pub struct GICv2 {
     global: GICD,
     local: GICC,
