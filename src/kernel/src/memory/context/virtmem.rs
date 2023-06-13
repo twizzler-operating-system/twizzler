@@ -403,7 +403,7 @@ impl KernelMemoryContext for VirtContext {
                 let size = layout
                     .pad_to_align()
                     .size()
-                    .next_multiple_of(crate::memory::pagetables::Table::level_to_page_size(0))
+                    .next_multiple_of(Table::level_to_page_size(Table::last_level()))
                     * 2;
                 glb.extend(size, self);
                 glb.alloc.allocate_first_fit(layout).unwrap()
