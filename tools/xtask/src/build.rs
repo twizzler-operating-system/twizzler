@@ -253,6 +253,25 @@ fn maybe_build_kernel_tests<'a>(
     crate::print_status_line("collection: kernel::tests", Some(build_config));
     let packages = locate_packages(workspace, Some("kernel"));
     let mut options = CompileOptions::new(workspace.config(), mode)?;
+    if !build_config.is_default_target() {
+        // the currently supported build target specs
+        // have a value of "unknown" for the machine, but
+        // we specify the machine for conditional compilation
+        // in the kernel via xtask cli
+        let triple = Triple::new(
+            build_config.arch,
+            crate::triple::Machine::Unknown,
+            crate::triple::Host::None,
+        );
+
+        let mut target_spec = triple.to_string();
+        target_spec.insert_str(0, "src/kernel/target-spec/");
+        target_spec.push_str(".json");
+
+        let bc = BuildConfig::new(workspace.config(), None, false, &[target_spec], mode)?;
+
+        options.build_config = bc;
+    }
     options.build_config.message_format = other_options.message_format;
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");

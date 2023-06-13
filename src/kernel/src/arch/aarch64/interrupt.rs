@@ -143,14 +143,12 @@ impl Drop for DynamicInterrupt {
 }
 
 pub fn init_interrupts() {
-    logln!("[arch::interrupt] initializing interrupts");
+    // we don't want to use logln since it enables interrupts
+    // in the future we should not use logging until mm us up
+    emerglogln!("[arch::interrupt] initializing interrupts");
     
     // initialize interrupt controller
-    INTERRUPT_CONTROLLER.print_config();
-
     INTERRUPT_CONTROLLER.configure();
-
-    INTERRUPT_CONTROLLER.print_config();
 }
 
 // in crate::arch::aarch64
