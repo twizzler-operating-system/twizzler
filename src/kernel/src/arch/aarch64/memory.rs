@@ -12,7 +12,7 @@ pub mod pagetables;
 /// all physical memory. This is convenient since
 /// calculating a physical to virtual address is simply
 /// va = base + offset
-const PHYS_MEM_OFFSET: u64 = 0xffff800000000000;
+const PHYS_MEM_OFFSET: u64 = 0xFFFF_8000_0000_0000;
 
 /* TODO: hide this */
 pub fn phys_to_virt(pa: PhysAddr) -> VirtAddr {
