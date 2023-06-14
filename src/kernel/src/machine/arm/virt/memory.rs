@@ -25,4 +25,15 @@ pub mod mmio {
         length: 0x00010000,
         kind: MemoryRegionKind::Reserved,
     };
+
+    /// The region of the physical memory map that represents
+    /// the MMIO registers of the PL011 UART
+    pub const PL011_UART: MemoryRegion = MemoryRegion {
+        // physical base address in QEMU
+        start: unsafe {
+            PhysAddr::new_unchecked(0x0900_0000)
+        },
+        length: 0x00010000, // TODO: check length
+        kind: MemoryRegionKind::Reserved,
+    };
 }
