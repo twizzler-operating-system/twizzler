@@ -195,8 +195,9 @@ impl From<MemoryAttribute> for CacheType {
         // memory in this case
         match attr.attr.read_as_enum(MEM_ATTR::Normal_Outer) {
             // is this device memory or uncacheable memory?
-            Some(MEM_ATTR::Normal_Outer::Value::Device) 
-                | Some(MEM_ATTR::Normal_Outer::Value::NonCacheable) => CacheType::Uncacheable,
+            Some(MEM_ATTR::Normal_Outer::Value::Device) => CacheType::MemoryMappedIO,
+            // is this memory not cacheable?
+            Some(MEM_ATTR::Normal_Outer::Value::NonCacheable) => CacheType::Uncacheable,
             // is this memory write-through?
             Some(MEM_ATTR::Normal_Outer::Value::WriteThrough_Transient_WriteAlloc)
                 | Some(MEM_ATTR::Normal_Outer::Value::WriteThrough_Transient_ReadAlloc)
