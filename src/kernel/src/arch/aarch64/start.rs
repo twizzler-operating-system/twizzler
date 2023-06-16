@@ -102,8 +102,6 @@ static LR3: &'static LimineKernelFileRequest = &KERNEL_ELF;
 // the kernel's entry point function from the limine bootloader
 // limine ensures we are in el1 (kernel mode)
 fn limine_entry() -> ! {
-    emerglogln!("[kernel] hello world!!");
-
     // let's see what's in the memory map from limine
     let mmap = MEMORY_MAP
         .get_response() // LiminePtr<LimineMemmapResponse>

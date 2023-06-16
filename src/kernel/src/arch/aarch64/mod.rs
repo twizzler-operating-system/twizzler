@@ -15,13 +15,17 @@ mod syscall;
 pub mod thread;
 mod start;
 
+pub mod tests;
+
 pub use address::{VirtAddr, PhysAddr};
 pub use interrupt::{send_ipi, init_interrupts};
 pub use start::BootInfoSystemTable;
 
 pub fn init<B: BootInfo>(_boot_info: &B) {
-    logln!("[arch::init] initializing exceptions");
+    // initialize exceptions by setting up our exception vectors
     exception::init();
+    // configure registers needed by the memory management system
+    // TODO: configure MAIR
 }
 
 pub fn init_secondary() {
