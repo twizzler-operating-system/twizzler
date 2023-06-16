@@ -9,12 +9,15 @@ lazy_static! {
     pub static ref INTERRUPT_CONTROLLER: GICv2 = {
         use twizzler_abi::{device::CacheType, object::Protections};
         
-        use crate::memory::pagetables::{
-            ContiguousProvider, MappingCursor, MappingSettings, Mapper,
-            MappingFlags,
+        use crate::memory::{
+            VirtAddr,
+            pagetables::{
+                ContiguousProvider, MappingCursor, MappingSettings, Mapper,
+                MappingFlags,
+            },
         };
-        let gicc_mmio_base = GICV2_CPU_INTERFACE.start.kernel_vaddr();
-        let gicd_mmio_base = GICV2_DISTRIBUTOR.start.kernel_vaddr();
+        let gicc_mmio_base = VirtAddr::new(0xFFFF_0000_0000_2000).unwrap();
+        let gicd_mmio_base = VirtAddr::new(0xFFFF_0000_0000_4000).unwrap();
         // configure mapping settings for this region of memory
         let gicc_region = MappingCursor::new(
             gicc_mmio_base,
@@ -47,7 +50,7 @@ lazy_static! {
         }
         GICv2::new(
             // TODO: might need to lock global distributor state,
-            // an possibly CPU interface
+            // and possibly CPU interface
             gicd_mmio_base,
             gicc_mmio_base,
         )

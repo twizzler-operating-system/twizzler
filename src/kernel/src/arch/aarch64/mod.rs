@@ -15,8 +15,6 @@ mod syscall;
 pub mod thread;
 mod start;
 
-pub mod tests;
-
 pub use address::{VirtAddr, PhysAddr};
 pub use interrupt::{send_ipi, init_interrupts};
 pub use start::BootInfoSystemTable;
