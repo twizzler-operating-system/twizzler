@@ -11,7 +11,8 @@ pub mod mmio {
         start: unsafe {
             PhysAddr::new_unchecked(0x08000000)
         },
-        length: 0x00010000,
+        // Distributor interface register map goes from 0x0000-0x1000
+        length: 0x00001000,
         kind: MemoryRegionKind::Reserved,
     };
 
@@ -22,7 +23,9 @@ pub mod mmio {
         start: unsafe {
             PhysAddr::new_unchecked(0x08010000)
         },
-        length: 0x00010000,
+        // CPU interface register map goes from 0x0000-0x1000
+        // we only need 0x1004 bytes, but will request 0x2000
+        length: 0x00002000,
         kind: MemoryRegionKind::Reserved,
     };
 
@@ -33,7 +36,7 @@ pub mod mmio {
         start: unsafe {
             PhysAddr::new_unchecked(0x0900_0000)
         },
-        length: 0x00010000, // TODO: check length
+        length: 0x00001000,
         kind: MemoryRegionKind::Reserved,
     };
 }
