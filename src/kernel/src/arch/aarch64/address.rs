@@ -28,10 +28,10 @@ pub struct NonCanonical;
 
 impl VirtAddr {
     /// The start of the kernel memory heap.
-    pub const HEAP_START: Self = Self(0xffffff0000000000);
+    pub const HEAP_START: Self = Self(0xFFFF_FF00_0000_0000);
 
     /// The start of the kernel object mapping.
-    const KOBJ_START: Self = Self(0xfffff00000000000);
+    const KOBJ_START: Self = Self(0xFFFF_F000_0000_0000);
     
     // TTBR0_EL1 points to a page table root for addresses ranging from
     // 0x0 to 0x0000_FFFF_FFFF_FFFF. Generally this is used to cover
@@ -66,11 +66,11 @@ impl VirtAddr {
     }
     
     pub const fn start_kernel_object_memory() -> Self {
-        todo!()
+        Self::KOBJ_START
     }
 
     pub const fn end_kernel_object_memory() -> Self {
-        todo!(); // doable
+        Self::HEAP_START
     }
 
     pub const fn start_user_memory() -> Self {

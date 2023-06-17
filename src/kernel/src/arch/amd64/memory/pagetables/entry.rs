@@ -171,6 +171,7 @@ impl From<&MappingSettings> for EntryFlags {
             CacheType::WriteThrough => EntryFlags::WRITE_THROUGH,
             CacheType::WriteCombining => EntryFlags::empty(),
             CacheType::Uncacheable => EntryFlags::CACHE_DISABLE,
+            CacheType::MemoryMappedIO => todo!("mapping MMIO CacheType to EntryFlags"),
         };
         let mut p = EntryFlags::empty();
         if settings.perms().contains(Protections::WRITE) {

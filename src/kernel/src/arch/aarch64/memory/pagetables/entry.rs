@@ -1,13 +1,11 @@
 use twizzler_abi::{device::CacheType, object::Protections};
 
-use arm64::registers::MAIR_EL1;
-use registers::interfaces::Readable;
-use registers::registers::InMemoryRegister;
-
 use crate::{
     arch::address::PhysAddr,
     memory::pagetables::{MappingFlags, MappingSettings},
 };
+
+use super::mair::{AttributeIndex, memory_attr_manager};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(transparent)]
@@ -31,6 +29,8 @@ impl Entry {
         // so it is safe to always add these flags
         Self::new_internal(addr, flags 
             | EntryFlags::PRESENT
+            // NOTE: device memory will ignore these sharability
+            // attributes, so it is safe to always enable them
             | EntryFlags::SH1_SHAREABLE
             | EntryFlags::SH0_INNER_OR_OUTER
             // TODO: access flag is managed by software on base
@@ -280,45 +280,15 @@ impl EntryFlags {
 
         // Get the attribute index of the entry
         // bits [4:2] => AttrIndex[2:0]
-        let i = (self.bits() >> 2) & 0b111;
-
-        // we have to read the MAIR register to determine
-        // the properties of this mapped memory
-        let mair = MAIR_EL1.get(); // the raw value
+        let index: AttributeIndex = ((self.bits() >> 2) & 0b111) as AttributeIndex;
 
         // get the attribute based on the index
-        const MAIR_LEN: u64 = 8;
-        const MAIR_MASK: u64 = 0xFF;
-        let attr = (mair >> (i * MAIR_LEN))  & MAIR_MASK;
+        let attr = memory_attr_manager()
+            .read_entry(index)
+            .expect("invalid attribute index");
 
         // match the attribute to the cache type
-        let cache: InMemoryRegister<u64, MAIR_EL1::Register> = InMemoryRegister::new(attr);
-
-        // NOTE: transient is basically a hint to the cacheing system
-        // so we can place it in the same class as other non-transient
-        // memory in this case
-        match cache.read_as_enum(MAIR_EL1::Attr0_Normal_Outer) {
-            // is this device memory or uncacheable memory?
-            Some(MAIR_EL1::Attr0_Normal_Outer::Value::Device) 
-                | Some(MAIR_EL1::Attr0_Normal_Outer::Value::NonCacheable) => CacheType::Uncacheable,
-            // is this memory write-through?
-            Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteThrough_Transient_WriteAlloc)
-                | Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteThrough_Transient_ReadAlloc)
-                | Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteThrough_Transient_ReadWriteAlloc)
-                | Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteThrough_NonTransient)
-                | Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteThrough_NonTransient_WriteAlloc)
-                | Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteThrough_NonTransient_ReadAlloc)
-                | Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteThrough_NonTransient_ReadWriteAlloc) => CacheType::WriteThrough,
-            // is this memory write-back?
-            Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteBack_Transient_WriteAlloc)
-                | Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteBack_Transient_ReadAlloc)
-                | Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteBack_Transient_ReadWriteAlloc)
-                | Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteBack_NonTransient)
-                | Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteBack_NonTransient_WriteAlloc)
-                | Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteBack_NonTransient_ReadAlloc)
-                | Some(MAIR_EL1::Attr0_Normal_Outer::Value::WriteBack_NonTransient_ReadWriteAlloc) => CacheType::WriteBack,
-            None => todo!("unrecognized cache type"),
-        }
+        CacheType::from(attr)
     }
 
     /// Get the set of flags to use for an intermediate (page table) entry.
@@ -349,21 +319,17 @@ impl EntryFlags {
 
 impl From<CacheType> for EntryFlags {
     fn from(cache: CacheType) -> Self {
-        // TODO: actually read the MAIR register, and see if 
-        // cache type matches an index, or maybe we statically assign
-        // certian entries in mair to a particular memory type
-
-        // TODO: differentiate between normal and device memory
-
         // unsupported cache types result in `EntryFlags::empty()`
         // in this, it defaults to normal cacheble memory (index 0)
-        let attr_idx = match cache {
-            CacheType::WriteBack | _ => 0,
-        };
+        let attr_idx = memory_attr_manager()
+            .attribute_index(cache)
+            .unwrap_or(0);
+        
+        // TODO: should we try to update the requested mapping in MAIR?
 
         // convert the numerical index to a set of flags
         // AttrIndx[2:0] is mapped to EntryFlags bits [4:2]
-        EntryFlags::from_bits_truncate(attr_idx << 2)
+        EntryFlags::from_bits_truncate((attr_idx << 2) as u64)
     }
 }
 
