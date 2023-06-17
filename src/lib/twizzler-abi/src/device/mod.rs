@@ -82,6 +82,7 @@ pub enum CacheType {
     WriteCombining = 1,
     WriteThrough = 2,
     Uncacheable = 3,
+    MemoryMappedIO = 4,
 }
 
 /// Info struct at the base of an mmio sub-object.
