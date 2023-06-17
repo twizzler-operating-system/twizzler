@@ -308,7 +308,6 @@ pub fn init() {
     }
     // Write virtual address of table to VBAR
     unsafe { 
-        // emerglogln!("[kernel::exception] setting vbar to address {:p}", __exception_vector_table.as_ptr());
         VBAR_EL1.set(__exception_vector_table.as_ptr() as u64); 
     }
 }
