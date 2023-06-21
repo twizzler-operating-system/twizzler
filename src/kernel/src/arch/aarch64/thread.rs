@@ -1,4 +1,12 @@
-use core::sync::atomic::AtomicU64;
+/// CPU context (register state) switching.
+/// 
+/// NOTE: According to section 6.1.1 of the 64-bit ARM
+/// Procedure Call Standard (PCS), not all registers
+/// need to be saved, only those needed for a subroutine call.
+/// 
+/// A full detailed explanation can be found in the
+/// "Procedure Call Standard for the Arm® 64-bit Architecture (AArch64)":
+///     https://github.com/ARM-software/abi-aa/releases/download/2023Q1/aapcs64.pdf
 
 use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
 
@@ -15,10 +23,32 @@ pub enum Registers {
     Interrupt(*mut ExceptionContext, ExceptionContext),
 }
 
+/// Registers that need to be saved between context switches.
+/// 
+/// According to section 6.1.1, we only need to preserve
+/// registers x19-x30 and the stack pointer (sp).
+#[derive(Default)]
+struct RegisterContext {
+    x19: u64,
+    x20: u64,
+    x21: u64,
+    x22: u64,
+    x23: u64,
+    x24: u64,
+    x25: u64,
+    x26: u64,
+    x27: u64,
+    x28: u64,
+    x29: u64,
+    // x30 aka the link register
+    lr: u64,
+    sp: u64,
+}
+
 // arch specific thread state
 #[repr(align(64))]
 pub struct ArchThread {
-    pub user_fs: AtomicU64, // placeholder, x86 specific
+    context: RegisterContext,
 }
 
 unsafe impl Sync for ArchThread {}
@@ -26,7 +56,9 @@ unsafe impl Send for ArchThread {}
 
 impl ArchThread {
     pub fn new() -> Self {
-        todo!()
+        Self { 
+            context: RegisterContext::default() 
+        }
     }
 }
 
