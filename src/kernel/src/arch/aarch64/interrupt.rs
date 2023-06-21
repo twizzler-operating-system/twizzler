@@ -12,6 +12,7 @@ use crate::interrupt::{DynamicInterrupt, Destination};
 use crate::machine::interrupt::INTERRUPT_CONTROLLER;
 
 use super::exception::{exception_handler, ExceptionContext};
+use super::cntp::{PhysicalTimer, cntp_interrupt_handler};
 
 // interrupt vector table size/num vectors
 pub const GENERIC_IPI_VECTOR: u32 = 0; // Used for IPI
@@ -101,9 +102,9 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
     emerglogln!("[arch::irq] interrupt: {}", irq_number);
     
     match irq_number {
-        super::cntp::PhysicalTimer::INTERRUPT_ID => {
+        PhysicalTimer::INTERRUPT_ID => {
             // call timer interrupt handler
-            super::cntp::cntp_interrupt_handler();
+            cntp_interrupt_handler();
         },
         _ => panic!("unknown reason!")
     }
@@ -149,6 +150,11 @@ pub fn init_interrupts() {
     
     // initialize interrupt controller
     INTERRUPT_CONTROLLER.configure();
+
+    // enable this CPU to recieve interrupts from the timer
+    // by configuring the interrupt controller to route
+    // the timer's interrupt to us
+    INTERRUPT_CONTROLLER.enable_interrupt(PhysicalTimer::INTERRUPT_ID);
 }
 
 // in crate::arch::aarch64
