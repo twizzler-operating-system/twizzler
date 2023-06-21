@@ -1,3 +1,6 @@
+use arm64::registers::TPIDR_EL1;
+use registers::interfaces::Writeable;
+
 use crate::{
     clock::Nanoseconds,
     interrupt::{Destination, PinPolarity, TriggerMode},
@@ -24,6 +27,10 @@ pub fn init<B: BootInfo>(_boot_info: &B) {
     exception::init();
     // configure registers needed by the memory management system
     // TODO: configure MAIR
+
+    // On reset, TPIDR_EL1 is initialized to some unknown value.
+    // we set it to zero so that we know it is not initialized.
+    TPIDR_EL1.set(0);
 }
 
 pub fn init_secondary() {

@@ -1,7 +1,7 @@
 use alloc::{vec::Vec};
 
-use arm64::registers::MPIDR_EL1;
-use registers::interfaces::Readable;
+use arm64::registers::{MPIDR_EL1, TPIDR_EL1};
+use registers::interfaces::{Readable, Writeable};
 
 use crate::{
     memory::VirtAddr,
@@ -12,8 +12,12 @@ use crate::{
 #[allow(unused_imports)] // DEBUG
 use super::{interrupt::InterProcessorInterrupt};
 
-pub fn init(_tls: VirtAddr) {
-    todo!()
+// initialize processor and any processor specific features
+pub fn init(tls: VirtAddr) {
+    // Save thread local storage to an unused variable.
+    // We use TPIDR_EL1 for this purpose which is free
+    // for the OS to use.
+    TPIDR_EL1.set(tls.raw());
 }
 
 // the core ID of the bootstrap core
@@ -70,7 +74,5 @@ impl Processor {
 }
 
 pub fn tls_ready() -> bool {
-    // TODO: initlialize tls
-    // see TPIDR_EL1
-    false
+    TPIDR_EL1.get() != 0
 }
