@@ -50,7 +50,7 @@ pub fn set_interrupt(
 }
 
 pub fn start_clock(_statclock_hz: u64, _stat_cb: fn(Nanoseconds)) {
-    todo!();
+    // TODO: implement support for the stat clock
 }
 
 pub fn schedule_oneshot_tick(_time: Nanoseconds) {
