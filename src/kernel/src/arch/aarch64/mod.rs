@@ -1,6 +1,8 @@
 use arm64::registers::TPIDR_EL1;
 use registers::interfaces::Writeable;
 
+use twizzler_abi::syscall::TimeSpan;
+
 use crate::{
     clock::Nanoseconds,
     interrupt::{Destination, PinPolarity, TriggerMode},
@@ -53,8 +55,14 @@ pub fn start_clock(_statclock_hz: u64, _stat_cb: fn(Nanoseconds)) {
     // TODO: implement support for the stat clock
 }
 
-pub fn schedule_oneshot_tick(_time: Nanoseconds) {
-    todo!()
+pub fn schedule_oneshot_tick(time: Nanoseconds) {
+    emerglogln!("[arch::tick] setting the timer to fire off after {} ns", time);
+    let old = interrupt::disable();
+    // set timer to fire off after a certian amount of time has passed
+    let phys_timer = cntp::PhysicalTimer::new();
+    let wait_time = TimeSpan::from_nanos(time);
+    phys_timer.set_timer(wait_time);
+    interrupt::set(old);
 }
 
 /// Jump into userspace

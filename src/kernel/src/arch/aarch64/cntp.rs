@@ -43,11 +43,14 @@ impl PhysicalTimer {
         // should this fail if requested span is too low, or implicitly
         // round up
 
-        // ticks = time / rate => secs / femtos => secs * 10^15 / secs
-        let ticks =  (span.0.0 * FEMTOS_PER_SEC) / self.info.resolution().0;
+        // ticks = time / rate => span as femtos / rate (in femtos)
+        let ticks =  span.as_femtos() / self.info.resolution().0 as u128;
 
         // configure the timer to fire after a certain amount of ticks have passed
-        CNTP_TVAL_EL0.set(ticks);
+        //
+        // our division uses the u128 type, but the resulting value is truncated to
+        // u64 since CNTP_TVAL_EL0 is also 64 bits.
+        CNTP_TVAL_EL0.set(ticks as u64);
 
         // clear the interrupt mask and enable the timer
         CNTP_CTL_EL0.modify(
@@ -76,6 +79,9 @@ impl ClockHardware for PhysicalTimer {
 /// prints to the debug console and clears the interrupt.
 pub fn cntp_interrupt_handler() {
     emerglogln!("[arch:cntp] Hello from Timer!!");
+    // handle the timer interrupt by advancing the scheduler ticks
+    crate::clock::oneshot_clock_hardtick();
+
     // Disable the timer to clear the interrupt. Software must clear 
     // the interrupt before deactivating the interrupt in the
     // interrupt controller, otherwise it will keep firing.
