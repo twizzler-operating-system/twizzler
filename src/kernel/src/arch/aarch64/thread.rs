@@ -97,11 +97,16 @@ impl Thread {
         todo!()
     }
 
+    // this does not need to be pub, might not needed for aarch64
     pub unsafe fn init_va(&mut self, _jmptarget: u64) {
         todo!()
     }
 
-    pub unsafe fn init(&mut self, _f: extern "C" fn()) {
-        todo!()
+    pub unsafe fn init(&mut self, entry: extern "C" fn()) {
+        let stack = self.kernel_stack.as_ptr() as *mut u64;
+        // set the stack pointer as the last thing context (x30 + 1)
+        self.arch.context.sp = stack as u64;
+        // set the link register as the second to last entry (x30)
+        self.arch.context.lr = entry as u64;
     }
 }
