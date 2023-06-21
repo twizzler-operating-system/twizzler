@@ -93,8 +93,57 @@ impl Thread {
         todo!()
     }
 
+    /// Architechture specific CPU context switch.
+    /// 
+    /// On 64-bit ARM systems, we only need to save a few registers
+    /// then switch thread stacks before changing control flow.
     pub extern "C" fn arch_switch_to(&self, _old_thread: &Thread) {
-        todo!()
+        // x0 - pointer to this thread's context save area (self)
+        // x1 - pointer to running thread's context save area (old_thread)
+        // 
+        // We rely on the ordering of the struct `Thread` to have `ArchThread` 
+        // as the first member and `ArchThread`'s register save area to be its
+        // first member. With this we can conviently use x0, and x1 as references
+        // to the context save area. In the future if anything changes we will
+        // need to revisit this.
+        //         
+        // The switch (1) saves registers x19-x30 and the stack pointer (sp)
+        // onto the current thread's context save area (old_thread).
+        // According to the 64-bit ARM PCS, this amount of context is fine.
+        // Other registers are either caller saved, or pushed onto 
+        // the stack when taking an exception. 
+        // Then we (2) restore the registes from the next thread's (self) context
+        // save area, (3) switch stacks, (4) and return control by returning
+        // to the address in the link register.
+        unsafe {
+            core::arch::asm!(
+                // (1) save old thread's registers
+                "stp x19, x20, [x1, #16 * 0]",
+                "stp x21, x22, [x1, #16 * 1]",
+                "stp x23, x24, [x1, #16 * 2]",
+                "stp x25, x26, [x1, #16 * 3]",
+                "stp x27, x28, [x1, #16 * 4]",
+                // save the fp (x29) and the lr (x30)
+                "stp x29, x30, [x1, #16 * 5]",
+                // save stack pointer
+                "mov x15, sp",
+                "str x15, [x1, #16 * 6]",
+                // (2) restore new thread's regs
+                "ldp x19, x20, [x0, #16 * 0]",
+                "ldp x21, x22, [x0, #16 * 1]",
+                "ldp x23, x24, [x0, #16 * 2]",
+                "ldp x25, x26, [x0, #16 * 3]",
+                "ldp x27, x28, [x0, #16 * 4]",
+                // restore the fp (x29) and the lr (x30)
+                "ldp x29, x30, [x0, #16 * 5]",
+                // (3) switch thread stacks
+                "ldr x15, [x0, #16 * 6]",
+                "mov sp, x15",
+                // (4) execution resumes in the address
+                // pointed to by the link register (x30)
+                "ret"
+            );
+        }
     }
 
     // this does not need to be pub, might not needed for aarch64
