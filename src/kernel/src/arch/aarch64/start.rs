@@ -33,7 +33,8 @@ impl BootInfo for Armv8BootInfo {
     }
 
     fn get_modules(&self) -> &'static [BootModule] {
-        todo!("get modules")
+        // TODO: support loading of modules (programs)
+        &[]
     }
 
     fn kernel_image_info(&self) -> (VirtAddr, usize) {
