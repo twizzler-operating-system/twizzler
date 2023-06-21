@@ -34,7 +34,9 @@ pub fn init<B: BootInfo>(_boot_info: &B) {
 }
 
 pub fn init_secondary() {
-    todo!();
+    // TODO: Initialize secondary processors:
+    // - set up exception handling
+    // - configure the local CPU interrupt controller interface
 }
 
 pub fn set_interrupt(

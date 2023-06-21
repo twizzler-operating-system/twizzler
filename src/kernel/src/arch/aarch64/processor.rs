@@ -54,7 +54,12 @@ pub fn enumerate_clocks() {
 
 // map out topology of hardware
 pub fn get_topology() -> Vec<(usize, bool)> {
-    todo!()
+    // TODO: more sophisticated enumeration of CPUs
+    // using something like information in MPIDR_EL1,
+    // Device Tree, or ACPI
+
+    // For now we simply return a single core, the boot core.
+    alloc::vec![(*BOOT_CORE_ID.wait() as usize, false)]
 }
 
 // arch specific implementation of processor specific state
