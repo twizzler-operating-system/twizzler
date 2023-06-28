@@ -4,6 +4,9 @@
 /// general orignate from a device or another processor
 /// which can be routed by an interrupt controller
 
+use arm64::registers::DAIF;
+use registers::interfaces::Readable;
+
 use twizzler_abi::{
     kso::{InterruptAllocateOptions, InterruptPriority},
 };
@@ -61,26 +64,36 @@ bitflags::bitflags! {
 }
 
 pub fn disable() -> bool {
-    unsafe {
-        core::arch::asm!(
-            "msr DAIFSet, {DISABLE_MASK}",
-            DISABLE_MASK = const DAIFMaskBits::IRQ.bits(),
-        );
+    // check if interrutps were already enabled.
+    // if the I bit is set, then IRQ exceptions
+    // are already masked
+    let irq_bit = DAIF.is_set(DAIF::I);
+
+    // if interrupts were not masked
+    if !irq_bit {
+        // disable interrupts
+        unsafe {
+            core::arch::asm!(
+                "msr DAIFSet, {DISABLE_MASK}",
+                DISABLE_MASK = const DAIFMaskBits::IRQ.bits(),
+            );
+        }
     }
-    // TODO: We need the current interrupt state,
-    // for now we return true. Since the interrupt state
-    // for aarch64 is more complex, maybe we need this
-    // to be a type. Or we since we are only toggling a bit,
-    // we could keep the bool representation
-    true
+    // return IRQ state to the caller
+    irq_bit
 }
 
-pub fn set(_state: bool) {
-    unsafe {
-        core::arch::asm!(
-            "msr DAIFClr, {ENABLE_MASK}",
-           ENABLE_MASK = const DAIFMaskBits::IRQ.bits(),
-        );
+pub fn set(state: bool) {
+    // state here refers to the I bit (IRQ) in DAIF.
+    // if it was set previously, then interrupts are masked.
+    // we unmask the I bit only if state is false
+    if !state {
+        unsafe {
+            core::arch::asm!(
+                "msr DAIFClr, {ENABLE_MASK}",
+                ENABLE_MASK = const DAIFMaskBits::IRQ.bits(),
+            );
+        }
     }
 }
 
