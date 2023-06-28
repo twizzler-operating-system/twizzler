@@ -20,7 +20,7 @@ pub struct ArchContextInner {
     mapper: Mapper,
 }
 pub struct ArchContext {
-    kernel: u64, // TODO
+    kernel: u64, // TODO: do we always need a copy?
     user: PhysAddr,
     inner: Mutex<ArchContextInner>,
 }
@@ -68,7 +68,7 @@ impl ArchContext {
     }
 
     pub fn new() -> Self {
-        todo!("ArchContext::new")
+        Self::new_kernel()
     }
 
     #[allow(named_asm_labels)]
@@ -114,7 +114,7 @@ impl ArchContext {
     }
 
     pub fn unmap(&self, _cursor: MappingCursor) {
-        todo!("unmap")
+        // TODO: actually unmap pages
     }
 
     pub fn readmap<R>(&self, _cursor: MappingCursor, _f: impl Fn(MapReader) -> R) -> R {
