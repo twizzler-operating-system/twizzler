@@ -87,7 +87,7 @@ pub fn set(state: bool) {
     // state singifies if interrupts need to enabled or disabled
     // the state can refer to the previous state of the I bit (IRQ)
     // in DAIF or may be explicitly changed. we unmask (enable) interrupts
-    // if the state is true
+    // if the state is true, and disable if false.
     if state {
         // enable interrupts by unmasking the I bit (the same as state)
         unsafe {
@@ -96,6 +96,8 @@ pub fn set(state: bool) {
                 ENABLE_MASK = const DAIFMaskBits::IRQ.bits(),
             );
         }
+    } else {
+        disable();
     }
 }
 
