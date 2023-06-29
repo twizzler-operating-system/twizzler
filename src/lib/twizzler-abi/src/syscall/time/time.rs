@@ -1,6 +1,6 @@
 use core::{time::Duration, ops::Sub};
 
-use super::{NanoSeconds, FemtoSeconds, Seconds, FEMTOS_PER_SEC, NANOS_PER_SEC};
+use super::{NanoSeconds, FemtoSeconds, Seconds, FEMTOS_PER_SEC, NANOS_PER_SEC, FEMTOS_PER_NANO};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TimeSpan(pub Seconds, pub FemtoSeconds);
@@ -32,9 +32,20 @@ impl TimeSpan {
         )
     }
 
+    pub const fn from_nanos(nanos: u64) -> TimeSpan {
+        TimeSpan(
+            Seconds(nanos / NANOS_PER_SEC),
+            FemtoSeconds(((nanos % NANOS_PER_SEC) as u64) * FEMTOS_PER_NANO)
+        )
+    }
+
     pub fn as_nanos(&self) -> u128 {
         let nanos: NanoSeconds = self.1.into();
         self.0.0 as u128 * NANOS_PER_SEC as u128 + nanos.0 as u128
+    }
+
+    pub fn as_femtos(&self) -> u128 {
+        self.0.0 as u128 * FEMTOS_PER_SEC as u128 + self.1.0 as u128
     }
 
     pub const fn checked_sub(&self, other: TimeSpan) -> Option<TimeSpan> {

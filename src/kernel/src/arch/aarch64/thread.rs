@@ -1,4 +1,12 @@
-use core::sync::atomic::AtomicU64;
+/// CPU context (register state) switching.
+/// 
+/// NOTE: According to section 6.1.1 of the 64-bit ARM
+/// Procedure Call Standard (PCS), not all registers
+/// need to be saved, only those needed for a subroutine call.
+/// 
+/// A full detailed explanation can be found in the
+/// "Procedure Call Standard for the Arm® 64-bit Architecture (AArch64)":
+///     https://github.com/ARM-software/abi-aa/releases/download/2023Q1/aapcs64.pdf
 
 use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
 
@@ -15,10 +23,32 @@ pub enum Registers {
     Interrupt(*mut ExceptionContext, ExceptionContext),
 }
 
+/// Registers that need to be saved between context switches.
+/// 
+/// According to section 6.1.1, we only need to preserve
+/// registers x19-x30 and the stack pointer (sp).
+#[derive(Default)]
+struct RegisterContext {
+    x19: u64,
+    x20: u64,
+    x21: u64,
+    x22: u64,
+    x23: u64,
+    x24: u64,
+    x25: u64,
+    x26: u64,
+    x27: u64,
+    x28: u64,
+    x29: u64,
+    // x30 aka the link register
+    lr: u64,
+    sp: u64,
+}
+
 // arch specific thread state
 #[repr(align(64))]
 pub struct ArchThread {
-    pub user_fs: AtomicU64, // placeholder, x86 specific
+    context: RegisterContext,
 }
 
 unsafe impl Sync for ArchThread {}
@@ -26,7 +56,9 @@ unsafe impl Send for ArchThread {}
 
 impl ArchThread {
     pub fn new() -> Self {
-        todo!()
+        Self { 
+            context: RegisterContext::default() 
+        }
     }
 }
 
@@ -61,15 +93,69 @@ impl Thread {
         todo!()
     }
 
+    /// Architechture specific CPU context switch.
+    /// 
+    /// On 64-bit ARM systems, we only need to save a few registers
+    /// then switch thread stacks before changing control flow.
     pub extern "C" fn arch_switch_to(&self, _old_thread: &Thread) {
-        todo!()
+        // x0 - pointer to this thread's context save area (self)
+        // x1 - pointer to running thread's context save area (old_thread)
+        // 
+        // We rely on the ordering of the struct `Thread` to have `ArchThread` 
+        // as the first member and `ArchThread`'s register save area to be its
+        // first member. With this we can conviently use x0, and x1 as references
+        // to the context save area. In the future if anything changes we will
+        // need to revisit this.
+        //         
+        // The switch (1) saves registers x19-x30 and the stack pointer (sp)
+        // onto the current thread's context save area (old_thread).
+        // According to the 64-bit ARM PCS, this amount of context is fine.
+        // Other registers are either caller saved, or pushed onto 
+        // the stack when taking an exception. 
+        // Then we (2) restore the registes from the next thread's (self) context
+        // save area, (3) switch stacks, (4) and return control by returning
+        // to the address in the link register.
+        unsafe {
+            core::arch::asm!(
+                // (1) save old thread's registers
+                "stp x19, x20, [x1, #16 * 0]",
+                "stp x21, x22, [x1, #16 * 1]",
+                "stp x23, x24, [x1, #16 * 2]",
+                "stp x25, x26, [x1, #16 * 3]",
+                "stp x27, x28, [x1, #16 * 4]",
+                // save the fp (x29) and the lr (x30)
+                "stp x29, x30, [x1, #16 * 5]",
+                // save stack pointer
+                "mov x15, sp",
+                "str x15, [x1, #16 * 6]",
+                // (2) restore new thread's regs
+                "ldp x19, x20, [x0, #16 * 0]",
+                "ldp x21, x22, [x0, #16 * 1]",
+                "ldp x23, x24, [x0, #16 * 2]",
+                "ldp x25, x26, [x0, #16 * 3]",
+                "ldp x27, x28, [x0, #16 * 4]",
+                // restore the fp (x29) and the lr (x30)
+                "ldp x29, x30, [x0, #16 * 5]",
+                // (3) switch thread stacks
+                "ldr x15, [x0, #16 * 6]",
+                "mov sp, x15",
+                // (4) execution resumes in the address
+                // pointed to by the link register (x30)
+                "ret"
+            );
+        }
     }
 
+    // this does not need to be pub, might not needed for aarch64
     pub unsafe fn init_va(&mut self, _jmptarget: u64) {
         todo!()
     }
 
-    pub unsafe fn init(&mut self, _f: extern "C" fn()) {
-        todo!()
+    pub unsafe fn init(&mut self, entry: extern "C" fn()) {
+        let stack = self.kernel_stack.as_ptr() as *mut u64;
+        // set the stack pointer as the last thing context (x30 + 1)
+        self.arch.context.sp = stack as u64;
+        // set the link register as the second to last entry (x30)
+        self.arch.context.lr = entry as u64;
     }
 }
