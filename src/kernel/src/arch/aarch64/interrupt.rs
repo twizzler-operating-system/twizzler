@@ -4,6 +4,9 @@
 /// general orignate from a device or another processor
 /// which can be routed by an interrupt controller
 
+use arm64::registers::DAIF;
+use registers::interfaces::Readable;
+
 use twizzler_abi::{
     kso::{InterruptAllocateOptions, InterruptPriority},
 };
@@ -12,6 +15,7 @@ use crate::interrupt::{DynamicInterrupt, Destination};
 use crate::machine::interrupt::INTERRUPT_CONTROLLER;
 
 use super::exception::{exception_handler, ExceptionContext};
+use super::cntp::{PhysicalTimer, cntp_interrupt_handler};
 
 // interrupt vector table size/num vectors
 pub const GENERIC_IPI_VECTOR: u32 = 0; // Used for IPI
@@ -60,26 +64,40 @@ bitflags::bitflags! {
 }
 
 pub fn disable() -> bool {
-    unsafe {
-        core::arch::asm!(
-            "msr DAIFSet, {DISABLE_MASK}",
-            DISABLE_MASK = const DAIFMaskBits::IRQ.bits(),
-        );
+    // check if interrutps were already enabled.
+    // if the I bit is set, then IRQ exceptions
+    // are already masked
+    let irq_enabled = !DAIF.is_set(DAIF::I);
+
+    // if interrupts were not masked
+    if irq_enabled {
+        // disable interrupts
+        unsafe {
+            core::arch::asm!(
+                "msr DAIFSet, {DISABLE_MASK}",
+                DISABLE_MASK = const DAIFMaskBits::IRQ.bits(),
+            );
+        }
     }
-    // TODO: We need the current interrupt state,
-    // for now we return true. Since the interrupt state
-    // for aarch64 is more complex, maybe we need this
-    // to be a type. Or we since we are only toggling a bit,
-    // we could keep the bool representation
-    true
+    // return IRQ state to the caller
+    irq_enabled
 }
 
-pub fn set(_state: bool) {
-    unsafe {
-        core::arch::asm!(
-            "msr DAIFClr, {ENABLE_MASK}",
-           ENABLE_MASK = const DAIFMaskBits::IRQ.bits(),
-        );
+pub fn set(state: bool) {
+    // state singifies if interrupts need to enabled or disabled
+    // the state can refer to the previous state of the I bit (IRQ)
+    // in DAIF or may be explicitly changed. we unmask (enable) interrupts
+    // if the state is true, and disable if false.
+    if state {
+        // enable interrupts by unmasking the I bit (the same as state)
+        unsafe {
+            core::arch::asm!(
+                "msr DAIFClr, {ENABLE_MASK}",
+                ENABLE_MASK = const DAIFMaskBits::IRQ.bits(),
+            );
+        }
+    } else {
+        disable();
     }
 }
 
@@ -101,17 +119,16 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
     emerglogln!("[arch::irq] interrupt: {}", irq_number);
     
     match irq_number {
-        super::cntp::PhysicalTimer::INTERRUPT_ID => {
+        PhysicalTimer::INTERRUPT_ID => {
             // call timer interrupt handler
-            super::cntp::cntp_interrupt_handler();
+            cntp_interrupt_handler();
         },
         _ => panic!("unknown reason!")
     }
     // signal the GIC that we have serviced the IRQ
     INTERRUPT_CONTROLLER.finish_active_interrupt(irq_number);
 
-    // TODO: maybe call crate::interrupt::post_interrupt()
-    // so that we can preempt this thread
+    crate::interrupt::post_interrupt()
 }
 
 //----------------------------
@@ -149,6 +166,11 @@ pub fn init_interrupts() {
     
     // initialize interrupt controller
     INTERRUPT_CONTROLLER.configure();
+
+    // enable this CPU to recieve interrupts from the timer
+    // by configuring the interrupt controller to route
+    // the timer's interrupt to us
+    INTERRUPT_CONTROLLER.enable_interrupt(PhysicalTimer::INTERRUPT_ID);
 }
 
 // in crate::arch::aarch64

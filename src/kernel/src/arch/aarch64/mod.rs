@@ -1,3 +1,8 @@
+use arm64::registers::TPIDR_EL1;
+use registers::interfaces::Writeable;
+
+use twizzler_abi::syscall::TimeSpan;
+
 use crate::{
     clock::Nanoseconds,
     interrupt::{Destination, PinPolarity, TriggerMode},
@@ -24,10 +29,16 @@ pub fn init<B: BootInfo>(_boot_info: &B) {
     exception::init();
     // configure registers needed by the memory management system
     // TODO: configure MAIR
+
+    // On reset, TPIDR_EL1 is initialized to some unknown value.
+    // we set it to zero so that we know it is not initialized.
+    TPIDR_EL1.set(0);
 }
 
 pub fn init_secondary() {
-    todo!();
+    // TODO: Initialize secondary processors:
+    // - set up exception handling
+    // - configure the local CPU interrupt controller interface
 }
 
 pub fn set_interrupt(
@@ -41,11 +52,17 @@ pub fn set_interrupt(
 }
 
 pub fn start_clock(_statclock_hz: u64, _stat_cb: fn(Nanoseconds)) {
-    todo!();
+    // TODO: implement support for the stat clock
 }
 
-pub fn schedule_oneshot_tick(_time: Nanoseconds) {
-    todo!()
+pub fn schedule_oneshot_tick(time: Nanoseconds) {
+    emerglogln!("[arch::tick] setting the timer to fire off after {} ns", time);
+    let old = interrupt::disable();
+    // set timer to fire off after a certian amount of time has passed
+    let phys_timer = cntp::PhysicalTimer::new();
+    let wait_time = TimeSpan::from_nanos(time);
+    phys_timer.set_timer(wait_time);
+    interrupt::set(old);
 }
 
 /// Jump into userspace
