@@ -67,10 +67,10 @@ pub fn disable() -> bool {
     // check if interrutps were already enabled.
     // if the I bit is set, then IRQ exceptions
     // are already masked
-    let irq_bit = DAIF.is_set(DAIF::I);
+    let irq_enabled = !DAIF.is_set(DAIF::I);
 
     // if interrupts were not masked
-    if !irq_bit {
+    if irq_enabled {
         // disable interrupts
         unsafe {
             core::arch::asm!(
@@ -80,14 +80,16 @@ pub fn disable() -> bool {
         }
     }
     // return IRQ state to the caller
-    irq_bit
+    irq_enabled
 }
 
 pub fn set(state: bool) {
-    // state here refers to the I bit (IRQ) in DAIF.
-    // if it was set previously, then interrupts are masked.
-    // we unmask the I bit only if state is false
-    if !state {
+    // state singifies if interrupts need to enabled or disabled
+    // the state can refer to the previous state of the I bit (IRQ)
+    // in DAIF or may be explicitly changed. we unmask (enable) interrupts
+    // if the state is true
+    if state {
+        // enable interrupts by unmasking the I bit (the same as state)
         unsafe {
             core::arch::asm!(
                 "msr DAIFClr, {ENABLE_MASK}",
@@ -124,8 +126,7 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
     // signal the GIC that we have serviced the IRQ
     INTERRUPT_CONTROLLER.finish_active_interrupt(irq_number);
 
-    // TODO: maybe call crate::interrupt::post_interrupt()
-    // so that we can preempt this thread
+    crate::interrupt::post_interrupt()
 }
 
 //----------------------------
