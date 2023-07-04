@@ -4,6 +4,7 @@ use strum_macros::EnumIter;
 pub enum Machine {
     Unknown,
     Rpi3,
+    Rpi4,
     Virt,
 }
 
@@ -74,6 +75,7 @@ impl From<Machine> for String {
         match m {
             Machine::Unknown => "unknown",
             Machine::Rpi3 => "rpi3",
+            Machine::Rpi4 => "rpi4",
             Machine::Virt => "virt",
         }
         .to_string()
