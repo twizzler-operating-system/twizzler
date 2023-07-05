@@ -47,7 +47,7 @@ pub fn init_tls(variant: TlsVariant, tls_template: TlsInfo) -> VirtAddr {
 
 fn variant1(tls_template: TlsInfo) -> VirtAddr {
     // TODO: reserved region may be arch specific. aarch64 reserves two
-    // words after the thread pointer (TP) before and TLS blocks
+    // words after the thread pointer (TP), before any TLS blocks
     let reserved_bytes = core::mem::size_of::<*const u64>() * 2;
     // the size of the TLS region in memory
     let tls_size = tls_template.mem_size + reserved_bytes;
@@ -55,7 +55,6 @@ fn variant1(tls_template: TlsInfo) -> VirtAddr {
     // generate a layout where the size is rounded up if not aligned
     let layout =
         Layout::from_size_align(tls_size, tls_template.align).expect("failed to unwrap TLS layout");
-    logln!("[kernel::tls] size of layout to alloc: {}", layout.size());
 
     // allocate/initialize a region of memory for the thread-local data
     let tls_region = unsafe {
@@ -73,13 +72,6 @@ fn variant1(tls_template: TlsInfo) -> VirtAddr {
         // we need a pointer offset of reserved_bytes. add here increments
         // the pointer offset by sizeof u8 bytes.
         let tls_base = tcb_base.add(reserved_bytes);
-
-        logln!("[kernel::tls] copy {} from {:#018x} to {:#018x} ({})",
-            tls_template.file_size,
-            tls_template.start_addr.raw(),
-            tls_base as u64,
-            tls_size,
-        );
 
         core::ptr::copy_nonoverlapping(tls_template.start_addr.as_ptr(), tls_base, tls_template.file_size);
 

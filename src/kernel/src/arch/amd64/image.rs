@@ -6,5 +6,5 @@ use crate::{
 };
 
 pub fn init_tls(tls_template: TlsInfo) -> VirtAddr {
-    image::init_tls(TlsVariant::Variant2, tls_template)
+    crate::image::init_tls(TlsVariant::Variant2, tls_template)
 }
