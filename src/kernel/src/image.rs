@@ -112,7 +112,7 @@ fn variant2(tls_template: TlsInfo) -> VirtAddr {
 
         tls
     };
-    let tcb_base = VirtAddr::from_ptr(tls).offset(full_tls_size).unwrap();
+    let tcb_base = VirtAddr::from_ptr(tls).offset(tls_size).unwrap();
 
     unsafe { *(tcb_base.as_mut_ptr()) = tcb_base.raw() };
 
