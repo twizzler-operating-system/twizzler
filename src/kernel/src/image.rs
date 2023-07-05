@@ -118,3 +118,23 @@ fn variant2(tls_template: TlsInfo) -> VirtAddr {
 
     tcb_base
 }
+
+
+#[cfg(test)]
+mod test {
+    use twizzler_kernel_macros::kernel_test;
+
+    // the correct value that the TLS var should be set to
+    const TLS_TEST_MAGIC: u64 = 0x900dc0ffee123abc;
+
+    #[thread_local]
+    static SOME_INT: u64 = TLS_TEST_MAGIC;
+
+    #[kernel_test]
+    fn tls_test() {
+        // get the initial value of TLS var
+        assert_eq!(SOME_INT, TLS_TEST_MAGIC,
+            "TLS var not initialized correctly: {:#x}", SOME_INT
+        );
+    }
+}
