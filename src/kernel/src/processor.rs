@@ -287,43 +287,8 @@ pub fn tls_ready() -> bool {
 
 pub const KERNEL_STACK_SIZE: usize = 81920;
 
-const MIN_TLS_ALIGN: usize = 16;
-
-fn init_tls(tls_template: TlsInfo) -> VirtAddr {
-    let mut tls_size = tls_template.mem_size;
-    let alignment = tls_template.align;
-
-    let start_address_ptr = tls_template.start_addr.as_ptr();
-
-    // The rhs of the below expression essentially calculates the amount of padding
-    // we will have to introduce within the TLS region in order to achieve the desired
-    // alignment.
-    tls_size += (((!tls_size) + 1) - (start_address_ptr as usize)) & (alignment - 1);
-
-    let tls_align = core::cmp::max(alignment, MIN_TLS_ALIGN);
-    let full_tls_size = (core::mem::size_of::<*const u8>() + tls_size + tls_align + MIN_TLS_ALIGN
-        - 1)
-        & ((!MIN_TLS_ALIGN) + 1);
-
-    let layout =
-        Layout::from_size_align(full_tls_size, tls_align).expect("failed to unwrap TLS layout");
-
-    let tls = unsafe {
-        let tls = alloc::alloc::alloc_zeroed(layout);
-
-        core::ptr::copy_nonoverlapping(start_address_ptr, tls, tls_template.file_size);
-
-        tls
-    };
-    let tcb_base = VirtAddr::from_ptr(tls).offset(full_tls_size).unwrap();
-
-    unsafe { *(tcb_base.as_mut_ptr()) = tcb_base.raw() };
-
-    tcb_base
-}
-
 pub fn init_cpu(tls_template: TlsInfo, bsp_id: u32) {
-    let tcb_base = init_tls(tls_template);
+    let tcb_base = crate::arch::image::init_tls(tls_template);
     crate::arch::processor::init(tcb_base);
     unsafe {
         BOOT_KERNEL_STACK = 0xfffffff000001000u64 as *mut u8; //TODO: get this from bootloader config?
@@ -356,7 +321,7 @@ fn start_secondary_cpu(cpu: u32, tls_template: TlsInfo) {
     if cpu == 0 {
         panic!("TODO: we currently assume the bootstrap processor gets ID 0");
     }
-    let tcb_base = init_tls(tls_template);
+    let tcb_base = crate::arch::image::init_tls(tls_template);
     /* TODO: dedicated kernel stack allocator, with guard page support */
     let kernel_stack = unsafe {
         let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();

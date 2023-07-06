@@ -14,6 +14,7 @@ pub mod address;
 pub mod context;
 //mod desctables;
 mod gdt;
+pub mod image;
 pub mod interrupt;
 pub mod ioapic;
 pub mod lapic;

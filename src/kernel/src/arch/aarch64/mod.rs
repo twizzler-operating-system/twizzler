@@ -13,6 +13,7 @@ pub mod address;
 mod cntp;
 pub mod context;
 mod exception;
+pub mod image;
 pub mod interrupt;
 pub mod memory;
 pub mod processor;

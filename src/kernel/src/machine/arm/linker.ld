@@ -23,11 +23,6 @@ SECTIONS
 
     /* Move to the next memory page for .rodata */
     . += CONSTANT(MAXPAGESIZE);
-
-    .limine_reqs : {
-        KEEP(*(.limine_reqs))
-        QUAD(0)
-    } :rodata
     
     .rodata : {
         *(.rodata .rodata.*)
@@ -42,6 +37,11 @@ SECTIONS
         *(.tbss .tbss.*) 
         *(.tcommon) 
     } :tls
+
+    .limine_reqs : {
+        KEEP(*(.limine_reqs))
+        QUAD(0)
+    } :rodata
 
     /* Move to the next memory page for .data */
     . += CONSTANT(MAXPAGESIZE);
