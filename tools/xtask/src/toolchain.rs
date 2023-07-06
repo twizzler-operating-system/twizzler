@@ -1,9 +1,10 @@
-use std::{fs::File, io::Write, path::Path, process::Command};
+use std::{fs::File, io::{Write, Read}, path::Path, process::Command};
 
 use anyhow::Context;
 use fs_extra::dir::CopyOptions;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
+use toml_edit::Document;
 
 use crate::{triple::Triple, BootstrapOptions};
 
@@ -165,15 +166,8 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             .block_on(download_files(&client))?;
     }
 
-    let res = std::fs::hard_link(
-        "toolchain/src/config.toml",
-        "toolchain/src/rust/config.toml",
-    );
-    if let Err(e) = res {
-        if e.kind() != std::io::ErrorKind::AlreadyExists {
-            anyhow::bail!("failed to create hardlink config.toml");
-        }
-    }
+    let _ = std::fs::remove_file("toolchain/src/rust/config.toml");
+    generate_config_toml()?;
     let res = std::fs::remove_dir_all("toolchain/src/rust/library/twizzler-abi");
     if let Err(e) = res {
         if e.kind() != std::io::ErrorKind::NotFound {
@@ -228,5 +222,25 @@ pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
     }
     std::env::set_var("RUSTC", &get_rustc_path()?);
     std::env::set_var("RUSTDOC", &get_rustdoc_path()?);
+    Ok(())
+}
+
+fn generate_config_toml() -> anyhow::Result<()> {
+    let mut data = File::open("toolchain/src/config.toml")?;
+    let mut buf = String::new();
+    data.read_to_string(&mut buf)?;
+    let mut toml = buf.parse::<Document>()?;
+    let host_triple = guess_host_triple::guess_host_triple().unwrap();
+
+    let curdir = std::env::current_dir().unwrap();
+    let llvm_bin = curdir.join("toolchain/src/rust/build").join(host_triple).join("llvm/bin");
+    toml["build"]["target"].as_array_mut().unwrap().push(host_triple);
+    toml["target"]["x86_64-unknown-twizzler"]["cc"] = toml_edit::value(llvm_bin.join("clang").to_str().unwrap());
+    toml["target"]["x86_64-unknown-twizzler"]["cxx"] = toml_edit::value(llvm_bin.join("clang++").to_str().unwrap());
+    toml["target"]["x86_64-unknown-twizzler"]["linker"] = toml_edit::value(llvm_bin.join("clang").to_str().unwrap());
+    toml["target"]["x86_64-unknown-twizzler"]["ar"] = toml_edit::value(llvm_bin.join("llvm-ar").to_str().unwrap());
+    
+    let mut out = File::create("toolchain/src/rust/config.toml")?;
+    out.write_all(toml.to_string().as_bytes())?;
     Ok(())
 }

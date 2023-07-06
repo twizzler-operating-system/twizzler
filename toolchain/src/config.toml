@@ -17,7 +17,7 @@ build-stage = 2
 test-stage = 2
 doc-stage = 2
 docs = false
-target = ["x86_64-unknown-twizzler", "aarch64-apple-darwin"]
+target = ["x86_64-unknown-twizzler"]
 submodules = false
 
 [rust]
@@ -36,12 +36,6 @@ llvm-has-rust-patches = true
 [target.x86_64-unknown-twizzler]
 llvm-has-rust-patches = true
 llvm-libunwind = 'in-tree'
-cc = "/Users/dbittman/src/twizzler/toolchain/src/rust/build/aarch64-apple-darwin/llvm/bin/clang"
-cxx = "/Users/dbittman/src/twizzler/toolchain/src/rust/build/aarch64-apple-darwin/llvm/bin/clang++"
-linker = "/Users/dbittman/src/twizzler/toolchain/src/rust/build/aarch64-apple-darwin/llvm/bin/clang"
-ar = "/Users/dbittman/src/twizzler/toolchain/src/rust/build/aarch64-apple-darwin/llvm/bin/llvm-ar"
-#cxx = "clang++"
-#linker = "clang"
 
 [dist]
 src-tarball = false
