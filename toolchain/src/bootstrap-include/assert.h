@@ -1,5 +1,4 @@
 #pragma once
 
-
-#define assert(...)
+#define assert(...) (void)0
 #define fprintf(...) (void)0
