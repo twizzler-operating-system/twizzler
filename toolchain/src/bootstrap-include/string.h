@@ -39,3 +39,6 @@ char *strchrnul(const char *, int);
 void *memset(void *dest, int c, size_t size);
 char *strerror(int errnum);
 size_t strlen(const char *s);
+
+#define memset __builtin_memset
+#define memcpy __builtin_memcpy
