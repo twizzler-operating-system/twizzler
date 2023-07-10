@@ -77,21 +77,14 @@ impl QemuCommand {
 
                 let has_kvm = std::env::consts::ARCH == self.arch.to_string()
                     && Path::new("/dev/kvm").exists();
+
                 if has_kvm {
                     self.cmd.arg("-enable-kvm");
-                }
-
-                // If we have KVM, use host features. Otherwise, hope for the best.
-                let cpu_str = if has_kvm {
-                    "host,+x2apic,+tsc-deadline,+invtsc,+tsc,+tsc_scale,+rdtscp"
+                    self.cmd
+                        .arg("-cpu")
+                        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+tsc_scale,+rdtscp");
                 } else {
-                    "max"
-                };
-                self.cmd.arg("-cpu").arg(cpu_str);
-                // check if host is same as qemu, and if kvm exists
-                if std::env::consts::ARCH == self.arch.to_string() && Path::new("/dev/kvm").exists()
-                {
-                    self.cmd.arg("-enable-kvm"); // machine specific
+                    self.cmd.arg("-cpu").arg("max");
                 }
 
                 // Connect some nvdimms
