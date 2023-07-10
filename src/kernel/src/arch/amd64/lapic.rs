@@ -48,13 +48,19 @@ unsafe fn write_lapic(reg: u32, val: u32) {
     core::ptr::read_volatile((LAPIC_ADDR + LAPIC_ID as u64) as *const u32);
 }
 
+fn supports_deadline() -> bool {
+    use crate::once::Once;
+    static SUPPORTS_DEADLINE: Once<bool> = Once::new();
+    *SUPPORTS_DEADLINE.call_once(|| {
+        let cpuid = x86::cpuid::CpuId::new();
+        let features = cpuid.get_feature_info().unwrap();
+        features.has_tsc_deadline()
+    })
+}
+
 static mut FREQ_MHZ: u64 = 0;
 pub fn get_speeds() {
     let cpuid = x86::cpuid::CpuId::new();
-    let features = cpuid.get_feature_info().unwrap();
-    if !features.has_tsc_deadline() {
-        unimplemented!("APIC without TSC deadline");
-    }
     if !cpuid
         .get_advanced_power_mgmt_info()
         .unwrap()
@@ -113,6 +119,7 @@ pub fn init(bsp: bool) {
 
         write_lapic(LAPIC_EOI, 0);
         write_lapic(LAPIC_TPR, 0);
+        write_lapic(LAPIC_TDCR, 0xb);
     }
 }
 
@@ -137,8 +144,13 @@ pub fn schedule_oneshot_tick(time: Nanoseconds) {
     unsafe {
         let time = read_monotonic_nanoseconds() + time;
         let deadline = (time / 1000) * FREQ_MHZ;
-        write_lapic(LAPIC_TIMER, 240 | LAPIC_TIMER_DEADLINE);
-        x86::msr::wrmsr(x86::msr::IA32_TSC_DEADLINE, deadline);
+        if supports_deadline() {
+            write_lapic(LAPIC_TIMER, 240 | LAPIC_TIMER_DEADLINE);
+            x86::msr::wrmsr(x86::msr::IA32_TSC_DEADLINE, deadline);
+        } else {
+            write_lapic(LAPIC_TIMER, 240);
+            write_lapic(LAPIC_TICR, deadline as u32);
+        }
     }
     interrupt::set(old);
 }
