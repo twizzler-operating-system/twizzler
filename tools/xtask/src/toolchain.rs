@@ -255,7 +255,6 @@ fn generate_config_toml() -> anyhow::Result<()> {
         .push(host_triple);
 
     toml["target"][host_triple]["llvm-has-rust-patches"] = toml_edit::value(true);
-    toml["target"][host_triple]["llvm-libunwind"] = toml_edit::value("in-tree");
 
     for triple in all_possible_platforms() {
         let clang = llvm_bin.join("clang").to_str().unwrap().to_string();
