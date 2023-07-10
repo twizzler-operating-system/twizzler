@@ -17,7 +17,7 @@ build-stage = 2
 test-stage = 2
 doc-stage = 2
 docs = false
-target = ["x86_64-unknown-twizzler"]
+target = []
 submodules = false
 
 [rust]
@@ -26,16 +26,6 @@ llvm-tools = true
 debug = true
 debuginfo-level = 1
 dist-src = false
-
-[target.x86_64-unknown-linux-gnu]
-llvm-has-rust-patches = true
-
-[target.aarch64-apple-darwin]
-llvm-has-rust-patches = true
-
-[target.x86_64-unknown-twizzler]
-llvm-has-rust-patches = true
-llvm-libunwind = 'in-tree'
 
 [dist]
 src-tarball = false
