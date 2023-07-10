@@ -63,12 +63,10 @@ impl QemuCommand {
     fn arch_config(&mut self, options: &QemuOptions) {
         match self.arch {
             Arch::X86_64 => {
-                // bios, cpu, platform
+                // bios, platform
                 self.cmd.arg("-bios").arg("toolchain/install/OVMF.fd");
                 self.cmd.arg("-machine").arg("q35,nvdimm=on");
-                self.cmd
-                    .arg("-cpu")
-                    .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+tsc_scale,+rdtscp");
+
                 // add qemu exit device for testing
                 if options.tests {
                     // x86 specific
@@ -77,10 +75,16 @@ impl QemuCommand {
                         .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
                 }
 
-                // check if host is same as qemu, and if kvm exists
-                if std::env::consts::ARCH == self.arch.to_string() && Path::new("/dev/kvm").exists()
-                {
-                    self.cmd.arg("-enable-kvm"); // machine specific
+                let has_kvm = std::env::consts::ARCH == self.arch.to_string()
+                    && Path::new("/dev/kvm").exists();
+
+                if has_kvm {
+                    self.cmd.arg("-enable-kvm");
+                    self.cmd
+                        .arg("-cpu")
+                        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+tsc_scale,+rdtscp");
+                } else {
+                    self.cmd.arg("-cpu").arg("max");
                 }
 
                 // Connect some nvdimms
