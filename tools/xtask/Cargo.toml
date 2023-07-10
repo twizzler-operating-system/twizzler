@@ -18,6 +18,8 @@ futures-util = "0.3.21"
 futures = "0.3.21"
 indicatif = "0.17.1"
 tokio = "1.17.0"
+toml_edit = "0.19"
+guess_host_triple = "*"
 
 [package.metadata]
 twizzler-build = "xtask"
