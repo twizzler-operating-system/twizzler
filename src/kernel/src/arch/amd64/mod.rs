@@ -18,7 +18,6 @@ mod gdt;
 pub mod image;
 pub mod interrupt;
 pub mod ioapic;
-//pub mod lapic;
 pub mod memory;
 mod pit;
 pub mod processor;
