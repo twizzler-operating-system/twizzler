@@ -66,7 +66,7 @@ pub fn get_speeds() {
         .unwrap()
         .has_invariant_tsc()
     {
-        unimplemented!("support for non-invariant tsc");
+        logln!("warning -- non-invariant TSC detected. Timing may be unpredictable.");
     }
     let tsc_speed_info = cpuid.get_tsc_info();
     if let Some(speed) = tsc_speed_info.map(|info| info.tsc_frequency()).flatten() {
@@ -88,7 +88,7 @@ pub fn get_speeds() {
         return;
     }
     unsafe { FREQ_MHZ = 2000 };
-    unimplemented!("measure TSC freq");
+    logln!("warning -- failed to determine TSC frequency.");
 }
 
 pub fn init(bsp: bool) {

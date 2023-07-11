@@ -1,5 +1,3 @@
-use core::sync::atomic::AtomicBool;
-
 use crate::{
     mutex::{LockGuard, Mutex},
     processor::current_processor,
