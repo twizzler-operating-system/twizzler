@@ -17,7 +17,12 @@ fn alloc_error_handler(layout: Layout) -> ! {
 }
 
 const EARLY_ALLOCATION_SIZE: usize = 1024 * 1024 * 2;
-static mut EARLY_ALLOCATION_AREA: [u8; EARLY_ALLOCATION_SIZE] = [0; EARLY_ALLOCATION_SIZE];
+#[repr(align(64))]
+#[derive(Copy, Clone)]
+struct AlignedU8(u8);
+
+static mut EARLY_ALLOCATION_AREA: [AlignedU8; EARLY_ALLOCATION_SIZE] =
+    [AlignedU8(0); EARLY_ALLOCATION_SIZE];
 static EARLY_ALLOCATION_PTR: AtomicUsize = AtomicUsize::new(0);
 
 struct KernelAllocatorInner<Ctx: KernelMemoryContext + 'static> {
@@ -37,7 +42,7 @@ impl<Ctx: KernelMemoryContext + 'static> KernelAllocator<Ctx> {
         if start + layout.size() >= EARLY_ALLOCATION_SIZE {
             panic!("out of early memory");
         }
-        unsafe { EARLY_ALLOCATION_AREA.as_mut_ptr().add(start) }
+        unsafe { EARLY_ALLOCATION_AREA.as_mut_ptr().add(start) as *mut u8 }
     }
 }
 
