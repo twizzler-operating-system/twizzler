@@ -1,6 +1,6 @@
 use crate::{interrupt::Destination, processor};
 
-use super::local::{read_lapic, write_lapic, LAPIC_ICRHI, LAPIC_ICRLO, LAPIC_ICRLO_STATUS_PEND};
+use super::local::{get_lapic, LAPIC_ICRHI, LAPIC_ICRLO, LAPIC_ICRLO_STATUS_PEND};
 
 pub fn send_ipi(dest: Destination, vector: u32) {
     let (dest_short, dest_val) = match dest {
@@ -12,10 +12,11 @@ pub fn send_ipi(dest: Destination, vector: u32) {
         Destination::AllButSelf => (3, 0),
     };
     unsafe {
-        write_lapic(LAPIC_ICRHI, dest_val);
-        write_lapic(LAPIC_ICRLO, vector | dest_short << 18);
+        let apic = get_lapic();
+        apic.write(LAPIC_ICRHI, dest_val);
+        apic.write(LAPIC_ICRLO, vector | dest_short << 18);
 
-        while read_lapic(LAPIC_ICRLO) & LAPIC_ICRLO_STATUS_PEND != 0 {
+        while apic.read(LAPIC_ICRLO) & LAPIC_ICRLO_STATUS_PEND != 0 {
             core::arch::asm!("pause")
         }
     }

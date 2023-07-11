@@ -19,6 +19,7 @@ use super::{
 };
 
 pub const GENERIC_IPI_VECTOR: u32 = 200;
+pub const TIMER_VECTOR: u32 = 32;
 pub const MIN_VECTOR: usize = 48;
 pub const MAX_VECTOR: usize = 239;
 pub const RESV_VECTORS: &[usize] = &[0x80, GENERIC_IPI_VECTOR as usize];
@@ -456,9 +457,9 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
                 );
             }
         }
-        32 => {
+        TIMER_VECTOR => {
             if current_processor().is_bsp() {
-                super::apic::send_ipi(Destination::AllButSelf, 32);
+                super::apic::send_ipi(Destination::AllButSelf, TIMER_VECTOR);
             }
             super::pit::timer_interrupt();
         }

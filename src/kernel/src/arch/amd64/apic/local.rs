@@ -1,6 +1,13 @@
-use core::intrinsics::unlikely;
+use x86::msr::{rdmsr, wrmsr, APIC_BASE};
 
-use crate::{arch::memory::phys_to_virt, clock::Nanoseconds, interrupt, memory::PhysAddr};
+use crate::{
+    arch::{amd64::tsc::Tsc, interrupt::TIMER_VECTOR, memory::phys_to_virt},
+    clock::Nanoseconds,
+    interrupt,
+    memory::{PhysAddr, VirtAddr},
+    once::Once,
+    time::ClockHardware,
+};
 
 static mut LAPIC_ADDR: u64 = 0;
 
@@ -28,17 +35,85 @@ pub const LAPIC_ICRLO_LEVEL: u32 = 0x8000;
 pub const LAPIC_ICRLO_ASSERT: u32 = 0x4000;
 pub const LAPIC_ICRLO_STATUS_PEND: u32 = 0x1000;
 
-pub unsafe fn read_lapic(reg: u32) -> u32 {
-    core::ptr::read_volatile((LAPIC_ADDR + reg as u64) as *const u32)
+pub const LAPIC_TIMER_DEADLINE: u32 = 0x40000;
+
+pub const LAPIC_SVR_SOFT_ENABLE: u32 = 1 << 8;
+
+pub const LAPIC_ERR_VECTOR: u16 = 0xfe;
+pub const LAPIC_SPURIOUS_VECTOR: u16 = 0xff;
+pub const LAPIC_TIMER_VECTOR: u16 = 0xf0;
+pub const LAPIC_RESCHED_VECTOR: u16 = 0xf1;
+
+// 3A 11.5.4
+pub const LAPIC_TDCR_DIV_1: u32 = 0xb;
+
+pub const LAPIC_INT_MASKED: u32 = 1 << 16;
+
+enum ApicVersion {
+    Apic,
 }
 
-pub unsafe fn write_lapic(reg: u32, val: u32) {
-    core::ptr::write_volatile((LAPIC_ADDR + reg as u64) as *mut u32, val);
-    core::ptr::read_volatile((LAPIC_ADDR + LAPIC_ID as u64) as *const u32);
+pub struct Lapic {
+    version: ApicVersion,
+    base: VirtAddr,
+}
+
+impl Lapic {
+    fn new_apic(base: VirtAddr) -> Self {
+        Self {
+            version: ApicVersion::Apic,
+            base,
+        }
+    }
+
+    pub unsafe fn read(&self, reg: u32) -> u32 {
+        core::ptr::read_volatile(self.base.offset(reg as usize).unwrap().as_ptr())
+    }
+
+    // Note: this does not need to take &mut self because the APIC is per-CPU.
+    pub unsafe fn write(&self, reg: u32, val: u32) {
+        core::ptr::write_volatile(self.base.offset(reg as usize).unwrap().as_mut_ptr(), val);
+        self.read(LAPIC_ID);
+    }
+
+    unsafe fn local_enable_set(&self, enable: bool) {
+        if enable {
+            self.write(
+                LAPIC_SVR,
+                LAPIC_SVR_SOFT_ENABLE | LAPIC_SPURIOUS_VECTOR as u32,
+            )
+        } else {
+            self.write(LAPIC_SVR, LAPIC_SPURIOUS_VECTOR as u32)
+        }
+    }
+
+    fn reset(&self) {
+        unsafe {
+            self.local_enable_set(false);
+
+            // Reset timer and basic interrupt control registers.
+            self.write(LAPIC_TIMER, LAPIC_INT_MASKED | TIMER_VECTOR);
+            self.write(LAPIC_TICR, 0);
+            self.write(LAPIC_LINT0, LAPIC_INT_MASKED);
+            self.write(LAPIC_LINT1, LAPIC_INT_MASKED);
+            self.write(LAPIC_ERROR, LAPIC_ERR_VECTOR as u32);
+            self.write(LAPIC_ESR, 0);
+            self.write(LAPIC_DFR, !0);
+            self.write(LAPIC_TPR, 0);
+
+            // Assign all processors to group 1 in the logical addressing mode.
+            self.write(LAPIC_LDR, 1 << 24);
+
+            // Signal EOI
+            self.write(LAPIC_EOI, 0);
+            self.write(LAPIC_TDCR, LAPIC_TDCR_DIV_1);
+
+            self.local_enable_set(true);
+        }
+    }
 }
 
 fn supports_deadline() -> bool {
-    use crate::once::Once;
     static SUPPORTS_DEADLINE: Once<bool> = Once::new();
     *SUPPORTS_DEADLINE.call_once(|| {
         let cpuid = x86::cpuid::CpuId::new();
@@ -47,116 +122,73 @@ fn supports_deadline() -> bool {
     })
 }
 
-static mut FREQ_MHZ: u64 = 0;
-pub fn get_speeds() {
-    let cpuid = x86::cpuid::CpuId::new();
-    if !cpuid
-        .get_advanced_power_mgmt_info()
-        .unwrap()
-        .has_invariant_tsc()
-    {
-        logln!("warning -- non-invariant TSC detected. Timing may be unpredictable.");
+const APIC_BASE_BSP_FLAG: u64 = 1 << 8;
+const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
+
+fn global_enable() -> PhysAddr {
+    let mut base = unsafe { rdmsr(APIC_BASE) };
+    if base & APIC_GLOBAL_ENABLE == 0 {
+        base |= APIC_GLOBAL_ENABLE;
+        unsafe { wrmsr(APIC_BASE, base) };
     }
-    let tsc_speed_info = cpuid.get_tsc_info();
-    if let Some(speed) = tsc_speed_info.map(|info| info.tsc_frequency()).flatten() {
-        unsafe { FREQ_MHZ = speed / 1000000 };
-        return;
-    }
-    if let Some(cpu_speed_info) = cpuid.get_processor_frequency_info() {
-        unsafe { FREQ_MHZ = cpu_speed_info.processor_base_frequency() as u64 };
-        if cpu_speed_info.processor_base_frequency() > 0 {
-            return;
-        }
-    }
-    if let Some(speed) = cpuid
-        .get_hypervisor_info()
-        .map(|info| info.tsc_frequency())
-        .flatten()
-    {
-        unsafe { FREQ_MHZ = speed as u64 / 1000 };
-        return;
-    }
-    unsafe { FREQ_MHZ = 2000 };
-    logln!("warning -- failed to determine TSC frequency.");
+    PhysAddr::new(base & !0xfff).expect("invalid APIC base address")
+}
+
+static LAPIC: Once<Lapic> = Once::new();
+pub fn get_lapic() -> &'static Lapic {
+    LAPIC.poll().expect("must initialize APIC before use")
 }
 
 pub fn init(bsp: bool) {
-    if bsp {
-        unsafe {
-            let apic_base = x86::msr::rdmsr(x86::msr::APIC_BASE) as u32;
-            LAPIC_ADDR =
-                phys_to_virt(PhysAddr::new((apic_base & 0xffff0000) as u64).unwrap()).raw();
-        }
-        get_speeds();
-    }
-
-    unsafe {
-        write_lapic(LAPIC_SVR, 0x100 | 0xff);
-
-        write_lapic(LAPIC_TIMER, 0x10000 | 32);
-        write_lapic(LAPIC_TICR, 10000000);
-        write_lapic(LAPIC_LINT0, 0x10000);
-        write_lapic(LAPIC_LINT1, 0x10000);
-
-        write_lapic(LAPIC_ERROR, 0xfe);
-
-        write_lapic(LAPIC_ESR, 0);
-        write_lapic(LAPIC_ESR, 0);
-
-        write_lapic(LAPIC_DFR, 0xffffffff);
-        write_lapic(LAPIC_LDR, 1 << 24);
-
-        write_lapic(LAPIC_EOI, 0);
-        write_lapic(LAPIC_TPR, 0);
-        write_lapic(LAPIC_TDCR, 0xb);
-    }
+    let apic = if bsp {
+        let base = global_enable();
+        let apic = Lapic::new_apic(phys_to_virt(base));
+        LAPIC.call_once(|| apic)
+    } else {
+        get_lapic()
+    };
+    apic.reset();
 }
 
 pub fn eoi() {
     unsafe {
-        write_lapic(LAPIC_EOI, 0);
+        get_lapic().write(LAPIC_EOI, 0);
     }
 }
 
 pub fn reset_error() {
     unsafe {
-        write_lapic(LAPIC_ESR, 0);
+        get_lapic().write(LAPIC_ESR, 0);
     }
 }
 
 pub fn lapic_interrupt(irq: u16) {
     match irq {
-        0xfe => panic!("LAPIC error"),
-        0xf0 => crate::clock::oneshot_clock_hardtick(),
-        0xf1 => crate::sched::schedule_resched(),
+        LAPIC_ERR_VECTOR => panic!("LAPIC error"),
+        LAPIC_TIMER_VECTOR => crate::clock::oneshot_clock_hardtick(),
+        LAPIC_RESCHED_VECTOR => crate::sched::schedule_resched(),
         _ => unimplemented!(),
     }
 }
 
-const LAPIC_TIMER_DEADLINE: u32 = 0x40000;
 pub fn schedule_oneshot_tick(time: Nanoseconds) {
+    static TSC: Once<Tsc> = Once::new();
+    let tsc = TSC.call_once(|| Tsc::new());
     let old = interrupt::disable();
     unsafe {
-        let time = read_monotonic_nanoseconds() + time;
-        let deadline = (time / 1000) * FREQ_MHZ;
+        let tsc_val = tsc.read();
+        let deadline = tsc_val.value + time / (tsc_val.rate.0 / 1000);
         if supports_deadline() {
-            write_lapic(LAPIC_TIMER, 240 | LAPIC_TIMER_DEADLINE);
+            get_lapic().write(
+                LAPIC_TIMER,
+                LAPIC_TIMER_VECTOR as u32 | LAPIC_TIMER_DEADLINE,
+            );
             x86::msr::wrmsr(x86::msr::IA32_TSC_DEADLINE, deadline);
         } else {
-            write_lapic(LAPIC_TIMER, 240);
-            write_lapic(LAPIC_TICR, deadline as u32);
+            let apic = get_lapic();
+            apic.write(LAPIC_TIMER, LAPIC_TIMER_VECTOR as u32);
+            apic.write(LAPIC_TICR, deadline as u32);
         }
     }
     interrupt::set(old);
-}
-
-pub fn read_monotonic_nanoseconds() -> Nanoseconds {
-    // TODO: should we use rdtsc or rdtscp here? (the latter will require a cpuid check once (only
-    // once, cache the result))
-    let tsc = unsafe { x86::time::rdtsc() };
-    let f = unsafe { FREQ_MHZ };
-    if unlikely(f == 0) {
-        panic!("cannot read nanoseconds before TSC calibration");
-    }
-    (tsc * 1000u64) / f
 }
