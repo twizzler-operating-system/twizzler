@@ -13,11 +13,12 @@ pub mod acpi;
 pub mod address;
 pub mod context;
 //mod desctables;
+mod apic;
 mod gdt;
 pub mod image;
 pub mod interrupt;
 pub mod ioapic;
-pub mod lapic;
+//pub mod lapic;
 pub mod memory;
 mod pit;
 pub mod processor;
@@ -25,12 +26,12 @@ mod start;
 mod syscall;
 pub mod thread;
 mod tsc;
-pub use lapic::{poke_cpu, schedule_oneshot_tick, send_ipi};
+pub use apic::{poke_cpu, schedule_oneshot_tick, send_ipi};
 pub use start::BootInfoSystemTable;
 pub fn init<B: BootInfo>(boot_info: &B) {
     gdt::init();
     interrupt::init_idt();
-    lapic::init(true);
+    apic::init(true);
 
     let rsdp = boot_info.get_system_table(BootInfoSystemTable::Rsdp);
     acpi::init(rsdp.raw());
@@ -39,7 +40,7 @@ pub fn init<B: BootInfo>(boot_info: &B) {
 pub fn init_secondary() {
     gdt::init_secondary();
     interrupt::init_idt();
-    lapic::init(false);
+    apic::init(false);
 }
 
 pub fn init_interrupts() {
