@@ -150,6 +150,7 @@ impl Lapic {
         let old = interrupt::disable();
         unsafe {
             let tsc_val = tsc.read();
+            // TODO: clean up once we do the cleanup for Nanoseconds.
             let deadline = tsc_val.value + time / (tsc_val.rate.0 / 1000);
             if supports_deadline() {
                 get_lapic().write(
