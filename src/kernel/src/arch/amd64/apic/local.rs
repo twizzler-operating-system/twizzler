@@ -151,7 +151,7 @@ impl Lapic {
         unsafe {
             let tsc_val = tsc.read();
             // TODO: clean up once we do the cleanup for Nanoseconds.
-            let deadline = tsc_val.value + time / (tsc_val.rate.0 / 1000);
+            let deadline = tsc_val.value + (1000000 * time) / tsc_val.rate.0;
             if supports_deadline() {
                 get_lapic().write(
                     LAPIC_TIMER,
