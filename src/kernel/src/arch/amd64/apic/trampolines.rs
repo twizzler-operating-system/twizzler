@@ -7,7 +7,7 @@ use crate::{
     arch::{
         amd64::{
             apic::local::{
-                reset_error, LAPIC_ICRLO_ASSERT, LAPIC_ICRLO_INIT, LAPIC_ICRLO_LEVEL,
+                get_lapic, LAPIC_ICRLO_ASSERT, LAPIC_ICRLO_INIT, LAPIC_ICRLO_LEVEL,
                 LAPIC_ICRLO_STARTUP,
             },
             pit,
@@ -200,7 +200,7 @@ pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
     assert!(*pagetables >> 32 == 0);
     core::arch::asm!("mfence");
 
-    reset_error();
+    get_lapic().clear_err();
     send_ipi(
         Destination::Single(cpu),
         LAPIC_ICRLO_INIT | LAPIC_ICRLO_LEVEL | LAPIC_ICRLO_ASSERT,

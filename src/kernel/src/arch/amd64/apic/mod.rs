@@ -3,5 +3,5 @@ mod local;
 mod trampolines;
 
 pub use ipi::send_ipi;
-pub use local::{eoi, init, lapic_interrupt, schedule_oneshot_tick};
+pub(super) use local::{get_lapic, init, lapic_interrupt};
 pub use trampolines::poke_cpu;

@@ -7,6 +7,7 @@ use twizzler_abi::{
 use x86::current::rflags::RFlags;
 
 use crate::{
+    arch::amd64::apic::get_lapic,
     interrupt::{Destination, DynamicInterrupt},
     memory::{context::virtmem::PageFaultFlags, VirtAddr},
     processor::current_processor,
@@ -400,7 +401,7 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         );
     }
 
-    super::apic::eoi();
+    get_lapic().eoi();
     match number as u32 {
         14 => {
             let cr2 = unsafe { x86::controlregs::cr2() };

@@ -9,8 +9,7 @@ use crate::{
     time::ClockHardware,
 };
 
-static mut LAPIC_ADDR: u64 = 0;
-
+// Registers for local APIC
 pub const LAPIC_ID: u32 = 0x20;
 pub const LAPIC_VER: u32 = 0x30;
 pub const LAPIC_TPR: u32 = 0x0080;
@@ -29,14 +28,17 @@ pub const LAPIC_ERROR: u32 = 0x0370;
 pub const LAPIC_TICR: u32 = 0x0380;
 pub const LAPIC_TDCR: u32 = 0x03e0;
 
+// Interrupt sending control flags
 pub const LAPIC_ICRLO_INIT: u32 = 0x0500;
 pub const LAPIC_ICRLO_STARTUP: u32 = 0x0600;
 pub const LAPIC_ICRLO_LEVEL: u32 = 0x8000;
 pub const LAPIC_ICRLO_ASSERT: u32 = 0x4000;
 pub const LAPIC_ICRLO_STATUS_PEND: u32 = 0x1000;
 
+// Timer flags
 pub const LAPIC_TIMER_DEADLINE: u32 = 0x40000;
 
+// Spurious vector register flags
 pub const LAPIC_SVR_SOFT_ENABLE: u32 = 1 << 8;
 
 pub const LAPIC_ERR_VECTOR: u16 = 0xfe;
@@ -44,11 +46,18 @@ pub const LAPIC_SPURIOUS_VECTOR: u16 = 0xff;
 pub const LAPIC_TIMER_VECTOR: u16 = 0xf0;
 pub const LAPIC_RESCHED_VECTOR: u16 = 0xf1;
 
-// 3A 11.5.4
+// Timer divide register selections (3A 11.5.4)
 pub const LAPIC_TDCR_DIV_1: u32 = 0xb;
 
+// Shared flag across all interrupt control regs
 pub const LAPIC_INT_MASKED: u32 = 1 << 16;
 
+// Flags in the APIC base MSR
+const APIC_BASE_BSP_FLAG: u64 = 1 << 8;
+const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
+
+// The APIC can either be a standard APIC or x2APIC. We'll support
+// x2 eventually.
 enum ApicVersion {
     Apic,
 }
@@ -66,10 +75,18 @@ impl Lapic {
         }
     }
 
+    /// Read a register from the local APIC.
+    ///
+    /// # Safety
+    /// Caller must ensure that reg is a valid register in the APIC register space.
     pub unsafe fn read(&self, reg: u32) -> u32 {
         core::ptr::read_volatile(self.base.offset(reg as usize).unwrap().as_ptr())
     }
 
+    /// Write a value to a register in the local APIC.
+    ///
+    /// # Safety
+    /// Caller must ensure that reg is a valid register in the APIC register space.
     // Note: this does not need to take &mut self because the APIC is per-CPU.
     pub unsafe fn write(&self, reg: u32, val: u32) {
         core::ptr::write_volatile(self.base.offset(reg as usize).unwrap().as_mut_ptr(), val);
@@ -84,6 +101,20 @@ impl Lapic {
             )
         } else {
             self.write(LAPIC_SVR, LAPIC_SPURIOUS_VECTOR as u32)
+        }
+    }
+
+    /// Issue an end-of-interrupt
+    pub fn eoi(&self) {
+        unsafe {
+            self.write(LAPIC_EOI, 0);
+        }
+    }
+
+    /// Clear the error status register.
+    pub fn clear_err(&self) {
+        unsafe {
+            self.write(LAPIC_ESR, 0);
         }
     }
 
@@ -111,6 +142,29 @@ impl Lapic {
             self.local_enable_set(true);
         }
     }
+
+    /// Schedule the APIC timer to go off after `time` nanoseconds.
+    pub fn setup_oneshot_timer(&self, time: Nanoseconds) {
+        static TSC: Once<Tsc> = Once::new();
+        let tsc = TSC.call_once(|| Tsc::new());
+        let old = interrupt::disable();
+        unsafe {
+            let tsc_val = tsc.read();
+            let deadline = tsc_val.value + time / (tsc_val.rate.0 / 1000);
+            if supports_deadline() {
+                get_lapic().write(
+                    LAPIC_TIMER,
+                    LAPIC_TIMER_VECTOR as u32 | LAPIC_TIMER_DEADLINE,
+                );
+                x86::msr::wrmsr(x86::msr::IA32_TSC_DEADLINE, deadline);
+            } else {
+                let apic = get_lapic();
+                apic.write(LAPIC_TIMER, LAPIC_TIMER_VECTOR as u32);
+                apic.write(LAPIC_TICR, deadline as u32);
+            }
+        }
+        interrupt::set(old);
+    }
 }
 
 fn supports_deadline() -> bool {
@@ -122,9 +176,6 @@ fn supports_deadline() -> bool {
     })
 }
 
-const APIC_BASE_BSP_FLAG: u64 = 1 << 8;
-const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
-
 fn global_enable() -> PhysAddr {
     let mut base = unsafe { rdmsr(APIC_BASE) };
     if base & APIC_GLOBAL_ENABLE == 0 {
@@ -135,6 +186,9 @@ fn global_enable() -> PhysAddr {
 }
 
 static LAPIC: Once<Lapic> = Once::new();
+/// Get a handle to the local APIC for this core. Note that the returned pointer
+/// is actually shared by all cores, since there is no CPU-local state we need to keep
+/// for now.
 pub fn get_lapic() -> &'static Lapic {
     LAPIC.poll().expect("must initialize APIC before use")
 }
@@ -150,18 +204,7 @@ pub fn init(bsp: bool) {
     apic.reset();
 }
 
-pub fn eoi() {
-    unsafe {
-        get_lapic().write(LAPIC_EOI, 0);
-    }
-}
-
-pub fn reset_error() {
-    unsafe {
-        get_lapic().write(LAPIC_ESR, 0);
-    }
-}
-
+/// Handle an incoming internal APIC interrupt (or some IPIs).
 pub fn lapic_interrupt(irq: u16) {
     match irq {
         LAPIC_ERR_VECTOR => panic!("LAPIC error"),
@@ -169,26 +212,4 @@ pub fn lapic_interrupt(irq: u16) {
         LAPIC_RESCHED_VECTOR => crate::sched::schedule_resched(),
         _ => unimplemented!(),
     }
-}
-
-pub fn schedule_oneshot_tick(time: Nanoseconds) {
-    static TSC: Once<Tsc> = Once::new();
-    let tsc = TSC.call_once(|| Tsc::new());
-    let old = interrupt::disable();
-    unsafe {
-        let tsc_val = tsc.read();
-        let deadline = tsc_val.value + time / (tsc_val.rate.0 / 1000);
-        if supports_deadline() {
-            get_lapic().write(
-                LAPIC_TIMER,
-                LAPIC_TIMER_VECTOR as u32 | LAPIC_TIMER_DEADLINE,
-            );
-            x86::msr::wrmsr(x86::msr::IA32_TSC_DEADLINE, deadline);
-        } else {
-            let apic = get_lapic();
-            apic.write(LAPIC_TIMER, LAPIC_TIMER_VECTOR as u32);
-            apic.write(LAPIC_TICR, deadline as u32);
-        }
-    }
-    interrupt::set(old);
 }

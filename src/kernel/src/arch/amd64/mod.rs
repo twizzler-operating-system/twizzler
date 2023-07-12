@@ -25,8 +25,10 @@ mod start;
 mod syscall;
 pub mod thread;
 mod tsc;
-pub use apic::{poke_cpu, schedule_oneshot_tick, send_ipi};
+pub use apic::{poke_cpu, send_ipi};
 pub use start::BootInfoSystemTable;
+
+use self::apic::get_lapic;
 pub fn init<B: BootInfo>(boot_info: &B) {
     gdt::init();
     interrupt::init_idt();
@@ -48,6 +50,10 @@ pub fn init_interrupts() {
 
 pub fn start_clock(statclock_hz: u64, stat_cb: fn(Nanoseconds)) {
     pit::setup_freq(statclock_hz, stat_cb);
+}
+
+pub fn schedule_oneshot_tick(time: Nanoseconds) {
+    get_lapic().setup_oneshot_timer(time)
 }
 
 /// Jump into userspace
