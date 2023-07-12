@@ -19,6 +19,8 @@ use crate::{
     memory::{PhysAddr, VirtAddr},
 };
 
+// TODO: cleanup magic numbers.
+
 #[naked]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn trampoline_entry_code16() {
