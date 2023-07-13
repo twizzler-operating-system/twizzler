@@ -8,12 +8,22 @@ use crate::{
     processor::current_processor,
     spinlock::Spinlock,
     thread::{Priority, ThreadRef},
-    time::{Ticks, ClockHardware, TICK_SOURCES, CLOCK_OFFSET},
+    time::{ClockHardware, Ticks, CLOCK_OFFSET, TICK_SOURCES},
 };
 
-use twizzler_abi::syscall::{ClockID, ClockInfo, FemtoSeconds, Clock, ClockKind, ReadClockListError};
+use twizzler_abi::syscall::{
+    Clock, ClockID, ClockInfo, ClockKind, FemtoSeconds, ReadClockListError,
+};
 
+// TODO: replace with NanoSeconds from twizzler-abi.
 pub type Nanoseconds = u64;
+
+// TODO: remove when replacing Nanoseconds.
+impl From<Ticks> for Nanoseconds {
+    fn from(t: Ticks) -> Self {
+        t.value * (t.rate.0 / 1000000)
+    }
+}
 
 pub fn statclock(dt: Nanoseconds) {
     crate::sched::schedule_stattick(dt);
@@ -305,7 +315,10 @@ fn organize_clock_sources(kind: ClockKind) {
 pub struct SoftClockTick;
 impl ClockHardware for SoftClockTick {
     fn read(&self) -> Ticks {
-        Ticks { value: get_current_ticks(), rate: FemtoSeconds(0)}
+        Ticks {
+            value: get_current_ticks(),
+            rate: FemtoSeconds(0),
+        }
     }
 
     fn info(&self) -> ClockInfo {
@@ -323,7 +336,7 @@ pub fn fill_with_every_first(slice: &mut [Clock], start: u64) -> Result<usize, R
     // there are currently only 3 kinds of clocks exposed
     if start >= 3 {
         // index out of bounds
-        return Err(ReadClockListError::InvalidArgument)
+        return Err(ReadClockListError::InvalidArgument);
     }
 
     let mut clocks_added = 0;
@@ -335,52 +348,51 @@ pub fn fill_with_every_first(slice: &mut [Clock], start: u64) -> Result<usize, R
             // does this allocate new kernel memory?
             slice[clocks_added].set(
                 // each semantic clock will have at least one element
-                {
-                    TICK_SOURCES.lock()[clock_list.first().unwrap().0 as usize].info()
-                },
+                { TICK_SOURCES.lock()[clock_list.first().unwrap().0 as usize].info() },
                 clock_list[0],
                 (i as u64).into(),
             );
             clocks_added += 1;
         } else {
-            break
+            break;
         }
     }
-    return Ok(clocks_added)
+    return Ok(clocks_added);
 }
 
 // fills the passed in slice with all clocks from a specified clock list
-pub fn fill_with_kind(slice: &mut [Clock], clock: ClockKind, start: u64) -> Result<usize, ReadClockListError> {
+pub fn fill_with_kind(
+    slice: &mut [Clock],
+    clock: ClockKind,
+    start: u64,
+) -> Result<usize, ReadClockListError> {
     // determine what clock list we need to be in
     let i: u64 = clock.into();
     let clock_list = &USER_CLOCKS.lock()[i as usize];
     // error check bounds of start
     if start as usize >= clock_list.len() {
         // index out of bounds
-        return Err(ReadClockListError::InvalidArgument)
+        return Err(ReadClockListError::InvalidArgument);
     }
     let mut clocks_added = 0;
     // add each clock in this list to the user slice
     for id in &clock_list[start as usize..] {
         // check that we don't go out of slice bounds
         if clocks_added < slice.len() {
-            slice[clocks_added].set(
-                { 
-                    TICK_SOURCES.lock()[id.0 as usize].info()
-                },
-                *id,
-                clock,
-            );
+            slice[clocks_added].set({ TICK_SOURCES.lock()[id.0 as usize].info() }, *id, clock);
             clocks_added += 1;
         } else {
-            break
+            break;
         }
     }
-    return Ok(clocks_added)
+    return Ok(clocks_added);
 }
 
 // fils the passed in slice with the first element of a specific clock type
-pub fn fill_with_first_kind(slice: &mut [Clock], clock: ClockKind) -> Result<usize, ReadClockListError> {
+pub fn fill_with_first_kind(
+    slice: &mut [Clock],
+    clock: ClockKind,
+) -> Result<usize, ReadClockListError> {
     // determine what clock list we need to be in
     let i: u64 = clock.into();
     let clock_list = &USER_CLOCKS.lock()[i as usize];
@@ -388,16 +400,10 @@ pub fn fill_with_first_kind(slice: &mut [Clock], clock: ClockKind) -> Result<usi
     // check that we don't go out of slice bounds
     if slice.len() >= 1 {
         let id = clock_list.first().unwrap();
-        slice[0].set(
-            {
-                TICK_SOURCES.lock()[id.0 as usize].info()
-            },
-            *id,
-            clock,
-        );
-        return Ok(clocks_added)
+        slice[0].set({ TICK_SOURCES.lock()[id.0 as usize].info() }, *id, clock);
+        return Ok(clocks_added);
     } else {
-        return Err(ReadClockListError::InvalidArgument)
+        return Err(ReadClockListError::InvalidArgument);
     }
 }
 

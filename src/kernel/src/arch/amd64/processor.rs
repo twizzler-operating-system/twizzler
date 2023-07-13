@@ -124,10 +124,6 @@ pub fn enumerate_clocks() {
 
 pub fn get_topology() -> Vec<(usize, bool)> {
     let cpuid = x86::cpuid::CpuId::new();
-    let vendor = cpuid.get_vendor_info().unwrap();
-    if vendor.as_str() != "GenuineIntel" {
-        unimplemented!("AMD support for topology determination");
-    }
     let bitsinfo = cpuid
         .get_extended_topology_info()
         .expect("TODO: implement support for deriving topology without this feature");

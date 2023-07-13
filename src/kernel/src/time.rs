@@ -1,7 +1,4 @@
-use alloc::{
-    sync::Arc,
-    vec::Vec
-};
+use alloc::{sync::Arc, vec::Vec};
 
 use twizzler_abi::syscall::{ClockInfo, FemtoSeconds};
 
@@ -9,7 +6,7 @@ use crate::spinlock::Spinlock;
 
 pub struct Ticks {
     pub value: u64,
-    pub rate: FemtoSeconds
+    pub rate: FemtoSeconds,
 }
 
 pub trait ClockHardware {
@@ -17,7 +14,8 @@ pub trait ClockHardware {
     fn info(&self) -> ClockInfo;
 }
 
-pub static TICK_SOURCES: Spinlock<Vec<Arc<dyn ClockHardware + Send + Sync>>> = Spinlock::new(Vec::new());
+pub static TICK_SOURCES: Spinlock<Vec<Arc<dyn ClockHardware + Send + Sync>>> =
+    Spinlock::new(Vec::new());
 pub const CLOCK_OFFSET: usize = 2;
 
 pub fn register_clock<T>(clock: T)
@@ -32,7 +30,7 @@ where
     // for the best monotonic and best real-time clocks
     // if not when we call sys_read_clock_info we'd have to
     // obtain a lock on USER_CLOCKS to get the clock id of the
-    // best real-time or monotonic clock and then 
+    // best real-time or monotonic clock and then
     // TICK_SOURCES to read the data. References with Arc around
     // them still point to the same memory location.
     if core::intrinsics::unlikely(clk_id == 0) {

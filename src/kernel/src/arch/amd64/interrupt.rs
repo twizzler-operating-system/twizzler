@@ -7,7 +7,7 @@ use twizzler_abi::{
 use x86::current::rflags::RFlags;
 
 use crate::{
-    arch::lapic,
+    arch::amd64::apic::get_lapic,
     interrupt::{Destination, DynamicInterrupt},
     memory::{context::virtmem::PageFaultFlags, VirtAddr},
     processor::current_processor,
@@ -20,6 +20,7 @@ use super::{
 };
 
 pub const GENERIC_IPI_VECTOR: u32 = 200;
+pub const TIMER_VECTOR: u32 = 32;
 pub const MIN_VECTOR: usize = 48;
 pub const MAX_VECTOR: usize = 239;
 pub const RESV_VECTORS: &[usize] = &[0x80, GENERIC_IPI_VECTOR as usize];
@@ -400,7 +401,7 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         );
     }
 
-    lapic::eoi();
+    get_lapic().eoi();
     match number as u32 {
         14 => {
             let cr2 = unsafe { x86::controlregs::cr2() };
@@ -457,9 +458,9 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
                 );
             }
         }
-        32 => {
+        TIMER_VECTOR => {
             if current_processor().is_bsp() {
-                lapic::send_ipi(Destination::AllButSelf, 32);
+                super::apic::send_ipi(Destination::AllButSelf, TIMER_VECTOR);
             }
             super::pit::timer_interrupt();
         }
@@ -468,7 +469,7 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             crate::processor::generic_ipi_handler();
         }
         n if n >= 240 => {
-            lapic::lapic_interrupt(number as u16);
+            super::apic::lapic_interrupt(number as u16);
         }
         34 => {
             // TODO (urgent): why is this being raised?
