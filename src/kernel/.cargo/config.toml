@@ -3,6 +3,7 @@ runner = "cargo run --package simple_boot --"
 rustflags = [
   "-C", "link-arg=--image-base=0xffffffff80100000", "-Cforce-unwind-tables", "-Cforce-frame-pointers=yes",
   "-C", "link-arg=--no-gc-sections",
+  "-C", "debuginfo=2",
 ]
 
 [target.aarch64-unknown-none]
