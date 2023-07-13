@@ -2,17 +2,11 @@ use alloc::{sync::Arc, vec::Vec};
 
 use twizzler_abi::syscall::{ClockInfo, FemtoSeconds};
 
-use crate::{clock::Nanoseconds, spinlock::Spinlock};
+use crate::spinlock::Spinlock;
 
 pub struct Ticks {
     pub value: u64,
     pub rate: FemtoSeconds,
-}
-
-impl From<Ticks> for Nanoseconds {
-    fn from(t: Ticks) -> Self {
-        t.value * t.rate.0
-    }
 }
 
 pub trait ClockHardware {
