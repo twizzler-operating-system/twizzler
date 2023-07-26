@@ -133,11 +133,18 @@ impl ToString for Triple {
 }
 
 pub fn all_possible_platforms() -> Vec<Triple> {
-    let triples = vec![Triple {
-        machine: Machine::Unknown,
-        arch: Arch::X86_64,
-        host: Host::Twizzler,
-    }];
+    let triples = vec![
+        Triple {
+            machine: Machine::Unknown,
+            arch: Arch::X86_64,
+            host: Host::Twizzler,
+        },
+        Triple {
+            machine: Machine::Unknown,
+            arch: Arch::Aarch64,
+            host: Host::Twizzler,
+        },
+    ];
 
     triples
 }
