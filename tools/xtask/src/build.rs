@@ -184,9 +184,13 @@ fn build_twizzler<'a>(
         return Ok(None);
     }
     crate::print_status_line("collection: userspace", Some(build_config));
+    // the currently supported build target triples
+    // have a value of "unknown" for the machine, but
+    // we might specify a different value for machine
+    // on the cli for conditional compilation
     let triple = Triple::new(
         build_config.arch,
-        build_config.machine,
+        crate::triple::Machine::Unknown,
         crate::triple::Host::Twizzler,
     );
     let packages = locate_packages(workspace, None);

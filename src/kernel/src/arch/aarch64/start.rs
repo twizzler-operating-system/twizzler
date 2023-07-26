@@ -25,6 +25,12 @@ struct Armv8BootInfo {
     /// This contains other useful information such as the kernel's
     /// command line parameters.
     kernel: &'static LimineFile,
+
+    /// A list of user programs loaded into memory.
+    /// 
+    /// This is essentially our initial ramdisk used
+    /// to start userspace.
+    modules: Vec<BootModule>,
 }
 
 impl BootInfo for Armv8BootInfo {
@@ -33,8 +39,7 @@ impl BootInfo for Armv8BootInfo {
     }
 
     fn get_modules(&self) -> &'static [BootModule] {
-        // TODO: support loading of modules (programs)
-        &[]
+        unsafe { core::intrinsics::transmute(&self.modules[..]) }
     }
 
     fn kernel_image_info(&self) -> (VirtAddr, usize) {
@@ -88,6 +93,10 @@ static MEMORY_MAP: LimineMmapRequest = LimineMmapRequest::new(0);
 #[used]
 static KERNEL_ELF: LimineKernelFileRequest = LimineKernelFileRequest::new(0);
 
+#[used]
+static USER_MODULES: LimineModuleRequest = LimineModuleRequest::new(0);
+
+
 #[link_section = ".limine_reqs"]
 #[used]
 static LR1: &'static LimineEntryPointRequest = &ENTRY_POINT;
@@ -99,6 +108,10 @@ static LR2: &'static LimineMmapRequest = &MEMORY_MAP;
 #[link_section = ".limine_reqs"]
 #[used]
 static LR3: &'static LimineKernelFileRequest = &KERNEL_ELF;
+
+#[link_section = ".limine_reqs"]
+#[used]
+static LR4: &'static LimineModuleRequest = &USER_MODULES;
 
 // the kernel's entry point function from the limine bootloader
 // limine ensures we are in el1 (kernel mode)
@@ -121,6 +134,14 @@ fn limine_entry() -> ! {
     //         region.typ)
     // }
 
+    // TODO: it should be ok if it is empty when -k is passed on the command line
+    let modules =  USER_MODULES
+        .get_response()
+        .get()
+        .expect("no modules specified for kernel -- no way to start init")
+        .modules()
+        .expect("no modules specified for kernel -- no way to start init");
+
     let kernel_elf = unsafe {
         KERNEL_ELF
             .get_response()
@@ -137,6 +158,7 @@ fn limine_entry() -> ! {
     let mut boot_info = Armv8BootInfo {
         memory: alloc::vec![],
         kernel: kernel_elf,
+        modules: alloc::vec![],
     };
 
     // convert memory map from bootloader to memory regions
@@ -148,6 +170,15 @@ fn limine_entry() -> ! {
             length: m.len as usize,
         })
         .collect();
+
+    // convert module representation from bootloader to boot module
+    boot_info.modules = modules
+    .iter()
+    .map(|m| BootModule {
+        start: VirtAddr::new(m.base.as_ptr().unwrap() as u64).unwrap(),
+        length: m.length as usize,
+    })
+    .collect();
 
     crate::kernel_main(&mut boot_info)
 }
