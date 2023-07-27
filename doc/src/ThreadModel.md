@@ -179,7 +179,7 @@ A thread may call these functions on another thread only if that thread has writ
 The kernel also maintains some internal state per-thread that can be manipulated or set by userspace. These values may be read or modified via the `sys_thread_control` syscall or helper functions:
 
 - TLS Pointer: This is a pointer that is loaded into an architecture-specific register whenever the thread is running, and is commonly used to denote thread-local storage areas. For example, on x86_64, this pointer value is loaded into the `fs` register upon context switch.
-- Upcall Pointer: This pointer is used by the kernel to invoke synchronous events. It is called by the kernel with a special ABI defined in the twizzler-abi crate and should not be used directly by end users.
+- Upcall Pointer: This pointer is used by the kernel to invoke synchronous events. It is called by the kernel with a special ABI defined in the twizzler-abi crate and should not be used directly by end users. When a thread is spawned, if the thread is to inherit the VM context of its parent, the upcall pointer is inherited too.
 - Affinity, see below.
 - Priority, see below.
 
@@ -187,8 +187,10 @@ These values may be set or read by another thread only if the calling thread has
 
 ### Affinity
 
-By default, a thread has no specific affinity, and may run anywhere. However, with a call to `sys_thread_control`, a thread may select a specific subset of cores upon which it is allowed to run. This is an _allow_ list, ensuring the thread only runs on CPUs that it has specified as allowed.
+By default, a thread has no specific affinity, and may run anywhere. However, with a call to `sys_thread_control`, a thread may select a specific subset of cores upon which it is allowed to run. This is an _allow_ list, ensuring the thread only runs on CPUs that it has specified as allowed. Upon thread creation, the new thread inherits the affinity of its parent.
 
 ### Priority
 
 TODO: discuss with Allen and George a good priority definition and API.
+
+Upon thread creation, the new thread inherits the priority of its parent.
