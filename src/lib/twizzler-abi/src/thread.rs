@@ -7,7 +7,10 @@ use core::{
     time::Duration,
 };
 
-use crate::syscall::{sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncSleep};
+use crate::syscall::{
+    sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
+    ThreadSyncSleep, ThreadSyncWake,
+};
 #[allow(unused_imports)]
 use crate::{
     object::{ObjID, Protections},
@@ -24,7 +27,39 @@ pub struct ThreadRepr {
     code: AtomicU64,
 }
 
+#[repr(u8)]
+pub enum ExecutionState {
+    Running,
+    Sleeping,
+    Suspended,
+    Exited = 255,
+}
+
 impl ThreadRepr {
+    pub fn get_state(&self) -> ExecutionState {
+        let status = self.status.load(Ordering::Acquire);
+        // If we see a status we don't understand, just assume the thread is running.
+        match status & 0xff {
+            1 => ExecutionState::Sleeping,
+            2 => ExecutionState::Suspended,
+            255 => ExecutionState::Exited,
+            _ => ExecutionState::Running,
+        }
+    }
+
+    pub fn set_state(&mut self, state: ExecutionState, code: u64) {
+        let status = state as u8 as u64;
+        self.code.store(code, Ordering::SeqCst);
+        self.status.store(status, Ordering::Release);
+        let _ = sys_thread_sync(
+            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                ThreadSyncReference::Virtual(&self.status),
+                usize::MAX,
+            ))],
+            None,
+        );
+    }
+
     /// Wait for a thread's status to change.
     pub fn wait(&self, timeout: Option<Duration>) -> Option<u64> {
         while self.status.load(Ordering::SeqCst) == 0 {
