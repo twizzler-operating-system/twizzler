@@ -152,10 +152,38 @@ If the flags argument contains NonBlocking, then this call returns immediately w
 
 ## Thread CPU State
 
+A running thread has a purely volatile CPU state, containing the registers, stack pointer, instruction pointer, etc. This volatile state
+is only ever stored loaded in the CPU, or in kernel space inside an in-kernel thread control block. However, the registers _can_ be made
+available for other threads to read or write through the use of an introspection system call:
+
+```{rust}
+fn sys_thread_read_register(target: ObjID, register: ArchRegister) -> Result<RegisterValue, ThreadRegisterError>;
+fn sys_thread_write_register(target: ObjID, register: ArchRegister, value: RegisterValue) -> Result<RegisterInfo, ThreadRegisterError>;
+```
+
+The `register` argument specifies which register to read from. The enum `ArchRegister` is an architecture-specific enum that lists
+all the registers accessible by this function. The return value is either a `RegisterValue` struct upon success, or a `ThreadRegisterError` on failure. Note that the thread must be suspended for these calls to succeed.
+
+The `RegisterValue` enum allows for different-sized registers, containing either a u8, a u16, etc, up to a u128. Larger registers must be read
+in parts.
+
+A thread may call these functions on another thread only if that thread has write permission on the target thread's control object.
+
 ## Thread Kernel State
 
-upcall pointer
+The kernel also maintains some internal state per-thread that can be manipulated or set by userspace. These values may be read or modified via the `sys_thread_control` syscall or helper functions:
+
+- TLS Pointer: This is a pointer that is loaded into an architecture-specific register whenever the thread is running, and is commonly used to denote thread-local storage areas. For example, on x86_64, this pointer value is loaded into the `fs` register upon context switch.
+- Upcall Pointer: This pointer is used by the kernel to invoke synchronous events. It is called by the kernel with a special ABI defined in the twizzler-abi crate and should not be used directly by end users.
+- Affinity, see below.
+- Priority, see below.
+
+These values may be set or read by another thread only if the calling thread has write access to the target thread's control object.
 
 ### Affinity
 
+By default, a thread has no specific affinity, and may run anywhere. However, with a call to `sys_thread_control`, a thread may select a specific subset of cores upon which it is allowed to run. This is an _allow_ list, ensuring the thread only runs on CPUs that it has specified as allowed.
+
 ### Priority
+
+TODO: discuss with Allen and George a good priority definition and API.
