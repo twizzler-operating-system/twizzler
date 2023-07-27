@@ -99,6 +99,8 @@ When a thread receives a synchronous event, it jumps to the thread's upcall poin
 
 A thread may, optionally, choose to be suspended upon receiving a synchronous event. If this is the case, the thread's status field is updated to be Suspended after the stack frame for the upcall is initialized and the instruction pointer is set to the upcall pointer. A thread-sync wake operation is then performed on the status field.
 
+For a list of currently defined synchronous events, see [List of Synchronous Events](SyncEvents.md).
+
 ### Asynchronous Events
 
 Asynchronous events are less urgent than synchronous events and are more akin to messages. They are sent to a thread via a Twizzler queue object that the thread registers with the kernel if it wants to receive async events. By default no queue is registered for new threads, they must do so manually. If no queue is registered, all async events are ignored, and the sender is notified via a failure to send an async event.
@@ -120,6 +122,9 @@ Standard fields include:
    - NonBlocking: the send message call was non-blocking. The receiving thread should still issue a completion notification.
 
 The other two fields, message and aux, contain data that is interpreted by the receiving thread.
+
+The kernel may also send async events to the thread (usually these must be asked for). For a list of pre-defined async events, see
+[List of Async Events](AsyncEvents.md).
 
 #### Completion
 
