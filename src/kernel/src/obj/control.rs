@@ -1,3 +1,8 @@
+//! Defines a control object caching mechanism, useful for control objects whose base type
+//! is updated frequently. Since these objects tend to also be small and use only one page
+//! for the base, we optimize a bit by avoiding creating a kernel object handle if the base
+//! type fits in one page.
+
 use core::ptr::NonNull;
 
 use twizzler_abi::{device::CacheType, marker::BaseType, object::Protections};
@@ -8,7 +13,7 @@ use crate::{
             kernel_context, KernelMemoryContext, KernelObject, KernelObjectHandle,
             ObjectContextInfo,
         },
-        frame::{alloc_frame, FrameRef, PhysicalFrameFlags},
+        frame::{alloc_frame, free_frame, FrameRef, PhysicalFrameFlags},
     },
     obj::{pages::Page, ObjectRef, PageNumber},
     userinit::create_blank_object,
@@ -24,6 +29,8 @@ enum QuickOrKernel<Base> {
     Kernel(KernelObject<Base>),
 }
 
+/// Manages a kernel control object, allowing access to the base type, while accelerating
+/// that access for the common case.
 pub struct ControlObjectCacher<Base> {
     object: ObjectRef,
     quick_or_kernel: QuickOrKernel<Base>,
@@ -32,6 +39,8 @@ pub struct ControlObjectCacher<Base> {
 unsafe impl<Base> Send for ControlObjectCacher<Base> {}
 
 impl<Base: BaseType> ControlObjectCacher<Base> {
+    /// Create a new control object cacher, making a new, blank object for it. Initialize the base
+    /// with the provided initial data.
     pub fn new(base: Base) -> Self {
         let object = create_blank_object();
         let qok = if core::mem::size_of::<Base>() > PageNumber::PAGE_SIZE {
@@ -61,10 +70,26 @@ impl<Base: BaseType> ControlObjectCacher<Base> {
         }
     }
 
+    /// Get a reference to the base of this object.
+    ///
+    /// # Safety
+    /// The caller must ensure that the base type is not aliased in a way that leads to unsoundness
+    /// for this type.
     pub unsafe fn base(&self) -> &Base {
         match &self.quick_or_kernel {
             QuickOrKernel::Quick(quick) => quick.base_ptr.as_ref(),
             QuickOrKernel::Kernel(kobj) => kobj.base(),
         }
+    }
+
+    /// Get the handle to the underlying object.
+    pub fn object(&self) -> &ObjectRef {
+        &self.object
+    }
+}
+
+impl<T> Drop for QuickBase<T> {
+    fn drop(&mut self) {
+        free_frame(self.base_frame);
     }
 }
