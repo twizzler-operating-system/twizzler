@@ -27,6 +27,7 @@ pub struct ThreadRepr {
     code: AtomicU64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(u8)]
 pub enum ExecutionState {
     Running,
@@ -60,21 +61,27 @@ impl ThreadRepr {
         );
     }
 
-    /// Wait for a thread's status to change.
-    pub fn wait(&self, timeout: Option<Duration>) -> Option<u64> {
-        while self.status.load(Ordering::SeqCst) == 0 {
+    /// Wait for a thread's status to change, optionally timing out. Return value is None if timeout occurs, or
+    /// Some((ExecutionState, code)) otherwise.
+    pub fn wait(&self, timeout: Option<Duration>) -> Option<(ExecutionState, u64)> {
+        let mut status = self.get_state();
+        loop {
+            if status != ExecutionState::Running {
+                return Some((status, self.code.load(Ordering::SeqCst)));
+            }
+
             let op = ThreadSync::new_sleep(ThreadSyncSleep::new(
-                crate::syscall::ThreadSyncReference::Virtual(&self.status as *const AtomicU64),
+                crate::syscall::ThreadSyncReference::Virtual(&self.status),
                 0,
                 ThreadSyncOp::Equal,
                 ThreadSyncFlags::empty(),
             ));
             sys_thread_sync(&mut [op], timeout).unwrap();
-            if timeout.is_some() && self.status.load(Ordering::SeqCst) == 0 {
+            status = self.get_state();
+            if timeout.is_some() && status == ExecutionState::Running {
                 return None;
             }
         }
-        Some(self.code.load(Ordering::SeqCst))
     }
 }
 
