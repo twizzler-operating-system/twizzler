@@ -18,6 +18,7 @@ use crate::{
     syscall::{MapFlags, ThreadSpawnArgs, ThreadSpawnFlags},
 };
 
+pub mod event;
 /// Base type for a thread object.
 #[repr(C)]
 pub struct ThreadRepr {
