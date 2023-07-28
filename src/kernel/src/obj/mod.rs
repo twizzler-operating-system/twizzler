@@ -22,6 +22,7 @@ use crate::{
 
 use self::{pages::Page, thread_sync::SleepInfo};
 
+pub mod control;
 pub mod copy;
 pub mod pages;
 pub mod pagevec;
@@ -96,6 +97,10 @@ impl PageNumber {
 
     pub fn is_zero(&self) -> bool {
         self.0 == 0
+    }
+
+    pub fn base_page() -> Self {
+        Self(1)
     }
 
     pub fn as_byte_offset(&self) -> usize {

@@ -62,7 +62,7 @@ impl ThreadRepr {
         }
     }
 
-    pub fn set_state(&mut self, state: ExecutionState, code: u64) {
+    pub fn set_state(&self, state: ExecutionState, code: u64) {
         let status = state as u8 as u64;
         self.code.store(code, Ordering::SeqCst);
         self.status.store(status, Ordering::Release);

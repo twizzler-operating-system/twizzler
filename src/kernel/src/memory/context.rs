@@ -18,6 +18,8 @@ use crate::obj::{InvalidateMode, PageNumber};
 
 use crate::syscall::object::ObjectHandle;
 
+use self::virtmem::KernelObjectVirtHandle;
+
 impl ObjectHandle for ContextRef {
     fn create_with_handle(_obj: ObjectRef) -> Self {
         Arc::new(Context::new())
@@ -129,6 +131,8 @@ pub trait KernelObjectHandle<T> {
     fn lea_raw<R>(&self, iptr: *const R) -> Option<&R>;
     fn lea_raw_mut<R>(&self, iptr: *mut R) -> Option<&mut R>;
 }
+
+pub type KernelObject<T> = KernelObjectVirtHandle<T>;
 
 lazy_static::lazy_static! {
     static ref KERNEL_CONTEXT: ContextRef = {

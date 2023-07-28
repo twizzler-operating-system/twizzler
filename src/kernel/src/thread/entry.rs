@@ -5,8 +5,11 @@ use twizzler_abi::{
 };
 
 use crate::{
-    memory::VirtAddr, obj::ObjectRef, sched::schedule_new_thread,
-    syscall::object::get_vmcontext_from_handle, userinit::user_init,
+    memory::VirtAddr,
+    obj::ObjectRef,
+    sched::schedule_new_thread,
+    syscall::object::get_vmcontext_from_handle,
+    userinit::{create_blank_object, user_init},
 };
 
 use super::{current_thread_ref, priority::Priority, Thread, ThreadRef};
@@ -35,14 +38,6 @@ extern "C" fn user_new_start() {
             arg as u64,
         )
     }
-}
-
-// TODO: remove
-fn create_blank_object() -> ObjectRef {
-    let obj = crate::obj::Object::new();
-    let obj = Arc::new(obj);
-    crate::obj::register_object(obj.clone());
-    obj
 }
 
 pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {

@@ -9,7 +9,7 @@ use crate::{
     initrd::get_boot_objects, memory::VirtAddr, obj::ObjectRef, thread::current_memory_context,
 };
 
-fn create_blank_object() -> ObjectRef {
+pub fn create_blank_object() -> ObjectRef {
     let obj = crate::obj::Object::new();
     let obj = Arc::new(obj);
     crate::obj::register_object(obj.clone());
