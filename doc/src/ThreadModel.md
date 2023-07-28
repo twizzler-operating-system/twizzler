@@ -38,14 +38,18 @@ is returned to 0. The value of `Code` is reserved.
 
 #### Changing Status Value
 
-The status field is an atomic u64, and thus must be updated using only atomic instructions (using, at minimum, release semantics). Both the kernel and userspace may update the field, however userspace may only do so if the updating thread has permission to write to the control object. After updating the status field, the updating thread must perform a thread-sync wake operation on the status field to ensure the effect occurs. If the kernel is updating the status field, the thread-sync wake will be performed by the kernel automatically. The value of `Code` only has meaning after the thread has exited, will only be written to by the kernel during the termination process, and will be written to before the final write to set the execution state to Exited.
+The status field is an atomic u64, and thus must be accessed using only atomic instructions (using, at minimum, acquire/release semantics). Both the kernel and userspace may update the field, however if userspace wants to cause the thread to actually transition states within the kernel, it should use the `sys_thread_change_state` syscall (see below). Note that any update to the status field must be followed by a thread-sync wake operation (the kernel does this automatically when it changes a thread's state). *NOTE*: the kernel does _not_ perform a thread-sync wake when transitioning a thread between sleeping and running.
+
+The value of `Code` only has meaning after the thread has exited, will only be written to by the kernel during the termination process, and will be written to before the final write to set the execution state to Exited.
 
 The kernel will update the status value over the thread's lifetime, changing it between running and sleeping as execution evolves until the
 thread is terminated through some mechanism, after which the kernel will update the thread's state to exited. The state in only ever changed to suspended by the kernel if a synchronous event occurs and the thread is setup to suspend upon fatal events (see Synchronous Events, below).
 
-Updates to the field from userspace may take effect anytime after the write to the status field occurs, but _will_ be before the return of the
-thread-sync wake operation. However, if other write to the status field occurs (either by userspace or by the kernel), the previous effect is
-overwritten. One exception is that if the kernel ever witnesses a value of 255 in the execution state field, the thread will exit and future values will be ignored.
+The `sys_thread_change_state` syscall can be used by userspace to change the state of a target thread (if the caller has write permission on the target thread's control object):
+
+```{rust}
+fn sys_thread_change_state(target: ObjID, state: ExecutionState, code: u64) -> Result<ExecutionState, ThreadChangeStateError>;
+```
 
 ## Creation
 
