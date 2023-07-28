@@ -28,12 +28,25 @@ pub struct ThreadRepr {
     code: AtomicU64,
 }
 
+/// Possible execution states for a thread. The transitions available are:
+/// +------------+     +-----------+     +-------------+
+/// |  Sleeping  +<--->+  Running  +<--->+  Suspended  |
+/// +------------+     +-----+-----+     +-------------+
+///                          |
+///                          |   +----------+
+///                          +-->+  Exited  |
+///                              +----------+
+/// The kernel will not transition a thread out of the exited state.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(u8)]
 pub enum ExecutionState {
+    /// The thread is running or waiting to be scheduled on a CPU.
     Running,
+    /// The thread is sleeping, waiting for a condition in-kernel.
     Sleeping,
+    /// The thread is suspended, and will not resume until manually transitioned back to running.
     Suspended,
+    /// The thread has terminated, and will never run again.
     Exited = 255,
 }
 

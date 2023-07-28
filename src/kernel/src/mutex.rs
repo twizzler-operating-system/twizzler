@@ -21,7 +21,7 @@ use crate::{
     idcounter::StableId,
     sched,
     spinlock::Spinlock,
-    thread::{current_thread_ref, Priority, ThreadRef, ThreadState},
+    thread::{current_thread_ref, priority::Priority, state::ThreadState, ThreadRef},
 };
 
 #[repr(align(64))]

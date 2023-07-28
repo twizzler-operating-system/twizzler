@@ -9,9 +9,11 @@ use crate::{
     once::Once,
     processor::{current_processor, get_processor, Processor},
     spinlock::Spinlock,
-    thread::{current_thread_ref, set_current_thread, Priority, Thread, ThreadRef, ThreadState},
+    thread::{current_thread_ref, set_current_thread, state::ThreadState, Thread, ThreadRef},
     utils::quick_random,
 };
+
+use crate::thread::priority::Priority;
 
 #[derive(Clone, Debug, Copy)]
 pub enum CPUTopoType {

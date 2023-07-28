@@ -10,7 +10,7 @@ use crate::{
     obj::ObjectRef,
     once::Once,
     spinlock::Spinlock,
-    thread::{Priority, ThreadRef},
+    thread::{priority::Priority, ThreadRef},
 };
 
 #[inline]
@@ -209,8 +209,9 @@ extern "C" fn soft_interrupt_waker() {
 }
 
 pub fn init() {
-    INT_THREAD
-        .call_once(|| crate::thread::start_new_kernel(Priority::REALTIME, soft_interrupt_waker));
+    INT_THREAD.call_once(|| {
+        crate::thread::entry::start_new_kernel(Priority::REALTIME, soft_interrupt_waker)
+    });
 }
 
 pub fn external_interrupt_entry(number: u32) {

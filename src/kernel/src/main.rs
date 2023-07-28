@@ -46,6 +46,7 @@ mod spinlock;
 mod syscall;
 mod thread;
 mod time;
+mod userinit;
 pub mod utils;
 extern crate alloc;
 
@@ -57,7 +58,7 @@ use arch::BootInfoSystemTable;
 use initrd::BootModule;
 use memory::{MemoryRegion, VirtAddr};
 
-use crate::processor::current_processor;
+use crate::{processor::current_processor, thread::entry::start_new_init};
 
 /// A collection of information made available to the kernel by the bootloader or arch-dep modules.
 pub trait BootInfo {
@@ -149,7 +150,7 @@ pub fn idle_main() -> ! {
         if is_test_mode() {
             test_main();
         }
-        thread::start_new_init();
+        start_new_init();
     }
     logln!(
         "[kernel::main] processor {} entering main idle loop",

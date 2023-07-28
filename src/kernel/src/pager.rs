@@ -7,7 +7,7 @@ use crate::{
     obj::{lookup_object, LookupFlags},
     queue::{ManagedQueueReceiver, ManagedQueueSender, QueueObject},
     sched::schedule,
-    thread::{start_new_kernel, Priority},
+    thread::{entry::start_new_kernel, priority::Priority},
 };
 
 struct PagerQueues {

@@ -6,55 +6,25 @@ use core::{
 
 use alloc::{boxed::Box, sync::Arc};
 use intrusive_collections::linked_list::AtomicLink;
-use twizzler_abi::{
-    aux::{AuxEntry, KernelInitInfo, KernelInitName},
-    object::{ObjID, Protections},
-    syscall::{ThreadSpawnArgs, ThreadSpawnError},
-    upcall::UpcallInfo,
-};
-use xmas_elf::program::SegmentData;
+use twizzler_abi::{syscall::ThreadSpawnArgs, upcall::UpcallInfo};
 
 use crate::{
     idcounter::{Id, IdCounter},
-    initrd::get_boot_objects,
     interrupt,
-    memory::{
-        context::{Context, ContextRef, UserContext},
-        VirtAddr,
-    },
+    memory::context::{Context, ContextRef, UserContext},
     obj::ObjectRef,
     processor::{get_processor, KERNEL_STACK_SIZE},
-    sched::schedule_new_thread,
     spinlock::Spinlock,
-    syscall::object::get_vmcontext_from_handle,
 };
 
-#[derive(Clone, Copy, PartialEq, Default, Debug)]
-#[repr(u32)]
-enum PriorityClass {
-    RealTime = 0,
-    User = 1,
-    Background = 2,
-    #[default]
-    Idle = 3,
-    ClassCount = 4,
-}
+use self::{
+    priority::{Priority, PriorityClass},
+    state::ThreadState,
+};
 
-#[derive(Default, Debug)]
-pub struct Priority {
-    class: PriorityClass,
-    adjust: AtomicI32,
-}
-
-#[derive(PartialEq, Copy, Clone, Debug)]
-#[repr(u32)]
-pub enum ThreadState {
-    Starting,
-    Running,
-    Blocked,
-    Exiting,
-    Exited,
-}
+pub mod entry;
+pub mod priority;
+pub mod state;
 
 #[derive(Debug, Default)]
 pub struct ThreadStats {
@@ -63,11 +33,13 @@ pub struct ThreadStats {
     pub idle: AtomicU64,
     pub last: AtomicU64,
 }
+
 const THREAD_PROC_IDLE: u32 = 1;
 const THREAD_HAS_DONATED_PRIORITY: u32 = 2;
 const THREAD_IN_KERNEL: u32 = 4;
 const THREAD_IS_SYNC_SLEEP: u32 = 8;
 const THREAD_IS_SYNC_SLEEP_DONE: u32 = 16;
+
 pub struct Thread {
     pub arch: crate::arch::thread::ArchThread,
     pub priority: Priority,
@@ -442,53 +414,6 @@ impl Priority {
     }
 }
 
-impl PartialEq for Priority {
-    fn eq(&self, other: &Self) -> bool {
-        self.class == other.class
-            && self.adjust.load(Ordering::Relaxed) == other.adjust.load(Ordering::Relaxed)
-    }
-}
-
-impl PartialOrd for PriorityClass {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        /* backwards because of how priority works */
-        (*other as usize).partial_cmp(&(*self as usize))
-    }
-}
-
-impl PartialOrd for Priority {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        match self.class.partial_cmp(&other.class) {
-            Some(core::cmp::Ordering::Equal) => {}
-            ord => return ord,
-        }
-        let thisadj = self.adjust.load(Ordering::Relaxed);
-        let thatadj = other.adjust.load(Ordering::Relaxed);
-        /* backwards because of how priority works */
-        thatadj.partial_cmp(&thisadj)
-    }
-}
-
-impl Clone for Priority {
-    fn clone(&self) -> Self {
-        Self {
-            class: self.class,
-            adjust: AtomicI32::new(self.adjust.load(Ordering::SeqCst)),
-        }
-    }
-}
-
-impl Eq for Priority {
-    fn assert_receiver_is_total_eq(&self) {}
-}
-
-impl Ord for Priority {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        //is this okay?
-        self.partial_cmp(other).unwrap()
-    }
-}
-
 pub fn exit() {
     {
         let th = current_thread_ref().unwrap();
@@ -499,249 +424,4 @@ pub fn exit() {
         drop(th);
     }
     crate::sched::schedule(false);
-}
-
-/*
-fn object_copy_test() {
-    let obj1 = crate::obj::Object::new();
-    let obj2 = crate::obj::Object::new();
-
-    let page = crate::obj::pages::Page::new();
-    let slice = page.as_mut_slice();
-    slice[0] = 9;
-    obj1.add_page(1.into(), crate::obj::pages::Page::new());
-
-    let page = crate::obj::pages::Page::new();
-    let slice = page.as_mut_slice();
-    slice[0] = 10;
-    obj1.add_page(2.into(), crate::obj::pages::Page::new());
-
-    let page = crate::obj::pages::Page::new();
-    let slice = page.as_mut_slice();
-    slice[0] = 11;
-    obj1.add_page(3.into(), crate::obj::pages::Page::new());
-
-    let page = crate::obj::pages::Page::new();
-    let slice = page.as_mut_slice();
-    slice[0] = 12;
-    obj1.add_page(5.into(), crate::obj::pages::Page::new());
-
-    let page = crate::obj::pages::Page::new();
-    let slice = page.as_mut_slice();
-    slice[0] = 13;
-    obj1.add_page(6.into(), crate::obj::pages::Page::new());
-
-    let obj1 = Arc::new(obj1);
-    let obj2 = Arc::new(obj2);
-
-    crate::obj::copy::copy_ranges(&obj1, 1.into(), &obj2, 8.into(), 4);
-
-    obj1.print_page_tree();
-    obj2.print_page_tree();
-
-    logln!("====== TEST FAULT ======\n");
-    let res = obj2.lock_page_tree().get_page(10.into(), true);
-    logln!("fault => {:?}", res);
-    obj1.print_page_tree();
-    obj2.print_page_tree();
-}
-*/
-
-fn create_blank_object() -> ObjectRef {
-    let obj = crate::obj::Object::new();
-    let obj = Arc::new(obj);
-    crate::obj::register_object(obj.clone());
-    obj
-}
-
-fn create_name_object() -> ObjectRef {
-    let boot_objects = get_boot_objects();
-    let obj = create_blank_object();
-    let mut init_info = KernelInitInfo::new();
-    for (name, obj) in &boot_objects.name_map {
-        init_info.add_name(KernelInitName::new(name, obj.id()));
-    }
-    obj.write_base(&init_info);
-    obj
-}
-
-extern "C" fn user_init() {
-    /* We need this scope to drop everything before we jump to user */
-    let (aux_start, entry) = {
-        let vm = current_memory_context().unwrap();
-        let boot_objects = get_boot_objects();
-
-        let obj_text = create_blank_object();
-        let obj_data = create_blank_object();
-        let obj_stack = create_blank_object();
-        let obj_name = create_name_object();
-        crate::operations::map_object_into_context(
-            twizzler_abi::slot::RESERVED_TEXT,
-            obj_text.clone(),
-            vm.clone(),
-            Protections::READ | Protections::EXEC | Protections::WRITE,
-        )
-        .unwrap();
-        crate::operations::map_object_into_context(
-            twizzler_abi::slot::RESERVED_DATA,
-            obj_data,
-            vm.clone(),
-            Protections::READ | Protections::WRITE,
-        )
-        .unwrap();
-        crate::operations::map_object_into_context(
-            twizzler_abi::slot::RESERVED_STACK,
-            obj_stack,
-            vm.clone(),
-            Protections::READ | Protections::WRITE,
-        )
-        .unwrap();
-        crate::operations::map_object_into_context(
-            twizzler_abi::slot::RESERVED_KERNEL_INIT,
-            obj_name,
-            vm.clone(),
-            Protections::READ,
-        )
-        .unwrap();
-        let init_obj = boot_objects.init.as_ref().expect("no init found");
-        let obj1_data = crate::operations::read_object(init_obj);
-        let elf = xmas_elf::ElfFile::new(&obj1_data).unwrap();
-        let mut phinfo = None;
-        for ph in elf.program_iter() {
-            if ph.get_type() == Ok(xmas_elf::program::Type::Load) {
-                let file_data = ph.get_data(&elf).unwrap();
-                if let SegmentData::Undefined(file_data) = file_data {
-                    let memory_addr = VirtAddr::new(ph.virtual_addr()).unwrap();
-                    let memory_slice: &mut [u8] = unsafe {
-                        core::slice::from_raw_parts_mut(
-                            memory_addr.as_mut_ptr(),
-                            ph.mem_size() as usize,
-                        )
-                    };
-
-                    memory_slice.fill(0);
-                    (&mut memory_slice[0..ph.file_size() as usize]).copy_from_slice(file_data);
-                }
-            }
-            if ph.get_type() == Ok(xmas_elf::program::Type::Phdr) {
-                phinfo = Some(ph);
-            }
-        }
-
-        fn append_aux(aux: *mut AuxEntry, entry: AuxEntry) -> *mut AuxEntry {
-            unsafe {
-                *aux = entry;
-                aux.add(1)
-            }
-        }
-
-        let aux_start: u64 = (1 << 30) * 2 + 0x300000;
-        let aux_start = aux_start as *mut twizzler_abi::aux::AuxEntry;
-        let mut aux = aux_start;
-
-        if let Some(phinfo) = phinfo {
-            aux = append_aux(
-                aux,
-                AuxEntry::ProgramHeaders(
-                    phinfo.virtual_addr(),
-                    phinfo.mem_size() as usize / elf.header.pt2.ph_entry_size() as usize,
-                ),
-            )
-        }
-
-        aux = append_aux(aux, AuxEntry::ExecId(init_obj.id()));
-        append_aux(aux, AuxEntry::Null);
-
-        // remove permission mappings from text segment
-        let page_tree = obj_text.lock_page_tree();
-        for r in page_tree.range(0.into()..usize::MAX.into()) {
-            let range = *r.0..r.0.offset(r.1.length);
-            vm.invalidate_object(obj_text.id(), &range, crate::obj::InvalidateMode::WriteProtect);
-        }
-
-        (aux_start, elf.header.pt2.entry_point())
-    };
-
-    unsafe {
-        crate::arch::jump_to_user(
-            VirtAddr::new(entry).unwrap(),
-            VirtAddr::new((1 << 30) * 2 + 0x200000).unwrap(),
-            aux_start as u64,
-        );
-    }
-}
-
-extern "C" fn user_new_start() {
-    let (entry, stack_base, stack_size, arg) = {
-        /* we need this scope to drop the current thread ref before jumping to user */
-        let current = current_thread_ref().unwrap();
-        let args = current.spawn_args.as_ref().unwrap();
-        current.set_tls(args.tls as u64);
-        /*
-        logln!(
-            "thread jtu {:x} {:x} {:x}",
-            args.entry,
-            args.stack_base + args.stack_size,
-            args.tls
-        );
-        */
-        (args.entry, args.stack_base, args.stack_size, args.arg)
-    };
-    unsafe {
-        crate::arch::jump_to_user(
-            VirtAddr::new(entry as u64).unwrap(),
-            /* TODO: this is x86 specific */
-            VirtAddr::new((stack_base + stack_size - 8) as u64).unwrap(),
-            arg as u64,
-        )
-    }
-}
-
-pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
-    let mut thread = if let Some(handle) = args.vm_context_handle {
-        let vmc = get_vmcontext_from_handle(handle).ok_or(ThreadSpawnError::NotFound)?;
-        Thread::new_with_handle_context(args, vmc)
-    } else {
-        Thread::new_with_current_context(args)
-    };
-    unsafe {
-        thread.init(user_new_start);
-    }
-    thread.repr = Some(create_blank_object());
-    let id = thread.repr.as_ref().unwrap().id();
-    /*
-    logln!(
-        "starting new thread {} {} with stack k={:p} u={:x},{:x}",
-        thread.id,
-        id,
-        thread.kernel_stack,
-        args.stack_base,
-        args.stack_size,
-    );
-    */
-    schedule_new_thread(thread);
-    Ok(id)
-}
-
-pub fn start_new_init() {
-    let mut thread = Thread::new_with_new_vm();
-    /*
-    logln!(
-        "starting new thread {} with stack {:p}",
-        thread.id,
-        thread.kernel_stack
-    );
-    */
-    unsafe {
-        thread.init(user_init);
-    }
-    thread.repr = Some(create_blank_object());
-    schedule_new_thread(thread);
-}
-
-pub fn start_new_kernel(pri: Priority, start: extern "C" fn()) -> ThreadRef {
-    let mut thread = Thread::new();
-    thread.priority = pri;
-    unsafe { thread.init(start) }
-    schedule_new_thread(thread)
 }

@@ -9,7 +9,7 @@ use crate::{
     interrupt::{self, Destination},
     once::Once,
     spinlock::{LockGuard, SpinLoop, Spinlock},
-    thread::current_thread_ref,
+    thread::{current_thread_ref, priority::Priority},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use intrusive_collections::{intrusive_adapter, LinkedList};
@@ -19,7 +19,7 @@ use crate::{
     image::TlsInfo,
     memory::VirtAddr,
     sched::{CPUTopoNode, CPUTopoType},
-    thread::{Priority, Thread, ThreadRef},
+    thread::{Thread, ThreadRef},
 };
 
 #[thread_local]

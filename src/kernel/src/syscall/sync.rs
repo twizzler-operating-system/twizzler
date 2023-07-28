@@ -13,7 +13,9 @@ use crate::{
     obj::{LookupFlags, ObjectRef},
     once::Once,
     spinlock::Spinlock,
-    thread::{current_memory_context, current_thread_ref, CriticalGuard, ThreadRef, ThreadState},
+    thread::{
+        current_memory_context, current_thread_ref, state::ThreadState, CriticalGuard, ThreadRef,
+    },
 };
 
 struct Requeue {
