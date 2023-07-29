@@ -94,7 +94,7 @@ pub(crate) fn upcall_rust_entry(frame: &UpcallFrame, info: &UpcallInfo) {
         crate::syscall::KernelConsoleWriteFlags::empty(),
     );
     if UPCALL_PANIC.load(Ordering::SeqCst) {
-        crate::syscall::sys_thread_exit(127, core::ptr::null_mut());
+        crate::syscall::sys_thread_exit(127);
     }
     UPCALL_PANIC.store(true, Ordering::SeqCst);
     // TODO: check if we have a panic runtime.

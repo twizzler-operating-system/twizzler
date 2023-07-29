@@ -1,8 +1,9 @@
 use core::time::Duration;
 
 use alloc::{collections::BTreeMap, vec::Vec};
-use twizzler_abi::syscall::{
-    ThreadSync, ThreadSyncError, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+use twizzler_abi::{
+    syscall::{ThreadSync, ThreadSyncError, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake},
+    thread::ExecutionState,
 };
 
 use crate::{
@@ -13,9 +14,7 @@ use crate::{
     obj::{LookupFlags, ObjectRef},
     once::Once,
     spinlock::Spinlock,
-    thread::{
-        current_memory_context, current_thread_ref, state::ThreadState, CriticalGuard, ThreadRef,
-    },
+    thread::{current_memory_context, current_thread_ref, CriticalGuard, ThreadRef},
 };
 
 struct Requeue {
@@ -57,10 +56,10 @@ pub fn remove_from_requeue(thread: &ThreadRef) {
 fn finish_blocking(guard: CriticalGuard) {
     let thread = current_thread_ref().unwrap();
     crate::interrupt::with_disabled(|| {
-        thread.set_state(ThreadState::Blocked);
+        thread.set_state(ExecutionState::Sleeping);
         drop(guard);
         crate::sched::schedule(false);
-        thread.set_state(ThreadState::Running);
+        thread.set_state(ExecutionState::Running);
     });
 }
 

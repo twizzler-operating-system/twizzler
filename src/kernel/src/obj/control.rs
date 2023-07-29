@@ -37,6 +37,7 @@ pub struct ControlObjectCacher<Base> {
 }
 
 unsafe impl<Base> Send for ControlObjectCacher<Base> {}
+unsafe impl<Base> Sync for ControlObjectCacher<Base> {}
 
 impl<Base: BaseType> ControlObjectCacher<Base> {
     /// Create a new control object cacher, making a new, blank object for it. Initialize the base
@@ -75,9 +76,9 @@ impl<Base: BaseType> ControlObjectCacher<Base> {
     /// # Safety
     /// The caller must ensure that the base type is not aliased in a way that leads to unsoundness
     /// for this type.
-    pub unsafe fn base(&self) -> &Base {
+    pub fn base(&self) -> &Base {
         match &self.quick_or_kernel {
-            QuickOrKernel::Quick(quick) => quick.base_ptr.as_ref(),
+            QuickOrKernel::Quick(quick) => unsafe { quick.base_ptr.as_ref() },
             QuickOrKernel::Kernel(kobj) => kobj.base(),
         }
     }

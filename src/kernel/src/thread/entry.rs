@@ -5,14 +5,13 @@ use twizzler_abi::{
 };
 
 use crate::{
-    memory::VirtAddr,
-    obj::ObjectRef,
+    memory::{context::Context, VirtAddr},
     sched::schedule_new_thread,
     syscall::object::get_vmcontext_from_handle,
-    userinit::{create_blank_object, user_init},
+    userinit::user_init,
 };
 
-use super::{current_thread_ref, priority::Priority, Thread, ThreadRef};
+use super::{current_memory_context, current_thread_ref, priority::Priority, Thread, ThreadRef};
 
 extern "C" fn user_new_start() {
     let (entry, stack_base, stack_size, arg) = {
@@ -43,48 +42,36 @@ extern "C" fn user_new_start() {
 pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
     let mut thread = if let Some(handle) = args.vm_context_handle {
         let vmc = get_vmcontext_from_handle(handle).ok_or(ThreadSpawnError::NotFound)?;
-        Thread::new_with_handle_context(args, vmc)
+        Thread::new(Some(vmc), Some(args), Priority::default_user())
     } else {
-        Thread::new_with_current_context(args)
+        Thread::new(
+            current_memory_context(),
+            Some(args),
+            Priority::default_user(),
+        )
     };
     unsafe {
         thread.init(user_new_start);
     }
-    thread.repr = Some(create_blank_object());
-    let id = thread.repr.as_ref().unwrap().id();
-    /*
-    logln!(
-        "starting new thread {} {} with stack k={:p} u={:x},{:x}",
-        thread.id,
-        id,
-        thread.kernel_stack,
-        args.stack_base,
-        args.stack_size,
-    );
-    */
+    let id = thread.control_object.object().id();
     schedule_new_thread(thread);
     Ok(id)
 }
 
 pub fn start_new_init() {
-    let mut thread = Thread::new_with_new_vm();
-    /*
-    logln!(
-        "starting new thread {} with stack {:p}",
-        thread.id,
-        thread.kernel_stack
+    let mut thread = Thread::new(
+        Some(Arc::new(Context::new())),
+        None,
+        Priority::default_user(),
     );
-    */
     unsafe {
         thread.init(user_init);
     }
-    thread.repr = Some(create_blank_object());
     schedule_new_thread(thread);
 }
 
 pub fn start_new_kernel(pri: Priority, start: extern "C" fn()) -> ThreadRef {
-    let mut thread = Thread::new();
-    thread.priority = pri;
+    let mut thread = Thread::new(None, None, pri);
     unsafe { thread.init(start) }
     schedule_new_thread(thread)
 }

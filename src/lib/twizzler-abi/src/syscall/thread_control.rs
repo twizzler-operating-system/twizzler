@@ -35,15 +35,11 @@ impl From<u64> for ThreadControl {
     }
 }
 
-/// Exit the thread. arg1 and arg2 should be code and location respectively, where code contains
-/// a 64-bit value to write into *location, followed by the kernel performing a thread-wake
-/// event on the memory word at location. If location is null, the write and thread-wake do not occur.
-pub fn sys_thread_exit(code: u64, location: *mut u64) -> ! {
+/// Exit the thread. The code will be written to the [crate::thread::ThreadRepr] for the current thread as part
+/// of updating the status and code to indicate thread has exited.
+pub fn sys_thread_exit(code: u64) -> ! {
     unsafe {
-        raw_syscall(
-            Syscall::ThreadCtrl,
-            &[ThreadControl::Exit as u64, code, location as u64],
-        );
+        raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::Exit as u64, code]);
     }
     unreachable!()
 }

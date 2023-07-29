@@ -16,12 +16,13 @@
 use core::{cell::UnsafeCell, sync::atomic::AtomicU64};
 
 use alloc::collections::VecDeque;
+use twizzler_abi::thread::ExecutionState;
 
 use crate::{
     idcounter::StableId,
     sched,
     spinlock::Spinlock,
-    thread::{current_thread_ref, priority::Priority, state::ThreadState, ThreadRef},
+    thread::{current_thread_ref, priority::Priority, ThreadRef},
 };
 
 #[repr(align(64))]
@@ -95,7 +96,7 @@ impl<T> Mutex<T> {
                 let mut reinsert = true;
                 if let Some(ref thread) = current_thread {
                     if !thread.is_idle_thread() {
-                        thread.set_state(ThreadState::Blocked);
+                        thread.set_state(ExecutionState::Sleeping);
                         queue.queue.push_back(thread.clone());
                         reinsert = false;
                         queue.pri = queue.queue.iter().map(|t| t.effective_priority()).max();

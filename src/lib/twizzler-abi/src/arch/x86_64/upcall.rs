@@ -49,7 +49,7 @@ pub(crate) unsafe extern "C" fn upcall_entry2(
 ) -> ! {
     crate::upcall::upcall_rust_entry(&*rdi, &*rsi);
     // TODO: resume
-    crate::syscall::sys_thread_exit(129, core::ptr::null_mut());
+    crate::syscall::sys_thread_exit(129);
 }
 
 #[cfg(feature = "rt")]

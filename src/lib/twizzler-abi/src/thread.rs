@@ -4,13 +4,16 @@ use core::{
     alloc::Layout,
     ptr,
     sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
 };
 
-use crate::syscall::{
-    sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
-    ThreadSyncSleep, ThreadSyncWake,
-};
+#[cfg(not(feature = "kernel"))]
+use core::time::Duration;
+
+use crate::marker::BaseType;
+
+#[cfg(not(feature = "kernel"))]
+use crate::syscall::*;
+
 #[allow(unused_imports)]
 use crate::{
     object::{ObjID, Protections},
@@ -20,12 +23,26 @@ use crate::{
 
 pub mod event;
 /// Base type for a thread object.
+#[derive(Default)]
 #[repr(C)]
 pub struct ThreadRepr {
     version: u32,
     flags: u32,
+    #[cfg(not(feature = "kernel"))]
     status: AtomicU64,
+    #[cfg(feature = "kernel")]
+    pub status: AtomicU64,
     code: AtomicU64,
+}
+
+impl BaseType for ThreadRepr {
+    fn init<T>(_t: T) -> Self {
+        Self::default()
+    }
+
+    fn tags() -> &'static [(crate::marker::BaseVersion, crate::marker::BaseTag)] {
+        todo!()
+    }
 }
 
 /// Possible execution states for a thread. The transitions available are:
@@ -50,9 +67,8 @@ pub enum ExecutionState {
     Exited = 255,
 }
 
-impl ThreadRepr {
-    pub fn get_state(&self) -> ExecutionState {
-        let status = self.status.load(Ordering::Acquire);
+impl ExecutionState {
+    fn from_status(status: u64) -> Self {
         // If we see a status we don't understand, just assume the thread is running.
         match status & 0xff {
             1 => ExecutionState::Sleeping,
@@ -61,20 +77,44 @@ impl ThreadRepr {
             _ => ExecutionState::Running,
         }
     }
+}
 
-    pub fn set_state(&self, state: ExecutionState, code: u64) {
-        let status = state as u8 as u64;
-        self.code.store(code, Ordering::SeqCst);
-        self.status.store(status, Ordering::Release);
-        let _ = sys_thread_sync(
-            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
-                ThreadSyncReference::Virtual(&self.status),
-                usize::MAX,
-            ))],
-            None,
-        );
+impl ThreadRepr {
+    pub fn get_state(&self) -> ExecutionState {
+        let status = self.status.load(Ordering::Acquire);
+        ExecutionState::from_status(status)
     }
 
+    pub fn get_code(&self) -> u64 {
+        self.code.load(Ordering::SeqCst)
+    }
+
+    pub fn set_state(&self, state: ExecutionState, code: u64) -> ExecutionState {
+        if self.get_state() == ExecutionState::Exited {
+            return ExecutionState::Exited;
+        }
+        let status = state as u8 as u64;
+        if state == ExecutionState::Exited {
+            self.code.store(code, Ordering::SeqCst);
+        }
+        let old_status = self.status.swap(status, Ordering::Release);
+        let old_state = ExecutionState::from_status(old_status);
+        if !(old_state == ExecutionState::Running && state == ExecutionState::Sleeping
+            || old_state == ExecutionState::Sleeping && state == ExecutionState::Running)
+        {
+            #[cfg(not(feature = "kernel"))]
+            let _ = sys_thread_sync(
+                &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                    ThreadSyncReference::Virtual(&self.status),
+                    usize::MAX,
+                ))],
+                None,
+            );
+        }
+        old_state
+    }
+
+    #[cfg(not(feature = "kernel"))]
     /// Wait for a thread's status to change, optionally timing out. Return value is None if timeout occurs, or
     /// Some((ExecutionState, code)) otherwise.
     pub fn wait(&self, timeout: Option<Duration>) -> Option<(ExecutionState, u64)> {
@@ -279,5 +319,5 @@ pub unsafe fn join(id: u32) {
 
 /// Exit the current thread.
 pub fn exit() -> ! {
-    crate::syscall::sys_thread_exit(0, ptr::null_mut());
+    crate::syscall::sys_thread_exit(0);
 }

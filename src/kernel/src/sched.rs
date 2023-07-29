@@ -2,6 +2,7 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use fixedbitset::FixedBitSet;
+use twizzler_abi::thread::ExecutionState;
 
 use crate::{
     clock::Nanoseconds,
@@ -9,7 +10,7 @@ use crate::{
     once::Once,
     processor::{current_processor, get_processor, Processor},
     spinlock::Spinlock,
-    thread::{current_thread_ref, set_current_thread, state::ThreadState, Thread, ThreadRef},
+    thread::{current_thread_ref, set_current_thread, Thread, ThreadRef},
     utils::quick_random,
 };
 
@@ -269,7 +270,7 @@ pub fn remove_thread(id: u64) {
 }
 
 pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
-    thread.set_state(ThreadState::Running);
+    thread.set_state(ExecutionState::Running);
     let thread = Arc::new(thread);
     {
         ALL_THREADS.lock().insert(thread.id(), thread.clone());
@@ -281,7 +282,7 @@ pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
 }
 
 pub fn schedule_thread(thread: ThreadRef) {
-    thread.set_state(ThreadState::Running);
+    thread.set_state(ExecutionState::Running);
     if thread.is_idle_thread() {
         return;
     }
@@ -351,8 +352,8 @@ pub fn schedule(reinsert: bool) {
     if !cur.is_idle_thread() && reinsert {
         schedule_thread(cur.clone());
     }
-    if cur.state() == ThreadState::Exiting {
-        cur.set_state(ThreadState::Exited);
+    if cur.is_exiting() {
+        cur.set_state(ExecutionState::Exited);
         processor.push_exited(cur.clone());
     }
     if !cur.is_idle_thread() {
@@ -516,7 +517,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
         if cp.id == 0 {
             let all_threads = ALL_THREADS.lock();
             for t in all_threads.values() {
-                logln!("thread {}: {:?} {:?}", t.id(), t.stats, t.state);
+                logln!("thread {}: {:?} {:?}", t.id(), t.stats, t.get_state());
             }
         }
         //crate::clock::print_info();
