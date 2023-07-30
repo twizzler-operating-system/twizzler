@@ -20,6 +20,7 @@ lazy_static! {
 }
 
 impl Thread {
+    /// Tell a thread to suspend. If that thread is the caller, then suspend immediately.
     pub fn start_suspend(self: &ThreadRef) {
         self.flags.fetch_or(THREAD_MUST_SUSPEND, Ordering::SeqCst);
         if self == &current_thread_ref().unwrap() {
@@ -28,6 +29,7 @@ impl Thread {
         // TODO: fire off interrupts?
     }
 
+    /// Consider suspending ourselves. If someone called [Self::start_suspend], then we will.
     pub fn maybe_suspend_self(self: &ThreadRef) {
         assert_eq!(self, current_thread_ref().unwrap());
         if self.flags.load(Ordering::SeqCst) & THREAD_MUST_SUSPEND == 0 {
@@ -58,11 +60,15 @@ impl Thread {
         );
     }
 
-    pub fn unsuspend_thread(self: &ThreadRef) {
+    /// If a thread is suspended, then wake it up. Returns false if that thread was not on the suspend list.
+    pub fn unsuspend_thread(self: &ThreadRef) -> bool {
         let mut suspended_threads = SUSPENDED_THREADS.lock();
         if suspended_threads.remove(&self.objid()).is_some() {
             // Just throw it on a queue, it'll cleanup its own flag mess.
             schedule_thread(self.clone());
+            true
+        } else {
+            false
         }
     }
 }
