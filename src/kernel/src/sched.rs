@@ -337,17 +337,10 @@ fn switch_to(thread: ThreadRef, old: ThreadRef) {
     }
 }
 
-pub fn schedule(reinsert: bool) {
-    /* TODO: switch to needs to also drop the ref on cur, somehow... */
-    /* TODO: if we preempt, just put the thread back on our list (or decide to not resched) */
-    let istate = interrupt::disable();
+fn do_schedule(reinsert: bool) {
+    // TODO: remove the duplicate calls here
     let cur = current_thread_ref().unwrap();
     let processor = current_processor();
-    if cur.is_critical() {
-        interrupt::set(istate);
-        return;
-    }
-
     cur.enter_critical();
     if !cur.is_idle_thread() && reinsert {
         schedule_thread(cur.clone());
@@ -367,12 +360,10 @@ pub fn schedule(reinsert: bool) {
 
     if let Some(next) = next {
         if next == cur {
-            interrupt::set(istate);
             return;
         }
         next.current_processor_queue.store(-1, Ordering::SeqCst);
         switch_to(next, cur);
-        interrupt::set(istate);
         return;
     }
 
@@ -380,16 +371,30 @@ pub fn schedule(reinsert: bool) {
         let cp = current_processor();
         cp.stats.steals.fetch_add(1, Ordering::SeqCst);
         switch_to(stolen, cur);
-        interrupt::set(istate);
         return;
     }
 
     if cur.is_idle_thread() {
-        interrupt::set(istate);
         return;
     }
     switch_to(processor.idle_thread.wait().clone(), cur);
+}
+
+pub fn schedule(reinsert: bool) {
+    let cur = current_thread_ref().unwrap();
+    /* TODO: switch to needs to also drop the ref on cur, somehow... */
+    /* TODO: if we preempt, just put the thread back on our list (or decide to not resched) */
+    let istate = interrupt::disable();
+    let processor = current_processor();
+    if cur.is_critical() {
+        interrupt::set(istate);
+        return;
+    }
+
+    do_schedule(reinsert);
     interrupt::set(istate);
+    // Always check if we need to suspend before returning control.
+    cur.maybe_suspend_self();
 }
 
 pub fn needs_reschedule(ticking: bool) -> bool {
@@ -403,6 +408,9 @@ pub fn needs_reschedule(ticking: bool) -> bool {
     };
     if cur.is_critical() {
         return false;
+    }
+    if cur.must_suspend() {
+        return true;
     }
     let sched = processor.schedlock();
     sched.should_preempt(&cur.effective_priority(), ticking)
