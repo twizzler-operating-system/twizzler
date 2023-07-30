@@ -7,7 +7,7 @@ use core::{
 use alloc::{boxed::Box, sync::Arc};
 use intrusive_collections::{linked_list::AtomicLink, offset_of};
 use twizzler_abi::{
-    object::NULLPAGE_SIZE,
+    object::{ObjID, NULLPAGE_SIZE},
     syscall::ThreadSpawnArgs,
     thread::{ExecutionState, ThreadRepr},
     upcall::UpcallInfo,
@@ -31,6 +31,7 @@ pub mod entry;
 mod flags;
 pub mod priority;
 pub mod state;
+pub mod suspend;
 
 pub use flags::{enter_kernel, exit_kernel};
 
@@ -126,6 +127,10 @@ impl Thread {
         thread.priority.class = PriorityClass::Idle;
         thread.switch_lock.store(1, Ordering::SeqCst);
         thread
+    }
+
+    pub fn objid(&self) -> ObjID {
+        self.control_object.object().id()
     }
 
     pub fn switch_thread(&self, current: &Thread) {

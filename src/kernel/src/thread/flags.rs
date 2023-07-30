@@ -8,6 +8,8 @@ pub(super) const THREAD_IN_KERNEL: u32 = 4;
 pub(super) const THREAD_IS_SYNC_SLEEP: u32 = 8;
 pub(super) const THREAD_IS_SYNC_SLEEP_DONE: u32 = 16;
 pub(super) const THREAD_IS_EXITING: u32 = 32;
+pub(super) const THREAD_IS_SUSPENDED: u32 = 64;
+pub(super) const THREAD_MUST_SUSPEND: u32 = 128;
 
 pub fn enter_kernel() {
     if let Some(thread) = current_thread_ref() {
