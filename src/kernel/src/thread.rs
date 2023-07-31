@@ -579,7 +579,7 @@ extern "C" fn user_init() {
             twizzler_abi::slot::RESERVED_TEXT,
             obj_text,
             vm.clone(),
-            Protections::READ | Protections::EXEC,
+            Protections::READ | Protections::EXEC | Protections::WRITE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
