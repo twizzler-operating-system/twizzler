@@ -1,5 +1,5 @@
-use arm64::registers::TPIDR_EL1;
-use registers::interfaces::Writeable;
+use arm64::registers::{TPIDR_EL1, SPSel, SP_EL0};
+use registers::interfaces::{Readable, Writeable};
 
 use twizzler_abi::syscall::TimeSpan;
 
@@ -34,6 +34,25 @@ pub fn init<B: BootInfo>(_boot_info: &B) {
     // On reset, TPIDR_EL1 is initialized to some unknown value.
     // we set it to zero so that we know it is not initialized.
     TPIDR_EL1.set(0);
+
+    // TODO: check if SPSel is already set to use SP_EL1
+    // TODO: scrub SP_EL0 if we do change SP
+
+    // make it so that we use SP_EL1 in the kernel
+    // when taking an exception.
+    SPSel.write(SPSel::SP::ELx);
+
+    // save the stack pointer from before
+    let sp = SP_EL0.get();
+
+    // set current stack pointer to previous,
+    // sp is now aliased to SP_EL1
+    unsafe {
+        core::arch::asm!(
+            "mov sp, {}",
+            in(reg) sp,
+        );
+    }
 }
 
 pub fn init_secondary() {
@@ -70,7 +89,7 @@ pub fn schedule_oneshot_tick(time: Nanoseconds) {
 /// # Safety
 /// The stack and target must be valid addresses.
 pub unsafe fn jump_to_user(_target: crate::memory::VirtAddr, _stack: crate::memory::VirtAddr, _arg: u64) {
-    todo!();
+    todo!("jump to user");
 }
 
 pub fn debug_shutdown(_code: u32) {
