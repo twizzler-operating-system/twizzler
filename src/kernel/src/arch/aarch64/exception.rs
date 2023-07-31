@@ -8,13 +8,15 @@
 
 use core::fmt::{Display, Formatter, Result};
 
-use arm64::registers::{VBAR_EL1, ESR_EL1};
+use arm64::registers::{VBAR_EL1, ESR_EL1, SPSR_EL1, ELR_EL1};
 use registers::{
     registers::InMemoryRegister,
     interfaces::{Readable, Writeable},
 };
 
-use twizzler_abi::upcall::UpcallFrame;
+use twizzler_abi::upcall::{MemoryAccessKind, UpcallFrame};
+
+use crate::memory::{context::virtmem::PageFaultFlags, VirtAddr};
 use super::thread::UpcallAble;
 
 // TODO: Change SPSel so that we take exceptions
@@ -37,7 +39,7 @@ __exception_vector_table:
 // Handlers for exceptions using the current EL with SP_EL0 (user)
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
-b interrupt_request_handler
+b default_exception_handler
 .align {VECTOR_ALIGNMENT}
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
@@ -49,7 +51,7 @@ b default_exception_handler
 // the kernel is preserved.
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
-b default_exception_handler
+b interrupt_request_handler
 .align {VECTOR_ALIGNMENT}
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
@@ -150,7 +152,8 @@ impl From<ExceptionContext> for UpcallFrame {
 
 /// macro creates a high level exception handler
 /// to be used in the exception vector table.
-/// saves/restores regs and calls the specified handler
+/// saves/restores regs on the current stack pointer
+/// and calls the specified handler
 macro_rules! exception_handler {
     ($name:ident, $handler:ident) => {
         #[naked]
@@ -292,6 +295,7 @@ fn debug_handler(ctx: &mut ExceptionContext) {
     }
 
     // print other system registers: PSTATE/SPSR
+    emerglogln!("[kernel::exception] SPSR_EL1: {:#018x}", SPSR_EL1.get());
 
     // print registers
     emerglog!("[kernel::exception] dumping register state: {}", ctx);
