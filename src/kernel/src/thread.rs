@@ -261,7 +261,7 @@ impl<'a> Drop for CriticalGuard<'a> {
     }
 }
 
-pub fn exit(code: u64) {
+pub fn exit(code: u64) -> ! {
     {
         let th = current_thread_ref().unwrap();
         th.control_object
@@ -274,4 +274,5 @@ pub fn exit(code: u64) {
         drop(th);
     }
     crate::sched::schedule(false);
+    unreachable!()
 }

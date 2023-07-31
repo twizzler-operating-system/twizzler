@@ -210,7 +210,7 @@ extern "C" fn soft_interrupt_waker() {
 
 pub fn init() {
     INT_THREAD.call_once(|| {
-        crate::thread::entry::start_new_kernel(Priority::REALTIME, soft_interrupt_waker)
+        crate::thread::entry::start_new_kernel(Priority::REALTIME, soft_interrupt_waker, 0)
     });
 }
 

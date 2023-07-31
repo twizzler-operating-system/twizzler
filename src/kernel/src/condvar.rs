@@ -20,6 +20,7 @@ impl CondVar {
             inner: Spinlock::new(InnerCondVar { queue: Vec::new() }),
         }
     }
+
     pub fn wait<'a, T>(&self, mut guard: SpinLockGuard<'a, T>) -> SpinLockGuard<'a, T> {
         crate::interrupt::with_disabled(|| {
             let current_thread = current_thread_ref().unwrap();

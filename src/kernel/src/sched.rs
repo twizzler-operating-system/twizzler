@@ -385,7 +385,6 @@ pub fn schedule(reinsert: bool) {
     /* TODO: switch to needs to also drop the ref on cur, somehow... */
     /* TODO: if we preempt, just put the thread back on our list (or decide to not resched) */
     let istate = interrupt::disable();
-    let processor = current_processor();
     if cur.is_critical() {
         interrupt::set(istate);
         return;

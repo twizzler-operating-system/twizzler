@@ -41,12 +41,13 @@ impl Thread {
 
     /// Consider suspending ourselves. If someone called [Self::start_suspend], then we will.
     pub fn maybe_suspend_self(self: &ThreadRef) {
-        assert_eq!(self, current_thread_ref().unwrap());
+        assert_eq!(self.id(), current_thread_ref().unwrap().id());
         if self.flags.load(Ordering::SeqCst) & THREAD_MUST_SUSPEND == 0 {
             return;
         }
         if self.flags.fetch_or(THREAD_IS_SUSPENDED, Ordering::SeqCst) & THREAD_IS_SUSPENDED != 0 {
-            panic!("we tried to suspend, but we already suspended?");
+            // The only time we'll see this flag set is if we are coming out of a suspend. So, just return.
+            return;
         }
         {
             // Do this before inserting the thread, to ensure no one writes Running here before we suspend.
@@ -80,5 +81,49 @@ impl Thread {
         } else {
             false
         }
+    }
+}
+
+mod test {
+    use core::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
+
+    use alloc::sync::Arc;
+    use twizzler_kernel_macros::kernel_test;
+
+    use crate::{
+        spinlock::Spinlock,
+        syscall::sync::sys_thread_sync,
+        thread::{entry::run_closure_in_new_thread, priority::Priority},
+    };
+
+    #[kernel_test]
+    fn test_suspend() {
+        // This test is a huge hack, and relies on the system to not schedule
+        // threads "badly". But, since we should be the only thread running at this point,
+        // it _should_ work correctly.
+        let incr = Arc::new(Spinlock::new(0));
+        let incr2 = incr.clone();
+        let exit_flag = &AtomicBool::default();
+        let test_thread = run_closure_in_new_thread(Priority::default_user(), move || loop {
+            if exit_flag.load(Ordering::SeqCst) {
+                break;
+            }
+            *incr2.lock() += 1;
+        });
+        sys_thread_sync(&mut [], Some(&mut Duration::from_secs(1))).unwrap();
+        let cur = { *incr.lock() };
+        assert_ne!(cur, 0);
+
+        test_thread.0.suspend();
+        let cur = { *incr.lock() };
+        sys_thread_sync(&mut [], Some(&mut Duration::from_secs(1))).unwrap();
+        let cur2 = { *incr.lock() };
+        assert_eq!(cur, cur2);
+        exit_flag.store(true, Ordering::SeqCst);
+        test_thread.0.unsuspend_thread();
+        test_thread.1.wait();
     }
 }

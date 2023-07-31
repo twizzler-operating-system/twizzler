@@ -415,6 +415,6 @@ pub fn init() {
     materialize_sw_clocks();
     crate::arch::start_clock(127, statclock);
     TIMEOUT_THREAD.call_once(|| {
-        crate::thread::entry::start_new_kernel(Priority::REALTIME, soft_timeout_clock)
+        crate::thread::entry::start_new_kernel(Priority::REALTIME, soft_timeout_clock, 0)
     });
 }
