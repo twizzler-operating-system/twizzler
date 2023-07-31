@@ -8,9 +8,10 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use twizzler_abi::object::ObjID;
+use twizzler_abi::object::{ObjID, MAX_SIZE};
 
 use crate::{
+    arch::memory::frame::FRAME_SIZE,
     idcounter::{IdCounter, SimpleId, StableId},
     memory::{
         context::{kernel_context, Context, ContextRef, UserContext},
@@ -91,7 +92,7 @@ impl PageNumber {
         self.0
     }
 
-    pub const PAGE_SIZE: usize = 0x1000; //TODO: arch-dep
+    pub const PAGE_SIZE: usize = FRAME_SIZE;
 
     pub fn is_zero(&self) -> bool {
         self.0 == 0
@@ -102,7 +103,7 @@ impl PageNumber {
     }
 
     pub fn from_address(addr: VirtAddr) -> Self {
-        PageNumber(((addr.raw() % (1 << 30)) / 0x1000) as usize) //TODO: arch-dep
+        PageNumber((addr.raw() as usize % MAX_SIZE) / Self::PAGE_SIZE)
     }
 
     pub fn next(&self) -> Self {

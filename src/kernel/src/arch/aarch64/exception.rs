@@ -8,13 +8,15 @@
 
 use core::fmt::{Display, Formatter, Result};
 
-use arm64::registers::{VBAR_EL1, ESR_EL1};
+use arm64::registers::{VBAR_EL1, ESR_EL1, SPSR_EL1, ELR_EL1};
 use registers::{
     registers::InMemoryRegister,
     interfaces::{Readable, Writeable},
 };
 
-use twizzler_abi::upcall::UpcallFrame;
+use twizzler_abi::upcall::{MemoryAccessKind, UpcallFrame};
+
+use crate::memory::{context::virtmem::PageFaultFlags, VirtAddr};
 use super::thread::UpcallAble;
 
 // TODO: Change SPSel so that we take exceptions
@@ -37,7 +39,7 @@ __exception_vector_table:
 // Handlers for exceptions using the current EL with SP_EL0 (user)
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
-b interrupt_request_handler
+b default_exception_handler
 .align {VECTOR_ALIGNMENT}
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
@@ -47,9 +49,9 @@ b default_exception_handler
 // Taking an exception from the current EL with SP_EL1 (kernel)
 // The exception is handled from EL1->EL1. The stack pointer from
 // the kernel is preserved.
-b default_exception_handler
+b sync_exception_handler
 .align {VECTOR_ALIGNMENT}
-b default_exception_handler
+b interrupt_request_handler
 .align {VECTOR_ALIGNMENT}
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
@@ -150,7 +152,8 @@ impl From<ExceptionContext> for UpcallFrame {
 
 /// macro creates a high level exception handler
 /// to be used in the exception vector table.
-/// saves/restores regs and calls the specified handler
+/// saves/restores regs on the current stack pointer
+/// and calls the specified handler
 macro_rules! exception_handler {
     ($name:ident, $handler:ident) => {
         #[naked]
@@ -292,11 +295,79 @@ fn debug_handler(ctx: &mut ExceptionContext) {
     }
 
     // print other system registers: PSTATE/SPSR
+    emerglogln!("[kernel::exception] SPSR_EL1: {:#018x}", SPSR_EL1.get());
 
     // print registers
     emerglog!("[kernel::exception] dumping register state: {}", ctx);
 
     panic!("caught unhandled exception!!!")
+}
+
+// Exception handler that services synchronous exceptions
+exception_handler!(sync_exception_handler, sync_handler);
+
+/// Exception handler deals with synchronous exceptions
+/// such as Data Aborts (i.e. page faults)
+fn sync_handler(ctx: &mut ExceptionContext) {
+    // read of raw value for ESR
+    let esr = ESR_EL1.get();
+    let esr_reg: InMemoryRegister<u64, ESR_EL1::Register> = InMemoryRegister::new(esr);
+    match esr_reg.read_as_enum(ESR_EL1::EC) {
+        Some(ESR_EL1::EC::Value::DataAbortCurrentEL) => {
+            // iss: syndrome
+            let iss = esr_reg.read(ESR_EL1::ISS);
+            // is the fault address register valid?
+            let far_valid = iss & (1 << 10) == 0;
+            // print faulting address (ELR/FAR)
+            let far = arm64::registers::FAR_EL1.get();
+            if !far_valid {
+                panic!("FAR is not valid!!");
+            }
+
+            // was fault caused by a write to memory or a read?
+            let write_fault = iss & (1 << 6) != 0;
+            let cause = if write_fault {
+                MemoryAccessKind::Write
+            } else {
+                MemoryAccessKind::Read
+            };
+
+            // TODO: support for PRESENT and INVALID flags
+            let flags = PageFaultFlags::empty();
+
+            let far_va = VirtAddr::new(far as u64).unwrap();
+
+            // DFSC bits[5:0] indicate the type of fault
+            let dfsc = iss & 0b111111;
+            if dfsc & 0b111100 == 0b001000 {
+                // we have an access fault
+                let level = dfsc & 0b11;
+                todo!("Access flag fault, level {}", level);
+                // TODO: set the access flag
+            } else if dfsc & 0b001100 == 0b001100 {
+                let level = dfsc & 0b11;
+                todo!("Permission fault, level {}", level);
+            }
+            crate::thread::enter_kernel();
+            // crate::interrupt::set(true);
+            let elr = ELR_EL1.get();
+            if let Ok(elr_va) = VirtAddr::new(elr) {
+                crate::memory::context::virtmem::page_fault(
+                    far_va,
+                    cause,
+                    flags,
+                    elr_va,
+                );
+            } else {
+                todo!("send upcall exception info");
+            }
+            // crate::interrupt::set(false);
+            crate::thread::exit_kernel();
+        },
+        Some(ESR_EL1::EC::Value::Unknown) | _ => {
+            debug_handler(ctx)
+        },
+    }
 }
 
 /// Initializes the exception vector table by writing the address of 

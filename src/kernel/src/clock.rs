@@ -346,9 +346,12 @@ pub fn fill_with_every_first(slice: &mut [Clock], start: u64) -> Result<usize, R
         // check that we don't go out of slice bounds
         if clocks_added < slice.len() {
             // does this allocate new kernel memory?
+            let info = {
+                TICK_SOURCES.lock()[clock_list.first().unwrap().0 as usize].info()
+            };
             slice[clocks_added].set(
                 // each semantic clock will have at least one element
-                { TICK_SOURCES.lock()[clock_list.first().unwrap().0 as usize].info() },
+                info,
                 clock_list[0],
                 (i as u64).into(),
             );
@@ -379,7 +382,10 @@ pub fn fill_with_kind(
     for id in &clock_list[start as usize..] {
         // check that we don't go out of slice bounds
         if clocks_added < slice.len() {
-            slice[clocks_added].set({ TICK_SOURCES.lock()[id.0 as usize].info() }, *id, clock);
+            let info = {
+                TICK_SOURCES.lock()[id.0 as usize].info()
+            };
+            slice[clocks_added].set(info, *id, clock);
             clocks_added += 1;
         } else {
             break;
@@ -400,7 +406,10 @@ pub fn fill_with_first_kind(
     // check that we don't go out of slice bounds
     if slice.len() >= 1 {
         let id = clock_list.first().unwrap();
-        slice[0].set({ TICK_SOURCES.lock()[id.0 as usize].info() }, *id, clock);
+        let info = {
+            TICK_SOURCES.lock()[id.0 as usize].info()
+        };
+        slice[0].set(info, *id, clock);
         return Ok(clocks_added);
     } else {
         return Err(ReadClockListError::InvalidArgument);

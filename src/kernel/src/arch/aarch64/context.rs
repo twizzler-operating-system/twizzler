@@ -110,7 +110,7 @@ impl ArchContext {
     }
 
     pub fn change(&self, _cursor: MappingCursor, _settings: &MappingSettings) {
-        todo!("change")
+        // TODO: change page table entry
     }
 
     pub fn unmap(&self, _cursor: MappingCursor) {

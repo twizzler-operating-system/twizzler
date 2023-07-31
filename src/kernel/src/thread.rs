@@ -577,9 +577,9 @@ extern "C" fn user_init() {
         let obj_name = create_name_object();
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_TEXT,
-            obj_text,
+            obj_text.clone(),
             vm.clone(),
-            Protections::READ | Protections::EXEC,
+            Protections::READ | Protections::EXEC | Protections::WRITE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
@@ -599,7 +599,7 @@ extern "C" fn user_init() {
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_KERNEL_INIT,
             obj_name,
-            vm,
+            vm.clone(),
             Protections::READ,
         )
         .unwrap();
@@ -651,6 +651,14 @@ extern "C" fn user_init() {
 
         aux = append_aux(aux, AuxEntry::ExecId(init_obj.id()));
         append_aux(aux, AuxEntry::Null);
+
+        // remove permission mappings from text segment
+        let page_tree = obj_text.lock_page_tree();
+        for r in page_tree.range(0.into()..usize::MAX.into()) {
+            let range = *r.0..r.0.offset(r.1.length);
+            vm.invalidate_object(obj_text.id(), &range, crate::obj::InvalidateMode::WriteProtect);
+        }
+
         (aux_start, elf.header.pt2.entry_point())
     };
 
