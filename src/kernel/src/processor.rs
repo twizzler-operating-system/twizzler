@@ -270,6 +270,9 @@ impl Processor {
 const MAX_CPU_ID: usize = 1024;
 
 pub fn current_processor() -> &'static Processor {
+    if !tls_ready() {
+        panic!("tried to read a thread-local value with no FS base set");
+    }
     unsafe { CURRENT_PROCESSOR.as_ref() }.unwrap()
 }
 

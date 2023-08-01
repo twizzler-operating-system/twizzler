@@ -223,6 +223,7 @@ impl Thread {
                 || state == ExecutionState::Exited
                 || state == ExecutionState::Suspended)
             && !current_thread_ref().map_or(true, |ct| ct.is_critical())
+            && old_state != ExecutionState::Exited
         {
             self.control_object
                 .object()

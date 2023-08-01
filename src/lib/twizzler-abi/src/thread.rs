@@ -90,29 +90,47 @@ impl ThreadRepr {
     }
 
     pub fn set_state(&self, state: ExecutionState, code: u64) -> ExecutionState {
-        if self.get_state() == ExecutionState::Exited {
-            return ExecutionState::Exited;
-        }
-        let status = state as u8 as u64;
-        if state == ExecutionState::Exited {
-            self.code.store(code, Ordering::SeqCst);
-        }
-        let old_status = self.status.swap(status, Ordering::Release);
-        let old_state = ExecutionState::from_status(old_status);
-        if !(old_state == ExecutionState::Running && state == ExecutionState::Sleeping
-            || old_state == ExecutionState::Sleeping && state == ExecutionState::Running)
-            && old_state != state
-        {
-            #[cfg(not(feature = "kernel"))]
-            let _ = sys_thread_sync(
-                &mut [ThreadSync::new_wake(ThreadSyncWake::new(
-                    ThreadSyncReference::Virtual(&self.status),
-                    usize::MAX,
-                ))],
-                None,
+        let mut old_status = self.status.load(Ordering::SeqCst);
+        loop {
+            let old_state = ExecutionState::from_status(old_status);
+            if old_state == ExecutionState::Exited {
+                return old_state;
+            }
+
+            let status = state as u8 as u64;
+            if state == ExecutionState::Exited {
+                self.code.store(code, Ordering::SeqCst);
+            }
+
+            let result = self.status.compare_exchange(
+                old_status,
+                status,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
             );
+            match result {
+                Ok(_) => {
+                    if !(old_state == ExecutionState::Running && state == ExecutionState::Sleeping
+                        || old_state == ExecutionState::Sleeping
+                            && state == ExecutionState::Running)
+                        && old_state != state
+                    {
+                        #[cfg(not(feature = "kernel"))]
+                        let _ = sys_thread_sync(
+                            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                                ThreadSyncReference::Virtual(&self.status),
+                                usize::MAX,
+                            ))],
+                            None,
+                        );
+                    }
+                    return old_state;
+                }
+                Err(x) => {
+                    old_status = x;
+                }
+            }
         }
-        old_state
     }
 
     #[cfg(not(feature = "kernel"))]

@@ -191,11 +191,21 @@ impl VirtContext {
         // the call to prep_smp later.
         let id_len = 0x100000000; // 4GB
         let cursor = MappingCursor::new(
-            VirtAddr::new(Table::level_to_page_size(Table::last_level()).try_into().unwrap()).unwrap(),
+            VirtAddr::new(
+                Table::level_to_page_size(Table::last_level())
+                    .try_into()
+                    .unwrap(),
+            )
+            .unwrap(),
             id_len,
         );
         let mut phys = ContiguousProvider::new(
-            PhysAddr::new(Table::level_to_page_size(Table::last_level()).try_into().unwrap()).unwrap(),
+            PhysAddr::new(
+                Table::level_to_page_size(Table::last_level())
+                    .try_into()
+                    .unwrap(),
+            )
+            .unwrap(),
             id_len,
         );
         let settings = MappingSettings::new(
@@ -598,7 +608,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
             (kernel_context(), true)
         } else {
             (user_ctx.as_ref().unwrap_or_else(||
-            panic!("page fault in userland with no memory context at IP {:?} caused by {:?} to/from {:?} with flags {:?}", ip, cause, addr, flags)), false)
+            panic!("page fault in userland with no memory context at IP {:?} caused by {:?} to/from {:?} with flags {:?}, thread {}", ip, cause, addr, flags, current_thread_ref().map_or(0, |t| t.id()))), false)
         };
         let slot = match addr.try_into() {
             Ok(s) => s,
