@@ -29,7 +29,8 @@ pub fn thread_ctrl(cmd: ThreadControl, arg: u64) -> (u64, u64) {
         ThreadControl::Yield => {
             // TODO: maybe give a priority drop?
             crate::sched::schedule(true);
-        } //_ => todo!(),
+        }
+        _ => todo!(),
     }
     (0, 0)
 }

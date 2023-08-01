@@ -6,7 +6,10 @@ use twizzler_abi::{
 use xmas_elf::program::SegmentData;
 
 use crate::{
-    initrd::get_boot_objects, memory::VirtAddr, obj::ObjectRef, thread::current_memory_context,
+    initrd::get_boot_objects,
+    memory::{context::UserContext, VirtAddr},
+    obj::ObjectRef,
+    thread::current_memory_context,
 };
 
 pub fn create_blank_object() -> ObjectRef {
@@ -39,9 +42,9 @@ pub extern "C" fn user_init() {
         let obj_name = create_name_object();
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_TEXT,
-            obj_text,
+            obj_text.clone(),
             vm.clone(),
-            Protections::READ | Protections::EXEC,
+            Protections::READ | Protections::EXEC | Protections::WRITE,
         )
         .unwrap();
         crate::operations::map_object_into_context(
@@ -61,7 +64,7 @@ pub extern "C" fn user_init() {
         crate::operations::map_object_into_context(
             twizzler_abi::slot::RESERVED_KERNEL_INIT,
             obj_name,
-            vm,
+            vm.clone(),
             Protections::READ,
         )
         .unwrap();
@@ -113,6 +116,18 @@ pub extern "C" fn user_init() {
 
         aux = append_aux(aux, AuxEntry::ExecId(init_obj.id()));
         append_aux(aux, AuxEntry::Null);
+
+        // remove permission mappings from text segment
+        let page_tree = obj_text.lock_page_tree();
+        for r in page_tree.range(0.into()..usize::MAX.into()) {
+            let range = *r.0..r.0.offset(r.1.length);
+            vm.invalidate_object(
+                obj_text.id(),
+                &range,
+                crate::obj::InvalidateMode::WriteProtect,
+            );
+        }
+
         (aux_start, elf.header.pt2.entry_point())
     };
 
