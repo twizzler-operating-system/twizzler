@@ -1,10 +1,11 @@
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::{boxed::Box, vec::Vec};
 
 use crate::{
     interrupt::Destination,
     memory::VirtAddr,
+    once::Once,
     processor::{current_processor, Processor},
 };
 
@@ -163,34 +164,47 @@ pub struct ArchProcessor {
     wait_word: AtomicU64,
 }
 
-static HAS_MWAIT: AtomicU32 = AtomicU32::new(0);
+#[derive(Default, Debug)]
+pub struct MwaitInfo {
+    break_on_int: bool,
+}
 
-fn has_mwait() -> bool {
-    let state = HAS_MWAIT.load(Ordering::SeqCst);
-    if state == 0 {
+static HAS_MWAIT: Once<Option<MwaitInfo>> = Once::new();
+
+fn has_mwait() -> &'static Option<MwaitInfo> {
+    HAS_MWAIT.call_once(|| {
         let cpuid = x86::cpuid::CpuId::new();
         let features = cpuid.get_feature_info();
-        if !features.unwrap().has_monitor_mwait() {
-            HAS_MWAIT.store(1, Ordering::SeqCst);
-            return has_mwait();
-        }
-        let mwait_features = cpuid.get_monitor_mwait_info();
-        if let Some(_mwait_features) = mwait_features {
-            HAS_MWAIT.store(2, Ordering::SeqCst);
-            return has_mwait();
-        }
-        HAS_MWAIT.store(1, Ordering::SeqCst);
-        return has_mwait();
-    }
-    state > 1
+        let info = if features.unwrap().has_monitor_mwait() {
+            let mut info = MwaitInfo::default();
+            let mwait_features = cpuid.get_monitor_mwait_info();
+            if let Some(mwait_features) = mwait_features {
+                if mwait_features.supported_c1_states() > 0 {
+                    info.break_on_int = mwait_features.interrupts_as_break_event();
+                    Some(info)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        info
+    })
 }
 
 pub fn halt_and_wait() {
     /* TODO: spin a bit */
     /* TODO: parse cstates and actually put the cpu into deeper and deeper sleep */
     let proc = current_processor();
-    if has_mwait() {
+    let mwait_info = has_mwait();
+    if let Some(mwait_info) = mwait_info {
         {
+            if mwait_info.break_on_int {
+                unsafe { core::arch::asm!("cli") };
+            }
             {
                 let sched = proc.schedlock();
                 unsafe {
@@ -219,7 +233,7 @@ pub fn halt_and_wait() {
 
 impl Processor {
     pub fn wakeup(&self, signal: bool) {
-        if has_mwait() {
+        if has_mwait().is_some() {
             self.arch.wait_word.store(1, Ordering::SeqCst);
             if !signal {
                 return;
