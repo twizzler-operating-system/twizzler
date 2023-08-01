@@ -200,17 +200,48 @@ impl Thread {
         }
     }
 
-    pub fn set_state(&self, state: ExecutionState) {
+    /// Set the state of the thread. This publishes thread info to userspace.
+    /// This function may be called in a critical section only if:
+    ///   1: transitioning between running and sleeping
+    ///   2: state == current state
+    pub fn set_state_and_code(&self, state: ExecutionState, code: u64) {
+        if (state == ExecutionState::Exited || state == ExecutionState::Suspended)
+            && self.is_current_thread()
+            && self.is_critical()
+        {
+            panic!("cannot signal wake up in set_state_and_code due to call from critical section");
+        }
         let base = self.control_object.base();
-        let old_state = base.set_state(state, 0);
+        let old_state = base.set_state(state, code);
 
+        // Note that since this value can be written to by userspace, we must check if we're
+        // critical because we can't rely on userspace following the rules. Same for checking if
+        // the state is changing.
         if !(old_state == ExecutionState::Running && state == ExecutionState::Sleeping
             || old_state == ExecutionState::Sleeping && state == ExecutionState::Running)
+            && (old_state != state
+                || state == ExecutionState::Exited
+                || state == ExecutionState::Suspended)
+            && !current_thread_ref().map_or(true, |ct| ct.is_critical())
         {
             self.control_object
                 .object()
                 .wakeup_word(NULLPAGE_SIZE + offset_of!(ThreadRepr, status), usize::MAX);
         }
+    }
+
+    pub fn is_current_thread(&self) -> bool {
+        if let Some(cur) = current_thread_ref() {
+            self.objid() == cur.objid()
+        } else {
+            false
+        }
+    }
+
+    #[inline]
+    /// See set_state_and_code for details.
+    pub fn set_state(&self, state: ExecutionState) {
+        self.set_state_and_code(state, 0)
     }
 
     pub fn get_state(&self) -> ExecutionState {
@@ -264,9 +295,7 @@ impl<'a> Drop for CriticalGuard<'a> {
 pub fn exit(code: u64) -> ! {
     {
         let th = current_thread_ref().unwrap();
-        th.control_object
-            .base()
-            .set_state(ExecutionState::Exited, code);
+        th.set_state_and_code(ExecutionState::Exited, code);
         crate::interrupt::disable();
         th.set_is_exiting();
         crate::syscall::sync::remove_from_requeue(&th);

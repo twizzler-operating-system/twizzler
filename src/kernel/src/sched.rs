@@ -346,7 +346,6 @@ fn do_schedule(reinsert: bool) {
         schedule_thread(cur.clone());
     }
     if cur.is_exiting() {
-        cur.set_state(ExecutionState::Exited);
         processor.push_exited(cur.clone());
     }
     if !cur.is_idle_thread() {

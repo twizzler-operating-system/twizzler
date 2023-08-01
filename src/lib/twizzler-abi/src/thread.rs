@@ -101,6 +101,7 @@ impl ThreadRepr {
         let old_state = ExecutionState::from_status(old_status);
         if !(old_state == ExecutionState::Running && state == ExecutionState::Sleeping
             || old_state == ExecutionState::Sleeping && state == ExecutionState::Running)
+            && old_state != state
         {
             #[cfg(not(feature = "kernel"))]
             let _ = sys_thread_sync(
