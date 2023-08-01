@@ -1,3 +1,5 @@
+use core::arch::asm;
+
 use x86::msr::{rdmsr, wrmsr, APIC_BASE};
 
 use crate::{
@@ -58,8 +60,10 @@ const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
 
 // The APIC can either be a standard APIC or x2APIC. We'll support
 // x2 eventually.
+#[derive(PartialEq, Eq)]
 enum ApicVersion {
-    Apic,
+    XApic,
+    X2Apic,
 }
 
 pub struct Lapic {
@@ -70,7 +74,7 @@ pub struct Lapic {
 impl Lapic {
     fn new_apic(base: VirtAddr) -> Self {
         Self {
-            version: ApicVersion::Apic,
+            version: ApicVersion::XApic,
             base,
         }
     }
@@ -148,20 +152,25 @@ impl Lapic {
         static TSC: Once<Tsc> = Once::new();
         let tsc = TSC.call_once(|| Tsc::new());
         let old = interrupt::disable();
+        let tsc_val = tsc.read();
+        let time_ticks = (1000000 * time) / tsc_val.rate.0;
         unsafe {
-            let tsc_val = tsc.read();
             // TODO: clean up once we do the cleanup for Nanoseconds.
-            let deadline = tsc_val.value + (1000000 * time) / tsc_val.rate.0;
             if supports_deadline() {
+                let deadline = tsc_val.value + time_ticks;
                 get_lapic().write(
                     LAPIC_TIMER,
                     LAPIC_TIMER_VECTOR as u32 | LAPIC_TIMER_DEADLINE,
                 );
+                // Intel 3A:11.5.4.1 requires an mfence here, between the MMIO write (if we're in xAPIC mode) and the MSR write.
+                if get_lapic().version == ApicVersion::XApic {
+                    asm!("mfence;");
+                }
                 x86::msr::wrmsr(x86::msr::IA32_TSC_DEADLINE, deadline);
             } else {
                 let apic = get_lapic();
                 apic.write(LAPIC_TIMER, LAPIC_TIMER_VECTOR as u32);
-                apic.write(LAPIC_TICR, deadline as u32);
+                apic.write(LAPIC_TICR, time_ticks as u32);
             }
         }
         interrupt::set(old);
