@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::Ordering;
 
 use twizzler_abi::{
     kso::{InterruptAllocateOptions, InterruptPriority},
@@ -118,7 +118,6 @@ impl core::fmt::Debug for IsrContext {
     }
 }
 
-static NEST: AtomicUsize = AtomicUsize::new(0);
 #[no_mangle]
 unsafe extern "C" fn common_handler_entry(
     ctx: *mut IsrContext,
@@ -126,23 +125,11 @@ unsafe extern "C" fn common_handler_entry(
     user: u64,
     kernel_fs: u64,
 ) {
-    let curfs = x86::msr::rdmsr(x86::msr::IA32_FS_BASE);
-    if false {
-        logln!(
-            "interrupt: {:?} {} {} {}, fs={:x}, nest: {}",
-            ctx.as_ref().unwrap(),
-            number,
-            user,
-            kernel_fs,
-            curfs,
-            NEST.fetch_add(1, Ordering::SeqCst)
-        );
-    }
     let user = user != 0;
     if user {
         if kernel_fs == 0 {
             panic!(
-                "tried to set kernel FS to 0 ==> {:?} {} {}",
+                "tried to set kernel fs to 0 during interrupt ctx: {:?} number: {} user: {}",
                 ctx.as_ref().unwrap(),
                 number,
                 user
@@ -161,8 +148,6 @@ unsafe extern "C" fn common_handler_entry(
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
         drop(t);
     }
-    //logln!("return from interrupt {}", number);
-    NEST.fetch_sub(1, Ordering::SeqCst);
 }
 
 #[allow(clippy::missing_safety_doc)]
@@ -1126,6 +1111,10 @@ pub fn set(state: bool) {
     let mut flags = x86::bits64::rflags::read();
     flags.set(RFlags::FLAGS_IF, state);
     x86::bits64::rflags::set(flags);
+}
+
+pub fn get() -> bool {
+    x86::bits64::rflags::read().contains(x86::bits64::rflags::RFlags::FLAGS_IF)
 }
 
 pub fn allocate_interrupt_vector(

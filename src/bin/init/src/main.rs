@@ -384,7 +384,6 @@ fn main() {
                     let tr = twizzler_abi::slot::to_vaddr_range(slot).0 as *const ThreadRepr;
                     unsafe {
                         let val = tr.as_ref().unwrap().wait(None);
-                        println!("--> {:?}", val);
                         if let Some(val) = val {
                             if val.0 == ExecutionState::Exited && val.1 != 0
                                 || val.0 == ExecutionState::Suspended

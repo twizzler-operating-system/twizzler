@@ -28,7 +28,8 @@ pub fn set(state: bool) {
 
 #[inline]
 pub fn get() -> bool {
-    x86::bits64::rflags::read().contains(x86::bits64::rflags::RFlags::FLAGS_IF)
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    crate::arch::interrupt::get()
 }
 
 #[inline]

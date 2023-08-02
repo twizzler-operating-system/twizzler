@@ -149,7 +149,7 @@ pub unsafe fn return_to_user(context: *const X86SyscallContext) -> ! {
 unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs: u64) -> ! {
     if kernel_fs == 0 {
         panic!(
-            "tried to set kernel FS to 0 ==> {:?}",
+            "tried to set kernel fs to 0 in syscall from {:?}",
             context.as_ref().unwrap(),
         );
     }
