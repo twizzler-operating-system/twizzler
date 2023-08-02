@@ -94,6 +94,8 @@ impl Entry {
             1 => PhysAddr::new(self.0 & Self::LVL1_BLK_ADDR_MASK).unwrap(),
             2 => PhysAddr::new(self.0 & Self::LVL2_BLK_ADDR_MASK).unwrap(),
             3 => PhysAddr::new(self.0 & Self::LVL3_PAGE_ADDR_MASK).unwrap(),
+            // this is used when changing/unmapping entries
+            0 => self.table_addr(),
             _ => todo!("getting the address from this level: {}", level)
         }
     }
