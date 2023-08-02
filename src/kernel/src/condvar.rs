@@ -30,6 +30,7 @@ impl CondVar {
             unsafe {
                 guard.force_unlock();
                 crate::sched::schedule(false);
+                crate::interrupt::set(true);
                 guard.force_relock()
             }
         })

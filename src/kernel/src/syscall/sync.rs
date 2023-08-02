@@ -56,8 +56,8 @@ pub fn remove_from_requeue(thread: &ThreadRef) {
 fn finish_blocking(guard: CriticalGuard) {
     let thread = current_thread_ref().unwrap();
     crate::interrupt::with_disabled(|| {
-        thread.set_state(ExecutionState::Sleeping);
         drop(guard);
+        thread.set_state(ExecutionState::Sleeping);
         crate::sched::schedule(false);
         thread.set_state(ExecutionState::Running);
     });

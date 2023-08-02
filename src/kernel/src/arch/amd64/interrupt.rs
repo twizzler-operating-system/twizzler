@@ -127,15 +127,17 @@ unsafe extern "C" fn common_handler_entry(
     kernel_fs: u64,
 ) {
     let curfs = x86::msr::rdmsr(x86::msr::IA32_FS_BASE);
-    logln!(
-        "interrupt: {:?} {} {} {}, fs={:x}, nest: {}",
-        ctx.as_ref().unwrap(),
-        number,
-        user,
-        kernel_fs,
-        curfs,
-        NEST.fetch_add(1, Ordering::SeqCst)
-    );
+    if false {
+        logln!(
+            "interrupt: {:?} {} {} {}, fs={:x}, nest: {}",
+            ctx.as_ref().unwrap(),
+            number,
+            user,
+            kernel_fs,
+            curfs,
+            NEST.fetch_add(1, Ordering::SeqCst)
+        );
+    }
     let user = user != 0;
     if user {
         if kernel_fs == 0 {
@@ -159,7 +161,7 @@ unsafe extern "C" fn common_handler_entry(
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
         drop(t);
     }
-    logln!("return from interrupt {}", number);
+    //logln!("return from interrupt {}", number);
     NEST.fetch_sub(1, Ordering::SeqCst);
 }
 

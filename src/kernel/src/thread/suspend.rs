@@ -22,13 +22,18 @@ lazy_static! {
 }
 
 impl Thread {
-    /// Tell a thread to suspend. If that thread is the caller, then suspend immediately. Otherwise, call out to other CPUs to
-    /// force the thread to suspend. In both cases, the thread will be suspended before this call returns (though, in the case of
-    /// the thread being the current thread, it will have to be unsuspended before it returns).
+    /// Tell a thread to suspend. If that thread is the caller, then suspend immediately unless in a critical section.
+    /// Otherwise, call out to other CPUs to
+    /// force the thread to suspend. Note that if the target is the calling thread, then it will have to be unsuspended before
+    /// it returns, and so will NOT be suspended upon completion of this call.
     pub fn suspend(self: &ThreadRef) {
         self.flags.fetch_or(THREAD_MUST_SUSPEND, Ordering::SeqCst);
         if self == &current_thread_ref().unwrap() {
-            self.maybe_suspend_self();
+            if !self.is_critical() {
+                crate::interrupt::with_disabled(|| {
+                    self.maybe_suspend_self();
+                });
+            }
         } else {
             ipi_exec(Destination::AllButSelf, Box::new(|| schedule_resched()));
         }

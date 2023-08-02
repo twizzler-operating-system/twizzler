@@ -74,6 +74,7 @@ impl<T> Mutex<T> {
         }
 
         loop {
+            let istate = crate::interrupt::disable();
             let reinsert = {
                 let mut queue = self.queue.lock();
                 if !queue.owned {
@@ -112,6 +113,8 @@ impl<T> Mutex<T> {
                 reinsert
             };
             sched::schedule(reinsert);
+            crate::interrupt::set(istate);
+            core::hint::spin_loop();
         }
 
         LockGuard {
