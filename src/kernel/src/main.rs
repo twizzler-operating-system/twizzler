@@ -135,6 +135,9 @@ pub fn test_runner(tests: &[&(&str, &dyn Fn())]) {
         log!("test {} ... ", test.0);
         (test.1)();
         logln!("ok");
+        if !interrupt::get() {
+            panic!("test {} didn't cleanup interrupt state", test.0);
+        }
     }
 
     logln!("[kernel::test] test result: ok.");
@@ -160,7 +163,7 @@ pub fn idle_main() -> ! {
                 || test_main(),
             )
             .1
-            .wait();
+            .wait(true);
         }
         start_new_init();
     }

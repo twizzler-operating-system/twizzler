@@ -27,6 +27,11 @@ pub fn set(state: bool) {
 }
 
 #[inline]
+pub fn get() -> bool {
+    x86::bits64::rflags::read().contains(x86::bits64::rflags::RFlags::FLAGS_IF)
+}
+
+#[inline]
 pub fn with_disabled<T, F: FnOnce() -> T>(f: F) -> T {
     let tmp = disable();
     let t = f();
@@ -203,7 +208,7 @@ extern "C" fn soft_interrupt_waker() {
                 handle_interrupt(ints[i]);
             }
         } else {
-            INT_THREAD_CONDVAR.wait(iq);
+            INT_THREAD_CONDVAR.wait(iq, true);
         }
     }
 }

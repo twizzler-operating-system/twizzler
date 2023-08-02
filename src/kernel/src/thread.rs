@@ -62,6 +62,7 @@ pub struct Thread {
     // TODO: consider reusing one of these for the others.
     pub sched_link: AtomicLink,
     pub mutex_link: AtomicLink,
+    pub condvar_link: RBTreeAtomicLink,
     pub suspend_link: RBTreeAtomicLink,
 }
 unsafe impl Send for Thread {}
@@ -123,6 +124,7 @@ impl Thread {
             sched_link: AtomicLink::default(),
             mutex_link: AtomicLink::default(),
             suspend_link: RBTreeAtomicLink::default(),
+            condvar_link: RBTreeAtomicLink::default(),
         }
     }
 

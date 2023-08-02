@@ -99,7 +99,7 @@ pub struct KthreadClosure<F, R> {
 
 impl<F, R> KthreadClosure<F, R> {
     /// Wait for the other thread to finish and provide the result.
-    pub fn wait(self: Arc<Self>) -> R {
+    pub fn wait(self: Arc<Self>, istate: bool) -> R {
         loop {
             let guard = self.result.lock();
             if guard.0 {
@@ -107,7 +107,7 @@ impl<F, R> KthreadClosure<F, R> {
                 // we initialize the MaybeUninit.
                 return unsafe { guard.1.assume_init_read() };
             }
-            self.signal.wait(guard);
+            self.signal.wait(guard, istate);
         }
     }
 }
@@ -146,6 +146,7 @@ where
         (arg.main)(arg.arg);
         crate::thread::exit(0);
     }
+
     let info = Arc::new(KthreadClosure {
         closure: Spinlock::new(Box::new(Some(f))),
         result: Spinlock::new((false, MaybeUninit::uninit())),
@@ -177,7 +178,7 @@ mod test {
     fn test_closure() {
         let x = super::run_closure_in_new_thread(Priority::default_user(), || 42)
             .1
-            .wait();
+            .wait(true);
         assert_eq!(42, x);
     }
 }
