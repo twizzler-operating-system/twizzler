@@ -43,7 +43,18 @@ pub fn init<B: BootInfo>(_boot_info: &B) {
     SPSel.write(SPSel::SP::ELx);
 
     // save the stack pointer from before
-    let sp = SP_EL0.get();
+    let old_sp = SP_EL0.get();
+
+    // make it so that the boot stack is in higher half memory
+    //
+    // NOTE: this is currently specific to Limine on aarch64
+    let sp = if VirtAddr::new(old_sp).unwrap().is_kernel() {
+        old_sp
+    } else {
+        unsafe {
+            PhysAddr::new_unchecked(old_sp).kernel_vaddr().raw()
+        }
+    };
 
     // set current stack pointer to previous,
     // sp is now aliased to SP_EL1
