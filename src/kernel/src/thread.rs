@@ -5,7 +5,7 @@ use core::{
 };
 
 use alloc::{boxed::Box, sync::Arc};
-use intrusive_collections::{linked_list::AtomicLink, offset_of};
+use intrusive_collections::{linked_list::AtomicLink, offset_of, RBTreeAtomicLink};
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     syscall::ThreadSpawnArgs,
@@ -59,7 +59,10 @@ pub struct Thread {
     pub stats: ThreadStats,
     spawn_args: Option<ThreadSpawnArgs>,
     pub control_object: ControlObjectCacher<ThreadRepr>,
+    // TODO: consider reusing one of these for the others.
     pub sched_link: AtomicLink,
+    pub mutex_link: AtomicLink,
+    pub suspend_link: RBTreeAtomicLink,
 }
 unsafe impl Send for Thread {}
 
@@ -118,6 +121,8 @@ impl Thread {
             spawn_args,
             control_object: ControlObjectCacher::new(ThreadRepr::default()),
             sched_link: AtomicLink::default(),
+            mutex_link: AtomicLink::default(),
+            suspend_link: RBTreeAtomicLink::default(),
         }
     }
 

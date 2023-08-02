@@ -1,14 +1,15 @@
 use core::sync::atomic::Ordering;
 
-use alloc::{boxed::Box, collections::BTreeMap};
+use alloc::boxed::Box;
+use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree};
 use lazy_static::lazy_static;
 use twizzler_abi::{object::ObjID, thread::ExecutionState};
 
 use crate::{
     interrupt::Destination,
-    mutex::Mutex,
     processor::ipi_exec,
     sched::{schedule, schedule_resched, schedule_thread},
+    spinlock::Spinlock,
     thread::current_thread_ref,
 };
 
@@ -18,7 +19,16 @@ use super::{
 };
 
 lazy_static! {
-    static ref SUSPENDED_THREADS: Mutex<BTreeMap<ObjID, ThreadRef>> = Mutex::new(BTreeMap::new());
+    static ref SUSPENDED_THREADS: Spinlock<RBTree<SuspendNodeAdapter>> =
+        Spinlock::new(RBTree::new(SuspendNodeAdapter::new()));
+}
+
+intrusive_adapter!(pub SuspendNodeAdapter = ThreadRef: Thread { suspend_link: intrusive_collections::rbtree::AtomicLink });
+impl<'a> KeyAdapter<'a> for SuspendNodeAdapter {
+    type Key = ObjID;
+    fn get_key(&self, s: &'a Thread) -> ObjID {
+        s.objid()
+    }
 }
 
 impl Thread {
@@ -58,12 +68,8 @@ impl Thread {
             // Do this before inserting the thread, to ensure no one writes Running here before we suspend.
             self.set_state(ExecutionState::Suspended);
             let mut suspended_threads = SUSPENDED_THREADS.lock();
-            if suspended_threads
-                .insert(self.objid(), self.clone())
-                .is_some()
-            {
-                panic!("tried to insert ourselves into suspend list multiple times!");
-            }
+            assert!(suspended_threads.find(&self.objid()).is_null());
+            suspended_threads.insert(self.clone());
         }
 
         // goodnight!
@@ -79,7 +85,7 @@ impl Thread {
     /// If a thread is suspended, then wake it up. Returns false if that thread was not on the suspend list.
     pub fn unsuspend_thread(self: &ThreadRef) -> bool {
         let mut suspended_threads = SUSPENDED_THREADS.lock();
-        if suspended_threads.remove(&self.objid()).is_some() {
+        if suspended_threads.find_mut(&self.objid()).remove().is_some() {
             // Just throw it on a queue, it'll cleanup its own flag mess.
             schedule_thread(self.clone());
             true

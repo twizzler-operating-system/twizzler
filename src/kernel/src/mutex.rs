@@ -15,24 +15,26 @@
 
 use core::{cell::UnsafeCell, sync::atomic::AtomicU64};
 
-use alloc::collections::VecDeque;
+use intrusive_collections::{intrusive_adapter, LinkedList};
 use twizzler_abi::thread::ExecutionState;
 
 use crate::{
     idcounter::StableId,
     sched,
     spinlock::Spinlock,
-    thread::{current_thread_ref, priority::Priority, ThreadRef},
+    thread::{current_thread_ref, priority::Priority, Thread, ThreadRef},
 };
 
 #[repr(align(64))]
 struct AlignedAtomicU64(AtomicU64);
 struct SleepQueue {
-    queue: VecDeque<ThreadRef>,
+    queue: LinkedList<MutexLinkAdapter>,
     pri: Option<Priority>,
     owner: Option<ThreadRef>,
     owned: bool,
 }
+
+intrusive_adapter!(pub MutexLinkAdapter = ThreadRef: Thread { mutex_link: intrusive_collections::linked_list::AtomicLink });
 
 /// A container data structure to manage mutual exclusion.
 pub struct Mutex<T> {
@@ -45,7 +47,7 @@ impl<T> Mutex<T> {
     pub fn new(data: T) -> Self {
         Self {
             queue: Spinlock::new(SleepQueue {
-                queue: VecDeque::new(),
+                queue: LinkedList::new(MutexLinkAdapter::NEW),
                 pri: None,
                 owner: None,
                 owned: false,
