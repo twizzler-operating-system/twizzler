@@ -196,7 +196,7 @@ impl<C: Copy> Outstanding<C> {
             if let Some(c) = &*data {
                 return *c;
             }
-            data = self.cv.wait(data);
+            data = self.cv.wait(data, true);
         }
     }
 

@@ -10,9 +10,10 @@ use crate::{
     obj::ObjectRef,
     once::Once,
     spinlock::Spinlock,
-    thread::{Priority, ThreadRef},
+    thread::{priority::Priority, ThreadRef},
 };
 
+/// Set the current interrupt enable state to disabled and return the old state.
 #[inline]
 pub fn disable() -> bool {
     let state = crate::arch::interrupt::disable();
@@ -20,10 +21,18 @@ pub fn disable() -> bool {
     state
 }
 
+/// Set the current interrupt enable state.
 #[inline]
 pub fn set(state: bool) {
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     crate::arch::interrupt::set(state);
+}
+
+/// Get the current interrupt enable state without modifying it.
+#[inline]
+pub fn get() -> bool {
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    crate::arch::interrupt::get()
 }
 
 #[inline]
@@ -203,14 +212,15 @@ extern "C" fn soft_interrupt_waker() {
                 handle_interrupt(ints[i]);
             }
         } else {
-            INT_THREAD_CONDVAR.wait(iq);
+            INT_THREAD_CONDVAR.wait(iq, true);
         }
     }
 }
 
 pub fn init() {
-    INT_THREAD
-        .call_once(|| crate::thread::start_new_kernel(Priority::REALTIME, soft_interrupt_waker));
+    INT_THREAD.call_once(|| {
+        crate::thread::entry::start_new_kernel(Priority::REALTIME, soft_interrupt_waker, 0)
+    });
 }
 
 pub fn external_interrupt_entry(number: u32) {

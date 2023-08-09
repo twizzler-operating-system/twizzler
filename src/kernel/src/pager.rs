@@ -7,7 +7,7 @@ use crate::{
     obj::{lookup_object, LookupFlags},
     queue::{ManagedQueueReceiver, ManagedQueueSender, QueueObject},
     sched::schedule,
-    thread::{start_new_kernel, Priority},
+    thread::{entry::start_new_kernel, priority::Priority},
 };
 
 struct PagerQueues {
@@ -83,8 +83,8 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
         unsafe { PAGER_QUEUES.receiver = Some(receiver) };
     }
     if unsafe { PAGER_QUEUES.receiver.is_some() && PAGER_QUEUES.sender.is_some() } {
-        start_new_kernel(Priority::REALTIME, pager_entry);
-        start_new_kernel(Priority::REALTIME, pager_compl_handler_entry);
-        start_new_kernel(Priority::REALTIME, pager_request_handler_entry);
+        start_new_kernel(Priority::REALTIME, pager_entry, 0);
+        start_new_kernel(Priority::REALTIME, pager_compl_handler_entry, 0);
+        start_new_kernel(Priority::REALTIME, pager_request_handler_entry, 0);
     }
 }

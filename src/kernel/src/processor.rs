@@ -1,7 +1,7 @@
 use core::{
     alloc::Layout,
     ptr::null_mut,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use crate::{
@@ -9,7 +9,7 @@ use crate::{
     interrupt::{self, Destination},
     once::Once,
     spinlock::{LockGuard, SpinLoop, Spinlock},
-    thread::current_thread_ref,
+    thread::{current_thread_ref, priority::Priority},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use intrusive_collections::{intrusive_adapter, LinkedList};
@@ -19,7 +19,7 @@ use crate::{
     image::TlsInfo,
     memory::VirtAddr,
     sched::{CPUTopoNode, CPUTopoType},
-    thread::{Priority, Thread, ThreadRef},
+    thread::{Thread, ThreadRef},
 };
 
 #[thread_local]
@@ -270,6 +270,9 @@ impl Processor {
 const MAX_CPU_ID: usize = 1024;
 
 pub fn current_processor() -> &'static Processor {
+    if !tls_ready() {
+        panic!("tried to read a thread-local value with no FS base set");
+    }
     unsafe { CURRENT_PROCESSOR.as_ref() }.unwrap()
 }
 
@@ -299,6 +302,8 @@ pub fn init_cpu(tls_template: TlsInfo, bsp_id: u32) {
     current_processor().set_topology(topo_path);
 }
 
+pub static NR_CPUS: AtomicUsize = AtomicUsize::new(1);
+
 static CPU_MAIN_BARRIER: AtomicBool = AtomicBool::new(false);
 pub fn secondary_entry(id: u32, tcb_base: VirtAddr, kernel_stack_base: *mut u8) -> ! {
     crate::arch::processor::init(tcb_base);
@@ -313,6 +318,7 @@ pub fn secondary_entry(id: u32, tcb_base: VirtAddr, kernel_stack_base: *mut u8) 
     current_processor()
         .running
         .store(true, core::sync::atomic::Ordering::SeqCst);
+    NR_CPUS.fetch_add(1, Ordering::SeqCst);
     while !CPU_MAIN_BARRIER.load(core::sync::atomic::Ordering::SeqCst) {}
     crate::init_threading();
 }

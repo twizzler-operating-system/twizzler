@@ -65,10 +65,8 @@ impl Page {
         /* TODO: enforce alignment and size of offset */
         /* TODO: once we start optimizing frame zeroing, we need to make the frame as non-zeroed here */
         let va = self.as_virtaddr();
-        va.as_mut_ptr::<T>()
-            .add(offset / core::mem::size_of::<T>())
-            .as_mut()
-            .unwrap()
+        let bytes = va.as_mut_ptr::<u8>();
+        bytes.add(offset) as *mut T
     }
 
     pub fn as_mut_slice(&self) -> &mut [u8] {

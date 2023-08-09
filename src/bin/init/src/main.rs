@@ -385,7 +385,9 @@ fn main() {
                     unsafe {
                         let val = tr.as_ref().unwrap().wait(None);
                         if let Some(val) = val {
-                            if val != 0 {
+                            if val.0 == ExecutionState::Exited && val.1 != 0
+                                || val.0 == ExecutionState::Suspended
+                            {
                                 test_failed = true;
                             }
                         }
@@ -468,6 +470,6 @@ use twizzler_abi::{
         NewHandleFlags, ObjectCreate, ObjectCreateFlags, ThreadSync, ThreadSyncFlags, ThreadSyncOp,
         ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
     },
-    thread::ThreadRepr,
+    thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_object::{CreateSpec, Object, ObjectInitFlags};

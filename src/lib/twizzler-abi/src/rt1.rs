@@ -221,9 +221,6 @@ pub extern "C" fn twz_runtime_start(mut aux_array: *const AuxEntry) -> ! {
     }
 
     /* it's unsafe because it's an extern C function. */
-    /* TODO: pass env and args */
-    // let code = unsafe { std_runtime_start(arg_count, arg_ptr, &null_env as *const *const i8) };
     let code = unsafe { std_runtime_start(arg_count, arg_ptr, env_ptr) };
-    //TODO: exit val
-    crate::syscall::sys_thread_exit(code as u64, ptr::null_mut())
+    crate::syscall::sys_thread_exit(code as u64)
 }

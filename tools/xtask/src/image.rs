@@ -144,6 +144,7 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
         Arch::Aarch64 => "toolchain/install/BOOTAA64.EFI",
     };
     let image_path = get_genfile_path(&comp, "disk.img");
+    println!("kernel: {:?}", comp.get_kernel_image(cli.tests));
     let status = Command::new(get_tool_path(&comp, "image_builder")?)
         .arg("--disk-path")
         .arg(&image_path)

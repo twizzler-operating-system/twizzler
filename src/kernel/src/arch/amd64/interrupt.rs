@@ -127,6 +127,14 @@ unsafe extern "C" fn common_handler_entry(
 ) {
     let user = user != 0;
     if user {
+        if kernel_fs == 0 {
+            panic!(
+                "tried to set kernel fs to 0 during interrupt ctx: {:?} number: {} user: {}",
+                ctx.as_ref().unwrap(),
+                number,
+                user
+            );
+        }
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
         let t = current_thread_ref().unwrap();
         t.set_entry_registers(Registers::Interrupt(ctx, *ctx));
@@ -1091,6 +1099,7 @@ pub fn init_idt() {
     }
 }
 
+/// Set the current interrupt enable state to disabled and return the old state.
 pub fn disable() -> bool {
     let mut flags = x86::bits64::rflags::read();
     let old_if = flags.contains(RFlags::FLAGS_IF);
@@ -1099,10 +1108,16 @@ pub fn disable() -> bool {
     old_if
 }
 
+/// Set the current interrupt enable state.
 pub fn set(state: bool) {
     let mut flags = x86::bits64::rflags::read();
     flags.set(RFlags::FLAGS_IF, state);
     x86::bits64::rflags::set(flags);
+}
+
+/// Get the current interrupt enable state without modifying it.
+pub fn get() -> bool {
+    x86::bits64::rflags::read().contains(x86::bits64::rflags::RFlags::FLAGS_IF)
 }
 
 pub fn allocate_interrupt_vector(
