@@ -46,6 +46,7 @@ mod spinlock;
 mod syscall;
 mod thread;
 mod time;
+mod userinit;
 pub mod utils;
 extern crate alloc;
 
@@ -57,7 +58,7 @@ use arch::BootInfoSystemTable;
 use initrd::BootModule;
 use memory::{MemoryRegion, VirtAddr};
 
-use crate::processor::current_processor;
+use crate::{processor::current_processor, thread::entry::start_new_init};
 
 /// A collection of information made available to the kernel by the bootloader or arch-dep modules.
 pub trait BootInfo {
@@ -125,11 +126,18 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
 
 #[cfg(test)]
 pub fn test_runner(tests: &[&(&str, &dyn Fn())]) {
-    logln!("[kernel::test] running {} tests", tests.len());
+    logln!(
+        "[kernel::test] running {} tests, test thread ID: {}",
+        tests.len(),
+        crate::thread::current_thread_ref().unwrap().id()
+    );
     for test in tests {
         log!("test {} ... ", test.0);
         (test.1)();
         logln!("ok");
+        if !interrupt::get() {
+            panic!("test {} didn't cleanup interrupt state", test.0);
+        }
     }
 
     logln!("[kernel::test] test result: ok.");
@@ -142,20 +150,27 @@ pub fn init_threading() -> ! {
 }
 
 pub fn idle_main() -> ! {
+    interrupt::set(true);
     if current_processor().is_bsp() {
         machine::machine_post_init();
 
         #[cfg(test)]
         if is_test_mode() {
-            test_main();
+            // Run tests on a high priority thread, so any threads spawned by tests
+            // don't preempt the testing thread.
+            crate::thread::entry::run_closure_in_new_thread(
+                crate::thread::priority::Priority::default_realtime(),
+                || test_main(),
+            )
+            .1
+            .wait(true);
         }
-        thread::start_new_init();
+        start_new_init();
     }
     logln!(
         "[kernel::main] processor {} entering main idle loop",
         current_processor().id
     );
-    interrupt::set(true);
     loop {
         sched::schedule(true);
         arch::processor::halt_and_wait();

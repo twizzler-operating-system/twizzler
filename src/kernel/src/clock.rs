@@ -7,7 +7,7 @@ use crate::{
     once::Once,
     processor::current_processor,
     spinlock::Spinlock,
-    thread::{Priority, ThreadRef},
+    thread::{priority::Priority, ThreadRef},
     time::{ClockHardware, Ticks, CLOCK_OFFSET, TICK_SOURCES},
 };
 
@@ -185,7 +185,7 @@ extern "C" fn soft_timeout_clock() {
             drop(tq);
             timeout.call();
         } else {
-            TIMEOUT_THREAD_CONDVAR.wait(tq);
+            TIMEOUT_THREAD_CONDVAR.wait(tq, true);
         }
     }
 }
@@ -346,9 +346,7 @@ pub fn fill_with_every_first(slice: &mut [Clock], start: u64) -> Result<usize, R
         // check that we don't go out of slice bounds
         if clocks_added < slice.len() {
             // does this allocate new kernel memory?
-            let info = {
-                TICK_SOURCES.lock()[clock_list.first().unwrap().0 as usize].info()
-            };
+            let info = { TICK_SOURCES.lock()[clock_list.first().unwrap().0 as usize].info() };
             slice[clocks_added].set(
                 // each semantic clock will have at least one element
                 info,
@@ -382,9 +380,7 @@ pub fn fill_with_kind(
     for id in &clock_list[start as usize..] {
         // check that we don't go out of slice bounds
         if clocks_added < slice.len() {
-            let info = {
-                TICK_SOURCES.lock()[id.0 as usize].info()
-            };
+            let info = { TICK_SOURCES.lock()[id.0 as usize].info() };
             slice[clocks_added].set(info, *id, clock);
             clocks_added += 1;
         } else {
@@ -406,9 +402,7 @@ pub fn fill_with_first_kind(
     // check that we don't go out of slice bounds
     if slice.len() >= 1 {
         let id = clock_list.first().unwrap();
-        let info = {
-            TICK_SOURCES.lock()[id.0 as usize].info()
-        };
+        let info = { TICK_SOURCES.lock()[id.0 as usize].info() };
         slice[0].set(info, *id, clock);
         return Ok(clocks_added);
     } else {
@@ -420,6 +414,7 @@ pub fn init() {
     enumerate_hw_clocks();
     materialize_sw_clocks();
     crate::arch::start_clock(127, statclock);
-    TIMEOUT_THREAD
-        .call_once(|| crate::thread::start_new_kernel(Priority::REALTIME, soft_timeout_clock));
+    TIMEOUT_THREAD.call_once(|| {
+        crate::thread::entry::start_new_kernel(Priority::REALTIME, soft_timeout_clock, 0)
+    });
 }

@@ -6,7 +6,7 @@ use crate::{memory::VirtAddr, syscall::SyscallContext, thread::current_thread_re
 
 use super::thread::{Registers, UpcallAble};
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, Debug)]
 #[repr(C)]
 pub struct X86SyscallContext {
     rax: u64,
@@ -147,6 +147,12 @@ pub unsafe fn return_to_user(context: *const X86SyscallContext) -> ! {
 
 #[no_mangle]
 unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs: u64) -> ! {
+    if kernel_fs == 0 {
+        panic!(
+            "tried to set kernel fs to 0 in syscall from {:?}",
+            context.as_ref().unwrap(),
+        );
+    }
     x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
     let t = current_thread_ref().unwrap();
     t.set_entry_registers(Registers::Syscall(context, *context));

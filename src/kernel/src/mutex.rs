@@ -15,22 +15,33 @@
 
 use core::{cell::UnsafeCell, sync::atomic::AtomicU64};
 
-use alloc::collections::VecDeque;
+use intrusive_collections::{intrusive_adapter, LinkedList};
+use twizzler_abi::thread::ExecutionState;
 
 use crate::{
     idcounter::StableId,
-    sched,
+    sched::{self, schedule_thread},
     spinlock::Spinlock,
-    thread::{current_thread_ref, Priority, ThreadRef, ThreadState},
+    thread::{current_thread_ref, priority::Priority, Thread, ThreadRef},
 };
 
 #[repr(align(64))]
 struct AlignedAtomicU64(AtomicU64);
 struct SleepQueue {
-    queue: VecDeque<ThreadRef>,
+    queue: LinkedList<MutexLinkAdapter>,
     pri: Option<Priority>,
     owner: Option<ThreadRef>,
     owned: bool,
+}
+
+intrusive_adapter!(pub MutexLinkAdapter = ThreadRef: Thread { mutex_link: intrusive_collections::linked_list::AtomicLink });
+
+impl Drop for SleepQueue {
+    fn drop(&mut self) {
+        while let Some(t) = self.queue.pop_front() {
+            schedule_thread(t);
+        }
+    }
 }
 
 /// A container data structure to manage mutual exclusion.
@@ -41,10 +52,10 @@ pub struct Mutex<T> {
 
 impl<T> Mutex<T> {
     /// Create a new mutex, moving data `T` into it.
-    pub fn new(data: T) -> Self {
+    pub const fn new(data: T) -> Self {
         Self {
             queue: Spinlock::new(SleepQueue {
-                queue: VecDeque::new(),
+                queue: LinkedList::new(MutexLinkAdapter::NEW),
                 pri: None,
                 owner: None,
                 owned: false,
@@ -72,7 +83,9 @@ impl<T> Mutex<T> {
             assert!(!current_thread.is_critical());
         }
 
+        let mut istate;
         loop {
+            istate = crate::interrupt::disable();
             let reinsert = {
                 let mut queue = self.queue.lock();
                 if !queue.owned {
@@ -95,7 +108,7 @@ impl<T> Mutex<T> {
                 let mut reinsert = true;
                 if let Some(ref thread) = current_thread {
                     if !thread.is_idle_thread() {
-                        thread.set_state(ThreadState::Blocked);
+                        thread.set_state(ExecutionState::Sleeping);
                         queue.queue.push_back(thread.clone());
                         reinsert = false;
                         queue.pri = queue.queue.iter().map(|t| t.effective_priority()).max();
@@ -110,9 +123,12 @@ impl<T> Mutex<T> {
                 }
                 reinsert
             };
+            core::hint::spin_loop();
             sched::schedule(reinsert);
+            crate::interrupt::set(istate);
         }
 
+        crate::interrupt::set(istate);
         LockGuard {
             lock: self,
             prev_donated_priority: current_donated_priority,
@@ -204,5 +220,62 @@ where
 impl<T: Default> Default for Mutex<T> {
     fn default() -> Self {
         Self::new(T::default())
+    }
+}
+
+mod test {
+    use core::{cmp::max, time::Duration};
+
+    use alloc::{sync::Arc, vec::Vec};
+    use twizzler_kernel_macros::kernel_test;
+
+    use crate::{
+        processor::NR_CPUS,
+        syscall::sync::sys_thread_sync,
+        thread::{entry::run_closure_in_new_thread, priority::Priority},
+        utils::quick_random,
+    };
+
+    use super::Mutex;
+
+    #[kernel_test]
+    fn test_mutex() {
+        const ITERS: usize = 50;
+        const INNER_ITER: usize = 80;
+        for _ in 0..ITERS {
+            log!(".");
+            for nr_threads in
+                (1..max(8, NR_CPUS.load(core::sync::atomic::Ordering::SeqCst) * 2)).step_by(2)
+            {
+                let lock = Arc::new(Mutex::new(0));
+                let mut locks = Vec::new();
+                locks.extend((0..nr_threads).into_iter().map(|_| lock.clone()));
+                let handles: Vec<_> = locks
+                    .into_iter()
+                    .map(|lock| {
+                        run_closure_in_new_thread(Priority::default_user(), move || {
+                            for _ in 0..INNER_ITER {
+                                let mut inner = lock.lock();
+                                if quick_random() % 20 == 0 {
+                                    let _ = sys_thread_sync(
+                                        &mut [],
+                                        Some(&mut Duration::from_millis(1)),
+                                    );
+                                }
+                                *inner += 1;
+                            }
+                        })
+                    })
+                    .collect();
+
+                for handle in handles {
+                    handle.1.wait(true);
+                }
+                let inner = lock.lock();
+                let val = *inner;
+                drop(inner);
+                assert_eq!(val, nr_threads * INNER_ITER);
+            }
+        }
     }
 }

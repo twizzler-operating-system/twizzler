@@ -2,6 +2,7 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use fixedbitset::FixedBitSet;
+use twizzler_abi::thread::ExecutionState;
 
 use crate::{
     clock::Nanoseconds,
@@ -9,9 +10,11 @@ use crate::{
     once::Once,
     processor::{current_processor, get_processor, Processor},
     spinlock::Spinlock,
-    thread::{current_thread_ref, set_current_thread, Priority, Thread, ThreadRef, ThreadState},
+    thread::{current_thread_ref, set_current_thread, Thread, ThreadRef},
     utils::quick_random,
 };
+
+use crate::thread::priority::Priority;
 
 #[derive(Clone, Debug, Copy)]
 pub enum CPUTopoType {
@@ -267,7 +270,7 @@ pub fn remove_thread(id: u64) {
 }
 
 pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
-    thread.set_state(ThreadState::Running);
+    thread.set_state(ExecutionState::Running);
     let thread = Arc::new(thread);
     {
         ALL_THREADS.lock().insert(thread.id(), thread.clone());
@@ -279,7 +282,7 @@ pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
 }
 
 pub fn schedule_thread(thread: ThreadRef) {
-    thread.set_state(ThreadState::Running);
+    thread.set_state(ExecutionState::Running);
     if thread.is_idle_thread() {
         return;
     }
@@ -334,23 +337,15 @@ fn switch_to(thread: ThreadRef, old: ThreadRef) {
     }
 }
 
-pub fn schedule(reinsert: bool) {
-    /* TODO: switch to needs to also drop the ref on cur, somehow... */
-    /* TODO: if we preempt, just put the thread back on our list (or decide to not resched) */
-    let istate = interrupt::disable();
+fn do_schedule(reinsert: bool) {
+    // TODO: remove the duplicate calls here
     let cur = current_thread_ref().unwrap();
     let processor = current_processor();
-    if cur.is_critical() {
-        interrupt::set(istate);
-        return;
-    }
-
     cur.enter_critical();
     if !cur.is_idle_thread() && reinsert {
         schedule_thread(cur.clone());
     }
-    if cur.state() == ThreadState::Exiting {
-        cur.set_state(ThreadState::Exited);
+    if cur.is_exiting() {
         processor.push_exited(cur.clone());
     }
     if !cur.is_idle_thread() {
@@ -364,12 +359,10 @@ pub fn schedule(reinsert: bool) {
 
     if let Some(next) = next {
         if next == cur {
-            interrupt::set(istate);
             return;
         }
         next.current_processor_queue.store(-1, Ordering::SeqCst);
         switch_to(next, cur);
-        interrupt::set(istate);
         return;
     }
 
@@ -377,16 +370,29 @@ pub fn schedule(reinsert: bool) {
         let cp = current_processor();
         cp.stats.steals.fetch_add(1, Ordering::SeqCst);
         switch_to(stolen, cur);
-        interrupt::set(istate);
         return;
     }
 
     if cur.is_idle_thread() {
-        interrupt::set(istate);
         return;
     }
     switch_to(processor.idle_thread.wait().clone(), cur);
+}
+
+pub fn schedule(reinsert: bool) {
+    let cur = current_thread_ref().unwrap();
+    /* TODO: switch to needs to also drop the ref on cur, somehow... */
+    /* TODO: if we preempt, just put the thread back on our list (or decide to not resched) */
+    let istate = interrupt::disable();
+    if cur.is_critical() {
+        interrupt::set(istate);
+        return;
+    }
+
+    do_schedule(reinsert);
     interrupt::set(istate);
+    // Always check if we need to suspend before returning control.
+    cur.maybe_suspend_self();
 }
 
 pub fn needs_reschedule(ticking: bool) -> bool {
@@ -400,6 +406,9 @@ pub fn needs_reschedule(ticking: bool) -> bool {
     };
     if cur.is_critical() {
         return false;
+    }
+    if cur.must_suspend() {
+        return true;
     }
     let sched = processor.schedlock();
     sched.should_preempt(&cur.effective_priority(), ticking)
@@ -514,7 +523,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
         if cp.id == 0 {
             let all_threads = ALL_THREADS.lock();
             for t in all_threads.values() {
-                logln!("thread {}: {:?} {:?}", t.id(), t.stats, t.state);
+                logln!("thread {}: {:?} {:?}", t.id(), t.stats, t.get_state());
             }
         }
         //crate::clock::print_info();
