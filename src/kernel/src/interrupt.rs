@@ -13,6 +13,7 @@ use crate::{
     thread::{priority::Priority, ThreadRef},
 };
 
+/// Set the current interrupt enable state to disabled and return the old state.
 #[inline]
 pub fn disable() -> bool {
     let state = crate::arch::interrupt::disable();
@@ -20,12 +21,14 @@ pub fn disable() -> bool {
     state
 }
 
+/// Set the current interrupt enable state.
 #[inline]
 pub fn set(state: bool) {
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     crate::arch::interrupt::set(state);
 }
 
+/// Get the current interrupt enable state without modifying it.
 #[inline]
 pub fn get() -> bool {
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);

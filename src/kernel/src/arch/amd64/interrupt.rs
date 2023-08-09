@@ -1099,6 +1099,7 @@ pub fn init_idt() {
     }
 }
 
+/// Set the current interrupt enable state to disabled and return the old state.
 pub fn disable() -> bool {
     let mut flags = x86::bits64::rflags::read();
     let old_if = flags.contains(RFlags::FLAGS_IF);
@@ -1107,12 +1108,14 @@ pub fn disable() -> bool {
     old_if
 }
 
+/// Set the current interrupt enable state.
 pub fn set(state: bool) {
     let mut flags = x86::bits64::rflags::read();
     flags.set(RFlags::FLAGS_IF, state);
     x86::bits64::rflags::set(flags);
 }
 
+/// Get the current interrupt enable state without modifying it.
 pub fn get() -> bool {
     x86::bits64::rflags::read().contains(x86::bits64::rflags::RFlags::FLAGS_IF)
 }
