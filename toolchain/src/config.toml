@@ -13,9 +13,6 @@ ninja = true
 clang = true
 
 [build]
-build-stage = 2
-test-stage = 2
-doc-stage = 2
 docs = false
 target = []
 submodules = false
