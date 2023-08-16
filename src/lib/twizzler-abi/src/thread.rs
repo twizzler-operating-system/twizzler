@@ -1,6 +1,16 @@
 //! Functions for manipulating threads.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+/*
+KANI_TODO
+*/
+
+
+use core::{
+    alloc::Layout,
+    ptr,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
 #[cfg(not(feature = "kernel"))]
 use core::time::Duration;
 
