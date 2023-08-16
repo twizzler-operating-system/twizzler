@@ -6,6 +6,10 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+/*
+KANI_TODO
+*/
+
 use crate::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
     ThreadSyncSleep, ThreadSyncWake,

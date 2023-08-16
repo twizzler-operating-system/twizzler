@@ -15,6 +15,10 @@ use twizzler_rt_abi::core::{InitInfoPtrs, MinimalInitInfo, RuntimeInfo, RUNTIME_
 
 use super::object::InternalObject;
 
+/*
+KANI_TODO
+*/
+
 #[derive(Debug)]
 #[repr(C)]
 pub(crate) struct ElfHeader {
