@@ -1,5 +1,10 @@
 //! Functions for manipulating threads.
 
+/*
+KANI_TODO
+*/
+
+
 use core::{
     alloc::Layout,
     ptr,

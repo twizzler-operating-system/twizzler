@@ -13,6 +13,10 @@ use crate::{
     },
 };
 
+/*
+KANI_TODO
+*/
+
 #[derive(Debug)]
 #[repr(C)]
 struct ElfHeader {

@@ -5,6 +5,10 @@
 //! We used a simple linked-list allocator to perform allocation within objects. This whole system
 //! can be optimized dramatically.
 
+/*
+KANI_TODO
+*/
+
 use core::{
     alloc::Layout,
     intrinsics::{copy_nonoverlapping, write_bytes},

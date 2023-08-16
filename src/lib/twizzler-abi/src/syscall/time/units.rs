@@ -6,6 +6,10 @@ pub const FEMTOS_PER_SEC: u64 = 1_000_000_000_000_000;
 pub const FEMTOS_PER_NANO: u64 = 1_000_000;
 pub const NANOS_PER_SEC: u64 = 1_000_000_000;
 
+/*
+KANI_TODO
+*/
+
 #[derive(Debug)]
 pub enum TimeUnitError {
     ConversionOverflow
