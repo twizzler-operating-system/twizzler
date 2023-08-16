@@ -31,10 +31,15 @@ Get a trace for a verification failure
 ```
 cargo kani  --enable-unstable --visualize
 ```
-Get a print of a text that will trigger the failure
+Get a print of a test that will trigger the failure
 ```
 cargo kani --enable-unstable  --concrete-playback=print|inplace
 ```
+Run a single test harness
+```
+cargo kani --harness <harness_name>
+```
+
 
 ## Test Harness
 ```
