@@ -47,18 +47,24 @@ impl PL011 {
         }
     }
 
-    /// Recieve a single byte of data.
-    pub fn rx_byte(&self) -> u8 {
+    /// Recieve a single byte of data. Operates in a non-blocking mode.
+    pub fn rx_byte(&self) -> Option<u8> {
+        // rx holding register/fifo may be empty
+        // check if RXFF bit in the UARTFR is set
+        let flag_reg = unsafe { self.read_reg(Registers::UARTFR) };
+        let rx_empty = (flag_reg >> 4) & 0b1 == 1;
+        if rx_empty {
+            return None
+        }
+
         // received data byte is read by performing reads from the UARTDR Register 
         // along with the corresponding status information
         let data = unsafe { self.read_reg(Registers::UARTDR) };
 
-        // TODO: rx holding register/fifo may be empty
-
         // TODO: check for rx errors
         // received data character must be read first from UARTDR
         // before reading the error status UARTRSR
-        (data & 0xff) as u8
+        Some((data & 0xff) as u8)
     }
 
     /// Configure the PL011 UART with desired baud, given the clock frequency
