@@ -44,7 +44,9 @@ lazy_static! {
         let serial_port = unsafe { 
             PL011::new(uart_mmio_base.into()) 
         };
-        serial_port.early_init();
+        // TODO: fix uart config
+        // maybe we need some barriers after writing to mmio
+        // serial_port.early_init();
 
         // Now that the UART object is ready, we must configure how we will
         // output the data from the device. We reserve GPIO pins 14/15 (TX/RX)
@@ -59,16 +61,17 @@ lazy_static! {
 }
 
 impl PL011 {
-    fn write_str(&self, s: &str) {
+    pub fn write_str(&self, s: &str) {
         for byte in s.bytes() {
             self.tx_byte(byte);
         }
     }
 
     /// initalize the UART driver early, before interrupts in the system are enabled
-    fn early_init(&self) {
-        // 24 MHz, TODO: get clock rate (set statically in config.txt)
-        // let's get the actual value from the firmware!!! 48000000
+    pub fn early_init(&self) {
+        // TODO: get clock rate (set statically in config.txt)
+        // let's get the actual value from the firmware!!!
+        // clock default = 48000000
         const CLOCK: u32 = 48000000; 
         const BAUD: u32 = 115200;
         // configure the UART with the desired baud, given the clock rate

@@ -167,6 +167,7 @@ impl PinManager {
     }
 }
 
+// TODO: use mmio ref type
 use core::ops::Deref;
 impl Deref for Pins {
     type Target = GpioRegisters;

@@ -34,7 +34,8 @@ pub fn init<B: BootInfo>(boot_info: &B) {
     MEM_INIT.store(true, Ordering::SeqCst);
 }
 
-static MEM_INIT: AtomicBool = AtomicBool::new(false);
+// AA: temporarily make memory init public
+pub static MEM_INIT: AtomicBool = AtomicBool::new(false);
 
 /// Indicates if memory management has been initalized by the boot core.
 pub fn is_init() -> bool {
