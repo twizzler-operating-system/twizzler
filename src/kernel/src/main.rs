@@ -109,15 +109,17 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
     // machine::tests::test_terminal(0x3);
 
     machine::tests::test_limine_serial();
+    machine::tests::test_uart_echo();
 
     // let's try to log something
     // "initialize" the memory init flag
     // this is for testing logging only and should be removed
     memory::MEM_INIT.store(true, Ordering::SeqCst);
     log!("A");
-
     machine::tests::test_terminal(0x4);
-
+    machine::tests::test_uart_echo();
+    machine::tests::test_terminal(0x5);
+    
     loop{}
 
     terminal!("[kernel::mm] initializing memory management");

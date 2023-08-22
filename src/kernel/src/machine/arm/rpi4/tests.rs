@@ -15,6 +15,8 @@ use crate::arch::memory::pagetables::{EntryFlags, Entry};
 use crate::arch::memory::frame::FRAME_SIZE;
 use crate::memory::frame::{alloc_frame, PhysicalFrameFlags};
 
+const UART_MMIO_BASE: u64 = 0xFFFF_0000_0000_2000;
+
 // test serial output using limine's page tables and init alloc memory
 //
 // we need at least the page frame allocator initialized
@@ -24,7 +26,7 @@ pub fn test_limine_serial() {
 
     // the desired virtal address for this region of mmio
     // make sure this address is different than other tests
-    let uart_mmio_base = VirtAddr::new(0xFFFF_0000_0000_2000).unwrap();
+    let uart_mmio_base = VirtAddr::new(UART_MMIO_BASE).unwrap();
     // configure mapping settings for this region of memory
     let cursor = MappingCursor::new(
         uart_mmio_base,
@@ -61,6 +63,62 @@ pub fn test_limine_serial() {
     serial_port.tx_byte(b'A');
     serial_port.write_str("Hello World!\r\n");
     serial_port.tx_byte(b'B');
+
+    // let's see how the RX side of things work ...
+    terminal!("[kernel::test] reading from UART ...");
+    serial_port.write_str("Type a single character:\r\n");
+    loop {
+        if let Some(c) = serial_port.rx_byte() {
+            serial_port.write_str("You typed: ");
+            serial_port.tx_byte(c);
+            serial_port.write_str("\r\n");
+            break
+        }
+    }
+}
+
+// a simple loop which echos output until the buffer is full or enter is recieved
+// assumes that uart has been initalized via [`test_limine_serial`]
+pub fn test_uart_echo() {
+    // the desired virtal address for this region of mmio
+    // make sure this address is different than other tests
+    // 
+    // this uses the same address as earlier
+    let uart_mmio_base = VirtAddr::new(UART_MMIO_BASE).unwrap();
+    // create instance of the PL011 UART driver
+    let serial_port = unsafe { 
+        PL011::new(uart_mmio_base.into()) 
+    };
+
+    serial_port.write_str("UART loop echoing output now ...\r\n");
+
+    const BUF_LEN: usize = 1024;
+    let mut buffer: [u8; BUF_LEN] = [0; BUF_LEN];
+    let mut cursor: usize = 0;
+    loop {
+        // read a single byte from the UART
+        if let Some(byte) = serial_port.rx_byte() {
+            // echo the character we just got
+            serial_port.tx_byte(byte);
+            // write the byte to the buffer
+            buffer[cursor] = byte;
+            // increment the cursor position
+            cursor += 1;
+            // check if we are at the limit
+            if cursor == BUF_LEN - 1 || byte as char == '\n' ||  byte as char == '\r' {
+                buffer[cursor] = 0; // null terminate??
+                serial_port.write_str("\r\n");
+                break;
+            }
+        }
+    }
+
+    serial_port.write_str("got: ");
+    for x in 0..cursor {
+        let byte = buffer[x];
+        serial_port.tx_byte(byte);
+    }
+    serial_port.write_str("\r\n");
 }
 
 // print an entire page table, skipping empty entries and some valid entries
