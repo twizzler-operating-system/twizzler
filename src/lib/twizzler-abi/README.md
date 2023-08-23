@@ -39,9 +39,14 @@ Run a single test harness
 ```
 cargo kani --harness <harness_name>
 ```
-
+Override unwind value for bound checking
+```
+cargo kani --harness <harness_name> --unwind <value>
+```
 
 ## Test Harness
+
+Basic proof harness
 ```
 #[cfg(kani)]
 #[kani::proof]
@@ -53,8 +58,18 @@ fn test_function(){
 }
 ```
 
-
-
+Proof harness with 
+```
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(1)] // Limit all loops executed by harness to 1 iteration
+fn test_function(){
+    // test harness
+    kani::any()
+    kani::assume()
+    // etc...
+}
+```
 
 
 
