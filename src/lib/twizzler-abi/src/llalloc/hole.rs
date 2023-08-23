@@ -56,7 +56,7 @@ impl HoleList {
             size: hole_size.saturating_sub(aligned_hole_addr - hole_addr),
             next: None,
         });
-
+  
         HoleList {
             first: Hole {
                 size: 0,
@@ -130,6 +130,7 @@ impl HoleList {
         size_of::<usize>() * 2
     }
 
+
     /// Returns information about the first hole for test purposes.
     #[cfg(test)]
     pub fn first_hole(&self) -> Option<(usize, usize)> {
@@ -139,6 +140,43 @@ impl HoleList {
             .map(|hole| ((*hole) as *const Hole as usize, hole.size))
     }
 }
+
+#[cfg(kani)]
+#[kani::proof]
+    pub fn new_hole_test(){
+        use core::ptr;
+
+        //Handle non bug errors
+        // pointer NULL
+        // Comes from null pointer to next node on hole
+        // pointer invalid
+        // Comes from null pointer to next node on hole 
+        // deallocated dynamic object
+        // same
+        // dead object
+        // Same
+        // pointer outside object bunds
+        // Same
+        // invalid integer address
+        // SAme
+
+
+        let hole_addr: usize = kani::any();
+        let hole_size: usize = kani::any();
+    
+        kani::assume(
+            (hole_addr as *const usize) != ptr::null()
+        );
+        kani::assume(
+            (hole_size as *const usize) != ptr::null()
+        );
+
+        let list = unsafe{ HoleList::new(
+            hole_addr, 
+            hole_size,
+        )};
+}
+
 
 /// A block containing free memory. It points to the next hole and thus forms a linked list.
 #[cfg(not(test))]
