@@ -115,10 +115,12 @@ KERNEL_CMDLINE={}
         let initrd_size_padded_and_rounded = ((initrd_size + 1024 * 64 - 1) / MB + 1) * MB;
         fat_file
             .set_len(
-                efi_size_padded_and_rounded
-                    + kernel_size_padded_and_rounded
-                    + initrd_size_padded_and_rounded
-                    + cfg_size_padded_and_rounded,
+                // efi_size_padded_and_rounded
+                //     + kernel_size_padded_and_rounded
+                //     + initrd_size_padded_and_rounded
+                //     + cfg_size_padded_and_rounded,
+                // AA: temporarily make image a static size
+                20 * MB
             )
             .context("failed to set UEFI FAT file length")?;
 
