@@ -20,6 +20,7 @@
 #![feature(negative_impls)]
 #![feature(rustc_attrs)]
 #![feature(asm_sym)]
+#![feature(asm_const)]
 pub mod arch;
 
 pub mod alloc;
