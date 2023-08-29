@@ -10,6 +10,7 @@ use crate::{
     clock::Nanoseconds,
     interrupt::{Destination, PinPolarity, TriggerMode},
     BootInfo,
+    syscall::SyscallContext,
 };
 
 pub mod address;
@@ -108,8 +109,10 @@ pub fn schedule_oneshot_tick(time: Nanoseconds) {
 /// Jump into userspace
 /// # Safety
 /// The stack and target must be valid addresses.
-pub unsafe fn jump_to_user(_target: crate::memory::VirtAddr, _stack: crate::memory::VirtAddr, _arg: u64) {
-    todo!("jump to user");
+pub unsafe fn jump_to_user(target: crate::memory::VirtAddr, stack: crate::memory::VirtAddr, arg: u64) {
+    let ctx = syscall::Armv8SyscallContext::create_jmp_context(target, stack, arg);
+    crate::thread::exit_kernel();
+    syscall::return_to_user(&ctx as *const syscall::Armv8SyscallContext);
 }
 
 pub fn debug_shutdown(_code: u32) {

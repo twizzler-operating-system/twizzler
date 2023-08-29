@@ -1,3 +1,6 @@
+use arm64::registers::{ELR_EL1, SP_EL0, SPSR_EL1};
+use registers::interfaces::Writeable;
+
 use twizzler_abi::upcall::UpcallFrame;
 
 use crate::{memory::VirtAddr, syscall::SyscallContext};
@@ -6,7 +9,11 @@ use super::thread::UpcallAble;
 
 #[derive(Default, Clone, Copy)]
 #[repr(C)]
-pub struct Armv8SyscallContext;
+pub struct Armv8SyscallContext {
+    x0: u64,
+    elr: u64,
+    sp: u64,
+}
 
 impl From<Armv8SyscallContext> for UpcallFrame {
     fn from(_int: Armv8SyscallContext) -> Self {
@@ -25,8 +32,13 @@ impl UpcallAble for Armv8SyscallContext {
 }
 
 impl SyscallContext for Armv8SyscallContext {
-    fn create_jmp_context(_target: VirtAddr, _stack: VirtAddr, _arg: u64) -> Self {
-        todo!()
+    fn create_jmp_context(target: VirtAddr, stack: VirtAddr, arg: u64) -> Self {
+        Self {
+            elr: target.into(),
+            sp: stack.into(),
+            x0: arg,
+            ..Default::default()
+        }
     }
 
     fn num(&self) -> usize {
@@ -63,9 +75,32 @@ impl SyscallContext for Armv8SyscallContext {
     }
 }
 
+// TODO: does not have to be *const
 #[allow(named_asm_labels)]
-pub unsafe fn return_to_user(_context: *const Armv8SyscallContext) -> ! {
-    todo!()
+pub unsafe fn return_to_user(context: *const Armv8SyscallContext) -> ! {
+    // set the entry point address
+    ELR_EL1.set((*context).elr);
+    // set the stack pointer
+    SP_EL0.set((*context).sp);
+    // configure the execution state for EL0:
+    // - interrupts masked
+    // - el0 exception level
+    // - use sp_el0 stack pointer
+    // - aarch64 execution state
+    SPSR_EL1.write(
+        SPSR_EL1::D::Masked + SPSR_EL1::A::Masked + SPSR_EL1::I::Masked
+        + SPSR_EL1::F::Masked + SPSR_EL1::M::EL0t
+    );
+
+    // TODO: zero out/copy all registers
+    core::arch::asm!(
+        // copy argument to register x0
+        "mov x0, {}",
+        // return to address specified in elr_el1
+        "eret",
+        in(reg) (*context).x0,
+        options(noreturn)
+    )
 }
 
 // #[allow(unsupported_naked_functions)] // DEBUG
