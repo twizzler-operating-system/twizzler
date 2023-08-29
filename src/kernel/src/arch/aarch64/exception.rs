@@ -19,8 +19,6 @@ use twizzler_abi::upcall::{MemoryAccessKind, UpcallFrame};
 use crate::memory::{context::virtmem::PageFaultFlags, VirtAddr};
 use super::thread::UpcallAble;
 
-// TODO: Change SPSel so that we take exceptions
-// using SP_ELx, instead of using SP_EL0
 core::arch::global_asm!(r#"
 /// Exception Vector Table Definition for EL1 (Kernel)
 
@@ -61,7 +59,7 @@ b default_exception_handler
 // Handling an exception from a Lower EL that is running in AArch64. 
 // Lower meaning lower priviledge (EL0/user). Basically do we handle
 // exceptions that occur in userspace (syscalls, etc.).
-b default_exception_handler
+b sync_exception_handler
 .align {VECTOR_ALIGNMENT}
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
@@ -243,6 +241,10 @@ fn debug_handler(ctx: &mut ExceptionContext) {
                 data_abort = true;
                 "Data Abort taken without a change in Exception level."
             },
+            Some(ESR_EL1::EC::Value::DataAbortLowerEL) => {
+                data_abort = true;
+                "Data Abort taken from a lower Exception level."
+            },
             Some(ESR_EL1::EC::Value::Unknown) | _ => "Unknown reason.",
         }
     );
@@ -313,7 +315,8 @@ fn sync_handler(ctx: &mut ExceptionContext) {
     let esr = ESR_EL1.get();
     let esr_reg: InMemoryRegister<u64, ESR_EL1::Register> = InMemoryRegister::new(esr);
     match esr_reg.read_as_enum(ESR_EL1::EC) {
-        Some(ESR_EL1::EC::Value::DataAbortCurrentEL) => {
+        // TODO: reorganize data abort handling between user and kernel
+        Some(ESR_EL1::EC::Value::DataAbortCurrentEL) | Some(ESR_EL1::EC::Value::DataAbortLowerEL) => {
             // iss: syndrome
             let iss = esr_reg.read(ESR_EL1::ISS);
             // is the fault address register valid?
