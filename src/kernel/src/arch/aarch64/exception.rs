@@ -15,6 +15,7 @@ use registers::{
 };
 
 use twizzler_abi::upcall::{MemoryAccessKind, UpcallFrame};
+use twizzler_abi::arch::syscall::SYSCALL_MAGIC;
 
 use crate::memory::{context::virtmem::PageFaultFlags, VirtAddr};
 use super::thread::UpcallAble;
@@ -82,40 +83,42 @@ TABLE_ALIGNMENT = const 11, // 2^11 = 2048 = 0x800
 VECTOR_ALIGNMENT = const 7, // 2^7 = 128 = 0x80
 );
 
+// TODO: check/set stack alignment for ExceptionContext
+
 /// Registers that are save/resored when handling an exception
 #[derive(Debug, Copy, Clone)]
 pub struct ExceptionContext {
-    x0: u64,
-    x1: u64,
-    x2: u64,
-    x3: u64,
-    x4: u64,
-    x5: u64,
-    x6: u64,
-    x7: u64,
-    x8: u64,
-    x9: u64,
-    x10: u64,
-    x11: u64,
-    x12: u64,
-    x13: u64,
-    x14: u64,
-    x15: u64,
-    x16: u64,
-    x17: u64,
-    x18: u64,
-    x19: u64,
-    x20: u64,
-    x21: u64,
-    x22: u64,
-    x23: u64,
-    x24: u64,
-    x25: u64,
-    x26: u64,
-    x27: u64,
-    x28: u64,
-    x29: u64,
-    x30: u64,
+    pub x0: u64,
+    pub x1: u64,
+    pub x2: u64,
+    pub x3: u64,
+    pub x4: u64,
+    pub x5: u64,
+    pub x6: u64,
+    pub x7: u64,
+    pub x8: u64,
+    pub x9: u64,
+    pub x10: u64,
+    pub x11: u64,
+    pub x12: u64,
+    pub x13: u64,
+    pub x14: u64,
+    pub x15: u64,
+    pub x16: u64,
+    pub x17: u64,
+    pub x18: u64,
+    pub x19: u64,
+    pub x20: u64,
+    pub x21: u64,
+    pub x22: u64,
+    pub x23: u64,
+    pub x24: u64,
+    pub x25: u64,
+    pub x26: u64,
+    pub x27: u64,
+    pub x28: u64,
+    pub x29: u64,
+    pub x30: u64,
 }
 
 impl Display for ExceptionContext {
@@ -366,6 +369,15 @@ fn sync_handler(ctx: &mut ExceptionContext) {
             }
             // crate::interrupt::set(false);
             crate::thread::exit_kernel();
+        },
+        Some(ESR_EL1::EC::Value::SVC64) => {
+            // iss: syndrome, contains passed to SVC
+            let iss = esr_reg.read(ESR_EL1::ISS);
+            if iss != SYSCALL_MAGIC {
+                // TODO: handle this
+                panic!("invalid syscall invocation");
+            }
+            super::syscall::handle_syscall(ctx);
         },
         Some(ESR_EL1::EC::Value::Unknown) | _ => {
             debug_handler(ctx)

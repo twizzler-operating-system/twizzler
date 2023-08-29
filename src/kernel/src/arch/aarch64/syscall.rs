@@ -1,20 +1,38 @@
+/// System call handling.
+///
+/// The registers used for system call arguments and return values
+/// are chosen based on information in the 64-bit ARM PCS.
+///
+/// "Procedure Call Standard for the Arm® 64-bit Architecture (AArch64)":
+///     https://github.com/ARM-software/abi-aa/releases/download/2023Q1/aapcs64.pdf
+
 use arm64::registers::{ELR_EL1, SP_EL0, SPSR_EL1};
-use registers::interfaces::Writeable;
+use registers::interfaces::{Readable, Writeable};
 
 use twizzler_abi::upcall::UpcallFrame;
 
 use crate::{memory::VirtAddr, syscall::SyscallContext};
 
-use super::thread::UpcallAble;
+use super::{thread::UpcallAble, exception::ExceptionContext};
 
+/// The register state needed to transition between kernel and user.
+///
+/// According to the ARM PCS Section 6, arguments/return values are
+/// passed in via registers x0-x7
 #[derive(Default, Clone, Copy)]
 #[repr(C)]
 pub struct Armv8SyscallContext {
     x0: u64,
+    x1: u64,
+    x2: u64,
+    x3: u64,
+    x4: u64,
+    x5: u64,
+    x6: u64,
+    x7: u64,
     elr: u64,
     sp: u64,
 }
-
 impl From<Armv8SyscallContext> for UpcallFrame {
     fn from(_int: Armv8SyscallContext) -> Self {
         todo!()
@@ -31,6 +49,9 @@ impl UpcallAble for Armv8SyscallContext {
     }
 }
 
+// Arguments 0-5 are passed in via registers x0-x5,
+// the syscall number is passed in register x6,
+// and the return values are passed in via x6/x7
 impl SyscallContext for Armv8SyscallContext {
     fn create_jmp_context(target: VirtAddr, stack: VirtAddr, arg: u64) -> Self {
         Self {
@@ -42,36 +63,38 @@ impl SyscallContext for Armv8SyscallContext {
     }
 
     fn num(&self) -> usize {
-        todo!()
+        self.x6 as usize
     }
     fn arg0<T: From<u64>>(&self) -> T {
-        todo!()
+        T::from(self.x0)
     }
     fn arg1<T: From<u64>>(&self) -> T {
-        todo!()
+        T::from(self.x1)
     }
     fn arg2<T: From<u64>>(&self) -> T {
-        todo!()
+        T::from(self.x2)
     }
     fn arg3<T: From<u64>>(&self) -> T {
-        todo!()
+        T::from(self.x3)
     }
     fn arg4<T: From<u64>>(&self) -> T {
-        todo!()
+        T::from(self.x4)
     }
     fn arg5<T: From<u64>>(&self) -> T {
-        todo!()
+        T::from(self.x5)
     }
     fn pc(&self) -> VirtAddr {
-        todo!()
+        // TODO: save and pass in elr register
+        todo!("get pc")
     }
 
-    fn set_return_values<R1, R2>(&mut self, _ret0: R1, _ret1: R2)
+    fn set_return_values<R1, R2>(&mut self, ret0: R1, ret1: R2)
     where
         u64: From<R1>,
         u64: From<R2>,
     {
-        todo!()
+        self.x6 = u64::from(ret0);
+        self.x7 = u64::from(ret1);
     }
 }
 
@@ -82,6 +105,9 @@ pub unsafe fn return_to_user(context: *const Armv8SyscallContext) -> ! {
     ELR_EL1.set((*context).elr);
     // set the stack pointer
     SP_EL0.set((*context).sp);
+
+    // TODO: enable interrupts
+
     // configure the execution state for EL0:
     // - interrupts masked
     // - el0 exception level
@@ -103,9 +129,38 @@ pub unsafe fn return_to_user(context: *const Armv8SyscallContext) -> ! {
     )
 }
 
-// #[allow(unsupported_naked_functions)] // DEBUG
-#[allow(named_asm_labels)]
-#[naked]
-pub unsafe extern "C" fn syscall_entry() -> ! {
-    core::arch::asm!("nop", options(noreturn))
+/// Service a system call according to the ABI defined in [`twizzler_abi`]
+pub fn handle_syscall(ctx: &mut ExceptionContext) {
+    crate::thread::enter_kernel();
+    // crate::interrupt::set(true);
+
+    // TODO: create syscall context from calling context
+    let mut context: Armv8SyscallContext = Default::default();
+    context.x0 = ctx.x0;
+    context.x1 = ctx.x1;
+    context.x2 = ctx.x2;
+    context.x3 = ctx.x3;
+    context.x4 = ctx.x4;
+    context.x5 = ctx.x5;
+    context.x6 = ctx.x6;
+    context.x7 = ctx.x7;
+
+    // TODO: save this in the incoming exception?
+    context.elr = ELR_EL1.get();
+
+    // TODO: get stack pointer
+
+    crate::syscall::syscall_entry(&mut context);
+    // crate::interrupt::set(false);
+    crate::thread::exit_kernel();
+
+    // copy over register values to exception return context
+
+    // overwrite the calling context with the result values
+    // we use registers x6 and x7 for this purpose
+    ctx.x6 = context.x6;
+    ctx.x7 = context.x7;
+
+    // returning from here will restore the calling context
+    // and then call `eret` to jump back to user space
 }
