@@ -112,7 +112,7 @@ pub fn schedule_oneshot_tick(time: Nanoseconds) {
 pub unsafe fn jump_to_user(target: crate::memory::VirtAddr, stack: crate::memory::VirtAddr, arg: u64) {
     let ctx = syscall::Armv8SyscallContext::create_jmp_context(target, stack, arg);
     crate::thread::exit_kernel();
-    syscall::return_to_user(&ctx as *const syscall::Armv8SyscallContext);
+    syscall::return_to_user(&ctx);
 }
 
 pub fn debug_shutdown(_code: u32) {

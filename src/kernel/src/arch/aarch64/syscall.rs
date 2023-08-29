@@ -98,15 +98,14 @@ impl SyscallContext for Armv8SyscallContext {
     }
 }
 
-// TODO: does not have to be *const
 #[allow(named_asm_labels)]
-pub unsafe fn return_to_user(context: *const Armv8SyscallContext) -> ! {
+pub unsafe fn return_to_user(context: &Armv8SyscallContext) -> ! {
     // set the entry point address
-    ELR_EL1.set((*context).elr);
+    ELR_EL1.set(context.elr);
     // set the stack pointer
-    SP_EL0.set((*context).sp);
+    SP_EL0.set(context.sp);
 
-    // TODO: enable interrupts
+    // TODO: enable interrupts when we can support nested exception handling
 
     // configure the execution state for EL0:
     // - interrupts masked
@@ -124,7 +123,7 @@ pub unsafe fn return_to_user(context: *const Armv8SyscallContext) -> ! {
         "mov x0, {}",
         // return to address specified in elr_el1
         "eret",
-        in(reg) (*context).x0,
+        in(reg) context.x0,
         options(noreturn)
     )
 }
@@ -134,7 +133,6 @@ pub fn handle_syscall(ctx: &mut ExceptionContext) {
     crate::thread::enter_kernel();
     // crate::interrupt::set(true);
 
-    // TODO: create syscall context from calling context
     let mut context: Armv8SyscallContext = Default::default();
     context.x0 = ctx.x0;
     context.x1 = ctx.x1;
@@ -144,19 +142,16 @@ pub fn handle_syscall(ctx: &mut ExceptionContext) {
     context.x5 = ctx.x5;
     context.x6 = ctx.x6;
     context.x7 = ctx.x7;
+    context.sp = ctx.sp;
 
     // TODO: save this in the incoming exception?
     context.elr = ELR_EL1.get();
-
-    // TODO: get stack pointer
 
     crate::syscall::syscall_entry(&mut context);
     // crate::interrupt::set(false);
     crate::thread::exit_kernel();
 
-    // copy over register values to exception return context
-
-    // overwrite the calling context with the result values
+    // copy over result values to exception return context
     // we use registers x6 and x7 for this purpose
     ctx.x6 = context.x6;
     ctx.x7 = context.x7;

@@ -48,9 +48,9 @@ b default_exception_handler
 // Taking an exception from the current EL with SP_EL1 (kernel)
 // The exception is handled from EL1->EL1. The stack pointer from
 // the kernel is preserved.
-b sync_exception_handler
+b sync_exception_handler_el1
 .align {VECTOR_ALIGNMENT}
-b interrupt_request_handler
+b interrupt_request_handler_el1
 .align {VECTOR_ALIGNMENT}
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
@@ -60,9 +60,9 @@ b default_exception_handler
 // Handling an exception from a Lower EL that is running in AArch64. 
 // Lower meaning lower priviledge (EL0/user). Basically do we handle
 // exceptions that occur in userspace (syscalls, etc.).
-b sync_exception_handler
+b sync_exception_handler_el0
 .align {VECTOR_ALIGNMENT}
-b default_exception_handler
+b interrupt_request_handler_el0
 .align {VECTOR_ALIGNMENT}
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
@@ -119,6 +119,7 @@ pub struct ExceptionContext {
     pub x28: u64,
     pub x29: u64,
     pub x30: u64,
+    pub sp: u64,
 }
 
 impl Display for ExceptionContext {
@@ -131,7 +132,7 @@ impl Display for ExceptionContext {
         writeln!(f, "\tx16: {:#018x} x17: {:#018x} x18: {:#018x} x19: {:#018x}", self.x16, self.x17, self.x18, self.x19)?;
         writeln!(f, "\tx20: {:#018x} x21: {:#018x} x22: {:#018x} x23: {:#018x}", self.x20, self.x21, self.x22, self.x23)?;
         writeln!(f, "\tx24: {:#018x} x25: {:#018x} x26: {:#018x} x27: {:#018x}", self.x24, self.x25, self.x26, self.x27)?;
-        writeln!(f, "\tx28: {:#018x} x29: {:#018x} x30: {:#018x} ", self.x28, self.x29, self.x30)
+        writeln!(f, "\tx28: {:#018x} x29: {:#018x} x30: {:#018x} sp: {:#018x}", self.x28, self.x29, self.x30, self.sp)
     }
 }
 
@@ -151,12 +152,16 @@ impl From<ExceptionContext> for UpcallFrame {
     }
 }
 
+// TODO: reentrant/nested interrupt support
+// - save spsr_el1 and elr_el1 before calling handler
+// - enable interrupts while servicing exceptions
+
 /// macro creates a high level exception handler
 /// to be used in the exception vector table.
 /// saves/restores regs on the current stack pointer
 /// and calls the specified handler
 macro_rules! exception_handler {
-    ($name:ident, $handler:ident) => {
+    ($name:ident, $handler:ident, $is_kernel:tt) => {
         #[naked]
         #[no_mangle]
         pub(super) unsafe extern "C" fn $name() {
@@ -182,14 +187,16 @@ macro_rules! exception_handler {
                 "stp x28, x29, [sp, #16 * 14]",
                 // save other important registers
                 // link register (i.e. x30)
-                "str x30, [sp, #16 * 15]",
+                save_stack_pointer!($is_kernel),
+                "stp x30, x10, [sp, #16 * 15]",
                 // move stack pointer of last frame as an argument
                 "mov x0, sp",
                 // go to exception handler (overwrites x30)
                 "bl {handler}",
                 // restore all general purpose registers (x0-x30)
                 // pop registers off of the stack
-                "ldr x30, [sp, #16 * 15]",
+                "ldp x30, x10, [sp, #16 * 15]",
+                restore_stack_pointer!($is_kernel),
                 "ldp x28, x29, [sp, #16 * 14]",
                 "ldp x26, x27, [sp, #16 * 13]",
                 "ldp x24, x25, [sp, #16 * 12]",
@@ -216,12 +223,44 @@ macro_rules! exception_handler {
         }
     };
 }
+
+// copy the value of the stack pointer into x10
+macro_rules! save_stack_pointer {
+    // save kernel stack pointer
+    (true) => {
+        // restore stack pointer base
+        "add x10, sp, {FRAME_SIZE}"
+    };
+    // save user stack pointer
+    (false) => {
+        // copy the value of sp_el0
+        "mrs x10, sp_el0"
+    }
+}
+
+// restore the value of the stack pointer from x10
+macro_rules! restore_stack_pointer {
+    // Restore the kernel stack pointer. This happens anyways since we clear
+    // the stack frame used for the exception context and `sp` is aliased to
+    // `sp_el1` in the kernel. So we return an empty string.
+    (true) => {
+        ""
+    };
+    // restore the user stack pointer (sp_el0)
+    (false) => {
+        // copy the value of sp_el0
+        "msr sp_el0, x10"
+    }
+}
+
 // export macro to be used, but only in the parent module
 pub(super) use exception_handler;
+pub(super) use save_stack_pointer;
+pub(super) use restore_stack_pointer;
 
 // Default exception handler simply prints out 
 // verbose debug information to the kernel console.
-exception_handler!(default_exception_handler, debug_handler);
+exception_handler!(default_exception_handler, debug_handler, true);
 
 /// Exception handler prints information about the
 /// stack frame that generated the exception and other
@@ -309,7 +348,10 @@ fn debug_handler(ctx: &mut ExceptionContext) {
 }
 
 // Exception handler that services synchronous exceptions
-exception_handler!(sync_exception_handler, sync_handler);
+// the same base handler, `sync_handler` is used (for now)
+// for both user and kernel.
+exception_handler!(sync_exception_handler_el1, sync_handler, true);
+exception_handler!(sync_exception_handler_el0, sync_handler, false);
 
 /// Exception handler deals with synchronous exceptions
 /// such as Data Aborts (i.e. page faults)
