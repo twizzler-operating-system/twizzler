@@ -63,7 +63,6 @@ bitflags::bitflags! {
     }
 }
 
-/// Set the current interrupt enable state to disabled and return the old state.
 pub fn disable() -> bool {
     // check if interrutps were already enabled.
     // if the I bit is set, then IRQ exceptions
@@ -84,7 +83,6 @@ pub fn disable() -> bool {
     irq_enabled
 }
 
-/// Set the current interrupt enable state.
 pub fn set(state: bool) {
     // state singifies if interrupts need to enabled or disabled
     // the state can refer to the previous state of the I bit (IRQ)
@@ -101,14 +99,6 @@ pub fn set(state: bool) {
     } else {
         disable();
     }
-}
-
-/// Get the current interrupt enable state without modifying it.
-pub fn get() -> bool {
-    // if the I bit is set, then IRQ exceptions are masked (disabled)
-    // We return false for masked interrupts and true for
-    // unmasked (enabled) interrupts
-    !DAIF.is_set(DAIF::I)
 }
 
 // The top level interrupt request (IRQ) handler. Deals with
