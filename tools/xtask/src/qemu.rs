@@ -66,6 +66,7 @@ impl QemuCommand {
                 // bios, platform
                 self.cmd.arg("-bios").arg("toolchain/install/OVMF.fd");
                 self.cmd.arg("-machine").arg("q35,nvdimm=on");
+                self.cmd.arg("-nographic");
 
                 // add qemu exit device for testing
                 if options.tests {
