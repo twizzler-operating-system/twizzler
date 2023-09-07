@@ -18,10 +18,15 @@ members = [
     "src/lib/twizzler-async",
     "src/lib/twizzler-nando",
     "src/lib/twizzler-object",
+    "src/runtime/twz-rt",
+    "src/runtime/nando",
+    "src/runtime/nando/nando-macros",
+    "src/runtime/secgate",
+    "src/runtime/secgate/secgate-macros",
+    "src/runtime/monitor",
+    "src/runtime/dynlink",
 ]
-exclude = [
-    "toolchain/src/rust",
-]
+exclude = ["toolchain/src/rust"]
 resolver = "2"
 
 [workspace.metadata]
@@ -31,6 +36,7 @@ initrd = [
     "crate:netmgr",
     "crate:nettest",
     "crate:pager",
+    "crate:monitor",
     #"third-party:hello-world-rs"
 ]
 
@@ -44,3 +50,6 @@ debug = true
 [patch.'https://github.com/dbittman/twizzler-abi']
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 
+[patch.crates-io]
+ring = { git = "https://github.com/twizzler-operating-system/ring-twizzler.git", branch = "twizzler" }
+getrandom = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler" }

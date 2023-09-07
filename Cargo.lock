@@ -664,10 +664,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "dynlink"
+version = "0.1.0"
+dependencies = [
+ "elf",
+]
+
+[[package]]
 name = "either"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e78d4f1cc4ae33bbfc157ed5d5a5ef3bc29227303d595861deb238fcec4e9457"
+
+[[package]]
+name = "elf"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2b183d6ce6ca4cf30e3db37abf5b52568b5f9015c97d9fbdd7026aa5dcdd758"
 
 [[package]]
 name = "encode_unicode"
@@ -930,13 +943,12 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d39cd93900197114fa1fcb7ae84ca742095eed9442088988ae74fa744e930e77"
+version = "0.2.10"
+source = "git+https://github.com/twizzler-operating-system/getrandom-twizzler.git?branch=twizzler#36d30f909b58851ca29a86d3e456f06aad735126"
 dependencies = [
  "cfg-if 1.0.0",
  "libc",
- "wasi 0.10.2+wasi-snapshot-preview1",
+ "wasi",
 ]
 
 [[package]]
@@ -1391,7 +1403,7 @@ version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 dependencies = [
- "spin",
+ "spin 0.5.2",
 ]
 
 [[package]]
@@ -1402,9 +1414,9 @@ checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
 name = "libc"
-version = "0.2.139"
+version = "0.2.147"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "201de327520df007757c1f0adce6e827fe8562fbc28bfd9c15571c66ca1f5f79"
+checksum = "b4668fb0ea861c1df094127ac5f1da3409a82116a4ba74fca2e58ef927159bb3"
 dependencies = [
  "rustc-std-workspace-core",
 ]
@@ -1569,7 +1581,7 @@ dependencies = [
  "log",
  "miow 0.3.7",
  "ntapi",
- "wasi 0.11.0+wasi-snapshot-preview1",
+ "wasi",
  "winapi",
 ]
 
@@ -1611,6 +1623,24 @@ dependencies = [
  "quote",
  "syn 1.0.107",
 ]
+
+[[package]]
+name = "monitor"
+version = "0.1.0"
+dependencies = [
+ "secgate",
+]
+
+[[package]]
+name = "nando"
+version = "0.1.0"
+dependencies = [
+ "nando-macros",
+]
+
+[[package]]
+name = "nando-macros"
+version = "0.1.0"
 
 [[package]]
 name = "native-tls"
@@ -2115,6 +2145,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ring"
+version = "0.17.0"
+source = "git+https://github.com/twizzler-operating-system/ring-twizzler.git?branch=twizzler#da70869a638c49abeb91126027fa9c5bb586b3a4"
+dependencies = [
+ "cc",
+ "getrandom",
+ "libc",
+ "spin 0.9.8",
+ "untrusted",
+ "winapi",
+]
+
+[[package]]
 name = "rprompt"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2221,6 +2264,18 @@ name = "scopeguard"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d29ab0c6d3fc0ee92fe66e2d99f700eab17a8d57d1c1d3b748380fb20baa78cd"
+
+[[package]]
+name = "secgate"
+version = "0.1.0"
+dependencies = [
+ "ring",
+ "secgate-macros",
+]
+
+[[package]]
+name = "secgate-macros"
+version = "0.1.0"
 
 [[package]]
 name = "security-framework"
@@ -2381,6 +2436,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e63cff320ae2c57904679ba7cb63280a3dc4613885beafb148ee7bf9aa9042d"
 
 [[package]]
+name = "spin"
+version = "0.9.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+
+[[package]]
 name = "spinning_top"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2495,9 +2556,13 @@ dependencies = [
 
 [[package]]
 name = "syscall_encode_traits"
-version = "0.1.7"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27cb40e33e126b20491b31c6fc9975f8d8a084550c937c6a7284fcd954e6c4d2"
+checksum = "f81b782ed6cc937aec2680f2b03bee5c94ca8d2076adeff2a6779093a0e00919"
+dependencies = [
+ "compiler_builtins",
+ "rustc-std-workspace-core",
+]
 
 [[package]]
 name = "tar"
@@ -2830,6 +2895,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "twz-rt"
+version = "0.1.0"
+dependencies = [
+ "nando",
+ "secgate",
+]
+
+[[package]]
 name = "typenum"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2883,6 +2956,12 @@ name = "unicode-xid"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ccb82d61f80a663efe1f787a51b16b5a51e3314d6ac365b08639f52387b33f3"
+
+[[package]]
+name = "untrusted"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "url"
@@ -2979,12 +3058,6 @@ dependencies = [
  "log",
  "try-lock",
 ]
-
-[[package]]
-name = "wasi"
-version = "0.10.2+wasi-snapshot-preview1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd6fbd9a79829dd1ad0cc20627bf1ed606756a7f77edff7b66b7064f9cb327c6"
 
 [[package]]
 name = "wasi"
