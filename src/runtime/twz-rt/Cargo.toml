@@ -8,4 +8,3 @@ edition = "2021"
 [dependencies]
 secgate = { path = "../secgate" }
 nando = { path = "../nando" }
-embedded-alloc = "0.5.0"
