@@ -328,6 +328,7 @@ fn build_kernel<'a>(
 pub(crate) struct TwizzlerCompilation {
     #[allow(dead_code)]
     pub user_config: Config,
+
     #[borrows(user_config)]
     #[covariant]
     pub user_workspace: Workspace<'this>,
@@ -396,6 +397,7 @@ fn compile(
     let cli_config = get_cli_configs(bc, other_options).unwrap();
     kernel_config.configure(0, false, None, false, false, false, &None, &[], &cli_config)?;
     kernel_config.reload_rooted_at("src/kernel")?;
+
     let manifest_path = other_options
         .manifest_path
         .as_ref()

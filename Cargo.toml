@@ -18,6 +18,7 @@ members = [
     "src/lib/twizzler-async",
     "src/lib/twizzler-nando",
     "src/lib/twizzler-object",
+    "src/lib/twizzler-runtime-api",
     "src/runtime/twz-rt",
     "src/runtime/nando",
     "src/runtime/nando/nando-macros",
@@ -25,6 +26,7 @@ members = [
     "src/runtime/secgate/secgate-macros",
     "src/runtime/monitor",
     "src/runtime/dynlink",
+    "src/runtime/bootstrap",
 ]
 exclude = ["toolchain/src/rust"]
 resolver = "2"
@@ -37,6 +39,7 @@ initrd = [
     "crate:nettest",
     "crate:pager",
     "crate:monitor",
+    "crate:bootstrap",
     #"third-party:hello-world-rs"
 ]
 
