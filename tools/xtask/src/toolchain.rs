@@ -238,10 +238,12 @@ pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
     let llvm_bin = get_llvm_bin(guess_host_triple().unwrap())?;
+    let rustlib_bin = get_rustlib_bin(guess_host_triple().unwrap())?;
     std::env::set_var(
         "PATH",
         format!(
-            "{}:{}:{}",
+            "{}:{}:{}:{}",
+            rustlib_bin.to_string_lossy(),
             lld_bin.to_string_lossy(),
             llvm_bin.to_string_lossy(),
             path
@@ -266,6 +268,15 @@ fn get_llvm_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
         .join(host_triple)
         .join("llvm/bin");
     Ok(llvm_bin)
+}
+
+fn get_rustlib_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
+    let curdir = std::env::current_dir().unwrap();
+    let rustlib_bin = curdir
+        .join("toolchain/install/lib/rustlib")
+        .join(host_triple)
+        .join("bin");
+    Ok(rustlib_bin)
 }
 
 fn generate_config_toml() -> anyhow::Result<()> {
