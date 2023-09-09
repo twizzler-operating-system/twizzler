@@ -1,7 +1,9 @@
-#![feature(return_position_impl_trait_in_trait)]
 #![no_std]
 
-use core::{ffi::CStr, fmt::Display, num::NonZeroUsize, sync::atomic::AtomicU32, time::Duration};
+use core::{
+    alloc::GlobalAlloc, ffi::CStr, fmt::Display, num::NonZeroUsize, sync::atomic::AtomicU32,
+    time::Duration,
+};
 
 /// Full runtime trait, composed of smaller traits
 pub trait Runtime:
@@ -59,8 +61,9 @@ pub trait ThreadRuntime {
 pub trait ObjectRuntime {}
 
 pub trait CoreRuntime {
+    type AllocatorType: GlobalAlloc;
     /// Return an allocator for default allocations
-    fn default_allocator(&self) -> impl core::alloc::GlobalAlloc;
+    fn default_allocator(&self) -> Self::AllocatorType;
 
     /// Called by std before calling main
     fn pre_main_hook(&self) {}
@@ -96,9 +99,10 @@ pub trait RustStdioRuntime {
     type Stdin: IoRead;
     type Stdout: IoWrite;
     type Stderr: IoWrite;
+    type PanicOutput: IoWrite;
 
     /// Get a writable object for panic writes.
-    fn panic_output(&self) -> impl IoWrite;
+    fn panic_output(&self) -> Self::PanicOutput;
 }
 
 /// Trait for stdin
@@ -133,3 +137,11 @@ pub type LibstdEntry = fn(aux: BasicAux) -> BasicReturn;
 
 /// Error types
 pub trait InternalError: core::fmt::Debug + Display {}
+
+pub trait DebugRuntime {
+    type LibType: Library;
+    type LibIterator: core::iter::Iterator<Item = Self::LibType>;
+    fn iter_libs(&self) -> Self::LibIterator;
+}
+
+pub trait Library {}
