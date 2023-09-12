@@ -1,6 +1,8 @@
 #![feature(fn_traits)]
 #![feature(unboxed_closures)]
 #![feature(tuple_trait)]
+#![feature(naked_functions)]
+#![feature(asm_sym)]
 
 use std::marker::{PhantomData, Tuple};
 
@@ -9,6 +11,15 @@ pub use secgate_macros::*;
 pub struct SecurityGate<Imp, Args, Ret> {
     imp: Imp,
     _pd: PhantomData<(Imp, Args, Ret)>,
+}
+
+impl<Imp, Args, Ret> SecurityGate<Imp, Args, Ret> {
+    pub const fn new(imp: Imp) -> Self {
+        Self {
+            imp,
+            _pd: PhantomData,
+        }
+    }
 }
 
 fn trampoline<Imp, Args: Tuple, Ret>(
@@ -52,33 +63,11 @@ where
     }
 }
 
-/*
 #[secure_gate]
-fn foo(...) -> ... {...}
-*/
-
-pub static FOO_GATE: SecurityGate<fn(i32, bool) -> Option<bool>, (i32, bool), Option<bool>> =
-    SecurityGate {
-        imp: foo_gate_impl_trampoline,
-        _pd: PhantomData,
-    };
-
-fn foo_gate_impl(x: i32, y: bool) -> Option<bool> {
+fn foo(x: u32, y: bool) -> Option<bool> {
     if x == 0 {
         Some(!y)
     } else {
         None
     }
-}
-
-#[link_section = ".twzsecgate"]
-pub fn foo_gate_impl_trampoline(x: i32, y: bool) -> Option<bool> {
-    // pre-call setup (secure callee side)
-    let ret = foo_gate_impl(x, y);
-    // post-call tear-down (secure callee side)
-    ret
-}
-
-pub fn foo(x: i32, y: bool) -> Option<bool> {
-    (FOO_GATE)(x, y)
 }
