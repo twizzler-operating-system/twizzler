@@ -10,8 +10,6 @@ use crate::{
 
 pub(crate) struct Context {
     next_slot: AtomicUsize,
-    pub alloc_lock: crate::simple_mutex::Mutex,
-    pub global_alloc: TwzGlobalAlloc,
 }
 
 #[allow(dead_code)]

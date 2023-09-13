@@ -1100,6 +1100,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2540771e65fc8cb83cd6e8a237f70c319bd5c29f78ed1084ba5d50eeac86f7f9"
 
 [[package]]
+name = "hello-world"
+version = "0.1.0"
+dependencies = [
+ "monitor",
+ "secgate",
+]
+
+[[package]]
 name = "hermit-abi"
 version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2208,6 +2216,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ef03e0a2b150c7a90d01faf6254c9c48a41e95fb2a8c2ac1c6f0d2b9aefc342"
 
 [[package]]
+name = "rustc-std-workspace-alloc"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff66d57013a5686e1917ed6a025d54dd591fcda71a41fe07edf4d16726aefa86"
+
+[[package]]
 name = "rustc-std-workspace-core"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2445,6 +2459,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52b274c61b9873a19293c96f2bf132ebc51fe21f507a91a0e5df0ba6989073b7"
 dependencies = [
  "log",
+]
+
+[[package]]
+name = "slotmap"
+version = "1.0.6"
+source = "git+https://github.com/twizzler-operating-system/slotmap.git?branch=twizzler#5ff6ca3be5047c311c1038c6e347f462201d2958"
+dependencies = [
+ "rustc-std-workspace-alloc",
+ "version_check",
 ]
 
 [[package]]
@@ -2817,9 +2840,12 @@ dependencies = [
  "bitflags 1.3.2",
  "compiler_builtins",
  "libc",
+ "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
+ "slotmap",
  "syscall_encode_macros",
  "syscall_encode_traits",
+ "twizzler-runtime-api",
 ]
 
 [[package]]
@@ -2928,7 +2954,6 @@ version = "0.1.0"
 dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-core",
- "twizzler-abi",
 ]
 
 [[package]]

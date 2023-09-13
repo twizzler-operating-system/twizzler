@@ -183,8 +183,20 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             anyhow::bail!("failed to remove copied twizzler-abi");
         }
     }
+    let res = std::fs::remove_dir_all("toolchain/src/rust/library/twizzler-runtime-api");
+    if let Err(e) = res {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            anyhow::bail!("failed to remove copied twizzler-runtime-api");
+        }
+    }
+
     fs_extra::copy_items(
         &["src/lib/twizzler-abi"],
+        "toolchain/src/rust/library/",
+        &CopyOptions::new(),
+    )?;
+    fs_extra::copy_items(
+        &["src/lib/twizzler-runtime-api"],
         "toolchain/src/rust/library/",
         &CopyOptions::new(),
     )?;
@@ -235,6 +247,8 @@ pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
     }
     std::env::set_var("RUSTC", &get_rustc_path()?);
     std::env::set_var("RUSTDOC", &get_rustdoc_path()?);
+    std::env::set_var("RUSTFLAGS", "-C prefer-dynamic");
+
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
     let llvm_bin = get_llvm_bin(guess_host_triple().unwrap())?;

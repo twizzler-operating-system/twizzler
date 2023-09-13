@@ -21,9 +21,13 @@
 #![feature(rustc_attrs)]
 #![feature(asm_sym)]
 #![feature(asm_const)]
+#![feature(linkage)]
+#![feature(once_cell)]
 pub mod arch;
 
-pub mod alloc;
+#[cfg(feature = "rustc-dep-of-std")]
+extern crate alloc as rustc_alloc;
+
 pub mod aux;
 pub mod device;
 #[cfg(any(doc, feature = "rt"))]
@@ -38,6 +42,7 @@ pub mod object;
 pub mod pager;
 #[cfg(any(doc, feature = "rt"))]
 pub mod rt1;
+pub mod runtime;
 mod simple_idcounter;
 pub mod simple_mutex;
 pub mod slot;

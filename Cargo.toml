@@ -26,6 +26,7 @@ members = [
     "src/runtime/secgate/secgate-macros",
     "src/runtime/monitor",
     "src/runtime/dynlink",
+    "src/runtime/hello-world",
     "src/runtime/bootstrap",
 ]
 exclude = ["toolchain/src/rust"]

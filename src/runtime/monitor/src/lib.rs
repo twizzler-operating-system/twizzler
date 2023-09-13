@@ -1,4 +1,5 @@
 #![feature(naked_functions)]
+#![feature(asm_sym)]
 use secgate::{secure_gate, SecurityGate};
 
 #[no_mangle]
@@ -6,6 +7,7 @@ pub fn monitor_main() {
     println!("Hello, world!");
 }
 
+/*
 #[secure_gate]
 pub fn stream_writer_write() {}
 
@@ -36,4 +38,15 @@ extern "C" fn foo_gate_trampoline_c_entry(x: i32, y: bool) -> Option<bool> {
 
 pub fn foo(x: i32, y: bool) -> Option<bool> {
     (FOO_GATE)(x, y)
+}
+
+*/
+
+#[secure_gate]
+fn foo(x: u32, y: bool) -> Option<bool> {
+    if x == 0 {
+        Some(!y)
+    } else {
+        None
+    }
 }

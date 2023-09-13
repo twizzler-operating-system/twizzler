@@ -1,7 +1,10 @@
 //! Very simple and unsafe Mutex for internal locking needs. DO NOT USE, USE THE RUST STANDARD
 //! LIBRARY MUTEX INSTEAD.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use crate::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
@@ -9,16 +12,16 @@ use crate::syscall::{
 };
 
 /// Simple mutex, supporting sleeping and wakeup. Does no attempt at handling priority or fairness.
-pub struct Mutex {
+pub(crate) struct MutexImp {
     lock: AtomicU64,
 }
 
-unsafe impl Send for Mutex {}
+unsafe impl Send for MutexImp {}
 
-impl Mutex {
+impl MutexImp {
     /// Construct a new mutex.
-    pub const fn new() -> Mutex {
-        Mutex {
+    pub const fn new() -> MutexImp {
+        MutexImp {
             lock: AtomicU64::new(0),
         }
     }
@@ -98,5 +101,54 @@ impl Mutex {
         self.lock
             .compare_exchange_weak(0, 1, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
+    }
+}
+
+pub(crate) struct Mutex<T> {
+    imp: MutexImp,
+    data: UnsafeCell<T>,
+}
+
+impl<T> Mutex<T> {
+    pub const fn new(data: T) -> Self {
+        Self {
+            imp: MutexImp::new(),
+            data,
+        }
+    }
+
+    pub fn lock(&self) -> LockGuard<'_, T> {
+        unsafe {
+            self.imp.lock();
+        }
+        LockGuard { lock: self }
+    }
+}
+
+unsafe impl<T> Send for Mutex<T> where T: Send {}
+unsafe impl<T> Sync for Mutex<T> where T: Send {}
+unsafe impl<T> Send for LockGuard<'_, T> where T: Send {}
+unsafe impl<T> Sync for LockGuard<'_, T> where T: Send + Sync {}
+
+pub(crate) struct LockGuard<'a, T> {
+    lock: &'a Mutex<T>,
+}
+
+impl<T> core::ops::Deref for LockGuard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.lock.data.get() }
+    }
+}
+
+impl<T> core::ops::DerefMut for LockGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.lock.data.get() }
+    }
+}
+
+impl<T> Drop for LockGuard<'_, T> {
+    fn drop(&mut self) {
+        self.lock.release();
     }
 }

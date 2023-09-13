@@ -62,12 +62,3 @@ where
         trampoline(&self, args, &self.imp)
     }
 }
-
-#[secure_gate]
-fn foo(x: u32, y: bool) -> Option<bool> {
-    if x == 0 {
-        Some(!y)
-    } else {
-        None
-    }
-}

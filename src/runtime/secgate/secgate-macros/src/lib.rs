@@ -3,8 +3,10 @@ use quote::quote;
 use syn::{
     parse::ParseStream,
     parse2,
+    punctuated::Punctuated,
     token::{Bracket, Paren, Pound, Pub},
-    Attribute, Block, Error, ItemFn, Path, ReturnType, Token, Type, VisRestricted, Visibility,
+    Attribute, Block, Error, Expr, ExprLit, ItemFn, LitStr, MetaNameValue, Path, PathSegment,
+    ReturnType, Token, Type, VisRestricted, Visibility,
 };
 
 #[proc_macro_attribute]
@@ -45,6 +47,28 @@ fn build_names(base: Ident, types: Vec<Box<Type>>, ret_type: ReturnType) -> Info
     }
 }
 
+fn link_section_attr(info: &Info, section: &str) -> Attribute {
+    Attribute {
+        style: syn::AttrStyle::Outer,
+        meta: syn::Meta::NameValue(MetaNameValue {
+            path: Path {
+                segments: Punctuated::from_iter([PathSegment {
+                    ident: Ident::new("link_section", info.fn_name.span()),
+                    arguments: syn::PathArguments::None,
+                }]),
+                leading_colon: None,
+            },
+            value: Expr::Lit(ExprLit {
+                lit: syn::Lit::Str(LitStr::new(section, info.fn_name.span())),
+                attrs: vec![],
+            }),
+            eq_token: syn::token::Eq(info.fn_name.span()),
+        }),
+        pound_token: Pound::default(),
+        bracket_token: Bracket::default(),
+    }
+}
+
 fn handle_secure_gate(
     _attr: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
@@ -68,6 +92,9 @@ fn handle_secure_gate(
     let public_call_point = build_call_point(&tree, &names)?;
     let struct_def = build_struct(&tree, &names)?;
 
+    let link_section_text = link_section_attr(&names, ".twz_gate_text");
+    let link_section_data = link_section_attr(&names, ".twz_gate_data");
+
     let Info {
         mod_name,
         fn_name,
@@ -83,8 +110,10 @@ fn handle_secure_gate(
     Ok(quote::quote! {
         mod #mod_name {
             #tree
+            #link_section_data
             #struct_def
         }
+        #link_section_text
         #public_call_point
     })
 }
@@ -129,9 +158,10 @@ fn build_struct(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
     } = names;
     let ret_type = ret_type.clone().unwrap_or(parse2(quote!(()))?);
     Ok(quote! {
+        pub static #struct_name: crate::SecurityGate<Imp, Args, Ret> = crate::SecurityGate::new(super::#fn_name);
+
         pub type Imp = fn(#(#types),*) -> Ret;
         pub type Args = (#(#types),*);
         pub type Ret = #ret_type;
-        pub static #struct_name: crate::SecurityGate<Imp, Args, Ret> = crate::SecurityGate::new(super::#fn_name);
     })
 }

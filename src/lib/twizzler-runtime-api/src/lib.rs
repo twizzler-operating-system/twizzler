@@ -7,15 +7,23 @@ use core::{
 
 /// Full runtime trait, composed of smaller traits
 pub trait Runtime:
-    ThreadRuntime + ObjectRuntime + CoreRuntime + RustFsRuntime + RustProcessRuntime
+    ThreadRuntime
+    + ObjectRuntime
+    + CoreRuntime
+    + RustFsRuntime
+    + RustProcessRuntime
+    + RustStdioRuntime
+    + DebugRuntime
+    + RustTimeRuntime
 {
+    fn get_runtime<'a>() -> &'a Self;
     // todo: get random
 }
 
 /// Arguments that std expects to pass to spawn.
 pub struct ThreadSpawnArgs {
-    /// The initial stack pointer
-    pub stack: usize,
+    /// The initial stack size
+    pub stack_size: usize,
     /// The entry point
     pub start: usize,
     /// The argument to the entry point
@@ -63,7 +71,7 @@ pub trait ObjectRuntime {}
 pub trait CoreRuntime {
     type AllocatorType: GlobalAlloc;
     /// Return an allocator for default allocations
-    fn default_allocator(&self) -> Self::AllocatorType;
+    fn default_allocator(&self) -> &Self::AllocatorType;
 
     /// Called by std before calling main
     fn pre_main_hook(&self) {}
@@ -72,10 +80,10 @@ pub trait CoreRuntime {
     fn post_main_hook(&self) {}
 
     /// Exit, directly invoked by user
-    fn exit(&self, code: i32);
+    fn exit(&self, code: i32) -> !;
 
     /// Thread abort
-    fn abort(&self);
+    fn abort(&self) -> !;
 }
 
 /// Arguments passed by the runtime to libstd.
