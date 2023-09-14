@@ -356,6 +356,8 @@ fn main() {
 
     if let Some(id) = find_init_name("test_bins") {
         println!("=== found init test list ===");
+        todo!()
+        /*
         let slot = twizzler_abi::slot::global_allocate().unwrap();
         twizzler_abi::syscall::sys_object_map(None, id, slot, Protections::READ, MapFlags::empty())
             .unwrap();
@@ -403,6 +405,7 @@ fn main() {
         }
         #[allow(deprecated)]
         twizzler_abi::syscall::sys_debug_shutdown(if test_failed { 1 } else { 0 });
+        */
     }
 
     println!("Hi, welcome to the basic twizzler test console.");

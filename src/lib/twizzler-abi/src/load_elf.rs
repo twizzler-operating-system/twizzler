@@ -2,9 +2,12 @@
 
 use core::{intrinsics::copy_nonoverlapping, mem::size_of};
 
+use crate::object::InternalObject;
+
 use crate::{
     aux::AuxEntry,
-    object::NULLPAGE_SIZE,
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    slot::{RESERVED_DATA, RESERVED_STACK, RESERVED_TEXT},
     syscall::{
         sys_unbind_handle, BackingType, HandleType, LifetimeType, MapFlags, NewHandleFlags,
         ObjectCreate, ObjectCreateFlags, ObjectSource, ThreadSpawnArgs, ThreadSpawnFlags,
@@ -163,8 +166,8 @@ impl<'a> ElfObject<'a> {
     }
 
     fn from_obj(obj: &'a InternalObject<ElfHeader>) -> Option<Self> {
-        let (start, _) = crate::slot::to_vaddr_range(obj.slot());
-        Self::from_raw_memory(obj, start as *const u8)
+        let start = obj.base();
+        Self::from_raw_memory(obj, start as *const ElfHeader as *const u8)
     }
 
     fn phdrs(&self) -> PhdrIter {
@@ -269,7 +272,7 @@ pub fn spawn_new_executable(
     )
     .map_err(|_| SpawnExecutableError::MapFailed)?;
 
-    let (stack_base, _) = crate::slot::to_vaddr_range(RESERVED_STACK);
+    let stack_base = RESERVED_STACK * MAX_SIZE + NULLPAGE_SIZE;
     let spawnaux_start = stack_base + INITIAL_STACK_SIZE + page_size as usize;
 
     fn copy_strings<T>(
@@ -278,22 +281,26 @@ pub fn spawn_new_executable(
         offset: usize,
     ) -> (usize, usize) {
         let offset = offset.checked_next_multiple_of(64).unwrap();
-        let (stack_base, _) = crate::slot::to_vaddr_range(RESERVED_STACK);
+        let stack_base = RESERVED_STACK * MAX_SIZE + NULLPAGE_SIZE;
         let args_start = unsafe {
-            let args_start: &mut () =
-                stack.offset_from_base(INITIAL_STACK_SIZE + NULLPAGE_SIZE * 2 + offset);
-            core::slice::from_raw_parts_mut(args_start as *mut () as *mut usize, strs.len() + 1)
+            let args_start: *mut usize = stack
+                .offset_mut(INITIAL_STACK_SIZE + NULLPAGE_SIZE * 2 + offset)
+                .unwrap();
+
+            core::slice::from_raw_parts_mut(args_start, strs.len() + 1)
         };
         let spawnargs_start = stack_base + INITIAL_STACK_SIZE + NULLPAGE_SIZE * 2 + offset;
 
         let args_data_start = unsafe {
-            let args_data_start: &mut () = stack.offset_from_base(
-                INITIAL_STACK_SIZE
-                    + NULLPAGE_SIZE * 2
-                    + offset
-                    + size_of::<*const u8>() * (strs.len() + 1),
-            );
-            args_data_start as *mut () as *mut u8
+            let args_data_start: *mut u8 = stack
+                .offset_mut(
+                    INITIAL_STACK_SIZE
+                        + NULLPAGE_SIZE * 2
+                        + offset
+                        + size_of::<*const u8>() * (strs.len() + 1),
+                )
+                .unwrap();
+            args_data_start
         };
         let spawnargs_data_start = spawnargs_start + size_of::<*const u8>() * (strs.len() + 1);
 
@@ -316,8 +323,12 @@ pub fn spawn_new_executable(
     let (spawnenv_start, _) = copy_strings(&mut stack, env, args_len);
 
     let aux_array = unsafe {
-        stack.offset_from_base::<[AuxEntry; 32]>(INITIAL_STACK_SIZE + page_size as usize)
-    };
+        stack
+            .offset_mut::<[AuxEntry; 32]>(INITIAL_STACK_SIZE + page_size as usize)
+            .unwrap()
+            .as_mut()
+    }
+    .unwrap();
     let mut idx = 0;
 
     if let Some(phinfo) = elf.phdrs().find(|p| p.phdr_type() == PhdrType::Phdr) {

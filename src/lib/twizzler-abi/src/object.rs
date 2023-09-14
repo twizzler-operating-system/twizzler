@@ -86,3 +86,6 @@ bitflags::bitflags! {
         const EXEC = 4;
     }
 }
+
+#[cfg(not(feature = "kernel"))]
+pub(crate) use crate::runtime::object::InternalObject;

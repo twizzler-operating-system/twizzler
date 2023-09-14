@@ -180,6 +180,7 @@ fn build_twizzler<'a>(
     build_config: &crate::BuildConfig,
     other_options: &OtherOptions,
 ) -> anyhow::Result<Option<Compilation<'a>>> {
+    crate::toolchain::set_dynamic();
     if !other_options.build_twizzler {
         return Ok(None);
     }

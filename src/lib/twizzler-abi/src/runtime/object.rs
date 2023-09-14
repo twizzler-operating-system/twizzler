@@ -16,7 +16,7 @@ impl ObjectRuntime for MinimalRuntime {
         todo!()
     }
 
-    fn unmap_object(&self, handle: twizzler_runtime_api::ObjectHandle) {
+    fn unmap_object(&self, handle: &twizzler_runtime_api::ObjectHandle) {
         todo!()
     }
 }

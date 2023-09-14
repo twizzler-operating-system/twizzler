@@ -65,7 +65,7 @@ pub trait ThreadRuntime {
 
 pub trait ObjectRuntime {
     fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError>;
-    fn unmap_object(&self, handle: ObjectHandle);
+    fn unmap_object(&self, handle: &ObjectHandle);
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
@@ -185,4 +185,12 @@ pub type LibstdEntry = fn(aux: BasicAux) -> BasicReturn;
 /// Error types
 pub trait DebugRuntime {
     fn iter_libs(&self) -> ();
+}
+
+extern "C" {
+    fn __twz_get_runtime() -> &'static (dyn Runtime + Sync);
+}
+
+pub fn get_runtime() -> &'static (dyn Runtime + Sync) {
+    unsafe { __twz_get_runtime() }
 }

@@ -16,6 +16,10 @@ pub(crate) struct InternalObject<T> {
 }
 
 impl<T> InternalObject<T> {
+    pub(crate) fn create_data_and_map() -> Option<Self> {
+        todo!()
+    }
+
     #[allow(dead_code)]
     pub(crate) fn base(&self) -> &T {
         let (start, _) = to_vaddr_range(self.slot);

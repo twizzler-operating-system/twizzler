@@ -34,19 +34,19 @@ pub mod device;
 //pub mod exec;
 pub mod kso;
 mod llalloc;
-//#[cfg(not(feature = "rt"))]
-//pub mod load_elf;
+#[cfg(not(feature = "kernel"))]
+pub mod load_elf;
 pub mod marker;
 pub mod meta;
 pub mod object;
 pub mod pager;
 //#[cfg(any(doc, feature = "rt"))]
 //pub mod rt1;
-#[cfg(not(feature = "kernel"))]
+#[cfg(any(not(feature = "kernel"), feature = "rt"))]
 pub mod runtime;
 //mod simple_idcounter;
 pub mod simple_mutex;
-//pub mod slot;
+pub mod slot;
 pub mod syscall;
 pub mod thread;
 //pub mod time;

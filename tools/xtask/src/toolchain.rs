@@ -241,13 +241,16 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn set_dynamic() {
+    std::env::set_var("RUSTFLAGS", "-C prefer-dynamic");
+}
+
 pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
     if needs_reinstall()? && !abi_changes_ok {
         anyhow::bail!("detected changes to twizzler-abi not reflected in current toolchain. This is probably because the twizzler-abi crate files were updated, so you need to run `cargo bootstrap --skip-submodules' again.");
     }
     std::env::set_var("RUSTC", &get_rustc_path()?);
     std::env::set_var("RUSTDOC", &get_rustdoc_path()?);
-    std::env::set_var("RUSTFLAGS", "-C prefer-dynamic");
 
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;

@@ -5,9 +5,10 @@ use std::{
 };
 
 use twizzler_abi::{
-    object::{ObjID, Protections, NULLPAGE_SIZE},
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::MapFlags,
 };
+use twizzler_runtime_api::{MapError, ObjectHandle};
 
 use crate::{meta::FotEntry, ObjectInitError};
 
@@ -16,27 +17,34 @@ use crate::{meta::FotEntry, ObjectInitError};
 /// counted, and when dropped, release the slot for reuse. The object may or may not be unmapped
 /// immediately following the slot's drop.
 pub struct Slot {
-    n: usize,
     id: ObjID,
     prot: Protections,
+    runtime_handle: ObjectHandle,
+}
+
+unsafe impl Sync for Slot {}
+unsafe impl Send for Slot {}
+
+impl From<MapError> for ObjectInitError {
+    fn from(_: MapError) -> Self {
+        todo!()
+    }
 }
 
 impl Slot {
     fn new(id: ObjID, prot: Protections) -> Result<Self, ObjectInitError> {
-        let n = twizzler_abi::slot::global_allocate().ok_or(ObjectInitError::OutOfSlots)?;
-        let _result = twizzler_abi::syscall::sys_object_map(None, id, n, prot, MapFlags::empty())
-            .map_err::<ObjectInitError, _>(|e| e.into())?;
-        Ok(Self { n, id, prot })
+        let runtime = twizzler_runtime_api::get_runtime();
+        let rh = runtime.map_object(id.as_u128(), prot.into())?;
+        Ok(Self {
+            id,
+            prot,
+            runtime_handle: rh,
+        })
     }
 
     /// Get the ID of the object in this slot.
     pub fn id(&self) -> ObjID {
         self.id
-    }
-
-    /// Get the slot number of this slot.
-    pub fn slot(&self) -> usize {
-        self.n
     }
 
     /// Get the protections of this slot.
@@ -46,17 +54,18 @@ impl Slot {
 
     /// Get the vaddr of this slot's object base.
     pub fn vaddr_start(&self) -> usize {
-        twizzler_abi::slot::to_vaddr_range(self.n).0
+        self.vaddr_null() + NULLPAGE_SIZE
     }
 
     /// Get the vaddr of this slot's object's null page.
     pub fn vaddr_null(&self) -> usize {
-        twizzler_abi::slot::to_vaddr_range(self.n).0 - twizzler_abi::object::NULLPAGE_SIZE
+        self.runtime_handle.base as usize
+        //self.runtime_handle.base.expose_addr()
     }
 
     /// Get the vaddr of this slot's object's meta page.
     pub fn vaddr_meta(&self) -> usize {
-        twizzler_abi::slot::to_vaddr_range(self.n).1
+        self.vaddr_null() + MAX_SIZE - NULLPAGE_SIZE
     }
 
     /// Perform a raw load-effective-address for an offset into a slot.
@@ -108,6 +117,7 @@ pub fn get(id: ObjID, prot: Protections) -> Result<Arc<Slot>, ObjectInitError> {
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        twizzler_abi::slot::global_release(self.n);
+        let runtime = twizzler_runtime_api::get_runtime();
+        runtime.unmap_object(&self.runtime_handle);
     }
 }

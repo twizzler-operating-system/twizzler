@@ -18,10 +18,12 @@ struct InternalThread {
 }
 
 unsafe impl Send for InternalObject<ThreadRepr> {}
+unsafe impl Sync for InternalObject<ThreadRepr> {}
 
-static THREAD_SLOTS: Mutex<BTreeMap<ObjID, InternalThread>> = Mutex::new(BTreeMap::new());
+use rustc_alloc::sync::Arc;
+static THREAD_SLOTS: Mutex<BTreeMap<ObjID, Arc<InternalThread>>> = Mutex::new(BTreeMap::new());
 
-fn get_thread_slots() -> &'static Mutex<BTreeMap<ObjID, InternalThread>> {
+fn get_thread_slots() -> &'static Mutex<BTreeMap<ObjID, Arc<InternalThread>>> {
     &THREAD_SLOTS
 }
 
@@ -96,7 +98,9 @@ impl ThreadRuntime for MinimalRuntime {
         let thread = InternalThread {
             repr: InternalObject::map(thid, Protections::READ).unwrap(),
         };
-        get_thread_slots().lock().insert(thid.as_u128(), thread);
+        get_thread_slots()
+            .lock()
+            .insert(thid.as_u128(), Arc::new(thread));
         Ok(thid.as_u128())
     }
 
@@ -118,14 +122,14 @@ impl ThreadRuntime for MinimalRuntime {
         timeout: Option<core::time::Duration>,
     ) -> Result<(), JoinError> {
         loop {
-            let base = {
-                let thread = get_thread_slots()
+            let thread = {
+                get_thread_slots()
                     .lock()
                     .get(&id)
-                    .ok_or(JoinError::LookupError)?;
-                thread.repr.base()
+                    .cloned()
+                    .ok_or(JoinError::LookupError)?
             };
-            let data = base.wait(timeout);
+            let data = thread.repr.base().wait(timeout);
             if let Some(data) = data {
                 if data.0 == ExecutionState::Exited {
                     get_thread_slots().lock().remove(&id);
