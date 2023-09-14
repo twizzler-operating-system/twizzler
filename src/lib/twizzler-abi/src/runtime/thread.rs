@@ -1,35 +1,31 @@
-use core::cell::OnceCell;
+use crate::{object::Protections, rustc_alloc::collections::BTreeMap, thread::ExecutionState};
 
-use slotmap::SlotMap;
-use twizzler_runtime_api::{InternalError, ThreadRuntime};
+use twizzler_runtime_api::{JoinError, ObjID, SpawnError, ThreadRuntime};
 
 use crate::{
-    object::{InternalObject, Protections},
     simple_mutex::Mutex,
-    syscall::{ThreadSpawnError, ThreadSpawnFlags, ThreadSync, ThreadSyncFlags, ThreadSyncSleep},
+    syscall::{
+        ThreadSpawnError, ThreadSpawnFlags, ThreadSync, ThreadSyncError, ThreadSyncFlags,
+        ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+    },
     thread::ThreadRepr,
 };
 
-use super::MinimalRuntime;
+use super::{object::InternalObject, MinimalRuntime};
 
 struct InternalThread {
     repr: InternalObject<ThreadRepr>,
 }
 
-static THREAD_SLOTS: OnceCell<Mutex<SlotMap<u32, InternalThread>>> = OnceCell::new();
+unsafe impl Send for InternalObject<ThreadRepr> {}
 
-fn get_thread_slots() -> &'static Mutex<SlotMap<u32, InternalThread>> {
-    THREAD_SLOTS.get_or_init(|| Mutex::new(SlotMap::new()))
+static THREAD_SLOTS: Mutex<BTreeMap<ObjID, InternalThread>> = Mutex::new(BTreeMap::new());
+
+fn get_thread_slots() -> &'static Mutex<BTreeMap<ObjID, InternalThread>> {
+    &THREAD_SLOTS
 }
 
 impl ThreadRuntime for MinimalRuntime {
-    type InternalId = u32;
-
-    type SpawnError = ThreadSpawnError;
-
-    // 2MB stack size
-    const DEFAULT_MIN_STACK_SIZE: usize = (1 << 20) * 2;
-
     fn available_parallelism(&self) -> core::num::NonZeroUsize {
         crate::syscall::sys_info().cpu_count()
     }
@@ -41,14 +37,14 @@ impl ThreadRuntime for MinimalRuntime {
         timeout: Option<core::time::Duration>,
     ) -> bool {
         // No need to wait if the value already changed.
-        if futex.load(core::sync::Atomic::Ordering::Relaxed) != expected {
+        if futex.load(core::sync::atomic::Ordering::Relaxed) != expected {
             return true;
         }
 
-        crate::syscall::sys_thread_sync(
+        let r = crate::syscall::sys_thread_sync(
             &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
                 crate::syscall::ThreadSyncReference::Virtual32(futex),
-                expected,
+                expected as u64,
                 crate::syscall::ThreadSyncOp::Equal,
                 ThreadSyncFlags::empty(),
             ))],
@@ -66,7 +62,7 @@ impl ThreadRuntime for MinimalRuntime {
             ThreadSyncReference::Virtual32(futex),
             1,
         ));
-        let _ = sys_thread_sync(&mut [wake], None);
+        let _ = crate::syscall::sys_thread_sync(&mut [wake], None);
         // TODO
         false
     }
@@ -76,13 +72,13 @@ impl ThreadRuntime for MinimalRuntime {
             ThreadSyncReference::Virtual32(futex),
             usize::MAX,
         ));
-        let _ = sys_thread_sync(&mut [wake], None);
+        let _ = crate::syscall::sys_thread_sync(&mut [wake], None);
     }
 
     fn spawn(
         &self,
         args: twizzler_runtime_api::ThreadSpawnArgs,
-    ) -> Result<Self::InternalId, Self::SpawnError> {
+    ) -> Result<twizzler_runtime_api::ObjID, SpawnError> {
         let initial_stack = todo!();
         let initial_tls = todo!();
         let thid = unsafe {
@@ -100,8 +96,8 @@ impl ThreadRuntime for MinimalRuntime {
         let thread = InternalThread {
             repr: InternalObject::map(thid, Protections::READ).unwrap(),
         };
-        let id = get_thread_slots().lock().insert(thread);
-        Ok(id)
+        get_thread_slots().lock().insert(thid.as_u128(), thread);
+        Ok(thid.as_u128())
     }
 
     fn yield_now(&self) {
@@ -116,17 +112,40 @@ impl ThreadRuntime for MinimalRuntime {
         let _ = crate::syscall::sys_thread_sync(&mut [], Some(duration));
     }
 
-    fn join(&self, id: Self::InternalId, timeout: Option<Duration>) {
-        let thread: InternalThread = get_thread_slots().lock().get(id);
-        thread.repr.base().wait(timeout);
-        get_thread_slots().lock().remove(id);
+    fn join(
+        &self,
+        id: twizzler_runtime_api::ObjID,
+        timeout: Option<core::time::Duration>,
+    ) -> Result<(), JoinError> {
+        loop {
+            let base = {
+                let thread = get_thread_slots()
+                    .lock()
+                    .get(&id)
+                    .ok_or(JoinError::LookupError)?;
+                thread.repr.base()
+            };
+            let data = base.wait(timeout);
+            if let Some(data) = data {
+                if data.0 == ExecutionState::Exited {
+                    get_thread_slots().lock().remove(&id);
+                    return Ok(());
+                }
+            } else if timeout.is_some() {
+                return Err(JoinError::Timeout);
+            }
+        }
     }
 }
-
-impl InternalError for ThreadSpawnError {}
 
 #[no_mangle]
 #[linkage = "extern_weak"]
 pub fn __tls_get_addr() {
     todo!()
+}
+
+impl From<ThreadSpawnError> for SpawnError {
+    fn from(_: ThreadSpawnError) -> Self {
+        todo!()
+    }
 }

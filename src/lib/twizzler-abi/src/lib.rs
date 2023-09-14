@@ -25,30 +25,31 @@
 #![feature(once_cell)]
 pub mod arch;
 
-#[cfg(feature = "rustc-dep-of-std")]
 extern crate alloc as rustc_alloc;
 
+//pub mod alloc;
 pub mod aux;
 pub mod device;
-#[cfg(any(doc, feature = "rt"))]
-pub mod exec;
+//#[cfg(any(doc, feature = "rt"))]
+//pub mod exec;
 pub mod kso;
 mod llalloc;
-#[cfg(not(feature = "rt"))]
-pub mod load_elf;
+//#[cfg(not(feature = "rt"))]
+//pub mod load_elf;
 pub mod marker;
 pub mod meta;
 pub mod object;
 pub mod pager;
-#[cfg(any(doc, feature = "rt"))]
-pub mod rt1;
+//#[cfg(any(doc, feature = "rt"))]
+//pub mod rt1;
+#[cfg(not(feature = "kernel"))]
 pub mod runtime;
-mod simple_idcounter;
+//mod simple_idcounter;
 pub mod simple_mutex;
-pub mod slot;
+//pub mod slot;
 pub mod syscall;
 pub mod thread;
-pub mod time;
+//pub mod time;
 pub mod upcall;
 pub mod vcell;
 

@@ -16,7 +16,7 @@ pub const NULLPAGE_SIZE: usize = 0x1000;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// An object ID, represented as a transparent wrapper type. Any value where the upper 64 bits are
 /// zero is invalid.
-pub struct ObjID(u128);
+pub struct ObjID(twizzler_runtime_api::ObjID);
 
 impl ObjID {
     /// Create a new ObjID out of a 128 bit value.
@@ -84,83 +84,5 @@ bitflags::bitflags! {
         const WRITE = 2;
         /// Exec allowed.
         const EXEC = 4;
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Debug)]
-pub(crate) struct InternalObject<T> {
-    slot: usize,
-    id: ObjID,
-    _pd: PhantomData<T>,
-}
-
-impl<T> InternalObject<T> {
-    #[allow(dead_code)]
-    pub(crate) fn base(&self) -> &T {
-        let (start, _) = crate::slot::to_vaddr_range(self.slot);
-        unsafe { (start as *const T).as_ref().unwrap() }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn id(&self) -> ObjID {
-        self.id
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn slot(&self) -> usize {
-        self.slot
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn create_data_and_map() -> Option<Self> {
-        let cs = ObjectCreate::new(
-            crate::syscall::BackingType::Normal,
-            crate::syscall::LifetimeType::Volatile,
-            None,
-            ObjectCreateFlags::empty(),
-        );
-        let id = crate::syscall::sys_object_create(cs, &[], &[]).ok()?;
-
-        let slot = crate::slot::global_allocate()?;
-
-        crate::syscall::sys_object_map(
-            None,
-            id,
-            slot,
-            Protections::READ | Protections::WRITE,
-            MapFlags::empty(),
-        )
-        .ok()?;
-
-        //TODO: delete
-        Some(Self {
-            id,
-            slot,
-            _pd: PhantomData,
-        })
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn map(id: ObjID, prot: Protections) -> Option<Self> {
-        let slot = crate::slot::global_allocate()?;
-        crate::syscall::sys_object_map(None, id, slot, prot, MapFlags::empty()).ok()?;
-        Some(Self {
-            id,
-            slot,
-            _pd: PhantomData,
-        })
-    }
-
-    #[allow(dead_code)]
-    pub(crate) unsafe fn offset_from_base<D>(&mut self, offset: usize) -> &mut D {
-        let (start, _) = crate::slot::to_vaddr_range(self.slot);
-        ((start + offset) as *mut D).as_mut().unwrap()
-    }
-}
-
-impl<T> Drop for InternalObject<T> {
-    fn drop(&mut self) {
-        crate::slot::global_release(self.slot);
     }
 }

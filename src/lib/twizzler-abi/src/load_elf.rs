@@ -4,8 +4,7 @@ use core::{intrinsics::copy_nonoverlapping, mem::size_of};
 
 use crate::{
     aux::AuxEntry,
-    object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    slot::{RESERVED_DATA, RESERVED_STACK, RESERVED_TEXT},
+    object::NULLPAGE_SIZE,
     syscall::{
         sys_unbind_handle, BackingType, HandleType, LifetimeType, MapFlags, NewHandleFlags,
         ObjectCreate, ObjectCreateFlags, ObjectSource, ThreadSpawnArgs, ThreadSpawnFlags,

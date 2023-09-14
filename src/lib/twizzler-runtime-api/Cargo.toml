@@ -9,6 +9,7 @@ crate-type = ["rlib"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+bitflags = "1.3.2"
 
 [dependencies.compiler_builtins]
 optional = true
@@ -20,4 +21,8 @@ package = "rustc-std-workspace-core"
 version = "1.0.0"
 
 [features]
-rustc-dep-of-std = ["core", "compiler_builtins/rustc-dep-of-std"]
+rustc-dep-of-std = [
+    "core",
+    "compiler_builtins/rustc-dep-of-std",
+    "bitflags/rustc-dep-of-std",
+]

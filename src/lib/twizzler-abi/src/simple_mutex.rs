@@ -113,7 +113,7 @@ impl<T> Mutex<T> {
     pub const fn new(data: T) -> Self {
         Self {
             imp: MutexImp::new(),
-            data,
+            data: UnsafeCell::new(data),
         }
     }
 
@@ -149,6 +149,6 @@ impl<T> core::ops::DerefMut for LockGuard<'_, T> {
 
 impl<T> Drop for LockGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.release();
+        unsafe { self.lock.imp.unlock() };
     }
 }

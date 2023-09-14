@@ -1,3 +1,5 @@
+use core::alloc::GlobalAlloc;
+
 use twizzler_runtime_api::CoreRuntime;
 
 use super::{alloc::MinimalAllocator, MinimalRuntime};
@@ -5,9 +7,7 @@ use super::{alloc::MinimalAllocator, MinimalRuntime};
 static GLOBAL_ALLOCATOR: MinimalAllocator = MinimalAllocator::new();
 
 impl CoreRuntime for MinimalRuntime {
-    type AllocatorType = MinimalAllocator;
-
-    fn default_allocator(&self) -> &Self::AllocatorType {
+    fn default_allocator(&self) -> &'static dyn GlobalAlloc {
         &GLOBAL_ALLOCATOR
     }
 
@@ -18,4 +18,10 @@ impl CoreRuntime for MinimalRuntime {
     fn abort(&self) -> ! {
         core::intrinsics::abort();
     }
+}
+
+static CORE_R: MinimalRuntime = MinimalRuntime {};
+
+pub fn runtime() -> &'static (dyn CoreRuntime + Sync) {
+    &CORE_R
 }

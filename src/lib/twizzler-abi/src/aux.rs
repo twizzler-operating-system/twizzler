@@ -5,7 +5,7 @@
 //! This array of entries is an unspecified length and is terminated by the Null entry at the end of
 //! the array.
 
-use crate::object::ObjID;
+use crate::{arch::to_vaddr_range, object::ObjID};
 
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -104,6 +104,7 @@ impl KernelInitInfo {
 
 /// Get the initial kernel info for init. Only works for init.
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {
-    let (start, _) = crate::slot::to_vaddr_range(crate::slot::RESERVED_KERNEL_INIT);
-    unsafe { (start as *const KernelInitInfo).as_ref().unwrap() }
+    todo!()
+    //let (start, _) = to_vaddr_range(crate::slot::RESERVED_KERNEL_INIT);
+    //unsafe { (start as *const KernelInitInfo).as_ref().unwrap() }
 }

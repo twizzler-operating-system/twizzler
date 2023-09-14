@@ -17,7 +17,6 @@ use crate::syscall::*;
 #[allow(unused_imports)]
 use crate::{
     object::{ObjID, Protections},
-    simple_idcounter::IdCounter,
     syscall::{MapFlags, ThreadSpawnArgs, ThreadSpawnFlags},
 };
 
@@ -158,6 +157,7 @@ impl ThreadRepr {
     }
 }
 
+/*
 #[allow(dead_code)]
 struct Thread {
     objid: ObjID,
@@ -177,7 +177,7 @@ impl Thread {
     }
 }
 
-static THREADS_LOCK: crate::simple_mutex::Mutex = crate::simple_mutex::Mutex::new();
+static THREADS_LOCK: crate::simple_mutex::Mutex<()> = crate::simple_mutex::Mutex::new(());
 static mut THREADS: *mut Thread = ptr::null_mut();
 static mut THREADS_LEN: usize = 0;
 static mut THREAD_IDS: IdCounter = IdCounter::new(1);
@@ -340,3 +340,5 @@ pub unsafe fn join(id: u32) {
 pub fn exit() -> ! {
     crate::syscall::sys_thread_exit(0);
 }
+
+*/

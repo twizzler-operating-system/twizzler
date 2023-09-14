@@ -1,22 +1,44 @@
 use core::fmt::Debug;
 
-use twizzler_runtime_api::{InternalError, IoRead, IoWrite, RustStdioRuntime};
+use twizzler_runtime_api::{IoRead, IoWrite, ReadError, RustStdioRuntime, WriteError};
 
 use crate::syscall::KernelConsoleReadError;
 
 use super::MinimalRuntime;
 
 impl RustStdioRuntime for MinimalRuntime {
-    type Stdin = ReadPoint;
+    fn with_panic_output(&self, cb: twizzler_runtime_api::IoWriteDynCallback<'_, ()>) {
+        todo!()
+    }
 
-    type Stdout = WritePoint;
+    fn with_stdin(
+        &self,
+        cb: twizzler_runtime_api::IoReadDynCallback<
+            '_,
+            Result<usize, twizzler_runtime_api::ReadError>,
+        >,
+    ) -> Result<usize, twizzler_runtime_api::ReadError> {
+        todo!()
+    }
 
-    type Stderr = WritePoint;
+    fn with_stdout(
+        &self,
+        cb: twizzler_runtime_api::IoWriteDynCallback<
+            '_,
+            Result<usize, twizzler_runtime_api::WriteError>,
+        >,
+    ) -> Result<usize, twizzler_runtime_api::WriteError> {
+        todo!()
+    }
 
-    type PanicOutput = WritePoint;
-
-    fn panic_output(&self) -> Self::PanicOutput {
-        WritePoint {}
+    fn with_stderr(
+        &self,
+        cb: twizzler_runtime_api::IoWriteDynCallback<
+            '_,
+            Result<usize, twizzler_runtime_api::WriteError>,
+        >,
+    ) -> Result<usize, twizzler_runtime_api::WriteError> {
+        todo!()
     }
 }
 
@@ -26,21 +48,8 @@ pub struct WritePoint {}
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
 pub struct ReadPoint {}
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
-pub enum WriteError {}
-
-impl core::fmt::Display for WriteError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        <Self as Debug>::fmt(&self, f)
-    }
-}
-
-impl InternalError for WriteError {}
-
 impl IoWrite for WritePoint {
-    type WriteErrorType = WriteError;
-
-    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::WriteErrorType> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, WriteError> {
         crate::syscall::sys_kernel_console_write(
             buf,
             crate::syscall::KernelConsoleWriteFlags::empty(),
@@ -48,20 +57,23 @@ impl IoWrite for WritePoint {
         Ok(buf.len())
     }
 
-    fn flush(&mut self) -> Result<(), Self::WriteErrorType> {
+    fn flush(&mut self) -> Result<(), WriteError> {
         Ok(())
     }
 }
 
 impl IoRead for ReadPoint {
-    type ReadErrorType = KernelConsoleReadError;
-
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::ReadErrorType> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, ReadError> {
         crate::syscall::sys_kernel_console_read(
             buf,
             crate::syscall::KernelConsoleReadFlags::empty(),
         )
+        .map_err(|e| e.into())
     }
 }
 
-impl InternalError for KernelConsoleReadError {}
+impl From<KernelConsoleReadError> for ReadError {
+    fn from(_: KernelConsoleReadError) -> Self {
+        todo!()
+    }
+}
