@@ -42,7 +42,7 @@ impl UpcallFrame {
 }
 
 #[no_mangle]
-#[cfg(feature = "rt")]
+#[cfg(feature = "runtime")]
 pub(crate) unsafe extern "C" fn upcall_entry2(
     rdi: *const UpcallFrame,
     rsi: *const UpcallInfo,
@@ -52,7 +52,7 @@ pub(crate) unsafe extern "C" fn upcall_entry2(
     crate::syscall::sys_thread_exit(129);
 }
 
-#[cfg(feature = "rt")]
+#[cfg(feature = "runtime")]
 #[no_mangle]
 pub(crate) unsafe extern "C" fn upcall_entry(rdi: *const UpcallFrame, rsi: *const UpcallInfo) -> ! {
     core::arch::asm!(

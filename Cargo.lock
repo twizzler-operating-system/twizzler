@@ -202,6 +202,9 @@ dependencies = [
 [[package]]
 name = "bootstrap"
 version = "0.1.0"
+dependencies = [
+ "twizzler-abi",
+]
 
 [[package]]
 name = "bstr"
@@ -1100,14 +1103,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2540771e65fc8cb83cd6e8a237f70c319bd5c29f78ed1084ba5d50eeac86f7f9"
 
 [[package]]
-name = "hello-world"
-version = "0.1.0"
-dependencies = [
- "monitor",
- "secgate",
-]
-
-[[package]]
 name = "hermit-abi"
 version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1656,13 +1651,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monitor"
-version = "0.1.0"
-dependencies = [
- "secgate",
-]
-
-[[package]]
 name = "nando"
 version = "0.1.0"
 dependencies = [
@@ -1710,6 +1698,7 @@ name = "nettest"
 version = "0.1.0"
 dependencies = [
  "byteorder",
+ "twizzler-abi",
  "twizzler-async",
  "twizzler-net",
  "twizzler-object",
@@ -2462,15 +2451,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "slotmap"
-version = "1.0.6"
-source = "git+https://github.com/twizzler-operating-system/slotmap.git?branch=twizzler#5ff6ca3be5047c311c1038c6e347f462201d2958"
-dependencies = [
- "rustc-std-workspace-alloc",
- "version_check",
-]
-
-[[package]]
 name = "socket2"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2842,7 +2822,6 @@ dependencies = [
  "libc",
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
- "slotmap",
  "syscall_encode_macros",
  "syscall_encode_traits",
  "twizzler-runtime-api",
@@ -2897,6 +2876,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-kernel-macros",
  "twizzler-queue-raw",
+ "twizzler-runtime-api",
  "uart_16550",
  "x86 0.52.0",
  "xmas-elf",

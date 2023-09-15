@@ -1,10 +1,6 @@
 //! Functions for manipulating threads.
 
-use core::{
-    alloc::Layout,
-    ptr,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(not(feature = "kernel"))]
 use core::time::Duration;

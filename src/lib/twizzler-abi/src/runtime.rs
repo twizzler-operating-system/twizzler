@@ -5,10 +5,12 @@ mod core;
 mod debug;
 mod fs;
 pub(crate) mod object;
+pub(crate) mod phdrs;
 mod process;
 mod stdio;
 mod thread;
 mod time;
+pub(crate) mod tls;
 
 #[derive(Default)]
 pub struct MinimalRuntime {}

@@ -24,9 +24,9 @@ members = [
     "src/runtime/nando/nando-macros",
     "src/runtime/secgate",
     "src/runtime/secgate/secgate-macros",
-    "src/runtime/monitor",
+    #"src/runtime/monitor",
     "src/runtime/dynlink",
-    "src/runtime/hello-world",
+    #"src/runtime/hello-world",
     "src/runtime/bootstrap",
 ]
 exclude = ["toolchain/src/rust"]

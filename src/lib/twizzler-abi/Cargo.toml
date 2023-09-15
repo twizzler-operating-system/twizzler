@@ -12,7 +12,6 @@ syscall_encode_macros = { version = "0.1.8" }
 syscall_encode_traits = { version = "0.1.9" }
 twizzler-runtime-api = { path = "../twizzler-runtime-api" }
 alloc = { version = "1.0.0", optional = true, package = "rustc-std-workspace-alloc" }
-slotmap = { version = "1.0", default-features = false, git = "https://github.com/twizzler-operating-system/slotmap.git", branch = "twizzler" }
 
 [dependencies.compiler_builtins]
 optional = true
@@ -29,10 +28,7 @@ default-features = false
 version = "0.2.51"
 
 [features]
-#default = ["std"]
-docs = []
-rt = []
-std = []
+runtime = []
 kernel = []
 rustc-dep-of-std = [
     "core",
@@ -42,7 +38,5 @@ rustc-dep-of-std = [
     "syscall_encode_macros/rustc-dep-of-std",
     "syscall_encode_traits/rustc-dep-of-std",
     "twizzler-runtime-api/rustc-dep-of-std",
-    "slotmap/rustc-dep-of-std",
     "alloc",
-    "rt",
 ]

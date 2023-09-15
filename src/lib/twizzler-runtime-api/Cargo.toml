@@ -26,3 +26,6 @@ rustc-dep-of-std = [
     "compiler_builtins/rustc-dep-of-std",
     "bitflags/rustc-dep-of-std",
 ]
+default = ["runtime"]
+runtime = []
+kernel = []

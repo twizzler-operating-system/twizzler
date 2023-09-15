@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 
 [dependencies]
-twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-abi = { path = "../../lib/twizzler-abi", features = ["runtime"] }
 twizzler-net = { path = "../../lib/twizzler-net" }
 twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-queue = { path = "../../lib/twizzler-queue" }

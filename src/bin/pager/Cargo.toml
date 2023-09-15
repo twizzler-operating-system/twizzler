@@ -6,12 +6,12 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-twizzler-abi = {path = "../../lib/twizzler-abi" }
-twizzler-net = {path = "../../lib/twizzler-net" }
-twizzler-object = {path = "../../lib/twizzler-object" }
-twizzler-queue = {path = "../../lib/twizzler-queue"}
-twizzler-async = {path = "../../lib/twizzler-async"}
-twizzler-driver = {path = "../../lib/twizzler-driver"}
+twizzler-abi = { path = "../../lib/twizzler-abi", features = ["runtime"] }
+twizzler-net = { path = "../../lib/twizzler-net" }
+twizzler-object = { path = "../../lib/twizzler-object" }
+twizzler-queue = { path = "../../lib/twizzler-queue" }
+twizzler-async = { path = "../../lib/twizzler-async" }
+twizzler-driver = { path = "../../lib/twizzler-driver" }
 nvme = { git = "https://github.com/twizzler-operating-system/nvme-rs" }
 tickv = { version = "1.0.0" }
 async-trait = "0.1.66"

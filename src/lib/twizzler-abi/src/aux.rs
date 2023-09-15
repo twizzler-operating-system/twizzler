@@ -5,24 +5,7 @@
 //! This array of entries is an unspecified length and is terminated by the Null entry at the end of
 //! the array.
 
-use crate::{arch::to_vaddr_range, object::ObjID};
-
-#[repr(C)]
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-/// Auxillary information provided to a new program on runtime entry.
-pub enum AuxEntry {
-    /// Ends the aux array.
-    Null,
-    /// A pointer to this program's program headers, and the number of them. See the ELF
-    /// specification for more info.
-    ProgramHeaders(u64, usize),
-    /// A pointer to the env var array.
-    Environment(u64),
-    /// A pointer to the arguments array.
-    Arguments(usize, u64),
-    /// The object ID of the executable.
-    ExecId(ObjID),
-}
+use crate::object::ObjID;
 
 /// Information about initrd object names.
 #[derive(Copy, Clone)]

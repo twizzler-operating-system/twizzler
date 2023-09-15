@@ -20,12 +20,12 @@ unsafe impl Send for MutexImp {}
 
 impl MutexImp {
     /// Construct a new mutex.
+    #[allow(dead_code)]
     pub const fn new() -> MutexImp {
-        MutexImp {
-            lock: AtomicU64::new(0),
-        }
+        MutexImp { lock: AtomicU64::new(0) }
     }
 
+    #[allow(dead_code)]
     pub fn is_locked(&self) -> bool {
         self.lock.load(Ordering::SeqCst) != 0
     }
@@ -37,19 +37,16 @@ impl MutexImp {
     /// mutex correctly, and that any data protected by the mutex is only accessed with the mutex locked.
     ///
     /// Note, this is why you should use the standard library mutex, which enforces all of these things.
+    #[allow(dead_code)]
     pub unsafe fn lock(&self) {
         for _ in 0..100 {
-            let result = self
-                .lock
-                .compare_exchange_weak(0, 1, Ordering::SeqCst, Ordering::SeqCst);
+            let result = self.lock.compare_exchange_weak(0, 1, Ordering::SeqCst, Ordering::SeqCst);
             if result.is_ok() {
                 return;
             }
             core::hint::spin_loop();
         }
-        let _ = self
-            .lock
-            .compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst);
+        let _ = self.lock.compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst);
         let sleep = ThreadSync::new_sleep(ThreadSyncSleep::new(
             ThreadSyncReference::Virtual(&self.lock),
             2,
@@ -69,25 +66,21 @@ impl MutexImp {
     /// Unlock a mutex locked with [Mutex::lock].
     /// # Safety
     /// Must be the current owner of the locked mutex and must make sure to unlock properly.
+    #[allow(dead_code)]
     pub unsafe fn unlock(&self) {
         if self.lock.swap(0, Ordering::SeqCst) == 1 {
             return;
         }
         for _ in 0..200 {
             if self.lock.load(Ordering::SeqCst) > 0
-                && self
-                    .lock
-                    .compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst)
-                    != Err(0)
+                && self.lock.compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst) != Err(0)
             {
                 return;
             }
             core::hint::spin_loop();
         }
-        let wake = ThreadSync::new_wake(ThreadSyncWake::new(
-            ThreadSyncReference::Virtual(&self.lock),
-            1,
-        ));
+        let wake =
+            ThreadSync::new_wake(ThreadSyncWake::new(ThreadSyncReference::Virtual(&self.lock), 1));
         let _ = sys_thread_sync(&mut [wake], None);
     }
 
@@ -97,10 +90,9 @@ impl MutexImp {
     /// # Safety
     /// Same safety concerns as [Mutex::lock], but now you have to check to see if the lock happened
     /// or not.
+    #[allow(dead_code)]
     pub unsafe fn try_lock(&self) -> bool {
-        self.lock
-            .compare_exchange_weak(0, 1, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+        self.lock.compare_exchange_weak(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_ok()
     }
 }
 
@@ -110,18 +102,27 @@ pub(crate) struct Mutex<T> {
 }
 
 impl<T> Mutex<T> {
+    #[allow(dead_code)]
     pub const fn new(data: T) -> Self {
-        Self {
-            imp: MutexImp::new(),
-            data: UnsafeCell::new(data),
-        }
+        Self { imp: MutexImp::new(), data: UnsafeCell::new(data) }
     }
 
+    #[allow(dead_code)]
     pub fn lock(&self) -> LockGuard<'_, T> {
         unsafe {
             self.imp.lock();
         }
         LockGuard { lock: self }
+    }
+
+    #[allow(dead_code)]
+    pub fn try_lock(&self) -> Option<LockGuard<'_, T>> {
+        unsafe {
+            if !self.imp.try_lock() {
+                return None;
+            }
+        }
+        Some(LockGuard { lock: self })
     }
 }
 

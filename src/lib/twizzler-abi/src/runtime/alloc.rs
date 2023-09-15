@@ -10,11 +10,11 @@ impl MinimalAllocator {
 }
 
 unsafe impl GlobalAlloc for MinimalAllocator {
-    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+    unsafe fn alloc(&self, _layout: core::alloc::Layout) -> *mut u8 {
         todo!()
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {
         todo!()
     }
 }

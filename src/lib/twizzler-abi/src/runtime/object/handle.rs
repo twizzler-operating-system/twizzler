@@ -16,6 +16,7 @@ pub(crate) struct InternalObject<T> {
 }
 
 impl<T> InternalObject<T> {
+    #[allow(dead_code)]
     pub(crate) fn create_data_and_map() -> Option<Self> {
         todo!()
     }
@@ -53,6 +54,7 @@ impl<T> InternalObject<T> {
         })
     }
 
+    #[allow(dead_code)]
     pub(crate) fn offset<P>(&self, offset: usize) -> Option<*const P> {
         if offset >= NULLPAGE_SIZE && offset < MAX_SIZE {
             Some(unsafe { self.runtime_handle.base.add(offset) as *const P })
@@ -61,6 +63,7 @@ impl<T> InternalObject<T> {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn offset_mut<P>(&mut self, offset: usize) -> Option<*mut P> {
         if offset >= NULLPAGE_SIZE && offset < MAX_SIZE {
             Some(unsafe { self.runtime_handle.base.add(offset) as *mut P })

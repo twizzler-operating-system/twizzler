@@ -25,6 +25,7 @@
 #![feature(once_cell)]
 pub mod arch;
 
+#[allow(unused_extern_crates)]
 extern crate alloc as rustc_alloc;
 
 //pub mod alloc;
@@ -32,19 +33,19 @@ pub mod aux;
 pub mod device;
 //#[cfg(any(doc, feature = "rt"))]
 //pub mod exec;
+#[cfg(feature = "runtime")]
+mod idcounter;
 pub mod kso;
 mod llalloc;
-#[cfg(not(feature = "kernel"))]
+#[cfg(feature = "runtime")]
 pub mod load_elf;
 pub mod marker;
 pub mod meta;
 pub mod object;
 pub mod pager;
-//#[cfg(any(doc, feature = "rt"))]
-//pub mod rt1;
-#[cfg(any(not(feature = "kernel"), feature = "rt"))]
+#[cfg(feature = "runtime")]
 pub mod runtime;
-//mod simple_idcounter;
+#[cfg(feature = "runtime")]
 pub mod simple_mutex;
 pub mod slot;
 pub mod syscall;
@@ -84,6 +85,7 @@ pub unsafe extern "C" fn __stack_chk_fail() {
     abort();
 }
 
+#[allow(dead_code)]
 /// during runtime init, we need to call functions that might fail, but if they do so, we should
 /// just abort. the standard unwrap() function for option will call panic, but we can't use that, as
 /// the runtime init stuff runs before the panic runtime is ready.

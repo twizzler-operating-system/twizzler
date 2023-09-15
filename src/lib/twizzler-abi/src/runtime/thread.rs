@@ -1,6 +1,9 @@
-use crate::{object::Protections, rustc_alloc::collections::BTreeMap, thread::ExecutionState};
+use crate::{
+    idcounter::IdCounter, object::Protections, rustc_alloc::collections::BTreeMap,
+    thread::ExecutionState,
+};
 
-use twizzler_runtime_api::{JoinError, ObjID, SpawnError, ThreadRuntime};
+use twizzler_runtime_api::{JoinError, SpawnError, ThreadRuntime};
 
 use crate::{
     simple_mutex::Mutex,
@@ -15,15 +18,18 @@ use super::{object::InternalObject, MinimalRuntime};
 
 struct InternalThread {
     repr: InternalObject<ThreadRepr>,
+    #[allow(dead_code)]
+    int_id: u32,
 }
 
 unsafe impl Send for InternalObject<ThreadRepr> {}
 unsafe impl Sync for InternalObject<ThreadRepr> {}
 
 use rustc_alloc::sync::Arc;
-static THREAD_SLOTS: Mutex<BTreeMap<ObjID, Arc<InternalThread>>> = Mutex::new(BTreeMap::new());
+static THREAD_SLOTS: Mutex<BTreeMap<u32, Arc<InternalThread>>> = Mutex::new(BTreeMap::new());
+static THREAD_ID_COUNTER: IdCounter = IdCounter::new_one();
 
-fn get_thread_slots() -> &'static Mutex<BTreeMap<ObjID, Arc<InternalThread>>> {
+fn get_thread_slots() -> &'static Mutex<BTreeMap<u32, Arc<InternalThread>>> {
     &THREAD_SLOTS
 }
 
@@ -77,10 +83,10 @@ impl ThreadRuntime for MinimalRuntime {
         let _ = crate::syscall::sys_thread_sync(&mut [wake], None);
     }
 
-    fn spawn(
-        &self,
-        args: twizzler_runtime_api::ThreadSpawnArgs,
-    ) -> Result<twizzler_runtime_api::ObjID, SpawnError> {
+    #[allow(dead_code)]
+    #[allow(unused_variables)]
+    #[allow(unreachable_code)]
+    fn spawn(&self, args: twizzler_runtime_api::ThreadSpawnArgs) -> Result<u32, SpawnError> {
         let initial_stack = todo!();
         let initial_tls = todo!();
         let thid = unsafe {
@@ -95,20 +101,20 @@ impl ThreadRuntime for MinimalRuntime {
             })?
         };
 
+        let int_id = THREAD_ID_COUNTER.fresh();
         let thread = InternalThread {
             repr: InternalObject::map(thid, Protections::READ).unwrap(),
+            int_id,
         };
-        get_thread_slots()
-            .lock()
-            .insert(thid.as_u128(), Arc::new(thread));
-        Ok(thid.as_u128())
+        get_thread_slots().lock().insert(int_id, Arc::new(thread));
+        Ok(int_id)
     }
 
     fn yield_now(&self) {
         crate::syscall::sys_thread_yield()
     }
 
-    fn set_name(&self, name: &core::ffi::CStr) {
+    fn set_name(&self, _name: &core::ffi::CStr) {
         // TODO
     }
 
@@ -116,11 +122,7 @@ impl ThreadRuntime for MinimalRuntime {
         let _ = crate::syscall::sys_thread_sync(&mut [], Some(duration));
     }
 
-    fn join(
-        &self,
-        id: twizzler_runtime_api::ObjID,
-        timeout: Option<core::time::Duration>,
-    ) -> Result<(), JoinError> {
+    fn join(&self, id: u32, timeout: Option<core::time::Duration>) -> Result<(), JoinError> {
         loop {
             let thread = {
                 get_thread_slots()
@@ -133,6 +135,7 @@ impl ThreadRuntime for MinimalRuntime {
             if let Some(data) = data {
                 if data.0 == ExecutionState::Exited {
                     get_thread_slots().lock().remove(&id);
+                    THREAD_ID_COUNTER.release(id);
                     return Ok(());
                 }
             } else if timeout.is_some() {
@@ -140,12 +143,10 @@ impl ThreadRuntime for MinimalRuntime {
             }
         }
     }
-}
 
-#[no_mangle]
-#[linkage = "extern_weak"]
-pub fn __tls_get_addr() {
-    todo!()
+    fn tls_get_addr(&self, tls_index: &twizzler_runtime_api::TlsIndex) -> *const u8 {
+        todo!()
+    }
 }
 
 impl From<ThreadSpawnError> for SpawnError {

@@ -3,6 +3,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
+    vec,
 };
 
 use anyhow::Context;
@@ -77,7 +78,7 @@ pub fn needs_reinstall() -> anyhow::Result<bool> {
         .unwrap()
         .modified()
         .expect("failed to get system time from metadata");
-    for entry in walkdir::WalkDir::new("src/lib/twizzler-abi").min_depth(1) {
+    for entry in walkdir::WalkDir::new("src/lib/twizzler-runtime-api").min_depth(1) {
         let entry = entry.expect("error walking directory");
         let stat = entry
             .metadata()
@@ -177,12 +178,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 
     let _ = std::fs::remove_file("toolchain/src/rust/config.toml");
     generate_config_toml()?;
-    let res = std::fs::remove_dir_all("toolchain/src/rust/library/twizzler-abi");
-    if let Err(e) = res {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            anyhow::bail!("failed to remove copied twizzler-abi");
-        }
-    }
     let res = std::fs::remove_dir_all("toolchain/src/rust/library/twizzler-runtime-api");
     if let Err(e) = res {
         if e.kind() != std::io::ErrorKind::NotFound {
@@ -190,11 +185,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         }
     }
 
-    fs_extra::copy_items(
-        &["src/lib/twizzler-abi"],
-        "toolchain/src/rust/library/",
-        &CopyOptions::new(),
-    )?;
     fs_extra::copy_items(
         &["src/lib/twizzler-runtime-api"],
         "toolchain/src/rust/library/",
@@ -205,8 +195,24 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
     std::env::set_var("PATH", format!("{}:{}", lld_bin.to_string_lossy(), path));
 
+    let keep_args = if cli.keep_early_stages {
+        vec![
+            "--keep-stage",
+            "0",
+            "--keep-stage-std",
+            "0",
+            "--keep-stage",
+            "1",
+            "--keep-stage-std",
+            "1",
+        ]
+    } else {
+        vec![]
+    };
+
     let status = Command::new("./x.py")
         .arg("install")
+        .args(&keep_args)
         .current_dir("toolchain/src/rust")
         .status()?;
     if !status.success() {
@@ -216,6 +222,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     let src_status = Command::new("./x.py")
         .arg("install")
         .arg("src")
+        .args(keep_args)
         .current_dir("toolchain/src/rust")
         .status()?;
     if !src_status.success() {
@@ -243,6 +250,10 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 
 pub fn set_dynamic() {
     std::env::set_var("RUSTFLAGS", "-C prefer-dynamic");
+}
+
+pub fn set_static() {
+    std::env::set_var("RUSTFLAGS", "-C prefer-dynamic=no");
 }
 
 pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {

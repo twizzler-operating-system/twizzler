@@ -1,11 +1,33 @@
 #![no_std]
+#![feature(unboxed_closures)]
+#![feature(naked_functions)]
+#![feature(asm_sym)]
 
 use core::{
-    alloc::GlobalAlloc, ffi::CStr, fmt::Display, num::NonZeroUsize, sync::atomic::AtomicU32,
-    time::Duration,
+    alloc::GlobalAlloc, ffi::CStr, num::NonZeroUsize, sync::atomic::AtomicU32, time::Duration,
 };
 
+#[cfg(all(feature = "runtime", not(feature = "kernel")))]
+pub mod rt0;
+
 pub type ObjID = u128;
+
+#[repr(C)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+/// Auxillary information provided to a new program on runtime entry.
+pub enum AuxEntry {
+    /// Ends the aux array.
+    Null,
+    /// A pointer to this program's program headers, and the number of them. See the ELF
+    /// specification for more info.
+    ProgramHeaders(u64, usize),
+    /// A pointer to the env var array.
+    Environment(u64),
+    /// A pointer to the arguments array.
+    Arguments(usize, u64),
+    /// The object ID of the executable.
+    ExecId(ObjID),
+}
 
 /// Full runtime trait, composed of smaller traits
 pub trait Runtime:
@@ -35,6 +57,13 @@ pub struct ThreadSpawnArgs {
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 pub enum SpawnError {}
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+pub struct TlsIndex {
+    pub mod_id: usize,
+    pub offset: usize,
+}
+
 /// All the thread-related runtime
 pub trait ThreadRuntime {
     /// Essentially number of threads on this system
@@ -48,7 +77,7 @@ pub trait ThreadRuntime {
     fn futex_wake_all(&self, futex: &AtomicU32);
 
     /// Spawn a thread
-    fn spawn(&self, args: ThreadSpawnArgs) -> Result<ObjID, SpawnError>;
+    fn spawn(&self, args: ThreadSpawnArgs) -> Result<u32, SpawnError>;
 
     /// Yield calling thread
     fn yield_now(&self);
@@ -60,7 +89,9 @@ pub trait ThreadRuntime {
     fn sleep(&self, duration: Duration);
 
     /// Specified thread is joining
-    fn join(&self, id: ObjID, timeout: Option<Duration>) -> Result<(), JoinError>;
+    fn join(&self, id: u32, timeout: Option<Duration>) -> Result<(), JoinError>;
+
+    fn tls_get_addr(&self, tls_index: &TlsIndex) -> *const u8;
 }
 
 pub trait ObjectRuntime {
@@ -110,8 +141,11 @@ pub trait CoreRuntime {
 
     /// Thread abort
     fn abort(&self) -> !;
+
+    fn runtime_entry(&self, arg: *const AuxEntry, std_entry: LibstdEntry) -> !;
 }
 
+#[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 /// Arguments passed by the runtime to libstd.
 pub struct BasicAux {
@@ -120,9 +154,12 @@ pub struct BasicAux {
     pub env: *const *const i8,
 }
 
+#[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 /// Return value returned by std from LibStdEntry
-pub struct BasicReturn {}
+pub struct BasicReturn {
+    pub code: i32,
+}
 
 /// Runtime that implements std's FS support
 pub trait RustFsRuntime {}
@@ -130,7 +167,7 @@ pub trait RustFsRuntime {}
 /// Runtime that implements std's process and command support
 pub trait RustProcessRuntime: RustStdioRuntime {}
 
-pub type IoReadDynCallback<'a, R> = &'a (dyn (Fn(&mut dyn IoRead) -> R));
+pub type IoReadDynCallback<'a, R> = &'a (dyn (FnMut(&mut dyn IoRead) -> R));
 
 pub type IoWriteDynCallback<'a, R> = &'a (dyn (Fn(&mut dyn IoWrite) -> R));
 
@@ -180,17 +217,19 @@ pub trait RustTimeRuntime {
 }
 
 /// This is the type of the function exposed by std that the runtime calls to transfer control to the Rust std + main.
-pub type LibstdEntry = fn(aux: BasicAux) -> BasicReturn;
+pub type LibstdEntry = unsafe extern "C" fn(aux: BasicAux) -> BasicReturn;
 
 /// Error types
 pub trait DebugRuntime {
     fn iter_libs(&self) -> ();
 }
 
-extern "C" {
-    fn __twz_get_runtime() -> &'static (dyn Runtime + Sync);
+#[cfg(not(feature = "kernel"))]
+extern "rust-call" {
+    fn __twz_get_runtime(_a: ()) -> &'static (dyn Runtime + Sync);
 }
 
+#[cfg(not(feature = "kernel"))]
 pub fn get_runtime() -> &'static (dyn Runtime + Sync) {
-    unsafe { __twz_get_runtime() }
+    unsafe { __twz_get_runtime(()) }
 }

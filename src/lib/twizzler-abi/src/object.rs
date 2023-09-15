@@ -1,11 +1,6 @@
 //! Low-level object APIs, mostly around IDs and basic things like protection definitions and metadata.
 
-use core::{
-    fmt::{LowerHex, UpperHex},
-    marker::PhantomData,
-};
-
-use crate::syscall::{MapFlags, ObjectCreate, ObjectCreateFlags};
+use core::fmt::{LowerHex, UpperHex};
 
 /// The maximum size of an object, including null page and meta page(s).
 pub const MAX_SIZE: usize = 1024 * 1024 * 1024;
@@ -87,5 +82,5 @@ bitflags::bitflags! {
     }
 }
 
-#[cfg(not(feature = "kernel"))]
+#[cfg(feature = "runtime")]
 pub(crate) use crate::runtime::object::InternalObject;

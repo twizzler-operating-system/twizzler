@@ -7,13 +7,13 @@ use crate::syscall::KernelConsoleReadError;
 use super::MinimalRuntime;
 
 impl RustStdioRuntime for MinimalRuntime {
-    fn with_panic_output(&self, cb: twizzler_runtime_api::IoWriteDynCallback<'_, ()>) {
+    fn with_panic_output(&self, _cb: twizzler_runtime_api::IoWriteDynCallback<'_, ()>) {
         todo!()
     }
 
     fn with_stdin(
         &self,
-        cb: twizzler_runtime_api::IoReadDynCallback<
+        _cb: twizzler_runtime_api::IoReadDynCallback<
             '_,
             Result<usize, twizzler_runtime_api::ReadError>,
         >,
@@ -23,7 +23,7 @@ impl RustStdioRuntime for MinimalRuntime {
 
     fn with_stdout(
         &self,
-        cb: twizzler_runtime_api::IoWriteDynCallback<
+        _cb: twizzler_runtime_api::IoWriteDynCallback<
             '_,
             Result<usize, twizzler_runtime_api::WriteError>,
         >,
@@ -33,7 +33,7 @@ impl RustStdioRuntime for MinimalRuntime {
 
     fn with_stderr(
         &self,
-        cb: twizzler_runtime_api::IoWriteDynCallback<
+        _cb: twizzler_runtime_api::IoWriteDynCallback<
             '_,
             Result<usize, twizzler_runtime_api::WriteError>,
         >,

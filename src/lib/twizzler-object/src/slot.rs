@@ -4,10 +4,7 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 
-use twizzler_abi::{
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::MapFlags,
-};
+use twizzler_abi::object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_runtime_api::{MapError, ObjectHandle};
 
 use crate::{meta::FotEntry, ObjectInitError};
@@ -31,10 +28,26 @@ impl From<MapError> for ObjectInitError {
     }
 }
 
+fn into_map_flags(p: Protections) -> twizzler_runtime_api::MapFlags {
+    let mut flags = twizzler_runtime_api::MapFlags::empty();
+    if p.contains(Protections::EXEC) {
+        flags.insert(twizzler_runtime_api::MapFlags::EXEC);
+    }
+
+    if p.contains(Protections::READ) {
+        flags.insert(twizzler_runtime_api::MapFlags::READ);
+    }
+
+    if p.contains(Protections::WRITE) {
+        flags.insert(twizzler_runtime_api::MapFlags::WRITE);
+    }
+    flags
+}
+
 impl Slot {
     fn new(id: ObjID, prot: Protections) -> Result<Self, ObjectInitError> {
         let runtime = twizzler_runtime_api::get_runtime();
-        let rh = runtime.map_object(id.as_u128(), prot.into())?;
+        let rh = runtime.map_object(id.as_u128(), into_map_flags(prot))?;
         Ok(Self {
             id,
             prot,

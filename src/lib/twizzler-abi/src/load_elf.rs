@@ -5,7 +5,6 @@ use core::{intrinsics::copy_nonoverlapping, mem::size_of};
 use crate::object::InternalObject;
 
 use crate::{
-    aux::AuxEntry,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     slot::{RESERVED_DATA, RESERVED_STACK, RESERVED_TEXT},
     syscall::{
@@ -14,6 +13,8 @@ use crate::{
         UnbindHandleFlags,
     },
 };
+
+use twizzler_runtime_api::AuxEntry;
 
 #[derive(Debug)]
 #[repr(C)]
@@ -337,7 +338,7 @@ pub fn spawn_new_executable(
         idx += 1;
     }
 
-    aux_array[idx] = AuxEntry::ExecId(exe.id());
+    aux_array[idx] = AuxEntry::ExecId(exe.id().as_u128());
     idx += 1;
     aux_array[idx] = AuxEntry::Arguments(args.len(), spawnargs_start as u64);
     idx += 1;
