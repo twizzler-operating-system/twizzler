@@ -14,3 +14,5 @@ twizzler-queue = { path = "../../lib/twizzler-queue" }
 lazy_static = "1.4.0"
 async-trait = "0.1.52"
 byteorder = "1.4.3"
+[package.metadata]
+twizzler-build = "static"

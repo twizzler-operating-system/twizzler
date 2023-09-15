@@ -16,3 +16,5 @@ nvme = { git = "https://github.com/twizzler-operating-system/nvme-rs" }
 tickv = { version = "1.0.0" }
 async-trait = "0.1.66"
 volatile_cell = "1.0.0"
+[package.metadata]
+twizzler-build = "static"

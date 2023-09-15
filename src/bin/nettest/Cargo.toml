@@ -11,3 +11,5 @@ twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-async = { path = "../../lib/twizzler-async" }
 twizzler-abi = { path = "../../lib/twizzler-abi", features = ["runtime"] }
 byteorder = "1.4.3"
+[package.metadata]
+twizzler-build = "static"

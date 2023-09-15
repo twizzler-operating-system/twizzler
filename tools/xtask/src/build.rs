@@ -70,6 +70,7 @@ fn get_cli_configs(
         build_config.arch,
         crate::triple::Machine::Unknown,
         crate::triple::Host::None,
+        None,
     );
     let target_machine = build_config.machine.to_string();
 
@@ -142,6 +143,7 @@ fn build_third_party<'a>(
         build_config.arch,
         build_config.machine,
         crate::triple::Host::Twizzler,
+        None,
     );
     let mut options = CompileOptions::new(config, mode)?;
     options.build_config = BuildConfig::new(config, None, false, &[triple.to_string()], mode)?;
@@ -196,6 +198,7 @@ fn build_static<'a>(
         build_config.arch,
         crate::triple::Machine::Unknown,
         crate::triple::Host::Twizzler,
+        Some("minruntime"),
     );
     let packages = locate_packages(workspace, Some("static"));
     let mut options = CompileOptions::new(workspace.config(), mode)?;
@@ -207,7 +210,6 @@ fn build_static<'a>(
     }
     options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
-    options.build_config.export_dir = Some(PathBuf::from("target/static"));
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
 
@@ -230,6 +232,7 @@ fn build_twizzler<'a>(
         build_config.arch,
         crate::triple::Machine::Unknown,
         crate::triple::Host::Twizzler,
+        None,
     );
     let packages = locate_packages(workspace, None);
     let mut options = CompileOptions::new(workspace.config(), mode)?;
@@ -259,6 +262,7 @@ fn maybe_build_tests<'a>(
         build_config.arch,
         build_config.machine,
         crate::triple::Host::Twizzler,
+        None,
     );
     let packages = locate_packages(workspace, None);
     let mut options = CompileOptions::new(workspace.config(), mode)?;
@@ -305,6 +309,7 @@ fn maybe_build_kernel_tests<'a>(
             build_config.arch,
             crate::triple::Machine::Unknown,
             crate::triple::Host::None,
+            None,
         );
 
         let mut target_spec = triple.to_string();
@@ -343,6 +348,7 @@ fn build_kernel<'a>(
             build_config.arch,
             crate::triple::Machine::Unknown,
             crate::triple::Host::None,
+            None,
         );
 
         let mut target_spec = triple.to_string();
@@ -365,14 +371,14 @@ fn build_kernel<'a>(
 
 #[self_referencing]
 pub(crate) struct TwizzlerCompilation {
-    //#[allow(dead_code)]
-    //pub static_config: Config,
+    #[allow(dead_code)]
+    pub static_config: Config,
     #[allow(dead_code)]
     pub user_config: Config,
 
-    //#[borrows(static_config)]
-    //#[covariant]
-    //pub static_workspace: Workspace<'this>,
+    #[borrows(static_config)]
+    #[covariant]
+    pub static_workspace: Workspace<'this>,
     #[borrows(user_config)]
     #[covariant]
     pub user_workspace: Workspace<'this>,
@@ -391,9 +397,9 @@ pub(crate) struct TwizzlerCompilation {
     #[covariant]
     pub kernel_compilation: Compilation<'this>,
 
-    //#[borrows(static_workspace)]
-    //#[covariant]
-    //pub static_compilation: Option<Compilation<'this>>,
+    #[borrows(static_workspace)]
+    #[covariant]
+    pub static_compilation: Option<Compilation<'this>>,
     #[borrows(user_workspace)]
     #[covariant]
     pub user_compilation: Option<Compilation<'this>>,
@@ -443,17 +449,7 @@ fn compile(
     config.configure(0, false, None, false, false, false, &None, &[], &[])?;
 
     let mut static_config = Config::default()?;
-    static_config.configure(
-        3,
-        false,
-        None,
-        false,
-        false,
-        false,
-        &Some(PathBuf::from("target/static")),
-        &[],
-        &[],
-    )?;
+    static_config.configure(0, false, None, false, false, false, &None, &[], &[])?;
 
     let mut kernel_config = Config::default()?;
     // add in a feature flags to be used in the kernel
@@ -469,12 +465,15 @@ fn compile(
         .canonicalize()?;
 
     TwizzlerCompilation::try_new::<anyhow::Error>(
+        static_config,
         config,
+        |c| Workspace::new(&manifest_path, c),
         |c| Workspace::new(&manifest_path, c),
         kernel_config,
         |c| Workspace::new(&manifest_path, c),
         |w| build_tools(w, mode, other_options),
         |w| build_kernel(w, mode, &bc, other_options),
+        |w| build_static(w, mode, &bc, other_options),
         |w| build_twizzler(w, mode, &bc, other_options),
         |w| maybe_build_tests(w, &bc, other_options),
         |w| maybe_build_kernel_tests(w, &bc, other_options),
