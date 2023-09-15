@@ -1,10 +1,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(dead_code)]
 
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 
 use cargo::{
     core::{
