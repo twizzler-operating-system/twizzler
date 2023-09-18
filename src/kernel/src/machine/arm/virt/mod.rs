@@ -1,3 +1,4 @@
+pub mod info;
 pub mod interrupt;
 pub mod memory;
 pub mod serial;
