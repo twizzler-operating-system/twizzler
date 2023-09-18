@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 use limine::{
-    LimineBootInfoRequest, LimineEntryPointRequest, LimineFile, LimineFramebufferRequest,
-    LimineKernelFileRequest, LimineMemoryMapEntryType, LimineMmapRequest, LimineModuleRequest,
-    LiminePtr, LimineRsdpRequest,
+    BootInfoRequest, EntryPointRequest, File, FramebufferRequest,
+    KernelFileRequest, MemoryMapEntryType, MemmapRequest, ModuleRequest,
+    Ptr, RsdpRequest,
 };
 
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
 };
 
 struct LimineBootInfo {
-    kernel: &'static LimineFile,
+    kernel: &'static File,
     maps: Vec<MemoryRegion>,
     modules: Vec<BootModule>,
     rsdp: Option<u64>,
@@ -58,11 +58,11 @@ impl BootInfo for LimineBootInfo {
     }
 }
 
-impl From<LimineMemoryMapEntryType> for MemoryRegionKind {
-    fn from(st: LimineMemoryMapEntryType) -> Self {
+impl From<MemoryMapEntryType> for MemoryRegionKind {
+    fn from(st: MemoryMapEntryType) -> Self {
         match st {
-            LimineMemoryMapEntryType::Usable => MemoryRegionKind::UsableRam,
-            LimineMemoryMapEntryType::KernelAndModules => MemoryRegionKind::BootloaderReserved,
+            MemoryMapEntryType::Usable => MemoryRegionKind::UsableRam,
+            MemoryMapEntryType::KernelAndModules => MemoryRegionKind::BootloaderReserved,
             _ => MemoryRegionKind::Reserved,
         }
     }
@@ -108,8 +108,7 @@ fn limine_entry() -> ! {
         .get_response()
         .get()
         .expect("no memory map specified for kernel")
-        .mmap()
-        .unwrap()
+        .memmap()
         .iter()
         .map(|m| MemoryRegion {
             kind: m.typ.into(),
@@ -122,7 +121,6 @@ fn limine_entry() -> ! {
         .get()
         .expect("no modules specified for kernel -- no way to start init")
         .modules()
-        .expect("no modules specified for kernel -- no way to start init")
         .iter()
         .map(|m| BootModule {
             start: VirtAddr::new(m.base.as_ptr().unwrap() as u64).unwrap(),
@@ -132,36 +130,36 @@ fn limine_entry() -> ! {
     crate::kernel_main(&mut boot_info);
 }
 
-static LIMINE_BOOTINFO: LimineBootInfoRequest = LimineBootInfoRequest::new(0);
-static LIMINE_ENTRY: LimineEntryPointRequest =
-    LimineEntryPointRequest::new(0).entry(LiminePtr::new(limine_entry));
-static LIMINE_FB: LimineFramebufferRequest = LimineFramebufferRequest::new(0);
-static LIMINE_MOD: LimineModuleRequest = LimineModuleRequest::new(0);
-static LIMINE_MEM: LimineMmapRequest = LimineMmapRequest::new(0);
-static LIMINE_KERNEL: LimineKernelFileRequest = LimineKernelFileRequest::new(0);
-static LIMINE_TABLE: LimineRsdpRequest = LimineRsdpRequest::new(0);
+static LIMINE_BOOTINFO: BootInfoRequest = BootInfoRequest::new(0);
+static LIMINE_ENTRY: EntryPointRequest =
+    EntryPointRequest::new(0).entry(Ptr::new(limine_entry));
+static LIMINE_FB: FramebufferRequest = FramebufferRequest::new(0);
+static LIMINE_MOD: ModuleRequest = ModuleRequest::new(0);
+static LIMINE_MEM: MemmapRequest = MemmapRequest::new(0);
+static LIMINE_KERNEL: KernelFileRequest = KernelFileRequest::new(0);
+static LIMINE_TABLE: RsdpRequest = RsdpRequest::new(0);
 
 #[link_section = ".limine_reqs"]
 #[used]
-static F1: &'static LimineBootInfoRequest = &LIMINE_BOOTINFO;
+static F1: &'static BootInfoRequest = &LIMINE_BOOTINFO;
 #[link_section = ".limine_reqs"]
 #[used]
-static F2: &'static LimineEntryPointRequest = &LIMINE_ENTRY;
+static F2: &'static EntryPointRequest = &LIMINE_ENTRY;
 #[link_section = ".limine_reqs"]
 #[used]
-static F3: &'static LimineModuleRequest = &LIMINE_MOD;
+static F3: &'static ModuleRequest = &LIMINE_MOD;
 #[link_section = ".limine_reqs"]
 #[used]
-static F4: &'static LimineMmapRequest = &LIMINE_MEM;
+static F4: &'static MemmapRequest = &LIMINE_MEM;
 #[link_section = ".limine_reqs"]
 #[used]
-static F5: &'static LimineKernelFileRequest = &LIMINE_KERNEL;
+static F5: &'static KernelFileRequest = &LIMINE_KERNEL;
 #[link_section = ".limine_reqs"]
 #[used]
-static F6: &'static LimineFramebufferRequest = &LIMINE_FB;
+static F6: &'static FramebufferRequest = &LIMINE_FB;
 #[link_section = ".limine_reqs"]
 #[used]
-static F7: &'static LimineRsdpRequest = &LIMINE_TABLE;
+static F7: &'static RsdpRequest = &LIMINE_TABLE;
 #[link_section = ".limine_reqs"]
 #[used]
 static FEND: u64 = 0;

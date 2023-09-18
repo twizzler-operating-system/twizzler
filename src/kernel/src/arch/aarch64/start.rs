@@ -24,7 +24,7 @@ struct Armv8BootInfo {
     /// 
     /// This contains other useful information such as the kernel's
     /// command line parameters.
-    kernel: &'static LimineFile,
+    kernel: &'static File,
 
     /// A list of user programs loaded into memory.
     /// 
@@ -73,56 +73,55 @@ impl BootInfo for Armv8BootInfo {
     }
 }
 
-impl From<LimineMemoryMapEntryType> for MemoryRegionKind {
-    fn from(st: LimineMemoryMapEntryType) -> Self {
+impl From<MemoryMapEntryType> for MemoryRegionKind {
+    fn from(st: MemoryMapEntryType) -> Self {
         match st {
-            LimineMemoryMapEntryType::Usable => MemoryRegionKind::UsableRam,
-            LimineMemoryMapEntryType::KernelAndModules => MemoryRegionKind::BootloaderReserved,
+            MemoryMapEntryType::Usable => MemoryRegionKind::UsableRam,
+            MemoryMapEntryType::KernelAndModules => MemoryRegionKind::BootloaderReserved,
             _ => MemoryRegionKind::Reserved,
         }
     }
 }
 
 #[used]
-static ENTRY_POINT: LimineEntryPointRequest = LimineEntryPointRequest::new(0)
-    .entry(LiminePtr::new(limine_entry));
+static ENTRY_POINT: EntryPointRequest = EntryPointRequest::new(0)
+    .entry(Ptr::new(limine_entry));
 
 #[used]
-static MEMORY_MAP: LimineMmapRequest = LimineMmapRequest::new(0);
+static MEMORY_MAP: MemmapRequest = MemmapRequest::new(0);
 
 #[used]
-static KERNEL_ELF: LimineKernelFileRequest = LimineKernelFileRequest::new(0);
+static KERNEL_ELF: KernelFileRequest = KernelFileRequest::new(0);
 
 #[used]
-static USER_MODULES: LimineModuleRequest = LimineModuleRequest::new(0);
+static USER_MODULES: ModuleRequest = ModuleRequest::new(0);
 
 
 #[link_section = ".limine_reqs"]
 #[used]
-static LR1: &'static LimineEntryPointRequest = &ENTRY_POINT;
+static LR1: &'static EntryPointRequest = &ENTRY_POINT;
 
 #[link_section = ".limine_reqs"]
 #[used]
-static LR2: &'static LimineMmapRequest = &MEMORY_MAP;
+static LR2: &'static MemmapRequest = &MEMORY_MAP;
 
 #[link_section = ".limine_reqs"]
 #[used]
-static LR3: &'static LimineKernelFileRequest = &KERNEL_ELF;
+static LR3: &'static KernelFileRequest = &KERNEL_ELF;
 
 #[link_section = ".limine_reqs"]
 #[used]
-static LR4: &'static LimineModuleRequest = &USER_MODULES;
+static LR4: &'static ModuleRequest = &USER_MODULES;
 
 // the kernel's entry point function from the limine bootloader
 // limine ensures we are in el1 (kernel mode)
 fn limine_entry() -> ! {
     // let's see what's in the memory map from limine
     let mmap = MEMORY_MAP
-        .get_response() // LiminePtr<LimineMemmapResponse>
+        .get_response() // Ptr<MemmapResponse>
         .get() // Option<'static T>
-        .expect("no memory map specified for kernel") // LimineMemmapResponse
-        .mmap() // Option<&'static [LimineMemmapEntry]>
-        .unwrap(); // &'static [LimineMemmapEntry]
+        .expect("no memory map specified for kernel") // MemmapResponse
+        .memmap(); // &[NonNullPtr<MemmapEntry>]
 
     // emerglogln!("[kernel] printing out memory map");
 
@@ -139,8 +138,7 @@ fn limine_entry() -> ! {
         .get_response()
         .get()
         .expect("no modules specified for kernel -- no way to start init")
-        .modules()
-        .expect("no modules specified for kernel -- no way to start init");
+        .modules();
 
     let kernel_elf = unsafe {
         KERNEL_ELF

@@ -1455,9 +1455,9 @@ dependencies = [
 
 [[package]]
 name = "limine"
-version = "0.1.8"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eac64618e505bab2387986e5b1014f5d344130d609685bbd8b71a10af3ee599d"
+checksum = "f45c67c512034e8eb0064556e1db5da671b3ef50791cd6ac6376e7aefc0ef27e"
 
 [[package]]
 name = "linked_list_allocator"
