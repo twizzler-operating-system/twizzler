@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
 
-use super::super::gicv2::GICv2;
+use super::super::common::gicv2::GICv2;
 
 use crate::machine::memory::mmio::{GICV2_DISTRIBUTOR, GICV2_CPU_INTERFACE};
 
