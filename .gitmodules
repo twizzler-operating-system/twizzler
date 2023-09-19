@@ -1,7 +1,7 @@
 [submodule "toolchain/src/rust"]
 	path = toolchain/src/rust
 	url = ../rust.git
-	branch = twizzler2
+	branch = twizzler-dynlink
 [submodule "src/lib/nvme-rs"]
 	path = src/lib/nvme-rs
 	url = ../nvme-rs.git
