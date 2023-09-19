@@ -44,15 +44,21 @@ pub fn open_directory(inode: &Object<InodeMeta>) -> Result<Object<DirectoryMeta>
 }
 
 pub fn get_root_id() -> NodeID {
-    ObjID::from(std::env::args()
-        .nth(1).expect("Root ID not found!")
-        .parse::<u128>().unwrap())
+    let x = std::env::var("ROOT_ID")
+        .expect("root id should exist")
+        .parse::<u128>()
+        .expect("should parse");
+
+    NodeID::from(x)
 }
 
 pub fn get_current_id() -> NodeID {
-    ObjID::from(std::env::args()
-        .nth(2).expect("Root ID not found!")
-        .parse::<u128>().unwrap())
+    let x = std::env::var("CURR_ID")
+        .expect("root id should exist")
+        .parse::<u128>()
+        .expect("should parse");
+
+    NodeID::from(x)
 }
 
 pub fn create_entry(fileno: ObjID, filename: &str) -> DirectoryEntry {
@@ -120,8 +126,7 @@ pub fn make_dir(parent_inode: &Object<InodeMeta>, name: &str) -> Result<NodeID, 
     let (parent_dir, parent_id) = (open_directory(parent_inode)?, parent_inode.id());
     match search_directory(&parent_dir, name) {
         Ok(_) => {return Err(Error::from(ErrorKind::AlreadyExists))},
-        Err(x) => ()
-
+        Err(_) => ()
     }
     let (child_node, child_id) = create_inode(FileType::Directory)?;
     let child_dir = open_directory(&child_node)?;
