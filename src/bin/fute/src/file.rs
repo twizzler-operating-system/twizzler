@@ -10,7 +10,7 @@ use twizzler_object::{Object, ObjectInitFlags, ObjectInitError};
 use std::{io::{Error, ErrorKind}, mem::size_of, ffi::OsStr, path::PathBuf};
 use std::io::SeekFrom;
 
-use crate::{inode::{FileMeta, InodeMeta, FileType, create_inode}, directory::{get_root_id, get_current_id, namei_raw, open_directory, create_entry, push_entry}};
+use crate::{inode::{FileMeta, InodeMeta, FileType, create_inode, get_inode}, directory::{get_root_id, get_current_id, namei_raw, open_directory, create_entry, push_entry, search_directory}};
 
 use std::io::{Read, Write, Seek};
 
@@ -71,8 +71,29 @@ impl File {
 
         let dir = open_directory(&node)?;
 
-        let (file_node, file_id) = create_inode(FileType::File)?;
+        match search_directory(&dir, file) {
+            Ok(file_id) => {
+                let file_meta = get_inode(file_id)?;
+                let file_obj = open_file(&file_meta)?;
 
+                let mut file = File {
+                    obj: file_meta,
+                    pointer: 0,
+                    data: file_obj,
+                };
+
+                file.truncate(0)?;
+
+                return Ok(file);
+            },
+            Err(x) if x.kind() == ErrorKind::NotFound => {   
+            },
+            Err(x) => {
+                return Err(x);
+            }
+        }
+        let (file_node, file_id) = create_inode(FileType::File)?;
+        
         push_entry(&dir, create_entry(file_id, file)).expect("File making failed :(");
 
         let file = open_file(&file_node)?;
