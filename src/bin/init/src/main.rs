@@ -408,8 +408,11 @@ fn main() {
     let root_id = fute::shell::make_root().expect("Building filesystem has failed");
     let mut curr_id = root_id;
     let curr_path = PathBuf::from("/");
+    
+    env::set_var("ROOT_ID", OsStr::new(&format!("{}", root_id)));
+    env::set_var("CURR_ID", OsStr::new(&format!("{}", root_id)));
 
-    println!("Done!");
+    println!("Done!");  
 
     println!("Hi, welcome to the basic twizzler test console.");
     println!("If you wanted line-editing, you've come to the wrong place.");
@@ -446,7 +449,7 @@ fn main() {
             match cmd[0].as_ref() {
                 "mkdir" => {
                     if cmd.len() == 4 {
-                        println!("{:?}", fute::shell::mkdir(root_id, curr_id, cmd[3]));
+                        println!("{:?}", fute::shell::mkdir(cmd[3]));
                     }
                     else {
                         eprintln!("mkdir: missing operand");
@@ -454,20 +457,22 @@ fn main() {
                 }
                 "ls" => {
                     if cmd.len() == 4 {
-                        fute::shell::ls(root_id, curr_id, cmd[3]);
+                        fute::shell::ls(cmd[3]);
                     }
                     else {
-                        fute::shell::ls(root_id, curr_id, "");
+                        fute::shell::ls("");
                     }
                 }
                 "cd" => {
                     if cmd.len() == 4 && cmd[3] != "" {
-                        let x = fute::shell::cd(root_id, curr_id, cmd[3]);
+                        let x = fute::shell::cd(cmd[3]);
                         println!("{:?}", x);
                         curr_id = match x {
                             Ok(x) => x,
                             Err(_) => curr_id
                         };
+
+                        env::set_var("CURR_ID", OsStr::new(&format!("{}", curr_id)));
                     }
                     else {
                         eprintln!("cd: missing operand");
@@ -475,7 +480,7 @@ fn main() {
                 }
                 "rm" => {
                     if cmd.len() == 4 {
-                        let x = fute::shell::rm(root_id, curr_id, cmd[3]);
+                        let x = fute::shell::rm(cmd[3]);
                         println!("{:?}", x);
                     }
                 }
@@ -513,7 +518,7 @@ extern "C" fn _start() -> ! {
 
 use std::{
     sync::{atomic::AtomicU64, Arc, Mutex},
-    time::Duration, path::PathBuf,
+    time::Duration, path::PathBuf, env, os, ffi::OsStr,
 };
 
 use twizzler_abi::{
