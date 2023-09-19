@@ -2,7 +2,7 @@
 use crypter::Crypter;
 
 use orion::aead::{seal, open, SecretKey};
-
+use std::io::{stdout, Write};
 pub struct Oreo;
 
 impl Crypter for Oreo {
@@ -19,7 +19,7 @@ impl Crypter for Oreo {
 
     fn encrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u8>, Self::Error> {
         let key = &SecretKey::from_slice(key)?;
-        let ciphertext = seal(key, data).unwrap();
+        let ciphertext = seal(key, data)?;
 
         Ok(ciphertext)
         //seal(&SecretKey::from_slice(key).unwrap(), data)
@@ -32,7 +32,7 @@ impl Crypter for Oreo {
 
     fn decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u8>, Self::Error> {
         let key = &SecretKey::from_slice(key)?;
-        let ciphertext = open(key, data).unwrap();
+        let ciphertext = open(key, data)?;
 
         Ok(ciphertext)
     }

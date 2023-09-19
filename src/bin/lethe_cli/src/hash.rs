@@ -3,18 +3,6 @@ use hasher::Hasher;
 use sha3::{Digest, Sha3_256};
 use std::convert::TryInto;
 
-/*
-pub trait Hasher<const N: usize> {
-    fn new() -> Self;
-
-    fn update(&mut self, data: &[u8]);
-
-    fn finish(self) -> [u8; N];
-
-    fn digest(data: &[u8]) -> [u8; N];
-}
-*/
-
 pub struct Hashbrowns {
     hasher : Sha3_256
 }

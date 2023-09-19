@@ -1,30 +1,20 @@
 use embedded_io::adapters::FromStd;
-use fute::file::File;
-use fute::shell::mkdir;
+
 use persistence::PersistentStorage;
 
-use std::{
-    io
-};
-
-use fute::inode::FileType;
-use fute::directory::{get_root_id, get_current_id};
+use fute::{directory, file::File, shell};
+use std::io;
 
 pub struct Storage {
     pub path: String,
-    pub root: u128,
-    pub working: u128
 }
 
 impl Storage {
     pub fn new(path: String) -> std::io::Result<Self> {
-        let (root, working) = (get_root_id().as_u128(), get_current_id().as_u128());
-        mkdir(root, working, &path);
+        fute::shell::mkdir(&path)?;
 
         Ok(Self {
             path: path,
-            root: root,
-            working: working,
         })    
     }
 
@@ -38,27 +28,26 @@ impl Storage {
 impl PersistentStorage for Storage {
     type Id = u64;
 
-    type Flags = FileType;
+    type Flags = u8;
 
     type Info = u8;
 
-    type Error = io::Error;
+    type Error = std::io::Error;
 
     type Io<'a> = FromStd<File>;
 
     fn create(&mut self, objid: &Self::Id, flags: &Self::Flags) -> Result<(), Self::Error> {
         let path: String = self.object_path(objid);
 
-        println!("path: {}", path);
-        File::create(&path);
+        File::create(&path)?;
 
         Ok(())
     }
 
     fn destroy(&mut self, objid: &Self::Id) -> Result<(), Self::Error> {
         let path: String = self.object_path(objid);
-
-        fute::shell::rm(self.root, self.working, &path);
+        println!("Path {}", path);
+        fute::shell::rm(&path)?;
         
         Ok(())
     }
@@ -89,7 +78,7 @@ impl PersistentStorage for Storage {
 
     fn rw_handle(&mut self, objid: &Self::Id) -> Result<Self::Io<'_>, Self::Error> {
         let path: String = self.object_path(objid);
-
+        
         let f = File::open(&path)?;
         let x = FromStd::new(f);
         Ok(x)    
@@ -97,8 +86,9 @@ impl PersistentStorage for Storage {
 
     fn truncate(&mut self, objid: &Self::Id, size: u64) -> Result<(), Self::Error> {
         let path: String = self.object_path(objid);
+
         let mut f = File::open(&path)?;
-        f.truncate(size);
+        f.truncate(size).unwrap();
 
         Ok(())
     }
