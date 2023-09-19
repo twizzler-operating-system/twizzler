@@ -1,6 +1,6 @@
 use twizzler_object::ObjID;
 
-use crate::directory::{ open_directory, set_preset_entries, make_dir, get_entry, remove_entry, namei_raw};
+use crate::directory::{ open_directory, set_preset_entries, make_dir, get_entry, remove_entry, namei_raw, get_root_id, get_current_id};
 use crate::file::File;
 use crate::inode::{FileType,  get_inode,   create_inode,  is_directory};
 use std::ffi::OsStr;
@@ -13,10 +13,10 @@ pub fn make_root() -> Result<u128, std::io::Error> {
     set_preset_entries(&dir, id, id);
 
     Ok(id.as_u128())
-}
+}  
 
-pub fn mkdir(root: u128, current: u128, path: &str) -> Result<(), std::io::Error> {
-    let (root, current) = (ObjID::from(root), ObjID::from(current));
+pub fn mkdir(path: &str) -> Result<(), std::io::Error> {
+    let (root, current) = (get_root_id(), get_current_id());
 
     let binding = PathBuf::from(path);
     let mut path : Vec<&OsStr> = binding.iter().collect();
@@ -35,13 +35,13 @@ pub fn mkdir(root: u128, current: u128, path: &str) -> Result<(), std::io::Error
 
     let node = namei_raw(root, current, path)?;
 
-    make_dir(&node, file)?;
+    make_dir(&node, file);
 
     Ok(())
 }
 
-pub fn ls(root: u128, current: u128, path: &str) -> Result<(), std::io::Error> {
-    let (root, current) = (ObjID::from(root), ObjID::from(current));
+pub fn ls(path: &str) -> Result<(), std::io::Error> {
+    let (root, current) = (get_root_id(), get_current_id());
 
     let binding = PathBuf::from(path);
 
@@ -66,8 +66,8 @@ pub fn ls(root: u128, current: u128, path: &str) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-pub fn cd(root: u128, current: u128, path: &str) -> Result<u128, std::io::Error> {
-    let (root, current) = (ObjID::from(root), ObjID::from(current));
+pub fn cd(path: &str) -> Result<u128, std::io::Error> {
+    let (root, current) = (get_root_id(), get_current_id());
    
     let binding = PathBuf::from(path);
     let path : Vec<&OsStr> = binding.iter().collect();
@@ -81,8 +81,8 @@ pub fn cd(root: u128, current: u128, path: &str) -> Result<u128, std::io::Error>
 }
 
 // This causes like major memory leaks lol
-pub fn rm(root: u128, current: u128, path: &str) -> Result<(), std::io::Error> {
-    let (root, current) = (ObjID::from(root), ObjID::from(current));
+pub fn rm(path: &str) -> Result<(), std::io::Error> {
+    let (root, current) = (get_root_id(), get_current_id());
 
     let binding = PathBuf::from(path);
     let mut path : Vec<&OsStr> = binding.iter().collect();
@@ -110,6 +110,6 @@ pub fn rm(root: u128, current: u128, path: &str) -> Result<(), std::io::Error> {
 
 
 // Traverse down the directory chain and write down names :/
-pub fn pwd(root: u128, current: u128) -> Result<String, std::io::Error> {
+pub fn pwd() -> Result<String, std::io::Error> {
     todo!()
 }
