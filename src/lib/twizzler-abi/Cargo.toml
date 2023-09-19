@@ -12,6 +12,7 @@ syscall_encode_macros = { version = "0.1.8" }
 syscall_encode_traits = { version = "0.1.9" }
 twizzler-runtime-api = { path = "../twizzler-runtime-api" }
 alloc = { version = "1.0.0", optional = true, package = "rustc-std-workspace-alloc" }
+#talc = { version = "3.0", default-features = false }
 
 [dependencies.compiler_builtins]
 optional = true

@@ -210,6 +210,8 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         vec![]
     };
 
+    std::env::set_var("BOOTSTRAP_SKIP_TARGET_SANITY", "1");
+
     let status = Command::new("./x.py")
         .arg("install")
         .args(&keep_args)

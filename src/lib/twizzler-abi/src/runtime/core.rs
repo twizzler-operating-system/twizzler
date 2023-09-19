@@ -71,11 +71,24 @@ impl CoreRuntime for MinimalRuntime {
                 aux_array = aux_array.offset(1);
             }
         }
-
+        crate::syscall::sys_kernel_console_write(
+            b"hello from userspace",
+            crate::syscall::KernelConsoleWriteFlags::empty(),
+        );
         let tls = init_tls();
+
+        crate::syscall::sys_kernel_console_write(
+            b"hello from twoserspace",
+            crate::syscall::KernelConsoleWriteFlags::empty(),
+        );
         if let Some(tls) = tls {
             crate::syscall::sys_thread_settls(tls);
         }
+
+        crate::syscall::sys_kernel_console_write(
+            b"hello from threeserspace",
+            crate::syscall::KernelConsoleWriteFlags::empty(),
+        );
         crate::syscall::sys_thread_set_upcall(crate::arch::upcall::upcall_entry);
 
         unsafe {

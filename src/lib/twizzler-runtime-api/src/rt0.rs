@@ -14,6 +14,8 @@ unsafe extern "C" fn entry(arg: usize) -> ! {
     rust_entry(arg as *const AuxEntry)
 }
 
+#[allow(unreachable_code)]
+#[allow(unused_variables)]
 unsafe fn rust_entry(arg: *const AuxEntry) -> ! {
     let runtime = crate::get_runtime();
     runtime.runtime_entry(arg, std_entry_from_runtime)
