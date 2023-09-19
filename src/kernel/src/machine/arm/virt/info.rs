@@ -1,5 +1,7 @@
 use fdt::Fdt;
 
+use twizzler_abi::device::{MmioInfo, CacheType};
+
 use crate::once::Once;
 use crate::BootInfo;
 use crate::arch::BootInfoSystemTable;
@@ -31,4 +33,44 @@ pub fn init<B: BootInfo>(boot_info: &B) {
 pub fn devicetree() -> &'static Fdt<'static> {
     FDT.poll()
         .expect("device tree initialization has not been called!!")
+}
+
+// return the clock frequency and the mmio register info
+pub fn get_uart_info() -> (usize, MmioInfo) {
+    let mut mmio = MmioInfo {
+        length: 0,
+        cache_type: CacheType::MemoryMappedIO,
+        info: 0,
+    };
+    let mut clock_freq: usize = 0;
+    // we use the device tree to retrieve mmio register information
+    // and other useful configuration info
+    let chosen = devicetree().chosen();
+    if let Some(uart) = chosen.stdout() {
+        // find the mmio registers
+        let regs = uart.reg().unwrap().next().unwrap();
+        mmio.info = regs.starting_address as u64;
+        mmio.length = regs.size.unwrap() as u64;
+        // find the clock information
+        if let Some(clock_list) = uart.property("clocks") {
+            let phandle: u32 = {
+                // TODO: use size cell/address cell info
+                let mut converter = [0u8; 4];
+                let mut phandle = 0;
+                for (i, v) in clock_list.value.iter().enumerate() {
+                    converter[i % 4] = *v;
+                    if (i + 1) % core::mem::size_of::<u32>() == 0 {
+                        // converted value
+                        phandle = u32::from_be_bytes(converter);
+                        break;
+                    }
+                }
+                phandle
+            };
+            if let Some(clock) = devicetree().find_phandle(phandle) {
+                clock_freq = clock.property("clock-frequency").unwrap().as_usize().unwrap();
+            }
+        }
+    }
+    (clock_freq, mmio)
 }
