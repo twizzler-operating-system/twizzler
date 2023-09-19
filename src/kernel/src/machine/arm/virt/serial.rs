@@ -3,17 +3,21 @@ use twizzler_abi::object::Protections;
 
 use super::super::common::uart::PL011;        
 
-use crate::memory::{PhysAddr, VirtAddr, pagetables::{
+use crate::memory::{PhysAddr, pagetables::{
     ContiguousProvider, MappingCursor, MappingSettings, Mapper,
     MappingFlags,
 }};
+use crate::arch::memory::mmio::MMIO_ALLOCATOR;
 
 lazy_static! {
     // TODO: add a spinlock here
     pub static ref SERIAL: PL011 = {
-        // the desired virtal address for this region of mmio
-        let uart_mmio_base = VirtAddr::new(0xFFFF_0000_0000_0000).unwrap();
         let (clock_freq, mmio) = crate::machine::info::get_uart_info();
+        // the desired virtal address for this region of mmio
+        let uart_mmio_base = {
+            MMIO_ALLOCATOR.lock().alloc(mmio.length as usize)
+                .expect("failed to allocate MMIO region")
+        };
         // configure mapping settings for this region of memory
         let cursor = MappingCursor::new(
             uart_mmio_base,

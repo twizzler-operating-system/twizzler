@@ -8,16 +8,25 @@ lazy_static! {
         use twizzler_abi::{device::CacheType, object::Protections};
         
         use crate::memory::{
-            VirtAddr, PhysAddr,
+            PhysAddr,
             pagetables::{
                 ContiguousProvider, MappingCursor, MappingSettings, Mapper,
                 MappingFlags,
             },
         };
-        // TODO: allocate mmio addresses ... 
-        let gicc_mmio_base = VirtAddr::new(0xFFFF_0000_0000_2000).unwrap();
-        let gicd_mmio_base = VirtAddr::new(0xFFFF_0000_0001_3000).unwrap();
+        use crate::arch::memory::mmio::MMIO_ALLOCATOR;
+        
+        // retrive the locations of the MMIO registers
         let (distributor_mmio, cpu_interface_mmio) = crate::machine::info::get_gicv2_info();
+        // reserve regions of virtual address space for MMIO
+        let (gicc_mmio_base, gicd_mmio_base) = {
+            let mut alloc = MMIO_ALLOCATOR.lock();
+            let cpu = alloc.alloc(cpu_interface_mmio.length as usize)
+                .expect("failed to allocate MMIO region");
+            let dist = alloc.alloc(distributor_mmio.length as usize)
+                .expect("failed to allocate MMIO region");
+            (cpu, dist)
+        };
         // configure mapping settings for this region of memory
         let gicc_region = MappingCursor::new(
             gicc_mmio_base,

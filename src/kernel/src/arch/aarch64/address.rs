@@ -54,6 +54,16 @@ impl VirtAddr {
         0xFFFF_FFFF_FFFF_FFFF
     );
 
+    // MMIO is used for communicating with devices. The kernel
+    // reserves a region of its virtual address space to allocate
+    // addresses to various drivers.
+    pub const MMIO_RANGE: RangeInclusive<u64> = RangeInclusive::new(
+        // The start range of addresses used for MMIO
+        *Self::TTBR1_EL1.start(),
+        // The end range of addresses used for MMIO
+        *Self::TTBR1_EL1.start() + 0x1000_0000_0000
+    );
+
     /// The bits that are valid which are used in address translation
     const VALID_ADDR_BITS: u32 = 48;
     /// The valid value for the upper bits of a high address
