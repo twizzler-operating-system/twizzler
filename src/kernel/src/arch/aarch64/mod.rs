@@ -29,7 +29,7 @@ pub use address::{VirtAddr, PhysAddr};
 pub use interrupt::{send_ipi, init_interrupts};
 pub use start::BootInfoSystemTable;
 
-pub fn init<B: BootInfo>(_boot_info: &B) {
+pub fn init<B: BootInfo>(boot_info: &B) {
     // initialize exceptions by setting up our exception vectors
     exception::init();
     // configure registers needed by the memory management system
@@ -38,6 +38,9 @@ pub fn init<B: BootInfo>(_boot_info: &B) {
     // On reset, TPIDR_EL1 is initialized to some unknown value.
     // we set it to zero so that we know it is not initialized.
     TPIDR_EL1.set(0);
+
+    // Initialize the machine specific enumeration state (e.g., DeviceTree, ACPI)
+    crate::machine::info::init(boot_info);
     
     // check if SPSel is already set to use SP_EL1
     let spsel: InMemoryRegister<u64, SPSel::Register> = InMemoryRegister::new(SPSel.get());

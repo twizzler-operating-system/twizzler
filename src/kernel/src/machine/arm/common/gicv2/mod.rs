@@ -9,7 +9,6 @@
 
 mod gicd;
 mod gicc;
-mod mmio;
 
 use gicd::GICD;
 use gicc::GICC;

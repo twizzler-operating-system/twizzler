@@ -5,5 +5,4 @@ mod virt;
 #[cfg(machine = "virt")]
 pub use virt::*;
 
-mod uart;
-mod gicv2;
+mod common;

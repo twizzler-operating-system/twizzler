@@ -15,7 +15,7 @@ use registers::{
     registers::ReadWrite,
 };
 
-use super::mmio::MmioRef;
+use super::super::mmio::MmioRef;
 
 use crate::memory::VirtAddr;
 

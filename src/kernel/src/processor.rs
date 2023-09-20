@@ -283,6 +283,12 @@ pub fn get_processor(id: u32) -> &'static Processor {
     unsafe { ALL_PROCESSORS[id as usize].as_ref().unwrap() }
 }
 
+/// Obtain a mutable reference to a processor object. This should not be called unless
+/// you know what you are doing. Generally during the boostrap process.
+pub unsafe fn get_processor_mut(id: u32) -> &'static mut Processor {
+    ALL_PROCESSORS[id as usize].as_mut().unwrap()
+}
+
 #[inline]
 pub fn tls_ready() -> bool {
     crate::arch::processor::tls_ready()

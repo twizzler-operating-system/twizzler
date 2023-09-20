@@ -9,7 +9,8 @@ use crate::{
 };
 
 pub enum BootInfoSystemTable {
-    Unknown
+    Dtb,
+    Efi,
 }
 
 /// Bootstrap information passed in by the bootloader.
@@ -24,7 +25,7 @@ struct Armv8BootInfo {
     /// 
     /// This contains other useful information such as the kernel's
     /// command line parameters.
-    kernel: &'static LimineFile,
+    kernel: &'static File,
 
     /// A list of user programs loaded into memory.
     /// 
@@ -49,9 +50,15 @@ impl BootInfo for Armv8BootInfo {
         )
     }
 
-    fn get_system_table(&self, _table: BootInfoSystemTable) -> VirtAddr {
-        todo!("get system table")
-    }
+    fn get_system_table(&self, table: BootInfoSystemTable) -> VirtAddr {
+        match table {
+            BootInfoSystemTable::Dtb => match DTB_REQ.get_response().get() {
+                Some(resp) => VirtAddr::new(resp.dtb_ptr.as_ptr().unwrap() as u64).unwrap(),
+                None => VirtAddr::new(0).unwrap()
+            },
+            BootInfoSystemTable::Efi => todo!("get EFI system table")
+        }
+   }
 
     fn get_cmd_line(&self) -> &'static str {
         if let Some(cmd) = self.kernel.cmdline.as_ptr() {
@@ -73,56 +80,61 @@ impl BootInfo for Armv8BootInfo {
     }
 }
 
-impl From<LimineMemoryMapEntryType> for MemoryRegionKind {
-    fn from(st: LimineMemoryMapEntryType) -> Self {
+impl From<MemoryMapEntryType> for MemoryRegionKind {
+    fn from(st: MemoryMapEntryType) -> Self {
         match st {
-            LimineMemoryMapEntryType::Usable => MemoryRegionKind::UsableRam,
-            LimineMemoryMapEntryType::KernelAndModules => MemoryRegionKind::BootloaderReserved,
+            MemoryMapEntryType::Usable => MemoryRegionKind::UsableRam,
+            MemoryMapEntryType::KernelAndModules => MemoryRegionKind::BootloaderReserved,
             _ => MemoryRegionKind::Reserved,
         }
     }
 }
 
 #[used]
-static ENTRY_POINT: LimineEntryPointRequest = LimineEntryPointRequest::new(0)
-    .entry(LiminePtr::new(limine_entry));
+static ENTRY_POINT: EntryPointRequest = EntryPointRequest::new(0)
+    .entry(Ptr::new(limine_entry));
 
 #[used]
-static MEMORY_MAP: LimineMmapRequest = LimineMmapRequest::new(0);
+static MEMORY_MAP: MemmapRequest = MemmapRequest::new(0);
 
 #[used]
-static KERNEL_ELF: LimineKernelFileRequest = LimineKernelFileRequest::new(0);
+static KERNEL_ELF: KernelFileRequest = KernelFileRequest::new(0);
 
 #[used]
-static USER_MODULES: LimineModuleRequest = LimineModuleRequest::new(0);
+static USER_MODULES: ModuleRequest = ModuleRequest::new(0);
 
+#[used]
+static DTB_REQ: DtbRequest = DtbRequest::new(0);
 
 #[link_section = ".limine_reqs"]
 #[used]
-static LR1: &'static LimineEntryPointRequest = &ENTRY_POINT;
+static LR1: &'static EntryPointRequest = &ENTRY_POINT;
 
 #[link_section = ".limine_reqs"]
 #[used]
-static LR2: &'static LimineMmapRequest = &MEMORY_MAP;
+static LR2: &'static MemmapRequest = &MEMORY_MAP;
 
 #[link_section = ".limine_reqs"]
 #[used]
-static LR3: &'static LimineKernelFileRequest = &KERNEL_ELF;
+static LR3: &'static KernelFileRequest = &KERNEL_ELF;
 
 #[link_section = ".limine_reqs"]
 #[used]
-static LR4: &'static LimineModuleRequest = &USER_MODULES;
+static LR4: &'static ModuleRequest = &USER_MODULES;
+
+#[link_section = ".limine_reqs"]
+#[used]
+static LR5: &'static DtbRequest = &DTB_REQ;
 
 // the kernel's entry point function from the limine bootloader
 // limine ensures we are in el1 (kernel mode)
 fn limine_entry() -> ! {
     // let's see what's in the memory map from limine
     let mmap = MEMORY_MAP
-        .get_response() // LiminePtr<LimineMemmapResponse>
+        .get_response() // Ptr<MemmapResponse>
         .get() // Option<'static T>
-        .expect("no memory map specified for kernel") // LimineMemmapResponse
-        .mmap() // Option<&'static [LimineMemmapEntry]>
-        .unwrap(); // &'static [LimineMemmapEntry]
+        .expect("no memory map specified for kernel") // MemmapResponse
+        .memmap(); // &[NonNullPtr<MemmapEntry>]
 
     // emerglogln!("[kernel] printing out memory map");
 
@@ -139,8 +151,7 @@ fn limine_entry() -> ! {
         .get_response()
         .get()
         .expect("no modules specified for kernel -- no way to start init")
-        .modules()
-        .expect("no modules specified for kernel -- no way to start init");
+        .modules();
 
     let kernel_elf = unsafe {
         KERNEL_ELF
@@ -162,14 +173,72 @@ fn limine_entry() -> ! {
     };
 
     // convert memory map from bootloader to memory regions
-    boot_info.memory = mmap
-        .iter()
-        .map(|m| MemoryRegion {
-            kind: m.typ.into(),
-            start: PhysAddr::new(m.base).unwrap(),
-            length: m.len as usize,
-        })
-        .collect();
+    let reserved = crate::machine::memory::reserved_regions();
+    for mem in mmap.iter() {
+        #[allow(unused_assignments)]
+        let mut split_range = (None, None);
+        let mut skip_region = false;
+        // a reserved region of memory may be present in the memory map
+        // and Limine may not mark it as so, so we have to modify
+        // the memory mapping so that the kernel ignores that region
+        for res in reserved {
+            if mem.base == res.start.raw() {
+                // for now we assume that only one reserved region exists within a single range
+                split_range = split(mem, &res);
+                if let Some(region) = split_range.0 {
+                    boot_info.memory.push(region);
+                }
+                if let Some(region) = split_range.1 {
+                    boot_info.memory.push(region);
+                }
+                skip_region = true;
+                break;
+            }
+        }
+        if !skip_region {
+            boot_info.memory.push(MemoryRegion {
+                kind: mem.typ.into(),
+                start: PhysAddr::new(mem.base).unwrap(),
+                length: mem.len as usize,
+            });
+        }
+    }
+
+    // function splits a memory region in half based on a reserved region
+    fn split(memmap: &NonNullPtr<MemmapEntry>, reserved: &MemoryRegion) -> (Option<MemoryRegion>, Option<MemoryRegion>) {
+        let lhs = memmap.base;
+        let rhs = memmap.base + memmap.len;
+
+        // case 1: take lhs range
+        if reserved.start.raw() == lhs {
+            (None, Some(MemoryRegion {
+                kind: memmap.typ.into(),
+                start: PhysAddr::new(memmap.base + reserved.length as u64).unwrap(),
+                length: memmap.len as usize - reserved.length,
+            }))
+        } 
+        // case 2: take rhs range
+        else if reserved.start.raw() + reserved.length as u64 == rhs {
+            (Some(MemoryRegion {
+                kind: memmap.typ.into(),
+                start: PhysAddr::new(memmap.base).unwrap(),
+                length: memmap.len as usize - reserved.length,
+            }), None)
+        }
+        // case 3: split in the middle
+        else {
+            (Some(MemoryRegion {
+                kind: memmap.typ.into(),
+                start: PhysAddr::new(memmap.base).unwrap(),
+                length: (reserved.start.raw() - memmap.base) as usize,
+            }),
+            Some(MemoryRegion {
+                kind: memmap.typ.into(),
+                start: PhysAddr::new(reserved.start.raw() + reserved.length as u64).unwrap(),
+                length: (memmap.len - reserved.length as u64 - (reserved.start.raw() - memmap.base)) as usize,
+            }))
+        }
+    }
 
     // convert module representation from bootloader to boot module
     boot_info.modules = modules
