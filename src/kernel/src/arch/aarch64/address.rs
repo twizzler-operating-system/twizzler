@@ -54,6 +54,9 @@ impl VirtAddr {
         0xFFFF_FFFF_FFFF_FFFF
     );
 
+    // The size of the virtual address range reserved for MMIO.
+    pub const MMIO_RANGE_SIZE: u64 = 0x1000_0000_0000;
+
     // MMIO is used for communicating with devices. The kernel
     // reserves a region of its virtual address space to allocate
     // addresses to various drivers.
@@ -61,7 +64,7 @@ impl VirtAddr {
         // The start range of addresses used for MMIO
         *Self::TTBR1_EL1.start(),
         // The end range of addresses used for MMIO
-        *Self::TTBR1_EL1.start() + 0x1000_0000_0000
+        *Self::TTBR1_EL1.start() + Self::MMIO_RANGE_SIZE
     );
 
     /// The bits that are valid which are used in address translation

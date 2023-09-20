@@ -174,22 +174,22 @@ fn limine_entry() -> ! {
 
     // convert memory map from bootloader to memory regions
     let reserved = crate::machine::memory::reserved_regions();
-    for m in mmap.iter() {
+    for mem in mmap.iter() {
         #[allow(unused_assignments)]
         let mut split_range = (None, None);
         let mut skip_region = false;
         // a reserved region of memory may be present in the memory map
         // and Limine may not mark it as so, so we have to modify
         // the memory mapping so that the kernel ignores that region
-        for r in reserved {
-            if m.base == r.start.raw() {
+        for res in reserved {
+            if mem.base == res.start.raw() {
                 // for now we assume that only one reserved region exists within a single range
-                split_range = split(m, &r);
-                if let Some(m1) = split_range.0 {
-                    boot_info.memory.push(m1);
+                split_range = split(mem, &res);
+                if let Some(region) = split_range.0 {
+                    boot_info.memory.push(region);
                 }
-                if let Some(m2) = split_range.1 {
-                    boot_info.memory.push(m2);
+                if let Some(region) = split_range.1 {
+                    boot_info.memory.push(region);
                 }
                 skip_region = true;
                 break;
@@ -197,9 +197,9 @@ fn limine_entry() -> ! {
         }
         if !skip_region {
             boot_info.memory.push(MemoryRegion {
-                kind: m.typ.into(),
-                start: PhysAddr::new(m.base).unwrap(),
-                length: m.len as usize,
+                kind: mem.typ.into(),
+                start: PhysAddr::new(mem.base).unwrap(),
+                length: mem.len as usize,
             });
         }
     }

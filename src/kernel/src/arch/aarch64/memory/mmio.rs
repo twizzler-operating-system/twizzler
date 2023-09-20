@@ -5,7 +5,7 @@ use core::alloc::Layout;
 use crate::{memory::VirtAddr, spinlock::Spinlock};
 use super::frame::FRAME_SIZE;
 
-/// A simply bump allocator that does not reclaim memory.
+/// A simple bump allocator that does not reclaim memory.
 /// This intended operating mode is okay for now. Addresses
 /// are aligned up until the next page size.
 pub struct BumpAlloc {
@@ -40,18 +40,17 @@ impl BumpAlloc {
         if new_marker > self.end() {
             return Err(())
         } else {
-            let va = self.marker;
+            let vaddr = self.marker;
             self.marker = VirtAddr::try_from(new_marker).map_err(|_| ())?;
-            Ok(va)
+            Ok(vaddr)
         }
     }
 }
 
 pub static MMIO_ALLOCATOR: Spinlock<BumpAlloc> = Spinlock::new({
-        let start = *VirtAddr::MMIO_RANGE.start();
-        let end = *VirtAddr::MMIO_RANGE.end();
-        let va_start = unsafe { VirtAddr::new_unchecked(start) };
-        let length = end - start;
-        BumpAlloc::new(va_start, length as usize)
+        let mmio_range_start = *VirtAddr::MMIO_RANGE.start();
+        let vaddr_start = unsafe { VirtAddr::new_unchecked(mmio_range_start) };
+        let length = VirtAddr::MMIO_RANGE_SIZE as usize;
+        BumpAlloc::new(vaddr_start, length)
     }
 );
