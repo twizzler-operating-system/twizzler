@@ -32,14 +32,13 @@ impl MmioObject {
     pub unsafe fn get_mmio_offset<T>(
         &self,
         offset: usize,
-    ) -> volatile::VolatilePtr<'_, T, ReadOnly> {
+    ) -> volatile::VolatileRef<'_, T, ReadOnly> {
         let ptr = self.obj.base().unwrap() as *const MmioInfo as *const u8;
         volatile::VolatileRef::from_ref(
             (ptr.add(MMIO_OFFSET + offset).sub(0x1000) as *mut T)
                 .as_mut()
                 .unwrap(),
         )
-        .as_ptr()
     }
 
     /// Get the base of the memory mapped IO region.
@@ -49,14 +48,13 @@ impl MmioObject {
     pub unsafe fn get_mmio_offset_mut<T>(
         &self,
         offset: usize,
-    ) -> volatile::VolatilePtr<'_, T, ReadWrite> {
+    ) -> volatile::VolatileRef<'_, T, ReadWrite> {
         let ptr = self.obj.base().unwrap() as *const MmioInfo as *const u8;
         volatile::VolatileRef::from_mut_ref(
             (ptr.add(MMIO_OFFSET + offset).sub(0x1000) as *mut T)
                 .as_mut()
                 .unwrap(),
         )
-        .as_mut_ptr()
     }
 }
 

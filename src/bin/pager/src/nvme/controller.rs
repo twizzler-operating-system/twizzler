@@ -23,6 +23,7 @@ use twizzler_driver::{
     request::{Requester, SubmitRequest, SubmitSummaryWithResponses},
     DeviceController,
 };
+use volatile::map_field;
 use volatile_cell::VolatileCell;
 
 use crate::nvme::dma::NvmeDmaSliceRegion;
@@ -41,12 +42,14 @@ pub struct NvmeController {
 
 pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
     let bar = ctrl.device_ctrl.device().get_mmio(1).unwrap();
-    let reg =
-        unsafe { bar.get_mmio_offset::<nvme::ds::controller::properties::ControllerProperties>(0) };
+    let reg = unsafe {
+        bar.get_mmio_offset_mut::<nvme::ds::controller::properties::ControllerProperties>(0)
+    };
+    let reg = reg.as_mut_ptr();
 
     let int = ctrl.device_ctrl.allocate_interrupt().unwrap();
     let config = ControllerConfig::new();
-    reg.configuration.set(config);
+    map_field!(reg.configuration).write(config);
 
     while reg.status.get().ready() {
         core::hint::spin_loop();

@@ -662,7 +662,7 @@ dependencies = [
  "twizzler-async",
  "twizzler-driver",
  "twizzler-object",
- "volatile_cell",
+ "volatile 0.5.1",
 ]
 
 [[package]]
@@ -1630,27 +1630,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "modular-bitfield"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a53d79ba8304ac1c4f9eb3b9d281f21f7be9d4626f72ce7df4ad8fbde4f38a74"
-dependencies = [
- "modular-bitfield-impl",
- "static_assertions",
-]
-
-[[package]]
-name = "modular-bitfield-impl"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a7d5f7076603ebc68de2dc6a650ec331a062a13abaa346975be747bbfa4b789"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.107",
-]
-
-[[package]]
 name = "nando"
 version = "0.1.0"
 dependencies = [
@@ -1760,15 +1739,6 @@ name = "number_prefix"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
-
-[[package]]
-name = "nvme"
-version = "0.1.0"
-source = "git+https://github.com/twizzler-operating-system/nvme-rs#d44f4f513f314689e60b28284f7684b5178064b0"
-dependencies = [
- "modular-bitfield",
- "volatile_cell",
-]
 
 [[package]]
 name = "object"
@@ -1885,22 +1855,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.107",
-]
-
-[[package]]
-name = "pager"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "nvme",
- "tickv",
- "twizzler-abi",
- "twizzler-async",
- "twizzler-driver",
- "twizzler-net",
- "twizzler-object",
- "twizzler-queue",
- "volatile_cell",
 ]
 
 [[package]]
@@ -2178,12 +2132,6 @@ checksum = "66d3add2fc55ef37511bcf81a08ee7a09eff07b23aae38b06a29024a38c604b1"
 dependencies = [
  "log",
 ]
-
-[[package]]
-name = "rust-libcore"
-version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae7a33830cc02d03ae1e50057d0e4e4b1a84be09bfb158bf95e9c3f3373aa453"
 
 [[package]]
 name = "rustc-demangle"
@@ -2646,12 +2594,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tickv"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c61f292d344c68f447d717efc2ebb9b5e9de3c859fef183dd2ab69fa5897f08a"
-
-[[package]]
 name = "time"
 version = "0.1.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3034,15 +2976,6 @@ name = "volatile"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9eaac9f9d9b7ae00cdd43e21b15e58ccacd903e6d29131d7536765a61969d25e"
-
-[[package]]
-name = "volatile_cell"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e89c44c56cc47ef6c4fccb52a3a5c48c4306929294fdf4ffe67321a0071bba72"
-dependencies = [
- "rust-libcore",
-]
 
 [[package]]
 name = "vte"

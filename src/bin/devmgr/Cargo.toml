@@ -13,4 +13,4 @@ twizzler-async = { path = "../../lib/twizzler-async" }
 pci-ids = "0.2.4"
 async-trait = "0.1.56"
 #nvme = { path = "../../lib/nvme-rs" }
-volatile_cell = "1.0.0"
+volatile = "0.5"

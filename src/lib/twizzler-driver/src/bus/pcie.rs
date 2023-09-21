@@ -1,6 +1,6 @@
 //! PCIe-specific functionality.
 
-use std::ptr::NonNull;
+use std::{marker::PhantomData, ptr::NonNull};
 
 pub use twizzler_abi::device::bus::pcie::*;
 use twizzler_abi::{
@@ -8,27 +8,28 @@ use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionFlags},
 };
 use volatile::{
-    access::{Access, Readable},
-    map_field, VolatilePtr,
+    access::{Access, ReadWrite, Readable},
+    map_field, VolatilePtr, VolatileRef,
 };
 
 use crate::device::{events::InterruptAllocationError, Device, MmioObject};
 
-pub struct PcieCapabilityIterator {
-    cfg: MmioObject,
+pub struct PcieCapabilityIterator<'a> {
+    dev: &'a Device,
+    cfg: &'a MmioObject,
     off: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
-#[repr(packed)]
+#[repr(packed(4))]
 pub struct PcieCapabilityHeader {
     pub id: u8,
     pub next: u8,
 }
 
-#[derive(Debug)]
-#[repr(packed)]
+#[derive(Debug, Copy, Clone)]
+#[repr(packed(4))]
 pub struct MsiCapability {
     pub header: PcieCapabilityHeader,
     pub msg_ctrl: u16,
@@ -40,8 +41,8 @@ pub struct MsiCapability {
     pub pending: u32,
 }
 
-#[derive(Debug)]
-#[repr(packed)]
+#[derive(Debug, Copy, Clone)]
+#[repr(packed(4))]
 pub struct MsixCapability {
     pub header: PcieCapabilityHeader,
     pub msg_ctrl: u16,
@@ -60,8 +61,8 @@ impl MsixCapability {
     }
 }
 
-#[derive(Debug)]
-#[repr(packed)]
+#[derive(Debug, Clone, Copy)]
+#[repr(packed(8))]
 pub struct MsixTableEntry {
     msg_addr_lo: u32,
     msg_addr_hi: u32,
@@ -70,14 +71,14 @@ pub struct MsixTableEntry {
 }
 
 #[derive(Debug)]
-pub enum PcieCapability {
+pub enum PcieCapability<'a> {
     Unknown(u8),
-    Msi(NonNull<MsiCapability>),
-    MsiX(NonNull<MsixCapability>),
+    Msi(VolatileRef<'a, MsiCapability>),
+    MsiX(VolatileRef<'a, MsixCapability>),
 }
 
-impl Iterator for PcieCapabilityIterator {
-    type Item = PcieCapability;
+impl<'a> Iterator for PcieCapabilityIterator<'a> {
+    type Item = PcieCapability<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.off == 0 {
@@ -85,16 +86,15 @@ impl Iterator for PcieCapabilityIterator {
         }
         unsafe {
             let cap = self.cfg.get_mmio_offset::<PcieCapabilityHeader>(self.off);
-            let ret = match cap.id {
-                5 => {
-                    PcieCapability::Msi(self.cfg.get_mmio_offset::<MsiCapability>(self.off).into())
+            let cap = cap.as_ptr();
+            let ret = match map_field!(cap.id).read() {
+                5 => PcieCapability::Msi(self.cfg.get_mmio_offset_mut::<MsiCapability>(self.off)),
+                0x11 => {
+                    PcieCapability::MsiX(self.cfg.get_mmio_offset_mut::<MsixCapability>(self.off))
                 }
-                0x11 => PcieCapability::MsiX(
-                    self.cfg.get_mmio_offset::<MsixCapability>(self.off).into(),
-                ),
                 x => PcieCapability::Unknown(x),
             };
-            self.off = (cap.next & 0xfc) as usize;
+            self.off = (map_field!(cap.next).read() & 0xfc) as usize;
             Some(ret)
         }
     }
@@ -109,15 +109,16 @@ fn calc_msg_info(vec: InterruptVector, level: bool) -> (u64, u32) {
 }
 
 impl Device {
-    fn pcie_capabilities(&self) -> Option<PcieCapabilityIterator> {
-        let mm = self.get_mmio(0)?;
+    fn pcie_capabilities<'a>(&'a self, mm: &'a MmioObject) -> Option<PcieCapabilityIterator<'a>> {
         let cfg = unsafe { mm.get_mmio_offset::<PcieDeviceHeader>(0) };
+        let cfg = cfg.as_ptr();
         let ptr = map_field!(cfg.cap_ptr).read() & 0xfc;
         let hdr = map_field!(cfg.fnheader);
         if map_field!(hdr.status).read() & (1 << 4) == 0 {
             return None;
         }
         Some(PcieCapabilityIterator {
+            dev: self,
             cfg: mm,
             off: ptr as usize,
         })
@@ -136,7 +137,7 @@ impl Device {
 
     fn allocate_msix_interrupt(
         &self,
-        msix: volatile::VolatilePtr<'_, MsixCapability>,
+        msix: volatile::VolatilePtr<'_, MsixCapability, ReadWrite>,
         vec: InterruptVector,
         inum: usize,
     ) -> Result<u32, InterruptAllocationError> {
@@ -148,6 +149,7 @@ impl Device {
         let table = unsafe {
             let start = mmio
                 .get_mmio_offset::<MsixTableEntry>(offset)
+                .as_ptr()
                 .as_raw_ptr()
                 .as_ptr();
             let len = MsixCapability::table_len(msix);
@@ -164,7 +166,7 @@ impl Device {
 
     fn allocate_msi_interrupt(
         &self,
-        _msi: &MsiCapability,
+        _msi: &VolatilePtr<'_, MsiCapability, ReadWrite>,
         _vec: InterruptVector,
     ) -> Result<u32, InterruptAllocationError> {
         todo!()
@@ -176,29 +178,30 @@ impl Device {
         inum: usize,
     ) -> Result<u32, InterruptAllocationError> {
         // Prefer MSI-X
+        let mm = self.get_mmio(0).unwrap();
         for cap in self
-            .pcie_capabilities()
+            .pcie_capabilities(&mm)
             .ok_or(InterruptAllocationError::Unsupported)?
         {
-            if let PcieCapability::MsiX(m) = cap {
+            if let PcieCapability::MsiX(mut m) = cap {
                 for msitest in self
-                    .pcie_capabilities()
+                    .pcie_capabilities(&mm)
                     .ok_or(InterruptAllocationError::Unsupported)?
                 {
-                    if let PcieCapability::Msi(m) = msitest {
-                        let msi = unsafe { m.as_ref() };
-                        msi.msg_ctrl.set(0);
+                    if let PcieCapability::Msi(mut msi) = msitest {
+                        let msi = msi.as_mut_ptr();
+                        map_field!(msi.msg_ctrl).write(0);
                     }
                 }
-                return unsafe { self.allocate_msix_interrupt(m.as_ref(), vec, inum) };
+                return self.allocate_msix_interrupt(m.as_mut_ptr(), vec, inum);
             }
         }
         for cap in self
-            .pcie_capabilities()
+            .pcie_capabilities(&mm)
             .ok_or(InterruptAllocationError::Unsupported)?
         {
-            if let PcieCapability::Msi(m) = cap {
-                return unsafe { self.allocate_msi_interrupt(m.as_ref(), vec) };
+            if let PcieCapability::Msi(mut m) = cap {
+                return self.allocate_msi_interrupt(&m.as_mut_ptr(), vec);
             }
         }
         Err(InterruptAllocationError::Unsupported)
