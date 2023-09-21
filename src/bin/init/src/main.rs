@@ -424,8 +424,6 @@ fn main() {
         println!("{:?}", cmd);
         let root_str = root_id.to_string();
         let curr_str = curr_id.to_string();
-        cmd.insert(1, &root_str);
-        cmd.insert(2, &curr_str);
         /*if cmd.len() == 2 && cmd[0] == "run" {
             if let Some(id) = find_init_name(cmd[1]) {
                 if cmd[1] == "nettest" {
@@ -448,24 +446,24 @@ fn main() {
         if cmd.len() > 0 {
             match cmd[0].as_ref() {
                 "mkdir" => {
-                    if cmd.len() == 4 {
-                        println!("{:?}", fute::shell::mkdir(cmd[3]));
+                    if cmd.len() == 2 {
+                        println!("{:?}", fute::shell::mkdir(cmd[1]));
                     }
                     else {
                         eprintln!("mkdir: missing operand");
                     }
                 }
                 "ls" => {
-                    if cmd.len() == 4 {
-                        fute::shell::ls(cmd[3]);
+                    if cmd.len() == 2 {
+                        fute::shell::ls(cmd[1]);
                     }
                     else {
                         fute::shell::ls("");
                     }
                 }
                 "cd" => {
-                    if cmd.len() == 4 && cmd[3] != "" {
-                        let x = fute::shell::cd(cmd[3]);
+                    if cmd.len() == 2 && cmd[1] != "" {
+                        let x = fute::shell::cd(cmd[1]);
                         println!("{:?}", x);
                         curr_id = match x {
                             Ok(x) => x,
@@ -479,12 +477,31 @@ fn main() {
                     }
                 }
                 "rm" => {
-                    if cmd.len() == 4 {
-                        let x = fute::shell::rm(cmd[3]);
+                    if cmd.len() == 2 {
+                        let x = fute::shell::rm(cmd[1]);
                         println!("{:?}", x);
                     }
                 }
+                "push" => {
+                    if cmd.len() == 3 {
+                        let file = cmd[1];
+                        let word = cmd[2];
+                        let mut x = LetheFute::new().expect("Whatever");
 
+                        x.create(file);
+                        x.append(file, word.as_bytes());
+                    }
+                }
+                "read" => {
+                    if cmd.len() == 2 {
+                        let f = cmd[1];
+                        let mut x = LetheFute::new().expect("Whatever");
+                        let mut buf = [0u8; 4096];
+                        x.read(f, &mut buf, 0);
+                        
+                        println!("{}", String::from_utf8(buf.to_vec()).unwrap());
+                    }
+                }
                 _ => {
                     if let Some(id) = find_init_name(cmd[0]) {
                         exec_n(cmd[0], id, &cmd);
@@ -521,6 +538,7 @@ use std::{
     time::Duration, path::PathBuf, env, os, ffi::OsStr,
 };
 
+use lethe_cli::fs::LetheFute;
 use twizzler_abi::{
     device::SubObjectType,
     kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue},

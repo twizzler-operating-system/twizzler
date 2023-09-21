@@ -10,4 +10,5 @@ twizzler-net = {path = "../../lib/twizzler-net" }
 twizzler-object = {path = "../../lib/twizzler-object" }
 twizzler-queue = {path = "../../lib/twizzler-queue"}
 fute = {path = "../fute"}
+lethe_cli = {path = "../lethe_cli"}
 rprompt = "1.0.5"
