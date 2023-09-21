@@ -8,6 +8,9 @@
 /// "Procedure Call Standard for the Arm® 64-bit Architecture (AArch64)":
 ///     https://github.com/ARM-software/abi-aa/releases/download/2023Q1/aapcs64.pdf
 
+use arm64::registers::TPIDR_EL0;
+use registers::interfaces::Writeable;
+
 use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
 
 use crate::thread::Thread;
@@ -87,8 +90,9 @@ impl Thread {
         todo!()
     }
 
-    pub fn set_tls(&self, _tls: u64) {
-        todo!()
+    pub fn set_tls(&self, tls: u64) {
+        // TODO: save TLS pointer in thread state, and track in context switches
+        TPIDR_EL0.set(tls);
     }
 
     /// Architechture specific CPU context switch.

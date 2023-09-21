@@ -14,7 +14,9 @@ use twizzler_abi::{
 use crate::interrupt::{DynamicInterrupt, Destination};
 use crate::machine::interrupt::INTERRUPT_CONTROLLER;
 
-use super::exception::{exception_handler, ExceptionContext};
+use super::exception::{
+    ExceptionContext, exception_handler, save_stack_pointer, restore_stack_pointer,
+};
 use super::cntp::{PhysicalTimer, cntp_interrupt_handler};
 
 // interrupt vector table size/num vectors
@@ -104,7 +106,8 @@ pub fn set(state: bool) {
 // The top level interrupt request (IRQ) handler. Deals with
 // interacting with the interrupt controller and acknowledging
 // device interrupts.
-exception_handler!(interrupt_request_handler, irq_exception_handler);
+exception_handler!(interrupt_request_handler_el1, irq_exception_handler, true);
+exception_handler!(interrupt_request_handler_el0, irq_exception_handler, false);
 
 /// Exception handler manages IRQs and calls the appropriate
 /// handler for a given IRQ number. This handler manages state

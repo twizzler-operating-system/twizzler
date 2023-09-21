@@ -1,9 +1,10 @@
-use alloc::{vec::Vec};
+use alloc::vec::Vec;
 
-use arm64::registers::{MPIDR_EL1, TPIDR_EL1};
+use arm64::registers::TPIDR_EL1;
 use registers::interfaces::{Readable, Writeable};
 
 use crate::{
+    machine::processor::BootMethod,
     memory::VirtAddr,
     processor::Processor,
     once::Once,
@@ -26,20 +27,10 @@ static BOOT_CORE_ID: Once<u32> = Once::new();
 /// Register processors enumerated by hardware
 /// and return the bootstrap processor's id
 pub fn enumerate_cpus() -> u32 {
-    // TODO: This is temporary until we can implement
-    // enumeration of the CPUs using some specification
-    // like Device Tree or ACPI
-
     // Get the local core number
     *BOOT_CORE_ID.call_once(|| {
-        // generally affinity 1 is the cluster ID, and
-        // affinity 0 (bits [7:0]) is the core ID in the cluster
-        let core_id = (MPIDR_EL1.get() & 0xff) as u32;
-
-        // For now we assume a single core, the boot core, and
-        // return it's ID to the scheduling system
-        crate::processor::register(core_id, core_id);
-        core_id
+        // enumerate all processors in a machine specific way
+        crate::machine::processor::enumerate_cpus()
     })
 }
 
@@ -64,7 +55,9 @@ pub fn get_topology() -> Vec<(usize, bool)> {
 
 // arch specific implementation of processor specific state
 #[derive(Default, Debug)]
-pub struct ArchProcessor;
+pub struct ArchProcessor {
+    pub boot: BootMethod,
+}
 
 pub fn halt_and_wait() {
     /* TODO: spin a bit */

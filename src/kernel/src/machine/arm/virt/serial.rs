@@ -1,33 +1,37 @@
 use lazy_static::lazy_static;
-use twizzler_abi::{device::CacheType, object::Protections};
+use twizzler_abi::object::Protections;
 
-use super::super::uart::PL011;        
-use super::memory::mmio::PL011_UART;
+use super::super::common::uart::PL011;        
 
-use crate::memory::{VirtAddr, pagetables::{
+use crate::memory::{PhysAddr, pagetables::{
     ContiguousProvider, MappingCursor, MappingSettings, Mapper,
     MappingFlags,
 }};
+use crate::arch::memory::mmio::MMIO_ALLOCATOR;
 
 lazy_static! {
     // TODO: add a spinlock here
     pub static ref SERIAL: PL011 = {
+        let (clock_freq, mmio) = crate::machine::info::get_uart_info();
         // the desired virtal address for this region of mmio
-        let uart_mmio_base = VirtAddr::new(0xFFFF_0000_0000_0000).unwrap();
+        let uart_mmio_base = {
+            MMIO_ALLOCATOR.lock().alloc(mmio.length as usize)
+                .expect("failed to allocate MMIO region")
+        };
         // configure mapping settings for this region of memory
         let cursor = MappingCursor::new(
             uart_mmio_base,
-            PL011_UART.length,
+            mmio.length as usize,
         );
         let mut phys = ContiguousProvider::new(
-            PL011_UART.start,
-            PL011_UART.length,
+            unsafe { PhysAddr::new_unchecked(mmio.info) },
+            mmio.length as usize,
         );
         // Device memory only prevetns speculative data accesses, so we must not
         // make this region executable to prevent speculative instruction accesses.
         let settings = MappingSettings::new(
             Protections::READ | Protections::WRITE,
-            CacheType::MemoryMappedIO,
+            mmio.cache_type,
             MappingFlags::GLOBAL,
         );
         // map in with curent memory context
@@ -40,7 +44,7 @@ lazy_static! {
         let serial_port = unsafe { 
             PL011::new(uart_mmio_base.into()) 
         };
-        serial_port.early_init();
+        serial_port.early_init(clock_freq as u32);
         serial_port
     };
 }
@@ -53,12 +57,11 @@ impl PL011 {
     }
 
     /// initalize the UART driver early, before interrupts in the system are enabled
-    fn early_init(&self) {
-        const CLOCK: u32 = 0x16e3600; // 24 MHz, TODO: get clock rate
+    fn early_init(&self, clock_freq: u32) {
         const BAUD: u32 = 115200;
         // configure the UART with the desired baud, given the clock rate
         unsafe { 
-            self.init(CLOCK, BAUD); 
+            self.init(clock_freq, BAUD);
         }
     }
 }
