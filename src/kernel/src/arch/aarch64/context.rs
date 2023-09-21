@@ -109,21 +109,12 @@ impl ArchContext {
         }
     }
 
-    pub fn change(&self, cursor: MappingCursor, settings: &MappingSettings) {
-        if cursor.start().is_kernel() {
-            KERNEL_MAPPER.lock().change(cursor, settings);
-        } else {
-            self.inner.lock().change(cursor, settings);
-        }
+    pub fn change(&self, _cursor: MappingCursor, _settings: &MappingSettings) {
+        // TODO: change page table entry
     }
 
-    pub fn unmap(&self, cursor: MappingCursor) {
-        let ops = if cursor.start().is_kernel() {
-            KERNEL_MAPPER.lock().unmap(cursor)
-        } else {
-            self.inner.lock().unmap(cursor)
-        };
-        ops.run_all();
+    pub fn unmap(&self, _cursor: MappingCursor) {
+        // TODO: actually unmap pages
     }
 
     pub fn readmap<R>(&self, _cursor: MappingCursor, _f: impl Fn(MapReader) -> R) -> R {
@@ -150,11 +141,11 @@ impl ArchContextInner {
         self.mapper.map(cursor, phys, settings);
     }
 
-    fn change(&mut self, cursor: MappingCursor, settings: &MappingSettings) {
-        self.mapper.change(cursor, settings);
+    fn change(&mut self, _cursor: MappingCursor, _settings: &MappingSettings) {
+        todo!()
     }
 
-    fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
-        self.mapper.unmap(cursor)
+    fn unmap(&mut self, _cursor: MappingCursor) -> DeferredUnmappingOps {
+        todo!()
     }
 }

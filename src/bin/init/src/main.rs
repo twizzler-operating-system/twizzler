@@ -247,7 +247,7 @@ fn exec_n(name: &str, id: ObjID, args: &[&str]) {
         .map(|(n, v)| format!("{}={}", n, v))
         .collect();
     let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
-    let mut fullargs = vec![name.as_bytes()];
+    let mut fullargs = vec![];
     fullargs.extend(args.iter().map(|x| x.as_bytes()));
     let _elf = twizzler_abi::load_elf::spawn_new_executable(id, &fullargs, &env_ref);
     //println!("ELF: {:?}", elf);
@@ -404,17 +404,27 @@ fn main() {
         #[allow(deprecated)]
         twizzler_abi::syscall::sys_debug_shutdown(if test_failed { 1 } else { 0 });
     }
+    println!("Building the filesystem...");
+    let root_id = fute::shell::make_root().expect("Building filesystem has failed");
+    let mut curr_id = root_id;
+    let curr_path = PathBuf::from("/");
+    
+    env::set_var("ROOT_ID", OsStr::new(&format!("{}", root_id)));
+    env::set_var("CURR_ID", OsStr::new(&format!("{}", root_id)));
+
+    println!("Done!");  
 
     println!("Hi, welcome to the basic twizzler test console.");
     println!("If you wanted line-editing, you've come to the wrong place.");
-    println!("A couple commands you can run:");
-    println!("   - 'nt': Run the nettest program");
-    println!("... and that's it, but you can add your OWN things with the magic of PROGRAMMING.");
+    println!("but you can add your OWN things with the magic of PROGRAMMING.");
     loop {
-        let reply = rprompt::prompt_reply_stdout("> ").unwrap();
-        println!("got: <{}>", reply);
-        let cmd: Vec<&str> = reply.split(" ").collect();
-        if cmd.len() == 2 && cmd[0] == "run" {
+        let reply = rprompt::prompt_reply_stdout(&format!("cptforever@twizzler:{}$ ", curr_path.to_str().unwrap())).unwrap();
+        //println!("got: <{}>", reply);
+        let mut cmd: Vec<&str> = reply.split(" ").collect();
+        println!("{:?}", cmd);
+        let root_str = root_id.to_string();
+        let curr_str = curr_id.to_string();
+        /*if cmd.len() == 2 && cmd[0] == "run" {
             if let Some(id) = find_init_name(cmd[1]) {
                 if cmd[1] == "nettest" {
                     exec(cmd[1], id, netid);
@@ -432,9 +442,77 @@ fn main() {
             } else {
                 eprintln!("[init] failed to start nettest");
             }
-        }
+        }*/
+        if cmd.len() > 0 {
+            match cmd[0].as_ref() {
+                "mkdir" => {
+                    if cmd.len() == 2 {
+                        println!("{:?}", fute::shell::mkdir(cmd[1]));
+                    }
+                    else {
+                        eprintln!("mkdir: missing operand");
+                    }
+                }
+                "ls" => {
+                    if cmd.len() == 2 {
+                        fute::shell::ls(cmd[1]);
+                    }
+                    else {
+                        fute::shell::ls("");
+                    }
+                }
+                "cd" => {
+                    if cmd.len() == 2 && cmd[1] != "" {
+                        let x = fute::shell::cd(cmd[1]);
+                        println!("{:?}", x);
+                        curr_id = match x {
+                            Ok(x) => x,
+                            Err(_) => curr_id
+                        };
 
-        //  get_user_input();
+                        env::set_var("CURR_ID", OsStr::new(&format!("{}", curr_id)));
+                    }
+                    else {
+                        eprintln!("cd: missing operand");
+                    }
+                }
+                "rm" => {
+                    if cmd.len() == 2 {
+                        let x = fute::shell::rm(cmd[1]);
+                        println!("{:?}", x);
+                    }
+                }
+                "push" => {
+                    if cmd.len() == 3 {
+                        let file = cmd[1];
+                        let word = cmd[2];
+                        let mut x = LetheFute::new().expect("Whatever");
+
+                        x.create(file);
+                        x.append(file, word.as_bytes());
+                    }
+                }
+                "read" => {
+                    if cmd.len() == 2 {
+                        let f = cmd[1];
+                        let mut x = LetheFute::new().expect("Whatever");
+                        let mut buf = [0u8; 4096];
+                        x.read(f, &mut buf, 0);
+                        
+                        println!("{}", String::from_utf8(buf.to_vec()).unwrap());
+                    }
+                }
+                _ => {
+                    if let Some(id) = find_init_name(cmd[0]) {
+                        exec_n(cmd[0], id, &cmd);
+                    }
+                    else {
+                        eprintln!("twsh: command not found: {}", cmd[0]);
+                    }
+                }
+            }
+
+        }
     }
     if false {
         test_kaction();
@@ -457,9 +535,10 @@ extern "C" fn _start() -> ! {
 
 use std::{
     sync::{atomic::AtomicU64, Arc, Mutex},
-    time::Duration,
+    time::Duration, path::PathBuf, env, os, ffi::OsStr,
 };
 
+use lethe_cli::fs::LetheFute;
 use twizzler_abi::{
     device::SubObjectType,
     kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue},

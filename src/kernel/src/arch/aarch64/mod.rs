@@ -39,6 +39,17 @@ pub fn init<B: BootInfo>(boot_info: &B) {
     // we set it to zero so that we know it is not initialized.
     TPIDR_EL1.set(0);
 
+<<<<<<< HEAD
+    // TODO: check if SPSel is already set to use SP_EL1
+    // TODO: scrub SP_EL0 if we do change SP
+
+    // make it so that we use SP_EL1 in the kernel
+    // when taking an exception.
+    SPSel.write(SPSel::SP::ELx);
+
+    // save the stack pointer from before
+    let sp = SP_EL0.get();
+=======
     // Initialize the machine specific enumeration state (e.g., DeviceTree, ACPI)
     crate::machine::info::init(boot_info);
     
@@ -64,6 +75,7 @@ pub fn init<B: BootInfo>(boot_info: &B) {
                 in(reg) spsel.get(),
             );
         }
+>>>>>>> 8a87a02b0a3010420cd11bcbd6e998ec9f50969d
 
         // make it so that the boot stack is in higher half memory
         if !VirtAddr::new(sp).unwrap().is_kernel() {
