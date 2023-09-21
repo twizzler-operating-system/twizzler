@@ -1,5 +1,4 @@
 //#![no_std]
-#![feature(lang_items)]
 #![feature(naked_functions)]
 #![feature(thread_local)]
 #![feature(duration_constants)]
@@ -232,6 +231,7 @@ fn exec(name: &str, id: ObjID, argid: ObjID) {
     //println!("ELF: {:?}", elf);
 }
 
+/*
 fn exec2(name: &str, id: ObjID) -> Option<ObjID> {
     let env: Vec<String> = std::env::vars()
         .map(|(n, v)| format!("{}={}", n, v))
@@ -241,6 +241,7 @@ fn exec2(name: &str, id: ObjID) -> Option<ObjID> {
     twizzler_abi::load_elf::spawn_new_executable(id, &args, &env_ref).ok()
     //println!("ELF: {:?}", elf);
 }
+*/
 
 fn exec_n(name: &str, id: ObjID, args: &[&str]) {
     let env: Vec<String> = std::env::vars()
@@ -354,7 +355,7 @@ fn main() {
     twizzler_net::wait_until_network_manager_ready(netid);
     println!("network manager is up!");
 
-    if let Some(id) = find_init_name("test_bins") {
+    if let Some(_id) = find_init_name("test_bins") {
         println!("=== found init test list ===");
         todo!()
         /*
@@ -469,10 +470,21 @@ use twizzler_abi::{
     object::{ObjID, Protections},
     pager::{CompletionToKernel, RequestFromKernel},
     syscall::{
-        sys_kaction, sys_new_handle, sys_thread_sync, BackingType, LifetimeType, MapFlags,
-        NewHandleFlags, ObjectCreate, ObjectCreateFlags, ThreadSync, ThreadSyncFlags, ThreadSyncOp,
-        ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+        sys_kaction,
+        sys_new_handle,
+        sys_thread_sync,
+        BackingType,
+        LifetimeType, //MapFlags,
+        NewHandleFlags,
+        ObjectCreate,
+        ObjectCreateFlags,
+        ThreadSync,
+        ThreadSyncFlags,
+        ThreadSyncOp,
+        ThreadSyncReference,
+        ThreadSyncSleep,
+        ThreadSyncWake,
     },
-    thread::{ExecutionState, ThreadRepr},
+    //thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_object::{CreateSpec, Object, ObjectInitFlags};

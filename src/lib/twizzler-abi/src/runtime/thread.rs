@@ -144,7 +144,7 @@ impl ThreadRuntime for MinimalRuntime {
         }
     }
 
-    fn tls_get_addr(&self, tls_index: &twizzler_runtime_api::TlsIndex) -> *const u8 {
+    fn tls_get_addr(&self, _tls_index: &twizzler_runtime_api::TlsIndex) -> *const u8 {
         todo!()
     }
 }

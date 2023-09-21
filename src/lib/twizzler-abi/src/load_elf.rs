@@ -292,7 +292,7 @@ pub fn spawn_new_executable(
         };
         let spawnargs_start = stack_base + INITIAL_STACK_SIZE + NULLPAGE_SIZE * 2 + offset;
 
-        let args_data_start = unsafe {
+        let args_data_start = {
             let args_data_start: *mut u8 = stack
                 .offset_mut(
                     INITIAL_STACK_SIZE

@@ -1,6 +1,6 @@
 //! PCIe-specific functionality.
 
-use std::{marker::PhantomData, ptr::NonNull};
+use std::ptr::NonNull;
 
 pub use twizzler_abi::device::bus::pcie::*;
 use twizzler_abi::{
@@ -15,7 +15,7 @@ use volatile::{
 use crate::device::{events::InterruptAllocationError, Device, MmioObject};
 
 pub struct PcieCapabilityIterator<'a> {
-    dev: &'a Device,
+    _dev: &'a Device,
     cfg: &'a MmioObject,
     off: usize,
 }
@@ -118,7 +118,7 @@ impl Device {
             return None;
         }
         Some(PcieCapabilityIterator {
-            dev: self,
+            _dev: self,
             cfg: mm,
             off: ptr as usize,
         })

@@ -16,8 +16,6 @@
 //! Each subqueue sends a type T across the queue via byte-level copy. Internally, these objects are
 //! held in a circular buffer with a maximum length specified on queue creation.
 
-#![feature(int_log)]
-
 mod callback_queue;
 mod queue;
 mod sender_queue;

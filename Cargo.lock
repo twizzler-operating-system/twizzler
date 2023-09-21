@@ -2505,6 +2505,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "talc"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1be706e6eccf295514e89645a2a52d93ac93ef1c87cdeb50cffb48ab58e6490"
+
+[[package]]
 name = "tar"
 version = "0.4.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2727,6 +2733,7 @@ dependencies = [
  "rustc-std-workspace-core",
  "syscall_encode_macros",
  "syscall_encode_traits",
+ "talc",
  "twizzler-runtime-api",
  "volatile 0.5.1",
 ]

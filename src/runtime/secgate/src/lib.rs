@@ -2,7 +2,6 @@
 #![feature(unboxed_closures)]
 #![feature(tuple_trait)]
 #![feature(naked_functions)]
-#![feature(asm_sym)]
 
 use std::marker::{PhantomData, Tuple};
 

@@ -1,12 +1,11 @@
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 use syn::{
-    parse::ParseStream,
     parse2,
     punctuated::Punctuated,
     token::{Bracket, Paren, Pound, Pub},
-    Attribute, Block, Error, Expr, ExprLit, ItemFn, LitStr, MetaNameValue, Path, PathSegment,
-    ReturnType, Token, Type, VisRestricted, Visibility,
+    Attribute, Error, Expr, ExprLit, ItemFn, LitStr, MetaNameValue, Path, PathSegment, ReturnType,
+    Type, VisRestricted, Visibility,
 };
 
 #[proc_macro_attribute]
@@ -97,8 +96,8 @@ fn handle_secure_gate(
 
     let Info {
         mod_name,
-        fn_name,
-        struct_name,
+        fn_name: _fn_name,
+        struct_name: _struct_name,
         ..
     } = names;
     tree.vis = Visibility::Restricted(VisRestricted {
@@ -135,7 +134,7 @@ fn build_call_point(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStr
     let Info {
         mod_name,
         fn_name,
-        struct_name,
+        struct_name: _struct_name,
         ..
     } = names;
     call_point.block = Box::new(parse2(quote::quote! {
@@ -147,9 +146,9 @@ fn build_call_point(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStr
     Ok(quote::quote!(#call_point))
 }
 
-fn build_struct(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
+fn build_struct(_tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
     let Info {
-        mod_name,
+        mod_name: _mod_name,
         fn_name,
         struct_name,
         types,

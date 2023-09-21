@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::object::ObjID;
 
 use super::tls::{set_tls_info, TlsInfo};
@@ -46,14 +48,12 @@ pub(crate) fn get_load_seg(nr: usize) -> Option<(usize, usize)> {
 pub fn process_phdrs(phdrs: &'static [Phdr]) {
     for ph in phdrs {
         if ph.ty == 7 {
-            unsafe {
-                set_tls_info(TlsInfo {
-                    template_start: ph.vaddr as *const u8,
-                    memsz: ph.memsz as usize,
-                    filsz: ph.filesz as usize,
-                    align: ph.align as usize,
-                })
-            }
+            set_tls_info(TlsInfo {
+                template_start: ph.vaddr as *const u8,
+                memsz: ph.memsz as usize,
+                filsz: ph.filesz as usize,
+                align: ph.align as usize,
+            })
         }
     }
     unsafe {
