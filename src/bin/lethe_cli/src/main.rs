@@ -10,7 +10,6 @@ fn main() {
     x.write("hi", &write_buf, 2075);
 
     x.read("hi", buf, 2000);
-    println!("{:?}", x.unlink("hi"));
     println!("{}", String::from_utf8(buf.to_vec()).unwrap());
     //x.consolidate();
 }

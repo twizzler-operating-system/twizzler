@@ -46,7 +46,7 @@ impl PersistentStorage for Storage {
 
     fn destroy(&mut self, objid: &Self::Id) -> Result<(), Self::Error> {
         let path: String = self.object_path(objid);
-        println!("Path {}", path);
+
         fute::shell::rm(&path)?;
         
         Ok(())

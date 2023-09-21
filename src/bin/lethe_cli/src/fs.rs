@@ -84,11 +84,9 @@ impl LetheFute {
     pub fn create(&mut self, path: &str) -> Result<()> {
         match self.namer.get(&path.to_owned()) {
             Some(x) => {
-                self.truncate(path, 0);
                 return Ok(())
             },
             None => {
-                println!("Couldn't find path {}", path);
             }
         };
         
@@ -131,11 +129,20 @@ impl LetheFute {
         Ok(io.write(buf)? as i32)
     }
 
+    pub fn append(&mut self, path: &str, buf: &[u8]) -> Result<i32> {
+        let objid = self.namer.get(&path.to_owned()).unwrap();
+
+        let mut io = self.lemosyne.write_handle(&objid)?;
+        io.seek(SeekFrom::End(0))?;
+
+        Ok(io.write(buf)? as i32)
+    }
+
     pub fn unlink(&mut self, path: &str) -> Result<i32> {
         let objid = self.namer.remove(&path.to_owned()).unwrap();
         self.allocator.dealloc(objid)?;
         self.lemosyne.destroy(&objid)?;
-    
+        
         Ok(0)
     }
 
