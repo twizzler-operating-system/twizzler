@@ -29,6 +29,7 @@ backtracer_core = { git = "https://github.com/twizzler-operating-system/backtrac
 limine = "0.1.11"
 twizzler-queue-raw = { version = "*", path = "../lib/twizzler-queue-raw", default-features = false }
 syscall_encode = { version = "0.1.2" }
+volatile = "0.5"
 
 [target.x86_64-unknown-none.dependencies]
 uart_16550 = "0.2.0"
@@ -49,3 +50,4 @@ twizzler-build = "kernel"
 
 [profile.release]
 debug = true
+

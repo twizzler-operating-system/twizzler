@@ -1,13 +1,16 @@
 #![no_std]
 #![feature(unboxed_closures)]
 #![feature(naked_functions)]
-#![feature(asm_sym)]
 
 use core::{
     alloc::GlobalAlloc, ffi::CStr, num::NonZeroUsize, sync::atomic::AtomicU32, time::Duration,
 };
 
-#[cfg(all(feature = "runtime", not(feature = "kernel")))]
+#[cfg(all(
+    feature = "runtime",
+    not(feature = "kernel"),
+    feature = "rustc-dep-of-std"
+))]
 pub mod rt0;
 
 pub type ObjID = u128;
@@ -97,6 +100,7 @@ pub trait ThreadRuntime {
 pub trait ObjectRuntime {
     fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError>;
     fn unmap_object(&self, handle: &ObjectHandle);
+    fn release_handle(&self, handle: &mut ObjectHandle);
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
@@ -125,6 +129,14 @@ pub struct ObjectHandle {
     pub id: ObjID,
     pub flags: MapFlags,
     pub base: *mut u8,
+}
+
+#[cfg(not(feature = "kernel"))]
+impl Drop for ObjectHandle {
+    fn drop(&mut self) {
+        let runtime = get_runtime();
+        runtime.release_handle(self);
+    }
 }
 
 pub trait CoreRuntime {
@@ -219,9 +231,34 @@ pub trait RustTimeRuntime {
 /// This is the type of the function exposed by std that the runtime calls to transfer control to the Rust std + main.
 pub type LibstdEntry = unsafe extern "C" fn(aux: BasicAux) -> BasicReturn;
 
+pub struct Library {
+    pub mapping: ObjectHandle,
+    pub range: (*const u8, *const u8),
+}
+
+impl AsRef<Library> for Library {
+    fn as_ref(&self) -> &Library {
+        self
+    }
+}
+
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LibraryId(pub usize);
+
+unsafe impl Send for Library {}
+
 /// Error types
 pub trait DebugRuntime {
-    fn iter_libs(&self) -> ();
+    fn get_library(&self, id: LibraryId) -> Option<Library>;
+    fn get_exeid(&self) -> Option<LibraryId>;
+    fn get_library_segment(&self, lib: &Library, seg: usize) -> Option<AddrRange>;
+    fn get_full_mapping(&self, lib: &Library) -> Option<ObjectHandle>;
+}
+
+pub struct AddrRange {
+    pub start: usize,
+    pub len: usize,
 }
 
 #[cfg(not(feature = "kernel"))]

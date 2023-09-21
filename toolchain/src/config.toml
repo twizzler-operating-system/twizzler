@@ -6,7 +6,6 @@ sysconfdir = "etc"
 
 [llvm]
 download-ci-llvm = false
-skip-rebuild = false
 targets = "AArch64;X86"
 experimental-targets = ""
 ninja = true

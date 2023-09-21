@@ -48,6 +48,7 @@ use crate::spinlock::Spinlock;
 use super::{MemoryRegion, MemoryRegionKind, PhysAddr};
 
 pub type FrameRef = &'static Frame;
+pub type FrameMutRef = &'static mut Frame;
 
 #[doc(hidden)]
 struct AllocationRegion {
@@ -70,6 +71,14 @@ impl AllocationRegion {
         self.indexer.get_frame(pa)
     }
 
+    /// Get a mutable frame reference.
+    ///
+    /// # Safety
+    /// pa must be a new frame
+    unsafe fn get_frame_mut(&mut self, pa: PhysAddr) -> Option<FrameMutRef> {
+        self.indexer.get_frame_mut(pa)
+    }
+
     fn admit_one(&mut self) -> bool {
         let next = self.next_for_init;
         if !self.contains(next) {
@@ -78,7 +87,8 @@ impl AllocationRegion {
         self.next_for_init = self.next_for_init.offset(FRAME_SIZE).unwrap();
 
         // Unwrap-Ok: we know this address is in this region already
-        let frame = self.get_frame(next).unwrap();
+        // Safety: we are allocating a new, untouched frame here
+        let frame = unsafe { self.get_frame_mut(next) }.unwrap();
         // Safety: the frame can be reset since during admit_one we are the only ones with access to the frame data.
         unsafe { frame.reset(next) };
         frame.set_admitted();
@@ -200,10 +210,10 @@ impl core::fmt::Debug for Frame {
 
 impl Frame {
     // Safety: must only be called once, during admit_one, when the frame has not been initialized yet.
-    unsafe fn reset(&self, pa: PhysAddr) {
+    unsafe fn reset(&mut self, pa: PhysAddr) {
         self.lock.store(0, Ordering::SeqCst);
         self.flags.store(0, Ordering::SeqCst);
-        let pa_ptr = &self.pa as *const _ as *mut _;
+        let pa_ptr = &mut self.pa as *mut _;
         *pa_ptr = pa;
         self.link.force_unlink();
         // This store acts as a release for pa as well, which synchronizes with a load in lock (or unlock), which is always called
@@ -457,6 +467,12 @@ impl FrameIndexer {
         unsafe { core::slice::from_raw_parts(self.frame_array_ptr, self.frame_array_len) }
     }
 
+    fn frame_array_mut(&mut self) -> &mut [Frame] {
+        unsafe {
+            core::slice::from_raw_parts_mut(self.frame_array_ptr as *mut _, self.frame_array_len)
+        }
+    }
+
     fn get_frame(&self, pa: PhysAddr) -> Option<FrameRef> {
         if !self.contains(pa) {
             return None;
@@ -464,6 +480,17 @@ impl FrameIndexer {
         let index = (pa - self.start) / FRAME_SIZE;
         assert!(index < self.frame_array_len);
         let frame = &self.frame_array()[index as usize];
+        // Safety: the frame array is static for the life of the kernel
+        Some(unsafe { transmute(frame) })
+    }
+
+    unsafe fn get_frame_mut(&mut self, pa: PhysAddr) -> Option<FrameMutRef> {
+        if !self.contains(pa) {
+            return None;
+        }
+        let index = (pa - self.start) / FRAME_SIZE;
+        assert!(index < self.frame_array_len);
+        let frame = &mut self.frame_array_mut()[index as usize];
         // Safety: the frame array is static for the life of the kernel
         Some(unsafe { transmute(frame) })
     }

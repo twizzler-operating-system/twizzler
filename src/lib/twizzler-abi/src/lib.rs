@@ -14,15 +14,16 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![feature(naked_functions)]
 #![feature(core_intrinsics)]
+#![feature(offset_of)]
 #![feature(int_roundings)]
 #![feature(thread_local)]
+#![feature(pointer_byte_offsets)]
 #![feature(auto_traits)]
 #![feature(negative_impls)]
+#![allow(internal_features)]
 #![feature(rustc_attrs)]
-#![feature(asm_sym)]
 #![feature(asm_const)]
 #![feature(linkage)]
-#![feature(once_cell)]
 pub mod arch;
 
 #[allow(unused_extern_crates)]
@@ -52,7 +53,7 @@ pub mod syscall;
 pub mod thread;
 //pub mod time;
 pub mod upcall;
-pub mod vcell;
+//pub mod vcell;
 
 /// Simple callback into twizzler_abi made by the standard library once it has initialized the
 /// environment. No panic runtime is available yet.

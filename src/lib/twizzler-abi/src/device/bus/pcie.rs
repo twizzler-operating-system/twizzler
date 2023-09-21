@@ -1,4 +1,11 @@
-use crate::{kso::KactionError, vcell::Volatile};
+use core::{
+    mem::{offset_of, size_of},
+    ptr::NonNull,
+};
+
+use volatile::VolatilePtr;
+
+use crate::kso::KactionError;
 /// The base struct for an info sub-object for a PCIe bus.
 #[allow(dead_code)]
 #[repr(C)]
@@ -59,66 +66,82 @@ impl TryFrom<u32> for PcieKactionSpecific {
 #[allow(dead_code)]
 #[repr(packed(4096))]
 pub struct PcieFunctionHeader {
-    pub vendor_id: Volatile<u16>,
-    pub device_id: Volatile<u16>,
-    pub command: Volatile<u16>,
-    pub status: Volatile<u16>,
-    pub revision: Volatile<u8>,
-    pub progif: Volatile<u8>,
-    pub subclass: Volatile<u8>,
-    pub class: Volatile<u8>,
-    pub cache_line_size: Volatile<u8>,
-    pub latency_timer: Volatile<u8>,
-    pub header_type: Volatile<u8>,
-    pub bist: Volatile<u8>,
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub command: u16,
+    pub status: u16,
+    pub revision: u8,
+    pub progif: u8,
+    pub subclass: u8,
+    pub class: u8,
+    pub cache_line_size: u8,
+    pub latency_timer: u8,
+    pub header_type: u8,
+    pub bist: u8,
 }
 
 /// The standard PCIe device header.
 /// See the PCI spec for more details.
 #[allow(dead_code)]
-#[repr(packed)]
+#[repr(packed(4096))]
 pub struct PcieDeviceHeader {
     pub fnheader: PcieFunctionHeader,
-    pub bars: [Volatile<u32>; 6],
-    pub cardbus_cis_ptr: Volatile<u32>,
-    pub subsystem_vendor_id: Volatile<u16>,
-    pub subsystem_id: Volatile<u16>,
-    pub exprom_base: Volatile<u32>,
-    pub cap_ptr: Volatile<u32>,
-    res0: Volatile<u32>,
-    pub int_line: Volatile<u8>,
-    pub int_pin: Volatile<u8>,
-    pub min_grant: Volatile<u8>,
-    pub max_latency: Volatile<u8>,
+    pub bar0: u32,
+    pub bar1: u32,
+    pub bar2: u32,
+    pub bar3: u32,
+    pub bar4: u32,
+    pub bar5: u32,
+    pub cardbus_cis_ptr: u32,
+    pub subsystem_vendor_id: u16,
+    pub subsystem_id: u16,
+    pub exprom_base: u32,
+    pub cap_ptr: u32,
+    res0: u32,
+    pub int_line: u8,
+    pub int_pin: u8,
+    pub min_grant: u8,
+    pub max_latency: u8,
 }
 
 /// The standard PCIe bridge header.
 /// See the PCI spec for more details.
 #[allow(dead_code)]
-#[repr(packed)]
+#[repr(packed(4096))]
 pub struct PcieBridgeHeader {
     pub fnheader: PcieFunctionHeader,
-    pub bar: [Volatile<u32>; 2],
-    pub primary_bus_nr: Volatile<u8>,
-    pub secondary_bus_nr: Volatile<u8>,
-    pub subordinate_bus_nr: Volatile<u8>,
-    pub secondary_latency_timer: Volatile<u8>,
-    pub io_base: Volatile<u8>,
-    pub io_limit: Volatile<u8>,
-    pub secondary_status: Volatile<u8>,
-    pub memory_base: Volatile<u16>,
-    pub memory_limit: Volatile<u16>,
-    pub pref_memory_base: Volatile<u16>,
-    pub pref_memory_limit: Volatile<u16>,
-    pub pref_base_upper: Volatile<u32>,
-    pub pref_limit_upper: Volatile<u32>,
-    pub io_base_upper: Volatile<u16>,
-    pub io_limit_upper: Volatile<u16>,
-    pub cap_ptr: Volatile<u32>,
-    pub exprom_base: Volatile<u32>,
-    pub int_line: Volatile<u8>,
-    pub int_pin: Volatile<u8>,
-    pub bridge_control: Volatile<u16>,
+    pub bar0: u32,
+    pub bar1: u32,
+    pub primary_bus_nr: u8,
+    pub secondary_bus_nr: u8,
+    pub subordinate_bus_nr: u8,
+    pub secondary_latency_timer: u8,
+    pub io_base: u8,
+    pub io_limit: u8,
+    pub secondary_status: u8,
+    pub memory_base: u16,
+    pub memory_limit: u16,
+    pub pref_memory_base: u16,
+    pub pref_memory_limit: u16,
+    pub pref_base_upper: u32,
+    pub pref_limit_upper: u32,
+    pub io_base_upper: u16,
+    pub io_limit_upper: u16,
+    pub cap_ptr: u32,
+    pub exprom_base: u32,
+    pub int_line: u8,
+    pub int_pin: u8,
+    pub bridge_control: u16,
+}
+
+pub fn get_bar(cfg: VolatilePtr<'_, PcieDeviceHeader>, n: usize) -> VolatilePtr<'_, u32> {
+    unsafe {
+        cfg.map(|mut x| {
+            let ptr = (x.as_mut() as *mut _ as *mut u32)
+                .byte_add(offset_of!(PcieDeviceHeader, bar0) + size_of::<u32>() * n);
+            NonNull::new(ptr).unwrap()
+        })
+    }
 }
 
 #[allow(dead_code)]
