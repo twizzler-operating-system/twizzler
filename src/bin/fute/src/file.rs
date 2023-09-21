@@ -81,9 +81,6 @@ impl File {
                     pointer: 0,
                     data: file_obj,
                 };
-
-                file.truncate(0)?;
-
                 return Ok(file);
             },
             Err(x) if x.kind() == ErrorKind::NotFound => {   

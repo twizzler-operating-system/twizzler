@@ -9,3 +9,4 @@ edition = "2021"
 twizzler-object = {path = "../../lib/twizzler-object"}
 twizzler-abi = {path = "../../lib/twizzler-abi"}
 arrayvec = "0.7.4"
+human-sort = "0.2.2"

@@ -5,6 +5,7 @@ use crate::file::File;
 use crate::inode::{FileType,  get_inode,   create_inode,  is_directory};
 use std::ffi::OsStr;
 use std::path::PathBuf;
+use human_sort::compare;
 
 pub fn make_root() -> Result<u128, std::io::Error> {
     let (root, id) = create_inode(FileType::Directory)?;
@@ -57,12 +58,37 @@ pub fn ls(path: &str) -> Result<(), std::io::Error> {
     let dir = open_directory(&node)?;
     let top = unsafe {dir.base_unchecked().top};
 
+    
+    let mut entries: Vec<(String, String, String)> = vec![];
     for i in 2..top {
         let entry = get_entry(&dir, i).expect("Directory Entry isn't valid");
         if entry.filename.as_bytes() == ".".as_bytes() {continue};
-        println!("{}", entry.filename);
+        let inode = get_inode(entry.fileno)?;
+        let (filetype, size) = unsafe {
+            let x = inode.base_unchecked();
+            let filetype = match x.filetype {
+                FileType::File => "F".to_owned(),
+                FileType::Directory => "D".to_owned(),
+            };
+
+            let size = match x.filetype {
+                FileType::File => format!("{}", x.size),
+                FileType::Directory => "-".to_owned(),
+            };
+
+            (filetype, size)
+        };
+
+        entries.push((filetype, size, entry.filename.to_string()));
     }
 
+    entries.sort_by(|a, b| compare(&a.2, &b.2));
+    if entries.len() > 0 {
+        println!("Type\tSize\tName");
+    }
+    for (filetype, size, filename) in entries {
+        println!("{}\t{}\t{}", filetype, size, filename);
+    }
     Ok(())
 }
 
