@@ -642,6 +642,10 @@ dependencies = [
 name = "crypter"
 version = "0.1.0"
 source = "git+https://github.com/lemosyne/crypter.git#6428c0bb342500bddca5b292c52b0bbcc1474baa"
+dependencies = [
+ "openssl",
+ "paste",
+]
 
 [[package]]
 name = "crypto-common"
@@ -935,6 +939,7 @@ name = "fute"
 version = "0.1.0"
 dependencies = [
  "arrayvec 0.7.4",
+ "human-sort",
  "twizzler-abi",
  "twizzler-object",
 ]
@@ -1173,6 +1178,10 @@ checksum = "2c6201b9ff9fd90a5a3bac2e56a830d0caa509576f0e503818ee82c181b3437a"
 name = "hasher"
 version = "0.1.0"
 source = "git+https://github.com/lemosyne/hasher.git#037aa9e94da68da55ab616de5fa8c14912965465"
+dependencies = [
+ "openssl",
+ "paste",
+]
 
 [[package]]
 name = "heck"
@@ -1267,6 +1276,12 @@ name = "httpdate"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4a1e36c821dbe04574f602848a19f742f4fb3c98d40449f11bcad18d6b17421"
+
+[[package]]
+name = "human-sort"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "140a09c9305e6d5e557e2ed7cbc68e05765a7d4213975b87cb04920689cc6219"
 
 [[package]]
 name = "humantime"
@@ -1432,6 +1447,7 @@ name = "init"
 version = "0.1.0"
 dependencies = [
  "fute",
+ "lethe_cli",
  "rprompt",
  "twizzler-abi",
  "twizzler-net",
@@ -1581,18 +1597,20 @@ checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 [[package]]
 name = "lethe"
 version = "0.1.0"
-source = "git+https://github.com/lemosyne/lethe#a41b5d21cb03fd2c7373583ff08e30146907980d"
 dependencies = [
  "allocator",
+ "anyhow",
  "bincode",
  "crypter",
  "embedded-io",
  "hasher",
  "khf",
  "kms",
+ "path_macro",
  "persistence",
  "rand",
  "serde",
+ "tempfile",
  "thiserror",
 ]
 
@@ -1602,11 +1620,13 @@ version = "0.1.0"
 dependencies = [
  "allocator",
  "anyhow",
+ "bincode",
  "bitmap",
  "crypter",
  "embedded-io",
  "fute",
  "hasher",
+ "khf",
  "lethe",
  "naming",
  "num-traits",
@@ -2096,6 +2116,18 @@ dependencies = [
  "twizzler-queue",
  "volatile_cell",
 ]
+
+[[package]]
+name = "paste"
+version = "1.0.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de3145af08024dea9fa9914f381a17b8fc6034dfb00f3a84013f7ff43f29ed4c"
+
+[[package]]
+name = "path_macro"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6e819bbd49d5939f682638fa54826bf1650abddcd65d000923de8ad63cc7d15"
 
 [[package]]
 name = "pathdiff"
