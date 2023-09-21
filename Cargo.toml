@@ -38,7 +38,7 @@ initrd = [
     "crate:devmgr",
     "crate:netmgr",
     "crate:nettest",
-    "crate:pager",
+    #"crate:pager",
     #"crate:monitor",
     #"crate:bootstrap",
     #"third-party:hello-world-rs"
