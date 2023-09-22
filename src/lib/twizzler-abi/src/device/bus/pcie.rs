@@ -63,7 +63,7 @@ impl TryFrom<u32> for PcieKactionSpecific {
 /// The standard PCIe function header.
 /// See the PCI spec for more details.
 #[allow(dead_code)]
-#[repr(packed(4096))]
+#[repr(C, packed(4))]
 #[derive(Copy, Clone, Debug)]
 pub struct PcieFunctionHeader {
     pub vendor_id: u16,
@@ -83,8 +83,8 @@ pub struct PcieFunctionHeader {
 /// The standard PCIe device header.
 /// See the PCI spec for more details.
 #[allow(dead_code)]
-#[repr(packed(4096))]
-#[derive(Copy, Clone, Debug)]
+#[repr(C, packed(8))]
+#[derive(Copy, Clone)]
 pub struct PcieDeviceHeader {
     pub fnheader: PcieFunctionHeader,
     pub bar0: u32,
@@ -108,7 +108,7 @@ pub struct PcieDeviceHeader {
 /// The standard PCIe bridge header.
 /// See the PCI spec for more details.
 #[allow(dead_code)]
-#[repr(packed(4096))]
+#[repr(C, packed(4096))]
 #[derive(Copy, Clone, Debug)]
 pub struct PcieBridgeHeader {
     pub fnheader: PcieFunctionHeader,
@@ -149,7 +149,7 @@ pub fn get_bar(cfg: VolatilePtr<'_, PcieDeviceHeader>, n: usize) -> VolatilePtr<
 
 #[derive(Copy, Clone)]
 #[allow(dead_code)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct PcieCapabilityHeader {
     pub id: u8,
     pub next: u8,

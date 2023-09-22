@@ -1,4 +1,7 @@
-use twizzler_abi::device::{MmioInfo, SubObjectType, MMIO_OFFSET};
+use twizzler_abi::{
+    device::{MmioInfo, SubObjectType, MMIO_OFFSET},
+    object::NULLPAGE_SIZE,
+};
 use twizzler_object::{ObjID, Object, ObjectInitError, ObjectInitFlags, Protections};
 use volatile::access::{ReadOnly, ReadWrite};
 
@@ -35,7 +38,7 @@ impl MmioObject {
     ) -> volatile::VolatileRef<'_, T, ReadOnly> {
         let ptr = self.obj.base().unwrap() as *const MmioInfo as *const u8;
         volatile::VolatileRef::from_ref(
-            (ptr.add(MMIO_OFFSET + offset).sub(0x1000) as *mut T)
+            (ptr.add(MMIO_OFFSET + offset).sub(NULLPAGE_SIZE) as *mut T)
                 .as_mut()
                 .unwrap(),
         )
@@ -51,7 +54,7 @@ impl MmioObject {
     ) -> volatile::VolatileRef<'_, T, ReadWrite> {
         let ptr = self.obj.base().unwrap() as *const MmioInfo as *const u8;
         volatile::VolatileRef::from_mut_ref(
-            (ptr.add(MMIO_OFFSET + offset).sub(0x1000) as *mut T)
+            (ptr.add(MMIO_OFFSET + offset).sub(NULLPAGE_SIZE) as *mut T)
                 .as_mut()
                 .unwrap(),
         )

@@ -5,4 +5,4 @@
 [submodule "src/lib/nvme-rs"]
 	path = src/lib/nvme-rs
 	url = ../nvme-rs.git
-	branch = main
+	branch = twizzler-dynlink

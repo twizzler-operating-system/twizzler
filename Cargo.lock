@@ -1617,6 +1617,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "modular-bitfield"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a53d79ba8304ac1c4f9eb3b9d281f21f7be9d4626f72ce7df4ad8fbde4f38a74"
+dependencies = [
+ "modular-bitfield-impl",
+ "static_assertions",
+]
+
+[[package]]
+name = "modular-bitfield-impl"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a7d5f7076603ebc68de2dc6a650ec331a062a13abaa346975be747bbfa4b789"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.107",
+]
+
+[[package]]
 name = "nando"
 version = "0.1.0"
 dependencies = [
@@ -1726,6 +1747,14 @@ name = "number_prefix"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
+
+[[package]]
+name = "nvme"
+version = "0.1.0"
+dependencies = [
+ "modular-bitfield",
+ "volatile 0.5.1",
+]
 
 [[package]]
 name = "object"
@@ -1842,6 +1871,22 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.107",
+]
+
+[[package]]
+name = "pager"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "nvme",
+ "tickv",
+ "twizzler-abi",
+ "twizzler-async",
+ "twizzler-driver",
+ "twizzler-net",
+ "twizzler-object",
+ "twizzler-queue",
+ "volatile 0.5.1",
 ]
 
 [[package]]
@@ -2585,6 +2630,12 @@ checksum = "5516c27b78311c50bf42c071425c560ac799b11c30b31f87e3081965fe5e0180"
 dependencies = [
  "once_cell",
 ]
+
+[[package]]
+name = "tickv"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c61f292d344c68f447d717efc2ebb9b5e9de3c859fef183dd2ab69fa5897f08a"
 
 [[package]]
 name = "time"

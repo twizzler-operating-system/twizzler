@@ -22,14 +22,14 @@ pub struct PcieCapabilityIterator<'a> {
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
-#[repr(packed(4))]
+#[repr(C, packed(4))]
 pub struct PcieCapabilityHeader {
     pub id: u8,
     pub next: u8,
 }
 
 #[derive(Debug, Copy, Clone)]
-#[repr(packed(4))]
+#[repr(C, packed(4))]
 pub struct MsiCapability {
     pub header: PcieCapabilityHeader,
     pub msg_ctrl: u16,
@@ -42,7 +42,7 @@ pub struct MsiCapability {
 }
 
 #[derive(Debug, Copy, Clone)]
-#[repr(packed(4))]
+#[repr(C, packed(4))]
 pub struct MsixCapability {
     pub header: PcieCapabilityHeader,
     pub msg_ctrl: u16,
@@ -62,7 +62,7 @@ impl MsixCapability {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[repr(packed(8))]
+#[repr(C, packed(8))]
 pub struct MsixTableEntry {
     msg_addr_lo: u32,
     msg_addr_hi: u32,
@@ -178,7 +178,7 @@ impl Device {
         inum: usize,
     ) -> Result<u32, InterruptAllocationError> {
         // Prefer MSI-X
-        let mm = self.get_mmio(0).unwrap();
+        let mm = self.find_mmio_bar(0xff).unwrap();
         for cap in self
             .pcie_capabilities(&mm)
             .ok_or(InterruptAllocationError::Unsupported)?
