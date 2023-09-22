@@ -51,3 +51,8 @@ twizzler-build = "kernel"
 [profile.release]
 debug = true
 
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package.slabmalloc]
+opt-level = 3

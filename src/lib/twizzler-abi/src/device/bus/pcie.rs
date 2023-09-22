@@ -1,8 +1,5 @@
 #[cfg(any(feature = "runtime", feature = "kernel"))]
-use core::{
-    mem::{offset_of, size_of},
-    ptr::NonNull,
-};
+use core::{mem::size_of, ptr::NonNull};
 
 #[cfg(any(feature = "runtime", feature = "kernel"))]
 use volatile::VolatilePtr;
@@ -67,7 +64,7 @@ impl TryFrom<u32> for PcieKactionSpecific {
 /// See the PCI spec for more details.
 #[allow(dead_code)]
 #[repr(packed(4096))]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct PcieFunctionHeader {
     pub vendor_id: u16,
     pub device_id: u16,
@@ -87,7 +84,7 @@ pub struct PcieFunctionHeader {
 /// See the PCI spec for more details.
 #[allow(dead_code)]
 #[repr(packed(4096))]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct PcieDeviceHeader {
     pub fnheader: PcieFunctionHeader,
     pub bar0: u32,
@@ -112,7 +109,7 @@ pub struct PcieDeviceHeader {
 /// See the PCI spec for more details.
 #[allow(dead_code)]
 #[repr(packed(4096))]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct PcieBridgeHeader {
     pub fnheader: PcieFunctionHeader,
     pub bar0: u32,
@@ -144,7 +141,7 @@ pub fn get_bar(cfg: VolatilePtr<'_, PcieDeviceHeader>, n: usize) -> VolatilePtr<
     unsafe {
         cfg.map(|mut x| {
             let ptr = (x.as_mut() as *mut _ as *mut u32)
-                .byte_add(offset_of!(PcieDeviceHeader, bar0) + size_of::<u32>() * n);
+                .byte_add(size_of::<PcieFunctionHeader>() + size_of::<u32>() * n);
             NonNull::new(ptr).unwrap()
         })
     }

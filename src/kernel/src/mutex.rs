@@ -95,6 +95,7 @@ impl<T> Mutex<T> {
                             thread.donate_priority(pri.clone());
                         }
                     }
+
                     queue.owner = current_thread;
                     break;
                 } else if let Some(ref cur_owner) = queue.owner {

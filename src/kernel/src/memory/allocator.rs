@@ -69,6 +69,7 @@ impl<Ctx: KernelMemoryContext + 'static> KernelAllocatorInner<Ctx> {
 unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<Ctx> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let mut inner = self.inner.lock();
+
         if inner.is_none() {
             return self.early_alloc(layout);
         }
@@ -144,4 +145,21 @@ pub fn init(ctx: &'static Context) {
         ctx,
         zone: ZoneAllocator::new(),
     });
+}
+pub fn rdtscp() -> (u64, u32) {
+    let eax: u32;
+    let ecx: u32;
+    let edx: u32;
+    unsafe {
+        core::arch::asm!(
+          "rdtscp",
+          lateout("eax") eax,
+          lateout("ecx") ecx,
+          lateout("edx") edx,
+          options(nomem, nostack)
+        )
+    };
+
+    let counter: u64 = (edx as u64) << 32 | eax as u64;
+    (counter, ecx)
 }

@@ -14,7 +14,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![feature(naked_functions)]
 #![feature(core_intrinsics)]
-#![feature(offset_of)]
 #![feature(int_roundings)]
 #![feature(thread_local)]
 #![feature(pointer_byte_offsets)]

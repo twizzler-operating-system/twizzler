@@ -83,6 +83,7 @@ impl PageVec {
 
     pub fn add_page(&mut self, offset: usize, page: Page) {
         if offset >= self.pages.len() {
+            self.pages.reserve((offset + 1) * 2);
             self.pages.resize(offset + 1, None)
         }
         assert!(self.pages[offset].is_none()); //TODO
