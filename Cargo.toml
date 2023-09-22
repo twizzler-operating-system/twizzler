@@ -38,6 +38,7 @@ initrd = [
     "crate:devmgr",
     "crate:netmgr",
     "crate:nettest",
+    "crate:bootstrap",
     #"crate:pager",
     #"crate:monitor",
     #"crate:bootstrap",

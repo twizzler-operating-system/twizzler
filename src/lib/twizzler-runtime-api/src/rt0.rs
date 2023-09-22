@@ -8,7 +8,7 @@ pub use aarch64::*;
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::*;
 
-use crate::{AuxEntry, LibstdEntry};
+use crate::AuxEntry;
 
 unsafe extern "C" fn entry(arg: usize) -> ! {
     rust_entry(arg as *const AuxEntry)
@@ -22,7 +22,7 @@ unsafe fn rust_entry(arg: *const AuxEntry) -> ! {
 }
 
 extern "C" {
-    static std_entry_from_runtime: LibstdEntry;
+    fn std_entry_from_runtime(aux: super::BasicAux) -> super::BasicReturn;
 }
 
 #[no_mangle]

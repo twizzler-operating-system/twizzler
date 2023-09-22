@@ -8,4 +8,4 @@ pub const RESERVED_STACK: usize = 2;
 #[allow(dead_code)]
 pub const RESERVED_KERNEL_INIT: usize = 3;
 #[allow(dead_code)]
-const ALLOC_START: usize = 10;
+pub(crate) const ALLOC_START: usize = 10;

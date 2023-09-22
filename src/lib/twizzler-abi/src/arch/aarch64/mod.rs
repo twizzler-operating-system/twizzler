@@ -14,3 +14,5 @@ pub fn to_vaddr_range(slot: usize) -> (usize, usize) {
     let end = (slot + 1) * (1024 * 1024 * 1024) - 0x1000;
     (start, end)
 }
+
+pub const SLOTS: usize = (1 << 47) / MAX_SIZE;

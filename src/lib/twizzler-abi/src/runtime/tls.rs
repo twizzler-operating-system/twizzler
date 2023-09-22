@@ -60,6 +60,9 @@ pub(crate) fn tls_variant1() -> Option<(usize, *mut u8, usize, usize)> {
 #[allow(dead_code)]
 pub(crate) fn tls_variant2() -> Option<(usize, *mut u8, usize, usize)> {
     unsafe {
+        if TLS_INFO.is_none() {
+            crate::print_err("No TLS_INFO\n");
+        }
         TLS_INFO.as_ref().map(|info| {
             let mut tls_size = info.memsz;
             tls_size += (((!tls_size) + 1) - (info.template_start as usize)) & (info.align - 1);

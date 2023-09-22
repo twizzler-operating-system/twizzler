@@ -22,7 +22,9 @@ impl MutexImp {
     /// Construct a new mutex.
     #[allow(dead_code)]
     pub const fn new() -> MutexImp {
-        MutexImp { lock: AtomicU64::new(0) }
+        MutexImp {
+            lock: AtomicU64::new(0),
+        }
     }
 
     #[allow(dead_code)]
@@ -40,13 +42,17 @@ impl MutexImp {
     #[allow(dead_code)]
     pub unsafe fn lock(&self) {
         for _ in 0..100 {
-            let result = self.lock.compare_exchange_weak(0, 1, Ordering::SeqCst, Ordering::SeqCst);
+            let result = self
+                .lock
+                .compare_exchange_weak(0, 1, Ordering::SeqCst, Ordering::SeqCst);
             if result.is_ok() {
                 return;
             }
             core::hint::spin_loop();
         }
-        let _ = self.lock.compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst);
+        let _ = self
+            .lock
+            .compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst);
         let sleep = ThreadSync::new_sleep(ThreadSyncSleep::new(
             ThreadSyncReference::Virtual(&self.lock),
             2,
@@ -73,14 +79,19 @@ impl MutexImp {
         }
         for _ in 0..200 {
             if self.lock.load(Ordering::SeqCst) > 0
-                && self.lock.compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst) != Err(0)
+                && self
+                    .lock
+                    .compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst)
+                    != Err(0)
             {
                 return;
             }
             core::hint::spin_loop();
         }
-        let wake =
-            ThreadSync::new_wake(ThreadSyncWake::new(ThreadSyncReference::Virtual(&self.lock), 1));
+        let wake = ThreadSync::new_wake(ThreadSyncWake::new(
+            ThreadSyncReference::Virtual(&self.lock),
+            1,
+        ));
         let _ = sys_thread_sync(&mut [wake], None);
     }
 
@@ -92,7 +103,9 @@ impl MutexImp {
     /// or not.
     #[allow(dead_code)]
     pub unsafe fn try_lock(&self) -> bool {
-        self.lock.compare_exchange_weak(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+        self.lock
+            .compare_exchange_weak(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
     }
 }
 
@@ -101,10 +114,22 @@ pub(crate) struct Mutex<T> {
     data: UnsafeCell<T>,
 }
 
+impl<T: Default> Default for Mutex<T> {
+    fn default() -> Self {
+        Self {
+            imp: MutexImp::new(),
+            data: Default::default(),
+        }
+    }
+}
+
 impl<T> Mutex<T> {
     #[allow(dead_code)]
     pub const fn new(data: T) -> Self {
-        Self { imp: MutexImp::new(), data: UnsafeCell::new(data) }
+        Self {
+            imp: MutexImp::new(),
+            data: UnsafeCell::new(data),
+        }
     }
 
     #[allow(dead_code)]

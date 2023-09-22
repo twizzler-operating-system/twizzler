@@ -1,9 +1,11 @@
+use core::alloc::Layout;
+
 use crate::{
     idcounter::IdCounter, object::Protections, rustc_alloc::collections::BTreeMap,
     thread::ExecutionState,
 };
 
-use twizzler_runtime_api::{JoinError, SpawnError, ThreadRuntime};
+use twizzler_runtime_api::{CoreRuntime, JoinError, SpawnError, ThreadRuntime};
 
 use crate::{
     simple_mutex::Mutex,
@@ -87,8 +89,17 @@ impl ThreadRuntime for MinimalRuntime {
     #[allow(unused_variables)]
     #[allow(unreachable_code)]
     fn spawn(&self, args: twizzler_runtime_api::ThreadSpawnArgs) -> Result<u32, SpawnError> {
-        let initial_stack = todo!();
-        let initial_tls = todo!();
+        const STACK_ALIGN: usize = 32;
+        let stack_layout = Layout::from_size_align(args.stack_size, STACK_ALIGN).unwrap();
+        if args.stack_size == 0 {
+            // TODO
+        }
+        let stack_base = unsafe { self.default_allocator().alloc(stack_layout) };
+        let (tls_set, tls_base, tls_len, tls_align) =
+            crate::runtime::tls::new_thread_tls().unwrap();
+        let tls_layout = Layout::from_size_align(tls_len, tls_align).unwrap();
+        let initial_stack = stack_base as usize;
+        let initial_tls = tls_set;
         let thid = unsafe {
             crate::syscall::sys_spawn(crate::syscall::ThreadSpawnArgs {
                 entry: args.start,
@@ -145,7 +156,7 @@ impl ThreadRuntime for MinimalRuntime {
     }
 
     fn tls_get_addr(&self, _tls_index: &twizzler_runtime_api::TlsIndex) -> *const u8 {
-        todo!()
+        panic!("minimal runtime only supports LocalExec TLS model");
     }
 }
 

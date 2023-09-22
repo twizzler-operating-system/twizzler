@@ -1,6 +1,6 @@
 use core::{alloc::GlobalAlloc, ptr};
 
-use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
+use twizzler_runtime_api::{AuxEntry, BasicAux, BasicReturn, CoreRuntime};
 
 use super::{
     alloc::MinimalAllocator,
@@ -39,7 +39,7 @@ impl CoreRuntime for MinimalRuntime {
     fn runtime_entry(
         &self,
         mut aux_array: *const AuxEntry,
-        std_entry: twizzler_runtime_api::LibstdEntry,
+        std_entry: unsafe extern "C" fn(BasicAux) -> BasicReturn,
     ) -> ! {
         let null_env: [*const i8; 4] = [
             b"RUST_BACKTRACE=full\0".as_ptr() as *const i8,
@@ -50,6 +50,7 @@ impl CoreRuntime for MinimalRuntime {
         let mut arg_ptr = ptr::null();
         let mut arg_count = 0;
         let mut env_ptr = (&null_env).as_ptr();
+
         unsafe {
             while !aux_array.is_null() && *aux_array != AuxEntry::Null {
                 match *aux_array {
@@ -66,29 +67,20 @@ impl CoreRuntime for MinimalRuntime {
                     AuxEntry::Environment(ptr) => {
                         env_ptr = ptr as *const *const i8;
                     }
-                    _ => {}
+                    _ => {
+                        crate::print_err("unknown aux type");
+                    }
                 }
                 aux_array = aux_array.offset(1);
             }
         }
-        crate::syscall::sys_kernel_console_write(
-            b"hello from userspace",
-            crate::syscall::KernelConsoleWriteFlags::empty(),
-        );
-        let tls = init_tls();
 
-        crate::syscall::sys_kernel_console_write(
-            b"hello from twoserspace",
-            crate::syscall::KernelConsoleWriteFlags::empty(),
-        );
+        let tls = init_tls();
         if let Some(tls) = tls {
             crate::syscall::sys_thread_settls(tls);
+        } else {
+            crate::print_err("failed to initialize TLS\n");
         }
-
-        crate::syscall::sys_kernel_console_write(
-            b"hello from threeserspace",
-            crate::syscall::KernelConsoleWriteFlags::empty(),
-        );
         crate::syscall::sys_thread_set_upcall(crate::arch::upcall::upcall_entry);
 
         unsafe {

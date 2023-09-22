@@ -110,7 +110,14 @@ pub enum JoinError {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
-pub enum MapError {}
+pub enum MapError {
+    Unknown,
+    InternalError,
+    OutOfMemory,
+    NoSuchObject,
+    PermissionDenied,
+    InvalidArgument,
+}
 
 bitflags::bitflags! {
     /// Mapping protections for mapping objects into the address space.
@@ -154,7 +161,11 @@ pub trait CoreRuntime {
     /// Thread abort
     fn abort(&self) -> !;
 
-    fn runtime_entry(&self, arg: *const AuxEntry, std_entry: LibstdEntry) -> !;
+    fn runtime_entry(
+        &self,
+        arg: *const AuxEntry,
+        std_entry: unsafe extern "C" fn(BasicAux) -> BasicReturn,
+    ) -> !;
 }
 
 #[repr(C)]
@@ -179,7 +190,7 @@ pub trait RustFsRuntime {}
 /// Runtime that implements std's process and command support
 pub trait RustProcessRuntime: RustStdioRuntime {}
 
-pub type IoReadDynCallback<'a, R> = &'a (dyn (FnMut(&mut dyn IoRead) -> R));
+pub type IoReadDynCallback<'a, R> = &'a mut (dyn (FnMut(&mut dyn IoRead) -> R));
 
 pub type IoWriteDynCallback<'a, R> = &'a (dyn (Fn(&mut dyn IoWrite) -> R));
 
@@ -227,9 +238,6 @@ pub trait RustTimeRuntime {
     fn get_system_time(&self) -> Duration;
     fn actually_monotonic(&self) -> bool;
 }
-
-/// This is the type of the function exposed by std that the runtime calls to transfer control to the Rust std + main.
-pub type LibstdEntry = unsafe extern "C" fn(aux: BasicAux) -> BasicReturn;
 
 pub struct Library {
     pub mapping: ObjectHandle,

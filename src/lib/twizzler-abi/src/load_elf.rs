@@ -141,10 +141,6 @@ impl<'a> ElfObject<'a> {
         self.hdr.entry
     }
 
-    fn ph_entry_size(&self) -> usize {
-        self.hdr.phentsize as usize
-    }
-
     fn get_phdr(&self, pos: usize) -> Option<&'a ElfPhdr> {
         if pos >= self.hdr.phnum as usize {
             return None;
@@ -214,6 +210,11 @@ pub fn spawn_new_executable(
 
     let page_size = NULLPAGE_SIZE as u64;
 
+    let phdr_vaddr = elf
+        .phdrs()
+        .find(|p| p.phdr_type() == PhdrType::Phdr)
+        .map(|p| p.vaddr);
+
     for phdr in elf.phdrs().filter(|p| p.phdr_type() == PhdrType::Load) {
         let src_start = (phdr.offset & ((!page_size) + 1)) + NULLPAGE_SIZE as u64;
         let dest_start = phdr.vaddr & ((!page_size) + 1);
@@ -273,33 +274,30 @@ pub fn spawn_new_executable(
     )
     .map_err(|_| SpawnExecutableError::MapFailed)?;
 
-    let stack_base = RESERVED_STACK * MAX_SIZE + NULLPAGE_SIZE;
-    let spawnaux_start = stack_base + INITIAL_STACK_SIZE + page_size as usize;
+    let stack_nullpage = RESERVED_STACK * MAX_SIZE;
+    let spawnaux_start = stack_nullpage + AUX_OFFSET;
+    const STACK_OFFSET: usize = NULLPAGE_SIZE;
+    const AUX_OFFSET: usize = STACK_OFFSET + INITIAL_STACK_SIZE;
+    const MAX_AUX: usize = 32;
+    const ARGS_OFFSET: usize = AUX_OFFSET + MAX_AUX * size_of::<AuxEntry>();
 
     fn copy_strings<T>(
         stack: &mut InternalObject<T>,
         strs: &[&[u8]],
         offset: usize,
     ) -> (usize, usize) {
+        let stack_nullpage = RESERVED_STACK * MAX_SIZE;
         let offset = offset.checked_next_multiple_of(64).unwrap();
-        let stack_base = RESERVED_STACK * MAX_SIZE + NULLPAGE_SIZE;
         let args_start = unsafe {
-            let args_start: *mut usize = stack
-                .offset_mut(INITIAL_STACK_SIZE + NULLPAGE_SIZE * 2 + offset)
-                .unwrap();
+            let args_start: *mut usize = stack.offset_mut(ARGS_OFFSET + offset).unwrap();
 
             core::slice::from_raw_parts_mut(args_start, strs.len() + 1)
         };
-        let spawnargs_start = stack_base + INITIAL_STACK_SIZE + NULLPAGE_SIZE * 2 + offset;
+        let spawnargs_start = stack_nullpage + ARGS_OFFSET + offset;
 
         let args_data_start = {
             let args_data_start: *mut u8 = stack
-                .offset_mut(
-                    INITIAL_STACK_SIZE
-                        + NULLPAGE_SIZE * 2
-                        + offset
-                        + size_of::<*const u8>() * (strs.len() + 1),
-                )
+                .offset_mut(ARGS_OFFSET + offset + size_of::<*const u8>() * (strs.len() + 1))
                 .unwrap();
             args_data_start
         };
@@ -325,18 +323,12 @@ pub fn spawn_new_executable(
 
     let aux_array = unsafe {
         stack
-            .offset_mut::<[AuxEntry; 32]>(INITIAL_STACK_SIZE + page_size as usize)
+            .offset_mut::<[AuxEntry; 32]>(AUX_OFFSET)
             .unwrap()
             .as_mut()
     }
     .unwrap();
     let mut idx = 0;
-
-    if let Some(phinfo) = elf.phdrs().find(|p| p.phdr_type() == PhdrType::Phdr) {
-        aux_array[idx] =
-            AuxEntry::ProgramHeaders(phinfo.vaddr, phinfo.memsz as usize / elf.ph_entry_size());
-        idx += 1;
-    }
 
     aux_array[idx] = AuxEntry::ExecId(exe.id().as_u128());
     idx += 1;
@@ -344,11 +336,15 @@ pub fn spawn_new_executable(
     idx += 1;
     aux_array[idx] = AuxEntry::Environment(spawnenv_start as u64);
     idx += 1;
+    if let Some(phdr_vaddr) = phdr_vaddr {
+        aux_array[idx] = AuxEntry::ProgramHeaders(phdr_vaddr, elf.hdr.phnum.into());
+        idx += 1;
+    }
     aux_array[idx] = AuxEntry::Null;
 
     let ts = ThreadSpawnArgs::new(
         elf.entry() as usize,
-        stack_base,
+        stack_nullpage + STACK_OFFSET,
         INITIAL_STACK_SIZE,
         0,
         spawnaux_start,

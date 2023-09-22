@@ -7,38 +7,42 @@ use crate::syscall::KernelConsoleReadError;
 use super::MinimalRuntime;
 
 impl RustStdioRuntime for MinimalRuntime {
-    fn with_panic_output(&self, _cb: twizzler_runtime_api::IoWriteDynCallback<'_, ()>) {
-        todo!()
+    fn with_panic_output(&self, cb: twizzler_runtime_api::IoWriteDynCallback<'_, ()>) {
+        let mut wp = WritePoint {};
+        cb(&mut wp);
     }
 
     fn with_stdin(
         &self,
-        _cb: twizzler_runtime_api::IoReadDynCallback<
+        cb: twizzler_runtime_api::IoReadDynCallback<
             '_,
             Result<usize, twizzler_runtime_api::ReadError>,
         >,
     ) -> Result<usize, twizzler_runtime_api::ReadError> {
-        todo!()
+        let mut rp = ReadPoint {};
+        cb(&mut rp)
     }
 
     fn with_stdout(
         &self,
-        _cb: twizzler_runtime_api::IoWriteDynCallback<
+        cb: twizzler_runtime_api::IoWriteDynCallback<
             '_,
             Result<usize, twizzler_runtime_api::WriteError>,
         >,
     ) -> Result<usize, twizzler_runtime_api::WriteError> {
-        todo!()
+        let mut wp = WritePoint {};
+        cb(&mut wp)
     }
 
     fn with_stderr(
         &self,
-        _cb: twizzler_runtime_api::IoWriteDynCallback<
+        cb: twizzler_runtime_api::IoWriteDynCallback<
             '_,
             Result<usize, twizzler_runtime_api::WriteError>,
         >,
     ) -> Result<usize, twizzler_runtime_api::WriteError> {
-        todo!()
+        let mut wp = WritePoint {};
+        cb(&mut wp)
     }
 }
 

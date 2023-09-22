@@ -87,7 +87,6 @@ impl KernelInitInfo {
 
 /// Get the initial kernel info for init. Only works for init.
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {
-    todo!()
-    //let (start, _) = to_vaddr_range(crate::slot::RESERVED_KERNEL_INIT);
-    //unsafe { (start as *const KernelInitInfo).as_ref().unwrap() }
+    let (start, _) = crate::arch::to_vaddr_range(crate::slot::RESERVED_KERNEL_INIT);
+    unsafe { (start as *const KernelInitInfo).as_ref().unwrap() }
 }
