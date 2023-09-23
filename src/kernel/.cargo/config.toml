@@ -1,5 +1,4 @@
 [target.x86_64-unknown-none]
-runner = "cargo run --package simple_boot --"
 rustflags = [
   "-C",
   "link-arg=--image-base=0xffffffff80100000",

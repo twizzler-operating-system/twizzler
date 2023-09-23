@@ -10,3 +10,6 @@ crate-type = ["lib", "dylib"]
 [dependencies]
 #ring = { version = "*", default-features = false, features = ["alloc"] }
 secgate-macros = { path = "secgate-macros" }
+
+[dev-dependencies]
+twizzler-abi = { path = "../twizzler-abi", features = ["runtime"]}

@@ -8,3 +8,6 @@ edition = "2021"
 [dependencies]
 secgate = { path = "../secgate" }
 nando = { path = "../nando" }
+
+[dev-dependencies]
+twizzler-abi = { path = "../twizzler-abi", features = ["runtime"]}

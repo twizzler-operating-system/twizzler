@@ -29,3 +29,6 @@ rustc-dep-of-std = [
 default = ["runtime"]
 runtime = []
 kernel = []
+
+[dev-dependencies]
+twizzler-abi = { path = "../twizzler-abi", features = ["runtime"]}

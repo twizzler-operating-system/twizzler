@@ -81,25 +81,27 @@ mod tests {
     #[test]
     fn test_new_zero() {
         let ic = IdCounter::new_zero();
-        assert_eq!(id.fresh(), 0)
+        assert_eq!(ic.fresh(), 0)
     }
 
+    #[test]
     fn test_new_one() {
         let ic = IdCounter::new_one();
-        assert_eq!(id.fresh(), 1)
+        assert_eq!(ic.fresh(), 1)
     }
 
+    #[test]
     fn test_fresh_simple() {
         let ic = IdCounter::new_zero();
-        assert_eq!(id.fresh(), 0);
-        assert_eq!(id.fresh(), 1);
-        assert_eq!(id.fresh(), 2);
+        assert_eq!(ic.fresh(), 0);
+        assert_eq!(ic.fresh(), 1);
+        assert_eq!(ic.fresh(), 2);
 
         ic.release(1);
-        assert_eq!(id.fresh(), 1);
+        assert_eq!(ic.fresh(), 1);
 
         ic.release(2);
         ic.release(1);
-        assert_eq!(id.fresh(), 1);
+        assert_eq!(ic.fresh(), 1);
     }
 }

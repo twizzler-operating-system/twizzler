@@ -95,6 +95,7 @@ fn build_third_party<'a>(
     if !other_options.build_twizzler {
         return Ok(vec![]);
     }
+    crate::toolchain::set_static();
     let config = user_workspace.config();
     let mut registry = PackageRegistry::new(config).unwrap();
     let _g = config.acquire_package_cache_lock().unwrap();
@@ -216,10 +217,10 @@ fn build_twizzler<'a>(
     build_config: &crate::BuildConfig,
     other_options: &OtherOptions,
 ) -> anyhow::Result<Option<Compilation<'a>>> {
-    crate::toolchain::set_dynamic();
     if !other_options.build_twizzler {
         return Ok(None);
     }
+    crate::toolchain::set_dynamic();
     crate::print_status_line("collection: userspace", Some(build_config));
     // the currently supported build target triples
     // have a value of "unknown" for the machine, but
@@ -253,15 +254,16 @@ fn maybe_build_tests<'a>(
     if !other_options.build_tests || !other_options.build_twizzler {
         return Ok(None);
     }
-    crate::toolchain::set_dynamic();
+    crate::toolchain::set_static();
     crate::print_status_line("collection: userspace::tests", Some(build_config));
     let triple = Triple::new(
         build_config.arch,
         build_config.machine,
         crate::triple::Host::Twizzler,
-        None,
+        Some("minruntime"),
     );
-    let packages = locate_packages(workspace, None);
+    let mut packages = locate_packages(workspace, None);
+    packages.append(&mut locate_packages(workspace, Some("static")));
     let mut options = CompileOptions::new(workspace.config(), mode)?;
     options.build_config =
         BuildConfig::new(workspace.config(), None, false, &[triple.to_string()], mode)?;
@@ -273,10 +275,11 @@ fn maybe_build_tests<'a>(
         packages
             .iter()
             .filter_map(|p| {
-                if p.name() == "twizzler-kernel-macros" {
-                    None
-                } else {
-                    Some(p.name().to_string())
+                match p.name().as_str() {
+                    "twizzler-kernel-macros" => None,
+                    "twizzler-runtime-api" => None,
+                    "nvme" => None,
+                    _ => Some(p.name().to_string())
                 }
             })
             .collect(),
@@ -294,6 +297,7 @@ fn maybe_build_kernel_tests<'a>(
     if !other_options.build_tests {
         return Ok(None);
     }
+    crate::toolchain::clear_rustflags();
     crate::print_status_line("collection: kernel::tests", Some(build_config));
     let packages = locate_packages(workspace, Some("kernel"));
     let mut options = CompileOptions::new(workspace.config(), mode)?;
@@ -332,6 +336,7 @@ fn build_kernel<'a>(
     build_config: &crate::BuildConfig,
     other_options: &OtherOptions,
 ) -> anyhow::Result<Compilation<'a>> {
+    crate::toolchain::clear_rustflags();
     crate::print_status_line("collection: kernel", Some(build_config));
     let packages = locate_packages(workspace, Some("kernel"));
     let mut options = CompileOptions::new(workspace.config(), mode)?;
@@ -400,7 +405,7 @@ pub(crate) struct TwizzlerCompilation {
     #[borrows(user_workspace)]
     #[covariant]
     pub user_compilation: Option<Compilation<'this>>,
-    #[borrows(user_workspace)]
+    #[borrows(static_workspace)]
     #[covariant]
     pub test_compilation: Option<Compilation<'this>>,
     #[borrows(kernel_workspace)]
@@ -451,7 +456,7 @@ fn compile(
     let mut kernel_config = Config::default()?;
     // add in a feature flags to be used in the kernel
     let cli_config = get_cli_configs(bc, other_options).unwrap();
-    kernel_config.configure(0, false, None, false, false, false, &None, &[], &cli_config)?;
+    kernel_config.configure(3, false, None, false, false, false, &None, &[], &cli_config)?;
     kernel_config.reload_rooted_at("src/kernel")?;
 
     let manifest_path = other_options

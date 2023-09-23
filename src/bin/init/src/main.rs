@@ -231,7 +231,6 @@ fn exec(name: &str, id: ObjID, argid: ObjID) {
     //println!("ELF: {:?}", elf);
 }
 
-/*
 fn exec2(name: &str, id: ObjID) -> Option<ObjID> {
     let env: Vec<String> = std::env::vars()
         .map(|(n, v)| format!("{}={}", n, v))
@@ -241,7 +240,6 @@ fn exec2(name: &str, id: ObjID) -> Option<ObjID> {
     twizzler_abi::load_elf::spawn_new_executable(id, &args, &env_ref).ok()
     //println!("ELF: {:?}", elf);
 }
-*/
 
 fn exec_n(name: &str, id: ObjID, args: &[&str]) {
     let env: Vec<String> = std::env::vars()
@@ -355,15 +353,14 @@ fn main() {
     twizzler_net::wait_until_network_manager_ready(netid);
     println!("network manager is up!");
 
-    if let Some(_id) = find_init_name("test_bins") {
+    if let Some(id) = find_init_name("test_bins") {
         println!("=== found init test list ===");
-        todo!()
-        /*
-        let slot = twizzler_abi::slot::global_allocate().unwrap();
-        twizzler_abi::syscall::sys_object_map(None, id, slot, Protections::READ, MapFlags::empty())
+        let runtime = __twz_get_runtime();
+        let handle = runtime
+            .map_object(id.as_u128(), Protections::READ.into())
             .unwrap();
 
-        let addr = twizzler_abi::slot::to_vaddr_range(slot).0;
+        let addr = unsafe { handle.base.add(NULLPAGE_SIZE) };
         let bytes = unsafe {
             core::slice::from_raw_parts(addr as *const u8, twizzler_abi::object::MAX_SIZE)
         };
@@ -375,16 +372,12 @@ fn main() {
             if let Some(id) = find_init_name(line) {
                 let tid = exec2(line, id);
                 if let Some(tid) = tid {
-                    let slot = twizzler_abi::slot::global_allocate().unwrap();
-                    twizzler_abi::syscall::sys_object_map(
-                        None,
-                        tid,
-                        slot,
-                        Protections::READ,
-                        MapFlags::empty(),
-                    )
-                    .unwrap();
-                    let tr = twizzler_abi::slot::to_vaddr_range(slot).0 as *const ThreadRepr;
+                    let thandle = runtime
+                        .map_object(tid.as_u128(), Protections::READ.into())
+                        .unwrap();
+
+                    let taddr = unsafe { thandle.base.add(NULLPAGE_SIZE) };
+                    let tr = taddr as *const ThreadRepr;
                     unsafe {
                         let val = tr.as_ref().unwrap().wait(None);
                         if let Some(val) = val {
@@ -406,7 +399,6 @@ fn main() {
         }
         #[allow(deprecated)]
         twizzler_abi::syscall::sys_debug_shutdown(if test_failed { 1 } else { 0 });
-        */
     }
 
     println!("Hi, welcome to the basic twizzler test console.");
@@ -467,8 +459,10 @@ use std::{
 use twizzler_abi::{
     device::SubObjectType,
     kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue},
-    object::{ObjID, Protections},
+    object::{ObjID, Protections, NULLPAGE_SIZE},
     pager::{CompletionToKernel, RequestFromKernel},
+    runtime::__twz_get_runtime,
+    //thread::{ExecutionState, ThreadRepr},
     syscall::{
         sys_kaction,
         sys_new_handle,
@@ -485,6 +479,6 @@ use twizzler_abi::{
         ThreadSyncSleep,
         ThreadSyncWake,
     },
-    //thread::{ExecutionState, ThreadRepr},
+    thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_object::{CreateSpec, Object, ObjectInitFlags};

@@ -7,3 +7,6 @@ edition = "2021"
 
 [dependencies]
 nando-macros = { path = "nando-macros" }
+
+[dev-dependencies]
+twizzler-abi = { path = "../twizzler-abi", features = ["runtime"]}
