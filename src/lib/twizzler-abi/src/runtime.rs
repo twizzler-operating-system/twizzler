@@ -25,3 +25,6 @@ pub fn __twz_get_runtime() -> &'static (dyn Runtime + Sync) {
 }
 
 pub static OUR_RUNTIME: MinimalRuntime = MinimalRuntime {};
+
+#[used]
+static USE_MARKER: fn() -> &'static (dyn Runtime + Sync) = __twz_get_runtime;

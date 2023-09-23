@@ -5,10 +5,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-intrusive-collections = { version = "0.9.5", features = ["nightly"] }
+intrusive-collections = { version = "0.9.6", features = ["nightly"] }
 twizzler-kernel-macros = { version = "*", path = "macros" }
 bitflags = "1.3.2"
-memoffset = "0.6.5"
+memoffset = "0.9.0"
 xmas-elf = "0.8.0"
 slabmalloc = "0.11.0"
 nonoverlapping_interval_tree = { version = "0.1.3", default-features = false }

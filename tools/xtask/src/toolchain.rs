@@ -255,7 +255,7 @@ pub fn set_dynamic() {
 }
 
 pub fn set_static() {
-    std::env::set_var("RUSTFLAGS", "-C prefer-dynamic=n --extern twizzler_abi --print link-args");
+    std::env::set_var("RUSTFLAGS", "-C prefer-dynamic=n");
 }
 
 pub fn clear_rustflags() {
