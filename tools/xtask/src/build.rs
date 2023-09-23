@@ -456,7 +456,7 @@ fn compile(
     let mut kernel_config = Config::default()?;
     // add in a feature flags to be used in the kernel
     let cli_config = get_cli_configs(bc, other_options).unwrap();
-    kernel_config.configure(3, false, None, false, false, false, &None, &[], &cli_config)?;
+    kernel_config.configure(0, false, None, false, false, false, &None, &[], &cli_config)?;
     kernel_config.reload_rooted_at("src/kernel")?;
 
     let manifest_path = other_options
