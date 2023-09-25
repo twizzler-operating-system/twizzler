@@ -360,7 +360,7 @@ fn main() {
             .map_object(id.as_u128(), Protections::READ.into())
             .unwrap();
 
-        let addr = unsafe { handle.base.add(NULLPAGE_SIZE) };
+        let addr = unsafe { handle.start.add(NULLPAGE_SIZE) };
         let bytes = unsafe {
             core::slice::from_raw_parts(addr as *const u8, twizzler_abi::object::MAX_SIZE)
         };
@@ -376,7 +376,7 @@ fn main() {
                         .map_object(tid.as_u128(), Protections::READ.into())
                         .unwrap();
 
-                    let taddr = unsafe { thandle.base.add(NULLPAGE_SIZE) };
+                    let taddr = unsafe { thandle.start.add(NULLPAGE_SIZE) };
                     let tr = taddr as *const ThreadRepr;
                     unsafe {
                         let val = tr.as_ref().unwrap().wait(None);

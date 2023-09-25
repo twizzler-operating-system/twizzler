@@ -66,13 +66,13 @@ impl Slot {
     }
 
     /// Get the vaddr of this slot's object base.
-    pub fn vaddr_start(&self) -> usize {
+    pub fn vaddr_base(&self) -> usize {
         self.vaddr_null() + NULLPAGE_SIZE
     }
 
     /// Get the vaddr of this slot's object's null page.
     pub fn vaddr_null(&self) -> usize {
-        self.runtime_handle.base as usize
+        self.runtime_handle.start as usize
         //self.runtime_handle.base.expose_addr()
     }
 

@@ -48,7 +48,8 @@ impl<T> InternalObject<T> {
             runtime_handle: ObjectHandle {
                 id: id.as_u128(),
                 flags: MapFlags::READ | MapFlags::WRITE,
-                base: (slot * MAX_SIZE) as *mut u8,
+                start: (slot * MAX_SIZE) as *mut u8,
+                meta: (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
             },
             _pd: PhantomData,
         })
@@ -86,7 +87,8 @@ impl<T> InternalObject<T> {
             runtime_handle: ObjectHandle {
                 id: id.as_u128(),
                 flags: prot.into(),
-                base: (slot * MAX_SIZE) as *mut u8,
+                start: (slot * MAX_SIZE) as *mut u8,
+                meta: (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
             },
             slot,
             _pd: PhantomData,
@@ -96,7 +98,7 @@ impl<T> InternalObject<T> {
     #[allow(dead_code)]
     pub(crate) fn offset<P>(&self, offset: usize) -> Option<*const P> {
         if offset >= NULLPAGE_SIZE && offset < MAX_SIZE {
-            Some(unsafe { self.runtime_handle.base.add(offset) as *const P })
+            Some(unsafe { self.runtime_handle.start.add(offset) as *const P })
         } else {
             None
         }
@@ -105,7 +107,7 @@ impl<T> InternalObject<T> {
     #[allow(dead_code)]
     pub(crate) fn offset_mut<P>(&mut self, offset: usize) -> Option<*mut P> {
         if offset >= NULLPAGE_SIZE && offset < MAX_SIZE {
-            Some(unsafe { self.runtime_handle.base.add(offset) as *mut P })
+            Some(unsafe { self.runtime_handle.start.add(offset) as *mut P })
         } else {
             None
         }

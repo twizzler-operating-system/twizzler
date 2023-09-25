@@ -1,6 +1,6 @@
 use core::time::Duration;
 
-use twizzler_runtime_api::RustTimeRuntime;
+use twizzler_runtime_api::{RustTimeRuntime, Monotonicity};
 
 use crate::syscall::{sys_read_clock_info, ClockSource, ReadClockFlags};
 
@@ -13,8 +13,8 @@ impl RustTimeRuntime for MinimalRuntime {
         Duration::from(clock_info.current_value())
     }
 
-    fn actually_monotonic(&self) -> bool {
-        false
+    fn actual_monotonicity(&self) -> Monotonicity {
+        Monotonicity::NonMonotonic
     }
 
     fn get_system_time(&self) -> Duration {
