@@ -1,3 +1,5 @@
+//! Implements the core runtime functions.
+
 use core::{alloc::GlobalAlloc, ptr};
 
 use twizzler_runtime_api::{AuxEntry, BasicAux, BasicReturn, CoreRuntime};
@@ -9,6 +11,7 @@ use super::{
     MinimalRuntime,
 };
 
+// Just keep a single, simple global allocator.
 static GLOBAL_ALLOCATOR: MinimalAllocator = MinimalAllocator::new();
 
 extern "C" {
@@ -41,6 +44,7 @@ impl CoreRuntime for MinimalRuntime {
         mut aux_array: *const AuxEntry,
         std_entry: unsafe extern "C" fn(BasicAux) -> BasicReturn,
     ) -> ! {
+        // If aux doesn't give us an environment, just use this default.
         let null_env: [*const i8; 4] = [
             b"RUST_BACKTRACE=full\0".as_ptr() as *const i8,
             ptr::null(),
@@ -57,9 +61,7 @@ impl CoreRuntime for MinimalRuntime {
                     AuxEntry::ProgramHeaders(paddr, pnum) => {
                         process_phdrs(core::slice::from_raw_parts(paddr as *const Phdr, pnum))
                     }
-                    AuxEntry::ExecId(_id) => {
-                        //EXEC_ID = id;
-                    }
+                    AuxEntry::ExecId(_id) => {}
                     AuxEntry::Arguments(num, ptr) => {
                         arg_count = num;
                         arg_ptr = ptr as *const *const i8

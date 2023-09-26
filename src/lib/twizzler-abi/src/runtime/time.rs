@@ -1,6 +1,8 @@
+//! Implements the time runtime.
+
 use core::time::Duration;
 
-use twizzler_runtime_api::{RustTimeRuntime, Monotonicity};
+use twizzler_runtime_api::{Monotonicity, RustTimeRuntime};
 
 use crate::syscall::{sys_read_clock_info, ClockSource, ReadClockFlags};
 

@@ -7,7 +7,6 @@ use std::{
 };
 
 use anyhow::Context;
-use fs_extra::dir::CopyOptions;
 use guess_host_triple::guess_host_triple;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
@@ -178,18 +177,12 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 
     let _ = std::fs::remove_file("toolchain/src/rust/config.toml");
     generate_config_toml()?;
-    let res = std::fs::remove_dir_all("toolchain/src/rust/library/twizzler-runtime-api");
-    if let Err(e) = res {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            anyhow::bail!("failed to remove copied twizzler-runtime-api");
-        }
-    }
 
+    let _ = fs_extra::dir::remove("toolchain/src/rust/library/twizzler-runtime-api");
     fs_extra::copy_items(
         &["src/lib/twizzler-runtime-api"],
-        "toolchain/src/rust/library/",
-        &CopyOptions::new(),
-    )?;
+        "toolchain/src/rust/library/twizzler-runtime-api",
+        &fs_extra::dir::CopyOptions::new().copy_inside(true)).expect("failed to copy twizzler-runtime-api files");
 
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
@@ -264,7 +257,7 @@ pub fn clear_rustflags() {
 
 pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
     if needs_reinstall()? && !abi_changes_ok {
-        anyhow::bail!("detected changes to twizzler-abi not reflected in current toolchain. This is probably because the twizzler-abi crate files were updated, so you need to run `cargo bootstrap --skip-submodules' again.");
+        anyhow::bail!("detected changes to twizzler-runtime-abi not reflected in current toolchain. This is probably because the twizzler-runtime-api crate files were updated, so you need to run `cargo bootstrap --skip-submodules' again.");
     }
     std::env::set_var("RUSTC", &get_rustc_path()?);
     std::env::set_var("RUSTDOC", &get_rustdoc_path()?);

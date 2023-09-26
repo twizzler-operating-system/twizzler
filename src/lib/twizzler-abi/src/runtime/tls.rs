@@ -1,3 +1,5 @@
+//! Implements TLS-related start up and new thread functionality.
+
 #[allow(dead_code)]
 const MIN_TLS_ALIGN: usize = 16;
 use core::alloc::Layout;

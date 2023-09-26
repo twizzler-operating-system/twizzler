@@ -297,6 +297,7 @@ fn maybe_build_kernel_tests<'a>(
     if !other_options.build_tests {
         return Ok(None);
     }
+    // The kernel config.toml sets its own rustflags.
     crate::toolchain::clear_rustflags();
     crate::print_status_line("collection: kernel::tests", Some(build_config));
     let packages = locate_packages(workspace, Some("kernel"));
@@ -336,6 +337,7 @@ fn build_kernel<'a>(
     build_config: &crate::BuildConfig,
     other_options: &OtherOptions,
 ) -> anyhow::Result<Compilation<'a>> {
+    // The kernel config.toml sets its own rustflags.
     crate::toolchain::clear_rustflags();
     crate::print_status_line("collection: kernel", Some(build_config));
     let packages = locate_packages(workspace, Some("kernel"));

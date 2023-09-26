@@ -1,3 +1,5 @@
+//! Implements some helper types and functions for working with objects in this runtime.
+
 use core::marker::PhantomData;
 
 use twizzler_runtime_api::{MapFlags, ObjectHandle};

@@ -9,4 +9,5 @@ pub unsafe extern "C" fn _start() {
 }
 
 #[used]
+// Ensure the compiler doesn't optimize us away!
 static ENTRY: unsafe extern "C" fn() = _start;

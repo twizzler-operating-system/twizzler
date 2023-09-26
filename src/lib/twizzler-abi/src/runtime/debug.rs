@@ -1,3 +1,5 @@
+//! Null implementation of the debug runtime.
+
 use twizzler_runtime_api::DebugRuntime;
 
 use super::MinimalRuntime;

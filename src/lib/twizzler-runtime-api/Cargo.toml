@@ -4,13 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
+# We only need to statically link this library, since it has a small footprint and only really matters when feature runtime is on. 
+# And when that's true, we are statically linking _start and friends from this crate into the executable, or into libstd.
 crate-type = ["rlib"]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 bitflags = "1.3.2"
 
+# We depend on some usually built-in crates here. In particular is we need to adhere to this "rustc-std-workspace-core"
+# semi-feature (https://github.com/rust-lang/wg-cargo-std-aware/issues/51). 
 [dependencies.compiler_builtins]
 optional = true
 version = "0.1"
@@ -21,12 +23,15 @@ package = "rustc-std-workspace-core"
 version = "1.0.0"
 
 [features]
+# Activate if compiling as part of libstd.
 rustc-dep-of-std = [
     "core",
     "compiler_builtins/rustc-dep-of-std",
     "bitflags/rustc-dep-of-std",
 ]
 default = ["runtime"]
+# Compiles in rt0 code, and get_runtime.
 runtime = []
+# Activate if compiling for the kernel.
 kernel = []
 

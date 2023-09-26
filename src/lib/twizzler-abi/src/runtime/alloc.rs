@@ -1,10 +1,13 @@
+//! Implements the allocation part of the core runtime trait. We use talc as our allocator, creating new objects for it to
+//! claim when it runs out of memory.
+
 use core::{alloc::GlobalAlloc, ptr::NonNull};
 
 use talc::{OomHandler, Span};
 
 use crate::{
     object::{InternalObject, MAX_SIZE, NULLPAGE_SIZE},
-    simple_mutex::Mutex,
+    runtime::simple_mutex::Mutex,
 };
 
 pub struct MinimalAllocator {
@@ -13,6 +16,7 @@ pub struct MinimalAllocator {
 
 pub struct MinimalOomHandler {}
 
+// Null page + Meta page + 2 extra pages (reserving 1 for FOT and one for base data).
 const ALLOC_OBJ_REG_SIZE: usize = MAX_SIZE - NULLPAGE_SIZE * 4;
 
 impl OomHandler for MinimalOomHandler {
@@ -21,7 +25,8 @@ impl OomHandler for MinimalOomHandler {
             return Err(());
         }
         let obj = InternalObject::<u8>::create_data_and_map().ok_or(())?;
-        let start = unsafe { obj.base_mut() } as *mut u8;
+        // Save room for base data.
+        let start = unsafe { (obj.base_mut() as *mut u8).add(NULLPAGE_SIZE) };
         let span = Span::new(start, unsafe { start.add(ALLOC_OBJ_REG_SIZE) });
         unsafe {
             talc.claim(span)?;

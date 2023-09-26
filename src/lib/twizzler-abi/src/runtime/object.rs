@@ -1,3 +1,5 @@
+//! Implementation of the object runtime.
+
 use twizzler_runtime_api::{MapError, ObjectHandle, ObjectRuntime};
 
 use crate::{
@@ -62,7 +64,7 @@ impl ObjectRuntime for MinimalRuntime {
             id,
             flags,
             start: (slot * MAX_SIZE) as *mut u8,
-            meta: (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8
+            meta: (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
         })
     }
 

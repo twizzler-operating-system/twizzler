@@ -227,7 +227,7 @@ fn exec(name: &str, id: ObjID, argid: ObjID) {
     let mut args = vec![name.as_bytes()];
     let argstr = format!("{}", argid.as_u128());
     args.push(argstr.as_bytes());
-    let _elf = twizzler_abi::load_elf::spawn_new_executable(id, &args, &env_ref);
+    let _elf = twizzler_abi::runtime::load_elf::spawn_new_executable(id, &args, &env_ref);
     //println!("ELF: {:?}", elf);
 }
 
@@ -237,7 +237,7 @@ fn exec2(name: &str, id: ObjID) -> Option<ObjID> {
         .collect();
     let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
     let args = vec![name.as_bytes()];
-    twizzler_abi::load_elf::spawn_new_executable(id, &args, &env_ref).ok()
+    twizzler_abi::runtime::load_elf::spawn_new_executable(id, &args, &env_ref).ok()
     //println!("ELF: {:?}", elf);
 }
 
@@ -248,7 +248,7 @@ fn exec_n(name: &str, id: ObjID, args: &[&str]) {
     let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
     let mut fullargs = vec![name.as_bytes()];
     fullargs.extend(args.iter().map(|x| x.as_bytes()));
-    let _elf = twizzler_abi::load_elf::spawn_new_executable(id, &fullargs, &env_ref);
+    let _elf = twizzler_abi::runtime::load_elf::spawn_new_executable(id, &fullargs, &env_ref);
     //println!("ELF: {:?}", elf);
 }
 

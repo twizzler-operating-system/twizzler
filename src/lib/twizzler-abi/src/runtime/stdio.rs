@@ -1,3 +1,5 @@
+//! Implements stdio runtime for rust's libstd.
+
 use core::fmt::Debug;
 
 use twizzler_runtime_api::{IoRead, IoWrite, ReadError, RustStdioRuntime, WriteError};
@@ -47,9 +49,11 @@ impl RustStdioRuntime for MinimalRuntime {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
+/// A simple unit struct for implementing a basic write-to-kernel-log writer.
 pub struct WritePoint {}
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
+/// A simple unit struct for implementing a basic read-from-kernel-input reader.
 pub struct ReadPoint {}
 
 impl IoWrite for WritePoint {

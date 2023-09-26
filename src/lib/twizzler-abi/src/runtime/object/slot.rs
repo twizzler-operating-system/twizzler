@@ -1,3 +1,5 @@
+//! Implements a global slot allocator, simple enough for this runtime.
+
 /// Allocate a slot in the address space where we could map a new object.
 pub fn global_allocate() -> Option<usize> {
     SLOT_TRACKER.lock().alloc()
@@ -9,7 +11,7 @@ pub fn global_release(slot: usize) {
     SLOT_TRACKER.lock().dealloc(slot)
 }
 
-use crate::{arch::SLOTS, simple_mutex::Mutex};
+use crate::{arch::SLOTS, runtime::simple_mutex::Mutex};
 use bitset_core::BitSet;
 
 struct SlotTracker {

@@ -1,14 +1,16 @@
+//! Implementation of the thread runtime.
+
 use core::alloc::Layout;
 
 use crate::{
-    idcounter::IdCounter, object::Protections, rustc_alloc::collections::BTreeMap,
+    object::Protections, runtime::idcounter::IdCounter, rustc_alloc::collections::BTreeMap,
     thread::ExecutionState,
 };
 
 use twizzler_runtime_api::{CoreRuntime, JoinError, SpawnError, ThreadRuntime};
 
 use crate::{
-    simple_mutex::Mutex,
+    runtime::simple_mutex::Mutex,
     syscall::{
         ThreadSpawnError, ThreadSpawnFlags, ThreadSync, ThreadSyncError, ThreadSyncFlags,
         ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
@@ -92,7 +94,7 @@ impl ThreadRuntime for MinimalRuntime {
         const STACK_ALIGN: usize = 32;
         let stack_layout = Layout::from_size_align(args.stack_size, STACK_ALIGN).unwrap();
         if args.stack_size == 0 {
-            // TODO
+            return Err(SpawnError::InvalidArgument);
         }
         let stack_base = unsafe { self.default_allocator().alloc(stack_layout) };
         let (tls_set, tls_base, tls_len, tls_align) =
@@ -125,9 +127,7 @@ impl ThreadRuntime for MinimalRuntime {
         crate::syscall::sys_thread_yield()
     }
 
-    fn set_name(&self, _name: &core::ffi::CStr) {
-        // TODO
-    }
+    fn set_name(&self, _name: &core::ffi::CStr) {}
 
     fn sleep(&self, duration: core::time::Duration) {
         let _ = crate::syscall::sys_thread_sync(&mut [], Some(duration));
@@ -161,7 +161,11 @@ impl ThreadRuntime for MinimalRuntime {
 }
 
 impl From<ThreadSpawnError> for SpawnError {
-    fn from(_: ThreadSpawnError) -> Self {
-        todo!()
+    fn from(ts: ThreadSpawnError) -> Self {
+        match ts {
+            ThreadSpawnError::Unknown => Self::Other,
+            ThreadSpawnError::InvalidArgument => Self::InvalidArgument,
+            ThreadSpawnError::NotFound => Self::ObjectNotFound,
+        }
     }
 }
