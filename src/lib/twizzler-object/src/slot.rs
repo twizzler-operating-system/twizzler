@@ -90,7 +90,10 @@ lazy_static::lazy_static! {
 static ref SLOTS: Mutex<HashMap<(ObjID, Protections), Weak<Slot>>> = Mutex::new(HashMap::new());
 }
 
-/// Get a slot for an object and protections combo.
+/// Get an Arc to a slot for an object id and protections combo.
+/// If (object,protection) tuple already has a slot, check if it's been dropped.
+/// If so, remove it and get a new slot.
+/// If not, return Arc to it.
 pub fn get(id: ObjID, prot: Protections) -> Result<Arc<Slot>, ObjectInitError> {
     let mut slots = SLOTS.lock().unwrap();
     if let Some(slot) = slots.get(&(id, prot)) {

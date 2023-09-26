@@ -129,7 +129,7 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
             .submit(self.next_id(), item, flags);
     }
 
-    /// Submit an item and await a completion.
+    /// Submit an item  to the sending queue and await a completion.
     pub async fn submit_and_wait(&self, item: S) -> Result<C, crate::QueueError> {
         let id = self.next_id();
         let state = Arc::new(Mutex::new(WaitPoint::<C> {

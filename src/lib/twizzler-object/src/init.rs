@@ -37,7 +37,8 @@ impl From<ObjectMapError> for ObjectInitError {
 }
 
 impl<T> Object<T> {
-    /// Initialize an object handle from an object ID.
+    /// Add an object with given id and protections to a new slot in the view.
+    /// Populate object data with phantom data
     pub fn init_id(
         id: ObjID,
         prot: Protections,

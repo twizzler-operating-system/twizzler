@@ -1,3 +1,16 @@
+//! The twizzler-net crate.
+//!
+//! The purpose of this crate is to provide:
+//!
+//!  - Networking data structures
+//!  - Basic functions for sending and receiving packets
+//!  - A vanilla TCP/IP stack
+//! 
+//! # Design
+//!     - This library talks to a NIC device driver through a common interface
+//!     - 
+//!     - The library notifies the driver of packets to be sent in the transmit queue
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use twizzler_abi::{
@@ -51,6 +64,7 @@ impl BaseType for Rendezvous {
 }
 
 #[allow(dead_code)]
+const NM_NOT_READY: u64 = 0;
 const NM_READY_NO_DATA: u64 = 1;
 const NM_READY_DATA: u64 = 2;
 const CLIENT_TAKING: u64 = 3;
@@ -152,62 +166,89 @@ pub fn is_network_manager_ready(rid: ObjID) -> bool {
 
 #[cfg(feature = "manager")]
 fn server_rendezvous(rid: ObjID) -> NmOpenObjects {
+    // initialize the slot counter for this view
     static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+    // initialize a new rendezvous object in the given view object
     let obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
     )
     .unwrap();
+    // get a mutable pointer to the base of the new rendezvous object
     let mut rendezvous = unsafe { obj.base_mut_unchecked() };
-
-    if rendezvous.ready.load(Ordering::SeqCst) == 0 {
+   // if rendezvous object isn't ready, mark it ready
+    println!("[NM] waiting for rendezvous object to be ready.");
+    if rendezvous.ready.load(Ordering::SeqCst) == NM_NOT_READY {
         write_wake(&rendezvous.ready, NM_READY_NO_DATA);
     }
-
+        // wait for the mark to be set
     wait_until_eq(&rendezvous.ready, NM_READY_NO_DATA);
-
+    // initialize a new blank NmOpenObjects instance
     let mut o = NmOpenObjects {
         tx_buf: new_obj(),
         rx_buf: new_obj(),
+        // default queue size: 64 requests or completions
         tx_queue: new_q::<TxRequest, TxCompletion>(),
         rx_queue: new_q::<RxRequest, RxCompletion>(),
         client_id: 0,
         client_name: [0; 256],
     };
+    // initialize the base object of the Rendezvous object, obj, to be an NmOpenObjects instance
     rendezvous.tx_buf = o.tx_buf;
     rendezvous.rx_buf = o.rx_buf;
     rendezvous.tx_queue = o.tx_queue;
     rendezvous.rx_queue = o.rx_queue;
+    // increment slot id counter
     let id = ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+    // use the previous id for the rendezvous object
     rendezvous.client_id = id;
     rendezvous.client_name = [0; 256];
+    //  wait for the rendezvous object to be ready
     write_wake(&rendezvous.ready, NM_READY_DATA);
-
-    wait_until_eq(&rendezvous.ready, CLIENT_DONE);
+    // wait for client to make a request and fill in the rendezvous.client_name
+    println!("[NM] Waiting for a client with a blank rendezvous object ready.");
+        wait_until_eq(&rendezvous.ready, CLIENT_DONE);
+    println!("[NM] client has taken a rendezvous object.");
     o.client_id = id;
     o.client_name.copy_from_slice(&rendezvous.client_name);
     write_wake(&rendezvous.ready, NM_READY_NO_DATA);
     o
 }
 
+
+/// Return a NmOpenObjects handle from the network manager in the given view
+/// set the client_name of the object
 fn client_rendezvous(rid: ObjID, client_name: &str) -> NmOpenObjects {
+    // initialize rendezvous object in view
     let obj = Object::<Rendezvous>::init_id(
         rid,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
     )
     .unwrap();
+
+    // retrieve a mutable pointer to the Rendezvous struct inside the object
     let rendezvous = unsafe { obj.base_mut_unchecked() };
+
+   // wait for network manager to have a handle ready, then take it
+    // set rendezvous.ready to CLIENT_TAKING
+    // this can only be set if it is in the NM_READY_DATA state
     loop {
         wait_until_eq(&rendezvous.ready, NM_READY_DATA);
         if rendezvous.ready.swap(CLIENT_TAKING, Ordering::SeqCst) == NM_READY_DATA {
             break;
         }
     }
-    let bytes = client_name.as_bytes();
-    let name = &bytes[0..std::cmp::min(255, bytes.len())];
-    rendezvous.client_name[0..std::cmp::min(255, bytes.len())].copy_from_slice(name);
+    // now this thread has exclusive access to the rendezvous object
+
+    // construct a NmOpenObjects struct named client_name and return it
+    // truncate the name to 255 bytes if needed before setting rendezvous.client_name
+    let name_len = std::cmp::min(255, client_name.len());
+
+    //let bytes = client_name.as_bytes();  // convert name to array of bytes
+    //let name = &bytes[0..name_len-1]; //truncate to 255 bytes if needed
+    rendezvous.client_name[0..name_len-1].copy_from_slice(&client_name.as_bytes()[0..name_len-1]);
     let o = NmOpenObjects {
         tx_buf: rendezvous.tx_buf,
         rx_buf: rendezvous.rx_buf,
@@ -216,6 +257,9 @@ fn client_rendezvous(rid: ObjID, client_name: &str) -> NmOpenObjects {
         client_id: rendezvous.client_id,
         client_name: rendezvous.client_name,
     };
+    // before returning, release lock on rendezvous object
     write_wake(&rendezvous.ready, CLIENT_DONE);
+    // this lets server create a new handle for the next client
+    // return the network handle
     o
 }

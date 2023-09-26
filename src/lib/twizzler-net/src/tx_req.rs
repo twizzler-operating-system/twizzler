@@ -11,6 +11,8 @@ bitflags::bitflags! {
 
 #[repr(C)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
+
+/// Connection information - Node, service, flags (e.g. RAW) 
 pub struct ListenInfo {
     node_addr: NodeAddr,
     service_addr: ServiceAddr,
@@ -39,6 +41,7 @@ impl ListenInfo {
 #[derive(Clone, Copy, Debug)]
 pub enum TxRequest {
     Echo(PacketData),
+    SendIcmpv4(Ipv4Addr,PacketData),
     SendToIpv4(Ipv4Addr, PacketData),
     ListenIpv4(Ipv4Addr),
     Connect(ListenInfo),
