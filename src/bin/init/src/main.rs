@@ -253,7 +253,7 @@ fn exec_n(name: &str, id: ObjID, args: &[&str]) {
 }
 
 fn find_init_name(name: &str) -> Option<ObjID> {
-    let init_info = twizzler_abi::aux::get_kernel_init_info();
+    let init_info = twizzler_abi::runtime::get_kernel_init_info();
     for n in init_info.names() {
         if n.name() == name {
             return Some(n.id());

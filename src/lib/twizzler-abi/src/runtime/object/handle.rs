@@ -5,7 +5,6 @@ use core::marker::PhantomData;
 use twizzler_runtime_api::{MapFlags, ObjectHandle};
 
 use crate::{
-    arch::to_vaddr_range,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     runtime::object::slot::global_allocate,
     syscall::{
@@ -59,14 +58,14 @@ impl<T> InternalObject<T> {
 
     #[allow(dead_code)]
     pub(crate) fn base(&self) -> &T {
-        let (start, _) = to_vaddr_range(self.slot);
-        unsafe { (start as *const T).as_ref().unwrap() }
+        let (start, _) = super::slot::slot_to_start_and_meta(self.slot);
+        unsafe { ((start + NULLPAGE_SIZE) as *const T).as_ref().unwrap() }
     }
 
     #[allow(dead_code)]
     pub(crate) unsafe fn base_mut(&self) -> &mut T {
-        let (start, _) = to_vaddr_range(self.slot);
-        unsafe { (start as *mut T).as_mut().unwrap() }
+        let (start, _) = super::slot::slot_to_start_and_meta(self.slot);
+        unsafe { ((start + NULLPAGE_SIZE) as *mut T).as_mut().unwrap() }
     }
 
     #[allow(dead_code)]

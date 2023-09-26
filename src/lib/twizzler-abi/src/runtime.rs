@@ -41,3 +41,5 @@ static OUR_RUNTIME: MinimalRuntime = MinimalRuntime {};
 // Ensure the compiler doesn't optimize us away.
 #[used]
 static USE_MARKER: fn() -> &'static (dyn Runtime + Sync) = __twz_get_runtime;
+
+pub use object::slot::get_kernel_init_info;

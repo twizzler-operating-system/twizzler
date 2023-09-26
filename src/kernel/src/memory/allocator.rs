@@ -146,20 +146,3 @@ pub fn init(ctx: &'static Context) {
         zone: ZoneAllocator::new(),
     });
 }
-pub fn rdtscp() -> (u64, u32) {
-    let eax: u32;
-    let ecx: u32;
-    let edx: u32;
-    unsafe {
-        core::arch::asm!(
-          "rdtscp",
-          lateout("eax") eax,
-          lateout("ecx") ecx,
-          lateout("edx") edx,
-          options(nomem, nostack)
-        )
-    };
-
-    let counter: u64 = (edx as u64) << 32 | eax as u64;
-    (counter, ecx)
-}
