@@ -5,7 +5,7 @@ use twizzler_queue::QueueError;
 use crate::{
     link::nic::{NicBuffer, SendableBuffer},
     listen,
-    network::ipv4::{self, setup_ipv4_listen},
+    network::ipv4::{self, setup_ipv4_listen,Ipv4Prot},
     send, HandleRef,
 };
 
@@ -14,18 +14,32 @@ pub async fn handle_client_request(
     id: u32,
     request: TxRequest,
 ) -> Result<(), QueueError> {
-    println!("got txreq {:?}", request);
+    // println!("got txreq {:?}", request);
     let reply = match request {
         TxRequest::Echo(incoming_data) => {
             let buffer = handle.get_incoming_buffer(incoming_data);
             let incoming_slice = buffer.as_bytes();
             let s = String::from_utf8(incoming_slice.to_vec());
-            println!("incoming slice was {:?}", s);
+            // println!("incoming slice was {:?}", s);
             let mut buffer = handle.allocatable_buffer_controller().allocate().await;
             buffer.copy_in(b"Reply Packet Data");
             let packet_data = buffer.as_packet_data();
             let _ = handle.submit(RxRequest::EchoReply(packet_data)).await;
-            println!("reply completed");
+            // println!("reply completed");
+            TxCompletion::Nothing
+        }
+        TxRequest::SendIcmpv4(addr, data) => {
+            let buffer = handle.get_incoming_buffer(data);
+            let _ = ipv4::send_to(
+                handle,
+                Ipv4Addr::localhost(),
+                addr,
+                Ipv4Prot::Icmp, /* This IP datagram contains an ICMP message */
+                &[SendableBuffer::ManagedBuffer(buffer)],
+                NicBuffer::allocate(0x1000),
+                None,
+             )
+             .await;
             TxCompletion::Nothing
         }
         TxRequest::SendToIpv4(addr, data) => {

@@ -95,16 +95,18 @@ impl Header for EthernetHeader {
 }
 
 pub async fn handle_incoming_ethernet_packets(buffers: &[Arc<NicBuffer>]) {
-    println!("got incoming eth packets");
+    // println!("got incoming eth packets");
     for buffer in buffers {
         let eth = unsafe { buffer.get_minimal_header::<EthernetHeader>(0) };
         // TODO: look at dest addr
-        println!("ethernet packet type {:?}", eth.ethertype());
+        // println!("ethernet packet type {:?}", eth.ethertype());
         let incoming_info = IncomingPacketInfo::new(buffer.clone());
-        if let Some(incoming_info) = incoming_info.update_for_link(0, buffer.packet_len()) {
+        if let Some(incoming_info) = incoming_info.update_for_link(0, 14) {
             if let Some(incoming_info) =
                 incoming_info.update_for_network(14, buffer.packet_len() - 14)
             {
+                // println!("Incoming packet information: {:?}", incoming_info);
+                // println!("Incoming packet contains: {:?}", buffer.as_bytes());
                 if let Ok(et) = eth.ethertype() {
                     match et {
                         EtherType::Ipv4 => handle_incoming_ipv4_packet(incoming_info).await,

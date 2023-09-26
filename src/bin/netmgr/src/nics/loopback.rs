@@ -54,7 +54,9 @@ impl NetworkInterface for Loopback {
             nb_bytes[off..(off + slice.len())].copy_from_slice(slice);
             off += slice.len();
         }
+        // println!("Frame has the following data: {:?}", nb.as_bytes());
         inner.buffer.push_back(Arc::new(nb));
+        // println!("Pushed ethernet frame {:?} to back of loopback buffer", inner.buffer);
         self.flag.signal_all();
         Ok(())
     }
@@ -68,6 +70,7 @@ impl NetworkInterface for Loopback {
                     while let Some(buf) = inner.buffer.pop_front() {
                         v.push(buf);
                     }
+                    // println!("Popped ethernet frame {:?} from front of loopback buffer.",v);
                     return Ok(v);
                 }
 

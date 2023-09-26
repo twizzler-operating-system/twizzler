@@ -16,7 +16,30 @@ use crate::{
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-struct Ipv4Header {
+/*
+RFC0791
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |Version|  IHL  |Type of Service|          Total Length         |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |         Identification        |Flags|      Fragment Offset    |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |  Time to Live |    Protocol   |         Header Checksum       |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                       Source Address                          |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                    Destination Address                        |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                    Options                    |    Padding    |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+                    Example Internet Datagram Header
+
+                               Figure 4.
+*/
+pub struct Ipv4Header {
     info1: u8,
     info2: u8,
     len: [u8; 2],
@@ -47,7 +70,7 @@ impl Ipv4Header {
 
 impl Header for Ipv4Header {
     fn len(&self) -> usize {
-        20 //TODO
+        20//TODO
     }
 
     fn update_csum(&mut self, _header_buffer: NicBuffer, _buffers: &[SendableBuffer]) {
@@ -55,7 +78,7 @@ impl Header for Ipv4Header {
     }
 }
 
-fn build_ipv4_header(source: Ipv4Addr, dest: Ipv4Addr, prot: Ipv4Prot) -> Ipv4Header {
+pub fn build_ipv4_header(source: Ipv4Addr, dest: Ipv4Addr, prot: Ipv4Prot) -> Ipv4Header {
     // TODO: we should take in other args as well for the other things in the header
     let mut hdr = Ipv4Header {
         info1: 4,
@@ -85,11 +108,15 @@ pub async fn send_to(
     mut header_buffer: NicBuffer,
     layer4_header: Option<&(dyn Header + Sync)>,
 ) -> Result<(), Ipv4SendError> {
+    // if destination is localhost, send to loopback device
     if dest.is_localhost() {
         let lo = crate::nics::lookup_nic(&EthernetAddr::local()).ok_or(Ipv4SendError::Unknown)?;
         let header = build_ipv4_header(source, dest, prot);
-
+        // println!("Added ipv4 header: {:?}", header.as_bytes());
+        // println!("Length of ipv4 header: {} bytes", header.len());
         let eth_header = EthernetHeader::build_localhost(EtherType::Ipv4);
+        // println!("Added ethernet header: {:?}", eth_header.as_bytes());
+        // println!("Length of ethernet header: {} bytes", eth_header.len());
         let len = if let Some(l4) = layer4_header {
             header_buffer.write_layer_headers(0, &[&eth_header, &header, l4])
         } else {
@@ -97,6 +124,8 @@ pub async fn send_to(
         };
         header_buffer.set_len(len);
         // TODO: checksums?
+        // println!("Added ipv4 and ethernet headers to get {:?}", header_buffer.as_bytes());
+        // println!("Total length of network + link layer headers= {} bytes", len);
         return lo
             .send_ethernet(header_buffer, buffers)
             .await
@@ -105,6 +134,7 @@ pub async fn send_to(
     todo!()
 }
 
+#[derive(Debug)]
 #[repr(u8)]
 pub enum Ipv4Prot {
     Icmp = 0x01,
@@ -193,17 +223,23 @@ pub async fn handle_incoming_ipv4_packet(info: IncomingPacketInfo) {
         }
 
     */
+    // println!("Handling incoming ipv4 packet from ethernet");
     let header = unsafe { info.get_network_hdr::<Ipv4Header>() };
+    // println!("Packet: {:?}", info);
+    // println!("Header: {:?}", header);
     if let Some(header) = header {
-        let len = header.packet_len();
+        let len = info.packet_len();
         let header_len = header.len();
-        if let Some(info) = info.update_for_transport(header_len, len) {
+        // println!("Packet length:{}; Header length:{}", len, header_len);
+        //if let Some(info) = info.update_for_transport(header_len, len) {
             let prot: Result<Ipv4Prot, ()> = header.prot.try_into();
+            // println!("Protocol: {:?}", prot);
             if let Ok(prot) = prot {
                 if let Ok(service_addr_any) = prot.try_into() {
+                    // println!("Handling ipv4 packet at service address {:?}", service_addr_any);
                     handle_packet(service_addr_any, info).await
                 }
             }
-        }
+        //}
     }
 }

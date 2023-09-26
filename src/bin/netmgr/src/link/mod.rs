@@ -7,9 +7,10 @@ use self::nic::NicBuffer;
 pub mod ethernet;
 pub mod nic;
 
+#[derive(Debug)]
 pub struct IncomingPacketInfo {
-    buffer: Arc<NicBuffer>,
-    network_info: Option<(usize, usize)>,
+    pub buffer: Arc<NicBuffer>,
+    pub network_info: Option<(usize, usize)>, // starting byte, length in bytes
     link_info: Option<(usize, usize)>,
     transport_info: Option<(usize, usize)>,
 }
@@ -45,6 +46,7 @@ impl IncomingPacketInfo {
         Some(self)
     }
 
+#[allow(dead_code)]
     pub fn update_for_transport(mut self, hdr_off: usize, len: usize) -> Option<Self> {
         let prev = self.network_info.unwrap().0;
         let off = hdr_off + prev;
@@ -56,14 +58,15 @@ impl IncomingPacketInfo {
         Some(self)
     }
 
-#[allow(dead_code)]
     pub fn packet_len(&self) -> usize {
         self.buffer.packet_len()
     }
-
+    
     pub unsafe fn get_network_hdr<T: Header>(&self) -> Option<T> {
         let info = self.network_info.unwrap();
-        if info.0 + std::mem::size_of::<T>() > info.1 {
+        // println!("Network header location: {:?}, header size: {:?} bytes",info.0, std::mem::size_of::<T>());
+        if std::mem::size_of::<T>() > info.1 {
+            println!("Bad Header. Too small to fit network neader.");
             return None;
         }
         Some(self.buffer.get_minimal_header(info.0))

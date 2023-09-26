@@ -10,6 +10,7 @@ members = [
     "src/bin/devmgr",
     "src/bin/netmgr",
     "src/bin/nettest",
+    "src/bin/objtest",
     "src/bin/pager",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
@@ -29,6 +30,7 @@ initrd = [
     "crate:init",
     "crate:devmgr",
     "crate:netmgr",
+    "crate:objtest",
     "crate:nettest",
     "crate:pager",
     #"third-party:hello-world-rs"
