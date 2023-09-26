@@ -18,6 +18,13 @@ members = [
     "src/lib/twizzler-async",
     "src/lib/twizzler-object",
     "src/lib/twizzler-runtime-api",
+    "src/runtime/bootstrap",
+    "src/runtime/dynlink",
+    "src/runtime/monitor",
+    "src/runtime/secgate",
+    "src/runtime/twz-rt",
+    "src/runtime/nando",
+    "src/runtime/hello-world",
 ]
 exclude = ["toolchain/src/rust"]
 resolver = "2"
