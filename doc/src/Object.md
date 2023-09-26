@@ -4,7 +4,7 @@
 
 Objects are an abstraction of a set of related data with the same lifetime and permissions. This vague definition allows for applications to define what data is contained in a single object in a way that is most reasonable for the particular use case. For example, a B-Tree could contain all nodes in the same object given that the nodes likely have the same permissions and lifetime. However, another tree with different permissions for children could separate these nodes into different objects. For this second example, managing their lifetime can be done with [ties](./Lifetime.md#Ties).
 
-Kernel interposition is only done when creating and deleting objects, leaving access and modification to userspace facilities and hardware. Access control is limited by specifying policies and letting hardware enforce those policies. This allows the kernel avoid involvement in access, improving performance without sacrificing security. Objects maintain a reference count to prevent deletion of object data when multiple pointers reference it.
+Kernel interposition is only done when creating and deleting objects, leaving access and modification to userspace facilities and hardware. Access control is limited by specifying policies and letting hardware enforce those policies. This allows the kernel to avoid involvement in access, improving performance without sacrificing security. Objects maintain a reference count to prevent deletion of object data when multiple pointers reference it.
 
 ## Object Creation
 

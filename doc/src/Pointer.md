@@ -3,7 +3,7 @@
 <!-- Page 10-12 of Twizzler: a Data-Centric OS for Non-Volaile Memory -->
 ## Definition
 
-There are two types of pointers in Twizzler: persistent and dereferenceable. Persistent pointers are used in order refer to external data with no extra context needed. They can be thought of file names on a traditional operating system, where the data exists longer than any process or power cycle. Dereferenceable pointers are references to data in ways that act like traditional memory accesses when programing on other operating systems (such as stack or heap data). Unlike persistent pointers, the data can be acted upon, such as by reading or writing, but additional context is necessary.
+There are two types of pointers in Twizzler: persistent and dereferenceable. Persistent pointers are used in order to refer to external data with no extra context needed. They can be thought of file names on a traditional operating system, where the data exists longer than any process or power cycle. Dereferenceable pointers are references to data in ways that act like traditional memory accesses when programing on other operating systems (such as stack or heap data). Unlike persistent pointers, the data can be acted upon, such as by reading or writing, but additional context is necessary.
 
 ## Rationale
 
