@@ -209,6 +209,7 @@ dependencies = [
 name = "bootstrap"
 version = "0.1.0"
 dependencies = [
+ "dynlink",
  "twizzler-abi",
 ]
 
@@ -681,7 +682,9 @@ name = "dynlink"
 version = "0.1.0"
 dependencies = [
  "elf",
+ "tracing",
  "twizzler-abi",
+ "twizzler-object",
 ]
 
 [[package]]
@@ -2770,7 +2773,19 @@ checksum = "4a1bdf54a7c28a2bbf701e1d2233f6c77f473486b94bee4f9678da5a148dca7f"
 dependencies = [
  "cfg-if 1.0.0",
  "pin-project-lite",
+ "tracing-attributes",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-attributes"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f4f31f56159e98206da9efd823404b79b6ef3143b4a7ab76e67b1751b25a4ab"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.28",
 ]
 
 [[package]]

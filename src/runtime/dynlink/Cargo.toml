@@ -7,6 +7,6 @@ edition = "2021"
 
 [dependencies]
 elf = "0.7"
-
-[dev-dependencies]
-twizzler-abi = { path = "../../lib/twizzler-abi", features = ["runtime"]}
+twizzler-abi = { path = "../../lib/twizzler-abi", features = ["runtime"] }
+tracing = "0.1"
+twizzler-object = { path = "../../lib/twizzler-object" }
