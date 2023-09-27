@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use tracing::{debug, error};
 
 use crate::{
-    compartment::{internal::InternalCompartment, UnrelocatedCompartment},
+    compartment::{internal::InternalCompartment, Compartment, UnrelocatedCompartment},
     context::Context,
     library::{Library, LibraryId, UnloadedLibrary},
     AddLibraryError, AdvanceError,
@@ -11,12 +11,12 @@ use crate::{
 
 use elf::abi::DT_NEEDED;
 
-use super::{LibraryResolver, UnloadedCompartment};
+use super::{CompartmentId, LibraryResolver, UnloadedCompartment};
 
-impl Default for UnloadedCompartment {
-    fn default() -> Self {
+impl UnloadedCompartment {
+    pub fn new(id: CompartmentId) -> Self {
         Self {
-            int: Default::default(),
+            int: InternalCompartment::new(id, None),
         }
     }
 }
@@ -28,13 +28,13 @@ impl UnloadedCompartment {
         ctx: &mut Context,
     ) -> Result<UnrelocatedCompartment, AdvanceError> {
         debug!("advancing compartment {}", self.int);
-        let mut next = InternalCompartment::default();
+        let mut next = InternalCompartment::new(self.id(), self.int.dep_start());
 
         let mut queue: VecDeque<_> = self.int.into_values().collect();
 
         while let Some(lib) = queue.pop_front() {
             //TODO: check if we have loaded it already
-            debug!("enumerating needed libraries for {:?}", lib);
+            debug!("enumerating needed libraries for {}", lib);
             let id = lib.id();
             let elf = lib.get_elf().map_err(|_| AdvanceError::LibraryFailed(id))?;
             let common = elf.find_common_data()?;

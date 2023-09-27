@@ -262,12 +262,17 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     None
 }
 
-use dynlink::{compartment::Compartment, library::UnloadedLibrary};
+use dynlink::{
+    compartment::{Compartment, LibraryResolver},
+    library::UnloadedLibrary,
+};
+use tracing::Level;
+use tracing_subscriber::FmtSubscriber;
 use twizzler_abi::object::ObjID;
 
 fn start_runtime(exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID, libstd: ObjID) {
-    let ctx = dynlink::context::Context::default();
-    let mut monitor_compartment = dynlink::compartment::UnloadedCompartment::default();
+    let mut ctx = dynlink::context::Context::default();
+    let mut monitor_compartment = ctx.new_compartment();
     let mc_id = monitor_compartment.id();
 
     monitor_compartment
@@ -278,12 +283,28 @@ fn start_runtime(exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID,
         .add_library(UnloadedLibrary::new(runtime_library, mc_id, "runtime").unwrap())
         .unwrap();
 
-    monitor_compartment
-        .add_library(UnloadedLibrary::new(libstd, mc_id, "libstd").unwrap())
+    let libstd_lib = UnloadedLibrary::new(libstd, mc_id, "libstd").unwrap();
+    monitor_compartment.add_library(libstd_lib.clone()).unwrap();
+
+    let lib_resolver = LibraryResolver::new(Box::new(move |n| {
+        println!("==> res {:?}", n);
+        if String::from_utf8_lossy(n.0).starts_with("libstd") {
+            Ok(libstd_lib.clone())
+        } else {
+            Err(dynlink::LookupError::NotFound)
+        }
+    }));
+    ctx.add_compartment(monitor_compartment, lib_resolver)
         .unwrap();
 }
 
 fn main() {
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(Level::DEBUG)
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+
     let exec_id = find_init_name("libhello_world.so").unwrap();
     let runtime_lib = find_init_name("libtwz_rt.so").unwrap();
     let monitor = find_init_name("libmonitor.so").unwrap();

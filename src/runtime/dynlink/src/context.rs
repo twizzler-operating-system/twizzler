@@ -24,6 +24,10 @@ impl Context {
         })
     }
 
+    pub fn new_compartment(&mut self) -> UnloadedCompartment {
+        UnloadedCompartment::new(self.get_fresh_id())
+    }
+
     pub fn lookup_symbol(
         &mut self,
         name: &SymbolName,
