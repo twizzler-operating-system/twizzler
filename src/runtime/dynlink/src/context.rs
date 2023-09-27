@@ -4,7 +4,8 @@ use crate::{
         Compartment, CompartmentId, LibraryResolver, ReadyCompartment, UninitializedCompartment,
         UnloadedCompartment,
     },
-    AdvanceError,
+    symbol::{RelocatedSymbol, SymbolName},
+    AdvanceError, LookupError,
 };
 
 #[derive(Debug, Default)]
@@ -17,15 +18,36 @@ impl Context {
         todo!()
     }
 
+    pub fn lookup_symbol(
+        &mut self,
+        name: &SymbolName,
+        primary: CompartmentId,
+    ) -> Result<RelocatedSymbol, LookupError> {
+        let prim = self.active_compartments.get(&primary);
+        if let Some(prim) = prim {
+            if let Ok(sym) = prim.lookup_symbol(name) {
+                return Ok(sym);
+            }
+        }
+
+        for (_id, comp) in &self.active_compartments {
+            if let Ok(sym) = comp.lookup_symbol(name) {
+                return Ok(sym);
+            }
+        }
+        Err(LookupError::NotFound)
+    }
+
     pub fn add_compartment(
         &mut self,
         comp: UnloadedCompartment,
+        lib_resolver: LibraryResolver,
     ) -> Result<CompartmentId, AdvanceError> {
         let id = self.get_fresh_id();
-        let loaded = comp.advance(LibraryResolver::new(Box::new(|_name| todo!())), self)?;
+        let loaded = comp.advance(lib_resolver, self)?;
         let reloc = loaded.advance(self)?;
         let inited = reloc.advance(self)?;
         self.active_compartments.insert(id, inited);
-        todo!()
+        Ok(id)
     }
 }

@@ -17,15 +17,17 @@ use library::LibraryId;
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug)]
 pub enum LookupError {
     NotFound,
     Unloaded,
+    ParseError(elf::ParseError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AddLibraryError {
     NotFound,
+    AdvanceError(AdvanceError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

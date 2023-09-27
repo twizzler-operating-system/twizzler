@@ -55,6 +55,15 @@ impl<L: Library> InternalCompartment<L> {
             id: self.id,
         })
     }
+
+    fn lookup_symbol(&self, name: &SymbolName) -> Result<L::SymbolType, LookupError> where {
+        for lib in self.libraries.values() {
+            if let Ok(sym) = lib.lookup_symbol(name) {
+                return Ok(sym);
+            }
+        }
+        Err(LookupError::NotFound)
+    }
 }
 
 impl<T> Default for InternalCompartment<T> {
@@ -69,8 +78,6 @@ impl<T> Default for InternalCompartment<T> {
 pub trait Compartment {
     type LibraryType: Library;
     type SymbolType: Symbol;
-
-    fn add_library(&mut self, lib: UnloadedLibrary) -> Result<LibraryId, AddLibraryError>;
 
     fn lookup_symbol(&self, name: &SymbolName) -> Result<Self::SymbolType, LookupError>;
 }
@@ -90,12 +97,8 @@ impl Compartment for UnloadedCompartment {
 
     type SymbolType = UnrelocatedSymbol;
 
-    fn add_library(&mut self, lib: UnloadedLibrary) -> Result<LibraryId, AddLibraryError> {
-        todo!()
-    }
-
     fn lookup_symbol(&self, name: &SymbolName) -> Result<Self::SymbolType, LookupError> {
-        Err(LookupError::Unloaded)
+        self.cmp.lookup_symbol(name)
     }
 }
 
@@ -104,12 +107,8 @@ impl Compartment for UnrelocatedCompartment {
 
     type SymbolType = UnrelocatedSymbol;
 
-    fn add_library(&mut self, lib: UnloadedLibrary) -> Result<LibraryId, AddLibraryError> {
-        todo!()
-    }
-
     fn lookup_symbol(&self, name: &SymbolName) -> Result<Self::SymbolType, LookupError> {
-        todo!()
+        self.cmp.lookup_symbol(name)
     }
 }
 
@@ -118,12 +117,8 @@ impl Compartment for UninitializedCompartment {
 
     type SymbolType = RelocatedSymbol;
 
-    fn add_library(&mut self, lib: UnloadedLibrary) -> Result<LibraryId, AddLibraryError> {
-        todo!()
-    }
-
     fn lookup_symbol(&self, name: &SymbolName) -> Result<Self::SymbolType, LookupError> {
-        todo!()
+        self.cmp.lookup_symbol(name)
     }
 }
 
@@ -132,12 +127,8 @@ impl Compartment for ReadyCompartment {
 
     type SymbolType = RelocatedSymbol;
 
-    fn add_library(&mut self, lib: UnloadedLibrary) -> Result<LibraryId, AddLibraryError> {
-        todo!()
-    }
-
     fn lookup_symbol(&self, name: &SymbolName) -> Result<Self::SymbolType, LookupError> {
-        todo!()
+        self.cmp.lookup_symbol(name)
     }
 }
 
@@ -178,16 +169,66 @@ impl UnloadedCompartment {
 
         Ok(UnrelocatedCompartment { cmp: next })
     }
+
+    pub fn add_library(&mut self, lib: UnloadedLibrary) -> Result<LibraryId, AddLibraryError> {
+        let id = lib.id();
+        self.cmp.libraries.insert(id, lib);
+        Ok(id)
+    }
 }
 
 impl UnrelocatedCompartment {
     pub fn advance(self, _ctx: &mut Context) -> Result<UninitializedCompartment, AdvanceError> {
         Ok(UninitializedCompartment { cmp: todo!() })
     }
+
+    pub fn add_library(
+        &mut self,
+        lib: UnloadedLibrary,
+        ctx: &mut Context,
+    ) -> Result<LibraryId, AddLibraryError> {
+        let id = lib.id();
+        let lib = lib.load(ctx)?;
+        self.cmp.libraries.insert(id, lib);
+        Ok(id)
+    }
 }
 
 impl UninitializedCompartment {
+    pub fn add_library(
+        &mut self,
+        lib: UnloadedLibrary,
+        ctx: &mut Context,
+    ) -> Result<LibraryId, AddLibraryError> {
+        let id = lib.id();
+        let lib = lib.load(ctx)?;
+        let lib = lib.relocate(ctx)?;
+        self.cmp.libraries.insert(id, lib);
+        Ok(id)
+    }
+
     pub fn advance(self, _ctx: &mut Context) -> Result<ReadyCompartment, AdvanceError> {
         Ok(ReadyCompartment { cmp: todo!() })
+    }
+}
+
+impl ReadyCompartment {
+    pub fn add_library(
+        &mut self,
+        lib: UnloadedLibrary,
+        ctx: &mut Context,
+    ) -> Result<LibraryId, AddLibraryError> {
+        let id = lib.id();
+        let lib = lib.load(ctx)?;
+        let lib = lib.relocate(ctx)?;
+        let lib = lib.initialize(ctx)?;
+        self.cmp.libraries.insert(id, lib);
+        Ok(id)
+    }
+}
+
+impl From<AdvanceError> for AddLibraryError {
+    fn from(value: AdvanceError) -> Self {
+        Self::AdvanceError(value)
     }
 }

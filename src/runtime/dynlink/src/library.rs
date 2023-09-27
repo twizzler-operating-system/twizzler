@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Display};
 
-use elf::{endian::NativeEndian, ElfBytes, ParseError};
+use elf::{endian::NativeEndian, CommonElfData, ElfBytes, ParseError};
 use twizzler_abi::object::ObjID;
 use twizzler_object::{Object, ObjectInitError, ObjectInitFlags, Protections};
 
@@ -24,6 +24,7 @@ struct InternalLibrary {
     object: Object<u8>,
     comp: CompartmentId,
     name: Option<String>,
+    id: LibraryId,
 }
 
 impl core::fmt::Debug for InternalLibrary {
@@ -40,7 +41,7 @@ impl Display for InternalLibrary {
         if let Some(ref name) = self.name {
             write!(f, "{}", name)
         } else {
-            write!(f, "{}", self.object.id())
+            write!(f, "{:?}", self.id)
         }
     }
 }
@@ -70,6 +71,16 @@ impl InternalLibrary {
             ))
         }
     }
+
+    fn lookup_symbol<Sym: Symbol + From<elf::symbol::Symbol>>(
+        &self,
+        name: &SymbolName,
+    ) -> Result<Sym, LookupError> {
+        let elf = self.get_elf()?;
+        let common = elf.find_common_data()?;
+        let sym = basic_lookup(name, &common).ok_or(LookupError::NotFound)?;
+        Ok(sym.into())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
@@ -96,32 +107,72 @@ pub trait Library {
 impl Library for ReadyLibrary {
     type SymbolType = RelocatedSymbol;
 
-    fn lookup_symbol(&self, name: &SymbolName) -> Result<Self::SymbolType, LookupError> {
-        todo!()
+    fn lookup_symbol(&self, name: &SymbolName) -> Result<RelocatedSymbol, LookupError> {
+        self.int.lookup_symbol(name)
     }
 }
 
 impl Library for UninitializedLibrary {
     type SymbolType = RelocatedSymbol;
 
-    fn lookup_symbol(&self, name: &SymbolName) -> Result<Self::SymbolType, LookupError> {
-        todo!()
+    fn lookup_symbol(&self, name: &SymbolName) -> Result<RelocatedSymbol, LookupError> {
+        self.int.lookup_symbol(name)
     }
 }
 
 impl Library for UnrelocatedLibrary {
     type SymbolType = UnrelocatedSymbol;
 
-    fn lookup_symbol(&self, name: &SymbolName) -> Result<Self::SymbolType, LookupError> {
-        todo!()
+    fn lookup_symbol(&self, name: &SymbolName) -> Result<UnrelocatedSymbol, LookupError> {
+        self.int.lookup_symbol(name)
     }
+}
+
+fn basic_lookup(
+    name: &SymbolName,
+    common: &CommonElfData<'_, NativeEndian>,
+) -> Option<elf::symbol::Symbol> {
+    if let Some(h) = &common.gnu_hash {
+        if let Some((_, y)) = h
+            .find(
+                name.as_ref(),
+                common.dynsyms.as_ref()?,
+                common.dynsyms_strs.as_ref()?,
+            )
+            .ok()
+            .flatten()
+        {
+            return Some(y);
+        }
+    }
+
+    if let Some(h) = &common.sysv_hash {
+        if let Some((_, y)) = h
+            .find(
+                name.as_ref(),
+                common.dynsyms.as_ref()?,
+                common.dynsyms_strs.as_ref()?,
+            )
+            .ok()
+            .flatten()
+        {
+            return Some(y);
+        }
+    }
+    None
 }
 
 impl Library for UnloadedLibrary {
     type SymbolType = UnrelocatedSymbol;
 
-    fn lookup_symbol(&self, name: &SymbolName) -> Result<Self::SymbolType, LookupError> {
-        todo!()
+    fn lookup_symbol(&self, name: &SymbolName) -> Result<UnrelocatedSymbol, LookupError> {
+        self.int.lookup_symbol(name)
+    }
+}
+
+impl From<ParseError> for LookupError {
+    fn from(value: ParseError) -> Self {
+        LookupError::ParseError(value)
     }
 }
 
@@ -136,6 +187,10 @@ impl<'a> From<&'a str> for LibraryName<'a> {
 impl UnloadedLibrary {
     pub fn get_elf(&self) -> Result<ElfBytes<'_, NativeEndian>, ParseError> {
         self.int.get_elf()
+    }
+
+    pub fn id(&self) -> LibraryId {
+        self.int.id
     }
 
     pub fn load(&self, _cxt: &mut Context) -> Result<UnrelocatedLibrary, AdvanceError> {
@@ -153,6 +208,7 @@ impl UnloadedLibrary {
                 object: obj,
                 comp: comp_id,
                 name: Some(name.to_string()),
+                id: LibraryId(id),
             },
         })
     }
@@ -161,5 +217,39 @@ impl UnloadedLibrary {
 impl Display for UnloadedLibrary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.int, f)
+    }
+}
+
+impl UnrelocatedLibrary {
+    pub fn get_elf(&self) -> Result<ElfBytes<'_, NativeEndian>, ParseError> {
+        self.int.get_elf()
+    }
+
+    pub fn relocate(self, _ctx: &mut Context) -> Result<UninitializedLibrary, AdvanceError> {
+        todo!()
+    }
+
+    pub fn lookup_symbol(&self, name: &SymbolName) -> Result<UnrelocatedSymbol, LookupError> {
+        self.int.lookup_symbol(name)
+    }
+}
+
+impl UninitializedLibrary {
+    pub fn get_elf(&self) -> Result<ElfBytes<'_, NativeEndian>, ParseError> {
+        self.int.get_elf()
+    }
+
+    pub fn initialize(self, _ctx: &mut Context) -> Result<ReadyLibrary, AdvanceError> {
+        todo!()
+    }
+}
+
+impl ReadyLibrary {
+    pub fn get_elf(&self) -> Result<ElfBytes<'_, NativeEndian>, ParseError> {
+        self.int.get_elf()
+    }
+
+    pub fn lookup_symbol(&self, name: &SymbolName) -> Result<RelocatedSymbol, LookupError> {
+        self.int.lookup_symbol(name)
     }
 }
