@@ -1,8 +1,7 @@
 use crate::{
     alloc::collections::BTreeMap,
     compartment::{
-        Compartment, CompartmentId, LibraryResolver, ReadyCompartment, UninitializedCompartment,
-        UnloadedCompartment,
+        Compartment, CompartmentId, LibraryResolver, ReadyCompartment, UnloadedCompartment,
     },
     symbol::{RelocatedSymbol, SymbolName},
     AdvanceError, LookupError,
@@ -11,11 +10,18 @@ use crate::{
 #[derive(Debug, Default)]
 pub struct Context {
     active_compartments: BTreeMap<CompartmentId, ReadyCompartment>,
+    id_counter: u32,
+    id_stack: Vec<u32>,
 }
 
 impl Context {
     fn get_fresh_id(&mut self) -> CompartmentId {
-        todo!()
+        CompartmentId(if let Some(old) = self.id_stack.pop() {
+            old
+        } else {
+            self.id_counter += 1;
+            self.id_counter
+        })
     }
 
     pub fn lookup_symbol(

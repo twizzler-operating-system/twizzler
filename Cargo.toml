@@ -18,7 +18,6 @@ members = [
     "src/lib/twizzler-async",
     "src/lib/twizzler-object",
     "src/lib/twizzler-runtime-api",
-    "src/runtime/bootstrap",
     "src/runtime/dynlink",
     "src/runtime/monitor",
     "src/runtime/secgate",
@@ -32,10 +31,13 @@ resolver = "2"
 [workspace.metadata]
 initrd = [
     "crate:init",
-    "crate:devmgr",
-    "crate:netmgr",
-    "crate:nettest",
-    "crate:pager",
+    "lib:hello-world",
+    "lib:monitor",
+    "lib:twz-rt",
+    #"crate:devmgr",
+    #"crate:netmgr",
+    #"crate:nettest",
+    #"crate:pager",
     #"third-party:hello-world-rs"
 ]
 

@@ -262,10 +262,49 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     None
 }
 
+use dynlink::{compartment::Compartment, library::UnloadedLibrary};
+use twizzler_abi::object::ObjID;
+
+fn start_runtime(exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID, libstd: ObjID) {
+    let ctx = dynlink::context::Context::default();
+    let mut monitor_compartment = dynlink::compartment::UnloadedCompartment::default();
+    let mc_id = monitor_compartment.id();
+
+    monitor_compartment
+        .add_library(UnloadedLibrary::new(runtime_monitor, mc_id, "monitor").unwrap())
+        .unwrap();
+
+    monitor_compartment
+        .add_library(UnloadedLibrary::new(runtime_library, mc_id, "runtime").unwrap())
+        .unwrap();
+
+    monitor_compartment
+        .add_library(UnloadedLibrary::new(libstd, mc_id, "libstd").unwrap())
+        .unwrap();
+}
+
 fn main() {
+    let exec_id = find_init_name("libhello_world.so").unwrap();
+    let runtime_lib = find_init_name("libtwz_rt.so").unwrap();
+    let monitor = find_init_name("libmonitor.so").unwrap();
+    let libstd = find_init_name("libstd.so").unwrap();
+
+    eprintln!("=== BOOTSTRAP RUNTIME ===");
+    start_runtime(exec_id, monitor, runtime_lib, libstd);
+
+    let _runtime = twizzler_abi::runtime::__twz_get_runtime();
+}
+
+fn old_main() {
     println!("[init] starting userspace");
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
+
+    let bs = find_init_name("bootstrap").unwrap();
+    exec2("bootstrap", bs);
+    loop {
+        std::thread::sleep(Duration::from_secs(1))
+    }
 
     let create = ObjectCreate::new(
         BackingType::Normal,
@@ -459,7 +498,7 @@ use std::{
 use twizzler_abi::{
     device::SubObjectType,
     kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue},
-    object::{ObjID, Protections, NULLPAGE_SIZE},
+    object::{Protections, NULLPAGE_SIZE},
     pager::{CompletionToKernel, RequestFromKernel},
     runtime::__twz_get_runtime,
     //thread::{ExecutionState, ThreadRepr},

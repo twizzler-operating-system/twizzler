@@ -1,5 +1,3 @@
-use crate::addr::Address;
-
 pub struct UnrelocatedSymbol {
     sym: elf::symbol::Symbol,
 }

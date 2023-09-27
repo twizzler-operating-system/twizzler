@@ -9,6 +9,7 @@ twizzler-abi = { path = "../../lib/twizzler-abi", features = ["runtime"] }
 twizzler-net = { path = "../../lib/twizzler-net" }
 twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-queue = { path = "../../lib/twizzler-queue" }
+dynlink = { path = "../../runtime/dynlink" }
 rprompt = "1.0.5"
 
 [package.metadata]

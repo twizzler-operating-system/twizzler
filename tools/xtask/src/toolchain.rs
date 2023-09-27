@@ -182,7 +182,9 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     fs_extra::copy_items(
         &["src/lib/twizzler-runtime-api"],
         "toolchain/src/rust/library/twizzler-runtime-api",
-        &fs_extra::dir::CopyOptions::new().copy_inside(true)).expect("failed to copy twizzler-runtime-api files");
+        &fs_extra::dir::CopyOptions::new().copy_inside(true),
+    )
+    .expect("failed to copy twizzler-runtime-api files");
 
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
@@ -303,6 +305,15 @@ fn get_rustlib_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
         .join("toolchain/install/lib/rustlib")
         .join(host_triple)
         .join("bin");
+    Ok(rustlib_bin)
+}
+
+pub fn get_rustlib_lib(host_triple: &str) -> anyhow::Result<PathBuf> {
+    let curdir = std::env::current_dir().unwrap();
+    let rustlib_bin = curdir
+        .join("toolchain/install/lib/rustlib")
+        .join(host_triple)
+        .join("lib");
     Ok(rustlib_bin)
 }
 
