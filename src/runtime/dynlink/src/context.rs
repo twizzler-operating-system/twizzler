@@ -1,10 +1,10 @@
 use crate::{
     alloc::collections::BTreeMap,
     compartment::{
-        Compartment, CompartmentId, LibraryResolver, ReadyCompartment, UninitializedCompartment,
+        CompartmentId, LibraryResolver, ReadyCompartment, UninitializedCompartment,
         UnloadedCompartment, UnrelocatedCompartment,
     },
-    library::{LibraryId, LibraryLoader},
+    library::{LibraryId, LibraryLoader, SymbolResolver},
     symbol::{RelocatedSymbol, SymbolName},
     AdvanceError, LookupError,
 };
@@ -49,13 +49,13 @@ impl Context {
     ) -> Result<RelocatedSymbol, LookupError> {
         let prim = self.active_compartments.get(&primary);
         if let Some(prim) = prim {
-            if let Ok(sym) = prim.lookup_symbol(name) {
+            if let Ok(sym) = prim.internal().lookup_symbol(name) {
                 return Ok(sym);
             }
         }
 
         for (_id, comp) in &self.active_compartments {
-            if let Ok(sym) = comp.lookup_symbol(name) {
+            if let Ok(sym) = comp.internal().lookup_symbol(name) {
                 return Ok(sym);
             }
         }
@@ -67,10 +67,11 @@ impl Context {
         comp: UnloadedCompartment,
         lib_resolver: &mut LibraryResolver,
         lib_loader: &mut LibraryLoader,
+        sym_resolver: &mut SymbolResolver,
     ) -> Result<CompartmentId, AdvanceError> {
         let id = self.get_fresh_id();
         let loaded = UnrelocatedCompartment::new(comp, self, lib_resolver, lib_loader)?;
-        let reloc = UninitializedCompartment::new(loaded, self)?;
+        let reloc = UninitializedCompartment::new(loaded, self, sym_resolver)?;
         let inited = ReadyCompartment::new(reloc, self)?;
         self.active_compartments.insert(id, inited);
         Ok(id)

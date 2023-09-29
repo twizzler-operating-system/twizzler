@@ -11,8 +11,8 @@ fn find_init_name(name: &str) -> Option<ObjID> {
 }
 
 use dynlink::{
-    compartment::{Compartment, LibraryResolver},
-    library::{LibraryLoader, UnloadedLibrary},
+    compartment::LibraryResolver,
+    library::{LibraryLoader, SymbolResolver, UnloadedLibrary},
 };
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
@@ -64,7 +64,6 @@ fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID
     monitor_compartment.add_library(libstd_lib.clone()).unwrap();
 
     let mut lib_resolver = LibraryResolver::new(Box::new(move |n| {
-        println!("==> res {:?}", n);
         if String::from_utf8_lossy(n.0).starts_with("libstd") {
             Ok(libstd_lib.clone())
         } else {
@@ -72,13 +71,19 @@ fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID
         }
     }));
 
+    let mut sym_resolver = SymbolResolver::new(Box::new(move |_s| todo!()));
     let mut lib_loader = LibraryLoader::new(
         Box::new(move |_data, cmds| create_obj(cmds)),
         Box::new(move |data_id, text_id| map_objs(data_id, text_id)),
     );
 
-    ctx.add_compartment(monitor_compartment, &mut lib_resolver, &mut lib_loader)
-        .unwrap();
+    ctx.add_compartment(
+        monitor_compartment,
+        &mut lib_resolver,
+        &mut lib_loader,
+        &mut sym_resolver,
+    )
+    .unwrap();
 }
 
 fn main() {

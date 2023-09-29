@@ -11,16 +11,14 @@ use crate::{
     AdvanceError, LookupError,
 };
 
-use super::{
-    internal::InternalLibrary, LibraryCollection, LibraryId, UnloadedLibrary, UnrelocatedLibrary,
-};
+use super::{internal::InternalLibrary, LibraryCollection, UnloadedLibrary, UnrelocatedLibrary};
 
 impl UnrelocatedLibrary {
     pub(crate) fn new(
         old: UnloadedLibrary,
         data: Object<u8>,
         text: Object<u8>,
-        deps: Vec<LibraryId>,
+        deps: Vec<String>,
     ) -> Self {
         let mut next_int = old.int.clone();
         next_int.set_maps(data, text);
@@ -30,15 +28,16 @@ impl UnrelocatedLibrary {
 }
 
 impl InternalLibrary {
-    pub(crate) fn laddr<T>(&self, val: u64) -> Option<*const T> {
+    pub(crate) fn laddr<T>(&self, _val: u64) -> Option<*const T> {
         todo!()
     }
 
+    #[allow(unused_variables)]
     pub(crate) fn relocate(
         &self,
         _supplemental: Option<&LibraryCollection<UnrelocatedLibrary>>,
         _comp: &InternalCompartment,
-        resolver: &mut SymbolResolver,
+        _resolver: &mut SymbolResolver,
     ) -> Result<(), AdvanceError> {
         debug!("relocating library {}", self);
         let elf = self.get_elf()?;

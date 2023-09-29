@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    library::{internal::InternalLibrary, Library, LibraryCollection, LibraryId},
+    library::{internal::InternalLibrary, LibraryCollection, LibraryId},
     symbol::{Symbol, SymbolName},
     LookupError,
 };
@@ -18,11 +18,7 @@ pub(crate) struct InternalCompartment {
 }
 
 impl InternalCompartment {
-    pub(super) fn id(&self) -> CompartmentId {
-        self.id
-    }
-
-    pub(super) fn insert_library(&mut self, lib: InternalLibrary) -> bool {
+    pub(crate) fn insert_library(&mut self, lib: InternalLibrary) -> bool {
         if self.name_map.contains_key(lib.name()) {
             return false;
         }
@@ -31,7 +27,10 @@ impl InternalCompartment {
         true
     }
 
-    pub(super) fn insert_all<L: Library>(&mut self, coll: LibraryCollection<L>) -> bool {
+    pub(crate) fn insert_all<L: Into<InternalLibrary>>(
+        &mut self,
+        coll: LibraryCollection<L>,
+    ) -> bool {
         let mut first = true;
         for lib in coll {
             if !self.insert_library(lib.into()) && first {
@@ -42,7 +41,7 @@ impl InternalCompartment {
         true
     }
 
-    pub(super) fn lookup_symbol<Sym: Symbol + From<elf::symbol::Symbol>>(
+    pub(crate) fn lookup_symbol<Sym: Symbol + From<elf::symbol::Symbol>>(
         &self,
         name: &SymbolName,
     ) -> Result<Sym, LookupError> where {

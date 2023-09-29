@@ -3,8 +3,8 @@ use tracing::debug;
 use crate::{
     context::Context,
     library::{
-        Library, LibraryCollection, LibraryId, LibraryLoader, ReadyLibrary, UninitializedLibrary,
-        UnloadedLibrary,
+        LibraryCollection, LibraryId, LibraryLoader, ReadyLibrary, SymbolResolver,
+        UninitializedLibrary, UnloadedLibrary,
     },
     AddLibraryError, AdvanceError,
 };
@@ -15,11 +15,15 @@ use super::{
 };
 
 impl UninitializedCompartment {
-    pub fn new(old: UnrelocatedCompartment, _ctx: &mut Context) -> Result<Self, AdvanceError> {
+    pub fn new(
+        old: UnrelocatedCompartment,
+        _ctx: &mut Context,
+        resolver: &mut SymbolResolver,
+    ) -> Result<Self, AdvanceError> {
         debug!("relocating compartment {}", old.int);
 
         for lib in old.int.libraries.values() {
-            lib.relocate(None, &old.int)?;
+            lib.relocate(None, &old.int, resolver)?;
         }
 
         Ok(Self { int: old.int })
@@ -32,7 +36,7 @@ impl UninitializedCompartment {
         resolver: &mut LibraryResolver,
         loader: &mut LibraryLoader,
     ) -> Result<LibraryId, AddLibraryError> {
-        let id = lib.id();
+        let id = lib.internal().id();
         let coll = self.int.load_library(lib, ctx, resolver, loader)?;
         let coll = self.int.relocate_collection(coll)?;
         if !self.int.insert_all(coll) {

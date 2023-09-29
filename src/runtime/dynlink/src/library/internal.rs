@@ -15,7 +15,7 @@ pub(crate) struct InternalLibrary {
     comp: CompartmentId,
     name: String,
     id: LibraryId,
-    deps_list: Vec<LibraryId>,
+    deps_list: Vec<String>,
     text_map: Option<Object<u8>>,
     data_map: Option<Object<u8>>,
 }
@@ -105,10 +105,6 @@ impl InternalLibrary {
         self.object.id()
     }
 
-    pub(super) fn compartment_id(&self) -> CompartmentId {
-        self.comp
-    }
-
     pub(crate) fn lookup_symbol<Sym: Symbol + From<elf::symbol::Symbol>>(
         &self,
         name: &SymbolName,
@@ -146,7 +142,7 @@ impl InternalLibrary {
         Err(LookupError::NotFound)
     }
 
-    pub(crate) fn set_deps(&mut self, deps_list: Vec<LibraryId>) {
+    pub(crate) fn set_deps(&mut self, deps_list: Vec<String>) {
         self.deps_list = deps_list;
     }
 }

@@ -1,10 +1,7 @@
+use crate::compartment::internal::InternalCompartment;
 use crate::{
     context::Context,
-    library::{
-        Library, LibraryId, LibraryLoader, LibraryName, ReadyLibrary, UninitializedLibrary,
-        UnloadedLibrary, UnrelocatedLibrary,
-    },
-    symbol::SymbolName,
+    library::{LibraryId, LibraryLoader, LibraryName, UnloadedLibrary},
     AddLibraryError, AdvanceError, LookupError,
 };
 
@@ -13,16 +10,6 @@ pub(crate) mod internal;
 mod load;
 mod relocate;
 
-pub trait Compartment {
-    type LibraryType: Library;
-
-    fn lookup_symbol(
-        &self,
-        name: &SymbolName,
-    ) -> Result<<<Self as Compartment>::LibraryType as Library>::SymbolType, LookupError>;
-    fn id(&self) -> CompartmentId;
-}
-
 macro_rules! compartment_state_decl {
     ($name:ident, $lib:ty) => {
         #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -30,19 +17,14 @@ macro_rules! compartment_state_decl {
             int: internal::InternalCompartment,
         }
 
-        impl Compartment for $name {
-            type LibraryType = $lib;
-
-            fn lookup_symbol(
-                &self,
-                name: &SymbolName,
-            ) -> Result<<<Self as Compartment>::LibraryType as Library>::SymbolType, LookupError>
-            {
-                self.int.lookup_symbol(name)
+        #[allow(dead_code)]
+        impl $name {
+            pub(crate) fn internal(&self) -> &InternalCompartment {
+                &self.int
             }
 
-            fn id(&self) -> CompartmentId {
-                self.int.id()
+            pub(crate) fn internal_mut(&mut self) -> &mut InternalCompartment {
+                &mut self.int
             }
         }
     };
@@ -78,7 +60,7 @@ impl ReadyCompartment {
         resolver: &mut LibraryResolver,
         loader: &mut LibraryLoader,
     ) -> Result<LibraryId, AddLibraryError> {
-        let id = lib.id();
+        let id = lib.internal().id();
         let coll = self.int.load_library(lib, ctx, resolver, loader)?;
         let coll = self.int.relocate_collection(coll)?;
         let coll = self.int.initialize_collection(coll)?;

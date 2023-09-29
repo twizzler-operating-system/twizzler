@@ -5,9 +5,7 @@ use tracing::debug;
 use crate::{
     compartment::internal::InternalCompartment,
     context::Context,
-    library::{
-        Library, LibraryCollection, LibraryId, LibraryLoader, UnloadedLibrary, UnrelocatedLibrary,
-    },
+    library::{LibraryCollection, LibraryId, LibraryLoader, UnloadedLibrary, UnrelocatedLibrary},
     AddLibraryError, AdvanceError,
 };
 
@@ -23,9 +21,13 @@ impl UnloadedCompartment {
 
 impl UnloadedCompartment {
     pub fn add_library(&mut self, lib: UnloadedLibrary) -> Result<LibraryId, AddLibraryError> {
-        let id = lib.id();
+        let id = lib.internal().id();
         self.int.insert_library(lib.into());
         Ok(id)
+    }
+
+    pub fn id(&self) -> CompartmentId {
+        self.internal().id
     }
 }
 
@@ -42,18 +44,18 @@ impl InternalCompartment {
 
         let mut queue: VecDeque<_> = deps.into();
         let mut names = HashSet::new();
-        names.insert(loaded_root.name().to_owned());
+        names.insert(loaded_root.internal().name().to_owned());
         let mut deps = vec![];
 
         // Breadth-first. Root is done separately.
         while let Some(lib) = queue.pop_front() {
-            if names.contains(lib.name()) {
-                debug!("tossing duplicate dependency {}", lib.name());
+            if names.contains(lib.internal().name()) {
+                debug!("tossing duplicate dependency {}", lib.internal().name());
                 continue;
             }
 
             let (loaded, loaded_deps) = lib.load(ctx, resolver, loader)?;
-            names.insert(loaded.name().to_owned());
+            names.insert(loaded.internal().name().to_owned());
             deps.push(loaded);
             for dep in loaded_deps {
                 queue.push_back(dep);

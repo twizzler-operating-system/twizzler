@@ -8,7 +8,6 @@ use twizzler_object::{ObjID, Object, ObjectInitError, ObjectInitFlags, Protectio
 use crate::{
     compartment::{CompartmentId, LibraryResolver},
     context::Context,
-    library::Library,
     AdvanceError,
 };
 
@@ -56,20 +55,22 @@ impl UnloadedLibrary {
         resolver: &mut LibraryResolver,
     ) -> Result<Vec<UnloadedLibrary>, AdvanceError> {
         debug!("enumerating needed libraries for {}", self);
+        let id = self.internal().id();
         let elf = self
+            .internal()
             .get_elf()
-            .map_err(|_| AdvanceError::LibraryFailed(self.id()))?;
+            .map_err(|_| AdvanceError::LibraryFailed(id))?;
         let common = elf.find_common_data()?;
 
         Ok(common
             .dynamic
-            .ok_or(AdvanceError::LibraryFailed(self.id()))?
+            .ok_or(AdvanceError::LibraryFailed(id))?
             .iter()
             .filter_map(|d| match d.d_tag {
                 DT_NEEDED => Some({
                     let name = common
                         .dynsyms_strs
-                        .ok_or(AdvanceError::LibraryFailed(self.id()))
+                        .ok_or(AdvanceError::LibraryFailed(id))
                         .map(|strs| {
                             strs.get(d.d_ptr() as usize)
                                 .map_err(|e| AdvanceError::ParseError(e))
@@ -80,7 +81,7 @@ impl UnloadedLibrary {
                         if dep.is_err() {
                             error!("failed to resolve library {} (needed by {})", name, self);
                         }
-                        dep.map_err(|_| AdvanceError::LibraryFailed(self.id()))
+                        dep.map_err(|_| AdvanceError::LibraryFailed(id))
                     })
                     .flatten()
                 }),
@@ -95,15 +96,16 @@ impl UnloadedLibrary {
         resolver: &mut LibraryResolver,
         loader: &mut LibraryLoader,
     ) -> Result<(UnrelocatedLibrary, Vec<UnloadedLibrary>), AdvanceError> {
-        let elf = self.get_elf()?;
+        let elf = self.internal().get_elf()?;
+        let id = self.internal().id();
         // TODO: sanity check
 
         let needed = self.enumerate_needed(resolver)?;
-        let deps_list = needed.iter().map(|dep| dep.id());
+        let deps_list = needed.iter().map(|dep| dep.internal().name().to_string());
 
         let copy_cmds: Vec<_> = elf
             .segments()
-            .ok_or(AdvanceError::LibraryFailed(self.id()))?
+            .ok_or(AdvanceError::LibraryFailed(id))?
             .iter()
             .filter(|p| p.p_type == elf::abi::PT_LOAD)
             .map(|phdr| {
@@ -119,7 +121,7 @@ impl UnloadedLibrary {
                     || offset > MAX_SIZE - NULLPAGE_SIZE * 2
                     || filesz > memsz
                 {
-                    return Err(AdvanceError::LibraryFailed(self.id()));
+                    return Err(AdvanceError::LibraryFailed(id));
                 }
 
                 let src_start = (NULLPAGE_SIZE + offset) & !(align - 1);
@@ -155,18 +157,18 @@ impl UnloadedLibrary {
         );
         let data_id = loader
             .create(true, &data_copy_cmds)
-            .map_err(|_| AdvanceError::LibraryFailed(self.id()))?;
+            .map_err(|_| AdvanceError::LibraryFailed(id))?;
         debug!(
             "creating text object ({} copy commands)",
             data_copy_cmds.len()
         );
         let text_id = loader
             .create(false, &text_copy_cmds)
-            .map_err(|_| AdvanceError::LibraryFailed(self.id()))?;
+            .map_err(|_| AdvanceError::LibraryFailed(id))?;
 
         let (data_object, text_object) = loader
             .map(data_id, text_id)
-            .map_err(|_| AdvanceError::LibraryFailed(self.id()))?;
+            .map_err(|_| AdvanceError::LibraryFailed(id))?;
 
         let unreloc_self =
             UnrelocatedLibrary::new(self, data_object, text_object, deps_list.collect());

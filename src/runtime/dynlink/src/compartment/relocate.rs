@@ -3,8 +3,8 @@ use tracing::debug;
 use crate::{
     context::Context,
     library::{
-        Library, LibraryCollection, LibraryId, LibraryLoader, UninitializedLibrary,
-        UnloadedLibrary, UnrelocatedLibrary,
+        LibraryCollection, LibraryId, LibraryLoader, UninitializedLibrary, UnloadedLibrary,
+        UnrelocatedLibrary,
     },
     AddLibraryError, AdvanceError,
 };
@@ -45,7 +45,7 @@ impl UnrelocatedCompartment {
         resolver: &mut LibraryResolver,
         loader: &mut LibraryLoader,
     ) -> Result<LibraryId, AddLibraryError> {
-        let id = lib.id();
+        let id = lib.internal().id();
         let coll = self.int.load_library(lib, ctx, resolver, loader)?;
         if !self.int.insert_all(coll) {
             return Err(AddLibraryError::AdvanceError(AdvanceError::LibraryFailed(
