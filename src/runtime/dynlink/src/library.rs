@@ -1,5 +1,4 @@
 use elf::{endian::NativeEndian, ElfBytes, ParseError};
-use twizzler_abi::object::ObjID;
 
 use crate::{
     compartment::CompartmentId,
@@ -7,17 +6,18 @@ use crate::{
     LookupError,
 };
 mod initialize;
-mod internal;
+pub(crate) mod internal;
 mod load;
 mod name;
 mod relocate;
 
+pub use load::LibraryLoader;
 pub use name::*;
 
 use self::internal::InternalLibrary;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
-pub struct LibraryId(ObjID);
+pub struct LibraryId(pub(crate) u64);
 
 pub trait Library {
     type SymbolType: Symbol;
@@ -31,6 +31,11 @@ pub trait Library {
     fn compartment_id(&self) -> CompartmentId;
 
     fn state() -> &'static str;
+
+    fn name(&self) -> &str;
+
+    #[allow(private_interfaces)]
+    fn internal(self) -> InternalLibrary;
 }
 
 macro_rules! library_state_decl {
@@ -38,6 +43,12 @@ macro_rules! library_state_decl {
         #[derive(Debug, Clone, PartialEq, PartialOrd)]
         pub struct $name {
             int: InternalLibrary,
+        }
+
+        impl From<InternalLibrary> for $name {
+            fn from(value: InternalLibrary) -> Self {
+                Self { int: value }
+            }
         }
 
         impl Library for $name {
@@ -62,6 +73,15 @@ macro_rules! library_state_decl {
             fn state() -> &'static str {
                 stringify!($name)
             }
+
+            fn name(&self) -> &str {
+                self.int.name()
+            }
+
+            #[allow(private_interfaces)]
+            fn internal(self) -> InternalLibrary {
+                self.int
+            }
         }
     };
 }
@@ -70,3 +90,31 @@ library_state_decl!(UnloadedLibrary, UnrelocatedSymbol);
 library_state_decl!(UnrelocatedLibrary, UnrelocatedSymbol);
 library_state_decl!(UninitializedLibrary, RelocatedSymbol);
 library_state_decl!(ReadyLibrary, RelocatedSymbol);
+
+pub struct LibraryCollection<L: Library> {
+    pub(crate) root: Option<L>,
+    pub(crate) deps: Vec<L>,
+}
+
+impl<L: Library> From<(L, Vec<L>)> for LibraryCollection<L> {
+    fn from(value: (L, Vec<L>)) -> Self {
+        Self {
+            root: Some(value.0),
+            deps: value.1,
+        }
+    }
+}
+
+impl<L: Library> Iterator for LibraryCollection<L> {
+    type Item = L;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.root.take().or_else(|| self.deps.pop())
+    }
+}
+
+impl<L: Library> From<L> for InternalLibrary {
+    fn from(value: L) -> Self {
+        value.internal()
+    }
+}

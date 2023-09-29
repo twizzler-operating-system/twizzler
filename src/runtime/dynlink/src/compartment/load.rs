@@ -1,86 +1,65 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
-use tracing::{debug, error};
+use tracing::debug;
 
 use crate::{
-    compartment::{internal::InternalCompartment, Compartment, UnrelocatedCompartment},
+    compartment::internal::InternalCompartment,
     context::Context,
-    library::{Library, LibraryId, UnloadedLibrary},
+    library::{
+        Library, LibraryCollection, LibraryId, LibraryLoader, UnloadedLibrary, UnrelocatedLibrary,
+    },
     AddLibraryError, AdvanceError,
 };
-
-use elf::abi::DT_NEEDED;
 
 use super::{CompartmentId, LibraryResolver, UnloadedCompartment};
 
 impl UnloadedCompartment {
-    pub fn new(id: CompartmentId) -> Self {
+    pub fn new(name: impl ToString, id: CompartmentId) -> Self {
         Self {
-            int: InternalCompartment::new(id, None),
+            int: InternalCompartment::new(name.to_string(), id, None),
         }
     }
 }
 
 impl UnloadedCompartment {
-    pub fn advance(
-        self,
-        mut library_resolver: LibraryResolver,
-        ctx: &mut Context,
-    ) -> Result<UnrelocatedCompartment, AdvanceError> {
-        debug!("advancing compartment {}", self.int);
-        let mut next = InternalCompartment::new(self.id(), self.int.dep_start());
-
-        let mut queue: VecDeque<_> = self.int.into_values().collect();
-
-        while let Some(lib) = queue.pop_front() {
-            //TODO: check if we have loaded it already
-            debug!("enumerating needed libraries for {}", lib);
-            let id = lib.id();
-            let elf = lib.get_elf().map_err(|_| AdvanceError::LibraryFailed(id))?;
-            let common = elf.find_common_data()?;
-
-            let neededs = common
-                .dynamic
-                .ok_or(AdvanceError::LibraryFailed(id))?
-                .iter()
-                .filter_map(|d| match d.d_tag {
-                    DT_NEEDED => Some({
-                        let name = common
-                            .dynsyms_strs
-                            .ok_or(AdvanceError::LibraryFailed(id))
-                            .map(|strs| {
-                                strs.get(d.d_ptr() as usize)
-                                    .map_err(|e| AdvanceError::ParseError(e))
-                            })
-                            .flatten();
-                        name.map(|name| {
-                            let dep = library_resolver.resolve(name.into());
-                            if dep.is_err() {
-                                error!("failed to resolve library {} (needed by {})", name, lib);
-                            }
-                            dep.map_err(|_| AdvanceError::LibraryFailed(id))
-                        })
-                        .flatten()
-                    }),
-                    _ => None,
-                });
-            for needed in neededs {
-                if let Ok(needed) = needed {
-                    debug!("adding {} (needed by {})", needed, lib);
-                    queue.push_back(needed);
-                } else {
-                }
-            }
-
-            next.insert_library(lib.load(ctx)?);
-        }
-
-        Ok(UnrelocatedCompartment { int: next })
-    }
-
     pub fn add_library(&mut self, lib: UnloadedLibrary) -> Result<LibraryId, AddLibraryError> {
         let id = lib.id();
-        self.int.insert_library(lib);
+        self.int.insert_library(lib.into());
         Ok(id)
+    }
+}
+
+impl InternalCompartment {
+    pub(crate) fn load_library(
+        &mut self,
+        lib: UnloadedLibrary,
+        ctx: &mut Context,
+        resolver: &mut LibraryResolver,
+        loader: &mut LibraryLoader,
+    ) -> Result<LibraryCollection<UnrelocatedLibrary>, AdvanceError> {
+        debug!("loading library {}", lib);
+        let (loaded_root, deps) = lib.load(ctx, resolver, loader)?;
+
+        let mut queue: VecDeque<_> = deps.into();
+        let mut names = HashSet::new();
+        names.insert(loaded_root.name().to_owned());
+        let mut deps = vec![];
+
+        // Breadth-first. Root is done separately.
+        while let Some(lib) = queue.pop_front() {
+            if names.contains(lib.name()) {
+                debug!("tossing duplicate dependency {}", lib.name());
+                continue;
+            }
+
+            let (loaded, loaded_deps) = lib.load(ctx, resolver, loader)?;
+            names.insert(loaded.name().to_owned());
+            deps.push(loaded);
+            for dep in loaded_deps {
+                queue.push_back(dep);
+            }
+        }
+        debug!("generated {} deps", deps.len());
+        Ok((loaded_root, deps).into())
     }
 }

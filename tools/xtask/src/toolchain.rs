@@ -317,6 +317,17 @@ pub fn get_rustlib_lib(host_triple: &str) -> anyhow::Result<PathBuf> {
     Ok(rustlib_bin)
 }
 
+pub fn get_rust_lld(host_triple: &str) -> anyhow::Result<PathBuf> {
+    let curdir = std::env::current_dir().unwrap();
+    let rustlib_bin = curdir
+        .join("toolchain/src/rust/build")
+        .join(host_triple)
+        .join("stage1/lib/rustlib")
+        .join(host_triple)
+        .join("bin/rust-lld");
+    Ok(rustlib_bin)
+}
+
 fn generate_config_toml() -> anyhow::Result<()> {
     /* We need to add two(ish) things to the config.toml for rustc: the paths of tools for each twizzler target (built by LLVM as part
     of rustc), and the host triple (added to the list of triples to support). */
@@ -339,7 +350,7 @@ fn generate_config_toml() -> anyhow::Result<()> {
     for triple in all_possible_platforms() {
         let clang = llvm_bin.join("clang").to_str().unwrap().to_string();
         // Use the C compiler as the linker.
-        let linker = clang.clone();
+        let linker = get_rust_lld(host_triple)?.to_str().unwrap().to_string();
         let clangxx = llvm_bin.join("clang++").to_str().unwrap().to_string();
         let ar = llvm_bin.join("llvm-ar").to_str().unwrap().to_string();
 

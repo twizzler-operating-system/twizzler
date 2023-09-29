@@ -1,8 +1,8 @@
 pub struct UnrelocatedSymbol {
-    sym: elf::symbol::Symbol,
+    _sym: elf::symbol::Symbol,
 }
 pub struct RelocatedSymbol {
-    sym: elf::symbol::Symbol,
+    _sym: elf::symbol::Symbol,
 }
 
 pub struct SymbolId(u32);
@@ -29,12 +29,12 @@ impl Symbol for RelocatedSymbol {}
 
 impl From<elf::symbol::Symbol> for UnrelocatedSymbol {
     fn from(value: elf::symbol::Symbol) -> Self {
-        Self { sym: value }
+        Self { _sym: value }
     }
 }
 
 impl From<elf::symbol::Symbol> for RelocatedSymbol {
     fn from(value: elf::symbol::Symbol) -> Self {
-        Self { sym: value }
+        Self { _sym: value }
     }
 }

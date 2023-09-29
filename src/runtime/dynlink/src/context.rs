@@ -1,8 +1,10 @@
 use crate::{
     alloc::collections::BTreeMap,
     compartment::{
-        Compartment, CompartmentId, LibraryResolver, ReadyCompartment, UnloadedCompartment,
+        Compartment, CompartmentId, LibraryResolver, ReadyCompartment, UninitializedCompartment,
+        UnloadedCompartment, UnrelocatedCompartment,
     },
+    library::{LibraryId, LibraryLoader},
     symbol::{RelocatedSymbol, SymbolName},
     AdvanceError, LookupError,
 };
@@ -12,6 +14,9 @@ pub struct Context {
     active_compartments: BTreeMap<CompartmentId, ReadyCompartment>,
     id_counter: u32,
     id_stack: Vec<u32>,
+
+    lib_id_counter: u64,
+    lib_id_stack: Vec<u64>,
 }
 
 impl Context {
@@ -24,8 +29,17 @@ impl Context {
         })
     }
 
-    pub fn new_compartment(&mut self) -> UnloadedCompartment {
-        UnloadedCompartment::new(self.get_fresh_id())
+    pub(crate) fn get_fresh_lib_id(&mut self) -> LibraryId {
+        LibraryId(if let Some(old) = self.lib_id_stack.pop() {
+            old
+        } else {
+            self.lib_id_counter += 1;
+            self.lib_id_counter
+        })
+    }
+
+    pub fn new_compartment(&mut self, name: impl ToString) -> UnloadedCompartment {
+        UnloadedCompartment::new(name, self.get_fresh_id())
     }
 
     pub fn lookup_symbol(
@@ -51,12 +65,13 @@ impl Context {
     pub fn add_compartment(
         &mut self,
         comp: UnloadedCompartment,
-        lib_resolver: LibraryResolver,
+        lib_resolver: &mut LibraryResolver,
+        lib_loader: &mut LibraryLoader,
     ) -> Result<CompartmentId, AdvanceError> {
         let id = self.get_fresh_id();
-        let loaded = comp.advance(lib_resolver, self)?;
-        let reloc = loaded.advance(self)?;
-        let inited = reloc.advance(self)?;
+        let loaded = UnrelocatedCompartment::new(comp, self, lib_resolver, lib_loader)?;
+        let reloc = UninitializedCompartment::new(loaded, self)?;
+        let inited = ReadyCompartment::new(reloc, self)?;
         self.active_compartments.insert(id, inited);
         Ok(id)
     }

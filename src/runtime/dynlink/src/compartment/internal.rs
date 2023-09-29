@@ -1,31 +1,51 @@
-use std::collections::{btree_map::IntoValues, BTreeMap};
+use std::collections::BTreeMap;
 
 use crate::{
-    library::{Library, LibraryId},
-    symbol::SymbolName,
+    library::{internal::InternalLibrary, Library, LibraryCollection, LibraryId},
+    symbol::{Symbol, SymbolName},
     LookupError,
 };
 
 use super::CompartmentId;
 
 #[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Clone)]
-pub(super) struct InternalCompartment<L> {
-    id: CompartmentId,
-    libraries: BTreeMap<LibraryId, L>,
-    dep_start: Option<LibraryId>,
+pub(crate) struct InternalCompartment {
+    pub id: CompartmentId,
+    pub libraries: BTreeMap<LibraryId, InternalLibrary>,
+    pub name_map: BTreeMap<String, LibraryId>,
+    pub dep_start: Option<LibraryId>,
+    pub name: String,
 }
 
-impl<L: Library> InternalCompartment<L> {
+impl InternalCompartment {
     pub(super) fn id(&self) -> CompartmentId {
         self.id
     }
 
-    pub(super) fn insert_library(&mut self, lib: L) {
+    pub(super) fn insert_library(&mut self, lib: InternalLibrary) -> bool {
+        if self.name_map.contains_key(lib.name()) {
+            return false;
+        }
+        self.name_map.insert(lib.name().to_string(), lib.id());
         self.libraries.insert(lib.id(), lib);
+        true
     }
 
-    pub(super) fn lookup_symbol(&self, name: &SymbolName) -> Result<L::SymbolType, LookupError> where
-    {
+    pub(super) fn insert_all<L: Library>(&mut self, coll: LibraryCollection<L>) -> bool {
+        let mut first = true;
+        for lib in coll {
+            if !self.insert_library(lib.into()) && first {
+                return false;
+            }
+            first = false;
+        }
+        true
+    }
+
+    pub(super) fn lookup_symbol<Sym: Symbol + From<elf::symbol::Symbol>>(
+        &self,
+        name: &SymbolName,
+    ) -> Result<Sym, LookupError> where {
         for lib in self.libraries.values() {
             if let Ok(sym) = lib.lookup_symbol(name) {
                 return Ok(sym);
@@ -33,28 +53,22 @@ impl<L: Library> InternalCompartment<L> {
         }
         Err(LookupError::NotFound)
     }
-
-    pub fn into_values(self) -> IntoValues<LibraryId, L> {
-        self.libraries.into_values()
-    }
-
-    pub(super) fn dep_start(&self) -> Option<LibraryId> {
-        self.dep_start
-    }
 }
 
-impl<T> InternalCompartment<T> {
-    pub fn new(id: CompartmentId, dep_start: Option<LibraryId>) -> Self {
+impl InternalCompartment {
+    pub fn new(name: String, id: CompartmentId, dep_start: Option<LibraryId>) -> Self {
         Self {
             libraries: Default::default(),
             id,
             dep_start,
+            name_map: Default::default(),
+            name,
         }
     }
 }
 
-impl<L: Library> core::fmt::Display for InternalCompartment<L> {
+impl core::fmt::Display for InternalCompartment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Compartment_{}[{}]", self.id.0, L::state())
+        write!(f, "{}", self.name)
     }
 }

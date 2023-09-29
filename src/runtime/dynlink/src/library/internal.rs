@@ -1,5 +1,5 @@
 use elf::{endian::NativeEndian, ElfBytes, ParseError};
-use twizzler_object::Object;
+use twizzler_object::{ObjID, Object};
 
 use crate::{
     compartment::CompartmentId,
@@ -10,12 +10,23 @@ use crate::{
 use super::LibraryId;
 
 #[derive(Clone)]
-pub(super) struct InternalLibrary {
+pub(crate) struct InternalLibrary {
     object: Object<u8>,
     comp: CompartmentId,
-    name: Option<String>,
+    name: String,
     id: LibraryId,
+    deps_list: Vec<LibraryId>,
+    text_map: Option<Object<u8>>,
+    data_map: Option<Object<u8>>,
 }
+
+impl Ord for InternalLibrary {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
+impl Eq for InternalLibrary {}
 
 impl core::fmt::Debug for InternalLibrary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -28,11 +39,7 @@ impl core::fmt::Debug for InternalLibrary {
 
 impl core::fmt::Display for InternalLibrary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(ref name) = self.name {
-            write!(f, "{}", name)
-        } else {
-            write!(f, "{:?}", self.id)
-        }
+        write!(f, "{}", self.name)
     }
 }
 
@@ -56,7 +63,7 @@ impl InternalLibrary {
     pub(super) fn new(
         object: Object<u8>,
         comp: CompartmentId,
-        name: Option<String>,
+        name: String,
         id: LibraryId,
     ) -> Self {
         Self {
@@ -64,7 +71,21 @@ impl InternalLibrary {
             comp,
             name,
             id,
+            deps_list: vec![],
+            text_map: None,
+            data_map: None,
         }
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(super) fn set_maps(&mut self, data: Object<u8>, text: Object<u8>) {
+        assert!(self.text_map.is_none());
+        assert!(self.data_map.is_none());
+        self.text_map = Some(text);
+        self.data_map = Some(data);
     }
 
     pub(super) fn get_elf(&self) -> Result<ElfBytes<'_, NativeEndian>, ParseError> {
@@ -76,15 +97,19 @@ impl InternalLibrary {
         }
     }
 
-    pub(super) fn id(&self) -> LibraryId {
+    pub(crate) fn id(&self) -> LibraryId {
         self.id
+    }
+
+    pub(super) fn object_id(&self) -> ObjID {
+        self.object.id()
     }
 
     pub(super) fn compartment_id(&self) -> CompartmentId {
         self.comp
     }
 
-    pub(super) fn lookup_symbol<Sym: Symbol + From<elf::symbol::Symbol>>(
+    pub(crate) fn lookup_symbol<Sym: Symbol + From<elf::symbol::Symbol>>(
         &self,
         name: &SymbolName,
     ) -> Result<Sym, LookupError> {
@@ -119,5 +144,9 @@ impl InternalLibrary {
             }
         }
         Err(LookupError::NotFound)
+    }
+
+    pub(crate) fn set_deps(&mut self, deps_list: Vec<LibraryId>) {
+        self.deps_list = deps_list;
     }
 }
