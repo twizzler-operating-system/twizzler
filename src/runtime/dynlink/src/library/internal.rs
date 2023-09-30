@@ -3,7 +3,7 @@ use twizzler_object::{ObjID, Object};
 
 use crate::{
     compartment::CompartmentId,
-    symbol::{Symbol, SymbolName},
+    symbol::{RelocatedSymbol, Symbol},
     LookupError,
 };
 
@@ -105,15 +105,12 @@ impl InternalLibrary {
         self.object.id()
     }
 
-    pub(crate) fn lookup_symbol<Sym: Symbol + From<elf::symbol::Symbol>>(
-        &self,
-        name: &SymbolName,
-    ) -> Result<Sym, LookupError> {
+    pub(crate) fn lookup_symbol(&self, name: &str) -> Result<RelocatedSymbol, LookupError> {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
 
         if let Some(h) = &common.gnu_hash {
-            if let Some((_, y)) = h
+            if let Some((_, sym)) = h
                 .find(
                     name.as_ref(),
                     common.dynsyms.as_ref().ok_or(LookupError::NotFound)?,
@@ -122,12 +119,12 @@ impl InternalLibrary {
                 .ok()
                 .flatten()
             {
-                return Ok(y.into());
+                return Ok(RelocatedSymbol::new(sym, self.get_base_addr().unwrap()));
             }
         }
 
         if let Some(h) = &common.sysv_hash {
-            if let Some((_, y)) = h
+            if let Some((_, sym)) = h
                 .find(
                     name.as_ref(),
                     common.dynsyms.as_ref().ok_or(LookupError::NotFound)?,
@@ -136,7 +133,7 @@ impl InternalLibrary {
                 .ok()
                 .flatten()
             {
-                return Ok(y.into());
+                return Ok(RelocatedSymbol::new(sym, self.get_base_addr().unwrap()));
             }
         }
         Err(LookupError::NotFound)
@@ -144,5 +141,11 @@ impl InternalLibrary {
 
     pub(crate) fn set_deps(&mut self, deps_list: Vec<String>) {
         self.deps_list = deps_list;
+    }
+
+    pub(crate) fn get_base_addr(&self) -> Option<usize> {
+        self.text_map
+            .as_ref()
+            .map(|text| text.raw_lea::<u8>(0) as usize)
     }
 }

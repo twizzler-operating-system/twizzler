@@ -1,5 +1,6 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
+use talc::{ErrOnOom, Talc};
 use tracing::debug;
 
 use crate::{
@@ -14,7 +15,15 @@ use super::{CompartmentId, LibraryResolver, UnloadedCompartment};
 impl UnloadedCompartment {
     pub fn new(name: impl ToString, id: CompartmentId) -> Self {
         Self {
-            int: InternalCompartment::new(name.to_string(), id, None),
+            int: InternalCompartment::new(
+                id,
+                BTreeMap::new(),
+                BTreeMap::new(),
+                None,
+                vec![],
+                Talc::new(ErrOnOom),
+                name.to_string(),
+            ),
         }
     }
 }

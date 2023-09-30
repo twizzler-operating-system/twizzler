@@ -1,23 +1,47 @@
 use std::collections::BTreeMap;
 
+use talc::{ErrOnOom, Talc};
+use twizzler_object::Object;
+
 use crate::{
     library::{internal::InternalLibrary, LibraryCollection, LibraryId},
-    symbol::{Symbol, SymbolName},
+    symbol::{RelocatedSymbol, Symbol},
     LookupError,
 };
 
 use super::CompartmentId;
 
-#[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Clone)]
 pub(crate) struct InternalCompartment {
     pub id: CompartmentId,
     pub libraries: BTreeMap<LibraryId, InternalLibrary>,
     pub name_map: BTreeMap<String, LibraryId>,
     pub dep_start: Option<LibraryId>,
+    pub alloc_objects: Vec<Object<u8>>,
+    pub allocator: Talc<ErrOnOom>,
     pub name: String,
 }
 
 impl InternalCompartment {
+    pub(crate) fn new(
+        id: CompartmentId,
+        libraries: BTreeMap<LibraryId, InternalLibrary>,
+        name_map: BTreeMap<String, LibraryId>,
+        dep_start: Option<LibraryId>,
+        alloc_objects: Vec<Object<u8>>,
+        allocator: Talc<ErrOnOom>,
+        name: String,
+    ) -> Self {
+        Self {
+            id,
+            libraries,
+            name_map,
+            dep_start,
+            alloc_objects,
+            allocator,
+            name,
+        }
+    }
+
     pub(crate) fn insert_library(&mut self, lib: InternalLibrary) -> bool {
         if self.name_map.contains_key(lib.name()) {
             return false;
@@ -41,28 +65,13 @@ impl InternalCompartment {
         true
     }
 
-    pub(crate) fn lookup_symbol<Sym: Symbol + From<elf::symbol::Symbol>>(
-        &self,
-        name: &SymbolName,
-    ) -> Result<Sym, LookupError> where {
+    pub(crate) fn lookup_symbol(&self, name: &str) -> Result<RelocatedSymbol, LookupError> where {
         for lib in self.libraries.values() {
             if let Ok(sym) = lib.lookup_symbol(name) {
                 return Ok(sym);
             }
         }
         Err(LookupError::NotFound)
-    }
-}
-
-impl InternalCompartment {
-    pub fn new(name: String, id: CompartmentId, dep_start: Option<LibraryId>) -> Self {
-        Self {
-            libraries: Default::default(),
-            id,
-            dep_start,
-            name_map: Default::default(),
-            name,
-        }
     }
 }
 

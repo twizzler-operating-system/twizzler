@@ -5,11 +5,11 @@ use crate::{
         UnloadedCompartment, UnrelocatedCompartment,
     },
     library::{LibraryId, LibraryLoader, SymbolResolver},
-    symbol::{RelocatedSymbol, SymbolName},
+    symbol::RelocatedSymbol,
     AdvanceError, LookupError,
 };
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Context {
     active_compartments: BTreeMap<CompartmentId, ReadyCompartment>,
     id_counter: u32,
@@ -44,7 +44,7 @@ impl Context {
 
     pub fn lookup_symbol(
         &mut self,
-        name: &SymbolName,
+        name: &str,
         primary: CompartmentId,
     ) -> Result<RelocatedSymbol, LookupError> {
         let prim = self.active_compartments.get(&primary);
@@ -67,11 +67,10 @@ impl Context {
         comp: UnloadedCompartment,
         lib_resolver: &mut LibraryResolver,
         lib_loader: &mut LibraryLoader,
-        sym_resolver: &mut SymbolResolver,
     ) -> Result<CompartmentId, AdvanceError> {
         let id = self.get_fresh_id();
         let loaded = UnrelocatedCompartment::new(comp, self, lib_resolver, lib_loader)?;
-        let reloc = UninitializedCompartment::new(loaded, self, sym_resolver)?;
+        let reloc = UninitializedCompartment::new(loaded, self)?;
         let inited = ReadyCompartment::new(reloc, self)?;
         self.active_compartments.insert(id, inited);
         Ok(id)

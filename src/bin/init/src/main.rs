@@ -71,24 +71,18 @@ fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID
         }
     }));
 
-    let mut sym_resolver = SymbolResolver::new(Box::new(move |_s| todo!()));
     let mut lib_loader = LibraryLoader::new(
         Box::new(move |_data, cmds| create_obj(cmds)),
         Box::new(move |data_id, text_id| map_objs(data_id, text_id)),
     );
 
-    ctx.add_compartment(
-        monitor_compartment,
-        &mut lib_resolver,
-        &mut lib_loader,
-        &mut sym_resolver,
-    )
-    .unwrap();
+    ctx.add_compartment(monitor_compartment, &mut lib_resolver, &mut lib_loader)
+        .unwrap();
 }
 
 fn main() {
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::TRACE)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");

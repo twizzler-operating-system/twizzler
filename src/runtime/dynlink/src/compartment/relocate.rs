@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use tracing::debug;
 
 use crate::{
@@ -24,17 +26,25 @@ impl UnrelocatedCompartment {
         let InternalCompartment {
             id,
             libraries,
-            name_map: _name_map,
             dep_start,
+            alloc_objects,
+            allocator,
             name,
+            ..
         } = old.int;
-        let mut next = InternalCompartment::new(name, id, dep_start);
-
+        let mut next = InternalCompartment::new(
+            id,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            dep_start,
+            alloc_objects,
+            allocator,
+            name,
+        );
         for lib in libraries.into_values() {
             let coll = next.load_library(UnloadedLibrary::from(lib), ctx, resolver, loader)?;
             next.insert_all(coll);
         }
-
         Ok(Self { int: next })
     }
 

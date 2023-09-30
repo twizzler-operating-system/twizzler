@@ -15,15 +15,11 @@ use super::{
 };
 
 impl UninitializedCompartment {
-    pub fn new(
-        old: UnrelocatedCompartment,
-        _ctx: &mut Context,
-        resolver: &mut SymbolResolver,
-    ) -> Result<Self, AdvanceError> {
+    pub fn new(old: UnrelocatedCompartment, _ctx: &mut Context) -> Result<Self, AdvanceError> {
         debug!("relocating compartment {}", old.int);
 
         for lib in old.int.libraries.values() {
-            lib.relocate(None, &old.int, resolver)?;
+            lib.relocate(None, &old.int)?;
         }
 
         Ok(Self { int: old.int })

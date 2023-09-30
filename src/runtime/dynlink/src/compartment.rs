@@ -5,6 +5,7 @@ use crate::{
     AddLibraryError, AdvanceError, LookupError,
 };
 
+mod alloc;
 mod initialize;
 pub(crate) mod internal;
 mod load;
@@ -12,7 +13,6 @@ mod relocate;
 
 macro_rules! compartment_state_decl {
     ($name:ident, $lib:ty) => {
-        #[derive(Debug, Clone, PartialEq, PartialOrd)]
         pub struct $name {
             int: internal::InternalCompartment,
         }
