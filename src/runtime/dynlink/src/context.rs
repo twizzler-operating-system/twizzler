@@ -1,9 +1,12 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Mutex};
 
 use petgraph::stable_graph::StableDiGraph;
 
 use crate::{
-    compartment::CompartmentRef, library::LibraryRef, symbol::RelocatedSymbol, DynlinkError,
+    compartment::CompartmentRef,
+    library::{Library, LibraryLoader, LibraryRef},
+    symbol::RelocatedSymbol,
+    DynlinkError,
 };
 
 #[derive(Default)]
@@ -64,4 +67,22 @@ impl ContextInner {
     }
 }
 
-pub struct Context {}
+#[derive(Default)]
+pub struct Context {
+    inner: Mutex<ContextInner>,
+}
+
+impl Context {
+    pub fn add_compartment(&self, name: impl ToString) -> Result<CompartmentRef, DynlinkError> {
+        todo!()
+    }
+
+    pub fn add_library(
+        &self,
+        compartment: &CompartmentRef,
+        lib: Library,
+        loader: &mut impl LibraryLoader,
+    ) -> Result<LibraryRef, DynlinkError> {
+        compartment.load_library(lib, &mut *self.inner.lock().unwrap(), loader)
+    }
+}

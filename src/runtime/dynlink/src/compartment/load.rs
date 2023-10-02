@@ -12,7 +12,7 @@ use super::Compartment;
 
 impl Compartment {
     pub(crate) fn load_library(
-        &mut self,
+        &self,
         mut lib: Library,
         ctx: &mut ContextInner,
         loader: &mut impl LibraryLoader,
@@ -20,6 +20,9 @@ impl Compartment {
         debug!("loading library {}", lib);
 
         let deps = lib.enumerate_needed(loader)?;
+        if !deps.is_empty() {
+            debug!("{}: loading {} dependencies", self, deps.len());
+        }
 
         let deps = deps
             .into_iter()

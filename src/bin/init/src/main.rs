@@ -10,9 +10,11 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     None
 }
 
+use std::arch::x86_64::_mm256_round_pd;
+
 use dynlink::{
     compartment::LibraryResolver,
-    library::{LibraryLoader, SymbolResolver, UnloadedLibrary},
+    library::{Library, LibraryLoader, SymbolResolver, UnloadedLibrary},
 };
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
@@ -49,35 +51,27 @@ fn map_objs(data_id: ObjID, text_id: ObjID) -> Result<(Object<u8>, Object<u8>), 
 
 fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID, libstd: ObjID) {
     let mut ctx = dynlink::context::Context::default();
-    let mut monitor_compartment = ctx.new_compartment("monitor");
-    let mc_id = monitor_compartment.id();
+    let mut monitor_compartment = ctx.add_compartment("monitor").unwrap();
 
-    monitor_compartment
-        .add_library(UnloadedLibrary::new(&mut ctx, runtime_monitor, mc_id, "monitor").unwrap())
-        .unwrap();
+    let mon_library: Library =
+        Object::<u8>::init_id(runtime_monitor, Protections::READ, ObjectInitFlags::empty())
+            .unwrap()
+            .into();
 
-    monitor_compartment
-        .add_library(UnloadedLibrary::new(&mut ctx, runtime_library, mc_id, "runtime").unwrap())
-        .unwrap();
+    let rt_library: Library =
+        Object::<u8>::init_id(runtime_library, Protections::READ, ObjectInitFlags::empty())
+            .unwrap()
+            .into();
 
-    let libstd_lib = UnloadedLibrary::new(&mut ctx, libstd, mc_id, "libstd").unwrap();
-    monitor_compartment.add_library(libstd_lib.clone()).unwrap();
+    let libstd_library: Library =
+        Object::<u8>::init_id(libstd, Protections::READ, ObjectInitFlags::empty())
+            .unwrap()
+            .into();
 
-    let mut lib_resolver = LibraryResolver::new(Box::new(move |n| {
-        if String::from_utf8_lossy(n.0).starts_with("libstd") {
-            Ok(libstd_lib.clone())
-        } else {
-            Err(dynlink::LookupError::NotFound)
-        }
-    }));
-
-    let mut lib_loader = LibraryLoader::new(
-        Box::new(move |_data, cmds| create_obj(cmds)),
-        Box::new(move |data_id, text_id| map_objs(data_id, text_id)),
-    );
-
-    ctx.add_compartment(monitor_compartment, &mut lib_resolver, &mut lib_loader)
-        .unwrap();
+    let loader = todo!();
+    ctx.add_library(&monitor_compartment, mon_library, loader);
+    ctx.add_library(&monitor_compartment, rt_library, loader);
+    ctx.add_library(&monitor_compartment, libstd_library, loader);
 }
 
 fn main() {
