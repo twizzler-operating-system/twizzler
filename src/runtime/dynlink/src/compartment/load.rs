@@ -1,76 +1,35 @@
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::sync::Arc;
 
-use talc::{ErrOnOom, Talc};
 use tracing::debug;
 
 use crate::{
-    compartment::internal::InternalCompartment,
-    context::Context,
-    library::{LibraryCollection, LibraryId, LibraryLoader, UnloadedLibrary, UnrelocatedLibrary},
-    AddLibraryError, AdvanceError,
+    context::ContextInner,
+    library::{Library, LibraryLoader, LibraryRef},
+    DynlinkError, ECollector,
 };
 
-use super::{CompartmentId, LibraryResolver, UnloadedCompartment};
+use super::Compartment;
 
-impl UnloadedCompartment {
-    pub fn new(name: impl ToString, id: CompartmentId) -> Self {
-        Self {
-            int: InternalCompartment::new(
-                id,
-                BTreeMap::new(),
-                BTreeMap::new(),
-                None,
-                vec![],
-                Talc::new(ErrOnOom),
-                name.to_string(),
-            ),
-        }
-    }
-}
-
-impl UnloadedCompartment {
-    pub fn add_library(&mut self, lib: UnloadedLibrary) -> Result<LibraryId, AddLibraryError> {
-        let id = lib.internal().id();
-        self.int.insert_library(lib.into());
-        Ok(id)
-    }
-
-    pub fn id(&self) -> CompartmentId {
-        self.internal().id
-    }
-}
-
-impl InternalCompartment {
+impl Compartment {
     pub(crate) fn load_library(
         &mut self,
-        lib: UnloadedLibrary,
-        ctx: &mut Context,
-        resolver: &mut LibraryResolver,
-        loader: &mut LibraryLoader,
-    ) -> Result<LibraryCollection<UnrelocatedLibrary>, AdvanceError> {
+        mut lib: Library,
+        ctx: &mut ContextInner,
+        loader: &mut impl LibraryLoader,
+    ) -> Result<LibraryRef, DynlinkError> {
         debug!("loading library {}", lib);
-        let (loaded_root, deps) = lib.load(ctx, resolver, loader)?;
 
-        let mut queue: VecDeque<_> = deps.into();
-        let mut names = HashSet::new();
-        names.insert(loaded_root.internal().name().to_owned());
-        let mut deps = vec![];
+        let deps = lib.enumerate_needed(loader)?;
 
-        // Breadth-first. Root is done separately.
-        while let Some(lib) = queue.pop_front() {
-            if names.contains(lib.internal().name()) {
-                debug!("tossing duplicate dependency {}", lib.internal().name());
-                continue;
-            }
+        let deps = deps
+            .into_iter()
+            .map(|lib| self.load_library(lib, ctx, loader))
+            .ecollect::<Vec<_>>()?;
 
-            let (loaded, loaded_deps) = lib.load(ctx, resolver, loader)?;
-            names.insert(loaded.internal().name().to_owned());
-            deps.push(loaded);
-            for dep in loaded_deps {
-                queue.push_back(dep);
-            }
-        }
-        debug!("generated {} deps", deps.len());
-        Ok((loaded_root, deps).into())
+        lib.load(ctx, loader)?;
+
+        let lib = Arc::new(lib);
+        ctx.insert_lib(lib.clone(), deps);
+        Ok(lib)
     }
 }

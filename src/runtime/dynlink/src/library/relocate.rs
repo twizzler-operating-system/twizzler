@@ -16,25 +16,9 @@ use elf::{
 use tracing::{debug, error, trace, warn};
 use twizzler_object::Object;
 
-use crate::{
-    compartment::internal::InternalCompartment, symbol::RelocatedSymbol, AdvanceError, LookupError,
-};
+use crate::{compartment::Compartment, symbol::RelocatedSymbol, DynlinkError, ECollector};
 
-use super::{internal::InternalLibrary, LibraryCollection, UnloadedLibrary, UnrelocatedLibrary};
-
-impl UnrelocatedLibrary {
-    pub(crate) fn new(
-        old: UnloadedLibrary,
-        data: Object<u8>,
-        text: Object<u8>,
-        deps: Vec<String>,
-    ) -> Self {
-        let mut next_int = old.int.clone();
-        next_int.set_maps(data, text);
-        next_int.set_deps(deps);
-        Self { int: next_int }
-    }
-}
+use super::Library;
 
 #[derive(Debug)]
 enum EitherRel {
@@ -72,7 +56,7 @@ impl EitherRel {
     }
 }
 
-impl InternalLibrary {
+impl Library {
     pub(crate) fn laddr<T>(&self, val: u64) -> Option<*const T> {
         self.get_base_addr()
             .map(|base| (base + val as usize) as *const T)
@@ -81,6 +65,46 @@ impl InternalLibrary {
     pub(crate) fn laddr_mut<T>(&self, val: u64) -> Option<*mut T> {
         self.get_base_addr()
             .map(|base| (base + val as usize) as *mut T)
+    }
+
+    pub(crate) fn get_base_addr(&self) -> Option<usize> {
+        todo!()
+    }
+
+    pub(crate) fn lookup_symbol(&self, name: &str) -> Result<RelocatedSymbol, DynlinkError> {
+        let elf = self.get_elf()?;
+        let common = elf.find_common_data()?;
+
+        if let Some(h) = &common.gnu_hash {
+            if let Some((_, sym)) = h
+                .find(
+                    name.as_ref(),
+                    common.dynsyms.as_ref().ok_or(DynlinkError::Unknown)?,
+                    common.dynsyms_strs.as_ref().ok_or(DynlinkError::Unknown)?,
+                )
+                .ok()
+                .flatten()
+            {
+                return Ok(RelocatedSymbol::new(sym, self.get_base_addr().unwrap()));
+            }
+        }
+
+        if let Some(h) = &common.sysv_hash {
+            if let Some((_, sym)) = h
+                .find(
+                    name.as_ref(),
+                    common.dynsyms.as_ref().ok_or(DynlinkError::Unknown)?,
+                    common.dynsyms_strs.as_ref().ok_or(DynlinkError::Unknown)?,
+                )
+                .ok()
+                .flatten()
+            {
+                return Ok(RelocatedSymbol::new(sym, self.get_base_addr().unwrap()));
+            }
+        }
+        Err(DynlinkError::NotFound {
+            name: name.to_string(),
+        })
     }
 
     pub(crate) fn get_parsing_iter<P: ParseAt>(
@@ -101,8 +125,8 @@ impl InternalLibrary {
         rel: EitherRel,
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
-        comp: &InternalCompartment,
-    ) -> Result<(), AdvanceError> {
+        comp: &Compartment,
+    ) -> Result<(), DynlinkError> {
         let addend = rel.addend();
         let base = self.get_base_addr().unwrap() as u64;
         let target: *mut u64 = self.laddr_mut(rel.offset()).unwrap();
@@ -123,11 +147,13 @@ impl InternalLibrary {
                     Ok(sym.value())
                 } else {
                     error!("{}: needed symbol {} not found", self, name);
-                    Err(AdvanceError::LibraryFailed(self.id()))
+                    Err(DynlinkError::NotFound {
+                        name: name.to_string(),
+                    })
                 }
             } else {
                 error!("{}: invalid relocation, no symbol data", self);
-                Err(AdvanceError::LibraryFailed(self.id()))
+                Err(DynlinkError::Unknown)
             }
         };
 
@@ -143,7 +169,7 @@ impl InternalLibrary {
             }
             _ => {
                 error!("{}: unsupported relocation: {}", self, rel.r_type());
-                Err(AdvanceError::LibraryFailed(self.id()))?
+                Err(DynlinkError::Unknown)?
             }
         }
 
@@ -158,8 +184,8 @@ impl InternalLibrary {
         name: &str,
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
-        comp: &InternalCompartment,
-    ) -> Result<(), AdvanceError> {
+        comp: &Compartment,
+    ) -> Result<(), DynlinkError> {
         debug!(
             "{}: processing {} relocations (num = {})",
             self,
@@ -167,32 +193,25 @@ impl InternalLibrary {
             sz / ent
         );
         if let Some(rels) = self.get_parsing_iter(start, ent, sz) {
-            for rel in rels {
-                self.do_reloc(EitherRel::Rel(rel), strings, syms, comp)?;
-            }
+            rels.map(|rel| self.do_reloc(EitherRel::Rel(rel), strings, syms, comp))
+                .ecollect::<Vec<_>>()?;
             Ok(())
         } else if let Some(relas) = self.get_parsing_iter(start, ent, sz) {
-            for rela in relas {
-                self.do_reloc(EitherRel::Rela(rela), strings, syms, comp)?;
-            }
+            relas
+                .map(|rela| self.do_reloc(EitherRel::Rela(rela), strings, syms, comp))
+                .ecollect::<Vec<_>>()?;
             Ok(())
         } else {
-            Err(AdvanceError::LibraryFailed(self.id()))
+            Err(DynlinkError::Unknown)
         }
     }
 
     #[allow(unused_variables)]
-    pub(crate) fn relocate(
-        &self,
-        _supplemental: Option<&LibraryCollection<UnrelocatedLibrary>>,
-        comp: &InternalCompartment,
-    ) -> Result<(), AdvanceError> {
+    pub(crate) fn relocate(&self, comp: &Compartment) -> Result<(), DynlinkError> {
         debug!("relocating library {}", self);
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
-        let dynamic = common
-            .dynamic
-            .ok_or(AdvanceError::LibraryFailed(self.id()))?;
+        let dynamic = common.dynamic.ok_or(DynlinkError::Unknown)?;
 
         let find_dyn_entry = |tag| {
             dynamic
@@ -200,7 +219,7 @@ impl InternalLibrary {
                 .find(|d| d.d_tag == tag)
                 .map(|d| self.laddr(d.d_ptr()))
                 .flatten()
-                .ok_or(AdvanceError::LibraryFailed(self.id()))
+                .ok_or(DynlinkError::Unknown)
         };
 
         let find_dyn_value = |tag| {
@@ -208,7 +227,7 @@ impl InternalLibrary {
                 .iter()
                 .find(|d| d.d_tag == tag)
                 .map(|d| d.d_val())
-                .ok_or(AdvanceError::LibraryFailed(self.id()))
+                .ok_or(DynlinkError::Unknown)
         };
 
         let find_dyn_rels = |tag, ent, sz| {
@@ -227,7 +246,7 @@ impl InternalLibrary {
         if let Some(flags) = flags {
             if flags as i64 & DF_TEXTREL != 0 {
                 error!("{}: relocations within text not supported", self);
-                return Err(AdvanceError::LibraryFailed(self.id()));
+                return Err(DynlinkError::Unknown);
             }
         }
         debug!("{}: relocation flags: {:?} {:?}", self, flags, flags_1);
@@ -237,12 +256,8 @@ impl InternalLibrary {
         let jmprels = find_dyn_rels(DT_JMPREL, DT_PLTREL, DT_PLTRELSZ);
         let pltgot: Option<*const u8> = find_dyn_entry(DT_PLTGOT).ok();
 
-        let dynsyms = common
-            .dynsyms
-            .ok_or(AdvanceError::LibraryFailed(self.id()))?;
-        let dynsyms_str = common
-            .dynsyms_strs
-            .ok_or(AdvanceError::LibraryFailed(self.id()))?;
+        let dynsyms = common.dynsyms.ok_or(DynlinkError::Unknown)?;
+        let dynsyms_str = common.dynsyms_strs.ok_or(DynlinkError::Unknown)?;
 
         if let Some((rela, ent, sz)) = relas {
             self.process_rels(
@@ -274,7 +289,7 @@ impl InternalLibrary {
                 DT_RELA => 3,
                 _ => {
                     error!("failed to relocate {}: unknown PLTREL type", self);
-                    return Err(AdvanceError::LibraryFailed(self.id()));
+                    return Err(DynlinkError::Unknown);
                 }
             } * size_of::<usize>();
             self.process_rels(
@@ -289,19 +304,5 @@ impl InternalLibrary {
         }
 
         Ok(())
-    }
-}
-
-pub struct SymbolResolver {
-    lookup: Box<dyn FnMut(&str) -> Result<RelocatedSymbol, LookupError>>,
-}
-
-impl SymbolResolver {
-    pub fn new(lookup: Box<dyn FnMut(&str) -> Result<RelocatedSymbol, LookupError>>) -> Self {
-        Self { lookup }
-    }
-
-    pub fn resolve(&mut self, name: &str) -> Result<RelocatedSymbol, LookupError> {
-        (self.lookup)(name)
     }
 }

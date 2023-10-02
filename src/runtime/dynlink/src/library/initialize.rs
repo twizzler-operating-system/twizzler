@@ -1,9 +1,9 @@
-use crate::{context::Context, AdvanceError};
+use crate::{context::ContextInner, DynlinkError};
 
-use super::{ReadyLibrary, UninitializedLibrary};
+use super::Library;
 
-impl UninitializedLibrary {
-    pub fn initialize(self, _ctx: &mut Context) -> Result<ReadyLibrary, AdvanceError> {
+impl Library {
+    pub fn initialize(self, _ctx: &mut ContextInner) -> Result<(), DynlinkError> {
         todo!()
     }
 }

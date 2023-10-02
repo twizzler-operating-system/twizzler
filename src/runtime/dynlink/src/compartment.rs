@@ -1,81 +1,53 @@
-use crate::compartment::internal::InternalCompartment;
-use crate::{
-    context::Context,
-    library::{LibraryId, LibraryLoader, LibraryName, UnloadedLibrary},
-    AddLibraryError, AdvanceError, LookupError,
-};
+use std::{collections::HashMap, sync::Arc};
+
+use talc::{ErrOnOom, Talc};
+use twizzler_object::Object;
+
+use crate::{library::LibraryRef, symbol::RelocatedSymbol, DynlinkError};
 
 mod alloc;
 mod initialize;
-pub(crate) mod internal;
 mod load;
 mod relocate;
 
-macro_rules! compartment_state_decl {
-    ($name:ident, $lib:ty) => {
-        pub struct $name {
-            int: internal::InternalCompartment,
-        }
-
-        #[allow(dead_code)]
-        impl $name {
-            pub(crate) fn internal(&self) -> &InternalCompartment {
-                &self.int
-            }
-
-            pub(crate) fn internal_mut(&mut self) -> &mut InternalCompartment {
-                &mut self.int
-            }
-        }
-    };
+pub struct Compartment {
+    name: String,
+    id: u128,
+    name_map: HashMap<String, LibraryRef>,
+    allocator: Talc<ErrOnOom>,
+    alloc_objects: Vec<Object<u8>>,
 }
 
-compartment_state_decl!(UnloadedCompartment, UnloadedLibrary);
-compartment_state_decl!(UnrelocatedCompartment, UnrelocatedLibrary);
-compartment_state_decl!(UninitializedCompartment, UninitializedLibrary);
-compartment_state_decl!(ReadyCompartment, ReadyLibrary);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CompartmentId(pub(crate) u32);
-
-pub struct LibraryResolver {
-    call: Box<dyn FnMut(LibraryName) -> Result<UnloadedLibrary, LookupError>>,
-}
-
-impl LibraryResolver {
-    pub fn new(f: Box<dyn FnMut(LibraryName) -> Result<UnloadedLibrary, LookupError>>) -> Self {
-        Self { call: f }
-    }
-
-    pub fn resolve(&mut self, name: LibraryName) -> Result<UnloadedLibrary, LookupError> {
-        (self.call)(name)
+impl PartialEq for Compartment {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
     }
 }
 
-impl ReadyCompartment {
-    pub fn add_library(
-        &mut self,
-        lib: UnloadedLibrary,
-        ctx: &mut Context,
-        resolver: &mut LibraryResolver,
-        loader: &mut LibraryLoader,
-    ) -> Result<LibraryId, AddLibraryError> {
-        let id = lib.internal().id();
-        let coll = self.int.load_library(lib, ctx, resolver, loader)?;
-        let coll = self.int.relocate_collection(coll)?;
-        let coll = self.int.initialize_collection(coll)?;
-        if !self.int.insert_all(coll) {
-            return Err(AddLibraryError::AdvanceError(AdvanceError::LibraryFailed(
-                id,
-            )));
-        }
-        Ok(id)
-    }
+impl Eq for Compartment {}
 
-    pub(crate) fn new(
-        _old: UninitializedCompartment,
-        _ctx: &mut Context,
-    ) -> Result<ReadyCompartment, AdvanceError> {
+impl PartialOrd for Compartment {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.id.partial_cmp(&other.id)
+    }
+}
+
+impl Ord for Compartment {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
+impl core::fmt::Display for Compartment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+pub type CompartmentRef = Arc<Compartment>;
+
+impl Compartment {
+    pub fn lookup_symbol(&self, name: &str) -> Result<RelocatedSymbol, DynlinkError> {
         todo!()
     }
 }

@@ -105,40 +105,6 @@ impl InternalLibrary {
         self.object.id()
     }
 
-    pub(crate) fn lookup_symbol(&self, name: &str) -> Result<RelocatedSymbol, LookupError> {
-        let elf = self.get_elf()?;
-        let common = elf.find_common_data()?;
-
-        if let Some(h) = &common.gnu_hash {
-            if let Some((_, sym)) = h
-                .find(
-                    name.as_ref(),
-                    common.dynsyms.as_ref().ok_or(LookupError::NotFound)?,
-                    common.dynsyms_strs.as_ref().ok_or(LookupError::NotFound)?,
-                )
-                .ok()
-                .flatten()
-            {
-                return Ok(RelocatedSymbol::new(sym, self.get_base_addr().unwrap()));
-            }
-        }
-
-        if let Some(h) = &common.sysv_hash {
-            if let Some((_, sym)) = h
-                .find(
-                    name.as_ref(),
-                    common.dynsyms.as_ref().ok_or(LookupError::NotFound)?,
-                    common.dynsyms_strs.as_ref().ok_or(LookupError::NotFound)?,
-                )
-                .ok()
-                .flatten()
-            {
-                return Ok(RelocatedSymbol::new(sym, self.get_base_addr().unwrap()));
-            }
-        }
-        Err(LookupError::NotFound)
-    }
-
     pub(crate) fn set_deps(&mut self, deps_list: Vec<String>) {
         self.deps_list = deps_list;
     }

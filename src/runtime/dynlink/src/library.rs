@@ -1,73 +1,47 @@
+use std::{cell::Cell, fmt::Debug, sync::Arc};
+
+use elf::{endian::NativeEndian, ParseError};
+
 mod initialize;
-pub(crate) mod internal;
 mod load;
 mod name;
 mod relocate;
 
 pub use load::LibraryLoader;
-pub use name::*;
-pub use relocate::SymbolResolver;
+use petgraph::stable_graph::NodeIndex;
+use twizzler_object::Object;
 
-use self::internal::InternalLibrary;
+pub type LibraryRef = Arc<Library>;
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
-pub struct LibraryId(pub(crate) u64);
-
-macro_rules! library_state_decl {
-    ($name:ident, $sym:ty) => {
-        #[derive(Debug, Clone, PartialEq, PartialOrd)]
-        pub struct $name {
-            int: InternalLibrary,
-        }
-
-        #[allow(dead_code)]
-        impl $name {
-            pub(crate) fn internal(&self) -> &InternalLibrary {
-                &self.int
-            }
-
-            pub(crate) fn internal_mut(&mut self) -> &mut InternalLibrary {
-                &mut self.int
-            }
-        }
-
-        impl From<InternalLibrary> for $name {
-            fn from(value: InternalLibrary) -> Self {
-                Self { int: value }
-            }
-        }
-
-        impl From<$name> for InternalLibrary {
-            fn from(value: $name) -> Self {
-                value.int
-            }
-        }
-    };
+pub struct Library {
+    pub(crate) comp_id: u64,
+    pub(crate) name: String,
+    pub(crate) idx: Cell<Option<NodeIndex>>,
 }
 
-library_state_decl!(UnloadedLibrary, UnrelocatedSymbol);
-library_state_decl!(UnrelocatedLibrary, UnrelocatedSymbol);
-library_state_decl!(UninitializedLibrary, RelocatedSymbol);
-library_state_decl!(ReadyLibrary, RelocatedSymbol);
-
-pub struct LibraryCollection<L> {
-    pub(crate) root: Option<L>,
-    pub(crate) deps: Vec<L>,
-}
-
-impl<L> From<(L, Vec<L>)> for LibraryCollection<L> {
-    fn from(value: (L, Vec<L>)) -> Self {
-        Self {
-            root: Some(value.0),
-            deps: value.1,
-        }
+impl Library {
+    pub fn get_elf(&self) -> Result<elf::ElfBytes<'_, NativeEndian>, ParseError> {
+        todo!()
     }
 }
 
-impl<L> Iterator for LibraryCollection<L> {
-    type Item = L;
+impl Debug for Library {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Library")
+            .field("name", &self.name)
+            .field("comp_id", &self.comp_id)
+            .finish()
+    }
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        self.root.take().or_else(|| self.deps.pop())
+impl core::fmt::Display for Library {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", &self.name)
+    }
+}
+
+impl From<Object<u8>> for Library {
+    fn from(value: Object<u8>) -> Self {
+        todo!()
     }
 }

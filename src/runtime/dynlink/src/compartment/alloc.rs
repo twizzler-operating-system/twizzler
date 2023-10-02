@@ -4,13 +4,13 @@ use talc::Span;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_object::Object;
 
-use super::internal::InternalCompartment;
+use super::Compartment;
 
 pub struct ObjectAllocator {
     alloc: Box<dyn FnMut() -> Option<Object<u8>>>,
 }
 
-impl InternalCompartment {
+impl Compartment {
     fn add_alloc_object(&mut self, alloc: &mut ObjectAllocator) {
         if let Some(obj) = (alloc.alloc)() {
             unsafe {

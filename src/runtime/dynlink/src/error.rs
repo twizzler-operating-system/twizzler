@@ -1,48 +1,86 @@
-use crate::library::LibraryId;
-use elf::ParseError;
 use thiserror::Error;
 #[derive(Debug, Error)]
-pub enum LookupError {
-    #[error("not found")]
-    NotFound,
-    #[error("tried to use an unloaded library")]
-    Unloaded,
-    #[error("failed to parse object data: {0:?}")]
-    ParseError(elf::ParseError),
+pub enum DynlinkError {
+    #[error("unknown")]
+    Unknown,
+    #[error("{}", .0.iter().map(|e| e.to_string()).fold(String::new(), |a, b| a + &b + "\n"))]
+    Collection(Vec<DynlinkError>),
+    #[error("not found: {name}")]
+    NotFound { name: String },
+    #[error("parse failed: {err}")]
+    ParseError {
+        #[from]
+        err: elf::ParseError,
+    },
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
 }
 
-#[derive(Debug, Error)]
-pub enum AddLibraryError {
-    #[error("library not found")]
-    NotFound,
-    #[error("failed to load library: {0}")]
-    AdvanceError(AdvanceError),
-}
-
-#[derive(Debug, Error)]
-pub enum AdvanceError {
-    #[error("library error: {0:?}")]
-    LibraryFailed(LibraryId),
-    #[error("parsing failed")]
-    ParseError(ParseError),
-    #[error("library already initialized")]
-    EndState,
-}
-
-impl From<ParseError> for AdvanceError {
-    fn from(value: ParseError) -> Self {
-        AdvanceError::ParseError(value)
+impl From<Vec<anyhow::Error>> for DynlinkError {
+    fn from(value: Vec<anyhow::Error>) -> Self {
+        Self::Collection(value.into_iter().map(|e| e.into()).collect())
     }
 }
 
-impl From<ParseError> for LookupError {
-    fn from(value: ParseError) -> Self {
-        LookupError::ParseError(value)
+impl FromIterator<anyhow::Error> for DynlinkError {
+    fn from_iter<T: IntoIterator<Item = anyhow::Error>>(iter: T) -> Self {
+        Self::Collection(iter.into_iter().map(|e| e.into()).collect())
     }
 }
 
-impl From<AdvanceError> for AddLibraryError {
-    fn from(value: AdvanceError) -> Self {
-        Self::AdvanceError(value)
+impl From<Vec<DynlinkError>> for DynlinkError {
+    fn from(value: Vec<DynlinkError>) -> Self {
+        let mut new = vec![];
+        for v in value {
+            match v {
+                DynlinkError::Collection(mut list) => {
+                    new.append(&mut list);
+                }
+                v => new.push(v.into()),
+            }
+        }
+        Self::Collection(new)
+    }
+}
+
+pub trait ECollector<T> {
+    fn ecollect<I>(self) -> Result<I, DynlinkError>
+    where
+        I: std::iter::FromIterator<T>;
+}
+
+impl<T, U, E> ECollector<T> for U
+where
+    U: Iterator<Item = Result<T, E>>,
+    E: std::convert::Into<DynlinkError>,
+{
+    #[allow(clippy::redundant_closure_call)]
+    fn ecollect<I>(self) -> Result<I, DynlinkError>
+    where
+        I: std::iter::FromIterator<T>,
+    {
+        let (good, bad): (I, Vec<DynlinkError>) = (|(g, b): (Vec<_>, Vec<_>)| {
+            (
+                g.into_iter()
+                    .map(|res| match res {
+                        Ok(x) => x,
+                        Err(_) => panic!(),
+                    })
+                    .collect(),
+                b.into_iter()
+                    .map(|res| match res {
+                        Ok(_) => panic!(),
+                        Err(e) => e,
+                    })
+                    .map(Into::into)
+                    .collect(),
+            )
+        })(self.partition(Result::is_ok));
+
+        if bad.is_empty() {
+            Ok(good)
+        } else {
+            Err(DynlinkError::Collection(bad))
+        }
     }
 }
