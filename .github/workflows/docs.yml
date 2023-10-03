@@ -16,6 +16,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+      with:
+        submodules: recursive
     - name: Keygen
       run: |
         echo "$DEPLOY_KEY_DATA" > deploy_key
