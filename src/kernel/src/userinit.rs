@@ -1,8 +1,9 @@
 use alloc::sync::Arc;
 use twizzler_abi::{
-    aux::{AuxEntry, KernelInitInfo, KernelInitName},
+    aux::{KernelInitInfo, KernelInitName},
     object::Protections,
 };
+use twizzler_runtime_api::AuxEntry;
 use xmas_elf::program::SegmentData;
 
 use crate::{
@@ -101,7 +102,7 @@ pub extern "C" fn user_init() {
         }
 
         let aux_start: u64 = (1 << 30) * 2 + 0x300000;
-        let aux_start = aux_start as *mut twizzler_abi::aux::AuxEntry;
+        let aux_start = aux_start as *mut AuxEntry;
         let mut aux = aux_start;
 
         if let Some(phinfo) = phinfo {
@@ -114,7 +115,7 @@ pub extern "C" fn user_init() {
             )
         }
 
-        aux = append_aux(aux, AuxEntry::ExecId(init_obj.id()));
+        aux = append_aux(aux, AuxEntry::ExecId(init_obj.id().as_u128()));
         append_aux(aux, AuxEntry::Null);
 
         // remove permission mappings from text segment

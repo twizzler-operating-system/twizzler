@@ -63,7 +63,7 @@ impl SleepInfo {
                 }
                 return 0;
             }
-            for (_, t) in se.threads.drain_filter(|_, v| {
+            for (_, t) in se.threads.extract_if(|_, v| {
                 let p = count < max_count && v.reset_sync_sleep();
                 count += 1;
                 p

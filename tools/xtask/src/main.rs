@@ -160,6 +160,11 @@ struct BootstrapOptions {
         help = "Don't remove the target/ directory after rebuilding the toolchain."
     )]
     keep_old_artifacts: bool,
+    #[clap(
+        long,
+        help = "Keep early stages (0 and 1) of building rustc. Speeds up compilation, but can only be used if you (a) have already done a full bootstrap, and (b) since that bootstrap, all that is modified is twizzler-runtime-api or rust's standard library. Any changes to the compiler require one to not use this flag."
+    )]
+    keep_early_stages: bool,
 }
 
 #[derive(Subcommand, Debug)]

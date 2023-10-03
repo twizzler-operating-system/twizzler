@@ -656,6 +656,10 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                     &mut info.phys_provider(&page),
                     &info.mapping_settings(cow, is_kern_obj),
                 );
+                ctx.arch.change(
+                    info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
+                    &info.mapping_settings(cow, is_kern_obj),
+                );
             } else {
                 let page = Page::new();
                 obj_page_tree.add_page(page_number, page);
@@ -665,6 +669,10 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 ctx.arch.map(
                     info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
                     &mut info.phys_provider(&page),
+                    &info.mapping_settings(cow, is_kern_obj),
+                );
+                ctx.arch.change(
+                    info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
                     &info.mapping_settings(cow, is_kern_obj),
                 );
             }

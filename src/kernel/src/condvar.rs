@@ -77,7 +77,7 @@ impl Drop for CondVar {
 
 #[cfg(test)]
 mod tests {
-    use core::{panic, time::Duration};
+    use core::time::Duration;
 
     use alloc::sync::Arc;
     use twizzler_kernel_macros::kernel_test;

@@ -130,7 +130,6 @@ impl<'a> KeyValueStore<'a> {
                 num_bytes,
             );
             buffer.copy_from_slice(&buf[0..num_bytes]);
-            drop(buffer);
             mu.assume_init()
         }
     }

@@ -1,7 +1,10 @@
 //! Very simple and unsafe Mutex for internal locking needs. DO NOT USE, USE THE RUST STANDARD
 //! LIBRARY MUTEX INSTEAD.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use crate::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
@@ -9,20 +12,22 @@ use crate::syscall::{
 };
 
 /// Simple mutex, supporting sleeping and wakeup. Does no attempt at handling priority or fairness.
-pub struct Mutex {
+pub(crate) struct MutexImp {
     lock: AtomicU64,
 }
 
-unsafe impl Send for Mutex {}
+unsafe impl Send for MutexImp {}
 
-impl Mutex {
+impl MutexImp {
     /// Construct a new mutex.
-    pub const fn new() -> Mutex {
-        Mutex {
+    #[allow(dead_code)]
+    pub const fn new() -> MutexImp {
+        MutexImp {
             lock: AtomicU64::new(0),
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_locked(&self) -> bool {
         self.lock.load(Ordering::SeqCst) != 0
     }
@@ -34,6 +39,7 @@ impl Mutex {
     /// mutex correctly, and that any data protected by the mutex is only accessed with the mutex locked.
     ///
     /// Note, this is why you should use the standard library mutex, which enforces all of these things.
+    #[allow(dead_code)]
     pub unsafe fn lock(&self) {
         for _ in 0..100 {
             let result = self
@@ -66,6 +72,7 @@ impl Mutex {
     /// Unlock a mutex locked with [Mutex::lock].
     /// # Safety
     /// Must be the current owner of the locked mutex and must make sure to unlock properly.
+    #[allow(dead_code)]
     pub unsafe fn unlock(&self) {
         if self.lock.swap(0, Ordering::SeqCst) == 1 {
             return;
@@ -94,9 +101,80 @@ impl Mutex {
     /// # Safety
     /// Same safety concerns as [Mutex::lock], but now you have to check to see if the lock happened
     /// or not.
+    #[allow(dead_code)]
     pub unsafe fn try_lock(&self) -> bool {
         self.lock
             .compare_exchange_weak(0, 1, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
+    }
+}
+
+pub(crate) struct Mutex<T> {
+    imp: MutexImp,
+    data: UnsafeCell<T>,
+}
+
+impl<T: Default> Default for Mutex<T> {
+    fn default() -> Self {
+        Self {
+            imp: MutexImp::new(),
+            data: Default::default(),
+        }
+    }
+}
+
+impl<T> Mutex<T> {
+    #[allow(dead_code)]
+    pub const fn new(data: T) -> Self {
+        Self {
+            imp: MutexImp::new(),
+            data: UnsafeCell::new(data),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn lock(&self) -> LockGuard<'_, T> {
+        unsafe {
+            self.imp.lock();
+        }
+        LockGuard { lock: self }
+    }
+
+    #[allow(dead_code)]
+    pub fn try_lock(&self) -> Option<LockGuard<'_, T>> {
+        unsafe {
+            if !self.imp.try_lock() {
+                return None;
+            }
+        }
+        Some(LockGuard { lock: self })
+    }
+}
+
+unsafe impl<T> Send for Mutex<T> where T: Send {}
+unsafe impl<T> Sync for Mutex<T> where T: Send {}
+unsafe impl<T> Send for LockGuard<'_, T> where T: Send {}
+unsafe impl<T> Sync for LockGuard<'_, T> where T: Send + Sync {}
+
+pub(crate) struct LockGuard<'a, T> {
+    lock: &'a Mutex<T>,
+}
+
+impl<T> core::ops::Deref for LockGuard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.lock.data.get() }
+    }
+}
+
+impl<T> core::ops::DerefMut for LockGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.lock.data.get() }
+    }
+}
+
+impl<T> Drop for LockGuard<'_, T> {
+    fn drop(&mut self) {
+        unsafe { self.lock.imp.unlock() };
     }
 }

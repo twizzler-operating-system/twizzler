@@ -69,6 +69,7 @@ impl<Ctx: KernelMemoryContext + 'static> KernelAllocatorInner<Ctx> {
 unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<Ctx> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let mut inner = self.inner.lock();
+
         if inner.is_none() {
             return self.early_alloc(layout);
         }

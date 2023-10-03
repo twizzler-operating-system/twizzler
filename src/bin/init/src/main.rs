@@ -1,5 +1,4 @@
 //#![no_std]
-#![feature(lang_items)]
 #![feature(naked_functions)]
 #![feature(thread_local)]
 #![feature(duration_constants)]
@@ -228,7 +227,7 @@ fn exec(name: &str, id: ObjID, argid: ObjID) {
     let mut args = vec![name.as_bytes()];
     let argstr = format!("{}", argid.as_u128());
     args.push(argstr.as_bytes());
-    let _elf = twizzler_abi::load_elf::spawn_new_executable(id, &args, &env_ref);
+    let _elf = twizzler_abi::runtime::load_elf::spawn_new_executable(id, &args, &env_ref);
     //println!("ELF: {:?}", elf);
 }
 
@@ -238,7 +237,7 @@ fn exec2(name: &str, id: ObjID) -> Option<ObjID> {
         .collect();
     let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
     let args = vec![name.as_bytes()];
-    twizzler_abi::load_elf::spawn_new_executable(id, &args, &env_ref).ok()
+    twizzler_abi::runtime::load_elf::spawn_new_executable(id, &args, &env_ref).ok()
     //println!("ELF: {:?}", elf);
 }
 
@@ -249,12 +248,12 @@ fn exec_n(name: &str, id: ObjID, args: &[&str]) {
     let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
     let mut fullargs = vec![name.as_bytes()];
     fullargs.extend(args.iter().map(|x| x.as_bytes()));
-    let _elf = twizzler_abi::load_elf::spawn_new_executable(id, &fullargs, &env_ref);
+    let _elf = twizzler_abi::runtime::load_elf::spawn_new_executable(id, &fullargs, &env_ref);
     //println!("ELF: {:?}", elf);
 }
 
 fn find_init_name(name: &str) -> Option<ObjID> {
-    let init_info = twizzler_abi::aux::get_kernel_init_info();
+    let init_info = twizzler_abi::runtime::get_kernel_init_info();
     for n in init_info.names() {
         if n.name() == name {
             return Some(n.id());
@@ -356,11 +355,12 @@ fn main() {
 
     if let Some(id) = find_init_name("test_bins") {
         println!("=== found init test list ===");
-        let slot = twizzler_abi::slot::global_allocate().unwrap();
-        twizzler_abi::syscall::sys_object_map(None, id, slot, Protections::READ, MapFlags::empty())
+        let runtime = __twz_get_runtime();
+        let handle = runtime
+            .map_object(id.as_u128(), Protections::READ.into())
             .unwrap();
 
-        let addr = twizzler_abi::slot::to_vaddr_range(slot).0;
+        let addr = unsafe { handle.start.add(NULLPAGE_SIZE) };
         let bytes = unsafe {
             core::slice::from_raw_parts(addr as *const u8, twizzler_abi::object::MAX_SIZE)
         };
@@ -372,16 +372,12 @@ fn main() {
             if let Some(id) = find_init_name(line) {
                 let tid = exec2(line, id);
                 if let Some(tid) = tid {
-                    let slot = twizzler_abi::slot::global_allocate().unwrap();
-                    twizzler_abi::syscall::sys_object_map(
-                        None,
-                        tid,
-                        slot,
-                        Protections::READ,
-                        MapFlags::empty(),
-                    )
-                    .unwrap();
-                    let tr = twizzler_abi::slot::to_vaddr_range(slot).0 as *const ThreadRepr;
+                    let thandle = runtime
+                        .map_object(tid.as_u128(), Protections::READ.into())
+                        .unwrap();
+
+                    let taddr = unsafe { thandle.start.add(NULLPAGE_SIZE) };
+                    let tr = taddr as *const ThreadRepr;
                     unsafe {
                         let val = tr.as_ref().unwrap().wait(None);
                         if let Some(val) = val {
@@ -463,12 +459,25 @@ use std::{
 use twizzler_abi::{
     device::SubObjectType,
     kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue},
-    object::{ObjID, Protections},
+    object::{ObjID, Protections, NULLPAGE_SIZE},
     pager::{CompletionToKernel, RequestFromKernel},
+    runtime::__twz_get_runtime,
+    //thread::{ExecutionState, ThreadRepr},
     syscall::{
-        sys_kaction, sys_new_handle, sys_thread_sync, BackingType, LifetimeType, MapFlags,
-        NewHandleFlags, ObjectCreate, ObjectCreateFlags, ThreadSync, ThreadSyncFlags, ThreadSyncOp,
-        ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+        sys_kaction,
+        sys_new_handle,
+        sys_thread_sync,
+        BackingType,
+        LifetimeType, //MapFlags,
+        NewHandleFlags,
+        ObjectCreate,
+        ObjectCreateFlags,
+        ThreadSync,
+        ThreadSyncFlags,
+        ThreadSyncOp,
+        ThreadSyncReference,
+        ThreadSyncSleep,
+        ThreadSyncWake,
     },
     thread::{ExecutionState, ThreadRepr},
 };

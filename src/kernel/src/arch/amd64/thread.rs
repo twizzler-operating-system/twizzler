@@ -15,12 +15,14 @@ use super::{interrupt::IsrContext, syscall::X86SyscallContext};
 
 const XSAVE_LEN: usize = 1024;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum Registers {
     None,
     Syscall(*mut X86SyscallContext, X86SyscallContext),
     Interrupt(*mut IsrContext, IsrContext),
 }
+
+#[derive(Debug)]
 struct Context {
     registers: Registers,
     xsave: AlignedXsaveRegion,
@@ -36,6 +38,7 @@ impl Context {
     }
 }
 
+#[derive(Debug)]
 #[repr(align(64))]
 struct AlignedXsaveRegion([u8; XSAVE_LEN]);
 pub struct ArchThread {
@@ -45,7 +48,7 @@ pub struct ArchThread {
     xsave_inited: AtomicBool,
     upcall: Option<(usize, UpcallInfo)>,
     backup_context: Spinlock<Vec<Context>>,
-    entry_registers: RefCell<Registers>,
+    pub entry_registers: RefCell<Registers>,
     //user_gs: u64,
 }
 unsafe impl Sync for ArchThread {}
