@@ -16,12 +16,10 @@ members = [
     "src/lib/twizzler-queue",
     "src/lib/twizzler-net",
     "src/lib/twizzler-async",
-    "src/lib/twizzler-nando",
     "src/lib/twizzler-object",
+    "src/lib/twizzler-runtime-api",
 ]
-exclude = [
-    "toolchain/src/rust",
-]
+exclude = ["toolchain/src/rust"]
 resolver = "2"
 
 [workspace.metadata]
@@ -44,3 +42,6 @@ debug = true
 [patch.'https://github.com/dbittman/twizzler-abi']
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 
+[patch.crates-io]
+#ring = { git = "https://github.com/twizzler-operating-system/ring-twizzler.git", branch = "twizzler" }
+getrandom = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler" }

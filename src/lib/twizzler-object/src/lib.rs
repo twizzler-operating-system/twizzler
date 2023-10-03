@@ -28,7 +28,6 @@
 
 #![feature(auto_traits)]
 //#![feature(specialization)]
-#![feature(rustc_attrs)]
 #![feature(negative_impls)]
 
 pub use twizzler_abi::object::ObjID;

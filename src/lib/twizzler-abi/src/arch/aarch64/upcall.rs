@@ -3,8 +3,7 @@ use crate::upcall::UpcallInfo;
 
 /// Arch-specific frame info for upcall.
 #[repr(C)]
-pub struct UpcallFrame {
-}
+pub struct UpcallFrame {}
 
 impl UpcallFrame {
     /// Get the instruction pointer of the frame.
@@ -24,7 +23,7 @@ impl UpcallFrame {
 }
 
 #[no_mangle]
-#[cfg(feature = "rt")]
+#[cfg(feature = "runtime")]
 pub(crate) unsafe extern "C" fn upcall_entry2(
     _frame: *const UpcallFrame,
     _info: *const UpcallInfo,
@@ -32,11 +31,11 @@ pub(crate) unsafe extern "C" fn upcall_entry2(
     todo!()
 }
 
-#[cfg(feature = "rt")]
+#[cfg(feature = "runtime")]
 #[no_mangle]
 pub(crate) unsafe extern "C" fn upcall_entry(
     _frame: *const UpcallFrame,
-    _info: *const UpcallInfo
+    _info: *const UpcallInfo,
 ) -> ! {
     todo!()
 }

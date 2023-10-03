@@ -6,16 +6,12 @@ sysconfdir = "etc"
 
 [llvm]
 download-ci-llvm = false
-skip-rebuild = false
 targets = "AArch64;X86"
 experimental-targets = ""
 ninja = true
 clang = true
 
 [build]
-build-stage = 2
-test-stage = 2
-doc-stage = 2
 docs = false
 target = []
 submodules = false

@@ -23,7 +23,7 @@ use twizzler_driver::{
     request::{Requester, SubmitRequest, SubmitSummaryWithResponses},
     DeviceController,
 };
-use volatile_cell::VolatileCell;
+use volatile::map_field;
 
 use crate::nvme::dma::NvmeDmaSliceRegion;
 
@@ -41,21 +41,23 @@ pub struct NvmeController {
 
 pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
     let bar = ctrl.device_ctrl.device().get_mmio(1).unwrap();
-    let reg =
-        unsafe { bar.get_mmio_offset::<nvme::ds::controller::properties::ControllerProperties>(0) };
+    let mut reg = unsafe {
+        bar.get_mmio_offset_mut::<nvme::ds::controller::properties::ControllerProperties>(0)
+    };
+    let reg = reg.as_mut_ptr();
 
     let int = ctrl.device_ctrl.allocate_interrupt().unwrap();
     let config = ControllerConfig::new();
-    reg.configuration.set(config);
+    map_field!(reg.configuration).write(config);
 
-    while reg.status.get().ready() {
+    while map_field!(reg.status).read().ready() {
         core::hint::spin_loop();
     }
 
     let aqa = nvme::ds::controller::properties::aqa::AdminQueueAttributes::new()
         .with_completion_queue_size(32 - 1)
         .with_submission_queue_size(32 - 1);
-    reg.admin_queue_attr.set(aqa);
+    map_field!(reg.admin_queue_attr).write(aqa);
 
     let saq = ctrl
         .dma_pool
@@ -78,8 +80,8 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
     let cpin_addr = cpin[0].addr();
     let spin_addr = spin[0].addr();
 
-    reg.admin_comqueue_base_addr.set(cpin_addr.into());
-    reg.admin_subqueue_base_addr.set(spin_addr.into());
+    map_field!(reg.admin_comqueue_base_addr).write(cpin_addr.into());
+    map_field!(reg.admin_subqueue_base_addr).write(spin_addr.into());
 
     //let css_nvm = reg.capabilities.get().supports_nvm_command_set();
     //let css_more = reg.capabilities.get().supports_more_io_command_sets();
@@ -102,8 +104,8 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
                 .unwrap(),
         );
 
-    reg.configuration.set(config);
-    while !reg.status.get().ready() {
+    map_field!(reg.configuration).write(config);
+    while !map_field!(reg.status).read().ready() {
         core::hint::spin_loop();
     }
 
@@ -125,18 +127,18 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
     };
     let cq = nvme::queue::CompletionQueue::new(cmem, 32, C_STRIDE).unwrap();
 
-    let saq_bell = unsafe { bar.get_mmio_offset::<VolatileCell<u32>>(0x1000) };
-    let caq_bell = unsafe {
-        bar.get_mmio_offset::<VolatileCell<u32>>(
-            0x1000 + 1 * reg.capabilities.get().doorbell_stride_bytes(),
+    let mut saq_bell = unsafe { bar.get_mmio_offset::<u32>(0x1000) };
+    let mut caq_bell = unsafe {
+        bar.get_mmio_offset::<u32>(
+            0x1000 + 1 * map_field!(reg.capabilities).read().doorbell_stride_bytes(),
         )
     };
 
     let req = NvmeRequester::new(
         Mutex::new(sq),
         Mutex::new(cq),
-        saq_bell as *const VolatileCell<u32>,
-        caq_bell as *const VolatileCell<u32>,
+        saq_bell.as_mut_ptr().as_raw_ptr().as_ptr(),
+        caq_bell.as_mut_ptr().as_raw_ptr().as_ptr(),
         saq,
         caq,
     );
@@ -295,24 +297,21 @@ impl NvmeController {
         let reg = unsafe {
             bar.get_mmio_offset::<nvme::ds::controller::properties::ControllerProperties>(0)
         };
-        let bell_stride: usize = reg.capabilities.get().doorbell_stride_bytes();
+        let reg = reg.into_ptr();
+        let bell_stride: usize = map_field!(reg.capabilities).read().doorbell_stride_bytes();
         let _ = 0;
-        let saq_bell = unsafe {
-            bar.get_mmio_offset::<VolatileCell<u32>>(
-                0x1000 + (u16::from(sqid) as usize) * 2 * bell_stride,
-            )
+        let mut saq_bell = unsafe {
+            bar.get_mmio_offset::<u32>(0x1000 + (u16::from(sqid) as usize) * 2 * bell_stride)
         };
-        let caq_bell = unsafe {
-            bar.get_mmio_offset::<VolatileCell<u32>>(
-                0x1000 + ((u16::from(cqid) as usize) * 2 + 1) * bell_stride,
-            )
+        let mut caq_bell = unsafe {
+            bar.get_mmio_offset::<u32>(0x1000 + ((u16::from(cqid) as usize) * 2 + 1) * bell_stride)
         };
 
         let req = NvmeRequester::new(
             Mutex::new(sq),
             Mutex::new(cq),
-            saq_bell as *const VolatileCell<u32>,
-            caq_bell as *const VolatileCell<u32>,
+            saq_bell.as_mut_ptr().as_raw_ptr().as_ptr(),
+            caq_bell.as_mut_ptr().as_raw_ptr().as_ptr(),
             saq,
             caq,
         );

@@ -159,7 +159,7 @@ fn server_rendezvous(rid: ObjID) -> NmOpenObjects {
         ObjectInitFlags::empty(),
     )
     .unwrap();
-    let mut rendezvous = unsafe { obj.base_mut_unchecked() };
+    let rendezvous = unsafe { obj.base_mut_unchecked() };
 
     if rendezvous.ready.load(Ordering::SeqCst) == 0 {
         write_wake(&rendezvous.ready, NM_READY_NO_DATA);

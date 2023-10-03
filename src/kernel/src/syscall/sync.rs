@@ -35,7 +35,7 @@ fn get_requeue_list() -> &'static Requeue {
 pub fn requeue_all() {
     let requeue = get_requeue_list();
     let mut list = requeue.list.lock();
-    for (_, thread) in list.drain_filter(|_, v| v.reset_sync_sleep_done()) {
+    for (_, thread) in list.extract_if(|_, v| v.reset_sync_sleep_done()) {
         crate::sched::schedule_thread(thread);
     }
 }

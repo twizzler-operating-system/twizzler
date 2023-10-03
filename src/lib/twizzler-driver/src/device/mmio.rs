@@ -1,5 +1,9 @@
-use twizzler_abi::device::{MmioInfo, SubObjectType, MMIO_OFFSET};
+use twizzler_abi::{
+    device::{MmioInfo, SubObjectType, MMIO_OFFSET},
+    object::NULLPAGE_SIZE,
+};
 use twizzler_object::{ObjID, Object, ObjectInitError, ObjectInitFlags, Protections};
+use volatile::access::{ReadOnly, ReadWrite};
 
 use super::Device;
 
@@ -28,11 +32,32 @@ impl MmioObject {
     /// # Safety
     /// The type this returns is not verified in any way, so the caller must ensure that T is
     /// the correct type for the underlying data.
-    pub unsafe fn get_mmio_offset<T>(&self, offset: usize) -> &T {
+    pub unsafe fn get_mmio_offset<T>(
+        &self,
+        offset: usize,
+    ) -> volatile::VolatileRef<'_, T, ReadOnly> {
         let ptr = self.obj.base().unwrap() as *const MmioInfo as *const u8;
-        (ptr.add(MMIO_OFFSET + offset).sub(0x1000) as *mut T)
-            .as_mut()
-            .unwrap()
+        volatile::VolatileRef::from_ref(
+            (ptr.add(MMIO_OFFSET + offset).sub(NULLPAGE_SIZE) as *mut T)
+                .as_mut()
+                .unwrap(),
+        )
+    }
+
+    /// Get the base of the memory mapped IO region.
+    /// # Safety
+    /// The type this returns is not verified in any way, so the caller must ensure that T is
+    /// the correct type for the underlying data.
+    pub unsafe fn get_mmio_offset_mut<T>(
+        &self,
+        offset: usize,
+    ) -> volatile::VolatileRef<'_, T, ReadWrite> {
+        let ptr = self.obj.base().unwrap() as *const MmioInfo as *const u8;
+        volatile::VolatileRef::from_mut_ref(
+            (ptr.add(MMIO_OFFSET + offset).sub(NULLPAGE_SIZE) as *mut T)
+                .as_mut()
+                .unwrap(),
+        )
     }
 }
 

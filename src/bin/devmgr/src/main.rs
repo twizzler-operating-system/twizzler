@@ -1,5 +1,3 @@
-#![feature(int_log)]
-
 use std::env::args;
 
 use pci_ids::FromId;
@@ -12,6 +10,7 @@ use twizzler_driver::{
     device::{BusType, Device},
 };
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
+use volatile::{access::ReadOnly, map_field, VolatilePtr};
 
 //mod nvme_test;
 
@@ -19,23 +18,31 @@ fn get_pcie_offset(bus: u8, device: u8, function: u8) -> usize {
     ((bus as usize * 256) + (device as usize * 8) + function as usize) * 4096
 }
 
-fn print_info(bus: u8, slot: u8, function: u8, cfg: &PcieFunctionHeader) -> Option<()> {
+fn print_info<'a>(
+    bus: u8,
+    slot: u8,
+    function: u8,
+    cfg: VolatilePtr<'a, PcieFunctionHeader, ReadOnly>,
+) -> Option<()> {
     if false {
         println!(
             "{} {} {}:: {:x} {:x} :: {:x} {:x} {:x}",
             bus,
             slot,
             function,
-            cfg.vendor_id.get(),
-            cfg.device_id.get(),
-            cfg.class.get(),
-            cfg.subclass.get(),
-            cfg.progif.get(),
+            map_field!(cfg.vendor_id).read(),
+            map_field!(cfg.device_id).read(),
+            map_field!(cfg.class).read(),
+            map_field!(cfg.subclass).read(),
+            map_field!(cfg.progif).read(),
         );
     }
-    let device = pci_ids::Device::from_vid_pid(cfg.vendor_id.get(), cfg.device_id.get())?;
+    let device = pci_ids::Device::from_vid_pid(
+        map_field!(cfg.vendor_id).read(),
+        map_field!(cfg.device_id).read(),
+    )?;
     let vendor = device.vendor();
-    let class = pci_ids::Class::from_id(cfg.class.get())?;
+    let class = pci_ids::Class::from_id(map_field!(cfg.class).read())?;
     //let subclass = pci_ids::Class::from_id(cfg.subclass.get())?;
     println!(
         "[devmgr] {:02x}:{:02x}.{:02x} {}: {} {}",
@@ -75,11 +82,12 @@ fn start_pcie(seg: Device) {
         for device in 0..32 {
             let off = get_pcie_offset(bus, device, 0);
             let cfg = unsafe { mmio.get_mmio_offset::<PcieFunctionHeader>(off) };
-            if cfg.vendor_id.get() != 0xffff
-                && cfg.device_id.get() != 0xffff
-                && cfg.vendor_id.get() != 0
+            let cfg = cfg.as_ptr();
+            if map_field!(cfg.vendor_id).read() != 0xffff
+                && map_field!(cfg.device_id).read() != 0xffff
+                && map_field!(cfg.vendor_id).read() != 0
             {
-                let mf = if cfg.header_type.get() & 0x80 != 0 {
+                let mf = if map_field!(cfg.header_type).read() & 0x80 != 0 {
                     7
                 } else {
                     0
@@ -87,7 +95,8 @@ fn start_pcie(seg: Device) {
                 for function in 0..=mf {
                     let off = get_pcie_offset(bus, device, function);
                     let cfg = unsafe { mmio.get_mmio_offset::<PcieFunctionHeader>(off) };
-                    if cfg.vendor_id.get() != 0xffff {
+                    let cfg = cfg.as_ptr();
+                    if map_field!(cfg.vendor_id).read() != 0xffff {
                         print_info(bus, device, function, cfg);
                         start_pcie_device(&seg, bus, device, function)
                     }

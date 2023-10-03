@@ -114,7 +114,6 @@ impl SchedulingQueues {
                 if item.id() == thread.id() {
                     let item = cursor.remove().unwrap();
                     drop(cursor);
-                    drop(queue);
                     return self.reinsert_thread(item);
                 }
                 cursor.move_next();

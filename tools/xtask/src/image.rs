@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::Context;
+use cargo::core::compiler::Compilation;
 
 use crate::{build::TwizzlerCompilation, triple::Arch, ImageOptions};
 
@@ -13,20 +14,34 @@ pub struct ImageInfo {
     pub disk_image: PathBuf,
 }
 
-fn get_crate_initrd_files(
-    comp: &TwizzlerCompilation,
-    crate_name: &str,
-) -> anyhow::Result<Vec<PathBuf>> {
+fn do_get_crate_initrd_files(comp: &Compilation, crate_name: &str) -> anyhow::Result<Vec<PathBuf>> {
     let unit = comp
-        .borrow_user_compilation()
-        .as_ref()
-        .expect("user space not compiled")
         .binaries
         .iter()
         .find(|item| item.unit.pkg.name() == crate_name)
         .with_context(|| format!("failed to find initrd crate {}", crate_name))?;
 
     Ok(vec![unit.path.clone()])
+}
+
+fn get_crate_initrd_files(
+    comp: &TwizzlerCompilation,
+    crate_name: &str,
+) -> anyhow::Result<Vec<PathBuf>> {
+    if let Ok(r) = do_get_crate_initrd_files(
+        comp.borrow_user_compilation()
+            .as_ref()
+            .expect("userspace not compiled"),
+        crate_name,
+    ) {
+        return Ok(r);
+    }
+    do_get_crate_initrd_files(
+        comp.borrow_static_compilation()
+            .as_ref()
+            .expect("userspace-static not compiled"),
+        crate_name,
+    )
 }
 
 fn get_third_party_initrd_files(

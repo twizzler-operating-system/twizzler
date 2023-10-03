@@ -10,3 +10,4 @@ description = "Twizzler bindings for interacting with objects."
 twizzler-abi = { path = "../twizzler-abi" }
 bitflags = "1.3.2"
 lazy_static = "1.4.0"
+twizzler-runtime-api = { path = "../twizzler-runtime-api" }

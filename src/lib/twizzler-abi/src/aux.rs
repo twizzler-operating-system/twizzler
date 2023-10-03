@@ -7,23 +7,6 @@
 
 use crate::object::ObjID;
 
-#[repr(C)]
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-/// Auxillary information provided to a new program on runtime entry.
-pub enum AuxEntry {
-    /// Ends the aux array.
-    Null,
-    /// A pointer to this program's program headers, and the number of them. See the ELF
-    /// specification for more info.
-    ProgramHeaders(u64, usize),
-    /// A pointer to the env var array.
-    Environment(u64),
-    /// A pointer to the arguments array.
-    Arguments(usize, u64),
-    /// The object ID of the executable.
-    ExecId(ObjID),
-}
-
 /// Information about initrd object names.
 #[derive(Copy, Clone)]
 #[repr(C)]
@@ -100,10 +83,4 @@ impl KernelInitInfo {
     pub fn names(&self) -> &[KernelInitName] {
         &self.boot_names[0..self.boot_names_len]
     }
-}
-
-/// Get the initial kernel info for init. Only works for init.
-pub fn get_kernel_init_info() -> &'static KernelInitInfo {
-    let (start, _) = crate::slot::to_vaddr_range(crate::slot::RESERVED_KERNEL_INIT);
-    unsafe { (start as *const KernelInitInfo).as_ref().unwrap() }
 }

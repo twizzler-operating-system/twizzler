@@ -1,5 +1,3 @@
-#![feature(int_log)]
-#![feature(once_cell)]
 use std::time::Duration;
 
 use twizzler_abi::pager::{

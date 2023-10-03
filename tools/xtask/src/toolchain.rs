@@ -1,12 +1,13 @@
 use std::{
     fs::File,
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
+    vec,
 };
 
 use anyhow::Context;
-use fs_extra::dir::CopyOptions;
+use guess_host_triple::guess_host_triple;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use toml_edit::Document;
@@ -76,7 +77,7 @@ pub fn needs_reinstall() -> anyhow::Result<bool> {
         .unwrap()
         .modified()
         .expect("failed to get system time from metadata");
-    for entry in walkdir::WalkDir::new("src/lib/twizzler-abi").min_depth(1) {
+    for entry in walkdir::WalkDir::new("src/lib/twizzler-runtime-api").min_depth(1) {
         let entry = entry.expect("error walking directory");
         let stat = entry
             .metadata()
@@ -176,20 +177,37 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 
     let _ = std::fs::remove_file("toolchain/src/rust/config.toml");
     generate_config_toml()?;
-    let res = std::fs::remove_dir_all("toolchain/src/rust/library/twizzler-abi");
-    if let Err(e) = res {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            anyhow::bail!("failed to remove copied twizzler-abi");
-        }
-    }
+
+    let _ = fs_extra::dir::remove("toolchain/src/rust/library/twizzler-runtime-api");
     fs_extra::copy_items(
-        &["src/lib/twizzler-abi"],
-        "toolchain/src/rust/library/",
-        &CopyOptions::new(),
-    )?;
+        &["src/lib/twizzler-runtime-api"],
+        "toolchain/src/rust/library/twizzler-runtime-api",
+        &fs_extra::dir::CopyOptions::new().copy_inside(true)).expect("failed to copy twizzler-runtime-api files");
+
+    let path = std::env::var("PATH").unwrap();
+    let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
+    std::env::set_var("PATH", format!("{}:{}", lld_bin.to_string_lossy(), path));
+
+    let keep_args = if cli.keep_early_stages {
+        vec![
+            "--keep-stage",
+            "0",
+            "--keep-stage-std",
+            "0",
+            "--keep-stage",
+            "1",
+            "--keep-stage-std",
+            "1",
+        ]
+    } else {
+        vec![]
+    };
+
+    std::env::set_var("BOOTSTRAP_SKIP_TARGET_SANITY", "1");
 
     let status = Command::new("./x.py")
         .arg("install")
+        .args(&keep_args)
         .current_dir("toolchain/src/rust")
         .status()?;
     if !status.success() {
@@ -199,6 +217,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     let src_status = Command::new("./x.py")
         .arg("install")
         .arg("src")
+        .args(keep_args)
         .current_dir("toolchain/src/rust")
         .status()?;
     if !src_status.success() {
@@ -224,13 +243,67 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn set_dynamic() {
+    std::env::set_var("RUSTFLAGS", "-C prefer-dynamic");
+}
+
+pub fn set_static() {
+    std::env::set_var("RUSTFLAGS", "-C prefer-dynamic=n");
+}
+
+pub fn clear_rustflags() {
+    std::env::remove_var("RUSTFLAGS");
+}
+
 pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
     if needs_reinstall()? && !abi_changes_ok {
-        anyhow::bail!("detected changes to twizzler-abi not reflected in current toolchain. This is probably because the twizzler-abi crate files were updated, so you need to run `cargo bootstrap --skip-submodules' again.");
+        anyhow::bail!("detected changes to twizzler-runtime-abi not reflected in current toolchain. This is probably because the twizzler-runtime-api crate files were updated, so you need to run `cargo bootstrap --skip-submodules' again.");
     }
     std::env::set_var("RUSTC", &get_rustc_path()?);
     std::env::set_var("RUSTDOC", &get_rustdoc_path()?);
+
+    let path = std::env::var("PATH").unwrap();
+    let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
+    let llvm_bin = get_llvm_bin(guess_host_triple().unwrap())?;
+    let rustlib_bin = get_rustlib_bin(guess_host_triple().unwrap())?;
+    std::env::set_var(
+        "PATH",
+        format!(
+            "{}:{}:{}:{}",
+            rustlib_bin.to_string_lossy(),
+            lld_bin.to_string_lossy(),
+            llvm_bin.to_string_lossy(),
+            path
+        ),
+    );
     Ok(())
+}
+
+fn get_lld_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
+    let curdir = std::env::current_dir().unwrap();
+    let llvm_bin = curdir
+        .join("toolchain/src/rust/build")
+        .join(host_triple)
+        .join("lld/bin");
+    Ok(llvm_bin)
+}
+
+fn get_llvm_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
+    let curdir = std::env::current_dir().unwrap();
+    let llvm_bin = curdir
+        .join("toolchain/src/rust/build")
+        .join(host_triple)
+        .join("llvm/bin");
+    Ok(llvm_bin)
+}
+
+fn get_rustlib_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
+    let curdir = std::env::current_dir().unwrap();
+    let rustlib_bin = curdir
+        .join("toolchain/install/lib/rustlib")
+        .join(host_triple)
+        .join("bin");
+    Ok(rustlib_bin)
 }
 
 fn generate_config_toml() -> anyhow::Result<()> {
@@ -242,13 +315,9 @@ fn generate_config_toml() -> anyhow::Result<()> {
     let commented =
         String::from("# This file was auto-generated by xtask. Do not edit directly.\n") + &buf;
     let mut toml = commented.parse::<Document>()?;
-    let host_triple = guess_host_triple::guess_host_triple().unwrap();
+    let host_triple = guess_host_triple().unwrap();
 
-    let curdir = std::env::current_dir().unwrap();
-    let llvm_bin = curdir
-        .join("toolchain/src/rust/build")
-        .join(host_triple)
-        .join("llvm/bin");
+    let llvm_bin = get_llvm_bin(host_triple)?;
     toml["build"]["target"]
         .as_array_mut()
         .unwrap()

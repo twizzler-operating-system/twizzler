@@ -46,7 +46,7 @@ struct ContextInfo {
 
 impl ContextInfo {
     fn insert(&mut self, ctx: &ContextRef) {
-        let mut entry = self
+        let entry = self
             .contexts
             .entry(ctx.id().value())
             .or_insert_with(|| (Arc::downgrade(ctx), 0));
