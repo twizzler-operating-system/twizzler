@@ -17,8 +17,12 @@ impl Compartment {
         ctx: &mut ContextInner,
         loader: &mut impl LibraryLoader,
     ) -> Result<LibraryRef, DynlinkError> {
-        debug!("loading library {}", lib);
+        if let Some(existing) = ctx.library_names.get(&lib.name) {
+            debug!("using existing library for {}", lib.name);
+            return Ok(existing.clone());
+        }
 
+        debug!("loading library {}", lib);
         let deps = lib.enumerate_needed(loader)?;
         if !deps.is_empty() {
             debug!("{}: loading {} dependencies", self, deps.len());

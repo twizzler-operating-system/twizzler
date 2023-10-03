@@ -47,6 +47,16 @@ impl core::fmt::Display for Compartment {
 pub type CompartmentRef = Arc<Compartment>;
 
 impl Compartment {
+    pub fn new(name: String, id: u128) -> Self {
+        Self {
+            name,
+            id,
+            name_map: Default::default(),
+            allocator: Talc::new(ErrOnOom),
+            alloc_objects: vec![],
+        }
+    }
+
     pub fn lookup_symbol(&self, name: &str) -> Result<RelocatedSymbol, DynlinkError> {
         todo!()
     }

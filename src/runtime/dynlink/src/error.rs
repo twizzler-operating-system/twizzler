@@ -1,4 +1,7 @@
+use std::sync::{LockResult, PoisonError};
+
 use thiserror::Error;
+use twizzler_abi::syscall::ObjectCreateError;
 #[derive(Debug, Error)]
 pub enum DynlinkError {
     #[error("unknown")]
@@ -7,6 +10,8 @@ pub enum DynlinkError {
     Collection(Vec<DynlinkError>),
     #[error("not found: {name}")]
     NotFound { name: String },
+    #[error("name already exists: {name}")]
+    AlreadyExists { name: String },
     #[error("parse failed: {err}")]
     ParseError {
         #[from]
@@ -14,6 +19,12 @@ pub enum DynlinkError {
     },
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+}
+
+impl<T> From<PoisonError<T>> for DynlinkError {
+    fn from(value: PoisonError<T>) -> Self {
+        Self::Other(anyhow::anyhow!(value.to_string()))
+    }
 }
 
 impl From<Vec<anyhow::Error>> for DynlinkError {

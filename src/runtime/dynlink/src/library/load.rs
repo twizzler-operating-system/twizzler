@@ -32,7 +32,7 @@ impl Library {
         &self,
         loader: &mut impl LibraryLoader,
     ) -> Result<Vec<Library>, DynlinkError> {
-        debug!("enumerating needed libraries for {}", self);
+        debug!("{}: enumerating dependencies", self);
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
 
@@ -55,7 +55,7 @@ impl Library {
                         if dep.is_err() {
                             error!("failed to resolve library {} (needed by {})", name, self);
                         }
-                        dep.map(|dep| dep.into())
+                        dep.map(|dep| Library::new(dep, name.to_string()))
                     })
                     .flatten()
                 }),
@@ -99,7 +99,7 @@ impl Library {
                 Ok((
                     targets_data,
                     twizzler_abi::syscall::ObjectSource::new(
-                        todo!(),
+                        self.full_obj.id(),
                         src_start as u64,
                         dest_start as u64,
                         len,
@@ -121,11 +121,20 @@ impl Library {
             .collect();
 
         debug!(
-            "creating data ({} copy commands) and text ({} copy commands)",
+            "{}: creating data ({} copy commands) and text ({} copy commands)",
+            self,
             data_copy_cmds.len(),
             text_copy_cmds.len()
         );
         let (data_obj, text_obj) = loader.create_segments(&data_copy_cmds, &text_copy_cmds)?;
+        unsafe {
+            debug!(
+                "{}: loaded: text = {:p}, data = {:p}",
+                self,
+                text_obj.base_unchecked(),
+                data_obj.base_unchecked()
+            );
+        }
         Ok(())
     }
 }

@@ -10,11 +10,9 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     None
 }
 
-use std::arch::x86_64::_mm256_round_pd;
-
 use dynlink::{
-    compartment::LibraryResolver,
-    library::{Library, LibraryLoader, SymbolResolver, UnloadedLibrary},
+    library::{Library, LibraryLoader},
+    DynlinkError,
 };
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
@@ -53,25 +51,77 @@ fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID
     let mut ctx = dynlink::context::Context::default();
     let mut monitor_compartment = ctx.add_compartment("monitor").unwrap();
 
-    let mon_library: Library =
+    let mon_library = Library::new(
         Object::<u8>::init_id(runtime_monitor, Protections::READ, ObjectInitFlags::empty())
-            .unwrap()
-            .into();
+            .unwrap(),
+        "monitor",
+    );
 
-    let rt_library: Library =
+    let rt_library = Library::new(
         Object::<u8>::init_id(runtime_library, Protections::READ, ObjectInitFlags::empty())
-            .unwrap()
-            .into();
+            .unwrap(),
+        "runtime",
+    );
 
-    let libstd_library: Library =
-        Object::<u8>::init_id(libstd, Protections::READ, ObjectInitFlags::empty())
-            .unwrap()
-            .into();
+    let _libstd_library = Library::new(
+        Object::<u8>::init_id(libstd, Protections::READ, ObjectInitFlags::empty()).unwrap(),
+        "libstd",
+    );
 
-    let loader = todo!();
-    ctx.add_library(&monitor_compartment, mon_library, loader);
-    ctx.add_library(&monitor_compartment, rt_library, loader);
-    ctx.add_library(&monitor_compartment, libstd_library, loader);
+    let mut loader = Loader {};
+    ctx.add_library(&monitor_compartment, mon_library, &mut loader)
+        .unwrap();
+    ctx.add_library(&monitor_compartment, rt_library, &mut loader)
+        .unwrap();
+    //ctx.add_library(&monitor_compartment, libstd_library, &mut loader)
+    //    .unwrap();
+}
+
+struct Loader {}
+
+impl LibraryLoader for Loader {
+    fn create_segments(
+        &mut self,
+        text_cmds: &[ObjectSource],
+        data_cmds: &[ObjectSource],
+    ) -> Result<(Object<u8>, Object<u8>), dynlink::DynlinkError> {
+        let create_spec = ObjectCreate::new(
+            BackingType::Normal,
+            LifetimeType::Volatile,
+            None,
+            ObjectCreateFlags::empty(),
+        );
+        let data_id =
+            sys_object_create(create_spec, &data_cmds, &[]).map_err(|_| DynlinkError::Unknown)?;
+        let text_id =
+            sys_object_create(create_spec, &text_cmds, &[]).map_err(|_| DynlinkError::Unknown)?;
+
+        let data = Object::init_id(
+            data_id,
+            Protections::READ | Protections::WRITE,
+            ObjectInitFlags::empty(),
+        )
+        .map_err(|_| DynlinkError::Unknown)?;
+
+        let text = Object::init_id(
+            text_id,
+            Protections::READ | Protections::EXEC,
+            ObjectInitFlags::empty(),
+        )
+        .map_err(|_| DynlinkError::Unknown)?;
+
+        Ok((data, text))
+    }
+
+    fn open(&mut self, mut name: &str) -> Result<Object<u8>, dynlink::DynlinkError> {
+        if name.starts_with("libstd") {
+            name = "libstd.so"
+        }
+        let id = find_init_name(name).unwrap();
+        let obj = Object::init_id(id, Protections::READ, ObjectInitFlags::empty())
+            .map_err(|_| DynlinkError::Unknown)?;
+        Ok(obj)
+    }
 }
 
 fn main() {

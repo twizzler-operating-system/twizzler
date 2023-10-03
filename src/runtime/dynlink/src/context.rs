@@ -1,9 +1,13 @@
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use petgraph::stable_graph::StableDiGraph;
+use tracing::debug;
 
 use crate::{
-    compartment::CompartmentRef,
+    compartment::{Compartment, CompartmentRef},
     library::{Library, LibraryLoader, LibraryRef},
     symbol::RelocatedSymbol,
     DynlinkError,
@@ -16,7 +20,7 @@ pub(crate) struct ContextInner {
 
     compartment_names: HashMap<String, CompartmentRef>,
 
-    library_names: HashMap<String, LibraryRef>,
+    pub(crate) library_names: HashMap<String, LibraryRef>,
     library_deps: StableDiGraph<LibraryRef, ()>,
 }
 
@@ -74,7 +78,16 @@ pub struct Context {
 
 impl Context {
     pub fn add_compartment(&self, name: impl ToString) -> Result<CompartmentRef, DynlinkError> {
-        todo!()
+        let name = name.to_string();
+        let mut inner = self.inner.lock()?;
+        if inner.compartment_names.contains_key(&name) {
+            return Err(DynlinkError::AlreadyExists { name });
+        }
+        let id = inner.get_fresh_id();
+        let compartment = Arc::new(Compartment::new(name.clone(), id));
+        inner.compartment_names.insert(name, compartment.clone());
+
+        Ok(compartment)
     }
 
     pub fn add_library(
@@ -83,6 +96,8 @@ impl Context {
         lib: Library,
         loader: &mut impl LibraryLoader,
     ) -> Result<LibraryRef, DynlinkError> {
-        compartment.load_library(lib, &mut *self.inner.lock().unwrap(), loader)
+        let mut inner = self.inner.lock()?;
+
+        compartment.load_library(lib, &mut inner, loader)
     }
 }
