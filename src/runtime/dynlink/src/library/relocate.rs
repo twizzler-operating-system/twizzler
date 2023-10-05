@@ -246,10 +246,10 @@ impl Library {
     }
 
     pub(crate) fn relocate(self: &LibraryRef, ctx: &ContextInner) -> Result<(), DynlinkError> {
-        if !self.get_reloc_state().is_unrelocated() {
+        // Atomically change state to relocating, using a CAS, to ensure a single thread gets the rights to relocate a library.
+        if !self.try_set_reloc_state(RelocState::Unrelocated, RelocState::Relocating) {
             return Ok(());
         }
-        self.set_reloc_state(RelocState::Relocating);
         ctx.library_deps
             .neighbors_directed(self.idx.get().unwrap(), petgraph::Direction::Outgoing)
             .enumerate()
@@ -348,6 +348,7 @@ impl Library {
             self.process_rels(rel, ent, sz as usize, "JMPREL", &dynsyms_str, &dynsyms, ctx)?;
         }
 
+        // We are the only ones who could get here, because of the CAS in try_set_state.
         self.set_reloc_state(RelocState::Relocated);
         Ok(())
     }

@@ -27,10 +27,19 @@ use crate::tls::TlsModId;
 pub type LibraryRef = Arc<Library>;
 
 #[derive(Debug)]
+#[repr(u32)]
 pub(crate) enum RelocState {
     Unrelocated,
     Relocating,
     Relocated,
+}
+
+#[derive(Debug)]
+#[repr(u32)]
+pub(crate) enum InitState {
+    Uninit,
+    Constructed,
+    Deconstructed,
 }
 
 impl RelocState {
@@ -48,6 +57,7 @@ pub struct Library {
     pub(crate) idx: Cell<Option<NodeIndex>>,
     pub(crate) full_obj: Object<u8>,
     reloc_state: AtomicU32,
+    init_state: AtomicU32,
 
     pub(crate) text_object: Option<Object<u8>>,
     pub(crate) data_object: Option<Object<u8>>,
@@ -66,6 +76,7 @@ impl Library {
             idx: Cell::new(None),
             full_obj: obj,
             reloc_state: AtomicU32::default(),
+            init_state: AtomicU32::default(),
             text_object: None,
             data_object: None,
             base_addr: None,
@@ -95,6 +106,22 @@ impl Library {
             2 => RelocState::Relocated,
             x => panic!("unexpected relocation state: {}", x),
         }
+    }
+
+    pub(crate) fn try_set_reloc_state(&self, old: RelocState, new: RelocState) -> bool {
+        self.reloc_state
+            .compare_exchange(old as u32, new as u32, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    pub(crate) fn try_set_init_state(&self, old: InitState, new: InitState) -> bool {
+        self.init_state
+            .compare_exchange(old as u32, new as u32, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    pub(crate) fn set_init_state(&self, state: InitState) {
+        self.init_state.store(state as u32, Ordering::SeqCst);
     }
 
     pub fn get_elf(&self) -> Result<elf::ElfBytes<'_, NativeEndian>, ParseError> {

@@ -35,7 +35,7 @@ impl Compartment {
 
         lib.load(ctx, loader)?;
 
-        lib.load_tls(self)?;
+        lib.register_tls(self)?;
 
         let ctors = lib.get_ctor_info()?;
         lib.set_ctors(ctors);

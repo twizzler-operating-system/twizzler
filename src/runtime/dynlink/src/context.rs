@@ -45,7 +45,7 @@ impl ContextInner {
         }
     }
 
-    pub(crate) fn with_ctors<I>(&self, roots: I, mut f: impl FnMut(&LibraryRef))
+    pub(crate) fn with_dfs_postorder<I>(&self, roots: I, mut f: impl FnMut(&LibraryRef))
     where
         I: IntoIterator<Item = LibraryRef>,
     {

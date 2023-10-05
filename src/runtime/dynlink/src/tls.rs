@@ -8,14 +8,25 @@ pub(crate) struct TlsInfo {
 
 pub(crate) struct TlsModule {
     is_static: bool,
-    data: Box<[u8], CompartmentAlloc>,
+    template_addr: usize,
+    template_filesz: usize,
+    template_memsz: usize,
+    template_align: usize,
 }
 
 impl TlsModule {
-    pub(crate) fn new_static(data: Box<[u8], CompartmentAlloc>) -> Self {
+    pub(crate) fn new_static(
+        template_addr: usize,
+        template_filesz: usize,
+        template_memsz: usize,
+        template_align: usize,
+    ) -> Self {
         Self {
             is_static: true,
-            data,
+            template_addr,
+            template_filesz,
+            template_memsz,
+            template_align,
         }
     }
 }
