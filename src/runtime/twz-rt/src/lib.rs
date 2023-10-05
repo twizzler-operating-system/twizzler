@@ -1,14 +1,17 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
+#![feature(linkage)]
+
+use twizzler_runtime_api::Runtime;
+
+#[inline]
+#[no_mangle]
+// Returns a reference to the currently-linked Runtime implementation.
+pub fn __twz_get_runtime() -> &'static (dyn Runtime + Sync) {
+    todo!()
+    //&OUR_RUNTIME
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+//static OUR_RUNTIME: MinimalRuntime = MinimalRuntime {};
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+// Ensure the compiler doesn't optimize us away.
+#[used]
+static USE_MARKER: fn() -> &'static (dyn Runtime + Sync) = __twz_get_runtime;

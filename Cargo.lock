@@ -675,6 +675,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "elf",
+ "humansize",
  "petgraph",
  "talc",
  "thiserror",
@@ -1177,6 +1178,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4a1e36c821dbe04574f602848a19f742f4fb3c98d40449f11bcad18d6b17421"
 
 [[package]]
+name = "humansize"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cb51c9a029ddc91b07a787f1d86b53ccfa49b0e86688c946ebe8d3555685dd7"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "humantime"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1460,6 +1470,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libm"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7012b1bbb0719e1097c47611d3898568c546d597c2e74d66f6087edd5233ff4"
+
+[[package]]
 name = "libnghttp2-sys"
 version = "0.1.7+1.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1644,6 +1660,7 @@ name = "monitor"
 version = "0.1.0"
 dependencies = [
  "secgate",
+ "twizzler-abi",
 ]
 
 [[package]]
@@ -3022,6 +3039,7 @@ version = "0.1.0"
 dependencies = [
  "nando",
  "secgate",
+ "twizzler-runtime-api",
 ]
 
 [[package]]

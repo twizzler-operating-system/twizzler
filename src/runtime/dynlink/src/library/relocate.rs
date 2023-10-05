@@ -1,11 +1,11 @@
-use std::mem::size_of;
+use std::{mem::size_of, sync::Arc};
 
 use elf::{
     abi::{
         DF_TEXTREL, DT_FLAGS, DT_FLAGS_1, DT_JMPREL, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_REL,
         DT_RELA, DT_RELACOUNT, DT_RELAENT, DT_RELASZ, DT_RELCOUNT, DT_RELENT, DT_RELSZ,
         R_X86_64_64, R_X86_64_DTPMOD64, R_X86_64_DTPOFF64, R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT,
-        R_X86_64_RELATIVE,
+        R_X86_64_RELATIVE, R_X86_64_TPOFF64, STB_WEAK,
     },
     endian::NativeEndian,
     parse::{ParseAt, ParsingIterator},
@@ -16,9 +16,12 @@ use elf::{
 use tracing::{debug, error, trace, warn};
 use twizzler_object::Object;
 
-use crate::{compartment::Compartment, symbol::RelocatedSymbol, DynlinkError, ECollector};
+use crate::{
+    compartment::Compartment, context::ContextInner, library::RelocState, symbol::RelocatedSymbol,
+    DynlinkError, ECollector,
+};
 
-use super::Library;
+use super::{Library, LibraryRef};
 
 #[derive(Debug)]
 enum EitherRel {
@@ -58,20 +61,17 @@ impl EitherRel {
 
 impl Library {
     pub(crate) fn laddr<T>(&self, val: u64) -> Option<*const T> {
-        self.get_base_addr()
-            .map(|base| (base + val as usize) as *const T)
+        self.base_addr.map(|base| (base + val as usize) as *const T)
     }
 
     pub(crate) fn laddr_mut<T>(&self, val: u64) -> Option<*mut T> {
-        self.get_base_addr()
-            .map(|base| (base + val as usize) as *mut T)
+        self.base_addr.map(|base| (base + val as usize) as *mut T)
     }
 
-    pub(crate) fn get_base_addr(&self) -> Option<usize> {
-        todo!()
-    }
-
-    pub(crate) fn lookup_symbol(&self, name: &str) -> Result<RelocatedSymbol, DynlinkError> {
+    pub(crate) fn lookup_symbol(
+        self: &Arc<Self>,
+        name: &str,
+    ) -> Result<RelocatedSymbol, DynlinkError> {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
 
@@ -85,8 +85,17 @@ impl Library {
                 .ok()
                 .flatten()
             {
-                return Ok(RelocatedSymbol::new(sym, self.get_base_addr().unwrap()));
+                if !sym.is_undefined() {
+                    if sym.st_bind() != STB_WEAK {
+                        return Ok(RelocatedSymbol::new(sym, self.clone()));
+                    } else {
+                        trace!("lookup symbol {} skipping weak binding in {}", name, self);
+                    }
+                }
             }
+            return Err(DynlinkError::NotFound {
+                name: name.to_string(),
+            });
         }
 
         if let Some(h) = &common.sysv_hash {
@@ -99,7 +108,13 @@ impl Library {
                 .ok()
                 .flatten()
             {
-                return Ok(RelocatedSymbol::new(sym, self.get_base_addr().unwrap()));
+                if !sym.is_undefined() {
+                    if sym.st_bind() != STB_WEAK {
+                        return Ok(RelocatedSymbol::new(sym, self.clone()));
+                    } else {
+                        trace!("lookup symbol {} skipping weak binding in {}", name, self);
+                    }
+                }
             }
         }
         Err(DynlinkError::NotFound {
@@ -121,20 +136,20 @@ impl Library {
     }
 
     fn do_reloc(
-        &self,
+        self: &LibraryRef,
         rel: EitherRel,
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
-        comp: &Compartment,
+        ctx: &ContextInner,
     ) -> Result<(), DynlinkError> {
         let addend = rel.addend();
-        let base = self.get_base_addr().unwrap() as u64;
+        let base = self.base_addr.unwrap() as u64;
         let target: *mut u64 = self.laddr_mut(rel.offset()).unwrap();
         let symbol = if rel.sym() != 0 {
             let sym = syms.get(rel.sym() as usize)?;
             strings
                 .get(sym.st_name as usize)
-                .map(|name| (name, comp.lookup_symbol(name)))
+                .map(|name| (name, ctx.lookup_symbol(self, name)))
                 .ok()
         } else {
             None
@@ -143,8 +158,14 @@ impl Library {
         let open_sym = || {
             if let Some((name, sym)) = symbol {
                 if let Ok(sym) = sym {
-                    trace!("{}: found symbol {} at {:x}", self, name, sym.value());
-                    Ok(sym.value())
+                    trace!(
+                        "{}: found symbol {} at {:x} from {}",
+                        self,
+                        name,
+                        sym.reloc_value(),
+                        sym.lib
+                    );
+                    Ok(sym)
                 } else {
                     error!("{}: needed symbol {} not found", self, name);
                     Err(DynlinkError::NotFound {
@@ -159,13 +180,31 @@ impl Library {
 
         match rel.r_type() {
             R_X86_64_RELATIVE => unsafe { *target = base.wrapping_add_signed(addend) },
-            R_X86_64_64 => unsafe { *target = open_sym()?.wrapping_add_signed(addend) },
-            R_X86_64_JUMP_SLOT | R_X86_64_GLOB_DAT => unsafe { *target = open_sym()? },
+            R_X86_64_64 => unsafe {
+                *target = open_sym()?.reloc_value().wrapping_add_signed(addend)
+            },
+            R_X86_64_JUMP_SLOT | R_X86_64_GLOB_DAT => unsafe {
+                *target = open_sym()?.reloc_value()
+            },
             R_X86_64_DTPMOD64 => {
-                warn!("not yet implemented: DTPMOD")
+                let id = if rel.sym() == 0 {
+                    self.tls_id
+                        .as_ref()
+                        .ok_or(DynlinkError::Unknown)?
+                        .as_tls_id()
+                } else {
+                    open_sym()?
+                        .lib
+                        .tls_id
+                        .as_ref()
+                        .ok_or(DynlinkError::Unknown)?
+                        .as_tls_id()
+                };
+                unsafe { *target = id }
             }
             R_X86_64_DTPOFF64 => {
-                warn!("not yet implemented: DTPOFF")
+                let val = open_sym().map(|sym| sym.raw_value()).unwrap_or(0);
+                unsafe { *target = val.wrapping_add_signed(addend) }
             }
             _ => {
                 error!("{}: unsupported relocation: {}", self, rel.r_type());
@@ -177,14 +216,14 @@ impl Library {
     }
 
     fn process_rels(
-        &self,
+        self: &LibraryRef,
         start: *const u8,
         ent: usize,
         sz: usize,
         name: &str,
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
-        comp: &Compartment,
+        ctx: &ContextInner,
     ) -> Result<(), DynlinkError> {
         debug!(
             "{}: processing {} relocations (num = {})",
@@ -193,12 +232,12 @@ impl Library {
             sz / ent
         );
         if let Some(rels) = self.get_parsing_iter(start, ent, sz) {
-            rels.map(|rel| self.do_reloc(EitherRel::Rel(rel), strings, syms, comp))
+            rels.map(|rel| self.do_reloc(EitherRel::Rel(rel), strings, syms, ctx))
                 .ecollect::<Vec<_>>()?;
             Ok(())
         } else if let Some(relas) = self.get_parsing_iter(start, ent, sz) {
             relas
-                .map(|rela| self.do_reloc(EitherRel::Rela(rela), strings, syms, comp))
+                .map(|rela| self.do_reloc(EitherRel::Rela(rela), strings, syms, ctx))
                 .ecollect::<Vec<_>>()?;
             Ok(())
         } else {
@@ -206,9 +245,23 @@ impl Library {
         }
     }
 
-    #[allow(unused_variables)]
-    pub(crate) fn relocate(&self, comp: &Compartment) -> Result<(), DynlinkError> {
-        debug!("relocating library {}", self);
+    pub(crate) fn relocate(self: &LibraryRef, ctx: &ContextInner) -> Result<(), DynlinkError> {
+        if !self.get_reloc_state().is_unrelocated() {
+            return Ok(());
+        }
+        self.set_reloc_state(RelocState::Relocating);
+        ctx.library_deps
+            .neighbors_directed(self.idx.get().unwrap(), petgraph::Direction::Outgoing)
+            .enumerate()
+            .map(|(idx, depidx)| {
+                if idx == 0 {
+                    debug!("{}: relocating dependencies", self);
+                }
+                let dep = &ctx.library_deps[depidx];
+                dep.relocate(ctx)
+            })
+            .ecollect()?;
+        debug!("{}: relocating library", self);
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
         let dynamic = common.dynamic.ok_or(DynlinkError::Unknown)?;
@@ -267,7 +320,7 @@ impl Library {
                 "RELA",
                 &dynsyms_str,
                 &dynsyms,
-                comp,
+                ctx,
             )?;
         }
 
@@ -279,7 +332,7 @@ impl Library {
                 "REL",
                 &dynsyms_str,
                 &dynsyms,
-                comp,
+                ctx,
             )?;
         }
 
@@ -292,17 +345,10 @@ impl Library {
                     return Err(DynlinkError::Unknown);
                 }
             } * size_of::<usize>();
-            self.process_rels(
-                rel,
-                ent,
-                sz as usize,
-                "JMPREL",
-                &dynsyms_str,
-                &dynsyms,
-                comp,
-            )?;
+            self.process_rels(rel, ent, sz as usize, "JMPREL", &dynsyms_str, &dynsyms, ctx)?;
         }
 
+        self.set_reloc_state(RelocState::Relocated);
         Ok(())
     }
 }

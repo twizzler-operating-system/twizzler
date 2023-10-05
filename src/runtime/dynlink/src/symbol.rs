@@ -1,9 +1,13 @@
+use std::borrow::BorrowMut;
+
+use crate::library::LibraryRef;
+
 pub struct UnrelocatedSymbol {
     _sym: elf::symbol::Symbol,
 }
 pub struct RelocatedSymbol {
     sym: elf::symbol::Symbol,
-    offset: u64,
+    pub(crate) lib: LibraryRef,
 }
 
 pub struct SymbolId(u32);
@@ -11,15 +15,16 @@ pub struct SymbolId(u32);
 pub trait Symbol {}
 
 impl RelocatedSymbol {
-    pub fn new(sym: elf::symbol::Symbol, offset: usize) -> Self {
-        Self {
-            sym,
-            offset: offset as u64,
-        }
+    pub fn new(sym: elf::symbol::Symbol, lib: LibraryRef) -> Self {
+        Self { sym, lib }
     }
 
-    pub fn value(&self) -> u64 {
-        self.sym.st_value + self.offset
+    pub fn reloc_value(&self) -> u64 {
+        self.sym.st_value + self.lib.base_addr.unwrap() as u64
+    }
+
+    pub fn raw_value(&self) -> u64 {
+        self.sym.st_value
     }
 
     pub fn size(&self) -> u64 {

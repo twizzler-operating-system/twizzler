@@ -10,3 +10,4 @@ crate-type = ["dylib"]
 
 [dependencies]
 secgate = { path = "../secgate" }
+twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::ObjectSource,
@@ -20,50 +20,14 @@ fn within_object(slot: usize, addr: usize) -> bool {
 pub trait LibraryLoader {
     fn create_segments(
         &mut self,
-        text: &[ObjectSource],
         data: &[ObjectSource],
+        text: &[ObjectSource],
     ) -> Result<(Object<u8>, Object<u8>), DynlinkError>;
 
     fn open(&mut self, name: &str) -> Result<Object<u8>, DynlinkError>;
 }
 
 impl Library {
-    pub(crate) fn enumerate_needed(
-        &self,
-        loader: &mut impl LibraryLoader,
-    ) -> Result<Vec<Library>, DynlinkError> {
-        debug!("{}: enumerating dependencies", self);
-        let elf = self.get_elf()?;
-        let common = elf.find_common_data()?;
-
-        Ok(common
-            .dynamic
-            .ok_or(DynlinkError::Unknown)?
-            .iter()
-            .filter_map(|d| match d.d_tag {
-                DT_NEEDED => Some({
-                    let name = common
-                        .dynsyms_strs
-                        .ok_or(DynlinkError::Unknown)
-                        .map(|strs| {
-                            strs.get(d.d_ptr() as usize)
-                                .map_err(|_| DynlinkError::Unknown)
-                        })
-                        .flatten();
-                    name.map(|name| {
-                        let dep = loader.open(name.into());
-                        if dep.is_err() {
-                            error!("failed to resolve library {} (needed by {})", name, self);
-                        }
-                        dep.map(|dep| Library::new(dep, name.to_string()))
-                    })
-                    .flatten()
-                }),
-                _ => None,
-            })
-            .ecollect()?)
-    }
-
     pub(crate) fn load(
         &mut self,
         _cxt: &mut ContextInner,
@@ -85,6 +49,14 @@ impl Library {
                 let align = phdr.p_align as usize;
                 let filesz = phdr.p_filesz as usize;
 
+                trace!(
+                    "{}: load directive: vaddr={:x}, memsz={:x}, offset={:x}, filesz={:x}",
+                    self,
+                    vaddr,
+                    memsz,
+                    offset,
+                    filesz
+                );
                 if !within_object(if targets_data { 1 } else { 0 }, vaddr)
                     || memsz > MAX_SIZE - NULLPAGE_SIZE * 2
                     || offset > MAX_SIZE - NULLPAGE_SIZE * 2
@@ -127,14 +99,18 @@ impl Library {
             text_copy_cmds.len()
         );
         let (data_obj, text_obj) = loader.create_segments(&data_copy_cmds, &text_copy_cmds)?;
+        let base_addr = unsafe { text_obj.base_unchecked() as *const _ as usize } - NULLPAGE_SIZE;
         unsafe {
             debug!(
-                "{}: loaded: text = {:p}, data = {:p}",
+                "{}: loaded: text = {:p}, data = {:p}, base = {:x}",
                 self,
                 text_obj.base_unchecked(),
-                data_obj.base_unchecked()
+                data_obj.base_unchecked(),
+                base_addr
             );
         }
+        self.set_mapping(data_obj, text_obj, base_addr);
+
         Ok(())
     }
 }

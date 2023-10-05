@@ -1,10 +1,43 @@
-#![feature(naked_functions)]
+//#![feature(naked_functions)]
+use std::ffi::c_char;
+
 use secgate::{secure_gate, SecurityGate};
 
 #[no_mangle]
-pub fn monitor_main() {
-    println!("Hello, world!");
+pub extern "C" fn monitor_entry_from_bootstrap() {
+    let _ = twizzler_abi::syscall::sys_kernel_console_write(
+        b"hello world from monitor entry\n",
+        twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
+    );
+    loop {}
+    //println!("Hello, world!");
 }
+
+pub fn my_main() {
+    let _ = twizzler_abi::syscall::sys_kernel_console_write(
+        b"hello world from monitor main\n",
+        twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
+    );
+    loop {}
+}
+
+extern "C" {
+    fn twizzler_call_lang_start(
+        main: fn(),
+        argc: isize,
+        argv: *const *const u8,
+        sigpipe: u8,
+    ) -> isize;
+}
+
+#[no_mangle]
+pub extern "C" fn main(argc: i32, argv: *const *const u8) -> i32 {
+    //TODO: sigpipe?
+    unsafe { twizzler_call_lang_start(my_main, argc as isize, argv, 0) as i32 }
+}
+
+#[no_mangle]
+pub extern "C" fn _init() {}
 
 /*
 #[secure_gate]
@@ -41,6 +74,7 @@ pub fn foo(x: i32, y: bool) -> Option<bool> {
 
 */
 
+/*
 #[secure_gate]
 fn foo(x: u32, y: bool) -> Option<bool> {
     if x == 0 {
@@ -49,3 +83,4 @@ fn foo(x: u32, y: bool) -> Option<bool> {
         None
     }
 }
+*/

@@ -69,12 +69,29 @@ fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID
     );
 
     let mut loader = Loader {};
-    ctx.add_library(&monitor_compartment, mon_library, &mut loader)
+    let monitor = ctx
+        .add_library(&monitor_compartment, mon_library, &mut loader)
         .unwrap();
-    ctx.add_library(&monitor_compartment, rt_library, &mut loader)
+    let runtime = ctx
+        .add_library(&monitor_compartment, rt_library, &mut loader)
+        .unwrap();
+    let _roots = ctx
+        .relocate_all([monitor.clone(), runtime], &mut loader)
         .unwrap();
     //ctx.add_library(&monitor_compartment, libstd_library, &mut loader)
     //    .unwrap();
+
+    eprintln!("== Context Ready, Building Arguments ==");
+
+    eprintln!("== Jumping to Monitor ==");
+    let entry = ctx
+        .lookup_symbol(&monitor, "monitor_entry_from_bootstrap")
+        .unwrap();
+
+    let value = entry.reloc_value() as usize;
+    eprintln!("==> Jumping to {:x}", value);
+    let ptr: extern "C" fn() = unsafe { core::mem::transmute(value) };
+    (ptr)();
 }
 
 struct Loader {}
@@ -82,8 +99,8 @@ struct Loader {}
 impl LibraryLoader for Loader {
     fn create_segments(
         &mut self,
-        text_cmds: &[ObjectSource],
         data_cmds: &[ObjectSource],
+        text_cmds: &[ObjectSource],
     ) -> Result<(Object<u8>, Object<u8>), dynlink::DynlinkError> {
         let create_spec = ObjectCreate::new(
             BackingType::Normal,
@@ -96,16 +113,16 @@ impl LibraryLoader for Loader {
         let text_id =
             sys_object_create(create_spec, &text_cmds, &[]).map_err(|_| DynlinkError::Unknown)?;
 
-        let data = Object::init_id(
-            data_id,
-            Protections::READ | Protections::WRITE,
+        let text = Object::init_id(
+            text_id,
+            Protections::READ | Protections::EXEC,
             ObjectInitFlags::empty(),
         )
         .map_err(|_| DynlinkError::Unknown)?;
 
-        let text = Object::init_id(
-            text_id,
-            Protections::READ | Protections::EXEC,
+        let data = Object::init_id(
+            data_id,
+            Protections::READ | Protections::WRITE,
             ObjectInitFlags::empty(),
         )
         .map_err(|_| DynlinkError::Unknown)?;
@@ -126,7 +143,7 @@ impl LibraryLoader for Loader {
 
 fn main() {
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::TRACE)
+        .with_max_level(Level::DEBUG)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");

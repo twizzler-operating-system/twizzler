@@ -1,7 +1,6 @@
-use std::sync::{LockResult, PoisonError};
+use std::sync::PoisonError;
 
 use thiserror::Error;
-use twizzler_abi::syscall::ObjectCreateError;
 #[derive(Debug, Error)]
 pub enum DynlinkError {
     #[error("unknown")]

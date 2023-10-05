@@ -8,11 +8,11 @@ use crate::{
     DynlinkError, ECollector,
 };
 
-use super::Compartment;
+use super::{Compartment, CompartmentRef};
 
 impl Compartment {
     pub(crate) fn load_library(
-        &self,
+        self: &CompartmentRef,
         mut lib: Library,
         ctx: &mut ContextInner,
         loader: &mut impl LibraryLoader,
@@ -35,8 +35,14 @@ impl Compartment {
 
         lib.load(ctx, loader)?;
 
+        lib.load_tls(self)?;
+
+        let ctors = lib.get_ctor_info()?;
+        lib.set_ctors(ctors);
+
         let lib = Arc::new(lib);
         ctx.insert_lib(lib.clone(), deps);
+
         Ok(lib)
     }
 }

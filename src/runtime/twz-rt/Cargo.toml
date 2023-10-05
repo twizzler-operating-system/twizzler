@@ -10,3 +10,6 @@ crate-type = ["dylib"]
 [dependencies]
 secgate = { path = "../secgate" }
 nando = { path = "../nando" }
+twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api", features = [
+    "runtime",
+] }

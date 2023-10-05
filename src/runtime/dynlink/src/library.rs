@@ -1,24 +1,61 @@
-use std::{cell::Cell, fmt::Debug, sync::Arc};
+use std::{
+    cell::Cell,
+    fmt::Debug,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
+};
 
-use elf::{endian::NativeEndian, ParseError};
+use elf::{endian::NativeEndian, relocation::Rel, ParseError};
 
-mod initialize;
+mod deps;
+mod init;
 mod load;
-mod name;
 mod relocate;
+mod tls;
 
+pub(crate) use init::CtorInfo;
 pub use load::LibraryLoader;
+
 use petgraph::stable_graph::NodeIndex;
 use twizzler_abi::object::MAX_SIZE;
 use twizzler_object::Object;
 
+use crate::tls::TlsModId;
+
 pub type LibraryRef = Arc<Library>;
+
+#[derive(Debug)]
+pub(crate) enum RelocState {
+    Unrelocated,
+    Relocating,
+    Relocated,
+}
+
+impl RelocState {
+    pub(crate) fn is_unrelocated(&self) -> bool {
+        match self {
+            RelocState::Unrelocated => true,
+            _ => false,
+        }
+    }
+}
 
 pub struct Library {
     pub(crate) comp_id: u128,
     pub(crate) name: String,
     pub(crate) idx: Cell<Option<NodeIndex>>,
     pub(crate) full_obj: Object<u8>,
+    reloc_state: AtomicU32,
+
+    pub(crate) text_object: Option<Object<u8>>,
+    pub(crate) data_object: Option<Object<u8>>,
+    pub(crate) base_addr: Option<usize>,
+
+    pub(crate) tls_id: Option<TlsModId>,
+
+    pub(crate) ctors: Option<CtorInfo>,
 }
 
 impl Library {
@@ -28,6 +65,35 @@ impl Library {
             name: name.to_string(),
             idx: Cell::new(None),
             full_obj: obj,
+            reloc_state: AtomicU32::default(),
+            text_object: None,
+            data_object: None,
+            base_addr: None,
+            tls_id: None,
+            ctors: None,
+        }
+    }
+
+    pub(crate) fn set_ctors(&mut self, ctors: CtorInfo) {
+        self.ctors = Some(ctors);
+    }
+
+    pub(crate) fn set_mapping(&mut self, data: Object<u8>, text: Object<u8>, base_addr: usize) {
+        self.text_object = Some(text);
+        self.data_object = Some(data);
+        self.base_addr = Some(base_addr);
+    }
+
+    pub(crate) fn set_reloc_state(&self, state: RelocState) {
+        self.reloc_state.store(state as u32, Ordering::SeqCst);
+    }
+
+    pub(crate) fn get_reloc_state(&self) -> RelocState {
+        match self.reloc_state.load(Ordering::SeqCst) {
+            0 => RelocState::Unrelocated,
+            1 => RelocState::Relocating,
+            2 => RelocState::Relocated,
+            x => panic!("unexpected relocation state: {}", x),
         }
     }
 

@@ -14,3 +14,4 @@ thiserror = "1.0"
 talc = { version = "3.0", default-features = false }
 anyhow = "1.0"
 petgraph = "0.6"
+humansize = "2.1"
