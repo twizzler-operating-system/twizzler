@@ -81,6 +81,8 @@ fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID
     //ctx.add_library(&monitor_compartment, libstd_library, &mut loader)
     //    .unwrap();
 
+    let _tls = monitor_compartment.build_tls_region(()).unwrap();
+
     eprintln!("== Context Ready, Building Arguments ==");
 
     eprintln!("== Jumping to Monitor ==");
@@ -143,7 +145,7 @@ impl LibraryLoader for Loader {
 
 fn main() {
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::TRACE)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");

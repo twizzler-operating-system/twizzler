@@ -6,7 +6,12 @@ use std::{
 use talc::{ErrOnOom, Talc};
 use twizzler_object::Object;
 
-use crate::{library::LibraryRef, symbol::RelocatedSymbol, tls::TlsInfo, DynlinkError};
+use crate::{
+    library::LibraryRef,
+    symbol::RelocatedSymbol,
+    tls::{TlsInfo, TlsRegion},
+    DynlinkError,
+};
 
 mod alloc;
 mod initialize;
@@ -81,6 +86,10 @@ impl Compartment {
         Self {
             inner: Mutex::new(CompartmentInner::new(name, id)),
         }
+    }
+
+    pub fn build_tls_region<T>(&self, tcb: T) -> Result<TlsRegion, DynlinkError> {
+        self.inner.lock()?.build_tls_region(tcb)
     }
 
     pub(crate) fn with_inner_mut<R>(

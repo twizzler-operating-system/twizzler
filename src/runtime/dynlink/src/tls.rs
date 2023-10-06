@@ -70,10 +70,11 @@ impl TlsInfo {
         }
         tm.offset = Some(self.offset);
 
-        let id = self.tls_mods.len();
+        let id = TlsModId((self.tls_mods.len() + 1) as u64);
+        tm.id = Some(id);
         self.tls_mods.push(tm);
         self.gen_count += 1;
-        TlsModId((id + 1) as u64)
+        id
     }
 
     pub(crate) fn allocate<T>(
@@ -92,7 +93,7 @@ impl TlsInfo {
             module_top: thread_pointer.clone(),
             thread_pointer,
             dtv: alloc_base.cast(),
-            num_dtv_entries: self.tls_mods.len() + 1,
+            num_dtv_entries: self.dtv_len(),
             alloc_base,
         };
 
@@ -105,6 +106,7 @@ impl TlsInfo {
             tls_region.set_dtv_entry(tm);
         }
 
+        trace!("setting dtv[0] to gen_count {}", self.gen_count);
         unsafe { *tls_region.dtv.as_ptr() = self.gen_count as usize };
 
         unsafe {
@@ -114,10 +116,15 @@ impl TlsInfo {
         Ok(tls_region)
     }
 
+    fn dtv_len(&self) -> usize {
+        self.tls_mods.len() + 1
+    }
+
     pub fn allocation_layout<T>(&self) -> Result<Layout, std::alloc::LayoutError> {
         let region_size = self.alloc_size_mods + self.max_align * self.tls_mods.len();
         let align = std::cmp::max(self.max_align, align_of::<Tcb<T>>()).next_power_of_two();
-        let size = region_size + size_of::<Tcb<T>>();
+        let dtv_size = self.dtv_len() * size_of::<usize>();
+        let size = region_size + size_of::<Tcb<T>>() + dtv_size;
         Layout::from_size_align(size, align)
     }
 }
@@ -142,7 +149,7 @@ impl<T> Tcb<T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
 pub(crate) struct TlsModId(u64);
 
@@ -157,12 +164,13 @@ impl TlsModId {
     }
 }
 
-pub(crate) struct TlsRegion {
-    pub alloc_base: NonNull<u8>,
-    pub thread_pointer: NonNull<u8>,
-    pub dtv: NonNull<usize>,
-    pub num_dtv_entries: usize,
-    pub module_top: NonNull<u8>,
+#[derive(Debug)]
+pub struct TlsRegion {
+    pub(crate) alloc_base: NonNull<u8>,
+    pub(crate) thread_pointer: NonNull<u8>,
+    pub(crate) dtv: NonNull<usize>,
+    pub(crate) num_dtv_entries: usize,
+    pub(crate) module_top: NonNull<u8>,
 }
 
 impl Drop for TlsRegion {
@@ -175,15 +183,23 @@ impl TlsRegion {
     pub(crate) fn set_dtv_entry(&self, tm: &TlsModule) {
         let dtv_slice =
             unsafe { core::slice::from_raw_parts_mut(self.dtv.as_ptr(), self.num_dtv_entries) };
-        dtv_slice[tm.id.as_ref().unwrap().as_tls_id() as usize] =
-            unsafe { self.module_top.as_ptr().sub(tm.offset.unwrap()) } as usize;
+        let dtv_idx = tm.id.as_ref().unwrap().as_tls_id() as usize;
+        let dtv_val = unsafe { self.module_top.as_ptr().sub(tm.offset.unwrap()) };
+        trace!("setting dtv entry {} <= {:p}", dtv_idx, dtv_val);
+        dtv_slice[dtv_idx] = dtv_val as usize;
     }
 
     pub(crate) fn copy_in_module(&self, tm: &TlsModule) -> usize {
-        trace!("copy in static region ({:?}", tm);
         unsafe {
             let start = self.module_top.as_ptr().sub(tm.offset.unwrap());
             let src = tm.template_addr as *const u8;
+            trace!(
+                "copy in static region {:p} => {:p} (filesz={}, memsz={})",
+                src,
+                start,
+                tm.template_filesz,
+                tm.template_memsz
+            );
             start.copy_from_nonoverlapping(src, tm.template_filesz);
             start as usize
         }
