@@ -2,7 +2,11 @@ use std::{alloc::Layout, mem::align_of, mem::size_of, ptr::NonNull};
 
 use tracing::{error, trace};
 
-use crate::{arch::MINIMUM_TLS_ALIGNMENT, compartment::CompartmentAlloc, DynlinkError};
+use crate::{
+    arch::MINIMUM_TLS_ALIGNMENT,
+    compartment::{CompartmentAlloc, CompartmentRef},
+    DynlinkError,
+};
 
 pub(crate) struct TlsInfo {
     gen_count: u64,
@@ -70,7 +74,7 @@ impl TlsInfo {
         }
         tm.offset = Some(self.offset);
 
-        let id = TlsModId((self.tls_mods.len() + 1) as u64);
+        let id = TlsModId((self.tls_mods.len() + 1) as u64, self.offset);
         tm.id = Some(id);
         self.tls_mods.push(tm);
         self.gen_count += 1;
@@ -79,6 +83,7 @@ impl TlsInfo {
 
     pub(crate) fn allocate<T>(
         &self,
+        comp: &CompartmentRef,
         alloc_base: NonNull<u8>,
         tcb: T,
     ) -> Result<TlsRegion, DynlinkError> {
@@ -95,6 +100,8 @@ impl TlsInfo {
             dtv: alloc_base.cast(),
             num_dtv_entries: self.dtv_len(),
             alloc_base,
+            comp: comp.clone(),
+            layout,
         };
 
         for tm in &self.tls_mods {
@@ -150,8 +157,7 @@ impl<T> Tcb<T> {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[repr(transparent)]
-pub(crate) struct TlsModId(u64);
+pub(crate) struct TlsModId(u64, usize);
 
 impl TlsModId {
     pub(crate) fn as_index(&self) -> usize {
@@ -162,10 +168,16 @@ impl TlsModId {
     pub(crate) fn as_tls_id(&self) -> u64 {
         self.0
     }
+
+    pub(crate) fn offset(&self) -> usize {
+        self.1
+    }
 }
 
 #[derive(Debug)]
 pub struct TlsRegion {
+    pub(crate) comp: CompartmentRef,
+    pub(crate) layout: Layout,
     pub(crate) alloc_base: NonNull<u8>,
     pub(crate) thread_pointer: NonNull<u8>,
     pub(crate) dtv: NonNull<usize>,
@@ -175,7 +187,9 @@ pub struct TlsRegion {
 
 impl Drop for TlsRegion {
     fn drop(&mut self) {
-        error!("TODO: drop");
+        let _ = self.comp.with_inner_mut(|inner| {
+            unsafe { inner.dealloc(self.alloc_base, self.layout) };
+        });
     }
 }
 

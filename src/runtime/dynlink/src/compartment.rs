@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::Debug,
     sync::{Arc, Mutex},
 };
 
@@ -31,6 +32,7 @@ pub(crate) struct CompartmentInner {
 }
 
 pub struct Compartment {
+    name: String,
     inner: Mutex<CompartmentInner>,
 }
 
@@ -62,7 +64,13 @@ impl core::fmt::Display for CompartmentInner {
 
 impl core::fmt::Display for Compartment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.inner.lock().unwrap().name)
+        write!(f, "{}", self.name)
+    }
+}
+
+impl Debug for Compartment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Compartment[{}]", self.name)
     }
 }
 
@@ -84,12 +92,9 @@ impl CompartmentInner {
 impl Compartment {
     pub(crate) fn new(name: String, id: u128) -> Self {
         Self {
+            name: name.clone(),
             inner: Mutex::new(CompartmentInner::new(name, id)),
         }
-    }
-
-    pub fn build_tls_region<T>(&self, tcb: T) -> Result<TlsRegion, DynlinkError> {
-        self.inner.lock()?.build_tls_region(tcb)
     }
 
     pub(crate) fn with_inner_mut<R>(

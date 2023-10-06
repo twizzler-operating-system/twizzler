@@ -5,7 +5,7 @@ use elf::{
         DF_TEXTREL, DT_FLAGS, DT_FLAGS_1, DT_JMPREL, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_REL,
         DT_RELA, DT_RELACOUNT, DT_RELAENT, DT_RELASZ, DT_RELCOUNT, DT_RELENT, DT_RELSZ,
         R_X86_64_64, R_X86_64_DTPMOD64, R_X86_64_DTPOFF64, R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT,
-        R_X86_64_RELATIVE, R_X86_64_TPOFF64, STB_WEAK,
+        R_X86_64_RELATIVE, R_X86_64_TPOFF32, R_X86_64_TPOFF64, STB_WEAK,
     },
     endian::NativeEndian,
     parse::{ParseAt, ParsingIterator},
@@ -17,7 +17,10 @@ use tracing::{debug, error, trace, warn};
 use twizzler_object::Object;
 
 use crate::{
-    compartment::Compartment, context::ContextInner, library::RelocState, symbol::RelocatedSymbol,
+    compartment::{Compartment, CompartmentInner},
+    context::ContextInner,
+    library::RelocState,
+    symbol::RelocatedSymbol,
     DynlinkError, ECollector,
 };
 
@@ -206,6 +209,20 @@ impl Library {
                 let val = open_sym().map(|sym| sym.raw_value()).unwrap_or(0);
                 unsafe { *target = val.wrapping_add_signed(addend) }
             }
+            R_X86_64_TPOFF64 => {
+                if let Some(tls) = self.tls_id {
+                    let val = open_sym().map(|sym| sym.raw_value()).unwrap_or(0);
+                    unsafe {
+                        *target = val
+                            .wrapping_sub(tls.offset() as u64)
+                            .wrapping_add_signed(addend)
+                    }
+                } else {
+                    error!("{}: TPOFF relocations require a PT_TLS segment", self);
+                    Err(DynlinkError::Unknown)?
+                }
+            }
+
             _ => {
                 error!("{}: unsupported relocation: {}", self, rel.r_type());
                 Err(DynlinkError::Unknown)?
