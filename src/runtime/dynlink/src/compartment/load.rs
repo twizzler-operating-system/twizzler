@@ -23,6 +23,10 @@ impl Compartment {
         }
 
         debug!("loading library {}", lib);
+        lib.load(ctx, loader)?;
+
+        lib.register_tls(self)?;
+
         let deps = lib.enumerate_needed(loader)?;
         if !deps.is_empty() {
             debug!("{}: loading {} dependencies", self, deps.len());
@@ -32,10 +36,6 @@ impl Compartment {
             .into_iter()
             .map(|lib| self.load_library(lib, ctx, loader))
             .ecollect::<Vec<_>>()?;
-
-        lib.load(ctx, loader)?;
-
-        lib.register_tls(self)?;
 
         let ctors = lib.get_ctor_info()?;
         lib.set_ctors(ctors);

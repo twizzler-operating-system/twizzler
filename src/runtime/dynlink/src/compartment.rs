@@ -12,6 +12,7 @@ mod alloc;
 mod initialize;
 mod load;
 mod relocate;
+mod tls;
 
 pub(crate) use self::alloc::CompartmentAlloc;
 

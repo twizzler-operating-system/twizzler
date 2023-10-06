@@ -36,7 +36,7 @@ impl Library {
         if let Some(phdr) = phdr {
             let formatter = humansize::make_format(humansize::BINARY);
             debug!(
-                "{}: loading TLS data ({} total, {} copy)",
+                "{}: registering TLS data ({} total, {} copy)",
                 self,
                 formatter(phdr.p_memsz),
                 formatter(phdr.p_filesz)

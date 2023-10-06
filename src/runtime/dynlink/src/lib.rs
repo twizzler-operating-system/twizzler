@@ -6,6 +6,7 @@
 #![feature(alloc_layout_extra)]
 
 pub mod addr;
+pub(crate) mod arch;
 pub mod compartment;
 pub mod context;
 pub mod error;

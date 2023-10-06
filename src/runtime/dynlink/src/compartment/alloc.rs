@@ -81,6 +81,14 @@ pub(crate) struct CompartmentAlloc {
     comp: CompartmentRef,
 }
 
+impl From<&CompartmentRef> for CompartmentAlloc {
+    fn from(value: &CompartmentRef) -> Self {
+        Self {
+            comp: value.clone(),
+        }
+    }
+}
+
 unsafe impl Allocator for CompartmentAlloc {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         self.comp

@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use elf::{endian::NativeEndian, relocation::Rel, ParseError};
+use elf::{endian::NativeEndian, ParseError};
 
 mod deps;
 mod init;
