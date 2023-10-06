@@ -165,7 +165,7 @@ impl Context {
             .into_iter()
             .map(|root| {
                 debug!("relocate_all: relocation root: {}", root);
-                root.relocate(&*inner).map(|_| root)
+                root.relocate(&inner).map(|_| root)
             })
             .ecollect()
     }

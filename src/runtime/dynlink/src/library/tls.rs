@@ -11,21 +11,14 @@ impl Library {
         Ok(self
             .get_elf()?
             .segments()
-            .map(|phdrs| phdrs.iter().find(|phdr| phdr.p_type == PT_TLS))
-            .flatten())
+            .and_then(|phdrs| phdrs.iter().find(|phdr| phdr.p_type == PT_TLS)))
     }
 
     pub(crate) fn get_tls_data(&self) -> Result<Option<&[u8]>, DynlinkError> {
-        Ok(self
-            .get_tls_phdr()?
-            .map(|phdr| unsafe {
-                if let Some(addr) = self.laddr(phdr.p_vaddr) {
-                    Some(core::slice::from_raw_parts(addr, phdr.p_memsz as usize))
-                } else {
-                    None
-                }
-            })
-            .flatten())
+        Ok(self.get_tls_phdr()?.and_then(|phdr| unsafe {
+            self.laddr(phdr.p_vaddr)
+                .map(|addr| core::slice::from_raw_parts(addr, phdr.p_memsz as usize))
+        }))
     }
 
     pub(crate) fn register_tls(

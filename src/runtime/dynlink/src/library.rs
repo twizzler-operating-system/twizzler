@@ -60,6 +60,8 @@ pub struct Library {
     pub(crate) ctors: Option<CtorInfo>,
 }
 
+unsafe impl Sync for Library {}
+
 #[allow(dead_code)]
 impl Library {
     pub fn new(obj: Object<u8>, name: impl ToString) -> Self {

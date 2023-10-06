@@ -46,7 +46,7 @@ impl From<Vec<DynlinkError>> for DynlinkError {
                 DynlinkError::Collection(mut list) => {
                     new.append(&mut list);
                 }
-                v => new.push(v.into()),
+                v => new.push(v),
             }
         }
         Self::Collection(new)

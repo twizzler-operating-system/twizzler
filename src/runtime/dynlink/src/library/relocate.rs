@@ -227,6 +227,7 @@ impl Library {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_rels(
         self: &LibraryRef,
         start: *const u8,
@@ -282,8 +283,7 @@ impl Library {
             dynamic
                 .iter()
                 .find(|d| d.d_tag == tag)
-                .map(|d| self.laddr(d.d_ptr()))
-                .flatten()
+                .and_then(|d| self.laddr(d.d_ptr()))
                 .ok_or(DynlinkError::Unknown)
         };
 

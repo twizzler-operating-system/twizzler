@@ -60,7 +60,7 @@ impl TlsInfo {
         self.max_align = std::cmp::max(self.max_align, tm.template_align);
         self.max_align = self.max_align.next_power_of_two();
 
-        if self.tls_mods.len() == 0 {
+        if self.tls_mods.is_empty() {
             self.offset = tm.template_memsz
                 + ((tm.template_addr + tm.template_memsz).overflowing_neg().0
                     & (tm.template_align - 1));
@@ -91,7 +91,7 @@ impl TlsInfo {
 
         let thread_pointer = NonNull::new(base as *mut u8).unwrap();
         let tls_region = TlsRegion {
-            module_top: thread_pointer.clone(),
+            module_top: thread_pointer,
             thread_pointer,
             dtv: alloc_base.cast(),
             num_dtv_entries: self.dtv_len(),

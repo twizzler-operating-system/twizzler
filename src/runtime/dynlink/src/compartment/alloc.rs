@@ -49,11 +49,11 @@ impl CompartmentInner {
     }
 
     pub(crate) unsafe fn alloc(&mut self, layout: Layout) -> Option<NonNull<u8>> {
-        if let Some(alloc) = self.allocator.malloc(layout).ok() {
+        if let Ok(alloc) = self.allocator.malloc(layout) {
             Some(alloc)
         } else {
             self.add_alloc_object();
-            self.allocator.malloc(layout).ok().map(|p| p)
+            self.allocator.malloc(layout).ok()
         }
     }
 

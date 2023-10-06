@@ -15,7 +15,7 @@ impl Library {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
 
-        Ok(common
+        common
             .dynamic
             .ok_or(DynlinkError::Unknown)?
             .iter()
@@ -24,22 +24,20 @@ impl Library {
                     let name = common
                         .dynsyms_strs
                         .ok_or(DynlinkError::Unknown)
-                        .map(|strs| {
+                        .and_then(|strs| {
                             strs.get(d.d_ptr() as usize)
                                 .map_err(|_| DynlinkError::Unknown)
-                        })
-                        .flatten();
-                    name.map(|name| {
-                        let dep = loader.open(name.into());
+                        });
+                    name.and_then(|name| {
+                        let dep = loader.open(name);
                         if dep.is_err() {
                             error!("failed to resolve library {} (needed by {})", name, self);
                         }
                         dep.map(|dep| Library::new(dep, name.to_string()))
                     })
-                    .flatten()
                 }),
                 _ => None,
             })
-            .ecollect()?)
+            .ecollect()
     }
 }
