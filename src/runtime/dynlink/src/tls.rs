@@ -1,4 +1,4 @@
-use std::{alloc::Layout, ptr::NonNull};
+use std::{alloc::Layout, mem::align_of, mem::size_of, ptr::NonNull};
 
 use tracing::{error, trace};
 
@@ -76,9 +76,13 @@ impl TlsInfo {
         TlsModId((id + 1) as u64)
     }
 
-    pub(crate) fn allocate(&self, alloc_base: NonNull<u8>) -> Result<TlsRegion, DynlinkError> {
+    pub(crate) fn allocate<T>(
+        &self,
+        alloc_base: NonNull<u8>,
+        tcb: T,
+    ) -> Result<TlsRegion, DynlinkError> {
         let layout = self
-            .allocation_layout()
+            .allocation_layout::<T>()
             .map_err(|_| DynlinkError::Unknown)?;
         let mut base = usize::from(alloc_base.addr()) + layout.size();
         base -= base & (layout.align() - 1);
@@ -101,17 +105,40 @@ impl TlsInfo {
             tls_region.set_dtv_entry(tm);
         }
 
+        unsafe { *tls_region.dtv.as_ptr() = self.gen_count as usize };
+
+        unsafe {
+            (tls_region.thread_pointer.as_ptr() as *mut Tcb<T>).write(Tcb::new(&tls_region, tcb))
+        };
+
         Ok(tls_region)
     }
 
-    pub fn allocation_layout(&self) -> Result<Layout, std::alloc::LayoutError> {
+    pub fn allocation_layout<T>(&self) -> Result<Layout, std::alloc::LayoutError> {
         let region_size = self.alloc_size_mods + self.max_align * self.tls_mods.len();
-        let align = self.max_align;
-
-        let size = region_size;
-
-        todo!();
+        let align = std::cmp::max(self.max_align, align_of::<Tcb<T>>()).next_power_of_two();
+        let size = region_size + size_of::<Tcb<T>>();
         Layout::from_size_align(size, align)
+    }
+}
+
+#[repr(C)]
+pub(crate) struct Tcb<T> {
+    self_ptr: *const Tcb<T>,
+    dtv: *const usize,
+    dtv_len: usize,
+    runtime_data: T,
+}
+
+impl<T> Tcb<T> {
+    pub(crate) fn new(tls_region: &TlsRegion, tcb_data: T) -> Self {
+        let self_ptr = tls_region.thread_pointer.as_ptr() as *mut Tcb<T>;
+        Self {
+            self_ptr,
+            dtv: tls_region.dtv.as_ptr(),
+            dtv_len: tls_region.num_dtv_entries,
+            runtime_data: tcb_data,
+        }
     }
 }
 
@@ -148,7 +175,8 @@ impl TlsRegion {
     pub(crate) fn set_dtv_entry(&self, tm: &TlsModule) {
         let dtv_slice =
             unsafe { core::slice::from_raw_parts_mut(self.dtv.as_ptr(), self.num_dtv_entries) };
-        dtv_slice[tm.id.as_ref().unwrap().as_tls_id() as usize] = tm.offset.unwrap();
+        dtv_slice[tm.id.as_ref().unwrap().as_tls_id() as usize] =
+            unsafe { self.module_top.as_ptr().sub(tm.offset.unwrap()) } as usize;
     }
 
     pub(crate) fn copy_in_module(&self, tm: &TlsModule) -> usize {
