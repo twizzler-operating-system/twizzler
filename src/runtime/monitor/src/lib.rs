@@ -1,7 +1,4 @@
 //#![feature(naked_functions)]
-use std::ffi::c_char;
-
-use secgate::{secure_gate, SecurityGate};
 
 #[no_mangle]
 pub extern "C" fn monitor_entry_from_bootstrap() {
@@ -21,6 +18,7 @@ pub fn my_main() {
     loop {}
 }
 
+#[allow(improper_ctypes)]
 extern "C" {
     fn twizzler_call_lang_start(
         main: fn(),

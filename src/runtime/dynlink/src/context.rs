@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{Arc, Mutex},
 };
 
@@ -13,28 +13,18 @@ use crate::{
     DynlinkError, ECollector,
 };
 
-struct NameContext<'a> {
-    pub(crate) lib: &'a Library,
-}
-
-impl<'a> From<&'a Library> for NameContext<'a> {
-    fn from(lib: &'a Library) -> Self {
-        Self { lib }
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct ContextInner {
     id_counter: u128,
     id_stack: Vec<u128>,
 
     compartment_names: HashMap<String, CompartmentRef>,
-    pub(crate) compartment_map: HashMap<u128, CompartmentRef>,
 
     pub(crate) library_names: HashMap<String, LibraryRef>,
     pub(crate) library_deps: StableDiGraph<LibraryRef, ()>,
 }
 
+#[allow(dead_code)]
 impl ContextInner {
     fn get_fresh_id(&mut self) -> u128 {
         if let Some(old) = self.id_stack.pop() {
@@ -117,6 +107,7 @@ pub struct Context {
     inner: Mutex<ContextInner>,
 }
 
+#[allow(dead_code)]
 impl Context {
     pub(crate) fn with_inner_mut<R>(
         &self,
@@ -167,7 +158,6 @@ impl Context {
     pub fn relocate_all(
         &self,
         roots: impl IntoIterator<Item = LibraryRef>,
-        loader: &mut impl LibraryLoader,
     ) -> Result<Vec<LibraryRef>, DynlinkError> {
         let inner = self.inner.lock()?;
 

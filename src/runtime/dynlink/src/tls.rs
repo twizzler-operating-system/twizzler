@@ -2,11 +2,7 @@ use std::{alloc::Layout, mem::align_of, mem::size_of, ptr::NonNull};
 
 use tracing::{error, trace};
 
-use crate::{
-    arch::MINIMUM_TLS_ALIGNMENT,
-    compartment::{CompartmentAlloc, CompartmentRef},
-    DynlinkError,
-};
+use crate::{arch::MINIMUM_TLS_ALIGNMENT, compartment::CompartmentRef, DynlinkError};
 
 pub(crate) struct TlsInfo {
     gen_count: u64,
@@ -160,11 +156,6 @@ impl<T> Tcb<T> {
 pub(crate) struct TlsModId(u64, usize);
 
 impl TlsModId {
-    pub(crate) fn as_index(&self) -> usize {
-        assert!(self.0 >= 2);
-        (self.0 - 1) as usize
-    }
-
     pub(crate) fn as_tls_id(&self) -> u64 {
         self.0
     }

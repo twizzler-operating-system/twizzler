@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fmt::Debug,
     sync::{Arc, Mutex},
 };
@@ -7,25 +6,16 @@ use std::{
 use talc::{ErrOnOom, Talc};
 use twizzler_object::Object;
 
-use crate::{
-    library::LibraryRef,
-    symbol::RelocatedSymbol,
-    tls::{TlsInfo, TlsRegion},
-    DynlinkError,
-};
+use crate::{tls::TlsInfo, DynlinkError};
 
 mod alloc;
 mod initialize;
 mod load;
-mod relocate;
 mod tls;
-
-pub(crate) use self::alloc::CompartmentAlloc;
 
 pub(crate) struct CompartmentInner {
     name: String,
     id: u128,
-    name_map: HashMap<String, LibraryRef>,
     allocator: Talc<ErrOnOom>,
     alloc_objects: Vec<Object<u8>>,
     pub(crate) tls_info: TlsInfo,
@@ -81,7 +71,6 @@ impl CompartmentInner {
         Self {
             name,
             id,
-            name_map: Default::default(),
             allocator: Talc::new(ErrOnOom),
             alloc_objects: vec![],
             tls_info: Default::default(),
@@ -89,6 +78,7 @@ impl CompartmentInner {
     }
 }
 
+#[allow(dead_code)]
 impl Compartment {
     pub(crate) fn new(name: String, id: u128) -> Self {
         Self {

@@ -18,38 +18,12 @@ use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use twizzler_abi::{
     object::ObjID,
-    syscall::{sys_object_create, ObjectCreateError, ObjectSource},
+    syscall::{sys_object_create, ObjectSource},
 };
 
-fn create_obj(copy_cmds: &[ObjectSource]) -> Result<ObjID, ObjectCreateError> {
-    let create_spec = ObjectCreate::new(
-        BackingType::Normal,
-        LifetimeType::Volatile,
-        None,
-        ObjectCreateFlags::empty(),
-    );
-    let id = sys_object_create(create_spec, &copy_cmds, &[])?;
-    Ok(id)
-}
-
-fn map_objs(data_id: ObjID, text_id: ObjID) -> Result<(Object<u8>, Object<u8>), ObjectInitError> {
-    let data = Object::init_id(
-        data_id,
-        Protections::READ | Protections::WRITE,
-        ObjectInitFlags::empty(),
-    )?;
-
-    let text = Object::init_id(
-        text_id,
-        Protections::READ | Protections::EXEC,
-        ObjectInitFlags::empty(),
-    )?;
-    Ok((data, text))
-}
-
 fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID, libstd: ObjID) {
-    let mut ctx = dynlink::context::Context::default();
-    let mut monitor_compartment = ctx.add_compartment("monitor").unwrap();
+    let ctx = dynlink::context::Context::default();
+    let monitor_compartment = ctx.add_compartment("monitor").unwrap();
 
     let mon_library = Library::new(
         Object::<u8>::init_id(runtime_monitor, Protections::READ, ObjectInitFlags::empty())
@@ -75,9 +49,7 @@ fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID
     let runtime = ctx
         .add_library(&monitor_compartment, rt_library, &mut loader)
         .unwrap();
-    let _roots = ctx
-        .relocate_all([monitor.clone(), runtime], &mut loader)
-        .unwrap();
+    let _roots = ctx.relocate_all([monitor.clone(), runtime]).unwrap();
     //ctx.add_library(&monitor_compartment, libstd_library, &mut loader)
     //    .unwrap();
 
@@ -145,7 +117,7 @@ impl LibraryLoader for Loader {
 
 fn main() {
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::TRACE)
+        .with_max_level(Level::DEBUG)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
@@ -170,4 +142,4 @@ use twizzler_abi::{
         ObjectCreateFlags,
     },
 };
-use twizzler_object::{Object, ObjectInitError, ObjectInitFlags};
+use twizzler_object::{Object, ObjectInitFlags};

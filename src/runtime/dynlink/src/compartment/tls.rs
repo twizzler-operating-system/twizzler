@@ -1,12 +1,6 @@
-use std::ptr::NonNull;
+use tracing::{debug, trace};
 
-use tracing::{debug, error, trace};
-
-use crate::{
-    compartment::CompartmentAlloc,
-    tls::{TlsModule, TlsRegion},
-    DynlinkError,
-};
+use crate::{tls::TlsRegion, DynlinkError};
 
 use super::{Compartment, CompartmentRef};
 

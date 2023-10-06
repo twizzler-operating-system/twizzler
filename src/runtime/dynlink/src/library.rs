@@ -34,21 +34,13 @@ pub(crate) enum RelocState {
     Relocated,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 #[repr(u32)]
 pub(crate) enum InitState {
     Uninit,
     Constructed,
     Deconstructed,
-}
-
-impl RelocState {
-    pub(crate) fn is_unrelocated(&self) -> bool {
-        match self {
-            RelocState::Unrelocated => true,
-            _ => false,
-        }
-    }
 }
 
 pub struct Library {
@@ -68,6 +60,7 @@ pub struct Library {
     pub(crate) ctors: Option<CtorInfo>,
 }
 
+#[allow(dead_code)]
 impl Library {
     pub fn new(obj: Object<u8>, name: impl ToString) -> Self {
         Self {

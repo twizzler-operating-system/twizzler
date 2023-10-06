@@ -5,6 +5,7 @@ use crate::{compartment::CompartmentRef, tls::TlsModule, DynlinkError};
 
 use super::Library;
 
+#[allow(dead_code)]
 impl Library {
     fn get_tls_phdr(&self) -> Result<Option<ProgramHeader>, DynlinkError> {
         Ok(self

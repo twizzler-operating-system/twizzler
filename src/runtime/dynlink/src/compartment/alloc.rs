@@ -8,7 +8,7 @@ use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
-use twizzler_object::{CreateSpec, Object, ObjectInitFlags, Protections};
+use twizzler_object::{Object, ObjectInitFlags, Protections};
 
 use super::{Compartment, CompartmentInner, CompartmentRef};
 
@@ -62,6 +62,7 @@ impl CompartmentInner {
     }
 }
 
+#[allow(dead_code)]
 impl Compartment {
     pub(crate) fn make_box<T>(self: &CompartmentRef, data: T) -> Option<Box<T, CompartmentAlloc>> {
         Some(Box::new_in(data, CompartmentAlloc { comp: self.clone() }))

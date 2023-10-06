@@ -3,9 +3,9 @@ use std::{mem::size_of, sync::Arc};
 use elf::{
     abi::{
         DF_TEXTREL, DT_FLAGS, DT_FLAGS_1, DT_JMPREL, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_REL,
-        DT_RELA, DT_RELACOUNT, DT_RELAENT, DT_RELASZ, DT_RELCOUNT, DT_RELENT, DT_RELSZ,
-        R_X86_64_64, R_X86_64_DTPMOD64, R_X86_64_DTPOFF64, R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT,
-        R_X86_64_RELATIVE, R_X86_64_TPOFF32, R_X86_64_TPOFF64, STB_WEAK,
+        DT_RELA, DT_RELAENT, DT_RELASZ, DT_RELENT, DT_RELSZ, R_X86_64_64, R_X86_64_DTPMOD64,
+        R_X86_64_DTPOFF64, R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT, R_X86_64_RELATIVE,
+        R_X86_64_TPOFF64, STB_WEAK,
     },
     endian::NativeEndian,
     parse::{ParseAt, ParsingIterator},
@@ -13,15 +13,10 @@ use elf::{
     string_table::StringTable,
     symbol::SymbolTable,
 };
-use tracing::{debug, error, trace, warn};
-use twizzler_object::Object;
+use tracing::{debug, error, trace};
 
 use crate::{
-    compartment::{Compartment, CompartmentInner},
-    context::ContextInner,
-    library::RelocState,
-    symbol::RelocatedSymbol,
-    DynlinkError, ECollector,
+    context::ContextInner, library::RelocState, symbol::RelocatedSymbol, DynlinkError, ECollector,
 };
 
 use super::{Library, LibraryRef};
@@ -42,7 +37,7 @@ impl EitherRel {
 
     fn addend(&self) -> i64 {
         match self {
-            EitherRel::Rel(r) => 0,
+            EitherRel::Rel(_) => 0,
             EitherRel::Rela(r) => r.r_addend,
         }
     }
@@ -324,7 +319,7 @@ impl Library {
         let rels = find_dyn_rels(DT_REL, DT_RELENT, DT_RELSZ);
         let relas = find_dyn_rels(DT_RELA, DT_RELAENT, DT_RELASZ);
         let jmprels = find_dyn_rels(DT_JMPREL, DT_PLTREL, DT_PLTRELSZ);
-        let pltgot: Option<*const u8> = find_dyn_entry(DT_PLTGOT).ok();
+        let _pltgot: Option<*const u8> = find_dyn_entry(DT_PLTGOT).ok();
 
         let dynsyms = common.dynsyms.ok_or(DynlinkError::Unknown)?;
         let dynsyms_str = common.dynsyms_strs.ok_or(DynlinkError::Unknown)?;

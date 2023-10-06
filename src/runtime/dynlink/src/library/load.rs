@@ -1,17 +1,13 @@
-use std::sync::Arc;
-
-use tracing::{debug, error, trace};
+use tracing::{debug, trace};
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::ObjectSource,
 };
 use twizzler_object::Object;
 
-use elf::abi::DT_NEEDED;
+use crate::{context::ContextInner, DynlinkError};
 
-use crate::{context::ContextInner, DynlinkError, ECollector};
-
-use super::{Library, LibraryRef};
+use super::Library;
 
 fn within_object(slot: usize, addr: usize) -> bool {
     addr >= slot * MAX_SIZE + NULLPAGE_SIZE && addr < (slot + 1) * MAX_SIZE - NULLPAGE_SIZE * 2
