@@ -24,6 +24,7 @@ pub trait LibraryLoader {
 }
 
 impl Library {
+    // Load (map) a single library into memory via creating two objects, one for text, and one for data.
     pub(crate) fn load(
         &mut self,
         _cxt: &mut ContextInner,
@@ -32,6 +33,7 @@ impl Library {
         let elf = self.get_elf()?;
         // TODO: sanity check
 
+        // Step 1: map the PT_LOAD directives to copy-from commands Twizzler can use for creating objects.
         let copy_cmds: Vec<_> = elf
             .segments()
             .ok_or(DynlinkError::Unknown)?
@@ -76,6 +78,7 @@ impl Library {
             })
             .try_collect()?;
 
+        // Separate out the commands for text and data segmets.
         let text_copy_cmds: Vec<_> = copy_cmds
             .iter()
             .filter(|(td, _)| !*td)
@@ -95,6 +98,7 @@ impl Library {
             text_copy_cmds.len()
         );
         let (data_obj, text_obj) = loader.create_segments(&data_copy_cmds, &text_copy_cmds)?;
+        // The base address is the "0-point" for the virtual addresses within the library.
         let base_addr = unsafe { text_obj.base_unchecked() as *const _ as usize } - NULLPAGE_SIZE;
         unsafe {
             debug!(

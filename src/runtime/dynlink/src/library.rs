@@ -24,13 +24,18 @@ use twizzler_object::Object;
 
 use crate::tls::TlsModId;
 
+/// Arc type for libraries.
 pub type LibraryRef = Arc<Library>;
 
+/// State of relocation.
 #[derive(Debug)]
 #[repr(u32)]
 pub(crate) enum RelocState {
+    /// The library has not been relocated.
     Unrelocated,
+    /// The library is currently being relocated.
     Relocating,
+    /// The library is relocated.
     Relocated,
 }
 
@@ -38,25 +43,40 @@ pub(crate) enum RelocState {
 #[derive(Debug)]
 #[repr(u32)]
 pub(crate) enum InitState {
+    /// No constructors have been called.
     Uninit,
+    /// Constructors have been called, destructors have not been called.
     Constructed,
+    /// Destructors have been called.
     Deconstructed,
 }
 
 pub struct Library {
+    /// ID of the compartment this library is in.
     pub(crate) comp_id: u128,
+    /// Name of this library.
     pub(crate) name: String,
+    /// Node index for the dependency graph. Only set once
+    /// the library is loaded.
     pub(crate) idx: Cell<Option<NodeIndex>>,
+    /// Object containing the full ELF data.
     pub(crate) full_obj: Object<u8>,
+    /// State of relocation (see [RelocState]).
     reloc_state: AtomicU32,
+    /// State of initialization (see [InitState]).
     init_state: AtomicU32,
 
+    /// Object containing R-X segments.
     pub(crate) text_object: Option<Object<u8>>,
+    /// Object containing RW- segments.
     pub(crate) data_object: Option<Object<u8>>,
+    /// Base address of this library, used for relocations.
     pub(crate) base_addr: Option<usize>,
 
+    /// The module ID for the TLS region, if any.
     pub(crate) tls_id: Option<TlsModId>,
 
+    /// Information about constructors, if any.
     pub(crate) ctors: Option<CtorInfo>,
 }
 

@@ -7,6 +7,7 @@ use super::{Library, LibraryLoader};
 use elf::abi::DT_NEEDED;
 
 impl Library {
+    /// Get a list of dependencies for this library.
     pub(crate) fn enumerate_needed(
         &self,
         loader: &mut impl LibraryLoader,
@@ -21,20 +22,22 @@ impl Library {
             .iter()
             .filter_map(|d| match d.d_tag {
                 DT_NEEDED => Some({
-                    let name = common
+                    // DT_NEEDED indicates a dependency. Lookup the name in the string table.
+                    common
                         .dynsyms_strs
                         .ok_or(DynlinkError::Unknown)
                         .and_then(|strs| {
                             strs.get(d.d_ptr() as usize)
                                 .map_err(|_| DynlinkError::Unknown)
-                        });
-                    name.and_then(|name| {
-                        let dep = loader.open(name);
-                        if dep.is_err() {
-                            error!("failed to resolve library {} (needed by {})", name, self);
-                        }
-                        dep.map(|dep| Library::new(dep, name.to_string()))
-                    })
+                        })
+                        .and_then(|name| {
+                            // We found the name, ask the loader to load the library for us.
+                            let dep = loader.open(name);
+                            if dep.is_err() {
+                                error!("failed to resolve library {} (needed by {})", name, self);
+                            }
+                            dep.map(|dep| Library::new(dep, name.to_string()))
+                        })
                 }),
                 _ => None,
             })

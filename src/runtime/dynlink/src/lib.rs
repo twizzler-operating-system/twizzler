@@ -44,7 +44,11 @@
 //!
 //! In step 4, we just add the library into global context. At this point, we have recorded enough info that we can make
 //! this library namable and searchable for symbols. Finally, in the last two steps, we recurse on each dependency, and
-//! add edges to the graph to note dependencies.
+//! add edges to the graph to note dependencies. I should note that dependencies may have already been loaded (e.g. a
+//! library foo depends on bar and baz, and library bar depends on baz, only one copy of baz will be loaded), and thus
+//! if we try to load a library that already has been loaded according to some namespace, we can just point the graph
+//! to the existing node instead of loading up a fresh copy of the library. This is why the graph may have cycles, by
+//! the way.
 //!
 //! When relocating a DSO, we need to ensure that it is fixed up to run at the base address we loaded it to. As a simple
 //! mental model, we can imagine that if we had some static variable, foo, that lives in a DSO. When linking, the linker
@@ -62,8 +66,6 @@
 //! DSO has a symbol table for symbols that it is advertising as useable for dynamic linking. The dynamic linker thus, when
 //! looking up symbols, transitively looks though a DSO's dependencies until it finds the symbol. If it doesn't, it
 //! falls back to a global lookup, where it traverses the entire graph looking for the symbol.
-//!
-//!
 //!
 //! # Basic Concepts for this crate
 //!
@@ -96,12 +98,14 @@
 #![feature(result_flattening)]
 #![feature(alloc_layout_extra)]
 
-pub mod addr;
+// Nothing arch-specific should export directly.
 pub(crate) mod arch;
+
+mod error;
+pub use error::*;
+
 pub mod compartment;
 pub mod context;
-pub mod error;
 pub mod library;
 pub mod symbol;
 pub mod tls;
-pub use error::*;

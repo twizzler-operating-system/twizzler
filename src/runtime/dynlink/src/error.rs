@@ -1,21 +1,32 @@
+//! Definitions for errors for the dynamic linker. One thing of note is that we allow for a collection of
+//! multiple error within the error type ([DynlinkError]). This is to enable returning multiple (e.g.) symbol
+//! lookup failures that can acted upon as a group instead of one at a time.
+
 use std::sync::PoisonError;
 
 use thiserror::Error;
+/// The main error type for dynlink.
 #[derive(Debug, Error)]
 pub enum DynlinkError {
+    /// Unknown error.
     #[error("unknown")]
     Unknown,
+    /// A collection of errors.
     #[error("{}", .0.iter().map(|e| e.to_string()).fold(String::new(), |a, b| a + &b + "\n"))]
     Collection(Vec<DynlinkError>),
+    /// Identifier lookup of name failed.
     #[error("not found: {name}")]
     NotFound { name: String },
+    /// Tried to add a name that was already present to the namespace.
     #[error("name already exists: {name}")]
     AlreadyExists { name: String },
+    /// Failed to parse ELF data.
     #[error("parse failed: {err}")]
     ParseError {
         #[from]
         err: elf::ParseError,
     },
+    /// Any other error.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -53,6 +64,7 @@ impl From<Vec<DynlinkError>> for DynlinkError {
     }
 }
 
+/// A collector trait that lets us combine multiple [DynlinkError]s into one Collection. Design borrowed from beau_collector.
 pub trait ECollector<T> {
     fn ecollect<I>(self) -> Result<I, DynlinkError>
     where

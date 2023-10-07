@@ -1,3 +1,5 @@
+//! Compartments are an abstraction for isolation of library components, but they are not done yet.
+
 use std::{
     fmt::Debug,
     sync::{Arc, Mutex},
