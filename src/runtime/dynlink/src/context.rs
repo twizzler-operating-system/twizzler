@@ -49,13 +49,16 @@ impl ContextInner {
         }
     }
 
-    pub(crate) fn insert_lib(
-        &mut self,
-        lib: LibraryRef,
-        deps: impl IntoIterator<Item = LibraryRef>,
-    ) {
+    pub(crate) fn insert_lib_predeps(&mut self, lib: LibraryRef) {
         self.library_names.insert(lib.name.clone(), lib.clone());
         lib.idx.set(Some(self.library_deps.add_node(lib.clone())));
+    }
+
+    pub(crate) fn set_lib_deps(
+        &mut self,
+        lib: &LibraryRef,
+        deps: impl IntoIterator<Item = LibraryRef>,
+    ) {
         for dep in deps.into_iter() {
             self.library_deps
                 .add_edge(lib.idx.get().unwrap(), dep.idx.get().unwrap(), ());

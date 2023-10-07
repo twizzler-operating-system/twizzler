@@ -27,21 +27,22 @@ impl Compartment {
 
         lib.register_tls(self)?;
 
+        let ctors = lib.get_ctor_info()?;
+        lib.set_ctors(ctors);
+
         let deps = lib.enumerate_needed(loader)?;
         if !deps.is_empty() {
             debug!("{}: loading {} dependencies", self, deps.len());
         }
 
+        let lib = Arc::new(lib);
+        ctx.insert_lib_predeps(lib.clone());
+
         let deps = deps
             .into_iter()
             .map(|lib| self.load_library(lib, ctx, loader))
             .ecollect::<Vec<_>>()?;
-
-        let ctors = lib.get_ctor_info()?;
-        lib.set_ctors(ctors);
-
-        let lib = Arc::new(lib);
-        ctx.insert_lib(lib.clone(), deps);
+        ctx.set_lib_deps(&lib, deps);
 
         Ok(lib)
     }
