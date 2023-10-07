@@ -21,6 +21,8 @@ use crate::{
 
 use super::{Library, LibraryRef};
 
+// A relocation is either a REL type or a RELA type. The only difference is that
+// the RELA type contains an addend (used in the reloc calculations below).
 #[derive(Debug)]
 enum EitherRel {
     Rel(Rel),
@@ -73,6 +75,7 @@ impl Library {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
 
+        // Try the GNU hash table, if present.
         if let Some(h) = &common.gnu_hash {
             if let Some((_, sym)) = h
                 .find(
@@ -84,6 +87,7 @@ impl Library {
                 .flatten()
             {
                 if !sym.is_undefined() {
+                    // TODO: proper weak symbol handling.
                     if sym.st_bind() != STB_WEAK {
                         return Ok(RelocatedSymbol::new(sym, self.clone()));
                     } else {
@@ -96,6 +100,7 @@ impl Library {
             });
         }
 
+        // Try the sysv hash table, if present.
         if let Some(h) = &common.sysv_hash {
             if let Some((_, sym)) = h
                 .find(
@@ -107,6 +112,7 @@ impl Library {
                 .flatten()
             {
                 if !sym.is_undefined() {
+                    // TODO: proper weak symbol handling.
                     if sym.st_bind() != STB_WEAK {
                         return Ok(RelocatedSymbol::new(sym, self.clone()));
                     } else {
@@ -143,6 +149,7 @@ impl Library {
         let addend = rel.addend();
         let base = self.base_addr.unwrap() as u64;
         let target: *mut u64 = self.laddr_mut(rel.offset()).unwrap();
+        // Lookup a symbol if the relocation's symbol index is non-zero.
         let symbol = if rel.sym() != 0 {
             let sym = syms.get(rel.sym() as usize)?;
             strings
@@ -153,6 +160,7 @@ impl Library {
             None
         };
 
+        // Helper for logging errors.
         let open_sym = || {
             if let Some((name, sym)) = symbol {
                 if let Ok(sym) = sym {
@@ -176,6 +184,7 @@ impl Library {
             }
         };
 
+        // This is where the magic happens.
         match rel.r_type() {
             R_X86_64_RELATIVE => unsafe { *target = base.wrapping_add_signed(addend) },
             R_X86_64_64 => unsafe {
@@ -185,6 +194,7 @@ impl Library {
                 *target = open_sym()?.reloc_value()
             },
             R_X86_64_DTPMOD64 => {
+                // See the TLS module for understanding where the TLS ID is coming from.
                 let id = if rel.sym() == 0 {
                     self.tls_id
                         .as_ref()
@@ -217,7 +227,6 @@ impl Library {
                     Err(DynlinkError::Unknown)?
                 }
             }
-
             _ => {
                 error!("{}: unsupported relocation: {}", self, rel.r_type());
                 Err(DynlinkError::Unknown)?
@@ -244,6 +253,8 @@ impl Library {
             name,
             sz / ent
         );
+        // Try to parse the table as REL or RELA, according to ent size. If get_parsing_iter succeeds for a given
+        // relocation type, that's the correct one.
         if let Some(rels) = self.get_parsing_iter(start, ent, sz) {
             rels.map(|rel| self.do_reloc(EitherRel::Rel(rel), strings, syms, ctx))
                 .ecollect::<Vec<_>>()?;
@@ -263,6 +274,7 @@ impl Library {
         if !self.try_set_reloc_state(RelocState::Unrelocated, RelocState::Relocating) {
             return Ok(());
         }
+        // Recurse on dependencies first, in case there are any copy relocations.
         ctx.library_deps
             .neighbors_directed(self.idx.get().unwrap(), petgraph::Direction::Outgoing)
             .enumerate()
@@ -279,6 +291,7 @@ impl Library {
         let common = elf.find_common_data()?;
         let dynamic = common.dynamic.ok_or(DynlinkError::Unknown)?;
 
+        // Helper to lookup a single entry for a relocated pointer in the dynamic table.
         let find_dyn_entry = |tag| {
             dynamic
                 .iter()
@@ -287,6 +300,7 @@ impl Library {
                 .ok_or(DynlinkError::Unknown)
         };
 
+        // Helper to lookup a single value in the dynamic table.
         let find_dyn_value = |tag| {
             dynamic
                 .iter()
@@ -295,6 +309,7 @@ impl Library {
                 .ok_or(DynlinkError::Unknown)
         };
 
+        // Many of the relocation tables are described in a similar way -- start, entry size, and table size (in bytes).
         let find_dyn_rels = |tag, ent, sz| {
             let rel = find_dyn_entry(tag).ok();
             let relent = find_dyn_value(ent).ok();
@@ -316,6 +331,7 @@ impl Library {
         }
         debug!("{}: relocation flags: {:?} {:?}", self, flags, flags_1);
 
+        // Lookup all the tables
         let rels = find_dyn_rels(DT_REL, DT_RELENT, DT_RELSZ);
         let relas = find_dyn_rels(DT_RELA, DT_RELAENT, DT_RELASZ);
         let jmprels = find_dyn_rels(DT_JMPREL, DT_PLTREL, DT_PLTRELSZ);
@@ -324,6 +340,7 @@ impl Library {
         let dynsyms = common.dynsyms.ok_or(DynlinkError::Unknown)?;
         let dynsyms_str = common.dynsyms_strs.ok_or(DynlinkError::Unknown)?;
 
+        // Process relocations
         if let Some((rela, ent, sz)) = relas {
             self.process_rels(
                 rela,
@@ -348,10 +365,11 @@ impl Library {
             )?;
         }
 
+        // This one is a little special in that instead of an entry size, we are given a relocation type.
         if let Some((rel, kind, sz)) = jmprels {
             let ent = match kind as i64 {
-                DT_REL => 2,
-                DT_RELA => 3,
+                DT_REL => 2,  // 2 usize long, according to ELF
+                DT_RELA => 3, // one extra usize for the addend
                 _ => {
                     error!("failed to relocate {}: unknown PLTREL type", self);
                     return Err(DynlinkError::Unknown);
