@@ -29,3 +29,13 @@ impl RelocatedSymbol {
         self.sym.st_size
     }
 }
+
+bitflags::bitflags! {
+    #[derive(Copy, Clone)]
+    /// Options for use during symbol lookup.
+    pub struct LookupFlags : u32 {
+        const SKIP_SELF = 1;
+        const SKIP_DEPS = 2;
+        const SKIP_GLOBAL = 4;
+    }
+}

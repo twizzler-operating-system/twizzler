@@ -11,7 +11,6 @@ use twizzler_object::Object;
 use crate::{tls::TlsInfo, DynlinkError};
 
 mod alloc;
-mod initialize;
 mod load;
 mod tls;
 

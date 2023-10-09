@@ -5,6 +5,7 @@ use crate::{tls::TlsRegion, DynlinkError};
 use super::{Compartment, CompartmentRef};
 
 impl Compartment {
+    /// Build a useable TLS region, complete with copied templates, a control block, and a dtv.
     pub fn build_tls_region<T>(self: &CompartmentRef, tcb: T) -> Result<TlsRegion, DynlinkError> {
         self.with_inner_mut(|inner| {
             let alloc_layout = inner

@@ -1,3 +1,6 @@
+//! This module handles allocating memory within a compartment for use by libraries within
+//! that compartment.
+
 use std::{
     alloc::{AllocError, Allocator, Layout},
     ptr::NonNull,

@@ -12,6 +12,7 @@ fn find_init_name(name: &str) -> Option<ObjID> {
 
 use dynlink::{
     library::{Library, LibraryLoader},
+    symbol::LookupFlags,
     DynlinkError,
 };
 use tracing::Level;
@@ -59,7 +60,11 @@ fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID
 
     eprintln!("== Jumping to Monitor ==");
     let entry = ctx
-        .lookup_symbol(&monitor, "monitor_entry_from_bootstrap")
+        .lookup_symbol(
+            &monitor,
+            "monitor_entry_from_bootstrap",
+            LookupFlags::empty(),
+        )
         .unwrap();
 
     let value = entry.reloc_value() as usize;

@@ -1,3 +1,5 @@
+//! Management of individual libraries.
+
 use std::{
     cell::Cell,
     fmt::Debug,
@@ -139,6 +141,7 @@ impl Library {
         self.init_state.store(state as u32, Ordering::SeqCst);
     }
 
+    /// Return a handle to the full ELF file.
     pub fn get_elf(&self) -> Result<elf::ElfBytes<'_, NativeEndian>, ParseError> {
         let slice =
             unsafe { core::slice::from_raw_parts(self.full_obj.base_unchecked(), MAX_SIZE) };

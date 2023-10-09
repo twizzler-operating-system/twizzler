@@ -1,3 +1,5 @@
+//! Management of global context.
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -9,17 +11,20 @@ use tracing::{debug, trace};
 use crate::{
     compartment::{Compartment, CompartmentRef},
     library::{Library, LibraryLoader, LibraryRef},
-    symbol::RelocatedSymbol,
+    symbol::{LookupFlags, RelocatedSymbol},
     DynlinkError, ECollector,
 };
 
 #[derive(Default)]
 pub(crate) struct ContextInner {
+    // Simple unique ID generation.
     id_counter: u128,
     id_stack: Vec<u128>,
 
+    // Track all the compartment names.
     compartment_names: HashMap<String, CompartmentRef>,
 
+    // We care about both names and dependency ordering for libraries.
     pub(crate) library_names: HashMap<String, LibraryRef>,
     pub(crate) library_deps: StableDiGraph<LibraryRef, ()>,
 }
@@ -35,7 +40,10 @@ impl ContextInner {
         }
     }
 
-    pub(crate) fn with_dfs_postorder<I>(&self, roots: I, mut f: impl FnMut(&LibraryRef))
+    /// Visit libraries in a post-order DFS traversal, starting from a number of roots. Note that
+    /// because multiple roots may be specified, this means that nodes may be visited `O(|roots|)`
+    /// times (|roots| is the number of roots yielded by the iterator).
+    pub fn with_dfs_postorder<I>(&self, roots: I, mut f: impl FnMut(&LibraryRef))
     where
         I: IntoIterator<Item = LibraryRef>,
     {
@@ -49,11 +57,13 @@ impl ContextInner {
         }
     }
 
+    /// Insert a library without specifying dependencies.
     pub(crate) fn insert_lib_predeps(&mut self, lib: LibraryRef) {
         self.library_names.insert(lib.name.clone(), lib.clone());
         lib.idx.set(Some(self.library_deps.add_node(lib.clone())));
     }
 
+    /// Add all dependency edges for a library.
     pub(crate) fn set_lib_deps(
         &mut self,
         lib: &LibraryRef,
@@ -67,29 +77,44 @@ impl ContextInner {
 
     pub(crate) fn lookup_symbol(
         &self,
-        ctx: &LibraryRef,
+        start: &LibraryRef,
         name: &str,
+        lookup_flags: LookupFlags,
     ) -> Result<RelocatedSymbol, DynlinkError> {
-        if let Ok(sym) = ctx.lookup_symbol(name) {
-            return Ok(sym);
+        // First try looking up within ourselves.
+        if !lookup_flags.contains(LookupFlags::SKIP_SELF) {
+            if let Ok(sym) = start.lookup_symbol(name) {
+                return Ok(sym);
+            }
         }
 
-        if let Some(sym) = self
-            .library_deps
-            .neighbors_directed(ctx.idx.get().unwrap(), petgraph::Direction::Outgoing)
-            .find_map(|depidx| {
-                let dep = &self.library_deps[depidx];
-                if depidx != ctx.idx.get().unwrap() {
-                    self.lookup_symbol(dep, name).ok()
-                } else {
-                    None
-                }
-            })
-        {
-            return Ok(sym);
+        // Next, try all of our transitive dependencies.
+        if !lookup_flags.contains(LookupFlags::SKIP_DEPS) {
+            if let Some(sym) = self
+                .library_deps
+                .neighbors_directed(start.idx.get().unwrap(), petgraph::Direction::Outgoing)
+                .find_map(|depidx| {
+                    let dep = &self.library_deps[depidx];
+                    if depidx != start.idx.get().unwrap() {
+                        self.lookup_symbol(dep, name, lookup_flags).ok()
+                    } else {
+                        None
+                    }
+                })
+            {
+                return Ok(sym);
+            }
         }
-        trace!("falling back to global search for {}", name);
-        self.lookup_symbol_global(name)
+
+        // Fall back to global search.
+        if !lookup_flags.contains(LookupFlags::SKIP_GLOBAL) {
+            trace!("falling back to global search for {}", name);
+            self.lookup_symbol_global(name)
+        } else {
+            Err(DynlinkError::NotFound {
+                name: name.to_string(),
+            })
+        }
     }
 
     pub(crate) fn lookup_symbol_global(&self, name: &str) -> Result<RelocatedSymbol, DynlinkError> {
@@ -126,6 +151,7 @@ impl Context {
         Ok(f(&*self.inner.lock()?))
     }
 
+    /// Create a new compartment with a given name.
     pub fn add_compartment(&self, name: impl ToString) -> Result<CompartmentRef, DynlinkError> {
         let name = name.to_string();
         let mut inner = self.inner.lock()?;
@@ -139,14 +165,17 @@ impl Context {
         Ok(compartment)
     }
 
+    /// Lookup a given symbol within the context.
     pub fn lookup_symbol(
         &self,
-        ctx: &LibraryRef,
+        start: &LibraryRef,
         name: &str,
+        lookup_flags: LookupFlags,
     ) -> Result<RelocatedSymbol, DynlinkError> {
-        self.inner.lock()?.lookup_symbol(ctx, name)
+        self.inner.lock()?.lookup_symbol(start, name, lookup_flags)
     }
 
+    /// Add an unloaded library to the context (and load it)
     pub fn add_library(
         &self,
         compartment: &CompartmentRef,
@@ -158,6 +187,7 @@ impl Context {
         compartment.load_library(lib, &mut inner, loader)
     }
 
+    /// Iterate through all libraries and process relocations for any libraries that haven't yet been relocated.
     pub fn relocate_all(
         &self,
         roots: impl IntoIterator<Item = LibraryRef>,

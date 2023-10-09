@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-use elf::abi::{DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_PREINIT_ARRAY};
+use elf::abi::{DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ};
 use tracing::{debug, warn};
 
 use crate::DynlinkError;
@@ -44,7 +44,13 @@ impl Library {
             .find(|d| d.d_tag == DT_PREINIT_ARRAY)
             .is_some()
         {
-            warn!("{}: PREINIT_ARRAY is unsupported", self);
+            if dynamic
+                .iter()
+                .find(|d| d.d_tag == DT_PREINIT_ARRAYSZ)
+                .is_some_and(|d| d.d_val() > 0)
+            {
+                warn!("{}: PREINIT_ARRAY is unsupported", self);
+            }
         }
 
         debug!(

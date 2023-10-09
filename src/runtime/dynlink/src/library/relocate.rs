@@ -16,7 +16,10 @@ use elf::{
 use tracing::{debug, error, trace};
 
 use crate::{
-    context::ContextInner, library::RelocState, symbol::RelocatedSymbol, DynlinkError, ECollector,
+    context::ContextInner,
+    library::RelocState,
+    symbol::{LookupFlags, RelocatedSymbol},
+    DynlinkError, ECollector,
 };
 
 use super::{Library, LibraryRef};
@@ -152,9 +155,10 @@ impl Library {
         // Lookup a symbol if the relocation's symbol index is non-zero.
         let symbol = if rel.sym() != 0 {
             let sym = syms.get(rel.sym() as usize)?;
+            let flags = LookupFlags::empty();
             strings
                 .get(sym.st_name as usize)
-                .map(|name| (name, ctx.lookup_symbol(self, name)))
+                .map(|name| (name, ctx.lookup_symbol(self, name, flags)))
                 .ok()
         } else {
             None
@@ -196,17 +200,14 @@ impl Library {
             R_X86_64_DTPMOD64 => {
                 // See the TLS module for understanding where the TLS ID is coming from.
                 let id = if rel.sym() == 0 {
-                    self.tls_id
-                        .as_ref()
-                        .ok_or(DynlinkError::Unknown)?
-                        .as_tls_id()
+                    self.tls_id.as_ref().ok_or(DynlinkError::Unknown)?.tls_id()
                 } else {
                     open_sym()?
                         .lib
                         .tls_id
                         .as_ref()
                         .ok_or(DynlinkError::Unknown)?
-                        .as_tls_id()
+                        .tls_id()
                 };
                 unsafe { *target = id }
             }

@@ -7,6 +7,7 @@ use super::Library;
 
 #[allow(dead_code)]
 impl Library {
+    // Helper to find the TLS program header.
     fn get_tls_phdr(&self) -> Result<Option<ProgramHeader>, DynlinkError> {
         Ok(self
             .get_elf()?
