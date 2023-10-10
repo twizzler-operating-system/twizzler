@@ -24,6 +24,10 @@
 
 - [Gates](./Gates.md)
 
+# Userland Development
+
+- [Porting a Rust Crate](./PortingARustCrate.md)
+
 # Driver Development
 
 - [DMA](./DMA.md)
