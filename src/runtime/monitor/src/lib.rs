@@ -1,4 +1,5 @@
 //#![feature(naked_functions)]
+#![feature(start)]
 
 #[no_mangle]
 pub extern "C" fn monitor_entry_from_bootstrap() {
@@ -28,12 +29,14 @@ extern "C" {
     ) -> isize;
 }
 
-#[no_mangle]
+#[cfg(not(test))]
+#[start]
 pub extern "C" fn main(argc: i32, argv: *const *const u8) -> i32 {
     //TODO: sigpipe?
     unsafe { twizzler_call_lang_start(my_main, argc as isize, argv, 0) as i32 }
 }
 
+#[cfg(not(test))]
 #[no_mangle]
 pub extern "C" fn _init() {}
 

@@ -7,6 +7,7 @@ members = [
     "tools/image_builder",
     "tools/initrd_gen",
     "src/bin/init",
+    "src/bin/bootstrap",
     "src/bin/devmgr",
     "src/bin/netmgr",
     "src/bin/nettest",
@@ -19,31 +20,23 @@ members = [
     "src/lib/twizzler-object",
     "src/lib/twizzler-runtime-api",
     "src/runtime/dynlink",
-    "src/runtime/monitor",
-    "src/runtime/secgate",
-    "src/runtime/twz-rt",
-    "src/runtime/nando",
-    "src/runtime/hello-world",
 ]
+
 exclude = ["toolchain/src/rust"]
 resolver = "2"
 
 [workspace.metadata]
 initrd = [
     "crate:init",
-    "lib:hello-world",
-    "lib:monitor",
-    "lib:twz-rt",
-    #"crate:devmgr",
-    #"crate:netmgr",
-    #"crate:nettest",
-    #"crate:pager",
+    "crate:devmgr",
+    "crate:netmgr",
+    "crate:nettest",
+    "crate:pager",
     #"third-party:hello-world-rs"
 ]
 
 [workspace.metadata.third-party]
 # hello-world-rs = "1.0.0"
-
 
 [profile.release]
 debug = true

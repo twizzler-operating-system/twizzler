@@ -8,8 +8,6 @@ crate-type = ["dylib"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-secgate = { path = "../secgate" }
-nando = { path = "../nando" }
 twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api", features = [
     "runtime",
 ] }

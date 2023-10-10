@@ -32,10 +32,13 @@ impl RelocatedSymbol {
 
 bitflags::bitflags! {
     #[derive(Copy, Clone)]
-    /// Options for use during symbol lookup.
+    /// Options for use during symbol lookup. If all of these flags are specified together, the search will fail.
     pub struct LookupFlags : u32 {
+        /// Look elsewhere first. Note that the symbol may still bind to us if the dep graph has a cycle.
         const SKIP_SELF = 1;
+        /// Don't look through dependencies, go straight to global search.
         const SKIP_DEPS = 2;
+        /// Don't do a global search.
         const SKIP_GLOBAL = 4;
     }
 }
