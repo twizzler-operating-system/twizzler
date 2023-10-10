@@ -1,13 +1,13 @@
 //! The Twizzler Runtime API is the core interface definition for Twizzler programs, including startup, execution, and libstd support.
 //! It defines a set of traits that, when all implemented, form the full interface that Rust's libstd expects from a Twizzler runtime.
-//! 
+//!
 //! From a high level, a Twizzler program links against Rust's libstd and a particular runtime that will support libstd. That runtime
 //! must implement the minimum set of interfaces required by the [Runtime] trait. Libstd then invokes the runtime functions when needed
 //! (e.g. allocating memory, exiting a thread, etc.). Other libraries may invoke runtime functions directly as well (bypassing libstd),
 //! but note that doing so may not play nicely with libstd's view of the world.
-//! 
+//!
 //! # What does it look like to use the runtime?
-//! 
+//!
 //! When a program (including libstd) wishes to use the runtime, it invokes this library's [get_runtime] function, which will return
 //! a reference (a &'static dyn reference) to a type that implements the Runtime trait. From there, runtime functions can be called:
 //! ```
@@ -15,22 +15,21 @@
 //! runtime.get_monotonic()
 //! ```
 //! Note that this function is only exposed if the runtime feature is enabled.
-//! 
+//!
 //! # So who is providing that type that implements [Runtime]?
-//! 
+//!
 //! Another library! Right now, Twizzler defines two runtimes: a "minimal" runtime, and a "reference" runtime. Those are not implemented
 //! in this crate. The minimal runtime is implemented as part of the twizzler-abi crate, as it's the most "baremetal" runtime. The
 //! reference runtime is implemented as a standalone set of crates. Of course, other runtimes can be implemented, as long as they implement
 //! the required interface in this crate, libstd will work.
-//! 
+//!
 //! ## Okay but how does get_runtime work?
-//! 
+//!
 //! Well, [get_runtime] is just a wrapper around calling an extern "C" function, [__twz_get_runtime]. This symbol is external, so not
 //! defined in this crate. A crate that implements [Runtime] then defines [__twz_get_runtime], allowing link-time swapping of runtimes.
 //! The twizzler-abi crate defines this symbol with (weak linkage)[https://en.wikipedia.org/wiki/Weak_symbol], causing it to be linked
 //! only if another (strong) definition is not present. Thus, a program can link to a specific runtime, but it can also be loaded by a
 //! dynamic linker and have its runtime selected at load time.
-
 
 #![no_std]
 #![feature(unboxed_closures)]
@@ -40,11 +39,7 @@ use core::{
     alloc::GlobalAlloc, ffi::CStr, num::NonZeroUsize, sync::atomic::AtomicU32, time::Duration,
 };
 
-#[cfg(all(
-    feature = "runtime",
-    not(feature = "kernel"),
-    feature = "rustc-dep-of-std"
-))]
+#[cfg(feature = "rt0")]
 pub mod rt0;
 
 /// Core object ID type in Twizzler.
@@ -376,7 +371,7 @@ impl AsRef<Library> for Library {
 /// Internal library ID type.
 pub struct LibraryId(pub usize);
 
-/// The runtime must ensure that the addresses are constant for the whole life of the library type, and that all threads 
+/// The runtime must ensure that the addresses are constant for the whole life of the library type, and that all threads
 /// may see the type.
 unsafe impl Send for Library {}
 
