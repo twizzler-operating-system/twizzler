@@ -22,7 +22,7 @@ use twizzler_abi::{
     syscall::{sys_object_create, ObjectSource},
 };
 
-fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID, libstd: ObjID) {
+fn start_runtime(runtime_monitor: ObjID, runtime_library: ObjID, libstd: ObjID) {
     let ctx = dynlink::context::Context::default();
     let monitor_compartment = ctx.add_compartment("monitor").unwrap();
 
@@ -127,13 +127,13 @@ fn main() {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let exec_id = find_init_name("libhello_world.so").unwrap();
+    //let exec_id = find_init_name("libhello_world.so").unwrap();
     let runtime_lib = find_init_name("libtwz_rt.so").unwrap();
     let monitor = find_init_name("libmonitor.so").unwrap();
     let libstd = find_init_name("libstd.so").unwrap();
 
     eprintln!("=== BOOTSTRAP RUNTIME ===");
-    start_runtime(exec_id, monitor, runtime_lib, libstd);
+    start_runtime(monitor, runtime_lib, libstd);
 
     let _runtime = twizzler_abi::runtime::__twz_get_runtime();
 }

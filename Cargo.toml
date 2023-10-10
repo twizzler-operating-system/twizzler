@@ -20,6 +20,8 @@ members = [
     "src/lib/twizzler-object",
     "src/lib/twizzler-runtime-api",
     "src/runtime/dynlink",
+    "src/runtime/monitor",
+    "src/runtime/twz-rt",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -27,11 +29,13 @@ resolver = "2"
 
 [workspace.metadata]
 initrd = [
-    "crate:init",
+    "crate:bootstrap",
     "crate:devmgr",
     "crate:netmgr",
     "crate:nettest",
     "crate:pager",
+    "lib:twz-rt",
+    "lib:monitor",
     #"third-party:hello-world-rs"
 ]
 
