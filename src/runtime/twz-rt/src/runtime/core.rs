@@ -1,5 +1,7 @@
 use twizzler_runtime_api::CoreRuntime;
 
+use crate::preinit_println;
+
 use super::ReferenceRuntime;
 
 impl CoreRuntime for ReferenceRuntime {
@@ -22,9 +24,9 @@ impl CoreRuntime for ReferenceRuntime {
             twizzler_runtime_api::BasicAux,
         ) -> twizzler_runtime_api::BasicReturn,
     ) -> ! {
-        twizzler_abi::syscall::sys_kernel_console_write(
-            b"hello from refruntime entry\n",
-            twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
+        preinit_println!(
+            "hello world from refruntime entry, with println {:p} !",
+            arg
         );
         loop {}
         todo!()
