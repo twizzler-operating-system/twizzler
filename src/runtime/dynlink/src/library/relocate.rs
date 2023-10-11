@@ -3,9 +3,7 @@ use std::{mem::size_of, sync::Arc};
 use elf::{
     abi::{
         DF_TEXTREL, DT_FLAGS, DT_FLAGS_1, DT_JMPREL, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_REL,
-        DT_RELA, DT_RELAENT, DT_RELASZ, DT_RELENT, DT_RELSZ, R_X86_64_64, R_X86_64_DTPMOD64,
-        R_X86_64_DTPOFF64, R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT, R_X86_64_RELATIVE,
-        R_X86_64_TPOFF64, STB_WEAK,
+        DT_RELA, DT_RELAENT, DT_RELASZ, DT_RELENT, DT_RELSZ, STB_WEAK,
     },
     endian::NativeEndian,
     parse::{ParseAt, ParsingIterator},
@@ -20,6 +18,10 @@ use crate::{
     library::RelocState,
     symbol::{LookupFlags, RelocatedSymbol},
     DynlinkError, ECollector,
+};
+
+use crate::arch::{
+    REL_DTPMOD, REL_DTPOFF, REL_GOT, REL_PLT, REL_RELATIVE, REL_SYMBOLIC, REL_TPOFF,
 };
 
 use super::{Library, LibraryRef};
@@ -190,14 +192,12 @@ impl Library {
 
         // This is where the magic happens.
         match rel.r_type() {
-            R_X86_64_RELATIVE => unsafe { *target = base.wrapping_add_signed(addend) },
-            R_X86_64_64 => unsafe {
+            REL_RELATIVE => unsafe { *target = base.wrapping_add_signed(addend) },
+            REL_SYMBOLIC => unsafe {
                 *target = open_sym()?.reloc_value().wrapping_add_signed(addend)
             },
-            R_X86_64_JUMP_SLOT | R_X86_64_GLOB_DAT => unsafe {
-                *target = open_sym()?.reloc_value()
-            },
-            R_X86_64_DTPMOD64 => {
+            REL_PLT | REL_GOT => unsafe { *target = open_sym()?.reloc_value() },
+            REL_DTPMOD => {
                 // See the TLS module for understanding where the TLS ID is coming from.
                 let id = if rel.sym() == 0 {
                     self.tls_id.as_ref().ok_or(DynlinkError::Unknown)?.tls_id()
@@ -211,11 +211,11 @@ impl Library {
                 };
                 unsafe { *target = id }
             }
-            R_X86_64_DTPOFF64 => {
+            REL_DTPOFF => {
                 let val = open_sym().map(|sym| sym.raw_value()).unwrap_or(0);
                 unsafe { *target = val.wrapping_add_signed(addend) }
             }
-            R_X86_64_TPOFF64 => {
+            REL_TPOFF => {
                 if let Some(tls) = self.tls_id {
                     let val = open_sym().map(|sym| sym.raw_value()).unwrap_or(0);
                     unsafe {
