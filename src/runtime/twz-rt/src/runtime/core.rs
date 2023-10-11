@@ -1,15 +1,46 @@
-use twizzler_runtime_api::CoreRuntime;
+use dynlink::{
+    context::{ImportantThing, RuntimeInitInfo},
+    library::CtorInfo,
+};
+use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
 
-use crate::preinit_println;
+use crate::{
+    preinit::{preinit_abort, preinit_unwrap},
+    preinit_println,
+};
 
 use super::ReferenceRuntime;
+
+fn build_basic_aux(aux: &[AuxEntry]) -> BasicAux {
+    let args = aux
+        .iter()
+        .find_map(|aux| match aux {
+            AuxEntry::Arguments(len, addr) => Some((*len, *addr as usize as *const _)),
+            _ => None,
+        })
+        .unwrap_or((0, core::ptr::null()));
+
+    let env = aux
+        .iter()
+        .find_map(|aux| match aux {
+            AuxEntry::Environment(addr) => Some(*addr as usize as *const _),
+            _ => None,
+        })
+        .unwrap_or(core::ptr::null());
+
+    BasicAux {
+        argc: args.0,
+        args: args.1,
+        env,
+    }
+}
 
 impl CoreRuntime for ReferenceRuntime {
     fn default_allocator(&self) -> &'static dyn std::alloc::GlobalAlloc {
         todo!()
     }
 
-    fn exit(&self, code: i32) -> ! {
+    fn exit(&self, _code: i32) -> ! {
         todo!()
     }
 
@@ -19,16 +50,84 @@ impl CoreRuntime for ReferenceRuntime {
 
     fn runtime_entry(
         &self,
-        arg: *const twizzler_runtime_api::AuxEntry,
+        aux: *const twizzler_runtime_api::AuxEntry,
         std_entry: unsafe extern "C" fn(
             twizzler_runtime_api::BasicAux,
         ) -> twizzler_runtime_api::BasicReturn,
     ) -> ! {
-        preinit_println!(
-            "hello world from refruntime entry, with println {:p} !",
-            arg
-        );
-        loop {}
-        todo!()
+        // Step 1: build the aux slice
+        let aux_len = unsafe {
+            let mut count = 0;
+            let mut tmp = aux;
+            while !tmp.is_null() {
+                match preinit_unwrap(tmp.as_ref()) {
+                    AuxEntry::Null => break,
+                    _ => {}
+                }
+                tmp = tmp.add(1);
+                count += 1;
+            }
+            count
+        };
+        let aux_slice = if aux.is_null() || aux_len == 0 {
+            preinit_println!("no AUX info provided");
+            preinit_abort();
+        } else {
+            unsafe { core::slice::from_raw_parts(aux, aux_len) }
+        };
+
+        // Step 2: do some early AUX processing
+        let init_info = preinit_unwrap(aux_slice.iter().find_map(|aux| match aux {
+            twizzler_runtime_api::AuxEntry::RuntimeInfo(info) => Some(*info),
+            _ => None,
+        }));
+        let init_info = unsafe { preinit_unwrap((init_info as *const RuntimeInitInfo).as_ref()) };
+
+        // Step 3: bootstrap pre-std stuff: upcalls, allocator, TLS, constructors (the order matters, ctors need to happen last)
+        twizzler_abi::syscall::sys_thread_set_upcall(crate::arch::rr_upcall_entry);
+        preinit_println!("A");
+        self.init_allocator(init_info);
+        self.init_tls(init_info);
+        self.init_ctors(init_info.ctor_infos());
+
+        // Step 4: call into libstd to finish setting up the standard library and call main
+        let ba = build_basic_aux(aux_slice);
+        let ret = unsafe { std_entry(ba) };
+        self.exit(ret.code);
+    }
+}
+
+impl ReferenceRuntime {
+    fn init_ctors(&self, ctor_array: &[CtorInfo]) {
+        for ctor in ctor_array {
+            unsafe {
+                if ctor.legacy_init != 0 {
+                    (core::mem::transmute::<_, extern "C" fn()>(ctor.legacy_init as *const u8))();
+                }
+                let init_slice: &[*const u8] =
+                    core::slice::from_raw_parts(ctor.init_array as *const _, ctor.init_array_len);
+                for call in init_slice {
+                    (core::mem::transmute::<_, extern "C" fn()>(*call))();
+                }
+            }
+        }
+    }
+
+    fn init_allocator(&self, info: &RuntimeInitInfo) {
+        for x in info.important_things() {
+            match x {
+                ImportantThing::Object(obj) => match obj.kind {
+                    dynlink::context::ImportantObjectKind::Heap => {
+                        todo!()
+                    }
+                    _ => {}
+                },
+            }
+        }
+    }
+
+    fn init_tls(&self, info: &RuntimeInitInfo) {
+        let tls = info.tls_region.get_thread_pointer_value();
+        twizzler_abi::syscall::sys_thread_settls(tls as u64);
     }
 }

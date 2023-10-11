@@ -206,6 +206,10 @@ impl Drop for TlsRegion {
 }
 
 impl TlsRegion {
+    pub fn get_thread_pointer_value(&self) -> usize {
+        self.thread_pointer.as_ptr() as usize
+    }
+
     pub(crate) fn set_dtv_entry(&self, tm: &TlsModule) {
         let dtv_slice =
             unsafe { core::slice::from_raw_parts_mut(self.dtv.as_ptr(), self.num_dtv_entries) };

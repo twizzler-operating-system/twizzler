@@ -50,11 +50,11 @@ fn start_runtime(runtime_monitor: ObjID, runtime_library: ObjID, libstd: ObjID) 
     let runtime = ctx
         .add_library(&monitor_compartment, rt_library, &mut loader)
         .unwrap();
-    let _roots = ctx.relocate_all([monitor.clone(), runtime]).unwrap();
+    let roots = ctx.relocate_all([monitor.clone(), runtime]).unwrap();
     //ctx.add_library(&monitor_compartment, libstd_library, &mut loader)
     //    .unwrap();
 
-    let _tls = monitor_compartment.build_tls_region(()).unwrap();
+    let tls = monitor_compartment.build_tls_region(()).unwrap();
 
     eprintln!("== Context Ready, Building Arguments ==");
 
@@ -69,8 +69,13 @@ fn start_runtime(runtime_monitor: ObjID, runtime_library: ObjID, libstd: ObjID) 
 
     let value = entry.reloc_value() as usize;
     eprintln!("==> Jumping to {:x}", value);
-    let ptr: extern "C" fn() = unsafe { core::mem::transmute(value) };
-    (ptr)();
+    let ptr: extern "C" fn(usize) = unsafe { core::mem::transmute(value) };
+
+    let info = ctx.build_runtime_info(roots, tls).unwrap();
+    let info_ptr = &info as *const _ as usize;
+    let aux = vec![AuxEntry::RuntimeInfo(info_ptr), AuxEntry::Null];
+    let aux_ptr = aux.as_slice().as_ptr();
+    (ptr)(aux_ptr as usize);
 }
 
 struct Loader {}
@@ -148,3 +153,4 @@ use twizzler_abi::{
     },
 };
 use twizzler_object::{Object, ObjectInitFlags};
+use twizzler_runtime_api::AuxEntry;

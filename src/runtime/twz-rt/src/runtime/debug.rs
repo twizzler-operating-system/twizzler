@@ -5,7 +5,7 @@ use super::ReferenceRuntime;
 impl DebugRuntime for ReferenceRuntime {
     fn get_library(
         &self,
-        id: twizzler_runtime_api::LibraryId,
+        _id: twizzler_runtime_api::LibraryId,
     ) -> Option<twizzler_runtime_api::Library> {
         todo!()
     }
@@ -16,15 +16,15 @@ impl DebugRuntime for ReferenceRuntime {
 
     fn get_library_segment(
         &self,
-        lib: &twizzler_runtime_api::Library,
-        seg: usize,
+        _lib: &twizzler_runtime_api::Library,
+        _seg: usize,
     ) -> Option<twizzler_runtime_api::AddrRange> {
         todo!()
     }
 
     fn get_full_mapping(
         &self,
-        lib: &twizzler_runtime_api::Library,
+        _lib: &twizzler_runtime_api::Library,
     ) -> Option<twizzler_runtime_api::ObjectHandle> {
         todo!()
     }
