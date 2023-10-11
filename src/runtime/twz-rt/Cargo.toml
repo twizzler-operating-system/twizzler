@@ -14,3 +14,4 @@ twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api", features = [
 thiserror = "1.0"
 tracing = "0.1"
 twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
+dynlink = { path = "../dynlink" }

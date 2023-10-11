@@ -264,6 +264,11 @@ impl Thread {
 
     pub fn send_upcall(&self, info: UpcallInfo) {
         // TODO
+        logln!(
+            "upcall: {:?} {:?}",
+            info,
+            self.arch.entry_registers.borrow()
+        );
         let ctx = current_memory_context().unwrap();
         let upcall = ctx.get_upcall().unwrap();
         self.arch_queue_upcall(upcall, info);

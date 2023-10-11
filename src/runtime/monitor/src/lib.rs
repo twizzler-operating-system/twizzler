@@ -10,8 +10,6 @@ pub extern "C" fn monitor_entry_from_bootstrap(aux: *const AuxEntry) {
         twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
     );
     unsafe { twizzler_runtime_api::rt0::rust_entry(aux) }
-    loop {}
-    //println!("Hello, world!");
 }
 
 pub fn my_main() {

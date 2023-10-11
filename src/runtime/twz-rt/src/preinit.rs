@@ -63,6 +63,7 @@ pub fn preinit_unwrap<T>(op: Option<T>) -> T {
     }
 }
 
+#[allow(dead_code)]
 pub fn preinit_unwrap_result<T, E: core::fmt::Display>(op: Result<T, E>) -> T {
     match op {
         Ok(item) => item,

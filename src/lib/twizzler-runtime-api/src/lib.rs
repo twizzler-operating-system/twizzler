@@ -60,6 +60,8 @@ pub enum AuxEntry {
     Arguments(usize, u64),
     /// The object ID of the executable.
     ExecId(ObjID),
+    /// Initial runtime information. The value is runtime-specific.
+    RuntimeInfo(usize),
 }
 
 /// Full runtime trait, composed of smaller traits

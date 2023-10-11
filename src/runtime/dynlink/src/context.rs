@@ -10,8 +10,9 @@ use tracing::{debug, trace};
 
 use crate::{
     compartment::{Compartment, CompartmentRef},
-    library::{Library, LibraryLoader, LibraryRef},
+    library::{CtorInfo, InitState, Library, LibraryLoader, LibraryRef},
     symbol::{LookupFlags, RelocatedSymbol},
+    tls::TlsRegion,
     DynlinkError, ECollector,
 };
 
@@ -27,6 +28,8 @@ pub(crate) struct ContextInner {
     // We care about both names and dependency ordering for libraries.
     pub(crate) library_names: HashMap<String, LibraryRef>,
     pub(crate) library_deps: StableDiGraph<LibraryRef, ()>,
+
+    pub(crate) static_ctors: Vec<CtorInfo>,
 }
 
 #[allow(dead_code)]
@@ -128,6 +131,39 @@ impl ContextInner {
             name: name.to_string(),
         })
     }
+
+    fn build_ctors<I>(&mut self, roots: I) -> Result<&[CtorInfo], DynlinkError>
+    where
+        I: IntoIterator<Item = LibraryRef>,
+    {
+        let mut ctors = vec![];
+        self.with_dfs_postorder(roots, |lib| {
+            if lib.try_set_init_state(InitState::Uninit, InitState::StaticUninit) {
+                ctors.push(lib.get_ctor_info())
+            }
+        });
+        let mut ctors = ctors.into_iter().ecollect::<Vec<_>>()?;
+        self.static_ctors.append(&mut ctors);
+        Ok(&self.static_ctors)
+    }
+
+    pub(crate) fn build_runtime_info<I>(
+        &mut self,
+        roots: I,
+        tls: TlsRegion,
+    ) -> Result<RuntimeInitInfo, DynlinkError>
+    where
+        I: IntoIterator<Item = LibraryRef>,
+    {
+        let ctors = self.build_ctors(roots)?;
+        Ok(RuntimeInitInfo::new(
+            ctors.as_ptr(),
+            ctors.len(),
+            tls,
+            core::ptr::null(),
+            0,
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -175,6 +211,18 @@ impl Context {
         self.inner.lock()?.lookup_symbol(start, name, lookup_flags)
     }
 
+    /// Get initial runtime information for bootstrapping.
+    pub fn build_runtime_info<I>(
+        &self,
+        roots: I,
+        tls: TlsRegion,
+    ) -> Result<RuntimeInitInfo, DynlinkError>
+    where
+        I: IntoIterator<Item = LibraryRef>,
+    {
+        self.inner.lock()?.build_runtime_info(roots, tls)
+    }
+
     /// Add an unloaded library to the context (and load it)
     pub fn add_library(
         &self,
@@ -201,5 +249,66 @@ impl Context {
                 root.relocate(&inner).map(|_| root)
             })
             .ecollect()
+    }
+}
+
+#[repr(C)]
+pub struct RuntimeInitInfo {
+    ctor_info_array: *const CtorInfo,
+    ctor_info_array_len: usize,
+
+    pub tls_region: TlsRegion,
+
+    important_thing_array: *const ImportantThing,
+    important_thing_array_len: usize,
+}
+
+pub enum ImportantObjectKind {
+    Text(u128),
+    Data(u128),
+    Stack,
+    Heap,
+}
+
+pub struct ImportantObject {
+    pub kind: ImportantObjectKind,
+    pub slot: usize,
+}
+
+impl ImportantObject {
+    pub fn new(kind: ImportantObjectKind, slot: usize) -> Self {
+        Self { kind, slot }
+    }
+}
+
+pub enum ImportantThing {
+    Object(ImportantObject),
+}
+
+impl RuntimeInitInfo {
+    pub(crate) fn new(
+        ctor_info_array: *const CtorInfo,
+        ctor_info_array_len: usize,
+        tls_region: TlsRegion,
+        important_thing_array: *const ImportantThing,
+        important_thing_array_len: usize,
+    ) -> Self {
+        Self {
+            ctor_info_array,
+            ctor_info_array_len,
+            tls_region,
+            important_thing_array,
+            important_thing_array_len,
+        }
+    }
+
+    pub fn ctor_infos(&self) -> &[CtorInfo] {
+        unsafe { core::slice::from_raw_parts(self.ctor_info_array, self.ctor_info_array_len) }
+    }
+
+    pub fn important_things(&self) -> &[ImportantThing] {
+        unsafe {
+            core::slice::from_raw_parts(self.important_thing_array, self.important_thing_array_len)
+        }
     }
 }

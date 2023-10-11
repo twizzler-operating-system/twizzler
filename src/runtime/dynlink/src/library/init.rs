@@ -65,8 +65,7 @@ impl Library {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) struct CtorInfo {
+pub struct CtorInfo {
     pub legacy_init: usize,
     pub init_array: usize,
     pub init_array_len: usize,

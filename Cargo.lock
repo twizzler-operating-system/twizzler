@@ -214,6 +214,7 @@ dependencies = [
  "tracing-subscriber",
  "twizzler-abi",
  "twizzler-object",
+ "twizzler-runtime-api",
 ]
 
 [[package]]
@@ -3012,6 +3013,7 @@ dependencies = [
 name = "twz-rt"
 version = "0.1.0"
 dependencies = [
+ "dynlink",
  "thiserror",
  "tracing",
  "twizzler-abi",
