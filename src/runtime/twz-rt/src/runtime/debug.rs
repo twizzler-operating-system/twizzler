@@ -7,11 +7,11 @@ impl DebugRuntime for ReferenceRuntime {
         &self,
         _id: twizzler_runtime_api::LibraryId,
     ) -> Option<twizzler_runtime_api::Library> {
-        todo!()
+        None
     }
 
     fn get_exeid(&self) -> Option<twizzler_runtime_api::LibraryId> {
-        todo!()
+        None
     }
 
     fn get_library_segment(
@@ -19,13 +19,13 @@ impl DebugRuntime for ReferenceRuntime {
         _lib: &twizzler_runtime_api::Library,
         _seg: usize,
     ) -> Option<twizzler_runtime_api::AddrRange> {
-        todo!()
+        None
     }
 
     fn get_full_mapping(
         &self,
         _lib: &twizzler_runtime_api::Library,
     ) -> Option<twizzler_runtime_api::ObjectHandle> {
-        todo!()
+        None
     }
 }

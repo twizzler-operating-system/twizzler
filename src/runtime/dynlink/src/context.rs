@@ -7,6 +7,7 @@ use std::{
 
 use petgraph::stable_graph::StableDiGraph;
 use tracing::{debug, trace};
+use twizzler_abi::object::MAX_SIZE;
 
 use crate::{
     compartment::{Compartment, CompartmentRef},
@@ -30,6 +31,7 @@ pub(crate) struct ContextInner {
     pub(crate) library_deps: StableDiGraph<LibraryRef, ()>,
 
     pub(crate) static_ctors: Vec<CtorInfo>,
+    pub(crate) bootstrap_array: Vec<ImportantThing>,
 }
 
 #[allow(dead_code)]
@@ -147,6 +149,28 @@ impl ContextInner {
         Ok(&self.static_ctors)
     }
 
+    fn build_important_array(&mut self) -> Result<&[ImportantThing], DynlinkError> {
+        let mut ia = vec![];
+        for comp in self.compartment_names.values() {
+            comp.with_inner(|inner| {
+                for ao in inner.alloc_objects() {
+                    debug!(
+                        "adding heap object {:x} to bootstrap array",
+                        ao.slot().vaddr_null()
+                    );
+                    let it = ImportantThing::Object(ImportantObject::new(
+                        ImportantObjectKind::Heap,
+                        ao.slot().vaddr_null() / MAX_SIZE,
+                    ));
+                    ia.push(it);
+                }
+            })?;
+        }
+
+        self.bootstrap_array = ia;
+        Ok(&self.bootstrap_array)
+    }
+
     pub(crate) fn build_runtime_info<I>(
         &mut self,
         roots: I,
@@ -155,14 +179,15 @@ impl ContextInner {
     where
         I: IntoIterator<Item = LibraryRef>,
     {
-        let ctors = self.build_ctors(roots)?;
-        Ok(RuntimeInitInfo::new(
-            ctors.as_ptr(),
-            ctors.len(),
-            tls,
-            core::ptr::null(),
-            0,
-        ))
+        let ctors = {
+            let ctors = self.build_ctors(roots)?;
+            (ctors.as_ptr(), ctors.len())
+        };
+        let ia = {
+            let ia = self.build_important_array()?;
+            (ia.as_ptr(), ia.len())
+        };
+        Ok(RuntimeInitInfo::new(ctors.0, ctors.1, tls, ia.0, ia.1))
     }
 }
 

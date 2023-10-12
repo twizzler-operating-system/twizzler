@@ -15,3 +15,5 @@ thiserror = "1.0"
 tracing = "0.1"
 twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
 dynlink = { path = "../dynlink" }
+bitflags = "2.4"
+talc = { version = "3.1", default-features = false }

@@ -695,6 +695,7 @@ dependencies = [
  "tracing",
  "twizzler-abi",
  "twizzler-object",
+ "twizzler-runtime-api",
 ]
 
 [[package]]
@@ -3013,7 +3014,9 @@ dependencies = [
 name = "twz-rt"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.4.0",
  "dynlink",
+ "talc",
  "thiserror",
  "tracing",
  "twizzler-abi",
