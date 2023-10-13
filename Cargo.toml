@@ -30,6 +30,7 @@ resolver = "2"
 [workspace.metadata]
 initrd = [
     "crate:bootstrap",
+    "crate:init",
     "crate:devmgr",
     "crate:netmgr",
     "crate:nettest",

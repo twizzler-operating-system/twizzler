@@ -274,13 +274,12 @@ fn maybe_build_tests<'a>(
     options.spec = Packages::Packages(
         packages
             .iter()
-            .filter_map(|p| {
-                match p.name().as_str() {
-                    "twizzler-kernel-macros" => None,
-                    "twizzler-runtime-api" => None,
-                    "nvme" => None,
-                    _ => Some(p.name().to_string())
-                }
+            .filter_map(|p| match p.name().as_str() {
+                "twizzler-kernel-macros" => None,
+                "twizzler-runtime-api" => None,
+                "nvme" => None,
+                "twz-rt" => None,
+                _ => Some(p.name().to_string()),
             })
             .collect(),
     );

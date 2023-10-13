@@ -5,7 +5,6 @@ edition = "2021"
 
 [lib]
 crate-type = ["dylib"]
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api", features = [
@@ -17,7 +16,6 @@ twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
 dynlink = { path = "../dynlink" }
 bitflags = "2.4"
 talc = { version = "3.1", default-features = false }
-#tracing-subscriber = { version = "0.3", default-features = false }
 
 [features]
 runtime = []
