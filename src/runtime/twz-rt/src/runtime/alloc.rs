@@ -16,10 +16,7 @@ use twizzler_abi::{
     },
 };
 
-use crate::{
-    preinit_println,
-    runtime::{slot::early_slot_alloc, RuntimeState},
-};
+use crate::runtime::{slot::early_slot_alloc, RuntimeState};
 
 use super::{ReferenceRuntime, OUR_RUNTIME};
 
@@ -54,7 +51,6 @@ struct RuntimeOom {}
 
 impl OomHandler for RuntimeOom {
     fn handle_oom(talc: &mut Talc<Self>, _layout: Layout) -> Result<(), ()> {
-        preinit_println!("got OOM");
         let id = sys_object_create(
             ObjectCreate::new(
                 BackingType::Normal,

@@ -99,7 +99,6 @@ impl CoreRuntime for ReferenceRuntime {
     }
 
     fn pre_main_hook(&self) {
-        preinit_println!("HERE: premain");
         self.set_runtime_ready();
     }
 
@@ -111,9 +110,7 @@ impl ReferenceRuntime {
         for ctor in ctor_array {
             unsafe {
                 if ctor.legacy_init != 0 {
-                    preinit_println!("calling legacy init {:x}", ctor.legacy_init);
                     (core::mem::transmute::<_, extern "C" fn()>(ctor.legacy_init))();
-                    preinit_println!("back!");
                 }
                 if ctor.init_array > 0 && ctor.init_array_len > 0 {
                     let init_slice: &[usize] = core::slice::from_raw_parts(
@@ -121,7 +118,6 @@ impl ReferenceRuntime {
                         ctor.init_array_len,
                     );
                     for call in init_slice.iter().cloned() {
-                        preinit_println!("calling init array {:x}", call);
                         (core::mem::transmute::<_, extern "C" fn()>(call))();
                     }
                 }
