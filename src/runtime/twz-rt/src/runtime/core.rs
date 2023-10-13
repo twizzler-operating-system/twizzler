@@ -1,11 +1,10 @@
-use std::panic::Location;
-
 use dynlink::{context::RuntimeInitInfo, library::CtorInfo};
 use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
 
 use crate::{
     preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
+    runtime::RuntimeState,
 };
 
 use super::{slot::mark_slot_reserved, ReferenceRuntime};
@@ -39,16 +38,23 @@ impl CoreRuntime for ReferenceRuntime {
         self.get_alloc()
     }
 
-    fn exit(&self, _code: i32) -> ! {
-        // TODO
-        preinit_println!("got runtime exit: {}", Location::caller());
-        preinit_abort()
+    fn exit(&self, code: i32) -> ! {
+        if self.state().contains(RuntimeState::READY) {
+            todo!()
+        } else {
+            preinit_println!("runtime exit before runtime ready: {}", code);
+            preinit_abort();
+        }
     }
 
     fn abort(&self) -> ! {
-        // TODO
-        preinit_println!("got runtime abort: {}", Location::caller());
-        preinit_abort()
+        if self.state().contains(RuntimeState::READY) {
+            // TODO: hook into debugging?
+            preinit_abort();
+        } else {
+            preinit_println!("runtime abort before runtime ready");
+            preinit_abort();
+        }
     }
 
     fn runtime_entry(
@@ -99,6 +105,7 @@ impl CoreRuntime for ReferenceRuntime {
     }
 
     fn pre_main_hook(&self) {
+        self.init_slots();
         self.set_runtime_ready();
     }
 

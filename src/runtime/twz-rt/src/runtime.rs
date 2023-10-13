@@ -1,7 +1,5 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use twizzler_runtime_api::Runtime;
-
 mod alloc;
 mod core;
 mod debug;
@@ -34,19 +32,26 @@ impl ReferenceRuntime {
     }
 }
 
-impl Runtime for ReferenceRuntime {}
-
-#[inline]
-#[no_mangle]
-// Returns a reference to the currently-linked Runtime implementation.
-pub fn __twz_get_runtime() -> &'static (dyn Runtime + Sync) {
-    &OUR_RUNTIME
-}
-
 static OUR_RUNTIME: ReferenceRuntime = ReferenceRuntime {
     state: AtomicU32::new(0),
 };
 
-// Ensure the compiler doesn't optimize us away.
-#[used]
-static USE_MARKER: fn() -> &'static (dyn Runtime + Sync) = __twz_get_runtime;
+#[cfg(feature = "runtime")]
+pub(crate) mod do_impl {
+    use twizzler_runtime_api::Runtime;
+
+    use super::ReferenceRuntime;
+
+    impl Runtime for ReferenceRuntime {}
+
+    #[inline]
+    #[no_mangle]
+    // Returns a reference to the currently-linked Runtime implementation.
+    pub fn __twz_get_runtime() -> &'static (dyn Runtime + Sync) {
+        &super::OUR_RUNTIME
+    }
+
+    // Ensure the compiler doesn't optimize us away.
+    #[used]
+    static USE_MARKER: fn() -> &'static (dyn Runtime + Sync) = __twz_get_runtime;
+}

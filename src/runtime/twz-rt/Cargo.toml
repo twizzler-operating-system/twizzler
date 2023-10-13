@@ -18,3 +18,7 @@ dynlink = { path = "../dynlink" }
 bitflags = "2.4"
 talc = { version = "3.1", default-features = false }
 #tracing-subscriber = { version = "0.3", default-features = false }
+
+[features]
+runtime = []
+default = ["runtime"]

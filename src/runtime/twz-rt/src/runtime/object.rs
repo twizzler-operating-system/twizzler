@@ -1,10 +1,10 @@
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::sys_object_map,
+    syscall::{sys_object_map, sys_object_unmap, UnmapFlags},
 };
 use twizzler_runtime_api::{MapError, MapFlags, ObjectHandle, ObjectRuntime};
 
-use super::{slot::early_slot_alloc, ReferenceRuntime};
+use super::ReferenceRuntime;
 
 impl ObjectRuntime for ReferenceRuntime {
     fn map_object(
@@ -22,7 +22,7 @@ impl ObjectRuntime for ReferenceRuntime {
         if flags.contains(MapFlags::EXEC) {
             prot.insert(Protections::EXEC);
         }
-        let slot = early_slot_alloc().ok_or(MapError::OutOfResources)?;
+        let slot = self.allocate_slot().ok_or(MapError::OutOfResources)?;
         let _ = sys_object_map(
             None,
             ObjID::new(id),
@@ -41,5 +41,9 @@ impl ObjectRuntime for ReferenceRuntime {
 
     fn unmap_object(&self, _handle: &twizzler_runtime_api::ObjectHandle) {}
 
-    fn release_handle(&self, _handle: &mut twizzler_runtime_api::ObjectHandle) {}
+    fn release_handle(&self, handle: &mut twizzler_runtime_api::ObjectHandle) {
+        let slot = (handle.start as usize) / MAX_SIZE;
+
+        if sys_object_unmap(None, slot, UnmapFlags::empty()).is_ok() {}
+    }
 }

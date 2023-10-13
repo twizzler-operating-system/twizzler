@@ -16,7 +16,7 @@ use twizzler_abi::{
     },
 };
 
-use crate::runtime::{slot::early_slot_alloc, RuntimeState};
+use crate::runtime::RuntimeState;
 
 use super::{ReferenceRuntime, OUR_RUNTIME};
 
@@ -63,7 +63,7 @@ impl OomHandler for RuntimeOom {
         )
         .map_err(|_| ())?;
 
-        let slot = early_slot_alloc().ok_or(())?;
+        let slot = OUR_RUNTIME.allocate_slot().ok_or(())?;
 
         sys_object_map(
             None,

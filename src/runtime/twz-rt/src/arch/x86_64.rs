@@ -2,6 +2,7 @@ use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
 
 use crate::preinit_println;
 
+#[cfg(feature = "runtime")]
 #[no_mangle]
 pub(crate) unsafe extern "C" fn rr_upcall_entry(
     rdi: *const UpcallFrame,
@@ -26,12 +27,13 @@ pub(crate) unsafe extern "C" fn rr_upcall_entry(
     );
 }
 
+#[cfg(feature = "runtime")]
 #[no_mangle]
 pub(crate) unsafe extern "C" fn rr_upcall_entry2(
     rdi: *const UpcallFrame,
     rsi: *const UpcallInfo,
 ) -> ! {
-    use crate::runtime::__twz_get_runtime;
+    use crate::runtime::do_impl::__twz_get_runtime;
 
     preinit_println!(
         "got upcall: {:?}, {:?}",

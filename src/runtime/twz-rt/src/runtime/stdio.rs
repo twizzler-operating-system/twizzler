@@ -23,6 +23,42 @@ static LOCAL_STDOUT: RwLock<Option<Arc<dyn IoWrite + Sync + Send>>> = RwLock::ne
 static LOCAL_STDERR: RwLock<Option<Arc<dyn IoWrite + Sync + Send + RefUnwindSafe>>> =
     RwLock::new(None);
 
+// TODO: configure fallbacks
+
+#[allow(dead_code)]
+impl ReferenceRuntime {
+    pub fn set_stdin(&self, thread_local: bool, stream: Arc<dyn IoRead + Sync + Send>) {
+        // Unwrap-Ok: we don't panic when holding the write lock.
+        if thread_local {
+            *THREAD_STDIN.write().unwrap() = Some(stream);
+        } else {
+            *LOCAL_STDIN.write().unwrap() = Some(stream);
+        }
+    }
+
+    pub fn set_stdout(&self, thread_local: bool, stream: Arc<dyn IoWrite + Sync + Send>) {
+        // Unwrap-Ok: we don't panic when holding the write lock.
+        if thread_local {
+            *THREAD_STDOUT.write().unwrap() = Some(stream);
+        } else {
+            *LOCAL_STDOUT.write().unwrap() = Some(stream);
+        }
+    }
+
+    pub fn set_stderr(
+        &self,
+        thread_local: bool,
+        stream: Arc<dyn IoWrite + Sync + Send + RefUnwindSafe>,
+    ) {
+        // Unwrap-Ok: we don't panic when holding the write lock.
+        if thread_local {
+            *THREAD_STDERR.write().unwrap() = Some(stream);
+        } else {
+            *LOCAL_STDERR.write().unwrap() = Some(stream);
+        }
+    }
+}
+
 impl RustStdioRuntime for ReferenceRuntime {
     fn with_panic_output(&self, cb: twizzler_runtime_api::IoWritePanicDynCallback<'_, ()>) {
         // For panic output, try to never wait on any locks. Also, catch unwinds and treat

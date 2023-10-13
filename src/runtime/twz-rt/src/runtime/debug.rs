@@ -2,6 +2,8 @@ use twizzler_runtime_api::DebugRuntime;
 
 use super::ReferenceRuntime;
 
+// TODO: hook into dynlink for this stuff
+
 impl DebugRuntime for ReferenceRuntime {
     fn get_library(
         &self,

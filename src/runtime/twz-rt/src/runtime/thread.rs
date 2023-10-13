@@ -1,6 +1,6 @@
 use dynlink::tls::Tcb;
 use twizzler_abi::syscall::{
-    sys_thread_sync, ThreadSync, ThreadSyncError, ThreadSyncFlags, ThreadSyncOp,
+    sys_thread_sync, sys_thread_yield, ThreadSync, ThreadSyncError, ThreadSyncFlags, ThreadSyncOp,
     ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
 use twizzler_runtime_api::ThreadRuntime;
@@ -8,6 +8,12 @@ use twizzler_runtime_api::ThreadRuntime;
 use crate::preinit_println;
 
 use super::ReferenceRuntime;
+
+pub struct RuntimeThreadControl {
+    name: String,
+}
+
+// TODO: implement spawning and joining
 
 impl ThreadRuntime for ReferenceRuntime {
     fn available_parallelism(&self) -> core::num::NonZeroUsize {
@@ -20,6 +26,7 @@ impl ThreadRuntime for ReferenceRuntime {
         expected: u32,
         timeout: Option<core::time::Duration>,
     ) -> bool {
+        preinit_println!("AAAAA");
         // No need to wait if the value already changed.
         if futex.load(core::sync::atomic::Ordering::Relaxed) != expected {
             return true;
@@ -66,11 +73,19 @@ impl ThreadRuntime for ReferenceRuntime {
         todo!()
     }
 
-    fn yield_now(&self) {}
+    fn yield_now(&self) {
+        sys_thread_yield()
+    }
 
-    fn set_name(&self, _name: &std::ffi::CStr) {}
+    fn set_name(&self, name: &std::ffi::CStr) {
+        let tp: &mut Tcb<RuntimeThreadControl> =
+            unsafe { dynlink::tls::get_thread_control_block().as_mut().unwrap() };
+        tp.runtime_data.name = name.to_string_lossy().to_string();
+    }
 
-    fn sleep(&self, _duration: std::time::Duration) {}
+    fn sleep(&self, duration: std::time::Duration) {
+        let _ = sys_thread_sync(&mut [], Some(duration));
+    }
 
     fn join(
         &self,
