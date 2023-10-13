@@ -1,3 +1,5 @@
+//! Top level runtime module, managing the basic presentation of the runtime.
+
 use std::sync::atomic::{AtomicU32, Ordering};
 
 mod alloc;
@@ -11,11 +13,13 @@ mod stdio;
 mod thread;
 mod time;
 
+/// The runtime trait implementer itself.
 pub struct ReferenceRuntime {
     pub(crate) state: AtomicU32,
 }
 
 bitflags::bitflags! {
+    /// Various state flags for the runtime.
     pub struct RuntimeState : u32 {
         const READY = 1;
     }

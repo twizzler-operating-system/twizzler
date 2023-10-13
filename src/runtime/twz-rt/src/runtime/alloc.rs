@@ -1,3 +1,7 @@
+//! Primary allocator, for compartment-local allocation. One tricky aspect to this is that we need to support allocation before the
+//! runtime is fully ready, so to avoid calling into std, we implement a manual spinlock around the allocator until the better Mutex
+//! is available. Once it is, we move the allocator into the mutex, and use that.
+
 use core::{
     alloc::{GlobalAlloc, Layout},
     cell::UnsafeCell,
@@ -37,6 +41,7 @@ impl ReferenceRuntime {
 
 pub struct LocalAllocator {
     runtime: &'static ReferenceRuntime,
+    // early allocation need a lock, but mutex isn't usable yet.
     early_lock: AtomicBool,
     early_alloc: UnsafeCell<Option<LocalAllocatorInner>>,
     inner: Mutex<Option<LocalAllocatorInner>>,

@@ -1,3 +1,5 @@
+//! Implements time routines.
+
 use std::time::Duration;
 
 use twizzler_abi::syscall::{sys_read_clock_info, ClockSource, ReadClockFlags};

@@ -1,3 +1,7 @@
+//! Implements stdio streams. For each one (stdin, stdout, and stderr), we have two possible sinks: a thread-local, and a "local"
+//! destination (here, local to this particular linking to this runtime). We try the thread-local first, if available, and if not, try
+//! the runtime local option. If that isn't present, we fallback to the Fallback writer and reader.
+
 use std::{
     panic::RefUnwindSafe,
     sync::{Arc, RwLock},

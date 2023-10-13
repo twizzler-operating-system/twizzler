@@ -6,6 +6,8 @@ use twizzler_runtime_api::{MapError, MapFlags, ObjectHandle, ObjectRuntime};
 
 use super::ReferenceRuntime;
 
+// TODO: implement an object cache
+
 impl ObjectRuntime for ReferenceRuntime {
     fn map_object(
         &self,
@@ -44,6 +46,8 @@ impl ObjectRuntime for ReferenceRuntime {
     fn release_handle(&self, handle: &mut twizzler_runtime_api::ObjectHandle) {
         let slot = (handle.start as usize) / MAX_SIZE;
 
-        if sys_object_unmap(None, slot, UnmapFlags::empty()).is_ok() {}
+        if sys_object_unmap(None, slot, UnmapFlags::empty()).is_ok() {
+            self.release_slot(slot);
+        }
     }
 }

@@ -1,3 +1,5 @@
+//! Utilities that enable formatted printing for early runtime init.
+
 use core::fmt::Write;
 
 use twizzler_abi::syscall::{sys_kernel_console_write, KernelConsoleWriteFlags};

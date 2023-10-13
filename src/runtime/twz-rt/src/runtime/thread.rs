@@ -1,3 +1,5 @@
+//! Implements thread management routines. Largely unimplemented still.
+
 use dynlink::tls::Tcb;
 use twizzler_abi::syscall::{
     sys_thread_sync, sys_thread_yield, ThreadSync, ThreadSyncError, ThreadSyncFlags, ThreadSyncOp,

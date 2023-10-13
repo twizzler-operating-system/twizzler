@@ -1,3 +1,5 @@
+//! Implements the core runtime functions.
+
 use dynlink::{context::RuntimeInitInfo, library::CtorInfo};
 use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
 
@@ -40,6 +42,7 @@ impl CoreRuntime for ReferenceRuntime {
 
     fn exit(&self, code: i32) -> ! {
         if self.state().contains(RuntimeState::READY) {
+            // TODO: hook into debugging?
             todo!()
         } else {
             preinit_println!("runtime exit before runtime ready: {}", code);
@@ -64,7 +67,7 @@ impl CoreRuntime for ReferenceRuntime {
             twizzler_runtime_api::BasicAux,
         ) -> twizzler_runtime_api::BasicReturn,
     ) -> ! {
-        // Step 1: build the aux slice
+        // Step 1: build the aux slice (count until we see a null entry)
         let aux_len = unsafe {
             let mut count = 0;
             let mut tmp = aux;
@@ -133,7 +136,7 @@ impl ReferenceRuntime {
     }
 
     fn init_allocator(&self, _info: &RuntimeInitInfo) {
-        // TODO: hack
+        // TODO: fix this hack
         for slot in 0..100 {
             mark_slot_reserved(slot)
         }
