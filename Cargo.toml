@@ -7,6 +7,7 @@ members = [
     "tools/image_builder",
     "tools/initrd_gen",
     "src/bin/init",
+    "src/bin/bootstrap",
     "src/bin/devmgr",
     "src/bin/netmgr",
     "src/bin/nettest",
@@ -18,7 +19,9 @@ members = [
     "src/lib/twizzler-async",
     "src/lib/twizzler-object",
     "src/lib/twizzler-runtime-api",
+    "src/runtime/dynlink",
 ]
+
 exclude = ["toolchain/src/rust"]
 resolver = "2"
 
@@ -34,7 +37,6 @@ initrd = [
 
 [workspace.metadata.third-party]
 # hello-world-rs = "1.0.0"
-
 
 [profile.release]
 debug = true
