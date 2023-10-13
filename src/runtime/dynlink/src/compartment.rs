@@ -77,6 +77,10 @@ impl CompartmentInner {
             tls_info: Default::default(),
         }
     }
+
+    pub(crate) fn alloc_objects(&self) -> &[Object<u8>] {
+        &self.alloc_objects
+    }
 }
 
 #[allow(dead_code)]

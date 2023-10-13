@@ -1,7 +1,6 @@
-use dynlink::{
-    context::{ImportantThing, RuntimeInitInfo},
-    library::CtorInfo,
-};
+use std::panic::Location;
+
+use dynlink::{context::RuntimeInitInfo, library::CtorInfo};
 use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
 
 use crate::{
@@ -9,7 +8,7 @@ use crate::{
     preinit_println,
 };
 
-use super::ReferenceRuntime;
+use super::{slot::mark_slot_reserved, ReferenceRuntime};
 
 fn build_basic_aux(aux: &[AuxEntry]) -> BasicAux {
     let args = aux
@@ -37,15 +36,19 @@ fn build_basic_aux(aux: &[AuxEntry]) -> BasicAux {
 
 impl CoreRuntime for ReferenceRuntime {
     fn default_allocator(&self) -> &'static dyn std::alloc::GlobalAlloc {
-        todo!()
+        self.get_alloc()
     }
 
     fn exit(&self, _code: i32) -> ! {
-        todo!()
+        // TODO
+        preinit_println!("got runtime exit: {}", Location::caller());
+        preinit_abort()
     }
 
     fn abort(&self) -> ! {
-        todo!()
+        // TODO
+        preinit_println!("got runtime abort: {}", Location::caller());
+        preinit_abort()
     }
 
     fn runtime_entry(
@@ -85,7 +88,6 @@ impl CoreRuntime for ReferenceRuntime {
 
         // Step 3: bootstrap pre-std stuff: upcalls, allocator, TLS, constructors (the order matters, ctors need to happen last)
         twizzler_abi::syscall::sys_thread_set_upcall(crate::arch::rr_upcall_entry);
-        preinit_println!("A");
         self.init_allocator(init_info);
         self.init_tls(init_info);
         self.init_ctors(init_info.ctor_infos());
@@ -95,6 +97,13 @@ impl CoreRuntime for ReferenceRuntime {
         let ret = unsafe { std_entry(ba) };
         self.exit(ret.code);
     }
+
+    fn pre_main_hook(&self) {
+        preinit_println!("HERE: premain");
+        self.set_runtime_ready();
+    }
+
+    fn post_main_hook(&self) {}
 }
 
 impl ReferenceRuntime {
@@ -102,27 +111,28 @@ impl ReferenceRuntime {
         for ctor in ctor_array {
             unsafe {
                 if ctor.legacy_init != 0 {
-                    (core::mem::transmute::<_, extern "C" fn()>(ctor.legacy_init as *const u8))();
+                    preinit_println!("calling legacy init {:x}", ctor.legacy_init);
+                    (core::mem::transmute::<_, extern "C" fn()>(ctor.legacy_init))();
+                    preinit_println!("back!");
                 }
-                let init_slice: &[*const u8] =
-                    core::slice::from_raw_parts(ctor.init_array as *const _, ctor.init_array_len);
-                for call in init_slice {
-                    (core::mem::transmute::<_, extern "C" fn()>(*call))();
+                if ctor.init_array > 0 && ctor.init_array_len > 0 {
+                    let init_slice: &[usize] = core::slice::from_raw_parts(
+                        ctor.init_array as *const usize,
+                        ctor.init_array_len,
+                    );
+                    for call in init_slice.iter().cloned() {
+                        preinit_println!("calling init array {:x}", call);
+                        (core::mem::transmute::<_, extern "C" fn()>(call))();
+                    }
                 }
             }
         }
     }
 
-    fn init_allocator(&self, info: &RuntimeInitInfo) {
-        for x in info.important_things() {
-            match x {
-                ImportantThing::Object(obj) => match obj.kind {
-                    dynlink::context::ImportantObjectKind::Heap => {
-                        todo!()
-                    }
-                    _ => {}
-                },
-            }
+    fn init_allocator(&self, _info: &RuntimeInitInfo) {
+        // TODO: hack
+        for slot in 0..100 {
+            mark_slot_reserved(slot)
         }
     }
 
