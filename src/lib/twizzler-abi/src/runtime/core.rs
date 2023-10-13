@@ -4,6 +4,8 @@ use core::{alloc::GlobalAlloc, ptr};
 
 use twizzler_runtime_api::{AuxEntry, BasicAux, BasicReturn, CoreRuntime};
 
+use crate::object::ObjID;
+
 use super::{
     alloc::MinimalAllocator,
     phdrs::{process_phdrs, Phdr},
@@ -46,7 +48,7 @@ impl CoreRuntime for MinimalRuntime {
     ) -> ! {
         // If aux doesn't give us an environment, just use this default.
         let null_env: [*const i8; 4] = [
-            b"RUST_BACKTRACE=full\0".as_ptr() as *const i8,
+            b"RUST_BACKTRACE=1\0".as_ptr() as *const i8,
             ptr::null(),
             ptr::null(),
             ptr::null(),
@@ -61,7 +63,9 @@ impl CoreRuntime for MinimalRuntime {
                     AuxEntry::ProgramHeaders(paddr, pnum) => {
                         process_phdrs(core::slice::from_raw_parts(paddr as *const Phdr, pnum))
                     }
-                    AuxEntry::ExecId(_id) => {}
+                    AuxEntry::ExecId(id) => {
+                        super::debug::set_execid(ObjID::new(id));
+                    }
                     AuxEntry::Arguments(num, ptr) => {
                         arg_count = num;
                         arg_ptr = ptr as *const *const i8

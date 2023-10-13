@@ -6,9 +6,9 @@ use std::{
 };
 
 use anyhow::Context;
-use cargo::core::compiler::Compilation;
+use cargo::core::compiler::{Compilation, CompileTarget};
 
-use crate::{build::TwizzlerCompilation, triple::Arch, ImageOptions};
+use crate::{build::TwizzlerCompilation, triple::Arch, BuildConfig, ImageOptions};
 
 pub struct ImageInfo {
     pub disk_image: PathBuf,
@@ -60,6 +60,32 @@ fn get_third_party_initrd_files(
         .collect()
 }
 
+fn get_lib_initrd_files(
+    comp: &TwizzlerCompilation,
+    name: &str,
+    config: &BuildConfig,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let comp = comp.borrow_user_compilation().as_ref().unwrap();
+    let mut output = comp
+        .root_output
+        .get(&cargo::core::compiler::CompileKind::Target(
+            CompileTarget::new(&config.twz_triple().to_string())?,
+        ))
+        .cloned()
+        .unwrap();
+
+    output.push(format!("lib{}.so", name).replace("-", "_"));
+    if output.is_file() {
+        Ok(vec![output])
+    } else {
+        anyhow::bail!(
+            "library file {} ({}) is a not a file or does not exist",
+            name,
+            output.display()
+        );
+    }
+}
+
 fn get_tool_path<'a>(comp: &'a TwizzlerCompilation, name: &str) -> anyhow::Result<&'a Path> {
     let unit = comp
         .borrow_tools_compilation()
@@ -109,6 +135,9 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
                 anyhow::bail!("initrd item must be of the form `x:y'");
             }
             match split[0] {
+                "lib" => {
+                    initrd_files.append(&mut get_lib_initrd_files(comp, split[1], &cli.config)?)
+                }
                 "crate" => initrd_files.append(&mut get_crate_initrd_files(comp, split[1])?),
                 "third-party" => {
                     initrd_files.append(&mut get_third_party_initrd_files(comp, split[1])?)
@@ -133,6 +162,30 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
         } else {
             assert!(!cli.tests);
         }
+
+        let mut lib_path = crate::toolchain::get_rustlib_lib(&cli.config.twz_triple().to_string())?;
+        let libstd_name = walkdir::WalkDir::new(lib_path.clone())
+            .min_depth(1)
+            .max_depth(2)
+            .into_iter()
+            .filter_entry(|x| {
+                x.file_name()
+                    .to_str()
+                    .map(|s| s.starts_with("libstd"))
+                    .unwrap_or(false)
+            })
+            .next()
+            .ok_or(anyhow::anyhow!(
+                "failed to find libstd in {}",
+                lib_path.display()
+            ))??
+            .file_name()
+            .to_str()
+            .unwrap()
+            .to_owned();
+
+        lib_path.push(libstd_name);
+        initrd_files.push(lib_path);
 
         let initrd_path = get_genfile_path(comp, "initrd");
         let status = Command::new(get_tool_path(comp, "initrd_gen")?)
