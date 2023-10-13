@@ -1,5 +1,6 @@
 //#![feature(naked_functions)]
 #![feature(start)]
+#![feature(thread_local)]
 
 use twizzler_runtime_api::AuxEntry;
 
@@ -12,11 +13,11 @@ pub extern "C" fn monitor_entry_from_bootstrap(aux: *const AuxEntry) {
     unsafe { twizzler_runtime_api::rt0::rust_entry(aux) }
 }
 
+#[thread_local]
+static FOO: u32 = 3459;
+
 pub fn my_main() {
-    let _ = twizzler_abi::syscall::sys_kernel_console_write(
-        b"hello world from monitor main\n",
-        twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
-    );
+    println!("hello world from my_main {}", FOO);
     loop {}
 }
 

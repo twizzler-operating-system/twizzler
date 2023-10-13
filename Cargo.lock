@@ -1665,6 +1665,8 @@ dependencies = [
 name = "monitor"
 version = "0.1.0"
 dependencies = [
+ "dynlink",
+ "tracing",
  "twizzler-abi",
  "twizzler-runtime-api",
 ]

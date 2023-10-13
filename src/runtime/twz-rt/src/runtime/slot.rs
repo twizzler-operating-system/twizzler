@@ -32,7 +32,7 @@ impl EarlySlotAllocatorInner {
         self.slots[slot / 8] |= 1 << (slot % 8)
     }
 
-    fn release(&mut self, slot: usize) {
+    fn _release(&mut self, slot: usize) {
         self.slots[slot / 8] &= !(1 << (slot % 8));
     }
 

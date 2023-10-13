@@ -36,7 +36,8 @@
 #![feature(naked_functions)]
 
 use core::{
-    alloc::GlobalAlloc, ffi::CStr, num::NonZeroUsize, sync::atomic::AtomicU32, time::Duration,
+    alloc::GlobalAlloc, ffi::CStr, num::NonZeroUsize, panic::RefUnwindSafe,
+    sync::atomic::AtomicU32, time::Duration,
 };
 
 #[cfg(feature = "rt0")]
@@ -266,15 +267,18 @@ pub trait RustFsRuntime {}
 pub trait RustProcessRuntime: RustStdioRuntime {}
 
 /// The type of a callback to an IO Read call (see: [RustStdioRuntime]).
-pub type IoReadDynCallback<'a, R> = &'a mut (dyn (FnMut(&mut dyn IoRead) -> R));
+pub type IoReadDynCallback<'a, R> = &'a mut (dyn (FnMut(&dyn IoRead) -> R));
 
 /// The type of a callback to an IO Write call (see: [RustStdioRuntime]).
-pub type IoWriteDynCallback<'a, R> = &'a (dyn (Fn(&mut dyn IoWrite) -> R));
+pub type IoWriteDynCallback<'a, R> = &'a (dyn (Fn(&dyn IoWrite) -> R));
+
+/// The type of a callback to an IO Write call (see: [RustStdioRuntime]).
+pub type IoWritePanicDynCallback<'a, R> = &'a (dyn (Fn(&dyn IoWrite) -> R) + RefUnwindSafe);
 
 /// Runtime that implements stdio.
 pub trait RustStdioRuntime {
     /// Execute a closure with an implementer of [IoWrite] that can be used for panic output.
-    fn with_panic_output(&self, cb: IoWriteDynCallback<'_, ()>);
+    fn with_panic_output(&self, cb: IoWritePanicDynCallback<'_, ()>);
 
     /// Execute a closure with an implementer of [IoRead] that can be used for stdin.
     fn with_stdin(
@@ -323,15 +327,15 @@ pub enum WriteError {
 /// Trait for stdin
 pub trait IoRead {
     /// Read data into buf, returning the number of bytes read.
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, ReadError>;
+    fn read(&self, buf: &mut [u8]) -> Result<usize, ReadError>;
 }
 
 /// Trait for stdout/stderr
 pub trait IoWrite {
     /// Write data from buf, returning the number of bytes written.
-    fn write(&mut self, buf: &[u8]) -> Result<usize, WriteError>;
+    fn write(&self, buf: &[u8]) -> Result<usize, WriteError>;
     /// Flush any buffered internal data. This function is allowed to be a no-op.
-    fn flush(&mut self) -> Result<(), WriteError>;
+    fn flush(&self) -> Result<(), WriteError>;
 }
 
 /// Runtime trait for libstd's time support

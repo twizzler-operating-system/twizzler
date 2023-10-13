@@ -1,4 +1,5 @@
 #![feature(core_intrinsics)]
+#![feature(thread_local)]
 
 pub(crate) mod arch;
 
