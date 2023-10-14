@@ -19,8 +19,8 @@ pub(crate) unsafe extern "C" fn rr_upcall_entry(
         ".cfi_offset rip, 0",
         ".cfi_return_column rip",
         "jmp rr_upcall_entry2",
-        in("rax") (&*rdi).rip,
-        in("rdx") (&*rdi).rbp,
+        in("rax") (*rdi).rip,
+        in("rdx") (*rdi).rbp,
         in("rdi") rdi,
         in("rsi") rsi,
         options(noreturn)

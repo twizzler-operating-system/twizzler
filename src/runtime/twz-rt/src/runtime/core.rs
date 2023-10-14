@@ -72,9 +72,8 @@ impl CoreRuntime for ReferenceRuntime {
             let mut count = 0;
             let mut tmp = aux;
             while !tmp.is_null() {
-                match preinit_unwrap(tmp.as_ref()) {
-                    AuxEntry::Null => break,
-                    _ => {}
+                if preinit_unwrap(tmp.as_ref()) == &AuxEntry::Null {
+                    break;
                 }
                 tmp = tmp.add(1);
                 count += 1;

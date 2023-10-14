@@ -44,10 +44,7 @@ impl ThreadRuntime for ReferenceRuntime {
             timeout,
         );
 
-        match r {
-            Err(ThreadSyncError::Timeout) => return false,
-            _ => return true,
-        }
+        !matches!(r, Err(ThreadSyncError::Timeout))
     }
 
     fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32) -> bool {

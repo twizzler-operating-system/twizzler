@@ -16,8 +16,7 @@ impl core::fmt::Write for PreinitLogger {
 
 impl PreinitLogger {
     pub fn write(&self, data: &[u8]) {
-        // we did our best
-        let _ = sys_kernel_console_write(data, KernelConsoleWriteFlags::empty());
+        sys_kernel_console_write(data, KernelConsoleWriteFlags::empty());
     }
 }
 
