@@ -67,6 +67,7 @@ impl Debug for Compartment {
 
 pub type CompartmentRef = Arc<Compartment>;
 
+#[allow(dead_code)]
 impl CompartmentInner {
     pub(crate) fn new(name: String, id: u128) -> Self {
         Self {
