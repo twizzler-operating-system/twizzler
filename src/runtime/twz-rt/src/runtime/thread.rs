@@ -28,7 +28,6 @@ impl ThreadRuntime for ReferenceRuntime {
         expected: u32,
         timeout: Option<core::time::Duration>,
     ) -> bool {
-        preinit_println!("AAAAA");
         // No need to wait if the value already changed.
         if futex.load(core::sync::atomic::Ordering::Relaxed) != expected {
             return true;
