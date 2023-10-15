@@ -11,6 +11,10 @@ pub use elf::abi::R_X86_64_JUMP_SLOT as REL_PLT;
 pub use elf::abi::R_X86_64_RELATIVE as REL_RELATIVE;
 pub use elf::abi::R_X86_64_TPOFF64 as REL_TPOFF;
 
+/// Get a pointer to the current thread control block, using the thread pointer.
+///
+/// # Safety
+/// The TCB must actually contain runtime data of type T, and be initialized.
 pub unsafe fn get_thread_control_block<T>() -> *mut Tcb<T> {
     let mut val: usize;
     core::arch::asm!("mov {}, fs:0", out(reg) val);

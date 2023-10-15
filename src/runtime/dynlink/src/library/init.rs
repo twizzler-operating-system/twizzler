@@ -39,18 +39,13 @@ impl Library {
             }
         });
 
-        if dynamic
-            .iter()
-            .find(|d| d.d_tag == DT_PREINIT_ARRAY)
-            .is_some()
-        {
-            if dynamic
+        if dynamic.iter().any(|d| d.d_tag == DT_PREINIT_ARRAY)
+            && dynamic
                 .iter()
                 .find(|d| d.d_tag == DT_PREINIT_ARRAYSZ)
                 .is_some_and(|d| d.d_val() > 0)
-            {
-                warn!("{}: PREINIT_ARRAY is unsupported", self);
-            }
+        {
+            warn!("{}: PREINIT_ARRAY is unsupported", self);
         }
 
         debug!(
