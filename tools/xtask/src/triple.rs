@@ -1,13 +1,13 @@
 use strum_macros::EnumIter;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, EnumIter, clap::ArgEnum)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, EnumIter, clap::ValueEnum)]
 pub enum Machine {
     Unknown,
     Rpi3,
     Virt,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, EnumIter, clap::ArgEnum)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, EnumIter, clap::ValueEnum)]
 pub enum Arch {
     X86_64,
     Aarch64,
