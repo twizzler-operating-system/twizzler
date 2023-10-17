@@ -446,7 +446,7 @@ fn load_text_and_data(elf: &ElfObject<'_>, exe: &InternalObject::<ElfHeader>) ->
             let vaddr = phdr.vaddr as usize;
             let memsz = phdr.memsz as usize;
             let offset = phdr.offset as usize;
-            let align = 4096; //phdr.align as usize;
+            let align = phdr.align as usize;
             let filesz = phdr.filesz as usize;
 
             fn within_object(slot: usize, addr: usize) -> bool {

@@ -389,8 +389,6 @@ fn sync_handler(ctx: &mut ExceptionContext) {
                 Err(_) => panic!("non canonical address: {:x}", far)    
             };
 
-            // .unwrap();
-
             // DFSC bits[5:0] indicate the type of fault
             let dfsc = iss & 0b111111;
             if dfsc & 0b111100 == 0b001000 {
