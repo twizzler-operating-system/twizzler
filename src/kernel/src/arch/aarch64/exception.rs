@@ -17,7 +17,7 @@ use registers::{
 use twizzler_abi::upcall::{MemoryAccessKind, UpcallFrame};
 use twizzler_abi::arch::syscall::SYSCALL_MAGIC;
 
-use crate::{memory::{context::{virtmem::PageFaultFlags, UserContext}, VirtAddr}, thread::{current_memory_context, current_thread_ref}};
+use crate::memory::{context::virtmem::PageFaultFlags, VirtAddr};
 use super::thread::UpcallAble;
 
 core::arch::global_asm!(r#"
@@ -420,16 +420,6 @@ fn sync_handler(ctx: &mut ExceptionContext) {
         },
         Some(ESR_EL1::EC::Value::InstrAbortLowerEL) => {
             handle_inst_abort(ctx, &esr_reg);
-            // logln!("done with instr abort");
-            // debug_handler(ctx)
-            // lookup object
-            use crate::memory::context::virtmem::Slot;
-            let mem_ctx = current_memory_context().unwrap();
-            // logln!("handle: {:#x}", mem_ctx.as_ref() as usize, current_thread_ref().unwrap().);
-            let info: Slot = twizzler_abi::slot::RESERVED_TEXT.try_into().unwrap();
-            let text = mem_ctx.lookup_object(info).unwrap();
-            // print object pages ...
-            // text.object().print_page_tree();
         },
         Some(ESR_EL1::EC::Value::SVC64) => {
             // iss: syndrome, contains passed to SVC
@@ -448,34 +438,26 @@ fn sync_handler(ctx: &mut ExceptionContext) {
 
 fn handle_inst_abort(_ctx: &mut ExceptionContext, esr_reg: &InMemoryRegister<u64, ESR_EL1::Register>) {
     // decoding ISS for instruction fault.
-    // emerglogln!("inst fault");
     // iss: syndrome
     let iss = esr_reg.read(ESR_EL1::ISS);
-    // is the fault address register valid? ... still bit 10
+    // is the fault address register valid? ... use bit 10
     let far_valid = iss & (1 << 10) == 0;
     if !far_valid {
         panic!("FAR is not valid!!");
     }
     let far = arm64::registers::FAR_EL1.get();
 
-    // bit 6 is reserved!!!
-    // was fault caused by a write to memory or a read?
-    let write_fault = iss & (1 << 6) != 0;
-    let _rw_cause = if write_fault {
-        MemoryAccessKind::Write
-    } else {
-        MemoryAccessKind::Read
-    };
-
+    // The cause is from an instruction fetch
     let cause = MemoryAccessKind::InstructionFetch;
 
     // TODO: support for PRESENT and INVALID flags
-    // AA:
+
+    // NOTE: currently, only instruciton aborts are handled when coming from
+    // user space, so we know that the page fault is user
     let flags = PageFaultFlags::USER;
 
     let far_va = VirtAddr::new(far as u64).unwrap();
 
-    // IFSC instead of DFSC
     // IFSC bits[5:0] indicate the type of fault
     let ifsc = iss & 0b111111;
     if ifsc & 0b111100 == 0b001000 {
@@ -487,7 +469,7 @@ fn handle_inst_abort(_ctx: &mut ExceptionContext, esr_reg: &InMemoryRegister<u64
         let level = ifsc & 0b11;
         todo!("Permission fault, level {}", level);
     } else if ifsc & 0b0000100 == 0b0000100 {
-        // AA: translation fault
+        // translation fault
         let _level = ifsc & 0b11;
     }
 

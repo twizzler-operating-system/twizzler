@@ -190,8 +190,6 @@ pub fn spawn_new_executable(
     args: &[&[u8]],
     env: &[&[u8]],
 ) -> Result<ObjID, SpawnExecutableError> {
-    let mut output = BufWriter {};
-    write!(&mut output, "[loader] loading ARM elf: {}\n", 42);
     let exe = InternalObject::<ElfHeader>::map(exe, Protections::READ)
         .ok_or(SpawnExecutableError::MapFailed)?;
     let elf = ElfObject::from_obj(&exe).ok_or(SpawnExecutableError::InvalidExecutable)?;
@@ -364,9 +362,6 @@ pub fn spawn_new_executable(
     Ok(thr)
 }
 
-use core::write;
-use core::fmt::Write;
-
 #[cfg(target_arch = "aarch64")]
 fn load_text_and_data(elf: &ElfObject<'_>, _exe: &InternalObject::<ElfHeader>) -> (ObjID, ObjID) {
     let cs = ObjectCreate::new(
@@ -376,7 +371,7 @@ fn load_text_and_data(elf: &ElfObject<'_>, _exe: &InternalObject::<ElfHeader>) -
         ObjectCreateFlags::empty(),
     );
 
-    // AA: create new objects for text and data
+    // create new objects for text and data
     let text = crate::syscall::sys_object_create(cs, &[], &[]).unwrap();
     let data = crate::syscall::sys_object_create(cs, &[], &[]).unwrap();
 
@@ -393,12 +388,6 @@ fn load_text_and_data(elf: &ElfObject<'_>, _exe: &InternalObject::<ElfHeader>) -
         let dst_offset = phdr.vaddr as usize % MAX_SIZE;
         // the size of the data that must be copied from the ELF
         let copy_len = phdr.filesz as usize;
-        // write!(&mut output, "[loader] loading ({:x}) => ({:x}), ({:x}) align: {:x}\n",
-        //     src_offset,
-        //     dst_offset,
-        //     copy_len,
-        //     phdr.align,
-        // );
         // the amount of bytes that must be zeroed out
         let zero_bytes = if phdr.filesz < phdr.memsz {
             Some((phdr.memsz - phdr.filesz) as usize)
@@ -442,7 +431,6 @@ fn load_text_and_data(elf: &ElfObject<'_>, _exe: &InternalObject::<ElfHeader>) -
 #[cfg(target_arch = "x86_64")]
 fn load_text_and_data(elf: &ElfObject<'_>, exe: &InternalObject::<ElfHeader>) -> (ObjID, ObjID) {
     use alloc::vec::Vec;
-    let mut output = BufWriter {};
     
     let phdr_vaddr = elf
         .phdrs()
@@ -461,13 +449,6 @@ fn load_text_and_data(elf: &ElfObject<'_>, exe: &InternalObject::<ElfHeader>) ->
             let align = 4096; //phdr.align as usize;
             let filesz = phdr.filesz as usize;
 
-            write!(&mut output,
-                "load directive: vaddr={:x}, memsz={:x}, offset={:x}, filesz={:x}\n",
-                vaddr,
-                memsz,
-                offset,
-                filesz
-            );
             fn within_object(slot: usize, addr: usize) -> bool {
                 addr >= slot * MAX_SIZE + NULLPAGE_SIZE && addr < (slot + 1) * MAX_SIZE - NULLPAGE_SIZE * 2
             }
@@ -479,20 +460,8 @@ fn load_text_and_data(elf: &ElfObject<'_>, exe: &InternalObject::<ElfHeader>) ->
                 panic!("address not within object")
             }
 
-            #[cfg(target_arch = "aarch64")]
-            let src_start =  {
-                let null_page_size = 0x1000;
-                let align_mask = !(NULLPAGE_SIZE - 1);
-                let offset_start = null_page_size + offset;
-                offset_start & align_mask
-            };
-
-            #[cfg(target_arch = "x86_64")]
             let src_start = (NULLPAGE_SIZE + offset) & !(align - 1);
-            // let tmp_align = NULLPAGE_SIZE;
-            // let src_start = (offset + NULLPAGE_SIZE + (tmp_align - 1)) & !(tmp_align - 1);
             let dest_start = vaddr & !(align - 1);
-            // let len = (vaddr - dest)
             let len = (vaddr - dest_start) + filesz;
             (
                 targets_data,
@@ -530,14 +499,4 @@ fn load_text_and_data(elf: &ElfObject<'_>, exe: &InternalObject::<ElfHeader>) ->
     let data = crate::syscall::sys_object_create(cs, &data_copy, &[]).unwrap();
 
     (text, data)
-}
-struct BufWriter;
-impl core::fmt::Write for BufWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        crate::syscall::sys_kernel_console_write(
-            s.as_bytes(),
-            crate::syscall::KernelConsoleWriteFlags::empty(),
-        );
-        Ok(())
-    }
 }
