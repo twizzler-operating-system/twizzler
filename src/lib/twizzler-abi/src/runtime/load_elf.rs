@@ -431,11 +431,6 @@ fn load_text_and_data(elf: &ElfObject<'_>, _exe: &InternalObject::<ElfHeader>) -
 #[cfg(target_arch = "x86_64")]
 fn load_text_and_data(elf: &ElfObject<'_>, exe: &InternalObject::<ElfHeader>) -> (ObjID, ObjID) {
     use alloc::vec::Vec;
-    
-    let phdr_vaddr = elf
-        .phdrs()
-        .find(|p| p.phdr_type() == PhdrType::Phdr)
-        .map(|p| p.vaddr);
 
     // Step 1: map the PT_LOAD directives to copy-from commands Twizzler can use for creating objects.
     let copy_cmds: Vec<_> = elf
