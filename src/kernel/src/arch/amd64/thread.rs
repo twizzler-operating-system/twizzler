@@ -185,6 +185,14 @@ fn use_xsave() -> bool {
     }
 }
 
+/// Compute the top of the stack. 
+/// 
+/// # Safety
+/// The range from [stack_base, stack_base+stack_size] must be valid addresses.
+pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
+    VirtAddr::new((stack_base + stack_size - 8) as u64).unwrap()
+}
+
 impl Thread {
     pub fn arch_queue_upcall(&self, target: VirtAddr, info: UpcallInfo) {
         logln!("queue upcall!");
