@@ -79,8 +79,12 @@ impl OomHandler for RuntimeOom {
         )
         .map_err(|_| ())?;
 
-        let base = slot * MAX_SIZE + NULLPAGE_SIZE * 2;
-        let top = (slot + 1) * MAX_SIZE - NULLPAGE_SIZE * 4;
+        // reserve an additional page size at the base of the object for future use. This behavior may change as the runtime is fleshed out.
+        const HEAP_OFFSET: usize = NULLPAGE_SIZE * 2;
+        // offset from the endpoint of the object to where the endpoint of the heap is. Reserve a page for the metadata + a few pages for any future FOT entries.
+        const TOP_OFFSET: usize = NULLPAGE_SIZE * 4;
+        let base = slot * MAX_SIZE + HEAP_OFFSET;
+        let top = (slot + 1) * MAX_SIZE - TOP_OFFSET;
 
         unsafe {
             talc.claim(Span::new(base as *mut _, top as *mut _))?;

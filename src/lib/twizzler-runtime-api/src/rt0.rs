@@ -42,5 +42,10 @@ extern "C" {
 pub unsafe extern "C" fn __tls_get_addr(arg: usize) -> *const u8 {
     // Just call the runtime.
     let runtime = crate::get_runtime();
-    runtime.tls_get_addr((arg as *const crate::TlsIndex).as_ref().unwrap())
+    let index = (arg as *const crate::TlsIndex)
+        .as_ref()
+        .expect("null pointer passed to __tls_get_addr");
+    runtime
+        .tls_get_addr(index)
+        .expect("index passed to __tls_get_addr is invalid")
 }

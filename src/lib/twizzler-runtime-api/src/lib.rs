@@ -142,7 +142,8 @@ pub trait ThreadRuntime {
 
     /// Implements the __tls_get_addr functionality. If the runtime feature is enabled, this crate defines the
     /// extern "C" function __tls_get_addr as a wrapper around calling this function after getting the runtime from [get_runtime].
-    fn tls_get_addr(&self, tls_index: &TlsIndex) -> *const u8;
+    /// If the provided index is invalid, return None.
+    fn tls_get_addr(&self, tls_index: &TlsIndex) -> Option<*const u8>;
 }
 
 /// All the object related runtime functions.

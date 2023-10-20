@@ -94,8 +94,12 @@ impl ThreadRuntime for ReferenceRuntime {
         todo!()
     }
 
-    fn tls_get_addr(&self, index: &twizzler_runtime_api::TlsIndex) -> *const u8 {
-        let tp: &Tcb<()> = unsafe { dynlink::tls::get_thread_control_block().as_ref().unwrap() };
+    fn tls_get_addr(&self, index: &twizzler_runtime_api::TlsIndex) -> Option<*const u8> {
+        let tp: &Tcb<()> = unsafe {
+            dynlink::tls::get_thread_control_block()
+                .as_ref()
+                .expect("failed to find thread control block")
+        };
         tp.get_addr(index)
     }
 }

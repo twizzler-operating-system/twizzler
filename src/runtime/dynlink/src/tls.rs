@@ -173,10 +173,10 @@ impl<T> Tcb<T> {
         }
     }
 
-    pub fn get_addr(&self, index: &TlsIndex) -> *const u8 {
+    pub fn get_addr(&self, index: &TlsIndex) -> Option<*const u8> {
         unsafe {
             let slice = core::slice::from_raw_parts(self.dtv, self.dtv_len);
-            (slice[index.mod_id] + index.offset) as *const _
+            Some((slice.get(index.mod_id)? + index.offset) as *const _)
         }
     }
 }
