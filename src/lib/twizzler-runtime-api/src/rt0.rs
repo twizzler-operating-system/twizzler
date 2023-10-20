@@ -1,5 +1,5 @@
 //! rt0 defines a collection of functions that the basic Rust ABI expects to be defined by some part of the C runtime:
-//! 
+//!
 //!   - __tls_get_addr for handling non-local TLS regions.
 //!   - _start, the entry point of an executable (per-arch, as this is assembly code).
 
@@ -21,7 +21,11 @@ unsafe extern "C" fn entry(arg: usize) -> ! {
     rust_entry(arg as *const AuxEntry)
 }
 
-unsafe fn rust_entry(arg: *const AuxEntry) -> ! {
+/// Entry point for Rust code wishing to start from rt0.
+///
+/// # Safety
+/// Do not call this unless you are bootstrapping a runtime.
+pub unsafe fn rust_entry(arg: *const AuxEntry) -> ! {
     // All we need to do is grab the runtime and call its init function. We want to
     // do as little as possible here.
     let runtime = crate::get_runtime();
@@ -38,5 +42,10 @@ extern "C" {
 pub unsafe extern "C" fn __tls_get_addr(arg: usize) -> *const u8 {
     // Just call the runtime.
     let runtime = crate::get_runtime();
-    runtime.tls_get_addr((arg as *const crate::TlsIndex).as_ref().unwrap())
+    let index = (arg as *const crate::TlsIndex)
+        .as_ref()
+        .expect("null pointer passed to __tls_get_addr");
+    runtime
+        .tls_get_addr(index)
+        .expect("index passed to __tls_get_addr is invalid")
 }

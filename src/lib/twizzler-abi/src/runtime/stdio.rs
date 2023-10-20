@@ -9,7 +9,7 @@ use crate::syscall::KernelConsoleReadError;
 use super::MinimalRuntime;
 
 impl RustStdioRuntime for MinimalRuntime {
-    fn with_panic_output(&self, cb: twizzler_runtime_api::IoWriteDynCallback<'_, ()>) {
+    fn with_panic_output(&self, cb: twizzler_runtime_api::IoWritePanicDynCallback<'_, ()>) {
         let mut wp = WritePoint {};
         cb(&mut wp);
     }
@@ -57,7 +57,7 @@ pub struct WritePoint {}
 pub struct ReadPoint {}
 
 impl IoWrite for WritePoint {
-    fn write(&mut self, buf: &[u8]) -> Result<usize, WriteError> {
+    fn write(&self, buf: &[u8]) -> Result<usize, WriteError> {
         crate::syscall::sys_kernel_console_write(
             buf,
             crate::syscall::KernelConsoleWriteFlags::empty(),
@@ -65,13 +65,13 @@ impl IoWrite for WritePoint {
         Ok(buf.len())
     }
 
-    fn flush(&mut self) -> Result<(), WriteError> {
+    fn flush(&self) -> Result<(), WriteError> {
         Ok(())
     }
 }
 
 impl IoRead for ReadPoint {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, ReadError> {
+    fn read(&self, buf: &mut [u8]) -> Result<usize, ReadError> {
         crate::syscall::sys_kernel_console_read(
             buf,
             crate::syscall::KernelConsoleReadFlags::empty(),

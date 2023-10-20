@@ -22,7 +22,7 @@ use twizzler_abi::{
     syscall::{sys_object_create, ObjectSource},
 };
 
-fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID, libstd: ObjID) {
+fn start_runtime(runtime_monitor: ObjID, runtime_library: ObjID, libstd: ObjID) {
     let ctx = dynlink::context::Context::default();
     let monitor_compartment = ctx.add_compartment("monitor").unwrap();
 
@@ -50,11 +50,11 @@ fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID
     let runtime = ctx
         .add_library(&monitor_compartment, rt_library, &mut loader)
         .unwrap();
-    let _roots = ctx.relocate_all([monitor.clone(), runtime]).unwrap();
+    let roots = ctx.relocate_all([monitor.clone(), runtime]).unwrap();
     //ctx.add_library(&monitor_compartment, libstd_library, &mut loader)
     //    .unwrap();
 
-    let _tls = monitor_compartment.build_tls_region(()).unwrap();
+    let tls = monitor_compartment.build_tls_region(()).unwrap();
 
     eprintln!("== Context Ready, Building Arguments ==");
 
@@ -69,8 +69,13 @@ fn start_runtime(_exec_id: ObjID, runtime_monitor: ObjID, runtime_library: ObjID
 
     let value = entry.reloc_value() as usize;
     eprintln!("==> Jumping to {:x}", value);
-    let ptr: extern "C" fn() = unsafe { core::mem::transmute(value) };
-    (ptr)();
+    let ptr: extern "C" fn(usize) = unsafe { core::mem::transmute(value) };
+
+    let info = ctx.build_runtime_info(roots, tls).unwrap();
+    let info_ptr = &info as *const _ as usize;
+    let aux = vec![AuxEntry::RuntimeInfo(info_ptr), AuxEntry::Null];
+    let aux_ptr = aux.as_slice().as_ptr();
+    (ptr)(aux_ptr as usize);
 }
 
 struct Loader {}
@@ -127,13 +132,13 @@ fn main() {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let exec_id = find_init_name("libhello_world.so").unwrap();
+    //let exec_id = find_init_name("libhello_world.so").unwrap();
     let runtime_lib = find_init_name("libtwz_rt.so").unwrap();
     let monitor = find_init_name("libmonitor.so").unwrap();
     let libstd = find_init_name("libstd.so").unwrap();
 
     eprintln!("=== BOOTSTRAP RUNTIME ===");
-    start_runtime(exec_id, monitor, runtime_lib, libstd);
+    start_runtime(monitor, runtime_lib, libstd);
 
     let _runtime = twizzler_abi::runtime::__twz_get_runtime();
 }
@@ -148,3 +153,4 @@ use twizzler_abi::{
     },
 };
 use twizzler_object::{Object, ObjectInitFlags};
+use twizzler_runtime_api::AuxEntry;

@@ -1,13 +1,13 @@
 //! The Twizzler Runtime API is the core interface definition for Twizzler programs, including startup, execution, and libstd support.
 //! It defines a set of traits that, when all implemented, form the full interface that Rust's libstd expects from a Twizzler runtime.
-//! 
+//!
 //! From a high level, a Twizzler program links against Rust's libstd and a particular runtime that will support libstd. That runtime
 //! must implement the minimum set of interfaces required by the [Runtime] trait. Libstd then invokes the runtime functions when needed
 //! (e.g. allocating memory, exiting a thread, etc.). Other libraries may invoke runtime functions directly as well (bypassing libstd),
 //! but note that doing so may not play nicely with libstd's view of the world.
-//! 
+//!
 //! # What does it look like to use the runtime?
-//! 
+//!
 //! When a program (including libstd) wishes to use the runtime, it invokes this library's [get_runtime] function, which will return
 //! a reference (a &'static dyn reference) to a type that implements the Runtime trait. From there, runtime functions can be called:
 //! ```
@@ -15,36 +15,32 @@
 //! runtime.get_monotonic()
 //! ```
 //! Note that this function is only exposed if the runtime feature is enabled.
-//! 
+//!
 //! # So who is providing that type that implements [Runtime]?
-//! 
+//!
 //! Another library! Right now, Twizzler defines two runtimes: a "minimal" runtime, and a "reference" runtime. Those are not implemented
 //! in this crate. The minimal runtime is implemented as part of the twizzler-abi crate, as it's the most "baremetal" runtime. The
 //! reference runtime is implemented as a standalone set of crates. Of course, other runtimes can be implemented, as long as they implement
 //! the required interface in this crate, libstd will work.
-//! 
+//!
 //! ## Okay but how does get_runtime work?
-//! 
+//!
 //! Well, [get_runtime] is just a wrapper around calling an extern "C" function, [__twz_get_runtime]. This symbol is external, so not
 //! defined in this crate. A crate that implements [Runtime] then defines [__twz_get_runtime], allowing link-time swapping of runtimes.
 //! The twizzler-abi crate defines this symbol with (weak linkage)[https://en.wikipedia.org/wiki/Weak_symbol], causing it to be linked
 //! only if another (strong) definition is not present. Thus, a program can link to a specific runtime, but it can also be loaded by a
 //! dynamic linker and have its runtime selected at load time.
 
-
 #![no_std]
 #![feature(unboxed_closures)]
 #![feature(naked_functions)]
 
 use core::{
-    alloc::GlobalAlloc, ffi::CStr, num::NonZeroUsize, sync::atomic::AtomicU32, time::Duration,
+    alloc::GlobalAlloc, ffi::CStr, num::NonZeroUsize, panic::RefUnwindSafe,
+    sync::atomic::AtomicU32, time::Duration,
 };
 
-#[cfg(all(
-    feature = "runtime",
-    not(feature = "kernel"),
-    feature = "rustc-dep-of-std"
-))]
+#[cfg(feature = "rt0")]
 pub mod rt0;
 
 /// Core object ID type in Twizzler.
@@ -65,6 +61,8 @@ pub enum AuxEntry {
     Arguments(usize, u64),
     /// The object ID of the executable.
     ExecId(ObjID),
+    /// Initial runtime information. The value is runtime-specific.
+    RuntimeInfo(usize),
 }
 
 /// Full runtime trait, composed of smaller traits
@@ -144,7 +142,8 @@ pub trait ThreadRuntime {
 
     /// Implements the __tls_get_addr functionality. If the runtime feature is enabled, this crate defines the
     /// extern "C" function __tls_get_addr as a wrapper around calling this function after getting the runtime from [get_runtime].
-    fn tls_get_addr(&self, tls_index: &TlsIndex) -> *const u8;
+    /// If the provided index is invalid, return None.
+    fn tls_get_addr(&self, tls_index: &TlsIndex) -> Option<*const u8>;
 }
 
 /// All the object related runtime functions.
@@ -269,15 +268,18 @@ pub trait RustFsRuntime {}
 pub trait RustProcessRuntime: RustStdioRuntime {}
 
 /// The type of a callback to an IO Read call (see: [RustStdioRuntime]).
-pub type IoReadDynCallback<'a, R> = &'a mut (dyn (FnMut(&mut dyn IoRead) -> R));
+pub type IoReadDynCallback<'a, R> = &'a mut (dyn (FnMut(&dyn IoRead) -> R));
 
 /// The type of a callback to an IO Write call (see: [RustStdioRuntime]).
-pub type IoWriteDynCallback<'a, R> = &'a (dyn (Fn(&mut dyn IoWrite) -> R));
+pub type IoWriteDynCallback<'a, R> = &'a (dyn (Fn(&dyn IoWrite) -> R));
+
+/// The type of a callback to an IO Write call (see: [RustStdioRuntime]).
+pub type IoWritePanicDynCallback<'a, R> = &'a (dyn (Fn(&dyn IoWrite) -> R) + RefUnwindSafe);
 
 /// Runtime that implements stdio.
 pub trait RustStdioRuntime {
     /// Execute a closure with an implementer of [IoWrite] that can be used for panic output.
-    fn with_panic_output(&self, cb: IoWriteDynCallback<'_, ()>);
+    fn with_panic_output(&self, cb: IoWritePanicDynCallback<'_, ()>);
 
     /// Execute a closure with an implementer of [IoRead] that can be used for stdin.
     fn with_stdin(
@@ -326,15 +328,15 @@ pub enum WriteError {
 /// Trait for stdin
 pub trait IoRead {
     /// Read data into buf, returning the number of bytes read.
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, ReadError>;
+    fn read(&self, buf: &mut [u8]) -> Result<usize, ReadError>;
 }
 
 /// Trait for stdout/stderr
 pub trait IoWrite {
     /// Write data from buf, returning the number of bytes written.
-    fn write(&mut self, buf: &[u8]) -> Result<usize, WriteError>;
+    fn write(&self, buf: &[u8]) -> Result<usize, WriteError>;
     /// Flush any buffered internal data. This function is allowed to be a no-op.
-    fn flush(&mut self) -> Result<(), WriteError>;
+    fn flush(&self) -> Result<(), WriteError>;
 }
 
 /// Runtime trait for libstd's time support
@@ -376,7 +378,7 @@ impl AsRef<Library> for Library {
 /// Internal library ID type.
 pub struct LibraryId(pub usize);
 
-/// The runtime must ensure that the addresses are constant for the whole life of the library type, and that all threads 
+/// The runtime must ensure that the addresses are constant for the whole life of the library type, and that all threads
 /// may see the type.
 unsafe impl Send for Library {}
 

@@ -17,7 +17,7 @@ mod load;
 mod relocate;
 mod tls;
 
-pub(crate) use init::CtorInfo;
+pub use init::CtorInfo;
 pub use load::LibraryLoader;
 
 use petgraph::stable_graph::NodeIndex;
@@ -47,6 +47,8 @@ pub(crate) enum RelocState {
 pub(crate) enum InitState {
     /// No constructors have been called.
     Uninit,
+    /// This library has been loaded as part of the static set, but hasn't been initialized (waiting for runtime entry).
+    StaticUninit,
     /// Constructors have been called, destructors have not been called.
     Constructed,
     /// Destructors have been called.
