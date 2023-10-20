@@ -30,8 +30,9 @@ rustc-dep-of-std = [
     "bitflags/rustc-dep-of-std",
 ]
 default = ["runtime"]
-# Compiles in rt0 code, and get_runtime.
+# Compiles in get_runtime.
 runtime = []
+# Compiles in rt0 code.
+rt0 = []
 # Activate if compiling for the kernel.
 kernel = []
-

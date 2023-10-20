@@ -10,3 +10,9 @@ crate-type = ["dylib"]
 
 [dependencies]
 twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
+twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api", features = [
+    "runtime",
+    "rt0",
+] }
+dynlink = { path = "../dynlink" }
+tracing = "0.1"

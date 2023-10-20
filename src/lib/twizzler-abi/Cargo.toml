@@ -34,7 +34,7 @@ version = "0.2.51"
 
 [features]
 # Activate if you want the minruntime to be compiled.
-runtime = ["volatile", "talc", "bitset-core"]
+runtime = ["volatile", "talc", "bitset-core", "twizzler-runtime-api/rt0"]
 # Activate if compiling for the kernel.
 kernel = ["volatile", "twizzler-runtime-api/kernel"]
 # Activate if compiling for libstd.

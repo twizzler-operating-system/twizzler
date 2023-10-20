@@ -6,6 +6,7 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 
 [dependencies]
 twizzler-abi = { path = "../../lib/twizzler-abi", features = ["runtime"] }
+twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api" }
 twizzler-object = { path = "../../lib/twizzler-object" }
 dynlink = { path = "../../runtime/dynlink" }
 tracing = "0.1"

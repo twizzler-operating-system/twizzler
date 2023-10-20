@@ -1,17 +1,18 @@
-#![feature(linkage)]
+//! # The Twizzler Reference Runtime
+//! The Reference Runtime implements the Runtime trait from twizzler-runtime-abi, and is designed to be the primary, fully supported
+//! programming environment on Twizzler.
+//!
+//! This is a work in progress.
 
-use twizzler_runtime_api::Runtime;
+#![feature(core_intrinsics)]
+#![feature(thread_local)]
+#![feature(array_windows)]
 
-#[inline]
-#[no_mangle]
-// Returns a reference to the currently-linked Runtime implementation.
-pub fn __twz_get_runtime() -> &'static (dyn Runtime + Sync) {
-    todo!()
-    //&OUR_RUNTIME
-}
+pub(crate) mod arch;
 
-//static OUR_RUNTIME: MinimalRuntime = MinimalRuntime {};
+mod runtime;
 
-// Ensure the compiler doesn't optimize us away.
-#[used]
-static USE_MARKER: fn() -> &'static (dyn Runtime + Sync) = __twz_get_runtime;
+mod error;
+pub use error::*;
+
+pub(crate) mod preinit;

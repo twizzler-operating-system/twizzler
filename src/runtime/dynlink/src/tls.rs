@@ -3,6 +3,7 @@
 use std::{alloc::Layout, mem::align_of, mem::size_of, ptr::NonNull};
 
 use tracing::{error, trace};
+use twizzler_runtime_api::TlsIndex;
 
 use crate::{arch::MINIMUM_TLS_ALIGNMENT, compartment::CompartmentRef, DynlinkError};
 
@@ -154,11 +155,11 @@ impl TlsInfo {
 }
 
 #[repr(C)]
-pub(crate) struct Tcb<T> {
+pub struct Tcb<T> {
     self_ptr: *const Tcb<T>,
     dtv: *const usize,
     dtv_len: usize,
-    runtime_data: T,
+    pub runtime_data: T,
 }
 
 impl<T> Tcb<T> {
@@ -169,6 +170,13 @@ impl<T> Tcb<T> {
             dtv: tls_region.dtv.as_ptr(),
             dtv_len: tls_region.num_dtv_entries,
             runtime_data: tcb_data,
+        }
+    }
+
+    pub fn get_addr(&self, index: &TlsIndex) -> Option<*const u8> {
+        unsafe {
+            let slice = core::slice::from_raw_parts(self.dtv, self.dtv_len);
+            Some((slice.get(index.mod_id)? + index.offset) as *const _)
         }
     }
 }
@@ -206,6 +214,10 @@ impl Drop for TlsRegion {
 }
 
 impl TlsRegion {
+    pub fn get_thread_pointer_value(&self) -> usize {
+        self.thread_pointer.as_ptr() as usize
+    }
+
     pub(crate) fn set_dtv_entry(&self, tm: &TlsModule) {
         let dtv_slice =
             unsafe { core::slice::from_raw_parts_mut(self.dtv.as_ptr(), self.num_dtv_entries) };
@@ -231,3 +243,5 @@ impl TlsRegion {
         }
     }
 }
+
+pub use crate::arch::get_thread_control_block;

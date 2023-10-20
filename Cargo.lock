@@ -214,6 +214,7 @@ dependencies = [
  "tracing-subscriber",
  "twizzler-abi",
  "twizzler-object",
+ "twizzler-runtime-api",
 ]
 
 [[package]]
@@ -694,6 +695,7 @@ dependencies = [
  "tracing",
  "twizzler-abi",
  "twizzler-object",
+ "twizzler-runtime-api",
 ]
 
 [[package]]
@@ -1657,6 +1659,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.107",
+]
+
+[[package]]
+name = "monitor"
+version = "0.1.0"
+dependencies = [
+ "dynlink",
+ "tracing",
+ "twizzler-abi",
+ "twizzler-runtime-api",
 ]
 
 [[package]]
@@ -2998,6 +3010,19 @@ dependencies = [
  "bitflags 1.3.2",
  "compiler_builtins",
  "rustc-std-workspace-core",
+]
+
+[[package]]
+name = "twz-rt"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.4.0",
+ "dynlink",
+ "talc",
+ "thiserror",
+ "tracing",
+ "twizzler-abi",
+ "twizzler-runtime-api",
 ]
 
 [[package]]
