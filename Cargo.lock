@@ -226,7 +226,7 @@ dependencies = [
  "cfg-if 1.0.0",
  "libc",
  "miniz_oxide",
- "object 0.32.1",
+ "object",
  "rustc-demangle",
 ]
 
@@ -814,7 +814,7 @@ dependencies = [
  "twizzler-async",
  "twizzler-driver",
  "twizzler-object",
- "volatile 0.5.1",
+ "volatile",
 ]
 
 [[package]]
@@ -2644,16 +2644,7 @@ name = "nvme"
 version = "0.1.0"
 dependencies = [
  "modular-bitfield",
- "volatile 0.5.1",
-]
-
-[[package]]
-name = "object"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21158b2c33aa6d4561f1c0a6ea283ca92bc54802a93b263e910746d679a7eb53"
-dependencies = [
- "memchr",
+ "volatile",
 ]
 
 [[package]]
@@ -2822,7 +2813,7 @@ dependencies = [
  "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
- "volatile 0.5.1",
+ "volatile",
 ]
 
 [[package]]
@@ -3746,12 +3737,12 @@ dependencies = [
 
 [[package]]
 name = "tar-no-std"
-version = "0.1.8"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "daa2b7e1951821da66cec610e8037658bfcf9ad2bfd0b5287270c02a5fe4efb4"
+checksum = "d87688750eada7aef6d4a0b82979148980c67aca111f62f4bef82827276f3fc5"
 dependencies = [
  "arrayvec 0.7.4",
- "bitflags 1.3.2",
+ "bitflags 2.4.1",
  "log",
 ]
 
@@ -4036,7 +4027,7 @@ dependencies = [
  "syscall_encode_traits",
  "talc",
  "twizzler-runtime-api",
- "volatile 0.5.1",
+ "volatile",
 ]
 
 [[package]]
@@ -4061,7 +4052,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-async",
  "twizzler-object",
- "volatile 0.5.1",
+ "volatile",
 ]
 
 [[package]]
@@ -4081,7 +4072,7 @@ dependencies = [
  "linked_list_allocator",
  "memoffset",
  "nonoverlapping_interval_tree",
- "object 0.29.0",
+ "object",
  "slabmalloc",
  "syscall_encode",
  "tar-no-std",
@@ -4091,7 +4082,7 @@ dependencies = [
  "twizzler-queue-raw",
  "twizzler-runtime-api",
  "uart_16550",
- "volatile 0.5.1",
+ "volatile",
  "x86 0.52.0",
  "xmas-elf",
 ]
@@ -4156,13 +4147,13 @@ checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
 
 [[package]]
 name = "uart_16550"
-version = "0.2.19"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "614ff2a87880d4bd4374722268598a970bbad05ced8bf630439417347254ab2e"
+checksum = "6dc00444796f6c71f47c85397a35e9c4dbf9901902ac02386940d178e2b78687"
 dependencies = [
  "bitflags 1.3.2",
  "rustversion",
- "x86_64",
+ "x86 0.52.0",
 ]
 
 [[package]]
@@ -4256,12 +4247,6 @@ name = "version_check"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
-
-[[package]]
-name = "volatile"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "442887c63f2c839b346c192d047a7c87e73d0689c9157b00b53dcc27dd5ea793"
 
 [[package]]
 name = "volatile"
@@ -4627,18 +4612,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "x86_64"
-version = "0.14.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b835097a84e4457323331ec5d6eb23d096066cbfb215d54096dcb4b2e85f500"
-dependencies = [
- "bit_field",
- "bitflags 2.4.1",
- "rustversion",
- "volatile 0.4.6",
-]
-
-[[package]]
 name = "xattr"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4649,9 +4622,9 @@ dependencies = [
 
 [[package]]
 name = "xmas-elf"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d29b4d8e7beaceb4e77447ba941a7600d23d0319ab52da0461abea214832d5a"
+checksum = "f820cc767d65b32eef9d7ce7201448f28501c59edc55d47b71375fea579fc2df"
 dependencies = [
  "zero",
 ]
