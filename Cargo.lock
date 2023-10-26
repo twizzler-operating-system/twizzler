@@ -272,16 +272,16 @@ name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
-dependencies = [
- "compiler_builtins",
- "rustc-std-workspace-core",
-]
 
 [[package]]
 name = "bitflags"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "327762f6e5a765692301e5bb513e0d9fef63be86bbc14528052b1cd3e6f03e07"
+dependencies = [
+ "compiler_builtins",
+ "rustc-std-workspace-core",
+]
 
 [[package]]
 name = "bitmaps"
@@ -4016,7 +4016,7 @@ checksum = "3528ecfd12c466c6f163363caf2d02a71161dd5e1cc6ae7b34207ea2d42d81ed"
 name = "twizzler-abi"
 version = "0.1.0"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags 2.4.1",
  "bitset-core",
  "cfg-if 1.0.0",
  "compiler_builtins",
@@ -4047,7 +4047,7 @@ name = "twizzler-driver"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "bitflags 1.3.2",
+ "bitflags 2.4.1",
  "futures",
  "twizzler-abi",
  "twizzler-async",
@@ -4063,7 +4063,7 @@ dependencies = [
  "acpi",
  "addr2line 0.16.0",
  "backtracer_core",
- "bitflags 1.3.2",
+ "bitflags 2.4.1",
  "fdt",
  "fixedbitset",
  "intrusive-collections",
@@ -4095,7 +4095,7 @@ version = "0.0.0"
 name = "twizzler-net"
 version = "0.1.0"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags 2.4.1",
  "twizzler-abi",
  "twizzler-async",
  "twizzler-object",
@@ -4106,7 +4106,7 @@ dependencies = [
 name = "twizzler-object"
 version = "0.1.0"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags 2.4.1",
  "lazy_static",
  "twizzler-abi",
  "twizzler-runtime-api",
@@ -4126,7 +4126,7 @@ dependencies = [
 name = "twizzler-queue-raw"
 version = "0.1.0"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags 2.4.1",
  "twizzler-abi",
 ]
 
@@ -4134,7 +4134,7 @@ dependencies = [
 name = "twizzler-runtime-api"
 version = "0.1.0"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags 2.4.1",
  "compiler_builtins",
  "rustc-std-workspace-core",
 ]

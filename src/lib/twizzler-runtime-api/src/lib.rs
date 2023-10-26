@@ -185,6 +185,7 @@ pub enum MapError {
 
 bitflags::bitflags! {
     /// Mapping protections for mapping objects into the address space.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct MapFlags: u32 {
         /// Read allowed.
         const READ = 1;
