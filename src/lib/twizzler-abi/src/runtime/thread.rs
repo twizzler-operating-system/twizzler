@@ -155,7 +155,7 @@ impl ThreadRuntime for MinimalRuntime {
         }
     }
 
-    fn tls_get_addr(&self, _tls_index: &twizzler_runtime_api::TlsIndex) -> *const u8 {
+    fn tls_get_addr(&self, _tls_index: &twizzler_runtime_api::TlsIndex) -> Option<*const u8> {
         panic!("minimal runtime only supports LocalExec TLS model");
     }
 }

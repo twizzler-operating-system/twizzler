@@ -635,6 +635,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                         info.obj.id(),
                         ObjectMemoryError::NullPageAccess,
                         cause,
+                        addr.into(),
                     )));
                 return;
             }
@@ -645,6 +646,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                         info.obj.id(),
                         ObjectMemoryError::OutOfBounds(page_number.as_byte_offset()),
                         cause,
+                        addr.into(),
                     )));
                 return;
             }

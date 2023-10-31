@@ -18,7 +18,7 @@ use twizzler_runtime_api::AuxEntry;
 
 #[derive(Debug)]
 #[repr(C)]
-struct ElfHeader {
+pub(crate) struct ElfHeader {
     magic: [u8; 4],
     class: u8,
     data: u8,
@@ -51,7 +51,7 @@ impl ElfHeader {
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Clone, Copy)]
-enum PhdrType {
+pub(crate) enum PhdrType {
     Null = 0,
     Load = 1,
     Dynamic = 2,
@@ -77,14 +77,14 @@ impl TryFrom<u32> for PhdrType {
 
 #[repr(C)]
 #[derive(Debug)]
-struct ElfPhdr {
+pub(crate) struct ElfPhdr {
     ptype: u32,
     flags: u32,
     offset: u64,
-    vaddr: u64,
+    pub(crate) vaddr: u64,
     paddr: u64,
     filesz: u64,
-    memsz: u64,
+    pub(crate) memsz: u64,
     align: u64,
 }
 
@@ -117,7 +117,7 @@ pub struct ElfObject<'a> {
     obj: &'a InternalObject<ElfHeader>,
 }
 
-struct PhdrIter<'a> {
+pub(crate) struct PhdrIter<'a> {
     elf: &'a ElfObject<'a>,
     pos: usize,
 }
@@ -162,12 +162,12 @@ impl<'a> ElfObject<'a> {
         }
     }
 
-    fn from_obj(obj: &'a InternalObject<ElfHeader>) -> Option<Self> {
+    pub(crate) fn from_obj(obj: &'a InternalObject<ElfHeader>) -> Option<Self> {
         let start = obj.base();
         Self::from_raw_memory(obj, start as *const ElfHeader as *const u8)
     }
 
-    fn phdrs(&self) -> PhdrIter {
+    pub(crate) fn phdrs(&self) -> PhdrIter {
         PhdrIter { elf: self, pos: 0 }
     }
 }

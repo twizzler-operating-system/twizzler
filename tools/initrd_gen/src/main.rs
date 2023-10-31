@@ -29,7 +29,20 @@ fn main() {
     for file in files.unwrap_or_default().map(|s| s.as_str()) {
         let mut f = File::open(file).unwrap();
         archive
-            .append_file(Path::new(file).file_name().unwrap(), &mut f)
+            .append_file(
+                Path::new(file)
+                    .file_name()
+                    .map(|s| {
+                        // TODO: HACK
+                        if s.to_str().unwrap().starts_with("libstd") {
+                            "libstd.so"
+                        } else {
+                            s.to_str().unwrap()
+                        }
+                    })
+                    .unwrap(),
+                &mut f,
+            )
             .unwrap();
     }
 }

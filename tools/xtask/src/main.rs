@@ -7,7 +7,7 @@ mod triple;
 use std::path::PathBuf;
 
 use clap::{ValueEnum, Args, Parser, Subcommand};
-use triple::{Arch, Machine};
+use triple::{Arch, Machine, Triple};
 
 #[derive(Parser, Debug)]
 #[clap(name = "xtask", author = "Daniel Bittman <danielbittman1@gmail.com>", version = "1.0", about = "Build system for Twizzler", long_about = None)]
@@ -59,6 +59,10 @@ impl BuildConfig {
 
     pub fn is_default_target(&self) -> bool {
         self.is_default_arch() && self.is_default_machine()
+    }
+
+    pub fn twz_triple(&self) -> Triple {
+        Triple::new(self.arch, self.machine, triple::Host::Twizzler, None)
     }
 }
 

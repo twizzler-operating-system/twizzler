@@ -30,14 +30,22 @@ pub struct ObjectMemoryFaultInfo {
     pub error: ObjectMemoryError,
     /// The kind of memory access that caused the error.
     pub access: MemoryAccessKind,
+    /// The virtual address at which the error occurred.
+    pub addr: usize,
 }
 
 impl ObjectMemoryFaultInfo {
-    pub fn new(object_id: ObjID, error: ObjectMemoryError, access: MemoryAccessKind) -> Self {
+    pub fn new(
+        object_id: ObjID,
+        error: ObjectMemoryError,
+        access: MemoryAccessKind,
+        addr: usize,
+    ) -> Self {
         Self {
             object_id,
             error,
             access,
+            addr,
         }
     }
 }
