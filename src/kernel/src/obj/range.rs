@@ -58,11 +58,18 @@ impl PageRange {
         self.pv_ref_count() > 1
     }
 
-    pub fn gc_pagevec(&self) {
-        // TODO
+    pub fn gc_pagevec(&mut self) {
+        if self.is_shared() {
+            // TODO: maybe we can do something smarter here, but it may be dangerous. In particular, we should
+            // study what pagevecs actually look like in a long-running system and decide what to do based on that.
+            // Of course, if we want to be able to do anything here, we'll either need to promote pagevecs to non-shared
+            // or we will need to track more page info.
+            return;
+        }
 
-        //logln!("TODO: gc page vec");
-        //       todo!()
+        let mut pv = self.pv.lock();
+        pv.truncate_and_drain(self.offset, self.length);
+        self.offset = 0;
     }
 
     pub fn split_at(&self, pn: PageNumber) -> (Option<PageRange>, PageRange, Option<PageRange>) {

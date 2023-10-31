@@ -5,6 +5,8 @@ use super::{
     InvalidateMode, ObjectRef, PageNumber,
 };
 
+// Given a page range and a subrange within it, split it into two parts, the part before the subrange, and the part after.
+// Each part may be None if its length is zero (consider splitting [1,2,3,4] with the subrange [1,2] => (None, Some([3,4]))).
 fn split_range(
     range: PageRange,
     out: core::ops::Range<PageNumber>,
@@ -24,6 +26,8 @@ fn split_range(
     (r1, r2)
 }
 
+// Add a page range to the object page tree. We are given: (1) a range we want to take from, (2) a subrange within that range (specified by offset and length),
+// and a point to insert this into (dest_point).
 fn copy_range_to_object_tree(
     dest_tree: &mut LockGuard<PageRangeTree>,
     dest_point: PageNumber,
@@ -31,20 +35,24 @@ fn copy_range_to_object_tree(
     offset: usize,
     length: usize,
 ) {
+    // First, make a new range that represents the subrange range[offset..(offset + length)].
     let new_offset = range.offset + offset;
     let new_range = range.new_from(dest_point, new_offset, length);
     let new_range_key = new_range.start..new_range.start.offset(new_range.length);
+    // Now insert the new range. This will, of course, kick any ranges that overlap with the new range out of the tree, so we
+    // need to split those and add in pages that shouldn't have been replaced.
     let kicked = dest_tree.insert_replace(new_range_key.clone(), new_range);
     for k in kicked {
         logln!("kicked: {:?}", k.0);
+        // We need to split any kicked ranges into parts that don't overlap with new_range_key, and then reinsert those splits.
         let (r1, r2) = split_range(k.1, new_range_key.clone());
-        if let Some(r1) = r1 {
+        if let Some(mut r1) = r1 {
             logln!("reins: {:?} {}", r1.range(), r1.start);
             r1.gc_pagevec();
             let res = dest_tree.insert_replace(r1.start..r1.start.offset(r1.length), r1);
             assert!(res.is_empty());
         }
-        if let Some(r2) = r2 {
+        if let Some(mut r2) = r2 {
             logln!("reins: {:?} {}", r2.range(), r2.start);
             r2.gc_pagevec();
             let res = dest_tree.insert_replace(r2.start..r2.start.offset(r2.length), r2);
@@ -53,6 +61,7 @@ fn copy_range_to_object_tree(
     }
 }
 
+// Copy a single, partial page.
 fn copy_single(
     dest_tree: &mut LockGuard<PageRangeTree>,
     src_tree: &mut LockGuard<PageRangeTree>,
@@ -77,6 +86,16 @@ fn copy_single(
     }
 }
 
+/// Copy page ranges from one object to another, preferring to share page vectors if possible.
+/// We allow non-page-aligned offsets, as long as the dest and src offsets are mis-aligned by the
+/// same amount. In the case that a full page needs to be copied, it will likely be shared and set
+/// to copy on write. In the case that a page needs to be partially copied, we'll do a manual copy
+/// for that page. This only happens at the start and end of the copy region.
+///
+/// We lock the page trees for each object (in a canonical order) and ensure that the regions are
+/// remapped appropriately for any mapping of the objects. This ensures that the source object is
+/// "checkpointed" before copying, and that the destination object cannot be read in the region being
+/// overwritten until the copy is done.
 pub fn copy_ranges(
     src: &ObjectRef,
     src_off: usize,
@@ -84,14 +103,19 @@ pub fn copy_ranges(
     dest_off: usize,
     byte_length: usize,
 ) {
+    // TODO: support full manual copy, if it comes to that.
     if src_off % PageNumber::PAGE_SIZE != dest_off % PageNumber::PAGE_SIZE {
         todo!("support copy_ranges that aren't aligned")
     }
-
     let src_start = PageNumber::from_offset(src_off);
     let dest_start = PageNumber::from_offset(dest_off);
+
     let start_offset = src_off % PageNumber::PAGE_SIZE;
     let end_offset = (src_off + byte_length) % PageNumber::PAGE_SIZE;
+
+    // Number of pages that will be touched, including partial pages.
+    // By subtracting the partial pages, we are left with the full pages,
+    // and then we can add in how many partial pages we'll be copying.
     let nr_pages: usize = byte_length.saturating_sub(start_offset + end_offset)
         / PageNumber::PAGE_SIZE
         + match (start_offset, end_offset) {
@@ -141,6 +165,7 @@ pub fn copy_ranges(
         remaining_pages -= 1;
     }
 
+    // Step 3b: copy full pages. The number of pages is how many we have left, minus if we are going to do a partial page at the end.
     let vec_pages = remaining_pages - if end_offset > 0 { 1 } else { 0 };
     let mut remaining_vec_pages = vec_pages;
     if vec_pages > 0 {
@@ -160,12 +185,13 @@ pub fn copy_ranges(
             src_point = src_point.offset(len);
         }
     }
-
     remaining_pages -= vec_pages;
+
     assert_eq!(remaining_pages == 1, end_offset > 0);
     assert!(remaining_pages == 1 || remaining_pages == 0);
     assert_eq!(remaining_vec_pages, 0);
 
+    // Step 3c: Finally, copy the last partial page, if there is one.
     if end_offset > 0 {
         copy_single(
             &mut dest_tree,
@@ -177,6 +203,7 @@ pub fn copy_ranges(
         );
     }
 
+    // TODO: remove this
     dest.invalidate(
         dest_start..dest_start.offset(nr_pages),
         InvalidateMode::Full,

@@ -20,6 +20,20 @@ impl PageVec {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.pages.len()
+    }
+
+    /// Remove the first elements up to offset, and then truncate the vector to the given length.
+    pub fn truncate_and_drain(&mut self, offset: usize, len: usize) {
+        logln!("t&d {} : {} {}", self.pages.len(), offset, len);
+        self.pages.drain(0..offset);
+        self.pages.truncate(len);
+        if self.pages.capacity() > 2 * len {
+            self.pages.shrink_to_fit();
+        }
+    }
+
     pub fn show_part(&self, range: &PageRange) -> String {
         let mut str = String::new();
         str += &format!("PV {:p} ", self);
