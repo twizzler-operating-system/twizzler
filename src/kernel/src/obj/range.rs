@@ -215,6 +215,7 @@ impl PageRangeTree {
     pub fn add_page(&mut self, pn: PageNumber, page: Page) {
         let range = self.tree.get(&pn);
         if let Some(range) = range {
+            // TODO: If this is shared, we need to split.
             range.add_page(pn, page);
         } else {
             if let Some(prev) = pn.prev() {
@@ -227,10 +228,13 @@ impl PageRangeTree {
                     return;
                 }
             }
+            // TODO: we could be a little smarter, and search a few pages back, or something. Find the previous
+            // range and see if it can be extended. We also need to make a page tree merging GC function.
             let mut range = PageRange::new(pn);
             range.length = 1;
             range.add_page(pn, page);
-            self.tree.insert_replace(pn..pn.next(), range);
+            let kicked = self.tree.insert_replace(pn..pn.next(), range);
+            assert_eq!(kicked.len(), 0);
         }
     }
 

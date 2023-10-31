@@ -171,18 +171,30 @@ pub fn copy_ranges(
     if vec_pages > 0 {
         let ranges = src_tree.range(src_point..src_point.offset(vec_pages));
         for range in ranges {
+            // If the source point is below the range's start, then there's a hole in the source page tree. We don't have
+            // to copy at all, just shift up the dest point to where it needs to be for this range (since we will be copying from it).
             if src_point < *range.0 {
-                /* TODO: we'll need to ensure all backing pages are present if we get here */
                 let diff = *range.0 - src_point;
+                // If the hole is bigger than our copy region, just break.
+                // Note: I don't think this will ever be true, given the way we select the ranges from the tree, but I haven't proven it yet.
+                if diff > remaining_vec_pages {
+                    dest_point = dest_point.offset(remaining_vec_pages);
+                    remaining_vec_pages = 0;
+                    break;
+                }
+                /* TODO: we'll need to ensure all backing pages are present if we get here */
                 dest_point = dest_point.offset(diff);
                 remaining_vec_pages -= diff;
             }
+
+            // Okay, finally, we can calculate the subrange from the source range that we'll be using for our destination region.
             let offset = src_point.num().saturating_sub(range.0.num());
             let len = core::cmp::min(range.1.value().length - offset, remaining_vec_pages);
             copy_range_to_object_tree(&mut dest_tree, dest_point, range.1.value(), offset, len);
+
             dest_point = dest_point.offset(len);
-            remaining_vec_pages -= len;
             src_point = src_point.offset(len);
+            remaining_vec_pages -= len;
         }
     }
     remaining_pages -= vec_pages;
