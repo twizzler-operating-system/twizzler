@@ -86,7 +86,7 @@ impl PageVec {
             self.pages.reserve((offset + 1) * 2);
             self.pages.resize(offset + 1, None)
         }
-        assert!(self.pages[offset].is_none()); //TODO
+        //assert!(self.pages[offset].is_none()); //TODO
         self.pages[offset] = Some(Arc::new(page));
     }
 }

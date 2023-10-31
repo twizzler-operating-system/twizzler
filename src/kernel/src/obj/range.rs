@@ -211,8 +211,9 @@ impl PageRangeTree {
             range.add_page(pn, page);
         } else {
             if let Some(prev) = pn.prev() {
-                let range = self.tree.remove(&prev);
-                if let Some(mut range) = range {
+                let range = self.tree.get(&prev);
+                if range.is_some_and(|range| !range.is_shared()) {
+                    let mut range = self.tree.remove(&prev).unwrap();
                     range.length += 1;
                     range.add_page(pn, page);
                     self.tree.insert_replace(range.range(), range);

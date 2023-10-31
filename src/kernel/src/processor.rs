@@ -420,6 +420,9 @@ fn enqueue_ipi_task_many(incl_self: bool, task: &Arc<IpiTask>) {
 
 /// Run a closure on some set of CPUs, waiting for all invocations to complete.
 pub fn ipi_exec(target: Destination, f: Box<dyn Fn() + Send + Sync>) {
+    if current_thread_ref().is_none() {
+        return;
+    }
     let task = Arc::new(IpiTask {
         outstanding: AtomicU64::new(0),
         func: f,

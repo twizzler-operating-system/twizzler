@@ -111,6 +111,10 @@ impl PageNumber {
         PageNumber((addr.raw() as usize % MAX_SIZE) / Self::PAGE_SIZE)
     }
 
+    pub fn from_offset(off: usize) -> Self {
+        PageNumber(off / Self::PAGE_SIZE)
+    }
+
     pub fn next(&self) -> Self {
         Self(self.0 + 1)
     }

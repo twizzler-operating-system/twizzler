@@ -220,10 +220,15 @@ pub fn spawn_new_executable(
         let dest_start = phdr.vaddr & ((!page_size) + 1);
         let len = (phdr.filesz as u64 + (phdr.vaddr & (page_size - 1))) as usize;
         let aligned_len = len.checked_next_multiple_of(page_size as usize).unwrap();
-        let copy = ObjectSource::new(exe.id(), src_start, dest_start, aligned_len);
         let prot = phdr.prot();
 
         if prot.contains(Protections::WRITE) {
+            let copy = ObjectSource::new(
+                exe.id(),
+                src_start,
+                dest_start & (MAX_SIZE as u64 - 1),
+                aligned_len,
+            );
             let brk = (phdr.vaddr & (page_size - 1)) + phdr.filesz;
             let pgbrk = (brk + (page_size - 1)) & ((!page_size) + 1);
             let pgend = (brk + phdr.memsz - phdr.filesz + (page_size - 1)) & ((!page_size) + 1);
@@ -240,6 +245,7 @@ pub fn spawn_new_executable(
             }
             data_zero.push((dest_zero_start, pgbrk - brk));
         } else {
+            let copy = ObjectSource::new(exe.id(), src_start, dest_start, aligned_len);
             text_copy.push(copy);
         }
     }
