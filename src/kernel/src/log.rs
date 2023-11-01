@@ -89,6 +89,7 @@ impl<T: KernelConsoleHardware> core::fmt::Write for KernelConsole<T, NormalMessa
 }
 
 bitflags::bitflags! {
+    #[derive(Clone, Copy)]
     pub struct KernelConsoleWriteFlags: u32 {
         const DISCARD_ON_FULL = 1;
     }

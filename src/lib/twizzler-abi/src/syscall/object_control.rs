@@ -56,6 +56,7 @@ impl std::error::Error for ObjectControlError {
 }
 bitflags::bitflags! {
     /// Flags to control operation of the object delete operation.
+    #[derive(Debug, Clone, Copy)]
     pub struct DeleteFlags : u64 {
         const FORCE = 1;
     }

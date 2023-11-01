@@ -7,6 +7,7 @@ use crate::{arch::syscall::raw_syscall, object::ObjID};
 use super::{convert_codes_to_result, Syscall};
 bitflags! {
     /// Flags to pass to [sys_spawn].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct ThreadSpawnFlags: u32 {
     }
 }

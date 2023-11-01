@@ -362,6 +362,7 @@ impl Frame {
 bitflags::bitflags! {
     /// Flags to control the state of a physical frame. Also used by the alloc functions to indicate
     /// what kind of physical frame is being requested.
+    #[derive(Clone, Copy)]
     pub struct PhysicalFrameFlags: u8 {
         /// The frame is zeroed (or, allocate a zeroed frame)
         const ZEROED = 1;

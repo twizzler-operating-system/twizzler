@@ -4,6 +4,7 @@ use super::{ClockSource, ReadClockFlags, ReadClockListFlags, TimeSpan, FemtoSeco
 
 bitflags! {
     /// Flags about a given clock or clock read.
+    #[derive(Debug, Clone, Copy)]
     pub struct ClockFlags: u32 {
         const MONOTONIC = 1;
     }

@@ -4,6 +4,7 @@ use crate::{
 };
 
 bitflags::bitflags! {
+    #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
     pub struct ListenFlags: u32 {
         const RAW = 0x1;
     }

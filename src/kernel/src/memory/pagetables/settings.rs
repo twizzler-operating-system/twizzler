@@ -2,6 +2,7 @@ use twizzler_abi::{device::CacheType, object::Protections};
 
 bitflags::bitflags! {
     /// A collection of flags commonly used for mapping.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct MappingFlags : u64 {
         /// The mapping is global, and may persist in the TLB across context switches.
         const GLOBAL = 1;

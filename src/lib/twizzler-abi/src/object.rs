@@ -72,6 +72,7 @@ impl core::fmt::Debug for ObjID {
 
 bitflags::bitflags! {
     /// Mapping protections for mapping objects into the address space.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Protections: u32 {
         /// Read allowed.
         const READ = 1;

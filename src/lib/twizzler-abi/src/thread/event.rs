@@ -36,6 +36,7 @@ pub const MAX_AUX_DATA: usize = 7;
 
 bitflags::bitflags! {
     /// Async event flags.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct AsyncEventFlags : u32 {
         /// The sender did not (or does not) want to wait for the completion.
         const NON_BLOCKING = 1;
@@ -63,6 +64,7 @@ impl AsyncEventCompletion {
 
 bitflags::bitflags! {
     /// Async event completion flags. Reserved for future use.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct AsyncEventCompletionFlags : u32 {
     }
 }

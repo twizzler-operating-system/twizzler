@@ -61,12 +61,14 @@ pub enum LifetimeType {
 
 bitflags! {
     /// Flags to pass to the object create system call.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)] 
     pub struct ObjectCreateFlags: u32 {
     }
 }
 
 bitflags! {
     /// Flags controlling how a particular object tie operates.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct CreateTieFlags: u32 {
     }
 }
