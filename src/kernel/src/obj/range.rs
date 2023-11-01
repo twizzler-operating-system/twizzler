@@ -143,21 +143,19 @@ impl PageRangeTree {
         self.tree.get_mut(&pn)
     }
 
-    pub fn get_page(&mut self, pn: PageNumber, is_write: bool) -> Option<(PageRef, bool)> {
-        let range = self.get(pn)?;
-        let page = range.get_page(pn);
-        let shared = range.is_shared();
-        if !shared || !is_write {
-            return Some((page, shared));
-        }
-        let range = self.tree.remove(&pn).unwrap();
-        /* need to copy */
+    fn split_into_three(&mut self, pn: PageNumber, discard: bool) {
+        let Some(range) = self.tree.remove(&pn) else {
+            return;
+        };
         let (r1, mut r2, r3) = range.split_at(pn);
         /* r2 is always the one we want */
-        let pv = Arc::new(Mutex::new(
-            r2.pv.lock().clone_pages_limited(r2.offset, r2.length),
-        ));
-        r2.pv = pv;
+        let pv = if discard {
+            PageVec::new()
+        } else {
+            r2.pv.lock().clone_pages_limited(r2.offset, r2.length)
+        };
+
+        r2.pv = Arc::new(Mutex::new(pv));
         r2.offset = 0;
 
         if let Some(r1) = r1 {
@@ -172,10 +170,22 @@ impl PageRangeTree {
             let res = self.insert_replace(r3.range(), r3);
             assert_eq!(res.len(), 0);
         }
+    }
 
+    fn do_get_page(&self, pn: PageNumber) -> Option<(PageRef, bool)> {
         let range = self.get(pn)?;
         let page = range.get_page(pn);
         let shared = range.is_shared();
+        Some((page, shared))
+    }
+
+    pub fn get_page(&mut self, pn: PageNumber, is_write: bool) -> Option<(PageRef, bool)> {
+        let (page, shared) = self.do_get_page(pn)?;
+        if !shared || !is_write {
+            return Some((page, shared));
+        }
+        self.split_into_three(pn, false);
+        let (page, shared) = self.do_get_page(pn)?;
         assert!(!shared);
         Some((page, false))
     }
@@ -212,24 +222,35 @@ impl PageRangeTree {
         self.tree.range_mut(r)
     }
 
+    pub fn gc_tree(&mut self) {
+        todo!()
+    }
+
     pub fn add_page(&mut self, pn: PageNumber, page: Page) {
+        const MAX_EXTENSION_ALLOWED: usize = 16;
         let range = self.tree.get(&pn);
-        if let Some(range) = range {
-            // TODO: If this is shared, we need to split.
+        if let Some(mut range) = range {
+            if range.is_shared() {
+                self.split_into_three(pn, true);
+                range = self.tree.get(&pn).unwrap();
+            }
             range.add_page(pn, page);
         } else {
-            if let Some(prev) = pn.prev() {
-                let range = self.tree.get(&prev);
-                if range.is_some_and(|range| !range.is_shared()) {
-                    let mut range = self.tree.remove(&prev).unwrap();
-                    range.length += 1;
-                    range.add_page(pn, page);
-                    self.tree.insert_replace(range.range(), range);
+            // Try to extend a previous range.
+            if let Some((_, prev_range)) =
+                self.tree.range_mut(PageNumber::from_offset(0)..pn).last()
+            {
+                let end = prev_range.start.offset(prev_range.length - 1);
+                let diff = pn - end;
+                if !prev_range.is_shared() && diff <= MAX_EXTENSION_ALLOWED {
+                    let mut prev_range = self.tree.remove(&end).unwrap();
+                    prev_range.length += diff;
+                    prev_range.add_page(pn, page);
+                    let kicked = self.tree.insert_replace(prev_range.range(), prev_range);
+                    assert_eq!(kicked.len(), 0);
                     return;
                 }
             }
-            // TODO: we could be a little smarter, and search a few pages back, or something. Find the previous
-            // range and see if it can be extended. We also need to make a page tree merging GC function.
             let mut range = PageRange::new(pn);
             range.length = 1;
             range.add_page(pn, page);
