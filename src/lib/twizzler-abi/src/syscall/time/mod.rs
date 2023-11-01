@@ -114,6 +114,7 @@ bitflags! {
     }
 
     /// Flags to pass to [`sys_read_clock_list`].
+    #[derive(PartialEq, Eq)]
     pub struct ReadClockListFlags: u32 {
         /// Fill the buffer with all clocks from the clock list, for every `ClockKind`.
         const ALL_CLOCKS = 1 << 0;

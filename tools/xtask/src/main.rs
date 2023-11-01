@@ -6,7 +6,7 @@ mod triple;
 
 use std::path::PathBuf;
 
-use clap::{ArgEnum, Args, Parser, Subcommand};
+use clap::{ValueEnum, Args, Parser, Subcommand};
 use triple::{Arch, Machine, Triple};
 
 #[derive(Parser, Debug)]
@@ -16,7 +16,7 @@ struct Cli {
     command: Option<Commands>,
 }
 
-#[derive(Debug, ArgEnum, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, ValueEnum, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Profile {
     Debug,
     Release,
@@ -40,11 +40,11 @@ impl Default for Profile {
 
 #[derive(Args, Debug, Clone, Copy)]
 struct BuildConfig {
-    #[clap(short, long, arg_enum, default_value_t = Profile::Debug, help = "Select build profile.")]
+    #[clap(short, long, value_enum, default_value_t = Profile::Debug, help = "Select build profile.")]
     pub profile: Profile,
-    #[clap(short, long, arg_enum, default_value_t = Arch::X86_64, help = "Select target architecture.")]
+    #[clap(short, long, value_enum, default_value_t = Arch::X86_64, help = "Select target architecture.")]
     pub arch: Arch,
-    #[clap(short, long, arg_enum, default_value_t = Machine::Unknown, help = "Select target machine.")]
+    #[clap(short, long, value_enum, default_value_t = Machine::Unknown, help = "Select target machine.")]
     pub machine: Machine,
 }
 
@@ -82,7 +82,7 @@ struct DocOptions {
     pub config: BuildConfig,
 }
 
-#[derive(ArgEnum, Debug, Clone, Copy)]
+#[derive(ValueEnum, Debug, Clone, Copy)]
 enum MessageFormat {
     Human,
     Short,
@@ -98,7 +98,7 @@ struct CheckOptions {
     pub config: BuildConfig,
     #[clap(long, short)]
     pub manifest_path: Option<PathBuf>,
-    #[clap(long, short, arg_enum, default_value_t = MessageFormat::Human)]
+    #[clap(long, short, value_enum, default_value_t = MessageFormat::Human)]
     pub message_format: MessageFormat,
     #[clap(long, short)]
     pub workspace: bool,

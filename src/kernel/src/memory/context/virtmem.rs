@@ -574,6 +574,7 @@ impl StableId for VirtContext {
 }
 
 bitflags::bitflags! {
+    #[derive(Debug)]
     pub struct PageFaultFlags : u32 {
         const USER = 1;
         const INVALID = 2;
