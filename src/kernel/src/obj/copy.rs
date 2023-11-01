@@ -1,6 +1,7 @@
 use crate::mutex::LockGuard;
 
 use super::{
+    pages::Page,
     range::{PageRange, PageRangeTree},
     InvalidateMode, ObjectRef, PageNumber,
 };
@@ -71,13 +72,7 @@ fn copy_single(
     max: usize,
 ) {
     let src_page = src_tree.get_page(src_point, false);
-    if dest_tree.get_page(dest_point, true).is_none() {
-        // TODO
-        dest_tree.add_page(dest_point, super::pages::Page::new());
-    }
-    let (dest_page, _) = dest_tree
-        .get_page(dest_point, true)
-        .expect("failed to get destination page"); //TODO fix this
+    let (dest_page, _) = dest_tree.get_or_add_page(dest_point, true, |_, _| Page::new());
     if let Some((src_page, _)) = src_page {
         dest_page.as_mut_slice()[offset..max].copy_from_slice(&src_page.as_slice()[offset..max]);
     } else {
@@ -283,10 +278,8 @@ mod test {
         for p in 0..254 {
             let mut tree: crate::mutex::LockGuard<'_, crate::obj::range::PageRangeTree> =
                 src.lock_page_tree();
-            tree.add_page(PageNumber::base_page().offset(p), Page::new());
-            let (sp, _) = tree
-                .get_page(PageNumber::base_page().offset(p), true)
-                .unwrap();
+            let (sp, _) =
+                tree.get_or_add_page(PageNumber::base_page().offset(p), true, |_, _| Page::new());
             sp.as_mut_slice().fill((p + 1) as u8);
         }
 

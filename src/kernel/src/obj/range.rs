@@ -190,6 +190,19 @@ impl PageRangeTree {
         Some((page, false))
     }
 
+    pub fn get_or_add_page(
+        &mut self,
+        pn: PageNumber,
+        is_write: bool,
+        if_not_present: impl Fn(PageNumber, bool) -> Page,
+    ) -> (PageRef, bool) {
+        if let Some(out) = self.get_page(pn, is_write) {
+            return out;
+        }
+        self.add_page(pn, if_not_present(pn, is_write));
+        self.get_page(pn, is_write).unwrap()
+    }
+
     pub fn insert_replace(
         &mut self,
         k: core::ops::Range<PageNumber>,
