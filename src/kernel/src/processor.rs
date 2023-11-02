@@ -5,7 +5,7 @@ use core::{
 };
 
 use crate::{
-    arch::interrupt::GENERIC_IPI_VECTOR,
+    arch::{interrupt::GENERIC_IPI_VECTOR, memory::pagetables::tlb_shootdown_handler},
     interrupt::{self, Destination},
     once::Once,
     spinlock::{LockGuard, SpinLoop, Spinlock},
@@ -288,6 +288,16 @@ pub unsafe fn get_processor_mut(id: u32) -> &'static mut Processor {
     ALL_PROCESSORS[id as usize].as_mut().unwrap()
 }
 
+pub fn with_each_active_processor(mut f: impl FnMut(&'static Processor)) {
+    for p in unsafe { &ALL_PROCESSORS } {
+        if let Some(p) = p {
+            if p.is_running() {
+                f(p)
+            }
+        }
+    }
+}
+
 #[inline]
 pub fn tls_ready() -> bool {
     crate::arch::processor::tls_ready()
@@ -460,7 +470,11 @@ pub fn ipi_exec(target: Destination, f: Box<dyn Fn() + Send + Sync>) {
         // outstanding tasks while we wait.
         if !int_state {
             current.run_ipi_tasks();
+            // We do have to check this, in case some CPU is waiting for all CPUs to do a shootdown, but one is in here,
+            // and the caller of this function had interrupts disabled.
+            tlb_shootdown_handler();
         }
+
         core::hint::spin_loop();
     }
     core::sync::atomic::fence(Ordering::SeqCst);
@@ -469,6 +483,27 @@ pub fn ipi_exec(target: Destination, f: Box<dyn Fn() + Send + Sync>) {
 pub fn generic_ipi_handler() {
     let current = current_processor();
     current.run_ipi_tasks();
+    core::sync::atomic::fence(Ordering::SeqCst);
+}
+
+/// Execute a fixed IPI. A fixed IPI is one defined by (probably) arch-specific code
+/// that needs to accomplish something with as little overhead as possible, and no allocations.
+/// An example of this is TLB shootdown.
+pub fn fixed_ipi_exec(target: Destination, vector: u32, keep_waiting: impl Fn(bool) -> bool) {
+    let int_state = interrupt::disable();
+    arch::send_ipi(target, vector);
+    // We can take interrupts while we wait for other CPUs to execute.
+    interrupt::set(int_state);
+
+    let current = current_processor();
+    while keep_waiting(int_state) {
+        // If interrupts are disabled, we could deadlock if another CPU asks to run IPIs on us. So check if we have
+        // outstanding tasks while we wait.
+        if !int_state {
+            current.run_ipi_tasks();
+        }
+        core::hint::spin_loop();
+    }
     core::sync::atomic::fence(Ordering::SeqCst);
 }
 

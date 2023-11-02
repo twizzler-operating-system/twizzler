@@ -1,14 +1,18 @@
-use alloc::boxed::Box;
 use x86::controlregs::Cr4;
 
 use crate::{
-    arch::address::{PhysAddr, VirtAddr},
+    arch::{
+        address::{PhysAddr, VirtAddr},
+        interrupt::TLB_SHOOTDOWN_VECTOR,
+        processor::{TlbShootdownInfo, NUM_TLB_SHOOTDOWN_ENTRIES},
+    },
     interrupt::Destination,
+    processor::{current_processor, tls_ready, with_each_active_processor},
 };
 
 const MAX_INVALIDATION_INSTRUCTIONS: usize = 16;
 #[derive(Clone)]
-struct TlbInvData {
+pub struct TlbInvData {
     target_cr3: u64,
     instructions: [InvInstruction; MAX_INVALIDATION_INSTRUCTIONS],
     len: u8,
@@ -63,6 +67,27 @@ impl TlbInvData {
         &self.instructions[0..(self.len as usize)]
     }
 
+    fn merge(&mut self, other: TlbInvData) {
+        if other.target_cr3 != self.target_cr3 {
+            self.set_global();
+            self.set_full();
+        } else {
+            if other.full() {
+                self.set_full();
+            }
+            if other.global() {
+                self.set_global();
+            }
+            if self.len as usize + other.len as usize > MAX_INVALIDATION_INSTRUCTIONS {
+                self.set_full();
+            } else {
+                for inst in other.instructions() {
+                    self.enqueue(*inst)
+                }
+            }
+        }
+    }
+
     fn enqueue(&mut self, inst: InvInstruction) {
         if inst.is_global() {
             self.set_global();
@@ -77,24 +102,36 @@ impl TlbInvData {
         self.len += 1;
     }
 
-    unsafe fn do_invalidation(&self) {
-        let our_cr3 = x86::controlregs::cr3();
+    pub fn has_invalidations(&self) -> bool {
+        self.len > 0 || self.full()
+    }
+
+    fn reset(&mut self) {
+        *self = Self::new(self.target());
+        assert!(!self.has_invalidations());
+    }
+
+    fn do_invalidation(&self) {
+        if !self.has_invalidations() {
+            return;
+        }
+        let our_cr3 = unsafe { x86::controlregs::cr3() };
         /*
         logln!(
-            "invalidation started on CPU {}: target = {} ({}) {}",
+            "invalidation started on CPU {}: target = {:x} ({}) {} {}",
             crate::processor::current_processor().id,
             self.target(),
             if self.target() == our_cr3 || self.global() {
-                if self.global() {
-                    "GLOBAL"
-                } else {
-                    "HIT"
-                }
+                "HIT"
             } else {
                 "miss"
             },
+            if self.global() { "GLOBAL" } else { "" },
             if self.full() { "FULL" } else { "" }
         );
+        for inst in self.instructions() {
+            logln!("   -> {:x} {}", inst.addr().raw(), inst.level());
+        }
         */
         if our_cr3 != self.target() && !self.global() {
             return;
@@ -111,6 +148,20 @@ impl TlbInvData {
 
         for inst in self.instructions() {
             inst.execute();
+        }
+    }
+
+    fn new(target: u64) -> Self {
+        TlbInvData {
+            target_cr3: target,
+            instructions: [InvInstruction::new(
+                unsafe { VirtAddr::new_unchecked(0) },
+                false,
+                false,
+                0,
+            ); MAX_INVALIDATION_INSTRUCTIONS],
+            len: 0,
+            flags: 0,
         }
     }
 }
@@ -201,19 +252,11 @@ pub struct ArchTlbMgr {
 impl ArchTlbMgr {
     /// Construct a new [ArchTlbMgr].
     pub fn new(target: PhysAddr) -> Self {
-        Self {
-            data: TlbInvData {
-                target_cr3: target.into(),
-                instructions: [InvInstruction::new(
-                    unsafe { VirtAddr::new_unchecked(0) },
-                    false,
-                    false,
-                    0,
-                ); MAX_INVALIDATION_INSTRUCTIONS],
-                len: 0,
-                flags: 0,
-            },
-        }
+        let this = Self {
+            data: TlbInvData::new(target.into()),
+        };
+        assert!(!this.data.has_invalidations());
+        this
     }
 
     /// Enqueue a new TLB invalidation. is_global should be set iff the page is global, and is_terminal should be set
@@ -229,14 +272,99 @@ impl ArchTlbMgr {
 
     /// Execute all queued invalidations.
     pub fn finish(&mut self) {
-        let data = self.data.clone();
-        crate::processor::ipi_exec(
-            Destination::AllButSelf,
-            Box::new(move || unsafe { data.do_invalidation() }),
-        );
-        unsafe {
-            self.data.do_invalidation();
+        if !self.data.has_invalidations() {
+            return;
         }
-        *self = Self::new(self.data.target().try_into().unwrap());
+        let proc = current_processor();
+
+        let mut count = 0;
+        // Distribute the invalidation commands
+        with_each_active_processor(|p| {
+            if p.id != proc.id {
+                p.arch.tlb_shootdown_info.lock().insert(self.data.clone());
+                count += 1;
+            }
+        });
+        if count > 0 {
+            // Send the IPI, and then do local invalidations.
+            super::super::super::apic::send_ipi(Destination::AllButSelf, TLB_SHOOTDOWN_VECTOR);
+        }
+        self.data.do_invalidation();
+
+        if count > 0 {
+            // Wait for each processor to report that it is done.
+            with_each_active_processor(|p| {
+                if p.id != proc.id {
+                    // It's possible we might wait for more than one invalidation, but it's unlikely
+                    while !p.arch.tlb_shootdown_info.lock().is_finished() {
+                        core::hint::spin_loop();
+                    }
+                }
+            });
+        }
+        self.data.reset();
+    }
+}
+
+impl Drop for ArchTlbMgr {
+    fn drop(&mut self) {
+        // Only matters once other CPUs are setup, which only happens after TLS is ready
+        if tls_ready() {
+            self.finish();
+        }
+    }
+}
+
+pub fn tlb_shootdown_handler() {
+    let cur = current_processor();
+    let mut tlb_shootdown_info = cur.arch.tlb_shootdown_info.lock();
+    tlb_shootdown_info.complete();
+}
+
+impl TlbShootdownInfo {
+    pub fn insert(&mut self, data: TlbInvData) {
+        // Try to find an empty slot
+        for entry in &mut self.data {
+            if entry.is_none() {
+                *entry = Some(data);
+                return;
+            }
+        }
+        // Try to find a slot with the same target_cr3
+        for entry in &mut self.data {
+            // Unwrap-Ok: we know that all slots are Some from the first loop.
+            if entry.as_ref().unwrap().target() == data.target() {
+                entry.as_mut().unwrap().merge(data);
+                return;
+            }
+        }
+        // Choose the 0'th entry because if this makes it a full or global entry, we want to be able to
+        // exit the handling loop early.
+        // Unwrap-Ok: we know that all slots are Some from the first loop.
+        self.data[0].as_mut().unwrap().merge(data);
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.data.iter().all(Option::is_none)
+    }
+
+    pub fn complete(&mut self) {
+        for entry in &mut self.data {
+            if let Some(data) = entry.take() {
+                data.do_invalidation();
+                if data.full() && data.global() {
+                    // Any other invalidations don't matter.
+                    self.reset();
+                    return;
+                }
+            }
+        }
+        // explicit reset not needed because we've called take() on all entries
+    }
+
+    fn reset(&mut self) {
+        for i in 0..NUM_TLB_SHOOTDOWN_ENTRIES {
+            self.data[i] = None;
+        }
     }
 }

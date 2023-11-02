@@ -7,9 +7,12 @@ use crate::{
     memory::VirtAddr,
     once::Once,
     processor::{current_processor, Processor},
+    spinlock::Spinlock,
 };
 
-use super::{acpi::get_acpi_root, interrupt::InterProcessorInterrupt};
+use super::{
+    acpi::get_acpi_root, interrupt::InterProcessorInterrupt, memory::pagetables::TlbInvData,
+};
 
 #[repr(C)]
 struct GsScratch {
@@ -161,9 +164,33 @@ pub fn get_topology() -> Vec<(usize, bool)> {
     }
 }
 
-#[derive(Default, Debug)]
+pub(super) const NUM_TLB_SHOOTDOWN_ENTRIES: usize = 4;
+pub struct TlbShootdownInfo {
+    pub(super) data: [Option<TlbInvData>; NUM_TLB_SHOOTDOWN_ENTRIES],
+}
+
 pub struct ArchProcessor {
     wait_word: AtomicU64,
+    pub(super) tlb_shootdown_info: Spinlock<TlbShootdownInfo>,
+}
+
+impl core::fmt::Debug for ArchProcessor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ArchProcessor")
+            .field("wait_word", &self.wait_word)
+            .finish()
+    }
+}
+
+impl Default for ArchProcessor {
+    fn default() -> Self {
+        Self {
+            wait_word: Default::default(),
+            tlb_shootdown_info: Spinlock::new(TlbShootdownInfo {
+                data: [None, None, None, None],
+            }),
+        }
+    }
 }
 
 #[derive(Default, Debug)]
