@@ -7,7 +7,7 @@ use crate::{
         processor::{TlbShootdownInfo, NUM_TLB_SHOOTDOWN_ENTRIES},
     },
     interrupt::Destination,
-    processor::{current_processor, tls_ready, with_each_active_processor},
+    processor::{current_processor, spin_wait_until, tls_ready, with_each_active_processor},
 };
 
 const MAX_INVALIDATION_INSTRUCTIONS: usize = 16;
@@ -295,11 +295,7 @@ impl ArchTlbMgr {
             // Wait for each processor to report that it is done.
             with_each_active_processor(|p| {
                 if p.id != proc.id {
-                    todo!("introduce the spin-wait concept, which calls into arch code to ensure that deadlock doesn't happen with a spin-wait. the spinlock data structure, this code, and anywhere else that uses spin-wait needs to be audited.");
-                    // It's possible we might wait for more than one invalidation, but it's unlikely
-                    while !p.arch.tlb_shootdown_info.lock().is_finished() {
-                        core::hint::spin_loop();
-                    }
+                    spin_wait_until(|| !p.arch.tlb_shootdown_info.lock().is_finished(), || {});
                 }
             });
         }

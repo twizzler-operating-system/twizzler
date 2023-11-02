@@ -5,7 +5,7 @@ use core::{
 };
 
 use crate::{
-    arch::{interrupt::GENERIC_IPI_VECTOR, memory::pagetables::tlb_shootdown_handler},
+    arch::interrupt::GENERIC_IPI_VECTOR,
     interrupt::{self, Destination},
     once::Once,
     spinlock::{LockGuard, SpinLoop, Spinlock},
@@ -361,6 +361,7 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
             start_secondary_cpu(p.id, tls_template);
         }
         while !p.running.load(core::sync::atomic::Ordering::SeqCst) {
+            // We can safely spin-loop here because we are in kernel initialization.
             core::hint::spin_loop();
         }
     }
@@ -465,18 +466,21 @@ pub fn ipi_exec(target: Destination, f: Box<dyn Fn() + Send + Sync>) {
     // We can take interrupts while we wait for other CPUs to execute.
     interrupt::set(int_state);
 
-    while task.outstanding.load(Ordering::SeqCst) != 0 {
-        // If interrupts are disabled, we could deadlock if another CPU asks to run IPIs on us. So check if we have
-        // outstanding tasks while we wait.
-        if !int_state {
-            current.run_ipi_tasks();
-            // We do have to check this, in case some CPU is waiting for all CPUs to do a shootdown, but one is in here,
-            // and the caller of this function had interrupts disabled.
-            tlb_shootdown_handler();
-        }
+    spin_wait_until(
+        || {
+            if task.outstanding.load(Ordering::SeqCst) != 0 {
+                None
+            } else {
+                Some(())
+            }
+        },
+        || {
+            if !int_state {
+                current.run_ipi_tasks();
+            }
+        },
+    );
 
-        core::hint::spin_loop();
-    }
     core::sync::atomic::fence(Ordering::SeqCst);
 }
 
@@ -486,25 +490,23 @@ pub fn generic_ipi_handler() {
     core::sync::atomic::fence(Ordering::SeqCst);
 }
 
-/// Execute a fixed IPI. A fixed IPI is one defined by (probably) arch-specific code
-/// that needs to accomplish something with as little overhead as possible, and no allocations.
-/// An example of this is TLB shootdown.
-pub fn fixed_ipi_exec(target: Destination, vector: u32, keep_waiting: impl Fn(bool) -> bool) {
-    let int_state = interrupt::disable();
-    arch::send_ipi(target, vector);
-    // We can take interrupts while we wait for other CPUs to execute.
-    interrupt::set(int_state);
-
-    let current = current_processor();
-    while keep_waiting(int_state) {
-        // If interrupts are disabled, we could deadlock if another CPU asks to run IPIs on us. So check if we have
-        // outstanding tasks while we wait.
-        if !int_state {
-            current.run_ipi_tasks();
+/// Spin waits while a condition (cond) is true, regularly running architecture-dependent spin-wait code along with the provided
+/// pause function. The cond function should not mutate state, and it should be fast (ideally reading a single, perhaps atomic,
+/// memory value + a comparison). The pause function, on the other hand, can be heavier-weight, and may do arbitrary work (within
+/// the context of the caller). The cond function will be called some multiple of times between calls to pause, and if cond returns
+/// false, then this function immediately returns. The [core::hint::spin_loop] function is called between calls to cond.
+pub fn spin_wait_until<R>(until: impl Fn() -> Option<R>, mut pause: impl FnMut()) -> R {
+    const NR_SPIN_LOOPS: usize = 100;
+    loop {
+        for _ in 0..NR_SPIN_LOOPS {
+            if let Some(ret) = until() {
+                return ret;
+            }
+            core::hint::spin_loop();
         }
-        core::hint::spin_loop();
+        arch::processor::spin_wait_iteration();
+        pause();
     }
-    core::sync::atomic::fence(Ordering::SeqCst);
 }
 
 #[cfg(test)]

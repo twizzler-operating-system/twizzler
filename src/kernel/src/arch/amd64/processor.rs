@@ -11,7 +11,9 @@ use crate::{
 };
 
 use super::{
-    acpi::get_acpi_root, interrupt::InterProcessorInterrupt, memory::pagetables::TlbInvData,
+    acpi::get_acpi_root,
+    interrupt::InterProcessorInterrupt,
+    memory::pagetables::{tlb_shootdown_handler, TlbInvData},
 };
 
 #[repr(C)]
@@ -290,4 +292,8 @@ pub fn get_bsp_id(maybe_processor_info: Option<&acpi::platform::ProcessorInfo>) 
         }
         Some(p) => p.boot_processor.local_apic_id,
     }
+}
+
+pub fn spin_wait_iteration() {
+    tlb_shootdown_handler();
 }

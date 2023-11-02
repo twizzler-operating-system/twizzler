@@ -19,6 +19,7 @@ use intrusive_collections::{intrusive_adapter, LinkedList};
 use twizzler_abi::thread::ExecutionState;
 
 use crate::{
+    arch,
     idcounter::StableId,
     sched::{self, schedule_thread},
     spinlock::Spinlock,
@@ -124,6 +125,7 @@ impl<T> Mutex<T> {
                 }
                 reinsert
             };
+            arch::processor::spin_wait_iteration();
             core::hint::spin_loop();
             sched::schedule(reinsert);
             crate::interrupt::set(istate);
