@@ -171,7 +171,7 @@ pub struct TlbShootdownInfo {
 
 pub struct ArchProcessor {
     wait_word: AtomicU64,
-    pub(super) tlb_shootdown_info: Spinlock<TlbShootdownInfo>,
+    pub(super) tlb_shootdown_info: todo!("needs to not be a lock, needs to be wait free"),
 }
 
 impl core::fmt::Debug for ArchProcessor {
