@@ -1,13 +1,18 @@
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
 use x86::controlregs::Cr4;
 
 use crate::{
     arch::{
         address::{PhysAddr, VirtAddr},
         interrupt::TLB_SHOOTDOWN_VECTOR,
-        processor::{TlbShootdownInfo, NUM_TLB_SHOOTDOWN_ENTRIES},
     },
-    interrupt::Destination,
+    interrupt::{self, Destination},
     processor::{current_processor, spin_wait_until, tls_ready, with_each_active_processor},
+    thread::current_thread_ref,
 };
 
 const MAX_INVALIDATION_INSTRUCTIONS: usize = 16;
@@ -275,30 +280,45 @@ impl ArchTlbMgr {
         if !self.data.has_invalidations() {
             return;
         }
-        let proc = current_processor();
+        let Some(current_thread) = current_thread_ref() else {
+            return;
+        };
+        // We definitely don't want to reschedule to a different CPU while doing this.
+        current_thread.do_critical(|_| {
+            let proc = current_processor();
 
-        let mut count = 0;
-        // Distribute the invalidation commands
-        with_each_active_processor(|p| {
-            if p.id != proc.id {
-                p.arch.tlb_shootdown_info.lock().insert(self.data.clone());
-                count += 1;
-            }
-        });
-        if count > 0 {
-            // Send the IPI, and then do local invalidations.
-            super::super::super::apic::send_ipi(Destination::AllButSelf, TLB_SHOOTDOWN_VECTOR);
-        }
-        self.data.do_invalidation();
-
-        if count > 0 {
-            // Wait for each processor to report that it is done.
+            let mut count = 0;
+            // Distribute the invalidation commands
             with_each_active_processor(|p| {
                 if p.id != proc.id {
-                    spin_wait_until(|| !p.arch.tlb_shootdown_info.lock().is_finished(), || {});
+                    p.arch.tlb_shootdown_info.insert(self.data.clone());
+                    count += 1;
                 }
             });
-        }
+            if count > 0 {
+                // Send the IPI, and then do local invalidations.
+                super::super::super::apic::send_ipi(Destination::AllButSelf, TLB_SHOOTDOWN_VECTOR);
+            }
+            self.data.do_invalidation();
+
+            if count > 0 {
+                // Wait for each processor to report that it is done.
+                with_each_active_processor(|p| {
+                    if p.id != proc.id {
+                        spin_wait_until(
+                            || {
+                                if p.arch.tlb_shootdown_info.is_finished() {
+                                    Some(())
+                                } else {
+                                    None
+                                }
+                            },
+                            || {},
+                        );
+                    }
+                });
+            }
+        });
         self.data.reset();
     }
 }
@@ -313,55 +333,107 @@ impl Drop for ArchTlbMgr {
 }
 
 pub fn tlb_shootdown_handler() {
-    let cur = current_processor();
-    let mut tlb_shootdown_info = cur.arch.tlb_shootdown_info.lock();
-    tlb_shootdown_info.complete();
+    // Interrupts are probably disabled here, but ensure it anyway.
+    interrupt::with_disabled(|| {
+        let cur = current_processor();
+        cur.arch.tlb_shootdown_info.complete();
+    })
+}
+
+const NUM_TLB_SHOOTDOWN_ENTRIES: usize = 4;
+pub struct TlbShootdownInfo {
+    // We use a manual spin lock, here, because the general spinlock code actually calls
+    // into this code to poll for TLB shootdowns to avoid deadlock. Hence, we have to manually
+    // lock here. This is "safe" because we fully control any code run while holding the lock,
+    // and we can guarantee that we don't wait on any other locks.
+    lock: AtomicBool,
+    // Maintain a list of a few invalidation command slots we can use, in case multiple CPUs send
+    // out invalidation commands at the same time. Note that in the case that this array is full of
+    // entries, we just merge any incoming commands into another command. This is possible because there
+    // is always a least-upper-bound merge between two invalidation commands that always invalidates
+    // all data from both commands. In the worst case, this merge is simply a full, global invalidation.
+    data: UnsafeCell<[Option<TlbInvData>; NUM_TLB_SHOOTDOWN_ENTRIES]>,
 }
 
 impl TlbShootdownInfo {
-    pub fn insert(&mut self, data: TlbInvData) {
-        // Try to find an empty slot
-        for entry in &mut self.data {
-            if entry.is_none() {
-                *entry = Some(data);
-                return;
-            }
+    pub fn new() -> Self {
+        Self {
+            data: UnsafeCell::new([None, None, None, None]),
+            lock: AtomicBool::new(false),
         }
-        // Try to find a slot with the same target_cr3
-        for entry in &mut self.data {
-            // Unwrap-Ok: we know that all slots are Some from the first loop.
-            if entry.as_ref().unwrap().target() == data.target() {
-                entry.as_mut().unwrap().merge(data);
-                return;
-            }
-        }
-        // Choose the 0'th entry because if this makes it a full or global entry, we want to be able to
-        // exit the handling loop early.
-        // Unwrap-Ok: we know that all slots are Some from the first loop.
-        self.data[0].as_mut().unwrap().merge(data);
     }
 
-    pub fn is_finished(&self) -> bool {
-        self.data.iter().all(Option::is_none)
-    }
-
-    pub fn complete(&mut self) {
-        for entry in &mut self.data {
-            if let Some(data) = entry.take() {
-                data.do_invalidation();
-                if data.full() && data.global() {
-                    // Any other invalidations don't matter.
-                    self.reset();
+    pub fn insert(&self, new_data: TlbInvData) {
+        interrupt::with_disabled(|| {
+            while self.lock.swap(true, Ordering::Acquire) {
+                core::hint::spin_loop()
+            }
+            let data = unsafe { self.data.get().as_mut().unwrap() };
+            // Try to find an empty slot
+            for entry in data.iter_mut() {
+                if entry.is_none() {
+                    *entry = Some(new_data);
+                    self.lock.store(false, Ordering::Release);
                     return;
                 }
             }
-        }
-        // explicit reset not needed because we've called take() on all entries
+            // Try to find a slot with the same target_cr3
+            for entry in data.iter_mut() {
+                // Unwrap-Ok: we know that all slots are Some from the first loop.
+                if entry.as_ref().unwrap().target() == new_data.target() {
+                    entry.as_mut().unwrap().merge(new_data);
+                    self.lock.store(false, Ordering::Release);
+                    return;
+                }
+            }
+            // Choose the 0'th entry because if this makes it a full or global entry, we want to be able to
+            // exit the handling loop early.
+            // Unwrap-Ok: we know that all slots are Some from the first loop.
+            data[0].as_mut().unwrap().merge(new_data);
+            self.lock.store(false, Ordering::Release);
+        })
     }
 
-    fn reset(&mut self) {
+    pub fn is_finished(&self) -> bool {
+        interrupt::with_disabled(|| {
+            if self.lock.swap(true, Ordering::Acquire) {
+                return false;
+            }
+            let data = unsafe { self.data.get().as_mut().unwrap() };
+            let ret = data.iter().all(Option::is_none);
+            self.lock.store(false, Ordering::Release);
+            ret
+        })
+    }
+
+    pub fn complete(&self) {
+        interrupt::with_disabled(|| {
+            while self.lock.swap(true, Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
+            let data = unsafe { self.data.get().as_mut().unwrap() };
+            for entry in data {
+                if let Some(data) = entry.take() {
+                    data.do_invalidation();
+                    if data.full() && data.global() {
+                        // Any other invalidations don't matter.
+                        self.reset();
+                        self.lock.store(false, Ordering::Release);
+                        return;
+                    }
+                }
+            }
+            // explicit reset not needed because we've called take() on all entries
+            self.lock.store(false, Ordering::Release);
+        })
+    }
+
+    // must be called with the lock held
+    fn reset(&self) {
+        assert!(self.lock.load(Ordering::SeqCst));
+        let data = unsafe { self.data.get().as_mut().unwrap() };
         for i in 0..NUM_TLB_SHOOTDOWN_ENTRIES {
-            self.data[i] = None;
+            data[i] = None;
         }
     }
 }

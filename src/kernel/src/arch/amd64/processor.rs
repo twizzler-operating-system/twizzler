@@ -7,13 +7,12 @@ use crate::{
     memory::VirtAddr,
     once::Once,
     processor::{current_processor, Processor},
-    spinlock::Spinlock,
 };
 
 use super::{
     acpi::get_acpi_root,
     interrupt::InterProcessorInterrupt,
-    memory::pagetables::{tlb_shootdown_handler, TlbInvData},
+    memory::pagetables::{tlb_shootdown_handler, TlbShootdownInfo},
 };
 
 #[repr(C)]
@@ -166,14 +165,9 @@ pub fn get_topology() -> Vec<(usize, bool)> {
     }
 }
 
-pub(super) const NUM_TLB_SHOOTDOWN_ENTRIES: usize = 4;
-pub struct TlbShootdownInfo {
-    pub(super) data: [Option<TlbInvData>; NUM_TLB_SHOOTDOWN_ENTRIES],
-}
-
 pub struct ArchProcessor {
     wait_word: AtomicU64,
-    pub(super) tlb_shootdown_info: todo!("needs to not be a lock, needs to be wait free"),
+    pub(super) tlb_shootdown_info: TlbShootdownInfo,
 }
 
 impl core::fmt::Debug for ArchProcessor {
@@ -188,9 +182,7 @@ impl Default for ArchProcessor {
     fn default() -> Self {
         Self {
             wait_word: Default::default(),
-            tlb_shootdown_info: Spinlock::new(TlbShootdownInfo {
-                data: [None, None, None, None],
-            }),
+            tlb_shootdown_info: TlbShootdownInfo::new(),
         }
     }
 }
