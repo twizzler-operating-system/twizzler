@@ -73,10 +73,13 @@ impl TlbInvData {
     }
 
     fn merge(&mut self, other: TlbInvData) {
+        // If these two target different page tables, then there's nothing we can do but flush all.
         if other.target_cr3 != self.target_cr3 {
             self.set_global();
             self.set_full();
         } else {
+            // Otherwise, the flags are OR'd, and the instructions concatenated. Order doesn't matter.
+            // If we'd have too many instructions, just fall back to full invalidation.
             if other.full() {
                 self.set_full();
             }
@@ -138,6 +141,8 @@ impl TlbInvData {
             logln!("   -> {:x} {}", inst.addr().raw(), inst.level());
         }
         */
+        // If none of the commands are global, and it's targeting a different set of
+        // page tables than is active, then we can ignore it.
         if our_cr3 != self.target() && !self.global() {
             return;
         }
@@ -173,12 +178,15 @@ impl TlbInvData {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
+// Stores an address along with a few fields, like level, is_global. Since addresses
+// here are page aligned, we have room in the bottom bits so we can pack this into a u64.
 struct InvInstruction(u64);
 
 impl InvInstruction {
+    const ADDR_MASK: u64 = !0xfff;
     fn new(addr: VirtAddr, is_global: bool, is_terminal: bool, level: u8) -> Self {
         let addr: u64 = addr.into();
-        let val = addr
+        let val = (addr & Self::ADDR_MASK)
             | if is_global { 1 << 0 } else { 0 }
             | if is_terminal { 1 << 1 } else { 0 }
             | (level as u64) << 2;
@@ -186,7 +194,7 @@ impl InvInstruction {
     }
 
     fn addr(&self) -> VirtAddr {
-        let val = self.0 & 0xfffffffffffff000;
+        let val = self.0 & Self::ADDR_MASK;
         val.try_into().unwrap()
     }
 
@@ -280,45 +288,44 @@ impl ArchTlbMgr {
         if !self.data.has_invalidations() {
             return;
         }
-        let Some(current_thread) = current_thread_ref() else {
-            return;
-        };
+
+        let ct = current_thread_ref();
+        let _guard = ct.as_ref().map(|ct| ct.enter_critical());
         // We definitely don't want to reschedule to a different CPU while doing this.
-        current_thread.do_critical(|_| {
-            let proc = current_processor();
+        let proc = current_processor();
 
-            let mut count = 0;
-            // Distribute the invalidation commands
-            with_each_active_processor(|p| {
-                if p.id != proc.id {
-                    p.arch.tlb_shootdown_info.insert(self.data.clone());
-                    count += 1;
-                }
-            });
-            if count > 0 {
-                // Send the IPI, and then do local invalidations.
-                super::super::super::apic::send_ipi(Destination::AllButSelf, TLB_SHOOTDOWN_VECTOR);
-            }
-            self.data.do_invalidation();
-
-            if count > 0 {
-                // Wait for each processor to report that it is done.
-                with_each_active_processor(|p| {
-                    if p.id != proc.id {
-                        spin_wait_until(
-                            || {
-                                if p.arch.tlb_shootdown_info.is_finished() {
-                                    Some(())
-                                } else {
-                                    None
-                                }
-                            },
-                            || {},
-                        );
-                    }
-                });
+        let mut count = 0;
+        // Distribute the invalidation commands
+        with_each_active_processor(|p| {
+            if p.id != proc.id {
+                p.arch.tlb_shootdown_info.insert(self.data.clone());
+                count += 1;
             }
         });
+        if count > 0 {
+            // Send the IPI, and then do local invalidations.
+            super::super::super::apic::send_ipi(Destination::AllButSelf, TLB_SHOOTDOWN_VECTOR);
+        }
+        self.data.do_invalidation();
+
+        if count > 0 {
+            // Wait for each processor to report that it is done.
+            with_each_active_processor(|p| {
+                if p.id != proc.id {
+                    spin_wait_until(
+                        || {
+                            if p.arch.tlb_shootdown_info.is_finished() {
+                                Some(())
+                            } else {
+                                None
+                            }
+                        },
+                        || {},
+                    );
+                }
+            });
+        }
+        drop(_guard);
         self.data.reset();
     }
 }
@@ -396,6 +403,7 @@ impl TlbShootdownInfo {
 
     pub fn is_finished(&self) -> bool {
         interrupt::with_disabled(|| {
+            // In this case, we don't actually need to grab the lock
             if self.lock.swap(true, Ordering::Acquire) {
                 return false;
             }
