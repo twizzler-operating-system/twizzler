@@ -4161,6 +4161,8 @@ dependencies = [
  "syscall_encode",
  "tar-no-std",
  "tock-registers",
+ "tracing",
+ "tracing-subscriber",
  "twizzler-abi",
  "twizzler-kernel-macros",
  "twizzler-queue-raw",

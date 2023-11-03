@@ -3,11 +3,12 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use tracing::{field::Visit, span, Level, Subscriber};
 use twizzler_abi::syscall::{
     KernelConsoleReadBufferError, KernelConsoleReadError, KernelConsoleReadFlags,
 };
 
-use crate::{interrupt, spinlock::Spinlock};
+use crate::{idcounter::IdCounter, interrupt, spinlock::Spinlock};
 
 const KEC_BUFFER_LEN: usize = 4096;
 const MAX_SINGLE_WRITE: usize = KEC_BUFFER_LEN / 2;
@@ -385,4 +386,50 @@ macro_rules! emerglogln {
     ($fmt:expr, $($arg:tt)*) => {
         $crate::emerglog!(concat!($fmt, "\n"), $($arg)*)
     };
+}
+
+pub struct KernelLogSubscriber {
+    ids: IdCounter,
+    verbosity: Level,
+}
+
+impl KernelLogSubscriber {
+    pub fn new(verbosity: Level) -> Self {
+        Self {
+            ids: Default::default(),
+            verbosity,
+        }
+    }
+}
+
+impl Subscriber for KernelLogSubscriber {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.level() >= &self.verbosity
+    }
+
+    fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
+        let id = self.ids.next_simple();
+        span::Id::from_u64(id.value())
+    }
+
+    fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut v = KernelLogFieldVisitor {};
+        event.record(&mut v);
+    }
+
+    fn enter(&self, _span: &span::Id) {}
+
+    fn exit(&self, _span: &span::Id) {}
+}
+
+struct KernelLogFieldVisitor {}
+
+impl Visit for KernelLogFieldVisitor {
+    fn record_debug(&mut self, _field: &tracing::field::Field, value: &dyn alloc::fmt::Debug) {
+        logln!("{:?}", value);
+    }
 }

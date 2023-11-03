@@ -55,8 +55,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use arch::BootInfoSystemTable;
 use initrd::BootModule;
 use memory::{MemoryRegion, VirtAddr};
+use tracing::{subscriber::set_global_default, Level};
 
-use crate::{processor::current_processor, thread::entry::start_new_init};
+use crate::{
+    log::KernelLogSubscriber, processor::current_processor, thread::entry::start_new_init,
+};
 
 /// A collection of information made available to the kernel by the bootloader or arch-dep modules.
 pub trait BootInfo {
@@ -78,6 +81,8 @@ pub fn is_test_mode() -> bool {
 }
 
 fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
+    let log_subscriber = KernelLogSubscriber::new(Level::INFO);
+    set_global_default(log_subscriber).expect("failed to set global tracing subscriber");
     arch::init(boot_info);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
     let cmdline = boot_info.get_cmd_line();
@@ -151,6 +156,8 @@ pub fn idle_main() -> ! {
     interrupt::set(true);
     if current_processor().is_bsp() {
         machine::machine_post_init();
+
+        tracing::info!("this is a test info trace {}", 42);
 
         #[cfg(test)]
         if is_test_mode() {
