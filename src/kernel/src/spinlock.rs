@@ -5,6 +5,8 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use crate::processor::spin_wait_until;
+
 pub trait RelaxStrategy {
     fn relax(iters: usize);
 }
@@ -15,17 +17,13 @@ impl RelaxStrategy for Reschedule {
     fn relax(iters: usize) {
         if iters > 100 {
             crate::sched::schedule(true);
-        } else {
-            core::hint::spin_loop();
         }
     }
 }
 pub struct SpinLoop {}
 impl RelaxStrategy for SpinLoop {
     #[inline]
-    fn relax(_iters: usize) {
-        core::hint::spin_loop()
-    }
+    fn relax(_iters: usize) {}
 }
 
 #[repr(align(64))]
@@ -58,17 +56,19 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
         let interrupt_state = crate::interrupt::disable();
         let ticket = self.next_ticket.0.fetch_add(1, Ordering::Relaxed);
         let mut iters = 0;
-        while self.current.0.load(Ordering::Acquire) != ticket {
-            Relax::relax(iters);
-            iters += 1;
-            if false && iters == 100000 {
-                emerglogln!(
-                    "DEADLOCK {:?} :: owned by {:?}",
-                    core::panic::Location::caller(),
-                    unsafe { self.locked_from.get().as_ref().unwrap().unwrap() }
-                );
-            }
-        }
+        spin_wait_until(
+            || {
+                if self.current.0.load(Ordering::Acquire) != ticket {
+                    None
+                } else {
+                    Some(())
+                }
+            },
+            || {
+                iters += 1;
+                Relax::relax(iters);
+            },
+        );
         let caller = core::panic::Location::caller().clone();
         unsafe { *self.locked_from.get().as_mut().unwrap() = Some(caller) };
         LockGuard {

@@ -20,6 +20,7 @@ use super::{
 };
 
 pub const GENERIC_IPI_VECTOR: u32 = 200;
+pub const TLB_SHOOTDOWN_VECTOR: u32 = 201;
 pub const TIMER_VECTOR: u32 = 32;
 pub const MIN_VECTOR: usize = 48;
 pub const MAX_VECTOR: usize = 239;
@@ -475,6 +476,9 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         0x80 => {}
         GENERIC_IPI_VECTOR => {
             crate::processor::generic_ipi_handler();
+        }
+        TLB_SHOOTDOWN_VECTOR => {
+            super::memory::pagetables::tlb_shootdown_handler();
         }
         n if n >= 240 => {
             super::apic::lapic_interrupt(number as u16);
