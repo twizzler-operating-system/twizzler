@@ -44,17 +44,14 @@ fn copy_range_to_object_tree(
     // need to split those and add in pages that shouldn't have been replaced.
     let kicked = dest_tree.insert_replace(new_range_key.clone(), new_range);
     for k in kicked {
-        logln!("kicked: {:?}", k.0);
         // We need to split any kicked ranges into parts that don't overlap with new_range_key, and then reinsert those splits.
         let (r1, r2) = split_range(k.1, new_range_key.clone());
         if let Some(mut r1) = r1 {
-            logln!("reins: {:?} {}", r1.range(), r1.start);
             r1.gc_pagevec();
             let res = dest_tree.insert_replace(r1.start..r1.start.offset(r1.length), r1);
             assert!(res.is_empty());
         }
         if let Some(mut r2) = r2 {
-            logln!("reins: {:?} {}", r2.range(), r2.start);
             r2.gc_pagevec();
             let res = dest_tree.insert_replace(r2.start..r2.start.offset(r2.length), r2);
             assert!(res.is_empty());
@@ -118,16 +115,6 @@ pub fn copy_ranges(
             (0, _) | (_, 0) => 1,
             (_, _) => 2,
         };
-    logln!(
-        "==> {:x} {:x} {:x} {:x} {:x} {} {}",
-        src_off,
-        dest_off,
-        byte_length,
-        start_offset,
-        end_offset,
-        byte_length / PageNumber::PAGE_SIZE,
-        nr_pages
-    );
     // Step 1: lock the page trees for the objects, in a canonical order.
     let (mut src_tree, mut dest_tree) = crate::utils::lock_two(&src.range_tree, &dest.range_tree);
 
@@ -177,7 +164,7 @@ pub fn copy_ranges(
                     remaining_vec_pages = 0;
                     break;
                 }
-                /* TODO: we'll need to ensure all backing pages are present if we get here */
+                // TODO: we'll need to either ensure everything is present, or interface with the pager. We'll probably do the later in the future.
                 dest_point = dest_point.offset(diff);
                 remaining_vec_pages -= diff;
             }
@@ -209,12 +196,6 @@ pub fn copy_ranges(
             end_offset,
         );
     }
-
-    // TODO: remove this
-    dest.invalidate(
-        dest_start..dest_start.offset(nr_pages),
-        InvalidateMode::Full,
-    );
 }
 
 #[cfg(test)]
@@ -263,10 +244,7 @@ mod test {
             PageNumber::base_page()..PageNumber::base_page().offset(1000),
             crate::obj::InvalidateMode::Full,
         );
-        //dest.print_page_tree();
         assert_eq!(src_slice.len(), dest_slice.len());
-        //logln!("==> {:?}", src_slice);
-        //logln!("==> {:?}", dest_slice);
         assert!(src_slice == dest_slice);
     }
 
@@ -282,19 +260,28 @@ mod test {
                 tree.get_or_add_page(PageNumber::base_page().offset(p), true, |_, _| Page::new());
             sp.as_mut_slice().fill((p + 1) as u8);
         }
+        let ps = PageNumber::PAGE_SIZE;
+        let abit = ps / 8;
+        assert!(abit > 0 && abit < ps);
 
-        //src.print_page_tree();
-        copy_ranges_and_check(&src, 0x1000, &dest, 0x1000, 0x1000);
-        copy_ranges_and_check(&src, 0x3000, &dest, 0x2000, 0x1000);
+        // Basic test
+        copy_ranges_and_check(&src, ps, &dest, ps, ps);
 
         // overwrite
-        //copy_ranges_and_check(&src, 0x2000, &dest, 0x1000, 0x1000);
+        copy_ranges_and_check(&src, ps * 2, &dest, ps * 2, ps);
+        copy_ranges_and_check(&src, ps * 3, &dest, ps, ps);
 
-        copy_ranges_and_check(&src, 0x3100, &dest, 0x4100, 0x1000);
-        copy_ranges_and_check(&src, 0x5100, &dest, 0x5100, 0x100);
-        copy_ranges_and_check(&src, 0x6100, &dest, 0x6100, 0x1300);
-        copy_ranges_and_check(&src, 0x7800, &dest, 0x7800, 0x800);
-        copy_ranges_and_check(&src, 0x8000, &dest, 0x8000, 0x800);
-        copy_ranges_and_check(&src, 0x9000, &dest, 0x9000, 0x2100);
+        // misaligned, single page
+        copy_ranges_and_check(&src, ps * 4 + abit, &dest, ps * 4 + abit, ps);
+        // misaligned, less than a page
+        copy_ranges_and_check(&src, ps * 5 + abit, &dest, ps * 5 + abit, abit);
+        // misaligned, more than a page (but less than 2 pages)
+        copy_ranges_and_check(&src, ps * 6 + abit, &dest, ps * 6 + abit, ps + abit * 3);
+        // Misaligned, at half page, for a half page (test boundary)
+        copy_ranges_and_check(&src, ps * 7 + ps / 2, &dest, ps * 8 + ps / 2, ps / 2);
+        // Page aligned, less than a page
+        copy_ranges_and_check(&src, ps * 8, &dest, ps * 8, ps / 2);
+        // Page aligned, more than 1 page, not length aligned
+        copy_ranges_and_check(&src, ps * 9, &dest, ps * 9, ps * 2 + abit);
     }
 }
