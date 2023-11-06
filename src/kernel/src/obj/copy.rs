@@ -73,16 +73,21 @@ fn copy_single(
     if let Some((src_page, _)) = src_page {
         dest_page.as_mut_slice()[offset..max].copy_from_slice(&src_page.as_slice()[offset..max]);
     } else {
-        // TODO: could skip this on freshly created page, if we can detect that
+        // TODO: could skip this on freshly created page, if we can detect that. That's just an optimization, though.
         dest_page.as_mut_slice()[offset..max].fill(0);
     }
 }
 
 /// Copy page ranges from one object to another, preferring to share page vectors if possible.
-/// We allow non-page-aligned offsets, as long as the dest and src offsets are mis-aligned by the
-/// same amount. In the case that a full page needs to be copied, it will likely be shared and set
+///
+/// In the case that a full page needs to be copied, it will likely be shared and set
 /// to copy on write. In the case that a page needs to be partially copied, we'll do a manual copy
 /// for that page. This only happens at the start and end of the copy region.
+///
+/// We allow non-page-aligned offsets, and that misalignment may differ between source and dest objects,
+/// but the kernel may have to resort to a bytewise copy of the object pages if the offsets aren't both
+/// misaligned by the same amount (e.g., if page size is 0x1000, then (dest off, src off) of (0x1000, 0x4000),
+/// (0x1100, 0x3100) will still enable COW style copying, but (0x1100, 0x1200) will require manual copy).
 ///
 /// We lock the page trees for each object (in a canonical order) and ensure that the regions are
 /// remapped appropriately for any mapping of the objects. This ensures that the source object is
@@ -95,10 +100,6 @@ pub fn copy_ranges(
     dest_off: usize,
     byte_length: usize,
 ) {
-    // TODO: support full manual copy, if it comes to that.
-    if src_off % PageNumber::PAGE_SIZE != dest_off % PageNumber::PAGE_SIZE {
-        todo!("support copy_ranges that aren't aligned")
-    }
     let src_start = PageNumber::from_offset(src_off);
     let dest_start = PageNumber::from_offset(dest_off);
 
@@ -129,7 +130,17 @@ pub fn copy_ranges(
         InvalidateMode::Full,
     );
 
-    // Step 3a: Copy any non-full-page at the start
+    // if we can't do COW copy, then fallback to full copy.
+    if src_off % PageNumber::PAGE_SIZE != dest_off % PageNumber::PAGE_SIZE {
+        copy_bytes(
+            &mut src_tree,
+            src_off,
+            &mut dest_tree,
+            dest_off,
+            byte_length,
+        );
+        return;
+    } // Step 3a: Copy any non-full-page at the start
     let mut dest_point = dest_start;
     let mut src_point = src_start;
     let mut remaining_pages = nr_pages;
@@ -198,6 +209,63 @@ pub fn copy_ranges(
     }
 }
 
+fn copy_bytes(
+    src_tree: &mut PageRangeTree,
+    src_off: usize,
+    dest_tree: &mut PageRangeTree,
+    dest_off: usize,
+    byte_length: usize,
+) {
+    if byte_length > PageNumber::PAGE_SIZE * 3 {
+        logln!(
+            "warning -- copying many pages (~{}) manually due to misaligned copy-from directive",
+            byte_length / PageNumber::PAGE_SIZE
+        );
+    }
+    let src_start = PageNumber::from_offset(src_off);
+    let dest_start = PageNumber::from_offset(dest_off);
+
+    let mut src_point = src_start;
+    let mut dest_point = dest_start;
+    let mut remaining = byte_length;
+
+    while remaining > 0 {
+        let src_page = src_tree.get_page(src_point, false);
+        let (dest_page, _) = dest_tree.get_or_add_page(dest_point, true, |_, _| Page::new());
+        let count_sofar = byte_length - remaining;
+
+        let this_src_offset = (src_off + count_sofar) % PageNumber::PAGE_SIZE;
+        let this_dest_offset = (dest_off + count_sofar) % PageNumber::PAGE_SIZE;
+
+        let this_length = if let Some((src_page, _)) = src_page {
+            let this_length = core::cmp::min(
+                core::cmp::min(
+                    PageNumber::PAGE_SIZE - this_src_offset,
+                    PageNumber::PAGE_SIZE - this_dest_offset,
+                ),
+                remaining,
+            );
+            dest_page.as_mut_slice()[this_dest_offset..(this_dest_offset + this_length)]
+                .copy_from_slice(
+                    &src_page.as_slice()[this_src_offset..(this_src_offset + this_length)],
+                );
+            this_length
+        } else {
+            let this_length = core::cmp::min(PageNumber::PAGE_SIZE - this_dest_offset, remaining);
+            // TODO: could skip this on freshly created page, if we can detect that. That's just an optimization, though.
+            dest_page.as_mut_slice()[this_dest_offset..(this_dest_offset + this_length)].fill(0);
+            this_length
+        };
+
+        if this_src_offset + this_length >= PageNumber::PAGE_SIZE {
+            src_point = src_point.offset(1);
+        }
+        if this_dest_offset + this_length >= PageNumber::PAGE_SIZE {
+            dest_point = dest_point.offset(1);
+        }
+        remaining -= this_length;
+    }
+}
 #[cfg(test)]
 mod test {
     use twizzler_abi::{device::CacheType, object::Protections};
@@ -240,10 +308,6 @@ mod test {
             core::slice::from_raw_parts(dptr.as_mut_ptr::<u8>().add(dest_off), byte_length)
         };
 
-        dest.invalidate(
-            PageNumber::base_page()..PageNumber::base_page().offset(1000),
-            crate::obj::InvalidateMode::Full,
-        );
         assert_eq!(src_slice.len(), dest_slice.len());
         assert!(src_slice == dest_slice);
     }
@@ -267,15 +331,15 @@ mod test {
         // Basic test
         copy_ranges_and_check(&src, ps, &dest, ps, ps);
 
-        // overwrite
+        // Overwrite
         copy_ranges_and_check(&src, ps * 2, &dest, ps * 2, ps);
         copy_ranges_and_check(&src, ps * 3, &dest, ps, ps);
 
-        // misaligned, single page
+        // Misaligned, single page
         copy_ranges_and_check(&src, ps * 4 + abit, &dest, ps * 4 + abit, ps);
-        // misaligned, less than a page
+        // Misaligned, less than a page
         copy_ranges_and_check(&src, ps * 5 + abit, &dest, ps * 5 + abit, abit);
-        // misaligned, more than a page (but less than 2 pages)
+        // Misaligned, more than a page (but less than 2 pages)
         copy_ranges_and_check(&src, ps * 6 + abit, &dest, ps * 6 + abit, ps + abit * 3);
         // Misaligned, at half page, for a half page (test boundary)
         copy_ranges_and_check(&src, ps * 7 + ps / 2, &dest, ps * 8 + ps / 2, ps / 2);
@@ -283,5 +347,9 @@ mod test {
         copy_ranges_and_check(&src, ps * 8, &dest, ps * 8, ps / 2);
         // Page aligned, more than 1 page, not length aligned
         copy_ranges_and_check(&src, ps * 9, &dest, ps * 9, ps * 2 + abit);
+
+        // Test fallback to manual copy
+        copy_ranges_and_check(&src, ps * 10 + abit, &dest, ps * 10 + abit * 2, ps + abit);
+        copy_ranges_and_check(&src, ps * 11 + abit, &dest, ps * 12 + abit * 2, abit);
     }
 }
