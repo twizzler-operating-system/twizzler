@@ -9,7 +9,11 @@ use crate::{
     processor::{current_processor, Processor},
 };
 
-use super::{acpi::get_acpi_root, interrupt::InterProcessorInterrupt};
+use super::{
+    acpi::get_acpi_root,
+    interrupt::InterProcessorInterrupt,
+    memory::pagetables::{tlb_shootdown_handler, TlbShootdownInfo},
+};
 
 #[repr(C)]
 struct GsScratch {
@@ -161,9 +165,26 @@ pub fn get_topology() -> Vec<(usize, bool)> {
     }
 }
 
-#[derive(Default, Debug)]
 pub struct ArchProcessor {
     wait_word: AtomicU64,
+    pub(super) tlb_shootdown_info: TlbShootdownInfo,
+}
+
+impl core::fmt::Debug for ArchProcessor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ArchProcessor")
+            .field("wait_word", &self.wait_word)
+            .finish()
+    }
+}
+
+impl Default for ArchProcessor {
+    fn default() -> Self {
+        Self {
+            wait_word: Default::default(),
+            tlb_shootdown_info: TlbShootdownInfo::new(),
+        }
+    }
 }
 
 #[derive(Default, Debug)]
@@ -263,4 +284,8 @@ pub fn get_bsp_id(maybe_processor_info: Option<&acpi::platform::ProcessorInfo>) 
         }
         Some(p) => p.boot_processor.local_apic_id,
     }
+}
+
+pub fn spin_wait_iteration() {
+    tlb_shootdown_handler();
 }

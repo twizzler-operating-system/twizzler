@@ -20,6 +20,7 @@ use crate::{
     },
     mutex::Mutex,
     obj::ObjectRef,
+    processor::spin_wait_until,
     spinlock::Spinlock,
     syscall::sync::sys_thread_sync,
 };
@@ -157,18 +158,32 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
     }
 
     pub fn recv(&self) -> (u32, S) {
-        while self.sguard.swap(true, Ordering::SeqCst) {
-            core::hint::spin_loop()
-        }
+        spin_wait_until(
+            || {
+                if self.sguard.swap(true, Ordering::SeqCst) {
+                    None
+                } else {
+                    Some(())
+                }
+            },
+            || {},
+        );
         let r = self.submissions.recv();
         self.sguard.store(false, Ordering::SeqCst);
         r
     }
 
     pub fn recv_completion(&self) -> (u32, C) {
-        while self.cguard.swap(true, Ordering::SeqCst) {
-            core::hint::spin_loop()
-        }
+        spin_wait_until(
+            || {
+                if self.cguard.swap(true, Ordering::SeqCst) {
+                    None
+                } else {
+                    Some(())
+                }
+            },
+            || {},
+        );
         let r = self.completions.recv();
         self.cguard.store(false, Ordering::SeqCst);
         r

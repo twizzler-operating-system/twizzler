@@ -288,6 +288,16 @@ pub unsafe fn get_processor_mut(id: u32) -> &'static mut Processor {
     ALL_PROCESSORS[id as usize].as_mut().unwrap()
 }
 
+pub fn with_each_active_processor(mut f: impl FnMut(&'static Processor)) {
+    for p in unsafe { &ALL_PROCESSORS } {
+        if let Some(p) = p {
+            if p.is_running() {
+                f(p)
+            }
+        }
+    }
+}
+
 #[inline]
 pub fn tls_ready() -> bool {
     crate::arch::processor::tls_ready()
@@ -351,6 +361,7 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
             start_secondary_cpu(p.id, tls_template);
         }
         while !p.running.load(core::sync::atomic::Ordering::SeqCst) {
+            // We can safely spin-loop here because we are in kernel initialization.
             core::hint::spin_loop();
         }
     }
@@ -455,14 +466,21 @@ pub fn ipi_exec(target: Destination, f: Box<dyn Fn() + Send + Sync>) {
     // We can take interrupts while we wait for other CPUs to execute.
     interrupt::set(int_state);
 
-    while task.outstanding.load(Ordering::SeqCst) != 0 {
-        // If interrupts are disabled, we could deadlock if another CPU asks to run IPIs on us. So check if we have
-        // outstanding tasks while we wait.
-        if !int_state {
-            current.run_ipi_tasks();
-        }
-        core::hint::spin_loop();
-    }
+    spin_wait_until(
+        || {
+            if task.outstanding.load(Ordering::SeqCst) != 0 {
+                None
+            } else {
+                Some(())
+            }
+        },
+        || {
+            if !int_state {
+                current.run_ipi_tasks();
+            }
+        },
+    );
+
     core::sync::atomic::fence(Ordering::SeqCst);
 }
 
@@ -470,6 +488,25 @@ pub fn generic_ipi_handler() {
     let current = current_processor();
     current.run_ipi_tasks();
     core::sync::atomic::fence(Ordering::SeqCst);
+}
+
+/// Spin waits while a condition (cond) is true, regularly running architecture-dependent spin-wait code along with the provided
+/// pause function. The cond function should not mutate state, and it should be fast (ideally reading a single, perhaps atomic,
+/// memory value + a comparison). The pause function, on the other hand, can be heavier-weight, and may do arbitrary work (within
+/// the context of the caller). The cond function will be called some multiple of times between calls to pause, and if cond returns
+/// false, then this function immediately returns. The [core::hint::spin_loop] function is called between calls to cond.
+pub fn spin_wait_until<R>(until: impl Fn() -> Option<R>, mut pause: impl FnMut()) -> R {
+    const NR_SPIN_LOOPS: usize = 100;
+    loop {
+        for _ in 0..NR_SPIN_LOOPS {
+            if let Some(ret) = until() {
+                return ret;
+            }
+            core::hint::spin_loop();
+        }
+        arch::processor::spin_wait_iteration();
+        pause();
+    }
 }
 
 #[cfg(test)]

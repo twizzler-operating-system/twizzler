@@ -4,6 +4,8 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
+use crate::processor::spin_wait_until;
+
 pub struct Once<T> {
     status: AtomicU32,
     data: UnsafeCell<MaybeUninit<T>>,
@@ -70,26 +72,26 @@ impl<T> Once<T> {
     /// races with a call to call_once, the function will either return None or wait until the data
     /// is ready and return Some.
     pub fn poll(&self) -> Option<&T> {
-        loop {
-            let status = self.status.load(Ordering::SeqCst);
-            if status == COMPLETE {
-                // SAFETY: If status is complete, the data is ready.
-                return Some(unsafe { self.force_get() });
-            } else if status == INCOMPLETE {
-                return None;
-            }
-            core::hint::spin_loop();
+        let status = spin_wait_until(
+            || match self.status.load(Ordering::SeqCst) {
+                COMPLETE => Some(COMPLETE),
+                INCOMPLETE => Some(INCOMPLETE),
+                _ => None,
+            },
+            || {},
+        );
+
+        if status == COMPLETE {
+            // SAFETY: If status is complete, the data is ready.
+            Some(unsafe { self.force_get() })
+        } else {
+            None
         }
     }
 
     /// Wait until the data is ready (someone calls call_once).
     pub fn wait(&self) -> &T {
-        loop {
-            match self.poll() {
-                Some(x) => break x,
-                None => core::hint::spin_loop(),
-            }
-        }
+        spin_wait_until(|| self.poll(), || {})
     }
 }
 
