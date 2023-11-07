@@ -117,11 +117,16 @@ pub fn copy_ranges(
 
     let start_offset = src_off % PageNumber::PAGE_SIZE;
     let end_offset = (src_off + byte_length) % PageNumber::PAGE_SIZE;
+    let start_page_partial_len = if start_offset > 0 {
+        PageNumber::PAGE_SIZE - start_offset
+    } else {
+        0
+    };
 
     // Number of pages that will be touched, including partial pages.
     // By subtracting the partial pages, we are left with the full pages,
     // and then we can add in how many partial pages we'll be copying.
-    let nr_pages: usize = byte_length.saturating_sub(start_offset + end_offset)
+    let nr_pages: usize = byte_length.saturating_sub(start_page_partial_len + end_offset)
         / PageNumber::PAGE_SIZE
         + match (start_offset, end_offset) {
             (0, 0) => 0,
@@ -289,11 +294,16 @@ pub fn zero_ranges(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
 
     let start_offset = dest_off % PageNumber::PAGE_SIZE;
     let end_offset = (dest_off + byte_length) % PageNumber::PAGE_SIZE;
+    let start_page_partial_len = if start_offset > 0 {
+        PageNumber::PAGE_SIZE - start_offset
+    } else {
+        0
+    };
 
     // Number of pages that will be touched, including partial pages.
     // By subtracting the partial pages, we are left with the full pages,
     // and then we can add in how many partial pages we'll be copying.
-    let nr_pages: usize = byte_length.saturating_sub(start_offset + end_offset)
+    let nr_pages: usize = byte_length.saturating_sub(start_page_partial_len + end_offset)
         / PageNumber::PAGE_SIZE
         + match (start_offset, end_offset) {
             (0, 0) => 0,
@@ -335,7 +345,7 @@ pub fn zero_ranges(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
 
         // Handle the last range, keeping only the parts that are after the zeroing region. We use pop because we
         // won't be needing to consider this entry later.
-        if let Some(last) = points.pop() && 
+        if let Some(last) = points.pop() &&
             let Some(mut last_range) = dest_tree.remove(&last) {
                 let last_point = dest_point.offset(vec_pages - 1);
                 if last_point < last_range.start.offset(last_range.length) && last_point >= last_range.start {
@@ -348,7 +358,6 @@ pub fn zero_ranges(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
                         last_range.offset += start_diff;
                         assert!(last_range.start == last_point.offset(1));
                         last_range.gc_pagevec();
-                    
                         let kicked = dest_tree.insert_replace(last_range.range(), last_range);
                         assert!(kicked.is_empty());
                     }
@@ -357,7 +366,7 @@ pub fn zero_ranges(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
 
         // Handle the first range, truncating it if it starts before the zeroing region. Don't bother removing it from
         // the list -- we'll just skip it in the iterator (remove head of vec can be slow).
-        if let Some(first) = points.first() && 
+        if let Some(first) = points.first() &&
             let Some(mut first_range) = dest_tree.remove(first) {
                 let first_point = dest_point;
                 if first_point < first_range.start.offset(first_range.length) && first_point >= first_range.start {
@@ -394,7 +403,7 @@ mod test {
 
     use crate::{
         memory::context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
-        obj::{pages::Page, ObjectRef, PageNumber, copy::zero_ranges},
+        obj::{copy::zero_ranges, pages::Page, ObjectRef, PageNumber},
         userinit::create_blank_object,
     };
 
@@ -434,26 +443,21 @@ mod test {
         assert!(src_slice == dest_slice);
     }
 
-    
-    fn zero_ranges_and_check(
-        dest: &ObjectRef,
-        dest_off: usize,
-        byte_length: usize,
-    ) {
+    fn zero_ranges_and_check(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
         {
-        let dko = kernel_context().insert_kernel_object::<u8>(ObjectContextInfo::new(
-            dest.clone(),
-            Protections::READ,
-            CacheType::WriteBack,
-        ));
-        let dptr = dko.start_addr();
-        let dest_slice = unsafe {
-            core::slice::from_raw_parts_mut(dptr.as_mut_ptr::<u8>().add(dest_off), byte_length)
-        };
-        dest_slice.fill(0xff);
-        assert!(!dest_slice.iter().all(|x| *x == 0));
+            let dko = kernel_context().insert_kernel_object::<u8>(ObjectContextInfo::new(
+                dest.clone(),
+                Protections::READ,
+                CacheType::WriteBack,
+            ));
+            let dptr = dko.start_addr();
+            let dest_slice = unsafe {
+                core::slice::from_raw_parts_mut(dptr.as_mut_ptr::<u8>().add(dest_off), byte_length)
+            };
+            dest_slice.fill(0xff);
+            assert!(!dest_slice.iter().all(|x| *x == 0));
         }
-                
+
         zero_ranges(dest, dest_off, byte_length);
 
         let dko = kernel_context().insert_kernel_object::<u8>(ObjectContextInfo::new(
@@ -477,7 +481,9 @@ mod test {
             let mut tree: crate::mutex::LockGuard<'_, crate::obj::range::PageRangeTree> =
                 src.lock_page_tree();
             let (sp, _) =
-                tree.get_or_add_page(PageNumber::base_page().offset(p as usize), true, |_, _| Page::new());
+                tree.get_or_add_page(PageNumber::base_page().offset(p as usize), true, |_, _| {
+                    Page::new()
+                });
             sp.as_mut_slice().fill(p + 1);
         }
 

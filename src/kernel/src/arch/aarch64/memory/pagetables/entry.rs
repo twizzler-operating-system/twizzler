@@ -5,14 +5,14 @@ use crate::{
     memory::pagetables::{MappingFlags, MappingSettings},
 };
 
-use super::mair::{AttributeIndex, memory_attr_manager};
+use super::mair::{memory_attr_manager, AttributeIndex};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(transparent)]
 /// The type of a single entry in a page table.
 ///
 /// Page table entries in aarch64 nomenclature are known
-/// as translation table descriptors. The descriptors themselves 
+/// as translation table descriptors. The descriptors themselves
 /// can be different types, and mean different things depending
 /// on what level we are in. It can also vary depending on
 /// the size of the physical address space used (e.g., 48-bit)
@@ -27,7 +27,9 @@ impl Entry {
     pub fn new(addr: PhysAddr, flags: EntryFlags) -> Self {
         // Table descriptor bits [11:2] are ignored
         // so it is safe to always add these flags
-        Self::new_internal(addr, flags 
+        Self::new_internal(
+            addr,
+            flags
             | EntryFlags::PRESENT
             // NOTE: device memory will ignore these sharability
             // attributes, so it is safe to always enable them
@@ -37,7 +39,7 @@ impl Entry {
             // ARMv8-A. This only works since these entries were
             // already present before when switching from bootstrap
             // mappings.
-            | EntryFlags::ACCESS
+            | EntryFlags::ACCESS,
         )
     }
 
@@ -80,11 +82,11 @@ impl Entry {
     const LVL2_BLK_ADDR_MASK: u64 = 0x0000_FFFF_FFE0_0000;
     // bits [47:12]
     const LVL3_PAGE_ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000;
-    
+
     /// Address contained in the [Entry].
     pub fn addr(&self, level: usize) -> PhysAddr {
         // The bits that indicate the address depends on
-        // the translation granule used and the descriptor 
+        // the translation granule used and the descriptor
         // type which depends on the level. For now we are
         // assuming a 4KiB translation granule.
         //
@@ -96,7 +98,7 @@ impl Entry {
             3 => PhysAddr::new(self.0 & Self::LVL3_PAGE_ADDR_MASK).unwrap(),
             // this is used when changing/unmapping entries
             0 => self.table_addr(),
-            _ => todo!("getting the address from this level: {}", level)
+            _ => todo!("getting the address from this level: {}", level),
         }
     }
 
@@ -118,11 +120,11 @@ impl Entry {
     /// Set the flags.
     pub fn set_flags(&mut self, flags: EntryFlags) {
         // todo!("setting the flags on aarch64 depends on the level")
-        // does it tho? I think for some yes, but not all ... 
+        // does it tho? I think for some yes, but not all ...
         // depends on the level, since this creates a new address
         // TODO: setting the address depends on the level.
         // For now we assume that we are setting the address for a leaf
-        
+
         // for now assume that we do a leaf
         *self = Entry::new_internal(self.addr(super::Table::last_level()), flags);
     }
@@ -146,19 +148,19 @@ bitflags::bitflags! {
         const PRESENT = 1 << 0;
         /// Indicates if this entry is a Table/Huge Page at a given level.
         const TABLE_OR_HUGE_PAGE = 1 << 1;
-        
+
         // Here we are assuming bit flags that corrspond to the upper/lower
         // attributes found in a block/page descriptor in a stage 1 translation.
 
         // Lower Attributes
-        
+
         // AttrIndx[2:0] (deals with cache type)
         //
         // Since the bitflags type only maps to a single flag
         // and not a range (bits [4:2]), we encode each bit from
         // AttrIndex so that its value is saved when calling
         // `from_bits_truncate`
-        
+
         /// AttrIndx bit 0.
         const ATTR_INDX_0 =  1 << 2;
         /// AttrIndx bit 1.
@@ -168,19 +170,19 @@ bitflags::bitflags! {
 
         /// The output address of a descriptor is to non-secure memory.
         const NS = 1 << 5;
-        
-        // [7:6] => AP[2:1] 
+
+        // [7:6] => AP[2:1]
         //   - data Access Permissions bits (AP[2:1]).
         //   - AP[2]: read only / read/write access
         //   - AP[1]: EL0/app control or priviledged exception level
         //   - AP[1]=0, no data access at EL0; AP[1]=1, EL0 access with AP[2] permissions
-        
+
         /// Access permission bit 1: User accessible/kernel only.
         const AP1_USER_OR_KERNEL = 1 << 6;
         /// Access permission bit 2: Read only or read-write permission.
         const AP2_READ_OR_RW = 1 << 7;
 
-        // [9:8] => 
+        // [9:8] =>
         //   - Shareability Field(SH[1:0]): if the Effective value of TCR_Elx.DS is 0.
         //   - Output Address(OA[51:50]): if the Effective value of TCR_Elx.DS is 1.
 
@@ -197,7 +199,7 @@ bitflags::bitflags! {
         /// Indicates if memory has been accessed since last set to 0.
         /// The flag might be managed by either hardware or software.
         const ACCESS = 1 << 10;
-        
+
         // [11] => nG
         //   - not global bit (nG).
         //   - for translations that use ASID
@@ -211,7 +213,7 @@ bitflags::bitflags! {
         //   - when changing block size accesses do not break coherency
 
         // Upper Attributes
-        
+
         // [50] => GP
         //   - If FEAT_BTI is implemented, then Gaurd page for stage 1
         // [51] => DBM
@@ -323,10 +325,8 @@ impl From<CacheType> for EntryFlags {
     fn from(cache: CacheType) -> Self {
         // unsupported cache types result in `EntryFlags::empty()`
         // in this, it defaults to normal cacheble memory (index 0)
-        let attr_idx = memory_attr_manager()
-            .attribute_index(cache)
-            .unwrap_or(0);
-        
+        let attr_idx = memory_attr_manager().attribute_index(cache).unwrap_or(0);
+
         // TODO: should we try to update the requested mapping in MAIR?
 
         // convert the numerical index to a set of flags
@@ -338,7 +338,7 @@ impl From<CacheType> for EntryFlags {
 impl From<&MappingSettings> for EntryFlags {
     fn from(settings: &MappingSettings) -> Self {
         // here 0/EntryFlags::empty() is a valid memory type
-        // so even if we do not support a certain type of memory, 
+        // so even if we do not support a certain type of memory,
         // it gets set as the default (WriteBack)
         let c = EntryFlags::from(settings.cache());
 
