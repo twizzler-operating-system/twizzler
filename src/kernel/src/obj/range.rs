@@ -58,11 +58,18 @@ impl PageRange {
         self.pv_ref_count() > 1
     }
 
-    pub fn gc_pagevec(&self) {
-        // TODO
+    pub fn gc_pagevec(&mut self) {
+        if self.is_shared() {
+            // TODO: maybe we can do something smarter here, but it may be dangerous. In particular, we should
+            // study what pagevecs actually look like in a long-running system and decide what to do based on that.
+            // Of course, if we want to be able to do anything here, we'll either need to promote pagevecs to non-shared
+            // or we will need to track more page info.
+            return;
+        }
 
-        //logln!("TODO: gc page vec");
-        //       todo!()
+        let mut pv = self.pv.lock();
+        pv.truncate_and_drain(self.offset, self.length);
+        self.offset = 0;
     }
 
     pub fn split_at(&self, pn: PageNumber) -> (Option<PageRange>, PageRange, Option<PageRange>) {
@@ -136,21 +143,23 @@ impl PageRangeTree {
         self.tree.get_mut(&pn)
     }
 
-    pub fn get_page(&mut self, pn: PageNumber, is_write: bool) -> Option<(PageRef, bool)> {
-        let range = self.get(pn)?;
-        let page = range.get_page(pn);
-        let shared = range.is_shared();
-        if !shared || !is_write {
-            return Some((page, shared));
-        }
-        let range = self.tree.remove(&pn).unwrap();
-        /* need to copy */
+    pub fn remove(&mut self, pn: &PageNumber) -> Option<PageRange> {
+        self.tree.remove(pn)
+    }
+
+    fn split_into_three(&mut self, pn: PageNumber, discard: bool) {
+        let Some(range) = self.tree.remove(&pn) else {
+            return;
+        };
         let (r1, mut r2, r3) = range.split_at(pn);
         /* r2 is always the one we want */
-        let pv = Arc::new(Mutex::new(
-            r2.pv.lock().clone_pages_limited(r2.offset, r2.length),
-        ));
-        r2.pv = pv;
+        let pv = if discard {
+            PageVec::new()
+        } else {
+            r2.pv.lock().clone_pages_limited(r2.offset, r2.length)
+        };
+
+        r2.pv = Arc::new(Mutex::new(pv));
         r2.offset = 0;
 
         if let Some(r1) = r1 {
@@ -165,12 +174,37 @@ impl PageRangeTree {
             let res = self.insert_replace(r3.range(), r3);
             assert_eq!(res.len(), 0);
         }
+    }
 
+    fn do_get_page(&self, pn: PageNumber) -> Option<(PageRef, bool)> {
         let range = self.get(pn)?;
         let page = range.get_page(pn);
         let shared = range.is_shared();
+        Some((page, shared))
+    }
+
+    pub fn get_page(&mut self, pn: PageNumber, is_write: bool) -> Option<(PageRef, bool)> {
+        let (page, shared) = self.do_get_page(pn)?;
+        if !shared || !is_write {
+            return Some((page, shared));
+        }
+        self.split_into_three(pn, false);
+        let (page, shared) = self.do_get_page(pn)?;
         assert!(!shared);
         Some((page, false))
+    }
+
+    pub fn get_or_add_page(
+        &mut self,
+        pn: PageNumber,
+        is_write: bool,
+        if_not_present: impl Fn(PageNumber, bool) -> Page,
+    ) -> (PageRef, bool) {
+        if let Some(out) = self.get_page(pn, is_write) {
+            return out;
+        }
+        self.add_page(pn, if_not_present(pn, is_write));
+        self.get_page(pn, is_write).unwrap()
     }
 
     pub fn insert_replace(
@@ -205,24 +239,40 @@ impl PageRangeTree {
         self.tree.range_mut(r)
     }
 
+    pub fn gc_tree(&mut self) {
+        todo!()
+    }
+
     pub fn add_page(&mut self, pn: PageNumber, page: Page) {
+        const MAX_EXTENSION_ALLOWED: usize = 16;
         let range = self.tree.get(&pn);
-        if let Some(range) = range {
+        if let Some(mut range) = range {
+            if range.is_shared() {
+                self.split_into_three(pn, true);
+                range = self.tree.get(&pn).unwrap();
+            }
             range.add_page(pn, page);
         } else {
-            if let Some(prev) = pn.prev() {
-                let range = self.tree.remove(&prev);
-                if let Some(mut range) = range {
-                    range.length += 1;
-                    range.add_page(pn, page);
-                    self.tree.insert_replace(range.range(), range);
+            // Try to extend a previous range.
+            if let Some((_, prev_range)) =
+                self.tree.range_mut(PageNumber::from_offset(0)..pn).last()
+            {
+                let end = prev_range.start.offset(prev_range.length - 1);
+                let diff = pn - end;
+                if !prev_range.is_shared() && diff <= MAX_EXTENSION_ALLOWED {
+                    let mut prev_range = self.tree.remove(&end).unwrap();
+                    prev_range.length += diff;
+                    prev_range.add_page(pn, page);
+                    let kicked = self.tree.insert_replace(prev_range.range(), prev_range);
+                    assert_eq!(kicked.len(), 0);
                     return;
                 }
             }
             let mut range = PageRange::new(pn);
             range.length = 1;
             range.add_page(pn, page);
-            self.tree.insert_replace(pn..pn.next(), range);
+            let kicked = self.tree.insert_replace(pn..pn.next(), range);
+            assert_eq!(kicked.len(), 0);
         }
     }
 
