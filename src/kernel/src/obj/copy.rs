@@ -350,10 +350,9 @@ pub fn zero_ranges(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
                 let last_point = dest_point.offset(vec_pages - 1);
                 if last_point < last_range.start.offset(last_range.length) && last_point >= last_range.start {
                     let start_diff = last_point.offset(1) - last_range.start;
-                    let len_diff = last_range.length - start_diff;
 
-                    if last_range.length > len_diff {
-                        last_range.length -= len_diff;
+                    if last_range.length > start_diff {
+                        last_range.length -= start_diff;
                         last_range.start = last_range.start.offset(start_diff);
                         last_range.offset += start_diff;
                         assert!(last_range.start == last_point.offset(1));
@@ -477,45 +476,65 @@ mod test {
         let src = create_blank_object();
         let dest = create_blank_object();
 
-        for p in 0..254u8 {
+        // Skip the null page, otherwise fill the source with pages that have different fills
+        for p in 1..255u8 {
             let mut tree: crate::mutex::LockGuard<'_, crate::obj::range::PageRangeTree> =
                 src.lock_page_tree();
-            let (sp, _) =
-                tree.get_or_add_page(PageNumber::base_page().offset(p as usize), true, |_, _| {
-                    Page::new()
-                });
-            sp.as_mut_slice().fill(p + 1);
+            let (sp, _) = tree.get_or_add_page(
+                PageNumber::from_offset((p as usize) * PageNumber::PAGE_SIZE),
+                true,
+                |_, _| Page::new(),
+            );
+            sp.as_mut_slice().fill(p);
         }
 
         let ps = PageNumber::PAGE_SIZE;
+        let half_ps = PageNumber::PAGE_SIZE / 2;
+        // This is for mis-aligning the offsets. Use about an eighth of a page for that, the exact number doesn't matter.
         let abit = ps / 8;
         assert!(abit > 0 && abit < ps);
+        let mut src_counting_page_num = 1;
+        let mut dest_counting_page_num = 1;
+        let calc_off =
+            |page_num: usize, misalign: usize| -> usize { ps * page_num + misalign * abit };
+
+        let mut do_check = |src_off_misalign, dest_off_misalign, len| {
+            let nr_pages = len / PageNumber::PAGE_SIZE + 2; // Just bump up, assuming there are partial pages.
+            let src_off = calc_off(src_counting_page_num, src_off_misalign);
+            let dest_off = calc_off(dest_counting_page_num, dest_off_misalign);
+            src_counting_page_num += nr_pages;
+            dest_counting_page_num += nr_pages;
+            copy_ranges_and_check(&src, src_off, &dest, dest_off, len);
+        };
 
         // Basic test
-        copy_ranges_and_check(&src, ps, &dest, ps, ps);
+        do_check(0, 0, ps);
 
-        // Overwrite
-        copy_ranges_and_check(&src, ps * 2, &dest, ps * 2, ps);
-        copy_ranges_and_check(&src, ps * 3, &dest, ps, ps);
+        // Overwrite. These two pages in src have different contents (see loop at start of this function).
+        let second_page = ps * 2;
+        let third_page = ps * 3;
+        copy_ranges_and_check(&src, second_page, &dest, second_page, ps);
+        copy_ranges_and_check(&src, third_page, &dest, second_page, ps);
 
         // Misaligned, single page
-        copy_ranges_and_check(&src, ps * 4 + abit, &dest, ps * 4 + abit, ps);
+        do_check(abit, abit, ps);
         // Misaligned, less than a page
-        copy_ranges_and_check(&src, ps * 5 + abit, &dest, ps * 5 + abit, abit);
+        do_check(abit, abit, abit);
         // Misaligned, more than a page (but less than 2 pages)
-        copy_ranges_and_check(&src, ps * 6 + abit, &dest, ps * 6 + abit, ps + abit * 3);
+        do_check(abit, abit, ps + abit);
         // Misaligned, at half page, for a half page (test boundary)
-        copy_ranges_and_check(&src, ps * 7 + ps / 2, &dest, ps * 8 + ps / 2, ps / 2);
+        do_check(half_ps, half_ps, half_ps);
         // Page aligned, less than a page
-        copy_ranges_and_check(&src, ps * 8, &dest, ps * 8, ps / 2);
-        // Page aligned, more than 1 page, not length aligned
-        copy_ranges_and_check(&src, ps * 9, &dest, ps * 9, ps * 2 + abit);
+        do_check(0, 0, half_ps);
+        // Page aligned, 2 pages and a bit more, not length aligned
+        do_check(0, 0, ps * 2 + abit);
 
-        // Test fallback to manual copy
-        copy_ranges_and_check(&src, ps * 10 + abit, &dest, ps * 10 + abit * 2, ps + abit);
-        copy_ranges_and_check(&src, ps * 11 + abit, &dest, ps * 12 + abit * 2, abit);
+        // Test fallback to manual copy. Force that by doubling the partial page offset for dest, but not src.
+        do_check(abit, abit * 2, ps + abit);
+        do_check(abit, abit * 2, abit);
 
-        zero_ranges_and_check(&dest, ps * 100, ps);
-        zero_ranges_and_check(&dest, ps * 101 + abit, ps * 3 + abit * 3);
+        zero_ranges_and_check(&dest, ps, ps);
+        // Test zeroing with a couple pages, not length aligned.
+        zero_ranges_and_check(&dest, ps + abit, ps * 2 + abit);
     }
 }
