@@ -223,7 +223,7 @@ pub fn spawn_new_executable(
         let prot = phdr.prot();
 
         if prot.contains(Protections::WRITE) {
-            let copy = ObjectSource::new(
+            let copy = ObjectSource::new_copy(
                 exe.id(),
                 src_start,
                 dest_start & (MAX_SIZE as u64 - 1),
@@ -236,7 +236,7 @@ pub fn spawn_new_executable(
             let dest_zero_start = brk & (MAX_SIZE as u64 - 1);
             data_copy.push(copy);
             if pgend > pgbrk {
-                data_copy.push(ObjectSource::new(
+                data_copy.push(ObjectSource::new_copy(
                     ObjID::new(0),
                     0,
                     dest_start,
@@ -245,7 +245,7 @@ pub fn spawn_new_executable(
             }
             data_zero.push((dest_zero_start, pgbrk - brk));
         } else {
-            let copy = ObjectSource::new(exe.id(), src_start, dest_start, aligned_len);
+            let copy = ObjectSource::new_copy(exe.id(), src_start, dest_start, aligned_len);
             text_copy.push(copy);
         }
     }

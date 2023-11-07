@@ -143,6 +143,10 @@ impl PageRangeTree {
         self.tree.get_mut(&pn)
     }
 
+    pub fn remove(&mut self, pn: &PageNumber) -> Option<PageRange> {
+        self.tree.remove(pn)
+    }
+
     fn split_into_three(&mut self, pn: PageNumber, discard: bool) {
         let Some(range) = self.tree.remove(&pn) else {
             return;

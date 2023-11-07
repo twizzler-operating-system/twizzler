@@ -26,7 +26,6 @@ impl PageVec {
 
     /// Remove the first elements up to offset, and then truncate the vector to the given length.
     pub fn truncate_and_drain(&mut self, offset: usize, len: usize) {
-        logln!("t&d {} : {} {}", self.pages.len(), offset, len);
         self.pages.drain(0..offset);
         self.pages.truncate(len);
         if self.pages.capacity() > 2 * len {

@@ -25,25 +25,29 @@ pub fn sys_object_create(
 ) -> Result<ObjID, ObjectCreateError> {
     let obj = Arc::new(Object::new());
     for src in srcs {
-        let so = crate::obj::lookup_object(src.id, LookupFlags::empty())
-            .ok_or(ObjectCreateError::ObjectNotFound)?;
-        if false {
-            logln!(
-                "object copy ranges: {} => {} :: {:x} => {:x} {:x}",
-                src.id,
-                obj.id(),
-                src.src_start,
-                src.dest_start,
-                src.len
-            );
+        if src.id.as_u128() == 0 {
+            crate::obj::copy::zero_ranges(&obj, src.dest_start as usize, src.len)
+        } else {
+            let so = crate::obj::lookup_object(src.id, LookupFlags::empty())
+                .ok_or(ObjectCreateError::ObjectNotFound)?;
+            if false {
+                logln!(
+                    "object copy ranges: {} => {} :: {:x} => {:x} {:x}",
+                    src.id,
+                    obj.id(),
+                    src.src_start,
+                    src.dest_start,
+                    src.len
+                );
+            }
+            crate::obj::copy::copy_ranges(
+                &so,
+                src.src_start as usize,
+                &obj,
+                src.dest_start as usize,
+                src.len,
+            )
         }
-        crate::obj::copy::copy_ranges(
-            &so,
-            src.src_start as usize,
-            &obj,
-            src.dest_start as usize,
-            src.len,
-        )
     }
     crate::obj::register_object(obj.clone());
     Ok(obj.id())
