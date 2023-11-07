@@ -68,7 +68,7 @@ impl Library {
                 let len = (vaddr - dest_start) + filesz;
                 Ok((
                     targets_data,
-                    twizzler_abi::syscall::ObjectSource::new(
+                    twizzler_abi::syscall::ObjectSource::new_copy(
                         self.full_obj.id(),
                         src_start as u64,
                         dest_start as u64,

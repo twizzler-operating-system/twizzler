@@ -5,7 +5,7 @@ use twizzler_abi::device::{CacheType, MMIO_OFFSET};
 
 use crate::{
     arch::memory::{frame::FRAME_SIZE, phys_to_virt},
-    memory::frame::{self, FrameRef, PhysicalFrameFlags},
+    memory::frame::{self, free_frame, FrameRef, PhysicalFrameFlags},
     memory::{PhysAddr, VirtAddr},
 };
 
@@ -30,6 +30,17 @@ pub type PageRef = Arc<Page>;
 impl Default for Page {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for Page {
+    fn drop(&mut self) {
+        match self.frame {
+            FrameOrWired::Frame(f) => {
+                free_frame(f);
+            }
+            FrameOrWired::Wired(_) => todo!(),
+        }
     }
 }
 

@@ -5,7 +5,6 @@ use core::{intrinsics::size_of, marker::PhantomData, ptr::NonNull};
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use twizzler_abi::{
     device::CacheType,
-    marker::BaseType,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
@@ -439,9 +438,9 @@ impl KernelMemoryContext for VirtContext {
         ));
     }
 
-    type Handle<T: BaseType> = KernelObjectVirtHandle<T>;
+    type Handle<T> = KernelObjectVirtHandle<T>;
 
-    fn insert_kernel_object<T: BaseType>(&self, info: ObjectContextInfo) -> Self::Handle<T> {
+    fn insert_kernel_object<T>(&self, info: ObjectContextInfo) -> Self::Handle<T> {
         let mut slots = self.slots.lock();
         let mut kernel_slots_counter = KERNEL_SLOT_COUNTER.lock();
         let slot = kernel_slots_counter
@@ -484,7 +483,7 @@ pub struct KernelObjectVirtHandle<T> {
 }
 
 impl<T> KernelObjectVirtHandle<T> {
-    fn start_addr(&self) -> VirtAddr {
+    pub fn start_addr(&self) -> VirtAddr {
         VirtAddr::new(0)
             .unwrap()
             .offset(self.slot.raw() * MAX_SIZE)
@@ -507,7 +506,7 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
     }
 }
 
-impl<T: BaseType> KernelObjectHandle<T> for KernelObjectVirtHandle<T> {
+impl<T> KernelObjectHandle<T> for KernelObjectVirtHandle<T> {
     fn base(&self) -> &T {
         unsafe {
             self.start_addr()
