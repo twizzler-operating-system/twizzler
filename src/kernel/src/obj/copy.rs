@@ -408,15 +408,13 @@ mod test {
 
     use super::copy_ranges;
 
-    fn copy_ranges_and_check(
+    fn check_slices(
         src: &ObjectRef,
         src_off: usize,
         dest: &ObjectRef,
         dest_off: usize,
         byte_length: usize,
     ) {
-        copy_ranges(src, src_off, dest, dest_off, byte_length);
-
         let dko = kernel_context().insert_kernel_object::<u8>(ObjectContextInfo::new(
             dest.clone(),
             Protections::READ,
@@ -440,6 +438,17 @@ mod test {
 
         assert_eq!(src_slice.len(), dest_slice.len());
         assert!(src_slice == dest_slice);
+    }
+
+    fn copy_ranges_and_check(
+        src: &ObjectRef,
+        src_off: usize,
+        dest: &ObjectRef,
+        dest_off: usize,
+        byte_length: usize,
+    ) {
+        copy_ranges(src, src_off, dest, dest_off, byte_length);
+        check_slices(src, src_off, dest, dest_off, byte_length);
     }
 
     fn zero_ranges_and_check(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
@@ -493,13 +502,15 @@ mod test {
         // This is for mis-aligning the offsets. Use about an eighth of a page for that, the exact number doesn't matter.
         let abit = ps / 8;
         assert!(abit > 0 && abit < ps);
+
+        // Some helper functions for finding regions of the objects to use for copy testing automatically.
         let mut src_counting_page_num = 1;
         let mut dest_counting_page_num = 1;
         let calc_off =
             |page_num: usize, misalign: usize| -> usize { ps * page_num + misalign * abit };
 
         let mut do_check = |src_off_misalign, dest_off_misalign, len| {
-            let nr_pages = len / PageNumber::PAGE_SIZE + 2; // Just bump up, assuming there are partial pages.
+            let nr_pages = len / PageNumber::PAGE_SIZE + 2; // Just bump up, assuming there are partial pages. Slightly wasteful, but it's just a test.
             let src_off = calc_off(src_counting_page_num, src_off_misalign);
             let dest_off = calc_off(dest_counting_page_num, dest_off_misalign);
             src_counting_page_num += nr_pages;
@@ -536,5 +547,12 @@ mod test {
         zero_ranges_and_check(&dest, ps, ps);
         // Test zeroing with a couple pages, not length aligned.
         zero_ranges_and_check(&dest, ps + abit, ps * 2 + abit);
+
+        // Test two back-to-back ranges. This first copy will copy (page(2) + abit) -> (page(2) + abit) for a len of
+        // a page. So the end point will be (page(3) + abit), which is where the second copy starts.
+        copy_ranges(&src, second_page + abit, &dest, second_page + abit, ps);
+        copy_ranges_and_check(&src, third_page + abit, &dest, third_page + abit, ps);
+        // Make sure we didn't overwrite the first copy.
+        check_slices(&src, second_page + abit, &dest, second_page + abit, ps);
     }
 }
