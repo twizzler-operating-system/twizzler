@@ -30,16 +30,6 @@ pub fn sys_object_create(
         } else {
             let so = crate::obj::lookup_object(src.id, LookupFlags::empty())
                 .ok_or(ObjectCreateError::ObjectNotFound)?;
-            if false {
-                logln!(
-                    "object copy ranges: {} => {} :: {:x} => {:x} {:x}",
-                    src.id,
-                    obj.id(),
-                    src.src_start,
-                    src.dest_start,
-                    src.len
-                );
-            }
             crate::obj::copy::copy_ranges(
                 &so,
                 src.src_start as usize,
@@ -73,15 +63,6 @@ pub fn sys_object_map(
     };
     // TODO
     let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into());
-    if false {
-        logln!(
-            "mapping obj {} to {} with {:?} in {:?}",
-            id,
-            slot,
-            prot,
-            handle
-        );
-    }
     Ok(slot)
 }
 
