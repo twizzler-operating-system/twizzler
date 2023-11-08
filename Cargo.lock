@@ -2600,8 +2600,10 @@ version = "0.1.0"
 dependencies = [
  "dynlink",
  "tracing",
+ "tracing-subscriber",
  "twizzler-abi",
  "twizzler-runtime-api",
+ "twz-rt",
 ]
 
 [[package]]

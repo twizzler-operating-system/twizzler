@@ -6,6 +6,7 @@
 
 #![feature(core_intrinsics)]
 #![feature(thread_local)]
+#![feature(fmt_internals)]
 #![feature(array_windows)]
 
 pub(crate) mod arch;
