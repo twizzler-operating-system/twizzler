@@ -171,7 +171,7 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             .filter_entry(|x| {
                 x.file_name()
                     .to_str()
-                    .map(|s| s.starts_with("libstd"))
+                    .map(|s| s.starts_with("libstd-") && s.ends_with(".so"))
                     .unwrap_or(false)
             })
             .next()

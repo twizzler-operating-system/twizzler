@@ -2,6 +2,7 @@ use tracing::{debug, trace, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod init;
+mod runtime;
 mod state;
 
 pub fn main() {
@@ -19,5 +20,7 @@ pub fn main() {
         "found dynlink context, with {} root libraries",
         state.roots.len()
     );
+
+    panic!("test panic");
     loop {}
 }

@@ -8,9 +8,11 @@
 #![feature(thread_local)]
 #![feature(fmt_internals)]
 #![feature(array_windows)]
+#![feature(unboxed_closures)]
 
 pub(crate) mod arch;
 
+pub mod monitor;
 mod runtime;
 
 mod error;
