@@ -13,7 +13,7 @@ pub use aarch64::*;
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::*;
 
-use crate::AuxEntry;
+use crate::{AuxEntry, DlPhdrInfo};
 
 // The C-based entry point coming from arch-specific assembly _start function.
 unsafe extern "C" fn entry(arg: usize) -> ! {
@@ -48,4 +48,18 @@ pub unsafe extern "C" fn __tls_get_addr(arg: usize) -> *const u8 {
     runtime
         .tls_get_addr(index)
         .expect("index passed to __tls_get_addr is invalid")
+}
+
+/// Public definition of dl_iterate_phdr, used by libunwind for learning where loaded objects (executables, libraries, ...) are.
+#[no_mangle]
+pub unsafe extern "C" fn dl_iterate_phdr(
+    callback: extern "C" fn(
+        ptr: *const DlPhdrInfo,
+        sz: core::ffi::c_size_t,
+        data: *mut core::ffi::c_void,
+    ) -> core::ffi::c_int,
+    data: *mut core::ffi::c_void,
+) -> core::ffi::c_int {
+    let runtime = crate::get_runtime();
+    runtime.iterate_phdr(&mut |info| callback(&info, core::mem::size_of::<DlPhdrInfo>(), data))
 }

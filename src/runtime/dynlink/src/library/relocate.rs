@@ -96,8 +96,10 @@ impl Library {
                     if sym.st_bind() != STB_WEAK {
                         return Ok(RelocatedSymbol::new(sym, self.clone()));
                     } else {
-                        trace!("lookup symbol {} skipping weak binding in {}", name, self);
+                        tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
                     }
+                } else {
+                    tracing::info!("undefined symbol: {}", name);
                 }
             }
             return Err(DynlinkError::NotFound {
@@ -121,8 +123,10 @@ impl Library {
                     if sym.st_bind() != STB_WEAK {
                         return Ok(RelocatedSymbol::new(sym, self.clone()));
                     } else {
-                        trace!("lookup symbol {} skipping weak binding in {}", name, self);
+                        tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
                     }
+                } else {
+                    tracing::info!("undefined symbol: {}", name);
                 }
             }
         }

@@ -456,9 +456,13 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         n if n < 32 => {
             if user {
                 logln!("user exception {:#?} {:x}", ctx, ctx.rsp);
-                let t = current_thread_ref().unwrap();
-                let info = UpcallInfo::Exception(ExceptionInfo::new(n.into(), ctx.err));
-                t.send_upcall(info);
+                if n != 3 {
+                    let t = current_thread_ref().unwrap();
+                    let info = UpcallInfo::Exception(ExceptionInfo::new(n.into(), ctx.err));
+                    t.send_upcall(info);
+                } else {
+                    logln!("debug exception, continuing...");
+                }
             } else {
                 panic!(
                     "caught unhandled exception {:?}: {:#?}",

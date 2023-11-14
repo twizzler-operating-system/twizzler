@@ -1,5 +1,5 @@
 use tracing::{debug, trace};
-use twizzler_runtime_api::DebugRuntime;
+use twizzler_runtime_api::{DebugRuntime, DlPhdrInfo, Library};
 
 use crate::monitor;
 
@@ -36,5 +36,30 @@ impl DebugRuntime for ReferenceRuntime {
     ) -> Option<twizzler_runtime_api::ObjectHandle> {
         debug!("get full mapping: {:x}", lib.mapping.id);
         None
+    }
+
+    fn iterate_phdr(
+        &self,
+        f: &mut dyn FnMut(twizzler_runtime_api::DlPhdrInfo) -> core::ffi::c_int,
+    ) -> core::ffi::c_int {
+        fn build_dl_info(lib: Library) -> Option<DlPhdrInfo> {
+            lib.dl_info.clone()
+        }
+
+        debug!("got iterate phdr");
+        let mut ret = 0;
+        for id in 0..usize::MAX {
+            let Some(lib) = self.get_library(twizzler_runtime_api::LibraryId(id)) else {
+                break;
+            };
+            let Some(dl_info) = build_dl_info(lib) else {
+                continue;
+            };
+            ret = f(dl_info);
+            if ret != 0 {
+                return ret;
+            }
+        }
+        ret
     }
 }

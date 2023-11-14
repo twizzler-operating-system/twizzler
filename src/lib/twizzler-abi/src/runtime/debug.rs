@@ -30,6 +30,7 @@ impl DebugRuntime for MinimalRuntime {
         Some(Library {
             range: (unsafe { mapping.start.add(NULLPAGE_SIZE) }, mapping.meta),
             mapping,
+            dl_info: None,
         })
     }
 
@@ -59,5 +60,13 @@ impl DebugRuntime for MinimalRuntime {
         lib: &twizzler_runtime_api::Library,
     ) -> Option<twizzler_runtime_api::ObjectHandle> {
         Some(lib.mapping.clone())
+    }
+
+    // This runtime doesn't use this.
+    fn iterate_phdr(
+        &self,
+        _f: &mut dyn FnMut(twizzler_runtime_api::DlPhdrInfo) -> core::ffi::c_int,
+    ) -> core::ffi::c_int {
+        0
     }
 }

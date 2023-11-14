@@ -34,6 +34,7 @@
 #![no_std]
 #![feature(unboxed_closures)]
 #![feature(naked_functions)]
+#![feature(c_size_t)]
 
 use core::{
     alloc::GlobalAlloc, ffi::CStr, num::NonZeroUsize, panic::RefUnwindSafe,
@@ -366,6 +367,8 @@ pub struct Library {
     pub mapping: ObjectHandle,
     /// Actual range of addresses that comprise the library binary data.
     pub range: (*const u8, *const u8),
+    /// Information for dl_iterate_phdr
+    pub dl_info: Option<DlPhdrInfo>,
 }
 
 impl AsRef<Library> for Library {
@@ -383,6 +386,24 @@ pub struct LibraryId(pub usize);
 /// may see the type.
 unsafe impl Send for Library {}
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub type ElfAddr = usize;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub type ElfHalf = u32;
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct DlPhdrInfo {
+    pub addr: ElfAddr,
+    pub name: *const CStr,
+    pub phdr_start: *const u8,
+    pub phdr_num: ElfHalf,
+    pub _adds: core::ffi::c_longlong,
+    pub _subs: core::ffi::c_longlong,
+    pub modid: core::ffi::c_size_t,
+    pub tls_data: *const core::ffi::c_void,
+}
+
 /// Functions for the debug support part of libstd (e.g. unwinding, backtracing).
 pub trait DebugRuntime {
     /// Gets a handle to a library given the ID.
@@ -393,6 +414,8 @@ pub trait DebugRuntime {
     fn get_library_segment(&self, lib: &Library, seg: usize) -> Option<AddrRange>;
     /// Get the full mapping of the underlying library.
     fn get_full_mapping(&self, lib: &Library) -> Option<ObjectHandle>;
+    /// Handler for calls to the dl_iterate_phdr call.
+    fn iterate_phdr(&self, f: &mut dyn FnMut(DlPhdrInfo) -> core::ffi::c_int) -> core::ffi::c_int;
 }
 
 /// An address range.
