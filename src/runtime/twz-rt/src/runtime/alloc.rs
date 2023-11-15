@@ -11,6 +11,9 @@ use core::{
 
 use std::sync::Mutex;
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const MIN_ALIGN: usize = 16;
+
 use talc::{OomHandler, Span, Talc};
 use twizzler_abi::{
     object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -98,8 +101,9 @@ impl OomHandler for RuntimeOom {
 
 unsafe impl GlobalAlloc for LocalAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let layout = Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), 16))
-            .expect("layout alignment bump failed");
+        let layout =
+            Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), MIN_ALIGN))
+                .expect("layout alignment bump failed");
         if self.runtime.state().contains(RuntimeState::READY) {
             // Runtime is ready, we can use normal locking
             let mut inner = self.inner.lock().unwrap();
@@ -133,8 +137,9 @@ unsafe impl GlobalAlloc for LocalAllocator {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let layout = Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), 16))
-            .expect("layout alignment bump failed");
+        let layout =
+            Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), MIN_ALIGN))
+                .expect("layout alignment bump failed");
         if self.runtime.state().contains(RuntimeState::READY) {
             // Runtime is ready, we can use normal locking
             let mut inner = self.inner.lock().unwrap();
