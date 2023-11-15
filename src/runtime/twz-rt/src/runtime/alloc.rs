@@ -9,14 +9,15 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use std::sync::Mutex;
+use std::{alloc::Allocator, mem::size_of, sync::Mutex};
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const MIN_ALIGN: usize = 16;
 
 use talc::{OomHandler, Span, Talc};
+use tracing::warn;
 use twizzler_abi::{
-    object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
         sys_object_create, sys_object_map, BackingType, LifetimeType, MapFlags, ObjectCreate,
         ObjectCreateFlags,
@@ -52,36 +53,55 @@ pub struct LocalAllocator {
 
 struct LocalAllocatorInner {
     talc: Talc<RuntimeOom>,
-    //_objects: Vec<(usize, ObjID)>,
 }
 
-struct RuntimeOom {}
+struct RuntimeOom {
+    list_obj: Option<(usize, ObjID)>,
+    objects: Vec<(usize, ObjID), FailAlloc>,
+}
+
+fn delete_obj(_slot: usize, _id: ObjID) {
+    // TODO
+    warn!("unimplemented: delete object due to failure in allocator");
+}
+
+fn create_and_map() -> Option<(usize, ObjID)> {
+    let slot = OUR_RUNTIME.allocate_slot()?;
+
+    let Ok(id) = sys_object_create(
+        ObjectCreate::new(
+            BackingType::Normal,
+            LifetimeType::Volatile,
+            None,
+            ObjectCreateFlags::empty(),
+        ),
+        &[],
+        &[],
+    ) else {
+        OUR_RUNTIME.release_slot(slot);
+        return None;
+    };
+
+    if sys_object_map(
+        None,
+        id,
+        slot,
+        Protections::READ | Protections::WRITE,
+        MapFlags::empty(),
+    )
+    .is_err()
+    {
+        delete_obj(slot, id);
+        OUR_RUNTIME.release_slot(slot);
+        return None;
+    }
+
+    Some((slot, id))
+}
 
 impl OomHandler for RuntimeOom {
     fn handle_oom(talc: &mut Talc<Self>, _layout: Layout) -> Result<(), ()> {
-        let id = sys_object_create(
-            ObjectCreate::new(
-                BackingType::Normal,
-                LifetimeType::Volatile,
-                None,
-                ObjectCreateFlags::empty(),
-            ),
-            &[],
-            &[],
-        )
-        .map_err(|_| ())?;
-
-        let slot = OUR_RUNTIME.allocate_slot().ok_or(())?;
-
-        sys_object_map(
-            None,
-            id,
-            slot,
-            Protections::READ | Protections::WRITE,
-            MapFlags::empty(),
-        )
-        .map_err(|_| ())?;
-
+        let (slot, id) = create_and_map().ok_or(())?;
         // reserve an additional page size at the base of the object for future use. This behavior may change as the runtime is fleshed out.
         const HEAP_OFFSET: usize = NULLPAGE_SIZE * 2;
         // offset from the endpoint of the object to where the endpoint of the heap is. Reserve a page for the metadata + a few pages for any future FOT entries.
@@ -90,12 +110,42 @@ impl OomHandler for RuntimeOom {
         let top = (slot + 1) * MAX_SIZE - TOP_OFFSET;
 
         unsafe {
-            talc.claim(Span::new(base as *mut _, top as *mut _))?;
+            if talc
+                .claim(Span::new(base as *mut _, top as *mut _))
+                .is_err()
+            {
+                delete_obj(slot, id);
+                OUR_RUNTIME.release_slot(slot);
+                return Err(());
+            }
         }
 
-        // TODO: track the objects
+        if talc.oom_handler.list_obj.is_none() {
+            talc.oom_handler.list_obj = Some(create_and_map().ok_or(())?);
+            let slot = talc.oom_handler.list_obj.unwrap().0;
+            let list_vec_start = slot * MAX_SIZE + HEAP_OFFSET;
+            let list_vec_bytes = MAX_SIZE - TOP_OFFSET;
+            let list_vec_cap = list_vec_bytes / size_of::<(usize, ObjID)>();
+            let na = FailAlloc;
+            talc.oom_handler.objects =
+                unsafe { Vec::from_raw_parts_in(list_vec_start as *mut _, 0, list_vec_cap, na) };
+        }
+
+        talc.oom_handler.objects.push((slot, id));
 
         Ok(())
+    }
+}
+
+struct FailAlloc;
+
+unsafe impl Allocator for FailAlloc {
+    fn allocate(&self, _layout: Layout) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+        panic!("cannot allocate from FailAlloc. This is a bug.")
+    }
+
+    unsafe fn deallocate(&self, _ptr: NonNull<u8>, _layout: Layout) {
+        panic!("cannot allocate from FailAlloc. This is a bug.")
     }
 }
 
@@ -174,8 +224,10 @@ unsafe impl GlobalAlloc for LocalAllocator {
 impl LocalAllocatorInner {
     const fn new() -> Self {
         Self {
-            talc: Talc::new(RuntimeOom {}),
-            // objects: vec![],
+            talc: Talc::new(RuntimeOom {
+                objects: Vec::new_in(FailAlloc),
+                list_obj: None,
+            }),
         }
     }
 

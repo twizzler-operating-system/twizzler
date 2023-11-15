@@ -9,6 +9,7 @@
 #![feature(fmt_internals)]
 #![feature(array_windows)]
 #![feature(unboxed_closures)]
+#![feature(allocator_api)]
 
 pub(crate) mod arch;
 
