@@ -182,14 +182,14 @@ impl<T> Tcb<T> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TlsModId(u64, usize);
+pub struct TlsModId(u64, usize);
 
 impl TlsModId {
-    pub(crate) fn tls_id(&self) -> u64 {
+    pub fn tls_id(&self) -> u64 {
         self.0
     }
 
-    pub(crate) fn offset(&self) -> usize {
+    pub fn offset(&self) -> usize {
         self.1
     }
 }

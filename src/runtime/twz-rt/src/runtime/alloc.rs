@@ -98,6 +98,8 @@ impl OomHandler for RuntimeOom {
 
 unsafe impl GlobalAlloc for LocalAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let layout = Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), 16))
+            .expect("layout alignment bump failed");
         if self.runtime.state().contains(RuntimeState::READY) {
             // Runtime is ready, we can use normal locking
             let mut inner = self.inner.lock().unwrap();
@@ -131,6 +133,8 @@ unsafe impl GlobalAlloc for LocalAllocator {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let layout = Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), 16))
+            .expect("layout alignment bump failed");
         if self.runtime.state().contains(RuntimeState::READY) {
             // Runtime is ready, we can use normal locking
             let mut inner = self.inner.lock().unwrap();

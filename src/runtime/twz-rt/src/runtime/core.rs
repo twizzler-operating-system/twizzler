@@ -43,7 +43,7 @@ impl CoreRuntime for ReferenceRuntime {
     fn exit(&self, code: i32) -> ! {
         if self.state().contains(RuntimeState::READY) {
             // TODO: hook into debugging?
-            todo!()
+            twizzler_abi::syscall::sys_thread_exit(code as u64);
         } else {
             preinit_println!("runtime exit before runtime ready: {}", code);
             preinit_abort();

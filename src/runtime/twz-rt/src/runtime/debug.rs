@@ -1,24 +1,22 @@
-use tracing::{debug, trace};
-use twizzler_runtime_api::{DebugRuntime, DlPhdrInfo, Library};
+use std::ffi::CString;
+
+use twizzler_runtime_api::DebugRuntime;
 
 use crate::monitor;
 
 use super::ReferenceRuntime;
 
 // TODO: hook into dynlink for this stuff
-
 impl DebugRuntime for ReferenceRuntime {
     fn get_library(
         &self,
         id: twizzler_runtime_api::LibraryId,
     ) -> Option<twizzler_runtime_api::Library> {
-        debug!("get_library: {}", id.0);
         monitor::get_monitor_actions().lookup_library_by_id(id)
     }
 
     fn get_exeid(&self) -> Option<twizzler_runtime_api::LibraryId> {
-        debug!("get_execid");
-        None
+        monitor::get_monitor_actions().local_primary()
     }
 
     fn get_library_segment(
@@ -26,40 +24,49 @@ impl DebugRuntime for ReferenceRuntime {
         lib: &twizzler_runtime_api::Library,
         seg: usize,
     ) -> Option<twizzler_runtime_api::AddrRange> {
-        debug!("get lib seg: {:x} {}", lib.mapping.id, seg);
-        None
+        monitor::get_monitor_actions().get_segment(lib.id, seg)
     }
 
     fn get_full_mapping(
         &self,
         lib: &twizzler_runtime_api::Library,
     ) -> Option<twizzler_runtime_api::ObjectHandle> {
-        debug!("get full mapping: {:x}", lib.mapping.id);
-        None
+        Some(lib.mapping.clone())
     }
 
     fn iterate_phdr(
         &self,
         f: &mut dyn FnMut(twizzler_runtime_api::DlPhdrInfo) -> core::ffi::c_int,
     ) -> core::ffi::c_int {
-        fn build_dl_info(lib: Library) -> Option<DlPhdrInfo> {
-            lib.dl_info.clone()
-        }
-
-        debug!("got iterate phdr");
         let mut ret = 0;
-        for id in 0..usize::MAX {
-            let Some(lib) = self.get_library(twizzler_runtime_api::LibraryId(id)) else {
-                break;
-            };
-            let Some(dl_info) = build_dl_info(lib) else {
-                continue;
-            };
-            ret = f(dl_info);
-            if ret != 0 {
-                return ret;
+        let mut id = self.get_exeid();
+        while let Some(library) = id.and_then(|id| self.get_library(id)) {
+            if let Some(mut info) = library.dl_info {
+                let mut buf = [0; 256];
+                let name = self
+                    .get_library_name(&library, &mut buf)
+                    .map(|len| {
+                        let mut v = buf[0..len].to_vec();
+                        v.push(0);
+                        CString::from_vec_with_nul(v).unwrap()
+                    })
+                    .unwrap_or_else(|_| CString::new(vec![b'?', b'?', b'?', b'\0']).unwrap());
+                info.name = name.as_c_str().as_ptr() as *const u8;
+                ret = f(info);
+                if ret != 0 {
+                    return ret;
+                }
             }
+            id = library.next_id;
         }
         ret
+    }
+
+    fn get_library_name(
+        &self,
+        lib: &twizzler_runtime_api::Library,
+        buf: &mut [u8],
+    ) -> Result<usize, ()> {
+        monitor::get_monitor_actions().lookup_library_name(lib.id, buf)
     }
 }

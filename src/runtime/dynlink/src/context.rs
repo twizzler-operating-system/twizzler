@@ -68,9 +68,9 @@ impl ContextInner {
     /// Visit libraries in a BFS traversal, starting from a number of roots. Note that
     /// because multiple roots may be specified, this means that nodes may be visited `O(|roots|)`
     /// times (|roots| is the number of roots yielded by the iterator).
-    pub fn with_bfs<I>(&self, roots: I, mut f: impl FnMut(&LibraryRef))
+    pub fn with_bfs<'a, I>(&'a self, roots: I, mut f: impl FnMut(&LibraryRef))
     where
-        I: IntoIterator<Item = LibraryRef>,
+        I: IntoIterator<Item = &'a LibraryRef>,
     {
         for root in roots.into_iter() {
             let mut visit = petgraph::visit::Bfs::new(&self.library_deps, root.idx.get().unwrap());

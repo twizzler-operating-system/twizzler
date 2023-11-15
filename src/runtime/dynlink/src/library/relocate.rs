@@ -65,11 +65,11 @@ impl EitherRel {
 }
 
 impl Library {
-    pub(crate) fn laddr<T>(&self, val: u64) -> Option<*const T> {
+    pub fn laddr<T>(&self, val: u64) -> Option<*const T> {
         self.base_addr.map(|base| (base + val as usize) as *const T)
     }
 
-    pub(crate) fn laddr_mut<T>(&self, val: u64) -> Option<*mut T> {
+    pub fn laddr_mut<T>(&self, val: u64) -> Option<*mut T> {
         self.base_addr.map(|base| (base + val as usize) as *mut T)
     }
 

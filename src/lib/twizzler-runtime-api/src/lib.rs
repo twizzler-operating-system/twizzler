@@ -363,12 +363,16 @@ pub enum Monotonicity {
 
 /// An abstract representation of a library, useful for debugging and backtracing.
 pub struct Library {
+    /// The ID of this library.
+    pub id: LibraryId,
     /// How this library is mapped.
     pub mapping: ObjectHandle,
     /// Actual range of addresses that comprise the library binary data.
     pub range: (*const u8, *const u8),
     /// Information for dl_iterate_phdr
     pub dl_info: Option<DlPhdrInfo>,
+    /// The Library ID of the next library, either the first dependency of this library, or a sibling.
+    pub next_id: Option<LibraryId>,
 }
 
 impl AsRef<Library> for Library {
@@ -395,7 +399,7 @@ pub type ElfHalf = u32;
 #[repr(C)]
 pub struct DlPhdrInfo {
     pub addr: ElfAddr,
-    pub name: *const CStr,
+    pub name: *const u8,
     pub phdr_start: *const u8,
     pub phdr_num: ElfHalf,
     pub _adds: core::ffi::c_longlong,
@@ -408,6 +412,9 @@ pub struct DlPhdrInfo {
 pub trait DebugRuntime {
     /// Gets a handle to a library given the ID.
     fn get_library(&self, id: LibraryId) -> Option<Library>;
+    /// Get library name. If the buffer is too small, returns Err(()). Otherwise,
+    /// returns the length of the name in bytes.
+    fn get_library_name(&self, lib: &Library, buf: &mut [u8]) -> Result<usize, ()>;
     /// Returns the ID of the main executable, if there is one.
     fn get_exeid(&self) -> Option<LibraryId>;
     /// Get a segment of a library, if the segment index exists. All segment IDs are indexes, so they range from [0, N).
