@@ -9,12 +9,7 @@ use std::{
     },
 };
 
-use elf::{
-    abi::PT_PHDR,
-    endian::NativeEndian,
-    segment::{Elf64_Phdr, ProgramHeader},
-    ParseError,
-};
+use elf::{abi::PT_PHDR, endian::NativeEndian, segment::Elf64_Phdr, ParseError};
 
 mod deps;
 mod init;
@@ -107,6 +102,17 @@ impl Library {
             tls_id: None,
             ctors: None,
         }
+    }
+
+    pub fn used_slots(&self) -> Vec<usize> {
+        let mut v = vec![self.full_obj.slot().slot_number()];
+        if let Some(ref text) = self.text_object {
+            v.push(text.slot().slot_number());
+        }
+        if let Some(ref data) = self.data_object {
+            v.push(data.slot().slot_number());
+        }
+        v
     }
 
     pub fn get_phdrs_raw(&self) -> Option<(*const Elf64_Phdr, usize)> {

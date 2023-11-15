@@ -55,6 +55,10 @@ impl Slot {
         })
     }
 
+    pub fn slot_number(&self) -> usize {
+        self.vaddr_null() as usize / MAX_SIZE
+    }
+
     /// Get the ID of the object in this slot.
     pub fn id(&self) -> ObjID {
         self.id

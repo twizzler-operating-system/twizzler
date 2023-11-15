@@ -27,6 +27,6 @@ pub fn main() {
     );
 
     init_actions(state);
-
-    panic!("test panic");
+    std::env::set_var("RUST_BACKTRACE", "1");
+    loop {}
 }

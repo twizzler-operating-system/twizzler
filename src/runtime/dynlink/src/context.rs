@@ -51,9 +51,9 @@ impl ContextInner {
     /// Visit libraries in a post-order DFS traversal, starting from a number of roots. Note that
     /// because multiple roots may be specified, this means that nodes may be visited `O(|roots|)`
     /// times (|roots| is the number of roots yielded by the iterator).
-    pub fn with_dfs_postorder<I>(&self, roots: I, mut f: impl FnMut(&LibraryRef))
+    pub fn with_dfs_postorder<'a, I>(&self, roots: I, mut f: impl FnMut(&LibraryRef))
     where
-        I: IntoIterator<Item = LibraryRef>,
+        I: IntoIterator<Item = &'a LibraryRef>,
     {
         for root in roots.into_iter() {
             let mut visit =
@@ -68,7 +68,7 @@ impl ContextInner {
     /// Visit libraries in a BFS traversal, starting from a number of roots. Note that
     /// because multiple roots may be specified, this means that nodes may be visited `O(|roots|)`
     /// times (|roots| is the number of roots yielded by the iterator).
-    pub fn with_bfs<'a, I>(&'a self, roots: I, mut f: impl FnMut(&LibraryRef))
+    pub fn with_bfs<'a, I>(&self, roots: I, mut f: impl FnMut(&LibraryRef))
     where
         I: IntoIterator<Item = &'a LibraryRef>,
     {
@@ -153,9 +153,9 @@ impl ContextInner {
         })
     }
 
-    fn build_ctors<I>(&mut self, roots: I) -> Result<&[CtorInfo], DynlinkError>
+    fn build_ctors<'a, I>(&mut self, roots: I) -> Result<&[CtorInfo], DynlinkError>
     where
-        I: IntoIterator<Item = LibraryRef>,
+        I: IntoIterator<Item = &'a LibraryRef>,
     {
         let mut ctors = vec![];
         self.with_dfs_postorder(roots, |lib| {
@@ -168,14 +168,14 @@ impl ContextInner {
         Ok(&self.static_ctors)
     }
 
-    pub(crate) fn build_runtime_info<I>(
+    pub(crate) fn build_runtime_info<'a, I>(
         &mut self,
         roots: I,
         tls: TlsRegion,
         outer: &Context,
     ) -> Result<RuntimeInitInfo, DynlinkError>
     where
-        I: IntoIterator<Item = LibraryRef> + Clone,
+        I: IntoIterator<Item = &'a LibraryRef> + Clone,
     {
         let root_names = roots
             .clone()
@@ -183,11 +183,13 @@ impl ContextInner {
             .map(|r| r.name.clone())
             .collect::<Vec<_>>();
         let ctors = {
-            let ctors = self.build_ctors(roots)?;
+            let ctors = self.build_ctors(roots.clone())?;
             (ctors.as_ptr(), ctors.len())
         };
+        let mut used_slots = vec![];
+        self.with_bfs(roots, |lib| used_slots.append(&mut lib.used_slots()));
         Ok(RuntimeInitInfo::new(
-            ctors.0, ctors.1, tls, outer, root_names,
+            ctors.0, ctors.1, tls, outer, root_names, used_slots,
         ))
     }
 }
@@ -240,13 +242,13 @@ impl Context {
     }
 
     /// Get initial runtime information for bootstrapping.
-    pub fn build_runtime_info<I>(
-        &self,
+    pub fn build_runtime_info<'a, I>(
+        &'a self,
         roots: I,
         tls: TlsRegion,
     ) -> Result<RuntimeInitInfo, DynlinkError>
     where
-        I: IntoIterator<Item = LibraryRef> + Clone,
+        I: IntoIterator<Item = &'a LibraryRef> + Clone,
     {
         self.inner.lock()?.build_runtime_info(roots, tls, self)
     }
@@ -296,6 +298,7 @@ pub struct RuntimeInitInfo {
     pub tls_region: TlsRegion,
     pub ctx: *const Context,
     pub root_names: Vec<String>,
+    pub used_slots: Vec<usize>,
 }
 
 unsafe impl Send for RuntimeInitInfo {}
@@ -308,6 +311,7 @@ impl RuntimeInitInfo {
         tls_region: TlsRegion,
         ctx: &Context,
         root_names: Vec<String>,
+        used_slots: Vec<usize>,
     ) -> Self {
         Self {
             ctor_info_array,
@@ -315,6 +319,7 @@ impl RuntimeInitInfo {
             tls_region,
             ctx,
             root_names,
+            used_slots,
         }
     }
 

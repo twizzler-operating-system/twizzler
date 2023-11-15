@@ -8,9 +8,11 @@ use dynlink::{
 use tracing::{debug, info, trace, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 use twizzler_abi::{
+    arch::SLOTS,
     object::{ObjID, Protections},
     syscall::{
-        sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, ObjectSource,
+        sys_object_create, sys_object_read_map, BackingType, LifetimeType, ObjectCreate,
+        ObjectCreateFlags, ObjectSource,
     },
 };
 use twizzler_object::{Object, ObjectInitFlags};
@@ -68,9 +70,22 @@ fn start_runtime(runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
 
     let value = entry.reloc_value() as usize;
     let ptr: extern "C" fn(usize) = unsafe { core::mem::transmute(value) };
-    let info = ctx.build_runtime_info(roots, tls).unwrap();
+    let mut info = ctx.build_runtime_info(roots.iter(), tls).unwrap();
     let info_ptr = &info as *const _ as usize;
     let aux = vec![AuxEntry::RuntimeInfo(info_ptr), AuxEntry::Null];
+
+    let mut used = vec![];
+    used.reserve(SLOTS);
+    // No more memory allocation after this point. We scan the address space to build a list
+    // of used slots for the next runtime.
+    for slot in 0..SLOTS {
+        let r = sys_object_read_map(None, slot);
+        if r.is_ok() {
+            used.push(slot);
+        }
+    }
+    info.used_slots = used;
+
     let aux_ptr = aux.as_slice().as_ptr();
     trace!("jumping to {:x}", value);
     (ptr)(aux_ptr as usize);

@@ -42,7 +42,6 @@ impl CoreRuntime for ReferenceRuntime {
 
     fn exit(&self, code: i32) -> ! {
         if self.state().contains(RuntimeState::READY) {
-            // TODO: hook into debugging?
             twizzler_abi::syscall::sys_thread_exit(code as u64);
         } else {
             preinit_println!("runtime exit before runtime ready: {}", code);
@@ -52,7 +51,6 @@ impl CoreRuntime for ReferenceRuntime {
 
     fn abort(&self) -> ! {
         if self.state().contains(RuntimeState::READY) {
-            // TODO: hook into debugging?
             preinit_abort();
         } else {
             preinit_println!("runtime abort before runtime ready");
@@ -134,10 +132,9 @@ impl ReferenceRuntime {
         }
     }
 
-    fn init_allocator(&self, _info: &RuntimeInitInfo) {
-        // TODO: fix this hack
-        for slot in 0..100 {
-            mark_slot_reserved(slot)
+    fn init_allocator(&self, info: &RuntimeInitInfo) {
+        for slot in &info.used_slots {
+            mark_slot_reserved(*slot);
         }
     }
 

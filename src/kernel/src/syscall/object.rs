@@ -5,8 +5,8 @@ use alloc::{
 use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
-        CreateTieSpec, HandleType, NewHandleError, ObjectCreate, ObjectCreateError, ObjectMapError,
-        ObjectSource,
+        CreateTieSpec, HandleType, MapFlags, MapInfo, NewHandleError, ObjectCreate,
+        ObjectCreateError, ObjectMapError, ObjectReadMapError, ObjectSource,
     },
 };
 
@@ -64,6 +64,23 @@ pub fn sys_object_map(
     // TODO
     let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into());
     Ok(slot)
+}
+
+pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo, ObjectReadMapError> {
+    let vm = if handle.as_u128() == 0 {
+        current_memory_context().unwrap()
+    } else {
+        get_vmcontext_from_handle(handle).ok_or(ObjectReadMapError::InvalidArgument)?
+    };
+    let info = vm
+        .lookup_slot(slot)
+        .ok_or(ObjectReadMapError::InvalidSlot)?;
+    Ok(MapInfo {
+        id: info.object().id(),
+        prot: info.mapping_settings(false, false).perms(),
+        slot,
+        flags: MapFlags::empty(),
+    })
 }
 
 pub trait ObjectHandle {
