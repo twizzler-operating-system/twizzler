@@ -1,8 +1,10 @@
+use std::ptr::NonNull;
+
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_map, sys_object_unmap, UnmapFlags},
 };
-use twizzler_runtime_api::{MapError, MapFlags, ObjectHandle, ObjectRuntime};
+use twizzler_runtime_api::{InternalHandleRefs, MapError, MapFlags, ObjectHandle, ObjectRuntime};
 
 use super::ReferenceRuntime;
 
@@ -33,15 +35,14 @@ impl ObjectRuntime for ReferenceRuntime {
             twizzler_abi::syscall::MapFlags::empty(),
         )
         .map_err(|_| MapError::InternalError)?;
-        Ok(ObjectHandle {
+        Ok(ObjectHandle::new(
+            NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap(),
             id,
             flags,
-            start: (slot * MAX_SIZE) as *mut u8,
-            meta: (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
-        })
+            (slot * MAX_SIZE) as *mut u8,
+            (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
+        ))
     }
-
-    fn unmap_object(&self, _handle: &twizzler_runtime_api::ObjectHandle) {}
 
     fn release_handle(&self, handle: &mut twizzler_runtime_api::ObjectHandle) {
         let slot = (handle.start as usize) / MAX_SIZE;

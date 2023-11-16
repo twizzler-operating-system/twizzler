@@ -55,6 +55,10 @@ impl Slot {
         })
     }
 
+    pub fn runtime_handle(&self) -> &ObjectHandle {
+        &self.runtime_handle
+    }
+
     pub fn slot_number(&self) -> usize {
         self.vaddr_null() as usize / MAX_SIZE
     }
@@ -126,11 +130,4 @@ pub fn get(id: ObjID, prot: Protections) -> Result<Arc<Slot>, ObjectInitError> {
     let w = Arc::downgrade(&slot);
     slots.insert((id, prot), w);
     Ok(slot)
-}
-
-impl Drop for Slot {
-    fn drop(&mut self) {
-        let runtime = twizzler_runtime_api::get_runtime();
-        runtime.unmap_object(&self.runtime_handle);
-    }
 }

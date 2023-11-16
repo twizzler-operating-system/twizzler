@@ -36,9 +36,15 @@
 #![feature(naked_functions)]
 #![feature(c_size_t)]
 
+#[cfg_attr(feature = "kernel", allow(unused_imports))]
 use core::{
-    alloc::GlobalAlloc, ffi::CStr, num::NonZeroUsize, panic::RefUnwindSafe,
-    sync::atomic::AtomicU32, time::Duration,
+    alloc::GlobalAlloc,
+    ffi::CStr,
+    num::NonZeroUsize,
+    panic::RefUnwindSafe,
+    ptr::NonNull,
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+    time::Duration,
 };
 
 #[cfg(feature = "rt0")]
@@ -151,8 +157,6 @@ pub trait ThreadRuntime {
 pub trait ObjectRuntime {
     /// Map an object to an [ObjectHandle]. The handle may reference the same internal mapping as other calls to this function.
     fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError>;
-    /// Unmap an object handle.
-    fn unmap_object(&self, handle: &ObjectHandle);
     /// Called on drop of an object handle.
     fn release_handle(&self, handle: &mut ObjectHandle);
 }
@@ -196,9 +200,11 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq)]
-/// A handle to an internal object.
+#[cfg_attr(feature = "kernel", allow(dead_code))]
+/// A handle to an internal object. This has similar semantics to Arc, but since this crate
+/// must be #[no_std], we need to implement refcounting ourselves.
 pub struct ObjectHandle {
+    internal_refs: NonNull<InternalHandleRefs>,
     /// The ID of the object.
     pub id: ObjID,
     /// The flags of this handle.
@@ -209,9 +215,83 @@ pub struct ObjectHandle {
     pub meta: *mut u8,
 }
 
+impl core::fmt::Debug for ObjectHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ObjectHandle")
+            .field("id", &self.id)
+            .field("flags", &self.flags)
+            .field("start", &self.start)
+            .field("meta", &self.meta)
+            .finish()
+    }
+}
+
+unsafe impl Send for ObjectHandle {}
+unsafe impl Sync for ObjectHandle {}
+
+#[cfg_attr(feature = "kernel", allow(dead_code))]
+pub struct InternalHandleRefs {
+    count: AtomicUsize,
+}
+
+impl Default for InternalHandleRefs {
+    fn default() -> Self {
+        Self {
+            count: AtomicUsize::new(1),
+        }
+    }
+}
+
+impl ObjectHandle {
+    pub fn new(
+        internal_refs: NonNull<InternalHandleRefs>,
+        id: ObjID,
+        flags: MapFlags,
+        start: *mut u8,
+        meta: *mut u8,
+    ) -> Self {
+        Self {
+            internal_refs,
+            id,
+            flags,
+            start,
+            meta,
+        }
+    }
+}
+
+#[cfg(not(feature = "kernel"))]
+impl Clone for ObjectHandle {
+    fn clone(&self) -> Self {
+        let rc = unsafe { self.internal_refs.as_ref() };
+        // This use of Relaxed ordering is justified by https://doc.rust-lang.org/nomicon/arc-mutex/arc-clone.html.
+        let old_count = rc.count.fetch_add(1, Ordering::Relaxed);
+        // The above link also justifies the following behavior. If our count gets this high, we have probably
+        // run into a problem somewhere.
+        if old_count >= isize::MAX as usize {
+            get_runtime().abort();
+        }
+        Self {
+            internal_refs: self.internal_refs,
+            id: self.id.clone(),
+            flags: self.flags.clone(),
+            start: self.start.clone(),
+            meta: self.meta.clone(),
+        }
+    }
+}
+
 #[cfg(not(feature = "kernel"))]
 impl Drop for ObjectHandle {
     fn drop(&mut self) {
+        // This use of Release ordering is justified by https://doc.rust-lang.org/nomicon/arc-mutex/arc-clone.html.
+        let rc = unsafe { self.internal_refs.as_ref() };
+        if rc.count.fetch_sub(1, Ordering::Release) != 1 {
+            return;
+        }
+        // This fence is needed to prevent reordering of the use and deletion
+        // of the data.
+        core::sync::atomic::fence(Ordering::Acquire);
         let runtime = get_runtime();
         runtime.release_handle(self);
     }

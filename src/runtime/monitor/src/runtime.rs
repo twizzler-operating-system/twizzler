@@ -1,7 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_runtime_api::{AddrRange, DlPhdrInfo, Library, LibraryId, MapFlags, ObjectHandle};
+use twizzler_runtime_api::{AddrRange, DlPhdrInfo, Library, LibraryId};
 use twz_rt::monitor::MonitorActions;
 
 use crate::state::MonitorState;
@@ -29,12 +29,7 @@ impl MonitorActions for MonitorActionsImpl {
         let phdrs = lib.get_phdrs_raw()?;
 
         Some(Library {
-            mapping: ObjectHandle {
-                id: lib.full_obj.id().as_u128(),
-                flags: MapFlags::READ,
-                start: lib.full_obj.slot().vaddr_null() as *mut _,
-                meta: unsafe { lib.full_obj.meta().as_ptr() as *mut _ },
-            },
+            mapping: lib.full_obj.slot().runtime_handle().clone(),
             range: (
                 lib.full_obj.raw_lea(NULLPAGE_SIZE),
                 lib.full_obj.raw_lea(MAX_SIZE - NULLPAGE_SIZE),
