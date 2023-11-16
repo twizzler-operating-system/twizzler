@@ -1,6 +1,15 @@
 //! Implements thread management routines. Largely unimplemented still.
 
-use dynlink::tls::Tcb;
+use std::{
+    collections::HashMap,
+    ffi::CString,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Mutex,
+    },
+};
+
+use dynlink::tls::{Tcb, TlsRegion};
 use twizzler_abi::syscall::{
     sys_thread_sync, sys_thread_yield, ThreadSync, ThreadSyncError, ThreadSyncFlags, ThreadSyncOp,
     ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
@@ -11,8 +20,76 @@ use crate::preinit_println;
 
 use super::ReferenceRuntime;
 
+const THREAD_NAME_MAX: usize = 128;
 pub struct RuntimeThreadControl {
-    name: String,
+    internal_lock: AtomicU32,
+    id: u32,
+    inner: std::cell::UnsafeCell<RuntimeThreadControlInner>,
+}
+
+pub struct RuntimeThreadControlInner {
+    name: [u8; THREAD_NAME_MAX + 1],
+}
+
+impl RuntimeThreadControl {
+    fn write_lock(&self) {
+        loop {
+            let old = self.internal_lock.fetch_or(1, Ordering::Acquire);
+            if old == 0 {
+                break;
+            }
+        }
+    }
+
+    fn write_unlock(&self) {
+        self.internal_lock.fetch_and(!1, Ordering::Release);
+    }
+
+    fn read_lock(&self) {
+        loop {
+            let old = self.internal_lock.fetch_add(2, Ordering::Acquire);
+            if old & 1 == 0 {
+                break;
+            }
+        }
+    }
+
+    fn read_unlock(&self) {
+        self.internal_lock.fetch_sub(2, Ordering::Release);
+    }
+
+    pub fn write_name(&self, name: &[u8]) {
+        let name = if name.len() > THREAD_NAME_MAX {
+            &name[0..THREAD_NAME_MAX]
+        } else {
+            name
+        };
+        unsafe {
+            self.inner.get().as_mut().unwrap().name[0..name.len()].copy_from_slice(name);
+        }
+    }
+}
+
+pub struct InternalThread {
+    id: u32,
+    tls: TlsRegion,
+}
+
+struct ThreadManager {
+    inner: Mutex<ThreadManagerInner>,
+}
+
+struct ThreadManagerInner {
+    all_threads: HashMap<u32, InternalThread>,
+}
+
+fn with_current_thread<R, F: FnOnce(&RuntimeThreadControl) -> R>(f: F) -> R {
+    let tp: &mut Tcb<RuntimeThreadControl> = unsafe {
+        dynlink::tls::get_current_thread_control_block()
+            .as_mut()
+            .unwrap()
+    };
+    f(&tp.runtime_data)
 }
 
 // TODO: implement spawning and joining
@@ -76,9 +153,7 @@ impl ThreadRuntime for ReferenceRuntime {
     }
 
     fn set_name(&self, name: &std::ffi::CStr) {
-        let tp: &mut Tcb<RuntimeThreadControl> =
-            unsafe { dynlink::tls::get_thread_control_block().as_mut().unwrap() };
-        tp.runtime_data.name = name.to_string_lossy().to_string();
+        with_current_thread(|cur| cur.write_name(name.to_bytes()))
     }
 
     fn sleep(&self, duration: std::time::Duration) {
@@ -96,7 +171,7 @@ impl ThreadRuntime for ReferenceRuntime {
 
     fn tls_get_addr(&self, index: &twizzler_runtime_api::TlsIndex) -> Option<*const u8> {
         let tp: &Tcb<()> = unsafe {
-            dynlink::tls::get_thread_control_block()
+            dynlink::tls::get_current_thread_control_block()
                 .as_ref()
                 .expect("failed to find thread control block")
         };

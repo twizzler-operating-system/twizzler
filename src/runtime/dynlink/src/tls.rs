@@ -244,4 +244,4 @@ impl TlsRegion {
     }
 }
 
-pub use crate::arch::get_thread_control_block;
+pub use crate::arch::get_current_thread_control_block;
