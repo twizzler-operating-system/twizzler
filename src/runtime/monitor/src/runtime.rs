@@ -78,6 +78,16 @@ impl MonitorActions for MonitorActionsImpl {
             len: phdr.p_memsz as usize,
         })
     }
+
+    fn allocate_tls_region(&self) -> Option<dynlink::tls::TlsRegion> {
+        let tcb = twz_rt::monitor::RuntimeThreadControl::new();
+
+        self.state
+            .dynlink
+            .with_inner_mut(|inner| inner.get_compartment().build_tls_region(tcb).ok())
+            .ok()
+            .flatten()
+    }
 }
 
 static ACTIONS: OnceLock<MonitorActionsImpl> = OnceLock::new();

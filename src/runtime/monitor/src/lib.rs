@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tracing::{debug, trace, Level};
+use tracing::{debug, info, trace, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use crate::runtime::init_actions;
@@ -28,5 +28,15 @@ pub fn main() {
 
     init_actions(state);
     std::env::set_var("RUST_BACKTRACE", "1");
+
+    let thread = std::thread::spawn(|| {
+        info!("hello from thread main");
+        0
+    });
+
+    let r = thread.join();
+
+    info!("==> {:?}", r);
+
     loop {}
 }

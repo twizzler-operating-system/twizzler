@@ -34,6 +34,11 @@ pub struct ContextInner {
 
 #[allow(dead_code)]
 impl ContextInner {
+    pub fn get_compartment(&self) -> CompartmentRef {
+        // TODO
+        self.compartment_names.values().nth(0).cloned().unwrap()
+    }
+
     fn get_fresh_id(&mut self) -> u128 {
         if let Some(old) = self.id_stack.pop() {
             old

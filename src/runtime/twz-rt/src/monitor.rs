@@ -1,5 +1,7 @@
 //! Definitions for hooking into the monitor.
 
+pub use crate::runtime::RuntimeThreadControl;
+use dynlink::tls::TlsRegion;
 use twizzler_runtime_api::{AddrRange, Library, LibraryId};
 
 pub trait MonitorActions {
@@ -7,6 +9,8 @@ pub trait MonitorActions {
     fn lookup_library_name(&self, id: LibraryId, buf: &mut [u8]) -> Result<usize, ()>;
     fn local_primary(&self) -> Option<LibraryId>;
     fn get_segment(&self, id: LibraryId, seg: usize) -> Option<AddrRange>;
+
+    fn allocate_tls_region(&self) -> Option<TlsRegion>;
 }
 
 extern "rust-call" {

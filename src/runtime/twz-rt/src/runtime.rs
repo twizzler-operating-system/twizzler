@@ -13,6 +13,8 @@ mod stdio;
 mod thread;
 mod time;
 
+pub use thread::RuntimeThreadControl;
+
 /// The runtime trait implementer itself.
 pub struct ReferenceRuntime {
     pub(crate) state: AtomicU32,

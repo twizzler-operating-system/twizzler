@@ -235,6 +235,7 @@ impl Thread {
             self.control_object
                 .object()
                 .wakeup_word(NULLPAGE_SIZE + offset_of!(ThreadRepr, status), usize::MAX);
+            crate::syscall::sync::requeue_all();
         }
     }
 

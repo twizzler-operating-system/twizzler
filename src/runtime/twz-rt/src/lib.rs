@@ -10,6 +10,7 @@
 #![feature(array_windows)]
 #![feature(unboxed_closures)]
 #![feature(allocator_api)]
+#![feature(hash_extract_if)]
 
 pub(crate) mod arch;
 

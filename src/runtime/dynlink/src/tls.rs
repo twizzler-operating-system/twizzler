@@ -214,6 +214,14 @@ impl Drop for TlsRegion {
 }
 
 impl TlsRegion {
+    pub fn alloc_base(&self) -> *mut u8 {
+        self.alloc_base.as_ptr()
+    }
+
+    pub fn alloc_layout(&self) -> Layout {
+        self.layout
+    }
+
     pub fn get_thread_pointer_value(&self) -> usize {
         self.thread_pointer.as_ptr() as usize
     }
