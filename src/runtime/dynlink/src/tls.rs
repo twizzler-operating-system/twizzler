@@ -101,12 +101,14 @@ impl TlsInfo {
             .allocation_layout::<T>()
             .map_err(|_| DynlinkError::Unknown)?;
 
+        // TODO: check all this for arm
         // Given an allocation regions, lets find all the interesting pointers.
-        let mut base = usize::from(alloc_base.addr()) + layout.size();
+        let mut base = usize::from(alloc_base.addr()) + layout.size() - size_of::<Tcb<T>>();
         // Align for the thread pointer and the 1st TLS region.
         base -= base & (layout.align() - 1);
         let thread_pointer = NonNull::new(base as *mut u8).unwrap();
         let tls_region = TlsRegion {
+            drop_safe: true,
             module_top: thread_pointer,
             thread_pointer,
             dtv: alloc_base.cast(),
@@ -143,10 +145,11 @@ impl TlsInfo {
     }
 
     pub(crate) fn allocation_layout<T>(&self) -> Result<Layout, std::alloc::LayoutError> {
-        // Region needs space for each module, and we just assume they all need the max alignment.
-        let region_size = self.alloc_size_mods + self.max_align * self.tls_mods.len();
         // Ensure that the alignment is enough for the control block.
         let align = std::cmp::max(self.max_align, align_of::<Tcb<T>>()).next_power_of_two();
+        // Region needs space for each module, and we just assume they all need the max alignment.
+        // Add two to the mods length for calculating align padding, one for the dtv, one for the tcb.
+        let region_size = self.alloc_size_mods + align * (self.tls_mods.len() + 2);
         let dtv_size = self.dtv_len() * size_of::<usize>();
         // We also need space for the control block and the dtv.
         let size = region_size + size_of::<Tcb<T>>() + dtv_size;
@@ -196,6 +199,7 @@ impl TlsModId {
 
 #[derive(Debug)]
 pub struct TlsRegion {
+    drop_safe: bool,
     pub(crate) comp: CompartmentRef,
     pub(crate) layout: Layout,
     pub(crate) alloc_base: NonNull<u8>,
@@ -207,13 +211,41 @@ pub struct TlsRegion {
 
 impl Drop for TlsRegion {
     fn drop(&mut self) {
+        trace!(
+            "dropping TLS Region {:p} {} with layout {:?}",
+            self.alloc_base.as_ptr(),
+            self.drop_safe,
+            self.layout,
+        );
+        if !self.drop_safe {
+            return;
+        }
         let _ = self.comp.with_inner_mut(|inner| {
+            trace!(
+                "dealloc in {} {:p}",
+                inner.alloc_objects().len(),
+                inner.alloc_objects()[0].raw_lea::<u8>(0)
+            );
             unsafe { inner.dealloc(self.alloc_base, self.layout) };
         });
     }
 }
 
 impl TlsRegion {
+    pub fn dont_drop(&mut self) -> Self {
+        self.drop_safe = false;
+        Self {
+            drop_safe: true,
+            comp: self.comp.clone(),
+            layout: self.layout,
+            alloc_base: self.alloc_base,
+            thread_pointer: self.thread_pointer,
+            dtv: self.dtv,
+            num_dtv_entries: self.num_dtv_entries,
+            module_top: self.module_top,
+        }
+    }
+
     pub fn alloc_base(&self) -> *mut u8 {
         self.alloc_base.as_ptr()
     }

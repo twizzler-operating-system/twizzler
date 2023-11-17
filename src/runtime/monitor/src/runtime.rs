@@ -88,6 +88,10 @@ impl MonitorActions for MonitorActionsImpl {
             .ok()
             .flatten()
     }
+
+    fn free_tls_region(&self, tls: dynlink::tls::TlsRegion) {
+        drop(tls);
+    }
 }
 
 static ACTIONS: OnceLock<MonitorActionsImpl> = OnceLock::new();

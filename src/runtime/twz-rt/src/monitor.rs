@@ -11,6 +11,7 @@ pub trait MonitorActions {
     fn get_segment(&self, id: LibraryId, seg: usize) -> Option<AddrRange>;
 
     fn allocate_tls_region(&self) -> Option<TlsRegion>;
+    fn free_tls_region(&self, tls: TlsRegion);
 }
 
 extern "rust-call" {
