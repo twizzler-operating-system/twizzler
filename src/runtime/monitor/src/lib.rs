@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tracing::{debug, info, trace, warn, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
 
 use crate::runtime::init_actions;
 
@@ -13,6 +13,8 @@ pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::DEBUG)
+        .with_target(false)
+        .with_span_events(FmtSpan::ACTIVE)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");

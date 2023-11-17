@@ -1,3 +1,5 @@
+//! Thread management routines, including spawn and join.
+
 use std::{alloc::Layout, collections::HashMap, sync::Mutex};
 
 use dynlink::tls::TlsRegion;
@@ -42,7 +44,9 @@ impl ThreadManager {
 #[derive(Default)]
 struct ThreadManagerInner {
     all_threads: HashMap<u32, InternalThread>,
+    // Threads that have exited, but we haven't cleaned up yet.
     to_cleanup: Vec<InternalThread>,
+    // Basic unique-ID system.
     id_stack: Vec<u32>,
     next_id: u32,
 }
@@ -98,6 +102,7 @@ impl ThreadManagerInner {
     }
 }
 
+// Makes spawn easier to read, as it'll auto-cleanup IDs on failure.
 struct IdDropper<'a> {
     tm: &'a mut ThreadManagerInner,
     id: u32,
@@ -124,6 +129,7 @@ impl ReferenceRuntime {
         &self,
         args: twizzler_runtime_api::ThreadSpawnArgs,
     ) -> Result<u32, twizzler_runtime_api::SpawnError> {
+        // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
         let tls: TlsRegion = get_monitor_actions()
             .allocate_tls_region()
@@ -139,6 +145,7 @@ impl ReferenceRuntime {
         let mut inner = THREAD_MGR.inner.lock().unwrap();
         let id = inner.next_id();
 
+        // Set the thread's ID. After this the TCB is ready.
         unsafe {
             tls.get_thread_control_block::<RuntimeThreadControl>()
                 .as_mut()
@@ -169,11 +176,11 @@ impl ReferenceRuntime {
                 vm_context_handle: None,
             })
         }
-        .map_err(|_| twizzler_runtime_api::SpawnError::Other /* TODO */)?;
+        .map_err(|_| twizzler_runtime_api::SpawnError::KernelError)?;
 
         let thread_repr_obj = self
             .map_object(thid.as_u128(), MapFlags::READ | MapFlags::WRITE)
-            .map_err(|_| SpawnError::Other /* TODO */)?;
+            .map_err(|_| SpawnError::Other)?;
 
         let thread = InternalThread::new(
             thread_repr_obj,
@@ -205,7 +212,6 @@ impl ReferenceRuntime {
                 .repr_handle()
                 .clone()
         };
-
         let base =
             unsafe { (repr.start.add(NULLPAGE_SIZE) as *const ThreadRepr).as_ref() }.unwrap();
         loop {

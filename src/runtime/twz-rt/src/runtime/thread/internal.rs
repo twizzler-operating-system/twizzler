@@ -1,3 +1,5 @@
+//! Internal thread struct routines.
+
 use std::{
     alloc::Layout,
     ffi::{CStr, CString},
@@ -14,6 +16,8 @@ use crate::{
     runtime::{thread::MIN_STACK_ALIGN, OUR_RUNTIME},
 };
 
+/// Internal representation of a thread, tracking the resources
+/// allocated for this thread.
 pub struct InternalThread {
     repr_handle: ObjectHandle,
     stack_addr: usize,
@@ -46,6 +50,8 @@ impl InternalThread {
 
     #[allow(dead_code)]
     pub(crate) fn repr(&self) -> &ThreadRepr {
+        // Safety: repr_handle ensures that the start memory will be alive, and that it contains
+        // the thread repr struct at the base.
         unsafe {
             (self.repr_handle.start.add(NULLPAGE_SIZE) as *const ThreadRepr)
                 .as_ref()
@@ -67,10 +73,12 @@ impl Drop for InternalThread {
         trace!("dropping InternalThread {}", self.id);
         unsafe {
             let alloc = OUR_RUNTIME.default_allocator();
+            // Stack is manually allocated, just free it directly.
             alloc.dealloc(
                 self.stack_addr as *mut u8,
                 Layout::from_size_align(self.stack_size, MIN_STACK_ALIGN).unwrap(),
             );
+            // Args is allocated by a box.
             let _args = Box::from_raw(self.args_box as *mut ThreadSpawnArgs);
             drop(_args);
             get_monitor_actions().free_tls_region(self.tls.dont_drop());

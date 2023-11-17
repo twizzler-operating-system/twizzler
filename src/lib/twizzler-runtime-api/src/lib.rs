@@ -108,6 +108,8 @@ pub enum SpawnError {
     ObjectNotFound,
     /// An object used as a handle may not be accessed by the caller.
     PermissionDenied,
+    /// Failed to spawn thread in-kernel.
+    KernelError,
 }
 
 #[repr(C)]

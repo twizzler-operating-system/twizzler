@@ -1,5 +1,6 @@
 use std::ptr::NonNull;
 
+use tracing::warn;
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_map, sys_object_unmap, UnmapFlags},
@@ -11,6 +12,7 @@ use super::ReferenceRuntime;
 // TODO: implement an object cache
 
 impl ObjectRuntime for ReferenceRuntime {
+    #[tracing::instrument(ret, skip(self), level = "trace")]
     fn map_object(
         &self,
         id: twizzler_runtime_api::ObjID,
@@ -27,7 +29,7 @@ impl ObjectRuntime for ReferenceRuntime {
             prot.insert(Protections::EXEC);
         }
         let slot = self.allocate_slot().ok_or(MapError::OutOfResources)?;
-        let _ = sys_object_map(
+        sys_object_map(
             None,
             ObjID::new(id),
             slot,
@@ -44,11 +46,14 @@ impl ObjectRuntime for ReferenceRuntime {
         ))
     }
 
+    #[tracing::instrument(skip(self), level = "trace")]
     fn release_handle(&self, handle: &mut twizzler_runtime_api::ObjectHandle) {
         let slot = (handle.start as usize) / MAX_SIZE;
 
         if sys_object_unmap(None, slot, UnmapFlags::empty()).is_ok() {
             self.release_slot(slot);
+        } else {
+            warn!("failed to unmap slot {}", slot);
         }
     }
 }
