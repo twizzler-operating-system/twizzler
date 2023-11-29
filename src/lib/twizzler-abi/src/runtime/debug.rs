@@ -64,7 +64,7 @@ impl DebugRuntime for MinimalRuntime {
         Some(lib.mapping.clone())
     }
 
-    // This runtime doesn't use this.
+    // The minimal runtime doesn't provide this, since we can get segment information in a simpler way for static binaries.
     fn iterate_phdr(
         &self,
         _f: &mut dyn FnMut(twizzler_runtime_api::DlPhdrInfo) -> core::ffi::c_int,
@@ -72,7 +72,7 @@ impl DebugRuntime for MinimalRuntime {
         0
     }
 
-    fn get_library_name(&self, _lib: &Library, _buf: &mut [u8]) -> Result<usize, ()> {
-        Ok(0)
+    fn get_library_name(&self, _lib: &Library, _buf: &mut [u8]) -> Option<usize> {
+        Some(0)
     }
 }

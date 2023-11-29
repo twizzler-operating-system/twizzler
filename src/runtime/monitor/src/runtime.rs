@@ -58,13 +58,13 @@ impl MonitorActions for MonitorActionsImpl {
         Some(LibraryId(0))
     }
 
-    fn lookup_library_name(&self, id: LibraryId, buf: &mut [u8]) -> Result<usize, ()> {
-        let lib = self.state.get_nth_library(id.0).ok_or(())?;
+    fn lookup_library_name(&self, id: LibraryId, buf: &mut [u8]) -> Option<usize> {
+        let lib = self.state.get_nth_library(id.0)?;
         if buf.len() < lib.name.len() {
-            return Err(());
+            return None;
         }
         buf[0..lib.name.len()].copy_from_slice(&lib.name.as_bytes());
-        Ok(lib.name.len())
+        Some(lib.name.len())
     }
 
     fn get_segment(&self, id: LibraryId, seg: usize) -> Option<twizzler_runtime_api::AddrRange> {

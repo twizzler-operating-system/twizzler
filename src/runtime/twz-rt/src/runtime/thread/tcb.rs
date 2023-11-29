@@ -25,11 +25,17 @@ pub struct RuntimeThreadControl {
     id: UnsafeCell<u32>,
 }
 
+impl Default for RuntimeThreadControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RuntimeThreadControl {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
-            internal_lock: AtomicU32::default(),
-            flags: AtomicU32::default(),
+            internal_lock: AtomicU32::new(0),
+            flags: AtomicU32::new(0),
             id: UnsafeCell::new(0),
         }
     }

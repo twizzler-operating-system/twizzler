@@ -57,7 +57,7 @@ impl DebugRuntime for ReferenceRuntime {
                         v.push(0);
                         CString::from_vec_with_nul(v).unwrap()
                     })
-                    .unwrap_or_else(|_| CString::new(b"???\0".to_vec()).unwrap());
+                    .unwrap_or_else(|| CString::new(b"???\0".to_vec()).unwrap());
                 info.name = name.as_c_str().as_ptr() as *const u8;
                 ret = f(info);
                 // dl_iterate_phdr returns early if the callback returns non-zero.
@@ -74,7 +74,7 @@ impl DebugRuntime for ReferenceRuntime {
         &self,
         lib: &twizzler_runtime_api::Library,
         buf: &mut [u8],
-    ) -> Result<usize, ()> {
+    ) -> Option<usize> {
         monitor::get_monitor_actions().lookup_library_name(lib.id, buf)
     }
 }

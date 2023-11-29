@@ -39,22 +39,10 @@ fn start_runtime(runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
         "monitor",
     );
 
-    /*
-    let rt_library = Library::new(
-        Object::<u8>::init_id(runtime_library, Protections::READ, ObjectInitFlags::empty())
-            .unwrap(),
-        "runtime",
-    );
-    */
-
     let mut loader = Loader {};
     let monitor = ctx
         .add_library(&monitor_compartment, mon_library, &mut loader)
         .unwrap();
-    /*let runtime = ctx
-        .add_library(&monitor_compartment, rt_library, &mut loader)
-        .unwrap();
-    */
 
     let roots = ctx.relocate_all([monitor.clone()]).unwrap();
     let tls = monitor_compartment.build_tls_region(()).unwrap();

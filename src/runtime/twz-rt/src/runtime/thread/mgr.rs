@@ -169,7 +169,7 @@ impl ReferenceRuntime {
             sys_spawn(twizzler_abi::syscall::ThreadSpawnArgs {
                 entry: trampoline as usize,
                 stack_base: stack_raw,
-                stack_size: stack_size,
+                stack_size,
                 tls: tls.get_thread_pointer_value(),
                 arg: arg_raw,
                 flags: twizzler_abi::syscall::ThreadSpawnFlags::empty(),

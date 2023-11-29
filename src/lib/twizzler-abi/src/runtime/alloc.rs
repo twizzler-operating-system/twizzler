@@ -31,6 +31,7 @@ impl OomHandler for MinimalOomHandler {
             return Err(());
         }
 
+        // Create a volatile object for our new allocation region.
         let id = sys_object_create(
             ObjectCreate::new(
                 BackingType::Normal,
@@ -42,7 +43,11 @@ impl OomHandler for MinimalOomHandler {
             &[],
         )
         .map_err(|_| ())?;
+
+        // Allocate a slot for it.
         let slot = global_allocate().ok_or(())?;
+
+        // ...and map it in.
         let _map = sys_object_map(
             None,
             id,
@@ -51,10 +56,12 @@ impl OomHandler for MinimalOomHandler {
             crate::syscall::MapFlags::empty(),
         )
         .map_err(|_| ())?;
-        // Save room for base data.
+
         let base = slot * MAX_SIZE + NULLPAGE_SIZE;
+        // Save room for future base data.
         let start = unsafe { (base as *mut u8).add(NULLPAGE_SIZE) };
         let span = Span::new(start, unsafe { start.add(ALLOC_OBJ_REG_SIZE) });
+        // Inform the allocator of the new region that it can use.
         unsafe {
             talc.claim(span)?;
         }

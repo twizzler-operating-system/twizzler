@@ -275,10 +275,10 @@ impl Clone for ObjectHandle {
         }
         Self {
             internal_refs: self.internal_refs,
-            id: self.id.clone(),
-            flags: self.flags.clone(),
-            start: self.start.clone(),
-            meta: self.meta.clone(),
+            id: self.id,
+            flags: self.flags,
+            start: self.start,
+            meta: self.meta,
         }
     }
 }
@@ -496,7 +496,7 @@ pub trait DebugRuntime {
     fn get_library(&self, id: LibraryId) -> Option<Library>;
     /// Get library name. If the buffer is too small, returns Err(()). Otherwise,
     /// returns the length of the name in bytes.
-    fn get_library_name(&self, lib: &Library, buf: &mut [u8]) -> Result<usize, ()>;
+    fn get_library_name(&self, lib: &Library, buf: &mut [u8]) -> Option<usize>;
     /// Returns the ID of the main executable, if there is one.
     fn get_exeid(&self) -> Option<LibraryId>;
     /// Get a segment of a library, if the segment index exists. All segment IDs are indexes, so they range from [0, N).
