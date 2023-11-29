@@ -26,9 +26,6 @@ struct InternalThread {
     int_id: u32,
 }
 
-unsafe impl Send for InternalObject<ThreadRepr> {}
-unsafe impl Sync for InternalObject<ThreadRepr> {}
-
 use rustc_alloc::sync::Arc;
 static THREAD_SLOTS: Mutex<BTreeMap<u32, Arc<InternalThread>>> = Mutex::new(BTreeMap::new());
 static THREAD_ID_COUNTER: IdCounter = IdCounter::new_one();

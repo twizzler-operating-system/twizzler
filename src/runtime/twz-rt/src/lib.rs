@@ -6,10 +6,15 @@
 
 #![feature(core_intrinsics)]
 #![feature(thread_local)]
+#![feature(fmt_internals)]
 #![feature(array_windows)]
+#![feature(unboxed_closures)]
+#![feature(allocator_api)]
+#![feature(hash_extract_if)]
 
 pub(crate) mod arch;
 
+pub mod monitor;
 mod runtime;
 
 mod error;

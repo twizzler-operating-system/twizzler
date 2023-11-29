@@ -63,6 +63,10 @@ impl Library {
                     return Err(DynlinkError::Unknown);
                 }
 
+                if filesz != memsz {
+                    todo!()
+                }
+
                 let src_start = (NULLPAGE_SIZE + offset) & !(align - 1);
                 let dest_start = vaddr & !(align - 1);
                 let len = (vaddr - dest_start) + filesz;
@@ -70,8 +74,8 @@ impl Library {
                     targets_data,
                     twizzler_abi::syscall::ObjectSource::new_copy(
                         self.full_obj.id(),
-                        src_start as u64,
-                        dest_start as u64,
+                        (src_start % MAX_SIZE) as u64,
+                        (dest_start % MAX_SIZE) as u64,
                         len,
                     ),
                 ))
@@ -97,6 +101,8 @@ impl Library {
             data_copy_cmds.len(),
             text_copy_cmds.len()
         );
+        trace!("{}: text copy commands: {:?}", self, text_copy_cmds);
+        trace!("{}: data copy commands: {:?}", self, data_copy_cmds);
         let (data_obj, text_obj) = loader.create_segments(&data_copy_cmds, &text_copy_cmds)?;
         // The base address is the "0-point" for the virtual addresses within the library.
         let base_addr = unsafe { text_obj.base_unchecked() as *const _ as usize } - NULLPAGE_SIZE;

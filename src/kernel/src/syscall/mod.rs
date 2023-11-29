@@ -5,9 +5,9 @@ use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
         ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, HandleType,
-        KernelConsoleReadSource, ObjectCreateError, ObjectMapError, ReadClockInfoError,
-        ReadClockListError, ReadClockListFlags, SysInfo, Syscall, ThreadSpawnError,
-        ThreadSyncError,
+        KernelConsoleReadSource, ObjectCreateError, ObjectMapError, ObjectReadMapError,
+        ReadClockInfoError, ReadClockListError, ReadClockListFlags, SysInfo, Syscall,
+        ThreadSpawnError, ThreadSyncError,
     },
 };
 
@@ -327,6 +327,25 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             } else {
                 Err(ObjectMapError::InvalidArgument)
             };
+            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
+            context.set_return_values(code, val);
+        }
+        Syscall::ObjectReadMap => {
+            let hi = context.arg0();
+            let lo = context.arg1();
+            let slot = context.arg2::<u64>() as usize;
+            let id = ObjID::new_from_parts(hi, lo);
+            let out = context.arg3();
+            let out = unsafe { create_user_ptr(out) };
+            let result = if let Some(out) = out {
+                object::sys_object_readmap(id, slot).map(|info| {
+                    *out = info;
+                    0u64
+                })
+            } else {
+                Err(ObjectReadMapError::InvalidArgument)
+            };
+
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }

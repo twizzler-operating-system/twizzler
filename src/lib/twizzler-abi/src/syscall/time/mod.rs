@@ -1,13 +1,13 @@
 mod clock;
-mod time;
+mod timedefs;
 mod units;
 
 pub use clock::*;
-pub use time::*;
+pub use timedefs::*;
 pub use units::*;
 
-use core::{fmt, mem::MaybeUninit};
 use bitflags::bitflags;
+use core::{fmt, mem::MaybeUninit};
 
 use crate::arch::syscall::raw_syscall;
 
@@ -131,7 +131,7 @@ bitflags! {
 pub enum ClockSource {
     BestMonotonic,
     BestRealTime,
-    ID(ClockID)
+    ID(ClockID),
 }
 
 impl From<u64> for ClockSource {
@@ -149,7 +149,7 @@ impl From<ClockSource> for u64 {
         match source {
             ClockSource::BestMonotonic => 0,
             ClockSource::BestRealTime => 1,
-            ClockSource::ID(clk) => clk.0
+            ClockSource::ID(clk) => clk.0,
         }
     }
 }
@@ -223,11 +223,5 @@ pub fn sys_read_clock_list(
             ],
         )
     };
-    convert_codes_to_result(
-        code,
-        val,
-        |c, _| c != 0,
-        |_, v| v as usize,
-        |_, v| v.into(),
-    )
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, |_, v| v.into())
 }

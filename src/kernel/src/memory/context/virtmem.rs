@@ -214,6 +214,10 @@ impl VirtContext {
         );
         self.arch.map(cursor, &mut phys, &settings);
     }
+
+    pub fn lookup_slot(&self, slot: usize) -> Option<VirtContextSlot> {
+        self.slots.lock().get(&Slot::try_from(slot).ok()?).cloned()
+    }
 }
 
 impl UserContext for VirtContext {
@@ -302,8 +306,8 @@ impl UserContext for VirtContext {
     }
 }
 
-#[derive(Eq, PartialEq, Ord, PartialOrd)]
-struct VirtContextSlot {
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub struct VirtContextSlot {
     obj: ObjectRef,
     slot: Slot,
     prot: Protections,
@@ -321,7 +325,7 @@ impl VirtContextSlot {
         MappingCursor::new(self.slot.start_vaddr().offset(start).unwrap(), len)
     }
 
-    fn mapping_settings(&self, wp: bool, is_kern_obj: bool) -> MappingSettings {
+    pub fn mapping_settings(&self, wp: bool, is_kern_obj: bool) -> MappingSettings {
         let mut prot = self.prot;
         if wp {
             prot.remove(Protections::WRITE);
@@ -335,6 +339,10 @@ impl VirtContextSlot {
                 MappingFlags::USER
             },
         )
+    }
+
+    pub fn object(&self) -> &ObjectRef {
+        &self.obj
     }
 
     fn phys_provider<'a>(&self, page: &'a Page) -> ObjectPageProvider<'a> {

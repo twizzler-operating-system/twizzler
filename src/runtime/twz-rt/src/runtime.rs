@@ -13,9 +13,25 @@ mod stdio;
 mod thread;
 mod time;
 
+pub use thread::RuntimeThreadControl;
+
 /// The runtime trait implementer itself.
 pub struct ReferenceRuntime {
     pub(crate) state: AtomicU32,
+}
+
+impl std::fmt::Debug for ReferenceRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "RefRun({})",
+            if self.state().contains(RuntimeState::READY) {
+                "ready"
+            } else {
+                "not-ready"
+            }
+        )
+    }
 }
 
 bitflags::bitflags! {

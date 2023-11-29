@@ -60,6 +60,7 @@ impl Library {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct CtorInfo {
     pub legacy_init: usize,
     pub init_array: usize,

@@ -17,7 +17,7 @@ pub unsafe fn raw_syscall(call: Syscall, args: &[u64]) -> (u64, u64) {
         crate::print_err("too many arguments to raw_syscall");
         crate::internal_abort();
     }
-    let a0 = *args.get(0).unwrap_or(&0u64);
+    let a0 = *args.first().unwrap_or(&0u64);
     let a1 = *args.get(1).unwrap_or(&0u64);
     let mut a2 = *args.get(2).unwrap_or(&0u64);
     let a3 = *args.get(3).unwrap_or(&0u64);

@@ -14,7 +14,7 @@ pub enum BaseError {
     InvalidVersion(BaseVersion),
 }
 
-fn match_tags<T>(_meta: NonNull<MetaInfo>) -> Result<(), BaseError> {
+fn match_tags(_meta: NonNull<MetaInfo>) -> Result<(), BaseError> {
     // TODO
     Ok(())
 }
@@ -24,7 +24,7 @@ impl<T: BaseType + ObjSafe> Object<T> {
     /// for the BaseType match.
     pub fn base(&self) -> Result<&T, BaseError> {
         let meta = unsafe { self.meta() };
-        match_tags::<T>(meta)?;
+        match_tags(meta)?;
         Ok(unsafe { self.base_unchecked() })
     }
 }
