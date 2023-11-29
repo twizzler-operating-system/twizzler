@@ -34,10 +34,17 @@
 #![no_std]
 #![feature(unboxed_closures)]
 #![feature(naked_functions)]
+#![feature(c_size_t)]
 
+#[cfg_attr(feature = "kernel", allow(unused_imports))]
 use core::{
-    alloc::GlobalAlloc, ffi::CStr, num::NonZeroUsize, panic::RefUnwindSafe,
-    sync::atomic::AtomicU32, time::Duration,
+    alloc::GlobalAlloc,
+    ffi::CStr,
+    num::NonZeroUsize,
+    panic::RefUnwindSafe,
+    ptr::NonNull,
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+    time::Duration,
 };
 
 #[cfg(feature = "rt0")]
@@ -101,6 +108,8 @@ pub enum SpawnError {
     ObjectNotFound,
     /// An object used as a handle may not be accessed by the caller.
     PermissionDenied,
+    /// Failed to spawn thread in-kernel.
+    KernelError,
 }
 
 #[repr(C)]
@@ -150,8 +159,6 @@ pub trait ThreadRuntime {
 pub trait ObjectRuntime {
     /// Map an object to an [ObjectHandle]. The handle may reference the same internal mapping as other calls to this function.
     fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError>;
-    /// Unmap an object handle.
-    fn unmap_object(&self, handle: &ObjectHandle);
     /// Called on drop of an object handle.
     fn release_handle(&self, handle: &mut ObjectHandle);
 }
@@ -195,9 +202,11 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq)]
-/// A handle to an internal object.
+#[cfg_attr(feature = "kernel", allow(dead_code))]
+/// A handle to an internal object. This has similar semantics to Arc, but since this crate
+/// must be #[no_std], we need to implement refcounting ourselves.
 pub struct ObjectHandle {
+    internal_refs: NonNull<InternalHandleRefs>,
     /// The ID of the object.
     pub id: ObjID,
     /// The flags of this handle.
@@ -208,9 +217,83 @@ pub struct ObjectHandle {
     pub meta: *mut u8,
 }
 
+impl core::fmt::Debug for ObjectHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ObjectHandle")
+            .field("id", &self.id)
+            .field("flags", &self.flags)
+            .field("start", &self.start)
+            .field("meta", &self.meta)
+            .finish()
+    }
+}
+
+unsafe impl Send for ObjectHandle {}
+unsafe impl Sync for ObjectHandle {}
+
+#[cfg_attr(feature = "kernel", allow(dead_code))]
+pub struct InternalHandleRefs {
+    count: AtomicUsize,
+}
+
+impl Default for InternalHandleRefs {
+    fn default() -> Self {
+        Self {
+            count: AtomicUsize::new(1),
+        }
+    }
+}
+
+impl ObjectHandle {
+    pub fn new(
+        internal_refs: NonNull<InternalHandleRefs>,
+        id: ObjID,
+        flags: MapFlags,
+        start: *mut u8,
+        meta: *mut u8,
+    ) -> Self {
+        Self {
+            internal_refs,
+            id,
+            flags,
+            start,
+            meta,
+        }
+    }
+}
+
+#[cfg(not(feature = "kernel"))]
+impl Clone for ObjectHandle {
+    fn clone(&self) -> Self {
+        let rc = unsafe { self.internal_refs.as_ref() };
+        // This use of Relaxed ordering is justified by https://doc.rust-lang.org/nomicon/arc-mutex/arc-clone.html.
+        let old_count = rc.count.fetch_add(1, Ordering::Relaxed);
+        // The above link also justifies the following behavior. If our count gets this high, we have probably
+        // run into a problem somewhere.
+        if old_count >= isize::MAX as usize {
+            get_runtime().abort();
+        }
+        Self {
+            internal_refs: self.internal_refs,
+            id: self.id,
+            flags: self.flags,
+            start: self.start,
+            meta: self.meta,
+        }
+    }
+}
+
 #[cfg(not(feature = "kernel"))]
 impl Drop for ObjectHandle {
     fn drop(&mut self) {
+        // This use of Release ordering is justified by https://doc.rust-lang.org/nomicon/arc-mutex/arc-clone.html.
+        let rc = unsafe { self.internal_refs.as_ref() };
+        if rc.count.fetch_sub(1, Ordering::Release) != 1 {
+            return;
+        }
+        // This fence is needed to prevent reordering of the use and deletion
+        // of the data.
+        core::sync::atomic::fence(Ordering::Acquire);
         let runtime = get_runtime();
         runtime.release_handle(self);
     }
@@ -362,10 +445,16 @@ pub enum Monotonicity {
 
 /// An abstract representation of a library, useful for debugging and backtracing.
 pub struct Library {
+    /// The ID of this library.
+    pub id: LibraryId,
     /// How this library is mapped.
     pub mapping: ObjectHandle,
     /// Actual range of addresses that comprise the library binary data.
     pub range: (*const u8, *const u8),
+    /// Information for dl_iterate_phdr
+    pub dl_info: Option<DlPhdrInfo>,
+    /// The Library ID of the next library, either the first dependency of this library, or a sibling.
+    pub next_id: Option<LibraryId>,
 }
 
 impl AsRef<Library> for Library {
@@ -383,16 +472,39 @@ pub struct LibraryId(pub usize);
 /// may see the type.
 unsafe impl Send for Library {}
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub type ElfAddr = usize;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub type ElfHalf = u32;
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct DlPhdrInfo {
+    pub addr: ElfAddr,
+    pub name: *const u8,
+    pub phdr_start: *const u8,
+    pub phdr_num: ElfHalf,
+    pub _adds: core::ffi::c_longlong,
+    pub _subs: core::ffi::c_longlong,
+    pub modid: core::ffi::c_size_t,
+    pub tls_data: *const core::ffi::c_void,
+}
+
 /// Functions for the debug support part of libstd (e.g. unwinding, backtracing).
 pub trait DebugRuntime {
     /// Gets a handle to a library given the ID.
     fn get_library(&self, id: LibraryId) -> Option<Library>;
+    /// Get library name. If the buffer is too small, returns Err(()). Otherwise,
+    /// returns the length of the name in bytes.
+    fn get_library_name(&self, lib: &Library, buf: &mut [u8]) -> Option<usize>;
     /// Returns the ID of the main executable, if there is one.
     fn get_exeid(&self) -> Option<LibraryId>;
     /// Get a segment of a library, if the segment index exists. All segment IDs are indexes, so they range from [0, N).
     fn get_library_segment(&self, lib: &Library, seg: usize) -> Option<AddrRange>;
     /// Get the full mapping of the underlying library.
     fn get_full_mapping(&self, lib: &Library) -> Option<ObjectHandle>;
+    /// Handler for calls to the dl_iterate_phdr call.
+    fn iterate_phdr(&self, f: &mut dyn FnMut(DlPhdrInfo) -> core::ffi::c_int) -> core::ffi::c_int;
 }
 
 /// An address range.

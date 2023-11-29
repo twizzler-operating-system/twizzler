@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use elf::{endian::NativeEndian, ParseError};
+use elf::{abi::PT_PHDR, endian::NativeEndian, segment::Elf64_Phdr, ParseError};
 
 mod deps;
 mod init;
@@ -59,26 +59,26 @@ pub struct Library {
     /// ID of the compartment this library is in.
     pub(crate) comp_id: u128,
     /// Name of this library.
-    pub(crate) name: String,
+    pub name: String,
     /// Node index for the dependency graph. Only set once
     /// the library is loaded.
     pub(crate) idx: Cell<Option<NodeIndex>>,
     /// Object containing the full ELF data.
-    pub(crate) full_obj: Object<u8>,
+    pub full_obj: Object<u8>,
     /// State of relocation (see [RelocState]).
     reloc_state: AtomicU32,
     /// State of initialization (see [InitState]).
     init_state: AtomicU32,
 
     /// Object containing R-X segments.
-    pub(crate) text_object: Option<Object<u8>>,
+    pub text_object: Option<Object<u8>>,
     /// Object containing RW- segments.
-    pub(crate) data_object: Option<Object<u8>>,
+    pub data_object: Option<Object<u8>>,
     /// Base address of this library, used for relocations.
-    pub(crate) base_addr: Option<usize>,
+    pub base_addr: Option<usize>,
 
     /// The module ID for the TLS region, if any.
-    pub(crate) tls_id: Option<TlsModId>,
+    pub tls_id: Option<TlsModId>,
 
     /// Information about constructors, if any.
     pub(crate) ctors: Option<CtorInfo>,
@@ -102,6 +102,30 @@ impl Library {
             tls_id: None,
             ctors: None,
         }
+    }
+
+    pub fn used_slots(&self) -> Vec<usize> {
+        let mut v = vec![self.full_obj.slot().slot_number()];
+        if let Some(ref text) = self.text_object {
+            v.push(text.slot().slot_number());
+        }
+        if let Some(ref data) = self.data_object {
+            v.push(data.slot().slot_number());
+        }
+        v
+    }
+
+    pub fn get_phdrs_raw(&self) -> Option<(*const Elf64_Phdr, usize)> {
+        Some((
+            self.get_elf().ok()?.segments()?.iter().find_map(|p| {
+                if p.p_type == PT_PHDR {
+                    Some(self.laddr(p.p_vaddr))
+                } else {
+                    None
+                }
+            })??,
+            self.get_elf().ok()?.segments()?.len(),
+        ))
     }
 
     pub(crate) fn set_ctors(&mut self, ctors: CtorInfo) {

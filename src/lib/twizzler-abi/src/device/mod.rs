@@ -221,6 +221,8 @@ impl DeviceRepr {
             flags: DeviceInterruptFlags::empty(),
             taken: AtomicU16::new(0),
         };
+
+        #[allow(clippy::declare_interior_mutable_const)]
         const M: AtomicU64 = AtomicU64::new(0);
         Self {
             kso_hdr,

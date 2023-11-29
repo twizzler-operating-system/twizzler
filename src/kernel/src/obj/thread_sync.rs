@@ -47,7 +47,7 @@ impl SleepInfo {
     pub fn wake_n(&mut self, offset: usize, max_count: usize) -> usize {
         let mut count = 0;
         if let Some(se) = self.words.get_mut(&offset) {
-            //  logln!("wake up {}/{} threads", max_count, se.threads.len());
+            //logln!("wake up {}/{} threads", max_count, se.threads.len());
             if max_count == 1 {
                 /* This is fairly common, so we can have a fast path */
                 let mut remove = None;

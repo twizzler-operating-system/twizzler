@@ -16,3 +16,5 @@ twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api", features = [
 ] }
 dynlink = { path = "../dynlink" }
 tracing = "0.1"
+tracing-subscriber = "0.3"
+twz-rt = { path = "../twz-rt" }

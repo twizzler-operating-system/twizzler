@@ -16,8 +16,8 @@ use crate::{
     DynlinkError, ECollector,
 };
 
-#[derive(Default)]
-pub(crate) struct ContextInner {
+#[derive(Default, Clone)]
+pub struct ContextInner {
     // Simple unique ID generation.
     id_counter: u128,
     id_stack: Vec<u128>,
@@ -34,6 +34,11 @@ pub(crate) struct ContextInner {
 
 #[allow(dead_code)]
 impl ContextInner {
+    pub fn get_compartment(&self) -> CompartmentRef {
+        // TODO
+        self.compartment_names.values().nth(0).cloned().unwrap()
+    }
+
     fn get_fresh_id(&mut self) -> u128 {
         if let Some(old) = self.id_stack.pop() {
             old
@@ -43,16 +48,37 @@ impl ContextInner {
         }
     }
 
+    /// Lookup a library by name
+    pub fn lookup_library(&self, name: &str) -> Option<&LibraryRef> {
+        self.library_names.get(name)
+    }
+
     /// Visit libraries in a post-order DFS traversal, starting from a number of roots. Note that
     /// because multiple roots may be specified, this means that nodes may be visited `O(|roots|)`
     /// times (|roots| is the number of roots yielded by the iterator).
-    pub fn with_dfs_postorder<I>(&self, roots: I, mut f: impl FnMut(&LibraryRef))
+    pub fn with_dfs_postorder<'a, I>(&self, roots: I, mut f: impl FnMut(&LibraryRef))
     where
-        I: IntoIterator<Item = LibraryRef>,
+        I: IntoIterator<Item = &'a LibraryRef>,
     {
         for root in roots.into_iter() {
             let mut visit =
                 petgraph::visit::DfsPostOrder::new(&self.library_deps, root.idx.get().unwrap());
+            while let Some(node) = visit.next(&self.library_deps) {
+                let dep = &self.library_deps[node];
+                f(dep)
+            }
+        }
+    }
+
+    /// Visit libraries in a BFS traversal, starting from a number of roots. Note that
+    /// because multiple roots may be specified, this means that nodes may be visited `O(|roots|)`
+    /// times (|roots| is the number of roots yielded by the iterator).
+    pub fn with_bfs<'a, I>(&self, roots: I, mut f: impl FnMut(&LibraryRef))
+    where
+        I: IntoIterator<Item = &'a LibraryRef>,
+    {
+        for root in roots.into_iter() {
+            let mut visit = petgraph::visit::Bfs::new(&self.library_deps, root.idx.get().unwrap());
             while let Some(node) = visit.next(&self.library_deps) {
                 let dep = &self.library_deps[node];
                 f(dep)
@@ -132,9 +158,9 @@ impl ContextInner {
         })
     }
 
-    fn build_ctors<I>(&mut self, roots: I) -> Result<&[CtorInfo], DynlinkError>
+    fn build_ctors<'a, I>(&mut self, roots: I) -> Result<&[CtorInfo], DynlinkError>
     where
-        I: IntoIterator<Item = LibraryRef>,
+        I: IntoIterator<Item = &'a LibraryRef>,
     {
         let mut ctors = vec![];
         self.with_dfs_postorder(roots, |lib| {
@@ -147,19 +173,29 @@ impl ContextInner {
         Ok(&self.static_ctors)
     }
 
-    pub(crate) fn build_runtime_info<I>(
+    pub(crate) fn build_runtime_info<'a, I>(
         &mut self,
         roots: I,
         tls: TlsRegion,
+        outer: &Context,
     ) -> Result<RuntimeInitInfo, DynlinkError>
     where
-        I: IntoIterator<Item = LibraryRef>,
+        I: IntoIterator<Item = &'a LibraryRef> + Clone,
     {
+        let root_names = roots
+            .clone()
+            .into_iter()
+            .map(|r| r.name.clone())
+            .collect::<Vec<_>>();
         let ctors = {
-            let ctors = self.build_ctors(roots)?;
+            let ctors = self.build_ctors(roots.clone())?;
             (ctors.as_ptr(), ctors.len())
         };
-        Ok(RuntimeInitInfo::new(ctors.0, ctors.1, tls))
+        let mut used_slots = vec![];
+        self.with_bfs(roots, |lib| used_slots.append(&mut lib.used_slots()));
+        Ok(RuntimeInitInfo::new(
+            ctors.0, ctors.1, tls, outer, root_names, used_slots,
+        ))
     }
 }
 
@@ -170,17 +206,14 @@ pub struct Context {
 
 #[allow(dead_code)]
 impl Context {
-    pub(crate) fn with_inner_mut<R>(
+    pub fn with_inner_mut<R>(
         &self,
         f: impl FnOnce(&mut ContextInner) -> R,
     ) -> Result<R, DynlinkError> {
         Ok(f(&mut *self.inner.lock()?))
     }
 
-    pub(crate) fn with_inner<R>(
-        &self,
-        f: impl FnOnce(&ContextInner) -> R,
-    ) -> Result<R, DynlinkError> {
+    pub fn with_inner<R>(&self, f: impl FnOnce(&ContextInner) -> R) -> Result<R, DynlinkError> {
         Ok(f(&*self.inner.lock()?))
     }
 
@@ -198,6 +231,11 @@ impl Context {
         Ok(compartment)
     }
 
+    /// Lookup a library by name.
+    pub fn lookup_library(&self, name: &str) -> Option<LibraryRef> {
+        self.inner.lock().ok()?.lookup_library(name).cloned()
+    }
+
     /// Lookup a given symbol within the context.
     pub fn lookup_symbol(
         &self,
@@ -209,15 +247,15 @@ impl Context {
     }
 
     /// Get initial runtime information for bootstrapping.
-    pub fn build_runtime_info<I>(
-        &self,
+    pub fn build_runtime_info<'a, I>(
+        &'a self,
         roots: I,
         tls: TlsRegion,
     ) -> Result<RuntimeInitInfo, DynlinkError>
     where
-        I: IntoIterator<Item = LibraryRef>,
+        I: IntoIterator<Item = &'a LibraryRef> + Clone,
     {
-        self.inner.lock()?.build_runtime_info(roots, tls)
+        self.inner.lock()?.build_runtime_info(roots, tls, self)
     }
 
     /// Add an unloaded library to the context (and load it)
@@ -249,23 +287,44 @@ impl Context {
     }
 }
 
+impl Clone for Context {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Mutex::new(self.inner.lock().unwrap().clone()),
+        }
+    }
+}
+
 #[repr(C)]
 pub struct RuntimeInitInfo {
     ctor_info_array: *const CtorInfo,
     ctor_info_array_len: usize,
 
     pub tls_region: TlsRegion,
+    pub ctx: *const Context,
+    pub root_names: Vec<String>,
+    pub used_slots: Vec<usize>,
 }
+
+unsafe impl Send for RuntimeInitInfo {}
+unsafe impl Sync for RuntimeInitInfo {}
+
 impl RuntimeInitInfo {
     pub(crate) fn new(
         ctor_info_array: *const CtorInfo,
         ctor_info_array_len: usize,
         tls_region: TlsRegion,
+        ctx: &Context,
+        root_names: Vec<String>,
+        used_slots: Vec<usize>,
     ) -> Self {
         Self {
             ctor_info_array,
             ctor_info_array_len,
             tls_region,
+            ctx,
+            root_names,
+            used_slots,
         }
     }
 

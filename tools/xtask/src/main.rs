@@ -6,7 +6,7 @@ mod triple;
 
 use std::path::PathBuf;
 
-use clap::{ValueEnum, Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use triple::{Arch, Machine, Triple};
 
 #[derive(Parser, Debug)]
@@ -188,6 +188,7 @@ enum Commands {
 }
 
 fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     if let Some(command) = cli.command {
         match command {

@@ -109,7 +109,7 @@ pub fn sys_new_handle(
             &[hi, lo, handle_type as u64, flags.bits()],
         )
     };
-    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as u64, justval)
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v, justval)
 }
 
 /// Unbind an object from handle status.

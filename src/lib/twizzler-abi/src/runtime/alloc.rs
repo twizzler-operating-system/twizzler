@@ -6,9 +6,15 @@ use core::{alloc::GlobalAlloc, ptr::NonNull};
 use talc::{OomHandler, Span};
 
 use crate::{
-    object::{InternalObject, MAX_SIZE, NULLPAGE_SIZE},
+    object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
     runtime::simple_mutex::Mutex,
+    syscall::{
+        sys_object_create, sys_object_map, BackingType, LifetimeType, ObjectCreate,
+        ObjectCreateFlags,
+    },
 };
+
+use super::object::slot::global_allocate;
 
 pub struct MinimalAllocator {
     imp: Mutex<talc::Talc<MinimalOomHandler>>,
@@ -24,14 +30,40 @@ impl OomHandler for MinimalOomHandler {
         if layout.size() > ALLOC_OBJ_REG_SIZE {
             return Err(());
         }
-        let obj = InternalObject::<u8>::create_data_and_map().ok_or(())?;
-        // Save room for base data.
-        let start = unsafe { (obj.base_mut() as *mut u8).add(NULLPAGE_SIZE) };
+
+        // Create a volatile object for our new allocation region.
+        let id = sys_object_create(
+            ObjectCreate::new(
+                BackingType::Normal,
+                LifetimeType::Volatile,
+                None,
+                ObjectCreateFlags::empty(),
+            ),
+            &[],
+            &[],
+        )
+        .map_err(|_| ())?;
+
+        // Allocate a slot for it.
+        let slot = global_allocate().ok_or(())?;
+
+        // ...and map it in.
+        let _map = sys_object_map(
+            None,
+            id,
+            slot,
+            Protections::READ | Protections::WRITE,
+            crate::syscall::MapFlags::empty(),
+        )
+        .map_err(|_| ())?;
+
+        let base = slot * MAX_SIZE + NULLPAGE_SIZE;
+        // Save room for future base data.
+        let start = unsafe { (base as *mut u8).add(NULLPAGE_SIZE) };
         let span = Span::new(start, unsafe { start.add(ALLOC_OBJ_REG_SIZE) });
+        // Inform the allocator of the new region that it can use.
         unsafe {
             talc.claim(span)?;
-            // Drop this because its now in the allocator, unrecoverable
-            core::mem::forget(obj);
         }
 
         Ok(())

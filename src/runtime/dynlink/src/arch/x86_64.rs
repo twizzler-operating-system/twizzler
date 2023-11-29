@@ -1,4 +1,5 @@
 use crate::tls::Tcb;
+use crate::tls::TlsRegion;
 
 pub(crate) const MINIMUM_TLS_ALIGNMENT: usize = 32;
 
@@ -15,8 +16,18 @@ pub use elf::abi::R_X86_64_TPOFF64 as REL_TPOFF;
 ///
 /// # Safety
 /// The TCB must actually contain runtime data of type T, and be initialized.
-pub unsafe fn get_thread_control_block<T>() -> *mut Tcb<T> {
+pub unsafe fn get_current_thread_control_block<T>() -> *mut Tcb<T> {
     let mut val: usize;
     core::arch::asm!("mov {}, fs:0", out(reg) val);
     val as *mut _
+}
+
+impl TlsRegion {
+    /// Get a pointer to the thread control block for this TLS region.
+    ///
+    /// # Safety
+    /// The TCB must actually contain runtime data of type T, and be initialized.    
+    pub unsafe fn get_thread_control_block<T>(&self) -> *mut Tcb<T> {
+        self.get_thread_pointer_value() as *mut _
+    }
 }

@@ -1,6 +1,9 @@
 //! Implementation of the object runtime.
 
-use twizzler_runtime_api::{MapError, ObjectHandle, ObjectRuntime};
+use core::ptr::NonNull;
+
+use crate::{rustc_alloc::boxed::Box, syscall::UnmapFlags};
+use twizzler_runtime_api::{InternalHandleRefs, MapError, ObjectHandle, ObjectRuntime};
 
 use crate::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -60,15 +63,20 @@ impl ObjectRuntime for MinimalRuntime {
         let slot = global_allocate().ok_or(MapError::OutOfResources)?;
         let _ = sys_object_map(None, ObjID::new(id), slot, flags.into(), flags.into())
             .map_err(|e| e.into())?;
-        Ok(ObjectHandle {
+        Ok(ObjectHandle::new(
+            NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap(),
             id,
             flags,
-            start: (slot * MAX_SIZE) as *mut u8,
-            meta: (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
-        })
+            (slot * MAX_SIZE) as *mut u8,
+            (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
+        ))
     }
 
-    fn unmap_object(&self, _handle: &twizzler_runtime_api::ObjectHandle) {}
+    fn release_handle(&self, handle: &mut twizzler_runtime_api::ObjectHandle) {
+        let slot = (handle.start as usize) / MAX_SIZE;
 
-    fn release_handle(&self, _handle: &mut twizzler_runtime_api::ObjectHandle) {}
+        if crate::syscall::sys_object_unmap(None, slot, UnmapFlags::empty()).is_ok() {
+            slot::global_release(slot);
+        }
+    }
 }

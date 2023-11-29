@@ -279,10 +279,13 @@ fn maybe_build_tests<'a>(
                 "twizzler-runtime-api" => None,
                 "nvme" => None,
                 "twz-rt" => None,
+                "monitor" => None,
+                "bootstrap" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),
     );
+    println!("==> {:?}", options.spec);
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }

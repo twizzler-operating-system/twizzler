@@ -32,8 +32,14 @@ fn early_slot_alloc() -> Option<usize> {
     Some(EARLY_SLOT_ALLOC.next.fetch_add(1, Ordering::SeqCst))
 }
 
-pub fn mark_slot_reserved(_slot: usize) {
-    // TODO: actually reserve bootstrap slots
+/// Mark a slot as reserved. This probably should only be called by the monitor initialization code.
+pub fn mark_slot_reserved(slot: usize) {
+    // Do a simple reservation. The bootstrap is likely to reserve slots in-order,
+    // so we can get away just starting our slots above the bootstrap slots.
+    let current = EARLY_SLOT_ALLOC.next.load(Ordering::SeqCst);
+    if slot >= current {
+        EARLY_SLOT_ALLOC.next.store(slot + 1, Ordering::SeqCst);
+    }
 }
 
 // Simple incremental allocator.
@@ -44,8 +50,7 @@ struct EarlySlotAllocator {
 impl EarlySlotAllocator {}
 
 static EARLY_SLOT_ALLOC: EarlySlotAllocator = EarlySlotAllocator {
-    // TODO: actually reserve bootstrap slots
-    next: AtomicUsize::new(100),
+    next: AtomicUsize::new(0),
 };
 
 struct SlotAllocatorInner {
@@ -171,7 +176,6 @@ impl ReferenceRuntime {
         let mut inner = SLOT_ALLOCATOR.inner.lock().unwrap();
         inner.singles = singles;
         inner.singles_aux = singles_aux;
-        // TODO: proper pre-reservation
         for i in 0..(EARLY_SLOT_ALLOC.next.load(Ordering::SeqCst) / 2 + 1) {
             inner.set(i);
         }
@@ -194,7 +198,8 @@ impl ReferenceRuntime {
         // early alloc has no ability to release slots
     }
 
-    /// Allocate a pair of adjacent slots, returning their numbers if a pair is available. The returned tuple will always be of form (x, x+1).
+    /// Allocate a pair of adjacent slots, returning their numbers if a pair is available.
+    /// The returned tuple will always be of form (x, x+1).
     pub fn allocate_pair(&self) -> Option<(usize, usize)> {
         if self.state().contains(RuntimeState::READY) {
             SLOT_ALLOCATOR.inner.lock().unwrap().alloc_pair()

@@ -1,30 +1,25 @@
 //! Utilities that enable formatted printing for early runtime init.
 
-use core::fmt::Write;
+use std::fmt;
 
 use twizzler_abi::syscall::{sys_kernel_console_write, KernelConsoleWriteFlags};
 
-#[derive(Clone, Copy)]
-pub struct PreinitLogger {}
+#[repr(C)]
+struct PreinitLogger;
 
-impl core::fmt::Write for PreinitLogger {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.write(s.as_bytes());
+impl fmt::Write for PreinitLogger {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        sys_kernel_console_write(s.as_bytes(), KernelConsoleWriteFlags::empty());
         Ok(())
     }
 }
 
-impl PreinitLogger {
-    pub fn write(&self, data: &[u8]) {
-        sys_kernel_console_write(data, KernelConsoleWriteFlags::empty());
-    }
-}
-
-static mut PREINIT_OUTPUT: PreinitLogger = PreinitLogger {};
+static mut PREINIT_OUTPUT: PreinitLogger = PreinitLogger;
 
 #[doc(hidden)]
-pub fn _print_normal(args: ::core::fmt::Arguments) {
-    let _ = unsafe { PREINIT_OUTPUT }.write_fmt(args);
+pub fn _print_normal(args: core::fmt::Arguments) {
+    use fmt::Write;
+    let _ = unsafe { &mut PREINIT_OUTPUT }.write_fmt(args);
 }
 
 #[macro_export]
@@ -47,7 +42,12 @@ macro_rules! preinit_println {
     };
 }
 
+#[track_caller]
 pub fn preinit_abort() -> ! {
+    preinit_println!(
+        "preinit abort called from {}",
+        core::panic::Location::caller()
+    );
     core::intrinsics::abort()
 }
 

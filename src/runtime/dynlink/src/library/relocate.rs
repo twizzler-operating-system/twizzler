@@ -65,11 +65,11 @@ impl EitherRel {
 }
 
 impl Library {
-    pub(crate) fn laddr<T>(&self, val: u64) -> Option<*const T> {
+    pub fn laddr<T>(&self, val: u64) -> Option<*const T> {
         self.base_addr.map(|base| (base + val as usize) as *const T)
     }
 
-    pub(crate) fn laddr_mut<T>(&self, val: u64) -> Option<*mut T> {
+    pub fn laddr_mut<T>(&self, val: u64) -> Option<*mut T> {
         self.base_addr.map(|base| (base + val as usize) as *mut T)
     }
 
@@ -96,8 +96,10 @@ impl Library {
                     if sym.st_bind() != STB_WEAK {
                         return Ok(RelocatedSymbol::new(sym, self.clone()));
                     } else {
-                        trace!("lookup symbol {} skipping weak binding in {}", name, self);
+                        tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
                     }
+                } else {
+                    tracing::info!("undefined symbol: {}", name);
                 }
             }
             return Err(DynlinkError::NotFound {
@@ -121,8 +123,10 @@ impl Library {
                     if sym.st_bind() != STB_WEAK {
                         return Ok(RelocatedSymbol::new(sym, self.clone()));
                     } else {
-                        trace!("lookup symbol {} skipping weak binding in {}", name, self);
+                        tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
                     }
+                } else {
+                    tracing::info!("undefined symbol: {}", name);
                 }
             }
         }

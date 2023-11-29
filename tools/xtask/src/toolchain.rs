@@ -246,11 +246,17 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 }
 
 pub fn set_dynamic() {
-    std::env::set_var("RUSTFLAGS", "-C prefer-dynamic");
+    std::env::set_var(
+        "RUSTFLAGS",
+        "-C prefer-dynamic=y -Z staticlib-prefer-dynamic=y",
+    );
 }
 
 pub fn set_static() {
-    std::env::set_var("RUSTFLAGS", "-C prefer-dynamic=n");
+    std::env::set_var(
+        "RUSTFLAGS",
+        "-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n",
+    );
 }
 
 pub fn clear_rustflags() {

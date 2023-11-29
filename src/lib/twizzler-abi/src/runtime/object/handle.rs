@@ -1,8 +1,9 @@
 //! Implements some helper types and functions for working with objects in this runtime.
 
-use core::marker::PhantomData;
+use core::{marker::PhantomData, ptr::NonNull};
 
-use twizzler_runtime_api::{MapFlags, ObjectHandle};
+use crate::rustc_alloc::boxed::Box;
+use twizzler_runtime_api::{InternalHandleRefs, MapFlags, ObjectHandle};
 
 use crate::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -14,11 +15,19 @@ use crate::{
 };
 
 #[allow(dead_code)]
-#[derive(Debug)]
 pub(crate) struct InternalObject<T> {
     slot: usize,
     runtime_handle: ObjectHandle,
     _pd: PhantomData<T>,
+}
+
+impl<T> core::fmt::Debug for InternalObject<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("InternalObject")
+            .field("slot", &self.slot)
+            .field("runtime_handle", &self.runtime_handle)
+            .finish()
+    }
 }
 
 impl<T> InternalObject<T> {
@@ -44,14 +53,18 @@ impl<T> InternalObject<T> {
             crate::syscall::MapFlags::empty(),
         )
         .ok()?;
+        let rc = Box::new(InternalHandleRefs::default());
+        let raw = NonNull::new(Box::into_raw(rc)).unwrap();
+
         Some(Self {
             slot,
-            runtime_handle: ObjectHandle {
-                id: id.as_u128(),
-                flags: MapFlags::READ | MapFlags::WRITE,
-                start: (slot * MAX_SIZE) as *mut u8,
-                meta: (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
-            },
+            runtime_handle: ObjectHandle::new(
+                raw,
+                id.as_u128(),
+                MapFlags::READ | MapFlags::WRITE,
+                (slot * MAX_SIZE) as *mut u8,
+                (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
+            ),
             _pd: PhantomData,
         })
     }
@@ -85,12 +98,13 @@ impl<T> InternalObject<T> {
             .ok()?;
 
         Some(Self {
-            runtime_handle: ObjectHandle {
-                id: id.as_u128(),
-                flags: prot.into(),
-                start: (slot * MAX_SIZE) as *mut u8,
-                meta: (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
-            },
+            runtime_handle: ObjectHandle::new(
+                NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap(),
+                id.as_u128(),
+                prot.into(),
+                (slot * MAX_SIZE) as *mut u8,
+                (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
+            ),
             slot,
             _pd: PhantomData,
         })

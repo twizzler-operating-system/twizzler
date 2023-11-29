@@ -11,11 +11,12 @@ twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api", features = [
     "runtime",
 ] }
 thiserror = "1.0"
-tracing = "0.1"
+tracing = { version = "0.1", features = ["attributes"] }
 twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
 dynlink = { path = "../dynlink" }
 bitflags = "2.4"
 talc = { version = "3.1", default-features = false }
+lazy_static = "1.4"
 
 [features]
 runtime = []
