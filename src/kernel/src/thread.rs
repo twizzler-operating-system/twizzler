@@ -264,9 +264,21 @@ impl Thread {
     }
 
     pub fn send_upcall(&self, info: UpcallInfo) {
-        // TODO
+        if !self.is_current_thread() {
+            panic!("cannot send upcall to a different thread");
+        }
+        if self.is_critical() {
+            panic!("tried to signal upcall in critical section");
+        }
         let ctx = current_memory_context().unwrap();
-        let upcall = ctx.get_upcall().unwrap();
+        let Some(upcall) = ctx.get_upcall() else {
+            logln!(
+                "dropping upcall {:?} for thread {} due to no upcall handler set",
+                info,
+                self.control_object.object().id()
+            );
+            exit(0xff /* TODO */);
+        };
         self.arch_queue_upcall(upcall, info);
     }
 }

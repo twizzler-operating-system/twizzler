@@ -89,3 +89,12 @@ pub enum UpcallInfo {
     ObjectMemoryFault(ObjectMemoryFaultInfo),
     MemoryContextViolation(MemoryContextViolationInfo),
 }
+
+#[derive(Debug)]
+#[repr(C)]
+pub struct UpcallData {
+    /// Info for this upcall, including reason and elaboration data.
+    pub info: UpcallInfo,
+    /// The instruction that caused the upcall (or the syscall that entered the kernel).
+    pub ip: usize,
+}

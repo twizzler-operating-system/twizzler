@@ -87,6 +87,7 @@ impl CoreRuntime for MinimalRuntime {
         } else {
             crate::print_err("failed to initialize TLS\n");
         }
+        crate::print_err("setting upcall");
         crate::syscall::sys_thread_set_upcall(crate::arch::upcall::upcall_entry);
 
         unsafe {

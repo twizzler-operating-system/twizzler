@@ -158,13 +158,6 @@ where
     let stack_start = stack_start & !15;
     let stack_start = stack_start - 8;
 
-    logln!(
-        "setting upcall {:x} {:x} {:x} {:x}",
-        target.raw(),
-        frame_start,
-        info_start,
-        stack_start
-    );
     regs.set_upcall(target, frame_start, info_start, stack_start);
 }
 
@@ -195,7 +188,6 @@ pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
 
 impl Thread {
     pub fn arch_queue_upcall(&self, target: VirtAddr, info: UpcallInfo) {
-        logln!("queue upcall!");
         self.arch
             .backup_context
             .lock()

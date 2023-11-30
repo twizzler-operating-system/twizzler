@@ -2,6 +2,7 @@
 #![feature(naked_functions)]
 #![feature(thread_local)]
 #![feature(duration_constants)]
+#![feature(core_intrinsics)]
 #![allow(unreachable_code)]
 //#![no_main]
 
@@ -267,6 +268,13 @@ fn main() {
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
 
+    let x = unsafe {
+        core::intrinsics::abort();
+        let mut zero = 0;
+        black_box(&mut zero);
+        println!("val: {}", 10 / zero);
+    };
+
     let create = ObjectCreate::new(
         BackingType::Normal,
         LifetimeType::Volatile,
@@ -452,6 +460,7 @@ extern "C" fn _start() -> ! {
 */
 
 use std::{
+    hint::black_box,
     sync::{atomic::AtomicU64, Arc, Mutex},
     time::Duration,
 };
