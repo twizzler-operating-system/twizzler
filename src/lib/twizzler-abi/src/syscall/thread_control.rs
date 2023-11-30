@@ -3,7 +3,7 @@ use num_enum::{FromPrimitive, IntoPrimitive};
 use crate::{
     arch::syscall::raw_syscall,
     object::ObjID,
-    upcall::{UpcallFrame, UpcallInfo},
+    upcall::{UpcallFrame, UpcallInfo, UpcallTarget},
 };
 
 use super::Syscall;
@@ -81,13 +81,14 @@ pub fn sys_thread_settls(tls: u64) {
 }
 
 /// Set the upcall location for this thread.
-pub fn sys_thread_set_upcall(
-    loc: unsafe extern "C" fn(*const UpcallFrame, *const UpcallInfo) -> !,
-) {
+pub fn sys_thread_set_upcall(target: UpcallTarget) {
     unsafe {
         raw_syscall(
             Syscall::ThreadCtrl,
-            &[ThreadControl::SetUpcall as u64, loc as usize as u64],
+            &[
+                ThreadControl::SetUpcall as u64,
+                (&target as *const _) as usize as u64,
+            ],
         );
     }
 }

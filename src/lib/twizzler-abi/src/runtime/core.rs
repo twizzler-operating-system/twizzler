@@ -4,7 +4,7 @@ use core::{alloc::GlobalAlloc, ptr};
 
 use twizzler_runtime_api::{AuxEntry, BasicAux, BasicReturn, CoreRuntime};
 
-use crate::object::ObjID;
+use crate::{object::ObjID, upcall::UpcallTarget};
 
 use super::{
     alloc::MinimalAllocator,
@@ -87,8 +87,12 @@ impl CoreRuntime for MinimalRuntime {
         } else {
             crate::print_err("failed to initialize TLS\n");
         }
-        crate::print_err("setting upcall");
-        crate::syscall::sys_thread_set_upcall(crate::arch::upcall::upcall_entry);
+        let upcall_target = UpcallTarget::new(
+            crate::arch::upcall::upcall_entry,
+            0,
+            crate::upcall::UpcallMode::Call,
+        );
+        crate::syscall::sys_thread_set_upcall(upcall_target);
 
         unsafe {
             // Run preinit array

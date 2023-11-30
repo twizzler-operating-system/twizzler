@@ -3,12 +3,14 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
 };
 
-use alloc::vec::Vec;
-use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
+use twizzler_abi::{
+    object::{MAX_SIZE, NULLPAGE_SIZE},
+    upcall::{UpcallFrame, UpcallInfo, UpcallTarget},
+};
 
 use crate::{
     arch::amd64::gdt::set_kernel_stack, memory::VirtAddr, processor::KERNEL_STACK_SIZE,
-    spinlock::Spinlock, thread::Thread,
+    thread::Thread,
 };
 
 use super::{interrupt::IsrContext, syscall::X86SyscallContext};
@@ -46,8 +48,6 @@ pub struct ArchThread {
     rsp: core::cell::UnsafeCell<u64>,
     pub user_fs: AtomicU64,
     xsave_inited: AtomicBool,
-    upcall: Option<(usize, UpcallInfo)>,
-    backup_context: Spinlock<Vec<Context>>,
     pub entry_registers: RefCell<Registers>,
     //user_gs: u64,
 }
@@ -114,8 +114,6 @@ impl ArchThread {
             rsp: core::cell::UnsafeCell::new(0),
             user_fs: AtomicU64::new(0),
             xsave_inited: AtomicBool::new(false),
-            upcall: None,
-            backup_context: Spinlock::new(Vec::new()),
             entry_registers: RefCell::new(Registers::None),
         }
     }
@@ -131,34 +129,86 @@ pub trait UpcallAble {
     fn set_upcall(&mut self, target: VirtAddr, frame: u64, info: u64, stack: u64);
     fn get_stack_top(&self) -> u64;
 }
-pub fn set_upcall<T: UpcallAble + Copy>(regs: &mut T, target: VirtAddr, info: UpcallInfo)
+
+fn same_object(a: usize, b: usize) -> bool {
+    a / MAX_SIZE == b / MAX_SIZE
+}
+
+pub fn set_upcall<T: UpcallAble + Copy>(
+    regs: &mut T,
+    target: UpcallTarget,
+    info: UpcallInfo,
+) -> bool
 where
     UpcallFrame: From<T>,
 {
-    let stack_top = regs.get_stack_top() - 512;
-    let stack_top = stack_top & (!15);
+    // Stack must always be 16-bytes aligned.
+    const MIN_STACK_ALIGN: usize = 16;
+    // We have to leave room for the red zone.
+    const RED_ZONE_SIZE: usize = 512;
 
+    // If the address is not canonical, leave.
+    let Ok(target_addr) = VirtAddr::new(target.address as u64) else {
+        return false;
+    };
+
+    // Step 1: determine where we are going to put the frame. If we have
+    // a supervisor stack, and we aren't currently on it, use that. Otherwise,
+    // use the current stack pointer.
+    let current_stack_pointer = regs.get_stack_top();
+    let stack_pointer = if target.super_stack != 0
+        && !same_object(target.super_stack, current_stack_pointer as usize)
+    {
+        target.super_stack as u64
+    } else {
+        current_stack_pointer
+    };
+    // Don't touch the red zone for the function we were in.
+    let stack_top = stack_pointer - RED_ZONE_SIZE as u64;
+    let stack_top = stack_top & (!(MIN_STACK_ALIGN as u64 - 1));
+
+    // Step 2: compute all the sizes for things we're going to shuffle around, and check
+    // if we even have enough space.
     let info_size = core::mem::size_of::<UpcallInfo>();
-    let info_size = (info_size + 16) & !15;
+    let info_size = (info_size + MIN_STACK_ALIGN) & !(MIN_STACK_ALIGN - 1);
+
     let frame_size = core::mem::size_of::<UpcallFrame>();
-    let frame_size = (frame_size + 16) & !15;
+    let frame_size = (frame_size + MIN_STACK_ALIGN) & !(MIN_STACK_ALIGN - 1);
+
+    let total_size = info_size + frame_size + RED_ZONE_SIZE;
+    let total_size = (total_size + MIN_STACK_ALIGN) & !(MIN_STACK_ALIGN - 1);
+
+    let stack_object_base = (stack_top as usize / MAX_SIZE) * MAX_SIZE + NULLPAGE_SIZE;
+    if stack_object_base + total_size >= stack_pointer as usize {
+        // No space for our frame!
+        return false;
+    }
+
+    // Step 3: write out the frame and the info into the stack.
     let info_start = stack_top - info_size as u64;
     let frame_start = info_start - frame_size as u64;
 
     let info_ptr = info_start as usize as *mut UpcallInfo;
     let frame_ptr = frame_start as usize as *mut UpcallFrame;
-
     let frame = (*regs).into();
 
+    // After this point, we better not fail.
     unsafe {
         info_ptr.write(info);
         frame_ptr.write(frame);
     }
-    let stack_start = frame_start - 16;
-    let stack_start = stack_start & !15;
-    let stack_start = stack_start - 8;
 
-    regs.set_upcall(target, frame_start, info_start, stack_start);
+    // Step 4: final alignment, and then call into the context (either syscall or interrupt) code
+    // to do the final setup of registers for the upcall.
+    let stack_start = frame_start - MIN_STACK_ALIGN as u64;
+    let stack_start = stack_start & !(MIN_STACK_ALIGN as u64 - 1);
+    // We have to enter with a mis-aligned stack, so that the function prelude
+    // of the receiver will re-align it. In this case, we control the ABI, so
+    // we preserve this just for consistency.
+    let stack_start = stack_start - core::mem::size_of::<u64>() as u64;
+
+    regs.set_upcall(target_addr, frame_start, info_start, stack_start);
+    true
 }
 
 fn use_xsave() -> bool {
@@ -187,11 +237,7 @@ pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
 }
 
 impl Thread {
-    pub fn arch_queue_upcall(&self, target: VirtAddr, info: UpcallInfo) {
-        self.arch
-            .backup_context
-            .lock()
-            .push(Context::new(*self.arch.entry_registers.borrow()));
+    pub fn arch_queue_upcall(&self, target: UpcallTarget, info: UpcallInfo) {
         match *self.arch.entry_registers.borrow() {
             Registers::None => {
                 panic!("tried to upcall to a thread that hasn't started yet");

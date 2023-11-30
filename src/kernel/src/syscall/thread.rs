@@ -1,12 +1,10 @@
 use twizzler_abi::{
     object::ObjID,
     syscall::{ThreadControl, ThreadSpawnArgs, ThreadSpawnError},
+    upcall::UpcallTarget,
 };
 
-use crate::{
-    memory::context::UserContext,
-    thread::{current_memory_context, current_thread_ref},
-};
+use crate::thread::current_thread_ref;
 
 pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
     crate::thread::entry::start_new_user(*args)
@@ -15,11 +13,11 @@ pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
 pub fn thread_ctrl(cmd: ThreadControl, arg: u64) -> (u64, u64) {
     match cmd {
         ThreadControl::SetUpcall => {
-            let ctx = current_memory_context().unwrap();
-            if let Ok(arg) = arg.try_into() {
-                ctx.set_upcall(arg);
-            }
-            // TODO
+            let Some(data) = (unsafe { (arg as usize as *const UpcallTarget).as_ref() }) else {
+                return (1, 1);
+            };
+            // TODO: verify args, check perms.
+            *current_thread_ref().unwrap().upcall_target.lock() = Some(*data);
         }
         ThreadControl::SetTls => {
             current_thread_ref().unwrap().set_tls(arg);

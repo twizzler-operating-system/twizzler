@@ -36,15 +36,9 @@ pub type ContextRef = Arc<Context>;
 /// type can be created that implements Context, which can then be used by the rest of the kernel to manage objects in a
 /// context (e.g. an address space).
 pub trait UserContext {
-    /// The type that is expected for upcall information (e.g. an entry address).
-    type UpcallInfo;
     /// The type that is expected for informing the context how to map the object (e.g. a slot number).
     type MappingInfo;
 
-    /// Set the context's upcall information.
-    fn set_upcall(&self, target: Self::UpcallInfo);
-    /// Retrieve the context's upcall information.
-    fn get_upcall(&self) -> Option<Self::UpcallInfo>;
     /// Switch to this context.
     fn switch_to(&self);
     /// Insert a range of an object into the context. The implementation may choose to use start and len as hints, but
