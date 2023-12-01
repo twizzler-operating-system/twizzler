@@ -44,10 +44,6 @@ macro_rules! preinit_println {
 
 #[track_caller]
 pub fn preinit_abort() -> ! {
-    preinit_println!(
-        "preinit abort called from {}",
-        core::panic::Location::caller()
-    );
     core::intrinsics::abort()
 }
 

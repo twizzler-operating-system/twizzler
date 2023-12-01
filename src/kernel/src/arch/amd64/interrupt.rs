@@ -1,6 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use twizzler_abi::{
+    arch::XSAVE_LEN,
     kso::{InterruptAllocateOptions, InterruptPriority},
     upcall::{ExceptionInfo, MemoryAccessKind, UpcallFrame, UpcallInfo},
 };
@@ -116,6 +117,8 @@ impl From<IsrContext> for UpcallFrame {
             r13: int.r13,
             r14: int.r14,
             r15: int.r15,
+            // this gets filled out later
+            xsave_region: [0; XSAVE_LEN],
         }
     }
 }
@@ -231,7 +234,8 @@ pub unsafe extern "C" fn return_from_interrupt() -> ! {
 }
 
 pub(super) unsafe fn return_with_frame_to_user(frame: IsrContext) -> ! {
-    logln!("restoring frame: {:?}", frame);
+    // We can just use the existing return code, given that we have an Isr frame. But
+    // remember to swapgs first, since we are returning to user.
     core::arch::asm!("mov rsp, rax",
     "swapgs",
     "jmp return_from_interrupt",

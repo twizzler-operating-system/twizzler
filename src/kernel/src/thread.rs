@@ -273,7 +273,6 @@ impl Thread {
             panic!("tried to signal upcall in critical section");
         }
 
-        logln!("==> upcall {:?}", info);
         let Some(upcall_target) = *self.upcall_target.lock() else {
             exit(UPCALL_EXIT_CODE);
         };

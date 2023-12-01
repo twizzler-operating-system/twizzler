@@ -150,7 +150,7 @@ pub enum UpcallMode {
 
 impl UpcallTarget {
     pub fn new(
-        target: unsafe extern "C" fn(*const UpcallFrame, *const UpcallInfo) -> !,
+        target: unsafe extern "C-unwind" fn(*const UpcallFrame, *const UpcallInfo) -> !,
         super_stack: usize,
         mode: UpcallMode,
     ) -> Self {

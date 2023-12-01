@@ -97,7 +97,11 @@ pub fn sys_thread_set_upcall(target: UpcallTarget) {
 
 /// Resume from an upcall, restoring registers. If you can
 /// resume yourself in userspace, this call is not necessary.
-pub fn sys_thread_resume_from_upcall(frame: &UpcallFrame) -> ! {
+///
+/// # Safety
+/// The frame argument must point to a valid upcall frame with
+/// a valid register state.
+pub unsafe fn sys_thread_resume_from_upcall(frame: &UpcallFrame) -> ! {
     unsafe {
         raw_syscall(
             Syscall::ThreadCtrl,

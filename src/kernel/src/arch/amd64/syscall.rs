@@ -1,8 +1,10 @@
 use core::sync::atomic::Ordering;
 
-use twizzler_abi::upcall::UpcallFrame;
+use twizzler_abi::{arch::XSAVE_LEN, upcall::UpcallFrame};
 
-use crate::{memory::VirtAddr, syscall::SyscallContext, thread::current_thread_ref};
+use crate::{
+    arch::thread::use_xsave, memory::VirtAddr, syscall::SyscallContext, thread::current_thread_ref,
+};
 
 use super::{
     interrupt::{return_with_frame_to_user, IsrContext},
@@ -51,6 +53,7 @@ impl From<X86SyscallContext> for UpcallFrame {
             r13: int.r13,
             r14: int.r14,
             r15: int.r15,
+            xsave_region: [0; XSAVE_LEN],
         }
     }
 }
@@ -182,11 +185,24 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
         cur_th.set_entry_registers(Registers::None);
         let user_fs = cur_th.arch.user_fs.load(Ordering::SeqCst);
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
-        // Okay, now check if we are restoring an upcall frame, and if so, do that.
+        // Okay, now check if we are restoring an upcall frame, and if so, do that. Unfortunately,
+        // we can't use the sysret/exit instruction for this, since it clobbers registers. Instead,
+        // we'll use the ISR return path, which doesn't.
         let mut rf = cur_th.arch.upcall_restore_frame.borrow_mut();
         if let Some(up_frame) = rf.take() {
-            let int_frame = IsrContext::from(up_frame);
+            // we MUST manually drop this, _and_ the current thread ref, because otherwise we leave
+            // them hanging when we trampoline back into userspace.
             drop(rf);
+            drop(cur_th);
+
+            // Restore the sse registers. These don't get restored by the isr return path, so we have to do it ourselves.
+            if use_xsave() {
+                core::arch::asm!("xrstor [{}]", in(reg) up_frame.xsave_region.as_ptr(), in("rax") 3, in("rdx") 0);
+            } else {
+                core::arch::asm!("fxrstor [{}]", in(reg) up_frame.xsave_region.as_ptr());
+            }
+
+            let int_frame = IsrContext::from(up_frame);
             return_with_frame_to_user(int_frame);
             unreachable!()
         }

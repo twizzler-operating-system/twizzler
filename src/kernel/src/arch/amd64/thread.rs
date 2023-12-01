@@ -4,6 +4,7 @@ use core::{
 };
 
 use twizzler_abi::{
+    arch::XSAVE_LEN,
     object::{MAX_SIZE, NULLPAGE_SIZE},
     upcall::{UpcallFrame, UpcallInfo, UpcallTarget},
 };
@@ -14,8 +15,6 @@ use crate::{
 };
 
 use super::{interrupt::IsrContext, syscall::X86SyscallContext};
-
-const XSAVE_LEN: usize = 1024;
 
 #[derive(Copy, Clone, Debug)]
 pub enum Registers {
@@ -148,6 +147,8 @@ where
     const MIN_STACK_ALIGN: usize = 16;
     // We have to leave room for the red zone.
     const RED_ZONE_SIZE: usize = 512;
+    // Frame must be aligned for the xsave region.
+    const MIN_FRAME_ALIGN: usize = 64;
 
     // If the address is not canonical, leave.
     let Ok(target_addr) = VirtAddr::new(target.address as u64) else {
@@ -173,11 +174,21 @@ where
     // if we even have enough space.
     let info_size = core::mem::size_of::<UpcallInfo>();
     let info_size = (info_size + MIN_STACK_ALIGN) & !(MIN_STACK_ALIGN - 1);
-
     let frame_size = core::mem::size_of::<UpcallFrame>();
-    let frame_size = (frame_size + MIN_STACK_ALIGN) & !(MIN_STACK_ALIGN - 1);
+    let frame_size = (frame_size + MIN_FRAME_ALIGN) & !(MIN_FRAME_ALIGN - 1);
+    let info_start = stack_top - info_size as u64;
 
-    let total_size = info_size + frame_size + RED_ZONE_SIZE;
+    // Frame needs extra care, since it must be aligned on 64-bytes for the xsave region.
+    let frame_highest_start = info_start as usize - frame_size;
+    let frame_padding = frame_highest_start - (frame_highest_start & !(MIN_FRAME_ALIGN - 1));
+    let frame_start = info_start - (frame_size + frame_padding) as u64;
+    assert_eq!(
+        frame_start,
+        frame_highest_start as u64 & !(MIN_FRAME_ALIGN as u64 - 1)
+    );
+    assert_eq!(frame_size & (MIN_FRAME_ALIGN - 1), 0);
+
+    let total_size = info_size + frame_size + frame_padding + RED_ZONE_SIZE;
     let total_size = (total_size + MIN_STACK_ALIGN) & !(MIN_STACK_ALIGN - 1);
 
     let stack_object_base = (stack_top as usize / MAX_SIZE) * MAX_SIZE + NULLPAGE_SIZE;
@@ -187,16 +198,18 @@ where
     }
 
     // Step 3: write out the frame and the info into the stack.
-    let info_start = stack_top - info_size as u64;
-    let frame_start = info_start - frame_size as u64;
 
     let info_ptr = info_start as usize as *mut UpcallInfo;
     let frame_ptr = frame_start as usize as *mut UpcallFrame;
-    let frame = (*regs).into();
+    let frame: UpcallFrame = (*regs).into();
 
-    logln!("sending upcall frame {:?}", frame);
-    // After this point, we better not fail.
     unsafe {
+        // We still need to save the fpu registers / sse state.
+        if use_xsave() {
+            core::arch::asm!("xsave [{}]", in(reg) frame.xsave_region.as_ptr(), in("rax") 3, in("rdx") 0);
+        } else {
+            core::arch::asm!("fxsave [{}]", in(reg) frame.xsave_region.as_ptr());
+        }
         info_ptr.write(info);
         frame_ptr.write(frame);
     }
@@ -214,7 +227,7 @@ where
     true
 }
 
-fn use_xsave() -> bool {
+pub(super) fn use_xsave() -> bool {
     static USE_XSAVE: AtomicU8 = AtomicU8::new(0);
     let xs = USE_XSAVE.load(Ordering::SeqCst);
     match xs {
@@ -241,6 +254,9 @@ pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
 
 impl Thread {
     pub fn restore_upcall_frame(&self, frame: &UpcallFrame) {
+        // We restore this in the syscall return code path, since
+        // we know that's where we are coming from, and we actually need
+        // to use the ISR return mechanism (see the syscall code).
         *self.arch.upcall_restore_frame.borrow_mut() = Some(*frame);
     }
 
@@ -265,7 +281,6 @@ impl Thread {
     }
 
     pub fn set_tls(&self, tls: u64) {
-        //logln!("setting user fs to {}", tls);
         self.arch.user_fs.store(tls, Ordering::SeqCst);
     }
 
