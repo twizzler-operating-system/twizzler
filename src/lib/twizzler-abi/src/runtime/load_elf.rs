@@ -190,6 +190,8 @@ pub fn spawn_new_executable(
     args: &[&[u8]],
     env: &[&[u8]],
 ) -> Result<ObjID, SpawnExecutableError> {
+    let mut output = BufWriter {};
+    write!(&mut output, "[loader] loading ARM elf: {}\n", 42);
     let exe = InternalObject::<ElfHeader>::map(exe, Protections::READ)
         .ok_or(SpawnExecutableError::MapFailed)?;
     let elf = ElfObject::from_obj(&exe).ok_or(SpawnExecutableError::InvalidExecutable)?;
@@ -209,43 +211,72 @@ pub fn spawn_new_executable(
         .find(|p| p.phdr_type() == PhdrType::Phdr)
         .map(|p| p.vaddr);
 
-    for phdr in elf.phdrs().filter(|p| p.phdr_type() == PhdrType::Load) {
-        let src_start = (phdr.offset & ((!page_size) + 1)) + NULLPAGE_SIZE as u64;
-        let dest_start = phdr.vaddr & ((!page_size) + 1);
-        let len = (phdr.filesz as u64 + (phdr.vaddr & (page_size - 1))) as usize;
-        let aligned_len = len.checked_next_multiple_of(page_size as usize).unwrap();
-        let prot = phdr.prot();
+    use alloc::vec::Vec;
+    // map the PT_LOAD directives to copy-from commands Twizzler can use for creating objects.
+    let mut copy_cmds: Vec<_> = elf
+        .phdrs()
+        .filter(|p| p.phdr_type() == PhdrType::Load)
+        .map(|phdr| {
+            let targets_data = phdr.prot().contains(Protections::WRITE);
+            let vaddr = phdr.vaddr as usize;
+            let memsz = phdr.memsz as usize;
+            let offset = phdr.offset as usize;
+            let align = phdr.align as usize;
+            let filesz = phdr.filesz as usize;
 
-        if prot.contains(Protections::WRITE) {
-            let copy = ObjectSource::new_copy(
-                exe.id(),
-                src_start,
-                dest_start & (MAX_SIZE as u64 - 1),
-                aligned_len,
-            );
-            let brk = (phdr.vaddr & (page_size - 1)) + phdr.filesz;
-            let pgbrk = (brk + (page_size - 1)) & ((!page_size) + 1);
-            let pgend = (brk + phdr.memsz - phdr.filesz + (page_size - 1)) & ((!page_size) + 1);
-            let dest_start = pgbrk & (MAX_SIZE as u64 - 1);
-            let dest_zero_start = brk & (MAX_SIZE as u64 - 1);
-            data_copy.push(copy);
-            if pgend > pgbrk {
-                data_copy.push(ObjectSource::new_copy(
-                    ObjID::new(0),
-                    0,
-                    dest_start,
-                    (pgend - pgbrk) as usize,
-                ))
+            fn within_object(slot: usize, addr: usize) -> bool {
+                addr >= slot * MAX_SIZE + NULLPAGE_SIZE && addr < (slot + 1) * MAX_SIZE - NULLPAGE_SIZE * 2
             }
-            data_zero.push((dest_zero_start, pgbrk - brk));
-        } else {
-            let copy = ObjectSource::new_copy(exe.id(), src_start, dest_start, aligned_len);
-            text_copy.push(copy);
-        }
-    }
+            if !within_object(if targets_data { 1 } else { 0 }, vaddr)
+                || memsz > MAX_SIZE - NULLPAGE_SIZE * 2
+                || offset > MAX_SIZE - NULLPAGE_SIZE * 2
+                || filesz > memsz
+            {
+                panic!("address not within object")
+            }
+
+            // the offset from the base of the object with the ELF executable data
+            let src_start = NULLPAGE_SIZE + offset;
+            // the destination offset is the virtual address we want this data
+            // to be mapped into. since the different sections are seperated
+            // by object boundaries, we keep the object-relative offset
+            // we trust the destination offset to be after the NULL_PAGE
+            let dest_start = vaddr as usize % MAX_SIZE;
+            // the size of the data that must be copied from the ELF
+            let len = filesz;
+            
+            // NOTE: Data that needs to be initialized to zero is not handled
+            // (filesz < memsz). The reason things work now is because
+            // the frame allocator in the kernel hands out zeroed pages by default.
+            // If this behaviour changes, we will need to explicitly handle it here.
+            (
+                targets_data,
+                ObjectSource::new_copy(
+                    exe.id(),
+                    src_start as u64,
+                    dest_start as u64,
+                    len,
+                ),
+            )
+        })
+        .collect();
+
+    // Separate out the commands for text and data segmets.
+    let text_copy: Vec<_> = copy_cmds
+        .iter()
+        .filter(|(td, _)| !*td)
+        .map(|(_, c)| c)
+        .cloned()
+        .collect();
+    let data_copy: Vec<_> = copy_cmds
+        .into_iter()
+        .filter(|(td, _)| *td)
+        .map(|(_, c)| c)
+        .collect();
 
     let text = crate::syscall::sys_object_create(cs, &text_copy, &[]).unwrap();
     let data = crate::syscall::sys_object_create(cs, &data_copy, &[]).unwrap();
+
     let mut stack = InternalObject::<()>::create_data_and_map()
         .ok_or(SpawnExecutableError::ObjectCreateFailed)?;
 
@@ -362,8 +393,102 @@ pub fn spawn_new_executable(
     Ok(thr)
 }
 
-#[cfg(target_arch = "aarch64")]
-fn load_text_and_data(elf: &ElfObject<'_>, _exe: &InternalObject::<ElfHeader>) -> (ObjID, ObjID) {
+use core::write;
+use core::fmt::Write;
+
+fn load_text_and_data(elf: &ElfObject<'_>, exe: &InternalObject::<ElfHeader>) -> (ObjID, ObjID) {
+    // arm64_text_and_data(elf, exe)
+    // head_text_and_data(elf, exe)
+    runtime_text_and_data(elf, exe)
+}
+
+// loads the code, but then gets a write fault at some address: 0x401320f0
+// suspect: code overwritten at some wierd place ... 
+fn head_text_and_data(elf: &ElfObject<'_>, exe: &InternalObject::<ElfHeader>) -> (ObjID, ObjID) {
+    let cs = ObjectCreate::new(
+        BackingType::Normal,
+        LifetimeType::Volatile,
+        None,
+        ObjectCreateFlags::empty(),
+    );
+    
+    let mut text_copy = alloc::vec::Vec::new();
+    let mut data_copy = alloc::vec::Vec::new();
+    let mut data_zero = alloc::vec::Vec::new();
+
+    let page_size = NULLPAGE_SIZE as u64;    
+
+    for phdr in elf.phdrs().filter(|p| p.phdr_type() == PhdrType::Load) {
+        let src_start = (phdr.offset & ((!page_size) + 1)) + NULLPAGE_SIZE as u64;
+        let dest_start = phdr.vaddr & ((!page_size) + 1);
+        let len = (phdr.filesz as u64 + (phdr.vaddr & (page_size - 1))) as usize;
+        let aligned_len = len.checked_next_multiple_of(page_size as usize).unwrap();
+        let prot = phdr.prot();
+
+
+        let zero_bytes = if phdr.filesz < phdr.memsz {
+            Some((phdr.memsz - phdr.filesz) as usize)
+        } else {
+            None
+        };
+
+        if let Some(len) = zero_bytes {
+            let copy_len = phdr.filesz;
+            data_copy.push(ObjectSource::new_copy(
+                ObjID::new(0),
+                0,
+                dest_start + copy_len,
+                len,
+            ));
+        }
+
+
+        if prot.contains(Protections::WRITE) {
+            let copy = ObjectSource::new_copy(
+                exe.id(),
+                src_start,
+                dest_start & (MAX_SIZE as u64 - 1),
+                aligned_len,
+            );
+            let brk = (phdr.vaddr & (page_size - 1)) + phdr.filesz;
+            let pgbrk = (brk + (page_size - 1)) & ((!page_size) + 1);
+            let pgend = (brk + phdr.memsz - phdr.filesz + (page_size - 1)) & ((!page_size) + 1);
+            let dest_start = pgbrk & (MAX_SIZE as u64 - 1);
+            let dest_zero_start = brk & (MAX_SIZE as u64 - 1);
+            data_copy.push(copy);
+            if pgend > pgbrk {
+                data_copy.push(ObjectSource::new_copy(
+                    ObjID::new(0),
+                    0,
+                    dest_start,
+                    (pgend - pgbrk) as usize,
+                ))
+            }
+            data_zero.push((dest_zero_start, pgbrk - brk));
+        } else {
+            let copy = ObjectSource::new_copy(exe.id(), src_start, dest_start, aligned_len);
+            text_copy.push(copy);
+        }
+    }
+
+    // data_zero.iter().map(|(start,len)| 
+    //     data_copy.push(ObjectSource::new_copy(
+    //         ObjID::new(0),
+    //         0,
+    //         *start,
+    //         *len as usize,
+    //     ))
+    // );
+
+    let text = crate::syscall::sys_object_create(cs, &text_copy, &[]).unwrap();
+    let data = crate::syscall::sys_object_create(cs, &data_copy, &[]).unwrap();
+    (text, data)
+}
+
+// #[cfg(target_arch = "aarch64")]
+fn arm64_text_and_data(elf: &ElfObject<'_>, _exe: &InternalObject::<ElfHeader>) -> (ObjID, ObjID) {
+    let mut output = BufWriter {};
+    
     let cs = ObjectCreate::new(
         BackingType::Normal,
         LifetimeType::Volatile,
@@ -371,7 +496,7 @@ fn load_text_and_data(elf: &ElfObject<'_>, _exe: &InternalObject::<ElfHeader>) -
         ObjectCreateFlags::empty(),
     );
 
-    // create new objects for text and data
+    // AA: create new objects for text and data
     let text = crate::syscall::sys_object_create(cs, &[], &[]).unwrap();
     let data = crate::syscall::sys_object_create(cs, &[], &[]).unwrap();
 
@@ -388,6 +513,12 @@ fn load_text_and_data(elf: &ElfObject<'_>, _exe: &InternalObject::<ElfHeader>) -
         let dst_offset = phdr.vaddr as usize % MAX_SIZE;
         // the size of the data that must be copied from the ELF
         let copy_len = phdr.filesz as usize;
+        // write!(&mut output, "[loader] loading ({:x}) => ({:x}), ({:x}) align: {:x}\n",
+        //     src_offset,
+        //     dst_offset,
+        //     copy_len,
+        //     phdr.align,
+        // );
         // the amount of bytes that must be zeroed out
         let zero_bytes = if phdr.filesz < phdr.memsz {
             Some((phdr.memsz - phdr.filesz) as usize)
@@ -395,6 +526,14 @@ fn load_text_and_data(elf: &ElfObject<'_>, _exe: &InternalObject::<ElfHeader>) -
             None
         };
         let prot = phdr.prot();
+
+        write!(&mut output,
+            "load directive: vaddr={:x}, memsz={:x}, offset={:x}, filesz={:x}\n",
+            dst_offset,
+            phdr.memsz,
+            src_offset,
+            copy_len
+        );
 
         unsafe {
             // the virtual address where we will copy data to
@@ -416,6 +555,12 @@ fn load_text_and_data(elf: &ElfObject<'_>, _exe: &InternalObject::<ElfHeader>) -
             let src_start = elf.base_raw.add(src_offset);
             copy_start.copy_from(src_start, copy_len);
             if let Some(len) = zero_bytes {
+                write!(&mut output,
+                    "zero out data! vaddr={:x}, memsz={:x}, offset={:x}\n",
+                    dst_offset + copy_len,
+                    len,
+                    copy_len,
+                );
                 copy_start
                 .add(copy_len)
                 .write_bytes(0, len);
@@ -428,12 +573,13 @@ fn load_text_and_data(elf: &ElfObject<'_>, _exe: &InternalObject::<ElfHeader>) -
     (text, data)
 }
 
-#[cfg(target_arch = "x86_64")]
-fn load_text_and_data(elf: &ElfObject<'_>, exe: &InternalObject::<ElfHeader>) -> (ObjID, ObjID) {
+// #[cfg(target_arch = "x86_64")]
+fn runtime_text_and_data(elf: &ElfObject<'_>, exe: &InternalObject::<ElfHeader>) -> (ObjID, ObjID) {
     use alloc::vec::Vec;
+    let mut output = BufWriter {};
 
     // Step 1: map the PT_LOAD directives to copy-from commands Twizzler can use for creating objects.
-    let copy_cmds: Vec<_> = elf
+    let mut copy_cmds: Vec<_> = elf
         .phdrs()
         .filter(|p| p.phdr_type() == PhdrType::Load)
         .map(|phdr| {
@@ -455,12 +601,24 @@ fn load_text_and_data(elf: &ElfObject<'_>, exe: &InternalObject::<ElfHeader>) ->
                 panic!("address not within object")
             }
 
-            let src_start = (NULLPAGE_SIZE + offset) & !(align - 1);
-            let dest_start = vaddr & !(align - 1);
-            let len = (vaddr - dest_start) + filesz;
+            // the offset from the base of the object with the ELF executable data
+            let src_start = NULLPAGE_SIZE + offset;
+            // the destination offset is the virtual address we want this data
+            // to be mapped into. since the different sections are seperated
+            // by object boundaries, we keep the object-relative offset
+            // we trust the destination offset to be after the NULL_PAGE
+            let dest_start = vaddr as usize % MAX_SIZE;
+            // the size of the data that must be copied from the ELF
+            let len = filesz;
+            
+            // NOTE: only regions of data from the ELF file are copied, and
+            // the parts of the executable that need to be initialized to zero
+            // is not handled. The reason things work now is because the frame
+            // allocator in the kernel hands out zeroed pages by default.
+            // If this behaviour changes, we will need to explicitly handle it here.
             (
                 targets_data,
-                ObjectSource::new(
+                ObjectSource::new_copy(
                     exe.id(),
                     src_start as u64,
                     dest_start as u64,
@@ -494,4 +652,15 @@ fn load_text_and_data(elf: &ElfObject<'_>, exe: &InternalObject::<ElfHeader>) ->
     let data = crate::syscall::sys_object_create(cs, &data_copy, &[]).unwrap();
 
     (text, data)
+}
+
+struct BufWriter;
+impl core::fmt::Write for BufWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        crate::syscall::sys_kernel_console_write(
+            s.as_bytes(),
+            crate::syscall::KernelConsoleWriteFlags::empty(),
+        );
+        Ok(())
+    }
 }
