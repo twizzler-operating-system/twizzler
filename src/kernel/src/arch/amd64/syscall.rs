@@ -4,7 +4,10 @@ use twizzler_abi::upcall::UpcallFrame;
 
 use crate::{memory::VirtAddr, syscall::SyscallContext, thread::current_thread_ref};
 
-use super::thread::{Registers, UpcallAble};
+use super::{
+    interrupt::{return_with_frame_to_user, IsrContext},
+    thread::{Registers, UpcallAble},
+};
 
 #[derive(Default, Clone, Copy, Debug)]
 #[repr(C)]
@@ -175,10 +178,18 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
 
     /* We need this scope to drop the current thread reference before we return to user */
     {
-        let t = current_thread_ref().unwrap();
-        t.set_entry_registers(Registers::None);
-        let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
+        let cur_th = current_thread_ref().unwrap();
+        cur_th.set_entry_registers(Registers::None);
+        let user_fs = cur_th.arch.user_fs.load(Ordering::SeqCst);
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+        // Okay, now check if we are restoring an upcall frame, and if so, do that.
+        let mut rf = cur_th.arch.upcall_restore_frame.borrow_mut();
+        if let Some(up_frame) = rf.take() {
+            let int_frame = IsrContext::from(up_frame);
+            drop(rf);
+            return_with_frame_to_user(int_frame);
+            unreachable!()
+        }
     }
     /* TODO: check that rcx is canonical */
     return_to_user(context);

@@ -1,7 +1,5 @@
 use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
 
-use crate::preinit_println;
-
 #[cfg(feature = "runtime")]
 #[no_mangle]
 pub(crate) unsafe extern "C" fn rr_upcall_entry(
@@ -33,14 +31,7 @@ pub(crate) unsafe extern "C" fn rr_upcall_entry2(
     rdi: *const UpcallFrame,
     rsi: *const UpcallInfo,
 ) -> ! {
-    use crate::runtime::do_impl::__twz_get_runtime;
-
-    preinit_println!(
-        "got upcall: {:?}, {:?}",
-        rdi.as_ref().unwrap(),
-        rsi.as_ref().unwrap()
-    );
-    //crate::runtime::upcall::upcall_rust_entry(&*rdi, &*rsi);
-    let runtime = __twz_get_runtime();
-    runtime.abort()
+    crate::runtime::upcall::upcall_rust_entry(&*rdi, &*rsi);
+    // TODO: with uiret instruction, we may be able to avoid the kernel, here.
+    twizzler_abi::syscall::sys_thread_resume_from_upcall(&*rdi);
 }

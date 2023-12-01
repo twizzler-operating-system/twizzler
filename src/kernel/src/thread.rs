@@ -10,7 +10,7 @@ use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     syscall::ThreadSpawnArgs,
     thread::{ExecutionState, ThreadRepr},
-    upcall::{UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE},
+    upcall::{UpcallFrame, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE},
 };
 
 use crate::{
@@ -273,6 +273,7 @@ impl Thread {
             panic!("tried to signal upcall in critical section");
         }
 
+        logln!("==> upcall {:?}", info);
         let Some(upcall_target) = *self.upcall_target.lock() else {
             exit(UPCALL_EXIT_CODE);
         };

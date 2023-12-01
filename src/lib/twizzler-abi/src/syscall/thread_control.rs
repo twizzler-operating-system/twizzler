@@ -3,7 +3,7 @@ use num_enum::{FromPrimitive, IntoPrimitive};
 use crate::{
     arch::syscall::raw_syscall,
     object::ObjID,
-    upcall::{UpcallFrame, UpcallInfo, UpcallTarget},
+    upcall::{UpcallFrame, UpcallTarget},
 };
 
 use super::Syscall;
@@ -52,6 +52,8 @@ pub enum ThreadControl {
     SetAffinity = 14,
     /// Get a thread's affinity.
     GetAffinity = 15,
+    /// Resume from an upcall.
+    ResumeFromUpcall = 16,
 }
 
 /// Exit the thread. The code will be written to the [crate::thread::ThreadRepr] for the current thread as part
@@ -90,6 +92,21 @@ pub fn sys_thread_set_upcall(target: UpcallTarget) {
                 (&target as *const _) as usize as u64,
             ],
         );
+    }
+}
+
+/// Resume from an upcall, restoring registers. If you can
+/// resume yourself in userspace, this call is not necessary.
+pub fn sys_thread_resume_from_upcall(frame: &UpcallFrame) -> ! {
+    unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                ThreadControl::ResumeFromUpcall as u64,
+                frame as *const _ as usize as u64,
+            ],
+        );
+        unreachable!()
     }
 }
 

@@ -1,7 +1,7 @@
 use twizzler_abi::{
     object::ObjID,
     syscall::{ThreadControl, ThreadSpawnArgs, ThreadSpawnError},
-    upcall::UpcallTarget,
+    upcall::{UpcallFrame, UpcallTarget},
 };
 
 use crate::thread::current_thread_ref;
@@ -18,6 +18,14 @@ pub fn thread_ctrl(cmd: ThreadControl, arg: u64) -> (u64, u64) {
             };
             // TODO: verify args, check perms.
             *current_thread_ref().unwrap().upcall_target.lock() = Some(*data);
+        }
+        ThreadControl::ResumeFromUpcall => {
+            let Some(data) = (unsafe { (arg as usize as *const UpcallFrame).as_ref() }) else {
+                return (1, 1);
+            };
+            // TODO: verify args, check perms.
+
+            current_thread_ref().unwrap().restore_upcall_frame(data);
         }
         ThreadControl::SetTls => {
             current_thread_ref().unwrap().set_tls(arg);

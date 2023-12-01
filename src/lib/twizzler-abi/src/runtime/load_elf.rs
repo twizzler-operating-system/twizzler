@@ -4,6 +4,7 @@ use core::{intrinsics::copy_nonoverlapping, mem::size_of};
 
 use crate::object::InternalObject;
 
+use crate::syscall::UpcallTargetSpawnOption;
 use crate::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     slot::{RESERVED_DATA, RESERVED_STACK, RESERVED_TEXT},
@@ -379,6 +380,7 @@ pub fn spawn_new_executable(
         spawnaux_start,
         ThreadSpawnFlags::empty(),
         Some(vm_handle),
+        UpcallTargetSpawnOption::DefaultAbort,
     );
     let thr = unsafe {
         crate::syscall::sys_spawn(ts).map_err(|_| SpawnExecutableError::ThreadSpawnFailed)?

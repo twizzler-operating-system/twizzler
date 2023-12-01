@@ -101,7 +101,7 @@ pub struct UpcallData {
 
 /// Information for handling an upcall, per-thread. By default, a thread starts with
 /// all these fields initialized to zero, and the mode set to [UpcallMode::Abort].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
 pub struct UpcallTarget {
     /// Address to jump to when handling via a call.
@@ -127,7 +127,7 @@ pub struct UpcallTarget {
 /// to [UpcallMode::Abort]).
 pub const UPCALL_EXIT_CODE: u64 = 127;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum UpcallMode {
     /// Do not call anywhere, just exit the thread.

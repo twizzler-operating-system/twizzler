@@ -38,4 +38,6 @@ pub fn main() {
 
 fn monitor_init() {
     info!("monitor early init completed, starting init");
+
+    unsafe { core::arch::asm!("ud2") };
 }

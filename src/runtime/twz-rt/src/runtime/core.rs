@@ -94,7 +94,6 @@ impl CoreRuntime for ReferenceRuntime {
         let init_info = unsafe { preinit_unwrap((init_info as *const RuntimeInitInfo).as_ref()) };
 
         // Step 3: bootstrap pre-std stuff: upcalls, allocator, TLS, constructors (the order matters, ctors need to happen last)
-
         let upcall_target = UpcallTarget::new(crate::arch::rr_upcall_entry, 0, UpcallMode::Call);
         twizzler_abi::syscall::sys_thread_set_upcall(upcall_target);
         self.init_allocator(init_info);

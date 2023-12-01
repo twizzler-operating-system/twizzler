@@ -65,6 +65,36 @@ impl UpcallAble for IsrContext {
     }
 }
 
+impl From<UpcallFrame> for IsrContext {
+    fn from(frame: UpcallFrame) -> Self {
+        Self {
+            r15: frame.r15,
+            r14: frame.r14,
+            r13: frame.r13,
+            r12: frame.r12,
+            r11: frame.r11,
+            r10: frame.r10,
+            r9: frame.r9,
+            r8: frame.r8,
+            rax: frame.rax,
+            rbx: frame.rbx,
+            rcx: frame.rcx,
+            rdx: frame.rdx,
+            rdi: frame.rdi,
+            rsi: frame.rsi,
+            rbp: frame.rbp,
+            rsp: frame.rsp,
+            rip: frame.rip,
+            rflags: frame.rflags,
+
+            err: 0,
+            // TODO
+            cs: 0x23,
+            ss: 0x1b,
+        }
+    }
+}
+
 impl From<IsrContext> for UpcallFrame {
     fn from(int: IsrContext) -> Self {
         Self {
@@ -177,7 +207,7 @@ pub unsafe extern "C" fn user_interrupt() {
 #[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 #[naked]
-pub unsafe extern "C" fn return_from_interrupt() {
+pub unsafe extern "C" fn return_from_interrupt() -> ! {
     core::arch::asm!(
         "pop r15",
         "pop r14",
@@ -198,6 +228,14 @@ pub unsafe extern "C" fn return_from_interrupt() {
         "iretq",
         options(noreturn)
     );
+}
+
+pub(super) unsafe fn return_with_frame_to_user(frame: IsrContext) -> ! {
+    logln!("restoring frame: {:?}", frame);
+    core::arch::asm!("mov rsp, rax",
+    "swapgs",
+    "jmp return_from_interrupt",
+    in("rax") &frame, options(noreturn));
 }
 
 macro_rules! interrupt {

@@ -49,6 +49,7 @@ pub struct ArchThread {
     pub user_fs: AtomicU64,
     xsave_inited: AtomicBool,
     pub entry_registers: RefCell<Registers>,
+    pub upcall_restore_frame: RefCell<Option<UpcallFrame>>,
     //user_gs: u64,
 }
 unsafe impl Sync for ArchThread {}
@@ -115,6 +116,7 @@ impl ArchThread {
             user_fs: AtomicU64::new(0),
             xsave_inited: AtomicBool::new(false),
             entry_registers: RefCell::new(Registers::None),
+            upcall_restore_frame: RefCell::new(None),
         }
     }
 }
@@ -192,6 +194,7 @@ where
     let frame_ptr = frame_start as usize as *mut UpcallFrame;
     let frame = (*regs).into();
 
+    logln!("sending upcall frame {:?}", frame);
     // After this point, we better not fail.
     unsafe {
         info_ptr.write(info);
@@ -237,6 +240,10 @@ pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
 }
 
 impl Thread {
+    pub fn restore_upcall_frame(&self, frame: &UpcallFrame) {
+        *self.arch.upcall_restore_frame.borrow_mut() = Some(*frame);
+    }
+
     pub fn arch_queue_upcall(&self, target: UpcallTarget, info: UpcallInfo) {
         match *self.arch.entry_registers.borrow() {
             Registers::None => {
