@@ -287,6 +287,7 @@ fn debug_handler(ctx: &mut ExceptionContext) {
                 data_abort = true;
                 "Data Abort taken from a lower Exception level."
             },
+            Some(ESR_EL1::EC::Value::InstrAbortLowerEL) => "Instruction abort from a lower Exception level.",
             Some(ESR_EL1::EC::Value::Unknown) | _ => "Unknown reason.",
         }
     );
@@ -383,7 +384,10 @@ fn sync_handler(ctx: &mut ExceptionContext) {
             // TODO: support for PRESENT and INVALID flags
             let flags = PageFaultFlags::empty();
 
-            let far_va = VirtAddr::new(far as u64).unwrap();
+            let far_va = match VirtAddr::new(far as u64) {
+                Ok(v) => v,
+                Err(_) => panic!("non canonical address: {:x}", far)    
+            };
 
             // DFSC bits[5:0] indicate the type of fault
             let dfsc = iss & 0b111111;
@@ -394,7 +398,7 @@ fn sync_handler(ctx: &mut ExceptionContext) {
                 // TODO: set the access flag
             } else if dfsc & 0b001100 == 0b001100 {
                 let level = dfsc & 0b11;
-                todo!("Permission fault, level {}", level);
+                todo!("Permission fault, level {} {:?} {:?}", level, cause, far_va);
             }
             crate::thread::enter_kernel();
             // crate::interrupt::set(true);
@@ -412,6 +416,9 @@ fn sync_handler(ctx: &mut ExceptionContext) {
             // crate::interrupt::set(false);
             crate::thread::exit_kernel();
         },
+        Some(ESR_EL1::EC::Value::InstrAbortLowerEL) => {
+            handle_inst_abort(ctx, &esr_reg);
+        },
         Some(ESR_EL1::EC::Value::SVC64) => {
             // iss: syndrome, contains passed to SVC
             let iss = esr_reg.read(ESR_EL1::ISS);
@@ -425,6 +432,61 @@ fn sync_handler(ctx: &mut ExceptionContext) {
             debug_handler(ctx)
         },
     }
+}
+
+fn handle_inst_abort(_ctx: &mut ExceptionContext, esr_reg: &InMemoryRegister<u64, ESR_EL1::Register>) {
+    // decoding ISS for instruction fault.
+    // iss: syndrome
+    let iss = esr_reg.read(ESR_EL1::ISS);
+    // is the fault address register valid? ... use bit 10
+    let far_valid = iss & (1 << 10) == 0;
+    if !far_valid {
+        panic!("FAR is not valid!!");
+    }
+    let far = arm64::registers::FAR_EL1.get();
+
+    // The cause is from an instruction fetch
+    let cause = MemoryAccessKind::InstructionFetch;
+
+    // TODO: support for PRESENT and INVALID flags
+
+    // NOTE: currently, only instruciton aborts are handled when coming from
+    // user space, so we know that the page fault is user
+    let flags = PageFaultFlags::USER;
+
+    let far_va = VirtAddr::new(far as u64).unwrap();
+
+    // IFSC bits[5:0] indicate the type of fault
+    let ifsc = iss & 0b111111;
+    if ifsc & 0b111100 == 0b001000 {
+        // we have an access fault
+        let level = ifsc & 0b11;
+        todo!("Access flag fault, level {}", level);
+        // TODO: set the access flag
+    } else if ifsc & 0b001100 == 0b001100 {
+        let level = ifsc & 0b11;
+        todo!("Permission fault, level {}", level);
+    } else if ifsc & 0b0000100 == 0b0000100 {
+        // translation fault
+        let _level = ifsc & 0b11;
+    }
+
+    crate::thread::enter_kernel();
+    // crate::interrupt::set(true);
+    let elr = ELR_EL1.get();
+    if let Ok(elr_va) = VirtAddr::new(elr) {
+        // logln!("fault {:?} from {:?}", far_va, elr_va);
+        crate::memory::context::virtmem::page_fault(
+            far_va,
+            cause,
+            flags,
+            elr_va,
+        );
+    } else {
+        todo!("send upcall exception info");
+    }
+    // crate::interrupt::set(false);
+    crate::thread::exit_kernel();
 }
 
 /// Initializes the exception vector table by writing the address of 

@@ -62,7 +62,15 @@ impl BuildConfig {
     }
 
     pub fn twz_triple(&self) -> Triple {
-        Triple::new(self.arch, self.machine, triple::Host::Twizzler, None)
+        // Compiling for aarch64 requires specifying the machine it will be compiled
+        // for. However, the supported triples have a generic machine value of unknown.
+        // We set the default machine value to unknown in this case.
+        let machine = if self.arch == Arch::Aarch64 {
+            Machine::Unknown
+        } else {
+            self.machine
+        };
+        Triple::new(self.arch, machine, triple::Host::Twizzler, None)
     }
 }
 

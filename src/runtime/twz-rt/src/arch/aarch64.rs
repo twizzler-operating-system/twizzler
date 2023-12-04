@@ -5,43 +5,24 @@ use crate::preinit_println;
 #[cfg(feature = "runtime")]
 #[no_mangle]
 pub(crate) unsafe extern "C" fn rr_upcall_entry(
-    rdi: *const UpcallFrame,
-    rsi: *const UpcallInfo,
+    _frame: *const UpcallFrame,
+    _info: *const UpcallInfo,
 ) -> ! {
-    /*
-    core::arch::asm!(
-        ".cfi_signal_frame",
-        "mov rbp, rdx",
-        "push rax",
-        "push rbp",
-        "push rax",
-        ".cfi_def_cfa rsp, 0",
-        ".cfi_offset rbp, 8",
-        ".cfi_offset rip, 0",
-        ".cfi_return_column rip",
-        "jmp rr_upcall_entry2",
-        in("rax") (&*rdi).rip,
-        in("rdx") (&*rdi).rbp,
-        in("rdi") rdi,
-        in("rsi") rsi,
-        options(noreturn)
-    );
-    */
     todo!()
 }
 
 #[cfg(feature = "runtime")]
 #[no_mangle]
 pub(crate) unsafe extern "C" fn rr_upcall_entry2(
-    rdi: *const UpcallFrame,
-    rsi: *const UpcallInfo,
+    frame: *const UpcallFrame,
+    info: *const UpcallInfo,
 ) -> ! {
     use crate::runtime::do_impl::__twz_get_runtime;
 
     preinit_println!(
         "got upcall: {:?}, {:?}",
-        rdi.as_ref().unwrap(),
-        rsi.as_ref().unwrap()
+        frame.as_ref().unwrap(),
+        info.as_ref().unwrap()
     );
     //crate::runtime::upcall::upcall_rust_entry(&*rdi, &*rsi);
     let runtime = __twz_get_runtime();

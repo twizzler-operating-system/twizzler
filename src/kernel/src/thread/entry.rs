@@ -36,8 +36,7 @@ extern "C" fn user_new_start() {
     unsafe {
         crate::arch::jump_to_user(
             VirtAddr::new(entry as u64).unwrap(),
-            /* TODO: this is x86 specific */
-            VirtAddr::new((stack_base + stack_size - 8) as u64).unwrap(),
+            crate::arch::thread::new_stack_top(stack_base, stack_size),
             arg as u64,
         )
     }

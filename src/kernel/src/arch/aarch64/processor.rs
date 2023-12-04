@@ -74,3 +74,7 @@ impl Processor {
 pub fn tls_ready() -> bool {
     TPIDR_EL1.get() != 0
 }
+
+pub fn spin_wait_iteration() {
+    // tlb_shootdown_handler();
+}

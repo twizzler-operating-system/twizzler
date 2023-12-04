@@ -2,6 +2,7 @@
 use crate::upcall::UpcallInfo;
 
 /// Arch-specific frame info for upcall.
+#[derive(Clone, Debug)]
 #[repr(C)]
 pub struct UpcallFrame {}
 
