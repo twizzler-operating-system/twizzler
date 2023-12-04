@@ -14,6 +14,7 @@ use registers::interfaces::Writeable;
 use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
 
 use crate::thread::Thread;
+use crate::memory::VirtAddr;
 
 use super::{exception::ExceptionContext, syscall::Armv8SyscallContext};
 
@@ -79,6 +80,26 @@ where
     UpcallFrame: From<T>,
 {
     todo!()
+}
+
+// The alignment of addresses use by the stack
+const CHECKED_STACK_ALIGNMENT: usize = 16;
+
+/// Compute the top of the stack. 
+/// 
+/// # Safety
+/// The range from [stack_base, stack_base+stack_size] must be valid addresses.
+pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
+    let stack_addr = (stack_base + stack_size) as u64;
+    // the stack pointer for aarch64 must be aligned to 16 bytes
+    // since the stack is downwards descending, we align the address
+    // down to be within the bounds.
+    let stack_from_args = VirtAddr::new(stack_addr).unwrap();
+    if stack_from_args.is_aligned_to(CHECKED_STACK_ALIGNMENT) {
+        stack_from_args
+    } else {
+        stack_from_args.align_down(CHECKED_STACK_ALIGNMENT as u64).unwrap()
+    }
 }
 
 impl Thread {
