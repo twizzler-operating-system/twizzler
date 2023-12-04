@@ -90,13 +90,26 @@ pub enum UpcallInfo {
     MemoryContextViolation(MemoryContextViolationInfo),
 }
 
+impl UpcallInfo {
+    pub fn number(&self) -> usize {
+        match self {
+            UpcallInfo::Exception(_) => 0,
+            UpcallInfo::ObjectMemoryFault(_) => 1,
+            UpcallInfo::MemoryContextViolation(_) => 2,
+        }
+    }
+}
+
+// TODO: tie this to the above
+pub const NR_UPCALLS: usize = 3;
+
 #[derive(Debug)]
 #[repr(C)]
 pub struct UpcallData {
     /// Info for this upcall, including reason and elaboration data.
     pub info: UpcallInfo,
-    /// The instruction that caused the upcall (or the syscall that entered the kernel).
-    pub ip: usize,
+    /// Upcall flags
+    pub flags: UpcallHandlerFlags,
 }
 
 /// Information for handling an upcall, per-thread. By default, a thread starts with
@@ -104,22 +117,38 @@ pub struct UpcallData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
 pub struct UpcallTarget {
-    /// Address to jump to when handling via a call.
-    pub address: usize,
-    /// Address of supervisor stack to use, if non-zero. If the value is zero, or refers to memory
-    /// within the object that contains the current thread's user stack, then the frame is pushed to
-    /// the stack after the current stack frame.
-    ///
-    /// This means that for normal code, if this value is non-zero, an upcall will change the stack
-    /// to this position, and then start pushing the upcall stack frame. If this value is non-zero,
-    /// the upcall frame is pushed to the next available frame spot in the stack after the current stack
-    /// pointer.
-    ///
-    /// If we have an exception in a monitor, the monitor will see the upcall frames pushed to the supervisor
-    /// stack like a normal upcall (acts as if super_stack is 0 when already in that stack).
+    /// Address to jump to when handling via a call to the same context.
+    pub self_address: usize,
+    /// Address to jump to when handling via a call to supervisor context.
+    pub super_address: usize,
+    /// Address of supervisor stack to use, when switching to supervisor context.
     pub super_stack: usize,
-    /// The mode to use when handling this upcall.
-    pub mode: UpcallMode,
+    /// Value to use for stack pointer, when switching to supervisor context.
+    pub super_thread_ptr: usize,
+    /// Supervisor context to use, when switching to supervisor context.
+    pub super_ctx: ObjID,
+    /// Per-upcall options.
+    pub mode: [UpcallOptions; NR_UPCALLS],
+}
+
+impl UpcallTarget {
+    pub fn new(
+        self_address: unsafe extern "C-unwind" fn(*const UpcallFrame, *const UpcallInfo) -> !,
+        super_address: unsafe extern "C-unwind" fn(*const UpcallFrame, *const UpcallInfo) -> !,
+        super_stack: usize,
+        super_thread_ptr: usize,
+        super_ctx: ObjID,
+        mode: [UpcallOptions; NR_UPCALLS],
+    ) -> Self {
+        Self {
+            self_address: self_address as usize,
+            super_address: super_address as usize,
+            super_stack,
+            super_thread_ptr,
+            super_ctx,
+            mode,
+        }
+    }
 }
 
 /// The exit code the kernel will use when killing a thread that cannot handle
@@ -127,37 +156,44 @@ pub struct UpcallTarget {
 /// to [UpcallMode::Abort]).
 pub const UPCALL_EXIT_CODE: u64 = 127;
 
+bitflags::bitflags! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(u8)]
-pub enum UpcallMode {
-    /// Do not call anywhere, just exit the thread.
-    Abort,
-    /// Invoke the upcall handler at the handler address, if canonical.
-    /// If the supervisor stack is a valid address and
-    /// points to a different object than the current stack, then the stack pointer
-    /// is updated to the value of the supervisor stack (see [UpcallTarget::super_stack]).
-    /// Otherwise, the stack pointer is moved to be clear of any red zones on the
-    /// current stack (if any).
-    Call,
-    /// Suspend the thread without modifying any registers. The thread can
-    /// be resumed later. Note that some upcall causes may be repeated if
-    /// not properly handled.
-    Suspend,
-    /// Setup the thread to invoke the upcall handler at the handler address (see [UpcallMode::Call]).
-    /// Before entering userspace, however, suspend the thread.
-    SuspendAndCall,
+pub struct UpcallFlags : u8 {
+    /// Whether or not to suspend the thread before handling (or aborting from) the upcall.
+    const SUSPEND = 1;
+}
 }
 
-impl UpcallTarget {
-    pub fn new(
-        target: unsafe extern "C-unwind" fn(*const UpcallFrame, *const UpcallInfo) -> !,
-        super_stack: usize,
-        mode: UpcallMode,
-    ) -> Self {
-        Self {
-            address: target as usize,
-            super_stack,
-            mode,
-        }
-    }
+bitflags::bitflags! {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UpcallHandlerFlags : u8 {
+    /// Whether or not to suspend the thread before handling (or aborting from) the upcall.
+    const SWITCHED_CONTEXT = 1;
+}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum UpcallMode {
+    /// Handle this upcall by immediate abort. If the SUSPEND flag is set, the thread will
+    /// still abort when unsuspended.
+    Abort,
+    /// Handle this upcall by calling, without trying to transfer to supervisor context. Upcall
+    /// data, including frame data, will be placed on the current stack, and the thread pointer
+    /// is unchanged.
+    CallSelf,
+    /// Handle this upcall by calling into supervisor context. If the thread is already in
+    /// supervisor context, this acts like [UpcallMode::CallSelf]. Otherwise, the thread's stack
+    /// and thread pointer are updated to the super_stack and super_thread_pointer values in the
+    /// upcall target respectively, and the active security context is switched to the supervisor
+    /// context (super_ctx).
+    CallSuper,
+}
+
+/// Options for a single upcall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UpcallOptions {
+    /// Flags for the upcall.
+    pub flags: UpcallFlags,
+    /// The mode for the upcall.
+    pub mode: UpcallMode,
 }
