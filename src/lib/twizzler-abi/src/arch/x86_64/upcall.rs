@@ -7,6 +7,7 @@ pub const XSAVE_LEN: usize = 1024;
 #[derive(Clone, Debug, Copy)]
 #[repr(C, align(64))]
 pub struct UpcallFrame {
+    pub xsave_region: [u8; XSAVE_LEN],
     pub rip: u64,
     pub rflags: u64,
     pub rsp: u64,
@@ -15,8 +16,6 @@ pub struct UpcallFrame {
     pub rbx: u64,
     pub rcx: u64,
     pub rdx: u64,
-    pub xsave_region: [u8; XSAVE_LEN],
-
     pub rdi: u64,
     pub rsi: u64,
     pub r8: u64,
@@ -27,6 +26,8 @@ pub struct UpcallFrame {
     pub r13: u64,
     pub r14: u64,
     pub r15: u64,
+    pub thread_ptr: u64,
+    pub prior_ctx: crate::object::ObjID,
 }
 
 impl UpcallFrame {

@@ -202,6 +202,7 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
                 core::arch::asm!("fxrstor [{}]", in(reg) up_frame.xsave_region.as_ptr());
             }
 
+            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, up_frame.thread_ptr);
             let int_frame = IsrContext::from(up_frame);
             return_with_frame_to_user(int_frame);
             unreachable!()

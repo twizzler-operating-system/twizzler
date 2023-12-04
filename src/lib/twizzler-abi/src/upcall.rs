@@ -128,7 +128,7 @@ pub struct UpcallTarget {
     /// Supervisor context to use, when switching to supervisor context.
     pub super_ctx: ObjID,
     /// Per-upcall options.
-    pub mode: [UpcallOptions; NR_UPCALLS],
+    pub options: [UpcallOptions; NR_UPCALLS],
 }
 
 impl UpcallTarget {
@@ -138,7 +138,7 @@ impl UpcallTarget {
         super_stack: usize,
         super_thread_ptr: usize,
         super_ctx: ObjID,
-        mode: [UpcallOptions; NR_UPCALLS],
+        options: [UpcallOptions; NR_UPCALLS],
     ) -> Self {
         Self {
             self_address: self_address as usize,
@@ -146,7 +146,7 @@ impl UpcallTarget {
             super_stack,
             super_thread_ptr,
             super_ctx,
-            mode,
+            options,
         }
     }
 }

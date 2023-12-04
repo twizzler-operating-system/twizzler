@@ -10,7 +10,7 @@ use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     syscall::ThreadSpawnArgs,
     thread::{ExecutionState, ThreadRepr},
-    upcall::{UpcallFrame, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE},
+    upcall::{UpcallFlags, UpcallFrame, UpcallInfo, UpcallMode, UpcallTarget, UPCALL_EXIT_CODE},
 };
 
 use crate::{
@@ -277,20 +277,23 @@ impl Thread {
             exit(UPCALL_EXIT_CODE);
         };
 
-        let suspend = match upcall_target.mode {
-            twizzler_abi::upcall::UpcallMode::Abort => exit(UPCALL_EXIT_CODE),
-            twizzler_abi::upcall::UpcallMode::Suspend => {
-                self.suspend();
-                return;
-            }
-            twizzler_abi::upcall::UpcallMode::SuspendAndCall => true,
-            twizzler_abi::upcall::UpcallMode::Call => false,
+        let num = info.number();
+
+        let Some(options) = upcall_target.options.get(num) else {
+            exit(UPCALL_EXIT_CODE);
         };
+
+        if matches!(options.mode, UpcallMode::Abort) {
+            if options.flags.contains(UpcallFlags::SUSPEND) {
+                self.suspend();
+            }
+            exit(UPCALL_EXIT_CODE);
+        }
 
         self.arch_queue_upcall(upcall_target, info);
 
         // Suspend afterwards to ensure that the upcall frame is queued up.
-        if suspend {
+        if options.flags.contains(UpcallFlags::SUSPEND) {
             self.suspend();
         }
     }

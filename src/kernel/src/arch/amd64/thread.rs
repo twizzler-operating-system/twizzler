@@ -139,6 +139,7 @@ pub fn set_upcall<T: UpcallAble + Copy>(
     regs: &mut T,
     target: UpcallTarget,
     info: UpcallInfo,
+    sup: bool,
 ) -> bool
 where
     UpcallFrame: From<T>,
@@ -150,18 +151,24 @@ where
     // Frame must be aligned for the xsave region.
     const MIN_FRAME_ALIGN: usize = 64;
 
+    let current_stack_pointer = regs.get_stack_top();
+    let switch_to_super = sup /* TODO: check context */ && !same_object(target.super_stack, current_stack_pointer as usize);
+
+    let target_addr = if switch_to_super {
+        target.super_address
+    } else {
+        target.self_address
+    };
+
     // If the address is not canonical, leave.
-    let Ok(target_addr) = VirtAddr::new(target.address as u64) else {
+    let Ok(target_addr) = VirtAddr::new(target_addr as u64) else {
         return false;
     };
 
     // Step 1: determine where we are going to put the frame. If we have
     // a supervisor stack, and we aren't currently on it, use that. Otherwise,
     // use the current stack pointer.
-    let current_stack_pointer = regs.get_stack_top();
-    let stack_pointer = if target.super_stack != 0
-        && !same_object(target.super_stack, current_stack_pointer as usize)
-    {
+    let stack_pointer = if switch_to_super {
         target.super_stack as u64
     } else {
         current_stack_pointer
@@ -260,18 +267,18 @@ impl Thread {
         *self.arch.upcall_restore_frame.borrow_mut() = Some(*frame);
     }
 
-    pub fn arch_queue_upcall(&self, target: UpcallTarget, info: UpcallInfo) {
+    pub fn arch_queue_upcall(&self, target: UpcallTarget, info: UpcallInfo, sup: bool) {
         match *self.arch.entry_registers.borrow() {
             Registers::None => {
                 panic!("tried to upcall to a thread that hasn't started yet");
             }
             Registers::Interrupt(int, _) => {
                 let int = unsafe { &mut *int };
-                set_upcall(int, target, info);
+                set_upcall(int, target, info, sup);
             }
             Registers::Syscall(sys, _) => {
                 let sys = unsafe { &mut *sys };
-                set_upcall(sys, target, info);
+                set_upcall(sys, target, info, sup);
             }
         }
     }
