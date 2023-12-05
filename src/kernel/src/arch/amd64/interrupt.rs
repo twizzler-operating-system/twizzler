@@ -117,8 +117,10 @@ impl From<IsrContext> for UpcallFrame {
             r13: int.r13,
             r14: int.r14,
             r15: int.r15,
-            // this gets filled out later
+            // these get filled out later
             xsave_region: [0; XSAVE_LEN],
+            thread_ptr: 0,
+            prior_ctx: 0.into(),
         }
     }
 }

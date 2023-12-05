@@ -1,6 +1,6 @@
-use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
+use twizzler_abi::upcall::{UpcallData, UpcallFrame};
 
-pub(crate) fn upcall_rust_entry(frame: &UpcallFrame, info: &UpcallInfo) {
+pub(crate) fn upcall_rust_entry(_frame: &UpcallFrame, info: &UpcallData) {
     println!("got upcall: {:?}", info);
     panic!("upcall");
 }

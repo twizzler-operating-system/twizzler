@@ -4,7 +4,7 @@ pub use crate::arch::upcall::UpcallFrame;
 use crate::object::ObjID;
 
 /// Information about an exception.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 pub struct ExceptionInfo {
     /// CPU-reported exception code.
@@ -21,7 +21,7 @@ impl ExceptionInfo {
 }
 
 /// Information about a memory access error to an object.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 pub struct ObjectMemoryFaultInfo {
     /// Object ID of attempted access.
@@ -51,7 +51,7 @@ impl ObjectMemoryFaultInfo {
 }
 
 /// Kinds of object memory errors.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(u8)]
 pub enum ObjectMemoryError {
     NullPageAccess,
@@ -59,7 +59,7 @@ pub enum ObjectMemoryError {
 }
 
 /// Information about a non-object-related memory access violation.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 pub struct MemoryContextViolationInfo {
     pub address: u64,
@@ -73,7 +73,7 @@ impl MemoryContextViolationInfo {
 }
 
 /// Kinds of memory access.
-#[derive(Debug, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(u8)]
 pub enum MemoryAccessKind {
     Read,
@@ -82,7 +82,7 @@ pub enum MemoryAccessKind {
 }
 
 /// Possible upcall reasons and info.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
 pub enum UpcallInfo {
     Exception(ExceptionInfo),
@@ -91,6 +91,7 @@ pub enum UpcallInfo {
 }
 
 impl UpcallInfo {
+    pub const NR_UPCALLS: usize = 3;
     pub fn number(&self) -> usize {
         match self {
             UpcallInfo::Exception(_) => 0,
@@ -100,16 +101,15 @@ impl UpcallInfo {
     }
 }
 
-// TODO: tie this to the above
-pub const NR_UPCALLS: usize = 3;
-
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
 pub struct UpcallData {
     /// Info for this upcall, including reason and elaboration data.
     pub info: UpcallInfo,
     /// Upcall flags
     pub flags: UpcallHandlerFlags,
+    /// Source context
+    pub source_ctx: ObjID,
 }
 
 /// Information for handling an upcall, per-thread. By default, a thread starts with
@@ -128,17 +128,17 @@ pub struct UpcallTarget {
     /// Supervisor context to use, when switching to supervisor context.
     pub super_ctx: ObjID,
     /// Per-upcall options.
-    pub options: [UpcallOptions; NR_UPCALLS],
+    pub options: [UpcallOptions; UpcallInfo::NR_UPCALLS],
 }
 
 impl UpcallTarget {
     pub fn new(
-        self_address: unsafe extern "C-unwind" fn(*const UpcallFrame, *const UpcallInfo) -> !,
-        super_address: unsafe extern "C-unwind" fn(*const UpcallFrame, *const UpcallInfo) -> !,
+        self_address: unsafe extern "C-unwind" fn(*const UpcallFrame, *const UpcallData) -> !,
+        super_address: unsafe extern "C-unwind" fn(*const UpcallFrame, *const UpcallData) -> !,
         super_stack: usize,
         super_thread_ptr: usize,
         super_ctx: ObjID,
-        options: [UpcallOptions; NR_UPCALLS],
+        options: [UpcallOptions; UpcallInfo::NR_UPCALLS],
     ) -> Self {
         Self {
             self_address: self_address as usize,

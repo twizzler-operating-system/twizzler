@@ -10,7 +10,7 @@ use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     syscall::ThreadSpawnArgs,
     thread::{ExecutionState, ThreadRepr},
-    upcall::{UpcallFlags, UpcallFrame, UpcallInfo, UpcallMode, UpcallTarget, UPCALL_EXIT_CODE},
+    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallTarget, UPCALL_EXIT_CODE},
 };
 
 use crate::{
@@ -290,7 +290,11 @@ impl Thread {
             exit(UPCALL_EXIT_CODE);
         }
 
-        self.arch_queue_upcall(upcall_target, info);
+        self.arch_queue_upcall(
+            upcall_target,
+            info,
+            matches!(options.mode, UpcallMode::CallSuper),
+        );
 
         // Suspend afterwards to ensure that the upcall frame is queued up.
         if options.flags.contains(UpcallFlags::SUSPEND) {

@@ -1,5 +1,5 @@
 #[allow(unused_imports)]
-use crate::upcall::UpcallInfo;
+use crate::upcall::{UpcallData, UpcallInfo};
 
 pub const XSAVE_LEN: usize = 1024;
 
@@ -51,7 +51,7 @@ impl UpcallFrame {
 #[cfg(feature = "runtime")]
 pub(crate) unsafe extern "C" fn upcall_entry2(
     rdi: *const UpcallFrame,
-    rsi: *const UpcallInfo,
+    rsi: *const UpcallData,
 ) -> ! {
     use crate::runtime::__twz_get_runtime;
 
@@ -64,7 +64,7 @@ pub(crate) unsafe extern "C" fn upcall_entry2(
 #[no_mangle]
 pub(crate) unsafe extern "C-unwind" fn upcall_entry(
     rdi: *const UpcallFrame,
-    rsi: *const UpcallInfo,
+    rsi: *const UpcallData,
 ) -> ! {
     core::arch::asm!(
         ".cfi_signal_frame",

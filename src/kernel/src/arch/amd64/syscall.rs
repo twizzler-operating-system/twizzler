@@ -53,7 +53,10 @@ impl From<X86SyscallContext> for UpcallFrame {
             r13: int.r13,
             r14: int.r14,
             r15: int.r15,
+            // these get filled out later
             xsave_region: [0; XSAVE_LEN],
+            thread_ptr: 0,
+            prior_ctx: 0.into(),
         }
     }
 }
@@ -193,7 +196,6 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
             // we MUST manually drop this, _and_ the current thread ref, because otherwise we leave
             // them hanging when we trampoline back into userspace.
             drop(rf);
-            drop(cur_th);
 
             // Restore the sse registers. These don't get restored by the isr return path, so we have to do it ourselves.
             if use_xsave() {
@@ -202,7 +204,13 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
                 core::arch::asm!("fxrstor [{}]", in(reg) up_frame.xsave_region.as_ptr());
             }
 
+            cur_th
+                .arch
+                .user_fs
+                .store(up_frame.thread_ptr, Ordering::SeqCst);
             x86::msr::wrmsr(x86::msr::IA32_FS_BASE, up_frame.thread_ptr);
+            drop(cur_th);
+
             let int_frame = IsrContext::from(up_frame);
             return_with_frame_to_user(int_frame);
             unreachable!()

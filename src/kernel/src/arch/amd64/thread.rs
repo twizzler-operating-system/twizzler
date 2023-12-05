@@ -6,12 +6,14 @@ use core::{
 use twizzler_abi::{
     arch::XSAVE_LEN,
     object::{MAX_SIZE, NULLPAGE_SIZE},
-    upcall::{UpcallFrame, UpcallInfo, UpcallTarget},
+    upcall::{UpcallData, UpcallFrame, UpcallHandlerFlags, UpcallInfo, UpcallTarget},
 };
 
 use crate::{
-    arch::amd64::gdt::set_kernel_stack, memory::VirtAddr, processor::KERNEL_STACK_SIZE,
-    thread::Thread,
+    arch::amd64::gdt::set_kernel_stack,
+    memory::VirtAddr,
+    processor::KERNEL_STACK_SIZE,
+    thread::{current_thread_ref, Thread},
 };
 
 use super::{interrupt::IsrContext, syscall::X86SyscallContext};
@@ -165,6 +167,16 @@ where
         return false;
     };
 
+    let upcall_data = UpcallData {
+        info,
+        flags: if switch_to_super {
+            UpcallHandlerFlags::SWITCHED_CONTEXT
+        } else {
+            UpcallHandlerFlags::empty()
+        },
+        source_ctx: 0.into(),
+    };
+
     // Step 1: determine where we are going to put the frame. If we have
     // a supervisor stack, and we aren't currently on it, use that. Otherwise,
     // use the current stack pointer.
@@ -179,23 +191,23 @@ where
 
     // Step 2: compute all the sizes for things we're going to shuffle around, and check
     // if we even have enough space.
-    let info_size = core::mem::size_of::<UpcallInfo>();
-    let info_size = (info_size + MIN_STACK_ALIGN) & !(MIN_STACK_ALIGN - 1);
+    let data_size = core::mem::size_of::<UpcallData>();
+    let data_size = (data_size + MIN_STACK_ALIGN) & !(MIN_STACK_ALIGN - 1);
     let frame_size = core::mem::size_of::<UpcallFrame>();
     let frame_size = (frame_size + MIN_FRAME_ALIGN) & !(MIN_FRAME_ALIGN - 1);
-    let info_start = stack_top - info_size as u64;
+    let data_start = stack_top - data_size as u64;
 
     // Frame needs extra care, since it must be aligned on 64-bytes for the xsave region.
-    let frame_highest_start = info_start as usize - frame_size;
+    let frame_highest_start = data_start as usize - frame_size;
     let frame_padding = frame_highest_start - (frame_highest_start & !(MIN_FRAME_ALIGN - 1));
-    let frame_start = info_start - (frame_size + frame_padding) as u64;
+    let frame_start = data_start - (frame_size + frame_padding) as u64;
     assert_eq!(
         frame_start,
         frame_highest_start as u64 & !(MIN_FRAME_ALIGN as u64 - 1)
     );
     assert_eq!(frame_size & (MIN_FRAME_ALIGN - 1), 0);
 
-    let total_size = info_size + frame_size + frame_padding + RED_ZONE_SIZE;
+    let total_size = data_size + frame_size + frame_padding + RED_ZONE_SIZE;
     let total_size = (total_size + MIN_STACK_ALIGN) & !(MIN_STACK_ALIGN - 1);
 
     let stack_object_base = (stack_top as usize / MAX_SIZE) * MAX_SIZE + NULLPAGE_SIZE;
@@ -204,11 +216,16 @@ where
         return false;
     }
 
-    // Step 3: write out the frame and the info into the stack.
+    // Step 3: write out the frame and the data into the stack.
 
-    let info_ptr = info_start as usize as *mut UpcallInfo;
+    let data_ptr = data_start as usize as *mut UpcallData;
     let frame_ptr = frame_start as usize as *mut UpcallFrame;
-    let frame: UpcallFrame = (*regs).into();
+    let mut frame: UpcallFrame = (*regs).into();
+    frame.thread_ptr = current_thread_ref()
+        .unwrap()
+        .arch
+        .user_fs
+        .load(Ordering::SeqCst);
 
     unsafe {
         // We still need to save the fpu registers / sse state.
@@ -217,7 +234,7 @@ where
         } else {
             core::arch::asm!("fxsave [{}]", in(reg) frame.xsave_region.as_ptr());
         }
-        info_ptr.write(info);
+        data_ptr.write(upcall_data);
         frame_ptr.write(frame);
     }
 
@@ -230,7 +247,7 @@ where
     // we preserve this just for consistency.
     let stack_start = stack_start - core::mem::size_of::<u64>() as u64;
 
-    regs.set_upcall(target_addr, frame_start, info_start, stack_start);
+    regs.set_upcall(target_addr, frame_start, data_start, stack_start);
     true
 }
 

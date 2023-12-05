@@ -1,10 +1,10 @@
-use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
+use twizzler_abi::upcall::{UpcallData, UpcallFrame};
 
 #[cfg(feature = "runtime")]
 #[no_mangle]
 pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry(
     rdi: *const UpcallFrame,
-    rsi: *const UpcallInfo,
+    rsi: *const UpcallData,
 ) -> ! {
     core::arch::asm!(
         "and rsp, 0xfffffffffffffff0",
@@ -23,7 +23,7 @@ pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry(
 #[no_mangle]
 pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry2(
     rdi: *const UpcallFrame,
-    rsi: *const UpcallInfo,
+    rsi: *const UpcallData,
 ) -> ! {
     use twizzler_abi::{syscall::sys_thread_exit, upcall::UPCALL_EXIT_CODE};
 

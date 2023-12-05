@@ -4,7 +4,10 @@ use core::{alloc::GlobalAlloc, ptr};
 
 use twizzler_runtime_api::{AuxEntry, BasicAux, BasicReturn, CoreRuntime};
 
-use crate::{object::ObjID, upcall::UpcallTarget};
+use crate::{
+    object::ObjID,
+    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
+};
 
 use super::{
     alloc::MinimalAllocator,
@@ -89,8 +92,14 @@ impl CoreRuntime for MinimalRuntime {
         }
         let upcall_target = UpcallTarget::new(
             crate::arch::upcall::upcall_entry,
+            crate::arch::upcall::upcall_entry,
             0,
-            crate::upcall::UpcallMode::Call,
+            0,
+            0.into(),
+            [UpcallOptions {
+                flags: UpcallFlags::empty(),
+                mode: UpcallMode::CallSelf,
+            }; UpcallInfo::NR_UPCALLS],
         );
         crate::syscall::sys_thread_set_upcall(upcall_target);
 
