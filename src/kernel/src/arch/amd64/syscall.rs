@@ -213,7 +213,6 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
 
             let int_frame = IsrContext::from(up_frame);
             return_with_frame_to_user(int_frame);
-            unreachable!()
         }
     }
     /* TODO: check that rcx is canonical */

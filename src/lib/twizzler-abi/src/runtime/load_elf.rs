@@ -212,7 +212,7 @@ pub fn spawn_new_executable(
 
     use alloc::vec::Vec;
     // map the PT_LOAD directives to copy-from commands Twizzler can use for creating objects.
-    let mut copy_cmds: Vec<_> = elf
+    let copy_cmds: Vec<_> = elf
         .phdrs()
         .filter(|p| p.phdr_type() == PhdrType::Load)
         .map(|phdr| {
@@ -220,11 +220,12 @@ pub fn spawn_new_executable(
             let vaddr = phdr.vaddr as usize;
             let memsz = phdr.memsz as usize;
             let offset = phdr.offset as usize;
-            let align = phdr.align as usize;
+            let _align = phdr.align as usize;
             let filesz = phdr.filesz as usize;
 
             fn within_object(slot: usize, addr: usize) -> bool {
-                addr >= slot * MAX_SIZE + NULLPAGE_SIZE && addr < (slot + 1) * MAX_SIZE - NULLPAGE_SIZE * 2
+                addr >= slot * MAX_SIZE + NULLPAGE_SIZE
+                    && addr < (slot + 1) * MAX_SIZE - NULLPAGE_SIZE * 2
             }
             if !within_object(if targets_data { 1 } else { 0 }, vaddr)
                 || memsz > MAX_SIZE - NULLPAGE_SIZE * 2
@@ -243,19 +244,14 @@ pub fn spawn_new_executable(
             let dest_start = vaddr as usize % MAX_SIZE;
             // the size of the data that must be copied from the ELF
             let len = filesz;
-            
+
             // NOTE: Data that needs to be initialized to zero is not handled
             // (filesz < memsz). The reason things work now is because
             // the frame allocator in the kernel hands out zeroed pages by default.
             // If this behaviour changes, we will need to explicitly handle it here.
             (
                 targets_data,
-                ObjectSource::new_copy(
-                    exe.id(),
-                    src_start as u64,
-                    dest_start as u64,
-                    len,
-                ),
+                ObjectSource::new_copy(exe.id(), src_start as u64, dest_start as u64, len),
             )
         })
         .collect();
