@@ -35,6 +35,7 @@ pub struct ObjectMemoryFaultInfo {
 }
 
 impl ObjectMemoryFaultInfo {
+    /// Construct a new upcall info for memory fault.
     pub fn new(
         object_id: ObjID,
         error: ObjectMemoryError,
@@ -54,7 +55,9 @@ impl ObjectMemoryFaultInfo {
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(u8)]
 pub enum ObjectMemoryError {
+    /// Tried to access an object's null page
     NullPageAccess,
+    /// Tried to access outside of an object
     OutOfBounds(usize),
 }
 
@@ -62,7 +65,9 @@ pub enum ObjectMemoryError {
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 pub struct MemoryContextViolationInfo {
+    /// The virtual address that caused the exception.
     pub address: u64,
+    /// The kind of memory access.
     pub kind: MemoryAccessKind,
 }
 
@@ -91,7 +96,9 @@ pub enum UpcallInfo {
 }
 
 impl UpcallInfo {
+    /// The number of upcall info variants
     pub const NR_UPCALLS: usize = 3;
+    /// Get the number associated with this variant
     pub fn number(&self) -> usize {
         match self {
             UpcallInfo::Exception(_) => 0,
@@ -101,6 +108,8 @@ impl UpcallInfo {
     }
 }
 
+/// A collection of data about this upcall, and the [UpcallInfo] for this
+/// particular upcall.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
 pub struct UpcallData {
@@ -132,6 +141,7 @@ pub struct UpcallTarget {
 }
 
 impl UpcallTarget {
+    /// Construct a new upcall target.
     pub fn new(
         self_address: unsafe extern "C-unwind" fn(*const UpcallFrame, *const UpcallData) -> !,
         super_address: unsafe extern "C-unwind" fn(*const UpcallFrame, *const UpcallData) -> !,
@@ -157,6 +167,7 @@ impl UpcallTarget {
 pub const UPCALL_EXIT_CODE: u64 = 127;
 
 bitflags::bitflags! {
+    /// Flags controlling upcall handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UpcallFlags : u8 {
     /// Whether or not to suspend the thread before handling (or aborting from) the upcall.
@@ -165,6 +176,7 @@ pub struct UpcallFlags : u8 {
 }
 
 bitflags::bitflags! {
+    /// Flags passed to the upcall handler in [UpcallData].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UpcallHandlerFlags : u8 {
     /// Whether or not to suspend the thread before handling (or aborting from) the upcall.
@@ -172,6 +184,7 @@ pub struct UpcallHandlerFlags : u8 {
 }
 }
 
+/// Possible modes for upcall handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum UpcallMode {
     /// Handle this upcall by immediate abort. If the SUSPEND flag is set, the thread will

@@ -99,11 +99,19 @@ A thread may be sent events, which may be either synchronous or asynchronous.
 A synchronous event is one that interrupts execution of the thread immediately, causing it to jump to a different execution location. These
 events are typically used to indicate exceptions or memory errors which cannot be ignored. For example, a thread reading some unmapped memory, dividing by zero, trying to read a mapped object which does not exist, etc. The kernel is the only thing that may send a thread a synchronous event; userspace programs wishing to communicate with threads should use the asynchronous event mechanism, detailed below.
 
-When a thread receives a synchronous event, it jumps to the thread's upcall pointer (see Thread Kernel State, below). If no pointer is registered, or an invalid pointer is registered, all synchronous events result in thread termination. If the upcall would cause the stack to be overflowed, the thread is terminated.
+There are several different kinds of upcalls (see [List of Syncronous Events](SyncEvents.md)). For each one, the thread can either
+abort or call into userspace for handling. When calling, the thread may switch to "supervisor context", which is defined by a set
+of values for stack pointer, thread pointer, and security context ID contained in this thread's upcall target information. If,
+for a given upcall, the upcall options say to call to super, and we aren't already in the super context, the context will be
+switched and the super stack pointer and thread pointer will be set for the thread before pushing upcall frame information and
+before the upcall is handled. This allows a supervisor context to trap thread upcalls and handle them in a secure context, if
+that functionality is needed. A thread can also signal that it would like to handle a particular upcall without switching.
 
-A thread may, optionally, choose to be suspended upon receiving a synchronous event. If this is the case, the thread's status field is updated to be Suspended after the stack frame for the upcall is initialized and the instruction pointer is set to the upcall pointer. A thread-sync wake operation is then performed on the status field.
+When a thread receives a synchronous event, it jumps to the target in the upcall target information (see Thread Kernel State, below), selecting which address to use based on if it is switching contexts or not. If no pointer is registered, or an invalid pointer is registered, all synchronous events result in thread termination. If the upcall would cause the stack to be overflowed, the thread is terminated.
 
-For a list of currently defined synchronous events, see [List of Synchronous Events](SyncEvents.md).
+A thread may, optionally, choose to be suspended upon receiving a synchronous event. If this is the case, the thread's status field is updated to be Suspended after the stack frame for the upcall is initialized and the instruction pointer is set to the upcall pointer. A thread-sync wake operation is then performed on the status field. A thread may also suspend on an upcall that
+it specifies to handle with an abort. In this case, the thread is still suspended before exiting, and must be unsuspended before
+it will exit, but it will unconditionally exit when unsuspended.
 
 ### Asynchronous Events
 
@@ -183,7 +191,8 @@ A thread may call these functions on another thread only if that thread has writ
 The kernel also maintains some internal state per-thread that can be manipulated or set by userspace. These values may be read or modified via the `sys_thread_control` syscall or helper functions:
 
 - TLS Pointer: This is a pointer that is loaded into an architecture-specific register whenever the thread is running, and is commonly used to denote thread-local storage areas. For example, on x86_64, this pointer value is loaded into the `fs` register upon context switch.
-- Upcall Pointer: This pointer is used by the kernel to invoke synchronous events. It is called by the kernel with a special ABI defined in the twizzler-abi crate and should not be used directly by end users. When a thread is spawned, if the thread is to inherit the VM context of its parent, the upcall pointer is inherited too.
+- Upcall target information: This is a struct containing a self-handling-upcall pointer, a set of supervisor thread state information for switching contexts, if needed (thread pointer, stack pointer, context ID), and a set of options for each upcall.
+When a thread is spawned, it can either (1) have a specific upcall target information applied, (2) inherit from the calling thread, or (3) set all upcalls to default-abort.
 - Affinity, see below.
 - Priority, see below.
 
