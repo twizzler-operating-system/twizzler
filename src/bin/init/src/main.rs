@@ -2,7 +2,6 @@
 #![feature(naked_functions)]
 #![feature(thread_local)]
 #![feature(duration_constants)]
-#![feature(core_intrinsics)]
 #![allow(unreachable_code)]
 //#![no_main]
 

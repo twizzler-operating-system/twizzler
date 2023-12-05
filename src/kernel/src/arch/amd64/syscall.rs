@@ -193,7 +193,7 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
         // we'll use the ISR return path, which doesn't.
         let mut rf = cur_th.arch.upcall_restore_frame.borrow_mut();
         if let Some(up_frame) = rf.take() {
-            // we MUST manually drop this, _and_ the current thread ref, because otherwise we leave
+            // we MUST manually drop this, _and_ the current thread ref (a bit later), because otherwise we leave
             // them hanging when we trampoline back into userspace.
             drop(rf);
 
@@ -204,6 +204,7 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
                 core::arch::asm!("fxrstor [{}]", in(reg) up_frame.xsave_region.as_ptr());
             }
 
+            // Restore the thread pointer (it might have changed, and we also allow for it to change inside the upcall frame during the upcall)
             cur_th
                 .arch
                 .user_fs

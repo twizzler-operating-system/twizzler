@@ -16,6 +16,7 @@ use crate::{
 };
 
 use super::{
+    gdt::user_selectors,
     set_interrupt,
     thread::{Registers, UpcallAble},
 };
@@ -68,6 +69,7 @@ impl UpcallAble for IsrContext {
 
 impl From<UpcallFrame> for IsrContext {
     fn from(frame: UpcallFrame) -> Self {
+        let sels = user_selectors();
         Self {
             r15: frame.r15,
             r14: frame.r14,
@@ -89,9 +91,8 @@ impl From<UpcallFrame> for IsrContext {
             rflags: frame.rflags,
 
             err: 0,
-            // TODO
-            cs: 0x23,
-            ss: 0x1b,
+            cs: sels.1.into(),
+            ss: sels.0.into(),
         }
     }
 }

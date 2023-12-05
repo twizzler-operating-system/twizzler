@@ -37,6 +37,7 @@ pub struct ThreadSpawnArgs {
 impl ThreadSpawnArgs {
     /// Construct a new ThreadSpawnArgs. If vm_context_handle is Some(handle), then spawn the thread in the
     /// VM context defined by handle. Otherwise spawn it in the same VM context as the spawner.
+    #[warn(clippy::too_many_arguments)]
     pub fn new(
         entry: usize,
         stack_base: usize,

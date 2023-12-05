@@ -27,11 +27,9 @@ pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry2(
 ) -> ! {
     use twizzler_abi::{syscall::sys_thread_exit, upcall::UPCALL_EXIT_CODE};
 
-    if std::panic::catch_unwind(|| {
-        crate::runtime::upcall::upcall_rust_entry(&*rdi, &*rsi);
-    })
-    .is_err()
-    {
+    let handler = || crate::runtime::upcall::upcall_rust_entry(&*rdi, &*rsi);
+
+    if std::panic::catch_unwind(handler).is_err() {
         sys_thread_exit(UPCALL_EXIT_CODE);
     }
     // TODO: with uiret instruction, we may be able to avoid the kernel, here.

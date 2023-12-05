@@ -50,6 +50,10 @@ pub struct ArchThread {
     pub user_fs: AtomicU64,
     xsave_inited: AtomicBool,
     pub entry_registers: RefCell<Registers>,
+    /// The frame of an upcall to restore. The restoration path only occurs on the first
+    /// return-from-syscall after entering from the syscall that provides the frame to restore.
+    /// We store that frame here until we hit the syscall return path, which then restores the
+    /// frame and returns to user using this frame.
     pub upcall_restore_frame: RefCell<Option<UpcallFrame>>,
     //user_gs: u64,
 }
@@ -150,11 +154,13 @@ where
     const MIN_STACK_ALIGN: usize = 16;
     // We have to leave room for the red zone.
     const RED_ZONE_SIZE: usize = 512;
-    // Frame must be aligned for the xsave region.
+    // Frame must be aligned for the xsave region (Intel says aligned on 64 bytes).
     const MIN_FRAME_ALIGN: usize = 64;
 
     let current_stack_pointer = regs.get_stack_top();
-    let switch_to_super = sup /* TODO: check context */ && !same_object(target.super_stack, current_stack_pointer as usize);
+    // We only switch contexts if it was requested and we aren't in that context.
+    // TODO: once security contexts are more fully implemented, we'll need to change this code.
+    let switch_to_super = sup && !same_object(target.super_stack, current_stack_pointer as usize);
 
     let target_addr = if switch_to_super {
         target.super_address
@@ -185,6 +191,10 @@ where
     } else {
         current_stack_pointer
     };
+
+    // TODO: once security contexts are more implemented, we'll need to do a bunch of permission checks
+    // on the stack and target jump addresses.
+
     // Don't touch the red zone for the function we were in.
     let stack_top = stack_pointer - RED_ZONE_SIZE as u64;
     let stack_top = stack_top & (!(MIN_STACK_ALIGN as u64 - 1));
@@ -217,10 +227,11 @@ where
     }
 
     // Step 3: write out the frame and the data into the stack.
-
     let data_ptr = data_start as usize as *mut UpcallData;
     let frame_ptr = frame_start as usize as *mut UpcallFrame;
     let mut frame: UpcallFrame = (*regs).into();
+
+    // Step 3a: we need to fill out some extra stuff in the upcall frame, like the thread pointer and fpu state.
     frame.thread_ptr = current_thread_ref()
         .unwrap()
         .arch
@@ -268,8 +279,8 @@ pub(super) fn use_xsave() -> bool {
     }
 }
 
-/// Compute the top of the stack. 
-/// 
+/// Compute the top of the stack.
+///
 /// # Safety
 /// The range from [stack_base, stack_base+stack_size] must be valid addresses.
 pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
