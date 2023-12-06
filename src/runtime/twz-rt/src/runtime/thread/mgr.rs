@@ -6,8 +6,9 @@ use dynlink::tls::TlsRegion;
 use tracing::trace;
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
-    syscall::sys_spawn,
+    syscall::{sys_spawn, UpcallTargetSpawnOption},
     thread::{ExecutionState, ThreadRepr},
+    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
 use twizzler_runtime_api::{CoreRuntime, JoinError, MapFlags, ObjectRuntime, SpawnError};
 
@@ -165,6 +166,18 @@ impl ReferenceRuntime {
             tls.get_thread_pointer_value(),
         );
 
+        let upcall_target = UpcallTarget::new(
+            crate::arch::rr_upcall_entry,
+            crate::arch::rr_upcall_entry,
+            0,
+            0,
+            0.into(),
+            [UpcallOptions {
+                flags: UpcallFlags::empty(),
+                mode: UpcallMode::CallSelf,
+            }; UpcallInfo::NR_UPCALLS],
+        );
+
         let thid = unsafe {
             sys_spawn(twizzler_abi::syscall::ThreadSpawnArgs {
                 entry: trampoline as usize,
@@ -174,6 +187,7 @@ impl ReferenceRuntime {
                 arg: arg_raw,
                 flags: twizzler_abi::syscall::ThreadSpawnFlags::empty(),
                 vm_context_handle: None,
+                upcall_target: UpcallTargetSpawnOption::SetTo(upcall_target),
             })
         }
         .map_err(|_| twizzler_runtime_api::SpawnError::KernelError)?;

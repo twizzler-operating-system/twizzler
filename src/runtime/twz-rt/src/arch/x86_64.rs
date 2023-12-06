@@ -1,23 +1,15 @@
-use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
-
-use crate::preinit_println;
+use twizzler_abi::upcall::{UpcallData, UpcallFrame};
 
 #[cfg(feature = "runtime")]
 #[no_mangle]
-pub(crate) unsafe extern "C" fn rr_upcall_entry(
-    rdi: *const UpcallFrame,
-    rsi: *const UpcallInfo,
+pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry(
+    rdi: *mut UpcallFrame,
+    rsi: *const UpcallData,
 ) -> ! {
     core::arch::asm!(
-        ".cfi_signal_frame",
+        "and rsp, 0xfffffffffffffff0",
         "mov rbp, rdx",
         "push rax",
-        "push rbp",
-        "push rax",
-        ".cfi_def_cfa rsp, 0",
-        ".cfi_offset rbp, 8",
-        ".cfi_offset rip, 0",
-        ".cfi_return_column rip",
         "jmp rr_upcall_entry2",
         in("rax") (*rdi).rip,
         in("rdx") (*rdi).rbp,
@@ -29,18 +21,17 @@ pub(crate) unsafe extern "C" fn rr_upcall_entry(
 
 #[cfg(feature = "runtime")]
 #[no_mangle]
-pub(crate) unsafe extern "C" fn rr_upcall_entry2(
-    rdi: *const UpcallFrame,
-    rsi: *const UpcallInfo,
+pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry2(
+    rdi: *mut UpcallFrame,
+    rsi: *const UpcallData,
 ) -> ! {
-    use crate::runtime::do_impl::__twz_get_runtime;
+    use twizzler_abi::{syscall::sys_thread_exit, upcall::UPCALL_EXIT_CODE};
 
-    preinit_println!(
-        "got upcall: {:?}, {:?}",
-        rdi.as_ref().unwrap(),
-        rsi.as_ref().unwrap()
-    );
-    //crate::runtime::upcall::upcall_rust_entry(&*rdi, &*rsi);
-    let runtime = __twz_get_runtime();
-    runtime.abort()
+    let handler = || crate::runtime::upcall::upcall_rust_entry(&mut *rdi, &*rsi);
+
+    if std::panic::catch_unwind(handler).is_err() {
+        sys_thread_exit(UPCALL_EXIT_CODE);
+    }
+    // TODO: with uiret instruction, we may be able to avoid the kernel, here.
+    twizzler_abi::syscall::sys_thread_resume_from_upcall(&*rdi);
 }

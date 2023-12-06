@@ -1,15 +1,18 @@
+use num_enum::{FromPrimitive, IntoPrimitive};
+
 use crate::{
     arch::syscall::raw_syscall,
     object::ObjID,
-    upcall::{UpcallFrame, UpcallInfo},
+    upcall::{UpcallFrame, UpcallTarget},
 };
 
 use super::Syscall;
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, FromPrimitive, IntoPrimitive)]
 #[repr(u64)]
 /// Possible Thread Control operations
 pub enum ThreadControl {
+    #[default]
     /// Exit the thread. arg1 and arg2 should be code and location respectively, where code contains
     /// a 64-bit value to write into *location, followed by the kernel performing a thread-wake
     /// event on the memory word at location. If location is null, the write and thread-wake do not occur.
@@ -49,18 +52,8 @@ pub enum ThreadControl {
     SetAffinity = 14,
     /// Get a thread's affinity.
     GetAffinity = 15,
-}
-
-impl From<u64> for ThreadControl {
-    fn from(x: u64) -> Self {
-        match x {
-            0 => Self::Exit,
-            1 => Self::Yield,
-            2 => Self::SetTls,
-            3 => Self::SetUpcall,
-            _ => Self::Yield,
-        }
-    }
+    /// Resume from an upcall.
+    ResumeFromUpcall = 16,
 }
 
 /// Exit the thread. The code will be written to the [crate::thread::ThreadRepr] for the current thread as part
@@ -90,14 +83,34 @@ pub fn sys_thread_settls(tls: u64) {
 }
 
 /// Set the upcall location for this thread.
-pub fn sys_thread_set_upcall(
-    loc: unsafe extern "C" fn(*const UpcallFrame, *const UpcallInfo) -> !,
-) {
+pub fn sys_thread_set_upcall(target: UpcallTarget) {
     unsafe {
         raw_syscall(
             Syscall::ThreadCtrl,
-            &[ThreadControl::SetUpcall as u64, loc as usize as u64],
+            &[
+                ThreadControl::SetUpcall as u64,
+                (&target as *const _) as usize as u64,
+            ],
         );
+    }
+}
+
+/// Resume from an upcall, restoring registers. If you can
+/// resume yourself in userspace, this call is not necessary.
+///
+/// # Safety
+/// The frame argument must point to a valid upcall frame with
+/// a valid register state.
+pub unsafe fn sys_thread_resume_from_upcall(frame: &UpcallFrame) -> ! {
+    unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                ThreadControl::ResumeFromUpcall as u64,
+                frame as *const _ as usize as u64,
+            ],
+        );
+        unreachable!()
     }
 }
 

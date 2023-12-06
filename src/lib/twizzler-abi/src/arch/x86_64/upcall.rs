@@ -1,10 +1,13 @@
 #[allow(unused_imports)]
-use crate::upcall::UpcallInfo;
+use crate::upcall::{UpcallData, UpcallInfo};
+
+pub const XSAVE_LEN: usize = 1024;
 
 /// Arch-specific frame info for upcall.
-#[derive(Clone, Debug)]
-#[repr(C)]
+#[derive(Clone, Debug, Copy)]
+#[repr(C, align(64))]
 pub struct UpcallFrame {
+    pub xsave_region: [u8; XSAVE_LEN],
     pub rip: u64,
     pub rflags: u64,
     pub rsp: u64,
@@ -23,6 +26,8 @@ pub struct UpcallFrame {
     pub r13: u64,
     pub r14: u64,
     pub r15: u64,
+    pub thread_ptr: u64,
+    pub prior_ctx: crate::object::ObjID,
 }
 
 impl UpcallFrame {
@@ -46,7 +51,7 @@ impl UpcallFrame {
 #[cfg(feature = "runtime")]
 pub(crate) unsafe extern "C" fn upcall_entry2(
     rdi: *const UpcallFrame,
-    rsi: *const UpcallInfo,
+    rsi: *const UpcallData,
 ) -> ! {
     use crate::runtime::__twz_get_runtime;
 
@@ -57,7 +62,10 @@ pub(crate) unsafe extern "C" fn upcall_entry2(
 
 #[cfg(feature = "runtime")]
 #[no_mangle]
-pub(crate) unsafe extern "C" fn upcall_entry(rdi: *const UpcallFrame, rsi: *const UpcallInfo) -> ! {
+pub(crate) unsafe extern "C-unwind" fn upcall_entry(
+    rdi: *mut UpcallFrame,
+    rsi: *const UpcallData,
+) -> ! {
     core::arch::asm!(
         ".cfi_signal_frame",
         "mov rbp, rdx",

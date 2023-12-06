@@ -10,7 +10,7 @@ use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     syscall::ThreadSpawnArgs,
     thread::{ExecutionState, ThreadRepr},
-    upcall::UpcallInfo,
+    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallTarget, UPCALL_EXIT_CODE},
 };
 
 use crate::{
@@ -59,6 +59,7 @@ pub struct Thread {
     pub stats: ThreadStats,
     spawn_args: Option<ThreadSpawnArgs>,
     pub control_object: ControlObjectCacher<ThreadRepr>,
+    pub upcall_target: Spinlock<Option<UpcallTarget>>,
     // TODO: consider reusing one of these for the others.
     pub sched_link: AtomicLink,
     pub mutex_link: AtomicLink,
@@ -125,6 +126,7 @@ impl Thread {
             mutex_link: AtomicLink::default(),
             suspend_link: RBTreeAtomicLink::default(),
             condvar_link: RBTreeAtomicLink::default(),
+            upcall_target: Spinlock::new(None),
         }
     }
 
@@ -263,11 +265,41 @@ impl Thread {
         self.id.value()
     }
 
-    pub fn send_upcall(&self, info: UpcallInfo) {
-        // TODO
-        let ctx = current_memory_context().unwrap();
-        let upcall = ctx.get_upcall().unwrap();
-        self.arch_queue_upcall(upcall, info);
+    pub fn send_upcall(self: &ThreadRef, info: UpcallInfo) {
+        if !self.is_current_thread() {
+            panic!("cannot send upcall to a different thread");
+        }
+        if self.is_critical() {
+            panic!("tried to signal upcall in critical section");
+        }
+
+        let Some(upcall_target) = *self.upcall_target.lock() else {
+            exit(UPCALL_EXIT_CODE);
+        };
+
+        let num = info.number();
+
+        let Some(options) = upcall_target.options.get(num) else {
+            exit(UPCALL_EXIT_CODE);
+        };
+
+        if matches!(options.mode, UpcallMode::Abort) {
+            if options.flags.contains(UpcallFlags::SUSPEND) {
+                self.suspend();
+            }
+            exit(UPCALL_EXIT_CODE);
+        }
+
+        self.arch_queue_upcall(
+            upcall_target,
+            info,
+            matches!(options.mode, UpcallMode::CallSuper),
+        );
+
+        // Suspend afterwards to ensure that the upcall frame is queued up.
+        if options.flags.contains(UpcallFlags::SUSPEND) {
+            self.suspend();
+        }
     }
 }
 
