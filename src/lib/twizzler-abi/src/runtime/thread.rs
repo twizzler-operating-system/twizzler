@@ -108,6 +108,7 @@ impl ThreadRuntime for MinimalRuntime {
                 arg: args.arg,
                 flags: ThreadSpawnFlags::empty(),
                 vm_context_handle: None,
+                upcall_target: crate::syscall::UpcallTargetSpawnOption::Inherit,
             })?
         };
 

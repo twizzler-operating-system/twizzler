@@ -1,6 +1,7 @@
 //! Implements the core runtime functions.
 
 use dynlink::{context::RuntimeInitInfo, library::CtorInfo};
+use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
 use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
 
 use crate::{
@@ -93,7 +94,18 @@ impl CoreRuntime for ReferenceRuntime {
         let init_info = unsafe { preinit_unwrap((init_info as *const RuntimeInitInfo).as_ref()) };
 
         // Step 3: bootstrap pre-std stuff: upcalls, allocator, TLS, constructors (the order matters, ctors need to happen last)
-        twizzler_abi::syscall::sys_thread_set_upcall(crate::arch::rr_upcall_entry);
+        let upcall_target = UpcallTarget::new(
+            crate::arch::rr_upcall_entry,
+            crate::arch::rr_upcall_entry,
+            0,
+            0,
+            0.into(),
+            [UpcallOptions {
+                flags: UpcallFlags::empty(),
+                mode: UpcallMode::CallSelf,
+            }; UpcallInfo::NR_UPCALLS],
+        );
+        twizzler_abi::syscall::sys_thread_set_upcall(upcall_target);
         self.init_allocator(init_info);
         self.init_tls(init_info);
         self.init_ctors(init_info.ctor_infos());

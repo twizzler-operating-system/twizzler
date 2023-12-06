@@ -40,7 +40,6 @@ use crate::{
 /// A type that implements [Context] for virtual memory systems.
 pub struct VirtContext {
     arch: ArchContext,
-    upcall: Spinlock<Option<VirtAddr>>,
     slots: Mutex<SlotMgr>,
     id: Id<'static>,
     is_kernel: bool,
@@ -151,7 +150,6 @@ impl VirtContext {
     fn __new(arch: ArchContext, is_kernel: bool) -> Self {
         Self {
             arch,
-            upcall: Spinlock::new(None),
             slots: Mutex::new(SlotMgr::default()),
             is_kernel,
             id: CONTEXT_IDS.next(),
@@ -221,16 +219,7 @@ impl VirtContext {
 }
 
 impl UserContext for VirtContext {
-    type UpcallInfo = VirtAddr;
     type MappingInfo = Slot;
-
-    fn set_upcall(&self, target: Self::UpcallInfo) {
-        *self.upcall.lock() = Some(target);
-    }
-
-    fn get_upcall(&self) -> Option<Self::UpcallInfo> {
-        *self.upcall.lock()
-    }
 
     fn switch_to(&self) {
         self.arch.switch_to();

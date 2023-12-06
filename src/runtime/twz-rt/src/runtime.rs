@@ -12,6 +12,7 @@ mod slot;
 mod stdio;
 mod thread;
 mod time;
+pub(crate) mod upcall;
 
 pub use thread::RuntimeThreadControl;
 

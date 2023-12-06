@@ -352,6 +352,9 @@ fn generate_config_toml() -> anyhow::Result<()> {
         .push(host_triple);
 
     toml["target"][host_triple]["llvm-has-rust-patches"] = toml_edit::value(true);
+    toml["target"][host_triple]["cc"] = toml_edit::value("/usr/bin/clang");
+    toml["target"][host_triple]["cxx"] = toml_edit::value("/usr/bin/clang++");
+    toml["target"][host_triple]["linker"] = toml_edit::value("/usr/bin/clang++");
 
     for triple in all_possible_platforms() {
         let clang = llvm_bin.join("clang").to_str().unwrap().to_string();

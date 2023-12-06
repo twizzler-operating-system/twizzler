@@ -3,7 +3,7 @@ use core::mem::MaybeUninit;
 use alloc::{boxed::Box, sync::Arc};
 use twizzler_abi::{
     object::ObjID,
-    syscall::{ThreadSpawnArgs, ThreadSpawnError, ThreadSpawnFlags},
+    syscall::{ThreadSpawnArgs, ThreadSpawnError, ThreadSpawnFlags, UpcallTargetSpawnOption},
 };
 
 use crate::{
@@ -53,6 +53,14 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> 
             Priority::default_user(),
         )
     };
+    match args.upcall_target {
+        UpcallTargetSpawnOption::DefaultAbort => {}
+        UpcallTargetSpawnOption::Inherit => {
+            *thread.upcall_target.lock() =
+                current_thread_ref().and_then(|cth| *cth.upcall_target.lock());
+        }
+        UpcallTargetSpawnOption::SetTo(ut) => *thread.upcall_target.lock() = Some(ut),
+    }
     unsafe {
         thread.init(user_new_start);
     }
@@ -84,6 +92,7 @@ pub fn start_new_kernel(pri: Priority, start: extern "C" fn(), arg: usize) -> Th
         arg,
         flags: ThreadSpawnFlags::empty(),
         vm_context_handle: None,
+        upcall_target: UpcallTargetSpawnOption::DefaultAbort,
     });
     schedule_new_thread(thread)
 }
