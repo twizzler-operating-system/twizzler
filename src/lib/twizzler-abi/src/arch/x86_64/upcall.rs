@@ -63,7 +63,7 @@ pub(crate) unsafe extern "C" fn upcall_entry2(
 #[cfg(feature = "runtime")]
 #[no_mangle]
 pub(crate) unsafe extern "C-unwind" fn upcall_entry(
-    rdi: *const UpcallFrame,
+    rdi: *mut UpcallFrame,
     rsi: *const UpcallData,
 ) -> ! {
     core::arch::asm!(

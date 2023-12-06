@@ -113,6 +113,12 @@ A thread may, optionally, choose to be suspended upon receiving a synchronous ev
 it specifies to handle with an abort. In this case, the thread is still suspended before exiting, and must be unsuspended before
 it will exit, but it will unconditionally exit when unsuspended.
 
+A userspace upcall handler is called via the C ABI, with the signature `unsafe extern "C-unwind" fn(*mut UpcallFrame, *const UpcallData) -> !`. Since
+the thread state has been modified, returning from this function would return to the upcall-triggering address with invalid state, thus this function
+may not return, and must instead restore the pre-upcall frame. It can do this by calling `sys_thread_resume_from_upcall` with the pre-upcall frame,
+which is passed as `*mut UpcallFrame` in the first argument to the upcall handler. However, if a handler can restore the frame perfectly without calling
+this syscall, it may do so. In other words, this syscall is not _mandatory_ after an upcall handler finishes, but may be needed on some architectures.
+
 ### Asynchronous Events
 
 Asynchronous events are less urgent than synchronous events and are more akin to messages. They are sent to a thread via a Twizzler queue object that the thread registers with the kernel if it wants to receive async events. By default no queue is registered for new threads, they must do so manually. If no queue is registered, all async events are ignored, and the sender is notified via a failure to send an async event.

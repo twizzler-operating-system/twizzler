@@ -143,8 +143,8 @@ pub struct UpcallTarget {
 impl UpcallTarget {
     /// Construct a new upcall target.
     pub fn new(
-        self_address: unsafe extern "C-unwind" fn(*const UpcallFrame, *const UpcallData) -> !,
-        super_address: unsafe extern "C-unwind" fn(*const UpcallFrame, *const UpcallData) -> !,
+        self_address: unsafe extern "C-unwind" fn(*mut UpcallFrame, *const UpcallData) -> !,
+        super_address: unsafe extern "C-unwind" fn(*mut UpcallFrame, *const UpcallData) -> !,
         super_stack: usize,
         super_thread_ptr: usize,
         super_ctx: ObjID,

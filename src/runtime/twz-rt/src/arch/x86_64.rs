@@ -3,7 +3,7 @@ use twizzler_abi::upcall::{UpcallData, UpcallFrame};
 #[cfg(feature = "runtime")]
 #[no_mangle]
 pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry(
-    rdi: *const UpcallFrame,
+    rdi: *mut UpcallFrame,
     rsi: *const UpcallData,
 ) -> ! {
     core::arch::asm!(
@@ -22,12 +22,12 @@ pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry(
 #[cfg(feature = "runtime")]
 #[no_mangle]
 pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry2(
-    rdi: *const UpcallFrame,
+    rdi: *mut UpcallFrame,
     rsi: *const UpcallData,
 ) -> ! {
     use twizzler_abi::{syscall::sys_thread_exit, upcall::UPCALL_EXIT_CODE};
 
-    let handler = || crate::runtime::upcall::upcall_rust_entry(&*rdi, &*rsi);
+    let handler = || crate::runtime::upcall::upcall_rust_entry(&mut *rdi, &*rsi);
 
     if std::panic::catch_unwind(handler).is_err() {
         sys_thread_exit(UPCALL_EXIT_CODE);

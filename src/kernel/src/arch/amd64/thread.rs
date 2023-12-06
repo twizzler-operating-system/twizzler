@@ -6,7 +6,9 @@ use core::{
 use twizzler_abi::{
     arch::XSAVE_LEN,
     object::{MAX_SIZE, NULLPAGE_SIZE},
-    upcall::{UpcallData, UpcallFrame, UpcallHandlerFlags, UpcallInfo, UpcallTarget},
+    upcall::{
+        UpcallData, UpcallFrame, UpcallHandlerFlags, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE,
+    },
 };
 
 use crate::{
@@ -141,7 +143,7 @@ fn same_object(a: usize, b: usize) -> bool {
     a / MAX_SIZE == b / MAX_SIZE
 }
 
-pub fn set_upcall<T: UpcallAble + Copy>(
+fn set_upcall<T: UpcallAble + Copy>(
     regs: &mut T,
     target: UpcallTarget,
     info: UpcallInfo,
@@ -288,6 +290,13 @@ pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
 }
 
 impl Thread {
+    /// Restore an upcall frame. We don't actually immediately restore it,
+    /// instead, we save the frame for when we return from the next syscall.
+    /// Since this function is to be called by a frame restore syscall, that
+    /// means we are here because of a syscall, so we know that code path will
+    /// be the one with which we return to user. Note also that any upcalls
+    /// generated to this thread after calling this function but before returning
+    /// to userspace will cause the thread to immediately abort.
     pub fn restore_upcall_frame(&self, frame: &UpcallFrame) {
         // We restore this in the syscall return code path, since
         // we know that's where we are coming from, and we actually need
@@ -295,7 +304,14 @@ impl Thread {
         *self.arch.upcall_restore_frame.borrow_mut() = Some(*frame);
     }
 
+    /// Queue up an upcall on this thread. The sup argument denotes if this upcall
+    /// is requesting a supervisor context switch. Once this is done, the thread's kernel
+    /// entry frame will be setup to enter the upcall handler on return-to-userspace.
     pub fn arch_queue_upcall(&self, target: UpcallTarget, info: UpcallInfo, sup: bool) {
+        if self.arch.upcall_restore_frame.borrow().is_some() {
+            logln!("warning -- thread aborted due to upcall generation during frame restoration");
+            crate::thread::exit(UPCALL_EXIT_CODE);
+        }
         match *self.arch.entry_registers.borrow() {
             Registers::None => {
                 panic!("tried to upcall to a thread that hasn't started yet");
