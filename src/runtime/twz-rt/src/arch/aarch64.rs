@@ -1,21 +1,21 @@
-use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
+use twizzler_abi::upcall::{UpcallData, UpcallFrame};
 
 use crate::preinit_println;
 
 #[cfg(feature = "runtime")]
 #[no_mangle]
-pub(crate) unsafe extern "C" fn rr_upcall_entry(
-    _frame: *const UpcallFrame,
-    _info: *const UpcallInfo,
+pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry(
+    _frame: *mut UpcallFrame,
+    _info: *const UpcallData,
 ) -> ! {
     todo!()
 }
 
 #[cfg(feature = "runtime")]
 #[no_mangle]
-pub(crate) unsafe extern "C" fn rr_upcall_entry2(
-    frame: *const UpcallFrame,
-    info: *const UpcallInfo,
+pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry2(
+    frame: *mut UpcallFrame,
+    info: *const UpcallData,
 ) -> ! {
     use crate::runtime::do_impl::__twz_get_runtime;
 
