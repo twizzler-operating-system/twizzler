@@ -29,12 +29,16 @@ jobs:
           toolchain: stable
     - name: Bootstrap Toolchain
       run: cargo bootstrap
-    - name: Build
+    # x86_64 is the default, builds in debug mode
+    - name: Build x86_64
       run: cargo build-all
-    - name: Test
+    - name: Test x86_64 Debug
       run: cargo start-qemu --tests --qemu-options=--nographic
-    - name: Test Release
+    - name: Test x86_64 Release
       run: cargo start-qemu --profile release --tests --qemu-options=--nographic
+    # aarch64 is compiled for QEMU virt, builds in debug mode
+    - name: Build aarch64
+      run: cargo build-all -a aarch64 -m virt
     - name: Install mdbook
       run: |
         mkdir mdbook
