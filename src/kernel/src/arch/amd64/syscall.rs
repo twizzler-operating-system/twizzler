@@ -1,10 +1,15 @@
 use core::sync::atomic::Ordering;
 
-use twizzler_abi::upcall::UpcallFrame;
+use twizzler_abi::{arch::XSAVE_LEN, upcall::UpcallFrame};
 
-use crate::{memory::VirtAddr, syscall::SyscallContext, thread::current_thread_ref};
+use crate::{
+    arch::thread::use_xsave, memory::VirtAddr, syscall::SyscallContext, thread::current_thread_ref,
+};
 
-use super::thread::{Registers, UpcallAble};
+use super::{
+    interrupt::{return_with_frame_to_user, IsrContext},
+    thread::{Registers, UpcallAble},
+};
 
 #[derive(Default, Clone, Copy, Debug)]
 #[repr(C)]
@@ -48,6 +53,10 @@ impl From<X86SyscallContext> for UpcallFrame {
             r13: int.r13,
             r14: int.r14,
             r15: int.r15,
+            // these get filled out later
+            xsave_region: [0; XSAVE_LEN],
+            thread_ptr: 0,
+            prior_ctx: 0.into(),
         }
     }
 }
@@ -175,10 +184,37 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
 
     /* We need this scope to drop the current thread reference before we return to user */
     {
-        let t = current_thread_ref().unwrap();
-        t.set_entry_registers(Registers::None);
-        let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
+        let cur_th = current_thread_ref().unwrap();
+        cur_th.set_entry_registers(Registers::None);
+        let user_fs = cur_th.arch.user_fs.load(Ordering::SeqCst);
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+        // Okay, now check if we are restoring an upcall frame, and if so, do that. Unfortunately,
+        // we can't use the sysret/exit instruction for this, since it clobbers registers. Instead,
+        // we'll use the ISR return path, which doesn't.
+        let mut rf = cur_th.arch.upcall_restore_frame.borrow_mut();
+        if let Some(up_frame) = rf.take() {
+            // we MUST manually drop this, _and_ the current thread ref (a bit later), because otherwise we leave
+            // them hanging when we trampoline back into userspace.
+            drop(rf);
+
+            // Restore the sse registers. These don't get restored by the isr return path, so we have to do it ourselves.
+            if use_xsave() {
+                core::arch::asm!("xrstor [{}]", in(reg) up_frame.xsave_region.as_ptr(), in("rax") 3, in("rdx") 0);
+            } else {
+                core::arch::asm!("fxrstor [{}]", in(reg) up_frame.xsave_region.as_ptr());
+            }
+
+            // Restore the thread pointer (it might have changed, and we also allow for it to change inside the upcall frame during the upcall)
+            cur_th
+                .arch
+                .user_fs
+                .store(up_frame.thread_ptr, Ordering::SeqCst);
+            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, up_frame.thread_ptr);
+            drop(cur_th);
+
+            let int_frame = IsrContext::from(up_frame);
+            return_with_frame_to_user(int_frame);
+        }
     }
     /* TODO: check that rcx is canonical */
     return_to_user(context);

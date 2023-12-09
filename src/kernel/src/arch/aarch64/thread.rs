@@ -11,7 +11,7 @@
 use arm64::registers::TPIDR_EL0;
 use registers::interfaces::Writeable;
 
-use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
+use twizzler_abi::upcall::{UpcallFrame, UpcallInfo, UpcallTarget};
 
 use crate::thread::Thread;
 use crate::memory::VirtAddr;
@@ -103,7 +103,11 @@ pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
 }
 
 impl Thread {
-    pub fn arch_queue_upcall(&self, _target: super::address::VirtAddr, _info: UpcallInfo) {
+    pub fn restore_upcall_frame(&self, _frame: &UpcallFrame) {
+        todo!()
+    }
+
+    pub fn arch_queue_upcall(&self, _target: UpcallTarget, _info: UpcallInfo, _sup: bool) {
         todo!()
     }
 
