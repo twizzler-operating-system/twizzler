@@ -3,6 +3,7 @@ mod image;
 mod qemu;
 mod toolchain;
 mod triple;
+mod kani;
 
 use std::path::PathBuf;
 
@@ -75,11 +76,22 @@ impl BuildConfig {
 }
 
 #[derive(Args, Debug)]
+struct KaniOptions {
+    //Kani options
+    #[clap(long, short, help = "Pass the flags for Kani to execute")]
+    kani_options: Option<String>,
+    // //Env options
+    // #[clap(long, short, help = "Pass any desired environment variables")]
+    // env: String,
+}
+
+
+#[derive(Args, Debug)]
 struct BuildOptions {
     #[clap(flatten)]
     pub config: BuildConfig,
     #[clap(long, short, help = "Build tests-enabled system.")]
-    tests: bool,
+    pub tests: bool,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
 }
@@ -195,6 +207,8 @@ enum Commands {
     MakeImage(ImageOptions),
     #[clap(about = "Boot a disk image in Qemu.")]
     StartQemu(QemuOptions),
+    #[clap(about = "Run Kani over Twizzler")]
+    Kani(KaniOptions),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -208,6 +222,7 @@ fn main() -> anyhow::Result<()> {
             Commands::Doc(x) => build::do_docs(x).map(|_| ()),
             Commands::MakeImage(x) => image::do_make_image(x).map(|_| ()),
             Commands::StartQemu(x) => qemu::do_start_qemu(x),
+            Commands::Kani(x) => kani::launch_kani(x).map(|_| ()),
         }
     } else {
         anyhow::bail!("you must specify a subcommand.");
