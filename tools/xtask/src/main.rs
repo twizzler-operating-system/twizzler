@@ -87,17 +87,6 @@ struct KaniOptions {
 
 
 #[derive(Args, Debug)]
-struct KaniOptions {
-    //Kani options
-    #[clap(long, short, help = "Pass the flags for Kani to execute")]
-    kani_options: Option<String>,
-    // //Env options
-    // #[clap(long, short, help = "Pass any desired environment variables")]
-    // env: String,
-}
-
-
-#[derive(Args, Debug)]
 struct BuildOptions {
     #[clap(flatten)]
     pub config: BuildConfig,
