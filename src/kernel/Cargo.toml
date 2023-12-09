@@ -30,6 +30,13 @@ limine = "0.1.11"
 twizzler-queue-raw = { version = "*", path = "../lib/twizzler-queue-raw", default-features = false }
 syscall_encode = { version = "0.1.2" }
 volatile = "0.5"
+uart_16550 = "0.3.0"
+x86 = "0.52.0"
+acpi = "4.1.1"
+arm64 = { package = "aarch64-cpu", version = "9.3.1" }
+registers = { package = "tock-registers", version = "0.8.x" }
+fdt = "0.1.5"
+
 
 [target.x86_64-unknown-none.dependencies]
 uart_16550 = "0.3.0"
@@ -53,3 +60,6 @@ debug = true
 
 [profile.dev]
 opt-level = 1
+
+[package.metadata.kani.flags]
+features = ["std"]

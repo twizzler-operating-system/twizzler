@@ -6,6 +6,7 @@ check-all = "run --release --target-dir=.target-xtask --package xtask -- check"
 make-image = "run --release --target-dir=.target-xtask --package xtask -- make-image"
 start-qemu = "run --release --target-dir=.target-xtask --package xtask -- start-qemu"
 bootstrap = "run --release --target-dir=.target-xtask --package xtask -- bootstrap"
+kani_test = "run --release --target-dir=.target-xtask --package xtask -- kani"
 
 [build]
 rustdocflags = "-Zunstable-options --enable-index-page"
