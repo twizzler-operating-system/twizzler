@@ -1,9 +1,9 @@
 use core::fmt;
 
-use crate::{object::ObjID, arch::syscall::raw_syscall};
+use crate::{arch::syscall::raw_syscall, object::ObjID};
 use bitflags::bitflags;
 
-use super::{Syscall, convert_codes_to_result};
+use super::{convert_codes_to_result, Syscall};
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
@@ -11,22 +11,32 @@ use super::{Syscall, convert_codes_to_result};
 /// source:[src_start, src_start + len) copied to <some unspecified destination object>:[dest_start,
 /// dest_start + len). Each range must start within an object, and end within the object.
 pub struct ObjectSource {
-    /// The ID of the source object.
+    /// The ID of the source object, or zero for filling destination with zero.
     pub id: ObjID,
-    /// The offset into the source object to start the copy.
+    /// The offset into the source object to start the copy. If id is zero, this field is reserved for future use.
     pub src_start: u64,
-    /// The offset into the dest object to start the copy to.
+    /// The offset into the dest object to start the copy or zero.
     pub dest_start: u64,
-    /// The length of the copy.
+    /// The length of the copy or zero.
     pub len: usize,
 }
 
 impl ObjectSource {
     /// Construct a new ObjectSource.
-    pub fn new(id: ObjID, src_start: u64, dest_start: u64, len: usize) -> Self {
+    pub fn new_copy(id: ObjID, src_start: u64, dest_start: u64, len: usize) -> Self {
         Self {
             id,
             src_start,
+            dest_start,
+            len,
+        }
+    }
+
+    /// Construct a new ObjectSource.
+    pub fn new_zero(dest_start: u64, len: usize) -> Self {
+        Self {
+            id: 0.into(),
+            src_start: 0,
             dest_start,
             len,
         }
@@ -61,12 +71,14 @@ pub enum LifetimeType {
 
 bitflags! {
     /// Flags to pass to the object create system call.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct ObjectCreateFlags: u32 {
     }
 }
 
 bitflags! {
     /// Flags controlling how a particular object tie operates.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct CreateTieFlags: u32 {
     }
 }

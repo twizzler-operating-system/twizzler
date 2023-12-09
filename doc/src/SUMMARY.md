@@ -14,6 +14,8 @@
 
 - [Permissions](./Permissions.md)
 
+- [Reference Runtime](./ReferenceRuntime.md)
+
 # Primitives
 
 - [Views](./Views.md)
@@ -29,3 +31,7 @@
 - [DMA](./DMA.md)
 
 <!-- - [Keyring](./Keyring.md) -->
+
+# Advanced Features
+
+- [Twizzler Build System Crate Metadata](./CargoMetadata.md)

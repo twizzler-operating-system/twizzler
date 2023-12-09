@@ -31,6 +31,7 @@ impl ThreadSyncOp {
 
 bitflags! {
     /// Flags to pass to sys_thread_sync.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct ThreadSyncFlags: u32 {
         /// Invert the decision test for sleeping the thread.
         const INVERT = 1;

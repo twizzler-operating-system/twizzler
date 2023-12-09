@@ -2,13 +2,22 @@ use core::fmt;
 
 use bitflags::bitflags;
 
-use crate::{arch::syscall::raw_syscall, object::ObjID};
+use crate::{arch::syscall::raw_syscall, object::ObjID, upcall::UpcallTarget};
 
 use super::{convert_codes_to_result, Syscall};
 bitflags! {
     /// Flags to pass to [sys_spawn].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct ThreadSpawnFlags: u32 {
     }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(C)]
+pub enum UpcallTargetSpawnOption {
+    DefaultAbort,
+    Inherit,
+    SetTo(UpcallTarget),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
@@ -22,11 +31,13 @@ pub struct ThreadSpawnArgs {
     pub arg: usize,
     pub flags: ThreadSpawnFlags,
     pub vm_context_handle: Option<ObjID>,
+    pub upcall_target: UpcallTargetSpawnOption,
 }
 
 impl ThreadSpawnArgs {
     /// Construct a new ThreadSpawnArgs. If vm_context_handle is Some(handle), then spawn the thread in the
     /// VM context defined by handle. Otherwise spawn it in the same VM context as the spawner.
+    #[warn(clippy::too_many_arguments)]
     pub fn new(
         entry: usize,
         stack_base: usize,
@@ -35,6 +46,7 @@ impl ThreadSpawnArgs {
         arg: usize,
         flags: ThreadSpawnFlags,
         vm_context_handle: Option<ObjID>,
+        upcall_target: UpcallTargetSpawnOption,
     ) -> Self {
         Self {
             entry,
@@ -44,6 +56,7 @@ impl ThreadSpawnArgs {
             arg,
             flags,
             vm_context_handle,
+            upcall_target,
         }
     }
 }

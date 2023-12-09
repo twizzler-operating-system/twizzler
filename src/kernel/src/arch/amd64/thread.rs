@@ -3,24 +3,31 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
 };
 
-use alloc::vec::Vec;
-use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
+use twizzler_abi::{
+    arch::XSAVE_LEN,
+    object::{MAX_SIZE, NULLPAGE_SIZE},
+    upcall::{
+        UpcallData, UpcallFrame, UpcallHandlerFlags, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE,
+    },
+};
 
 use crate::{
-    arch::amd64::gdt::set_kernel_stack, memory::VirtAddr, processor::KERNEL_STACK_SIZE,
-    spinlock::Spinlock, thread::Thread,
+    arch::amd64::gdt::set_kernel_stack,
+    memory::VirtAddr,
+    processor::KERNEL_STACK_SIZE,
+    thread::{current_thread_ref, Thread},
 };
 
 use super::{interrupt::IsrContext, syscall::X86SyscallContext};
 
-const XSAVE_LEN: usize = 1024;
-
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum Registers {
     None,
     Syscall(*mut X86SyscallContext, X86SyscallContext),
     Interrupt(*mut IsrContext, IsrContext),
 }
+
+#[derive(Debug)]
 struct Context {
     registers: Registers,
     xsave: AlignedXsaveRegion,
@@ -36,6 +43,7 @@ impl Context {
     }
 }
 
+#[derive(Debug)]
 #[repr(align(64))]
 struct AlignedXsaveRegion([u8; XSAVE_LEN]);
 pub struct ArchThread {
@@ -43,9 +51,12 @@ pub struct ArchThread {
     rsp: core::cell::UnsafeCell<u64>,
     pub user_fs: AtomicU64,
     xsave_inited: AtomicBool,
-    upcall: Option<(usize, UpcallInfo)>,
-    backup_context: Spinlock<Vec<Context>>,
-    entry_registers: RefCell<Registers>,
+    pub entry_registers: RefCell<Registers>,
+    /// The frame of an upcall to restore. The restoration path only occurs on the first
+    /// return-from-syscall after entering from the syscall that provides the frame to restore.
+    /// We store that frame here until we hit the syscall return path, which then restores the
+    /// frame and returns to user using this frame.
+    pub upcall_restore_frame: RefCell<Option<UpcallFrame>>,
     //user_gs: u64,
 }
 unsafe impl Sync for ArchThread {}
@@ -111,9 +122,8 @@ impl ArchThread {
             rsp: core::cell::UnsafeCell::new(0),
             user_fs: AtomicU64::new(0),
             xsave_inited: AtomicBool::new(false),
-            upcall: None,
-            backup_context: Spinlock::new(Vec::new()),
             entry_registers: RefCell::new(Registers::None),
+            upcall_restore_frame: RefCell::new(None),
         }
     }
 }
@@ -128,44 +138,133 @@ pub trait UpcallAble {
     fn set_upcall(&mut self, target: VirtAddr, frame: u64, info: u64, stack: u64);
     fn get_stack_top(&self) -> u64;
 }
-pub fn set_upcall<T: UpcallAble + Copy>(regs: &mut T, target: VirtAddr, info: UpcallInfo)
+
+fn same_object(a: usize, b: usize) -> bool {
+    a / MAX_SIZE == b / MAX_SIZE
+}
+
+fn set_upcall<T: UpcallAble + Copy>(
+    regs: &mut T,
+    target: UpcallTarget,
+    info: UpcallInfo,
+    sup: bool,
+) -> bool
 where
     UpcallFrame: From<T>,
 {
-    let stack_top = regs.get_stack_top() - 512;
-    let stack_top = stack_top & (!15);
+    // Stack must always be 16-bytes aligned.
+    const MIN_STACK_ALIGN: usize = 16;
+    // We have to leave room for the red zone.
+    const RED_ZONE_SIZE: usize = 512;
+    // Frame must be aligned for the xsave region (Intel says aligned on 64 bytes).
+    const MIN_FRAME_ALIGN: usize = 64;
 
-    let info_size = core::mem::size_of::<UpcallInfo>();
-    let info_size = (info_size + 16) & !15;
+    let current_stack_pointer = regs.get_stack_top();
+    // We only switch contexts if it was requested and we aren't in that context.
+    // TODO: once security contexts are more fully implemented, we'll need to change this code.
+    let switch_to_super = sup && !same_object(target.super_stack, current_stack_pointer as usize);
+
+    let target_addr = if switch_to_super {
+        target.super_address
+    } else {
+        target.self_address
+    };
+
+    // If the address is not canonical, leave.
+    let Ok(target_addr) = VirtAddr::new(target_addr as u64) else {
+        return false;
+    };
+
+    let upcall_data = UpcallData {
+        info,
+        flags: if switch_to_super {
+            UpcallHandlerFlags::SWITCHED_CONTEXT
+        } else {
+            UpcallHandlerFlags::empty()
+        },
+        source_ctx: 0.into(),
+    };
+
+    // Step 1: determine where we are going to put the frame. If we have
+    // a supervisor stack, and we aren't currently on it, use that. Otherwise,
+    // use the current stack pointer.
+    let stack_pointer = if switch_to_super {
+        target.super_stack as u64
+    } else {
+        current_stack_pointer
+    };
+
+    // TODO: once security contexts are more implemented, we'll need to do a bunch of permission checks
+    // on the stack and target jump addresses.
+
+    // Don't touch the red zone for the function we were in.
+    let stack_top = stack_pointer - RED_ZONE_SIZE as u64;
+    let stack_top = stack_top & (!(MIN_STACK_ALIGN as u64 - 1));
+
+    // Step 2: compute all the sizes for things we're going to shuffle around, and check
+    // if we even have enough space.
+    let data_size = core::mem::size_of::<UpcallData>();
+    let data_size = (data_size + MIN_STACK_ALIGN) & !(MIN_STACK_ALIGN - 1);
     let frame_size = core::mem::size_of::<UpcallFrame>();
-    let frame_size = (frame_size + 16) & !15;
-    let info_start = stack_top - info_size as u64;
-    let frame_start = info_start - frame_size as u64;
+    let frame_size = (frame_size + MIN_FRAME_ALIGN) & !(MIN_FRAME_ALIGN - 1);
+    let data_start = stack_top - data_size as u64;
 
-    let info_ptr = info_start as usize as *mut UpcallInfo;
+    // Frame needs extra care, since it must be aligned on 64-bytes for the xsave region.
+    let frame_highest_start = data_start as usize - frame_size;
+    let frame_padding = frame_highest_start - (frame_highest_start & !(MIN_FRAME_ALIGN - 1));
+    let frame_start = data_start - (frame_size + frame_padding) as u64;
+    assert_eq!(
+        frame_start,
+        frame_highest_start as u64 & !(MIN_FRAME_ALIGN as u64 - 1)
+    );
+    assert_eq!(frame_size & (MIN_FRAME_ALIGN - 1), 0);
+
+    let total_size = data_size + frame_size + frame_padding + RED_ZONE_SIZE;
+    let total_size = (total_size + MIN_STACK_ALIGN) & !(MIN_STACK_ALIGN - 1);
+
+    let stack_object_base = (stack_top as usize / MAX_SIZE) * MAX_SIZE + NULLPAGE_SIZE;
+    if stack_object_base + total_size >= stack_pointer as usize {
+        // No space for our frame!
+        return false;
+    }
+
+    // Step 3: write out the frame and the data into the stack.
+    let data_ptr = data_start as usize as *mut UpcallData;
     let frame_ptr = frame_start as usize as *mut UpcallFrame;
+    let mut frame: UpcallFrame = (*regs).into();
 
-    let frame = (*regs).into();
+    // Step 3a: we need to fill out some extra stuff in the upcall frame, like the thread pointer and fpu state.
+    frame.thread_ptr = current_thread_ref()
+        .unwrap()
+        .arch
+        .user_fs
+        .load(Ordering::SeqCst);
 
     unsafe {
-        info_ptr.write(info);
+        // We still need to save the fpu registers / sse state.
+        if use_xsave() {
+            core::arch::asm!("xsave [{}]", in(reg) frame.xsave_region.as_ptr(), in("rax") 3, in("rdx") 0);
+        } else {
+            core::arch::asm!("fxsave [{}]", in(reg) frame.xsave_region.as_ptr());
+        }
+        data_ptr.write(upcall_data);
         frame_ptr.write(frame);
     }
-    let stack_start = frame_start - 16;
-    let stack_start = stack_start & !15;
-    let stack_start = stack_start - 8;
 
-    logln!(
-        "setting upcall {:x} {:x} {:x} {:x}",
-        target.raw(),
-        frame_start,
-        info_start,
-        stack_start
-    );
-    regs.set_upcall(target, frame_start, info_start, stack_start);
+    // Step 4: final alignment, and then call into the context (either syscall or interrupt) code
+    // to do the final setup of registers for the upcall.
+    let stack_start = frame_start - MIN_STACK_ALIGN as u64;
+    let stack_start = stack_start & !(MIN_STACK_ALIGN as u64 - 1);
+    // We have to enter with a mis-aligned stack, so that the function prelude
+    // of the receiver will re-align it. In this case, we control the ABI, so
+    // we preserve this just for consistency.
+    let stack_start = stack_start - core::mem::size_of::<u64>() as u64;
+
+    regs.set_upcall(target_addr, frame_start, data_start, stack_start);
+    true
 }
 
-fn use_xsave() -> bool {
+pub(super) fn use_xsave() -> bool {
     static USE_XSAVE: AtomicU8 = AtomicU8::new(0);
     let xs = USE_XSAVE.load(Ordering::SeqCst);
     match xs {
@@ -182,24 +281,48 @@ fn use_xsave() -> bool {
     }
 }
 
+/// Compute the top of the stack.
+///
+/// # Safety
+/// The range from [stack_base, stack_base+stack_size] must be valid addresses.
+pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
+    VirtAddr::new((stack_base + stack_size - 8) as u64).unwrap()
+}
+
 impl Thread {
-    pub fn arch_queue_upcall(&self, target: VirtAddr, info: UpcallInfo) {
-        logln!("queue upcall!");
-        self.arch
-            .backup_context
-            .lock()
-            .push(Context::new(*self.arch.entry_registers.borrow()));
+    /// Restore an upcall frame. We don't actually immediately restore it,
+    /// instead, we save the frame for when we return from the next syscall.
+    /// Since this function is to be called by a frame restore syscall, that
+    /// means we are here because of a syscall, so we know that code path will
+    /// be the one with which we return to user. Note also that any upcalls
+    /// generated to this thread after calling this function but before returning
+    /// to userspace will cause the thread to immediately abort.
+    pub fn restore_upcall_frame(&self, frame: &UpcallFrame) {
+        // We restore this in the syscall return code path, since
+        // we know that's where we are coming from, and we actually need
+        // to use the ISR return mechanism (see the syscall code).
+        *self.arch.upcall_restore_frame.borrow_mut() = Some(*frame);
+    }
+
+    /// Queue up an upcall on this thread. The sup argument denotes if this upcall
+    /// is requesting a supervisor context switch. Once this is done, the thread's kernel
+    /// entry frame will be setup to enter the upcall handler on return-to-userspace.
+    pub fn arch_queue_upcall(&self, target: UpcallTarget, info: UpcallInfo, sup: bool) {
+        if self.arch.upcall_restore_frame.borrow().is_some() {
+            logln!("warning -- thread aborted due to upcall generation during frame restoration");
+            crate::thread::exit(UPCALL_EXIT_CODE);
+        }
         match *self.arch.entry_registers.borrow() {
             Registers::None => {
                 panic!("tried to upcall to a thread that hasn't started yet");
             }
             Registers::Interrupt(int, _) => {
                 let int = unsafe { &mut *int };
-                set_upcall(int, target, info);
+                set_upcall(int, target, info, sup);
             }
             Registers::Syscall(sys, _) => {
                 let sys = unsafe { &mut *sys };
-                set_upcall(sys, target, info);
+                set_upcall(sys, target, info, sup);
             }
         }
     }
@@ -209,7 +332,6 @@ impl Thread {
     }
 
     pub fn set_tls(&self, tls: u64) {
-        //logln!("setting user fs to {}", tls);
         self.arch.user_fs.store(tls, Ordering::SeqCst);
     }
 

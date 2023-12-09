@@ -46,7 +46,7 @@ struct ContextInfo {
 
 impl ContextInfo {
     fn insert(&mut self, ctx: &ContextRef) {
-        let mut entry = self
+        let entry = self
             .contexts
             .entry(ctx.id().value())
             .or_insert_with(|| (Arc::downgrade(ctx), 0));
@@ -109,6 +109,10 @@ impl PageNumber {
 
     pub fn from_address(addr: VirtAddr) -> Self {
         PageNumber((addr.raw() as usize % MAX_SIZE) / Self::PAGE_SIZE)
+    }
+
+    pub fn from_offset(off: usize) -> Self {
+        PageNumber(off / Self::PAGE_SIZE)
     }
 
     pub fn next(&self) -> Self {

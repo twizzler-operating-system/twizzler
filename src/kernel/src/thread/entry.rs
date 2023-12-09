@@ -3,7 +3,7 @@ use core::mem::MaybeUninit;
 use alloc::{boxed::Box, sync::Arc};
 use twizzler_abi::{
     object::ObjID,
-    syscall::{ThreadSpawnArgs, ThreadSpawnError, ThreadSpawnFlags},
+    syscall::{ThreadSpawnArgs, ThreadSpawnError, ThreadSpawnFlags, UpcallTargetSpawnOption},
 };
 
 use crate::{
@@ -36,8 +36,7 @@ extern "C" fn user_new_start() {
     unsafe {
         crate::arch::jump_to_user(
             VirtAddr::new(entry as u64).unwrap(),
-            /* TODO: this is x86 specific */
-            VirtAddr::new((stack_base + stack_size - 8) as u64).unwrap(),
+            crate::arch::thread::new_stack_top(stack_base, stack_size),
             arg as u64,
         )
     }
@@ -54,6 +53,14 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> 
             Priority::default_user(),
         )
     };
+    match args.upcall_target {
+        UpcallTargetSpawnOption::DefaultAbort => {}
+        UpcallTargetSpawnOption::Inherit => {
+            *thread.upcall_target.lock() =
+                current_thread_ref().and_then(|cth| *cth.upcall_target.lock());
+        }
+        UpcallTargetSpawnOption::SetTo(ut) => *thread.upcall_target.lock() = Some(ut),
+    }
     unsafe {
         thread.init(user_new_start);
     }
@@ -85,6 +92,7 @@ pub fn start_new_kernel(pri: Priority, start: extern "C" fn(), arg: usize) -> Th
         arg,
         flags: ThreadSpawnFlags::empty(),
         vm_context_handle: None,
+        upcall_target: UpcallTargetSpawnOption::DefaultAbort,
     });
     schedule_new_thread(thread)
 }

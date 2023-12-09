@@ -1,19 +1,19 @@
-use std::sync::Mutex;
+use std::{ptr::NonNull, sync::Mutex};
 
 use nvme::{
     ds::queue::{comentry::CommonCompletion, subentry::CommonCommand},
     queue::{CompletionQueue, SubmissionQueue},
 };
 use twizzler_driver::request::{RequestDriver, ResponseInfo, SubmitRequest};
-use volatile_cell::VolatileCell;
+use volatile::VolatilePtr;
 
 use super::dma::NvmeDmaSliceRegion;
 
 pub struct NvmeRequester {
     subq: Mutex<SubmissionQueue>,
     comq: Mutex<CompletionQueue>,
-    sub_bell: *const VolatileCell<u32>,
-    com_bell: *const VolatileCell<u32>,
+    sub_bell: *mut u32,
+    com_bell: *mut u32,
     _sub_dma: NvmeDmaSliceRegion<CommonCommand>,
     _com_dma: NvmeDmaSliceRegion<CommonCompletion>,
 }
@@ -25,8 +25,8 @@ impl NvmeRequester {
     pub fn new(
         subq: Mutex<SubmissionQueue>,
         comq: Mutex<CompletionQueue>,
-        sub_bell: *const VolatileCell<u32>,
-        com_bell: *const VolatileCell<u32>,
+        sub_bell: *mut u32,
+        com_bell: *mut u32,
         sub_dma: NvmeDmaSliceRegion<CommonCommand>,
         com_dma: NvmeDmaSliceRegion<CommonCompletion>,
     ) -> Self {
@@ -38,6 +38,16 @@ impl NvmeRequester {
             _sub_dma: sub_dma,
             _com_dma: com_dma,
         }
+    }
+
+    #[inline]
+    fn sub_bell(&self) -> VolatilePtr<'_, u32> {
+        unsafe { VolatilePtr::new(NonNull::new(self.sub_bell).unwrap()) }
+    }
+
+    #[inline]
+    fn com_bell(&self) -> VolatilePtr<'_, u32> {
+        unsafe { VolatilePtr::new(NonNull::new(self.com_bell).unwrap()) }
     }
 
     pub fn check_completions(&self) -> Vec<ResponseInfo<CommonCompletion>> {
@@ -57,7 +67,7 @@ impl NvmeRequester {
         }
 
         if let Some(bell) = new_bell {
-            unsafe { self.com_bell.as_ref().unwrap().set(bell as u32) }
+            self.com_bell().write(bell as u32)
         }
 
         resps
@@ -85,9 +95,7 @@ impl RequestDriver for NvmeRequester {
             assert!(tail.is_some());
         }
         if let Some(tail) = tail {
-            unsafe {
-                self.sub_bell.as_ref().unwrap().set(tail as u32);
-            }
+            self.sub_bell().write(tail as u32);
         }
         Ok(())
     }

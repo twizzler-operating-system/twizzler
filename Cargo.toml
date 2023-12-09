@@ -7,6 +7,7 @@ members = [
     "tools/image_builder",
     "tools/initrd_gen",
     "src/bin/init",
+    "src/bin/bootstrap",
     "src/bin/devmgr",
     "src/bin/netmgr",
     "src/bin/nettest",
@@ -16,27 +17,31 @@ members = [
     "src/lib/twizzler-queue",
     "src/lib/twizzler-net",
     "src/lib/twizzler-async",
-    "src/lib/twizzler-nando",
     "src/lib/twizzler-object",
+    "src/lib/twizzler-runtime-api",
+    "src/runtime/dynlink",
+    "src/runtime/monitor",
+    "src/runtime/twz-rt",
 ]
-exclude = [
-    "toolchain/src/rust",
-]
+
+exclude = ["toolchain/src/rust"]
 resolver = "2"
 
 [workspace.metadata]
 initrd = [
+    "crate:bootstrap",
     "crate:init",
     "crate:devmgr",
     "crate:netmgr",
     "crate:nettest",
     "crate:pager",
+    "lib:twz-rt",
+    "lib:monitor",
     #"third-party:hello-world-rs"
 ]
 
 [workspace.metadata.third-party]
 # hello-world-rs = "1.0.0"
-
 
 [profile.release]
 debug = true
@@ -44,3 +49,6 @@ debug = true
 [patch.'https://github.com/dbittman/twizzler-abi']
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 
+[patch.crates-io]
+#ring = { git = "https://github.com/twizzler-operating-system/ring-twizzler.git", branch = "twizzler" }
+getrandom = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler" }

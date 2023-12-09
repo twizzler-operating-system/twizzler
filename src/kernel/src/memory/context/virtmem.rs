@@ -5,7 +5,6 @@ use core::{intrinsics::size_of, marker::PhantomData, ptr::NonNull};
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use twizzler_abi::{
     device::CacheType,
-    marker::BaseType,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
@@ -41,7 +40,6 @@ use crate::{
 /// A type that implements [Context] for virtual memory systems.
 pub struct VirtContext {
     arch: ArchContext,
-    upcall: Spinlock<Option<VirtAddr>>,
     slots: Mutex<SlotMgr>,
     id: Id<'static>,
     is_kernel: bool,
@@ -152,7 +150,6 @@ impl VirtContext {
     fn __new(arch: ArchContext, is_kernel: bool) -> Self {
         Self {
             arch,
-            upcall: Spinlock::new(None),
             slots: Mutex::new(SlotMgr::default()),
             is_kernel,
             id: CONTEXT_IDS.next(),
@@ -215,19 +212,14 @@ impl VirtContext {
         );
         self.arch.map(cursor, &mut phys, &settings);
     }
+
+    pub fn lookup_slot(&self, slot: usize) -> Option<VirtContextSlot> {
+        self.slots.lock().get(&Slot::try_from(slot).ok()?).cloned()
+    }
 }
 
 impl UserContext for VirtContext {
-    type UpcallInfo = VirtAddr;
     type MappingInfo = Slot;
-
-    fn set_upcall(&self, target: Self::UpcallInfo) {
-        *self.upcall.lock() = Some(target);
-    }
-
-    fn get_upcall(&self) -> Option<Self::UpcallInfo> {
-        *self.upcall.lock()
-    }
 
     fn switch_to(&self) {
         self.arch.switch_to();
@@ -303,8 +295,8 @@ impl UserContext for VirtContext {
     }
 }
 
-#[derive(Eq, PartialEq, Ord, PartialOrd)]
-struct VirtContextSlot {
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub struct VirtContextSlot {
     obj: ObjectRef,
     slot: Slot,
     prot: Protections,
@@ -322,7 +314,7 @@ impl VirtContextSlot {
         MappingCursor::new(self.slot.start_vaddr().offset(start).unwrap(), len)
     }
 
-    fn mapping_settings(&self, wp: bool, is_kern_obj: bool) -> MappingSettings {
+    pub fn mapping_settings(&self, wp: bool, is_kern_obj: bool) -> MappingSettings {
         let mut prot = self.prot;
         if wp {
             prot.remove(Protections::WRITE);
@@ -336,6 +328,10 @@ impl VirtContextSlot {
                 MappingFlags::USER
             },
         )
+    }
+
+    pub fn object(&self) -> &ObjectRef {
+        &self.obj
     }
 
     fn phys_provider<'a>(&self, page: &'a Page) -> ObjectPageProvider<'a> {
@@ -439,9 +435,9 @@ impl KernelMemoryContext for VirtContext {
         ));
     }
 
-    type Handle<T: BaseType> = KernelObjectVirtHandle<T>;
+    type Handle<T> = KernelObjectVirtHandle<T>;
 
-    fn insert_kernel_object<T: BaseType>(&self, info: ObjectContextInfo) -> Self::Handle<T> {
+    fn insert_kernel_object<T>(&self, info: ObjectContextInfo) -> Self::Handle<T> {
         let mut slots = self.slots.lock();
         let mut kernel_slots_counter = KERNEL_SLOT_COUNTER.lock();
         let slot = kernel_slots_counter
@@ -484,7 +480,7 @@ pub struct KernelObjectVirtHandle<T> {
 }
 
 impl<T> KernelObjectVirtHandle<T> {
-    fn start_addr(&self) -> VirtAddr {
+    pub fn start_addr(&self) -> VirtAddr {
         VirtAddr::new(0)
             .unwrap()
             .offset(self.slot.raw() * MAX_SIZE)
@@ -507,7 +503,7 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
     }
 }
 
-impl<T: BaseType> KernelObjectHandle<T> for KernelObjectVirtHandle<T> {
+impl<T> KernelObjectHandle<T> for KernelObjectVirtHandle<T> {
     fn base(&self) -> &T {
         unsafe {
             self.start_addr()
@@ -574,6 +570,7 @@ impl StableId for VirtContext {
 }
 
 bitflags::bitflags! {
+    #[derive(Debug)]
     pub struct PageFaultFlags : u32 {
         const USER = 1;
         const INVALID = 2;
@@ -634,6 +631,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                         info.obj.id(),
                         ObjectMemoryError::NullPageAccess,
                         cause,
+                        addr.into(),
                     )));
                 return;
             }
@@ -644,6 +642,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                         info.obj.id(),
                         ObjectMemoryError::OutOfBounds(page_number.as_byte_offset()),
                         cause,
+                        addr.into(),
                     )));
                 return;
             }
@@ -656,6 +655,10 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                     &mut info.phys_provider(&page),
                     &info.mapping_settings(cow, is_kern_obj),
                 );
+                ctx.arch.change(
+                    info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
+                    &info.mapping_settings(cow, is_kern_obj),
+                );
             } else {
                 let page = Page::new();
                 obj_page_tree.add_page(page_number, page);
@@ -665,6 +668,10 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 ctx.arch.map(
                     info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
                     &mut info.phys_provider(&page),
+                    &info.mapping_settings(cow, is_kern_obj),
+                );
+                ctx.arch.change(
+                    info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
                     &info.mapping_settings(cow, is_kern_obj),
                 );
             }

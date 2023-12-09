@@ -5,25 +5,28 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-intrusive-collections = { version = "0.9.5", features = ["nightly"] }
+intrusive-collections = { version = "0.9.6", features = ["nightly"] }
 twizzler-kernel-macros = { version = "*", path = "macros" }
-bitflags = "1.3.2"
-memoffset = "0.6.5"
-xmas-elf = "0.8.0"
+bitflags = "2.4.1"
+memoffset = "0.9.0"
+xmas-elf = "0.9.0"
 slabmalloc = "0.11.0"
 nonoverlapping_interval_tree = { version = "0.1.3", default-features = false }
 twizzler-abi = { path = "../lib/twizzler-abi", default-features = false, features = [
     "kernel",
 ] }
+twizzler-runtime-api = { path = "../lib/twizzler-runtime-api", default-features = false, features = [
+    "kernel",
+] }
 fixedbitset = { version = "0.4.1", default-features = false }
-linked_list_allocator = "0.10.4"
-tar-no-std = "0.1.7"
-object = { version = "0.29.0", default-features = false, features = ["read"] }
+linked_list_allocator = "0.10"
+tar-no-std = "0.2.0"
+object = { version = "0.32.1", default-features = false, features = ["read"] }
 addr2line = { version = "0.16.0", default-features = false, features = [
-    "rustc-demangle",
+    "rustc-demangle"
 ] }
 backtracer_core = { git = "https://github.com/twizzler-operating-system/backtracer", branch = "twizzler" }
-limine = "0.1.8"
+limine = "0.1.11"
 twizzler-queue-raw = { version = "*", path = "../lib/twizzler-queue-raw", default-features = false }
 syscall_encode = { version = "0.1.2" }
 volatile = "0.5"
@@ -36,13 +39,14 @@ fdt = "0.1.5"
 
 
 [target.x86_64-unknown-none.dependencies]
-uart_16550 = "0.2.0"
+uart_16550 = "0.3.0"
 x86 = "0.52.0"
 acpi = "4.1.1"
 
 [target.aarch64-unknown-none.dependencies]
 arm64 = { package = "aarch64-cpu", version = "9.3.1" }
 registers = { package = "tock-registers", version = "0.8.x" }
+fdt = "0.1.5"
 
 [dependencies.lazy_static]
 version = "1.0"

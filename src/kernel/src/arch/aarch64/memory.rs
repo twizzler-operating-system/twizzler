@@ -2,6 +2,7 @@
 use super::address::{PhysAddr, VirtAddr};
 
 pub mod frame;
+pub mod mmio;
 pub mod pagetables;
 
 /// The start offset into physical memory.

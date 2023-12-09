@@ -8,9 +8,13 @@
 /// "Procedure Call Standard for the Arm® 64-bit Architecture (AArch64)":
 ///     https://github.com/ARM-software/abi-aa/releases/download/2023Q1/aapcs64.pdf
 
-use twizzler_abi::upcall::{UpcallFrame, UpcallInfo};
+use arm64::registers::TPIDR_EL0;
+use registers::interfaces::Writeable;
+
+use twizzler_abi::upcall::{UpcallFrame, UpcallInfo, UpcallTarget};
 
 use crate::thread::Thread;
+use crate::memory::VirtAddr;
 
 use super::{exception::ExceptionContext, syscall::Armv8SyscallContext};
 
@@ -78,8 +82,32 @@ where
     todo!()
 }
 
+// The alignment of addresses use by the stack
+const CHECKED_STACK_ALIGNMENT: usize = 16;
+
+/// Compute the top of the stack. 
+/// 
+/// # Safety
+/// The range from [stack_base, stack_base+stack_size] must be valid addresses.
+pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
+    let stack_addr = (stack_base + stack_size) as u64;
+    // the stack pointer for aarch64 must be aligned to 16 bytes
+    // since the stack is downwards descending, we align the address
+    // down to be within the bounds.
+    let stack_from_args = VirtAddr::new(stack_addr).unwrap();
+    if stack_from_args.is_aligned_to(CHECKED_STACK_ALIGNMENT) {
+        stack_from_args
+    } else {
+        stack_from_args.align_down(CHECKED_STACK_ALIGNMENT as u64).unwrap()
+    }
+}
+
 impl Thread {
-    pub fn arch_queue_upcall(&self, _target: super::address::VirtAddr, _info: UpcallInfo) {
+    pub fn restore_upcall_frame(&self, _frame: &UpcallFrame) {
+        todo!()
+    }
+
+    pub fn arch_queue_upcall(&self, _target: UpcallTarget, _info: UpcallInfo, _sup: bool) {
         todo!()
     }
 
@@ -87,8 +115,9 @@ impl Thread {
         todo!()
     }
 
-    pub fn set_tls(&self, _tls: u64) {
-        todo!()
+    pub fn set_tls(&self, tls: u64) {
+        // TODO: save TLS pointer in thread state, and track in context switches
+        TPIDR_EL0.set(tls);
     }
 
     /// Architechture specific CPU context switch.

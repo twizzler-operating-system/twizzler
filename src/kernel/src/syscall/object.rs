@@ -5,15 +5,15 @@ use alloc::{
 use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
-        CreateTieSpec, HandleType, NewHandleError, ObjectCreate, ObjectCreateError, ObjectMapError,
-        ObjectSource,
+        CreateTieSpec, HandleType, MapFlags, MapInfo, NewHandleError, ObjectCreate,
+        ObjectCreateError, ObjectMapError, ObjectReadMapError, ObjectSource,
     },
 };
 
 use crate::{
-    memory::{context::ContextRef, VirtAddr},
+    memory::context::ContextRef,
     mutex::Mutex,
-    obj::{copy::CopySpec, LookupFlags, Object, ObjectRef, PageNumber},
+    obj::{LookupFlags, Object, ObjectRef},
     once::Once,
     thread::current_memory_context,
 };
@@ -25,25 +25,19 @@ pub fn sys_object_create(
 ) -> Result<ObjID, ObjectCreateError> {
     let obj = Arc::new(Object::new());
     for src in srcs {
-        let so = crate::obj::lookup_object(src.id, LookupFlags::empty())
-            .ok_or(ObjectCreateError::ObjectNotFound)?;
-        if false {
-            logln!(
-                "object copy ranges: {} => {} :: {:x} => {:x} {:x}",
-                src.id,
-                obj.id(),
-                src.src_start,
-                src.dest_start,
-                src.len
-            );
+        if src.id.as_u128() == 0 {
+            crate::obj::copy::zero_ranges(&obj, src.dest_start as usize, src.len)
+        } else {
+            let so = crate::obj::lookup_object(src.id, LookupFlags::empty())
+                .ok_or(ObjectCreateError::ObjectNotFound)?;
+            crate::obj::copy::copy_ranges(
+                &so,
+                src.src_start as usize,
+                &obj,
+                src.dest_start as usize,
+                src.len,
+            )
         }
-        let cs = CopySpec::new(
-            so,
-            PageNumber::from_address(VirtAddr::new(src.src_start).unwrap()),
-            PageNumber::from_address(VirtAddr::new(src.dest_start).unwrap()),
-            src.len,
-        );
-        crate::obj::copy::copy_ranges(&cs.src, cs.src_start, &obj, cs.dest_start, cs.length)
     }
     crate::obj::register_object(obj.clone());
     Ok(obj.id())
@@ -69,16 +63,24 @@ pub fn sys_object_map(
     };
     // TODO
     let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into());
-    if false {
-        logln!(
-            "mapping obj {} to {} with {:?} in {:?}",
-            id,
-            slot,
-            prot,
-            handle
-        );
-    }
     Ok(slot)
+}
+
+pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo, ObjectReadMapError> {
+    let vm = if handle.as_u128() == 0 {
+        current_memory_context().unwrap()
+    } else {
+        get_vmcontext_from_handle(handle).ok_or(ObjectReadMapError::InvalidArgument)?
+    };
+    let info = vm
+        .lookup_slot(slot)
+        .ok_or(ObjectReadMapError::InvalidSlot)?;
+    Ok(MapInfo {
+        id: info.object().id(),
+        prot: info.mapping_settings(false, false).perms(),
+        slot,
+        flags: MapFlags::empty(),
+    })
 }
 
 pub trait ObjectHandle {

@@ -1,0 +1,20 @@
+[package]
+name = "monitor"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["dylib"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
+twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api", features = [
+    "runtime",
+    "rt0",
+] }
+dynlink = { path = "../dynlink" }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+twz-rt = { path = "../twz-rt" }

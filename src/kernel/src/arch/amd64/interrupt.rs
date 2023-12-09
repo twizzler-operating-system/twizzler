@@ -1,6 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use twizzler_abi::{
+    arch::XSAVE_LEN,
     kso::{InterruptAllocateOptions, InterruptPriority},
     upcall::{ExceptionInfo, MemoryAccessKind, UpcallFrame, UpcallInfo},
 };
@@ -15,11 +16,13 @@ use crate::{
 };
 
 use super::{
+    gdt::user_selectors,
     set_interrupt,
     thread::{Registers, UpcallAble},
 };
 
 pub const GENERIC_IPI_VECTOR: u32 = 200;
+pub const TLB_SHOOTDOWN_VECTOR: u32 = 201;
 pub const TIMER_VECTOR: u32 = 32;
 pub const MIN_VECTOR: usize = 48;
 pub const MAX_VECTOR: usize = 239;
@@ -64,6 +67,36 @@ impl UpcallAble for IsrContext {
     }
 }
 
+impl From<UpcallFrame> for IsrContext {
+    fn from(frame: UpcallFrame) -> Self {
+        let sels = user_selectors();
+        Self {
+            r15: frame.r15,
+            r14: frame.r14,
+            r13: frame.r13,
+            r12: frame.r12,
+            r11: frame.r11,
+            r10: frame.r10,
+            r9: frame.r9,
+            r8: frame.r8,
+            rax: frame.rax,
+            rbx: frame.rbx,
+            rcx: frame.rcx,
+            rdx: frame.rdx,
+            rdi: frame.rdi,
+            rsi: frame.rsi,
+            rbp: frame.rbp,
+            rsp: frame.rsp,
+            rip: frame.rip,
+            rflags: frame.rflags,
+
+            err: 0,
+            cs: sels.1.into(),
+            ss: sels.0.into(),
+        }
+    }
+}
+
 impl From<IsrContext> for UpcallFrame {
     fn from(int: IsrContext) -> Self {
         Self {
@@ -85,6 +118,10 @@ impl From<IsrContext> for UpcallFrame {
             r13: int.r13,
             r14: int.r14,
             r15: int.r15,
+            // these get filled out later
+            xsave_region: [0; XSAVE_LEN],
+            thread_ptr: 0,
+            prior_ctx: 0.into(),
         }
     }
 }
@@ -176,7 +213,7 @@ pub unsafe extern "C" fn user_interrupt() {
 #[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 #[naked]
-pub unsafe extern "C" fn return_from_interrupt() {
+pub unsafe extern "C" fn return_from_interrupt() -> ! {
     core::arch::asm!(
         "pop r15",
         "pop r14",
@@ -197,6 +234,15 @@ pub unsafe extern "C" fn return_from_interrupt() {
         "iretq",
         options(noreturn)
     );
+}
+
+pub(super) unsafe fn return_with_frame_to_user(frame: IsrContext) -> ! {
+    // We can just use the existing return code, given that we have an Isr frame. But
+    // remember to swapgs first, since we are returning to user.
+    core::arch::asm!("mov rsp, rax",
+    "swapgs",
+    "jmp return_from_interrupt",
+    in("rax") &frame, options(noreturn));
 }
 
 macro_rules! interrupt {
@@ -454,10 +500,13 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         }
         n if n < 32 => {
             if user {
-                logln!("user exception {:#?} {:x}", ctx, ctx.rsp);
-                let t = current_thread_ref().unwrap();
-                let info = UpcallInfo::Exception(ExceptionInfo::new(n.into(), ctx.err));
-                t.send_upcall(info);
+                if n as u64 != Exception::Breakpoint as u64 {
+                    let t = current_thread_ref().unwrap();
+                    let info = UpcallInfo::Exception(ExceptionInfo::new(n.into(), ctx.err));
+                    t.send_upcall(info);
+                } else {
+                    logln!("debug exception, continuing...");
+                }
             } else {
                 panic!(
                     "caught unhandled exception {:?}: {:#?}",
@@ -475,6 +524,9 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         0x80 => {}
         GENERIC_IPI_VECTOR => {
             crate::processor::generic_ipi_handler();
+        }
+        TLB_SHOOTDOWN_VECTOR => {
+            super::memory::pagetables::tlb_shootdown_handler();
         }
         n if n >= 240 => {
             super::apic::lapic_interrupt(number as u16);

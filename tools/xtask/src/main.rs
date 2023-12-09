@@ -7,8 +7,8 @@ mod kani;
 
 use std::path::PathBuf;
 
-use clap::{ArgEnum, Args, Parser, Subcommand};
-use triple::{Arch, Machine};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use triple::{Arch, Machine, Triple};
 
 #[derive(Parser, Debug)]
 #[clap(name = "xtask", author = "Daniel Bittman <danielbittman1@gmail.com>", version = "1.0", about = "Build system for Twizzler", long_about = None)]
@@ -17,7 +17,7 @@ struct Cli {
     command: Option<Commands>,
 }
 
-#[derive(Debug, ArgEnum, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, ValueEnum, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Profile {
     Debug,
     Release,
@@ -41,11 +41,11 @@ impl Default for Profile {
 
 #[derive(Args, Debug, Clone, Copy)]
 struct BuildConfig {
-    #[clap(short, long, arg_enum, default_value_t = Profile::Debug, help = "Select build profile.")]
+    #[clap(short, long, value_enum, default_value_t = Profile::Debug, help = "Select build profile.")]
     pub profile: Profile,
-    #[clap(short, long, arg_enum, default_value_t = Arch::X86_64, help = "Select target architecture.")]
+    #[clap(short, long, value_enum, default_value_t = Arch::X86_64, help = "Select target architecture.")]
     pub arch: Arch,
-    #[clap(short, long, arg_enum, default_value_t = Machine::Unknown, help = "Select target machine.")]
+    #[clap(short, long, value_enum, default_value_t = Machine::Unknown, help = "Select target machine.")]
     pub machine: Machine,
 }
 
@@ -61,7 +61,30 @@ impl BuildConfig {
     pub fn is_default_target(&self) -> bool {
         self.is_default_arch() && self.is_default_machine()
     }
+
+    pub fn twz_triple(&self) -> Triple {
+        // Compiling for aarch64 requires specifying the machine it will be compiled
+        // for. However, the supported triples have a generic machine value of unknown.
+        // We set the default machine value to unknown in this case.
+        let machine = if self.arch == Arch::Aarch64 {
+            Machine::Unknown
+        } else {
+            self.machine
+        };
+        Triple::new(self.arch, machine, triple::Host::Twizzler, None)
+    }
 }
+
+#[derive(Args, Debug)]
+struct KaniOptions {
+    //Kani options
+    #[clap(long, short, help = "Pass the flags for Kani to execute")]
+    kani_options: Option<String>,
+    // //Env options
+    // #[clap(long, short, help = "Pass any desired environment variables")]
+    // env: String,
+}
+
 
 #[derive(Args, Debug)]
 struct KaniOptions {
@@ -90,7 +113,7 @@ struct DocOptions {
     pub config: BuildConfig,
 }
 
-#[derive(ArgEnum, Debug, Clone, Copy)]
+#[derive(ValueEnum, Debug, Clone, Copy)]
 enum MessageFormat {
     Human,
     Short,
@@ -106,7 +129,7 @@ struct CheckOptions {
     pub config: BuildConfig,
     #[clap(long, short)]
     pub manifest_path: Option<PathBuf>,
-    #[clap(long, short, arg_enum, default_value_t = MessageFormat::Human)]
+    #[clap(long, short, value_enum, default_value_t = MessageFormat::Human)]
     pub message_format: MessageFormat,
     #[clap(long, short)]
     pub workspace: bool,
@@ -172,6 +195,11 @@ struct BootstrapOptions {
         help = "Don't remove the target/ directory after rebuilding the toolchain."
     )]
     keep_old_artifacts: bool,
+    #[clap(
+        long,
+        help = "Keep early stages (0 and 1) of building rustc. Speeds up compilation, but can only be used if you (a) have already done a full bootstrap, and (b) since that bootstrap, all that is modified is twizzler-runtime-api or rust's standard library. Any changes to the compiler require one to not use this flag."
+    )]
+    keep_early_stages: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -193,6 +221,7 @@ enum Commands {
 }
 
 fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     if let Some(command) = cli.command {
         match command {

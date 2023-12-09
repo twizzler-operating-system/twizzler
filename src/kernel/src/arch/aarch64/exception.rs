@@ -15,12 +15,11 @@ use registers::{
 };
 
 use twizzler_abi::upcall::{MemoryAccessKind, UpcallFrame};
+use twizzler_abi::arch::syscall::SYSCALL_MAGIC;
 
 use crate::memory::{context::virtmem::PageFaultFlags, VirtAddr};
 use super::thread::UpcallAble;
 
-// TODO: Change SPSel so that we take exceptions
-// using SP_ELx, instead of using SP_EL0
 core::arch::global_asm!(r#"
 /// Exception Vector Table Definition for EL1 (Kernel)
 
@@ -49,9 +48,9 @@ b default_exception_handler
 // Taking an exception from the current EL with SP_EL1 (kernel)
 // The exception is handled from EL1->EL1. The stack pointer from
 // the kernel is preserved.
-b sync_exception_handler
+b sync_exception_handler_el1
 .align {VECTOR_ALIGNMENT}
-b interrupt_request_handler
+b interrupt_request_handler_el1
 .align {VECTOR_ALIGNMENT}
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
@@ -61,9 +60,9 @@ b default_exception_handler
 // Handling an exception from a Lower EL that is running in AArch64. 
 // Lower meaning lower priviledge (EL0/user). Basically do we handle
 // exceptions that occur in userspace (syscalls, etc.).
-b default_exception_handler
+b sync_exception_handler_el0
 .align {VECTOR_ALIGNMENT}
-b default_exception_handler
+b interrupt_request_handler_el0
 .align {VECTOR_ALIGNMENT}
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
@@ -84,40 +83,43 @@ TABLE_ALIGNMENT = const 11, // 2^11 = 2048 = 0x800
 VECTOR_ALIGNMENT = const 7, // 2^7 = 128 = 0x80
 );
 
+// TODO: check/set stack alignment for ExceptionContext
+
 /// Registers that are save/resored when handling an exception
 #[derive(Debug, Copy, Clone)]
 pub struct ExceptionContext {
-    x0: u64,
-    x1: u64,
-    x2: u64,
-    x3: u64,
-    x4: u64,
-    x5: u64,
-    x6: u64,
-    x7: u64,
-    x8: u64,
-    x9: u64,
-    x10: u64,
-    x11: u64,
-    x12: u64,
-    x13: u64,
-    x14: u64,
-    x15: u64,
-    x16: u64,
-    x17: u64,
-    x18: u64,
-    x19: u64,
-    x20: u64,
-    x21: u64,
-    x22: u64,
-    x23: u64,
-    x24: u64,
-    x25: u64,
-    x26: u64,
-    x27: u64,
-    x28: u64,
-    x29: u64,
-    x30: u64,
+    pub x0: u64,
+    pub x1: u64,
+    pub x2: u64,
+    pub x3: u64,
+    pub x4: u64,
+    pub x5: u64,
+    pub x6: u64,
+    pub x7: u64,
+    pub x8: u64,
+    pub x9: u64,
+    pub x10: u64,
+    pub x11: u64,
+    pub x12: u64,
+    pub x13: u64,
+    pub x14: u64,
+    pub x15: u64,
+    pub x16: u64,
+    pub x17: u64,
+    pub x18: u64,
+    pub x19: u64,
+    pub x20: u64,
+    pub x21: u64,
+    pub x22: u64,
+    pub x23: u64,
+    pub x24: u64,
+    pub x25: u64,
+    pub x26: u64,
+    pub x27: u64,
+    pub x28: u64,
+    pub x29: u64,
+    pub x30: u64,
+    pub sp: u64,
 }
 
 impl Display for ExceptionContext {
@@ -130,7 +132,7 @@ impl Display for ExceptionContext {
         writeln!(f, "\tx16: {:#018x} x17: {:#018x} x18: {:#018x} x19: {:#018x}", self.x16, self.x17, self.x18, self.x19)?;
         writeln!(f, "\tx20: {:#018x} x21: {:#018x} x22: {:#018x} x23: {:#018x}", self.x20, self.x21, self.x22, self.x23)?;
         writeln!(f, "\tx24: {:#018x} x25: {:#018x} x26: {:#018x} x27: {:#018x}", self.x24, self.x25, self.x26, self.x27)?;
-        writeln!(f, "\tx28: {:#018x} x29: {:#018x} x30: {:#018x} ", self.x28, self.x29, self.x30)
+        writeln!(f, "\tx28: {:#018x} x29: {:#018x} x30: {:#018x} sp: {:#018x}", self.x28, self.x29, self.x30, self.sp)
     }
 }
 
@@ -150,12 +152,16 @@ impl From<ExceptionContext> for UpcallFrame {
     }
 }
 
+// TODO: reentrant/nested interrupt support
+// - save spsr_el1 and elr_el1 before calling handler
+// - enable interrupts while servicing exceptions
+
 /// macro creates a high level exception handler
 /// to be used in the exception vector table.
 /// saves/restores regs on the current stack pointer
 /// and calls the specified handler
 macro_rules! exception_handler {
-    ($name:ident, $handler:ident) => {
+    ($name:ident, $handler:ident, $is_kernel:tt) => {
         #[naked]
         #[no_mangle]
         pub(super) unsafe extern "C" fn $name() {
@@ -181,14 +187,16 @@ macro_rules! exception_handler {
                 "stp x28, x29, [sp, #16 * 14]",
                 // save other important registers
                 // link register (i.e. x30)
-                "str x30, [sp, #16 * 15]",
+                save_stack_pointer!($is_kernel),
+                "stp x30, x10, [sp, #16 * 15]",
                 // move stack pointer of last frame as an argument
                 "mov x0, sp",
                 // go to exception handler (overwrites x30)
                 "bl {handler}",
                 // restore all general purpose registers (x0-x30)
                 // pop registers off of the stack
-                "ldr x30, [sp, #16 * 15]",
+                "ldp x30, x10, [sp, #16 * 15]",
+                restore_stack_pointer!($is_kernel),
                 "ldp x28, x29, [sp, #16 * 14]",
                 "ldp x26, x27, [sp, #16 * 13]",
                 "ldp x24, x25, [sp, #16 * 12]",
@@ -215,12 +223,44 @@ macro_rules! exception_handler {
         }
     };
 }
+
+// copy the value of the stack pointer into x10
+macro_rules! save_stack_pointer {
+    // save kernel stack pointer
+    (true) => {
+        // restore stack pointer base
+        "add x10, sp, {FRAME_SIZE}"
+    };
+    // save user stack pointer
+    (false) => {
+        // copy the value of sp_el0
+        "mrs x10, sp_el0"
+    }
+}
+
+// restore the value of the stack pointer from x10
+macro_rules! restore_stack_pointer {
+    // Restore the kernel stack pointer. This happens anyways since we clear
+    // the stack frame used for the exception context and `sp` is aliased to
+    // `sp_el1` in the kernel. So we return an empty string.
+    (true) => {
+        ""
+    };
+    // restore the user stack pointer (sp_el0)
+    (false) => {
+        // copy the value of sp_el0
+        "msr sp_el0, x10"
+    }
+}
+
 // export macro to be used, but only in the parent module
 pub(super) use exception_handler;
+pub(super) use save_stack_pointer;
+pub(super) use restore_stack_pointer;
 
 // Default exception handler simply prints out 
 // verbose debug information to the kernel console.
-exception_handler!(default_exception_handler, debug_handler);
+exception_handler!(default_exception_handler, debug_handler, true);
 
 /// Exception handler prints information about the
 /// stack frame that generated the exception and other
@@ -243,6 +283,11 @@ fn debug_handler(ctx: &mut ExceptionContext) {
                 data_abort = true;
                 "Data Abort taken without a change in Exception level."
             },
+            Some(ESR_EL1::EC::Value::DataAbortLowerEL) => {
+                data_abort = true;
+                "Data Abort taken from a lower Exception level."
+            },
+            Some(ESR_EL1::EC::Value::InstrAbortLowerEL) => "Instruction abort from a lower Exception level.",
             Some(ESR_EL1::EC::Value::Unknown) | _ => "Unknown reason.",
         }
     );
@@ -304,7 +349,10 @@ fn debug_handler(ctx: &mut ExceptionContext) {
 }
 
 // Exception handler that services synchronous exceptions
-exception_handler!(sync_exception_handler, sync_handler);
+// the same base handler, `sync_handler` is used (for now)
+// for both user and kernel.
+exception_handler!(sync_exception_handler_el1, sync_handler, true);
+exception_handler!(sync_exception_handler_el0, sync_handler, false);
 
 /// Exception handler deals with synchronous exceptions
 /// such as Data Aborts (i.e. page faults)
@@ -313,7 +361,8 @@ fn sync_handler(ctx: &mut ExceptionContext) {
     let esr = ESR_EL1.get();
     let esr_reg: InMemoryRegister<u64, ESR_EL1::Register> = InMemoryRegister::new(esr);
     match esr_reg.read_as_enum(ESR_EL1::EC) {
-        Some(ESR_EL1::EC::Value::DataAbortCurrentEL) => {
+        // TODO: reorganize data abort handling between user and kernel
+        Some(ESR_EL1::EC::Value::DataAbortCurrentEL) | Some(ESR_EL1::EC::Value::DataAbortLowerEL) => {
             // iss: syndrome
             let iss = esr_reg.read(ESR_EL1::ISS);
             // is the fault address register valid?
@@ -335,7 +384,10 @@ fn sync_handler(ctx: &mut ExceptionContext) {
             // TODO: support for PRESENT and INVALID flags
             let flags = PageFaultFlags::empty();
 
-            let far_va = VirtAddr::new(far as u64).unwrap();
+            let far_va = match VirtAddr::new(far as u64) {
+                Ok(v) => v,
+                Err(_) => panic!("non canonical address: {:x}", far)    
+            };
 
             // DFSC bits[5:0] indicate the type of fault
             let dfsc = iss & 0b111111;
@@ -346,7 +398,7 @@ fn sync_handler(ctx: &mut ExceptionContext) {
                 // TODO: set the access flag
             } else if dfsc & 0b001100 == 0b001100 {
                 let level = dfsc & 0b11;
-                todo!("Permission fault, level {}", level);
+                todo!("Permission fault, level {} {:?} {:?}", level, cause, far_va);
             }
             crate::thread::enter_kernel();
             // crate::interrupt::set(true);
@@ -364,10 +416,77 @@ fn sync_handler(ctx: &mut ExceptionContext) {
             // crate::interrupt::set(false);
             crate::thread::exit_kernel();
         },
+        Some(ESR_EL1::EC::Value::InstrAbortLowerEL) => {
+            handle_inst_abort(ctx, &esr_reg);
+        },
+        Some(ESR_EL1::EC::Value::SVC64) => {
+            // iss: syndrome, contains passed to SVC
+            let iss = esr_reg.read(ESR_EL1::ISS);
+            if iss != SYSCALL_MAGIC {
+                // TODO: handle this
+                panic!("invalid syscall invocation");
+            }
+            super::syscall::handle_syscall(ctx);
+        },
         Some(ESR_EL1::EC::Value::Unknown) | _ => {
             debug_handler(ctx)
         },
     }
+}
+
+fn handle_inst_abort(_ctx: &mut ExceptionContext, esr_reg: &InMemoryRegister<u64, ESR_EL1::Register>) {
+    // decoding ISS for instruction fault.
+    // iss: syndrome
+    let iss = esr_reg.read(ESR_EL1::ISS);
+    // is the fault address register valid? ... use bit 10
+    let far_valid = iss & (1 << 10) == 0;
+    if !far_valid {
+        panic!("FAR is not valid!!");
+    }
+    let far = arm64::registers::FAR_EL1.get();
+
+    // The cause is from an instruction fetch
+    let cause = MemoryAccessKind::InstructionFetch;
+
+    // TODO: support for PRESENT and INVALID flags
+
+    // NOTE: currently, only instruciton aborts are handled when coming from
+    // user space, so we know that the page fault is user
+    let flags = PageFaultFlags::USER;
+
+    let far_va = VirtAddr::new(far as u64).unwrap();
+
+    // IFSC bits[5:0] indicate the type of fault
+    let ifsc = iss & 0b111111;
+    if ifsc & 0b111100 == 0b001000 {
+        // we have an access fault
+        let level = ifsc & 0b11;
+        todo!("Access flag fault, level {}", level);
+        // TODO: set the access flag
+    } else if ifsc & 0b001100 == 0b001100 {
+        let level = ifsc & 0b11;
+        todo!("Permission fault, level {}", level);
+    } else if ifsc & 0b0000100 == 0b0000100 {
+        // translation fault
+        let _level = ifsc & 0b11;
+    }
+
+    crate::thread::enter_kernel();
+    // crate::interrupt::set(true);
+    let elr = ELR_EL1.get();
+    if let Ok(elr_va) = VirtAddr::new(elr) {
+        // logln!("fault {:?} from {:?}", far_va, elr_va);
+        crate::memory::context::virtmem::page_fault(
+            far_va,
+            cause,
+            flags,
+            elr_va,
+        );
+    } else {
+        todo!("send upcall exception info");
+    }
+    // crate::interrupt::set(false);
+    crate::thread::exit_kernel();
 }
 
 /// Initializes the exception vector table by writing the address of 

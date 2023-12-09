@@ -1,10 +1,10 @@
 #[allow(unused_imports)]
-use crate::upcall::UpcallInfo;
+use crate::upcall::{UpcallData, UpcallInfo};
 
 /// Arch-specific frame info for upcall.
+#[derive(Clone, Debug)]
 #[repr(C)]
-pub struct UpcallFrame {
-}
+pub struct UpcallFrame {}
 
 impl UpcallFrame {
     /// Get the instruction pointer of the frame.
@@ -24,19 +24,19 @@ impl UpcallFrame {
 }
 
 #[no_mangle]
-#[cfg(feature = "rt")]
+#[cfg(feature = "runtime")]
 pub(crate) unsafe extern "C" fn upcall_entry2(
-    _frame: *const UpcallFrame,
+    _frame: *mut UpcallFrame,
     _info: *const UpcallInfo,
 ) -> ! {
     todo!()
 }
 
-#[cfg(feature = "rt")]
+#[cfg(feature = "runtime")]
 #[no_mangle]
-pub(crate) unsafe extern "C" fn upcall_entry(
-    _frame: *const UpcallFrame,
-    _info: *const UpcallInfo
+pub(crate) unsafe extern "C-unwind" fn upcall_entry(
+    _frame: *mut UpcallFrame,
+    _info: *const UpcallData,
 ) -> ! {
     todo!()
 }

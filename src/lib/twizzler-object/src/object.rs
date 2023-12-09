@@ -30,6 +30,10 @@ impl<T> Object<T> {
         &self.slot
     }
 
+    /// Transmute the object of base type T to base type N.
+    ///
+    /// # Safety
+    /// All the safely rules of using [core::mem::transmute] apply to the base type.
     pub unsafe fn transmute<N>(self) -> Object<N> {
         core::mem::transmute(self)
     }

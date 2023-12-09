@@ -9,7 +9,6 @@ use core::ops::Range;
 use core::ptr::NonNull;
 
 use alloc::sync::Arc;
-use twizzler_abi::marker::BaseType;
 use twizzler_abi::object::ObjID;
 use twizzler_abi::{device::CacheType, object::Protections};
 
@@ -37,15 +36,9 @@ pub type ContextRef = Arc<Context>;
 /// type can be created that implements Context, which can then be used by the rest of the kernel to manage objects in a
 /// context (e.g. an address space).
 pub trait UserContext {
-    /// The type that is expected for upcall information (e.g. an entry address).
-    type UpcallInfo;
     /// The type that is expected for informing the context how to map the object (e.g. a slot number).
     type MappingInfo;
 
-    /// Set the context's upcall information.
-    fn set_upcall(&self, target: Self::UpcallInfo);
-    /// Retrieve the context's upcall information.
-    fn get_upcall(&self) -> Option<Self::UpcallInfo>;
     /// Switch to this context.
     fn switch_to(&self);
     /// Insert a range of an object into the context. The implementation may choose to use start and len as hints, but
@@ -104,7 +97,7 @@ pub enum InsertError {
 
 /// A trait for kernel-related memory context actions.
 pub trait KernelMemoryContext {
-    type Handle<T: BaseType>: KernelObjectHandle<T>;
+    type Handle<T>: KernelObjectHandle<T>;
     /// Called once during initialization, after which calls to the other function in this trait may be called.
     fn init_allocator(&self);
     /// Allocate a contiguous chunk of memory. This is not expected to be good for small allocations, this should be
@@ -122,7 +115,7 @@ pub trait KernelMemoryContext {
     fn prep_smp(&self);
     /// Insert object into kernel space. The context need only support a small number of kernel-memory-mapped objects.
     /// The mapping is released when the returned handle is dropped.
-    fn insert_kernel_object<T: BaseType>(&self, info: ObjectContextInfo) -> Self::Handle<T>;
+    fn insert_kernel_object<T>(&self, info: ObjectContextInfo) -> Self::Handle<T>;
 }
 
 pub trait KernelObjectHandle<T> {

@@ -1,5 +1,4 @@
 [target.x86_64-unknown-none]
-runner = "cargo run --package simple_boot --"
 rustflags = [
   "-C",
   "link-arg=--image-base=0xffffffff80100000",
@@ -33,4 +32,4 @@ target = "target-spec/x86_64-unknown-none.json"
 
 [unstable]
 build-std = ["core", "alloc"]
-build-std-features = ["compiler-builtins-mem"]
+build-std-features = []

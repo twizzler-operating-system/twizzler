@@ -3,7 +3,7 @@ use alloc::format;
 use alloc::vec::Vec;
 use memoffset::offset_of;
 use twizzler_abi::device::bus::pcie::{
-    PcieBridgeHeader, PcieDeviceHeader, PcieDeviceInfo, PcieFunctionHeader, PcieInfo,
+    get_bar, PcieBridgeHeader, PcieDeviceHeader, PcieDeviceInfo, PcieFunctionHeader, PcieInfo,
     PcieKactionSpecific,
 };
 use twizzler_abi::device::{
@@ -15,6 +15,7 @@ use twizzler_abi::{
     device::BusType,
     kso::{KactionError, KactionValue},
 };
+use volatile::map_field;
 
 use crate::arch::memory::phys_to_virt;
 use crate::interrupt::{DynamicInterrupt, WakeInfo};
@@ -32,7 +33,6 @@ lazy_static::lazy_static! {
     static ref DEVS: Mutex<BTreeMap<ObjID, PcieKernelInfo>> = Mutex::new(BTreeMap::new());
 }
 
-#[allow(unaligned_references)]
 fn register_device(
     parent: DeviceRef,
     seg: u16,
@@ -56,78 +56,96 @@ fn register_device(
         id,
         kaction,
     );
-    let cfg: &PcieFunctionHeader = unsafe {
-        phys_to_virt(PhysAddr::new(cfgaddr).unwrap())
-            .as_ptr::<PcieFunctionHeader>()
-            .as_ref()
-            .unwrap()
+    let mut cfg = unsafe {
+        volatile::VolatileRef::from_mut_ref(
+            phys_to_virt(PhysAddr::new(cfgaddr).unwrap())
+                .as_mut_ptr::<PcieFunctionHeader>()
+                .as_mut()
+                .unwrap(),
+        )
     };
+    let cfg = cfg.as_mut_ptr();
     let mut bars = Vec::new();
-    match cfg.header_type.get() {
+    match map_field!(cfg.header_type).read() {
         0 => {
-            let cfg: &PcieDeviceHeader = unsafe {
-                phys_to_virt(PhysAddr::new(cfgaddr).unwrap())
-                    .as_ptr::<PcieDeviceHeader>()
-                    .as_ref()
-                    .unwrap()
+            let mut cfg = unsafe {
+                volatile::VolatileRef::from_mut_ref(
+                    phys_to_virt(PhysAddr::new(cfgaddr).unwrap())
+                        .as_mut_ptr::<PcieDeviceHeader>()
+                        .as_mut()
+                        .unwrap(),
+                )
             };
-            let mut bar = 0;
-            while bar < 6 {
-                let info = cfg.bars[bar].get();
-                cfg.bars[bar].set(0xffffffff);
-                let sz = (!(cfg.bars[bar].get() & 0xfffffff0)).wrapping_add(1);
-                cfg.bars[bar].set(info);
-                let ty = (info >> 1) & 3;
-                let pref = (info >> 3) & 1;
-                if info & 1 != 0 {
+
+            let cfg = cfg.as_mut_ptr();
+
+            let mut bar_idx = 0;
+            while bar_idx < 6 {
+                let bar = get_bar(cfg, bar_idx);
+                let bar_data = bar.read();
+                bar.write(0xffffffff);
+                let sz = (!(bar.read() & 0xfffffff0)).wrapping_add(1);
+                bar.write(bar_data);
+                let ty = (bar_data >> 1) & 3;
+                let pref = (bar_data >> 3) & 1;
+                if bar_data & 1 != 0 {
                     bars.push((0, 0, 0));
                 } else {
                     if ty == 2 {
                         // TODO: does the second BAR contribute to sz?
-                        bar += 1;
-                        let info2 = cfg.bars[bar].get();
+                        bar_idx += 1;
+
+                        let bar2 = get_bar(cfg, bar_idx);
+                        let bar2_data = bar2.read();
                         bars.push((
-                            ((info2 as u64 & 0xffffffff) << 32) | info as u64 & 0xfffffff0,
+                            ((bar2_data as u64 & 0xffffffff) << 32) | bar_data as u64 & 0xfffffff0,
                             sz,
                             pref,
                         ));
                         bars.push((0, 0, 0));
                     } else {
-                        bars.push((info as u64 & 0xfffffff0, sz, pref));
+                        bars.push((bar_data as u64 & 0xfffffff0, sz, pref));
                     }
                 }
-                bar += 1;
+                bar_idx += 1;
             }
         }
         1 => {
-            let cfg: &PcieBridgeHeader = unsafe {
-                phys_to_virt(PhysAddr::new(cfgaddr).unwrap())
-                    .as_ptr::<PcieBridgeHeader>()
-                    .as_ref()
-                    .unwrap()
+            let mut cfg = unsafe {
+                volatile::VolatileRef::from_mut_ref(
+                    phys_to_virt(PhysAddr::new(cfgaddr).unwrap())
+                        .as_mut_ptr::<PcieBridgeHeader>()
+                        .as_mut()
+                        .unwrap(),
+                )
             };
-            let info = cfg.bar[0].get();
-            cfg.bar[0].set(0xffffffff);
-            let sz = (!(cfg.bar[0].get() & 0xfffffff0)).wrapping_add(1);
-            cfg.bar[0].set(info);
-            let info2 = cfg.bar[1].get();
-            cfg.bar[1].set(0xffffffff);
-            let sz2 = (!(cfg.bar[1].get() & 0xfffffff0)).wrapping_add(1);
-            cfg.bar[1].set(info2);
-            let ty = (info >> 1) & 3;
-            let pref = (info >> 3) & 1;
+            let cfg = cfg.as_mut_ptr();
+            let bar0 = map_field!(cfg.bar0);
+            let bar1 = map_field!(cfg.bar1);
+            let bar0_backup = bar0.read();
+            let bar1_backup = bar1.read();
+
+            bar0.write(0xffffffff);
+            let sz = (!(bar0.read() & 0xfffffff0)).wrapping_add(1);
+            bar0.write(bar0_backup);
+
+            bar1.write(0xffffffff);
+            let sz2 = (!(bar1.read() & 0xfffffff0)).wrapping_add(1);
+            bar1.write(bar1_backup);
+            let ty = (bar0_backup >> 1) & 3;
+            let pref = (bar0_backup >> 3) & 1;
             if ty == 2 {
                 // TODO: does the second BAR contribute to sz?
                 bars.push((
-                    ((info2 as u64 & 0xfffffff0) << 32) | info as u64 & 0xfffffff0,
+                    ((bar1_backup as u64 & 0xfffffff0) << 32) | bar0_backup as u64 & 0xfffffff0,
                     sz,
                     pref,
                 ));
                 bars.push((0, 0, 0));
             } else {
-                let pref2 = (info2 >> 3) & 1;
-                bars.push((info as u64 & 0xfffffff0, sz, pref));
-                bars.push((info2 as u64 & 0xfffffff0, sz2, pref2));
+                let pref2 = (bar1_backup >> 3) & 1;
+                bars.push((bar0_backup as u64 & 0xfffffff0, sz, pref));
+                bars.push((bar1_backup as u64 & 0xfffffff0, sz2, pref2));
             }
         }
         _ => {
@@ -139,12 +157,12 @@ fn register_device(
         bus_nr: bus,
         dev_nr: device,
         func_nr: function,
-        device_id: cfg.device_id.get(),
-        vendor_id: cfg.vendor_id.get(),
-        class: cfg.class.get(),
-        subclass: cfg.subclass.get(),
-        progif: cfg.progif.get(),
-        revision: cfg.revision.get(),
+        device_id: map_field!(cfg.device_id).read(),
+        vendor_id: map_field!(cfg.vendor_id).read(),
+        class: map_field!(cfg.class).read(),
+        subclass: map_field!(cfg.subclass).read(),
+        progif: map_field!(cfg.progif).read(),
+        revision: map_field!(cfg.revision).read(),
     };
     dev.add_info(&info);
     dev.add_mmio(

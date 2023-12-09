@@ -20,6 +20,19 @@ impl PageVec {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.pages.len()
+    }
+
+    /// Remove the first elements up to offset, and then truncate the vector to the given length.
+    pub fn truncate_and_drain(&mut self, offset: usize, len: usize) {
+        self.pages.drain(0..offset);
+        self.pages.truncate(len);
+        if self.pages.capacity() > 2 * len {
+            self.pages.shrink_to_fit();
+        }
+    }
+
     pub fn show_part(&self, range: &PageRange) -> String {
         let mut str = String::new();
         str += &format!("PV {:p} ", self);
@@ -83,9 +96,9 @@ impl PageVec {
 
     pub fn add_page(&mut self, offset: usize, page: Page) {
         if offset >= self.pages.len() {
+            self.pages.reserve((offset + 1) * 2);
             self.pages.resize(offset + 1, None)
         }
-        assert!(self.pages[offset].is_none()); //TODO
         self.pages[offset] = Some(Arc::new(page));
     }
 }
