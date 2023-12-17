@@ -3,7 +3,75 @@ use core::fmt::Display;
 use alloc::{sync::Arc, vec::Vec};
 use nonoverlapping_interval_tree::{IntervalValue, NonOverlappingIntervalTree};
 
+//
+// KANI TODO
+//
+
 use crate::mutex::Mutex;
+
+
+// #[cfg(kani)]
+// mod page_range_tree_verification{
+//     use crate::memory::PhysAddr;
+//     use crate::memory::VirtAddr;
+//     use crate::obj::PageNumber;
+
+//     use super::PageRangeTree;
+//     use super::Page;
+//     use twizzler_abi::device::CacheType;
+
+
+//     #[kani::proof]
+//     pub fn split_into_three(){
+//         let mut tree = PageRangeTree::new();
+
+//         let addr1 = VirtAddr::new(kani::any());
+//         let pn = PageNumber::from_address( addr1.unwrap());
+
+//         let page = get_page();
+//         tree.add_page(pn, page);
+
+//         let addr2 = VirtAddr::new(kani::any());
+//         let pn_split = PageNumber::from_address(addr2.unwrap());
+//         let discard = kani::any();
+        
+//         tree.split_into_three(pn_split, discard)
+//     }
+
+
+//     //handle page enums
+
+//     #[kani::proof]
+//     pub fn get_page() -> Page{
+//         // let pa = PhysAddr::new(kani::any()) ;
+
+//         let pa = PhysAddr::new(23940);
+//         //Note: kany is not generating a random
+//         //value here, it will evaluate the different
+//         //match states equally.
+
+//         let cache_type = match kani::any(){
+//             0 => CacheType::MemoryMappedIO,
+//             1 => CacheType::Uncacheable,
+//             2 => CacheType::WriteBack,
+//             3 => CacheType::WriteCombining,
+//             _ => CacheType::WriteThrough,
+//         };
+
+
+
+//         match kani::any(){
+//             0 => Page::new(),
+//             _ => Page::new_wired(pa.unwrap(), cache_type)
+//         }
+//     }
+
+//     pub fn cache() -> u8{
+//         3
+//     }
+
+// }
+
 
 use super::{
     pages::{Page, PageRef},

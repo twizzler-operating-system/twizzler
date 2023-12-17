@@ -61,5 +61,9 @@ debug = true
 [profile.dev]
 opt-level = 1
 
+[features]
+std = []
+
 [package.metadata.kani.flags]
 features = ["std"]
+
