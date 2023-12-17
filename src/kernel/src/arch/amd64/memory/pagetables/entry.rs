@@ -193,3 +193,34 @@ impl From<&MappingSettings> for EntryFlags {
         p | c | f | u
     }
 }
+
+
+// impl From<&MappingSettings> for EntryFlags {
+//     fn from(settings: &MappingSettings) -> Self {
+//         let c = match settings.cache() {
+//             CacheType::WriteBack => EntryFlags::empty(),
+//             CacheType::WriteThrough => (1 << 3).into(),
+//             CacheType::WriteCombining => EntryFlags::empty(),
+//             CacheType::Uncacheable =>  (1 << 4).into(),
+//             CacheType::MemoryMappedIO => todo!("mapping MMIO CacheType to EntryFlags"),
+//         };
+//         let mut p = EntryFlags::empty();
+//         if settings.perms().contains(2) {
+//             p |=  (1 << 1).into();
+//         }
+//         if !settings.perms().contains(4) {
+//             p |= (1 << 63).into();
+//         }
+//         let f = if settings.flags().contains(1) {
+//             (1 << 8).into()
+//         } else {
+//             EntryFlags::empty()
+//         };
+//         let u = if settings.flags().contains(2) {
+//             (1 << 2).into()
+//         } else {
+//             EntryFlags::empty()
+//         };
+//         p | c | f | u
+//     }
+// }

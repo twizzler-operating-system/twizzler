@@ -126,6 +126,87 @@ macro_rules! impl_unit_conversion {
 impl_unit_conversion!(Seconds, FemtoSeconds, FEMTOS_PER_SEC);
 impl_unit_conversion!(NanoSeconds, FemtoSeconds, FEMTOS_PER_NANO);
 
+#[cfg(kani)]
+mod units_verification {
+
+    use crate::syscall::{FemtoSeconds, Seconds, TimeSpan, FEMTOS_PER_SEC};
+
+
+    // #[kani::proof]
+    // #[kani::unwind(10)]     
+    // pub fn secs(){
+    //     let scalar: u64 = kani::any();
+    //     let secs: u64 = kani::any();
+
+    //     assert_eq!(Seconds(secs) * scalar, TimeSpan::new(secs * scalar, 0));
+    //     assert_eq!(scalar * Seconds(secs), TimeSpan::new(secs * scalar, 0));
+    // }
+
+    #[kani::proof]
+    #[kani::unwind(10)]     
+    pub fn femtos(){
+
+        let scalar: u64 = kani::any();
+        let femtos: u64 = kani::any();
+
+        assert_eq!(
+            FemtoSeconds(femtos) * scalar,
+            TimeSpan::new(0, femtos * scalar)
+        );
+
+        assert_eq!(
+            scalar * FemtoSeconds(femtos),
+            TimeSpan::new(0, femtos * scalar)
+        );
+    }
+    #[test]
+    fn kani_concrete_playback_femtos_687408779676949329() {
+        let concrete_vals: Vec<Vec<u8>> = vec![
+            // 45591629314129921ul
+            vec![1, 0, 0, 102, 88, 249, 161, 0],
+            // 120ul
+            vec![120, 0, 0, 0, 0, 0, 0, 0],
+        ];
+        kani::concrete_playback_run(concrete_vals, femtos);
+    }
+    #[test]
+    fn kani_concrete_playback_femtos_5587730266331093905() {
+        let concrete_vals: Vec<Vec<u8>> = vec![
+            // 4369355084542459ul
+            vec![251, 49, 182, 193, 231, 133, 15, 0],
+            // 10360214283417026561ul
+            vec![1, 0, 0, 0, 0, 224, 198, 143],
+        ];
+        kani::concrete_playback_run(concrete_vals, femtos);
+    }
+
+    #[kani::proof]
+    pub fn conversion(){
+        let base_value = kani::any();
+        let femtos = FemtoSeconds(FEMTOS_PER_SEC * base_value);
+        let mut secs: Seconds = femtos.into();
+
+        assert_eq!(secs, Seconds(base_value));
+
+        secs = Seconds(base_value);
+        let f: FemtoSeconds = secs
+            .try_into()
+            .expect("could not convert Seconds to FemtoSeconds");
+
+        assert_eq!(femtos, f);
+
+    }
+    #[test]
+    fn kani_concrete_playback_conversion_7419321740632851174() {
+        let concrete_vals: Vec<Vec<u8>> = vec![
+            // 5794978167381398911ul
+            vec![127, 149, 233, 171, 240, 229, 107, 80],
+        ];
+        kani::concrete_playback_run(concrete_vals, conversion);
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
 

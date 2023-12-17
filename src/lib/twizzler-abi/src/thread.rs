@@ -95,6 +95,40 @@ impl From<ThreadSpawnError> for SpawnError {
     }
 }
 
+
+// #[cfg(kani)]
+
+// mod thread_verif{
+//     use super::ExecutionState;
+//     use super::ThreadRepr;
+
+//     #[kani::proof]
+//     pub fn thread_set_state(){
+    
+//         let tr = ThreadRepr::default();
+        
+//         let state = exec_state();
+
+//         tr.set_state(state, kani::any());
+        
+//         assert!(tr.get_state() == state);
+
+//     }
+
+//     pub fn exec_state() -> ExecutionState{
+//         let state = match kani::any(){
+//                         0 => ExecutionState::Exited,
+//                         1 => ExecutionState::Sleeping, 
+//                         2 => ExecutionState::Running,
+//                         _ => ExecutionState::Suspended,
+//                     };
+//         return state;
+//     }
+
+// }
+
+
+
 impl ThreadRepr {
     pub fn get_state(&self) -> ExecutionState {
         let status = self.status.load(Ordering::Acquire);
