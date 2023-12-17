@@ -39,6 +39,11 @@ pub(crate) fn launch_kani(cli:  KaniOptions) -> anyhow::Result<()> {
     cmd.args(exclude_list());
     cmd.args(kernel_flags());
 
+    // let child = cmd.stdout(Stdio::inherit())
+    // .stderr(Stdio::inherit()).spawn();
+
+    // return child.
+
     match cmd.spawn() {
         Err(e) => {
             return Err(e.into());

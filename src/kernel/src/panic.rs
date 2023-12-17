@@ -1,9 +1,8 @@
-use core::panic::PanicInfo;
 
 use addr2line::Context;
 use object::{Object, ObjectSection};
 
-use crate::interrupt::disable;
+use core::panic::PanicInfo;
 
 static mut DEBUG_CTX: Option<
     Context<addr2line::gimli::EndianReader<addr2line::gimli::RunTimeEndian, alloc::rc::Rc<[u8]>>>,
@@ -53,8 +52,7 @@ pub fn init(kernel_image: &'static [u8]) {
     let ctx = load_debug_context(&image);
     unsafe { DEBUG_CTX = ctx };
 }
-
-const MAX_FRAMES: usize = 100;
+#[cfg(feature = "std")]
 pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoint>) {
     let mut frame_nr = 0;
     let trace_callback = |frame: &backtracer_core::Frame| {
@@ -110,10 +108,6 @@ pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoin
         }
         frame_nr += 1;
 
-        if frame_nr > MAX_FRAMES {
-            return false;
-        }
-
         true // keep going to the next frame
     };
 
@@ -124,10 +118,11 @@ pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoin
     }
 }
 
+#[cfg(feature = "std")]
 static DID_PANIC: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 #[panic_handler]
+#[cfg(feature = "std")]
 fn panic(info: &PanicInfo) -> ! {
-    disable();
     let second_panic = DID_PANIC.swap(true, core::sync::atomic::Ordering::SeqCst);
     if second_panic {
         loop {}
@@ -150,6 +145,6 @@ fn panic(info: &PanicInfo) -> ! {
 
     loop {}
 }
-
+#[cfg(feature = "std")]
 #[lang = "eh_personality"]
 pub extern "C" fn rust_eh_personality() {}
