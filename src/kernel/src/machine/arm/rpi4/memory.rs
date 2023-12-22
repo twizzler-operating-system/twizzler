@@ -6,6 +6,22 @@
 // in the "BCM2711 ARM Peripherals" document here:
 //     https://datasheets.raspberrypi.com/bcm2711/bcm2711-peripherals.pdf
 
+
+use crate::memory::{MemoryRegion, MemoryRegionKind, PhysAddr};
+
+pub const DTB_ADDR: PhysAddr = unsafe {
+    PhysAddr::new_unchecked(0x4000_0000)
+};
+
+static RESERVED: [MemoryRegion; 0] = [];
+
+/// A slice of physical regions of memory that are reserved
+/// and should be ignored by the kernel. This list is device specific
+/// and may be empty.
+pub fn reserved_regions() -> &'static [MemoryRegion] {
+    &RESERVED
+}
+
 pub mod mmio {
     use crate::memory::{MemoryRegion, MemoryRegionKind, PhysAddr};
 
@@ -14,7 +30,7 @@ pub mod mmio {
     pub const GICV2_DISTRIBUTOR: MemoryRegion = MemoryRegion {
         // physical base address in QEMU
         start: unsafe {
-            PhysAddr::new_unchecked(0x08000000)
+            PhysAddr::new_unchecked(0x0_FF84_1000)
         },
         // Distributor interface register map goes from 0x0000-0x1000
         length: 0x00001000,
@@ -26,7 +42,7 @@ pub mod mmio {
     pub const GICV2_CPU_INTERFACE: MemoryRegion = MemoryRegion {
         // physical base address in QEMU
         start: unsafe {
-            PhysAddr::new_unchecked(0x08010000)
+            PhysAddr::new_unchecked(0x0_FF84_2000)
         },
         // CPU interface register map goes from 0x0000-0x1000
         // we only need 0x1004 bytes, but will request 0x2000
