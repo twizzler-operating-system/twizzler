@@ -113,14 +113,15 @@ KERNEL_CMDLINE={}
         let kernel_size_padded_and_rounded = ((kernel_size + 1024 * 64 - 1) / MB + 1) * MB;
         let cfg_size_padded_and_rounded = ((cfg_data.len() as u64 + 1024 * 64 - 1) / MB + 1) * MB;
         let initrd_size_padded_and_rounded = ((initrd_size + 1024 * 64 - 1) / MB + 1) * MB;
+        const FIRMWARE_SIZE: u64 = 10 * MB;
         fat_file
             .set_len(
-                // efi_size_padded_and_rounded
-                //     + kernel_size_padded_and_rounded
-                //     + initrd_size_padded_and_rounded
-                //     + cfg_size_padded_and_rounded,
-                // AA: temporarily make image a static size
-                20 * MB
+                efi_size_padded_and_rounded
+                    + kernel_size_padded_and_rounded
+                    + initrd_size_padded_and_rounded
+                    + cfg_size_padded_and_rounded
+                // AA: add additinal space for the firmware
+                    + FIRMWARE_SIZE
             )
             .context("failed to set UEFI FAT file length")?;
 
