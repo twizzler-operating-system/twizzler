@@ -6,7 +6,7 @@ use crate::{
     memory::{
         frame::{alloc_frame, get_frame, FrameRef, PhysicalFrameFlags},
         pagetables::MappingFlags,
-    }, terminal, term,
+    },
 };
 
 use super::{consistency::Consistency, MapInfo, MappingCursor, MappingSettings, PhysAddrProvider};
@@ -250,36 +250,6 @@ impl Table {
         let index = Self::get_index(cursor.start(), level);
         let entry = &self[index];
         let is_huge = entry.is_huge() && Self::can_map_at_level(level);
-
-        // AA: only after about iteration 1265, we get stuck
-        unsafe {
-            const START: usize = 1265;
-            if super::mapper::COUNT > START && super::mapper::COUNT < 1300 {
-                // terminal!("[kernel::table] reading entry {:03} at level {}, count: {}",
-                //     index,
-                //     level,
-                //     super::mapper::COUNT,
-                // );
-                // if level == Self::top_level() {
-                //     terminal!("\tcursor: {:?}", cursor);
-                // }
-                if is_huge || level == Self::last_level() {
-                    terminal!("[kernel::table] reading entry {:03} at level {}, count: {}",
-                    index,
-                    level,
-                    super::mapper::COUNT,
-                    );
-                    terminal!("\tcursor: {:?}", cursor);
-                    term!("\tentry: {:#018x}, is huge: {}",
-                        entry.raw(), is_huge,
-                    );
-                    term!(", size: {:#x}",  Self::level_to_page_size(level));
-                    term!("\n");
-                }
-                // term!("\n");
-            }
-        }
-
         if entry.is_present() && (is_huge || level == Self::last_level()) {
             Ok(MapInfo::new(
                 cursor.start(),

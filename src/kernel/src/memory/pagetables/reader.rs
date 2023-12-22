@@ -29,7 +29,6 @@ impl<'a> Iterator for MapReader<'a> {
                     return None;
                 }
                 let info = self.mapper.do_read_map(&cursor);
-                // terminal!("\treturned!!");
                 match info {
                     Ok(info) => {
                         self.cursor = cursor.advance(info.psize);
@@ -37,14 +36,6 @@ impl<'a> Iterator for MapReader<'a> {
                     }
                     Err(skip) => {
                         self.cursor = cursor.advance(skip);
-                        // AA: log any skipping
-                        static mut SKIPPED: usize = 0;
-                        unsafe {
-                            if SKIPPED != skip {
-                                SKIPPED = skip;
-                                terminal!("skipping: {:#x}, count: {}", skip, super::mapper::COUNT);
-                            }
-                        }
                         continue;
                     }
                 }

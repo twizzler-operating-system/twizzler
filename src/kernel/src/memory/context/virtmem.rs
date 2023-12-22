@@ -29,7 +29,7 @@ use crate::{
     mutex::Mutex,
     obj::{self, ObjectRef},
     spinlock::Spinlock,
-    thread::current_thread_ref, terminal,
+    thread::current_thread_ref,
 };
 
 use crate::{
@@ -173,9 +173,6 @@ impl VirtContext {
             VirtAddr::start_kernel_memory(),
             usize::MAX,
         ));
-        // AA: print out initial bootloader mappings
-        // gets stuck in iterator
-        terminal!("[kernel::vmm] reading bootstrap mappings ...");
         for map in rm.coalesce() {
             let cursor = MappingCursor::new(map.vaddr(), map.len());
             let mut phys = ContiguousProvider::new(map.paddr(), map.len());
@@ -184,7 +181,6 @@ impl VirtContext {
                 map.settings().cache(),
                 map.settings().flags() | MappingFlags::GLOBAL,
             );
-            terminal!("[kernel::context] found mapping: {:#018x} => {:#018x} ({:#x})", map.vaddr().raw(), map.paddr().raw(), map.len());
             self.arch.map(cursor, &mut phys, &settings);
         }
 

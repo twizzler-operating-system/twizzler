@@ -8,8 +8,6 @@ use super::{
     MapInfo, MappingCursor, MappingSettings, PhysAddrProvider,
 };
 
-pub static mut COUNT: usize = 0;
-
 /// Manager for a set of page tables. This is the primary interface for manipulating a set of page tables.
 pub struct Mapper {
     root: PhysAddr,
@@ -107,15 +105,6 @@ impl Mapper {
     pub(super) fn do_read_map(&self, cursor: &MappingCursor) -> Result<MapInfo, usize> {
         let level = self.start_level;
         let root = self.root();
-        // AA: log map read operation every few or so times
-        use crate::terminal;
-        unsafe {
-            const MAX_COUNTS: usize = 300;
-            if COUNT % MAX_COUNTS == 0 {
-                terminal!("[kernel::mapper] reading pt root ... {}", COUNT);
-            }
-            COUNT += 1;
-        }
         root.readmap(cursor, level)
     }
 }
