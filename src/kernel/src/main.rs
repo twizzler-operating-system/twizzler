@@ -81,7 +81,7 @@ pub fn is_test_mode() -> bool {
 }
 
 fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
-    // arch::init(boot_info);
+    arch::init(boot_info);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
     let cmdline = boot_info.get_cmd_line();
     for opt in cmdline.split(" ") {
@@ -94,35 +94,7 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
         logln!("!!! TEST MODE ACTIVE");
     }
 
-    // AA: initialize physical frame allocation before calling test functions 
-    crate::memory::frame::init(boot_info.memory_regions());
-    
-    // machine::tests::test_terminal(0x1);
-
-    // // test with limine's pt entries
-    // machine::tests::print_page_table(crate::memory::pagetables::Table::current(), 0);
-
-    // machine::tests::test_terminal(0x2);
-    
-    // machine::tests::test_map_limine();
-    
-    // machine::tests::test_terminal(0x3);
-
-    machine::tests::test_limine_serial();
-    machine::tests::test_uart_echo();
-
-    // let's try to log something
-    // "initialize" the memory init flag
-    // this is for testing logging only and should be removed
-    memory::MEM_INIT.store(true, Ordering::SeqCst);
-    log!("A");
-    machine::tests::test_terminal(0x4);
-    machine::tests::test_uart_echo();
-    machine::tests::test_terminal(0x5);
-    
-    loop{}
-
-    terminal!("[kernel::mm] initializing memory management");
+    logln!("[kernel::mm] initializing memory management");
     memory::init(boot_info);
 
     logln!("[kernel::debug] parsing kernel debug image");
