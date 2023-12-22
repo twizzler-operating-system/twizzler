@@ -1,16 +1,16 @@
-use limine::{LimineTerminalRequest, LimineTerminalResponse};
+use limine::{TerminalRequest, TerminalResponse};
 use core::fmt::Write;
 
 #[used]
-static TERMINAL: LimineTerminalRequest = LimineTerminalRequest::new(0);
+static TERMINAL: TerminalRequest = TerminalRequest::new(0);
 
 #[link_section = ".limine_reqs"]
 #[used]
-static LR3: &'static LimineTerminalRequest = &TERMINAL;
+static LR3: &'static TerminalRequest = &TERMINAL;
 
 use crate::once::Once;
 
-static TERM: Once<Option<&'static LimineTerminalResponse>> = Once::new();
+static TERM: Once<Option<&'static TerminalResponse>> = Once::new();
 
 // The terminal feature in Limine provides a service to send serial
 // output to an external display.
@@ -37,11 +37,11 @@ pub fn print(msg: &str) {
         let terminals = termref.terminals();
 
         for term in terminals {
-            out(&term[0], msg);
+            out(&*term, msg);
         }
     } 
-    #[cfg(machine = "virt")]
-    crate::machine::serial::EARLY_SERIAL.write_str(msg);
+    // #[cfg(machine = "virt")]
+    // crate::machine::serial::EARLY_SERIAL.write_str(msg);
 }
 
 pub fn _print_terminal(args: ::core::fmt::Arguments) {
