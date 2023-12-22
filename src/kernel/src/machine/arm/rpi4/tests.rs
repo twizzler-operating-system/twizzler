@@ -2,7 +2,7 @@ use crate::{terminal, term};
 
 use twizzler_abi::{device::CacheType, object::Protections};
 
-use super::super::uart::PL011;        
+use super::super::common::uart::PL011;        
 use super::memory::mmio::PL011_UART;
 
 use crate::memory::{PhysAddr, VirtAddr, pagetables::{
