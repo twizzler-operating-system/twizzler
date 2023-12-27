@@ -78,7 +78,7 @@ impl ClockHardware for PhysicalTimer {
 /// for now this does not do anything interesting. It merely
 /// prints to the debug console and clears the interrupt.
 pub fn cntp_interrupt_handler() {
-    emerglogln!("[arch:cntp] Hello from Timer!!");
+    // emerglogln!("[arch:cntp] Hello from Timer!!");
     // handle the timer interrupt by advancing the scheduler ticks
     crate::clock::oneshot_clock_hardtick();
 
