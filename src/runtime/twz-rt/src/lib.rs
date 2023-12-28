@@ -16,6 +16,7 @@ pub(crate) mod arch;
 
 pub mod monitor;
 mod runtime;
+pub use runtime::OUR_RUNTIME;
 
 mod error;
 pub use error::*;

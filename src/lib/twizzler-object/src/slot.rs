@@ -44,6 +44,22 @@ fn into_map_flags(p: Protections) -> twizzler_runtime_api::MapFlags {
     flags
 }
 
+fn into_protections(flags: twizzler_runtime_api::MapFlags) -> Protections {
+    let mut prot = Protections::empty();
+    if flags.contains(twizzler_runtime_api::MapFlags::EXEC) {
+        prot.insert(Protections::EXEC);
+    }
+
+    if flags.contains(twizzler_runtime_api::MapFlags::READ) {
+        prot.insert(Protections::READ);
+    }
+
+    if flags.contains(twizzler_runtime_api::MapFlags::WRITE) {
+        prot.insert(Protections::WRITE);
+    }
+    prot
+}
+
 impl Slot {
     fn new(id: ObjID, prot: Protections) -> Result<Self, ObjectInitError> {
         let runtime = twizzler_runtime_api::get_runtime();
@@ -52,6 +68,14 @@ impl Slot {
             id,
             prot,
             runtime_handle: rh,
+        })
+    }
+
+    pub fn new_from_handle(handle: ObjectHandle) -> Result<Self, ObjectInitError> {
+        Ok(Self {
+            id: ObjID::new(handle.id),
+            prot: into_protections(handle.flags),
+            runtime_handle: handle,
         })
     }
 

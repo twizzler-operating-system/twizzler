@@ -36,7 +36,7 @@ fn start_runtime(runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     let mon_library = Library::new(
         Object::<u8>::init_id(runtime_monitor, Protections::READ, ObjectInitFlags::empty())
             .unwrap(),
-        "monitor",
+        "libmonitor.so",
     );
 
     let mut loader = Loader {};
