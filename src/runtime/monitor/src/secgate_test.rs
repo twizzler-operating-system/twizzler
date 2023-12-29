@@ -6,15 +6,28 @@ pub fn do_setup() {}
 
 pub fn do_teardown() {}
 
-type FooEntryType = extern "C" fn() -> u32;
+type FooEntryType = extern "C" fn() -> SecGateReturn<u32>;
 
-pub extern "C" fn foo_entry() -> u32 {
+#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[repr(C)]
+pub enum SecGateReturn<T> {
+    Success(T),
+    PermissionDenied,
+    CalleePanic,
+}
+
+use std::process::{ExitCode, Termination};
+pub extern "C" fn foo_entry() -> SecGateReturn<u32> {
     do_setup();
+
     let ret = std::panic::catch_unwind(|| foo_impl());
+    if ret.is_err() {
+        Termination::report(ExitCode::from(101u8));
+    }
     do_teardown();
     match ret {
-        Ok(r) => r,
-        Err(_) => todo!(),
+        Ok(r) => SecGateReturn::Success(r),
+        Err(_) => SecGateReturn::CalleePanic,
     }
 }
 
@@ -31,13 +44,13 @@ static FOO_INFO: SecGateInfo<&'static FooEntryType> = SecGateInfo {
 
 #[link_section = ".twz_secgate_text"]
 #[naked]
-pub unsafe extern "C" fn foo_trampoline() -> u32 {
+pub unsafe extern "C" fn foo_trampoline() -> SecGateReturn<u32> {
     core::arch::asm!("jmp {}", sym foo_entry, options(noreturn))
 }
 
 pub const SECGATE_TRAMPOLINE_ALIGN: usize = 0x10;
 
 #[inline(always)]
-pub fn foo() -> u32 {
+pub fn foo() -> SecGateReturn<u32> {
     unsafe { foo_trampoline() }
 }

@@ -112,6 +112,8 @@ struct CheckOptions {
     pub workspace: bool,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
+    #[clap(long)]
+    all_targets: bool,
 }
 
 #[derive(Args, Debug, Clone, Copy)]
