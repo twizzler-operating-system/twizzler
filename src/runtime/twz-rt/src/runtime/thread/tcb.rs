@@ -7,8 +7,9 @@
 
 use std::{
     cell::UnsafeCell,
+    collections::HashMap,
     panic::catch_unwind,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
 use dynlink::tls::Tcb;
@@ -113,7 +114,7 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
                 .as_ref()
                 .unwrap()
         };
-        // Jump to the requested entry point. Handle the return, just in-case, but this is
+        // Jump to the requested entry point. Handle the return, just in case, but this is
         // not supposed to return.
         let entry: extern "C" fn(usize) = unsafe { core::mem::transmute(arg.start) };
         (entry)(arg.arg);
@@ -121,4 +122,48 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
     })
     .unwrap_or(THREAD_PANIC_CODE);
     twizzler_abi::syscall::sys_thread_exit(code);
+}
+
+pub struct TlsGen {
+    pub gen_id: u64,
+    pub thread_ptr: usize,
+}
+
+struct TlsGenCounter {
+    pub tls_gen: TlsGen,
+    pub count: AtomicU64,
+}
+
+#[derive(Default)]
+pub struct TlsMgr {
+    generations: HashMap<u64, TlsGenCounter>,
+}
+
+impl TlsMgr {
+    fn add_new_gen(&mut self, gen: TlsGen) {
+        self.generations.insert(
+            gen.gen_id,
+            TlsGenCounter {
+                tls_gen: gen,
+                count: AtomicU64::new(0),
+            },
+        );
+    }
+
+    fn increment_gen(&mut self, gen_id: u64) {
+        self.generations
+            .get_mut(&gen_id)
+            .map(|gc| gc.count.fetch_add(1, Ordering::SeqCst));
+    }
+
+    fn decrement_gen(&mut self, gen_id: u64) -> bool {
+        self.generations
+            .get_mut(&gen_id)
+            .map(|gc| gc.count.fetch_sub(1, Ordering::SeqCst) == 1)
+            .unwrap_or(false)
+    }
+}
+
+lazy_static::lazy_static! {
+pub(crate) static ref TLS_MGR: TlsMgr = TlsMgr::default();
 }
