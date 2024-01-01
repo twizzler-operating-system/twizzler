@@ -582,8 +582,7 @@ pub fn multi_receive<T: Copy, W: Fn(&[(Option<&AtomicU64>, u64)]), R: Fn(&[Optio
 mod tests {
     #![allow(soft_unstable)]
     use std::sync::atomic::{AtomicU64, Ordering};
-
-    //   use syscalls::SyscallArgs;
+   //   use syscalls::SyscallArgs;
 
     use crate::multi_receive;
     use crate::QueueError;
@@ -599,6 +598,65 @@ mod tests {
     fn wake(_x: &AtomicU64) {
         //   println!("wake");
     }
+
+    #[test]
+    fn loom_sequential(){
+    use loom::sync::Arc;
+    use loom::sync::atomic::AtomicUsize;
+    use loom::sync::atomic::Ordering::{Acquire, Release, Relaxed};
+    use loom::thread;
+ 
+        loom::model(|| {
+            let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
+            let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
+            let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
+            
+            thread::spawn(move || {
+                let res = q.submit(
+                    QueueEntry::new(i as u32, 10),
+                    wait,
+                    wake,
+                    SubmissionFlags::empty(),
+                    );
+                assert_eq!(res,OK(()));
+
+                let res = q.receive(wait, wake, ReceiveFlags::Empty());
+                assert!(res.is_ok());
+                assert_eq!(res.unwrap().info(), i as u32);
+                assert_eq!(res.unwrap().item(), 10);
+            }
+        }
+    }
+    
+    #[test]
+    fn loom_parallel(){
+    use loom::sync::Arc;
+    use loom::sync::atomic::AtomicUsize;
+    use loom::sync::atomic::Ordering::{Acquire, Release, Relaxed};
+    use loom::thread;
+ 
+        loom::model(|| {
+            let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
+            let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
+            let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
+            
+            thread::spawn(move || {
+                let res = q.submit(
+                    QueueEntry::new(i as u32, 10),
+                    wait,
+                    wake,
+                    SubmissionFlags::empty(),
+                    );
+                assert_eq!(res,OK(()));
+           }
+
+            let res = q.receive(wait, wake, ReceiveFlags::Empty());
+            assert!(res.is_ok());
+            assert_eq!(res.unwrap().info(), i as u32);
+            assert_eq!(res.unwrap().item(), 10);
+        }
+    }
+
 
     #[test]
     fn it_transmits() {

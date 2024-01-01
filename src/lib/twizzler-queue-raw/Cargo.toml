@@ -12,3 +12,7 @@ twizzler-abi = {path = "../twizzler-abi", version = "*"}
 [features]
 std = []
 default = ["std"]
+
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
