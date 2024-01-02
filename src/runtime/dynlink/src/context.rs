@@ -5,108 +5,99 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use petgraph::stable_graph::NodeIndex;
 use petgraph::stable_graph::StableDiGraph;
 use tracing::{debug, trace};
 
 use crate::{
-    compartment::{Compartment, CompartmentRef},
-    library::{CtorInfo, InitState, Library, LibraryLoader, LibraryRef},
+    compartment::Compartment,
+    library::{BackingData, CtorInfo, InitState, Library, UnloadedLibrary},
     symbol::{LookupFlags, RelocatedSymbol},
     tls::TlsRegion,
     DynlinkError, ECollector,
 };
 
-#[derive(Default, Clone)]
-pub struct ContextInner {
-    // Simple unique ID generation.
-    id_counter: u128,
-    id_stack: Vec<u128>,
+pub trait ContextEngine {
+    type Backing: BackingData;
+}
 
+#[derive(Default, Clone)]
+pub struct Context<Engine: ContextEngine> {
+    engine: Engine,
     // Track all the compartment names.
-    compartment_names: HashMap<String, CompartmentRef>,
+    compartment_names: HashMap<String, Compartment<Engine::Backing>>,
 
     // We care about both names and dependency ordering for libraries.
-    pub(crate) library_names: HashMap<String, LibraryRef>,
-    pub(crate) library_deps: StableDiGraph<LibraryRef, ()>,
+    pub(crate) library_names: HashMap<String, NodeIndex>,
+    pub(crate) library_deps: StableDiGraph<LoadedOrUnloaded<Engine::Backing>, ()>,
 
     pub(crate) static_ctors: Vec<CtorInfo>,
 }
 
+pub enum LoadedOrUnloaded<Backing: BackingData> {
+    Unloaded(UnloadedLibrary),
+    Loaded(Library<Backing>),
+}
+
 #[allow(dead_code)]
-impl ContextInner {
-    pub fn get_compartment(&self) -> CompartmentRef {
+impl<Engine: ContextEngine> Context<Engine> {
+    pub fn get_compartment(&self) -> Compartment<Engine::Backing> {
         // TODO
         self.compartment_names.values().nth(0).cloned().unwrap()
     }
 
-    fn get_fresh_id(&mut self) -> u128 {
-        if let Some(old) = self.id_stack.pop() {
-            old
-        } else {
-            self.id_counter += 1;
-            self.id_counter
-        }
-    }
-
     /// Lookup a library by name
-    pub fn lookup_library(&self, name: &str) -> Option<&LibraryRef> {
-        self.library_names.get(name)
+    pub fn lookup_library(&self, name: &str) -> Option<&Library<Engine::Backing>> {
+        self.library_deps[self.library_names.get(name)?]
     }
 
-    /// Visit libraries in a post-order DFS traversal, starting from a number of roots. Note that
-    /// because multiple roots may be specified, this means that nodes may be visited `O(|roots|)`
-    /// times (|roots| is the number of roots yielded by the iterator).
-    pub fn with_dfs_postorder<'a, I>(&self, roots: I, mut f: impl FnMut(&LibraryRef))
-    where
-        I: IntoIterator<Item = &'a LibraryRef>,
-    {
-        for root in roots.into_iter() {
-            let mut visit =
-                petgraph::visit::DfsPostOrder::new(&self.library_deps, root.idx.get().unwrap());
-            while let Some(node) = visit.next(&self.library_deps) {
-                let dep = &self.library_deps[node];
-                f(dep)
-            }
+    pub fn with_dfs_postorder<'a, I>(
+        &self,
+        root: &Library<Engine::Backing>,
+        mut f: impl FnMut(&LoadedOrUnloaded<Engine::Backing>),
+    ) {
+        let mut visit = petgraph::visit::DfsPostOrder::new(&self.library_deps, root.idx);
+        while let Some(node) = visit.next(&self.library_deps) {
+            let dep = &self.library_deps[node];
+            f(dep)
         }
     }
 
-    /// Visit libraries in a BFS traversal, starting from a number of roots. Note that
-    /// because multiple roots may be specified, this means that nodes may be visited `O(|roots|)`
-    /// times (|roots| is the number of roots yielded by the iterator).
-    pub fn with_bfs<'a, I>(&self, roots: I, mut f: impl FnMut(&LibraryRef))
-    where
-        I: IntoIterator<Item = &'a LibraryRef>,
-    {
-        for root in roots.into_iter() {
-            let mut visit = petgraph::visit::Bfs::new(&self.library_deps, root.idx.get().unwrap());
-            while let Some(node) = visit.next(&self.library_deps) {
-                let dep = &self.library_deps[node];
-                f(dep)
-            }
+    pub fn with_bfs<'a, I>(
+        &self,
+        root: &Library<Engine::Backing>,
+        mut f: impl FnMut(&LoadedOrUnloaded<Engine::Backing>),
+    ) {
+        let mut visit = petgraph::visit::Bfs::new(&self.library_deps, root.idx);
+        while let Some(node) = visit.next(&self.library_deps) {
+            let dep = &self.library_deps[node];
+            f(dep)
         }
     }
 
-    /// Insert a library without specifying dependencies.
-    pub(crate) fn insert_lib_predeps(&mut self, lib: LibraryRef) {
-        self.library_names.insert(lib.name.clone(), lib.clone());
-        lib.idx.set(Some(self.library_deps.add_node(lib.clone())));
+    pub fn add_library(
+        &mut self,
+        compartment: &Compartment<Engine::Backing>,
+        lib: UnloadedLibrary,
+    ) {
+        let idx = self.library_deps.add_node(LoadedOrUnloaded::Unloaded(lib));
+        self.library_names.insert(lib.name.clone(), idx);
     }
 
     /// Add all dependency edges for a library.
     pub(crate) fn set_lib_deps(
         &mut self,
-        lib: &LibraryRef,
-        deps: impl IntoIterator<Item = LibraryRef>,
+        lib: &Library<Engine::Backing>,
+        deps: impl IntoIterator<Item = &Library<Engine::Backing>>,
     ) {
         for dep in deps.into_iter() {
-            self.library_deps
-                .add_edge(lib.idx.get().unwrap(), dep.idx.get().unwrap(), ());
+            self.library_deps.add_edge(lib.idx, dep.idx, ());
         }
     }
 
     pub(crate) fn lookup_symbol(
         &self,
-        start: &LibraryRef,
+        start: &Library<Engine::Backing>,
         name: &str,
         lookup_flags: LookupFlags,
     ) -> Result<RelocatedSymbol, DynlinkError> {
@@ -158,12 +149,12 @@ impl ContextInner {
         })
     }
 
-    fn build_ctors<'a, I>(&mut self, roots: I) -> Result<&[CtorInfo], DynlinkError>
-    where
-        I: IntoIterator<Item = &'a LibraryRef>,
-    {
+    fn build_ctors(
+        &mut self,
+        root: &Library<Engine::Backing>,
+    ) -> Result<&[CtorInfo], DynlinkError> {
         let mut ctors = vec![];
-        self.with_dfs_postorder(roots, |lib| {
+        self.with_dfs_postorder(root, |lib| {
             if lib.try_set_init_state(InitState::Uninit, InitState::StaticUninit) {
                 ctors.push(lib.get_ctor_info())
             }
@@ -173,52 +164,29 @@ impl ContextInner {
         Ok(&self.static_ctors)
     }
 
-    pub(crate) fn build_runtime_info<'a, I>(
+    pub(crate) fn build_runtime_info(
         &mut self,
-        roots: I,
+        root: &Library<Engine::Backing>,
         tls: TlsRegion,
-        outer: &Context,
-    ) -> Result<RuntimeInitInfo, DynlinkError>
-    where
-        I: IntoIterator<Item = &'a LibraryRef> + Clone,
-    {
-        let root_names = roots
-            .clone()
-            .into_iter()
-            .map(|r| r.name.clone())
-            .collect::<Vec<_>>();
+    ) -> Result<RuntimeInitInfo, DynlinkError> {
+        let root_name = root.name.clone();
         let ctors = {
-            let ctors = self.build_ctors(roots.clone())?;
+            let ctors = self.build_ctors(root)?;
             (ctors.as_ptr(), ctors.len())
         };
         let mut used_slots = vec![];
-        self.with_bfs(roots, |lib| used_slots.append(&mut lib.used_slots()));
+        self.with_bfs(root, |lib| used_slots.append(&mut lib.used_slots()));
         Ok(RuntimeInitInfo::new(
-            ctors.0, ctors.1, tls, outer, root_names, used_slots,
+            ctors.0, ctors.1, tls, self, root_name, used_slots,
         ))
-    }
-}
-
-#[derive(Default)]
-pub struct Context {
-    inner: Mutex<ContextInner>,
-}
-
-#[allow(dead_code)]
-impl Context {
-    pub fn with_inner_mut<R>(
-        &self,
-        f: impl FnOnce(&mut ContextInner) -> R,
-    ) -> Result<R, DynlinkError> {
-        Ok(f(&mut *self.inner.lock()?))
-    }
-
-    pub fn with_inner<R>(&self, f: impl FnOnce(&ContextInner) -> R) -> Result<R, DynlinkError> {
-        Ok(f(&*self.inner.lock()?))
     }
 
     /// Create a new compartment with a given name.
-    pub fn add_compartment(&self, name: impl ToString) -> Result<CompartmentRef, DynlinkError> {
+    pub fn add_compartment(
+        &self,
+        name: impl ToString,
+        root: UnloadedLibrary,
+    ) -> Result<Compartment<Engine::Backing>, DynlinkError> {
         let name = name.to_string();
         let mut inner = self.inner.lock()?;
         if inner.compartment_names.contains_key(&name) {
@@ -232,49 +200,23 @@ impl Context {
     }
 
     /// Lookup a library by name.
-    pub fn lookup_library(&self, name: &str) -> Option<LibraryRef> {
+    pub fn lookup_library(&self, name: &str) -> Option<&Library<Engine::Backing>> {
         self.inner.lock().ok()?.lookup_library(name).cloned()
     }
 
     /// Lookup a given symbol within the context.
     pub fn lookup_symbol(
         &self,
-        start: &LibraryRef,
+        start: &Library<Engine::Backing>,
         name: &str,
         lookup_flags: LookupFlags,
     ) -> Result<RelocatedSymbol, DynlinkError> {
         self.inner.lock()?.lookup_symbol(start, name, lookup_flags)
     }
 
-    /// Get initial runtime information for bootstrapping.
-    pub fn build_runtime_info<'a, I>(
-        &'a self,
-        roots: I,
-        tls: TlsRegion,
-    ) -> Result<RuntimeInitInfo, DynlinkError>
-    where
-        I: IntoIterator<Item = &'a LibraryRef> + Clone,
-    {
-        self.inner.lock()?.build_runtime_info(roots, tls, self)
-    }
-
-    /// Add an unloaded library to the context (and load it)
-    pub fn add_library(
-        &self,
-        compartment: &CompartmentRef,
-        lib: Library,
-        loader: &mut impl LibraryLoader,
-    ) -> Result<LibraryRef, DynlinkError> {
-        let mut inner = self.inner.lock()?;
-
-        compartment.load_library(lib, &mut inner, loader)
-    }
-
     /// Iterate through all libraries and process relocations for any libraries that haven't yet been relocated.
-    pub fn relocate_all(
-        &self,
-        roots: impl IntoIterator<Item = LibraryRef>,
-    ) -> Result<Vec<LibraryRef>, DynlinkError> {
+    pub fn relocate_all(&self, root: &Library<Engine::Backing>) -> Result<(), DynlinkError> {
+        /*
         let inner = self.inner.lock()?;
 
         roots
@@ -284,14 +226,8 @@ impl Context {
                 root.relocate(&inner).map(|_| root)
             })
             .ecollect()
-    }
-}
-
-impl Clone for Context {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Mutex::new(self.inner.lock().unwrap().clone()),
-        }
+        */
+        todo!()
     }
 }
 
@@ -301,7 +237,7 @@ pub struct RuntimeInitInfo {
     ctor_info_array_len: usize,
 
     pub tls_region: TlsRegion,
-    pub ctx: *const Context,
+    pub ctx: *const u8,
     pub root_names: Vec<String>,
     pub used_slots: Vec<usize>,
 }
@@ -310,11 +246,11 @@ unsafe impl Send for RuntimeInitInfo {}
 unsafe impl Sync for RuntimeInitInfo {}
 
 impl RuntimeInitInfo {
-    pub(crate) fn new(
+    pub(crate) fn new<E: ContextEngine>(
         ctor_info_array: *const CtorInfo,
         ctor_info_array_len: usize,
         tls_region: TlsRegion,
-        ctx: &Context,
+        ctx: &Context<E>,
         root_names: Vec<String>,
         used_slots: Vec<usize>,
     ) -> Self {
@@ -322,7 +258,7 @@ impl RuntimeInitInfo {
             ctor_info_array,
             ctor_info_array_len,
             tls_region,
-            ctx,
+            ctx: ctx as *const _ as *const u8,
             root_names,
             used_slots,
         }

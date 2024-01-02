@@ -7,48 +7,21 @@ use std::{
 };
 
 use talc::Span;
-use twizzler_abi::{
-    object::{MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
-};
-use twizzler_object::{Object, ObjectInitFlags, Protections};
 
-use super::{Compartment, CompartmentInner, CompartmentRef};
+use crate::library::BackingData;
 
-fn new_object() -> Option<Object<u8>> {
-    let id = sys_object_create(
-        ObjectCreate::new(
-            BackingType::Normal,
-            LifetimeType::Volatile,
-            None,
-            ObjectCreateFlags::empty(),
-        ),
-        &[],
-        &[],
-    )
-    .ok()?;
+use super::Compartment;
 
-    Object::init_id(
-        id,
-        Protections::READ | Protections::WRITE,
-        ObjectInitFlags::empty(),
-    )
-    .ok()
-}
-
-impl CompartmentInner {
+impl<Backing: BackingData> Compartment<Backing> {
     fn add_alloc_object(&mut self) {
-        if let Some(obj) = new_object() {
-            unsafe {
-                let memory = Span::new(
-                    obj.base_mut_unchecked(),
-                    (obj.base_mut_unchecked() as *mut u8).add(MAX_SIZE - NULLPAGE_SIZE),
-                );
-                // We ensure that we do not meet the conditions for this to return Err.
-                let _ = self.allocator.claim(memory);
-            }
-            self.alloc_objects.insert(0, obj);
+        let new_data = Backing::new_data();
+
+        unsafe {
+            let memory = Span::from_base_size(new_data.0, new_data.1);
+            // We ensure that we do not meet the conditions for this to return Err.
+            let _ = self.allocator.claim(memory);
         }
+        self.alloc_objects.push(new_data);
     }
 
     pub(crate) unsafe fn alloc(&mut self, layout: Layout) -> Option<NonNull<u8>> {
@@ -65,14 +38,15 @@ impl CompartmentInner {
     }
 }
 
+/*
 #[allow(dead_code)]
-impl Compartment {
-    pub(crate) fn make_box<T>(self: &CompartmentRef, data: T) -> Option<Box<T, CompartmentAlloc>> {
+impl<Backing: BackingData> Compartment<Backing> {
+    pub(crate) fn make_box<T>(&self, data: T) -> Option<Box<T, CompartmentAlloc>> {
         Some(Box::new_in(data, CompartmentAlloc { comp: self.clone() }))
     }
 
     pub(crate) fn make_box_slice<T: Clone>(
-        self: &CompartmentRef,
+        &self,
         data: &[T],
     ) -> Option<Box<[T], CompartmentAlloc>> {
         let mut vec = Vec::<T, CompartmentAlloc>::new_in(CompartmentAlloc { comp: self.clone() });
@@ -116,3 +90,4 @@ unsafe impl Allocator for CompartmentAlloc {
         let _ = self.comp.with_inner_mut(|inner| inner.dealloc(ptr, layout));
     }
 }
+*/

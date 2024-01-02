@@ -1,13 +1,6 @@
 //! Management of individual libraries.
 
-use std::{
-    cell::Cell,
-    fmt::Debug,
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    },
-};
+use std::fmt::Debug;
 
 use elf::{abi::PT_PHDR, endian::NativeEndian, segment::Elf64_Phdr, ParseError};
 
@@ -24,10 +17,7 @@ use petgraph::stable_graph::NodeIndex;
 use twizzler_abi::object::MAX_SIZE;
 use twizzler_object::Object;
 
-use crate::tls::TlsModId;
-
-/// Arc type for libraries.
-pub type LibraryRef = Arc<Library>;
+use crate::{compartment::Compartment, tls::TlsModId};
 
 /// State of relocation.
 #[derive(Debug)]
@@ -55,26 +45,32 @@ pub(crate) enum InitState {
     Deconstructed,
 }
 
-pub struct Library {
-    /// ID of the compartment this library is in.
-    pub(crate) comp_id: u128,
+pub trait BackingData {
+    fn data(&self) -> (*mut u8, usize);
+    fn new_data() -> Self;
+}
+
+pub struct UnloadedLibrary {
+    pub name: String,
+}
+
+pub struct Library<Backing: BackingData> {
     /// Name of this library.
     pub name: String,
-    /// Node index for the dependency graph. Only set once
-    /// the library is loaded.
-    pub(crate) idx: Cell<Option<NodeIndex>>,
+    /// Node index for the dependency graph.
+    pub(crate) idx: NodeIndex,
     /// Object containing the full ELF data.
     pub full_obj: Object<u8>,
     /// State of relocation (see [RelocState]).
-    reloc_state: AtomicU32,
+    reloc_state: RelocState,
     /// State of initialization (see [InitState]).
-    init_state: AtomicU32,
+    init_state: InitState,
 
-    /// Object containing R-X segments.
-    pub text_object: Option<Object<u8>>,
-    /// Object containing RW- segments.
-    pub data_object: Option<Object<u8>>,
-    /// Base address of this library, used for relocations.
+    /// Object containing R-X segments, if any.
+    pub text_object: Option<Backing>,
+    /// Object containing RW- segments, if any.
+    pub data_object: Option<Backing>,
+    /// Load base address of this library, used for relocations.
     pub base_addr: Option<usize>,
 
     /// The module ID for the TLS region, if any.
@@ -83,8 +79,6 @@ pub struct Library {
     /// Information about constructors, if any.
     pub(crate) ctors: Option<CtorInfo>,
 }
-
-unsafe impl Sync for Library {}
 
 #[allow(dead_code)]
 impl Library {
@@ -105,11 +99,12 @@ impl Library {
     }
 
     pub fn used_slots(&self) -> Vec<usize> {
-        let mut v = vec![self.full_obj.slot().slot_number()];
-        if let Some(ref text) = self.text_object {
+        let inner = self.inner.lock().unwrap();
+        let mut v = vec![inner.full_obj.slot().slot_number()];
+        if let Some(ref text) = inner.text_object {
             v.push(text.slot().slot_number());
         }
-        if let Some(ref data) = self.data_object {
+        if let Some(ref data) = inner.data_object {
             v.push(data.slot().slot_number());
         }
         v
@@ -129,13 +124,14 @@ impl Library {
     }
 
     pub(crate) fn set_ctors(&mut self, ctors: CtorInfo) {
-        self.ctors = Some(ctors);
+        self.inner.lock().unwrap().ctors = Some(ctors);
     }
 
     pub(crate) fn set_mapping(&mut self, data: Object<u8>, text: Object<u8>, base_addr: usize) {
-        self.text_object = Some(text);
-        self.data_object = Some(data);
-        self.base_addr = Some(base_addr);
+        let inner = self.inner.lock.unwrap();
+        inner.text_object = Some(text);
+        inner.data_object = Some(data);
+        inner.base_addr = Some(base_addr);
     }
 
     pub(crate) fn set_reloc_state(&self, state: RelocState) {
