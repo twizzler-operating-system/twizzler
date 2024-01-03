@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use tickv::{success_codes::SuccessCode, ErrorCode};
 
-use crate::store::{Key, KeyValueStore, Storage, BLOCK_SIZE};
+use crate::store::{Key, KeyValueStore};
 
 mod nvme;
 mod store;
@@ -73,12 +73,6 @@ fn main() {
         }
     })
     .detach();
-    // let nvme_ctrl = twizzler_async::block_on(nvme::init_nvme());
-    // let len = twizzler_async::block_on(nvme_ctrl.flash_len());
-
-    // let storage = Storage::new(nvme_ctrl);
-    // let mut read_buffer = [0; BLOCK_SIZE];
-    // let _kv = KeyValueStore::new(storage, &mut read_buffer, len).unwrap();
 
     twizzler_async::Task::spawn(async move {
         loop {
