@@ -1,4 +1,4 @@
-use std::{mem::size_of, sync::Arc};
+use std::mem::size_of;
 
 use elf::{
     abi::{
@@ -14,17 +14,16 @@ use elf::{
 use tracing::{debug, error, trace};
 
 use crate::{
-    context::ContextInner,
     library::RelocState,
     symbol::{LookupFlags, RelocatedSymbol},
-    DynlinkError, ECollector,
+    DynlinkError,
 };
 
 use crate::arch::{
     REL_DTPMOD, REL_DTPOFF, REL_GOT, REL_PLT, REL_RELATIVE, REL_SYMBOLIC, REL_TPOFF,
 };
 
-use super::{Library, LibraryRef};
+use super::{engine::ContextEngine, Context, Library};
 
 // A relocation is either a REL type or a RELA type. The only difference is that
 // the RELA type contains an addend (used in the reloc calculations below).
@@ -64,77 +63,7 @@ impl EitherRel {
     }
 }
 
-impl Library {
-    pub fn laddr<T>(&self, val: u64) -> Option<*const T> {
-        self.base_addr.map(|base| (base + val as usize) as *const T)
-    }
-
-    pub fn laddr_mut<T>(&self, val: u64) -> Option<*mut T> {
-        self.base_addr.map(|base| (base + val as usize) as *mut T)
-    }
-
-    pub(crate) fn lookup_symbol(
-        self: &Arc<Self>,
-        name: &str,
-    ) -> Result<RelocatedSymbol, DynlinkError> {
-        let elf = self.get_elf()?;
-        let common = elf.find_common_data()?;
-
-        // Try the GNU hash table, if present.
-        if let Some(h) = &common.gnu_hash {
-            if let Some((_, sym)) = h
-                .find(
-                    name.as_ref(),
-                    common.dynsyms.as_ref().ok_or(DynlinkError::Unknown)?,
-                    common.dynsyms_strs.as_ref().ok_or(DynlinkError::Unknown)?,
-                )
-                .ok()
-                .flatten()
-            {
-                if !sym.is_undefined() {
-                    // TODO: proper weak symbol handling.
-                    if sym.st_bind() != STB_WEAK {
-                        return Ok(RelocatedSymbol::new(sym, self.clone()));
-                    } else {
-                        tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
-                    }
-                } else {
-                    tracing::info!("undefined symbol: {}", name);
-                }
-            }
-            return Err(DynlinkError::NotFound {
-                name: name.to_string(),
-            });
-        }
-
-        // Try the sysv hash table, if present.
-        if let Some(h) = &common.sysv_hash {
-            if let Some((_, sym)) = h
-                .find(
-                    name.as_ref(),
-                    common.dynsyms.as_ref().ok_or(DynlinkError::Unknown)?,
-                    common.dynsyms_strs.as_ref().ok_or(DynlinkError::Unknown)?,
-                )
-                .ok()
-                .flatten()
-            {
-                if !sym.is_undefined() {
-                    // TODO: proper weak symbol handling.
-                    if sym.st_bind() != STB_WEAK {
-                        return Ok(RelocatedSymbol::new(sym, self.clone()));
-                    } else {
-                        tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
-                    }
-                } else {
-                    tracing::info!("undefined symbol: {}", name);
-                }
-            }
-        }
-        Err(DynlinkError::NotFound {
-            name: name.to_string(),
-        })
-    }
-
+impl<Engine: ContextEngine> Context<Engine> {
     pub(crate) fn get_parsing_iter<P: ParseAt>(
         &self,
         start: *const u8,
@@ -149,11 +78,11 @@ impl Library {
     }
 
     fn do_reloc(
-        self: &LibraryRef,
+        &self,
+        lib: &Library<Engine::Backing>,
         rel: EitherRel,
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
-        ctx: &ContextInner,
     ) -> Result<(), DynlinkError> {
         let addend = rel.addend();
         let base = self.base_addr.unwrap() as u64;
@@ -164,7 +93,7 @@ impl Library {
             let flags = LookupFlags::empty();
             strings
                 .get(sym.st_name as usize)
-                .map(|name| (name, ctx.lookup_symbol(self, name, flags)))
+                .map(|name| (name, self.lookup_symbol(lib, name, flags)))
                 .ok()
         } else {
             None
@@ -243,14 +172,14 @@ impl Library {
 
     #[allow(clippy::too_many_arguments)]
     fn process_rels(
-        self: &LibraryRef,
+        &self,
+        lib: &Library<Engine::Backing>,
         start: *const u8,
         ent: usize,
         sz: usize,
         name: &str,
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
-        ctx: &ContextInner,
     ) -> Result<(), DynlinkError> {
         debug!(
             "{}: processing {} relocations (num = {})",
@@ -261,12 +190,12 @@ impl Library {
         // Try to parse the table as REL or RELA, according to ent size. If get_parsing_iter succeeds for a given
         // relocation type, that's the correct one.
         if let Some(rels) = self.get_parsing_iter(start, ent, sz) {
-            rels.map(|rel| self.do_reloc(EitherRel::Rel(rel), strings, syms, ctx))
+            rels.map(|rel| self.do_reloc(lib, EitherRel::Rel(rel), strings, syms))
                 .ecollect::<Vec<_>>()?;
             Ok(())
         } else if let Some(relas) = self.get_parsing_iter(start, ent, sz) {
             relas
-                .map(|rela| self.do_reloc(EitherRel::Rela(rela), strings, syms, ctx))
+                .map(|rela| self.do_reloc(lib, EitherRel::Rela(rela), strings, syms))
                 .ecollect::<Vec<_>>()?;
             Ok(())
         } else {
@@ -274,25 +203,25 @@ impl Library {
         }
     }
 
-    pub(crate) fn relocate(self: &LibraryRef, ctx: &ContextInner) -> Result<(), DynlinkError> {
+    pub(crate) fn relocate(&self, lib: &Library<Engine::Backing>) -> Result<(), DynlinkError> {
         // Atomically change state to relocating, using a CAS, to ensure a single thread gets the rights to relocate a library.
         if !self.try_set_reloc_state(RelocState::Unrelocated, RelocState::Relocating) {
             return Ok(());
         }
         // Recurse on dependencies first, in case there are any copy relocations.
-        ctx.library_deps
+        self.library_deps
             .neighbors_directed(self.idx.get().unwrap(), petgraph::Direction::Outgoing)
             .enumerate()
             .map(|(idx, depidx)| {
                 if idx == 0 {
                     debug!("{}: relocating dependencies", self);
                 }
-                let dep = &ctx.library_deps[depidx];
-                dep.relocate(ctx)
+                let dep = &self.library_deps[depidx];
+                self.relocate(dep);
             })
             .ecollect()?;
         debug!("{}: relocating library", self);
-        let elf = self.get_elf()?;
+        let elf = lib.get_elf()?;
         let common = elf.find_common_data()?;
         let dynamic = common.dynamic.ok_or(DynlinkError::Unknown)?;
 
@@ -348,25 +277,25 @@ impl Library {
         // Process relocations
         if let Some((rela, ent, sz)) = relas {
             self.process_rels(
+                lib,
                 rela,
                 ent as usize,
                 sz as usize,
                 "RELA",
                 &dynsyms_str,
                 &dynsyms,
-                ctx,
             )?;
         }
 
         if let Some((rel, ent, sz)) = rels {
             self.process_rels(
+                lib,
                 rel,
                 ent as usize,
                 sz as usize,
                 "REL",
                 &dynsyms_str,
                 &dynsyms,
-                ctx,
             )?;
         }
 
@@ -380,11 +309,11 @@ impl Library {
                     return Err(DynlinkError::Unknown);
                 }
             } * size_of::<usize>();
-            self.process_rels(rel, ent, sz as usize, "JMPREL", &dynsyms_str, &dynsyms, ctx)?;
+            self.process_rels(lib, rel, ent, sz as usize, "JMPREL", &dynsyms_str, &dynsyms)?;
         }
 
         // We are the only ones who could get here, because of the CAS in try_set_state.
-        self.set_reloc_state(RelocState::Relocated);
+        lib.set_reloc_state(RelocState::Relocated);
         Ok(())
     }
 }

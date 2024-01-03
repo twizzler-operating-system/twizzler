@@ -1,29 +1,29 @@
 //! Management of global context.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::collections::HashMap;
 
 use petgraph::stable_graph::NodeIndex;
 use petgraph::stable_graph::StableDiGraph;
-use tracing::{debug, trace};
+use tracing::trace;
 
 use crate::{
     compartment::Compartment,
     library::{BackingData, CtorInfo, InitState, Library, UnloadedLibrary},
     symbol::{LookupFlags, RelocatedSymbol},
     tls::TlsRegion,
-    DynlinkError, ECollector,
+    DynlinkError,
 };
 
-pub trait ContextEngine {
-    type Backing: BackingData;
-}
+use self::engine::ContextEngine;
+
+mod deps;
+pub mod engine;
+mod load;
+mod relocate;
 
 #[derive(Default, Clone)]
 pub struct Context<Engine: ContextEngine> {
-    engine: Engine,
+    pub(crate) engine: Engine,
     // Track all the compartment names.
     compartment_names: HashMap<String, Compartment<Engine::Backing>>,
 
@@ -75,20 +75,29 @@ impl<Engine: ContextEngine> Context<Engine> {
         }
     }
 
-    pub fn add_library(
+    pub(crate) fn add_library(
         &mut self,
         compartment: &Compartment<Engine::Backing>,
         lib: UnloadedLibrary,
-    ) {
+    ) -> NodeIndex {
         let idx = self.library_deps.add_node(LoadedOrUnloaded::Unloaded(lib));
         self.library_names.insert(lib.name.clone(), idx);
+        idx
+    }
+
+    pub(crate) fn add_dep(
+        &mut self,
+        parent: Option<&Library<Engine::Backing>>,
+        dep: NodeIndex,
+    ) -> NodeIndex {
+        self.library_deps.add_edge(parent.idx, dep, ());
     }
 
     /// Add all dependency edges for a library.
-    pub(crate) fn set_lib_deps(
-        &mut self,
+    pub(crate) fn set_lib_deps<'a>(
+        &'a mut self,
         lib: &Library<Engine::Backing>,
-        deps: impl IntoIterator<Item = &Library<Engine::Backing>>,
+        deps: impl IntoIterator<Item = &'a Library<Engine::Backing>>,
     ) {
         for dep in deps.into_iter() {
             self.library_deps.add_edge(lib.idx, dep.idx, ());
@@ -187,31 +196,7 @@ impl<Engine: ContextEngine> Context<Engine> {
         name: impl ToString,
         root: UnloadedLibrary,
     ) -> Result<Compartment<Engine::Backing>, DynlinkError> {
-        let name = name.to_string();
-        let mut inner = self.inner.lock()?;
-        if inner.compartment_names.contains_key(&name) {
-            return Err(DynlinkError::AlreadyExists { name });
-        }
-        let id = inner.get_fresh_id();
-        let compartment = Arc::new(Compartment::new(name.clone(), id));
-        inner.compartment_names.insert(name, compartment.clone());
-
-        Ok(compartment)
-    }
-
-    /// Lookup a library by name.
-    pub fn lookup_library(&self, name: &str) -> Option<&Library<Engine::Backing>> {
-        self.inner.lock().ok()?.lookup_library(name).cloned()
-    }
-
-    /// Lookup a given symbol within the context.
-    pub fn lookup_symbol(
-        &self,
-        start: &Library<Engine::Backing>,
-        name: &str,
-        lookup_flags: LookupFlags,
-    ) -> Result<RelocatedSymbol, DynlinkError> {
-        self.inner.lock()?.lookup_symbol(start, name, lookup_flags)
+        todo!()
     }
 
     /// Iterate through all libraries and process relocations for any libraries that haven't yet been relocated.

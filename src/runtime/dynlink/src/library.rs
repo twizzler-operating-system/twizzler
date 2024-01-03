@@ -2,22 +2,17 @@
 
 use std::fmt::Debug;
 
-use elf::{abi::PT_PHDR, endian::NativeEndian, segment::Elf64_Phdr, ParseError};
-
-mod deps;
-mod init;
-mod load;
-mod relocate;
-mod tls;
-
-pub use init::CtorInfo;
-pub use load::LibraryLoader;
+use elf::{
+    abi::{PT_PHDR, PT_TLS, STB_WEAK},
+    endian::NativeEndian,
+    segment::{Elf64_Phdr, ProgramHeader},
+    ParseError,
+};
 
 use petgraph::stable_graph::NodeIndex;
 use twizzler_abi::object::MAX_SIZE;
-use twizzler_object::Object;
 
-use crate::{compartment::Compartment, tls::TlsModId};
+use crate::{symbol::RelocatedSymbol, tls::TlsModId, DynlinkError};
 
 /// State of relocation.
 #[derive(Debug)]
@@ -48,6 +43,7 @@ pub(crate) enum InitState {
 pub trait BackingData {
     fn data(&self) -> (*mut u8, usize);
     fn new_data() -> Self;
+    fn load_addr(&self) -> usize;
 }
 
 pub struct UnloadedLibrary {
@@ -60,18 +56,13 @@ pub struct Library<Backing: BackingData> {
     /// Node index for the dependency graph.
     pub(crate) idx: NodeIndex,
     /// Object containing the full ELF data.
-    pub full_obj: Object<u8>,
+    pub full_obj: Backing,
     /// State of relocation (see [RelocState]).
     reloc_state: RelocState,
     /// State of initialization (see [InitState]).
     init_state: InitState,
 
-    /// Object containing R-X segments, if any.
-    pub text_object: Option<Backing>,
-    /// Object containing RW- segments, if any.
-    pub data_object: Option<Backing>,
-    /// Load base address of this library, used for relocations.
-    pub base_addr: Option<usize>,
+    pub backings: Vec<Backing>,
 
     /// The module ID for the TLS region, if any.
     pub tls_id: Option<TlsModId>,
@@ -81,33 +72,25 @@ pub struct Library<Backing: BackingData> {
 }
 
 #[allow(dead_code)]
-impl Library {
-    pub fn new(obj: Object<u8>, name: impl ToString) -> Self {
+impl<Backing: BackingData> Library<Backing> {
+    pub fn new(
+        name: String,
+        idx: NodeIndex,
+        full_obj: Backing,
+        backings: Vec<Backing>,
+        tls_id: Option<TlsModId>,
+        ctors: Option<CtorInfo>,
+    ) -> Self {
         Self {
-            comp_id: 0,
-            name: name.to_string(),
-            idx: Cell::new(None),
-            full_obj: obj,
-            reloc_state: AtomicU32::default(),
-            init_state: AtomicU32::default(),
-            text_object: None,
-            data_object: None,
-            base_addr: None,
-            tls_id: None,
-            ctors: None,
+            name,
+            idx,
+            full_obj,
+            reloc_state: RelocState::Unrelocated,
+            init_state: InitState::Uninit,
+            backings,
+            tls_id,
+            ctors,
         }
-    }
-
-    pub fn used_slots(&self) -> Vec<usize> {
-        let inner = self.inner.lock().unwrap();
-        let mut v = vec![inner.full_obj.slot().slot_number()];
-        if let Some(ref text) = inner.text_object {
-            v.push(text.slot().slot_number());
-        }
-        if let Some(ref data) = inner.data_object {
-            v.push(data.slot().slot_number());
-        }
-        v
     }
 
     pub fn get_phdrs_raw(&self) -> Option<(*const Elf64_Phdr, usize)> {
@@ -123,55 +106,101 @@ impl Library {
         ))
     }
 
-    pub(crate) fn set_ctors(&mut self, ctors: CtorInfo) {
-        self.inner.lock().unwrap().ctors = Some(ctors);
-    }
-
-    pub(crate) fn set_mapping(&mut self, data: Object<u8>, text: Object<u8>, base_addr: usize) {
-        let inner = self.inner.lock.unwrap();
-        inner.text_object = Some(text);
-        inner.data_object = Some(data);
-        inner.base_addr = Some(base_addr);
-    }
-
-    pub(crate) fn set_reloc_state(&self, state: RelocState) {
-        self.reloc_state.store(state as u32, Ordering::SeqCst);
-    }
-
-    pub(crate) fn get_reloc_state(&self) -> RelocState {
-        match self.reloc_state.load(Ordering::SeqCst) {
-            0 => RelocState::Unrelocated,
-            1 => RelocState::Relocating,
-            2 => RelocState::Relocated,
-            x => panic!("unexpected relocation state: {}", x),
-        }
-    }
-
-    pub(crate) fn try_set_reloc_state(&self, old: RelocState, new: RelocState) -> bool {
-        self.reloc_state
-            .compare_exchange(old as u32, new as u32, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-    }
-
-    pub(crate) fn try_set_init_state(&self, old: InitState, new: InitState) -> bool {
-        self.init_state
-            .compare_exchange(old as u32, new as u32, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-    }
-
-    pub(crate) fn set_init_state(&self, state: InitState) {
-        self.init_state.store(state as u32, Ordering::SeqCst);
-    }
-
     /// Return a handle to the full ELF file.
     pub fn get_elf(&self) -> Result<elf::ElfBytes<'_, NativeEndian>, ParseError> {
         let slice =
             unsafe { core::slice::from_raw_parts(self.full_obj.base_unchecked(), MAX_SIZE) };
         elf::ElfBytes::minimal_parse(slice)
     }
+
+    pub fn base_addr(&self) -> usize {
+        self.backings[0].load_addr()
+    }
+
+    pub fn laddr<T>(&self, val: u64) -> *const T {
+        (self.base_addr() + val as usize) as *const T
+    }
+
+    pub fn laddr_mut<T>(&self, val: u64) -> *mut T {
+        (self.base_addr() + val as usize) as *mut T
+    }
+
+    // Helper to find the TLS program header.
+    fn get_tls_phdr(&self) -> Result<Option<ProgramHeader>, DynlinkError> {
+        Ok(self
+            .get_elf()?
+            .segments()
+            .and_then(|phdrs| phdrs.iter().find(|phdr| phdr.p_type == PT_TLS)))
+    }
+
+    pub(crate) fn get_tls_data(&self) -> Result<Option<&[u8]>, DynlinkError> {
+        Ok(self.get_tls_phdr()?.and_then(|phdr| unsafe {
+            self.laddr(phdr.p_vaddr)
+                .map(|addr| core::slice::from_raw_parts(addr, phdr.p_memsz as usize))
+        }))
+    }
+
+    pub(crate) fn lookup_symbol(&self, name: &str) -> Result<RelocatedSymbol, DynlinkError> {
+        let elf = self.get_elf()?;
+        let common = elf.find_common_data()?;
+
+        // Try the GNU hash table, if present.
+        if let Some(h) = &common.gnu_hash {
+            if let Some((_, sym)) = h
+                .find(
+                    name.as_ref(),
+                    common.dynsyms.as_ref().ok_or(DynlinkError::Unknown)?,
+                    common.dynsyms_strs.as_ref().ok_or(DynlinkError::Unknown)?,
+                )
+                .ok()
+                .flatten()
+            {
+                if !sym.is_undefined() {
+                    // TODO: proper weak symbol handling.
+                    if sym.st_bind() != STB_WEAK {
+                        return Ok(RelocatedSymbol::new(sym, self.clone()));
+                    } else {
+                        tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
+                    }
+                } else {
+                    tracing::info!("undefined symbol: {}", name);
+                }
+            }
+            return Err(self.error(crate::DynlinkErrorKind::NameNotFound {
+                name: name.to_string(),
+            }));
+        }
+
+        // Try the sysv hash table, if present.
+        if let Some(h) = &common.sysv_hash {
+            if let Some((_, sym)) = h
+                .find(
+                    name.as_ref(),
+                    common.dynsyms.as_ref().ok_or(DynlinkError::Unknown)?,
+                    common.dynsyms_strs.as_ref().ok_or(DynlinkError::Unknown)?,
+                )
+                .ok()
+                .flatten()
+            {
+                if !sym.is_undefined() {
+                    // TODO: proper weak symbol handling.
+                    if sym.st_bind() != STB_WEAK {
+                        return Ok(RelocatedSymbol::new(sym, self.clone()));
+                    } else {
+                        tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
+                    }
+                } else {
+                    tracing::info!("undefined symbol: {}", name);
+                }
+            }
+        }
+        Err(self.error(crate::DynlinkErrorKind::NameNotFound {
+            name: name.to_string(),
+        }))
+    }
 }
 
-impl Debug for Library {
+impl<B: BackingData> Debug for Library<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Library")
             .field("name", &self.name)
@@ -180,8 +209,15 @@ impl Debug for Library {
     }
 }
 
-impl core::fmt::Display for Library {
+impl<B: BackingData> core::fmt::Display for Library<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", &self.name)
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CtorInfo {
+    pub legacy_init: usize,
+    pub init_array: usize,
+    pub init_array_len: usize,
 }
