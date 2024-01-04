@@ -299,6 +299,7 @@ name = "bootstrap"
 version = "0.1.0"
 dependencies = [
  "dynlink",
+ "miette",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",

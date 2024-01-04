@@ -90,7 +90,7 @@ impl<Engine: ContextEngine> Context<Engine> {
     // Load (map) a single library into memory via creating two objects, one for text, and one for data.
     pub fn load<N>(
         &mut self,
-        comp: &mut Compartment<Engine::Backing>,
+        compartment_name: &str,
         unlib: UnloadedLibrary,
         idx: NodeIndex,
         n: N,
@@ -157,9 +157,11 @@ impl<Engine: ContextEngine> Context<Engine> {
                 tls_phdr.p_memsz as usize,
                 tls_phdr.p_align as usize,
             );
+            let comp = &mut self.compartment_names.get_mut(compartment_name).unwrap();
             comp.tls_info.insert(tm)
         });
 
+        let elf = self.get_elf(&backing)?;
         let ctor_info = self.get_ctor_info(&unlib.name, &elf, base_addr)?;
 
         Ok(Library::new(
@@ -169,7 +171,7 @@ impl<Engine: ContextEngine> Context<Engine> {
 
     pub(crate) fn load_library<N>(
         &mut self,
-        comp: &mut Compartment<Engine::Backing>,
+        compartment_name: &str,
         unlib: UnloadedLibrary,
         idx: NodeIndex,
         n: N,
@@ -184,7 +186,7 @@ impl<Engine: ContextEngine> Context<Engine> {
         }
 
         debug!("loading library {}", unlib);
-        let lib = self.load(comp, unlib.clone(), idx, n.clone())?;
+        let lib = self.load(compartment_name, unlib.clone(), idx, n.clone())?;
 
         let deps = self.enumerate_needed(&lib)?;
         if !deps.is_empty() {
@@ -193,9 +195,9 @@ impl<Engine: ContextEngine> Context<Engine> {
         let deps = deps
             .into_iter()
             .map(|unlib| {
-                let idx = self.add_library(comp, unlib.clone());
+                let idx = self.add_library(unlib.clone());
                 self.add_dep(&lib, idx);
-                self.load_library(comp, unlib, idx, n.clone())
+                self.load_library(compartment_name, unlib, idx, n.clone())
             })
             .collect::<Vec<_>>();
 

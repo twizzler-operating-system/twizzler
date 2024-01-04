@@ -31,18 +31,25 @@ fn find_init_name(name: &str) -> Option<ObjID> {
 }
 
 fn start_runtime(runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
+    //miette::set_hook(Box::new(|_| Box::new(miette::DebugReportHandler::new()))).unwrap();
     let engine = Engine;
     let mut ctx = dynlink::context::Context::new(engine);
     let unlib = UnloadedLibrary::new("libmonitor.so");
-    let mut monitor_compartment = ctx.add_compartment("monitor").unwrap();
+    let _ = ctx.add_compartment("monitor").unwrap();
 
-    let monitor = ctx
-        .load_library_in_compartment(todo!(), unlib, |name| todo!())
-        .unwrap();
+    let res = ctx.load_library_in_compartment("monitor", unlib, |name| todo!());
 
-    ctx.relocate_all(monitor).unwrap();
+    if let Err(e) = res {
+        let x = miette::Report::new(e);
+        eprintln!("{}", x);
+    }
+
+    ctx.relocate_all("libmonitor.so").unwrap();
+
+    let monitor_compartment = ctx.get_compartment_mut("monitor").unwrap();
     let tls = monitor_compartment.build_tls_region(()).unwrap();
 
+    let monitor_compartment = ctx.get_compartment("monitor").unwrap();
     let monitor = monitor_compartment.root_library();
     debug!("context loaded, jumping to monitor");
     let entry = ctx

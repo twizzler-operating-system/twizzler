@@ -64,6 +64,10 @@ impl<Engine: ContextEngine> Context<Engine> {
         self.compartment_names.get(name)
     }
 
+    pub fn get_compartment_mut(&mut self, name: &str) -> Option<&mut Compartment<Engine::Backing>> {
+        self.compartment_names.get_mut(name)
+    }
+
     /// Lookup a library by name
     pub fn lookup_library(&self, name: &str) -> Option<&LoadedOrUnloaded<Engine::Backing>> {
         Some(&self.library_deps[*self.library_names.get(name)?])
@@ -93,11 +97,7 @@ impl<Engine: ContextEngine> Context<Engine> {
         }
     }
 
-    pub(crate) fn add_library(
-        &mut self,
-        compartment: &Compartment<Engine::Backing>,
-        lib: UnloadedLibrary,
-    ) -> NodeIndex {
+    pub(crate) fn add_library(&mut self, lib: UnloadedLibrary) -> NodeIndex {
         let name = lib.name.clone();
         let idx = self.library_deps.add_node(LoadedOrUnloaded::Unloaded(lib));
         self.library_names.insert(name, idx);
@@ -106,15 +106,15 @@ impl<Engine: ContextEngine> Context<Engine> {
 
     pub fn load_library_in_compartment<N>(
         &mut self,
-        compartment: &mut Compartment<Engine::Backing>,
+        compartment_name: &str,
         unlib: UnloadedLibrary,
         n: N,
     ) -> Result<&Library<Engine::Backing>, DynlinkError>
     where
         N: FnMut(&str) -> Option<Engine::Backing> + Clone,
     {
-        let idx = self.add_library(compartment, unlib.clone());
-        let idx = self.load_library(compartment, unlib.clone(), idx, n)?;
+        let idx = self.add_library(unlib.clone());
+        let idx = self.load_library(compartment_name, unlib.clone(), idx, n)?;
         match &self.library_deps[idx] {
             LoadedOrUnloaded::Unloaded(_) => {
                 Err(DynlinkErrorKind::LibraryLoadFail { library: unlib }.into())
@@ -207,10 +207,7 @@ impl<Engine: ContextEngine> Context<Engine> {
         .into())
     }
 
-    fn build_ctors(
-        &mut self,
-        root: &Library<Engine::Backing>,
-    ) -> Result<&[CtorInfo], DynlinkError> {
+    fn build_ctors(&self, root: &Library<Engine::Backing>) -> Result<Vec<CtorInfo>, DynlinkError> {
         let mut ctors = vec![];
         self.with_dfs_postorder(root, |lib| match lib {
             LoadedOrUnloaded::Unloaded(_) => {}
@@ -218,12 +215,11 @@ impl<Engine: ContextEngine> Context<Engine> {
                 ctors.push(lib.ctors);
             }
         });
-        self.static_ctors.append(&mut ctors);
-        Ok(&self.static_ctors)
+        Ok(ctors)
     }
 
     pub fn build_runtime_info(
-        &mut self,
+        &self,
         root: &Library<Engine::Backing>,
         tls: TlsRegion,
     ) -> Result<RuntimeInitInfo, DynlinkError> {
@@ -246,7 +242,7 @@ impl<Engine: ContextEngine> Context<Engine> {
     }
 
     /// Iterate through all libraries and process relocations for any libraries that haven't yet been relocated.
-    pub fn relocate_all(&self, root: &Library<Engine::Backing>) -> Result<(), DynlinkError> {
+    pub fn relocate_all(&self, root_name: &str) -> Result<(), DynlinkError> {
         /*
         let inner = self.inner.lock()?;
 
