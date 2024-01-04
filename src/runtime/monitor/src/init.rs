@@ -1,32 +1,22 @@
 use dynlink::{
     context::{Context, RuntimeInitInfo},
-    library::LibraryRef,
+    engines::Engine,
 };
 use twizzler_runtime_api::AuxEntry;
 
 static mut AUX: Option<*const RuntimeInitInfo> = None;
 
 pub(crate) struct InitDynlinkContext {
-    pub ctx: Context,
-    pub roots: Vec<LibraryRef>,
+    pub ctx: *mut Context<Engine>,
+    pub root: String,
 }
 
 pub(crate) fn bootstrap_dynlink_context() -> Option<InitDynlinkContext> {
     let info = unsafe { AUX.unwrap().as_ref().unwrap() };
-    let ctx = unsafe { info.ctx.as_ref().unwrap() };
-    let roots = info
-        .root_names
-        .iter()
-        .map(|name| {
-            ctx.lookup_library(name)
-                .expect("supplied root library could not be looked up")
-        })
-        .collect::<Vec<_>>();
+    let ctx = info.ctx as *mut Context<Engine>;
+    let root = info.root_name.clone();
 
-    Some(InitDynlinkContext {
-        ctx: ctx.clone(),
-        roots,
-    })
+    Some(InitDynlinkContext { ctx, root })
 }
 
 #[no_mangle]

@@ -12,7 +12,20 @@ pub trait ContextEngine {
         ld: &[LoadDirective],
     ) -> Result<Vec<Self::Backing>, DynlinkError>;
 
-    fn load_object(&mut self, unlib: &UnloadedLibrary) -> Result<Self::Backing, DynlinkError>;
+    fn load_object<N>(
+        &mut self,
+        unlib: &UnloadedLibrary,
+        mut n: N,
+    ) -> Result<Self::Backing, DynlinkError>
+    where
+        N: FnMut(&str) -> Option<Self::Backing>,
+    {
+        n(&unlib.name).ok_or_else(|| {
+            DynlinkError::new(crate::DynlinkErrorKind::NameNotFound {
+                name: unlib.name.clone(),
+            })
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]

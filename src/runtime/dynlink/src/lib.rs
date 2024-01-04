@@ -106,6 +106,7 @@ pub use error::*;
 
 pub mod compartment;
 pub mod context;
+pub mod engines;
 pub mod library;
 pub mod symbol;
 pub mod tls;

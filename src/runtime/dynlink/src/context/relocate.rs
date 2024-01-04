@@ -3,7 +3,7 @@ use std::mem::size_of;
 use elf::{
     abi::{
         DF_TEXTREL, DT_FLAGS, DT_FLAGS_1, DT_JMPREL, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_REL,
-        DT_RELA, DT_RELAENT, DT_RELASZ, DT_RELENT, DT_RELSZ, STB_WEAK,
+        DT_RELA, DT_RELAENT, DT_RELASZ, DT_RELENT, DT_RELSZ,
     },
     endian::NativeEndian,
     parse::{ParseAt, ParsingIterator},
@@ -13,11 +13,7 @@ use elf::{
 };
 use tracing::{debug, error, trace};
 
-use crate::{
-    library::RelocState,
-    symbol::{LookupFlags, RelocatedSymbol},
-    DynlinkError,
-};
+use crate::{symbol::LookupFlags, DynlinkError, DynlinkErrorKind};
 
 use crate::arch::{
     REL_DTPMOD, REL_DTPOFF, REL_GOT, REL_PLT, REL_RELATIVE, REL_SYMBOLIC, REL_TPOFF,
@@ -85,8 +81,8 @@ impl<Engine: ContextEngine> Context<Engine> {
         syms: &SymbolTable<NativeEndian>,
     ) -> Result<(), DynlinkError> {
         let addend = rel.addend();
-        let base = self.base_addr.unwrap() as u64;
-        let target: *mut u64 = self.laddr_mut(rel.offset()).unwrap();
+        let base = lib.base_addr() as u64;
+        let target: *mut u64 = lib.laddr_mut(rel.offset());
         // Lookup a symbol if the relocation's symbol index is non-zero.
         let symbol = if rel.sym() != 0 {
             let sym = syms.get(rel.sym() as usize)?;
@@ -105,21 +101,25 @@ impl<Engine: ContextEngine> Context<Engine> {
                 if let Ok(sym) = sym {
                     trace!(
                         "{}: found symbol {} at {:x} from {}",
-                        self,
+                        lib,
                         name,
                         sym.reloc_value(),
                         sym.lib
                     );
-                    Ok(sym)
+                    Result::<_, DynlinkError>::Ok(sym)
                 } else {
-                    error!("{}: needed symbol {} not found", self, name);
-                    Err(DynlinkError::NotFound {
+                    error!("{}: needed symbol {} not found", lib, name);
+                    Err(DynlinkErrorKind::NameNotFound {
                         name: name.to_string(),
-                    })
+                    }
+                    .into())
                 }
             } else {
-                error!("{}: invalid relocation, no symbol data", self);
-                Err(DynlinkError::Unknown)
+                error!("{}: invalid relocation, no symbol data", lib);
+                Err(DynlinkErrorKind::MissingSection {
+                    name: "symbol data".to_string(),
+                }
+                .into())
             }
         };
 
@@ -133,13 +133,20 @@ impl<Engine: ContextEngine> Context<Engine> {
             REL_DTPMOD => {
                 // See the TLS module for understanding where the TLS ID is coming from.
                 let id = if rel.sym() == 0 {
-                    self.tls_id.as_ref().ok_or(DynlinkError::Unknown)?.tls_id()
+                    lib.tls_id
+                        .as_ref()
+                        .ok_or_else(|| DynlinkErrorKind::NoTLSInfo {
+                            library: lib.name.clone(),
+                        })?
+                        .tls_id()
                 } else {
-                    open_sym()?
-                        .lib
+                    let other_lib = open_sym()?.lib;
+                    other_lib
                         .tls_id
                         .as_ref()
-                        .ok_or(DynlinkError::Unknown)?
+                        .ok_or_else(|| DynlinkErrorKind::NoTLSInfo {
+                            library: other_lib.name.clone(),
+                        })?
                         .tls_id()
                 };
                 unsafe { *target = id }
@@ -149,7 +156,7 @@ impl<Engine: ContextEngine> Context<Engine> {
                 unsafe { *target = val.wrapping_add_signed(addend) }
             }
             REL_TPOFF => {
-                if let Some(tls) = self.tls_id {
+                if let Some(tls) = lib.tls_id {
                     let val = open_sym().map(|sym| sym.raw_value()).unwrap_or(0);
                     unsafe {
                         *target = val
@@ -157,13 +164,21 @@ impl<Engine: ContextEngine> Context<Engine> {
                             .wrapping_add_signed(addend)
                     }
                 } else {
-                    error!("{}: TPOFF relocations require a PT_TLS segment", self);
-                    Err(DynlinkError::Unknown)?
+                    error!("{}: TPOFF relocations require a PT_TLS segment", lib);
+                    Err(DynlinkErrorKind::NoTLSInfo {
+                        library: lib.name.clone(),
+                    })?
                 }
             }
             _ => {
-                error!("{}: unsupported relocation: {}", self, rel.r_type());
-                Err(DynlinkError::Unknown)?
+                error!("{}: unsupported relocation: {}", lib, rel.r_type());
+                Result::<_, DynlinkError>::Err(
+                    DynlinkErrorKind::UnsupportedReloc {
+                        library: lib.name.clone(),
+                        reloc: rel.r_type(),
+                    }
+                    .into(),
+                )?
             }
         }
 
@@ -183,71 +198,62 @@ impl<Engine: ContextEngine> Context<Engine> {
     ) -> Result<(), DynlinkError> {
         debug!(
             "{}: processing {} relocations (num = {})",
-            self,
+            lib,
             name,
             sz / ent
         );
         // Try to parse the table as REL or RELA, according to ent size. If get_parsing_iter succeeds for a given
         // relocation type, that's the correct one.
         if let Some(rels) = self.get_parsing_iter(start, ent, sz) {
-            rels.map(|rel| self.do_reloc(lib, EitherRel::Rel(rel), strings, syms))
-                .ecollect::<Vec<_>>()?;
+            DynlinkError::collect(
+                DynlinkErrorKind::RelocationFail {
+                    library: lib.name.clone(),
+                },
+                rels.map(|rel| self.do_reloc(lib, EitherRel::Rel(rel), strings, syms)),
+            )?;
             Ok(())
         } else if let Some(relas) = self.get_parsing_iter(start, ent, sz) {
-            relas
-                .map(|rela| self.do_reloc(lib, EitherRel::Rela(rela), strings, syms))
-                .ecollect::<Vec<_>>()?;
+            DynlinkError::collect(
+                DynlinkErrorKind::RelocationFail {
+                    library: lib.name.clone(),
+                },
+                relas.map(|rela| self.do_reloc(lib, EitherRel::Rela(rela), strings, syms)),
+            )?;
             Ok(())
         } else {
-            Err(DynlinkError::Unknown)
+            Err(DynlinkErrorKind::RelocationFail {
+                library: lib.name.clone(),
+            }
+            .into())
         }
     }
 
     pub(crate) fn relocate(&self, lib: &Library<Engine::Backing>) -> Result<(), DynlinkError> {
-        // Atomically change state to relocating, using a CAS, to ensure a single thread gets the rights to relocate a library.
-        if !self.try_set_reloc_state(RelocState::Unrelocated, RelocState::Relocating) {
-            return Ok(());
-        }
-        // Recurse on dependencies first, in case there are any copy relocations.
-        self.library_deps
-            .neighbors_directed(self.idx.get().unwrap(), petgraph::Direction::Outgoing)
-            .enumerate()
-            .map(|(idx, depidx)| {
-                if idx == 0 {
-                    debug!("{}: relocating dependencies", self);
-                }
-                let dep = &self.library_deps[depidx];
-                self.relocate(dep);
-            })
-            .ecollect()?;
-        debug!("{}: relocating library", self);
+        debug!("{}: relocating library", lib);
         let elf = lib.get_elf()?;
         let common = elf.find_common_data()?;
-        let dynamic = common.dynamic.ok_or(DynlinkError::Unknown)?;
+        let dynamic = common
+            .dynamic
+            .ok_or_else(|| DynlinkErrorKind::MissingSection {
+                name: "dynamic".to_string(),
+            })?;
 
         // Helper to lookup a single entry for a relocated pointer in the dynamic table.
         let find_dyn_entry = |tag| {
             dynamic
                 .iter()
                 .find(|d| d.d_tag == tag)
-                .and_then(|d| self.laddr(d.d_ptr()))
-                .ok_or(DynlinkError::Unknown)
+                .map(|d| lib.laddr(d.d_ptr()))
         };
 
         // Helper to lookup a single value in the dynamic table.
-        let find_dyn_value = |tag| {
-            dynamic
-                .iter()
-                .find(|d| d.d_tag == tag)
-                .map(|d| d.d_val())
-                .ok_or(DynlinkError::Unknown)
-        };
+        let find_dyn_value = |tag| dynamic.iter().find(|d| d.d_tag == tag).map(|d| d.d_val());
 
         // Many of the relocation tables are described in a similar way -- start, entry size, and table size (in bytes).
         let find_dyn_rels = |tag, ent, sz| {
-            let rel = find_dyn_entry(tag).ok();
-            let relent = find_dyn_value(ent).ok();
-            let relsz = find_dyn_value(sz).ok();
+            let rel = find_dyn_entry(tag);
+            let relent = find_dyn_value(ent);
+            let relsz = find_dyn_value(sz);
             if let (Some(rel), Some(relent), Some(relsz)) = (rel, relent, relsz) {
                 Some((rel, relent, relsz))
             } else {
@@ -255,24 +261,37 @@ impl<Engine: ContextEngine> Context<Engine> {
             }
         };
 
-        let flags = find_dyn_value(DT_FLAGS).ok();
-        let flags_1 = find_dyn_value(DT_FLAGS_1).ok();
+        let flags = find_dyn_value(DT_FLAGS);
+        let flags_1 = find_dyn_value(DT_FLAGS_1);
         if let Some(flags) = flags {
             if flags as i64 & DF_TEXTREL != 0 {
-                error!("{}: relocations within text not supported", self);
-                return Err(DynlinkError::Unknown);
+                error!("{}: relocations within text not supported", lib);
+                return Err(DynlinkErrorKind::UnsupportedReloc {
+                    library: lib.name.to_string(),
+                    // TODO
+                    reloc: 0,
+                }
+                .into());
             }
         }
-        debug!("{}: relocation flags: {:?} {:?}", self, flags, flags_1);
+        debug!("{}: relocation flags: {:?} {:?}", lib, flags, flags_1);
 
         // Lookup all the tables
         let rels = find_dyn_rels(DT_REL, DT_RELENT, DT_RELSZ);
         let relas = find_dyn_rels(DT_RELA, DT_RELAENT, DT_RELASZ);
         let jmprels = find_dyn_rels(DT_JMPREL, DT_PLTREL, DT_PLTRELSZ);
-        let _pltgot: Option<*const u8> = find_dyn_entry(DT_PLTGOT).ok();
+        let _pltgot: Option<*const u8> = find_dyn_entry(DT_PLTGOT);
 
-        let dynsyms = common.dynsyms.ok_or(DynlinkError::Unknown)?;
-        let dynsyms_str = common.dynsyms_strs.ok_or(DynlinkError::Unknown)?;
+        let dynsyms = common
+            .dynsyms
+            .ok_or_else(|| DynlinkErrorKind::MissingSection {
+                name: "dynsyms".to_string(),
+            })?;
+        let dynsyms_str = common
+            .dynsyms_strs
+            .ok_or_else(|| DynlinkErrorKind::MissingSection {
+                name: "dynsyms_strs".to_string(),
+            })?;
 
         // Process relocations
         if let Some((rela, ent, sz)) = relas {
@@ -305,15 +324,17 @@ impl<Engine: ContextEngine> Context<Engine> {
                 DT_REL => 2,  // 2 usize long, according to ELF
                 DT_RELA => 3, // one extra usize for the addend
                 _ => {
-                    error!("failed to relocate {}: unknown PLTREL type", self);
-                    return Err(DynlinkError::Unknown);
+                    error!("failed to relocate {}: unknown PLTREL type", lib);
+                    return Err(DynlinkErrorKind::UnsupportedReloc {
+                        library: lib.name.clone(),
+                        reloc: 0, /* TODO */
+                    }
+                    .into());
                 }
             } * size_of::<usize>();
             self.process_rels(lib, rel, ent, sz as usize, "JMPREL", &dynsyms_str, &dynsyms)?;
         }
 
-        // We are the only ones who could get here, because of the CAS in try_set_state.
-        lib.set_reloc_state(RelocState::Relocated);
         Ok(())
     }
 }

@@ -1,22 +1,22 @@
 //! Definitions for symbols in the dynamic linker.
 
-use crate::library::LibraryRef;
+use crate::library::{BackingData, Library};
 
 /// A (relocated) symbol. Contains information about the symbol itself, like value and size, along with a reference to
 /// the library that it comes from.
-pub struct RelocatedSymbol {
+pub struct RelocatedSymbol<'lib, Backing: BackingData> {
     sym: elf::symbol::Symbol,
-    pub(crate) lib: LibraryRef,
+    pub(crate) lib: &'lib Library<Backing>,
 }
 
-impl RelocatedSymbol {
-    pub(crate) fn new(sym: elf::symbol::Symbol, lib: LibraryRef) -> Self {
+impl<'lib, Backing: BackingData> RelocatedSymbol<'lib, Backing> {
+    pub(crate) fn new(sym: elf::symbol::Symbol, lib: &'lib Library<Backing>) -> Self {
         Self { sym, lib }
     }
 
     /// Returns the relocated address of the symbol, i.e. the value of the symbol added to the base address of the library it comes from.
     pub fn reloc_value(&self) -> u64 {
-        self.sym.st_value + self.lib.base_addr.unwrap() as u64
+        self.sym.st_value + self.lib.base_addr() as u64
     }
 
     /// Returns the raw symbol value (unrelocated).

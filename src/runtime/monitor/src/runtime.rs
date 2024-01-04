@@ -1,5 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
+use dynlink::library::BackingData;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_runtime_api::{AddrRange, DlPhdrInfo, Library, LibraryId};
 use twz_rt::monitor::MonitorActions;
@@ -29,13 +30,12 @@ impl MonitorActions for MonitorActionsImpl {
         let phdrs = lib.get_phdrs_raw()?;
 
         Some(Library {
-            mapping: lib.full_obj.slot().runtime_handle().clone(),
-            range: (
-                lib.full_obj.raw_lea(NULLPAGE_SIZE),
-                lib.full_obj.raw_lea(MAX_SIZE - NULLPAGE_SIZE),
-            ),
+            mapping: lib.full_obj.clone().to_inner(),
+            range: (lib.full_obj.data().0, unsafe {
+                lib.full_obj.data().0.add(lib.full_obj.data().1)
+            }),
             dl_info: Some(DlPhdrInfo {
-                addr: lib.base_addr?,
+                addr: lib.base_addr(),
                 name: core::ptr::null(),
                 phdr_start: phdrs.0 as *const _,
                 phdr_num: phdrs.1.try_into().ok()?,
@@ -74,7 +74,7 @@ impl MonitorActions for MonitorActionsImpl {
         let slice = unsafe { core::slice::from_raw_parts(phdrs.0, phdrs.1) };
         let phdr = slice.iter().filter(|p| p.p_type == PT_LOAD).nth(seg)?;
         Some(AddrRange {
-            start: lib.laddr::<u8>(phdr.p_vaddr)? as usize,
+            start: lib.laddr::<u8>(phdr.p_vaddr) as usize,
             len: phdr.p_memsz as usize,
         })
     }
@@ -83,10 +83,11 @@ impl MonitorActions for MonitorActionsImpl {
         let tcb = twz_rt::monitor::RuntimeThreadControl::new();
 
         self.state
-            .dynlink
-            .with_inner_mut(|inner| inner.get_compartment().build_tls_region(tcb).ok())
+            .dynlink()
+            .get_compartment(todo!())
+            .unwrap()
+            .build_tls_region(tcb)
             .ok()
-            .flatten()
     }
 
     fn free_tls_region(&self, tls: dynlink::tls::TlsRegion) {

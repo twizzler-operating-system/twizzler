@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use dynlink::{library::LibraryLoader, symbol::LookupFlags, DynlinkError};
+use dynlink::{symbol::LookupFlags, DynlinkError};
 use state::MonitorState;
 use tracing::{debug, info, trace, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
@@ -39,10 +39,7 @@ pub fn main() {
     let init =
         init::bootstrap_dynlink_context().expect("failed to discover initial dynlink context");
     let state = Arc::new(state::MonitorState::new(init));
-    debug!(
-        "found dynlink context, with {} root libraries",
-        state.roots.len()
-    );
+    debug!("found dynlink context, with root {}", state.root);
 
     init_actions(state.clone());
     std::env::set_var("RUST_BACKTRACE", "1");
@@ -55,6 +52,7 @@ pub fn main() {
 fn monitor_init(state: Arc<MonitorState>) {
     info!("monitor early init completed, starting init");
 
+    /*
     let hw = Object::init_id(
         find_init_name("libhello_world.so").unwrap(),
         Protections::READ,
@@ -81,6 +79,7 @@ fn monitor_init(state: Arc<MonitorState>) {
     info!("addr = {:x}", addr);
     let ptr: extern "C" fn() = unsafe { core::mem::transmute(addr as usize) };
     (ptr)();
+    */
 }
 
 struct Loader {}
@@ -103,6 +102,7 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     None
 }
 
+/*
 impl LibraryLoader for Loader {
     fn create_segments(
         &mut self,
@@ -147,3 +147,4 @@ impl LibraryLoader for Loader {
         Ok(obj)
     }
 }
+*/

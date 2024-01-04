@@ -1,7 +1,9 @@
 use std::process::exit;
 
 use dynlink::{
-    library::{Library, LibraryLoader},
+    context::engine::ContextEngine,
+    engines::Engine,
+    library::{BackingData, Library, UnloadedLibrary},
     symbol::LookupFlags,
     DynlinkError,
 };
@@ -29,24 +31,19 @@ fn find_init_name(name: &str) -> Option<ObjID> {
 }
 
 fn start_runtime(runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
-    let ctx = dynlink::context::Context::default();
-    let monitor_compartment = ctx.add_compartment("monitor").unwrap();
+    let engine = Engine;
+    let mut ctx = dynlink::context::Context::new(engine);
+    let unlib = UnloadedLibrary::new("libmonitor.so");
+    let mut monitor_compartment = ctx.add_compartment("monitor").unwrap();
 
-    // TODO: we should not hardcode these names, and make it flexible as to what is loaded in bootstrap.
-    let mon_library = Library::new(
-        Object::<u8>::init_id(runtime_monitor, Protections::READ, ObjectInitFlags::empty())
-            .unwrap(),
-        "libmonitor.so",
-    );
-
-    let mut loader = Loader {};
     let monitor = ctx
-        .add_library(&monitor_compartment, mon_library, &mut loader)
+        .load_library_in_compartment(todo!(), unlib, |name| todo!())
         .unwrap();
 
-    let roots = ctx.relocate_all([monitor.clone()]).unwrap();
+    ctx.relocate_all(monitor).unwrap();
     let tls = monitor_compartment.build_tls_region(()).unwrap();
 
+    let monitor = monitor_compartment.root_library();
     debug!("context loaded, jumping to monitor");
     let entry = ctx
         .lookup_symbol(
@@ -58,7 +55,8 @@ fn start_runtime(runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
 
     let value = entry.reloc_value() as usize;
     let ptr: extern "C" fn(usize) = unsafe { core::mem::transmute(value) };
-    let mut info = ctx.build_runtime_info(roots.iter(), tls).unwrap();
+
+    let mut info = ctx.build_runtime_info(monitor, tls).unwrap();
     let info_ptr = &info as *const _ as usize;
     let aux = vec![AuxEntry::RuntimeInfo(info_ptr), AuxEntry::Null];
 
@@ -82,6 +80,7 @@ fn start_runtime(runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     exit(0);
 }
 
+/*
 struct Loader {}
 
 impl LibraryLoader for Loader {
@@ -128,6 +127,7 @@ impl LibraryLoader for Loader {
         Ok(obj)
     }
 }
+*/
 
 fn main() {
     let subscriber = FmtSubscriber::builder()

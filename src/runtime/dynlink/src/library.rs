@@ -1,6 +1,6 @@
 //! Management of individual libraries.
 
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::atomic::AtomicU32};
 
 use elf::{
     abi::{PT_PHDR, PT_TLS, STB_WEAK},
@@ -10,21 +10,8 @@ use elf::{
 };
 
 use petgraph::stable_graph::NodeIndex;
-use twizzler_abi::object::MAX_SIZE;
 
-use crate::{symbol::RelocatedSymbol, tls::TlsModId, DynlinkError};
-
-/// State of relocation.
-#[derive(Debug)]
-#[repr(u32)]
-pub(crate) enum RelocState {
-    /// The library has not been relocated.
-    Unrelocated,
-    /// The library is currently being relocated.
-    Relocating,
-    /// The library is relocated.
-    Relocated,
-}
+use crate::{symbol::RelocatedSymbol, tls::TlsModId, DynlinkError, DynlinkErrorKind};
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -40,25 +27,46 @@ pub(crate) enum InitState {
     Deconstructed,
 }
 
-pub trait BackingData {
+pub trait BackingData: Clone {
     fn data(&self) -> (*mut u8, usize);
-    fn new_data() -> Self;
+    fn new_data() -> Result<Self, DynlinkError>
+    where
+        Self: Sized;
     fn load_addr(&self) -> usize;
+
+    fn slice(&self) -> &[u8] {
+        let data = self.data();
+        // Safety: a loaded library may have a slice constructed of its backing data.
+        unsafe { core::slice::from_raw_parts(data.0, data.1) }
+    }
+
+    type InnerType;
+    fn to_inner(self) -> Self::InnerType;
 }
 
+#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub struct UnloadedLibrary {
     pub name: String,
 }
 
+impl UnloadedLibrary {
+    pub fn new(name: impl ToString) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+}
+
+const RELOCATED: u32 = 1;
+
 pub struct Library<Backing: BackingData> {
+    flags: AtomicU32,
     /// Name of this library.
     pub name: String,
     /// Node index for the dependency graph.
     pub(crate) idx: NodeIndex,
     /// Object containing the full ELF data.
     pub full_obj: Backing,
-    /// State of relocation (see [RelocState]).
-    reloc_state: RelocState,
     /// State of initialization (see [InitState]).
     init_state: InitState,
 
@@ -67,8 +75,8 @@ pub struct Library<Backing: BackingData> {
     /// The module ID for the TLS region, if any.
     pub tls_id: Option<TlsModId>,
 
-    /// Information about constructors, if any.
-    pub(crate) ctors: Option<CtorInfo>,
+    /// Information about constructors.
+    pub(crate) ctors: CtorInfo,
 }
 
 #[allow(dead_code)]
@@ -79,17 +87,17 @@ impl<Backing: BackingData> Library<Backing> {
         full_obj: Backing,
         backings: Vec<Backing>,
         tls_id: Option<TlsModId>,
-        ctors: Option<CtorInfo>,
+        ctors: CtorInfo,
     ) -> Self {
         Self {
             name,
             idx,
             full_obj,
-            reloc_state: RelocState::Unrelocated,
             init_state: InitState::Uninit,
             backings,
             tls_id,
             ctors,
+            flags: AtomicU32::new(0),
         }
     }
 
@@ -101,16 +109,21 @@ impl<Backing: BackingData> Library<Backing> {
                 } else {
                     None
                 }
-            })??,
+            })?,
             self.get_elf().ok()?.segments()?.len(),
         ))
     }
 
+    pub(crate) fn try_relocate_start(&self) -> bool {
+        self.flags
+            .fetch_or(RELOCATED, std::sync::atomic::Ordering::SeqCst)
+            & RELOCATED
+            == 0
+    }
+
     /// Return a handle to the full ELF file.
     pub fn get_elf(&self) -> Result<elf::ElfBytes<'_, NativeEndian>, ParseError> {
-        let slice =
-            unsafe { core::slice::from_raw_parts(self.full_obj.base_unchecked(), MAX_SIZE) };
-        elf::ElfBytes::minimal_parse(slice)
+        elf::ElfBytes::minimal_parse(self.full_obj.slice())
     }
 
     pub fn base_addr(&self) -> usize {
@@ -134,13 +147,19 @@ impl<Backing: BackingData> Library<Backing> {
     }
 
     pub(crate) fn get_tls_data(&self) -> Result<Option<&[u8]>, DynlinkError> {
-        Ok(self.get_tls_phdr()?.and_then(|phdr| unsafe {
-            self.laddr(phdr.p_vaddr)
-                .map(|addr| core::slice::from_raw_parts(addr, phdr.p_memsz as usize))
+        let phdr = self.get_tls_phdr()?;
+        Ok(phdr.and_then(|phdr| {
+            let slice = unsafe {
+                core::slice::from_raw_parts(self.laddr(phdr.p_vaddr), phdr.p_memsz as usize)
+            };
+            Some(slice)
         }))
     }
 
-    pub(crate) fn lookup_symbol(&self, name: &str) -> Result<RelocatedSymbol, DynlinkError> {
+    pub(crate) fn lookup_symbol(
+        &self,
+        name: &str,
+    ) -> Result<RelocatedSymbol<'_, Backing>, DynlinkError> {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
 
@@ -149,8 +168,17 @@ impl<Backing: BackingData> Library<Backing> {
             if let Some((_, sym)) = h
                 .find(
                     name.as_ref(),
-                    common.dynsyms.as_ref().ok_or(DynlinkError::Unknown)?,
-                    common.dynsyms_strs.as_ref().ok_or(DynlinkError::Unknown)?,
+                    common
+                        .dynsyms
+                        .as_ref()
+                        .ok_or_else(|| DynlinkErrorKind::MissingSection {
+                            name: "dynsyms".to_string(),
+                        })?,
+                    common.dynsyms_strs.as_ref().ok_or_else(|| {
+                        DynlinkErrorKind::MissingSection {
+                            name: "dynsyms_strs".to_string(),
+                        }
+                    })?,
                 )
                 .ok()
                 .flatten()
@@ -158,7 +186,7 @@ impl<Backing: BackingData> Library<Backing> {
                 if !sym.is_undefined() {
                     // TODO: proper weak symbol handling.
                     if sym.st_bind() != STB_WEAK {
-                        return Ok(RelocatedSymbol::new(sym, self.clone()));
+                        return Ok(RelocatedSymbol::new(sym, self));
                     } else {
                         tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
                     }
@@ -166,9 +194,10 @@ impl<Backing: BackingData> Library<Backing> {
                     tracing::info!("undefined symbol: {}", name);
                 }
             }
-            return Err(self.error(crate::DynlinkErrorKind::NameNotFound {
+            return Err(DynlinkErrorKind::NameNotFound {
                 name: name.to_string(),
-            }));
+            }
+            .into());
         }
 
         // Try the sysv hash table, if present.
@@ -176,8 +205,17 @@ impl<Backing: BackingData> Library<Backing> {
             if let Some((_, sym)) = h
                 .find(
                     name.as_ref(),
-                    common.dynsyms.as_ref().ok_or(DynlinkError::Unknown)?,
-                    common.dynsyms_strs.as_ref().ok_or(DynlinkError::Unknown)?,
+                    common
+                        .dynsyms
+                        .as_ref()
+                        .ok_or_else(|| DynlinkErrorKind::MissingSection {
+                            name: "dynsyms".to_string(),
+                        })?,
+                    common.dynsyms_strs.as_ref().ok_or_else(|| {
+                        DynlinkErrorKind::MissingSection {
+                            name: "dynsyms_strs".to_string(),
+                        }
+                    })?,
                 )
                 .ok()
                 .flatten()
@@ -185,7 +223,7 @@ impl<Backing: BackingData> Library<Backing> {
                 if !sym.is_undefined() {
                     // TODO: proper weak symbol handling.
                     if sym.st_bind() != STB_WEAK {
-                        return Ok(RelocatedSymbol::new(sym, self.clone()));
+                        return Ok(RelocatedSymbol::new(sym, self));
                     } else {
                         tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
                     }
@@ -194,22 +232,26 @@ impl<Backing: BackingData> Library<Backing> {
                 }
             }
         }
-        Err(self.error(crate::DynlinkErrorKind::NameNotFound {
+        Err(DynlinkErrorKind::NameNotFound {
             name: name.to_string(),
-        }))
+        }
+        .into())
     }
 }
 
 impl<B: BackingData> Debug for Library<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Library")
-            .field("name", &self.name)
-            .field("comp_id", &self.comp_id)
-            .finish()
+        f.debug_struct("Library").field("name", &self.name).finish()
     }
 }
 
 impl<B: BackingData> core::fmt::Display for Library<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", &self.name)
+    }
+}
+
+impl core::fmt::Display for UnloadedLibrary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", &self.name)
     }

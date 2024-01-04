@@ -81,7 +81,8 @@ impl Drop for InternalThread {
             // Args is allocated by a box.
             let _args = Box::from_raw(self.args_box as *mut ThreadSpawnArgs);
             drop(_args);
-            get_monitor_actions().free_tls_region(self.tls.dont_drop());
+            tracing::warn!("TODO: drop TLS");
+            //get_monitor_actions().free_tls_region(self.tls.dont_drop());
         }
     }
 }

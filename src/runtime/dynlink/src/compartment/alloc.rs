@@ -1,10 +1,7 @@
 //! This module handles allocating memory within a compartment for use by libraries within
 //! that compartment.
 
-use std::{
-    alloc::{AllocError, Allocator, Layout},
-    ptr::NonNull,
-};
+use std::{alloc::Layout, ptr::NonNull};
 
 use talc::Span;
 
@@ -16,12 +13,14 @@ impl<Backing: BackingData> Compartment<Backing> {
     fn add_alloc_object(&mut self) {
         let new_data = Backing::new_data();
 
-        unsafe {
-            let memory = Span::from_base_size(new_data.0, new_data.1);
-            // We ensure that we do not meet the conditions for this to return Err.
-            let _ = self.allocator.claim(memory);
+        if let Ok(new_data) = new_data {
+            unsafe {
+                let memory = Span::from_base_size(new_data.data().0, new_data.data().1);
+                // We ensure that we do not meet the conditions for this to return Err.
+                let _ = self.allocator.claim(memory);
+            }
+            self.alloc_objects.push(new_data);
         }
-        self.alloc_objects.push(new_data);
     }
 
     pub(crate) unsafe fn alloc(&mut self, layout: Layout) -> Option<NonNull<u8>> {

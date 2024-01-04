@@ -6,9 +6,10 @@ use petgraph::stable_graph::NodeIndex;
 use petgraph::stable_graph::StableDiGraph;
 use tracing::trace;
 
+use crate::DynlinkErrorKind;
 use crate::{
     compartment::Compartment,
-    library::{BackingData, CtorInfo, InitState, Library, UnloadedLibrary},
+    library::{BackingData, CtorInfo, Library, UnloadedLibrary},
     symbol::{LookupFlags, RelocatedSymbol},
     tls::TlsRegion,
     DynlinkError,
@@ -21,7 +22,6 @@ pub mod engine;
 mod load;
 mod relocate;
 
-#[derive(Default, Clone)]
 pub struct Context<Engine: ContextEngine> {
     pub(crate) engine: Engine,
     // Track all the compartment names.
@@ -39,19 +39,37 @@ pub enum LoadedOrUnloaded<Backing: BackingData> {
     Loaded(Library<Backing>),
 }
 
+impl<Backing: BackingData> LoadedOrUnloaded<Backing> {
+    pub fn name(&self) -> &str {
+        match self {
+            LoadedOrUnloaded::Unloaded(unlib) => &unlib.name,
+            LoadedOrUnloaded::Loaded(lib) => &lib.name,
+        }
+    }
+}
+
 #[allow(dead_code)]
 impl<Engine: ContextEngine> Context<Engine> {
-    pub fn get_compartment(&self) -> Compartment<Engine::Backing> {
-        // TODO
-        self.compartment_names.values().nth(0).cloned().unwrap()
+    pub fn new(engine: Engine) -> Self {
+        Self {
+            engine,
+            compartment_names: HashMap::new(),
+            library_names: HashMap::new(),
+            library_deps: StableDiGraph::new(),
+            static_ctors: Vec::new(),
+        }
+    }
+
+    pub fn get_compartment(&self, name: &str) -> Option<&Compartment<Engine::Backing>> {
+        self.compartment_names.get(name)
     }
 
     /// Lookup a library by name
-    pub fn lookup_library(&self, name: &str) -> Option<&Library<Engine::Backing>> {
-        self.library_deps[self.library_names.get(name)?]
+    pub fn lookup_library(&self, name: &str) -> Option<&LoadedOrUnloaded<Engine::Backing>> {
+        Some(&self.library_deps[*self.library_names.get(name)?])
     }
 
-    pub fn with_dfs_postorder<'a, I>(
+    pub fn with_dfs_postorder(
         &self,
         root: &Library<Engine::Backing>,
         mut f: impl FnMut(&LoadedOrUnloaded<Engine::Backing>),
@@ -63,7 +81,7 @@ impl<Engine: ContextEngine> Context<Engine> {
         }
     }
 
-    pub fn with_bfs<'a, I>(
+    pub fn with_bfs(
         &self,
         root: &Library<Engine::Backing>,
         mut f: impl FnMut(&LoadedOrUnloaded<Engine::Backing>),
@@ -80,16 +98,32 @@ impl<Engine: ContextEngine> Context<Engine> {
         compartment: &Compartment<Engine::Backing>,
         lib: UnloadedLibrary,
     ) -> NodeIndex {
+        let name = lib.name.clone();
         let idx = self.library_deps.add_node(LoadedOrUnloaded::Unloaded(lib));
-        self.library_names.insert(lib.name.clone(), idx);
+        self.library_names.insert(name, idx);
         idx
     }
 
-    pub(crate) fn add_dep(
+    pub fn load_library_in_compartment<N>(
         &mut self,
-        parent: Option<&Library<Engine::Backing>>,
-        dep: NodeIndex,
-    ) -> NodeIndex {
+        compartment: &mut Compartment<Engine::Backing>,
+        unlib: UnloadedLibrary,
+        n: N,
+    ) -> Result<&Library<Engine::Backing>, DynlinkError>
+    where
+        N: FnMut(&str) -> Option<Engine::Backing> + Clone,
+    {
+        let idx = self.add_library(compartment, unlib.clone());
+        let idx = self.load_library(compartment, unlib.clone(), idx, n)?;
+        match &self.library_deps[idx] {
+            LoadedOrUnloaded::Unloaded(_) => {
+                Err(DynlinkErrorKind::LibraryLoadFail { library: unlib }.into())
+            }
+            LoadedOrUnloaded::Loaded(lib) => Ok(lib),
+        }
+    }
+
+    pub(crate) fn add_dep(&mut self, parent: &Library<Engine::Backing>, dep: NodeIndex) {
         self.library_deps.add_edge(parent.idx, dep, ());
     }
 
@@ -104,12 +138,12 @@ impl<Engine: ContextEngine> Context<Engine> {
         }
     }
 
-    pub(crate) fn lookup_symbol(
-        &self,
-        start: &Library<Engine::Backing>,
+    pub fn lookup_symbol<'a>(
+        &'a self,
+        start: &'a Library<Engine::Backing>,
         name: &str,
         lookup_flags: LookupFlags,
-    ) -> Result<RelocatedSymbol, DynlinkError> {
+    ) -> Result<RelocatedSymbol<'a, Engine::Backing>, DynlinkError> {
         // First try looking up within ourselves.
         if !lookup_flags.contains(LookupFlags::SKIP_SELF) {
             if let Ok(sym) = start.lookup_symbol(name) {
@@ -121,11 +155,16 @@ impl<Engine: ContextEngine> Context<Engine> {
         if !lookup_flags.contains(LookupFlags::SKIP_DEPS) {
             if let Some(sym) = self
                 .library_deps
-                .neighbors_directed(start.idx.get().unwrap(), petgraph::Direction::Outgoing)
+                .neighbors_directed(start.idx, petgraph::Direction::Outgoing)
                 .find_map(|depidx| {
                     let dep = &self.library_deps[depidx];
-                    if depidx != start.idx.get().unwrap() {
-                        self.lookup_symbol(dep, name, lookup_flags).ok()
+                    if depidx != start.idx {
+                        match dep {
+                            LoadedOrUnloaded::Unloaded(_) => None,
+                            LoadedOrUnloaded::Loaded(dep) => {
+                                self.lookup_symbol(dep, name, lookup_flags).ok()
+                            }
+                        }
                     } else {
                         None
                     }
@@ -140,22 +179,32 @@ impl<Engine: ContextEngine> Context<Engine> {
             trace!("falling back to global search for {}", name);
             self.lookup_symbol_global(name)
         } else {
-            Err(DynlinkError::NotFound {
+            Err(DynlinkErrorKind::NameNotFound {
                 name: name.to_string(),
-            })
+            }
+            .into())
         }
     }
 
-    pub(crate) fn lookup_symbol_global(&self, name: &str) -> Result<RelocatedSymbol, DynlinkError> {
+    pub(crate) fn lookup_symbol_global<'a>(
+        &'a self,
+        name: &str,
+    ) -> Result<RelocatedSymbol<'a, Engine::Backing>, DynlinkError> {
         for idx in self.library_deps.node_indices() {
             let dep = &self.library_deps[idx];
-            if let Ok(sym) = dep.lookup_symbol(name) {
-                return Ok(sym);
+            match dep {
+                LoadedOrUnloaded::Unloaded(_) => {}
+                LoadedOrUnloaded::Loaded(dep) => {
+                    if let Ok(sym) = dep.lookup_symbol(name) {
+                        return Ok(sym);
+                    }
+                }
             }
         }
-        Err(DynlinkError::NotFound {
+        Err(DynlinkErrorKind::NameNotFound {
             name: name.to_string(),
-        })
+        }
+        .into())
     }
 
     fn build_ctors(
@@ -163,17 +212,17 @@ impl<Engine: ContextEngine> Context<Engine> {
         root: &Library<Engine::Backing>,
     ) -> Result<&[CtorInfo], DynlinkError> {
         let mut ctors = vec![];
-        self.with_dfs_postorder(root, |lib| {
-            if lib.try_set_init_state(InitState::Uninit, InitState::StaticUninit) {
-                ctors.push(lib.get_ctor_info())
+        self.with_dfs_postorder(root, |lib| match lib {
+            LoadedOrUnloaded::Unloaded(_) => {}
+            LoadedOrUnloaded::Loaded(lib) => {
+                ctors.push(lib.ctors);
             }
         });
-        let mut ctors = ctors.into_iter().ecollect::<Vec<_>>()?;
         self.static_ctors.append(&mut ctors);
         Ok(&self.static_ctors)
     }
 
-    pub(crate) fn build_runtime_info(
+    pub fn build_runtime_info(
         &mut self,
         root: &Library<Engine::Backing>,
         tls: TlsRegion,
@@ -183,20 +232,17 @@ impl<Engine: ContextEngine> Context<Engine> {
             let ctors = self.build_ctors(root)?;
             (ctors.as_ptr(), ctors.len())
         };
-        let mut used_slots = vec![];
-        self.with_bfs(root, |lib| used_slots.append(&mut lib.used_slots()));
-        Ok(RuntimeInitInfo::new(
-            ctors.0, ctors.1, tls, self, root_name, used_slots,
-        ))
+        Ok(RuntimeInitInfo::new(ctors.0, ctors.1, tls, self, root_name))
     }
 
     /// Create a new compartment with a given name.
     pub fn add_compartment(
-        &self,
+        &mut self,
         name: impl ToString,
-        root: UnloadedLibrary,
-    ) -> Result<Compartment<Engine::Backing>, DynlinkError> {
-        todo!()
+    ) -> Result<&Compartment<Engine::Backing>, DynlinkError> {
+        let comp = Compartment::new(name.to_string());
+        self.compartment_names.insert(comp.name.clone(), comp);
+        Ok(&self.compartment_names[&name.to_string()])
     }
 
     /// Iterate through all libraries and process relocations for any libraries that haven't yet been relocated.
@@ -223,7 +269,7 @@ pub struct RuntimeInitInfo {
 
     pub tls_region: TlsRegion,
     pub ctx: *const u8,
-    pub root_names: Vec<String>,
+    pub root_name: String,
     pub used_slots: Vec<usize>,
 }
 
@@ -236,16 +282,15 @@ impl RuntimeInitInfo {
         ctor_info_array_len: usize,
         tls_region: TlsRegion,
         ctx: &Context<E>,
-        root_names: Vec<String>,
-        used_slots: Vec<usize>,
+        root_name: String,
     ) -> Self {
         Self {
             ctor_info_array,
             ctor_info_array_len,
             tls_region,
             ctx: ctx as *const _ as *const u8,
-            root_names,
-            used_slots,
+            root_name,
+            used_slots: vec![],
         }
     }
 
