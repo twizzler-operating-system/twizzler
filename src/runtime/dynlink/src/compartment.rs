@@ -1,6 +1,7 @@
 //! Compartments are an abstraction for isolation of library components, but they are not done yet.
 
-use std::fmt::Debug;
+use petgraph::stable_graph::NodeIndex;
+use std::{collections::HashMap, fmt::Debug};
 
 use talc::{ErrOnOom, Talc};
 
@@ -14,6 +15,7 @@ mod tls;
 
 pub struct Compartment<Backing: BackingData> {
     pub name: String,
+    pub(crate) library_names: HashMap<String, NodeIndex>,
     pub(super) allocator: Talc<ErrOnOom>,
     pub(super) alloc_objects: Vec<Backing>,
     pub(crate) tls_info: TlsInfo,
@@ -25,14 +27,11 @@ impl<Backing: BackingData> Compartment<Backing> {
     pub fn new(name: String) -> Self {
         Self {
             name,
+            library_names: HashMap::new(),
             allocator: Talc::new(ErrOnOom),
             alloc_objects: vec![],
             tls_info: TlsInfo::new(0),
         }
-    }
-
-    pub fn root_library(&self) -> &Library<Backing> {
-        todo!()
     }
 }
 

@@ -28,7 +28,7 @@ pub trait ContextEngine {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
 pub struct LoadDirective {
     pub load_flags: LoadFlags,
     pub vaddr: usize,
@@ -39,7 +39,7 @@ pub struct LoadDirective {
 }
 
 bitflags::bitflags! {
-    #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
+    #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
     pub struct LoadFlags: u32 {
         const TARGETS_DATA = 1;
     }

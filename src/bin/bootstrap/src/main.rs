@@ -2,7 +2,7 @@ use std::process::exit;
 
 use dynlink::{
     context::engine::ContextEngine,
-    engines::Engine,
+    engines::{Backing, Engine},
     library::{BackingData, Library, UnloadedLibrary},
     symbol::LookupFlags,
     DynlinkError,
@@ -18,7 +18,7 @@ use twizzler_abi::{
     },
 };
 use twizzler_object::{Object, ObjectInitFlags};
-use twizzler_runtime_api::AuxEntry;
+use twizzler_runtime_api::{AuxEntry, MapFlags};
 
 fn find_init_name(name: &str) -> Option<ObjID> {
     let init_info = twizzler_abi::runtime::get_kernel_init_info();
@@ -37,21 +37,31 @@ fn start_runtime(runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     let unlib = UnloadedLibrary::new("libmonitor.so");
     let _ = ctx.add_compartment("monitor").unwrap();
 
-    let res = ctx.load_library_in_compartment("monitor", unlib, |name| todo!());
+    let _res = ctx
+        .load_library_in_compartment("monitor", unlib, |mut name| {
+            if name.starts_with("libstd") {
+                name = "libstd.so";
+            }
+            let id = find_init_name(name)?;
+            let obj = twizzler_runtime_api::get_runtime()
+                .map_object(id.as_u128(), MapFlags::READ)
+                .ok()?;
+            Some(Backing::new(obj))
+        })
+        .unwrap();
 
-    if let Err(e) = res {
-        let x = miette::Report::new(e);
-        eprintln!("{}", x);
-    }
-
-    ctx.relocate_all("libmonitor.so").unwrap();
+    let monitor_compartment = ctx.get_compartment("monitor").unwrap();
+    ctx.relocate_all(monitor_compartment, "libmonitor.so")
+        .unwrap();
 
     let monitor_compartment = ctx.get_compartment_mut("monitor").unwrap();
     let tls = monitor_compartment.build_tls_region(()).unwrap();
 
     let monitor_compartment = ctx.get_compartment("monitor").unwrap();
-    let monitor = monitor_compartment.root_library();
-    debug!("context loaded, jumping to monitor");
+    let monitor = ctx
+        .lookup_loaded_library(monitor_compartment, "libmonitor.so")
+        .unwrap();
+    debug!("context loaded, prepping jump to monitor");
     let entry = ctx
         .lookup_symbol(
             &monitor,
@@ -80,7 +90,7 @@ fn start_runtime(runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     info.used_slots = used;
 
     let aux_ptr = aux.as_slice().as_ptr();
-    trace!("jumping to {:x}", value);
+    debug!("jumping to {:x}", value);
     (ptr)(aux_ptr as usize);
 
     warn!("returned from monitor, exiting...");

@@ -5,6 +5,8 @@ use crate::{
     DynlinkError, DynlinkErrorKind,
 };
 
+use elf::abi::DT_NEEDED;
+
 use super::{engine::ContextEngine, Context};
 
 impl<Engine: ContextEngine> Context<Engine> {

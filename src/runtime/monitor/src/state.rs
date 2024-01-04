@@ -26,7 +26,9 @@ impl MonitorState {
     pub(crate) fn get_nth_library(&self, n: usize) -> Option<&dynlink::library::Library<Backing>> {
         // TODO: this sucks.
         let mut all = vec![];
-        let root = self.dynlink().lookup_library(&self.root)?;
+        // TODO
+        let comp = self.dynlink().get_compartment("monitor")?;
+        let root = self.dynlink().lookup_library(comp, &self.root)?;
         let root = match root {
             dynlink::context::LoadedOrUnloaded::Unloaded(_) => return None,
             dynlink::context::LoadedOrUnloaded::Loaded(lib) => lib,
@@ -34,7 +36,8 @@ impl MonitorState {
         self.dynlink()
             .with_bfs(root, |lib| all.push(lib.name().to_string()));
         all.get(n)
-            .and_then(|x| match self.dynlink().lookup_library(&x) {
+            // TODO
+            .and_then(|x| match self.dynlink().lookup_library(comp, &x) {
                 Some(dynlink::context::LoadedOrUnloaded::Loaded(l)) => Some(l),
                 _ => None,
             })

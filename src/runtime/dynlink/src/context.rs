@@ -1,7 +1,9 @@
 //! Management of global context.
 
 use std::collections::HashMap;
+use std::ffi::FromBytesUntilNulError;
 
+use anyhow::Error;
 use petgraph::stable_graph::NodeIndex;
 use petgraph::stable_graph::StableDiGraph;
 use tracing::trace;
@@ -27,8 +29,6 @@ pub struct Context<Engine: ContextEngine> {
     // Track all the compartment names.
     compartment_names: HashMap<String, Compartment<Engine::Backing>>,
 
-    // We care about both names and dependency ordering for libraries.
-    pub(crate) library_names: HashMap<String, NodeIndex>,
     pub(crate) library_deps: StableDiGraph<LoadedOrUnloaded<Engine::Backing>, ()>,
 
     pub(crate) static_ctors: Vec<CtorInfo>,
@@ -54,7 +54,6 @@ impl<Engine: ContextEngine> Context<Engine> {
         Self {
             engine,
             compartment_names: HashMap::new(),
-            library_names: HashMap::new(),
             library_deps: StableDiGraph::new(),
             static_ctors: Vec::new(),
         }
@@ -69,8 +68,30 @@ impl<Engine: ContextEngine> Context<Engine> {
     }
 
     /// Lookup a library by name
-    pub fn lookup_library(&self, name: &str) -> Option<&LoadedOrUnloaded<Engine::Backing>> {
-        Some(&self.library_deps[*self.library_names.get(name)?])
+    pub fn lookup_library(
+        &self,
+        comp: &Compartment<Engine::Backing>,
+        name: &str,
+    ) -> Option<&LoadedOrUnloaded<Engine::Backing>> {
+        Some(&self.library_deps[*comp.library_names.get(name)?])
+    }
+
+    pub fn lookup_loaded_library(
+        &self,
+        comp: &Compartment<Engine::Backing>,
+        name: &str,
+    ) -> Result<&Library<Engine::Backing>, DynlinkError> {
+        match self.lookup_library(comp, name) {
+            Some(LoadedOrUnloaded::Loaded(lib)) => Ok(lib),
+            Some(LoadedOrUnloaded::Unloaded(unlib)) => {
+                Err(DynlinkError::new(DynlinkErrorKind::LibraryLoadFail {
+                    library: unlib.clone(),
+                }))
+            }
+            _ => Err(DynlinkError::new(DynlinkErrorKind::NameNotFound {
+                name: name.to_string(),
+            })),
+        }
     }
 
     pub fn with_dfs_postorder(
@@ -100,7 +121,6 @@ impl<Engine: ContextEngine> Context<Engine> {
     pub(crate) fn add_library(&mut self, lib: UnloadedLibrary) -> NodeIndex {
         let name = lib.name.clone();
         let idx = self.library_deps.add_node(LoadedOrUnloaded::Unloaded(lib));
-        self.library_names.insert(name, idx);
         idx
     }
 
@@ -114,6 +134,20 @@ impl<Engine: ContextEngine> Context<Engine> {
         N: FnMut(&str) -> Option<Engine::Backing> + Clone,
     {
         let idx = self.add_library(unlib.clone());
+        let comp = self.get_compartment_mut(compartment_name).ok_or_else(|| {
+            DynlinkErrorKind::NameNotFound {
+                name: compartment_name.to_string(),
+            }
+        })?;
+
+        if comp.library_names.contains_key(&unlib.name) {
+            return Err(DynlinkErrorKind::NameAlreadyExists {
+                name: unlib.name.clone(),
+            }
+            .into());
+        }
+
+        comp.library_names.insert(unlib.name.clone(), idx);
         let idx = self.load_library(compartment_name, unlib.clone(), idx, n)?;
         match &self.library_deps[idx] {
             LoadedOrUnloaded::Unloaded(_) => {
@@ -242,19 +276,27 @@ impl<Engine: ContextEngine> Context<Engine> {
     }
 
     /// Iterate through all libraries and process relocations for any libraries that haven't yet been relocated.
-    pub fn relocate_all(&self, root_name: &str) -> Result<(), DynlinkError> {
-        /*
-        let inner = self.inner.lock()?;
+    pub fn relocate_all(
+        &self,
+        comp: &Compartment<Engine::Backing>,
+        root_name: &str,
+    ) -> Result<(), DynlinkError> {
+        let root =
+            comp.library_names
+                .get(root_name)
+                .ok_or_else(|| DynlinkErrorKind::NameNotFound {
+                    name: root_name.to_string(),
+                })?;
 
-        roots
-            .into_iter()
-            .map(|root| {
-                debug!("relocate_all: relocation root: {}", root);
-                root.relocate(&inner).map(|_| root)
-            })
-            .ecollect()
-        */
-        todo!()
+        let root = &self.library_deps[*root];
+        match root {
+            LoadedOrUnloaded::Unloaded(unlib) => {
+                Err(DynlinkError::new(DynlinkErrorKind::LibraryLoadFail {
+                    library: unlib.clone(),
+                }))
+            }
+            LoadedOrUnloaded::Loaded(lib) => self.relocate(lib),
+        }
     }
 }
 

@@ -135,7 +135,12 @@ impl<Engine: ContextEngine> Context<Engine> {
             return Err(DynlinkErrorKind::LibraryLoadFail { library: unlib }.into());
         }
         let base_addr = backings[0].load_addr();
-        debug!("{}: loaded to {:x} ", unlib, base_addr);
+        debug!(
+            "{}: loaded to {:x} (data at {:x})",
+            unlib,
+            base_addr,
+            backings.get(1).map(|b| b.load_addr()).unwrap_or_default()
+        );
 
         // Need to grab this again to reborrow.
         let elf = self.get_elf(&backing)?;
@@ -179,12 +184,6 @@ impl<Engine: ContextEngine> Context<Engine> {
     where
         N: FnMut(&str) -> Option<Engine::Backing> + Clone,
     {
-        // Don't load twice!
-        if let Some(existing) = self.library_names.get(&unlib.name) {
-            debug!("using existing library for {}", unlib.name);
-            return Ok(*existing);
-        }
-
         debug!("loading library {}", unlib);
         let lib = self.load(compartment_name, unlib.clone(), idx, n.clone())?;
 
@@ -195,7 +194,19 @@ impl<Engine: ContextEngine> Context<Engine> {
         let deps = deps
             .into_iter()
             .map(|unlib| {
-                let idx = self.add_library(unlib.clone());
+                // Don't load twice!
+                let comp = self.get_compartment(compartment_name).ok_or_else(|| {
+                    DynlinkErrorKind::NameNotFound {
+                        name: compartment_name.to_string(),
+                    }
+                })?;
+                let idx = if let Some(existing) = comp.library_names.get(&unlib.name) {
+                    debug!("using existing library for {}", unlib.name);
+                    *existing
+                } else {
+                    self.add_library(unlib.clone())
+                };
+
                 self.add_dep(&lib, idx);
                 self.load_library(compartment_name, unlib, idx, n.clone())
             })

@@ -5,21 +5,10 @@ use itertools::{Either, Itertools};
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::library::UnloadedLibrary;
-
-impl<T> From<PoisonError<T>> for DynlinkError {
-    fn from(value: PoisonError<T>) -> Self {
-        Self {
-            kind: DynlinkErrorKind::PoisonError {
-                report: value.to_string(),
-            },
-            related: vec![],
-        }
-    }
-}
+use crate::{context::engine::LoadDirective, library::UnloadedLibrary};
 
 #[derive(Debug, Error, Diagnostic)]
-#[error("dynamic linker error")]
+#[error("dynamic linker error: {kind}")]
 pub struct DynlinkError {
     pub kind: DynlinkErrorKind,
     #[related]
@@ -81,8 +70,6 @@ pub enum DynlinkErrorKind {
         #[from]
         err: elf::ParseError,
     },
-    #[error("poison error: {report}")]
-    PoisonError { report: String },
     #[error("dynamic object is missing a required segment or section '{name}'")]
     MissingSection { name: String },
     #[error("failed to allocate {:?} within compartment {}", layout, comp)]
@@ -102,6 +89,8 @@ pub enum DynlinkErrorKind {
     RelocationFail { library: String },
     #[error("failed to create new backing data")]
     NewBackingFail,
+    #[error("failed to satisfy load directive")]
+    LoadDirectiveFail { dir: LoadDirective },
 }
 
 impl From<elf::ParseError> for DynlinkError {
