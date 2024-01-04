@@ -119,10 +119,10 @@ pub struct ExceptionContext {
     pub x28: u64,
     pub x29: u64,
     pub x30: u64,
-    /// The stack pointer, depending onf the context where the exception
-    /// occured, this is either sp_el0 or sp_el1
+    /// The stack pointer, depending on the context where the exception
+    /// occurred, this is either sp_el0 or sp_el1
     pub sp: u64,
-    /// The program counter. The address where the exception occured.
+    /// The program counter. The address where the exception occurred.
     pub elr: u64,
     /// The state of the processor (SPSR_EL1). Determines execution environment (e.g., interrupts)
     pub spsr: u64,

@@ -108,7 +108,7 @@ pub unsafe fn return_to_user(context: &Armv8SyscallContext) -> ! {
     // crate::interrupt::set(true);
 
     // configure the execution state for EL0:
-    // - interrupts umasked
+    // - interrupts unmasked
     // - el0 exception level
     // - use sp_el0 stack pointer
     // - aarch64 execution state
