@@ -7,7 +7,7 @@
 ///     https://github.com/ARM-software/abi-aa/releases/download/2023Q1/aapcs64.pdf
 
 use arm64::registers::{ELR_EL1, SP_EL0, SPSR_EL1};
-use registers::interfaces::{Readable, Writeable};
+use registers::interfaces::Writeable;
 
 use twizzler_abi::upcall::UpcallFrame;
 
@@ -84,8 +84,7 @@ impl SyscallContext for Armv8SyscallContext {
         T::from(self.x5)
     }
     fn pc(&self) -> VirtAddr {
-        // TODO: save and pass in elr register
-        todo!("get pc")
+        VirtAddr::new(self.elr).unwrap()
     }
 
     fn set_return_values<R1, R2>(&mut self, ret0: R1, ret1: R2)
@@ -106,14 +105,15 @@ pub unsafe fn return_to_user(context: &Armv8SyscallContext) -> ! {
     SP_EL0.set(context.sp);
 
     // TODO: enable interrupts when we can support nested exception handling
+    // crate::interrupt::set(true);
 
     // configure the execution state for EL0:
-    // - interrupts masked
+    // - interrupts unmasked
     // - el0 exception level
     // - use sp_el0 stack pointer
     // - aarch64 execution state
     SPSR_EL1.write(
-        SPSR_EL1::D::Masked + SPSR_EL1::A::Masked + SPSR_EL1::I::Masked
+        SPSR_EL1::D::Masked + SPSR_EL1::A::Masked + SPSR_EL1::I::Unmasked
         + SPSR_EL1::F::Masked + SPSR_EL1::M::EL0t
     );
 
@@ -131,7 +131,7 @@ pub unsafe fn return_to_user(context: &Armv8SyscallContext) -> ! {
 /// Service a system call according to the ABI defined in [`twizzler_abi`]
 pub fn handle_syscall(ctx: &mut ExceptionContext) {
     crate::thread::enter_kernel();
-    // crate::interrupt::set(true);
+    crate::interrupt::set(true);
 
     let mut context: Armv8SyscallContext = Default::default();
     context.x0 = ctx.x0;
@@ -143,9 +143,7 @@ pub fn handle_syscall(ctx: &mut ExceptionContext) {
     context.x6 = ctx.x6;
     context.x7 = ctx.x7;
     context.sp = ctx.sp;
-
-    // TODO: save this in the incoming exception?
-    context.elr = ELR_EL1.get();
+    context.elr = ctx.elr;
 
     crate::syscall::syscall_entry(&mut context);
     // crate::interrupt::set(false);

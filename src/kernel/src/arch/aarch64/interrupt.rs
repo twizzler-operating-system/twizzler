@@ -129,7 +129,6 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
     // Get pending IRQ number from GIC CPU Interface.
     // Doing so acknowledges the pending interrupt.
     let irq_number = INTERRUPT_CONTROLLER.pending_interrupt();
-    emerglogln!("[arch::irq] interrupt: {}", irq_number);
     
     match irq_number {
         PhysicalTimer::INTERRUPT_ID => {

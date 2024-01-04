@@ -100,7 +100,6 @@ pub fn start_clock(_statclock_hz: u64, _stat_cb: fn(Nanoseconds)) {
 }
 
 pub fn schedule_oneshot_tick(time: Nanoseconds) {
-    emerglogln!("[arch::tick] setting the timer to fire off after {} ns", time);
     let old = interrupt::disable();
     // set timer to fire off after a certian amount of time has passed
     let phys_timer = cntp::PhysicalTimer::new();

@@ -8,7 +8,7 @@
 
 use core::fmt::{Display, Formatter, Result};
 
-use arm64::registers::{VBAR_EL1, ESR_EL1, SPSR_EL1, ELR_EL1};
+use arm64::registers::{VBAR_EL1, ESR_EL1};
 use registers::{
     registers::InMemoryRegister,
     interfaces::{Readable, Writeable},
@@ -119,7 +119,17 @@ pub struct ExceptionContext {
     pub x28: u64,
     pub x29: u64,
     pub x30: u64,
+    /// The stack pointer, depending on the context where the exception
+    /// occurred, this is either sp_el0 or sp_el1
     pub sp: u64,
+    /// The program counter. The address where the exception occurred.
+    pub elr: u64,
+    /// The state of the processor (SPSR_EL1). Determines execution environment (e.g., interrupts)
+    pub spsr: u64,
+    /// The cause of a synchronous exception (ESR_EL1).
+    pub esr: u64,
+    /// The address where a the fault occured (FAR_EL1).
+    pub far: u64,
 }
 
 impl Display for ExceptionContext {
@@ -132,7 +142,8 @@ impl Display for ExceptionContext {
         writeln!(f, "\tx16: {:#018x} x17: {:#018x} x18: {:#018x} x19: {:#018x}", self.x16, self.x17, self.x18, self.x19)?;
         writeln!(f, "\tx20: {:#018x} x21: {:#018x} x22: {:#018x} x23: {:#018x}", self.x20, self.x21, self.x22, self.x23)?;
         writeln!(f, "\tx24: {:#018x} x25: {:#018x} x26: {:#018x} x27: {:#018x}", self.x24, self.x25, self.x26, self.x27)?;
-        writeln!(f, "\tx28: {:#018x} x29: {:#018x} x30: {:#018x} sp: {:#018x}", self.x28, self.x29, self.x30, self.sp)
+        writeln!(f, "\tx28: {:#018x} x29: {:#018x} x30: {:#018x}  sp: {:#018x}", self.x28, self.x29, self.x30, self.sp)?;
+        writeln!(f, "\telr: {:#018x} spsr: {:#018x} esr: {:#018x} far: {:#018x}", self.elr, self.spsr, self.esr, self.far)
     }
 }
 
@@ -153,7 +164,7 @@ impl From<ExceptionContext> for UpcallFrame {
 }
 
 // TODO: reentrant/nested interrupt support
-// - save spsr_el1 and elr_el1 before calling handler
+// x save spsr_el1 and elr_el1 before calling handler
 // - enable interrupts while servicing exceptions
 
 /// macro creates a high level exception handler
@@ -189,12 +200,32 @@ macro_rules! exception_handler {
                 // link register (i.e. x30)
                 save_stack_pointer!($is_kernel),
                 "stp x30, x10, [sp, #16 * 15]",
+                // the program counter
+                "mrs x11, elr_el1",
+                // the processor state
+                "mrs x12, spsr_el1",
+                // the exception syndrome register
+                "mrs x13, esr_el1",
+                // the fault address register
+                "mrs x14, far_el1",
+                "stp x11, x12, [sp, #16 * 16]",
+                "stp x13, x14, [sp, #16 * 17]", 
                 // move stack pointer of last frame as an argument
                 "mov x0, sp",
                 // go to exception handler (overwrites x30)
                 "bl {handler}",
-                // restore all general purpose registers (x0-x30)
                 // pop registers off of the stack
+                "ldp x13, x14, [sp, #16 * 17]", 
+                "ldp x11, x12, [sp, #16 * 16]",
+                // the program counter
+                "msr elr_el1, x11",
+                // the processor state
+                "msr spsr_el1, x12",
+                // the exception syndrome register
+                "msr esr_el1, x13",
+                // the fault address register
+                "msr far_el1, x14",
+                // restore all general purpose registers (x0-x30)
                 "ldp x30, x10, [sp, #16 * 15]",
                 restore_stack_pointer!($is_kernel),
                 "ldp x28, x29, [sp, #16 * 14]",
@@ -267,7 +298,7 @@ exception_handler!(default_exception_handler, debug_handler, true);
 /// useful system register state. Then it panics.
 fn debug_handler(ctx: &mut ExceptionContext) {
     // read of raw value for ESR
-    let esr = ESR_EL1.get();
+    let esr = ctx.esr;
     // print reason for exception (syndrome register)
     emerglogln!("[kernel::exception] Exception Syndrome Register (ESR) value: {:#x}", esr);
     // print decoding information
@@ -314,7 +345,7 @@ fn debug_handler(ctx: &mut ExceptionContext) {
         if far_valid {
             emerglogln!("\t\tFault Address Register is valid"); 
             // print faulting address (ELR/FAR)
-            emerglogln!("\t\tFAR value = {:#018x}", arm64::registers::FAR_EL1.get());
+            emerglogln!("\t\tFAR value = {:#018x}", ctx.far);
         }
 
         // was fault caused by a write to memory or a read?
@@ -340,8 +371,8 @@ fn debug_handler(ctx: &mut ExceptionContext) {
     }
 
     // print other system registers: PSTATE/SPSR
-    emerglogln!("[kernel::exception] SPSR_EL1: {:#018x}", SPSR_EL1.get());
-
+    emerglogln!("[kernel::exception] SPSR_EL1: {:#018x}", ctx.spsr);
+    
     // print registers
     emerglog!("[kernel::exception] dumping register state: {}", ctx);
 
@@ -358,7 +389,7 @@ exception_handler!(sync_exception_handler_el0, sync_handler, false);
 /// such as Data Aborts (i.e. page faults)
 fn sync_handler(ctx: &mut ExceptionContext) {
     // read of raw value for ESR
-    let esr = ESR_EL1.get();
+    let esr = ctx.esr;
     let esr_reg: InMemoryRegister<u64, ESR_EL1::Register> = InMemoryRegister::new(esr);
     match esr_reg.read_as_enum(ESR_EL1::EC) {
         // TODO: reorganize data abort handling between user and kernel
@@ -368,7 +399,7 @@ fn sync_handler(ctx: &mut ExceptionContext) {
             // is the fault address register valid?
             let far_valid = iss & (1 << 10) == 0;
             // print faulting address (ELR/FAR)
-            let far = arm64::registers::FAR_EL1.get();
+            let far = ctx.far;
             if !far_valid {
                 panic!("FAR is not valid!!");
             }
@@ -402,7 +433,7 @@ fn sync_handler(ctx: &mut ExceptionContext) {
             }
             crate::thread::enter_kernel();
             // crate::interrupt::set(true);
-            let elr = ELR_EL1.get();
+            let elr = ctx.elr;
             if let Ok(elr_va) = VirtAddr::new(elr) {
                 crate::memory::context::virtmem::page_fault(
                     far_va,
@@ -434,7 +465,7 @@ fn sync_handler(ctx: &mut ExceptionContext) {
     }
 }
 
-fn handle_inst_abort(_ctx: &mut ExceptionContext, esr_reg: &InMemoryRegister<u64, ESR_EL1::Register>) {
+fn handle_inst_abort(ctx: &mut ExceptionContext, esr_reg: &InMemoryRegister<u64, ESR_EL1::Register>) {
     // decoding ISS for instruction fault.
     // iss: syndrome
     let iss = esr_reg.read(ESR_EL1::ISS);
@@ -443,7 +474,7 @@ fn handle_inst_abort(_ctx: &mut ExceptionContext, esr_reg: &InMemoryRegister<u64
     if !far_valid {
         panic!("FAR is not valid!!");
     }
-    let far = arm64::registers::FAR_EL1.get();
+    let far = ctx.far;
 
     // The cause is from an instruction fetch
     let cause = MemoryAccessKind::InstructionFetch;
@@ -473,7 +504,7 @@ fn handle_inst_abort(_ctx: &mut ExceptionContext, esr_reg: &InMemoryRegister<u64
 
     crate::thread::enter_kernel();
     // crate::interrupt::set(true);
-    let elr = ELR_EL1.get();
+    let elr = ctx.elr;
     if let Ok(elr_va) = VirtAddr::new(elr) {
         // logln!("fault {:?} from {:?}", far_va, elr_va);
         crate::memory::context::virtmem::page_fault(

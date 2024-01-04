@@ -45,6 +45,9 @@ struct RegisterContext {
     // x30 aka the link register
     lr: u64,
     sp: u64,
+    // thread local storage for user space
+    tpidr: u64,
+    tpidrro: u64,
 }
 
 // arch specific thread state
@@ -116,7 +119,6 @@ impl Thread {
     }
 
     pub fn set_tls(&self, tls: u64) {
-        // TODO: save TLS pointer in thread state, and track in context switches
         TPIDR_EL0.set(tls);
     }
 
@@ -124,6 +126,7 @@ impl Thread {
     /// 
     /// On 64-bit ARM systems, we only need to save a few registers
     /// then switch thread stacks before changing control flow.
+    #[inline(never)]
     pub extern "C" fn arch_switch_to(&self, old_thread: &Thread) {
         // The switch (1) saves registers x19-x30 and the stack pointer (sp)
         // onto the current thread's context save area (old_thread).
@@ -147,7 +150,11 @@ impl Thread {
                 "stp x29, x30, [x11, #16 * 5]",
                 // save stack pointer
                 "mov x15, sp",
-                "str x15, [x11, #16 * 6]",
+                // save the thread pointer registers
+                "mrs x14, tpidr_el0",
+                "mrs x13, tpidrro_el0",
+                "stp x15, x14, [x11, #16 * 6]",
+                "str x13, [x11, #16 * 7]",
                 // (2) restore next thread's regs
                 "ldp x19, x20, [x10, #16 * 0]",
                 "ldp x21, x22, [x10, #16 * 1]",
@@ -157,7 +164,10 @@ impl Thread {
                 // restore the fp (x29) and the lr (x30)
                 "ldp x29, x30, [x10, #16 * 5]",
                 // (3) switch thread stacks
-                "ldr x15, [x10, #16 * 6]",
+                "ldp x15, x14, [x10, #16 * 6]",
+                "ldr x13, [x10, #16 * 7]",
+                "msr tpidr_el0, x14",
+                "msr tpidrro_el0, x13",
                 "mov sp, x15",
                 // (4) execution resumes in the address
                 // pointed to by the link register (x30)
@@ -165,8 +175,6 @@ impl Thread {
                 // assign inputs to temporary registers
                 in("x11") current,
                 in("x10") next,
-                // TODO: test if we need this ...
-                options(noreturn)
             );
         }
     }
