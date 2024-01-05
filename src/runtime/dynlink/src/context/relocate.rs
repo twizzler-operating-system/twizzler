@@ -228,7 +228,10 @@ impl<Engine: ContextEngine> Context<Engine> {
         }
     }
 
-    pub(crate) fn relocate(&self, lib: &Library<Engine::Backing>) -> Result<(), DynlinkError> {
+    pub(crate) fn relocate_single(
+        &self,
+        lib: &Library<Engine::Backing>,
+    ) -> Result<(), DynlinkError> {
         debug!("{}: relocating library", lib);
         let elf = lib.get_elf()?;
         let common = elf.find_common_data()?;

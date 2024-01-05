@@ -110,8 +110,8 @@ impl ContextEngine for Engine {
 
             Ok(ObjectSource::new_copy(
                 twizzler_object::ObjID::new(src.obj.id),
-                src_start as u64,
-                dest_start as u64,
+                (src_start % MAX_SIZE) as u64,
+                (dest_start % MAX_SIZE) as u64,
                 len,
             ))
         };

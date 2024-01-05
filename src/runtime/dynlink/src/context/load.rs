@@ -204,13 +204,20 @@ impl<Engine: ContextEngine> Context<Engine> {
                     debug!("using existing library for {}", unlib.name);
                     *existing
                 } else {
-                    self.add_library(unlib.clone())
-                };
+                    let idx = self.add_library(unlib.clone());
 
+                    let comp = self.get_compartment_mut(compartment_name).ok_or_else(|| {
+                        DynlinkErrorKind::NameNotFound {
+                            name: compartment_name.to_string(),
+                        }
+                    })?;
+                    comp.library_names.insert(unlib.name.clone(), idx);
+                    self.load_library(compartment_name, unlib, idx, n.clone())?
+                };
                 self.add_dep(&lib, idx);
-                self.load_library(compartment_name, unlib, idx, n.clone())
+                Ok(idx)
             })
-            .collect::<Vec<_>>();
+            .collect::<Vec<Result<_, DynlinkError>>>();
 
         let _ = DynlinkError::collect(DynlinkErrorKind::LibraryLoadFail { library: unlib }, deps)?;
 

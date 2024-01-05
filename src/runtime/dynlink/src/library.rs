@@ -257,6 +257,7 @@ impl core::fmt::Display for UnloadedLibrary {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CtorInfo {
     pub legacy_init: usize,

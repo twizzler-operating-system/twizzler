@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::ffi::FromBytesUntilNulError;
+use std::fmt::Display;
 
 use anyhow::Error;
 use petgraph::stable_graph::NodeIndex;
@@ -37,6 +38,15 @@ pub struct Context<Engine: ContextEngine> {
 pub enum LoadedOrUnloaded<Backing: BackingData> {
     Unloaded(UnloadedLibrary),
     Loaded(Library<Backing>),
+}
+
+impl<Backing: BackingData> Display for LoadedOrUnloaded<Backing> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadedOrUnloaded::Unloaded(unlib) => write!(f, "(unloaded){}", unlib),
+            LoadedOrUnloaded::Loaded(lib) => write!(f, "(loaded){}", lib),
+        }
+    }
 }
 
 impl<Backing: BackingData> LoadedOrUnloaded<Backing> {
@@ -94,16 +104,18 @@ impl<Engine: ContextEngine> Context<Engine> {
         }
     }
 
-    pub fn with_dfs_postorder(
+    pub fn with_dfs_postorder<R>(
         &self,
         root: &Library<Engine::Backing>,
-        mut f: impl FnMut(&LoadedOrUnloaded<Engine::Backing>),
-    ) {
+        mut f: impl FnMut(&LoadedOrUnloaded<Engine::Backing>) -> R,
+    ) -> Vec<R> {
+        let mut rets = vec![];
         let mut visit = petgraph::visit::DfsPostOrder::new(&self.library_deps, root.idx);
         while let Some(node) = visit.next(&self.library_deps) {
             let dep = &self.library_deps[node];
-            f(dep)
+            rets.push(f(dep))
         }
+        rets
     }
 
     pub fn with_bfs(
@@ -149,6 +161,14 @@ impl<Engine: ContextEngine> Context<Engine> {
 
         comp.library_names.insert(unlib.name.clone(), idx);
         let idx = self.load_library(compartment_name, unlib.clone(), idx, n)?;
+
+        for n in self
+            .library_deps
+            .neighbors_directed(idx, petgraph::Direction::Outgoing)
+        {
+            trace!("dep {}", self.library_deps[n]);
+        }
+
         match &self.library_deps[idx] {
             LoadedOrUnloaded::Unloaded(_) => {
                 Err(DynlinkErrorKind::LibraryLoadFail { library: unlib }.into())
@@ -196,7 +216,13 @@ impl<Engine: ContextEngine> Context<Engine> {
                         match dep {
                             LoadedOrUnloaded::Unloaded(_) => None,
                             LoadedOrUnloaded::Loaded(dep) => {
-                                self.lookup_symbol(dep, name, lookup_flags).ok()
+                                // TODO: this could loop forever?
+                                self.lookup_symbol(
+                                    dep,
+                                    name,
+                                    lookup_flags | LookupFlags::SKIP_GLOBAL,
+                                )
+                                .ok()
                             }
                         }
                     } else {
@@ -258,11 +284,8 @@ impl<Engine: ContextEngine> Context<Engine> {
         tls: TlsRegion,
     ) -> Result<RuntimeInitInfo, DynlinkError> {
         let root_name = root.name.clone();
-        let ctors = {
-            let ctors = self.build_ctors(root)?;
-            (ctors.as_ptr(), ctors.len())
-        };
-        Ok(RuntimeInitInfo::new(ctors.0, ctors.1, tls, self, root_name))
+        let ctors = self.build_ctors(root)?;
+        Ok(RuntimeInitInfo::new(tls, self, root_name, ctors))
     }
 
     /// Create a new compartment with a given name.
@@ -281,34 +304,33 @@ impl<Engine: ContextEngine> Context<Engine> {
         comp: &Compartment<Engine::Backing>,
         root_name: &str,
     ) -> Result<(), DynlinkError> {
-        let root =
-            comp.library_names
-                .get(root_name)
-                .ok_or_else(|| DynlinkErrorKind::NameNotFound {
-                    name: root_name.to_string(),
-                })?;
-
-        let root = &self.library_deps[*root];
-        match root {
+        let root = self.lookup_loaded_library(comp, root_name)?;
+        let rets = self.with_dfs_postorder(root, |item| match item {
             LoadedOrUnloaded::Unloaded(unlib) => {
                 Err(DynlinkError::new(DynlinkErrorKind::LibraryLoadFail {
                     library: unlib.clone(),
                 }))
             }
-            LoadedOrUnloaded::Loaded(lib) => self.relocate(lib),
-        }
+            LoadedOrUnloaded::Loaded(lib) => self.relocate_single(lib),
+        });
+
+        DynlinkError::collect(
+            DynlinkErrorKind::RelocationFail {
+                library: root_name.to_string(),
+            },
+            rets,
+        )?;
+        Ok(())
     }
 }
 
 #[repr(C)]
 pub struct RuntimeInitInfo {
-    ctor_info_array: *const CtorInfo,
-    ctor_info_array_len: usize,
-
     pub tls_region: TlsRegion,
     pub ctx: *const u8,
     pub root_name: String,
     pub used_slots: Vec<usize>,
+    pub ctors: Vec<CtorInfo>,
 }
 
 unsafe impl Send for RuntimeInitInfo {}
@@ -316,23 +338,17 @@ unsafe impl Sync for RuntimeInitInfo {}
 
 impl RuntimeInitInfo {
     pub(crate) fn new<E: ContextEngine>(
-        ctor_info_array: *const CtorInfo,
-        ctor_info_array_len: usize,
         tls_region: TlsRegion,
         ctx: &Context<E>,
         root_name: String,
+        ctors: Vec<CtorInfo>,
     ) -> Self {
         Self {
-            ctor_info_array,
-            ctor_info_array_len,
             tls_region,
             ctx: ctx as *const _ as *const u8,
             root_name,
             used_slots: vec![],
+            ctors,
         }
-    }
-
-    pub fn ctor_infos(&self) -> &[CtorInfo] {
-        unsafe { core::slice::from_raw_parts(self.ctor_info_array, self.ctor_info_array_len) }
     }
 }

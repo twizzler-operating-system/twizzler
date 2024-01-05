@@ -42,6 +42,7 @@ pub unsafe extern "C" fn monitor_entry_from_bootstrap(aux: *const AuxEntry) {
         AuxEntry::RuntimeInfo(r) => Some(*r),
         _ => None,
     });
+
     unsafe {
         AUX = runtime_info.map(|info| info as *const RuntimeInitInfo);
         twizzler_runtime_api::rt0::rust_entry(aux);

@@ -6,7 +6,7 @@ use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
 
 use crate::{
     preinit::{preinit_abort, preinit_unwrap},
-    preinit_println,
+    preinit_print, preinit_println,
     runtime::RuntimeState,
 };
 
@@ -108,10 +108,11 @@ impl CoreRuntime for ReferenceRuntime {
         twizzler_abi::syscall::sys_thread_set_upcall(upcall_target);
         self.init_allocator(init_info);
         self.init_tls(init_info);
-        self.init_ctors(init_info.ctor_infos());
+        self.init_ctors(&init_info.ctors);
 
         // Step 4: call into libstd to finish setting up the standard library and call main
         let ba = build_basic_aux(aux_slice);
+
         let ret = unsafe { std_entry(ba) };
         self.exit(ret.code);
     }
