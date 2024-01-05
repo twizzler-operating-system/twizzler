@@ -18,7 +18,8 @@ pub struct Compartment<Backing: BackingData> {
     pub(crate) library_names: HashMap<String, NodeIndex>,
     pub(super) allocator: Talc<ErrOnOom>,
     pub(super) alloc_objects: Vec<Backing>,
-    pub(crate) tls_info: TlsInfo,
+    pub(crate) tls_info: HashMap<u64, TlsInfo>,
+    pub(crate) tls_gen: u64,
 }
 
 unsafe impl<B: BackingData> Sync for Compartment<B> {}
@@ -30,7 +31,8 @@ impl<Backing: BackingData> Compartment<Backing> {
             library_names: HashMap::new(),
             allocator: Talc::new(ErrOnOom),
             alloc_objects: vec![],
-            tls_info: TlsInfo::new(0),
+            tls_info: HashMap::new(),
+            tls_gen: 0,
         }
     }
 }

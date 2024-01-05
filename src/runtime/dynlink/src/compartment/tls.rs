@@ -1,14 +1,43 @@
 use tracing::{debug, trace};
 
-use crate::{library::BackingData, tls::TlsRegion, DynlinkError, DynlinkErrorKind};
+use crate::{
+    library::BackingData,
+    tls::{TlsInfo, TlsModId, TlsModule, TlsRegion},
+    DynlinkError, DynlinkErrorKind,
+};
 
 use super::Compartment;
 
 impl<Backing: BackingData> Compartment<Backing> {
+    pub fn insert(&mut self, tm: TlsModule) -> TlsModId {
+        if !self.tls_info.contains_key(&self.tls_gen) {
+            self.tls_info
+                .insert(self.tls_gen, TlsInfo::new(self.tls_gen));
+        }
+
+        self.tls_info.get_mut(&self.tls_gen).unwrap().insert(tm)
+    }
+
+    pub fn advance_tls_generation(&mut self) -> u64 {
+        let tng = self.tls_gen + 1;
+        let initial = if let Some(prev) = self.tls_info.get(&self.tls_gen) {
+            prev.clone_to_new_gen(tng)
+        } else {
+            TlsInfo::new(tng)
+        };
+
+        self.tls_info.insert(tng, initial);
+        tng
+    }
+
     /// Build a useable TLS region, complete with copied templates, a control block, and a dtv.
     pub fn build_tls_region<T>(&mut self, tcb: T) -> Result<TlsRegion, DynlinkError> {
-        let alloc_layout = self
-            .tls_info
+        let tls_info = self.tls_info.get(&self.tls_gen).ok_or_else(|| {
+            DynlinkError::new(DynlinkErrorKind::NoTLSInfo {
+                library: self.name.clone(),
+            })
+        })?;
+        let alloc_layout = tls_info
             .allocation_layout::<T>()
             .map_err(|e| DynlinkErrorKind::from(e))?;
         debug!(
@@ -24,7 +53,12 @@ impl<Backing: BackingData> Compartment<Backing> {
             }
         })?;
 
-        let tls_region = self.tls_info.allocate(self, base, tcb);
+        let tls_info = self.tls_info.get(&self.tls_gen).ok_or_else(|| {
+            DynlinkError::new(DynlinkErrorKind::NoTLSInfo {
+                library: self.name.clone(),
+            })
+        })?;
+        let tls_region = tls_info.allocate(self, base, tcb);
         trace!("{}: static TLS region: {:?}", self, tls_region);
         tls_region
     }

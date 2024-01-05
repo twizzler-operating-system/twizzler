@@ -163,7 +163,7 @@ impl<Engine: ContextEngine> Context<Engine> {
                 tls_phdr.p_align as usize,
             );
             let comp = &mut self.compartment_names.get_mut(compartment_name).unwrap();
-            comp.tls_info.insert(tm)
+            comp.insert(tm)
         });
 
         let elf = self.get_elf(&backing)?;

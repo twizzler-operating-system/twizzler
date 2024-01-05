@@ -33,10 +33,20 @@ impl TlsInfo {
             offset: 0,
         }
     }
+
+    pub(crate) fn clone_to_new_gen(&self, new_gen: u64) -> Self {
+        Self {
+            gen: new_gen,
+            alloc_size_mods: self.alloc_size_mods,
+            max_align: self.max_align,
+            tls_mods: self.tls_mods.clone(),
+            offset: self.offset,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TlsModule {
+pub struct TlsModule {
     pub is_static: bool,
     pub template_addr: usize,
     pub template_filesz: usize,
@@ -111,6 +121,7 @@ impl TlsInfo {
         base -= base & (layout.align() - 1);
         let thread_pointer = NonNull::new(base as *mut u8).unwrap();
         let tls_region = TlsRegion {
+            gen: self.gen,
             module_top: thread_pointer,
             thread_pointer,
             dtv: alloc_base.cast(),
@@ -198,14 +209,16 @@ impl TlsModId {
     }
 }
 
+#[repr(C)]
 #[derive(Debug)]
 pub struct TlsRegion {
-    pub(crate) layout: Layout,
-    pub(crate) alloc_base: NonNull<u8>,
-    pub(crate) thread_pointer: NonNull<u8>,
-    pub(crate) dtv: NonNull<usize>,
-    pub(crate) num_dtv_entries: usize,
-    pub(crate) module_top: NonNull<u8>,
+    pub gen: u64,
+    pub layout: Layout,
+    pub alloc_base: NonNull<u8>,
+    pub thread_pointer: NonNull<u8>,
+    pub dtv: NonNull<usize>,
+    pub num_dtv_entries: usize,
+    pub module_top: NonNull<u8>,
 }
 
 impl TlsRegion {
