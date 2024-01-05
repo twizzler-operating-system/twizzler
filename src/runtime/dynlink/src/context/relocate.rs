@@ -232,6 +232,10 @@ impl<Engine: ContextEngine> Context<Engine> {
         &self,
         lib: &Library<Engine::Backing>,
     ) -> Result<(), DynlinkError> {
+        if !lib.try_relocate_start() {
+            trace!("{}: already relocated", lib);
+            return Ok(());
+        }
         debug!("{}: relocating library", lib);
         let elf = lib.get_elf()?;
         let common = elf.find_common_data()?;

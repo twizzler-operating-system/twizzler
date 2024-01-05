@@ -1,21 +1,16 @@
 #![feature(naked_functions)]
-#![feature(twizzler)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use dynlink::{symbol::LookupFlags, DynlinkError};
+use dynlink::{engines::Backing, symbol::LookupFlags};
 use state::MonitorState;
 use tracing::{debug, info, trace, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{
-        sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, ObjectSource,
-    },
 };
-use twizzler_object::{slot::Slot, ObjID, Object, ObjectInitFlags, Protections};
-use twizzler_runtime_api::ObjectHandle;
+use twizzler_object::ObjID;
 
 use crate::runtime::init_actions;
 
@@ -38,8 +33,11 @@ pub fn main() {
     trace!("monitor entered, discovering dynlink context");
     let init =
         init::bootstrap_dynlink_context().expect("failed to discover initial dynlink context");
-    let state = Arc::new(state::MonitorState::new(init));
-    debug!("found dynlink context, with root {}", state.root);
+    let state = Arc::new(Mutex::new(state::MonitorState::new(init)));
+    debug!(
+        "found dynlink context, with root {}",
+        state.lock().unwrap().root
+    );
 
     init_actions(state.clone());
     std::env::set_var("RUST_BACKTRACE", "1");
@@ -49,27 +47,40 @@ pub fn main() {
     warn!("monitor main thread exited");
 }
 
-fn monitor_init(state: Arc<MonitorState>) {
+fn monitor_init(state: Arc<Mutex<MonitorState>>) {
     info!("monitor early init completed, starting init");
 
-    /*
-    let hw = Object::init_id(
-        find_init_name("libhello_world.so").unwrap(),
-        Protections::READ,
-        ObjectInitFlags::empty(),
-    )
-    .unwrap();
-    let lib = dynlink::library::Library::new(hw, "libhello_world.so");
-    let comp = state.dynlink.add_compartment("test").unwrap();
+    let lib = dynlink::library::UnloadedLibrary::new("libhello_world.so");
+
+    let mut state = state.lock().unwrap();
+    let _ = state.dynlink.add_compartment("test").unwrap();
+
+    let _ = state
+        .dynlink
+        .load_library_in_compartment("test", lib, |mut name| {
+            if name.starts_with("libstd-") {
+                name = "libstd.so";
+            }
+            let id = find_init_name(name)?;
+            let obj = twizzler_runtime_api::get_runtime()
+                .map_object(id.as_u128(), twizzler_runtime_api::MapFlags::READ)
+                .ok()?;
+            Some(Backing::new(obj))
+        })
+        .unwrap();
+
+    let comp = state.dynlink.get_compartment("test").unwrap();
+    state
+        .dynlink
+        .relocate_all(comp, "libhello_world.so")
+        .unwrap();
+
+    info!("lookup entry");
 
     let hwlib = state
         .dynlink
-        .add_library(&comp, lib, &mut Loader {})
+        .lookup_loaded_library(comp, "libhello_world.so")
         .unwrap();
-
-    state.dynlink.relocate_all([hwlib.clone()]).unwrap();
-
-    info!("lookup entry");
     let sym = state
         .dynlink
         .lookup_symbol(&hwlib, "test_sec_call", LookupFlags::empty())
@@ -79,10 +90,8 @@ fn monitor_init(state: Arc<MonitorState>) {
     info!("addr = {:x}", addr);
     let ptr: extern "C" fn() = unsafe { core::mem::transmute(addr as usize) };
     (ptr)();
-    */
 }
 
-struct Loader {}
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {
     unsafe {
         (((twizzler_abi::slot::RESERVED_KERNEL_INIT * MAX_SIZE) + NULLPAGE_SIZE)
@@ -101,50 +110,3 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     }
     None
 }
-
-/*
-impl LibraryLoader for Loader {
-    fn create_segments(
-        &mut self,
-        data_cmds: &[ObjectSource],
-        text_cmds: &[ObjectSource],
-    ) -> Result<(Object<u8>, Object<u8>), dynlink::DynlinkError> {
-        let create_spec = ObjectCreate::new(
-            BackingType::Normal,
-            LifetimeType::Volatile,
-            None,
-            ObjectCreateFlags::empty(),
-        );
-        let data_id =
-            sys_object_create(create_spec, &data_cmds, &[]).map_err(|_| DynlinkError::Unknown)?;
-        let text_id =
-            sys_object_create(create_spec, &text_cmds, &[]).map_err(|_| DynlinkError::Unknown)?;
-
-        // TODO
-        let data = Object::init_id(
-            data_id,
-            Protections::READ | Protections::WRITE,
-            ObjectInitFlags::empty(),
-        )
-        .map_err(|_| DynlinkError::Unknown)?;
-        let text = Object::init_id(
-            text_id,
-            Protections::READ | Protections::EXEC,
-            ObjectInitFlags::empty(),
-        )
-        .map_err(|_| DynlinkError::Unknown)?;
-
-        Ok((data, text))
-    }
-
-    fn open(&mut self, mut name: &str) -> Result<Object<u8>, dynlink::DynlinkError> {
-        if name.starts_with("libstd") {
-            name = "libstd.so"
-        }
-        let id = find_init_name(name).unwrap();
-        let obj = Object::init_id(id, Protections::READ, ObjectInitFlags::empty())
-            .map_err(|_| DynlinkError::Unknown)?;
-        Ok(obj)
-    }
-}
-*/

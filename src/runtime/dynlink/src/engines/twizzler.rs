@@ -134,13 +134,28 @@ impl ContextEngine for Engine {
             .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
         let runtime = twizzler_runtime_api::get_runtime();
-        let text_handle = runtime
-            .map_object(text_id.as_u128(), MapFlags::READ | MapFlags::EXEC)
-            .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
-        let data_handle = runtime
-            .map_object(data_id.as_u128(), MapFlags::READ | MapFlags::WRITE)
+
+        let (text_handle, data_handle) = runtime
+            .map_two_objects(
+                text_id.as_u128(),
+                MapFlags::READ | MapFlags::EXEC,
+                data_id.as_u128(),
+                MapFlags::READ | MapFlags::WRITE,
+            )
             .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
+        if data_handle.start as usize != text_handle.start as usize + MAX_SIZE {
+            tracing::error!("internal runtime error: failed to map text and data adjacent and in-order ({:p} {:p})", text_handle.start, data_handle.start);
+            return Err(DynlinkErrorKind::NewBackingFail.into());
+        }
+
         Ok(vec![Backing::new(text_handle), Backing::new(data_handle)])
+    }
+
+    fn select_compartment(&mut self, unlib: &crate::library::UnloadedLibrary) -> Option<String> {
+        if unlib.name == "libmonitor.so" {
+            return Some("monitor".to_string());
+        }
+        None
     }
 }

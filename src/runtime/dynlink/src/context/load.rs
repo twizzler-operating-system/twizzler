@@ -174,6 +174,17 @@ impl<Engine: ContextEngine> Context<Engine> {
         ))
     }
 
+    fn find_cross_compartment_library(&self, unlib: &UnloadedLibrary) -> Option<(NodeIndex, &str)> {
+        for (comp_name, comp) in self.compartment_names.iter() {
+            if let Some(lib) = comp.library_names.get(&unlib.name) {
+                // TODO: only do this if it actually has secure gates.
+                return Some((*lib, comp_name));
+            }
+        }
+
+        None
+    }
+
     pub(crate) fn load_library<N>(
         &mut self,
         compartment_name: &str,
@@ -194,19 +205,48 @@ impl<Engine: ContextEngine> Context<Engine> {
         let deps = deps
             .into_iter()
             .map(|unlib| {
-                // Don't load twice!
+                // Dependency search + load alg:
+                // 1. Search library name in current compartment. If found, use that.
+                // 2. Fallback to searching globally for the name, by checking compartment by compartment. If found, use that.
+                // 3. Okay, now we know we need to load the dep, so check if it can go in the current compartment. If not, create a new compartment.
+                // 4. Finally, recurse to load it and its dependencies into either the current compartment or the new one, if created.
+
                 let comp = self.get_compartment(compartment_name).ok_or_else(|| {
                     DynlinkErrorKind::NameNotFound {
                         name: compartment_name.to_string(),
                     }
                 })?;
-                let idx = if let Some(existing) = comp.library_names.get(&unlib.name) {
-                    debug!("using existing library for {}", unlib.name);
-                    *existing
+
+                let (existing_idx, load_comp_name) =
+                    if let Some(existing) = comp.library_names.get(&unlib.name) {
+                        debug!(
+                            "using existing library for {} (intra-compartment)",
+                            unlib.name
+                        );
+                        (Some(*existing), compartment_name.to_string())
+                    } else if let Some((existing, other_comp_name)) =
+                        self.find_cross_compartment_library(&unlib)
+                    {
+                        debug!(
+                            "using existing library for {} (cross-compartment -> {})",
+                            unlib.name, other_comp_name
+                        );
+                        (Some(existing), other_comp_name.to_string())
+                    } else {
+                        (
+                            None,
+                            self.engine
+                                .select_compartment(&unlib)
+                                .unwrap_or(compartment_name.to_string()),
+                        )
+                    };
+
+                let idx = if let Some(existing_idx) = existing_idx {
+                    existing_idx
                 } else {
                     let idx = self.add_library(unlib.clone());
 
-                    let comp = self.get_compartment_mut(compartment_name).ok_or_else(|| {
+                    let comp = self.get_compartment_mut(&load_comp_name).ok_or_else(|| {
                         DynlinkErrorKind::NameNotFound {
                             name: compartment_name.to_string(),
                         }

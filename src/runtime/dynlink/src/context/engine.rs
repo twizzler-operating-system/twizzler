@@ -26,6 +26,8 @@ pub trait ContextEngine {
             })
         })
     }
+
+    fn select_compartment(&mut self, unlib: &UnloadedLibrary) -> Option<String>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]

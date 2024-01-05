@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use dynlink::library::BackingData;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
@@ -13,10 +13,10 @@ pub fn __do_get_monitor_actions() -> &'static dyn MonitorActions {
 }
 
 struct MonitorActionsImpl {
-    state: Arc<MonitorState>,
+    state: Arc<Mutex<MonitorState>>,
 }
 
-pub(crate) fn init_actions(state: Arc<MonitorState>) {
+pub(crate) fn init_actions(state: Arc<Mutex<MonitorState>>) {
     let _ = ACTIONS.set(MonitorActionsImpl { state });
 }
 
@@ -25,7 +25,8 @@ impl MonitorActions for MonitorActionsImpl {
         &self,
         id: twizzler_runtime_api::LibraryId,
     ) -> Option<twizzler_runtime_api::Library> {
-        let lib = self.state.get_nth_library(id.0)?;
+        let state = self.state.lock().unwrap();
+        let lib = state.get_nth_library(id.0)?;
         let next_id = LibraryId(id.0 + 1);
         let phdrs = lib.get_phdrs_raw()?;
 
@@ -49,7 +50,7 @@ impl MonitorActions for MonitorActionsImpl {
                     .ok()?,
                 tls_data: core::ptr::null(),
             }),
-            next_id: self.state.get_nth_library(next_id.0).map(|_| next_id),
+            next_id: state.get_nth_library(next_id.0).map(|_| next_id),
             id,
         })
     }
@@ -59,7 +60,8 @@ impl MonitorActions for MonitorActionsImpl {
     }
 
     fn lookup_library_name(&self, id: LibraryId, buf: &mut [u8]) -> Option<usize> {
-        let lib = self.state.get_nth_library(id.0)?;
+        let state = self.state.lock().unwrap();
+        let lib = state.get_nth_library(id.0)?;
         if buf.len() < lib.name.len() {
             return None;
         }
@@ -69,7 +71,8 @@ impl MonitorActions for MonitorActionsImpl {
 
     fn get_segment(&self, id: LibraryId, seg: usize) -> Option<twizzler_runtime_api::AddrRange> {
         const PT_LOAD: u32 = 1;
-        let lib = self.state.get_nth_library(id.0)?;
+        let state = self.state.lock().unwrap();
+        let lib = state.get_nth_library(id.0)?;
         let phdrs = lib.get_phdrs_raw()?;
         let slice = unsafe { core::slice::from_raw_parts(phdrs.0, phdrs.1) };
         let phdr = slice.iter().filter(|p| p.p_type == PT_LOAD).nth(seg)?;
@@ -83,8 +86,10 @@ impl MonitorActions for MonitorActionsImpl {
         let tcb = twz_rt::monitor::RuntimeThreadControl::new();
 
         self.state
-            .dynlink()
-            .get_compartment(todo!())
+            .lock()
+            .unwrap()
+            .dynlink
+            .get_compartment_mut("monitor")
             .unwrap()
             .build_tls_region(tcb)
             .ok()

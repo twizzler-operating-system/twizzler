@@ -15,9 +15,9 @@ pub trait MonitorActions {
 }
 
 extern "rust-call" {
-    fn __do_get_monitor_actions(_a: ()) -> &'static dyn MonitorActions;
+    fn __do_get_monitor_actions(_a: ()) -> &'static mut dyn MonitorActions;
 }
 
-pub fn get_monitor_actions() -> &'static dyn MonitorActions {
+pub fn get_monitor_actions() -> &'static mut dyn MonitorActions {
     unsafe { __do_get_monitor_actions(()) }
 }
