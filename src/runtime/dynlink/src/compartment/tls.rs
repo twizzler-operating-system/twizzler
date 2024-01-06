@@ -10,12 +10,16 @@ use super::Compartment;
 
 impl<Backing: BackingData> Compartment<Backing> {
     pub fn insert(&mut self, tm: TlsModule) -> TlsModId {
-        if !self.tls_info.contains_key(&self.tls_gen) {
-            self.tls_info
-                .insert(self.tls_gen, TlsInfo::new(self.tls_gen));
-        }
-
-        self.tls_info.get_mut(&self.tls_gen).unwrap().insert(tm)
+        let prev_gen = self.tls_gen;
+        self.tls_gen += 1;
+        let prev_info = self
+            .tls_info
+            .remove(&prev_gen)
+            .unwrap_or_else(|| TlsInfo::new(self.tls_gen));
+        let mut next = prev_info.clone_to_new_gen(self.tls_gen);
+        let id = next.insert(tm);
+        self.tls_info.insert(self.tls_gen, next);
+        id
     }
 
     pub fn advance_tls_generation(&mut self) -> u64 {
@@ -25,7 +29,6 @@ impl<Backing: BackingData> Compartment<Backing> {
         } else {
             TlsInfo::new(tng)
         };
-
         self.tls_info.insert(tng, initial);
         tng
     }

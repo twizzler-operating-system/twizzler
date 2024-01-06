@@ -1,5 +1,5 @@
 //! Definitions for errors for the dynamic linker.
-use std::{alloc::Layout, sync::PoisonError};
+use std::alloc::Layout;
 
 use itertools::{Either, Itertools};
 use miette::Diagnostic;
@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::{context::engine::LoadDirective, library::UnloadedLibrary};
 
 #[derive(Debug, Error, Diagnostic)]
-#[error("dynamic linker error: {kind}")]
+#[error("{kind}")]
 pub struct DynlinkError {
     pub kind: DynlinkErrorKind,
     #[related]
@@ -63,6 +63,8 @@ pub enum DynlinkErrorKind {
     LibraryLoadFail { library: UnloadedLibrary },
     #[error("name not found: {name}")]
     NameNotFound { name: String },
+    #[error("failed to find symbol '{symname}' in '{sourcelib}'")]
+    SymbolLookupFail { symname: String, sourcelib: String },
     #[error("name already exists: {name}")]
     NameAlreadyExists { name: String },
     #[error("parse failed: {err}")]
@@ -84,8 +86,10 @@ pub enum DynlinkErrorKind {
     #[error("library {library} had no TLS data for request")]
     NoTLSInfo { library: String },
     #[error("library {library} requested relocation that is unsupported")]
-    UnsupportedReloc { library: String, reloc: u32 },
-    #[error("library {library} failed to relocate")]
+    UnsupportedReloc { library: String, reloc: String },
+    #[error("failed to process relocation section '{secname}' for library '{library}'")]
+    RelocationSectionFail { secname: String, library: String },
+    #[error("library '{library}' failed to relocate")]
     RelocationFail { library: String },
     #[error("failed to create new backing data")]
     NewBackingFail,

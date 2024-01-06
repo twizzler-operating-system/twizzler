@@ -22,3 +22,13 @@ mod error;
 pub use error::*;
 
 pub(crate) mod preinit;
+
+#[thread_local]
+static mut FOO: usize = 12389;
+
+pub fn test_tls() {
+    unsafe {
+        FOO += 1;
+        println!("==> {}", FOO);
+    }
+}

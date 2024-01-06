@@ -1,8 +1,10 @@
 #![feature(naked_functions)]
+#![feature(thread_local)]
 
 use std::sync::{Arc, Mutex};
 
 use dynlink::{engines::Backing, symbol::LookupFlags};
+use miette::ErrReport;
 use state::MonitorState;
 use tracing::{debug, info, trace, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
@@ -42,6 +44,8 @@ pub fn main() {
     init_actions(state.clone());
     std::env::set_var("RUST_BACKTRACE", "1");
 
+    test_tls();
+    twz_rt::test_tls();
     let main_thread = std::thread::spawn(|| monitor_init(state));
     main_thread.join().unwrap();
     warn!("monitor main thread exited");
@@ -50,6 +54,11 @@ pub fn main() {
 fn monitor_init(state: Arc<Mutex<MonitorState>>) {
     info!("monitor early init completed, starting init");
 
+    miette::set_hook(Box::new(|_| {
+        Box::new(miette::NarratableReportHandler::new().with_cause_chain())
+    }))
+    .unwrap();
+    test_tls();
     let lib = dynlink::library::UnloadedLibrary::new("libhello_world.so");
 
     let mut state = state.lock().unwrap();
@@ -69,12 +78,13 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) {
         })
         .unwrap();
 
+    twz_rt::test_tls();
     let comp = state.dynlink.get_compartment("test").unwrap();
-    state
+    let res = state
         .dynlink
         .relocate_all(comp, "libhello_world.so")
+        .map_err(|e| miette::Report::new(e))
         .unwrap();
-
     info!("lookup entry");
 
     let hwlib = state
@@ -90,6 +100,18 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) {
     info!("addr = {:x}", addr);
     let ptr: extern "C" fn() = unsafe { core::mem::transmute(addr as usize) };
     (ptr)();
+}
+
+struct Rep;
+
+impl miette::ReportHandler for Rep {
+    fn debug(
+        &self,
+        error: &(dyn miette::Diagnostic),
+        f: &mut core::fmt::Formatter<'_>,
+    ) -> core::fmt::Result {
+        todo!()
+    }
 }
 
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {
@@ -109,4 +131,14 @@ fn find_init_name(name: &str) -> Option<ObjID> {
         }
     }
     None
+}
+
+#[thread_local]
+static mut FOO: usize = 4444;
+
+pub fn test_tls() {
+    unsafe {
+        FOO += 1;
+        println!("==> {}", FOO);
+    }
 }

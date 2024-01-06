@@ -109,8 +109,9 @@ impl<Engine: ContextEngine> Context<Engine> {
                     Result::<_, DynlinkError>::Ok(sym)
                 } else {
                     error!("{}: needed symbol {} not found", lib, name);
-                    Err(DynlinkErrorKind::NameNotFound {
-                        name: name.to_string(),
+                    Err(DynlinkErrorKind::SymbolLookupFail {
+                        symname: name.to_string(),
+                        sourcelib: lib.name.to_string(),
                     }
                     .into())
                 }
@@ -175,7 +176,7 @@ impl<Engine: ContextEngine> Context<Engine> {
                 Result::<_, DynlinkError>::Err(
                     DynlinkErrorKind::UnsupportedReloc {
                         library: lib.name.clone(),
-                        reloc: rel.r_type(),
+                        reloc: rel.r_type().to_string(),
                     }
                     .into(),
                 )?
@@ -206,7 +207,8 @@ impl<Engine: ContextEngine> Context<Engine> {
         // relocation type, that's the correct one.
         if let Some(rels) = self.get_parsing_iter(start, ent, sz) {
             DynlinkError::collect(
-                DynlinkErrorKind::RelocationFail {
+                DynlinkErrorKind::RelocationSectionFail {
+                    secname: "REL".to_string(),
                     library: lib.name.clone(),
                 },
                 rels.map(|rel| self.do_reloc(lib, EitherRel::Rel(rel), strings, syms)),
@@ -214,15 +216,18 @@ impl<Engine: ContextEngine> Context<Engine> {
             Ok(())
         } else if let Some(relas) = self.get_parsing_iter(start, ent, sz) {
             DynlinkError::collect(
-                DynlinkErrorKind::RelocationFail {
+                DynlinkErrorKind::RelocationSectionFail {
+                    secname: "RELA".to_string(),
                     library: lib.name.clone(),
                 },
                 relas.map(|rela| self.do_reloc(lib, EitherRel::Rela(rela), strings, syms)),
             )?;
             Ok(())
         } else {
-            Err(DynlinkErrorKind::RelocationFail {
+            let info = format!("reloc '{}' with entsz {}, size {}", name, ent, sz);
+            Err(DynlinkErrorKind::UnsupportedReloc {
                 library: lib.name.clone(),
+                reloc: info,
             }
             .into())
         }
@@ -276,7 +281,7 @@ impl<Engine: ContextEngine> Context<Engine> {
                 return Err(DynlinkErrorKind::UnsupportedReloc {
                     library: lib.name.to_string(),
                     // TODO
-                    reloc: 0,
+                    reloc: "DF_TEXTREL".to_string(),
                 }
                 .into());
             }
@@ -334,7 +339,7 @@ impl<Engine: ContextEngine> Context<Engine> {
                     error!("failed to relocate {}: unknown PLTREL type", lib);
                     return Err(DynlinkErrorKind::UnsupportedReloc {
                         library: lib.name.clone(),
-                        reloc: 0, /* TODO */
+                        reloc: "unknown PTREL type".to_string(),
                     }
                     .into());
                 }

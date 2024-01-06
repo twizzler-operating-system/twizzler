@@ -19,3 +19,4 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 twz-rt = { path = "../twz-rt", features = ["runtime"] }
 twizzler-object = { path = "../../lib/twizzler-object" }
+miette = "5.10"
