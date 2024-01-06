@@ -31,6 +31,7 @@ impl DynlinkError {
     where
         I: IntoIterator<Item = Result<T, DynlinkError>>,
     {
+        // Collect errors and values, and then if there any errors, build a new error from that.
         let (vals, errs): (Vec<T>, Vec<DynlinkError>) =
             it.into_iter().partition_map(|item| match item {
                 Ok(o) => Either::Left(o),

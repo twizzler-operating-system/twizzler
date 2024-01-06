@@ -1,10 +1,8 @@
 //! Management of global context.
 
 use std::collections::HashMap;
-use std::ffi::FromBytesUntilNulError;
 use std::fmt::Display;
 
-use anyhow::Error;
 use petgraph::stable_graph::NodeIndex;
 use petgraph::stable_graph::StableDiGraph;
 use tracing::trace;
@@ -30,11 +28,13 @@ pub struct Context<Engine: ContextEngine> {
     // Track all the compartment names.
     compartment_names: HashMap<String, Compartment<Engine::Backing>>,
 
+    // This is the primary list of libraries, all libraries have an entry here, and they are
+    // placed here independent of compartment.
     pub(crate) library_deps: StableDiGraph<LoadedOrUnloaded<Engine::Backing>, ()>,
-
-    pub(crate) static_ctors: Vec<CtorInfo>,
 }
 
+// Libraries in the dependency graph are placed there before loading, so that they can participate
+// in dependency search. So we need to track both kinds of libraries that may be at a given index in the graph.
 pub enum LoadedOrUnloaded<Backing: BackingData> {
     Unloaded(UnloadedLibrary),
     Loaded(Library<Backing>),
@@ -65,7 +65,6 @@ impl<Engine: ContextEngine> Context<Engine> {
             engine,
             compartment_names: HashMap::new(),
             library_deps: StableDiGraph::new(),
-            static_ctors: Vec::new(),
         }
     }
 
@@ -131,44 +130,38 @@ impl<Engine: ContextEngine> Context<Engine> {
     }
 
     pub(crate) fn add_library(&mut self, lib: UnloadedLibrary) -> NodeIndex {
-        let name = lib.name.clone();
-        let idx = self.library_deps.add_node(LoadedOrUnloaded::Unloaded(lib));
-        idx
+        self.library_deps.add_node(LoadedOrUnloaded::Unloaded(lib))
     }
 
+    /// Load a library into a given compartment. The namer callback resolves names to Backing objects.
     pub fn load_library_in_compartment<N>(
         &mut self,
         compartment_name: &str,
         unlib: UnloadedLibrary,
-        n: N,
+        namer: N,
     ) -> Result<&Library<Engine::Backing>, DynlinkError>
     where
         N: FnMut(&str) -> Option<Engine::Backing> + Clone,
     {
         let idx = self.add_library(unlib.clone());
+        // Step 1: insert into the compartment's library names.
         let comp = self.get_compartment_mut(compartment_name).ok_or_else(|| {
             DynlinkErrorKind::NameNotFound {
                 name: compartment_name.to_string(),
             }
         })?;
 
+        // At this level, it's an error to insert an already loaded library.
         if comp.library_names.contains_key(&unlib.name) {
             return Err(DynlinkErrorKind::NameAlreadyExists {
                 name: unlib.name.clone(),
             }
             .into());
         }
-
         comp.library_names.insert(unlib.name.clone(), idx);
-        let idx = self.load_library(compartment_name, unlib.clone(), idx, n)?;
 
-        for n in self
-            .library_deps
-            .neighbors_directed(idx, petgraph::Direction::Outgoing)
-        {
-            trace!("dep {}", self.library_deps[n]);
-        }
-
+        // Step 2: load the library. This call recurses on dependencies.
+        let idx = self.load_library(compartment_name, unlib.clone(), idx, namer)?;
         match &self.library_deps[idx] {
             LoadedOrUnloaded::Unloaded(_) => {
                 Err(DynlinkErrorKind::LibraryLoadFail { library: unlib }.into())
@@ -179,17 +172,6 @@ impl<Engine: ContextEngine> Context<Engine> {
 
     pub(crate) fn add_dep(&mut self, parent: &Library<Engine::Backing>, dep: NodeIndex) {
         self.library_deps.add_edge(parent.idx, dep, ());
-    }
-
-    /// Add all dependency edges for a library.
-    pub(crate) fn set_lib_deps<'a>(
-        &'a mut self,
-        lib: &Library<Engine::Backing>,
-        deps: impl IntoIterator<Item = &'a Library<Engine::Backing>>,
-    ) {
-        for dep in deps.into_iter() {
-            self.library_deps.add_edge(lib.idx, dep.idx, ());
-        }
     }
 
     pub fn lookup_symbol<'a>(
@@ -207,30 +189,20 @@ impl<Engine: ContextEngine> Context<Engine> {
 
         // Next, try all of our transitive dependencies.
         if !lookup_flags.contains(LookupFlags::SKIP_DEPS) {
-            if let Some(sym) = self
-                .library_deps
-                .neighbors_directed(start.idx, petgraph::Direction::Outgoing)
-                .find_map(|depidx| {
-                    let dep = &self.library_deps[depidx];
-                    if depidx != start.idx {
-                        match dep {
-                            LoadedOrUnloaded::Unloaded(_) => None,
-                            LoadedOrUnloaded::Loaded(dep) => {
-                                // TODO: this could loop forever?
-                                self.lookup_symbol(
-                                    dep,
-                                    name,
-                                    lookup_flags | LookupFlags::SKIP_GLOBAL,
-                                )
-                                .ok()
+            let mut visit = petgraph::visit::Bfs::new(&self.library_deps, start.idx);
+            while let Some(node) = visit.next(&self.library_deps) {
+                let dep = &self.library_deps[node];
+
+                if node != start.idx {
+                    match dep {
+                        LoadedOrUnloaded::Unloaded(_) => {}
+                        LoadedOrUnloaded::Loaded(dep) => {
+                            if let Ok(sym) = dep.lookup_symbol(name) {
+                                return Ok(sym);
                             }
                         }
-                    } else {
-                        None
                     }
-                })
-            {
-                return Ok(sym);
+                }
             }
         }
 

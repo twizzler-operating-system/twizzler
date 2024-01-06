@@ -12,10 +12,12 @@ pub extern "C" fn test_sec_call() {
     println!("got {:?} from sec call", r);
 }
 
+/*
 extern "C" {
     fn not_a_real_symbol();
     fn another_symbol_that_doesnt_exist();
 }
+*/
 
 #[thread_local]
 static mut FOO: usize = 12;

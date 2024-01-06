@@ -24,12 +24,11 @@
 //! 6. Add edges from the library to each dependency
 //!
 //! Relocating (from a starting point DSO):
-//! 1. If marked as in-progress or done, return.
-//! 2. Mark as in-progress.
-//! 3. Recurse on all dependencies
-//! 4. For each relocation entry,
-//!    4a. Fixup the relocation entry according to its contents, possibly looking up a symbol if necessary.
-//! 5. Mark as done
+//! 1. If marked done, return.
+//! 2. Recurse on all dependencies
+//! 3. For each relocation entry,
+//!    3a. Fixup the relocation entry according to its contents, possibly looking up a symbol if necessary.
+//! 4. Mark as done
 //!
 //! Let's talk about loading first. In step 1, for example, we need to iterate the program headers of the ELF file,
 //! looking for PT_LOAD statements. These statements tell us how to setup the virtual memory for this program. Since these
@@ -77,18 +76,18 @@
 //! This crate calls DSOs Libraries, because in Twizzler, there is usually little difference.
 //!
 //! ## Error Handling
-//! This crate reports error with the [error::DynlinkError] type, which implements std::error::Error. One specific quirk
-//! is that this type can report a collection of errors, designed to allow reporting more than one error in situations where
-//! it would be annoying to get errors one at a time. For example, during relocation, symbols are looked up. If many symbol
-//! lookup failures occur, it would be nice to see reporting for all of them instead of just the first one.
+//! This crate reports error with the [error::DynlinkError] type, which implements std::error::Error and miette's Diagnostic.
 //!
 //! ## Compartments
 //! We add one major concept to the dynamic linking scene: compartments. A compartment is a collection of DSOs that operate
 //! within a single, shared isolation group. Calls inside a compartment operate like normal calls, but cross-compartment
-//! calls or accesses may be subject to additional processing and checks. This doesn't change a lot of the core
-//! functionality of the dynamic linker, except for a few things (primarily TLS handling and allocation).
+//! calls or accesses may be subject to additional processing and checks. Compartments modify the dependency algorithm a bit:
 //!
-//!
+//! When loading a DSO and enumerating dependencies, we check if a dependency can be satified within the same compartment. If
+//! so, dependencies act like normal. If not, we do a _global compartment search_ for that same dependency (subject to restrictions,
+//! e.g., permissions). If we don't find it there, we try to load it in either the same compartment as its parent (if allowed) or in
+//! a new compartment (only if we must). Thus the dependency graph is still correct, and still allows symbol lookup to work, even
+//! if libraries' dependency relationships may cross compartment boundaries.
 //!
 
 #![feature(strict_provenance)]
