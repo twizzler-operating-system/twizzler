@@ -22,6 +22,10 @@ pub struct Compartment<Backing: BackingData> {
     pub(crate) tls_gen: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[repr(transparent)]
+pub struct CompartmentId(pub(crate) usize);
+
 unsafe impl<B: BackingData> Sync for Compartment<B> {}
 
 impl<Backing: BackingData> Compartment<Backing> {

@@ -1,4 +1,5 @@
 use itertools::{Either, Itertools};
+use tracing::warn;
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
@@ -8,6 +9,7 @@ use twizzler_abi::{
 use twizzler_runtime_api::MapFlags;
 
 use crate::{
+    compartment::CompartmentId,
     context::engine::{ContextEngine, LoadDirective, LoadFlags},
     library::BackingData,
     DynlinkError, DynlinkErrorKind,
@@ -152,9 +154,12 @@ impl ContextEngine for Engine {
         Ok(vec![Backing::new(text_handle), Backing::new(data_handle)])
     }
 
-    fn select_compartment(&mut self, unlib: &crate::library::UnloadedLibrary) -> Option<String> {
+    fn select_compartment(
+        &mut self,
+        unlib: &crate::library::UnloadedLibrary,
+    ) -> Option<CompartmentId> {
         if unlib.name == "libmonitor.so" {
-            return Some("monitor".to_string());
+            warn!("TODO");
         }
         None
     }

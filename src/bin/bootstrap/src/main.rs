@@ -1,23 +1,13 @@
 use std::process::exit;
 
 use dynlink::{
-    context::engine::ContextEngine,
     engines::{Backing, Engine},
-    library::{BackingData, Library, UnloadedLibrary},
+    library::UnloadedLibrary,
     symbol::LookupFlags,
-    DynlinkError,
 };
-use tracing::{debug, info, trace, warn, Level};
+use tracing::{debug, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
-use twizzler_abi::{
-    arch::SLOTS,
-    object::{ObjID, Protections},
-    syscall::{
-        sys_object_create, sys_object_read_map, BackingType, LifetimeType, ObjectCreate,
-        ObjectCreateFlags, ObjectSource,
-    },
-};
-use twizzler_object::{Object, ObjectInitFlags};
+use twizzler_abi::{arch::SLOTS, object::ObjID, syscall::sys_object_read_map};
 use twizzler_runtime_api::{AuxEntry, MapFlags};
 
 fn find_init_name(name: &str) -> Option<ObjID> {
@@ -30,15 +20,15 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     None
 }
 
-fn start_runtime(runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
+fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     //miette::set_hook(Box::new(|_| Box::new(miette::DebugReportHandler::new()))).unwrap();
     let engine = Engine;
     let mut ctx = dynlink::context::Context::new(engine);
     let unlib = UnloadedLibrary::new("libmonitor.so");
-    let _ = ctx.add_compartment("monitor").unwrap();
+    let monitor_comp_id = ctx.add_compartment("monitor").unwrap();
 
-    let _res = ctx
-        .load_library_in_compartment("monitor", unlib, |mut name| {
+    let monitor_id = ctx
+        .load_library_in_compartment(monitor_comp_id, unlib, |mut name| {
             if name.starts_with("libstd") {
                 name = "libstd.so";
             }
@@ -50,18 +40,13 @@ fn start_runtime(runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
         })
         .unwrap();
 
-    let monitor_compartment = ctx.get_compartment("monitor").unwrap();
-    ctx.relocate_all(monitor_compartment, "libmonitor.so")
-        .unwrap();
+    ctx.relocate_all(monitor_id).unwrap();
 
-    let monitor_compartment = ctx.get_compartment_mut("monitor").unwrap();
+    let monitor_compartment = ctx.get_compartment_mut(monitor_comp_id);
     let tls = monitor_compartment.build_tls_region(()).unwrap();
 
-    let monitor_compartment = ctx.get_compartment("monitor").unwrap();
-    let monitor = ctx
-        .lookup_loaded_library(monitor_compartment, "libmonitor.so")
-        .unwrap();
     debug!("context loaded, prepping jump to monitor");
+    let monitor = ctx.get_library(monitor_id).unwrap();
     let entry = ctx
         .lookup_symbol(
             &monitor,
@@ -73,7 +58,7 @@ fn start_runtime(runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     let value = entry.reloc_value() as usize;
     let ptr: extern "C" fn(usize) = unsafe { core::mem::transmute(value) };
 
-    let mut info = ctx.build_runtime_info(monitor, tls).unwrap();
+    let mut info = ctx.build_runtime_info(monitor_id, tls).unwrap();
     let info_ptr = &info as *const _ as usize;
     let aux = vec![AuxEntry::RuntimeInfo(info_ptr), AuxEntry::Null];
 

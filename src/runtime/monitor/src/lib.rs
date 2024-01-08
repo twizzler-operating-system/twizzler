@@ -4,7 +4,6 @@
 use std::sync::{Arc, Mutex};
 
 use dynlink::{engines::Backing, symbol::LookupFlags};
-use miette::ErrReport;
 use state::MonitorState;
 use tracing::{debug, info, trace, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
@@ -62,11 +61,11 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) {
     let lib = dynlink::library::UnloadedLibrary::new("libhello_world.so");
 
     let mut state = state.lock().unwrap();
-    let _ = state.dynlink.add_compartment("test").unwrap();
+    let test_comp_id = state.dynlink.add_compartment("test").unwrap();
 
-    let _ = state
+    let libhw_id = state
         .dynlink
-        .load_library_in_compartment("test", lib, |mut name| {
+        .load_library_in_compartment(test_comp_id, lib, |mut name| {
             if name.starts_with("libstd-") {
                 name = "libstd.so";
             }
@@ -79,18 +78,14 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) {
         .unwrap();
 
     twz_rt::test_tls();
-    let comp = state.dynlink.get_compartment("test").unwrap();
     let res = state
         .dynlink
-        .relocate_all(comp, "libhello_world.so")
+        .relocate_all(libhw_id)
         .map_err(|e| miette::Report::new(e))
         .unwrap();
     info!("lookup entry");
 
-    let hwlib = state
-        .dynlink
-        .lookup_loaded_library(comp, "libhello_world.so")
-        .unwrap();
+    let hwlib = state.dynlink.get_library(libhw_id).unwrap();
     let sym = state
         .dynlink
         .lookup_symbol(&hwlib, "test_sec_call", LookupFlags::empty())
@@ -100,18 +95,6 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) {
     info!("addr = {:x}", addr);
     let ptr: extern "C" fn() = unsafe { core::mem::transmute(addr as usize) };
     (ptr)();
-}
-
-struct Rep;
-
-impl miette::ReportHandler for Rep {
-    fn debug(
-        &self,
-        error: &(dyn miette::Diagnostic),
-        f: &mut core::fmt::Formatter<'_>,
-    ) -> core::fmt::Result {
-        todo!()
-    }
 }
 
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {

@@ -1,4 +1,5 @@
 use crate::{
+    compartment::CompartmentId,
     library::{BackingData, UnloadedLibrary},
     DynlinkError,
 };
@@ -27,7 +28,7 @@ pub trait ContextEngine {
         })
     }
 
-    fn select_compartment(&mut self, unlib: &UnloadedLibrary) -> Option<String>;
+    fn select_compartment(&mut self, unlib: &UnloadedLibrary) -> Option<CompartmentId>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]

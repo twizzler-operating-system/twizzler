@@ -713,6 +713,7 @@ dependencies = [
  "itertools 0.12.0",
  "miette",
  "petgraph",
+ "stable-vec",
  "talc",
  "thiserror",
  "tracing",

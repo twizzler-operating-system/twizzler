@@ -1,12 +1,12 @@
 //! Implements the core runtime functions.
 
-use dynlink::{context::RuntimeInitInfo, library::CtorInfo};
+use dynlink::{context::runtime::RuntimeInitInfo, library::CtorInfo};
 use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
 use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
 
 use crate::{
     preinit::{preinit_abort, preinit_unwrap},
-    preinit_print, preinit_println,
+    preinit_println,
     runtime::RuntimeState,
 };
 

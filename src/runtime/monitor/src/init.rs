@@ -1,5 +1,5 @@
 use dynlink::{
-    context::{Context, RuntimeInitInfo},
+    context::{runtime::RuntimeInitInfo, Context},
     engines::Engine,
 };
 use twizzler_runtime_api::AuxEntry;

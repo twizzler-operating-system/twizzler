@@ -13,7 +13,11 @@ use elf::{
 };
 use tracing::{debug, error, trace};
 
-use crate::{symbol::LookupFlags, DynlinkError, DynlinkErrorKind};
+use crate::{
+    library::{LibraryId, RelocState},
+    symbol::LookupFlags,
+    DynlinkError, DynlinkErrorKind,
+};
 
 use crate::arch::{
     REL_DTPMOD, REL_DTPOFF, REL_GOT, REL_PLT, REL_RELATIVE, REL_SYMBOLIC, REL_TPOFF,
@@ -233,14 +237,8 @@ impl<Engine: ContextEngine> Context<Engine> {
         }
     }
 
-    pub(crate) fn relocate_single(
-        &self,
-        lib: &Library<Engine::Backing>,
-    ) -> Result<(), DynlinkError> {
-        if !lib.try_relocate_start() {
-            trace!("{}: already relocated", lib);
-            return Ok(());
-        }
+    pub(crate) fn relocate_single(&mut self, lib_id: LibraryId) -> Result<(), DynlinkError> {
+        let lib = self.get_library(lib_id)?;
         debug!("{}: relocating library", lib);
         let elf = lib.get_elf()?;
         let common = elf.find_common_data()?;
@@ -348,5 +346,56 @@ impl<Engine: ContextEngine> Context<Engine> {
         }
 
         Ok(())
+    }
+
+    fn relocate_recursive(&mut self, root_id: LibraryId) -> Result<(), DynlinkError> {
+        let lib = self.get_library(root_id)?;
+        let libname = lib.name.to_string();
+        match lib.reloc_state {
+            crate::library::RelocState::Unrelocated => {}
+            crate::library::RelocState::PartialRelocation => {
+                error!("{}: tried to relocate a failed library", lib);
+                return Err(DynlinkErrorKind::RelocationFail {
+                    library: lib.name.to_string(),
+                }
+                .into());
+            }
+            crate::library::RelocState::Relocated => {
+                trace!("{}: already relocated", lib);
+                return Ok(());
+            }
+        }
+
+        let deps = self
+            .library_deps
+            .neighbors_directed(root_id.0, petgraph::Direction::Outgoing)
+            .collect::<Vec<_>>();
+
+        let rets = deps
+            .into_iter()
+            .map(|dep_id| self.relocate_recursive(LibraryId(dep_id)));
+
+        DynlinkError::collect(DynlinkErrorKind::DepsRelocFail { library: libname }, rets)?;
+
+        let lib = self.get_library_mut(root_id)?;
+        lib.reloc_state = RelocState::PartialRelocation;
+
+        let res = self.relocate_single(root_id);
+
+        let lib = self.get_library_mut(root_id)?;
+        if res.is_ok() {
+            lib.reloc_state = RelocState::Relocated;
+        } else {
+            lib.reloc_state = RelocState::PartialRelocation;
+        }
+        res
+    }
+
+    /// Iterate through all libraries and process relocations for any libraries that haven't yet been relocated.
+    pub fn relocate_all(&mut self, root_id: LibraryId) -> Result<(), DynlinkError> {
+        let name = self.get_library(root_id)?.name.to_string();
+        self.relocate_recursive(root_id).map_err(|e| {
+            DynlinkError::new_collect(DynlinkErrorKind::RelocationFail { library: name }, vec![e])
+        })
     }
 }

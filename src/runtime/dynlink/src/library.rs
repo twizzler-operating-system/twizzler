@@ -27,6 +27,15 @@ pub(crate) enum InitState {
     Deconstructed,
 }
 
+pub(crate) enum RelocState {
+    /// Relocation has not started.
+    Unrelocated,
+    /// Relocation has started, but not finished, or failed.
+    PartialRelocation,
+    /// Relocation completed successfully.
+    Relocated,
+}
+
 pub trait BackingData: Clone {
     fn data(&self) -> (*mut u8, usize);
     fn new_data() -> Result<Self, DynlinkError>
@@ -57,18 +66,21 @@ impl UnloadedLibrary {
     }
 }
 
-const RELOCATED: u32 = 1;
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[repr(transparent)]
+pub struct LibraryId(pub(crate) NodeIndex);
 
 pub struct Library<Backing: BackingData> {
-    flags: AtomicU32,
     /// Name of this library.
     pub name: String,
     /// Node index for the dependency graph.
     pub(crate) idx: NodeIndex,
     /// Object containing the full ELF data.
     pub full_obj: Backing,
-    /// State of initialization (see [InitState]).
-    init_state: InitState,
+    /// State of initialization.
+    pub(crate) init_state: InitState,
+    /// State of relocation.
+    pub(crate) reloc_state: RelocState,
 
     pub backings: Vec<Backing>,
 
@@ -97,8 +109,12 @@ impl<Backing: BackingData> Library<Backing> {
             backings,
             tls_id,
             ctors,
-            flags: AtomicU32::new(0),
+            reloc_state: RelocState::Unrelocated,
         }
+    }
+
+    pub fn id(&self) -> LibraryId {
+        LibraryId(self.idx)
     }
 
     pub fn get_phdrs_raw(&self) -> Option<(*const Elf64_Phdr, usize)> {
@@ -112,13 +128,6 @@ impl<Backing: BackingData> Library<Backing> {
             })?,
             self.get_elf().ok()?.segments()?.len(),
         ))
-    }
-
-    pub(crate) fn try_relocate_start(&self) -> bool {
-        self.flags
-            .fetch_or(RELOCATED, std::sync::atomic::Ordering::SeqCst)
-            & RELOCATED
-            == 0
     }
 
     /// Return a handle to the full ELF file.

@@ -31,7 +31,7 @@ impl DynlinkError {
     where
         I: IntoIterator<Item = Result<T, DynlinkError>>,
     {
-        // Collect errors and values, and then if there any errors, build a new error from that.
+        // Collect errors and values, and then if there any errors, build a new error from them.
         let (vals, errs): (Vec<T>, Vec<DynlinkError>) =
             it.into_iter().partition_map(|item| match item {
                 Ok(o) => Either::Left(o),
@@ -96,6 +96,10 @@ pub enum DynlinkErrorKind {
     NewBackingFail,
     #[error("failed to satisfy load directive")]
     LoadDirectiveFail { dir: LoadDirective },
+    #[error("tried to operate on an unloaded library '{library}'")]
+    UnloadedLibrary { library: String },
+    #[error("dependencies of '{library}' failed to relocate")]
+    DepsRelocFail { library: String },
 }
 
 impl From<elf::ParseError> for DynlinkError {
