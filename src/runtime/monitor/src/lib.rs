@@ -48,9 +48,6 @@ pub fn main() {
     init_actions(state.clone());
     std::env::set_var("RUST_BACKTRACE", "1");
 
-    test_tls();
-    twz_rt::test_tls();
-
     let main_thread = std::thread::spawn(|| monitor_init(state));
     let _r = main_thread.join().unwrap().map_err(|e| {
         tracing::error!("{:?}", e);
@@ -61,7 +58,12 @@ pub fn main() {
 fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
     info!("monitor early init completed, starting init");
 
-    test_tls();
+    load_hello_world_test(&state)?;
+
+    Ok(())
+}
+
+fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()> {
     let lib = dynlink::library::UnloadedLibrary::new("libhello_world.so");
 
     let mut state = state.lock().unwrap();
@@ -80,7 +82,6 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
             Some(Backing::new(obj))
         })?;
 
-    twz_rt::test_tls();
     let _ = state.dynlink.relocate_all(libhw_id)?;
     info!("lookup entry");
 
@@ -113,14 +114,4 @@ fn find_init_name(name: &str) -> Option<ObjID> {
         }
     }
     None
-}
-
-#[thread_local]
-static mut FOO: usize = 4444;
-
-pub fn test_tls() {
-    unsafe {
-        FOO += 1;
-        println!("==> {}", FOO);
-    }
 }
