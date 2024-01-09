@@ -12,3 +12,6 @@ twizzler-abi = { path = "../twizzler-abi", version = "*" }
 [features]
 std = []
 default = ["std"]
+
+[package.metadata.kani.flags]
+features = ["std"]

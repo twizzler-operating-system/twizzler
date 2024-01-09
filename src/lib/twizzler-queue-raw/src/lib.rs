@@ -396,6 +396,8 @@ pub struct RawQueue<T> {
     buf: UnsafeCell<*mut QueueEntry<T>>,
 }
 
+
+// Argh bitflags ruins me again
 bitflags::bitflags! {
     /// Flags to control how queue submission works.
     pub struct SubmissionFlags: u32 {
@@ -607,6 +609,88 @@ pub fn multi_receive<T: Copy, W: Fn(&[(Option<&AtomicU64>, u64)]), R: Fn(&[Optio
     }
 }
 
+
+fn wait(x: &AtomicU64, v: u64) {
+    // println!("wait");
+    while x.load(Ordering::SeqCst) == v {
+        core::hint::spin_loop();
+    }
+}
+
+fn wake(_x: &AtomicU64) {
+    //   println!("wake");
+}
+
+
+#[cfg(kani)]
+mod queue_kani {
+
+    // use std::sync::atomic::{AtomicU64, Ordering};
+    use core::mem;
+
+    //   use syscalls::SyscallArgs;
+    use crate::{QueueEntry, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags};
+    use crate::{wait, wake};
+
+    use core::convert::From;
+
+
+    // impl SubmissionFlags {
+    //     pub fn as_u32(&self) ->
+    // }
+
+    impl From<u32> for SubmissionFlags{
+        fn from(item: u32) -> Self {
+            SubmissionFlags::NON_BLOCK
+        }
+
+    }
+
+    impl From<u32> for ReceiveFlags{
+        fn from(item: u32) -> Self {
+            ReceiveFlags::NON_BLOCK
+        }
+
+    }
+
+    fn sempty() -> SubmissionFlags{
+        return 0.into();
+    }
+
+    fn rempty() -> ReceiveFlags{
+        return 0.into();
+    }
+
+    #[kani::proof]
+    #[kani::stub(SubmissionFlags::empty, sempty)]
+    #[kani::stub(ReceiveFlags::empty, rempty)]
+    pub fn transmision(){
+
+    let qh = RawQueueHdr::new(4, mem::size_of::<QueueEntry<u32>>());
+
+    let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
+    let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
+
+    let value: i32 = kani::any();
+
+    let res = q.submit(
+        QueueEntry::new(value as u32, value),
+        wait,
+        wake,
+        SubmissionFlags::empty());
+
+    assert_eq!(res, Ok(()));
+
+    let res = q.receive(wait, wake, ReceiveFlags::from_bits_retain(0));
+    assert!(res.is_ok());
+    assert_eq!(res.unwrap().info(), value as u32);
+    assert_eq!(res.unwrap().item(),value);
+}
+
+
+}
+
+
 #[cfg(test)]
 mod tests {
     #![allow(soft_unstable)]
@@ -625,6 +709,8 @@ mod tests {
     fn wake(_x: &AtomicU64) {
         //   println!("wake");
     }
+
+    
 
     #[test]
     fn it_transmits() {
