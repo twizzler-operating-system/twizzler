@@ -11,7 +11,7 @@ use tracing::{debug, trace, warn};
 use crate::{
     compartment::{Compartment, CompartmentId},
     context::engine::{LoadDirective, LoadFlags},
-    library::{BackingData, CtorInfo, Library, LibraryId, UnloadedLibrary},
+    library::{BackingData, CtorInfo, Library, LibraryId, SecgateInfo, UnloadedLibrary},
     tls::TlsModule,
     DynlinkError, DynlinkErrorKind, HeaderError,
 };
@@ -19,6 +19,29 @@ use crate::{
 use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
 
 impl<Engine: ContextEngine> Context<Engine> {
+    pub(crate) fn get_secgate_info(
+        &self,
+        elf: &elf::ElfBytes<'_, NativeEndian>,
+        base_addr: usize,
+    ) -> Result<SecgateInfo, DynlinkError> {
+        let mut info = SecgateInfo::default();
+
+        let info_section = elf.section_header_by_name(".twz_secgate_info")?;
+        if let Some(info_section) = info_section {
+            let (data, compression) = elf.section_data(&info_section)?;
+            if compression.is_some() {
+                warn!("ELF compression is not supported");
+                return Ok(info);
+            }
+
+            let gate_data: &[secgate::RawSecGateInfo] = bytemuck::cast_slice(data);
+            for g in gate_data {
+                tracing::info!("got sec gate: {:x} {:x}", g.imp, g.name);
+            }
+        }
+
+        Ok(info)
+    }
     // Collect information about constructors.
     pub(crate) fn get_ctor_info(
         &self,
@@ -226,8 +249,10 @@ impl<Engine: ContextEngine> Context<Engine> {
             })
             .transpose()?;
 
-        // Step 3: lookup constructor information for this library.
+        // Step 3: lookup constructor and secgate information for this library.
         let ctor_info = self.get_ctor_info(&unlib.name, &elf, base_addr)?;
+
+        let secgate_info = self.get_secgate_info(&elf, base_addr)?;
 
         let comp = self.get_compartment(comp_id)?;
         Ok(Library::new(
@@ -238,6 +263,7 @@ impl<Engine: ContextEngine> Context<Engine> {
             backings,
             tls_id,
             ctor_info,
+            secgate_info,
         ))
     }
 

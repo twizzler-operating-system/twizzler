@@ -1,5 +1,6 @@
 #![feature(naked_functions)]
 #![feature(thread_local)]
+#![feature(c_str_literals)]
 
 use std::sync::{Arc, Mutex};
 
@@ -17,6 +18,7 @@ use crate::runtime::init_actions;
 
 mod init;
 mod runtime;
+pub mod secgate_test;
 mod state;
 
 pub fn main() {

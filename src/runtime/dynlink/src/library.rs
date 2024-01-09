@@ -97,6 +97,7 @@ pub struct Library<Backing: BackingData> {
 
     /// Information about constructors.
     pub(crate) ctors: CtorInfo,
+    pub(crate) secgate_info: SecgateInfo,
 }
 
 #[allow(dead_code)]
@@ -109,6 +110,7 @@ impl<Backing: BackingData> Library<Backing> {
         backings: Vec<Backing>,
         tls_id: Option<TlsModId>,
         ctors: CtorInfo,
+        secgate_info: SecgateInfo,
     ) -> Self {
         Self {
             name,
@@ -119,6 +121,7 @@ impl<Backing: BackingData> Library<Backing> {
             ctors,
             reloc_state: RelocState::Unrelocated,
             comp_name,
+            secgate_info,
         }
     }
 
@@ -295,4 +298,15 @@ pub struct CtorInfo {
     pub init_array: usize,
     /// Length of the init array.
     pub init_array_len: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SecgateInfo {
+    pub gates: Vec<SecureGate>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SecureGate {
+    pub entry: usize,
+    pub name: String,
 }

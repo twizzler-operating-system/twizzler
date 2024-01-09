@@ -325,6 +325,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f30e7476521f6f8af1a1c4c0b8cc94f0bee37d91763d0ca2665f299b6cd8aec"
 
 [[package]]
+name = "bytemuck"
+version = "1.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "374d28ec25809ee0e23827c2ab573d729e293f281dfe393500e7ad618baa61c6"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "965ab7eb5f8f97d2a083c799f3a1b994fc397b2fe2da5d1da1626ce15a39f2b1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.38",
+]
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -708,11 +728,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bitflags 2.4.1",
+ "bytemuck",
  "elf",
  "humansize",
  "itertools 0.12.0",
  "miette",
  "petgraph",
+ "secgate",
  "stable-vec",
  "talc",
  "thiserror",
@@ -1701,6 +1723,7 @@ version = "0.1.0"
 dependencies = [
  "dynlink",
  "miette",
+ "secgate",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
@@ -2337,6 +2360,25 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "secgate"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "secgate-macros",
+ "static_assertions",
+ "twizzler-abi",
+]
+
+[[package]]
+name = "secgate-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.38",
+]
 
 [[package]]
 name = "security-framework"
