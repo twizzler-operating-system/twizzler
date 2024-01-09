@@ -19,8 +19,6 @@ mod init;
 mod runtime;
 mod state;
 
-pub mod secgate_test;
-
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
