@@ -58,6 +58,21 @@ pub fn main() {
 fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
     info!("monitor early init completed, starting init");
 
+    {
+        let state = state.lock().unwrap();
+        let comp = state.dynlink.lookup_compartment("monitor").unwrap();
+        let mon = state.dynlink.lookup_library(comp, "libmonitor.so").unwrap();
+
+        let mon = state.dynlink.get_library(mon)?;
+
+        for gate in mon.iter_secgates().unwrap() {
+            info!("==> {:x} {:x}", gate.imp, gate.name);
+            let name = gate.name as *const i8;
+            let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy();
+            info!("    => {}", name);
+        }
+    }
+
     load_hello_world_test(&state)?;
 
     Ok(())

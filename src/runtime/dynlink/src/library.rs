@@ -10,6 +10,7 @@ use elf::{
 };
 
 use petgraph::stable_graph::NodeIndex;
+use secgate::RawSecGateInfo;
 
 use crate::{symbol::RelocatedSymbol, tls::TlsModId, DynlinkError, DynlinkErrorKind};
 
@@ -263,6 +264,12 @@ impl<Backing: BackingData> Library<Backing> {
         }
         .into())
     }
+
+    pub fn iter_secgates(&self) -> Option<&[RawSecGateInfo]> {
+        let addr = self.secgate_info.info_addr?;
+
+        Some(unsafe { core::slice::from_raw_parts(addr as *const _, self.secgate_info.num) })
+    }
 }
 
 impl<B: BackingData> Debug for Library<B> {
@@ -302,11 +309,6 @@ pub struct CtorInfo {
 
 #[derive(Debug, Clone, Default)]
 pub struct SecgateInfo {
-    pub gates: Vec<SecureGate>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SecureGate {
-    pub entry: usize,
-    pub name: String,
+    pub info_addr: Option<usize>,
+    pub num: usize,
 }

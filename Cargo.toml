@@ -22,8 +22,7 @@ members = [
     "src/runtime/dynlink",
     "src/runtime/monitor",
     "src/runtime/twz-rt",
-    "src/runtime/secgate",
-    "src/runtime/secgate/secgate-macros",
+    "src/runtime/hello-world",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -39,6 +38,7 @@ initrd = [
     "crate:pager",
     "lib:twz-rt",
     "lib:monitor",
+    "lib:hello-world",
     #"third-party:hello-world-rs"
 ]
 
