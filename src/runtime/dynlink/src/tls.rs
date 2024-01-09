@@ -106,7 +106,7 @@ impl TlsInfo {
 
     pub(crate) fn allocate<T, B: BackingData>(
         &self,
-        comp: &Compartment<B>,
+        _comp: &Compartment<B>,
         alloc_base: NonNull<u8>,
         tcb: T,
     ) -> Result<TlsRegion, DynlinkError> {

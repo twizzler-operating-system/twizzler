@@ -11,10 +11,7 @@ use tracing::trace;
 use twizzler_abi::{object::NULLPAGE_SIZE, thread::ThreadRepr};
 use twizzler_runtime_api::{CoreRuntime, ObjectHandle, ThreadSpawnArgs};
 
-use crate::{
-    monitor::get_monitor_actions,
-    runtime::{thread::MIN_STACK_ALIGN, OUR_RUNTIME},
-};
+use crate::runtime::{thread::MIN_STACK_ALIGN, OUR_RUNTIME};
 
 /// Internal representation of a thread, tracking the resources
 /// allocated for this thread.
@@ -24,7 +21,7 @@ pub struct InternalThread {
     stack_size: usize,
     args_box: usize,
     pub(super) id: u32,
-    tls: TlsRegion,
+    _tls: TlsRegion,
     name: Mutex<CString>,
 }
 
@@ -43,7 +40,7 @@ impl InternalThread {
             stack_size,
             args_box,
             id,
-            tls,
+            _tls: tls,
             name: Mutex::new(CString::default()),
         }
     }
@@ -82,7 +79,6 @@ impl Drop for InternalThread {
             let _args = Box::from_raw(self.args_box as *mut ThreadSpawnArgs);
             drop(_args);
             tracing::warn!("TODO: drop TLS");
-            //get_monitor_actions().free_tls_region(self.tls.dont_drop());
         }
     }
 }

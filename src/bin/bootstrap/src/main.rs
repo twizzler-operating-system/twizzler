@@ -42,14 +42,13 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
 
     ctx.relocate_all(monitor_id).unwrap();
 
-    let monitor_compartment = ctx.get_compartment_mut(monitor_comp_id);
+    let monitor_compartment = ctx.get_compartment_mut(monitor_comp_id).unwrap();
     let tls = monitor_compartment.build_tls_region(()).unwrap();
 
     debug!("context loaded, prepping jump to monitor");
-    let monitor = ctx.get_library(monitor_id).unwrap();
     let entry = ctx
         .lookup_symbol(
-            &monitor,
+            monitor_id,
             "monitor_entry_from_bootstrap",
             LookupFlags::empty(),
         )
@@ -81,55 +80,6 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     warn!("returned from monitor, exiting...");
     exit(0);
 }
-
-/*
-struct Loader {}
-
-impl LibraryLoader for Loader {
-    fn create_segments(
-        &mut self,
-        data_cmds: &[ObjectSource],
-        text_cmds: &[ObjectSource],
-    ) -> Result<(Object<u8>, Object<u8>), dynlink::DynlinkError> {
-        let create_spec = ObjectCreate::new(
-            BackingType::Normal,
-            LifetimeType::Volatile,
-            None,
-            ObjectCreateFlags::empty(),
-        );
-        let data_id =
-            sys_object_create(create_spec, &data_cmds, &[]).map_err(|_| DynlinkError::Unknown)?;
-        let text_id =
-            sys_object_create(create_spec, &text_cmds, &[]).map_err(|_| DynlinkError::Unknown)?;
-
-        let text = Object::init_id(
-            text_id,
-            Protections::READ | Protections::EXEC,
-            ObjectInitFlags::empty(),
-        )
-        .map_err(|_| DynlinkError::Unknown)?;
-
-        let data = Object::init_id(
-            data_id,
-            Protections::READ | Protections::WRITE,
-            ObjectInitFlags::empty(),
-        )
-        .map_err(|_| DynlinkError::Unknown)?;
-
-        Ok((data, text))
-    }
-
-    fn open(&mut self, mut name: &str) -> Result<Object<u8>, dynlink::DynlinkError> {
-        if name.starts_with("libstd") {
-            name = "libstd.so"
-        }
-        let id = find_init_name(name).unwrap();
-        let obj = Object::init_id(id, Protections::READ, ObjectInitFlags::empty())
-            .map_err(|_| DynlinkError::Unknown)?;
-        Ok(obj)
-    }
-}
-*/
 
 fn main() {
     let subscriber = FmtSubscriber::builder()

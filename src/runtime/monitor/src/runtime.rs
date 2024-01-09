@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use dynlink::library::BackingData;
-use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_runtime_api::{AddrRange, DlPhdrInfo, Library, LibraryId};
 use twz_rt::monitor::MonitorActions;
 
@@ -85,19 +84,12 @@ impl MonitorActions for MonitorActionsImpl {
     fn allocate_tls_region(&self) -> Option<dynlink::tls::TlsRegion> {
         let tcb = twz_rt::monitor::RuntimeThreadControl::new();
 
-        let comp = self
-            .state
-            .lock()
-            .unwrap()
-            .dynlink
-            .lookup_compartment("monitor")
-            .unwrap();
-
-        self.state
-            .lock()
-            .unwrap()
+        let mut state = self.state.lock().unwrap();
+        let comp = state.dynlink.lookup_compartment("monitor").unwrap();
+        state
             .dynlink
             .get_compartment_mut(comp)
+            .unwrap()
             .build_tls_region(tcb)
             .ok()
     }

@@ -1,5 +1,5 @@
 use crate::{
-    library::{CtorInfo, Library, LibraryId},
+    library::{CtorInfo, LibraryId},
     tls::TlsRegion,
     DynlinkError,
 };
@@ -15,6 +15,7 @@ pub struct RuntimeInitInfo {
     pub ctors: Vec<CtorInfo>,
 }
 
+// Safety: the pointers involved here are used for a one-time handoff during bootstrap.
 unsafe impl Send for RuntimeInitInfo {}
 unsafe impl Sync for RuntimeInitInfo {}
 
@@ -47,6 +48,7 @@ impl<Engine: ContextEngine> Context<Engine> {
         Ok(ctors)
     }
 
+    /// Build the runtime handoff info for bootstrapping the Twizzler runtime.
     pub fn build_runtime_info(
         &self,
         root_id: LibraryId,

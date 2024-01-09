@@ -1,4 +1,4 @@
-use std::mem::size_of;
+use std::{collections::HashSet, mem::size_of};
 
 use elf::{
     abi::{
@@ -93,7 +93,7 @@ impl<Engine: ContextEngine> Context<Engine> {
             let flags = LookupFlags::empty();
             strings
                 .get(sym.st_name as usize)
-                .map(|name| (name, self.lookup_symbol(lib, name, flags)))
+                .map(|name| (name, self.lookup_symbol(lib.id(), name, flags)))
                 .ok()
         } else {
             None
@@ -366,17 +366,28 @@ impl<Engine: ContextEngine> Context<Engine> {
             }
         }
 
+        // We do this recursively instead of using a traversal, since we want to be able to prune nodes that
+        // we know we no longer need to relocate. But since the reloc state gets set at the end (so we can do this pruning),
+        // we'll need to track the visit states. In the end, this is depth-first postorder.
         let deps = self
             .library_deps
             .neighbors_directed(root_id.0, petgraph::Direction::Outgoing)
             .collect::<Vec<_>>();
 
-        let rets = deps
-            .into_iter()
-            .map(|dep_id| self.relocate_recursive(LibraryId(dep_id)));
+        let mut visit_state = HashSet::new();
+        visit_state.insert(root_id.0);
+        let rets = deps.into_iter().map(|dep_id| {
+            if !visit_state.contains(&dep_id) {
+                visit_state.insert(dep_id);
+                self.relocate_recursive(LibraryId(dep_id))
+            } else {
+                Ok(())
+            }
+        });
 
         DynlinkError::collect(DynlinkErrorKind::DepsRelocFail { library: libname }, rets)?;
 
+        // Okay, deps are ready, let's reloc the root.
         let lib = self.get_library_mut(root_id)?;
         lib.reloc_state = RelocState::PartialRelocation;
 

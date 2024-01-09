@@ -3,7 +3,7 @@ use std::mem::size_of;
 use elf::{
     abi::{DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ, PT_TLS},
     endian::NativeEndian,
-    ParseError,
+    file::Class,
 };
 use petgraph::stable_graph::NodeIndex;
 use tracing::{debug, trace, warn};
@@ -13,20 +13,13 @@ use crate::{
     context::engine::{LoadDirective, LoadFlags},
     library::{BackingData, CtorInfo, Library, LibraryId, UnloadedLibrary},
     tls::TlsModule,
-    DynlinkError, DynlinkErrorKind,
+    DynlinkError, DynlinkErrorKind, HeaderError,
 };
 
 use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
 
 impl<Engine: ContextEngine> Context<Engine> {
-    fn get_elf(
-        &self,
-        backing: &Engine::Backing,
-    ) -> Result<elf::ElfBytes<'_, NativeEndian>, ParseError> {
-        let slice = unsafe { core::slice::from_raw_parts(backing.data().0, backing.data().1) };
-        elf::ElfBytes::minimal_parse(slice)
-    }
-
+    // Collect information about constructors.
     pub(crate) fn get_ctor_info(
         &self,
         libname: &str,
@@ -38,6 +31,7 @@ impl<Engine: ContextEngine> Context<Engine> {
             .ok_or_else(|| DynlinkErrorKind::MissingSection {
                 name: "dynamic".to_string(),
             })?;
+
         // If this isn't present, just call it 0, since if there's an init_array, this entry must be present in valid ELF files.
         let init_array_len = dynamic
             .iter()
@@ -49,9 +43,10 @@ impl<Engine: ContextEngine> Context<Engine> {
                 }
             })
             .unwrap_or_default();
+
         // Init array is a pointer to an array of function pointers.
         let init_array = dynamic.iter().find_map(|d| {
-            if d.d_tag == DT_INIT_ARRAY {
+            if d.d_tag == DT_INIT_ARRAY && d.clone().d_ptr() != 0 {
                 Some(base_addr + d.d_ptr() as usize)
             } else {
                 None
@@ -60,7 +55,7 @@ impl<Engine: ContextEngine> Context<Engine> {
 
         // Legacy _init call. Supported for, well, legacy.
         let leg_init = dynamic.iter().find_map(|d| {
-            if d.d_tag == DT_INIT {
+            if d.d_tag == DT_INIT && d.clone().d_ptr() != 0 {
                 Some(base_addr + d.d_ptr() as usize)
             } else {
                 None
@@ -88,7 +83,7 @@ impl<Engine: ContextEngine> Context<Engine> {
     }
 
     // Load (map) a single library into memory via creating two objects, one for text, and one for data.
-    pub fn load<N>(
+    fn load<N>(
         &mut self,
         comp_id: CompartmentId,
         unlib: UnloadedLibrary,
@@ -99,8 +94,69 @@ impl<Engine: ContextEngine> Context<Engine> {
         N: FnMut(&str) -> Option<Engine::Backing>,
     {
         let backing = self.engine.load_object(&unlib, n)?;
-        let elf = self.get_elf(&backing)?;
-        // TODO: sanity check
+        let elf = backing.get_elf()?;
+
+        // Step 0: sanity check the ELF header.
+
+        const EXPECTED_CLASS: Class = Class::ELF64;
+        const EXPECTED_VERSION: u32 = 1;
+        const EXPECTED_ABI: u8 = elf::abi::ELFOSABI_SYSV;
+        const EXPECTED_ABI_VERSION: u8 = 0;
+        const EXPECTED_TYPE: u16 = elf::abi::ET_DYN;
+
+        #[cfg(target_arch = "x86_64")]
+        const EXPECTED_MACHINE: u16 = elf::abi::EM_X86_64;
+
+        #[cfg(target_arch = "aarch64")]
+        const EXPECTED_MACHINE: u16 = elf::abi::EM_AARCH64;
+
+        if elf.ehdr.class != EXPECTED_CLASS {
+            return Err(DynlinkErrorKind::from(HeaderError::ClassMismatch {
+                expect: Class::ELF64,
+                got: elf.ehdr.class,
+            })
+            .into());
+        }
+
+        if elf.ehdr.version != EXPECTED_VERSION {
+            return Err(DynlinkErrorKind::from(HeaderError::VersionMismatch {
+                expect: EXPECTED_VERSION,
+                got: elf.ehdr.version,
+            })
+            .into());
+        }
+
+        if elf.ehdr.osabi != EXPECTED_ABI {
+            return Err(DynlinkErrorKind::from(HeaderError::OSABIMismatch {
+                expect: EXPECTED_ABI,
+                got: elf.ehdr.osabi,
+            })
+            .into());
+        }
+
+        if elf.ehdr.abiversion != EXPECTED_ABI_VERSION {
+            return Err(DynlinkErrorKind::from(HeaderError::ABIVersionMismatch {
+                expect: EXPECTED_ABI_VERSION,
+                got: elf.ehdr.abiversion,
+            })
+            .into());
+        }
+
+        if elf.ehdr.e_machine != EXPECTED_MACHINE {
+            return Err(DynlinkErrorKind::from(HeaderError::MachineMismatch {
+                expect: EXPECTED_MACHINE,
+                got: elf.ehdr.e_machine,
+            })
+            .into());
+        }
+
+        if elf.ehdr.e_type != EXPECTED_TYPE {
+            return Err(DynlinkErrorKind::from(HeaderError::ELFTypeMismatch {
+                expect: EXPECTED_TYPE,
+                got: elf.ehdr.e_type,
+            })
+            .into());
+        }
 
         // Step 1: map the PT_LOAD directives to copy-from commands Twizzler can use for creating objects.
         let directives: Vec<_> = elf
@@ -130,9 +186,10 @@ impl<Engine: ContextEngine> Context<Engine> {
             })
             .collect();
 
+        // call the system impl to actually map things
         let backings = self.engine.load_segments(&backing, &directives)?;
-        if backings.len() == 0 {
-            return Err(DynlinkErrorKind::LibraryLoadFail { library: unlib }.into());
+        if backings.is_empty() {
+            return Err(DynlinkErrorKind::NewBackingFail.into());
         }
         let base_addr = backings[0].load_addr();
         debug!(
@@ -142,35 +199,43 @@ impl<Engine: ContextEngine> Context<Engine> {
             backings.get(1).map(|b| b.load_addr()).unwrap_or_default()
         );
 
-        // Need to grab this again to reborrow.
-        let elf = self.get_elf(&backing)?;
+        // Step 2: look for any TLS information, stored in program header PT_TLS.
         let tls_phdr = elf
             .segments()
             .and_then(|phdrs| phdrs.iter().find(|phdr| phdr.p_type == PT_TLS));
 
-        let tls_id = tls_phdr.map(|tls_phdr| {
-            let formatter = humansize::make_format(humansize::BINARY);
-            debug!(
-                "{}: registering TLS data ({} total, {} copy)",
-                unlib,
-                formatter(tls_phdr.p_memsz),
-                formatter(tls_phdr.p_filesz)
-            );
-            let tm = TlsModule::new_static(
-                base_addr + tls_phdr.p_vaddr as usize,
-                tls_phdr.p_filesz as usize,
-                tls_phdr.p_memsz as usize,
-                tls_phdr.p_align as usize,
-            );
-            let comp = &mut self.get_compartment_mut(comp_id);
-            comp.insert(tm)
-        });
+        let tls_id = tls_phdr
+            .map(|tls_phdr| {
+                let formatter = humansize::make_format(humansize::BINARY);
+                debug!(
+                    "{}: registering TLS data ({} total, {} copy)",
+                    unlib,
+                    formatter(tls_phdr.p_memsz),
+                    formatter(tls_phdr.p_filesz)
+                );
+                let tm = TlsModule::new_static(
+                    base_addr + tls_phdr.p_vaddr as usize,
+                    tls_phdr.p_filesz as usize,
+                    tls_phdr.p_memsz as usize,
+                    tls_phdr.p_align as usize,
+                );
+                let comp = &mut self.get_compartment_mut(comp_id)?;
+                Ok::<_, DynlinkError>(comp.insert(tm))
+            })
+            .transpose()?;
 
-        let elf = self.get_elf(&backing)?;
+        // Step 3: lookup constructor information for this library.
         let ctor_info = self.get_ctor_info(&unlib.name, &elf, base_addr)?;
 
+        let comp = self.get_compartment(comp_id)?;
         Ok(Library::new(
-            unlib.name, idx, backing, backings, tls_id, ctor_info,
+            unlib.name,
+            idx,
+            comp.name.clone(),
+            backing,
+            backings,
+            tls_id,
+            ctor_info,
         ))
     }
 
@@ -179,15 +244,23 @@ impl<Engine: ContextEngine> Context<Engine> {
         unlib: &UnloadedLibrary,
     ) -> Option<(NodeIndex, CompartmentId, &Compartment<Engine::Backing>)> {
         for (idx, comp) in self.compartments.iter() {
-            if let Some(lib) = comp.library_names.get(&unlib.name) {
+            if let Some(lib_id) = comp.library_names.get(&unlib.name) {
                 // TODO: only do this if it actually has secure gates.
-                return Some((*lib, CompartmentId(idx), comp));
+                let lib = self.get_library(LibraryId(*lib_id));
+                // TODO: HACK that will be addressed next PR.
+                if let Ok(lib) = lib {
+                    if lib.name.starts_with("libstd") || lib.name.starts_with("libtwz_rt") {
+                        return None;
+                    }
+                    return Some((*lib_id, CompartmentId(idx), comp));
+                }
             }
         }
 
         None
     }
 
+    // Load a library and all its deps.
     pub(crate) fn load_library<N>(
         &mut self,
         comp_id: CompartmentId,
@@ -199,9 +272,27 @@ impl<Engine: ContextEngine> Context<Engine> {
         N: FnMut(&str) -> Option<Engine::Backing> + Clone,
     {
         debug!("loading library {}", unlib);
-        let lib = self.load(comp_id, unlib.clone(), idx, n.clone())?;
+        // First load the main library.
+        let lib = self
+            .load(comp_id, unlib.clone(), idx, n.clone())
+            .map_err(|e| {
+                DynlinkError::new_collect(
+                    DynlinkErrorKind::LibraryLoadFail {
+                        library: unlib.clone(),
+                    },
+                    vec![e],
+                )
+            })?;
 
-        let deps = self.enumerate_needed(&lib)?;
+        // Second, go through deps
+        let deps = self.enumerate_needed(&lib).map_err(|e| {
+            DynlinkError::new_collect(
+                DynlinkErrorKind::DepEnumerationFail {
+                    library: unlib.name.to_string(),
+                },
+                vec![e],
+            )
+        })?;
         if !deps.is_empty() {
             debug!("{}: loading {} dependencies", unlib, deps.len());
         }
@@ -214,8 +305,7 @@ impl<Engine: ContextEngine> Context<Engine> {
                 // 3. Okay, now we know we need to load the dep, so check if it can go in the current compartment. If not, create a new compartment.
                 // 4. Finally, recurse to load it and its dependencies into either the current compartment or the new one, if created.
 
-                let comp = self.get_compartment(comp_id);
-
+                let comp = self.get_compartment(comp_id)?;
                 let (existing_idx, load_comp) =
                     if let Some(existing) = comp.library_names.get(&unlib.name) {
                         debug!(
@@ -238,14 +328,23 @@ impl<Engine: ContextEngine> Context<Engine> {
                         )
                     };
 
+                // If we decided to use an existing library, then use that. Otherwise, load into the chosen compartment.
                 let idx = if let Some(existing_idx) = existing_idx {
                     existing_idx
                 } else {
                     let idx = self.add_library(unlib.clone());
 
-                    let comp = self.get_compartment_mut(load_comp);
+                    let comp = self.get_compartment_mut(load_comp)?;
                     comp.library_names.insert(unlib.name.clone(), idx);
-                    self.load_library(comp_id, unlib, idx, n.clone())?
+                    self.load_library(comp_id, unlib.clone(), idx, n.clone())
+                        .map_err(|e| {
+                            DynlinkError::new_collect(
+                                DynlinkErrorKind::LibraryLoadFail {
+                                    library: unlib.clone(),
+                                },
+                                vec![e],
+                            )
+                        })?
                 };
                 self.add_dep(&lib, idx);
                 Ok(idx)
@@ -271,7 +370,7 @@ impl<Engine: ContextEngine> Context<Engine> {
     {
         let idx = self.add_library(unlib.clone());
         // Step 1: insert into the compartment's library names.
-        let comp = self.get_compartment_mut(comp_id);
+        let comp = self.get_compartment_mut(comp_id)?;
 
         // At this level, it's an error to insert an already loaded library.
         if comp.library_names.contains_key(&unlib.name) {

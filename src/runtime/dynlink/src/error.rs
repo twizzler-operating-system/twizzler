@@ -1,11 +1,16 @@
 //! Definitions for errors for the dynamic linker.
 use std::alloc::Layout;
 
+use elf::file::Class;
 use itertools::{Either, Itertools};
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::{context::engine::LoadDirective, library::UnloadedLibrary};
+use crate::{
+    compartment::CompartmentId,
+    context::engine::LoadDirective,
+    library::{LibraryId, UnloadedLibrary},
+};
 
 #[derive(Debug, Error, Diagnostic)]
 #[error("{kind}")]
@@ -38,7 +43,7 @@ impl DynlinkError {
                 Err(e) => Either::Right(e),
             });
 
-        if errs.len() == 0 {
+        if errs.is_empty() {
             Ok(vals)
         } else {
             Err(DynlinkError {
@@ -100,6 +105,33 @@ pub enum DynlinkErrorKind {
     UnloadedLibrary { library: String },
     #[error("dependencies of '{library}' failed to relocate")]
     DepsRelocFail { library: String },
+    #[error("invalid library ID '{id}'")]
+    InvalidLibraryId { id: LibraryId },
+    #[error("invalid compartment ID '{id}'")]
+    InvalidCompartmentId { id: CompartmentId },
+    #[error("invalid ELF header: {hdr_err}")]
+    InvalidELFHeader {
+        #[source]
+        #[from]
+        #[diagnostic_source]
+        hdr_err: HeaderError,
+    },
+}
+
+#[derive(Debug, Error, Diagnostic)]
+pub enum HeaderError {
+    #[error("class mismatch: expected {expect:?}, got {got:?}")]
+    ClassMismatch { expect: Class, got: Class },
+    #[error("ELF version mismatch: expected {expect}, got {got}")]
+    VersionMismatch { expect: u32, got: u32 },
+    #[error("OS/ABI mismatch: expected {expect}, got {got}")]
+    OSABIMismatch { expect: u8, got: u8 },
+    #[error("ABI version mismatch: expected {expect}, got {got}")]
+    ABIVersionMismatch { expect: u8, got: u8 },
+    #[error("ELF type mismatch: expected {expect}, got {got}")]
+    ELFTypeMismatch { expect: u16, got: u16 },
+    #[error("machine mismatch: expected {expect}, got {got}")]
+    MachineMismatch { expect: u16, got: u16 },
 }
 
 impl From<elf::ParseError> for DynlinkError {

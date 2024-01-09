@@ -9,7 +9,7 @@ use crate::{
 use super::Compartment;
 
 impl<Backing: BackingData> Compartment<Backing> {
-    pub fn insert(&mut self, tm: TlsModule) -> TlsModId {
+    pub(crate) fn insert(&mut self, tm: TlsModule) -> TlsModId {
         let prev_gen = self.tls_gen;
         self.tls_gen += 1;
         let prev_info = self
@@ -22,6 +22,7 @@ impl<Backing: BackingData> Compartment<Backing> {
         id
     }
 
+    /// Advance the TLS generation count by 1.
     pub fn advance_tls_generation(&mut self) -> u64 {
         let tng = self.tls_gen + 1;
         let initial = if let Some(prev) = self.tls_info.get(&self.tls_gen) {
@@ -42,7 +43,7 @@ impl<Backing: BackingData> Compartment<Backing> {
         })?;
         let alloc_layout = tls_info
             .allocation_layout::<T>()
-            .map_err(|e| DynlinkErrorKind::from(e))?;
+            .map_err(DynlinkErrorKind::from)?;
         debug!(
             "{}: building static TLS region (size: {}, align: {})",
             self,

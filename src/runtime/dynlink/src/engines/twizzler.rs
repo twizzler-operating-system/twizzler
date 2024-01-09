@@ -30,6 +30,7 @@ impl BackingData for Backing {
     fn data(&self) -> (*mut u8, usize) {
         (
             unsafe { self.obj.start.add(NULLPAGE_SIZE) },
+            // one null-page, one meta-page
             MAX_SIZE - NULLPAGE_SIZE * 2,
         )
     }
@@ -118,7 +119,7 @@ impl ContextEngine for Engine {
             ))
         };
 
-        let ld = ld.into_iter().cloned().collect::<Vec<_>>();
+        let ld = ld.to_vec();
         let (data_cmds, text_cmds): (Vec<_>, Vec<_>) = ld.into_iter().partition_map(|directive| {
             if directive.load_flags.contains(LoadFlags::TARGETS_DATA) {
                 Either::Left(build_copy_cmd(&directive))
@@ -160,6 +161,7 @@ impl ContextEngine for Engine {
     ) -> Option<CompartmentId> {
         if unlib.name == "libmonitor.so" {
             warn!("TODO");
+            return Some(CompartmentId(0));
         }
         None
     }

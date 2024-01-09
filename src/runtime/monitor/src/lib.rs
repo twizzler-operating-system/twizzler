@@ -24,12 +24,17 @@ pub mod secgate_test;
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::TRACE)
+        .with_max_level(Level::DEBUG)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+
+    miette::set_hook(Box::new(|_| {
+        Box::new(miette::NarratableReportHandler::new().with_cause_chain())
+    }))
+    .unwrap();
 
     trace!("monitor entered, discovering dynlink context");
     let init =
@@ -45,23 +50,22 @@ pub fn main() {
 
     test_tls();
     twz_rt::test_tls();
+
     let main_thread = std::thread::spawn(|| monitor_init(state));
-    main_thread.join().unwrap();
+    let _r = main_thread.join().unwrap().map_err(|e| {
+        tracing::error!("{:?}", e);
+    });
     warn!("monitor main thread exited");
 }
 
-fn monitor_init(state: Arc<Mutex<MonitorState>>) {
+fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
     info!("monitor early init completed, starting init");
 
-    miette::set_hook(Box::new(|_| {
-        Box::new(miette::NarratableReportHandler::new().with_cause_chain())
-    }))
-    .unwrap();
     test_tls();
     let lib = dynlink::library::UnloadedLibrary::new("libhello_world.so");
 
     let mut state = state.lock().unwrap();
-    let test_comp_id = state.dynlink.add_compartment("test").unwrap();
+    let test_comp_id = state.dynlink.add_compartment("test")?;
 
     let libhw_id = state
         .dynlink
@@ -74,27 +78,22 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) {
                 .map_object(id.as_u128(), twizzler_runtime_api::MapFlags::READ)
                 .ok()?;
             Some(Backing::new(obj))
-        })
-        .unwrap();
+        })?;
 
     twz_rt::test_tls();
-    let res = state
-        .dynlink
-        .relocate_all(libhw_id)
-        .map_err(|e| miette::Report::new(e))
-        .unwrap();
+    let _ = state.dynlink.relocate_all(libhw_id)?;
     info!("lookup entry");
 
-    let hwlib = state.dynlink.get_library(libhw_id).unwrap();
     let sym = state
         .dynlink
-        .lookup_symbol(&hwlib, "test_sec_call", LookupFlags::empty())
-        .unwrap();
+        .lookup_symbol(libhw_id, "test_sec_call", LookupFlags::empty())?;
 
     let addr = sym.reloc_value();
     info!("addr = {:x}", addr);
     let ptr: extern "C" fn() = unsafe { core::mem::transmute(addr as usize) };
     (ptr)();
+
+    Ok(())
 }
 
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {

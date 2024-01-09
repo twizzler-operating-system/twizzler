@@ -1,4 +1,4 @@
-use tracing::debug;
+use tracing::trace;
 
 use crate::{
     library::{Library, UnloadedLibrary},
@@ -15,10 +15,11 @@ impl<Engine: ContextEngine> Context<Engine> {
         &self,
         lib: &Library<Engine::Backing>,
     ) -> Result<Vec<UnloadedLibrary>, DynlinkError> {
-        debug!("{}: enumerating dependencies", lib);
+        trace!("{}: enumerating dependencies", lib);
         let elf = lib.get_elf()?;
         let common = elf.find_common_data()?;
 
+        // Iterate over the dynamic table, looking for DT_NEEDED.
         let res = common
             .dynamic
             .ok_or_else(|| DynlinkErrorKind::MissingSection {
@@ -40,10 +41,8 @@ impl<Engine: ContextEngine> Context<Engine> {
                                 }
                             })
                         })
-                        .and_then(|name| {
-                            Ok(UnloadedLibrary {
-                                name: name.to_string(),
-                            })
+                        .map(|name| UnloadedLibrary {
+                            name: name.to_string(),
                         })
                 }),
                 _ => None,

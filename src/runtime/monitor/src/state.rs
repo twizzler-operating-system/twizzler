@@ -1,5 +1,3 @@
-use std::sync::Mutex;
-
 use dynlink::{
     context::Context,
     engines::{Backing, Engine},
@@ -7,7 +5,6 @@ use dynlink::{
 
 use crate::init::InitDynlinkContext;
 
-#[allow(dead_code)]
 pub struct MonitorState {
     pub dynlink: &'static mut Context<Engine>,
     pub(crate) root: String,
@@ -26,7 +23,7 @@ impl MonitorState {
         let mut all = vec![];
         // TODO
         let comp_id = self.dynlink.lookup_compartment("monitor")?;
-        let comp = self.dynlink.get_compartment(comp_id);
+        let comp = self.dynlink.get_compartment(comp_id).ok()?;
         let root_id = self.dynlink.lookup_library(comp, &self.root)?;
         self.dynlink
             .with_bfs(root_id, |lib| all.push(lib.name().to_string()));
@@ -41,6 +38,3 @@ impl MonitorState {
         self.dynlink.get_library(lib).ok()
     }
 }
-
-unsafe impl Send for MonitorState {}
-unsafe impl Sync for MonitorState {}
