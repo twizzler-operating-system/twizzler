@@ -5,11 +5,15 @@ use std::{alloc::Layout, mem::align_of, mem::size_of, ptr::NonNull};
 use tracing::{error, trace};
 use twizzler_runtime_api::TlsIndex;
 
-use crate::{arch::MINIMUM_TLS_ALIGNMENT, compartment::CompartmentRef, DynlinkError};
+use crate::{
+    arch::MINIMUM_TLS_ALIGNMENT, compartment::Compartment, library::BackingData, DynlinkError,
+    DynlinkErrorKind,
+};
 
+#[derive(Clone)]
 pub(crate) struct TlsInfo {
     // DTV needs to start with a generation count.
-    gen_count: u64,
+    gen: u64,
     // When adding modules to the static TLS region
     alloc_size_mods: usize,
     // Calculate the maximum alignment we'll need.
@@ -19,20 +23,30 @@ pub(crate) struct TlsInfo {
     pub(crate) tls_mods: Vec<TlsModule>,
 }
 
-impl Default for TlsInfo {
-    fn default() -> Self {
+impl TlsInfo {
+    pub(crate) fn new(gen: u64) -> Self {
         Self {
-            gen_count: Default::default(),
+            gen,
             alloc_size_mods: Default::default(),
             max_align: MINIMUM_TLS_ALIGNMENT,
             tls_mods: Default::default(),
             offset: 0,
         }
     }
+
+    pub(crate) fn clone_to_new_gen(&self, new_gen: u64) -> Self {
+        Self {
+            gen: new_gen,
+            alloc_size_mods: self.alloc_size_mods,
+            max_align: self.max_align,
+            tls_mods: self.tls_mods.clone(),
+            offset: self.offset,
+        }
+    }
 }
 
-#[derive(Debug)]
-pub(crate) struct TlsModule {
+#[derive(Debug, Clone)]
+pub struct TlsModule {
     pub is_static: bool,
     pub template_addr: usize,
     pub template_filesz: usize,
@@ -87,19 +101,18 @@ impl TlsInfo {
         let id = TlsModId((self.tls_mods.len() + 1) as u64, self.offset);
         tm.id = Some(id);
         self.tls_mods.push(tm);
-        self.gen_count += 1;
         id
     }
 
-    pub(crate) fn allocate<T>(
+    pub(crate) fn allocate<T, B: BackingData>(
         &self,
-        comp: &CompartmentRef,
+        _comp: &Compartment<B>,
         alloc_base: NonNull<u8>,
         tcb: T,
     ) -> Result<TlsRegion, DynlinkError> {
         let layout = self
             .allocation_layout::<T>()
-            .map_err(|_| DynlinkError::Unknown)?;
+            .map_err(|err| DynlinkErrorKind::LayoutError { err })?;
 
         // TODO: check all this for arm
         // Given an allocation regions, lets find all the interesting pointers.
@@ -108,13 +121,12 @@ impl TlsInfo {
         base -= base & (layout.align() - 1);
         let thread_pointer = NonNull::new(base as *mut u8).unwrap();
         let tls_region = TlsRegion {
-            drop_safe: true,
+            gen: self.gen,
             module_top: thread_pointer,
             thread_pointer,
             dtv: alloc_base.cast(),
             num_dtv_entries: self.dtv_len(),
             alloc_base,
-            comp: comp.clone(),
             layout,
         };
 
@@ -129,8 +141,8 @@ impl TlsInfo {
         }
 
         // Write the gen count.
-        trace!("setting dtv[0] to gen_count {}", self.gen_count);
-        unsafe { *tls_region.dtv.as_ptr() = self.gen_count as usize };
+        trace!("setting dtv[0] to gen_count {}", self.gen);
+        unsafe { *tls_region.dtv.as_ptr() = self.gen as usize };
 
         // Finally fill out the control block.
         unsafe {
@@ -197,55 +209,19 @@ impl TlsModId {
     }
 }
 
+#[repr(C)]
 #[derive(Debug)]
 pub struct TlsRegion {
-    drop_safe: bool,
-    pub(crate) comp: CompartmentRef,
-    pub(crate) layout: Layout,
-    pub(crate) alloc_base: NonNull<u8>,
-    pub(crate) thread_pointer: NonNull<u8>,
-    pub(crate) dtv: NonNull<usize>,
-    pub(crate) num_dtv_entries: usize,
-    pub(crate) module_top: NonNull<u8>,
-}
-
-impl Drop for TlsRegion {
-    fn drop(&mut self) {
-        trace!(
-            "dropping TLS Region {:p} {} with layout {:?}",
-            self.alloc_base.as_ptr(),
-            self.drop_safe,
-            self.layout,
-        );
-        if !self.drop_safe {
-            return;
-        }
-        let _ = self.comp.with_inner_mut(|inner| {
-            trace!(
-                "dealloc in {} {:p}",
-                inner.alloc_objects().len(),
-                inner.alloc_objects()[0].raw_lea::<u8>(0)
-            );
-            unsafe { inner.dealloc(self.alloc_base, self.layout) };
-        });
-    }
+    pub gen: u64,
+    pub layout: Layout,
+    pub alloc_base: NonNull<u8>,
+    pub thread_pointer: NonNull<u8>,
+    pub dtv: NonNull<usize>,
+    pub num_dtv_entries: usize,
+    pub module_top: NonNull<u8>,
 }
 
 impl TlsRegion {
-    pub fn dont_drop(&mut self) -> Self {
-        self.drop_safe = false;
-        Self {
-            drop_safe: true,
-            comp: self.comp.clone(),
-            layout: self.layout,
-            alloc_base: self.alloc_base,
-            thread_pointer: self.thread_pointer,
-            dtv: self.dtv,
-            num_dtv_entries: self.num_dtv_entries,
-            module_top: self.module_top,
-        }
-    }
-
     pub fn alloc_base(&self) -> *mut u8 {
         self.alloc_base.as_ptr()
     }

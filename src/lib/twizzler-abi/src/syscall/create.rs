@@ -5,7 +5,7 @@ use bitflags::bitflags;
 
 use super::{convert_codes_to_result, Syscall};
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Default)]
 #[repr(C)]
 /// Specifications for an object-copy from a source object. The specified ranges are
 /// source:[src_start, src_start + len) copied to <some unspecified destination object>:[dest_start,

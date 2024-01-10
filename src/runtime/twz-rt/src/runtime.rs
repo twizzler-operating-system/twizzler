@@ -53,7 +53,7 @@ impl ReferenceRuntime {
     }
 }
 
-static OUR_RUNTIME: ReferenceRuntime = ReferenceRuntime {
+pub static OUR_RUNTIME: ReferenceRuntime = ReferenceRuntime {
     state: AtomicU32::new(0),
 };
 

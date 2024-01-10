@@ -11,6 +11,7 @@ twizzler-object = { path = "../../lib/twizzler-object" }
 dynlink = { path = "../../runtime/dynlink" }
 tracing = "0.1"
 tracing-subscriber = "0.3.17"
+miette = { version = "5.10", features = [ ]}
 
 [package.metadata]
 twizzler-build = "static"

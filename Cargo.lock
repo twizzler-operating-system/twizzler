@@ -299,6 +299,7 @@ name = "bootstrap"
 version = "0.1.0"
 dependencies = [
  "dynlink",
+ "miette",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
@@ -709,7 +710,10 @@ dependencies = [
  "bitflags 2.4.1",
  "elf",
  "humansize",
+ "itertools 0.12.0",
+ "miette",
  "petgraph",
+ "stable-vec",
  "talc",
  "thiserror",
  "tracing",
@@ -1418,6 +1422,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25db6b064527c5d482d0423354fcd07a89a2dfe07b67892e62411946db7f07b0"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1598,6 +1611,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "miette"
+version = "5.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59bb584eaeeab6bd0226ccf3509a69d7936d148cf3d036ad350abe35e8c6856e"
+dependencies = [
+ "miette-derive",
+ "once_cell",
+ "thiserror",
+ "unicode-width",
+]
+
+[[package]]
+name = "miette-derive"
+version = "5.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49e7bc1560b95a3c4a25d03de42fe76ca718ab92d1a22a55b9b4cf67b3ae635c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.38",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1664,9 +1700,11 @@ name = "monitor"
 version = "0.1.0"
 dependencies = [
  "dynlink",
+ "miette",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
+ "twizzler-object",
  "twizzler-runtime-api",
  "twz-rt",
 ]
