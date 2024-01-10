@@ -1,6 +1,6 @@
 //! Implements the core runtime functions.
 
-use dynlink::{context::RuntimeInitInfo, library::CtorInfo};
+use dynlink::{context::runtime::RuntimeInitInfo, library::CtorInfo};
 use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
 use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
 
@@ -108,10 +108,11 @@ impl CoreRuntime for ReferenceRuntime {
         twizzler_abi::syscall::sys_thread_set_upcall(upcall_target);
         self.init_allocator(init_info);
         self.init_tls(init_info);
-        self.init_ctors(init_info.ctor_infos());
+        self.init_ctors(&init_info.ctors);
 
         // Step 4: call into libstd to finish setting up the standard library and call main
         let ba = build_basic_aux(aux_slice);
+
         let ret = unsafe { std_entry(ba) };
         self.exit(ret.code);
     }

@@ -1,6 +1,6 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
+use dynlink::library::BackingData;
 use twizzler_runtime_api::{AddrRange, DlPhdrInfo, Library, LibraryId};
 use twz_rt::monitor::MonitorActions;
 
@@ -12,10 +12,10 @@ pub fn __do_get_monitor_actions() -> &'static dyn MonitorActions {
 }
 
 struct MonitorActionsImpl {
-    state: Arc<MonitorState>,
+    state: Arc<Mutex<MonitorState>>,
 }
 
-pub(crate) fn init_actions(state: Arc<MonitorState>) {
+pub(crate) fn init_actions(state: Arc<Mutex<MonitorState>>) {
     let _ = ACTIONS.set(MonitorActionsImpl { state });
 }
 
@@ -24,18 +24,18 @@ impl MonitorActions for MonitorActionsImpl {
         &self,
         id: twizzler_runtime_api::LibraryId,
     ) -> Option<twizzler_runtime_api::Library> {
-        let lib = self.state.get_nth_library(id.0)?;
+        let state = self.state.lock().unwrap();
+        let lib = state.get_nth_library(id.0)?;
         let next_id = LibraryId(id.0 + 1);
         let phdrs = lib.get_phdrs_raw()?;
 
         Some(Library {
-            mapping: lib.full_obj.slot().runtime_handle().clone(),
-            range: (
-                lib.full_obj.raw_lea(NULLPAGE_SIZE),
-                lib.full_obj.raw_lea(MAX_SIZE - NULLPAGE_SIZE),
-            ),
+            mapping: lib.full_obj.clone().to_inner(),
+            range: (lib.full_obj.data().0, unsafe {
+                lib.full_obj.data().0.add(lib.full_obj.data().1)
+            }),
             dl_info: Some(DlPhdrInfo {
-                addr: lib.base_addr?,
+                addr: lib.base_addr(),
                 name: core::ptr::null(),
                 phdr_start: phdrs.0 as *const _,
                 phdr_num: phdrs.1.try_into().ok()?,
@@ -49,7 +49,7 @@ impl MonitorActions for MonitorActionsImpl {
                     .ok()?,
                 tls_data: core::ptr::null(),
             }),
-            next_id: self.state.get_nth_library(next_id.0).map(|_| next_id),
+            next_id: state.get_nth_library(next_id.0).map(|_| next_id),
             id,
         })
     }
@@ -59,7 +59,8 @@ impl MonitorActions for MonitorActionsImpl {
     }
 
     fn lookup_library_name(&self, id: LibraryId, buf: &mut [u8]) -> Option<usize> {
-        let lib = self.state.get_nth_library(id.0)?;
+        let state = self.state.lock().unwrap();
+        let lib = state.get_nth_library(id.0)?;
         if buf.len() < lib.name.len() {
             return None;
         }
@@ -69,12 +70,13 @@ impl MonitorActions for MonitorActionsImpl {
 
     fn get_segment(&self, id: LibraryId, seg: usize) -> Option<twizzler_runtime_api::AddrRange> {
         const PT_LOAD: u32 = 1;
-        let lib = self.state.get_nth_library(id.0)?;
+        let state = self.state.lock().unwrap();
+        let lib = state.get_nth_library(id.0)?;
         let phdrs = lib.get_phdrs_raw()?;
         let slice = unsafe { core::slice::from_raw_parts(phdrs.0, phdrs.1) };
         let phdr = slice.iter().filter(|p| p.p_type == PT_LOAD).nth(seg)?;
         Some(AddrRange {
-            start: lib.laddr::<u8>(phdr.p_vaddr)? as usize,
+            start: lib.laddr::<u8>(phdr.p_vaddr) as usize,
             len: phdr.p_memsz as usize,
         })
     }
@@ -82,11 +84,14 @@ impl MonitorActions for MonitorActionsImpl {
     fn allocate_tls_region(&self) -> Option<dynlink::tls::TlsRegion> {
         let tcb = twz_rt::monitor::RuntimeThreadControl::new();
 
-        self.state
+        let mut state = self.state.lock().unwrap();
+        let comp = state.dynlink.lookup_compartment("monitor").unwrap();
+        state
             .dynlink
-            .with_inner_mut(|inner| inner.get_compartment().build_tls_region(tcb).ok())
+            .get_compartment_mut(comp)
+            .unwrap()
+            .build_tls_region(tcb)
             .ok()
-            .flatten()
     }
 
     fn free_tls_region(&self, tls: dynlink::tls::TlsRegion) {

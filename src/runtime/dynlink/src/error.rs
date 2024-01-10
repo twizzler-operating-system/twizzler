@@ -1,108 +1,144 @@
-//! Definitions for errors for the dynamic linker. One thing of note is that we allow for a collection of
-//! multiple error within the error type ([DynlinkError]). This is to enable returning multiple (e.g.) symbol
-//! lookup failures that can acted upon as a group instead of one at a time.
+//! Definitions for errors for the dynamic linker.
+use std::alloc::Layout;
 
-use std::sync::PoisonError;
-
+use elf::file::Class;
+use itertools::{Either, Itertools};
+use miette::Diagnostic;
 use thiserror::Error;
-/// The main error type for dynlink.
-#[derive(Debug, Error)]
-pub enum DynlinkError {
-    /// Unknown error.
-    #[error("unknown")]
-    Unknown,
-    /// A collection of errors.
-    #[error("{}", .0.iter().map(|e| e.to_string()).fold(String::new(), |a, b| a + &b + "\n"))]
-    Collection(Vec<DynlinkError>),
-    /// Identifier lookup of name failed.
-    #[error("not found: {name}")]
-    NotFound { name: String },
-    /// Tried to add a name that was already present to the namespace.
+
+use crate::{
+    compartment::CompartmentId,
+    context::engine::LoadDirective,
+    library::{LibraryId, UnloadedLibrary},
+};
+
+#[derive(Debug, Error, Diagnostic)]
+#[error("{kind}")]
+pub struct DynlinkError {
+    pub kind: DynlinkErrorKind,
+    #[related]
+    pub related: Vec<DynlinkError>,
+}
+
+impl DynlinkError {
+    pub fn new_collect(kind: DynlinkErrorKind, related: Vec<DynlinkError>) -> Self {
+        Self { kind, related }
+    }
+
+    pub fn new(kind: DynlinkErrorKind) -> Self {
+        Self {
+            kind,
+            related: vec![],
+        }
+    }
+
+    pub fn collect<I, T>(parent_kind: DynlinkErrorKind, it: I) -> Result<Vec<T>, DynlinkError>
+    where
+        I: IntoIterator<Item = Result<T, DynlinkError>>,
+    {
+        // Collect errors and values, and then if there any errors, build a new error from them.
+        let (vals, errs): (Vec<T>, Vec<DynlinkError>) =
+            it.into_iter().partition_map(|item| match item {
+                Ok(o) => Either::Left(o),
+                Err(e) => Either::Right(e),
+            });
+
+        if errs.is_empty() {
+            Ok(vals)
+        } else {
+            Err(DynlinkError {
+                kind: parent_kind,
+                related: errs,
+            })
+        }
+    }
+}
+
+impl From<DynlinkErrorKind> for DynlinkError {
+    fn from(value: DynlinkErrorKind) -> Self {
+        Self {
+            kind: value,
+            related: vec![],
+        }
+    }
+}
+
+#[derive(Debug, Error, Diagnostic)]
+pub enum DynlinkErrorKind {
+    #[error("failed to load library {library}")]
+    LibraryLoadFail { library: UnloadedLibrary },
+    #[error("name not found: {name}")]
+    NameNotFound { name: String },
+    #[error("failed to find symbol '{symname}' in '{sourcelib}'")]
+    SymbolLookupFail { symname: String, sourcelib: String },
     #[error("name already exists: {name}")]
-    AlreadyExists { name: String },
-    /// Failed to parse ELF data.
+    NameAlreadyExists { name: String },
     #[error("parse failed: {err}")]
     ParseError {
         #[from]
         err: elf::ParseError,
     },
-    /// Any other error.
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
+    #[error("dynamic object is missing a required segment or section '{name}'")]
+    MissingSection { name: String },
+    #[error("failed to allocate {:?} within compartment {}", layout, comp)]
+    FailedToAllocate { comp: String, layout: Layout },
+    #[error("invalid allocation layout: {err}")]
+    LayoutError {
+        #[from]
+        err: std::alloc::LayoutError,
+    },
+    #[error("failed to enumerate dependencies for {library}")]
+    DepEnumerationFail { library: String },
+    #[error("library {library} had no TLS data for request")]
+    NoTLSInfo { library: String },
+    #[error("library {library} requested relocation that is unsupported")]
+    UnsupportedReloc { library: String, reloc: String },
+    #[error("failed to process relocation section '{secname}' for library '{library}'")]
+    RelocationSectionFail { secname: String, library: String },
+    #[error("library '{library}' failed to relocate")]
+    RelocationFail { library: String },
+    #[error("failed to create new backing data")]
+    NewBackingFail,
+    #[error("failed to satisfy load directive")]
+    LoadDirectiveFail { dir: LoadDirective },
+    #[error("tried to operate on an unloaded library '{library}'")]
+    UnloadedLibrary { library: String },
+    #[error("dependencies of '{library}' failed to relocate")]
+    DepsRelocFail { library: String },
+    #[error("invalid library ID '{id}'")]
+    InvalidLibraryId { id: LibraryId },
+    #[error("invalid compartment ID '{id}'")]
+    InvalidCompartmentId { id: CompartmentId },
+    #[error("invalid ELF header: {hdr_err}")]
+    InvalidELFHeader {
+        #[source]
+        #[from]
+        #[diagnostic_source]
+        hdr_err: HeaderError,
+    },
 }
 
-impl<T> From<PoisonError<T>> for DynlinkError {
-    fn from(value: PoisonError<T>) -> Self {
-        Self::Other(anyhow::anyhow!(value.to_string()))
-    }
+#[derive(Debug, Error, Diagnostic)]
+pub enum HeaderError {
+    #[error("class mismatch: expected {expect:?}, got {got:?}")]
+    ClassMismatch { expect: Class, got: Class },
+    #[error("ELF version mismatch: expected {expect}, got {got}")]
+    VersionMismatch { expect: u32, got: u32 },
+    #[error("OS/ABI mismatch: expected {expect}, got {got}")]
+    OSABIMismatch { expect: u8, got: u8 },
+    #[error("ABI version mismatch: expected {expect}, got {got}")]
+    ABIVersionMismatch { expect: u8, got: u8 },
+    #[error("ELF type mismatch: expected {expect}, got {got}")]
+    ELFTypeMismatch { expect: u16, got: u16 },
+    #[error("machine mismatch: expected {expect}, got {got}")]
+    MachineMismatch { expect: u16, got: u16 },
 }
 
-impl From<Vec<anyhow::Error>> for DynlinkError {
-    fn from(value: Vec<anyhow::Error>) -> Self {
-        Self::Collection(value.into_iter().map(|e| e.into()).collect())
-    }
-}
-
-impl FromIterator<anyhow::Error> for DynlinkError {
-    fn from_iter<T: IntoIterator<Item = anyhow::Error>>(iter: T) -> Self {
-        Self::Collection(iter.into_iter().map(|e| e.into()).collect())
-    }
-}
-
-impl From<Vec<DynlinkError>> for DynlinkError {
-    fn from(value: Vec<DynlinkError>) -> Self {
-        let mut new = vec![];
-        for v in value {
-            match v {
-                DynlinkError::Collection(mut list) => {
-                    new.append(&mut list);
-                }
-                v => new.push(v),
-            }
-        }
-        Self::Collection(new)
-    }
-}
-
-/// A collector trait that lets us combine multiple [DynlinkError]s into one Collection. Design borrowed from beau_collector.
-pub trait ECollector<T> {
-    fn ecollect<I>(self) -> Result<I, DynlinkError>
-    where
-        I: std::iter::FromIterator<T>;
-}
-
-impl<T, U, E> ECollector<T> for U
-where
-    U: Iterator<Item = Result<T, E>>,
-    E: std::convert::Into<DynlinkError>,
-{
-    #[allow(clippy::redundant_closure_call)]
-    fn ecollect<I>(self) -> Result<I, DynlinkError>
-    where
-        I: std::iter::FromIterator<T>,
-    {
-        let (good, bad): (I, Vec<DynlinkError>) = (|(g, b): (Vec<_>, Vec<_>)| {
-            (
-                g.into_iter()
-                    .map(|res| match res {
-                        Ok(x) => x,
-                        Err(_) => panic!(),
-                    })
-                    .collect(),
-                b.into_iter()
-                    .map(|res| match res {
-                        Ok(_) => panic!(),
-                        Err(e) => e,
-                    })
-                    .map(Into::into)
-                    .collect(),
-            )
-        })(self.partition(Result::is_ok));
-
-        if bad.is_empty() {
-            Ok(good)
-        } else {
-            Err(DynlinkError::Collection(bad))
+impl From<elf::ParseError> for DynlinkError {
+    fn from(value: elf::ParseError) -> Self {
+        Self {
+            kind: DynlinkErrorKind::ParseError { err: value },
+            related: vec![],
         }
     }
 }
