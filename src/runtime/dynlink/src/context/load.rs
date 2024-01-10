@@ -83,17 +83,17 @@ impl<Engine: ContextEngine> Context<Engine> {
     }
 
     // Load (map) a single library into memory via creating two objects, one for text, and one for data.
-    fn load<N>(
+    fn load<Namer>(
         &mut self,
         comp_id: CompartmentId,
         unlib: UnloadedLibrary,
         idx: NodeIndex,
-        n: N,
+        namer: Namer,
     ) -> Result<Library<Engine::Backing>, DynlinkError>
     where
-        N: FnMut(&str) -> Option<Engine::Backing>,
+        Namer: FnMut(&str) -> Option<Engine::Backing>,
     {
-        let backing = self.engine.load_object(&unlib, n)?;
+        let backing = self.engine.load_object(&unlib, namer)?;
         let elf = backing.get_elf()?;
 
         // Step 0: sanity check the ELF header.
@@ -261,20 +261,20 @@ impl<Engine: ContextEngine> Context<Engine> {
     }
 
     // Load a library and all its deps.
-    pub(crate) fn load_library<N>(
+    pub(crate) fn load_library<Namer>(
         &mut self,
         comp_id: CompartmentId,
         unlib: UnloadedLibrary,
         idx: NodeIndex,
-        n: N,
+        namer: Namer,
     ) -> Result<NodeIndex, DynlinkError>
     where
-        N: FnMut(&str) -> Option<Engine::Backing> + Clone,
+        Namer: FnMut(&str) -> Option<Engine::Backing> + Clone,
     {
         debug!("loading library {}", unlib);
         // First load the main library.
         let lib = self
-            .load(comp_id, unlib.clone(), idx, n.clone())
+            .load(comp_id, unlib.clone(), idx, namer.clone())
             .map_err(|e| {
                 DynlinkError::new_collect(
                     DynlinkErrorKind::LibraryLoadFail {
@@ -336,7 +336,7 @@ impl<Engine: ContextEngine> Context<Engine> {
 
                     let comp = self.get_compartment_mut(load_comp)?;
                     comp.library_names.insert(unlib.name.clone(), idx);
-                    self.load_library(comp_id, unlib.clone(), idx, n.clone())
+                    self.load_library(comp_id, unlib.clone(), idx, namer.clone())
                         .map_err(|e| {
                             DynlinkError::new_collect(
                                 DynlinkErrorKind::LibraryLoadFail {
@@ -358,15 +358,16 @@ impl<Engine: ContextEngine> Context<Engine> {
         Ok(idx)
     }
 
-    /// Load a library into a given compartment. The namer callback resolves names to Backing objects.
-    pub fn load_library_in_compartment<N>(
+    /// Load a library into a given compartment. The namer callback resolves names to Backing objects, allowing
+    /// the caller to hook into the "name-of-dependency" -> backing object pipeline.
+    pub fn load_library_in_compartment<Namer>(
         &mut self,
         comp_id: CompartmentId,
         unlib: UnloadedLibrary,
-        namer: N,
+        namer: Namer,
     ) -> Result<LibraryId, DynlinkError>
     where
-        N: FnMut(&str) -> Option<Engine::Backing> + Clone,
+        Namer: FnMut(&str) -> Option<Engine::Backing> + Clone,
     {
         let idx = self.add_library(unlib.clone());
         // Step 1: insert into the compartment's library names.
