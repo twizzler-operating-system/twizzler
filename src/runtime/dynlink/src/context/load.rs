@@ -93,6 +93,8 @@ impl<Engine: ContextEngine> Context<Engine> {
     where
         Namer: FnMut(&str) -> Option<Engine::Backing>,
     {
+        // At this point, all we know is a name. Ask the system implementation to use the name resolver to get a backing object from the name,
+        // and then map it for access (this will be the full ELF file data).
         let backing = self.engine.load_object(&unlib, namer)?;
         let elf = backing.get_elf()?;
 
@@ -260,7 +262,7 @@ impl<Engine: ContextEngine> Context<Engine> {
         None
     }
 
-    // Load a library and all its deps.
+    // Load a library and all its deps, using the supplied name resolution callback for deps.
     pub(crate) fn load_library<Namer>(
         &mut self,
         comp_id: CompartmentId,
