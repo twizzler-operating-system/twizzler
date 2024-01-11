@@ -728,7 +728,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bitflags 2.4.1",
- "bytemuck",
  "elf",
  "humansize",
  "itertools 0.12.0",
@@ -1156,6 +1155,7 @@ name = "hello-world"
 version = "0.1.0"
 dependencies = [
  "monitor",
+ "secgate",
 ]
 
 [[package]]

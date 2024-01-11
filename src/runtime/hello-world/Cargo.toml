@@ -10,3 +10,4 @@ crate-type = ["dylib"]
 
 [dependencies]
 monitor = { path = "../monitor" }
+secgate = { path = "../secgate" }
