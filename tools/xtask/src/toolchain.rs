@@ -259,6 +259,24 @@ pub fn set_static() {
     );
 }
 
+pub fn set_cc() {
+    let clang_path = Path::new("toolchain/src/rust/build/host/llvm/bin/clang")
+        .canonicalize()
+        .unwrap();
+    std::env::set_var("CC", clang_path);
+
+    let inc_path = Path::new("toolchain/src/bootstrap-include")
+        .canonicalize()
+        .unwrap();
+    let cflags = format!("-nostdlibinc -I{}", inc_path.display());
+    std::env::set_var("CFLAGS", cflags);
+}
+
+pub fn clear_cc() {
+    std::env::remove_var("CC");
+    std::env::remove_var("CFLAGS");
+}
+
 pub fn clear_rustflags() {
     std::env::remove_var("RUSTFLAGS");
 }
