@@ -22,6 +22,7 @@ members = [
     "src/runtime/dynlink",
     "src/runtime/monitor",
     "src/runtime/twz-rt",
+    "src/runtime/hello-world",
 ]
 
 exclude = ["toolchain/src/rust"]

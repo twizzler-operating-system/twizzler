@@ -150,7 +150,10 @@ fn build_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStr
     let Info { entry_name, .. } = names;
     call_point.block = Box::new(parse2(quote::quote! {
         {
+            #[cfg(target_arch = "x86_64")]
             unsafe {core::arch::asm!("jmp {0}", sym #entry_name, options(noreturn))}
+            #[cfg(target_arch = "aarch64")]
+            unsafe {core::arch::asm!("b {0}", sym #entry_name, options(noreturn))}
         }
     })?);
 
