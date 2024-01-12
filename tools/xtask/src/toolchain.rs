@@ -268,7 +268,7 @@ pub fn set_cc() {
     let inc_path = Path::new("toolchain/src/bootstrap-include")
         .canonicalize()
         .unwrap();
-    let cflags = format!("-nostdlibinc -I{}", inc_path.display());
+    let cflags = format!("-fno-stack-protector -nostdlibinc -I{}", inc_path.display());
     std::env::set_var("CFLAGS", cflags);
 }
 

@@ -1,3 +1,4 @@
+/*
 pub fn do_setup() {}
 
 pub fn do_teardown() {}
@@ -40,8 +41,10 @@ pub unsafe extern "C" fn foo_trampoline() -> SecGateReturn<u32> {
 pub fn foo() -> SecGateReturn<u32> {
     unsafe { foo_trampoline() }
 }
+*/
 
 #[secgate::secure_gate]
 fn bar(x: i32, y: bool) -> u32 {
+    tracing::info!("in sec gate bar: {} {}", x, y);
     420
 }

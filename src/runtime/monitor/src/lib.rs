@@ -66,10 +66,8 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
         let mon = state.dynlink.get_library(mon)?;
 
         for gate in mon.iter_secgates().unwrap() {
-            info!("==> {:x} {:p}", gate.imp, gate.name);
-            let name = gate.name as *const i8;
-            let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy();
-            info!("    => {}", name);
+            let name = gate.name().to_string_lossy();
+            info!("secure gate in {} => {}: {:x}", mon.name, name, gate.imp);
         }
     }
 

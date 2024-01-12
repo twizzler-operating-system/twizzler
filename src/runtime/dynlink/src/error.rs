@@ -69,7 +69,7 @@ pub enum DynlinkErrorKind {
     LibraryLoadFail { library: UnloadedLibrary },
     #[error("name not found: {name}")]
     NameNotFound { name: String },
-    #[error("failed to find symbol '{symname}' in '{sourcelib}'")]
+    #[error("failed to find symbol '{symname}' for '{sourcelib}'")]
     SymbolLookupFail { symname: String, sourcelib: String },
     #[error("name already exists: {name}")]
     NameAlreadyExists { name: String },

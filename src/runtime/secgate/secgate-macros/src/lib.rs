@@ -207,10 +207,12 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
     call_point.block = Box::new(parse2(quote::quote! {
         {
             let tuple = (#(#arg_names),*);
-            let args = #mod_name::Args::new(tuple);
-            let mut ret = #mod_name::Ret::new_uninit();
-            #mod_name::#trampoline_name(&args as *const _, &mut ret as *mut _);
-            ret.into_inner().unwrap_or(secgate::SecGateReturn::NoReturnValue)
+            #mod_name::Args::with_alloca(tuple, |args| {
+                #mod_name::Ret::with_alloca(|ret| {
+                    #mod_name::#trampoline_name(args as *const _, ret as *mut _);
+                    ret.into_inner().unwrap_or(secgate::SecGateReturn::NoReturnValue)
+                })
+            })
         }
     })?);
 
@@ -265,5 +267,7 @@ fn build_struct(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
         type #entry_type_name = #ty;
         pub type Args = secgate::Arguments<(#(#types),*)>;
         pub type Ret = secgate::Return<secgate::SecGateReturn<#ret_type>>;
+        pub const ARGS_SIZE: usize = core::mem::size_of::<Args>();
+        pub const RET_SIZE: usize = core::mem::size_of::<Ret>();
     })
 }
