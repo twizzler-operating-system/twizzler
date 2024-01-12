@@ -5,8 +5,6 @@
 #![feature(auto_traits)]
 #![feature(negative_impls)]
 
-extern crate alloca;
-
 use core::ffi::CStr;
 use std::{cell::UnsafeCell, marker::Tuple, mem::MaybeUninit};
 
@@ -73,7 +71,6 @@ pub struct Arguments<Args: Tuple + Crossing + Copy> {
 }
 
 impl<Args: Tuple + Crossing + Copy> Arguments<Args> {
-    #[inline(never)]
     pub fn with_alloca<F, R>(args: Args, f: F) -> R
     where
         F: FnOnce(&mut Self) -> R,
@@ -100,19 +97,11 @@ pub struct Return<T: Crossing + Copy> {
 
 impl<T: Copy + Crossing> Clone for Return<T> {
     fn clone(&self) -> Self {
-        Self {
-            isset: self.isset,
-            ret: if self.isset {
-                MaybeUninit::new(unsafe { *self.ret.assume_init_ref() })
-            } else {
-                MaybeUninit::uninit()
-            },
-        }
+        *self
     }
 }
 
 impl<T: Crossing + Copy> Return<T> {
-    #[inline(never)]
     pub fn with_alloca<F, R>(f: F) -> R
     where
         F: FnOnce(&mut Self) -> R,
@@ -155,6 +144,9 @@ impl<T: Crossing + Copy> Return<T> {
 /// An auto trait that limits the types that can be send across to another compartment. These are:
 /// 1. Types other than references, UnsafeCell, raw pointers, slices.
 /// 2. #[repr(C)] structs and enums made from Crossing types.
+///
+/// # Safety
+/// The type must meet the above requirements.
 pub unsafe auto trait Crossing {}
 
 impl<T> !Crossing for &T {}
@@ -166,3 +158,17 @@ impl<T> !Crossing for &[T] {}
 impl<T> !Crossing for &mut [T] {}
 
 unsafe impl<T: Crossing + Copy> Crossing for SecGateReturn<T> {}
+
+/// Required to put in your source if you call any secure gates.
+// TODO: this isn't ideal, but it's the only solution I have at the moment. For some reason,
+// the linker doesn't even bother linking the libcalloca.a library that alloca creates. This forces
+// that to happen.
+#[macro_export]
+macro_rules! secgate_prelude {
+    () => {
+        #[link(name = "calloca", kind = "static")]
+        extern "C" {
+            pub fn c_with_alloca();
+        }
+    };
+}

@@ -1,5 +1,8 @@
 #![feature(c_str_literals)]
 #![feature(iterator_try_collect)]
+// syn doesn't allow us to easily fix this.
+#![allow(clippy::vec_box)]
+
 use proc_macro2::{Ident, TokenStream};
 use quote::{quote, ToTokens};
 use syn::{
@@ -18,7 +21,7 @@ pub fn secure_gate(
     }
 }
 
-const PREFIX: &'static str = "__twz_secgate_impl_";
+const PREFIX: &str = "__twz_secgate_impl_";
 
 #[allow(dead_code)]
 struct Info {
@@ -101,12 +104,17 @@ fn handle_secure_gate(
         ..
     } = names;
     tree.vis = Visibility::Inherited;
+    // For now, we put all this stuff in a mod to keep it contained.
     Ok(quote::quote! {
         pub mod #mod_name {
+            // the implementation (user-written)
             #tree
+            // the generated entry function
             #entry
+            // info struct data
             #link_section_data
             #struct_def
+            // trampoline text
             #link_section_text
             #trampoline
         }
@@ -163,18 +171,21 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
     call_point.sig.ident = entry_name.clone();
     call_point.block = Box::new(parse2(quote::quote! {
         {
+            // Unpack the arguments.
             let (#(#arg_names),*) = unsafe {*args}.into_inner();
-            //do_setup();
+
+            // Call the user-written implementation, catching unwinds.
             let impl_ret = std::panic::catch_unwind(|| #fn_name(#(#arg_names),*));
+            // If we panic'd, report to user and return error.
             if impl_ret.is_err() {
                 std::process::Termination::report(std::process::ExitCode::from(101u8));
             }
-            //do_teardown();
             let wret = match impl_ret {
                 Ok(r) => secgate::SecGateReturn::Success(r),
                 Err(_) => secgate::SecGateReturn::CalleePanic,
             };
 
+            // Success -- write the return value.
             let ret = unsafe {ret.as_mut().unwrap()};
             ret.set(wret);
         }
@@ -206,9 +217,12 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
     } = names;
     call_point.block = Box::new(parse2(quote::quote! {
         {
+            // Pack up the args
             let tuple = (#(#arg_names),*);
+            // Allocate stack space for args + ret. Args::with_alloca also inits the memory.
             #mod_name::Args::with_alloca(tuple, |args| {
                 #mod_name::Ret::with_alloca(|ret| {
+                    // Call the trampoline in the mod.
                     #mod_name::#trampoline_name(args as *const _, ret as *mut _);
                     ret.into_inner().unwrap_or(secgate::SecGateReturn::NoReturnValue)
                 })

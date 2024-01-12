@@ -1,7 +1,7 @@
 #![feature(naked_functions)]
 #![feature(thread_local)]
 
-extern crate secgate;
+secgate::secgate_prelude!();
 
 #[no_mangle]
 pub extern "C" fn test_sec_call() {
@@ -28,9 +28,4 @@ extern "C" {
 #[secgate::secure_gate]
 pub fn bar(x: u32, y: bool) -> u32 {
     420
-}
-
-#[link(name = "calloca", kind = "static")]
-extern "C" {
-    pub fn c_with_alloca();
 }
