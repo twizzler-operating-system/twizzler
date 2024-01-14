@@ -6,12 +6,13 @@ use elf::{
     file::Class,
 };
 use petgraph::stable_graph::NodeIndex;
+use secgate::RawSecGateInfo;
 use tracing::{debug, trace, warn};
 
 use crate::{
     compartment::{Compartment, CompartmentId},
     context::engine::{LoadDirective, LoadFlags},
-    library::{BackingData, CtorInfo, Library, LibraryId, UnloadedLibrary},
+    library::{BackingData, CtorInfo, Library, LibraryId, SecgateInfo, UnloadedLibrary},
     tls::TlsModule,
     DynlinkError, DynlinkErrorKind, HeaderError,
 };
@@ -19,6 +20,27 @@ use crate::{
 use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
 
 impl<Engine: ContextEngine> Context<Engine> {
+    pub(crate) fn get_secgate_info(
+        &self,
+        libname: &str,
+        elf: &elf::ElfBytes<'_, NativeEndian>,
+        base_addr: usize,
+    ) -> Result<SecgateInfo, DynlinkError> {
+        let info = elf
+            .section_header_by_name(".twz_secgate_info")?
+            .map(|info| SecgateInfo {
+                info_addr: Some((info.sh_addr as usize) + base_addr),
+                num: (info.sh_size as usize) / core::mem::size_of::<RawSecGateInfo>(),
+            })
+            .unwrap_or_default();
+
+        debug!(
+            "{}: registered secure gate info: {} gates",
+            libname, info.num
+        );
+
+        Ok(info)
+    }
     // Collect information about constructors.
     pub(crate) fn get_ctor_info(
         &self,
@@ -226,8 +248,9 @@ impl<Engine: ContextEngine> Context<Engine> {
             })
             .transpose()?;
 
-        // Step 3: lookup constructor information for this library.
+        // Step 3: lookup constructor and secgate information for this library.
         let ctor_info = self.get_ctor_info(&unlib.name, &elf, base_addr)?;
+        let secgate_info = self.get_secgate_info(&unlib.name, &elf, base_addr)?;
 
         let comp = self.get_compartment(comp_id)?;
         Ok(Library::new(
@@ -238,6 +261,7 @@ impl<Engine: ContextEngine> Context<Engine> {
             backings,
             tls_id,
             ctor_info,
+            secgate_info,
         ))
     }
 
@@ -247,14 +271,13 @@ impl<Engine: ContextEngine> Context<Engine> {
     ) -> Option<(NodeIndex, CompartmentId, &Compartment<Engine::Backing>)> {
         for (idx, comp) in self.compartments.iter() {
             if let Some(lib_id) = comp.library_names.get(&unlib.name) {
-                // TODO: only do this if it actually has secure gates.
                 let lib = self.get_library(LibraryId(*lib_id));
-                // TODO: HACK that will be addressed next PR.
                 if let Ok(lib) = lib {
-                    if lib.name.starts_with("libstd") || lib.name.starts_with("libtwz_rt") {
-                        return None;
+                    // Only allow cross-compartment refs for a library that has secure gates.
+                    if lib.secgate_info.info_addr.is_some() {
+                        return Some((*lib_id, CompartmentId(idx), comp));
                     }
-                    return Some((*lib_id, CompartmentId(idx), comp));
+                    return None;
                 }
             }
         }
@@ -266,21 +289,21 @@ impl<Engine: ContextEngine> Context<Engine> {
     pub(crate) fn load_library<Namer>(
         &mut self,
         comp_id: CompartmentId,
-        unlib: UnloadedLibrary,
+        root_unlib: UnloadedLibrary,
         idx: NodeIndex,
         namer: Namer,
     ) -> Result<NodeIndex, DynlinkError>
     where
         Namer: FnMut(&str) -> Option<Engine::Backing> + Clone,
     {
-        debug!("loading library {}", unlib);
+        debug!("loading library {}", root_unlib);
         // First load the main library.
         let lib = self
-            .load(comp_id, unlib.clone(), idx, namer.clone())
+            .load(comp_id, root_unlib.clone(), idx, namer.clone())
             .map_err(|e| {
                 DynlinkError::new_collect(
                     DynlinkErrorKind::LibraryLoadFail {
-                        library: unlib.clone(),
+                        library: root_unlib.clone(),
                     },
                     vec![e],
                 )
@@ -290,17 +313,17 @@ impl<Engine: ContextEngine> Context<Engine> {
         let deps = self.enumerate_needed(&lib).map_err(|e| {
             DynlinkError::new_collect(
                 DynlinkErrorKind::DepEnumerationFail {
-                    library: unlib.name.to_string(),
+                    library: root_unlib.name.to_string(),
                 },
                 vec![e],
             )
         })?;
         if !deps.is_empty() {
-            debug!("{}: loading {} dependencies", unlib, deps.len());
+            debug!("{}: loading {} dependencies", root_unlib, deps.len());
         }
         let deps = deps
             .into_iter()
-            .map(|unlib| {
+            .map(|dep_unlib| {
                 // Dependency search + load alg:
                 // 1. Search library name in current compartment. If found, use that.
                 // 2. Fallback to searching globally for the name, by checking compartment by compartment. If found, use that.
@@ -309,24 +332,26 @@ impl<Engine: ContextEngine> Context<Engine> {
 
                 let comp = self.get_compartment(comp_id)?;
                 let (existing_idx, load_comp) =
-                    if let Some(existing) = comp.library_names.get(&unlib.name) {
+                    if let Some(existing) = comp.library_names.get(&dep_unlib.name) {
                         debug!(
-                            "using existing library for {} (intra-compartment)",
-                            unlib.name
+                            "{}: dep using existing library for {} (intra-compartment in {})",
+                            root_unlib, dep_unlib.name, comp.name
                         );
                         (Some(*existing), comp_id)
                     } else if let Some((existing, other_comp_id, other_comp)) =
-                        self.find_cross_compartment_library(&unlib)
+                        self.find_cross_compartment_library(&dep_unlib)
                     {
                         debug!(
-                            "using existing library for {} (cross-compartment -> {})",
-                            unlib.name, other_comp.name
+                            "{}: dep using existing library for {} (cross-compartment to {})",
+                            root_unlib, dep_unlib.name, other_comp.name
                         );
                         (Some(existing), other_comp_id)
                     } else {
                         (
                             None,
-                            self.engine.select_compartment(&unlib).unwrap_or(comp_id),
+                            self.engine
+                                .select_compartment(&dep_unlib)
+                                .unwrap_or(comp_id),
                         )
                     };
 
@@ -334,15 +359,15 @@ impl<Engine: ContextEngine> Context<Engine> {
                 let idx = if let Some(existing_idx) = existing_idx {
                     existing_idx
                 } else {
-                    let idx = self.add_library(unlib.clone());
+                    let idx = self.add_library(dep_unlib.clone());
 
                     let comp = self.get_compartment_mut(load_comp)?;
-                    comp.library_names.insert(unlib.name.clone(), idx);
-                    self.load_library(comp_id, unlib.clone(), idx, namer.clone())
+                    comp.library_names.insert(dep_unlib.name.clone(), idx);
+                    self.load_library(comp_id, dep_unlib.clone(), idx, namer.clone())
                         .map_err(|e| {
                             DynlinkError::new_collect(
                                 DynlinkErrorKind::LibraryLoadFail {
-                                    library: unlib.clone(),
+                                    library: dep_unlib.clone(),
                                 },
                                 vec![e],
                             )
@@ -353,7 +378,12 @@ impl<Engine: ContextEngine> Context<Engine> {
             })
             .collect::<Vec<Result<_, DynlinkError>>>();
 
-        let _ = DynlinkError::collect(DynlinkErrorKind::LibraryLoadFail { library: unlib }, deps)?;
+        let _ = DynlinkError::collect(
+            DynlinkErrorKind::LibraryLoadFail {
+                library: root_unlib,
+            },
+            deps,
+        )?;
 
         assert_eq!(idx, lib.idx);
         self.library_deps[idx] = LoadedOrUnloaded::Loaded(lib);

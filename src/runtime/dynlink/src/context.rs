@@ -121,11 +121,8 @@ impl<Engine: ContextEngine> Context<Engine> {
     }
 
     /// Lookup a library by name
-    pub fn lookup_library(
-        &self,
-        comp: &Compartment<Engine::Backing>,
-        name: &str,
-    ) -> Option<LibraryId> {
+    pub fn lookup_library(&self, comp: CompartmentId, name: &str) -> Option<LibraryId> {
+        let comp = self.get_compartment(comp).ok()?;
         Some(LibraryId(*comp.library_names.get(name)?))
     }
 

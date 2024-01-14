@@ -1,5 +1,6 @@
 #![feature(naked_functions)]
 #![feature(thread_local)]
+#![feature(c_str_literals)]
 
 use std::sync::{Arc, Mutex};
 
@@ -17,6 +18,7 @@ use crate::runtime::init_actions;
 
 mod init;
 mod runtime;
+pub mod secgate_test;
 mod state;
 
 pub fn main() {
@@ -55,6 +57,19 @@ pub fn main() {
 
 fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
     info!("monitor early init completed, starting init");
+
+    {
+        let state = state.lock().unwrap();
+        let comp = state.dynlink.lookup_compartment("monitor").unwrap();
+        let mon = state.dynlink.lookup_library(comp, "libmonitor.so").unwrap();
+
+        let mon = state.dynlink.get_library(mon)?;
+
+        for gate in mon.iter_secgates().unwrap() {
+            let name = gate.name().to_string_lossy();
+            info!("secure gate in {} => {}: {:x}", mon.name, name, gate.imp);
+        }
+    }
 
     load_hello_world_test(&state)?;
 

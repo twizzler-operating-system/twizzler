@@ -9,6 +9,7 @@ edition = "2021"
 elf = "0.7"
 twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
 twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api", features = ["runtime"] }
+secgate = { path = "../secgate" }
 tracing = "0.1"
 twizzler-object = { path = "../../lib/twizzler-object" }
 thiserror = "1.0"
