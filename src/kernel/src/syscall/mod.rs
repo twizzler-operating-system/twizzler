@@ -16,7 +16,7 @@ use crate::memory::VirtAddr;
 use crate::time::TICK_SOURCES;
 
 use self::{
-    object::{sys_new_handle, sys_unbind_handle},
+    object::{sys_new_handle, sys_sctx_attach, sys_unbind_handle},
     thread::thread_ctrl,
 };
 
@@ -346,6 +346,14 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
                 Err(ObjectReadMapError::InvalidArgument)
             };
 
+            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
+            context.set_return_values(code, val);
+        }
+        Syscall::SctxAttach => {
+            let hi = context.arg0();
+            let lo = context.arg1();
+            let id = ObjID::new_from_parts(hi, lo);
+            let result = sys_sctx_attach(id).map(|_| 0u64);
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }

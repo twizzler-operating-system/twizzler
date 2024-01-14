@@ -20,9 +20,7 @@ use crate::syscall::object::ObjectHandle;
 use self::virtmem::KernelObjectVirtHandle;
 
 impl ObjectHandle for ContextRef {
-    fn create_with_handle(_obj: ObjectRef) -> Self {
-        Arc::new(Context::new())
-    }
+    type HandleType = Context;
 }
 
 pub mod virtmem;

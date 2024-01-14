@@ -71,7 +71,7 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> 
 
 pub fn start_new_init() {
     let mut thread = Thread::new(
-        Some(Arc::new(Context::new())),
+        Some(Arc::new(Context::new(None))),
         None,
         Priority::default_user(),
     );

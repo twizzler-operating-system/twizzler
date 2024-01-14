@@ -40,6 +40,7 @@ use crate::{
 /// A type that implements [Context] for virtual memory systems.
 pub struct VirtContext {
     arch: ArchContext,
+    sctx: Option<ObjectRef>,
     slots: Mutex<SlotMgr>,
     id: Id<'static>,
     is_kernel: bool,
@@ -142,28 +143,29 @@ impl<'a> PhysAddrProvider for ObjectPageProvider<'a> {
 
 impl Default for VirtContext {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
 impl VirtContext {
-    fn __new(arch: ArchContext, is_kernel: bool) -> Self {
+    fn __new(arch: ArchContext, is_kernel: bool, sctx: Option<ObjectRef>) -> Self {
         Self {
             arch,
             slots: Mutex::new(SlotMgr::default()),
             is_kernel,
             id: CONTEXT_IDS.next(),
+            sctx,
         }
     }
 
     /// Construct a new context for the kernel.
     pub fn new_kernel() -> Self {
-        Self::__new(ArchContext::new_kernel(), true)
+        Self::__new(ArchContext::new_kernel(), true, None)
     }
 
     /// Construct a new context for userspace.
-    pub fn new() -> Self {
-        Self::__new(ArchContext::new(), false)
+    pub fn new(sctx: Option<ObjectRef>) -> Self {
+        Self::__new(ArchContext::new(), false, sctx)
     }
 
     /// Init a context for being the kernel context, and clone the mappings from the bootstrap context.
