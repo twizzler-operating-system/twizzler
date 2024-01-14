@@ -287,7 +287,6 @@ fn maybe_build_tests<'a>(
                 "bootstrap" => None,
                 "secgate" => None,
                 "secgate-macros" => None,
-                "hello-world" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),
