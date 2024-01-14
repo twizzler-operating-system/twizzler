@@ -168,6 +168,7 @@ fn build_tools<'a>(
     mode: CompileMode,
     other_options: &OtherOptions,
 ) -> anyhow::Result<Compilation<'a>> {
+    crate::toolchain::clear_cc();
     crate::print_status_line("collection: tools", None);
     let tools = locate_packages(workspace, Some("tool"));
     let mut options = CompileOptions::new(workspace.config(), mode)?;
@@ -187,6 +188,7 @@ fn build_static<'a>(
         return Ok(None);
     }
     crate::toolchain::set_static();
+    crate::toolchain::set_cc();
     crate::print_status_line("collection: userspace-static", Some(build_config));
     // the currently supported build target triples
     // have a value of "unknown" for the machine, but
@@ -221,6 +223,7 @@ fn build_twizzler<'a>(
         return Ok(None);
     }
     crate::toolchain::set_dynamic();
+    crate::toolchain::set_cc();
     crate::print_status_line("collection: userspace", Some(build_config));
     // the currently supported build target triples
     // have a value of "unknown" for the machine, but
@@ -255,6 +258,7 @@ fn maybe_build_tests<'a>(
         return Ok(None);
     }
     crate::toolchain::set_static();
+    crate::toolchain::set_cc();
     crate::print_status_line("collection: userspace::tests", Some(build_config));
     let triple = Triple::new(
         build_config.arch,
@@ -281,6 +285,8 @@ fn maybe_build_tests<'a>(
                 "twz-rt" => None,
                 "monitor" => None,
                 "bootstrap" => None,
+                "secgate" => None,
+                "secgate-macros" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),
