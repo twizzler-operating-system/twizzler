@@ -19,6 +19,7 @@ use crate::{
     memory::context::{ContextRef, UserContext},
     obj::control::ControlObjectCacher,
     processor::{get_processor, KERNEL_STACK_SIZE},
+    security::SecCtxMgr,
     spinlock::Spinlock,
 };
 
@@ -60,6 +61,7 @@ pub struct Thread {
     spawn_args: Option<ThreadSpawnArgs>,
     pub control_object: ControlObjectCacher<ThreadRepr>,
     pub upcall_target: Spinlock<Option<UpcallTarget>>,
+    pub secctx: SecCtxMgr,
     // TODO: consider reusing one of these for the others.
     pub sched_link: AtomicLink,
     pub mutex_link: AtomicLink,
@@ -127,6 +129,7 @@ impl Thread {
             suspend_link: RBTreeAtomicLink::default(),
             condvar_link: RBTreeAtomicLink::default(),
             upcall_target: Spinlock::new(None),
+            secctx: SecCtxMgr::default(),
         }
     }
 

@@ -61,6 +61,9 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> 
         }
         UpcallTargetSpawnOption::SetTo(ut) => *thread.upcall_target.lock() = Some(ut),
     }
+    if let Some(cur) = current_thread_ref() {
+        thread.secctx = cur.secctx.clone();
+    }
     unsafe {
         thread.init(user_new_start);
     }

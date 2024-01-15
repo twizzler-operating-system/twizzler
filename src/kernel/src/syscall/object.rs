@@ -171,6 +171,7 @@ pub fn sys_unbind_handle(id: ObjID) {
     ah.vm_contexts.remove(&id).unwrap();
 }
 
-pub fn sys_sctx_attach(id: ObjID) -> Result<(), ()> {
+// Note: placeholder types
+pub fn sys_sctx_attach(id: ObjID) -> Result<u32, u32> {
     todo!()
 }

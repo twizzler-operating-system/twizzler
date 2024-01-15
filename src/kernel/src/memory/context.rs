@@ -57,6 +57,7 @@ pub trait UserContext {
 }
 
 /// A struct containing information about how an object is inserted within a context.
+#[derive(Clone)]
 pub struct ObjectContextInfo {
     object: ObjectRef,
     perms: Protections,

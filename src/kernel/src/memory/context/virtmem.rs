@@ -481,12 +481,26 @@ pub struct KernelObjectVirtHandle<T> {
     _pd: PhantomData<T>,
 }
 
+impl<T> Clone for KernelObjectVirtHandle<T> {
+    fn clone(&self) -> Self {
+        Self {
+            info: self.info.clone(),
+            slot: self.slot,
+            _pd: PhantomData,
+        }
+    }
+}
+
 impl<T> KernelObjectVirtHandle<T> {
     pub fn start_addr(&self) -> VirtAddr {
         VirtAddr::new(0)
             .unwrap()
             .offset(self.slot.raw() * MAX_SIZE)
             .unwrap()
+    }
+
+    pub fn id(&self) -> ObjID {
+        self.info.object().id()
     }
 }
 
