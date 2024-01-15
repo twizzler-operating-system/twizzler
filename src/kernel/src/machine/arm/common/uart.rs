@@ -137,6 +137,45 @@ impl PL011 {
         }
     }
 
+    /// Enable interrupts for the RX side if the UART.
+    pub unsafe fn enable_rx_interrupt(&self) {
+        // program the UART: (page 62/3-16)
+        // disable UART
+        {
+            let cr = self.read_reg(Registers::UARTCR);
+            self.write_reg(Registers::UARTCR, (cr &  !0b1) as u32);
+        }
+        // wait for end of tx or rx of current char
+        // while BUSY, !TXFE, !RXFE --> wait
+        loop {
+            let flag_reg = self.read_reg(Registers::UARTFR);
+            let tx_busy = (flag_reg >> 3) & 0b1 == 1;
+            let tx_empty = (flag_reg >> 7) & 0b1 == 1;
+            let rx_empty = (flag_reg >> 4) & 0b1 == 1;
+
+            if !tx_busy && tx_empty && rx_empty {
+                break
+            }
+        }
+        // Flush the transmit FIFO by setting the FEN bit to 0 in the
+        // Line Control Register, UARTLCR_H on page 3-12.
+        let lcr = self.read_reg(Registers::UARTLCR_H);
+        self.write_reg(Registers::UARTLCR_H, (lcr & !(0b1 << 4)) as u32);
+
+        // Enable interrupts for the RX side.
+        // See RXIM: bit 4 of UARTIMSC from table 3-14, pg 3-18
+        // - On a write of 1, the mask of the UARTRXINTR interrupt is set.
+        // - A write of 0 clears the mask.
+        // From 2.8, pg 2-22: "Setting the mask bit HIGH enables the interrupt."
+        self.write_reg(Registers::UARTIMSC, (0b1 << 4) as u32);
+
+        // enable uart
+        {
+            let cr = self.read_reg(Registers::UARTCR);
+            self.write_reg(Registers::UARTCR, (cr | 0b1) as u32);
+        }
+    }
+
     /// Write a value to a single register. Registers are 32-bits wide.
     unsafe fn write_reg(&self, register: Registers, value: u32) {
         let reg = (self.base + register as usize) as *mut u32;
