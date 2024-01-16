@@ -147,7 +147,7 @@ pub fn sys_new_handle(id: ObjID, handle_type: HandleType) -> Result<u64, NewHand
     match handle_type {
         HandleType::VmContext => ah
             .vm_contexts
-            .insert(id, Handle::new(id, |_obj| Context::new(None))?),
+            .insert(id, Handle::new(id, |_obj| Context::new())?),
         HandleType::PagerQueue => {
             if ah.pager_q_count == 2 {
                 return Err(NewHandleError::HandleSaturated);

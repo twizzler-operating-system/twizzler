@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{arch, BootInfo};
+use crate::{arch, security::KERNEL_SCTX, BootInfo};
 
 pub mod allocator;
 pub mod context;
@@ -27,7 +27,7 @@ pub struct MemoryRegion {
 pub fn init<B: BootInfo>(boot_info: &B) {
     frame::init(boot_info.memory_regions());
     let kc = context::kernel_context();
-    kc.switch_to();
+    kc.switch_to(KERNEL_SCTX);
     kc.init_allocator();
     allocator::init(kc);
     // set flag to indicate that mm system is initalized

@@ -10,6 +10,7 @@ use crate::{
     condvar::CondVar,
     memory::{context::Context, VirtAddr},
     sched::schedule_new_thread,
+    security::{SecCtxMgr, SecurityContext, KERNEL_SCTX},
     spinlock::Spinlock,
     syscall::object::get_vmcontext_from_handle,
     userinit::user_init,
@@ -23,14 +24,6 @@ extern "C" fn user_new_start() {
         let current = current_thread_ref().unwrap();
         let args = current.spawn_args.as_ref().unwrap();
         current.set_tls(args.tls as u64);
-        /*
-        logln!(
-            "thread jtu {:x} {:x} {:x}",
-            args.entry,
-            args.stack_base + args.stack_size,
-            args.tls
-        );
-        */
         (args.entry, args.stack_base, args.stack_size, args.arg)
     };
     unsafe {
@@ -74,10 +67,11 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> 
 
 pub fn start_new_init() {
     let mut thread = Thread::new(
-        Some(Arc::new(Context::new(None))),
+        Some(Arc::new(Context::new())),
         None,
         Priority::default_user(),
     );
+    thread.secctx = SecCtxMgr::new(Arc::new(SecurityContext::new(None)));
     unsafe {
         thread.init(user_init);
     }

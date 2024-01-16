@@ -61,12 +61,12 @@ pub struct Thread {
     spawn_args: Option<ThreadSpawnArgs>,
     pub control_object: ControlObjectCacher<ThreadRepr>,
     pub upcall_target: Spinlock<Option<UpcallTarget>>,
-    pub secctx: SecCtxMgr,
     // TODO: consider reusing one of these for the others.
     pub sched_link: AtomicLink,
     pub mutex_link: AtomicLink,
     pub condvar_link: RBTreeAtomicLink,
     pub suspend_link: RBTreeAtomicLink,
+    pub secctx: SecCtxMgr,
 }
 unsafe impl Send for Thread {}
 
@@ -129,7 +129,7 @@ impl Thread {
             suspend_link: RBTreeAtomicLink::default(),
             condvar_link: RBTreeAtomicLink::default(),
             upcall_target: Spinlock::new(None),
-            secctx: SecCtxMgr::default(),
+            secctx: SecCtxMgr::new_kernel(),
         }
     }
 
@@ -148,7 +148,7 @@ impl Thread {
     pub fn switch_thread(&self, current: &Thread) {
         if self != current {
             if let Some(ref ctx) = self.memory_context {
-                ctx.switch_to();
+                ctx.switch_to(self.secctx.active().id());
             }
         }
         self.arch_switch_to(current)
