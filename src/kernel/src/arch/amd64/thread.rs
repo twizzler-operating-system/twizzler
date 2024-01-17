@@ -5,7 +5,7 @@ use core::{
 
 use twizzler_abi::{
     arch::XSAVE_LEN,
-    object::{MAX_SIZE, NULLPAGE_SIZE},
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
     upcall::{
         UpcallData, UpcallFrame, UpcallHandlerFlags, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE,
     },
@@ -147,6 +147,7 @@ fn set_upcall<T: UpcallAble + Copy>(
     regs: &mut T,
     target: UpcallTarget,
     info: UpcallInfo,
+    source_ctx: ObjID,
     sup: bool,
 ) -> bool
 where
@@ -182,7 +183,7 @@ where
         } else {
             UpcallHandlerFlags::empty()
         },
-        source_ctx: 0.into(),
+        source_ctx,
     };
 
     // Step 1: determine where we are going to put the frame. If we have
@@ -298,6 +299,11 @@ impl Thread {
     /// generated to this thread after calling this function but before returning
     /// to userspace will cause the thread to immediately abort.
     pub fn restore_upcall_frame(&self, frame: &UpcallFrame) {
+        let res = self.secctx.switch_context(frame.prior_ctx);
+        if matches!(res, crate::security::SwitchResult::NotAttached) {
+            logln!("warning -- tried to restore thread to non-attached security context");
+            crate::thread::exit(UPCALL_EXIT_CODE);
+        }
         // We restore this in the syscall return code path, since
         // we know that's where we are coming from, and we actually need
         // to use the ISR return mechanism (see the syscall code).
@@ -312,17 +318,18 @@ impl Thread {
             logln!("warning -- thread aborted due to upcall generation during frame restoration");
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
+        let source_ctx = self.secctx.active_id();
         match *self.arch.entry_registers.borrow() {
             Registers::None => {
                 panic!("tried to upcall to a thread that hasn't started yet");
             }
             Registers::Interrupt(int, _) => {
                 let int = unsafe { &mut *int };
-                set_upcall(int, target, info, sup);
+                set_upcall(int, target, info, source_ctx, sup);
             }
             Registers::Syscall(sys, _) => {
                 let sys = unsafe { &mut *sys };
-                set_upcall(sys, target, info, sup);
+                set_upcall(sys, target, info, source_ctx, sup);
             }
         }
     }

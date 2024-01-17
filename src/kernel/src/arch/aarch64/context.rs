@@ -5,7 +5,7 @@ use crate::{
     memory::{
         frame::{alloc_frame, PhysicalFrameFlags},
         pagetables::{
-            DeferredUnmappingOps, Mapper, MapReader, MappingCursor, MappingSettings,
+            DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
             PhysAddrProvider,
         },
         PhysAddr,
@@ -37,10 +37,10 @@ lazy_static::lazy_static! {
         for idx in (Table::PAGE_TABLE_ENTRIES/2)..Table::PAGE_TABLE_ENTRIES {
             // write out PT entries for a top level table
             // whose entries point to another zeroed page
-            m.set_top_level_table(idx, 
+            m.set_top_level_table(idx,
                 Entry::new(
                     alloc_frame(PhysicalFrameFlags::ZEROED)
-                        .start_address(), 
+                        .start_address(),
                     // intermediate here means another page table
                     EntryFlags::intermediate()
                 )
@@ -73,12 +73,13 @@ impl ArchContext {
 
     #[allow(named_asm_labels)]
     pub fn switch_to(&self) {
+        // TODO: handle requests to switch to current page tables by just ignoring.
         // TODO: make sure the TTBR1_EL1 switch only happens once
         // write TTBR1
         TTBR1_EL1.set_baddr(self.kernel);
         // write TTBR0
         TTBR0_EL1.set_baddr(self.user.raw());
-        unsafe { 
+        unsafe {
             core::arch::asm!(
                 // ensure that all previous instructions have completed
                 "isb",
@@ -133,11 +134,9 @@ impl ArchContext {
 
 impl ArchContextInner {
     fn new() -> Self {
-        // we need to create a new mapper object by allocating 
+        // we need to create a new mapper object by allocating
         // some memory for the page table.
-        let mapper = Mapper::new(
-            alloc_frame(PhysicalFrameFlags::ZEROED).start_address()
-        );
+        let mapper = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
         Self { mapper }
     }
 

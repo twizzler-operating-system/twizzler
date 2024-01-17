@@ -6,16 +6,17 @@ use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
         CreateTieSpec, HandleType, MapFlags, MapInfo, NewHandleError, ObjectCreate,
-        ObjectCreateError, ObjectMapError, ObjectReadMapError, ObjectSource,
+        ObjectCreateError, ObjectMapError, ObjectReadMapError, ObjectSource, SctxAttachError,
     },
 };
 
 use crate::{
-    memory::context::{Context, ContextRef},
+    memory::context::{Context, ContextRef, KernelMemoryContext, KernelObject, ObjectContextInfo},
     mutex::Mutex,
     obj::{LookupFlags, Object, ObjectRef},
     once::Once,
-    thread::current_memory_context,
+    security::{get_sctx, SecurityContext},
+    thread::{current_memory_context, current_thread_ref},
 };
 
 pub fn sys_object_create(
@@ -172,6 +173,10 @@ pub fn sys_unbind_handle(id: ObjID) {
 }
 
 // Note: placeholder types
-pub fn sys_sctx_attach(id: ObjID) -> Result<u32, u32> {
-    todo!()
+pub fn sys_sctx_attach(id: ObjID) -> Result<u32, SctxAttachError> {
+    let sctx = get_sctx(id)?;
+
+    current_thread_ref().unwrap().secctx.attach(sctx);
+
+    Ok(0)
 }

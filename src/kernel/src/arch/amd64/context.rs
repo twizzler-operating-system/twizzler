@@ -50,10 +50,11 @@ impl ArchContext {
         }
     }
 
-    #[allow(named_asm_labels)]
     pub fn switch_to(&self) {
         unsafe {
-            x86::controlregs::cr3_write(self.target);
+            if self.target != x86::controlregs::cr3() {
+                x86::controlregs::cr3_write(self.target);
+            }
         }
     }
 

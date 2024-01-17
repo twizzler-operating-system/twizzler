@@ -28,7 +28,7 @@ use crate::{
     },
     mutex::Mutex,
     obj::{self, ObjectRef},
-    security::{SecCtxMgr, SecurityContextRef, KERNEL_SCTX},
+    security::KERNEL_SCTX,
     spinlock::Spinlock,
     thread::current_thread_ref,
 };

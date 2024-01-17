@@ -148,7 +148,7 @@ impl Thread {
     pub fn switch_thread(&self, current: &Thread) {
         if self != current {
             if let Some(ref ctx) = self.memory_context {
-                ctx.switch_to(self.secctx.active().id());
+                ctx.switch_to(self.secctx.active_id());
             }
         }
         self.arch_switch_to(current)

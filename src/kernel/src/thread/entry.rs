@@ -10,7 +10,7 @@ use crate::{
     condvar::CondVar,
     memory::{context::Context, VirtAddr},
     sched::schedule_new_thread,
-    security::{SecCtxMgr, SecurityContext, KERNEL_SCTX},
+    security::{SecCtxMgr, SecurityContext},
     spinlock::Spinlock,
     syscall::object::get_vmcontext_from_handle,
     userinit::user_init,
