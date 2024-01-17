@@ -13,16 +13,19 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct SecCtxMgrInner {
+struct SecCtxMgrInner {
     active: SecurityContextRef,
     inactive: BTreeMap<ObjID, SecurityContextRef>,
 }
 
+/// Management of per-thread security context info.
 pub struct SecCtxMgr {
     inner: Mutex<SecCtxMgrInner>,
+    // Cache this here so we can access it quickly and without grabbing a mutex.
     active_id: Spinlock<ObjID>,
 }
 
+/// A single security context.
 pub struct SecurityContext {
     kobj: Option<KernelObject<()>>,
     cache: BTreeMap<ObjID, PermsInfo>,
@@ -30,14 +33,17 @@ pub struct SecurityContext {
 
 pub type SecurityContextRef = Arc<SecurityContext>;
 
+/// The kernel gets a special, reserved sctx ID.
 pub const KERNEL_SCTX: ObjID = ObjID::new(0);
 
+/// Information about protections for a given object within a context.
 #[derive(Clone, Copy)]
 pub struct PermsInfo {
     ctx: ObjID,
     prot: Protections,
 }
 
+/// Information about how we want to access an object for perms checking.
 #[derive(Clone, Copy)]
 pub struct AccessInfo {
     /// The target object we're accessing
@@ -77,22 +83,27 @@ impl SecCtxMgr {
         *self.inner.lock().active.lookup(id)
     }
 
+    /// Get the active context.
     pub fn active(&self) -> SecurityContextRef {
         self.inner.lock().active.clone()
     }
 
+    /// Get the active ID. This is faster than active().id() and doesn't allocate memory (and only uses a spinlock).
     pub fn active_id(&self) -> ObjID {
         *self.active_id.lock()
     }
 
+    /// Check access rights in the active context.
     pub fn check_active_access(&self, _access_info: AccessInfo) -> &PermsInfo {
         todo!()
     }
 
+    /// Search all attached contexts for access.
     pub fn search_access(&self, _access_info: AccessInfo) -> &PermsInfo {
         todo!()
     }
 
+    /// Build a new SctxMgr for user threads.
     pub fn new(ctx: SecurityContextRef) -> Self {
         let id = ctx.id();
         Self {
@@ -104,6 +115,7 @@ impl SecCtxMgr {
         }
     }
 
+    /// Build a new SctxMgr for kernel threads.
     pub fn new_kernel() -> Self {
         Self {
             inner: Mutex::new(SecCtxMgrInner {
@@ -114,6 +126,7 @@ impl SecCtxMgr {
         }
     }
 
+    /// Switch to the specified context.
     pub fn switch_context(&self, id: ObjID) -> SwitchResult {
         if *self.active_id.lock() == id {
             return SwitchResult::NoSwitch;
@@ -130,15 +143,20 @@ impl SecCtxMgr {
         }
     }
 
+    /// Attach a security context.
     pub fn attach(&self, sctx: SecurityContextRef) {
         self.inner.lock().inactive.insert(sctx.id(), sctx);
     }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+/// Possible results of switching.
 pub enum SwitchResult {
+    /// No switch was needed.
     NoSwitch,
+    /// Switch successful.
     Switched,
+    /// The specified ID was not attached.
     NotAttached,
 }
 
@@ -163,6 +181,7 @@ lazy_static! {
     };
 }
 
+/// Get a security contexts from the global cache.
 pub fn get_sctx(id: ObjID) -> Result<SecurityContextRef, SctxAttachError> {
     let obj = crate::obj::lookup_object(id, LookupFlags::empty())
         .ok_or(SctxAttachError::ObjectNotFound)?;
@@ -180,4 +199,19 @@ pub fn get_sctx(id: ObjID) -> Result<SecurityContextRef, SctxAttachError> {
     Ok(entry.clone())
 }
 
-// TODO: security context removal
+impl Drop for SecCtxMgr {
+    fn drop(&mut self) {
+        let mut global = GLOBAL_SECCTX_MGR.contexts.lock();
+        let inner = self.inner.lock();
+        // Check the contexts we have a reference to. If the value is 2, then it's only us and the global mgr that have a ref.
+        // Since we hold the global mgr lock, this will not get incremented if no one else holds a ref.
+        for ctx in inner.inactive.values() {
+            if ctx.id() != KERNEL_SCTX && Arc::strong_count(ctx) == 2 {
+                global.remove(&ctx.id());
+            }
+        }
+        if inner.active.id() != KERNEL_SCTX && Arc::strong_count(&inner.active) == 2 {
+            global.remove(&inner.active.id());
+        }
+    }
+}

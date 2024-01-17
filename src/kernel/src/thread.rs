@@ -148,6 +148,7 @@ impl Thread {
     pub fn switch_thread(&self, current: &Thread) {
         if self != current {
             if let Some(ref ctx) = self.memory_context {
+                // We have to use active_id here to avoid a mutex.
                 ctx.switch_to(self.secctx.active_id());
             }
         }

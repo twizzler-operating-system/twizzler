@@ -17,7 +17,10 @@ use super::{
     UserContext,
 };
 use crate::{
-    arch::{address::VirtAddr, context::ArchContext},
+    arch::{
+        address::VirtAddr,
+        context::{ArchContext, ArchContextTarget},
+    },
     idcounter::{Id, IdCounter, StableId},
     memory::{
         pagetables::{
@@ -40,7 +43,10 @@ use crate::{
 
 /// A type that implements [Context] for virtual memory systems.
 pub struct VirtContext {
-    secctx: Spinlock<BTreeMap<ObjID, ArchContext>>,
+    secctx: Mutex<BTreeMap<ObjID, ArchContext>>,
+    // We keep a cache of the actual switch targets so that we don't need to take the above mutex during switch_to.
+    // Unfortunately, it's still kinda hairy, since this is a spinlock of a memory-allocating collection. See register_sctx for details.
+    target_cache: Spinlock<BTreeMap<ObjID, ArchContextTarget>>,
     slots: Mutex<SlotMgr>,
     id: Id<'static>,
     is_kernel: bool,
@@ -147,16 +153,15 @@ impl VirtContext {
             slots: Mutex::new(SlotMgr::default()),
             is_kernel,
             id: CONTEXT_IDS.next(),
-            secctx: Spinlock::new(BTreeMap::new()),
+            secctx: Mutex::new(BTreeMap::new()),
+            target_cache: Spinlock::new(BTreeMap::new()),
         }
     }
 
     /// Construct a new context for the kernel.
     pub fn new_kernel() -> Self {
         let this = Self::__new(true);
-        this.secctx
-            .lock()
-            .insert(KERNEL_SCTX, ArchContext::new_kernel());
+        this.register_sctx(KERNEL_SCTX, ArchContext::new_kernel());
         this
     }
 
@@ -164,7 +169,7 @@ impl VirtContext {
     pub fn new() -> Self {
         let this = Self::__new(false);
         // TODO: remove this once we have full support for user security contexts
-        this.secctx.lock().insert(KERNEL_SCTX, ArchContext::new());
+        this.register_sctx(KERNEL_SCTX, ArchContext::new());
         this
     }
 
@@ -175,8 +180,20 @@ impl VirtContext {
             .expect("cannot get arch mapper for unattached security context"))
     }
 
-    pub fn register_sctx(&self, sctx: ObjID) {
-        self.secctx.lock().insert(sctx, ArchContext::new());
+    pub fn register_sctx(&self, sctx: ObjID, arch: ArchContext) {
+        let mut secctx = self.secctx.lock();
+        secctx.insert(sctx, arch);
+        // Rebuild the target cache. We have to do it this way because we cannot allocate
+        // memory while holding the target_cache lock (as it's a spinlock).
+        let mut new_target_cache = BTreeMap::new();
+        for value in secctx.iter() {
+            new_target_cache.insert(*value.0, value.1.target);
+        }
+        // Swap out the target caches, dropping the old one after the spinlock is released.
+        {
+            let mut target_cache = self.target_cache.lock();
+            core::mem::swap(&mut *target_cache, &mut new_target_cache);
+        }
     }
 
     /// Init a context for being the kernel context, and clone the mappings from the bootstrap context.
@@ -235,7 +252,14 @@ impl UserContext for VirtContext {
     type MappingInfo = Slot;
 
     fn switch_to(&self, sctx: ObjID) {
-        self.with_arch(sctx, |arch| arch.switch_to())
+        let tc = self.target_cache.lock();
+        let target = tc
+            .get(&sctx)
+            .expect("tried to switch to a non-registered sctx");
+        // Safety: we get the target from an ArchContext that we track.
+        unsafe {
+            ArchContext::switch_to_target(target);
+        }
     }
 
     fn insert_object(

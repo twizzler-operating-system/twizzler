@@ -11,11 +11,11 @@ use twizzler_abi::{
 };
 
 use crate::{
-    memory::context::{Context, ContextRef, KernelMemoryContext, KernelObject, ObjectContextInfo},
+    memory::context::{Context, ContextRef},
     mutex::Mutex,
     obj::{LookupFlags, Object, ObjectRef},
     once::Once,
-    security::{get_sctx, SecurityContext},
+    security::get_sctx,
     thread::{current_memory_context, current_thread_ref},
 };
 
