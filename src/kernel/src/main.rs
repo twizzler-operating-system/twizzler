@@ -40,6 +40,7 @@ mod panic;
 mod processor;
 mod queue;
 mod sched;
+pub mod security;
 mod spinlock;
 mod syscall;
 mod thread;
