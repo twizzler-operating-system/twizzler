@@ -6,7 +6,7 @@ use super::{convert_codes_to_result, Syscall};
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(u32)]
-/// Possible error returns for [sys_object_create].
+/// Possible error returns for [sys_sctx_attach].
 pub enum SctxAttachError {
     /// An unknown error occurred.
     Unknown = 0,

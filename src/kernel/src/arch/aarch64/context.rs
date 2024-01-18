@@ -20,6 +20,7 @@ pub struct ArchContextInner {
     // we have a single mapper that covers one part of the address space
     mapper: Mapper,
 }
+
 pub struct ArchContext {
     pub target: ArchContextTarget,
     inner: Mutex<ArchContextInner>,
@@ -27,7 +28,7 @@ pub struct ArchContext {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 // TODO: can we get the kernel tables elsewhere?
-pub struct ArchContextTarget(PhysAddr, u64);
+pub struct ArchContextTarget(PhysAddr);
 
 // default kernel mapper that is shared among all kernel instances of ArchContext
 lazy_static::lazy_static! {
@@ -52,6 +53,8 @@ lazy_static::lazy_static! {
         }
         Spinlock::new(m)
     };
+
+    static ref KERNEL_TABLE_ADDR: PhysAddr = KERNEL_MAPPER.lock().root_address();
 }
 
 impl Default for ArchContext {
@@ -64,10 +67,7 @@ impl ArchContext {
     /// Construct a new context for the kernel.
     pub fn new_kernel() -> Self {
         let inner = ArchContextInner::new();
-        let target = ArchContextTarget(
-            inner.mapper.root_address(),
-            KERNEL_MAPPER.lock().root_address().raw(),
-        );
+        let target = ArchContextTarget(inner.mapper.root_address());
         Self {
             target,
             inner: Mutex::new(inner),
@@ -90,10 +90,10 @@ impl ArchContext {
     /// # Safety
     /// This function must be called with a target that comes from an ArchContext that lives long enough.
     pub unsafe fn switch_to_target(tgt: &ArchContextTarget) {
-        // TODO: handle requests to switch to current page tables by just ignoring.
-        // TODO: make sure the TTBR1_EL1 switch only happens once
+        // TODO: If the incoming target is already the current user table, this should be a no-op. Also, we don't
+        // need to set the kernel tables each time.
         // write TTBR1
-        TTBR1_EL1.set_baddr(tgt.1);
+        TTBR1_EL1.set_baddr(KERNEL_TABLE_ADDR.raw());
         // write TTBR0
         TTBR0_EL1.set_baddr(tgt.0.raw());
         core::arch::asm!(
