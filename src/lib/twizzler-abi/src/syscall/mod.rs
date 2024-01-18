@@ -8,6 +8,7 @@ mod kaction;
 mod map;
 mod object_control;
 mod object_stat;
+mod security;
 mod spawn;
 mod thread_control;
 mod thread_sync;
@@ -53,6 +54,8 @@ pub enum Syscall {
     ObjectReadMap,
     /// Remove an object as a handle.
     UnbindHandle,
+    /// Attach to a security context.
+    SctxAttach,
     NumSyscalls,
 }
 
@@ -80,6 +83,7 @@ pub use kaction::*;
 pub use map::*;
 pub use object_control::*;
 pub use object_stat::*;
+pub use security::*;
 pub use spawn::*;
 pub use thread_control::*;
 pub use thread_sync::*;

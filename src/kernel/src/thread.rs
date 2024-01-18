@@ -19,6 +19,7 @@ use crate::{
     memory::context::{ContextRef, UserContext},
     obj::control::ControlObjectCacher,
     processor::{get_processor, KERNEL_STACK_SIZE},
+    security::SecCtxMgr,
     spinlock::Spinlock,
 };
 
@@ -65,6 +66,7 @@ pub struct Thread {
     pub mutex_link: AtomicLink,
     pub condvar_link: RBTreeAtomicLink,
     pub suspend_link: RBTreeAtomicLink,
+    pub secctx: SecCtxMgr,
 }
 unsafe impl Send for Thread {}
 
@@ -127,6 +129,7 @@ impl Thread {
             suspend_link: RBTreeAtomicLink::default(),
             condvar_link: RBTreeAtomicLink::default(),
             upcall_target: Spinlock::new(None),
+            secctx: SecCtxMgr::new_kernel(),
         }
     }
 
@@ -145,7 +148,8 @@ impl Thread {
     pub fn switch_thread(&self, current: &Thread) {
         if self != current {
             if let Some(ref ctx) = self.memory_context {
-                ctx.switch_to();
+                // We have to use active_id here to avoid a mutex.
+                ctx.switch_to(self.secctx.active_id());
             }
         }
         self.arch_switch_to(current)

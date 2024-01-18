@@ -1,11 +1,12 @@
 use crate::{
     arch::memory::pagetables::{Entry, EntryFlags},
     memory::{
-        frame::{alloc_frame, PhysicalFrameFlags},
+        frame::{alloc_frame, free_frame, get_frame, PhysicalFrameFlags},
         pagetables::{
             DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
             PhysAddrProvider,
         },
+        VirtAddr,
     },
     mutex::Mutex,
     spinlock::Spinlock,
@@ -16,9 +17,13 @@ pub struct ArchContextInner {
 }
 
 pub struct ArchContext {
-    target: u64,
+    pub target: ArchContextTarget,
     inner: Mutex<ArchContextInner>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[repr(transparent)]
+pub struct ArchContextTarget(u64);
 
 lazy_static::lazy_static! {
     static ref KERNEL_MAPPER: Spinlock<Mapper> = {
@@ -43,17 +48,26 @@ impl ArchContext {
 
     pub fn new() -> Self {
         let inner = ArchContextInner::new();
-        let target = inner.mapper.root_address().into();
+        let target = ArchContextTarget(inner.mapper.root_address().into());
         Self {
             target,
             inner: Mutex::new(inner),
         }
     }
 
-    #[allow(named_asm_labels)]
     pub fn switch_to(&self) {
+        unsafe { Self::switch_to_target(&self.target) }
+    }
+
+    /// Switch to a given set of page tables.
+    ///
+    /// # Safety
+    /// The specified target must be a root page table that will live as long as we are switched to it.
+    pub unsafe fn switch_to_target(tgt: &ArchContextTarget) {
         unsafe {
-            x86::controlregs::cr3_write(self.target);
+            if tgt.0 != x86::controlregs::cr3() {
+                x86::controlregs::cr3_write(tgt.0);
+            }
         }
     }
 
@@ -122,5 +136,21 @@ impl ArchContextInner {
 
     fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
         self.mapper.unmap(cursor)
+    }
+}
+
+impl Drop for ArchContextInner {
+    fn drop(&mut self) {
+        // Unmap all user memory to clear any allocated page tables.
+        self.mapper
+            .unmap(MappingCursor::new(
+                VirtAddr::start_user_memory(),
+                VirtAddr::end_user_memory() - VirtAddr::start_user_memory(),
+            ))
+            .run_all();
+        // Manually free the root.
+        if let Some(frame) = get_frame(self.mapper.root_address()) {
+            free_frame(frame);
+        }
     }
 }
