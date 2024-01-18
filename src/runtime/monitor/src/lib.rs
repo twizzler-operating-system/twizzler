@@ -13,6 +13,7 @@ use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
 };
 use twizzler_object::ObjID;
+use twz_rt::set_upcall_handler;
 
 use crate::runtime::init_actions;
 
@@ -20,6 +21,8 @@ mod init;
 mod runtime;
 pub mod secgate_test;
 mod state;
+mod thread;
+mod upcall;
 
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
@@ -47,6 +50,8 @@ pub fn main() {
 
     init_actions(state.clone());
     std::env::set_var("RUST_BACKTRACE", "1");
+
+    set_upcall_handler(&crate::upcall::upcall_monitor_handler).unwrap();
 
     let main_thread = std::thread::spawn(|| monitor_init(state));
     let _r = main_thread.join().unwrap().map_err(|e| {
