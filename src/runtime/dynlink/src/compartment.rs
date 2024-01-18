@@ -13,6 +13,7 @@ use crate::{library::BackingData, tls::TlsInfo};
 mod alloc;
 mod tls;
 
+#[repr(C)]
 /// A compartment that contains libraries (and a local runtime).
 pub struct Compartment<Backing: BackingData> {
     pub name: String,

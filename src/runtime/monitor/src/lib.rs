@@ -71,7 +71,7 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
         }
     }
 
-    load_hello_world_test(&state)?;
+    load_hello_world_test(&state).unwrap();
 
     Ok(())
 }
@@ -81,7 +81,9 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
 
     let mut state = state.lock().unwrap();
     let test_comp_id = state.dynlink.add_compartment("test")?;
+    tracing::info!("here");
 
+    info!("loading hello-world.so");
     let libhw_id = state
         .dynlink
         .load_library_in_compartment(test_comp_id, lib, |mut name| {

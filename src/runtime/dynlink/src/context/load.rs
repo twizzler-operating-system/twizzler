@@ -269,7 +269,7 @@ impl<Engine: ContextEngine> Context<Engine> {
         &self,
         unlib: &UnloadedLibrary,
     ) -> Option<(NodeIndex, CompartmentId, &Compartment<Engine::Backing>)> {
-        for (idx, comp) in self.compartments.iter() {
+        for (idx, comp) in self.compartments.iter().enumerate() {
             if let Some(lib_id) = comp.library_names.get(&unlib.name) {
                 let lib = self.get_library(LibraryId(*lib_id));
                 if let Ok(lib) = lib {

@@ -52,6 +52,7 @@ pub trait BackingData: Clone {
     }
 }
 
+#[repr(C)]
 /// An unloaded library. It's just a name, really.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub struct UnloadedLibrary {
@@ -78,6 +79,7 @@ impl Display for LibraryId {
     }
 }
 
+#[repr(C)]
 /// A loaded library. It may be in various relocation states.
 pub struct Library<Backing: BackingData> {
     /// Name of this library.

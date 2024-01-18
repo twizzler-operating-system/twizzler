@@ -5,7 +5,6 @@ use std::fmt::Display;
 
 use petgraph::stable_graph::NodeIndex;
 use petgraph::stable_graph::StableDiGraph;
-use stable_vec::StableVec;
 
 use crate::compartment::CompartmentId;
 use crate::library::LibraryId;
@@ -25,6 +24,7 @@ mod relocate;
 pub mod runtime;
 mod syms;
 
+#[repr(C)]
 /// A dynamic linker context, the main state struct for this crate.
 pub struct Context<Engine: ContextEngine> {
     // Implementation callbacks.
@@ -32,7 +32,7 @@ pub struct Context<Engine: ContextEngine> {
     // Track all the compartment names.
     compartment_names: HashMap<String, usize>,
     // Compartments get stable IDs from StableVec.
-    compartments: StableVec<Compartment<Engine::Backing>>,
+    compartments: Vec<Compartment<Engine::Backing>>,
 
     // This is the primary list of libraries, all libraries have an entry here, and they are
     // placed here independent of compartment. Edges denote dependency relationships, and may also cross compartments.
@@ -88,7 +88,7 @@ impl<Engine: ContextEngine> Context<Engine> {
             engine,
             compartment_names: HashMap::new(),
             library_deps: StableDiGraph::new(),
-            compartments: StableVec::new(),
+            compartments: Vec::new(),
         }
     }
 
@@ -102,7 +102,7 @@ impl<Engine: ContextEngine> Context<Engine> {
         &self,
         id: CompartmentId,
     ) -> Result<&Compartment<Engine::Backing>, DynlinkError> {
-        if !self.compartments.has_element_at(id.0) {
+        if self.compartments.len() <= id.0 {
             return Err(DynlinkErrorKind::InvalidCompartmentId { id }.into());
         }
         Ok(&self.compartments[id.0])
@@ -113,10 +113,9 @@ impl<Engine: ContextEngine> Context<Engine> {
         &mut self,
         id: CompartmentId,
     ) -> Result<&mut Compartment<Engine::Backing>, DynlinkError> {
-        if !self.compartments.has_element_at(id.0) {
+        if self.compartments.len() <= id.0 {
             return Err(DynlinkErrorKind::InvalidCompartmentId { id }.into());
         }
-
         Ok(&mut self.compartments[id.0])
     }
 
@@ -212,7 +211,8 @@ impl<Engine: ContextEngine> Context<Engine> {
     pub fn add_compartment(&mut self, name: impl ToString) -> Result<CompartmentId, DynlinkError> {
         let name = name.to_string();
         let comp = Compartment::new(name.clone());
-        let idx = self.compartments.push(comp);
+        let idx = self.compartments.len();
+        self.compartments.push(comp);
         self.compartment_names.insert(name, idx);
         Ok(CompartmentId(idx))
     }
