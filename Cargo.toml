@@ -21,6 +21,7 @@ members = [
     "src/lib/twizzler-runtime-api",
     "src/runtime/dynlink",
     "src/runtime/monitor",
+    "src/runtime/monitor-api",
     "src/runtime/twz-rt",
     "src/runtime/hello-world",
 ]

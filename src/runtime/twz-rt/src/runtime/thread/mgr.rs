@@ -5,12 +5,12 @@ use std::{alloc::Layout, collections::HashMap, sync::Mutex};
 use dynlink::tls::TlsRegion;
 use tracing::trace;
 use twizzler_abi::{
-    object::NULLPAGE_SIZE,
-    syscall::{sys_spawn, UpcallTargetSpawnOption},
+    object::{ObjID, NULLPAGE_SIZE},
     thread::{ExecutionState, ThreadRepr},
-    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
-use twizzler_runtime_api::{CoreRuntime, JoinError, MapFlags, ObjectRuntime, SpawnError};
+use twizzler_runtime_api::{
+    CoreRuntime, JoinError, MapFlags, ObjectRuntime, SpawnError, ThreadSpawnArgs,
+};
 
 use crate::{
     monitor::get_monitor_actions,
@@ -166,31 +166,23 @@ impl ReferenceRuntime {
             tls.get_thread_pointer_value(),
         );
 
-        let upcall_target = UpcallTarget::new(
-            crate::arch::rr_upcall_entry,
-            crate::arch::rr_upcall_entry,
-            0,
-            0,
-            0.into(),
-            [UpcallOptions {
-                flags: UpcallFlags::empty(),
-                mode: UpcallMode::CallSelf,
-            }; UpcallInfo::NR_UPCALLS],
-        );
+        let new_args = ThreadSpawnArgs {
+            stack_size,
+            start: trampoline as usize,
+            arg: arg_raw,
+        };
 
-        let thid = unsafe {
-            sys_spawn(twizzler_abi::syscall::ThreadSpawnArgs {
-                entry: trampoline as usize,
-                stack_base: stack_raw,
-                stack_size,
-                tls: tls.get_thread_pointer_value(),
-                arg: arg_raw,
-                flags: twizzler_abi::syscall::ThreadSpawnFlags::empty(),
-                vm_context_handle: None,
-                upcall_target: UpcallTargetSpawnOption::SetTo(upcall_target),
-            })
-        }
-        .map_err(|_| twizzler_runtime_api::SpawnError::KernelError)?;
+        let thid: ObjID = {
+            let res = monitor_api::monitor_rt_spawn_thread(
+                new_args,
+                tls.get_thread_pointer_value(),
+                stack_raw,
+            );
+            match res {
+                secgate::SecGateReturn::Success(id) => id?,
+                _ => return Err(SpawnError::Other),
+            }
+        };
 
         let thread_repr_obj = self
             .map_object(thid.as_u128(), MapFlags::READ | MapFlags::WRITE)

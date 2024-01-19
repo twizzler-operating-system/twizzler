@@ -1,6 +1,7 @@
 #![feature(naked_functions)]
 #![feature(thread_local)]
 #![feature(c_str_literals)]
+#![feature(new_uninit)]
 
 use std::sync::{Arc, Mutex};
 

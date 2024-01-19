@@ -27,12 +27,13 @@ const PREFIX: &str = "__twz_secgate_impl_";
 struct Info {
     pub mod_name: Ident,
     pub fn_name: Ident,
+    pub internal_fn_name: Ident,
     pub trampoline_name: Ident,
     pub entry_name: Ident,
     pub struct_name: Ident,
     pub entry_type_name: Ident,
     pub types: Vec<Box<Type>>,
-    pub ret_type: Option<Box<Type>>,
+    pub ret_type: ReturnType,
     pub arg_names: Vec<Ident>,
 }
 
@@ -42,20 +43,17 @@ fn build_names(
     ret_type: ReturnType,
     arg_names: Vec<Ident>,
 ) -> Info {
-    let x = match ret_type {
-        ReturnType::Default => None,
-        ReturnType::Type(_, ty) => Some(ty),
-    };
     Info {
         mod_name: Ident::new(&format!("{}{}_mod", PREFIX, base), base.span()),
         struct_name: Ident::new(&format!("{}_info", base).to_uppercase(), base.span()),
         trampoline_name: Ident::new(&format!("{}_trampoline", base), base.span()),
         entry_name: Ident::new(&format!("{}_entry", base), base.span()),
+        internal_fn_name: Ident::new(&format!("{}_direct", base), base.span()),
         entry_type_name: Ident::new(&format!("{}_EntryType", base), base.span()),
         fn_name: base,
         types,
         arg_names,
-        ret_type: x,
+        ret_type,
     }
 }
 
@@ -99,16 +97,19 @@ fn handle_secure_gate(
 
     let Info {
         mod_name,
-        fn_name: _fn_name,
-        struct_name: _struct_name,
+        fn_name,
+        internal_fn_name,
         ..
     } = names;
-    tree.vis = Visibility::Inherited;
+    tree.sig.ident = parse_quote!(#internal_fn_name);
+    //tree.vis = parse_quote!(pub(crate));
     // For now, we put all this stuff in a mod to keep it contained.
     Ok(quote::quote! {
+        // the implementation (user-written)
+        #tree
         pub mod #mod_name {
-            // the implementation (user-written)
-            #tree
+            use super::*;
+            pub(super) use super::#internal_fn_name as #fn_name;
             // the generated entry function
             #entry
             // info struct data
@@ -175,7 +176,7 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
     call_point.block = Box::new(parse2(quote::quote! {
         {
             // Unpack the arguments.
-            let (#(#arg_names),*) = unsafe {*args}.into_inner();
+            let (#(#arg_names),*,) = unsafe {*args}.into_inner();
 
             // Call the user-written implementation, catching unwinds.
             let impl_ret = std::panic::catch_unwind(|| #fn_name(#(#arg_names),*));
@@ -184,8 +185,8 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
                 std::process::Termination::report(std::process::ExitCode::from(101u8));
             }
             let wret = match impl_ret {
-                Ok(r) => secgate::SecGateReturn::Success(r),
-                Err(_) => secgate::SecGateReturn::CalleePanic,
+                Ok(r) => secgate::SecGateReturn::<_>::Success(r),
+                Err(_) => secgate::SecGateReturn::<_>::CalleePanic,
             };
 
             // Success -- write the return value.
@@ -202,7 +203,12 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
     call_point.attrs.push(parse_quote!(#[inline(always)]));
     call_point.vis = Visibility::Public(Pub::default());
 
-    let ret_type = names.ret_type.clone().unwrap_or_else(|| parse_quote!(()));
+    let ret_type = names.ret_type.clone();
+
+    let ret_type = match ret_type {
+        ReturnType::Default => Box::new(parse_quote!(())),
+        ReturnType::Type(_, ty) => ty.clone(),
+    };
     let rt_path: Path = parse_quote! { secgate::SecGateReturn<#ret_type> };
     call_point.sig.output = ReturnType::Type(
         Default::default(),
@@ -221,13 +227,13 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
     call_point.block = Box::new(parse2(quote::quote! {
         {
             // Pack up the args
-            let tuple = (#(#arg_names),*);
+            let tuple = (#(#arg_names),*,);
             // Allocate stack space for args + ret. Args::with_alloca also inits the memory.
             #mod_name::Args::with_alloca(tuple, |args| {
                 #mod_name::Ret::with_alloca(|ret| {
                     // Call the trampoline in the mod.
                     #mod_name::#trampoline_name(args as *const _, ret as *mut _);
-                    ret.into_inner().unwrap_or(secgate::SecGateReturn::NoReturnValue)
+                    ret.into_inner().unwrap_or(secgate::SecGateReturn::<_>::NoReturnValue)
                 })
             })
         }
@@ -271,6 +277,11 @@ fn build_struct(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
         output: entry_sig.output,
     };
 
+    let ret_type = match ret_type {
+        ReturnType::Default => Box::new(parse_quote!(())),
+        ReturnType::Type(_, ty) => ty.clone(),
+    };
+
     let mut name_bytes = fn_name.to_string().into_bytes();
     name_bytes.push(0);
 
@@ -282,7 +293,7 @@ fn build_struct(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
             secgate::SecGateInfo::new(&(#entry_name as #entry_type_name), unsafe {std::ffi::CStr::from_bytes_with_nul_unchecked(#str_lit)});
         #[allow(non_camel_case_types)]
         type #entry_type_name = #ty;
-        pub type Args = secgate::Arguments<(#(#types),*)>;
+        pub type Args = secgate::Arguments<(#(#types),*,)>;
         pub type Ret = secgate::Return<secgate::SecGateReturn<#ret_type>>;
         pub const ARGS_SIZE: usize = core::mem::size_of::<Args>();
         pub const RET_SIZE: usize = core::mem::size_of::<Ret>();

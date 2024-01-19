@@ -1732,14 +1732,26 @@ name = "monitor"
 version = "0.1.0"
 dependencies = [
  "dynlink",
+ "lazy_static",
  "miette",
+ "monitor-api",
  "secgate",
+ "static_assertions",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
  "twizzler-object",
  "twizzler-runtime-api",
  "twz-rt",
+]
+
+[[package]]
+name = "monitor-api"
+version = "0.1.0"
+dependencies = [
+ "secgate",
+ "twizzler-abi",
+ "twizzler-runtime-api",
 ]
 
 [[package]]
@@ -3130,6 +3142,8 @@ dependencies = [
  "bitflags 2.4.1",
  "dynlink",
  "lazy_static",
+ "monitor-api",
+ "secgate",
  "static_assertions",
  "talc",
  "thiserror",

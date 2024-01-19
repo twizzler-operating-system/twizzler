@@ -14,6 +14,8 @@
 
 pub(crate) mod arch;
 
+pub use arch::rr_upcall_entry;
+
 pub mod monitor;
 mod runtime;
 pub use runtime::set_upcall_handler;

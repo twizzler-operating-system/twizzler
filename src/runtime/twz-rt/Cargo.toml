@@ -19,6 +19,8 @@ talc = { version = "3.1", default-features = false }
 lazy_static = "1.4"
 atomic = "0.6"
 static_assertions = "1.1"
+monitor-api = { path = "../monitor-api" }
+secgate = { path = "../secgate" }
 
 
 [features]
