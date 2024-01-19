@@ -8,7 +8,6 @@ use twizzler_abi::syscall::TimeSpan;
 
 use crate::{
     clock::Nanoseconds,
-    interrupt::{Destination, PinPolarity, TriggerMode},
     BootInfo,
     syscall::SyscallContext,
 };
@@ -26,7 +25,7 @@ pub mod thread;
 mod start;
 
 pub use address::{VirtAddr, PhysAddr};
-pub use interrupt::{send_ipi, init_interrupts};
+pub use interrupt::{send_ipi, init_interrupts, set_interrupt};
 pub use start::BootInfoSystemTable;
 
 pub fn init<B: BootInfo>(boot_info: &B) {
@@ -83,16 +82,6 @@ pub fn init_secondary() {
     // TODO: Initialize secondary processors:
     // - set up exception handling
     // - configure the local CPU interrupt controller interface
-}
-
-pub fn set_interrupt(
-    _num: u32,
-    _masked: bool,
-    _trigger: TriggerMode,
-    _polarity: PinPolarity,
-    _destination: Destination,
-) {
-    todo!();
 }
 
 pub fn start_clock(_statclock_hz: u64, _stat_cb: fn(Nanoseconds)) {
