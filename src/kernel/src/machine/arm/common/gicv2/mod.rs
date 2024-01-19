@@ -31,15 +31,19 @@ impl GICv2 {
 
     /// Configures the interrupt controller. At the end of this function
     /// the current calling CPU is ready to recieve interrupts.
-    pub fn configure(&self) {
-        // enable the gic distributor
-        self.global.enable();
-
+    pub fn configure_local(&self) {
         // set the interrupt priority mask to accept all interrupts
         self.set_interrupt_mask(GICC::ACCEPT_ALL);
 
         // enable the gic cpu interface
         self.local.enable();
+    }
+
+    /// Configures global state in the interrupt controller. This should only
+    /// really be called once during system intialization by the boostrap core.
+    pub fn configure_global(&self) {
+        // enable the gic distributor
+        self.global.enable();
     }
 
     /// Sets the interrupt priority mask for the current calling CPU.

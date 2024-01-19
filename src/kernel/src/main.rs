@@ -103,11 +103,10 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
         panic::init(kernel_image);
     }
 
-    arch::init_interrupts();
-
     logln!("[kernel::cpu] enumerating secondary CPUs");
     let bsp_id = arch::processor::enumerate_cpus();
     processor::init_cpu(image::get_tls(), bsp_id);
+    arch::init_interrupts();
     arch::init_secondary();
     initrd::init(boot_info.get_modules());
     logln!("[kernel::cpu] booting secondary CPUs");
