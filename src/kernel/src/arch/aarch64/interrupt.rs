@@ -16,6 +16,7 @@ use crate::{
     processor::current_processor,
 };
 use crate::machine::interrupt::INTERRUPT_CONTROLLER;
+use crate::machine::serial::{SERIAL_INT_ID, serial_interrupt_handler};
 
 use super::exception::{
     ExceptionContext, exception_handler, save_stack_pointer, restore_stack_pointer,
@@ -137,6 +138,10 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
         PhysicalTimer::INTERRUPT_ID => {
             // call timer interrupt handler
             cntp_interrupt_handler();
+        },
+        _ if irq_number == *SERIAL_INT_ID => {
+            // call the serial interrupt handler
+            serial_interrupt_handler();
         },
         _ => panic!("unknown irq number! {}", irq_number)
     }

@@ -7,6 +7,7 @@ use crate::memory::{PhysAddr, pagetables::{
     ContiguousProvider, MappingCursor, MappingSettings, Mapper,
     MappingFlags,
 }};
+use crate::interrupt::{Destination, TriggerMode};
 use crate::arch::memory::mmio::MMIO_ALLOCATOR;
 
 lazy_static! {
@@ -47,6 +48,12 @@ lazy_static! {
         serial_port.early_init(clock_freq as u32);
         serial_port
     };
+
+    pub static ref SERIAL_INT_ID: u32 = {
+        let int_num = crate::machine::info::get_uart_interrupt_num()
+            .expect("failed to decode UART interrupt number");
+        int_num
+    };
 }
 
 impl PL011 {
@@ -64,6 +71,22 @@ impl PL011 {
             self.init(clock_freq, BAUD);
         }
     }
+
+    /// intitialize the UART driver after the system has enabled interrupts
+    pub fn late_init(&self) {
+        // enable the rx side to use interrupts
+        unsafe {
+            self.enable_rx_interrupt();
+        }
+
+        crate::arch::set_interrupt(
+            *SERIAL_INT_ID,
+            false,
+            TriggerMode::Edge,
+            crate::interrupt::PinPolarity::ActiveHigh,
+            Destination::Bsp,
+        );
+    }
 }
 
 pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
@@ -79,4 +102,12 @@ pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
             SERIAL.write_str(core::str::from_utf8_unchecked(data));
         }
     }
+}
+
+pub fn serial_interrupt_handler() {
+    let byte = SERIAL.rx_byte();
+    if let Some(x) = byte {
+        crate::log::push_input_byte(x);
+    }
+    SERIAL.clear_rx_interrupt();
 }

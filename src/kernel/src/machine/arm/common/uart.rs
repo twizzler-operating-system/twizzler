@@ -19,6 +19,7 @@ enum Registers {
     UARTLCR_H = 0x02C,
     UARTCR = 0x030,
     UARTIMSC = 0x038,
+    UARTICR = 0x044,
     UARTDMACR = 0x048,
 }
 
@@ -173,6 +174,18 @@ impl PL011 {
         {
             let cr = self.read_reg(Registers::UARTCR);
             self.write_reg(Registers::UARTCR, (cr | 0b1) as u32);
+        }
+    }
+
+    pub fn clear_rx_interrupt(&self) {
+        // The UARTICR Register is the interrupt clear register and is write-only. 
+        // On a write of 1, the corresponding interrupt is cleared. 
+        // A write of 0 has no effect. Table 3-17 lists the register bit assignments.
+        //
+        // We must write to Receive interrupt clear (RXIC) which is bit 4. This
+        // Clears the UARTRXINTR interrupt.
+        unsafe {
+            self.write_reg(Registers::UARTICR, (0b1 << 4) as u32);
         }
     }
 
