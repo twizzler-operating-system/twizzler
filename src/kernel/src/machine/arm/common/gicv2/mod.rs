@@ -51,16 +51,17 @@ impl GICv2 {
     // Enables the interrupt with a given ID to be routed to CPUs.
     pub fn enable_interrupt(&self, int_id: u32) {
         self.global.enable_interrupt(int_id);
-
-        // TODO: set the priority for the corresponding interrupt? see GICD_IPRIORITYRn
-        // TODO: edge triggered or level sensitive??? see GICD_ICFGRn
     }
 
     /// Programs the interrupt controller to be able to route
     /// a given interrupt to a particular core.
-    fn route_interrupt(&self, _int_id: u32, _core: u32) {
-        // TODD: route the interrupt to a corresponding core, see GICD_ITARGETSRn
-        todo!()
+    pub fn route_interrupt(&self, int_id: u32, core: u32) {
+        // route the interrupt to a corresponding core
+        self.global.set_interrupt_target(int_id, core);
+        // TODO: have the priority set to something reasonable
+        // set the priority for the corresponding interrupt
+        self.global.set_interrupt_priority(int_id, GICD::HIGHEST_PRIORITY);
+        // TODO: edge triggered or level sensitive??? see GICD_ICFGRn
     }
 
     /// Returns the pending interrupt ID from the controller, and
