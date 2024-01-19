@@ -31,15 +31,19 @@ impl GICv2 {
 
     /// Configures the interrupt controller. At the end of this function
     /// the current calling CPU is ready to recieve interrupts.
-    pub fn configure(&self) {
-        // enable the gic distributor
-        self.global.enable();
-
+    pub fn configure_local(&self) {
         // set the interrupt priority mask to accept all interrupts
         self.set_interrupt_mask(GICC::ACCEPT_ALL);
 
         // enable the gic cpu interface
         self.local.enable();
+    }
+
+    /// Configures global state in the interrupt controller. This should only
+    /// really be called once during system intialization by the boostrap core.
+    pub fn configure_global(&self) {
+        // enable the gic distributor
+        self.global.enable();
     }
 
     /// Sets the interrupt priority mask for the current calling CPU.
@@ -51,16 +55,17 @@ impl GICv2 {
     // Enables the interrupt with a given ID to be routed to CPUs.
     pub fn enable_interrupt(&self, int_id: u32) {
         self.global.enable_interrupt(int_id);
-
-        // TODO: set the priority for the corresponding interrupt? see GICD_IPRIORITYRn
-        // TODO: edge triggered or level sensitive??? see GICD_ICFGRn
     }
 
     /// Programs the interrupt controller to be able to route
     /// a given interrupt to a particular core.
-    fn route_interrupt(&self, _int_id: u32, _core: u32) {
-        // TODD: route the interrupt to a corresponding core, see GICD_ITARGETSRn
-        todo!()
+    pub fn route_interrupt(&self, int_id: u32, core: u32) {
+        // route the interrupt to a corresponding core
+        self.global.set_interrupt_target(int_id, core);
+        // TODO: have the priority set to something reasonable
+        // set the priority for the corresponding interrupt
+        self.global.set_interrupt_priority(int_id, GICD::HIGHEST_PRIORITY);
+        // TODO: edge triggered or level sensitive??? see GICD_ICFGRn
     }
 
     /// Returns the pending interrupt ID from the controller, and

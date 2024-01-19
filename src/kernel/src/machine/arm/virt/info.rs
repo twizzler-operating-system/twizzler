@@ -75,6 +75,36 @@ pub fn get_uart_info() -> (usize, MmioInfo) {
     (clock_freq, mmio)
 }
 
+// Retrieve the interrupt number for the UART device
+pub fn get_uart_interrupt_num() -> Option<u32> {
+    // NOTE: this encoding is specific to GIC interrupt controllers
+    let chosen = devicetree().chosen();
+    if let Some(uart) = chosen.stdout() {
+        // find the interrupt information
+        if let Some(inter) = uart.property("interrupts") {
+            let mut converter = [0u8; 4];
+            let mut converted = [0u32; 3];
+            // each interrupt property is encoded as a series of 32-bit values
+            for (i, v) in inter.value.iter().enumerate() {
+                converter[i % 4] = *v;
+                if (i + 1) % core::mem::size_of::<u32>() == 0 {
+                    // converted value
+                    let val = u32::from_be_bytes(converter);
+                    converted[i % 3] = val;
+                }
+            }
+            // first number is the SPI flag
+            let is_spi = converted[0] == 1;
+            // second number is the interrupt
+            let int_num = if is_spi { converted[1] + 16 } else { converted[1] + 32 };
+            // third number is the trigger level
+            let _trigger = converted[2];
+            return Some(int_num)
+        }
+    }
+    None
+}
+
 // return the mmio address info for the distributor and cpu interfaces
 // for a gicv2 interrupt controller
 pub fn get_gicv2_info() -> (MmioInfo, MmioInfo) {
