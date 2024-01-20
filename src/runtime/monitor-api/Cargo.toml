@@ -11,3 +11,4 @@ crate-type = ["rlib"]
 twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api", default-features = false }
 twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
 secgate = { path = "../secgate" }
+dynlink = { path = "../dynlink" }

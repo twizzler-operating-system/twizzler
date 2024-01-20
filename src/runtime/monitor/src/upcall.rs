@@ -1,7 +1,14 @@
 use tracing::info;
-use twizzler_abi::upcall::{UpcallData, UpcallFrame};
+use twizzler_abi::upcall::{UpcallData, UpcallFrame, UpcallHandlerFlags};
 
-pub fn upcall_monitor_handler(_frame: &mut UpcallFrame, _info: &UpcallData) {
-    info!("got monitor upcall {:?} {:?}", _frame, _info);
-    _frame.rip += 2;
+pub fn upcall_monitor_handler(frame: &mut UpcallFrame, info: &UpcallData) {
+    if info.flags.contains(UpcallHandlerFlags::SWITCHED_CONTEXT) {
+        info!("got monitor upcall {:?} {:?}", frame, info);
+        frame.rip += 2;
+    } else {
+        panic!(
+            "monitor got unexpected upcall while in supervisor context: {:?} {:?}",
+            frame, info
+        );
+    }
 }

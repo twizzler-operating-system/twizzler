@@ -4,7 +4,7 @@ use crate::upcall::{UpcallData, UpcallInfo};
 pub const XSAVE_LEN: usize = 1024;
 
 /// Arch-specific frame info for upcall.
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Copy)]
 #[repr(C, align(64))]
 pub struct UpcallFrame {
     pub xsave_region: [u8; XSAVE_LEN],
@@ -28,6 +28,19 @@ pub struct UpcallFrame {
     pub r15: u64,
     pub thread_ptr: u64,
     pub prior_ctx: crate::object::ObjID,
+}
+
+impl core::fmt::Debug for UpcallFrame {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("UpcallFrame")
+            .field("rip", &format_args!("0x{:x}", self.rip))
+            .field("rsp", &format_args!("0x{:x}", self.rsp))
+            .field("rbp", &format_args!("0x{:x}", self.rbp))
+            .field("rflags", &format_args!("0x{:x}", self.rflags))
+            .field("thread_ptr", &format_args!("0x{:x}", self.thread_ptr))
+            .field("prior_ctx", &format_args!("0x{:x}", self.prior_ctx))
+            .finish_non_exhaustive()
+    }
 }
 
 impl UpcallFrame {

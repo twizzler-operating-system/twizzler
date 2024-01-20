@@ -16,7 +16,7 @@ use crate::{
     monitor::get_monitor_actions,
     runtime::{
         thread::{
-            tcb::{trampoline, RuntimeThreadControl},
+            tcb::{trampoline, RuntimeThreadControl, TLS_GEN_MGR},
             MIN_STACK_ALIGN, THREAD_MGR,
         },
         ReferenceRuntime, OUR_RUNTIME,
@@ -132,9 +132,11 @@ impl ReferenceRuntime {
     ) -> Result<u32, twizzler_runtime_api::SpawnError> {
         // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
-        let tls: TlsRegion = get_monitor_actions()
-            .allocate_tls_region()
-            .ok_or(SpawnError::Other)?;
+        let tls = TLS_GEN_MGR
+            .lock()
+            .unwrap()
+            .get_next_tls_info(0, || RuntimeThreadControl::new(0))
+            .unwrap();
         let stack_raw = unsafe {
             OUR_RUNTIME
                 .default_allocator()
@@ -148,22 +150,18 @@ impl ReferenceRuntime {
 
         // Set the thread's ID. After this the TCB is ready.
         unsafe {
-            tls.get_thread_control_block::<RuntimeThreadControl>()
-                .as_mut()
-                .unwrap()
-                .runtime_data
-                .set_id(id.id);
+            tls.as_mut().unwrap().runtime_data.set_id(id.id);
         }
 
         let stack_size = args.stack_size;
         let arg_raw = Box::into_raw(args) as usize;
 
         trace!(
-            "spawning thread {} with stack {:x}, entry {:x}, and TLS {:x}",
+            "spawning thread {} with stack {:x}, entry {:x}, and TLS {:p}",
             id.id,
             stack_raw,
             trampoline as usize,
-            tls.get_thread_pointer_value(),
+            tls,
         );
 
         let new_args = ThreadSpawnArgs {
@@ -173,11 +171,7 @@ impl ReferenceRuntime {
         };
 
         let thid: ObjID = {
-            let res = monitor_api::monitor_rt_spawn_thread(
-                new_args,
-                tls.get_thread_pointer_value(),
-                stack_raw,
-            );
+            let res = monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
             match res {
                 secgate::SecGateReturn::Success(id) => id?,
                 _ => return Err(SpawnError::Other),

@@ -1749,6 +1749,7 @@ dependencies = [
 name = "monitor-api"
 version = "0.1.0"
 dependencies = [
+ "dynlink",
  "secgate",
  "twizzler-abi",
  "twizzler-runtime-api",

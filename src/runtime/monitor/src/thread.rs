@@ -1,11 +1,14 @@
 use std::{collections::HashMap, mem::MaybeUninit, sync::Mutex};
 
+use monitor_api::SharedCompConfig;
 use twizzler_abi::{
     syscall::{sys_spawn, UpcallTargetSpawnOption},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
 use twizzler_object::ObjID;
 use twizzler_runtime_api::{SpawnError, ThreadSpawnArgs};
+
+use crate::state::get_monitor_state;
 
 pub const SUPER_UPCALL_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 
@@ -15,6 +18,7 @@ pub fn spawn_thread(
     stack_pointer: usize,
 ) -> Result<ObjID, SpawnError> {
     tracing::info!("SPAWN THREAD IN MON");
+
     let super_stack = Box::<[u8]>::new_zeroed_slice(SUPER_UPCALL_STACK_SIZE);
 
     let upcall_target = UpcallTarget::new(
@@ -57,6 +61,15 @@ pub fn __monitor_rt_spawn_thread(
     stack_pointer: usize,
 ) -> Result<ObjID, SpawnError> {
     spawn_thread(args, thread_pointer, stack_pointer)
+}
+
+#[no_mangle]
+pub fn __monitor_rt_get_comp_config(comp: ObjID) -> *const SharedCompConfig {
+    let state = get_monitor_state().lock().unwrap();
+    let comp = state.comps.get(&0.into()).unwrap();
+    let cc = comp.get_comp_config();
+    tracing::info!("==> {:p}", cc);
+    cc
 }
 
 #[allow(dead_code)]

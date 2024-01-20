@@ -10,14 +10,17 @@ use state::MonitorState;
 use tracing::{debug, info, trace, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
 use twizzler_abi::{
+    arch::SLOTS,
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
+    syscall::UnmapFlags,
 };
 use twizzler_object::ObjID;
 use twz_rt::set_upcall_handler;
 
-use crate::runtime::init_actions;
+use crate::{compartment::Comp, runtime::init_actions, state::set_monitor_state};
 
+mod compartment;
 mod init;
 mod runtime;
 pub mod secgate_test;
@@ -28,7 +31,7 @@ mod upcall;
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::TRACE)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
@@ -43,7 +46,13 @@ pub fn main() {
     trace!("monitor entered, discovering dynlink context");
     let init =
         init::bootstrap_dynlink_context().expect("failed to discover initial dynlink context");
-    let state = Arc::new(Mutex::new(state::MonitorState::new(init)));
+    let mut state = state::MonitorState::new(init);
+
+    let monitor_comp_id = state.dynlink.lookup_compartment("monitor").unwrap();
+    let monitor_comp = Comp::new(0.into(), monitor_comp_id);
+    state.add_comp(monitor_comp);
+
+    let state = Arc::new(Mutex::new(state));
     debug!(
         "found dynlink context, with root {}",
         state.lock().unwrap().root
@@ -53,6 +62,7 @@ pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
 
     set_upcall_handler(&crate::upcall::upcall_monitor_handler).unwrap();
+    set_monitor_state(state.clone());
 
     let main_thread = std::thread::spawn(|| monitor_init(state));
     let _r = main_thread.join().unwrap().map_err(|e| {
@@ -62,6 +72,10 @@ pub fn main() {
 }
 
 fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
+    twizzler_abi::syscall::sys_kernel_console_write(
+        b"monitor_init\n",
+        twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
+    );
     info!("monitor early init completed, starting init");
 
     {
@@ -77,6 +91,39 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
         }
     }
 
+    debug!("unmapping bootstrap program");
+    // Unmap bootstrap program.
+    // TODO
+    /*
+    twizzler_abi::syscall::sys_object_unmap(
+        None,
+        twizzler_abi::slot::RESERVED_TEXT,
+        UnmapFlags::empty(),
+    )
+    .unwrap();
+    twizzler_abi::syscall::sys_object_unmap(
+        None,
+        twizzler_abi::slot::RESERVED_DATA,
+        UnmapFlags::empty(),
+    )
+    .unwrap();
+    */
+
+    {
+        let mut used = Vec::new();
+        // Reserve so we don't allocate memory while looking for mapped objects.
+        used.reserve(SLOTS);
+        for slot in 0..SLOTS {
+            let r = twizzler_abi::syscall::sys_object_read_map(None, slot);
+            match r {
+                Ok(info) => used.push(info),
+                _ => {}
+            }
+        }
+
+        trace!("bootstrapping secctx with {:?}", used);
+    }
+
     load_hello_world_test(&state).unwrap();
 
     Ok(())
@@ -87,21 +134,13 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
 
     let mut state = state.lock().unwrap();
     let test_comp_id = state.dynlink.add_compartment("test")?;
-    tracing::info!("here");
 
-    info!("loading hello-world.so");
+    let test_comp = Comp::new(1.into(), test_comp_id);
+    state.add_comp(test_comp);
+
     let libhw_id = state
         .dynlink
-        .load_library_in_compartment(test_comp_id, lib, |mut name| {
-            if name.starts_with("libstd-") {
-                name = "libstd.so";
-            }
-            let id = find_init_name(name)?;
-            let obj = twizzler_runtime_api::get_runtime()
-                .map_object(id.as_u128(), twizzler_runtime_api::MapFlags::READ)
-                .ok()?;
-            Some(Backing::new(obj))
-        })?;
+        .load_library_in_compartment(test_comp_id, lib, |name| bootstrap_name_res(name))?;
 
     let _ = state.dynlink.relocate_all(libhw_id)?;
     info!("lookup entry");
@@ -116,6 +155,17 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
     (ptr)();
 
     Ok(())
+}
+
+fn bootstrap_name_res(mut name: &str) -> Option<Backing> {
+    if name.starts_with("libstd-") {
+        name = "libstd.so";
+    }
+    let id = find_init_name(name)?;
+    let obj = twizzler_runtime_api::get_runtime()
+        .map_object(id.as_u128(), twizzler_runtime_api::MapFlags::READ)
+        .ok()?;
+    Some(Backing::new(obj))
 }
 
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {

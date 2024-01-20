@@ -119,6 +119,8 @@ pub struct UpcallData {
     pub flags: UpcallHandlerFlags,
     /// Source context
     pub source_ctx: ObjID,
+    /// The thread ID for this thread.
+    pub thread_id: ObjID,
 }
 
 /// Information for handling an upcall, per-thread. By default, a thread starts with

@@ -144,6 +144,7 @@ fn set_upcall<T: UpcallAble + Copy>(
     target: UpcallTarget,
     info: UpcallInfo,
     source_ctx: ObjID,
+    thread_id: ObjID,
     sup: bool,
 ) -> bool
 where
@@ -185,6 +186,7 @@ where
             UpcallHandlerFlags::empty()
         },
         source_ctx,
+        thread_id,
     };
 
     // Step 1: determine where we are going to put the frame. If we have
@@ -338,11 +340,11 @@ impl Thread {
             }
             Registers::Interrupt(int, _) => {
                 let int = unsafe { &mut *int };
-                set_upcall(int, target, info, source_ctx, sup)
+                set_upcall(int, target, info, source_ctx, self.objid(), sup)
             }
             Registers::Syscall(sys, _) => {
                 let sys = unsafe { &mut *sys };
-                set_upcall(sys, target, info, source_ctx, sup)
+                set_upcall(sys, target, info, source_ctx, self.objid(), sup)
             }
         };
         if !ok {
