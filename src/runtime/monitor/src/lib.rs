@@ -13,7 +13,6 @@ use twizzler_abi::{
     arch::SLOTS,
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
-    syscall::UnmapFlags,
 };
 use twizzler_object::ObjID;
 use twz_rt::set_upcall_handler;
@@ -31,7 +30,7 @@ mod upcall;
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::TRACE)
+        .with_max_level(Level::DEBUG)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
@@ -49,7 +48,11 @@ pub fn main() {
     let mut state = state::MonitorState::new(init);
 
     let monitor_comp_id = state.dynlink.lookup_compartment("monitor").unwrap();
-    let monitor_comp = Comp::new(0.into(), monitor_comp_id);
+    let monitor_comp = Comp::new(
+        0.into(),
+        state.dynlink.get_compartment_mut(monitor_comp_id).unwrap(),
+    )
+    .unwrap();
     state.add_comp(monitor_comp);
 
     let state = Arc::new(Mutex::new(state));
@@ -135,14 +138,19 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
     let mut state = state.lock().unwrap();
     let test_comp_id = state.dynlink.add_compartment("test")?;
 
-    let test_comp = Comp::new(1.into(), test_comp_id);
-    state.add_comp(test_comp);
-
     let libhw_id = state
         .dynlink
         .load_library_in_compartment(test_comp_id, lib, |name| bootstrap_name_res(name))?;
 
     let _ = state.dynlink.relocate_all(libhw_id)?;
+
+    let test_comp = Comp::new(
+        1.into(),
+        state.dynlink.get_compartment_mut(test_comp_id).unwrap(),
+    )
+    .unwrap();
+    state.add_comp(test_comp);
+
     info!("lookup entry");
 
     let sym = state

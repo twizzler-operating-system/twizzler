@@ -1737,6 +1737,7 @@ dependencies = [
  "monitor-api",
  "secgate",
  "static_assertions",
+ "talc",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
@@ -2756,6 +2757,9 @@ name = "talc"
 version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df4d2bae993eb37405b2d0efe7dbb7cb5eb36b2c16cdb484a0e24263a1a631e2"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "tar"

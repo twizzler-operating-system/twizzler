@@ -24,4 +24,4 @@ secgate = { path = "../secgate" }
 monitor-api = { path = "../monitor-api" }
 static_assertions = "1.1"
 lazy_static = "1.4"
-
+talc = "3.1"

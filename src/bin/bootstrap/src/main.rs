@@ -43,7 +43,11 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     ctx.relocate_all(monitor_id).unwrap();
 
     let monitor_compartment = ctx.get_compartment_mut(monitor_comp_id).unwrap();
-    let tls = monitor_compartment.build_tls_region(()).unwrap();
+    let tls = monitor_compartment
+        .build_tls_region((), |layout| unsafe {
+            std::ptr::NonNull::new(std::alloc::alloc_zeroed(layout))
+        })
+        .unwrap();
 
     debug!("context loaded, prepping jump to monitor");
     let entry = ctx

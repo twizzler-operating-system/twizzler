@@ -49,16 +49,6 @@ impl MonitorState {
     }
 
     pub(crate) fn add_comp(&mut self, comp: Comp) {
-        let cc = unsafe { comp.get_comp_config().as_ref().unwrap() };
-        let template_info = self
-            .dynlink
-            .get_compartment_mut(comp.compartment_id)
-            .unwrap()
-            .build_tls_region(RuntimeThreadControl::new(0))
-            .unwrap();
-        let temp = Box::new(TlsTemplateInfo::from(template_info));
-        let temp = Box::leak(temp);
-        cc.set_tls_template(temp);
         self.comps.insert(comp.sctx_id, comp);
     }
 }

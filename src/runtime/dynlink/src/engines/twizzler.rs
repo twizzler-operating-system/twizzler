@@ -35,25 +35,6 @@ impl BackingData for Backing {
         )
     }
 
-    fn new_data() -> Result<Self, DynlinkError> {
-        let runtime = twizzler_runtime_api::get_runtime();
-        let id = sys_object_create(
-            ObjectCreate::new(
-                BackingType::Normal,
-                LifetimeType::Volatile,
-                None,
-                ObjectCreateFlags::empty(),
-            ),
-            &[],
-            &[],
-        )
-        .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
-        let handle = runtime
-            .map_object(id.as_u128(), MapFlags::READ | MapFlags::WRITE)
-            .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
-        Ok(Self { obj: handle })
-    }
-
     fn load_addr(&self) -> usize {
         self.obj.start as usize
     }

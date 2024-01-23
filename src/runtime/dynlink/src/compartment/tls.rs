@@ -1,3 +1,5 @@
+use std::{alloc::Layout, ptr::NonNull};
+
 use tracing::{debug, trace};
 
 use crate::{
@@ -35,7 +37,11 @@ impl<Backing: BackingData> Compartment<Backing> {
     }
 
     /// Build a useable TLS region, complete with copied templates, a control block, and a dtv.
-    pub fn build_tls_region<T>(&mut self, tcb: T) -> Result<TlsRegion, DynlinkError> {
+    pub fn build_tls_region<T>(
+        &mut self,
+        tcb: T,
+        alloc: impl FnOnce(Layout) -> Option<NonNull<u8>>,
+    ) -> Result<TlsRegion, DynlinkError> {
         let tls_info = self.tls_info.get(&self.tls_gen).ok_or_else(|| {
             DynlinkError::new(DynlinkErrorKind::NoTLSInfo {
                 library: self.name.clone(),
@@ -44,18 +50,17 @@ impl<Backing: BackingData> Compartment<Backing> {
         let alloc_layout = tls_info
             .allocation_layout::<T>()
             .map_err(DynlinkErrorKind::from)?;
+        let base = alloc(alloc_layout).ok_or_else(|| DynlinkErrorKind::FailedToAllocate {
+            comp: self.name.clone(),
+            layout: alloc_layout,
+        })?;
         debug!(
-            "{}: building static TLS region (size: {}, align: {})",
+            "{}: building static TLS region (size: {}, align: {}) -> {:p}",
             self,
             alloc_layout.size(),
-            alloc_layout.align()
+            alloc_layout.align(),
+            base
         );
-        let base = unsafe { self.alloc(alloc_layout) }.ok_or_else(|| {
-            DynlinkErrorKind::FailedToAllocate {
-                comp: self.name.clone(),
-                layout: alloc_layout,
-            }
-        })?;
 
         let tls_info = self.tls_info.get(&self.tls_gen).ok_or_else(|| {
             DynlinkError::new(DynlinkErrorKind::NoTLSInfo {

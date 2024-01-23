@@ -210,8 +210,8 @@ impl<Engine: ContextEngine> Context<Engine> {
     /// Create a new compartment with a given name.
     pub fn add_compartment(&mut self, name: impl ToString) -> Result<CompartmentId, DynlinkError> {
         let name = name.to_string();
-        let comp = Compartment::new(name.clone());
         let idx = self.compartments.len();
+        let comp = Compartment::new(name.clone(), CompartmentId(idx));
         self.compartments.push(comp);
         self.compartment_names.insert(name, idx);
         Ok(CompartmentId(idx))

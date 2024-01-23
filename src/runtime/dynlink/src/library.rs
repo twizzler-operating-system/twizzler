@@ -29,10 +29,6 @@ pub trait BackingData: Clone {
     /// region is valid.
     fn data(&self) -> (*mut u8, usize);
 
-    /// Make a new backing data for holding allocated data for the dynamic linker.
-    fn new_data() -> Result<Self, DynlinkError>
-    where
-        Self: Sized;
     fn load_addr(&self) -> usize;
 
     /// Get the data as a slice.
