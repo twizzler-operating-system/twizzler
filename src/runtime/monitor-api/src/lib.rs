@@ -1,10 +1,16 @@
+//! This crate exists to break a circular dependency between twz-rt and monitor. We use extern symbols so that we
+//! can just call into the monitor without having to have it as an explicit dependency.
+
 #![feature(naked_functions)]
 #![feature(pointer_byte_offsets)]
 #![feature(pointer_is_aligned)]
 use std::{
     alloc::Layout,
     ptr::NonNull,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::{
+        atomic::{AtomicPtr, Ordering},
+        OnceLock,
+    },
 };
 
 use dynlink::tls::{Tcb, TlsRegion};
@@ -12,12 +18,14 @@ use twizzler_abi::object::ObjID;
 use twizzler_runtime_api::{SpawnError, ThreadSpawnArgs};
 
 extern "Rust" {
+    /// Spawn a thread using the provided parameters.
     pub fn __monitor_rt_spawn_thread(
         args: ThreadSpawnArgs,
         thread_pointer: usize,
         stack_pointer: usize,
     ) -> Result<ObjID, SpawnError>;
 
+    /// Get a raw pointer to this compartment's shared compartment config.
     pub fn __monitor_rt_get_comp_config() -> *const SharedCompConfig;
 }
 
@@ -38,9 +46,32 @@ pub fn monitor_rt_get_comp_config(_todo: bool) -> usize {
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and read-only from the compartment.
 #[repr(C)]
 pub struct SharedCompConfig {
-    /// The security context that this compartment derives from.
+    /// The security context that this compartment derives from. Read-only, will not be overwritten.
     pub sctx: ObjID,
+    // Pointer to the current TLS template. Read-only by compartment, writable by monitor.
     tls_template: AtomicPtr<TlsTemplateInfo>,
+}
+
+struct CompConfigFinder {
+    config: NonNull<SharedCompConfig>,
+}
+
+// Safety: the compartment config address is stable over the life of the compartment and doesn't change after init.
+unsafe impl Sync for CompConfigFinder {}
+unsafe impl Send for CompConfigFinder {}
+
+static COMP_CONFIG: OnceLock<CompConfigFinder> = OnceLock::new();
+
+/// Get a reference to this compartment's [SharedCompConfig].
+pub fn get_comp_config() -> &'static SharedCompConfig {
+    unsafe {
+        COMP_CONFIG
+            .get_or_init(|| CompConfigFinder {
+                config: NonNull::new(monitor_rt_get_comp_config(true).unwrap() as *mut _).unwrap(),
+            })
+            .config
+            .as_ref()
+    }
 }
 
 /// Information about a monitor-generated TLS template.
@@ -88,21 +119,13 @@ impl TlsTemplateInfo {
         // Step 1: copy the template to the new memory.
         core::ptr::copy_nonoverlapping(self.alloc_base.as_ptr(), new, self.layout.size());
 
-        println!("new tls base: {:p}", new);
-
         let tcb = new.add(self.tp_offset) as *mut Tcb<T>;
         let dtv_ptr = new.add(self.dtv_offset) as *mut *mut u8;
         let dtv = core::slice::from_raw_parts_mut(dtv_ptr, self.num_dtv_entries);
 
-        // Step 2a: "relocate" the pointers inside the DTV. First entry is the gen count.
+        // Step 2a: "relocate" the pointers inside the DTV. First entry is the gen count, so skip that.
         for entry in dtv.iter_mut().skip(1) {
             let offset = (*entry).byte_offset_from(self.alloc_base.as_ptr());
-            println!(
-                "adjusting dtv entry: {:p} => {:p} ({})",
-                *entry,
-                new.byte_offset(offset),
-                offset
-            );
             *entry = new.byte_offset(offset);
         }
 
@@ -117,18 +140,6 @@ impl TlsTemplateInfo {
             tcb.self_ptr = tcb;
             tcb.runtime_data = tcb_data;
         }
-
-        println!(
-            "==> init_new_tls: {:p} {:p} {:p}",
-            tcb,
-            (*tcb).self_ptr,
-            (*tcb).dtv
-        );
-        println!(
-            "==> old: {:p} {:?}",
-            self.alloc_base.as_ptr().add(self.tp_offset),
-            self
-        );
 
         tcb
     }

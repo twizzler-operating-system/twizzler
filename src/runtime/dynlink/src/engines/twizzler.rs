@@ -93,7 +93,8 @@ impl ContextEngine for Engine {
             let len = (directive.vaddr - dest_start) + directive.filesz;
 
             if !directive.load_flags.contains(LoadFlags::TARGETS_DATA) {
-                if src_start != dest_start {
+                // Ensure we can direct-map the object for the text directives.
+                if src_start != dest_start || directive.filesz != directive.memsz {
                     // TODO: check len too.
                     return Err(DynlinkError::new(DynlinkErrorKind::LoadDirectiveFail {
                         dir: *directive,
@@ -124,8 +125,6 @@ impl ContextEngine for Engine {
         let data_id = sys_object_create(create_spec, &data_cmds, &[])
             .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
         let text_id = src.obj.id;
-        //let text_id = sys_object_create(create_spec, &text_cmds, &[])
-        //    .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
         let runtime = twizzler_runtime_api::get_runtime();
 
