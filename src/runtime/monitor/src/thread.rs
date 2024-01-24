@@ -17,8 +17,7 @@ pub fn spawn_thread(
     thread_pointer: usize,
     stack_pointer: usize,
 ) -> Result<ObjID, SpawnError> {
-    tracing::info!("SPAWN THREAD IN MON");
-
+    // Allocate a new stack for super entry for upcalls.
     let super_stack = Box::<[u8]>::new_zeroed_slice(SUPER_UPCALL_STACK_SIZE);
 
     let upcall_target = UpcallTarget::new(
@@ -26,6 +25,7 @@ pub fn spawn_thread(
         Some(twz_rt::rr_upcall_entry),
         super_stack.as_ptr() as usize,
         SUPER_UPCALL_STACK_SIZE,
+        // TODO: thread pointer
         0,
         0.into(),
         [UpcallOptions {
@@ -34,6 +34,7 @@ pub fn spawn_thread(
         }; UpcallInfo::NR_UPCALLS],
     );
 
+    // Lock before spawn so we guarantee we can fill out the manager entry before the thread can look there.
     let mut mgr = THREAD_MGR.lock().map_err(|_| SpawnError::Other)?;
     let thid = unsafe {
         sys_spawn(twizzler_abi::syscall::ThreadSpawnArgs {
@@ -54,6 +55,7 @@ pub fn spawn_thread(
     Ok(thid)
 }
 
+// Extern function, linked to by the runtime.
 #[no_mangle]
 pub fn __monitor_rt_spawn_thread(
     args: ThreadSpawnArgs,
@@ -63,13 +65,12 @@ pub fn __monitor_rt_spawn_thread(
     spawn_thread(args, thread_pointer, stack_pointer)
 }
 
+// Extern function, linked to by the runtime.
 #[no_mangle]
-pub fn __monitor_rt_get_comp_config(comp: ObjID) -> *const SharedCompConfig {
+pub fn __monitor_rt_get_comp_config(_comp: ObjID) -> *const SharedCompConfig {
     let state = get_monitor_state().lock().unwrap();
     let comp = state.comps.get(&0.into()).unwrap();
-    let cc = comp.get_comp_config();
-    tracing::info!("==> {:p}", cc);
-    cc
+    comp.get_comp_config()
 }
 
 #[allow(dead_code)]

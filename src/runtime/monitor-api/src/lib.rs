@@ -39,7 +39,7 @@ pub fn monitor_rt_spawn_thread(
 }
 
 #[secgate::secure_gate]
-pub fn monitor_rt_get_comp_config(_todo: bool) -> usize {
+pub fn monitor_rt_get_comp_config() -> usize {
     unsafe { __monitor_rt_get_comp_config() as usize }
 }
 

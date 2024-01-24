@@ -10,7 +10,6 @@ use state::MonitorState;
 use tracing::{debug, info, trace, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
 use twizzler_abi::{
-    arch::SLOTS,
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
 };
@@ -75,10 +74,6 @@ pub fn main() {
 }
 
 fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
-    twizzler_abi::syscall::sys_kernel_console_write(
-        b"monitor_init\n",
-        twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
-    );
     info!("monitor early init completed, starting init");
 
     {
@@ -92,39 +87,6 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
             let name = gate.name().to_string_lossy();
             info!("secure gate in {} => {}: {:x}", mon.name, name, gate.imp);
         }
-    }
-
-    debug!("unmapping bootstrap program");
-    // Unmap bootstrap program.
-    // TODO
-    /*
-    twizzler_abi::syscall::sys_object_unmap(
-        None,
-        twizzler_abi::slot::RESERVED_TEXT,
-        UnmapFlags::empty(),
-    )
-    .unwrap();
-    twizzler_abi::syscall::sys_object_unmap(
-        None,
-        twizzler_abi::slot::RESERVED_DATA,
-        UnmapFlags::empty(),
-    )
-    .unwrap();
-    */
-
-    {
-        let mut used = Vec::new();
-        // Reserve so we don't allocate memory while looking for mapped objects.
-        used.reserve(SLOTS);
-        for slot in 0..SLOTS {
-            let r = twizzler_abi::syscall::sys_object_read_map(None, slot);
-            match r {
-                Ok(info) => used.push(info),
-                _ => {}
-            }
-        }
-
-        trace!("bootstrapping secctx with {:?}", used);
     }
 
     load_hello_world_test(&state).unwrap();
