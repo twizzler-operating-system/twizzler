@@ -189,12 +189,6 @@ impl<T> Tcb<T> {
     }
 
     pub fn get_addr(&self, index: &TlsIndex) -> Option<*const u8> {
-        /*
-        twizzler_abi::syscall::sys_kernel_console_write(
-            b"get_addr\n",
-            twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
-        );
-        */
         unsafe {
             let slice = core::slice::from_raw_parts(self.dtv, self.dtv_len);
             Some((slice.get(index.mod_id)? + index.offset) as *const _)
