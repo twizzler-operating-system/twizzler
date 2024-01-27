@@ -47,21 +47,20 @@ pub fn enumerate_cpus() -> u32 {
 
     // enumerate the cpus using a device tree
     for cpu in devicetree().cpus() {
-        emerglogln!("found cpu {}", cpu.ids().first());
-        if core_id == cpu.ids().first() as u32 {
-            // For now we assume a single core, the boot core, and
-            // return it's ID to the scheduling system
-            crate::processor::register(core_id, core_id);
-            // set the enable method to turn on the CPU core
-            if let Some(enable) = cpu.property("enable-method") {
-                emerglogln!("\tenable = {:?}", enable.as_str());
-                let core = unsafe {
-                    crate::processor::get_processor_mut(core_id)
-                };
-                core.arch.boot = BootMethod::from_str(enable.as_str().unwrap()).unwrap();
-            }
+        let cpu_id = cpu.ids().first() as u32;
+        emerglogln!("found cpu {}", cpu_id);
+        // For now we assume a single core, the boot core, and
+        // return it's ID to the scheduling system
+        crate::processor::register(cpu_id, core_id);
+        // set the enable method to turn on the CPU core
+        if let Some(enable) = cpu.property("enable-method") {
+            emerglogln!("\tenable = {:?}", enable.as_str());
+            let core = unsafe {
+                crate::processor::get_processor_mut(cpu_id)
+            };
+            // set the arch-sepecific boot protocol
+            core.arch.boot = BootMethod::from_str(enable.as_str().unwrap()).unwrap();
         }
-        // TODO: register other processors so we can start them up
     }
 
     core_id
