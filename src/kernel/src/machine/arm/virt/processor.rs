@@ -5,36 +5,8 @@ use registers::interfaces::Readable;
 
 use crate::machine::info::devicetree;
 
-#[derive(Debug, Default, Copy, Clone, PartialEq)]
-pub enum BootMethod {
-    Psci,
-    SpinTable,
-    #[default]
-    Unknown,
-}
-
-impl BootMethod {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Psci => "psci",
-            Self::SpinTable => "spintable",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-impl FromStr for BootMethod {
-    type Err = ();
-
-    // Required method
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "psci" => Ok(BootMethod::Psci),
-            "spin-table" => Ok(BootMethod::SpinTable),
-            _ => Err(())
-        }
-    }
-}
+// re-export boot module
+pub use super::super::common::boot::*;
 
 pub fn enumerate_cpus() -> u32 {
     // MT bit means lowest level is logical cores (SMT)
@@ -49,8 +21,6 @@ pub fn enumerate_cpus() -> u32 {
     for cpu in devicetree().cpus() {
         let cpu_id = cpu.ids().first() as u32;
         emerglogln!("found cpu {}", cpu_id);
-        // For now we assume a single core, the boot core, and
-        // return it's ID to the scheduling system
         crate::processor::register(cpu_id, core_id);
         // set the enable method to turn on the CPU core
         if let Some(enable) = cpu.property("enable-method") {

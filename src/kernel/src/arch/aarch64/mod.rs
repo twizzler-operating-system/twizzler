@@ -113,6 +113,6 @@ pub fn debug_shutdown(_code: u32) {
 /// Start up a CPU.
 /// # Safety
 /// The tcb_base and kernel stack must both be valid memory regions for each thing.
-pub unsafe fn poke_cpu(_cpu: u32, _tcb_base: crate::memory::VirtAddr, _kernel_stack: *mut u8) {
-    todo!("start up a cpu")
+pub unsafe fn poke_cpu(cpu: u32, tcb_base: crate::memory::VirtAddr, kernel_stack: *mut u8) {
+    crate::machine::processor::poke_cpu(cpu, tcb_base, kernel_stack);
 }
