@@ -67,7 +67,7 @@ pub fn get_comp_config() -> &'static SharedCompConfig {
     unsafe {
         COMP_CONFIG
             .get_or_init(|| CompConfigFinder {
-                config: NonNull::new(monitor_rt_get_comp_config(true).unwrap() as *mut _).unwrap(),
+                config: NonNull::new(__monitor_rt_get_comp_config() as *mut _).unwrap(),
             })
             .config
             .as_ref()

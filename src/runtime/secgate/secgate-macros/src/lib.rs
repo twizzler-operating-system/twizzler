@@ -173,10 +173,16 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
         ..
     } = names;
     call_point.sig.ident = entry_name.clone();
+
+    let unpacked_args = if arg_names.is_empty() {
+        quote! {}
+    } else {
+        quote! {let (#(#arg_names),*,) = unsafe {*args}.into_inner();}
+    };
+
     call_point.block = Box::new(parse2(quote::quote! {
         {
-            // Unpack the arguments.
-            let (#(#arg_names),*,) = unsafe {*args}.into_inner();
+            #unpacked_args
 
             // Call the user-written implementation, catching unwinds.
             let impl_ret = std::panic::catch_unwind(|| #fn_name(#(#arg_names),*));
@@ -224,10 +230,18 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
         arg_names,
         ..
     } = names;
+
+    let args_tuple = if arg_names.is_empty() {
+        quote! {let tuple = ();}
+    } else {
+        quote! {
+            let tuple = (#(#arg_names),*,);
+        }
+    };
+
     call_point.block = Box::new(parse2(quote::quote! {
         {
-            // Pack up the args
-            let tuple = (#(#arg_names),*,);
+            #args_tuple
             // Allocate stack space for args + ret. Args::with_alloca also inits the memory.
             #mod_name::Args::with_alloca(tuple, |args| {
                 #mod_name::Ret::with_alloca(|ret| {
@@ -287,13 +301,21 @@ fn build_struct(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
 
     let str_lit = syn::LitByteStr::new(&name_bytes, proc_macro2::Span::mixed_site());
 
+    let arg_types = if types.is_empty() {
+        quote! {secgate::Arguments<()>}
+    } else {
+        quote! {
+            secgate::Arguments<(#(#types),*,)>
+        }
+    };
+
     Ok(quote! {
         #[used]
         pub static #struct_name: secgate::SecGateInfo<&'static #entry_type_name> =
             secgate::SecGateInfo::new(&(#entry_name as #entry_type_name), unsafe {std::ffi::CStr::from_bytes_with_nul_unchecked(#str_lit)});
         #[allow(non_camel_case_types)]
         type #entry_type_name = #ty;
-        pub type Args = secgate::Arguments<(#(#types),*,)>;
+        pub type Args = #arg_types;
         pub type Ret = secgate::Return<secgate::SecGateReturn<#ret_type>>;
         pub const ARGS_SIZE: usize = core::mem::size_of::<Args>();
         pub const RET_SIZE: usize = core::mem::size_of::<Ret>();
