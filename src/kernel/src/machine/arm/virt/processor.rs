@@ -30,6 +30,8 @@ pub fn enumerate_cpus() -> u32 {
             };
             // set the arch-sepecific boot protocol
             core.arch.boot = BootMethod::from_str(enable.as_str().unwrap()).unwrap();
+            // save the MPIDR_EL1 value found used for boot
+            core.arch.mpidr = cpu_id as u64;
         }
     }
 

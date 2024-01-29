@@ -4,7 +4,7 @@ use arm64::registers::TPIDR_EL1;
 use registers::interfaces::{Readable, Writeable};
 
 use crate::{
-    machine::processor::BootMethod,
+    machine::processor::{BootMethod, BootArgs},
     memory::VirtAddr,
     processor::Processor,
     once::Once,
@@ -57,6 +57,8 @@ pub fn get_topology() -> Vec<(usize, bool)> {
 #[derive(Default, Debug)]
 pub struct ArchProcessor {
     pub boot: BootMethod,
+    pub args: BootArgs,
+    pub mpidr: u64,
 }
 
 pub fn halt_and_wait() {
