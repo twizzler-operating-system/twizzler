@@ -4,6 +4,7 @@ use std::{
 };
 
 use dynlink::{
+    compartment::Compartment,
     context::Context,
     engines::{Backing, Engine},
 };
@@ -27,6 +28,16 @@ impl MonitorState {
             root: init.root,
             comps: Default::default(),
         }
+    }
+
+    pub(crate) fn get_monitor_compartment(&self) -> &Compartment<Backing> {
+        let mid = self.dynlink.lookup_compartment("monitor").unwrap();
+        self.dynlink.get_compartment(mid).unwrap()
+    }
+
+    pub(crate) fn get_monitor_compartment_mut(&mut self) -> &mut Compartment<Backing> {
+        let mid = self.dynlink.lookup_compartment("monitor").unwrap();
+        self.dynlink.get_compartment_mut(mid).unwrap()
     }
 
     pub(crate) fn get_nth_library(&self, n: usize) -> Option<&dynlink::library::Library<Backing>> {

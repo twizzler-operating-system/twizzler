@@ -1,4 +1,4 @@
-use std::{collections::HashMap, mem::MaybeUninit, sync::Mutex};
+use std::{collections::HashMap, mem::MaybeUninit, ptr::NonNull, sync::Mutex};
 
 use monitor_api::SharedCompConfig;
 use twizzler_abi::{
@@ -7,6 +7,7 @@ use twizzler_abi::{
 };
 use twizzler_object::ObjID;
 use twizzler_runtime_api::{SpawnError, ThreadSpawnArgs};
+use twz_rt::monitor::RuntimeThreadControl;
 
 use crate::state::get_monitor_state;
 
@@ -20,13 +21,20 @@ pub fn spawn_thread(
     // Allocate a new stack for super entry for upcalls.
     let super_stack = Box::<[u8]>::new_zeroed_slice(SUPER_UPCALL_STACK_SIZE);
 
+    let mut state = get_monitor_state().lock().unwrap();
+    let mon_comp = state.get_monitor_compartment_mut();
+    let tls = mon_comp
+        .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
+            NonNull::new(std::alloc::alloc_zeroed(layout))
+        })
+        .unwrap();
+
     let upcall_target = UpcallTarget::new(
         None,
         Some(twz_rt::rr_upcall_entry),
         super_stack.as_ptr() as usize,
         SUPER_UPCALL_STACK_SIZE,
-        // TODO: thread pointer
-        0,
+        tls.get_thread_pointer_value(),
         0.into(),
         [UpcallOptions {
             flags: UpcallFlags::empty(),
