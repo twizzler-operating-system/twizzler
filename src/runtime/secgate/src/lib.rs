@@ -184,13 +184,15 @@ macro_rules! secgate_prelude {
     };
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(C)]
 pub struct GateCallInfo {
-    pub thread_id: ObjID,
-    pub src_ctx: ObjID,
+    thread_id: ObjID,
+    src_ctx: ObjID,
 }
 
 impl GateCallInfo {
+    /// Allocate a new GateCallInfo on the stack for the closure.
     pub fn with_alloca<F, R>(thread_id: ObjID, src_ctx: ObjID, f: F) -> R
     where
         F: FnOnce(&mut Self) -> R,
@@ -200,5 +202,31 @@ impl GateCallInfo {
             // Safety: we init the MaybeUninit just above.
             f(unsafe { stack_space.assume_init_mut() })
         })
+    }
+
+    /// Get the ID of the source context, or None if the call was not cross-context.
+    pub fn source_context(&self) -> Option<ObjID> {
+        if self.src_ctx.as_u128() == 0 {
+            None
+        } else {
+            Some(self.src_ctx)
+        }
+    }
+
+    /// Get the ID of the calling thread.
+    pub fn thread_id(&self) -> ObjID {
+        if self.thread_id.as_u128() == 0 {
+            twizzler_abi::syscall::sys_thread_self_id()
+        } else {
+            self.thread_id
+        }
+    }
+
+    /// Ensures that the data is filled out (may read thread ID from kernel if necessary).
+    pub fn canonicalize(self) -> Self {
+        Self {
+            thread_id: self.thread_id(),
+            src_ctx: self.src_ctx,
+        }
     }
 }

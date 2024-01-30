@@ -10,12 +10,12 @@ use twizzler_object::ObjID;
 use twizzler_runtime_api::{SpawnError, ThreadSpawnArgs};
 use twz_rt::monitor::RuntimeThreadControl;
 
-use crate::{compartment::Comp, state::get_monitor_state};
+use crate::state::get_monitor_state;
 
 pub const SUPER_UPCALL_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 
-pub fn spawn_thread(
-    compartment: &Comp,
+fn spawn_thread(
+    src_ctx: ObjID,
     args: ThreadSpawnArgs,
     thread_pointer: usize,
     stack_pointer: usize,
@@ -44,6 +44,7 @@ pub fn spawn_thread(
         }; UpcallInfo::NR_UPCALLS],
     );
 
+    let comp = state.comps.get(&src_ctx).unwrap();
     // Lock before spawn so we guarantee we can fill out the manager entry before the thread can look there.
     let mut mgr = THREAD_MGR.lock().map_err(|_| SpawnError::Other)?;
     let thid = unsafe {
@@ -62,7 +63,7 @@ pub fn spawn_thread(
 
     mgr.all.insert(thid, ManagedThread::new(thid, super_stack));
 
-    debug!("spawned thread {} in compartment {}", thid, compartment);
+    debug!("spawned thread {} in compartment {}", thid, comp);
 
     Ok(thid)
 }
@@ -75,9 +76,7 @@ pub fn __monitor_rt_spawn_thread(
     thread_pointer: usize,
     stack_pointer: usize,
 ) -> Result<ObjID, SpawnError> {
-    let state = get_monitor_state().lock().unwrap();
-    let comp = state.comps.get(&src_ctx).unwrap();
-    spawn_thread(comp, args, thread_pointer, stack_pointer)
+    spawn_thread(src_ctx, args, thread_pointer, stack_pointer)
 }
 
 // Extern function, linked to by the runtime.

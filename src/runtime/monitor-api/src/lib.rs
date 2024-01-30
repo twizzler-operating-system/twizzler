@@ -31,18 +31,26 @@ extern "Rust" {
     pub fn __monitor_rt_get_comp_config(src_ctx: ObjID) -> *const SharedCompConfig;
 }
 
-#[secgate::secure_gate]
+#[secgate::secure_gate(options(info))]
 pub fn monitor_rt_spawn_thread(
+    info: &GateCallInfo,
     args: ThreadSpawnArgs,
     thread_pointer: usize,
     stack_pointer: usize,
 ) -> Result<ObjID, SpawnError> {
-    unsafe { __monitor_rt_spawn_thread(todo!(), args, thread_pointer, stack_pointer) }
+    unsafe {
+        __monitor_rt_spawn_thread(
+            info.source_context().unwrap_or(0.into()),
+            args,
+            thread_pointer,
+            stack_pointer,
+        )
+    }
 }
 
-#[secgate::secure_gate]
-pub fn monitor_rt_get_comp_config() -> usize {
-    unsafe { __monitor_rt_get_comp_config(todo!()) as usize }
+#[secgate::secure_gate(options(info))]
+pub fn monitor_rt_get_comp_config(info: &GateCallInfo) -> usize {
+    unsafe { __monitor_rt_get_comp_config(info.source_context().unwrap_or(0.into())) as usize }
 }
 
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and read-only from the compartment.

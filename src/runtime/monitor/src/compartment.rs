@@ -47,7 +47,7 @@ impl core::fmt::Debug for Comp {
 
 impl core::fmt::Display for Comp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "comp:{}", &self.name)
+        write!(f, "{}", &self.name)
     }
 }
 
