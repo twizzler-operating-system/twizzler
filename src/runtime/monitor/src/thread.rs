@@ -1,6 +1,7 @@
 use std::{collections::HashMap, mem::MaybeUninit, ptr::NonNull, sync::Mutex};
 
 use monitor_api::SharedCompConfig;
+use tracing::debug;
 use twizzler_abi::{
     syscall::{sys_spawn, UpcallTargetSpawnOption},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
@@ -9,11 +10,12 @@ use twizzler_object::ObjID;
 use twizzler_runtime_api::{SpawnError, ThreadSpawnArgs};
 use twz_rt::monitor::RuntimeThreadControl;
 
-use crate::state::get_monitor_state;
+use crate::{compartment::Comp, state::get_monitor_state};
 
 pub const SUPER_UPCALL_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 
 pub fn spawn_thread(
+    compartment: &Comp,
     args: ThreadSpawnArgs,
     thread_pointer: usize,
     stack_pointer: usize,
@@ -27,7 +29,7 @@ pub fn spawn_thread(
         .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
             NonNull::new(std::alloc::alloc_zeroed(layout))
         })
-        .unwrap();
+        .map_err(|_| SpawnError::Other)?;
 
     let upcall_target = UpcallTarget::new(
         None,
@@ -60,24 +62,29 @@ pub fn spawn_thread(
 
     mgr.all.insert(thid, ManagedThread::new(thid, super_stack));
 
+    debug!("spawned thread {} in compartment {}", thid, compartment);
+
     Ok(thid)
 }
 
 // Extern function, linked to by the runtime.
 #[no_mangle]
 pub fn __monitor_rt_spawn_thread(
+    src_ctx: ObjID,
     args: ThreadSpawnArgs,
     thread_pointer: usize,
     stack_pointer: usize,
 ) -> Result<ObjID, SpawnError> {
-    spawn_thread(args, thread_pointer, stack_pointer)
+    let state = get_monitor_state().lock().unwrap();
+    let comp = state.comps.get(&src_ctx).unwrap();
+    spawn_thread(comp, args, thread_pointer, stack_pointer)
 }
 
 // Extern function, linked to by the runtime.
 #[no_mangle]
-pub fn __monitor_rt_get_comp_config(_comp: ObjID) -> *const SharedCompConfig {
+pub fn __monitor_rt_get_comp_config(src_ctx: ObjID) -> *const SharedCompConfig {
     let state = get_monitor_state().lock().unwrap();
-    let comp = state.comps.get(&0.into()).unwrap();
+    let comp = state.comps.get(&src_ctx).unwrap();
     comp.get_comp_config()
 }
 

@@ -27,6 +27,8 @@ pub struct Comp {
 
     // A map of threads that have entered this compartment and have associated runtime data.
     thread_map: HashMap<ObjID, CompThreadInfo>,
+
+    name: String,
 }
 
 /// Safety: this is needed because of the comp_config field, but this points to an object that is
@@ -35,7 +37,17 @@ unsafe impl Send for Comp {}
 
 impl core::fmt::Debug for Comp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Comp({:x}, {})", &self.sctx_id, &self.compartment_id)
+        write!(
+            f,
+            "comp:{}({:x}, {})",
+            &self.name, &self.sctx_id, &self.compartment_id
+        )
+    }
+}
+
+impl core::fmt::Display for Comp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "comp:{}", &self.name)
     }
 }
 
@@ -83,6 +95,7 @@ impl Comp {
             thread_map: Default::default(),
             allocator,
             comp_config: OnceCell::new(),
+            name: compartment.name.clone(),
         };
 
         // Construct the TLS template.

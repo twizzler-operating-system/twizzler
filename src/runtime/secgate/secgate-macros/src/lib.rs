@@ -1,8 +1,11 @@
 #![feature(c_str_literals)]
 #![feature(iterator_try_collect)]
+#![feature(proc_macro_diagnostic)]
 // syn doesn't allow us to easily fix this.
 #![allow(clippy::vec_box)]
 
+use darling::FromMeta;
+use proc_macro::{Diagnostic, Level};
 use proc_macro2::{Ident, TokenStream};
 use quote::{quote, ToTokens};
 use syn::{
@@ -35,6 +38,13 @@ struct Info {
     pub types: Vec<Box<Type>>,
     pub ret_type: ReturnType,
     pub arg_names: Vec<Ident>,
+    pub has_info: bool,
+}
+
+#[derive(Debug, FromMeta)]
+struct MacroArgs {
+    #[darling(default)]
+    options: darling::util::PathList,
 }
 
 fn build_names(
@@ -42,6 +52,7 @@ fn build_names(
     types: Vec<Box<Type>>,
     ret_type: ReturnType,
     arg_names: Vec<Ident>,
+    has_info: bool,
 ) -> Info {
     Info {
         mod_name: Ident::new(&format!("{}{}_mod", PREFIX, base), base.span()),
@@ -54,11 +65,12 @@ fn build_names(
         types,
         arg_names,
         ret_type,
+        has_info,
     }
 }
 
 fn handle_secure_gate(
-    _attr: proc_macro2::TokenStream,
+    attr: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
 ) -> Result<proc_macro2::TokenStream, Error> {
     let mut tree = syn::parse2::<syn::ItemFn>(item)?;
@@ -83,10 +95,62 @@ fn handle_secure_gate(
         })
         .try_collect()?;
 
+    let attr_args = darling::ast::NestedMeta::parse_meta_list(attr.into())?;
+    let attr_args = MacroArgs::from_list(&attr_args)?;
+
+    let opt_info: Ident = parse_quote!(info);
+    let has_info = if attr_args
+        .options
+        .iter()
+        .find(|item| item.is_ident(&opt_info))
+        .is_some()
+    {
+        if types.is_empty() {
+            Diagnostic::spanned(
+                tree.sig.ident.span().unwrap(),
+                Level::Error,
+                "option info requires at least one argument, the info struct",
+            )
+            .emit();
+        }
+        let first = tree.sig.inputs.first().unwrap();
+        match first {
+            syn::FnArg::Receiver(rec) => {
+                Diagnostic::spanned(
+                    rec.self_token.span.unwrap(),
+                    Level::Error,
+                    "option info may not be used on a receiver function",
+                )
+                .emit();
+            }
+            syn::FnArg::Typed(pat) => match &*pat.ty {
+                Type::Reference(tr) => {
+                    if tr.mutability.is_some() {
+                        Diagnostic::spanned(
+                            tree.sig.ident.span().unwrap(),
+                            Level::Error,
+                            "option info requires first argument to be immutable",
+                        )
+                        .emit();
+                    }
+                }
+                _ => Diagnostic::spanned(
+                    tree.sig.ident.span().unwrap(),
+                    Level::Error,
+                    "option info requires first argument to be a reference type to GateCallInfo",
+                )
+                .emit(),
+            },
+        }
+        true
+    } else {
+        false
+    };
+
     let ret_type = tree.sig.output.clone();
 
     let fn_name = tree.sig.ident.clone();
-    let names = build_names(fn_name, types, ret_type, arg_names);
+    let names = build_names(fn_name, types, ret_type, arg_names, has_info);
     let trampoline = build_trampoline(&tree, &names)?;
     let public_call_point = build_public_call(&tree, &names)?;
     let entry = build_entry(&tree, &names)?;
@@ -127,6 +191,9 @@ fn get_entry_sig(tree: &ItemFn) -> Signature {
     let mut sig = tree.sig.clone();
     sig.abi = parse_quote!( extern "C" );
     sig.inputs = Punctuated::new();
+    sig.inputs
+        .push_value(parse_quote!(info: *const secgate::GateCallInfo));
+    sig.inputs.push_punct(parse_quote!(,));
     sig.inputs.push_value(parse_quote!(args: *const Args));
     sig.inputs.push_punct(parse_quote!(,));
     sig.inputs.push_value(parse_quote!(ret: *mut Ret));
@@ -169,10 +236,19 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
     let Info {
         entry_name,
         fn_name,
-        arg_names,
+        arg_names: all_arg_names,
+        has_info,
         ..
     } = names;
     call_point.sig.ident = entry_name.clone();
+
+    let arg_names = if *has_info {
+        //let args = call_point.sig.inputs.into_iter().skip(1).collect();
+        //call_point.sig.inputs = args;
+        &all_arg_names[1..]
+    } else {
+        &all_arg_names
+    };
 
     let unpacked_args = if arg_names.is_empty() {
         quote! {}
@@ -180,12 +256,18 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
         quote! {let (#(#arg_names),*,) = unsafe {*args}.into_inner();}
     };
 
+    let call_args = if *has_info {
+        quote! {unsafe {&*info}, #(#arg_names),*}
+    } else {
+        quote! {#(#arg_names),*}
+    };
+
     call_point.block = Box::new(parse2(quote::quote! {
         {
             #unpacked_args
 
             // Call the user-written implementation, catching unwinds.
-            let impl_ret = std::panic::catch_unwind(|| #fn_name(#(#arg_names),*));
+            let impl_ret = std::panic::catch_unwind(|| #fn_name(#call_args));
             // If we panic'd, report to user and return error.
             if impl_ret.is_err() {
                 std::process::Termination::report(std::process::ExitCode::from(101u8));
@@ -228,8 +310,17 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
         mod_name,
         trampoline_name,
         arg_names,
+        has_info,
         ..
     } = names;
+
+    let arg_names = if *has_info {
+        let args = call_point.sig.inputs.into_iter().skip(1).collect();
+        call_point.sig.inputs = args;
+        &arg_names[1..]
+    } else {
+        &arg_names
+    };
 
     let args_tuple = if arg_names.is_empty() {
         quote! {let tuple = ();}
@@ -243,11 +334,13 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
         {
             #args_tuple
             // Allocate stack space for args + ret. Args::with_alloca also inits the memory.
-            #mod_name::Args::with_alloca(tuple, |args| {
-                #mod_name::Ret::with_alloca(|ret| {
-                    // Call the trampoline in the mod.
-                    #mod_name::#trampoline_name(args as *const _, ret as *mut _);
-                    ret.into_inner().unwrap_or(secgate::SecGateReturn::<_>::NoReturnValue)
+            secgate::GateCallInfo::with_alloca(0.into(), 0.into(), |info| {
+                #mod_name::Args::with_alloca(tuple, |args| {
+                    #mod_name::Ret::with_alloca(|ret| {
+                        // Call the trampoline in the mod.
+                        #mod_name::#trampoline_name(info as *const _, args as *const _, ret as *mut _);
+                        ret.into_inner().unwrap_or(secgate::SecGateReturn::<_>::NoReturnValue)
+                    })
                 })
             })
         }
@@ -265,6 +358,7 @@ fn build_struct(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
         struct_name,
         types,
         ret_type,
+        has_info,
         ..
     } = names;
     let entry_sig = get_entry_sig(tree);
@@ -300,6 +394,8 @@ fn build_struct(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
     name_bytes.push(0);
 
     let str_lit = syn::LitByteStr::new(&name_bytes, proc_macro2::Span::mixed_site());
+
+    let types = if *has_info { &types[1..] } else { &types };
 
     let arg_types = if types.is_empty() {
         quote! {secgate::Arguments<()>}

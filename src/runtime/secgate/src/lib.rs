@@ -9,6 +9,7 @@ use core::ffi::CStr;
 use std::{cell::UnsafeCell, marker::Tuple, mem::MaybeUninit};
 
 pub use secgate_macros::*;
+use twizzler_abi::object::ObjID;
 
 /// Enum of possible return codes, similar to [Result], but with specific
 /// variants of possible failures of initializing or invoking the secure gate call.
@@ -181,4 +182,23 @@ macro_rules! secgate_prelude {
             pub fn c_with_alloca();
         }
     };
+}
+
+#[repr(C)]
+pub struct GateCallInfo {
+    pub thread_id: ObjID,
+    pub src_ctx: ObjID,
+}
+
+impl GateCallInfo {
+    pub fn with_alloca<F, R>(thread_id: ObjID, src_ctx: ObjID, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        alloca::alloca(|stack_space| {
+            stack_space.write(Self { thread_id, src_ctx });
+            // Safety: we init the MaybeUninit just above.
+            f(unsafe { stack_space.assume_init_mut() })
+        })
+    }
 }
