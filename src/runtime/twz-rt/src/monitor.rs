@@ -24,7 +24,8 @@ pub fn get_monitor_actions() -> &'static mut dyn MonitorActions {
 pub fn get_comp_config() -> &'static SharedCompConfig {
     static COMP_CONFIG: OnceLock<&'static SharedCompConfig> = OnceLock::new();
     COMP_CONFIG.get_or_init(|| unsafe {
-        (match monitor_api::monitor_rt_get_comp_config() {
+        let m: secgate::SecGateReturn<*const SharedCompConfig> = todo!();
+        (match m {
             secgate::SecGateReturn::Success(val) => val,
             _ => {
                 panic!("failed to get compartment config from monitor")

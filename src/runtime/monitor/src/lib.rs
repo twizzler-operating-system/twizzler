@@ -26,6 +26,9 @@ mod state;
 mod thread;
 mod upcall;
 
+#[path = "../secapi/gates.rs"]
+mod gates;
+
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()

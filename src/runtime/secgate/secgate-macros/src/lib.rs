@@ -9,8 +9,9 @@ use proc_macro::{Diagnostic, Level};
 use proc_macro2::{Ident, TokenStream};
 use quote::{quote, ToTokens};
 use syn::{
-    parse2, parse_quote, punctuated::Punctuated, token::Pub, Attribute, BareFnArg, Error, ItemFn,
-    LitStr, Path, ReturnType, Signature, Type, TypeBareFn, TypePath, Visibility,
+    parse2, parse_quote, punctuated::Punctuated, token::Pub, Attribute, BareFnArg, Error,
+    ForeignItemFn, ItemFn, LitStr, Path, ReturnType, Signature, Token, Type, TypeBareFn, TypePath,
+    Visibility,
 };
 
 #[proc_macro_attribute]
@@ -99,6 +100,14 @@ fn handle_secure_gate(
     let attr_args = MacroArgs::from_list(&attr_args)?;
 
     let opt_info: Ident = parse_quote!(info);
+    let opt_api: Ident = parse_quote!(api);
+
+    let entry_only = attr_args
+        .options
+        .iter()
+        .find(|item| item.is_ident(&opt_api))
+        .is_some();
+
     let has_info = if attr_args
         .options
         .iter()
@@ -152,9 +161,11 @@ fn handle_secure_gate(
     let fn_name = tree.sig.ident.clone();
     let names = build_names(fn_name, types, ret_type, arg_names, has_info);
     let trampoline = build_trampoline(&tree, &names)?;
+    let extern_trampoline = build_extern_trampoline(&tree, &names)?;
     let public_call_point = build_public_call(&tree, &names)?;
     let entry = build_entry(&tree, &names)?;
     let struct_def = build_struct(&tree, &names)?;
+    let types_def = build_types(&tree, &names)?;
 
     let link_section_text: Attribute = parse_quote!(#[link_section = ".twz_secgate_text"]);
     let link_section_data: Attribute = parse_quote!(#[link_section = ".twz_secgate_info"]);
@@ -167,24 +178,37 @@ fn handle_secure_gate(
     } = names;
     tree.sig.ident = parse_quote!(#internal_fn_name);
     //tree.vis = parse_quote!(pub(crate));
-    // For now, we put all this stuff in a mod to keep it contained.
-    Ok(quote::quote! {
-        // the implementation (user-written)
-        #tree
-        pub mod #mod_name {
-            use super::*;
-            pub(super) use super::#internal_fn_name as #fn_name;
-            // the generated entry function
-            #entry
-            // info struct data
-            #link_section_data
-            #struct_def
-            // trampoline text
-            #link_section_text
-            #trampoline
-        }
-        #public_call_point
-    })
+
+    if entry_only {
+        Ok(quote::quote! {
+            pub mod #mod_name {
+                use super::*;
+                 #extern_trampoline
+                #types_def
+            }
+            #public_call_point
+        })
+    } else {
+        // For now, we put all this stuff in a mod to keep it contained.
+        Ok(quote::quote! {
+            // the implementation (user-written)
+            #tree
+            pub mod #mod_name {
+                use super::*;
+                pub(super) use super::#internal_fn_name as #fn_name;
+                // the generated entry function
+                #entry
+                // info struct data
+                #link_section_data
+                #struct_def
+                #types_def
+                // trampoline text
+                #link_section_text
+                #trampoline
+            }
+            #public_call_point
+        })
+    }
 }
 
 fn get_entry_sig(tree: &ItemFn) -> Signature {
@@ -228,6 +252,22 @@ fn build_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStr
     Ok(quote::quote!(#call_point))
 }
 
+fn build_extern_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, Error> {
+    let mut entry_sig = get_entry_sig(tree);
+    // This will be in an extern block.
+    entry_sig.abi = None;
+    entry_sig.ident = names.trampoline_name.clone();
+
+    let ffn = ForeignItemFn {
+        attrs: vec![],
+        vis: Visibility::Public(Pub::default()),
+        semi_token: Token![;](entry_sig.ident.span()),
+        sig: entry_sig,
+    };
+
+    Ok(quote::quote!(extern "C" {#ffn}))
+}
+
 fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, Error> {
     let mut call_point = tree.clone();
     call_point.vis = Visibility::Inherited;
@@ -257,7 +297,7 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
     };
 
     let call_args = if *has_info {
-        quote! {unsafe {&*info}, #(#arg_names),*}
+        quote! {unsafe {&(*info).canonicalize()}, #(#arg_names),*}
     } else {
         quote! {#(#arg_names),*}
     };
@@ -338,7 +378,9 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
                 #mod_name::Args::with_alloca(tuple, |args| {
                     #mod_name::Ret::with_alloca(|ret| {
                         // Call the trampoline in the mod.
-                        #mod_name::#trampoline_name(info as *const _, args as *const _, ret as *mut _);
+                        unsafe {
+                            #mod_name::#trampoline_name(info as *const _, args as *const _, ret as *mut _);
+                        }
                         ret.into_inner().unwrap_or(secgate::SecGateReturn::<_>::NoReturnValue)
                     })
                 })
@@ -349,13 +391,33 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
     Ok(quote::quote!(#call_point))
 }
 
-fn build_struct(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
+fn build_struct(_tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
     let Info {
         mod_name: _mod_name,
         entry_type_name,
         entry_name,
         fn_name,
         struct_name,
+        ..
+    } = names;
+
+    let mut name_bytes = fn_name.to_string().into_bytes();
+    name_bytes.push(0);
+
+    let str_lit = syn::LitByteStr::new(&name_bytes, proc_macro2::Span::mixed_site());
+
+    Ok(quote! {
+        #[used]
+        pub static #struct_name: secgate::SecGateInfo<&'static #entry_type_name> =
+            secgate::SecGateInfo::new(&(#entry_name as #entry_type_name), unsafe {std::ffi::CStr::from_bytes_with_nul_unchecked(#str_lit)});
+    })
+}
+
+fn build_types(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
+    let Info {
+        mod_name: _mod_name,
+        entry_type_name,
+        fn_name,
         types,
         ret_type,
         has_info,
@@ -393,8 +455,6 @@ fn build_struct(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
     let mut name_bytes = fn_name.to_string().into_bytes();
     name_bytes.push(0);
 
-    let str_lit = syn::LitByteStr::new(&name_bytes, proc_macro2::Span::mixed_site());
-
     let types = if *has_info { &types[1..] } else { &types };
 
     let arg_types = if types.is_empty() {
@@ -406,9 +466,6 @@ fn build_struct(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
     };
 
     Ok(quote! {
-        #[used]
-        pub static #struct_name: secgate::SecGateInfo<&'static #entry_type_name> =
-            secgate::SecGateInfo::new(&(#entry_name as #entry_type_name), unsafe {std::ffi::CStr::from_bytes_with_nul_unchecked(#str_lit)});
         #[allow(non_camel_case_types)]
         type #entry_type_name = #ty;
         pub type Args = #arg_types;

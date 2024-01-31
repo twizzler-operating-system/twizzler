@@ -14,44 +14,12 @@ use std::{
 };
 
 use dynlink::tls::{Tcb, TlsRegion};
-use secgate::GateCallInfo;
 use twizzler_abi::object::ObjID;
-use twizzler_runtime_api::{SpawnError, ThreadSpawnArgs};
 
-extern "Rust" {
-    /// Spawn a thread using the provided parameters.
-    pub fn __monitor_rt_spawn_thread(
-        src_ctx: ObjID,
-        args: ThreadSpawnArgs,
-        thread_pointer: usize,
-        stack_pointer: usize,
-    ) -> Result<ObjID, SpawnError>;
+#[path = "../../monitor/secapi/gates.rs"]
+mod gates;
 
-    /// Get a raw pointer to this compartment's shared compartment config.
-    pub fn __monitor_rt_get_comp_config(src_ctx: ObjID) -> *const SharedCompConfig;
-}
-
-#[secgate::secure_gate(options(info))]
-pub fn monitor_rt_spawn_thread(
-    info: &GateCallInfo,
-    args: ThreadSpawnArgs,
-    thread_pointer: usize,
-    stack_pointer: usize,
-) -> Result<ObjID, SpawnError> {
-    unsafe {
-        __monitor_rt_spawn_thread(
-            info.source_context().unwrap_or(0.into()),
-            args,
-            thread_pointer,
-            stack_pointer,
-        )
-    }
-}
-
-#[secgate::secure_gate(options(info))]
-pub fn monitor_rt_get_comp_config(info: &GateCallInfo) -> usize {
-    unsafe { __monitor_rt_get_comp_config(info.source_context().unwrap_or(0.into())) as usize }
-}
+pub use gates::*;
 
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and read-only from the compartment.
 #[repr(C)]
@@ -73,11 +41,11 @@ unsafe impl Send for CompConfigFinder {}
 static COMP_CONFIG: OnceLock<CompConfigFinder> = OnceLock::new();
 
 /// Get a reference to this compartment's [SharedCompConfig].
-pub fn get_comp_config() -> &'static SharedCompConfig {
+pub fn get_comp_config(src_ctx: ObjID) -> &'static SharedCompConfig {
     unsafe {
         COMP_CONFIG
             .get_or_init(|| CompConfigFinder {
-                config: NonNull::new(__monitor_rt_get_comp_config(todo!()) as *mut _).unwrap(),
+                config: NonNull::new(todo!() as *mut _).unwrap(),
             })
             .config
             .as_ref()

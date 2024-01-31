@@ -2,7 +2,6 @@
 
 use std::{alloc::Layout, collections::HashMap, sync::Mutex};
 
-use dynlink::tls::TlsRegion;
 use tracing::trace;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
@@ -12,15 +11,12 @@ use twizzler_runtime_api::{
     CoreRuntime, JoinError, MapFlags, ObjectRuntime, SpawnError, ThreadSpawnArgs,
 };
 
-use crate::{
-    monitor::get_monitor_actions,
-    runtime::{
-        thread::{
-            tcb::{trampoline, RuntimeThreadControl, TLS_GEN_MGR},
-            MIN_STACK_ALIGN, THREAD_MGR,
-        },
-        ReferenceRuntime, OUR_RUNTIME,
+use crate::runtime::{
+    thread::{
+        tcb::{trampoline, RuntimeThreadControl, TLS_GEN_MGR},
+        MIN_STACK_ALIGN, THREAD_MGR,
     },
+    ReferenceRuntime, OUR_RUNTIME,
 };
 
 use super::internal::InternalThread;
@@ -171,7 +167,8 @@ impl ReferenceRuntime {
         };
 
         let thid: ObjID = {
-            let res = monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
+            let res: secgate::SecGateReturn<Result<ObjID, SpawnError>> = todo!();
+            //let res = monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
             match res {
                 secgate::SecGateReturn::Success(id) => id?,
                 _ => return Err(SpawnError::Other),
