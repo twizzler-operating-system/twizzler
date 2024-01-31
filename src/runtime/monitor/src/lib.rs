@@ -103,11 +103,12 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
     let mut state = state.lock().unwrap();
     let test_comp_id = state.dynlink.add_compartment("test")?;
 
-    let libhw_id = state
-        .dynlink
-        .load_library_in_compartment(test_comp_id, lib, |name| bootstrap_name_res(name))?;
+    let libhw_id =
+        state
+            .dynlink
+            .load_library_in_compartment(test_comp_id, lib, bootstrap_name_res)?;
 
-    let _ = state.dynlink.relocate_all(libhw_id)?;
+    state.dynlink.relocate_all(libhw_id)?;
 
     let test_comp = Comp::new(
         1.into(),

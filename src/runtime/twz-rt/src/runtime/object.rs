@@ -99,7 +99,7 @@ impl ObjectRuntime for ReferenceRuntime {
             prot_a,
             twizzler_abi::syscall::MapFlags::empty(),
         )
-        .map_err(|e| map_sys_err(e))?;
+        .map_err(map_sys_err)?;
 
         sys_object_map(
             None,
@@ -108,7 +108,7 @@ impl ObjectRuntime for ReferenceRuntime {
             prot_b,
             twizzler_abi::syscall::MapFlags::empty(),
         )
-        .map_err(|e| map_sys_err(e))?;
+        .map_err(map_sys_err)?;
 
         Ok((
             new_object_handle(in_id_a, slot_a, in_flags_a),

@@ -64,7 +64,7 @@ impl MonitorActions for MonitorActionsImpl {
         if buf.len() < lib.name.len() {
             return None;
         }
-        buf[0..lib.name.len()].copy_from_slice(&lib.name.as_bytes());
+        buf[0..lib.name.len()].copy_from_slice(lib.name.as_bytes());
         Some(lib.name.len())
     }
 

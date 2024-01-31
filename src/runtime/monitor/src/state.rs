@@ -44,10 +44,7 @@ impl MonitorState {
         let lib = all
             .get(n)
             // TODO
-            .and_then(|x| match self.dynlink.lookup_library(comp_id, &x) {
-                Some(l) => Some(l),
-                _ => None,
-            })?;
+            .and_then(|x| self.dynlink.lookup_library(comp_id, x))?;
 
         self.dynlink.get_library(lib).ok()
     }

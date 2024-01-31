@@ -96,23 +96,18 @@ fn handle_secure_gate(
         })
         .try_collect()?;
 
-    let attr_args = darling::ast::NestedMeta::parse_meta_list(attr.into())?;
+    let attr_args = darling::ast::NestedMeta::parse_meta_list(attr)?;
     let attr_args = MacroArgs::from_list(&attr_args)?;
 
     let opt_info: Ident = parse_quote!(info);
     let opt_api: Ident = parse_quote!(api);
 
-    let entry_only = attr_args
-        .options
-        .iter()
-        .find(|item| item.is_ident(&opt_api))
-        .is_some();
+    let entry_only = attr_args.options.iter().any(|item| item.is_ident(&opt_api));
 
     let has_info = if attr_args
         .options
         .iter()
-        .find(|item| item.is_ident(&opt_info))
-        .is_some()
+        .any(|item| item.is_ident(&opt_info))
     {
         if types.is_empty() {
             Diagnostic::spanned(
@@ -288,7 +283,7 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
         //call_point.sig.inputs = args;
         &all_arg_names[1..]
     } else {
-        &all_arg_names
+        all_arg_names
     };
 
     let unpacked_args = if arg_names.is_empty() {
@@ -360,7 +355,7 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
         call_point.sig.inputs = args;
         &arg_names[1..]
     } else {
-        &arg_names
+        arg_names
     };
 
     let args_tuple = if arg_names.is_empty() {
@@ -456,7 +451,7 @@ fn build_types(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
     let mut name_bytes = fn_name.to_string().into_bytes();
     name_bytes.push(0);
 
-    let types = if *has_info { &types[1..] } else { &types };
+    let types = if *has_info { &types[1..] } else { types };
 
     let arg_types = if types.is_empty() {
         quote! {secgate::Arguments<()>}
