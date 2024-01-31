@@ -41,11 +41,11 @@ unsafe impl Send for CompConfigFinder {}
 static COMP_CONFIG: OnceLock<CompConfigFinder> = OnceLock::new();
 
 /// Get a reference to this compartment's [SharedCompConfig].
-pub fn get_comp_config(src_ctx: ObjID) -> &'static SharedCompConfig {
+pub fn get_comp_config() -> &'static SharedCompConfig {
     unsafe {
         COMP_CONFIG
             .get_or_init(|| CompConfigFinder {
-                config: NonNull::new(todo!() as *mut _).unwrap(),
+                config: NonNull::new(monitor_rt_get_comp_config().unwrap() as *mut _).unwrap(),
             })
             .config
             .as_ref()

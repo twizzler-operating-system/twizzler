@@ -229,6 +229,7 @@ fn get_entry_sig(tree: &ItemFn) -> Signature {
 fn build_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, Error> {
     let mut call_point = tree.clone();
     call_point.attrs.push(parse_quote!(#[naked]));
+    call_point.attrs.push(parse_quote!(#[no_mangle]));
     call_point.vis = Visibility::Public(Pub::default());
     call_point.sig.ident = names.trampoline_name.clone();
     call_point.sig.abi = Some(syn::Abi {

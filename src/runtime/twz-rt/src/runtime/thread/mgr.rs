@@ -167,7 +167,8 @@ impl ReferenceRuntime {
         };
 
         let thid: ObjID = {
-            let res: secgate::SecGateReturn<Result<ObjID, SpawnError>> = todo!();
+            let res: secgate::SecGateReturn<Result<ObjID, SpawnError>> =
+                monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
             //let res = monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
             match res {
                 secgate::SecGateReturn::Success(id) => id?,

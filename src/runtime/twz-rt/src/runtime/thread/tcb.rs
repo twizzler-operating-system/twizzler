@@ -21,7 +21,7 @@ use monitor_api::TlsTemplateInfo;
 use tracing::trace;
 use twizzler_runtime_api::CoreRuntime;
 
-use crate::{monitor::get_comp_config, runtime::OUR_RUNTIME};
+use crate::runtime::OUR_RUNTIME;
 
 const THREAD_STARTED: u32 = 1;
 pub struct RuntimeThreadControl {
@@ -155,7 +155,7 @@ impl TlsGenMgr {
         mygen: u64,
         new_tcb_data: impl FnOnce() -> T,
     ) -> Option<*mut Tcb<T>> {
-        let cc = get_comp_config();
+        let cc = monitor_api::get_comp_config();
         let template = unsafe { cc.get_tls_template().as_ref().unwrap() };
         if mygen == template.gen {
             return None;

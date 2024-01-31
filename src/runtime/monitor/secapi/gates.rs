@@ -13,7 +13,12 @@ pub fn monitor_rt_spawn_thread(
     thread_pointer: usize,
     stack_pointer: usize,
 ) -> Result<ObjID, SpawnError> {
-    todo!()
+    crate::thread::__monitor_rt_spawn_thread(
+        info.source_context().unwrap_or(0.into()),
+        args,
+        thread_pointer,
+        stack_pointer,
+    )
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
@@ -22,5 +27,5 @@ pub fn monitor_rt_spawn_thread(
     secgate::secure_gate(options(info, api))
 )]
 pub fn monitor_rt_get_comp_config(info: &GateCallInfo) -> usize {
-    todo!()
+    crate::thread::__monitor_rt_get_comp_config(info.source_context().unwrap_or(0.into())) as usize
 }
