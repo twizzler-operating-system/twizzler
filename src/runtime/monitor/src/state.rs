@@ -8,9 +8,7 @@ use dynlink::{
     context::Context,
     engines::{Backing, Engine},
 };
-use monitor_api::TlsTemplateInfo;
 use twizzler_object::ObjID;
-use twz_rt::monitor::RuntimeThreadControl;
 
 use crate::{compartment::Comp, init::InitDynlinkContext};
 
@@ -28,11 +26,6 @@ impl MonitorState {
             root: init.root,
             comps: Default::default(),
         }
-    }
-
-    pub(crate) fn get_monitor_compartment(&self) -> &Compartment<Backing> {
-        let mid = self.dynlink.lookup_compartment("monitor").unwrap();
-        self.dynlink.get_compartment(mid).unwrap()
     }
 
     pub(crate) fn get_monitor_compartment_mut(&mut self) -> &mut Compartment<Backing> {

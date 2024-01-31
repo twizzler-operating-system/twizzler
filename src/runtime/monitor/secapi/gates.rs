@@ -1,4 +1,3 @@
-use secgate::GateCallInfo;
 use twizzler_abi::object::ObjID;
 use twizzler_runtime_api::{SpawnError, ThreadSpawnArgs};
 
@@ -8,7 +7,7 @@ use twizzler_runtime_api::{SpawnError, ThreadSpawnArgs};
     secgate::secure_gate(options(info, api))
 )]
 pub fn monitor_rt_spawn_thread(
-    info: &GateCallInfo,
+    info: &secgate::GateCallInfo,
     args: ThreadSpawnArgs,
     thread_pointer: usize,
     stack_pointer: usize,
@@ -26,6 +25,6 @@ pub fn monitor_rt_spawn_thread(
     not(feature = "secgate-impl"),
     secgate::secure_gate(options(info, api))
 )]
-pub fn monitor_rt_get_comp_config(info: &GateCallInfo) -> usize {
+pub fn monitor_rt_get_comp_config(info: &secgate::GateCallInfo) -> usize {
     crate::thread::__monitor_rt_get_comp_config(info.source_context().unwrap_or(0.into())) as usize
 }

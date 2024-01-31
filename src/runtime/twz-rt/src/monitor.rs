@@ -1,9 +1,6 @@
 //! Definitions for hooking into the monitor.
 
-use std::sync::OnceLock;
-
 pub use crate::runtime::RuntimeThreadControl;
-use monitor_api::SharedCompConfig;
 use twizzler_runtime_api::{AddrRange, Library, LibraryId};
 
 pub trait MonitorActions {
