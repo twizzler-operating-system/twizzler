@@ -8,8 +8,8 @@ use twizzler_abi::{
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_object::ObjID;
-use twizzler_runtime_api::{MapFlags, ObjectHandle};
-use twz_rt::monitor::RuntimeThreadControl;
+use twizzler_runtime_api::{LibraryId, MapFlags, ObjectHandle};
+use twz_rt::RuntimeThreadControl;
 
 /// The monitor's representation of a compartment.
 pub struct Comp {
@@ -152,6 +152,11 @@ impl Comp {
         // Safety: this reference is valid as long as self is valid.
         // Unwrap-Ok: we set this during compartment construction.
         unsafe { self.comp_config.get().unwrap().as_ref() }
+    }
+
+    pub fn set_root_id(&mut self, root_id: LibraryId) {
+        let cc = unsafe { self.comp_config.get_mut().unwrap().as_mut() };
+        cc.root_library_id = Some(root_id);
     }
 }
 

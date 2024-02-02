@@ -256,6 +256,7 @@ impl<Engine: ContextEngine> Context<Engine> {
         Ok(Library::new(
             unlib.name,
             idx,
+            comp.id,
             comp.name.clone(),
             backing,
             backings,
@@ -373,7 +374,7 @@ impl<Engine: ContextEngine> Context<Engine> {
                             )
                         })?
                 };
-                self.add_dep(&lib, idx);
+                self.add_dep(lib.idx, idx);
                 Ok(idx)
             })
             .collect::<Vec<Result<_, DynlinkError>>>();

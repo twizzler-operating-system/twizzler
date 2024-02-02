@@ -23,7 +23,7 @@ fn mapflags_into_prot(flags: MapFlags) -> Protections {
     prot
 }
 
-fn new_object_handle(
+pub(crate) fn new_object_handle(
     id: twizzler_runtime_api::ObjID,
     slot: usize,
     flags: MapFlags,
@@ -78,6 +78,9 @@ impl ObjectRuntime for ReferenceRuntime {
         } else {
             warn!("failed to unmap slot {}", slot);
         }
+
+        // Safety: we only create internal refs from Box.
+        let _boxed = unsafe { Box::from_raw(handle.internal_refs.as_mut()) };
     }
 
     fn map_two_objects(

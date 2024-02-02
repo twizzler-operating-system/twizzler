@@ -12,7 +12,10 @@ use elf::{
 use petgraph::stable_graph::NodeIndex;
 use secgate::RawSecGateInfo;
 
-use crate::{symbol::RelocatedSymbol, tls::TlsModId, DynlinkError, DynlinkErrorKind};
+use crate::{
+    compartment::CompartmentId, symbol::RelocatedSymbol, tls::TlsModId, DynlinkError,
+    DynlinkErrorKind,
+};
 
 pub(crate) enum RelocState {
     /// Relocation has not started.
@@ -41,6 +44,7 @@ pub trait BackingData: Clone {
     type InnerType;
     /// Get the inner implementation type.
     fn to_inner(self) -> Self::InnerType;
+    fn inner(&self) -> &Self::InnerType;
 
     /// Get the ELF file for this backing.
     fn get_elf(&self) -> Result<elf::ElfBytes<'_, NativeEndian>, ParseError> {
@@ -69,6 +73,18 @@ impl UnloadedLibrary {
 #[repr(transparent)]
 pub struct LibraryId(pub(crate) NodeIndex);
 
+impl From<twizzler_runtime_api::LibraryId> for LibraryId {
+    fn from(value: twizzler_runtime_api::LibraryId) -> Self {
+        LibraryId(NodeIndex::new(value.0))
+    }
+}
+
+impl Into<twizzler_runtime_api::LibraryId> for LibraryId {
+    fn into(self) -> twizzler_runtime_api::LibraryId {
+        twizzler_runtime_api::LibraryId(self.0.index())
+    }
+}
+
 impl Display for LibraryId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", &self.0.index())
@@ -82,8 +98,10 @@ pub struct Library<Backing: BackingData> {
     pub name: String,
     /// Node index for the dependency graph.
     pub(crate) idx: NodeIndex,
-    /// Compartment name this library is loaded in.
-    pub(crate) comp_name: String,
+    /// Compartment ID this library is loaded in.
+    pub(crate) comp_id: CompartmentId,
+    /// Just for debug and logging purposes.
+    comp_name: String,
     /// Object containing the full ELF data.
     pub full_obj: Backing,
     /// State of relocation.
@@ -104,6 +122,7 @@ impl<Backing: BackingData> Library<Backing> {
     pub(crate) fn new(
         name: String,
         idx: NodeIndex,
+        comp_id: CompartmentId,
         comp_name: String,
         full_obj: Backing,
         backings: Vec<Backing>,
@@ -119,6 +138,7 @@ impl<Backing: BackingData> Library<Backing> {
             tls_id,
             ctors,
             reloc_state: RelocState::Unrelocated,
+            comp_id,
             comp_name,
             secgate_info,
         }
@@ -127,6 +147,11 @@ impl<Backing: BackingData> Library<Backing> {
     /// Get the ID for this library
     pub fn id(&self) -> LibraryId {
         LibraryId(self.idx)
+    }
+
+    /// Get the compartment ID for this library.
+    pub fn compartment(&self) -> CompartmentId {
+        self.comp_id
     }
 
     /// Get a raw pointer to the program headers for this library.
@@ -261,6 +286,20 @@ impl<Backing: BackingData> Library<Backing> {
             name: name.to_string(),
         }
         .into())
+    }
+
+    pub(crate) fn is_local_or_secgate_from(&self, other: &Library<Backing>, name: &str) -> bool {
+        other.comp_id == self.comp_id || self.is_secgate(name)
+    }
+
+    fn is_secgate(&self, name: &str) -> bool {
+        self.iter_secgates()
+            .map(|gates| {
+                gates
+                    .iter()
+                    .any(|gate| gate.name().to_bytes() == name.as_bytes())
+            })
+            .unwrap_or(false)
     }
 
     pub fn iter_secgates(&self) -> Option<&[RawSecGateInfo]> {

@@ -20,6 +20,7 @@ use twizzler_abi::object::ObjID;
 mod gates;
 
 pub use gates::*;
+use twizzler_runtime_api::LibraryId;
 
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and read-only from the compartment.
 #[repr(C)]
@@ -28,6 +29,8 @@ pub struct SharedCompConfig {
     pub sctx: ObjID,
     // Pointer to the current TLS template. Read-only by compartment, writable by monitor.
     tls_template: AtomicPtr<TlsTemplateInfo>,
+    /// The root library ID for this compartment. May be None if no libraries have been loaded.
+    pub root_library_id: Option<LibraryId>,
 }
 
 struct CompConfigFinder {
@@ -128,6 +131,7 @@ impl SharedCompConfig {
         Self {
             sctx,
             tls_template: AtomicPtr::new(tls_template),
+            root_library_id: None,
         }
     }
 
@@ -141,3 +145,5 @@ impl SharedCompConfig {
         self.tls_template.load(Ordering::SeqCst)
     }
 }
+
+pub use gates::LibraryInfo;

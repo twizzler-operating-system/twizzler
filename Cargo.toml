@@ -38,6 +38,7 @@ initrd = [
     "crate:pager",
     "lib:twz-rt",
     "lib:monitor",
+    "crate:hello-world",
     #"third-party:hello-world-rs"
 ]
 

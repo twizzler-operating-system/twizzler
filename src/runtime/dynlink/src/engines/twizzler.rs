@@ -44,6 +44,10 @@ impl BackingData for Backing {
     fn to_inner(self) -> Self::InnerType {
         self.obj
     }
+
+    fn inner(&self) -> &Self::InnerType {
+        &self.obj
+    }
 }
 
 pub struct Engine;

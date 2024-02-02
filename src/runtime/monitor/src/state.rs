@@ -7,10 +7,14 @@ use dynlink::{
     compartment::Compartment,
     context::Context,
     engines::{Backing, Engine},
+    library::BackingData,
 };
+use secgate::GateCallInfo;
+use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_object::ObjID;
+use twizzler_runtime_api::LibraryId;
 
-use crate::{compartment::Comp, init::InitDynlinkContext};
+use crate::{compartment::Comp, gates::LibraryInfo, init::InitDynlinkContext};
 
 pub struct MonitorState {
     pub dynlink: &'static mut Context<Engine>,
@@ -49,8 +53,13 @@ impl MonitorState {
         self.dynlink.get_library(lib).ok()
     }
 
-    pub(crate) fn add_comp(&mut self, comp: Comp) {
+    pub(crate) fn add_comp(&mut self, mut comp: Comp, root_id: LibraryId) {
+        comp.set_root_id(root_id);
         self.comps.insert(comp.sctx_id, comp);
+    }
+
+    pub(crate) fn lookup_comp(&self, sctx: ObjID) -> Option<&Comp> {
+        self.comps.get(&sctx)
     }
 }
 
@@ -66,4 +75,45 @@ pub(crate) fn get_monitor_state() -> &'static Arc<Mutex<MonitorState>> {
     MONITOR_STATE
         .get()
         .unwrap_or_else(|| panic!("failed to get monitor state"))
+}
+
+pub fn __monitor_rt_get_library_info(info: &GateCallInfo, id: LibraryId) -> Option<LibraryInfo> {
+    let state = get_monitor_state().lock().unwrap();
+    let lib = state.dynlink.get_library(id.into()).ok()?;
+    let comp = state.lookup_comp(info.source_context().unwrap_or(0.into()))?;
+
+    let compartment = state.dynlink.get_compartment(lib.compartment()).ok()?;
+    if compartment.id != comp.compartment_id {
+        return None;
+    }
+
+    let handle = lib.full_obj.inner();
+
+    let next_lib = state
+        .dynlink
+        .libraries()
+        .skip_while(|l| lib.id() != l.id())
+        .skip(1)
+        .skip_while(|l| l.compartment() != lib.compartment())
+        .next();
+
+    Some(LibraryInfo {
+        objid: handle.id,
+        slot: handle.start as usize / MAX_SIZE,
+        range: twizzler_runtime_api::AddrRange {
+            start: handle.start as usize + NULLPAGE_SIZE,
+            len: MAX_SIZE - NULLPAGE_SIZE,
+        },
+        dl_info: twizzler_runtime_api::DlPhdrInfo {
+            addr: lib.base_addr(),
+            name: core::ptr::null(),
+            phdr_start: lib.get_phdrs_raw()?.0 as *const _,
+            phdr_num: lib.get_phdrs_raw()?.1 as u32,
+            _adds: 0,
+            _subs: 0,
+            modid: lib.tls_id.map(|t| t.tls_id()).unwrap_or(0) as usize,
+            tls_data: core::ptr::null(),
+        },
+        next_id: next_lib.map(|nl| nl.id().into()),
+    })
 }

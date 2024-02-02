@@ -16,10 +16,8 @@ pub(crate) mod arch;
 
 pub use arch::rr_upcall_entry;
 
-pub mod monitor;
 mod runtime;
-pub use runtime::set_upcall_handler;
-pub use runtime::OUR_RUNTIME;
+pub use runtime::{set_upcall_handler, RuntimeThreadControl, OUR_RUNTIME};
 
 mod error;
 pub use error::*;
