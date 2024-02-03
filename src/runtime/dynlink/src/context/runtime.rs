@@ -13,13 +13,6 @@ pub struct RuntimeInitInfo {
     pub root_name: String,
     pub used_slots: Vec<usize>,
     pub ctors: Vec<CtorInfo>,
-    pub flags: RuntimeInitFlags,
-}
-
-bitflags::bitflags! {
-    pub struct RuntimeInitFlags: u32 {
-        const IS_MONITOR = 1;
-    }
 }
 
 // Safety: the pointers involved here are used for a one-time handoff during bootstrap.
@@ -32,7 +25,6 @@ impl RuntimeInitInfo {
         ctx: &Context<E>,
         root_name: String,
         ctors: Vec<CtorInfo>,
-        flags: RuntimeInitFlags,
     ) -> Self {
         Self {
             tls_region,
@@ -40,7 +32,6 @@ impl RuntimeInitInfo {
             root_name,
             used_slots: vec![],
             ctors,
-            flags,
         }
     }
 }
@@ -62,7 +53,6 @@ impl<Engine: ContextEngine> Context<Engine> {
         &self,
         root_id: LibraryId,
         tls: TlsRegion,
-        flags: RuntimeInitFlags,
     ) -> Result<RuntimeInitInfo, DynlinkError> {
         let ctors = self.build_ctors(root_id)?;
         Ok(RuntimeInitInfo::new(
@@ -70,7 +60,6 @@ impl<Engine: ContextEngine> Context<Engine> {
             self,
             self.get_library(root_id)?.name.to_string(),
             ctors,
-            flags,
         ))
     }
 }

@@ -7,7 +7,7 @@ use twizzler_abi::{
 };
 use twizzler_runtime_api::{MapError, MapFlags, ObjectHandle, ObjectRuntime};
 
-use super::{ReferenceRuntime, RuntimeState};
+use super::ReferenceRuntime;
 
 fn mapflags_into_prot(flags: MapFlags) -> Protections {
     let mut prot = Protections::empty();
@@ -73,9 +73,6 @@ impl ObjectRuntime for ReferenceRuntime {
         in_id_b: twizzler_runtime_api::ObjID,
         in_flags_b: MapFlags,
     ) -> Result<(ObjectHandle, ObjectHandle), MapError> {
-        if !self.state().contains(RuntimeState::IS_MONITOR) {
-            panic!("cannot call map_two_objects from non-monitor context");
-        }
         let (slot_a, slot_b) = self.allocate_pair().ok_or(MapError::OutOfResources)?;
 
         let prot_a = mapflags_into_prot(in_flags_a);

@@ -1,7 +1,6 @@
 use std::process::exit;
 
 use dynlink::{
-    context::runtime::RuntimeInitFlags,
     engines::{Backing, Engine},
     library::UnloadedLibrary,
     symbol::LookupFlags,
@@ -62,9 +61,7 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     let value = entry.reloc_value() as usize;
     let ptr: extern "C" fn(usize) = unsafe { core::mem::transmute(value) };
 
-    let mut info = ctx
-        .build_runtime_info(monitor_id, tls, RuntimeInitFlags::IS_MONITOR)
-        .unwrap();
+    let mut info = ctx.build_runtime_info(monitor_id, tls).unwrap();
     let info_ptr = &info as *const _ as usize;
     let aux = vec![AuxEntry::RuntimeInfo(info_ptr), AuxEntry::Null];
 

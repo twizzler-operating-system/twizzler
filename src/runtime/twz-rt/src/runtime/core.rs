@@ -1,9 +1,6 @@
 //! Implements the core runtime functions.
 
-use dynlink::{
-    context::runtime::{RuntimeInitFlags, RuntimeInitInfo},
-    library::CtorInfo,
-};
+use dynlink::{context::runtime::RuntimeInitInfo, library::CtorInfo};
 use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
 use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
 
@@ -95,10 +92,6 @@ impl CoreRuntime for ReferenceRuntime {
             _ => None,
         }));
         let init_info = unsafe { preinit_unwrap((init_info as *const RuntimeInitInfo).as_ref()) };
-
-        if init_info.flags.contains(RuntimeInitFlags::IS_MONITOR) {
-            self.set_is_monitor();
-        }
 
         // Step 3: bootstrap pre-std stuff: upcalls, allocator, TLS, constructors (the order matters, ctors need to happen last)
         let upcall_target = UpcallTarget::new(
