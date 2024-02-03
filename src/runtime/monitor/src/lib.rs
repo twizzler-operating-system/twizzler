@@ -20,6 +20,7 @@ use crate::{compartment::Comp, state::set_monitor_state};
 
 mod compartment;
 mod init;
+mod object;
 mod runtime;
 pub mod secgate_test;
 mod state;

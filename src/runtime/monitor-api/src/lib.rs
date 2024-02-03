@@ -16,8 +16,10 @@ use std::{
 use dynlink::tls::{Tcb, TlsRegion};
 use twizzler_abi::object::ObjID;
 
-#[path = "../../monitor/secapi/gates.rs"]
-mod gates;
+//#[path = "../../monitor/secapi/gates.rs"]
+mod gates {
+    include! {"../../monitor/secapi/gates.rs"}
+}
 
 pub use gates::*;
 use twizzler_runtime_api::LibraryId;

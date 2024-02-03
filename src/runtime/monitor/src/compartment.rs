@@ -1,4 +1,9 @@
-use std::{alloc::Layout, cell::OnceCell, collections::HashMap, ptr::NonNull};
+use std::{
+    alloc::Layout,
+    cell::OnceCell,
+    collections::{HashMap, HashSet},
+    ptr::NonNull,
+};
 
 use dynlink::{compartment::CompartmentId, library::BackingData};
 use monitor_api::{SharedCompConfig, TlsTemplateInfo};
@@ -27,6 +32,8 @@ pub struct Comp {
 
     // A map of threads that have entered this compartment and have associated runtime data.
     thread_map: HashMap<ObjID, CompThreadInfo>,
+
+    slots: HashSet<usize>,
 
     name: String,
 }
@@ -96,6 +103,7 @@ impl Comp {
             allocator,
             comp_config: OnceCell::new(),
             name: compartment.name.clone(),
+            slots: HashSet::new(),
         };
 
         // Construct the TLS template.
@@ -157,6 +165,18 @@ impl Comp {
     pub fn set_root_id(&mut self, root_id: LibraryId) {
         let cc = unsafe { self.comp_config.get_mut().unwrap().as_mut() };
         cc.root_library_id = Some(root_id);
+    }
+
+    pub fn add_slot(&mut self, slot: usize) {
+        self.slots.insert(slot);
+    }
+
+    pub fn has_slot(&mut self, slot: usize) -> bool {
+        self.slots.contains(&slot)
+    }
+
+    pub fn remove_slot(&mut self, slot: usize) {
+        self.slots.remove(&slot);
     }
 }
 

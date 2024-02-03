@@ -1,6 +1,9 @@
 //! Top level runtime module, managing the basic presentation of the runtime.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Mutex,
+};
 
 mod alloc;
 mod core;
@@ -17,9 +20,12 @@ pub(crate) mod upcall;
 pub use thread::RuntimeThreadControl;
 pub use upcall::set_upcall_handler;
 
+use self::object::ObjectHandleManager;
+
 /// The runtime trait implementer itself.
 pub struct ReferenceRuntime {
     pub(crate) state: AtomicU32,
+    pub(crate) object_manager: Mutex<ObjectHandleManager>,
 }
 
 impl std::fmt::Debug for ReferenceRuntime {
@@ -40,11 +46,12 @@ bitflags::bitflags! {
     /// Various state flags for the runtime.
     pub struct RuntimeState : u32 {
         const READY = 1;
+        const IS_MONITOR = 2;
     }
 }
 
 impl ReferenceRuntime {
-    fn state(&self) -> RuntimeState {
+    pub(crate) fn state(&self) -> RuntimeState {
         RuntimeState::from_bits_truncate(self.state.load(Ordering::SeqCst))
     }
 
@@ -52,10 +59,16 @@ impl ReferenceRuntime {
         self.state
             .fetch_or(RuntimeState::READY.bits(), Ordering::SeqCst);
     }
+
+    pub(crate) fn set_is_monitor(&self) {
+        self.state
+            .fetch_or(RuntimeState::IS_MONITOR.bits(), Ordering::SeqCst);
+    }
 }
 
 pub static OUR_RUNTIME: ReferenceRuntime = ReferenceRuntime {
     state: AtomicU32::new(0),
+    object_manager: Mutex::new(ObjectHandleManager::new()),
 };
 
 #[cfg(feature = "runtime")]

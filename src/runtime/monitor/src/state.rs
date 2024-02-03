@@ -61,6 +61,10 @@ impl MonitorState {
     pub(crate) fn lookup_comp(&self, sctx: ObjID) -> Option<&Comp> {
         self.comps.get(&sctx)
     }
+
+    pub(crate) fn lookup_comp_mut(&mut self, sctx: ObjID) -> Option<&mut Comp> {
+        self.comps.get_mut(&sctx)
+    }
 }
 
 static MONITOR_STATE: OnceLock<Arc<Mutex<MonitorState>>> = OnceLock::new();
@@ -75,6 +79,10 @@ pub(crate) fn get_monitor_state() -> &'static Arc<Mutex<MonitorState>> {
     MONITOR_STATE
         .get()
         .unwrap_or_else(|| panic!("failed to get monitor state"))
+}
+
+pub(crate) fn try_get_monitor_state() -> Option<&'static Arc<Mutex<MonitorState>>> {
+    MONITOR_STATE.get()
 }
 
 pub fn __monitor_rt_get_library_info(info: &GateCallInfo, id: LibraryId) -> Option<LibraryInfo> {
