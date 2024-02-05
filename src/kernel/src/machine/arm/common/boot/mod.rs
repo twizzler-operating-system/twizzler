@@ -71,7 +71,6 @@ pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
     let core = unsafe {
         crate::processor::get_processor_mut(cpu)
     };
-    logln!("starting {} with {}", core.id, core.arch.boot.as_str());
 
     match core.arch.boot {
         BootMethod::Psci => psci::boot_core(core, tcb_base, kernel_stack),
@@ -108,7 +107,6 @@ fn translate(va: VirtAddr, access: MemoryAccessKind) -> Option<PhysAddr> {
     // PAR_EL1 holds result of AT instruction
     // - FST: fault status info
     // - PA: output address
-    logln!("{:?} -> {} {:#018x}", va, PAR_EL1.matches_all(PAR_EL1::F::TranslationSuccessfull), PAR_EL1.read(PAR_EL1::PA));
     if PAR_EL1.matches_all(PAR_EL1::F::TranslationSuccessfull) {
         let pa = unsafe { 
             // PAR_EL1.PA returns bits 47:12

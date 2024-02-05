@@ -64,28 +64,11 @@ unsafe fn psci_secondary_entry(context_id: &BootArgs) -> ! {
 /// and paging to be functional. The executing environment
 /// should be set up so we can execute safe Rust code.
 fn rust_secondary_entry(args: &BootArgs) -> ! {
-    // after mmu is on test if we can read a VA
-    let ctx_pa = unsafe { PhysAddr::new_unchecked(args as *const _ as u64) };
-    let args_va = ctx_pa.kernel_vaddr().as_ptr::<BootArgs>();
-
-    unsafe {
-        core::arch::asm!(
-            // set the stack pointer (virtual)
-            // "mov sp, {1}",
-            "mov x11, {}",
-            "mov x12, 0xBBBB",
-            in(reg) (*args_va).tcb_base,
-            // in(reg) (*args_va).kernel_stack,
-        );
-    }
-    logln!("hello from core!!");
-
     // call the generic secondary cpu entry point
     crate::processor::secondary_entry(args.cpu, 
         VirtAddr::new(args.tcb_base).unwrap(),
         args.kernel_stack as *mut u8,
     );
-
     // TODO: clean up values of registers saved after boot here
     // TODO: remove smp mappings, needs TLB coherence across cores
 }
@@ -101,32 +84,21 @@ pub unsafe fn boot_core(core: &mut Processor, tcb_base: VirtAddr, kernel_stack: 
     // pass secondary entry point (physical address)
     let entry_va = VirtAddr::new(psci_secondary_entry as u64)
         .expect("invalid entry point address");
-    logln!("entry address: {:?}", entry_va);
     let entry_pa = translate(entry_va, MemoryAccessKind::Read)
         .expect("entry point is not mapped");
-    logln!("entry pa: {:?}", entry_pa);
     // pass Context ID which in our implementation is the boot args
     // needed to start the CPU core. The Context ID is gaurenteed to 
     // be passed as an argument to the entry point we specify.
     let context_id = &core.arch.args as *const _ as u64;
     let ctx_pa = translate(VirtAddr::new(context_id).unwrap(), MemoryAccessKind::Write)
         .expect("context ID is not mapped");
-    logln!("context id: {:#x}, {:?}", context_id, ctx_pa);
 
     // Here we pass in the necessary arguments to start the CPU
-
-    // - MAIR, TTBR1, TCR
+    
     let cpacr: u64;
     core::arch::asm!(
         "mrs {}, CPACR_EL1",
         out(reg) cpacr,
-    );
-    logln!("MAIR:{:#x}, TTBR1:{:#x}, TCR:{:#x}, SCTLR:{:#x}, CPACR: {:#x}",
-        MAIR_EL1.get(),
-        TTBR1_EL1.get(),
-        TCR_EL1.get(),
-        SCTLR_EL1.get(),
-        cpacr
     );
 
     // Register state needed by low level code to setup an environment 
@@ -156,15 +128,15 @@ pub unsafe fn boot_core(core: &mut Processor, tcb_base: VirtAddr, kernel_stack: 
             .as_str()
             .expect("failed to convert to string")
     };
-    logln!("method: {} hcv? {}", method, method == "hvc");
     
     // here we assume 64 bit calling convention, in the future
     // we should check if this is different
-    logln!("booting: {:#x} {:?} {:?}", cpu_id, entry_pa, ctx_pa);
-    let boot_err = match method {
+    let boot_result = match method {
         "hvc" => cpu_on::<smccc::Hvc>(cpu_id, entry_pa.into(), ctx_pa.into()),
         _ => todo!("SMCCC calling convention needed by PSCI")
     };
-    // let boot_err =  smccc::psci::cpu_on::<smccc::Hvc>(cpu_id, entry_pa.into(), ctx_pa.into());
-    logln!("boot: {:?}", boot_err);
+    // Booting up the core is asynchronous and the call only returns OK if the signal was sent
+    if boot_result.is_err() {
+        panic!("failed to start CPU core {}", core.id);
+    }
 }

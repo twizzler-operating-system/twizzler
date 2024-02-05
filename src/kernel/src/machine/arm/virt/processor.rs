@@ -20,11 +20,9 @@ pub fn enumerate_cpus() -> u32 {
     // enumerate the cpus using a device tree
     for cpu in devicetree().cpus() {
         let cpu_id = cpu.ids().first() as u32;
-        emerglogln!("found cpu {}", cpu_id);
         crate::processor::register(cpu_id, core_id);
         // set the enable method to turn on the CPU core
         if let Some(enable) = cpu.property("enable-method") {
-            emerglogln!("\tenable = {:?}", enable.as_str());
             let core = unsafe {
                 crate::processor::get_processor_mut(cpu_id)
             };
