@@ -1,6 +1,8 @@
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
 use arm64::registers::{TPIDR_EL1, MPIDR_EL1};
+use arm64::asm::{wfe, sev};
 use registers::interfaces::{Readable, Writeable};
 
 use crate::{
@@ -8,6 +10,7 @@ use crate::{
     memory::VirtAddr,
     processor::Processor,
     once::Once,
+    current_processor,
 };
 
 #[allow(unused_imports)] // DEBUG
@@ -59,17 +62,28 @@ pub struct ArchProcessor {
     pub boot: BootMethod,
     pub args: BootArgs,
     pub mpidr: u64,
+    pub wait_flag: AtomicBool,
 }
 
 pub fn halt_and_wait() {
     /* TODO: spin a bit */
-    /* TODO: actually put the cpu into deeper and deeper sleep */
-    todo!()
+    /* TODO: actually put the cpu into deeper and deeper sleep, see PSCI */
+    let core = current_processor();
+    // set the wait condition
+    core.arch.wait_flag.store(true, SeqCst);
+
+    // wait until someone wakes us up
+    while core.arch.wait_flag.load(SeqCst) {
+        wfe();
+    }
 }
 
 impl Processor {
     pub fn wakeup(&self, _signal: bool) {
-        todo!()
+        // remove the wait condition
+        self.arch.wait_flag.store(false, SeqCst);
+        // wakeup the processor
+        sev();
     }
 }
 
