@@ -179,12 +179,10 @@ impl Drop for DynamicInterrupt {
     }
 }
 
-pub fn init_interrupts() {
-    // we don't want to use logln since it enables interrupts
-    // in the future we should not use logging until mm us up
-    emerglogln!("[arch::interrupt] initializing interrupts");
-    
+pub fn init_interrupts() {    
     let cpu = current_processor();
+
+    emerglogln!("[arch::interrupt] processor {} initializing interrupts", cpu.id);
 
     // initialize interrupt controller
     if cpu.is_bsp() {
