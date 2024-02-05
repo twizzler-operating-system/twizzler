@@ -127,7 +127,9 @@ impl<T> Mutex<T> {
             };
             arch::processor::spin_wait_iteration();
             core::hint::spin_loop();
-            sched::schedule(reinsert);
+            if current_thread.is_some() {
+                sched::schedule(reinsert);
+            }
             crate::interrupt::set(istate);
         }
 
