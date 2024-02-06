@@ -152,12 +152,12 @@ pub(crate) static ref TLS_GEN_MGR: Mutex<TlsGenMgr> = Mutex::new(TlsGenMgr::defa
 impl TlsGenMgr {
     pub fn get_next_tls_info<T>(
         &mut self,
-        mygen: u64,
+        mygen: Option<u64>,
         new_tcb_data: impl FnOnce() -> T,
     ) -> Option<*mut Tcb<T>> {
         let cc = monitor_api::get_comp_config();
         let template = unsafe { cc.get_tls_template().as_ref().unwrap() };
-        if mygen == template.gen {
+        if mygen.is_some_and(|mygen| mygen == template.gen) {
             return None;
         }
 

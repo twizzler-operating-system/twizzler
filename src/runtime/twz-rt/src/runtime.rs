@@ -17,6 +17,7 @@ mod thread;
 mod time;
 pub(crate) mod upcall;
 
+pub use core::CompartmentInitInfo;
 pub use thread::RuntimeThreadControl;
 pub use upcall::set_upcall_handler;
 
@@ -84,3 +85,13 @@ pub(crate) mod do_impl {
     #[used]
     static USE_MARKER: fn() -> &'static (dyn Runtime + Sync) = __twz_get_runtime;
 }
+
+// These are exported by libunwind, but not re-exported by the standard library that pulls that in. Or,
+// at least, that's what it seems like. In any case, they're no-ops in libunwind and musl, so this is
+// fine for now.
+#[no_mangle]
+pub fn __register_frame_info() {}
+#[no_mangle]
+pub fn __deregister_frame_info() {}
+#[no_mangle]
+pub fn __cxa_finalize() {}

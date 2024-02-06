@@ -35,6 +35,8 @@
 #![feature(unboxed_closures)]
 #![feature(naked_functions)]
 #![feature(c_size_t)]
+#![feature(linkage)]
+#![feature(core_intrinsics)]
 
 use core::fmt::{LowerHex, UpperHex};
 #[cfg_attr(feature = "kernel", allow(unused_imports))]
@@ -130,7 +132,7 @@ pub enum AuxEntry {
     /// The object ID of the executable.
     ExecId(ObjID),
     /// Initial runtime information. The value is runtime-specific.
-    RuntimeInfo(usize),
+    RuntimeInfo(usize, u64),
 }
 
 /// Full runtime trait, composed of smaller traits
@@ -630,4 +632,12 @@ extern "rust-call" {
 /// Wrapper around call to __twz_get_runtime.
 pub fn get_runtime() -> &'static (dyn Runtime + Sync) {
     unsafe { __twz_get_runtime(()) }
+}
+
+pub mod __imp {
+    #[linkage = "weak"]
+    #[no_mangle]
+    pub fn __twz_get_runtime(_a: ()) -> &'static (dyn super::Runtime + Sync) {
+        core::intrinsics::abort()
+    }
 }
