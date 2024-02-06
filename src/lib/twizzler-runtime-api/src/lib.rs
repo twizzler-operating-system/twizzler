@@ -40,6 +40,7 @@
 #![feature(naked_functions)]
 #![feature(c_size_t)]
 #![feature(linkage)]
+#![allow(internal_features)]
 #![feature(core_intrinsics)]
 #![feature(error_in_core)]
 

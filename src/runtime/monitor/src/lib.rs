@@ -150,17 +150,22 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
     };
     state.add_comp(test_comp, libhw_id.into());
 
+    let ctors = state.dynlink.build_ctors_list(libhw_id).unwrap();
+
     info!("lookup entry");
 
     let rt_lib = state.dynlink.get_library(rt_id).unwrap();
     let entry = rt_lib.get_entry_address().unwrap();
 
+    let rtinfo = CompartmentInitInfo {
+        ctor_array_start: ctors.as_ptr() as usize,
+        ctor_array_len: ctors.len(),
+    };
     let aux = [
         AuxEntry::RuntimeInfo(&rtinfo as *const _ as usize, 1),
         AuxEntry::Null,
     ];
     println!("==> {:p}", entry);
-    drop(state);
     entry(aux.as_ptr());
     /*
     let sym = state
