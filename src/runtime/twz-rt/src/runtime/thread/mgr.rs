@@ -131,7 +131,7 @@ impl ReferenceRuntime {
         let tls = TLS_GEN_MGR
             .lock()
             .unwrap()
-            .get_next_tls_info(0, || RuntimeThreadControl::new(0))
+            .get_next_tls_info(None, || RuntimeThreadControl::new(0))
             .unwrap();
         let stack_raw = unsafe {
             OUR_RUNTIME

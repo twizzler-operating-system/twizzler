@@ -116,6 +116,8 @@ pub enum DynlinkErrorKind {
         #[diagnostic_source]
         hdr_err: HeaderError,
     },
+    #[error("no entry address present")]
+    NoEntryAddress { name: String },
 }
 
 #[derive(Debug, Error, Diagnostic)]

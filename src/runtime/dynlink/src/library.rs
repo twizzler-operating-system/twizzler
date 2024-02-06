@@ -6,11 +6,13 @@ use elf::{
     abi::{PT_PHDR, PT_TLS, STB_WEAK},
     endian::NativeEndian,
     segment::{Elf64_Phdr, ProgramHeader},
+    symbol::Symbol,
     ParseError,
 };
 
 use petgraph::stable_graph::NodeIndex;
 use secgate::RawSecGateInfo;
+use twizzler_runtime_api::AuxEntry;
 
 use crate::{
     compartment::CompartmentId, symbol::RelocatedSymbol, tls::TlsModId, DynlinkError,
@@ -188,6 +190,21 @@ impl<Backing: BackingData> Library<Backing> {
         (self.base_addr() + val as usize) as *mut T
     }
 
+    /// Get a function pointer to this library's entry address, if one exists.
+    pub fn get_entry_address(&self) -> Result<extern "C" fn(*const AuxEntry) -> !, DynlinkError> {
+        let entry = self.get_elf()?.ehdr.e_entry;
+        if entry == 0 {
+            return Err(DynlinkErrorKind::NoEntryAddress {
+                name: self.name.clone(),
+            }
+            .into());
+        }
+        let entry: *const u8 = self.laddr(entry);
+        let ptr: extern "C" fn(*const AuxEntry) -> ! =
+            unsafe { core::mem::transmute(entry as usize) };
+        Ok(ptr)
+    }
+
     // Helper to find the TLS program header.
     fn get_tls_phdr(&self) -> Result<Option<ProgramHeader>, DynlinkError> {
         Ok(self
@@ -334,7 +351,7 @@ impl core::fmt::Display for UnloadedLibrary {
 
 /// Information about constructors for a library.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct CtorInfo {
     /// Legacy pointer to _init function for a library. Can be called with the C abi.
     pub legacy_init: usize,
