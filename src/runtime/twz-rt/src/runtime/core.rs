@@ -10,7 +10,7 @@ use crate::{
     preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
     runtime::RuntimeState,
-    RuntimeThreadControl, OUR_RUNTIME,
+    RuntimeThreadControl,
 };
 
 #[repr(C)]
@@ -103,7 +103,6 @@ impl CoreRuntime for ReferenceRuntime {
         }));
 
         if is_monitor {
-            preinit_println!("setting up as monitor");
             let init_info =
                 unsafe { preinit_unwrap((init_info as *const RuntimeInitInfo).as_ref()) };
             self.init_for_monitor(init_info);
