@@ -1,4 +1,8 @@
-// TODO: add a link to the spec
+/// Power State Coordination Interface (PSCI) is a standard interface for power management.
+///
+/// A full explanation of interfaces for power management can be found in the
+/// "Arm Power State Coordination Interface Platform Design Document":
+///     https://developer.arm.com/documentation/den0022/f/
 
 use arm64::registers::{SCTLR_EL1, MAIR_EL1, TTBR1_EL1, TTBR0_EL1, TCR_EL1, SPSR_EL1};
 use arm64::registers::Readable;
@@ -14,6 +18,8 @@ use twizzler_abi::upcall::MemoryAccessKind;
 
 use super::{BootArgs, translate};
 
+// According to Section 6.4 the MMU and caches are disabled
+// and software must set the EL1h stack pointer
 unsafe fn psci_secondary_entry(context_id: &BootArgs) -> ! {
     // TODO: manually set the configuration of registers
 
@@ -76,7 +82,7 @@ fn rust_secondary_entry(args: &BootArgs) -> ! {
 pub unsafe fn boot_core(core: &mut Processor, tcb_base: VirtAddr, kernel_stack: *mut u8) {
     // we will issue a CPU_ON to turn on the cpu core
     // first we will add the necessary arguments needed
-    // by PSCI's CPU_ON function
+    // by PSCI's CPU_ON function (Section 5.6)
 
     // pass cpu id, this is this core's MPIDR_EL1 value
     // TODO: ensure the right bits are 0
