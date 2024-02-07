@@ -9,7 +9,11 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use std::{alloc::Allocator, mem::size_of, sync::Mutex};
+use std::{
+    alloc::Allocator,
+    mem::size_of,
+    sync::{atomic::AtomicUsize, Mutex},
+};
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const MIN_ALIGN: usize = 16;
@@ -22,7 +26,7 @@ use twizzler_abi::{
 };
 use twizzler_runtime_api::MapFlags;
 
-use crate::runtime::RuntimeState;
+use crate::{preinit_println, runtime::RuntimeState};
 
 use super::{ReferenceRuntime, OUR_RUNTIME};
 
@@ -31,6 +35,7 @@ static LOCAL_ALLOCATOR: LocalAllocator = LocalAllocator {
     early_lock: AtomicBool::new(false),
     early_alloc: UnsafeCell::new(Some(LocalAllocatorInner::new())),
     inner: Mutex::new(None),
+    bootstrap_alloc_slot: AtomicUsize::new(0),
 };
 
 unsafe impl Sync for LocalAllocator {}
@@ -38,6 +43,12 @@ unsafe impl Sync for LocalAllocator {}
 impl ReferenceRuntime {
     pub fn get_alloc(&self) -> &'static LocalAllocator {
         &LOCAL_ALLOCATOR
+    }
+
+    pub(crate) fn register_bootstrap_alloc(&self, slot: usize) {
+        LOCAL_ALLOCATOR
+            .bootstrap_alloc_slot
+            .store(slot, Ordering::SeqCst);
     }
 }
 
@@ -47,6 +58,7 @@ pub struct LocalAllocator {
     early_lock: AtomicBool,
     early_alloc: UnsafeCell<Option<LocalAllocatorInner>>,
     inner: Mutex<Option<LocalAllocatorInner>>,
+    bootstrap_alloc_slot: AtomicUsize,
 }
 
 struct LocalAllocatorInner {
@@ -155,7 +167,9 @@ unsafe impl GlobalAlloc for LocalAllocator {
                 *inner = (*self.early_alloc.get()).take();
                 self.early_lock.store(false, Ordering::SeqCst);
             }
-            inner.as_mut().unwrap().do_alloc(layout)
+
+            let ptr = inner.as_mut().unwrap().do_alloc(layout);
+            ptr
         } else {
             // Runtime is NOT ready. Use a basic spinlock to prevent calls to std.
             while !self.early_lock.swap(true, Ordering::SeqCst) {
@@ -179,6 +193,20 @@ unsafe impl GlobalAlloc for LocalAllocator {
         let layout =
             Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), MIN_ALIGN))
                 .expect("layout alignment bump failed");
+
+        // The monitor runtime has to deal with some weirdness in that some allocations may have happened during bootstrap. It's possible
+        // that these could be freed into _this_ allocator, which would be wrong. So just ignore deallocations of bootstrap-allocated memory.
+        let ignore_slot = self.bootstrap_alloc_slot.load(Ordering::SeqCst);
+        if ignore_slot != 0
+            && Span::new(
+                ((ignore_slot * MAX_SIZE) + NULLPAGE_SIZE) as *mut u8,
+                ((ignore_slot * MAX_SIZE) + (MAX_SIZE - NULLPAGE_SIZE)) as *mut u8,
+            )
+            .contains(ptr)
+        {
+            return;
+        }
+
         if self.runtime.state().contains(RuntimeState::READY) {
             // Runtime is ready, we can use normal locking
             let mut inner = self.inner.lock().unwrap();
@@ -191,6 +219,7 @@ unsafe impl GlobalAlloc for LocalAllocator {
                 *inner = (*self.early_alloc.get()).take();
                 self.early_lock.store(false, Ordering::SeqCst);
             }
+
             inner.as_mut().unwrap().do_dealloc(ptr, layout);
         } else {
             // Runtime is NOT ready. Use a basic spinlock to prevent calls to std.

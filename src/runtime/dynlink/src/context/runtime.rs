@@ -1,3 +1,7 @@
+use std::alloc::Layout;
+
+use twizzler_abi::object::MAX_SIZE;
+
 use crate::{
     library::{CtorInfo, LibraryId},
     tls::TlsRegion,
@@ -13,6 +17,7 @@ pub struct RuntimeInitInfo {
     pub root_name: String,
     pub used_slots: Vec<usize>,
     pub ctors: Vec<CtorInfo>,
+    pub bootstrap_alloc_slot: usize,
 }
 
 // Safety: the pointers involved here are used for a one-time handoff during bootstrap.
@@ -26,12 +31,16 @@ impl RuntimeInitInfo {
         root_name: String,
         ctors: Vec<CtorInfo>,
     ) -> Self {
+        let alloc_test = unsafe { std::alloc::alloc(Layout::from_size_align(16, 8).unwrap()) }
+            as usize
+            / MAX_SIZE;
         Self {
             tls_region,
             ctx: ctx as *const _ as *const u8,
             root_name,
             used_slots: vec![],
             ctors,
+            bootstrap_alloc_slot: alloc_test,
         }
     }
 }

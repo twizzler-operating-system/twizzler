@@ -8,7 +8,7 @@ use crate::{
     preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
     runtime::RuntimeState,
-    RuntimeThreadControl, OUR_RUNTIME,
+    RuntimeThreadControl,
 };
 
 use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
@@ -99,7 +99,6 @@ impl CoreRuntime for ReferenceRuntime {
         }));
 
         if is_monitor {
-            preinit_println!("setting up as monitor");
             let init_info =
                 unsafe { preinit_unwrap((init_info as *const RuntimeInitInfo).as_ref()) };
             self.init_for_monitor(init_info);
@@ -111,21 +110,14 @@ impl CoreRuntime for ReferenceRuntime {
 
         // Step 3: call into libstd to finish setting up the standard library and call main
         let ba = build_basic_aux(aux_slice);
-
-        twizzler_abi::syscall::sys_kernel_console_write(
-            b"here\n",
-            twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
-        );
         let ret = unsafe { std_entry(ba) };
         self.exit(ret.code);
     }
 
     fn pre_main_hook(&self) {
-        twizzler_abi::syscall::sys_kernel_console_write(
-            b"here: pmh\n",
-            twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
-        );
-        self.init_slots();
+        if self.state().contains(RuntimeState::IS_MONITOR) {
+            self.init_slots();
+        }
         self.set_runtime_ready();
     }
 
@@ -147,6 +139,7 @@ impl ReferenceRuntime {
             }; UpcallInfo::NR_UPCALLS],
         );
         twizzler_abi::syscall::sys_thread_set_upcall(upcall_target);
+        self.set_is_monitor();
         self.init_allocator(init_info);
         self.init_tls(init_info);
         self.init_ctors(&init_info.ctors);
@@ -193,6 +186,7 @@ impl ReferenceRuntime {
         for slot in &info.used_slots {
             mark_slot_reserved(*slot);
         }
+        self.register_bootstrap_alloc(info.bootstrap_alloc_slot);
     }
 
     fn init_tls(&self, info: &RuntimeInitInfo) {

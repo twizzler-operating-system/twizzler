@@ -47,6 +47,7 @@ bitflags::bitflags! {
     /// Various state flags for the runtime.
     pub struct RuntimeState : u32 {
         const READY = 1;
+        const IS_MONITOR = 2;
     }
 }
 
@@ -58,6 +59,11 @@ impl ReferenceRuntime {
     fn set_runtime_ready(&self) {
         self.state
             .fetch_or(RuntimeState::READY.bits(), Ordering::SeqCst);
+    }
+
+    fn set_is_monitor(&self) {
+        self.state
+            .fetch_or(RuntimeState::IS_MONITOR.bits(), Ordering::SeqCst);
     }
 }
 
