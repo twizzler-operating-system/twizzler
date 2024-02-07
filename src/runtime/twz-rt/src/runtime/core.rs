@@ -10,7 +10,7 @@ use crate::{
     preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
     runtime::RuntimeState,
-    RuntimeThreadControl,
+    RuntimeThreadControl, OUR_RUNTIME,
 };
 
 #[repr(C)]
@@ -77,10 +77,6 @@ impl CoreRuntime for ReferenceRuntime {
             twizzler_runtime_api::BasicAux,
         ) -> twizzler_runtime_api::BasicReturn,
     ) -> ! {
-        twizzler_abi::syscall::sys_kernel_console_write(
-            b"here\n",
-            twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
-        );
         // Step 1: build the aux slice (count until we see a null entry)
         let aux_len = unsafe {
             let mut count = 0;
@@ -107,6 +103,7 @@ impl CoreRuntime for ReferenceRuntime {
         }));
 
         if is_monitor {
+            preinit_println!("setting up as monitor");
             let init_info =
                 unsafe { preinit_unwrap((init_info as *const RuntimeInitInfo).as_ref()) };
             self.init_for_monitor(init_info);
@@ -115,6 +112,7 @@ impl CoreRuntime for ReferenceRuntime {
                 unsafe { preinit_unwrap((init_info as *const CompartmentInitInfo).as_ref()) };
             self.init_for_compartment(init_info);
         }
+
         // Step 3: call into libstd to finish setting up the standard library and call main
         let ba = build_basic_aux(aux_slice);
         let ret = unsafe { std_entry(ba) };
