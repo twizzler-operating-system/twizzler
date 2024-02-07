@@ -334,7 +334,6 @@ impl core::fmt::Debug for ObjectHandle {
 unsafe impl Send for ObjectHandle {}
 unsafe impl Sync for ObjectHandle {}
 
-#[cfg_attr(feature = "kernel", allow(dead_code))]
 pub struct InternalHandleRefs {
     count: AtomicUsize,
 }
@@ -365,7 +364,6 @@ impl ObjectHandle {
     }
 }
 
-#[cfg(not(feature = "kernel"))]
 impl Clone for ObjectHandle {
     fn clone(&self) -> Self {
         let rc = unsafe { self.internal_refs.as_ref() };
@@ -386,7 +384,6 @@ impl Clone for ObjectHandle {
     }
 }
 
-#[cfg(not(feature = "kernel"))]
 impl Drop for ObjectHandle {
     fn drop(&mut self) {
         // This use of Release ordering is justified by https://doc.rust-lang.org/nomicon/arc-mutex/arc-clone.html.
@@ -622,22 +619,52 @@ pub struct AddrRange {
     pub len: usize,
 }
 
-#[cfg(not(feature = "kernel"))]
 extern "rust-call" {
     /// Called by get_runtime to actually get the runtime.
+    #[linkage = "extern_weak"]
     fn __twz_get_runtime(_a: ()) -> &'static (dyn Runtime + Sync);
 }
 
-#[cfg(not(feature = "kernel"))]
 /// Wrapper around call to __twz_get_runtime.
 pub fn get_runtime() -> &'static (dyn Runtime + Sync) {
     unsafe { __twz_get_runtime(()) }
 }
 
+#[cfg(feature = "kernel")]
 pub mod __imp {
     #[linkage = "weak"]
     #[no_mangle]
-    pub fn __twz_get_runtime(_a: ()) -> &'static (dyn super::Runtime + Sync) {
-        core::intrinsics::abort()
+    pub unsafe extern "C" fn __twz_get_runtime() {
+        core::intrinsics::abort();
     }
+}
+
+/// Public definition of __tls_get_addr, a function that gets automatically called by the compiler when needed for TLS
+/// pointer resolution.
+#[cfg(feature = "rustc-dep-of-std")]
+#[no_mangle]
+pub unsafe extern "C" fn __tls_get_addr(arg: usize) -> *const u8 {
+    // Just call the runtime.
+    let runtime = crate::get_runtime();
+    let index = (arg as *const crate::TlsIndex)
+        .as_ref()
+        .expect("null pointer passed to __tls_get_addr");
+    runtime
+        .tls_get_addr(index)
+        .expect("index passed to __tls_get_addr is invalid")
+}
+
+/// Public definition of dl_iterate_phdr, used by libunwind for learning where loaded objects (executables, libraries, ...) are.
+#[cfg(feature = "rustc-dep-of-std")]
+#[no_mangle]
+pub unsafe extern "C" fn dl_iterate_phdr(
+    callback: extern "C" fn(
+        ptr: *const DlPhdrInfo,
+        sz: core::ffi::c_size_t,
+        data: *mut core::ffi::c_void,
+    ) -> core::ffi::c_int,
+    data: *mut core::ffi::c_void,
+) -> core::ffi::c_int {
+    let runtime = crate::get_runtime();
+    runtime.iterate_phdr(&mut |info| callback(&info, core::mem::size_of::<DlPhdrInfo>(), data))
 }
