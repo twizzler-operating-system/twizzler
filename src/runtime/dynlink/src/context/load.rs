@@ -297,7 +297,7 @@ impl<Engine: ContextEngine> Context<Engine> {
     where
         Namer: FnMut(&str) -> Option<Engine::Backing> + Clone,
     {
-        debug!("loading library {}", root_unlib);
+        debug!("loading library {} (idx = {:?})", root_unlib, idx);
         // First load the main library.
         let lib = self
             .load(comp_id, root_unlib.clone(), idx, namer.clone())
@@ -335,16 +335,16 @@ impl<Engine: ContextEngine> Context<Engine> {
                 let (existing_idx, load_comp) =
                     if let Some(existing) = comp.library_names.get(&dep_unlib.name) {
                         debug!(
-                            "{}: dep using existing library for {} (intra-compartment in {})",
-                            root_unlib, dep_unlib.name, comp.name
+                            "{}: dep using existing library for {} (intra-compartment in {}): {:?}",
+                            root_unlib, dep_unlib.name, comp.name, existing
                         );
                         (Some(*existing), comp_id)
                     } else if let Some((existing, other_comp_id, other_comp)) =
                         self.find_cross_compartment_library(&dep_unlib)
                     {
                         debug!(
-                            "{}: dep using existing library for {} (cross-compartment to {})",
-                            root_unlib, dep_unlib.name, other_comp.name
+                            "{}: dep using existing library for {} (cross-compartment to {}): {:?}",
+                            root_unlib, dep_unlib.name, other_comp.name, existing
                         );
                         (Some(existing), other_comp_id)
                     } else {
