@@ -248,6 +248,8 @@ impl<Engine: ContextEngine> Context<Engine> {
             })
             .transpose()?;
 
+        debug!("{}: got TLS ID {:?}", unlib, tls_id);
+
         // Step 3: lookup constructor and secgate information for this library.
         let ctor_info = self.get_ctor_info(&unlib.name, &elf, base_addr)?;
         let secgate_info = self.get_secgate_info(&unlib.name, &elf, base_addr)?;

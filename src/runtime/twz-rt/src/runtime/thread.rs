@@ -9,7 +9,7 @@ use twizzler_abi::syscall::{
 };
 use twizzler_runtime_api::{JoinError, SpawnError, ThreadRuntime, TlsIndex};
 
-use crate::runtime::thread::mgr::ThreadManager;
+use crate::{preinit_println, runtime::thread::mgr::ThreadManager};
 
 use self::tcb::with_current_thread;
 
@@ -81,7 +81,6 @@ impl ThreadRuntime for ReferenceRuntime {
 
     fn set_name(&self, name: &std::ffi::CStr) {
         with_current_thread(|cur| {
-            trace!("naming thread {} `{}'", cur.id(), name.to_string_lossy());
             THREAD_MGR.with_internal(cur.id(), |th| th.set_name(name));
         })
     }
@@ -96,6 +95,7 @@ impl ThreadRuntime for ReferenceRuntime {
                 .as_ref()
                 .expect("failed to find thread control block")
         };
+
         tp.get_addr(index)
     }
 

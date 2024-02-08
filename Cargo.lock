@@ -1196,6 +1196,7 @@ dependencies = [
  "secgate",
  "tracing",
  "tracing-subscriber",
+ "twizzler-abi",
 ]
 
 [[package]]
