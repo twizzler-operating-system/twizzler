@@ -60,6 +60,7 @@ pub fn main() {
     state.add_comp(monitor_comp, twizzler_runtime_api::LibraryId(0));
 
     let state = Arc::new(Mutex::new(state));
+    tracing::info!(".. state: {:p}", state);
     debug!(
         "found dynlink context, with root {}",
         state.lock().unwrap().root
@@ -132,6 +133,9 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
         state.dynlink.get_compartment_mut(test_comp_id).unwrap(),
     )
     .unwrap();
+
+    info!("!! root = {}", libhw_id);
+
     state.add_comp(test_comp, libhw_id.into());
 
     let ctors = state.dynlink.build_ctors_list(libhw_id).unwrap();
@@ -150,6 +154,7 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
         AuxEntry::Null,
     ];
     println!("==> {:p}", entry);
+    drop(state);
     entry(aux.as_ptr());
     /*
     let sym = state

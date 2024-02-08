@@ -82,6 +82,10 @@ pub fn __monitor_rt_spawn_thread(
 // Extern function, linked to by the runtime.
 #[no_mangle]
 pub fn __monitor_rt_get_comp_config(src_ctx: ObjID) -> *const SharedCompConfig {
+    twizzler_abi::syscall::sys_kernel_console_write(
+        b"areisntaeiorst\n",
+        twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
+    );
     let state = get_monitor_state().lock().unwrap();
     let comp = state.comps.get(&src_ctx).unwrap();
     comp.get_comp_config()

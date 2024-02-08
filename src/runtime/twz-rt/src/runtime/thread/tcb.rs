@@ -21,7 +21,7 @@ use monitor_api::TlsTemplateInfo;
 use tracing::trace;
 use twizzler_runtime_api::CoreRuntime;
 
-use crate::runtime::OUR_RUNTIME;
+use crate::{preinit_println, runtime::OUR_RUNTIME};
 
 const THREAD_STARTED: u32 = 1;
 pub struct RuntimeThreadControl {

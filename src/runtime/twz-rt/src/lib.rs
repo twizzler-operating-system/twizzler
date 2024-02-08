@@ -22,4 +22,4 @@ pub use runtime::{set_upcall_handler, CompartmentInitInfo, RuntimeThreadControl,
 mod error;
 pub use error::*;
 
-pub(crate) mod preinit;
+pub mod preinit;
