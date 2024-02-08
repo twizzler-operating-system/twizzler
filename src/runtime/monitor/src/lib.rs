@@ -166,6 +166,7 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
         AuxEntry::Null,
     ];
     println!("==> {:p}", entry);
+    drop(state);
     entry(aux.as_ptr());
     /*
     let sym = state

@@ -334,7 +334,6 @@ impl Thread {
     /// is requesting a supervisor context switch. Once this is done, the thread's kernel
     /// entry frame will be setup to enter the upcall handler on return-to-userspace.
     pub fn arch_queue_upcall(&self, target: UpcallTarget, info: UpcallInfo, sup: bool) {
-        logln!("==> {:?}", info);
         if self.arch.upcall_restore_frame.borrow().is_some() {
             logln!("warning -- thread aborted due to upcall generation during frame restoration");
             crate::thread::exit(UPCALL_EXIT_CODE);

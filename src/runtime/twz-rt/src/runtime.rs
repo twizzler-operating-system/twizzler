@@ -77,6 +77,8 @@ pub static OUR_RUNTIME: ReferenceRuntime = ReferenceRuntime {
 pub(crate) mod do_impl {
     use twizzler_runtime_api::Runtime;
 
+    use crate::preinit_println;
+
     use super::ReferenceRuntime;
     use crate::preinit_println;
 

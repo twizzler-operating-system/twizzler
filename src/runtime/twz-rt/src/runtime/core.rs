@@ -45,7 +45,7 @@ fn build_basic_aux(aux: &[AuxEntry]) -> BasicAux {
 }
 
 #[thread_local]
-static TLS_TEST: usize = 3222;
+static TLS_TEST: usize = 32;
 
 impl CoreRuntime for ReferenceRuntime {
     fn default_allocator(&self) -> &'static dyn std::alloc::GlobalAlloc {
@@ -119,13 +119,17 @@ impl CoreRuntime for ReferenceRuntime {
     }
 
     fn pre_main_hook(&self) {
+        preinit_println!("==> tls: {}", TLS_TEST);
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
         }
         self.set_runtime_ready();
     }
 
-    fn post_main_hook(&self) {}
+    fn post_main_hook(&self) {
+        preinit_println!("==p> tls: {}", TLS_TEST);
+        loop {}
+    }
 }
 
 impl ReferenceRuntime {

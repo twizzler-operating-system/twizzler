@@ -3,3 +3,5 @@ toolchain/install
 .vscode
 workspace.code-workspace
 .target-xtask
+shell.nix
+twizzler.code-workspace
