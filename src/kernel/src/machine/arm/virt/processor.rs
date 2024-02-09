@@ -5,36 +5,8 @@ use registers::interfaces::Readable;
 
 use crate::machine::info::devicetree;
 
-#[derive(Debug, Default, Copy, Clone, PartialEq)]
-pub enum BootMethod {
-    Psci,
-    SpinTable,
-    #[default]
-    Unknown,
-}
-
-impl BootMethod {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Psci => "psci",
-            Self::SpinTable => "spintable",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-impl FromStr for BootMethod {
-    type Err = ();
-
-    // Required method
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "psci" => Ok(BootMethod::Psci),
-            "spin-table" => Ok(BootMethod::SpinTable),
-            _ => Err(())
-        }
-    }
-}
+// re-export boot module
+pub use super::super::common::boot::*;
 
 pub fn enumerate_cpus() -> u32 {
     // MT bit means lowest level is logical cores (SMT)
@@ -47,21 +19,18 @@ pub fn enumerate_cpus() -> u32 {
 
     // enumerate the cpus using a device tree
     for cpu in devicetree().cpus() {
-        emerglogln!("found cpu {}", cpu.ids().first());
-        if core_id == cpu.ids().first() as u32 {
-            // For now we assume a single core, the boot core, and
-            // return it's ID to the scheduling system
-            crate::processor::register(core_id, core_id);
-            // set the enable method to turn on the CPU core
-            if let Some(enable) = cpu.property("enable-method") {
-                emerglogln!("\tenable = {:?}", enable.as_str());
-                let core = unsafe {
-                    crate::processor::get_processor_mut(core_id)
-                };
-                core.arch.boot = BootMethod::from_str(enable.as_str().unwrap()).unwrap();
-            }
+        let cpu_id = cpu.ids().first() as u32;
+        crate::processor::register(cpu_id, core_id);
+        // set the enable method to turn on the CPU core
+        if let Some(enable) = cpu.property("enable-method") {
+            let core = unsafe {
+                crate::processor::get_processor_mut(cpu_id)
+            };
+            // set the arch-sepecific boot protocol
+            core.arch.boot = BootMethod::from_str(enable.as_str().unwrap()).unwrap();
+            // save the MPIDR_EL1 value found used for boot
+            core.arch.mpidr = cpu_id as u64;
         }
-        // TODO: register other processors so we can start them up
     }
 
     core_id

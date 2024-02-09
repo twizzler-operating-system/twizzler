@@ -40,6 +40,7 @@ acpi = "4.1.1"
 arm64 = { package = "aarch64-cpu", version = "9.3.1" }
 registers = { package = "tock-registers", version = "0.8.x" }
 fdt = "0.1.5"
+smccc = "0.1.1"
 
 [dependencies.lazy_static]
 version = "1.0"
