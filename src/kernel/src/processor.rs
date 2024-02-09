@@ -322,12 +322,12 @@ pub static NR_CPUS: AtomicUsize = AtomicUsize::new(1);
 static CPU_MAIN_BARRIER: AtomicBool = AtomicBool::new(false);
 pub fn secondary_entry(id: u32, tcb_base: VirtAddr, kernel_stack_base: *mut u8) -> ! {
     crate::arch::processor::init(tcb_base);
-    arch::init_secondary();
     unsafe {
         BOOT_KERNEL_STACK = kernel_stack_base;
         CPU_ID = id;
         CURRENT_PROCESSOR = &**ALL_PROCESSORS[id as usize].as_ref().unwrap();
     }
+    arch::init_secondary();
     let topo_path = arch::processor::get_topology();
     current_processor().set_topology(topo_path);
     current_processor()
