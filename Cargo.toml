@@ -24,6 +24,7 @@ members = [
     "src/runtime/monitor-api",
     "src/runtime/twz-rt",
     "src/lib/twizzler-futures",
+    "src/runtime/hello-world",
 ]
 
 exclude = ["toolchain/src/rust"]

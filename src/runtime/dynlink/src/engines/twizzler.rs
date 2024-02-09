@@ -136,7 +136,7 @@ impl ContextEngine for Engine {
 
         let (text_handle, data_handle) = runtime
             .map_two_objects(
-                text_id,
+                text_id.as_u128(),
                 MapFlags::READ | MapFlags::EXEC,
                 data_id,
                 MapFlags::READ | MapFlags::WRITE,
