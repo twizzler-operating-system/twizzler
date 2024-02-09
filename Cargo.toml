@@ -23,7 +23,6 @@ members = [
     "src/runtime/monitor",
     "src/runtime/monitor-api",
     "src/runtime/twz-rt",
-    "src/runtime/hello-world",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -39,7 +38,6 @@ initrd = [
     "crate:pager",
     "lib:twz-rt",
     "lib:monitor",
-    "lib:hello-world",
     #"third-party:hello-world-rs"
 ]
 
