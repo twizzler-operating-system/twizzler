@@ -61,7 +61,7 @@ pub fn init(modules: &[BootModule]) {
             }
             let obj = Arc::new(obj);
             obj::register_object(obj.clone());
-            if e.filename().as_str() == "init" {
+            if e.filename().as_str() == "bootstrap" {
                 boot_objects.init = Some(obj.clone());
             }
             boot_objects
