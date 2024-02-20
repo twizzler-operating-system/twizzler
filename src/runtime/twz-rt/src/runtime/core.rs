@@ -1,6 +1,7 @@
 //! Implements the core runtime functions.
 
 use dynlink::{context::runtime::RuntimeInitInfo, library::CtorInfo};
+use monitor_api::SharedCompConfig;
 use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
 use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
 
@@ -17,6 +18,7 @@ use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
 pub struct CompartmentInitInfo {
     pub ctor_array_start: usize,
     pub ctor_array_len: usize,
+    pub comp_config_addr: usize,
 }
 
 fn build_basic_aux(aux: &[AuxEntry]) -> BasicAux {
@@ -44,7 +46,7 @@ fn build_basic_aux(aux: &[AuxEntry]) -> BasicAux {
 }
 
 #[thread_local]
-static TLS_TEST: usize = 32;
+static TLS_TEST: usize = 3222;
 
 impl CoreRuntime for ReferenceRuntime {
     fn default_allocator(&self) -> &'static dyn std::alloc::GlobalAlloc {
@@ -118,17 +120,14 @@ impl CoreRuntime for ReferenceRuntime {
     }
 
     fn pre_main_hook(&self) {
-        preinit_println!("==> tls: {}", TLS_TEST);
+        preinit_println!("====== {}", TLS_TEST);
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
         }
         self.set_runtime_ready();
     }
 
-    fn post_main_hook(&self) {
-        preinit_println!("==p> tls: {}", TLS_TEST);
-        loop {}
-    }
+    fn post_main_hook(&self) {}
 }
 
 impl ReferenceRuntime {
@@ -153,6 +152,16 @@ impl ReferenceRuntime {
     }
 
     fn init_for_compartment(&self, init_info: &CompartmentInitInfo) {
+        unsafe {
+            preinit_unwrap(
+                monitor_api::set_comp_config(
+                    (init_info.comp_config_addr as *const SharedCompConfig)
+                        .as_ref()
+                        .unwrap(),
+                )
+                .ok(),
+            );
+        }
         let tls = preinit_unwrap(
             preinit_unwrap(TLS_GEN_MGR.lock().ok())
                 .get_next_tls_info(None, || RuntimeThreadControl::new(0)),

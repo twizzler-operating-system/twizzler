@@ -12,6 +12,7 @@ use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{sys_object_create, ObjectCreate},
 };
 use twizzler_object::ObjID;
 use twizzler_runtime_api::AuxEntry;
@@ -94,7 +95,7 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
         }
     }
 
-    //load_hello_world_test(&state).unwrap();
+    load_hello_world_test(&state).unwrap();
 
     Ok(())
 }
@@ -126,6 +127,11 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
                 .unwrap(),
         };
 
+    println!("found rt_id: {}", rt_id);
+    let rt_lib = state.dynlink.get_library(rt_id).unwrap();
+
+    drop(rt_lib);
+
     state.dynlink.relocate_all(libhw_id)?;
 
     let test_comp = Comp::new(
@@ -135,20 +141,20 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
     .unwrap();
 
     info!("!! root = {}", libhw_id);
-
-    state.add_comp(test_comp, libhw_id.into());
-
     let ctors = state.dynlink.build_ctors_list(libhw_id).unwrap();
+
+    let rtinfo = CompartmentInitInfo {
+        ctor_array_start: ctors.as_ptr() as usize,
+        ctor_array_len: ctors.len(),
+        comp_config_addr: test_comp.get_comp_config() as *const _ as usize,
+    };
+    state.add_comp(test_comp, libhw_id.into());
 
     info!("lookup entry");
 
     let rt_lib = state.dynlink.get_library(rt_id).unwrap();
     let entry = rt_lib.get_entry_address().unwrap();
 
-    let rtinfo = CompartmentInitInfo {
-        ctor_array_start: ctors.as_ptr() as usize,
-        ctor_array_len: ctors.len(),
-    };
     let aux = [
         AuxEntry::RuntimeInfo(&rtinfo as *const _ as usize, 1),
         AuxEntry::Null,

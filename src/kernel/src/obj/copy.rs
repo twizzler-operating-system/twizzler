@@ -345,39 +345,45 @@ pub fn zero_ranges(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
 
         // Handle the last range, keeping only the parts that are after the zeroing region. We use pop because we
         // won't be needing to consider this entry later.
-        if let Some(last) = points.pop() &&
-            let Some(mut last_range) = dest_tree.remove(&last) {
-                let last_point = dest_point.offset(vec_pages - 1);
-                if last_point < last_range.start.offset(last_range.length) && last_point >= last_range.start {
-                    let start_diff = last_point.offset(1) - last_range.start;
+        if let Some(last) = points.pop()
+            && let Some(mut last_range) = dest_tree.remove(&last)
+        {
+            let last_point = dest_point.offset(vec_pages - 1);
+            if last_point < last_range.start.offset(last_range.length)
+                && last_point >= last_range.start
+            {
+                let start_diff = last_point.offset(1) - last_range.start;
 
-                    if last_range.length > start_diff {
-                        last_range.length -= start_diff;
-                        last_range.start = last_range.start.offset(start_diff);
-                        last_range.offset += start_diff;
-                        assert!(last_range.start == last_point.offset(1));
-                        last_range.gc_pagevec();
-                        let kicked = dest_tree.insert_replace(last_range.range(), last_range);
-                        assert!(kicked.is_empty());
-                    }
+                if last_range.length > start_diff {
+                    last_range.length -= start_diff;
+                    last_range.start = last_range.start.offset(start_diff);
+                    last_range.offset += start_diff;
+                    assert!(last_range.start == last_point.offset(1));
+                    last_range.gc_pagevec();
+                    let kicked = dest_tree.insert_replace(last_range.range(), last_range);
+                    assert!(kicked.is_empty());
                 }
+            }
         }
 
         // Handle the first range, truncating it if it starts before the zeroing region. Don't bother removing it from
         // the list -- we'll just skip it in the iterator (remove head of vec can be slow).
-        if let Some(first) = points.first() &&
-            let Some(mut first_range) = dest_tree.remove(first) {
-                let first_point = dest_point;
-                if first_point < first_range.start.offset(first_range.length) && first_point >= first_range.start {
-                    let len_diff = first_range.start.offset(first_range.length) - first_point;
+        if let Some(first) = points.first()
+            && let Some(mut first_range) = dest_tree.remove(first)
+        {
+            let first_point = dest_point;
+            if first_point < first_range.start.offset(first_range.length)
+                && first_point >= first_range.start
+            {
+                let len_diff = first_range.start.offset(first_range.length) - first_point;
 
-                    if first_range.length > len_diff {
-                        first_range.length -= len_diff;
-                        first_range.gc_pagevec();
-                        let kicked = dest_tree.insert_replace(first_range.range(), first_range);
-                        assert!(kicked.is_empty());
-                    }
+                if first_range.length > len_diff {
+                    first_range.length -= len_diff;
+                    first_range.gc_pagevec();
+                    let kicked = dest_tree.insert_replace(first_range.range(), first_range);
+                    assert!(kicked.is_empty());
                 }
+            }
         }
 
         // Finally we can remove the remaining ranges that are wholely contained. Skip the first one, though, we handled that above.
