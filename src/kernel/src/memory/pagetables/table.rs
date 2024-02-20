@@ -85,6 +85,7 @@ impl Table {
             .settings()
             .flags()
             .contains(MappingFlags::GLOBAL);
+        let old_entry = *entry;
         *entry = new_entry;
         let entry_addr = VirtAddr::from(entry as *const _);
         consist.flush(entry_addr);

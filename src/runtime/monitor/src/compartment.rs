@@ -95,6 +95,12 @@ impl Comp {
             allocator.claim(Span::new(start, end)).unwrap();
         }
 
+        tracing::debug!(
+            "init new compartment {} with config alloc {:p}",
+            compartment,
+            comp_alloc_obj.start
+        );
+
         let mut comp = Self {
             sctx_id,
             compartment_id: compartment.id,
@@ -114,10 +120,18 @@ impl Comp {
 
         // Init the shared compartment config. We'll leak this TLS template since we are manually
         // managing its lifetime.
-        let temp = Box::new(TlsTemplateInfo::from(template_info));
-        let temp = Box::leak(temp);
+        //let temp = Box::new(TlsTemplateInfo::from(template_info));
+        //let temp = Box::leak(temp);
+        let temp = comp
+            .monitor_new(TlsTemplateInfo::from(template_info))
+            .unwrap();
+        tracing::debug!(
+            "allocated TLS template for comp {}: {:p}",
+            compartment,
+            temp
+        );
         let cc = comp
-            .monitor_new(SharedCompConfig::new(sctx_id, temp))
+            .monitor_new(SharedCompConfig::new(sctx_id, temp.as_ptr()))
             .ok_or_else(|| {
                 miette::miette!(
                     "failed to allocate shared compartment config data within compartment"

@@ -204,7 +204,7 @@ impl<Engine: ContextEngine> Context<Engine> {
                     filesz: phdr.p_filesz as usize,
                 };
 
-                trace!("{}: {:?}", unlib, ld);
+                debug!("{}: {:?}", unlib, ld);
 
                 ld
             })
