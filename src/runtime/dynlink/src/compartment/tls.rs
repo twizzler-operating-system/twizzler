@@ -50,6 +50,7 @@ impl<Backing: BackingData> Compartment<Backing> {
         let alloc_layout = tls_info
             .allocation_layout::<T>()
             .map_err(DynlinkErrorKind::from)?;
+        // Each compartment has its own libstd, so we can just all alloc directly.
         let base = alloc(alloc_layout).ok_or_else(|| DynlinkErrorKind::FailedToAllocate {
             comp: self.name.clone(),
             layout: alloc_layout,
