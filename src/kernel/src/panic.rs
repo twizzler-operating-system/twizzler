@@ -51,7 +51,7 @@ pub fn init(kernel_image: &'static [u8]) {
     let ctx = load_debug_context(&image);
     unsafe { DEBUG_CTX = ctx };
 }
-#[cfg(feature = "std")]
+#[cfg(feature = "kani")]
 pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoint>) {
     let mut frame_nr = 0;
     let trace_callback = |frame: &backtracer_core::Frame| {
@@ -117,10 +117,10 @@ pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoin
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "kani")]
 static DID_PANIC: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 #[panic_handler]
-#[cfg(feature = "std")]
+#[cfg(feature = "kani")]
 fn panic(info: &PanicInfo) -> ! {
     let second_panic = DID_PANIC.swap(true, core::sync::atomic::Ordering::SeqCst);
     if second_panic {
@@ -144,6 +144,6 @@ fn panic(info: &PanicInfo) -> ! {
 
     loop {}
 }
-#[cfg(feature = "std")]
+#[cfg(feature = "kani")]
 #[lang = "eh_personality"]
 pub extern "C" fn rust_eh_personality() {}
