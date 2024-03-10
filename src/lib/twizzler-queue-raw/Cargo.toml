@@ -9,9 +9,3 @@ edition = "2021"
 bitflags = "2.4.1"
 twizzler-abi = {path = "../twizzler-abi", version = "*"}
 
-[features]
-std = []
-default = ["std"]
-
-[package.metadata.kani.flags]
-features = ["std"]
