@@ -11,7 +11,9 @@ use slabmalloc::{AllocationError, Allocator, LargeObjectPage, ObjectPage, ZoneAl
 use super::context::{Context, KernelMemoryContext};
 use crate::spinlock::Spinlock;
 
-#[cfg(feature = "std")]
+
+
+#[cfg(feature = "kani")]
 #[alloc_error_handler]
 fn alloc_error_handler(layout: Layout) -> ! {
     panic!("allocation error: {:?}", layout)

@@ -85,8 +85,9 @@ debug = true
 opt-level = 1
 
 [features]
-std = []
+kani = []
+default = []
 
 [package.metadata.kani.flags]
-features = ["std"]
+features = ["kani"]
 
