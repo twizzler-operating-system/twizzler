@@ -11,8 +11,12 @@ use twizzler_abi::{
     kso::{InterruptAllocateOptions, InterruptPriority},
 };
 
-use crate::interrupt::{DynamicInterrupt, Destination};
+use crate::{
+    interrupt::{DynamicInterrupt, Destination, TriggerMode, PinPolarity},
+    processor::current_processor,
+};
 use crate::machine::interrupt::INTERRUPT_CONTROLLER;
+use crate::machine::serial::{SERIAL_INT_ID, serial_interrupt_handler};
 
 use super::exception::{
     ExceptionContext, exception_handler, save_stack_pointer, restore_stack_pointer,
@@ -129,14 +133,17 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
     // Get pending IRQ number from GIC CPU Interface.
     // Doing so acknowledges the pending interrupt.
     let irq_number = INTERRUPT_CONTROLLER.pending_interrupt();
-    emerglogln!("[arch::irq] interrupt: {}", irq_number);
     
     match irq_number {
         PhysicalTimer::INTERRUPT_ID => {
             // call timer interrupt handler
             cntp_interrupt_handler();
         },
-        _ => panic!("unknown reason!")
+        _ if irq_number == *SERIAL_INT_ID => {
+            // call the serial interrupt handler
+            serial_interrupt_handler();
+        },
+        _ => panic!("unknown irq number! {}", irq_number)
     }
     // signal the GIC that we have serviced the IRQ
     INTERRUPT_CONTROLLER.finish_active_interrupt(irq_number);
@@ -172,27 +179,36 @@ impl Drop for DynamicInterrupt {
     }
 }
 
-pub fn init_interrupts() {
-    // we don't want to use logln since it enables interrupts
-    // in the future we should not use logging until mm us up
-    emerglogln!("[arch::interrupt] initializing interrupts");
-    
+pub fn init_interrupts() {    
+    let cpu = current_processor();
+
+    emerglogln!("[arch::interrupt] processor {} initializing interrupts", cpu.id);
+
     // initialize interrupt controller
-    INTERRUPT_CONTROLLER.configure();
+    if cpu.is_bsp() {
+        INTERRUPT_CONTROLLER.configure_global();
+    }
+    INTERRUPT_CONTROLLER.configure_local();
 
     // enable this CPU to recieve interrupts from the timer
     // by configuring the interrupt controller to route
     // the timer's interrupt to us
-    INTERRUPT_CONTROLLER.enable_interrupt(PhysicalTimer::INTERRUPT_ID);
+    INTERRUPT_CONTROLLER.route_interrupt(
+        PhysicalTimer::INTERRUPT_ID,
+        cpu.id,
+    );
 }
 
-// in crate::arch::aarch64
-// pub fn set_interrupt(
-//     _num: u32,
-//     _masked: bool,
-//     _trigger: TriggerMode,
-//     _polarity: PinPolarity,
-//     _destination: Destination,
-// ) {
-//     todo!();
-// }
+pub fn set_interrupt(
+    num: u32,
+    _masked: bool,
+    _trigger: TriggerMode,
+    _polarity: PinPolarity,
+    destination: Destination,
+) {
+    match destination {
+        Destination::Bsp => INTERRUPT_CONTROLLER.route_interrupt(num, current_processor().bsp_id()),
+        _ => todo!("routing interrupt: {:?}", destination)
+    }
+    INTERRUPT_CONTROLLER.enable_interrupt(num);
+}

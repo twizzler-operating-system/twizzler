@@ -6,16 +6,17 @@ use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
         CreateTieSpec, HandleType, MapFlags, MapInfo, NewHandleError, ObjectCreate,
-        ObjectCreateError, ObjectMapError, ObjectReadMapError, ObjectSource,
+        ObjectCreateError, ObjectMapError, ObjectReadMapError, ObjectSource, SctxAttachError,
     },
 };
 
 use crate::{
-    memory::context::ContextRef,
+    memory::context::{Context, ContextRef},
     mutex::Mutex,
     obj::{LookupFlags, Object, ObjectRef},
     once::Once,
-    thread::current_memory_context,
+    security::get_sctx,
+    thread::{current_memory_context, current_thread_ref},
 };
 
 pub fn sys_object_create(
@@ -84,16 +85,26 @@ pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo, ObjectR
 }
 
 pub trait ObjectHandle {
-    fn create_with_handle(obj: ObjectRef) -> Self;
+    type HandleType;
+    fn create_with_handle<NewFn>(obj: ObjectRef, new: NewFn) -> Arc<Self::HandleType>
+    where
+        NewFn: FnOnce(ObjectRef) -> Self::HandleType,
+        Self: Sized,
+    {
+        Arc::new(new(obj))
+    }
 }
 
 struct Handle<T: ObjectHandle> {
     obj: ObjectRef,
-    item: T,
+    item: Arc<T::HandleType>,
 }
 
 impl<T: ObjectHandle + Clone> Handle<T> {
-    fn new(id: ObjID) -> Result<Self, NewHandleError> {
+    fn new<NewFn>(id: ObjID, new: NewFn) -> Result<Self, NewHandleError>
+    where
+        NewFn: FnOnce(ObjectRef) -> T::HandleType,
+    {
         let obj = crate::obj::lookup_object(id, LookupFlags::empty());
         let obj = match obj {
             crate::obj::LookupResult::Found(obj) => obj,
@@ -101,7 +112,7 @@ impl<T: ObjectHandle + Clone> Handle<T> {
         };
         Ok(Handle {
             obj: obj.clone(),
-            item: T::create_with_handle(obj),
+            item: T::create_with_handle(obj, new),
         })
     }
 }
@@ -135,7 +146,9 @@ pub fn sys_new_handle(id: ObjID, handle_type: HandleType) -> Result<u64, NewHand
         return Err(NewHandleError::AlreadyHandle);
     }
     match handle_type {
-        HandleType::VmContext => ah.vm_contexts.insert(id, Handle::new(id)?),
+        HandleType::VmContext => ah
+            .vm_contexts
+            .insert(id, Handle::new(id, |_obj| Context::new())?),
         HandleType::PagerQueue => {
             if ah.pager_q_count == 2 {
                 return Err(NewHandleError::HandleSaturated);
@@ -157,4 +170,13 @@ pub fn sys_unbind_handle(id: ObjID) {
     // TODO: we'll need to fix this for having many kinds of handles.
     ah.all.remove(&id);
     ah.vm_contexts.remove(&id).unwrap();
+}
+
+// Note: placeholder types
+pub fn sys_sctx_attach(id: ObjID) -> Result<u32, SctxAttachError> {
+    let sctx = get_sctx(id)?;
+
+    current_thread_ref().unwrap().secctx.attach(sctx);
+
+    Ok(0)
 }

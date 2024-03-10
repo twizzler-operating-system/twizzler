@@ -63,6 +63,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "250f629c0161ad8107cf89319e990051fae62832fd343083bea452d93e2205fd"
 
 [[package]]
+name = "alloca"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5a7d05ea6aea7e9e64d25b9156ba2fee3fdd659e34e41063cd2fc7cd020d7f4"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "android-tzdata"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -299,6 +308,7 @@ name = "bootstrap"
 version = "0.1.0"
 dependencies = [
  "dynlink",
+ "miette",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
@@ -709,7 +719,11 @@ dependencies = [
  "bitflags 2.4.1",
  "elf",
  "humansize",
+ "itertools 0.12.0",
+ "miette",
  "petgraph",
+ "secgate",
+ "stable-vec",
  "talc",
  "thiserror",
  "tracing",
@@ -1418,6 +1432,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25db6b064527c5d482d0423354fcd07a89a2dfe07b67892e62411946db7f07b0"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1598,6 +1621,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "miette"
+version = "5.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59bb584eaeeab6bd0226ccf3509a69d7936d148cf3d036ad350abe35e8c6856e"
+dependencies = [
+ "miette-derive",
+ "once_cell",
+ "thiserror",
+ "unicode-width",
+]
+
+[[package]]
+name = "miette-derive"
+version = "5.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49e7bc1560b95a3c4a25d03de42fe76ca718ab92d1a22a55b9b4cf67b3ae635c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.38",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1664,9 +1710,12 @@ name = "monitor"
 version = "0.1.0"
 dependencies = [
  "dynlink",
+ "miette",
+ "secgate",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
+ "twizzler-object",
  "twizzler-runtime-api",
  "twz-rt",
 ]
@@ -2301,6 +2350,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "secgate"
+version = "0.1.0"
+dependencies = [
+ "alloca",
+ "cc",
+ "secgate-macros",
+ "static_assertions",
+ "twizzler-abi",
+]
+
+[[package]]
+name = "secgate-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.38",
+]
+
+[[package]]
 name = "security-framework"
 version = "2.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2470,6 +2539,12 @@ name = "smallvec"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "942b4a808e05215192e39f4ab80813e599068285906cc91aa64f923db842bd5a"
+
+[[package]]
+name = "smccc"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617d17f088ec733e5a6b86da6ce4cce1414e6e856d6061c16dda51cceae6f68c"
 
 [[package]]
 name = "socket2"
@@ -2959,6 +3034,7 @@ dependencies = [
  "nonoverlapping_interval_tree",
  "object",
  "slabmalloc",
+ "smccc",
  "syscall_encode",
  "tar-no-std",
  "tock-registers",

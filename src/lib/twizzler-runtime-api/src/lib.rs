@@ -161,6 +161,45 @@ pub trait ObjectRuntime {
     fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError>;
     /// Called on drop of an object handle.
     fn release_handle(&self, handle: &mut ObjectHandle);
+
+    /// Map two objects in sequence, useful for executable loading. The default implementation makes no guarantees about
+    /// ordering.
+    fn map_two_objects(
+        &self,
+        in_id_a: ObjID,
+        in_flags_a: MapFlags,
+        in_id_b: ObjID,
+        in_flags_b: MapFlags,
+    ) -> Result<(ObjectHandle, ObjectHandle), MapError> {
+        let map_and_check = |rev: bool| {
+            let (id_a, flags_a) = if rev {
+                (in_id_b, in_flags_b)
+            } else {
+                (in_id_a, in_flags_a)
+            };
+
+            let (id_b, flags_b) = if !rev {
+                (in_id_b, in_flags_b)
+            } else {
+                (in_id_a, in_flags_a)
+            };
+
+            let a = self.map_object(id_a, flags_a)?;
+            let b = self.map_object(id_b, flags_b)?;
+            let a_addr = a.start as usize;
+            let b_addr = b.start as usize;
+
+            if rev && a_addr > b_addr {
+                Ok((b, a))
+            } else if !rev && b_addr > a_addr {
+                Ok((a, b))
+            } else {
+                Err(MapError::InternalError)
+            }
+        };
+
+        map_and_check(false).or_else(|_| map_and_check(true))
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]

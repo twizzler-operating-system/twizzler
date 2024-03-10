@@ -3,15 +3,16 @@ use arm64::registers::{TTBR0_EL1, TTBR1_EL1};
 use crate::{
     arch::memory::pagetables::{Entry, EntryFlags, Table},
     memory::{
-        frame::{alloc_frame, PhysicalFrameFlags},
+        frame::{alloc_frame, free_frame, get_frame, PhysicalFrameFlags},
         pagetables::{
-            DeferredUnmappingOps, Mapper, MapReader, MappingCursor, MappingSettings,
+            DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
             PhysAddrProvider,
         },
         PhysAddr,
     },
     mutex::Mutex,
     spinlock::Spinlock,
+    VirtAddr,
 };
 
 // this does not need to be pub
@@ -19,11 +20,15 @@ pub struct ArchContextInner {
     // we have a single mapper that covers one part of the address space
     mapper: Mapper,
 }
+
 pub struct ArchContext {
-    kernel: u64, // TODO: do we always need a copy?
-    user: PhysAddr,
+    pub target: ArchContextTarget,
     inner: Mutex<ArchContextInner>,
 }
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+// TODO: can we get the kernel tables elsewhere?
+pub struct ArchContextTarget(PhysAddr);
 
 // default kernel mapper that is shared among all kernel instances of ArchContext
 lazy_static::lazy_static! {
@@ -37,10 +42,10 @@ lazy_static::lazy_static! {
         for idx in (Table::PAGE_TABLE_ENTRIES/2)..Table::PAGE_TABLE_ENTRIES {
             // write out PT entries for a top level table
             // whose entries point to another zeroed page
-            m.set_top_level_table(idx, 
+            m.set_top_level_table(idx,
                 Entry::new(
                     alloc_frame(PhysicalFrameFlags::ZEROED)
-                        .start_address(), 
+                        .start_address(),
                     // intermediate here means another page table
                     EntryFlags::intermediate()
                 )
@@ -48,6 +53,8 @@ lazy_static::lazy_static! {
         }
         Spinlock::new(m)
     };
+
+    static ref KERNEL_TABLE_ADDR: PhysAddr = KERNEL_MAPPER.lock().root_address();
 }
 
 impl Default for ArchContext {
@@ -60,9 +67,9 @@ impl ArchContext {
     /// Construct a new context for the kernel.
     pub fn new_kernel() -> Self {
         let inner = ArchContextInner::new();
+        let target = ArchContextTarget(inner.mapper.root_address());
         Self {
-            kernel: KERNEL_MAPPER.lock().root_address().raw(),
-            user: inner.mapper.root_address(),
+            target,
             inner: Mutex::new(inner),
         }
     }
@@ -71,25 +78,34 @@ impl ArchContext {
         Self::new_kernel()
     }
 
-    #[allow(named_asm_labels)]
     pub fn switch_to(&self) {
-        // TODO: make sure the TTBR1_EL1 switch only happens once
-        // write TTBR1
-        TTBR1_EL1.set_baddr(self.kernel);
-        // write TTBR0
-        TTBR0_EL1.set_baddr(self.user.raw());
-        unsafe { 
-            core::arch::asm!(
-                // ensure that all previous instructions have completed
-                "isb",
-                // invalidate all tlb entries (locally)
-                "tlbi vmalle1",
-                // ensure tlb invalidation completes
-                "dsb nsh",
-                // ensure dsb instruction completes
-                "isb",
-            );
+        unsafe {
+            Self::switch_to_target(&self.target);
         }
+    }
+
+    #[allow(named_asm_labels)]
+    /// Switch to a target context.
+    ///
+    /// # Safety
+    /// This function must be called with a target that comes from an ArchContext that lives long enough.
+    pub unsafe fn switch_to_target(tgt: &ArchContextTarget) {
+        // TODO: If the incoming target is already the current user table, this should be a no-op. Also, we don't
+        // need to set the kernel tables each time.
+        // write TTBR1
+        TTBR1_EL1.set_baddr(KERNEL_TABLE_ADDR.raw());
+        // write TTBR0
+        TTBR0_EL1.set_baddr(tgt.0.raw());
+        core::arch::asm!(
+            // ensure that all previous instructions have completed
+            "isb",
+            // invalidate all tlb entries (locally)
+            "tlbi vmalle1",
+            // ensure tlb invalidation completes
+            "dsb nsh",
+            // ensure dsb instruction completes
+            "isb",
+        );
     }
 
     pub fn map(
@@ -133,11 +149,9 @@ impl ArchContext {
 
 impl ArchContextInner {
     fn new() -> Self {
-        // we need to create a new mapper object by allocating 
+        // we need to create a new mapper object by allocating
         // some memory for the page table.
-        let mapper = Mapper::new(
-            alloc_frame(PhysicalFrameFlags::ZEROED).start_address()
-        );
+        let mapper = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
         Self { mapper }
     }
 
@@ -156,5 +170,21 @@ impl ArchContextInner {
 
     fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
         self.mapper.unmap(cursor)
+    }
+}
+
+impl Drop for ArchContextInner {
+    fn drop(&mut self) {
+        // Unmap all user memory to clear any allocated page tables.
+        self.mapper
+            .unmap(MappingCursor::new(
+                VirtAddr::start_user_memory(),
+                VirtAddr::end_user_memory() - VirtAddr::start_user_memory(),
+            ))
+            .run_all();
+        // Manually free the root.
+        if let Some(frame) = get_frame(self.mapper.root_address()) {
+            free_frame(frame);
+        }
     }
 }

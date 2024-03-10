@@ -8,7 +8,8 @@ edition = "2021"
 [dependencies]
 elf = "0.7"
 twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
-twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api", default-features = false }
+twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api", features = ["runtime"] }
+secgate = { path = "../secgate" }
 tracing = "0.1"
 twizzler-object = { path = "../../lib/twizzler-object" }
 thiserror = "1.0"
@@ -17,3 +18,6 @@ anyhow = "1.0"
 petgraph = "0.6"
 humansize = "2.1"
 bitflags = "2.4"
+miette = "5.10"
+itertools = "0.12"
+stable-vec = "0.4"

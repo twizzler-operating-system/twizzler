@@ -113,7 +113,7 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
                 .as_ref()
                 .unwrap()
         };
-        // Jump to the requested entry point. Handle the return, just in-case, but this is
+        // Jump to the requested entry point. Handle the return, just in case, but this is
         // not supposed to return.
         let entry: extern "C" fn(usize) = unsafe { core::mem::transmute(arg.start) };
         (entry)(arg.arg);

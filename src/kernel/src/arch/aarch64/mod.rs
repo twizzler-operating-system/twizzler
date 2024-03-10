@@ -8,7 +8,6 @@ use twizzler_abi::syscall::TimeSpan;
 
 use crate::{
     clock::Nanoseconds,
-    interrupt::{Destination, PinPolarity, TriggerMode},
     BootInfo,
     syscall::SyscallContext,
 };
@@ -26,7 +25,7 @@ pub mod thread;
 mod start;
 
 pub use address::{VirtAddr, PhysAddr};
-pub use interrupt::{send_ipi, init_interrupts};
+pub use interrupt::{send_ipi, init_interrupts, set_interrupt};
 pub use start::BootInfoSystemTable;
 
 pub fn init<B: BootInfo>(boot_info: &B) {
@@ -80,19 +79,46 @@ pub fn init<B: BootInfo>(boot_info: &B) {
 }
 
 pub fn init_secondary() {
-    // TODO: Initialize secondary processors:
-    // - set up exception handling
-    // - configure the local CPU interrupt controller interface
-}
+    // initialize exceptions by setting up our exception vectors
+    exception::init();
+    
+    // check if SPSel is already set to use SP_EL1
+    let spsel: InMemoryRegister<u64, SPSel::Register> = InMemoryRegister::new(SPSel.get());
+    if spsel.matches_all(SPSel::SP::EL0) {
+        // make it so that we use SP_EL1 in the kernel
+        // when taking an exception.
+        spsel.write(SPSel::SP::ELx);
+        let sp: u64;
+        unsafe {
+            core::arch::asm!(
+                // save the stack pointer from before
+                "mov {0}, sp",
+                // change usage of sp from SP_EL0 to SP_EL1
+                "msr spsel, {1}",
+                // set current stack pointer to previous,
+                // sp is now aliased to SP_EL1
+                "mov sp, {0}",
+                // scrub the value stored in SP_EL0
+                // "msr sp_el0, xzr",
+                out(reg) sp,
+                in(reg) spsel.get(),
+            );
+        }
 
-pub fn set_interrupt(
-    _num: u32,
-    _masked: bool,
-    _trigger: TriggerMode,
-    _polarity: PinPolarity,
-    _destination: Destination,
-) {
-    todo!();
+        // make it so that the boot stack is in higher half memory
+        if !VirtAddr::new(sp).unwrap().is_kernel() {
+            unsafe {
+                // we convert it to higher memory that has r/w permissions
+                let new_sp = PhysAddr::new_unchecked(sp).kernel_vaddr().raw();
+                core::arch::asm!(
+                    "mov sp, {}",
+                    in(reg) new_sp,
+                );
+            }
+        }
+    }
+    // initialize the (local) settings for the interrupt controller
+    init_interrupts();
 }
 
 pub fn start_clock(_statclock_hz: u64, _stat_cb: fn(Nanoseconds)) {
@@ -100,7 +126,6 @@ pub fn start_clock(_statclock_hz: u64, _stat_cb: fn(Nanoseconds)) {
 }
 
 pub fn schedule_oneshot_tick(time: Nanoseconds) {
-    emerglogln!("[arch::tick] setting the timer to fire off after {} ns", time);
     let old = interrupt::disable();
     // set timer to fire off after a certian amount of time has passed
     let phys_timer = cntp::PhysicalTimer::new();
@@ -125,6 +150,6 @@ pub fn debug_shutdown(_code: u32) {
 /// Start up a CPU.
 /// # Safety
 /// The tcb_base and kernel stack must both be valid memory regions for each thing.
-pub unsafe fn poke_cpu(_cpu: u32, _tcb_base: crate::memory::VirtAddr, _kernel_stack: *mut u8) {
-    todo!("start up a cpu")
+pub unsafe fn poke_cpu(cpu: u32, tcb_base: crate::memory::VirtAddr, kernel_stack: *mut u8) {
+    crate::machine::processor::poke_cpu(cpu, tcb_base, kernel_stack);
 }

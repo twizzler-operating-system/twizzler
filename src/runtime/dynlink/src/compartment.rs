@@ -1,109 +1,64 @@
 //! Compartments are an abstraction for isolation of library components, but they are not done yet.
 
+use petgraph::stable_graph::NodeIndex;
 use std::{
-    fmt::Debug,
-    sync::{Arc, Mutex},
+    collections::HashMap,
+    fmt::{Debug, Display},
 };
 
 use talc::{ErrOnOom, Talc};
-use twizzler_object::Object;
 
-use crate::{tls::TlsInfo, DynlinkError};
+use crate::{library::BackingData, tls::TlsInfo};
 
 mod alloc;
-mod load;
 mod tls;
 
-pub(crate) struct CompartmentInner {
-    name: String,
-    id: u128,
-    allocator: Talc<ErrOnOom>,
-    alloc_objects: Vec<Object<u8>>,
-    pub(crate) tls_info: TlsInfo,
+/// A compartment that contains libraries (and a local runtime).
+pub struct Compartment<Backing: BackingData> {
+    pub name: String,
+    // Library names are per-compartment.
+    pub(crate) library_names: HashMap<String, NodeIndex>,
+    // We maintain an allocator, so we can alloc data within the compartment.
+    pub(super) allocator: Talc<ErrOnOom>,
+    pub(super) alloc_objects: Vec<Backing>,
+
+    // Information for TLS. We store all the "active" generations.
+    pub(crate) tls_info: HashMap<u64, TlsInfo>,
+    pub(crate) tls_gen: u64,
 }
 
-pub struct Compartment {
-    name: String,
-    inner: Mutex<CompartmentInner>,
-}
+/// ID type for a compartment.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[repr(transparent)]
+pub struct CompartmentId(pub(crate) usize);
 
-impl PartialEq for CompartmentInner {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl Eq for CompartmentInner {}
-
-impl PartialOrd for CompartmentInner {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for CompartmentInner {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.id.cmp(&other.id)
-    }
-}
-
-impl core::fmt::Display for CompartmentInner {
+impl Display for CompartmentId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name)
+        write!(f, "{}", self.0)
     }
 }
 
-impl core::fmt::Display for Compartment {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
-
-impl Debug for Compartment {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Compartment[{}]", self.name)
-    }
-}
-
-pub type CompartmentRef = Arc<Compartment>;
-
-#[allow(dead_code)]
-impl CompartmentInner {
-    pub(crate) fn new(name: String, id: u128) -> Self {
+impl<Backing: BackingData> Compartment<Backing> {
+    pub(crate) fn new(name: String) -> Self {
         Self {
             name,
-            id,
+            library_names: HashMap::new(),
             allocator: Talc::new(ErrOnOom),
             alloc_objects: vec![],
-            tls_info: Default::default(),
+            tls_info: HashMap::new(),
+            tls_gen: 0,
         }
-    }
-
-    pub(crate) fn alloc_objects(&self) -> &[Object<u8>] {
-        &self.alloc_objects
     }
 }
 
-#[allow(dead_code)]
-impl Compartment {
-    pub(crate) fn new(name: String, id: u128) -> Self {
-        Self {
-            name: name.clone(),
-            inner: Mutex::new(CompartmentInner::new(name, id)),
-        }
+impl<Backing: BackingData> core::fmt::Display for Compartment<Backing> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
     }
+}
 
-    pub(crate) fn with_inner_mut<R>(
-        &self,
-        f: impl FnOnce(&mut CompartmentInner) -> R,
-    ) -> Result<R, DynlinkError> {
-        Ok(f(&mut *self.inner.lock()?))
-    }
-
-    pub(crate) fn with_inner<R>(
-        &self,
-        f: impl FnOnce(&CompartmentInner) -> R,
-    ) -> Result<R, DynlinkError> {
-        Ok(f(&*self.inner.lock()?))
+impl<Backing: BackingData> Debug for Compartment<Backing> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Compartment[{}]", self.name)
     }
 }
