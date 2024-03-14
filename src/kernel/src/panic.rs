@@ -51,6 +51,7 @@ pub fn init(kernel_image: &'static [u8]) {
     let ctx = load_debug_context(&image);
     unsafe { DEBUG_CTX = ctx };
 }
+
 #[cfg(feature = "kani")]
 pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoint>) {
     let mut frame_nr = 0;
