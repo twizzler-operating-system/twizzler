@@ -1,7 +1,8 @@
 
 
 use crate::KaniOptions;
-use std::fs::File;
+use std::fs::{self, File};
+use std::path::Path;
 use std::process::Command;
 use std::env;
 
@@ -25,6 +26,10 @@ pub(crate) fn launch_kani(cli:  KaniOptions) -> anyhow::Result<()> {
     // };
 
     let date = Local::now().format("%Y-%m-%d-%H:%M:%S").to_string();
+
+    if !Path::new("./kani_test/log/").exists(){
+        fs::create_dir_all("./kani_test/log/")?;
+    }
 
     let log_name = format!("./kani_test/log/{}.log", date);
     let log = File::create(log_name).expect("failed to open log");
