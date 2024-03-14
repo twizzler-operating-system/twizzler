@@ -53,6 +53,7 @@ pub fn init(kernel_image: &'static [u8]) {
     let ctx = load_debug_context(&image);
     unsafe { DEBUG_CTX = ctx };
 }
+
 #[cfg(feature = "kani")]
 const MAX_FRAMES: usize = 100;
 pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoint>) {
