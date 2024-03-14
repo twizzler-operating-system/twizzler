@@ -3,3 +3,4 @@ toolchain/install
 .vscode
 workspace.code-workspace
 .target-xtask
+kani_test
