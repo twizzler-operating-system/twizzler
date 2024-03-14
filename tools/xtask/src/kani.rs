@@ -1,8 +1,11 @@
 
 
 use crate::KaniOptions;
+use std::fs::File;
 use std::process::Command;
 use std::env;
+
+use chrono::prelude::*;
 
 
 //Verifies Kani is installed and launches it
@@ -21,9 +24,15 @@ pub(crate) fn launch_kani(cli:  KaniOptions) -> anyhow::Result<()> {
     //     }
     // };
 
+    let date = Local::now().format("%Y-%m-%d-%H:%M:%S").to_string();
+
+    let log_name = format!("./kani_test/log/{}.log", date);
+    let log = File::create(log_name).expect("failed to open log");
+
 
     //Actually run the command
     let mut cmd = Command::new("cargo");
+    cmd.stdout(log);
     cmd.arg("kani");
     //Add env 
     // let hash = cli.env.and_then(|vec| Some(vec.into_iter()));
@@ -61,7 +70,8 @@ pub fn kernel_flags() -> Vec<String> {
     flags.extend_from_slice(
         &[
             "--enable-unstable",
-            "--ignore-global-asm"
+            "--ignore-global-asm",
+            "-Zstubbing"
         ].map(String::from)
         .to_vec());
 
@@ -79,6 +89,7 @@ pub fn exclude_list() -> Vec<String> {
             "--exclude",
             "monitor",
             "unicode-bidi"
+            // "twizzler-abi"
         ].map(String::from)
         .to_vec());
 
