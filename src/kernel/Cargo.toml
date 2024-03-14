@@ -45,8 +45,6 @@ rand_jitter = "0.4.0"
 # [dev-dependencies] # kernel doesn't include dev dependencies when testing
 # for testing crypto
 hex-literal = { version = "0.4.1", default-features = false }
-syscall_encode = { version = "0.1.2" }
-volatile = "0.5"
 uart_16550 = "0.3.0"
 x86 = "0.52.0"
 acpi = "4.1.1"

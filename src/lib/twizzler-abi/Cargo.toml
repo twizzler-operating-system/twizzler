@@ -6,6 +6,11 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 
 [dependencies]
 bitflags = "2.4.1"
+# syscall_encode_macros = { version = "0.1.8" }
+# syscall_encode_traits = { version = "0.1.9"}
+twizzler-runtime-api = { path = "../twizzler-runtime-api" }
+alloc = { version = "1.0.0", optional = true, package = "rustc-std-workspace-alloc" }
+talc = { version = "3.0", default-features = false, optional = true }
 bitset-core = { version = "0.1", optional = true, default-features = false }
 cfg-if = "1.0"
 num_enum = { version = "0.7", default-features = false }
@@ -20,7 +25,15 @@ version = "0.5"
 
 [features]
 # Activate if compiling for the kernel.
-kernel = ["volatile"]
-
-[dev-dependencies]
-#twizzler-runtime = { path = "../../runtime/rt" }
+kernel = ["volatile", "twizzler-runtime-api/kernel"]
+# Activate if compiling for libstd.
+rustc-dep-of-std = [
+    "core",
+    "compiler_builtins/rustc-dep-of-std",
+    "libc/rustc-dep-of-std",
+    "bitflags/rustc-dep-of-std",
+    # "syscall_encode_macros/rustc-dep-of-std",
+    # "syscall_encode_traits/rustc-dep-of-std",
+    "twizzler-runtime-api/rustc-dep-of-std",
+    "alloc",
+]
