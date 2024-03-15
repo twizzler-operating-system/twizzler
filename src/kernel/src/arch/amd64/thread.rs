@@ -139,15 +139,12 @@ pub trait UpcallAble {
     fn get_stack_top(&self) -> u64;
 }
 
-fn same_object(a: usize, b: usize) -> bool {
-    a / MAX_SIZE == b / MAX_SIZE
-}
-
 fn set_upcall<T: UpcallAble + Copy>(
     regs: &mut T,
     target: UpcallTarget,
     info: UpcallInfo,
     source_ctx: ObjID,
+    thread_id: ObjID,
     sup: bool,
 ) -> bool
 where
@@ -159,11 +156,15 @@ where
     const RED_ZONE_SIZE: usize = 512;
     // Frame must be aligned for the xsave region (Intel says aligned on 64 bytes).
     const MIN_FRAME_ALIGN: usize = 64;
+    // Minimum amount of stack space we need left over for execution
+    const MIN_STACK_REMAINING: usize = 1024 * 1024; // 1MB
 
     let current_stack_pointer = regs.get_stack_top();
     // We only switch contexts if it was requested and we aren't in that context.
     // TODO: once security contexts are more fully implemented, we'll need to change this code.
-    let switch_to_super = sup && !same_object(target.super_stack, current_stack_pointer as usize);
+    let switch_to_super = sup
+        && !(current_stack_pointer as usize >= target.super_stack
+            && (current_stack_pointer as usize) < (target.super_stack + target.super_stack_size));
 
     let target_addr = if switch_to_super {
         target.super_address
@@ -173,6 +174,7 @@ where
 
     // If the address is not canonical, leave.
     let Ok(target_addr) = VirtAddr::new(target_addr as u64) else {
+        logln!("warning -- thread aborted to non-canonical jump address for upcall");
         return false;
     };
 
@@ -184,16 +186,22 @@ where
             UpcallHandlerFlags::empty()
         },
         source_ctx,
+        thread_id,
     };
 
     // Step 1: determine where we are going to put the frame. If we have
     // a supervisor stack, and we aren't currently on it, use that. Otherwise,
     // use the current stack pointer.
     let stack_pointer = if switch_to_super {
-        target.super_stack as u64
+        (target.super_stack + target.super_stack_size) as u64
     } else {
         current_stack_pointer
     };
+
+    if stack_pointer == 0 {
+        logln!("warning -- thread aborted to null stack pointer for upcall");
+        return false;
+    }
 
     // TODO: once security contexts are more implemented, we'll need to do a bunch of permission checks
     // on the stack and target jump addresses.
@@ -223,10 +231,17 @@ where
     let total_size = data_size + frame_size + frame_padding + RED_ZONE_SIZE;
     let total_size = (total_size + MIN_STACK_ALIGN) & !(MIN_STACK_ALIGN - 1);
 
-    let stack_object_base = (stack_top as usize / MAX_SIZE) * MAX_SIZE + NULLPAGE_SIZE;
-    if stack_object_base + total_size >= stack_pointer as usize {
-        // No space for our frame!
-        return false;
+    if switch_to_super {
+        if target.super_stack_size < (total_size + MIN_STACK_REMAINING) {
+            logln!("warning -- thread aborted due insufficient super stack space");
+            return false;
+        }
+    } else {
+        let stack_object_base = (stack_top as usize / MAX_SIZE) * MAX_SIZE + NULLPAGE_SIZE;
+        if stack_object_base + (total_size + MIN_STACK_REMAINING) >= stack_pointer as usize {
+            logln!("warning -- thread aborted due insufficient stack space");
+            return false;
+        }
     }
 
     // Step 3: write out the frame and the data into the stack.
@@ -319,18 +334,21 @@ impl Thread {
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
         let source_ctx = self.secctx.active_id();
-        match *self.arch.entry_registers.borrow() {
+        let ok = match *self.arch.entry_registers.borrow() {
             Registers::None => {
                 panic!("tried to upcall to a thread that hasn't started yet");
             }
             Registers::Interrupt(int, _) => {
                 let int = unsafe { &mut *int };
-                set_upcall(int, target, info, source_ctx, sup);
+                set_upcall(int, target, info, source_ctx, self.objid(), sup)
             }
             Registers::Syscall(sys, _) => {
                 let sys = unsafe { &mut *sys };
-                set_upcall(sys, target, info, source_ctx, sup);
+                set_upcall(sys, target, info, source_ctx, self.objid(), sup)
             }
+        };
+        if !ok {
+            crate::thread::exit(UPCALL_EXIT_CODE);
         }
     }
 

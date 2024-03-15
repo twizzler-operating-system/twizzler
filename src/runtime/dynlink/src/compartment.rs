@@ -10,12 +10,13 @@ use talc::{ErrOnOom, Talc};
 
 use crate::{library::BackingData, tls::TlsInfo};
 
-mod alloc;
 mod tls;
 
+#[repr(C)]
 /// A compartment that contains libraries (and a local runtime).
 pub struct Compartment<Backing: BackingData> {
     pub name: String,
+    pub id: CompartmentId,
     // Library names are per-compartment.
     pub(crate) library_names: HashMap<String, NodeIndex>,
     // We maintain an allocator, so we can alloc data within the compartment.
@@ -39,9 +40,10 @@ impl Display for CompartmentId {
 }
 
 impl<Backing: BackingData> Compartment<Backing> {
-    pub(crate) fn new(name: String) -> Self {
+    pub(crate) fn new(name: String, id: CompartmentId) -> Self {
         Self {
             name,
+            id,
             library_names: HashMap::new(),
             allocator: Talc::new(ErrOnOom),
             alloc_objects: vec![],

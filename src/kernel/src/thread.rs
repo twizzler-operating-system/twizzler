@@ -338,6 +338,7 @@ impl<'a> Drop for CriticalGuard<'a> {
 }
 
 pub fn exit(code: u64) -> ! {
+    // TODO: we can do a quick sanity check here that we aren't holding any locks before we exit.
     {
         let th = current_thread_ref().unwrap();
         th.set_state_and_code(ExecutionState::Exited, code);

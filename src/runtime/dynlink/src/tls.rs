@@ -171,9 +171,9 @@ impl TlsInfo {
 
 #[repr(C)]
 pub struct Tcb<T> {
-    self_ptr: *const Tcb<T>,
-    dtv: *const usize,
-    dtv_len: usize,
+    pub self_ptr: *const Tcb<T>,
+    pub dtv: *const usize,
+    pub dtv_len: usize,
     pub runtime_data: T,
 }
 

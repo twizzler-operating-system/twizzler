@@ -64,7 +64,7 @@ impl MonitorActions for MonitorActionsImpl {
         if buf.len() < lib.name.len() {
             return None;
         }
-        buf[0..lib.name.len()].copy_from_slice(&lib.name.as_bytes());
+        buf[0..lib.name.len()].copy_from_slice(lib.name.as_bytes());
         Some(lib.name.len())
     }
 
@@ -79,23 +79,6 @@ impl MonitorActions for MonitorActionsImpl {
             start: lib.laddr::<u8>(phdr.p_vaddr) as usize,
             len: phdr.p_memsz as usize,
         })
-    }
-
-    fn allocate_tls_region(&self) -> Option<dynlink::tls::TlsRegion> {
-        let tcb = twz_rt::monitor::RuntimeThreadControl::new();
-
-        let mut state = self.state.lock().unwrap();
-        let comp = state.dynlink.lookup_compartment("monitor").unwrap();
-        state
-            .dynlink
-            .get_compartment_mut(comp)
-            .unwrap()
-            .build_tls_region(tcb)
-            .ok()
-    }
-
-    fn free_tls_region(&self, tls: dynlink::tls::TlsRegion) {
-        drop(tls);
     }
 }
 

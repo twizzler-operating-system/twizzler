@@ -15,8 +15,15 @@ bitflags! {
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 pub enum UpcallTargetSpawnOption {
+    /// Set all sync event handlers to abort by default. Entry addresses will be zero, and upcalls will not be issued.
     DefaultAbort,
+    /// Inherit the upcall target entry address. All supervisor fields are cleared.
     Inherit,
+    /// Set the upcall target directly. The following conditions must be met:
+    ///   1. The super_ctx field holds the ID of the current thread's active context (prevents priv escalation).
+    ///   2. The super_entry_address is at most r-x, and at least --x in the super_ctx.
+    ///   3. The super_thread_pointer is exactly rw- in the super_ctx.
+    ///   4. The super_stack_pointer is exactly rw- in the super_ctx.
     SetTo(UpcallTarget),
 }
 

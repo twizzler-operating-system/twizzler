@@ -29,10 +29,6 @@ pub trait BackingData: Clone {
     /// region is valid.
     fn data(&self) -> (*mut u8, usize);
 
-    /// Make a new backing data for holding allocated data for the dynamic linker.
-    fn new_data() -> Result<Self, DynlinkError>
-    where
-        Self: Sized;
     fn load_addr(&self) -> usize;
 
     /// Get the data as a slice.
@@ -52,6 +48,7 @@ pub trait BackingData: Clone {
     }
 }
 
+#[repr(C)]
 /// An unloaded library. It's just a name, really.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub struct UnloadedLibrary {
@@ -78,6 +75,7 @@ impl Display for LibraryId {
     }
 }
 
+#[repr(C)]
 /// A loaded library. It may be in various relocation states.
 pub struct Library<Backing: BackingData> {
     /// Name of this library.

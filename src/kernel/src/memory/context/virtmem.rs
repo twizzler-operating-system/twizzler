@@ -683,31 +683,37 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
             }
         };
 
+        let page_number = PageNumber::from_address(addr);
         let slot_mgr = ctx.slots.lock();
-
         if let Some(info) = slot_mgr.get(&slot) {
-            let page_number = PageNumber::from_address(addr);
+            let id = info.obj.id();
+            let null_upcall = UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
+                id,
+                ObjectMemoryError::NullPageAccess,
+                cause,
+                addr.into(),
+            ));
+
+            let oob_upcall = UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
+                id,
+                ObjectMemoryError::OutOfBounds(page_number.as_byte_offset()),
+                cause,
+                addr.into(),
+            ));
+
             let mut obj_page_tree = info.obj.lock_page_tree();
             if page_number.is_zero() {
-                current_thread_ref()
-                    .unwrap()
-                    .send_upcall(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
-                        info.obj.id(),
-                        ObjectMemoryError::NullPageAccess,
-                        cause,
-                        addr.into(),
-                    )));
+                // drop these mutexes in case upcall sending generetes a page fault.
+                drop(obj_page_tree);
+                drop(slot_mgr);
+                current_thread_ref().unwrap().send_upcall(null_upcall);
                 return;
             }
             if page_number.as_byte_offset() >= MAX_SIZE {
-                current_thread_ref()
-                    .unwrap()
-                    .send_upcall(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
-                        info.obj.id(),
-                        ObjectMemoryError::OutOfBounds(page_number.as_byte_offset()),
-                        cause,
-                        addr.into(),
-                    )));
+                // drop these mutexes in case upcall sending generetes a page fault.
+                drop(obj_page_tree);
+                drop(slot_mgr);
+                current_thread_ref().unwrap().send_upcall(oob_upcall);
                 return;
             }
 
@@ -746,6 +752,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 });
             }
         } else {
+            drop(slot_mgr);
             current_thread_ref()
                 .unwrap()
                 .send_upcall(UpcallInfo::MemoryContextViolation(
