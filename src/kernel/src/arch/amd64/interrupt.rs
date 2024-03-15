@@ -91,8 +91,8 @@ impl From<UpcallFrame> for IsrContext {
             rflags: frame.rflags,
 
             err: 0,
-            cs: sels.1.into(),
-            ss: sels.0.into(),
+            cs: sels.0.into(),
+            ss: sels.1.into(),
         }
     }
 }

@@ -54,6 +54,8 @@ pub enum ThreadControl {
     GetAffinity = 15,
     /// Resume from an upcall.
     ResumeFromUpcall = 16,
+    /// Get the repr ID of the calling thread.
+    GetSelfId = 17,
 }
 
 /// Exit the thread. The code will be written to the [crate::thread::ThreadRepr] for the current thread as part
@@ -80,6 +82,12 @@ pub fn sys_thread_settls(tls: u64) {
     unsafe {
         raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::SetTls as u64, tls]);
     }
+}
+
+/// Get the repr ID of the calling thread.
+pub fn sys_thread_self_id() -> ObjID {
+    let (hi, lo) = unsafe { raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::GetSelfId as u64]) };
+    ObjID::new_from_parts(hi, lo)
 }
 
 /// Set the upcall location for this thread.

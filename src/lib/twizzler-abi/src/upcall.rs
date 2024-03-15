@@ -119,6 +119,8 @@ pub struct UpcallData {
     pub flags: UpcallHandlerFlags,
     /// Source context
     pub source_ctx: ObjID,
+    /// The thread ID for this thread.
+    pub thread_id: ObjID,
 }
 
 /// Information for handling an upcall, per-thread. By default, a thread starts with
@@ -132,6 +134,8 @@ pub struct UpcallTarget {
     pub super_address: usize,
     /// Address of supervisor stack to use, when switching to supervisor context.
     pub super_stack: usize,
+    /// Size of the super stack.
+    pub super_stack_size: usize,
     /// Value to use for stack pointer, when switching to supervisor context.
     pub super_thread_ptr: usize,
     /// Supervisor context to use, when switching to supervisor context.
@@ -143,20 +147,24 @@ pub struct UpcallTarget {
 impl UpcallTarget {
     /// Construct a new upcall target.
     pub fn new(
-        self_address: unsafe extern "C-unwind" fn(*mut UpcallFrame, *const UpcallData) -> !,
-        super_address: unsafe extern "C-unwind" fn(*mut UpcallFrame, *const UpcallData) -> !,
+        self_address: Option<unsafe extern "C-unwind" fn(*mut UpcallFrame, *const UpcallData) -> !>,
+        super_address: Option<
+            unsafe extern "C-unwind" fn(*mut UpcallFrame, *const UpcallData) -> !,
+        >,
         super_stack: usize,
+        super_stack_size: usize,
         super_thread_ptr: usize,
         super_ctx: ObjID,
         options: [UpcallOptions; UpcallInfo::NR_UPCALLS],
     ) -> Self {
         Self {
-            self_address: self_address as usize,
-            super_address: super_address as usize,
+            self_address: self_address.map(|addr| addr as usize).unwrap_or_default(),
+            super_address: super_address.map(|addr| addr as usize).unwrap_or_default(),
             super_stack,
             super_thread_ptr,
             super_ctx,
             options,
+            super_stack_size,
         }
     }
 }

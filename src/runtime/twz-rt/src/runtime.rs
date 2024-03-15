@@ -15,6 +15,7 @@ mod time;
 pub(crate) mod upcall;
 
 pub use thread::RuntimeThreadControl;
+pub use upcall::set_upcall_handler;
 
 /// The runtime trait implementer itself.
 pub struct ReferenceRuntime {

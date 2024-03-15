@@ -201,6 +201,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d818003e740b63afc82337e3160717f4f63078720a810b7b903e70a5d1d2994"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "atty"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -332,6 +341,12 @@ name = "bumpalo"
 version = "3.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f30e7476521f6f8af1a1c4c0b8cc94f0bee37d91763d0ca2665f299b6cd8aec"
+
+[[package]]
+name = "bytemuck"
+version = "1.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "374d28ec25809ee0e23827c2ab573d729e293f281dfe393500e7ad618baa61c6"
 
 [[package]]
 name = "byteorder"
@@ -688,6 +703,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "darling"
+version = "0.20.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da01daa5f6d41c91358398e8db4dde38e292378da1f28300b59ef4732b879454"
+dependencies = [
+ "darling_core",
+ "darling_macro",
+]
+
+[[package]]
+name = "darling_core"
+version = "0.20.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f44f6238b948a3c6c3073cdf53bb0c2d5e024ee27e0f35bfe9d556a12395808a"
+dependencies = [
+ "fnv",
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim",
+ "syn 2.0.38",
+]
+
+[[package]]
+name = "darling_macro"
+version = "0.20.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d2d88bd93979b1feb760a6b5c531ac5ba06bd63e74894c377af02faee07b9cd"
+dependencies = [
+ "darling_core",
+ "quote",
+ "syn 2.0.38",
+]
+
+[[package]]
 name = "devmgr"
 version = "0.1.0"
 dependencies = [
@@ -723,7 +773,6 @@ dependencies = [
  "miette",
  "petgraph",
  "secgate",
- "stable-vec",
  "talc",
  "thiserror",
  "tracing",
@@ -1282,6 +1331,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ident_case"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
+
+[[package]]
 name = "idna"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1710,14 +1765,28 @@ name = "monitor"
 version = "0.1.0"
 dependencies = [
  "dynlink",
+ "lazy_static",
  "miette",
+ "monitor-api",
  "secgate",
+ "static_assertions",
+ "talc",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
  "twizzler-object",
  "twizzler-runtime-api",
  "twz-rt",
+]
+
+[[package]]
+name = "monitor-api"
+version = "0.1.0"
+dependencies = [
+ "dynlink",
+ "secgate",
+ "twizzler-abi",
+ "twizzler-runtime-api",
 ]
 
 [[package]]
@@ -2364,6 +2433,7 @@ dependencies = [
 name = "secgate-macros"
 version = "0.1.0"
 dependencies = [
+ "darling",
  "proc-macro2",
  "quote",
  "syn 2.0.38",
@@ -2721,6 +2791,9 @@ name = "talc"
 version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df4d2bae993eb37405b2d0efe7dbb7cb5eb36b2c16cdb484a0e24263a1a631e2"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "tar"
@@ -3104,9 +3177,13 @@ dependencies = [
 name = "twz-rt"
 version = "0.1.0"
 dependencies = [
+ "atomic",
  "bitflags 2.4.1",
  "dynlink",
  "lazy_static",
+ "monitor-api",
+ "secgate",
+ "static_assertions",
  "talc",
  "thiserror",
  "tracing",

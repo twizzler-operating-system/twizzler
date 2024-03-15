@@ -91,8 +91,9 @@ impl CoreRuntime for MinimalRuntime {
             crate::print_err("failed to initialize TLS\n");
         }
         let upcall_target = UpcallTarget::new(
-            crate::arch::upcall::upcall_entry,
-            crate::arch::upcall::upcall_entry,
+            Some(crate::arch::upcall::upcall_entry),
+            Some(crate::arch::upcall::upcall_entry),
+            0,
             0,
             0,
             0.into(),

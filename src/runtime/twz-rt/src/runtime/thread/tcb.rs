@@ -6,12 +6,18 @@
 //! that might call into std (with one exception, below).
 
 use std::{
+    alloc::GlobalAlloc,
     cell::UnsafeCell,
+    collections::HashMap,
     panic::catch_unwind,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Mutex,
+    },
 };
 
 use dynlink::tls::Tcb;
+use monitor_api::TlsTemplateInfo;
 use tracing::trace;
 use twizzler_runtime_api::CoreRuntime;
 
@@ -27,16 +33,16 @@ pub struct RuntimeThreadControl {
 
 impl Default for RuntimeThreadControl {
     fn default() -> Self {
-        Self::new()
+        Self::new(0)
     }
 }
 
 impl RuntimeThreadControl {
-    pub const fn new() -> Self {
+    pub const fn new(id: u32) -> Self {
         Self {
             internal_lock: AtomicU32::new(0),
             flags: AtomicU32::new(0),
-            id: UnsafeCell::new(0),
+            id: UnsafeCell::new(id),
         }
     }
 
@@ -107,6 +113,10 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
             cur.flags.fetch_or(THREAD_STARTED, Ordering::SeqCst);
             trace!("thread {} started", cur.id());
         });
+        twizzler_abi::syscall::sys_kernel_console_write(
+            b"alive\n",
+            twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
+        );
         // Find the arguments. arg is a pointer to a Box::into_raw of a Box of ThreadSpawnArgs.
         let arg = unsafe {
             (arg as *const twizzler_runtime_api::ThreadSpawnArgs)
@@ -121,4 +131,48 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
     })
     .unwrap_or(THREAD_PANIC_CODE);
     twizzler_abi::syscall::sys_thread_exit(code);
+}
+
+#[derive(Default)]
+pub(crate) struct TlsGenMgr {
+    map: HashMap<u64, TlsGen>,
+}
+
+pub(crate) struct TlsGen {
+    template: TlsTemplateInfo,
+    thread_count: usize,
+}
+
+unsafe impl Send for TlsGen {}
+
+lazy_static::lazy_static! {
+pub(crate) static ref TLS_GEN_MGR: Mutex<TlsGenMgr> = Mutex::new(TlsGenMgr::default());
+}
+
+impl TlsGenMgr {
+    pub fn get_next_tls_info<T>(
+        &mut self,
+        mygen: u64,
+        new_tcb_data: impl FnOnce() -> T,
+    ) -> Option<*mut Tcb<T>> {
+        let cc = monitor_api::get_comp_config();
+        let template = unsafe { cc.get_tls_template().as_ref().unwrap() };
+        if mygen == template.gen {
+            return None;
+        }
+
+        let new = unsafe { OUR_RUNTIME.get_alloc().alloc(template.layout) };
+        let tlsgen = self.map.entry(template.gen).or_insert_with(|| TlsGen {
+            template: *template,
+            thread_count: 0,
+        });
+        tlsgen.thread_count += 1;
+
+        unsafe {
+            let tcb = tlsgen.template.init_new_tls_region(new, new_tcb_data());
+            Some(tcb)
+        }
+    }
+
+    // TODO: when threads exit or move on to a different TLS gen, track that in thread_count, and if it hits zero, notify the monitor.
 }

@@ -4,7 +4,7 @@ use crate::preinit_println;
 
 #[cfg(feature = "runtime")]
 #[no_mangle]
-pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry(
+pub unsafe extern "C-unwind" fn rr_upcall_entry(
     _frame: *mut UpcallFrame,
     _info: *const UpcallData,
 ) -> ! {

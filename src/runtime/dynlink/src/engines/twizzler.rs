@@ -35,25 +35,6 @@ impl BackingData for Backing {
         )
     }
 
-    fn new_data() -> Result<Self, DynlinkError> {
-        let runtime = twizzler_runtime_api::get_runtime();
-        let id = sys_object_create(
-            ObjectCreate::new(
-                BackingType::Normal,
-                LifetimeType::Volatile,
-                None,
-                ObjectCreateFlags::empty(),
-            ),
-            &[],
-            &[],
-        )
-        .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
-        let handle = runtime
-            .map_object(id.as_u128(), MapFlags::READ | MapFlags::WRITE)
-            .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
-        Ok(Self { obj: handle })
-    }
-
     fn load_addr(&self) -> usize {
         self.obj.start as usize
     }
@@ -111,6 +92,16 @@ impl ContextEngine for Engine {
             let dest_start = directive.vaddr & !(directive.align - 1);
             let len = (directive.vaddr - dest_start) + directive.filesz;
 
+            if !directive.load_flags.contains(LoadFlags::TARGETS_DATA) {
+                // Ensure we can direct-map the object for the text directives.
+                if src_start != dest_start || directive.filesz != directive.memsz {
+                    // TODO: check len too.
+                    return Err(DynlinkError::new(DynlinkErrorKind::LoadDirectiveFail {
+                        dir: *directive,
+                    }));
+                }
+            }
+
             Ok(ObjectSource::new_copy(
                 twizzler_object::ObjID::new(src.obj.id),
                 (src_start % MAX_SIZE) as u64,
@@ -129,18 +120,17 @@ impl ContextEngine for Engine {
         });
 
         let data_cmds = DynlinkError::collect(DynlinkErrorKind::NewBackingFail, data_cmds)?;
-        let text_cmds = DynlinkError::collect(DynlinkErrorKind::NewBackingFail, text_cmds)?;
+        let _text_cmds = DynlinkError::collect(DynlinkErrorKind::NewBackingFail, text_cmds)?;
 
         let data_id = sys_object_create(create_spec, &data_cmds, &[])
             .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
-        let text_id = sys_object_create(create_spec, &text_cmds, &[])
-            .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
+        let text_id = src.obj.id;
 
         let runtime = twizzler_runtime_api::get_runtime();
 
         let (text_handle, data_handle) = runtime
             .map_two_objects(
-                text_id.as_u128(),
+                text_id,
                 MapFlags::READ | MapFlags::EXEC,
                 data_id.as_u128(),
                 MapFlags::READ | MapFlags::WRITE,

@@ -2,7 +2,11 @@ use twizzler_abi::upcall::{UpcallData, UpcallFrame};
 
 #[cfg(feature = "runtime")]
 #[no_mangle]
-pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry(
+/// Entry for upcalls.
+///
+/// # Safety
+/// This function may not be called except as an upcall from the kernel.
+pub unsafe extern "C-unwind" fn rr_upcall_entry(
     rdi: *mut UpcallFrame,
     rsi: *const UpcallData,
 ) -> ! {

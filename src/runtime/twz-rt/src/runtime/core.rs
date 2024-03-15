@@ -95,8 +95,9 @@ impl CoreRuntime for ReferenceRuntime {
 
         // Step 3: bootstrap pre-std stuff: upcalls, allocator, TLS, constructors (the order matters, ctors need to happen last)
         let upcall_target = UpcallTarget::new(
-            crate::arch::rr_upcall_entry,
-            crate::arch::rr_upcall_entry,
+            Some(crate::arch::rr_upcall_entry),
+            Some(crate::arch::rr_upcall_entry),
+            0,
             0,
             0,
             0.into(),
