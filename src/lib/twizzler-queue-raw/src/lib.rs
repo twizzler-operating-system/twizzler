@@ -607,36 +607,7 @@ mod queue_kani {
 
     use core::convert::From;
 
-
-    // impl SubmissionFlags {
-    //     pub fn as_u32(&self) ->
-    // }
-
-    impl From<u32> for SubmissionFlags{
-        fn from(item: u32) -> Self {
-            SubmissionFlags::NON_BLOCK
-        }
-
-    }
-
-    impl From<u32> for ReceiveFlags{
-        fn from(item: u32) -> Self {
-            ReceiveFlags::NON_BLOCK
-        }
-
-    }
-
-    fn sempty() -> SubmissionFlags{
-        return 0.into();
-    }
-
-    fn rempty() -> ReceiveFlags{
-        return 0.into();
-    }
-
     #[kani::proof]
-    #[kani::stub(SubmissionFlags::empty, sempty)]
-    #[kani::stub(ReceiveFlags::empty, rempty)]
     pub fn transmision(){
 
     let qh = RawQueueHdr::new(4, mem::size_of::<QueueEntry<u32>>());
