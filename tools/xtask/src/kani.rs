@@ -44,6 +44,7 @@ pub(crate) fn launch_kani(cli:  KaniOptions) -> anyhow::Result<()> {
     //Pass any desired environment variables
     cmd.envs(env::vars());
 
+    cmd.args(kernel_flags());
 
     //Add kani args
     if let Some(args) = cli.kani_options {
@@ -51,12 +52,15 @@ pub(crate) fn launch_kani(cli:  KaniOptions) -> anyhow::Result<()> {
     }
 
     cmd.args(exclude_list());
-    cmd.args(kernel_flags());
 
-    // let child = cmd.stdout(Stdio::inherit())
-    // .stderr(Stdio::inherit()).spawn();
+    if let Some(args) = cli.cbmc_options {
+        cmd.args(cbmc_flags());
+        cmd.arg(args);
+    }
 
-    // return child.
+    // if true == cli.print_kani_argument {
+    //     return Ok(cmd.get_args())
+    // }
 
     match cmd.spawn() {
         Err(e) => {
@@ -69,19 +73,40 @@ pub(crate) fn launch_kani(cli:  KaniOptions) -> anyhow::Result<()> {
     }
 }
 
+
+
+
 pub fn kernel_flags() -> Vec<String> {
     let mut flags: Vec<_> = Vec::new();
 
     flags.extend_from_slice(
         &[
+            "--output-format",
+            "terse",
             "--enable-unstable",
+            // "assess",
             "--ignore-global-asm",
-            "-Zstubbing"
+            "-Zstubbing",
         ].map(String::from)
         .to_vec());
 
     flags
 }
+
+
+pub fn cbmc_flags() -> Vec<String> {
+    let mut flags: Vec<_> = Vec::new();
+
+    flags.extend_from_slice(
+        &[
+            "--cbmc-args",
+            // "--show-properties"
+        ].map(String::from)
+        .to_vec());
+
+    flags
+}
+
 
 
 pub fn exclude_list() -> Vec<String> {
