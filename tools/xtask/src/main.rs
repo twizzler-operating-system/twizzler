@@ -78,9 +78,12 @@ impl BuildConfig {
 #[derive(Args, Debug)]
 struct KaniOptions {
     //Kani options
-    #[clap(long, short, help = "Pass the flags for Kani to execute")]
+    #[clap(long, short, help = "Pass the kani specific flags for Kani to execute")]
     kani_options: Option<String>,
-    // //Env options
+    #[clap(long, short, help = "Pass the cbmc specific flags for Kani to pass to CBMC")]
+    cbmc_options: Option<String>,
+    #[clap(long, short, help = "Print Statement sent for kani")]
+    print_kani_argument: bool,
     // #[clap(long, short, help = "Pass any desired environment variables")]
     // env: String,
 }
