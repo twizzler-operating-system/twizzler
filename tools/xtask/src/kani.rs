@@ -35,12 +35,11 @@ pub(crate) fn launch_kani(cli:  KaniOptions) -> anyhow::Result<()> {
     let log = File::create(log_name).expect("failed to open log");
 
 
-    //Actually run the command
+    //Actually compose the command
     let mut cmd = Command::new("cargo");
     cmd.stdout(log);
     cmd.arg("kani");
     //Add env 
-    // let hash = cli.env.and_then(|vec| Some(vec.into_iter()));
     //Pass any desired environment variables
     cmd.envs(env::vars());
 
@@ -59,7 +58,7 @@ pub(crate) fn launch_kani(cli:  KaniOptions) -> anyhow::Result<()> {
     }
 
     // if true == cli.print_kani_argument {
-    //     return Ok(cmd.get_args())
+    //     return Ok((pretty_cmd(&cmd));
     // }
 
     match cmd.spawn() {
@@ -74,6 +73,15 @@ pub(crate) fn launch_kani(cli:  KaniOptions) -> anyhow::Result<()> {
 }
 
 
+fn pretty_cmd(cmd: &Command) -> String {
+    format!(
+        "{} {:?}",
+        cmd.get_envs()
+            .map(|(key, val)| format!("{:?}={:?}", key, val))
+            .fold(String::new(), |a, b| a + &b),
+        cmd
+    )
+}
 
 
 pub fn kernel_flags() -> Vec<String> {

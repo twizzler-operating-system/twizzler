@@ -34,28 +34,28 @@ mod page_range_tree_verification{
         }
     }
 
-    #[cfg(kani)]
-    #[kani::proof]
-    #[kani::stub(core::arch::x86_64::__cpuid_count, stub_cpu_count)]
-    pub fn fixme_split_into_three(){ //Fixme makes Kani ignore this test for now.
-        let mut tree = PageRangeTree::new();
+    // #[cfg(kani)]
+    // #[kani::stub(core::arch::x86_64::__cpuid_count, stub_cpu_count)]
+    // #[kani::proof]
+    // pub fn fixme_split_into_three(){ //Fixme makes Kani ignore this test for now.
+    //     let mut tree = PageRangeTree::new();
 
-        let addr1 = VirtAddr::new(kani::any());
-        let pn = PageNumber::from_address( addr1.unwrap());
+    //     let addr1 = VirtAddr::new(kani::any());
+    //     let pn = PageNumber::from_address( addr1.unwrap());
 
-        let page = get_page();
-        tree.add_page(pn, page);
+    //     let page = get_page();
+    //     tree.add_page(pn, page);
 
-        let addr2 = VirtAddr::new(kani::any());
-        let pn_split = PageNumber::from_address(addr2.unwrap());
-        let discard = kani::any();
+    //     let addr2 = VirtAddr::new(kani::any());
+    //     let pn_split = PageNumber::from_address(addr2.unwrap());
+    //     let discard = kani::any();
         
-        tree.split_into_three(pn_split, discard);
+    //     tree.split_into_three(pn_split, discard);
 
-        //What are our invariants
-        // tree.get(pn)
+    //     //What are our invariants
+    //     // tree.get(pn)
         
-    }
+    // }
 
 
     //handle page enums
