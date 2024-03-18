@@ -10,67 +10,79 @@ use nonoverlapping_interval_tree::{IntervalValue, NonOverlappingIntervalTree};
 use crate::mutex::Mutex;
 
 
-// #[cfg(kani)]
-// mod page_range_tree_verification{
-//     use crate::memory::PhysAddr;
-//     use crate::memory::VirtAddr;
-//     use crate::obj::PageNumber;
+//Includes Inline assembly in the dependencies. Not supported by kani
+//TODO: Currently runs out of memory :(
+#[cfg(kani)]
+mod page_range_tree_verification{
+    use core::arch::x86_64::CpuidResult;
 
-//     use super::PageRangeTree;
-//     use super::Page;
-//     use twizzler_abi::device::CacheType;
+    use crate::memory::PhysAddr;
+    use crate::memory::VirtAddr;
+    use crate::obj::PageNumber;
 
+    use super::PageRangeTree;
+    use super::Page;
+    use twizzler_abi::device::CacheType;
 
-//     #[kani::proof]
-//     pub fn split_into_three(){
-//         let mut tree = PageRangeTree::new();
+    #[cfg(kani)]
+    pub fn stub_cpu_count(_: u32, _: u32)->CpuidResult{
+        return CpuidResult { 
+            eax: kani::any_where(|x| *x < 10), 
+            ebx:  kani::any_where(|x| *x < 10), 
+            ecx:  kani::any_where(|x| *x < 10), 
+            edx:  kani::any_where(|x| *x < 10) 
+        }
+    }
 
-//         let addr1 = VirtAddr::new(kani::any());
-//         let pn = PageNumber::from_address( addr1.unwrap());
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::stub(core::arch::x86_64::__cpuid_count, stub_cpu_count)]
+    pub fn fixme_split_into_three(){ //Fixme makes Kani ignore this test for now.
+        let mut tree = PageRangeTree::new();
 
-//         let page = get_page();
-//         tree.add_page(pn, page);
+        let addr1 = VirtAddr::new(kani::any());
+        let pn = PageNumber::from_address( addr1.unwrap());
 
-//         let addr2 = VirtAddr::new(kani::any());
-//         let pn_split = PageNumber::from_address(addr2.unwrap());
-//         let discard = kani::any();
+        let page = get_page();
+        tree.add_page(pn, page);
+
+        let addr2 = VirtAddr::new(kani::any());
+        let pn_split = PageNumber::from_address(addr2.unwrap());
+        let discard = kani::any();
         
-//         tree.split_into_three(pn_split, discard)
-//     }
+        tree.split_into_three(pn_split, discard);
+
+        //What are our invariants
+        // tree.get(pn)
+        
+    }
 
 
-//     //handle page enums
+    //handle page enums
+    pub fn get_page() -> Page{
+        // let pa = PhysAddr::new(kani::any()) ;
 
-//     #[kani::proof]
-//     pub fn get_page() -> Page{
-//         // let pa = PhysAddr::new(kani::any()) ;
+        
+        let pa = PhysAddr::new(kani::any_where(|x| *x < 10));
+        //Note: kany is not generating a random
+        //value here, it will evaluate the different
+        //match states equally.
 
-//         let pa = PhysAddr::new(23940);
-//         //Note: kany is not generating a random
-//         //value here, it will evaluate the different
-//         //match states equally.
+        let cache_type = match kani::any(){
+            0 => CacheType::MemoryMappedIO,
+            1 => CacheType::Uncacheable,
+            2 => CacheType::WriteBack,
+            3 => CacheType::WriteCombining,
+            _ => CacheType::WriteThrough,
+        };
 
-//         let cache_type = match kani::any(){
-//             0 => CacheType::MemoryMappedIO,
-//             1 => CacheType::Uncacheable,
-//             2 => CacheType::WriteBack,
-//             3 => CacheType::WriteCombining,
-//             _ => CacheType::WriteThrough,
-//         };
+        match kani::any(){
+            0 => Page::new(),
+            _ => Page::new_wired(pa.unwrap(), cache_type)
+        }
+    }
 
-
-
-//         match kani::any(){
-//             0 => Page::new(),
-//             _ => Page::new_wired(pa.unwrap(), cache_type)
-//         }
-//     }
-
-//     pub fn cache() -> u8{
-//         3
-//     }
-
-// }
+}
 
 use super::{
     pages::{Page, PageRef},
