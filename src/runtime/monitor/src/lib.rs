@@ -5,7 +5,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use dynlink::{engines::Backing, symbol::LookupFlags};
+use dynlink::{
+    context::engine::{ContextEngine, Selector},
+    engines::Engine,
+    symbol::LookupFlags,
+};
 use state::MonitorState;
 use tracing::{debug, info, trace, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
@@ -100,6 +104,21 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
     Ok(())
 }
 
+struct Sel;
+
+impl Selector<Engine> for Sel {
+    fn resolve_name(&self, mut name: &str) -> Option<<Engine as ContextEngine>::Backing> {
+        if name.starts_with("libstd-") {
+            name = "libstd.so";
+        }
+        let id = find_init_name(name)?;
+        let obj = twizzler_runtime_api::get_runtime()
+            .map_object(id.as_u128(), twizzler_runtime_api::MapFlags::READ)
+            .ok()?;
+        Some(<Engine as ContextEngine>::Backing::new(obj))
+    }
+}
+
 fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()> {
     let lib = dynlink::library::UnloadedLibrary::new("hello-world");
     let rt_lib = dynlink::library::UnloadedLibrary::new("libtwz_rt.so");
@@ -107,30 +126,27 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
     let mut state = state.lock().unwrap();
     let test_comp_id = state.dynlink.add_compartment("test")?;
 
-    let libhw_id =
-        state
-            .dynlink
-            .load_library_in_compartment(test_comp_id, lib, bootstrap_name_res)?;
+    let libhw_id = state
+        .dynlink
+        .load_library_in_compartment(test_comp_id, lib, &Sel)?[0]
+        .lib;
 
-    let rt_id =
-        match state
+    let rt_id = match state
+        .dynlink
+        .load_library_in_compartment(test_comp_id, rt_lib, &Sel)
+    {
+        Ok(rt_id) => {
+            state.dynlink.add_manual_dependency(libhw_id, rt_id[0].lib);
+            rt_id[0].lib
+        }
+        Err(_) => state
             .dynlink
-            .load_library_in_compartment(test_comp_id, rt_lib, bootstrap_name_res)
-        {
-            Ok(rt_id) => {
-                state.dynlink.add_manual_dependency(libhw_id, rt_id);
-                rt_id
-            }
-            Err(_) => state
-                .dynlink
-                .lookup_library(test_comp_id, "libtwz_rt.so")
-                .unwrap(),
-        };
+            .lookup_library(test_comp_id, "libtwz_rt.so")
+            .unwrap(),
+    };
 
     println!("found rt_id: {}", rt_id);
-    let rt_lib = state.dynlink.get_library(rt_id).unwrap();
-
-    drop(rt_lib);
+    let _rt_lib = state.dynlink.get_library(rt_id).unwrap();
 
     state.dynlink.relocate_all(libhw_id)?;
 
@@ -174,17 +190,6 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
     */
 
     Ok(())
-}
-
-fn bootstrap_name_res(mut name: &str) -> Option<Backing> {
-    if name.starts_with("libstd-") {
-        name = "libstd.so";
-    }
-    let id = find_init_name(name)?;
-    let obj = twizzler_runtime_api::get_runtime()
-        .map_object(id, twizzler_runtime_api::MapFlags::READ)
-        .ok()?;
-    Some(Backing::new(obj))
 }
 
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {

@@ -33,6 +33,12 @@ pub struct Compartment<Backing: BackingData> {
 #[repr(transparent)]
 pub struct CompartmentId(pub(crate) usize);
 
+impl CompartmentId {
+    pub fn raw(&self) -> usize {
+        self.0
+    }
+}
+
 impl Display for CompartmentId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

@@ -1,6 +1,7 @@
 use std::process::exit;
 
 use dynlink::{
+    context::engine::Selector,
     engines::{Backing, Engine},
     library::UnloadedLibrary,
     symbol::LookupFlags,
@@ -20,6 +21,24 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     None
 }
 
+struct Sel;
+
+impl Selector<Engine> for Sel {
+    fn resolve_name(
+        &self,
+        mut name: &str,
+    ) -> Option<<Engine as dynlink::context::engine::ContextEngine>::Backing> {
+        if name.starts_with("libstd") {
+            name = "libstd.so";
+        }
+        let id = find_init_name(name)?;
+        let obj = twizzler_runtime_api::get_runtime()
+            .map_object(id.as_u128(), MapFlags::READ)
+            .ok()?;
+        Some(Backing::new(obj))
+    }
+}
+
 fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     //miette::set_hook(Box::new(|_| Box::new(miette::DebugReportHandler::new()))).unwrap();
     let engine = Engine;
@@ -27,18 +46,24 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     let unlib = UnloadedLibrary::new("libmonitor.so");
     let monitor_comp_id = ctx.add_compartment("monitor").unwrap();
 
-    let monitor_id = ctx
-        .load_library_in_compartment(monitor_comp_id, unlib, |mut name| {
-            if name.starts_with("libstd") {
-                name = "libstd.so";
-            }
-            let id = find_init_name(name)?;
-            let obj = twizzler_runtime_api::get_runtime()
-                .map_object(id, MapFlags::READ)
-                .ok()?;
-            Some(Backing::new(obj))
-        })
+    let monitor_id = ctx.load_library_in_compartment(monitor_comp_id, unlib, |mut name| {
+        if name.starts_with("libstd") {
+            name = "libstd.so";
+        }
+        let id = find_init_name(name)?;
+        let obj = twizzler_runtime_api::get_runtime()
+            .map_object(id, MapFlags::READ)
+            .ok()?;
+        Some(Backing::new(obj))
+    });
+    let loads = ctx
+        .load_library_in_compartment(monitor_comp_id, unlib, &Sel)
         .unwrap();
+
+    let monitor_id = loads[0].lib;
+    for load in loads {
+        assert!(load.comp == monitor_comp_id);
+    }
 
     ctx.relocate_all(monitor_id).unwrap();
 

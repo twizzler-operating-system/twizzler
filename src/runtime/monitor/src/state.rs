@@ -13,7 +13,6 @@ use secgate::GateCallInfo;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_object::ObjID;
 use twizzler_runtime_api::LibraryId;
-use twz_rt::preinit_println;
 
 use crate::{compartment::Comp, gates::LibraryInfo, init::InitDynlinkContext};
 

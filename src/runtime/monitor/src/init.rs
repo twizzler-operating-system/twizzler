@@ -13,7 +13,7 @@ pub(crate) struct InitDynlinkContext {
 
 pub(crate) fn bootstrap_dynlink_context() -> Option<InitDynlinkContext> {
     let info = unsafe { AUX.unwrap().as_ref().unwrap() };
-    let ctx = info.ctx as *mut Context<Engine>;
+    let ctx = info.ctx as *mut Context<_>;
     let root = info.root_name.clone();
 
     Some(InitDynlinkContext { ctx, root })

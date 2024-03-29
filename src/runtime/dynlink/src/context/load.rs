@@ -9,7 +9,10 @@ use petgraph::stable_graph::NodeIndex;
 use secgate::RawSecGateInfo;
 use tracing::{debug, trace, warn};
 
-use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
+use super::{
+    engine::{ContextEngine, Selector},
+    Context, LoadedOrUnloaded,
+};
 use crate::{
     compartment::{Compartment, CompartmentId},
     context::engine::{LoadDirective, LoadFlags},
@@ -17,6 +20,20 @@ use crate::{
     tls::TlsModule,
     DynlinkError, DynlinkErrorKind, HeaderError,
 };
+
+pub struct LoadIds {
+    pub comp: CompartmentId,
+    pub lib: LibraryId,
+}
+
+impl LoadIds {
+    fn new<B: BackingData>(lib: &Library<B>) -> Self {
+        Self {
+            comp: lib.comp_id,
+            lib: lib.id(),
+        }
+    }
+}
 
 impl<Engine: ContextEngine> Context<Engine> {
     pub(crate) fn get_secgate_info(
@@ -106,20 +123,17 @@ impl<Engine: ContextEngine> Context<Engine> {
 
     // Load (map) a single library into memory via creating two objects, one for text, and one for
     // data.
-    fn load<Namer>(
+    fn load<S: Selector<Engine>>(
         &mut self,
         comp_id: CompartmentId,
         unlib: UnloadedLibrary,
         idx: NodeIndex,
-        namer: Namer,
-    ) -> Result<Library<Engine::Backing>, DynlinkError>
-    where
-        Namer: FnMut(&str) -> Option<Engine::Backing>,
-    {
+        select: &S,
+    ) -> Result<Library<Engine::Backing>, DynlinkError> {
         // At this point, all we know is a name. Ask the system implementation to use the name
         // resolver to get a backing object from the name, and then map it for access (this
         // will be the full ELF file data).
-        let backing = self.engine.load_object(&unlib, namer)?;
+        let backing = self.engine.load_object(&unlib, select)?;
         let elf = backing.get_elf()?;
 
         // Step 0: sanity check the ELF header.
@@ -291,21 +305,23 @@ impl<Engine: ContextEngine> Context<Engine> {
         None
     }
 
+    fn select_compartment(&self, unlib: &UnloadedLibrary) -> Option<CompartmentId> {
+        None
+    }
+
     // Load a library and all its deps, using the supplied name resolution callback for deps.
-    pub(crate) fn load_library<Namer>(
+    pub(crate) fn load_library<S: Selector<Engine>>(
         &mut self,
         comp_id: CompartmentId,
         root_unlib: UnloadedLibrary,
         idx: NodeIndex,
-        namer: Namer,
-    ) -> Result<NodeIndex, DynlinkError>
-    where
-        Namer: FnMut(&str) -> Option<Engine::Backing> + Clone,
-    {
+        select: &S,
+    ) -> Result<Vec<LoadIds>, DynlinkError> {
         debug!("loading library {} (idx = {:?})", root_unlib, idx);
+        let mut ids = vec![];
         // First load the main library.
         let lib = self
-            .load(comp_id, root_unlib.clone(), idx, namer.clone())
+            .load(comp_id, root_unlib.clone(), idx, select)
             .map_err(|e| {
                 DynlinkError::new_collect(
                     DynlinkErrorKind::LibraryLoadFail {
@@ -314,6 +330,7 @@ impl<Engine: ContextEngine> Context<Engine> {
                     vec![e],
                 )
             })?;
+        ids.push(LoadIds::new(&lib));
 
         // Second, go through deps
         let deps = self.enumerate_needed(&lib).map_err(|e| {
@@ -356,12 +373,7 @@ impl<Engine: ContextEngine> Context<Engine> {
                         );
                         (Some(existing), other_comp_id)
                     } else {
-                        (
-                            None,
-                            self.engine
-                                .select_compartment(&dep_unlib)
-                                .unwrap_or(comp_id),
-                        )
+                        (None, self.select_compartment(&dep_unlib).unwrap_or(comp_id))
                     };
 
                 // If we decided to use an existing library, then use that. Otherwise, load into the
@@ -373,7 +385,8 @@ impl<Engine: ContextEngine> Context<Engine> {
 
                     let comp = self.get_compartment_mut(load_comp)?;
                     comp.library_names.insert(dep_unlib.name.clone(), idx);
-                    self.load_library(comp_id, dep_unlib.clone(), idx, namer.clone())
+                    let mut recs = self
+                        .load_library(comp_id, dep_unlib.clone(), idx, select)
                         .map_err(|e| {
                             DynlinkError::new_collect(
                                 DynlinkErrorKind::LibraryLoadFail {
@@ -381,37 +394,41 @@ impl<Engine: ContextEngine> Context<Engine> {
                                 },
                                 vec![e],
                             )
-                        })?
+                        })?;
+                    ids.append(&mut recs);
+                    idx
                 };
                 self.add_dep(lib.idx, idx);
                 Ok(idx)
             })
             .collect::<Vec<Result<_, DynlinkError>>>();
 
-        let _ = DynlinkError::collect(
+        let deps = DynlinkError::collect(
             DynlinkErrorKind::LibraryLoadFail {
                 library: root_unlib,
             },
             deps,
         )?;
 
+        for d in deps {
+            let dlib = &self.library_deps[d].loaded().unwrap();
+            ids.push(LoadIds::new(dlib));
+        }
+
         assert_eq!(idx, lib.idx);
         self.library_deps[idx] = LoadedOrUnloaded::Loaded(lib);
-        Ok(idx)
+        Ok(ids)
     }
 
     /// Load a library into a given compartment. The namer callback resolves names to Backing
     /// objects, allowing the caller to hook into the "name-of-dependency" -> backing object
     /// pipeline.
-    pub fn load_library_in_compartment<Namer>(
+    pub fn load_library_in_compartment<S: Selector<Engine>>(
         &mut self,
         comp_id: CompartmentId,
         unlib: UnloadedLibrary,
-        namer: Namer,
-    ) -> Result<LibraryId, DynlinkError>
-    where
-        Namer: FnMut(&str) -> Option<Engine::Backing> + Clone,
-    {
+        select: &S,
+    ) -> Result<Vec<LoadIds>, DynlinkError> {
         let idx = self.add_library(unlib.clone());
         // Step 1: insert into the compartment's library names.
         let comp = self.get_compartment_mut(comp_id)?;
@@ -426,12 +443,6 @@ impl<Engine: ContextEngine> Context<Engine> {
         comp.library_names.insert(unlib.name.clone(), idx);
 
         // Step 2: load the library. This call recurses on dependencies.
-        let idx = self.load_library(comp_id, unlib.clone(), idx, namer)?;
-        match &self.library_deps[idx] {
-            LoadedOrUnloaded::Unloaded(_) => {
-                Err(DynlinkErrorKind::LibraryLoadFail { library: unlib }.into())
-            }
-            LoadedOrUnloaded::Loaded(_) => Ok(LibraryId(idx)),
-        }
+        self.load_library(comp_id, unlib.clone(), idx, select)
     }
 }

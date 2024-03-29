@@ -17,23 +17,20 @@ pub trait ContextEngine {
     ) -> Result<Vec<Self::Backing>, DynlinkError>;
 
     /// Load a single object, based on the given unloaded library.
-    fn load_object<N>(
+    fn load_object<S: Selector<Self>>(
         &mut self,
         unlib: &UnloadedLibrary,
-        mut n: N,
+        select: &S,
     ) -> Result<Self::Backing, DynlinkError>
     where
-        N: FnMut(&str) -> Option<Self::Backing>,
+        Self: Sized,
     {
-        n(&unlib.name).ok_or_else(|| {
+        select.resolve_name(&unlib.name).ok_or_else(|| {
             DynlinkError::new(crate::DynlinkErrorKind::NameNotFound {
                 name: unlib.name.clone(),
             })
         })
     }
-
-    /// Select which compartment a library should go in.
-    fn select_compartment(&mut self, unlib: &UnloadedLibrary) -> Option<CompartmentId>;
 }
 
 /// A single load directive, matching closely with an ELF program header.
@@ -54,4 +51,8 @@ bitflags::bitflags! {
         /// This load directive specifies a data (writable) segment.
         const TARGETS_DATA = 1;
     }
+}
+
+pub trait Selector<E: ContextEngine> {
+    fn resolve_name(&self, name: &str) -> Option<E::Backing>;
 }
