@@ -13,6 +13,7 @@ use crate::{
     RuntimeThreadControl,
 };
 
+#[derive(Debug)]
 #[repr(C)]
 pub struct CompartmentInitInfo {
     pub ctor_array_start: usize,

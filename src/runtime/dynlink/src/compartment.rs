@@ -8,7 +8,10 @@ use std::{
 use petgraph::stable_graph::NodeIndex;
 use talc::{ErrOnOom, Talc};
 
-use crate::{library::BackingData, tls::TlsInfo};
+use crate::{
+    library::{BackingData, LibraryId},
+    tls::TlsInfo,
+};
 
 mod tls;
 
@@ -56,6 +59,16 @@ impl<Backing: BackingData> Compartment<Backing> {
             tls_info: HashMap::new(),
             tls_gen: 0,
         }
+    }
+
+    pub fn with_each_library_id(&self, mut f: impl FnMut(LibraryId)) {
+        for idx in self.library_names.values() {
+            f(LibraryId(*idx))
+        }
+    }
+
+    pub fn library_ids(&self) -> impl Iterator<Item = LibraryId> + '_ {
+        self.library_names.values().map(|idx| LibraryId(*idx))
     }
 }
 

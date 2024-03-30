@@ -309,8 +309,10 @@ impl<Backing: BackingData> Library<Backing> {
     }
 
     fn is_secgate(&self, name: &str) -> bool {
+        compile_error!("CANNOT CALL THIS BEFORE RELOC");
         self.iter_secgates()
             .map(|gates| {
+                tracing::error!("{}==> {:?}", self, gates);
                 gates
                     .iter()
                     .any(|gate| gate.name().to_bytes() == name.as_bytes())

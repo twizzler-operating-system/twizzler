@@ -3,20 +3,28 @@
 #![feature(c_str_literals)]
 #![feature(new_uninit)]
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    ptr::addr_of,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
+};
 
 use dynlink::{
+    compartment::CompartmentId,
     context::engine::{ContextEngine, Selector},
     engines::Engine,
-    symbol::LookupFlags,
+    library::{LibraryId, UnloadedLibrary},
 };
-use state::MonitorState;
+use miette::IntoDiagnostic;
+use state::{MonitorState, MonitorStateRef};
 use tracing::{debug, info, trace, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{sys_object_create, ObjectCreate},
 };
 use twizzler_object::ObjID;
 use twizzler_runtime_api::AuxEntry;
@@ -39,7 +47,7 @@ mod gates;
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::TRACE)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
@@ -73,7 +81,7 @@ pub fn main() {
 
     std::env::set_var("RUST_BACKTRACE", "1");
 
-    set_upcall_handler(&crate::upcall::upcall_monitor_handler).unwrap();
+    set_upcall_handler(&crate::upcall::upcall_monitor_handler);
     set_monitor_state(state.clone());
 
     let main_thread = std::thread::spawn(|| monitor_init(state));
@@ -119,77 +127,219 @@ impl Selector<Engine> for Sel {
     }
 }
 
-fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()> {
-    let lib = dynlink::library::UnloadedLibrary::new("hello-world");
-    let rt_lib = dynlink::library::UnloadedLibrary::new("libtwz_rt.so");
+const RUNTIME_NAME: &'static str = "libtwz_rt.so";
+static CTX_NUM: AtomicU64 = AtomicU64::new(1);
 
-    let mut state = state.lock().unwrap();
-    let test_comp_id = state.dynlink.add_compartment("test")?;
+struct ExtraCompInfo {
+    pub root_id: LibraryId,
+    pub rt_id: LibraryId,
+    pub sctx_id: ObjID,
+}
 
-    let libhw_id = state
-        .dynlink
-        .load_library_in_compartment(test_comp_id, lib, &Sel)?[0]
-        .lib;
+struct Loader {
+    state: MonitorStateRef,
+    extra_compartments: Vec<ExtraCompInfo>,
+    start_unload: Option<LibraryId>,
+}
 
-    let rt_id = match state
-        .dynlink
-        .load_library_in_compartment(test_comp_id, rt_lib, &Sel)
-    {
-        Ok(rt_id) => {
-            state.dynlink.add_manual_dependency(libhw_id, rt_id[0].lib);
-            rt_id[0].lib
+impl Drop for Loader {
+    fn drop(&mut self) {
+        if let Some(start_unload) = self.start_unload.take() {
+            if let Ok(state) = self.state.lock() {
+                tracing::warn!("TODO: unload library");
+            }
         }
-        Err(_) => state
+        while let Some(extra) = self.extra_compartments.pop() {
+            if let Ok(state) = self.state.lock() {
+                tracing::warn!("TODO: unload compartment");
+            }
+        }
+    }
+}
+
+impl Loader {
+    fn new(state: Arc<Mutex<MonitorState>>) -> Self {
+        Self {
+            state,
+            extra_compartments: vec![],
+            start_unload: None,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.start_unload = None;
+        self.extra_compartments.clear();
+    }
+
+    fn start_thread_in_compartment(
+        state: &MonitorStateRef,
+        rt_id: LibraryId,
+        sctx_id: ObjID,
+        rt_info: CompartmentInitInfo,
+    ) -> miette::Result<()> {
+        let (entry, rt_info) = {
+            let mut state = state.lock().map_err(|_| miette::miette!("poison error"))?;
+            let rt_info = state
+                .lookup_comp_mut(sctx_id)
+                .unwrap()
+                .monitor_new(rt_info)
+                .unwrap();
+            let rt_lib = state.dynlink.get_library(rt_id)?;
+
+            (rt_lib.get_entry_address()?, rt_info.as_ptr() as usize)
+        };
+
+        tracing::debug!(
+            "spawning thread in compartment {} at {:p} with {:x}",
+            sctx_id,
+            entry,
+            rt_info
+        );
+        let join = std::thread::spawn(move || {
+            let aux = [AuxEntry::RuntimeInfo(rt_info, 1), AuxEntry::Null];
+            entry(aux.as_ptr());
+        });
+        // TODO: timeout?
+        join.join().map_err(|_| miette::miette!("join error"))?;
+        Ok(())
+    }
+
+    fn maybe_inject_rt(
+        state: &mut MutexGuard<'_, MonitorState>,
+        root_id: LibraryId,
+        comp_id: CompartmentId,
+    ) -> miette::Result<LibraryId> {
+        let rt_unlib = UnloadedLibrary::new(RUNTIME_NAME);
+
+        if let Some(id) = state.dynlink.lookup_library(comp_id, RUNTIME_NAME) {
+            return Ok(id);
+        }
+
+        let loads = state
             .dynlink
-            .lookup_library(test_comp_id, "libtwz_rt.so")
-            .unwrap(),
-    };
+            .load_library_in_compartment(comp_id, rt_unlib, &Sel)?;
 
-    println!("found rt_id: {}", rt_id);
-    let _rt_lib = state.dynlink.get_library(rt_id).unwrap();
+        let rt_id = loads[0].lib;
+        state.dynlink.add_manual_dependency(root_id, rt_id);
+        Ok(rt_id)
+    }
 
-    state.dynlink.relocate_all(libhw_id)?;
+    //#[tracing::instrument(skip(self))]
+    pub fn run_a_crate(&mut self, name: &str, comp_name: &str) -> miette::Result<()> {
+        let root_unlib = UnloadedLibrary::new(name);
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| miette::miette!("poison error"))?;
+        let root_comp_id = state.dynlink.add_compartment(comp_name)?;
 
-    let test_comp = Comp::new(
-        1.into(),
-        state.dynlink.get_compartment_mut(test_comp_id).unwrap(),
-    )
-    .unwrap();
+        let loads = state
+            .dynlink
+            .load_library_in_compartment(root_comp_id, root_unlib, &Sel)?;
 
-    info!("!! root = {}", libhw_id);
-    let ctors = state.dynlink.build_ctors_list(libhw_id).unwrap();
+        tracing::warn!("==> {:#?}", loads);
 
-    let rtinfo = CompartmentInitInfo {
-        ctor_array_start: ctors.as_ptr() as usize,
-        ctor_array_len: ctors.len(),
-        comp_config_addr: test_comp.get_comp_config() as *const _ as usize,
-    };
-    state.add_comp(test_comp, libhw_id.into());
+        let mut cache = HashMap::new();
+        self.extra_compartments = loads
+            .iter()
+            .filter_map(|load| {
+                if load.comp != root_comp_id {
+                    if let Ok(lib) = state.dynlink.get_library(load.lib) {
+                        if cache.contains_key(&load.comp) {
+                            tracing::info!(
+                                "load alt compartment library {}: {} (existing)",
+                                lib,
+                                load.comp
+                            );
+                            return None;
+                        }
+                        tracing::info!(
+                            "load returned alternate compartment for library {}: {}",
+                            lib,
+                            load.comp
+                        );
 
-    info!("lookup entry");
+                        let rt_id =
+                            Loader::maybe_inject_rt(&mut state, load.lib, load.comp).ok()?;
 
-    let rt_lib = state.dynlink.get_library(rt_id).unwrap();
-    let entry = rt_lib.get_entry_address().unwrap();
+                        let sctx_id = (CTX_NUM.fetch_add(1, Ordering::SeqCst) as u128).into();
+                        cache.insert(load.comp, sctx_id);
+                        let dep_comp = Comp::new(
+                            sctx_id,
+                            state.dynlink.get_compartment_mut(load.comp).unwrap(),
+                        )
+                        .unwrap();
+                        state.add_comp(dep_comp, load.lib.into());
+                        Some(ExtraCompInfo {
+                            root_id: load.lib,
+                            rt_id,
+                            sctx_id,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-    let aux = [
-        AuxEntry::RuntimeInfo(&rtinfo as *const _ as usize, 1),
-        AuxEntry::Null,
-    ];
-    println!("==> {:p}", entry);
-    drop(state);
-    entry(aux.as_ptr());
-    /*
-    let sym = state
-        .dynlink
-        .lookup_symbol(libhw_id, "test_sec_call", LookupFlags::empty())?;
+        let root_id = loads[0].lib;
+        self.start_unload = Some(root_id);
+        tracing::info!("loaded {} as {}", name, root_id);
 
-    let addr = sym.reloc_value();
-    info!("addr = {:x}", addr);
-    let ptr: extern "C" fn() = unsafe { core::mem::transmute(addr as usize) };
-    (ptr)();
-    */
+        let rt_id = Loader::maybe_inject_rt(&mut state, root_id, root_comp_id)?;
+        state.dynlink.relocate_all(root_id)?;
 
-    Ok(())
+        let sctx_id = (CTX_NUM.fetch_add(1, Ordering::SeqCst) as u128).into();
+        let root_comp =
+            Comp::new(sctx_id, state.dynlink.get_compartment_mut(root_comp_id)?).unwrap();
+
+        let extra_ctors = self
+            .extra_compartments
+            .iter()
+            .filter_map(|extra_info| {
+                let comp = state.lookup_comp(extra_info.sctx_id)?;
+                Some((
+                    state.dynlink.build_ctors_list(extra_info.root_id).ok()?,
+                    comp.get_comp_config() as *const _ as usize,
+                    extra_info.sctx_id,
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        drop(state);
+
+        for (ctors, comp_config_addr, sctx_id) in extra_ctors {
+            let rtinfo = CompartmentInitInfo {
+                ctor_array_start: ctors.as_ptr() as usize,
+                ctor_array_len: ctors.len(),
+                comp_config_addr,
+            };
+            Loader::start_thread_in_compartment(&self.state, rt_id, sctx_id, rtinfo)?;
+        }
+
+        let mut state = self.state.lock().unwrap();
+
+        let ctors = state.dynlink.build_ctors_list(root_id).unwrap();
+        // TODO: allocate this in-compartment
+        let rtinfo = CompartmentInitInfo {
+            ctor_array_start: ctors.as_ptr() as usize,
+            ctor_array_len: ctors.len(),
+            comp_config_addr: root_comp.get_comp_config() as *const _ as usize,
+        };
+        state.add_comp(root_comp, root_id.into());
+
+        drop(state);
+        tracing::trace!("entry runtime info: {:?}", rtinfo);
+        Loader::start_thread_in_compartment(&self.state, rt_id, sctx_id, rtinfo)?;
+        Ok(())
+    }
+}
+
+fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()> {
+    let mut loader = Loader::new(state.clone());
+    loader.run_a_crate("hello-world", "test")
 }
 
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {

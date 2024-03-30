@@ -7,7 +7,7 @@ use elf::{
 };
 use petgraph::stable_graph::NodeIndex;
 use secgate::RawSecGateInfo;
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 
 use super::{
     engine::{ContextEngine, Selector},
@@ -21,6 +21,7 @@ use crate::{
     DynlinkError, DynlinkErrorKind, HeaderError,
 };
 
+#[derive(Debug, Clone, Copy)]
 pub struct LoadIds {
     pub comp: CompartmentId,
     pub lib: LibraryId,
@@ -57,6 +58,13 @@ impl<Engine: ContextEngine> Context<Engine> {
 
         Ok(info)
     }
+
+    pub(crate) fn has_secgate_info(&self, elf: &elf::ElfBytes<'_, NativeEndian>) -> bool {
+        elf.section_header_by_name(".twz_secgate_info")
+            .ok()
+            .is_some_and(|s| s.is_some())
+    }
+
     // Collect information about constructors.
     pub(crate) fn get_ctor_info(
         &self,
@@ -305,8 +313,24 @@ impl<Engine: ContextEngine> Context<Engine> {
         None
     }
 
-    fn select_compartment(&self, unlib: &UnloadedLibrary) -> Option<CompartmentId> {
-        None
+    fn select_compartment<S: Selector<Engine>>(
+        &mut self,
+        unlib: &UnloadedLibrary,
+        parent_comp_name: String,
+        select: &S,
+    ) -> Option<CompartmentId> {
+        let backing = select.resolve_name(&unlib.name)?;
+        let elf = backing.get_elf().ok()?;
+        if self.has_secgate_info(&elf) {
+            let id = self
+                .add_compartment(format!("{}::{}", parent_comp_name, unlib.name))
+                .ok()?;
+            tracing::info!("lib {} has gates!! new comp {}", unlib.name, id);
+            // TODO: Handle collisions
+            Some(id)
+        } else {
+            None
+        }
     }
 
     // Load a library and all its deps, using the supplied name resolution callback for deps.
@@ -317,7 +341,10 @@ impl<Engine: ContextEngine> Context<Engine> {
         idx: NodeIndex,
         select: &S,
     ) -> Result<Vec<LoadIds>, DynlinkError> {
-        debug!("loading library {} (idx = {:?})", root_unlib, idx);
+        debug!(
+            "loading library {} (idx = {:?}) into compartment {}",
+            root_unlib, idx, comp_id
+        );
         let mut ids = vec![];
         // First load the main library.
         let lib = self
@@ -373,7 +400,11 @@ impl<Engine: ContextEngine> Context<Engine> {
                         );
                         (Some(existing), other_comp_id)
                     } else {
-                        (None, self.select_compartment(&dep_unlib).unwrap_or(comp_id))
+                        (
+                            None,
+                            self.select_compartment(&dep_unlib, comp.name.clone(), select)
+                                .unwrap_or(comp_id),
+                        )
                     };
 
                 // If we decided to use an existing library, then use that. Otherwise, load into the
@@ -386,7 +417,7 @@ impl<Engine: ContextEngine> Context<Engine> {
                     let comp = self.get_compartment_mut(load_comp)?;
                     comp.library_names.insert(dep_unlib.name.clone(), idx);
                     let mut recs = self
-                        .load_library(comp_id, dep_unlib.clone(), idx, select)
+                        .load_library(load_comp, dep_unlib.clone(), idx, select)
                         .map_err(|e| {
                             DynlinkError::new_collect(
                                 DynlinkErrorKind::LibraryLoadFail {
@@ -403,17 +434,12 @@ impl<Engine: ContextEngine> Context<Engine> {
             })
             .collect::<Vec<Result<_, DynlinkError>>>();
 
-        let deps = DynlinkError::collect(
+        let _deps = DynlinkError::collect(
             DynlinkErrorKind::LibraryLoadFail {
                 library: root_unlib,
             },
             deps,
         )?;
-
-        for d in deps {
-            let dlib = &self.library_deps[d].loaded().unwrap();
-            ids.push(LoadIds::new(dlib));
-        }
 
         assert_eq!(idx, lib.idx);
         self.library_deps[idx] = LoadedOrUnloaded::Loaded(lib);

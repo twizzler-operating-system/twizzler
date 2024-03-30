@@ -45,13 +45,17 @@ impl RuntimeInitInfo {
 }
 
 impl<Engine: ContextEngine> Context<Engine> {
-    /// Build up a list of constructors to call for a library and its dependencies.
+    /// Build up a list of constructors to call for a library and its dependencies. Cross-compartment
+    /// dependencies are not included, since each compartment must be separately initialized.
     pub fn build_ctors_list(&self, root_id: LibraryId) -> Result<Vec<CtorInfo>, DynlinkError> {
+        let start_comp_id = self.get_library(root_id)?.comp_id;
         let mut ctors = vec![];
         self.with_dfs_postorder(root_id, |lib| match lib {
             LoadedOrUnloaded::Unloaded(_) => {}
             LoadedOrUnloaded::Loaded(lib) => {
-                ctors.push(lib.ctors);
+                if lib.comp_id == start_comp_id {
+                    ctors.push(lib.ctors);
+                }
             }
         });
         Ok(ctors)

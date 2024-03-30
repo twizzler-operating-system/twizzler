@@ -23,6 +23,8 @@ pub struct MonitorState {
     pub comps: HashMap<ObjID, Comp>,
 }
 
+pub type MonitorStateRef = Arc<Mutex<MonitorState>>;
+
 impl MonitorState {
     pub(crate) fn new(init: InitDynlinkContext) -> Self {
         Self {

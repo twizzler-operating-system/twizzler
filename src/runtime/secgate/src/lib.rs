@@ -48,6 +48,12 @@ pub struct SecGateInfo<F> {
     name: *const i8,
 }
 
+impl<F> core::fmt::Debug for SecGateInfo<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SecGateInfo({:p})", self.name)
+    }
+}
+
 impl<F> SecGateInfo<F> {
     pub const fn new(imp: F, name: &'static CStr) -> Self {
         Self {
