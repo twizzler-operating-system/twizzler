@@ -18,6 +18,7 @@ use crate::{
     DynlinkErrorKind,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 pub(crate) enum RelocState {
     /// Relocation has not started.
     Unrelocated,
@@ -225,6 +226,7 @@ impl<Backing: BackingData> Library<Backing> {
     pub(crate) fn lookup_symbol(
         &self,
         name: &str,
+        allow_weak: bool,
     ) -> Result<RelocatedSymbol<'_, Backing>, DynlinkError> {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
@@ -251,7 +253,7 @@ impl<Backing: BackingData> Library<Backing> {
             {
                 if !sym.is_undefined() {
                     // TODO: proper weak symbol handling.
-                    if sym.st_bind() != STB_WEAK {
+                    if sym.st_bind() != STB_WEAK || allow_weak {
                         return Ok(RelocatedSymbol::new(sym, self));
                     } else {
                         tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
@@ -305,14 +307,18 @@ impl<Backing: BackingData> Library<Backing> {
     }
 
     pub(crate) fn is_local_or_secgate_from(&self, other: &Library<Backing>, name: &str) -> bool {
-        other.comp_id == self.comp_id || self.is_secgate(name)
+        other.comp_id == self.comp_id
+            || (self.reloc_state == RelocState::Relocated && self.is_secgate(name))
+    }
+
+    pub(crate) fn in_same_compartment_as(&self, other: &Library<Backing>) -> bool {
+        other.comp_id == self.comp_id
     }
 
     fn is_secgate(&self, name: &str) -> bool {
-        compile_error!("CANNOT CALL THIS BEFORE RELOC");
+        assert!(self.reloc_state == RelocState::Relocated);
         self.iter_secgates()
             .map(|gates| {
-                tracing::error!("{}==> {:?}", self, gates);
                 gates
                     .iter()
                     .any(|gate| gate.name().to_bytes() == name.as_bytes())

@@ -95,7 +95,7 @@ impl Comp {
             allocator.claim(Span::new(start, end)).unwrap();
         }
 
-        tracing::debug!(
+        tracing::info!(
             "init new compartment {} with config alloc {:p}",
             compartment,
             comp_alloc_obj.start

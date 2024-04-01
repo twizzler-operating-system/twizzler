@@ -47,7 +47,7 @@ mod gates;
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::TRACE)
+        .with_max_level(Level::DEBUG)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();

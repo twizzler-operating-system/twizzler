@@ -10,7 +10,7 @@ use crate::{
     preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
     runtime::RuntimeState,
-    RuntimeThreadControl,
+    RuntimeThreadControl, OUR_RUNTIME,
 };
 
 #[derive(Debug)]
@@ -120,7 +120,6 @@ impl CoreRuntime for ReferenceRuntime {
     }
 
     fn pre_main_hook(&self) {
-        preinit_println!("====== {}", TLS_TEST);
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
         }
@@ -209,4 +208,25 @@ impl ReferenceRuntime {
         let tls = info.tls_region.get_thread_pointer_value();
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
     }
+}
+
+#[allow(improper_ctypes)]
+extern "C" {
+    fn twizzler_call_lang_start(
+        main: fn(),
+        argc: isize,
+        argv: *const *const u8,
+        sigpipe: u8,
+    ) -> isize;
+}
+
+#[no_mangle]
+#[linkage = "weak"]
+pub extern "C" fn main(argc: i32, argv: *const *const u8) -> i32 {
+    //TODO: sigpipe?
+    unsafe { twizzler_call_lang_start(dead_end, argc as isize, argv, 0) as i32 }
+}
+
+fn dead_end() {
+    twizzler_abi::syscall::sys_thread_exit(0);
 }

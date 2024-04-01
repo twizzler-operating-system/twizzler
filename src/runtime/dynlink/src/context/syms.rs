@@ -2,7 +2,7 @@ use tracing::trace;
 
 use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
 use crate::{
-    library::{Library, LibraryId},
+    library::{Library, LibraryId, RelocState},
     symbol::{LookupFlags, RelocatedSymbol},
     DynlinkError, DynlinkErrorKind,
 };
@@ -17,10 +17,11 @@ impl<Engine: ContextEngine> Context<Engine> {
         name: &str,
         lookup_flags: LookupFlags,
     ) -> Result<RelocatedSymbol<'a, Engine::Backing>, DynlinkError> {
+        let allow_weak = lookup_flags.contains(LookupFlags::ALLOW_WEAK);
         let start_lib = self.get_library(start_id)?;
         // First try looking up within ourselves.
         if !lookup_flags.contains(LookupFlags::SKIP_SELF) {
-            if let Ok(sym) = start_lib.lookup_symbol(name) {
+            if let Ok(sym) = start_lib.lookup_symbol(name, allow_weak) {
                 return Ok(sym);
             }
         }
@@ -37,7 +38,9 @@ impl<Engine: ContextEngine> Context<Engine> {
                             if lookup_flags.contains(LookupFlags::SKIP_SECGATE_CHECK)
                                 || dep.is_local_or_secgate_from(start_lib, name)
                             {
-                                if let Ok(sym) = dep.lookup_symbol(name) {
+                                let allow_weak =
+                                    allow_weak && dep.in_same_compartment_as(start_lib);
+                                if let Ok(sym) = dep.lookup_symbol(name, allow_weak) {
                                     return Ok(sym);
                                 }
                             }
@@ -50,13 +53,23 @@ impl<Engine: ContextEngine> Context<Engine> {
         // Fall back to global search.
         if !lookup_flags.contains(LookupFlags::SKIP_GLOBAL) {
             trace!("falling back to global search for {}", name);
-            self.lookup_symbol_global(start_lib, name, lookup_flags)
-        } else {
-            Err(DynlinkErrorKind::NameNotFound {
-                name: name.to_string(),
+            let res = self.lookup_symbol_global(start_lib, name, lookup_flags);
+            if res.is_ok() {
+                return res;
             }
-            .into())
+
+            if !allow_weak {
+                let res =
+                    self.lookup_symbol(start_id, name, lookup_flags.union(LookupFlags::ALLOW_WEAK));
+                if res.is_ok() {
+                    return res;
+                }
+            }
         }
+        Err(DynlinkErrorKind::NameNotFound {
+            name: name.to_string(),
+        }
+        .into())
     }
 
     pub(crate) fn lookup_symbol_global<'a>(
@@ -73,7 +86,9 @@ impl<Engine: ContextEngine> Context<Engine> {
                     if lookup_flags.contains(LookupFlags::SKIP_SECGATE_CHECK)
                         || dep.is_local_or_secgate_from(start_lib, name)
                     {
-                        if let Ok(sym) = dep.lookup_symbol(name) {
+                        let allow_weak = lookup_flags.contains(LookupFlags::ALLOW_WEAK)
+                            && dep.in_same_compartment_as(start_lib);
+                        if let Ok(sym) = dep.lookup_symbol(name, allow_weak) {
                             return Ok(sym);
                         }
                     }
