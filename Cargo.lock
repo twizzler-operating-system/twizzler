@@ -736,6 +736,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctor"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad291aa74992b9b7a7e88c38acbbf6ad7e107f1d90ee8775b7bc1fc3394f485c"
+dependencies = [
+ "quote",
+ "syn 2.0.38",
+]
+
+[[package]]
 name = "curl"
 version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1287,19 +1297,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
 
 [[package]]
-name = "hermit-abi"
-version = "0.1.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62b467343b94ba476dcb2500d242dadbb39557df889310ac77c5d99100aaac33"
+name = "hello-world"
+version = "0.1.0"
 dependencies = [
- "libc",
+ "logboi",
+ "monitor",
+ "small_ctor",
+ "tracing",
+ "tracing-subscriber",
+ "twizzler-abi",
 ]
-
-[[package]]
-name = "hermit-abi"
-version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d231dfb89cfffdbc30e7fc41579ed6066ad03abda9e567ccafae602b97ec5024"
 
 [[package]]
 name = "hex"
@@ -1768,6 +1775,22 @@ name = "log"
 version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
+
+[[package]]
+name = "logboi"
+version = "0.1.0"
+dependencies = [
+ "logboi-impl",
+ "secgate",
+]
+
+[[package]]
+name = "logboi-impl"
+version = "0.1.0"
+dependencies = [
+ "ctor",
+ "secgate",
+]
 
 [[package]]
 name = "memchr"
@@ -2736,6 +2759,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "small_ctor"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "533b934026d84df379afeed5d4f346d6c86622465b2eba78eef8940f01f97575"
+
+[[package]]
 name = "smallvec"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2891,10 +2920,6 @@ name = "syscall_encode_traits"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f81b782ed6cc937aec2680f2b03bee5c94ca8d2076adeff2a6779093a0e00919"
-dependencies = [
- "compiler_builtins",
- "rustc-std-workspace-core",
-]
 
 [[package]]
 name = "system-configuration"
@@ -3207,8 +3232,6 @@ dependencies = [
  "num_enum",
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
- "syscall_encode_macros",
- "syscall_encode_traits",
  "talc",
  "thiserror-no-std",
  "twizzler-runtime-api",

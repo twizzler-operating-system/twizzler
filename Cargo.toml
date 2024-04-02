@@ -25,6 +25,8 @@ members = [
     "src/runtime/twz-rt",
     "src/lib/twizzler-futures",
     "src/runtime/hello-world",
+    "src/runtime/logboi",
+    "src/runtime/logboi/logboi-impl",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -38,8 +40,10 @@ initrd = [
     "crate:netmgr",
     "crate:nettest",
     "crate:pager",
-    #"lib:twz-rt",
-    #"lib:monitor",
+    "lib:twz-rt",
+    "lib:monitor",
+    "lib:logboi-impl",
+    "crate:hello-world",
     #"third-party:hello-world-rs"
 ]
 
