@@ -39,6 +39,7 @@ mod state;
 mod thread;
 mod upcall;
 
+mod api;
 mod compman;
 mod mapman;
 
