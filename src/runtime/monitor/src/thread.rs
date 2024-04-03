@@ -2,11 +2,11 @@ use std::{collections::HashMap, mem::MaybeUninit, ptr::NonNull, sync::Mutex};
 
 use monitor_api::SharedCompConfig;
 use tracing::debug;
+use twizzler_abi::object::ObjID;
 use twizzler_abi::{
     syscall::{sys_spawn, UpcallTargetSpawnOption},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
-use twizzler_object::ObjID;
 use twizzler_runtime_api::{SpawnError, ThreadSpawnArgs};
 use twz_rt::RuntimeThreadControl;
 

@@ -1922,7 +1922,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
- "twizzler-object",
  "twizzler-runtime-api",
  "twz-rt",
 ]

@@ -5,7 +5,6 @@
 
 use std::{
     collections::HashMap,
-    ptr::addr_of,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex, MutexGuard,
@@ -18,15 +17,14 @@ use dynlink::{
     engines::Engine,
     library::{LibraryId, UnloadedLibrary},
 };
-use miette::IntoDiagnostic;
 use state::{MonitorState, MonitorStateRef};
 use tracing::{debug, info, trace, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
+use twizzler_abi::object::ObjID;
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
 };
-use twizzler_object::ObjID;
 use twizzler_runtime_api::AuxEntry;
 use twz_rt::{set_upcall_handler, CompartmentInitInfo};
 
@@ -40,6 +38,9 @@ pub mod secgate_test;
 mod state;
 mod thread;
 mod upcall;
+
+mod compman;
+mod mapman;
 
 #[path = "../secapi/gates.rs"]
 mod gates;

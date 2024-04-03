@@ -1,7 +1,7 @@
 use secgate::GateCallInfo;
 use tracing::warn;
+use twizzler_abi::object::Protections;
 use twizzler_abi::syscall::{sys_object_map, sys_object_unmap, UnmapFlags};
-use twizzler_object::Protections;
 use twizzler_runtime_api::{MapError, MapFlags, ObjID};
 
 fn mapflags_into_prot(flags: MapFlags) -> Protections {

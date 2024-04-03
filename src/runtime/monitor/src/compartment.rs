@@ -8,11 +8,11 @@ use std::{
 use dynlink::{compartment::CompartmentId, library::BackingData};
 use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use talc::{ErrOnOom, Span, Talc};
+use twizzler_abi::object::ObjID;
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
-use twizzler_object::ObjID;
 use twizzler_runtime_api::{LibraryId, MapFlags, ObjectHandle};
 use twz_rt::RuntimeThreadControl;
 
