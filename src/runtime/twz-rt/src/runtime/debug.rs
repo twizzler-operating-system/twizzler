@@ -24,7 +24,6 @@ impl DebugRuntime for ReferenceRuntime {
     }
 
     fn get_exeid(&self) -> Option<twizzler_runtime_api::LibraryId> {
-        //get_comp_config().root_library_id
         Some(twizzler_runtime_api::LibraryId(3))
     }
 
@@ -58,15 +57,12 @@ impl DebugRuntime for ReferenceRuntime {
         &self,
         f: &mut dyn FnMut(twizzler_runtime_api::DlPhdrInfo) -> core::ffi::c_int,
     ) -> core::ffi::c_int {
-        //preinit_println!("IN ITER PHDR");
         let mut ret = 0;
         // Get the primary library for this compartment.
         let mut id = self.get_exeid();
-        //preinit_println!("exe: {:?}", id);
         // Each library contains a field indicating the next library ID in this list.
         while let Some(library) = id.and_then(|id| self.get_library(id)) {
             if let Some(info) = library.dl_info {
-                //preinit_println!("call: {:?}", info);
                 ret = f(info);
                 // dl_iterate_phdr returns early if the callback returns non-zero.
                 if ret != 0 {
