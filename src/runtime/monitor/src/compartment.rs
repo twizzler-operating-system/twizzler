@@ -118,10 +118,7 @@ impl Comp {
                 comp.monitor_alloc(layout)
             })?;
 
-        // Init the shared compartment config. We'll leak this TLS template since we are manually
-        // managing its lifetime.
-        //let temp = Box::new(TlsTemplateInfo::from(template_info));
-        //let temp = Box::leak(temp);
+        // Allocate the compartment config in the new compartment.
         let temp = comp
             .monitor_new(TlsTemplateInfo::from(template_info))
             .unwrap();
