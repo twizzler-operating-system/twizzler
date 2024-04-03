@@ -57,7 +57,7 @@ pub(crate) fn launch_kani(cli:  KaniOptions) -> anyhow::Result<()> {
     // .stderr(Stdio::inherit()).spawn();
 
     // return child.
-
+    println!("{:?}", cmd);
     match cmd.spawn() {
         Err(e) => {
             return Err(e.into());

@@ -132,15 +132,17 @@ mod units_verification {
     use crate::syscall::{FemtoSeconds, Seconds, TimeSpan, FEMTOS_PER_SEC};
 
 
-    // #[kani::proof]
-    // #[kani::unwind(10)]     
-    // pub fn secs(){
-    //     let scalar: u64 = kani::any();
-    //     let secs: u64 = kani::any();
-
-    //     assert_eq!(Seconds(secs) * scalar, TimeSpan::new(secs * scalar, 0));
-    //     assert_eq!(scalar * Seconds(secs), TimeSpan::new(secs * scalar, 0));
-    // }
+   #[kani::proof]
+   #[kani::unwind(10)]     
+   pub fn secs(){
+        let scalar: u64 = kani::any();
+        let secs: u64 = kani::any();
+        assert_eq!(Seconds(scalar * secs) * 1, TimeSpan::new(scalar * secs,0));
+        /*
+        assert_eq!(Seconds(secs) * scalar, TimeSpan::new(secs * scalar, 0));
+        assert_eq!(scalar * Seconds(secs), TimeSpan::new(secs * scalar, 0));
+        */
+   }
 
     #[kani::proof]
     #[kani::unwind(10)]     
