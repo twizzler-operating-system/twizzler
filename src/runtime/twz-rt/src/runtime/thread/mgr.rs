@@ -167,11 +167,11 @@ impl ReferenceRuntime {
         };
 
         let thid: ObjID = {
-            let res: secgate::SecGateReturn<Result<ObjID, SpawnError>> =
+            let res: secgate::SecGateReturn<Result<_, SpawnError>> =
                 monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
             //let res = monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
             match res {
-                secgate::SecGateReturn::Success(id) => id?,
+                secgate::SecGateReturn::Success(id) => ObjID::from(id?),
                 _ => return Err(SpawnError::Other),
             }
         };

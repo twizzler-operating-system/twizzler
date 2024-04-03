@@ -1,7 +1,7 @@
 use tracing::trace;
 
 use crate::{
-    library::LibraryId,
+    library::{Library, LibraryId},
     symbol::{LookupFlags, RelocatedSymbol},
     DynlinkError, DynlinkErrorKind,
 };
@@ -17,9 +17,9 @@ impl<Engine: ContextEngine> Context<Engine> {
         name: &str,
         lookup_flags: LookupFlags,
     ) -> Result<RelocatedSymbol<'a, Engine::Backing>, DynlinkError> {
+        let start_lib = self.get_library(start_id)?;
         // First try looking up within ourselves.
         if !lookup_flags.contains(LookupFlags::SKIP_SELF) {
-            let start_lib = self.get_library(start_id)?;
             if let Ok(sym) = start_lib.lookup_symbol(name) {
                 return Ok(sym);
             }
@@ -34,8 +34,12 @@ impl<Engine: ContextEngine> Context<Engine> {
                     match dep {
                         LoadedOrUnloaded::Unloaded(_) => {}
                         LoadedOrUnloaded::Loaded(dep) => {
-                            if let Ok(sym) = dep.lookup_symbol(name) {
-                                return Ok(sym);
+                            if lookup_flags.contains(LookupFlags::SKIP_SECGATE_CHECK)
+                                || dep.is_local_or_secgate_from(start_lib, name)
+                            {
+                                if let Ok(sym) = dep.lookup_symbol(name) {
+                                    return Ok(sym);
+                                }
                             }
                         }
                     }
@@ -46,7 +50,7 @@ impl<Engine: ContextEngine> Context<Engine> {
         // Fall back to global search.
         if !lookup_flags.contains(LookupFlags::SKIP_GLOBAL) {
             trace!("falling back to global search for {}", name);
-            self.lookup_symbol_global(name)
+            self.lookup_symbol_global(start_lib, name, lookup_flags)
         } else {
             Err(DynlinkErrorKind::NameNotFound {
                 name: name.to_string(),
@@ -57,15 +61,21 @@ impl<Engine: ContextEngine> Context<Engine> {
 
     pub(crate) fn lookup_symbol_global<'a>(
         &'a self,
+        start_lib: &Library<Engine::Backing>,
         name: &str,
+        lookup_flags: LookupFlags,
     ) -> Result<RelocatedSymbol<'a, Engine::Backing>, DynlinkError> {
         for idx in self.library_deps.node_indices() {
             let dep = &self.library_deps[idx];
             match dep {
                 LoadedOrUnloaded::Unloaded(_) => {}
                 LoadedOrUnloaded::Loaded(dep) => {
-                    if let Ok(sym) = dep.lookup_symbol(name) {
-                        return Ok(sym);
+                    if lookup_flags.contains(LookupFlags::SKIP_SECGATE_CHECK)
+                        || dep.is_local_or_secgate_from(start_lib, name)
+                    {
+                        if let Ok(sym) = dep.lookup_symbol(name) {
+                            return Ok(sym);
+                        }
                     }
                 }
             }

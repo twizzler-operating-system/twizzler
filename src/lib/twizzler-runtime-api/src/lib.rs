@@ -230,7 +230,7 @@ pub enum MapError {
 
 bitflags::bitflags! {
     /// Mapping protections for mapping objects into the address space.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct MapFlags: u32 {
         /// Read allowed.
         const READ = 1;
@@ -245,7 +245,8 @@ bitflags::bitflags! {
 /// A handle to an internal object. This has similar semantics to Arc, but since this crate
 /// must be #[no_std], we need to implement refcounting ourselves.
 pub struct ObjectHandle {
-    internal_refs: NonNull<InternalHandleRefs>,
+    /// Pointer to refcounter.
+    pub internal_refs: NonNull<InternalHandleRefs>,
     /// The ID of the object.
     pub id: ObjID,
     /// The flags of this handle.
@@ -489,16 +490,22 @@ pub struct Library {
     /// How this library is mapped.
     pub mapping: ObjectHandle,
     /// Actual range of addresses that comprise the library binary data.
-    pub range: (*const u8, *const u8),
+    pub range: AddrRange,
     /// Information for dl_iterate_phdr
     pub dl_info: Option<DlPhdrInfo>,
-    /// The Library ID of the next library, either the first dependency of this library, or a sibling.
+    /// The Library ID of first dependency.
     pub next_id: Option<LibraryId>,
 }
 
 impl AsRef<Library> for Library {
     fn as_ref(&self) -> &Library {
         self
+    }
+}
+
+impl Library {
+    pub fn name(&self) -> Option<&CStr> {
+        unsafe { Some(CStr::from_ptr(self.dl_info?.name as *const i8)) }
     }
 }
 
@@ -516,7 +523,7 @@ pub type ElfAddr = usize;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub type ElfHalf = u32;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 #[repr(C)]
 pub struct DlPhdrInfo {
     pub addr: ElfAddr,
@@ -533,9 +540,6 @@ pub struct DlPhdrInfo {
 pub trait DebugRuntime {
     /// Gets a handle to a library given the ID.
     fn get_library(&self, id: LibraryId) -> Option<Library>;
-    /// Get library name. If the buffer is too small, returns Err(()). Otherwise,
-    /// returns the length of the name in bytes.
-    fn get_library_name(&self, lib: &Library, buf: &mut [u8]) -> Option<usize>;
     /// Returns the ID of the main executable, if there is one.
     fn get_exeid(&self) -> Option<LibraryId>;
     /// Get a segment of a library, if the segment index exists. All segment IDs are indexes, so they range from [0, N).
@@ -546,6 +550,7 @@ pub trait DebugRuntime {
     fn iterate_phdr(&self, f: &mut dyn FnMut(DlPhdrInfo) -> core::ffi::c_int) -> core::ffi::c_int;
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 /// An address range.
 pub struct AddrRange {
     /// Starting virtual address.

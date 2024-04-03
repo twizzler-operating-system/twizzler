@@ -17,12 +17,10 @@ const MIN_ALIGN: usize = 16;
 use talc::{OomHandler, Span, Talc};
 use tracing::warn;
 use twizzler_abi::{
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{
-        sys_object_create, sys_object_map, BackingType, LifetimeType, MapFlags, ObjectCreate,
-        ObjectCreateFlags,
-    },
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
+use twizzler_runtime_api::MapFlags;
 
 use crate::runtime::RuntimeState;
 
@@ -60,15 +58,13 @@ struct RuntimeOom {
     objects: Vec<(usize, ObjID), FailAlloc>,
 }
 
-fn delete_obj(_slot: usize, _id: ObjID) {
+fn delete_obj(_id: ObjID) {
     // TODO
     warn!("unimplemented: delete object due to failure in allocator");
 }
 
 fn create_and_map() -> Option<(usize, ObjID)> {
-    let slot = OUR_RUNTIME.allocate_slot()?;
-
-    let Ok(id) = sys_object_create(
+    let id = sys_object_create(
         ObjectCreate::new(
             BackingType::Normal,
             LifetimeType::Volatile,
@@ -77,26 +73,19 @@ fn create_and_map() -> Option<(usize, ObjID)> {
         ),
         &[],
         &[],
-    ) else {
-        OUR_RUNTIME.release_slot(slot);
-        return None;
-    };
-
-    if sys_object_map(
-        None,
-        id,
-        slot,
-        Protections::READ | Protections::WRITE,
-        MapFlags::empty(),
     )
-    .is_err()
-    {
-        delete_obj(slot, id);
-        OUR_RUNTIME.release_slot(slot);
-        return None;
-    }
+    .ok()?;
 
-    Some((slot, id))
+    let slot = monitor_api::monitor_rt_object_map(id.as_u128(), MapFlags::READ | MapFlags::WRITE)
+        .unwrap()
+        .ok();
+
+    if let Some(slot) = slot {
+        Some((slot, id))
+    } else {
+        delete_obj(id);
+        None
+    }
 }
 
 impl OomHandler for RuntimeOom {
@@ -114,8 +103,8 @@ impl OomHandler for RuntimeOom {
                 .claim(Span::new(base as *mut _, top as *mut _))
                 .is_err()
             {
-                delete_obj(slot, id);
-                OUR_RUNTIME.release_slot(slot);
+                delete_obj(id);
+                monitor_api::monitor_rt_object_unmap(slot).unwrap();
                 return Err(());
             }
         }

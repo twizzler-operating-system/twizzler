@@ -1,8 +1,8 @@
 //! Null implementation of the debug runtime.
 
-use twizzler_runtime_api::{DebugRuntime, Library, LibraryId, MapFlags};
+use twizzler_runtime_api::{AddrRange, DebugRuntime, Library, LibraryId, MapFlags};
 
-use crate::object::{InternalObject, ObjID, Protections, NULLPAGE_SIZE};
+use crate::object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE};
 
 use super::{
     MinimalRuntime, __twz_get_runtime,
@@ -28,7 +28,10 @@ impl DebugRuntime for MinimalRuntime {
             .map_object(get_execid().as_u128(), MapFlags::READ)
             .ok()?;
         Some(Library {
-            range: (unsafe { mapping.start.add(NULLPAGE_SIZE) }, mapping.meta),
+            range: AddrRange {
+                start: mapping.start as usize + NULLPAGE_SIZE,
+                len: MAX_SIZE - NULLPAGE_SIZE,
+            },
             mapping,
             dl_info: None,
             next_id: None,
@@ -70,9 +73,5 @@ impl DebugRuntime for MinimalRuntime {
         _f: &mut dyn FnMut(twizzler_runtime_api::DlPhdrInfo) -> core::ffi::c_int,
     ) -> core::ffi::c_int {
         0
-    }
-
-    fn get_library_name(&self, _lib: &Library, _buf: &mut [u8]) -> Option<usize> {
-        Some(0)
     }
 }

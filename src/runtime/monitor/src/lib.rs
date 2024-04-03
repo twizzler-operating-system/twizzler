@@ -16,10 +16,11 @@ use twizzler_abi::{
 use twizzler_object::ObjID;
 use twz_rt::set_upcall_handler;
 
-use crate::{compartment::Comp, runtime::init_actions, state::set_monitor_state};
+use crate::{compartment::Comp, state::set_monitor_state};
 
 mod compartment;
 mod init;
+mod object;
 mod runtime;
 pub mod secgate_test;
 mod state;
@@ -55,7 +56,7 @@ pub fn main() {
         state.dynlink.get_compartment_mut(monitor_comp_id).unwrap(),
     )
     .unwrap();
-    state.add_comp(monitor_comp);
+    state.add_comp(monitor_comp, twizzler_runtime_api::LibraryId(0));
 
     let state = Arc::new(Mutex::new(state));
     debug!(
@@ -63,7 +64,6 @@ pub fn main() {
         state.lock().unwrap().root
     );
 
-    init_actions(state.clone());
     std::env::set_var("RUST_BACKTRACE", "1");
 
     set_upcall_handler(&crate::upcall::upcall_monitor_handler).unwrap();
@@ -98,7 +98,8 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
 }
 
 fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()> {
-    let lib = dynlink::library::UnloadedLibrary::new("libhello_world.so");
+    let lib = dynlink::library::UnloadedLibrary::new("hello-world");
+    let rt_lib = dynlink::library::UnloadedLibrary::new("libtwz_rt.so");
 
     let mut state = state.lock().unwrap();
     let test_comp_id = state.dynlink.add_compartment("test")?;
@@ -108,6 +109,12 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
             .dynlink
             .load_library_in_compartment(test_comp_id, lib, bootstrap_name_res)?;
 
+    let rt_id =
+        state
+            .dynlink
+            .load_library_in_compartment(test_comp_id, rt_lib, bootstrap_name_res)?;
+
+    state.dynlink.add_manual_dependency(libhw_id, rt_id);
     state.dynlink.relocate_all(libhw_id)?;
 
     let test_comp = Comp::new(
@@ -115,7 +122,7 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
         state.dynlink.get_compartment_mut(test_comp_id).unwrap(),
     )
     .unwrap();
-    state.add_comp(test_comp);
+    state.add_comp(test_comp, libhw_id.into());
 
     info!("lookup entry");
 

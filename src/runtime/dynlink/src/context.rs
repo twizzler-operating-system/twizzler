@@ -199,12 +199,20 @@ impl<Engine: ContextEngine> Context<Engine> {
         }
     }
 
+    pub fn libraries(&self) -> LibraryIter<'_, Engine> {
+        LibraryIter { ctx: self, next: 0 }
+    }
+
     pub(crate) fn add_library(&mut self, lib: UnloadedLibrary) -> NodeIndex {
         self.library_deps.add_node(LoadedOrUnloaded::Unloaded(lib))
     }
 
-    pub(crate) fn add_dep(&mut self, parent: &Library<Engine::Backing>, dep: NodeIndex) {
-        self.library_deps.add_edge(parent.idx, dep, ());
+    pub(crate) fn add_dep(&mut self, parent: NodeIndex, dep: NodeIndex) {
+        self.library_deps.add_edge(parent, dep, ());
+    }
+
+    pub fn add_manual_dependency(&mut self, parent: LibraryId, dependee: LibraryId) {
+        self.add_dep(parent.0, dependee.0);
     }
 
     /// Create a new compartment with a given name.
@@ -215,5 +223,26 @@ impl<Engine: ContextEngine> Context<Engine> {
         self.compartments.push(comp);
         self.compartment_names.insert(name, idx);
         Ok(CompartmentId(idx))
+    }
+}
+
+pub struct LibraryIter<'a, Engine: ContextEngine> {
+    ctx: &'a Context<Engine>,
+    next: usize,
+}
+
+impl<'a, Engine: ContextEngine> Iterator for LibraryIter<'a, Engine> {
+    type Item = &'a Library<Engine::Backing>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let idx = self.ctx.library_deps.node_indices().nth(self.next)?;
+            self.next += 1;
+            let node = &self.ctx.library_deps[idx];
+            match node {
+                LoadedOrUnloaded::Unloaded(_) => {}
+                LoadedOrUnloaded::Loaded(lib) => return Some(lib),
+            }
+        }
     }
 }
