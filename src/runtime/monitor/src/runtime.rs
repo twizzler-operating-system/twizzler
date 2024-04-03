@@ -2,10 +2,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use dynlink::library::BackingData;
 use twizzler_runtime_api::{AddrRange, DlPhdrInfo, Library, LibraryId};
-use twz_rt::monitor::MonitorActions;
 
 use crate::state::MonitorState;
 
+/*
 #[no_mangle]
 pub fn __do_get_monitor_actions() -> &'static dyn MonitorActions {
     ACTIONS.get().unwrap()
@@ -83,3 +83,4 @@ impl MonitorActions for MonitorActionsImpl {
 }
 
 static ACTIONS: OnceLock<MonitorActionsImpl> = OnceLock::new();
+*/

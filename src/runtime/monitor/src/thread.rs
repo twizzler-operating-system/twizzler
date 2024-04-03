@@ -8,7 +8,7 @@ use twizzler_abi::{
 };
 use twizzler_object::ObjID;
 use twizzler_runtime_api::{SpawnError, ThreadSpawnArgs};
-use twz_rt::monitor::RuntimeThreadControl;
+use twz_rt::RuntimeThreadControl;
 
 use crate::state::get_monitor_state;
 
@@ -75,8 +75,8 @@ pub fn __monitor_rt_spawn_thread(
     args: ThreadSpawnArgs,
     thread_pointer: usize,
     stack_pointer: usize,
-) -> Result<ObjID, SpawnError> {
-    spawn_thread(src_ctx, args, thread_pointer, stack_pointer)
+) -> Result<twizzler_runtime_api::ObjID, SpawnError> {
+    spawn_thread(src_ctx, args, thread_pointer, stack_pointer).map(|o| o.as_u128())
 }
 
 // Extern function, linked to by the runtime.

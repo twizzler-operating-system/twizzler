@@ -1,9 +1,9 @@
-use std::ptr::NonNull;
+use std::{collections::HashMap, ptr::NonNull, sync::atomic::AtomicUsize};
 
 use tracing::warn;
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{sys_object_map, sys_object_unmap, ObjectMapError, UnmapFlags},
+    syscall::{sys_object_map, ObjectMapError},
 };
 use twizzler_runtime_api::{MapError, MapFlags, ObjectHandle, ObjectRuntime};
 
@@ -23,7 +23,7 @@ fn mapflags_into_prot(flags: MapFlags) -> Protections {
     prot
 }
 
-fn new_object_handle(
+pub(crate) fn new_object_handle(
     id: twizzler_runtime_api::ObjID,
     slot: usize,
     flags: MapFlags,
@@ -48,8 +48,6 @@ fn map_sys_err(sys_err: ObjectMapError) -> twizzler_runtime_api::MapError {
     }
 }
 
-// TODO: implement an object cache
-
 impl ObjectRuntime for ReferenceRuntime {
     #[tracing::instrument(ret, skip(self), level = "trace")]
     fn map_object(
@@ -57,27 +55,15 @@ impl ObjectRuntime for ReferenceRuntime {
         id: twizzler_runtime_api::ObjID,
         flags: twizzler_runtime_api::MapFlags,
     ) -> Result<twizzler_runtime_api::ObjectHandle, twizzler_runtime_api::MapError> {
-        let slot = self.allocate_slot().ok_or(MapError::OutOfResources)?;
-        sys_object_map(
-            None,
-            ObjID::new(id),
-            slot,
-            mapflags_into_prot(flags),
-            twizzler_abi::syscall::MapFlags::empty(),
-        )
-        .map_err(|_| MapError::InternalError)?;
-        Ok(new_object_handle(id, slot, flags))
+        self.object_manager
+            .lock()
+            .unwrap()
+            .map_object(ObjectMapKey(id.into(), flags))
     }
 
     #[tracing::instrument(skip(self), level = "trace")]
     fn release_handle(&self, handle: &mut twizzler_runtime_api::ObjectHandle) {
-        let slot = (handle.start as usize) / MAX_SIZE;
-
-        if sys_object_unmap(None, slot, UnmapFlags::empty()).is_ok() {
-            self.release_slot(slot);
-        } else {
-            warn!("failed to unmap slot {}", slot);
-        }
+        self.object_manager.lock().unwrap().release(handle)
     }
 
     fn map_two_objects(
@@ -114,5 +100,75 @@ impl ObjectRuntime for ReferenceRuntime {
             new_object_handle(in_id_a, slot_a, in_flags_a),
             new_object_handle(in_id_b, slot_b, in_flags_b),
         ))
+    }
+}
+
+/// A key for local (per-compartment) mappings of objects.
+#[derive(PartialEq, PartialOrd, Ord, Eq, Hash, Copy, Clone)]
+pub struct ObjectMapKey(pub twizzler_runtime_api::ObjID, pub MapFlags);
+
+/// A local slot for an object to be mapped, gotten from the monitor.
+pub struct LocalSlot {
+    number: usize,
+    refs: AtomicUsize,
+}
+
+impl LocalSlot {
+    pub fn new(number: usize) -> Self {
+        Self {
+            number,
+            refs: AtomicUsize::new(0),
+        }
+    }
+}
+
+/// Per-compartment object management.
+pub struct ObjectHandleManager {
+    map: Option<HashMap<ObjectMapKey, LocalSlot>>,
+}
+
+impl ObjectHandleManager {
+    pub const fn new() -> Self {
+        Self { map: None }
+    }
+
+    fn map(&mut self) -> &mut HashMap<ObjectMapKey, LocalSlot> {
+        if self.map.is_some() {
+            // Unwrap-Ok: is_some above.
+            return self.map.as_mut().unwrap();
+        }
+        self.map = Some(HashMap::new());
+        // Unwrap-Ok: set above.
+        self.map.as_mut().unwrap()
+    }
+
+    /// Map an object with this manager. Will call to monitor if needed.
+    pub fn map_object(&mut self, key: ObjectMapKey) -> Result<ObjectHandle, MapError> {
+        if !self.map().contains_key(&key) {
+            self.map().insert(
+                key,
+                LocalSlot::new(monitor_api::monitor_rt_object_map(key.0, key.1).unwrap()?),
+            );
+        }
+
+        // Unwrap-Ok: we ensure key is present above.
+        let entry = self.map().get(&key).unwrap();
+        entry.refs.fetch_add(1, atomic::Ordering::SeqCst);
+
+        Ok(new_object_handle(key.0, entry.number, key.1))
+    }
+
+    /// Release a handle. If all handles have been released, calls to monitor to unmap.
+    pub fn release(&mut self, handle: &mut ObjectHandle) {
+        let key = ObjectMapKey(handle.id.into(), handle.flags);
+        if let Some(entry) = self.map().get(&key) {
+            if entry.refs.fetch_sub(1, atomic::Ordering::SeqCst) == 1 {
+                monitor_api::monitor_rt_object_unmap(entry.number).unwrap();
+                self.map().remove(&key);
+            }
+        }
+
+        // Safety: we only create internal refs from Box.
+        let _boxed = unsafe { Box::from_raw(handle.internal_refs.as_mut()) };
     }
 }

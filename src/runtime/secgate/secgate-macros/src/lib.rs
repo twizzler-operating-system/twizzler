@@ -58,7 +58,7 @@ fn build_names(
     Info {
         mod_name: Ident::new(&format!("{}{}_mod", PREFIX, base), base.span()),
         struct_name: Ident::new(&format!("{}_info", base).to_uppercase(), base.span()),
-        trampoline_name: Ident::new(&format!("{}_trampoline", base), base.span()),
+        trampoline_name: Ident::new(&format!("{}", base), base.span()),
         entry_name: Ident::new(&format!("{}_entry", base), base.span()),
         internal_fn_name: Ident::new(&format!("{}_direct", base), base.span()),
         entry_type_name: Ident::new(&format!("{}_EntryType", base), base.span()),
@@ -190,7 +190,7 @@ fn handle_secure_gate(
             #tree
             pub mod #mod_name {
                 use super::*;
-                pub(super) use super::#internal_fn_name as #fn_name;
+                pub(super) use super::#internal_fn_name;
                 // the generated entry function
                 #entry
                 // info struct data
@@ -271,7 +271,7 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
 
     let Info {
         entry_name,
-        fn_name,
+        internal_fn_name,
         arg_names: all_arg_names,
         has_info,
         ..
@@ -303,7 +303,7 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
             #unpacked_args
 
             // Call the user-written implementation, catching unwinds.
-            let impl_ret = std::panic::catch_unwind(|| #fn_name(#call_args));
+            let impl_ret = std::panic::catch_unwind(|| #internal_fn_name(#call_args));
             // If we panic'd, report to user and return error.
             if impl_ret.is_err() {
                 std::process::Termination::report(std::process::ExitCode::from(101u8));

@@ -40,5 +40,7 @@ bitflags::bitflags! {
         const SKIP_DEPS = 2;
         /// Don't do a global search.
         const SKIP_GLOBAL = 4;
+        /// Allow any symbols, not just secgates.
+        const SKIP_SECGATE_CHECK = 8;
     }
 }

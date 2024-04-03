@@ -18,6 +18,7 @@ bitflags = "2.4"
 talc = { version = "3.1", default-features = false }
 lazy_static = "1.4"
 atomic = "0.6"
+elf = "0.7"
 static_assertions = "1.1"
 monitor-api = { path = "../monitor-api" }
 secgate = { path = "../secgate" }

@@ -3180,6 +3180,7 @@ dependencies = [
  "atomic",
  "bitflags 2.4.1",
  "dynlink",
+ "elf",
  "lazy_static",
  "monitor-api",
  "secgate",
