@@ -49,8 +49,3 @@ features = ["spin_no_std"]
 [package.metadata]
 twizzler-build = "kernel"
 
-[profile.release]
-debug = true
-
-[profile.dev]
-opt-level = 1

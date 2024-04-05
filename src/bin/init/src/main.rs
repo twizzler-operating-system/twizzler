@@ -262,10 +262,21 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     None
 }
 
+fn test_async() {
+    let e = async_executor::Executor::new();
+    e.spawn(async {
+        println!("hello!");
+    })
+    .detach();
+}
+
 fn main() {
     println!("[init] starting userspace");
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
+
+    test_async();
+    loop {}
 
     let create = ObjectCreate::new(
         BackingType::Normal,
@@ -452,6 +463,7 @@ extern "C" fn _start() -> ! {
 */
 
 use std::{
+    future,
     sync::{atomic::AtomicU64, Arc, Mutex},
     time::Duration,
 };

@@ -475,6 +475,7 @@ fn compile(
         .unwrap_or(&PathBuf::from("Cargo.toml"))
         .clone()
         .canonicalize()?;
+    println!("==> manifest path: {:?}", manifest_path);
 
     TwizzlerCompilation::try_new::<anyhow::Error>(
         static_config,
