@@ -103,6 +103,27 @@ impl Object {
         res
     }
 
+    pub fn setup_sleep_word32(
+        &self,
+        offset: usize,
+        op: ThreadSyncOp,
+        val: u32,
+        first_sleep: bool,
+    ) -> bool {
+        let thread = current_thread_ref().unwrap();
+        let mut sleep_info = self.sleep_info.lock();
+
+        let cur = unsafe { self.read_atomic_u32(offset) };
+        let res = op.check(cur, val);
+        if res {
+            if first_sleep {
+                thread.set_sync_sleep();
+            }
+            sleep_info.insert(offset, thread);
+        }
+        res
+    }
+
     pub fn remove_from_sleep_word(&self, offset: usize) {
         let thread = current_thread_ref().unwrap();
         let mut sleep_info = self.sleep_info.lock();

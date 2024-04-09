@@ -121,7 +121,12 @@ fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent, 
         });
     }
     */
-    let did_sleep = obj.setup_sleep_word(offset, sleep.op, sleep.value, first_sleep);
+    let did_sleep = if matches!(sleep.reference, ThreadSyncReference::Virtual32(_)) {
+        obj.setup_sleep_word32(offset, sleep.op, sleep.value as u32, first_sleep)
+    } else {
+        obj.setup_sleep_word(offset, sleep.op, sleep.value, first_sleep)
+    };
+
     Ok(SleepEvent {
         obj,
         offset,
@@ -173,11 +178,33 @@ pub fn sys_thread_sync(
     }
     let mut ready_count = 0;
     let mut unsleeps = Vec::new();
+    let mut num_sleepers = 0;
 
+    //logln!("==> {:?}", ops);
     for op in ops {
         match op {
             ThreadSync::Sleep(sleep, result) => match prep_sleep(sleep, unsleeps.is_empty()) {
                 Ok(se) => {
+                    /*
+                    if let ThreadSyncReference::Virtual32(p) = &sleep.reference {
+                        logln!(
+                            " sleep32 => {:p} {}: {}",
+                            *p,
+                            unsafe { (**p).load(core::sync::atomic::Ordering::SeqCst) },
+                            se.did_sleep
+                        );
+                    }
+
+                    if let ThreadSyncReference::Virtual(p) = &sleep.reference {
+                        logln!(
+                            " sleep => {:p} {}: {}",
+                            *p,
+                            unsafe { (**p).load(core::sync::atomic::Ordering::SeqCst) },
+                            se.did_sleep
+                        );
+                    }
+                    */
+                    num_sleepers += 1;
                     *result = Ok(if se.did_sleep { 0 } else { 1 });
                     if se.did_sleep {
                         unsleeps.push(se);
@@ -194,7 +221,7 @@ pub fn sys_thread_sync(
                         (**p).load(core::sync::atomic::Ordering::SeqCst)
                     });
                 }
-                */
+                    */
                 match wakeup(wake) {
                     Ok(count) => {
                         *result = Ok(count);
@@ -210,9 +237,10 @@ pub fn sys_thread_sync(
         }
     }
     let thread = current_thread_ref().unwrap();
+    let should_sleep = unsleeps.len() == num_sleepers && num_sleepers > 0;
     {
         let guard = thread.enter_critical();
-        if !unsleeps.is_empty() {
+        if should_sleep {
             if let Some(timeout) = timeout {
                 crate::clock::register_timeout_callback(
                     // TODO: fix all our time types
@@ -224,7 +252,7 @@ pub fn sys_thread_sync(
             thread.set_sync_sleep_done();
         }
         requeue_all();
-        if !unsleeps.is_empty() {
+        if should_sleep {
             finish_blocking(guard);
         } else {
             drop(guard);

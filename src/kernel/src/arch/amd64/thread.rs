@@ -336,7 +336,10 @@ impl Thread {
         let source_ctx = self.secctx.active_id();
         let ok = match *self.arch.entry_registers.borrow() {
             Registers::None => {
-                panic!("tried to upcall to a thread that hasn't started yet");
+                panic!(
+                    "tried to upcall {:?} to a thread that hasn't started yet",
+                    info
+                );
             }
             Registers::Interrupt(int, _) => {
                 let int = unsafe { &mut *int };
@@ -348,6 +351,11 @@ impl Thread {
             }
         };
         if !ok {
+            logln!(
+                "while trying to generate upcall: {:?} from {:?}",
+                info,
+                self.arch.entry_registers.borrow()
+            );
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
     }

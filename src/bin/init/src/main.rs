@@ -262,12 +262,138 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     None
 }
 
+#[derive(Default)]
+struct IoTest {
+    switch: AtomicU64,
+    _pin: PhantomPinned,
+}
+
+impl TwizzlerWaitable for IoTest {
+    fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+        ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(&self.switch),
+            0,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        )
+    }
+
+    fn wait_item_write(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+        ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(&self.switch),
+            1,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        )
+    }
+}
+
+impl IoTest {
+    fn try_read(&self) -> io::Result<()> {
+        match self
+            .switch
+            .compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
+        {
+            Ok(_) => {
+                let _ = twizzler_abi::syscall::sys_thread_sync(
+                    &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                        ThreadSyncReference::Virtual(&self.switch),
+                        usize::MAX,
+                    ))],
+                    None,
+                );
+                Ok(())
+            }
+            Err(_) => Err(ErrorKind::WouldBlock.into()),
+        }
+    }
+
+    fn try_write(&self) -> io::Result<()> {
+        match self
+            .switch
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+        {
+            Ok(_) => {
+                let _ = twizzler_abi::syscall::sys_thread_sync(
+                    &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                        ThreadSyncReference::Virtual(&self.switch),
+                        usize::MAX,
+                    ))],
+                    None,
+                );
+                Ok(())
+            }
+            Err(_) => Err(ErrorKind::WouldBlock.into()),
+        }
+    }
+}
+
+type AsyncIoTest = Async<IoTest>;
+
+async fn async_test_async() {
+    let mut timer1 = async_io::Timer::interval(Duration::from_millis(123));
+    let mut timer2 = async_io::Timer::interval(Duration::from_millis(456));
+
+    let ait = Async::new(IoTest::default()).unwrap();
+    let ait2 = Arc::new(Async::new(IoTest::default()).unwrap());
+    let ait2_clone = ait2.clone();
+
+    let fr = async {
+        loop {
+            let r = ait.read_with(|io| io.try_read()).await;
+            println!("read! {:?}", r);
+            let timer1 = async_io::Timer::interval(Duration::from_millis(100));
+            timer1.await;
+        }
+    };
+
+    let fr2 = async {
+        loop {
+            let r = ait2.read_with(|io| io.try_read()).await;
+            println!("extern read! {:?}", r);
+        }
+    };
+
+    std::thread::spawn(move || loop {
+        println!("external write");
+        ait2_clone.get_ref().try_write();
+        std::thread::sleep(Duration::from_millis(981));
+    });
+
+    let fw = async {
+        loop {
+            let w = ait.write_with(|io| io.try_write()).await;
+            println!("write! {:?}", w);
+            let timer1 = async_io::Timer::interval(Duration::from_millis(100));
+            timer1.await;
+        }
+    };
+    let mut fr = std::pin::pin!(FutureExt::fuse(fr));
+    let mut fr2 = std::pin::pin!(FutureExt::fuse(fr2));
+    let mut fw = std::pin::pin!(FutureExt::fuse(fw));
+
+    loop {
+        let mut timer1 = FutureExt::fuse(timer1.next());
+        let mut timer2 = FutureExt::fuse(timer2.next());
+        println!("loop");
+        futures::select! {
+            _ = timer1 => println!("timer1"),
+            _ = timer2 => println!("timer2"),
+            _ = fr => println!("fr"),
+            _ = fr2 => println!("fr2"),
+            _ = fw => println!("fw"),
+        }
+    }
+}
+
 fn test_async() {
     let e = async_executor::Executor::new();
     e.spawn(async {
         println!("hello!");
+        async_test_async().await
     })
     .detach();
+    block_on(e.run(std::future::pending::<()>()));
 }
 
 fn main() {
@@ -275,6 +401,12 @@ fn main() {
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
 
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .finish(),
+    )
+    .unwrap();
     test_async();
     loop {}
 
@@ -464,10 +596,18 @@ extern "C" fn _start() -> ! {
 
 use std::{
     future,
-    sync::{atomic::AtomicU64, Arc, Mutex},
+    io::{self, ErrorKind},
+    marker::PhantomPinned,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 
+use async_io::{block_on, Async};
+use futures::{FutureExt, StreamExt};
+use polling::BorrowedTwizzlerWaitable;
 use twizzler_abi::{
     device::SubObjectType,
     kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue},
@@ -493,4 +633,5 @@ use twizzler_abi::{
     },
     thread::{ExecutionState, ThreadRepr},
 };
+use twizzler_futures::TwizzlerWaitable;
 use twizzler_object::{CreateSpec, Object, ObjectInitFlags};

@@ -16,6 +16,8 @@ tracing-subscriber = "0.3.17"
 async-io = { path = "../../lib/smol/async-io" }
 async-executor = { path = "../../lib/smol/async-executor" }
 polling = { path = "../../lib/smol/polling" }
+futures = "*"
+twizzler-futures = { path = "../../lib/twizzler-futures" }
 
 [package.metadata]
 twizzler-build = "static"

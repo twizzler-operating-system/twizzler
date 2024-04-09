@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use alloc::sync::Arc;
 use twizzler_abi::device::{CacheType, MMIO_OFFSET};
@@ -149,6 +149,22 @@ impl Object {
             obj_page_tree.add_page(page_number, page);
             drop(obj_page_tree);
             self.read_atomic_u64(offset)
+        }
+    }
+
+    pub unsafe fn read_atomic_u32(&self, offset: usize) -> u32 {
+        let mut obj_page_tree = self.lock_page_tree();
+        let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
+        let page_offset = offset % PageNumber::PAGE_SIZE;
+
+        if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
+            let t = page.get_mut_to_val::<AtomicU32>(page_offset);
+            (*t).load(Ordering::SeqCst)
+        } else {
+            let page = Page::new();
+            obj_page_tree.add_page(page_number, page);
+            drop(obj_page_tree);
+            self.read_atomic_u32(offset)
         }
     }
 
