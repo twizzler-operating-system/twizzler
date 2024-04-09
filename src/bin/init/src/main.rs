@@ -342,7 +342,7 @@ async fn async_test_async() {
         loop {
             let r = ait.read_with(|io| io.try_read()).await;
             println!("read! {:?}", r);
-            let timer1 = async_io::Timer::interval(Duration::from_millis(100));
+            let timer1 = async_io::Timer::interval(Duration::from_millis(73));
             timer1.await;
         }
     };
@@ -357,14 +357,14 @@ async fn async_test_async() {
     std::thread::spawn(move || loop {
         println!("external write");
         ait2_clone.get_ref().try_write();
-        std::thread::sleep(Duration::from_millis(981));
+        std::thread::sleep(Duration::from_millis(307));
     });
 
     let fw = async {
         loop {
             let w = ait.write_with(|io| io.try_write()).await;
             println!("write! {:?}", w);
-            let timer1 = async_io::Timer::interval(Duration::from_millis(100));
+            let timer1 = async_io::Timer::interval(Duration::from_millis(211));
             timer1.await;
         }
     };

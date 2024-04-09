@@ -75,6 +75,13 @@ fn type_sys_object_create(
 }
 
 fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<usize, ThreadSyncError> {
+    logln!(
+        "{} ==> {:x} {} {:x}",
+        crate::thread::current_thread_ref().unwrap().id(),
+        ptr,
+        len,
+        timeoutptr
+    );
     let slice = unsafe { create_user_slice(ptr, len) }.ok_or(ThreadSyncError::InvalidArgument)?;
     let timeout =
         unsafe { create_user_nullable_ptr(timeoutptr) }.ok_or(ThreadSyncError::InvalidArgument)?;

@@ -163,19 +163,20 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
         );
     }
     x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
+
+    if true {
+        logln!(
+            "syscall entry {:?} {} {:x}",
+            current_thread_ref().map(|ct| ct.id()),
+            (*context).rax,
+            (*context).rcx
+        );
+    }
     let t = current_thread_ref().unwrap();
     t.set_entry_registers(Registers::Syscall(context, *context));
 
     crate::thread::enter_kernel();
     crate::interrupt::set(true);
-    if false {
-        logln!(
-            "syscall entry {} {} {:x}",
-            current_thread_ref().unwrap().id(),
-            (*context).rax,
-            (*context).rcx
-        );
-    }
     drop(t);
 
     crate::syscall::syscall_entry(context.as_mut().unwrap());
@@ -183,11 +184,9 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
     crate::thread::exit_kernel();
 
     /* We need this scope to drop the current thread reference before we return to user */
-    {
+    let user_fs = {
         let cur_th = current_thread_ref().unwrap();
-        cur_th.set_entry_registers(Registers::None);
         let user_fs = cur_th.arch.user_fs.load(Ordering::SeqCst);
-        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
         // Okay, now check if we are restoring an upcall frame, and if so, do that. Unfortunately,
         // we can't use the sysret/exit instruction for this, since it clobbers registers. Instead,
         // we'll use the ISR return path, which doesn't.
@@ -209,13 +208,33 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
                 .arch
                 .user_fs
                 .store(up_frame.thread_ptr, Ordering::SeqCst);
-            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, up_frame.thread_ptr);
+            cur_th.set_entry_registers(Registers::None);
             drop(cur_th);
 
             let int_frame = IsrContext::from(up_frame);
+
+            if int_frame.get_ip() < 0x1000 {
+                logln!("UPRETURN FAIL: {:x}", int_frame.get_ip());
+            }
+            logln!(
+                "{}: return from upret syscall",
+                current_thread_ref().unwrap().id()
+            );
+            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, up_frame.thread_ptr);
             return_with_frame_to_user(int_frame);
         }
+        cur_th.set_entry_registers(Registers::None);
+        user_fs
+    };
+
+    if (*context).rcx < 0x1000 {
+        logln!("UPRETURN FAIL: {:x}", (*context).rcx);
     }
+    logln!(
+        "{:?}: return from syscall",
+        current_thread_ref().map(|ct| ct.id())
+    );
+    x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
     /* TODO: check that rcx is canonical */
     return_to_user(context);
 }

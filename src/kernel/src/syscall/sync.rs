@@ -180,30 +180,32 @@ pub fn sys_thread_sync(
     let mut unsleeps = Vec::new();
     let mut num_sleepers = 0;
 
-    //logln!("==> {:?}", ops);
+    logln!("{}: ==> {:?}", current_thread_ref().unwrap().id(), ops);
     for op in ops {
         match op {
             ThreadSync::Sleep(sleep, result) => match prep_sleep(sleep, unsleeps.is_empty()) {
                 Ok(se) => {
-                    /*
                     if let ThreadSyncReference::Virtual32(p) = &sleep.reference {
-                        logln!(
-                            " sleep32 => {:p} {}: {}",
-                            *p,
-                            unsafe { (**p).load(core::sync::atomic::Ordering::SeqCst) },
-                            se.did_sleep
-                        );
+                        if (*p as usize) < 0x1000 {
+                            logln!(
+                                " sleep32 => {:p} {}: {}",
+                                *p,
+                                unsafe { (**p).load(core::sync::atomic::Ordering::SeqCst) },
+                                se.did_sleep
+                            );
+                        }
                     }
 
                     if let ThreadSyncReference::Virtual(p) = &sleep.reference {
-                        logln!(
-                            " sleep => {:p} {}: {}",
-                            *p,
-                            unsafe { (**p).load(core::sync::atomic::Ordering::SeqCst) },
-                            se.did_sleep
-                        );
+                        if (*p as usize) < 0x1000 {
+                            logln!(
+                                " sleep => {:p} {}: {}",
+                                *p,
+                                unsafe { (**p).load(core::sync::atomic::Ordering::SeqCst) },
+                                se.did_sleep
+                            );
+                        }
                     }
-                    */
                     num_sleepers += 1;
                     *result = Ok(if se.did_sleep { 0 } else { 1 });
                     if se.did_sleep {

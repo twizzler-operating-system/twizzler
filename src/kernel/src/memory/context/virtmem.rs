@@ -642,10 +642,22 @@ bitflags::bitflags! {
     }
 }
 
-pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
+pub fn page_fault(
+    addr: VirtAddr,
+    cause: MemoryAccessKind,
+    flags: PageFaultFlags,
+    ip: VirtAddr,
+    stack: VirtAddr,
+) {
     //logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
     if flags.contains(PageFaultFlags::INVALID) {
         panic!("page table contains invalid bits for address {:?}", addr);
+    }
+    if !flags.contains(PageFaultFlags::USER) && cause == MemoryAccessKind::InstructionFetch {
+        panic!(
+            "kernel page-fault at IP {:?} caused by {:?} to/from {:?} with flags {:?}, stack = {:?}",
+            ip, cause, addr, flags, stack
+        );
     }
     if !flags.contains(PageFaultFlags::USER) && addr.is_kernel() && !addr.is_kernel_object_memory()
     {
@@ -706,6 +718,15 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 // drop these mutexes in case upcall sending generetes a page fault.
                 drop(obj_page_tree);
                 drop(slot_mgr);
+                logln!(
+                    "page-fault by thread {}: {:?} {:?} {:?} ip={:?} st={:?}",
+                    current_thread_ref().unwrap().id(),
+                    addr,
+                    cause,
+                    flags,
+                    ip,
+                    stack
+                );
                 current_thread_ref().unwrap().send_upcall(null_upcall);
                 return;
             }
@@ -713,6 +734,14 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 // drop these mutexes in case upcall sending generetes a page fault.
                 drop(obj_page_tree);
                 drop(slot_mgr);
+                logln!(
+                    "page-fault: {:?} {:?} {:?} ip={:?} st={:?}",
+                    addr,
+                    cause,
+                    flags,
+                    ip,
+                    stack
+                );
                 current_thread_ref().unwrap().send_upcall(oob_upcall);
                 return;
             }

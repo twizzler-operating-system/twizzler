@@ -155,6 +155,12 @@ impl core::fmt::Debug for IsrContext {
     }
 }
 
+impl IsrContext {
+    pub fn get_ip(&self) -> u64 {
+        self.rip
+    }
+}
+
 #[no_mangle]
 unsafe extern "C" fn common_handler_entry(
     ctx: *mut IsrContext,
@@ -173,17 +179,48 @@ unsafe extern "C" fn common_handler_entry(
             );
         }
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
+
+        logln!(
+            "{:?} entry: interrupt: {} {} {}",
+            current_thread_ref().map(|ct| ct.id()),
+            number,
+            user,
+            kernel_fs
+        );
         let t = current_thread_ref().unwrap();
         t.set_entry_registers(Registers::Interrupt(ctx, *ctx));
+    } else {
+        logln!(
+            "{:?} kern reentry: interrupt: {} {} {}",
+            current_thread_ref().map(|ct| ct.id()),
+            number,
+            user,
+            kernel_fs
+        );
     }
     generic_isr_handler(ctx, number, user);
 
     if user {
         let t = current_thread_ref().unwrap();
-        t.set_entry_registers(Registers::None);
         let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
-        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+        let ctx = ctx.as_mut().unwrap();
+        if ctx.rip < 0x1000 {
+            logln!("INTERRUPT FAIL: {:x}", ctx.rip);
+        }
+        t.set_entry_registers(Registers::None);
+        logln!("==> {}: leaving int: {}", t.id(), number);
         drop(t);
+        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+    } else {
+        let ctx = ctx.as_mut().unwrap();
+        if ctx.rip < 0x1000 {
+            logln!("KINTERRUPT FAIL: {:x}", ctx.rip);
+        }
+        logln!(
+            "==> {:?}: leaving kint: {}",
+            current_thread_ref().map(|ct| ct.id()),
+            number
+        );
     }
 }
 
@@ -479,15 +516,25 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             if err & (1 << 3) != 0 {
                 flags.insert(PageFaultFlags::INVALID);
             }
+            logln!(
+                "14 ===> {:?} : {:x} {:?} {:?}",
+                current_thread_ref().map(|ct| ct.id()),
+                cr2,
+                flags,
+                cause
+            );
             crate::thread::enter_kernel();
             crate::interrupt::set(true);
-            if let Ok(cr2_va) = VirtAddr::new(cr2 as u64) && let Ok(rip_va) = VirtAddr::new(ctx.rip) {
-            crate::memory::context::virtmem::page_fault(
-                cr2_va,
-                cause,
-                flags,
-                rip_va,
-            );
+            if let Ok(cr2_va) = VirtAddr::new(cr2 as u64)
+                && let Ok(rip_va) = VirtAddr::new(ctx.rip)
+            {
+                crate::memory::context::virtmem::page_fault(
+                    cr2_va,
+                    cause,
+                    flags,
+                    rip_va,
+                    VirtAddr::new(ctx.rsp).unwrap(),
+                );
             } else {
                 // TODO: do we need to do something better?
                 let t = current_thread_ref().unwrap();
