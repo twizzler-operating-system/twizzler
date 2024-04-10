@@ -83,7 +83,7 @@ unsafe extern "C" fn __do_switch(
         /* save the stack pointer. */
         "mov [rsi], rsp",
         /* okay, now we can release the switch lock */
-        "mov qword ptr [rcx], 0",
+        "lock mov qword ptr [rcx], 0",
         "sfence",
         /* try to grab the new switch lock for the new thread. if we fail, jump to a spin loop */
         "mov rax, [rdx]",
@@ -91,7 +91,8 @@ unsafe extern "C" fn __do_switch(
         "jnz sw_wait",
         "do_the_switch:",
         /* we can just store to the new switch lock, since we're guaranteed to be the only CPU here */
-        "mov qword ptr [rdx], 1",
+        "lock mov qword ptr [rdx], 1",
+        "mfence",
         /* okay, now load the new stack pointer and restore */
         "mov rsp, [rdi]",
         "popfq",
@@ -369,6 +370,7 @@ impl Thread {
     }
 
     pub extern "C" fn arch_switch_to(&self, old_thread: &Thread) {
+        assert!(!crate::interrupt::get());
         unsafe {
             set_kernel_stack(
                 VirtAddr::new(self.kernel_stack.as_ref() as *const u8 as u64)

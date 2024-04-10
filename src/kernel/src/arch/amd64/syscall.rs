@@ -150,6 +150,7 @@ pub unsafe fn return_to_user(context: *const X86SyscallContext) -> ! {
         "mov r11, [r11 + 0x40]",
         "bts r11, 9",
         "swapgs",
+        "lfence",
         "sysretq",
         in("r11") context, options(noreturn))
 }
@@ -164,14 +165,6 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
     }
     x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
 
-    if true {
-        logln!(
-            "syscall entry {:?} {} {:x}",
-            current_thread_ref().map(|ct| ct.id()),
-            (*context).rax,
-            (*context).rcx
-        );
-    }
     let t = current_thread_ref().unwrap();
     t.set_entry_registers(Registers::Syscall(context, *context));
 
@@ -213,13 +206,6 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
 
             let int_frame = IsrContext::from(up_frame);
 
-            if int_frame.get_ip() < 0x1000 {
-                logln!("UPRETURN FAIL: {:x}", int_frame.get_ip());
-            }
-            logln!(
-                "{}: return from upret syscall",
-                current_thread_ref().unwrap().id()
-            );
             x86::msr::wrmsr(x86::msr::IA32_FS_BASE, up_frame.thread_ptr);
             return_with_frame_to_user(int_frame);
         }
@@ -227,13 +213,6 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
         user_fs
     };
 
-    if (*context).rcx < 0x1000 {
-        logln!("UPRETURN FAIL: {:x}", (*context).rcx);
-    }
-    logln!(
-        "{:?}: return from syscall",
-        current_thread_ref().map(|ct| ct.id())
-    );
     x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
     /* TODO: check that rcx is canonical */
     return_to_user(context);
@@ -245,6 +224,7 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
     core::arch::asm!(
         /* syscall can only come from userspace, so we can safely blindly swapgs */
         "swapgs",
+        "lfence",
         "mov gs:16, r11",     //backup r11, which contains rflags
         "mov r11, gs:0",      //load kernel stack pointer
         "mov [r11 - 8], rsp", //push user stack pointer
@@ -268,6 +248,7 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
         "push rax",
         "mov rdi, rsp",
         "mov rsi, gs:8",
+        "cld",
         "call syscall_entry_c",
         options(noreturn),
     )
