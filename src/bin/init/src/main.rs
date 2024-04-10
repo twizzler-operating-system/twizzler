@@ -356,7 +356,7 @@ async fn async_test_async() {
 
     std::thread::spawn(move || loop {
         println!("external write");
-        ait2_clone.get_ref().try_write();
+        let _ = ait2_clone.get_ref().try_write();
         std::thread::sleep(Duration::from_millis(307));
     });
 

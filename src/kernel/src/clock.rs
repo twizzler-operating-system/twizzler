@@ -55,6 +55,7 @@ impl<T: Send, F: FnOnce(T)> Timeout for TimeoutOnce<T, F> {
 struct TimeoutEntry {
     timeout: Box<dyn Timeout + Send>,
     expire_ticks: u64,
+    key: usize,
 }
 
 impl core::fmt::Debug for TimeoutEntry {
@@ -81,6 +82,20 @@ struct TimeoutQueue {
     current: usize,
     next_wake: usize,
     soft_current: usize,
+    keys: Vec<usize>,
+    next_key: usize,
+}
+
+#[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Clone)]
+pub struct TimeoutKey {
+    key: usize,
+    window: usize,
+}
+
+impl Drop for TimeoutKey {
+    fn drop(&mut self) {
+        TIMEOUT_QUEUE.lock().remove(self);
+    }
 }
 
 impl TimeoutQueue {
@@ -91,6 +106,26 @@ impl TimeoutQueue {
             current: 0,
             next_wake: 0,
             soft_current: 0,
+            keys: Vec::new(),
+            next_key: 0,
+        }
+    }
+
+    fn next_key(&mut self) -> usize {
+        match self.keys.pop() {
+            Some(key) => key,
+            None => {
+                self.next_key += 1;
+                self.next_key
+            }
+        }
+    }
+
+    fn release_key(&mut self, key: usize) {
+        if key == self.next_key {
+            self.next_key -= 1;
+        } else {
+            self.keys.push(key);
         }
     }
 
@@ -119,24 +154,34 @@ impl TimeoutQueue {
         NR_WINDOWS as u64
     }
 
-    fn insert(&mut self, time: Nanoseconds, timeout: Box<dyn Timeout + Send>) {
+    fn insert(&mut self, time: Nanoseconds, timeout: Box<dyn Timeout + Send>) -> TimeoutKey {
         let ticks = nano_to_ticks(time);
         let expire_ticks = self.current + ticks as usize;
         let window = expire_ticks % NR_WINDOWS;
-        self.queues[window].push(TimeoutEntry {
+        let key = self.next_key();
+        let entry = TimeoutEntry {
             timeout,
             expire_ticks: expire_ticks as u64,
-        });
+            key,
+        };
+        self.queues[window].push(entry);
         if expire_ticks < self.next_wake {
             // TODO: #41 signal CPU to wake up early.
         }
+        TimeoutKey { key, window }
     }
+
+    fn remove(&mut self, key: &TimeoutKey) {
+        for _ in self.queues[key.window].extract_if(|entry| entry.key == key.key) {}
+        self.release_key(key.key);
+    }
+
     fn check_window(&mut self, window: usize) -> Option<TimeoutEntry> {
         if !self.queues[window].is_empty() {
             let index = self.queues[window]
                 .iter()
                 .position(|x| x.is_ready(self.current as u64));
-            return index.map(|index| self.queues[window].remove(index));
+            return index.map(|index| self.queues[window].swap_remove(index));
         }
         None
     }
@@ -171,9 +216,9 @@ pub fn register_timeout_callback<T: 'static + Send, F: FnOnce(T) + Send + 'stati
     time: Nanoseconds,
     cb: F,
     data: T,
-) {
+) -> TimeoutKey {
     let timeout = TimeoutOnce::new(cb, data);
-    TIMEOUT_QUEUE.lock().insert(time, Box::new(timeout));
+    TIMEOUT_QUEUE.lock().insert(time, Box::new(timeout))
 }
 
 extern "C" fn soft_timeout_clock() {

@@ -18,6 +18,7 @@
 #![feature(const_option)]
 #![feature(let_chains)]
 #![feature(btree_extract_if)]
+#![feature(extract_if)]
 
 #[macro_use]
 pub mod log;

@@ -154,7 +154,7 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
     let thread = current_thread_ref().unwrap();
     let guard = thread.enter_critical();
     thread.set_sync_sleep();
-    crate::clock::register_timeout_callback(
+    let timeout_key = crate::clock::register_timeout_callback(
         // TODO: fix all our time types
         timeout.as_nanos() as u64,
         thread_sync_cb_timeout,
@@ -163,6 +163,7 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
     thread.set_sync_sleep_done();
     requeue_all();
     finish_blocking(guard);
+    drop(timeout_key);
 }
 
 // TODO: #42 on timeout, try to return Err(Timeout).
@@ -229,23 +230,27 @@ pub fn sys_thread_sync(
     let should_sleep = unsleeps.len() == num_sleepers && num_sleepers > 0;
     {
         let guard = thread.enter_critical();
-        if should_sleep {
-            if let Some(timeout) = timeout {
+        let timeout_key = if should_sleep {
+            let timeout_key = timeout.map(|timeout| {
                 crate::clock::register_timeout_callback(
                     // TODO: fix all our time types
                     timeout.as_nanos() as u64,
                     thread_sync_cb_timeout,
                     thread.clone(),
-                );
-            }
+                )
+            });
             thread.set_sync_sleep_done();
-        }
+            timeout_key
+        } else {
+            None
+        };
         requeue_all();
         if should_sleep {
             finish_blocking(guard);
         } else {
             drop(guard);
         }
+        drop(timeout_key);
     }
     for op in unsleeps {
         undo_sleep(op);
