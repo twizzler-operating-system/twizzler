@@ -387,12 +387,28 @@ async fn async_test_async() {
 }
 
 fn test_async() {
-    let e = async_executor::Executor::new();
+    let e = Arc::new(async_executor::Executor::new());
     e.spawn(async {
         println!("hello!");
         async_test_async().await
     })
     .detach();
+
+    e.spawn(async {
+        println!("hello!");
+        async_test_async().await
+    })
+    .detach();
+
+    e.spawn(async {
+        println!("hello!");
+        async_test_async().await
+    })
+    .detach();
+    for _ in 0..4 {
+        let e = e.clone();
+        let _t = std::thread::spawn(move || block_on(e.run(std::future::pending::<()>())));
+    }
     block_on(e.run(std::future::pending::<()>()));
 }
 

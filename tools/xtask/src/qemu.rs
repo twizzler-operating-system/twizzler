@@ -58,7 +58,7 @@ impl QemuCommand {
         // add additional options for qemu
         self.cmd.args(&options.qemu_options);
 
-        //self.cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
+        self.cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
     }
 
     fn arch_config(&mut self, options: &QemuOptions) {
