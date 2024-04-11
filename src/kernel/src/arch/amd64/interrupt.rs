@@ -497,13 +497,7 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             if let Ok(cr2_va) = VirtAddr::new(cr2 as u64)
                 && let Ok(rip_va) = VirtAddr::new(ctx.rip)
             {
-                crate::memory::context::virtmem::page_fault(
-                    cr2_va,
-                    cause,
-                    flags,
-                    rip_va,
-                    VirtAddr::new(ctx.rsp).unwrap(),
-                );
+                crate::memory::context::virtmem::page_fault(cr2_va, cause, flags, rip_va);
             } else {
                 // TODO: do we need to do something better?
                 let t = current_thread_ref().unwrap();
