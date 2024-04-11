@@ -172,13 +172,11 @@ pub fn sys_thread_sync(
     timeout: Option<&mut Duration>,
 ) -> Result<usize, ThreadSyncError> {
     if let Some(ref timeout) = timeout {
-        assert!(!VirtAddr::from_ptr(*timeout).is_kernel());
         if ops.is_empty() {
             simple_timed_sleep(timeout);
             return Ok(0);
         }
     }
-    assert!(!VirtAddr::from_ptr(ops.as_ptr()).is_kernel());
     let mut ready_count = 0;
     let mut unsleeps = Vec::new();
     let mut num_sleepers = 0;
@@ -187,13 +185,6 @@ pub fn sys_thread_sync(
         match op {
             ThreadSync::Sleep(sleep, result) => match prep_sleep(sleep, unsleeps.is_empty()) {
                 Ok(se) => {
-                    if let ThreadSyncReference::Virtual32(p) = &sleep.reference {
-                        assert!(!VirtAddr::from_ptr(*p).is_kernel());
-                    }
-
-                    if let ThreadSyncReference::Virtual(p) = &sleep.reference {
-                        assert!(!VirtAddr::from_ptr(*p).is_kernel());
-                    }
                     num_sleepers += 1;
                     *result = Ok(if se.did_sleep { 0 } else { 1 });
                     if se.did_sleep {
@@ -204,26 +195,17 @@ pub fn sys_thread_sync(
                 }
                 Err(x) => *result = Err(x),
             },
-            ThreadSync::Wake(wake, result) => {
-                if let ThreadSyncReference::Virtual32(p) = &wake.reference {
-                    assert!(!VirtAddr::from_ptr(*p).is_kernel());
-                }
-
-                if let ThreadSyncReference::Virtual(p) = &wake.reference {
-                    assert!(!VirtAddr::from_ptr(*p).is_kernel());
-                }
-                match wakeup(wake) {
-                    Ok(count) => {
-                        *result = Ok(count);
-                        if count > 0 {
-                            ready_count += 1;
-                        }
-                    }
-                    Err(x) => {
-                        *result = Err(x);
+            ThreadSync::Wake(wake, result) => match wakeup(wake) {
+                Ok(count) => {
+                    *result = Ok(count);
+                    if count > 0 {
+                        ready_count += 1;
                     }
                 }
-            }
+                Err(x) => {
+                    *result = Err(x);
+                }
+            },
         }
     }
     let thread = current_thread_ref().unwrap();

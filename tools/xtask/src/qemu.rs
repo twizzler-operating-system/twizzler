@@ -58,7 +58,7 @@ impl QemuCommand {
         // add additional options for qemu
         self.cmd.args(&options.qemu_options);
 
-        self.cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
+        //self.cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
     }
 
     fn arch_config(&mut self, options: &QemuOptions) {
@@ -118,8 +118,6 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
 
     let mut run_cmd = QemuCommand::new(&cli);
     run_cmd.config(&cli, image_info);
-
-    println!("qemu command: {:?}", run_cmd);
 
     let exit_status = run_cmd.status()?;
     if exit_status.success() {

@@ -54,6 +54,7 @@ pub fn init(kernel_image: &'static [u8]) {
     unsafe { DEBUG_CTX = ctx };
 }
 
+const MAX_FRAMES: usize = 100;
 pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoint>) {
     let mut frame_nr = 0;
     let trace_callback = |frame: &backtracer_core::Frame| {
@@ -109,7 +110,7 @@ pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoin
         }
         frame_nr += 1;
 
-        if frame_nr > 100 {
+        if frame_nr > MAX_FRAMES {
             return false;
         }
 

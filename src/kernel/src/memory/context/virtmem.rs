@@ -718,15 +718,6 @@ pub fn page_fault(
                 // drop these mutexes in case upcall sending generetes a page fault.
                 drop(obj_page_tree);
                 drop(slot_mgr);
-                logln!(
-                    "page-fault by thread {}: {:?} {:?} {:?} ip={:?} st={:?}",
-                    current_thread_ref().unwrap().id(),
-                    addr,
-                    cause,
-                    flags,
-                    ip,
-                    stack
-                );
                 current_thread_ref().unwrap().send_upcall(null_upcall);
                 return;
             }
@@ -734,14 +725,6 @@ pub fn page_fault(
                 // drop these mutexes in case upcall sending generetes a page fault.
                 drop(obj_page_tree);
                 drop(slot_mgr);
-                logln!(
-                    "page-fault: {:?} {:?} {:?} ip={:?} st={:?}",
-                    addr,
-                    cause,
-                    flags,
-                    ip,
-                    stack
-                );
                 current_thread_ref().unwrap().send_upcall(oob_upcall);
                 return;
             }

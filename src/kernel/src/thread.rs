@@ -271,8 +271,6 @@ impl Thread {
 
     #[track_caller]
     pub fn send_upcall(self: &ThreadRef, info: UpcallInfo) {
-        logln!("sending upcall: {:?}", core::panic::Location::caller());
-        logln!("current kstack: {:p}", self.kernel_stack);
         if !self.is_current_thread() {
             panic!("cannot send upcall to a different thread");
         }
