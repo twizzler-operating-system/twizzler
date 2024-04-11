@@ -6,12 +6,3 @@
 	path = src/lib/nvme-rs
 	url = ../nvme-rs.git
 	branch = twizzler-dynlink
-[submodule "src/lib/smol/polling"]
-	path = src/lib/smol/polling
-	url = git@github.com:dbittman/polling.git
-[submodule "src/lib/smol/async-executor"]
-	path = src/lib/smol/async-executor
-	url = git@github.com:dbittman/async-executor.git
-[submodule "src/lib/smol/async-io"]
-	path = src/lib/smol/async-io
-	url = git@github.com:dbittman/async-io.git
