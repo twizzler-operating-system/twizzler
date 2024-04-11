@@ -108,19 +108,6 @@ struct SleepEvent {
 
 fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent, ThreadSyncError> {
     let (obj, offset) = get_obj(sleep.reference)?;
-    /*
-    logln!(
-        "{} sleep {} {:x}",
-        current_thread_ref().unwrap().id(),
-        obj.id(),
-        offset
-    );
-    if let ThreadSyncReference::Virtual(p) = &sleep.reference {
-        logln!("  => {:p} {}", *p, unsafe {
-            (**p).load(core::sync::atomic::Ordering::SeqCst)
-        });
-    }
-    */
     let did_sleep = if matches!(sleep.reference, ThreadSyncReference::Virtual32(_)) {
         obj.setup_sleep_word32(offset, sleep.op, sleep.value as u32, first_sleep)
     } else {
@@ -166,7 +153,6 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
     drop(timeout_key);
 }
 
-// TODO: #42 on timeout, try to return Err(Timeout).
 pub fn sys_thread_sync(
     ops: &mut [ThreadSync],
     timeout: Option<&mut Duration>,
@@ -210,7 +196,7 @@ pub fn sys_thread_sync(
     }
     let thread = current_thread_ref().unwrap();
     let should_sleep = unsleeps.len() == num_sleepers && num_sleepers > 0;
-    {
+    let was_timedout = {
         let guard = thread.enter_critical();
         let timeout_key = if should_sleep {
             let timeout_key = timeout.map(|timeout| {
@@ -232,10 +218,15 @@ pub fn sys_thread_sync(
         } else {
             drop(guard);
         }
-        drop(timeout_key);
-    }
+        // If we have a timeout key, AND we don't find it during release, the timeout fired.
+        timeout_key.map(|tk| !tk.release()).unwrap_or(false)
+    };
     for op in unsleeps {
         undo_sleep(op);
     }
-    Ok(ready_count)
+    if was_timedout && ready_count == 0 {
+        Err(ThreadSyncError::Timeout)
+    } else {
+        Ok(ready_count)
+    }
 }

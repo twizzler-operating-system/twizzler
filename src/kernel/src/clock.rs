@@ -92,6 +92,16 @@ pub struct TimeoutKey {
     window: usize,
 }
 
+impl TimeoutKey {
+    /// Remove all timeouts with this key. Returns true if a key was actually removed (timeout hasn't fired).
+    pub fn release(self) -> bool {
+        let did_remove = TIMEOUT_QUEUE.lock().remove(&self);
+        // Our destructor just calls remove, above, so skip it when doing this manual release.
+        core::mem::forget(self);
+        did_remove
+    }
+}
+
 impl Drop for TimeoutKey {
     fn drop(&mut self) {
         TIMEOUT_QUEUE.lock().remove(self);
@@ -171,9 +181,13 @@ impl TimeoutQueue {
         TimeoutKey { key, window }
     }
 
-    fn remove(&mut self, key: &TimeoutKey) {
+    // Remove a timeout key. Returns true if the key was actually removed (timeout hasn't fired).
+    fn remove(&mut self, key: &TimeoutKey) -> bool {
+        let old_len = self.queues[key.window].len();
         for _ in self.queues[key.window].extract_if(|entry| entry.key == key.key) {}
         self.release_key(key.key);
+        // Did we remove anything?
+        old_len != self.queues[key.window].len()
     }
 
     fn check_window(&mut self, window: usize) -> Option<TimeoutEntry> {
