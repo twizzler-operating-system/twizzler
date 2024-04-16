@@ -76,7 +76,7 @@ fn create_and_map() -> Option<(usize, ObjID)> {
     )
     .ok()?;
 
-    let slot = monitor_api::monitor_rt_object_map(id.as_u128(), MapFlags::READ | MapFlags::WRITE)
+    let slot = monitor_api::monitor_rt_object_map(id, MapFlags::READ | MapFlags::WRITE)
         .unwrap()
         .ok();
 

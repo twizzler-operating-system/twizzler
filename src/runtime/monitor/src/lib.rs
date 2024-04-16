@@ -144,7 +144,7 @@ fn bootstrap_name_res(mut name: &str) -> Option<Backing> {
     }
     let id = find_init_name(name)?;
     let obj = twizzler_runtime_api::get_runtime()
-        .map_object(id.as_u128(), twizzler_runtime_api::MapFlags::READ)
+        .map_object(id, twizzler_runtime_api::MapFlags::READ)
         .ok()?;
     Some(Backing::new(obj))
 }
