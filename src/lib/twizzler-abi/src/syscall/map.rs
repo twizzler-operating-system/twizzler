@@ -1,6 +1,7 @@
-use core::{fmt, mem::MaybeUninit};
+use core::mem::MaybeUninit;
 
 use bitflags::bitflags;
+use num_enum::{FromPrimitive, IntoPrimitive};
 
 use crate::{
     arch::syscall::raw_syscall,
@@ -8,64 +9,41 @@ use crate::{
 };
 
 use super::{convert_codes_to_result, justval, Syscall};
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
-#[repr(u32)]
+
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Eq,
+    IntoPrimitive,
+    FromPrimitive,
+    thiserror::Error,
+)]
+#[repr(u64)]
 /// Possible error values for [sys_object_map].
 pub enum ObjectMapError {
+    #[num_enum(default)]
     /// An unknown error occurred.
+    #[error("unknown error")]
     Unknown = 0,
     /// The specified object was not found.
+    #[error("object not found")]
     ObjectNotFound = 1,
     /// The specified slot was invalid.
+    #[error("invalid slot")]
     InvalidSlot = 2,
     /// The specified protections were invalid.
+    #[error("invalid protections")]
     InvalidProtections = 3,
     /// An argument was invalid.
+    #[error("invalid argument")]
     InvalidArgument = 4,
 }
 
-impl ObjectMapError {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Unknown => "an unknown error occurred",
-            Self::InvalidProtections => "invalid protections",
-            Self::InvalidSlot => "invalid slot",
-            Self::ObjectNotFound => "object was not found",
-            Self::InvalidArgument => "invalid argument",
-        }
-    }
-}
-
-impl From<ObjectMapError> for u64 {
-    fn from(x: ObjectMapError) -> u64 {
-        x as u64
-    }
-}
-
-impl From<u64> for ObjectMapError {
-    fn from(x: u64) -> Self {
-        match x {
-            1 => Self::ObjectNotFound,
-            2 => Self::InvalidSlot,
-            3 => Self::InvalidProtections,
-            4 => Self::InvalidArgument,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl fmt::Display for ObjectMapError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for ObjectMapError {
-    fn description(&self) -> &str {
-        self.as_str()
-    }
-}
+impl core::error::Error for ObjectMapError {}
 
 bitflags! {
     /// Flags to pass to [sys_object_map].
@@ -95,15 +73,30 @@ pub fn sys_object_map(
     convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, justval)
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
-#[repr(u32)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Eq,
+    IntoPrimitive,
+    FromPrimitive,
+    thiserror::Error,
+)]
+#[repr(u64)]
 /// Possible error values for [sys_object_unmap].
 pub enum ObjectUnmapError {
     /// An unknown error occurred.
+    #[num_enum(default)]
+    #[error("unknown error")]
     Unknown = 0,
     /// The specified slot was invalid.
+    #[error("invalid slot")]
     InvalidSlot = 1,
     /// An argument was invalid.
+    #[error("invalid argument")]
     InvalidArgument = 2,
 }
 
@@ -117,34 +110,7 @@ impl ObjectUnmapError {
     }
 }
 
-impl From<ObjectUnmapError> for u64 {
-    fn from(x: ObjectUnmapError) -> u64 {
-        x as u64
-    }
-}
-
-impl From<u64> for ObjectUnmapError {
-    fn from(x: u64) -> Self {
-        match x {
-            1 => Self::InvalidSlot,
-            2 => Self::InvalidArgument,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl fmt::Display for ObjectUnmapError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for ObjectUnmapError {
-    fn description(&self) -> &str {
-        self.as_str()
-    }
-}
+impl core::error::Error for ObjectUnmapError {}
 
 bitflags! {
     /// Flags to pass to [sys_object_unmap].
@@ -165,56 +131,34 @@ pub fn sys_object_unmap(
     convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), justval)
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
-#[repr(u32)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Eq,
+    FromPrimitive,
+    IntoPrimitive,
+    thiserror::Error,
+)]
+#[repr(u64)]
 /// Possible error values for [sys_object_unmap].
 pub enum ObjectReadMapError {
     /// An unknown error occurred.
+    #[num_enum(default)]
+    #[error("unknown error")]
     Unknown = 0,
     /// The specified slot was invalid.
+    #[error("invalid slot")]
     InvalidSlot = 1,
     /// An argument was invalid.
+    #[error("invalid argument")]
     InvalidArgument = 2,
 }
 
-impl ObjectReadMapError {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Unknown => "an unknown error occurred",
-            Self::InvalidSlot => "invalid slot",
-            Self::InvalidArgument => "invalid argument",
-        }
-    }
-}
-
-impl From<ObjectReadMapError> for u64 {
-    fn from(x: ObjectReadMapError) -> u64 {
-        x as u64
-    }
-}
-
-impl From<u64> for ObjectReadMapError {
-    fn from(x: u64) -> Self {
-        match x {
-            1 => Self::InvalidSlot,
-            2 => Self::InvalidArgument,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl fmt::Display for ObjectReadMapError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for ObjectReadMapError {
-    fn description(&self) -> &str {
-        self.as_str()
-    }
-}
+impl core::error::Error for ObjectReadMapError {}
 
 /// Information about an object mapping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

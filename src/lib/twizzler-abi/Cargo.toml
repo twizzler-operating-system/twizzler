@@ -14,6 +14,7 @@ talc = { version = "3.0", default-features = false, optional = true }
 bitset-core = { version = "0.1", optional = true, default-features = false }
 cfg-if = "1.0"
 num_enum = { version = "0.7", default-features = false }
+thiserror = { package = "thiserror-no-std", version = "2.0", default-features = false }
 
 [dependencies.volatile]
 optional = true
