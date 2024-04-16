@@ -60,7 +60,7 @@ impl<T> InternalObject<T> {
             slot,
             runtime_handle: ObjectHandle::new(
                 raw,
-                id.as_u128(),
+                id,
                 MapFlags::READ | MapFlags::WRITE,
                 (slot * MAX_SIZE) as *mut u8,
                 (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
@@ -83,7 +83,7 @@ impl<T> InternalObject<T> {
 
     #[allow(dead_code)]
     pub(crate) fn id(&self) -> ObjID {
-        ObjID::new(self.runtime_handle.id)
+        self.runtime_handle.id
     }
 
     #[allow(dead_code)]
@@ -100,7 +100,7 @@ impl<T> InternalObject<T> {
         Some(Self {
             runtime_handle: ObjectHandle::new(
                 NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap(),
-                id.as_u128(),
+                id,
                 prot.into(),
                 (slot * MAX_SIZE) as *mut u8,
                 (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,

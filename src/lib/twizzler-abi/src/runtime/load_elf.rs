@@ -356,7 +356,7 @@ pub fn spawn_new_executable(
     .unwrap();
     let mut idx = 0;
 
-    aux_array[idx] = AuxEntry::ExecId(exe.id().as_u128());
+    aux_array[idx] = AuxEntry::ExecId(exe.id());
     idx += 1;
     aux_array[idx] = AuxEntry::Arguments(args.len(), spawnargs_start as u64);
     idx += 1;

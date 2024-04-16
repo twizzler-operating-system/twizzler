@@ -63,7 +63,7 @@ fn into_protections(flags: twizzler_runtime_api::MapFlags) -> Protections {
 impl Slot {
     fn new(id: ObjID, prot: Protections) -> Result<Self, ObjectInitError> {
         let runtime = twizzler_runtime_api::get_runtime();
-        let rh = runtime.map_object(id.as_u128(), into_map_flags(prot))?;
+        let rh = runtime.map_object(id, into_map_flags(prot))?;
         Ok(Self {
             id,
             prot,
@@ -73,7 +73,7 @@ impl Slot {
 
     pub fn new_from_handle(handle: ObjectHandle) -> Result<Self, ObjectInitError> {
         Ok(Self {
-            id: ObjID::new(handle.id),
+            id: handle.id,
             prot: into_protections(handle.flags),
             runtime_handle: handle,
         })

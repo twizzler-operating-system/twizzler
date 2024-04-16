@@ -115,7 +115,7 @@ pub extern "C" fn user_init() {
             )
         }
 
-        aux = append_aux(aux, AuxEntry::ExecId(init_obj.id().as_u128()));
+        aux = append_aux(aux, AuxEntry::ExecId(init_obj.id()));
         append_aux(aux, AuxEntry::Null);
 
         // remove permission mappings from text segment

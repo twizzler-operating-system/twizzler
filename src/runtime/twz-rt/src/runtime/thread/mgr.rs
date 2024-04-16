@@ -177,7 +177,7 @@ impl ReferenceRuntime {
         };
 
         let thread_repr_obj = self
-            .map_object(thid.as_u128(), MapFlags::READ | MapFlags::WRITE)
+            .map_object(thid, MapFlags::READ | MapFlags::WRITE)
             .map_err(|_| SpawnError::Other)?;
 
         let thread = InternalThread::new(

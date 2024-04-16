@@ -34,7 +34,7 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
             }
             let id = find_init_name(name)?;
             let obj = twizzler_runtime_api::get_runtime()
-                .map_object(id.as_u128(), MapFlags::READ)
+                .map_object(id, MapFlags::READ)
                 .ok()?;
             Some(Backing::new(obj))
         })

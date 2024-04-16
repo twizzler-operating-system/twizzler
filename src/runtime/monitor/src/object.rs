@@ -28,7 +28,7 @@ pub fn map_object(_info: &GateCallInfo, id: ObjID, flags: MapFlags) -> Result<us
 
     let Ok(_) = sys_object_map(
         None,
-        twizzler_abi::object::ObjID::new(id),
+        id,
         slot,
         mapflags_into_prot(flags),
         twizzler_abi::syscall::MapFlags::empty(),

@@ -73,7 +73,7 @@ pub(crate) fn make_new_comp_alloc_object() -> ObjectHandle {
     .unwrap();
 
     twizzler_runtime_api::get_runtime()
-        .map_object(id.as_u128(), MapFlags::READ | MapFlags::WRITE)
+        .map_object(id, MapFlags::READ | MapFlags::WRITE)
         .unwrap()
 }
 

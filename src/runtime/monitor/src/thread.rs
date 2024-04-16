@@ -76,7 +76,7 @@ pub fn __monitor_rt_spawn_thread(
     thread_pointer: usize,
     stack_pointer: usize,
 ) -> Result<twizzler_runtime_api::ObjID, SpawnError> {
-    spawn_thread(src_ctx, args, thread_pointer, stack_pointer).map(|o| o.as_u128())
+    spawn_thread(src_ctx, args, thread_pointer, stack_pointer)
 }
 
 // Extern function, linked to by the runtime.

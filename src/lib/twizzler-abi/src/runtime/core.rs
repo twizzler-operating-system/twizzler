@@ -67,7 +67,7 @@ impl CoreRuntime for MinimalRuntime {
                         process_phdrs(core::slice::from_raw_parts(paddr as *const Phdr, pnum))
                     }
                     AuxEntry::ExecId(id) => {
-                        super::debug::set_execid(ObjID::new(id));
+                        super::debug::set_execid(id);
                     }
                     AuxEntry::Arguments(num, ptr) => {
                         arg_count = num;

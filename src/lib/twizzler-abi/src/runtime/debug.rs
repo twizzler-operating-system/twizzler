@@ -25,7 +25,7 @@ impl DebugRuntime for MinimalRuntime {
         id: twizzler_runtime_api::LibraryId,
     ) -> Option<twizzler_runtime_api::Library> {
         let mapping = __twz_get_runtime()
-            .map_object(get_execid().as_u128(), MapFlags::READ)
+            .map_object(get_execid(), MapFlags::READ)
             .ok()?;
         Some(Library {
             range: AddrRange {
