@@ -37,7 +37,11 @@
 #![feature(c_size_t)]
 #![feature(error_in_core)]
 
+<<<<<<< HEAD
 use core::fmt::{Display, LowerHex, UpperHex};
+=======
+use core::fmt::{LowerHex, UpperHex};
+>>>>>>> 7def295 (Unify ObjID types across API and ABI crates.)
 #[cfg_attr(feature = "kernel", allow(unused_imports))]
 use core::{
     alloc::GlobalAlloc,
