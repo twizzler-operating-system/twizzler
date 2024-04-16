@@ -356,9 +356,7 @@ fn main() {
     if let Some(id) = find_init_name("test_bins") {
         println!("=== found init test list ===");
         let runtime = __twz_get_runtime();
-        let handle = runtime
-            .map_object(id.as_u128(), Protections::READ.into())
-            .unwrap();
+        let handle = runtime.map_object(id, Protections::READ.into()).unwrap();
 
         let addr = unsafe { handle.start.add(NULLPAGE_SIZE) };
         let bytes = unsafe {
@@ -372,9 +370,7 @@ fn main() {
             if let Some(id) = find_init_name(line) {
                 let tid = exec2(line, id);
                 if let Some(tid) = tid {
-                    let thandle = runtime
-                        .map_object(tid.as_u128(), Protections::READ.into())
-                        .unwrap();
+                    let thandle = runtime.map_object(tid, Protections::READ.into()).unwrap();
 
                     let taddr = unsafe { thandle.start.add(NULLPAGE_SIZE) };
                     let tr = taddr as *const ThreadRepr;

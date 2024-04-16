@@ -36,6 +36,7 @@
 #![feature(naked_functions)]
 #![feature(c_size_t)]
 
+use core::fmt::{LowerHex, UpperHex};
 #[cfg_attr(feature = "kernel", allow(unused_imports))]
 use core::{
     alloc::GlobalAlloc,
@@ -50,8 +51,68 @@ use core::{
 #[cfg(feature = "rt0")]
 pub mod rt0;
 
-/// Core object ID type in Twizzler.
-pub type ObjID = u128;
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+/// An object ID, represented as a transparent wrapper type. Any value where the upper 64 bits are
+/// zero is invalid.
+pub struct ObjID(u128);
+
+impl ObjID {
+    /// Create a new ObjID out of a 128 bit value.
+    pub const fn new(id: u128) -> Self {
+        Self(id)
+    }
+
+    /// Split an object ID into upper and lower values, useful for syscalls.
+    pub fn split(&self) -> (u64, u64) {
+        ((self.0 >> 64) as u64, (self.0 & 0xffffffffffffffff) as u64)
+    }
+
+    /// Build a new ObjID out of a high part and a low part.
+    pub fn new_from_parts(hi: u64, lo: u64) -> Self {
+        ObjID::new(((hi as u128) << 64) | (lo as u128))
+    }
+
+    pub fn as_u128(&self) -> u128 {
+        self.0
+    }
+}
+
+impl core::convert::AsRef<ObjID> for ObjID {
+    fn as_ref(&self) -> &ObjID {
+        self
+    }
+}
+
+impl From<u128> for ObjID {
+    fn from(id: u128) -> Self {
+        Self::new(id)
+    }
+}
+
+impl LowerHex for ObjID {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:x}", self.0)
+    }
+}
+
+impl UpperHex for ObjID {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:X}", self.0)
+    }
+}
+
+impl core::fmt::Display for ObjID {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ObjID({:x})", self.0)
+    }
+}
+
+impl core::fmt::Debug for ObjID {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ObjID({:x})", self.0)
+    }
+}
 
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]

@@ -80,7 +80,7 @@ impl ObjectRuntime for ReferenceRuntime {
 
         sys_object_map(
             None,
-            ObjID::new(in_id_a),
+            in_id_a,
             slot_a,
             prot_a,
             twizzler_abi::syscall::MapFlags::empty(),
@@ -89,7 +89,7 @@ impl ObjectRuntime for ReferenceRuntime {
 
         sys_object_map(
             None,
-            ObjID::new(in_id_b),
+            in_id_b,
             slot_b,
             prot_b,
             twizzler_abi::syscall::MapFlags::empty(),
