@@ -22,12 +22,14 @@ pub fn drop_map(comp: Option<ObjID>, id: ObjID, flags: MapFlags) {
     let _ = COMPMAN.unmap_object(comp.unwrap_or(MONITOR_INSTANCE_ID), id, flags);
 }
 
+/// Get information about a library, from a given compartments perspective.
 pub fn get_library_info(info: &GateCallInfo, id: LibraryId) -> Option<LibraryInfo> {
     todo!()
 }
 
+/// Spawn a thread into the given compartment.
 pub fn spawn_thread(
-    src_ctx: ObjID,
+    comp_id: ObjID,
     args: ThreadSpawnArgs,
     thread_pointer: usize,
     stack_pointer: usize,
@@ -35,6 +37,7 @@ pub fn spawn_thread(
     todo!()
 }
 
+/// Get the caller's compartment configuration pointer.
 pub fn get_comp_config(comp_id: Option<ObjID>) -> *const SharedCompConfig {
     todo!()
 }

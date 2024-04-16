@@ -13,8 +13,9 @@ use twz_rt::RuntimeThreadControl;
 use crate::state::get_monitor_state;
 
 pub const SUPER_UPCALL_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
+pub const DEFAULT_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 
-fn spawn_thread(
+pub(crate) fn spawn_thread(
     src_ctx: ObjID,
     args: ThreadSpawnArgs,
     thread_pointer: usize,

@@ -35,7 +35,7 @@ pub struct RunComp {
 }
 
 impl RunCompInner {
-    pub fn map_object(&mut self, info: MapInfo) -> Result<MappedObjectAddrs, MapError> {
+    pub fn map_object(&mut self, info: MapInfo) -> Result<&MapHandle, MapError> {
         if let Some(handle) = self.mapped_objects.get(&info) {
             Ok(handle.addrs())
         } else {
@@ -44,7 +44,6 @@ impl RunCompInner {
             self.mapped_objects
                 .get(&info)
                 .ok_or(MapError::InternalError)
-                .map(|h| h.addrs())
         }
     }
 
@@ -57,6 +56,11 @@ impl RunCompInner {
 impl RunComp {
     pub fn cloned_inner(&self) -> Arc<Mutex<RunCompInner>> {
         self.inner.clone()
+    }
+
+    pub fn with_inner<R>(&self, f: impl FnOnce(&mut RunCompInner) -> R) -> R {
+        let mut guard = self.inner.lock().unwrap();
+        f(&mut *guard)
     }
 
     pub fn name(&self) -> &str {

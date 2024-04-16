@@ -2,6 +2,7 @@
 #![feature(thread_local)]
 #![feature(c_str_literals)]
 #![feature(new_uninit)]
+#![feature(error_in_core)]
 
 use std::{
     collections::HashMap,

@@ -1,9 +1,11 @@
 use super::{cleaner::background_unmap_info, info::MapInfo, inner::MappedObjectAddrs};
 
-pub struct MapHandle {
+pub struct MapHandleInner {
     info: MapInfo,
     map: MappedObjectAddrs,
 }
+
+pub type MapHandle = Arc<MapHandleInner>;
 
 impl MapHandle {
     pub(crate) fn new(info: MapInfo, map: MappedObjectAddrs) -> Self {
