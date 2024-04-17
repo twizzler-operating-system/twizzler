@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{cleaner::background_unmap_info, info::MapInfo, inner::MappedObjectAddrs};
 
 pub struct MapHandleInner {
@@ -7,7 +9,7 @@ pub struct MapHandleInner {
 
 pub type MapHandle = Arc<MapHandleInner>;
 
-impl MapHandle {
+impl MapHandleInner {
     pub(crate) fn new(info: MapInfo, map: MappedObjectAddrs) -> Self {
         Self { info, map }
     }
@@ -17,7 +19,7 @@ impl MapHandle {
     }
 }
 
-impl Drop for MapHandle {
+impl Drop for MapHandleInner {
     fn drop(&mut self) {
         // Toss this work onto a background thread.
         background_unmap_info(self.info);

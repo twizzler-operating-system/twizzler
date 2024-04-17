@@ -1,9 +1,8 @@
 use miette::IntoDiagnostic;
 use twizzler_abi::syscall::{
-    sys_object_create, BackingType, CreateTieFlags, CreateTieSpec, ObjectCreate, ObjectCreateError,
-    ObjectCreateFlags,
+    sys_object_create, BackingType, CreateTieFlags, CreateTieSpec, ObjectCreate, ObjectCreateFlags,
 };
-use twizzler_runtime_api::{MapFlags, ObjectHandle, ObjectRuntime};
+use twizzler_runtime_api::{MapError, MapFlags, ObjectHandle, ObjectRuntime};
 
 use crate::mapman::MapHandle;
 
@@ -35,14 +34,18 @@ impl TlsObject {
         )
         .into_diagnostic()?;
 
-        let handle = twz_rt::OUR_RUNTIME.map_object(id.as_u128(), MapFlags::empty())?;
-        let mh = rc.with_inner(|inner| {
-            let mh = inner.map_object(crate::mapman::MapInfo {
-                id: id.as_u128(),
-                flags: MapFlags::empty(),
-            })?;
-            Ok(mh.clone())
-        })?;
+        let handle = twz_rt::OUR_RUNTIME
+            .map_object(id, MapFlags::empty())
+            .into_diagnostic()?;
+        let mh = rc
+            .with_inner(|inner| {
+                let mh = inner.map_object(crate::mapman::MapInfo {
+                    id,
+                    flags: MapFlags::empty(),
+                })?;
+                Ok::<_, MapError>(mh.clone())
+            })
+            .into_diagnostic()?;
 
         Ok(Self {
             handle,

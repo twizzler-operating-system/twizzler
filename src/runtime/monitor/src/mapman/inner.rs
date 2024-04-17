@@ -2,7 +2,7 @@
 //!
 //! Manages inner mappings, tracking handle count for monitor internal mapping and tracking.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
@@ -10,7 +10,10 @@ use twizzler_abi::{
 };
 use twizzler_runtime_api::{MapError, MapFlags};
 
-use super::{handle::MapHandle, info::MapInfo};
+use super::{
+    handle::{MapHandle, MapHandleInner},
+    info::MapInfo,
+};
 use twizzler_abi::object::Protections;
 
 pub(super) struct MMInner {
@@ -65,7 +68,7 @@ impl MMInner {
 
                 let Ok(_) = sys_object_map(
                     None,
-                    twizzler_abi::object::ObjID::new(info.id),
+                    info.id,
                     slot,
                     mapflags_into_prot(info.flags),
                     twizzler_abi::syscall::MapFlags::empty(),
@@ -90,7 +93,7 @@ impl MMInner {
 
         // New maps will be set to zero, so this is unconditional.
         item.handle_count += 1;
-        Ok(MapHandle::new(info, item.addrs))
+        Ok(Arc::new(MapHandleInner::new(info, item.addrs)))
     }
 
     pub(super) fn handle_drop(&mut self, info: MapInfo) -> Option<UnmapOnDrop> {

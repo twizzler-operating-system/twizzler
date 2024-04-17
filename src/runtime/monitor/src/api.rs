@@ -1,12 +1,10 @@
 use monitor_api::SharedCompConfig;
 use secgate::GateCallInfo;
-use twizzler_runtime_api::{
-    LibraryId, MapError, MapFlags, ObjID, ObjectHandle, SpawnError, ThreadSpawnArgs,
-};
+use twizzler_runtime_api::{LibraryId, MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
 
 use crate::{compman::COMPMAN, gates::LibraryInfo, mapman::MappedObjectAddrs};
 
-pub const MONITOR_INSTANCE_ID: ObjID = 0;
+pub const MONITOR_INSTANCE_ID: ObjID = ObjID::new(0);
 
 /// Maps an object into a specified compartment, or the monitor compartment if comp is None.
 pub fn map_object(
@@ -14,7 +12,9 @@ pub fn map_object(
     id: ObjID,
     flags: MapFlags,
 ) -> Result<MappedObjectAddrs, MapError> {
-    COMPMAN.map_object(comp.unwrap_or(MONITOR_INSTANCE_ID), id, flags)
+    COMPMAN
+        .map_object(comp.unwrap_or(MONITOR_INSTANCE_ID), id, flags)
+        .map(|mh| mh.addrs())
 }
 
 /// Indicates that the given map has been dropped, and the monitor can consider it freed by the calling compartment.

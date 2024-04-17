@@ -1,16 +1,13 @@
 use std::{
-    cell::OnceCell,
     collections::HashMap,
-    ptr::NonNull,
     sync::{Arc, Mutex},
 };
 
 use dynlink::compartment::CompartmentId;
-use monitor_api::SharedCompConfig;
 use talc::{ErrOnOom, Talc};
 use twizzler_runtime_api::{MapError, ObjID};
 
-use crate::mapman::{MapHandle, MapInfo, MappedObjectAddrs};
+use crate::mapman::{MapHandle, MapInfo};
 
 use super::{object::CompObject, thread::CompThread};
 
@@ -35,16 +32,16 @@ pub struct RunComp {
 }
 
 impl RunCompInner {
-    pub fn map_object(&mut self, info: MapInfo) -> Result<&MapHandle, MapError> {
+    pub fn map_object(&mut self, info: MapInfo) -> Result<MapHandle, MapError> {
         if let Some(handle) = self.mapped_objects.get(&info) {
-            Ok(handle.addrs())
-        } else {
-            let handle = crate::mapman::map_object(info)?;
-            self.mapped_objects.insert(info, handle);
-            self.mapped_objects
-                .get(&info)
-                .ok_or(MapError::InternalError)
+            return Ok(handle.clone());
         }
+        let handle = crate::mapman::map_object(info)?;
+        self.mapped_objects.insert(info, handle);
+        self.mapped_objects
+            .get(&info)
+            .cloned()
+            .ok_or(MapError::InternalError)
     }
 
     pub fn unmap_object(&mut self, info: MapInfo) {

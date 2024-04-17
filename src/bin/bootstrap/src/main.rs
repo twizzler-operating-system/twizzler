@@ -33,7 +33,7 @@ impl Selector<Engine> for Sel {
         }
         let id = find_init_name(name)?;
         let obj = twizzler_runtime_api::get_runtime()
-            .map_object(id.as_u128(), MapFlags::READ)
+            .map_object(id, MapFlags::READ)
             .ok()?;
         Some(Backing::new(obj))
     }
@@ -46,16 +46,6 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     let unlib = UnloadedLibrary::new("libmonitor.so");
     let monitor_comp_id = ctx.add_compartment("monitor").unwrap();
 
-    let monitor_id = ctx.load_library_in_compartment(monitor_comp_id, unlib, |mut name| {
-        if name.starts_with("libstd") {
-            name = "libstd.so";
-        }
-        let id = find_init_name(name)?;
-        let obj = twizzler_runtime_api::get_runtime()
-            .map_object(id, MapFlags::READ)
-            .ok()?;
-        Some(Backing::new(obj))
-    });
     let loads = ctx
         .load_library_in_compartment(monitor_comp_id, unlib, &Sel)
         .unwrap();

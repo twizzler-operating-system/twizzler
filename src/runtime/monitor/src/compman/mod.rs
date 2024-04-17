@@ -6,7 +6,7 @@ use std::{
 use dynlink::engines::Engine;
 use twizzler_runtime_api::{MapError, MapFlags, ObjID};
 
-use crate::mapman::{MapInfo, MappedObjectAddrs};
+use crate::mapman::{MapHandle, MapInfo};
 
 use self::runcomp::{RunComp, RunCompInner};
 
@@ -80,7 +80,7 @@ impl CompMan {
         comp_id: ObjID,
         id: ObjID,
         flags: MapFlags,
-    ) -> Result<MappedObjectAddrs, MapError> {
+    ) -> Result<MapHandle, MapError> {
         let rc = self
             .get_comp_inner(comp_id)
             .ok_or(MapError::InternalError)?;

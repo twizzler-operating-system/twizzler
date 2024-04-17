@@ -1,8 +1,8 @@
-use std::rc::Rc;
-
 use twizzler_runtime_api::{
-    MapFlags, ObjID, ObjectHandle, ObjectRuntime, ThreadSpawnArgs, ThreadSpawnError,
+    MapFlags, ObjID, ObjectHandle, ObjectRuntime, SpawnError, ThreadSpawnArgs,
 };
+
+use miette::IntoDiagnostic;
 
 use crate::{mapman::MapHandle, thread::DEFAULT_STACK_SIZE};
 
@@ -19,11 +19,9 @@ impl CompThread {
         }
     }
 
-    fn spawn_thread(
-        &mut self,
-        sctx: ObjID,
-        args: ThreadSpawnArgs,
-    ) -> Result<ObjID, ThreadSpawnError> {
+    fn spawn_thread(&mut self, sctx: ObjID, args: ThreadSpawnArgs) -> Result<ObjID, SpawnError> {
+        let tp = todo!();
+        let sp = todo!();
         crate::thread::spawn_thread(sctx, args, tp, sp)
     }
 
@@ -32,18 +30,18 @@ impl CompThread {
         sctx: ObjID,
         start: extern "C" fn(usize) -> !,
         arg: usize,
-    ) -> Result<(), ThreadSpawnError> {
+    ) -> miette::Result<()> {
         let args = ThreadSpawnArgs {
             stack_size: DEFAULT_STACK_SIZE,
             start: start as *const () as usize,
             arg,
         };
-        let id = self.spawn_thread(sctx, args)?;
+        let id = self.spawn_thread(sctx, args).into_diagnostic()?;
 
         self.thread_repr = Some(
             twz_rt::OUR_RUNTIME
                 .map_object(id, MapFlags::empty())
-                .map_err(|_| ThreadSpawnError::Unknown)?,
+                .into_diagnostic()?,
         );
         Ok(())
     }
