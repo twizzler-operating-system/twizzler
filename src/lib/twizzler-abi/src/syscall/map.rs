@@ -100,16 +100,6 @@ pub enum ObjectUnmapError {
     InvalidArgument = 2,
 }
 
-impl ObjectUnmapError {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Unknown => "an unknown error occurred",
-            Self::InvalidSlot => "invalid slot",
-            Self::InvalidArgument => "invalid argument",
-        }
-    }
-}
-
 impl core::error::Error for ObjectUnmapError {}
 
 bitflags! {
