@@ -35,8 +35,9 @@
 #![feature(unboxed_closures)]
 #![feature(naked_functions)]
 #![feature(c_size_t)]
+#![feature(error_in_core)]
 
-use core::fmt::{LowerHex, UpperHex};
+use core::fmt::{Display, LowerHex, UpperHex};
 #[cfg_attr(feature = "kernel", allow(unused_imports))]
 use core::{
     alloc::GlobalAlloc,
@@ -173,6 +174,20 @@ pub enum SpawnError {
     KernelError,
 }
 
+impl Display for SpawnError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            SpawnError::Other => write!(f, "unknown error"),
+            SpawnError::InvalidArgument => write!(f, "invalid argument"),
+            SpawnError::ObjectNotFound => write!(f, "object not found"),
+            SpawnError::PermissionDenied => write!(f, "permission denied"),
+            SpawnError::KernelError => write!(f, "kernel error"),
+        }
+    }
+}
+
+impl core::error::Error for SpawnError {}
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 /// An ABI-defined argument passed to __tls_get_addr.
@@ -263,7 +278,7 @@ pub trait ObjectRuntime {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 /// Possible errors of join.
 pub enum JoinError {
     /// The internal-thread-ID does not exist.
@@ -272,7 +287,18 @@ pub enum JoinError {
     Timeout,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+impl Display for JoinError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            JoinError::LookupError => write!(f, "lookup error"),
+            JoinError::Timeout => write!(f, "operation timed out"),
+        }
+    }
+}
+
+impl core::error::Error for JoinError {}
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 /// Possible errors of mapping an object.
 pub enum MapError {
     /// Error is unclassified.
@@ -288,6 +314,21 @@ pub enum MapError {
     /// An argument to map is invalid.
     InvalidArgument,
 }
+
+impl Display for MapError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            MapError::Other => write!(f, "unknown error"),
+            MapError::InternalError => write!(f, "internal error"),
+            MapError::OutOfResources => write!(f, "out of resources"),
+            MapError::NoSuchObject => write!(f, "no such object"),
+            MapError::PermissionDenied => write!(f, "permission denied"),
+            MapError::InvalidArgument => write!(f, "invalid argument"),
+        }
+    }
+}
+
+impl core::error::Error for MapError {}
 
 bitflags::bitflags! {
     /// Mapping protections for mapping objects into the address space.
@@ -486,7 +527,7 @@ pub trait RustStdioRuntime {
 }
 
 /// Possible errors from read.
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub enum ReadError {
     /// Unclassified error
     Other,
@@ -498,7 +539,20 @@ pub enum ReadError {
     NoIo,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+impl Display for ReadError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ReadError::Other => write!(f, "unknown error"),
+            ReadError::IoError => write!(f, "I/O error"),
+            ReadError::PermissionDenied => write!(f, "permission denied"),
+            ReadError::NoIo => write!(f, "no such I/O mechanism"),
+        }
+    }
+}
+
+impl core::error::Error for ReadError {}
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub enum WriteError {
     /// Unclassified error
     Other,
@@ -509,6 +563,19 @@ pub enum WriteError {
     /// No such IO mechanism.
     NoIo,
 }
+
+impl Display for WriteError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            WriteError::Other => write!(f, "unknown error"),
+            WriteError::IoError => write!(f, "I/O error"),
+            WriteError::PermissionDenied => write!(f, "permission denied"),
+            WriteError::NoIo => write!(f, "no such I/O mechanism"),
+        }
+    }
+}
+
+impl core::error::Error for WriteError {}
 
 /// Trait for stdin
 pub trait IoRead {
