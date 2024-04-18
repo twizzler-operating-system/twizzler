@@ -3,6 +3,7 @@
 #![feature(c_str_literals)]
 #![feature(new_uninit)]
 #![feature(error_in_core)]
+#![feature(hash_extract_if)]
 
 use std::{
     collections::HashMap,
@@ -43,6 +44,7 @@ mod upcall;
 mod api;
 mod compman;
 mod mapman;
+mod threadman;
 
 #[path = "../secapi/gates.rs"]
 mod gates;

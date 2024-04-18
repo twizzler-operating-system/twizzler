@@ -29,8 +29,8 @@ struct MappedObject {
 #[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 pub struct MappedObjectAddrs {
     slot: usize,
-    start: usize,
-    meta: usize,
+    pub start: usize,
+    pub meta: usize,
 }
 
 fn mapflags_into_prot(flags: MapFlags) -> Protections {

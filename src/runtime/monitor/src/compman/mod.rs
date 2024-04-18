@@ -12,8 +12,8 @@ use self::runcomp::{RunComp, RunCompInner};
 
 mod object;
 mod runcomp;
+mod stack_object;
 mod thread;
-mod tls_object;
 
 pub(crate) struct CompMan {
     inner: Mutex<CompManInner>,

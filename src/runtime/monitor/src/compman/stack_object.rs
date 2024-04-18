@@ -8,15 +8,14 @@ use crate::mapman::MapHandle;
 
 use super::runcomp::RunComp;
 
-pub(crate) struct TlsObject {
+pub(crate) struct StackObject {
     handle: ObjectHandle,
     comphandle: MapHandle,
     stack_size: usize,
-    tls_size: usize,
     init_size: usize,
 }
 
-impl TlsObject {
+impl StackObject {
     pub fn new<T>(rc: &RunComp, init_data: T, stack_size: usize) -> miette::Result<Self> {
         let cs = ObjectCreate::new(
             BackingType::Normal,
@@ -51,8 +50,23 @@ impl TlsObject {
             handle,
             comphandle: mh,
             stack_size,
-            tls_size: 0,
             init_size: core::mem::size_of::<T>(),
         })
+    }
+
+    pub fn stack_comp_start(&self) -> usize {
+        self.comphandle.addrs().start
+    }
+
+    pub fn stack_size(&self) -> usize {
+        self.stack_size
+    }
+
+    pub fn init_data_comp_start(&self) -> usize {
+        self.stack_comp_start() + self.stack_comp_start()
+    }
+
+    pub fn init_data_size(&self) -> usize {
+        self.init_size
     }
 }
