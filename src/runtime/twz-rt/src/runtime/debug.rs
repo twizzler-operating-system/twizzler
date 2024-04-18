@@ -24,6 +24,9 @@ impl DebugRuntime for ReferenceRuntime {
     }
 
     fn get_exeid(&self) -> Option<twizzler_runtime_api::LibraryId> {
+        // For now, this will always be the third library, after runtime and libstd.
+        // TODO (dbittman): once the monitor refactor is complete, this API will be fixed
+        // to be more dynamic.
         Some(twizzler_runtime_api::LibraryId(3))
     }
 
