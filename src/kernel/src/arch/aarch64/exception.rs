@@ -163,10 +163,6 @@ impl From<ExceptionContext> for UpcallFrame {
     }
 }
 
-// TODO: reentrant/nested interrupt support
-// x save spsr_el1 and elr_el1 before calling handler
-// - enable interrupts while servicing exceptions
-
 /// macro creates a high level exception handler
 /// to be used in the exception vector table.
 /// saves/restores regs on the current stack pointer
@@ -432,7 +428,7 @@ fn sync_handler(ctx: &mut ExceptionContext) {
                 todo!("Permission fault, level {} {:?} {:?}", level, cause, far_va);
             }
             crate::thread::enter_kernel();
-            // crate::interrupt::set(true);
+            crate::interrupt::set(true);
             let elr = ctx.elr;
             if let Ok(elr_va) = VirtAddr::new(elr) {
                 crate::memory::context::virtmem::page_fault(
@@ -444,7 +440,7 @@ fn sync_handler(ctx: &mut ExceptionContext) {
             } else {
                 todo!("send upcall exception info");
             }
-            // crate::interrupt::set(false);
+            crate::interrupt::set(false);
             crate::thread::exit_kernel();
         },
         Some(ESR_EL1::EC::Value::InstrAbortLowerEL) => {
@@ -463,6 +459,7 @@ fn sync_handler(ctx: &mut ExceptionContext) {
             debug_handler(ctx)
         },
     }
+    crate::interrupt::post_interrupt();
 }
 
 fn handle_inst_abort(ctx: &mut ExceptionContext, esr_reg: &InMemoryRegister<u64, ESR_EL1::Register>) {
@@ -503,7 +500,7 @@ fn handle_inst_abort(ctx: &mut ExceptionContext, esr_reg: &InMemoryRegister<u64,
     }
 
     crate::thread::enter_kernel();
-    // crate::interrupt::set(true);
+    crate::interrupt::set(true);
     let elr = ctx.elr;
     if let Ok(elr_va) = VirtAddr::new(elr) {
         // logln!("fault {:?} from {:?}", far_va, elr_va);
@@ -516,7 +513,7 @@ fn handle_inst_abort(ctx: &mut ExceptionContext, esr_reg: &InMemoryRegister<u64,
     } else {
         todo!("send upcall exception info");
     }
-    // crate::interrupt::set(false);
+    crate::interrupt::set(false);
     crate::thread::exit_kernel();
 }
 
