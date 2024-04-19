@@ -51,7 +51,7 @@ pub struct ArchThread {
     rsp: core::cell::UnsafeCell<u64>,
     pub user_fs: AtomicU64,
     xsave_inited: AtomicBool,
-    pub entry_registers: RefCell<Registers>,
+    entry_registers: RefCell<Registers>,
     /// The frame of an upcall to restore. The restoration path only occurs on the first
     /// return-from-syscall after entering from the syscall that provides the frame to restore.
     /// We store that frame here until we hit the syscall return path, which then restores the
@@ -83,7 +83,7 @@ unsafe extern "C" fn __do_switch(
         /* save the stack pointer. */
         "mov [rsi], rsp",
         /* okay, now we can release the switch lock */
-        "mov qword ptr [rcx], 0",
+        "lock mov qword ptr [rcx], 0",
         "sfence",
         /* try to grab the new switch lock for the new thread. if we fail, jump to a spin loop */
         "mov rax, [rdx]",
@@ -91,7 +91,8 @@ unsafe extern "C" fn __do_switch(
         "jnz sw_wait",
         "do_the_switch:",
         /* we can just store to the new switch lock, since we're guaranteed to be the only CPU here */
-        "mov qword ptr [rdx], 1",
+        "lock mov qword ptr [rdx], 1",
+        "mfence",
         /* okay, now load the new stack pointer and restore */
         "mov rsp, [rdi]",
         "popfq",
@@ -336,7 +337,10 @@ impl Thread {
         let source_ctx = self.secctx.active_id();
         let ok = match *self.arch.entry_registers.borrow() {
             Registers::None => {
-                panic!("tried to upcall to a thread that hasn't started yet");
+                panic!(
+                    "tried to upcall {:?} to a thread that hasn't started yet",
+                    info
+                );
             }
             Registers::Interrupt(int, _) => {
                 let int = unsafe { &mut *int };
@@ -348,6 +352,11 @@ impl Thread {
             }
         };
         if !ok {
+            logln!(
+                "while trying to generate upcall: {:?} from {:?}",
+                info,
+                self.arch.entry_registers.borrow()
+            );
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
     }
@@ -361,6 +370,7 @@ impl Thread {
     }
 
     pub extern "C" fn arch_switch_to(&self, old_thread: &Thread) {
+        assert!(!crate::interrupt::get());
         unsafe {
             set_kernel_stack(
                 VirtAddr::new(self.kernel_stack.as_ref() as *const u8 as u64)

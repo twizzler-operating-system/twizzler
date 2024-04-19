@@ -6,6 +6,7 @@ use std::{
 
 use crate::{image::ImageInfo, triple::Arch, QemuOptions};
 
+#[derive(Debug)]
 struct QemuCommand {
     cmd: Command,
     arch: Arch,
