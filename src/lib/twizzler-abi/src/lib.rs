@@ -36,6 +36,7 @@ pub mod object;
 pub mod pager;
 #[cfg(feature = "runtime")]
 pub mod runtime;
+pub mod security;
 pub mod slot;
 pub mod syscall;
 pub mod thread;

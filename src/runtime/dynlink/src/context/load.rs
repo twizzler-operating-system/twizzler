@@ -204,7 +204,7 @@ impl<Engine: ContextEngine> Context<Engine> {
                     filesz: phdr.p_filesz as usize,
                 };
 
-                trace!("{}: {:?}", unlib, ld);
+                debug!("{}: {:?}", unlib, ld);
 
                 ld
             })
@@ -247,6 +247,8 @@ impl<Engine: ContextEngine> Context<Engine> {
                 Ok::<_, DynlinkError>(comp.insert(tm))
             })
             .transpose()?;
+
+        debug!("{}: got TLS ID {:?}", unlib, tls_id);
 
         // Step 3: lookup constructor and secgate information for this library.
         let ctor_info = self.get_ctor_info(&unlib.name, &elf, base_addr)?;
@@ -297,7 +299,7 @@ impl<Engine: ContextEngine> Context<Engine> {
     where
         Namer: FnMut(&str) -> Option<Engine::Backing> + Clone,
     {
-        debug!("loading library {}", root_unlib);
+        debug!("loading library {} (idx = {:?})", root_unlib, idx);
         // First load the main library.
         let lib = self
             .load(comp_id, root_unlib.clone(), idx, namer.clone())
@@ -335,16 +337,16 @@ impl<Engine: ContextEngine> Context<Engine> {
                 let (existing_idx, load_comp) =
                     if let Some(existing) = comp.library_names.get(&dep_unlib.name) {
                         debug!(
-                            "{}: dep using existing library for {} (intra-compartment in {})",
-                            root_unlib, dep_unlib.name, comp.name
+                            "{}: dep using existing library for {} (intra-compartment in {}): {:?}",
+                            root_unlib, dep_unlib.name, comp.name, existing
                         );
                         (Some(*existing), comp_id)
                     } else if let Some((existing, other_comp_id, other_comp)) =
                         self.find_cross_compartment_library(&dep_unlib)
                     {
                         debug!(
-                            "{}: dep using existing library for {} (cross-compartment to {})",
-                            root_unlib, dep_unlib.name, other_comp.name
+                            "{}: dep using existing library for {} (cross-compartment to {}): {:?}",
+                            root_unlib, dep_unlib.name, other_comp.name, existing
                         );
                         (Some(existing), other_comp_id)
                     } else {

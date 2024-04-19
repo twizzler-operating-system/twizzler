@@ -82,6 +82,7 @@ pub fn __monitor_rt_spawn_thread(
 // Extern function, linked to by the runtime.
 #[no_mangle]
 pub fn __monitor_rt_get_comp_config(src_ctx: ObjID) -> *const SharedCompConfig {
+    println!("got monitor comp config");
     let state = get_monitor_state().lock().unwrap();
     let comp = state.comps.get(&src_ctx).unwrap();
     comp.get_comp_config()

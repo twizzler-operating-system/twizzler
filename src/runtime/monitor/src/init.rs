@@ -39,7 +39,7 @@ pub unsafe extern "C" fn monitor_entry_from_bootstrap(aux: *const AuxEntry) {
         unsafe { core::slice::from_raw_parts(aux, aux_len) }
     };
     let runtime_info = aux_slice.iter().find_map(|x| match x {
-        AuxEntry::RuntimeInfo(r) => Some(*r),
+        AuxEntry::RuntimeInfo(r, 0) => Some(*r),
         _ => None,
     });
 

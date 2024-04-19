@@ -233,13 +233,13 @@ where
 
     if switch_to_super {
         if target.super_stack_size < (total_size + MIN_STACK_REMAINING) {
-            logln!("warning -- thread aborted due insufficient super stack space");
+            logln!("warning -- thread aborted due to insufficient super stack space");
             return false;
         }
     } else {
         let stack_object_base = (stack_top as usize / MAX_SIZE) * MAX_SIZE + NULLPAGE_SIZE;
         if stack_object_base + (total_size + MIN_STACK_REMAINING) >= stack_pointer as usize {
-            logln!("warning -- thread aborted due insufficient stack space");
+            logln!("warning -- thread aborted due to insufficient stack space");
             return false;
         }
     }

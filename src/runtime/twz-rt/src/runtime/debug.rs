@@ -2,6 +2,8 @@ use elf::segment::Elf64_Phdr;
 use monitor_api::get_comp_config;
 use twizzler_runtime_api::{AddrRange, DebugRuntime, Library, MapFlags};
 
+use crate::preinit_println;
+
 use super::{object::new_object_handle, ReferenceRuntime};
 
 impl DebugRuntime for ReferenceRuntime {
@@ -22,7 +24,10 @@ impl DebugRuntime for ReferenceRuntime {
     }
 
     fn get_exeid(&self) -> Option<twizzler_runtime_api::LibraryId> {
-        get_comp_config().root_library_id
+        // For now, this will always be the third library, after runtime and libstd.
+        // TODO (dbittman): once the monitor refactor is complete, this API will be fixed
+        // to be more dynamic.
+        Some(twizzler_runtime_api::LibraryId(3))
     }
 
     fn get_library_segment(

@@ -124,11 +124,13 @@ impl ContextEngine for Engine {
         });
 
         let data_cmds = DynlinkError::collect(DynlinkErrorKind::NewBackingFail, data_cmds)?;
-        let _text_cmds = DynlinkError::collect(DynlinkErrorKind::NewBackingFail, text_cmds)?;
+        let text_cmds = DynlinkError::collect(DynlinkErrorKind::NewBackingFail, text_cmds)?;
 
         let data_id = sys_object_create(create_spec, &data_cmds, &[])
             .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
-        let text_id = src.obj.id;
+
+        let text_id = sys_object_create(create_spec, &text_cmds, &[])
+            .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
         let runtime = twizzler_runtime_api::get_runtime();
 
