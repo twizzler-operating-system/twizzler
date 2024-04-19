@@ -647,6 +647,12 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
     if flags.contains(PageFaultFlags::INVALID) {
         panic!("page table contains invalid bits for address {:?}", addr);
     }
+    if !flags.contains(PageFaultFlags::USER) && cause == MemoryAccessKind::InstructionFetch {
+        panic!(
+            "kernel page-fault at IP {:?} caused by {:?} to/from {:?} with flags {:?}",
+            ip, cause, addr, flags
+        );
+    }
     if !flags.contains(PageFaultFlags::USER) && addr.is_kernel() && !addr.is_kernel_object_memory()
     {
         panic!(

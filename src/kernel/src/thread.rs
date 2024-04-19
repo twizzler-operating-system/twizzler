@@ -269,6 +269,7 @@ impl Thread {
         self.id.value()
     }
 
+    #[track_caller]
     pub fn send_upcall(self: &ThreadRef, info: UpcallInfo) {
         if !self.is_current_thread() {
             panic!("cannot send upcall to a different thread");

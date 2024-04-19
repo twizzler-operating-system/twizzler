@@ -150,6 +150,7 @@ pub unsafe fn return_to_user(context: *const X86SyscallContext) -> ! {
         "mov r11, [r11 + 0x40]",
         "bts r11, 9",
         "swapgs",
+        "lfence",
         "sysretq",
         in("r11") context, options(noreturn))
 }
@@ -163,19 +164,12 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
         );
     }
     x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
+
     let t = current_thread_ref().unwrap();
     t.set_entry_registers(Registers::Syscall(context, *context));
 
     crate::thread::enter_kernel();
     crate::interrupt::set(true);
-    if false {
-        logln!(
-            "syscall entry {} {} {:x}",
-            current_thread_ref().unwrap().id(),
-            (*context).rax,
-            (*context).rcx
-        );
-    }
     drop(t);
 
     crate::syscall::syscall_entry(context.as_mut().unwrap());
@@ -183,11 +177,9 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
     crate::thread::exit_kernel();
 
     /* We need this scope to drop the current thread reference before we return to user */
-    {
+    let user_fs = {
         let cur_th = current_thread_ref().unwrap();
-        cur_th.set_entry_registers(Registers::None);
         let user_fs = cur_th.arch.user_fs.load(Ordering::SeqCst);
-        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
         // Okay, now check if we are restoring an upcall frame, and if so, do that. Unfortunately,
         // we can't use the sysret/exit instruction for this, since it clobbers registers. Instead,
         // we'll use the ISR return path, which doesn't.
@@ -209,13 +201,19 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
                 .arch
                 .user_fs
                 .store(up_frame.thread_ptr, Ordering::SeqCst);
-            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, up_frame.thread_ptr);
+            cur_th.set_entry_registers(Registers::None);
             drop(cur_th);
 
             let int_frame = IsrContext::from(up_frame);
+
+            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, up_frame.thread_ptr);
             return_with_frame_to_user(int_frame);
         }
-    }
+        cur_th.set_entry_registers(Registers::None);
+        user_fs
+    };
+
+    x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
     /* TODO: check that rcx is canonical */
     return_to_user(context);
 }
@@ -226,6 +224,7 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
     core::arch::asm!(
         /* syscall can only come from userspace, so we can safely blindly swapgs */
         "swapgs",
+        "lfence",
         "mov gs:16, r11",     //backup r11, which contains rflags
         "mov r11, gs:0",      //load kernel stack pointer
         "mov [r11 - 8], rsp", //push user stack pointer
@@ -249,6 +248,7 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
         "push rax",
         "mov rdi, rsp",
         "mov rsi, gs:8",
+        "cld",
         "call syscall_entry_c",
         options(noreturn),
     )

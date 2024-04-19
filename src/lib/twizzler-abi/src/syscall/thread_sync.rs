@@ -10,7 +10,7 @@ use num_enum::{FromPrimitive, IntoPrimitive};
 use crate::{arch::syscall::raw_syscall, object::ObjID};
 
 use super::{convert_codes_to_result, Syscall};
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(u32)]
 /// Possible operations the kernel can perform when looking at the supplies reference and the
 /// supplied value. If the operation `*reference OP value` evaluates to true (or false if the INVERT
@@ -32,14 +32,14 @@ impl ThreadSyncOp {
 
 bitflags! {
     /// Flags to pass to sys_thread_sync.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ThreadSyncFlags: u32 {
         /// Invert the decision test for sleeping the thread.
         const INVERT = 1;
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(C)]
 /// A reference to a piece of data. May either be a non-realized persistent reference or a virtual address.
 pub enum ThreadSyncReference {
@@ -63,7 +63,7 @@ impl ThreadSyncReference {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(C)]
 /// Specification for a thread sleep request.
 pub struct ThreadSyncSleep {
@@ -77,7 +77,7 @@ pub struct ThreadSyncSleep {
     pub flags: ThreadSyncFlags,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(C)]
 /// Specification for a thread wake request.
 pub struct ThreadSyncWake {
