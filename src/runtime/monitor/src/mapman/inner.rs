@@ -4,6 +4,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use monitor_api::MappedObjectAddrs;
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_map, sys_object_unmap, UnmapFlags},
@@ -23,14 +24,6 @@ pub(super) struct MMInner {
 struct MappedObject {
     addrs: MappedObjectAddrs,
     handle_count: usize,
-}
-
-/// Contains raw mapping addresses, for use when translating to object handles for the runtime.
-#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
-pub struct MappedObjectAddrs {
-    slot: usize,
-    pub start: usize,
-    pub meta: usize,
 }
 
 fn mapflags_into_prot(flags: MapFlags) -> Protections {

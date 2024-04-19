@@ -12,6 +12,7 @@ use twizzler_runtime_api::{MapError, MapFlags, ObjID};
 
 use crate::{
     api::MONITOR_INSTANCE_ID,
+    init::InitDynlinkContext,
     mapman::{MapHandle, MapInfo},
 };
 
@@ -42,7 +43,7 @@ impl CompMan {
 pub(crate) struct CompManInner {
     name_map: HashMap<String, ObjID>,
     instance_map: HashMap<ObjID, RunComp>,
-    dynlink_state: Option<Context<Engine>>,
+    dynlink_state: Option<&'static mut Context<Engine>>,
 }
 
 impl CompManInner {
@@ -88,6 +89,11 @@ impl CompManInner {
 }
 
 impl CompMan {
+    pub fn init(&self, mut idc: InitDynlinkContext) {
+        let mut cm = self.inner.lock().unwrap();
+        cm.dynlink_state = Some(idc.ctx());
+    }
+
     pub fn lock(&self) -> MutexGuard<'_, CompManInner> {
         self.inner.lock().unwrap()
     }

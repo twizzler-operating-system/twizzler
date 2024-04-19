@@ -9,7 +9,6 @@ mod inner;
 
 pub use handle::MapHandle;
 pub use info::MapInfo;
-pub use inner::MappedObjectAddrs;
 
 use twizzler_runtime_api::MapError;
 

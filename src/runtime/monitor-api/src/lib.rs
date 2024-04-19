@@ -163,3 +163,11 @@ impl SharedCompConfig {
 }
 
 pub use gates::LibraryInfo;
+
+/// Contains raw mapping addresses, for use when translating to object handles for the runtime.
+#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+pub struct MappedObjectAddrs {
+    pub slot: usize,
+    pub start: usize,
+    pub meta: usize,
+}

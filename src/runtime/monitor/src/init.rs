@@ -7,8 +7,16 @@ use twizzler_runtime_api::AuxEntry;
 static mut AUX: Option<*const RuntimeInitInfo> = None;
 
 pub(crate) struct InitDynlinkContext {
-    pub ctx: *mut Context<Engine>,
+    pub ctx: Option<*mut Context<Engine>>,
     pub root: String,
+}
+
+impl InitDynlinkContext {
+    pub fn ctx(&mut self) -> &'static mut Context<Engine> {
+        // Safety: we are the only holders of this pointer, so
+        // we can create an &mut. We take() to prevent aliasing.
+        unsafe { self.ctx.take().unwrap().as_mut().unwrap() }
+    }
 }
 
 pub(crate) fn bootstrap_dynlink_context() -> Option<InitDynlinkContext> {
@@ -16,7 +24,10 @@ pub(crate) fn bootstrap_dynlink_context() -> Option<InitDynlinkContext> {
     let ctx = info.ctx as *mut Context<_>;
     let root = info.root_name.clone();
 
-    Some(InitDynlinkContext { ctx, root })
+    Some(InitDynlinkContext {
+        ctx: Some(ctx),
+        root,
+    })
 }
 
 #[no_mangle]

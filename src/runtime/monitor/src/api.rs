@@ -1,12 +1,11 @@
-use monitor_api::SharedCompConfig;
+use monitor_api::{MappedObjectAddrs, SharedCompConfig};
 use secgate::GateCallInfo;
 use twizzler_runtime_api::{LibraryId, MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
 
 use crate::{
     compman::COMPMAN,
     gates::LibraryInfo,
-    mapman::MappedObjectAddrs,
-    threadman::{jump_into_compartment, start_managed_thread, ManagedThread, ManagedThreadRef},
+    threadman::{jump_into_compartment, start_managed_thread},
 };
 
 pub const MONITOR_INSTANCE_ID: ObjID = ObjID::new(0);
@@ -29,19 +28,19 @@ pub fn drop_map(comp: Option<ObjID>, id: ObjID, flags: MapFlags) {
 
 /// Get information about a library, from a given compartments perspective.
 pub fn get_library_info(info: &GateCallInfo, id: LibraryId) -> Option<LibraryInfo> {
-    todo!()
+    None
 }
 
 /// Spawn a thread into the given compartment.
 pub fn spawn_thread(
-    comp_id: ObjID,
+    comp_id: Option<ObjID>,
     args: ThreadSpawnArgs,
     thread_pointer: usize,
     stack_start: usize,
 ) -> Result<twizzler_runtime_api::ObjID, SpawnError> {
     let managed_thread = start_managed_thread(move || unsafe {
         jump_into_compartment(
-            comp_id,
+            comp_id.unwrap_or(MONITOR_INSTANCE_ID),
             stack_start + args.stack_size,
             thread_pointer,
             args.start,

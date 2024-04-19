@@ -1,7 +1,12 @@
 use secgate::Crossing;
 use twizzler_runtime_api::{
-    AddrRange, DlPhdrInfo, LibraryId, MapError, ObjID, SpawnError, ThreadSpawnArgs,
+    AddrRange, DlPhdrInfo, LibraryId, MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs,
 };
+
+#[cfg(not(feature = "secgate-impl"))]
+use crate::MappedObjectAddrs;
+#[cfg(feature = "secgate-impl")]
+use monitor_api::MappedObjectAddrs;
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
 #[cfg_attr(
@@ -14,12 +19,7 @@ pub fn monitor_rt_spawn_thread(
     thread_pointer: usize,
     stack_pointer: usize,
 ) -> Result<ObjID, SpawnError> {
-    crate::thread::__monitor_rt_spawn_thread(
-        info.source_context().unwrap_or(0.into()),
-        args,
-        thread_pointer,
-        stack_pointer,
-    )
+    crate::api::spawn_thread(info.source_context(), args, thread_pointer, stack_pointer)
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
@@ -28,7 +28,7 @@ pub fn monitor_rt_spawn_thread(
     secgate::secure_gate(options(info, api))
 )]
 pub fn monitor_rt_get_comp_config(info: &secgate::GateCallInfo) -> usize {
-    crate::thread::__monitor_rt_get_comp_config(info.source_context().unwrap_or(0.into())) as usize
+    crate::api::get_comp_config(info.source_context()) as usize
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
@@ -40,7 +40,7 @@ pub fn monitor_rt_get_library_info(
     info: &secgate::GateCallInfo,
     library_id: LibraryId,
 ) -> Option<LibraryInfo> {
-    crate::state::__monitor_rt_get_library_info(info, library_id)
+    crate::api::get_library_info(info, library_id)
 }
 
 #[repr(C)]
@@ -65,9 +65,9 @@ unsafe impl Crossing for LibraryInfo {}
 pub fn monitor_rt_object_map(
     info: &secgate::GateCallInfo,
     id: ObjID,
-    flags: twizzler_runtime_api::MapFlags,
-) -> Result<usize, MapError> {
-    crate::object::map_object(info, id, flags)
+    flags: MapFlags,
+) -> Result<MappedObjectAddrs, MapError> {
+    crate::api::map_object(info.source_context(), id, flags)
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
@@ -75,6 +75,6 @@ pub fn monitor_rt_object_map(
     not(feature = "secgate-impl"),
     secgate::secure_gate(options(info, api))
 )]
-pub fn monitor_rt_object_unmap(info: &secgate::GateCallInfo, slot: usize) {
-    crate::object::unmap_object(info, slot)
+pub fn monitor_rt_object_unmap(info: &secgate::GateCallInfo, id: ObjID, flags: MapFlags) {
+    crate::api::drop_map(info.source_context(), id, flags)
 }

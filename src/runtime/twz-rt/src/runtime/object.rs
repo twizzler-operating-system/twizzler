@@ -1,8 +1,9 @@
 use std::{collections::HashMap, ptr::NonNull, sync::atomic::AtomicUsize};
 
+use monitor_api::MappedObjectAddrs;
 use tracing::warn;
 use twizzler_abi::{
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_map, ObjectMapError},
 };
 use twizzler_runtime_api::{MapError, MapFlags, ObjectHandle, ObjectRuntime};
@@ -110,14 +111,14 @@ pub struct ObjectMapKey(pub twizzler_runtime_api::ObjID, pub MapFlags);
 
 /// A local slot for an object to be mapped, gotten from the monitor.
 pub struct LocalSlot {
-    number: usize,
+    addrs: MappedObjectAddrs,
     refs: AtomicUsize,
 }
 
 impl LocalSlot {
-    pub fn new(number: usize) -> Self {
+    pub fn new(addrs: MappedObjectAddrs) -> Self {
         Self {
-            number,
+            addrs,
             refs: AtomicUsize::new(0),
         }
     }
@@ -156,7 +157,7 @@ impl ObjectHandleManager {
         let entry = self.map().get(&key).unwrap();
         entry.refs.fetch_add(1, atomic::Ordering::SeqCst);
 
-        Ok(new_object_handle(key.0, entry.number, key.1))
+        Ok(new_object_handle(key.0, entry.addrs.slot, key.1))
     }
 
     /// Release a handle. If all handles have been released, calls to monitor to unmap.
@@ -164,7 +165,7 @@ impl ObjectHandleManager {
         let key = ObjectMapKey(handle.id.into(), handle.flags);
         if let Some(entry) = self.map().get(&key) {
             if entry.refs.fetch_sub(1, atomic::Ordering::SeqCst) == 1 {
-                monitor_api::monitor_rt_object_unmap(entry.number).unwrap();
+                monitor_api::monitor_rt_object_unmap(key.0, key.1).unwrap();
                 self.map().remove(&key);
             }
         }

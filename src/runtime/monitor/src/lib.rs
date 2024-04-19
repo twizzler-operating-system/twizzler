@@ -30,7 +30,7 @@ use twizzler_abi::{
 use twizzler_runtime_api::AuxEntry;
 use twz_rt::{set_upcall_handler, CompartmentInitInfo};
 
-use crate::{compartment::Comp, state::set_monitor_state};
+use crate::{compartment::Comp, compman::COMPMAN, state::set_monitor_state};
 
 mod compartment;
 mod init;
@@ -52,7 +52,7 @@ mod gates;
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::TRACE)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
@@ -67,6 +67,10 @@ pub fn main() {
     trace!("monitor entered, discovering dynlink context");
     let init =
         init::bootstrap_dynlink_context().expect("failed to discover initial dynlink context");
+
+    COMPMAN.init(init);
+    loop {}
+
     let mut state = state::MonitorState::new(init);
 
     let monitor_comp_id = state.dynlink.lookup_compartment("monitor").unwrap();

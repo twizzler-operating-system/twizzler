@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use super::{cleaner::background_unmap_info, info::MapInfo, inner::MappedObjectAddrs};
+use monitor_api::MappedObjectAddrs;
+
+use super::{cleaner::background_unmap_info, info::MapInfo};
 
 pub struct MapHandleInner {
     info: MapInfo,
