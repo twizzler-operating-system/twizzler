@@ -1,68 +1,43 @@
-use core::fmt;
-
 use bitflags::bitflags;
+use num_enum::{FromPrimitive, IntoPrimitive};
 
 use crate::{arch::syscall::raw_syscall, object::ObjID};
 
 use super::{convert_codes_to_result, justval, Syscall};
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
-#[repr(u32)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Eq,
+    IntoPrimitive,
+    FromPrimitive,
+    thiserror::Error,
+)]
+#[repr(u64)]
 /// Possible error values for [sys_new_handle].
 pub enum NewHandleError {
     /// An unknown error occurred.
+    #[num_enum(default)]
+    #[error("unknown error")]
     Unknown = 0,
     /// One of the arguments was invalid.   
+    #[error("invalid argument")]
     InvalidArgument = 1,
     /// The specified object is already a handle.
+    #[error("object is already a handle")]
     AlreadyHandle = 2,
     /// The specified object was not found.
+    #[error("object not found")]
     NotFound = 3,
     /// The specified handle type is already saturated.
+    #[error("handle type cannot be used again")]
     HandleSaturated = 4,
 }
 
-impl NewHandleError {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Unknown => "an unknown error occurred",
-            Self::InvalidArgument => "invalid argument",
-            Self::AlreadyHandle => "object is already a handle",
-            Self::NotFound => "object was not found",
-            Self::HandleSaturated => "handle cannot support any more objects",
-        }
-    }
-}
-
-impl From<NewHandleError> for u64 {
-    fn from(x: NewHandleError) -> Self {
-        x as u64
-    }
-}
-
-impl From<u64> for NewHandleError {
-    fn from(x: u64) -> Self {
-        match x {
-            1 => Self::InvalidArgument,
-            2 => Self::AlreadyHandle,
-            3 => Self::NotFound,
-            4 => Self::HandleSaturated,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl fmt::Display for NewHandleError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for NewHandleError {
-    fn description(&self) -> &str {
-        self.as_str()
-    }
-}
+impl core::error::Error for NewHandleError {}
 
 /// Possible kernel handle types.
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]

@@ -3,109 +3,70 @@ mod timedefs;
 mod units;
 
 pub use clock::*;
+use num_enum::{FromPrimitive, IntoPrimitive};
 pub use timedefs::*;
 pub use units::*;
 
 use bitflags::bitflags;
-use core::{fmt, mem::MaybeUninit};
+use core::mem::MaybeUninit;
 
 use crate::arch::syscall::raw_syscall;
 
 use super::{convert_codes_to_result, Syscall};
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
-#[repr(u32)]
-/// Possible error values for [sys_read_clock_info].
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Eq,
+    Hash,
+    IntoPrimitive,
+    FromPrimitive,
+    thiserror::Error,
+)]
+#[repr(u64)]
+/// Possible error returns for [sys_read_clock_info].
 pub enum ReadClockInfoError {
     /// An unknown error occurred.
+    #[num_enum(default)]
+    #[error("unknown error")]
     Unknown = 0,
-    /// One of the arguments was invalid.   
+    /// One of the arguments was invalid.
+    #[error("invalid argument")]
     InvalidArgument = 1,
 }
 
-impl ReadClockInfoError {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Unknown => "an unknown error occurred",
-            Self::InvalidArgument => "invalid argument",
-        }
-    }
-}
+impl core::error::Error for ReadClockInfoError {}
 
-impl From<ReadClockInfoError> for u64 {
-    fn from(x: ReadClockInfoError) -> Self {
-        x as u64
-    }
-}
-
-impl From<u64> for ReadClockInfoError {
-    fn from(x: u64) -> Self {
-        match x {
-            1 => Self::InvalidArgument,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl fmt::Display for ReadClockInfoError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for ReadClockInfoError {
-    fn description(&self) -> &str {
-        self.as_str()
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-#[repr(u32)]
-/// Possible error values for [sys_read_clock_list].
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Eq,
+    Hash,
+    IntoPrimitive,
+    FromPrimitive,
+    thiserror::Error,
+)]
+#[repr(u64)]
+/// Possible error returns for [sys_read_clock_info].
 pub enum ReadClockListError {
     /// An unknown error occurred.
+    #[num_enum(default)]
+    #[error("unknown error")]
     Unknown = 0,
-    /// One of the arguments was invalid.   
+    /// One of the arguments was invalid.
+    #[error("invalid argument")]
     InvalidArgument = 1,
 }
 
-impl ReadClockListError {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Unknown => "an unknown error occurred",
-            Self::InvalidArgument => "invalid argument",
-        }
-    }
-}
-
-impl From<ReadClockListError> for u64 {
-    fn from(e: ReadClockListError) -> Self {
-        e as u64
-    }
-}
-
-impl From<u64> for ReadClockListError {
-    fn from(x: u64) -> Self {
-        match x {
-            1 => Self::InvalidArgument,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl fmt::Display for ReadClockListError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for ReadClockListError {
-    fn description(&self) -> &str {
-        self.as_str()
-    }
-}
+impl core::error::Error for ReadClockListError {}
 
 bitflags! {
     /// Flags to pass to [`sys_read_clock_info`].

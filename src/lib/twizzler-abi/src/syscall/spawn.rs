@@ -1,6 +1,5 @@
-use core::fmt;
-
 use bitflags::bitflags;
+use num_enum::{FromPrimitive, IntoPrimitive};
 
 use crate::{arch::syscall::raw_syscall, object::ObjID, upcall::UpcallTarget};
 
@@ -68,62 +67,31 @@ impl ThreadSpawnArgs {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
-#[repr(u32)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Eq,
+    IntoPrimitive,
+    FromPrimitive,
+    thiserror::Error,
+)]
+#[repr(u64)]
 /// Possible error values for [sys_spawn].
 pub enum ThreadSpawnError {
     /// An unknown error occurred.
+    #[error("unknown error")]
+    #[num_enum(default)]
     Unknown = 0,
     /// One of the arguments was invalid.   
+    #[error("invalid argument")]
     InvalidArgument = 1,
     /// A specified object (handle) was not found.
+    #[error("object handle not found")]
     NotFound = 2,
-}
-
-impl ThreadSpawnError {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Unknown => "an unknown error occurred",
-            Self::InvalidArgument => "invalid argument",
-            Self::NotFound => "specified object was not found",
-        }
-    }
-}
-
-impl From<ThreadSpawnError> for u64 {
-    fn from(x: ThreadSpawnError) -> Self {
-        x as u64
-    }
-}
-/*
-impl Into<u64> for ThreadSpawnError {
-    fn into(self) -> u64 {
-        self as u64
-    }
-}
-*/
-
-impl From<u64> for ThreadSpawnError {
-    fn from(x: u64) -> Self {
-        match x {
-            2 => Self::NotFound,
-            1 => Self::InvalidArgument,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl fmt::Display for ThreadSpawnError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for ThreadSpawnError {
-    fn description(&self) -> &str {
-        self.as_str()
-    }
 }
 
 /// Spawn a new thread, returning the ObjID of the thread's handle or an error.

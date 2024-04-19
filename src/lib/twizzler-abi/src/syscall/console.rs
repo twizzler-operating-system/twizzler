@@ -1,64 +1,41 @@
 use bitflags::bitflags;
-use core::fmt;
+use num_enum::{FromPrimitive, IntoPrimitive};
 
 use crate::arch::syscall::raw_syscall;
 
 use super::{convert_codes_to_result, Syscall};
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    IntoPrimitive,
+    FromPrimitive,
+    thiserror::Error,
+)]
+#[repr(u64)]
 /// Possible errors returned by reading from the kernel console's input.
 pub enum KernelConsoleReadError {
     /// Unknown error.
+    #[num_enum(default)]
+    #[error("unknown error")]
     Unknown = 0,
     /// Operation would block, but non-blocking was requested.
+    #[error("would block")]
     WouldBlock = 1,
     /// Failed to read because there was no input mechanism made available to the kernel.
+    #[error("no such device")]
     NoSuchDevice = 2,
     /// The input mechanism had an internal error.
+    #[error("I/O error")]
     IOError = 3,
 }
 
-impl KernelConsoleReadError {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Unknown => "unknown error",
-            Self::WouldBlock => "operation would block",
-            Self::NoSuchDevice => "no way to read from kernel console physical device",
-            Self::IOError => "an IO error occurred",
-        }
-    }
-}
-
-impl From<KernelConsoleReadError> for u64 {
-    fn from(x: KernelConsoleReadError) -> Self {
-        x as u64
-    }
-}
-
-impl From<u64> for KernelConsoleReadError {
-    fn from(x: u64) -> Self {
-        match x {
-            1 => Self::WouldBlock,
-            2 => Self::NoSuchDevice,
-            3 => Self::IOError,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl fmt::Display for KernelConsoleReadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for KernelConsoleReadError {
-    fn description(&self) -> &str {
-        self.as_str()
-    }
-}
+impl core::error::Error for KernelConsoleReadError {}
 
 bitflags! {
     /// Flags to pass to [sys_kernel_console_read].
@@ -123,52 +100,31 @@ pub fn sys_kernel_console_read(
     convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, |_, v| v.into())
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-/// Possible errors returned by reading from the kernel console's buffer.
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    IntoPrimitive,
+    FromPrimitive,
+    thiserror::Error,
+)]
+#[repr(u64)]
+/// Possible errors returned by reading from the kernel console's input.
 pub enum KernelConsoleReadBufferError {
     /// Unknown error.
+    #[num_enum(default)]
+    #[error("unknown error")]
     Unknown = 0,
     /// Operation would block, but non-blocking was requested.
+    #[error("would block")]
     WouldBlock = 1,
 }
 
-impl KernelConsoleReadBufferError {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Unknown => "unknown error",
-            Self::WouldBlock => "operation would block",
-        }
-    }
-}
-
-impl From<KernelConsoleReadBufferError> for u64 {
-    fn from(x: KernelConsoleReadBufferError) -> Self {
-        x as u64
-    }
-}
-
-impl From<u64> for KernelConsoleReadBufferError {
-    fn from(x: u64) -> Self {
-        match x {
-            1 => Self::WouldBlock,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl fmt::Display for KernelConsoleReadBufferError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for KernelConsoleReadBufferError {
-    fn description(&self) -> &str {
-        self.as_str()
-    }
-}
+impl core::error::Error for KernelConsoleReadBufferError {}
 
 bitflags! {
     /// Flags to pass to [sys_kernel_console_read_buffer].

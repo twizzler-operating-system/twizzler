@@ -21,6 +21,7 @@
 #![feature(rustc_attrs)]
 #![feature(asm_const)]
 #![feature(linkage)]
+#![feature(error_in_core)]
 pub mod arch;
 
 #[allow(unused_extern_crates)]
