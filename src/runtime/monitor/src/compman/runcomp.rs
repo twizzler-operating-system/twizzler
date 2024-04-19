@@ -26,8 +26,8 @@ pub(crate) struct RunCompInner {
 pub struct RunComp {
     pub sctx: ObjID,
     pub instance: ObjID,
-    name: String,
-    compartment_id: CompartmentId,
+    pub name: String,
+    pub compartment_id: CompartmentId,
     inner: Arc<Mutex<RunCompInner>>,
 }
 

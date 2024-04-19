@@ -2,7 +2,12 @@ use monitor_api::SharedCompConfig;
 use secgate::GateCallInfo;
 use twizzler_runtime_api::{LibraryId, MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
 
-use crate::{compman::COMPMAN, gates::LibraryInfo, mapman::MappedObjectAddrs};
+use crate::{
+    compman::COMPMAN,
+    gates::LibraryInfo,
+    mapman::MappedObjectAddrs,
+    threadman::{jump_into_compartment, start_managed_thread, ManagedThread, ManagedThreadRef},
+};
 
 pub const MONITOR_INSTANCE_ID: ObjID = ObjID::new(0);
 
@@ -32,9 +37,19 @@ pub fn spawn_thread(
     comp_id: ObjID,
     args: ThreadSpawnArgs,
     thread_pointer: usize,
-    stack_pointer: usize,
+    stack_start: usize,
 ) -> Result<twizzler_runtime_api::ObjID, SpawnError> {
-    todo!()
+    let managed_thread = start_managed_thread(move || unsafe {
+        jump_into_compartment(
+            comp_id,
+            stack_start + args.stack_size,
+            thread_pointer,
+            args.start,
+            args.arg,
+        )
+    })?;
+
+    Ok(managed_thread.id)
 }
 
 /// Get the caller's compartment configuration pointer.

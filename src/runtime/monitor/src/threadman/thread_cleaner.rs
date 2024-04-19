@@ -32,6 +32,7 @@ struct Waits {
     threads: HashMap<ObjID, ManagedThreadRef>,
 }
 
+// Changes to the collection of threads we are tracking
 enum WaitOp {
     Add(ManagedThreadRef),
     Remove(ObjID),
@@ -41,18 +42,26 @@ impl ThreadCleaner {
     pub(super) fn new() -> Self {
         let (send, recv) = std::sync::mpsc::channel();
         let data = Arc::new(ThreadCleanerData::default());
+        let inner = data.clone();
+        let thread = std::thread::Builder::new()
+            .name("thread-exit cleanup tracker".into())
+            .spawn(move || cleaner_thread_main(data, recv))
+            .unwrap();
         Self {
             send,
-            inner: data.clone(),
-            thread: std::thread::spawn(move || cleaner_thread_main(data, recv)),
+            inner,
+            thread,
         }
     }
 
+    /// Track a thread. If that thread exits, the cleanup thread will remove the exited thread from
+    /// tracking and from the global thread manager.
     pub fn track(&self, th: ManagedThreadRef) {
         let _ = self.send.send(WaitOp::Add(th));
         self.inner.notify();
     }
 
+    /// Untrack a thread. Threads removed this way do not trigger a removal from the global thread manager.
     pub fn untrack(&self, id: ObjID) {
         let _ = self.send.send(WaitOp::Remove(id));
         self.inner.notify();
@@ -60,6 +69,7 @@ impl ThreadCleaner {
 }
 
 impl ThreadCleanerData {
+    /// Notify the cleanup thread that new items are on the queue.
     fn notify(&self) {
         self.notify.store(0, Ordering::SeqCst);
         let mut ops = [ThreadSync::new_wake(ThreadSyncWake::new(
@@ -89,6 +99,7 @@ impl Waits {
 
 #[tracing::instrument(skip(data, recv))]
 fn cleaner_thread_main(data: Arc<ThreadCleanerData>, mut recv: Receiver<WaitOp>) {
+    // TODO (dbittman): when we have support for async thread events, we can use that API.
     let mut ops = Vec::new();
     let mut cleanups = Vec::new();
     loop {

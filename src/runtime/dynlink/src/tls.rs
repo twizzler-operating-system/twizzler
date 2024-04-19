@@ -267,3 +267,8 @@ impl TlsRegion {
 }
 
 pub use crate::arch::get_current_thread_control_block;
+
+// Safety: the contained pointers are never turned into refs.
+unsafe impl Send for TlsRegion {}
+// Safety: the contained pointers are never turned into refs.
+unsafe impl Sync for TlsRegion {}

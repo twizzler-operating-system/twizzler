@@ -58,6 +58,40 @@ impl UpcallFrame {
     pub fn bp(&self) -> usize {
         self.rbp as usize
     }
+
+    /// Build a new frame set up to enter a context at a start point.
+    pub fn new_entry_frame(
+        sp: usize,
+        tp: usize,
+        ctx: crate::object::ObjID,
+        entry: usize,
+        arg: usize,
+    ) -> Self {
+        Self {
+            xsave_region: [0; XSAVE_LEN],
+            rip: entry as u64,
+            // Default has the interrupt enabled flag set, and the reserved bit.
+            rflags: 0x202,
+            rsp: sp as u64,
+            rbp: 0,
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rdi: arg as u64,
+            rsi: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            thread_ptr: tp as u64,
+            prior_ctx: ctx,
+        }
+    }
 }
 
 #[no_mangle]
