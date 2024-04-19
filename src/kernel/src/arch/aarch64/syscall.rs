@@ -104,9 +104,6 @@ pub unsafe fn return_to_user(context: &Armv8SyscallContext) -> ! {
     // set the stack pointer
     SP_EL0.set(context.sp);
 
-    // TODO: enable interrupts when we can support nested exception handling
-    // crate::interrupt::set(true);
-
     // configure the execution state for EL0:
     // - interrupts unmasked
     // - el0 exception level
@@ -130,9 +127,6 @@ pub unsafe fn return_to_user(context: &Armv8SyscallContext) -> ! {
 
 /// Service a system call according to the ABI defined in [`twizzler_abi`]
 pub fn handle_syscall(ctx: &mut ExceptionContext) {
-    crate::thread::enter_kernel();
-    crate::interrupt::set(true);
-
     let mut context: Armv8SyscallContext = Default::default();
     context.x0 = ctx.x0;
     context.x1 = ctx.x1;
@@ -145,8 +139,12 @@ pub fn handle_syscall(ctx: &mut ExceptionContext) {
     context.sp = ctx.sp;
     context.elr = ctx.elr;
 
+    crate::thread::enter_kernel();
+    crate::interrupt::set(true);
+    
     crate::syscall::syscall_entry(&mut context);
-    // crate::interrupt::set(false);
+    
+    crate::interrupt::set(false);
     crate::thread::exit_kernel();
 
     // copy over result values to exception return context

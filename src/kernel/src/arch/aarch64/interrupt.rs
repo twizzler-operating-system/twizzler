@@ -197,6 +197,7 @@ pub fn init_interrupts() {
         PhysicalTimer::INTERRUPT_ID,
         cpu.id,
     );
+    INTERRUPT_CONTROLLER.enable_interrupt(PhysicalTimer::INTERRUPT_ID);
 }
 
 pub fn set_interrupt(

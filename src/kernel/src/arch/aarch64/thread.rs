@@ -16,7 +16,7 @@ use twizzler_abi::upcall::{UpcallFrame, UpcallInfo, UpcallTarget};
 use crate::thread::Thread;
 use crate::memory::VirtAddr;
 
-use super::{exception::ExceptionContext, syscall::Armv8SyscallContext};
+use super::{exception::ExceptionContext, syscall::Armv8SyscallContext, interrupt::DAIFMaskBits};
 
 #[derive(Copy, Clone)]
 pub enum Registers {
@@ -48,6 +48,8 @@ struct RegisterContext {
     // thread local storage for user space
     tpidr: u64,
     tpidrro: u64,
+    // interrupt state
+    daif: u64,
 }
 
 // arch specific thread state
@@ -62,7 +64,7 @@ unsafe impl Send for ArchThread {}
 impl ArchThread {
     pub fn new() -> Self {
         Self { 
-            context: RegisterContext::default() 
+            context: RegisterContext::default(),
         }
     }
 }
@@ -149,12 +151,14 @@ impl Thread {
                 // save the fp (x29) and the lr (x30)
                 "stp x29, x30, [x11, #16 * 5]",
                 // save stack pointer
-                "mov x15, sp",
+                "mov x12, sp",
                 // save the thread pointer registers
-                "mrs x14, tpidr_el0",
-                "mrs x13, tpidrro_el0",
-                "stp x15, x14, [x11, #16 * 6]",
-                "str x13, [x11, #16 * 7]",
+                "mrs x13, tpidr_el0",
+                "mrs x14, tpidrro_el0",
+                // save the current interrupt state
+                "mrs x15, daif",
+                "stp x12, x13, [x11, #16 * 6]",
+                "stp x14, x15, [x11, #16 * 7]",
                 // (2) restore next thread's regs
                 "ldp x19, x20, [x10, #16 * 0]",
                 "ldp x21, x22, [x10, #16 * 1]",
@@ -163,12 +167,15 @@ impl Thread {
                 "ldp x27, x28, [x10, #16 * 4]",
                 // restore the fp (x29) and the lr (x30)
                 "ldp x29, x30, [x10, #16 * 5]",
+                // restore the thread pointer registers
+                "ldp x12, x13, [x10, #16 * 6]",
+                "ldp x14, x15, [x10, #16 * 7]",
+                "msr tpidr_el0, x13",
+                "msr tpidrro_el0, x14",
                 // (3) switch thread stacks
-                "ldp x15, x14, [x10, #16 * 6]",
-                "ldr x13, [x10, #16 * 7]",
-                "msr tpidr_el0, x14",
-                "msr tpidrro_el0, x13",
-                "mov sp, x15",
+                "mov sp, x12",
+                // set the current interrupt state
+                "msr daif, x15",
                 // (4) execution resumes in the address
                 // pointed to by the link register (x30)
                 "ret",
@@ -190,5 +197,8 @@ impl Thread {
         self.arch.context.sp = stack as u64;
         // set the link register as the second to last entry (x30)
         self.arch.context.lr = entry as u64;
+        // by default interrupts are enabled (unmask the I bit)
+        // in other words set bits D,A, and F in DAIF[9:6]
+        self.arch.context.daif = (DAIFMaskBits::IRQ.complement().bits() as u64) << 6;
     }
 }
