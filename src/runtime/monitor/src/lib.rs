@@ -12,9 +12,11 @@ use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{sys_object_create, ObjectCreate},
 };
 use twizzler_object::ObjID;
-use twz_rt::set_upcall_handler;
+use twizzler_runtime_api::AuxEntry;
+use twz_rt::{set_upcall_handler, CompartmentInitInfo};
 
 use crate::{compartment::Comp, state::set_monitor_state};
 
@@ -59,6 +61,7 @@ pub fn main() {
     state.add_comp(monitor_comp, twizzler_runtime_api::LibraryId(0));
 
     let state = Arc::new(Mutex::new(state));
+    tracing::info!(".. state: {:p}", state);
     debug!(
         "found dynlink context, with root {}",
         state.lock().unwrap().root
@@ -110,11 +113,25 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
             .load_library_in_compartment(test_comp_id, lib, bootstrap_name_res)?;
 
     let rt_id =
-        state
+        match state
             .dynlink
-            .load_library_in_compartment(test_comp_id, rt_lib, bootstrap_name_res)?;
+            .load_library_in_compartment(test_comp_id, rt_lib, bootstrap_name_res)
+        {
+            Ok(rt_id) => {
+                state.dynlink.add_manual_dependency(libhw_id, rt_id);
+                rt_id
+            }
+            Err(_) => state
+                .dynlink
+                .lookup_library(test_comp_id, "libtwz_rt.so")
+                .unwrap(),
+        };
 
-    state.dynlink.add_manual_dependency(libhw_id, rt_id);
+    println!("found rt_id: {}", rt_id);
+    let rt_lib = state.dynlink.get_library(rt_id).unwrap();
+
+    drop(rt_lib);
+
     state.dynlink.relocate_all(libhw_id)?;
 
     let test_comp = Comp::new(
@@ -122,10 +139,30 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
         state.dynlink.get_compartment_mut(test_comp_id).unwrap(),
     )
     .unwrap();
+
+    info!("!! root = {}", libhw_id);
+    let ctors = state.dynlink.build_ctors_list(libhw_id).unwrap();
+
+    let rtinfo = CompartmentInitInfo {
+        ctor_array_start: ctors.as_ptr() as usize,
+        ctor_array_len: ctors.len(),
+        comp_config_addr: test_comp.get_comp_config() as *const _ as usize,
+    };
     state.add_comp(test_comp, libhw_id.into());
 
     info!("lookup entry");
 
+    let rt_lib = state.dynlink.get_library(rt_id).unwrap();
+    let entry = rt_lib.get_entry_address().unwrap();
+
+    let aux = [
+        AuxEntry::RuntimeInfo(&rtinfo as *const _ as usize, 1),
+        AuxEntry::Null,
+    ];
+    println!("==> {:p}", entry);
+    drop(state);
+    entry(aux.as_ptr());
+    /*
     let sym = state
         .dynlink
         .lookup_symbol(libhw_id, "test_sec_call", LookupFlags::empty())?;
@@ -134,6 +171,7 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
     info!("addr = {:x}", addr);
     let ptr: extern "C" fn() = unsafe { core::mem::transmute(addr as usize) };
     (ptr)();
+    */
 
     Ok(())
 }

@@ -35,31 +35,3 @@ pub unsafe fn rust_entry(arg: *const AuxEntry) -> ! {
 extern "C" {
     fn std_entry_from_runtime(aux: super::BasicAux) -> super::BasicReturn;
 }
-
-/// Public definition of __tls_get_addr, a function that gets automatically called by the compiler when needed for TLS
-/// pointer resolution.
-#[no_mangle]
-pub unsafe extern "C" fn __tls_get_addr(arg: usize) -> *const u8 {
-    // Just call the runtime.
-    let runtime = crate::get_runtime();
-    let index = (arg as *const crate::TlsIndex)
-        .as_ref()
-        .expect("null pointer passed to __tls_get_addr");
-    runtime
-        .tls_get_addr(index)
-        .expect("index passed to __tls_get_addr is invalid")
-}
-
-/// Public definition of dl_iterate_phdr, used by libunwind for learning where loaded objects (executables, libraries, ...) are.
-#[no_mangle]
-pub unsafe extern "C" fn dl_iterate_phdr(
-    callback: extern "C" fn(
-        ptr: *const DlPhdrInfo,
-        sz: core::ffi::c_size_t,
-        data: *mut core::ffi::c_void,
-    ) -> core::ffi::c_int,
-    data: *mut core::ffi::c_void,
-) -> core::ffi::c_int {
-    let runtime = crate::get_runtime();
-    runtime.iterate_phdr(&mut |info| callback(&info, core::mem::size_of::<DlPhdrInfo>(), data))
-}

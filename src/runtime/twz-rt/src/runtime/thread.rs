@@ -2,14 +2,13 @@
 
 use dynlink::tls::Tcb;
 use lazy_static::lazy_static;
-use tracing::trace;
 use twizzler_abi::syscall::{
     sys_thread_sync, sys_thread_yield, ThreadSync, ThreadSyncError, ThreadSyncFlags, ThreadSyncOp,
     ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
-use twizzler_runtime_api::{JoinError, SpawnError, ThreadRuntime, TlsIndex};
+use twizzler_runtime_api::{CoreRuntime, JoinError, SpawnError, ThreadRuntime, TlsIndex};
 
-use crate::runtime::thread::mgr::ThreadManager;
+use crate::{preinit_println, runtime::thread::mgr::ThreadManager};
 
 use self::tcb::with_current_thread;
 
@@ -20,6 +19,7 @@ mod mgr;
 mod tcb;
 
 pub use tcb::RuntimeThreadControl;
+pub(crate) use tcb::TLS_GEN_MGR;
 
 const MIN_STACK_ALIGN: usize = 128;
 
@@ -80,7 +80,6 @@ impl ThreadRuntime for ReferenceRuntime {
 
     fn set_name(&self, name: &std::ffi::CStr) {
         with_current_thread(|cur| {
-            trace!("naming thread {} `{}'", cur.id(), name.to_string_lossy());
             THREAD_MGR.with_internal(cur.id(), |th| th.set_name(name));
         })
     }
@@ -91,10 +90,15 @@ impl ThreadRuntime for ReferenceRuntime {
 
     fn tls_get_addr(&self, index: &TlsIndex) -> Option<*const u8> {
         let tp: &Tcb<()> = unsafe {
-            dynlink::tls::get_current_thread_control_block()
-                .as_ref()
-                .expect("failed to find thread control block")
+            match dynlink::tls::get_current_thread_control_block().as_ref() {
+                Some(tp) => tp,
+                None => {
+                    preinit_println!("failed to locate TLS data");
+                    self.abort();
+                }
+            }
         };
+
         tp.get_addr(index)
     }
 

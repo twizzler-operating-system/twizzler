@@ -47,6 +47,7 @@ pub fn preinit_abort() -> ! {
     core::intrinsics::abort()
 }
 
+#[track_caller]
 pub fn preinit_unwrap<T>(op: Option<T>) -> T {
     match op {
         Some(item) => item,
@@ -60,6 +61,7 @@ pub fn preinit_unwrap<T>(op: Option<T>) -> T {
     }
 }
 
+#[track_caller]
 #[allow(dead_code)]
 pub fn preinit_unwrap_result<T, E: core::fmt::Display>(op: Result<T, E>) -> T {
     match op {

@@ -35,7 +35,7 @@ pub struct SharedCompConfig {
 }
 
 struct CompConfigFinder {
-    config: NonNull<SharedCompConfig>,
+    config: *const SharedCompConfig,
 }
 
 // Safety: the compartment config address is stable over the life of the compartment and doesn't change after init.
@@ -49,11 +49,21 @@ pub fn get_comp_config() -> &'static SharedCompConfig {
     unsafe {
         COMP_CONFIG
             .get_or_init(|| CompConfigFinder {
-                config: NonNull::new(monitor_rt_get_comp_config().unwrap() as *mut _).unwrap(),
+                config: monitor_rt_get_comp_config().unwrap() as *const _,
             })
             .config
             .as_ref()
+            .unwrap()
     }
+}
+
+/// Tries to set the comp config pointer. May fail, as this can only be set once.
+/// The comp config pointer is automatically determined if [get_comp_config] is called
+/// without comp config being set, by cross-compartment call into monitor.
+pub fn set_comp_config(cfg: &'static SharedCompConfig) -> Result<(), ()> {
+    COMP_CONFIG
+        .set(CompConfigFinder { config: cfg })
+        .map_err(|_| ())
 }
 
 /// Information about a monitor-generated TLS template.

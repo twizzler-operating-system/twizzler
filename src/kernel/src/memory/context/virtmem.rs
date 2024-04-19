@@ -722,6 +722,10 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
             {
                 // TODO: select user context here.
                 ctx.with_arch(KERNEL_SCTX, |arch| {
+                    // TODO: don't need all three every time.
+                    arch.unmap(
+                        info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
+                    );
                     arch.map(
                         info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
                         &mut info.phys_provider(&page),
@@ -740,6 +744,10 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                     .unwrap();
                 // TODO: select user context here.
                 ctx.with_arch(KERNEL_SCTX, |arch| {
+                    // TODO: don't need all three every time.
+                    arch.unmap(
+                        info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
+                    );
                     arch.map(
                         info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
                         &mut info.phys_provider(&page),

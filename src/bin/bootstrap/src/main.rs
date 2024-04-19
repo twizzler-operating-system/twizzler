@@ -63,7 +63,7 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
 
     let mut info = ctx.build_runtime_info(monitor_id, tls).unwrap();
     let info_ptr = &info as *const _ as usize;
-    let aux = vec![AuxEntry::RuntimeInfo(info_ptr), AuxEntry::Null];
+    let aux = vec![AuxEntry::RuntimeInfo(info_ptr, 0), AuxEntry::Null];
 
     let mut used = vec![];
     used.reserve(SLOTS);
