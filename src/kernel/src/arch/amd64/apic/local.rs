@@ -162,7 +162,8 @@ impl Lapic {
                     LAPIC_TIMER,
                     LAPIC_TIMER_VECTOR as u32 | LAPIC_TIMER_DEADLINE,
                 );
-                // Intel 3A:11.5.4.1 requires an mfence here, between the MMIO write (if we're in xAPIC mode) and the MSR write.
+                // Intel 3A:11.5.4.1 requires an mfence here, between the MMIO write (if we're in
+                // xAPIC mode) and the MSR write.
                 if get_lapic().version == ApicVersion::XApic {
                     asm!("mfence;");
                 }

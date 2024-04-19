@@ -1,17 +1,16 @@
+mod gicc;
 /// A Generic Interrupt Controller (GIC) v2 driver interface
-/// 
+///
 /// The full specification can be found here:
 ///     https://developer.arm.com/documentation/ihi0048/b?lang=en
 ///
 /// A summary of its functionality can be found in section 10.6
 /// "ARM Cortex-A Series Programmer’s Guide for ARMv8-A":
 ///     https://developer.arm.com/documentation/den0024/a/
-
 mod gicd;
-mod gicc;
 
-use gicd::GICD;
 use gicc::GICC;
+use gicd::GICD;
 
 use crate::memory::VirtAddr;
 
@@ -64,7 +63,8 @@ impl GICv2 {
         self.global.set_interrupt_target(int_id, core);
         // TODO: have the priority set to something reasonable
         // set the priority for the corresponding interrupt
-        self.global.set_interrupt_priority(int_id, GICD::HIGHEST_PRIORITY);
+        self.global
+            .set_interrupt_priority(int_id, GICD::HIGHEST_PRIORITY);
         // TODO: edge triggered or level sensitive??? see GICD_ICFGRn
     }
 
@@ -85,4 +85,3 @@ impl GICv2 {
         self.local.print_config();
     }
 }
-

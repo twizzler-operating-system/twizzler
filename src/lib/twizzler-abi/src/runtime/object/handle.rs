@@ -2,12 +2,12 @@
 
 use core::{marker::PhantomData, ptr::NonNull};
 
-use crate::rustc_alloc::boxed::Box;
 use twizzler_runtime_api::{InternalHandleRefs, MapFlags, ObjectHandle};
 
 use crate::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     runtime::object::slot::global_allocate,
+    rustc_alloc::boxed::Box,
     syscall::{
         sys_object_create, sys_object_map, BackingType, LifetimeType, ObjectCreate,
         ObjectCreateFlags,

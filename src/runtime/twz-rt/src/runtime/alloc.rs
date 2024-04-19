@@ -1,6 +1,7 @@
-//! Primary allocator, for compartment-local allocation. One tricky aspect to this is that we need to support allocation before the
-//! runtime is fully ready, so to avoid calling into std, we implement a manual spinlock around the allocator until the better Mutex
-//! is available. Once it is, we move the allocator into the mutex, and use that.
+//! Primary allocator, for compartment-local allocation. One tricky aspect to this is that we need
+//! to support allocation before the runtime is fully ready, so to avoid calling into std, we
+//! implement a manual spinlock around the allocator until the better Mutex is available. Once it
+//! is, we move the allocator into the mutex, and use that.
 
 use core::{
     alloc::{GlobalAlloc, Layout},
@@ -8,7 +9,6 @@ use core::{
     ptr::NonNull,
     sync::atomic::{AtomicBool, Ordering},
 };
-
 use std::{
     alloc::Allocator,
     mem::size_of,
@@ -26,9 +26,8 @@ use twizzler_abi::{
 };
 use twizzler_runtime_api::MapFlags;
 
-use crate::{preinit_println, runtime::RuntimeState};
-
 use super::{ReferenceRuntime, OUR_RUNTIME};
+use crate::{preinit_println, runtime::RuntimeState};
 
 static LOCAL_ALLOCATOR: LocalAllocator = LocalAllocator {
     runtime: &OUR_RUNTIME,
@@ -103,9 +102,11 @@ fn create_and_map() -> Option<(usize, ObjID)> {
 impl OomHandler for RuntimeOom {
     fn handle_oom(talc: &mut Talc<Self>, _layout: Layout) -> Result<(), ()> {
         let (slot, id) = create_and_map().ok_or(())?;
-        // reserve an additional page size at the base of the object for future use. This behavior may change as the runtime is fleshed out.
+        // reserve an additional page size at the base of the object for future use. This behavior
+        // may change as the runtime is fleshed out.
         const HEAP_OFFSET: usize = NULLPAGE_SIZE * 2;
-        // offset from the endpoint of the object to where the endpoint of the heap is. Reserve a page for the metadata + a few pages for any future FOT entries.
+        // offset from the endpoint of the object to where the endpoint of the heap is. Reserve a
+        // page for the metadata + a few pages for any future FOT entries.
         const TOP_OFFSET: usize = NULLPAGE_SIZE * 4;
         let base = slot * MAX_SIZE + HEAP_OFFSET;
         let top = (slot + 1) * MAX_SIZE - TOP_OFFSET;
@@ -159,7 +160,8 @@ unsafe impl GlobalAlloc for LocalAllocator {
             // Runtime is ready, we can use normal locking
             let mut inner = self.inner.lock().unwrap();
             if inner.is_none() {
-                // First ones in after bootstrap. Lock, and then grab the early_alloc, using it for ourselves.
+                // First ones in after bootstrap. Lock, and then grab the early_alloc, using it for
+                // ourselves.
                 while !self.early_lock.swap(true, Ordering::SeqCst) {
                     core::hint::spin_loop()
                 }
@@ -194,8 +196,10 @@ unsafe impl GlobalAlloc for LocalAllocator {
             Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), MIN_ALIGN))
                 .expect("layout alignment bump failed");
 
-        // The monitor runtime has to deal with some weirdness in that some allocations may have happened during bootstrap. It's possible
-        // that these could be freed into _this_ allocator, which would be wrong. So just ignore deallocations of bootstrap-allocated memory.
+        // The monitor runtime has to deal with some weirdness in that some allocations may have
+        // happened during bootstrap. It's possible that these could be freed into _this_
+        // allocator, which would be wrong. So just ignore deallocations of bootstrap-allocated
+        // memory.
         let ignore_slot = self.bootstrap_alloc_slot.load(Ordering::SeqCst);
         if ignore_slot != 0
             && Span::new(
@@ -211,7 +215,8 @@ unsafe impl GlobalAlloc for LocalAllocator {
             // Runtime is ready, we can use normal locking
             let mut inner = self.inner.lock().unwrap();
             if inner.is_none() {
-                // First ones in after bootstrap. Lock, and then grab the early_alloc, using it for ourselves.
+                // First ones in after bootstrap. Lock, and then grab the early_alloc, using it for
+                // ourselves.
                 while !self.early_lock.swap(true, Ordering::SeqCst) {
                     core::hint::spin_loop()
                 }

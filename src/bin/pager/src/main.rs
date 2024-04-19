@@ -1,14 +1,11 @@
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
+use tickv::{success_codes::SuccessCode, ErrorCode};
 use twizzler_abi::pager::{
     CompletionToKernel, CompletionToPager, KernelCompletionData, RequestFromKernel,
     RequestFromPager,
 };
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
-
-use std::collections::BTreeMap;
-
-use tickv::{success_codes::SuccessCode, ErrorCode};
 
 use crate::store::{Key, KeyValueStore};
 
@@ -117,7 +114,7 @@ impl<'a> Tester<'a> {
             let _ = self.get(k);
             let num = quick_random() % 3;
             if num == 0 || num == 2 {
-                let _ = self.put(k, Foo { x: x });
+                let _ = self.put(k, Foo { x });
             } else if num == 1 {
                 let _ = self.del(k);
             }

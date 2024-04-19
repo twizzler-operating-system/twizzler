@@ -1,12 +1,10 @@
+use alloc::vec::Vec;
 use core::{
     fmt::Display,
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::once::Once;
-use alloc::vec::Vec;
-
-use crate::mutex::Mutex;
+use crate::{mutex::Mutex, once::Once};
 
 pub struct IdCounter {
     counter: AtomicU64,
@@ -74,8 +72,8 @@ impl IdCounter {
     fn release(&self, id: u64) {
         assert!(id > 0);
         self.reuse.call_once(|| Mutex::new(Vec::new()));
-        //TODO: we could optimize here by trying to subtract from ID_COUNTER using CAS if the thread ID
-        //is the current top value of the counter
+        //TODO: we could optimize here by trying to subtract from ID_COUNTER using CAS if the
+        // thread ID is the current top value of the counter
         let mut reuser = self.reuse.wait().lock();
         reuser.push(id);
     }

@@ -1,8 +1,8 @@
-use crate::{arch::syscall::raw_syscall, object::ObjID};
 use bitflags::bitflags;
 use num_enum::{FromPrimitive, IntoPrimitive};
 
 use super::{convert_codes_to_result, Syscall};
+use crate::{arch::syscall::raw_syscall, object::ObjID};
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Default)]
 #[repr(C)]
@@ -12,7 +12,8 @@ use super::{convert_codes_to_result, Syscall};
 pub struct ObjectSource {
     /// The ID of the source object, or zero for filling destination with zero.
     pub id: ObjID,
-    /// The offset into the source object to start the copy. If id is zero, this field is reserved for future use.
+    /// The offset into the source object to start the copy. If id is zero, this field is reserved
+    /// for future use.
     pub src_start: u64,
     /// The offset into the dest object to start the copy or zero.
     pub dest_start: u64,

@@ -2,12 +2,11 @@
 
 use twizzler_runtime_api::{AddrRange, DebugRuntime, Library, LibraryId, MapFlags};
 
-use crate::object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE};
-
 use super::{
     MinimalRuntime, __twz_get_runtime,
     load_elf::{ElfObject, PhdrType},
 };
+use crate::object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE};
 
 static mut EXEC_ID: ObjID = ObjID::new(0);
 
@@ -67,7 +66,8 @@ impl DebugRuntime for MinimalRuntime {
         Some(lib.mapping.clone())
     }
 
-    // The minimal runtime doesn't provide this, since we can get segment information in a simpler way for static binaries.
+    // The minimal runtime doesn't provide this, since we can get segment information in a simpler
+    // way for static binaries.
     fn iterate_phdr(
         &self,
         _f: &mut dyn FnMut(twizzler_runtime_api::DlPhdrInfo) -> core::ffi::c_int,

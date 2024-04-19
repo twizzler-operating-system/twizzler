@@ -11,14 +11,13 @@ use twizzler_abi::{
     },
 };
 
+use super::{interrupt::IsrContext, syscall::X86SyscallContext};
 use crate::{
     arch::amd64::gdt::set_kernel_stack,
     memory::VirtAddr,
     processor::KERNEL_STACK_SIZE,
     thread::{current_thread_ref, Thread},
 };
-
-use super::{interrupt::IsrContext, syscall::X86SyscallContext};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Registers {
@@ -90,7 +89,8 @@ unsafe extern "C" fn __do_switch(
         "test rax, rax",
         "jnz sw_wait",
         "do_the_switch:",
-        /* we can just store to the new switch lock, since we're guaranteed to be the only CPU here */
+        /* we can just store to the new switch lock, since we're guaranteed to be the only CPU
+         * here */
         "lock mov qword ptr [rdx], 1",
         "mfence",
         /* okay, now load the new stack pointer and restore */
@@ -106,7 +106,8 @@ unsafe extern "C" fn __do_switch(
         "pop rax",
         "jmp rax",
         "sw_wait:",
-        /* okay, so we have to wait. Just keep retrying to read zero from the lock, pausing in the meantime */
+        /* okay, so we have to wait. Just keep retrying to read zero from the lock, pausing in
+         * the meantime */
         "pause",
         "mov rax, [rdx]",
         "test rax, rax",
@@ -204,8 +205,8 @@ where
         return false;
     }
 
-    // TODO: once security contexts are more implemented, we'll need to do a bunch of permission checks
-    // on the stack and target jump addresses.
+    // TODO: once security contexts are more implemented, we'll need to do a bunch of permission
+    // checks on the stack and target jump addresses.
 
     // Don't touch the red zone for the function we were in.
     let stack_top = stack_pointer - RED_ZONE_SIZE as u64;
@@ -250,7 +251,8 @@ where
     let frame_ptr = frame_start as usize as *mut UpcallFrame;
     let mut frame: UpcallFrame = (*regs).into();
 
-    // Step 3a: we need to fill out some extra stuff in the upcall frame, like the thread pointer and fpu state.
+    // Step 3a: we need to fill out some extra stuff in the upcall frame, like the thread pointer
+    // and fpu state.
     frame.thread_ptr = current_thread_ref()
         .unwrap()
         .arch

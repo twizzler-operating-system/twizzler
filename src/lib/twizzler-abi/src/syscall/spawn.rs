@@ -1,9 +1,8 @@
 use bitflags::bitflags;
 use num_enum::{FromPrimitive, IntoPrimitive};
 
-use crate::{arch::syscall::raw_syscall, object::ObjID, upcall::UpcallTarget};
-
 use super::{convert_codes_to_result, Syscall};
+use crate::{arch::syscall::raw_syscall, object::ObjID, upcall::UpcallTarget};
 bitflags! {
     /// Flags to pass to [sys_spawn].
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -14,12 +13,14 @@ bitflags! {
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 pub enum UpcallTargetSpawnOption {
-    /// Set all sync event handlers to abort by default. Entry addresses will be zero, and upcalls will not be issued.
+    /// Set all sync event handlers to abort by default. Entry addresses will be zero, and upcalls
+    /// will not be issued.
     DefaultAbort,
     /// Inherit the upcall target entry address. All supervisor fields are cleared.
     Inherit,
     /// Set the upcall target directly. The following conditions must be met:
-    ///   1. The super_ctx field holds the ID of the current thread's active context (prevents priv escalation).
+    ///   1. The super_ctx field holds the ID of the current thread's active context (prevents priv
+    ///      escalation).
     ///   2. The super_entry_address is at most r-x, and at least --x in the super_ctx.
     ///   3. The super_thread_pointer is exactly rw- in the super_ctx.
     ///   4. The super_stack_pointer is exactly rw- in the super_ctx.
@@ -41,8 +42,9 @@ pub struct ThreadSpawnArgs {
 }
 
 impl ThreadSpawnArgs {
-    /// Construct a new ThreadSpawnArgs. If vm_context_handle is Some(handle), then spawn the thread in the
-    /// VM context defined by handle. Otherwise spawn it in the same VM context as the spawner.
+    /// Construct a new ThreadSpawnArgs. If vm_context_handle is Some(handle), then spawn the thread
+    /// in the VM context defined by handle. Otherwise spawn it in the same VM context as the
+    /// spawner.
     #[warn(clippy::too_many_arguments)]
     pub fn new(
         entry: usize,

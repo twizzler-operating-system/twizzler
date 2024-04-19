@@ -2,13 +2,12 @@ use core::sync::atomic::Ordering;
 
 use twizzler_abi::{arch::XSAVE_LEN, upcall::UpcallFrame};
 
-use crate::{
-    arch::thread::use_xsave, memory::VirtAddr, syscall::SyscallContext, thread::current_thread_ref,
-};
-
 use super::{
     interrupt::{return_with_frame_to_user, IsrContext},
     thread::{Registers, UpcallAble},
+};
+use crate::{
+    arch::thread::use_xsave, memory::VirtAddr, syscall::SyscallContext, thread::current_thread_ref,
 };
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -185,18 +184,20 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
         // we'll use the ISR return path, which doesn't.
         let mut rf = cur_th.arch.upcall_restore_frame.borrow_mut();
         if let Some(up_frame) = rf.take() {
-            // we MUST manually drop this, _and_ the current thread ref (a bit later), because otherwise we leave
-            // them hanging when we trampoline back into userspace.
+            // we MUST manually drop this, _and_ the current thread ref (a bit later), because
+            // otherwise we leave them hanging when we trampoline back into userspace.
             drop(rf);
 
-            // Restore the sse registers. These don't get restored by the isr return path, so we have to do it ourselves.
+            // Restore the sse registers. These don't get restored by the isr return path, so we
+            // have to do it ourselves.
             if use_xsave() {
                 core::arch::asm!("xrstor [{}]", in(reg) up_frame.xsave_region.as_ptr(), in("rax") 3, in("rdx") 0);
             } else {
                 core::arch::asm!("fxrstor [{}]", in(reg) up_frame.xsave_region.as_ptr());
             }
 
-            // Restore the thread pointer (it might have changed, and we also allow for it to change inside the upcall frame during the upcall)
+            // Restore the thread pointer (it might have changed, and we also allow for it to change
+            // inside the upcall frame during the upcall)
             cur_th
                 .arch
                 .user_fs

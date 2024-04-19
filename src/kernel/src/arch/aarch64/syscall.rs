@@ -5,15 +5,12 @@
 ///
 /// "Procedure Call Standard for the Arm® 64-bit Architecture (AArch64)":
 ///     https://github.com/ARM-software/abi-aa/releases/download/2023Q1/aapcs64.pdf
-
-use arm64::registers::{ELR_EL1, SP_EL0, SPSR_EL1};
+use arm64::registers::{ELR_EL1, SPSR_EL1, SP_EL0};
 use registers::interfaces::Writeable;
-
 use twizzler_abi::upcall::UpcallFrame;
 
+use super::{exception::ExceptionContext, thread::UpcallAble};
 use crate::{memory::VirtAddr, syscall::SyscallContext};
-
-use super::{thread::UpcallAble, exception::ExceptionContext};
 
 /// The register state needed to transition between kernel and user.
 ///
@@ -110,8 +107,11 @@ pub unsafe fn return_to_user(context: &Armv8SyscallContext) -> ! {
     // - use sp_el0 stack pointer
     // - aarch64 execution state
     SPSR_EL1.write(
-        SPSR_EL1::D::Masked + SPSR_EL1::A::Masked + SPSR_EL1::I::Unmasked
-        + SPSR_EL1::F::Masked + SPSR_EL1::M::EL0t
+        SPSR_EL1::D::Masked
+            + SPSR_EL1::A::Masked
+            + SPSR_EL1::I::Unmasked
+            + SPSR_EL1::F::Masked
+            + SPSR_EL1::M::EL0t,
     );
 
     // TODO: zero out/copy all registers
@@ -141,9 +141,9 @@ pub fn handle_syscall(ctx: &mut ExceptionContext) {
 
     crate::thread::enter_kernel();
     crate::interrupt::set(true);
-    
+
     crate::syscall::syscall_entry(&mut context);
-    
+
     crate::interrupt::set(false);
     crate::thread::exit_kernel();
 

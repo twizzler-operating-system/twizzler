@@ -5,9 +5,9 @@ use std::{
 
 use twizzler_async::FlagBlock;
 
-use crate::{
-    link::ethernet::{EthernetAddr, EthernetError},
-    link::nic::{NetworkInterface, NicBuffer, SendableBuffer},
+use crate::link::{
+    ethernet::{EthernetAddr, EthernetError},
+    nic::{NetworkInterface, NicBuffer, SendableBuffer},
 };
 
 struct LoopbackInner {

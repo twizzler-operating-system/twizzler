@@ -2,13 +2,12 @@ use std::alloc::Layout;
 
 use twizzler_abi::object::MAX_SIZE;
 
+use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
 use crate::{
     library::{CtorInfo, LibraryId},
     tls::TlsRegion,
     DynlinkError,
 };
-
-use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
 
 #[repr(C)]
 pub struct RuntimeInitInfo {

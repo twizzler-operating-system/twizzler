@@ -1,9 +1,9 @@
 use alloc::collections::BTreeMap;
+
 use twizzler_abi::syscall::ThreadSyncOp;
 
-use crate::thread::{current_thread_ref, ThreadRef};
-
 use super::Object;
+use crate::thread::{current_thread_ref, ThreadRef};
 
 struct SleepEntry {
     threads: BTreeMap<u64, ThreadRef>,
@@ -68,7 +68,8 @@ impl SleepInfo {
                 count += 1;
                 p
             }) {
-                /* TODO (opt): if sync_sleep_done is also set, maybe we can just immeditately reschedule this thread. */
+                /* TODO (opt): if sync_sleep_done is also set, maybe we can just immeditately
+                 * reschedule this thread. */
                 crate::syscall::sync::add_to_requeue(t);
             }
         }

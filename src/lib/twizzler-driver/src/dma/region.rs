@@ -1,5 +1,4 @@
-use core::marker::PhantomData;
-use core::ops::Range;
+use core::{marker::PhantomData, ops::Range};
 use std::sync::Arc;
 
 use twizzler_abi::{
@@ -11,13 +10,12 @@ use twizzler_abi::{
     syscall::{sys_kaction, PinnedPage},
 };
 
-use crate::arch::DMA_PAGE_SIZE;
-
 use super::{
     pin::{PhysInfo, PinError},
     pool::{AllocatableDmaObject, SplitPageRange},
     Access, DeviceSync, DmaObject, DmaOptions, DmaPin, SyncMode,
 };
+use crate::arch::DMA_PAGE_SIZE;
 
 /// A region of DMA memory, represented in virtual memory as type `T`, with a particular access mode
 /// and options.
@@ -33,8 +31,8 @@ pub struct DmaRegion<T: DeviceSync> {
     _pd: PhantomData<T>,
 }
 
-/// A region of DMA memory, represented in virtual memory as type `[T; len]`, with a particular access mode
-/// and options.
+/// A region of DMA memory, represented in virtual memory as type `[T; len]`, with a particular
+/// access mode and options.
 pub struct DmaSliceRegion<T: DeviceSync> {
     region: DmaRegion<T>,
     len: usize,
@@ -191,7 +189,8 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
     /// Release any pin created for this region.
     ///
     /// # Safety
-    /// Caller must ensure that no device is using the information from any active pins for this region.
+    /// Caller must ensure that no device is using the information from any active pins for this
+    /// region.
     pub unsafe fn release_pin(&mut self) {
         if let Some((_, token)) = self.backing {
             super::object::release_pin(self.dma_object().object().id(), token);
@@ -305,7 +304,8 @@ impl<'a, T: DeviceSync> DmaSliceRegion<T> {
         ret
     }
 
-    // Run a closure that takes a mutable reference to a subslice of the DMA data, ensuring coherence.
+    // Run a closure that takes a mutable reference to a subslice of the DMA data, ensuring
+    // coherence.
     pub fn with_mut<F, R>(&mut self, range: Range<usize>, f: F) -> R
     where
         F: FnOnce(&mut [T]) -> R,
@@ -338,7 +338,8 @@ impl<'a, T: DeviceSync> DmaSliceRegion<T> {
     /// Release any pin created for this region.
     ///
     /// # Safety
-    /// Caller must ensure that no device is using the information from any active pins for this region.
+    /// Caller must ensure that no device is using the information from any active pins for this
+    /// region.
     #[inline]
     pub unsafe fn release_pin(&mut self) {
         self.region.release_pin()

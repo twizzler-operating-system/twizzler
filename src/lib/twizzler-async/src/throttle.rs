@@ -1,8 +1,9 @@
-use scoped_tls_hkt::scoped_thread_local;
 use std::{
     cell::Cell,
     task::{Context, Poll},
 };
+
+use scoped_tls_hkt::scoped_thread_local;
 
 scoped_thread_local! {
     static BUDGET: Cell<u32>

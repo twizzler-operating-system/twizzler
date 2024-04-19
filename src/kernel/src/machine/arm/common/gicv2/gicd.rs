@@ -1,5 +1,5 @@
 /// A Generic Interrupt Controller (GIC) v2 Distributor Interface
-/// 
+///
 /// The full specification can be found here:
 ///     https://developer.arm.com/documentation/ihi0048/b?lang=en
 ///
@@ -8,17 +8,15 @@
 /// A summary of its functionality can be found in section 10.6
 /// "ARM Cortex-A Series Programmer’s Guide for ARMv8-A":
 ///     https://developer.arm.com/documentation/den0024/a/
-
 use core::ops::RangeInclusive;
 
 use registers::{
-    interfaces::{Readable, Writeable, ReadWriteable},
+    interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields, register_structs,
     registers::{ReadOnly, ReadWrite},
 };
 
 use super::super::mmio::MmioRef;
-
 use crate::memory::VirtAddr;
 
 // Each register in the specification is prefixed with GICD_
@@ -66,8 +64,8 @@ register_bitfields! {
 
 // Each register in the specification is prefixed with GICD_
 register_structs! {
-    /// Distributor Register Map according 
-    /// to Section 4.1.2, Table 4-1. 
+    /// Distributor Register Map according
+    /// to Section 4.1.2, Table 4-1.
     /// All registers are 32-bits wide.
     #[allow(non_snake_case)]
     DistributorRegisters {
@@ -96,14 +94,14 @@ pub struct GICD {
 }
 
 impl GICD {
-    /// According to 4.3.11 and 3.3: "GICD_IPRIORITYRs provide 8-bit 
-    /// priority field for each interrupt," and Lower numbers have 
+    /// According to 4.3.11 and 3.3: "GICD_IPRIORITYRs provide 8-bit
+    /// priority field for each interrupt," and Lower numbers have
     /// higher priority, with 0 being the highest.
     pub const HIGHEST_PRIORITY: u8 = 0;
 
     // The CPU can see interrupt IDs 0-1019. 0-31 are banked by
     // the distributor and uniquely seen by each processor, and
-    // SPIs range from 32-1019 (2.2.1). 
+    // SPIs range from 32-1019 (2.2.1).
 
     /// Software Generated Interrupts (SGIs) range from 0-15 (See 2.2.1)
     const SGI_ID_RANGE: RangeInclusive<u32> = RangeInclusive::new(0, 15);
@@ -151,23 +149,23 @@ impl GICD {
     }
 
     /// Set the enable bit for the corresponding interrupt.
-    pub fn enable_interrupt(&self, int_id: u32) {        
-        // The GICD_ISENABLERns provide the set-enable bits 
+    pub fn enable_interrupt(&self, int_id: u32) {
+        // The GICD_ISENABLERns provide the set-enable bits
         // for each interrupt shared or otherwise (3.1.2).
-        // 
+        //
         // NOTE: The implementation of SGIs may have them
         // permanently enabled or they need to be manually
         // enabled/disabled
-        if Self::SGI_ID_RANGE.contains(&int_id) 
+        if Self::SGI_ID_RANGE.contains(&int_id)
             || Self::PPI_ID_RANGE.contains(&int_id)
-            || Self::SPI_ID_RANGE.contains(&int_id) 
-        { 
+            || Self::SPI_ID_RANGE.contains(&int_id)
+        {
             // according to the algorithm on 4-93:
             // 1. GICD_ISENABLER n = int_id / 32
             let iser = (int_id / 32) as usize;
             // 2. bit number = int_id % 32
             let bit_index = int_id % 32;
-            
+
             // First, we read the right GICD_ISENABLER register
             let mut enable = self.registers.ISENABLER[iser].get();
             // set the bit in the local copy
@@ -182,20 +180,20 @@ impl GICD {
     /// configure routing of interrupts to particular cpu cores
     pub fn set_interrupt_target(&self, int_id: u32, core: u32) {
         // We skip the banked registers since according to 2.2.1
-        // those map to interrupt IDs 0-31 which are local to 
+        // those map to interrupt IDs 0-31 which are local to
         // the processor.
         //
         // According to 4.3.12:
         // - GICD_ITARGETSR0 to GICD_ITARGETSR7 are read-only
         // - GICD_ITARGETSR0 to GICD_ITARGETSR7 are banked
         if int_id < *Self::PPI_ID_RANGE.end() {
-            return
+            return;
         }
 
         // Following the algorithm on page 4-107:
         // 1. ITARGETSR num = int_id / 4
         // minus 1 since we seperate banked registers
-        let num = (int_id / 4) as usize - 1; 
+        let num = (int_id / 4) as usize - 1;
         // 2. byte offset required = int_id % 4
         let offset = int_id % 4;
 
@@ -225,7 +223,7 @@ impl GICD {
             1 => IPRIORITYR::PriorityOffset1.val(priority.into()),
             2 => IPRIORITYR::PriorityOffset2.val(priority.into()),
             3 => IPRIORITYR::PriorityOffset3.val(priority.into()),
-            _ => unreachable!()
+            _ => unreachable!(),
         };
 
         self.registers.IPRIORITYR[num].modify(prio);

@@ -1,11 +1,11 @@
 //! Compartments are an abstraction for isolation of library components, but they are not done yet.
 
-use petgraph::stable_graph::NodeIndex;
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
 };
 
+use petgraph::stable_graph::NodeIndex;
 use talc::{ErrOnOom, Talc};
 
 use crate::{library::BackingData, tls::TlsInfo};

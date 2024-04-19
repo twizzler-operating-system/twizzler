@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "manager")]
+use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags};
 use twizzler_abi::{
     marker::BaseType,
     syscall::{
@@ -9,23 +11,18 @@ use twizzler_abi::{
 };
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
-#[cfg(feature = "manager")]
-use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags};
-
 pub mod addr;
 pub mod buffer;
 mod nm_handle;
 mod req;
 mod rx_req;
 mod tx_req;
+pub use nm_handle::{open_nm_handle, NmHandle};
+#[cfg(feature = "manager")]
+pub use nm_handle::{server_open_nm_handle, NmHandleManager};
 pub use req::{CloseInfo, ConnectionId, PacketData};
 pub use rx_req::{Connection, RxCompletion, RxRequest};
 pub use tx_req::{ListenFlags, ListenInfo, TxCompletion, TxCompletionError, TxRequest};
-
-pub use nm_handle::{open_nm_handle, NmHandle};
-
-#[cfg(feature = "manager")]
-pub use nm_handle::{server_open_nm_handle, NmHandleManager};
 
 struct Rendezvous {
     ready: AtomicU64,

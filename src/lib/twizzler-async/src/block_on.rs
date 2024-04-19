@@ -1,15 +1,13 @@
 use std::{
+    cell::RefCell,
+    future::Future,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Condvar, Mutex,
     },
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::Duration,
 };
-
-use std::cell::RefCell;
-use std::future::Future;
-use std::task::Waker;
 struct Parker {
     unparker: Unparker,
 }

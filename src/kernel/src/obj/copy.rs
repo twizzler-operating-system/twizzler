@@ -1,13 +1,13 @@
-use crate::mutex::LockGuard;
-
 use super::{
     pages::Page,
     range::{PageRange, PageRangeTree},
     InvalidateMode, ObjectRef, PageNumber,
 };
+use crate::mutex::LockGuard;
 
-// Given a page range and a subrange within it, split it into two parts, the part before the subrange, and the part after.
-// Each part may be None if its length is zero (consider splitting [1,2,3,4] with the subrange [1,2] => (None, Some([3,4]))).
+// Given a page range and a subrange within it, split it into two parts, the part before the
+// subrange, and the part after. Each part may be None if its length is zero (consider splitting
+// [1,2,3,4] with the subrange [1,2] => (None, Some([3,4]))).
 fn split_range(
     range: PageRange,
     out: core::ops::Range<PageNumber>,
@@ -27,8 +27,9 @@ fn split_range(
     (r1, r2)
 }
 
-// Add a page range to the object page tree. We are given: (1) a range we want to take from, (2) a subrange within that range (specified by offset and length),
-// and a point to insert this into (dest_point).
+// Add a page range to the object page tree. We are given: (1) a range we want to take from, (2) a
+// subrange within that range (specified by offset and length), and a point to insert this into
+// (dest_point).
 fn copy_range_to_object_tree(
     dest_tree: &mut LockGuard<PageRangeTree>,
     dest_point: PageNumber,
@@ -40,11 +41,13 @@ fn copy_range_to_object_tree(
     let new_offset = range.offset + offset;
     let new_range = range.new_from(dest_point, new_offset, length);
     let new_range_key = new_range.start..new_range.start.offset(new_range.length);
-    // Now insert the new range. This will, of course, kick any ranges that overlap with the new range out of the tree, so we
-    // need to split those and add in pages that shouldn't have been replaced.
+    // Now insert the new range. This will, of course, kick any ranges that overlap with the new
+    // range out of the tree, so we need to split those and add in pages that shouldn't have
+    // been replaced.
     let kicked = dest_tree.insert_replace(new_range_key.clone(), new_range);
     for k in kicked {
-        // We need to split any kicked ranges into parts that don't overlap with new_range_key, and then reinsert those splits.
+        // We need to split any kicked ranges into parts that don't overlap with new_range_key, and
+        // then reinsert those splits.
         let (r1, r2) = split_range(k.1, new_range_key.clone());
         if let Some(mut r1) = r1 {
             r1.gc_pagevec();
@@ -73,7 +76,8 @@ fn copy_single(
     if let Some((src_page, _)) = src_page {
         dest_page.as_mut_slice()[offset..max].copy_from_slice(&src_page.as_slice()[offset..max]);
     } else {
-        // TODO: could skip this on freshly created page, if we can detect that. That's just an optimization, though.
+        // TODO: could skip this on freshly created page, if we can detect that. That's just an
+        // optimization, though.
         dest_page.as_mut_slice()[offset..max].fill(0);
     }
 }
@@ -96,15 +100,16 @@ fn zero_single(
 /// to copy on write. In the case that a page needs to be partially copied, we'll do a manual copy
 /// for that page. This only happens at the start and end of the copy region.
 ///
-/// We allow non-page-aligned offsets, and that misalignment may differ between source and dest objects,
-/// but the kernel may have to resort to a bytewise copy of the object pages if the offsets aren't both
-/// misaligned by the same amount (e.g., if page size is 0x1000, then (dest off, src off) of (0x1000, 0x4000),
-/// (0x1100, 0x3100) will still enable COW style copying, but (0x1100, 0x1200) will require manual copy).
+/// We allow non-page-aligned offsets, and that misalignment may differ between source and dest
+/// objects, but the kernel may have to resort to a bytewise copy of the object pages if the offsets
+/// aren't both misaligned by the same amount (e.g., if page size is 0x1000, then (dest off, src
+/// off) of (0x1000, 0x4000), (0x1100, 0x3100) will still enable COW style copying, but (0x1100,
+/// 0x1200) will require manual copy).
 ///
 /// We lock the page trees for each object (in a canonical order) and ensure that the regions are
 /// remapped appropriately for any mapping of the objects. This ensures that the source object is
-/// "checkpointed" before copying, and that the destination object cannot be read in the region being
-/// overwritten until the copy is done.
+/// "checkpointed" before copying, and that the destination object cannot be read in the region
+/// being overwritten until the copy is done.
 pub fn copy_ranges(
     src: &ObjectRef,
     src_off: usize,
@@ -136,8 +141,9 @@ pub fn copy_ranges(
     // Step 1: lock the page trees for the objects, in a canonical order.
     let (mut src_tree, mut dest_tree) = crate::utils::lock_two(&src.range_tree, &dest.range_tree);
 
-    // Step 2: Invalidate the page ranges. In the destination, we fully unmap the object for that range. In the source,
-    // we only need to ensure that no one modifies pages, so we just write-protect it.
+    // Step 2: Invalidate the page ranges. In the destination, we fully unmap the object for that
+    // range. In the source, we only need to ensure that no one modifies pages, so we just
+    // write-protect it.
     src.invalidate(
         src_start..src_start.offset(nr_pages),
         InvalidateMode::WriteProtect,
@@ -177,29 +183,34 @@ pub fn copy_ranges(
         remaining_pages -= 1;
     }
 
-    // Step 3b: copy full pages. The number of pages is how many we have left, minus if we are going to do a partial page at the end.
+    // Step 3b: copy full pages. The number of pages is how many we have left, minus if we are going
+    // to do a partial page at the end.
     let vec_pages = remaining_pages - if end_offset > 0 { 1 } else { 0 };
     let mut remaining_vec_pages = vec_pages;
     if vec_pages > 0 {
         let ranges = src_tree.range(src_point..src_point.offset(vec_pages));
         for range in ranges {
-            // If the source point is below the range's start, then there's a hole in the source page tree. We don't have
-            // to copy at all, just shift up the dest point to where it needs to be for this range (since we will be copying from it).
+            // If the source point is below the range's start, then there's a hole in the source
+            // page tree. We don't have to copy at all, just shift up the dest point to
+            // where it needs to be for this range (since we will be copying from it).
             if src_point < *range.0 {
                 let diff = *range.0 - src_point;
                 // If the hole is bigger than our copy region, just break.
-                // Note: I don't think this will ever be true, given the way we select the ranges from the tree, but I haven't proven it yet.
+                // Note: I don't think this will ever be true, given the way we select the ranges
+                // from the tree, but I haven't proven it yet.
                 if diff > remaining_vec_pages {
                     dest_point = dest_point.offset(remaining_vec_pages);
                     remaining_vec_pages = 0;
                     break;
                 }
-                // TODO: we'll need to either ensure everything is present, or interface with the pager. We'll probably do the later in the future.
+                // TODO: we'll need to either ensure everything is present, or interface with the
+                // pager. We'll probably do the later in the future.
                 dest_point = dest_point.offset(diff);
                 remaining_vec_pages -= diff;
             }
 
-            // Okay, finally, we can calculate the subrange from the source range that we'll be using for our destination region.
+            // Okay, finally, we can calculate the subrange from the source range that we'll be
+            // using for our destination region.
             let offset = src_point.num().saturating_sub(range.0.num());
             let len = core::cmp::min(range.1.value().length - offset, remaining_vec_pages);
             copy_range_to_object_tree(&mut dest_tree, dest_point, range.1.value(), offset, len);
@@ -271,7 +282,8 @@ fn copy_bytes(
             this_length
         } else {
             let this_length = core::cmp::min(PageNumber::PAGE_SIZE - this_dest_offset, remaining);
-            // TODO: could skip this on freshly created page, if we can detect that. That's just an optimization, though.
+            // TODO: could skip this on freshly created page, if we can detect that. That's just an
+            // optimization, though.
             dest_page.as_mut_slice()[this_dest_offset..(this_dest_offset + this_length)].fill(0);
             this_length
         };
@@ -335,16 +347,17 @@ pub fn zero_ranges(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
     // Okay, now we'll try to evict page tree entries that comprise the region.
     let vec_pages = remaining_pages - if end_offset > 0 { 1 } else { 0 };
     if vec_pages > 0 {
-        // Our plan is to collect all the page ranges within this range of pages, and remove them. We'll have to pay special attention
-        // to the first and last ranges, though, as they may only partially overlap the region to be zero'd.
+        // Our plan is to collect all the page ranges within this range of pages, and remove them.
+        // We'll have to pay special attention to the first and last ranges, though, as they
+        // may only partially overlap the region to be zero'd.
         let ranges = dest_tree.range(dest_point..dest_point.offset(vec_pages));
         let mut points = ranges
             .into_iter()
             .map(|r| r.0.clone())
             .collect::<alloc::vec::Vec<_>>();
 
-        // Handle the last range, keeping only the parts that are after the zeroing region. We use pop because we
-        // won't be needing to consider this entry later.
+        // Handle the last range, keeping only the parts that are after the zeroing region. We use
+        // pop because we won't be needing to consider this entry later.
         if let Some(last) = points.pop()
             && let Some(mut last_range) = dest_tree.remove(&last)
         {
@@ -366,8 +379,9 @@ pub fn zero_ranges(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
             }
         }
 
-        // Handle the first range, truncating it if it starts before the zeroing region. Don't bother removing it from
-        // the list -- we'll just skip it in the iterator (remove head of vec can be slow).
+        // Handle the first range, truncating it if it starts before the zeroing region. Don't
+        // bother removing it from the list -- we'll just skip it in the iterator (remove
+        // head of vec can be slow).
         if let Some(first) = points.first()
             && let Some(mut first_range) = dest_tree.remove(first)
         {
@@ -386,7 +400,8 @@ pub fn zero_ranges(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
             }
         }
 
-        // Finally we can remove the remaining ranges that are wholely contained. Skip the first one, though, we handled that above.
+        // Finally we can remove the remaining ranges that are wholely contained. Skip the first
+        // one, though, we handled that above.
         for point in points.iter().skip(1) {
             dest_tree.remove(point);
         }
@@ -406,13 +421,12 @@ pub fn zero_ranges(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
 mod test {
     use twizzler_abi::{device::CacheType, object::Protections};
 
+    use super::copy_ranges;
     use crate::{
         memory::context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
         obj::{copy::zero_ranges, pages::Page, ObjectRef, PageNumber},
         userinit::create_blank_object,
     };
-
-    use super::copy_ranges;
 
     fn check_slices(
         src: &ObjectRef,
@@ -505,18 +519,21 @@ mod test {
 
         let ps = PageNumber::PAGE_SIZE;
         let half_ps = PageNumber::PAGE_SIZE / 2;
-        // This is for mis-aligning the offsets. Use about an eighth of a page for that, the exact number doesn't matter.
+        // This is for mis-aligning the offsets. Use about an eighth of a page for that, the exact
+        // number doesn't matter.
         let abit = ps / 8;
         assert!(abit > 0 && abit < ps);
 
-        // Some helper functions for finding regions of the objects to use for copy testing automatically.
+        // Some helper functions for finding regions of the objects to use for copy testing
+        // automatically.
         let mut src_counting_page_num = 1;
         let mut dest_counting_page_num = 1;
         let calc_off =
             |page_num: usize, misalign: usize| -> usize { ps * page_num + misalign * abit };
 
         let mut do_check = |src_off_misalign, dest_off_misalign, len| {
-            let nr_pages = len / PageNumber::PAGE_SIZE + 2; // Just bump up, assuming there are partial pages. Slightly wasteful, but it's just a test.
+            let nr_pages = len / PageNumber::PAGE_SIZE + 2; // Just bump up, assuming there are partial pages. Slightly wasteful, but it's just a
+                                                            // test.
             let src_off = calc_off(src_counting_page_num, src_off_misalign);
             let dest_off = calc_off(dest_counting_page_num, dest_off_misalign);
             src_counting_page_num += nr_pages;
@@ -527,7 +544,8 @@ mod test {
         // Basic test
         do_check(0, 0, ps);
 
-        // Overwrite. These two pages in src have different contents (see loop at start of this function).
+        // Overwrite. These two pages in src have different contents (see loop at start of this
+        // function).
         let second_page = ps * 2;
         let third_page = ps * 3;
         copy_ranges_and_check(&src, second_page, &dest, second_page, ps);
@@ -546,7 +564,8 @@ mod test {
         // Page aligned, 2 pages and a bit more, not length aligned
         do_check(0, 0, ps * 2 + abit);
 
-        // Test fallback to manual copy. Force that by doubling the partial page offset for dest, but not src.
+        // Test fallback to manual copy. Force that by doubling the partial page offset for dest,
+        // but not src.
         do_check(abit, abit * 2, ps + abit);
         do_check(abit, abit * 2, abit);
 
@@ -554,8 +573,9 @@ mod test {
         // Test zeroing with a couple pages, not length aligned.
         zero_ranges_and_check(&dest, ps + abit, ps * 2 + abit);
 
-        // Test two back-to-back ranges. This first copy will copy (page(2) + abit) -> (page(2) + abit) for a len of
-        // a page. So the end point will be (page(3) + abit), which is where the second copy starts.
+        // Test two back-to-back ranges. This first copy will copy (page(2) + abit) -> (page(2) +
+        // abit) for a len of a page. So the end point will be (page(3) + abit), which is
+        // where the second copy starts.
         copy_ranges(&src, second_page + abit, &dest, second_page + abit, ps);
         copy_ranges_and_check(&src, third_page + abit, &dest, third_page + abit, ps);
         // Make sure we didn't overwrite the first copy.

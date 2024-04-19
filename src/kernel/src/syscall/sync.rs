@@ -1,6 +1,6 @@
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::time::Duration;
 
-use alloc::{collections::BTreeMap, vec::Vec};
 use twizzler_abi::{
     syscall::{ThreadSync, ThreadSyncError, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake},
     thread::ExecutionState,

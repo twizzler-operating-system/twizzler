@@ -65,8 +65,8 @@ impl<T> Mutex<T> {
         }
     }
 
-    /// Get a mut reference to the contained data. Does not perform locking, but is safe because we have a mut reference
-    /// to the mutex itself.
+    /// Get a mut reference to the contained data. Does not perform locking, but is safe because we
+    /// have a mut reference to the mutex itself.
     pub fn get_mut(&mut self) -> &mut T {
         self.cell.get_mut()
     }
@@ -229,19 +229,18 @@ impl<T: Default> Default for Mutex<T> {
 }
 
 mod test {
+    use alloc::{sync::Arc, vec::Vec};
     use core::{cmp::max, time::Duration};
 
-    use alloc::{sync::Arc, vec::Vec};
     use twizzler_kernel_macros::kernel_test;
 
+    use super::Mutex;
     use crate::{
         processor::NR_CPUS,
         syscall::sync::sys_thread_sync,
         thread::{entry::run_closure_in_new_thread, priority::Priority},
         utils::quick_random,
     };
-
-    use super::Mutex;
 
     #[kernel_test]
     fn test_mutex() {
