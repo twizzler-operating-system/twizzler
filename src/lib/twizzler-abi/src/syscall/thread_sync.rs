@@ -1,10 +1,11 @@
 use core::{
-    fmt, ptr,
+    ptr,
     sync::atomic::{AtomicU32, AtomicU64},
     time::Duration,
 };
 
 use bitflags::bitflags;
+use num_enum::{FromPrimitive, IntoPrimitive};
 
 use crate::{arch::syscall::raw_syscall, object::ObjID};
 
@@ -126,64 +127,41 @@ impl ThreadSyncWake {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Eq,
+    Hash,
+    IntoPrimitive,
+    FromPrimitive,
+    thiserror::Error,
+)]
 #[repr(u64)]
 /// Possible error returns for [sys_thread_sync].
 pub enum ThreadSyncError {
-    /// An unknown error.
+    /// An unknown error occurred.
+    #[num_enum(default)]
+    #[error("unknown error")]
     Unknown = 0,
-    /// The reference was invalid.
-    InvalidReference = 1,
-    /// An argument was invalid.
-    InvalidArgument = 2,
+    /// One of the arguments was invalid.
+    #[error("invalid argument")]
+    InvalidArgument = 1,
+    /// Invalid reference.
+    #[error("invalid reference")]
+    InvalidReference = 2,
     /// The operation timed out.
+    #[error("operation timed out")]
     Timeout = 3,
 }
 
+impl core::error::Error for ThreadSyncError {}
+
 /// Result of sync operations.
 pub type ThreadSyncResult = Result<usize, ThreadSyncError>;
-
-impl From<ThreadSyncError> for u64 {
-    fn from(x: ThreadSyncError) -> Self {
-        x as Self
-    }
-}
-
-impl ThreadSyncError {
-    /// Convert error to a human-readable string.
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Unknown => "an unknown error occurred",
-            Self::InvalidArgument => "an argument was invalid",
-            Self::InvalidReference => "a reference was invalid",
-            Self::Timeout => "the operation timed out",
-        }
-    }
-}
-
-impl From<u64> for ThreadSyncError {
-    fn from(x: u64) -> Self {
-        match x {
-            1 => Self::InvalidReference,
-            2 => Self::InvalidArgument,
-            3 => Self::Timeout,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl fmt::Display for ThreadSyncError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for ThreadSyncError {
-    fn description(&self) -> &str {
-        self.as_str()
-    }
-}
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]

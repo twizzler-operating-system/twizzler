@@ -1,59 +1,39 @@
-use core::fmt;
+use num_enum::{FromPrimitive, IntoPrimitive};
 
 use crate::{arch::syscall::raw_syscall, object::ObjID};
 
 use super::{convert_codes_to_result, justval, Syscall};
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
-#[repr(u32)]
-/// Possible error values for [sys_object_ctrl].
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Eq,
+    Hash,
+    IntoPrimitive,
+    FromPrimitive,
+    thiserror::Error,
+)]
+#[repr(u64)]
+/// Possible error returns for [sys_object_ctrl].
 pub enum ObjectControlError {
     /// An unknown error occurred.
+    #[num_enum(default)]
+    #[error("unknown error")]
     Unknown = 0,
-    /// The ID was invalid.
-    InvalidID = 1,
-    /// An argument was invalid.
-    InvalidArgument = 2,
+    /// One of the arguments was invalid.
+    #[error("invalid argument")]
+    InvalidArgument = 1,
+    /// Invalid object ID.
+    #[error("invalid object ID")]
+    InvalidID = 2,
 }
 
-impl ObjectControlError {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Unknown => "an unknown error occurred",
-            Self::InvalidID => "invalid ID",
-            Self::InvalidArgument => "invalid argument",
-        }
-    }
-}
+impl core::error::Error for ObjectControlError {}
 
-impl From<ObjectControlError> for u64 {
-    fn from(x: ObjectControlError) -> u64 {
-        x as u64
-    }
-}
-
-impl From<u64> for ObjectControlError {
-    fn from(x: u64) -> Self {
-        match x {
-            1 => Self::InvalidID,
-            2 => Self::InvalidArgument,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl fmt::Display for ObjectControlError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for ObjectControlError {
-    fn description(&self) -> &str {
-        self.as_str()
-    }
-}
 bitflags::bitflags! {
     /// Flags to control operation of the object delete operation.
     #[derive(Debug, Clone, Copy)]
