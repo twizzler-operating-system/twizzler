@@ -54,5 +54,8 @@ pub fn spawn_thread(
 
 /// Get the caller's compartment configuration pointer.
 pub fn get_comp_config(comp_id: Option<ObjID>) -> *const SharedCompConfig {
-    todo!()
+    COMPMAN
+        .get_comp_inner(comp_id.unwrap_or(MONITOR_INSTANCE_ID))
+        .map(|comp| comp.lock().unwrap().compartment_config() as *const _)
+        .unwrap_or(core::ptr::null())
 }

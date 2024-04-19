@@ -4,6 +4,7 @@ use std::{
 };
 
 use dynlink::compartment::CompartmentId;
+use monitor_api::SharedCompConfig;
 use talc::{ErrOnOom, Talc};
 use twizzler_runtime_api::{MapError, ObjID};
 
@@ -47,6 +48,10 @@ impl RunCompInner {
     pub fn unmap_object(&mut self, info: MapInfo) {
         let _ = self.mapped_objects.remove(&info);
         // Unmap handled in MapHandle drop
+    }
+
+    pub fn compartment_config(&self) -> &SharedCompConfig {
+        todo!()
     }
 }
 
