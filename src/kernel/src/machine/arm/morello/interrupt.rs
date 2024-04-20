@@ -1,10 +1,10 @@
 use lazy_static::lazy_static;
 
-use super::super::common::gicv2::GICv2;
+use super::super::common::gicv3::GICv3;
 
 lazy_static! {
     /// System-wide reference to the interrupt controller
-    pub static ref INTERRUPT_CONTROLLER: GICv2 = {
+    pub static ref INTERRUPT_CONTROLLER: GICv3 = {
         use twizzler_abi::{device::CacheType, object::Protections};
         
         use crate::memory::{
@@ -17,9 +17,9 @@ lazy_static! {
         use crate::arch::memory::mmio::MMIO_ALLOCATOR;
         
         // retrive the locations of the MMIO registers
-        let (distributor_mmio, cpu_interface_mmio) = crate::machine::info::get_gicv2_info();
+        let (distributor_mmio, cpu_interface_mmio) = crate::machine::info::get_gicv3_info();
         // reserve regions of virtual address space for MMIO
-        let (gicc_mmio_base, gicd_mmio_base) = {
+        let (gicr_mmio_base, gicd_mmio_base) = {
             let mut alloc = MMIO_ALLOCATOR.lock();
             let cpu = alloc.alloc(cpu_interface_mmio.length as usize)
                 .expect("failed to allocate MMIO region");
@@ -28,11 +28,11 @@ lazy_static! {
             (cpu, dist)
         };
         // configure mapping settings for this region of memory
-        let gicc_region = MappingCursor::new(
-            gicc_mmio_base,
+        let gicr_region = MappingCursor::new(
+            gicr_mmio_base,
             cpu_interface_mmio.length as usize,
         );
-        let mut gicc_phys = ContiguousProvider::new(
+        let mut gicr_phys = ContiguousProvider::new(
             unsafe { PhysAddr::new_unchecked(cpu_interface_mmio.info) },
             cpu_interface_mmio.length as usize,
         );
@@ -54,14 +54,12 @@ lazy_static! {
         // map in with curent memory context
         unsafe {
             let mut mapper = Mapper::current();
-            mapper.map(gicc_region, &mut gicc_phys, &settings);
+            mapper.map(gicr_region, &mut gicr_phys, &settings);
             mapper.map(gicd_region, &mut gicd_phys, &settings);
         }
-        GICv2::new(
-            // TODO: might need to lock global distributor state,
-            // and possibly CPU interface
+        GICv3::new(
             gicd_mmio_base,
-            gicc_mmio_base,
+            gicr_mmio_base,
         )
     };
 }
