@@ -131,3 +131,18 @@ pub fn get_gicv2_info() -> (MmioInfo, MmioInfo) {
     }
     (gicd_mmio, gicc_mmio)
 }
+
+/// Return the MMIO info for the GICv3 registers
+pub fn get_gicv3_info() -> (MmioInfo, MmioInfo) {
+    let gicd_mmio = MmioInfo { 
+        length: 0x1000,
+        cache_type: CacheType::MemoryMappedIO,
+        info: 0x800_0000, 
+    };
+    let gicr_mmio = MmioInfo { 
+        length: 0x00F60000,
+        cache_type: CacheType::MemoryMappedIO,
+        info: 0x80A_0000, 
+    };
+    (gicd_mmio, gicr_mmio)
+}

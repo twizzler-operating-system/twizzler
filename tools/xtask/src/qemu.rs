@@ -110,8 +110,7 @@ impl QemuCommand {
                 self.cmd.arg("-bios").arg("toolchain/install/OVMF-AA64.fd");
                 self.cmd.arg("-net").arg("none");
                 if self.machine == Machine::Morello {
-                    // TODO: change this to use GICv3, like how Morello uses
-                    self.cmd.arg("-machine").arg("virt,gic-version=2");
+                    self.cmd.arg("-machine").arg("virt,gic-version=3");
                     self.cmd.arg("-cpu").arg("morello");
                 } else {
                     // use qemu virt machine by default
