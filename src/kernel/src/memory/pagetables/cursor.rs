@@ -13,7 +13,8 @@ impl MappingCursor {
         Self { start, len }
     }
 
-    /// Advance the cursor by `len`. Should the resulting address be non-canonical, `None` is returned.
+    /// Advance the cursor by `len`. Should the resulting address be non-canonical, `None` is
+    /// returned.
     pub fn advance(mut self, len: usize) -> Option<Self> {
         if self.len <= len {
             return None;
@@ -24,7 +25,8 @@ impl MappingCursor {
         Some(self)
     }
 
-    /// Advance the cursor by up to `len`, so we end up aligned on len. Should the resulting address be non-canonical, `None` is returned.
+    /// Advance the cursor by up to `len`, so we end up aligned on len. Should the resulting address
+    /// be non-canonical, `None` is returned.
     pub fn align_advance(mut self, len: usize) -> Option<Self> {
         let vaddr = self.start.align_up(len as u64).ok()?;
         if vaddr == self.start {

@@ -2,9 +2,8 @@ use core::mem::MaybeUninit;
 
 use num_enum::{FromPrimitive, IntoPrimitive};
 
-use crate::{arch::syscall::raw_syscall, object::ObjID};
-
 use super::{convert_codes_to_result, justval, BackingType, LifetimeType, Syscall};
+use crate::{arch::syscall::raw_syscall, object::ObjID};
 
 #[derive(
     Debug,

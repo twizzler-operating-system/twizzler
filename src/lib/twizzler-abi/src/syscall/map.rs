@@ -3,12 +3,11 @@ use core::mem::MaybeUninit;
 use bitflags::bitflags;
 use num_enum::{FromPrimitive, IntoPrimitive};
 
+use super::{convert_codes_to_result, justval, Syscall};
 use crate::{
     arch::syscall::raw_syscall,
     object::{ObjID, Protections},
 };
-
-use super::{convert_codes_to_result, justval, Syscall};
 
 #[derive(
     Debug,

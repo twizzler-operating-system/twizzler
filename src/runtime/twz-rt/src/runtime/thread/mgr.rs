@@ -11,6 +11,7 @@ use twizzler_runtime_api::{
     CoreRuntime, JoinError, MapFlags, ObjectRuntime, SpawnError, ThreadSpawnArgs,
 };
 
+use super::internal::InternalThread;
 use crate::runtime::{
     thread::{
         tcb::{trampoline, RuntimeThreadControl, TLS_GEN_MGR},
@@ -18,8 +19,6 @@ use crate::runtime::{
     },
     ReferenceRuntime, OUR_RUNTIME,
 };
-
-use super::internal::InternalThread;
 
 pub(super) struct ThreadManager {
     inner: Mutex<ThreadManagerInner>,
@@ -139,8 +138,8 @@ impl ReferenceRuntime {
                 .alloc_zeroed(Layout::from_size_align(args.stack_size, MIN_STACK_ALIGN).unwrap())
         } as usize;
 
-        // Take the thread management lock, so that when the new thread starts we cannot observe that thread
-        // running without the management data being recorded.
+        // Take the thread management lock, so that when the new thread starts we cannot observe
+        // that thread running without the management data being recorded.
         let mut inner = THREAD_MGR.inner.lock().unwrap();
         let id = inner.next_id();
 

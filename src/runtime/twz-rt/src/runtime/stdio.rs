@@ -1,6 +1,7 @@
-//! Implements stdio streams. For each one (stdin, stdout, and stderr), we have two possible sinks: a thread-local, and a "local"
-//! destination (here, local to this particular linking to this runtime). We try the thread-local first, if available, and if not, try
-//! the runtime local option. If that isn't present, we fallback to the Fallback writer and reader.
+//! Implements stdio streams. For each one (stdin, stdout, and stderr), we have two possible sinks:
+//! a thread-local, and a "local" destination (here, local to this particular linking to this
+//! runtime). We try the thread-local first, if available, and if not, try the runtime local option.
+//! If that isn't present, we fallback to the Fallback writer and reader.
 
 use std::{
     panic::RefUnwindSafe,
@@ -66,7 +67,8 @@ impl ReferenceRuntime {
 impl RustStdioRuntime for ReferenceRuntime {
     fn with_panic_output(&self, cb: twizzler_runtime_api::IoWritePanicDynCallback<'_, ()>) {
         // For panic output, try to never wait on any locks. Also, catch unwinds and treat
-        // the output option as None if the callback panics, to try to ensure the output goes somewhere.
+        // the output option as None if the callback panics, to try to ensure the output goes
+        // somewhere.
 
         // Unwrap-Ok: we ensure that no one can panic when holding the read lock.
         if let Ok(ref out) = THREAD_STDERR.try_read() {

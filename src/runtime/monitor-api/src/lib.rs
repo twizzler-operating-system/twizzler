@@ -1,5 +1,6 @@
-//! This crate exists to break a circular dependency between twz-rt and monitor. We use extern symbols so that we
-//! can just call into the monitor without having to have it as an explicit dependency.
+//! This crate exists to break a circular dependency between twz-rt and monitor. We use extern
+//! symbols so that we can just call into the monitor without having to have it as an explicit
+//! dependency.
 
 #![feature(naked_functions)]
 #![feature(pointer_byte_offsets)]
@@ -23,10 +24,12 @@ mod gates {
 pub use gates::*;
 use twizzler_runtime_api::LibraryId;
 
-/// Shared data between the monitor and a compartment runtime. Written to by the monitor, and read-only from the compartment.
+/// Shared data between the monitor and a compartment runtime. Written to by the monitor, and
+/// read-only from the compartment.
 #[repr(C)]
 pub struct SharedCompConfig {
-    /// The security context that this compartment derives from. Read-only, will not be overwritten.
+    /// The security context that this compartment derives from. Read-only, will not be
+    /// overwritten.
     pub sctx: ObjID,
     // Pointer to the current TLS template. Read-only by compartment, writable by monitor.
     tls_template: AtomicPtr<TlsTemplateInfo>,
@@ -38,7 +41,8 @@ struct CompConfigFinder {
     config: *const SharedCompConfig,
 }
 
-// Safety: the compartment config address is stable over the life of the compartment and doesn't change after init.
+// Safety: the compartment config address is stable over the life of the compartment and doesn't
+// change after init.
 unsafe impl Sync for CompConfigFinder {}
 unsafe impl Send for CompConfigFinder {}
 
@@ -115,7 +119,8 @@ impl TlsTemplateInfo {
         let dtv_ptr = new.add(self.dtv_offset) as *mut *mut u8;
         let dtv = core::slice::from_raw_parts_mut(dtv_ptr, self.num_dtv_entries);
 
-        // Step 2a: "relocate" the pointers inside the DTV. First entry is the gen count, so skip that.
+        // Step 2a: "relocate" the pointers inside the DTV. First entry is the gen count, so skip
+        // that.
         for entry in dtv.iter_mut().skip(1) {
             let offset = (*entry).byte_offset_from(self.alloc_base.as_ptr());
             *entry = new.byte_offset(offset);

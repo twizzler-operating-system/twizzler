@@ -12,7 +12,8 @@ pub trait PhysAddrProvider {
 }
 
 #[derive(Default)]
-/// An implementation of [PhysAddrProvider] that just allocates and returns freshly allocated and zeroed frames.
+/// An implementation of [PhysAddrProvider] that just allocates and returns freshly allocated and
+/// zeroed frames.
 pub struct ZeroPageProvider {
     current: Option<FrameRef>,
 }

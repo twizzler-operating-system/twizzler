@@ -6,7 +6,7 @@ lazy_static! {
     /// System-wide reference to the interrupt controller
     pub static ref INTERRUPT_CONTROLLER: GICv2 = {
         use twizzler_abi::{device::CacheType, object::Protections};
-        
+
         use crate::memory::{
             PhysAddr,
             pagetables::{
@@ -15,7 +15,7 @@ lazy_static! {
             },
         };
         use crate::arch::memory::mmio::MMIO_ALLOCATOR;
-        
+
         // retrive the locations of the MMIO registers
         let (distributor_mmio, cpu_interface_mmio) = crate::machine::info::get_gicv2_info();
         // reserve regions of virtual address space for MMIO

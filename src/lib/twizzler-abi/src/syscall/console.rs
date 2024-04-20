@@ -1,9 +1,8 @@
 use bitflags::bitflags;
 use num_enum::{FromPrimitive, IntoPrimitive};
 
-use crate::arch::syscall::raw_syscall;
-
 use super::{convert_codes_to_result, Syscall};
+use crate::arch::syscall::raw_syscall;
 
 #[derive(
     Debug,

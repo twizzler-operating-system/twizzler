@@ -1,5 +1,5 @@
 /// A Generic Interrupt Controller (GIC) v2 CPU Interface
-/// 
+///
 /// The full specification can be found here:
 ///     https://developer.arm.com/documentation/ihi0048/b?lang=en
 ///
@@ -8,7 +8,6 @@
 /// A summary of its functionality can be found in section 10.6
 /// "ARM Cortex-A Series Programmer’s Guide for ARMv8-A":
 ///     https://developer.arm.com/documentation/den0024/a/
-
 use registers::{
     interfaces::{Readable, Writeable},
     register_bitfields, register_structs,
@@ -16,7 +15,6 @@ use registers::{
 };
 
 use super::super::mmio::MmioRef;
-
 use crate::memory::VirtAddr;
 
 // Each register in the specification is prefixed with GICC_
@@ -112,7 +110,9 @@ impl GICC {
         // A write to the EOIR corrsponds to the most recent valid
         // read of the IAR value. A return of a spurious ID from IAR
         // does not have to be written to EOIR.
-        self.registers.EOIR.write(EOIR::InterruptID.val(int_id as u32));
+        self.registers
+            .EOIR
+            .write(EOIR::InterruptID.val(int_id as u32));
     }
 
     /// print the configuration of the distributor

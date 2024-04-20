@@ -5,11 +5,11 @@ use core::{
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
+
 use slabmalloc::{AllocationError, Allocator, LargeObjectPage, ObjectPage, ZoneAllocator};
 
-use crate::spinlock::Spinlock;
-
 use super::context::{Context, KernelMemoryContext};
+use crate::spinlock::Spinlock;
 
 #[alloc_error_handler]
 fn alloc_error_handler(layout: Layout) -> ! {

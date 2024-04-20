@@ -1,18 +1,19 @@
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use alloc::sync::Arc;
 use twizzler_abi::device::{CacheType, MMIO_OFFSET};
 
+use super::{Object, PageNumber};
 use crate::{
     arch::memory::{frame::FRAME_SIZE, phys_to_virt},
-    memory::frame::{self, free_frame, FrameRef, PhysicalFrameFlags},
-    memory::{PhysAddr, VirtAddr},
+    memory::{
+        frame::{self, free_frame, FrameRef, PhysicalFrameFlags},
+        PhysAddr, VirtAddr,
+    },
 };
 
-use super::{Object, PageNumber};
-
-/// An object page can be either a physical frame (allocatable memory) or a static physical address (wired). This will likely be
-/// overhauled soon.
+/// An object page can be either a physical frame (allocatable memory) or a static physical address
+/// (wired). This will likely be overhauled soon.
 #[derive(Debug)]
 enum FrameOrWired {
     Frame(FrameRef),
@@ -45,7 +46,8 @@ impl Drop for Page {
 }
 
 impl Page {
-    // TODO: we should have a way of allocating non-zero pages, for pages that will be immediately overwritten.
+    // TODO: we should have a way of allocating non-zero pages, for pages that will be immediately
+    // overwritten.
     pub fn new() -> Self {
         Self {
             frame: FrameOrWired::Frame(frame::alloc_frame(PhysicalFrameFlags::ZEROED)),
@@ -74,7 +76,8 @@ impl Page {
 
     pub unsafe fn get_mut_to_val<T>(&self, offset: usize) -> *mut T {
         /* TODO: enforce alignment and size of offset */
-        /* TODO: once we start optimizing frame zeroing, we need to make the frame as non-zeroed here */
+        /* TODO: once we start optimizing frame zeroing, we need to make the frame as non-zeroed
+         * here */
         let va = self.as_virtaddr();
         let bytes = va.as_mut_ptr::<u8>();
         bytes.add(offset) as *mut T

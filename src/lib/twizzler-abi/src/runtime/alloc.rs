@@ -1,10 +1,11 @@
-//! Implements the allocation part of the core runtime trait. We use talc as our allocator, creating new objects for it to
-//! claim when it runs out of memory.
+//! Implements the allocation part of the core runtime trait. We use talc as our allocator, creating
+//! new objects for it to claim when it runs out of memory.
 
 use core::{alloc::GlobalAlloc, ptr::NonNull};
 
 use talc::{OomHandler, Span};
 
+use super::object::slot::global_allocate;
 use crate::{
     object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
     runtime::simple_mutex::Mutex,
@@ -13,8 +14,6 @@ use crate::{
         ObjectCreateFlags,
     },
 };
-
-use super::object::slot::global_allocate;
 
 pub struct MinimalAllocator {
     imp: Mutex<talc::Talc<MinimalOomHandler>>,

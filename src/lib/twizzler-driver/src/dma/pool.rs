@@ -74,9 +74,8 @@ impl SplitPageRange {
 
 #[cfg(test)]
 pub mod tests_split_page_range {
-    use crate::dma::pool::compact_range_list;
-
     use super::SplitPageRange;
+    use crate::dma::pool::compact_range_list;
 
     #[test]
     fn spr_split_multiple() {
@@ -310,10 +309,7 @@ impl DmaPool {
 
     /// Allocate a new [DmaRegion<T>] from the pool. The region will be initialized with the
     /// provided initial value.
-    pub fn allocate<'a, T: DeviceSync>(
-        &'a self,
-        init: T,
-    ) -> Result<DmaRegion<T>, AllocationError> {
+    pub fn allocate<'a, T: DeviceSync>(&'a self, init: T) -> Result<DmaRegion<T>, AllocationError> {
         let len = core::mem::size_of::<T>();
         let (ado, range) = self.do_allocate(len)?;
         let mut reg = DmaRegion::new(
@@ -372,9 +368,8 @@ impl DmaPool {
 
 #[cfg(test)]
 mod tests {
-    use crate::dma::{Access, DmaOptions};
-
     use super::DmaPool;
+    use crate::dma::{Access, DmaOptions};
 
     #[test]
     fn allocate() {

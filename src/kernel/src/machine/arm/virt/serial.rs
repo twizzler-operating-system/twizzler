@@ -1,14 +1,15 @@
 use lazy_static::lazy_static;
 use twizzler_abi::object::Protections;
 
-use super::super::common::uart::PL011;        
-
-use crate::memory::{PhysAddr, pagetables::{
-    ContiguousProvider, MappingCursor, MappingSettings, Mapper,
-    MappingFlags,
-}};
-use crate::interrupt::{Destination, TriggerMode};
-use crate::arch::memory::mmio::MMIO_ALLOCATOR;
+use super::super::common::uart::PL011;
+use crate::{
+    arch::memory::mmio::MMIO_ALLOCATOR,
+    interrupt::{Destination, TriggerMode},
+    memory::{
+        pagetables::{ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings},
+        PhysAddr,
+    },
+};
 
 lazy_static! {
     // TODO: add a spinlock here
@@ -42,8 +43,8 @@ lazy_static! {
         }
 
         // create instance of the PL011 UART driver
-        let serial_port = unsafe { 
-            PL011::new(uart_mmio_base.into()) 
+        let serial_port = unsafe {
+            PL011::new(uart_mmio_base.into())
         };
         serial_port.early_init(clock_freq as u32);
         serial_port
@@ -67,7 +68,7 @@ impl PL011 {
     fn early_init(&self, clock_freq: u32) {
         const BAUD: u32 = 115200;
         // configure the UART with the desired baud, given the clock rate
-        unsafe { 
+        unsafe {
             self.init(clock_freq, BAUD);
         }
     }

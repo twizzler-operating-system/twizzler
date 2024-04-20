@@ -48,7 +48,8 @@ pub enum BusType {
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Debug)]
 #[repr(u32)]
 pub enum SubObjectType {
-    /// An info sub-object, which is comprised of a device-specific (or bus-specific) information structure.
+    /// An info sub-object, which is comprised of a device-specific (or bus-specific) information
+    /// structure.
     Info = 0,
     /// A mapping of the MMIO registers for this device into an object.
     Mmio = 1,
@@ -106,7 +107,8 @@ impl crate::marker::BaseType for MmioInfo {
         todo!()
     }
 }
-/// An mmio object has, at its base, a [MmioInfo] struct. At this offset, the mmio mapping actually starts.
+/// An mmio object has, at its base, a [MmioInfo] struct. At this offset, the mmio mapping actually
+/// starts.
 pub const MMIO_OFFSET: usize = 0x2000;
 
 bitflags::bitflags! {

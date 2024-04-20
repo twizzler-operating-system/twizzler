@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use crate::header::Header;
-
 use self::nic::NicBuffer;
+use crate::header::Header;
 
 pub mod ethernet;
 pub mod nic;
@@ -56,7 +55,7 @@ impl IncomingPacketInfo {
         Some(self)
     }
 
-#[allow(dead_code)]
+    #[allow(dead_code)]
     pub fn packet_len(&self) -> usize {
         self.buffer.packet_len()
     }

@@ -1,8 +1,7 @@
 use core::ops::{Index, IndexMut};
 
-use crate::{arch::address::VirtAddr, memory::PhysAddr};
-
 use super::Entry;
+use crate::{arch::address::VirtAddr, memory::PhysAddr};
 
 #[repr(transparent)]
 /// Representation of a page table. Can be indexed with [].
@@ -46,10 +45,12 @@ impl Table {
     /// Set the current count of used entries.
     ///
     /// Note: On some architectures that make available bits in the page table entries,
-    /// this function may choose to do something clever, like store the count in the available bits. But it could also
-    /// make this function a no-op, and make [Table::read_count] just count the entries.
+    /// this function may choose to do something clever, like store the count in the available bits.
+    /// But it could also make this function a no-op, and make [Table::read_count] just count
+    /// the entries.
     pub fn set_count(&mut self, count: usize) {
-        // NOTE: this function doesn't need cache line or TLB flushing because the hardware never reads these bits.
+        // NOTE: this function doesn't need cache line or TLB flushing because the hardware never
+        // reads these bits.
         for b in 0..16 {
             if count & (1 << b) == 0 {
                 self[b].set_avail_bit(false);

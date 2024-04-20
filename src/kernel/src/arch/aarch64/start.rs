@@ -4,7 +4,7 @@ use limine::*;
 
 use crate::{
     initrd::BootModule,
-    memory::{MemoryRegion, MemoryRegionKind, VirtAddr, PhysAddr},
+    memory::{MemoryRegion, MemoryRegionKind, PhysAddr, VirtAddr},
     BootInfo,
 };
 
@@ -22,13 +22,13 @@ struct Armv8BootInfo {
     memory: Vec<MemoryRegion>,
 
     /// A reference to the kernel's ELF file in memory.
-    /// 
+    ///
     /// This contains other useful information such as the kernel's
     /// command line parameters.
     kernel: &'static File,
 
     /// A list of user programs loaded into memory.
-    /// 
+    ///
     /// This is essentially our initial ramdisk used
     /// to start userspace.
     modules: Vec<BootModule>,
@@ -54,25 +54,18 @@ impl BootInfo for Armv8BootInfo {
         match table {
             BootInfoSystemTable::Dtb => match DTB_REQ.get_response().get() {
                 Some(resp) => VirtAddr::new(resp.dtb_ptr.as_ptr().unwrap() as u64).unwrap(),
-                None => VirtAddr::new(0).unwrap()
+                None => VirtAddr::new(0).unwrap(),
             },
-            BootInfoSystemTable::Efi => todo!("get EFI system table")
+            BootInfoSystemTable::Efi => todo!("get EFI system table"),
         }
-   }
+    }
 
     fn get_cmd_line(&self) -> &'static str {
         if let Some(cmd) = self.kernel.cmdline.as_ptr() {
             let ptr = cmd as *const u8;
             const MAX_CMD_LINE_LEN: usize = 0x1000;
-            let slice = unsafe { 
-                core::slice::from_raw_parts(ptr, MAX_CMD_LINE_LEN) 
-            };
-            let slice = &slice[
-                0..slice
-                    .iter()
-                    .position(|r| *r == 0)
-                    .unwrap_or(0)
-            ];
+            let slice = unsafe { core::slice::from_raw_parts(ptr, MAX_CMD_LINE_LEN) };
+            let slice = &slice[0..slice.iter().position(|r| *r == 0).unwrap_or(0)];
             core::str::from_utf8(slice).unwrap()
         } else {
             ""
@@ -91,8 +84,7 @@ impl From<MemoryMapEntryType> for MemoryRegionKind {
 }
 
 #[used]
-static ENTRY_POINT: EntryPointRequest = EntryPointRequest::new(0)
-    .entry(Ptr::new(limine_entry));
+static ENTRY_POINT: EntryPointRequest = EntryPointRequest::new(0).entry(Ptr::new(limine_entry));
 
 #[used]
 static MEMORY_MAP: MemmapRequest = MemmapRequest::new(0);
@@ -147,7 +139,7 @@ fn limine_entry() -> ! {
     // }
 
     // TODO: it should be ok if it is empty when -k is passed on the command line
-    let modules =  USER_MODULES
+    let modules = USER_MODULES
         .get_response()
         .get()
         .expect("no modules specified for kernel -- no way to start init")
@@ -205,49 +197,63 @@ fn limine_entry() -> ! {
     }
 
     // function splits a memory region in half based on a reserved region
-    fn split(memmap: &NonNullPtr<MemmapEntry>, reserved: &MemoryRegion) -> (Option<MemoryRegion>, Option<MemoryRegion>) {
+    fn split(
+        memmap: &NonNullPtr<MemmapEntry>,
+        reserved: &MemoryRegion,
+    ) -> (Option<MemoryRegion>, Option<MemoryRegion>) {
         let lhs = memmap.base;
         let rhs = memmap.base + memmap.len;
 
         // case 1: take lhs range
         if reserved.start.raw() == lhs {
-            (None, Some(MemoryRegion {
-                kind: memmap.typ.into(),
-                start: PhysAddr::new(memmap.base + reserved.length as u64).unwrap(),
-                length: memmap.len as usize - reserved.length,
-            }))
-        } 
+            (
+                None,
+                Some(MemoryRegion {
+                    kind: memmap.typ.into(),
+                    start: PhysAddr::new(memmap.base + reserved.length as u64).unwrap(),
+                    length: memmap.len as usize - reserved.length,
+                }),
+            )
+        }
         // case 2: take rhs range
         else if reserved.start.raw() + reserved.length as u64 == rhs {
-            (Some(MemoryRegion {
-                kind: memmap.typ.into(),
-                start: PhysAddr::new(memmap.base).unwrap(),
-                length: memmap.len as usize - reserved.length,
-            }), None)
+            (
+                Some(MemoryRegion {
+                    kind: memmap.typ.into(),
+                    start: PhysAddr::new(memmap.base).unwrap(),
+                    length: memmap.len as usize - reserved.length,
+                }),
+                None,
+            )
         }
         // case 3: split in the middle
         else {
-            (Some(MemoryRegion {
-                kind: memmap.typ.into(),
-                start: PhysAddr::new(memmap.base).unwrap(),
-                length: (reserved.start.raw() - memmap.base) as usize,
-            }),
-            Some(MemoryRegion {
-                kind: memmap.typ.into(),
-                start: PhysAddr::new(reserved.start.raw() + reserved.length as u64).unwrap(),
-                length: (memmap.len - reserved.length as u64 - (reserved.start.raw() - memmap.base)) as usize,
-            }))
+            (
+                Some(MemoryRegion {
+                    kind: memmap.typ.into(),
+                    start: PhysAddr::new(memmap.base).unwrap(),
+                    length: (reserved.start.raw() - memmap.base) as usize,
+                }),
+                Some(MemoryRegion {
+                    kind: memmap.typ.into(),
+                    start: PhysAddr::new(reserved.start.raw() + reserved.length as u64).unwrap(),
+                    length: (memmap.len
+                        - reserved.length as u64
+                        - (reserved.start.raw() - memmap.base))
+                        as usize,
+                }),
+            )
         }
     }
 
     // convert module representation from bootloader to boot module
     boot_info.modules = modules
-    .iter()
-    .map(|m| BootModule {
-        start: VirtAddr::new(m.base.as_ptr().unwrap() as u64).unwrap(),
-        length: m.length as usize,
-    })
-    .collect();
+        .iter()
+        .map(|m| BootModule {
+            start: VirtAddr::new(m.base.as_ptr().unwrap() as u64).unwrap(),
+            length: m.length as usize,
+        })
+        .collect();
 
     crate::kernel_main(&mut boot_info)
 }

@@ -1,15 +1,16 @@
-use core::{
-    fmt::Display,
-    sync::atomic::{AtomicU32, Ordering},
-};
-
 use alloc::{
     collections::{btree_map::Entry, BTreeMap},
     sync::{Arc, Weak},
     vec::Vec,
 };
+use core::{
+    fmt::Display,
+    sync::atomic::{AtomicU32, Ordering},
+};
+
 use twizzler_abi::object::{ObjID, MAX_SIZE};
 
+use self::{pages::Page, thread_sync::SleepInfo};
 use crate::{
     arch::memory::frame::FRAME_SIZE,
     idcounter::{IdCounter, SimpleId, StableId},
@@ -19,8 +20,6 @@ use crate::{
     },
     mutex::{LockGuard, Mutex},
 };
-
-use self::{pages::Page, thread_sync::SleepInfo};
 
 pub mod control;
 pub mod copy;
@@ -162,7 +161,8 @@ impl Object {
     }
 
     pub fn release_pin(&self, _pin: u32) {
-        // TODO: Currently we don't track pins. This will be changed in-future when we fully implement eviction.
+        // TODO: Currently we don't track pins. This will be changed in-future when we fully
+        // implement eviction.
     }
 
     pub fn pin(&self, start: PageNumber, len: usize) -> Option<(Vec<PhysAddr>, u32)> {

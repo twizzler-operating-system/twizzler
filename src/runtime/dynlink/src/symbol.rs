@@ -2,8 +2,8 @@
 
 use crate::library::{BackingData, Library};
 
-/// A (relocated) symbol. Contains information about the symbol itself, like value and size, along with a reference to
-/// the library that it comes from.
+/// A (relocated) symbol. Contains information about the symbol itself, like value and size, along
+/// with a reference to the library that it comes from.
 pub struct RelocatedSymbol<'lib, Backing: BackingData> {
     sym: elf::symbol::Symbol,
     pub(crate) lib: &'lib Library<Backing>,
@@ -14,7 +14,8 @@ impl<'lib, Backing: BackingData> RelocatedSymbol<'lib, Backing> {
         Self { sym, lib }
     }
 
-    /// Returns the relocated address of the symbol, i.e. the value of the symbol added to the base address of the library it comes from.
+    /// Returns the relocated address of the symbol, i.e. the value of the symbol added to the base
+    /// address of the library it comes from.
     pub fn reloc_value(&self) -> u64 {
         self.sym.st_value + self.lib.base_addr() as u64
     }

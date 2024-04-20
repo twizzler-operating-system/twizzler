@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-use super::{ClockSource, ReadClockFlags, ReadClockListFlags, TimeSpan, FemtoSeconds};
+use super::{ClockSource, FemtoSeconds, ReadClockFlags, ReadClockListFlags, TimeSpan};
 
 bitflags! {
     /// Flags about a given clock or clock read.
@@ -25,10 +25,11 @@ impl ClockInfo {
         TimeSpan::ZERO,
         FemtoSeconds(0),
         FemtoSeconds(0),
-        ClockFlags::MONOTONIC
+        ClockFlags::MONOTONIC,
     );
 
-    /// Construct a new ClockInfo. You probably want to be getting these from [sys_read_clock_info], though.
+    /// Construct a new ClockInfo. You probably want to be getting these from [sys_read_clock_info],
+    /// though.
     pub const fn new(
         current: TimeSpan,
         precision: FemtoSeconds,
@@ -64,7 +65,6 @@ impl ClockInfo {
     }
 }
 
-
 /// Different kinds of clocks exposed by the kernel.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -79,7 +79,7 @@ impl From<ClockKind> for u64 {
         match clock {
             ClockKind::Monotonic => 0,
             ClockKind::RealTime => 1,
-            ClockKind::Unknown => 2
+            ClockKind::Unknown => 2,
         }
     }
 }
@@ -89,7 +89,7 @@ impl From<u64> for ClockKind {
         match x {
             0 => ClockKind::Monotonic,
             1 => ClockKind::RealTime,
-            _ => ClockKind::Unknown
+            _ => ClockKind::Unknown,
         }
     }
 }
@@ -105,27 +105,27 @@ pub struct ClockID(pub u64);
 pub struct Clock {
     pub info: ClockInfo,
     id: ClockID,
-    kind: ClockKind
+    kind: ClockKind,
 }
 
 impl Clock {
     pub const ZERO: Clock = Clock {
         info: ClockInfo::ZERO,
         id: ClockID(0),
-        kind: ClockKind::Unknown
+        kind: ClockKind::Unknown,
     };
 
     pub fn new(info: ClockInfo, id: ClockID, kind: ClockKind) -> Clock {
-        Self {info, id, kind}
+        Self { info, id, kind }
     }
 
     pub fn read(&self) -> TimeSpan {
         match super::sys_read_clock_info(ClockSource::ID(self.id), ReadClockFlags::empty()) {
             Ok(ci) => ci.current_value(),
-            _ => TimeSpan::ZERO
+            _ => TimeSpan::ZERO,
         }
     }
-    
+
     pub fn info(&self) -> ClockInfo {
         self.info
     }
@@ -133,9 +133,11 @@ impl Clock {
     /// Returns a new instance of a Clock from the specified ClockKind
     pub fn get(kind: ClockKind) -> Clock {
         let mut clk = [Clock::ZERO];
-        if let Ok(filled) = super::sys_read_clock_list(kind, &mut clk, 0, ReadClockListFlags::FIRST_KIND) {
+        if let Ok(filled) =
+            super::sys_read_clock_list(kind, &mut clk, 0, ReadClockListFlags::FIRST_KIND)
+        {
             if filled > 0 {
-                return clk[0]
+                return clk[0];
             }
         }
         Clock::ZERO

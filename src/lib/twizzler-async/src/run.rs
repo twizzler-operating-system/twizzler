@@ -15,9 +15,9 @@ pub(crate) fn enter<T>(f: impl FnOnce() -> T) -> T {
 /// Runs executors.
 ///
 /// We run both the thread-local executor and the global executor, and also check for timer events.
-/// If we cannot make progress, we call the reactor, which handles waiting and waking up on [crate::Async]
-/// and [crate::AsyncDuplex] objects for use in externally signaled events that control non-blocking closures'
-/// readiness.
+/// If we cannot make progress, we call the reactor, which handles waiting and waking up on
+/// [crate::Async] and [crate::AsyncDuplex] objects for use in externally signaled events that
+/// control non-blocking closures' readiness.
 ///
 /// # Examples
 /// ```no_run
@@ -39,10 +39,10 @@ pub(crate) fn enter<T>(f: impl FnOnce() -> T) -> T {
 /// twizzler_async::block_on(async {
 ///     twizzler_async::Task::spawn(async {
 ///         println!("Hello from executor thread!");
-///     }).await;
+///     })
+///     .await;
 /// });
 /// ```
-///
 pub fn run<T>(future: impl Future<Output = T>) -> T {
     let local = ThreadLocalExecutor::new();
     let exec = Executor::get();
