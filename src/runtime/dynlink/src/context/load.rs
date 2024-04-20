@@ -9,6 +9,7 @@ use petgraph::stable_graph::NodeIndex;
 use secgate::RawSecGateInfo;
 use tracing::{debug, trace, warn};
 
+use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
 use crate::{
     compartment::{Compartment, CompartmentId},
     context::engine::{LoadDirective, LoadFlags},
@@ -16,8 +17,6 @@ use crate::{
     tls::TlsModule,
     DynlinkError, DynlinkErrorKind, HeaderError,
 };
-
-use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
 
 impl<Engine: ContextEngine> Context<Engine> {
     pub(crate) fn get_secgate_info(
@@ -54,7 +53,8 @@ impl<Engine: ContextEngine> Context<Engine> {
                 name: "dynamic".to_string(),
             })?;
 
-        // If this isn't present, just call it 0, since if there's an init_array, this entry must be present in valid ELF files.
+        // If this isn't present, just call it 0, since if there's an init_array, this entry must be
+        // present in valid ELF files.
         let init_array_len = dynamic
             .iter()
             .find_map(|d| {
@@ -104,7 +104,8 @@ impl<Engine: ContextEngine> Context<Engine> {
         })
     }
 
-    // Load (map) a single library into memory via creating two objects, one for text, and one for data.
+    // Load (map) a single library into memory via creating two objects, one for text, and one for
+    // data.
     fn load<Namer>(
         &mut self,
         comp_id: CompartmentId,
@@ -115,8 +116,9 @@ impl<Engine: ContextEngine> Context<Engine> {
     where
         Namer: FnMut(&str) -> Option<Engine::Backing>,
     {
-        // At this point, all we know is a name. Ask the system implementation to use the name resolver to get a backing object from the name,
-        // and then map it for access (this will be the full ELF file data).
+        // At this point, all we know is a name. Ask the system implementation to use the name
+        // resolver to get a backing object from the name, and then map it for access (this
+        // will be the full ELF file data).
         let backing = self.engine.load_object(&unlib, namer)?;
         let elf = backing.get_elf()?;
 
@@ -182,7 +184,8 @@ impl<Engine: ContextEngine> Context<Engine> {
             .into());
         }
 
-        // Step 1: map the PT_LOAD directives to copy-from commands Twizzler can use for creating objects.
+        // Step 1: map the PT_LOAD directives to copy-from commands Twizzler can use for creating
+        // objects.
         let directives: Vec<_> = elf
             .segments()
             .ok_or_else(|| DynlinkErrorKind::MissingSection {
@@ -329,9 +332,12 @@ impl<Engine: ContextEngine> Context<Engine> {
             .map(|dep_unlib| {
                 // Dependency search + load alg:
                 // 1. Search library name in current compartment. If found, use that.
-                // 2. Fallback to searching globally for the name, by checking compartment by compartment. If found, use that.
-                // 3. Okay, now we know we need to load the dep, so check if it can go in the current compartment. If not, create a new compartment.
-                // 4. Finally, recurse to load it and its dependencies into either the current compartment or the new one, if created.
+                // 2. Fallback to searching globally for the name, by checking compartment by
+                //    compartment. If found, use that.
+                // 3. Okay, now we know we need to load the dep, so check if it can go in the
+                //    current compartment. If not, create a new compartment.
+                // 4. Finally, recurse to load it and its dependencies into either the current
+                //    compartment or the new one, if created.
 
                 let comp = self.get_compartment(comp_id)?;
                 let (existing_idx, load_comp) =
@@ -358,7 +364,8 @@ impl<Engine: ContextEngine> Context<Engine> {
                         )
                     };
 
-                // If we decided to use an existing library, then use that. Otherwise, load into the chosen compartment.
+                // If we decided to use an existing library, then use that. Otherwise, load into the
+                // chosen compartment.
                 let idx = if let Some(existing_idx) = existing_idx {
                     existing_idx
                 } else {
@@ -393,8 +400,9 @@ impl<Engine: ContextEngine> Context<Engine> {
         Ok(idx)
     }
 
-    /// Load a library into a given compartment. The namer callback resolves names to Backing objects, allowing
-    /// the caller to hook into the "name-of-dependency" -> backing object pipeline.
+    /// Load a library into a given compartment. The namer callback resolves names to Backing
+    /// objects, allowing the caller to hook into the "name-of-dependency" -> backing object
+    /// pipeline.
     pub fn load_library_in_compartment<Namer>(
         &mut self,
         comp_id: CompartmentId,

@@ -1,14 +1,14 @@
+use super::{
+    consistency::{Consistency, DeferredUnmappingOps},
+    MapInfo, MappingCursor, MappingSettings, PhysAddrProvider,
+};
 use crate::arch::{
     address::PhysAddr,
     memory::pagetables::{Entry, Table},
 };
 
-use super::{
-    consistency::{Consistency, DeferredUnmappingOps},
-    MapInfo, MappingCursor, MappingSettings, PhysAddrProvider,
-};
-
-/// Manager for a set of page tables. This is the primary interface for manipulating a set of page tables.
+/// Manager for a set of page tables. This is the primary interface for manipulating a set of page
+/// tables.
 pub struct Mapper {
     root: PhysAddr,
     start_level: usize,
@@ -40,8 +40,8 @@ impl Mapper {
         unsafe { &*(self.root.kernel_vaddr().as_ptr::<Table>()) }
     }
 
-    /// Set a top level table to a direct value. Useful for creating large regions of global memory (like the kernel's
-    /// vaddr memory range). Does not perform any consistency operations.
+    /// Set a top level table to a direct value. Useful for creating large regions of global memory
+    /// (like the kernel's vaddr memory range). Does not perform any consistency operations.
     pub fn set_top_level_table(&mut self, index: usize, entry: Entry) {
         let root = self.root_mut();
         let was_present = root[index].is_present();
@@ -56,7 +56,8 @@ impl Mapper {
         }
     }
 
-    /// Get a top level table entry's value. Useful for cloning large regions during creation (e.g. the kernel's memory region).
+    /// Get a top level table entry's value. Useful for cloning large regions during creation (e.g.
+    /// the kernel's memory region).
     pub fn get_top_level_table(&self, index: usize) -> Entry {
         let root = self.root();
         root[index]
@@ -81,8 +82,8 @@ impl Mapper {
     }
 
     #[must_use]
-    /// Unmap a region from the page tables. The deferred operations must be run, and must be run AFTER unlocking any
-    /// page table locks.
+    /// Unmap a region from the page tables. The deferred operations must be run, and must be run
+    /// AFTER unlocking any page table locks.
     pub fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
         let mut consist = Consistency::new(self.root);
         let level = self.start_level;
@@ -99,9 +100,10 @@ impl Mapper {
         root.change(&mut consist, cursor, level, settings);
     }
 
-    /// Read the map of a single address (the start of the cursor). If there is a mapping at the specified location,
-    /// return the mapping information. Otherwise, return Err with a length that specifies how much the cursor may
-    /// advance before calling this function again to check for a new mapping.
+    /// Read the map of a single address (the start of the cursor). If there is a mapping at the
+    /// specified location, return the mapping information. Otherwise, return Err with a length
+    /// that specifies how much the cursor may advance before calling this function again to
+    /// check for a new mapping.
     pub(super) fn do_read_map(&self, cursor: &MappingCursor) -> Result<MapInfo, usize> {
         let level = self.start_level;
         let root = self.root();

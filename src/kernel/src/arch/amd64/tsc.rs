@@ -1,6 +1,6 @@
-use crate::time::{ClockHardware, Ticks};
-
 use twizzler_abi::syscall::{ClockFlags, ClockInfo, FemtoSeconds, TimeSpan};
+
+use crate::time::{ClockHardware, Ticks};
 
 // 1 ms = 1000000 ns
 // 200 milliseconds

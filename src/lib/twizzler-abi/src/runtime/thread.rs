@@ -2,23 +2,19 @@
 
 use core::alloc::Layout;
 
-use crate::{
-    object::Protections, runtime::idcounter::IdCounter, rustc_alloc::collections::BTreeMap,
-    thread::ExecutionState,
-};
-
 use twizzler_runtime_api::{CoreRuntime, JoinError, SpawnError, ThreadRuntime};
 
+use super::{object::InternalObject, MinimalRuntime};
 use crate::{
-    runtime::simple_mutex::Mutex,
+    object::Protections,
+    runtime::{idcounter::IdCounter, simple_mutex::Mutex},
+    rustc_alloc::collections::BTreeMap,
     syscall::{
         ThreadSpawnError, ThreadSpawnFlags, ThreadSync, ThreadSyncError, ThreadSyncFlags,
         ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
     },
-    thread::ThreadRepr,
+    thread::{ExecutionState, ThreadRepr},
 };
-
-use super::{object::InternalObject, MinimalRuntime};
 
 struct InternalThread {
     repr: InternalObject<ThreadRepr>,

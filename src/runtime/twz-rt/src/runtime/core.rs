@@ -5,14 +5,13 @@ use monitor_api::SharedCompConfig;
 use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
 use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
 
+use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
 use crate::{
     preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
     runtime::RuntimeState,
     RuntimeThreadControl,
 };
-
-use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
 
 #[repr(C)]
 pub struct CompartmentInitInfo {

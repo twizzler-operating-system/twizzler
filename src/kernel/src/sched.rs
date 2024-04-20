@@ -1,6 +1,6 @@
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use fixedbitset::FixedBitSet;
 use twizzler_abi::thread::ExecutionState;
 
@@ -10,11 +10,9 @@ use crate::{
     once::Once,
     processor::{current_processor, get_processor, Processor},
     spinlock::Spinlock,
-    thread::{current_thread_ref, set_current_thread, Thread, ThreadRef},
+    thread::{current_thread_ref, priority::Priority, set_current_thread, Thread, ThreadRef},
     utils::quick_random,
 };
-
-use crate::thread::priority::Priority;
 
 #[derive(Clone, Debug, Copy)]
 pub enum CPUTopoType {

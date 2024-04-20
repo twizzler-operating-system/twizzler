@@ -1,8 +1,9 @@
 //! Types that make up object metadata.
 
-use crate::object::ObjID;
-
-use crate::marker::{BaseTag, BaseVersion};
+use crate::{
+    marker::{BaseTag, BaseVersion},
+    object::ObjID,
+};
 
 /// Flags for objects.
 #[derive(Clone, Copy, Debug)]

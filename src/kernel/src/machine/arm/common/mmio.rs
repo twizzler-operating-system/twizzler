@@ -8,9 +8,7 @@ pub struct MmioRef<T> {
 
 impl<T> MmioRef<T> {
     pub fn new(address: *const T) -> Self {
-        Self {
-            address,
-        }
+        Self { address }
     }
 }
 

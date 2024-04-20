@@ -5,9 +5,9 @@ use twizzler_net::addr::{Ipv4Addr, ServiceAddr};
 
 use crate::{
     header::Header,
-    link::nic::{NicBuffer, SendableBuffer},
     link::{
         ethernet::{EtherType, EthernetAddr, EthernetHeader},
+        nic::{NicBuffer, SendableBuffer},
         IncomingPacketInfo,
     },
     transport::handle_packet,

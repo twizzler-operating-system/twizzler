@@ -1,13 +1,13 @@
-use acpi::{madt::Madt, sdt::Signature, InterruptModel};
 use alloc::vec::Vec;
 
+use acpi::{madt::Madt, sdt::Signature, InterruptModel};
+
+use super::{acpi::get_acpi_root, memory::phys_to_virt, processor::get_bsp_id};
 use crate::{
     interrupt::{Destination, PinPolarity, TriggerMode},
     memory::PhysAddr,
     spinlock::Spinlock,
 };
-
-use super::{acpi::get_acpi_root, memory::phys_to_virt, processor::get_bsp_id};
 
 struct IOApic {
     address: PhysAddr,

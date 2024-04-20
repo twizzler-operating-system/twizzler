@@ -7,9 +7,8 @@ use core::{
 use bitflags::bitflags;
 use num_enum::{FromPrimitive, IntoPrimitive};
 
-use crate::{arch::syscall::raw_syscall, object::ObjID};
-
 use super::{convert_codes_to_result, Syscall};
+use crate::{arch::syscall::raw_syscall, object::ObjID};
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(u32)]
 /// Possible operations the kernel can perform when looking at the supplies reference and the
@@ -41,7 +40,8 @@ bitflags! {
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(C)]
-/// A reference to a piece of data. May either be a non-realized persistent reference or a virtual address.
+/// A reference to a piece of data. May either be a non-realized persistent reference or a virtual
+/// address.
 pub enum ThreadSyncReference {
     ObjectRef(ObjID, usize),
     Virtual(*const AtomicU64),
@@ -121,7 +121,8 @@ impl ThreadSyncSleep {
 impl ThreadSyncWake {
     /// Construct a new thread wake request. The reference works the same was as in
     /// [ThreadSyncSleep]. The kernel will wake up `count` threads that are sleeping on this
-    /// particular word of object memory. If you want to wake up all threads, you can supply `usize::MAX`.
+    /// particular word of object memory. If you want to wake up all threads, you can supply
+    /// `usize::MAX`.
     pub fn new(reference: ThreadSyncReference, count: usize) -> Self {
         Self { reference, count }
     }
@@ -165,7 +166,8 @@ pub type ThreadSyncResult = Result<usize, ThreadSyncError>;
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
-/// Either a sleep or wake request. The syscall comprises of a number of either sleep or wake requests.
+/// Either a sleep or wake request. The syscall comprises of a number of either sleep or wake
+/// requests.
 pub enum ThreadSync {
     Sleep(ThreadSyncSleep, ThreadSyncResult),
     Wake(ThreadSyncWake, ThreadSyncResult),
@@ -207,11 +209,12 @@ impl ThreadSync {
 /// or slightly more due to scheduling uncertainty). If no operations are specified, the thread will
 /// sleep until the timeout expires.
 ///
-/// Returns either Ok(ready_count), indicating how many operations were immediately ready, or Err([ThreadSyncError]),
-/// indicating failure. After return, the kernel may have modified the ThreadSync entries to
-/// indicate additional information about each request, with Err to indicate error and Ok(n) to
-/// indicate success. For sleep requests, n is 0 if the operation went to sleep or 1 otherwise. For
-/// wakeup requests, n indicates the number of threads woken up by this operation.
+/// Returns either Ok(ready_count), indicating how many operations were immediately ready, or
+/// Err([ThreadSyncError]), indicating failure. After return, the kernel may have modified the
+/// ThreadSync entries to indicate additional information about each request, with Err to indicate
+/// error and Ok(n) to indicate success. For sleep requests, n is 0 if the operation went to sleep
+/// or 1 otherwise. For wakeup requests, n indicates the number of threads woken up by this
+/// operation.
 ///
 /// Note that spurious wakeups are possible, and that even if a timeout occurs the function may
 /// return Ok(0).

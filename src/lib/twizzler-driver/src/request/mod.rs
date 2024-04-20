@@ -7,7 +7,8 @@
 //! A user of the requester can call the [Requester::submit] or [Requester::submit_for_response]
 //! functions to submit a set a requests depending on if the caller wants the responses or just
 //! wants to know if the requests succeeded. The reason this distinction is maintained is that
-//! collecting responses has an overhead. The requester interacts with the driver to submit the requests.
+//! collecting responses has an overhead. The requester interacts with the driver to submit the
+//! requests.
 //!
 //! Internally, the requester assigns IDs to requests for use in communicating with the driver.
 //! These IDs are not necessarily allocated sequentially and can only be relied upon to be unique
@@ -51,10 +52,8 @@ pub trait RequestDriver {
 
 // TODO: drop for inflight tracker, so we can remove it to save work?
 
-pub use inflight::InFlightFuture;
-pub use inflight::InFlightFutureWithResponses;
+pub use inflight::{InFlightFuture, InFlightFutureWithResponses};
 pub use requester::Requester;
 pub use response_info::ResponseInfo;
 pub use submit::SubmitRequest;
-pub use summary::SubmitSummary;
-pub use summary::SubmitSummaryWithResponses;
+pub use summary::{SubmitSummary, SubmitSummaryWithResponses};

@@ -1,12 +1,10 @@
-use crate::once::Once;
-use alloc::borrow::ToOwned;
-use alloc::sync::Arc;
+use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, sync::Arc};
 
-use crate::memory::VirtAddr;
-use crate::obj::ObjectRef;
-use crate::obj::{self, pages::Page};
-use alloc::collections::BTreeMap;
-use alloc::string::String;
+use crate::{
+    memory::VirtAddr,
+    obj::{self, pages::Page, ObjectRef},
+    once::Once,
+};
 pub struct BootModule {
     pub start: VirtAddr,
     pub length: usize,

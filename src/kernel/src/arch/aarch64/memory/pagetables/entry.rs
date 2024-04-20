@@ -1,11 +1,10 @@
 use twizzler_abi::{device::CacheType, object::Protections};
 
+use super::mair::{memory_attr_manager, AttributeIndex};
 use crate::{
     arch::address::PhysAddr,
     memory::pagetables::{MappingFlags, MappingSettings},
 };
-
-use super::mair::{memory_attr_manager, AttributeIndex};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(transparent)]

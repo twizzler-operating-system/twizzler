@@ -8,11 +8,9 @@ use twizzler_abi::syscall::{
 };
 use twizzler_runtime_api::{CoreRuntime, JoinError, SpawnError, ThreadRuntime, TlsIndex};
 
-use crate::{preinit_println, runtime::thread::mgr::ThreadManager};
-
 use self::tcb::with_current_thread;
-
 use super::ReferenceRuntime;
+use crate::{preinit_println, runtime::thread::mgr::ThreadManager};
 
 mod internal;
 mod mgr;

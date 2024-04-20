@@ -78,8 +78,9 @@ impl TlbInvData {
             self.set_global();
             self.set_full();
         } else {
-            // Otherwise, the flags are OR'd, and the instructions concatenated. Order doesn't matter.
-            // If we'd have too many instructions, just fall back to full invalidation.
+            // Otherwise, the flags are OR'd, and the instructions concatenated. Order doesn't
+            // matter. If we'd have too many instructions, just fall back to full
+            // invalidation.
             if other.full() {
                 self.set_full();
             }
@@ -226,9 +227,10 @@ pub struct ArchCacheLineMgr {
 
 const CACHE_LINE_SIZE: u64 = 64;
 impl ArchCacheLineMgr {
-    /// Flush a given cache line when this [ArchCacheLineMgr] is dropped. Subsequent flush requests for the same cache
-    /// line will be batched. Flushes for different cache lines will cause older requests to flush immediately, and the
-    /// new request will be flushed when this object is dropped.
+    /// Flush a given cache line when this [ArchCacheLineMgr] is dropped. Subsequent flush requests
+    /// for the same cache line will be batched. Flushes for different cache lines will cause
+    /// older requests to flush immediately, and the new request will be flushed when this
+    /// object is dropped.
     pub fn flush(&mut self, line: VirtAddr) {
         let addr: u64 = line.into();
         let addr = addr & !(CACHE_LINE_SIZE - 1);
@@ -272,8 +274,8 @@ impl ArchTlbMgr {
         this
     }
 
-    /// Enqueue a new TLB invalidation. is_global should be set iff the page is global, and is_terminal should be set
-    /// iff the invalidation is for a leaf.
+    /// Enqueue a new TLB invalidation. is_global should be set iff the page is global, and
+    /// is_terminal should be set iff the invalidation is for a leaf.
     pub fn enqueue(&mut self, addr: VirtAddr, is_global: bool, is_terminal: bool, level: usize) {
         self.data.enqueue(InvInstruction::new(
             addr,
@@ -356,9 +358,10 @@ pub struct TlbShootdownInfo {
     lock: AtomicBool,
     // Maintain a list of a few invalidation command slots we can use, in case multiple CPUs send
     // out invalidation commands at the same time. Note that in the case that this array is full of
-    // entries, we just merge any incoming commands into another command. This is possible because there
-    // is always a least-upper-bound merge between two invalidation commands that always invalidates
-    // all data from both commands. In the worst case, this merge is simply a full, global invalidation.
+    // entries, we just merge any incoming commands into another command. This is possible because
+    // there is always a least-upper-bound merge between two invalidation commands that always
+    // invalidates all data from both commands. In the worst case, this merge is simply a full,
+    // global invalidation.
     data: UnsafeCell<[Option<TlbInvData>; NUM_TLB_SHOOTDOWN_ENTRIES]>,
 }
 
@@ -393,8 +396,8 @@ impl TlbShootdownInfo {
                     return;
                 }
             }
-            // Choose the 0'th entry because if this makes it a full or global entry, we want to be able to
-            // exit the handling loop early.
+            // Choose the 0'th entry because if this makes it a full or global entry, we want to be
+            // able to exit the handling loop early.
             // Unwrap-Ok: we know that all slots are Some from the first loop.
             data[0].as_mut().unwrap().merge(new_data);
             self.lock.store(false, Ordering::Release);

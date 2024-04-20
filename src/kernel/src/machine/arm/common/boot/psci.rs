@@ -1,22 +1,19 @@
+use arm64::registers::Readable;
 /// Power State Coordination Interface (PSCI) is a standard interface for power management.
 ///
 /// A full explanation of interfaces for power management can be found in the
 /// "Arm Power State Coordination Interface Platform Design Document":
 ///     https://developer.arm.com/documentation/den0022/f/
-
-use arm64::registers::{SCTLR_EL1, MAIR_EL1, TTBR1_EL1, TTBR0_EL1, TCR_EL1, SPSR_EL1};
-use arm64::registers::Readable;
+use arm64::registers::{MAIR_EL1, SCTLR_EL1, SPSR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1};
 use smccc::psci::cpu_on;
-
-use crate::{
-    machine::info::devicetree,
-    memory::{VirtAddr, PhysAddr},
-    processor::Processor,
-};
-
 use twizzler_abi::upcall::MemoryAccessKind;
 
-use super::{BootArgs, translate};
+use super::{translate, BootArgs};
+use crate::{
+    machine::info::devicetree,
+    memory::{PhysAddr, VirtAddr},
+    processor::Processor,
+};
 
 // According to Section 6.4 the MMU and caches are disabled
 // and software must set the EL1h stack pointer
@@ -71,7 +68,8 @@ unsafe fn psci_secondary_entry(context_id: &BootArgs) -> ! {
 /// should be set up so we can execute safe Rust code.
 fn rust_secondary_entry(args: &BootArgs) -> ! {
     // call the generic secondary cpu entry point
-    crate::processor::secondary_entry(args.cpu, 
+    crate::processor::secondary_entry(
+        args.cpu,
         VirtAddr::new(args.tcb_base).unwrap(),
         args.kernel_stack as *mut u8,
     );
@@ -88,26 +86,24 @@ pub unsafe fn boot_core(core: &mut Processor, tcb_base: VirtAddr, kernel_stack: 
     // TODO: ensure the right bits are 0
     let cpu_id = core.arch.mpidr;
     // pass secondary entry point (physical address)
-    let entry_va = VirtAddr::new(psci_secondary_entry as u64)
-        .expect("invalid entry point address");
-    let entry_pa = translate(entry_va, MemoryAccessKind::Read)
-        .expect("entry point is not mapped");
+    let entry_va = VirtAddr::new(psci_secondary_entry as u64).expect("invalid entry point address");
+    let entry_pa = translate(entry_va, MemoryAccessKind::Read).expect("entry point is not mapped");
     // pass Context ID which in our implementation is the boot args
-    // needed to start the CPU core. The Context ID is gaurenteed to 
+    // needed to start the CPU core. The Context ID is gaurenteed to
     // be passed as an argument to the entry point we specify.
     let context_id = &core.arch.args as *const _ as u64;
     let ctx_pa = translate(VirtAddr::new(context_id).unwrap(), MemoryAccessKind::Write)
         .expect("context ID is not mapped");
 
     // Here we pass in the necessary arguments to start the CPU
-    
+
     let cpacr: u64;
     core::arch::asm!(
         "mrs {}, CPACR_EL1",
         out(reg) cpacr,
     );
 
-    // Register state needed by low level code to setup an environment 
+    // Register state needed by low level code to setup an environment
     // suitable for executing Rust code in the kernel.
     core.arch.args.mair = MAIR_EL1.get();
     core.arch.args.ttbr1 = TTBR1_EL1.get();
@@ -125,21 +121,19 @@ pub unsafe fn boot_core(core: &mut Processor, tcb_base: VirtAddr, kernel_stack: 
 
     // get the method from the psci root node
     let method = {
-        let psci_info = devicetree()
-            .find_node("/psci")
-            .expect("no psci node");
+        let psci_info = devicetree().find_node("/psci").expect("no psci node");
         psci_info
             .property("method")
             .expect("no method property")
             .as_str()
             .expect("failed to convert to string")
     };
-    
+
     // here we assume 64 bit calling convention, in the future
     // we should check if this is different
     let boot_result = match method {
         "hvc" => cpu_on::<smccc::Hvc>(cpu_id, entry_pa.into(), ctx_pa.into()),
-        _ => todo!("SMCCC calling convention needed by PSCI")
+        _ => todo!("SMCCC calling convention needed by PSCI"),
     };
     // Booting up the core is asynchronous and the call only returns OK if the signal was sent
     if boot_result.is_err() {

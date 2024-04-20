@@ -1,10 +1,7 @@
 use fdt::Fdt;
+use twizzler_abi::device::{CacheType, MmioInfo};
 
-use twizzler_abi::device::{MmioInfo, CacheType};
-
-use crate::once::Once;
-use crate::BootInfo;
-use crate::arch::BootInfoSystemTable;
+use crate::{arch::BootInfoSystemTable, once::Once, BootInfo};
 
 // We use device tree to describe the hardware on this machine
 static FDT: Once<Fdt<'static>> = Once::new();
@@ -20,13 +17,10 @@ pub fn init<B: BootInfo>(boot_info: &B) {
                 super::memory::DTB_ADDR.kernel_vaddr()
             } else {
                 bootloader_dtb_addr
-            }    
+            }
         };
         // should not fail, but it might ...
-        unsafe {
-            Fdt::from_ptr(dtb.as_ptr())
-                .expect("invalid DTB file, cannot boot")
-        }
+        unsafe { Fdt::from_ptr(dtb.as_ptr()).expect("invalid DTB file, cannot boot") }
     });
 }
 
@@ -68,7 +62,11 @@ pub fn get_uart_info() -> (usize, MmioInfo) {
                 phandle
             };
             if let Some(clock) = devicetree().find_phandle(phandle) {
-                clock_freq = clock.property("clock-frequency").unwrap().as_usize().unwrap();
+                clock_freq = clock
+                    .property("clock-frequency")
+                    .unwrap()
+                    .as_usize()
+                    .unwrap();
             }
         }
     }
@@ -96,10 +94,14 @@ pub fn get_uart_interrupt_num() -> Option<u32> {
             // first number is the SPI flag
             let is_spi = converted[0] == 1;
             // second number is the interrupt
-            let int_num = if is_spi { converted[1] + 16 } else { converted[1] + 32 };
+            let int_num = if is_spi {
+                converted[1] + 16
+            } else {
+                converted[1] + 32
+            };
             // third number is the trigger level
             let _trigger = converted[2];
-            return Some(int_num)
+            return Some(int_num);
         }
     }
     None
@@ -108,15 +110,15 @@ pub fn get_uart_interrupt_num() -> Option<u32> {
 // return the mmio address info for the distributor and cpu interfaces
 // for a gicv2 interrupt controller
 pub fn get_gicv2_info() -> (MmioInfo, MmioInfo) {
-    let mut gicd_mmio = MmioInfo { 
+    let mut gicd_mmio = MmioInfo {
         length: 0,
         cache_type: CacheType::MemoryMappedIO,
-        info: 0, 
+        info: 0,
     };
-    let mut gicc_mmio = MmioInfo { 
+    let mut gicc_mmio = MmioInfo {
         length: 0,
         cache_type: CacheType::MemoryMappedIO,
-        info: 0, 
+        info: 0,
     };
     if let Some(gic) = devicetree().find_node("/intc") {
         let mut mmio_regs = gic.reg().unwrap();

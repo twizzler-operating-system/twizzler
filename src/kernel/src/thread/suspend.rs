@@ -1,21 +1,20 @@
+use alloc::boxed::Box;
 use core::sync::atomic::Ordering;
 
-use alloc::boxed::Box;
 use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree};
 use lazy_static::lazy_static;
 use twizzler_abi::{object::ObjID, thread::ExecutionState};
 
+use super::{
+    flags::{THREAD_IS_SUSPENDED, THREAD_MUST_SUSPEND},
+    Thread, ThreadRef,
+};
 use crate::{
     interrupt::Destination,
     processor::ipi_exec,
     sched::{schedule, schedule_resched, schedule_thread},
     spinlock::Spinlock,
     thread::current_thread_ref,
-};
-
-use super::{
-    flags::{THREAD_IS_SUSPENDED, THREAD_MUST_SUSPEND},
-    Thread, ThreadRef,
 };
 
 lazy_static! {
@@ -32,10 +31,11 @@ impl<'a> KeyAdapter<'a> for SuspendNodeAdapter {
 }
 
 impl Thread {
-    /// Tell a thread to suspend. If that thread is the caller, then suspend immediately unless in a critical section.
-    /// Otherwise, call out to other CPUs to
-    /// force the thread to suspend. Note that if the target is the calling thread, then it will have to be unsuspended before
-    /// it returns, and so will NOT be suspended upon completion of this call.
+    /// Tell a thread to suspend. If that thread is the caller, then suspend immediately unless in a
+    /// critical section. Otherwise, call out to other CPUs to
+    /// force the thread to suspend. Note that if the target is the calling thread, then it will
+    /// have to be unsuspended before it returns, and so will NOT be suspended upon completion
+    /// of this call.
     pub fn suspend(self: &ThreadRef) {
         self.flags.fetch_or(THREAD_MUST_SUSPEND, Ordering::SeqCst);
         if self == &current_thread_ref().unwrap() {
@@ -61,11 +61,13 @@ impl Thread {
             return;
         }
         if self.flags.fetch_or(THREAD_IS_SUSPENDED, Ordering::SeqCst) & THREAD_IS_SUSPENDED != 0 {
-            // The only time we'll see this flag set is if we are coming out of a suspend. So, just return.
+            // The only time we'll see this flag set is if we are coming out of a suspend. So, just
+            // return.
             return;
         }
         {
-            // Do this before inserting the thread, to ensure no one writes Running here before we suspend.
+            // Do this before inserting the thread, to ensure no one writes Running here before we
+            // suspend.
             self.set_state(ExecutionState::Suspended);
             let mut suspended_threads = SUSPENDED_THREADS.lock();
             assert!(suspended_threads.find(&self.objid()).is_null());
@@ -75,14 +77,16 @@ impl Thread {
         // goodnight!
         schedule(false);
 
-        // goodmorning! Clear the flags. This is one operation, so we'll never observe THREAD_IS_SUSPENDED without THREAD_MUST_SUSPEND.
+        // goodmorning! Clear the flags. This is one operation, so we'll never observe
+        // THREAD_IS_SUSPENDED without THREAD_MUST_SUSPEND.
         self.flags.fetch_and(
             !(THREAD_IS_SUSPENDED | THREAD_MUST_SUSPEND),
             Ordering::SeqCst,
         );
     }
 
-    /// If a thread is suspended, then wake it up. Returns false if that thread was not on the suspend list.
+    /// If a thread is suspended, then wake it up. Returns false if that thread was not on the
+    /// suspend list.
     pub fn unsuspend_thread(self: &ThreadRef) -> bool {
         let mut suspended_threads = SUSPENDED_THREADS.lock();
         if suspended_threads.find_mut(&self.objid()).remove().is_some() {
@@ -96,12 +100,12 @@ impl Thread {
 }
 
 mod test {
+    use alloc::sync::Arc;
     use core::{
         sync::atomic::{AtomicBool, Ordering},
         time::Duration,
     };
 
-    use alloc::sync::Arc;
     use twizzler_kernel_macros::kernel_test;
 
     use crate::{

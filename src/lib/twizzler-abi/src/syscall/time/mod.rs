@@ -2,17 +2,16 @@ mod clock;
 mod timedefs;
 mod units;
 
+use core::mem::MaybeUninit;
+
+use bitflags::bitflags;
 pub use clock::*;
 use num_enum::{FromPrimitive, IntoPrimitive};
 pub use timedefs::*;
 pub use units::*;
 
-use bitflags::bitflags;
-use core::mem::MaybeUninit;
-
-use crate::arch::syscall::raw_syscall;
-
 use super::{convert_codes_to_result, Syscall};
+use crate::arch::syscall::raw_syscall;
 
 #[derive(
     Debug,
@@ -159,7 +158,12 @@ pub fn sys_read_clock_info(
 ///
 /// ```no_run
 /// let mut clocks = [Clock::ZERO; 4];
-/// let result = sys_read_clock_list(ClockKind::Monotonic, &mut clocks, 0, ReadClockListFlags::FIRST_KIND);
+/// let result = sys_read_clock_list(
+///     ClockKind::Monotonic,
+///     &mut clocks,
+///     0,
+///     ReadClockListFlags::FIRST_KIND,
+/// );
 /// if let Some(filled) = result {
 ///     if filled > 0 {
 ///         println!("time now: {}", clock[0].read().as_nanos());

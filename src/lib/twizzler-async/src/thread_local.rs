@@ -1,13 +1,12 @@
 use std::{
     cell::RefCell,
     collections::VecDeque,
+    future::Future,
     sync::{Arc, Mutex},
+    thread::{self, ThreadId},
 };
 
-use std::thread::{self, ThreadId};
-
 use scoped_tls_hkt::scoped_thread_local;
-use std::future::Future;
 
 use crate::{
     event::FlagEvent,

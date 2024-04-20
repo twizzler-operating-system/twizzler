@@ -77,17 +77,16 @@ impl Drop for CondVar {
 
 #[cfg(test)]
 mod tests {
+    use alloc::sync::Arc;
     use core::time::Duration;
 
-    use alloc::sync::Arc;
     use twizzler_kernel_macros::kernel_test;
 
+    use super::CondVar;
     use crate::{
         spinlock::Spinlock,
         thread::{entry::run_closure_in_new_thread, priority::Priority},
     };
-
-    use super::CondVar;
 
     #[kernel_test]
     fn test_condvar() {

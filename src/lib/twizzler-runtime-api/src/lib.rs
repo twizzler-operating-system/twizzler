@@ -1,16 +1,18 @@
-//! The Twizzler Runtime API is the core interface definition for Twizzler programs, including startup, execution, and libstd support.
-//! It defines a set of traits that, when all implemented, form the full interface that Rust's libstd expects from a Twizzler runtime.
+//! The Twizzler Runtime API is the core interface definition for Twizzler programs, including
+//! startup, execution, and libstd support. It defines a set of traits that, when all implemented,
+//! form the full interface that Rust's libstd expects from a Twizzler runtime.
 //!
-//! From a high level, a Twizzler program links against Rust's libstd and a particular runtime that will support libstd. That runtime
-//! must implement the minimum set of interfaces required by the [Runtime] trait. Libstd then invokes the runtime functions when needed
-//! (e.g. allocating memory, exiting a thread, etc.). Other libraries may invoke runtime functions directly as well (bypassing libstd),
-//! but note that doing so may not play nicely with libstd's view of the world.
+//! From a high level, a Twizzler program links against Rust's libstd and a particular runtime that
+//! will support libstd. That runtime must implement the minimum set of interfaces required by the
+//! [Runtime] trait. Libstd then invokes the runtime functions when needed (e.g. allocating memory,
+//! exiting a thread, etc.). Other libraries may invoke runtime functions directly as well
+//! (bypassing libstd), but note that doing so may not play nicely with libstd's view of the world.
 //!
 //! # What does it look like to use the runtime?
 //!
-//! When a program (including libstd) wishes to use the runtime, it invokes this library's [get_runtime] function, which will return
-//! a reference (a &'static dyn reference) to a type that implements the Runtime trait. From there, runtime functions can be called:
-//! ```
+//! When a program (including libstd) wishes to use the runtime, it invokes this library's
+//! [get_runtime] function, which will return a reference (a &'static dyn reference) to a type that
+//! implements the Runtime trait. From there, runtime functions can be called: ```
 //! let runtime = get_runtime();
 //! runtime.get_monotonic()
 //! ```
@@ -18,18 +20,20 @@
 //!
 //! # So who is providing that type that implements [Runtime]?
 //!
-//! Another library! Right now, Twizzler defines two runtimes: a "minimal" runtime, and a "reference" runtime. Those are not implemented
-//! in this crate. The minimal runtime is implemented as part of the twizzler-abi crate, as it's the most "baremetal" runtime. The
-//! reference runtime is implemented as a standalone set of crates. Of course, other runtimes can be implemented, as long as they implement
-//! the required interface in this crate, libstd will work.
+//! Another library! Right now, Twizzler defines two runtimes: a "minimal" runtime, and a
+//! "reference" runtime. Those are not implemented in this crate. The minimal runtime is implemented
+//! as part of the twizzler-abi crate, as it's the most "baremetal" runtime. The reference runtime
+//! is implemented as a standalone set of crates. Of course, other runtimes can be implemented, as
+//! long as they implement the required interface in this crate, libstd will work.
 //!
 //! ## Okay but how does get_runtime work?
 //!
-//! Well, [get_runtime] is just a wrapper around calling an extern "C" function, [__twz_get_runtime]. This symbol is external, so not
-//! defined in this crate. A crate that implements [Runtime] then defines [__twz_get_runtime], allowing link-time swapping of runtimes.
-//! The twizzler-abi crate defines this symbol with (weak linkage)[https://en.wikipedia.org/wiki/Weak_symbol], causing it to be linked
-//! only if another (strong) definition is not present. Thus, a program can link to a specific runtime, but it can also be loaded by a
-//! dynamic linker and have its runtime selected at load time.
+//! Well, [get_runtime] is just a wrapper around calling an extern "C" function,
+//! [__twz_get_runtime]. This symbol is external, so not defined in this crate. A crate that
+//! implements [Runtime] then defines [__twz_get_runtime], allowing link-time swapping of runtimes. The twizzler-abi crate defines this symbol with (weak linkage)[https://en.wikipedia.org/wiki/Weak_symbol], causing it to be linked
+//! only if another (strong) definition is not present. Thus, a program can link to a specific
+//! runtime, but it can also be loaded by a dynamic linker and have its runtime selected at load
+//! time.
 
 #![no_std]
 #![feature(unboxed_closures)]
@@ -227,21 +231,23 @@ pub trait ThreadRuntime {
     /// Wait for the specified thread to terminate, or optionally time out.
     fn join(&self, id: u32, timeout: Option<Duration>) -> Result<(), JoinError>;
 
-    /// Implements the __tls_get_addr functionality. If the runtime feature is enabled, this crate defines the
-    /// extern "C" function __tls_get_addr as a wrapper around calling this function after getting the runtime from [get_runtime].
-    /// If the provided index is invalid, return None.
+    /// Implements the __tls_get_addr functionality. If the runtime feature is enabled, this crate
+    /// defines the extern "C" function __tls_get_addr as a wrapper around calling this function
+    /// after getting the runtime from [get_runtime]. If the provided index is invalid, return
+    /// None.
     fn tls_get_addr(&self, tls_index: &TlsIndex) -> Option<*const u8>;
 }
 
 /// All the object related runtime functions.
 pub trait ObjectRuntime {
-    /// Map an object to an [ObjectHandle]. The handle may reference the same internal mapping as other calls to this function.
+    /// Map an object to an [ObjectHandle]. The handle may reference the same internal mapping as
+    /// other calls to this function.
     fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError>;
     /// Called on drop of an object handle.
     fn release_handle(&self, handle: &mut ObjectHandle);
 
-    /// Map two objects in sequence, useful for executable loading. The default implementation makes no guarantees about
-    /// ordering.
+    /// Map two objects in sequence, useful for executable loading. The default implementation makes
+    /// no guarantees about ordering.
     fn map_two_objects(
         &self,
         in_id_a: ObjID,
@@ -410,8 +416,8 @@ impl Clone for ObjectHandle {
         let rc = unsafe { self.internal_refs.as_ref() };
         // This use of Relaxed ordering is justified by https://doc.rust-lang.org/nomicon/arc-mutex/arc-clone.html.
         let old_count = rc.count.fetch_add(1, Ordering::Relaxed);
-        // The above link also justifies the following behavior. If our count gets this high, we have probably
-        // run into a problem somewhere.
+        // The above link also justifies the following behavior. If our count gets this high, we
+        // have probably run into a problem somewhere.
         if old_count >= isize::MAX as usize {
             get_runtime().abort();
         }
@@ -451,14 +457,16 @@ pub trait CoreRuntime {
     /// Called by libstd after returning from main.
     fn post_main_hook(&self) {}
 
-    /// Exit the calling thread. This is allowed to cause a full exit of the entire program and all threads.
+    /// Exit the calling thread. This is allowed to cause a full exit of the entire program and all
+    /// threads.
     fn exit(&self, code: i32) -> !;
 
     /// Thread abort. This is allowed to cause a full exit of the entire program and all threads.
     fn abort(&self) -> !;
 
-    /// Called by rt0 code to start the runtime. Once the runtime has initialized, it should call the provided entry function. The pointer
-    /// arg is a pointer to an array of [AuxEntry] that terminates with an [AuxEntry::Null].
+    /// Called by rt0 code to start the runtime. Once the runtime has initialized, it should call
+    /// the provided entry function. The pointer arg is a pointer to an array of [AuxEntry] that
+    /// terminates with an [AuxEntry::Null].
     fn runtime_entry(
         &self,
         arg: *const AuxEntry,
@@ -641,8 +649,8 @@ impl Library {
 /// Internal library ID type.
 pub struct LibraryId(pub usize);
 
-/// The runtime must ensure that the addresses are constant for the whole life of the library type, and that all threads
-/// may see the type.
+/// The runtime must ensure that the addresses are constant for the whole life of the library type,
+/// and that all threads may see the type.
 unsafe impl Send for Library {}
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -669,7 +677,8 @@ pub trait DebugRuntime {
     fn get_library(&self, id: LibraryId) -> Option<Library>;
     /// Returns the ID of the main executable, if there is one.
     fn get_exeid(&self) -> Option<LibraryId>;
-    /// Get a segment of a library, if the segment index exists. All segment IDs are indexes, so they range from [0, N).
+    /// Get a segment of a library, if the segment index exists. All segment IDs are indexes, so
+    /// they range from [0, N).
     fn get_library_segment(&self, lib: &Library, seg: usize) -> Option<AddrRange>;
     /// Get the full mapping of the underlying library.
     fn get_full_mapping(&self, lib: &Library) -> Option<ObjectHandle>;
@@ -706,8 +715,8 @@ pub mod __imp {
     }
 }
 
-/// Public definition of __tls_get_addr, a function that gets automatically called by the compiler when needed for TLS
-/// pointer resolution.
+/// Public definition of __tls_get_addr, a function that gets automatically called by the compiler
+/// when needed for TLS pointer resolution.
 #[cfg(feature = "rustc-dep-of-std")]
 #[no_mangle]
 pub unsafe extern "C" fn __tls_get_addr(arg: usize) -> *const u8 {
@@ -721,7 +730,8 @@ pub unsafe extern "C" fn __tls_get_addr(arg: usize) -> *const u8 {
         .expect("index passed to __tls_get_addr is invalid")
 }
 
-/// Public definition of dl_iterate_phdr, used by libunwind for learning where loaded objects (executables, libraries, ...) are.
+/// Public definition of dl_iterate_phdr, used by libunwind for learning where loaded objects
+/// (executables, libraries, ...) are.
 #[cfg(feature = "rustc-dep-of-std")]
 #[no_mangle]
 pub unsafe extern "C" fn dl_iterate_phdr(

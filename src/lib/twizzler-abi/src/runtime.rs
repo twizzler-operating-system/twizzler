@@ -1,9 +1,10 @@
-//! This mod implements the [twizzler_runtime_api::Runtime] trait as the "minruntime", or minimal runtime implementation.
-//! The word minimal is pretty subjective, but here we're roughly saying "it's the runtime that you can use to interact with
-//! the kernel and twizzler-abi directly, with no additional support".
+//! This mod implements the [twizzler_runtime_api::Runtime] trait as the "minruntime", or minimal
+//! runtime implementation. The word minimal is pretty subjective, but here we're roughly saying
+//! "it's the runtime that you can use to interact with the kernel and twizzler-abi directly, with
+//! no additional support".
 //!
-//! Additionally, we provide a mechanism for linking our runtime only if no other runtime is linked, via the "extern_weak" linkage
-//! attribute on __twz_get_runtime.
+//! Additionally, we provide a mechanism for linking our runtime only if no other runtime is linked,
+//! via the "extern_weak" linkage attribute on __twz_get_runtime.
 
 use twizzler_runtime_api::Runtime;
 

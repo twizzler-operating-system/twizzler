@@ -1,8 +1,7 @@
 use core::num::NonZeroUsize;
 
-use crate::arch::syscall::raw_syscall;
-
 use super::Syscall;
+use crate::arch::syscall::raw_syscall;
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 /// Information about the system.

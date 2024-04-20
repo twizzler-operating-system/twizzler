@@ -1,8 +1,7 @@
 use core::{fmt::LowerHex, ops::Sub};
 
-use crate::once::Once;
-
 use super::memory::phys_to_virt;
+use crate::once::Once;
 
 /// A representation of a canonical virtual address.
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
@@ -26,7 +25,8 @@ impl VirtAddr {
     const PHYS_START: Self = Self(0xffff800000000000);
 
     pub const fn start_kernel_memory() -> Self {
-        // This is defined by the definitions of the two canonical regions of the virtual memory space.
+        // This is defined by the definitions of the two canonical regions of the virtual memory
+        // space.
         Self(0xffff800000000000)
     }
 
@@ -39,19 +39,22 @@ impl VirtAddr {
     }
 
     pub const fn start_user_memory() -> Self {
-        // This is defined by the definitions of the two canonical regions of the virtual memory space.
+        // This is defined by the definitions of the two canonical regions of the virtual memory
+        // space.
         Self(0x0)
     }
 
     pub const fn end_user_memory() -> Self {
-        // This is defined by the definitions of the two canonical regions of the virtual memory space.
+        // This is defined by the definitions of the two canonical regions of the virtual memory
+        // space.
         Self(0x0000800000000000)
     }
 
-    /// Construct a new virtual address from the provided addr value, only if the provided value is a valid, canonical
-    /// address. If not, returns Err.
+    /// Construct a new virtual address from the provided addr value, only if the provided value is
+    /// a valid, canonical address. If not, returns Err.
     pub const fn new(addr: u64) -> Result<Self, NonCanonical> {
-        // This is defined by the definitions of the two canonical regions of the virtual memory space.
+        // This is defined by the definitions of the two canonical regions of the virtual memory
+        // space.
         if addr >= 0xFFFF800000000000 || addr <= 0x00007fffffffffff {
             Ok(Self(addr))
         } else {
@@ -59,7 +62,8 @@ impl VirtAddr {
         }
     }
 
-    /// Construct a new virtual address from a u64 without verifying that it is a valid virtual address.
+    /// Construct a new virtual address from a u64 without verifying that it is a valid virtual
+    /// address.
     ///
     /// # Safety
     /// The provided address must be canonical.
@@ -80,7 +84,8 @@ impl VirtAddr {
     }
 
     pub fn is_kernel(&self) -> bool {
-        // This is defined by the definitions of the two canonical regions of the virtual memory space.
+        // This is defined by the definitions of the two canonical regions of the virtual memory
+        // space.
         self.0 >= 0xffff800000000000
     }
 
@@ -193,7 +198,8 @@ impl PhysAddr {
         }
     }
 
-    /// Construct a new physical address from a u64 without verifying that it is a valid physical address.
+    /// Construct a new physical address from a u64 without verifying that it is a valid physical
+    /// address.
     ///
     /// # Safety
     /// The provided address must be a valid address.

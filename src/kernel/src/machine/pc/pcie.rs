@@ -1,28 +1,28 @@
-use alloc::collections::BTreeMap;
-use alloc::format;
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, format, vec::Vec};
+
 use memoffset::offset_of;
-use twizzler_abi::device::bus::pcie::{
-    get_bar, PcieBridgeHeader, PcieDeviceHeader, PcieDeviceInfo, PcieFunctionHeader, PcieInfo,
-    PcieKactionSpecific,
-};
-use twizzler_abi::device::{
-    CacheType, DeviceId, DeviceInterrupt, DeviceRepr, NUM_DEVICE_INTERRUPTS,
-};
-use twizzler_abi::kso::unpack_kaction_int_pri_and_opts;
-use twizzler_abi::object::{ObjID, NULLPAGE_SIZE};
 use twizzler_abi::{
-    device::BusType,
-    kso::{KactionError, KactionValue},
+    device::{
+        bus::pcie::{
+            get_bar, PcieBridgeHeader, PcieDeviceHeader, PcieDeviceInfo, PcieFunctionHeader,
+            PcieInfo, PcieKactionSpecific,
+        },
+        BusType, CacheType, DeviceId, DeviceInterrupt, DeviceRepr, NUM_DEVICE_INTERRUPTS,
+    },
+    kso::{unpack_kaction_int_pri_and_opts, KactionError, KactionValue},
+    object::{ObjID, NULLPAGE_SIZE},
 };
 use volatile::map_field;
 
-use crate::arch::memory::phys_to_virt;
-use crate::interrupt::{DynamicInterrupt, WakeInfo};
-use crate::memory::PhysAddr;
-use crate::mutex::Mutex;
-use crate::once::Once;
-use crate::{arch, device::DeviceRef};
+use crate::{
+    arch,
+    arch::memory::phys_to_virt,
+    device::DeviceRef,
+    interrupt::{DynamicInterrupt, WakeInfo},
+    memory::PhysAddr,
+    mutex::Mutex,
+    once::Once,
+};
 
 struct PcieKernelInfo {
     seg_dev: DeviceRef,

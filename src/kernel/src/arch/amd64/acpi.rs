@@ -2,10 +2,8 @@ use core::ptr::NonNull;
 
 use acpi::AcpiTables;
 
-use crate::memory::PhysAddr;
-use crate::once::Once;
-
 use super::memory::phys_to_virt;
+use crate::{memory::PhysAddr, once::Once};
 
 #[derive(Clone, Copy, Debug)]
 pub struct AcpiHandlerImpl {}

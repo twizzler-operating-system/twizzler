@@ -1,6 +1,5 @@
-use crate::arch::address::{PhysAddr, VirtAddr};
-
 use super::{Mapper, MappingCursor, MappingSettings};
+use crate::arch::address::{PhysAddr, VirtAddr};
 
 /// Iterator for reading mapping information. Will not cross non-canonical address boundaries.
 pub struct MapReader<'a> {
@@ -57,10 +56,14 @@ impl<'a> Iterator for MapCoalescer<'a> {
             let next = self.reader.next();
             if let Some(next) = next {
                 if let Some(last) = &mut self.last {
-                    if let Ok(last_next) = last.vaddr().offset(last.len()) && let Ok(last_next_phys) = last.paddr().offset(last.len())
-                        && last_next == next.vaddr() && last.settings() == next.settings() && last_next_phys == next.paddr() {
-                            last.psize += next.len();
-                            continue;
+                    if let Ok(last_next) = last.vaddr().offset(last.len())
+                        && let Ok(last_next_phys) = last.paddr().offset(last.len())
+                        && last_next == next.vaddr()
+                        && last.settings() == next.settings()
+                        && last_next_phys == next.paddr()
+                    {
+                        last.psize += next.len();
+                        continue;
                     }
 
                     let ret = last.clone();
@@ -86,8 +89,9 @@ pub struct MapInfo {
 }
 
 impl Mapper {
-    /// Create a [MapReader] that can be used to iterate over the region specified by the mapping cursor. If the mapping
-    /// cursor includes a non-canonical region, the reader will stop early.
+    /// Create a [MapReader] that can be used to iterate over the region specified by the mapping
+    /// cursor. If the mapping cursor includes a non-canonical region, the reader will stop
+    /// early.
     pub fn readmap(&self, cursor: MappingCursor) -> MapReader<'_> {
         MapReader {
             mapper: self,
@@ -116,7 +120,8 @@ impl MapInfo {
         self.vaddr
     }
 
-    /// Length of this individual mapping (corresponds to the length of physical and virtual memory covered by this mapping).
+    /// Length of this individual mapping (corresponds to the length of physical and virtual memory
+    /// covered by this mapping).
     pub fn len(&self) -> usize {
         self.psize
     }

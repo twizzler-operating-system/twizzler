@@ -1,6 +1,6 @@
+use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::mem::size_of;
 
-use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use memoffset::offset_of;
 use twizzler_abi::{
     device::{

@@ -12,9 +12,10 @@ pub struct ArchCacheLineMgr {
 }
 
 impl ArchCacheLineMgr {
-    /// Flush a given cache line when this [ArchCacheLineMgr] is dropped. Subsequent flush requests for the same cache
-    /// line will be batched. Flushes for different cache lines will cause older requests to flush immediately, and the
-    /// new request will be flushed when this object is dropped.
+    /// Flush a given cache line when this [ArchCacheLineMgr] is dropped. Subsequent flush requests
+    /// for the same cache line will be batched. Flushes for different cache lines will cause
+    /// older requests to flush immediately, and the new request will be flushed when this
+    /// object is dropped.
     pub fn flush(&mut self, line: VirtAddr) {
         // logln!("[arch::cacheln] flush called on: {:#018x}", line.raw());
         let addr: u64 = line.into();
@@ -97,16 +98,16 @@ impl TlbInvData {
 // A queue of TLB invalidations containg the data arguments
 struct TlbInvQueue {
     data: [TlbInvData; Self::MAX_OUTSTANDING_INVALIDATIONS],
-    len: u8
+    len: u8,
 }
 
 impl TlbInvQueue {
     const MAX_OUTSTANDING_INVALIDATIONS: usize = 16;
 
     fn new() -> Self {
-        Self { 
-            data: [TlbInvData::default(); Self::MAX_OUTSTANDING_INVALIDATIONS], 
-            len: 0 
+        Self {
+            data: [TlbInvData::default(); Self::MAX_OUTSTANDING_INVALIDATIONS],
+            len: 0,
         }
     }
 
@@ -137,7 +138,7 @@ impl TlbInvQueue {
 /// A management object for TLB invalidations that occur during a page table operation.
 pub struct ArchTlbMgr {
     queue: TlbInvQueue,
-    root: PhysAddr
+    root: PhysAddr,
 }
 
 impl ArchTlbMgr {
@@ -149,8 +150,8 @@ impl ArchTlbMgr {
         }
     }
 
-    /// Enqueue a new TLB invalidation. is_global should be set iff the page is global, and is_terminal should be set
-    /// iff the invalidation is for a leaf.
+    /// Enqueue a new TLB invalidation. is_global should be set iff the page is global, and
+    /// is_terminal should be set iff the invalidation is for a leaf.
     pub fn enqueue(&mut self, addr: VirtAddr, _is_global: bool, is_terminal: bool, _level: usize) {
         // only invalidate leaves
         if is_terminal {

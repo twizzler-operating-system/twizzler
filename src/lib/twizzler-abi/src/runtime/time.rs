@@ -4,9 +4,8 @@ use core::time::Duration;
 
 use twizzler_runtime_api::{Monotonicity, RustTimeRuntime};
 
-use crate::syscall::{sys_read_clock_info, ClockSource, ReadClockFlags};
-
 use super::MinimalRuntime;
+use crate::syscall::{sys_read_clock_info, ClockSource, ReadClockFlags};
 
 impl RustTimeRuntime for MinimalRuntime {
     fn get_monotonic(&self) -> Duration {

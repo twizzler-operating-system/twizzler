@@ -140,8 +140,9 @@ impl<R> InFlight<R> {
 }
 
 #[derive(Debug)]
-/// A future for a set of in-flight requests for which we are uninterested in any responses from the device,
-/// we only care if the responses were completed successfully or not. On await, returns a [SubmitSummary].
+/// A future for a set of in-flight requests for which we are uninterested in any responses from the
+/// device, we only care if the responses were completed successfully or not. On await, returns a
+/// [SubmitSummary].
 pub struct InFlightFuture<R> {
     inflight: Arc<InFlight<R>>,
 }
@@ -176,8 +177,8 @@ impl<R> InFlightFutureWithResponses<R> {
 }
 
 #[derive(Debug)]
-/// A future for a set of in-flight requests for which we are interested in all responses from the device.
-/// On await, returns a [SubmitSummaryWithResponses].
+/// A future for a set of in-flight requests for which we are interested in all responses from the
+/// device. On await, returns a [SubmitSummaryWithResponses].
 pub struct InFlightFutureWithResponses<R> {
     inflight: Arc<InFlight<R>>,
 }

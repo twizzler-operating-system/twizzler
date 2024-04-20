@@ -1,11 +1,10 @@
 use alloc::{format, string::String, sync::Arc, vec::Vec};
 
-use crate::mutex::Mutex;
-
 use super::{
     pages::{Page, PageRef},
     range::PageRange,
 };
+use crate::mutex::Mutex;
 
 pub struct PageVec {
     pages: Vec<Option<PageRef>>,

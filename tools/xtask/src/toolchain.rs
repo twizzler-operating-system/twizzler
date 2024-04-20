@@ -270,7 +270,8 @@ pub fn set_cc() {
     let inc_path = Path::new("toolchain/src/bootstrap-include")
         .canonicalize()
         .unwrap();
-    // We don't yet support stack protector. Also, don't pull in standard lib includes, as those may go to the system includes.
+    // We don't yet support stack protector. Also, don't pull in standard lib includes, as those may
+    // go to the system includes.
     let cflags = format!("-fno-stack-protector -nostdlibinc -I{}", inc_path.display());
     std::env::set_var("CFLAGS", cflags);
 }

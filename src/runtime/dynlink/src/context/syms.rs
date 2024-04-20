@@ -1,16 +1,16 @@
 use tracing::trace;
 
+use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
 use crate::{
     library::{Library, LibraryId},
     symbol::{LookupFlags, RelocatedSymbol},
     DynlinkError, DynlinkErrorKind,
 };
 
-use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
-
 impl<Engine: ContextEngine> Context<Engine> {
-    /// Search for a symbol, starting from library denoted by start_id. For normal symbol lookup, this should be the
-    /// ID of the library that needs a symbol looked up. Flags can be specified which allow control over where to look for the symbol.
+    /// Search for a symbol, starting from library denoted by start_id. For normal symbol lookup,
+    /// this should be the ID of the library that needs a symbol looked up. Flags can be
+    /// specified which allow control over where to look for the symbol.
     pub fn lookup_symbol<'a>(
         &'a self,
         start_id: LibraryId,

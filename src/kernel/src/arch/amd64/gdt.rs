@@ -1,15 +1,14 @@
 use core::mem::size_of;
 
-use x86::current::task::TaskStateSegment;
-use x86::dtables::DescriptorTablePointer;
-use x86::segmentation::BuildDescriptor;
-use x86::segmentation::CodeSegmentType;
-use x86::segmentation::DataSegmentType;
-use x86::segmentation::Descriptor;
-use x86::segmentation::DescriptorBuilder;
-use x86::segmentation::SegmentDescriptorBuilder;
-use x86::segmentation::SegmentSelector;
-use x86::Ring;
+use x86::{
+    current::task::TaskStateSegment,
+    dtables::DescriptorTablePointer,
+    segmentation::{
+        BuildDescriptor, CodeSegmentType, DataSegmentType, Descriptor, DescriptorBuilder,
+        SegmentDescriptorBuilder, SegmentSelector,
+    },
+    Ring,
+};
 
 use crate::memory::VirtAddr;
 

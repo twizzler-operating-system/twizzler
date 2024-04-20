@@ -1,6 +1,11 @@
-//! Implements ELF TLS Variant II. I highly recommend reading the Fuchsia docs on thread-local storage as prep for this code.
+//! Implements ELF TLS Variant II. I highly recommend reading the Fuchsia docs on thread-local
+//! storage as prep for this code.
 
-use std::{alloc::Layout, mem::align_of, mem::size_of, ptr::NonNull};
+use std::{
+    alloc::Layout,
+    mem::{align_of, size_of},
+    ptr::NonNull,
+};
 
 use tracing::{error, trace};
 use twizzler_runtime_api::TlsIndex;
@@ -160,7 +165,8 @@ impl TlsInfo {
         // Ensure that the alignment is enough for the control block.
         let align = std::cmp::max(self.max_align, align_of::<Tcb<T>>()).next_power_of_two();
         // Region needs space for each module, and we just assume they all need the max alignment.
-        // Add two to the mods length for calculating align padding, one for the dtv, one for the tcb.
+        // Add two to the mods length for calculating align padding, one for the dtv, one for the
+        // tcb.
         let region_size = self.alloc_size_mods + align * (self.tls_mods.len() + 2);
         let dtv_size = self.dtv_len() * size_of::<usize>();
         // We also need space for the control block and the dtv.

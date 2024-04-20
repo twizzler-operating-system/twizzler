@@ -4,16 +4,15 @@ use core::{alloc::GlobalAlloc, ptr};
 
 use twizzler_runtime_api::{AuxEntry, BasicAux, BasicReturn, CoreRuntime};
 
-use crate::{
-    object::ObjID,
-    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
-};
-
 use super::{
     alloc::MinimalAllocator,
     phdrs::{process_phdrs, Phdr},
     tls::init_tls,
     MinimalRuntime,
+};
+use crate::{
+    object::ObjID,
+    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
 
 // Just keep a single, simple global allocator.

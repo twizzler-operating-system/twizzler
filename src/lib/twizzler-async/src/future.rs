@@ -20,7 +20,8 @@ impl<FutOne: Unpin, FutTwo: Unpin> Unpin for WaitForFirst<FutOne, FutTwo> {}
 
 /// A future that waits on two sub-futures until the first one completes. If the second one
 /// completes first, this future will continue awaiting on the first future. If the first one
-/// completes first, this future returns immediately without continuing to wait on the second future.
+/// completes first, this future returns immediately without continuing to wait on the second
+/// future.
 pub fn wait_for_first<FutOne, FutTwo, T, R>(
     one: FutOne,
     two: FutTwo,
@@ -70,7 +71,8 @@ pub struct FlagBlockInner {
 
 #[derive(Default)]
 /// A basic condition variable for async tasks. If you call wait() you get back a future that you
-/// can await on, which will complete once another tasks calls signal_all(). But there's a gotcha here.
+/// can await on, which will complete once another tasks calls signal_all(). But there's a gotcha
+/// here.
 ///
 /// Okay so you know the rule with mutexes and condition variables? Like, you have some predicate
 /// that tells you "ready" or not, and this is tested with the mutex held, followed by waiting on
@@ -191,7 +193,8 @@ pub async fn timeout_after<F: Future>(f: F, dur: Duration) -> Option<F::Output> 
 }
 
 /// Await a future until a timeout occurs (or that future completes). If the timeout happens, return
-/// None, otherwise return Some of the result of the future. This timeout expires at an instant in time.
+/// None, otherwise return Some of the result of the future. This timeout expires at an instant in
+/// time.
 pub async fn timeout_at<F: Future>(f: F, at: Instant) -> Option<F::Output> {
     Timeout::at(Box::pin(f), at).await
 }

@@ -1,3 +1,4 @@
+use super::{consistency::Consistency, MapInfo, MappingCursor, MappingSettings, PhysAddrProvider};
 use crate::{
     arch::{
         address::{PhysAddr, VirtAddr},
@@ -8,8 +9,6 @@ use crate::{
         pagetables::MappingFlags,
     },
 };
-
-use super::{consistency::Consistency, MapInfo, MappingCursor, MappingSettings, PhysAddrProvider};
 
 impl Table {
     fn next_table_mut(&mut self, index: usize) -> Option<&mut Table> {

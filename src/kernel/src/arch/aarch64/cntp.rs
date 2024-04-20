@@ -1,13 +1,11 @@
 /// The `ClockHardware` interface for the CNTP_EL0 timer
 /// This timer is local to a single core, and timestamps
 /// are synchronized to a global system timer count
-
 use arm64::registers::{CNTFRQ_EL0, CNTPCT_EL0, CNTP_CTL_EL0, CNTP_TVAL_EL0};
-use registers::interfaces::{Readable, Writeable, ReadWriteable};
+use registers::interfaces::{ReadWriteable, Readable, Writeable};
+use twizzler_abi::syscall::{ClockFlags, ClockInfo, FemtoSeconds, TimeSpan, FEMTOS_PER_SEC};
 
 use crate::time::{ClockHardware, Ticks};
-
-use twizzler_abi::syscall::{ClockFlags, ClockInfo, FemtoSeconds, TimeSpan, FEMTOS_PER_SEC};
 
 /// The Non-secure physical timer `CNTP` for EL0.
 pub struct PhysicalTimer {
@@ -44,7 +42,7 @@ impl PhysicalTimer {
         // round up
 
         // ticks = time / rate => span as femtos / rate (in femtos)
-        let ticks =  span.as_femtos() / self.info.resolution().0 as u128;
+        let ticks = span.as_femtos() / self.info.resolution().0 as u128;
 
         // configure the timer to fire after a certain amount of ticks have passed
         //
@@ -53,9 +51,7 @@ impl PhysicalTimer {
         CNTP_TVAL_EL0.set(ticks as u64);
 
         // clear the interrupt mask and enable the timer
-        CNTP_CTL_EL0.modify(
-            CNTP_CTL_EL0::IMASK::CLEAR + CNTP_CTL_EL0::ENABLE::SET
-        );
+        CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::CLEAR + CNTP_CTL_EL0::ENABLE::SET);
     }
 }
 
@@ -81,7 +77,7 @@ pub fn cntp_interrupt_handler() {
     // handle the timer interrupt by advancing the scheduler ticks
     crate::clock::oneshot_clock_hardtick();
 
-    // Disable the timer to clear the interrupt. Software must clear 
+    // Disable the timer to clear the interrupt. Software must clear
     // the interrupt before deactivating the interrupt in the
     // interrupt controller, otherwise it will keep firing.
     //

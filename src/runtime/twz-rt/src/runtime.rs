@@ -18,6 +18,7 @@ mod time;
 pub(crate) mod upcall;
 
 pub use core::CompartmentInitInfo;
+
 pub use thread::RuntimeThreadControl;
 pub use upcall::set_upcall_handler;
 
@@ -76,9 +77,8 @@ pub static OUR_RUNTIME: ReferenceRuntime = ReferenceRuntime {
 pub(crate) mod do_impl {
     use twizzler_runtime_api::Runtime;
 
-    use crate::preinit_println;
-
     use super::ReferenceRuntime;
+    use crate::preinit_println;
 
     impl Runtime for ReferenceRuntime {}
 
@@ -94,9 +94,9 @@ pub(crate) mod do_impl {
     static USE_MARKER: fn() -> &'static (dyn Runtime + Sync) = __twz_get_runtime;
 }
 
-// These are exported by libunwind, but not re-exported by the standard library that pulls that in. Or,
-// at least, that's what it seems like. In any case, they're no-ops in libunwind and musl, so this is
-// fine for now.
+// These are exported by libunwind, but not re-exported by the standard library that pulls that in.
+// Or, at least, that's what it seems like. In any case, they're no-ops in libunwind and musl, so
+// this is fine for now.
 #[no_mangle]
 pub fn __register_frame_info() {}
 #[no_mangle]

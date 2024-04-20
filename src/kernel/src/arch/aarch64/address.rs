@@ -3,15 +3,16 @@
 /// https://developer.arm.com/documentation/100940/0101/?lang=en
 /// and the Arm Architecture Reference Manual for A-profile architecture
 /// https://developer.arm.com/documentation/ddi0487/latest
-
-use core::{fmt::LowerHex, ops::{Sub, RangeInclusive}};
+use core::{
+    fmt::LowerHex,
+    ops::{RangeInclusive, Sub},
+};
 
 use arm64::registers::ID_AA64MMFR0_EL1;
 use registers::interfaces::Readable;
 
-use crate::once::Once;
-
 use super::memory::phys_to_virt;
+use crate::once::Once;
 
 /// A representation of a canonical virtual address.
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
@@ -32,7 +33,7 @@ impl VirtAddr {
 
     /// The start of the kernel object mapping.
     const KOBJ_START: Self = Self(0xFFFF_F000_0000_0000);
-    
+
     // TTBR0_EL1 points to a page table root for addresses ranging from
     // 0x0 to 0x0000_FFFF_FFFF_FFFF. Generally this is used to cover
     // user accessible memory (EL0).
@@ -40,18 +41,18 @@ impl VirtAddr {
         // The start range of valid addresses that TTBR0 covers
         0x0000_0000_0000_0000,
         // The end range of valid addresses that TTBR0 covers
-        0x0000_FFFF_FFFF_FFFF
+        0x0000_FFFF_FFFF_FFFF,
     );
 
     // TTBR1_EL1 -> a pt root for addresses ranging from
     // 0xFFFF_FFFF_FFFF_FFFF to 0xFFFF_0000_0000_0000
-    // Generally this is used to cover exclusively 
+    // Generally this is used to cover exclusively
     // kernel accessible memory (EL1).
     const TTBR1_EL1: RangeInclusive<u64> = RangeInclusive::new(
         // The start range of valid addresses that TTBR1 covers
         0xFFFF_0000_0000_0000,
         // The end range of valid addresses that TTBR1 covers
-        0xFFFF_FFFF_FFFF_FFFF
+        0xFFFF_FFFF_FFFF_FFFF,
     );
 
     // The size of the virtual address range reserved for MMIO.
@@ -64,7 +65,7 @@ impl VirtAddr {
         // The start range of addresses used for MMIO
         *Self::TTBR1_EL1.start(),
         // The end range of addresses used for MMIO
-        *Self::TTBR1_EL1.start() + Self::MMIO_RANGE_SIZE
+        *Self::TTBR1_EL1.start() + Self::MMIO_RANGE_SIZE,
     );
 
     /// The bits that are valid which are used in address translation
@@ -73,11 +74,11 @@ impl VirtAddr {
     const VALID_HIGH_ADDRESS: u64 = 0xFFFF;
     /// The valid value for the upper bits of a low address
     const VALID_LOW_ADDRESS: u64 = 0x0;
- 
+
     pub const fn start_kernel_memory() -> Self {
         Self(*Self::TTBR1_EL1.start())
     }
-    
+
     pub const fn start_kernel_object_memory() -> Self {
         Self::KOBJ_START
     }
@@ -98,22 +99,21 @@ impl VirtAddr {
         Self(*Self::TTBR0_EL1.end())
     }
 
-    /// Construct a new virtual address from the provided addr value, only if the provided value is a valid, canonical
-    /// address. If not, returns Err.
+    /// Construct a new virtual address from the provided addr value, only if the provided value is
+    /// a valid, canonical address. If not, returns Err.
     pub const fn new(addr: u64) -> Result<Self, NonCanonical> {
-        // The most significant 16 bits of an address must be 0xFFFF or 0x0000. 
+        // The most significant 16 bits of an address must be 0xFFFF or 0x0000.
         // Any attempt to use a different bit value triggers a fault.
         // For now we assume that virtual address tagging is disabled.
-        let top_two_bytes = addr
-            .checked_shr(Self::VALID_ADDR_BITS)
-            .unwrap();
+        let top_two_bytes = addr.checked_shr(Self::VALID_ADDR_BITS).unwrap();
         match top_two_bytes {
             Self::VALID_HIGH_ADDRESS | Self::VALID_LOW_ADDRESS => Ok(Self(addr)),
             _ => Err(NonCanonical),
         }
     }
 
-    /// Construct a new virtual address from a u64 without verifying that it is a valid virtual address.
+    /// Construct a new virtual address from a u64 without verifying that it is a valid virtual
+    /// address.
     ///
     /// # Safety
     /// The provided address must be canonical.
@@ -239,7 +239,7 @@ impl PhysAddr {
                 Some(ID_AA64MMFR0_EL1::PARange::Value::Bits_44) => 44,
                 Some(ID_AA64MMFR0_EL1::PARange::Value::Bits_48) => 48,
                 Some(ID_AA64MMFR0_EL1::PARange::Value::Bits_52) => 52,
-                _ => unimplemented!("unknown PA size")
+                _ => unimplemented!("unknown PA size"),
             }
         })
     }
@@ -253,7 +253,8 @@ impl PhysAddr {
         }
     }
 
-    /// Construct a new physical address from a u64 without verifying that it is a valid physical address.
+    /// Construct a new physical address from a u64 without verifying that it is a valid physical
+    /// address.
     ///
     /// # Safety
     /// The provided address must be a valid address.

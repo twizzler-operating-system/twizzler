@@ -36,9 +36,11 @@ impl MutexImp {
     /// Lock a mutex, which can be unlocked by calling [Mutex::unlock].
     /// # Safety
     /// The caller must ensure that they are not recursively locking, that they unlock the
-    /// mutex correctly, and that any data protected by the mutex is only accessed with the mutex locked.
+    /// mutex correctly, and that any data protected by the mutex is only accessed with the mutex
+    /// locked.
     ///
-    /// Note, this is why you should use the standard library mutex, which enforces all of these things.
+    /// Note, this is why you should use the standard library mutex, which enforces all of these
+    /// things.
     #[allow(dead_code)]
     pub unsafe fn lock(&self) {
         for _ in 0..100 {
@@ -96,8 +98,8 @@ impl MutexImp {
     }
 
     #[inline]
-    /// Similar to [Mutex::lock], but if we can't immediately grab the lock, don't and return false. Return
-    /// true if we got the lock.
+    /// Similar to [Mutex::lock], but if we can't immediately grab the lock, don't and return false.
+    /// Return true if we got the lock.
     /// # Safety
     /// Same safety concerns as [Mutex::lock], but now you have to check to see if the lock happened
     /// or not.

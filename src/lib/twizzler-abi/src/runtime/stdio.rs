@@ -4,9 +4,8 @@ use core::fmt::Debug;
 
 use twizzler_runtime_api::{IoRead, IoWrite, ReadError, RustStdioRuntime, WriteError};
 
-use crate::syscall::KernelConsoleReadError;
-
 use super::MinimalRuntime;
+use crate::syscall::KernelConsoleReadError;
 
 impl RustStdioRuntime for MinimalRuntime {
     fn with_panic_output(&self, cb: twizzler_runtime_api::IoWritePanicDynCallback<'_, ()>) {

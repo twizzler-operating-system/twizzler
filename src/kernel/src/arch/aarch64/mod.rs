@@ -1,16 +1,11 @@
-use arm64::registers::{TPIDR_EL1, SPSel};
+use arm64::registers::{SPSel, TPIDR_EL1};
 use registers::{
-    registers::InMemoryRegister,
     interfaces::{Readable, Writeable},
+    registers::InMemoryRegister,
 };
-
 use twizzler_abi::syscall::TimeSpan;
 
-use crate::{
-    clock::Nanoseconds,
-    BootInfo,
-    syscall::SyscallContext,
-};
+use crate::{clock::Nanoseconds, syscall::SyscallContext, BootInfo};
 
 pub mod address;
 mod cntp;
@@ -20,12 +15,12 @@ pub mod image;
 pub mod interrupt;
 pub mod memory;
 pub mod processor;
+mod start;
 mod syscall;
 pub mod thread;
-mod start;
 
-pub use address::{VirtAddr, PhysAddr};
-pub use interrupt::{send_ipi, init_interrupts, set_interrupt};
+pub use address::{PhysAddr, VirtAddr};
+pub use interrupt::{init_interrupts, send_ipi, set_interrupt};
 pub use start::BootInfoSystemTable;
 
 pub fn init<B: BootInfo>(boot_info: &B) {
@@ -40,7 +35,7 @@ pub fn init<B: BootInfo>(boot_info: &B) {
 
     // Initialize the machine specific enumeration state (e.g., DeviceTree, ACPI)
     crate::machine::info::init(boot_info);
-    
+
     // check if SPSel is already set to use SP_EL1
     let spsel: InMemoryRegister<u64, SPSel::Register> = InMemoryRegister::new(SPSel.get());
     if spsel.matches_all(SPSel::SP::EL0) {
@@ -81,7 +76,7 @@ pub fn init<B: BootInfo>(boot_info: &B) {
 pub fn init_secondary() {
     // initialize exceptions by setting up our exception vectors
     exception::init();
-    
+
     // check if SPSel is already set to use SP_EL1
     let spsel: InMemoryRegister<u64, SPSel::Register> = InMemoryRegister::new(SPSel.get());
     if spsel.matches_all(SPSel::SP::EL0) {
@@ -137,7 +132,11 @@ pub fn schedule_oneshot_tick(time: Nanoseconds) {
 /// Jump into userspace
 /// # Safety
 /// The stack and target must be valid addresses.
-pub unsafe fn jump_to_user(target: crate::memory::VirtAddr, stack: crate::memory::VirtAddr, arg: u64) {
+pub unsafe fn jump_to_user(
+    target: crate::memory::VirtAddr,
+    stack: crate::memory::VirtAddr,
+    arg: u64,
+) {
     let ctx = syscall::Armv8SyscallContext::create_jmp_context(target, stack, arg);
     crate::thread::exit_kernel();
     syscall::return_to_user(&ctx);

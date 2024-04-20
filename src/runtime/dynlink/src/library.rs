@@ -9,7 +9,6 @@ use elf::{
     symbol::Symbol,
     ParseError,
 };
-
 use petgraph::stable_graph::NodeIndex;
 use secgate::RawSecGateInfo;
 use twizzler_runtime_api::AuxEntry;
@@ -30,8 +29,8 @@ pub(crate) enum RelocState {
 
 /// The core trait that represents loaded or mapped data.
 pub trait BackingData: Clone {
-    /// Get a pointer to the start of a region, and a length, denoting valid memory representing this object. The memory
-    /// region is valid.
+    /// Get a pointer to the start of a region, and a length, denoting valid memory representing
+    /// this object. The memory region is valid.
     fn data(&self) -> (*mut u8, usize);
 
     fn load_addr(&self) -> usize;
@@ -355,7 +354,8 @@ impl core::fmt::Display for UnloadedLibrary {
 pub struct CtorInfo {
     /// Legacy pointer to _init function for a library. Can be called with the C abi.
     pub legacy_init: usize,
-    /// Pointer to start of the init array, which contains functions pointers that can be called by the C abi.
+    /// Pointer to start of the init array, which contains functions pointers that can be called by
+    /// the C abi.
     pub init_array: usize,
     /// Length of the init array.
     pub init_array_len: usize,

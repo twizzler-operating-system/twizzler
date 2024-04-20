@@ -1,6 +1,7 @@
 //! When running a new program (and thus, initializing a new runtime), the new program expects to
 //! receive some information about how it was started, including arguments, env vars, etc. These are
-//! passed to the new program through the _start function as an array of AuxEntries as its only argument.
+//! passed to the new program through the _start function as an array of AuxEntries as its only
+//! argument.
 //!
 //! This array of entries is an unspecified length and is terminated by the Null entry at the end of
 //! the array.

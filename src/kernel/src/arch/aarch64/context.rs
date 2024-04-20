@@ -88,10 +88,11 @@ impl ArchContext {
     /// Switch to a target context.
     ///
     /// # Safety
-    /// This function must be called with a target that comes from an ArchContext that lives long enough.
+    /// This function must be called with a target that comes from an ArchContext that lives long
+    /// enough.
     pub unsafe fn switch_to_target(tgt: &ArchContextTarget) {
-        // TODO: If the incoming target is already the current user table, this should be a no-op. Also, we don't
-        // need to set the kernel tables each time.
+        // TODO: If the incoming target is already the current user table, this should be a no-op.
+        // Also, we don't need to set the kernel tables each time.
         // write TTBR1
         TTBR1_EL1.set_baddr(KERNEL_TABLE_ADDR.raw());
         // write TTBR0

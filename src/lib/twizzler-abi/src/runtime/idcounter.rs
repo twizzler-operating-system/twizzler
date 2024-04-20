@@ -68,7 +68,8 @@ impl IdCounter {
         next
     }
 
-    /// Release an ID to that it may be reused in the future. Note: it may not be immediately reused.
+    /// Release an ID to that it may be reused in the future. Note: it may not be immediately
+    /// reused.
     pub fn release(&self, id: u32) {
         // First see if we can just subtract the next counter.
         if self
@@ -82,7 +83,8 @@ impl IdCounter {
         let mut stack = self.stack.lock();
         stack.push(id);
         if stack.len() > MAX_BEFORE_UH_OH {
-            // We hit the high watermark, so make future calls to fresh() try harder to get the lock.
+            // We hit the high watermark, so make future calls to fresh() try harder to get the
+            // lock.
             self.uh_oh.store(true, Ordering::SeqCst);
         }
         self.stack_non_empty.store(true, Ordering::SeqCst);

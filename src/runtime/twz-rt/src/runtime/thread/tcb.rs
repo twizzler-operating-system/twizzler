@@ -174,5 +174,6 @@ impl TlsGenMgr {
         }
     }
 
-    // TODO: when threads exit or move on to a different TLS gen, track that in thread_count, and if it hits zero, notify the monitor.
+    // TODO: when threads exit or move on to a different TLS gen, track that in thread_count, and if
+    // it hits zero, notify the monitor.
 }

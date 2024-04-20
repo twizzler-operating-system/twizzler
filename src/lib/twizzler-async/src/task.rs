@@ -14,8 +14,9 @@ pub(crate) type Runnable = async_task::Task<u32>;
 /// cancel a task explicitly with the [`cancel()`][Task::cancel()] method.
 ///
 /// Tasks that panic are immediately canceled, and awaiting a canceled task causes a panic. If the
-/// future panics, the panic will be unwound into the [`run()`][crate::run()] invocation that polled it, but this
-/// doesn't apply to the blocking executor, which will simply ignore panics and continue running.
+/// future panics, the panic will be unwound into the [`run()`][crate::run()] invocation that polled
+/// it, but this doesn't apply to the blocking executor, which will simply ignore panics and
+/// continue running.
 #[must_use = "futures do nothing unless you `.await` or poll them; tasks, specifically, get canceled if you drop them, use `.detach()` to run them in the background"]
 pub struct Task<T>(pub(crate) Option<async_task::JoinHandle<T, u32>>);
 
@@ -31,8 +32,8 @@ impl<T: 'static> Task<T> {
 impl<T: Send + 'static> Task<T> {
     /// Spawns a future onto the global executor.
     ///
-    /// This future may be stolen and polled by any thread calling [`run()`][crate::run()], and thus the future
-    /// (and its output) must be Send.
+    /// This future may be stolen and polled by any thread calling [`run()`][crate::run()], and thus
+    /// the future (and its output) must be Send.
     pub fn spawn(future: impl Future<Output = T> + Send + 'static) -> Task<T> {
         crate::exec::Executor::get().spawn(future)
     }
@@ -61,8 +62,9 @@ impl Task<()> {
     /// # Examples
     ///
     /// ```no_run
-    /// use twizzler_async::{Task, Timer};
     /// use std::time::Duration;
+    ///
+    /// use twizzler_async::{Task, Timer};
     ///
     /// # twizzler_async::run(async {
     /// Task::spawn(async {
@@ -83,7 +85,8 @@ impl<T> Task<T> {
     /// Cancels the task and waits for it to stop running. If the task completed before canceling,
     /// return the task's output, or `None` if it wasn't complete. The advantage of calling
     /// `cancel()` explicitly over jus dropping the task is that it, one, waits for the task to stop
-    /// running before returning, and two, it returns the result if the task _did_ successfully complete.
+    /// running before returning, and two, it returns the result if the task _did_ successfully
+    /// complete.
     pub async fn cancel(self) -> Option<T> {
         let handle = { self }.0.take().unwrap();
         handle.cancel();

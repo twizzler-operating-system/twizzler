@@ -1,21 +1,21 @@
 use num_enum::{FromPrimitive, IntoPrimitive};
 
+use super::Syscall;
 use crate::{
     arch::syscall::raw_syscall,
     object::ObjID,
     upcall::{UpcallFrame, UpcallTarget},
 };
 
-use super::Syscall;
-
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, FromPrimitive, IntoPrimitive)]
 #[repr(u64)]
 /// Possible Thread Control operations
 pub enum ThreadControl {
     #[default]
-    /// Exit the thread. arg1 and arg2 should be code and location respectively, where code contains
-    /// a 64-bit value to write into *location, followed by the kernel performing a thread-wake
-    /// event on the memory word at location. If location is null, the write and thread-wake do not occur.
+    /// Exit the thread. arg1 and arg2 should be code and location respectively, where code
+    /// contains a 64-bit value to write into *location, followed by the kernel performing a
+    /// thread-wake event on the memory word at location. If location is null, the write and
+    /// thread-wake do not occur.
     Exit = 0,
     /// Yield the thread's CPU time now. The actual effect of this is unspecified, but it acts as a
     /// hint to the kernel that this thread does not need to run right now. The kernel, of course,
@@ -25,7 +25,8 @@ pub enum ThreadControl {
     SetTls = 2,
     /// Get the thread's TLS pointer.
     GetTls = 3,
-    /// Set the thread's upcall pointer (child threads in the same virtual address space will inherit).
+    /// Set the thread's upcall pointer (child threads in the same virtual address space will
+    /// inherit).
     SetUpcall = 4,
     /// Get the upcall pointer.
     GetUpcall = 5,
@@ -58,8 +59,8 @@ pub enum ThreadControl {
     GetSelfId = 17,
 }
 
-/// Exit the thread. The code will be written to the [crate::thread::ThreadRepr] for the current thread as part
-/// of updating the status and code to indicate thread has exited.
+/// Exit the thread. The code will be written to the [crate::thread::ThreadRepr] for the current
+/// thread as part of updating the status and code to indicate thread has exited.
 pub fn sys_thread_exit(code: u64) -> ! {
     unsafe {
         raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::Exit as u64, code]);

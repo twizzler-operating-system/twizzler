@@ -1,5 +1,5 @@
 /// A PL011 UART Driver Interface
-/// 
+///
 /// Full specification found here: https://developer.arm.com/documentation/ddi0183/latest
 
 // #[derive(Copy, Clone)]
@@ -26,9 +26,7 @@ enum Registers {
 impl PL011 {
     /// Create new instance of a PL011 UART at some base address
     pub const unsafe fn new(base: usize) -> Self {
-        Self {
-            base: base
-        }
+        Self { base }
     }
 
     /// Transmit a single byte of data. Will block to send other data present before.
@@ -40,8 +38,8 @@ impl PL011 {
                 // bit is set if no data is present in holding register
                 // or if operating in FIFO mode, FIFO is empty
                 let tx_empty: bool = ((flag_reg >> 7) & 0b1) == 1;
-                if tx_empty  {
-                    break
+                if tx_empty {
+                    break;
                 }
             }
             self.write_reg(Registers::UARTDR, data as u32);
@@ -55,10 +53,10 @@ impl PL011 {
         let flag_reg = unsafe { self.read_reg(Registers::UARTFR) };
         let rx_empty = (flag_reg >> 4) & 0b1 == 1;
         if rx_empty {
-            return None
+            return None;
         }
 
-        // received data byte is read by performing reads from the UARTDR Register 
+        // received data byte is read by performing reads from the UARTDR Register
         // along with the corresponding status information
         let data = unsafe { self.read_reg(Registers::UARTDR) };
 
@@ -74,7 +72,7 @@ impl PL011 {
         // disable UART
         {
             let cr = self.read_reg(Registers::UARTCR);
-            self.write_reg(Registers::UARTCR, (cr &  !0b1) as u32);
+            self.write_reg(Registers::UARTCR, (cr & !0b1) as u32);
         }
         // wait for end of tx or rx of current char
         // while BUSY, !TXFE, !RXFE --> wait
@@ -85,10 +83,10 @@ impl PL011 {
             let rx_empty = (flag_reg >> 4) & 0b1 == 1;
 
             if !tx_busy && tx_empty && rx_empty {
-                break
+                break;
             }
         }
-        // Flush the transmit FIFO by setting the FEN bit to 0 in the 
+        // Flush the transmit FIFO by setting the FEN bit to 0 in the
         // Line Control Register, UARTLCR_H on page 3-12.
         let lcr = self.read_reg(Registers::UARTLCR_H);
         self.write_reg(Registers::UARTLCR_H, (lcr & !(0b1 << 4)) as u32);
@@ -108,7 +106,7 @@ impl PL011 {
         let brd_scaled: u32 = 4 * clk / baud; // brd * 64
         let int: u32 = brd_scaled >> 6;
         let frac: u32 = brd_scaled & 0x3f;
-        
+
         // configure channel format: parity, word size, etc.
         // no parity, 1 stop bit, 8 data bits
         // brk 0, parity 0, eps 0, fifo enable 0, 2 stop bits 0, wlen 0b11 (8 bits), stick parity 1
@@ -118,7 +116,7 @@ impl PL011 {
         self.write_reg(Registers::UARTIBRD, int);
         self.write_reg(Registers::UARTFBRD, frac);
         self.write_reg(Registers::UARTLCR_H, lcr);
-        
+
         // disable interrupts
         self.write_reg(Registers::UARTIMSC, 0u32);
 
@@ -144,7 +142,7 @@ impl PL011 {
         // disable UART
         {
             let cr = self.read_reg(Registers::UARTCR);
-            self.write_reg(Registers::UARTCR, (cr &  !0b1) as u32);
+            self.write_reg(Registers::UARTCR, (cr & !0b1) as u32);
         }
         // wait for end of tx or rx of current char
         // while BUSY, !TXFE, !RXFE --> wait
@@ -155,7 +153,7 @@ impl PL011 {
             let rx_empty = (flag_reg >> 4) & 0b1 == 1;
 
             if !tx_busy && tx_empty && rx_empty {
-                break
+                break;
             }
         }
         // Flush the transmit FIFO by setting the FEN bit to 0 in the
@@ -178,8 +176,8 @@ impl PL011 {
     }
 
     pub fn clear_rx_interrupt(&self) {
-        // The UARTICR Register is the interrupt clear register and is write-only. 
-        // On a write of 1, the corresponding interrupt is cleared. 
+        // The UARTICR Register is the interrupt clear register and is write-only.
+        // On a write of 1, the corresponding interrupt is cleared.
         // A write of 0 has no effect. Table 3-17 lists the register bit assignments.
         //
         // We must write to Receive interrupt clear (RXIC) which is bit 4. This
@@ -207,14 +205,14 @@ mod error {
     /// The received data character must be read first from the Data Register, UARTDR
     /// before reading the error status associated with that data character.
     enum Error {
-        /// Data is recieved when FIFO is already full. The data in the FIFO remains valid. 
+        /// Data is recieved when FIFO is already full. The data in the FIFO remains valid.
         /// The shift register is overwritten. The CPU must read the data to empty the FIFO.
         OverrunError,
         /// The received data input was held LOW for longer than a full-word transmission time.
         /// The error is cleared after a write to UARTECR.
         BreakError,
-        /// Parity does not match the parity of EPS/SPS bits in the Line Control Register, UARTLCR_H.
-        /// The error is cleared after a write to UARTECR.
+        /// Parity does not match the parity of EPS/SPS bits in the Line Control Register,
+        /// UARTLCR_H. The error is cleared after a write to UARTECR.
         ParityError,
         /// The received character did not have a valid stop bit (a valid stop bit is 1).
         /// The error is cleared after a write to UARTECR.

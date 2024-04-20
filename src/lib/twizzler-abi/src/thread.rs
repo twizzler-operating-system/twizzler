@@ -1,15 +1,12 @@
 //! Functions for manipulating threads.
 
 use core::sync::atomic::{AtomicU64, Ordering};
-
 #[cfg(not(feature = "kernel"))]
 use core::time::Duration;
 
 use crate::marker::BaseType;
-
 #[cfg(not(feature = "kernel"))]
 use crate::syscall::*;
-
 #[allow(unused_imports)]
 use crate::{
     object::{ObjID, Protections},
@@ -129,8 +126,8 @@ impl ThreadRepr {
     }
 
     #[cfg(not(feature = "kernel"))]
-    /// Wait for a thread's status to change, optionally timing out. Return value is None if timeout occurs, or
-    /// Some((ExecutionState, code)) otherwise.
+    /// Wait for a thread's status to change, optionally timing out. Return value is None if timeout
+    /// occurs, or Some((ExecutionState, code)) otherwise.
     pub fn wait(&self, timeout: Option<Duration>) -> Option<(ExecutionState, u64)> {
         let mut status = self.get_state();
         loop {

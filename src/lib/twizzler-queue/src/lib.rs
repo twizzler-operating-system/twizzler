@@ -1,4 +1,5 @@
-//! Provides a duplex send/completion queue, where each direction is multiple-producer/single-consumer.
+//! Provides a duplex send/completion queue, where each direction is
+//! multiple-producer/single-consumer.
 //!
 //! The core queue abstraction is built around two subqueues, each providing an MPSC
 //! interface. These subqueues are stored in a single object, and so the verbs to interact with the

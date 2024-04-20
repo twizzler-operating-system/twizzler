@@ -1,11 +1,12 @@
+use alloc::{boxed::Box, sync::Arc};
 use core::mem::MaybeUninit;
 
-use alloc::{boxed::Box, sync::Arc};
 use twizzler_abi::{
     object::ObjID,
     syscall::{ThreadSpawnArgs, ThreadSpawnError, ThreadSpawnFlags, UpcallTargetSpawnOption},
 };
 
+use super::{current_memory_context, current_thread_ref, priority::Priority, Thread, ThreadRef};
 use crate::{
     condvar::CondVar,
     memory::{context::Context, VirtAddr},
@@ -15,8 +16,6 @@ use crate::{
     syscall::object::get_vmcontext_from_handle,
     userinit::user_init,
 };
-
-use super::{current_memory_context, current_thread_ref, priority::Priority, Thread, ThreadRef};
 
 extern "C" fn user_new_start() {
     let (entry, stack_base, stack_size, arg) = {
@@ -122,8 +121,8 @@ struct KthreadArg {
     arg: usize,
 }
 
-/// Run a closure on a new thread. Returns both the handle to the thread and also a handle that allows
-/// the caller to wait for the result.
+/// Run a closure on a new thread. Returns both the handle to the thread and also a handle that
+/// allows the caller to wait for the result.
 pub fn run_closure_in_new_thread<F, R>(
     pri: Priority,
     f: F,
@@ -132,8 +131,8 @@ where
     F: (FnOnce() -> R) + Send,
 {
     let main = move |arg: usize| {
-        // Safety: this pointer is generated below by a call to Arc::into_raw, and is guaranteed to have a valid count by the
-        // code that generates this pointer.
+        // Safety: this pointer is generated below by a call to Arc::into_raw, and is guaranteed to
+        // have a valid count by the code that generates this pointer.
         let info = unsafe { Arc::from_raw(arg as *const KthreadClosure<F, R>) };
         // Take this out, but don't hold the lock when we run the closure.
         let closure = { info.closure.lock().take().unwrap() };
@@ -158,8 +157,8 @@ where
         signal: CondVar::new(),
     });
     let raw = Arc::into_raw(info);
-    // Safety: manually increment the strong count so we can pass the raw pointer to the new thread. That
-    // thread will call Arc::from_raw, gaining a valid Arc.
+    // Safety: manually increment the strong count so we can pass the raw pointer to the new thread.
+    // That thread will call Arc::from_raw, gaining a valid Arc.
     unsafe {
         Arc::increment_strong_count(raw);
     }
@@ -168,16 +167,17 @@ where
         arg: raw as usize,
     });
     let thr = start_new_kernel(pri, trampoline, Box::into_raw(arg) as usize);
-    // Safety: this is our own Arc, from earlier, after we manually incremented the count on behalf of
-    // the receiving thread.
+    // Safety: this is our own Arc, from earlier, after we manually incremented the count on behalf
+    // of the receiving thread.
     let info = unsafe { Arc::from_raw(raw) };
     (thr, info)
 }
 
 #[cfg(test)]
 mod test {
-    use crate::thread::Priority;
     use twizzler_kernel_macros::kernel_test;
+
+    use crate::thread::Priority;
 
     #[kernel_test]
     fn test_closure() {

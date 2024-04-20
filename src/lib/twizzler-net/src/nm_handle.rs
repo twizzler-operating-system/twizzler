@@ -9,6 +9,8 @@ use std::{
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 use twizzler_queue::{CallbackQueueReceiver, QueueBase, QueueError, QueueSender, SubmissionFlags};
 
+#[cfg(feature = "manager")]
+use crate::server_rendezvous;
 use crate::{
     buffer::{BufferBase, BufferController, ManagedBuffer},
     client_rendezvous,
@@ -16,9 +18,6 @@ use crate::{
     rx_req::{RxCompletion, RxRequest},
     tx_req::{TxCompletion, TxRequest},
 };
-
-#[cfg(feature = "manager")]
-use crate::server_rendezvous;
 
 struct NmHandleObjects {
     tx_queue: Object<QueueBase<TxRequest, TxCompletion>>,

@@ -1,22 +1,18 @@
 /// CPU context (register state) switching.
-/// 
+///
 /// NOTE: According to section 6.1.1 of the 64-bit ARM
 /// Procedure Call Standard (PCS), not all registers
 /// need to be saved, only those needed for a subroutine call.
-/// 
+///
 /// A full detailed explanation can be found in the
 /// "Procedure Call Standard for the Arm® 64-bit Architecture (AArch64)":
 ///     https://github.com/ARM-software/abi-aa/releases/download/2023Q1/aapcs64.pdf
-
 use arm64::registers::TPIDR_EL0;
 use registers::interfaces::Writeable;
-
 use twizzler_abi::upcall::{UpcallFrame, UpcallInfo, UpcallTarget};
 
-use crate::thread::Thread;
-use crate::memory::VirtAddr;
-
-use super::{exception::ExceptionContext, syscall::Armv8SyscallContext, interrupt::DAIFMaskBits};
+use super::{exception::ExceptionContext, interrupt::DAIFMaskBits, syscall::Armv8SyscallContext};
+use crate::{memory::VirtAddr, thread::Thread};
 
 #[derive(Copy, Clone)]
 pub enum Registers {
@@ -26,7 +22,7 @@ pub enum Registers {
 }
 
 /// Registers that need to be saved between context switches.
-/// 
+///
 /// According to section 6.1.1, we only need to preserve
 /// registers x19-x30 and the stack pointer (sp).
 #[derive(Default)]
@@ -63,7 +59,7 @@ unsafe impl Send for ArchThread {}
 
 impl ArchThread {
     pub fn new() -> Self {
-        Self { 
+        Self {
             context: RegisterContext::default(),
         }
     }
@@ -90,8 +86,8 @@ where
 // The alignment of addresses use by the stack
 const CHECKED_STACK_ALIGNMENT: usize = 16;
 
-/// Compute the top of the stack. 
-/// 
+/// Compute the top of the stack.
+///
 /// # Safety
 /// The range from [stack_base, stack_base+stack_size] must be valid addresses.
 pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
@@ -103,7 +99,9 @@ pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
     if stack_from_args.is_aligned_to(CHECKED_STACK_ALIGNMENT) {
         stack_from_args
     } else {
-        stack_from_args.align_down(CHECKED_STACK_ALIGNMENT as u64).unwrap()
+        stack_from_args
+            .align_down(CHECKED_STACK_ALIGNMENT as u64)
+            .unwrap()
     }
 }
 
@@ -125,7 +123,7 @@ impl Thread {
     }
 
     /// Architechture specific CPU context switch.
-    /// 
+    ///
     /// On 64-bit ARM systems, we only need to save a few registers
     /// then switch thread stacks before changing control flow.
     #[inline(never)]
@@ -133,8 +131,8 @@ impl Thread {
         // The switch (1) saves registers x19-x30 and the stack pointer (sp)
         // onto the current thread's context save area (old_thread).
         // According to the 64-bit ARM PCS, this amount of context is fine.
-        // Other registers are either caller saved, or pushed onto 
-        // the stack when taking an exception. 
+        // Other registers are either caller saved, or pushed onto
+        // the stack when taking an exception.
         // Then we (2) restore the registes from the next thread's (self) context
         // save area, (3) switch stacks, (4) and return control by returning
         // to the address in the link register (x30).

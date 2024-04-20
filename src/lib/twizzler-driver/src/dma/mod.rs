@@ -10,18 +10,21 @@ mod region;
 
 use std::cell::UnsafeCell;
 
-pub use super::arch::DMA_PAGE_SIZE;
 pub use object::DmaObject;
 pub use pin::{DmaPin, PinError};
 pub use pool::DmaPool;
 pub use region::{DmaRegion, DmaSliceRegion};
 
+pub use super::arch::DMA_PAGE_SIZE;
+
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
 /// Intended access direction for DMA memory.
 pub enum Access {
-    /// The memory is used for the host to write and the device to read. Device writes may not be coherent.
+    /// The memory is used for the host to write and the device to read. Device writes may not be
+    /// coherent.
     HostToDevice,
-    /// The memory is used for the host to read and the device to write. Host writes may not be coherent.
+    /// The memory is used for the host to read and the device to write. Host writes may not be
+    /// coherent.
     DeviceToHost,
     /// The memory is accessed read/write by both device and host.
     BiDirectional,

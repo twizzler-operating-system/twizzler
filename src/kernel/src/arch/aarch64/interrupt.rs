@@ -3,25 +3,22 @@
 /// External interrupt sources, or simply interrupts in
 /// general orignate from a device or another processor
 /// which can be routed by an interrupt controller
-
 use arm64::registers::DAIF;
 use registers::interfaces::Readable;
+use twizzler_abi::kso::{InterruptAllocateOptions, InterruptPriority};
 
-use twizzler_abi::{
-    kso::{InterruptAllocateOptions, InterruptPriority},
+use super::{
+    cntp::{cntp_interrupt_handler, PhysicalTimer},
+    exception::{exception_handler, restore_stack_pointer, save_stack_pointer, ExceptionContext},
 };
-
 use crate::{
-    interrupt::{DynamicInterrupt, Destination, TriggerMode, PinPolarity},
+    interrupt::{Destination, DynamicInterrupt, PinPolarity, TriggerMode},
+    machine::{
+        interrupt::INTERRUPT_CONTROLLER,
+        serial::{serial_interrupt_handler, SERIAL_INT_ID},
+    },
     processor::current_processor,
 };
-use crate::machine::interrupt::INTERRUPT_CONTROLLER;
-use crate::machine::serial::{SERIAL_INT_ID, serial_interrupt_handler};
-
-use super::exception::{
-    ExceptionContext, exception_handler, save_stack_pointer, restore_stack_pointer,
-};
-use super::cntp::{PhysicalTimer, cntp_interrupt_handler};
 
 // interrupt vector table size/num vectors
 pub const GENERIC_IPI_VECTOR: u32 = 0; // Used for IPI
@@ -133,17 +130,17 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
     // Get pending IRQ number from GIC CPU Interface.
     // Doing so acknowledges the pending interrupt.
     let irq_number = INTERRUPT_CONTROLLER.pending_interrupt();
-    
+
     match irq_number {
         PhysicalTimer::INTERRUPT_ID => {
             // call timer interrupt handler
             cntp_interrupt_handler();
-        },
+        }
         _ if irq_number == *SERIAL_INT_ID => {
             // call the serial interrupt handler
             serial_interrupt_handler();
-        },
-        _ => panic!("unknown irq number! {}", irq_number)
+        }
+        _ => panic!("unknown irq number! {}", irq_number),
     }
     // signal the GIC that we have serviced the IRQ
     INTERRUPT_CONTROLLER.finish_active_interrupt(irq_number);
@@ -167,7 +164,7 @@ pub fn allocate_interrupt_vector(
     todo!()
 }
 
-// code for IPI signal to send 
+// code for IPI signal to send
 // needed by generic IPI code
 pub enum InterProcessorInterrupt {
     Reschedule = 0, /* TODO */
@@ -179,10 +176,13 @@ impl Drop for DynamicInterrupt {
     }
 }
 
-pub fn init_interrupts() {    
+pub fn init_interrupts() {
     let cpu = current_processor();
 
-    emerglogln!("[arch::interrupt] processor {} initializing interrupts", cpu.id);
+    emerglogln!(
+        "[arch::interrupt] processor {} initializing interrupts",
+        cpu.id
+    );
 
     // initialize interrupt controller
     if cpu.is_bsp() {
@@ -193,10 +193,7 @@ pub fn init_interrupts() {
     // enable this CPU to recieve interrupts from the timer
     // by configuring the interrupt controller to route
     // the timer's interrupt to us
-    INTERRUPT_CONTROLLER.route_interrupt(
-        PhysicalTimer::INTERRUPT_ID,
-        cpu.id,
-    );
+    INTERRUPT_CONTROLLER.route_interrupt(PhysicalTimer::INTERRUPT_ID, cpu.id);
     INTERRUPT_CONTROLLER.enable_interrupt(PhysicalTimer::INTERRUPT_ID);
 }
 
@@ -209,7 +206,7 @@ pub fn set_interrupt(
 ) {
     match destination {
         Destination::Bsp => INTERRUPT_CONTROLLER.route_interrupt(num, current_processor().bsp_id()),
-        _ => todo!("routing interrupt: {:?}", destination)
+        _ => todo!("routing interrupt: {:?}", destination),
     }
     INTERRUPT_CONTROLLER.enable_interrupt(num);
 }

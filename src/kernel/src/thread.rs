@@ -1,10 +1,10 @@
+use alloc::{boxed::Box, sync::Arc};
 use core::{
     alloc::Layout,
     cell::RefCell,
     sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
 };
 
-use alloc::{boxed::Box, sync::Arc};
 use intrusive_collections::{linked_list::AtomicLink, offset_of, RBTreeAtomicLink};
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
@@ -13,6 +13,10 @@ use twizzler_abi::{
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallTarget, UPCALL_EXIT_CODE},
 };
 
+use self::{
+    flags::{THREAD_IN_KERNEL, THREAD_PROC_IDLE},
+    priority::{Priority, PriorityClass},
+};
 use crate::{
     idcounter::{Id, IdCounter},
     interrupt,
@@ -21,11 +25,6 @@ use crate::{
     processor::{get_processor, KERNEL_STACK_SIZE},
     security::SecCtxMgr,
     spinlock::Spinlock,
-};
-
-use self::{
-    flags::{THREAD_IN_KERNEL, THREAD_PROC_IDLE},
-    priority::{Priority, PriorityClass},
 };
 
 pub mod entry;

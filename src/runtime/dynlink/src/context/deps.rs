@@ -1,13 +1,11 @@
+use elf::abi::DT_NEEDED;
 use tracing::trace;
 
+use super::{engine::ContextEngine, Context};
 use crate::{
     library::{Library, UnloadedLibrary},
     DynlinkError, DynlinkErrorKind,
 };
-
-use elf::abi::DT_NEEDED;
-
-use super::{engine::ContextEngine, Context};
 
 impl<Engine: ContextEngine> Context<Engine> {
     /// Get a list of dependencies for this library.

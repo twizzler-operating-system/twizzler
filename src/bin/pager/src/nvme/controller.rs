@@ -4,7 +4,7 @@ use std::{
 };
 
 use nvme::{
-    admin::CreateIOCompletionQueue,
+    admin::{CreateIOCompletionQueue, CreateIOSubmissionQueue},
     ds::{
         controller::properties::config::ControllerConfig,
         identify::controller::IdentifyControllerDataStructure,
@@ -13,10 +13,9 @@ use nvme::{
             comentry::CommonCompletion, subentry::CommonCommand, CommandId, QueueId, QueuePriority,
         },
     },
-    hosted::memory::PrpMode,
+    hosted::memory::{PhysicalPageCollection, PrpMode},
     nvm::{ReadDword13, WriteDword13},
 };
-use nvme::{admin::CreateIOSubmissionQueue, hosted::memory::PhysicalPageCollection};
 use twizzler_async::Task;
 use twizzler_driver::{
     dma::{DmaOptions, DmaPool, DMA_PAGE_SIZE},
@@ -25,9 +24,8 @@ use twizzler_driver::{
 };
 use volatile::map_field;
 
-use crate::nvme::dma::NvmeDmaSliceRegion;
-
 use super::{dma::NvmeDmaRegion, requester::NvmeRequester};
+use crate::nvme::dma::NvmeDmaSliceRegion;
 
 pub struct NvmeController {
     requester: RwLock<Vec<Requester<NvmeRequester>>>,
@@ -239,7 +237,8 @@ impl NvmeController {
             .unwrap();
 
         {
-            // TODO: we should save these NvmeDmaRegions so they don't drop (dropping is okay, but this leaks memory )
+            // TODO: we should save these NvmeDmaRegions so they don't drop (dropping is okay, but
+            // this leaks memory )
             let cmd = CreateIOCompletionQueue::new(
                 CommandId::new(),
                 cqid,

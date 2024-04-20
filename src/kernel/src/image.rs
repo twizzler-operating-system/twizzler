@@ -2,8 +2,7 @@ use core::alloc::Layout;
 
 use xmas_elf::program::{self};
 
-use crate::memory::VirtAddr;
-use crate::once::Once;
+use crate::{memory::VirtAddr, once::Once};
 static KERNEL_IMAGE: Once<&'static [u8]> = Once::new();
 
 pub fn init(kernel_image: &'static [u8]) {
@@ -60,12 +59,12 @@ fn variant1(tls_template: TlsInfo) -> VirtAddr {
     let tls_region = unsafe {
         // allocate a region of memory initialized to zero
         let tcb_base = alloc::alloc::alloc_zeroed(layout);
-        
+
         // copy from the kernel's ELF TLS to the allocated region of memory
         // the layout of this region in memory is architechture dependent.
         //
-        // Architechtures that use TLS Variant I (e.g. ARM) have the thread pointer 
-        // point to the start of the TCB and thread-local vars are defined 
+        // Architechtures that use TLS Variant I (e.g. ARM) have the thread pointer
+        // point to the start of the TCB and thread-local vars are defined
         // before this in higher memory addresses. So accessing a thread
         // local var adds some offset to the thread pointer
 
@@ -73,14 +72,18 @@ fn variant1(tls_template: TlsInfo) -> VirtAddr {
         // the pointer offset by sizeof u8 bytes.
         let tls_base = tcb_base.add(reserved_bytes);
 
-        core::ptr::copy_nonoverlapping(tls_template.start_addr.as_ptr(), tls_base, tls_template.file_size);
+        core::ptr::copy_nonoverlapping(
+            tls_template.start_addr.as_ptr(),
+            tls_base,
+            tls_template.file_size,
+        );
 
         tcb_base
     };
-    
+
     // the TP points to the base of the TCB which exists in lower memory.
     let tcb_base = VirtAddr::from_ptr(tls_region);
-    
+
     tcb_base
 }
 
@@ -119,7 +122,6 @@ fn variant2(tls_template: TlsInfo) -> VirtAddr {
     tcb_base
 }
 
-
 #[cfg(test)]
 mod test {
     use twizzler_kernel_macros::kernel_test;
@@ -133,8 +135,10 @@ mod test {
     #[kernel_test]
     fn tls_test() {
         // get the initial value of TLS var
-        assert_eq!(SOME_INT, TLS_TEST_MAGIC,
-            "TLS var not initialized correctly: {:#x}", SOME_INT
+        assert_eq!(
+            SOME_INT, TLS_TEST_MAGIC,
+            "TLS var not initialized correctly: {:#x}",
+            SOME_INT
         );
     }
 }

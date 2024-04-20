@@ -1,21 +1,15 @@
 //! Management of global context.
 
-use std::collections::HashMap;
-use std::fmt::Display;
+use std::{collections::HashMap, fmt::Display};
 
-use petgraph::stable_graph::NodeIndex;
-use petgraph::stable_graph::StableDiGraph;
-
-use crate::compartment::CompartmentId;
-use crate::library::LibraryId;
-use crate::DynlinkErrorKind;
-use crate::{
-    compartment::Compartment,
-    library::{BackingData, Library, UnloadedLibrary},
-    DynlinkError,
-};
+use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 
 use self::engine::ContextEngine;
+use crate::{
+    compartment::{Compartment, CompartmentId},
+    library::{BackingData, Library, LibraryId, UnloadedLibrary},
+    DynlinkError, DynlinkErrorKind,
+};
 
 mod deps;
 pub mod engine;
@@ -35,12 +29,14 @@ pub struct Context<Engine: ContextEngine> {
     compartments: Vec<Compartment<Engine::Backing>>,
 
     // This is the primary list of libraries, all libraries have an entry here, and they are
-    // placed here independent of compartment. Edges denote dependency relationships, and may also cross compartments.
+    // placed here independent of compartment. Edges denote dependency relationships, and may also
+    // cross compartments.
     pub(crate) library_deps: StableDiGraph<LoadedOrUnloaded<Engine::Backing>, ()>,
 }
 
 // Libraries in the dependency graph are placed there before loading, so that they can participate
-// in dependency search. So we need to track both kinds of libraries that may be at a given index in the graph.
+// in dependency search. So we need to track both kinds of libraries that may be at a given index in
+// the graph.
 pub enum LoadedOrUnloaded<Backing: BackingData> {
     Unloaded(UnloadedLibrary),
     Loaded(Library<Backing>),
@@ -171,7 +167,8 @@ impl<Engine: ContextEngine> Context<Engine> {
         rets
     }
 
-    /// Traverse the library graph with DFS postorder, calling the callback for each library (mutable ref).
+    /// Traverse the library graph with DFS postorder, calling the callback for each library
+    /// (mutable ref).
     pub fn with_dfs_postorder_mut<R>(
         &mut self,
         root_id: LibraryId,

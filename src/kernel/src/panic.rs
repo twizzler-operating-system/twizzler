@@ -1,7 +1,7 @@
+use core::panic::PanicInfo;
+
 use addr2line::Context;
 use object::{Object, ObjectSection};
-
-use core::panic::PanicInfo;
 
 use crate::interrupt::disable;
 

@@ -11,9 +11,8 @@ use tracing::trace;
 use twizzler_abi::{object::NULLPAGE_SIZE, thread::ThreadRepr};
 use twizzler_runtime_api::{CoreRuntime, ObjectHandle, ThreadSpawnArgs};
 
-use crate::runtime::{thread::MIN_STACK_ALIGN, OUR_RUNTIME};
-
 use super::RuntimeThreadControl;
+use crate::runtime::{thread::MIN_STACK_ALIGN, OUR_RUNTIME};
 
 /// Internal representation of a thread, tracking the resources
 /// allocated for this thread.

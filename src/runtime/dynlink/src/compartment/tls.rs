@@ -2,13 +2,12 @@ use std::{alloc::Layout, ptr::NonNull};
 
 use tracing::{debug, trace};
 
+use super::Compartment;
 use crate::{
     library::BackingData,
     tls::{TlsInfo, TlsModId, TlsModule, TlsRegion},
     DynlinkError, DynlinkErrorKind,
 };
-
-use super::Compartment;
 
 impl<Backing: BackingData> Compartment<Backing> {
     pub(crate) fn insert(&mut self, tm: TlsModule) -> TlsModId {

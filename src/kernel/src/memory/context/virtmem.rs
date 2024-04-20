@@ -1,8 +1,8 @@
 //! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
 
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{intrinsics::size_of, marker::PhantomData, ptr::NonNull};
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -30,22 +30,18 @@ use crate::{
         PhysAddr,
     },
     mutex::Mutex,
-    obj::{self, ObjectRef},
+    obj::{self, pages::Page, ObjectRef, PageNumber},
     security::KERNEL_SCTX,
     spinlock::Spinlock,
-    thread::current_thread_ref,
-};
-
-use crate::{
-    obj::{pages::Page, PageNumber},
-    thread::current_memory_context,
+    thread::{current_memory_context, current_thread_ref},
 };
 
 /// A type that implements [Context] for virtual memory systems.
 pub struct VirtContext {
     secctx: Mutex<BTreeMap<ObjID, ArchContext>>,
-    // We keep a cache of the actual switch targets so that we don't need to take the above mutex during switch_to.
-    // Unfortunately, it's still kinda hairy, since this is a spinlock of a memory-allocating collection. See register_sctx for details.
+    // We keep a cache of the actual switch targets so that we don't need to take the above mutex
+    // during switch_to. Unfortunately, it's still kinda hairy, since this is a spinlock of a
+    // memory-allocating collection. See register_sctx for details.
     target_cache: Spinlock<BTreeMap<ObjID, ArchContextTarget>>,
     slots: Mutex<SlotMgr>,
     id: Id<'static>,
@@ -196,7 +192,8 @@ impl VirtContext {
         }
     }
 
-    /// Init a context for being the kernel context, and clone the mappings from the bootstrap context.
+    /// Init a context for being the kernel context, and clone the mappings from the bootstrap
+    /// context.
     pub(super) fn init_kernel_context(&self) {
         let proto = unsafe { Mapper::current() };
         let rm = proto.readmap(MappingCursor::new(
@@ -214,8 +211,8 @@ impl VirtContext {
             self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys, &settings));
         }
 
-        // ID-map the lower memory. This is needed by some systems to boot secondary CPUs. This mapping is cleared by
-        // the call to prep_smp later.
+        // ID-map the lower memory. This is needed by some systems to boot secondary CPUs. This
+        // mapping is cleared by the call to prep_smp later.
         let id_len = 0x100000000; // 4GB
         let cursor = MappingCursor::new(
             VirtAddr::new(
@@ -412,7 +409,8 @@ impl GlobalPageAlloc {
             arch.map(cursor, &mut phys, &settings);
         });
         self.end = self.end.offset(len).unwrap();
-        // Safety: the extension is backed by memory that is directly after the previous call to extend.
+        // Safety: the extension is backed by memory that is directly after the previous call to
+        // extend.
         unsafe {
             self.alloc.extend(len);
         }
@@ -438,8 +436,8 @@ impl GlobalPageAlloc {
     }
 }
 
-// Safety: the internal heap contains raw pointers, which are not Send. However, the heap is globally mapped and static
-// for the lifetime of the kernel.
+// Safety: the internal heap contains raw pointers, which are not Send. However, the heap is
+// globally mapped and static for the lifetime of the kernel.
 unsafe impl Send for GlobalPageAlloc {}
 
 static GLOBAL_PAGE_ALLOC: Spinlock<GlobalPageAlloc> = Spinlock::new(GlobalPageAlloc {
@@ -556,8 +554,8 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
         let kctx = kernel_context();
         {
             let mut slots = kctx.slots.lock();
-            // We don't need to tell the object that it's no longer mapped in the kernel context, since object
-            // invalidation always informs the kernel context.
+            // We don't need to tell the object that it's no longer mapped in the kernel context,
+            // since object invalidation always informs the kernel context.
             slots.remove(self.slot);
         }
         kctx.with_arch(KERNEL_SCTX, |arch| {
@@ -779,6 +777,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
 #[cfg(test)]
 mod test {
     use alloc::sync::Arc;
+
     use twizzler_abi::{marker::BaseType, object::Protections};
     use twizzler_kernel_macros::kernel_test;
 

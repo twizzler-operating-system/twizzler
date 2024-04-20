@@ -38,7 +38,8 @@ pub(crate) fn new_object_handle(
 }
 
 fn map_sys_err(sys_err: ObjectMapError) -> twizzler_runtime_api::MapError {
-    // TODO (dbittman): in a future PR, I plan to cleanup all the error handling between the API and ABI crates.
+    // TODO (dbittman): in a future PR, I plan to cleanup all the error handling between the API and
+    // ABI crates.
     match sys_err {
         ObjectMapError::Unknown => MapError::Other,
         ObjectMapError::ObjectNotFound => MapError::NoSuchObject,

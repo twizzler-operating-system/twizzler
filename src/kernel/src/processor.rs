@@ -1,25 +1,21 @@
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     alloc::Layout,
     ptr::null_mut,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
-use crate::{
-    arch::interrupt::GENERIC_IPI_VECTOR,
-    interrupt::{self, Destination},
-    once::Once,
-    spinlock::{LockGuard, SpinLoop, Spinlock},
-    thread::{current_thread_ref, priority::Priority},
-};
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use intrusive_collections::{intrusive_adapter, LinkedList};
 
 use crate::{
-    arch::{self, processor::ArchProcessor},
+    arch::{self, interrupt::GENERIC_IPI_VECTOR, processor::ArchProcessor},
     image::TlsInfo,
+    interrupt::{self, Destination},
     memory::VirtAddr,
+    once::Once,
     sched::{CPUTopoNode, CPUTopoType},
-    thread::{Thread, ThreadRef},
+    spinlock::{LockGuard, SpinLoop, Spinlock},
+    thread::{current_thread_ref, priority::Priority, Thread, ThreadRef},
 };
 
 #[thread_local]
@@ -428,7 +424,8 @@ pub fn ipi_exec(target: Destination, f: Box<dyn Fn() + Send + Sync>) {
         func: f,
     });
 
-    // We need to disable interrupts to prevent our current CPU from changing until we've submitted the IPIs.
+    // We need to disable interrupts to prevent our current CPU from changing until we've submitted
+    // the IPIs.
     let int_state = interrupt::disable();
     let current = current_processor();
     match target {
@@ -455,7 +452,8 @@ pub fn ipi_exec(target: Destination, f: Box<dyn Fn() + Send + Sync>) {
         Destination::All => enqueue_ipi_task_many(true, &task),
     }
 
-    // No point using the IPI hardware to send ourselves a message, so just run it manually if current CPU is included.
+    // No point using the IPI hardware to send ourselves a message, so just run it manually if
+    // current CPU is included.
     let (target, target_self) = match target {
         Destination::All => (Destination::AllButSelf, true),
         x => (x, false),
@@ -493,11 +491,13 @@ pub fn generic_ipi_handler() {
     core::sync::atomic::fence(Ordering::SeqCst);
 }
 
-/// Spin waits while a condition (cond) is true, regularly running architecture-dependent spin-wait code along with the provided
-/// pause function. The cond function should not mutate state, and it should be fast (ideally reading a single, perhaps atomic,
-/// memory value + a comparison). The pause function, on the other hand, can be heavier-weight, and may do arbitrary work (within
-/// the context of the caller). The cond function will be called some multiple of times between calls to pause, and if cond returns
-/// false, then this function immediately returns. The [core::hint::spin_loop] function is called between calls to cond.
+/// Spin waits while a condition (cond) is true, regularly running architecture-dependent spin-wait
+/// code along with the provided pause function. The cond function should not mutate state, and it
+/// should be fast (ideally reading a single, perhaps atomic, memory value + a comparison). The
+/// pause function, on the other hand, can be heavier-weight, and may do arbitrary work (within
+/// the context of the caller). The cond function will be called some multiple of times between
+/// calls to pause, and if cond returns false, then this function immediately returns. The
+/// [core::hint::spin_loop] function is called between calls to cond.
 pub fn spin_wait_until<R>(until: impl Fn() -> Option<R>, mut pause: impl FnMut()) -> R {
     const NR_SPIN_LOOPS: usize = 100;
     loop {
@@ -514,14 +514,13 @@ pub fn spin_wait_until<R>(until: impl Fn() -> Option<R>, mut pause: impl FnMut()
 
 #[cfg(test)]
 mod test {
+    use alloc::{boxed::Box, sync::Arc};
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use alloc::{boxed::Box, sync::Arc};
     use twizzler_kernel_macros::kernel_test;
 
-    use crate::interrupt::Destination;
-
     use super::ALL_PROCESSORS;
+    use crate::interrupt::Destination;
 
     const NR_IPI_TEST_ITERS: usize = 1000;
     #[kernel_test]

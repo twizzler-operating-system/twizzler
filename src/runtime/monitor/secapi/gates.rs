@@ -53,7 +53,8 @@ pub struct LibraryInfo {
     pub next_id: Option<LibraryId>,
 }
 
-// Safety: the broken part is just DlPhdrInfo. We ensure that any pointers in there are intra-compartment.
+// Safety: the broken part is just DlPhdrInfo. We ensure that any pointers in there are
+// intra-compartment.
 unsafe impl Crossing for LibraryInfo {}
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]

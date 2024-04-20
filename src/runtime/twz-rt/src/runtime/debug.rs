@@ -2,9 +2,8 @@ use elf::segment::Elf64_Phdr;
 use monitor_api::get_comp_config;
 use twizzler_runtime_api::{AddrRange, DebugRuntime, Library, MapFlags};
 
-use crate::preinit_println;
-
 use super::{object::new_object_handle, ReferenceRuntime};
+use crate::preinit_println;
 
 impl DebugRuntime for ReferenceRuntime {
     fn get_library(

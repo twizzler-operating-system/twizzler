@@ -1,4 +1,5 @@
-//! rt0 defines a collection of functions that the basic Rust ABI expects to be defined by some part of the C runtime:
+//! rt0 defines a collection of functions that the basic Rust ABI expects to be defined by some part
+//! of the C runtime:
 //!
 //!   - __tls_get_addr for handling non-local TLS regions.
 //!   - _start, the entry point of an executable (per-arch, as this is assembly code).

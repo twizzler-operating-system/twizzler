@@ -2,16 +2,15 @@
 
 use core::ptr::NonNull;
 
-use crate::{rustc_alloc::boxed::Box, syscall::UnmapFlags};
 use twizzler_runtime_api::{InternalHandleRefs, MapError, ObjectHandle, ObjectRuntime};
 
+use super::MinimalRuntime;
 use crate::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     runtime::object::slot::global_allocate,
-    syscall::{sys_object_map, ObjectMapError},
+    rustc_alloc::boxed::Box,
+    syscall::{sys_object_map, ObjectMapError, UnmapFlags},
 };
-
-use super::MinimalRuntime;
 
 mod handle;
 

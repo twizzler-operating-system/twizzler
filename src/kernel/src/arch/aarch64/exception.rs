@@ -12,9 +12,10 @@ use registers::{
     interfaces::{Readable, Writeable},
     registers::InMemoryRegister,
 };
-
-use twizzler_abi::arch::syscall::SYSCALL_MAGIC;
-use twizzler_abi::upcall::{MemoryAccessKind, UpcallFrame};
+use twizzler_abi::{
+    arch::syscall::SYSCALL_MAGIC,
+    upcall::{MemoryAccessKind, UpcallFrame},
+};
 
 use super::thread::UpcallAble;
 use crate::memory::{context::virtmem::PageFaultFlags, VirtAddr};

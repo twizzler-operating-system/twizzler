@@ -3,9 +3,8 @@ use core::ops::{Index, IndexMut};
 use arm64::registers::TTBR1_EL1;
 use registers::interfaces::Readable;
 
-use crate::{arch::address::VirtAddr, memory::PhysAddr};
-
 use super::Entry;
+use crate::{arch::address::VirtAddr, memory::PhysAddr};
 
 #[repr(transparent)]
 /// Representation of a page table. Can be indexed with [].
@@ -72,8 +71,9 @@ impl Table {
     /// Set the current count of used entries.
     ///
     /// Note: On some architectures that make available bits in the page table entries,
-    /// this function may choose to do something clever, like store the count in the available bits. But it could also
-    /// make this function a no-op, and make [Table::read_count] just count the entries.
+    /// this function may choose to do something clever, like store the count in the available bits.
+    /// But it could also make this function a no-op, and make [Table::read_count] just count
+    /// the entries.
     pub fn set_count(&mut self, _count: usize) {
         // for now let's make this a no-op
         // the pt entries on arm does have some spare bits
@@ -107,7 +107,7 @@ impl Table {
     /// Get the page size of a given level.
     pub fn level_to_page_size(level: usize) -> usize {
         // frame size * num entries ** (3-level)
-        1 << (12 + 9 * (Self::MAX_LEVEL - level)) 
+        1 << (12 + 9 * (Self::MAX_LEVEL - level))
     }
 
     /// Get the level of the last page table.

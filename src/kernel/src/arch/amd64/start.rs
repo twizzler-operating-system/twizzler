@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
+
 use limine::{
-    BootInfoRequest, EntryPointRequest, File, FramebufferRequest,
-    KernelFileRequest, MemoryMapEntryType, MemmapRequest, ModuleRequest,
-    Ptr, RsdpRequest,
+    BootInfoRequest, EntryPointRequest, File, FramebufferRequest, KernelFileRequest, MemmapRequest,
+    MemoryMapEntryType, ModuleRequest, Ptr, RsdpRequest,
 };
 
 use crate::{
@@ -131,8 +131,7 @@ fn limine_entry() -> ! {
 }
 
 static LIMINE_BOOTINFO: BootInfoRequest = BootInfoRequest::new(0);
-static LIMINE_ENTRY: EntryPointRequest =
-    EntryPointRequest::new(0).entry(Ptr::new(limine_entry));
+static LIMINE_ENTRY: EntryPointRequest = EntryPointRequest::new(0).entry(Ptr::new(limine_entry));
 static LIMINE_FB: FramebufferRequest = FramebufferRequest::new(0);
 static LIMINE_MOD: ModuleRequest = ModuleRequest::new(0);
 static LIMINE_MEM: MemmapRequest = MemmapRequest::new(0);

@@ -69,7 +69,8 @@ pub fn hasher<T: std::hash::Hash>(t: &T) -> u64 {
     let mut h = DefaultHasher::new();
     t.hash(&mut h);
     let x = h.finish();
-    // Don't ever hash to 0, 1, MAX, or MAX-1. Makes the open addressing easier, and 0 and MAX-1 are required for tickv.
+    // Don't ever hash to 0, 1, MAX, or MAX-1. Makes the open addressing easier, and 0 and MAX-1 are
+    // required for tickv.
     match x {
         0 => 2,
         u64::MAX => u64::MAX - 2,

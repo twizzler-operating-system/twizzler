@@ -1,6 +1,9 @@
+use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use alloc::{boxed::Box, vec::Vec};
+use twizzler_abi::syscall::{
+    Clock, ClockID, ClockInfo, ClockKind, FemtoSeconds, ReadClockListError,
+};
 
 use crate::{
     condvar::CondVar,
@@ -9,10 +12,6 @@ use crate::{
     spinlock::Spinlock,
     thread::{priority::Priority, ThreadRef},
     time::{ClockHardware, Ticks, CLOCK_OFFSET, TICK_SOURCES},
-};
-
-use twizzler_abi::syscall::{
-    Clock, ClockID, ClockInfo, ClockKind, FemtoSeconds, ReadClockListError,
 };
 
 // TODO: replace with NanoSeconds from twizzler-abi.
@@ -93,7 +92,8 @@ pub struct TimeoutKey {
 }
 
 impl TimeoutKey {
-    /// Remove all timeouts with this key. Returns true if a key was actually removed (timeout hasn't fired).
+    /// Remove all timeouts with this key. Returns true if a key was actually removed (timeout
+    /// hasn't fired).
     pub fn release(self) -> bool {
         let did_remove = TIMEOUT_QUEUE.lock().remove(&self);
         // Our destructor just calls remove, above, so skip it when doing this manual release.

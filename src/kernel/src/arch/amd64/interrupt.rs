@@ -7,18 +7,17 @@ use twizzler_abi::{
 };
 use x86::current::rflags::RFlags;
 
+use super::{
+    gdt::user_selectors,
+    set_interrupt,
+    thread::{Registers, UpcallAble},
+};
 use crate::{
     arch::amd64::apic::get_lapic,
     interrupt::{Destination, DynamicInterrupt},
     memory::{context::virtmem::PageFaultFlags, VirtAddr},
     processor::current_processor,
     thread::current_thread_ref,
-};
-
-use super::{
-    gdt::user_selectors,
-    set_interrupt,
-    thread::{Registers, UpcallAble},
 };
 
 pub const GENERIC_IPI_VECTOR: u32 = 200;

@@ -1,15 +1,14 @@
+use alloc::{sync::Arc, vec::Vec};
 use core::fmt::Display;
 
-use alloc::{sync::Arc, vec::Vec};
 use nonoverlapping_interval_tree::{IntervalValue, NonOverlappingIntervalTree};
-
-use crate::mutex::Mutex;
 
 use super::{
     pages::{Page, PageRef},
     pagevec::{PageVec, PageVecRef},
     PageNumber,
 };
+use crate::mutex::Mutex;
 
 pub struct PageRange {
     pub start: PageNumber,
@@ -60,9 +59,10 @@ impl PageRange {
 
     pub fn gc_pagevec(&mut self) {
         if self.is_shared() {
-            // TODO: maybe we can do something smarter here, but it may be dangerous. In particular, we should
-            // study what pagevecs actually look like in a long-running system and decide what to do based on that.
-            // Of course, if we want to be able to do anything here, we'll either need to promote pagevecs to non-shared
+            // TODO: maybe we can do something smarter here, but it may be dangerous. In particular,
+            // we should study what pagevecs actually look like in a long-running system
+            // and decide what to do based on that. Of course, if we want to be able to
+            // do anything here, we'll either need to promote pagevecs to non-shared
             // or we will need to track more page info.
             return;
         }

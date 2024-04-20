@@ -101,9 +101,9 @@ impl<T: RequestDriver> Requester<T> {
         Ok(())
     }
 
-    /// Submit a set of requests, for which we are **not** interested in the specific responses from the
-    /// device. Returns a future that awaits on an [InFlightFuture], so awaiting on this function
-    /// ensures that all requests are submitted, not necessarily handled.
+    /// Submit a set of requests, for which we are **not** interested in the specific responses from
+    /// the device. Returns a future that awaits on an [InFlightFuture], so awaiting on this
+    /// function ensures that all requests are submitted, not necessarily handled.
     pub async fn submit(
         &self,
         reqs: &mut [SubmitRequest<T::Request>],
@@ -118,8 +118,8 @@ impl<T: RequestDriver> Requester<T> {
     }
 
     /// Submit a set of requests, for which we **are** interested in the specific responses from the
-    /// device. Returns a future that awaits on an [InFlightFutureWithResponses], so awaiting on this function
-    /// ensures that all requests are submitted, not necessarily handled.
+    /// device. Returns a future that awaits on an [InFlightFutureWithResponses], so awaiting on
+    /// this function ensures that all requests are submitted, not necessarily handled.
     pub async fn submit_for_response(
         &self,
         reqs: &mut [SubmitRequest<T::Request>],

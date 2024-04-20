@@ -45,7 +45,8 @@ fn spawn_thread(
     );
 
     let comp = state.comps.get(&src_ctx).unwrap();
-    // Lock before spawn so we guarantee we can fill out the manager entry before the thread can look there.
+    // Lock before spawn so we guarantee we can fill out the manager entry before the thread can
+    // look there.
     let mut mgr = THREAD_MGR.lock().map_err(|_| SpawnError::Other)?;
     let thid = unsafe {
         sys_spawn(twizzler_abi::syscall::ThreadSpawnArgs {
