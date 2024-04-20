@@ -5,6 +5,7 @@ pub enum Machine {
     Unknown,
     Rpi3,
     Virt,
+    Morello,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, EnumIter, clap::ValueEnum)]
@@ -75,6 +76,7 @@ impl From<Machine> for String {
             Machine::Unknown => "unknown",
             Machine::Rpi3 => "rpi3",
             Machine::Virt => "virt",
+            Machine::Morello => "morello",
         }
         .to_string()
     }
@@ -162,4 +164,13 @@ pub fn all_possible_platforms() -> Vec<Triple> {
         ),
     ];
     triples
+}
+
+pub fn valid_targets() -> Vec<(Arch, Machine)> {
+    let targets = vec![
+        (Arch::X86_64, Machine::Unknown),
+        (Arch::Aarch64, Machine::Virt),
+        (Arch::Aarch64, Machine::Morello)
+    ];
+    targets
 }
