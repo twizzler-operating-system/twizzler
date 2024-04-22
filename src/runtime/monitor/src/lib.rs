@@ -5,46 +5,23 @@
 #![feature(error_in_core)]
 #![feature(hash_extract_if)]
 
-use std::{
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard,
-    },
-};
-
-use dynlink::{
-    compartment::CompartmentId,
-    context::engine::{ContextEngine, Selector},
-    engines::Engine,
-    library::{LibraryId, UnloadedLibrary},
-};
-use state::{MonitorState, MonitorStateRef};
-use tracing::{debug, info, trace, warn, Level};
+use tracing::{trace, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
 use twizzler_abi::object::ObjID;
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
 };
-use twizzler_runtime_api::AuxEntry;
-use twz_rt::{set_upcall_handler, CompartmentInitInfo};
 
-use crate::{compartment::Comp, compman::COMPMAN, state::set_monitor_state};
-
-mod compartment;
-mod init;
-mod object;
-mod runtime;
-pub mod secgate_test;
-mod state;
-mod thread;
-mod upcall;
+use crate::compman::COMPMAN;
 
 mod api;
 mod compman;
+mod init;
 mod mapman;
+pub mod secgate_test;
 mod threadman;
+mod upcall;
 
 #[path = "../secapi/gates.rs"]
 mod gates;
@@ -68,9 +45,12 @@ pub fn main() {
     let init =
         init::bootstrap_dynlink_context().expect("failed to discover initial dynlink context");
 
+    twz_rt::set_upcall_handler(&crate::upcall::upcall_monitor_handler).unwrap();
     COMPMAN.init(init);
+    std::env::set_var("RUST_BACKTRACE", "1");
     loop {}
 
+    /*
     let mut state = state::MonitorState::new(init);
 
     let monitor_comp_id = state.dynlink.lookup_compartment("monitor").unwrap();
@@ -98,8 +78,10 @@ pub fn main() {
         tracing::error!("{:?}", e);
     });
     warn!("monitor main thread exited");
+    */
 }
 
+/*
 fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
     info!("monitor early init completed, starting init");
 
@@ -350,6 +332,7 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
     let mut loader = Loader::new(state.clone());
     loader.run_a_crate("hello-world", "test")
 }
+*/
 
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {
     unsafe {

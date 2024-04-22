@@ -92,6 +92,16 @@ impl CompMan {
     pub fn init(&self, mut idc: InitDynlinkContext) {
         let mut cm = self.inner.lock().unwrap();
         cm.dynlink_state = Some(idc.ctx());
+
+        let monitor_comp_id = cm.dynlink().lookup_compartment("monitor").unwrap();
+        let mon_rc = RunComp::new(
+            MONITOR_INSTANCE_ID,
+            MONITOR_INSTANCE_ID,
+            "monitor",
+            monitor_comp_id,
+        )
+        .expect("failed to bootstrap monitor RunComp");
+        cm.insert(mon_rc);
     }
 
     pub fn lock(&self) -> MutexGuard<'_, CompManInner> {

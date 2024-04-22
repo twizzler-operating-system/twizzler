@@ -13,7 +13,7 @@ use crate::mapman::{MapHandle, MapInfo};
 use super::{object::CompObject, thread::CompThread};
 
 pub(crate) struct RunCompInner {
-    main_thread: CompThread,
+    main_thread: Option<CompThread>,
     deps: Vec<ObjID>,
     comp_config_object: CompObject,
     // The allocator for the above object.
@@ -53,9 +53,43 @@ impl RunCompInner {
     pub fn compartment_config(&self) -> &SharedCompConfig {
         todo!()
     }
+
+    fn new(sctx: ObjID, instance: ObjID, compartment_id: CompartmentId) -> miette::Result<Self> {
+        let mapped_objects = HashMap::new();
+
+        Ok(Self {
+            main_thread: None,
+            deps: Vec::new(),
+            comp_config_object: CompObject::new_alloc()?,
+            allocator: Talc::new(ErrOnOom),
+            mapped_objects,
+            sctx,
+            instance,
+            compartment_id,
+        })
+    }
 }
 
 impl RunComp {
+    pub fn new(
+        sctx: ObjID,
+        instance: ObjID,
+        name: impl ToString,
+        dynlink_comp_id: CompartmentId,
+    ) -> miette::Result<RunComp> {
+        Ok(Self {
+            sctx,
+            instance,
+            name: name.to_string(),
+            compartment_id: dynlink_comp_id,
+            inner: Arc::new(Mutex::new(RunCompInner::new(
+                sctx,
+                instance,
+                dynlink_comp_id,
+            )?)),
+        })
+    }
+
     pub fn cloned_inner(&self) -> Arc<Mutex<RunCompInner>> {
         self.inner.clone()
     }

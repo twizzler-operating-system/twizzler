@@ -17,11 +17,10 @@ use twizzler_abi::{
 use twizzler_runtime_api::{CoreRuntime, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
 use twz_rt::RuntimeThreadControl;
 
-use crate::{
-    api::MONITOR_INSTANCE_ID,
-    compman::COMPMAN,
-    thread::{DEFAULT_STACK_SIZE, SUPER_UPCALL_STACK_SIZE},
-};
+use crate::{api::MONITOR_INSTANCE_ID, compman::COMPMAN};
+
+pub const SUPER_UPCALL_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
+pub const DEFAULT_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 
 use self::thread_cleaner::ThreadCleaner;
 

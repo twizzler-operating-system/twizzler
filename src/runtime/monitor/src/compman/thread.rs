@@ -10,8 +10,7 @@ use miette::IntoDiagnostic;
 
 use crate::{
     api::MONITOR_INSTANCE_ID,
-    thread::{DEFAULT_STACK_SIZE, SUPER_UPCALL_STACK_SIZE},
-    threadman::ManagedThreadRef,
+    threadman::{ManagedThreadRef, DEFAULT_STACK_SIZE},
 };
 
 use super::{runcomp::RunComp, stack_object::StackObject};
