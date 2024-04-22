@@ -4,27 +4,33 @@ use std::{
     process::{Command, ExitStatus},
 };
 
-use crate::{image::ImageInfo, triple::{Arch, Machine}, QemuOptions};
+use crate::{
+    image::ImageInfo,
+    triple::{Arch, Machine},
+    QemuOptions,
+};
 
 #[derive(Debug)]
 struct QemuCommand {
     cmd: Command,
     arch: Arch,
-    machine: Machine
+    machine: Machine,
 }
 
 impl QemuCommand {
     pub fn new(cli: &QemuOptions) -> Self {
         let cmd = match cli.config.arch {
             Arch::X86_64 => String::from("qemu-system-x86_64"),
-            Arch::Aarch64 => if cli.config.machine == Machine::Morello {
-                // all morello software by default is installed in ~/cheri
-                let mut qemu = home::home_dir().expect("failed to find home directory");
-                qemu.push("cheri/output/sdk/bin/qemu-system-morello");
-                String::from(qemu.to_str().unwrap())
-            } else {
-                String::from("qemu-system-aarch64")
-            },
+            Arch::Aarch64 => {
+                if cli.config.machine == Machine::Morello {
+                    // all morello software by default is installed in ~/cheri
+                    let mut qemu = home::home_dir().expect("failed to find home directory");
+                    qemu.push("cheri/output/sdk/bin/qemu-system-morello");
+                    String::from(qemu.to_str().unwrap())
+                } else {
+                    String::from("qemu-system-aarch64")
+                }
+            }
         };
         Self {
             cmd: Command::new(&cmd),
