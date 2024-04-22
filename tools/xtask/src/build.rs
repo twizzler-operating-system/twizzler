@@ -24,7 +24,10 @@ struct OtherOptions {
     build_twizzler: bool,
 }
 
-use crate::{triple::{Triple, valid_targets}, BuildOptions, CheckOptions, DocOptions, Profile};
+use crate::{
+    triple::{valid_targets, Triple},
+    BuildOptions, CheckOptions, DocOptions, Profile,
+};
 
 fn locate_packages<'a>(workspace: &'a Workspace, kind: Option<&str>) -> Vec<Package> {
     workspace
@@ -454,7 +457,7 @@ fn check_build_target(config: crate::BuildConfig) -> anyhow::Result<()> {
         Ok(())
     } else {
         anyhow::bail!("build target is invalid");
-    }    
+    }
 }
 
 fn compile(

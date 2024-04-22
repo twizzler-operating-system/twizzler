@@ -1,15 +1,16 @@
 /// A Generic Interrupt Controller (GIC) v3 driver interface
-/// 
+///
 /// The full specification can be found here:
 ///     https://developer.arm.com/documentation/ihi0069/latest
 ///
 /// A summary of its functionality can be found here:
 ///     https://developer.arm.com/documentation/198123/0302/
-/// 
+///
 /// A driver interface for the GICv3
 
-use crate::{memory::VirtAddr, spinlock::Spinlock};
 use arm_gic::gicv3::{GicV3, IntId};
+
+use crate::{memory::VirtAddr, spinlock::Spinlock};
 
 /// A representation of the Generic Interrupt Controller (GIC) v3
 pub struct GICv3 {
@@ -19,7 +20,7 @@ pub struct GICv3 {
 /// This wrapper is needed because the type `GicV3` is not
 /// Send or Sync since it's internal implementation uses
 /// raw pointers. The workaround is a wrapper type so we
-/// are able to use this with `Spinlock` and be able to 
+/// are able to use this with `Spinlock` and be able to
 /// use its APIs that mutate state in the global distributor.
 struct Gicv3Wrapper(GicV3);
 
@@ -37,7 +38,7 @@ impl GICv3 {
         unsafe {
             let gic_instance = GicV3::new(distr_base.as_mut_ptr(), redist_base.as_mut_ptr());
             Self {
-                global: Spinlock::new(Gicv3Wrapper(gic_instance))
+                global: Spinlock::new(Gicv3Wrapper(gic_instance)),
             }
         }
     }
@@ -49,8 +50,8 @@ impl GICv3 {
         self.set_interrupt_mask(Self::ACCEPT_ALL);
         // TODO: enable the gic cpu interface. See GICR_WAKER
 
-        // NOTE: handled in the `setup` function. This might not be the best 
-        // crate to use if we want to utilize multiple cores since 
+        // NOTE: handled in the `setup` function. This might not be the best
+        // crate to use if we want to utilize multiple cores since
         // the gicv3 crate touches global and local state during `setup`.
     }
 
@@ -59,7 +60,7 @@ impl GICv3 {
     pub fn configure_global(&self) {
         // enable the gic distributor
         self.global.lock().0.setup();
-        // NOTE: This might not be the best crate to use if we want to 
+        // NOTE: This might not be the best crate to use if we want to
         // utilize multiple cores since the gicv3 crate touches global
         // and local state during `setup`.
         //
@@ -74,17 +75,25 @@ impl GICv3 {
 
     // Enables the interrupt with a given ID to be routed to CPUs.
     pub fn enable_interrupt(&self, int_id: u32) {
-        self.global.lock().0.enable_interrupt(u32_to_int_id(int_id), true);
+        self.global
+            .lock()
+            .0
+            .enable_interrupt(u32_to_int_id(int_id), true);
     }
 
     /// Programs the interrupt controller to be able to route
     /// a given interrupt to a particular core.
     pub fn route_interrupt(&self, int_id: u32, _core: u32) {
+        // TODO: route interrupts (PPIs/SPIs) to cores
         // route the interrupt to a corresponding core
         // self.global.set_interrupt_target(int_id, core);
+
         // TODO: have the priority set to something reasonable
         // set the priority for the corresponding interrupt
-        self.global.lock().0.set_interrupt_priority(u32_to_int_id(int_id), Self::HIGHEST_PRIORITY);
+        self.global
+            .lock()
+            .0
+            .set_interrupt_priority(u32_to_int_id(int_id), Self::HIGHEST_PRIORITY);
         // TODO: edge triggered or level sensitive??? see GICD_ICFGRn
     }
 
@@ -105,7 +114,6 @@ impl GICv3 {
         todo!()
     }
 }
-
 
 /// The ID of the first Software Generated Interrupt.
 const SGI_START: u32 = 0;
