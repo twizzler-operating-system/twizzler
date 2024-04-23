@@ -1,21 +1,22 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    ptr::null_mut,
+    sync::{atomic::AtomicPtr, Arc, Mutex},
 };
 
-use dynlink::compartment::CompartmentId;
+use dynlink::{compartment::CompartmentId, library::LibraryId};
 use monitor_api::SharedCompConfig;
 use talc::{ErrOnOom, Talc};
 use twizzler_runtime_api::{MapError, ObjID};
 
 use crate::mapman::{MapHandle, MapInfo};
 
-use super::{object::CompObject, thread::CompThread};
+use super::{object::CompConfigObject, thread::CompThread};
 
 pub(crate) struct RunCompInner {
     main_thread: Option<CompThread>,
     deps: Vec<ObjID>,
-    comp_config_object: CompObject,
+    comp_config_object: CompConfigObject,
     // The allocator for the above object.
     allocator: Talc<ErrOnOom>,
     mapped_objects: HashMap<MapInfo, MapHandle>,
@@ -54,13 +55,21 @@ impl RunCompInner {
         todo!()
     }
 
-    fn new(sctx: ObjID, instance: ObjID, compartment_id: CompartmentId) -> miette::Result<Self> {
+    fn new(
+        sctx: ObjID,
+        instance: ObjID,
+        compartment_id: CompartmentId,
+        root_library_id: LibraryId,
+    ) -> miette::Result<Self> {
         let mapped_objects = HashMap::new();
 
         Ok(Self {
             main_thread: None,
             deps: Vec::new(),
-            comp_config_object: CompObject::new_alloc()?,
+            comp_config_object: CompConfigObject::new(
+                instance,
+                SharedCompConfig::new(sctx, null_mut()),
+            )?,
             allocator: Talc::new(ErrOnOom),
             mapped_objects,
             sctx,
@@ -76,6 +85,7 @@ impl RunComp {
         instance: ObjID,
         name: impl ToString,
         dynlink_comp_id: CompartmentId,
+        root_library_id: LibraryId,
     ) -> miette::Result<RunComp> {
         Ok(Self {
             sctx,
@@ -86,6 +96,7 @@ impl RunComp {
                 sctx,
                 instance,
                 dynlink_comp_id,
+                root_library_id,
             )?)),
         })
     }

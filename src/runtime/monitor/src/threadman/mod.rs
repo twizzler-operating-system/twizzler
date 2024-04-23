@@ -21,6 +21,8 @@ use crate::{api::MONITOR_INSTANCE_ID, compman::COMPMAN};
 
 pub const SUPER_UPCALL_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 pub const DEFAULT_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
+pub const STACK_SIZE_MIN_ALIGN: usize = 0x1000; // 4K
+pub const DEFAULT_TLS_ALIGN: usize = 0x1000;
 
 use self::thread_cleaner::ThreadCleaner;
 

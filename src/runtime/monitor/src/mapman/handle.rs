@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use monitor_api::MappedObjectAddrs;
+use twizzler_abi::object::NULLPAGE_SIZE;
 
 use super::{cleaner::background_unmap_info, info::MapInfo};
 
@@ -18,6 +19,14 @@ impl MapHandleInner {
 
     pub fn addrs(&self) -> MappedObjectAddrs {
         self.map
+    }
+
+    pub fn monitor_data_null(&self) -> *mut u8 {
+        self.map.start as *mut u8
+    }
+
+    pub fn monitor_data_base(&self) -> *mut u8 {
+        (self.map.start + NULLPAGE_SIZE) as *mut u8
     }
 }
 

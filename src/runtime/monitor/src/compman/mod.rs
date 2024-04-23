@@ -94,11 +94,16 @@ impl CompMan {
         cm.dynlink_state = Some(idc.ctx());
 
         let monitor_comp_id = cm.dynlink().lookup_compartment("monitor").unwrap();
+        let monitor_root_id = cm
+            .dynlink()
+            .lookup_library(monitor_comp_id, &idc.root)
+            .unwrap();
         let mon_rc = RunComp::new(
             MONITOR_INSTANCE_ID,
             MONITOR_INSTANCE_ID,
             "monitor",
             monitor_comp_id,
+            monitor_root_id,
         )
         .expect("failed to bootstrap monitor RunComp");
         cm.insert(mon_rc);
