@@ -1,4 +1,4 @@
-use std::thread::Thread;
+use std::{sync::atomic::AtomicU64, thread::Thread};
 
 use twizzler_abi::{
     syscall::{sys_spawn, UpcallTargetSpawnOption},
@@ -30,8 +30,9 @@ pub(super) struct CompThread {
 
 impl CompThread {
     pub fn new(instance: ObjID, start: impl FnOnce() + Send + 'static) -> miette::Result<Self> {
-        // Fill zero for now, this will get filled out when the thread starts.
-        let init_data = ThreadInitData { repr: 0.into() };
+        let thread = crate::threadman::start_managed_thread(start).into_diagnostic()?;
+        tracing::info!("==> HERE");
+        let init_data = ThreadInitData { repr: thread.id };
         Ok(Self {
             stack_object: StackObject::new(
                 instance,
@@ -39,7 +40,7 @@ impl CompThread {
                 DEFAULT_TLS_ALIGN,
                 DEFAULT_STACK_SIZE,
             )?,
-            thread: crate::threadman::start_managed_thread(start).into_diagnostic()?,
+            thread,
         })
     }
 }

@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
 use dynlink::{
@@ -18,6 +18,7 @@ use crate::{
 
 use self::runcomp::{RunComp, RunCompInner};
 
+mod loader;
 mod object;
 mod runcomp;
 mod stack_object;
@@ -29,6 +30,7 @@ pub(crate) struct CompMan {
 
 lazy_static::lazy_static! {
 pub(crate) static ref COMPMAN: CompMan = CompMan::new();
+pub(crate) static ref MONITOR_COMP: OnceLock<RunComp> = OnceLock::new();
 }
 
 impl CompMan {
@@ -58,7 +60,7 @@ impl CompManInner {
     pub fn get_monitor_dynlink_compartment(
         &mut self,
     ) -> &mut Compartment<<Engine as ContextEngine>::Backing> {
-        let id = self.lookup(MONITOR_INSTANCE_ID).unwrap().compartment_id;
+        let id = MONITOR_COMP.get().unwrap().compartment_id;
         self.dynlink_mut().get_compartment_mut(id).unwrap()
     }
 
@@ -106,7 +108,7 @@ impl CompMan {
             monitor_root_id,
         )
         .expect("failed to bootstrap monitor RunComp");
-        cm.insert(mon_rc);
+        MONITOR_COMP.set(mon_rc).unwrap();
     }
 
     pub fn lock(&self) -> MutexGuard<'_, CompManInner> {
@@ -114,12 +116,13 @@ impl CompMan {
     }
 
     pub fn with_monitor_compartment<R>(&self, f: impl FnOnce(&RunComp) -> R) -> R {
-        let inner = self.inner.lock().unwrap();
-        let rc = inner.lookup(MONITOR_INSTANCE_ID).unwrap();
-        f(rc)
+        f(MONITOR_COMP.get().unwrap())
     }
 
     pub fn get_comp_inner(&self, comp_id: ObjID) -> Option<Arc<Mutex<RunCompInner>>> {
+        if comp_id == MONITOR_INSTANCE_ID {
+            return Some(MONITOR_COMP.get().unwrap().cloned_inner());
+        }
         // Lock, get inner and clone, and release lock. Consumers of this function can then safely lock the inner RC without
         // holding the CompMan lock.
         let inner = self.inner.lock().ok()?;
@@ -127,12 +130,19 @@ impl CompMan {
         Some(rc.cloned_inner())
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn map_object(
         &self,
         comp_id: ObjID,
         id: ObjID,
         flags: MapFlags,
     ) -> Result<MapHandle, MapError> {
+        if comp_id == MONITOR_INSTANCE_ID {
+            return MONITOR_COMP
+                .get()
+                .unwrap()
+                .with_inner(|inner| inner.map_object(MapInfo { id, flags }));
+        }
         let rc = self
             .get_comp_inner(comp_id)
             .ok_or(MapError::InternalError)?;
@@ -141,6 +151,13 @@ impl CompMan {
     }
 
     pub fn unmap_object(&self, comp_id: ObjID, id: ObjID, flags: MapFlags) -> Result<(), MapError> {
+        if comp_id == MONITOR_INSTANCE_ID {
+            MONITOR_COMP
+                .get()
+                .unwrap()
+                .with_inner(|inner| inner.unmap_object(MapInfo { id, flags }));
+            return Ok(());
+        }
         let rc = self
             .get_comp_inner(comp_id)
             .ok_or(MapError::InternalError)?;

@@ -8,6 +8,7 @@ use std::panic::catch_unwind;
 use std::{sync::mpsc::Sender, thread::JoinHandle};
 
 use super::info::MapInfo;
+use super::MAPMAN;
 
 pub(super) struct MapCleaner {
     sender: Sender<MapInfo>,
@@ -39,9 +40,14 @@ impl MapCleaner {
 }
 
 pub(super) fn background_unmap_info(info: MapInfo) {
+    let Some(cleaner) = MAPMAN.cleaner.get() else {
+        tracing::warn!("failed to enqueue {:?} onto cleaner thread", info);
+        return;
+    };
+
     // If the receiver is down, this will fail, but that also shouldn't happen, unless the
     // call to clean_call above panics. In any case, handle this gracefully.
-    if super::MAPMAN.cleaner.sender.send(info).is_err() {
+    if cleaner.sender.send(info).is_err() {
         tracing::warn!("failed to enqueue {:?} onto cleaner thread", info);
     }
 }

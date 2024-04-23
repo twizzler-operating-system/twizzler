@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Mutex, Once, OnceLock};
 
 use self::{cleaner::MapCleaner, inner::MMInner};
 
@@ -18,7 +18,7 @@ use twizzler_abi::syscall::{
 use twizzler_runtime_api::{MapError, MapFlags};
 
 pub struct MapMan {
-    cleaner: MapCleaner,
+    cleaner: OnceLock<MapCleaner>,
     inner: Mutex<MMInner>,
 }
 
@@ -28,6 +28,13 @@ static ref MAPMAN: MapMan = MapMan::new();
 
 impl MapMan {
     fn new() -> Self {
+        Self {
+            cleaner: OnceLock::new(),
+            inner: Mutex::new(MMInner::new()),
+        }
+    }
+
+    fn start_cleaner(&self) {
         fn clean_call(info: MapInfo) {
             let _unmap = match MAPMAN.inner.lock() {
                 Ok(mut inner) => inner.handle_drop(info),
@@ -35,9 +42,8 @@ impl MapMan {
             };
             // _unmap will unmap on drop, without the mapman inner lock held.
         }
-        Self {
-            cleaner: MapCleaner::new(clean_call),
-            inner: Mutex::new(MMInner::new()),
+        if self.cleaner.set(MapCleaner::new(clean_call)).is_err() {
+            panic!("cannot start map cleaner thread multiple times");
         }
     }
 }

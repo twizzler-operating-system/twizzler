@@ -30,7 +30,18 @@ pub struct RunComp {
     pub instance: ObjID,
     pub name: String,
     pub compartment_id: CompartmentId,
-    inner: Arc<Mutex<RunCompInner>>,
+    pub(crate) inner: Arc<Mutex<RunCompInner>>,
+}
+
+impl core::fmt::Debug for RunComp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunComp")
+            .field("sctx", &self.sctx)
+            .field("instance", &self.instance)
+            .field("name", &self.name)
+            .field("compartment_id", &self.compartment_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RunCompInner {
@@ -53,6 +64,18 @@ impl RunCompInner {
 
     pub fn compartment_config(&self) -> &SharedCompConfig {
         todo!()
+    }
+
+    pub fn start_main_thread(
+        &mut self,
+        start: impl FnOnce() + Send + 'static,
+    ) -> miette::Result<()> {
+        if self.main_thread.is_some() {
+            panic!("cannot start main thread in compartment twice");
+        }
+
+        self.main_thread = Some(CompThread::new(self.instance, start)?);
+        Ok(())
     }
 
     fn new(

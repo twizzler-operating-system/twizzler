@@ -84,7 +84,7 @@ impl ThreadCleanerData {
 
 impl Waits {
     fn process_queue(&mut self, recv: &mut Receiver<WaitOp>) {
-        for wo in recv.recv() {
+        while let Ok(wo) = recv.recv() {
             match wo {
                 WaitOp::Add(th) => {
                     self.threads.insert(th.id, th);

@@ -141,12 +141,6 @@ struct ThreadManagerInner {
     cleaner: Option<ThreadCleaner>,
 }
 
-impl ThreadManagerInner {
-    fn get_cleaner_thread(&mut self) -> &ThreadCleaner {
-        self.cleaner.get_or_insert(ThreadCleaner::new())
-    }
-}
-
 pub struct ThreadManager {
     inner: Mutex<ThreadManagerInner>,
 }
@@ -156,10 +150,16 @@ pub static ref THREAD_MGR: ThreadManager = ThreadManager { inner: Mutex::new(Thr
 }
 
 impl ThreadManager {
+    pub fn start_cleaner(&self) {
+        self.inner.lock().unwrap().cleaner = Some(ThreadCleaner::new());
+    }
+
     pub fn insert(&self, th: ManagedThreadRef) {
         let mut inner = self.inner.lock().unwrap();
         inner.all.insert(th.id, th.clone());
-        inner.get_cleaner_thread().track(th);
+        if let Some(ref cleaner) = inner.cleaner {
+            cleaner.track(th);
+        }
     }
 
     fn do_remove(&self, th: &ManagedThreadRef) {
@@ -169,7 +169,9 @@ impl ThreadManager {
 
     pub fn remove(&self, th: &ManagedThreadRef) {
         let mut inner = self.inner.lock().unwrap();
-        inner.get_cleaner_thread().untrack(th.id);
+        if let Some(ref cleaner) = inner.cleaner {
+            cleaner.untrack(th.id);
+        }
         inner.all.remove(&th.id);
     }
 
