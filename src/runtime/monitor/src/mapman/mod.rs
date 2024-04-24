@@ -48,6 +48,10 @@ impl MapMan {
     }
 }
 
+pub fn init_mapping() {
+    MAPMAN.start_cleaner();
+}
+
 pub fn map_object(info: MapInfo) -> Result<MapHandle, MapError> {
     MAPMAN
         .inner

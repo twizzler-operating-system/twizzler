@@ -1,4 +1,5 @@
 use std::{
+    alloc::Layout,
     collections::HashMap,
     sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
@@ -8,7 +9,9 @@ use dynlink::{
     context::{engine::ContextEngine, Context},
     engines::Engine,
 };
+use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use twizzler_runtime_api::{MapError, MapFlags, ObjID};
+use twz_rt::RuntimeThreadControl;
 
 use crate::{
     api::MONITOR_INSTANCE_ID,
@@ -108,6 +111,31 @@ impl CompMan {
             monitor_root_id,
         )
         .expect("failed to bootstrap monitor RunComp");
+
+        mon_rc.with_inner(|inner| {
+            let tls = cm
+                .dynlink_mut()
+                .get_compartment_mut(monitor_comp_id)
+                .unwrap()
+                .build_tls_region(RuntimeThreadControl::new(0), |layout| unsafe {
+                    inner.allocator.malloc(layout).ok()
+                })
+                .unwrap();
+            let info = TlsTemplateInfo::from(tls);
+            let template = unsafe {
+                inner
+                    .allocator
+                    .malloc(Layout::new::<TlsTemplateInfo>())
+                    .unwrap()
+                    .as_ptr() as *mut TlsTemplateInfo
+            };
+            unsafe {
+                template.write(info);
+            }
+            let config = SharedCompConfig::new(MONITOR_INSTANCE_ID, template);
+            inner.comp_config_object().write_config(config);
+        });
+
         MONITOR_COMP.set(mon_rc).unwrap();
     }
 

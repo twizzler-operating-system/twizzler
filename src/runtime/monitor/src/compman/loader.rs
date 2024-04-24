@@ -53,8 +53,9 @@ impl Drop for Loader {
     fn drop(&mut self) {
         tracing::warn!("TODO: unload library");
         while let Some(extra) = self.extra_compartments.pop() {
-            tracing::warn!("TODO: unload compartment");
+            tracing::warn!("TODO: unload extra compartment");
         }
+        tracing::warn!("TODO: unload root compartment")
     }
 }
 

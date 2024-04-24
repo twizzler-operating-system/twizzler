@@ -25,6 +25,7 @@ use twz_rt::CompartmentInitInfo;
 
 use crate::api::MONITOR_INSTANCE_ID;
 use crate::compman::COMPMAN;
+use crate::mapman::init_mapping;
 use crate::threadman::THREAD_MGR;
 
 mod api;
@@ -41,7 +42,7 @@ mod gates;
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::TRACE)
+        .with_max_level(Level::DEBUG)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
@@ -59,7 +60,8 @@ pub fn main() {
 
     twz_rt::set_upcall_handler(&crate::upcall::upcall_monitor_handler).unwrap();
     COMPMAN.init(init);
-    //THREAD_MGR.start_cleaner();
+    init_mapping();
+    THREAD_MGR.start_cleaner();
     std::env::set_var("RUST_BACKTRACE", "1");
 
     let mon_rc = COMPMAN.get_comp_inner(MONITOR_INSTANCE_ID).unwrap();
@@ -79,7 +81,7 @@ pub fn main() {
         .unwrap();
 
     tracing::info!("!!!");
-    drop(mon_rc);
+    // TODO: wait for monitor init thread.
     loop {}
 }
 

@@ -18,7 +18,7 @@ pub(crate) struct RunCompInner {
     deps: Vec<ObjID>,
     comp_config_object: CompConfigObject,
     // The allocator for the above object.
-    allocator: Talc<ErrOnOom>,
+    pub allocator: Talc<ErrOnOom>,
     mapped_objects: HashMap<MapInfo, MapHandle>,
     pub sctx: ObjID,
     pub instance: ObjID,
@@ -63,7 +63,11 @@ impl RunCompInner {
     }
 
     pub fn compartment_config(&self) -> &SharedCompConfig {
-        todo!()
+        unsafe { self.comp_config_object.get_comp_config().as_ref().unwrap() }
+    }
+
+    pub fn comp_config_object(&self) -> &CompConfigObject {
+        &self.comp_config_object
     }
 
     pub fn start_main_thread(
@@ -85,15 +89,18 @@ impl RunCompInner {
         root_library_id: LibraryId,
     ) -> miette::Result<Self> {
         let mapped_objects = HashMap::new();
+        let comp_config_object =
+            CompConfigObject::new(instance, SharedCompConfig::new(sctx, null_mut()))?;
 
+        let mut allocator = Talc::new(ErrOnOom);
+        unsafe {
+            allocator.claim(comp_config_object.alloc_span()).unwrap();
+        }
         Ok(Self {
             main_thread: None,
             deps: Vec::new(),
-            comp_config_object: CompConfigObject::new(
-                instance,
-                SharedCompConfig::new(sctx, null_mut()),
-            )?,
-            allocator: Talc::new(ErrOnOom),
+            comp_config_object,
+            allocator,
             mapped_objects,
             sctx,
             instance,
