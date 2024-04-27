@@ -21,6 +21,12 @@ pub struct GICv2 {
 }
 
 impl GICv2 {
+    // used by generic kernel interrupt code
+    pub const MIN_VECTOR: usize = *GICD::SGI_ID_RANGE.start() as usize;
+    pub const MAX_VECTOR: usize = *GICD::SGI_ID_RANGE.end() as usize;
+    pub const NUM_VECTORS: usize =
+        (*GICD::SGI_ID_RANGE.end() - *GICD::SGI_ID_RANGE.start() + 1) as usize;
+
     pub fn new(distr_base: VirtAddr, local_base: VirtAddr) -> Self {
         Self {
             global: GICD::new(distr_base),
