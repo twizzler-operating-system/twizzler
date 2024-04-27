@@ -20,37 +20,18 @@ use crate::{
     processor::current_processor,
 };
 
-// interrupt vector table size/num vectors
+// Reserved SW-generated interrupt numbers.
+// These numbers depend on the interrupt controller.
+// We can and should dynamically allocate these,
+// but this is fine for now.
 pub const GENERIC_IPI_VECTOR: u32 = 0; // Used for IPI
-pub const MIN_VECTOR: usize = 0;
-pub const MAX_VECTOR: usize = 0;
-pub const RESV_VECTORS: &[usize] = &[0x0];
-pub const NUM_VECTORS: usize = 0; // Used to interrupt generic code
+pub const TLB_SHOOTDOWN_VECTOR: u32 = 1; // used for TLB consistency
+pub const RESV_VECTORS: &[usize] = &[GENERIC_IPI_VECTOR as usize, TLB_SHOOTDOWN_VECTOR as usize];
+// pub const TIMER_VECTOR: u32 = 3;
 
-// #[allow(unsupported_naked_functions)] // DEBUG
-#[allow(clippy::missing_safety_doc)]
-#[no_mangle]
-#[naked]
-pub unsafe extern "C" fn kernel_interrupt() {
-    core::arch::asm!("nop", options(noreturn))
-}
-
-// #[allow(unsupported_naked_functions)] // DEBUG
-#[allow(clippy::missing_safety_doc)]
-#[allow(named_asm_labels)]
-#[no_mangle]
-#[naked]
-pub unsafe extern "C" fn user_interrupt() {
-    core::arch::asm!("nop", options(noreturn))
-}
-
-// #[allow(unsupported_naked_functions)] // DEBUG
-#[allow(clippy::missing_safety_doc)]
-#[no_mangle]
-#[naked]
-pub unsafe extern "C" fn return_from_interrupt() {
-    core::arch::asm!("nop", options(noreturn))
-}
+// IC controller specfific
+// Used to interrupt generic code
+pub use crate::machine::interrupt::{MAX_VECTOR, MIN_VECTOR, NUM_VECTORS};
 
 bitflags::bitflags! {
     /// Interrupt mask bits for the DAIF register which changes PSTATE.
@@ -168,7 +149,7 @@ pub fn allocate_interrupt_vector(
 // code for IPI signal to send
 // needed by generic IPI code
 pub enum InterProcessorInterrupt {
-    Reschedule = 0, /* TODO */
+    Reschedule = 2, /* TODO */
 }
 
 impl Drop for DynamicInterrupt {

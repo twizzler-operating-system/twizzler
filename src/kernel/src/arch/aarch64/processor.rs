@@ -7,8 +7,6 @@ use arm64::{
 };
 use registers::interfaces::{Readable, Writeable};
 
-#[allow(unused_imports)] // DEBUG
-use super::interrupt::InterProcessorInterrupt;
 use crate::{
     current_processor,
     machine::processor::{BootArgs, BootMethod},
