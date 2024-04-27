@@ -124,12 +124,10 @@ exception_handler!(interrupt_request_handler_el0, irq_exception_handler, false);
 /// handler for a given IRQ number. This handler manages state
 /// in the interrupt controller.
 pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
-    // TODO: for compatability, ARM recommends reading the entire
-    // GICC_IAR register and writing that to GICC_EOIR
-
-    // Get pending IRQ number from GIC CPU Interface.
+    // Get pending IRQ number from GIC CPU Interface
+    // and possibly return the core number that interrupted us.
     // Doing so acknowledges the pending interrupt.
-    let irq_number = INTERRUPT_CONTROLLER.pending_interrupt();
+    let (irq_number, sender_core) = INTERRUPT_CONTROLLER.pending_interrupt();
 
     match irq_number {
         PhysicalTimer::INTERRUPT_ID => {
@@ -140,10 +138,11 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
             // call the serial interrupt handler
             serial_interrupt_handler();
         }
+        crate::tests::TEST_IPI_VECTOR => crate::tests::sgi_write(),
         _ => panic!("unknown irq number! {}", irq_number),
     }
     // signal the GIC that we have serviced the IRQ
-    INTERRUPT_CONTROLLER.finish_active_interrupt(irq_number);
+    INTERRUPT_CONTROLLER.finish_active_interrupt(irq_number, sender_core);
 
     crate::interrupt::post_interrupt()
 }
@@ -151,8 +150,10 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
 //----------------------------
 //  interrupt controller APIs
 //----------------------------
-pub fn send_ipi(_dest: Destination, _vector: u32) {
-    todo!("send an ipi")
+pub fn send_ipi(dest: Destination, vector: u32) {
+    // tell the interrupt controller to send and interrupt
+    INTERRUPT_CONTROLLER.send_interrupt(vector, dest);
+    // wait while interrupt has not been recieved
 }
 
 // like register, used by generic code
