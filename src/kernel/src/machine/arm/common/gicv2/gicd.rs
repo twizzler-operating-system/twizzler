@@ -309,44 +309,6 @@ impl GICD {
             unimplemented!("unsupported interrupt number: {}", int_id)
         }
 
-        match dest {
-            Destination::Single(core) => self.check_sgi_status(int_id, core),
-            Destination::AllButSelf => {
-                let current = current_processor();
-                // NR_CPUS is read only after bootstrap, so relaxed ordering is safe.
-                let nr_cpus =
-                    crate::processor::NR_CPUS.load(core::sync::atomic::Ordering::Relaxed) as u32;
-                for core in 0..nr_cpus {
-                    if core == current.id {
-                        continue;
-                    }
-                    // TODO: cache state, and check some high bit
-                    if self.check_sgi_status(int_id, core) {
-                        return true;
-                    }
-                }
-                false
-            }
-            Destination::Bsp | Destination::LowestPriority => {
-                let bsp = current_processor().bsp_id();
-                self.check_sgi_status(int_id, bsp)
-            }
-            _ => unimplemented!("unsupported SGI destination: {:?}", dest),
-        }
-
-        // GICD_CPENDSGIRn provide a clear-pending bit for each
-        // SGI and source processsor combination. A write of 1
-        // means the pending state is cleared. Reading a high bit
-        // means that the SGI is pending. A read of 0 means that
-        // the SGI is not pending.
-        // let state = self.registers.CPENDSGIR[num].get();
-        // let sgi_status = state >> (offset * 8);
-        // emerglogln!("pending?: {}, {:#x}", ((sgi_status >> bit) & 0x1) != 0, state);
-        // ((sgi_status >> bit) & 0x1) != 0
-    }
-
-    // check if the specified SGI is still pending for a particular core
-    fn check_sgi_status(&self, int_id: u32, core_id: u32) -> bool {
         // Each GICD_CPENDSGIRn register has 8 clear-pending bits
         // for four SGIs. 4 registers are implemented in total for
         // all 16 SGIs.
@@ -357,7 +319,40 @@ impl GICD {
         let num = (int_id / 4) as usize;
         // the SGI clear-pending field offset y = x % 4
         let offset = int_id % 4;
-        // the bit in the SGI x clear-pending field is bit C
+
+        // GICD_CPENDSGIRn provide a clear-pending bit for each
+        // SGI and source processsor combination.
+        let state = self.registers.CPENDSGIR[num].get();
+        let sgi_status = state >> (offset * 8);
+
+        match dest {
+            Destination::Single(core) => Self::check_sgi_status(sgi_status, core),
+            Destination::AllButSelf => {
+                let current = current_processor();
+                // NOTE: NR_CPUS is read only after bootstrap, so relaxed ordering is safe.
+                let nr_cpus =
+                    crate::processor::NR_CPUS.load(core::sync::atomic::Ordering::Relaxed) as u32;
+                for core in 0..nr_cpus {
+                    if core == current.id {
+                        continue;
+                    }
+                    if Self::check_sgi_status(sgi_status, core) {
+                        return true;
+                    }
+                }
+                false
+            }
+            Destination::Bsp | Destination::LowestPriority => {
+                let bsp = current_processor().bsp_id();
+                Self::check_sgi_status(sgi_status, bsp)
+            }
+            _ => unimplemented!("unsupported SGI destination: {:?}", dest),
+        }
+    }
+
+    // check if the specified SGI is still pending for a particular core
+    fn check_sgi_status(sgi_status: u32, core_id: u32) -> bool {
+        // the bit in the SGI x clear-pending field is bit C, for CPU C
         let bit = core_id;
 
         // GICD_CPENDSGIRn provide a clear-pending bit for each
@@ -365,9 +360,6 @@ impl GICD {
         // means the pending state is cleared. Reading a high bit
         // means that the SGI is pending. A read of 0 means that
         // the SGI is not pending.
-        let state = self.registers.CPENDSGIR[num].get();
-        let sgi_status = state >> (offset * 8);
-        // emerglogln!("pending?: {}, {:#x}", ((sgi_status >> bit) & 0x1) != 0, state);
         ((sgi_status >> bit) & 0x1) != 0
     }
 }
