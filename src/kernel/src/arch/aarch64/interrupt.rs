@@ -135,6 +135,9 @@ pub fn send_ipi(dest: Destination, vector: u32) {
     // tell the interrupt controller to send and interrupt
     INTERRUPT_CONTROLLER.send_interrupt(vector, dest);
     // wait while interrupt has not been recieved
+    while INTERRUPT_CONTROLLER.is_interrupt_pending(vector, dest) {
+        core::hint::spin_loop();
+    }
 }
 
 // like register, used by generic code

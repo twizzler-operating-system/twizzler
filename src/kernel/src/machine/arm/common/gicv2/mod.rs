@@ -91,6 +91,11 @@ impl GICv2 {
         self.global.send_interrupt(int_id, dest);
     }
 
+    /// Check if the interrupt is still pending.
+    pub fn is_interrupt_pending(&self, int_id: u32, dest: Destination) -> bool {
+        self.global.is_interrupt_pending(int_id, dest)
+    }
+
     /// Print the configuration of the GIC
     pub fn print_config(&self) {
         self.global.print_config();
