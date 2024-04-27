@@ -431,6 +431,12 @@ pub fn ipi_exec(target: Destination, f: Box<dyn Fn() + Send + Sync>) {
     match target {
         // Lowest priority doesn't really make sense in IPIs, so we just pretend it goes to BSP.
         Destination::Bsp | Destination::LowestPriority => {
+            if current.is_bsp() {
+                // We are the only recipients, so just run the closure.
+                (task.func)();
+                interrupt::set(int_state);
+                return;
+            }
             get_processor(current.bsp_id()).enqueue_ipi_task(task.clone());
         }
         Destination::Single(id) => {
