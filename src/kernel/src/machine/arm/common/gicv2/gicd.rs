@@ -13,11 +13,11 @@ use core::ops::RangeInclusive;
 use registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields, register_structs,
-    registers::{ReadOnly, ReadWrite},
+    registers::{ReadOnly, ReadWrite, WriteOnly},
 };
 
 use super::super::mmio::MmioRef;
-use crate::memory::VirtAddr;
+use crate::{current_processor, interrupt::Destination, memory::VirtAddr};
 
 // Each register in the specification is prefixed with GICD_
 register_bitfields! {
@@ -59,7 +59,21 @@ register_bitfields! {
         PriorityOffset2 OFFSET(16) NUMBITS(8) [],
         PriorityOffset1 OFFSET(8)  NUMBITS(8) [],
         PriorityOffset0 OFFSET(0)  NUMBITS(8) []
-    ]
+    ],
+
+    /// Software Generated Interrupt Register
+    SGIR [
+        // bits [31:26] are reserved
+        TargetListFilter OFFSET(24)  NUMBITS(2) [
+            ForwardSpecified = 0b00,
+            AllButSelf = 0b01,
+            ToSelf = 0b10,
+            // the value 0b11 is reserved
+        ],
+        CPUTargetList OFFSET(16)  NUMBITS(8) [],
+        IntID OFFSET(0) NUMBITS(4) [],
+        // NSATT
+    ],
 }
 
 // Each register in the specification is prefixed with GICD_
@@ -83,8 +97,11 @@ register_structs! {
         // skip the banked ITARGETSR registers, see 4.3.12
         (0x800 => ITARGETSR_BANKED: [ReadOnly<u32, ITARGETSR::Register>; 8]),
         // this covers interrupt numbers 32 - 1019
-        (0x820 => ITARGETSR: [ReadWrite<u32, ITARGETSR::Register>; 248]),
-        (0xC00 => @END),
+        (0x820 => ITARGETSR: [ReadWrite<u32, ITARGETSR::Register>; 247]),
+        (0xBFC => _reserved4),
+        /// Software Generated Interrupt Register
+        (0xF00 => SGIR: WriteOnly<u32, SGIR::Register>),
+        (0xF04 => @END),
     }
 }
 
@@ -104,7 +121,7 @@ impl GICD {
     // SPIs range from 32-1019 (2.2.1).
 
     /// Software Generated Interrupts (SGIs) range from 0-15 (See 2.2.1)
-    const SGI_ID_RANGE: RangeInclusive<u32> = RangeInclusive::new(0, 15);
+    pub(super) const SGI_ID_RANGE: RangeInclusive<u32> = RangeInclusive::new(0, 15);
 
     /// Private Peripheral Interrupts (PPIs) range from 16-31 (See 2.2.1)
     const PPI_ID_RANGE: RangeInclusive<u32> = RangeInclusive::new(16, 31);
@@ -227,5 +244,50 @@ impl GICD {
         };
 
         self.registers.IPRIORITYR[num].modify(prio);
+    }
+
+    /// Send a software generated interrupt to a set of cores
+    pub fn send_interrupt(&self, int_id: u32, dest: Destination) {
+        // SGI's range from 0-15
+        if int_id > *Self::SGI_ID_RANGE.end() {
+            return;
+        }
+
+        // set target list filter and cpu list
+        let (filter, targets) = match dest {
+            Destination::Single(core) => {
+                if current_processor().id == core {
+                    // use optimized SGI path for ourselves
+                    (SGIR::TargetListFilter::ToSelf, None)
+                } else {
+                    (
+                        SGIR::TargetListFilter::ForwardSpecified,
+                        Some(SGIR::CPUTargetList.val(1 << core)),
+                    )
+                }
+            }
+            Destination::AllButSelf => (SGIR::TargetListFilter::AllButSelf, None),
+            Destination::Bsp | Destination::LowestPriority => {
+                if current_processor().is_bsp() {
+                    // use optimized SGI path for ourselves
+                    (SGIR::TargetListFilter::ToSelf, None)
+                } else {
+                    (
+                        SGIR::TargetListFilter::ForwardSpecified,
+                        Some(SGIR::CPUTargetList.val(1 << current_processor().bsp_id())),
+                    )
+                }
+            }
+            _ => unimplemented!("unsupported SGI destination: {:?}", dest),
+        };
+
+        if let Some(target_list) = targets {
+            // NOTE: forwarding of interrupts may have to be enabled (see 4.3.15)
+            self.registers
+                .SGIR
+                .write(filter + target_list + SGIR::IntID.val(int_id));
+        } else {
+            self.registers.SGIR.write(filter + SGIR::IntID.val(int_id));
+        }
     }
 }
