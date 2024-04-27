@@ -17,7 +17,7 @@ use crate::{
         interrupt::INTERRUPT_CONTROLLER,
         serial::{serial_interrupt_handler, SERIAL_INT_ID},
     },
-    processor::current_processor,
+    processor::{current_processor, generic_ipi_handler},
 };
 
 // Reserved SW-generated interrupt numbers.
@@ -119,7 +119,9 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
             // call the serial interrupt handler
             serial_interrupt_handler();
         }
-        crate::tests::TEST_IPI_VECTOR => crate::tests::sgi_write(),
+        GENERIC_IPI_VECTOR => {
+            generic_ipi_handler();
+        }
         _ => panic!("unknown irq number! {}", irq_number),
     }
     // signal the GIC that we have serviced the IRQ
