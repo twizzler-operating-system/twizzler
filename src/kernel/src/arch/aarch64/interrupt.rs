@@ -17,40 +17,21 @@ use crate::{
         interrupt::INTERRUPT_CONTROLLER,
         serial::{serial_interrupt_handler, SERIAL_INT_ID},
     },
-    processor::current_processor,
+    processor::{current_processor, generic_ipi_handler},
 };
 
-// interrupt vector table size/num vectors
+// Reserved SW-generated interrupt numbers.
+// These numbers depend on the interrupt controller.
+// We can and should dynamically allocate these,
+// but this is fine for now.
 pub const GENERIC_IPI_VECTOR: u32 = 0; // Used for IPI
-pub const MIN_VECTOR: usize = 0;
-pub const MAX_VECTOR: usize = 0;
-pub const RESV_VECTORS: &[usize] = &[0x0];
-pub const NUM_VECTORS: usize = 0; // Used to interrupt generic code
+pub const TLB_SHOOTDOWN_VECTOR: u32 = 1; // used for TLB consistency
+pub const RESV_VECTORS: &[usize] = &[GENERIC_IPI_VECTOR as usize, TLB_SHOOTDOWN_VECTOR as usize];
+// pub const TIMER_VECTOR: u32 = 3;
 
-// #[allow(unsupported_naked_functions)] // DEBUG
-#[allow(clippy::missing_safety_doc)]
-#[no_mangle]
-#[naked]
-pub unsafe extern "C" fn kernel_interrupt() {
-    core::arch::asm!("nop", options(noreturn))
-}
-
-// #[allow(unsupported_naked_functions)] // DEBUG
-#[allow(clippy::missing_safety_doc)]
-#[allow(named_asm_labels)]
-#[no_mangle]
-#[naked]
-pub unsafe extern "C" fn user_interrupt() {
-    core::arch::asm!("nop", options(noreturn))
-}
-
-// #[allow(unsupported_naked_functions)] // DEBUG
-#[allow(clippy::missing_safety_doc)]
-#[no_mangle]
-#[naked]
-pub unsafe extern "C" fn return_from_interrupt() {
-    core::arch::asm!("nop", options(noreturn))
-}
+// IC controller specfific
+// Used to interrupt generic code
+pub use crate::machine::interrupt::{MAX_VECTOR, MIN_VECTOR, NUM_VECTORS};
 
 bitflags::bitflags! {
     /// Interrupt mask bits for the DAIF register which changes PSTATE.
@@ -124,12 +105,10 @@ exception_handler!(interrupt_request_handler_el0, irq_exception_handler, false);
 /// handler for a given IRQ number. This handler manages state
 /// in the interrupt controller.
 pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
-    // TODO: for compatability, ARM recommends reading the entire
-    // GICC_IAR register and writing that to GICC_EOIR
-
-    // Get pending IRQ number from GIC CPU Interface.
+    // Get pending IRQ number from GIC CPU Interface
+    // and possibly return the core number that interrupted us.
     // Doing so acknowledges the pending interrupt.
-    let irq_number = INTERRUPT_CONTROLLER.pending_interrupt();
+    let (irq_number, sender_core) = INTERRUPT_CONTROLLER.pending_interrupt();
 
     match irq_number {
         PhysicalTimer::INTERRUPT_ID => {
@@ -140,10 +119,13 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
             // call the serial interrupt handler
             serial_interrupt_handler();
         }
+        GENERIC_IPI_VECTOR => {
+            generic_ipi_handler();
+        }
         _ => panic!("unknown irq number! {}", irq_number),
     }
     // signal the GIC that we have serviced the IRQ
-    INTERRUPT_CONTROLLER.finish_active_interrupt(irq_number);
+    INTERRUPT_CONTROLLER.finish_active_interrupt(irq_number, sender_core);
 
     crate::interrupt::post_interrupt()
 }
@@ -151,8 +133,13 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
 //----------------------------
 //  interrupt controller APIs
 //----------------------------
-pub fn send_ipi(_dest: Destination, _vector: u32) {
-    todo!("send an ipi")
+pub fn send_ipi(dest: Destination, vector: u32) {
+    // tell the interrupt controller to send and interrupt
+    INTERRUPT_CONTROLLER.send_interrupt(vector, dest);
+    // wait while interrupt has not been recieved
+    while INTERRUPT_CONTROLLER.is_interrupt_pending(vector, dest) {
+        core::hint::spin_loop();
+    }
 }
 
 // like register, used by generic code
@@ -167,7 +154,7 @@ pub fn allocate_interrupt_vector(
 // code for IPI signal to send
 // needed by generic IPI code
 pub enum InterProcessorInterrupt {
-    Reschedule = 0, /* TODO */
+    Reschedule = 2, /* TODO */
 }
 
 impl Drop for DynamicInterrupt {
