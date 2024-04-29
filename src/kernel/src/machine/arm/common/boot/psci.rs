@@ -1,19 +1,15 @@
-use arm64::registers::Readable;
 /// Power State Coordination Interface (PSCI) is a standard interface for power management.
 ///
 /// A full explanation of interfaces for power management can be found in the
 /// "Arm Power State Coordination Interface Platform Design Document":
 ///     https://developer.arm.com/documentation/den0022/f/
+use arm64::registers::Readable;
 use arm64::registers::{MAIR_EL1, SCTLR_EL1, SPSR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1};
 use smccc::psci::cpu_on;
 use twizzler_abi::upcall::MemoryAccessKind;
 
 use super::{translate, BootArgs};
-use crate::{
-    machine::info::devicetree,
-    memory::{PhysAddr, VirtAddr},
-    processor::Processor,
-};
+use crate::{machine::info::devicetree, memory::VirtAddr, processor::Processor};
 
 // According to Section 6.4 the MMU and caches are disabled
 // and software must set the EL1h stack pointer
