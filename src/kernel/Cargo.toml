@@ -70,9 +70,7 @@ debug = true
 opt-level = 1
 
 [features]
-kani = []
-default = []
-
+kani_exclude = []
 [package.metadata.kani.flags]
-features = ["kani"]
+features = ["kani_exclude"]
 
