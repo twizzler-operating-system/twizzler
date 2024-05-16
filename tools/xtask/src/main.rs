@@ -82,6 +82,8 @@ struct KaniOptions {
     kani_options: Option<String>,
     #[clap(long, short, help = "Pass the cbmc specific flags for Kani to pass to CBMC")]
     cbmc_options: Option<String>,
+    #[clap(long, short, help = "Pass the cbmc specific flags for Kani to pass to CBMC")]
+    cargo_options: Option<String>,
     #[clap(long, short, help = "Print Statement sent for kani")]
     print_kani_argument: bool,
     // #[clap(long, short, help = "Pass any desired environment variables")]

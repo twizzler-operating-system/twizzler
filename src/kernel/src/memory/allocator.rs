@@ -12,7 +12,7 @@ use crate::spinlock::Spinlock;
 use super::context::{Context, KernelMemoryContext};
 
 
-#[cfg(feature = "kani")]
+#[cfg(not(feature = "kani_exclude"))] 
 #[alloc_error_handler]
 fn alloc_error_handler(layout: Layout) -> ! {
     panic!("allocation error: {:?}", layout)
