@@ -41,9 +41,9 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.stdout(log);
     cmd.arg("kani");
-    //Add env
+
     //Pass any desired environment variables
-    cmd.envs(env::vars());
+    // cmd.envs(env::vars());
     cmd.args(kernel_flags());
 
     //Add kani args
@@ -51,7 +51,10 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
         cmd.arg(args);
     }
 
+    //Exclude packages that make kani crash
     cmd.args(exclude_list());
+
+    //Capture CBMC options
     if let Some(args) = cli.cbmc_options {
         cmd.args(cbmc_flags());
         cmd.arg(args);
@@ -61,14 +64,23 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
         println!("KANI CMD:{}", (pretty_cmd(&cmd)));
     }
 
-    match cmd.spawn() {
-        Err(e) => {
-            return Err(e.into());
-        }
-        Ok(_v) => {
-            return Ok(());
-        }
+    let status = cmd.status()?;
+    if !status.success() {
+        // if status.exit_ok().is_ok(){
+        // }
+        // anyhow::bail!("Failed to run Kani: {}", pretty_cmd(&cmd));
     }
+
+    Ok(())
+
+    // match cmd.spawn() {
+    //     Err(e) => {
+    //         return Err(e.into());
+    //     }
+    //     Ok(_v) => {
+    //         return Ok(());
+    //     }
+    // }
 }
 
 fn pretty_cmd(cmd: &Command) -> String {

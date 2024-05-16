@@ -121,7 +121,7 @@ mod thread_verif{
             //If we know what system call is being called we can stub that out too
         
             // core::arch::asm!("syscall", inout("rax") num, in("rdi") a0, in("rsi") a1, inout("rdx") a2, in("r10") a3, in("r9") a4, in("r8") a5, lateout("rcx") _, lateout("r11") _, clobber_abi("system"));
-            (num, a2)
+            (kani::any(), kani::any())
         }
         
     }
