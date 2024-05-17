@@ -13,7 +13,6 @@ twizzler-queue = { path = "../../lib/twizzler-queue" }
 twizzler-driver = { path = "../../lib/twizzler-driver" }
 twizzler-runtime = { path = "../../rt" }
 nvme = { path = "../../lib/nvme-rs" }
-# nvme = { path = "../../lib/nvme-rs", features = ["kani_exclude"]}
 tickv = { version = "1.0.0" }
 async-trait = "0.1.66"
 volatile = "0.5"

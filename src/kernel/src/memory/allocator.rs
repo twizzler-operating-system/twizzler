@@ -13,7 +13,7 @@ use crate::spinlock::Spinlock;
 
 
 
-#[cfg(not(feature = "kani_exclude"))] 
+#[cfg(not(kani))]
 #[alloc_error_handler]
 fn alloc_error_handler(layout: Layout) -> ! {
     panic!("allocation error: {:?}", layout)
