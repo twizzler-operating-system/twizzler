@@ -52,7 +52,7 @@ pub fn init(kernel_image: &'static [u8]) {
     unsafe { DEBUG_CTX = ctx };
 }
 
-#[cfg(not(feature = "kani_exclude"))] 
+#[cfg(not(kani))]
 pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoint>) {
     let mut frame_nr = 0;
     let trace_callback = |frame: &backtracer_core::Frame| {
@@ -118,10 +118,11 @@ pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoin
     }
 }
 
-#[cfg(not(feature = "kani_exclude"))] 
+#[cfg(not(kani))]
 static DID_PANIC: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+#[cfg(not(kani))]
 #[panic_handler]
-#[cfg(not(feature = "kani_exclude"))] 
 fn panic(info: &PanicInfo) -> ! {
     let second_panic = DID_PANIC.swap(true, core::sync::atomic::Ordering::SeqCst);
     if second_panic {
@@ -145,6 +146,6 @@ fn panic(info: &PanicInfo) -> ! {
 
     loop {}
 }
-#[cfg(not(feature = "kani_exclude"))] 
+#[cfg(not(kani))]
 #[lang = "eh_personality"]
 pub extern "C" fn rust_eh_personality() {}

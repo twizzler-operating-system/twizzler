@@ -62,8 +62,3 @@ debug = true
 [profile.dev]
 opt-level = 1
 
-[features]
-kani_exclude = []
-[package.metadata.kani.flags]
-features = ["kani_exclude"]
-
