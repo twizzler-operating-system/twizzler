@@ -4,7 +4,7 @@
 	branch = twizzler-tcup2024
 [submodule "src/lib/nvme-rs"]
 	path = src/lib/nvme-rs
-	url = ../../nvme-rs.git
+	url = ../../twizzler-operating-system/nvme-rs.git
 	branch = twizzler-dynlink
 [submodule "src/abi"]
 	path = src/abi
