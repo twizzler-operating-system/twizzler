@@ -1,5 +1,8 @@
 use std::{
+    borrow::Borrow,
+    cell::{Cell, RefCell},
     collections::HashMap,
+    mem::ManuallyDrop,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -12,7 +15,7 @@ use dynlink::{
 use twizzler_runtime_api::ObjID;
 use twz_rt::CompartmentInitInfo;
 
-use super::{stack_object::MainThreadReadyWaiter, CompMan, CompManInner, COMPMAN};
+use super::{runcomp::RunCompReadyWaiter, CompMan, CompManInner, COMPMAN};
 use crate::{compman::runcomp::RunComp, find_init_name, init::InitDynlinkContext};
 
 struct Sel;
@@ -47,7 +50,7 @@ pub struct ExtraCompInfo {
 pub struct Loader {
     extra_compartments: Vec<ExtraCompInfo>,
     start_unload: LibraryId,
-    root_comp: ExtraCompInfo,
+    root_comp: Option<ExtraCompInfo>,
 }
 
 impl Drop for Loader {
@@ -78,13 +81,38 @@ impl Loader {
         Ok(rt_id)
     }
 
-    pub fn start_main(&mut self) -> miette::Result<MainThreadReadyWaiter> {
-        for dep in self.extra_compartments.iter_mut().rev() {
-            let waiter = dep.comp.start_main(&dep.ctor_info, dep.entry_point)?;
+    pub fn start_main(mut self) -> miette::Result<RunCompReadyWaiter> {
+        tracing::debug!(
+            "starting main threads for dependency compartments of {}",
+            self.root_comp.as_ref().unwrap().comp.name()
+        );
+        let start_comp = |info: ExtraCompInfo| -> miette::Result<RunCompReadyWaiter> {
+            let ExtraCompInfo {
+                comp,
+                ctor_info,
+                entry_point,
+                sctx_id,
+                ..
+            } = info;
+            tracing::debug!("starting thread for {}", comp.name());
+            let waiter = {
+                let mut inner = COMPMAN.lock();
+                inner.insert(comp);
+
+                let comp = inner.lookup(sctx_id).unwrap();
+                comp.with_inner(|inner| inner.start_main(&ctor_info, entry_point))?;
+                comp.ready_waiter()
+            };
+            Ok(waiter)
+        };
+
+        for dep in self.extra_compartments.drain(..).rev() {
+            let waiter = start_comp(dep)?;
+            waiter.wait();
         }
-        self.root_comp
-            .comp
-            .start_main(&self.root_comp.ctor_info, self.root_comp.entry_point)
+
+        let root_comp = self.root_comp.take().unwrap();
+        start_comp(root_comp)
     }
 }
 
@@ -201,14 +229,14 @@ impl CompMan {
         Ok(Loader {
             extra_compartments,
             start_unload: root_id,
-            root_comp: ExtraCompInfo {
+            root_comp: Some(ExtraCompInfo {
                 root_id,
                 rt_id,
                 sctx_id,
                 comp: root_comp,
                 ctor_info,
                 entry_point,
-            },
+            }),
         })
     }
 }

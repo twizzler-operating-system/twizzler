@@ -3,7 +3,10 @@ use std::{
     collections::HashMap,
     ptr::{null_mut, NonNull},
     rc::Rc,
-    sync::{atomic::AtomicPtr, Arc, Mutex},
+    sync::{
+        atomic::{AtomicPtr, AtomicU64, Ordering},
+        Arc, Mutex, Once,
+    },
 };
 
 use dynlink::{
@@ -12,15 +15,19 @@ use dynlink::{
 };
 use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use talc::{ErrOnOom, Talc};
-use twizzler_abi::upcall::UpcallFrame;
+use twizzler_abi::syscall::{
+    ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
+};
 use twizzler_runtime_api::{AuxEntry, MapError, ObjID};
 use twz_rt::CompartmentInitInfo;
 
-use super::{object::CompConfigObject, stack_object::MainThreadReadyWaiter, thread::CompThread};
+use super::{object::CompConfigObject, thread::CompThread};
 use crate::{
     compman::COMPMAN,
     mapman::{MapHandle, MapInfo},
 };
+
+const COMP_READY: u64 = 0x1;
 
 pub(crate) struct RunCompInner {
     main_thread: Option<CompThread>,
@@ -32,6 +39,7 @@ pub(crate) struct RunCompInner {
     pub sctx: ObjID,
     pub instance: ObjID,
     compartment_id: CompartmentId,
+    pub flags: AtomicU64,
 }
 
 pub struct RunComp {
@@ -54,6 +62,44 @@ impl core::fmt::Debug for RunComp {
 }
 
 impl RunCompInner {
+    pub fn start_main(&mut self, ctors: &[CtorInfo], entry: usize) -> miette::Result<()> {
+        let comp_config_addr = self.comp_config_object.get_comp_config() as usize;
+
+        let ctx = self.instance;
+
+        let ctors_in_comp = self.monitor_new_slice(ctors).unwrap();
+        let comp_init_info = CompartmentInitInfo {
+            ctor_array_start: ctors_in_comp as usize,
+            ctor_array_len: ctors.len(),
+            comp_config_addr,
+        };
+        let comp_init_info_in_comp = self.monitor_new(comp_init_info).unwrap();
+        let aux_in_comp = self
+            .monitor_new_slice(&[
+                AuxEntry::RuntimeInfo(comp_init_info_in_comp as usize, 1),
+                AuxEntry::Null,
+            ])
+            .unwrap();
+        let arg = aux_in_comp as usize;
+
+        self.start_main_thread(move || {
+            tracing::info!("==> {}", ctx);
+            let comp = COMPMAN.get_comp_inner(ctx).unwrap();
+            let inner = comp.lock().unwrap();
+            let frame = inner
+                .main_thread
+                .as_ref()
+                .unwrap()
+                .get_entry_frame(ctx, entry, arg);
+            drop(inner);
+            drop(comp);
+            unsafe {
+                twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame);
+            }
+        })?;
+        Ok(())
+    }
+
     pub fn map_object(&mut self, info: MapInfo) -> Result<MapHandle, MapError> {
         if let Some(handle) = self.mapped_objects.get(&info) {
             return Ok(handle.clone());
@@ -133,7 +179,30 @@ impl RunCompInner {
             sctx,
             instance,
             compartment_id,
+            flags: AtomicU64::new(0),
         })
+    }
+
+    pub fn set_ready(&self) {
+        self.flags.fetch_or(COMP_READY, Ordering::SeqCst);
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.flags.load(Ordering::SeqCst) & COMP_READY != 0
+    }
+
+    pub fn ready_waitable(&self) -> Option<ThreadSyncSleep> {
+        let flags = self.flags.load(Ordering::SeqCst);
+        if flags & COMP_READY == 0 {
+            Some(ThreadSyncSleep::new(
+                ThreadSyncReference::Virtual(&self.flags),
+                flags,
+                ThreadSyncOp::Equal,
+                ThreadSyncFlags::empty(),
+            ))
+        } else {
+            None
+        }
     }
 }
 
@@ -159,50 +228,6 @@ impl RunComp {
         })
     }
 
-    pub fn start_main(
-        &mut self,
-        ctors: &[CtorInfo],
-        entry: usize,
-    ) -> miette::Result<MainThreadReadyWaiter> {
-        self.with_inner(|inner| {
-            let comp_config_addr = inner.comp_config_object.get_comp_config() as usize;
-
-            let waiter = inner.main_thread.as_mut().unwrap().prep_stack_object()?;
-            let ctx = self.instance;
-
-            let ctors_in_comp = inner.monitor_new_slice(ctors).unwrap();
-            let comp_init_info = CompartmentInitInfo {
-                ctor_array_start: ctors_in_comp as usize,
-                ctor_array_len: ctors.len(),
-                comp_config_addr,
-            };
-            let comp_init_info_in_comp = inner.monitor_new(comp_init_info).unwrap();
-            let aux_in_comp = inner
-                .monitor_new_slice(&[
-                    AuxEntry::RuntimeInfo(comp_init_info_in_comp as usize, 1),
-                    AuxEntry::Null,
-                ])
-                .unwrap();
-            let arg = aux_in_comp as usize;
-
-            inner.start_main_thread(move || {
-                let comp = COMPMAN.get_comp_inner(ctx).unwrap();
-                let inner = comp.lock().unwrap();
-                let frame = inner
-                    .main_thread
-                    .as_ref()
-                    .unwrap()
-                    .get_entry_frame(ctx, entry, arg);
-                drop(inner);
-                drop(comp);
-                unsafe {
-                    twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame);
-                }
-            });
-            Ok(waiter)
-        })
-    }
-
     pub fn cloned_inner(&self) -> Arc<Mutex<RunCompInner>> {
         self.inner.clone()
     }
@@ -214,5 +239,32 @@ impl RunComp {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn ready_waiter(&self) -> RunCompReadyWaiter {
+        RunCompReadyWaiter {
+            rc: self.inner.clone(),
+        }
+    }
+}
+
+pub struct RunCompReadyWaiter {
+    rc: Arc<Mutex<RunCompInner>>,
+}
+
+impl RunCompReadyWaiter {
+    pub fn wait(&self) {
+        loop {
+            let wait = { self.rc.lock().unwrap().ready_waitable() };
+            let Some(wait) = wait else {
+                break;
+            };
+
+            if let Err(e) =
+                twizzler_abi::syscall::sys_thread_sync(&mut [ThreadSync::new_sleep(wait)], None)
+            {
+                tracing::warn!("thread sync error: {:?}", e);
+            }
+        }
     }
 }

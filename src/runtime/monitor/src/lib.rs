@@ -92,7 +92,8 @@ fn monitor_init() -> miette::Result<()> {
             name: "hello-world".to_string(),
         },
     );
-    info!("==> {:?}", loader);
+    info!("==> {:#?}", loader);
+    loader.unwrap().start_main().unwrap();
     Ok(())
 }
 

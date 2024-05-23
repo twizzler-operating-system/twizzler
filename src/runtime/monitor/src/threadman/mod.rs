@@ -2,7 +2,10 @@ use std::{
     collections::HashMap,
     mem::MaybeUninit,
     ptr::NonNull,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU32, AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use dynlink::tls::TlsRegion;
@@ -88,8 +91,8 @@ impl ManagedThread {
 
         let super_stack = Box::new_zeroed_slice(SUPER_UPCALL_STACK_SIZE);
 
-        // Safety: we are allocating and tracking both the stack and the tls region for greater than the lifetime of
-        // this thread. The start entry points to our given start function.
+        // Safety: we are allocating and tracking both the stack and the tls region for greater than
+        // the lifetime of this thread. The start entry points to our given start function.
         let id = unsafe {
             Self::spawn_thread(
                 start as *const () as usize,

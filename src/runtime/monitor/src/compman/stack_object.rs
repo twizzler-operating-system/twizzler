@@ -6,7 +6,7 @@ use twizzler_runtime_api::{MapFlags, ObjID};
 
 use crate::{
     mapman::{safe_create_and_map_object, MapHandle},
-    threadman::{DEFAULT_STACK_SIZE, STACK_SIZE_MIN_ALIGN},
+    threadman::{ManagedThreadRef, DEFAULT_STACK_SIZE, STACK_SIZE_MIN_ALIGN},
 };
 
 pub(crate) struct StackObject {
@@ -52,5 +52,3 @@ impl StackObject {
         self.stack_comp_start() + self.stack_size
     }
 }
-
-pub(crate) struct MainThreadReadyWaiter {}
