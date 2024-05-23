@@ -4,29 +4,28 @@
 #![feature(new_uninit)]
 #![feature(error_in_core)]
 #![feature(hash_extract_if)]
+#![feature(offset_of)]
 
-use std::cmp::Ordering;
-use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
+use std::{cmp::Ordering, collections::HashMap, sync::atomic::AtomicU64};
 
-use dynlink::compartment::CompartmentId;
-use dynlink::context::engine::{ContextEngine, Selector};
-use dynlink::engines::Engine;
-use dynlink::library::{LibraryId, UnloadedLibrary};
+use dynlink::{
+    compartment::CompartmentId,
+    context::engine::{ContextEngine, Selector},
+    engines::Engine,
+    library::{LibraryId, UnloadedLibrary},
+};
 use tracing::{debug, info, trace, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
-use twizzler_abi::object::ObjID;
 use twizzler_abi::{
     aux::KernelInitInfo,
-    object::{MAX_SIZE, NULLPAGE_SIZE},
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
 };
 use twizzler_runtime_api::AuxEntry;
 use twz_rt::CompartmentInitInfo;
 
-use crate::api::MONITOR_INSTANCE_ID;
-use crate::compman::COMPMAN;
-use crate::mapman::init_mapping;
-use crate::threadman::THREAD_MGR;
+use crate::{
+    api::MONITOR_INSTANCE_ID, compman::COMPMAN, mapman::init_mapping, threadman::THREAD_MGR,
+};
 
 mod api;
 mod compman;

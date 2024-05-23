@@ -1,17 +1,26 @@
 use std::{
+    alloc::Layout,
     collections::HashMap,
-    ptr::null_mut,
+    ptr::{null_mut, NonNull},
+    rc::Rc,
     sync::{atomic::AtomicPtr, Arc, Mutex},
 };
 
-use dynlink::{compartment::CompartmentId, library::LibraryId};
-use monitor_api::SharedCompConfig;
+use dynlink::{
+    compartment::CompartmentId,
+    library::{CtorInfo, LibraryId},
+};
+use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use talc::{ErrOnOom, Talc};
-use twizzler_runtime_api::{MapError, ObjID};
+use twizzler_abi::upcall::UpcallFrame;
+use twizzler_runtime_api::{AuxEntry, MapError, ObjID};
+use twz_rt::CompartmentInitInfo;
 
-use crate::mapman::{MapHandle, MapInfo};
-
-use super::{object::CompConfigObject, thread::CompThread};
+use super::{object::CompConfigObject, stack_object::MainThreadReadyWaiter, thread::CompThread};
+use crate::{
+    compman::COMPMAN,
+    mapman::{MapHandle, MapInfo},
+};
 
 pub(crate) struct RunCompInner {
     main_thread: Option<CompThread>,
@@ -82,6 +91,25 @@ impl RunCompInner {
         Ok(())
     }
 
+    pub fn monitor_new<T: Copy + Sized>(&mut self, data: T) -> Result<*mut T, ()> {
+        unsafe {
+            let place: NonNull<T> = self.allocator.malloc(Layout::new::<T>())?.cast();
+            place.as_ptr().write(data);
+            Ok(place.as_ptr() as *mut T)
+        }
+    }
+
+    pub fn monitor_new_slice<T: Copy + Sized>(&mut self, data: &[T]) -> Result<*mut T, ()> {
+        unsafe {
+            let place = self
+                .allocator
+                .malloc(Layout::array::<T>(data.len()).unwrap())?;
+            let slice = core::slice::from_raw_parts_mut(place.as_ptr() as *mut T, data.len());
+            slice.copy_from_slice(data);
+            Ok(place.as_ptr() as *mut T)
+        }
+    }
+
     fn new(
         sctx: ObjID,
         instance: ObjID,
@@ -128,6 +156,50 @@ impl RunComp {
                 dynlink_comp_id,
                 root_library_id,
             )?)),
+        })
+    }
+
+    pub fn start_main(
+        &mut self,
+        ctors: &[CtorInfo],
+        entry: usize,
+    ) -> miette::Result<MainThreadReadyWaiter> {
+        self.with_inner(|inner| {
+            let comp_config_addr = inner.comp_config_object.get_comp_config() as usize;
+
+            let waiter = inner.main_thread.as_mut().unwrap().prep_stack_object()?;
+            let ctx = self.instance;
+
+            let ctors_in_comp = inner.monitor_new_slice(ctors).unwrap();
+            let comp_init_info = CompartmentInitInfo {
+                ctor_array_start: ctors_in_comp as usize,
+                ctor_array_len: ctors.len(),
+                comp_config_addr,
+            };
+            let comp_init_info_in_comp = inner.monitor_new(comp_init_info).unwrap();
+            let aux_in_comp = inner
+                .monitor_new_slice(&[
+                    AuxEntry::RuntimeInfo(comp_init_info_in_comp as usize, 1),
+                    AuxEntry::Null,
+                ])
+                .unwrap();
+            let arg = aux_in_comp as usize;
+
+            inner.start_main_thread(move || {
+                let comp = COMPMAN.get_comp_inner(ctx).unwrap();
+                let inner = comp.lock().unwrap();
+                let frame = inner
+                    .main_thread
+                    .as_ref()
+                    .unwrap()
+                    .get_entry_frame(ctx, entry, arg);
+                drop(inner);
+                drop(comp);
+                unsafe {
+                    twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame);
+                }
+            });
+            Ok(waiter)
         })
     }
 

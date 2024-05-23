@@ -7,14 +7,13 @@ use dynlink::{
     compartment::CompartmentId,
     context::engine::{ContextEngine, Selector},
     engines::Engine,
-    library::{LibraryId, UnloadedLibrary},
+    library::{CtorInfo, LibraryId, UnloadedLibrary},
 };
 use twizzler_runtime_api::ObjID;
 use twz_rt::CompartmentInitInfo;
 
-use crate::{compman::runcomp::RunComp, find_init_name};
-
-use super::{CompMan, CompManInner, COMPMAN};
+use super::{stack_object::MainThreadReadyWaiter, CompMan, CompManInner, COMPMAN};
+use crate::{compman::runcomp::RunComp, find_init_name, init::InitDynlinkContext};
 
 struct Sel;
 
@@ -40,6 +39,8 @@ pub struct ExtraCompInfo {
     pub rt_id: LibraryId,
     pub sctx_id: ObjID,
     pub comp: RunComp,
+    pub ctor_info: Vec<CtorInfo>,
+    pub entry_point: usize,
 }
 
 #[derive(Debug)]
@@ -59,140 +60,33 @@ impl Drop for Loader {
     }
 }
 
-/*
 impl Loader {
-    fn start_thread_in_compartment(
-        rt_id: LibraryId,
-        sctx_id: ObjID,
-        rt_info: CompartmentInitInfo,
-    ) -> miette::Result<()> {
-        let (entry, rt_info) = { todo!() };
-
-        tracing::debug!(
-            "spawning thread in compartment {} at {:p} with {:x}",
-            sctx_id,
-            entry,
-            rt_info
-        );
-        Ok(())
-    }
-
     fn maybe_inject_rt(root_id: LibraryId, comp_id: CompartmentId) -> miette::Result<LibraryId> {
         let rt_unlib = UnloadedLibrary::new(RUNTIME_NAME);
 
-        let dynlink = COMPMAN.lock().dynlink_mut();
-        if let Some(id) = dynlink.lookup_library(comp_id, RUNTIME_NAME) {
+        let mut inner = COMPMAN.lock();
+        if let Some(id) = inner.dynlink().lookup_library(comp_id, RUNTIME_NAME) {
             return Ok(id);
         }
 
-        let loads = dynlink.load_library_in_compartment(comp_id, rt_unlib, &Sel)?;
+        let loads = inner
+            .dynlink_mut()
+            .load_library_in_compartment(comp_id, rt_unlib, &Sel)?;
 
         let rt_id = loads[0].lib;
-        dynlink.add_manual_dependency(root_id, rt_id);
+        inner.dynlink_mut().add_manual_dependency(root_id, rt_id);
         Ok(rt_id)
     }
 
-    pub fn run_a_crate(&mut self, name: &str, comp_name: &str) -> miette::Result<()> {
-        let root_unlib = UnloadedLibrary::new(name);
-        let dynlink = COMPMAN.lock().dynlink_mut();
-        let root_comp_id = dynlink.add_compartment(comp_name)?;
-
-        let loads = dynlink.load_library_in_compartment(root_comp_id, root_unlib, &Sel)?;
-
-        tracing::warn!("==> {:#?}", loads);
-
-        let mut cache = HashMap::new();
-        self.extra_compartments = loads
-            .iter()
-            .filter_map(|load| {
-                if load.comp != root_comp_id {
-                    if let Ok(lib) = dynlink.get_library(load.lib) {
-                        if cache.contains_key(&load.comp) {
-                            tracing::info!(
-                                "load alt compartment library {}: {} (existing)",
-                                lib,
-                                load.comp
-                            );
-                            return None;
-                        }
-                        tracing::info!(
-                            "load returned alternate compartment for library {}: {}",
-                            lib,
-                            load.comp
-                        );
-
-                        let rt_id = Loader::maybe_inject_rt(load.lib, load.comp).ok()?;
-
-                        let sctx_id = (CTX_NUM.fetch_add(1, Ordering::SeqCst) as u128).into();
-                        cache.insert(load.comp, sctx_id);
-                        let dep_comp = RunComp::new().unwrap();
-                        Some(ExtraCompInfo {
-                            root_id: load.lib,
-                            rt_id,
-                            sctx_id,
-                            comp: dep_comp,
-                        })
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let root_id = loads[0].lib;
-        self.start_unload = Some(root_id);
-        tracing::info!("loaded {} as {}", name, root_id);
-
-        let rt_id = Loader::maybe_inject_rt(root_id, root_comp_id)?;
-        dynlink.relocate_all(root_id)?;
-
-        let sctx_id: ObjID = (CTX_NUM.fetch_add(1, Ordering::SeqCst) as u128).into();
-        let root_comp = RunComp::new().unwrap();
-
-        let extra_ctors = loader
-            .extra_compartments
-            .iter()
-            .filter_map(|extra_info| {
-                let comp = state.lookup_comp(extra_info.sctx_id)?;
-                Some((
-                    state.dynlink.build_ctors_list(extra_info.root_id).ok()?,
-                    comp.get_comp_config() as *const _ as usize,
-                    extra_info.sctx_id,
-                ))
-            })
-            .collect::<Vec<_>>();
-
-        drop(state);
-
-        for (ctors, comp_config_addr, sctx_id) in extra_ctors {
-            let rtinfo = CompartmentInitInfo {
-                ctor_array_start: ctors.as_ptr() as usize,
-                ctor_array_len: ctors.len(),
-                comp_config_addr,
-            };
-            Loader::start_thread_in_compartment(&self.state, rt_id, sctx_id, rtinfo)?;
+    pub fn start_main(&mut self) -> miette::Result<MainThreadReadyWaiter> {
+        for dep in self.extra_compartments.iter_mut().rev() {
+            let waiter = dep.comp.start_main(&dep.ctor_info, dep.entry_point)?;
         }
-
-        let mut state = self.state.lock().unwrap();
-
-        let ctors = state.dynlink.build_ctors_list(root_id).unwrap();
-        // TODO: allocate this in-compartment
-        let rtinfo = CompartmentInitInfo {
-            ctor_array_start: ctors.as_ptr() as usize,
-            ctor_array_len: ctors.len(),
-            comp_config_addr: root_comp.get_comp_config() as *const _ as usize,
-        };
-        state.add_comp(root_comp, root_id.into());
-
-        drop(state);
-        tracing::trace!("entry runtime info: {:?}", rtinfo);
-        Loader::start_thread_in_compartment(&self.state, rt_id, sctx_id, rtinfo)?;
-        Ok(())
+        self.root_comp
+            .comp
+            .start_main(&self.root_comp.ctor_info, self.root_comp.entry_point)
     }
 }
-        */
 
 impl CompManInner {
     fn maybe_inject_rt(
@@ -232,6 +126,7 @@ impl CompMan {
         tracing::warn!("==> {:#?}", loads);
         let mut cache = HashMap::new();
 
+        // TODO: collect errors
         let extra_compartments = loads
             .iter()
             .filter_map(|load| {
@@ -263,11 +158,20 @@ impl CompMan {
                             load.lib,
                         )
                         .unwrap();
+                        let ctor_info = inner.dynlink().build_ctors_list(load.lib).ok()?;
+                        let entry_point = inner
+                            .dynlink()
+                            .get_library(rt_id)
+                            .unwrap()
+                            .get_entry_address()
+                            .ok()?;
                         Some(ExtraCompInfo {
                             root_id: load.lib,
                             rt_id,
                             sctx_id,
                             comp: dep_comp,
+                            ctor_info,
+                            entry_point,
                         })
                     } else {
                         None
@@ -287,6 +191,13 @@ impl CompMan {
         let sctx_id = (CTX_NUM.fetch_add(1, Ordering::SeqCst) as u128).into();
         let root_comp = RunComp::new(sctx_id, sctx_id, comp_name, root_comp_id, root_id).unwrap();
 
+        let ctor_info = inner.dynlink().build_ctors_list(root_id)?;
+        let entry_point = inner
+            .dynlink()
+            .get_library(rt_id)
+            .unwrap()
+            .get_entry_address()?;
+
         Ok(Loader {
             extra_compartments,
             start_unload: root_id,
@@ -295,6 +206,8 @@ impl CompMan {
                 rt_id,
                 sctx_id,
                 comp: root_comp,
+                ctor_info,
+                entry_point,
             },
         })
     }

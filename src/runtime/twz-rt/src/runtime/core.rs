@@ -3,7 +3,7 @@
 use dynlink::{context::runtime::RuntimeInitInfo, library::CtorInfo};
 use monitor_api::SharedCompConfig;
 use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
-use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
+use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime, ObjID};
 
 use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
 use crate::{
@@ -13,7 +13,7 @@ use crate::{
     RuntimeThreadControl, OUR_RUNTIME,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
 pub struct CompartmentInitInfo {
     pub ctor_array_start: usize,

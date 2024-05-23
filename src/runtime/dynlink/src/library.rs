@@ -191,7 +191,14 @@ impl<Backing: BackingData> Library<Backing> {
     }
 
     /// Get a function pointer to this library's entry address, if one exists.
-    pub fn get_entry_address(&self) -> Result<extern "C" fn(*const AuxEntry) -> !, DynlinkError> {
+    pub fn get_entry_fn(&self) -> Result<extern "C" fn(*const AuxEntry) -> !, DynlinkError> {
+        let ptr: extern "C" fn(*const AuxEntry) -> ! =
+            unsafe { core::mem::transmute(self.get_entry_address()?) };
+        Ok(ptr)
+    }
+
+    /// Get a function pointer to this library's entry address, if one exists.
+    pub fn get_entry_address(&self) -> Result<usize, DynlinkError> {
         let entry = self.get_elf()?.ehdr.e_entry;
         if entry == 0 {
             return Err(DynlinkErrorKind::NoEntryAddress {
@@ -200,9 +207,7 @@ impl<Backing: BackingData> Library<Backing> {
             .into());
         }
         let entry: *const u8 = self.laddr(entry);
-        let ptr: extern "C" fn(*const AuxEntry) -> ! =
-            unsafe { core::mem::transmute(entry as usize) };
-        Ok(ptr)
+        Ok(entry as usize)
     }
 
     // Helper to find the TLS program header.
