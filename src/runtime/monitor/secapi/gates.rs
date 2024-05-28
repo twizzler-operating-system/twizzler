@@ -1,3 +1,5 @@
+#[cfg(feature = "secgate-impl")]
+use monitor_api::MappedObjectAddrs;
 use secgate::Crossing;
 use twizzler_runtime_api::{
     AddrRange, DlPhdrInfo, LibraryId, MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs,
@@ -5,8 +7,6 @@ use twizzler_runtime_api::{
 
 #[cfg(not(feature = "secgate-impl"))]
 use crate::MappedObjectAddrs;
-#[cfg(feature = "secgate-impl")]
-use monitor_api::MappedObjectAddrs;
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
 #[cfg_attr(
@@ -77,4 +77,19 @@ pub fn monitor_rt_object_map(
 )]
 pub fn monitor_rt_object_unmap(info: &secgate::GateCallInfo, id: ObjID, flags: MapFlags) {
     crate::api::drop_map(info.source_context(), id, flags)
+}
+
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+pub enum MonitorCompControlCmd {
+    RuntimeReady,
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_comp_ctrl(info: &secgate::GateCallInfo, cmd: MonitorCompControlCmd) {
+    crate::api::compartment_ctrl(info, cmd);
 }

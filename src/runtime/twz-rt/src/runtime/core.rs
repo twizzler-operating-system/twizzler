@@ -176,6 +176,8 @@ impl ReferenceRuntime {
             };
             self.init_ctors(ctor_slice);
         }
+
+        monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimeReady);
     }
 
     fn init_ctors(&self, ctor_array: &[CtorInfo]) {

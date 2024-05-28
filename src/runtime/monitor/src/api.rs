@@ -4,7 +4,7 @@ use twizzler_runtime_api::{LibraryId, MapError, MapFlags, ObjID, SpawnError, Thr
 
 use crate::{
     compman::COMPMAN,
-    gates::LibraryInfo,
+    gates::{LibraryInfo, MonitorCompControlCmd},
     threadman::{jump_into_compartment, start_managed_thread},
 };
 
@@ -21,7 +21,8 @@ pub fn map_object(
         .map(|mh| mh.addrs())
 }
 
-/// Indicates that the given map has been dropped, and the monitor can consider it freed by the calling compartment.
+/// Indicates that the given map has been dropped, and the monitor can consider it freed by the
+/// calling compartment.
 pub fn drop_map(comp: Option<ObjID>, id: ObjID, flags: MapFlags) {
     let _ = COMPMAN.unmap_object(comp.unwrap_or(MONITOR_INSTANCE_ID), id, flags);
 }
@@ -57,4 +58,13 @@ pub fn get_comp_config(comp_id: Option<ObjID>) -> *const SharedCompConfig {
         .get_comp_inner(comp_id.unwrap_or(MONITOR_INSTANCE_ID))
         .map(|comp| comp.lock().unwrap().compartment_config() as *const _)
         .unwrap_or(core::ptr::null())
+}
+
+pub fn compartment_ctrl(info: &GateCallInfo, cmd: MonitorCompControlCmd) {
+    tracing::debug!("comp ctrl: {:?} {:?}", info, cmd);
+    match cmd {
+        MonitorCompControlCmd::RuntimeReady => COMPMAN
+            .get_comp_inner(info.source_context().unwrap_or(MONITOR_INSTANCE_ID))
+            .map(|comp| comp.lock().unwrap().set_ready()),
+    };
 }

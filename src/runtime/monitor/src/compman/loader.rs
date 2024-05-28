@@ -100,8 +100,14 @@ impl Loader {
                 inner.insert(comp);
 
                 let comp = inner.lookup(sctx_id).unwrap();
-                comp.with_inner(|inner| inner.start_main(&ctor_info, entry_point))?;
-                comp.ready_waiter()
+                let waiter = comp.ready_waiter();
+                let comp_inner = comp.cloned_inner();
+                drop(inner);
+                comp_inner
+                    .lock()
+                    .unwrap()
+                    .start_main(&ctor_info, entry_point)?;
+                waiter
             };
             Ok(waiter)
         };
