@@ -81,17 +81,19 @@ unsafe extern "C" fn __do_switch(
         "pushfq",
         /* save the stack pointer. */
         "mov [rsi], rsp",
-        /* okay, now we can release the switch lock */
-        "lock mov qword ptr [rcx], 0",
-        "sfence",
-        /* try to grab the new switch lock for the new thread. if we fail, jump to a spin loop */
-        "mov rax, [rdx]",
+        /* okay, now we can release the switch lock. We can probably relax this, but for now do
+         * a seq_cst store (mov + mfence). */
+        "mov qword ptr [rcx], 0",
+        "mfence",
+        /* try to grab the new switch lock for the new thread. if we fail, jump to a spin loop.
+         * We use lock xchg to ensure single winner for setting the lock, which has seq_cst
+         * semantics. */
+        "grab_the_lock:",
+        "mov rax, 1",
+        "lock xchg rax, [rdx]",
         "test rax, rax",
         "jnz sw_wait",
         "do_the_switch:",
-        /* we can just store to the new switch lock, since we're guaranteed to be the only CPU
-         * here */
-        "lock mov qword ptr [rdx], 1",
         "mfence",
         /* okay, now load the new stack pointer and restore */
         "mov rsp, [rdi]",
@@ -112,7 +114,7 @@ unsafe extern "C" fn __do_switch(
         "mov rax, [rdx]",
         "test rax, rax",
         "jnz sw_wait",
-        "jmp do_the_switch",
+        "jmp grab_the_lock",
         options(noreturn),
     )
 }
