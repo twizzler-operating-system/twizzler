@@ -21,11 +21,7 @@ runs on the Twizzler operating system you can follow these steps:
 3. add the following to the main.rs file within hello/src:
 
 ```rust
-use twizzler_abi::pager::{CompletionToKernel, KernelCompletionData, RequestFromKernel};
-
-async fn handle_request(_request: RequestFromKernel) -> Option<CompletionToKernel> {
-   Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
-}
+extern crate twizzler_abi;
 ```
 
 4. Edit the Cargo.toml file in the root directory to add the program to the Twizzler build system.
