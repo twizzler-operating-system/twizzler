@@ -11,19 +11,25 @@ the main repo in your own branches.
 Twizzler makes heavy use of Rust's Cargo system of crates in order to manage both kernel and user space programs.  To create a new program that
 runs on the Twizzler operating system you can follow these steps:
 
-  1. Change directories into the bin directory:
+1. Change directories into the bin directory:
 
 ```cd twizzler/src/bin```
 
-  2. Create a new program, named ```hello```.  The ```Cargo``` command will actually create the canonical ```Hello world``` program for you.
+2. Create a new program, named ```hello```.  The ```Cargo``` command will actually create the canonical ```Hello world``` program for you.
 ```cargo new --bin hello```
 
-  3. Edit the Cargo.toml file in the root directory to add the program to the Twizzler build system.
+3. add the following to the main.rs file within hello/src:
+
+```rust
+extern crate twizzler_abi;
+```
+
+4. Edit the Cargo.toml file in the root directory to add the program to the Twizzler build system.
 ```vi ../../Cargo.toml```
 
 The following diff shows the two lines you need to add:
 
-```
+```diff
 diff --git a/Cargo.toml b/Cargo.toml
 index 338455b..cb38fb5 100644
 --- a/Cargo.toml
