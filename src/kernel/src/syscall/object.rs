@@ -175,9 +175,11 @@ pub fn sys_unbind_handle(id: ObjID) {
 
 // Note: placeholder types
 pub fn sys_sctx_attach(id: ObjID) -> Result<u32, SctxAttachError> {
+    logln!("a0");
     let sctx = get_sctx(id)?;
 
-    current_thread_ref().unwrap().secctx.attach(sctx);
+    logln!("a");
+    current_thread_ref().unwrap().secctx.attach(sctx)?;
 
     Ok(0)
 }

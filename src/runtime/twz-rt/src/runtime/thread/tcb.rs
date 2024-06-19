@@ -8,16 +8,14 @@
 use std::{
     alloc::GlobalAlloc,
     cell::UnsafeCell,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     panic::catch_unwind,
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Mutex,
-    },
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use dynlink::tls::Tcb;
 use monitor_api::TlsTemplateInfo;
+use spin::RwLock;
 use tracing::trace;
 use twizzler_runtime_api::CoreRuntime;
 
@@ -133,9 +131,8 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
     twizzler_abi::syscall::sys_thread_exit(code);
 }
 
-#[derive(Default)]
 pub(crate) struct TlsGenMgr {
-    map: HashMap<u64, TlsGen>,
+    map: BTreeMap<u64, TlsGen>,
 }
 
 pub(crate) struct TlsGen {
@@ -144,32 +141,46 @@ pub(crate) struct TlsGen {
 }
 
 unsafe impl Send for TlsGen {}
+unsafe impl Sync for TlsGen {}
 
-lazy_static::lazy_static! {
-pub(crate) static ref TLS_GEN_MGR: Mutex<TlsGenMgr> = Mutex::new(TlsGenMgr::default());
-}
+pub(crate) static TLS_GEN_MGR: RwLock<TlsGenMgr> = RwLock::new(TlsGenMgr {
+    map: BTreeMap::new(),
+});
 
 impl TlsGenMgr {
+    pub fn need_new_gen(&self, mygen: Option<u64>) -> bool {
+        let cc = monitor_api::get_comp_config();
+        let template = unsafe { cc.get_tls_template().as_ref().unwrap() };
+        mygen.is_some_and(|mygen| mygen == template.gen)
+    }
+
     pub fn get_next_tls_info<T>(
         &mut self,
         mygen: Option<u64>,
         new_tcb_data: impl FnOnce() -> T,
     ) -> Option<*mut Tcb<T>> {
+        preinit_println!("HERE");
         let cc = monitor_api::get_comp_config();
+        preinit_println!("CC: {:p}", cc.get_tls_template());
         let template = unsafe { cc.get_tls_template().as_ref().unwrap() };
         if mygen.is_some_and(|mygen| mygen == template.gen) {
+            preinit_println!("BYE");
             return None;
         }
 
+        preinit_println!("x0");
         let new = unsafe { OUR_RUNTIME.get_alloc().alloc(template.layout) };
+        preinit_println!("x1");
         let tlsgen = self.map.entry(template.gen).or_insert_with(|| TlsGen {
             template: *template,
             thread_count: 0,
         });
         tlsgen.thread_count += 1;
+        preinit_println!("x2");
 
         unsafe {
             let tcb = tlsgen.template.init_new_tls_region(new, new_tcb_data());
+            preinit_println!("x3");
             Some(tcb)
         }
     }

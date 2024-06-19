@@ -32,19 +32,22 @@ pub enum SctxAttachError {
     /// Permission denied.
     #[error("permission denied")]
     PermissionDenied = 3,
+    /// Already attached.
+    #[error("already attached")]
+    AlreadyAttached = 4,
 }
 
 impl core::error::Error for SctxAttachError {}
 
 /// Attach to a given security context.
-pub fn sys_sctx_attach(id: ObjID) -> Result<(), SctxAttachError> {
+pub fn sys_sctx_attach(id: ObjID) -> Result<(u64, u64), SctxAttachError> {
     let args = [id.split().0, id.split().1, 0, 0, 0];
     let (code, val) = unsafe { raw_syscall(Syscall::SctxAttach, &args) };
     convert_codes_to_result(
         code,
         val,
-        |c, _| c == 0,
-        |_, _| (),
+        |c, _| c == 1,
+        |a, b| (a, b),
         |_, v| SctxAttachError::from(v),
     )
 }

@@ -1,6 +1,8 @@
 use monitor_api::{MappedObjectAddrs, SharedCompConfig};
 use secgate::GateCallInfo;
+use twizzler_abi::syscall::SctxAttachError;
 use twizzler_runtime_api::{LibraryId, MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
+use twz_rt::preinit_println;
 
 use crate::{
     compman::COMPMAN,
@@ -16,6 +18,7 @@ pub fn map_object(
     id: ObjID,
     flags: MapFlags,
 ) -> Result<MappedObjectAddrs, MapError> {
+    preinit_println!("==> map_object: {:?} :: {:?}", id, comp);
     COMPMAN
         .map_object(comp.unwrap_or(MONITOR_INSTANCE_ID), id, flags)
         .map(|mh| mh.addrs())
@@ -40,6 +43,15 @@ pub fn spawn_thread(
     stack_start: usize,
 ) -> Result<twizzler_runtime_api::ObjID, SpawnError> {
     let managed_thread = start_managed_thread(move || unsafe {
+        if let Some(comp_id) = comp_id {
+            tracing::debug!("attaching to {:?}", comp_id);
+            if let Err(e) = twizzler_abi::syscall::sys_sctx_attach(comp_id) {
+                if !matches!(e, SctxAttachError::AlreadyAttached) {
+                    tracing::warn!("thread failed to attach to compartment: {}", e);
+                    return;
+                }
+            }
+        }
         jump_into_compartment(
             comp_id.unwrap_or(MONITOR_INSTANCE_ID),
             stack_start + args.stack_size,

@@ -128,8 +128,7 @@ impl ReferenceRuntime {
         // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
         let tls = TLS_GEN_MGR
-            .lock()
-            .unwrap()
+            .write()
             .get_next_tls_info(None, || RuntimeThreadControl::new(0))
             .unwrap();
         let stack_raw = unsafe {

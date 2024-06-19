@@ -146,8 +146,13 @@ impl SecCtxMgr {
     }
 
     /// Attach a security context.
-    pub fn attach(&self, sctx: SecurityContextRef) {
-        self.inner.lock().inactive.insert(sctx.id(), sctx);
+    pub fn attach(&self, sctx: SecurityContextRef) -> Result<(), SctxAttachError> {
+        let mut inner = self.inner.lock();
+        if inner.active.id() == sctx.id() || inner.inactive.contains_key(&sctx.id()) {
+            return Err(SctxAttachError::AlreadyAttached);
+        }
+        inner.inactive.insert(sctx.id(), sctx);
+        Ok(())
     }
 }
 

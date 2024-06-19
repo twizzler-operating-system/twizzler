@@ -11,12 +11,17 @@ use std::{
 
 use dynlink::{
     compartment::CompartmentId,
+    context::Context,
+    engines::Engine,
     library::{CtorInfo, LibraryId},
+    DynlinkError,
 };
+use miette::IntoDiagnostic;
 use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::syscall::{
-    ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
+    SctxAttachError, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
+    ThreadSyncSleep,
 };
 use twizzler_runtime_api::{AuxEntry, MapError, ObjID};
 use twz_rt::CompartmentInitInfo;
@@ -83,7 +88,6 @@ impl RunCompInner {
         let arg = aux_in_comp as usize;
 
         self.start_main_thread(move || {
-            tracing::info!("==> {}", ctx);
             let comp = COMPMAN.get_comp_inner(ctx).unwrap();
             let inner = comp.lock().unwrap();
             let frame = inner
@@ -93,6 +97,14 @@ impl RunCompInner {
                 .get_entry_frame(ctx, entry, arg);
             drop(inner);
             drop(comp);
+
+            tracing::debug!("attaching to {:?}", ctx);
+            if let Err(e) = twizzler_abi::syscall::sys_sctx_attach(ctx) {
+                if !matches!(e, SctxAttachError::AlreadyAttached) {
+                    tracing::warn!("thread failed to attach to compartment: {}", e);
+                    return;
+                }
+            }
             unsafe {
                 twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame);
             }
@@ -134,6 +146,24 @@ impl RunCompInner {
         }
 
         self.main_thread = Some(CompThread::new(self.instance, start)?);
+        Ok(())
+    }
+
+    pub fn build_tls_template(&mut self, dynlink: &mut Context<Engine>) -> miette::Result<()> {
+        let region = dynlink
+            .get_compartment_mut(self.compartment_id)
+            .unwrap()
+            .build_tls_region((), |layout| unsafe { self.allocator.malloc(layout) }.ok())
+            .into_diagnostic()?;
+
+        let template: TlsTemplateInfo = region.into();
+        let tls_template = self
+            .monitor_new(template)
+            .map_err(|_| miette::miette!("failed to allocate TLS memory"))?;
+
+        let config = self.comp_config_object().read_comp_config();
+        config.set_tls_template(tls_template);
+        self.comp_config_object().write_config(config);
         Ok(())
     }
 

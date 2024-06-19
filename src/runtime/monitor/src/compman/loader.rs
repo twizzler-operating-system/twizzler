@@ -12,6 +12,7 @@ use dynlink::{
     engines::Engine,
     library::{CtorInfo, LibraryId, UnloadedLibrary},
 };
+use twizzler_abi::syscall::{BackingType, ObjectCreate, ObjectCreateFlags};
 use twizzler_runtime_api::ObjID;
 use twz_rt::CompartmentInitInfo;
 
@@ -144,6 +145,22 @@ impl CompManInner {
     }
 }
 
+fn get_new_sctx_instance(_sctx: ObjID) -> ObjID {
+    // TODO
+
+    twizzler_abi::syscall::sys_object_create(
+        ObjectCreate::new(
+            BackingType::Normal,
+            twizzler_abi::syscall::LifetimeType::Volatile,
+            None,
+            ObjectCreateFlags::empty(),
+        ),
+        &[],
+        &[],
+    )
+    .unwrap()
+}
+
 impl CompMan {
     pub fn load_compartment(
         &self,
@@ -182,7 +199,7 @@ impl CompMan {
 
                         let rt_id = inner.maybe_inject_rt(load.lib, load.comp).ok()?;
 
-                        let sctx_id = (CTX_NUM.fetch_add(1, Ordering::SeqCst) as u128).into();
+                        let sctx_id = get_new_sctx_instance(1.into());
                         cache.insert(load.comp, sctx_id);
                         let dep_comp = RunComp::new(
                             sctx_id,
@@ -192,6 +209,9 @@ impl CompMan {
                             load.lib,
                         )
                         .unwrap();
+                        dep_comp
+                            .with_inner(|rc| rc.build_tls_template(inner.dynlink_mut()))
+                            .ok()?;
                         let ctor_info = inner.dynlink().build_ctors_list(load.lib).ok()?;
                         let entry_point = inner
                             .dynlink()
@@ -222,8 +242,9 @@ impl CompMan {
         let rt_id = inner.maybe_inject_rt(root_id, root_comp_id)?;
         inner.dynlink_mut().relocate_all(root_id)?;
 
-        let sctx_id = (CTX_NUM.fetch_add(1, Ordering::SeqCst) as u128).into();
+        let sctx_id = get_new_sctx_instance(1.into());
         let root_comp = RunComp::new(sctx_id, sctx_id, comp_name, root_comp_id, root_id).unwrap();
+        root_comp.with_inner(|rc| rc.build_tls_template(inner.dynlink_mut()))?;
 
         let ctor_info = inner.dynlink().build_ctors_list(root_id)?;
         let entry_point = inner

@@ -42,6 +42,10 @@ impl CompConfigObject {
         }
     }
 
+    pub(crate) fn read_comp_config(&self) -> SharedCompConfig {
+        unsafe { self.get_comp_config().read() }
+    }
+
     pub fn get_comp_config(&self) -> *const SharedCompConfig {
         self.handle.monitor_data_base() as *const SharedCompConfig
     }

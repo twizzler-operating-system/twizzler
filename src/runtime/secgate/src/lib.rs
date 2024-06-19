@@ -241,3 +241,11 @@ impl GateCallInfo {
         }
     }
 }
+
+pub fn get_thread_id() -> ObjID {
+    twizzler_abi::syscall::sys_thread_self_id()
+}
+
+pub fn get_sctx_id() -> ObjID {
+    twizzler_abi::syscall::sys_thread_active_sctx_id()
+}

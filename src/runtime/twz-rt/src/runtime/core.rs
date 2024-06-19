@@ -151,6 +151,7 @@ impl ReferenceRuntime {
     }
 
     fn init_for_compartment(&self, init_info: &CompartmentInitInfo) {
+        preinit_println!("0");
         unsafe {
             preinit_unwrap(
                 monitor_api::set_comp_config(
@@ -161,11 +162,14 @@ impl ReferenceRuntime {
                 .ok(),
             );
         }
-        let tls = preinit_unwrap(
-            preinit_unwrap(TLS_GEN_MGR.lock().ok())
-                .get_next_tls_info(None, || RuntimeThreadControl::new(0)),
-        );
-        twizzler_abi::syscall::sys_thread_settls(tls as u64);
+
+        preinit_println!("A: {:?}", TLS_GEN_MGR.reader_count());
+
+        let tls = TLS_GEN_MGR
+            .write()
+            .get_next_tls_info(None, || RuntimeThreadControl::new(0));
+        twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
+        preinit_println!("B");
 
         if init_info.ctor_array_start != 0 && init_info.ctor_array_len != 0 {
             let ctor_slice = unsafe {
@@ -177,6 +181,7 @@ impl ReferenceRuntime {
             self.init_ctors(ctor_slice);
         }
 
+        preinit_println!("SIGNAL READY");
         monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimeReady);
     }
 

@@ -321,7 +321,10 @@ impl Thread {
     pub fn restore_upcall_frame(&self, frame: &UpcallFrame) {
         let res = self.secctx.switch_context(frame.prior_ctx);
         if matches!(res, crate::security::SwitchResult::NotAttached) {
-            logln!("warning -- tried to restore thread to non-attached security context");
+            logln!(
+                "warning -- tried to restore thread to non-attached security context {:?}",
+                frame.prior_ctx
+            );
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
         // We restore this in the syscall return code path, since
