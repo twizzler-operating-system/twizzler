@@ -67,7 +67,7 @@ impl PL011 {
     }
 
     /// Configure the PL011 UART with desired baud, given the clock frequency
-    pub unsafe fn init(&self, baud: u32, clk: u32) {
+    pub unsafe fn init(&self, clk: u32, baud: u32) {
         // program the UART: (page 26/3-16)
         // disable UART
         {
