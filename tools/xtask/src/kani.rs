@@ -10,7 +10,6 @@ use chrono::prelude::*;
 
 //Verifies Kani is installed and launches it
 pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
-
     //Check Kani is installed
     match Command::new("cargo").args(["kani","--version"]).spawn() {
         Ok(_) => println!("Kani installed!"),
@@ -25,6 +24,7 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
         }
     };
 
+
     //Log Date
     let date = Local::now().format("%Y-%m-%d-%H:%M:%S").to_string();
 
@@ -33,14 +33,21 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
         fs::create_dir_all("./kani_test/log/")?;
     }
 
+    let dir_name = String::from(format!("./kani_test/log/{}/", date));
+    fs::create_dir_all(&dir_name)?;
+
+    let dir = Path::new(&dir_name);
+    env::set_current_dir(&dir);
+
     //Log Format
-    let log_name = format!("./kani_test/log/{}.log", date);
+    let log_name = format!("{}.log", date);
     let log = File::create(log_name).expect("failed to open log");
 
     //Actually compose the command
-    let mut cmd = Command::new("cargo");
+    let mut cmd = Command::new("../../../kani/scripts/cargo-kani");
+//    let mut cmd = Command::new("cargo");
+//    cmd.arg("kani");
     cmd.stdout(log);
-    cmd.arg("kani");
 
     //Pass any desired environment variables
     // cmd.envs(env::vars());
@@ -60,6 +67,7 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
         cmd.arg(args);
     }
 
+    println!("KANI CMD:{}", (pretty_cmd(&cmd)));
     if true == cli.print_kani_argument {
         println!("KANI CMD:{}", (pretty_cmd(&cmd)));
     }
@@ -98,8 +106,8 @@ pub fn kernel_flags() -> Vec<String> {
 
     flags.extend_from_slice(
         &[
-            "--output-format",
-            "terse",
+            //"--output-format",
+            //"terse",
             "--enable-unstable",
             "--ignore-global-asm",
             "-Zstubbing",
