@@ -20,6 +20,13 @@ impl CompThread {
     }
 
     pub fn get_entry_frame(&self, ctx: ObjID, entry: usize, arg: usize) -> UpcallFrame {
-        UpcallFrame::new_entry_frame(self.stack_object.initial_stack_ptr(), 0, ctx, entry, arg)
+        UpcallFrame::new_entry_frame(
+            self.stack_object.initial_stack_ptr(),
+            self.stack_object.stack_size(),
+            0,
+            ctx,
+            entry,
+            arg,
+        )
     }
 }

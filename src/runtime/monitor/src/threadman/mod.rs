@@ -221,10 +221,18 @@ unsafe fn do_spawn_thread(
 pub unsafe fn jump_into_compartment(
     target: ObjID,
     stack_pointer: usize,
+    stack_size: usize,
     thread_pointer: usize,
     entry: usize,
     arg: usize,
 ) -> ! {
-    let frame = UpcallFrame::new_entry_frame(stack_pointer, thread_pointer, target, entry, arg);
+    let frame = UpcallFrame::new_entry_frame(
+        stack_pointer,
+        stack_size,
+        thread_pointer,
+        target,
+        entry,
+        arg,
+    );
     sys_thread_resume_from_upcall(&frame)
 }

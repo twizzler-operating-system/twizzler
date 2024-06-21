@@ -54,7 +54,8 @@ pub fn spawn_thread(
         }
         jump_into_compartment(
             comp_id.unwrap_or(MONITOR_INSTANCE_ID),
-            stack_start + args.stack_size,
+            stack_start,
+            args.stack_size,
             thread_pointer,
             args.start,
             args.arg,

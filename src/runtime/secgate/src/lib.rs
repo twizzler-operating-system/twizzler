@@ -4,6 +4,8 @@
 #![feature(naked_functions)]
 #![feature(auto_traits)]
 #![feature(negative_impls)]
+#![feature(linkage)]
+#![feature(core_intrinsics)]
 
 use core::ffi::CStr;
 use std::{cell::UnsafeCell, marker::Tuple, mem::MaybeUninit};
@@ -248,4 +250,23 @@ pub fn get_thread_id() -> ObjID {
 
 pub fn get_sctx_id() -> ObjID {
     twizzler_abi::syscall::sys_thread_active_sctx_id()
+}
+
+pub fn runtime_preentry() {
+    extern "C" {
+        #[linkage = "extern_weak"]
+        fn __twz_rt_cross_compartment_entry();
+    }
+
+    unsafe {
+        __twz_rt_cross_compartment_entry();
+    }
+}
+
+pub mod __imp {
+    #[linkage = "weak"]
+    #[no_mangle]
+    pub unsafe extern "C" fn __twz_rt_cross_compartment_entry() {
+        core::intrinsics::abort();
+    }
 }

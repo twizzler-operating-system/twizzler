@@ -13,7 +13,7 @@ mod object;
 mod process;
 mod slot;
 mod stdio;
-mod thread;
+pub(crate) mod thread;
 mod time;
 pub(crate) mod upcall;
 

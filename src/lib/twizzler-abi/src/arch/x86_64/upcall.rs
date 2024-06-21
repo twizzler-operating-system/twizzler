@@ -61,18 +61,20 @@ impl UpcallFrame {
 
     /// Build a new frame set up to enter a context at a start point.
     pub fn new_entry_frame(
-        sp: usize,
+        stack_base: usize,
+        stack_size: usize,
         tp: usize,
         ctx: crate::object::ObjID,
         entry: usize,
         arg: usize,
     ) -> Self {
+        // TODO: check alignment and sizes better.
         Self {
             xsave_region: [0; XSAVE_LEN],
             rip: entry as u64,
             // Default has the interrupt enabled flag set, and the reserved bit.
             rflags: 0x202,
-            rsp: sp as u64,
+            rsp: (stack_base + stack_size - 8) as u64,
             rbp: 0,
             rax: 0,
             rbx: 0,

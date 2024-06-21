@@ -300,6 +300,9 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
 
     call_point.block = Box::new(parse2(quote::quote! {
         {
+            if unsafe {(*info)}.source_context().is_some() {
+                secgate::runtime_preentry();
+            }
             #unpacked_args
 
             // Call the user-written implementation, catching unwinds.

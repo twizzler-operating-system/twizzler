@@ -13,7 +13,7 @@ use super::ReferenceRuntime;
 use crate::{preinit_println, runtime::thread::mgr::ThreadManager};
 
 mod internal;
-mod mgr;
+pub(crate) mod mgr;
 mod tcb;
 
 pub use tcb::RuntimeThreadControl;

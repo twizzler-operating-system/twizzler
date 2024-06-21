@@ -157,6 +157,8 @@ impl CompMan {
         Some(rc.cloned_inner())
     }
 
+    //it's this. But it's more than that -- we need to set up TLS for the monitor by the time we
+    // get here, so we need to figure out how to do compartment entry properly.
     #[tracing::instrument(skip(self))]
     pub fn map_object(
         &self,

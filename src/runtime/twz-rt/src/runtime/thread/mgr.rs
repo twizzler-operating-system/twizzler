@@ -1,7 +1,8 @@
 //! Thread management routines, including spawn and join.
 
-use std::{alloc::Layout, collections::HashMap, sync::Mutex};
+use std::{alloc::Layout, collections::HashMap};
 
+use spin::Mutex;
 use tracing::trace;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
@@ -12,16 +13,23 @@ use twizzler_runtime_api::{
 };
 
 use super::internal::InternalThread;
-use crate::runtime::{
-    thread::{
-        tcb::{trampoline, RuntimeThreadControl, TLS_GEN_MGR},
-        MIN_STACK_ALIGN, THREAD_MGR,
+use crate::{
+    preinit_println,
+    runtime::{
+        thread::{
+            tcb::{trampoline, RuntimeThreadControl, TLS_GEN_MGR},
+            MIN_STACK_ALIGN, THREAD_MGR,
+        },
+        ReferenceRuntime, OUR_RUNTIME,
     },
-    ReferenceRuntime, OUR_RUNTIME,
 };
 
 pub(super) struct ThreadManager {
     inner: Mutex<ThreadManagerInner>,
+}
+
+pub fn test() {
+    preinit_println!("==> LOCK: {}", THREAD_MGR.inner.is_locked());
 }
 
 impl ThreadManager {
@@ -32,7 +40,7 @@ impl ThreadManager {
     }
 
     pub fn with_internal<R, F: FnOnce(&InternalThread) -> R>(&self, id: u32, f: F) -> Option<R> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock();
         Some(f(inner.all_threads.get(&id)?))
     }
 }
@@ -120,6 +128,23 @@ impl<'a> Drop for IdDropper<'a> {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn __twz_rt_cross_compartment_entry() {
+    preinit_println!("IN CCE: {}", THREAD_MGR.inner.is_locked());
+    let mut inner = THREAD_MGR.inner.lock();
+    preinit_println!("IN CCE: a");
+    let id = inner.next_id().freeze();
+    preinit_println!("IN CCE: b");
+    drop(inner);
+    preinit_println!("IN CCE: b2: {}", TLS_GEN_MGR.writer_count());
+    let tls = TLS_GEN_MGR
+        .write()
+        .get_next_tls_info(None, || RuntimeThreadControl::new(id))
+        .unwrap();
+    preinit_println!("IN CCE: c");
+    twizzler_abi::syscall::sys_thread_settls(tls as u64);
+}
+
 impl ReferenceRuntime {
     pub(super) fn impl_spawn(
         &self,
@@ -139,7 +164,7 @@ impl ReferenceRuntime {
 
         // Take the thread management lock, so that when the new thread starts we cannot observe
         // that thread running without the management data being recorded.
-        let mut inner = THREAD_MGR.inner.lock().unwrap();
+        let mut inner = THREAD_MGR.inner.lock();
         let id = inner.next_id();
 
         // Set the thread's ID. After this the TCB is ready.
@@ -151,9 +176,10 @@ impl ReferenceRuntime {
         let arg_raw = Box::into_raw(args) as usize;
 
         trace!(
-            "spawning thread {} with stack {:x}, entry {:x}, and TLS {:p}",
+            "spawning thread {} with stack {:x} (sz={:x}), entry {:x}, and TLS {:p}",
             id.id,
             stack_raw,
+            stack_size,
             trampoline as usize,
             tls,
         );
@@ -199,7 +225,7 @@ impl ReferenceRuntime {
     ) -> Result<(), JoinError> {
         trace!("joining on thread {} with timeout {:?}", id, timeout);
         let repr = {
-            let mut inner = THREAD_MGR.inner.lock().unwrap();
+            let mut inner = THREAD_MGR.inner.lock();
             inner.scan_for_exited_except(id);
             inner
                 .all_threads
@@ -213,7 +239,7 @@ impl ReferenceRuntime {
         loop {
             let (state, _code) = base.wait(timeout).ok_or(JoinError::Timeout)?;
             if state == ExecutionState::Exited {
-                let mut inner = THREAD_MGR.inner.lock().unwrap();
+                let mut inner = THREAD_MGR.inner.lock();
                 inner.prep_cleanup(id);
                 inner.do_thread_gc();
                 trace!("join {} completed", id);

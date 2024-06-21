@@ -75,6 +75,7 @@ impl UpcallAble for X86SyscallContext {
 
 impl SyscallContext for X86SyscallContext {
     fn create_jmp_context(target: VirtAddr, stack: VirtAddr, arg: u64) -> Self {
+        logln!("@######## {:?}", stack);
         Self {
             rsp: stack.into(),
             rcx: target.into(),

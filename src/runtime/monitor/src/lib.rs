@@ -41,7 +41,7 @@ mod gates;
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::TRACE)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
@@ -58,11 +58,15 @@ pub fn main() {
         init::bootstrap_dynlink_context().expect("failed to discover initial dynlink context");
 
     twz_rt::set_upcall_handler(&crate::upcall::upcall_monitor_handler).unwrap();
+    tracing::error!("==> COMP INIT");
     COMPMAN.init(init);
+    tracing::error!("==> MAP INIT");
     init_mapping();
+    tracing::error!("==> CLEAN INIT");
     THREAD_MGR.start_cleaner();
     std::env::set_var("RUST_BACKTRACE", "1");
 
+    tracing::error!("==> MAIN INIT");
     let mon_rc = COMPMAN.get_comp_inner(MONITOR_INSTANCE_ID).unwrap();
     mon_rc
         .lock()
