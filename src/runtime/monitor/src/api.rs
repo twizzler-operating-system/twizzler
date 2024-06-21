@@ -5,7 +5,10 @@ use twizzler_runtime_api::{LibraryId, MapError, MapFlags, ObjID, SpawnError, Thr
 use twz_rt::preinit_println;
 
 use crate::{
-    compman::COMPMAN,
+    compman::{
+        runcomp::{COMP_IS_BINARY, COMP_THREAD_CAN_EXIT},
+        COMPMAN,
+    },
     gates::{LibraryInfo, MonitorCompControlCmd},
     threadman::{jump_into_compartment, start_managed_thread},
 };
@@ -73,11 +76,30 @@ pub fn get_comp_config(comp_id: Option<ObjID>) -> *const SharedCompConfig {
         .unwrap_or(core::ptr::null())
 }
 
-pub fn compartment_ctrl(info: &GateCallInfo, cmd: MonitorCompControlCmd) {
+pub fn compartment_ctrl(info: &GateCallInfo, cmd: MonitorCompControlCmd) -> Option<i32> {
     tracing::debug!("comp ctrl: {:?} {:?}", info, cmd);
     match cmd {
         MonitorCompControlCmd::RuntimeReady => COMPMAN
             .get_comp_inner(info.source_context().unwrap_or(MONITOR_INSTANCE_ID))
-            .map(|comp| comp.lock().unwrap().set_ready()),
-    };
+            .map(|comp| {
+                comp.lock().unwrap().set_ready();
+                if comp.lock().unwrap().has_flag(COMP_IS_BINARY) {
+                    None
+                } else {
+                    Some(0)
+                }
+            })
+            .flatten(),
+
+        MonitorCompControlCmd::RuntimePostMain => {
+            let waiter = COMPMAN
+                .with_compartment(info.source_context().unwrap_or(MONITOR_INSTANCE_ID), |rc| {
+                    rc.ready_waiter(COMP_THREAD_CAN_EXIT)
+                });
+            if let Some(waiter) = waiter {
+                waiter.wait();
+            }
+            None
+        }
+    }
 }

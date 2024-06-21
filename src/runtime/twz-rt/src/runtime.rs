@@ -78,7 +78,6 @@ pub(crate) mod do_impl {
     use twizzler_runtime_api::Runtime;
 
     use super::ReferenceRuntime;
-    use crate::preinit_println;
 
     impl Runtime for ReferenceRuntime {}
 

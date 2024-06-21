@@ -83,6 +83,7 @@ pub fn monitor_rt_object_unmap(info: &secgate::GateCallInfo, id: ObjID, flags: M
 #[repr(C)]
 pub enum MonitorCompControlCmd {
     RuntimeReady,
+    RuntimePostMain,
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
@@ -90,6 +91,9 @@ pub enum MonitorCompControlCmd {
     not(feature = "secgate-impl"),
     secgate::secure_gate(options(info, api))
 )]
-pub fn monitor_rt_comp_ctrl(info: &secgate::GateCallInfo, cmd: MonitorCompControlCmd) {
-    crate::api::compartment_ctrl(info, cmd);
+pub fn monitor_rt_comp_ctrl(
+    info: &secgate::GateCallInfo,
+    cmd: MonitorCompControlCmd,
+) -> Option<i32> {
+    crate::api::compartment_ctrl(info, cmd)
 }

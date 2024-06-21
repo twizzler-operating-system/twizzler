@@ -452,8 +452,11 @@ pub trait CoreRuntime {
     /// Returns a reference to an allocator to use for default (global) allocations.
     fn default_allocator(&self) -> &'static dyn GlobalAlloc;
 
-    /// Called by libstd before calling main.
-    fn pre_main_hook(&self) {}
+    /// Called by libstd before calling main. If returns Some(code), use that code for exit and do
+    /// not call main. By default, returns None.
+    fn pre_main_hook(&self) -> Option<i32> {
+        None
+    }
 
     /// Called by libstd after returning from main.
     fn post_main_hook(&self) {}

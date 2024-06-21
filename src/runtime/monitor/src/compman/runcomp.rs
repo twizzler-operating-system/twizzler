@@ -21,7 +21,7 @@ use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::syscall::{
     SctxAttachError, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
-    ThreadSyncSleep,
+    ThreadSyncSleep, ThreadSyncWake,
 };
 use twizzler_runtime_api::{AuxEntry, MapError, ObjID};
 use twz_rt::CompartmentInitInfo;
@@ -32,7 +32,9 @@ use crate::{
     mapman::{MapHandle, MapInfo},
 };
 
-const COMP_READY: u64 = 0x1;
+pub const COMP_READY: u64 = 0x1;
+pub const COMP_IS_BINARY: u64 = 0x2;
+pub const COMP_THREAD_CAN_EXIT: u64 = 0x4;
 
 pub(crate) struct RunCompInner {
     main_thread: Option<CompThread>,
@@ -213,17 +215,32 @@ impl RunCompInner {
         })
     }
 
+    pub fn set_flag(&self, val: u64) {
+        self.flags.fetch_or(val, Ordering::SeqCst);
+        let _ = twizzler_abi::syscall::sys_thread_sync(
+            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                ThreadSyncReference::Virtual(&self.flags),
+                usize::MAX,
+            ))],
+            None,
+        );
+    }
+
+    pub fn has_flag(&self, flag: u64) -> bool {
+        self.flags.load(Ordering::SeqCst) & flag != 0
+    }
+
     pub fn set_ready(&self) {
-        self.flags.fetch_or(COMP_READY, Ordering::SeqCst);
+        self.set_flag(COMP_READY);
     }
 
     pub fn is_ready(&self) -> bool {
         self.flags.load(Ordering::SeqCst) & COMP_READY != 0
     }
 
-    pub fn ready_waitable(&self) -> Option<ThreadSyncSleep> {
+    pub fn ready_waitable(&self, flag: u64) -> Option<ThreadSyncSleep> {
         let flags = self.flags.load(Ordering::SeqCst);
-        if flags & COMP_READY == 0 {
+        if flags & flag == 0 {
             Some(ThreadSyncSleep::new(
                 ThreadSyncReference::Virtual(&self.flags),
                 flags,
@@ -271,21 +288,23 @@ impl RunComp {
         &self.name
     }
 
-    pub fn ready_waiter(&self) -> RunCompReadyWaiter {
+    pub fn ready_waiter(&self, flag: u64) -> RunCompReadyWaiter {
         RunCompReadyWaiter {
+            flag,
             rc: self.inner.clone(),
         }
     }
 }
 
 pub struct RunCompReadyWaiter {
+    flag: u64,
     rc: Arc<Mutex<RunCompInner>>,
 }
 
 impl RunCompReadyWaiter {
     pub fn wait(&self) {
         loop {
-            let wait = { self.rc.lock().unwrap().ready_waitable() };
+            let wait = { self.rc.lock().unwrap().ready_waitable(self.flag) };
             let Some(wait) = wait else {
                 break;
             };

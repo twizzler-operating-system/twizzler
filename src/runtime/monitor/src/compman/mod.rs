@@ -22,7 +22,7 @@ use crate::{
 
 mod loader;
 mod object;
-mod runcomp;
+pub(crate) mod runcomp;
 mod stack_object;
 mod thread;
 
@@ -144,6 +144,10 @@ impl CompMan {
 
     pub fn with_monitor_compartment<R>(&self, f: impl FnOnce(&RunComp) -> R) -> R {
         f(MONITOR_COMP.get().unwrap())
+    }
+
+    pub fn with_compartment<R>(&self, comp_id: ObjID, f: impl FnOnce(&RunComp) -> R) -> Option<R> {
+        Some(f(self.inner.lock().unwrap().instance_map.get(&comp_id)?))
     }
 
     pub fn get_comp_inner(&self, comp_id: ObjID) -> Option<Arc<Mutex<RunCompInner>>> {

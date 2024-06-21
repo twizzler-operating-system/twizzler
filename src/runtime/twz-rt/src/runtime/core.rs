@@ -2,6 +2,7 @@
 
 use dynlink::{context::runtime::RuntimeInitInfo, library::CtorInfo};
 use monitor_api::SharedCompConfig;
+use secgate::SecGateReturn;
 use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
 use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime, ObjID};
 
@@ -115,18 +116,35 @@ impl CoreRuntime for ReferenceRuntime {
 
         // Step 3: call into libstd to finish setting up the standard library and call main
         let ba = build_basic_aux(aux_slice);
+        preinit_println!("STD_ENTRY: {:p}", std_entry);
         let ret = unsafe { std_entry(ba) };
         self.exit(ret.code);
     }
 
-    fn pre_main_hook(&self) {
+    fn pre_main_hook(&self) -> Option<i32> {
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
         }
         self.set_runtime_ready();
+
+        if !self.state().contains(RuntimeState::IS_MONITOR) {
+            preinit_println!("SIGNAL READY");
+            let ret = match monitor_api::monitor_rt_comp_ctrl(
+                monitor_api::MonitorCompControlCmd::RuntimeReady,
+            ) {
+                SecGateReturn::Success(ret) => ret,
+                _ => self.abort(),
+            };
+            preinit_println!("SIGNAL READY: DONE");
+            ret
+        } else {
+            None
+        }
     }
 
-    fn post_main_hook(&self) {}
+    fn post_main_hook(&self) {
+        monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimePostMain);
+    }
 }
 
 impl ReferenceRuntime {
@@ -180,9 +198,6 @@ impl ReferenceRuntime {
             };
             self.init_ctors(ctor_slice);
         }
-
-        preinit_println!("SIGNAL READY");
-        monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimeReady);
     }
 
     fn init_ctors(&self, ctor_array: &[CtorInfo]) {

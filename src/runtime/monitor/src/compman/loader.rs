@@ -17,7 +17,11 @@ use twizzler_runtime_api::ObjID;
 use twz_rt::CompartmentInitInfo;
 
 use super::{runcomp::RunCompReadyWaiter, CompMan, CompManInner, COMPMAN};
-use crate::{compman::runcomp::RunComp, find_init_name, init::InitDynlinkContext};
+use crate::{
+    compman::runcomp::{RunComp, COMP_IS_BINARY, COMP_READY},
+    find_init_name,
+    init::InitDynlinkContext,
+};
 
 struct Sel;
 
@@ -101,7 +105,7 @@ impl Loader {
                 inner.insert(comp);
 
                 let comp = inner.lookup(sctx_id).unwrap();
-                let waiter = comp.ready_waiter();
+                let waiter = comp.ready_waiter(COMP_READY);
                 let comp_inner = comp.cloned_inner();
                 drop(inner);
                 comp_inner
@@ -245,6 +249,9 @@ impl CompMan {
         let sctx_id = get_new_sctx_instance(1.into());
         let root_comp = RunComp::new(sctx_id, sctx_id, comp_name, root_comp_id, root_id).unwrap();
         root_comp.with_inner(|rc| rc.build_tls_template(inner.dynlink_mut()))?;
+
+        // TODO: not all the time
+        root_comp.with_inner(|rc| rc.set_flag(COMP_IS_BINARY));
 
         let ctor_info = inner.dynlink().build_ctors_list(root_id)?;
         let entry_point = inner
