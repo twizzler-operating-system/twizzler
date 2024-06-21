@@ -39,7 +39,7 @@ pub fn thread_ctrl(cmd: ThreadControl, arg: u64) -> (u64, u64) {
         }
         ThreadControl::GetSelfId => return current_thread_ref().unwrap().objid().split(),
         ThreadControl::GetActiveSctxId => {
-            return current_thread_ref().unwrap().secctx.active_id().split()
+            return current_thread_ref().unwrap().secctx.active_id().split();
         }
         _ => todo!(),
     }

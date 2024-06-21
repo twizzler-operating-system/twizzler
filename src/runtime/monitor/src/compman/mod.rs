@@ -11,15 +11,14 @@ use dynlink::{
 };
 use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use twizzler_runtime_api::{MapError, MapFlags, ObjID};
-use twz_rt::RuntimeThreadControl;
+use twz_rt::{preinit_println, RuntimeThreadControl};
 
+use self::runcomp::{RunComp, RunCompInner};
 use crate::{
     api::MONITOR_INSTANCE_ID,
     init::InitDynlinkContext,
     mapman::{MapHandle, MapInfo},
 };
-
-use self::runcomp::{RunComp, RunCompInner};
 
 mod loader;
 mod object;
@@ -151,8 +150,8 @@ impl CompMan {
         if comp_id == MONITOR_INSTANCE_ID {
             return Some(MONITOR_COMP.get().unwrap().cloned_inner());
         }
-        // Lock, get inner and clone, and release lock. Consumers of this function can then safely lock the inner RC without
-        // holding the CompMan lock.
+        // Lock, get inner and clone, and release lock. Consumers of this function can then safely
+        // lock the inner RC without holding the CompMan lock.
         let inner = self.inner.lock().ok()?;
         let rc = inner.lookup(comp_id)?;
         Some(rc.cloned_inner())
@@ -165,6 +164,8 @@ impl CompMan {
         id: ObjID,
         flags: MapFlags,
     ) -> Result<MapHandle, MapError> {
+        preinit_println!("MO HE");
+        tracing::warn!("==> mo");
         if comp_id == MONITOR_INSTANCE_ID {
             return MONITOR_COMP
                 .get()

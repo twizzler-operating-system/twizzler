@@ -12,6 +12,7 @@ use twizzler_abi::{
 };
 
 use crate::{
+    arch::context::ArchContext,
     memory::context::{Context, ContextRef},
     mutex::Mutex,
     obj::{LookupFlags, Object, ObjectRef},
@@ -175,11 +176,12 @@ pub fn sys_unbind_handle(id: ObjID) {
 
 // Note: placeholder types
 pub fn sys_sctx_attach(id: ObjID) -> Result<u32, SctxAttachError> {
-    logln!("a0");
     let sctx = get_sctx(id)?;
 
-    logln!("a");
-    current_thread_ref().unwrap().secctx.attach(sctx)?;
+    let current_thread = current_thread_ref().unwrap();
+    let current_context = current_memory_context().unwrap();
+    current_context.register_sctx(sctx.id(), ArchContext::new());
+    current_thread.secctx.attach(sctx)?;
 
     Ok(0)
 }

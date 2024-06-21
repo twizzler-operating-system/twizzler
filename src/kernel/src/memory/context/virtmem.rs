@@ -178,6 +178,9 @@ impl VirtContext {
 
     pub fn register_sctx(&self, sctx: ObjID, arch: ArchContext) {
         let mut secctx = self.secctx.lock();
+        if secctx.contains_key(&sctx) {
+            return;
+        }
         secctx.insert(sctx, arch);
         // Rebuild the target cache. We have to do it this way because we cannot allocate
         // memory while holding the target_cache lock (as it's a spinlock).
@@ -641,7 +644,20 @@ bitflags::bitflags! {
 }
 
 pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
-    //logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
+    if !addr.is_kernel()
+        && false
+        && !ip.is_kernel()
+        && current_thread_ref().is_some_and(|ct| ct.secctx.active_id() != 0.into() || true)
+    {
+        logln!(
+            "page-fault in {}: {:?} {:?} {:?} ip={:?}",
+            current_thread_ref().unwrap().secctx.active_id(),
+            addr,
+            cause,
+            flags,
+            ip
+        );
+    }
     if flags.contains(PageFaultFlags::INVALID) {
         panic!("page table contains invalid bits for address {:?}", addr);
     }
@@ -667,6 +683,9 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
             return;
         }
 
+        let sctx_id = current_thread_ref()
+            .map(|ct| ct.secctx.active_id())
+            .unwrap_or(KERNEL_SCTX);
         let user_ctx = current_memory_context();
         let (ctx, is_kern_obj) = if addr.is_kernel_object_memory() {
             assert!(!flags.contains(PageFaultFlags::USER));
@@ -725,7 +744,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write)
             {
                 // TODO: select user context here.
-                ctx.with_arch(KERNEL_SCTX, |arch| {
+                ctx.with_arch(sctx_id, |arch| {
                     // TODO: don't need all three every time.
                     arch.unmap(
                         info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
@@ -747,7 +766,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                     .get_page(page_number, cause == MemoryAccessKind::Write)
                     .unwrap();
                 // TODO: select user context here.
-                ctx.with_arch(KERNEL_SCTX, |arch| {
+                ctx.with_arch(sctx_id, |arch| {
                     // TODO: don't need all three every time.
                     arch.unmap(
                         info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),

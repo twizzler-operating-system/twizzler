@@ -320,6 +320,7 @@ impl Thread {
     /// to userspace will cause the thread to immediately abort.
     pub fn restore_upcall_frame(&self, frame: &UpcallFrame) {
         let res = self.secctx.switch_context(frame.prior_ctx);
+        logln!("restore to {}: {:?}", frame.prior_ctx, res);
         if matches!(res, crate::security::SwitchResult::NotAttached) {
             logln!(
                 "warning -- tried to restore thread to non-attached security context {:?}",
