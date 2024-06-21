@@ -270,3 +270,21 @@ pub mod __imp {
         core::intrinsics::abort();
     }
 }
+
+pub struct SecFrame {
+    tp: usize,
+}
+
+pub fn frame() -> SecFrame {
+    let mut val: usize;
+    unsafe {
+        core::arch::asm!("rdfsbase {}", out(reg) val);
+    }
+    SecFrame { tp: val }
+}
+
+pub fn restore_frame(frame: SecFrame) {
+    if frame.tp != 0 {
+        twizzler_abi::syscall::sys_thread_settls(frame.tp as u64);
+    }
+}

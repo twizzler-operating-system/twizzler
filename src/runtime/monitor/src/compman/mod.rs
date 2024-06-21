@@ -11,7 +11,7 @@ use dynlink::{
 };
 use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use twizzler_runtime_api::{MapError, MapFlags, ObjID};
-use twz_rt::{preinit_println, RuntimeThreadControl};
+use twz_rt::RuntimeThreadControl;
 
 use self::runcomp::{RunComp, RunCompInner};
 use crate::{
@@ -161,17 +161,12 @@ impl CompMan {
         Some(rc.cloned_inner())
     }
 
-    //it's this. But it's more than that -- we need to set up TLS for the monitor by the time we
-    // get here, so we need to figure out how to do compartment entry properly.
-    #[tracing::instrument(skip(self))]
     pub fn map_object(
         &self,
         comp_id: ObjID,
         id: ObjID,
         flags: MapFlags,
     ) -> Result<MapHandle, MapError> {
-        preinit_println!("MO HE");
-        tracing::warn!("==> mo");
         if comp_id == MONITOR_INSTANCE_ID {
             return MONITOR_COMP
                 .get()

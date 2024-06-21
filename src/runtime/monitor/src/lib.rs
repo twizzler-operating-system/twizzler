@@ -6,7 +6,7 @@
 #![feature(hash_extract_if)]
 #![feature(offset_of)]
 
-use std::{cmp::Ordering, collections::HashMap, sync::atomic::AtomicU64};
+use std::{cmp::Ordering, collections::HashMap, sync::atomic::AtomicU64, time::Duration};
 
 use dynlink::{
     compartment::CompartmentId,
@@ -37,11 +37,12 @@ mod upcall;
 
 #[path = "../secapi/gates.rs"]
 mod gates;
+//b2130
 
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::TRACE)
+        .with_max_level(Level::DEBUG)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
@@ -58,15 +59,11 @@ pub fn main() {
         init::bootstrap_dynlink_context().expect("failed to discover initial dynlink context");
 
     twz_rt::set_upcall_handler(&crate::upcall::upcall_monitor_handler).unwrap();
-    tracing::error!("==> COMP INIT");
     COMPMAN.init(init);
-    tracing::error!("==> MAP INIT");
     init_mapping();
-    tracing::error!("==> CLEAN INIT");
     THREAD_MGR.start_cleaner();
     std::env::set_var("RUST_BACKTRACE", "1");
 
-    tracing::error!("==> MAIN INIT");
     let mon_rc = COMPMAN.get_comp_inner(MONITOR_INSTANCE_ID).unwrap();
     mon_rc
         .lock()
@@ -83,7 +80,6 @@ pub fn main() {
         })
         .unwrap();
 
-    tracing::info!("!!!");
     // TODO: wait for monitor init thread.
     loop {}
 }

@@ -111,10 +111,6 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
             cur.flags.fetch_or(THREAD_STARTED, Ordering::SeqCst);
             trace!("thread {} started", cur.id());
         });
-        twizzler_abi::syscall::sys_kernel_console_write(
-            b"alive\n",
-            twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
-        );
         // Find the arguments. arg is a pointer to a Box::into_raw of a Box of ThreadSpawnArgs.
         let arg = unsafe {
             (arg as *const twizzler_runtime_api::ThreadSpawnArgs)
@@ -159,28 +155,21 @@ impl TlsGenMgr {
         mygen: Option<u64>,
         new_tcb_data: impl FnOnce() -> T,
     ) -> Option<*mut Tcb<T>> {
-        preinit_println!("HERE");
         let cc = monitor_api::get_comp_config();
-        preinit_println!("CC: {:p}", cc.get_tls_template());
         let template = unsafe { cc.get_tls_template().as_ref().unwrap() };
         if mygen.is_some_and(|mygen| mygen == template.gen) {
-            preinit_println!("BYE");
             return None;
         }
 
-        preinit_println!("x0");
         let new = unsafe { OUR_RUNTIME.get_alloc().alloc(template.layout) };
-        preinit_println!("x1");
         let tlsgen = self.map.entry(template.gen).or_insert_with(|| TlsGen {
             template: *template,
             thread_count: 0,
         });
         tlsgen.thread_count += 1;
-        preinit_println!("x2");
 
         unsafe {
             let tcb = tlsgen.template.init_new_tls_region(new, new_tcb_data());
-            preinit_println!("x3");
             Some(tcb)
         }
     }

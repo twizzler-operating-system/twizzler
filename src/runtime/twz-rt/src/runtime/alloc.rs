@@ -85,7 +85,6 @@ fn create_and_map() -> Option<(usize, ObjID)> {
     )
     .ok()?;
 
-    preinit_println!("CAM: a");
     if OUR_RUNTIME.state().contains(RuntimeState::IS_MONITOR) {
         // Map directly, avoiding complex machinery in the monitor that depends on an allocator.
         let slot = OUR_RUNTIME.allocate_slot().unwrap();
@@ -100,12 +99,10 @@ fn create_and_map() -> Option<(usize, ObjID)> {
         return Some((slot, id));
     }
 
-    preinit_println!("CAM: b");
     let addrs = monitor_api::monitor_rt_object_map(id, MapFlags::READ | MapFlags::WRITE)
         .unwrap()
         .ok();
 
-    preinit_println!("CAM: c");
     if let Some(addrs) = addrs {
         Some((addrs.slot, id))
     } else {
@@ -123,7 +120,6 @@ fn release_object(id: ObjID) {
 
 impl OomHandler for RuntimeOom {
     fn handle_oom(talc: &mut Talc<Self>, _layout: Layout) -> Result<(), ()> {
-        preinit_println!("OOM: a");
         let (slot, id) = create_and_map().ok_or(())?;
         // reserve an additional page size at the base of the object for future use. This behavior
         // may change as the runtime is fleshed out.
@@ -134,7 +130,6 @@ impl OomHandler for RuntimeOom {
         let base = slot * MAX_SIZE + HEAP_OFFSET;
         let top = (slot + 1) * MAX_SIZE - TOP_OFFSET;
 
-        preinit_println!("OOM: b");
         unsafe {
             if talc
                 .claim(Span::new(base as *mut _, top as *mut _))
@@ -145,7 +140,6 @@ impl OomHandler for RuntimeOom {
             }
         }
 
-        preinit_println!("OOM: c");
         if talc.oom_handler.list_obj.is_none() {
             talc.oom_handler.list_obj = Some(create_and_map().ok_or(())?);
             let slot = talc.oom_handler.list_obj.unwrap().0;
@@ -157,7 +151,6 @@ impl OomHandler for RuntimeOom {
                 unsafe { Vec::from_raw_parts_in(list_vec_start as *mut _, 0, list_vec_cap, na) };
         }
 
-        preinit_println!("OOM: d");
         talc.oom_handler.objects.push((slot, id));
 
         Ok(())
@@ -198,7 +191,6 @@ unsafe impl GlobalAlloc for LocalAllocator {
             let ptr = inner.as_mut().unwrap().do_alloc(layout);
             ptr
         } else {
-            preinit_println!("EARLY ALLOC");
             // Runtime is NOT ready. Use a basic spinlock to prevent calls to std.
             while !self.early_lock.swap(true, Ordering::SeqCst) {
                 core::hint::spin_loop()
@@ -212,7 +204,6 @@ unsafe impl GlobalAlloc for LocalAllocator {
                 .as_mut()
                 .unwrap()
                 .do_alloc(layout);
-            preinit_println!("EARLY ALLOC: ok");
             self.early_lock.store(false, Ordering::SeqCst);
             ret
         }

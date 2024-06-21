@@ -24,7 +24,3 @@ mod error;
 pub use error::*;
 
 pub mod preinit;
-
-pub fn test() {
-    runtime::thread::mgr::test();
-}

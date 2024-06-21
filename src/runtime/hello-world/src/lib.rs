@@ -16,11 +16,9 @@ pub fn main() {
 
     std::env::set_var("RUST_BACKTRACE", "1");
 
+    tracing::info!("doing secure gate test");
     let res = logboi::logboi_test(3);
     tracing::info!("==> {:?}", res);
-    tracing::trace!("test panic");
-
-    panic!("panic test");
 }
 
 /*

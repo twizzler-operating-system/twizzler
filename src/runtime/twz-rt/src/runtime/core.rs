@@ -116,7 +116,6 @@ impl CoreRuntime for ReferenceRuntime {
 
         // Step 3: call into libstd to finish setting up the standard library and call main
         let ba = build_basic_aux(aux_slice);
-        preinit_println!("STD_ENTRY: {:p}", std_entry);
         let ret = unsafe { std_entry(ba) };
         self.exit(ret.code);
     }
@@ -128,14 +127,12 @@ impl CoreRuntime for ReferenceRuntime {
         self.set_runtime_ready();
 
         if !self.state().contains(RuntimeState::IS_MONITOR) {
-            preinit_println!("SIGNAL READY");
             let ret = match monitor_api::monitor_rt_comp_ctrl(
                 monitor_api::MonitorCompControlCmd::RuntimeReady,
             ) {
                 SecGateReturn::Success(ret) => ret,
                 _ => self.abort(),
             };
-            preinit_println!("SIGNAL READY: DONE");
             ret
         } else {
             None
@@ -169,7 +166,6 @@ impl ReferenceRuntime {
     }
 
     fn init_for_compartment(&self, init_info: &CompartmentInitInfo) {
-        preinit_println!("0");
         unsafe {
             preinit_unwrap(
                 monitor_api::set_comp_config(
@@ -181,14 +177,10 @@ impl ReferenceRuntime {
             );
         }
 
-        preinit_println!("A: {:?}", TLS_GEN_MGR.reader_count());
-
         let tls = TLS_GEN_MGR
             .write()
             .get_next_tls_info(None, || RuntimeThreadControl::new(0));
         twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
-        preinit_println!("B");
-
         if init_info.ctor_array_start != 0 && init_info.ctor_array_len != 0 {
             let ctor_slice = unsafe {
                 core::slice::from_raw_parts(

@@ -21,7 +21,6 @@ pub fn map_object(
     id: ObjID,
     flags: MapFlags,
 ) -> Result<MappedObjectAddrs, MapError> {
-    preinit_println!("==> map_object: {:?} :: {:?}", id, comp);
     COMPMAN
         .map_object(comp.unwrap_or(MONITOR_INSTANCE_ID), id, flags)
         .map(|mh| mh.addrs())

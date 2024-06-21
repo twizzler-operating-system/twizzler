@@ -28,10 +28,6 @@ pub(super) struct ThreadManager {
     inner: Mutex<ThreadManagerInner>,
 }
 
-pub fn test() {
-    preinit_println!("==> LOCK: {}", THREAD_MGR.inner.is_locked());
-}
-
 impl ThreadManager {
     pub(super) fn new() -> Self {
         Self {
@@ -130,18 +126,13 @@ impl<'a> Drop for IdDropper<'a> {
 
 #[no_mangle]
 pub extern "C" fn __twz_rt_cross_compartment_entry() {
-    preinit_println!("IN CCE: {}", THREAD_MGR.inner.is_locked());
     let mut inner = THREAD_MGR.inner.lock();
-    preinit_println!("IN CCE: a");
     let id = inner.next_id().freeze();
-    preinit_println!("IN CCE: b");
     drop(inner);
-    preinit_println!("IN CCE: b2: {}", TLS_GEN_MGR.writer_count());
     let tls = TLS_GEN_MGR
         .write()
         .get_next_tls_info(None, || RuntimeThreadControl::new(id))
         .unwrap();
-    preinit_println!("IN CCE: c");
     twizzler_abi::syscall::sys_thread_settls(tls as u64);
 }
 

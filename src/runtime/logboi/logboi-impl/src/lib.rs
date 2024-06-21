@@ -2,6 +2,7 @@
 
 #[secgate::secure_gate]
 pub fn logboi_test(x: u32) -> u32 {
+    println!("logboi got secure gate call ==> {}", x);
     x + 1
 }
 
