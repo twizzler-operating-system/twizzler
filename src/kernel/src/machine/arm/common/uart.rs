@@ -67,7 +67,7 @@ impl PL011 {
     }
 
     /// Configure the PL011 UART with desired baud, given the clock frequency
-    pub unsafe fn init(&self, baud: u32, clk: u32) {
+    pub unsafe fn init(&self, clk: u32, baud: u32) {
         // program the UART: (page 26/3-16)
         // disable UART
         {
@@ -103,7 +103,7 @@ impl PL011 {
         // int = (64 * brd - f) / 64 (integer division)
         // since f / 64 < 1, int = (64 * brd) / 64
         // f ~= to 6 remaining bits after division
-        let brd_scaled: u32 = 4 * clk / baud; // brd * 64
+        let brd_scaled: u32 = (4 * clk) / baud; // brd * 64
         let int: u32 = brd_scaled >> 6;
         let frac: u32 = brd_scaled & 0x3f;
 
