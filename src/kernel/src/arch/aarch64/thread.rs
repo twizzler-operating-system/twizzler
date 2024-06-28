@@ -12,7 +12,7 @@ use registers::interfaces::Writeable;
 use twizzler_abi::upcall::{UpcallFrame, UpcallInfo, UpcallTarget};
 
 use super::{exception::ExceptionContext, interrupt::DAIFMaskBits, syscall::Armv8SyscallContext};
-use crate::{memory::VirtAddr, thread::Thread};
+use crate::{memory::VirtAddr, processor::KERNEL_STACK_SIZE, thread::Thread};
 
 #[derive(Copy, Clone)]
 pub enum Registers {
@@ -190,9 +190,9 @@ impl Thread {
     }
 
     pub unsafe fn init(&mut self, entry: extern "C" fn()) {
-        let stack = self.kernel_stack.as_ptr() as *mut u64;
+        let stack = new_stack_top(self.kernel_stack.as_ptr() as usize, KERNEL_STACK_SIZE);
         // set the stack pointer as the last thing context (x30 + 1)
-        self.arch.context.sp = stack as u64;
+        self.arch.context.sp = stack.into();
         // set the link register as the second to last entry (x30)
         self.arch.context.lr = entry as u64;
         // by default interrupts are enabled (unmask the I bit)
