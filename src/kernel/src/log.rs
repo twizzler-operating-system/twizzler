@@ -340,11 +340,13 @@ pub fn _print_normal(args: ::core::fmt::Arguments) {
 }
 
 pub fn _print_emergency(args: ::core::fmt::Arguments) {
+    let istate = interrupt::disable();
     unsafe {
         EMERGENCY_CONSOLE
             .write_fmt(args)
             .expect("printing to serial failed");
     }
+    interrupt::set(istate);
 }
 
 #[macro_export]
