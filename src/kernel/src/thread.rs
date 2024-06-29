@@ -338,6 +338,12 @@ impl<'a> Drop for CriticalGuard<'a> {
 }
 
 pub fn exit(code: u64) -> ! {
+    logln!(
+        "thread {} :: {} exit: {}",
+        current_thread_ref().unwrap().id(),
+        current_thread_ref().unwrap().objid(),
+        code
+    );
     // TODO: we can do a quick sanity check here that we aren't holding any locks before we exit.
     {
         let th = current_thread_ref().unwrap();

@@ -109,9 +109,15 @@ struct SleepEvent {
 fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent, ThreadSyncError> {
     let (obj, offset) = get_obj(sleep.reference)?;
     let did_sleep = if matches!(sleep.reference, ThreadSyncReference::Virtual32(_)) {
-        obj.setup_sleep_word32(offset, sleep.op, sleep.value as u32, first_sleep)
+        obj.setup_sleep_word32(
+            offset,
+            sleep.op,
+            sleep.value as u32,
+            first_sleep,
+            sleep.flags,
+        )
     } else {
-        obj.setup_sleep_word(offset, sleep.op, sleep.value, first_sleep)
+        obj.setup_sleep_word(offset, sleep.op, sleep.value, first_sleep, sleep.flags)
     };
 
     Ok(SleepEvent {

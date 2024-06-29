@@ -60,6 +60,7 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> 
         thread.init(user_new_start);
     }
     let id = thread.control_object.object().id();
+    logln!("new thread: {} :: {}", thread.id(), id);
     schedule_new_thread(thread);
     Ok(id)
 }

@@ -22,9 +22,19 @@ pub enum ThreadSyncOp {
 
 impl ThreadSyncOp {
     /// Apply the operation to two values, returning the result.
-    pub fn check<T: Eq + PartialEq + Ord + PartialOrd>(&self, a: T, b: T) -> bool {
-        match self {
+    pub fn check<T: Eq + PartialEq + Ord + PartialOrd>(
+        &self,
+        a: T,
+        b: T,
+        flags: ThreadSyncFlags,
+    ) -> bool {
+        let res = match self {
             Self::Equal => a == b,
+        };
+        if flags.contains(ThreadSyncFlags::INVERT) {
+            !res
+        } else {
+            res
         }
     }
 }

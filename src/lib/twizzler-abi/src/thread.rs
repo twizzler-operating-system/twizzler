@@ -4,9 +4,12 @@ use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(feature = "kernel"))]
 use core::time::Duration;
 
-use crate::marker::BaseType;
 #[cfg(not(feature = "kernel"))]
 use crate::syscall::*;
+use crate::{
+    marker::BaseType,
+    syscall::{ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep},
+};
 #[allow(unused_imports)]
 use crate::{
     object::{ObjID, Protections},
@@ -123,6 +126,17 @@ impl ThreadRepr {
                 }
             }
         }
+    }
+
+    #[cfg(not(feature = "kernel"))]
+    /// Construct a [ThreadSyncSleep] that will sleep until execution state becomes `state`.
+    pub fn waitable_until(&self, state: ExecutionState) -> ThreadSyncSleep {
+        ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(&self.status),
+            state as u64,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::INVERT,
+        )
     }
 
     #[cfg(not(feature = "kernel"))]

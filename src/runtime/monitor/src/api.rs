@@ -91,10 +91,17 @@ pub fn compartment_ctrl(info: &GateCallInfo, cmd: MonitorCompControlCmd) -> Opti
             .flatten(),
 
         MonitorCompControlCmd::RuntimePostMain => {
-            let waiter = COMPMAN
-                .with_compartment(info.source_context().unwrap_or(MONITOR_INSTANCE_ID), |rc| {
+            let waiter = COMPMAN.with_compartment(
+                info.source_context().unwrap_or(MONITOR_INSTANCE_ID),
+                |rc| {
+                    rc.with_inner(|inner| {
+                        if inner.has_flag(COMP_IS_BINARY) {
+                            inner.set_flag(COMP_THREAD_CAN_EXIT)
+                        }
+                    });
                     rc.ready_waiter(COMP_THREAD_CAN_EXIT)
-                });
+                },
+            );
             if let Some(waiter) = waiter {
                 waiter.wait();
             }

@@ -11,16 +11,22 @@ use std::{
 use dynlink::tls::TlsRegion;
 use miette::IntoDiagnostic;
 use twizzler_abi::{
+    object::NULLPAGE_SIZE,
     syscall::{
-        sys_spawn, sys_thread_exit, sys_thread_resume_from_upcall, ThreadSyncSleep,
-        UpcallTargetSpawnOption,
+        sys_spawn, sys_thread_exit, sys_thread_resume_from_upcall, ThreadSyncFlags, ThreadSyncOp,
+        ThreadSyncSleep, UpcallTargetSpawnOption,
     },
+    thread::{ExecutionState, ThreadRepr},
     upcall::{UpcallFlags, UpcallFrame, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
 use twizzler_runtime_api::{CoreRuntime, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
 use twz_rt::RuntimeThreadControl;
 
-use crate::{api::MONITOR_INSTANCE_ID, compman::COMPMAN};
+use crate::{
+    api::MONITOR_INSTANCE_ID,
+    compman::COMPMAN,
+    mapman::{MapHandle, MapInfo},
+};
 
 pub const SUPER_UPCALL_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 pub const DEFAULT_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
@@ -31,11 +37,33 @@ use self::thread_cleaner::ThreadCleaner;
 
 mod thread_cleaner;
 
+struct ManagedThreadRepr {
+    handle: MapHandle,
+}
+
+impl ManagedThreadRepr {
+    fn new(handle: MapHandle) -> Self {
+        Self { handle }
+    }
+
+    pub fn get_repr(&self) -> &ThreadRepr {
+        let addr = self.handle.addrs().start + NULLPAGE_SIZE;
+        unsafe { (addr as *const ThreadRepr).as_ref().unwrap() }
+    }
+}
+
 #[allow(dead_code)]
 pub struct ManagedThread {
     pub id: ObjID,
+    pub repr: ManagedThreadRepr,
     super_stack: Box<[MaybeUninit<u8>]>,
     super_tls: TlsRegion,
+}
+
+impl core::fmt::Debug for ManagedThread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ManagedThread({})", self.id)
+    }
 }
 
 impl Drop for ManagedThread {
@@ -48,10 +76,17 @@ pub type ManagedThreadRef = Arc<ManagedThread>;
 
 impl ManagedThread {
     fn new(id: ObjID, super_stack: Box<[MaybeUninit<u8>]>) -> ManagedThreadRef {
+        // TODO
+        let repr = crate::mapman::map_object(MapInfo {
+            id,
+            flags: MapFlags::READ,
+        })
+        .unwrap();
         Arc::new(Self {
             id,
             super_stack,
             super_tls: todo!(),
+            repr: ManagedThreadRepr::new(repr),
         })
     }
 
@@ -102,10 +137,18 @@ impl ManagedThread {
             )
         }?;
 
+        // TODO
+        let repr = crate::mapman::map_object(MapInfo {
+            id,
+            flags: MapFlags::READ,
+        })
+        .unwrap();
+
         Ok(Self {
             id,
             super_stack,
             super_tls,
+            repr: ManagedThreadRepr::new(repr),
         })
     }
 
@@ -124,11 +167,11 @@ impl ManagedThread {
     }
 
     fn waitable_until_exit(&self) -> ThreadSyncSleep {
-        todo!()
+        self.repr.get_repr().waitable_until(ExecutionState::Exited)
     }
 
     fn has_exited(&self) -> bool {
-        todo!()
+        matches!(self.repr.get_repr().get_state(), ExecutionState::Exited)
     }
 }
 
