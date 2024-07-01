@@ -43,7 +43,7 @@ impl ContextEngine for Engine {
         &mut self,
         _unlib: &UnloadedLibrary,
     ) -> Option<dynlink::compartment::CompartmentId> {
-        Some(MONITOR_COMPARTMENT_ID)
+        todo!()
     }
 }
 

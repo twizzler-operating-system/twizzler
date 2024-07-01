@@ -87,6 +87,7 @@ impl Context {
         }
     }
 
+    /// Replace the callback engine for this context.
     pub fn replace_engine(&mut self, engine: Box<dyn ContextEngine + Send>) {
         self.engine = engine;
     }

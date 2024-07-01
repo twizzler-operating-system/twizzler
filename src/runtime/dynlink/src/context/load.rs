@@ -112,9 +112,6 @@ impl Context {
         unlib: UnloadedLibrary,
         idx: NodeIndex,
     ) -> Result<Library, DynlinkError> {
-        // At this point, all we know is a name. Ask the system implementation to use the name
-        // resolver to get a backing object from the name, and then map it for access (this
-        // will be the full ELF file data).
         let backing = self.engine.load_object(&unlib)?;
         let elf = backing.get_elf()?;
 

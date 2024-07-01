@@ -16,6 +16,8 @@ fn within_object(slot: usize, addr: usize) -> bool {
     addr >= slot * MAX_SIZE + NULLPAGE_SIZE && addr < (slot + 1) * MAX_SIZE - NULLPAGE_SIZE * 2
 }
 
+/// Load segments according to Twizzler requirements. Helper function for implementing a
+/// ContextEngine.
 pub fn load_segments(src: &Backing, ld: &[LoadDirective]) -> Result<Vec<Backing>, DynlinkError> {
     let create_spec = ObjectCreate::new(
         BackingType::Normal,

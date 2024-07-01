@@ -43,6 +43,8 @@ bitflags::bitflags! {
     }
 }
 
+/// A backing type for the dynamic linker. Contains a handle to an object, and abstractions
+/// for treating Twizzler objects as object files.
 #[derive(Clone)]
 pub struct Backing {
     obj: twizzler_runtime_api::ObjectHandle,
@@ -63,6 +65,7 @@ impl Backing {
         )
     }
 
+    /// Get the underlying object handle.
     pub fn object(&self) -> &ObjectHandle {
         &self.obj
     }
