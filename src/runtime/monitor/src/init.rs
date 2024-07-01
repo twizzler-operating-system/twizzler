@@ -1,19 +1,16 @@
-use dynlink::{
-    context::{runtime::RuntimeInitInfo, Context},
-    engines::Engine,
-};
+use dynlink::context::{runtime::RuntimeInitInfo, Context};
 use twizzler_runtime_api::AuxEntry;
 
 static mut AUX: Option<*const RuntimeInitInfo> = None;
 
 pub(crate) struct InitDynlinkContext {
-    pub ctx: *mut Context<Engine>,
+    pub ctx: *mut Context,
     pub root: String,
 }
 
 pub(crate) fn bootstrap_dynlink_context() -> Option<InitDynlinkContext> {
     let info = unsafe { AUX.unwrap().as_ref().unwrap() };
-    let ctx = info.ctx as *mut Context<Engine>;
+    let ctx = info.ctx as *mut Context;
     let root = info.root_name.clone();
 
     Some(InitDynlinkContext { ctx, root })

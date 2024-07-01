@@ -11,8 +11,7 @@ use tracing::{error, trace};
 use twizzler_runtime_api::TlsIndex;
 
 use crate::{
-    arch::MINIMUM_TLS_ALIGNMENT, compartment::Compartment, library::BackingData, DynlinkError,
-    DynlinkErrorKind,
+    arch::MINIMUM_TLS_ALIGNMENT, compartment::Compartment, DynlinkError, DynlinkErrorKind,
 };
 
 #[derive(Clone)]
@@ -109,9 +108,9 @@ impl TlsInfo {
         id
     }
 
-    pub(crate) fn allocate<T, B: BackingData>(
+    pub(crate) fn allocate<T>(
         &self,
-        _comp: &Compartment<B>,
+        _comp: &Compartment,
         alloc_base: NonNull<u8>,
         tcb: T,
     ) -> Result<TlsRegion, DynlinkError> {

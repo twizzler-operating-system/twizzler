@@ -4,12 +4,11 @@ use tracing::{debug, trace};
 
 use super::Compartment;
 use crate::{
-    library::BackingData,
     tls::{TlsInfo, TlsModId, TlsModule, TlsRegion},
     DynlinkError, DynlinkErrorKind,
 };
 
-impl<Backing: BackingData> Compartment<Backing> {
+impl Compartment {
     pub(crate) fn insert(&mut self, tm: TlsModule) -> TlsModId {
         let prev_gen = self.tls_gen;
         self.tls_gen += 1;

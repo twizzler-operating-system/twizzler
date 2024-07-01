@@ -5,7 +5,7 @@ use std::{
     ptr::NonNull,
 };
 
-use dynlink::{compartment::CompartmentId, library::BackingData};
+use dynlink::compartment::CompartmentId;
 use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use talc::{ErrOnOom, Span, Talc};
 use twizzler_abi::{
@@ -80,9 +80,9 @@ pub(crate) fn make_new_comp_alloc_object() -> ObjectHandle {
 impl Comp {
     /// Construct a new compartment. This can fail, since it allocates memory within the compartment
     /// (for the TLS template and shared config data).
-    pub fn new<Backing: BackingData>(
+    pub fn new(
         sctx_id: ObjID,
-        compartment: &mut dynlink::compartment::Compartment<Backing>,
+        compartment: &mut dynlink::compartment::Compartment,
     ) -> miette::Result<Self> {
         // First make a new allocation object and initialize it.
         let comp_alloc_obj = make_new_comp_alloc_object();
