@@ -2891,10 +2891,6 @@ name = "syscall_encode_traits"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f81b782ed6cc937aec2680f2b03bee5c94ca8d2076adeff2a6779093a0e00919"
-dependencies = [
- "compiler_builtins",
- "rustc-std-workspace-core",
-]
 
 [[package]]
 name = "system-configuration"
@@ -3207,8 +3203,6 @@ dependencies = [
  "num_enum",
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
- "syscall_encode_macros",
- "syscall_encode_traits",
  "talc",
  "thiserror-no-std",
  "twizzler-runtime-api",

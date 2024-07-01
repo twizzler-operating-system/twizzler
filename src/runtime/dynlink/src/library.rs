@@ -6,7 +6,6 @@ use elf::{
     abi::{PT_PHDR, PT_TLS, STB_WEAK},
     endian::NativeEndian,
     segment::{Elf64_Phdr, ProgramHeader},
-    symbol::Symbol,
     ParseError,
 };
 use petgraph::stable_graph::NodeIndex;
@@ -14,8 +13,8 @@ use secgate::RawSecGateInfo;
 use twizzler_runtime_api::AuxEntry;
 
 use crate::{
-    compartment::CompartmentId, symbol::RelocatedSymbol, tls::TlsModId, DynlinkError,
-    DynlinkErrorKind,
+    compartment::CompartmentId, engines::Backing, symbol::RelocatedSymbol, tls::TlsModId,
+    DynlinkError, DynlinkErrorKind,
 };
 
 pub(crate) enum RelocState {
@@ -25,32 +24,6 @@ pub(crate) enum RelocState {
     PartialRelocation,
     /// Relocation completed successfully.
     Relocated,
-}
-
-/// The core trait that represents loaded or mapped data.
-pub trait BackingData: Clone {
-    /// Get a pointer to the start of a region, and a length, denoting valid memory representing
-    /// this object. The memory region is valid.
-    fn data(&self) -> (*mut u8, usize);
-
-    fn load_addr(&self) -> usize;
-
-    /// Get the data as a slice.
-    fn slice(&self) -> &[u8] {
-        let data = self.data();
-        // Safety: a loaded library may have a slice constructed of its backing data.
-        unsafe { core::slice::from_raw_parts(data.0, data.1) }
-    }
-
-    type InnerType;
-    /// Get the inner implementation type.
-    fn to_inner(self) -> Self::InnerType;
-    fn inner(&self) -> &Self::InnerType;
-
-    /// Get the ELF file for this backing.
-    fn get_elf(&self) -> Result<elf::ElfBytes<'_, NativeEndian>, ParseError> {
-        elf::ElfBytes::minimal_parse(self.slice())
-    }
 }
 
 #[repr(C)]
@@ -94,7 +67,7 @@ impl Display for LibraryId {
 
 #[repr(C)]
 /// A loaded library. It may be in various relocation states.
-pub struct Library<Backing: BackingData> {
+pub struct Library {
     /// Name of this library.
     pub name: String,
     /// Node index for the dependency graph.
@@ -119,7 +92,7 @@ pub struct Library<Backing: BackingData> {
 }
 
 #[allow(dead_code)]
-impl<Backing: BackingData> Library<Backing> {
+impl Library {
     pub(crate) fn new(
         name: String,
         idx: NodeIndex,
@@ -222,10 +195,7 @@ impl<Backing: BackingData> Library<Backing> {
         }))
     }
 
-    pub(crate) fn lookup_symbol(
-        &self,
-        name: &str,
-    ) -> Result<RelocatedSymbol<'_, Backing>, DynlinkError> {
+    pub(crate) fn lookup_symbol(&self, name: &str) -> Result<RelocatedSymbol<'_>, DynlinkError> {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
 
@@ -304,7 +274,7 @@ impl<Backing: BackingData> Library<Backing> {
         .into())
     }
 
-    pub(crate) fn is_local_or_secgate_from(&self, other: &Library<Backing>, name: &str) -> bool {
+    pub(crate) fn is_local_or_secgate_from(&self, other: &Library, name: &str) -> bool {
         other.comp_id == self.comp_id || self.is_secgate(name)
     }
 
@@ -325,7 +295,7 @@ impl<Backing: BackingData> Library<Backing> {
     }
 }
 
-impl<B: BackingData> Debug for Library<B> {
+impl Debug for Library {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Library")
             .field("name", &self.name)
@@ -336,7 +306,7 @@ impl<B: BackingData> Debug for Library<B> {
     }
 }
 
-impl<B: BackingData> core::fmt::Display for Library<B> {
+impl core::fmt::Display for Library {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}::{}", &self.comp_name, &self.name)
     }

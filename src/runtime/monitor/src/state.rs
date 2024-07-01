@@ -4,41 +4,66 @@ use std::{
 };
 
 use dynlink::{
-    compartment::Compartment,
+    compartment::{Compartment, MONITOR_COMPARTMENT_ID},
     context::Context,
-    engines::{Backing, Engine},
-    library::BackingData,
+    engines::{Backing, ContextEngine},
+    library::UnloadedLibrary,
+    DynlinkError, DynlinkErrorKind,
 };
 use secgate::GateCallInfo;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_object::ObjID;
-use twizzler_runtime_api::LibraryId;
-use twz_rt::preinit_println;
+use twizzler_runtime_api::{LibraryId, MapFlags};
 
-use crate::{compartment::Comp, gates::LibraryInfo, init::InitDynlinkContext};
+use crate::{bootstrap_name_res, compartment::Comp, gates::LibraryInfo, init::InitDynlinkContext};
 
 pub struct MonitorState {
-    pub dynlink: &'static mut Context<Engine>,
+    pub dynlink: &'static mut Context,
     pub(crate) root: String,
 
     pub comps: HashMap<ObjID, Comp>,
 }
 
+struct Engine;
+
+impl ContextEngine for Engine {
+    fn load_segments(
+        &mut self,
+        src: &Backing,
+        ld: &[dynlink::engines::LoadDirective],
+    ) -> Result<Vec<Backing>, dynlink::DynlinkError> {
+        dynlink::engines::twizzler::load_segments(src, ld)
+    }
+
+    fn load_object(&mut self, unlib: &UnloadedLibrary) -> Result<Backing, DynlinkError> {
+        bootstrap_name_res(&unlib.name).ok_or(DynlinkErrorKind::NewBackingFail.into())
+    }
+
+    fn select_compartment(
+        &mut self,
+        _unlib: &UnloadedLibrary,
+    ) -> Option<dynlink::compartment::CompartmentId> {
+        Some(MONITOR_COMPARTMENT_ID)
+    }
+}
+
 impl MonitorState {
     pub(crate) fn new(init: InitDynlinkContext) -> Self {
-        Self {
+        let this = Self {
             dynlink: unsafe { init.ctx.as_mut().unwrap() },
             root: init.root,
             comps: Default::default(),
-        }
+        };
+        this.dynlink.replace_engine(Box::new(Engine));
+        this
     }
 
-    pub(crate) fn get_monitor_compartment_mut(&mut self) -> &mut Compartment<Backing> {
+    pub(crate) fn get_monitor_compartment_mut(&mut self) -> &mut Compartment {
         let mid = self.dynlink.lookup_compartment("monitor").unwrap();
         self.dynlink.get_compartment_mut(mid).unwrap()
     }
 
-    pub(crate) fn get_nth_library(&self, n: usize) -> Option<&dynlink::library::Library<Backing>> {
+    pub(crate) fn get_nth_library(&self, n: usize) -> Option<&dynlink::library::Library> {
         // TODO: this sucks.
         let mut all = vec![];
         // TODO
@@ -96,7 +121,7 @@ pub fn __monitor_rt_get_library_info(info: &GateCallInfo, id: LibraryId) -> Opti
         //return None;
     }
 
-    let handle = lib.full_obj.inner();
+    let handle = lib.full_obj.object();
 
     let next_lib = state
         .dynlink
