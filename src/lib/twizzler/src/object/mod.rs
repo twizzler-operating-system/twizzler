@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use twizzler_runtime_api::{MapError, MapFlags, ObjID, ObjectHandle};
 
-struct Object<Base: BaseType> {
+pub struct Object<Base: BaseType> {
     handle: ObjectHandle,
     _pd: PhantomData<*const Base>,
 }
@@ -17,4 +17,4 @@ impl<Base: BaseType> Object<Base> {
     }
 }
 
-trait BaseType {}
+pub trait BaseType {}
