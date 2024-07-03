@@ -22,6 +22,7 @@ Installing the tools:
   3. sudo apt install cmake
   4. sudo apt install ninja-build
   5. Install Rust https://www.rust-lang.org/tools/install
+  6. Clone submodules: `git submodule update --init`
 
 Building Twizzler is done in several steps:
 
