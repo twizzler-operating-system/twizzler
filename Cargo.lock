@@ -2107,7 +2107,7 @@ name = "nvme"
 version = "0.1.0"
 dependencies = [
  "modular-bitfield",
- "volatile_cell",
+ "volatile",
 ]
 
 [[package]]
@@ -2582,12 +2582,6 @@ checksum = "1ed5f33bb98eace335c13cdd159fbfc73ce203b597981a76832dfbb9cbd8101b"
 dependencies = [
  "log",
 ]
-
-[[package]]
-name = "rust-libcore"
-version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae7a33830cc02d03ae1e50057d0e4e4b1a84be09bfb158bf95e9c3f3373aa453"
 
 [[package]]
 name = "rustc-demangle"
@@ -3607,15 +3601,6 @@ name = "volatile"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9eaac9f9d9b7ae00cdd43e21b15e58ccacd903e6d29131d7536765a61969d25e"
-
-[[package]]
-name = "volatile_cell"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e89c44c56cc47ef6c4fccb52a3a5c48c4306929294fdf4ffe67321a0071bba72"
-dependencies = [
- "rust-libcore",
-]
 
 [[package]]
 name = "vte"
