@@ -94,14 +94,17 @@ pub struct ObjectCreate {
 }
 impl ObjectCreate {
     /// Build a new object create specification.
-    pub fn new(
+    pub const fn new(
         bt: BackingType,
         lt: LifetimeType,
         kuid: Option<ObjID>,
         flags: ObjectCreateFlags,
     ) -> Self {
         Self {
-            kuid: kuid.unwrap_or_else(|| 0.into()),
+            kuid: match kuid {
+                Some(id) => id,
+                None => ObjID::new(0),
+            },
             bt,
             lt,
             flags,

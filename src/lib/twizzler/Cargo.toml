@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 twizzler-runtime-api = { path = "../twizzler-runtime-api" }
+twizzler-abi = { path = "../twizzler-abi" }
