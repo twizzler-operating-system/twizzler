@@ -25,6 +25,7 @@ pub mod log;
 pub mod arch;
 mod clock;
 mod condvar;
+mod crypto;
 mod device;
 mod idcounter;
 mod image;
