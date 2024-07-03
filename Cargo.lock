@@ -3157,10 +3157,6 @@ name = "syscall_encode_traits"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f81b782ed6cc937aec2680f2b03bee5c94ca8d2076adeff2a6779093a0e00919"
-dependencies = [
- "compiler_builtins",
- "rustc-std-workspace-core",
-]
 
 [[package]]
 name = "system-configuration"
@@ -3467,28 +3463,6 @@ version = "0.1.0"
 dependencies = [
  "twizzler-abi",
  "twizzler-runtime-api",
-]
-
-[[package]]
-name = "twizzler-abi"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.6.0",
- "bitset-core",
- "cfg-if 1.0.0",
- "compiler_builtins",
- "lazy_static",
- "libc",
- "num_enum",
- "rustc-std-workspace-alloc",
- "rustc-std-workspace-core",
- "stable-vec",
- "syscall_encode_macros",
- "syscall_encode_traits",
- "talc",
- "thiserror-no-std",
- "twizzler-runtime-api",
- "volatile",
 ]
 
 [[package]]
