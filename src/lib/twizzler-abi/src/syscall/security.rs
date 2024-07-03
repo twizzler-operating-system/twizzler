@@ -32,6 +32,9 @@ pub enum SctxAttachError {
     /// Permission denied.
     #[error("permission denied")]
     PermissionDenied = 3,
+    /// Permission denied.
+    #[error("already attached")]
+    AlreadyAttached = 4,
 }
 
 impl core::error::Error for SctxAttachError {}
@@ -43,7 +46,7 @@ pub fn sys_sctx_attach(id: ObjID) -> Result<(), SctxAttachError> {
     convert_codes_to_result(
         code,
         val,
-        |c, _| c == 0,
+        |c, _| c == 1,
         |_, _| (),
         |_, v| SctxAttachError::from(v),
     )

@@ -57,6 +57,8 @@ pub enum ThreadControl {
     ResumeFromUpcall = 16,
     /// Get the repr ID of the calling thread.
     GetSelfId = 17,
+    /// Get the ID of the active security context.
+    GetActiveSctxId = 18,
 }
 
 /// Exit the thread. The code will be written to the [crate::thread::ThreadRepr] for the current
@@ -88,6 +90,17 @@ pub fn sys_thread_settls(tls: u64) {
 /// Get the repr ID of the calling thread.
 pub fn sys_thread_self_id() -> ObjID {
     let (hi, lo) = unsafe { raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::GetSelfId as u64]) };
+    ObjID::new_from_parts(hi, lo)
+}
+
+/// Get the active security context ID for the calling thread.
+pub fn sys_thread_active_sctx_id() -> ObjID {
+    let (hi, lo) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[ThreadControl::GetActiveSctxId as u64],
+        )
+    };
     ObjID::new_from_parts(hi, lo)
 }
 

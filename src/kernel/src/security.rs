@@ -137,6 +137,7 @@ impl SecCtxMgr {
         let mut inner = self.inner.lock();
         if let Some(mut ctx) = inner.inactive.remove(&id) {
             core::mem::swap(&mut ctx, &mut inner.active);
+            *self.active_id.lock() = id;
             // ctx now holds the old active context
             inner.inactive.insert(ctx.id(), ctx);
             SwitchResult::Switched
@@ -146,12 +147,17 @@ impl SecCtxMgr {
     }
 
     /// Attach a security context.
-    pub fn attach(&self, sctx: SecurityContextRef) {
-        self.inner.lock().inactive.insert(sctx.id(), sctx);
+    pub fn attach(&self, sctx: SecurityContextRef) -> Result<(), SctxAttachError> {
+        let mut inner = self.inner.lock();
+        if inner.active.id() == sctx.id() || inner.inactive.contains_key(&sctx.id()) {
+            return Err(SctxAttachError::AlreadyAttached);
+        }
+        inner.inactive.insert(sctx.id(), sctx);
+        Ok(())
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Debug)]
 /// Possible results of switching.
 pub enum SwitchResult {
     /// No switch was needed.
