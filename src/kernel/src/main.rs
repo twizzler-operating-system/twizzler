@@ -49,6 +49,7 @@ mod thread;
 mod time;
 mod userinit;
 pub mod utils;
+mod rand;
 extern crate alloc;
 
 extern crate bitflags;
