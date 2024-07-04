@@ -11,13 +11,11 @@ use sha2::{
     Digest, Sha256,
 };
 
-pub fn sha256(
-    input: impl AsRef<[u8]>,
-) -> GenericArray<u8, UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>, B0>> {
+pub fn sha256(input: impl AsRef<[u8]>) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(input);
     let res = hasher.finalize();
-    res
+    res.into()
 }
 
 pub fn sign(private_key: &SigningKey, message: &[u8]) -> Signature {
