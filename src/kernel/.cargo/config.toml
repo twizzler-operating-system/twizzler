@@ -7,6 +7,8 @@ rustflags = [
   "-C",
   "link-arg=--no-gc-sections",
   "-C",
+  "target-feature=+rdrand",                   # not supported when running qemu on ARM chips
+  "-C",
   "debuginfo=2",
 ]
 
