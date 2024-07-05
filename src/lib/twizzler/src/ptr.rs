@@ -13,6 +13,10 @@ impl<T> InvPtr<T> {
     pub fn set(&mut self, builder: InvPtrBuilder<T>) {
         todo!()
     }
+
+    pub fn raw(&self) -> u64 {
+        self.bits
+    }
 }
 
 pub struct InvPtrBuilder<T> {

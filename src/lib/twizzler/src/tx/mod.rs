@@ -1,8 +1,4 @@
-use twizzler_runtime_api::ObjectHandle;
-
-pub struct TxHandle<'obj> {
-    object: &'obj ObjectHandle,
-}
+pub trait TxHandle<'obj> {}
 
 pub type TxResult<T, E> = Result<T, TxError<E>>;
 
@@ -16,15 +12,15 @@ pub enum TxError<E> {
 pub struct TxObjectCell<T>(T);
 
 impl<T> TxObjectCell<T> {
-    pub fn as_ref(&self, tx: &TxHandle<'_>) -> &T {
+    pub fn as_ref<'a>(&'a self, tx: impl TxHandle<'a>) -> &T {
         todo!()
     }
 
-    pub fn as_mut(&self, tx: &mut TxHandle<'_>) -> &mut T {
+    pub fn as_mut<'a>(&'a self, tx: impl TxHandle<'a>) -> &mut T {
         todo!()
     }
 
-    pub fn write(&self, tx: &mut TxHandle<'_>, data: T) {
+    pub fn write<'a>(&'a self, tx: impl TxHandle<'a>, data: T) {
         todo!()
     }
 }

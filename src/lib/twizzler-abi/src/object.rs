@@ -23,3 +23,11 @@ bitflags::bitflags! {
 
 #[cfg(feature = "runtime")]
 pub(crate) use crate::runtime::object::InternalObject;
+
+#[inline]
+pub fn split_invariant_pointer(raw: u64) -> (usize, u64) {
+    (
+        ((raw & !0x0000ffffffffffff) >> 48) as usize,
+        raw & 0x0000ffffffffffff,
+    )
+}
