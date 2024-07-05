@@ -55,6 +55,7 @@
 
 use std::marker::PhantomData;
 
+use twizzler_abi::meta::MetaInfo;
 use twizzler_runtime_api::{MapError, MapFlags, ObjID, ObjectHandle};
 
 use crate::{
@@ -65,44 +66,15 @@ use crate::{
 mod builder;
 pub use builder::ObjectBuilder;
 
-pub struct Object<Base: BaseType> {
-    handle: ObjectHandle,
-    _pd: PhantomData<*const Base>,
-}
+use self::fot::FotEntry;
+pub mod fot;
+pub mod meta;
 
-impl<Base: BaseType> Object<Base> {
-    pub fn base(&self) -> BaseRef<'_, Base> {
-        todo!()
-    }
+mod base;
+pub use base::BaseType;
 
-    pub fn open(&self, id: ObjID, flags: MapFlags) -> Result<Self, MapError> {
-        todo!()
-    }
+mod ctrl;
+mod objtypes;
+mod stat;
 
-    pub fn tx<TxFn, Ret, Err>(&self, txfn: TxFn) -> TxResult<Ret, Err>
-    where
-        TxFn: FnOnce(TxHandle<'_>) -> Result<Ret, Err>,
-    {
-        todo!()
-    }
-}
-
-pub trait BaseType {}
-
-pub struct BaseRef<'a, Base: BaseType> {
-    ptr: &'a Base,
-}
-
-impl<'a, Base: BaseType> From<BaseRef<'a, Base>> for InvPtrBuilder<Base> {
-    fn from(value: BaseRef<'a, Base>) -> Self {
-        todo!()
-    }
-}
-
-impl<'a, Base: BaseType> std::ops::Deref for BaseRef<'a, Base> {
-    type Target = Base;
-
-    fn deref(&self) -> &Self::Target {
-        self.ptr
-    }
-}
+pub use objtypes::*;
