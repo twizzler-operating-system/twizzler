@@ -53,20 +53,9 @@
 //!     Bar { x: foo_ptr }
 //! }).unwrap();
 
-use std::marker::PhantomData;
-
-use twizzler_abi::meta::MetaInfo;
-use twizzler_runtime_api::{MapError, MapFlags, ObjID, ObjectHandle};
-
-use crate::{
-    ptr::InvPtrBuilder,
-    tx::{TxHandle, TxResult},
-};
-
 mod builder;
 pub use builder::ObjectBuilder;
 
-use self::fot::FotEntry;
 pub mod fot;
 pub mod meta;
 
