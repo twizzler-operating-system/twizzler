@@ -1,5 +1,9 @@
 pub trait TxHandle<'obj> {}
 
+pub trait ReadHandle<'obj> {}
+
+impl<'o, T: TxHandle<'o>> ReadHandle<'o> for T {}
+
 pub type TxResult<T, E> = Result<T, TxError<E>>;
 
 pub enum TxError<E> {
@@ -13,6 +17,10 @@ pub struct TxObjectCell<T>(T);
 
 impl<T> TxObjectCell<T> {
     pub fn as_ref<'a>(&'a self, tx: impl TxHandle<'a>) -> &T {
+        todo!()
+    }
+
+    pub fn read<'a>(&'a self, rh: impl ReadHandle<'a>) -> T {
         todo!()
     }
 
