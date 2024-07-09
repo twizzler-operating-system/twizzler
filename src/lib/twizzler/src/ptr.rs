@@ -19,6 +19,14 @@ unsafe impl<T: Sync> Sync for InvPtr<T> {}
 unsafe impl<T: Sync> Send for InvPtr<T> {}
 
 impl<T> InvPtr<T> {
+    pub fn null() -> Self {
+        Self {
+            bits: 0,
+            _pd: PhantomData,
+            _pp: PhantomPinned,
+        }
+    }
+
     pub fn set(&mut self, builder: InvPtrBuilder<T>) {
         todo!()
     }
