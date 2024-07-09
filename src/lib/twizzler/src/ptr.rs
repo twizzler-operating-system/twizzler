@@ -6,12 +6,17 @@ use std::{
 
 use twizzler_runtime_api::{ObjID, ObjectHandle};
 
+// TODO: niche optimization -- sizeof Option<InvPtr<T>> == 8 -- null => None.
 #[repr(transparent)]
 pub struct InvPtr<T> {
     bits: u64,
     _pd: PhantomData<*const T>,
     _pp: PhantomPinned,
 }
+
+// Safety: These are the standard library rules for references (https://doc.rust-lang.org/std/primitive.reference.html).
+unsafe impl<T: Sync> Sync for InvPtr<T> {}
+unsafe impl<T: Sync> Send for InvPtr<T> {}
 
 impl<T> InvPtr<T> {
     pub fn set(&mut self, builder: InvPtrBuilder<T>) {
