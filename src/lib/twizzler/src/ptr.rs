@@ -27,7 +27,7 @@ impl<T> InvPtr<T> {
         }
     }
 
-    pub fn set(&mut self, builder: InvPtrBuilder<T>) {
+    pub fn set(&mut self, builder: impl Into<InvPtrBuilder<T>>) {
         todo!()
     }
 
