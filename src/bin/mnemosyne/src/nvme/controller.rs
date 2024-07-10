@@ -38,7 +38,6 @@ pub struct NvmeController {
 }
 
 pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
-
     let bar = ctrl.device_ctrl.device().get_mmio(1).unwrap();
     let mut reg = unsafe {
         bar.get_mmio_offset_mut::<nvme::ds::controller::properties::ControllerProperties>(0)
@@ -142,25 +141,28 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
         caq,
     );
     let req = Arc::new(Requester::new(req));
-    
+
     std::thread::spawn(|| twizzler_async::run(std::future::pending::<()>()));
 
     let req2 = req.clone();
     let ctrl2 = ctrl.clone();
-    let task = twizzler_async::run(async {Task::spawn(async move {
-        loop {
-            let _i = int.next().await;
-            //println!("got interrupt");
-            //println!("=== admin ===");
-            let resps = req2.driver().check_completions();
-            req2.finish(&resps);
-            for r in ctrl2.requester.read().unwrap().iter() {
-                //println!("=== i/o ===");
-                let c = r.driver().check_completions();
-                r.finish(&c);
+    let task = twizzler_async::run(async {
+        Task::spawn(async move {
+            loop {
+                let _i = int.next().await;
+                //println!("got interrupt");
+                //println!("=== admin ===");
+                let resps = req2.driver().check_completions();
+                req2.finish(&resps);
+                for r in ctrl2.requester.read().unwrap().iter() {
+                    //println!("=== i/o ===");
+                    let c = r.driver().check_completions();
+                    r.finish(&c);
+                }
             }
-        }
-    })}).detach();
+        })
+    })
+    .detach();
 
     //ctrl.int_tasks.lock().unwrap().push(task);
 
@@ -233,11 +235,8 @@ impl NvmeController {
 
         const C_STRIDE: usize = size_of::<CommonCompletion>();
         const S_STRIDE: usize = size_of::<CommonCommand>();
-        let sq = nvme::queue::SubmissionQueue::new(
-            smem, 
-            queue_len.try_into().unwrap(), 
-            S_STRIDE
-        ).unwrap();
+        let sq = nvme::queue::SubmissionQueue::new(smem, queue_len.try_into().unwrap(), S_STRIDE)
+            .unwrap();
 
         let cmem = unsafe {
             core::slice::from_raw_parts_mut(
@@ -246,11 +245,8 @@ impl NvmeController {
             )
         };
 
-        let cq = nvme::queue::CompletionQueue::new(
-            cmem, 
-            queue_len.try_into().unwrap(), 
-            C_STRIDE
-        ).unwrap();
+        let cq = nvme::queue::CompletionQueue::new(cmem, queue_len.try_into().unwrap(), C_STRIDE)
+            .unwrap();
 
         {
             // TODO: we should save these NvmeDmaRegions so they don't drop (dropping is okay, but

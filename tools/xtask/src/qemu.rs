@@ -1,5 +1,5 @@
 use std::{
-    fs::{File, OpenOptions},
+    fs::OpenOptions,
     path::Path,
     process::{Command, ExitStatus},
 };

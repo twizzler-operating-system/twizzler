@@ -1,23 +1,22 @@
 use std::{
-    future,
+    future, io,
+    io::{Error, ErrorKind},
     mem::size_of,
     sync::{Arc, Mutex, RwLock},
-    io::Error, io::ErrorKind
 };
 
-use std::io;
-
-use layout::{io::SeekFrom, ApplyLayout, Frame, Read, Seek, Write, IO};
-use crate::nvme::{init_nvme, NvmeController};
-
-use twizzler_async::block_on;
-
-use layout::{collections::raw::RawBytes, io::StdIO, Encode, SourcedDynamic};
+use layout::{
+    collections::raw::RawBytes,
+    io::{SeekFrom, StdIO},
+    ApplyLayout, Encode, Frame, Read, Seek, SourcedDynamic, Write, IO,
+};
 use lethe_gadget_fat::{
     filesystem::FileSystem,
     schema::{self, FATEntry, Superblock},
 };
+use twizzler_async::block_on;
 
+use crate::nvme::{init_nvme, NvmeController};
 
 pub struct Disk {
     ctrl: Arc<NvmeController>,
@@ -28,7 +27,7 @@ impl Disk {
     pub fn new() -> Result<Disk, ()> {
         Ok(Disk {
             ctrl: block_on(init_nvme()),
-            pos: 0
+            pos: 0,
         })
     }
 }
@@ -83,15 +82,19 @@ impl Read for Disk {
             }
 
             let left = self.pos % PAGE_SIZE;
-            let right = if buf.len() - bytes_written > PAGE_SIZE {PAGE_SIZE} else {left + buf.len() - bytes_written}; // If I want to write more than the boundary of a page
+            let right = if left + buf.len() - bytes_written > PAGE_SIZE {
+                PAGE_SIZE
+            } else {
+                left + buf.len() - bytes_written
+            }; // If I want to write more than the boundary of a page
             block_on(self.ctrl.read_page(lba as u64, &mut read_buffer, 0));
 
-            for p in left..right {
-                buf[bytes_written] = read_buffer[p];
-                bytes_written+=1;
-            }
+            let bytes_to_read = right - left;
+            buf[bytes_written..bytes_written + bytes_to_read]
+                .copy_from_slice(&read_buffer[left..right]);
 
-            self.pos += right - left;
+            bytes_written += bytes_to_read;
+            self.pos += bytes_to_read;
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 
@@ -109,26 +112,30 @@ impl Write for Disk {
         let mut lba = (self.pos / PAGE_SIZE) * 8;
         let mut bytes_read = 0;
         let mut write_buffer: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
-        
+
         while bytes_read != buf.len() {
             if lba >= LBA_COUNT {
                 break;
             }
-            
-            let temp_pos: u64 = self.pos.try_into().unwrap();
-            self.seek(SeekFrom::Start(temp_pos & !PAGE_MASK as u64)); 
-            self.read_exact(&mut write_buffer)?;
-            self.seek(SeekFrom::Start(temp_pos)); 
 
             let left = self.pos % PAGE_SIZE;
-            let right = if left + buf.len() - bytes_read > PAGE_SIZE {PAGE_SIZE} else {left + buf.len() - bytes_read}; 
-            for p in left..right {
-                write_buffer[p] = buf[bytes_read];
-                bytes_read+=1;
+            let right = if left + buf.len() - bytes_read > PAGE_SIZE {
+                PAGE_SIZE
+            } else {
+                left + buf.len() - bytes_read
+            };
+            if right - left != PAGE_SIZE {
+                let temp_pos: u64 = self.pos.try_into().unwrap();
+                self.seek(SeekFrom::Start(temp_pos & !PAGE_MASK as u64));
+                self.read_exact(&mut write_buffer)?;
+                self.seek(SeekFrom::Start(temp_pos));
             }
 
+            write_buffer[left..right].copy_from_slice(&buf[bytes_read..bytes_read + right - left]);
+            bytes_read += right - left;
+
             self.pos += right - left;
-            
+
             block_on(self.ctrl.write_page(lba as u64, &mut write_buffer, 0));
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
@@ -157,8 +164,7 @@ impl Seek for Disk {
 
         if new_pos > DISK_SIZE.try_into().unwrap() || new_pos < 0 {
             Err(Error::new(ErrorKind::AddrInUse, "oh no!"))
-        }
-        else {
+        } else {
             self.pos = new_pos as usize;
             Ok(self.pos.try_into().unwrap())
         }
