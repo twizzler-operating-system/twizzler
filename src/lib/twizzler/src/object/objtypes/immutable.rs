@@ -24,7 +24,7 @@ impl<Base: BaseType> InitializedObject for ImmutableObject<Base> {
         todo!()
     }
 
-    fn meta(&self) -> MetaInfo {
+    fn meta(&self) -> &MetaInfo {
         todo!()
     }
 
@@ -45,13 +45,8 @@ impl<Base: BaseType> Into<ObjectHandle> for ImmutableObject<Base> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct IsMutable;
-
-impl<Base: BaseType> TryFrom<ObjectHandle> for ImmutableObject<Base> {
-    type Error = IsMutable;
-
-    fn try_from(value: ObjectHandle) -> Result<Self, Self::Error> {
+impl<Base: BaseType> From<ObjectHandle> for ImmutableObject<Base> {
+    fn from(value: ObjectHandle) -> Self {
         todo!()
     }
 }

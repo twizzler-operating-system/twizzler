@@ -6,7 +6,7 @@ use twizzler_runtime_api::{MapError, MapFlags, ObjID, ObjectHandle};
 use super::{ImmutableObject, Object, RawObject};
 use crate::{
     object::{base::BaseRef, BaseType},
-    ptr::{InvPtr, ResolvedImmutablePtr, ResolvedMutablePtr, ResolvedPtr},
+    ptr::{InvPtr, ResolvedPtr},
 };
 
 pub trait InitializedObject {
@@ -21,7 +21,7 @@ pub trait InitializedObject {
         todo!()
     }
 
-    fn meta(&self) -> MetaInfo;
+    fn meta(&self) -> &MetaInfo;
 
     // TODO: Error type
     fn freeze(&self) -> Result<ImmutableObject<Self::Base>, ()>;
@@ -33,26 +33,6 @@ pub trait InitializedObject {
     /// object's FOT. The resulting resolved pointer does NOT implement Deref, since it may not be
     /// memory safe to do so in general (we cannot prove that noone has a mutable reference).
     fn resolve<T>(&self, ptr: &InvPtr<T>) -> Result<ResolvedPtr<'_, T>, ()> {
-        todo!()
-    }
-
-    /// Resolves an invariant pointer for this object, ensuring the result points to a locked,
-    /// mutable object.
-    ///
-    /// This function checks to ensure the passed in invariant pointer really is
-    /// part of the object. It then tries to resolve the pointer according to its contents and this
-    /// object's FOT. The resulting pointer implements Deref and DerefMut.
-    fn resolve_mut<T>(&self, ptr: &InvPtr<T>) -> Result<ResolvedMutablePtr<'_, T>, ()> {
-        todo!()
-    }
-
-    /// Resolves an invariant pointer for this object, ensuring the result points to an immutable
-    /// object.
-    ///
-    /// This function checks to ensure the passed in invariant pointer really is
-    /// part of the object. It then tries to resolve the pointer according to its contents and this
-    /// object's FOT. The resulting pointer implements Deref.
-    fn resolve_imm<T>(&self, ptr: &InvPtr<T>) -> Result<ResolvedImmutablePtr<'_, T>, ()> {
         todo!()
     }
 }

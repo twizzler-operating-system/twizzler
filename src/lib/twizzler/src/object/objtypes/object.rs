@@ -23,8 +23,13 @@ impl<Base: BaseType> Object<Base> {
         todo!()
     }
 
-    // TODO: error type
-    pub fn immutable(self) -> Result<ImmutableObject<Base>, ()> {
+    /// Convert this handle to an immutable handle.
+    ///
+    /// This function treats the current object handle as immutable, without creating a new
+    /// immutable object. This means that this underlying handle will not have any data modified,
+    /// but the underlying memory object may still change. If you want to create a new, truely
+    /// immutable object, see [InitializedObject::freeze].
+    pub fn immutable(self) -> ImmutableObject<Base> {
         todo!()
     }
 }
@@ -36,8 +41,7 @@ impl<Base: BaseType> InitializedObject for Object<Base> {
         todo!()
     }
 
-    fn meta(&self) -> MetaInfo {
-        // requires checking for tears (no version bumps)
+    fn meta(&self) -> &MetaInfo {
         todo!()
     }
 

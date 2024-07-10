@@ -3,12 +3,12 @@ use std::marker::PhantomData;
 use twizzler_abi::meta::MetaInfo;
 use twizzler_runtime_api::ObjectHandle;
 
-use super::{InitializedObject, Object, RawObject};
+use super::{ImmutableObject, InitializedObject, Object, RawObject};
 use crate::object::{base::BaseRef, BaseType};
 
 pub struct MutableObject<Base: BaseType> {
     handle: ObjectHandle,
-    _pd: PhantomData<*const Base>,
+    _pd: PhantomData<*mut Base>,
 }
 
 impl<Base: BaseType> MutableObject<Base> {
@@ -50,11 +50,11 @@ impl<Base: BaseType> InitializedObject for MutableObject<Base> {
         todo!()
     }
 
-    fn meta(&self) -> MetaInfo {
+    fn meta(&self) -> &MetaInfo {
         todo!()
     }
 
-    fn freeze(&self) -> Result<super::ImmutableObject<Self::Base>, ()> {
+    fn freeze(&self) -> Result<ImmutableObject<Self::Base>, ()> {
         todo!()
     }
 }
