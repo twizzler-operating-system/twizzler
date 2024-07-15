@@ -18,7 +18,10 @@ use twizzler_abi::{
 };
 
 use super::thread::UpcallAble;
-use crate::memory::{context::virtmem::PageFaultFlags, VirtAddr};
+use crate::{
+    memory::{context::virtmem::PageFaultFlags, VirtAddr},
+    thread::current_thread_ref,
+};
 
 core::arch::global_asm!(r#"
 /// Exception Vector Table Definition for EL1 (Kernel)
@@ -57,7 +60,7 @@ b default_exception_handler
 b default_exception_handler
 .align {VECTOR_ALIGNMENT}
 
-// Handling an exception from a Lower EL that is running in AArch64. 
+// Handling an exception from a Lower EL that is running in AArch64.
 // Lower meaning lower priviledge (EL0/user). Basically do we handle
 // exceptions that occur in userspace (syscalls, etc.).
 b sync_exception_handler_el0
@@ -437,6 +440,12 @@ fn sync_handler(ctx: &mut ExceptionContext) {
     // read of raw value for ESR
     let esr = ctx.esr;
     let esr_reg: InMemoryRegister<u64, ESR_EL1::Register> = InMemoryRegister::new(esr);
+
+    {
+        let current_thread = current_thread_ref().unwrap();
+        current_thread.set_entry_registers(Some(ctx as *mut ExceptionContext));
+    }
+
     match esr_reg.read_as_enum(ESR_EL1::EC) {
         // TODO: reorganize data abort handling between user and kernel
         Some(ESR_EL1::EC::Value::DataAbortCurrentEL)
@@ -503,6 +512,12 @@ fn sync_handler(ctx: &mut ExceptionContext) {
         }
         Some(ESR_EL1::EC::Value::Unknown) | _ => debug_handler(ctx),
     }
+
+    {
+        let current_thread = current_thread_ref().unwrap();
+        current_thread.set_entry_registers(None);
+    }
+
     crate::interrupt::post_interrupt();
 }
 

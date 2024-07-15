@@ -7,19 +7,14 @@
 /// A full detailed explanation can be found in the
 /// "Procedure Call Standard for the Arm® 64-bit Architecture (AArch64)":
 ///     https://github.com/ARM-software/abi-aa/releases/download/2023Q1/aapcs64.pdf
+use core::cell::RefCell;
+
 use arm64::registers::TPIDR_EL0;
 use registers::interfaces::Writeable;
 use twizzler_abi::upcall::{UpcallFrame, UpcallInfo, UpcallTarget};
 
 use super::{exception::ExceptionContext, interrupt::DAIFMaskBits, syscall::Armv8SyscallContext};
 use crate::{memory::VirtAddr, processor::KERNEL_STACK_SIZE, thread::Thread};
-
-#[derive(Copy, Clone)]
-pub enum Registers {
-    None,
-    Syscall(*mut Armv8SyscallContext, Armv8SyscallContext),
-    Interrupt(*mut ExceptionContext, ExceptionContext),
-}
 
 /// Registers that need to be saved between context switches.
 ///
@@ -51,7 +46,10 @@ struct RegisterContext {
 // arch specific thread state
 #[repr(align(64))]
 pub struct ArchThread {
+    /// The register context to be managed during a context switch.
     context: RegisterContext,
+    /// The register block saved on entry to handle and exception or interrupt.
+    entry_registers: RefCell<*mut ExceptionContext>,
 }
 
 unsafe impl Sync for ArchThread {}
@@ -61,6 +59,7 @@ impl ArchThread {
     pub fn new() -> Self {
         Self {
             context: RegisterContext::default(),
+            entry_registers: RefCell::new(core::ptr::null_mut()),
         }
     }
 }
@@ -114,8 +113,11 @@ impl Thread {
         todo!()
     }
 
-    pub fn set_entry_registers(&self, _regs: Registers) {
-        todo!()
+    pub fn set_entry_registers(&self, regs: Option<*mut ExceptionContext>) {
+        match regs {
+            Some(r) => (*self.arch.entry_registers.borrow_mut()) = r,
+            None => (*self.arch.entry_registers.borrow_mut()) = core::ptr::null_mut(),
+        }
     }
 
     pub fn set_tls(&self, tls: u64) {
