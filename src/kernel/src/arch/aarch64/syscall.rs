@@ -9,7 +9,7 @@ use arm64::registers::{ELR_EL1, SPSR_EL1, SP_EL0};
 use registers::interfaces::Writeable;
 use twizzler_abi::upcall::UpcallFrame;
 
-use super::{exception::ExceptionContext, thread::UpcallAble};
+use super::exception::ExceptionContext;
 use crate::{memory::VirtAddr, syscall::SyscallContext};
 
 /// The register state needed to transition between kernel and user.
@@ -29,21 +29,6 @@ pub struct Armv8SyscallContext {
     x7: u64,
     elr: u64,
     sp: u64,
-}
-impl From<Armv8SyscallContext> for UpcallFrame {
-    fn from(_int: Armv8SyscallContext) -> Self {
-        todo!()
-    }
-}
-
-impl UpcallAble for Armv8SyscallContext {
-    fn set_upcall(&mut self, _target: usize, _frame: u64, _info: u64, _stack: u64) {
-        todo!()
-    }
-
-    fn get_stack_top(&self) -> u64 {
-        todo!()
-    }
 }
 
 // Arguments 0-5 are passed in via registers x0-x5,
