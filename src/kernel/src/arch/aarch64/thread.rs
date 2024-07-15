@@ -124,7 +124,6 @@ impl Thread {
         if !self.arch.entry_registers.borrow().is_null() {
             let ok = {
                 let regs = unsafe { &mut *(*self.arch.entry_registers.borrow()) };
-                emerglogln!("entry registers: {}", regs.clone());
                 regs.setup_upcall(target, info, source_ctx, self.objid(), sup)
             };
             if !ok {

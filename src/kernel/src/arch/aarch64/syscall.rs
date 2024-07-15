@@ -169,7 +169,6 @@ fn handle_upcall(ctx: &mut ExceptionContext) {
             // using the upcall frame given to us
             ctx.restore_from_upcall(&up_frame);
         }
-        emerglogln!("registers set ... {}", ctx);
     }
     // from here we return using the normal syscall/exception return path
 }
