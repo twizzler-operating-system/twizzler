@@ -7,19 +7,14 @@
 /// A full detailed explanation can be found in the
 /// "Procedure Call Standard for the Arm® 64-bit Architecture (AArch64)":
 ///     https://github.com/ARM-software/abi-aa/releases/download/2023Q1/aapcs64.pdf
+use core::cell::RefCell;
+
 use arm64::registers::TPIDR_EL0;
 use registers::interfaces::Writeable;
-use twizzler_abi::upcall::{UpcallFrame, UpcallInfo, UpcallTarget};
+use twizzler_abi::upcall::{UpcallFrame, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE};
 
 use super::{exception::ExceptionContext, interrupt::DAIFMaskBits, syscall::Armv8SyscallContext};
 use crate::{memory::VirtAddr, processor::KERNEL_STACK_SIZE, thread::Thread};
-
-#[derive(Copy, Clone)]
-pub enum Registers {
-    None,
-    Syscall(*mut Armv8SyscallContext, Armv8SyscallContext),
-    Interrupt(*mut ExceptionContext, ExceptionContext),
-}
 
 /// Registers that need to be saved between context switches.
 ///
@@ -51,7 +46,15 @@ struct RegisterContext {
 // arch specific thread state
 #[repr(align(64))]
 pub struct ArchThread {
+    /// The register context to be managed during a context switch.
     context: RegisterContext,
+    /// The register block saved on entry to handle and exception or interrupt.
+    entry_registers: RefCell<*mut ExceptionContext>,
+    /// The frame of an upcall to restore. The restoration path only occurs on the first
+    /// return-from-syscall after entering from the syscall that provides the frame to restore.
+    /// We store that frame here until we hit the syscall return path, which then restores the
+    /// frame and returns to user using this frame.
+    pub upcall_restore_frame: RefCell<Option<UpcallFrame>>,
 }
 
 unsafe impl Sync for ArchThread {}
@@ -61,6 +64,8 @@ impl ArchThread {
     pub fn new() -> Self {
         Self {
             context: RegisterContext::default(),
+            entry_registers: RefCell::new(core::ptr::null_mut()),
+            upcall_restore_frame: RefCell::new(None),
         }
     }
 }
@@ -69,18 +74,6 @@ impl Default for ArchThread {
     fn default() -> Self {
         Self::new()
     }
-}
-
-pub trait UpcallAble {
-    fn set_upcall(&mut self, _target: usize, _frame: u64, _info: u64, _stack: u64);
-    fn get_stack_top(&self) -> u64;
-}
-
-pub fn set_upcall<T: UpcallAble + Copy>(_regs: &mut T, _target: usize, _info: UpcallInfo)
-where
-    UpcallFrame: From<T>,
-{
-    todo!()
 }
 
 // The alignment of addresses use by the stack
@@ -106,16 +99,54 @@ pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
 }
 
 impl Thread {
-    pub fn restore_upcall_frame(&self, _frame: &UpcallFrame) {
-        todo!()
+    pub fn restore_upcall_frame(&self, frame: &UpcallFrame) {
+        let res = self.secctx.switch_context(frame.prior_ctx);
+        if matches!(res, crate::security::SwitchResult::NotAttached) {
+            logln!("warning -- tried to restore thread to non-attached security context");
+            crate::thread::exit(UPCALL_EXIT_CODE);
+        }
+        // We restore this in the syscall return code path, since
+        // we know that's where we are coming from.
+        *self.arch.upcall_restore_frame.borrow_mut() = Some(*frame);
     }
 
-    pub fn arch_queue_upcall(&self, _target: UpcallTarget, _info: UpcallInfo, _sup: bool) {
-        todo!()
+    pub fn arch_queue_upcall(&self, target: UpcallTarget, info: UpcallInfo, sup: bool) {
+        if self.arch.upcall_restore_frame.borrow().is_some() {
+            logln!("warning -- thread aborted due to upcall generation during frame restoration");
+            crate::thread::exit(UPCALL_EXIT_CODE);
+        }
+
+        // obtain the active security context
+        let source_ctx = self.secctx.active_id();
+
+        // obtain a reference to the upcall frame register block
+        // and set the upcall state in the register block
+        if !self.arch.entry_registers.borrow().is_null() {
+            let ok = {
+                let regs = unsafe { &mut *(*self.arch.entry_registers.borrow()) };
+                regs.setup_upcall(target, info, source_ctx, self.objid(), sup)
+            };
+            if !ok {
+                logln!(
+                    "while trying to generate upcall: {:?} from {:?}",
+                    info,
+                    self.arch.entry_registers.borrow()
+                );
+                crate::thread::exit(UPCALL_EXIT_CODE);
+            }
+        } else {
+            panic!(
+                "tried to upcall {:?} to a thread that hasn't started yet",
+                info
+            );
+        }
     }
 
-    pub fn set_entry_registers(&self, _regs: Registers) {
-        todo!()
+    pub fn set_entry_registers(&self, regs: Option<*mut ExceptionContext>) {
+        match regs {
+            Some(r) => (*self.arch.entry_registers.borrow_mut()) = r,
+            None => (*self.arch.entry_registers.borrow_mut()) = core::ptr::null_mut(),
+        }
     }
 
     pub fn set_tls(&self, tls: u64) {
