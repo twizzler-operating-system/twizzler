@@ -10,7 +10,7 @@ use registers::interfaces::Writeable;
 use twizzler_abi::upcall::UpcallFrame;
 
 use super::exception::ExceptionContext;
-use crate::{memory::VirtAddr, syscall::SyscallContext};
+use crate::{memory::VirtAddr, syscall::SyscallContext, thread::current_thread_ref};
 
 /// The register state needed to transition between kernel and user.
 ///
@@ -137,6 +137,39 @@ pub fn handle_syscall(ctx: &mut ExceptionContext) {
     ctx.x6 = context.x6;
     ctx.x7 = context.x7;
 
+    // check if we are restoring an upcall frame, and if so, do that.
+    handle_upcall(ctx);
+
     // returning from here will restore the calling context
     // and then call `eret` to jump back to user space
+}
+
+fn handle_upcall(ctx: &mut ExceptionContext) {
+    let cur_th = current_thread_ref().unwrap();
+
+    // if we have an upcall restore frame saved, fix up the register state
+    // before we return to user space.
+    let mut rf = cur_th.arch.upcall_restore_frame.borrow_mut();
+    if let Some(mut up_frame) = rf.take() {
+        emerglogln!("returning from upcall to user");
+        // we MUST manually drop this
+        drop(rf);
+
+        // TODO: SIMD registers
+
+        // restore the TLS registers which may have changed
+        unsafe {
+            core::arch::asm!(
+                 "msr tpidr_el0, x13",
+                 "msr tpidrro_el0, x14",
+                 in("x13") up_frame.tpidr,
+                 in("x14") up_frame.tpidrro
+            );
+            // modify the exception context registers directly
+            // using the upcall frame given to us
+            ctx.restore_from_upcall(&up_frame);
+        }
+        emerglogln!("registers set ... {}", ctx);
+    }
+    // from here we return using the normal syscall/exception return path
 }

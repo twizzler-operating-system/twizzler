@@ -99,8 +99,15 @@ pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
 }
 
 impl Thread {
-    pub fn restore_upcall_frame(&self, _frame: &UpcallFrame) {
-        todo!()
+    pub fn restore_upcall_frame(&self, frame: &UpcallFrame) {
+        let res = self.secctx.switch_context(frame.prior_ctx);
+        if matches!(res, crate::security::SwitchResult::NotAttached) {
+            logln!("warning -- tried to restore thread to non-attached security context");
+            crate::thread::exit(UPCALL_EXIT_CODE);
+        }
+        // We restore this in the syscall return code path, since
+        // we know that's where we are coming from.
+        *self.arch.upcall_restore_frame.borrow_mut() = Some(*frame);
     }
 
     pub fn arch_queue_upcall(&self, target: UpcallTarget, info: UpcallInfo, sup: bool) {

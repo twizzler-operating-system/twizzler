@@ -139,7 +139,7 @@ pub struct ExceptionContext {
 }
 
 impl ExceptionContext {
-    // save the register context onto the stack to be used by upcall handler
+    // Save the register context onto the stack to be used by upcall handler
     // and modify the current register state to prepare a jump into the
     // upcall handler.
     pub(super) fn setup_upcall(
@@ -277,6 +277,44 @@ impl ExceptionContext {
         self.x1 = data_start;
 
         true
+    }
+
+    // Restore all register state from the upcall frame by overwriting our current registers
+    pub(super) unsafe fn restore_from_upcall(&mut self, frame: &UpcallFrame) {
+        self.x0 = frame.x0;
+        self.x1 = frame.x1;
+        self.x2 = frame.x2;
+        self.x3 = frame.x3;
+        self.x4 = frame.x4;
+        self.x5 = frame.x5;
+        self.x6 = frame.x6;
+        self.x7 = frame.x7;
+        self.x8 = frame.x8;
+        self.x9 = frame.x9;
+        self.x10 = frame.x10;
+        self.x11 = frame.x11;
+        self.x12 = frame.x12;
+        self.x13 = frame.x13;
+        self.x14 = frame.x14;
+        self.x15 = frame.x15;
+        self.x16 = frame.x16;
+        self.x17 = frame.x17;
+        self.x18 = frame.x18;
+        self.x19 = frame.x19;
+        self.x20 = frame.x20;
+        self.x21 = frame.x21;
+        self.x22 = frame.x22;
+        self.x23 = frame.x23;
+        self.x24 = frame.x24;
+        self.x25 = frame.x25;
+        self.x26 = frame.x26;
+        self.x27 = frame.x27;
+        self.x28 = frame.x28;
+        self.x29 = frame.x29;
+        self.x30 = frame.fp;
+        self.sp = frame.sp;
+        self.elr = frame.pc;
+        self.spsr = frame.spsr;
     }
 }
 
