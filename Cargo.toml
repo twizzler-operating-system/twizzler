@@ -27,6 +27,7 @@ members = [
     "src/runtime/twz-rt",
     "src/lib/twizzler-futures",
     "src/lib/twizzler",
+    "src/lib/twizzler/twizzler-derive",
 ]
 
 exclude = ["toolchain/src/rust"]

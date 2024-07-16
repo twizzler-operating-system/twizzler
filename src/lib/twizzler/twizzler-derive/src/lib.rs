@@ -1,0 +1,87 @@
+use std::{any::type_name, hash::BuildHasher};
+
+use proc_macro2::{Ident, Span};
+use quote::quote;
+use syn::{parse_macro_input, spanned::Spanned, DeriveInput, Error};
+
+#[proc_macro_derive(Invariant)]
+pub fn invariant(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    match handle_invariant(parse_macro_input!(item as DeriveInput)) {
+        Ok(ts) => ts.into(),
+        Err(err) => proc_macro::TokenStream::from(err.to_compile_error()),
+    }
+}
+
+fn handle_invariant(item: DeriveInput) -> Result<proc_macro2::TokenStream, Error> {
+    let type_name = item.ident.clone();
+    let mut in_place_vec = vec![];
+    let mut builder_vec = vec![];
+    let mut new_vec = vec![];
+    match item.data {
+        syn::Data::Struct(st) => {
+            let fields = st.fields.iter().enumerate().map(|f| {
+                (
+                    if let Some(ref name) = f.1.ident {
+                        name.clone()
+                    } else {
+                        Ident::new(&f.0.to_string(), f.1.span())
+                    },
+                    f.1.ty.clone(),
+                )
+            });
+            for (f, t) in fields {
+                in_place_vec.push(quote! {
+                    unsafe {
+                    let ptr = place as *mut _ as *mut Self;
+                    let ptr = core::ptr::addr_of!((*ptr).#f) as *mut core::mem::MaybeUninit<#t>;
+                        <#t>::in_place_ctor(builder.#f, &mut *ptr, &tx);
+                    }
+                });
+                builder_vec.push(quote! {
+                    #f: <#t as InPlaceCtor>::Builder,
+                });
+                new_vec.push(quote! {
+                    #f,
+                });
+            }
+        }
+        syn::Data::Enum(_) => todo!(),
+        syn::Data::Union(_) => todo!(),
+    }
+    let builder_name = Ident::new(
+        &format!("{}Builder", type_name.to_string()),
+        type_name.span(),
+    );
+    Ok(quote::quote! {
+        unsafe impl twizzler::marker::Invariant for #type_name {}
+
+        unsafe impl twizzler::marker::InPlaceCtor for #type_name {
+            type Builder = #builder_name;
+
+            fn in_place_ctor<'b>(
+                builder: Self::Builder,
+                place: &'b mut core::mem::MaybeUninit<Self>,
+                tx: impl twizzler::tx::TxHandle<'b>,
+            ) -> &'b mut Self
+            where
+                Self: Sized {
+                #(#in_place_vec)*
+                unsafe {
+                    place.assume_init_mut()
+                }
+            }
+        }
+
+        struct #builder_name {
+            #(#builder_vec)*
+        }
+
+        impl #type_name {
+            pub fn new(#(#builder_vec)*) -> #builder_name {
+                #builder_name {
+                    #(#new_vec)*
+                }
+            }
+        }
+    })
+}

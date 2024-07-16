@@ -1,6 +1,7 @@
 use std::marker::{PhantomData, PhantomPinned};
 
 use super::{GlobalPtr, InvPtrBuilder, ResolvedPtr};
+use crate::marker::{InPlaceCtor, InvariantValue};
 
 // TODO: niche optimization -- sizeof Option<InvPtr<T>> == 8 -- null => None.
 #[repr(transparent)]
@@ -45,6 +46,23 @@ impl<T> InvPtr<T> {
     }
 
     pub fn as_global(&self) -> Result<GlobalPtr<T>, ()> {
+        todo!()
+    }
+}
+
+unsafe impl<T> InvariantValue for InvPtr<T> {}
+
+unsafe impl<T> InPlaceCtor for InvPtr<T> {
+    type Builder = InvPtrBuilder<T>;
+
+    fn in_place_ctor<'b>(
+        builder: Self::Builder,
+        place: &'b mut std::mem::MaybeUninit<Self>,
+        tx: impl crate::tx::TxHandle<'b>,
+    ) -> &'b mut Self
+    where
+        Self: Sized,
+    {
         todo!()
     }
 }

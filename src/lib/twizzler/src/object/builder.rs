@@ -57,9 +57,9 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         todo!()
     }
 
-    pub fn allocate_static_ctor<'a, T, StaticCtor>(self, ctor: StaticCtor) -> Self
+    pub fn allocate_static_ctor<'a, T: InPlaceCtor, StaticCtor>(self, ctor: StaticCtor) -> Self
     where
-        StaticCtor: FnOnce(ConstructorInfo<'a>) -> T,
+        StaticCtor: FnOnce(ConstructorInfo<'a>) -> T::Builder,
     {
         todo!()
     }
@@ -75,12 +75,12 @@ impl<Base: BaseType + InPlaceCtor> ObjectBuilder<Base> {
 }
 
 impl<Base: BaseType + Copy> ObjectBuilder<Base> {
-    pub fn build(&self, base: Base) -> Result<Object<Base>, ObjectCreateError> {
+    pub fn init(&self, base: Base) -> Result<Object<Base>, ObjectCreateError> {
         todo!()
     }
 }
 
-#[cfg(test)]
+//#[cfg(test)]
 mod test {
     use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags};
 
@@ -112,12 +112,12 @@ mod test {
 
     #[test]
     fn test() {
-        let builder = ObjectBuilder::new(DEF_SPEC);
+        let builder = ObjectBuilder::default();
         let foo_obj = builder.construct(|_obj| Foo { x: 42 }).unwrap();
 
-        let _another_foo_obj = ObjectBuilder::new(DEF_SPEC).build(Foo { x: 42 }).unwrap();
+        let _another_foo_obj = ObjectBuilder::default().init(Foo { x: 42 }).unwrap();
 
-        let builder = ObjectBuilder::new(DEF_SPEC);
+        let builder = ObjectBuilder::default();
         let bar_obj = builder
             .construct(|mut ctorinfo| Bar {
                 x: ctorinfo.new_invptr(foo_obj.base().into()),
@@ -127,12 +127,12 @@ mod test {
 
     #[test]
     fn test_static() {
-        let builder = ObjectBuilder::new(DEF_SPEC).allocate_static(Baz { x: true });
+        let builder = ObjectBuilder::default().allocate_static(Baz { x: true });
         let foo_obj = builder.construct(|_obj| Foo { x: 42 }).unwrap();
 
-        let _another_foo_obj = ObjectBuilder::new(DEF_SPEC).build(Foo { x: 42 }).unwrap();
+        let _another_foo_obj = ObjectBuilder::default().init(Foo { x: 42 }).unwrap();
 
-        let builder = ObjectBuilder::new(DEF_SPEC);
+        let builder = ObjectBuilder::default();
         let bar_obj = builder
             .construct(|mut ctorinfo| Bar {
                 x: ctorinfo.new_invptr(foo_obj.base().into()),

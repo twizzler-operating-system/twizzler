@@ -36,16 +36,6 @@ impl<Base: BaseType> Object<Base> {
     pub fn immutable(self) -> ImmutableObject<Base> {
         todo!()
     }
-
-    fn move_in_place<'a, T: InPlaceCtor>(
-        &self,
-        value: T::Builder,
-        place: &mut MaybeUninit<T>,
-        tx: impl TxHandle<'a>,
-    ) -> TxResult<()> {
-        T::in_place_ctor(value, place);
-        Ok(())
-    }
 }
 
 impl<Base: BaseType> InitializedObject for Object<Base> {
