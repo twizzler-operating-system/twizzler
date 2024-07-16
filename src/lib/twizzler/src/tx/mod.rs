@@ -1,7 +1,10 @@
 use std::{
     cell::UnsafeCell,
-    ops::{Deref, DerefMut},
+    mem::{transmute, MaybeUninit},
+    ops::Deref,
 };
+
+use crate::marker::InPlaceCtor;
 
 /// A trait for implementing transaction handles.
 ///
@@ -54,20 +57,51 @@ impl<T> TxCell<T> {
     /// # Safety
     /// The caller must ensure that no returned reference from this function aliases any other alive
     /// reference to the same TxCell.
-    pub unsafe fn as_mut<'a, E>(&self, tx: impl TxHandle<'a>) -> TxResult<&mut T, E> {
+    pub unsafe fn as_mut<'a>(&self, tx: impl TxHandle<'a>) -> TxResult<&mut T> {
         let target = tx.tx_mut(self.0.get())?;
         Ok(&mut *target)
     }
 
     /// Get a mutable reference to the interior data. Takes a mutable reference to the TxCell to
     /// enforce borrowing rules.
-    pub fn get_mut<'a, E>(&mut self, tx: impl TxHandle<'a>) -> TxResult<&mut T, E> {
+    pub fn get_mut<'a>(&mut self, tx: impl TxHandle<'a>) -> TxResult<&mut T> {
         // Safety: we take self as &mut, so we hold the only reference.
         unsafe { self.as_mut(tx) }
     }
+}
 
-    pub fn set<'a>(&self, item: T, tx: impl TxHandle<'a>) {
-        todo!()
+impl<'a, T: InPlaceCtor + 'a> TxCell<T> {
+    /// Set the value of the cell, constructing the value in-place.
+    pub fn set_in_place(&self, value: T::Builder, tx: impl TxHandle<'a>) -> TxResult<()> {
+        let ptr = unsafe { transmute::<&mut T, &mut MaybeUninit<T>>(self.as_mut(&tx)?) };
+        T::in_place_ctor(value, ptr, &tx);
+        Ok(())
+    }
+}
+
+impl<'a, T: Copy> TxCell<T> {
+    /// Set the value of the cell, constructing the value in-place.
+    pub fn set(&self, value: T, tx: impl TxHandle<'a>) -> TxResult<()> {
+        self.set_in_place(value, tx)
+    }
+}
+
+unsafe impl<T: InPlaceCtor> InPlaceCtor for TxCell<T> {
+    type Builder = T::Builder;
+
+    fn in_place_ctor<'b>(
+        builder: Self::Builder,
+        place: &'b mut MaybeUninit<Self>,
+        tx: impl TxHandle<'b>,
+    ) -> &'b mut Self
+    where
+        Self: Sized,
+    {
+        unsafe {
+            let inner_place = transmute::<&mut MaybeUninit<Self>, &mut MaybeUninit<T>>(place);
+            T::in_place_ctor(builder, inner_place, tx);
+            place.assume_init_mut()
+        }
     }
 }
 

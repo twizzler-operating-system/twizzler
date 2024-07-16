@@ -19,7 +19,7 @@ submodules = false
 [rust]
 lld = true
 llvm-tools = true
-debug = true
+debug = false
 debuginfo-level = 1
 dist-src = false
 
