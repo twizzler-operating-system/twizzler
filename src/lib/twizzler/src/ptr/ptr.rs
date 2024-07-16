@@ -1,12 +1,6 @@
-use std::{
-    borrow::Cow,
-    marker::{PhantomData, PhantomPinned},
-    ops::{Deref, DerefMut},
-};
+use std::marker::{PhantomData, PhantomPinned};
 
-use twizzler_runtime_api::ObjectHandle;
-
-use super::InvPtrBuilder;
+use super::{GlobalPtr, InvPtrBuilder, ResolvedPtr};
 
 // TODO: niche optimization -- sizeof Option<InvPtr<T>> == 8 -- null => None.
 #[repr(transparent)]
@@ -29,12 +23,16 @@ impl<T> InvPtr<T> {
         }
     }
 
-    pub fn set(&mut self, builder: impl Into<InvPtrBuilder<T>>) {
+    pub fn set(&mut self, _builder: impl Into<InvPtrBuilder<T>>) {
         todo!()
     }
 
     pub fn raw(&self) -> u64 {
         self.bits
+    }
+
+    pub fn is_local(&self) -> bool {
+        todo!()
     }
 
     /// Resolves an invariant pointer.
@@ -45,45 +43,8 @@ impl<T> InvPtr<T> {
     pub fn resolve(&self) -> Result<ResolvedPtr<'_, T>, ()> {
         todo!()
     }
-}
 
-pub struct ResolvedPtr<'obj, T> {
-    handle: Cow<'obj, ObjectHandle>,
-    ptr: *const T,
-}
-
-impl<'obj, T> ResolvedPtr<'obj, T> {
-    pub unsafe fn as_mut(&self) -> ResolvedMutablePtr<'obj, T> {
+    pub fn as_global(&self) -> Result<GlobalPtr<T>, ()> {
         todo!()
-    }
-}
-
-impl<'obj, T> Deref for ResolvedPtr<'obj, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        // Safety: we are pointing to a mutable object, that we have locked.
-        unsafe { self.ptr.as_ref().unwrap_unchecked() }
-    }
-}
-
-pub struct ResolvedMutablePtr<'obj, T> {
-    handle: &'obj ObjectHandle,
-    ptr: *mut T,
-}
-
-impl<'obj, T> Deref for ResolvedMutablePtr<'obj, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        // Safety: we are pointing to a mutable object, that we have locked.
-        unsafe { self.ptr.as_ref().unwrap_unchecked() }
-    }
-}
-
-impl<'obj, T> DerefMut for ResolvedMutablePtr<'obj, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // Safety: we are pointing to a mutable object, that we have locked.
-        unsafe { self.ptr.as_mut().unwrap_unchecked() }
     }
 }
