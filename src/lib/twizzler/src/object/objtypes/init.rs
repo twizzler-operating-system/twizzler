@@ -7,6 +7,7 @@ use super::{ImmutableObject, Object, RawObject};
 use crate::{
     object::{base::BaseRef, BaseType},
     ptr::{InvPtr, ResolvedPtr},
+    tx::TxHandle,
 };
 
 pub trait InitializedObject {

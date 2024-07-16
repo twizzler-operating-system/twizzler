@@ -44,6 +44,10 @@ impl<T> InvSlice<T> {
         self.len as usize
     }
 
+    pub fn is_local(&self) -> bool {
+        todo!()
+    }
+
     /// Resolves an invariant slice.
     ///
     /// Note that this function needs to ask the runtime for help, since it does not know which

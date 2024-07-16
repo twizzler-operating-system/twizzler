@@ -54,7 +54,7 @@
 //! }).unwrap();
 
 mod builder;
-pub use builder::ObjectBuilder;
+pub use builder::{ConstructorInfo, ObjectBuilder};
 
 pub mod fot;
 pub mod meta;

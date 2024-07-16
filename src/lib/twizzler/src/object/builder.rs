@@ -4,11 +4,20 @@ use twizzler_abi::syscall::{ObjectCreate, ObjectCreateError};
 use twizzler_runtime_api::ObjectHandle;
 
 use super::{BaseType, Object};
-use crate::ptr::{InvPtr, InvPtrBuilder};
+use crate::{
+    marker::InPlaceCtor,
+    ptr::{InvPtr, InvPtrBuilder},
+};
 
 pub struct ObjectBuilder<Base: BaseType> {
     spec: ObjectCreate,
     _pd: PhantomData<Base>,
+}
+
+impl<Base: BaseType> Default for ObjectBuilder<Base> {
+    fn default() -> Self {
+        Self::new(ObjectCreate::default())
+    }
 }
 
 pub struct UninitializedObject {
@@ -54,14 +63,18 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     {
         todo!()
     }
+}
 
+impl<Base: BaseType + InPlaceCtor> ObjectBuilder<Base> {
     pub fn construct<BaseCtor>(&self, ctor: BaseCtor) -> Result<Object<Base>, ObjectCreateError>
     where
-        BaseCtor: FnOnce(ConstructorInfo<'_>) -> Base,
+        BaseCtor: FnOnce(ConstructorInfo<'_>) -> Base::Builder,
     {
         todo!()
     }
+}
 
+impl<Base: BaseType + Copy> ObjectBuilder<Base> {
     pub fn build(&self, base: Base) -> Result<Object<Base>, ObjectCreateError> {
         todo!()
     }

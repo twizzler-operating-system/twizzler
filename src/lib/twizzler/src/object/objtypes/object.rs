@@ -1,10 +1,14 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, mem::MaybeUninit};
 
 use twizzler_abi::meta::MetaInfo;
 use twizzler_runtime_api::ObjectHandle;
 
 use super::{ImmutableObject, InitializedObject, MutableObject, RawObject};
-use crate::object::{base::BaseRef, BaseType};
+use crate::{
+    marker::InPlaceCtor,
+    object::{base::BaseRef, BaseType},
+    tx::{TxHandle, TxResult},
+};
 
 pub struct Object<Base: BaseType> {
     handle: ObjectHandle,
@@ -31,6 +35,16 @@ impl<Base: BaseType> Object<Base> {
     /// immutable object, see [InitializedObject::freeze].
     pub fn immutable(self) -> ImmutableObject<Base> {
         todo!()
+    }
+
+    fn move_in_place<'a, T: InPlaceCtor>(
+        &self,
+        value: T::Builder,
+        place: &mut MaybeUninit<T>,
+        tx: impl TxHandle<'a>,
+    ) -> TxResult<()> {
+        T::in_place_ctor(value, place);
+        Ok(())
     }
 }
 

@@ -112,6 +112,17 @@ impl ObjectCreate {
     }
 }
 
+impl Default for ObjectCreate {
+    fn default() -> Self {
+        Self::new(
+            BackingType::Normal,
+            LifetimeType::Volatile,
+            None,
+            ObjectCreateFlags::empty(),
+        )
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 /// A specification of ties to create.
