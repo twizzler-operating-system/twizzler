@@ -17,6 +17,10 @@ impl<'a> OnceHandle<'a> {
             Cow::Owned(runtime.ptr_to_handle(ptr).unwrap())
         })
     }
+
+    fn new(handle: ObjectHandle) -> Self {
+        Self(OnceCell::from(Cow::Owned(handle)))
+    }
 }
 
 pub struct ResolvedPtr<'obj, T> {
@@ -29,6 +33,13 @@ impl<'obj, T> ResolvedPtr<'obj, T> {
         Self {
             ptr,
             once_handle: OnceHandle::default(),
+        }
+    }
+
+    pub(crate) unsafe fn new_with_handle(ptr: *const T, handle: ObjectHandle) -> Self {
+        Self {
+            ptr,
+            once_handle: OnceHandle::new(handle),
         }
     }
 

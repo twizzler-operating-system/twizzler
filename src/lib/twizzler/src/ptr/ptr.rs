@@ -10,7 +10,7 @@ use twizzler_runtime_api::FotResolveError;
 use super::{GlobalPtr, InvPtrBuilder, ResolvedPtr};
 use crate::{
     marker::{Invariant, InvariantValue, StoreEffect, TryStoreEffect},
-    object::InitializedObject,
+    object::{fot::FotEntry, InitializedObject},
     tx::{TxError, TxResult},
 };
 
@@ -102,7 +102,14 @@ impl<T> InvPtr<T> {
         )?;
         // Safety: we ensure we point to valid memory by ensuring contiguous length from start
         // to our offset + size of T, above.
-        return unsafe { Ok(ResolvedPtr::new(start.add(offset) as *const T)) };
+        match start {
+            twizzler_runtime_api::StartOrHandle::Start(start) => unsafe {
+                Ok(ResolvedPtr::new(start.add(offset) as *const T))
+            },
+            twizzler_runtime_api::StartOrHandle::Handle(handle) => unsafe {
+                Ok(ResolvedPtr::new(handle.start.add(offset) as *const T))
+            },
+        }
     }
 
     pub fn as_global(&self) -> Result<GlobalPtr<T>, FotResolveError> {
@@ -137,8 +144,12 @@ impl<T: Invariant> TryStoreEffect for InvPtr<T> {
                 .ptr_to_handle(in_place.place() as *const _ as *const u8)
                 .ok_or(())?;
             let (fot, idx) = runtime.add_fot_entry(&handle).ok_or(())?;
-            // TODO: write FOT entry
-            unsafe { Self::from_raw_parts(idx, ctor.offset()) }
+            let fot = fot as *mut FotEntry;
+
+            unsafe {
+                fot.write(ctor.fot_entry());
+                Self::from_raw_parts(idx, ctor.offset())
+            }
         })
     }
 }

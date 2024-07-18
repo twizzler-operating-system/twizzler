@@ -1,8 +1,9 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::atomic::AtomicU32};
 
 use twizzler_runtime_api::ObjID;
 
-use super::GlobalPtr;
+use super::{GlobalPtr, InvPtr};
+use crate::object::fot::FotEntry;
 
 pub struct InvPtrBuilder<T> {
     id: ObjID,
@@ -58,5 +59,13 @@ impl<T> InvPtrBuilder<T> {
 
     pub const fn offset(&self) -> u64 {
         self.offset
+    }
+
+    pub fn fot_entry(&self) -> FotEntry {
+        FotEntry {
+            values: [self.id().split().0, self.id().split().1],
+            resolver: InvPtr::null(),
+            flags: AtomicU32::new(0),
+        }
     }
 }

@@ -261,6 +261,7 @@ mod test {
             .try_construct(|ci| {
                 let static_foo_alloc_a1 = ci.static_alloc(Foo { x: 1 })?;
 
+                println!("HERE");
                 let static_bar_alloc = ci.static_alloc_with(|ci, in_place| {
                     let static_foo_alloc_b1 = ci.static_alloc(Foo { x: 101 })?;
                     let static_foo_alloc_b2 = ci.static_alloc(Foo { x: 102 })?;

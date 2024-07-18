@@ -276,6 +276,11 @@ impl Display for FotResolveError {
 
 impl core::error::Error for FotResolveError {}
 
+pub enum StartOrHandle {
+    Start(*const u8),
+    Handle(ObjectHandle),
+}
+
 /// All the object related runtime functions.
 pub trait ObjectRuntime {
     /// Map an object to an [ObjectHandle]. The handle may reference the same internal mapping as
@@ -300,7 +305,7 @@ pub trait ObjectRuntime {
         handle: &ObjectHandle,
         idx: usize,
         valid_len: usize,
-    ) -> Result<*const u8, FotResolveError>;
+    ) -> Result<StartOrHandle, FotResolveError>;
 
     /// Add an FOT entry to the object, returning a pointer to the FOT entry and the entry index. If
     /// there are no more FOT entries, or if the object is immutable, returns None.
