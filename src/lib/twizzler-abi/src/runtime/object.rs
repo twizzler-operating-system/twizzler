@@ -3,10 +3,13 @@
 use core::{mem::ManuallyDrop, ptr::NonNull};
 
 use rustc_alloc::collections::BTreeMap;
-use twizzler_runtime_api::{InternalHandleRefs, MapError, ObjectHandle, ObjectRuntime};
+use twizzler_runtime_api::{
+    InternalHandleRefs, MapError, MapFlags, ObjectHandle, ObjectRuntime, StartOrHandle,
+};
 
 use super::{simple_mutex, MinimalRuntime};
 use crate::{
+    meta::MetaInfo,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     runtime::object::slot::global_allocate,
     rustc_alloc::boxed::Box,
@@ -126,11 +129,36 @@ impl ObjectRuntime for MinimalRuntime {
         handle: &'a ObjectHandle,
         idx: usize,
         valid_len: usize,
-    ) -> Result<*const u8, twizzler_runtime_api::FotResolveError> {
-        todo!()
+    ) -> Result<StartOrHandle, twizzler_runtime_api::FotResolveError> {
+        if idx == 0 {
+            return Ok(StartOrHandle::Start(handle.start));
+        }
+
+        let fote = unsafe {
+            let fot0_ptr = (handle.meta as *mut FotEntry).offset(-1);
+            let fot_ptr = fot0_ptr.offset(-(idx as isize));
+            fot_ptr.read()
+        };
+        let id = ObjID::new_from_parts(fote.vals[0], fote.vals[1]);
+
+        let handle = self.map_object(id, MapFlags::READ)?;
+        Ok(StartOrHandle::Handle(handle))
     }
 
     fn add_fot_entry(&self, handle: &ObjectHandle) -> Option<(*mut u8, usize)> {
-        todo!()
+        unsafe {
+            let mut meta = (handle.meta as *const MetaInfo).read();
+            let next = meta.fotcount + 1;
+            meta.fotcount = next;
+            (handle.meta as *mut MetaInfo).write(meta);
+
+            let fot0_ptr = (handle.meta as *mut FotEntry).offset(-1);
+            let fot_ptr = fot0_ptr.offset(-(next as isize));
+            Some((fot_ptr as *mut u8, next as usize))
+        }
     }
+}
+#[repr(C)]
+struct FotEntry {
+    vals: [u64; 4],
 }

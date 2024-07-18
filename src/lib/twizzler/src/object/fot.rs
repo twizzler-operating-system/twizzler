@@ -26,9 +26,9 @@ pub struct FotResolve {}
 
 #[repr(C)]
 pub struct FotEntry {
-    values: [u64; 2],
-    resolver: InvPtr<ResolverFn>,
-    flags: AtomicU32,
+    pub values: [u64; 2],
+    pub resolver: InvPtr<ResolverFn>,
+    pub flags: AtomicU32,
 }
 
 impl<Base: BaseType> Object<Base> {

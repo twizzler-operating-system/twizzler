@@ -5,7 +5,7 @@ use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_map, ObjectMapError},
 };
-use twizzler_runtime_api::{MapError, MapFlags, ObjectHandle, ObjectRuntime};
+use twizzler_runtime_api::{MapError, MapFlags, ObjectHandle, ObjectRuntime, StartOrHandle};
 
 use super::ReferenceRuntime;
 
@@ -116,7 +116,7 @@ impl ObjectRuntime for ReferenceRuntime {
         handle: &'a ObjectHandle,
         idx: usize,
         valid_len: usize,
-    ) -> Result<*const u8, twizzler_runtime_api::FotResolveError> {
+    ) -> Result<StartOrHandle, twizzler_runtime_api::FotResolveError> {
         todo!()
     }
 
