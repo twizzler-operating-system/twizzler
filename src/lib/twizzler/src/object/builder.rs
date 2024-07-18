@@ -12,7 +12,12 @@ use twizzler_abi::{
 use twizzler_runtime_api::{get_runtime, MapError, MapFlags, ObjectHandle};
 
 use super::{BaseType, Object};
-use crate::{marker::InPlaceCtor, object::RawObject, ptr::InvPtrBuilder, tx::TxHandle};
+use crate::{
+    marker::{InPlace, Invariant},
+    object::RawObject,
+    ptr::InvPtrBuilder,
+    tx::TxHandle,
+};
 
 #[derive(Clone, Copy, Debug, Error)]
 pub enum CreateError {
@@ -39,20 +44,37 @@ pub struct UninitializedObject {
     handle: ObjectHandle,
 }
 
-pub struct ConstructorInfo {
-    object: UninitializedObject,
-    static_alloc_offset: usize,
+impl UninitializedObject {
+    pub fn base<Base>(&self) -> InPlace<'_, Base> {
+        // Safety: we are constructing an &mut to a MaybeUninit, which is safe. We guarantee that we
+        // are the only reference, since the object is uninitialized and we have exclusive rights.
+        let base = unsafe { &mut *(self.handle.base_mut_ptr() as *mut MaybeUninit<Base>) };
+        InPlace::new(base)
+    }
 }
 
-impl ConstructorInfo {
-    fn new<Base>(object: UninitializedObject) -> Self {
+pub struct ConstructorInfo<Base> {
+    object: UninitializedObject,
+    static_alloc_offset: usize,
+    _pd: PhantomData<MaybeUninit<Base>>,
+}
+
+impl<Base> ConstructorInfo<Base> {
+    fn new(object: UninitializedObject) -> Self {
         Self {
             object,
             static_alloc_offset: Layout::new::<Base>().size() + NULLPAGE_SIZE,
+            _pd: PhantomData,
         }
     }
+
+    /// Get the uninitialized object that is being constructed.
     pub fn object(&self) -> &UninitializedObject {
         &self.object
+    }
+
+    pub fn base(&self) -> InPlace<'_, Base> {
+        self.object().base()
     }
 
     fn do_static_alloc<T>(&mut self) -> Result<(*mut T, usize), AllocError> {
@@ -69,7 +91,8 @@ impl ConstructorInfo {
         Ok((ptr, offset))
     }
 
-    pub fn static_alloc<T>(&mut self, value: T) -> Result<InvPtrBuilder<T>, AllocError> {
+    /// Allocate a value of type T in object memory at creation time.
+    pub fn static_alloc<T: Invariant>(&mut self, value: T) -> Result<InvPtrBuilder<T>, AllocError> {
         let (ptr, offset) = self.do_static_alloc::<T>()?;
         unsafe {
             // Safety: the object is still uninitialized, so no references exist. We can blindly
@@ -80,21 +103,20 @@ impl ConstructorInfo {
         }
     }
 
-    pub fn static_alloc_with<T: InPlaceCtor, StaticCtor>(
+    /// Allocate a value of type T in object memory at creation time, and construct it in-place.
+    pub fn static_alloc_with<T: Invariant, StaticCtor>(
         &mut self,
         ctor: StaticCtor,
     ) -> Result<InvPtrBuilder<T>, AllocError>
     where
-        StaticCtor: FnOnce(&mut Self) -> Result<T::Builder, AllocError>,
+        StaticCtor: FnOnce(&mut Self, &mut InPlace<'_, T>) -> Result<T, AllocError>,
     {
         let (ptr, offset) = self.do_static_alloc::<MaybeUninit<T>>()?;
-
-        let builder = ctor(self)?;
         unsafe {
             // Safety: we are taking an &mut to a MaybeUninit.
-            let _ptr = T::in_place_ctor::<()>(builder, &mut *ptr, ObjectInitTxHandle)
-                .ok()
-                .ok_or(AllocError)?;
+            let mut in_place = InPlace::new(&mut *ptr);
+            let value = ctor(self, &mut in_place)?;
+            in_place.place().write(value);
             // Safety: we just initialized this value above.
             Ok(InvPtrBuilder::from_offset(offset))
         }
@@ -102,6 +124,7 @@ impl ConstructorInfo {
 }
 
 impl<Base: BaseType> ObjectBuilder<Base> {
+    /// Create a new object builder.
     pub fn new(spec: ObjectCreate) -> Self {
         Self {
             spec,
@@ -109,6 +132,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         }
     }
 
+    /// Create the object without initializing it.
     pub fn create_object(&self) -> Result<UninitializedObject, CreateError> {
         let id = sys_object_create(self.spec, &[], &[])?;
         let handle = get_runtime().map_object(id, MapFlags::READ | MapFlags::WRITE)?;
@@ -124,24 +148,38 @@ impl<'a> TxHandle<'a> for ObjectInitTxHandle {
     }
 }
 
-impl<Base: BaseType + InPlaceCtor> ObjectBuilder<Base> {
+impl<Base: BaseType + Invariant> ObjectBuilder<Base> {
+    /// Construct the object, building the Base value in-place.
     pub fn construct<BaseCtor>(&self, ctor: BaseCtor) -> Result<Object<Base>, CreateError>
     where
-        BaseCtor: FnOnce(&mut ConstructorInfo) -> Result<Base::Builder, CreateError>,
+        BaseCtor: FnOnce(&mut ConstructorInfo<Base>) -> Base,
     {
         let handle = self.create_object()?;
-        let mut ci = ConstructorInfo::new::<Base>(handle);
+        let mut ci = ConstructorInfo::new(handle);
         unsafe {
-            let base = &mut *(ci.object.handle.base_mut_ptr() as *mut MaybeUninit<Base>);
-            let inplace_builder = ctor(&mut ci)?;
-            // TODO
-            Base::in_place_ctor::<'_, ()>(inplace_builder, base, ObjectInitTxHandle).unwrap();
+            let base = ctor(&mut ci);
+            ci.object.base().place().write(base);
+            Ok(Object::new(ci.object.handle))
+        }
+    }
+
+    /// Construct the object, building the Base value in-place.
+    pub fn try_construct<BaseCtor>(&self, ctor: BaseCtor) -> Result<Object<Base>, CreateError>
+    where
+        BaseCtor: FnOnce(&mut ConstructorInfo<Base>) -> Result<Base, CreateError>,
+    {
+        let handle = self.create_object()?;
+        let mut ci = ConstructorInfo::new(handle);
+        unsafe {
+            let base = ctor(&mut ci)?;
+            ci.object().base().place().write(base);
             Ok(Object::new(ci.object.handle))
         }
     }
 }
 
 impl<Base: BaseType + Copy> ObjectBuilder<Base> {
+    /// Construct the object, using the supplied base value.
     pub fn init(&self, base: Base) -> Result<Object<Base>, CreateError> {
         let handle = self.create_object()?;
         unsafe {
@@ -154,8 +192,10 @@ impl<Base: BaseType + Copy> ObjectBuilder<Base> {
 #[cfg(test)]
 mod test {
     use crate::{
-        object::{BaseType, InitializedObject, Object, ObjectBuilder},
+        marker::InPlace,
+        object::{builder::ObjectInitTxHandle, BaseType, InitializedObject, Object, ObjectBuilder},
         ptr::{InvPtr, InvPtrBuilder},
+        tx::TxHandle,
     };
 
     #[derive(twizzler_derive::InvariantCopy, Clone, Copy)]
@@ -172,6 +212,22 @@ mod test {
         y: InvPtr<Foo>,
         z: InvPtr<Bar>,
     }
+
+    impl Bar {
+        fn new<'a>(
+            in_place: &mut InPlace<'a, Bar>,
+            x: InvPtrBuilder<Foo>,
+            y: InvPtrBuilder<Foo>,
+            z: InvPtrBuilder<Bar>,
+            tx: &impl TxHandle<'a>,
+        ) -> Self {
+            Self {
+                x: in_place.store(x, tx),
+                y: in_place.store(y, tx),
+                z: in_place.store(z, tx),
+            }
+        }
+    }
     impl BaseType for Bar {}
 
     #[test]
@@ -184,11 +240,12 @@ mod test {
     fn simple_object_with_static_alloc() {
         let bar_obj: Object<Bar> = ObjectBuilder::default()
             .construct(|ci| {
-                Ok(Bar::new(
-                    ci.static_alloc(Foo { x: 46 })?,
-                    InvPtrBuilder::null(),
-                    InvPtrBuilder::null(),
-                ))
+                let foo_alloc = ci.static_alloc(Foo { x: 46 }).unwrap();
+                Bar {
+                    x: ci.base().store(foo_alloc, ObjectInitTxHandle),
+                    y: InvPtr::null(),
+                    z: InvPtr::null(),
+                }
             })
             .unwrap();
         assert_eq!(bar_obj.base().x.resolve().unwrap().x, 46);
@@ -201,22 +258,26 @@ mod test {
 
         let builder = ObjectBuilder::default();
         let bar_obj: Object<Bar> = builder
-            .construct(|ci| {
+            .try_construct(|ci| {
                 let static_foo_alloc_a1 = ci.static_alloc(Foo { x: 1 })?;
 
-                let static_bar_alloc = ci.static_alloc_with(|ci| {
+                let static_bar_alloc = ci.static_alloc_with(|ci, in_place| {
                     let static_foo_alloc_b1 = ci.static_alloc(Foo { x: 101 })?;
                     let static_foo_alloc_b2 = ci.static_alloc(Foo { x: 102 })?;
                     Ok(Bar::new(
+                        in_place,
                         static_foo_alloc_b1,
                         static_foo_alloc_b2,
                         InvPtrBuilder::null(),
+                        &ObjectInitTxHandle,
                     ))
                 })?;
                 Ok(Bar::new(
+                    &mut ci.base(),
                     foo_obj.base().into(),
                     static_foo_alloc_a1,
                     static_bar_alloc,
+                    &ObjectInitTxHandle,
                 ))
             })
             .unwrap();

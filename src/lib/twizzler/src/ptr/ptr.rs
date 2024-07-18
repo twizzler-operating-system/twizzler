@@ -9,7 +9,7 @@ use twizzler_runtime_api::FotResolveError;
 
 use super::{GlobalPtr, InvPtrBuilder, ResolvedPtr};
 use crate::{
-    marker::{InPlaceCtor, InvariantValue},
+    marker::{Invariant, InvariantValue, StoreEffect},
     object::InitializedObject,
     tx::{TxError, TxResult},
 };
@@ -107,22 +107,19 @@ impl<T> InvPtr<T> {
 }
 
 unsafe impl<T> InvariantValue for InvPtr<T> {}
+unsafe impl<T> Invariant for InvPtr<T> {}
 
-unsafe impl<T> InPlaceCtor for InvPtr<T> {
-    type Builder = InvPtrBuilder<T>;
+impl<T: Invariant> StoreEffect for InvPtr<T> {
+    type MoveCtor = InvPtrBuilder<T>;
 
-    fn in_place_ctor<'b, E>(
-        builder: Self::Builder,
-        place: &'b mut std::mem::MaybeUninit<Self>,
-        tx: impl crate::tx::TxHandle<'b>,
-    ) -> TxResult<&'b mut Self, E>
+    fn store<'a>(
+        ctor: Self::MoveCtor,
+        in_place: &mut crate::marker::InPlace<'a, Self>,
+        tx: impl crate::tx::TxHandle<'a>,
+    ) -> Self
     where
         Self: Sized,
     {
-        if builder.is_local() {
-            Ok(place.write(unsafe { InvPtr::new(builder.offset()) }))
-        } else {
-            todo!()
-        }
+        todo!()
     }
 }

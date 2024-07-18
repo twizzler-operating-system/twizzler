@@ -5,7 +5,6 @@ use twizzler_runtime_api::ObjectHandle;
 
 use super::{ImmutableObject, InitializedObject, MutableObject, RawObject};
 use crate::{
-    marker::InPlaceCtor,
     object::{base::BaseRef, BaseType},
     tx::{TxHandle, TxResult},
 };

@@ -63,36 +63,7 @@ fn handle_invariant(item: DeriveInput, copy: bool) -> Result<proc_macro2::TokenS
     let in_place = if copy {
         quote! {}
     } else {
-        quote! {
-
-         struct #builder_name {
-             #(#builder_vec)*
-         }
-             unsafe impl twizzler::marker::InPlaceCtor for #type_name {
-                 type Builder = #builder_name;
-
-                 fn in_place_ctor<'b, E>(
-                     builder: Self::Builder,
-                     place: &'b mut core::mem::MaybeUninit<Self>,
-                     tx: impl twizzler::tx::TxHandle<'b>,
-                 ) -> twizzler::tx::TxResult<&'b mut Self, E>
-                 where
-                     Self: Sized {
-                     #(#in_place_vec)*
-                     unsafe {
-                         Ok(place.assume_init_mut())
-                     }
-                 }
-             }
-
-        impl #type_name {
-             pub fn new(#(#builder_vec)*) -> #builder_name {
-                 #builder_name {
-                     #(#new_vec)*
-                 }
-             }
-         }
-         }
+        quote! {}
     };
     Ok(quote::quote! {
        unsafe impl twizzler::marker::Invariant for #type_name {}

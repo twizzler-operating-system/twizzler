@@ -10,7 +10,7 @@ use twizzler_runtime_api::ObjID;
 use super::{Allocator, TxAllocator};
 use crate::{
     collections::VectorHeader,
-    marker::InPlaceCtor,
+    marker::InPlace,
     object::{BaseType, Object},
     ptr::{InvPtr, InvPtrBuilder},
     tx::{TxCell, TxError, TxResult},
@@ -67,13 +67,13 @@ pub trait Arena<'arena> {
         placement: Option<Placement>,
     ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>;
 
-    fn alloc_with<Item: ArenaItem + InPlaceCtor, F>(
+    fn alloc_with<Item: ArenaItem, F>(
         &'arena self,
         f: F,
         placement: Option<Placement>,
     ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>
     where
-        F: FnOnce(&Object<PerObjectArena>) -> Item::Builder;
+        F: FnOnce(&Object<PerObjectArena>, InPlace<'arena, Item>) -> Item;
 }
 
 impl Object<ArenaManifest> {
@@ -101,13 +101,13 @@ impl<'arena> Arena<'arena> for Object<ArenaManifest> {
         todo!()
     }
 
-    fn alloc_with<Item: ArenaItem + InPlaceCtor, F>(
+    fn alloc_with<Item: ArenaItem, F>(
         &'arena self,
         f: F,
         placement: Option<Placement>,
     ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>
     where
-        F: FnOnce(&Object<PerObjectArena>) -> Item::Builder,
+        F: FnOnce(&Object<PerObjectArena>, InPlace<'arena, Item>) -> Item,
     {
         todo!()
     }
@@ -238,24 +238,25 @@ impl<'arena> Arena<'arena> for Object<PerObjectArena> {
         unsafe { todo!() }
     }
 
-    fn alloc_with<Item: ArenaItem + InPlaceCtor, F>(
+    fn alloc_with<Item: ArenaItem, F>(
         &'arena self,
         f: F,
         placement: Option<Placement>,
     ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>
     where
-        F: FnOnce(&Object<PerObjectArena>) -> Item::Builder,
+        F: FnOnce(&Object<PerObjectArena>, InPlace<'arena, Item>) -> Item,
     {
         todo!()
     }
 }
 
-#[cfg(test)]
+//#[cfg(test)]
 mod test {
     use super::{Arena, ArenaManifest, ArenaMutRef};
     use crate::{
         object::{BaseType, InitializedObject, Object, ObjectBuilder},
         ptr::{InvPtr, InvPtrBuilder},
+        tx::UnsafeTxHandle,
     };
 
     #[derive(twizzler_derive::Invariant)]
@@ -280,14 +281,23 @@ mod test {
         // Alloc a new node.
         let node1: super::ArenaMutRef<'_, Node> = obj
             .alloc_with(
-                |_| Node::new(InvPtrBuilder::null(), leaf_object.base().into()),
+                |_, mut ip| Node {
+                    next: InvPtr::null(),
+                    data: ip.store(leaf_object.base(), unsafe { UnsafeTxHandle::new() }),
+                },
                 None,
             )
             .unwrap();
 
         // Alloc another node
-        let node2: ArenaMutRef<'_, Node> = obj
-            .alloc_with(|_| Node::new(node1.into(), leaf_object.base().into()), None)
+        let node2: super::ArenaMutRef<'_, Node> = obj
+            .alloc_with(
+                |_, mut ip| Node {
+                    next: ip.store(node1, unsafe { UnsafeTxHandle::new() }),
+                    data: ip.store(leaf_object.base(), unsafe { UnsafeTxHandle::new() }),
+                },
+                None,
+            )
             .unwrap();
 
         let res_node1 = node2.next.resolve().unwrap();
