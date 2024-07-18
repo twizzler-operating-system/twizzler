@@ -1,4 +1,4 @@
-use std::mem::MaybeUninit;
+use std::{convert::Infallible, mem::MaybeUninit};
 
 use crate::tx::TxHandle;
 
@@ -89,3 +89,22 @@ pub trait TryStoreEffect {
     where
         Self: Sized;
 }
+
+/*
+impl<T: StoreEffect> TryStoreEffect for T {
+    type MoveCtor = T::MoveCtor;
+
+    type Error = Infallible;
+
+    fn try_store<'a>(
+        ctor: Self::MoveCtor,
+        in_place: &mut InPlace<'a, Self>,
+        tx: impl TxHandle<'a>,
+    ) -> Result<Self, Self::Error>
+    where
+        Self: Sized,
+    {
+        Ok(T::store(ctor, in_place, tx))
+    }
+}
+*/

@@ -31,3 +31,8 @@ pub const fn split_invariant_pointer(raw: u64) -> (usize, u64) {
         raw & 0x0000ffffffffffff,
     )
 }
+
+#[inline]
+pub const fn make_invariant_pointer(fot_idx: usize, offset: u64) -> u64 {
+    (((fot_idx as u64) & 0xffff) << 48) | (offset as u64) & 0x0000ffffffffffff
+}
