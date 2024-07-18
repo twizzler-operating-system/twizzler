@@ -1,22 +1,46 @@
 use std::{
     borrow::Cow,
+    cell::OnceCell,
     ops::{Deref, DerefMut},
 };
 
 use twizzler_runtime_api::ObjectHandle;
 
+#[repr(transparent)]
+#[derive(Clone, Default)]
+struct OnceHandle<'a>(OnceCell<Cow<'a, ObjectHandle>>);
+
+impl<'a> OnceHandle<'a> {
+    fn handle(&self, ptr: *const u8) -> &ObjectHandle {
+        self.0.get_or_init(|| {
+            let runtime = twizzler_runtime_api::get_runtime();
+            Cow::Owned(runtime.ptr_to_handle(ptr).unwrap())
+        })
+    }
+}
+
 pub struct ResolvedPtr<'obj, T> {
-    handle: Cow<'obj, ObjectHandle>,
     ptr: *const T,
+    once_handle: OnceHandle<'obj>,
 }
 
 impl<'obj, T> ResolvedPtr<'obj, T> {
-    pub unsafe fn as_mut(&self) -> ResolvedMutablePtr<'obj, T> {
-        todo!()
+    pub(crate) unsafe fn new(ptr: *const T) -> Self {
+        Self {
+            ptr,
+            once_handle: OnceHandle::default(),
+        }
+    }
+
+    pub unsafe fn as_mut(&'obj self) -> ResolvedMutablePtr<'obj, T> {
+        ResolvedMutablePtr {
+            handle: self.handle(),
+            ptr: self.ptr as *mut T,
+        }
     }
 
     pub fn handle(&self) -> &ObjectHandle {
-        &self.handle
+        self.once_handle.handle(self.ptr as *const u8)
     }
 
     pub fn ptr(&self) -> *const T {

@@ -102,6 +102,27 @@ impl ObjectRuntime for ReferenceRuntime {
             new_object_handle(in_id_b, slot_b, in_flags_b),
         ))
     }
+
+    fn ptr_to_handle(&self, va: *const u8) -> Option<ObjectHandle> {
+        todo!()
+    }
+
+    fn ptr_to_object_start(&self, va: *const u8, valid_len: usize) -> Option<*const u8> {
+        todo!()
+    }
+
+    fn resolve_fot_to_object_start<'a>(
+        &self,
+        handle: &'a ObjectHandle,
+        idx: usize,
+        valid_len: usize,
+    ) -> Result<*const u8, twizzler_runtime_api::FotResolveError> {
+        todo!()
+    }
+
+    fn add_fot_entry(&self, handle: &ObjectHandle) -> Option<(*mut u8, usize)> {
+        todo!()
+    }
 }
 
 /// A key for local (per-compartment) mappings of objects.

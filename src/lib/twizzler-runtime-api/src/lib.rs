@@ -71,16 +71,16 @@ impl ObjID {
     }
 
     /// Split an object ID into upper and lower values, useful for syscalls.
-    pub fn split(&self) -> (u64, u64) {
+    pub const fn split(&self) -> (u64, u64) {
         ((self.0 >> 64) as u64, (self.0 & 0xffffffffffffffff) as u64)
     }
 
     /// Build a new ObjID out of a high part and a low part.
-    pub fn new_from_parts(hi: u64, lo: u64) -> Self {
+    pub const fn new_from_parts(hi: u64, lo: u64) -> Self {
         ObjID::new(((hi as u128) << 64) | (lo as u128))
     }
 
-    pub fn as_u128(&self) -> u128 {
+    pub const fn as_u128(&self) -> u128 {
         self.0
     }
 }
@@ -238,6 +238,44 @@ pub trait ThreadRuntime {
     fn tls_get_addr(&self, tls_index: &TlsIndex) -> Option<*const u8>;
 }
 
+/// Possible errors on FOT resolve.
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+pub enum FotResolveError {
+    /// An error that is not classified.
+    Other,
+    /// Null pointer
+    NullPointer,
+    /// One of the arguments in FOT resolution call was invalid.
+    InvalidArgument,
+    /// FOT index is invalid.
+    InvalidIndex,
+    /// FOT entry at given index is invalid.
+    InvalidFOTEntry,
+    /// Mapping failed
+    MapFailed(MapError),
+}
+
+impl From<MapError> for FotResolveError {
+    fn from(value: MapError) -> Self {
+        Self::MapFailed(value)
+    }
+}
+
+impl Display for FotResolveError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            FotResolveError::Other => write!(f, "unknown error"),
+            FotResolveError::NullPointer => write!(f, "null pointer"),
+            FotResolveError::InvalidArgument => write!(f, "invalid argument"),
+            FotResolveError::InvalidIndex => write!(f, "invalid index"),
+            FotResolveError::InvalidFOTEntry => write!(f, "invalid FOT entry"),
+            FotResolveError::MapFailed(me) => write!(f, "mapping failed: {}", me),
+        }
+    }
+}
+
+impl core::error::Error for FotResolveError {}
+
 /// All the object related runtime functions.
 pub trait ObjectRuntime {
     /// Map an object to an [ObjectHandle]. The handle may reference the same internal mapping as
@@ -245,6 +283,28 @@ pub trait ObjectRuntime {
     fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError>;
     /// Called on drop of an object handle.
     fn release_handle(&self, handle: &mut ObjectHandle);
+
+    /// Given a pointer, return the object handle associated with that memory. Note that the
+    /// returned handle may not necessarily point to the same virtual address as the pointer passed
+    /// to this function.
+    fn ptr_to_handle(&self, va: *const u8) -> Option<ObjectHandle>;
+
+    /// Given a pointer, return a pointer to the start of the associated object. Ensures that at
+    /// least valid_len bytes after the returned pointer are valid to use.
+    fn ptr_to_object_start(&self, va: *const u8, valid_len: usize) -> Option<*const u8>;
+
+    /// Resolve an object handle's FOT entry idx into a pointer to the start of the referenced
+    /// object. Ensures that at least valid_len bytes after the returned pointer are valid to use.
+    fn resolve_fot_to_object_start(
+        &self,
+        handle: &ObjectHandle,
+        idx: usize,
+        valid_len: usize,
+    ) -> Result<*const u8, FotResolveError>;
+
+    /// Add an FOT entry to the object, returning a pointer to the FOT entry and the entry index. If
+    /// there are no more FOT entries, or if the object is immutable, returns None.
+    fn add_fot_entry(&self, handle: &ObjectHandle) -> Option<(*mut u8, usize)>;
 
     /// Map two objects in sequence, useful for executable loading. The default implementation makes
     /// no guarantees about ordering.

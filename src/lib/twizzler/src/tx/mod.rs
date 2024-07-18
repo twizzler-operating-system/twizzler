@@ -74,12 +74,12 @@ impl<'a, T: InPlaceCtor + 'a> TxCell<T> {
     /// Set the value of the cell, constructing the value in-place.
     pub fn set_in_place(&self, value: T::Builder, tx: impl TxHandle<'a>) -> TxResult<()> {
         let ptr = unsafe { transmute::<&mut T, &mut MaybeUninit<T>>(self.as_mut(&tx)?) };
-        T::in_place_ctor(value, ptr, &tx);
+        T::in_place_ctor(value, ptr, &tx)?;
         Ok(())
     }
 }
 
-impl<'a, T: Copy> TxCell<T> {
+impl<'a, T: Copy + 'a> TxCell<T> {
     /// Set the value of the cell, constructing the value in-place.
     pub fn set(&self, value: T, tx: impl TxHandle<'a>) -> TxResult<()> {
         self.set_in_place(value, tx)
@@ -89,18 +89,18 @@ impl<'a, T: Copy> TxCell<T> {
 unsafe impl<T: InPlaceCtor> InPlaceCtor for TxCell<T> {
     type Builder = T::Builder;
 
-    fn in_place_ctor<'b>(
+    fn in_place_ctor<'b, E>(
         builder: Self::Builder,
         place: &'b mut MaybeUninit<Self>,
         tx: impl TxHandle<'b>,
-    ) -> &'b mut Self
+    ) -> TxResult<&'b mut Self, E>
     where
         Self: Sized,
     {
         unsafe {
             let inner_place = transmute::<&mut MaybeUninit<Self>, &mut MaybeUninit<T>>(place);
-            T::in_place_ctor(builder, inner_place, tx);
-            place.assume_init_mut()
+            T::in_place_ctor(builder, inner_place, tx)?;
+            Ok(place.assume_init_mut())
         }
     }
 }
@@ -112,22 +112,3 @@ impl<T> Deref for TxCell<T> {
         unsafe { &*self.0.get() }
     }
 }
-
-/*
-mod test {
-    use super::{TxCell, TxHandle};
-
-    fn test<'a>(tc: &'a TxCell<u32>, mut th: impl TxHandle<'a>) {
-        // TODO: this should not compile!
-        let p1 = tc.as_mut::<'a, ()>(&th).unwrap();
-        let p2 = tc.as_mut::<'a, ()>(&th).unwrap();
-        *p1 = 2;
-        *p2 = 3;
-    }
-
-    fn test<'a>(tc: &'a TxCell<u32>, mut th: impl TxHandle<'a>) {
-        let p1 = tc.as_mut::<'a, ()>(&th).unwrap();
-        *p1 = 2;
-    }
-}
-*/

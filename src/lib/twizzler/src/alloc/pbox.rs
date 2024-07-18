@@ -3,8 +3,9 @@ use std::alloc::{AllocError, Layout};
 use super::Allocator;
 use crate::{
     marker::InPlaceCtor,
+    object::InitializedObject,
     ptr::{GlobalPtr, InvPtr, InvPtrBuilder},
-    tx::TxHandle,
+    tx::{TxHandle, TxResult},
 };
 
 #[repr(C)]
@@ -19,11 +20,11 @@ pub struct PBoxBuilder<T> {
 unsafe impl<T> InPlaceCtor for PBox<T> {
     type Builder = PBoxBuilder<T>;
 
-    fn in_place_ctor<'b>(
+    fn in_place_ctor<'b, E>(
         builder: Self::Builder,
         place: &'b mut std::mem::MaybeUninit<Self>,
         tx: impl TxHandle<'b>,
-    ) -> &'b mut Self
+    ) -> TxResult<&'b mut Self, E>
     where
         Self: Sized,
     {
@@ -51,6 +52,7 @@ impl<T> Drop for PBox<T> {
     }
 }
 
+#[cfg(test)]
 mod test {
     use std::u32;
 
@@ -75,34 +77,57 @@ mod test {
         data2: TxCell<u32>,
     }
 
-    /*
-    impl Foo {
-        fn new(d: PBoxBuilder<u32>, d2: u32) -> FooBuilder {
-            FooBuilder { data: d, data2: d2 }
-        }
+    #[derive(twizzler_derive::InvariantCopy, Copy, Clone)]
+    #[repr(C)]
+    struct Foo2 {
+        x: u32,
     }
 
-    unsafe impl InPlaceCtor for Foo {
-        type Builder = InvPtrBuilder<u32>;
-
+    /*
+    unsafe impl twizzler::marker::Invariant for Foo {}
+    unsafe impl twizzler::marker::InPlaceCtor for Foo {
+        type Builder = FooBuilder;
         fn in_place_ctor<'b>(
             builder: Self::Builder,
-            place: &'b mut std::mem::MaybeUninit<Self>,
-            tx: impl TxHandle<'b>,
+            place: &'b mut core::mem::MaybeUninit<Self>,
+            tx: impl twizzler::tx::TxHandle<'b>,
         ) -> &'b mut Self
         where
             Self: Sized,
         {
-            todo!()
+            unsafe {
+                let ptr = place as *mut _ as *mut Self;
+                let ptr = addr_of!((*ptr).data) as *mut core::mem::MaybeUninit<TxCell<PBox<u32>>>;
+                <TxCell<PBox<u32>>>::in_place_ctor(builder.data, &mut *ptr, &tx);
+            }
+            unsafe {
+                let ptr = place as *mut _ as *mut Self;
+                let ptr = addr_of!((*ptr).data2) as *mut core::mem::MaybeUninit<TxCell<u32>>;
+                <TxCell<u32>>::in_place_ctor(builder.data2, &mut *ptr, &tx);
+            }
+            unsafe { place.assume_init_mut() }
+        }
+    }
+    struct FooBuilder {
+        data: <TxCell<PBox<u32>> as InPlaceCtor>::Builder, // PBoxBuilder
+        data2: <TxCell<u32> as InPlaceCtor>::Builder, // u32
+    }
+    impl Foo {
+        pub fn new(
+            data: <TxCell<PBox<u32>> as InPlaceCtor>::Builder,
+            data2: <TxCell<u32> as InPlaceCtor>::Builder,
+        ) -> FooBuilder {
+            FooBuilder { data, data2 }
         }
     }
     */
 
     impl BaseType for Foo {}
+    impl BaseType for Foo2 {}
 
     fn test<'a>(alloc: Object<ArenaManifest>, tx: impl TxHandle<'a>) {
         let obj: Object<Foo> = ObjectBuilder::default()
-            .construct(|_info| Foo::new(PBox::new_in(32, &alloc).unwrap(), 334))
+            .construct(|_info| Ok(Foo::new(PBox::new_in(32, &alloc).unwrap(), 334)))
             .unwrap();
 
         let base = obj.base();
@@ -112,5 +137,9 @@ mod test {
         let _data = **base.data;
 
         base.data2.set(42, tx).unwrap();
+
+        let o2 = ObjectBuilder::default().init(Foo2 { x: 4 }).unwrap();
+        let base = o2.base();
+        let _data = base.x;
     }
 }

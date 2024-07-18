@@ -1,6 +1,8 @@
 #![feature(allocator_api)]
 #![feature(auto_traits)]
 #![feature(negative_impls)]
+#![feature(strict_provenance)]
+#![feature(core_intrinsics)]
 
 extern crate self as twizzler;
 
@@ -10,3 +12,5 @@ pub mod marker;
 pub mod object;
 pub mod ptr;
 pub mod tx;
+
+mod tests;

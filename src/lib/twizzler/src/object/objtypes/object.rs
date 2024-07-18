@@ -16,6 +16,13 @@ pub struct Object<Base: BaseType> {
 }
 
 impl<Base: BaseType> Object<Base> {
+    pub(crate) unsafe fn new(handle: ObjectHandle) -> Self {
+        Self {
+            handle,
+            _pd: PhantomData,
+        }
+    }
+
     pub unsafe fn base_mut(&self) -> &mut Base {
         (self.base_mut_ptr() as *mut Base)
             .as_mut()
@@ -42,7 +49,7 @@ impl<Base: BaseType> InitializedObject for Object<Base> {
     type Base = Base;
 
     fn base(&self) -> BaseRef<'_, Self::Base> {
-        todo!()
+        BaseRef::new(self)
     }
 
     fn meta(&self) -> &MetaInfo {

@@ -1,6 +1,9 @@
 use std::mem::MaybeUninit;
 
-use crate::tx::TxHandle;
+use crate::{
+    object::InitializedObject,
+    tx::{TxHandle, TxResult},
+};
 
 pub unsafe auto trait InvariantValue {}
 
@@ -26,22 +29,22 @@ unsafe impl<T: Invariant, const N: usize> Invariant for [T; N] {}
 pub unsafe trait InPlaceCtor {
     type Builder;
 
-    fn in_place_ctor<'b>(
+    fn in_place_ctor<'b, E>(
         builder: Self::Builder,
         place: &'b mut MaybeUninit<Self>,
         tx: impl TxHandle<'b>,
-    ) -> &'b mut Self
+    ) -> TxResult<&'b mut Self, E>
     where
         Self: Sized;
 }
 
 unsafe impl<T: Copy> InPlaceCtor for T {
     type Builder = T;
-    fn in_place_ctor<'b>(
+    fn in_place_ctor<'b, E>(
         builder: T,
         place: &'b mut MaybeUninit<Self>,
         _tx: impl TxHandle<'b>,
-    ) -> &'b mut Self {
-        place.write(builder)
+    ) -> TxResult<&'b mut Self, E> {
+        Ok(place.write(builder))
     }
 }
