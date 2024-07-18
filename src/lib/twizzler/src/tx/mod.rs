@@ -4,7 +4,7 @@ use std::{
     ops::Deref,
 };
 
-use crate::marker::InPlaceCtor;
+use crate::marker::InPlace;
 
 /// A trait for implementing transaction handles.
 ///
@@ -70,11 +70,16 @@ impl<T> TxCell<T> {
     }
 }
 
-impl<'a, T: InPlaceCtor + 'a> TxCell<T> {
+impl<'a, T> TxCell<T> {
     /// Set the value of the cell, constructing the value in-place.
-    pub fn set_in_place(&self, value: T::Builder, tx: impl TxHandle<'a>) -> TxResult<()> {
+    pub fn set_with<F>(&self, ctor: F, tx: impl TxHandle<'a>) -> TxResult<()>
+    where
+        F: FnOnce(&mut InPlace<'_, T>) -> T,
+    {
         let ptr = unsafe { transmute::<&mut T, &mut MaybeUninit<T>>(self.as_mut(&tx)?) };
-        T::in_place_ctor(value, ptr, &tx)?;
+        let mut in_place = InPlace::new(ptr);
+        let value = ctor(&mut in_place);
+        ptr.write(value);
         Ok(())
     }
 }
@@ -82,26 +87,11 @@ impl<'a, T: InPlaceCtor + 'a> TxCell<T> {
 impl<'a, T: Copy + 'a> TxCell<T> {
     /// Set the value of the cell, constructing the value in-place.
     pub fn set(&self, value: T, tx: impl TxHandle<'a>) -> TxResult<()> {
-        self.set_in_place(value, tx)
-    }
-}
-
-unsafe impl<T: InPlaceCtor> InPlaceCtor for TxCell<T> {
-    type Builder = T::Builder;
-
-    fn in_place_ctor<'b, E>(
-        builder: Self::Builder,
-        place: &'b mut MaybeUninit<Self>,
-        tx: impl TxHandle<'b>,
-    ) -> TxResult<&'b mut Self, E>
-    where
-        Self: Sized,
-    {
         unsafe {
-            let inner_place = transmute::<&mut MaybeUninit<Self>, &mut MaybeUninit<T>>(place);
-            T::in_place_ctor(builder, inner_place, tx)?;
-            Ok(place.assume_init_mut())
+            let ptr = self.as_mut(tx)? as *mut T;
+            ptr.write(value);
         }
+        Ok(())
     }
 }
 
@@ -110,5 +100,21 @@ impl<T> Deref for TxCell<T> {
 
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.0.get() }
+    }
+}
+
+pub struct UnsafeTxHandle {
+    _priv: (),
+}
+
+impl<'a> TxHandle<'a> for UnsafeTxHandle {
+    fn tx_mut<T, E>(&self, data: *const T) -> crate::tx::TxResult<*mut T, E> {
+        Ok(data as *mut T)
+    }
+}
+
+impl UnsafeTxHandle {
+    pub const unsafe fn new() -> Self {
+        Self { _priv: () }
     }
 }

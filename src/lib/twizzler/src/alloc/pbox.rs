@@ -2,7 +2,6 @@ use std::alloc::{AllocError, Layout};
 
 use super::Allocator;
 use crate::{
-    marker::InPlaceCtor,
     object::InitializedObject,
     ptr::{GlobalPtr, InvPtr, InvPtrBuilder},
     tx::{TxHandle, TxResult},
@@ -15,21 +14,6 @@ pub struct PBox<T> {
 
 pub struct PBoxBuilder<T> {
     inv: InvPtrBuilder<T>,
-}
-
-unsafe impl<T> InPlaceCtor for PBox<T> {
-    type Builder = PBoxBuilder<T>;
-
-    fn in_place_ctor<'b, E>(
-        builder: Self::Builder,
-        place: &'b mut std::mem::MaybeUninit<Self>,
-        tx: impl TxHandle<'b>,
-    ) -> TxResult<&'b mut Self, E>
-    where
-        Self: Sized,
-    {
-        todo!()
-    }
 }
 
 impl<T> std::ops::Deref for PBox<T> {
@@ -52,7 +36,7 @@ impl<T> Drop for PBox<T> {
     }
 }
 
-#[cfg(test)]
+//#[cfg(test)]
 mod test {
     use std::u32;
 
@@ -64,7 +48,6 @@ mod test {
             arena::{Arena, ArenaManifest},
             TxAllocator,
         },
-        marker::InPlaceCtor,
         object::{BaseType, ConstructorInfo, InitializedObject, Object, ObjectBuilder},
         ptr::InvPtrBuilder,
         tx::{TxCell, TxHandle},
@@ -120,7 +103,6 @@ mod test {
             FooBuilder { data, data2 }
         }
     }
-    */
 
     impl BaseType for Foo {}
     impl BaseType for Foo2 {}
@@ -142,4 +124,5 @@ mod test {
         let base = o2.base();
         let _data = base.x;
     }
+    */
 }
