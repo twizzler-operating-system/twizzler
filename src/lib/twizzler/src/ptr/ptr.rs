@@ -4,12 +4,12 @@ use std::{
     mem::size_of,
 };
 
-use twizzler_abi::object::split_invariant_pointer;
+use twizzler_abi::object::{make_invariant_pointer, split_invariant_pointer};
 use twizzler_runtime_api::FotResolveError;
 
 use super::{GlobalPtr, InvPtrBuilder, ResolvedPtr};
 use crate::{
-    marker::{Invariant, InvariantValue, StoreEffect},
+    marker::{Invariant, InvariantValue, StoreEffect, TryStoreEffect},
     object::InitializedObject,
     tx::{TxError, TxResult},
 };
@@ -38,6 +38,14 @@ impl<T> InvPtr<T> {
     pub unsafe fn new(bits: u64) -> Self {
         Self {
             bits,
+            _pd: PhantomData,
+            _pp: PhantomPinned,
+        }
+    }
+
+    pub unsafe fn from_raw_parts(fot_idx: usize, offset: u64) -> Self {
+        Self {
+            bits: make_invariant_pointer(fot_idx, offset),
             _pd: PhantomData,
             _pp: PhantomPinned,
         }
@@ -109,6 +117,32 @@ impl<T> InvPtr<T> {
 unsafe impl<T> InvariantValue for InvPtr<T> {}
 unsafe impl<T> Invariant for InvPtr<T> {}
 
+impl<T: Invariant> TryStoreEffect for InvPtr<T> {
+    type MoveCtor = InvPtrBuilder<T>;
+    type Error = ();
+
+    fn try_store<'a>(
+        ctor: Self::MoveCtor,
+        in_place: &mut crate::marker::InPlace<'a, Self>,
+        tx: impl crate::tx::TxHandle<'a>,
+    ) -> Result<Self, Self::Error>
+    where
+        Self: Sized,
+    {
+        Ok(if ctor.is_local() {
+            unsafe { Self::new(ctor.offset()) }
+        } else {
+            let runtime = twizzler_runtime_api::get_runtime();
+            let handle = runtime
+                .ptr_to_handle(in_place.place() as *const _ as *const u8)
+                .ok_or(())?;
+            let (fot, idx) = runtime.add_fot_entry(&handle).ok_or(())?;
+            // TODO: write FOT entry
+            unsafe { Self::from_raw_parts(idx, ctor.offset()) }
+        })
+    }
+}
+
 impl<T: Invariant> StoreEffect for InvPtr<T> {
     type MoveCtor = InvPtrBuilder<T>;
 
@@ -120,6 +154,6 @@ impl<T: Invariant> StoreEffect for InvPtr<T> {
     where
         Self: Sized,
     {
-        todo!()
+        <Self as TryStoreEffect>::try_store(ctor, in_place, tx).unwrap()
     }
 }
