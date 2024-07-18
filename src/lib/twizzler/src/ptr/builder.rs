@@ -23,6 +23,35 @@ impl<T> InvPtrBuilder<T> {
         }
     }
 
+    /// Construct an invariant pointer from a local offset.
+    ///
+    /// # Safety
+    /// The caller must ensure that the data in the local object referred to by this offset is valid
+    /// and initialized, and of the correct type.
+    pub const unsafe fn from_offset(offset: usize) -> Self {
+        Self {
+            id: ObjID::new(0),
+            offset: offset as u64,
+            _pd: PhantomData,
+        }
+    }
+
+    pub const fn is_local(&self) -> bool {
+        self.id.as_u128() == 0
+    }
+
+    pub const fn null() -> Self {
+        Self {
+            id: ObjID::new(0),
+            offset: 0,
+            _pd: PhantomData,
+        }
+    }
+
+    pub const fn is_null(&self) -> bool {
+        self.offset == 0
+    }
+
     pub const fn id(&self) -> ObjID {
         self.id
     }

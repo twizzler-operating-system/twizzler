@@ -10,6 +10,7 @@ use twizzler_runtime_api::ObjID;
 use super::{Allocator, TxAllocator};
 use crate::{
     collections::VectorHeader,
+    marker::InPlaceCtor,
     object::{BaseType, Object},
     ptr::{InvPtr, InvPtrBuilder},
     tx::{TxCell, TxError, TxResult},
@@ -23,12 +24,6 @@ pub struct ArenaMutRef<'arena, T> {
 pub struct ArenaRef<'arena, T> {
     ptr: &'arena T,
     target_id: ObjID,
-}
-
-impl<'arena, T> From<&ArenaRef<'arena, T>> for InvPtrBuilder<T> {
-    fn from(value: &ArenaRef<'arena, T>) -> Self {
-        todo!()
-    }
 }
 
 impl<'arena, T> Deref for ArenaMutRef<'arena, T> {
@@ -72,13 +67,13 @@ pub trait Arena<'arena> {
         placement: Option<Placement>,
     ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>;
 
-    fn alloc_with<Item: ArenaItem, F>(
+    fn alloc_with<Item: ArenaItem + InPlaceCtor, F>(
         &'arena self,
         f: F,
         placement: Option<Placement>,
     ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>
     where
-        F: FnOnce(&Object<PerObjectArena>) -> Item;
+        F: FnOnce(&Object<PerObjectArena>) -> Item::Builder;
 }
 
 impl Object<ArenaManifest> {
@@ -106,13 +101,13 @@ impl<'arena> Arena<'arena> for Object<ArenaManifest> {
         todo!()
     }
 
-    fn alloc_with<Item: ArenaItem, F>(
+    fn alloc_with<Item: ArenaItem + InPlaceCtor, F>(
         &'arena self,
         f: F,
         placement: Option<Placement>,
     ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>
     where
-        F: FnOnce(&Object<PerObjectArena>) -> Item,
+        F: FnOnce(&Object<PerObjectArena>) -> Item::Builder,
     {
         todo!()
     }
@@ -156,7 +151,7 @@ impl TxAllocator for Object<ArenaManifest> {
 
 pub trait ArenaItem {}
 
-impl<T: Send + Sync> ArenaItem for T {}
+impl<T> ArenaItem for T {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ArenaError {
@@ -181,6 +176,18 @@ pub enum Placement {
 pub struct ArenaManifest {
     nr_groups: u32,
     arenas: TxCell<VecAndStart>,
+}
+
+impl Default for ArenaManifest {
+    fn default() -> Self {
+        Self {
+            nr_groups: 0,
+            arenas: TxCell::new(VecAndStart {
+                start: 0,
+                vec: VectorHeader::default(),
+            }),
+        }
+    }
 }
 
 #[repr(C)]
@@ -231,68 +238,57 @@ impl<'arena> Arena<'arena> for Object<PerObjectArena> {
         unsafe { todo!() }
     }
 
-    fn alloc_with<Item: ArenaItem, F>(
+    fn alloc_with<Item: ArenaItem + InPlaceCtor, F>(
         &'arena self,
         f: F,
         placement: Option<Placement>,
     ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>
     where
-        F: FnOnce(&Object<PerObjectArena>) -> Item,
+        F: FnOnce(&Object<PerObjectArena>) -> Item::Builder,
     {
         todo!()
     }
 }
 
+#[cfg(test)]
 mod test {
-    use super::{Arena, ArenaManifest};
+    use super::{Arena, ArenaManifest, ArenaMutRef};
     use crate::{
-        object::{BaseType, InitializedObject, Object},
-        ptr::InvPtr,
-        tx::TxCell,
+        object::{BaseType, InitializedObject, Object, ObjectBuilder},
+        ptr::{InvPtr, InvPtrBuilder},
     };
 
+    #[derive(twizzler_derive::Invariant)]
     #[repr(C)]
     struct Node {
         next: InvPtr<Node>,
         data: InvPtr<LeafData>,
     }
 
+    #[derive(twizzler_derive::InvariantCopy)]
     #[repr(C)]
-    #[derive(Copy, Clone)]
+    #[derive(Copy, Clone, Default)]
     struct LeafData {
         payload: u32,
     }
 
     impl BaseType for LeafData {}
 
-    fn test(obj: Object<ArenaManifest>, leaf_object: Object<LeafData>) {
+    //#[test]
+    fn test(obj: Object<ArenaManifest>) {
+        let leaf_object = ObjectBuilder::default().init(LeafData::default()).unwrap();
         // Alloc a new node.
-        let mut node1 = obj
-            .alloc(
-                Node {
-                    next: InvPtr::null(),
-                    data: InvPtr::null(),
-                },
+        let node1: super::ArenaMutRef<'_, Node> = obj
+            .alloc_with(
+                |_| Node::new(InvPtrBuilder::null(), leaf_object.base().into()),
                 None,
             )
             .unwrap();
-        // Set that node's data pointer.
-        node1.ptr.data.set(leaf_object.base());
 
-        // Alloc another node.
-        let mut node2 = obj
-            .alloc(
-                Node {
-                    next: InvPtr::null(),
-                    data: InvPtr::null(),
-                },
-                None,
-            )
+        // Alloc another node
+        let node2: ArenaMutRef<'_, Node> = obj
+            .alloc_with(|_| Node::new(node1.into(), leaf_object.base().into()), None)
             .unwrap();
-        // Set the node's data pointer.
-        node2.ptr.data.set(leaf_object.base());
-        // Set the next pointer.
-        node2.ptr.next.set(node1);
 
         let res_node1 = node2.next.resolve().unwrap();
         let leaf_data = res_node1.data.resolve().unwrap();

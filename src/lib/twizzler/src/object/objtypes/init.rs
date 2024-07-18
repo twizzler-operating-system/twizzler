@@ -5,12 +5,12 @@ use twizzler_runtime_api::{MapError, MapFlags, ObjID, ObjectHandle};
 
 use super::{ImmutableObject, Object, RawObject};
 use crate::{
-    object::{base::BaseRef, BaseType},
-    ptr::{InvPtr, ResolvedPtr},
+    object::{base::BaseRef, fot::FotEntry, BaseType},
+    ptr::{InvPtr, InvPtrBuilder, ResolvedPtr},
     tx::TxHandle,
 };
 
-pub trait InitializedObject {
+pub trait InitializedObject: RawObject {
     type Base: BaseType;
 
     fn base(&self) -> BaseRef<'_, Self::Base>;
@@ -62,5 +62,21 @@ impl<Base: BaseType> RawObject for UninitializedObject<Base> {
 impl<Base: BaseType> Into<ObjectHandle> for UninitializedObject<Base> {
     fn into(self) -> ObjectHandle {
         self.handle
+    }
+}
+
+pub trait FotInserter {
+    fn insert_fot<'a, T>(&self, builder: InvPtrBuilder<T>, tx: impl TxHandle<'a>) -> usize;
+}
+
+impl<O: InitializedObject> FotInserter for O {
+    fn insert_fot<'a, T>(&self, builder: InvPtrBuilder<T>, tx: impl TxHandle<'a>) -> usize {
+        todo!()
+    }
+}
+
+impl<Base: BaseType> FotInserter for UninitializedObject<Base> {
+    fn insert_fot<'a, T>(&self, builder: InvPtrBuilder<T>, tx: impl TxHandle<'a>) -> usize {
+        todo!()
     }
 }
