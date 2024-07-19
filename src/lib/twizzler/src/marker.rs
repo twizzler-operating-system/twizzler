@@ -1,6 +1,4 @@
-use std::{convert::Infallible, mem::MaybeUninit};
-
-use crate::tx::TxHandle;
+use std::mem::MaybeUninit;
 
 pub unsafe auto trait InvariantValue {}
 
@@ -23,56 +21,38 @@ unsafe impl Invariant for i64 {}
 
 unsafe impl<T: Invariant, const N: usize> Invariant for [T; N] {}
 
-pub struct InPlace<'a, T> {
-    place: &'a mut MaybeUninit<T>,
+pub struct InPlace<'a> {
+    place: &'a mut MaybeUninit<u8>,
 }
 
-impl<'a, T> InPlace<'a, T> {
-    pub(crate) fn new(place: &'a mut MaybeUninit<T>) -> Self {
+impl<'a> InPlace<'a> {
+    pub(crate) fn new(place: &'a mut MaybeUninit<u8>) -> Self {
         Self { place }
     }
 
-    pub fn place(&mut self) -> &mut MaybeUninit<T> {
+    pub(crate) fn place(&mut self) -> &mut MaybeUninit<u8> {
         self.place
     }
+}
 
-    // This function is only safe because we never actually store through these.
-    fn cast<V>(&mut self) -> InPlace<'a, V> {
-        unsafe {
-            InPlace {
-                place: &mut *(self.place.as_mut_ptr() as *mut MaybeUninit<V>),
-            }
-        }
+impl<'a> InPlace<'a> {
+    pub fn store<V: StoreEffect + 'a>(&mut self, item: impl Into<V::MoveCtor>) -> V {
+        V::store(item.into(), self)
     }
 }
 
-impl<'a, T> InPlace<'a, T> {
-    pub fn store<V: StoreEffect + 'a>(
-        &mut self,
-        item: impl Into<V::MoveCtor>,
-        tx: impl TxHandle<'a>,
-    ) -> V {
-        V::store(item.into(), &mut self.cast(), tx)
-    }
-}
-
-impl<'a, T> InPlace<'a, T> {
+impl<'a> InPlace<'a> {
     pub fn try_store<V: TryStoreEffect + 'a>(
         &mut self,
         item: impl Into<V::MoveCtor>,
-        tx: impl TxHandle<'a>,
     ) -> Result<V, V::Error> {
-        V::try_store(item.into(), &mut self.cast(), tx)
+        V::try_store(item.into(), self)
     }
 }
 
 pub trait StoreEffect {
     type MoveCtor;
-    fn store<'a>(
-        ctor: Self::MoveCtor,
-        in_place: &mut InPlace<'a, Self>,
-        tx: impl TxHandle<'a>,
-    ) -> Self
+    fn store<'a>(ctor: Self::MoveCtor, in_place: &mut InPlace<'a>) -> Self
     where
         Self: Sized;
 }
@@ -81,30 +61,7 @@ pub trait TryStoreEffect {
     type MoveCtor;
     type Error;
 
-    fn try_store<'a>(
-        ctor: Self::MoveCtor,
-        in_place: &mut InPlace<'a, Self>,
-        tx: impl TxHandle<'a>,
-    ) -> Result<Self, Self::Error>
+    fn try_store<'a>(ctor: Self::MoveCtor, in_place: &mut InPlace<'a>) -> Result<Self, Self::Error>
     where
         Self: Sized;
 }
-
-/*
-impl<T: StoreEffect> TryStoreEffect for T {
-    type MoveCtor = T::MoveCtor;
-
-    type Error = Infallible;
-
-    fn try_store<'a>(
-        ctor: Self::MoveCtor,
-        in_place: &mut InPlace<'a, Self>,
-        tx: impl TxHandle<'a>,
-    ) -> Result<Self, Self::Error>
-    where
-        Self: Sized,
-    {
-        Ok(T::store(ctor, in_place, tx))
-    }
-}
-*/

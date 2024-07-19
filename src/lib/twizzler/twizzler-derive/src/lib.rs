@@ -12,14 +12,6 @@ pub fn invariant(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     }
 }
 
-#[proc_macro_derive(InvariantCopy)]
-pub fn invariant_copy(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    match handle_invariant(parse_macro_input!(item as DeriveInput), true) {
-        Ok(ts) => ts.into(),
-        Err(err) => proc_macro::TokenStream::from(err.to_compile_error()),
-    }
-}
-
 fn handle_invariant(item: DeriveInput, copy: bool) -> Result<proc_macro2::TokenStream, Error> {
     let type_name = item.ident.clone();
     let mut in_place_vec = vec![];
