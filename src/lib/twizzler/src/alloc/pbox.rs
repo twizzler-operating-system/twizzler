@@ -60,7 +60,7 @@ mod test {
         data2: TxCell<u32>,
     }
 
-    #[derive(twizzler_derive::InvariantCopy, Copy, Clone)]
+    #[derive(twizzler_derive::Invariant, Copy, Clone)]
     #[repr(C)]
     struct Foo2 {
         x: u32,

@@ -130,8 +130,7 @@ impl<T: Invariant> TryStoreEffect for InvPtr<T> {
 
     fn try_store<'a>(
         ctor: Self::MoveCtor,
-        in_place: &mut crate::marker::InPlace<'a, Self>,
-        tx: impl crate::tx::TxHandle<'a>,
+        in_place: &mut crate::marker::InPlace<'a>,
     ) -> Result<Self, Self::Error>
     where
         Self: Sized,
@@ -157,14 +156,10 @@ impl<T: Invariant> TryStoreEffect for InvPtr<T> {
 impl<T: Invariant> StoreEffect for InvPtr<T> {
     type MoveCtor = InvPtrBuilder<T>;
 
-    fn store<'a>(
-        ctor: Self::MoveCtor,
-        in_place: &mut crate::marker::InPlace<'a, Self>,
-        tx: impl crate::tx::TxHandle<'a>,
-    ) -> Self
+    fn store<'a>(ctor: Self::MoveCtor, in_place: &mut crate::marker::InPlace<'a>) -> Self
     where
         Self: Sized,
     {
-        <Self as TryStoreEffect>::try_store(ctor, in_place, tx).unwrap()
+        <Self as TryStoreEffect>::try_store(ctor, in_place).unwrap()
     }
 }

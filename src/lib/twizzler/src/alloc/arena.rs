@@ -73,7 +73,7 @@ pub trait Arena<'arena> {
         placement: Option<Placement>,
     ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>
     where
-        F: FnOnce(&Object<PerObjectArena>, InPlace<'arena, Item>) -> Item;
+        F: FnOnce(&Object<PerObjectArena>, InPlace<'arena>) -> Item;
 }
 
 impl Object<ArenaManifest> {
@@ -107,7 +107,7 @@ impl<'arena> Arena<'arena> for Object<ArenaManifest> {
         placement: Option<Placement>,
     ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>
     where
-        F: FnOnce(&Object<PerObjectArena>, InPlace<'arena, Item>) -> Item,
+        F: FnOnce(&Object<PerObjectArena>, InPlace<'arena>) -> Item,
     {
         todo!()
     }
@@ -244,7 +244,7 @@ impl<'arena> Arena<'arena> for Object<PerObjectArena> {
         placement: Option<Placement>,
     ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>
     where
-        F: FnOnce(&Object<PerObjectArena>, InPlace<'arena, Item>) -> Item,
+        F: FnOnce(&Object<PerObjectArena>, InPlace<'arena>) -> Item,
     {
         todo!()
     }
@@ -266,7 +266,7 @@ mod test {
         data: InvPtr<LeafData>,
     }
 
-    #[derive(twizzler_derive::InvariantCopy)]
+    #[derive(twizzler_derive::Invariant)]
     #[repr(C)]
     #[derive(Copy, Clone, Default)]
     struct LeafData {
@@ -283,7 +283,18 @@ mod test {
             .alloc_with(
                 |_, mut ip| Node {
                     next: InvPtr::null(),
-                    data: ip.store(leaf_object.base(), unsafe { UnsafeTxHandle::new() }),
+                    data: ip.store(leaf_object.base()),
+                },
+                None,
+            )
+            .unwrap();
+
+        // Alloc a new node.
+        let node1 = obj
+            .alloc_with(
+                |_, mut ip| Node {
+                    next: InvPtr::null(),
+                    data: ip.store(leaf_object.base()),
                 },
                 None,
             )
@@ -293,8 +304,8 @@ mod test {
         let node2: super::ArenaMutRef<'_, Node> = obj
             .alloc_with(
                 |_, mut ip| Node {
-                    next: ip.store(node1, unsafe { UnsafeTxHandle::new() }),
-                    data: ip.store(leaf_object.base(), unsafe { UnsafeTxHandle::new() }),
+                    next: ip.store(node1),
+                    data: ip.store(leaf_object.base()),
                 },
                 None,
             )

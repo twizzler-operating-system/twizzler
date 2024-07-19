@@ -74,11 +74,12 @@ impl<'a, T> TxCell<T> {
     /// Set the value of the cell, constructing the value in-place.
     pub fn set_with<F>(&self, ctor: F, tx: impl TxHandle<'a>) -> TxResult<()>
     where
-        F: FnOnce(&mut InPlace<'_, T>) -> T,
+        F: FnOnce(&mut InPlace<'_>) -> T,
     {
         let ptr = unsafe { transmute::<&mut T, &mut MaybeUninit<T>>(self.as_mut(&tx)?) };
-        let mut in_place = InPlace::new(ptr);
+        let mut in_place = InPlace::new(unsafe { transmute(ptr) });
         let value = ctor(&mut in_place);
+        let ptr = unsafe { transmute::<&mut T, &mut MaybeUninit<T>>(self.as_mut(&tx)?) };
         ptr.write(value);
         Ok(())
     }
