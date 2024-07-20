@@ -46,10 +46,7 @@ pub struct UninitializedObject {
 
 impl UninitializedObject {
     pub(crate) fn in_place(&self) -> InPlace<'_> {
-        // Safety: we are constructing an &mut to a MaybeUninit, which is safe. We guarantee that we
-        // are the only reference, since the object is uninitialized and we have exclusive rights.
-        let base = unsafe { &mut *(self.handle.base_mut_ptr() as *mut MaybeUninit<u8>) };
-        InPlace::new(base)
+        InPlace::new(&self.handle)
     }
 }
 
@@ -117,9 +114,10 @@ impl<Base> ConstructorInfo<Base> {
         StaticCtor: FnOnce(&mut Self, &mut InPlace<'_>) -> Result<T, AllocError>,
     {
         let (ptr, offset) = self.do_static_alloc::<MaybeUninit<T>>()?;
+        let handle = self.object.handle.clone();
         unsafe {
             // Safety: we are taking an &mut to a MaybeUninit.
-            let mut in_place = InPlace::new(&mut *ptr);
+            let mut in_place = InPlace::new(&handle);
             let value = ctor(self, &mut in_place)?;
             (&mut *ptr).write(value);
             // Safety: we just initialized this value above.

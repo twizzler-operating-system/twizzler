@@ -104,10 +104,15 @@ impl<T> InvPtr<T> {
         // to our offset + size of T, above.
         match start {
             twizzler_runtime_api::StartOrHandle::Start(start) => unsafe {
+                println!("resolved as: {:p}", start);
                 Ok(ResolvedPtr::new(start.add(offset) as *const T))
             },
             twizzler_runtime_api::StartOrHandle::Handle(handle) => unsafe {
-                Ok(ResolvedPtr::new(handle.start.add(offset) as *const T))
+                println!("resolved as h: {:p}", handle.start);
+                Ok(ResolvedPtr::new_with_handle(
+                    handle.start.add(offset) as *const T,
+                    handle,
+                ))
             },
         }
     }
@@ -135,7 +140,6 @@ impl<T> TryStoreEffect for InvPtr<T> {
     where
         Self: Sized,
     {
-        println!("\nHERE: 0");
         Ok(if ctor.is_local() {
             unsafe { Self::new(ctor.offset()) }
         } else {
@@ -144,10 +148,8 @@ impl<T> TryStoreEffect for InvPtr<T> {
             let (handle, _) = runtime
                 .ptr_to_handle(in_place.place() as *const _ as *const u8)
                 .ok_or(())?;
-            println!("\nHERE: A");
             let (fot, idx) = runtime.add_fot_entry(&handle).ok_or(())?;
             let fot = fot as *mut FotEntry;
-            println!("\nHERE: B");
 
             unsafe {
                 fot.write(ctor.fot_entry());

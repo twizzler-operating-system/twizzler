@@ -166,7 +166,11 @@ impl ArenaManifest {
         F: FnOnce(InPlace<'_>) -> Item,
     {
         let mut place = self.alloc::<MaybeUninit<Item>>(MaybeUninit::uninit())?;
-        let item = f(InPlace::new(&mut *place));
+        let handle = twizzler_runtime_api::get_runtime()
+            .ptr_to_handle(place.ptr.as_mut_ptr() as *const u8)
+            .unwrap()
+            .0;
+        let item = f(InPlace::new(&handle));
 
         let place = place.write(item) as *mut Item;
         Ok(ArenaMutRef {

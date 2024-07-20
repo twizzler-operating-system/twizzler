@@ -54,6 +54,7 @@ impl<T> InvSlice<T> {
     /// object, you can use [Object::resolve].
     pub fn resolve(&self) -> Result<ResolvedSlice<'_, T>, FotResolveError> {
         let resolved = self.ptr.resolve()?;
+        println!("resolved slice: {:p}", resolved.ptr());
         Ok(ResolvedSlice::new(resolved, self.len as usize))
     }
 }
