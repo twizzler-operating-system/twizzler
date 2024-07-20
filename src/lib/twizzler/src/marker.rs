@@ -1,6 +1,8 @@
 use std::mem::{transmute, MaybeUninit};
 
-use crate::object::BaseType;
+use twizzler_runtime_api::ObjectHandle;
+
+use crate::object::{BaseType, RawObject};
 
 pub unsafe auto trait InvariantValue {}
 
@@ -24,18 +26,16 @@ unsafe impl Invariant for i64 {}
 unsafe impl<T: Invariant, const N: usize> Invariant for [T; N] {}
 
 pub struct InPlace<'a> {
-    place: &'a mut MaybeUninit<u8>,
+    handle: &'a ObjectHandle,
 }
 
 impl<'a> InPlace<'a> {
-    pub(crate) fn new<T>(place: &'a mut MaybeUninit<T>) -> Self {
-        Self {
-            place: unsafe { transmute(place) },
-        }
+    pub(crate) fn new(handle: &'a ObjectHandle) -> Self {
+        Self { handle }
     }
 
     pub(crate) fn place(&mut self) -> &mut MaybeUninit<u8> {
-        self.place
+        unsafe { &mut *(self.handle.base_mut_ptr() as *mut MaybeUninit<u8>) }
     }
 }
 

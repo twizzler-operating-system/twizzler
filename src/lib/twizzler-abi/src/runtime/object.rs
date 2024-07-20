@@ -9,6 +9,7 @@ use twizzler_runtime_api::{
 
 use super::{simple_mutex, MinimalRuntime};
 use crate::{
+    klog_println,
     meta::MetaInfo,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     print_err,
@@ -87,7 +88,8 @@ impl ObjectRuntime for MinimalRuntime {
             (slot * MAX_SIZE) as *mut u8,
             (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
         ));
-        HANDLE_MAP.lock().insert(handle.start as usize, our_handle);
+        klog_println!("mapping:: {}", slot);
+        HANDLE_MAP.lock().insert(slot, our_handle);
 
         Ok(handle)
     }
@@ -97,7 +99,8 @@ impl ObjectRuntime for MinimalRuntime {
 
         // This does not run drop on the handle, which is important, since we this map does not hold
         // a counted reference.
-        if let Some(item) = HANDLE_MAP.lock().remove(&(handle.start as usize)) {
+        klog_println!("unmapping:: {}", slot);
+        if let Some(item) = HANDLE_MAP.lock().remove(&slot) {
             // No one else has a reference outside of the runtime, since we're in release, and we've
             // just removed the last reference in the handle map. We can free the internal refs.
             unsafe {
@@ -112,8 +115,11 @@ impl ObjectRuntime for MinimalRuntime {
 
     fn ptr_to_handle(&self, va: *const u8) -> Option<(ObjectHandle, usize)> {
         let (start, offset) = self.ptr_to_object_start(va, 0)?;
+        klog_println!("ptr_to_handle: {:p} {:p}", va, start);
         let hmap = HANDLE_MAP.lock();
-        let our_handle = hmap.get(&(start as usize))?;
+        let slot = va as usize / MAX_SIZE;
+        klog_println!("lookup slot {}: {}", slot, hmap.contains_key(&slot));
+        let our_handle = hmap.get(&slot)?;
 
         // Clone will kick up the refcount again.
         let handle = ManuallyDrop::into_inner(our_handle.clone());
@@ -144,7 +150,7 @@ impl ObjectRuntime for MinimalRuntime {
         };
         let id = ObjID::new_from_parts(fote.vals[0], fote.vals[1]);
 
-        let handle = self.map_object(id, MapFlags::READ)?;
+        let handle = self.map_object(id, MapFlags::READ | MapFlags::WRITE)?;
         Ok(StartOrHandle::Handle(handle))
     }
 

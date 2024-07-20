@@ -86,8 +86,11 @@ impl<'a, T: Invariant> TxCell<T> {
         F: FnOnce(&mut InPlace<'_>) -> T,
     {
         let ptr = unsafe { transmute::<&mut T, &mut MaybeUninit<T>>(self.as_mut(&tx)?) };
-        println!("set_with ptr: {:p}", ptr);
-        let mut in_place = InPlace::new(ptr);
+        let handle = twizzler_runtime_api::get_runtime()
+            .ptr_to_handle(ptr.as_mut_ptr() as *const u8)
+            .unwrap()
+            .0; // TODO: unwrap
+        let mut in_place = InPlace::new(&handle);
         let value = ctor(&mut in_place);
         let ptr = unsafe { transmute::<&mut T, &mut MaybeUninit<T>>(self.as_mut(&tx)?) };
         ptr.write(value);
