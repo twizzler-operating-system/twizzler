@@ -119,7 +119,7 @@ impl<Base> ConstructorInfo<Base> {
         let (ptr, offset) = self.do_static_alloc::<MaybeUninit<T>>()?;
         unsafe {
             // Safety: we are taking an &mut to a MaybeUninit.
-            let mut in_place = InPlace::new(std::mem::transmute(&mut *ptr));
+            let mut in_place = InPlace::new(&mut *ptr);
             let value = ctor(self, &mut in_place)?;
             (&mut *ptr).write(value);
             // Safety: we just initialized this value above.
@@ -141,6 +141,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     pub fn create_object(&self) -> Result<UninitializedObject, CreateError> {
         let id = sys_object_create(self.spec, &[], &[])?;
         let handle = get_runtime().map_object(id, MapFlags::READ | MapFlags::WRITE)?;
+        println!("MAPPED: {:p}", handle.start);
         Ok(UninitializedObject { handle })
     }
 }
@@ -183,7 +184,7 @@ impl<Base: BaseType + Invariant> ObjectBuilder<Base> {
     }
 }
 
-impl<Base: BaseType + Copy> ObjectBuilder<Base> {
+impl<Base: BaseType> ObjectBuilder<Base> {
     /// Construct the object, using the supplied base value.
     pub fn init(&self, base: Base) -> Result<Object<Base>, CreateError> {
         let handle = self.create_object()?;

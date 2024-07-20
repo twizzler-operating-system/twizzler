@@ -17,6 +17,16 @@ impl<T> GlobalPtr<T> {
         }
     }
 
+    pub fn from_va(ptr: *const T) -> Option<Self> {
+        let runtime = twizzler_runtime_api::get_runtime();
+        let (handle, offset) = runtime.ptr_to_handle(ptr as *const u8)?;
+        Some(Self {
+            id: handle.id,
+            offset: offset as u64,
+            _pd: PhantomData,
+        })
+    }
+
     pub const fn id(&self) -> ObjID {
         self.id
     }

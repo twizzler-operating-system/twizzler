@@ -291,12 +291,13 @@ pub trait ObjectRuntime {
 
     /// Given a pointer, return the object handle associated with that memory. Note that the
     /// returned handle may not necessarily point to the same virtual address as the pointer passed
-    /// to this function.
-    fn ptr_to_handle(&self, va: *const u8) -> Option<ObjectHandle>;
+    /// to this function. Also returns the offset from the start of the object where va points to.
+    fn ptr_to_handle(&self, va: *const u8) -> Option<(ObjectHandle, usize)>;
 
     /// Given a pointer, return a pointer to the start of the associated object. Ensures that at
-    /// least valid_len bytes after the returned pointer are valid to use.
-    fn ptr_to_object_start(&self, va: *const u8, valid_len: usize) -> Option<*const u8>;
+    /// least valid_len bytes after the returned pointer are valid to use. Also returns the offset
+    /// from the start of the object where va points to.
+    fn ptr_to_object_start(&self, va: *const u8, valid_len: usize) -> Option<(*const u8, usize)>;
 
     /// Resolve an object handle's FOT entry idx into a pointer to the start of the referenced
     /// object. Ensures that at least valid_len bytes after the returned pointer are valid to use.

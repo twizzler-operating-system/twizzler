@@ -1,29 +1,30 @@
 use std::{
     alloc::Layout,
     marker::PhantomData,
-    mem::MaybeUninit,
+    mem::{size_of, MaybeUninit},
     ops::{Deref, DerefMut},
 };
 
-use twizzler_runtime_api::ObjID;
+use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_runtime_api::{ObjID, ObjectHandle};
 
 use super::{Allocator, TxAllocator};
 use crate::{
     collections::VectorHeader,
-    marker::InPlace,
-    object::{BaseType, Object},
-    ptr::{InvPtr, InvPtrBuilder},
-    tx::{TxCell, TxError, TxResult},
+    marker::{InPlace, Invariant},
+    object::{BaseType, InitializedObject, Object, ObjectBuilder, RawObject},
+    ptr::{
+        GlobalPtr, InvPtr, InvPtrBuilder, InvSlice, InvSliceBuilder, ResolvedMutPtr, ResolvedPtr,
+    },
+    tx::{TxCell, TxError, TxHandle, TxResult, UnsafeTxHandle},
 };
 
 pub struct ArenaMutRef<'arena, T> {
     ptr: &'arena mut T,
-    target_id: ObjID,
 }
 
 pub struct ArenaRef<'arena, T> {
     ptr: &'arena T,
-    target_id: ObjID,
 }
 
 impl<'arena, T> Deref for ArenaMutRef<'arena, T> {
@@ -50,70 +51,137 @@ impl<'arena, T> DerefMut for ArenaMutRef<'arena, T> {
 
 impl<'a, T> From<ArenaRef<'a, T>> for InvPtrBuilder<T> {
     fn from(value: ArenaRef<'a, T>) -> Self {
-        todo!()
+        unsafe { InvPtrBuilder::from_global(GlobalPtr::from_va(value.ptr).unwrap()) }
     }
 }
 
 impl<'a, T> From<ArenaMutRef<'a, T>> for InvPtrBuilder<T> {
     fn from(value: ArenaMutRef<'a, T>) -> Self {
-        todo!()
+        unsafe { InvPtrBuilder::from_global(GlobalPtr::from_va(value.ptr).unwrap()) }
     }
 }
 
-pub trait Arena<'arena> {
-    fn alloc<Item: ArenaItem>(
-        &'arena self,
-        init: Item,
-        placement: Option<Placement>,
-    ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ArenaError {
+    OutOfMemory,
+    TransactionFailed(TxError),
+}
 
-    fn alloc_with<Item: ArenaItem, F>(
-        &'arena self,
-        f: F,
-        placement: Option<Placement>,
-    ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>
+impl From<TxError> for ArenaError {
+    fn from(value: TxError) -> Self {
+        Self::TransactionFailed(value)
+    }
+}
+
+#[repr(C)]
+pub struct ArenaManifest {
+    arenas: TxCell<VecAndStart>,
+}
+
+impl Default for ArenaManifest {
+    fn default() -> Self {
+        Self {
+            arenas: TxCell::new(VecAndStart {
+                start: 0,
+                vec: InvSlice::null(),
+            }),
+        }
+    }
+}
+
+impl ArenaManifest {
+    fn new_object(&self) -> Result<Object<PerObjectArena>, ArenaError> {
+        let obj = ObjectBuilder::default()
+            .init(PerObjectArena::default())
+            .map_err(|_| ArenaError::OutOfMemory)?;
+        Ok(obj)
+    }
+
+    fn add_object<'a>(
+        &self,
+        tx: impl TxHandle<'a>,
+    ) -> Result<ResolvedPtr<PerObjectArena>, ArenaError> {
+        println!("arena new obj: add_object");
+        let obj = self.new_object()?;
+        println!("got: {:p}", obj.base_ptr());
+        let idx = unsafe { self.arenas.as_mut(&tx)? }.add_object(obj.base(), &tx)?;
+        let ptr = &self.arenas.vec.resolve().unwrap()[idx];
+        let per_object_arena = ptr.resolve().unwrap();
+        Ok(per_object_arena.owned())
+    }
+
+    fn alloc<Item: Invariant>(&self, init: Item) -> Result<ArenaMutRef<'_, Item>, ArenaError> {
+        let tx = unsafe { UnsafeTxHandle::new() };
+        let raw_place = if self.arenas.vec.is_null() {
+            println!("arena new obj: first alloc");
+            let obj = ObjectBuilder::default()
+                .init(())
+                .map_err(|_| ArenaError::OutOfMemory)?;
+            println!("got: {:p}", obj.base_ptr());
+
+            let raw_base = obj.base_mut_ptr() as *mut TxCell<InvPtr<PerObjectArena>>;
+            let raw_len =
+                (MAX_SIZE - NULLPAGE_SIZE * 2) / size_of::<TxCell<InvPtr<PerObjectArena>>>();
+
+            let slice = unsafe {
+                InvSliceBuilder::from_raw_parts(
+                    InvPtrBuilder::from_global(GlobalPtr::from_va(raw_base).unwrap()),
+                    raw_len,
+                )
+            };
+
+            self.arenas.set_with(
+                |in_place| VecAndStart {
+                    start: 0,
+                    vec: in_place.store(slice),
+                },
+                tx,
+            )?;
+            let arena = self.add_object(tx)?;
+            arena.alloc_raw::<Item>(arena.handle(), tx)
+        } else {
+            let start = self.arenas.start as usize;
+            let slice = self.arenas.vec.resolve().unwrap();
+            let arena = slice[start].resolve().unwrap();
+            let raw_place = arena.alloc_raw::<Item>(arena.handle(), tx);
+
+            if matches!(raw_place, Err(ArenaError::OutOfMemory)) {
+                let arena = self.add_object(tx)?;
+                arena.alloc_raw::<Item>(arena.handle(), tx)
+            } else {
+                raw_place
+            }
+        }?;
+        unsafe {
+            raw_place.write(init);
+        }
+
+        Ok(ArenaMutRef {
+            ptr: unsafe { &mut *raw_place },
+        })
+    }
+
+    fn alloc_with<Item: Invariant, F>(&self, f: F) -> Result<ArenaMutRef<'_, Item>, ArenaError>
     where
-        F: FnOnce(&Object<PerObjectArena>, InPlace<'arena>) -> Item;
-}
-
-impl Object<ArenaManifest> {
-    fn add_object(&self) -> Result<usize, ArenaError> {
-        todo!()
-        /*
-        let new_id = todo!();
-        self.object
-            .tx(|mut tx| {
-                let base = self.object.base();
-                let arenas = base.arenas.as_mut(&mut tx);
-                Ok(arenas.add_object(new_id))
-            })
-            .map_err(|_err: TxError<()>| ArenaError::OutOfMemory)
-        */
-    }
-}
-
-impl<'arena> Arena<'arena> for Object<ArenaManifest> {
-    fn alloc<Item: ArenaItem>(
-        &'arena self,
-        init: Item,
-        placement: Option<Placement>,
-    ) -> Result<ArenaMutRef<'arena, Item>, ArenaError> {
-        todo!()
-    }
-
-    fn alloc_with<Item: ArenaItem, F>(
-        &'arena self,
-        f: F,
-        placement: Option<Placement>,
-    ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>
-    where
-        F: FnOnce(&Object<PerObjectArena>, InPlace<'arena>) -> Item,
+        F: FnOnce(InPlace<'_>) -> Item,
     {
-        todo!()
+        let mut place = self.alloc::<MaybeUninit<Item>>(MaybeUninit::uninit())?;
+        let item = f(InPlace::new(&mut *place));
+
+        let place = place.write(item) as *mut Item;
+        Ok(ArenaMutRef {
+            ptr: unsafe { &mut *place },
+        })
     }
 }
 
-impl Allocator for Object<ArenaManifest> {
+#[derive(twizzler_derive::Invariant)]
+#[repr(C)]
+pub struct ArenaAllocator {
+    alloc: InvPtr<ArenaManifest>,
+}
+
+impl Allocator for ArenaAllocator {
     fn allocate(
         &self,
         layout: Layout,
@@ -123,140 +191,94 @@ impl Allocator for Object<ArenaManifest> {
 
     unsafe fn deallocate(
         &self,
-        ptr: crate::ptr::GlobalPtr<u8>,
-        layout: Layout,
+        _ptr: crate::ptr::GlobalPtr<u8>,
+        _layout: Layout,
     ) -> Result<(), std::alloc::AllocError> {
-        todo!()
+        Ok(())
     }
 }
 
-impl TxAllocator for Object<ArenaManifest> {
-    fn allocate<'a>(
-        &self,
-        layout: Layout,
-        tx: impl crate::tx::TxHandle<'a>,
-    ) -> Result<crate::ptr::GlobalPtr<u8>, std::alloc::AllocError> {
-        todo!()
-    }
-
-    unsafe fn deallocate<'a>(
-        &self,
-        ptr: crate::ptr::GlobalPtr<u8>,
-        layout: Layout,
-        tx: impl crate::tx::TxHandle<'a>,
-    ) -> Result<(), std::alloc::AllocError> {
-        todo!()
-    }
-}
-
-pub trait ArenaItem {}
-
-impl<T> ArenaItem for T {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ArenaError {
-    OutOfMemory,
-    TransactionFailed,
-}
-
-impl From<TxError<ArenaError>> for ArenaError {
-    fn from(value: TxError<ArenaError>) -> Self {
-        match value {
-            TxError::Abort(e) => e,
-            _ => ArenaError::TransactionFailed,
-        }
-    }
-}
-
-pub enum Placement {
-    Group(usize),
-}
-
-#[repr(C)]
-pub struct ArenaManifest {
-    nr_groups: u32,
-    arenas: TxCell<VecAndStart>,
-}
-
-impl Default for ArenaManifest {
-    fn default() -> Self {
-        Self {
-            nr_groups: 0,
-            arenas: TxCell::new(VecAndStart {
-                start: 0,
-                vec: VectorHeader::default(),
-            }),
-        }
-    }
-}
-
+#[derive(twizzler_derive::Invariant)]
 #[repr(C)]
 struct VecAndStart {
     start: u32,
-    vec: VectorHeader<InvPtr<PerObjectArena>>,
+    vec: InvSlice<TxCell<InvPtr<PerObjectArena>>>,
 }
 
 impl VecAndStart {
-    fn add_object(&mut self, id: ObjID) -> usize {
-        todo!()
+    fn add_object<'a>(
+        &mut self,
+        ptr: impl Into<InvPtrBuilder<PerObjectArena>>,
+        tx: impl TxHandle<'a>,
+    ) -> Result<usize, ArenaError> {
+        let slice = self.vec.resolve().unwrap();
+        self.start += 1;
+        let start = self.start as usize;
+        if start >= slice.len() {
+            return Err(ArenaError::OutOfMemory);
+        }
+        println!("slice ptr: {:p}", slice.get(start).unwrap().ptr());
+        slice
+            .get(start)
+            .unwrap()
+            .set_with(|in_place| in_place.store(ptr), tx)?;
+        Ok(start)
     }
 }
 
 impl BaseType for ArenaManifest {}
 
+#[derive(twizzler_derive::Invariant)]
 #[repr(C)]
 pub struct PerObjectArena {
     max: u64,
     end: TxCell<u64>,
 }
 
-impl BaseType for PerObjectArena {}
-
-impl<'arena> Arena<'arena> for Object<PerObjectArena> {
-    fn alloc<Item: ArenaItem>(
-        &'arena self,
-        init: Item,
-        placement: Option<Placement>,
-    ) -> Result<ArenaMutRef<'arena, Item>, ArenaError> {
-        /*
-        let addr = self.object.tx(|mut tx| {
-            let end = self.object.base().end.read(&mut tx);
-            let layout = Layout::new::<Item>();
-            let addr = end.next_multiple_of(layout.align() as u64);
-            if addr + layout.size() as u64 > end {
-                return Err(ArenaError::OutOfMemory);
-            }
-
-            self.object
-                .base()
-                .end
-                .write(&mut tx, addr + layout.size() as u64);
-            Ok(addr)
-        })?;
-
-        */
-        unsafe { todo!() }
-    }
-
-    fn alloc_with<Item: ArenaItem, F>(
-        &'arena self,
-        f: F,
-        placement: Option<Placement>,
-    ) -> Result<ArenaMutRef<'arena, Item>, ArenaError>
-    where
-        F: FnOnce(&Object<PerObjectArena>, InPlace<'arena>) -> Item,
-    {
-        todo!()
+impl Default for PerObjectArena {
+    fn default() -> Self {
+        PerObjectArena {
+            max: (MAX_SIZE - NULLPAGE_SIZE) as u64,
+            end: TxCell::new((NULLPAGE_SIZE + size_of::<Self>()) as u64),
+        }
     }
 }
 
+impl PerObjectArena {
+    fn alloc_raw<'a, T>(
+        &self,
+        handle: &ObjectHandle,
+        tx: impl TxHandle<'a>,
+    ) -> Result<*mut T, ArenaError>
+    where
+        T: Sized,
+    {
+        const MIN_ALIGN: usize = 32;
+        let layout = Layout::new::<T>();
+        let align = std::cmp::max(MIN_ALIGN, layout.align());
+        let place = self.end.modify(
+            |end| {
+                let place = (*end as usize).next_multiple_of(align);
+                let next_end = place + layout.size();
+                *end = next_end as u64;
+                place
+            },
+            tx,
+        )?;
+
+        let ptr = handle.lea_mut(place, layout.size()).unwrap();
+        Ok(ptr as *mut T)
+    }
+}
+
+impl BaseType for PerObjectArena {}
+
 //#[cfg(test)]
 mod test {
-    use super::{Arena, ArenaManifest, ArenaMutRef};
+    use super::{ArenaManifest, ArenaMutRef};
     use crate::{
         object::{BaseType, InitializedObject, Object, ObjectBuilder},
         ptr::{InvPtr, InvPtrBuilder},
-        tx::UnsafeTxHandle,
     };
 
     #[derive(twizzler_derive::Invariant)]
@@ -266,66 +288,49 @@ mod test {
         data: InvPtr<LeafData>,
     }
 
-    #[derive(twizzler_derive::Invariant)]
+    #[derive(twizzler_derive::Invariant, Copy, Clone, Default)]
     #[repr(C)]
-    #[derive(Copy, Clone, Default)]
     struct LeafData {
         payload: u32,
     }
+    impl BaseType for LeafData {
+        /* TODO */
+    }
 
-    impl BaseType for LeafData {}
-
-    //#[test]
-    fn test(obj: Object<ArenaManifest>) {
-        let leaf_object = ObjectBuilder::default().init(LeafData::default()).unwrap();
-        // Alloc a new node.
-        let node1: super::ArenaMutRef<'_, Node> = obj
-            .alloc_with(
-                |_, mut ip| Node {
-                    next: InvPtr::null(),
-                    data: ip.store(leaf_object.base()),
-                },
-                None,
-            )
+    #[test]
+    fn test() {
+        let obj = ObjectBuilder::default()
+            .init(ArenaManifest::default())
+            .unwrap();
+        let leaf_object = ObjectBuilder::default()
+            .init(LeafData { payload: 42 })
             .unwrap();
 
+        let arena = obj.base();
         // Alloc a new node.
-        let node1 = obj
-            .alloc_with(
-                |_, mut ip| Node {
-                    next: InvPtr::null(),
-                    data: ip.store(leaf_object.base()),
-                },
-                None,
-            )
+        let node1 = arena
+            .alloc_with(|mut ip| Node {
+                next: InvPtr::null(),
+                data: ip.store(leaf_object.base()),
+            })
             .unwrap();
 
         // Alloc another node
-        let node2: super::ArenaMutRef<'_, Node> = obj
-            .alloc_with(
-                |_, mut ip| Node {
-                    next: ip.store(node1),
-                    data: ip.store(leaf_object.base()),
-                },
-                None,
-            )
+        let node2 = arena
+            .alloc_with(|mut ip| Node {
+                // this node points to node1 in the next field.
+                next: ip.store(node1),
+                data: ip.store(leaf_object.base()),
+            })
             .unwrap();
 
-        let res_node1 = node2.next.resolve().unwrap();
-        let leaf_data = res_node1.data.resolve().unwrap();
-        let _payload = leaf_data.payload;
+        let _leaf_alloc = arena.alloc(LeafData { payload: 32 }).unwrap();
 
-        // This interacts with the runtime to do safe reads. This has overhead, as the runtime needs
-        // to ensure that the data doesn't change. Details to come, but there can be a fast and slow
-        // path for this, and it's hopefully not too bad. But that's the price for safety.
+        // I'm planning on implementing Deref for InvPtr, and just having it panic if resolve()
+        // returns Err.
         let res_node1 = node2.next.resolve().unwrap();
-        // unsafe allows us to skip the runtime check. We know the nodes are all in an arena
-        // allocator, and we're done writing to it, so this is safe.
         let leaf_data = res_node1.data.resolve().unwrap();
-        // This read is checked, and could be slow. It does a full copy, too, as it's not actually
-        // safe in general to create references to object data (&T relies on no one mutating, and we
-        // don't know if another compartment is mutating it).
-        let leaf_data_read = *leaf_data;
-        let _payload = leaf_data_read.payload;
+        let payload = leaf_data.payload;
+        assert_eq!(payload, 42);
     }
 }

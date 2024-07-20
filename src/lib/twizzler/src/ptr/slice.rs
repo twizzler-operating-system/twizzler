@@ -1,11 +1,15 @@
 use std::{
     borrow::Cow,
-    ops::{Deref, DerefMut},
+    ops::{Deref, DerefMut, Index, IndexMut},
 };
 
-use twizzler_runtime_api::ObjectHandle;
+use twizzler_runtime_api::{FotResolveError, ObjID, ObjectHandle};
 
-use super::{InvPtr, InvPtrBuilder};
+use super::{InvPtr, InvPtrBuilder, OnceHandle, ResolvedPtr};
+use crate::{
+    marker::{Invariant, StoreEffect},
+    object::fot::FotEntry,
+};
 
 #[repr(C)]
 pub struct InvSlice<T> {
@@ -25,13 +29,8 @@ impl<T> InvSlice<T> {
         }
     }
 
-    /// Construct a slice from raw parts.
-    ///
-    /// # Safety
-    /// The caller must ensure that the pointed-to array is valid for [start, start + len), where
-    /// start is the location pointed to by the invariant pointer.
-    pub unsafe fn set_from_raw_parts(&mut self, builder: impl Into<InvPtrBuilder<T>>, len: usize) {
-        todo!()
+    pub fn is_null(&self) -> bool {
+        self.ptr.is_null()
     }
 
     /// Get the invariant pointer to the start of the slice.
@@ -53,20 +52,47 @@ impl<T> InvSlice<T> {
     /// Note that this function needs to ask the runtime for help, since it does not know which
     /// object to use for FOT translation. If you know that an invariant pointer resides in an
     /// object, you can use [Object::resolve].
-    pub fn resolve(&self) -> Result<ResolvedSlice<'_, T>, ()> {
-        todo!()
+    pub fn resolve(&self) -> Result<ResolvedSlice<'_, T>, FotResolveError> {
+        let resolved = self.ptr.resolve()?;
+        Ok(ResolvedSlice::new(resolved, self.len as usize))
     }
 }
 
 pub struct ResolvedSlice<'obj, T> {
-    handle: Cow<'obj, ObjectHandle>,
+    ptr: ResolvedPtr<'obj, T>,
     len: usize,
-    ptr: *const T,
 }
 
 impl<'obj, T> ResolvedSlice<'obj, T> {
-    pub unsafe fn as_mut(&self) -> ResolvedMutableSlice<'obj, T> {
+    pub unsafe fn as_mut(&self) -> ResolvedMutSlice<'obj, T> {
         todo!()
+    }
+
+    fn new(ptr: ResolvedPtr<'obj, T>, len: usize) -> Self {
+        Self { len, ptr }
+    }
+
+    pub fn ptr(&self) -> &ResolvedPtr<'obj, T> {
+        &self.ptr
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn owned<'a>(&self) -> ResolvedSlice<'a, T> {
+        ResolvedSlice {
+            ptr: self.ptr().owned(),
+            len: self.len(),
+        }
+    }
+
+    pub fn get(&self, idx: usize) -> Option<ResolvedPtr<'obj, T>> {
+        if idx >= self.len() {
+            None
+        } else {
+            Some(unsafe { self.ptr().clone().add(idx) })
+        }
     }
 }
 
@@ -75,17 +101,58 @@ impl<'obj, T> Deref for ResolvedSlice<'obj, T> {
 
     fn deref(&self) -> &Self::Target {
         // Safety: ResolvedSlice ensures this is correct.
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+        unsafe { std::slice::from_raw_parts(self.ptr.ptr(), self.len) }
     }
 }
 
-pub struct ResolvedMutableSlice<'obj, T> {
+/*
+impl<'obj, T, Idx: Into<usize>> IndexMut<Idx> for ResolvedMutSlice<'obj, T> {
+    fn index_mut(&mut self, index: Idx) -> &mut Self::Output {
+        let slice = unsafe { core::slice::from_raw_parts_mut(self.ptr, self.len) };
+        &mut slice[index.into()]
+    }
+}
+
+impl<'obj, T, Idx: Into<usize>> Index<Idx> for ResolvedMutSlice<'obj, T> {
+    type Output = T;
+
+    fn index(&self, index: Idx) -> &Self::Output {
+        let slice = unsafe { core::slice::from_raw_parts(self.ptr, self.len) };
+        &slice[index.into()]
+    }
+}
+
+impl<'obj, T, Idx: Into<usize>> Index<Idx> for ResolvedSlice<'obj, T> {
+    type Output = T;
+
+    fn index(&self, index: Idx) -> &Self::Output {
+        let slice = unsafe { core::slice::from_raw_parts(self.ptr.ptr(), self.len) };
+        &slice[index.into()]
+    }
+}
+*/
+
+pub struct ResolvedMutSlice<'obj, T> {
     handle: &'obj ObjectHandle,
     len: usize,
     ptr: *mut T,
 }
 
-impl<'obj, T> Deref for ResolvedMutableSlice<'obj, T> {
+impl<'obj, T> ResolvedMutSlice<'obj, T> {
+    pub fn handle(&self) -> &ObjectHandle {
+        self.handle
+    }
+
+    pub fn ptr(&self) -> *mut T {
+        self.ptr
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl<'obj, T> Deref for ResolvedMutSlice<'obj, T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
@@ -94,10 +161,75 @@ impl<'obj, T> Deref for ResolvedMutableSlice<'obj, T> {
     }
 }
 
-impl<'obj, T> DerefMut for ResolvedMutableSlice<'obj, T> {
+impl<'obj, T> DerefMut for ResolvedMutSlice<'obj, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // Safety: ResolvedSlice ensures this is correct.
         // Safety: we are pointing to a mutable object, that we have locked.
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
+pub struct InvSliceBuilder<T> {
+    ptr: InvPtrBuilder<T>,
+    len: usize,
+}
+
+impl<T> InvSliceBuilder<T> {
+    pub const fn is_local(&self) -> bool {
+        self.ptr.is_local()
+    }
+
+    pub const fn null() -> Self {
+        Self {
+            ptr: InvPtrBuilder::null(),
+            len: 0,
+        }
+    }
+
+    pub const fn is_null(&self) -> bool {
+        self.ptr.is_null()
+    }
+
+    pub const fn id(&self) -> ObjID {
+        self.ptr.id()
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub const fn offset(&self) -> u64 {
+        self.ptr.offset()
+    }
+
+    pub fn fot_entry(&self) -> FotEntry {
+        self.ptr.fot_entry()
+    }
+
+    pub const fn ptr(&self) -> &InvPtrBuilder<T> {
+        &self.ptr
+    }
+
+    pub const fn into_raw_parts(self) -> (InvPtrBuilder<T>, usize) {
+        let Self { ptr, len } = self;
+        (ptr, len)
+    }
+
+    pub const unsafe fn from_raw_parts(ptr: InvPtrBuilder<T>, len: usize) -> Self {
+        Self { ptr, len }
+    }
+}
+
+impl<T> StoreEffect for InvSlice<T> {
+    type MoveCtor = InvSliceBuilder<T>;
+
+    fn store<'a>(ctor: Self::MoveCtor, in_place: &mut crate::marker::InPlace<'a>) -> Self
+    where
+        Self: Sized,
+    {
+        Self {
+            len: ctor.len() as u64,
+            ptr: in_place.store(ctor.ptr),
+        }
     }
 }

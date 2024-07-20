@@ -103,14 +103,6 @@ impl ObjectRuntime for ReferenceRuntime {
         ))
     }
 
-    fn ptr_to_handle(&self, va: *const u8) -> Option<ObjectHandle> {
-        todo!()
-    }
-
-    fn ptr_to_object_start(&self, va: *const u8, valid_len: usize) -> Option<*const u8> {
-        todo!()
-    }
-
     fn resolve_fot_to_object_start<'a>(
         &self,
         handle: &'a ObjectHandle,
@@ -121,6 +113,14 @@ impl ObjectRuntime for ReferenceRuntime {
     }
 
     fn add_fot_entry(&self, handle: &ObjectHandle) -> Option<(*mut u8, usize)> {
+        todo!()
+    }
+
+    fn ptr_to_handle(&self, va: *const u8) -> Option<(ObjectHandle, usize)> {
+        todo!()
+    }
+
+    fn ptr_to_object_start(&self, va: *const u8, valid_len: usize) -> Option<(*const u8, usize)> {
         todo!()
     }
 }

@@ -7,6 +7,7 @@ use crate::{
     tx::{TxHandle, TxResult},
 };
 
+#[derive(twizzler_derive::Invariant)]
 #[repr(C)]
 pub struct PBox<T> {
     ptr: InvPtr<T>,
@@ -44,10 +45,7 @@ mod test {
 
     use super::{PBox, PBoxBuilder};
     use crate::{
-        alloc::{
-            arena::{Arena, ArenaManifest},
-            TxAllocator,
-        },
+        alloc::{arena::ArenaManifest, TxAllocator},
         object::{BaseType, ConstructorInfo, InitializedObject, Object, ObjectBuilder},
         ptr::InvPtrBuilder,
         tx::{TxCell, TxHandle},

@@ -11,6 +11,7 @@ use super::{simple_mutex, MinimalRuntime};
 use crate::{
     meta::MetaInfo,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    print_err,
     runtime::object::slot::global_allocate,
     rustc_alloc::boxed::Box,
     syscall::{sys_object_map, ObjectMapError, UnmapFlags},
@@ -109,19 +110,21 @@ impl ObjectRuntime for MinimalRuntime {
         }
     }
 
-    fn ptr_to_handle(&self, va: *const u8) -> Option<ObjectHandle> {
-        let start = self.ptr_to_object_start(va, 0)?;
+    fn ptr_to_handle(&self, va: *const u8) -> Option<(ObjectHandle, usize)> {
+        let (start, offset) = self.ptr_to_object_start(va, 0)?;
         let hmap = HANDLE_MAP.lock();
         let our_handle = hmap.get(&(start as usize))?;
 
         // Clone will kick up the refcount again.
         let handle = ManuallyDrop::into_inner(our_handle.clone());
-        Some(handle)
+        Some((handle, offset))
     }
 
-    fn ptr_to_object_start(&self, va: *const u8, valid_len: usize) -> Option<*const u8> {
+    fn ptr_to_object_start(&self, va: *const u8, valid_len: usize) -> Option<(*const u8, usize)> {
         let slot = (va as usize) / MAX_SIZE;
-        Some((slot * MAX_SIZE) as *const u8)
+        let start = slot * MAX_SIZE;
+        let offset = (va as usize) - start;
+        Some((start as *const u8, offset))
     }
 
     fn resolve_fot_to_object_start<'a>(
