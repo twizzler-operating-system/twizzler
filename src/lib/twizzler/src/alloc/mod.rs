@@ -1,11 +1,11 @@
 use std::alloc::{AllocError, Layout};
 
-use crate::{ptr::GlobalPtr, tx::TxHandle};
+use crate::{marker::Invariant, ptr::GlobalPtr, tx::TxHandle};
 
 pub mod arena;
 pub mod pbox;
 
-pub trait Allocator {
+pub trait Allocator: Invariant {
     fn allocate(&self, layout: Layout) -> Result<GlobalPtr<u8>, AllocError>;
     unsafe fn deallocate(&self, ptr: GlobalPtr<u8>, layout: Layout) -> Result<(), AllocError>;
 }

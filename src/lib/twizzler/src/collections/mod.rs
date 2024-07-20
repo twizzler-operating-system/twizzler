@@ -7,6 +7,8 @@ use crate::{
     tx::{TxCell, TxError, TxHandle, TxResult},
 };
 
+#[derive(twizzler_derive::Invariant)]
+#[repr(C)]
 struct VectorInner<T> {
     ptr: InvPtr<T>,
     cap: u64,
@@ -23,17 +25,20 @@ impl<T> Default for VectorInner<T> {
     }
 }
 
+#[derive(twizzler_derive::Invariant)]
 #[repr(C)]
-pub struct VectorHeader<T> {
+pub struct VectorHeader<T, Alloc: Allocator> {
     inner: TxCell<VectorInner<T>>,
+    alloc: Alloc,
 }
 
-impl<T> Default for VectorHeader<T> {
-    fn default() -> Self {
+impl<T, Alloc: Allocator> VectorHeader<T, Alloc> {
+    pub fn new_in(alloc: Alloc) -> Self {
         Self {
             inner: TxCell::new(VectorInner::default()),
+            alloc,
         }
     }
 }
 
-impl<T> BaseType for VectorHeader<T> {}
+impl<T, Alloc: Allocator> BaseType for VectorHeader<T, Alloc> {}

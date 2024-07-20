@@ -14,9 +14,10 @@ pub fn invariant(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 fn handle_invariant(item: DeriveInput, copy: bool) -> Result<proc_macro2::TokenStream, Error> {
     let type_name = item.ident.clone();
-    let mut in_place_vec = vec![];
-    let mut builder_vec = vec![];
-    let mut new_vec = vec![];
+    /*
+    //let mut in_place_vec = vec![];
+    //let mut builder_vec = vec![];
+    //let mut new_vec = vec![];
     match item.data {
         syn::Data::Struct(st) => {
             let fields = st.fields.iter().enumerate().map(|f| {
@@ -30,7 +31,7 @@ fn handle_invariant(item: DeriveInput, copy: bool) -> Result<proc_macro2::TokenS
                 )
             });
             for (f, t) in fields {
-                in_place_vec.push(quote! {
+                /*in_place_vec.push(quote! {
                     unsafe {
                     let ptr = place as *mut _ as *mut Self;
                     let ptr = core::ptr::addr_of!((*ptr).#f) as *mut core::mem::MaybeUninit<#t>;
@@ -42,7 +43,7 @@ fn handle_invariant(item: DeriveInput, copy: bool) -> Result<proc_macro2::TokenS
                 });
                 new_vec.push(quote! {
                     #f,
-                });
+                });*/
             }
         }
         syn::Data::Enum(_) => todo!(),
@@ -57,10 +58,11 @@ fn handle_invariant(item: DeriveInput, copy: bool) -> Result<proc_macro2::TokenS
     } else {
         quote! {}
     };
+    */
+    let (impl_gens, type_gens, where_clause) = item.generics.split_for_impl();
     Ok(quote::quote! {
-       unsafe impl twizzler::marker::Invariant for #type_name {}
+       unsafe impl #impl_gens twizzler::marker::Invariant for #type_name #type_gens #where_clause {}
 
-       #in_place
 
     })
 }

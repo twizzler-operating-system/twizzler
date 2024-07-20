@@ -81,7 +81,7 @@ impl<T> InvPtr<T> {
         // If we're doing a local transform, let's just get the start and calculate an offset.
         if likely(fote == 0) {
             // TODO: cache this?.
-            let start = twizzler_runtime_api::get_runtime()
+            let (start, _) = twizzler_runtime_api::get_runtime()
                 .ptr_to_object_start(this, valid_len)
                 .ok_or(FotResolveError::InvalidArgument)?;
             // Safety: we ensure we point to valid memory by ensuring contiguous length from start
@@ -92,7 +92,7 @@ impl<T> InvPtr<T> {
         // We need to consult the FOT, so ask the runtime.
         let runtime = twizzler_runtime_api::get_runtime();
         // TODO: cache this.
-        let our_handle = runtime
+        let (our_handle, _) = runtime
             .ptr_to_handle(this)
             .ok_or(FotResolveError::InvalidArgument)?;
         let start = twizzler_runtime_api::get_runtime().resolve_fot_to_object_start(
@@ -124,7 +124,7 @@ impl<T> InvPtr<T> {
 unsafe impl<T> InvariantValue for InvPtr<T> {}
 unsafe impl<T> Invariant for InvPtr<T> {}
 
-impl<T: Invariant> TryStoreEffect for InvPtr<T> {
+impl<T> TryStoreEffect for InvPtr<T> {
     type MoveCtor = InvPtrBuilder<T>;
     type Error = ();
 
@@ -135,15 +135,19 @@ impl<T: Invariant> TryStoreEffect for InvPtr<T> {
     where
         Self: Sized,
     {
+        println!("\nHERE: 0");
         Ok(if ctor.is_local() {
             unsafe { Self::new(ctor.offset()) }
         } else {
             let runtime = twizzler_runtime_api::get_runtime();
-            let handle = runtime
+            println!("==> getting: {:p}", in_place.place());
+            let (handle, _) = runtime
                 .ptr_to_handle(in_place.place() as *const _ as *const u8)
                 .ok_or(())?;
+            println!("\nHERE: A");
             let (fot, idx) = runtime.add_fot_entry(&handle).ok_or(())?;
             let fot = fot as *mut FotEntry;
+            println!("\nHERE: B");
 
             unsafe {
                 fot.write(ctor.fot_entry());
@@ -153,7 +157,7 @@ impl<T: Invariant> TryStoreEffect for InvPtr<T> {
     }
 }
 
-impl<T: Invariant> StoreEffect for InvPtr<T> {
+impl<T> StoreEffect for InvPtr<T> {
     type MoveCtor = InvPtrBuilder<T>;
 
     fn store<'a>(ctor: Self::MoveCtor, in_place: &mut crate::marker::InPlace<'a>) -> Self

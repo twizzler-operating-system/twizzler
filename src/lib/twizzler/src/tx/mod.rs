@@ -4,7 +4,7 @@ use std::{
     ops::Deref,
 };
 
-use crate::marker::InPlace;
+use crate::marker::{InPlace, Invariant, InvariantValue};
 
 /// A trait for implementing transaction handles.
 ///
@@ -25,7 +25,7 @@ impl<'a, Tx: TxHandle<'a>> TxHandle<'a> for &Tx {
 /// Return type for transactions, containing common errors, Ok value, and user-specified Abort type.
 pub type TxResult<T, E = ()> = Result<T, TxError<E>>;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Transaction errors, with user-definable abort type.
 pub enum TxError<E = ()> {
     /// Transaction aborted.
@@ -38,16 +38,18 @@ pub enum TxError<E = ()> {
 
 /// A transaction cell, enabling transactional interior mutability.
 #[repr(transparent)]
-#[derive(Default, Debug)]
-pub struct TxCell<T>(UnsafeCell<T>);
+#[derive(Default, Debug, twizzler_derive::Invariant)]
+pub struct TxCell<T: Invariant>(UnsafeCell<T>);
 
-impl<T> From<T> for TxCell<T> {
+unsafe impl<T: Invariant> InvariantValue for TxCell<T> {}
+
+impl<T: Invariant> From<T> for TxCell<T> {
     fn from(value: T) -> Self {
         Self::new(value)
     }
 }
 
-impl<T> TxCell<T> {
+impl<T: Invariant> TxCell<T> {
     pub fn new(value: T) -> Self {
         Self(UnsafeCell::new(value))
     }
@@ -57,7 +59,7 @@ impl<T> TxCell<T> {
     /// # Safety
     /// The caller must ensure that no returned reference from this function aliases any other alive
     /// reference to the same TxCell.
-    pub unsafe fn as_mut<'a>(&self, tx: impl TxHandle<'a>) -> TxResult<&mut T> {
+    pub unsafe fn as_mut<'a, E>(&self, tx: impl TxHandle<'a>) -> TxResult<&mut T, E> {
         let target = tx.tx_mut(self.0.get())?;
         Ok(&mut *target)
     }
@@ -68,16 +70,24 @@ impl<T> TxCell<T> {
         // Safety: we take self as &mut, so we hold the only reference.
         unsafe { self.as_mut(tx) }
     }
+
+    pub fn modify<'a, R>(&self, f: impl FnOnce(&mut T) -> R, tx: impl TxHandle<'a>) -> TxResult<R> {
+        unsafe {
+            let ptr = self.as_mut(tx)?;
+            Ok(f(ptr))
+        }
+    }
 }
 
-impl<'a, T> TxCell<T> {
+impl<'a, T: Invariant> TxCell<T> {
     /// Set the value of the cell, constructing the value in-place.
     pub fn set_with<F>(&self, ctor: F, tx: impl TxHandle<'a>) -> TxResult<()>
     where
         F: FnOnce(&mut InPlace<'_>) -> T,
     {
         let ptr = unsafe { transmute::<&mut T, &mut MaybeUninit<T>>(self.as_mut(&tx)?) };
-        let mut in_place = InPlace::new(unsafe { transmute(ptr) });
+        println!("set_with ptr: {:p}", ptr);
+        let mut in_place = InPlace::new(ptr);
         let value = ctor(&mut in_place);
         let ptr = unsafe { transmute::<&mut T, &mut MaybeUninit<T>>(self.as_mut(&tx)?) };
         ptr.write(value);
@@ -85,7 +95,7 @@ impl<'a, T> TxCell<T> {
     }
 }
 
-impl<'a, T: Copy + 'a> TxCell<T> {
+impl<'a, T: Invariant + 'a> TxCell<T> {
     /// Set the value of the cell, constructing the value in-place.
     pub fn set(&self, value: T, tx: impl TxHandle<'a>) -> TxResult<()> {
         unsafe {
@@ -96,7 +106,7 @@ impl<'a, T: Copy + 'a> TxCell<T> {
     }
 }
 
-impl<T> Deref for TxCell<T> {
+impl<T: Invariant> Deref for TxCell<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -104,6 +114,7 @@ impl<T> Deref for TxCell<T> {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct UnsafeTxHandle {
     _priv: (),
 }
