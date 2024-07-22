@@ -494,8 +494,48 @@ pub struct BasicReturn {
     pub code: i32,
 }
 
-/// Runtime that implements std's FS support. Currently unimplemented.
-pub trait RustFsRuntime {}
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
+pub enum FsError {
+    /// Error is unclassified.
+    Other,
+    InvalidPath,
+    // Couldn't find the file descriptor
+    LookupError
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
+pub enum SeekFrom {
+    Start(u64),
+    End(i64),
+    Current(i64),
+}
+
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
+pub struct OwnedFd {
+    pub internal_fd: u32
+}
+
+/*impl core::fmt::Debug for OwnedFd {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OwnedFd")
+            .field("internal_fd", &self.internal_fd)
+            .finish()
+    }
+}*/
+
+/// Runtime that implements std's FS support. Currently being implemented.
+pub trait RustFsRuntime {
+    fn open(&self, path: &CStr) -> Result<OwnedFd, FsError>;
+
+    fn read(&self, fd: OwnedFd, buf: *mut u8, len: usize) -> Result<usize, FsError>;
+
+    fn write(&self, fd: OwnedFd, buf: *const u8, len: usize) -> Result<usize, FsError>;
+
+    fn close(&self, fd: OwnedFd) -> Result<(), FsError>;
+
+    fn seek(&self, fd: OwnedFd, pos: SeekFrom) -> Result<usize, FsError>;
+}
 
 /// Runtime that implements std's process and command support. Currently unimplemented.
 pub trait RustProcessRuntime: RustStdioRuntime {}
