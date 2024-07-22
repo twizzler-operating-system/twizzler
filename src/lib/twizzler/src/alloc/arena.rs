@@ -19,19 +19,19 @@ use crate::{
     tx::{TxCell, TxError, TxHandle, TxResult, UnsafeTxHandle},
 };
 
-pub struct ArenaMutRef<'arena, T> {
-    ptr: &'arena mut T,
+pub struct ArenaMutRef<'a, T> {
+    ptr: ResolvedMutPtr<'a, T>,
 }
 
-pub struct ArenaRef<'arena, T> {
-    ptr: &'arena T,
+pub struct ArenaRef<'a, T> {
+    ptr: ResolvedPtr<'a, T>,
 }
 
 impl<'arena, T> Deref for ArenaMutRef<'arena, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        self.ptr
+        &*self.ptr
     }
 }
 
@@ -39,25 +39,25 @@ impl<'arena, T> Deref for ArenaRef<'arena, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        self.ptr
+        &*self.ptr
     }
 }
 
 impl<'arena, T> DerefMut for ArenaMutRef<'arena, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.ptr
+        &mut *self.ptr
     }
 }
 
 impl<'a, T> From<ArenaRef<'a, T>> for InvPtrBuilder<T> {
     fn from(value: ArenaRef<'a, T>) -> Self {
-        unsafe { InvPtrBuilder::from_global(GlobalPtr::from_va(value.ptr).unwrap()) }
+        unsafe { InvPtrBuilder::from_global(GlobalPtr::from_va(value.ptr.ptr()).unwrap()) }
     }
 }
 
 impl<'a, T> From<ArenaMutRef<'a, T>> for InvPtrBuilder<T> {
     fn from(value: ArenaMutRef<'a, T>) -> Self {
-        unsafe { InvPtrBuilder::from_global(GlobalPtr::from_va(value.ptr).unwrap()) }
+        unsafe { InvPtrBuilder::from_global(GlobalPtr::from_va(value.ptr.ptr()).unwrap()) }
     }
 }
 
@@ -112,7 +112,7 @@ impl ArenaManifest {
 
     fn alloc<Item: Invariant>(&self, init: Item) -> Result<ArenaMutRef<'_, Item>, ArenaError> {
         let tx = unsafe { UnsafeTxHandle::new() };
-        let raw_place = if self.arenas.vec.is_null() {
+        let (handle, raw_place) = if self.arenas.vec.is_null() {
             println!("arena new obj: first alloc");
             let obj = ObjectBuilder::default()
                 .init(())
@@ -138,18 +138,21 @@ impl ArenaManifest {
                 tx,
             )?;
             let arena = self.add_object(tx)?;
-            arena.alloc_raw::<Item>(arena.handle(), tx)
+            let handle = arena.handle().clone();
+            arena.alloc_raw::<Item>(&handle, tx).map(|x| (handle, x))
         } else {
             let start = self.arenas.start as usize;
             let slice = self.arenas.vec.resolve().unwrap();
             let arena = slice[start].resolve().unwrap();
-            let raw_place = arena.alloc_raw::<Item>(arena.handle(), tx);
+            let handle = arena.handle().clone();
+            let raw_place = arena.alloc_raw::<Item>(&handle, tx);
 
             if matches!(raw_place, Err(ArenaError::OutOfMemory)) {
                 let arena = self.add_object(tx)?;
-                arena.alloc_raw::<Item>(arena.handle(), tx)
+                let handle = arena.handle().clone();
+                arena.alloc_raw::<Item>(&handle, tx).map(|x| (handle, x))
             } else {
-                raw_place
+                raw_place.map(|x| (handle, x))
             }
         }?;
         unsafe {
@@ -157,7 +160,7 @@ impl ArenaManifest {
         }
 
         Ok(ArenaMutRef {
-            ptr: unsafe { &mut *raw_place },
+            ptr: unsafe { ResolvedMutPtr::new_with_handle(raw_place, handle) },
         })
     }
 
@@ -171,10 +174,9 @@ impl ArenaManifest {
             .unwrap()
             .0;
         let item = f(InPlace::new(&handle));
-
         let place = place.write(item) as *mut Item;
         Ok(ArenaMutRef {
-            ptr: unsafe { &mut *place },
+            ptr: unsafe { ResolvedMutPtr::new_with_handle(place, handle) },
         })
     }
 }

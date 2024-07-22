@@ -54,7 +54,7 @@ impl<'obj, T> ResolvedPtr<'obj, T> {
 
     pub unsafe fn as_mut(&'obj self) -> ResolvedMutPtr<'obj, T> {
         ResolvedMutPtr {
-            handle: self.handle(),
+            once_handle: self.once_handle.clone(),
             ptr: self.ptr as *mut T,
         }
     }
@@ -92,13 +92,27 @@ impl<'obj, T> Deref for ResolvedPtr<'obj, T> {
 }
 
 pub struct ResolvedMutPtr<'obj, T> {
-    handle: &'obj ObjectHandle,
+    once_handle: OnceHandle<'obj>,
     ptr: *mut T,
 }
 
 impl<'obj, T> ResolvedMutPtr<'obj, T> {
+    pub(crate) unsafe fn new(ptr: *mut T) -> Self {
+        Self {
+            ptr,
+            once_handle: OnceHandle::default(),
+        }
+    }
+
+    pub(crate) unsafe fn new_with_handle(ptr: *mut T, handle: ObjectHandle) -> Self {
+        Self {
+            ptr,
+            once_handle: OnceHandle::new(handle),
+        }
+    }
+
     pub fn handle(&self) -> &ObjectHandle {
-        self.handle
+        self.once_handle.handle(self.ptr as *const u8)
     }
 
     pub fn ptr(&self) -> *mut T {
