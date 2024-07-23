@@ -9,10 +9,8 @@ use twizzler_runtime_api::{
 
 use super::{simple_mutex, MinimalRuntime};
 use crate::{
-    klog_println,
     meta::MetaInfo,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    print_err,
     runtime::object::slot::global_allocate,
     rustc_alloc::boxed::Box,
     syscall::{sys_object_map, ObjectMapError, UnmapFlags},
@@ -88,7 +86,6 @@ impl ObjectRuntime for MinimalRuntime {
             (slot * MAX_SIZE) as *mut u8,
             (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
         ));
-        klog_println!("mapping:: {}", slot);
         HANDLE_MAP.lock().insert(slot, our_handle);
 
         Ok(handle)
@@ -99,7 +96,6 @@ impl ObjectRuntime for MinimalRuntime {
 
         // This does not run drop on the handle, which is important, since we this map does not hold
         // a counted reference.
-        klog_println!("unmapping:: {}", slot);
         if let Some(item) = HANDLE_MAP.lock().remove(&slot) {
             // No one else has a reference outside of the runtime, since we're in release, and we've
             // just removed the last reference in the handle map. We can free the internal refs.
@@ -114,11 +110,9 @@ impl ObjectRuntime for MinimalRuntime {
     }
 
     fn ptr_to_handle(&self, va: *const u8) -> Option<(ObjectHandle, usize)> {
-        let (start, offset) = self.ptr_to_object_start(va, 0)?;
-        klog_println!("ptr_to_handle: {:p} {:p}", va, start);
+        let (_start, offset) = self.ptr_to_object_start(va, 0)?;
         let hmap = HANDLE_MAP.lock();
         let slot = va as usize / MAX_SIZE;
-        klog_println!("lookup slot {}: {}", slot, hmap.contains_key(&slot));
         let our_handle = hmap.get(&slot)?;
 
         // Clone will kick up the refcount again.
@@ -126,7 +120,7 @@ impl ObjectRuntime for MinimalRuntime {
         Some((handle, offset))
     }
 
-    fn ptr_to_object_start(&self, va: *const u8, valid_len: usize) -> Option<(*const u8, usize)> {
+    fn ptr_to_object_start(&self, va: *const u8, _valid_len: usize) -> Option<(*const u8, usize)> {
         let slot = (va as usize) / MAX_SIZE;
         let start = slot * MAX_SIZE;
         let offset = (va as usize) - start;
@@ -137,7 +131,7 @@ impl ObjectRuntime for MinimalRuntime {
         &self,
         handle: &'a ObjectHandle,
         idx: usize,
-        valid_len: usize,
+        _valid_len: usize,
     ) -> Result<StartOrHandle, twizzler_runtime_api::FotResolveError> {
         if idx == 0 {
             return Ok(StartOrHandle::Start(handle.start));

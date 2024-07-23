@@ -10,8 +10,7 @@ use twizzler_runtime_api::FotResolveError;
 use super::{GlobalPtr, InvPtrBuilder, ResolvedPtr};
 use crate::{
     marker::{Invariant, InvariantValue, StoreEffect, TryStoreEffect},
-    object::{fot::FotEntry, InitializedObject},
-    tx::{TxError, TxResult},
+    object::fot::FotEntry,
 };
 
 // TODO: niche optimization -- sizeof Option<InvPtr<T>> == 8 -- null => None.
@@ -104,11 +103,9 @@ impl<T> InvPtr<T> {
         // to our offset + size of T, above.
         match start {
             twizzler_runtime_api::StartOrHandle::Start(start) => unsafe {
-                println!("resolved as: {:p}", start);
                 Ok(ResolvedPtr::new(start.add(offset) as *const T))
             },
             twizzler_runtime_api::StartOrHandle::Handle(handle) => unsafe {
-                println!("resolved as h: {:p}", handle.start);
                 Ok(ResolvedPtr::new_with_handle(
                     handle.start.add(offset) as *const T,
                     handle,
@@ -144,7 +141,6 @@ impl<T> TryStoreEffect for InvPtr<T> {
             unsafe { Self::new(ctor.offset()) }
         } else {
             let runtime = twizzler_runtime_api::get_runtime();
-            println!("==> getting: {:p}", in_place.place());
             let (handle, _) = runtime
                 .ptr_to_handle(in_place.place() as *const _ as *const u8)
                 .ok_or(())?;
