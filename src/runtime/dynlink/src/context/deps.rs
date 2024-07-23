@@ -1,17 +1,17 @@
 use elf::abi::DT_NEEDED;
 use tracing::trace;
 
-use super::{engine::ContextEngine, Context};
+use super::Context;
 use crate::{
     library::{Library, UnloadedLibrary},
     DynlinkError, DynlinkErrorKind,
 };
 
-impl<Engine: ContextEngine> Context<Engine> {
+impl Context {
     /// Get a list of dependencies for this library.
     pub(crate) fn enumerate_needed(
         &self,
-        lib: &Library<Engine::Backing>,
+        lib: &Library,
     ) -> Result<Vec<UnloadedLibrary>, DynlinkError> {
         trace!("{}: enumerating dependencies", lib);
         let elf = lib.get_elf()?;

@@ -13,7 +13,7 @@ use elf::{
 };
 use tracing::{debug, error, trace};
 
-use super::{engine::ContextEngine, Context, Library};
+use super::{Context, Library};
 use crate::{
     arch::{REL_DTPMOD, REL_DTPOFF, REL_GOT, REL_PLT, REL_RELATIVE, REL_SYMBOLIC, REL_TPOFF},
     library::{LibraryId, RelocState},
@@ -59,7 +59,7 @@ impl EitherRel {
     }
 }
 
-impl<Engine: ContextEngine> Context<Engine> {
+impl Context {
     pub(crate) fn get_parsing_iter<P: ParseAt>(
         &self,
         start: *const u8,
@@ -75,7 +75,7 @@ impl<Engine: ContextEngine> Context<Engine> {
 
     fn do_reloc(
         &self,
-        lib: &Library<Engine::Backing>,
+        lib: &Library,
         rel: EitherRel,
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
@@ -189,7 +189,7 @@ impl<Engine: ContextEngine> Context<Engine> {
     #[allow(clippy::too_many_arguments)]
     fn process_rels(
         &self,
-        lib: &Library<Engine::Backing>,
+        lib: &Library,
         start: *const u8,
         ent: usize,
         sz: usize,
