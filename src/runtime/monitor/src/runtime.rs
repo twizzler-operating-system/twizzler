@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
-use dynlink::library::BackingData;
 use twizzler_runtime_api::{AddrRange, DlPhdrInfo, Library, LibraryId};
 
 use crate::state::MonitorState;

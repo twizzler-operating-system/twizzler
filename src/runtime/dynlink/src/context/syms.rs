@@ -1,13 +1,13 @@
 use tracing::trace;
 
-use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
+use super::{Context, LoadedOrUnloaded};
 use crate::{
     library::{Library, LibraryId},
     symbol::{LookupFlags, RelocatedSymbol},
     DynlinkError, DynlinkErrorKind,
 };
 
-impl<Engine: ContextEngine> Context<Engine> {
+impl Context {
     /// Search for a symbol, starting from library denoted by start_id. For normal symbol lookup,
     /// this should be the ID of the library that needs a symbol looked up. Flags can be
     /// specified which allow control over where to look for the symbol.
@@ -16,7 +16,7 @@ impl<Engine: ContextEngine> Context<Engine> {
         start_id: LibraryId,
         name: &str,
         lookup_flags: LookupFlags,
-    ) -> Result<RelocatedSymbol<'a, Engine::Backing>, DynlinkError> {
+    ) -> Result<RelocatedSymbol<'a>, DynlinkError> {
         let start_lib = self.get_library(start_id)?;
         // First try looking up within ourselves.
         if !lookup_flags.contains(LookupFlags::SKIP_SELF) {
@@ -61,10 +61,10 @@ impl<Engine: ContextEngine> Context<Engine> {
 
     pub(crate) fn lookup_symbol_global<'a>(
         &'a self,
-        start_lib: &Library<Engine::Backing>,
+        start_lib: &Library,
         name: &str,
         lookup_flags: LookupFlags,
-    ) -> Result<RelocatedSymbol<'a, Engine::Backing>, DynlinkError> {
+    ) -> Result<RelocatedSymbol<'a>, DynlinkError> {
         for idx in self.library_deps.node_indices() {
             let dep = &self.library_deps[idx];
             match dep {

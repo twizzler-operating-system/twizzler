@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{
     compartment::CompartmentId,
-    context::engine::LoadDirective,
+    engines::LoadDirective,
     library::{LibraryId, UnloadedLibrary},
 };
 
