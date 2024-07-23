@@ -4,9 +4,9 @@ use happylock::RwLock;
 
 use self::space::Unmapper;
 
-mod compartment;
-mod space;
-mod thread;
+pub(crate) mod compartment;
+pub(crate) mod space;
+pub(crate) mod thread;
 
 pub struct Monitor {
     space: RwLock<space::Space>,

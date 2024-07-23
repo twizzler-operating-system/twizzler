@@ -5,11 +5,12 @@ use twizzler_abi::syscall::{sys_object_map, sys_object_unmap, UnmapFlags};
 use twizzler_object::Protections;
 use twizzler_runtime_api::{MapError, MapFlags, ObjID};
 
-use self::handle::{MapHandle, MapHandleInner};
+use self::handle::MapHandleInner;
 
 mod handle;
 mod unmapper;
 
+pub use handle::MapHandle;
 pub use unmapper::Unmapper;
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]

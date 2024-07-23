@@ -2,6 +2,7 @@
 #![feature(thread_local)]
 #![feature(c_str_literals)]
 #![feature(new_uninit)]
+#![feature(hash_extract_if)]
 
 use std::sync::{Arc, Mutex};
 
@@ -29,6 +30,7 @@ mod state;
 mod thread;
 mod upcall;
 
+mod api;
 mod mon;
 
 #[path = "../secapi/gates.rs"]
