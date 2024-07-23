@@ -29,6 +29,8 @@ mod state;
 mod thread;
 mod upcall;
 
+mod mon;
+
 #[path = "../secapi/gates.rs"]
 mod gates;
 
@@ -95,7 +97,7 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
         }
     }
 
-    load_hello_world_test(&state).unwrap();
+    //load_hello_world_test(&state).unwrap();
 
     Ok(())
 }

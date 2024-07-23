@@ -37,8 +37,8 @@ initrd = [
     "crate:netmgr",
     "crate:nettest",
     "crate:pager",
-    #"lib:twz-rt",
-    #"lib:monitor",
+    "lib:twz-rt",
+    "lib:monitor",
     #"third-party:hello-world-rs"
 ]
 
