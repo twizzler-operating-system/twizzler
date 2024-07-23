@@ -73,6 +73,7 @@ impl From<TxError> for ArenaError {
     }
 }
 
+#[derive(twizzler_derive::Invariant)]
 #[repr(C)]
 pub struct ArenaManifest {
     arenas: TxCell<VecAndStart>,
@@ -110,7 +111,7 @@ impl ArenaManifest {
         Ok(per_object_arena.owned())
     }
 
-    fn alloc<Item: Invariant>(&self, init: Item) -> Result<ArenaMutRef<'_, Item>, ArenaError> {
+    pub fn alloc<Item: Invariant>(&self, init: Item) -> Result<ArenaMutRef<'_, Item>, ArenaError> {
         let tx = unsafe { UnsafeTxHandle::new() };
         let (handle, raw_place) = if self.arenas.vec.is_null() {
             println!("arena new obj: first alloc");
@@ -164,7 +165,7 @@ impl ArenaManifest {
         })
     }
 
-    fn alloc_with<Item: Invariant, F>(&self, f: F) -> Result<ArenaMutRef<'_, Item>, ArenaError>
+    pub fn alloc_with<Item: Invariant, F>(&self, f: F) -> Result<ArenaMutRef<'_, Item>, ArenaError>
     where
         F: FnOnce(InPlace<'_>) -> Item,
     {
@@ -188,6 +189,23 @@ pub struct ArenaAllocator {
 }
 
 impl Allocator for ArenaAllocator {
+    fn allocate(
+        &self,
+        layout: Layout,
+    ) -> Result<crate::ptr::GlobalPtr<u8>, std::alloc::AllocError> {
+        todo!()
+    }
+
+    unsafe fn deallocate(
+        &self,
+        _ptr: crate::ptr::GlobalPtr<u8>,
+        _layout: Layout,
+    ) -> Result<(), std::alloc::AllocError> {
+        Ok(())
+    }
+}
+
+impl Allocator for ArenaManifest {
     fn allocate(
         &self,
         layout: Layout,
@@ -313,6 +331,7 @@ mod test {
             .unwrap();
 
         let arena = obj.base();
+        let leaf2 = arena.alloc(LeafData { payload: 32 }).unwrap();
         // Alloc a new node.
         let node1 = arena
             .alloc_with(|mut ip| Node {
@@ -326,7 +345,7 @@ mod test {
             .alloc_with(|mut ip| Node {
                 // this node points to node1 in the next field.
                 next: ip.store(node1),
-                data: ip.store(leaf_object.base()),
+                data: ip.store(leaf2),
             })
             .unwrap();
 

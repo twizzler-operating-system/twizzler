@@ -1,6 +1,8 @@
 use std::marker::PhantomData;
 
-use twizzler_runtime_api::ObjID;
+use twizzler_runtime_api::{FotResolveError, ObjID};
+
+use super::{ResolvedMutPtr, ResolvedPtr};
 
 pub struct GlobalPtr<T> {
     id: ObjID,
@@ -37,6 +39,14 @@ impl<T> GlobalPtr<T> {
 
     pub const fn cast<U>(&self) -> GlobalPtr<U> {
         GlobalPtr::new(self.id, self.offset)
+    }
+
+    pub fn resolve(&self) -> Result<ResolvedPtr<'_, T>, FotResolveError> {
+        todo!()
+    }
+
+    pub fn resolve_mut(&self) -> Result<ResolvedMutPtr<'_, T>, FotResolveError> {
+        todo!()
     }
 }
 
