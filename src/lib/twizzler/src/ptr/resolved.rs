@@ -1,10 +1,13 @@
 use std::{
     borrow::Cow,
     cell::OnceCell,
+    mem::MaybeUninit,
     ops::{Deref, DerefMut},
 };
 
 use twizzler_runtime_api::ObjectHandle;
+
+use super::{GlobalPtr, ResolvedSlice};
 
 #[repr(transparent)]
 #[derive(Clone, Default)]
@@ -80,6 +83,10 @@ impl<'obj, T> ResolvedPtr<'obj, T> {
             once_handle: OnceHandle::new(self.handle().clone()),
         }
     }
+
+    pub fn global(&self) -> GlobalPtr<T> {
+        GlobalPtr::from_va(self.ptr()).unwrap()
+    }
 }
 
 impl<'obj, T> Deref for ResolvedPtr<'obj, T> {
@@ -117,6 +124,26 @@ impl<'obj, T> ResolvedMutPtr<'obj, T> {
 
     pub fn ptr(&self) -> *mut T {
         self.ptr
+    }
+
+    pub fn owned<'a>(&self) -> ResolvedMutPtr<'a, T> {
+        ResolvedMutPtr {
+            ptr: self.ptr(),
+            once_handle: OnceHandle::new(self.handle().clone()),
+        }
+    }
+}
+
+impl<'obj, T> ResolvedMutPtr<'obj, MaybeUninit<T>> {
+    pub fn write(self, item: T) -> ResolvedMutPtr<'obj, T> {
+        let ResolvedMutPtr { once_handle, ptr } = self;
+        unsafe {
+            (*ptr).write(item);
+        }
+        ResolvedMutPtr {
+            once_handle,
+            ptr: ptr as *mut T,
+        }
     }
 }
 

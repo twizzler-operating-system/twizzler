@@ -1,8 +1,9 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, mem::size_of};
 
-use twizzler_runtime_api::{FotResolveError, ObjID};
+use twizzler_runtime_api::{FotResolveError, MapFlags, ObjID};
 
 use super::{ResolvedMutPtr, ResolvedPtr};
+use crate::object::RawObject;
 
 pub struct GlobalPtr<T> {
     id: ObjID,
@@ -42,11 +43,13 @@ impl<T> GlobalPtr<T> {
     }
 
     pub fn resolve(&self) -> Result<ResolvedPtr<'_, T>, FotResolveError> {
-        todo!()
-    }
-
-    pub fn resolve_mut(&self) -> Result<ResolvedMutPtr<'_, T>, FotResolveError> {
-        todo!()
+        // TODO: shouldn't use WRITE here?
+        let handle = twizzler_runtime_api::get_runtime()
+            .map_object(self.id(), MapFlags::READ | MapFlags::WRITE)?;
+        let ptr = handle
+            .lea(self.offset() as usize, size_of::<T>())
+            .ok_or(FotResolveError::InvalidArgument)?;
+        Ok(unsafe { ResolvedPtr::new_with_handle(ptr as *const T, handle) })
     }
 }
 

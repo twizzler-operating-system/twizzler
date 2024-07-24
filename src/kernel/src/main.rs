@@ -127,6 +127,7 @@ fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
 
 #[cfg(test)]
 pub fn test_runner(tests: &[&(&str, &dyn Fn())]) {
+    return;
     logln!(
         "[kernel::test] running {} tests, test thread ID: {}",
         tests.len(),

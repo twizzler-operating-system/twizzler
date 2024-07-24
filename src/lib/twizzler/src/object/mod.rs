@@ -60,7 +60,7 @@ pub mod fot;
 pub mod meta;
 
 mod base;
-pub use base::BaseType;
+pub use base::{BaseRef, BaseType};
 
 mod ctrl;
 mod objtypes;

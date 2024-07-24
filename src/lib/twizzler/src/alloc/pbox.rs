@@ -37,7 +37,7 @@ impl<T, A: Allocator> PBox<T, A> {
         Self { ptr, alloc }
     }
 
-    pub fn new(value: T, alloc: A) -> Result<PBoxBuilder<T, A>, AllocError> {
+    pub fn new_in(value: T, alloc: A) -> Result<PBoxBuilder<T, A>, AllocError> {
         let gptr = alloc.allocate(Layout::new::<T>())?.cast::<T>();
         let ptr = gptr.resolve().map_err(|_| AllocError)?;
         let mut mut_ptr = unsafe { ptr.as_mut() };
@@ -49,7 +49,7 @@ impl<T, A: Allocator> PBox<T, A> {
         })
     }
 
-    pub fn new_with(
+    pub fn new_in_with(
         ctor: impl FnOnce(InPlace) -> T,
         alloc: A,
     ) -> Result<PBoxBuilder<T, A>, AllocError> {
@@ -127,6 +127,7 @@ mod test {
         x: u32,
     }
 
+    #[test]
     fn test() {
         let obj = ObjectBuilder::default()
             .init(ArenaManifest::default())
@@ -134,9 +135,12 @@ mod test {
         let arena = obj.base();
 
         let foo = arena
-            .alloc_with(|mut ip| Foo {
-                data: ip.store(PBox::new(Bar { x: 42 }, arena).unwrap()),
-                data2: TxCell::new(3),
+            .alloc_with(|mut ip| {
+                let arena = ArenaAllocator::new(&mut ip, obj.base());
+                Foo {
+                    data: ip.store(PBox::new_in(Bar { x: 42 }, arena).unwrap()),
+                    data2: TxCell::new(3),
+                }
             })
             .unwrap();
     }
