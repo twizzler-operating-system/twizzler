@@ -34,8 +34,8 @@ impl<'a> InPlace<'a> {
         Self { handle }
     }
 
-    pub(crate) fn place(&mut self) -> &mut MaybeUninit<u8> {
-        unsafe { &mut *(self.handle.base_mut_ptr() as *mut MaybeUninit<u8>) }
+    pub fn handle(&self) -> &ObjectHandle {
+        &self.handle
     }
 }
 
