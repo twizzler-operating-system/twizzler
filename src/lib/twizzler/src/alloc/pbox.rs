@@ -99,7 +99,10 @@ impl<T, A: Allocator> StoreEffect for PBox<T, A> {
 
 //#[cfg(test)]
 mod test {
-    use std::u32;
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        u32,
+    };
 
     use twizzler_abi::syscall::ObjectCreate;
 
@@ -143,5 +146,8 @@ mod test {
                 }
             })
             .unwrap();
+
+        let payload = foo.data.resolve().unwrap().x;
+        assert_eq!(payload, 42);
     }
 }

@@ -2,6 +2,7 @@ use std::{
     intrinsics::{likely, unlikely},
     marker::{PhantomData, PhantomPinned},
     mem::size_of,
+    ptr::{addr_of, addr_of_mut},
 };
 
 use twizzler_abi::object::{make_invariant_pointer, split_invariant_pointer};
@@ -9,8 +10,9 @@ use twizzler_runtime_api::FotResolveError;
 
 use super::{GlobalPtr, InvPtrBuilder, ResolvedPtr};
 use crate::{
-    marker::{Invariant, InvariantValue, StoreEffect, TryStoreEffect},
+    marker::{InPlace, Invariant, InvariantValue, StoreEffect, TryStoreEffect},
     object::fot::FotEntry,
+    tx::TxResult,
 };
 
 // TODO: niche optimization -- sizeof Option<InvPtr<T>> == 8 -- null => None.
@@ -60,6 +62,18 @@ impl<T> InvPtr<T> {
 
     pub fn is_local(&self) -> bool {
         split_invariant_pointer(self.raw()).0 == 0
+    }
+
+    pub fn set(&mut self, dest: impl Into<InvPtrBuilder<T>>) -> TxResult<()> {
+        let raw_self = addr_of_mut!(*self);
+        let (handle, _) = twizzler_runtime_api::get_runtime()
+            .ptr_to_handle(raw_self as *const u8)
+            .unwrap();
+        let mut in_place = InPlace::new(&handle);
+        let value = Self::store(dest.into(), &mut in_place);
+
+        *self = value;
+        Ok(())
     }
 
     /// Resolves an invariant pointer.
@@ -138,10 +152,7 @@ impl<T> TryStoreEffect for InvPtr<T> {
             unsafe { Self::new(ctor.offset()) }
         } else {
             let runtime = twizzler_runtime_api::get_runtime();
-            let (handle, _) = runtime
-                .ptr_to_handle(in_place.place() as *const _ as *const u8)
-                .ok_or(())?;
-            let (fot, idx) = runtime.add_fot_entry(&handle).ok_or(())?;
+            let (fot, idx) = runtime.add_fot_entry(&in_place.handle()).ok_or(())?;
             let fot = fot as *mut FotEntry;
 
             unsafe {
