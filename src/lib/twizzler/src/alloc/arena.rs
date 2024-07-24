@@ -190,13 +190,13 @@ impl ArenaManifest {
 #[derive(twizzler_derive::Invariant)]
 #[repr(C)]
 pub struct ArenaAllocator {
-    alloc: InvPtr<ArenaManifest>,
+    alloc: GlobalPtr<ArenaManifest>,
 }
 
 impl ArenaAllocator {
-    pub fn new(in_place: &mut InPlace, alloc: impl Into<InvPtrBuilder<ArenaManifest>>) -> Self {
+    pub fn new(alloc: &ArenaManifest) -> Self {
         Self {
-            alloc: in_place.store(alloc.into()),
+            alloc: GlobalPtr::from_va(alloc).unwrap(),
         }
     }
 }
@@ -302,7 +302,7 @@ impl PerObjectArena {
             tx,
         )?;
 
-        Ok(GlobalPtr::new(handle.id, place as u64))
+        Ok(unsafe { GlobalPtr::new(handle.id, place as u64) })
     }
 }
 

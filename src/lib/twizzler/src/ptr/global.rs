@@ -3,16 +3,20 @@ use std::{marker::PhantomData, mem::size_of};
 use twizzler_runtime_api::{FotResolveError, MapFlags, ObjID};
 
 use super::{ResolvedMutPtr, ResolvedPtr};
-use crate::object::RawObject;
+use crate::{marker::InvariantValue, object::RawObject};
 
+#[derive(twizzler_derive::Invariant, Copy, Clone, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[repr(C)]
 pub struct GlobalPtr<T> {
     id: ObjID,
     offset: u64,
     _pd: PhantomData<*const T>,
 }
 
+unsafe impl<T> InvariantValue for GlobalPtr<T> {}
+
 impl<T> GlobalPtr<T> {
-    pub const fn new(id: ObjID, offset: u64) -> Self {
+    pub const unsafe fn new(id: ObjID, offset: u64) -> Self {
         Self {
             id,
             offset,
@@ -38,7 +42,7 @@ impl<T> GlobalPtr<T> {
         self.offset
     }
 
-    pub const fn cast<U>(&self) -> GlobalPtr<U> {
+    pub const unsafe fn cast<U>(&self) -> GlobalPtr<U> {
         GlobalPtr::new(self.id, self.offset)
     }
 
