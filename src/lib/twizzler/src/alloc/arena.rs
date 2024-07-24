@@ -1,5 +1,5 @@
 use std::{
-    alloc::Layout,
+    alloc::{AllocError, Layout},
     marker::PhantomData,
     mem::{size_of, MaybeUninit},
     ops::{Deref, DerefMut},
@@ -12,7 +12,7 @@ use super::{Allocator, TxAllocator};
 use crate::{
     collections::VectorHeader,
     marker::{InPlace, Invariant},
-    object::{BaseType, InitializedObject, Object, ObjectBuilder, RawObject},
+    object::{BaseRef, BaseType, InitializedObject, Object, ObjectBuilder, RawObject},
     ptr::{
         GlobalPtr, InvPtr, InvPtrBuilder, InvSlice, InvSliceBuilder, ResolvedMutPtr, ResolvedPtr,
     },
@@ -67,6 +67,12 @@ pub enum ArenaError {
     TransactionFailed(TxError),
 }
 
+impl From<ArenaError> for AllocError {
+    fn from(value: ArenaError) -> Self {
+        AllocError
+    }
+}
+
 impl From<TxError> for ArenaError {
     fn from(value: TxError) -> Self {
         Self::TransactionFailed(value)
@@ -111,14 +117,12 @@ impl ArenaManifest {
         Ok(per_object_arena.owned())
     }
 
-    pub fn alloc<Item: Invariant>(&self, init: Item) -> Result<ArenaMutRef<'_, Item>, ArenaError> {
+    fn alloc_raw(&self, layout: Layout) -> Result<GlobalPtr<u8>, ArenaError> {
         let tx = unsafe { UnsafeTxHandle::new() };
-        let (handle, raw_place) = if self.arenas.vec.is_null() {
-            println!("arena new obj: first alloc");
+        if self.arenas.vec.is_null() {
             let obj = ObjectBuilder::default()
                 .init(())
                 .map_err(|_| ArenaError::OutOfMemory)?;
-            println!("got: {:p}", obj.base_ptr());
 
             let raw_base = obj.base_mut_ptr() as *mut TxCell<InvPtr<PerObjectArena>>;
             let raw_len =
@@ -140,45 +144,46 @@ impl ArenaManifest {
             )?;
             let arena = self.add_object(tx)?;
             let handle = arena.handle().clone();
-            arena.alloc_raw::<Item>(&handle, tx).map(|x| (handle, x))
+            arena.alloc_raw(&handle, layout, tx)
         } else {
             let start = self.arenas.start as usize;
             let slice = self.arenas.vec.resolve().unwrap();
             let arena = slice[start].resolve().unwrap();
             let handle = arena.handle().clone();
-            let raw_place = arena.alloc_raw::<Item>(&handle, tx);
+            let raw_place = arena.alloc_raw(&handle, layout, tx);
 
             if matches!(raw_place, Err(ArenaError::OutOfMemory)) {
                 let arena = self.add_object(tx)?;
                 let handle = arena.handle().clone();
-                arena.alloc_raw::<Item>(&handle, tx).map(|x| (handle, x))
+                arena.alloc_raw(&handle, layout, tx)
             } else {
-                raw_place.map(|x| (handle, x))
+                raw_place
             }
-        }?;
-        unsafe {
-            raw_place.write(init);
         }
+    }
 
-        Ok(ArenaMutRef {
-            ptr: unsafe { ResolvedMutPtr::new_with_handle(raw_place, handle) },
-        })
+    pub fn alloc<Item: Invariant>(&self, init: Item) -> Result<ArenaMutRef<'_, Item>, ArenaError> {
+        let layout = Layout::new::<Item>();
+        unsafe {
+            let gptr = self.alloc_raw(layout)?.cast::<Item>();
+            let ptr = gptr
+                .resolve()
+                .map_err(|_| ArenaError::TransactionFailed(TxError::Exhausted))?;
+            let ptr = ptr.as_mut();
+            ptr.ptr().write(init);
+
+            Ok(ArenaMutRef { ptr: ptr.owned() })
+        }
     }
 
     pub fn alloc_with<Item: Invariant, F>(&self, f: F) -> Result<ArenaMutRef<'_, Item>, ArenaError>
     where
         F: FnOnce(InPlace<'_>) -> Item,
     {
-        let mut place = self.alloc::<MaybeUninit<Item>>(MaybeUninit::uninit())?;
-        let handle = twizzler_runtime_api::get_runtime()
-            .ptr_to_handle(place.ptr.as_mut_ptr() as *const u8)
-            .unwrap()
-            .0;
-        let item = f(InPlace::new(&handle));
-        let place = place.write(item) as *mut Item;
-        Ok(ArenaMutRef {
-            ptr: unsafe { ResolvedMutPtr::new_with_handle(place, handle) },
-        })
+        let place = self.alloc::<MaybeUninit<Item>>(MaybeUninit::uninit())?;
+        let item = f(InPlace::new(&place.ptr.handle()));
+        let place = place.ptr.write(item);
+        Ok(ArenaMutRef { ptr: place })
     }
 }
 
@@ -188,12 +193,21 @@ pub struct ArenaAllocator {
     alloc: InvPtr<ArenaManifest>,
 }
 
+impl ArenaAllocator {
+    pub fn new(in_place: &mut InPlace, alloc: impl Into<InvPtrBuilder<ArenaManifest>>) -> Self {
+        Self {
+            alloc: in_place.store(alloc.into()),
+        }
+    }
+}
+
 impl Allocator for ArenaAllocator {
     fn allocate(
         &self,
         layout: Layout,
     ) -> Result<crate::ptr::GlobalPtr<u8>, std::alloc::AllocError> {
-        todo!()
+        let manifest = self.alloc.resolve().map_err(|_| AllocError)?;
+        manifest.allocate(layout)
     }
 
     unsafe fn deallocate(
@@ -210,7 +224,8 @@ impl Allocator for ArenaManifest {
         &self,
         layout: Layout,
     ) -> Result<crate::ptr::GlobalPtr<u8>, std::alloc::AllocError> {
-        todo!()
+        let ptr = self.alloc_raw(layout)?;
+        Ok(ptr)
     }
 
     unsafe fn deallocate(
@@ -269,16 +284,13 @@ impl Default for PerObjectArena {
 }
 
 impl PerObjectArena {
-    fn alloc_raw<'a, T>(
+    fn alloc_raw<'a>(
         &self,
         handle: &ObjectHandle,
+        layout: Layout,
         tx: impl TxHandle<'a>,
-    ) -> Result<*mut T, ArenaError>
-    where
-        T: Sized,
-    {
+    ) -> Result<GlobalPtr<u8>, ArenaError> {
         const MIN_ALIGN: usize = 32;
-        let layout = Layout::new::<T>();
         let align = std::cmp::max(MIN_ALIGN, layout.align());
         let place = self.end.modify(
             |end| {
@@ -290,8 +302,7 @@ impl PerObjectArena {
             tx,
         )?;
 
-        let ptr = handle.lea_mut(place, layout.size()).unwrap();
-        Ok(ptr as *mut T)
+        Ok(GlobalPtr::new(handle.id, place as u64))
     }
 }
 
