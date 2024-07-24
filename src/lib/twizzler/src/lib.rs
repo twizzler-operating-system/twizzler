@@ -14,3 +14,5 @@ pub mod ptr;
 pub mod tx;
 
 mod tests;
+
+pub use twizzler_derive::Invariant;
