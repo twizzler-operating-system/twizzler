@@ -116,10 +116,7 @@ impl<T> InvPtr<T> {
 
     pub fn as_global(&self) -> Result<GlobalPtr<T>, FotResolveError> {
         let resolved = self.resolve()?;
-        Ok(GlobalPtr::new(
-            resolved.handle().id,
-            split_invariant_pointer(self.raw()).1,
-        ))
+        Ok(unsafe { GlobalPtr::new(resolved.handle().id, split_invariant_pointer(self.raw()).1) })
     }
 }
 
