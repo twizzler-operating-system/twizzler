@@ -19,48 +19,6 @@ use crate::{
     tx::{TxCell, TxError, TxHandle, TxResult, UnsafeTxHandle},
 };
 
-pub struct ArenaMutRef<'a, T> {
-    ptr: ResolvedMutPtr<'a, T>,
-}
-
-pub struct ArenaRef<'a, T> {
-    ptr: ResolvedPtr<'a, T>,
-}
-
-impl<'arena, T> Deref for ArenaMutRef<'arena, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &*self.ptr
-    }
-}
-
-impl<'arena, T> Deref for ArenaRef<'arena, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &*self.ptr
-    }
-}
-
-impl<'arena, T> DerefMut for ArenaMutRef<'arena, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut *self.ptr
-    }
-}
-
-impl<'a, T> From<ArenaRef<'a, T>> for InvPtrBuilder<T> {
-    fn from(value: ArenaRef<'a, T>) -> Self {
-        unsafe { InvPtrBuilder::from_global(GlobalPtr::from_va(value.ptr.ptr()).unwrap()) }
-    }
-}
-
-impl<'a, T> From<ArenaMutRef<'a, T>> for InvPtrBuilder<T> {
-    fn from(value: ArenaMutRef<'a, T>) -> Self {
-        unsafe { InvPtrBuilder::from_global(GlobalPtr::from_va(value.ptr.ptr()).unwrap()) }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ArenaError {
     OutOfMemory,
@@ -112,8 +70,8 @@ impl ArenaManifest {
         let obj = self.new_object()?;
         println!("got: {:p}", obj.base_ptr());
         let idx = unsafe { self.arenas.as_mut(&tx)? }.add_object(obj.base(), &tx)?;
-        let ptr = &self.arenas.vec.resolve().unwrap()[idx];
-        let per_object_arena = ptr.resolve().unwrap();
+        let ptr = &self.arenas.vec.resolve()[idx];
+        let per_object_arena = ptr.resolve();
         Ok(per_object_arena.owned())
     }
 
@@ -147,8 +105,8 @@ impl ArenaManifest {
             arena.alloc_raw(&handle, layout, tx)
         } else {
             let start = self.arenas.start as usize;
-            let slice = self.arenas.vec.resolve().unwrap();
-            let arena = slice[start].resolve().unwrap();
+            let slice = self.arenas.vec.resolve();
+            let arena = slice[start].resolve();
             let handle = arena.handle().clone();
             let raw_place = arena.alloc_raw(&handle, layout, tx);
 
@@ -162,7 +120,10 @@ impl ArenaManifest {
         }
     }
 
-    pub fn alloc<Item: Invariant>(&self, init: Item) -> Result<ArenaMutRef<'_, Item>, ArenaError> {
+    pub fn alloc<Item: Invariant>(
+        &self,
+        init: Item,
+    ) -> Result<ResolvedMutPtr<'_, Item>, ArenaError> {
         let layout = Layout::new::<Item>();
         unsafe {
             let gptr = self.alloc_raw(layout)?.cast::<Item>();
@@ -172,18 +133,21 @@ impl ArenaManifest {
             let ptr = ptr.as_mut();
             ptr.ptr().write(init);
 
-            Ok(ArenaMutRef { ptr: ptr.owned() })
+            Ok(ptr.owned())
         }
     }
 
-    pub fn alloc_with<Item: Invariant, F>(&self, f: F) -> Result<ArenaMutRef<'_, Item>, ArenaError>
+    pub fn alloc_with<Item: Invariant, F>(
+        &self,
+        f: F,
+    ) -> Result<ResolvedMutPtr<'_, Item>, ArenaError>
     where
         F: FnOnce(InPlace<'_>) -> Item,
     {
         let place = self.alloc::<MaybeUninit<Item>>(MaybeUninit::uninit())?;
-        let item = f(InPlace::new(&place.ptr.handle()));
-        let place = place.ptr.write(item);
-        Ok(ArenaMutRef { ptr: place })
+        let item = f(InPlace::new(&place.handle()));
+        let place = place.write(item);
+        Ok(place)
     }
 }
 
@@ -250,7 +214,7 @@ impl VecAndStart {
         ptr: impl Into<InvPtrBuilder<PerObjectArena>>,
         tx: impl TxHandle<'a>,
     ) -> Result<usize, ArenaError> {
-        let slice = self.vec.resolve().unwrap();
+        let slice = self.vec.resolve();
         self.start += 1;
         let start = self.start as usize;
         if start >= slice.len() {
@@ -308,9 +272,9 @@ impl PerObjectArena {
 
 impl BaseType for PerObjectArena {}
 
-//#[cfg(test)]
+#[cfg(test)]
 mod test {
-    use super::{ArenaManifest, ArenaMutRef};
+    use super::ArenaManifest;
     use crate::{
         object::{BaseType, InitializedObject, Object, ObjectBuilder},
         ptr::{InvPtr, InvPtrBuilder},
@@ -342,7 +306,6 @@ mod test {
             .unwrap();
 
         let arena = obj.base();
-        let leaf2 = arena.alloc(LeafData { payload: 32 }).unwrap();
         // Alloc a new node.
         let node1 = arena
             .alloc_with(|mut ip| Node {
@@ -355,8 +318,8 @@ mod test {
         let node2 = arena
             .alloc_with(|mut ip| Node {
                 // this node points to node1 in the next field.
-                next: ip.store(node1),
-                data: ip.store(leaf2),
+                next: ip.store(unsafe { InvPtrBuilder::from_global(node1.global()) }),
+                data: ip.store(leaf_object.base()),
             })
             .unwrap();
 
@@ -364,8 +327,8 @@ mod test {
 
         // I'm planning on implementing Deref for InvPtr, and just having it panic if resolve()
         // returns Err.
-        let res_node1 = node2.next.resolve().unwrap();
-        let leaf_data = res_node1.data.resolve().unwrap();
+        let res_node1 = node2.next.resolve();
+        let leaf_data = res_node1.data.resolve();
         let payload = leaf_data.payload;
         assert_eq!(payload, 42);
     }

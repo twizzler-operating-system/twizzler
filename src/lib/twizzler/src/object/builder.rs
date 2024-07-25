@@ -251,7 +251,7 @@ mod test {
                 }
             })
             .unwrap();
-        assert_eq!(bar_obj.base().x.resolve().unwrap().x, 46);
+        assert_eq!(bar_obj.base().x.resolve().x, 46);
     }
 
     #[test]
@@ -283,10 +283,10 @@ mod test {
             })
             .unwrap();
 
-        let foo_obj_x = bar_obj.base().x.resolve().unwrap().x;
-        let yx = bar_obj.base().y.resolve().unwrap().x;
-        let zxx = bar_obj.base().z.resolve().unwrap().x.resolve().unwrap().x;
-        let zyx = bar_obj.base().z.resolve().unwrap().y.resolve().unwrap().x;
+        let foo_obj_x = bar_obj.base().x.resolve().x;
+        let yx = bar_obj.base().y.resolve().x;
+        let zxx = bar_obj.base().z.resolve().x.resolve().x;
+        let zyx = bar_obj.base().z.resolve().y.resolve().x;
         assert_eq!(foo_obj_x, 12345);
         assert_eq!(yx, 1);
         assert_eq!(zxx, 101);

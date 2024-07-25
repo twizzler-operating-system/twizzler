@@ -47,13 +47,17 @@ impl<T> InvSlice<T> {
         todo!()
     }
 
+    pub fn resolve(&self) -> ResolvedSlice<'_, T> {
+        self.try_resolve().unwrap()
+    }
+
     /// Resolves an invariant slice.
     ///
     /// Note that this function needs to ask the runtime for help, since it does not know which
     /// object to use for FOT translation. If you know that an invariant pointer resides in an
     /// object, you can use [Object::resolve].
-    pub fn resolve(&self) -> Result<ResolvedSlice<'_, T>, FotResolveError> {
-        let resolved = self.ptr.resolve()?;
+    pub fn try_resolve(&self) -> Result<ResolvedSlice<'_, T>, FotResolveError> {
+        let resolved = self.ptr.try_resolve()?;
         println!("resolved slice: {:p}", resolved.ptr());
         Ok(ResolvedSlice::new(resolved, self.len as usize))
     }
