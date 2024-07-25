@@ -76,17 +76,21 @@ impl<T> InvPtr<T> {
         Ok(())
     }
 
+    pub fn resolve(&self) -> ResolvedPtr<'_, T> {
+        self.try_resolve().unwrap()
+    }
+
     /// Resolves an invariant pointer.
     ///
     /// Note that this function needs to ask the runtime for help, since it does not know which
     /// object to use for FOT translation. If you know that an invariant pointer resides in an
     /// object, you can use [Object::resolve].
-    pub fn resolve(&self) -> Result<ResolvedPtr<'_, T>, FotResolveError> {
+    pub fn try_resolve(&self) -> Result<ResolvedPtr<'_, T>, FotResolveError> {
         if unlikely(self.is_null()) {
             return Err(FotResolveError::NullPointer);
         }
         // Find the address of our invariant pointer, to locate the object it resides in.
-        let this = self as *const _ as *const u8;
+        let this = addr_of!(*self) as *const u8;
         // Split the pointer, and grab the offset as a usize.
         let (fote, off) = split_invariant_pointer(self.raw());
         let offset = off as usize;
@@ -128,8 +132,8 @@ impl<T> InvPtr<T> {
         }
     }
 
-    pub fn as_global(&self) -> Result<GlobalPtr<T>, FotResolveError> {
-        let resolved = self.resolve()?;
+    pub fn try_as_global(&self) -> Result<GlobalPtr<T>, FotResolveError> {
+        let resolved = self.try_resolve()?;
         Ok(unsafe { GlobalPtr::new(resolved.handle().id, split_invariant_pointer(self.raw()).1) })
     }
 }

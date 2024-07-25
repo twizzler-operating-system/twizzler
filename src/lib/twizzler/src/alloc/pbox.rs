@@ -68,16 +68,15 @@ impl<T, A: Allocator> PBox<T, A> {
 
 impl<T, A: Allocator> Drop for PBox<T, A> {
     fn drop(&mut self) {
-        if let Ok(res) = self.ptr.resolve() {
+        if let Ok(res) = self.ptr.try_resolve() {
             unsafe {
                 let ptr = res.ptr() as *mut T;
                 core::ptr::drop_in_place(ptr);
             }
-        } else {
-            //TODO
+        } else { //TODO
         }
 
-        if let Ok(res) = self.ptr.as_global() {
+        if let Ok(res) = self.ptr.try_as_global() {
             // TODO
             let _ = unsafe { self.alloc.deallocate(res.cast(), Layout::new::<T>()) };
         } else {
@@ -119,16 +118,18 @@ mod test {
 
     #[derive(twizzler_derive::Invariant)]
     #[repr(C)]
-    struct Foo {
-        data: PBox<Bar, ArenaAllocator>,
-        data2: TxCell<u32>,
+    struct Node {
+        next: Option<PBox<Node, ArenaAllocator>>,
+        value: u32,
     }
 
-    #[derive(twizzler_derive::Invariant, Copy, Clone)]
+    #[derive(twizzler_derive::Invariant)]
     #[repr(C)]
-    struct Bar {
-        x: u32,
+    struct Root {
+        list: PBox<Node, ArenaAllocator>,
     }
+
+    impl BaseType for Root {}
 
     #[test]
     fn test() {
@@ -137,17 +138,36 @@ mod test {
             .unwrap();
         let arena = obj.base();
 
-        let foo = arena
-            .alloc_with(|mut ip| {
-                let arena = ArenaAllocator::new(&*obj.base());
-                Foo {
-                    data: ip.store(PBox::new_in(Bar { x: 42 }, arena).unwrap()),
-                    data2: TxCell::new(3),
-                }
+        let alloc_node =
+            |parent: Option<PBoxBuilder<Node, ArenaAllocator>>,
+             value: u32,
+             arena: &crate::object::BaseRef<'_, ArenaManifest>| {
+                PBox::new_in_with(
+                    |mut ip| Node {
+                        next: parent.map(|parent| ip.store(parent)),
+                        value,
+                    },
+                    ArenaAllocator::new(&*arena),
+                )
+                .unwrap()
+            };
+
+        let node1 = alloc_node(None, 3, &arena);
+        let node2 = alloc_node(Some(node1), 11, &arena);
+
+        let root_object = ObjectBuilder::default()
+            .construct(|ci| Root {
+                list: ci.in_place().store(node2),
             })
             .unwrap();
 
-        let payload = foo.data.resolve().unwrap().x;
-        assert_eq!(payload, 42);
+        let root = root_object.base();
+        let res_node2 = root.list.resolve();
+        let value2 = res_node2.value;
+        let res_node1 = res_node2.next.as_ref().unwrap().resolve();
+        let value1 = res_node1.value;
+        assert!(res_node1.next.is_none());
+        assert_eq!(value1, 3);
+        assert_eq!(value2, 11);
     }
 }

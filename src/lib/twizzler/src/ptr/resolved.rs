@@ -7,7 +7,7 @@ use std::{
 
 use twizzler_runtime_api::ObjectHandle;
 
-use super::{GlobalPtr, ResolvedSlice};
+use super::{GlobalPtr, InvPtrBuilder, ResolvedSlice};
 
 #[repr(transparent)]
 #[derive(Clone, Default)]
@@ -132,6 +132,10 @@ impl<'obj, T> ResolvedMutPtr<'obj, T> {
             once_handle: OnceHandle::new(self.handle().clone()),
         }
     }
+
+    pub fn global(&self) -> GlobalPtr<T> {
+        GlobalPtr::from_va(self.ptr()).unwrap()
+    }
 }
 
 impl<'obj, T> ResolvedMutPtr<'obj, MaybeUninit<T>> {
@@ -140,6 +144,7 @@ impl<'obj, T> ResolvedMutPtr<'obj, MaybeUninit<T>> {
         unsafe {
             (*ptr).write(item);
         }
+
         ResolvedMutPtr {
             once_handle,
             ptr: ptr as *mut T,
