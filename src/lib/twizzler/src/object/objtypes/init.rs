@@ -5,15 +5,14 @@ use twizzler_runtime_api::{MapError, MapFlags, ObjID, ObjectHandle};
 
 use super::{ImmutableObject, Object, RawObject};
 use crate::{
-    object::{base::BaseRef, fot::FotEntry, BaseType},
-    ptr::{InvPtr, InvPtrBuilder, ResolvedPtr},
-    tx::TxHandle,
+    object::BaseType,
+    ptr::{InvPtr, ResolvedPtr},
 };
 
 pub trait InitializedObject: RawObject {
     type Base: BaseType;
 
-    fn base(&self) -> BaseRef<'_, Self::Base>;
+    fn base(&self) -> &Self::Base;
 
     fn map(id: ObjID, flags: MapFlags) -> Result<Self, MapError>
     where
@@ -33,7 +32,7 @@ pub trait InitializedObject: RawObject {
     /// part of the object. It then tries to resolve the pointer according to its contents and this
     /// object's FOT. The resulting resolved pointer does NOT implement Deref, since it may not be
     /// memory safe to do so in general (we cannot prove that noone has a mutable reference).
-    fn resolve<T>(&self, ptr: &InvPtr<T>) -> Result<ResolvedPtr<'_, T>, ()> {
+    unsafe fn resolve<T>(&self, ptr: &InvPtr<T>) -> Result<ResolvedPtr<'_, T>, ()> {
         todo!()
     }
 }
@@ -62,21 +61,5 @@ impl<Base: BaseType> RawObject for UninitializedObject<Base> {
 impl<Base: BaseType> Into<ObjectHandle> for UninitializedObject<Base> {
     fn into(self) -> ObjectHandle {
         self.handle
-    }
-}
-
-pub trait FotInserter {
-    fn insert_fot<'a, T>(&self, builder: InvPtrBuilder<T>, tx: impl TxHandle<'a>) -> usize;
-}
-
-impl<O: InitializedObject> FotInserter for O {
-    fn insert_fot<'a, T>(&self, builder: InvPtrBuilder<T>, tx: impl TxHandle<'a>) -> usize {
-        todo!()
-    }
-}
-
-impl<Base: BaseType> FotInserter for UninitializedObject<Base> {
-    fn insert_fot<'a, T>(&self, builder: InvPtrBuilder<T>, tx: impl TxHandle<'a>) -> usize {
-        todo!()
     }
 }

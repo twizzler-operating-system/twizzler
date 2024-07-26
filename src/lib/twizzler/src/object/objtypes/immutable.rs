@@ -4,7 +4,7 @@ use twizzler_abi::meta::MetaInfo;
 use twizzler_runtime_api::ObjectHandle;
 
 use super::{InitializedObject, Object, RawObject};
-use crate::object::{base::BaseRef, BaseType};
+use crate::object::BaseType;
 
 pub struct ImmutableObject<Base: BaseType> {
     handle: ObjectHandle,
@@ -20,7 +20,7 @@ impl<Base: BaseType> ImmutableObject<Base> {
 impl<Base: BaseType> InitializedObject for ImmutableObject<Base> {
     type Base = Base;
 
-    fn base(&self) -> BaseRef<'_, Self::Base> {
+    fn base(&self) -> &Base {
         todo!()
     }
 

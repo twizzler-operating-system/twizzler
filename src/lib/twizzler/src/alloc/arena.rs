@@ -12,7 +12,7 @@ use super::{Allocator, TxAllocator};
 use crate::{
     collections::VectorHeader,
     marker::{InPlace, Invariant},
-    object::{BaseRef, BaseType, InitializedObject, Object, ObjectBuilder, RawObject},
+    object::{BaseType, InitializedObject, Object, ObjectBuilder, RawObject},
     ptr::{
         GlobalPtr, InvPtr, InvPtrBuilder, InvSlice, InvSliceBuilder, ResolvedMutPtr, ResolvedPtr,
     },
@@ -69,9 +69,11 @@ impl ArenaManifest {
         println!("arena new obj: add_object");
         let obj = self.new_object()?;
         println!("got: {:p}", obj.base_ptr());
-        let idx = unsafe { self.arenas.as_mut(&tx)? }.add_object(obj.base(), &tx)?;
-        let ptr = &self.arenas.vec.resolve()[idx];
-        let per_object_arena = ptr.resolve();
+        // TODO: is this pin unsafe?
+        let idx =
+            unsafe { self.arenas.as_mut(&tx)?.get_unchecked_mut() }.add_object(obj.base(), &tx)?;
+        let ptr = &unsafe { self.arenas.vec.resolve() }[idx];
+        let per_object_arena = unsafe { ptr.resolve() };
         Ok(per_object_arena.owned())
     }
 
@@ -105,8 +107,8 @@ impl ArenaManifest {
             arena.alloc_raw(&handle, layout, tx)
         } else {
             let start = self.arenas.start as usize;
-            let slice = self.arenas.vec.resolve();
-            let arena = slice[start].resolve();
+            let slice = unsafe { self.arenas.vec.resolve() };
+            let arena = unsafe { slice[start].resolve() };
             let handle = arena.handle().clone();
             let raw_place = arena.alloc_raw(&handle, layout, tx);
 
@@ -170,7 +172,7 @@ impl Allocator for ArenaAllocator {
         &self,
         layout: Layout,
     ) -> Result<crate::ptr::GlobalPtr<u8>, std::alloc::AllocError> {
-        let manifest = self.alloc.resolve().map_err(|_| AllocError)?;
+        let manifest = unsafe { self.alloc.resolve().map_err(|_| AllocError) }?;
         manifest.allocate(layout)
     }
 
@@ -214,7 +216,7 @@ impl VecAndStart {
         ptr: impl Into<InvPtrBuilder<PerObjectArena>>,
         tx: impl TxHandle<'a>,
     ) -> Result<usize, ArenaError> {
-        let slice = self.vec.resolve();
+        let slice = unsafe { self.vec.resolve() };
         self.start += 1;
         let start = self.start as usize;
         if start >= slice.len() {
@@ -257,7 +259,7 @@ impl PerObjectArena {
         const MIN_ALIGN: usize = 32;
         let align = std::cmp::max(MIN_ALIGN, layout.align());
         let place = self.end.modify(
-            |end| {
+            |mut end| {
                 let place = (*end as usize).next_multiple_of(align);
                 let next_end = place + layout.size();
                 *end = next_end as u64;
@@ -327,8 +329,8 @@ mod test {
 
         // I'm planning on implementing Deref for InvPtr, and just having it panic if resolve()
         // returns Err.
-        let res_node1 = node2.next.resolve();
-        let leaf_data = res_node1.data.resolve();
+        let res_node1 = unsafe { node2.next.resolve() };
+        let leaf_data = unsafe { res_node1.data.resolve() };
         let payload = leaf_data.payload;
         assert_eq!(payload, 42);
     }

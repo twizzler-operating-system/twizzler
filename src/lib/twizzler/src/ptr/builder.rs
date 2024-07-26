@@ -13,10 +13,7 @@ pub struct InvPtrBuilder<T> {
 
 impl<T> InvPtrBuilder<T> {
     /// Construct an invariant pointer builder from a global pointer.
-    ///
-    /// # Safety
-    /// The caller must ensure that the lifetime of the pointed to data lives long enough.
-    pub const unsafe fn from_global(gp: GlobalPtr<T>) -> Self {
+    pub const fn from_global(gp: GlobalPtr<T>) -> Self {
         Self {
             id: gp.id(),
             offset: gp.offset(),
@@ -25,11 +22,7 @@ impl<T> InvPtrBuilder<T> {
     }
 
     /// Construct an invariant pointer from a local offset.
-    ///
-    /// # Safety
-    /// The caller must ensure that the data in the local object referred to by this offset is valid
-    /// and initialized, and of the correct type.
-    pub const unsafe fn from_offset(offset: usize) -> Self {
+    pub const fn from_offset(offset: usize) -> Self {
         Self {
             id: ObjID::new(0),
             offset: offset as u64,

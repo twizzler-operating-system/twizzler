@@ -2,6 +2,7 @@ use std::{
     cell::UnsafeCell,
     mem::{transmute, MaybeUninit},
     ops::Deref,
+    pin::Pin,
 };
 
 use crate::marker::{InPlace, Invariant, InvariantValue};
@@ -59,19 +60,24 @@ impl<T: Invariant> TxCell<T> {
     /// # Safety
     /// The caller must ensure that no returned reference from this function aliases any other alive
     /// reference to the same TxCell.
-    pub unsafe fn as_mut<'a, E>(&self, tx: impl TxHandle<'a>) -> TxResult<&mut T, E> {
+    pub unsafe fn as_mut<'a, E>(&self, tx: impl TxHandle<'a>) -> TxResult<Pin<&mut T>, E> {
         let target = tx.tx_mut(self.0.get())?;
-        Ok(&mut *target)
+        let ptr = Pin::new_unchecked(&mut *target);
+        Ok(ptr)
     }
 
     /// Get a mutable reference to the interior data. Takes a mutable reference to the TxCell to
     /// enforce borrowing rules.
-    pub fn get_mut<'a>(&mut self, tx: impl TxHandle<'a>) -> TxResult<&mut T> {
+    pub fn get_mut<'a>(&mut self, tx: impl TxHandle<'a>) -> TxResult<Pin<&mut T>> {
         // Safety: we take self as &mut, so we hold the only reference.
         unsafe { self.as_mut(tx) }
     }
 
-    pub fn modify<'a, R>(&self, f: impl FnOnce(&mut T) -> R, tx: impl TxHandle<'a>) -> TxResult<R> {
+    pub fn modify<'a, R>(
+        &self,
+        f: impl FnOnce(Pin<&mut T>) -> R,
+        tx: impl TxHandle<'a>,
+    ) -> TxResult<R> {
         unsafe {
             let ptr = self.as_mut(tx)?;
             Ok(f(ptr))
@@ -85,24 +91,27 @@ impl<'a, T: Invariant> TxCell<T> {
     where
         F: FnOnce(&mut InPlace<'_>) -> T,
     {
-        let ptr = unsafe { transmute::<&mut T, &mut MaybeUninit<T>>(self.as_mut(&tx)?) };
+        // TODO: do we need to drop anything?
+        let ptr = unsafe { transmute::<Pin<&mut T>, Pin<&mut MaybeUninit<T>>>(self.as_mut(&tx)?) };
         let handle = twizzler_runtime_api::get_runtime()
-            .ptr_to_handle(ptr.as_mut_ptr() as *const u8)
+            .ptr_to_handle(ptr.as_ptr() as *const u8)
             .unwrap()
             .0; // TODO: unwrap
         let mut in_place = InPlace::new(&handle);
         let value = ctor(&mut in_place);
-        let ptr = unsafe { transmute::<&mut T, &mut MaybeUninit<T>>(self.as_mut(&tx)?) };
-        ptr.write(value);
+        let ptr = unsafe { transmute::<Pin<&mut T>, Pin<&mut MaybeUninit<T>>>(self.as_mut(&tx)?) };
+        // TODO: is this okay?
+        unsafe { ptr.get_unchecked_mut().write(value) };
         Ok(())
     }
 }
 
-impl<'a, T: Invariant + 'a> TxCell<T> {
+impl<'a, T: Invariant + 'a + Unpin> TxCell<T> {
     /// Set the value of the cell, constructing the value in-place.
     pub fn set(&self, value: T, tx: impl TxHandle<'a>) -> TxResult<()> {
+        // TODO: do we need to drop anything?
         unsafe {
-            let ptr = self.as_mut(tx)? as *mut T;
+            let ptr = self.as_mut(tx)?.get_mut() as *mut T;
             ptr.write(value);
         }
         Ok(())

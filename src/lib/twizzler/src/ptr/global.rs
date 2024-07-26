@@ -2,7 +2,7 @@ use std::{marker::PhantomData, mem::size_of};
 
 use twizzler_runtime_api::{FotResolveError, MapFlags, ObjID};
 
-use super::{ResolvedMutPtr, ResolvedPtr};
+use super::ResolvedPtr;
 use crate::{marker::InvariantValue, object::RawObject};
 
 #[derive(twizzler_derive::Invariant, Copy, Clone, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
@@ -16,7 +16,7 @@ pub struct GlobalPtr<T> {
 unsafe impl<T> InvariantValue for GlobalPtr<T> {}
 
 impl<T> GlobalPtr<T> {
-    pub const unsafe fn new(id: ObjID, offset: u64) -> Self {
+    pub const fn new(id: ObjID, offset: u64) -> Self {
         Self {
             id,
             offset,
@@ -42,11 +42,11 @@ impl<T> GlobalPtr<T> {
         self.offset
     }
 
-    pub const unsafe fn cast<U>(&self) -> GlobalPtr<U> {
+    pub const fn cast<U>(&self) -> GlobalPtr<U> {
         GlobalPtr::new(self.id, self.offset)
     }
 
-    pub fn resolve(&self) -> Result<ResolvedPtr<'_, T>, FotResolveError> {
+    pub unsafe fn resolve(&self) -> Result<ResolvedPtr<'_, T>, FotResolveError> {
         // TODO: shouldn't use WRITE here?
         let handle = twizzler_runtime_api::get_runtime()
             .map_object(self.id(), MapFlags::READ | MapFlags::WRITE)?;

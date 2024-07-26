@@ -37,9 +37,12 @@ impl<T, A: Allocator> PBox<T, A> {
         Self { ptr, alloc }
     }
 
-    pub fn new_in(value: T, alloc: A) -> Result<PBoxBuilder<T, A>, AllocError> {
+    pub fn new_in(value: T, alloc: A) -> Result<PBoxBuilder<T, A>, AllocError>
+    where
+        T: Unpin,
+    {
         let gptr = unsafe { alloc.allocate(Layout::new::<T>())?.cast::<T>() };
-        let ptr = gptr.resolve().map_err(|_| AllocError)?;
+        let ptr = unsafe { gptr.resolve().map_err(|_| AllocError) }?;
         let mut mut_ptr = unsafe { ptr.as_mut() };
         *mut_ptr = value;
 
@@ -54,10 +57,10 @@ impl<T, A: Allocator> PBox<T, A> {
         alloc: A,
     ) -> Result<PBoxBuilder<T, A>, AllocError> {
         let gptr = unsafe { alloc.allocate(Layout::new::<T>())?.cast::<T>() };
-        let ptr = gptr.resolve().map_err(|_| AllocError)?;
+        let ptr = unsafe { gptr.resolve().map_err(|_| AllocError) }?;
         let mut mut_ptr = unsafe { ptr.as_mut() };
         let in_place = InPlace::new(&ptr.handle());
-        *mut_ptr = ctor(in_place);
+        unsafe { mut_ptr.ptr().write(ctor(in_place)) };
 
         Ok(PBoxBuilder {
             inv: unsafe { InvPtrBuilder::from_global(gptr) },
@@ -68,7 +71,7 @@ impl<T, A: Allocator> PBox<T, A> {
 
 impl<T, A: Allocator> Drop for PBox<T, A> {
     fn drop(&mut self) {
-        if let Ok(res) = self.ptr.try_resolve() {
+        if let Ok(res) = unsafe { self.ptr.try_resolve() } {
             unsafe {
                 let ptr = res.ptr() as *mut T;
                 core::ptr::drop_in_place(ptr);
@@ -138,19 +141,18 @@ mod test {
             .unwrap();
         let arena = obj.base();
 
-        let alloc_node =
-            |parent: Option<PBoxBuilder<Node, ArenaAllocator>>,
-             value: u32,
-             arena: &crate::object::BaseRef<'_, ArenaManifest>| {
-                PBox::new_in_with(
-                    |mut ip| Node {
-                        next: parent.map(|parent| ip.store(parent)),
-                        value,
-                    },
-                    ArenaAllocator::new(&*arena),
-                )
-                .unwrap()
-            };
+        let alloc_node = |parent: Option<PBoxBuilder<Node, ArenaAllocator>>,
+                          value: u32,
+                          arena: &ArenaManifest| {
+            PBox::new_in_with(
+                |mut ip| Node {
+                    next: parent.map(|parent| ip.store(parent)),
+                    value,
+                },
+                ArenaAllocator::new(&*arena),
+            )
+            .unwrap()
+        };
 
         let node1 = alloc_node(None, 3, &arena);
         let node2 = alloc_node(Some(node1), 11, &arena);
@@ -162,9 +164,9 @@ mod test {
             .unwrap();
 
         let root = root_object.base();
-        let res_node2 = root.list.resolve();
+        let res_node2 = unsafe { root.list.resolve() };
         let value2 = res_node2.value;
-        let res_node1 = res_node2.next.as_ref().unwrap().resolve();
+        let res_node1 = unsafe { res_node2.next.as_ref().unwrap().resolve() };
         let value1 = res_node1.value;
         assert!(res_node1.next.is_none());
         assert_eq!(value1, 3);
