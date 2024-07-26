@@ -7,7 +7,8 @@ use std::{
 
 use twizzler_runtime_api::ObjectHandle;
 
-use super::{GlobalPtr, InvPtrBuilder, ResolvedSlice};
+use super::{GlobalPtr, InvPtrBuilder};
+use crate::marker::InPlace;
 
 #[repr(transparent)]
 #[derive(Clone, Default)]
@@ -26,18 +27,10 @@ impl<'a> OnceHandle<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct ResolvedPtr<'obj, T> {
     ptr: *const T,
     once_handle: OnceHandle<'obj>,
-}
-
-impl<'obj, T> Clone for ResolvedPtr<'obj, T> {
-    fn clone(&self) -> Self {
-        Self {
-            ptr: self.ptr,
-            once_handle: self.once_handle.clone(),
-        }
-    }
 }
 
 impl<'obj, T> ResolvedPtr<'obj, T> {
@@ -59,13 +52,6 @@ impl<'obj, T> ResolvedPtr<'obj, T> {
         ResolvedMutPtr {
             once_handle: self.once_handle.clone(),
             ptr: self.ptr as *mut T,
-        }
-    }
-
-    pub unsafe fn add(self, offset: usize) -> Self {
-        Self {
-            ptr: self.ptr.add(offset),
-            once_handle: self.once_handle,
         }
     }
 
@@ -93,7 +79,6 @@ impl<'obj, T> Deref for ResolvedPtr<'obj, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        // Safety: we are pointing to a mutable object, that we have locked.
         unsafe { self.ptr.as_ref().unwrap_unchecked() }
     }
 }
@@ -136,6 +121,16 @@ impl<'obj, T> ResolvedMutPtr<'obj, T> {
     pub fn global(&self) -> GlobalPtr<T> {
         GlobalPtr::from_va(self.ptr()).unwrap()
     }
+
+    pub fn set_with(&mut self, ctor: impl FnOnce(InPlace) -> T) {
+        todo!()
+    }
+}
+
+impl<'obj, T: Unpin> ResolvedMutPtr<'obj, T> {
+    pub fn set(&mut self, value: T) {
+        todo!()
+    }
 }
 
 impl<'obj, T> ResolvedMutPtr<'obj, MaybeUninit<T>> {
@@ -161,9 +156,30 @@ impl<'obj, T> Deref for ResolvedMutPtr<'obj, T> {
     }
 }
 
-impl<'obj, T> DerefMut for ResolvedMutPtr<'obj, T> {
+impl<'obj, T: Unpin> DerefMut for ResolvedMutPtr<'obj, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // Safety: we are pointing to a mutable object, that we have locked.
         unsafe { self.ptr.as_mut().unwrap_unchecked() }
+    }
+}
+
+impl<'a, T> From<ResolvedMutPtr<'a, T>> for ResolvedPtr<'a, T> {
+    fn from(value: ResolvedMutPtr<'a, T>) -> Self {
+        Self {
+            ptr: value.ptr,
+            once_handle: value.once_handle,
+        }
+    }
+}
+
+impl<'a, T> From<ResolvedPtr<'a, T>> for InvPtrBuilder<T> {
+    fn from(value: ResolvedPtr<'a, T>) -> Self {
+        todo!()
+    }
+}
+
+impl<'a, T> From<ResolvedMutPtr<'a, T>> for InvPtrBuilder<T> {
+    fn from(value: ResolvedMutPtr<'a, T>) -> Self {
+        todo!()
     }
 }

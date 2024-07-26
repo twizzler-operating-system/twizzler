@@ -1,13 +1,10 @@
-use std::{marker::PhantomData, mem::MaybeUninit};
+use std::marker::PhantomData;
 
 use twizzler_abi::meta::MetaInfo;
 use twizzler_runtime_api::ObjectHandle;
 
 use super::{ImmutableObject, InitializedObject, MutableObject, RawObject};
-use crate::{
-    object::{base::BaseRef, BaseType},
-    tx::{TxHandle, TxResult},
-};
+use crate::object::BaseType;
 
 pub struct Object<Base: BaseType> {
     handle: ObjectHandle,
@@ -47,8 +44,9 @@ impl<Base: BaseType> Object<Base> {
 impl<Base: BaseType> InitializedObject for Object<Base> {
     type Base = Base;
 
-    fn base(&self) -> BaseRef<'_, Self::Base> {
-        BaseRef::new(self)
+    fn base(&self) -> &Base {
+        let base = self.base_ptr() as *const Base;
+        unsafe { base.as_ref().unwrap() }
     }
 
     fn meta(&self) -> &MetaInfo {

@@ -36,6 +36,7 @@ impl<T> InvPtr<T> {
         }
     }
 
+    // TODO: these maybe are safe
     pub unsafe fn new(bits: u64) -> Self {
         Self {
             bits,
@@ -44,6 +45,7 @@ impl<T> InvPtr<T> {
         }
     }
 
+    // TODO: these maybe are safe
     pub unsafe fn from_raw_parts(fot_idx: usize, offset: u64) -> Self {
         Self {
             bits: make_invariant_pointer(fot_idx, offset),
@@ -72,11 +74,13 @@ impl<T> InvPtr<T> {
         let mut in_place = InPlace::new(&handle);
         let value = Self::store(dest.into(), &mut in_place);
 
+        // TODO: do we need to drop anything?
+
         *self = value;
         Ok(())
     }
 
-    pub fn resolve(&self) -> ResolvedPtr<'_, T> {
+    pub unsafe fn resolve(&self) -> ResolvedPtr<'_, T> {
         self.try_resolve().unwrap()
     }
 
@@ -85,7 +89,7 @@ impl<T> InvPtr<T> {
     /// Note that this function needs to ask the runtime for help, since it does not know which
     /// object to use for FOT translation. If you know that an invariant pointer resides in an
     /// object, you can use [Object::resolve].
-    pub fn try_resolve(&self) -> Result<ResolvedPtr<'_, T>, FotResolveError> {
+    pub unsafe fn try_resolve(&self) -> Result<ResolvedPtr<'_, T>, FotResolveError> {
         if unlikely(self.is_null()) {
             return Err(FotResolveError::NullPointer);
         }
@@ -133,7 +137,7 @@ impl<T> InvPtr<T> {
     }
 
     pub fn try_as_global(&self) -> Result<GlobalPtr<T>, FotResolveError> {
-        let resolved = self.try_resolve()?;
+        let resolved = unsafe { self.try_resolve() }?;
         Ok(unsafe { GlobalPtr::new(resolved.handle().id, split_invariant_pointer(self.raw()).1) })
     }
 }
