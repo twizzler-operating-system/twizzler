@@ -28,7 +28,7 @@ unsafe impl<T: Sync> Sync for InvPtr<T> {}
 unsafe impl<T: Sync> Send for InvPtr<T> {}
 
 impl<T> InvPtr<T> {
-    pub fn null() -> Self {
+    pub const fn null() -> Self {
         Self {
             bits: 0,
             _pd: PhantomData,
@@ -37,7 +37,7 @@ impl<T> InvPtr<T> {
     }
 
     // TODO: these maybe are safe
-    pub unsafe fn new(bits: u64) -> Self {
+    pub const unsafe fn new(bits: u64) -> Self {
         Self {
             bits,
             _pd: PhantomData,
@@ -46,7 +46,7 @@ impl<T> InvPtr<T> {
     }
 
     // TODO: these maybe are safe
-    pub unsafe fn from_raw_parts(fot_idx: usize, offset: u64) -> Self {
+    pub const unsafe fn from_raw_parts(fot_idx: usize, offset: u64) -> Self {
         Self {
             bits: make_invariant_pointer(fot_idx, offset),
             _pd: PhantomData,
@@ -54,15 +54,15 @@ impl<T> InvPtr<T> {
         }
     }
 
-    pub fn is_null(&self) -> bool {
+    pub const fn is_null(&self) -> bool {
         self.bits == 0
     }
 
-    pub fn raw(&self) -> u64 {
+    pub const fn raw(&self) -> u64 {
         self.bits
     }
 
-    pub fn is_local(&self) -> bool {
+    pub const fn is_local(&self) -> bool {
         split_invariant_pointer(self.raw()).0 == 0
     }
 
