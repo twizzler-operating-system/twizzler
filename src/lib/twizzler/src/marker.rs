@@ -1,8 +1,8 @@
-use std::mem::{transmute, MaybeUninit};
+use std::mem::MaybeUninit;
 
 use twizzler_runtime_api::ObjectHandle;
 
-use crate::object::{BaseType, RawObject};
+use crate::object::BaseType;
 
 pub unsafe auto trait InvariantValue {}
 
@@ -23,7 +23,17 @@ unsafe impl Invariant for i16 {}
 unsafe impl Invariant for i32 {}
 unsafe impl Invariant for i64 {}
 
+unsafe impl Invariant for f64 {}
+unsafe impl Invariant for f32 {}
+
+unsafe impl Invariant for () {}
+
 unsafe impl<T: Invariant, const N: usize> Invariant for [T; N] {}
+
+unsafe impl<T: Invariant> Invariant for (T,) {}
+
+unsafe impl<T: Invariant> Invariant for Option<T> {}
+unsafe impl<R: Invariant, E: Invariant> Invariant for Result<R, E> {}
 
 pub struct InPlace<'a> {
     handle: &'a ObjectHandle,
