@@ -41,13 +41,13 @@ impl<T, A: Allocator> PBox<T, A> {
     where
         T: Unpin,
     {
-        let gptr = unsafe { alloc.allocate(Layout::new::<T>())?.cast::<T>() };
+        let gptr = alloc.allocate(Layout::new::<T>())?.cast::<T>();
         let ptr = unsafe { gptr.resolve().map_err(|_| AllocError) }?;
-        let mut mut_ptr = unsafe { ptr.as_mut() };
+        let mut mut_ptr = unsafe { ptr.into_mut() };
         *mut_ptr = value;
 
         Ok(PBoxBuilder {
-            inv: unsafe { InvPtrBuilder::from_global(gptr) },
+            inv: InvPtrBuilder::from_global(gptr),
             alloc,
         })
     }
@@ -56,14 +56,14 @@ impl<T, A: Allocator> PBox<T, A> {
         ctor: impl FnOnce(InPlace) -> T,
         alloc: A,
     ) -> Result<PBoxBuilder<T, A>, AllocError> {
-        let gptr = unsafe { alloc.allocate(Layout::new::<T>())?.cast::<T>() };
+        let gptr = alloc.allocate(Layout::new::<T>())?.cast::<T>();
         let ptr = unsafe { gptr.resolve().map_err(|_| AllocError) }?;
-        let mut mut_ptr = unsafe { ptr.as_mut() };
-        let in_place = InPlace::new(&ptr.handle());
+        let mut_ptr = unsafe { ptr.into_mut() };
+        let in_place = InPlace::new(&mut_ptr.handle());
         unsafe { mut_ptr.ptr().write(ctor(in_place)) };
 
         Ok(PBoxBuilder {
-            inv: unsafe { InvPtrBuilder::from_global(gptr) },
+            inv: InvPtrBuilder::from_global(gptr),
             alloc,
         })
     }

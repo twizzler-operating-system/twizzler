@@ -4,7 +4,7 @@ use twizzler_abi::meta::MetaInfo;
 use twizzler_runtime_api::ObjectHandle;
 
 use super::{InitializedObject, Object, RawObject};
-use crate::object::BaseType;
+use crate::{object::BaseType, ptr::ResolvedPtr};
 
 pub struct ImmutableObject<Base: BaseType> {
     handle: ObjectHandle,
@@ -20,7 +20,11 @@ impl<Base: BaseType> ImmutableObject<Base> {
 impl<Base: BaseType> InitializedObject for ImmutableObject<Base> {
     type Base = Base;
 
-    fn base(&self) -> &Base {
+    fn base(&self) -> ResolvedPtr<'_, Self::Base> {
+        todo!()
+    }
+
+    fn base_ref(&self) -> &Base {
         todo!()
     }
 

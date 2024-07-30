@@ -4,7 +4,7 @@ use twizzler_abi::meta::MetaInfo;
 use twizzler_runtime_api::ObjectHandle;
 
 use super::{ImmutableObject, InitializedObject, Object, RawObject};
-use crate::object::BaseType;
+use crate::{object::BaseType, ptr::ResolvedPtr};
 
 pub struct MutableObject<Base: BaseType> {
     handle: ObjectHandle,
@@ -46,7 +46,11 @@ impl<Base: BaseType> Drop for MutableObject<Base> {
 impl<Base: BaseType> InitializedObject for MutableObject<Base> {
     type Base = Base;
 
-    fn base(&self) -> &Base {
+    fn base(&self) -> ResolvedPtr<'_, Self::Base> {
+        todo!()
+    }
+
+    fn base_ref(&self) -> &Base {
         todo!()
     }
 

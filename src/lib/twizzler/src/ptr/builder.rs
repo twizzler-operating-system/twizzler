@@ -11,6 +11,18 @@ pub struct InvPtrBuilder<T> {
     _pd: PhantomData<*const T>,
 }
 
+impl<T> Clone for InvPtrBuilder<T> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            offset: self.offset,
+            _pd: PhantomData,
+        }
+    }
+}
+
+impl<T> Copy for InvPtrBuilder<T> {}
+
 impl<T> InvPtrBuilder<T> {
     /// Construct an invariant pointer builder from a global pointer.
     pub const fn from_global(gp: GlobalPtr<T>) -> Self {

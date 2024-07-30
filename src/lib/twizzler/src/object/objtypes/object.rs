@@ -4,7 +4,7 @@ use twizzler_abi::meta::MetaInfo;
 use twizzler_runtime_api::ObjectHandle;
 
 use super::{ImmutableObject, InitializedObject, MutableObject, RawObject};
-use crate::object::BaseType;
+use crate::{object::BaseType, ptr::ResolvedPtr};
 
 pub struct Object<Base: BaseType> {
     handle: ObjectHandle,
@@ -44,9 +44,13 @@ impl<Base: BaseType> Object<Base> {
 impl<Base: BaseType> InitializedObject for Object<Base> {
     type Base = Base;
 
-    fn base(&self) -> &Base {
+    fn base_ref(&self) -> &Base {
         let base = self.base_ptr() as *const Base;
         unsafe { base.as_ref().unwrap() }
+    }
+
+    fn base(&self) -> ResolvedPtr<'_, Self::Base> {
+        unsafe { ResolvedPtr::new(self.base_ptr() as *const Base) }
     }
 
     fn meta(&self) -> &MetaInfo {

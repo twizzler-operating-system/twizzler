@@ -3,6 +3,7 @@ use std::{
     cell::OnceCell,
     mem::MaybeUninit,
     ops::{Deref, DerefMut},
+    pin::Pin,
 };
 
 use twizzler_runtime_api::ObjectHandle;
@@ -48,11 +49,16 @@ impl<'obj, T> ResolvedPtr<'obj, T> {
         }
     }
 
-    pub unsafe fn as_mut(&'obj self) -> ResolvedMutPtr<'obj, T> {
+    pub unsafe fn into_mut(self) -> ResolvedMutPtr<'obj, T> {
+        let ResolvedPtr { ptr, once_handle } = self;
         ResolvedMutPtr {
-            once_handle: self.once_handle.clone(),
-            ptr: self.ptr as *mut T,
+            once_handle,
+            ptr: ptr as *mut T,
         }
+    }
+
+    pub unsafe fn as_mut(&mut self) -> &mut T {
+        self.ptr.cast_mut().as_mut().unwrap()
     }
 
     pub fn handle(&self) -> &ObjectHandle {
@@ -64,14 +70,15 @@ impl<'obj, T> ResolvedPtr<'obj, T> {
     }
 
     pub fn owned<'a>(&self) -> ResolvedPtr<'a, T> {
-        ResolvedPtr {
-            ptr: self.ptr(),
-            once_handle: OnceHandle::new(self.handle().clone()),
-        }
+        unsafe { ResolvedPtr::new_with_handle(self.ptr, self.handle().clone()) }
     }
 
     pub fn global(&self) -> GlobalPtr<T> {
         GlobalPtr::from_va(self.ptr()).unwrap()
+    }
+
+    pub fn inv_ptr(&self) -> InvPtrBuilder<T> {
+        InvPtrBuilder::from_global(self.global())
     }
 }
 
@@ -111,11 +118,8 @@ impl<'obj, T> ResolvedMutPtr<'obj, T> {
         self.ptr
     }
 
-    pub fn owned<'a>(&self) -> ResolvedMutPtr<'a, T> {
-        ResolvedMutPtr {
-            ptr: self.ptr(),
-            once_handle: OnceHandle::new(self.handle().clone()),
-        }
+    pub fn owned<'a>(self) -> ResolvedMutPtr<'a, T> {
+        unsafe { ResolvedMutPtr::new_with_handle(self.ptr, self.handle().clone()) }
     }
 
     pub fn global(&self) -> GlobalPtr<T> {
@@ -124,6 +128,18 @@ impl<'obj, T> ResolvedMutPtr<'obj, T> {
 
     pub fn set_with(&mut self, ctor: impl FnOnce(InPlace) -> T) {
         todo!()
+    }
+
+    pub unsafe fn as_mut(&mut self) -> &mut T {
+        self.ptr.as_mut().unwrap()
+    }
+
+    pub fn as_pin(&mut self) -> Pin<&mut T> {
+        unsafe { Pin::new_unchecked(self.ptr.as_mut().unwrap()) }
+    }
+
+    pub fn inv_ptr(&self) -> InvPtrBuilder<T> {
+        InvPtrBuilder::from_global(self.global())
     }
 }
 
@@ -174,12 +190,24 @@ impl<'a, T> From<ResolvedMutPtr<'a, T>> for ResolvedPtr<'a, T> {
 
 impl<'a, T> From<ResolvedPtr<'a, T>> for InvPtrBuilder<T> {
     fn from(value: ResolvedPtr<'a, T>) -> Self {
-        todo!()
+        InvPtrBuilder::from_global(value.global())
     }
 }
 
 impl<'a, T> From<ResolvedMutPtr<'a, T>> for InvPtrBuilder<T> {
     fn from(value: ResolvedMutPtr<'a, T>) -> Self {
-        todo!()
+        InvPtrBuilder::from_global(value.global())
+    }
+}
+
+impl<'a, T> From<&ResolvedPtr<'a, T>> for InvPtrBuilder<T> {
+    fn from(value: &ResolvedPtr<'a, T>) -> Self {
+        InvPtrBuilder::from_global(value.global())
+    }
+}
+
+impl<'a, T> From<&ResolvedMutPtr<'a, T>> for InvPtrBuilder<T> {
+    fn from(value: &ResolvedMutPtr<'a, T>) -> Self {
+        InvPtrBuilder::from_global(value.global())
     }
 }
