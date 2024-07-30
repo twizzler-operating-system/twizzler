@@ -153,7 +153,7 @@ impl ArenaManifest {
     }
 }
 
-#[derive(twizzler_derive::Invariant)]
+#[derive(twizzler_derive::Invariant, Clone)]
 #[repr(C)]
 pub struct ArenaAllocator {
     alloc: GlobalPtr<ArenaManifest>,

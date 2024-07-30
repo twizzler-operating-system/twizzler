@@ -99,6 +99,15 @@ impl<T, A: Allocator> StoreEffect for PBox<T, A> {
     }
 }
 
+impl<T, A: Allocator + Clone> From<&PBox<T, A>> for PBoxBuilder<T, A> {
+    fn from(value: &PBox<T, A>) -> Self {
+        Self {
+            inv: (&value.ptr).into(),
+            alloc: value.alloc.clone(),
+        }
+    }
+}
+
 //#[cfg(test)]
 mod test {
     use std::{
