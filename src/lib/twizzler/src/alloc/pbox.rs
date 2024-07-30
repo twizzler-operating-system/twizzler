@@ -4,11 +4,13 @@ use std::{
     ops::Deref,
 };
 
+use twizzler_runtime_api::FotResolveError;
+
 use super::Allocator;
 use crate::{
     marker::{InPlace, StoreEffect},
     object::InitializedObject,
-    ptr::{GlobalPtr, InvPtr, InvPtrBuilder},
+    ptr::{GlobalPtr, InvPtr, InvPtrBuilder, ResolvedPtr},
     tx::{TxHandle, TxResult},
 };
 
@@ -66,6 +68,14 @@ impl<T, A: Allocator> PBox<T, A> {
             inv: InvPtrBuilder::from_global(gptr),
             alloc,
         })
+    }
+
+    pub fn try_resolve(&self) -> Result<ResolvedPtr<'_, T>, FotResolveError> {
+        unsafe { self.ptr.try_resolve() }
+    }
+
+    pub fn resolve(&self) -> ResolvedPtr<'_, T> {
+        self.try_resolve().unwrap()
     }
 }
 
