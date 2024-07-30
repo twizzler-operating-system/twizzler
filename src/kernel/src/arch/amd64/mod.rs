@@ -65,6 +65,7 @@ pub unsafe fn jump_to_user(
 ) {
     use crate::syscall::SyscallContext;
     let ctx = syscall::X86SyscallContext::create_jmp_context(target, stack, arg);
+    crate::interrupt::set(false);
     crate::thread::exit_kernel();
 
     {
