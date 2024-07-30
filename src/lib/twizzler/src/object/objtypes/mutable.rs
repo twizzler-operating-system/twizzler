@@ -47,11 +47,11 @@ impl<Base: BaseType> InitializedObject for MutableObject<Base> {
     type Base = Base;
 
     fn base(&self) -> ResolvedPtr<'_, Self::Base> {
-        todo!()
+        unsafe { ResolvedPtr::new(self.base_ptr() as *const Base) }
     }
 
     fn base_ref(&self) -> &Base {
-        todo!()
+        unsafe { &*(self.base_ptr() as *const Base) }
     }
 
     fn meta(&self) -> &MetaInfo {
