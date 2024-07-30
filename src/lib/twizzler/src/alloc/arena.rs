@@ -128,12 +128,12 @@ impl ArenaManifest {
     ) -> Result<ResolvedMutPtr<'_, Item>, ArenaError> {
         let layout = Layout::new::<Item>();
         unsafe {
-            let gptr = self.alloc_raw(layout)?.cast::<Item>();
+            let gptr = self.alloc_raw(layout)?.cast::<MaybeUninit<Item>>();
             let ptr = gptr
                 .resolve()
                 .map_err(|_| ArenaError::TransactionFailed(TxError::Exhausted))?;
-            let ptr = ptr.as_mut();
-            ptr.ptr().write(init);
+            let ptr = ptr.into_mut();
+            let ptr = ptr.write(init);
 
             Ok(ptr.owned())
         }

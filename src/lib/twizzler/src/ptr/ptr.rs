@@ -8,7 +8,7 @@ use std::{
 use twizzler_abi::object::{make_invariant_pointer, split_invariant_pointer};
 use twizzler_runtime_api::FotResolveError;
 
-use super::{GlobalPtr, InvPtrBuilder, ResolvedPtr};
+use super::{GlobalPtr, InvPtrBuilder, ResolvedMutPtr, ResolvedPtr};
 use crate::{
     marker::{InPlace, Invariant, InvariantValue, StoreEffect, TryStoreEffect},
     object::fot::FotEntry,

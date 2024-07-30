@@ -12,7 +12,9 @@ use crate::{
 pub trait InitializedObject: RawObject {
     type Base: BaseType;
 
-    fn base(&self) -> &Self::Base;
+    fn base(&self) -> ResolvedPtr<'_, Self::Base>;
+
+    fn base_ref(&self) -> &Self::Base;
 
     fn map(id: ObjID, flags: MapFlags) -> Result<Self, MapError>
     where
