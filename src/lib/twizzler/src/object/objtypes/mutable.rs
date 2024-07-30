@@ -39,7 +39,7 @@ impl<Base: BaseType> MutableObject<Base> {
 
 impl<Base: BaseType> Drop for MutableObject<Base> {
     fn drop(&mut self) {
-        todo!()
+        // TODO
     }
 }
 
