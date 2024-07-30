@@ -74,3 +74,9 @@ impl<T> InvPtrBuilder<T> {
         }
     }
 }
+
+impl<T> From<&InvPtr<T>> for InvPtrBuilder<T> {
+    fn from(value: &InvPtr<T>) -> Self {
+        unsafe { InvPtrBuilder::from_global(value.try_as_global().unwrap()) }
+    }
+}

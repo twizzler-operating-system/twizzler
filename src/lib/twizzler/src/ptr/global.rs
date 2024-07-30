@@ -5,13 +5,25 @@ use twizzler_runtime_api::{FotResolveError, MapFlags, ObjID};
 use super::ResolvedPtr;
 use crate::{marker::InvariantValue, object::RawObject};
 
-#[derive(twizzler_derive::Invariant, Copy, Clone, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[derive(twizzler_derive::Invariant, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(C)]
 pub struct GlobalPtr<T> {
     id: ObjID,
     offset: u64,
     _pd: PhantomData<*const T>,
 }
+
+impl<T> Clone for GlobalPtr<T> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            offset: self.offset,
+            _pd: PhantomData,
+        }
+    }
+}
+
+impl<T> Copy for GlobalPtr<T> {}
 
 unsafe impl<T> InvariantValue for GlobalPtr<T> {}
 
