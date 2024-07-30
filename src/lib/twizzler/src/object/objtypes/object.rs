@@ -27,7 +27,7 @@ impl<Base: BaseType> Object<Base> {
 
     // TODO: error type
     pub fn mutable(self) -> Result<MutableObject<Base>, ()> {
-        todo!()
+        MutableObject::try_from(self.handle).map_err(|_| ())
     }
 
     /// Convert this handle to an immutable handle.

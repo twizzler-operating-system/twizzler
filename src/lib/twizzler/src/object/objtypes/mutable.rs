@@ -76,7 +76,11 @@ impl<Base: BaseType> TryFrom<ObjectHandle> for MutableObject<Base> {
     type Error = IsImmutable;
 
     fn try_from(value: ObjectHandle) -> Result<Self, Self::Error> {
-        todo!()
+        // TODO: check if this is okay
+        Ok(Self {
+            handle: value,
+            _pd: PhantomData,
+        })
     }
 }
 
