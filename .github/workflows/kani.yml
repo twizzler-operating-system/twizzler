@@ -1,6 +1,12 @@
 
 name: Kani 
 
+on:
+  push:
+    branches: [ "alex_kani_2", "main" ]
+  pull_request:
+    branches: [ main ]
+
 env:
   CARGO_TERM_COLOR: always
 
