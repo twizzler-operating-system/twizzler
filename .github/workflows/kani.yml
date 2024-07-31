@@ -1,23 +1,36 @@
 
-name: Rust
-
-on:
-  push:
-    branches: [ "alex_kani_2", "main" ]
-  pull_request:
-    branches: [ "main" ]
+name: Kani 
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
-
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+    - name: Cleanup
+      run: |
+        ls -la 
+        rm -rf ./* || true
+        rm -rf ./.??* || true
+        ls -la 
+    - uses: actions/checkout@v2
+      with:
+        submodules: recursive
+    - name: Install latest nightly
+      uses: actions-rs/toolchain@v1
+      with:
+          toolchain: stable
+    - name: Bootstrap Toolchain
+      run: cargo bootstrap
+    # x86_64 is the default, builds in debug mode
+    - name: Build x86_64
+      run: cargo build-all
+    - name: Test x86_64 Debug
+      run: cargo start-qemu --tests --qemu-options=--nographic
+    - name: Test x86_64 Release
+      run: cargo start-qemu --profile release --tests --qemu-options=--nographic
+    # aarch64 is compiled for QEMU virt, builds in debug mode
+    - name: Build aarch64
+      run: cargo build-all -a aarch64 -m virt  
