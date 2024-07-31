@@ -1,25 +1,5 @@
 use crate::{io::*, *};
 
-// specialization o_O
-
-// impl<const N: usize> Decode for [u8; N] {
-//     fn decode<R: Read + Seek + IO>(reader: &mut R, offset: u64) -> Result<Self, R::Error> {
-//         let mut out = [0; N];
-
-//         reader.seek(SeekFrom::Start(offset))?;
-//         reader.read_exact(&mut out)?;
-
-//         Ok(out)
-//     }
-// }
-
-// impl<const N: usize> Encode for [u8; N] {
-//     fn encode<W: Write + Seek + IO>(&self, writer: &mut W, offset: u64) -> Result<(), W::Error> {
-//         writer.seek(SeekFrom::Start(offset))?;
-//         writer.write_all(self.as_ref())
-//     }
-// }
-
 impl<T, const N: usize> Fixed for [T; N] {
     fn size() -> u64 {
         std::mem::size_of::<Self>() as u64 // abi assumption

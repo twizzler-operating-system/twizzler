@@ -1,3 +1,5 @@
+extern crate twizzler_abi;
+
 use std::marker::PhantomData;
 
 pub mod collections;

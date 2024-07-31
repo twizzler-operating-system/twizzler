@@ -6,5 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+twizzler-abi = { path = "../../../../lib/twizzler-abi", features = ["runtime"] }
 array-init = "2.0.1"
 layout-derive = { path = "./layout-derive" }
+
+#[package.metadata]
+#twizzler-build = "static"
