@@ -1,8 +1,7 @@
+use super::ReferenceRuntime;
+
 use atomic::Atomic;
 use dynlink::engines::twizzler;
-use twizzler_runtime_api::RustFsRuntime;
-
-use super::ReferenceRuntime;
 
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -23,7 +22,10 @@ use std::sync::Mutex;
 use atomic::Ordering;
 
 use twizzler_abi::slot;
-use twizzler_runtime_api::{OwnedFd, FsError, SeekFrom};
+use twizzler_runtime_api::{RustFsRuntime, RawFd, FsError, SeekFrom};
+
+use stable_vec::{self, StableVec};
+use lazy_static::lazy_static;
 
 struct FileDesc {
     slot_id: u32,
@@ -32,6 +34,7 @@ struct FileDesc {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct FileMetadata {
     magic: u64,
     size: u64,
@@ -40,15 +43,16 @@ struct FileMetadata {
 
 const MAGIC_NUMBER: u64 = 0xBEEFDEAD;
 
-static FD_SLOTS: Mutex<BTreeMap<u32, Arc<Mutex<FileDesc>>>> = Mutex::new(BTreeMap::new());
-static FD_ID_COUNTER: AtomicU32 = AtomicU32::new(1);
+lazy_static! {
+    static ref FD_SLOTS: Mutex<StableVec<Arc<Mutex<FileDesc>>>> = Mutex::new(StableVec::new());
+}
 
-fn get_fd_slots() -> &'static Mutex<BTreeMap<u32, Arc<Mutex<FileDesc>>>> {
+fn get_fd_slots() -> &'static Mutex<StableVec<Arc<Mutex<FileDesc>>>> {
     &FD_SLOTS
 }
 
 impl RustFsRuntime for ReferenceRuntime {
-    fn open(&self, path: &core::ffi::CStr) -> Result<OwnedFd, FsError> {
+    fn open(&self, path: &core::ffi::CStr) -> Result<RawFd, FsError> {
         let obj_id = ObjID::new(
             path
             .to_str()
@@ -60,95 +64,87 @@ impl RustFsRuntime for ReferenceRuntime {
 
         let handle = self.map_object(obj_id, flags).unwrap();
 
-        let mut metadata_handle = unsafe{ &mut *handle.start.cast::<FileMetadata>() };
-        if metadata_handle.magic != MAGIC_NUMBER {
-            metadata_handle = &mut FileMetadata {
+        let mut metadata_handle = unsafe{ handle.start.offset(NULLPAGE_SIZE as isize).cast::<FileMetadata>() };
+        if (unsafe { *metadata_handle }).magic != MAGIC_NUMBER {
+            unsafe { *metadata_handle = FileMetadata {
                 magic: MAGIC_NUMBER,
                 size: 0,
                 direct: [0; 10],
-            };
+            } };
         }
 
-        let fd = FD_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
-        get_fd_slots()
+        let fd = get_fd_slots()
             .lock()
             .unwrap()
-            .insert(fd, Arc::new(Mutex::new(FileDesc {
+            .push(Arc::new(Mutex::new(FileDesc {
                 slot_id: 0,
                 pos: 0,
                 handle: handle
             })));
-        
-        Ok (OwnedFd{ 
-            internal_fd: fd
-        })
+
+        Ok (fd.try_into().unwrap())
     }
 
-    fn read(&self, fd: OwnedFd, buf: *mut u8, len: usize) -> Result<usize, FsError> {
+    fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, FsError> {
         let binding = get_fd_slots()
-            .lock()
-            .unwrap();
+            .lock().unwrap();
         let mut file_desc = 
             binding
-                .get(&fd.internal_fd)
+                .get(fd.try_into().unwrap())
                 .ok_or(FsError::LookupError)?;
 
         let mut binding = file_desc.lock().unwrap();
 
-        unsafe { buf.copy_from(binding.handle.start.offset(binding.pos as isize + size_of::<FileMetadata>() as isize), len) }
+        unsafe { buf.as_mut_ptr().copy_from(binding.handle.start.offset(NULLPAGE_SIZE as isize + binding.pos as isize + size_of::<FileMetadata>() as isize), buf.len()) }
 
-        binding.pos += len as u64;
+        binding.pos += buf.len() as u64;
 
-        Ok(len)
+        Ok(buf.len())
     }
 
-    fn write(&self, fd: OwnedFd, buf: *const u8, len: usize) -> Result<usize, FsError> {
+    fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, FsError> {
         let binding = get_fd_slots()
-            .lock()
-            .unwrap();
+            .lock().unwrap();
         let file_desc = 
             binding
-                .get(&fd.internal_fd)
+                .get(fd.try_into().unwrap())
                 .ok_or(FsError::LookupError)?;
         
         let mut binding = file_desc.lock().unwrap();
             
-        unsafe { 
+        unsafe {
             binding.handle.start
-                .offset(binding.pos as isize + size_of::<FileMetadata>() as isize)
-                .copy_from(buf, len) 
+                .offset(NULLPAGE_SIZE as isize + binding.pos as isize + size_of::<FileMetadata>() as isize)
+                .copy_from(buf.as_ptr(), buf.len()) 
         }
 
-        binding.pos += len as u64;
+        binding.pos += buf.len() as u64;
 
-        Ok(len)
+        Ok(buf.len())
     }
 
-    fn close(&self, fd: OwnedFd) -> Result<(), FsError> {
+    fn close(&self, fd: RawFd) -> Result<(), FsError> {
         let file_desc = 
             get_fd_slots()
                 .lock()
                 .unwrap()
-                .remove(&fd.internal_fd)
+                .remove(fd.try_into().unwrap())
                 .ok_or(FsError::LookupError)?;
 
-        let mut binding = file_desc
-            .lock()
-            .unwrap();
+        let mut binding = file_desc.lock().unwrap();
         
         self.release_handle(&mut binding.handle);
         
         Ok(())
     }
 
-    fn seek(&self, fd: OwnedFd, pos: SeekFrom) -> Result<usize, FsError> {
+    fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, FsError> {
         let binding = get_fd_slots()
-            .lock()
-            .unwrap();
+            .lock().unwrap();
 
         let file_desc = 
             binding
-                .get(&fd.internal_fd)
+                .get(fd.try_into().unwrap())
                 .ok_or(FsError::LookupError)?;
         
         let mut binding = file_desc.lock().unwrap();
@@ -161,10 +157,11 @@ impl RustFsRuntime for ReferenceRuntime {
         };
 
         if new_pos > metadata_handle.size.try_into().unwrap() || new_pos < 0 {
-            Err(FsError::LookupError)
+            Err(FsError::SeekError)
         } else {
             binding.pos = new_pos as u64;
-            Ok(binding.pos.try_into().unwrap()) 
+            Ok(binding.pos.try_into().unwrap())
         }
     }
 }
+

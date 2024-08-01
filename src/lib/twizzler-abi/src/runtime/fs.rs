@@ -19,7 +19,10 @@ use core::{intrinsics::size_of, ptr::NonNull};
 use rustc_alloc::{borrow::ToOwned, sync::Arc};
 use crate::runtime::object::slot;
 
-use twizzler_runtime_api::{OwnedFd, FsError, SeekFrom};
+use twizzler_runtime_api::{RawFd, FsError, SeekFrom};
+
+use stable_vec::{self, StableVec};
+use lazy_static::lazy_static;
 
 struct FileDesc {
     slot_id: u32,
@@ -37,15 +40,16 @@ struct FileMetadata {
 
 const MAGIC_NUMBER: u64 = 0xBEEFDEAD;
 
-static FD_SLOTS: Mutex<BTreeMap<u32, Arc<Mutex<FileDesc>>>> = Mutex::new(BTreeMap::new());
-static FD_ID_COUNTER: IdCounter = IdCounter::new_one();
+lazy_static! {
+    static ref FD_SLOTS: Mutex<StableVec<Arc<Mutex<FileDesc>>>> = Mutex::new(StableVec::new());
+}
 
-fn get_fd_slots() -> &'static Mutex<BTreeMap<u32, Arc<Mutex<FileDesc>>>> {
+fn get_fd_slots() -> &'static Mutex<StableVec<Arc<Mutex<FileDesc>>>> {
     &FD_SLOTS
 }
 
 impl RustFsRuntime for MinimalRuntime {
-    fn open(&self, path: &core::ffi::CStr) -> Result<OwnedFd, FsError> {
+    fn open(&self, path: &core::ffi::CStr) -> Result<RawFd, FsError> {
         let obj_id = ObjID::new(
             path
             .to_str()
@@ -66,63 +70,60 @@ impl RustFsRuntime for MinimalRuntime {
             } };
         }
 
-        let fd = FD_ID_COUNTER.fresh();
-        get_fd_slots()
+        let fd = get_fd_slots()
             .lock()
-            .insert(fd, Arc::new(Mutex::new(FileDesc {
+            .push(Arc::new(Mutex::new(FileDesc {
                 slot_id: 0,
                 pos: 0,
                 handle: handle
             })));
-        
-        Ok (OwnedFd{ 
-            internal_fd: fd
-        })
+
+        Ok (fd.try_into().unwrap())
     }
 
-    fn read(&self, fd: OwnedFd, buf: *mut u8, len: usize) -> Result<usize, FsError> {
+    fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, FsError> {
         let binding = get_fd_slots()
             .lock();
         let mut file_desc = 
             binding
-                .get(&fd.internal_fd)
+                .get(fd.try_into().unwrap())
                 .ok_or(FsError::LookupError)?;
 
         let mut binding = file_desc.lock();
 
-        unsafe { buf.copy_from(binding.handle.start.offset(NULLPAGE_SIZE as isize + binding.pos as isize + size_of::<FileMetadata>() as isize), len) }
+        unsafe { buf.as_mut_ptr().copy_from(binding.handle.start.offset(NULLPAGE_SIZE as isize + binding.pos as isize + size_of::<FileMetadata>() as isize), buf.len()) }
 
-        binding.pos += len as u64;
+        binding.pos += buf.len() as u64;
 
-        Ok(len)
+        Ok(buf.len())
     }
 
-    fn write(&self, fd: OwnedFd, buf: *const u8, len: usize) -> Result<usize, FsError> {
+    fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, FsError> {
         let binding = get_fd_slots()
             .lock();
         let file_desc = 
             binding
-                .get(&fd.internal_fd)
+                .get(fd.try_into().unwrap())
                 .ok_or(FsError::LookupError)?;
         
         let mut binding = file_desc.lock();
             
-        unsafe { 
+        unsafe {
             binding.handle.start
                 .offset(NULLPAGE_SIZE as isize + binding.pos as isize + size_of::<FileMetadata>() as isize)
-                .copy_from(buf, len) 
+                .copy_from(buf.as_ptr(), buf.len()) 
         }
 
-        binding.pos += len as u64;
+        binding.pos += buf.len() as u64;
 
-        Ok(len)
+        Ok(buf.len())
     }
 
-    fn close(&self, fd: OwnedFd) -> Result<(), FsError> {
+    fn close(&self, fd: RawFd) -> Result<(), FsError> {
         let file_desc = 
             get_fd_slots()
                 .lock()
-                .remove(&fd.internal_fd)
+                .remove(fd.try_into().unwrap())
                 .ok_or(FsError::LookupError)?;
 
         let mut binding = file_desc.lock();
@@ -132,13 +133,13 @@ impl RustFsRuntime for MinimalRuntime {
         Ok(())
     }
 
-    fn seek(&self, fd: OwnedFd, pos: SeekFrom) -> Result<usize, FsError> {
+    fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, FsError> {
         let binding = get_fd_slots()
             .lock();
 
         let file_desc = 
             binding
-                .get(&fd.internal_fd)
+                .get(fd.try_into().unwrap())
                 .ok_or(FsError::LookupError)?;
         
         let mut binding = file_desc.lock();
