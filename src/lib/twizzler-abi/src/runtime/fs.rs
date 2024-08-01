@@ -70,13 +70,23 @@ impl RustFsRuntime for MinimalRuntime {
             } };
         }
 
-        let fd = get_fd_slots()
-            .lock()
-            .push(Arc::new(Mutex::new(FileDesc {
-                slot_id: 0,
-                pos: 0,
-                handle: handle
-            })));
+        let mut binding = get_fd_slots()
+            .lock();
+
+        let elem = Arc::new(Mutex::new(FileDesc {
+            slot_id: 0,
+            pos: 0,
+            handle: handle
+        }));
+        
+        let fd = if binding.is_compact() {
+            binding.push(elem)
+        }
+        else {
+            let fd = binding.first_empty_slot_from(0).unwrap();
+            binding.insert(fd, elem);
+            fd
+        };
 
         Ok (fd.try_into().unwrap())
     }
