@@ -8,13 +8,13 @@ use std::{
 use petgraph::stable_graph::NodeIndex;
 use talc::{ErrOnOom, Talc};
 
-use crate::{library::BackingData, tls::TlsInfo};
+use crate::{engines::Backing, library::LibraryId, tls::TlsInfo};
 
 mod tls;
 
 #[repr(C)]
 /// A compartment that contains libraries (and a local runtime).
-pub struct Compartment<Backing: BackingData> {
+pub struct Compartment {
     pub name: String,
     pub id: CompartmentId,
     // Library names are per-compartment.
@@ -39,7 +39,15 @@ impl Display for CompartmentId {
     }
 }
 
-impl<Backing: BackingData> Compartment<Backing> {
+impl CompartmentId {
+    /// Get the raw integer representing compartment ID.
+    pub fn raw(&self) -> usize {
+        self.0
+    }
+}
+
+pub const MONITOR_COMPARTMENT_ID: CompartmentId = CompartmentId(0);
+impl Compartment {
     pub(crate) fn new(name: String, id: CompartmentId) -> Self {
         Self {
             name,
@@ -51,15 +59,20 @@ impl<Backing: BackingData> Compartment<Backing> {
             tls_gen: 0,
         }
     }
+
+    /// Get an iterator over the IDs of libraries in this compartment.
+    pub fn library_ids(&self) -> impl Iterator<Item = LibraryId> + '_ {
+        self.library_names.values().map(|idx| LibraryId(*idx))
+    }
 }
 
-impl<Backing: BackingData> core::fmt::Display for Compartment<Backing> {
+impl core::fmt::Display for Compartment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name)
     }
 }
 
-impl<Backing: BackingData> Debug for Compartment<Backing> {
+impl Debug for Compartment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Compartment[{}]", self.name)
     }

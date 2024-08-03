@@ -107,25 +107,23 @@ fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()>
     let mut state = state.lock().unwrap();
     let test_comp_id = state.dynlink.add_compartment("test")?;
 
-    let libhw_id =
-        state
-            .dynlink
-            .load_library_in_compartment(test_comp_id, lib, bootstrap_name_res)?;
+    let libhw_id = state
+        .dynlink
+        .load_library_in_compartment(test_comp_id, lib)?;
 
-    let rt_id =
-        match state
+    let rt_id = match state
+        .dynlink
+        .load_library_in_compartment(test_comp_id, rt_lib)
+    {
+        Ok(rt_id) => {
+            state.dynlink.add_manual_dependency(libhw_id, rt_id);
+            rt_id
+        }
+        Err(_) => state
             .dynlink
-            .load_library_in_compartment(test_comp_id, rt_lib, bootstrap_name_res)
-        {
-            Ok(rt_id) => {
-                state.dynlink.add_manual_dependency(libhw_id, rt_id);
-                rt_id
-            }
-            Err(_) => state
-                .dynlink
-                .lookup_library(test_comp_id, "libtwz_rt.so")
-                .unwrap(),
-        };
+            .lookup_library(test_comp_id, "libtwz_rt.so")
+            .unwrap(),
+    };
 
     println!("found rt_id: {}", rt_id);
     let rt_lib = state.dynlink.get_library(rt_id).unwrap();

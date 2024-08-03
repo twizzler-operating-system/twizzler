@@ -2,7 +2,7 @@ use std::alloc::Layout;
 
 use twizzler_abi::object::MAX_SIZE;
 
-use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
+use super::{Context, LoadedOrUnloaded};
 use crate::{
     library::{CtorInfo, LibraryId},
     tls::TlsRegion,
@@ -24,9 +24,9 @@ unsafe impl Send for RuntimeInitInfo {}
 unsafe impl Sync for RuntimeInitInfo {}
 
 impl RuntimeInitInfo {
-    pub(crate) fn new<E: ContextEngine>(
+    pub(crate) fn new(
         tls_region: TlsRegion,
-        ctx: &Context<E>,
+        ctx: &Context,
         root_name: String,
         ctors: Vec<CtorInfo>,
     ) -> Self {
@@ -44,7 +44,7 @@ impl RuntimeInitInfo {
     }
 }
 
-impl<Engine: ContextEngine> Context<Engine> {
+impl Context {
     /// Build up a list of constructors to call for a library and its dependencies.
     pub fn build_ctors_list(&self, root_id: LibraryId) -> Result<Vec<CtorInfo>, DynlinkError> {
         let mut ctors = vec![];
