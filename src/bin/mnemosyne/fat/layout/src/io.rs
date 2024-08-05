@@ -22,7 +22,7 @@ pub enum SeekFrom {
 pub trait Seek: IO {
     fn seek(&mut self, pos: SeekFrom) -> Result<u64, Self::Error>;
 
-    // taken from std::io::Seek's provided definition for the corollary function 
+    // taken from std::io::Seek's provided definition for the corollary function
     fn stream_len(&mut self) -> Result<u64, Self::Error> {
         let old_pos = self.stream_position()?;
         let len = self.seek(SeekFrom::End(0))?;
@@ -34,7 +34,7 @@ pub trait Seek: IO {
         Ok(len)
     }
 
-    // taken from std::io::Seek's provided definition for the corollary function 
+    // taken from std::io::Seek's provided definition for the corollary function
     fn stream_position(&mut self) -> Result<u64, Self::Error> {
         self.seek(SeekFrom::Current(0))
     }

@@ -42,14 +42,16 @@ pub struct RawFrame<'a, T, R> {
 
 impl<'a, T: Decode + Fixed, R: Read + Seek + IO> RawFrame<'a, T, R> {
     pub fn get(&mut self, index: u64) -> Result<T, R::Error> {
-        self.stream.seek(SeekFrom::Start(self.offset + index * T::size()))?;
+        self.stream
+            .seek(SeekFrom::Start(self.offset + index * T::size()))?;
         T::decode(self.stream)
     }
 }
 
 impl<'a, T: Encode + Fixed, R: Write + Seek + IO> RawFrame<'a, T, R> {
     pub fn set(&mut self, index: u64, elem: &T) -> Result<(), R::Error> {
-        self.stream.seek(SeekFrom::Current((index * T::size()) as i64))?;
+        self.stream
+            .seek(SeekFrom::Current((index * T::size()) as i64))?;
         elem.encode(self.stream)
     }
 }
