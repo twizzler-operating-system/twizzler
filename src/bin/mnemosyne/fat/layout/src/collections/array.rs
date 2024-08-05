@@ -34,7 +34,8 @@ impl<'a, R: Read + Seek + IO, T: Fixed + Decode, const N: usize> ArrFrame<'a, R,
             panic!("index out of bounds: {index} >= {N}");
         }
 
-        self.stream.seek(SeekFrom::Start(self.offset + index * T::size()))?;
+        self.stream
+            .seek(SeekFrom::Start(self.offset + index * T::size()))?;
         T::decode(self.stream)
     }
 }
@@ -45,7 +46,8 @@ impl<'a, W: Write + Seek + IO, T: Fixed + Encode, const N: usize> ArrFrame<'a, W
             panic!("index out of bounds: {index} >= {N}");
         }
 
-        self.stream.seek(SeekFrom::Start(self.offset + index * T::size()))?;
+        self.stream
+            .seek(SeekFrom::Start(self.offset + index * T::size()))?;
         elem.encode(self.stream)
     }
 }
@@ -60,7 +62,9 @@ impl<'a, R, T, const N: usize> Frame<R> for ArrFrame<'a, R, T, N> {
     }
 }
 
-impl<'a, R: 'a + IO, T: 'a + Fixed + Encode + Decode, const N: usize> ApplyLayout<'a, R> for [T; N] {
+impl<'a, R: 'a + IO, T: 'a + Fixed + Encode + Decode, const N: usize> ApplyLayout<'a, R>
+    for [T; N]
+{
     type Frame = ArrFrame<'a, R, T, N>;
 
     fn apply_layout(stream: &'a mut R, offset: u64) -> Result<Self::Frame, R::Error> {

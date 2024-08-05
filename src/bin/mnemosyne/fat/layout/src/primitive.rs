@@ -62,13 +62,13 @@ macro_rules! impl_tuple {
                         $tail,
                     )*
                 ) = self;
-            
+
                 $head.encode(writer)?;
 
                 $(
                     $tail.encode(writer)?;
                 )*
-            
+
                 Ok(())
             }
         }

@@ -1,10 +1,7 @@
 use crate::{io::*, *};
 
 impl<T: Encode + Fixed> Encode for Box<[T]> {
-    fn encode<W: Write + Seek + IO>(
-        &self,
-        writer: &mut W
-    ) -> Result<(), W::Error> {
+    fn encode<W: Write + Seek + IO>(&self, writer: &mut W) -> Result<(), W::Error> {
         (self.len() as u64).encode(writer)?;
         for e in self.as_ref() {
             e.encode(writer)?;
@@ -56,7 +53,9 @@ impl<'a, R: Read + Seek + IO, T: Fixed + Decode> DynArrFrame<'a, R, T> {
             panic!("index out of bounds: {index} >= {}", self.len);
         }
 
-        self.stream.seek(SeekFrom::Start(self.offset + u64::size() + index * T::size()))?;
+        self.stream.seek(SeekFrom::Start(
+            self.offset + u64::size() + index * T::size(),
+        ))?;
         T::decode(self.stream)
     }
 }
@@ -64,7 +63,7 @@ impl<'a, R: Read + Seek + IO, T: Fixed + Decode> DynArrFrame<'a, R, T> {
 impl<'a, W: Write + Seek + IO, T: Fixed + Encode> DynArrFrame<'a, W, T> {
     pub fn set_len(&mut self, len: u64) -> Result<(), W::Error> {
         self.stream.seek(SeekFrom::Start(self.offset))?;
-    
+
         self.len = len;
         len.encode(self.stream)
     }
@@ -74,7 +73,9 @@ impl<'a, W: Write + Seek + IO, T: Fixed + Encode> DynArrFrame<'a, W, T> {
             panic!("index out of bounds: {index} >= {}", self.len);
         }
 
-        self.stream.seek(SeekFrom::Start(self.offset + u64::size() + index * T::size()))?;
+        self.stream.seek(SeekFrom::Start(
+            self.offset + u64::size() + index * T::size(),
+        ))?;
         elem.encode(self.stream)
     }
 }

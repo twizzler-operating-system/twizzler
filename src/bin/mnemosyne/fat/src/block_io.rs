@@ -1,6 +1,6 @@
-use alloc::vec;
-use alloc::vec::Vec;
-use layout::{io::SeekFrom, Read, Seek, Write, IO, ApplyLayout};
+use alloc::{vec, vec::Vec};
+
+use layout::{io::SeekFrom, ApplyLayout, Read, Seek, Write, IO};
 
 use crate::{
     filesystem::{FSError, FileSystem},
@@ -76,8 +76,10 @@ impl<'a, S: Read + Write + Seek + IO> BlockIO<'a, S> {
     }
 }
 
-impl <'a, S: IO> BlockIO<'a, S> {
-    pub fn as_frame<L: ApplyLayout<'a, Self>>(&'a mut self) -> Result<L::Frame, <Self as IO>::Error> {
+impl<'a, S: IO> BlockIO<'a, S> {
+    pub fn as_frame<L: ApplyLayout<'a, Self>>(
+        &'a mut self,
+    ) -> Result<L::Frame, <Self as IO>::Error> {
         L::apply_layout(self, 0)
     }
 }
@@ -102,12 +104,12 @@ impl<'a, S: Read + Write + Seek + IO> BlockIO<'a, S> {
                 None => {
                     let next_block = self.fs.alloc_block()?;
                     self.blocks.push(next_block);
-        
+
                     self.fs
                         .frame()?
                         .fat()?
                         .set(cur_block, FATEntry::Block(next_block))?;
-    
+
                     cur_block = next_block;
                 }
             }
@@ -153,10 +155,7 @@ impl<'a, S: Read + Write + Seek + IO> Seek for BlockIO<'a, S> {
 
                 self.fill_blocks_to(Some(target_block as u64 + 1), false)?;
 
-                (
-                    target_block as u64,
-                    (self.cur_offset as i64 + off) as u64,
-                )
+                (target_block as u64, (self.cur_offset as i64 + off) as u64)
             }
         };
 
@@ -205,7 +204,9 @@ impl<'a, S: Read + Write + Seek + IO> Read for BlockIO<'a, S> {
             }
         }
 
-        let trunc = buf.len().min((self.block_size - self.cur_offset % self.block_size) as usize);
+        let trunc = buf
+            .len()
+            .min((self.block_size - self.cur_offset % self.block_size) as usize);
         let cropped_buf = &mut buf[..trunc];
         let read = self.fs.disk.read(cropped_buf)?;
 
@@ -245,12 +246,14 @@ impl<'a, S: Read + Write + Seek + IO> Write for BlockIO<'a, S> {
             self.fill_blocks_to(Some(self.blocks.len() as u64 + 1), !self.fixed_size)?;
             self.align_stream()?;
 
-            if self.fixed_size && self.cur_block_idx == self.blocks.len() as u64{
+            if self.fixed_size && self.cur_block_idx == self.blocks.len() as u64 {
                 return Err(FSError::OutOfBounds);
             }
         }
 
-        let trunc = buf.len().min((self.block_size - self.cur_offset % self.block_size) as usize);
+        let trunc = buf
+            .len()
+            .min((self.block_size - self.cur_offset % self.block_size) as usize);
         let cropped_buf = &buf[..trunc];
 
         let written = self.fs.disk.write(cropped_buf)?;

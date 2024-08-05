@@ -89,7 +89,7 @@ impl Size {
                     fn framed_size(&mut self) -> Result<u64, S::Error> {
                         Ok(#framed)
                     }
-                    
+
                 }
 
                 impl ::layout::SourcedDynamic for #name {
@@ -159,7 +159,8 @@ pub fn layout(_: TokenStream, item: TokenStream) -> TokenStream {
 
         encode_impl = quote!(#encode_impl self.#field_name.encode(writer)?;);
 
-        decode_impl_assigns = quote!(#decode_impl_assigns let #field_name = <#field_ty>::decode(reader)?;);
+        decode_impl_assigns =
+            quote!(#decode_impl_assigns let #field_name = <#field_ty>::decode(reader)?;);
         decode_impl_struct_init = quote!(#decode_impl_struct_init #field_name,);
 
         let [framed, sourced, selfed] = field_size.gen_field_size(field_name, field_ty);
