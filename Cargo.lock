@@ -1362,7 +1362,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1949ae82dd58a6d8a76ec4761e3b1e01ffd9eb3871cb2d8eba6eda8e66a7b3d6"
 dependencies = [
- "lock_api",
+ "lock_api 0.4.11",
  "once_cell",
  "parking_lot",
  "thread_local",
@@ -1869,6 +1869,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lock_api"
+version = "0.4.12"
+source = "git+https://github.com/twizzler-operating-system/parking_lot.git?branch=twizzler#81ce3c45b8ab118bc8ab543b435e4fe4fe509ca9"
+dependencies = [
+ "autocfg",
+ "scopeguard",
+]
+
+[[package]]
 name = "log"
 version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2292,7 +2301,7 @@ name = "parking_lot"
 version = "0.12.3"
 source = "git+https://github.com/twizzler-operating-system/parking_lot.git?branch=twizzler#81ce3c45b8ab118bc8ab543b435e4fe4fe509ca9"
 dependencies = [
- "lock_api",
+ "lock_api 0.4.12",
  "parking_lot_core",
 ]
 
@@ -2971,7 +2980,7 @@ version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b9eb1a2f4c41445a3a0ff9abc5221c5fcd28e1f13cd7c0397706f9ac938ddb0"
 dependencies = [
- "lock_api",
+ "lock_api 0.4.11",
 ]
 
 [[package]]
@@ -3115,7 +3124,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df4d2bae993eb37405b2d0efe7dbb7cb5eb36b2c16cdb484a0e24263a1a631e2"
 dependencies = [
- "lock_api",
+ "lock_api 0.4.11",
 ]
 
 [[package]]
