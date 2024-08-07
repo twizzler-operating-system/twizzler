@@ -12,8 +12,8 @@ pub struct ImmutableObject<Base: BaseType> {
 }
 
 impl<Base: BaseType> ImmutableObject<Base> {
-    pub fn object(&self) -> Object<Base> {
-        todo!()
+    pub fn object(self) -> Object<Base> {
+        unsafe { Object::new(self.handle) }
     }
 }
 
@@ -21,15 +21,15 @@ impl<Base: BaseType> InitializedObject for ImmutableObject<Base> {
     type Base = Base;
 
     fn base(&self) -> ResolvedPtr<'_, Self::Base> {
-        todo!()
+        unsafe { ResolvedPtr::new_with_handle_ref(self.base_ptr().cast(), &self.handle) }
     }
 
     fn base_ref(&self) -> &Base {
-        todo!()
+        unsafe { &*self.base_ptr().cast() }
     }
 
     fn meta(&self) -> &MetaInfo {
-        todo!()
+        unsafe { &*self.meta_ptr().cast() }
     }
 
     fn freeze(&self) -> Result<ImmutableObject<Self::Base>, ()> {
@@ -51,6 +51,9 @@ impl<Base: BaseType> Into<ObjectHandle> for ImmutableObject<Base> {
 
 impl<Base: BaseType> From<ObjectHandle> for ImmutableObject<Base> {
     fn from(value: ObjectHandle) -> Self {
-        todo!()
+        Self {
+            handle: value,
+            _pd: PhantomData,
+        }
     }
 }

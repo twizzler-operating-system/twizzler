@@ -20,7 +20,7 @@ impl<Base: BaseType> Object<Base> {
     }
 
     pub unsafe fn base_mut(&self) -> &mut Base {
-        (self.base_mut_ptr() as *mut Base)
+        (self.base_mut_ptr().cast::<Base>())
             .as_mut()
             .unwrap_unchecked()
     }
@@ -45,16 +45,15 @@ impl<Base: BaseType> InitializedObject for Object<Base> {
     type Base = Base;
 
     fn base_ref(&self) -> &Base {
-        let base = self.base_ptr() as *const Base;
-        unsafe { base.as_ref().unwrap() }
+        unsafe { &*self.base_ptr().cast() }
     }
 
     fn base(&self) -> ResolvedPtr<'_, Self::Base> {
-        unsafe { ResolvedPtr::new(self.base_ptr() as *const Base) }
+        unsafe { ResolvedPtr::new(self.base_ptr().cast()) }
     }
 
     fn meta(&self) -> &MetaInfo {
-        todo!()
+        unsafe { &*self.meta_ptr().cast() }
     }
 
     fn freeze(&self) -> Result<ImmutableObject<Self::Base>, ()> {

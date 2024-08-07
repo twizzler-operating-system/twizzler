@@ -32,11 +32,13 @@ pub trait RawObject {
     }
 
     fn fote_ptr(&self, idx: usize) -> Option<*const FotEntry> {
-        todo!()
+        let offset: isize = (1 + idx).try_into().ok()?;
+        unsafe { Some((self.meta_ptr() as *const FotEntry).offset(-offset)) }
     }
 
     fn fote_ptr_mut(&self, idx: usize) -> Option<*mut FotEntry> {
-        todo!()
+        let offset: isize = (1 + idx).try_into().ok()?;
+        unsafe { Some((self.meta_mut_ptr() as *mut FotEntry).offset(-offset)) }
     }
 
     fn lea(&self, offset: usize, _len: usize) -> Option<*const u8> {

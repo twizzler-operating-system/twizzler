@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, mem::MaybeUninit};
 
 use twizzler_abi::meta::MetaInfo;
-use twizzler_runtime_api::{MapError, MapFlags, ObjID, ObjectHandle};
+use twizzler_runtime_api::{get_runtime, FotResolveError, MapError, MapFlags, ObjID, ObjectHandle};
 
 use super::{ImmutableObject, Object, RawObject};
 use crate::{
@@ -34,8 +34,12 @@ pub trait InitializedObject: RawObject {
     /// part of the object. It then tries to resolve the pointer according to its contents and this
     /// object's FOT. The resulting resolved pointer does NOT implement Deref, since it may not be
     /// memory safe to do so in general (we cannot prove that noone has a mutable reference).
-    unsafe fn resolve<T>(&self, ptr: &InvPtr<T>) -> Result<ResolvedPtr<'_, T>, ()> {
-        todo!()
+    unsafe fn try_resolve<'a, T>(
+        &self,
+        ptr: &'a InvPtr<T>,
+    ) -> Result<ResolvedPtr<'a, T>, FotResolveError> {
+        // TODO: use object handle to speed up
+        ptr.try_resolve()
     }
 }
 
