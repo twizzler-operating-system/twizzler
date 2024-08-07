@@ -3,8 +3,10 @@ use std::{collections::HashMap, mem::MaybeUninit, sync::Arc};
 use dynlink::tls::TlsRegion;
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
-    syscall::{sys_spawn, sys_thread_exit, ThreadSyncSleep, UpcallTargetSpawnOption},
-    thread::ThreadRepr,
+    syscall::{
+        sys_spawn, sys_thread_exit, ThreadSyncReference, ThreadSyncSleep, UpcallTargetSpawnOption,
+    },
+    thread::{ExecutionState, ThreadRepr},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
 use twizzler_runtime_api::{ObjID, SpawnError};
@@ -14,6 +16,9 @@ use crate::{api::MONITOR_INSTANCE_ID, thread::SUPER_UPCALL_STACK_SIZE};
 
 mod cleaner;
 
+/// Manages all threads owned by the monitor. Typically, this is all threads.
+/// Threads are spawned here and tracked in the background by a [cleaner::ThreadCleaner]. The thread
+/// cleaner detects when a thread has exited and performs any final thread cleanup logic.
 pub struct ThreadMgr {
     all: HashMap<ObjID, ManagedThread>,
     cleaner: cleaner::ThreadCleaner,
@@ -21,7 +26,7 @@ pub struct ThreadMgr {
 
 impl ThreadMgr {
     fn do_remove(&mut self, thread: &ManagedThread) {
-        todo!()
+        self.all.remove(&thread.id);
     }
 
     unsafe fn spawn_thread(
@@ -57,48 +62,12 @@ impl ThreadMgr {
     }
 
     fn do_spawn(start: unsafe extern "C" fn(usize) -> !, arg: usize) -> Result<Self, SpawnError> {
-        /*
-        let mut cm = COMPMAN.lock();
-        let mon_comp = cm.get_monitor_dynlink_compartment();
-        let super_tls = mon_comp
-            .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
-                NonNull::new(std::alloc::alloc_zeroed(layout))
-            })
-            .map_err(|_| SpawnError::Other)?;
-        drop(cm);
-        let super_thread_pointer = super_tls.get_thread_pointer_value();
-
-        let super_stack = Box::new_zeroed_slice(SUPER_UPCALL_STACK_SIZE);
-
-        // Safety: we are allocating and tracking both the stack and the tls region for greater than
-        // the lifetime of this thread. The start entry points to our given start function.
-        let id = unsafe {
-            Self::spawn_thread(
-                start as *const () as usize,
-                super_stack.as_ptr() as usize,
-                super_thread_pointer,
-                arg,
-            )
-        }?;
-
-        // TODO
-        let repr = crate::mapman::map_object(MapInfo {
-            id,
-            flags: MapFlags::READ,
-        })
-        .unwrap();
-
-        Ok(Self {
-            id,
-            super_stack,
-            super_tls,
-            repr: ManagedThreadRepr::new(repr),
-        })
-        */
         todo!()
     }
 
-    fn do_start(main: Box<dyn FnOnce()>) -> Result<Self, SpawnError> {
+    /// Start a thread, running the provided Box'd closure. The thread will be running in
+    /// monitor-mode, and will have no connection to any compartment.
+    pub fn start_thread(main: Box<dyn FnOnce()>) -> Result<Self, SpawnError> {
         let main_addr = Box::into_raw(Box::new(main)) as usize;
         unsafe extern "C" fn managed_thread_entry(main: usize) -> ! {
             {
@@ -113,7 +82,7 @@ impl ThreadMgr {
     }
 }
 
-#[allow(dead_code)]
+/// Internal managed thread data.
 pub struct ManagedThreadInner {
     pub id: ObjID,
     pub(crate) repr: ManagedThreadRepr,
@@ -122,12 +91,14 @@ pub struct ManagedThreadInner {
 }
 
 impl ManagedThreadInner {
+    /// Check if this thread has exited.
     pub fn has_exited(&self) -> bool {
-        todo!()
+        self.repr.get_repr().get_state() == ExecutionState::Exited
     }
 
+    /// Create a ThreadSyncSleep that will wait until the thread has exited.
     pub fn waitable_until_exit(&self) -> ThreadSyncSleep {
-        todo!()
+        self.repr.get_repr().waitable(ExecutionState::Exited)
     }
 }
 
@@ -147,8 +118,10 @@ impl Drop for ManagedThreadInner {
     }
 }
 
+/// A thread managed by the monitor.
 pub type ManagedThread = Arc<ManagedThreadInner>;
 
+/// An owned handle to a thread's repr object.
 pub(crate) struct ManagedThreadRepr {
     handle: MapHandle,
 }
@@ -158,6 +131,7 @@ impl ManagedThreadRepr {
         Self { handle }
     }
 
+    /// Get the thread representation structure for the associated thread.
     pub fn get_repr(&self) -> &ThreadRepr {
         let addr = self.handle.addrs().start + NULLPAGE_SIZE;
         unsafe { (addr as *const ThreadRepr).as_ref().unwrap() }

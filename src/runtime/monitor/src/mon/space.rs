@@ -14,12 +14,14 @@ pub use handle::MapHandle;
 pub use unmapper::Unmapper;
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
+/// A mapping of an object and flags.
 pub struct MapInfo {
     pub(crate) id: ObjID,
     pub(crate) flags: MapFlags,
 }
 
 #[derive(Default)]
+/// An address space we can map objects into.
 pub struct Space {
     maps: HashMap<MapInfo, MappedObject>,
 }
@@ -44,6 +46,7 @@ fn mapflags_into_prot(flags: MapFlags) -> Protections {
 }
 
 impl Space {
+    /// Map an object into the space.
     pub fn map(&mut self, info: MapInfo) -> Result<MapHandle, MapError> {
         // Can't use the entry API here because the closure may fail.
         let item = match self.maps.get_mut(&info) {
@@ -80,6 +83,8 @@ impl Space {
         Ok(Arc::new(MapHandleInner::new(info, item.addrs)))
     }
 
+    /// Remove an object from the space. The actual unmapping syscall only happens once the returned
+    /// value from this function is dropped.
     pub fn handle_drop(&mut self, info: MapInfo) -> Option<UnmapOnDrop> {
         // Missing maps in unmap should be ignored.
         let Some(item) = self.maps.get_mut(&info) else {
