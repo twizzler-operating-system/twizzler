@@ -1861,9 +1861,8 @@ dependencies = [
 
 [[package]]
 name = "lock_api"
-version = "0.4.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c168f8615b12bc01f9c17e2eb0cc07dcae1940121185446edc3744920e8ef45"
+version = "0.4.12"
+source = "git+https://github.com/twizzler-operating-system/parking_lot.git?branch=twizzler#81ce3c45b8ab118bc8ab543b435e4fe4fe509ca9"
 dependencies = [
  "autocfg",
  "scopeguard",
@@ -2291,8 +2290,7 @@ checksum = "bb813b8af86854136c6922af0598d719255ecb2179515e6e7730d468f05c9cae"
 [[package]]
 name = "parking_lot"
 version = "0.12.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1bf18183cf54e8d6059647fc3063646a1801cf30896933ec2311622cc4b9a27"
+source = "git+https://github.com/twizzler-operating-system/parking_lot.git?branch=twizzler#81ce3c45b8ab118bc8ab543b435e4fe4fe509ca9"
 dependencies = [
  "lock_api",
  "parking_lot_core",
@@ -2301,13 +2299,13 @@ dependencies = [
 [[package]]
 name = "parking_lot_core"
 version = "0.9.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e401f977ab385c9e4e3ab30627d6f26d00e2c73eef317493c4ec6d468726cf8"
+source = "git+https://github.com/twizzler-operating-system/parking_lot.git?branch=twizzler#81ce3c45b8ab118bc8ab543b435e4fe4fe509ca9"
 dependencies = [
  "cfg-if 1.0.0",
  "libc",
  "redox_syscall 0.5.3",
  "smallvec",
+ "twizzler-abi",
  "windows-targets 0.52.4",
 ]
 
@@ -4115,8 +4113,3 @@ name = "zeroize"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ced3678a2879b30306d323f4542626697a464a97c0a07c9aebf7ebca65cd4dde"
-
-[[patch.unused]]
-name = "parking_lot"
-version = "0.12.3"
-source = "git+https://github.com/twizzler-operating-system/parking_lot.git?branch=twizzler#81ce3c45b8ab118bc8ab543b435e4fe4fe509ca9"
