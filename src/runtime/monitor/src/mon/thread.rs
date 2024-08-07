@@ -3,18 +3,21 @@ use std::{collections::HashMap, mem::MaybeUninit, sync::Arc};
 use dynlink::tls::TlsRegion;
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
-    syscall::{
-        sys_spawn, sys_thread_exit, ThreadSyncReference, ThreadSyncSleep, UpcallTargetSpawnOption,
-    },
+    syscall::{sys_spawn, sys_thread_exit, ThreadSyncSleep, UpcallTargetSpawnOption},
     thread::{ExecutionState, ThreadRepr},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
 use twizzler_runtime_api::{ObjID, SpawnError};
 
 use super::space::MapHandle;
-use crate::{api::MONITOR_INSTANCE_ID, thread::SUPER_UPCALL_STACK_SIZE};
+use crate::api::MONITOR_INSTANCE_ID;
 
 mod cleaner;
+
+pub const SUPER_UPCALL_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
+pub const DEFAULT_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
+pub const STACK_SIZE_MIN_ALIGN: usize = 0x1000; // 4K
+pub const DEFAULT_TLS_ALIGN: usize = 0x1000; // 4K
 
 /// Manages all threads owned by the monitor. Typically, this is all threads.
 /// Threads are spawned here and tracked in the background by a [cleaner::ThreadCleaner]. The thread
