@@ -26,6 +26,10 @@ impl<'a> OnceHandle<'a> {
     pub(crate) fn new(handle: ObjectHandle) -> Self {
         Self(OnceCell::from(Cow::Owned(handle)))
     }
+
+    pub(crate) fn new_ref(handle: &'a ObjectHandle) -> Self {
+        Self(OnceCell::from(Cow::Borrowed(handle)))
+    }
 }
 
 #[derive(Clone)]
@@ -46,6 +50,13 @@ impl<'obj, T> ResolvedPtr<'obj, T> {
         Self {
             ptr,
             once_handle: OnceHandle::new(handle),
+        }
+    }
+
+    pub(crate) unsafe fn new_with_handle_ref(ptr: *const T, handle: &'obj ObjectHandle) -> Self {
+        Self {
+            ptr,
+            once_handle: OnceHandle::new_ref(handle),
         }
     }
 

@@ -16,7 +16,7 @@ impl<Base: BaseType> MutableObject<Base> {
         // Safety: part of the MutableObject contract is its existence ensures that the object is
         // locked. Thus, by taking &mut self, we can ensure no one else can point to the base.
         unsafe {
-            (self.base_mut_ptr() as *mut Base)
+            (self.base_mut_ptr().cast::<Base>())
                 .as_mut()
                 .unwrap_unchecked()
         }
@@ -26,7 +26,7 @@ impl<Base: BaseType> MutableObject<Base> {
         // Safety: part of the MutableObject contract is its existence ensures that the object is
         // locked. Thus, by taking &mut self, we can ensure no one else can point to the meta data.
         unsafe {
-            (self.meta_mut_ptr() as *mut MetaInfo)
+            (self.meta_mut_ptr().cast::<MetaInfo>())
                 .as_mut()
                 .unwrap_unchecked()
         }
@@ -47,15 +47,15 @@ impl<Base: BaseType> InitializedObject for MutableObject<Base> {
     type Base = Base;
 
     fn base(&self) -> ResolvedPtr<'_, Self::Base> {
-        unsafe { ResolvedPtr::new(self.base_ptr() as *const Base) }
+        unsafe { ResolvedPtr::new(self.base_ptr().cast()) }
     }
 
     fn base_ref(&self) -> &Base {
-        unsafe { &*(self.base_ptr() as *const Base) }
+        unsafe { &*(self.base_ptr().cast()) }
     }
 
     fn meta(&self) -> &MetaInfo {
-        todo!()
+        unsafe { &*(self.meta_ptr().cast()) }
     }
 
     fn freeze(&self) -> Result<ImmutableObject<Self::Base>, ()> {
