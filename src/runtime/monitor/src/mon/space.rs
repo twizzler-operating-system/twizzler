@@ -1,7 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 
+use miette::IntoDiagnostic;
 use monitor_api::MappedObjectAddrs;
-use twizzler_abi::syscall::{sys_object_map, sys_object_unmap, UnmapFlags};
+use twizzler_abi::syscall::{
+    sys_object_create, sys_object_ctrl, sys_object_map, sys_object_unmap, CreateTieSpec,
+    DeleteFlags, ObjectControlCmd, ObjectCreate, ObjectSource, UnmapFlags,
+};
 use twizzler_object::Protections;
 use twizzler_runtime_api::{MapError, MapFlags, ObjID};
 
@@ -105,6 +109,31 @@ impl Space {
         } else {
             None
         }
+    }
+
+    pub(crate) fn safe_create_and_map_object(
+        &mut self,
+        spec: ObjectCreate,
+        sources: &[ObjectSource],
+        ties: &[CreateTieSpec],
+        map_flags: MapFlags,
+    ) -> miette::Result<MapHandle> {
+        let id = sys_object_create(spec, sources, ties).into_diagnostic()?;
+
+        match self.map(MapInfo {
+            id,
+            flags: map_flags,
+        }) {
+            Ok(mh) => Ok(mh),
+            Err(me) => {
+                if let Err(e) = sys_object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()))
+                {
+                    tracing::warn!("failed to delete object {} after map failure {}", e, me);
+                }
+                Err(me)
+            }
+        }
+        .into_diagnostic()
     }
 }
 
