@@ -2694,8 +2694,10 @@ dependencies = [
  "alloca",
  "cc",
  "secgate-macros",
+ "stable-vec",
  "static_assertions",
  "twizzler-abi",
+ "twizzler-runtime-api",
 ]
 
 [[package]]
