@@ -2,6 +2,11 @@ use lazy_static::lazy_static;
 
 use super::super::common::gicv3::GICv3;
 
+// used by generic kernel interrupt code
+pub const MIN_VECTOR: usize = GICv3::MIN_VECTOR;
+pub const MAX_VECTOR: usize = GICv3::MAX_VECTOR;
+pub const NUM_VECTORS: usize = GICv3::NUM_VECTORS;
+
 lazy_static! {
     /// System-wide reference to the interrupt controller
     pub static ref INTERRUPT_CONTROLLER: GICv3 = {

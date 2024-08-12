@@ -107,33 +107,6 @@ pub fn get_uart_interrupt_num() -> Option<u32> {
     None
 }
 
-// return the mmio address info for the distributor and cpu interfaces
-// for a gicv2 interrupt controller
-pub fn get_gicv2_info() -> (MmioInfo, MmioInfo) {
-    let mut gicd_mmio = MmioInfo {
-        length: 0,
-        cache_type: CacheType::MemoryMappedIO,
-        info: 0,
-    };
-    let mut gicc_mmio = MmioInfo {
-        length: 0,
-        cache_type: CacheType::MemoryMappedIO,
-        info: 0,
-    };
-    if let Some(gic) = devicetree().find_node("/intc") {
-        let mut mmio_regs = gic.reg().unwrap();
-        // get distributor mmio regs
-        let regs = mmio_regs.next().unwrap();
-        gicd_mmio.info = regs.starting_address as u64;
-        gicd_mmio.length = regs.size.unwrap() as u64;
-        // get local cpu interface regs
-        let regs = mmio_regs.next().unwrap();
-        gicc_mmio.info = regs.starting_address as u64;
-        gicc_mmio.length = regs.size.unwrap() as u64;
-    }
-    (gicd_mmio, gicc_mmio)
-}
-
 /// Return the MMIO info for the GICv3 registers
 pub fn get_gicv3_info() -> (MmioInfo, MmioInfo) {
     let gicd_mmio = MmioInfo {
