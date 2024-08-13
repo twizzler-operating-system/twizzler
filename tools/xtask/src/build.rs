@@ -285,7 +285,6 @@ fn maybe_build_tests<'a>(
                 "twz-rt" => None,
                 "monitor" => None,
                 "bootstrap" => None,
-                "secgate" => None,
                 "secgate-macros" => None,
                 _ => Some(p.name().to_string()),
             })
