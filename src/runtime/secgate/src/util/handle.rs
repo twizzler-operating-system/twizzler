@@ -5,7 +5,10 @@ use twizzler_runtime_api::ObjID;
 
 /// A handle that can be opened and released.
 pub trait Handle {
+    /// The error type returned by open.
     type OpenError;
+
+    /// The arguments to open.
     type OpenInfo;
 
     /// Open a handle.
@@ -36,6 +39,11 @@ impl<ServerData> HandleMgr<ServerData> {
         }
     }
 
+    /// Get the maximum number of open handles.
+    pub fn max(&self) -> usize {
+        self.max
+    }
+
     /// Lookup the server data associated with a descriptor.
     pub fn lookup(&self, comp: ObjID, ds: Descriptor) -> Option<&ServerData> {
         let idx: usize = ds.try_into().ok()?;
@@ -60,5 +68,56 @@ impl<ServerData> HandleMgr<ServerData> {
     pub fn remove(&mut self, comp: ObjID, ds: Descriptor) -> Option<ServerData> {
         let idx: usize = ds.try_into().ok()?;
         self.handles.get_mut(&comp)?.remove(idx)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    struct FooHandle {
+        desc: Descriptor,
+        x: u32,
+        mgr: RefCell<HandleMgr<u32>>,
+        removed_data: Option<u32>,
+    }
+
+    impl Handle for FooHandle {
+        type OpenError = ();
+
+        type OpenInfo = (u32, RefCell<HandleMgr<u32>>);
+
+        fn open(info: Self::OpenInfo) -> Result<Self, Self::OpenError>
+        where
+            Self: Sized,
+        {
+            let desc = info.1.borrow_mut().insert(0.into(), info.0).unwrap();
+            Ok(Self {
+                desc,
+                x: info.0,
+                mgr: info.1,
+                removed_data: None,
+            })
+        }
+
+        fn release(&mut self) {
+            self.removed_data = self.mgr.borrow_mut().remove(0.into(), self.desc);
+        }
+    }
+
+    #[test]
+    fn handle() {
+        let mgr = RefCell::new(HandleMgr::new(8));
+        let mut foo = FooHandle::open((42, mgr)).unwrap();
+
+        assert_eq!(foo.x, 42);
+        let sd = foo.mgr.borrow().lookup(0.into(), foo.desc).cloned();
+        assert_eq!(sd, Some(42));
+
+        foo.release();
+        assert_eq!(foo.removed_data, Some(42));
+        assert!(foo.mgr.borrow().lookup(0.into(), foo.desc).is_none());
     }
 }

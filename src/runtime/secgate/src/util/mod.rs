@@ -1,3 +1,5 @@
+//! A set of utility types for low-level communication between compartments.
+
 mod buffer;
 mod handle;
 

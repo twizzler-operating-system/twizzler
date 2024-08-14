@@ -1,7 +1,8 @@
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_runtime_api::ObjectHandle;
 
-/// A simple buffer to use for transferring bytes between compartments.
+/// A simple buffer to use for transferring bytes between compartments, using shared memory via
+/// objects underneath.
 pub struct SimpleBuffer {
     handle: ObjectHandle,
 }
