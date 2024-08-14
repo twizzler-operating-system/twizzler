@@ -68,7 +68,6 @@ impl UpcallFrame {
         entry: usize,
         arg: usize,
     ) -> Self {
-        // TODO: check alignment and sizes better.
         Self {
             xsave_region: [0; XSAVE_LEN],
             rip: entry as u64,
