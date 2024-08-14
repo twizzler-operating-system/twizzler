@@ -4,7 +4,7 @@ use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 
 use crate::mon::space::MapHandle;
 
-/// Manages a comp config object.
+/// Manages a compartment configuration object.
 pub struct CompConfigObject {
     handle: MapHandle,
 }
@@ -47,7 +47,7 @@ impl CompConfigObject {
         unsafe {
             Span::new(
                 self.handle.monitor_data_base().add(offset_from_base),
-                self.handle.monitor_data_null().add(MAX_SIZE / 2),
+                self.handle.monitor_data_start().add(MAX_SIZE / 2),
             )
         }
     }

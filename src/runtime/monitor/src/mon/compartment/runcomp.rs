@@ -14,17 +14,25 @@ use twizzler_abi::syscall::{
 };
 use twizzler_runtime_api::{MapError, ObjID};
 
-use super::{comp_config::CompConfigObject, compthread::CompThread};
+use super::{compconfig::CompConfigObject, compthread::CompThread};
 use crate::mon::space::{MapHandle, MapInfo};
 
+/// Compartment is ready (loaded, reloacated, runtime started and ctors run).
 pub const COMP_READY: u64 = 0x1;
+/// Compartment is a binary, not a library.
 pub const COMP_IS_BINARY: u64 = 0x2;
+/// Compartment runtime thread may exit.
 pub const COMP_THREAD_CAN_EXIT: u64 = 0x4;
 
+/// A runnable or running compartment.
 pub struct RunComp {
+    /// The security context for this compartment.
     pub sctx: ObjID,
+    /// The instance of the security context.
     pub instance: ObjID,
+    /// The name of this compartment.
     pub name: String,
+    /// The dynlink ID of this compartment.
     pub compartment_id: CompartmentId,
     main: Option<CompThread>,
     deps: Vec<ObjID>,
@@ -130,6 +138,7 @@ pub struct RunCompReadyWaiter<'a> {
 }
 
 impl<'a> RunCompReadyWaiter<'a> {
+    /// Wait until the compartment is marked as ready.
     pub fn wait(&self) {
         loop {
             let Some(sleep) = self.sleep else { return };

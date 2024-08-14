@@ -111,6 +111,7 @@ impl Space {
         }
     }
 
+    /// Utility function for creating an object and mapping it, deleting it if the mapping fails.
     pub(crate) fn safe_create_and_map_object(
         &mut self,
         spec: ObjectCreate,

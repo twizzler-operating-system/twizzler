@@ -5,7 +5,7 @@ use twizzler_runtime_api::ObjID;
 use self::runcomp::RunComp;
 use crate::api::MONITOR_INSTANCE_ID;
 
-mod comp_config;
+mod compconfig;
 mod compthread;
 mod runcomp;
 
