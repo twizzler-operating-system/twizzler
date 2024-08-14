@@ -60,7 +60,9 @@ pub fn main() {
     let mon = mon::Monitor::new(init);
     mon::set_monitor(mon);
 
+    info!("Ok: set monitor");
     unsafe { OUR_RUNTIME.set_runtime_ready() };
+    info!("Ok: start threads");
     mon::get_monitor().start_background_threads();
 
     info!("Ok");

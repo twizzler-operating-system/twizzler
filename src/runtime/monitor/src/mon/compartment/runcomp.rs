@@ -69,8 +69,9 @@ impl RunComp {
     }
 
     /// Map an object into this compartment.
-    pub fn map_object(&mut self, info: MapInfo) -> Result<MapHandle, MapError> {
-        todo!()
+    pub fn map_object(&mut self, info: MapInfo, handle: MapHandle) -> Result<MapHandle, MapError> {
+        self.mapped_objects.insert(info, handle.clone());
+        Ok(handle)
     }
 
     /// Unmap and object from this compartment.

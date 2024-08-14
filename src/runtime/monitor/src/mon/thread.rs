@@ -20,6 +20,7 @@ use super::space::{MapHandle, MapInfo, Space};
 use crate::api::MONITOR_INSTANCE_ID;
 
 mod cleaner;
+pub(crate) use cleaner::ThreadCleaner;
 
 /// Stack size for the supervisor upcall stack.
 pub const SUPER_UPCALL_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
@@ -48,11 +49,8 @@ impl Default for ThreadMgr {
 }
 
 impl ThreadMgr {
-    pub(super) fn start_cleaner(&mut self) {
-        self.cleaner
-            .set(cleaner::ThreadCleaner::new())
-            .ok()
-            .unwrap();
+    pub(super) fn set_cleaner(&mut self, cleaner: cleaner::ThreadCleaner) {
+        self.cleaner.set(cleaner).ok().unwrap();
     }
 
     fn do_remove(&mut self, thread: &ManagedThread) {
@@ -183,6 +181,7 @@ impl core::fmt::Debug for ManagedThreadInner {
 
 impl Drop for ManagedThreadInner {
     fn drop(&mut self) {
+        // TODO
         tracing::trace!("dropping ManagedThread {}", self.id);
     }
 }

@@ -1,15 +1,16 @@
-use std::{cell::OnceCell, sync::OnceLock};
+use std::{ptr::NonNull, sync::OnceLock};
 
 use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
-use monitor_api::SharedCompConfig;
+use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use twizzler_abi::upcall::UpcallFrame;
-use twizzler_runtime_api::{MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
+use twizzler_runtime_api::{MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
+use twz_rt::RuntimeThreadControl;
 
 use self::{
     compartment::{CompConfigObject, RunComp},
-    space::Unmapper,
-    thread::ManagedThread,
+    space::{MapHandle, MapInfo, Unmapper},
+    thread::{ManagedThread, ThreadCleaner},
 };
 use crate::{api::MONITOR_INSTANCE_ID, init::InitDynlinkContext};
 
@@ -41,16 +42,29 @@ type MonitorInner<'a> = (
 
 impl Monitor {
     pub fn start_background_threads(&self) {
+        let cleaner = ThreadCleaner::new();
         self.unmapper.set(Unmapper::new()).ok().unwrap();
         self.thread_mgr
             .write(ThreadKey::get().unwrap())
-            .start_cleaner();
+            .set_cleaner(cleaner);
     }
 
     pub fn new(init: InitDynlinkContext) -> Self {
         let mut comp_mgr = compartment::CompartmentMgr::default();
         let mut space = space::Space::default();
-        let monitor_scc = SharedCompConfig::new(MONITOR_INSTANCE_ID, std::ptr::null_mut());
+
+        let super_tls = (unsafe { &mut *init.ctx })
+            .get_compartment_mut(MONITOR_COMPARTMENT_ID)
+            .unwrap()
+            .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
+                NonNull::new(std::alloc::alloc_zeroed(layout))
+            })
+            .unwrap();
+
+        let template: &'static TlsTemplateInfo = Box::leak(Box::new(super_tls.into()));
+
+        let monitor_scc =
+            SharedCompConfig::new(MONITOR_INSTANCE_ID, template as *const _ as *mut _);
         let handle = space
             .safe_create_and_map_runtime_object(
                 MONITOR_INSTANCE_ID,
@@ -99,17 +113,32 @@ impl Monitor {
         stack_ptr: usize,
         thread_ptr: usize,
     ) -> Result<ObjID, SpawnError> {
-        let thread = self.start_thread(Box::new(|| {
-            
-            let frame = UpcallFrame::
-        }
-        ))?;
+        let thread = self.start_thread(Box::new(move || {
+            let frame = UpcallFrame::new_entry_frame(
+                stack_ptr,
+                args.stack_size,
+                thread_ptr,
+                instance,
+                args.start,
+                args.arg,
+            );
+            unsafe { twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame) };
+        }))?;
         Ok(thread.id)
     }
 
     pub fn get_comp_config(&self, sctx: ObjID) -> Option<*const SharedCompConfig> {
         let comps = self.comp_mgr.read(ThreadKey::get().unwrap());
         Some(comps.get(sctx)?.comp_config_ptr())
+    }
+
+    pub fn map_object(&self, sctx: ObjID, info: MapInfo) -> Result<MapHandle, MapError> {
+        let handle = self.space.write(ThreadKey::get().unwrap()).map(info)?;
+
+        let mut comp_mgr = self.comp_mgr.write(ThreadKey::get().unwrap());
+        let rc = comp_mgr.get_mut(sctx).ok_or(MapError::InvalidArgument)?;
+        let handle = rc.map_object(info, handle)?;
+        Ok(handle)
     }
 }
 
