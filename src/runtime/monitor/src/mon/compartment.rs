@@ -2,14 +2,17 @@ use std::collections::HashMap;
 
 use twizzler_runtime_api::ObjID;
 
-use self::runcomp::RunComp;
 use crate::api::MONITOR_INSTANCE_ID;
 
 mod compconfig;
 mod compthread;
 mod runcomp;
 
+pub use compconfig::*;
+pub use runcomp::*;
+
 /// Manages compartments.
+#[derive(Default)]
 pub struct CompartmentMgr {
     names: HashMap<String, ObjID>,
     instances: HashMap<ObjID, RunComp>,

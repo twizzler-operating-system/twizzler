@@ -17,7 +17,7 @@ use twizzler_abi::{
 };
 use twizzler_object::ObjID;
 use twizzler_runtime_api::AuxEntry;
-use twz_rt::{set_upcall_handler, CompartmentInitInfo};
+use twz_rt::{set_upcall_handler, CompartmentInitInfo, OUR_RUNTIME};
 
 use crate::{compartment::Comp, state::set_monitor_state};
 
@@ -32,6 +32,8 @@ mod upcall;
 
 mod api;
 mod mon;
+
+pub use monitor_api::MappedObjectAddrs;
 
 #[path = "../secapi/gates.rs"]
 mod gates;
@@ -54,6 +56,16 @@ pub fn main() {
     trace!("monitor entered, discovering dynlink context");
     let init =
         init::bootstrap_dynlink_context().expect("failed to discover initial dynlink context");
+
+    let mon = mon::Monitor::new(init);
+    mon::set_monitor(mon);
+
+    unsafe { OUR_RUNTIME.set_runtime_ready() };
+
+    info!("Ok");
+
+    loop {}
+
     let mut state = state::MonitorState::new(init);
 
     let monitor_comp_id = state.dynlink.lookup_compartment("monitor").unwrap();

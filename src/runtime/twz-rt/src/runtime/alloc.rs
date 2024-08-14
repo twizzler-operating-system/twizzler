@@ -92,7 +92,7 @@ fn create_and_map() -> Option<(usize, ObjID)> {
         .ok();
 
     if let Some(slot) = slot {
-        Some((slot, id))
+        Some((slot.slot, id))
     } else {
         delete_obj(id);
         None

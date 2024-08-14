@@ -43,6 +43,31 @@ pub struct RunComp {
 }
 
 impl RunComp {
+    pub fn new(
+        sctx: ObjID,
+        instance: ObjID,
+        name: String,
+        compartment_id: CompartmentId,
+        deps: Vec<ObjID>,
+        comp_config_object: CompConfigObject,
+        flags: u64,
+    ) -> Self {
+        let mut alloc = Talc::new(ErrOnOom);
+        unsafe { alloc.claim(comp_config_object.alloc_span()).unwrap() };
+        Self {
+            sctx,
+            instance,
+            name,
+            compartment_id,
+            main: None,
+            deps,
+            comp_config_object,
+            alloc,
+            mapped_objects: HashMap::default(),
+            flags: Box::new(AtomicU64::new(flags)),
+        }
+    }
+
     /// Map an object into this compartment.
     pub fn map_object(&mut self, info: MapInfo) -> Result<MapHandle, MapError> {
         todo!()

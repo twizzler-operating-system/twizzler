@@ -66,8 +66,24 @@ pub fn monitor_rt_object_map(
     info: &secgate::GateCallInfo,
     id: ObjID,
     flags: twizzler_runtime_api::MapFlags,
-) -> Result<usize, MapError> {
-    crate::object::map_object(info, id, flags)
+) -> Result<crate::MappedObjectAddrs, MapError> {
+    use happylock::ThreadKey;
+    use twz_rt::{RuntimeState, OUR_RUNTIME};
+
+    use crate::{api::MONITOR_INSTANCE_ID, mon::space::MapInfo};
+    if OUR_RUNTIME.state().contains(RuntimeState::READY) {
+        let monitor = crate::mon::get_monitor();
+        let key = ThreadKey::get().unwrap();
+        monitor
+            .comp_mgr
+            .write(key)
+            .get_mut(info.source_context().unwrap_or(MONITOR_INSTANCE_ID))
+            .unwrap()
+            .map_object(MapInfo { id, flags })
+            .map(|handle| handle.addrs())
+    } else {
+        Ok(crate::mon::early_object_map(MapInfo { id, flags }))
+    }
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]

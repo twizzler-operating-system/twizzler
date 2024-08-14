@@ -42,6 +42,8 @@ impl Drop for MapHandleInner {
     fn drop(&mut self) {
         // Toss this work onto a background thread.
         let monitor = get_monitor();
-        monitor.unmapper.background_unmap_info(self.info);
+        if let Some(unmapper) = monitor.unmapper.get() {
+            unmapper.background_unmap_info(self.info);
+        }
     }
 }

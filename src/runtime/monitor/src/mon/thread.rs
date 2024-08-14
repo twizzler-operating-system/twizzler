@@ -1,15 +1,22 @@
-use std::{collections::HashMap, mem::MaybeUninit, sync::Arc};
+use std::{
+    cell::OnceCell,
+    collections::HashMap,
+    mem::MaybeUninit,
+    ptr::NonNull,
+    sync::{Arc, OnceLock},
+};
 
-use dynlink::tls::TlsRegion;
+use dynlink::{compartment::Compartment, context::Context, tls::TlsRegion};
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
     syscall::{sys_spawn, sys_thread_exit, ThreadSyncSleep, UpcallTargetSpawnOption},
     thread::{ExecutionState, ThreadRepr},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
-use twizzler_runtime_api::{ObjID, SpawnError};
+use twizzler_runtime_api::{MapFlags, ObjID, SpawnError};
+use twz_rt::RuntimeThreadControl;
 
-use super::space::MapHandle;
+use super::space::{MapHandle, MapInfo, Space};
 use crate::api::MONITOR_INSTANCE_ID;
 
 mod cleaner;
@@ -28,10 +35,26 @@ pub const DEFAULT_TLS_ALIGN: usize = 0x1000; // 4K
 /// cleaner detects when a thread has exited and performs any final thread cleanup logic.
 pub struct ThreadMgr {
     all: HashMap<ObjID, ManagedThread>,
-    cleaner: cleaner::ThreadCleaner,
+    cleaner: OnceLock<cleaner::ThreadCleaner>,
+}
+
+impl Default for ThreadMgr {
+    fn default() -> Self {
+        Self {
+            all: HashMap::default(),
+            cleaner: OnceLock::new(),
+        }
+    }
 }
 
 impl ThreadMgr {
+    pub(super) fn start_cleaner(&mut self) {
+        self.cleaner
+            .set(cleaner::ThreadCleaner::new())
+            .ok()
+            .unwrap();
+    }
+
     fn do_remove(&mut self, thread: &ManagedThread) {
         self.all.remove(&thread.id);
     }
@@ -68,13 +91,50 @@ impl ThreadMgr {
         .map_err(|_| SpawnError::KernelError)
     }
 
-    fn do_spawn(start: unsafe extern "C" fn(usize) -> !, arg: usize) -> Result<Self, SpawnError> {
-        todo!()
+    fn do_spawn(
+        &mut self,
+        space: &mut Space,
+        monitor_dynlink_comp: &mut Compartment,
+        start: unsafe extern "C" fn(usize) -> !,
+        arg: usize,
+    ) -> Result<ManagedThread, SpawnError> {
+        let super_tls = monitor_dynlink_comp
+            .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
+                NonNull::new(std::alloc::alloc_zeroed(layout))
+            })
+            .map_err(|_| SpawnError::Other)?;
+        let super_thread_pointer = super_tls.get_thread_pointer_value();
+        let super_stack = Box::new_zeroed_slice(SUPER_UPCALL_STACK_SIZE);
+        let id = unsafe {
+            Self::spawn_thread(
+                start as *const () as usize,
+                super_stack.as_ptr() as usize,
+                super_thread_pointer,
+                arg,
+            )?
+        };
+        let repr = space
+            .map(MapInfo {
+                id,
+                flags: MapFlags::READ,
+            })
+            .unwrap();
+        Ok(Arc::new(ManagedThreadInner {
+            id,
+            repr: ManagedThreadRepr::new(repr),
+            super_stack,
+            super_tls,
+        }))
     }
 
     /// Start a thread, running the provided Box'd closure. The thread will be running in
     /// monitor-mode, and will have no connection to any compartment.
-    pub fn start_thread(main: Box<dyn FnOnce()>) -> Result<Self, SpawnError> {
+    pub fn start_thread(
+        &mut self,
+        space: &mut Space,
+        monitor_dynlink_comp: &mut Compartment,
+        main: Box<dyn FnOnce()>,
+    ) -> Result<ManagedThread, SpawnError> {
         let main_addr = Box::into_raw(Box::new(main)) as usize;
         unsafe extern "C" fn managed_thread_entry(main: usize) -> ! {
             {
@@ -85,7 +145,7 @@ impl ThreadMgr {
             sys_thread_exit(0);
         }
 
-        Self::do_spawn(managed_thread_entry, main_addr)
+        self.do_spawn(space, monitor_dynlink_comp, managed_thread_entry, main_addr)
     }
 }
 

@@ -148,7 +148,11 @@ impl ObjectHandleManager {
         if !self.map().contains_key(&key) {
             self.map().insert(
                 key,
-                LocalSlot::new(monitor_api::monitor_rt_object_map(key.0, key.1).unwrap()?),
+                LocalSlot::new(
+                    monitor_api::monitor_rt_object_map(key.0, key.1)
+                        .unwrap()?
+                        .slot,
+                ),
             );
         }
 
