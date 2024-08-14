@@ -43,6 +43,9 @@ initrd = [
     "lib:monitor",
     "crate:mnemosyne",
     "crate:stdfs_demo",
+    #"lib:twz-rt",
+    #"lib:monitor",
+>>>>>>> 5e5e713 (Cleanup.)
     #"third-party:hello-world-rs"
 ]
 
@@ -64,4 +67,5 @@ async-executor = { git = "https://github.com/twizzler-operating-system/async-exe
 twizzler-futures = { path = "src/lib/twizzler-futures" }
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
+# lock_api comes from the parking_lot repo
 lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
