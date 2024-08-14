@@ -84,6 +84,11 @@ impl RunComp {
         self.comp_config_object.read_comp_config()
     }
 
+    /// Get a pointer to the compartment config.
+    pub fn comp_config_ptr(&self) -> *const SharedCompConfig {
+        self.comp_config_object.get_comp_config()
+    }
+
     /// Set the compartment config.
     pub fn set_comp_config(&mut self, scc: SharedCompConfig) {
         self.comp_config_object.write_config(scc)

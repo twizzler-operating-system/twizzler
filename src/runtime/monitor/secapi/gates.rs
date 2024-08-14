@@ -14,11 +14,12 @@ pub fn monitor_rt_spawn_thread(
     thread_pointer: usize,
     stack_pointer: usize,
 ) -> Result<ObjID, SpawnError> {
-    crate::thread::__monitor_rt_spawn_thread(
+    let monitor = crate::mon::get_monitor();
+    monitor.spawn_user_thread(
         info.source_context().unwrap_or(0.into()),
         args,
-        thread_pointer,
         stack_pointer,
+        thread_pointer,
     )
 }
 
@@ -28,7 +29,12 @@ pub fn monitor_rt_spawn_thread(
     secgate::secure_gate(options(info, api))
 )]
 pub fn monitor_rt_get_comp_config(info: &secgate::GateCallInfo) -> usize {
-    crate::thread::__monitor_rt_get_comp_config(info.source_context().unwrap_or(0.into())) as usize
+    use crate::api::MONITOR_INSTANCE_ID;
+    let monitor = crate::mon::get_monitor();
+    monitor
+        .get_comp_config(info.source_context().unwrap_or(MONITOR_INSTANCE_ID))
+        .map(|ptr| ptr as usize)
+        .unwrap_or(0)
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
@@ -91,6 +97,24 @@ pub fn monitor_rt_object_map(
     not(feature = "secgate-impl"),
     secgate::secure_gate(options(info, api))
 )]
-pub fn monitor_rt_object_unmap(info: &secgate::GateCallInfo, slot: usize) {
-    crate::object::unmap_object(info, slot)
+pub fn monitor_rt_object_unmap(
+    info: &secgate::GateCallInfo,
+    slot: usize,
+    id: ObjID,
+    flags: twizzler_runtime_api::MapFlags,
+) {
+    use twz_rt::{RuntimeState, OUR_RUNTIME};
+    if OUR_RUNTIME.state().contains(RuntimeState::READY) {
+        let monitor = crate::mon::get_monitor();
+        let key = happylock::ThreadKey::get().unwrap();
+        monitor
+            .comp_mgr
+            .write(key)
+            .get_mut(
+                info.source_context()
+                    .unwrap_or(crate::api::MONITOR_INSTANCE_ID),
+            )
+            .unwrap()
+            .unmap_object(crate::mon::space::MapInfo { id, flags })
+    }
 }

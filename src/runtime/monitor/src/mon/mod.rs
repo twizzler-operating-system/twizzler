@@ -3,7 +3,8 @@ use std::{cell::OnceCell, sync::OnceLock};
 use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
 use monitor_api::SharedCompConfig;
-use twizzler_runtime_api::{MapFlags, SpawnError};
+use twizzler_abi::upcall::UpcallFrame;
+use twizzler_runtime_api::{MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
 
 use self::{
     compartment::{CompConfigObject, RunComp},
@@ -39,7 +40,7 @@ type MonitorInner<'a> = (
 );
 
 impl Monitor {
-    pub fn start_background_threads(&mut self) {
+    pub fn start_background_threads(&self) {
         self.unmapper.set(Unmapper::new()).ok().unwrap();
         self.thread_mgr
             .write(ThreadKey::get().unwrap())
@@ -89,6 +90,26 @@ impl Monitor {
         locks
             .1
             .start_thread(&mut *locks.0, monitor_dynlink_comp, main)
+    }
+
+    pub fn spawn_user_thread(
+        &self,
+        instance: ObjID,
+        args: ThreadSpawnArgs,
+        stack_ptr: usize,
+        thread_ptr: usize,
+    ) -> Result<ObjID, SpawnError> {
+        let thread = self.start_thread(Box::new(|| {
+            
+            let frame = UpcallFrame::
+        }
+        ))?;
+        Ok(thread.id)
+    }
+
+    pub fn get_comp_config(&self, sctx: ObjID) -> Option<*const SharedCompConfig> {
+        let comps = self.comp_mgr.read(ThreadKey::get().unwrap());
+        Some(comps.get(sctx)?.comp_config_ptr())
     }
 }
 

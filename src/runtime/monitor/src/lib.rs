@@ -16,7 +16,7 @@ use twizzler_abi::{
     syscall::{sys_object_create, ObjectCreate},
 };
 use twizzler_object::ObjID;
-use twizzler_runtime_api::AuxEntry;
+use twizzler_runtime_api::{AuxEntry, RustTimeRuntime};
 use twz_rt::{set_upcall_handler, CompartmentInitInfo, OUR_RUNTIME};
 
 use crate::{compartment::Comp, state::set_monitor_state};
@@ -61,6 +61,7 @@ pub fn main() {
     mon::set_monitor(mon);
 
     unsafe { OUR_RUNTIME.set_runtime_ready() };
+    mon::get_monitor().start_background_threads();
 
     info!("Ok");
 
