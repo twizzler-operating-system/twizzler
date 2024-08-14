@@ -72,6 +72,18 @@ impl UpcallFrame {
     pub fn bp(&self) -> usize {
         self.fp as usize
     }
+
+    /// Build a new frame set up to enter a context at a start point.
+    pub fn new_entry_frame(
+        stack_base: usize,
+        stack_size: usize,
+        tp: usize,
+        ctx: crate::object::ObjID,
+        entry: usize,
+        arg: usize,
+    ) -> Self {
+        todo!()
+    }
 }
 
 #[no_mangle]
