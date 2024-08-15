@@ -77,6 +77,20 @@ pub fn monitor_rt_object_map(
 
     use crate::{api::MONITOR_INSTANCE_ID, mon::space::MapInfo};
     if OUR_RUNTIME.state().contains(RuntimeState::READY) {
+        // Are we recursing from the monitor, with a lock held? In that case, use early_object_map
+        // to map the object. This will leak this mapping, but this is both rare, and then
+        // since the mapping is leaked, it can be used as an allocator object indefinitely
+        // (not currently implemented). Make sure the ThreadKey drops.
+        let is_monitor_recursed =
+            { happylock::ThreadKey::get().is_none() && info.source_context().is_none() };
+        if is_monitor_recursed {
+            tracing::debug!(
+                "performing early object mapping (recursed), {} {:?}",
+                id,
+                flags
+            );
+            return Ok(crate::mon::early_object_map(MapInfo { id, flags }));
+        }
         let monitor = crate::mon::get_monitor();
         monitor
             .map_object(
@@ -85,6 +99,9 @@ pub fn monitor_rt_object_map(
             )
             .map(|handle| handle.addrs())
     } else {
+        // We need to use early_object_map, since the monitor hasn't finished initializing, but
+        // still needs to allocate (which may involve mapping an object).
+        tracing::debug!("performing early object mapping, {} {:?}", id, flags);
         Ok(crate::mon::early_object_map(MapInfo { id, flags }))
     }
 }
