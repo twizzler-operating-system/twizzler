@@ -53,7 +53,9 @@ pub fn main() {
     let mon = mon::Monitor::new(init);
     mon::set_monitor(mon);
 
+    // Safety: the monitor is ready, and so we can set our runtime as ready to use the monitor.
     unsafe { OUR_RUNTIME.set_runtime_ready() };
+    // Had to wait till now to be able to spawn threads.
     mon::get_monitor().start_background_threads();
 
     debug!("Ok");

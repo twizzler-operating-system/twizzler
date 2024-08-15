@@ -15,7 +15,7 @@ pub fn monitor_rt_spawn_thread(
     stack_pointer: usize,
 ) -> Result<ObjID, SpawnError> {
     let monitor = crate::mon::get_monitor();
-    monitor.spawn_user_thread(
+    monitor.spawn_compartment_thread(
         info.source_context().unwrap_or(0.into()),
         args,
         stack_pointer,

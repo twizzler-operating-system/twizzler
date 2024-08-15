@@ -157,8 +157,8 @@ impl Space {
     }
 }
 
-// Allows us to call handle_drop and do all the hard work in the caller, since
-// the caller probably had to hold a lock to call these functions.
+/// Allows us to call handle_drop and do all the hard work in the caller, since
+/// the caller probably had to hold a lock to call these functions.
 pub(crate) struct UnmapOnDrop {
     slot: usize,
 }
@@ -173,6 +173,8 @@ impl Drop for UnmapOnDrop {
     }
 }
 
+/// Map an object into the address space, without tracking it. This leaks the mapping, but is useful
+/// for bootstrapping. See the object mapping gate comments for more details.
 pub fn early_object_map(info: MapInfo) -> MappedObjectAddrs {
     let slot = twz_rt::OUR_RUNTIME.allocate_slot().unwrap();
 
