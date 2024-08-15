@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, pin::Pin};
 
 use twizzler_abi::meta::MetaInfo;
 use twizzler_runtime_api::ObjectHandle;
@@ -12,13 +12,15 @@ pub struct MutableObject<Base: BaseType> {
 }
 
 impl<Base: BaseType> MutableObject<Base> {
-    pub fn base_mut(&mut self) -> &mut Base {
+    pub fn base_mut(&mut self) -> Pin<&mut Base> {
         // Safety: part of the MutableObject contract is its existence ensures that the object is
         // locked. Thus, by taking &mut self, we can ensure no one else can point to the base.
         unsafe {
-            (self.base_mut_ptr().cast::<Base>())
-                .as_mut()
-                .unwrap_unchecked()
+            Pin::new_unchecked(
+                (self.base_mut_ptr().cast::<Base>())
+                    .as_mut()
+                    .unwrap_unchecked(),
+            )
         }
     }
 
