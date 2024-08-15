@@ -22,7 +22,7 @@ mod gates {
 }
 
 pub use gates::*;
-use twizzler_runtime_api::LibraryId;
+use twizzler_runtime_api::{AddrRange, DlPhdrInfo, LibraryId, ObjectHandle};
 
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and
 /// read-only from the compartment.
@@ -162,7 +162,152 @@ impl SharedCompConfig {
     }
 }
 
-pub use gates::LibraryInfo;
+pub use gates::LibraryInfo as LibraryInfoRaw;
+
+/// Contains information about a library loaded into the address space.
+#[derive(Clone, Debug)]
+pub struct LibraryInfo {
+    /// The library's name
+    pub name: String,
+    /// Global library ID
+    pub id: LibraryId,
+    /// The compartment of the library
+    pub compartment_id: ObjID,
+    /// The object ID that the library was loaded from
+    pub objid: ObjID,
+    /// The address range the library was loaded to
+    pub range: AddrRange,
+    /// The DlPhdrInfo for this library
+    pub dl_info: DlPhdrInfo,
+}
+
+/// A handle to a loaded library. On drop, the library may unload.
+pub struct LibraryHandle {
+    handle: ObjectHandle,
+}
+
+impl LibraryHandle {
+    /// Get the library info.
+    pub fn info(&self) -> LibraryInfo {
+        todo!()
+    }
+}
+
+/// A builder-type for loading libraries.
+pub struct LibraryLoader {
+    id: ObjID,
+}
+
+impl LibraryLoader {
+    /// Make a new LibraryLoader.
+    pub fn new(id: ObjID) -> Self {
+        todo!()
+    }
+
+    // TODO: err
+    /// Load the library.
+    pub fn load(&self) -> Result<LibraryHandle, ()> {
+        todo!()
+    }
+}
+
+/// A compartment handle. On drop, the compartment may be unloaded.
+pub struct CompartmentHandle {
+    id: ObjID,
+}
+
+impl CompartmentHandle {
+    /// Get the compartment info.
+    pub fn info(&self) -> CompartmentInfo {
+        todo!()
+    }
+}
+
+/// A builder-type for loading compartments.
+pub struct CompartmentLoader {
+    id: ObjID,
+}
+
+impl CompartmentLoader {
+    /// Make a new compartment loader.
+    pub fn new(id: ObjID) -> Self {
+        todo!()
+    }
+
+    // TODO: err
+    /// Load the compartment.
+    pub fn load() -> Result<CompartmentHandle, ()> {
+        todo!()
+    }
+}
+
+/// Information about a compartment.
+pub struct CompartmentInfo {
+    /// The name of the compartment.
+    pub name: String,
+    /// The instance ID.
+    pub id: ObjID,
+    /// The security context.
+    pub sctx: ObjID,
+    /// The compartment flags and status.
+    pub flags: CompartmentFlags,
+}
+
+impl CompartmentInfo {
+    /// Get compartment info for a specified ID.
+    pub fn get(id: ObjID) -> Option<Self> {
+        todo!()
+    }
+
+    /// Get the current compartment's info.
+    pub fn current() -> Self {
+        todo!()
+    }
+
+    /// Get an iterator over this compartment's dependencies.
+    pub fn deps(&self) -> CompartmentDepsIter {
+        todo!()
+    }
+
+    /// Get the root library for this compartment.
+    pub fn root(&self) -> LibraryInfo {
+        todo!()
+    }
+
+    /// Get an iterator over the libraries for this compartment.
+    pub fn libs(&self) -> LibraryIter {
+        todo!()
+    }
+}
+
+/// An iterator over libraries in a compartment.
+pub struct LibraryIter {}
+
+impl Iterator for LibraryIter {
+    type Item = LibraryInfo;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        todo!()
+    }
+}
+
+/// An iterator over a compartmen's dependencies.
+pub struct CompartmentDepsIter {}
+
+impl Iterator for CompartmentDepsIter {
+    type Item = CompartmentInfo;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        todo!()
+    }
+}
+
+bitflags::bitflags! {
+    /// Compartment state flags.
+    pub struct CompartmentFlags : u32 {
+        const READY = 0x1;
+    }
+}
 
 /// Contains raw mapping addresses, for use when translating to object handles for the runtime.
 #[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]

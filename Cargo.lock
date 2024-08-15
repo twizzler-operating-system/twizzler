@@ -2059,6 +2059,7 @@ dependencies = [
 name = "monitor-api"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.4.1",
  "dynlink",
  "secgate",
  "twizzler-abi",
