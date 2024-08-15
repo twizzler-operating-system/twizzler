@@ -689,8 +689,6 @@ pub struct Library {
     pub range: AddrRange,
     /// Information for dl_iterate_phdr
     pub dl_info: Option<DlPhdrInfo>,
-    /// The Library ID of first dependency.
-    pub next_id: Option<LibraryId>,
 }
 
 impl AsRef<Library> for Library {

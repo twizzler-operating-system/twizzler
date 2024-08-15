@@ -148,6 +148,8 @@ pub fn __monitor_rt_get_library_info(info: &GateCallInfo, id: LibraryId) -> Opti
             modid: lib.tls_id.map(|t| t.tls_id()).unwrap_or(0) as usize,
             tls_data: core::ptr::null(),
         },
-        next_id: next_lib.map(|nl| nl.id().into()),
+        id,
+        name_len: todo!(),
+        compartment_id: todo!(),
     })
 }

@@ -179,6 +179,22 @@ pub struct LibraryInfo {
     pub range: AddrRange,
     /// The DlPhdrInfo for this library
     pub dl_info: DlPhdrInfo,
+    /// The slot of the library text.
+    pub slot: usize,
+}
+
+impl LibraryInfo {
+    fn from_raw(raw: LibraryInfoRaw) -> Self {
+        Self {
+            name: todo!(),
+            id: raw.id,
+            compartment_id: raw.compartment_id,
+            objid: raw.objid,
+            range: raw.range,
+            dl_info: raw.dl_info,
+            slot: raw.slot,
+        }
+    }
 }
 
 /// A handle to a loaded library. On drop, the library may unload.
@@ -219,7 +235,7 @@ pub struct CompartmentHandle {
 impl CompartmentHandle {
     /// Get the compartment info.
     pub fn info(&self) -> CompartmentInfo {
-        todo!()
+        CompartmentInfo::get(self.id).unwrap()
     }
 }
 
@@ -254,14 +270,24 @@ pub struct CompartmentInfo {
 }
 
 impl CompartmentInfo {
-    /// Get compartment info for a specified ID.
+    fn from_raw(raw: gates::CompartmentInfo) -> Self {
+        Self {
+            name: todo!(),
+            id: raw.id,
+            sctx: raw.sctx,
+            flags: CompartmentFlags::from_bits_truncate(raw.flags),
+        }
+    }
+    /// Get compartment info for a specified ID. A value of 0 will return infomation about the
+    /// current compartment.
     pub fn get(id: ObjID) -> Option<Self> {
-        todo!()
+        let raw = gates::monitor_rt_get_compartment_info(id).ok().flatten()?;
+        Some(Self::from_raw(raw))
     }
 
     /// Get the current compartment's info.
     pub fn current() -> Self {
-        todo!()
+        Self::get(0.into()).unwrap()
     }
 
     /// Get an iterator over this compartment's dependencies.
@@ -271,7 +297,7 @@ impl CompartmentInfo {
 
     /// Get the root library for this compartment.
     pub fn root(&self) -> LibraryInfo {
-        todo!()
+        self.libs().next().unwrap()
     }
 
     /// Get an iterator over the libraries for this compartment.
@@ -298,6 +324,10 @@ impl Iterator for CompartmentDepsIter {
     type Item = CompartmentInfo;
 
     fn next(&mut self) -> Option<Self::Item> {
+        todo!()
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
         todo!()
     }
 }

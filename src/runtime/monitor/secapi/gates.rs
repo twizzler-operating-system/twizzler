@@ -44,19 +44,56 @@ pub fn monitor_rt_get_comp_config(info: &secgate::GateCallInfo) -> usize {
 )]
 pub fn monitor_rt_get_library_info(
     info: &secgate::GateCallInfo,
-    library_id: LibraryId,
+    compartment: ObjID,
+    lib_n: usize,
 ) -> Option<LibraryInfo> {
-    crate::state::__monitor_rt_get_library_info(info, library_id)
+    todo!()
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct LibraryInfo {
+    pub id: LibraryId,
+    pub name_len: usize,
+    pub compartment_id: ObjID,
     pub objid: ObjID,
     pub slot: usize,
     pub range: AddrRange,
     pub dl_info: DlPhdrInfo,
-    pub next_id: Option<LibraryId>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CompartmentInfo {
+    pub name_len: usize,
+    pub id: ObjID,
+    pub sctx: ObjID,
+    pub flags: u32,
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_get_compartment_info(
+    info: &secgate::GateCallInfo,
+    compartment: ObjID,
+) -> Option<CompartmentInfo> {
+    todo!()
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_get_compartment_deps(
+    info: &secgate::GateCallInfo,
+    compartment: ObjID,
+    dep_n: usize,
+) -> Option<CompartmentInfo> {
+    todo!()
 }
 
 // Safety: the broken part is just DlPhdrInfo. We ensure that any pointers in there are
