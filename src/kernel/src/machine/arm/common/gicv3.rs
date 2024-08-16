@@ -225,9 +225,6 @@ impl GICv3 {
                 "[gicv3] GICD_ISENABLER1: {:#x}",
                 read_reg(self.distr.as_ptr(), 0x0100 + 4 * 1)
             );
-            // emerglogln!("[gicv3] GICD_ISENABLER1: {:#x}", denable);
-            // emerglogln!("[gicv3] GICD_ISENABLER: {:#x}", denable);
-            // emerglogln!("[gicv3] GICD_ISENABLER: {:#x}", denable);
         }
     }
 }
@@ -263,7 +260,6 @@ const SPI_START: u32 = 32;
 /// The first special interrupt ID. Special interrupt numbers range from 1020-1023.
 const SPECIAL_START: u32 = 1020;
 
-// TODO: is this mapping off??
 fn u32_to_int_id(value: u32) -> IntId {
     if value < PPI_START {
         IntId::sgi(value)

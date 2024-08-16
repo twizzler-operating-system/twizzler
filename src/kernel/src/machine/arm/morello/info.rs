@@ -19,7 +19,8 @@ pub fn init<B: BootInfo>(boot_info: &B) {
                 bootloader_dtb_addr
             }
         };
-        // should not fail, but it might ...
+        // this should not fail, but it might due a bad magic value
+        // in the FDT header or the fact that a NULL pointer is passed in.
         unsafe { Fdt::from_ptr(dtb.as_ptr()).expect("invalid DTB file, cannot boot") }
     });
 }
