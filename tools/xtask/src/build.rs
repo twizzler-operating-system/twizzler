@@ -24,7 +24,10 @@ struct OtherOptions {
     build_twizzler: bool,
 }
 
-use crate::{triple::Triple, BuildOptions, CheckOptions, DocOptions, Profile};
+use crate::{
+    triple::{valid_targets, Triple},
+    BuildOptions, CheckOptions, DocOptions, Profile,
+};
 
 fn locate_packages<'a>(workspace: &'a Workspace, kind: Option<&str>) -> Vec<Package> {
     workspace
@@ -225,6 +228,7 @@ fn build_twizzler<'a>(
     crate::toolchain::set_dynamic();
     crate::toolchain::set_cc();
     crate::print_status_line("collection: userspace", Some(build_config));
+    // let triple =  build_config.twz_triple();
     // the currently supported build target triples
     // have a value of "unknown" for the machine, but
     // we might specify a different value for machine
@@ -448,11 +452,20 @@ impl TwizzlerCompilation {
     }
 }
 
+fn check_build_target(config: crate::BuildConfig) -> anyhow::Result<()> {
+    if valid_targets().contains(&(config.arch, config.machine)) {
+        Ok(())
+    } else {
+        anyhow::bail!("build target is invalid");
+    }
+}
+
 fn compile(
     bc: crate::BuildConfig,
     mode: CompileMode,
     other_options: &OtherOptions,
 ) -> anyhow::Result<TwizzlerCompilation> {
+    check_build_target(bc)?;
     crate::toolchain::init_for_build(
         mode.is_doc() || mode.is_check() || !other_options.build_twizzler || true,
     )?;

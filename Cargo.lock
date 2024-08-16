@@ -172,6 +172,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arm-gic"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84eab3ef073fa1f664c9173e44f2437ce413e41d0ae8f17edd632a1bbcc89c4d"
+dependencies = [
+ "bitflags 2.6.0",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -335,9 +344,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
-version = "2.4.1"
+version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "327762f6e5a765692301e5bb513e0d9fef63be86bbc14528052b1cd3e6f03e07"
+checksum = "b048fb63fd8b5923fc5aa7b340d8e156aec7ec02f0c78fa8a6ddc2613f6f71de"
 dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-core",
@@ -865,7 +874,7 @@ name = "dynlink"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "elf",
  "humansize",
  "itertools 0.12.0",
@@ -1308,7 +1317,7 @@ version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8283e7331b8c93b9756e0cfdbcfb90312852f953c6faf9bf741e684cc3b6ad69"
 dependencies = [
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "crc",
  "log",
  "uuid",
@@ -1412,11 +1421,11 @@ dependencies = [
 
 [[package]]
 name = "home"
-version = "0.5.5"
+version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5444c27eef6923071f7ebcc33e3444508466a76f7a2b93da00ed6e19f30c1ddb"
+checksum = "e3d1354bf6b7235cb4a0576c2619fd4ed18183f689b12b006a0ee7329eeff9a5"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2141,7 +2150,7 @@ version = "0.10.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bac25ee399abb46215765b1cb35bc0212377e58a061560d8b29b024fd0430e7c"
 dependencies = [
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "cfg-if 1.0.0",
  "foreign-types",
  "libc",
@@ -2370,7 +2379,7 @@ name = "polling"
 version = "3.6.0"
 source = "git+https://github.com/twizzler-operating-system/polling.git?branch=twizzler#83586e3bbde74954cc24e5d571a5d004a9d00c24"
 dependencies = [
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "cfg-if 1.0.0",
  "concurrent-queue",
  "hermit-abi 0.3.9",
@@ -2625,7 +2634,7 @@ version = "0.38.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65e04861e65f21776e67888bfbea442b3642beaa0138fdb1dd7a84a52dffdb89"
 dependencies = [
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "errno 0.3.8",
  "libc",
  "linux-raw-sys",
@@ -3092,7 +3101,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d87688750eada7aef6d4a0b82979148980c67aca111f62f4bef82827276f3fc5"
 dependencies = [
  "arrayvec 0.7.4",
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "log",
 ]
 
@@ -3347,7 +3356,7 @@ checksum = "3528ecfd12c466c6f163363caf2d02a71161dd5e1cc6ae7b34207ea2d42d81ed"
 name = "twizzler-abi"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "bitset-core",
  "cfg-if 1.0.0",
  "compiler_builtins",
@@ -3380,7 +3389,7 @@ name = "twizzler-driver"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "futures",
  "twizzler-abi",
  "twizzler-async",
@@ -3402,8 +3411,9 @@ dependencies = [
  "aarch64-cpu",
  "acpi",
  "addr2line 0.16.0",
+ "arm-gic",
  "backtracer_core",
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "fdt",
  "fixedbitset",
  "hex-literal",
@@ -3439,7 +3449,7 @@ version = "0.0.0"
 name = "twizzler-net"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "twizzler-abi",
  "twizzler-async",
  "twizzler-object",
@@ -3450,7 +3460,7 @@ dependencies = [
 name = "twizzler-object"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "lazy_static",
  "twizzler-abi",
  "twizzler-runtime-api",
@@ -3470,7 +3480,7 @@ dependencies = [
 name = "twizzler-queue-raw"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "twizzler-abi",
 ]
 
@@ -3478,7 +3488,7 @@ dependencies = [
 name = "twizzler-runtime-api"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "compiler_builtins",
  "rustc-std-workspace-core",
 ]
@@ -3488,7 +3498,7 @@ name = "twz-rt"
 version = "0.1.0"
 dependencies = [
  "atomic",
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "dynlink",
  "elf",
  "lazy_static",
@@ -4046,6 +4056,7 @@ dependencies = [
  "futures",
  "futures-util",
  "guess_host_triple",
+ "home",
  "indicatif",
  "ouroboros",
  "reqwest",

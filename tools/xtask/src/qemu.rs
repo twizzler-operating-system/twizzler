@@ -4,23 +4,38 @@ use std::{
     process::{Command, ExitStatus},
 };
 
-use crate::{image::ImageInfo, triple::Arch, QemuOptions};
+use crate::{
+    image::ImageInfo,
+    triple::{Arch, Machine},
+    QemuOptions,
+};
 
 #[derive(Debug)]
 struct QemuCommand {
     cmd: Command,
     arch: Arch,
+    machine: Machine,
 }
 
 impl QemuCommand {
     pub fn new(cli: &QemuOptions) -> Self {
         let cmd = match cli.config.arch {
-            Arch::X86_64 => "qemu-system-x86_64",
-            Arch::Aarch64 => "qemu-system-aarch64",
+            Arch::X86_64 => String::from("qemu-system-x86_64"),
+            Arch::Aarch64 => {
+                if cli.config.machine == Machine::Morello {
+                    // all morello software by default is installed in ~/cheri
+                    let mut qemu = home::home_dir().expect("failed to find home directory");
+                    qemu.push("cheri/output/sdk/bin/qemu-system-morello");
+                    String::from(qemu.to_str().unwrap())
+                } else {
+                    String::from("qemu-system-aarch64")
+                }
+            }
         };
         Self {
-            cmd: Command::new(cmd),
+            cmd: Command::new(&cmd),
             arch: cli.config.arch,
+            machine: cli.config.machine,
         }
     }
 
@@ -100,9 +115,15 @@ impl QemuCommand {
             Arch::Aarch64 => {
                 self.cmd.arg("-bios").arg("toolchain/install/OVMF-AA64.fd");
                 self.cmd.arg("-net").arg("none");
-                // use qemu virt machine by default
-                self.cmd.arg("-machine").arg("virt"); //,gic-version=max");
-                self.cmd.arg("-cpu").arg("cortex-a72");
+                if self.machine == Machine::Morello {
+                    self.cmd.arg("-machine").arg("virt,gic-version=3");
+                    self.cmd.arg("-cpu").arg("morello");
+                } else {
+                    // use qemu virt machine by default
+                    // virt uses GICv2 by default
+                    self.cmd.arg("-machine").arg("virt");
+                    self.cmd.arg("-cpu").arg("cortex-a72");
+                }
                 self.cmd.arg("-nographic");
             }
         }
