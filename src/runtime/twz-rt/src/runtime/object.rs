@@ -5,7 +5,9 @@ use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_map, ObjectMapError},
 };
-use twizzler_runtime_api::{MapError, MapFlags, ObjectHandle, ObjectRuntime, StartOrHandle};
+use twizzler_runtime_api::{
+    MapError, MapFlags, ObjectHandle, ObjectRuntime, StartOrHandle, StartOrHandleRef,
+};
 
 use super::ReferenceRuntime;
 
@@ -103,9 +105,9 @@ impl ObjectRuntime for ReferenceRuntime {
         ))
     }
 
-    fn resolve_fot_to_object_start<'a>(
+    fn resolve_fot_to_object_start(
         &self,
-        handle: &'a ObjectHandle,
+        handle: StartOrHandleRef<'_>,
         idx: usize,
         valid_len: usize,
     ) -> Result<StartOrHandle, twizzler_runtime_api::FotResolveError> {

@@ -1,7 +1,6 @@
 use std::{
-    intrinsics::{likely, unlikely},
+    intrinsics::{likely, size_of, unlikely},
     marker::{PhantomData, PhantomPinned},
-    mem::size_of,
     ptr::{addr_of, addr_of_mut},
 };
 
@@ -11,7 +10,7 @@ use twizzler_runtime_api::FotResolveError;
 use super::{GlobalPtr, InvPtrBuilder, ResolvedMutPtr, ResolvedPtr};
 use crate::{
     marker::{InPlace, Invariant, InvariantValue, StoreEffect, TryStoreEffect},
-    object::fot::FotEntry,
+    object::fot::{FotEntry, FotResolve},
     tx::TxResult,
 };
 
@@ -112,12 +111,11 @@ impl<T> InvPtr<T> {
 
         // We need to consult the FOT, so ask the runtime.
         let runtime = twizzler_runtime_api::get_runtime();
-        // TODO: cache this.
-        let (our_handle, _) = runtime
-            .ptr_to_handle(this)
+        let our_start = runtime
+            .ptr_to_object_start(this, valid_len)
             .ok_or(FotResolveError::InvalidArgument)?;
         let start = twizzler_runtime_api::get_runtime().resolve_fot_to_object_start(
-            &our_handle,
+            twizzler_runtime_api::StartOrHandleRef::Start(our_start.0),
             fote,
             valid_len,
         )?;

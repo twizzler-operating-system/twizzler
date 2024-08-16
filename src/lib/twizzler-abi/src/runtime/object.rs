@@ -5,6 +5,7 @@ use core::{mem::ManuallyDrop, ptr::NonNull};
 use rustc_alloc::{collections::BTreeMap, vec::Vec};
 use twizzler_runtime_api::{
     InternalHandleRefs, MapError, MapFlags, ObjectHandle, ObjectRuntime, StartOrHandle,
+    StartOrHandleRef,
 };
 
 use self::slot::global_release;
@@ -209,18 +210,23 @@ impl ObjectRuntime for MinimalRuntime {
         Some((start as *const u8, offset))
     }
 
-    fn resolve_fot_to_object_start<'a>(
+    fn resolve_fot_to_object_start(
         &self,
-        handle: &'a ObjectHandle,
+        handle: StartOrHandleRef<'_>,
         idx: usize,
         _valid_len: usize,
     ) -> Result<StartOrHandle, twizzler_runtime_api::FotResolveError> {
-        if idx == 0 {
-            return Ok(StartOrHandle::Start(handle.start));
+        let start = match handle {
+            StartOrHandleRef::Start(s) => s,
+            StartOrHandleRef::Handle(h) => h.start,
+        };
+        if core::intrinsics::likely(idx == 0) {
+            return Ok(StartOrHandle::Start(start));
         }
 
+        let meta = unsafe { start.add(MAX_SIZE - NULLPAGE_SIZE) };
         let fote = unsafe {
-            let fot0_ptr = (handle.meta as *mut FotEntry).offset(-1);
+            let fot0_ptr = (meta as *mut FotEntry).offset(-1);
             let fot_ptr = fot0_ptr.offset(-(idx as isize));
             fot_ptr.read()
         };

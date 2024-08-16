@@ -276,9 +276,16 @@ impl Display for FotResolveError {
 
 impl core::error::Error for FotResolveError {}
 
+#[derive(Clone, Debug)]
 pub enum StartOrHandle {
     Start(*const u8),
     Handle(ObjectHandle),
+}
+
+#[derive(Clone, Debug, Copy)]
+pub enum StartOrHandleRef<'a> {
+    Start(*const u8),
+    Handle(&'a ObjectHandle),
 }
 
 /// All the object related runtime functions.
@@ -303,7 +310,7 @@ pub trait ObjectRuntime {
     /// object. Ensures that at least valid_len bytes after the returned pointer are valid to use.
     fn resolve_fot_to_object_start(
         &self,
-        handle: &ObjectHandle,
+        handle: StartOrHandleRef<'_>,
         idx: usize,
         valid_len: usize,
     ) -> Result<StartOrHandle, FotResolveError>;
