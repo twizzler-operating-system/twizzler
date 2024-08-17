@@ -69,4 +69,11 @@ impl DebugRuntime for ReferenceRuntime {
         }
         ret
     }
+
+    fn next_library_id(
+        &self,
+        id: twizzler_runtime_api::LibraryId,
+    ) -> Option<twizzler_runtime_api::LibraryId> {
+        Some(twizzler_runtime_api::LibraryId(id.0 + 1))
+    }
 }
