@@ -154,7 +154,7 @@ impl<T> TryStoreEffect for InvPtr<T> {
     where
         Self: Sized,
     {
-        Ok(if ctor.is_local() {
+        Ok(if ctor.is_local() || ctor.id() == in_place.handle().id {
             unsafe { Self::new(ctor.offset()) }
         } else {
             let runtime = twizzler_runtime_api::get_runtime();
