@@ -22,7 +22,7 @@ mod gates {
 }
 
 pub use gates::*;
-use twizzler_runtime_api::{AddrRange, DlPhdrInfo, LibraryId, ObjectHandle};
+use twizzler_runtime_api::{AddrRange, DlPhdrInfo, LibraryId, MapFlags, ObjectHandle};
 
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and
 /// read-only from the compartment.
@@ -200,12 +200,28 @@ impl LibraryInfo {
 /// A handle to a loaded library. On drop, the library may unload.
 pub struct LibraryHandle {
     handle: ObjectHandle,
+    id: LibraryId,
 }
 
 impl LibraryHandle {
     /// Get the library info.
     pub fn info(&self) -> LibraryInfo {
-        todo!()
+        LibraryInfo::from_raw(
+            gates::monitor_rt_get_library_info(0.into(), self.id.0 as usize)
+                .ok()
+                .flatten()
+                .unwrap(),
+        )
+    }
+
+    /// Get the handle for this library.
+    pub fn handle(&self) -> &ObjectHandle {
+        &self.handle
+    }
+
+    /// Get the ID of this library.
+    pub fn library_id(&self) -> LibraryId {
+        self.id
     }
 }
 
@@ -217,13 +233,21 @@ pub struct LibraryLoader {
 impl LibraryLoader {
     /// Make a new LibraryLoader.
     pub fn new(id: ObjID) -> Self {
-        todo!()
+        Self { id }
     }
 
     // TODO: err
     /// Load the library.
     pub fn load(&self) -> Result<LibraryHandle, ()> {
-        todo!()
+        let info: LibraryInfoRaw = gates::monitor_rt_load_library(self.id)
+            .ok()
+            .flatten()
+            .ok_or(())?;
+        let runtime = twizzler_runtime_api::get_runtime();
+        Ok(LibraryHandle {
+            handle: runtime.map_object(info.objid, MapFlags::READ).unwrap(),
+            id: info.id,
+        })
     }
 }
 
@@ -247,13 +271,33 @@ pub struct CompartmentLoader {
 impl CompartmentLoader {
     /// Make a new compartment loader.
     pub fn new(id: ObjID) -> Self {
-        todo!()
+        Self { id }
     }
 
     // TODO: err
     /// Load the compartment.
-    pub fn load() -> Result<CompartmentHandle, ()> {
-        todo!()
+    pub fn load(&self) -> Result<CompartmentHandle, ()> {
+        let info: gates::CompartmentInfo = gates::monitor_rt_load_compartment(self.id)
+            .ok()
+            .flatten()
+            .ok_or(())?;
+        Ok(CompartmentHandle { id: info.id })
+    }
+}
+
+impl Drop for CompartmentHandle {
+    fn drop(&mut self) {
+        let _ = gates::monitor_rt_drop_compartment_handle(self.id)
+            .ok()
+            .flatten();
+    }
+}
+
+impl Drop for LibraryHandle {
+    fn drop(&mut self) {
+        let _ = gates::monitor_rt_drop_library_handle(self.id)
+            .ok()
+            .flatten();
     }
 }
 
@@ -292,7 +336,7 @@ impl CompartmentInfo {
 
     /// Get an iterator over this compartment's dependencies.
     pub fn deps(&self) -> CompartmentDepsIter {
-        todo!()
+        CompartmentDepsIter::new(self.id)
     }
 
     /// Get the root library for this compartment.
@@ -302,33 +346,59 @@ impl CompartmentInfo {
 
     /// Get an iterator over the libraries for this compartment.
     pub fn libs(&self) -> LibraryIter {
-        todo!()
+        LibraryIter::new()
     }
 }
 
 /// An iterator over libraries in a compartment.
-pub struct LibraryIter {}
+pub struct LibraryIter {
+    n: usize,
+}
+
+impl LibraryIter {
+    pub fn new() -> Self {
+        Self { n: 0 }
+    }
+}
 
 impl Iterator for LibraryIter {
     type Item = LibraryInfo;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        let info = gates::monitor_rt_get_library_info(0.into(), self.n)
+            .ok()
+            .flatten()?;
+        self.n += 1;
+        Some(LibraryInfo::from_raw(info))
     }
 }
 
 /// An iterator over a compartmen's dependencies.
-pub struct CompartmentDepsIter {}
+pub struct CompartmentDepsIter {
+    n: usize,
+    id: ObjID,
+}
+
+impl CompartmentDepsIter {
+    pub fn new(id: ObjID) -> Self {
+        Self { n: 0, id }
+    }
+}
 
 impl Iterator for CompartmentDepsIter {
     type Item = CompartmentInfo;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        let info = gates::monitor_rt_get_compartment_deps(self.id, self.n)
+            .ok()
+            .flatten()?;
+        self.n += 1;
+        Some(CompartmentInfo::from_raw(info))
     }
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        todo!()
+        self.n += n;
+        self.next()
     }
 }
 

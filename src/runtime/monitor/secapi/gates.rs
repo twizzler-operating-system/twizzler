@@ -105,6 +105,51 @@ unsafe impl Crossing for LibraryInfo {}
     not(feature = "secgate-impl"),
     secgate::secure_gate(options(info, api))
 )]
+pub fn monitor_rt_load_compartment(
+    info: &secgate::GateCallInfo,
+    root_id: ObjID,
+) -> Option<CompartmentInfo> {
+    todo!()
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_drop_compartment_handle(
+    info: &secgate::GateCallInfo,
+    id: ObjID,
+) -> Option<CompartmentInfo> {
+    todo!()
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_load_library(info: &secgate::GateCallInfo, id: ObjID) -> Option<LibraryInfo> {
+    todo!()
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_drop_library_handle(
+    info: &secgate::GateCallInfo,
+    id: LibraryId,
+) -> Option<LibraryInfo> {
+    todo!()
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
 pub fn monitor_rt_object_map(
     info: &secgate::GateCallInfo,
     id: ObjID,
