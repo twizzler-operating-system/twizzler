@@ -1,4 +1,5 @@
 pub mod cpu_trng;
+mod fortuna;
 use alloc::vec::Vec;
 
 use rand_core::RngCore;

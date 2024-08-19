@@ -3,7 +3,6 @@ use rdrand::{ErrorCode, RdSeed};
 
 #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
 mod rndrs;
-use rand_core::RngCore;
 
 #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
 use self::rndrs::Rndrs;
@@ -50,9 +49,9 @@ mod test {
             generator
                 .try_fill_entropy(&mut dest)
                 .expect("CpuEntropy should return some bytes");
-            logln!("{dest:?}\n");
+            logln!("Random bytes from CpuEntropy: {:?}\n", dest);
         } else {
-            logln!("CpuEntropy not supported")
+            logln!("CpuEntropy not supported on this hardware")
         }
     }
 }

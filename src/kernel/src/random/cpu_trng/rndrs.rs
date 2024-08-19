@@ -15,7 +15,6 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    #[cfg(not(feature = "std"))]
     const fn as_randcore_code(self) -> core::num::NonZeroU32 {
         /// Arbitrary, off top of head bitmask for error codes that come from rdrand
         const RDRAND_TAG: u32 = rand_core::Error::CUSTOM_START + 0x3D34_7D00;
@@ -33,7 +32,7 @@ impl From<ErrorCode> for rand_core::Error {
 // doesn't actually work on the chip we are targeting, but it might eventually
 // get supported on future ARM chips.
 // Untested because I don't have hardware to test it on
-// and I don't want to try to emulate that hardware!
+// and I don't want to try to emulate that hardware.
 impl Rndrs {
     pub fn new() -> Result<Self, ErrorCode> {
         Ok(Rndrs(
