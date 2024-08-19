@@ -291,6 +291,7 @@ fn maybe_build_tests<'a>(
                 "bootstrap" => None,
                 "secgate" => None,
                 "secgate-macros" => None,
+                "layout-derive" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),
