@@ -25,6 +25,8 @@ monitor-api = { path = "../monitor-api" }
 static_assertions = "1.1"
 lazy_static = "1.4"
 talc = "3.1"
+happylock = "0.3"
+parking_lot = "*"
 
 [features]
 secgate-impl = []

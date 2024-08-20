@@ -74,4 +74,8 @@ impl DebugRuntime for MinimalRuntime {
     ) -> core::ffi::c_int {
         0
     }
+
+    fn next_library_id(&self, _id: LibraryId) -> Option<LibraryId> {
+        None
+    }
 }

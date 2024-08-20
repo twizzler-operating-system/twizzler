@@ -4,9 +4,12 @@ use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(feature = "kernel"))]
 use core::time::Duration;
 
-use crate::marker::BaseType;
 #[cfg(not(feature = "kernel"))]
 use crate::syscall::*;
+use crate::{
+    marker::BaseType,
+    syscall::{ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep},
+};
 #[allow(unused_imports)]
 use crate::{
     object::{ObjID, Protections},
@@ -123,6 +126,26 @@ impl ThreadRepr {
                 }
             }
         }
+    }
+
+    /// Create a [ThreadSyncSleep] that will wait until the thread's state matches `state`.
+    pub fn waitable(&self, state: ExecutionState) -> ThreadSyncSleep {
+        ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(&self.status),
+            state as u64,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        )
+    }
+
+    /// Create a [ThreadSyncSleep] that will wait until the thread's state is _not_ `state`.
+    pub fn waitable_until_not(&self, state: ExecutionState) -> ThreadSyncSleep {
+        ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(&self.status),
+            state as u64,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::INVERT,
+        )
     }
 
     #[cfg(not(feature = "kernel"))]
