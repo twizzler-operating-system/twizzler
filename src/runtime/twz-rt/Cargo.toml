@@ -22,7 +22,7 @@ elf = "0.7"
 static_assertions = "1.1"
 monitor-api = { path = "../monitor-api" }
 secgate = { path = "../secgate" }
-
+stable-vec = "0.4.1"
 
 [features]
 runtime = []
