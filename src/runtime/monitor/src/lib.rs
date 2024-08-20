@@ -2,6 +2,7 @@
 #![feature(thread_local)]
 #![feature(c_str_literals)]
 #![feature(new_uninit)]
+#![feature(hash_extract_if)]
 
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +29,9 @@ pub mod secgate_test;
 mod state;
 mod thread;
 mod upcall;
+
+mod api;
+mod mon;
 
 #[path = "../secapi/gates.rs"]
 mod gates;
@@ -95,7 +99,7 @@ fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
         }
     }
 
-    load_hello_world_test(&state).unwrap();
+    //load_hello_world_test(&state).unwrap();
 
     Ok(())
 }
