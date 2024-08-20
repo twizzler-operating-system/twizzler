@@ -1,5 +1,5 @@
 use std::{
-    fs::File,
+    fs::OpenOptions,
     path::Path,
     process::{Command, ExitStatus},
 };
@@ -52,9 +52,10 @@ impl QemuCommand {
             image_info.disk_image.as_path().display()
         ));
 
-        File::create("target/nvme.img")
-            .and_then(|f| f.set_len(0x1000000))
-            .unwrap();
+        if let Ok(f) = OpenOptions::new().write(true).create(true).open("target/nvme.img") {
+            f.set_len(0x1000000).unwrap();
+        }
+
         self.cmd
             .arg("-drive")
             .arg("file=target/nvme.img,if=none,id=nvme")
