@@ -11,6 +11,8 @@ use std::{cell::UnsafeCell, marker::Tuple, mem::MaybeUninit};
 pub use secgate_macros::*;
 use twizzler_abi::object::ObjID;
 
+pub mod util;
+
 /// Enum of possible return codes, similar to [Result], but with specific
 /// variants of possible failures of initializing or invoking the secure gate call.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
