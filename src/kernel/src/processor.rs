@@ -394,7 +394,8 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
 
 pub fn register(id: u32, bsp_id: u32) {
     if id as usize >= unsafe { &ALL_PROCESSORS }.len() {
-        unimplemented!("processor ID too large");
+        logln!("warning -- processor ID too large: {}", id);
+        return;
     }
 
     unsafe {
