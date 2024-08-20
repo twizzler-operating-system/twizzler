@@ -12,6 +12,8 @@ members = [
     "src/bin/netmgr",
     "src/bin/nettest",
     "src/bin/pager",
+    "src/bin/mnemosyne",
+    "src/bin/stdfs_demo",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
@@ -23,7 +25,7 @@ members = [
     "src/runtime/monitor",
     "src/runtime/monitor-api",
     "src/runtime/twz-rt",
-    "src/lib/twizzler-futures",
+    "src/lib/twizzler-futures", 
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -39,6 +41,8 @@ initrd = [
     "crate:pager",
     "lib:twz-rt",
     "lib:monitor",
+    "crate:mnemosyne",
+    "crate:stdfs_demo",
     #"third-party:hello-world-rs"
 ]
 
