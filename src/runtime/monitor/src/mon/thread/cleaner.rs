@@ -18,6 +18,7 @@ use twizzler_runtime_api::ObjID;
 use super::ManagedThread;
 use crate::mon::get_monitor;
 
+/// Tracks threads that do not exit cleanly, so their monitor-internal resources can be cleaned up.
 pub(super) struct ThreadCleaner {
     thread: std::thread::JoinHandle<()>,
     send: Sender<WaitOp>,
@@ -30,6 +31,7 @@ struct ThreadCleanerData {
     _unpin: PhantomPinned,
 }
 
+// All the threads we are tracking.
 #[derive(Default)]
 struct Waits {
     threads: HashMap<ObjID, ManagedThread>,
@@ -42,6 +44,7 @@ enum WaitOp {
 }
 
 impl ThreadCleaner {
+    /// Makes a new ThreadCleaner.
     pub(super) fn new() -> Self {
         let (send, recv) = std::sync::mpsc::channel();
         let data = Arc::pin(ThreadCleanerData::default());
