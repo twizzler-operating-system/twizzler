@@ -43,9 +43,6 @@ initrd = [
     "lib:monitor",
     "crate:mnemosyne",
     "crate:stdfs_demo",
-    #"lib:twz-rt",
-    #"lib:monitor",
->>>>>>> 5e5e713 (Cleanup.)
     #"third-party:hello-world-rs"
 ]
 
