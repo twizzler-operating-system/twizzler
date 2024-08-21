@@ -4,7 +4,7 @@ use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
 use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use twizzler_abi::upcall::UpcallFrame;
-use twizzler_runtime_api::{MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
+use twizzler_runtime_api::{LibraryId, MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
 use twz_rt::{RuntimeState, RuntimeThreadControl, OUR_RUNTIME};
 
 use self::{
@@ -12,7 +12,11 @@ use self::{
     space::{MapHandle, MapInfo, Unmapper},
     thread::{ManagedThread, ThreadCleaner},
 };
-use crate::{api::MONITOR_INSTANCE_ID, init::InitDynlinkContext};
+use crate::{
+    api::MONITOR_INSTANCE_ID,
+    gates::{CompartmentInfo, LibraryInfo, LoadCompartmentError, LoadLibraryError},
+    init::InitDynlinkContext,
+};
 
 pub(crate) mod compartment;
 pub(crate) mod space;
@@ -157,6 +161,52 @@ impl Monitor {
         let rc = comp_mgr.get_mut(sctx).ok_or(MapError::InvalidArgument)?;
         let handle = rc.map_object(info, handle)?;
         Ok(handle)
+    }
+
+    pub fn get_library_info(
+        &self,
+        caller: ObjID,
+        compartment: ObjID,
+        num: usize,
+    ) -> Option<LibraryInfo> {
+        todo!()
+    }
+
+    pub fn get_compartment_info(
+        &self,
+        caller: ObjID,
+        compartment: ObjID,
+    ) -> Option<CompartmentInfo> {
+        todo!()
+    }
+
+    pub fn get_compartment_deps(
+        &self,
+        caller: ObjID,
+        compartment: ObjID,
+        dep_n: usize,
+    ) -> Option<CompartmentInfo> {
+        todo!()
+    }
+
+    pub fn load_compartment(
+        &self,
+        caller: ObjID,
+        root_id: ObjID,
+    ) -> Result<CompartmentInfo, LoadCompartmentError> {
+        todo!()
+    }
+
+    pub fn load_library(&self, caller: ObjID, id: ObjID) -> Result<LibraryInfo, LoadLibraryError> {
+        todo!()
+    }
+
+    pub fn drop_compartment_handle(&self, caller: ObjID, handle: ObjID) {
+        todo!()
+    }
+
+    pub fn drop_library_handle(&self, caller: ObjID, handle: LibraryId) {
+        todo!()
     }
 }
 

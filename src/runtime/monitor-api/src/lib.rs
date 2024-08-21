@@ -5,6 +5,7 @@
 #![feature(naked_functions)]
 #![feature(pointer_byte_offsets)]
 #![feature(pointer_is_aligned)]
+#![feature(result_flattening)]
 use std::{
     alloc::Layout,
     ptr::NonNull,
@@ -238,11 +239,11 @@ impl LibraryLoader {
 
     // TODO: err
     /// Load the library.
-    pub fn load(&self) -> Result<LibraryHandle, ()> {
+    pub fn load(&self) -> Result<LibraryHandle, gates::LoadLibraryError> {
         let info: LibraryInfoRaw = gates::monitor_rt_load_library(self.id)
             .ok()
-            .flatten()
-            .ok_or(())?;
+            .ok_or(gates::LoadLibraryError::Unknown)
+            .flatten()?;
         let runtime = twizzler_runtime_api::get_runtime();
         Ok(LibraryHandle {
             handle: runtime.map_object(info.objid, MapFlags::READ).unwrap(),
@@ -276,28 +277,24 @@ impl CompartmentLoader {
 
     // TODO: err
     /// Load the compartment.
-    pub fn load(&self) -> Result<CompartmentHandle, ()> {
+    pub fn load(&self) -> Result<CompartmentHandle, gates::LoadCompartmentError> {
         let info: gates::CompartmentInfo = gates::monitor_rt_load_compartment(self.id)
             .ok()
-            .flatten()
-            .ok_or(())?;
+            .ok_or(gates::LoadCompartmentError::Unknown)
+            .flatten()?;
         Ok(CompartmentHandle { id: info.id })
     }
 }
 
 impl Drop for CompartmentHandle {
     fn drop(&mut self) {
-        let _ = gates::monitor_rt_drop_compartment_handle(self.id)
-            .ok()
-            .flatten();
+        let _ = gates::monitor_rt_drop_compartment_handle(self.id).ok();
     }
 }
 
 impl Drop for LibraryHandle {
     fn drop(&mut self) {
-        let _ = gates::monitor_rt_drop_library_handle(self.id)
-            .ok()
-            .flatten();
+        let _ = gates::monitor_rt_drop_library_handle(self.id).ok();
     }
 }
 
