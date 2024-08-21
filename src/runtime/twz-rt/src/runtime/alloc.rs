@@ -92,7 +92,7 @@ fn create_and_map() -> Option<(usize, ObjID)> {
         .ok();
 
     if let Some(slot) = slot {
-        Some((slot, id))
+        Some((slot.slot, id))
     } else {
         delete_obj(id);
         None
@@ -117,7 +117,8 @@ impl OomHandler for RuntimeOom {
                 .is_err()
             {
                 delete_obj(id);
-                monitor_api::monitor_rt_object_unmap(slot).unwrap();
+                monitor_api::monitor_rt_object_unmap(slot, id, MapFlags::READ | MapFlags::WRITE)
+                    .unwrap();
                 return Err(());
             }
         }

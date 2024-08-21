@@ -53,11 +53,14 @@ bitflags::bitflags! {
 }
 
 impl ReferenceRuntime {
-    pub(crate) fn state(&self) -> RuntimeState {
+    /// Returns the runtime state flags.
+    pub fn state(&self) -> RuntimeState {
         RuntimeState::from_bits_truncate(self.state.load(Ordering::SeqCst))
     }
 
-    fn set_runtime_ready(&self) {
+    /// Set the runtime ready state. If the runtime has not been initialized, the result is
+    /// undefined.
+    pub unsafe fn set_runtime_ready(&self) {
         self.state
             .fetch_or(RuntimeState::READY.bits(), Ordering::SeqCst);
     }

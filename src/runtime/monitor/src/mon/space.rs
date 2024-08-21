@@ -3,8 +3,9 @@ use std::{collections::HashMap, sync::Arc};
 use miette::IntoDiagnostic;
 use monitor_api::MappedObjectAddrs;
 use twizzler_abi::syscall::{
-    sys_object_create, sys_object_ctrl, sys_object_map, sys_object_unmap, CreateTieSpec,
-    DeleteFlags, ObjectControlCmd, ObjectCreate, ObjectSource, UnmapFlags,
+    sys_object_create, sys_object_ctrl, sys_object_map, sys_object_unmap, BackingType,
+    CreateTieSpec, DeleteFlags, LifetimeType, ObjectControlCmd, ObjectCreate, ObjectCreateFlags,
+    ObjectSource, UnmapFlags,
 };
 use twizzler_object::Protections;
 use twizzler_runtime_api::{MapError, MapFlags, ObjID};
@@ -136,10 +137,28 @@ impl Space {
         }
         .into_diagnostic()
     }
+
+    pub(crate) fn safe_create_and_map_runtime_object(
+        &mut self,
+        instance: ObjID,
+        map_flags: MapFlags,
+    ) -> miette::Result<MapHandle> {
+        self.safe_create_and_map_object(
+            ObjectCreate::new(
+                BackingType::Normal,
+                LifetimeType::Volatile,
+                Some(instance),
+                ObjectCreateFlags::empty(),
+            ),
+            &[],
+            &[],
+            map_flags,
+        )
+    }
 }
 
-// Allows us to call handle_drop and do all the hard work in the caller, since
-// the caller probably had to hold a lock to call these functions.
+/// Allows us to call handle_drop and do all the hard work in the caller, since
+/// the caller probably had to hold a lock to call these functions.
 pub(crate) struct UnmapOnDrop {
     slot: usize,
 }
@@ -152,4 +171,21 @@ impl Drop for UnmapOnDrop {
             tracing::warn!("failed to unmap slot {}", self.slot);
         }
     }
+}
+
+/// Map an object into the address space, without tracking it. This leaks the mapping, but is useful
+/// for bootstrapping. See the object mapping gate comments for more details.
+pub fn early_object_map(info: MapInfo) -> MappedObjectAddrs {
+    let slot = twz_rt::OUR_RUNTIME.allocate_slot().unwrap();
+
+    sys_object_map(
+        None,
+        info.id,
+        slot,
+        mapflags_into_prot(info.flags),
+        twizzler_abi::syscall::MapFlags::empty(),
+    )
+    .unwrap();
+
+    MappedObjectAddrs::new(slot)
 }

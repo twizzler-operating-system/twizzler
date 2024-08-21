@@ -122,8 +122,9 @@ impl CoreRuntime for ReferenceRuntime {
         preinit_println!("====== {}", TLS_TEST);
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
+        } else {
+            unsafe { self.set_runtime_ready() };
         }
-        self.set_runtime_ready();
     }
 
     fn post_main_hook(&self) {}
