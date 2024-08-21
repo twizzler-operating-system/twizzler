@@ -8,7 +8,8 @@ impl DebugRuntime for ReferenceRuntime {
         &self,
         id: twizzler_runtime_api::LibraryId,
     ) -> Option<twizzler_runtime_api::Library> {
-        let info = monitor_api::CompartmentInfo::current().libs().nth(id.0)?;
+        let lib = monitor_api::CompartmentHandle::current().libs().nth(id.0)?;
+        let info = lib.info();
         let handle = new_object_handle(info.objid, info.slot, MapFlags::READ);
         Some(Library {
             range: info.range,

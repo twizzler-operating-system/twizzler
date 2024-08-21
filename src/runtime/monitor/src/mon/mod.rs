@@ -3,6 +3,7 @@ use std::{ptr::NonNull, sync::OnceLock};
 use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
 use monitor_api::{SharedCompConfig, TlsTemplateInfo};
+use secgate::util::HandleMgr;
 use twizzler_abi::upcall::UpcallFrame;
 use twizzler_runtime_api::{LibraryId, MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
 use twz_rt::{RuntimeState, RuntimeThreadControl, OUR_RUNTIME};
@@ -19,6 +20,7 @@ use crate::{
 };
 
 pub(crate) mod compartment;
+pub mod library;
 pub(crate) mod space;
 pub(crate) mod thread;
 
@@ -39,6 +41,8 @@ pub struct Monitor {
     pub comp_mgr: &'static RwLock<compartment::CompartmentMgr>,
     /// Dynamic linker state.
     pub dynlink: &'static RwLock<&'static mut dynlink::context::Context>,
+    /// Open handles to libraries.
+    pub library_handles: &'static RwLock<HandleMgr<()>>,
 }
 
 // We allow locking individually, using eg mon.space.write(key), or locking the collection for more
@@ -48,6 +52,7 @@ type MonitorLocks<'a> = (
     &'a RwLock<thread::ThreadMgr>,
     &'a RwLock<compartment::CompartmentMgr>,
     &'a RwLock<&'static mut dynlink::context::Context>,
+    &'a RwLock<HandleMgr<()>>,
 );
 
 impl Monitor {
@@ -102,15 +107,24 @@ impl Monitor {
         let thread_mgr = Box::leak(Box::new(RwLock::new(thread::ThreadMgr::default())));
         let comp_mgr = Box::leak(Box::new(RwLock::new(comp_mgr)));
         let dynlink = Box::leak(Box::new(RwLock::new(unsafe { init.ctx.as_mut().unwrap() })));
+        let library_handles = Box::leak(Box::new(RwLock::new(HandleMgr::new(None))));
 
         // Okay to call try_new here, since it's not many locks and only happens once.
         Self {
-            locks: LockCollection::try_new((&*space, &*thread_mgr, &*comp_mgr, &*dynlink)).unwrap(),
+            locks: LockCollection::try_new((
+                &*space,
+                &*thread_mgr,
+                &*comp_mgr,
+                &*dynlink,
+                &*library_handles,
+            ))
+            .unwrap(),
             unmapper: OnceLock::new(),
             space,
             thread_mgr,
             comp_mgr,
             dynlink,
+            library_handles,
         }
     }
 
@@ -163,49 +177,7 @@ impl Monitor {
         Ok(handle)
     }
 
-    pub fn get_library_info(
-        &self,
-        caller: ObjID,
-        compartment: ObjID,
-        num: usize,
-    ) -> Option<LibraryInfo> {
-        todo!()
-    }
-
-    pub fn get_compartment_info(
-        &self,
-        caller: ObjID,
-        compartment: ObjID,
-    ) -> Option<CompartmentInfo> {
-        todo!()
-    }
-
-    pub fn get_compartment_deps(
-        &self,
-        caller: ObjID,
-        compartment: ObjID,
-        dep_n: usize,
-    ) -> Option<CompartmentInfo> {
-        todo!()
-    }
-
-    pub fn load_compartment(
-        &self,
-        caller: ObjID,
-        root_id: ObjID,
-    ) -> Result<CompartmentInfo, LoadCompartmentError> {
-        todo!()
-    }
-
-    pub fn load_library(&self, caller: ObjID, id: ObjID) -> Result<LibraryInfo, LoadLibraryError> {
-        todo!()
-    }
-
-    pub fn drop_compartment_handle(&self, caller: ObjID, handle: ObjID) {
-        todo!()
-    }
-
-    pub fn drop_library_handle(&self, caller: ObjID, handle: LibraryId) {
+    pub fn get_thread_simple_buffer(&self, sctx: ObjID, thread: ObjID) -> Option<ObjID> {
         todo!()
     }
 }

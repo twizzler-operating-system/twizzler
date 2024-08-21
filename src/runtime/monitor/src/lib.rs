@@ -17,10 +17,10 @@ use twz_rt::{set_upcall_handler, OUR_RUNTIME};
 mod compartment;
 mod init;
 mod object;
-mod runtime;
+//mod runtime;
 pub mod secgate_test;
-mod state;
-mod thread;
+//mod state;
+//mod thread;
 mod upcall;
 
 mod api;

@@ -7,6 +7,14 @@ pub struct SimpleBuffer {
     handle: ObjectHandle,
 }
 
+impl core::fmt::Debug for SimpleBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimpleBuffer")
+            .field("id", &self.handle.id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl SimpleBuffer {
     fn ptr_to_base(&self) -> *const u8 {
         unsafe { self.handle.start.add(NULLPAGE_SIZE) }

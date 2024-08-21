@@ -1,8 +1,12 @@
 use std::collections::HashMap;
 
+use secgate::util::Descriptor;
 use twizzler_runtime_api::ObjID;
 
-use crate::api::MONITOR_INSTANCE_ID;
+use crate::{
+    api::MONITOR_INSTANCE_ID,
+    gates::{CompartmentInfo, LoadCompartmentError},
+};
 
 mod compconfig;
 mod compthread;
@@ -64,5 +68,36 @@ impl CompartmentMgr {
     pub fn get_monitor_mut(&mut self) -> &mut RunComp {
         // Unwrap-Ok: this instance is always present.
         self.get_mut(MONITOR_INSTANCE_ID).unwrap()
+    }
+}
+
+impl super::Monitor {
+    pub fn get_compartment_info(&self, caller: ObjID, desc: Option<Descriptor>) -> CompartmentInfo {
+        todo!()
+    }
+
+    pub fn get_compartment_handle(&self, caller: ObjID, compartment: ObjID) -> Option<Descriptor> {
+        todo!()
+    }
+
+    pub fn get_compartment_deps(
+        &self,
+        caller: ObjID,
+        desc: Option<Descriptor>,
+        dep_n: usize,
+    ) -> Option<Descriptor> {
+        todo!()
+    }
+
+    pub fn load_compartment(
+        &self,
+        caller: ObjID,
+        root_id: ObjID,
+    ) -> Result<Descriptor, LoadCompartmentError> {
+        todo!()
+    }
+
+    pub fn drop_compartment_handle(&self, caller: ObjID, desc: Descriptor) {
+        todo!()
     }
 }
