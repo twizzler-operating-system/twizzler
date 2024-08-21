@@ -122,6 +122,8 @@ struct ImageOptions {
     pub config: BuildConfig,
     #[clap(long, short, help = "Build tests-enabled system.")]
     tests: bool,
+    #[clap(long, short, help = "Build benchmark-enabled system.")]
+    benches: bool,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
 }
@@ -130,7 +132,7 @@ impl From<ImageOptions> for BuildOptions {
     fn from(io: ImageOptions) -> Self {
         Self {
             config: io.config,
-            tests: io.tests,
+            tests: io.tests || io.benches,
             kernel: io.kernel,
         }
     }
@@ -148,6 +150,12 @@ struct QemuOptions {
     qemu_options: Vec<String>,
     #[clap(long, short, help = "Run tests instead of booting normally.")]
     tests: bool,
+    #[clap(
+        long,
+        short,
+        help = "Run benchmarks instead of booting normally. Can be used with --tests."
+    )]
+    benches: bool,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
 }
@@ -157,6 +165,7 @@ impl From<&QemuOptions> for ImageOptions {
         Self {
             config: qo.config,
             tests: qo.tests,
+            benches: qo.benches,
             kernel: qo.kernel,
         }
     }

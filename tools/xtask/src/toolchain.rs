@@ -292,6 +292,12 @@ pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
     std::env::set_var("RUSTC", &get_rustc_path()?);
     std::env::set_var("RUSTDOC", &get_rustdoc_path()?);
 
+    let compiler_rt_path = "toolchain/src/rust/src/llvm-project/compiler-rt";
+    std::env::set_var(
+        "RUST_COMPILER_RT_ROOT",
+        Path::new(compiler_rt_path).canonicalize().unwrap(),
+    );
+
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
     let llvm_bin = get_llvm_bin(guess_host_triple().unwrap())?;

@@ -295,7 +295,6 @@ fn maybe_build_tests<'a>(
             })
             .collect(),
     );
-    println!("==> {:?}", options.spec);
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }

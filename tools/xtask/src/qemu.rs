@@ -85,7 +85,7 @@ impl QemuCommand {
                 self.cmd.arg("-machine").arg("q35,nvdimm=on");
 
                 // add qemu exit device for testing
-                if options.tests {
+                if options.tests || options.benches {
                     // x86 specific
                     self.cmd
                         .arg("-device")
@@ -145,7 +145,7 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
     if exit_status.success() {
         Ok(())
     } else {
-        if cli.tests {
+        if cli.tests || cli.benches {
             if exit_status.code().unwrap() == 1 {
                 eprintln!("qemu reports tests passed");
                 std::process::exit(0);

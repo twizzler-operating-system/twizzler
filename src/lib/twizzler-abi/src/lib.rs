@@ -22,6 +22,7 @@
 #![feature(asm_const)]
 #![feature(linkage)]
 #![feature(error_in_core)]
+#![feature(test)]
 pub mod arch;
 
 #[allow(unused_extern_crates)]
@@ -85,5 +86,22 @@ fn internal_unwrap_result<T, E>(t: Result<T, E>, msg: &str) -> T {
         unsafe {
             internal_abort();
         }
+    }
+}
+
+#[cfg(test)]
+extern crate test;
+
+#[cfg(test)]
+mod tester {
+    use crate::print_err;
+
+    #[bench]
+    fn test_bench(bench: &mut test::Bencher) {
+        bench.iter(|| {
+            for i in 0..10000 {
+                core::hint::black_box(i);
+            }
+        });
     }
 }
