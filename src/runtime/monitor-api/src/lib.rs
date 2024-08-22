@@ -18,7 +18,7 @@ use std::{
 };
 
 use dynlink::tls::{Tcb, TlsRegion};
-use secgate::util::Descriptor;
+use secgate::util::{Descriptor, Handle};
 use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 
 mod gates {
@@ -274,17 +274,59 @@ impl CompartmentLoader {
     }
 }
 
-impl Drop for CompartmentHandle {
-    fn drop(&mut self) {
+impl Handle for CompartmentHandle {
+    type OpenError = ();
+
+    type OpenInfo = ObjID;
+
+    fn open(info: Self::OpenInfo) -> Result<Self, Self::OpenError>
+    where
+        Self: Sized,
+    {
+        let desc = gates::monitor_rt_get_compartment_handle(info)
+            .ok()
+            .flatten()
+            .ok_or(())?;
+        Ok(CompartmentHandle { desc: Some(desc) })
+    }
+
+    fn release(&mut self) {
         if let Some(desc) = self.desc {
             let _ = gates::monitor_rt_drop_compartment_handle(desc).ok();
         }
     }
 }
 
+impl Handle for LibraryHandle {
+    type OpenError = ();
+
+    type OpenInfo = (Option<Descriptor>, usize);
+
+    fn open(info: Self::OpenInfo) -> Result<Self, Self::OpenError>
+    where
+        Self: Sized,
+    {
+        let desc = gates::monitor_rt_get_library_handle(info.0, info.1)
+            .ok()
+            .flatten()
+            .ok_or(())?;
+        Ok(LibraryHandle { desc })
+    }
+
+    fn release(&mut self) {
+        let _ = gates::monitor_rt_drop_library_handle(self.desc).ok();
+    }
+}
+
+impl Drop for CompartmentHandle {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 impl Drop for LibraryHandle {
     fn drop(&mut self) {
-        let _ = gates::monitor_rt_drop_library_handle(self.desc).ok();
+        self.release()
     }
 }
 
@@ -350,11 +392,11 @@ impl<'a> Iterator for LibraryIter<'a> {
     type Item = LibraryHandle;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let desc = gates::monitor_rt_get_library_handle(self.comp.desc, self.n)
-            .ok()
-            .flatten()?;
-        self.n += 1;
-        Some(LibraryHandle { desc })
+        let handle = LibraryHandle::open((self.comp.desc, self.n)).ok();
+        if handle.is_some() {
+            self.n += 1;
+        }
+        handle
     }
 }
 
