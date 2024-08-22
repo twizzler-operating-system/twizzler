@@ -24,6 +24,11 @@ pub mod library;
 pub(crate) mod space;
 pub(crate) mod thread;
 
+struct LibraryHandle {
+    comp: ObjID,
+    id: LibraryId,
+}
+
 /// A security monitor instance. All monitor logic is implemented as methods for this type.
 /// We split the state into the following components: 'space', managing the virtual memory space and
 /// mapping objects, 'thread_mgr', which manages all threads owned by the monitor (typically, all
@@ -42,7 +47,7 @@ pub struct Monitor {
     /// Dynamic linker state.
     pub dynlink: &'static RwLock<&'static mut dynlink::context::Context>,
     /// Open handles to libraries.
-    pub library_handles: &'static RwLock<HandleMgr<()>>,
+    pub library_handles: &'static RwLock<HandleMgr<LibraryHandle>>,
 }
 
 // We allow locking individually, using eg mon.space.write(key), or locking the collection for more
@@ -52,7 +57,7 @@ type MonitorLocks<'a> = (
     &'a RwLock<thread::ThreadMgr>,
     &'a RwLock<compartment::CompartmentMgr>,
     &'a RwLock<&'static mut dynlink::context::Context>,
-    &'a RwLock<HandleMgr<()>>,
+    &'a RwLock<HandleMgr<LibraryHandle>>,
 );
 
 impl Monitor {

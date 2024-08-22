@@ -8,6 +8,7 @@ use std::{
 
 use dynlink::compartment::CompartmentId;
 use monitor_api::SharedCompConfig;
+use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::syscall::{
     ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
@@ -40,7 +41,11 @@ pub struct RunComp {
     alloc: Talc<ErrOnOom>,
     mapped_objects: HashMap<MapInfo, MapHandle>,
     flags: Box<AtomicU64>,
+    per_thread: HashMap<ObjID, PerThread>,
 }
+
+#[derive(Default)]
+struct PerThread {}
 
 impl RunComp {
     pub fn new(
@@ -65,7 +70,18 @@ impl RunComp {
             alloc,
             mapped_objects: HashMap::default(),
             flags: Box::new(AtomicU64::new(flags)),
+            per_thread: HashMap::new(),
         }
+    }
+
+    /// Get per-thread data in this compartment.
+    pub fn get_per_thread(&mut self, id: ObjID) -> &mut PerThread {
+        self.per_thread.entry(id).or_default()
+    }
+
+    /// Remove all per-thread data for a given thread.
+    pub fn clean_per_thread_data(&mut self, id: ObjID) {
+        self.per_thread.remove(&id);
     }
 
     /// Map an object into this compartment.

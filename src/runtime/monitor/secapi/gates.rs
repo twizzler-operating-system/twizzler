@@ -42,7 +42,10 @@ pub fn monitor_rt_get_comp_config(info: &secgate::GateCallInfo) -> usize {
     not(feature = "secgate-impl"),
     secgate::secure_gate(options(info, api))
 )]
-pub fn monitor_rt_get_library_info(info: &secgate::GateCallInfo, desc: Descriptor) -> LibraryInfo {
+pub fn monitor_rt_get_library_info(
+    info: &secgate::GateCallInfo,
+    desc: Descriptor,
+) -> Option<LibraryInfo> {
     use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
@@ -75,7 +78,7 @@ pub struct LibraryInfo {
     pub slot: usize,
     pub range: AddrRange,
     pub dl_info: DlPhdrInfo,
-    desc: Descriptor,
+    pub desc: Descriptor,
 }
 
 #[repr(C)]

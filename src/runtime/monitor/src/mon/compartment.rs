@@ -69,6 +69,14 @@ impl CompartmentMgr {
         // Unwrap-Ok: this instance is always present.
         self.get_mut(MONITOR_INSTANCE_ID).unwrap()
     }
+
+    pub fn compartments(&self) -> impl Iterator<Item = &RunComp> {
+        self.instances.values()
+    }
+
+    pub fn compartments_mut(&mut self) -> impl Iterator<Item = &mut RunComp> {
+        self.instances.values_mut()
+    }
 }
 
 impl super::Monitor {

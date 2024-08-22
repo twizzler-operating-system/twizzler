@@ -211,7 +211,12 @@ pub struct LibraryHandle {
 impl LibraryHandle {
     /// Get the library info.
     pub fn info(&self) -> LibraryInfo<'_> {
-        LibraryInfo::from_raw(gates::monitor_rt_get_library_info(self.desc).ok().unwrap())
+        LibraryInfo::from_raw(
+            gates::monitor_rt_get_library_info(self.desc)
+                .ok()
+                .flatten()
+                .unwrap(),
+        )
     }
 }
 
