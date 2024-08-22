@@ -95,12 +95,10 @@ extern crate test;
 
 #[cfg(test)]
 mod tester {
-    use crate::print_err;
-
     #[bench]
     fn test_bench(bench: &mut test::Bencher) {
         bench.iter(|| {
-            for i in 0..10000 {
+            for i in 0..1000 {
                 core::hint::black_box(i);
             }
         });

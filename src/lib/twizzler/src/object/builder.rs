@@ -251,6 +251,7 @@ mod test {
                 }
             })
             .unwrap();
+        assert!(bar_obj.base().x.is_local());
         assert_eq!(unsafe { bar_obj.base().x.resolve().x }, 46);
     }
 
@@ -284,6 +285,7 @@ mod test {
             .unwrap();
 
         let foo_obj_x = unsafe { bar_obj.base().x.resolve().x };
+        assert!(!bar_obj.base().x.is_local());
         let yx = unsafe { bar_obj.base().y.resolve().x };
         let zxx = unsafe { bar_obj.base().z.resolve().x.resolve().x };
         let zyx = unsafe { bar_obj.base().z.resolve().y.resolve().x };

@@ -3461,11 +3461,31 @@ checksum = "3528ecfd12c466c6f163363caf2d02a71161dd5e1cc6ae7b34207ea2d42d81ed"
 name = "twizzler"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.4.1",
+ "bitflags 2.6.0",
  "thiserror",
  "twizzler-abi",
  "twizzler-derive",
  "twizzler-runtime-api",
+]
+
+[[package]]
+name = "twizzler-abi"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.6.0",
+ "bitset-core",
+ "cfg-if 1.0.0",
+ "compiler_builtins",
+ "lazy_static",
+ "libc",
+ "num_enum",
+ "rustc-std-workspace-alloc",
+ "rustc-std-workspace-core",
+ "stable-vec",
+ "talc",
+ "thiserror-no-std",
+ "twizzler-runtime-api",
+ "volatile",
 ]
 
 [[package]]

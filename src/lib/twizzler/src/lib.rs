@@ -3,6 +3,8 @@
 #![feature(negative_impls)]
 #![feature(strict_provenance)]
 #![feature(core_intrinsics)]
+#![feature(thread_local)]
+#![feature(test)]
 
 extern crate self as twizzler;
 
