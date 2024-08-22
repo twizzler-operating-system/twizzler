@@ -116,7 +116,7 @@ struct CheckOptions {
     all_targets: bool,
 }
 
-#[derive(Args, Debug, Clone, Copy)]
+#[derive(Args, Debug, Clone)]
 struct ImageOptions {
     #[clap(flatten)]
     pub config: BuildConfig,
@@ -124,6 +124,8 @@ struct ImageOptions {
     tests: bool,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
+    #[clap(long, short, help = "Share a file/directory with Twizzler")]
+    data: Option<PathBuf>
 }
 
 impl From<ImageOptions> for BuildOptions {
@@ -150,6 +152,8 @@ struct QemuOptions {
     tests: bool,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
+    #[clap(long, short, help = "Share a file/directory with Twizzler")]
+    data: Option<PathBuf>
 }
 
 impl From<&QemuOptions> for ImageOptions {
@@ -158,6 +162,7 @@ impl From<&QemuOptions> for ImageOptions {
             config: qo.config,
             tests: qo.tests,
             kernel: qo.kernel,
+            data: qo.data.clone(),
         }
     }
 }

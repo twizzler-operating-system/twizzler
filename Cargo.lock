@@ -1763,9 +1763,9 @@ dependencies = [
 
 [[package]]
 name = "lazy_static"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 dependencies = [
  "spin",
 ]
@@ -2968,9 +2968,9 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.5.2"
+version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e63cff320ae2c57904679ba7cb63280a3dc4613885beafb148ee7bf9aa9042d"
+checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 
 [[package]]
 name = "spinning_top"
@@ -2983,9 +2983,9 @@ dependencies = [
 
 [[package]]
 name = "stable-vec"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80dfb7bb28f3d2fa50566793349d633b33f938543154be8071610ea9f590d8ca"
+checksum = "d1dff32a2ce087283bec878419027cebd888760d8760b2941ad0843531dc9ec8"
 dependencies = [
  "no-std-compat",
 ]
@@ -3414,10 +3414,12 @@ dependencies = [
  "bitset-core",
  "cfg-if 1.0.0",
  "compiler_builtins",
+ "lazy_static",
  "libc",
  "num_enum",
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
+ "stable-vec",
  "syscall_encode_macros",
  "syscall_encode_traits",
  "talc",
@@ -3557,6 +3559,7 @@ dependencies = [
  "lazy_static",
  "monitor-api",
  "secgate",
+ "stable-vec",
  "static_assertions",
  "talc",
  "thiserror",

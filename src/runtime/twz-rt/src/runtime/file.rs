@@ -84,13 +84,13 @@ impl RustFsRuntime for ReferenceRuntime {
                 handle,
             })));
 
-        Ok(fd.try_into().unwrap())
+        Ok(RawFd(fd.try_into().unwrap()))
     }
 
-    fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, FsError> {
+    fn read(&self, fd: &RawFd, buf: &mut [u8]) -> Result<usize, FsError> {
         let binding = get_fd_slots().lock().unwrap();
         let mut file_desc = binding
-            .get(fd.try_into().unwrap())
+            .get(fd.0.try_into().unwrap())
             .ok_or(FsError::LookupError)?;
 
         let mut binding = file_desc.lock().unwrap();
@@ -111,10 +111,10 @@ impl RustFsRuntime for ReferenceRuntime {
         Ok(buf.len())
     }
 
-    fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, FsError> {
+    fn write(&self, fd: &RawFd, buf: &[u8]) -> Result<usize, FsError> {
         let binding = get_fd_slots().lock().unwrap();
         let file_desc = binding
-            .get(fd.try_into().unwrap())
+            .get(fd.0.try_into().unwrap())
             .ok_or(FsError::LookupError)?;
 
         let mut binding = file_desc.lock().unwrap();
@@ -136,11 +136,11 @@ impl RustFsRuntime for ReferenceRuntime {
         Ok(buf.len())
     }
 
-    fn close(&self, fd: RawFd) -> Result<(), FsError> {
+    fn close(&self, fd: &mut RawFd) -> Result<(), FsError> {
         let file_desc = get_fd_slots()
             .lock()
             .unwrap()
-            .remove(fd.try_into().unwrap())
+            .remove(fd.0.try_into().unwrap())
             .ok_or(FsError::LookupError)?;
 
         let mut binding = file_desc.lock().unwrap();
@@ -150,11 +150,11 @@ impl RustFsRuntime for ReferenceRuntime {
         Ok(())
     }
 
-    fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, FsError> {
+    fn seek(&self, fd: &RawFd, pos: SeekFrom) -> Result<usize, FsError> {
         let binding = get_fd_slots().lock().unwrap();
 
         let file_desc = binding
-            .get(fd.try_into().unwrap())
+            .get(fd.0.try_into().unwrap())
             .ok_or(FsError::LookupError)?;
 
         let mut binding = file_desc.lock().unwrap();

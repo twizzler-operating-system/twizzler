@@ -1,5 +1,5 @@
 use std::{
-    fs::File,
+    fs::{metadata, File, FileType},
     io::Write,
     path::{Path, PathBuf},
     process::Command,
@@ -102,7 +102,22 @@ fn get_genfile_path(comp: &TwizzlerCompilation, name: &str) -> PathBuf {
     path
 }
 
-fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Result<PathBuf> {
+fn generate_initrd(initrd_files: Vec<PathBuf>, comp: &TwizzlerCompilation) -> anyhow::Result<PathBuf> {
+    let initrd_path = get_genfile_path(comp, "initrd");
+    let status = Command::new(get_tool_path(comp, "initrd_gen")?)
+        .arg("--output")
+        .arg(&initrd_path)
+        .args(&initrd_files)
+        .status()?;
+
+    if status.success() {
+        Ok(initrd_path)
+    } else {
+        anyhow::bail!("failed to generate initrd");
+    }
+}
+
+fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Result<Vec<PathBuf>> {
     crate::print_status_line("initrd", Some(&cli.config));
     // Create an empty initrd if we are building just the kernel.
     // No user space components are required to run the code, but
@@ -112,7 +127,7 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
         let initrd_path = get_genfile_path(comp, "initrd");
         let result = File::create(&initrd_path);
         if result.is_ok() {
-            Ok(initrd_path)
+            Ok(vec![initrd_path])
         } else {
             anyhow::bail!("failed to generate initrd");
         }
@@ -187,24 +202,39 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
         lib_path.push(libstd_name);
         initrd_files.push(lib_path);
 
-        let initrd_path = get_genfile_path(comp, "initrd");
-        let status = Command::new(get_tool_path(comp, "initrd_gen")?)
-            .arg("--output")
-            .arg(&initrd_path)
-            .args(&initrd_files)
-            .status()?;
-        if status.success() {
-            Ok(initrd_path)
-        } else {
-            anyhow::bail!("failed to generate initrd");
-        }
+        Ok(initrd_files)
     }
 }
 
 pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
-    let comp = crate::build::do_build(cli.into())?;
-    let initrd_path = build_initrd(&cli, &comp)?;
+    let comp = crate::build::do_build(cli.clone().into())?;
+    let mut initrd_files = build_initrd(&cli, &comp)?;
 
+
+    // Get the file/directory from the cli and add all files to initrd 
+    if let Some(file) = cli.data.as_ref() {
+        let md =  metadata(&file)?;
+        
+        if md.is_dir() {
+            let files: Vec<PathBuf> = walkdir::WalkDir::new(file.clone())
+                .min_depth(1)
+                .max_depth(3)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter_map(|e| if e.file_type().is_file() {Some(e)} else {None})
+                .map(|x| x.path().to_owned())
+                .map(|x| x.to_path_buf())
+                .collect();
+
+            initrd_files.extend(files)
+        }
+        else if md.is_file() {
+            initrd_files.push(file.to_path_buf());
+        }
+    }
+
+    let initrd_path = generate_initrd(initrd_files, &comp)?;
+    
     crate::print_status_line("disk image", Some(&cli.config));
     let cmdline = if cli.tests { "--tests" } else { "" };
     let efi_binary = match cli.config.arch {
