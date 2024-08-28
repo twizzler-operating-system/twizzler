@@ -534,8 +534,7 @@ pub enum SeekFrom {
 /// A identifier for a Twizzler object that allows File-like IO
 /// The data backing RawFd holds the position of the file cursor and a reference to the object that
 /// stores the file's data.
-#[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
-pub struct RawFd(pub u32);
+pub type RawFd = u32;
 
 /// Runtime that implements STD's FS support. Currently being implemented.
 pub trait RustFsRuntime {
@@ -545,25 +544,18 @@ pub trait RustFsRuntime {
 
     /// Reads bytes from the source twizzler Object into the specified buffer, returns how many
     /// bytes were read.
-    fn read(&self, fd: &RawFd, buf: &mut [u8]) -> Result<usize, FsError>;
+    fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, FsError>;
 
     /// Writes bytes from the source twizzler Object into the specified buffer, returns how many
     /// bytes were written.
-    fn write(&self, fd: &RawFd, buf: &[u8]) -> Result<usize, FsError>;
+    fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, FsError>;
 
     /// Cleans the data associated with the RawFd allowing reuse. Note that this doesn't
     /// close/unmap the backing object.
-    fn close(&self, fd: &mut RawFd) -> Result<(), FsError>;
+    fn close(&self, fd: RawFd) -> Result<(), FsError>;
 
     /// Moves the cursor to a specified offset within the backed object.
-    fn seek(&self, fd: &RawFd, pos: SeekFrom) -> Result<usize, FsError>;
-}
-
-impl Drop for RawFd {
-    fn drop(&mut self) {
-        let runtime = get_runtime();
-        let _ = runtime.close(self);
-    }
+    fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, FsError>;
 }
 
 /// Runtime that implements std's process and command support. Currently unimplemented.

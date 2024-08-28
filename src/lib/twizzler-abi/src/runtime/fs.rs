@@ -1,24 +1,19 @@
-use core::{intrinsics::size_of, ptr::NonNull, cmp::min, cmp::max};
+use core::{intrinsics::size_of, cmp::min, cmp::max};
 
 use lazy_static::lazy_static;
-use rustc_alloc::{borrow::ToOwned, sync::Arc};
+use rustc_alloc::{string::ToString, sync::Arc};
 use stable_vec::{self, StableVec};
 use twizzler_runtime_api::{
-    FsError, InternalHandleRefs, JoinError, MapError, ObjectHandle, ObjectRuntime, RawFd,
+    FsError, ObjectHandle, ObjectRuntime, RawFd,
     RustFsRuntime, SeekFrom,
 };
 
 use super::MinimalRuntime;
 use crate::{
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE}, print_err, runtime::{
-        idcounter::IdCounter,
-        object::slot::{self, global_allocate},
-        simple_mutex::Mutex,
-    }, rustc_alloc::{boxed::Box, collections::BTreeMap}, syscall::{sys_object_create, sys_object_map, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, UnmapFlags}, thread::{ExecutionState, ThreadRepr}
+    object::{ObjID, NULLPAGE_SIZE}, runtime::simple_mutex::Mutex, syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags}
 };
 
 struct FileDesc {
-    slot_id: u32,
     pos: u64,
     handle: ObjectHandle,
     map: [Option<ObjectHandle>; 10], // Lazily loads object handles when using extensible files
@@ -29,13 +24,14 @@ struct FileDesc {
 struct FileMetadata {
     magic: u64,
     size: u64,
-    direct: [ObjID; 10],
+    direct: [ObjID; DIRECT_OBJECT_COUNT],
 }
 
 const MAGIC_NUMBER: u64 = 0xBEEFDEAD;
-const OBJECT_SIZE: u64 = 1 << 30;
+const WRITABLE_BYTES: u64 = (1 << 30) - size_of::<FileMetadata>() as u64 - NULLPAGE_SIZE as u64;
 const OBJECT_COUNT: usize = 11;
-const MAX_FILE_SIZE: u64 = OBJECT_SIZE * 11;
+const DIRECT_OBJECT_COUNT: usize = 10; // The number of objects reachable from the direct pointer list
+const MAX_FILE_SIZE: u64 = WRITABLE_BYTES * 11;
 
 lazy_static! {
     static ref FD_SLOTS: Mutex<StableVec<Arc<Mutex<FileDesc>>>> = Mutex::new(StableVec::new());
@@ -49,20 +45,21 @@ impl RustFsRuntime for MinimalRuntime {
     fn open(&self, path: &core::ffi::CStr) -> Result<RawFd, FsError> {
         let obj_id = ObjID::new(
             path.to_str()
-                .map_err(|err| (FsError::InvalidPath))?
+                .map_err(|_err| (FsError::InvalidPath))?
                 .parse::<u128>()
-                .map_err(|err| (FsError::InvalidPath))?,
+                .map_err(|_err| (FsError::InvalidPath))?,
         );
         let flags = twizzler_runtime_api::MapFlags::READ | twizzler_runtime_api::MapFlags::WRITE;
 
         let handle = self.map_object(obj_id, flags).unwrap();
 
-        let mut metadata_handle = unsafe {
+        let metadata_handle = unsafe {
             handle
                 .start 
                 .offset(NULLPAGE_SIZE as isize)
                 .cast::<FileMetadata>()
         };
+
         if (unsafe { *metadata_handle }).magic != MAGIC_NUMBER {
             unsafe {
                 *metadata_handle = FileMetadata {
@@ -73,13 +70,14 @@ impl RustFsRuntime for MinimalRuntime {
             };
         }
 
-        let fd = get_fd_slots().lock().push(Arc::new(Mutex::new(FileDesc {
-            slot_id: 0,
+        let mut binding = get_fd_slots().lock();
+
+        let elem = Arc::new(Mutex::new(FileDesc {
             pos: 0,
             handle: handle,
             map: Default::default(),
-        })));
-        
+        }));
+
         let fd = if binding.is_compact() {
             binding.push(elem)
         }
@@ -89,18 +87,18 @@ impl RustFsRuntime for MinimalRuntime {
             fd
         };
 
-        Ok(RawFd(fd.try_into().unwrap()))
+        Ok(fd.try_into().unwrap())
     }
 
-    fn read(&self, fd: &RawFd, buf: &mut [u8]) -> Result<usize, FsError> {
+    fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, FsError> {
         let binding = get_fd_slots().lock();
-        let mut file_desc = binding
-            .get(fd.0.try_into().unwrap())
+        let file_desc = binding
+            .get(fd.try_into().unwrap())
             .ok_or(FsError::LookupError)?;
 
         let mut binding = file_desc.lock();
 
-        let mut metadata_handle = unsafe {
+        let metadata_handle = unsafe {
             binding
                 .handle
                 .start
@@ -110,14 +108,14 @@ impl RustFsRuntime for MinimalRuntime {
 
         let mut bytes_read = 0;
         while bytes_read < buf.len() {
-            if (binding.pos > (unsafe{*metadata_handle}).size) {
+            if binding.pos > (unsafe{*metadata_handle}).size {
                 break;
             }
 
             let available_bytes = (unsafe{*metadata_handle}).size - binding.pos;
             
-            let object_window: usize = ((binding.pos + size_of::<FileMetadata>() as u64) / OBJECT_SIZE) as usize;
-            let mut offset = (binding.pos + size_of::<FileMetadata>() as u64) % OBJECT_SIZE;
+            let object_window: usize = ((binding.pos) / WRITABLE_BYTES) as usize;
+            let offset = (binding.pos) % WRITABLE_BYTES;
 
             if object_window > OBJECT_COUNT || available_bytes == 0 {
                 break;
@@ -128,7 +126,7 @@ impl RustFsRuntime for MinimalRuntime {
             // available_bytes is the total bytes you can write to the file, this is bound by the writer since the writer can modify the size of the file
             // buf.len() - bytes_read is the bytes you have left to read, this is bound by buf.len() > bytes_read 
             let bytes_to_read = min(min(
-                OBJECT_SIZE - offset, 
+                WRITABLE_BYTES - offset, 
                 available_bytes), 
                 (buf.len() - bytes_read) as u64
             );
@@ -153,6 +151,7 @@ impl RustFsRuntime for MinimalRuntime {
                 buf.as_mut_ptr().offset(bytes_read as isize).copy_from(
                     object_ptr.offset(
                         NULLPAGE_SIZE as isize +
+                        size_of::<FileMetadata>() as isize + 
                         offset as isize
                     ),
                     bytes_to_read as usize,
@@ -167,15 +166,15 @@ impl RustFsRuntime for MinimalRuntime {
         Ok(bytes_read)
     }
 
-    fn write(&self, fd: &RawFd, buf: &[u8]) -> Result<usize, FsError> {
+    fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, FsError> {
         let binding = get_fd_slots().lock();
         let file_desc = binding
-            .get((&fd).0.try_into().unwrap())
+            .get(fd.try_into().unwrap())
             .ok_or(FsError::LookupError)?;
 
         let mut binding = file_desc.lock();
 
-        let mut metadata_handle = unsafe {
+        let metadata_handle = unsafe {
             binding
                 .handle
                 .start
@@ -187,10 +186,10 @@ impl RustFsRuntime for MinimalRuntime {
         while bytes_written < buf.len() {
             // The available bytes for writing is the OBJECT_SIZE * OBJECT_COUNT
             // The metadata fills some bytes, the rest is defined by binding.pos which overlays the rest of the object space
-            let available_bytes = MAX_FILE_SIZE - binding.pos - size_of::<FileMetadata>() as u64;
+            let available_bytes = MAX_FILE_SIZE - binding.pos;
 
-            let object_window: usize = ((binding.pos + size_of::<FileMetadata>() as u64) / OBJECT_SIZE) as usize;
-            let mut offset = (binding.pos + size_of::<FileMetadata>() as u64) % OBJECT_SIZE;
+            let object_window: usize = (binding.pos / WRITABLE_BYTES) as usize;
+            let offset = binding.pos % WRITABLE_BYTES;
             
             if object_window > OBJECT_COUNT || available_bytes == 0 {
                 break;
@@ -200,11 +199,12 @@ impl RustFsRuntime for MinimalRuntime {
             // available_bytes is the total bytes you can write to the file, available_bytes is always bound by the max file size
             // buf.len() - bytes_written is the bytes you have left to write
             let bytes_to_write = min(min(
-                OBJECT_SIZE - offset, 
+                WRITABLE_BYTES - offset, 
                 available_bytes), 
-                (buf.len() - bytes_written) as u64);
+                (buf.len() - bytes_written) as u64
+            );
 
-                let object_ptr = if object_window == 0 {
+            let object_ptr = if object_window == 0 {
                 binding.handle.start
             }
             else {
@@ -225,8 +225,9 @@ impl RustFsRuntime for MinimalRuntime {
                             ObjectCreateFlags::empty(),
                         );
                         let new_id = sys_object_create(create, &[], &[]).unwrap();
-                        ((unsafe{*metadata_handle}).direct)[(object_window - 1) as usize] = new_id;
-
+                        unsafe {
+                            (*metadata_handle).direct[(object_window - 1) as usize] = new_id;
+                        }
                         new_id
                     }
                     else {
@@ -240,14 +241,13 @@ impl RustFsRuntime for MinimalRuntime {
             };
 
             unsafe {
-                object_ptr.offset(NULLPAGE_SIZE as isize + offset as isize).copy_from(
+                object_ptr.offset(NULLPAGE_SIZE as isize + size_of::<FileMetadata>() as isize + offset as isize).copy_from(
                     buf.as_ptr().offset(
                         bytes_written as isize
                     ),
-                    bytes_to_write as usize,
+                    (bytes_to_write) as usize,
                 )
             }
-            
             binding.pos += bytes_to_write as u64;
             unsafe {((*metadata_handle).size) = max(binding.pos, (*metadata_handle).size)};
             bytes_written += bytes_to_write as usize;
@@ -256,10 +256,10 @@ impl RustFsRuntime for MinimalRuntime {
         Ok(bytes_written)
     }
 
-    fn close(&self, fd: &mut RawFd) -> Result<(), FsError> {
+    fn close(&self, fd: RawFd) -> Result<(), FsError> {
         let file_desc = get_fd_slots()
             .lock()
-            .remove(fd.0.try_into().unwrap())
+            .remove(fd.try_into().unwrap())
             .ok_or(FsError::LookupError)?;
 
         let mut binding = file_desc.lock();
@@ -269,15 +269,14 @@ impl RustFsRuntime for MinimalRuntime {
         Ok(())
     }
 
-    fn seek(&self, fd: &RawFd, pos: SeekFrom) -> Result<usize, FsError> {
+    fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, FsError> {
         let binding = get_fd_slots().lock();
-
         let file_desc = binding
-            .get(fd.0.try_into().unwrap())
+            .get(fd.try_into().unwrap())
             .ok_or(FsError::LookupError)?;
-
+ 
         let mut binding = file_desc.lock();
-        let mut metadata_handle = unsafe { &mut *binding.handle.start.offset(NULLPAGE_SIZE as isize).cast::<FileMetadata>() };
+        let metadata_handle = unsafe { &mut *binding.handle.start.offset(NULLPAGE_SIZE as isize).cast::<FileMetadata>() };
 
         let new_pos: i64 = match pos {
             SeekFrom::Start(x) => x as i64,
@@ -285,8 +284,8 @@ impl RustFsRuntime for MinimalRuntime {
             SeekFrom::Current(x) => (binding.pos as i64) + x,
         };
 
-        if new_pos > metadata_handle.size.try_into().unwrap() || new_pos < 0 {
-            Err(FsError::LookupError)
+        if new_pos < 0 {
+            Err(FsError::SeekError)
         } else {
             binding.pos = new_pos as u64;
             Ok(binding.pos.try_into().unwrap())
