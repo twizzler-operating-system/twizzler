@@ -59,7 +59,7 @@ impl<T> InternalObject<T> {
         Some(Self {
             slot,
             runtime_handle: ObjectHandle::new(
-                raw,
+                Some(raw),
                 id,
                 MapFlags::READ | MapFlags::WRITE,
                 (slot * MAX_SIZE) as *mut u8,
@@ -99,7 +99,7 @@ impl<T> InternalObject<T> {
 
         Some(Self {
             runtime_handle: ObjectHandle::new(
-                NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap(),
+                Some(NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap()),
                 id,
                 prot.into(),
                 (slot * MAX_SIZE) as *mut u8,

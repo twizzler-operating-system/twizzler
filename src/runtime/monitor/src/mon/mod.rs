@@ -1,4 +1,4 @@
-use std::{ptr::NonNull, sync::OnceLock};
+use std::{ptr::NonNull, sync::OnceLock, thread::Thread};
 
 use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
@@ -24,9 +24,8 @@ pub mod library;
 pub(crate) mod space;
 pub(crate) mod thread;
 
-struct LibraryHandle {
-    comp: ObjID,
-    id: LibraryId,
+pub struct CompartmentHandle {
+    instance: ObjID,
 }
 
 /// A security monitor instance. All monitor logic is implemented as methods for this type.
@@ -47,7 +46,9 @@ pub struct Monitor {
     /// Dynamic linker state.
     pub dynlink: &'static RwLock<&'static mut dynlink::context::Context>,
     /// Open handles to libraries.
-    pub library_handles: &'static RwLock<HandleMgr<LibraryHandle>>,
+    pub library_handles: &'static RwLock<HandleMgr<library::LibraryHandle>>,
+    /// Open handles to compartments.
+    pub compartment_handles: &'static RwLock<HandleMgr<CompartmentHandle>>,
 }
 
 // We allow locking individually, using eg mon.space.write(key), or locking the collection for more
@@ -57,7 +58,8 @@ type MonitorLocks<'a> = (
     &'a RwLock<thread::ThreadMgr>,
     &'a RwLock<compartment::CompartmentMgr>,
     &'a RwLock<&'static mut dynlink::context::Context>,
-    &'a RwLock<HandleMgr<LibraryHandle>>,
+    &'a RwLock<HandleMgr<library::LibraryHandle>>,
+    &'a RwLock<HandleMgr<CompartmentHandle>>,
 );
 
 impl Monitor {
@@ -113,6 +115,7 @@ impl Monitor {
         let comp_mgr = Box::leak(Box::new(RwLock::new(comp_mgr)));
         let dynlink = Box::leak(Box::new(RwLock::new(unsafe { init.ctx.as_mut().unwrap() })));
         let library_handles = Box::leak(Box::new(RwLock::new(HandleMgr::new(None))));
+        let compartment_handles = Box::leak(Box::new(RwLock::new(HandleMgr::new(None))));
 
         // Okay to call try_new here, since it's not many locks and only happens once.
         Self {
@@ -122,6 +125,7 @@ impl Monitor {
                 &*comp_mgr,
                 &*dynlink,
                 &*library_handles,
+                &*compartment_handles,
             ))
             .unwrap(),
             unmapper: OnceLock::new(),
@@ -130,6 +134,7 @@ impl Monitor {
             comp_mgr,
             dynlink,
             library_handles,
+            compartment_handles,
         }
     }
 
@@ -183,7 +188,11 @@ impl Monitor {
     }
 
     pub fn get_thread_simple_buffer(&self, sctx: ObjID, thread: ObjID) -> Option<ObjID> {
-        todo!()
+        let mut locks = self.locks.lock(ThreadKey::get().unwrap());
+        let (ref mut space, _, ref mut comps, _, _, _) = *locks;
+        let rc = comps.get_mut(sctx)?;
+        let pt = rc.get_per_thread(thread, &mut *space);
+        Some(pt.simple_buffer_id())
     }
 }
 

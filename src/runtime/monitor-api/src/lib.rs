@@ -173,8 +173,6 @@ pub use gates::LibraryInfo as LibraryInfoRaw;
 pub struct LibraryInfo<'a> {
     /// The library's name
     pub name: String,
-    /// Global library ID
-    pub id: LibraryId,
     /// The compartment of the library
     pub compartment_id: ObjID,
     /// The object ID that the library was loaded from
@@ -192,7 +190,6 @@ impl<'a> LibraryInfo<'a> {
     fn from_raw(raw: LibraryInfoRaw) -> Self {
         Self {
             name: lazy_sb::read_string_from_sb(raw.name_len),
-            id: raw.id,
             compartment_id: raw.compartment_id,
             objid: raw.objid,
             range: raw.range,
@@ -204,6 +201,7 @@ impl<'a> LibraryInfo<'a> {
 }
 
 /// A handle to a loaded library. On drop, the library may unload.
+#[derive(Debug)]
 pub struct LibraryHandle {
     desc: Descriptor,
 }
@@ -252,6 +250,7 @@ impl CompartmentHandle {
         CompartmentInfo::from_raw(
             gates::monitor_rt_get_compartment_info(self.desc)
                 .ok()
+                .flatten()
                 .unwrap(),
         )
     }
@@ -336,6 +335,7 @@ impl Drop for LibraryHandle {
 }
 
 /// Information about a compartment.
+#[derive(Clone, Debug)]
 pub struct CompartmentInfo<'a> {
     /// The name of the compartment.
     pub name: String,
@@ -436,7 +436,8 @@ impl<'a> Iterator for CompartmentDepsIter<'a> {
 
 bitflags::bitflags! {
     /// Compartment state flags.
-    pub struct CompartmentFlags : u32 {
+    #[derive(Clone, Debug, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+    pub struct CompartmentFlags : u64 {
         const READY = 0x1;
     }
 }

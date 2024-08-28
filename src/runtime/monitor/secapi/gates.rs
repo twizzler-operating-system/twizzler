@@ -48,8 +48,9 @@ pub fn monitor_rt_get_library_info(
 ) -> Option<LibraryInfo> {
     use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
-    let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
-    monitor.get_library_info(caller, desc)
+    let instance = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
+    let thread = info.thread_id();
+    monitor.get_library_info(instance, thread, desc)
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
@@ -71,7 +72,6 @@ pub fn monitor_rt_get_library_handle(
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct LibraryInfo {
-    pub id: LibraryId,
     pub name_len: usize,
     pub compartment_id: ObjID,
     pub objid: ObjID,
@@ -87,8 +87,7 @@ pub struct CompartmentInfo {
     pub name_len: usize,
     pub id: ObjID,
     pub sctx: ObjID,
-    pub flags: u32,
-    desc: Descriptor,
+    pub flags: u64,
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
@@ -119,7 +118,7 @@ pub fn monitor_rt_get_compartment_handle(
 pub fn monitor_rt_get_compartment_info(
     info: &secgate::GateCallInfo,
     desc: Option<Descriptor>,
-) -> CompartmentInfo {
+) -> Option<CompartmentInfo> {
     use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use monitor_api::MappedObjectAddrs;
 use twizzler_abi::object::NULLPAGE_SIZE;
+use twizzler_runtime_api::ObjectHandle;
 
 use super::MapInfo;
 use crate::mon::get_monitor;
@@ -35,6 +36,16 @@ impl MapHandleInner {
     /// Get a pointer to the base address of the object.
     pub fn monitor_data_base(&self) -> *mut u8 {
         (self.map.start + NULLPAGE_SIZE) as *mut u8
+    }
+
+    pub unsafe fn object_handle(&self) -> ObjectHandle {
+        ObjectHandle::new(
+            None,
+            self.info.id,
+            self.info.flags,
+            self.map.start as *mut u8,
+            self.map.meta as *mut u8,
+        )
     }
 }
 

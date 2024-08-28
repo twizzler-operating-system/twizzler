@@ -34,6 +34,11 @@ impl SimpleBuffer {
         MAX_SIZE - NULLPAGE_SIZE * 2
     }
 
+    /// Get the underlying object handle.
+    pub fn handle(&self) -> &ObjectHandle {
+        &self.handle
+    }
+
     /// Read bytes from the SimpleBuffer into `buffer`, up to the size of the supplied buffer. The
     /// actual number of bytes copied is returned.
     pub fn read(&self, buffer: &mut [u8]) -> usize {

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use happylock::ThreadKey;
 use secgate::util::Descriptor;
 use twizzler_runtime_api::ObjID;
 
@@ -80,12 +81,43 @@ impl CompartmentMgr {
 }
 
 impl super::Monitor {
-    pub fn get_compartment_info(&self, caller: ObjID, desc: Option<Descriptor>) -> CompartmentInfo {
-        todo!()
+    pub fn get_compartment_info(
+        &self,
+        caller: ObjID,
+        desc: Option<Descriptor>,
+    ) -> Option<CompartmentInfo> {
+        let (ref mut space, _, ref mut comps, _, _, ref comphandles) =
+            *self.locks.lock(ThreadKey::get().unwrap());
+        let comp_id = desc
+            .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
+            .unwrap_or(Some(caller))?;
+
+        let name = comps.get(comp_id)?.name.clone();
+        let pt = comps.get_mut(caller)?.get_per_thread(caller, space);
+        let name_len = pt.write_bytes(name.as_bytes());
+        let comp = comps.get(comp_id)?;
+
+        Some(CompartmentInfo {
+            name_len,
+            id: comp_id,
+            sctx: comp.sctx,
+            flags: comp.raw_flags(),
+        })
     }
 
     pub fn get_compartment_handle(&self, caller: ObjID, compartment: ObjID) -> Option<Descriptor> {
-        todo!()
+        self.compartment_handles
+            .write(ThreadKey::get().unwrap())
+            .insert(
+                caller,
+                super::CompartmentHandle {
+                    instance: if compartment.as_u128() == 0 {
+                        caller
+                    } else {
+                        compartment
+                    },
+                },
+            )
     }
 
     pub fn get_compartment_deps(
@@ -106,6 +138,8 @@ impl super::Monitor {
     }
 
     pub fn drop_compartment_handle(&self, caller: ObjID, desc: Descriptor) {
-        todo!()
+        self.compartment_handles
+            .write(ThreadKey::get().unwrap())
+            .remove(caller, desc);
     }
 }

@@ -3,7 +3,10 @@ use std::{
     collections::HashMap,
     marker::PhantomData,
     ptr::NonNull,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use dynlink::compartment::CompartmentId;
@@ -13,10 +16,10 @@ use talc::{ErrOnOom, Talc};
 use twizzler_abi::syscall::{
     ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
-use twizzler_runtime_api::{MapError, ObjID};
+use twizzler_runtime_api::{MapError, MapFlags, ObjID, ObjectHandle};
 
 use super::{compconfig::CompConfigObject, compthread::CompThread};
-use crate::mon::space::{MapHandle, MapInfo};
+use crate::mon::space::{MapHandle, MapInfo, Space};
 
 /// Compartment is ready (loaded, reloacated, runtime started and ctors run).
 pub const COMP_READY: u64 = 0x1;
@@ -44,8 +47,30 @@ pub struct RunComp {
     per_thread: HashMap<ObjID, PerThread>,
 }
 
-#[derive(Default)]
-struct PerThread {}
+pub struct PerThread {
+    simple_buffer: (SimpleBuffer, MapHandle),
+}
+
+impl PerThread {
+    fn new(instance: ObjID, th: ObjID, space: &mut Space) -> Self {
+        // TODO: unwrap
+        let handle = space
+            .safe_create_and_map_runtime_object(instance, MapFlags::READ | MapFlags::WRITE)
+            .unwrap();
+
+        Self {
+            simple_buffer: (SimpleBuffer::new(unsafe { handle.object_handle() }), handle),
+        }
+    }
+
+    pub fn write_bytes(&mut self, bytes: &[u8]) -> usize {
+        self.simple_buffer.0.write(bytes)
+    }
+
+    pub fn simple_buffer_id(&self) -> ObjID {
+        self.simple_buffer.0.handle().id
+    }
+}
 
 impl RunComp {
     pub fn new(
@@ -75,8 +100,10 @@ impl RunComp {
     }
 
     /// Get per-thread data in this compartment.
-    pub fn get_per_thread(&mut self, id: ObjID) -> &mut PerThread {
-        self.per_thread.entry(id).or_default()
+    pub fn get_per_thread(&mut self, id: ObjID, space: &mut Space) -> &mut PerThread {
+        self.per_thread
+            .entry(id)
+            .or_insert_with(|| PerThread::new(self.instance, id, space))
     }
 
     /// Remove all per-thread data for a given thread.
@@ -173,6 +200,11 @@ impl RunComp {
             sleep: self.flag_waitable(flag),
             _pd: PhantomData,
         }
+    }
+
+    /// Get the raw flags bits for this RC.
+    pub fn raw_flags(&self) -> u64 {
+        self.flags.load(Ordering::SeqCst)
     }
 }
 

@@ -1,3 +1,4 @@
+use dynlink::library::LibraryId;
 use happylock::ThreadKey;
 use secgate::util::Descriptor;
 use twizzler_abi::object::MAX_SIZE;
@@ -6,14 +7,27 @@ use twizzler_runtime_api::{AddrRange, ObjID};
 use super::Monitor;
 use crate::gates::{LibraryInfo, LoadLibraryError};
 
+pub struct LibraryHandle {
+    comp: ObjID,
+    id: LibraryId,
+}
+
 impl Monitor {
-    pub fn get_library_info(&self, caller: ObjID, desc: Descriptor) -> Option<LibraryInfo> {
-        let locks = self.locks.lock(ThreadKey::get().unwrap());
-        let handle = locks.4.lookup(caller, desc)?;
-        let lib = locks.3.get_library(todo!()).ok()?;
+    #[tracing::instrument(skip(self))]
+    pub fn get_library_info(
+        &self,
+        instance: ObjID,
+        thread: ObjID,
+        desc: Descriptor,
+    ) -> Option<LibraryInfo> {
+        let (ref mut space, _, ref mut comps, ref dynlink, ref libhandles, _) =
+            *self.locks.lock(ThreadKey::get().unwrap());
+        let handle = libhandles.lookup(instance, desc)?;
+        let lib = dynlink.get_library(handle.id).ok()?;
+        let pt = comps.get_mut(instance)?.get_per_thread(thread, space);
+        let name_len = pt.write_bytes(lib.name.as_bytes());
         Some(LibraryInfo {
-            id: todo!(),
-            name_len: todo!(),
+            name_len,
             compartment_id: handle.comp,
             objid: lib.full_obj.object().id,
             slot: lib.base_addr() / MAX_SIZE,
@@ -35,13 +49,22 @@ impl Monitor {
         })
     }
 
+    #[tracing::instrument(skip(self), ret)]
     pub fn get_library_handle(
         &self,
         caller: ObjID,
         comp: Option<Descriptor>,
         num: usize,
     ) -> Option<Descriptor> {
-        todo!()
+        let (_, _, ref mut comps, ref dynlink, ref mut handles, ref comphandles) =
+            *self.locks.lock(ThreadKey::get().unwrap());
+        let comp_id = comp
+            .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
+            .unwrap_or(Some(caller))?;
+        let rc = comps.get(comp_id)?;
+        let dcomp = dynlink.get_compartment(rc.compartment_id).ok()?;
+        let id = dcomp.library_ids().nth(num)?;
+        handles.insert(comp_id, LibraryHandle { comp: comp_id, id })
     }
 
     pub fn load_library(&self, caller: ObjID, id: ObjID) -> Result<Descriptor, LoadLibraryError> {
@@ -49,6 +72,8 @@ impl Monitor {
     }
 
     pub fn drop_library_handle(&self, caller: ObjID, desc: Descriptor) {
-        todo!()
+        self.library_handles
+            .write(ThreadKey::get().unwrap())
+            .remove(caller, desc);
     }
 }
