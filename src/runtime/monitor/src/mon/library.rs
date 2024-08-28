@@ -13,7 +13,6 @@ pub struct LibraryHandle {
 }
 
 impl Monitor {
-    #[tracing::instrument(skip(self))]
     pub fn get_library_info(
         &self,
         instance: ObjID,
@@ -49,7 +48,6 @@ impl Monitor {
         })
     }
 
-    #[tracing::instrument(skip(self), ret)]
     pub fn get_library_handle(
         &self,
         caller: ObjID,
