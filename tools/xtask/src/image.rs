@@ -1,5 +1,5 @@
 use std::{
-    fs::{metadata, File, FileType},
+    fs::File,
     io::Write,
     path::{Path, PathBuf},
     process::Command,
@@ -208,31 +208,8 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
 
 pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     let comp = crate::build::do_build(cli.clone().into())?;
-    let mut initrd_files = build_initrd(&cli, &comp)?;
-
-
-    // Get the file/directory from the cli and add all files to initrd 
-    if let Some(file) = cli.data.as_ref() {
-        let md =  metadata(&file)?;
-        
-        if md.is_dir() {
-            let files: Vec<PathBuf> = walkdir::WalkDir::new(file.clone())
-                .min_depth(1)
-                .max_depth(3)
-                .into_iter()
-                .filter_map(|e| e.ok())
-                .filter_map(|e| if e.file_type().is_file() {Some(e)} else {None})
-                .map(|x| x.path().to_owned())
-                .map(|x| x.to_path_buf())
-                .collect();
-
-            initrd_files.extend(files)
-        }
-        else if md.is_file() {
-            initrd_files.push(file.to_path_buf());
-        }
-    }
-
+    let initrd_files = build_initrd(&cli, &comp)?;
+    
     let initrd_path = generate_initrd(initrd_files, &comp)?;
     
     crate::print_status_line("disk image", Some(&cli.config));
