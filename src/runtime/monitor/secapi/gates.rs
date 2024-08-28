@@ -122,7 +122,7 @@ pub fn monitor_rt_get_compartment_info(
     use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
-    monitor.get_compartment_info(caller, desc)
+    monitor.get_compartment_info(caller, info.thread_id(), desc)
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]

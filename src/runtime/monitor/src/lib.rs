@@ -82,6 +82,8 @@ fn monitor_init() -> miette::Result<()> {
         info!("library: {:?}", info);
     }
 
+    panic!("test panic");
+
     Ok(())
 }
 

@@ -44,6 +44,14 @@ impl<ServerData> HandleMgr<ServerData> {
         self.max.map(|x| x.get())
     }
 
+    /// Get the number of currently open handles for a given compartment.
+    pub fn open_count(&self, comp: ObjID) -> usize {
+        self.handles
+            .get(&comp)
+            .map(|sv| sv.num_elements())
+            .unwrap_or(0)
+    }
+
     /// Lookup the server data associated with a descriptor.
     pub fn lookup(&self, comp: ObjID, ds: Descriptor) -> Option<&ServerData> {
         let idx: usize = ds.try_into().ok()?;

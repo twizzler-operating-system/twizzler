@@ -169,7 +169,7 @@ impl SharedCompConfig {
 pub use gates::LibraryInfo as LibraryInfoRaw;
 
 /// Contains information about a library loaded into the address space.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct LibraryInfo<'a> {
     /// The library's name
     pub name: String,
@@ -184,11 +184,13 @@ pub struct LibraryInfo<'a> {
     /// The slot of the library text.
     pub slot: usize,
     _pd: PhantomData<&'a ()>,
+    internal_name: Vec<u8>,
 }
 
 impl<'a> LibraryInfo<'a> {
     fn from_raw(raw: LibraryInfoRaw) -> Self {
-        Self {
+        let name = lazy_sb::read_bytes_from_sb(raw.name_len);
+        let mut this = Self {
             name: lazy_sb::read_string_from_sb(raw.name_len),
             compartment_id: raw.compartment_id,
             objid: raw.objid,
@@ -196,7 +198,10 @@ impl<'a> LibraryInfo<'a> {
             dl_info: raw.dl_info,
             slot: raw.slot,
             _pd: PhantomData,
-        }
+            internal_name: name,
+        };
+        this.dl_info.name = this.internal_name.as_ptr();
+        this
     }
 }
 
@@ -510,5 +515,11 @@ mod lazy_sb {
         let mut buf = vec![0u8; len];
         let len = unsafe { LAZY_SB.read(&mut buf) };
         String::from_utf8_lossy(&buf[0..len]).to_string()
+    }
+
+    pub(super) fn read_bytes_from_sb(len: usize) -> Vec<u8> {
+        let mut buf = vec![0u8; len];
+        let len = unsafe { LAZY_SB.read(&mut buf) };
+        buf
     }
 }

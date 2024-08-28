@@ -1,7 +1,7 @@
 use dynlink::library::LibraryId;
 use happylock::ThreadKey;
 use secgate::util::Descriptor;
-use twizzler_abi::object::MAX_SIZE;
+use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_runtime_api::{AddrRange, ObjID};
 
 use super::Monitor;
@@ -13,6 +13,7 @@ pub struct LibraryHandle {
 }
 
 impl Monitor {
+    //#[tracing::instrument(skip(self), ret)]
     pub fn get_library_info(
         &self,
         instance: ObjID,
@@ -31,8 +32,8 @@ impl Monitor {
             objid: lib.full_obj.object().id,
             slot: lib.base_addr() / MAX_SIZE,
             range: AddrRange {
-                start: lib.base_addr(),
-                len: MAX_SIZE * 2,
+                start: lib.full_obj.object().start as usize + NULLPAGE_SIZE,
+                len: MAX_SIZE - NULLPAGE_SIZE * 2,
             },
             dl_info: twizzler_runtime_api::DlPhdrInfo {
                 addr: lib.base_addr(),
@@ -48,6 +49,7 @@ impl Monitor {
         })
     }
 
+    //#[tracing::instrument(skip(self), ret)]
     pub fn get_library_handle(
         &self,
         caller: ObjID,
@@ -69,6 +71,7 @@ impl Monitor {
         todo!()
     }
 
+    //#[tracing::instrument(skip(self), ret)]
     pub fn drop_library_handle(&self, caller: ObjID, desc: Descriptor) {
         self.library_handles
             .write(ThreadKey::get().unwrap())

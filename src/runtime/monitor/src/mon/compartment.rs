@@ -81,19 +81,21 @@ impl CompartmentMgr {
 }
 
 impl super::Monitor {
+    //#[tracing::instrument(skip(self), ret)]
     pub fn get_compartment_info(
         &self,
-        caller: ObjID,
+        instance: ObjID,
+        thread: ObjID,
         desc: Option<Descriptor>,
     ) -> Option<CompartmentInfo> {
         let (ref mut space, _, ref mut comps, _, _, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = desc
-            .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
-            .unwrap_or(Some(caller))?;
+            .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
+            .unwrap_or(Some(instance))?;
 
         let name = comps.get(comp_id)?.name.clone();
-        let pt = comps.get_mut(caller)?.get_per_thread(caller, space);
+        let pt = comps.get_mut(instance)?.get_per_thread(thread, space);
         let name_len = pt.write_bytes(name.as_bytes());
         let comp = comps.get(comp_id)?;
 
@@ -105,6 +107,7 @@ impl super::Monitor {
         })
     }
 
+    //#[tracing::instrument(skip(self), ret)]
     pub fn get_compartment_handle(&self, caller: ObjID, compartment: ObjID) -> Option<Descriptor> {
         self.compartment_handles
             .write(ThreadKey::get().unwrap())
@@ -137,6 +140,7 @@ impl super::Monitor {
         todo!()
     }
 
+    //#[tracing::instrument(skip(self), ret)]
     pub fn drop_compartment_handle(&self, caller: ObjID, desc: Descriptor) {
         self.compartment_handles
             .write(ThreadKey::get().unwrap())
