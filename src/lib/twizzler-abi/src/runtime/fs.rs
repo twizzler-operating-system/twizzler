@@ -61,7 +61,6 @@ impl RustFsRuntime for MinimalRuntime {
                 .offset(NULLPAGE_SIZE as isize)
                 .cast::<FileMetadata>()
         };
-
         if (unsafe { *metadata_handle }).magic != MAGIC_NUMBER {
             unsafe {
                 *metadata_handle = FileMetadata {

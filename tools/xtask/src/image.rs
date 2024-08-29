@@ -162,20 +162,26 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
         }
 
         if let Some(ref test_comp) = comp.borrow_test_compilation() {
+            let mut testlist = String::new();
+            for bin in test_comp.tests.iter() {
+                initrd_files.push(bin.path.clone());
+                testlist += &bin.path.file_name().unwrap().to_string_lossy();
+                testlist += "\n";
+            }
             if cli.tests {
-                let mut testlist = String::new();
-                for bin in test_comp.tests.iter() {
-                    initrd_files.push(bin.path.clone());
-                    testlist += &bin.path.file_name().unwrap().to_string_lossy();
-                    testlist += "\n";
-                }
                 let test_file_path = get_genfile_path(comp, "test_bins");
                 let mut file = File::create(&test_file_path)?;
                 file.write_all(testlist.as_bytes())?;
                 initrd_files.push(test_file_path);
             }
+            if cli.benches {
+                let test_file_path = get_genfile_path(comp, "bench_bins");
+                let mut file = File::create(&test_file_path)?;
+                file.write_all(testlist.as_bytes())?;
+                initrd_files.push(test_file_path);
+            }
         } else {
-            assert!(!cli.tests);
+            assert!(!cli.tests && !cli.benches);
         }
 
         let mut lib_path = crate::toolchain::get_rustlib_lib(&cli.config.twz_triple().to_string())?;
@@ -213,21 +219,30 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     let initrd_path = generate_initrd(initrd_files, &comp)?;
     
     crate::print_status_line("disk image", Some(&cli.config));
-    let cmdline = if cli.tests { "--tests" } else { "" };
+    let mut cmdline = String::new();
+    if cli.tests {
+        cmdline.push_str("--tests ");
+    }
+    if cli.benches {
+        cmdline.push_str("--benches");
+    }
     let efi_binary = match cli.config.arch {
         Arch::X86_64 => "toolchain/install/BOOTX64.EFI",
         Arch::Aarch64 => "toolchain/install/BOOTAA64.EFI",
     };
     let image_path = get_genfile_path(&comp, "disk.img");
-    println!("kernel: {:?}", comp.get_kernel_image(cli.tests));
+    println!(
+        "kernel: {:?}",
+        comp.get_kernel_image(cli.tests || cli.benches)
+    );
     let status = Command::new(get_tool_path(&comp, "image_builder")?)
         .arg("--disk-path")
         .arg(&image_path)
         .arg("--kernel-path")
-        .arg(comp.get_kernel_image(cli.tests))
+        .arg(comp.get_kernel_image(cli.tests || cli.benches))
         .arg("--initrd-path")
         .arg(initrd_path)
-        .arg(format!("--cmdline={}", cmdline))
+        .arg(format!("--cmdline={}", cmdline.trim()))
         .arg("--efi-binary")
         .arg(efi_binary)
         .status()?;

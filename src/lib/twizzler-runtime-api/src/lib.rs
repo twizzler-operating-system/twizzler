@@ -745,6 +745,10 @@ pub trait DebugRuntime {
     fn get_full_mapping(&self, lib: &Library) -> Option<ObjectHandle>;
     /// Handler for calls to the dl_iterate_phdr call.
     fn iterate_phdr(&self, f: &mut dyn FnMut(DlPhdrInfo) -> core::ffi::c_int) -> core::ffi::c_int;
+    /// Get the library ID immediately following the given one.
+    fn next_library_id(&self, id: LibraryId) -> Option<LibraryId> {
+        Some(LibraryId(id.0 + 1))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
