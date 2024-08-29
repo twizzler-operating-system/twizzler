@@ -14,8 +14,6 @@ members = [
     "src/bin/pager",
     "src/bin/mnemosyne",
     "src/bin/stdfs_demo",
-    "src/bin/mnemosyne",
-    "src/bin/stdfs_demo",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
