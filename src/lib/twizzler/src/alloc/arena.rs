@@ -243,13 +243,14 @@ pub struct PerObjectArena {
 impl Default for PerObjectArena {
     fn default() -> Self {
         PerObjectArena {
-            max: (MAX_SIZE - NULLPAGE_SIZE) as u64,
+            max: Self::MAX_ALLOC,
             end: TxCell::new((NULLPAGE_SIZE + size_of::<Self>()) as u64),
         }
     }
 }
 
 impl PerObjectArena {
+    const MAX_ALLOC: u64 = (MAX_SIZE - NULLPAGE_SIZE * 8) as u64;
     fn alloc_raw<'a>(
         &self,
         handle: &ObjectHandle,
@@ -262,11 +263,16 @@ impl PerObjectArena {
             |mut end| {
                 let place = (*end as usize).next_multiple_of(align);
                 let next_end = place + layout.size();
+
+                if next_end > self.max as usize {
+                    return Err(ArenaError::OutOfMemory);
+                }
+
                 *end = next_end as u64;
-                place
+                Ok(place)
             },
             tx,
-        )?;
+        )??;
 
         Ok(unsafe { GlobalPtr::new(handle.id, place as u64) })
     }

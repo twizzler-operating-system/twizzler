@@ -74,9 +74,8 @@ impl<T> InvPtr<T> {
     }
 
     pub fn set(&mut self, dest: impl Into<InvPtrBuilder<T>>) -> TxResult<()> {
-        let raw_self = addr_of_mut!(*self);
         let (handle, _) = twizzler_runtime_api::get_runtime()
-            .ptr_to_handle(raw_self as *const u8)
+            .ptr_to_handle(self.this())
             .unwrap();
         let mut in_place = InPlace::new(&handle);
         let value = Self::store(dest.into(), &mut in_place);
