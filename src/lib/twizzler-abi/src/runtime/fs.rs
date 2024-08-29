@@ -1,16 +1,18 @@
-use core::{intrinsics::size_of, cmp::min, cmp::max};
+use core::{
+    cmp::{max, min},
+    intrinsics::size_of,
+};
 
 use lazy_static::lazy_static;
 use rustc_alloc::{string::ToString, sync::Arc};
 use stable_vec::{self, StableVec};
-use twizzler_runtime_api::{
-    FsError, ObjectHandle, ObjectRuntime, RawFd,
-    RustFsRuntime, SeekFrom,
-};
+use twizzler_runtime_api::{FsError, ObjectHandle, ObjectRuntime, RawFd, RustFsRuntime, SeekFrom};
 
 use super::MinimalRuntime;
 use crate::{
-    object::{ObjID, NULLPAGE_SIZE}, runtime::simple_mutex::Mutex, syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags}
+    object::{ObjID, NULLPAGE_SIZE},
+    runtime::simple_mutex::Mutex,
+    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 
 struct FileDesc {
@@ -55,7 +57,7 @@ impl RustFsRuntime for MinimalRuntime {
 
         let metadata_handle = unsafe {
             handle
-                .start 
+                .start
                 .offset(NULLPAGE_SIZE as isize)
                 .cast::<FileMetadata>()
         };
@@ -74,14 +76,13 @@ impl RustFsRuntime for MinimalRuntime {
 
         let elem = Arc::new(Mutex::new(FileDesc {
             pos: 0,
-            handle: handle,
+            handle,
             map: Default::default(),
         }));
 
         let fd = if binding.is_compact() {
             binding.push(elem)
-        }
-        else {
+        } else {
             let fd = binding.first_empty_slot_from(0).unwrap();
             binding.insert(fd, elem);
             fd
@@ -108,39 +109,40 @@ impl RustFsRuntime for MinimalRuntime {
 
         let mut bytes_read = 0;
         while bytes_read < buf.len() {
-            if binding.pos > (unsafe{*metadata_handle}).size {
+            if binding.pos > (unsafe { *metadata_handle }).size {
                 break;
             }
 
-            let available_bytes = (unsafe{*metadata_handle}).size - binding.pos;
-            
+            let available_bytes = (unsafe { *metadata_handle }).size - binding.pos;
+
             let object_window: usize = ((binding.pos) / WRITABLE_BYTES) as usize;
             let offset = (binding.pos) % WRITABLE_BYTES;
 
             if object_window > OBJECT_COUNT || available_bytes == 0 {
                 break;
             }
-            // If the offset is in the first object, then 
-            
-            // OBJECT_SIZE - offset, is the bytes you can write in one object. Offset is bound by modulo of OBJECT_SIZE.
-            // available_bytes is the total bytes you can write to the file, this is bound by the writer since the writer can modify the size of the file
-            // buf.len() - bytes_read is the bytes you have left to read, this is bound by buf.len() > bytes_read 
-            let bytes_to_read = min(min(
-                WRITABLE_BYTES - offset, 
-                available_bytes), 
-                (buf.len() - bytes_read) as u64
+            // If the offset is in the first object, then
+
+            // OBJECT_SIZE - offset, is the bytes you can write in one object. Offset is bound by
+            // modulo of OBJECT_SIZE. available_bytes is the total bytes you can write
+            // to the file, this is bound by the writer since the writer can modify the size of the
+            // file buf.len() - bytes_read is the bytes you have left to read, this is
+            // bound by buf.len() > bytes_read
+            let bytes_to_read = min(
+                min(WRITABLE_BYTES - offset, available_bytes),
+                (buf.len() - bytes_read) as u64,
             );
 
             let object_ptr = if object_window == 0 {
                 binding.handle.start
-            }
-            else {
+            } else {
                 if let Some(new_handle) = &binding.map[object_window - 1] {
-                    new_handle.start 
-                }
-                else {
-                    let obj_id = ((unsafe{*metadata_handle}).direct)[(object_window - 1) as usize];
-                    let flags = twizzler_runtime_api::MapFlags::READ | twizzler_runtime_api::MapFlags::WRITE;
+                    new_handle.start
+                } else {
+                    let obj_id =
+                        ((unsafe { *metadata_handle }).direct)[(object_window - 1) as usize];
+                    let flags = twizzler_runtime_api::MapFlags::READ
+                        | twizzler_runtime_api::MapFlags::WRITE;
                     let handle = self.map_object(obj_id, flags).unwrap();
                     binding.map[object_window - 1] = Some(handle.clone());
                     handle.start
@@ -150,14 +152,14 @@ impl RustFsRuntime for MinimalRuntime {
             unsafe {
                 buf.as_mut_ptr().offset(bytes_read as isize).copy_from(
                     object_ptr.offset(
-                        NULLPAGE_SIZE as isize +
-                        size_of::<FileMetadata>() as isize + 
-                        offset as isize
+                        NULLPAGE_SIZE as isize
+                            + size_of::<FileMetadata>() as isize
+                            + offset as isize,
                     ),
                     bytes_to_read as usize,
                 )
             }
-            
+
             binding.pos += bytes_to_read;
 
             bytes_read += bytes_to_read as usize;
@@ -185,37 +187,40 @@ impl RustFsRuntime for MinimalRuntime {
         let mut bytes_written = 0;
         while bytes_written < buf.len() {
             // The available bytes for writing is the OBJECT_SIZE * OBJECT_COUNT
-            // The metadata fills some bytes, the rest is defined by binding.pos which overlays the rest of the object space
+            // The metadata fills some bytes, the rest is defined by binding.pos which overlays the
+            // rest of the object space
             let available_bytes = MAX_FILE_SIZE - binding.pos;
 
             let object_window: usize = (binding.pos / WRITABLE_BYTES) as usize;
             let offset = binding.pos % WRITABLE_BYTES;
-            
+
             if object_window > OBJECT_COUNT || available_bytes == 0 {
                 break;
             }
-            
-            // OBJECT_SIZE - offset, 0 is the bytes you can write in one object. Offset is bound by modulo of OBJECT_SIZE.
-            // available_bytes is the total bytes you can write to the file, available_bytes is always bound by the max file size
+
+            // OBJECT_SIZE - offset, 0 is the bytes you can write in one object. Offset is bound by
+            // modulo of OBJECT_SIZE. available_bytes is the total bytes you can write
+            // to the file, available_bytes is always bound by the max file size
             // buf.len() - bytes_written is the bytes you have left to write
-            let bytes_to_write = min(min(
-                WRITABLE_BYTES - offset, 
-                available_bytes), 
-                (buf.len() - bytes_written) as u64
+            let bytes_to_write = min(
+                min(WRITABLE_BYTES - offset, available_bytes),
+                (buf.len() - bytes_written) as u64,
             );
 
             let object_ptr = if object_window == 0 {
                 binding.handle.start
-            }
-            else {
+            } else {
                 // If the object is already mapped, return it's pointer
                 if let Some(new_handle) = &binding.map[object_window - 1] {
-                    new_handle.start 
+                    new_handle.start
                 }
-                // Otherwise check the direct map, if the ID is valid then map it, otherwise create the object, store it, then map it.
+                // Otherwise check the direct map, if the ID is valid then map it, otherwise create
+                // the object, store it, then map it.
                 else {
-                    let obj_id = ((unsafe{*metadata_handle}).direct)[(object_window - 1) as usize];
-                    let flags = twizzler_runtime_api::MapFlags::READ | twizzler_runtime_api::MapFlags::WRITE;
+                    let obj_id =
+                        ((unsafe { *metadata_handle }).direct)[(object_window - 1) as usize];
+                    let flags = twizzler_runtime_api::MapFlags::READ
+                        | twizzler_runtime_api::MapFlags::WRITE;
 
                     let mapped_id = if obj_id == 0.into() {
                         let create = ObjectCreate::new(
@@ -229,8 +234,7 @@ impl RustFsRuntime for MinimalRuntime {
                             (*metadata_handle).direct[(object_window - 1) as usize] = new_id;
                         }
                         new_id
-                    }
-                    else {
+                    } else {
                         obj_id
                     };
 
@@ -241,15 +245,19 @@ impl RustFsRuntime for MinimalRuntime {
             };
 
             unsafe {
-                object_ptr.offset(NULLPAGE_SIZE as isize + size_of::<FileMetadata>() as isize + offset as isize).copy_from(
-                    buf.as_ptr().offset(
-                        bytes_written as isize
-                    ),
-                    (bytes_to_write) as usize,
-                )
+                object_ptr
+                    .offset(
+                        NULLPAGE_SIZE as isize
+                            + size_of::<FileMetadata>() as isize
+                            + offset as isize,
+                    )
+                    .copy_from(
+                        buf.as_ptr().offset(bytes_written as isize),
+                        (bytes_to_write) as usize,
+                    )
             }
             binding.pos += bytes_to_write as u64;
-            unsafe {((*metadata_handle).size) = max(binding.pos, (*metadata_handle).size)};
+            unsafe { ((*metadata_handle).size) = max(binding.pos, (*metadata_handle).size) };
             bytes_written += bytes_to_write as usize;
         }
 
@@ -274,9 +282,15 @@ impl RustFsRuntime for MinimalRuntime {
         let file_desc = binding
             .get(fd.try_into().unwrap())
             .ok_or(FsError::LookupError)?;
- 
+
         let mut binding = file_desc.lock();
-        let metadata_handle = unsafe { &mut *binding.handle.start.offset(NULLPAGE_SIZE as isize).cast::<FileMetadata>() };
+        let metadata_handle = unsafe {
+            &mut *binding
+                .handle
+                .start
+                .offset(NULLPAGE_SIZE as isize)
+                .cast::<FileMetadata>()
+        };
 
         let new_pos: i64 = match pos {
             SeekFrom::Start(x) => x as i64,

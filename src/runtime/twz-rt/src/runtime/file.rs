@@ -77,10 +77,7 @@ impl RustFsRuntime for ReferenceRuntime {
         let fd = get_fd_slots()
             .lock()
             .unwrap()
-            .push(Arc::new(Mutex::new(FileDesc {
-                pos: 0,
-                handle,
-            })));
+            .push(Arc::new(Mutex::new(FileDesc { pos: 0, handle })));
 
         Ok(fd.try_into().unwrap())
     }

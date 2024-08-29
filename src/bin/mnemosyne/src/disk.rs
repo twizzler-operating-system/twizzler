@@ -5,9 +5,7 @@ use std::{
 };
 
 use layout::{
-    collections::raw::RawBytes,
-    io::SeekFrom,
-    Encode, Read, Seek, SourcedDynamic, Write, IO,
+    collections::raw::RawBytes, io::SeekFrom, Encode, Read, Seek, SourcedDynamic, Write, IO,
 };
 use lethe_gadget_fat::schema::{self, FATEntry, Superblock};
 use twizzler_async::block_on;
