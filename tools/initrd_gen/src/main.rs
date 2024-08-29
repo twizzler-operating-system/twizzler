@@ -65,7 +65,7 @@ fn main() {
     let mut archive = Builder::new(outfile);
 
     for file in files.unwrap_or_default().map(|s| s.as_str()) {
-        println!("file: {}", file);
+
         let mut f = File::open(file).unwrap();
         archive
             .append_file(
@@ -124,7 +124,7 @@ fn main() {
 
         let fmd_bytes: &[u8] = unsafe { any_as_u8_slice(&file_metadata) };
         data.extend(fmd_bytes);
-        println!("mapping.");
+
         f.read_to_end(&mut data).unwrap();
         let mut header = Header::new_old();
 
@@ -141,7 +141,7 @@ fn main() {
         header.set_gid(md.gid().into());
         header.set_mode(md.mode());
         header.set_cksum();
-        println!("Appending data :) ");
+        
         archive
             .append_data(
                 &mut header,
@@ -152,7 +152,5 @@ fn main() {
                 Cursor::new(data),
             )
             .unwrap();
-
-        println!("Appended");
-    }
+        }
 }
