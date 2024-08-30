@@ -154,12 +154,6 @@ impl<'obj, T> ResolvedMutPtr<'obj, T> {
     }
 }
 
-impl<'obj, T: CopyStorable> ResolvedMutPtr<'obj, T> {
-    pub fn set(&mut self, value: T) {
-        todo!()
-    }
-}
-
 impl<'obj, T> ResolvedMutPtr<'obj, MaybeUninit<T>> {
     pub fn write(self, item: T) -> ResolvedMutPtr<'obj, T> {
         let ResolvedMutPtr { once_handle, ptr } = self;

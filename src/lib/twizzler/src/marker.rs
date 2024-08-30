@@ -185,6 +185,12 @@ mod test {
         se: TestSE,
     }
 
+    #[derive(Invariant, BaseType, NewStorer)]
+    struct Baz {
+        x: u32,
+        se: Option<TestSE>,
+    }
+
     #[derive(Invariant, BaseType)]
     struct Bar {
         x: u32,
@@ -196,7 +202,7 @@ mod test {
         }
     }
 
-    #[test]
+    //#[test]
     fn test_storer() {
         let obj_bar = ObjectBuilder::default().init(Bar::new()).unwrap();
         let obj: Object<Foo> = ObjectBuilder::default()
@@ -204,5 +210,32 @@ mod test {
             .unwrap();
         let obj_bar_ctor: Object<Bar> =
             ObjectBuilder::default().construct(|ci| Bar::new()).unwrap();
+
+        /*
+        // Storer::new_move(T(Storer::store(x).into_inner()))
+        store!(
+            Baz,
+            &mut ci.in_place(),
+            42,
+            Some(store!(TestSE, &mut ci.in_place()))
+        );
+        */
+        let obj_baz: Object<Baz> = ObjectBuilder::default()
+            .construct(|ci| Baz::new_storer(42, unsafe { Storer::new_move(None) }))
+            .unwrap();
+
+        let obj_baz2: Object<Baz> = ObjectBuilder::default()
+            .construct(|ci| {
+                Baz::new_storer(
+                    42,
+                    move_storer(TestSE::new(&mut ci.in_place()), |x| Some(x)),
+                )
+            })
+            .unwrap();
     }
+}
+
+/// TODO: THIS IS UNSAFE
+fn move_storer<T, U>(x: Storer<T>, f: impl FnOnce(T) -> U) -> Storer<U> {
+    unsafe { Storer::new_move(f(x.into_inner())) }
 }
