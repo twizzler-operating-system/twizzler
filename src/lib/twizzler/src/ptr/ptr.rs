@@ -263,6 +263,18 @@ impl<T> TryStoreEffect for InvPtr<T> {
     }
 }
 
+impl<T: Copy> StoreEffect for T {
+    type MoveCtor = T;
+
+    #[inline]
+    fn store<'a>(ctor: Self::MoveCtor, _in_place: &mut InPlace<'a>) -> Self
+    where
+        Self: Sized,
+    {
+        ctor
+    }
+}
+
 impl<T> StoreEffect for InvPtr<T> {
     type MoveCtor = InvPtrBuilder<T>;
 

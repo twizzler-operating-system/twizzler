@@ -37,6 +37,12 @@ pub enum TxError<E = ()> {
     Immutable,
 }
 
+impl<E> From<E> for TxError<E> {
+    fn from(value: E) -> Self {
+        Self::Abort(value)
+    }
+}
+
 /// A transaction cell, enabling transactional interior mutability.
 #[repr(transparent)]
 #[derive(Default, Debug, twizzler_derive::Invariant)]
@@ -73,14 +79,25 @@ impl<T: Invariant> TxCell<T> {
         unsafe { self.as_mut(tx) }
     }
 
-    pub fn modify<'a, R>(
+    pub fn modify<'a, R, E>(
         &self,
         f: impl FnOnce(Pin<&mut T>) -> R,
         tx: impl TxHandle<'a>,
-    ) -> TxResult<R> {
+    ) -> TxResult<R, E> {
         unsafe {
             let ptr = self.as_mut(tx)?;
             Ok(f(ptr))
+        }
+    }
+
+    pub fn try_modify<'a, R, E>(
+        &self,
+        f: impl FnOnce(Pin<&mut T>) -> TxResult<R, E>,
+        tx: impl TxHandle<'a>,
+    ) -> TxResult<R, E> {
+        unsafe {
+            let ptr = self.as_mut(tx)?;
+            f(ptr)
         }
     }
 }

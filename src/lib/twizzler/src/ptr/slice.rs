@@ -59,7 +59,7 @@ impl<T> InvSlice<T> {
     /// object, you can use [Object::resolve].
     pub unsafe fn try_resolve(&self) -> Result<ResolvedSlice<'_, T>, FotResolveError> {
         let resolved = self.ptr.try_resolve()?;
-        Ok(ResolvedSlice::new(resolved, self.len as usize))
+        Ok(ResolvedSlice::from_raw_parts(resolved, self.len as usize))
     }
 }
 
@@ -78,7 +78,7 @@ impl<'obj, T> ResolvedSlice<'obj, T> {
         }
     }
 
-    fn new(ptr: ResolvedPtr<'obj, T>, len: usize) -> Self {
+    pub unsafe fn from_raw_parts(ptr: ResolvedPtr<'obj, T>, len: usize) -> Self {
         Self { len, ptr }
     }
 
@@ -98,7 +98,7 @@ impl<'obj, T> ResolvedSlice<'obj, T> {
         }
     }
 
-    pub fn get(&self, idx: usize) -> Option<ResolvedPtr<'_, T>> {
+    pub fn get(&self, idx: usize) -> Option<ResolvedPtr<'obj, T>> {
         if idx >= self.len() {
             None
         } else {
@@ -132,6 +132,10 @@ pub struct ResolvedMutSlice<'obj, T> {
 }
 
 impl<'obj, T> ResolvedMutSlice<'obj, T> {
+    pub unsafe fn from_raw_parts(ptr: ResolvedMutPtr<'obj, T>, len: usize) -> Self {
+        Self { len, ptr }
+    }
+
     pub fn handle(&self) -> &ObjectHandle {
         self.ptr.handle()
     }
@@ -152,7 +156,7 @@ impl<'obj, T> ResolvedMutSlice<'obj, T> {
         }
     }
 
-    pub fn get(&self, idx: usize) -> Option<ResolvedMutPtr<'_, T>> {
+    pub fn get(&self, idx: usize) -> Option<ResolvedMutPtr<'obj, T>> {
         if idx >= self.len() {
             None
         } else {

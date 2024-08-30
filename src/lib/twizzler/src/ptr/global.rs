@@ -2,7 +2,7 @@ use std::{marker::PhantomData, mem::size_of};
 
 use twizzler_runtime_api::{FotResolveError, MapFlags, ObjID};
 
-use super::ResolvedPtr;
+use super::{InvPtrBuilder, ResolvedPtr};
 use crate::{marker::InvariantValue, object::RawObject};
 
 #[derive(twizzler_derive::Invariant, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
@@ -72,3 +72,9 @@ impl<T> GlobalPtr<T> {
 // Safety: These are the standard library rules for references (https://doc.rust-lang.org/std/primitive.reference.html).
 unsafe impl<T: Sync> Sync for GlobalPtr<T> {}
 unsafe impl<T: Sync> Send for GlobalPtr<T> {}
+
+impl<T> From<GlobalPtr<T>> for InvPtrBuilder<T> {
+    fn from(value: GlobalPtr<T>) -> Self {
+        Self::from_global(value)
+    }
+}
