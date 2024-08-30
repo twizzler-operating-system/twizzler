@@ -1,7 +1,7 @@
 use std::{
     intrinsics::{likely, size_of, unlikely},
-    marker::{PhantomData, PhantomPinned},
-    ptr::{addr_of, addr_of_mut},
+    marker::PhantomData,
+    ptr::addr_of,
 };
 
 use twizzler_abi::object::{
@@ -9,10 +9,12 @@ use twizzler_abi::object::{
 };
 use twizzler_runtime_api::FotResolveError;
 
-use super::{GlobalPtr, InvPtrBuilder, ResolvedMutPtr, ResolvedPtr};
+use super::{GlobalPtr, InvPtrBuilder, ResolvedPtr};
 use crate::{
-    marker::{InPlace, Invariant, InvariantValue, StoreEffect, TryStoreEffect},
-    object::fot::{FotEntry, FotResolve},
+    marker::{
+        Invariant, InvariantValue, PhantomStoreEffect, StoreEffect, StorePlace, TryStoreEffect,
+    },
+    object::fot::FotEntry,
     tx::TxResult,
 };
 
@@ -21,7 +23,7 @@ use crate::{
 pub struct InvPtr<T> {
     bits: u64,
     _pd: PhantomData<*const T>,
-    _pp: PhantomPinned,
+    _pse: PhantomStoreEffect,
 }
 
 // Safety: These are the standard library rules for references (https://doc.rust-lang.org/std/primitive.reference.html).
@@ -31,31 +33,22 @@ unsafe impl<T: Sync> Send for InvPtr<T> {}
 impl<T> InvPtr<T> {
     #[inline]
     pub const fn null() -> Self {
-        Self {
-            bits: 0,
-            _pd: PhantomData,
-            _pp: PhantomPinned,
-        }
+        Self::new(0)
     }
 
-    // TODO: these maybe are safe
     #[inline]
-    pub const unsafe fn new(bits: u64) -> Self {
+    pub const fn new(bits: u64) -> Self {
         Self {
             bits,
             _pd: PhantomData,
-            _pp: PhantomPinned,
+            //_pp: PhantomPinned,
+            _pse: PhantomStoreEffect,
         }
     }
 
-    // TODO: these maybe are safe
     #[inline]
-    pub const unsafe fn from_raw_parts(fot_idx: usize, offset: u64) -> Self {
-        Self {
-            bits: make_invariant_pointer(fot_idx, offset),
-            _pd: PhantomData,
-            _pp: PhantomPinned,
-        }
+    pub const fn from_raw_parts(fot_idx: usize, offset: u64) -> Self {
+        Self::new(make_invariant_pointer(fot_idx, offset))
     }
 
     #[inline]
@@ -77,11 +70,8 @@ impl<T> InvPtr<T> {
         let (handle, _) = twizzler_runtime_api::get_runtime()
             .ptr_to_handle(self.this())
             .unwrap();
-        let mut in_place = InPlace::new(&handle);
+        let mut in_place = StorePlace::new(&handle);
         let value = Self::store(dest.into(), &mut in_place);
-
-        // TODO: do we need to drop anything?
-
         *self = value;
         Ok(())
     }
@@ -172,7 +162,10 @@ impl<T> InvPtr<T> {
 
     pub fn try_as_global(&self) -> Result<GlobalPtr<T>, FotResolveError> {
         let resolved = unsafe { self.try_resolve() }?;
-        Ok(unsafe { GlobalPtr::new(resolved.handle().id, split_invariant_pointer(self.raw()).1) })
+        Ok(GlobalPtr::new(
+            resolved.handle().id,
+            split_invariant_pointer(self.raw()).1,
+        ))
     }
 }
 
@@ -243,13 +236,13 @@ impl<T> TryStoreEffect for InvPtr<T> {
 
     fn try_store<'a>(
         ctor: Self::MoveCtor,
-        in_place: &mut crate::marker::InPlace<'a>,
+        in_place: &mut crate::marker::StorePlace<'a>,
     ) -> Result<Self, Self::Error>
     where
         Self: Sized,
     {
         Ok(if ctor.is_local() || ctor.id() == in_place.handle().id {
-            unsafe { Self::new(ctor.offset()) }
+            Self::new(ctor.offset())
         } else {
             let runtime = twizzler_runtime_api::get_runtime();
             let (fot, idx) = runtime.add_fot_entry(&in_place.handle()).ok_or(())?;
@@ -263,22 +256,10 @@ impl<T> TryStoreEffect for InvPtr<T> {
     }
 }
 
-impl<T: Copy> StoreEffect for T {
-    type MoveCtor = T;
-
-    #[inline]
-    fn store<'a>(ctor: Self::MoveCtor, _in_place: &mut InPlace<'a>) -> Self
-    where
-        Self: Sized,
-    {
-        ctor
-    }
-}
-
 impl<T> StoreEffect for InvPtr<T> {
     type MoveCtor = InvPtrBuilder<T>;
 
-    fn store<'a>(ctor: Self::MoveCtor, in_place: &mut crate::marker::InPlace<'a>) -> Self
+    fn store<'a>(ctor: Self::MoveCtor, in_place: &mut crate::marker::StorePlace<'a>) -> Self
     where
         Self: Sized,
     {
@@ -286,8 +267,10 @@ impl<T> StoreEffect for InvPtr<T> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use crate::{
+        marker::Storer,
         object::{BaseType, InitializedObject, ObjectBuilder},
         ptr::InvPtr,
     };
@@ -304,11 +287,14 @@ mod tests {
     }
     impl BaseType for Bar {}
     extern crate test;
+
     #[bench]
     fn bench_ptr_resolve_local(bench: &mut test::Bencher) {
-        let obj = ObjectBuilder::default()
-            .init(Foo {
-                ptr: unsafe { InvPtr::new(0x4000) },
+        let obj = ObjectBuilder::<Foo>::default()
+            .construct(|_| unsafe {
+                Storer::new_move(Foo {
+                    ptr: unsafe { InvPtr::new(0x4000) },
+                })
             })
             .unwrap();
         let base = unsafe { obj.base_mut() };
@@ -321,9 +307,11 @@ mod tests {
     #[bench]
     fn bench_ptr_resolve_fote(bench: &mut test::Bencher) {
         let bar = ObjectBuilder::default().init(Bar { x: 3 }).unwrap();
-        let obj = ObjectBuilder::default()
-            .construct(|ci| Foo {
-                ptr: ci.in_place().store(bar.base()),
+        let obj = ObjectBuilder::<Foo>::default()
+            .construct(|ci| unsafe {
+                Storer::new_move(Foo {
+                    ptr: ci.in_place().store(bar.base()),
+                })
             })
             .unwrap();
         let base = unsafe { obj.base_mut() };

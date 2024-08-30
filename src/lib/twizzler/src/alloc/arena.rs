@@ -10,8 +10,8 @@ use twizzler_runtime_api::{ObjID, ObjectHandle};
 
 use super::{Allocator, TxAllocator};
 use crate::{
-    collections::VectorHeader,
-    marker::{InPlace, Invariant},
+    collections::Vector,
+    marker::{CopyStorable, Invariant, Storable, StorePlace, Storer},
     object::{BaseType, InitializedObject, Object, ObjectBuilder, RawObject},
     ptr::{
         GlobalPtr, InvPtr, InvPtrBuilder, InvSlice, InvSliceBuilder, ResolvedMutPtr, ResolvedPtr,
@@ -37,7 +37,7 @@ impl From<TxError> for ArenaError {
     }
 }
 
-#[derive(twizzler_derive::Invariant)]
+#[derive(twizzler_derive::Invariant, twizzler_derive::BaseType)]
 #[repr(C)]
 pub struct ArenaManifest {
     arenas: TxCell<VecAndStart>,
@@ -55,6 +55,10 @@ impl Default for ArenaManifest {
 }
 
 impl ArenaManifest {
+    pub fn new() -> Storer<Self> {
+        unsafe { Storer::new_move(Self::default()) }
+    }
+
     fn new_object(&self) -> Result<Object<PerObjectArena>, ArenaError> {
         let obj = ObjectBuilder::default()
             .init(PerObjectArena::default())
@@ -66,9 +70,7 @@ impl ArenaManifest {
         &self,
         tx: impl TxHandle<'a>,
     ) -> Result<ResolvedPtr<PerObjectArena>, ArenaError> {
-        println!("arena new obj: add_object");
         let obj = self.new_object()?;
-        println!("got: {:p}", obj.base_ptr());
         // TODO: is this pin unsafe?
         let idx =
             unsafe { self.arenas.as_mut(&tx)?.get_unchecked_mut() }.add_object(obj.base(), &tx)?;
@@ -122,7 +124,7 @@ impl ArenaManifest {
         }
     }
 
-    pub fn alloc<Item: Invariant>(
+    unsafe fn do_alloc<Item: Invariant>(
         &self,
         init: Item,
     ) -> Result<ResolvedMutPtr<'_, Item>, ArenaError> {
@@ -139,16 +141,23 @@ impl ArenaManifest {
         }
     }
 
-    pub fn alloc_with<Item: Invariant, F>(
+    pub fn alloc<Item: Invariant + CopyStorable>(
+        &self,
+        init: Item,
+    ) -> Result<ResolvedMutPtr<'_, Item>, ArenaError> {
+        unsafe { self.do_alloc(init) }
+    }
+
+    pub fn alloc_with<Item: Invariant, F, SItem: Storable<Item>>(
         &self,
         f: F,
     ) -> Result<ResolvedMutPtr<'_, Item>, ArenaError>
     where
-        F: FnOnce(InPlace<'_>) -> Item,
+        F: FnOnce(StorePlace<'_>) -> SItem,
     {
-        let place = self.alloc::<MaybeUninit<Item>>(MaybeUninit::uninit())?;
-        let item = f(InPlace::new(&place.handle()));
-        let place = place.write(item);
+        let place = unsafe { self.do_alloc::<MaybeUninit<Item>>(MaybeUninit::uninit()) }?;
+        let item = f(StorePlace::new(&place.handle()));
+        let place = place.write(item.storable());
         Ok(place)
     }
 }
@@ -203,7 +212,7 @@ impl Allocator for ArenaManifest {
     }
 }
 
-#[derive(twizzler_derive::Invariant)]
+#[derive(twizzler_derive::Invariant, twizzler_derive::BaseType)]
 #[repr(C)]
 struct VecAndStart {
     start: u32,
@@ -222,7 +231,6 @@ impl VecAndStart {
         if start >= slice.len() {
             return Err(ArenaError::OutOfMemory);
         }
-        println!("slice ptr: {:p}", slice.get(start).unwrap().ptr());
         slice
             .get(start)
             .unwrap()
@@ -231,9 +239,7 @@ impl VecAndStart {
     }
 }
 
-impl BaseType for ArenaManifest {}
-
-#[derive(twizzler_derive::Invariant)]
+#[derive(twizzler_derive::Invariant, twizzler_derive::BaseType)]
 #[repr(C)]
 pub struct PerObjectArena {
     max: u64,
@@ -274,21 +280,20 @@ impl PerObjectArena {
             tx,
         )??;
 
-        Ok(unsafe { GlobalPtr::new(handle.id, place as u64) })
+        Ok(GlobalPtr::new(handle.id, place as u64))
     }
 }
-
-impl BaseType for PerObjectArena {}
 
 #[cfg(test)]
 mod test {
     use super::ArenaManifest;
     use crate::{
+        marker::Storer,
         object::{BaseType, InitializedObject, Object, ObjectBuilder},
         ptr::{InvPtr, InvPtrBuilder},
     };
 
-    #[derive(twizzler_derive::Invariant)]
+    #[derive(twizzler_derive::Invariant, twizzler_derive::NewStorer)]
     #[repr(C)]
     struct Node {
         next: InvPtr<Node>,
@@ -306,8 +311,8 @@ mod test {
 
     #[test]
     fn test() {
-        let obj = ObjectBuilder::default()
-            .init(ArenaManifest::default())
+        let obj = ObjectBuilder::<ArenaManifest>::default()
+            .construct(|_| ArenaManifest::new())
             .unwrap();
         let leaf_object = ObjectBuilder::default()
             .init(LeafData { payload: 42 })
@@ -316,25 +321,26 @@ mod test {
         let arena = obj.base();
         // Alloc a new node.
         let node1 = arena
-            .alloc_with(|mut ip| Node {
-                next: InvPtr::null(),
-                data: ip.store(leaf_object.base()),
+            .alloc_with::<Node, _, _>(|mut ip| {
+                Node::new_storer(
+                    Storer::store(InvPtrBuilder::null(), &mut ip),
+                    Storer::store(leaf_object.base(), &mut ip),
+                )
             })
             .unwrap();
 
         // Alloc another node
         let node2 = arena
-            .alloc_with(|mut ip| Node {
-                // this node points to node1 in the next field.
-                next: ip.store(unsafe { InvPtrBuilder::from_global(node1.global()) }),
-                data: ip.store(leaf_object.base()),
+            .alloc_with::<Node, _, _>(|mut ip| {
+                Node::new_storer(
+                    Storer::store(node1, &mut ip),
+                    Storer::store(leaf_object.base(), &mut ip),
+                )
             })
             .unwrap();
 
         let _leaf_alloc = arena.alloc(LeafData { payload: 32 }).unwrap();
 
-        // I'm planning on implementing Deref for InvPtr, and just having it panic if resolve()
-        // returns Err.
         let res_node1 = unsafe { node2.next.resolve() };
         let leaf_data = unsafe { res_node1.data.resolve() };
         let payload = leaf_data.payload;

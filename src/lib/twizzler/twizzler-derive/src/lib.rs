@@ -12,6 +12,22 @@ pub fn invariant(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     }
 }
 
+#[proc_macro_derive(BaseType)]
+pub fn base_type(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    match handle_base_type(parse_macro_input!(item as DeriveInput)) {
+        Ok(ts) => ts.into(),
+        Err(err) => proc_macro::TokenStream::from(err.to_compile_error()),
+    }
+}
+
+#[proc_macro_derive(NewStorer)]
+pub fn new_storer(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    match handle_new_storer(parse_macro_input!(item as DeriveInput)) {
+        Ok(ts) => ts.into(),
+        Err(err) => proc_macro::TokenStream::from(err.to_compile_error()),
+    }
+}
+
 fn handle_invariant(item: DeriveInput, copy: bool) -> Result<proc_macro2::TokenStream, Error> {
     let type_name = item.ident.clone();
     /*
@@ -62,7 +78,59 @@ fn handle_invariant(item: DeriveInput, copy: bool) -> Result<proc_macro2::TokenS
     let (impl_gens, type_gens, where_clause) = item.generics.split_for_impl();
     Ok(quote::quote! {
        unsafe impl #impl_gens twizzler::marker::Invariant for #type_name #type_gens #where_clause {}
+    })
+}
 
+fn handle_base_type(item: DeriveInput) -> Result<proc_macro2::TokenStream, Error> {
+    let type_name = item.ident.clone();
 
+    let (impl_gens, type_gens, where_clause) = item.generics.split_for_impl();
+    Ok(quote::quote! {
+       impl #impl_gens twizzler::marker::BaseType for #type_name #type_gens #where_clause {}
+    })
+}
+
+fn handle_new_storer(item: DeriveInput) -> Result<proc_macro2::TokenStream, Error> {
+    let type_name = item.ident.clone();
+    let (impl_gens, type_gens, where_clause) = item.generics.split_for_impl();
+
+    let types: Vec<_> = match item.data {
+        syn::Data::Struct(st) => st
+            .fields
+            .iter()
+            .enumerate()
+            .map(|f| {
+                (
+                    f.1.ident
+                        .clone()
+                        .unwrap_or(Ident::new(&format!("x{}", f.0), f.1.ident.span())),
+                    f.1.ty.clone(),
+                )
+            })
+            .collect(),
+        syn::Data::Enum(_) => todo!(),
+        syn::Data::Union(_) => todo!(),
+    };
+
+    let params = types
+        .iter()
+        .map(|(ident, ty)| quote!(#ident: impl twizzler::marker::Storable<#ty>));
+
+    let inits = types
+        .iter()
+        .map(|(ident, _ty)| quote!(#ident: #ident.storable()));
+
+    Ok(quote::quote! {
+       impl #impl_gens #type_name #type_gens #where_clause {
+           pub fn new_storer(#(#params),*) -> twizzler::marker::Storer<Self> {
+               unsafe {
+                   twizzler::marker::Storer::new_move(
+                       Self {
+                            #(#inits),*
+                       }
+                   )
+               }
+           }
+       }
     })
 }

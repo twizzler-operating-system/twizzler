@@ -13,7 +13,7 @@ use twizzler_runtime_api::{get_runtime, MapError, MapFlags, ObjectHandle};
 
 use super::{BaseType, Object};
 use crate::{
-    marker::{InPlace, Invariant},
+    marker::{CopyStorable, Invariant, Storable, StorePlace},
     object::RawObject,
     ptr::InvPtrBuilder,
     tx::TxHandle,
@@ -45,8 +45,8 @@ pub struct UninitializedObject {
 }
 
 impl UninitializedObject {
-    pub(crate) fn in_place(&self) -> InPlace<'_> {
-        InPlace::new(&self.handle)
+    pub(crate) fn in_place(&self) -> StorePlace<'_> {
+        StorePlace::new(&self.handle)
     }
 }
 
@@ -65,9 +65,13 @@ impl<Base> ConstructorInfo<Base> {
         }
     }
 
-    pub fn write_base(&self, base_init: Base) {
+    pub fn write_base<InitBase>(&self, base_init: InitBase)
+    where
+        InitBase: Storable<Base>,
+        Base: Invariant,
+    {
         let base = unsafe { &mut *(self.object.handle.base_mut_ptr() as *mut MaybeUninit<Base>) };
-        base.write(base_init);
+        base.write(base_init.storable());
     }
 
     /// Get the uninitialized object that is being constructed.
@@ -75,7 +79,7 @@ impl<Base> ConstructorInfo<Base> {
         &self.object
     }
 
-    pub fn in_place(&self) -> InPlace<'_> {
+    pub fn in_place(&self) -> StorePlace<'_> {
         self.object().in_place()
     }
 
@@ -106,20 +110,20 @@ impl<Base> ConstructorInfo<Base> {
     }
 
     /// Allocate a value of type T in object memory at creation time, and construct it in-place.
-    pub fn static_alloc_with<T: Invariant, StaticCtor>(
+    pub fn static_alloc_with<T: Invariant, StaticCtor, ST>(
         &mut self,
         ctor: StaticCtor,
     ) -> Result<InvPtrBuilder<T>, AllocError>
     where
-        StaticCtor: FnOnce(&mut Self, &mut InPlace<'_>) -> Result<T, AllocError>,
+        StaticCtor: FnOnce(&mut Self) -> Result<ST, AllocError>,
+        ST: Storable<T>,
     {
         let (ptr, offset) = self.do_static_alloc::<MaybeUninit<T>>()?;
         let handle = self.object.handle.clone();
         unsafe {
             // Safety: we are taking an &mut to a MaybeUninit.
-            let mut in_place = InPlace::new(&handle);
-            let value = ctor(self, &mut in_place)?;
-            (&mut *ptr).write(value);
+            let value = ctor(self)?;
+            (&mut *ptr).write(value.storable());
             // Safety: we just initialized this value above.
             Ok(InvPtrBuilder::from_offset(offset))
         }
@@ -154,9 +158,10 @@ impl<'a> TxHandle<'a> for ObjectInitTxHandle {
 
 impl<Base: BaseType + Invariant> ObjectBuilder<Base> {
     /// Construct the object, building the Base value in-place.
-    pub fn construct<BaseCtor>(&self, ctor: BaseCtor) -> Result<Object<Base>, CreateError>
+    pub fn construct<BaseCtor, IntoBase>(&self, ctor: BaseCtor) -> Result<Object<Base>, CreateError>
     where
-        BaseCtor: FnOnce(&mut ConstructorInfo<Base>) -> Base,
+        BaseCtor: FnOnce(&mut ConstructorInfo<Base>) -> IntoBase,
+        IntoBase: Storable<Base>,
     {
         let handle = self.create_object()?;
         let mut ci = ConstructorInfo::new(handle);
@@ -168,9 +173,13 @@ impl<Base: BaseType + Invariant> ObjectBuilder<Base> {
     }
 
     /// Construct the object, building the Base value in-place.
-    pub fn try_construct<BaseCtor>(&self, ctor: BaseCtor) -> Result<Object<Base>, CreateError>
+    pub fn try_construct<BaseCtor, IntoBase>(
+        &self,
+        ctor: BaseCtor,
+    ) -> Result<Object<Base>, CreateError>
     where
-        BaseCtor: FnOnce(&mut ConstructorInfo<Base>) -> Result<Base, CreateError>,
+        BaseCtor: FnOnce(&mut ConstructorInfo<Base>) -> Result<IntoBase, CreateError>,
+        IntoBase: Storable<Base>,
     {
         let handle = self.create_object()?;
         let mut ci = ConstructorInfo::new(handle);
@@ -182,12 +191,12 @@ impl<Base: BaseType + Invariant> ObjectBuilder<Base> {
     }
 }
 
-impl<Base: BaseType> ObjectBuilder<Base> {
+impl<Base: BaseType + CopyStorable + Invariant> ObjectBuilder<Base> {
     /// Construct the object, using the supplied base value.
     pub fn init(&self, base: Base) -> Result<Object<Base>, CreateError> {
         let handle = self.create_object()?;
         unsafe {
-            (handle.handle.base_mut_ptr() as *mut Base).write(base);
+            (handle.handle.base_mut_ptr() as *mut Base).write(base.into());
             Ok(Object::new(handle.handle))
         }
     }
@@ -196,42 +205,25 @@ impl<Base: BaseType> ObjectBuilder<Base> {
 #[cfg(test)]
 mod test {
     use crate::{
-        marker::InPlace,
+        marker::{StorePlace, Storer},
         object::{builder::ObjectInitTxHandle, BaseType, InitializedObject, Object, ObjectBuilder},
         ptr::{InvPtr, InvPtrBuilder},
         tx::TxHandle,
     };
 
-    #[derive(twizzler_derive::Invariant, Clone, Copy)]
+    #[derive(twizzler_derive::Invariant, Clone, Copy, twizzler_derive::BaseType)]
     #[repr(C)]
     struct Foo {
         x: u32,
     }
-    impl BaseType for Foo {}
 
-    #[derive(twizzler_derive::Invariant)]
+    #[derive(twizzler_derive::Invariant, twizzler_derive::NewStorer, twizzler_derive::BaseType)]
     #[repr(C)]
     struct Bar {
         x: InvPtr<Foo>,
         y: InvPtr<Foo>,
         z: InvPtr<Bar>,
     }
-
-    impl Bar {
-        fn new<'a>(
-            in_place: &mut InPlace<'a>,
-            x: InvPtrBuilder<Foo>,
-            y: InvPtrBuilder<Foo>,
-            z: InvPtrBuilder<Bar>,
-        ) -> Self {
-            Self {
-                x: in_place.store(x),
-                y: in_place.store(y),
-                z: in_place.store(z),
-            }
-        }
-    }
-    impl BaseType for Bar {}
 
     #[test]
     fn init_object() {
@@ -244,11 +236,11 @@ mod test {
         let bar_obj: Object<Bar> = ObjectBuilder::default()
             .construct(|ci| {
                 let foo_alloc = ci.static_alloc(Foo { x: 46 }).unwrap();
-                Bar {
-                    x: ci.in_place().store(foo_alloc),
-                    y: InvPtr::null(),
-                    z: InvPtr::null(),
-                }
+                Bar::new_storer(
+                    Storer::store(foo_alloc, &mut ci.in_place()),
+                    Storer::store(InvPtrBuilder::null(), &mut ci.in_place()),
+                    Storer::store(InvPtrBuilder::null(), &mut ci.in_place()),
+                )
             })
             .unwrap();
         assert!(bar_obj.base().x.is_local());
@@ -265,21 +257,21 @@ mod test {
             .try_construct(|ci| {
                 let static_foo_alloc_a1 = ci.static_alloc(Foo { x: 1 })?;
 
-                let static_bar_alloc = ci.static_alloc_with(|ci, in_place| {
+                let static_bar_alloc = ci.static_alloc_with(|ci| {
                     let static_foo_alloc_b1 = ci.static_alloc(Foo { x: 101 })?;
                     let static_foo_alloc_b2 = ci.static_alloc(Foo { x: 102 })?;
-                    Ok(Bar::new(
-                        in_place,
-                        static_foo_alloc_b1,
-                        static_foo_alloc_b2,
-                        InvPtrBuilder::null(),
+
+                    Ok(Bar::new_storer(
+                        Storer::store(static_foo_alloc_b1, &mut ci.in_place()),
+                        Storer::store(static_foo_alloc_b2, &mut ci.in_place()),
+                        Storer::store(InvPtrBuilder::null(), &mut ci.in_place()),
                     ))
                 })?;
-                Ok(Bar::new(
-                    &mut ci.in_place(),
-                    foo_obj.base().into(),
-                    static_foo_alloc_a1,
-                    static_bar_alloc,
+
+                Ok(Bar::new_storer(
+                    Storer::store(foo_obj.base(), &mut ci.in_place()),
+                    Storer::store(static_foo_alloc_a1, &mut ci.in_place()),
+                    Storer::store(static_bar_alloc, &mut ci.in_place()),
                 ))
             })
             .unwrap();

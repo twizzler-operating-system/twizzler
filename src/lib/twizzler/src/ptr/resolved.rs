@@ -9,7 +9,7 @@ use std::{
 use twizzler_runtime_api::ObjectHandle;
 
 use super::{GlobalPtr, InvPtrBuilder};
-use crate::marker::InPlace;
+use crate::marker::{CopyStorable, StorePlace};
 
 #[repr(transparent)]
 #[derive(Clone, Default)]
@@ -137,7 +137,7 @@ impl<'obj, T> ResolvedMutPtr<'obj, T> {
         GlobalPtr::from_va(self.ptr()).unwrap()
     }
 
-    pub fn set_with(&mut self, ctor: impl FnOnce(InPlace) -> T) {
+    pub fn set_with(&mut self, ctor: impl FnOnce(StorePlace) -> T) {
         todo!()
     }
 
@@ -154,7 +154,7 @@ impl<'obj, T> ResolvedMutPtr<'obj, T> {
     }
 }
 
-impl<'obj, T: Unpin> ResolvedMutPtr<'obj, T> {
+impl<'obj, T: CopyStorable> ResolvedMutPtr<'obj, T> {
     pub fn set(&mut self, value: T) {
         todo!()
     }
@@ -183,7 +183,7 @@ impl<'obj, T> Deref for ResolvedMutPtr<'obj, T> {
     }
 }
 
-impl<'obj, T: Unpin> DerefMut for ResolvedMutPtr<'obj, T> {
+impl<'obj, T: CopyStorable> DerefMut for ResolvedMutPtr<'obj, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // Safety: we are pointing to a mutable object, that we have locked.
         unsafe { self.ptr.as_mut().unwrap_unchecked() }

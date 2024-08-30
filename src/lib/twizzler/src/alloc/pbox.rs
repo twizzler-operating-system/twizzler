@@ -8,7 +8,7 @@ use twizzler_runtime_api::FotResolveError;
 
 use super::Allocator;
 use crate::{
-    marker::{InPlace, StoreEffect},
+    marker::{CopyStorable, PhantomStoreEffect, Storable, StoreEffect, StorePlace},
     object::InitializedObject,
     ptr::{GlobalPtr, InvPtr, InvPtrBuilder, ResolvedPtr},
     tx::{TxHandle, TxResult},
@@ -41,7 +41,7 @@ impl<T, A: Allocator> PBox<T, A> {
 
     pub fn new_in(value: T, alloc: A) -> Result<PBoxBuilder<T, A>, AllocError>
     where
-        T: Unpin,
+        T: CopyStorable,
     {
         let gptr = alloc.allocate(Layout::new::<T>())?.cast::<T>();
         let ptr = unsafe { gptr.resolve().map_err(|_| AllocError) }?;
@@ -54,15 +54,15 @@ impl<T, A: Allocator> PBox<T, A> {
         })
     }
 
-    pub fn new_in_with(
-        ctor: impl FnOnce(InPlace) -> T,
+    pub fn new_in_with<ST: Storable<T>>(
+        ctor: impl FnOnce(StorePlace) -> ST,
         alloc: A,
     ) -> Result<PBoxBuilder<T, A>, AllocError> {
         let gptr = alloc.allocate(Layout::new::<T>())?.cast::<T>();
         let ptr = unsafe { gptr.resolve().map_err(|_| AllocError) }?;
         let mut_ptr = unsafe { ptr.into_mut() };
-        let in_place = InPlace::new(&mut_ptr.handle());
-        unsafe { mut_ptr.ptr().write(ctor(in_place)) };
+        let in_place = StorePlace::new(&mut_ptr.handle());
+        unsafe { mut_ptr.ptr().write(ctor(in_place).storable()) };
 
         Ok(PBoxBuilder {
             inv: InvPtrBuilder::from_global(gptr),
@@ -101,7 +101,7 @@ impl<T, A: Allocator> Drop for PBox<T, A> {
 impl<T, A: Allocator> StoreEffect for PBox<T, A> {
     type MoveCtor = PBoxBuilder<T, A>;
 
-    fn store<'a>(ctor: Self::MoveCtor, in_place: &mut InPlace<'a>) -> Self
+    fn store<'a>(ctor: Self::MoveCtor, in_place: &mut StorePlace<'a>) -> Self
     where
         Self: Sized,
     {
@@ -118,7 +118,7 @@ impl<T, A: Allocator + Clone> From<&PBox<T, A>> for PBoxBuilder<T, A> {
     }
 }
 
-//#[cfg(test)]
+#[cfg(test)]
 mod test {
     use std::{
         sync::atomic::{AtomicUsize, Ordering},
@@ -126,6 +126,7 @@ mod test {
     };
 
     use twizzler_abi::syscall::ObjectCreate;
+    use twizzler_derive::NewStorer;
 
     use super::{PBox, PBoxBuilder};
     use crate::{
@@ -133,19 +134,20 @@ mod test {
             arena::{ArenaAllocator, ArenaManifest},
             TxAllocator,
         },
+        marker::Storer,
         object::{BaseType, ConstructorInfo, InitializedObject, Object, ObjectBuilder},
         ptr::InvPtrBuilder,
         tx::{TxCell, TxHandle},
     };
 
-    #[derive(twizzler_derive::Invariant)]
+    #[derive(twizzler_derive::Invariant, NewStorer)]
     #[repr(C)]
     struct Node {
         next: Option<PBox<Node, ArenaAllocator>>,
         value: u32,
     }
 
-    #[derive(twizzler_derive::Invariant)]
+    #[derive(twizzler_derive::Invariant, NewStorer)]
     #[repr(C)]
     struct Root {
         list: PBox<Node, ArenaAllocator>,
@@ -156,7 +158,7 @@ mod test {
     #[test]
     fn test() {
         let obj = ObjectBuilder::default()
-            .init(ArenaManifest::default())
+            .construct(|_| ArenaManifest::new())
             .unwrap();
         let arena = obj.base();
 
@@ -164,9 +166,10 @@ mod test {
                           value: u32,
                           arena: &ArenaManifest| {
             PBox::new_in_with(
-                |mut ip| Node {
-                    next: parent.map(|parent| ip.store(parent)),
-                    value,
+                |mut ip| {
+                    let parent = parent.map(|parent| Storer::store(parent, &mut ip).into_inner());
+                    let parent = unsafe { Storer::new_move(parent) };
+                    Node::new_storer(parent, value)
                 },
                 ArenaAllocator::new(&*arena),
             )
@@ -176,10 +179,8 @@ mod test {
         let node1 = alloc_node(None, 3, &arena);
         let node2 = alloc_node(Some(node1), 11, &arena);
 
-        let root_object = ObjectBuilder::default()
-            .construct(|ci| Root {
-                list: ci.in_place().store(node2),
-            })
+        let root_object = ObjectBuilder::<Root>::default()
+            .construct(|ci| Root::new_storer(Storer::store(node2, &mut ci.in_place())))
             .unwrap();
 
         let root = root_object.base();

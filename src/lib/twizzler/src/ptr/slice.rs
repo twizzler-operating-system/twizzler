@@ -261,7 +261,7 @@ impl<T> InvSliceBuilder<T> {
 impl<T> StoreEffect for InvSlice<T> {
     type MoveCtor = InvSliceBuilder<T>;
 
-    fn store<'a>(ctor: Self::MoveCtor, in_place: &mut crate::marker::InPlace<'a>) -> Self
+    fn store<'a>(ctor: Self::MoveCtor, in_place: &mut crate::marker::StorePlace<'a>) -> Self
     where
         Self: Sized,
     {

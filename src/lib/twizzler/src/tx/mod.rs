@@ -5,7 +5,7 @@ use std::{
     pin::Pin,
 };
 
-use crate::marker::{InPlace, Invariant, InvariantValue};
+use crate::marker::{Invariant, InvariantValue, StorePlace};
 
 /// A trait for implementing transaction handles.
 ///
@@ -106,7 +106,7 @@ impl<'a, T: Invariant> TxCell<T> {
     /// Set the value of the cell, constructing the value in-place.
     pub fn set_with<F>(&self, ctor: F, tx: impl TxHandle<'a>) -> TxResult<()>
     where
-        F: FnOnce(&mut InPlace<'_>) -> T,
+        F: FnOnce(&mut StorePlace<'_>) -> T,
     {
         // TODO: do we need to drop anything?
         let ptr = unsafe { transmute::<Pin<&mut T>, Pin<&mut MaybeUninit<T>>>(self.as_mut(&tx)?) };
@@ -114,7 +114,7 @@ impl<'a, T: Invariant> TxCell<T> {
             .ptr_to_handle(ptr.as_ptr() as *const u8)
             .unwrap()
             .0; // TODO: unwrap
-        let mut in_place = InPlace::new(&handle);
+        let mut in_place = StorePlace::new(&handle);
         let value = ctor(&mut in_place);
         let ptr = unsafe { transmute::<Pin<&mut T>, Pin<&mut MaybeUninit<T>>>(self.as_mut(&tx)?) };
         // TODO: is this okay?

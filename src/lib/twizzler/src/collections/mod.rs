@@ -4,14 +4,17 @@ use std::{
     pin::Pin,
 };
 
+use twizzler_derive::NewStorer;
+
 use crate::{
     alloc::Allocator,
+    marker::Storer,
     object::BaseType,
     ptr::{InvPtr, ResolvedPtr, ResolvedSlice},
     tx::{TxCell, TxHandle, TxResult},
 };
 
-#[derive(twizzler_derive::Invariant)]
+#[derive(twizzler_derive::Invariant, NewStorer)]
 #[repr(C)]
 struct VectorInner<T> {
     ptr: InvPtr<T>,
@@ -81,16 +84,18 @@ impl<T> VectorInner<T> {
 
 #[derive(twizzler_derive::Invariant)]
 #[repr(C)]
-pub struct VectorHeader<T, Alloc: Allocator> {
+pub struct Vector<T, Alloc: Allocator> {
     inner: TxCell<VectorInner<T>>,
     alloc: Alloc,
 }
 
-impl<T, Alloc: Allocator> VectorHeader<T, Alloc> {
-    pub fn new_in(alloc: Alloc) -> Self {
-        Self {
-            inner: TxCell::new(VectorInner::default()),
-            alloc,
+impl<T, Alloc: Allocator> Vector<T, Alloc> {
+    pub fn new_in(alloc: Alloc) -> Storer<Self> {
+        unsafe {
+            Storer::new_move(Self {
+                inner: TxCell::new(VectorInner::default()),
+                alloc,
+            })
         }
     }
 
@@ -142,24 +147,24 @@ impl<T, Alloc: Allocator> VectorHeader<T, Alloc> {
     }
 }
 
-impl<T, Alloc: Allocator> BaseType for VectorHeader<T, Alloc> {}
+impl<T, Alloc: Allocator> BaseType for Vector<T, Alloc> {}
 
-#[cfg(test)]
+//#[cfg(test)]
 mod tests {
-    use super::VectorHeader;
+    use super::Vector;
     use crate::{
         alloc::arena::{ArenaAllocator, ArenaManifest},
         object::{InitializedObject, Object, ObjectBuilder},
         tx::UnsafeTxHandle,
     };
 
-    fn init() -> Object<VectorHeader<i32, ArenaAllocator>> {
+    fn init() -> Object<Vector<i32, ArenaAllocator>> {
         let arena = ObjectBuilder::default()
-            .init(ArenaManifest::default())
+            .construct(|_| ArenaManifest::new())
             .unwrap();
         let alloc = ArenaAllocator::new(arena.base_ref());
         ObjectBuilder::default()
-            .init(VectorHeader::new_in(alloc))
+            .construct(|_| Vector::new_in(alloc))
             .unwrap()
     }
 
