@@ -8,7 +8,7 @@ use twizzler_runtime_api::FotResolveError;
 
 use super::Allocator;
 use crate::{
-    marker::{CopyStorable, PhantomStoreEffect, Storable, StoreEffect, StorePlace},
+    marker::{CopyStorable, PhantomStoreEffect, StoreEffect, StorePlace, Storer},
     object::InitializedObject,
     ptr::{GlobalPtr, InvPtr, InvPtrBuilder, ResolvedPtr},
     tx::{TxHandle, TxResult},
@@ -54,7 +54,7 @@ impl<T, A: Allocator> PBox<T, A> {
         })
     }
 
-    pub fn new_in_with<ST: Storable<T>>(
+    pub fn new_in_with<ST: Into<Storer<T>>>(
         ctor: impl FnOnce(StorePlace) -> ST,
         alloc: A,
     ) -> Result<PBoxBuilder<T, A>, AllocError> {
@@ -62,7 +62,7 @@ impl<T, A: Allocator> PBox<T, A> {
         let ptr = unsafe { gptr.resolve().map_err(|_| AllocError) }?;
         let mut_ptr = unsafe { ptr.into_mut() };
         let in_place = StorePlace::new(&mut_ptr.handle());
-        unsafe { mut_ptr.ptr().write(ctor(in_place).storable()) };
+        unsafe { mut_ptr.ptr().write(ctor(in_place).into().into_inner()) };
 
         Ok(PBoxBuilder {
             inv: InvPtrBuilder::from_global(gptr),
@@ -109,7 +109,7 @@ impl<T, A: Allocator> StoreEffect for PBox<T, A> {
     }
 }
 
-#[cfg(test)]
+//#[cfg(test)]
 mod test {
     use std::{
         sync::atomic::{AtomicUsize, Ordering},

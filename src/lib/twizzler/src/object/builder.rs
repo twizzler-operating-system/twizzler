@@ -13,7 +13,7 @@ use twizzler_runtime_api::{get_runtime, MapError, MapFlags, ObjectHandle};
 
 use super::{BaseType, Object};
 use crate::{
-    marker::{CopyStorable, Invariant, Storable, StorePlace},
+    marker::{CopyStorable, Invariant, StorePlace, Storer},
     object::RawObject,
     ptr::InvPtrBuilder,
     tx::TxHandle,
@@ -67,11 +67,11 @@ impl<Base> ConstructorInfo<Base> {
 
     pub fn write_base<InitBase>(&self, base_init: InitBase)
     where
-        InitBase: Storable<Base>,
+        InitBase: Into<Storer<Base>>,
         Base: Invariant,
     {
         let base = unsafe { &mut *(self.object.handle.base_mut_ptr() as *mut MaybeUninit<Base>) };
-        base.write(base_init.storable());
+        base.write(base_init.into().into_inner());
     }
 
     /// Get the uninitialized object that is being constructed.
@@ -116,14 +116,13 @@ impl<Base> ConstructorInfo<Base> {
     ) -> Result<InvPtrBuilder<T>, AllocError>
     where
         StaticCtor: FnOnce(&mut Self) -> Result<ST, AllocError>,
-        ST: Storable<T>,
+        ST: Into<Storer<T>>,
     {
         let (ptr, offset) = self.do_static_alloc::<MaybeUninit<T>>()?;
-        let handle = self.object.handle.clone();
         unsafe {
             // Safety: we are taking an &mut to a MaybeUninit.
             let value = ctor(self)?;
-            (&mut *ptr).write(value.storable());
+            (&mut *ptr).write(value.into().into_inner());
             // Safety: we just initialized this value above.
             Ok(InvPtrBuilder::from_offset(offset))
         }
@@ -161,7 +160,7 @@ impl<Base: BaseType + Invariant> ObjectBuilder<Base> {
     pub fn construct<BaseCtor, IntoBase>(&self, ctor: BaseCtor) -> Result<Object<Base>, CreateError>
     where
         BaseCtor: FnOnce(&mut ConstructorInfo<Base>) -> IntoBase,
-        IntoBase: Storable<Base>,
+        IntoBase: Into<Storer<Base>>,
     {
         let handle = self.create_object()?;
         let mut ci = ConstructorInfo::new(handle);
@@ -179,7 +178,7 @@ impl<Base: BaseType + Invariant> ObjectBuilder<Base> {
     ) -> Result<Object<Base>, CreateError>
     where
         BaseCtor: FnOnce(&mut ConstructorInfo<Base>) -> Result<IntoBase, CreateError>,
-        IntoBase: Storable<Base>,
+        IntoBase: Into<Storer<Base>>,
     {
         let handle = self.create_object()?;
         let mut ci = ConstructorInfo::new(handle);

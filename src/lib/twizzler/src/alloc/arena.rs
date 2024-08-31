@@ -11,7 +11,7 @@ use twizzler_runtime_api::{ObjID, ObjectHandle};
 use super::{Allocator, TxAllocator};
 use crate::{
     collections::Vector,
-    marker::{CopyStorable, Invariant, Storable, StorePlace, Storer},
+    marker::{CopyStorable, Invariant, StorePlace, Storer},
     object::{BaseType, InitializedObject, Object, ObjectBuilder, RawObject},
     ptr::{
         GlobalPtr, InvPtr, InvPtrBuilder, InvSlice, InvSliceBuilder, ResolvedMutPtr, ResolvedPtr,
@@ -148,7 +148,7 @@ impl ArenaManifest {
         unsafe { self.do_alloc(init) }
     }
 
-    pub fn alloc_with<Item: Invariant, F, SItem: Storable<Item>>(
+    pub fn alloc_with<Item: Invariant, F, SItem: Into<Storer<Item>>>(
         &self,
         f: F,
     ) -> Result<ResolvedMutPtr<'_, Item>, ArenaError>
@@ -157,7 +157,7 @@ impl ArenaManifest {
     {
         let place = unsafe { self.do_alloc::<MaybeUninit<Item>>(MaybeUninit::uninit()) }?;
         let item = f(StorePlace::new(&place.handle()));
-        let place = place.write(item.storable());
+        let place = place.write(item.into().into_inner());
         Ok(place)
     }
 }

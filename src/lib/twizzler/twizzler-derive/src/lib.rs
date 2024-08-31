@@ -114,11 +114,11 @@ fn handle_new_storer(item: DeriveInput) -> Result<proc_macro2::TokenStream, Erro
 
     let params = types
         .iter()
-        .map(|(ident, ty)| quote!(#ident: impl twizzler::marker::Storable<#ty>));
+        .map(|(ident, ty)| quote!(#ident: impl Into<twizzler::marker::Storer<#ty>>));
 
     let inits = types
         .iter()
-        .map(|(ident, _ty)| quote!(#ident: #ident.storable()));
+        .map(|(ident, _ty)| quote!(#ident: #ident.into().into_inner()));
 
     Ok(quote::quote! {
        impl #impl_gens #type_name #type_gens #where_clause {

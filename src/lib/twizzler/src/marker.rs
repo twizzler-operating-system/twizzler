@@ -1,4 +1,4 @@
-use std::{convert::Infallible, marker::PhantomPinned, mem::MaybeUninit};
+use std::{convert::Infallible, mem::MaybeUninit};
 
 use twizzler_runtime_api::ObjectHandle;
 
@@ -60,6 +60,10 @@ impl<T> Storer<T> {
     pub fn into_inner(self) -> T {
         self.0
     }
+
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Storer<U> {
+        unsafe { Storer::new_move(f(self.into_inner())) }
+    }
 }
 
 impl<T: CopyStorable> Storer<T> {
@@ -68,15 +72,18 @@ impl<T: CopyStorable> Storer<T> {
     }
 }
 
-unsafe impl<T> CopyStorable for Storer<T> {}
+//unsafe impl<T> CopyStorable for Storer<T> {}
 
+/*
 pub trait Storable<T>: CopyStorable {
+    type Out;
     fn storable(self) -> T
     where
         Self: Sized;
 }
 
 impl<T: CopyStorable> Storable<T> for T {
+    type Out = T;
     fn storable(self) -> T
     where
         Self: Sized,
@@ -86,6 +93,7 @@ impl<T: CopyStorable> Storable<T> for T {
 }
 
 impl<T> Storable<T> for Storer<T> {
+    type Out = T;
     fn storable(self) -> T
     where
         Self: Sized,
@@ -93,6 +101,7 @@ impl<T> Storable<T> for Storer<T> {
         self.into_inner()
     }
 }
+*/
 
 pub struct StorePlace<'a> {
     handle: &'a ObjectHandle,
@@ -154,6 +163,22 @@ impl<T: CopyStorable> StoreEffect for T {
     }
 }
 
+impl<T: CopyStorable> TryStoreEffect for T {
+    type MoveCtor = T;
+    type Error = Infallible;
+
+    #[inline]
+    fn try_store<'a>(
+        ctor: Self::MoveCtor,
+        _in_place: &mut StorePlace<'a>,
+    ) -> Result<Self, Self::Error>
+    where
+        Self: Sized,
+    {
+        Ok(ctor)
+    }
+}
+
 impl BaseType for () {}
 
 unsafe impl<T: Invariant> Invariant for MaybeUninit<T> {}
@@ -202,7 +227,7 @@ mod test {
         }
     }
 
-    //#[test]
+    #[test]
     fn test_storer() {
         let obj_bar = ObjectBuilder::default().init(Bar::new()).unwrap();
         let obj: Object<Foo> = ObjectBuilder::default()
@@ -211,31 +236,28 @@ mod test {
         let obj_bar_ctor: Object<Bar> =
             ObjectBuilder::default().construct(|ci| Bar::new()).unwrap();
 
-        /*
-        // Storer::new_move(T(Storer::store(x).into_inner()))
-        store!(
-            Baz,
-            &mut ci.in_place(),
-            42,
-            Some(store!(TestSE, &mut ci.in_place()))
-        );
-        */
         let obj_baz: Object<Baz> = ObjectBuilder::default()
-            .construct(|ci| Baz::new_storer(42, unsafe { Storer::new_move(None) }))
+            .construct(|ci| Baz::new_storer(42, None))
             .unwrap();
 
         let obj_baz2: Object<Baz> = ObjectBuilder::default()
-            .construct(|ci| {
-                Baz::new_storer(
-                    42,
-                    move_storer(TestSE::new(&mut ci.in_place()), |x| Some(x)),
-                )
-            })
+            .construct(|ci| Baz::new_storer(42, TestSE::new(&mut ci.in_place()).map(|x| Some(x))))
             .unwrap();
     }
 }
 
-/// TODO: THIS IS UNSAFE
-fn move_storer<T, U>(x: Storer<T>, f: impl FnOnce(T) -> U) -> Storer<U> {
-    unsafe { Storer::new_move(f(x.into_inner())) }
+impl<T: CopyStorable> From<T> for Storer<T> {
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}
+
+// TODO: impl all of these
+impl<T> From<Option<Storer<T>>> for Storer<Option<T>> {
+    fn from(value: Option<Storer<T>>) -> Self {
+        match value {
+            Some(s) => s.map(|s| Some(s)),
+            None => unsafe { Storer::new_move(None) },
+        }
+    }
 }
