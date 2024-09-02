@@ -71,17 +71,20 @@ impl CompartmentMgr {
         self.get_mut(MONITOR_INSTANCE_ID).unwrap()
     }
 
+    /// Get an iterator over all compartments.
     pub fn compartments(&self) -> impl Iterator<Item = &RunComp> {
         self.instances.values()
     }
 
+    /// Get an iterator over all compartments (mutable).
     pub fn compartments_mut(&mut self) -> impl Iterator<Item = &mut RunComp> {
         self.instances.values_mut()
     }
 }
 
 impl super::Monitor {
-    //#[tracing::instrument(skip(self), ret)]
+    /// Get CompartmentInfo for this caller. Note that this will write to the compartment-thread's
+    /// simple buffer.
     pub fn get_compartment_info(
         &self,
         instance: ObjID,
@@ -107,7 +110,7 @@ impl super::Monitor {
         })
     }
 
-    //#[tracing::instrument(skip(self), ret)]
+    /// Open a compartment handle for this caller compartment.
     pub fn get_compartment_handle(&self, caller: ObjID, compartment: ObjID) -> Option<Descriptor> {
         self.compartment_handles
             .write(ThreadKey::get().unwrap())
@@ -123,6 +126,7 @@ impl super::Monitor {
             )
     }
 
+    /// Open a handle to the n'th dependency compartment of a given compartment.
     pub fn get_compartment_deps(
         &self,
         caller: ObjID,
@@ -132,6 +136,7 @@ impl super::Monitor {
         todo!()
     }
 
+    /// Load a new compartment with a root library ID, and return a compartment handle.
     pub fn load_compartment(
         &self,
         caller: ObjID,
@@ -140,10 +145,15 @@ impl super::Monitor {
         todo!()
     }
 
-    //#[tracing::instrument(skip(self), ret)]
+    /// Drop a compartment handle.
     pub fn drop_compartment_handle(&self, caller: ObjID, desc: Descriptor) {
         self.compartment_handles
             .write(ThreadKey::get().unwrap())
             .remove(caller, desc);
     }
+}
+
+/// A handle to a compartment.
+pub struct CompartmentHandle {
+    pub instance: ObjID,
 }

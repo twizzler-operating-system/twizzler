@@ -7,13 +7,15 @@ use twizzler_runtime_api::{AddrRange, ObjID};
 use super::Monitor;
 use crate::gates::{LibraryInfo, LoadLibraryError};
 
+/// A handle to a library.
 pub struct LibraryHandle {
     comp: ObjID,
     id: LibraryId,
 }
 
 impl Monitor {
-    //#[tracing::instrument(skip(self), ret)]
+    /// Get LibraryInfo for a given library handle. Note that this will write to the
+    /// compartment-thread's simple buffer.
     pub fn get_library_info(
         &self,
         instance: ObjID,
@@ -49,7 +51,7 @@ impl Monitor {
         })
     }
 
-    //#[tracing::instrument(skip(self), ret)]
+    /// Open a handle to the n'th library for a compartment.
     pub fn get_library_handle(
         &self,
         caller: ObjID,
@@ -67,11 +69,17 @@ impl Monitor {
         handles.insert(comp_id, LibraryHandle { comp: comp_id, id })
     }
 
-    pub fn load_library(&self, caller: ObjID, id: ObjID) -> Result<Descriptor, LoadLibraryError> {
+    /// Load a library in the given compartment.
+    pub fn load_library(
+        &self,
+        caller: ObjID,
+        id: ObjID,
+        comp: Option<Descriptor>,
+    ) -> Result<Descriptor, LoadLibraryError> {
         todo!()
     }
 
-    //#[tracing::instrument(skip(self), ret)]
+    /// Drop a library handle.
     pub fn drop_library_handle(&self, caller: ObjID, desc: Descriptor) {
         self.library_handles
             .write(ThreadKey::get().unwrap())

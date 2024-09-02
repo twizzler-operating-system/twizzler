@@ -184,12 +184,13 @@ pub fn monitor_rt_drop_compartment_handle(info: &secgate::GateCallInfo, desc: De
 )]
 pub fn monitor_rt_load_library(
     info: &secgate::GateCallInfo,
+    compartment: Option<Descriptor>,
     id: ObjID,
 ) -> Result<Descriptor, LoadLibraryError> {
     use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
-    monitor.load_library(caller, id)
+    monitor.load_library(caller, id, compartment)
 }
 
 #[derive(Clone, Copy, Debug)]

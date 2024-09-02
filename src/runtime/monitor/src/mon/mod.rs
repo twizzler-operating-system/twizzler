@@ -1,32 +1,24 @@
-use std::{ptr::NonNull, sync::OnceLock, thread::Thread};
+use std::{ptr::NonNull, sync::OnceLock};
 
 use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
 use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use secgate::util::HandleMgr;
 use twizzler_abi::upcall::UpcallFrame;
-use twizzler_runtime_api::{LibraryId, MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
+use twizzler_runtime_api::{MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
 use twz_rt::{RuntimeState, RuntimeThreadControl, OUR_RUNTIME};
 
 use self::{
-    compartment::{CompConfigObject, RunComp},
+    compartment::{CompConfigObject, CompartmentHandle, RunComp},
     space::{MapHandle, MapInfo, Unmapper},
     thread::{ManagedThread, ThreadCleaner},
 };
-use crate::{
-    api::MONITOR_INSTANCE_ID,
-    gates::{CompartmentInfo, LibraryInfo, LoadCompartmentError, LoadLibraryError},
-    init::InitDynlinkContext,
-};
+use crate::{api::MONITOR_INSTANCE_ID, init::InitDynlinkContext};
 
 pub(crate) mod compartment;
 pub mod library;
 pub(crate) mod space;
 pub(crate) mod thread;
-
-pub struct CompartmentHandle {
-    instance: ObjID,
-}
 
 /// A security monitor instance. All monitor logic is implemented as methods for this type.
 /// We split the state into the following components: 'space', managing the virtual memory space and
@@ -187,6 +179,7 @@ impl Monitor {
         Ok(handle)
     }
 
+    /// Get the object ID for this compartment-thread's simple buffer.
     pub fn get_thread_simple_buffer(&self, sctx: ObjID, thread: ObjID) -> Option<ObjID> {
         let mut locks = self.locks.lock(ThreadKey::get().unwrap());
         let (ref mut space, _, ref mut comps, _, _, _) = *locks;
