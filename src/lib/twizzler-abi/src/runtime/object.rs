@@ -195,6 +195,7 @@ impl ObjectRuntime for MinimalRuntime {
         HANDLES.lock().release(handle);
     }
 
+    #[inline]
     fn ptr_to_handle(&self, va: *const u8) -> Option<(ObjectHandle, usize)> {
         let (_start, offset) = self.ptr_to_object_start(va, 0)?;
         let slot = va as usize / MAX_SIZE;
@@ -203,6 +204,7 @@ impl ObjectRuntime for MinimalRuntime {
         Some((handle.clone(), offset))
     }
 
+    #[inline]
     fn ptr_to_object_start(&self, va: *const u8, _valid_len: usize) -> Option<(*const u8, usize)> {
         let slot = (va as usize) / MAX_SIZE;
         let start = slot * MAX_SIZE;
@@ -236,6 +238,24 @@ impl ObjectRuntime for MinimalRuntime {
         Ok(StartOrHandle::Handle(handle))
     }
 
+    fn find_fot_entry(&self, handle: &ObjectHandle, entry: *const u8) -> Option<usize> {
+        unsafe {
+            let entry = entry.cast::<FotEntry>().read();
+            let meta = (handle.meta as *const MetaInfo).read();
+            for i in 1..(meta.fotcount + 1) {
+                let fot0_ptr = (handle.meta as *mut FotEntry).offset(-1);
+                let fot_ptr = fot0_ptr.offset(-(i as isize));
+                let val = fot_ptr.read();
+
+                // TODO: hack
+                if val.vals[0] == entry.vals[0] && val.vals[1] == entry.vals[1] {
+                    return Some(i as usize);
+                }
+            }
+            None
+        }
+    }
+
     fn add_fot_entry(&self, handle: &ObjectHandle) -> Option<(*mut u8, usize)> {
         unsafe {
             let mut meta = (handle.meta as *const MetaInfo).read();
@@ -249,6 +269,8 @@ impl ObjectRuntime for MinimalRuntime {
         }
     }
 }
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(C)]
 struct FotEntry {
     vals: [u64; 4],

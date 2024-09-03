@@ -17,4 +17,4 @@ pub mod tx;
 
 mod tests;
 
-pub use twizzler_derive::Invariant;
+pub use twizzler_derive::{BaseType, Invariant, NewStorer};

@@ -62,8 +62,18 @@ impl<T> InvPtr<T> {
     }
 
     #[inline]
+    pub const fn fot_index(&self) -> usize {
+        split_invariant_pointer(self.raw()).0
+    }
+
+    #[inline]
+    pub const fn offset(&self) -> u64 {
+        split_invariant_pointer(self.raw()).1
+    }
+
+    #[inline]
     pub const fn is_local(&self) -> bool {
-        split_invariant_pointer(self.raw()).0 == 0
+        self.fot_index() == 0
     }
 
     pub fn set(&mut self, dest: impl Into<InvPtrBuilder<T>>) -> TxResult<()> {
@@ -245,12 +255,21 @@ impl<T> TryStoreEffect for InvPtr<T> {
             Self::new(ctor.offset())
         } else {
             let runtime = twizzler_runtime_api::get_runtime();
-            let (fot, idx) = runtime.add_fot_entry(&in_place.handle()).ok_or(())?;
-            let fot = fot as *mut FotEntry;
 
-            unsafe {
-                fot.write(ctor.fot_entry());
+            // Check of existing entries. If we find one, use it, otherwise add a new one.
+            if let Some(idx) = runtime.find_fot_entry(
+                in_place.handle(),
+                (&ctor.fot_entry()) as *const _ as *const u8,
+            ) {
                 Self::from_raw_parts(idx, ctor.offset())
+            } else {
+                let (fot, idx) = runtime.add_fot_entry(in_place.handle()).ok_or(())?;
+                let fot = fot as *mut FotEntry;
+
+                unsafe {
+                    fot.write(ctor.fot_entry());
+                    Self::from_raw_parts(idx, ctor.offset())
+                }
             }
         })
     }
@@ -275,7 +294,7 @@ mod tests {
         ptr::InvPtr,
     };
 
-    #[derive(crate::Invariant)]
+    #[derive(crate::Invariant, crate::NewStorer)]
     struct Foo {
         ptr: InvPtr<Bar>,
     }
@@ -329,5 +348,26 @@ mod tests {
             let _res = unsafe { foo.ptr.resolve() };
             core::hint::black_box(_res);
         }
+    }
+
+    #[test]
+    fn test_fot_scan() {
+        let bar = ObjectBuilder::default().init(Bar { x: 3 }).unwrap();
+        let obj = ObjectBuilder::<Foo>::default()
+            .construct(|ci| {
+                let _sa = ci
+                    .static_alloc_with(|ci| {
+                        let foo = Foo::new_storer(Storer::store(bar.base(), &mut ci.in_place()))
+                            .into_inner();
+                        assert_eq!(foo.ptr.fot_index(), 1);
+                        unsafe { Ok(Storer::new_move(foo)) }
+                    })
+                    .unwrap();
+                let foo =
+                    Foo::new_storer(Storer::store(bar.base(), &mut ci.in_place())).into_inner();
+                assert_eq!(foo.ptr.fot_index(), 1);
+                unsafe { Storer::new_move(foo) }
+            })
+            .unwrap();
     }
 }

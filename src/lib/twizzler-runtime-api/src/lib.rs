@@ -315,6 +315,11 @@ pub trait ObjectRuntime {
         valid_len: usize,
     ) -> Result<StartOrHandle, FotResolveError>;
 
+    /// Locate an existing FOT entry in an object. Returns None if not found.
+    fn find_fot_entry(&self, _handle: &ObjectHandle, _entry: *const u8) -> Option<usize> {
+        None
+    }
+
     /// Add an FOT entry to the object, returning a pointer to the FOT entry and the entry index. If
     /// there are no more FOT entries, or if the object is immutable, returns None.
     fn add_fot_entry(&self, handle: &ObjectHandle) -> Option<(*mut u8, usize)>;
