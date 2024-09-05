@@ -185,7 +185,7 @@ impl Monitor {
         let (ref mut space, _, ref mut comps, _, _, _) = *locks;
         let rc = comps.get_mut(sctx)?;
         let pt = rc.get_per_thread(thread, &mut *space);
-        Some(pt.simple_buffer_id())
+        pt.simple_buffer_id()
     }
 }
 

@@ -47,32 +47,43 @@ pub struct RunComp {
     per_thread: HashMap<ObjID, PerThread>,
 }
 
+/// Per-thread data in a compartment.
 pub struct PerThread {
-    simple_buffer: (SimpleBuffer, MapHandle),
+    simple_buffer: Option<(SimpleBuffer, MapHandle)>,
 }
 
 impl PerThread {
+    /// Create a new PerThread. Note that this must succeed, so any allocation failures must be
+    /// handled gracefully. This means that if the thread fails to allocate a simple buffer, it
+    /// will just forego having one. This may cause a failure down the line, but it's the best we
+    /// can do without panicing.
     fn new(instance: ObjID, th: ObjID, space: &mut Space) -> Self {
-        // TODO: unwrap
         let handle = space
             .safe_create_and_map_runtime_object(instance, MapFlags::READ | MapFlags::WRITE)
-            .unwrap();
+            .ok();
 
         Self {
-            simple_buffer: (SimpleBuffer::new(unsafe { handle.object_handle() }), handle),
+            simple_buffer: handle
+                .map(|handle| (SimpleBuffer::new(unsafe { handle.object_handle() }), handle)),
         }
     }
 
+    /// Write bytes into this compartment-thread's simple buffer.
     pub fn write_bytes(&mut self, bytes: &[u8]) -> usize {
-        self.simple_buffer.0.write(bytes)
+        self.simple_buffer
+            .as_mut()
+            .map(|sb| sb.0.write(bytes))
+            .unwrap_or(0)
     }
 
-    pub fn simple_buffer_id(&self) -> ObjID {
-        self.simple_buffer.0.handle().id
+    /// Get the Object ID of this compartment thread's simple buffer.
+    pub fn simple_buffer_id(&self) -> Option<ObjID> {
+        Some(self.simple_buffer.as_ref()?.0.handle().id)
     }
 }
 
 impl RunComp {
+    /// Build a new runtime compartment.
     pub fn new(
         sctx: ObjID,
         instance: ObjID,

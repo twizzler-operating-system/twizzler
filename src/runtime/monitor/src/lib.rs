@@ -17,10 +17,7 @@ use twz_rt::{set_upcall_handler, OUR_RUNTIME};
 mod compartment;
 mod init;
 mod object;
-//mod runtime;
 pub mod secgate_test;
-//mod state;
-//mod thread;
 mod upcall;
 
 mod api;
@@ -71,18 +68,6 @@ pub fn main() {
 
 fn monitor_init() -> miette::Result<()> {
     info!("monitor early init completed, starting init");
-
-    let cur = monitor_api::CompartmentHandle::current();
-    let info = cur.info();
-    info!("current compartment info: {:?}", info);
-
-    for lib in cur.libs() {
-        info!("lh: {:?}", lib);
-        let info = lib.info();
-        info!("library: {:?}", info);
-    }
-
-    panic!("test panic");
 
     Ok(())
 }
