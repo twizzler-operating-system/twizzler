@@ -2,19 +2,16 @@ mod error;
 mod internal;
 mod pool;
 use alloc::vec::Vec;
-use core::{borrow::BorrowMut, time::Duration};
+use core::{borrow::BorrowMut, sync::atomic::AtomicU8, time::Duration};
 
 use digest::Digest;
-use error::{
-    Error,
-    TooBigOrSmall::{TooBig, TooSmall},
-};
+pub use error::Error;
 use internal::{Generator, MAX_GEN_SIZE};
 use pool::Pool;
 use sha2::Sha256;
 use twizzler_abi::syscall::Clock;
 
-use crate::{mutex::Mutex, once::Once};
+use crate::{instant::Instant, mutex::Mutex, once::Once};
 
 // 9.5.5
 const MIN_POOL_SIZE: usize = 64;
@@ -22,9 +19,9 @@ const MIN_POOL_SIZE: usize = 64;
 // based on Cryptography Engineering Chapter 9 by Neils Ferguson et. al.
 // comments including 9.x.x reference the above text's sections
 
-const POOL_COUNT: usize = 32;
+pub(super) const POOL_COUNT: usize = 32;
 
-const CONTRIBUTOR_ID: Once<Mutex<u8>> = Once::new();
+const CONTRIBUTOR_ID: AtomicU8 = AtomicU8::new(0);
 // 9.5.6 utility class to make it easier to keep track of
 // incrementing the pool number and make assigning ids easier as well.
 pub struct Contributor {
@@ -34,9 +31,10 @@ pub struct Contributor {
 
 impl Contributor {
     pub fn new() -> Self {
-        let mut contrib_id = CONTRIBUTOR_ID.call_once(|| Mutex::new(0)).lock();
+        let mut contrib_id = CONTRIBUTOR_ID;
+        let mut contrib_id = contrib_id.get_mut();
         let out = Contributor {
-            id: contrib_id,
+            id: *contrib_id,
             pool_number: 0,
         };
         *contrib_id += 1;
@@ -44,6 +42,9 @@ impl Contributor {
     }
     pub(self) fn contribute(&mut self) -> (u8, u8) {
         self.pool_number += 1;
+        if self.pool_number > 32 {
+            self.pool_number = 1;
+        }
         (self.id, self.pool_number - 1)
     }
 }
@@ -53,7 +54,7 @@ pub struct Accumulator {
     generator: Generator,
     reseed_ct: usize,
     pools: [Pool; POOL_COUNT],
-    last_reseed_timestamp: Duration,
+    last_reseed_timestamp: Instant,
 }
 
 impl Accumulator {
@@ -69,14 +70,23 @@ impl Accumulator {
             pools: pools
                 .try_into()
                 .expect("Vec should have the correct number of elements"),
-            last_reseed_timestamp: Duration::new(0, 0),
+            last_reseed_timestamp: Instant::zero(),
         }
+    }
+
+    pub fn is_seeded(&self) -> bool {
+        self.reseed_ct != 0
     }
 
     // 9.5.5
     pub fn try_fill_random_data(&mut self, out: &mut [u8]) -> Result<(), self::error::Error> {
-        // TODO: require that reseeds are only done at most every 100ms
-        if self.pools[0].count() >= MIN_POOL_SIZE {
+        let now = Instant::now();
+        let diff = now - self.last_reseed_timestamp;
+        self.last_reseed_timestamp = now;
+
+        // reseeds should only be done every 100ms at most to prevent spamming events overwriting
+        // all pools
+        if self.pools[0].count() >= MIN_POOL_SIZE && diff < Duration::from_millis(100) {
             self.reseed_ct += 1;
             let mut new_seed: Sha256 = Sha256::new();
             let mut all_pools = [0u8; (32 * POOL_COUNT)];
@@ -106,6 +116,7 @@ impl Accumulator {
     /// `source_number` is a unique id representing where the event is being contributed from.
     /// `pool_number` should be an 8 bit looping counter which input programs increment themselves
     /// to indicate which entropy bucket the event should be placed in.
+    /// Be sure to contribute at least one byte and at most 32 bytes.
     pub fn add_random_event(
         &mut self,
         contributor: &mut Contributor,
@@ -113,16 +124,16 @@ impl Accumulator {
     ) -> Result<(), Error> {
         let (source_number, pool_number) = contributor.contribute();
         if data.len() < 1 {
-            return Err(Error::InvalidDataSize(TooSmall));
+            return Err(Error::TooLittleData);
         }
         if data.len() > 32 {
-            return Err(Error::InvalidDataSize(TooBig));
+            return Err(Error::TooMuchData);
         }
-        if pool_number > POOL_COUNT - 1 {
-            return Err(Error::InvalidPoolSize(TooBig));
+        if pool_number > (POOL_COUNT - 1) as u8 {
+            return Err(Error::PoolNumTooBig);
         }
-        self.pools[pool_number].insert(&[source_number, e.len() as u8]);
-        self.pools[pool_number].insert(e);
+        self.pools[pool_number as usize].insert(&[source_number, data.len() as u8]);
+        self.pools[pool_number as usize].insert(data);
         Ok(())
     }
 }

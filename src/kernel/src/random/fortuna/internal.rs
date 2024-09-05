@@ -59,13 +59,13 @@ impl Generator {
 
         debug_assert_eq!(0, into.len() % COUNTER_LENGTH); // assert slice is evenly divisable by COUNTER_LENGTH
         let block_count = into.len() / COUNTER_LENGTH;
-
         let mut hasher = ChaCha20::new((&self.key).into(), (&self.counter[4..]).into());
 
         let out_chunks = into.chunks_mut(COUNTER_LENGTH);
 
         for chunk in out_chunks {
-            hasher.apply_keystream_b2b(&self.counter, chunk);
+            hasher.apply_keystream_b2b(&self.counter, chunk).unwrap();
+            return;
             self.increment_counter();
         }
     }

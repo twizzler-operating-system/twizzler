@@ -1,5 +1,6 @@
 [target.x86_64-unknown-none]
 rustflags = [
+  "--emit=llvm-ir",
   "-C",
   "link-arg=--image-base=0xffffffff80100000",
   "-Cforce-unwind-tables",
@@ -14,6 +15,7 @@ rustflags = [
 
 [target.aarch64-unknown-none]
 rustflags = [
+  "--emit=llvm-ir",
   "-C",
   "link-args=-Tsrc/kernel/src/machine/arm/linker.ld",
   "-C",
