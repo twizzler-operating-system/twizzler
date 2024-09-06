@@ -13,7 +13,7 @@ use tar::{Builder, Header};
 struct FileMetadata {
     magic: u64,
     size: u64,
-    direct: [u128; 10],
+    direct: [u128; 255],
 }
 
 unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
@@ -65,7 +65,6 @@ fn main() {
     let mut archive = Builder::new(outfile);
 
     for file in files.unwrap_or_default().map(|s| s.as_str()) {
-
         let mut f = File::open(file).unwrap();
         archive
             .append_file(
@@ -117,7 +116,7 @@ fn main() {
         let file_metadata = FileMetadata {
             magic: 0xBEEFDEAD,
             size: md.size(),
-            direct: [0; 10],
+            direct: [0; 255],
         };
 
         let mut data: Vec<u8> = vec![];

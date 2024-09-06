@@ -1,5 +1,5 @@
 use std::{
-    fs::File,
+    fs::{DirBuilder, File},
     io::Write,
     path::{Path, PathBuf},
     process::Command,
@@ -102,9 +102,26 @@ fn get_genfile_path(comp: &TwizzlerCompilation, name: &str) -> PathBuf {
     path
 }
 
-fn generate_initrd(initrd_files: Vec<PathBuf>, comp: &TwizzlerCompilation) -> anyhow::Result<PathBuf> {
+fn generate_data_folder(comp: &TwizzlerCompilation) -> PathBuf {
+    let mut path = comp.get_kernel_image(false).parent().unwrap().to_path_buf();
+    path.push("data");
+
+    if path.exists() {
+        path
+    }
+    else {
+        DirBuilder::new()
+            .create(&path)
+            .unwrap();
+        path
+    }
+}
+
+fn generate_initrd(initrd_files: Vec<PathBuf>, data_files: PathBuf, comp: &TwizzlerCompilation) -> anyhow::Result<PathBuf> {
     let initrd_path = get_genfile_path(comp, "initrd");
     let status = Command::new(get_tool_path(comp, "initrd_gen")?)
+        .arg("--data")
+        .arg(&data_files)
         .arg("--output")
         .arg(&initrd_path)
         .args(&initrd_files)
@@ -214,9 +231,10 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
 
 pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     let comp = crate::build::do_build(cli.clone().into())?;
+
     let initrd_files = build_initrd(&cli, &comp)?;
-    
-    let initrd_path = generate_initrd(initrd_files, &comp)?;
+    let data_files = generate_data_folder(&comp);
+    let initrd_path = generate_initrd(initrd_files, data_files, &comp)?;
     
     crate::print_status_line("disk image", Some(&cli.config));
     let mut cmdline = String::new();
