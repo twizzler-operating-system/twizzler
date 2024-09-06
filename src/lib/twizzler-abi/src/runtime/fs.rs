@@ -2,13 +2,14 @@ use core::{
     cmp::{max, min},
     intrinsics::size_of,
 };
-
+use crate::print_err;
 use lazy_static::lazy_static;
 use rustc_alloc::{string::ToString, sync::Arc};
 use stable_vec::{self, StableVec};
 use twizzler_runtime_api::{FsError, ObjectHandle, ObjectRuntime, RawFd, RustFsRuntime, SeekFrom};
-
-use super::MinimalRuntime;
+use lru::LruCache;
+use core::num::NonZeroUsize;
+use super::{object, MinimalRuntime};
 use crate::{
     object::{ObjID, NULLPAGE_SIZE},
     runtime::simple_mutex::Mutex,
@@ -18,7 +19,7 @@ use crate::{
 struct FileDesc {
     pos: u64,
     handle: ObjectHandle,
-    map: [Option<ObjectHandle>; 10], // Lazily loads object handles when using extensible files
+    map: LruCache::<usize, ObjectHandle>, // Lazily loads object handles when using extensible files
 }
 
 #[repr(C)]
@@ -30,11 +31,12 @@ struct FileMetadata {
 }
 
 const MAGIC_NUMBER: u64 = 0xBEEFDEAD;
-const WRITABLE_BYTES: u64 = (1 << 30) - size_of::<FileMetadata>() as u64 - NULLPAGE_SIZE as u64;
-const OBJECT_COUNT: usize = 11;
-const DIRECT_OBJECT_COUNT: usize = 10; // The number of objects reachable from the direct pointer list
-const MAX_FILE_SIZE: u64 = WRITABLE_BYTES * 11;
-
+// 64 megabytes
+const WRITABLE_BYTES: u64 = (1 << 26) - size_of::<FileMetadata>() as u64 - NULLPAGE_SIZE as u64;
+const OBJECT_COUNT: usize = 256;
+const DIRECT_OBJECT_COUNT: usize = 255; // The number of objects reachable from the direct pointer list
+const MAX_FILE_SIZE: u64 = WRITABLE_BYTES * 256;
+const MAX_LOADABLE_OBJECTS: usize = 16;
 lazy_static! {
     static ref FD_SLOTS: Mutex<StableVec<Arc<Mutex<FileDesc>>>> = Mutex::new(StableVec::new());
 }
@@ -66,7 +68,7 @@ impl RustFsRuntime for MinimalRuntime {
                 *metadata_handle = FileMetadata {
                     magic: MAGIC_NUMBER,
                     size: 0,
-                    direct: [ObjID::new(0); 10],
+                    direct: [ObjID::new(0); DIRECT_OBJECT_COUNT],
                 }
             };
         }
@@ -76,7 +78,7 @@ impl RustFsRuntime for MinimalRuntime {
         let elem = Arc::new(Mutex::new(FileDesc {
             pos: 0,
             handle,
-            map: Default::default(),
+            map: LruCache::<usize, ObjectHandle>::new(NonZeroUsize::new(1).unwrap()),
         }));
 
         let fd = if binding.is_compact() {
@@ -135,7 +137,7 @@ impl RustFsRuntime for MinimalRuntime {
             let object_ptr = if object_window == 0 {
                 binding.handle.start
             } else {
-                if let Some(new_handle) = &binding.map[object_window - 1] {
+                if let Some(new_handle) = binding.map.get(&object_window) {
                     new_handle.start
                 } else {
                     let obj_id =
@@ -143,7 +145,7 @@ impl RustFsRuntime for MinimalRuntime {
                     let flags = twizzler_runtime_api::MapFlags::READ
                         | twizzler_runtime_api::MapFlags::WRITE;
                     let handle = self.map_object(obj_id, flags).unwrap();
-                    binding.map[object_window - 1] = Some(handle.clone());
+                    binding.map.put(object_window, handle.clone());
                     handle.start
                 }
             };
@@ -210,7 +212,7 @@ impl RustFsRuntime for MinimalRuntime {
                 binding.handle.start
             } else {
                 // If the object is already mapped, return it's pointer
-                if let Some(new_handle) = &binding.map[object_window - 1] {
+                if let Some(new_handle) = binding.map.get(&object_window) {
                     new_handle.start
                 }
                 // Otherwise check the direct map, if the ID is valid then map it, otherwise create
@@ -218,6 +220,7 @@ impl RustFsRuntime for MinimalRuntime {
                 else {
                     let obj_id =
                         ((unsafe { *metadata_handle }).direct)[(object_window - 1) as usize];
+                    
                     let flags = twizzler_runtime_api::MapFlags::READ
                         | twizzler_runtime_api::MapFlags::WRITE;
 
@@ -238,7 +241,8 @@ impl RustFsRuntime for MinimalRuntime {
                     };
 
                     let handle = self.map_object(mapped_id, flags).unwrap();
-                    binding.map[object_window - 1] = Some(handle.clone());
+                    binding.map.push(object_window, handle.clone());
+                    
                     handle.start
                 }
             };
