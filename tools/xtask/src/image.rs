@@ -1,9 +1,10 @@
 use std::{
-    fs::{DirBuilder, File},
+    fs::{File},
     io::Write,
     path::{Path, PathBuf},
     process::Command,
 };
+use rusync::sync::Syncer;
 
 use anyhow::Context;
 use cargo::core::compiler::{Compilation, CompileTarget};
@@ -103,18 +104,19 @@ fn get_genfile_path(comp: &TwizzlerCompilation, name: &str) -> PathBuf {
 }
 
 fn generate_data_folder(comp: &TwizzlerCompilation) -> PathBuf {
-    let mut path = comp.get_kernel_image(false).parent().unwrap().to_path_buf();
-    path.push("data");
+    let mut destination = comp.get_kernel_image(false).parent().unwrap().to_path_buf();
+    destination.push("data/");
 
-    if path.exists() {
-        path
-    }
-    else {
-        DirBuilder::new()
-            .create(&path)
-            .unwrap();
-        path
-    }
+    let source = PathBuf::from("./src/data/");
+    Command::new("rsync")
+        .arg("-a")
+        .arg("--delete")
+        .arg(&source)
+        .arg(&destination)
+        .status()
+        .unwrap();
+
+    destination
 }
 
 fn generate_initrd(initrd_files: Vec<PathBuf>, data_files: PathBuf, comp: &TwizzlerCompilation) -> anyhow::Result<PathBuf> {
