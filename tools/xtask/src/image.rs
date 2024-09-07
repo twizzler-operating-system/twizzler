@@ -1,10 +1,9 @@
 use std::{
-    fs::{File},
+    fs::File,
     io::Write,
     path::{Path, PathBuf},
     process::Command,
 };
-use rusync::sync::Syncer;
 
 use anyhow::Context;
 use cargo::core::compiler::{Compilation, CompileTarget};
