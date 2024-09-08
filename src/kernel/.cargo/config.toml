@@ -9,6 +9,8 @@ rustflags = [
   "link-arg=--no-gc-sections",
   "-C",
   "target-feature=+rdrand",                   # not supported when running qemu on ARM chips
+  "--cfg",
+  "chacha20_force_soft",
   "-C",
   "debuginfo=2",
 ]
@@ -20,6 +22,8 @@ rustflags = [
   "link-args=-Tsrc/kernel/src/machine/arm/linker.ld",
   "-C",
   "link-arg=--image-base=0xffffffff80100000",
+  "--cfg",
+  "chacha20_force_soft",
 ]
 
 #[profile.dev]

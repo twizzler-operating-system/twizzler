@@ -65,7 +65,6 @@ impl Generator {
 
         for chunk in out_chunks {
             hasher.apply_keystream_b2b(&self.counter, chunk).unwrap();
-            return;
             self.increment_counter();
         }
     }
