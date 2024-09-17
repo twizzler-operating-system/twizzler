@@ -149,6 +149,9 @@ pub fn start_entropy_contribution_thread() {
     // );
     let _registered_cpu = maybe_add_cpu_entropy_source();
     let _registered_jitter = maybe_add_jitter_entropy_source();
+    // FIXME: currently this thread never is actually run again due to
+    // default_background priority coupled with sys_thread_sync never actually
+    // causing the thread to resume.
     run_closure_in_new_thread(Priority::default_background(), || {
         contribute_entropy_regularly()
     });
