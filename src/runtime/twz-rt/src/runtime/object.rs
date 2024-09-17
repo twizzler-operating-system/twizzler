@@ -148,7 +148,11 @@ impl ObjectHandleManager {
         if !self.map().contains_key(&key) {
             self.map().insert(
                 key,
-                LocalSlot::new(monitor_api::monitor_rt_object_map(key.0, key.1).unwrap()?),
+                LocalSlot::new(
+                    monitor_api::monitor_rt_object_map(key.0, key.1)
+                        .unwrap()?
+                        .slot,
+                ),
             );
         }
 
@@ -164,7 +168,8 @@ impl ObjectHandleManager {
         let key = ObjectMapKey(handle.id.into(), handle.flags);
         if let Some(entry) = self.map().get(&key) {
             if entry.refs.fetch_sub(1, atomic::Ordering::SeqCst) == 1 {
-                monitor_api::monitor_rt_object_unmap(entry.number).unwrap();
+                monitor_api::monitor_rt_object_unmap(entry.number, handle.id, handle.flags)
+                    .unwrap();
                 self.map().remove(&key);
             }
         }

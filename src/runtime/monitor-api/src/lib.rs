@@ -15,7 +15,7 @@ use std::{
 };
 
 use dynlink::tls::{Tcb, TlsRegion};
-use twizzler_abi::object::ObjID;
+use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 
 mod gates {
     include! {"../../monitor/secapi/gates.rs"}
@@ -163,3 +163,21 @@ impl SharedCompConfig {
 }
 
 pub use gates::LibraryInfo;
+
+/// Contains raw mapping addresses, for use when translating to object handles for the runtime.
+#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+pub struct MappedObjectAddrs {
+    pub slot: usize,
+    pub start: usize,
+    pub meta: usize,
+}
+
+impl MappedObjectAddrs {
+    pub fn new(slot: usize) -> Self {
+        Self {
+            start: slot * MAX_SIZE,
+            meta: (slot + 1) * MAX_SIZE - NULLPAGE_SIZE,
+            slot,
+        }
+    }
+}

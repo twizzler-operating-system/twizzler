@@ -494,8 +494,69 @@ pub struct BasicReturn {
     pub code: i32,
 }
 
-/// Runtime that implements std's FS support. Currently unimplemented.
-pub trait RustFsRuntime {}
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
+/// Possible errors returned by the FsRuntime
+pub enum FsError {
+    /// Error is unclassified.
+    Other,
+    /// Path provided isn't a valid u128 integer
+    InvalidPath,
+    /// Couldn't find the file descriptor
+    LookupError,
+    /// Seek is beyond maximum file size or before 0
+    SeekError,
+}
+
+impl Display for FsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            FsError::Other => write!(f, "unknown error"),
+            FsError::InvalidPath => write!(f, "Path is invalid"),
+            FsError::LookupError => write!(f, "Couldn't find file descriptor"),
+            FsError::SeekError => write!(f, "Couldn't seek to this position"),
+        }
+    }
+}
+
+impl core::error::Error for FsError {}
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
+/// Enum of the possible ways to seek within a object
+pub enum SeekFrom {
+    /// Sets to the offset in bytes
+    Start(u64),
+    /// Sets to the offset relative to the end of the file
+    End(i64),
+    /// Sets the offset relative to the position of the cursor
+    Current(i64),
+}
+
+/// A identifier for a Twizzler object that allows File-like IO
+/// The data backing RawFd holds the position of the file cursor and a reference to the object that
+/// stores the file's data.
+pub type RawFd = u32;
+
+/// Runtime that implements STD's FS support. Currently being implemented.
+pub trait RustFsRuntime {
+    /// Takes in a u128 integer as CStr and emits a File Descriptor that allows File-Like IO on a
+    /// Twizzler Object. Note that the object must already exist to be opened.
+    fn open(&self, path: &CStr) -> Result<RawFd, FsError>;
+
+    /// Reads bytes from the source twizzler Object into the specified buffer, returns how many
+    /// bytes were read.
+    fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, FsError>;
+
+    /// Writes bytes from the source twizzler Object into the specified buffer, returns how many
+    /// bytes were written.
+    fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, FsError>;
+
+    /// Cleans the data associated with the RawFd allowing reuse. Note that this doesn't
+    /// close/unmap the backing object.
+    fn close(&self, fd: RawFd) -> Result<(), FsError>;
+
+    /// Moves the cursor to a specified offset within the backed object.
+    fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, FsError>;
+}
 
 /// Runtime that implements std's process and command support. Currently unimplemented.
 pub trait RustProcessRuntime: RustStdioRuntime {}
@@ -684,6 +745,10 @@ pub trait DebugRuntime {
     fn get_full_mapping(&self, lib: &Library) -> Option<ObjectHandle>;
     /// Handler for calls to the dl_iterate_phdr call.
     fn iterate_phdr(&self, f: &mut dyn FnMut(DlPhdrInfo) -> core::ffi::c_int) -> core::ffi::c_int;
+    /// Get the library ID immediately following the given one.
+    fn next_library_id(&self, id: LibraryId) -> Option<LibraryId> {
+        Some(LibraryId(id.0 + 1))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]

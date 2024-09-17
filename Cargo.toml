@@ -12,6 +12,8 @@ members = [
     "src/bin/netmgr",
     "src/bin/nettest",
     "src/bin/pager",
+    "src/bin/mnemosyne",
+    "src/bin/stdfs_demo",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
@@ -23,7 +25,7 @@ members = [
     "src/runtime/monitor",
     "src/runtime/monitor-api",
     "src/runtime/twz-rt",
-    "src/lib/twizzler-futures",
+    "src/lib/twizzler-futures", 
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -37,8 +39,10 @@ initrd = [
     "crate:netmgr",
     "crate:nettest",
     "crate:pager",
-    #"lib:twz-rt",
-    #"lib:monitor",
+    "lib:twz-rt",
+    "lib:monitor",
+    "crate:mnemosyne",
+    "crate:stdfs_demo",
     #"third-party:hello-world-rs"
 ]
 
@@ -60,3 +64,5 @@ async-executor = { git = "https://github.com/twizzler-operating-system/async-exe
 twizzler-futures = { path = "src/lib/twizzler-futures" }
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
+# lock_api comes from the parking_lot repo
+lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
