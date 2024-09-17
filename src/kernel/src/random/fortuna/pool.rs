@@ -1,5 +1,3 @@
-use core::{cell::RefCell, slice::IterMut};
-
 use digest::Digest;
 use sha2::Sha256;
 
@@ -19,7 +17,6 @@ pub struct Pool {
 
 impl Pool {
     pub fn new() -> Pool {
-        let mut buf: [u8; BUFFER_SIZE] = Default::default();
         Pool {
             state: Sha256::new(),
             buf: Default::default(),

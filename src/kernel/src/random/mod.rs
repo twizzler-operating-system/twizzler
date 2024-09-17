@@ -2,27 +2,18 @@ pub mod cpu_trng;
 mod fortuna;
 mod jitter;
 
-use alloc::{borrow::ToOwned, boxed::Box, sync::Arc, vec::Vec};
-use core::{
-    borrow::{Borrow, BorrowMut},
-    cell::{Cell, RefCell},
-    time::Duration,
-};
+use alloc::{boxed::Box, vec::Vec};
+use core::{any::Any, borrow::BorrowMut, time::Duration};
 
-use fortuna::{Accumulator, Contributor, MIN_POOL_SIZE};
-use rand_core::RngCore;
+use cpu_trng::maybe_add_cpu_entropy_source;
+use fortuna::{Accumulator, Contributor};
+use jitter::maybe_add_jitter_entropy_source;
 
 use crate::{
     mutex::{LockGuard, Mutex},
     once::Once,
-    sched::schedule,
-    spinlock::SpinLoop,
     syscall::sync::sys_thread_sync,
-    thread::{
-        entry::{run_closure_in_new_thread, start_new_kernel},
-        priority::Priority,
-        Thread,
-    },
+    thread::{entry::run_closure_in_new_thread, priority::Priority},
 };
 
 const POLL_AMOUNT: usize = 64;
@@ -92,12 +83,8 @@ static ENTROPY_SOURCES: Once<Mutex<EntropySources>> = Once::new();
 /// Returns whether or not it successfully filled the out buffer with entropy
 pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
     let mut acc: LockGuard<Accumulator> = ACCUMULATOR
-        .call_once(|| {
-            logln!("Calling call_once for acc in getrandom");
-            Mutex::new(Accumulator::new())
-        })
+        .call_once(|| Mutex::new(Accumulator::new()))
         .lock();
-    logln!("filling random data");
     let res = acc.borrow_mut().try_fill_random_data(out);
     if let Ok(()) = res {
         return true;
@@ -106,25 +93,23 @@ pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
     // try_fill_random_data only fails if unseeded
     // so the rest is trying to seed it/wait for it to be seeded
     let mut entropy_sources = ENTROPY_SOURCES
-        .call_once(|| {
-            logln!("Calling call_once for es in getrandom");
-            Mutex::new(EntropySources::new())
-        })
+        .call_once(|| Mutex::new(EntropySources::new()))
         .lock();
     if entropy_sources.has_sources() {
         logln!("has sources");
         entropy_sources.contribute_entropy(acc.borrow_mut());
         acc.try_fill_random_data(out)
             .expect("Should be seeded now & therefore shouldn't return an error");
+        drop((entropy_sources, acc));
+        return getrandom(out, nonblocking);
     }
-    drop(entropy_sources);
+    drop((entropy_sources, acc));
     if nonblocking {
         // doesn't block, returns false instead
         false
     } else {
         // otherwise schedule and recurse in again after this thread gets picked up again
         // this way it allows other work to get done, work that might result in entropy events
-        drop(acc); // removes lock from the accumulator
 
         // block for 2 seconds and hope for other entropy-generating work to get done in the
         // meantime
@@ -149,12 +134,10 @@ pub fn contribute_entropy(
 /// Returns whether registration was successful
 pub fn register_entropy_source<T: EntropySource + 'static + Send + Sync>() -> bool {
     // ignore whether or not the registration was successful
-    logln!("Registering entropy source");
     let mut entropy_sources = ENTROPY_SOURCES
         .call_once(|| Mutex::new(EntropySources::new()))
         .lock();
     let res: Result<(), ()> = entropy_sources.try_register_source::<T>();
-    logln!("esc: {:?}", entropy_sources.sources.len());
     res.is_ok()
 }
 
@@ -164,7 +147,9 @@ pub fn start_entropy_contribution_thread() {
     //     contribute_entropy_regularly,
     //     0,
     // );
-    run_closure_in_new_thread(Priority::default_realtime(), || {
+    let _registered_cpu = maybe_add_cpu_entropy_source();
+    let _registered_jitter = maybe_add_jitter_entropy_source();
+    run_closure_in_new_thread(Priority::default_background(), || {
         contribute_entropy_regularly()
     });
 }
@@ -182,14 +167,14 @@ extern "C" fn contribute_entropy_regularly() {
         entropy_sources.contribute_entropy(&mut acc);
         drop(entropy_sources);
         drop(acc);
-        crate::syscall::sync::sys_thread_sync(&mut [], Some(&mut Duration::from_secs(120))).expect(
-            "shouldn't panic because sys_thread_sync doesn't panic if no ops are passed in",
-        );
+        crate::syscall::sync::sys_thread_sync(&mut [], Some(&mut Duration::from_secs(1000)))
+            .expect(
+                "shouldn't panic because sys_thread_sync doesn't panic if no ops are passed in",
+            );
     }
 }
 
 mod test {
-    use cpu_trng::maybe_add_cpu_entropy_source;
     use jitter::maybe_add_jitter_entropy_source;
     use twizzler_kernel_macros::kernel_test;
 

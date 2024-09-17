@@ -1,0 +1,14 @@
+[package]
+name = "random_validation"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+twizzler-abi = { path = "../../lib/twizzler-abi", features = ["runtime"] }
+getrandom = { path = "../../lib/getrandom-twizzler" }
+diehardest = "1.0.0"
+
+[package.metadata]
+twizzler-build = "static"

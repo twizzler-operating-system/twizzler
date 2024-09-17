@@ -59,7 +59,7 @@ pub fn sys_get_random(
             &[
                 dest.as_mut_ptr() as u64,
                 dest.len() as u64,
-                GetRandomFlags::NONBLOCKING.bits() as u64,
+                flags.bits() as u64,
             ],
         )
     };

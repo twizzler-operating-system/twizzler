@@ -19,7 +19,6 @@ use crate::{
     clock::{fill_with_every_first, fill_with_first_kind, fill_with_kind},
     memory::VirtAddr,
     random::getrandom,
-    thread::current_thread_ref,
     time::TICK_SOURCES,
 };
 

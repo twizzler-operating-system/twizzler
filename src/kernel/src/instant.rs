@@ -1,8 +1,8 @@
 use core::{ops::Sub, time::Duration};
 
-use twizzler_abi::syscall::{ClockFlags, ClockInfo, ClockSource, FemtoSeconds, TimeSpan};
+use twizzler_abi::syscall::TimeSpan;
 
-use crate::{syscall::syscall_entry, time::TICK_SOURCES};
+use crate::time::TICK_SOURCES;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Instant(TimeSpan);

@@ -30,9 +30,10 @@ impl Generator {
         }
     }
 
+    // helper function to increment the counter
     fn increment_counter(&mut self) {
         for i in 0..self.counter.len() {
-            let mut overflow = false;
+            let overflow;
             (self.counter[i], overflow) = self.counter[i].overflowing_add(1);
             if !overflow {
                 break;
@@ -43,8 +44,6 @@ impl Generator {
     // 9.4.2
     pub fn reseed(&mut self, seed: &[u8]) {
         // K <- SHAd-256(K || seed)
-        // uses fortuna instead of sha, but it's the same idea,
-        // just with a different cipher
         let mut hasher = Sha256::new();
         hasher.update(self.key);
         hasher.update(seed);
@@ -58,7 +57,6 @@ impl Generator {
         debug_assert_ne!(self.counter, [0; COUNTER_LENGTH]);
 
         debug_assert_eq!(0, into.len() % COUNTER_LENGTH); // assert slice is evenly divisable by COUNTER_LENGTH
-        let block_count = into.len() / COUNTER_LENGTH;
         let mut hasher = ChaCha20::new((&self.key).into(), (&self.counter[4..]).into());
 
         let out_chunks = into.chunks_mut(COUNTER_LENGTH);
@@ -76,8 +74,8 @@ impl Generator {
         if rem > 0 {
             let mut buf = [0; COUNTER_LENGTH];
             self.generate_blocks(&mut buf);
-            let mut leftover_out = &mut out[(n * COUNTER_LENGTH)..];
-            leftover_out.copy_from_slice(&buf);
+            let leftover_out = &mut out[(n * COUNTER_LENGTH)..];
+            leftover_out.copy_from_slice(&buf[..rem]);
         }
         let mut new_key = [0; KEY_LENGTH];
         self.generate_blocks(&mut new_key);

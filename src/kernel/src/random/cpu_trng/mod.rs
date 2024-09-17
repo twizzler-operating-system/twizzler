@@ -1,10 +1,8 @@
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use rdrand::{ErrorCode, RdSeed};
+use rdrand::RdSeed;
 
 #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
 mod rndrs;
-
-use rand_core::RngCore;
 
 #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
 use self::rndrs::Rndrs;
@@ -42,7 +40,7 @@ mod test {
     use super::*;
     #[kernel_test]
     fn test_rand() {
-        let mut generator = CpuEntropy::try_new();
+        let generator = CpuEntropy::try_new();
         if let Ok(mut generator) = generator {
             let mut dest: [u8; 8] = [0; 8];
             generator

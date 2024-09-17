@@ -62,7 +62,6 @@ use initrd::BootModule;
 use memory::{MemoryRegion, VirtAddr};
 use random::start_entropy_contribution_thread;
 
-use self::random::{cpu_trng::CpuEntropy, EntropySource};
 use crate::{processor::current_processor, thread::entry::start_new_init};
 
 /// A collection of information made available to the kernel by the bootloader or arch-dep modules.

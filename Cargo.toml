@@ -14,6 +14,7 @@ members = [
     "src/bin/pager",
     "src/bin/mnemosyne",
     "src/bin/stdfs_demo",
+    "src/bin/random_validation",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
@@ -45,6 +46,7 @@ initrd = [
     "lib:monitor",
     "crate:mnemosyne",
     "crate:stdfs_demo",
+    "crate:random_validation",
     #"third-party:hello-world-rs"
 ]
 

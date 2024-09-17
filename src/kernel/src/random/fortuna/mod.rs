@@ -3,19 +3,15 @@ mod internal;
 mod pool;
 use alloc::vec::Vec;
 use core::{
-    borrow::BorrowMut,
     sync::atomic::{AtomicU8, Ordering},
     time::Duration,
 };
 
-use digest::Digest;
 pub use error::Error;
 use internal::{Generator, MAX_GEN_SIZE};
 use pool::Pool;
-use sha2::Sha256;
-use twizzler_abi::syscall::Clock;
 
-use crate::{instant::Instant, mutex::Mutex, once::Once};
+use crate::instant::Instant;
 
 // 9.5.5
 pub(super) const MIN_POOL_SIZE: usize = 64;
