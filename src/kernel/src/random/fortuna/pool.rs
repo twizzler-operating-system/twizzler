@@ -20,7 +20,6 @@ pub struct Pool {
 impl Pool {
     pub fn new() -> Pool {
         let mut buf: [u8; BUFFER_SIZE] = Default::default();
-        let iter = RefCell::new(buf.iter_mut());
         Pool {
             state: Sha256::new(),
             buf: Default::default(),

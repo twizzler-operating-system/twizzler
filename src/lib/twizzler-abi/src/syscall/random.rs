@@ -1,5 +1,10 @@
+use core::mem::MaybeUninit;
+
 use bitflags::bitflags;
 use num_enum::{FromPrimitive, IntoPrimitive};
+
+use super::{convert_codes_to_result, Syscall};
+use crate::arch::syscall::raw_syscall;
 
 bitflags! {
     pub struct GetRandomFlags: u32 {
@@ -43,3 +48,20 @@ pub enum GetRandomError {
 }
 
 impl core::error::Error for GetRandomError {}
+
+pub fn sys_get_random(
+    dest: &mut [MaybeUninit<u8>],
+    flags: GetRandomFlags,
+) -> Result<usize, GetRandomError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::GetRandom,
+            &[
+                dest.as_mut_ptr() as u64,
+                dest.len() as u64,
+                GetRandomFlags::NONBLOCKING.bits() as u64,
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, |_, v| v.into())
+}

@@ -34,7 +34,7 @@ impl From<ErrorCode> for rand_core::Error {
 // Untested because I don't have hardware to test it on
 // and I don't want to try to emulate that hardware.
 impl Rndrs {
-    pub fn new() -> Result<Self, ErrorCode> {
+    fn new() -> Result<Self, ErrorCode> {
         Ok(Rndrs(
             ArmRng::new().ok_or(ErrorCode::UnsupportedInstruction)?,
         ))
@@ -87,6 +87,12 @@ impl Iterator for RndrsIterator<'_> {
 }
 
 impl EntropySource for Rndrs {
+    fn try_new() -> Result<Self, ()>
+    where
+        Self: Sized,
+    {
+        Rndrs::new().map_err(|_| ())
+    }
     fn try_fill_entropy(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
         let mut dest_iter = dest.iter_mut();
         let mut rndrs_iter = self.try_iter()?;

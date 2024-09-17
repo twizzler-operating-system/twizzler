@@ -9,7 +9,7 @@ use core::{
     time::Duration,
 };
 
-use fortuna::{Accumulator, Contributor};
+use fortuna::{Accumulator, Contributor, MIN_POOL_SIZE};
 use rand_core::RngCore;
 
 use crate::{
@@ -18,7 +18,11 @@ use crate::{
     sched::schedule,
     spinlock::SpinLoop,
     syscall::sync::sys_thread_sync,
-    thread::Thread,
+    thread::{
+        entry::{run_closure_in_new_thread, start_new_kernel},
+        priority::Priority,
+        Thread,
+    },
 };
 
 const POLL_AMOUNT: usize = 64;
@@ -31,45 +35,55 @@ pub trait EntropySource {
 }
 
 struct EntropySources {
-    sources: Vec<Mutex<(Box<dyn EntropySource>, Contributor)>>,
+    sources: Vec<(Box<dyn EntropySource + Send + Sync>, Contributor)>,
 }
 
 impl EntropySources {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
+        logln!("Created new entropy sources list");
         Self {
             sources: Vec::new(),
         }
     }
 
     pub fn has_sources(&self) -> bool {
+        logln!("source count: {}", self.source_count());
         self.source_count() != 0
     }
 
     pub fn source_count(&self) -> usize {
         self.sources.len()
     }
-    pub fn try_register_source<Source: EntropySource + 'static>(&mut self) -> Result<(), ()> {
+    pub fn try_register_source<Source: EntropySource + 'static + Send + Sync>(
+        &mut self,
+    ) -> Result<(), ()> {
         let source = Source::try_new()?;
-        self.sources
-            .push(Mutex::new((Box::new(source), Contributor::new())));
+        logln!("pushing source!");
+        self.sources.push((Box::new(source), Contributor::new()));
+        logln!("Sources count: {}", self.source_count());
         Ok(())
     }
 
-    pub fn contribute_entropy(&self, accumulator: &mut Accumulator) {
-        let mut buf: [u8; POLL_AMOUNT] = [0u8; POLL_AMOUNT];
-        for mut source in &self.sources {
-            let mut source = source.lock();
-            // add one event per source to each of the pools
-            for _ in 0..fortuna::POOL_COUNT {
+    pub fn contribute_entropy(&mut self, accumulator: &mut Accumulator) {
+        let mut buf: [u8; 32] = [0u8; 32];
+
+        for source in &mut self.sources {
+            // add two events per source to each of the pools
+            // Two events because fortuna::MIN_POOL_SIZE is 64 bytes and each event
+            // is restricted to be 32 bytes at most
+            for _ in 0..fortuna::POOL_COUNT * 2 {
                 if let Ok(_) = source.0.try_fill_entropy(&mut buf) {
-                    accumulator.add_random_event(&mut source.1, &buf);
+                    accumulator
+                        .add_random_event(&mut source.1, &buf)
+                        .expect("event should be properly sized");
                 }
             }
         }
     }
 }
 
-const ACCUMULATOR: Once<Mutex<Accumulator>> = Once::new();
+static ACCUMULATOR: Once<Mutex<Accumulator>> = Once::new();
+static ENTROPY_SOURCES: Once<Mutex<EntropySources>> = Once::new();
 
 /// Generates randomness and fills the out buffer with entropy.
 ///  
@@ -77,19 +91,33 @@ const ACCUMULATOR: Once<Mutex<Accumulator>> = Once::new();
 ///
 /// Returns whether or not it successfully filled the out buffer with entropy
 pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
-    let acc = ACCUMULATOR;
-    let mut acc: LockGuard<Accumulator> = acc.call_once(|| Mutex::new(Accumulator::new())).lock();
+    let mut acc: LockGuard<Accumulator> = ACCUMULATOR
+        .call_once(|| {
+            logln!("Calling call_once for acc in getrandom");
+            Mutex::new(Accumulator::new())
+        })
+        .lock();
+    logln!("filling random data");
     let res = acc.borrow_mut().try_fill_random_data(out);
     if let Ok(()) = res {
         return true;
     }
+    logln!("need to seed accumulator");
     // try_fill_random_data only fails if unseeded
     // so the rest is trying to seed it/wait for it to be seeded
-    if ENTROPY_SOURCES.has_sources() {
-        ENTROPY_SOURCES.contribute_entropy(acc.borrow_mut());
+    let mut entropy_sources = ENTROPY_SOURCES
+        .call_once(|| {
+            logln!("Calling call_once for es in getrandom");
+            Mutex::new(EntropySources::new())
+        })
+        .lock();
+    if entropy_sources.has_sources() {
+        logln!("has sources");
+        entropy_sources.contribute_entropy(acc.borrow_mut());
         acc.try_fill_random_data(out)
             .expect("Should be seeded now & therefore shouldn't return an error");
     }
+    drop(entropy_sources);
     if nonblocking {
         // doesn't block, returns false instead
         false
@@ -100,8 +128,11 @@ pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
 
         // block for 2 seconds and hope for other entropy-generating work to get done in the
         // meantime
-        sys_thread_sync(&mut [], Some(&mut Duration::from_secs(2)));
-        getrandom(out, true)
+        logln!("recursing");
+        sys_thread_sync(&mut [], Some(&mut Duration::from_secs(2))).expect(
+            "shouldn't panic because sys_thread_sync doesn't panic if no ops are passed in",
+        );
+        getrandom(out, nonblocking)
     }
 }
 
@@ -110,24 +141,69 @@ pub fn contribute_entropy(
     contributor: &mut Contributor,
     event: &[u8],
 ) -> Result<(), self::fortuna::Error> {
-    let acc = ACCUMULATOR;
-    let mut acc = acc.call_once(|| Mutex::new(Accumulator::new())).lock();
+    let mut acc = ACCUMULATOR
+        .call_once(|| Mutex::new(Accumulator::new()))
+        .lock();
     acc.add_random_event(contributor, event)
 }
-
-const ENTROPY_SOURCES: EntropySources = EntropySources::new();
-pub fn register_entropy_source<T: EntropySource + 'static>() {
+/// Returns whether registration was successful
+pub fn register_entropy_source<T: EntropySource + 'static + Send + Sync>() -> bool {
     // ignore whether or not the registration was successful
-    let _: Result<(), ()> = ENTROPY_SOURCES.try_register_source::<T>();
+    logln!("Registering entropy source");
+    let mut entropy_sources = ENTROPY_SOURCES
+        .call_once(|| Mutex::new(EntropySources::new()))
+        .lock();
+    let res: Result<(), ()> = entropy_sources.try_register_source::<T>();
+    logln!("esc: {:?}", entropy_sources.sources.len());
+    res.is_ok()
 }
 
-fn contribute_entropy_regularly() {
+pub fn start_entropy_contribution_thread() {
+    // let thread = start_new_kernel(
+    //     Priority::default_background(),
+    //     contribute_entropy_regularly,
+    //     0,
+    // );
+    run_closure_in_new_thread(Priority::default_realtime(), || {
+        contribute_entropy_regularly()
+    });
+}
+
+extern "C" fn contribute_entropy_regularly() {
+    logln!("Starting entropy contribution");
     loop {
+        logln!("Contributing entropy");
+        let mut acc = ACCUMULATOR
+            .call_once(|| Mutex::new(Accumulator::new()))
+            .lock();
+        let mut entropy_sources = ENTROPY_SOURCES
+            .call_once(|| Mutex::new(EntropySources::new()))
+            .lock();
+        entropy_sources.contribute_entropy(&mut acc);
+        drop(entropy_sources);
+        drop(acc);
         crate::syscall::sync::sys_thread_sync(&mut [], Some(&mut Duration::from_secs(120))).expect(
             "shouldn't panic because sys_thread_sync doesn't panic if no ops are passed in",
         );
-        let acc = ACCUMULATOR;
-        let mut acc = acc.call_once(|| Mutex::new(Accumulator::new())).lock();
-        ENTROPY_SOURCES.contribute_entropy(&mut acc)
+    }
+}
+
+mod test {
+    use cpu_trng::maybe_add_cpu_entropy_source;
+    use jitter::maybe_add_jitter_entropy_source;
+    use twizzler_kernel_macros::kernel_test;
+
+    use super::*;
+    #[kernel_test]
+    fn test_rand_gen() {
+        let registered_jitter_entropy = maybe_add_jitter_entropy_source();
+        let mut into = [0u8; 1024];
+        logln!("jitter entropy registered: {}", registered_jitter_entropy);
+
+        getrandom(&mut into, false);
+        for byte in into {
+            logln!("{}", byte);
+        }
+        // logln!("Into: {:?}", into)
     }
 }

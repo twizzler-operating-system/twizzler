@@ -6,3 +6,7 @@
 	path = src/lib/nvme-rs
 	url = ../../twizzler-operating-system/nvme-rs.git
 	branch = twizzler-dynlink
+[submodule "src/lib/getrandom-twizzler"]
+	path = src/lib/getrandom-twizzler
+	url = ../getrandom-twizzler.git
+	branch = twizzler

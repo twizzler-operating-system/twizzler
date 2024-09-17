@@ -8,7 +8,7 @@ rustflags = [
   "-C",
   "link-arg=--no-gc-sections",
   "-C",
-  "target-feature=+rdrand",                   # not supported when running qemu on ARM chips
+  "target-feature=+rdrand",                   # not supported when running qemu on ARM chips, will fail gracefully
   "--cfg",
   "chacha20_force_soft",
   "-C",

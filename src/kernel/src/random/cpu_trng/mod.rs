@@ -4,6 +4,8 @@ use rdrand::{ErrorCode, RdSeed};
 #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
 mod rndrs;
 
+use rand_core::RngCore;
+
 #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
 use self::rndrs::Rndrs;
 use super::{register_entropy_source, EntropySource};
@@ -22,7 +24,7 @@ impl EntropySource for CpuEntropy {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         let cpu = RdSeed::new().or(Err(()))?;
         #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
-        let cpu = Rndrs::new().or(())?;
+        let cpu = Rndrs::try_new()?;
         Ok(Self { cpu })
     }
     fn try_fill_entropy(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
@@ -30,10 +32,8 @@ impl EntropySource for CpuEntropy {
     }
 }
 
-pub fn maybe_add_cpu_entropy_source() {
-    if let Ok(cpu_entropy) = CpuEntropy::try_new() {
-        register_entropy_source::<CpuEntropy>()
-    }
+pub fn maybe_add_cpu_entropy_source() -> bool {
+    register_entropy_source::<CpuEntropy>()
 }
 
 mod test {

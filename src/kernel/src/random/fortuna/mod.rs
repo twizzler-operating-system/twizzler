@@ -2,7 +2,11 @@ mod error;
 mod internal;
 mod pool;
 use alloc::vec::Vec;
-use core::{borrow::BorrowMut, sync::atomic::AtomicU8, time::Duration};
+use core::{
+    borrow::BorrowMut,
+    sync::atomic::{AtomicU8, Ordering},
+    time::Duration,
+};
 
 use digest::Digest;
 pub use error::Error;
@@ -14,14 +18,14 @@ use twizzler_abi::syscall::Clock;
 use crate::{instant::Instant, mutex::Mutex, once::Once};
 
 // 9.5.5
-const MIN_POOL_SIZE: usize = 64;
+pub(super) const MIN_POOL_SIZE: usize = 64;
 
 // based on Cryptography Engineering Chapter 9 by Neils Ferguson et. al.
 // comments including 9.x.x reference the above text's sections
 
 pub(super) const POOL_COUNT: usize = 32;
 
-const CONTRIBUTOR_ID: AtomicU8 = AtomicU8::new(0);
+static CONTRIBUTOR_ID: AtomicU8 = AtomicU8::new(0);
 // 9.5.6 utility class to make it easier to keep track of
 // incrementing the pool number and make assigning ids easier as well.
 pub struct Contributor {
@@ -31,13 +35,10 @@ pub struct Contributor {
 
 impl Contributor {
     pub fn new() -> Self {
-        let mut contrib_id = CONTRIBUTOR_ID;
-        let mut contrib_id = contrib_id.get_mut();
         let out = Contributor {
-            id: *contrib_id,
+            id: CONTRIBUTOR_ID.fetch_add(1, Ordering::Relaxed),
             pool_number: 0,
         };
-        *contrib_id += 1;
         out
     }
     pub(self) fn contribute(&mut self) -> (u8, u8) {
@@ -88,7 +89,6 @@ impl Accumulator {
         // all pools
         if self.pools[0].count() >= MIN_POOL_SIZE && diff < Duration::from_millis(100) {
             self.reseed_ct += 1;
-            let mut new_seed: Sha256 = Sha256::new();
             let mut all_pools = [0u8; (32 * POOL_COUNT)];
             let all_pools_iterator = all_pools.chunks_mut(32);
             let mut powered = 0b1;

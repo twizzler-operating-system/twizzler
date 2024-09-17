@@ -28,6 +28,6 @@ impl EntropySource for Jitter {
     }
 }
 
-pub fn maybe_add_cpu_entropy_source() {
+pub fn maybe_add_jitter_entropy_source() -> bool {
     register_entropy_source::<Jitter>()
 }

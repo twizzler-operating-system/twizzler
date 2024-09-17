@@ -60,6 +60,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use arch::BootInfoSystemTable;
 use initrd::BootModule;
 use memory::{MemoryRegion, VirtAddr};
+use random::start_entropy_contribution_thread;
 
 use self::random::{cpu_trng::CpuEntropy, EntropySource};
 use crate::{processor::current_processor, thread::entry::start_new_init};
@@ -157,6 +158,7 @@ pub fn idle_main() -> ! {
     interrupt::set(true);
     if current_processor().is_bsp() {
         machine::machine_post_init();
+        start_entropy_contribution_thread();
 
         #[cfg(test)]
         if is_test_mode() {
