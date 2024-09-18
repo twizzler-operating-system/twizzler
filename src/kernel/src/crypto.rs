@@ -31,7 +31,6 @@ pub fn verify(
 }
 
 mod test {
-
     use hex_literal::hex;
     use twizzler_kernel_macros::kernel_test;
 
