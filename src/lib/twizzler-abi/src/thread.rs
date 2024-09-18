@@ -4,12 +4,16 @@
 KANI_TODO
 */
 
+<<<<<<< HEAD
 
 use core::{
     alloc::Layout,
     ptr,
     sync::atomic::{AtomicU64, Ordering},
 };
+=======
+use core::sync::atomic::{AtomicU64, Ordering};
+>>>>>>> 73de36adf36e949d259f1388d0743ca73c227ec3
 
 #[cfg(not(feature = "kernel"))]
 use core::time::Duration;

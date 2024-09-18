@@ -37,7 +37,11 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
     fs::create_dir_all(&dir_name)?;
 
     let dir = Path::new(&dir_name);
+<<<<<<< HEAD
     let _ = env::set_current_dir(&dir);
+=======
+    env::set_current_dir(&dir);
+>>>>>>> 73de36adf36e949d259f1388d0743ca73c227ec3
 
     //Log Format
     let log_name = format!("{}.log", date);
