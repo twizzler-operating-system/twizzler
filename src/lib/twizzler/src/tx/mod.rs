@@ -1,11 +1,17 @@
 use std::{
-    cell::UnsafeCell,
-    mem::{transmute, MaybeUninit},
-    ops::Deref,
+    cell::{RefCell, UnsafeCell},
+    mem::{size_of, transmute, MaybeUninit},
+    ops::{Deref, RangeInclusive},
     pin::Pin,
 };
 
-use crate::marker::{Invariant, InvariantValue, StorePlace};
+use range_set::RangeSet;
+use twizzler_runtime_api::{get_runtime, ObjectHandle};
+
+use crate::{
+    marker::{Invariant, InvariantValue, StorePlace},
+    object::{BaseType, RawObject},
+};
 
 /// A trait for implementing transaction handles.
 ///
@@ -35,6 +41,8 @@ pub enum TxError<E = ()> {
     Exhausted,
     /// Tried to mutate immutable data.
     Immutable,
+    /// Invalid argument.
+    InvalidArgument,
 }
 
 impl<E> From<E> for TxError<E> {
@@ -157,5 +165,65 @@ impl<'a> TxHandle<'a> for UnsafeTxHandle {
 impl UnsafeTxHandle {
     pub const unsafe fn new() -> Self {
         Self { _priv: () }
+    }
+}
+
+const CHANGE_SET_STACK_SIZE: usize = 8;
+pub struct ObjectTxHandle<'a> {
+    handle: &'a ObjectHandle,
+    change_set: RefCell<RangeSet<[RangeInclusive<u64>; CHANGE_SET_STACK_SIZE]>>,
+}
+
+impl<'a> ObjectTxHandle<'a> {
+    pub fn new(handle: &'a ObjectHandle) -> Self {
+        Self {
+            handle,
+            change_set: RefCell::new(RangeSet::new()),
+        }
+    }
+}
+
+impl<'a> TxHandle<'a> for ObjectTxHandle<'a> {
+    fn tx_mut<T, E>(&self, data: *const T) -> TxResult<*mut T, E> {
+        // TODO: check if pointer is in this object
+        // TODO: ensure uniqueness of returned pointers?
+        let len = size_of::<T>();
+        if len == 0 {
+            return Ok(data as *mut T);
+        }
+        let runtime = get_runtime();
+        let (_, offset) = runtime
+            .ptr_to_object_start(data.cast(), len)
+            .ok_or(TxError::InvalidArgument)?;
+        let off = offset as u64;
+        let _existing = self
+            .change_set
+            .borrow_mut()
+            .insert_range(off..=(off + len as u64 - 1));
+        Ok(data as *mut T)
+    }
+}
+
+impl<T: BaseType> crate::object::Object<T> {
+    pub fn tx<F, R, E>(&self, f: F) -> TxResult<R, E>
+    where
+        F: FnOnce(&ObjectTxHandle) -> TxResult<R, E>,
+    {
+        // 1. Prove uniqueness.
+        // TODO
+
+        // 2. Do transaction.
+        let tx = ObjectTxHandle::new(self.handle());
+        let res = f(&tx);
+
+        if res.is_ok() {
+            // 3a. Commit.
+            // TODO: call pager, commit
+        } else {
+            // 3b. Abort.
+            // TODO: call pager, abort
+        }
+
+        res
     }
 }

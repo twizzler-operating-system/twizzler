@@ -14,6 +14,8 @@ use crate::{
     tx::{TxCell, TxHandle, TxResult},
 };
 
+mod vec;
+
 #[derive(twizzler_derive::Invariant, NewStorer)]
 #[repr(C)]
 struct VectorInner<T> {
@@ -149,7 +151,7 @@ impl<T, Alloc: Allocator> Vector<T, Alloc> {
 
 impl<T, Alloc: Allocator> BaseType for Vector<T, Alloc> {}
 
-//#[cfg(test)]
+#[cfg(test)]
 mod tests {
     use super::Vector;
     use crate::{

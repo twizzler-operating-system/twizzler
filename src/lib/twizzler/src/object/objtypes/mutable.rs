@@ -4,7 +4,7 @@ use twizzler_abi::meta::MetaInfo;
 use twizzler_runtime_api::ObjectHandle;
 
 use super::{ImmutableObject, InitializedObject, Object, RawObject};
-use crate::{object::BaseType, ptr::ResolvedPtr};
+use crate::{object::BaseType, ptr::ResolvedPtr, tx::TxHandle};
 
 pub struct MutableObject<Base: BaseType> {
     handle: ObjectHandle,
@@ -83,6 +83,14 @@ impl<Base: BaseType> TryFrom<ObjectHandle> for MutableObject<Base> {
             handle: value,
             _pd: PhantomData,
         })
+    }
+}
+
+impl<'a, B: BaseType> TxHandle<'a> for MutableObject<B> {
+    fn tx_mut<T, E>(&self, data: *const T) -> crate::tx::TxResult<*mut T, E> {
+        // TODO: check if pointer is in this object
+        // TODO: ensure uniqueness of returned pointers?
+        Ok(data as *mut T)
     }
 }
 

@@ -11,3 +11,4 @@ twizzler-abi = { path = "../twizzler-abi" }
 bitflags = { version = "2.4" }
 twizzler-derive = { path = "twizzler-derive" }
 thiserror = "1.0"
+range-set = "0.0.11"

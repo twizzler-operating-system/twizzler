@@ -2558,6 +2558,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "range-set"
+version = "0.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "714bc4849c399f77ab82177e9b4f012e02f3a7d6191023e016334edde5b21050"
+dependencies = [
+ "num-traits",
+ "smallvec",
+]
+
+[[package]]
 name = "raw-cpuid"
 version = "10.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3462,6 +3472,7 @@ name = "twizzler"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.6.0",
+ "range-set",
  "thiserror",
  "twizzler-abi",
  "twizzler-derive",

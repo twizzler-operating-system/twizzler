@@ -5,6 +5,7 @@
 #![feature(core_intrinsics)]
 #![feature(thread_local)]
 #![feature(test)]
+#![feature(pointer_byte_offsets)]
 
 extern crate self as twizzler;
 
