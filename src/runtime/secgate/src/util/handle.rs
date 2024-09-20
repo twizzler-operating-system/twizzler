@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroUsize};
 
 use stable_vec::StableVec;
 use twizzler_runtime_api::ObjID;
@@ -27,21 +27,29 @@ pub type Descriptor = u32;
 #[derive(Default, Clone)]
 pub struct HandleMgr<ServerData> {
     handles: HashMap<ObjID, StableVec<ServerData>>,
-    max: usize,
+    max: Option<NonZeroUsize>,
 }
 
 impl<ServerData> HandleMgr<ServerData> {
     /// Construct a new HandleMgr.
-    pub fn new(max: usize) -> Self {
+    pub fn new(max: Option<usize>) -> Self {
         Self {
             handles: HashMap::new(),
-            max,
+            max: max.map(|max| NonZeroUsize::new(max)).flatten(),
         }
     }
 
     /// Get the maximum number of open handles.
-    pub fn max(&self) -> usize {
-        self.max
+    pub fn max(&self) -> Option<usize> {
+        self.max.map(|x| x.get())
+    }
+
+    /// Get the number of currently open handles for a given compartment.
+    pub fn open_count(&self, comp: ObjID) -> usize {
+        self.handles
+            .get(&comp)
+            .map(|sv| sv.num_elements())
+            .unwrap_or(0)
     }
 
     /// Lookup the server data associated with a descriptor.
@@ -54,8 +62,10 @@ impl<ServerData> HandleMgr<ServerData> {
     pub fn insert(&mut self, comp: ObjID, sd: ServerData) -> Option<Descriptor> {
         let entry = self.handles.entry(comp).or_insert_with(|| StableVec::new());
         let idx = entry.next_push_index();
-        if idx >= self.max && self.max > 0 {
-            return None;
+        if let Some(max) = self.max {
+            if idx >= max.get() {
+                return None;
+            }
         }
         let ds: Descriptor = idx.try_into().ok()?;
         let pushed_idx = entry.push(sd);
@@ -109,7 +119,7 @@ mod test {
 
     #[test]
     fn handle() {
-        let mgr = RefCell::new(HandleMgr::new(8));
+        let mgr = RefCell::new(HandleMgr::new(Some(8)));
         let mut foo = FooHandle::open((42, mgr)).unwrap();
 
         assert_eq!(foo.x, 42);
