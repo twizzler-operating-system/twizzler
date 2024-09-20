@@ -33,7 +33,6 @@ impl DebugRuntime for MinimalRuntime {
             },
             mapping,
             dl_info: None,
-            next_id: None,
             id,
         })
     }
