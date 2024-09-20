@@ -356,7 +356,7 @@ bitflags::bitflags! {
 /// must be #[no_std], we need to implement refcounting ourselves.
 pub struct ObjectHandle {
     /// Pointer to refcounter.
-    pub internal_refs: NonNull<InternalHandleRefs>,
+    pub internal_refs: Option<NonNull<InternalHandleRefs>>,
     /// The ID of the object.
     pub id: ObjID,
     /// The flags of this handle.
@@ -395,7 +395,7 @@ impl Default for InternalHandleRefs {
 
 impl ObjectHandle {
     pub fn new(
-        internal_refs: NonNull<InternalHandleRefs>,
+        internal_refs: Option<NonNull<InternalHandleRefs>>,
         id: ObjID,
         flags: MapFlags,
         start: *mut u8,
@@ -413,7 +413,10 @@ impl ObjectHandle {
 
 impl Clone for ObjectHandle {
     fn clone(&self) -> Self {
-        let rc = unsafe { self.internal_refs.as_ref() };
+        let Some(ref refs) = self.internal_refs else {
+            panic!("cannot clone an unsafe object handle");
+        };
+        let rc = unsafe { refs.as_ref() };
         // This use of Relaxed ordering is justified by https://doc.rust-lang.org/nomicon/arc-mutex/arc-clone.html.
         let old_count = rc.count.fetch_add(1, Ordering::Relaxed);
         // The above link also justifies the following behavior. If our count gets this high, we
@@ -433,8 +436,11 @@ impl Clone for ObjectHandle {
 
 impl Drop for ObjectHandle {
     fn drop(&mut self) {
+        let Some(ref refs) = self.internal_refs else {
+            return;
+        };
         // This use of Release ordering is justified by https://doc.rust-lang.org/nomicon/arc-mutex/arc-clone.html.
-        let rc = unsafe { self.internal_refs.as_ref() };
+        let rc = unsafe { refs.as_ref() };
         if rc.count.fetch_sub(1, Ordering::Release) != 1 {
             return;
         }
@@ -689,8 +695,6 @@ pub struct Library {
     pub range: AddrRange,
     /// Information for dl_iterate_phdr
     pub dl_info: Option<DlPhdrInfo>,
-    /// The Library ID of first dependency.
-    pub next_id: Option<LibraryId>,
 }
 
 impl AsRef<Library> for Library {

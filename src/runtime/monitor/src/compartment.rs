@@ -16,6 +16,8 @@ use twizzler_object::ObjID;
 use twizzler_runtime_api::{LibraryId, MapFlags, ObjectHandle};
 use twz_rt::RuntimeThreadControl;
 
+use crate::gates::{CompartmentInfo, LoadCompartmentError};
+
 /// The monitor's representation of a compartment.
 pub struct Comp {
     /// This compartment's security context.

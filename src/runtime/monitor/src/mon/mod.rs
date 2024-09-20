@@ -3,18 +3,20 @@ use std::{ptr::NonNull, sync::OnceLock};
 use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
 use monitor_api::{SharedCompConfig, TlsTemplateInfo};
+use secgate::util::HandleMgr;
 use twizzler_abi::upcall::UpcallFrame;
 use twizzler_runtime_api::{MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
 use twz_rt::{RuntimeState, RuntimeThreadControl, OUR_RUNTIME};
 
 use self::{
-    compartment::{CompConfigObject, RunComp},
+    compartment::{CompConfigObject, CompartmentHandle, RunComp},
     space::{MapHandle, MapInfo, Unmapper},
     thread::{ManagedThread, ThreadCleaner},
 };
 use crate::{api::MONITOR_INSTANCE_ID, init::InitDynlinkContext};
 
 pub(crate) mod compartment;
+pub mod library;
 pub(crate) mod space;
 pub(crate) mod thread;
 
@@ -35,6 +37,10 @@ pub struct Monitor {
     pub comp_mgr: &'static RwLock<compartment::CompartmentMgr>,
     /// Dynamic linker state.
     pub dynlink: &'static RwLock<&'static mut dynlink::context::Context>,
+    /// Open handles to libraries.
+    pub library_handles: &'static RwLock<HandleMgr<library::LibraryHandle>>,
+    /// Open handles to compartments.
+    pub compartment_handles: &'static RwLock<HandleMgr<CompartmentHandle>>,
 }
 
 // We allow locking individually, using eg mon.space.write(key), or locking the collection for more
@@ -44,6 +50,8 @@ type MonitorLocks<'a> = (
     &'a RwLock<thread::ThreadMgr>,
     &'a RwLock<compartment::CompartmentMgr>,
     &'a RwLock<&'static mut dynlink::context::Context>,
+    &'a RwLock<HandleMgr<library::LibraryHandle>>,
+    &'a RwLock<HandleMgr<CompartmentHandle>>,
 );
 
 impl Monitor {
@@ -98,15 +106,27 @@ impl Monitor {
         let thread_mgr = Box::leak(Box::new(RwLock::new(thread::ThreadMgr::default())));
         let comp_mgr = Box::leak(Box::new(RwLock::new(comp_mgr)));
         let dynlink = Box::leak(Box::new(RwLock::new(unsafe { init.ctx.as_mut().unwrap() })));
+        let library_handles = Box::leak(Box::new(RwLock::new(HandleMgr::new(None))));
+        let compartment_handles = Box::leak(Box::new(RwLock::new(HandleMgr::new(None))));
 
         // Okay to call try_new here, since it's not many locks and only happens once.
         Self {
-            locks: LockCollection::try_new((&*space, &*thread_mgr, &*comp_mgr, &*dynlink)).unwrap(),
+            locks: LockCollection::try_new((
+                &*space,
+                &*thread_mgr,
+                &*comp_mgr,
+                &*dynlink,
+                &*library_handles,
+                &*compartment_handles,
+            ))
+            .unwrap(),
             unmapper: OnceLock::new(),
             space,
             thread_mgr,
             comp_mgr,
             dynlink,
+            library_handles,
+            compartment_handles,
         }
     }
 
@@ -157,6 +177,15 @@ impl Monitor {
         let rc = comp_mgr.get_mut(sctx).ok_or(MapError::InvalidArgument)?;
         let handle = rc.map_object(info, handle)?;
         Ok(handle)
+    }
+
+    /// Get the object ID for this compartment-thread's simple buffer.
+    pub fn get_thread_simple_buffer(&self, sctx: ObjID, thread: ObjID) -> Option<ObjID> {
+        let mut locks = self.locks.lock(ThreadKey::get().unwrap());
+        let (ref mut space, _, ref mut comps, _, _, _) = *locks;
+        let rc = comps.get_mut(sctx)?;
+        let pt = rc.get_per_thread(thread, &mut *space);
+        pt.simple_buffer_id()
     }
 }
 

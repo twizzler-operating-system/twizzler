@@ -1,32 +1,27 @@
 use elf::segment::Elf64_Phdr;
-use monitor_api::get_comp_config;
 use twizzler_runtime_api::{AddrRange, DebugRuntime, Library, MapFlags};
 
 use super::{object::new_object_handle, ReferenceRuntime};
-use crate::preinit_println;
 
 impl DebugRuntime for ReferenceRuntime {
     fn get_library(
         &self,
         id: twizzler_runtime_api::LibraryId,
     ) -> Option<twizzler_runtime_api::Library> {
-        let info: monitor_api::LibraryInfo =
-            monitor_api::monitor_rt_get_library_info(id).unwrap()?;
+        let lib = monitor_api::CompartmentHandle::current().libs().nth(id.0)?;
+        let info = lib.info();
         let handle = new_object_handle(info.objid, info.slot, MapFlags::READ);
         Some(Library {
             range: info.range,
             dl_info: Some(info.dl_info),
             id,
             mapping: handle,
-            next_id: info.next_id,
         })
     }
 
     fn get_exeid(&self) -> Option<twizzler_runtime_api::LibraryId> {
-        // For now, this will always be the third library, after runtime and libstd.
-        // TODO (dbittman): once the monitor refactor is complete, this API will be fixed
-        // to be more dynamic.
-        Some(twizzler_runtime_api::LibraryId(3))
+        // root ID is always 0
+        Some(twizzler_runtime_api::LibraryId(0))
     }
 
     fn get_library_segment(
@@ -61,9 +56,9 @@ impl DebugRuntime for ReferenceRuntime {
     ) -> core::ffi::c_int {
         let mut ret = 0;
         // Get the primary library for this compartment.
-        let mut id = self.get_exeid();
+        let mut id = self.get_exeid().unwrap().0;
         // Each library contains a field indicating the next library ID in this list.
-        while let Some(library) = id.and_then(|id| self.get_library(id)) {
+        while let Some(library) = self.get_library(twizzler_runtime_api::LibraryId(id)) {
             if let Some(info) = library.dl_info {
                 ret = f(info);
                 // dl_iterate_phdr returns early if the callback returns non-zero.
@@ -71,8 +66,15 @@ impl DebugRuntime for ReferenceRuntime {
                     return ret;
                 }
             }
-            id = library.next_id;
+            id += 1;
         }
         ret
+    }
+
+    fn next_library_id(
+        &self,
+        id: twizzler_runtime_api::LibraryId,
+    ) -> Option<twizzler_runtime_api::LibraryId> {
+        Some(twizzler_runtime_api::LibraryId(id.0 + 1))
     }
 }

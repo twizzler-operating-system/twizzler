@@ -7,16 +7,21 @@ use std::{
 };
 
 use dynlink::{compartment::Compartment, context::Context, tls::TlsRegion};
+use happylock::ThreadKey;
+use secgate::util::SimpleBuffer;
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
-    syscall::{sys_spawn, sys_thread_exit, ThreadSyncSleep, UpcallTargetSpawnOption},
+    syscall::{sys_spawn, sys_thread_exit, ObjectCreate, ThreadSyncSleep, UpcallTargetSpawnOption},
     thread::{ExecutionState, ThreadRepr},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
 use twizzler_runtime_api::{MapFlags, ObjID, SpawnError};
 use twz_rt::RuntimeThreadControl;
 
-use super::space::{MapHandle, MapInfo, Space};
+use super::{
+    get_monitor,
+    space::{MapHandle, MapInfo, Space},
+};
 use crate::api::MONITOR_INSTANCE_ID;
 
 mod cleaner;

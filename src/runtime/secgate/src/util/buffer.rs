@@ -7,6 +7,14 @@ pub struct SimpleBuffer {
     handle: ObjectHandle,
 }
 
+impl core::fmt::Debug for SimpleBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimpleBuffer")
+            .field("id", &self.handle.id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl SimpleBuffer {
     fn ptr_to_base(&self) -> *const u8 {
         unsafe { self.handle.start.add(NULLPAGE_SIZE) }
@@ -24,6 +32,11 @@ impl SimpleBuffer {
     /// Returns the maximum length of a read or write.
     pub fn max_len(&self) -> usize {
         MAX_SIZE - NULLPAGE_SIZE * 2
+    }
+
+    /// Get the underlying object handle.
+    pub fn handle(&self) -> &ObjectHandle {
+        &self.handle
     }
 
     /// Read bytes from the SimpleBuffer into `buffer`, up to the size of the supplied buffer. The

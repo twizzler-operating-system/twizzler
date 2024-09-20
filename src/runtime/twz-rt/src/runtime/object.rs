@@ -29,7 +29,7 @@ pub(crate) fn new_object_handle(
     flags: MapFlags,
 ) -> ObjectHandle {
     ObjectHandle::new(
-        NonNull::new(Box::into_raw(Box::default())).unwrap(),
+        Some(NonNull::new(Box::into_raw(Box::default())).unwrap()),
         id,
         flags,
         (slot * MAX_SIZE) as *mut u8,
@@ -175,6 +175,6 @@ impl ObjectHandleManager {
         }
 
         // Safety: we only create internal refs from Box.
-        let _boxed = unsafe { Box::from_raw(handle.internal_refs.as_mut()) };
+        let _boxed = unsafe { Box::from_raw(handle.internal_refs.unwrap().as_mut()) };
     }
 }

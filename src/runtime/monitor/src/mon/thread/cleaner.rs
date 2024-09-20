@@ -135,8 +135,14 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
         for (_, th) in cleanups.drain(..) {
             tracing::debug!("cleaning thread: {}", th.id);
             let monitor = get_monitor();
-            let mut tmgr = monitor.thread_mgr.write(&mut key);
-            tmgr.do_remove(&th);
+            {
+                let mut tmgr = monitor.thread_mgr.write(&mut key);
+                tmgr.do_remove(&th);
+            }
+            let mut cmgr = monitor.comp_mgr.write(&mut key);
+            for comp in cmgr.compartments_mut() {
+                comp.clean_per_thread_data(th.id);
+            }
         }
 
         // Check for notifications, and sleep.

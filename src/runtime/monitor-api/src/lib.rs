@@ -5,8 +5,11 @@
 #![feature(naked_functions)]
 #![feature(pointer_byte_offsets)]
 #![feature(pointer_is_aligned)]
+#![feature(result_flattening)]
+#![feature(thread_local)]
 use std::{
     alloc::Layout,
+    marker::PhantomData,
     ptr::NonNull,
     sync::{
         atomic::{AtomicPtr, Ordering},
@@ -15,6 +18,7 @@ use std::{
 };
 
 use dynlink::tls::{Tcb, TlsRegion};
+use secgate::util::{Descriptor, Handle};
 use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 
 mod gates {
@@ -22,7 +26,7 @@ mod gates {
 }
 
 pub use gates::*;
-use twizzler_runtime_api::LibraryId;
+use twizzler_runtime_api::{AddrRange, DlPhdrInfo, LibraryId};
 
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and
 /// read-only from the compartment.
@@ -162,7 +166,305 @@ impl SharedCompConfig {
     }
 }
 
-pub use gates::LibraryInfo;
+pub use gates::LibraryInfo as LibraryInfoRaw;
+
+/// Contains information about a library loaded into the address space.
+#[derive(Debug)]
+pub struct LibraryInfo<'a> {
+    /// The library's name
+    pub name: String,
+    /// The compartment of the library
+    pub compartment_id: ObjID,
+    /// The object ID that the library was loaded from
+    pub objid: ObjID,
+    /// The address range the library was loaded to
+    pub range: AddrRange,
+    /// The DlPhdrInfo for this library
+    pub dl_info: DlPhdrInfo,
+    /// The slot of the library text.
+    pub slot: usize,
+    _pd: PhantomData<&'a ()>,
+    internal_name: Vec<u8>,
+}
+
+impl<'a> LibraryInfo<'a> {
+    fn from_raw(raw: LibraryInfoRaw) -> Self {
+        let name = lazy_sb::read_bytes_from_sb(raw.name_len);
+        let mut this = Self {
+            name: lazy_sb::read_string_from_sb(raw.name_len),
+            compartment_id: raw.compartment_id,
+            objid: raw.objid,
+            range: raw.range,
+            dl_info: raw.dl_info,
+            slot: raw.slot,
+            _pd: PhantomData,
+            internal_name: name,
+        };
+        this.dl_info.name = this.internal_name.as_ptr();
+        this
+    }
+}
+
+/// A handle to a loaded library. On drop, the library may unload.
+#[derive(Debug)]
+pub struct LibraryHandle {
+    desc: Descriptor,
+}
+
+impl LibraryHandle {
+    /// Get the library info.
+    pub fn info(&self) -> LibraryInfo<'_> {
+        LibraryInfo::from_raw(
+            gates::monitor_rt_get_library_info(self.desc)
+                .ok()
+                .flatten()
+                .unwrap(),
+        )
+    }
+
+    /// Get the descriptor for this handle.
+    pub fn desc(&self) -> Descriptor {
+        self.desc
+    }
+}
+
+/// A builder-type for loading libraries.
+pub struct LibraryLoader<'a> {
+    id: ObjID,
+    comp: Option<&'a CompartmentHandle>,
+}
+
+impl<'a> LibraryLoader<'a> {
+    /// Make a new LibraryLoader.
+    pub fn new(id: ObjID) -> Self {
+        Self { id, comp: None }
+    }
+
+    /// Load the library in the given compartment.
+    pub fn in_compartment(&'a mut self, comp: &'a CompartmentHandle) -> &'a mut Self {
+        self.comp = Some(comp);
+        self
+    }
+
+    /// Load the library.
+    pub fn load(&self) -> Result<LibraryHandle, gates::LoadLibraryError> {
+        let desc: Descriptor =
+            gates::monitor_rt_load_library(self.comp.map(|comp| comp.desc).flatten(), self.id)
+                .ok()
+                .ok_or(gates::LoadLibraryError::Unknown)
+                .flatten()?;
+        Ok(LibraryHandle { desc })
+    }
+}
+
+/// A compartment handle. On drop, the compartment may be unloaded.
+pub struct CompartmentHandle {
+    desc: Option<Descriptor>,
+}
+
+impl CompartmentHandle {
+    /// Get the compartment info.
+    pub fn info(&self) -> CompartmentInfo<'_> {
+        CompartmentInfo::from_raw(
+            gates::monitor_rt_get_compartment_info(self.desc)
+                .ok()
+                .flatten()
+                .unwrap(),
+        )
+    }
+
+    /// Get the descriptor for this handle, or None if the handle refers to the current compartment.
+    pub fn desc(&self) -> Option<Descriptor> {
+        self.desc
+    }
+}
+
+/// A builder-type for loading compartments.
+pub struct CompartmentLoader {
+    id: ObjID,
+}
+
+impl CompartmentLoader {
+    /// Make a new compartment loader.
+    pub fn new(id: ObjID) -> Self {
+        Self { id }
+    }
+
+    /// Load the compartment.
+    pub fn load(&self) -> Result<CompartmentHandle, gates::LoadCompartmentError> {
+        let desc = gates::monitor_rt_load_compartment(self.id)
+            .ok()
+            .ok_or(gates::LoadCompartmentError::Unknown)
+            .flatten()?;
+        Ok(CompartmentHandle { desc: Some(desc) })
+    }
+}
+
+impl Handle for CompartmentHandle {
+    type OpenError = ();
+
+    type OpenInfo = ObjID;
+
+    fn open(info: Self::OpenInfo) -> Result<Self, Self::OpenError>
+    where
+        Self: Sized,
+    {
+        let desc = gates::monitor_rt_get_compartment_handle(info)
+            .ok()
+            .flatten()
+            .ok_or(())?;
+        Ok(CompartmentHandle { desc: Some(desc) })
+    }
+
+    fn release(&mut self) {
+        if let Some(desc) = self.desc {
+            let _ = gates::monitor_rt_drop_compartment_handle(desc).ok();
+        }
+    }
+}
+
+impl Handle for LibraryHandle {
+    type OpenError = ();
+
+    type OpenInfo = (Option<Descriptor>, usize);
+
+    fn open(info: Self::OpenInfo) -> Result<Self, Self::OpenError>
+    where
+        Self: Sized,
+    {
+        let desc = gates::monitor_rt_get_library_handle(info.0, info.1)
+            .ok()
+            .flatten()
+            .ok_or(())?;
+        Ok(LibraryHandle { desc })
+    }
+
+    fn release(&mut self) {
+        let _ = gates::monitor_rt_drop_library_handle(self.desc).ok();
+    }
+}
+
+impl Drop for CompartmentHandle {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+impl Drop for LibraryHandle {
+    fn drop(&mut self) {
+        self.release()
+    }
+}
+
+/// Information about a compartment.
+#[derive(Clone, Debug)]
+pub struct CompartmentInfo<'a> {
+    /// The name of the compartment.
+    pub name: String,
+    /// The instance ID.
+    pub id: ObjID,
+    /// The security context.
+    pub sctx: ObjID,
+    /// The compartment flags and status.
+    pub flags: CompartmentFlags,
+    _pd: PhantomData<&'a ()>,
+}
+
+impl<'a> CompartmentInfo<'a> {
+    fn from_raw(raw: gates::CompartmentInfo) -> Self {
+        Self {
+            name: lazy_sb::read_string_from_sb(raw.name_len),
+            id: raw.id,
+            sctx: raw.sctx,
+            flags: CompartmentFlags::from_bits_truncate(raw.flags),
+            _pd: PhantomData,
+        }
+    }
+}
+
+impl CompartmentHandle {
+    /// Get a handle to the current compartment.
+    pub fn current() -> Self {
+        Self { desc: None }
+    }
+
+    /// Get an iterator over this compartment's dependencies.
+    pub fn deps(&self) -> CompartmentDepsIter {
+        CompartmentDepsIter::new(self)
+    }
+
+    /// Get the root library for this compartment.
+    pub fn root(&self) -> LibraryHandle {
+        self.libs().next().unwrap()
+    }
+
+    /// Get an iterator over the libraries for this compartment.
+    pub fn libs(&self) -> LibraryIter<'_> {
+        LibraryIter::new(self)
+    }
+}
+
+/// An iterator over libraries in a compartment.
+pub struct LibraryIter<'a> {
+    n: usize,
+    comp: &'a CompartmentHandle,
+}
+
+impl<'a> LibraryIter<'a> {
+    fn new(comp: &'a CompartmentHandle) -> Self {
+        Self { n: 0, comp }
+    }
+}
+
+impl<'a> Iterator for LibraryIter<'a> {
+    type Item = LibraryHandle;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let handle = LibraryHandle::open((self.comp.desc, self.n)).ok();
+        if handle.is_some() {
+            self.n += 1;
+        }
+        handle
+    }
+}
+
+/// An iterator over a compartmen's dependencies.
+pub struct CompartmentDepsIter<'a> {
+    n: usize,
+    comp: &'a CompartmentHandle,
+}
+
+impl<'a> CompartmentDepsIter<'a> {
+    fn new(comp: &'a CompartmentHandle) -> Self {
+        Self { n: 0, comp }
+    }
+}
+
+impl<'a> Iterator for CompartmentDepsIter<'a> {
+    type Item = CompartmentHandle;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let desc = gates::monitor_rt_get_compartment_deps(self.comp.desc, self.n)
+            .ok()
+            .flatten()?;
+        self.n += 1;
+        Some(CompartmentHandle { desc: Some(desc) })
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        self.n += n;
+        self.next()
+    }
+}
+
+bitflags::bitflags! {
+    /// Compartment state flags.
+    #[derive(Clone, Debug, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+    pub struct CompartmentFlags : u64 {
+        /// Compartment is ready (libraries relocated and constructors run).
+        const READY = 0x1;
+    }
+}
 
 /// Contains raw mapping addresses, for use when translating to object handles for the runtime.
 #[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
@@ -179,5 +481,71 @@ impl MappedObjectAddrs {
             meta: (slot + 1) * MAX_SIZE - NULLPAGE_SIZE,
             slot,
         }
+    }
+}
+
+mod lazy_sb {
+    //! A per-thread per-compartment simple buffer used for transferring strings between
+    //! compartments and the monitor. This is necessary because the monitor runs at too low of a
+    //! level for us to use nice shared memory techniques. This is simpler and more secure.
+    use std::cell::OnceCell;
+
+    use secgate::util::SimpleBuffer;
+    use twizzler_runtime_api::MapFlags;
+
+    struct LazyThreadSimpleBuffer {
+        sb: OnceCell<SimpleBuffer>,
+    }
+
+    impl LazyThreadSimpleBuffer {
+        const fn new() -> Self {
+            Self {
+                sb: OnceCell::new(),
+            }
+        }
+
+        fn init() -> SimpleBuffer {
+            let id = super::gates::monitor_rt_get_thread_simple_buffer()
+                .ok()
+                .flatten()
+                .expect("failed to get per-thread monitor simple buffer");
+            let oh = twizzler_runtime_api::get_runtime()
+                .map_object(id, MapFlags::READ | MapFlags::WRITE)
+                .unwrap();
+            SimpleBuffer::new(oh)
+        }
+
+        fn read(&mut self, buf: &mut [u8]) -> usize {
+            let sb = self.sb.get_or_init(|| Self::init());
+            sb.read(buf)
+        }
+
+        fn _write(&mut self, buf: &[u8]) -> usize {
+            if self.sb.get().is_none() {
+                // Unwrap-Ok: we know it's empty.
+                self.sb.set(Self::init()).unwrap();
+            }
+            let sb = self.sb.get_mut().unwrap();
+            sb.write(buf)
+        }
+    }
+
+    #[thread_local]
+    static mut LAZY_SB: LazyThreadSimpleBuffer = LazyThreadSimpleBuffer::new();
+
+    pub(super) fn read_string_from_sb(len: usize) -> String {
+        let mut buf = vec![0u8; len];
+        // Safety: this is per thread, and we only ever create the reference here or in the other
+        // read function below.
+        let len = unsafe { LAZY_SB.read(&mut buf) };
+        String::from_utf8_lossy(&buf[0..len]).to_string()
+    }
+
+    pub(super) fn read_bytes_from_sb(len: usize) -> Vec<u8> {
+        let mut buf = vec![0u8; len];
+        // Safety: see above.
+        let len = unsafe { LAZY_SB.read(&mut buf) };
+        buf.truncate(len);
+        buf
     }
 }

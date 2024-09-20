@@ -62,7 +62,7 @@ impl ObjectRuntime for MinimalRuntime {
         let slot = global_allocate().ok_or(MapError::OutOfResources)?;
         let _ = sys_object_map(None, id, slot, flags.into(), flags.into()).map_err(|e| e.into())?;
         Ok(ObjectHandle::new(
-            NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap(),
+            Some(NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap()),
             id,
             flags,
             (slot * MAX_SIZE) as *mut u8,
