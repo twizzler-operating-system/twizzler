@@ -62,6 +62,8 @@ impl QemuCommand {
             .arg("-device")
             .arg("nvme,serial=deadbeef,drive=nvme");
 
+        self.cmd.arg("-nic").arg("user,model=virtio-net-pci");
+
         self.cmd
             .arg("--no-reboot") // exit instead of rebooting
             .arg("-s") // shorthand for -gdb tcp::1234

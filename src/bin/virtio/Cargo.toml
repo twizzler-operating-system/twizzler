@@ -1,0 +1,21 @@
+[package]
+name = "virtio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+twizzler-net = { path = "../../lib/twizzler-net" }
+twizzler-object = { path = "../../lib/twizzler-object" }
+twizzler-async = { path = "../../lib/twizzler-async" }
+twizzler-driver = { path = "../../lib/twizzler-driver" }
+twizzler-abi = { path = "../../lib/twizzler-abi", features = ["runtime"] }
+
+virtio-drivers = "0.7.5"
+volatile = "0.6.1"
+
+byteorder = "1.5.0"
+
+
+
+[package.metadata]
+twizzler-build = "static"
