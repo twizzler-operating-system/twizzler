@@ -69,6 +69,11 @@ pub fn main() {
 fn monitor_init() -> miette::Result<()> {
     info!("monitor early init completed, starting init");
 
+    let hw = find_init_name("foo").unwrap();
+
+    let loader = monitor_api::CompartmentLoader::new(hw);
+    let hw_comp = loader.load().unwrap();
+
     Ok(())
 }
 

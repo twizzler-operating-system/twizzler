@@ -71,7 +71,8 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
 
     let monitor_id = ctx
         .load_library_in_compartment(monitor_comp_id, unlib)
-        .unwrap();
+        .unwrap()[0]
+        .lib;
 
     ctx.relocate_all(monitor_id).unwrap();
 

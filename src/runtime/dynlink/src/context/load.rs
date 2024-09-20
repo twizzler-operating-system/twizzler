@@ -18,6 +18,21 @@ use crate::{
     DynlinkError, DynlinkErrorKind, HeaderError,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+pub struct LoadIds {
+    pub comp: CompartmentId,
+    pub lib: LibraryId,
+}
+
+impl From<&Library> for LoadIds {
+    fn from(value: &Library) -> Self {
+        Self {
+            comp: value.comp_id,
+            lib: value.id(),
+        }
+    }
+}
+
 impl Context {
     pub(crate) fn get_secgate_info(
         &self,
@@ -290,8 +305,9 @@ impl Context {
         comp_id: CompartmentId,
         root_unlib: UnloadedLibrary,
         idx: NodeIndex,
-    ) -> Result<NodeIndex, DynlinkError> {
+    ) -> Result<Vec<LoadIds>, DynlinkError> {
         debug!("loading library {} (idx = {:?})", root_unlib, idx);
+        let mut ids = vec![];
         // First load the main library.
         let lib = self.load(comp_id, root_unlib.clone(), idx).map_err(|e| {
             DynlinkError::new_collect(
@@ -301,6 +317,7 @@ impl Context {
                 vec![e],
             )
         })?;
+        ids.push((&lib).into());
 
         // Second, go through deps
         let deps = self.enumerate_needed(&lib).map_err(|e| {
@@ -360,15 +377,18 @@ impl Context {
 
                     let comp = self.get_compartment_mut(load_comp)?;
                     comp.library_names.insert(dep_unlib.name.clone(), idx);
-                    self.load_library(comp_id, dep_unlib.clone(), idx)
-                        .map_err(|e| {
-                            DynlinkError::new_collect(
-                                DynlinkErrorKind::LibraryLoadFail {
-                                    library: dep_unlib.clone(),
-                                },
-                                vec![e],
-                            )
-                        })?
+                    let mut recs =
+                        self.load_library(comp_id, dep_unlib.clone(), idx)
+                            .map_err(|e| {
+                                DynlinkError::new_collect(
+                                    DynlinkErrorKind::LibraryLoadFail {
+                                        library: dep_unlib.clone(),
+                                    },
+                                    vec![e],
+                                )
+                            })?;
+                    ids.append(&mut recs);
+                    idx
                 };
                 self.add_dep(lib.idx, idx);
                 Ok(idx)
@@ -384,17 +404,15 @@ impl Context {
 
         assert_eq!(idx, lib.idx);
         self.library_deps[idx] = LoadedOrUnloaded::Loaded(lib);
-        Ok(idx)
+        Ok(ids)
     }
 
-    /// Load a library into a given compartment. The namer callback resolves names to Backing
-    /// objects, allowing the caller to hook into the "name-of-dependency" -> backing object
-    /// pipeline.
+    /// Load a library into a given compartment.
     pub fn load_library_in_compartment(
         &mut self,
         comp_id: CompartmentId,
         unlib: UnloadedLibrary,
-    ) -> Result<LibraryId, DynlinkError> {
+    ) -> Result<Vec<LoadIds>, DynlinkError> {
         let idx = self.add_library(unlib.clone());
         // Step 1: insert into the compartment's library names.
         let comp = self.get_compartment_mut(comp_id)?;
@@ -409,12 +427,6 @@ impl Context {
         comp.library_names.insert(unlib.name.clone(), idx);
 
         // Step 2: load the library. This call recurses on dependencies.
-        let idx = self.load_library(comp_id, unlib.clone(), idx)?;
-        match &self.library_deps[idx] {
-            LoadedOrUnloaded::Unloaded(_) => {
-                Err(DynlinkErrorKind::LibraryLoadFail { library: unlib }.into())
-            }
-            LoadedOrUnloaded::Loaded(_) => Ok(LibraryId(idx)),
-        }
+        self.load_library(comp_id, unlib.clone(), idx)
     }
 }

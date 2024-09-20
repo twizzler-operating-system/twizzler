@@ -11,9 +11,11 @@ use crate::{
 
 mod compconfig;
 mod compthread;
+mod loader;
 mod runcomp;
 
 pub use compconfig::*;
+pub use loader::RunCompLoader;
 pub use runcomp::*;
 
 /// Manages compartments.

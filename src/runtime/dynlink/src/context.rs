@@ -17,6 +17,8 @@ mod relocate;
 pub mod runtime;
 mod syms;
 
+pub use load::LoadIds;
+
 #[repr(C)]
 /// A dynamic linker context, the main state struct for this crate.
 pub struct Context {
