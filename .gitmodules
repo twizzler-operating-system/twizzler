@@ -8,5 +8,5 @@
 	branch = twizzler-dynlink
 [submodule "src/lib/getrandom-twizzler"]
 	path = src/lib/getrandom-twizzler
-	url = ../twizzler-operating-system/getrandom-twizzler.git
+	url = ../../twizzler-operating-system/getrandom-twizzler.git
 	branch = twizzler
