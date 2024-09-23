@@ -6,10 +6,11 @@ use dynlink::{
     library::{CtorInfo, LibraryId, UnloadedLibrary},
     DynlinkError,
 };
+use miette::IntoDiagnostic;
 use twizzler_abi::syscall::{BackingType, ObjectCreate, ObjectCreateFlags};
 use twizzler_runtime_api::{AuxEntry, ObjID};
 
-use super::RunComp;
+use super::{CompartmentMgr, RunComp};
 
 #[derive(Debug)]
 pub struct RunCompLoader {
@@ -17,7 +18,7 @@ pub struct RunCompLoader {
     root_comp: LoadInfo,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct LoadInfo {
     root_id: LibraryId,
     rt_id: LibraryId,
@@ -47,8 +48,8 @@ impl LoadInfo {
         })
     }
 
-    /*
-    fn build_runcomp(&self) -> miette::Result<RunComp> {
+    fn build_runcomp(&self) -> Result<RunComp, DynlinkError> {
+        /*
         Ok(RunComp::new(
             self.sctx_id,
             self.sctx_id,
@@ -58,8 +59,9 @@ impl LoadInfo {
             comp_config,
             0,
         ))
+        */
+        todo!()
     }
-    */
 }
 
 impl Drop for RunCompLoader {
@@ -166,7 +168,38 @@ impl RunCompLoader {
         })
     }
 
-    pub fn start(self) -> miette::Result<Vec<ObjID>> {
-        todo!()
+    pub fn build_rcs(self, cmp: &mut CompartmentMgr) -> miette::Result<Vec<ObjID>> {
+        let root_comp = &self.root_comp;
+        let loaded_extras = &self.loaded_extras;
+
+        let mut v = vec![];
+        let extras = DynlinkError::collect(
+            dynlink::DynlinkErrorKind::CompartmentLoadFail {
+                compartment: root_comp.name.clone(),
+            },
+            loaded_extras.iter().map(|cmp| cmp.build_runcomp()),
+        )?;
+        for rc in extras.into_iter().rev() {
+            let id = rc.instance;
+            v.push(id);
+            cmp.insert(rc);
+        }
+
+        let rc = root_comp.build_runcomp();
+        let rc = match rc {
+            Err(e) => {
+                // TODO: unload extras
+                return Err(e).into_diagnostic();
+            }
+            Ok(o) => o,
+        };
+        let id = rc.instance;
+        v.insert(0, id);
+        cmp.insert(rc);
+
+        // TODO: build dependency graph for compartments.
+
+        std::mem::forget(self);
+        Ok(v)
     }
 }
