@@ -8,6 +8,18 @@ pub(crate) struct InitDynlinkContext {
     pub root: String,
 }
 
+impl InitDynlinkContext {
+    pub fn get_safe_context(&self) -> &'static mut Context {
+        let ctx = self.ctx;
+        // Safety: the engine is the only thing that can't cross API boundary coming from bootstrap.
+        // Replace it, and we're good to go.
+        unsafe {
+            (*ctx).replace_engine(Box::new(crate::dlengine::Engine));
+            &mut (*ctx)
+        }
+    }
+}
+
 pub(crate) fn bootstrap_dynlink_context() -> Option<InitDynlinkContext> {
     let info = unsafe { AUX.unwrap().as_ref().unwrap() };
     let ctx = info.ctx as *mut Context;

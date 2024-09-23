@@ -281,18 +281,21 @@ impl CompartmentHandle {
 
 /// A builder-type for loading compartments.
 pub struct CompartmentLoader {
-    id: ObjID,
+    name: String,
 }
 
 impl CompartmentLoader {
     /// Make a new compartment loader.
-    pub fn new(id: ObjID) -> Self {
-        Self { id }
+    pub fn new(name: impl ToString) -> Self {
+        Self {
+            name: name.to_string(),
+        }
     }
 
     /// Load the compartment.
     pub fn load(&self) -> Result<CompartmentHandle, gates::LoadCompartmentError> {
-        let desc = gates::monitor_rt_load_compartment(self.id)
+        let len = lazy_sb::write_bytes_to_sb(self.name.as_bytes());
+        let desc = gates::monitor_rt_load_compartment(len as u64)
             .ok()
             .ok_or(gates::LoadCompartmentError::Unknown)
             .flatten()?;
@@ -520,7 +523,7 @@ mod lazy_sb {
             sb.read(buf)
         }
 
-        fn _write(&mut self, buf: &[u8]) -> usize {
+        fn write(&mut self, buf: &[u8]) -> usize {
             if self.sb.get().is_none() {
                 // Unwrap-Ok: we know it's empty.
                 self.sb.set(Self::init()).unwrap();
@@ -536,7 +539,7 @@ mod lazy_sb {
     pub(super) fn read_string_from_sb(len: usize) -> String {
         let mut buf = vec![0u8; len];
         // Safety: this is per thread, and we only ever create the reference here or in the other
-        // read function below.
+        // functions below.
         let len = unsafe { LAZY_SB.read(&mut buf) };
         String::from_utf8_lossy(&buf[0..len]).to_string()
     }
@@ -547,5 +550,9 @@ mod lazy_sb {
         let len = unsafe { LAZY_SB.read(&mut buf) };
         buf.truncate(len);
         buf
+    }
+
+    pub(super) fn write_bytes_to_sb(buf: &[u8]) -> usize {
+        unsafe { LAZY_SB.write(buf) }
     }
 }

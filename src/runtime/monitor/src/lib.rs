@@ -15,6 +15,7 @@ use twizzler_object::ObjID;
 use twz_rt::{set_upcall_handler, OUR_RUNTIME};
 
 mod compartment;
+mod dlengine;
 mod init;
 mod object;
 pub mod secgate_test;
@@ -69,9 +70,7 @@ pub fn main() {
 fn monitor_init() -> miette::Result<()> {
     info!("monitor early init completed, starting init");
 
-    let hw = find_init_name("foo").unwrap();
-
-    let loader = monitor_api::CompartmentLoader::new(hw);
+    let loader = monitor_api::CompartmentLoader::new("foo");
     let hw_comp = loader.load().unwrap();
 
     Ok(())

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use dynlink::library::UnloadedLibrary;
 use happylock::ThreadKey;
 use secgate::util::Descriptor;
 use twizzler_runtime_api::ObjID;
@@ -142,8 +143,20 @@ impl super::Monitor {
     pub fn load_compartment(
         &self,
         caller: ObjID,
-        root_id: ObjID,
+        thread: ObjID,
+        name_len: usize,
     ) -> Result<Descriptor, LoadCompartmentError> {
+        let sctx = caller; //TODO
+        let name_bytes = self
+            .read_thread_simple_buffer(caller, thread, name_len)
+            .ok_or(LoadCompartmentError::Unknown)?;
+        let name = String::from_utf8_lossy(&name_bytes);
+        let root = UnloadedLibrary::new(name.clone());
+        let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
+        let loader = loader::RunCompLoader::new(&mut *dynlink, &name, root);
+        tracing::info!("loader: {:?}", loader);
+
+        loop {}
         todo!()
     }
 

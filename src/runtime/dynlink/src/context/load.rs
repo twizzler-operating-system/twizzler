@@ -299,6 +299,35 @@ impl Context {
         None
     }
 
+    fn has_secgate_info(&self, elf: &elf::ElfBytes<'_, NativeEndian>) -> bool {
+        elf.section_header_by_name(".twz_secgate_info")
+            .ok()
+            .is_some_and(|s| s.is_some())
+    }
+
+    fn select_compartment(
+        &mut self,
+        unlib: &UnloadedLibrary,
+        parent_comp_name: String,
+    ) -> Option<CompartmentId> {
+        let backing = self.engine.load_object(unlib).ok()?;
+        let elf = backing.get_elf().ok()?;
+        if self.has_secgate_info(&elf) {
+            let name = format!("{}::{}", parent_comp_name, unlib.name);
+            let id = self.add_compartment(&name).ok()?;
+            tracing::debug!(
+                "creating new compartment {}({}) for library {}",
+                name,
+                id,
+                unlib.name
+            );
+            // TODO: Handle collisions
+            Some(id)
+        } else {
+            None
+        }
+    }
+
     // Load a library and all its deps, using the supplied name resolution callback for deps.
     pub(crate) fn load_library(
         &mut self,
@@ -306,7 +335,11 @@ impl Context {
         root_unlib: UnloadedLibrary,
         idx: NodeIndex,
     ) -> Result<Vec<LoadIds>, DynlinkError> {
-        debug!("loading library {} (idx = {:?})", root_unlib, idx);
+        let root_comp_name = self.get_compartment(comp_id)?.name.clone();
+        debug!(
+            "loading library {} (idx = {:?}) in {}",
+            root_unlib, idx, root_comp_name
+        );
         let mut ids = vec![];
         // First load the main library.
         let lib = self.load(comp_id, root_unlib.clone(), idx).map_err(|e| {
@@ -362,8 +395,7 @@ impl Context {
                     } else {
                         (
                             None,
-                            self.engine
-                                .select_compartment(&dep_unlib)
+                            self.select_compartment(&dep_unlib, root_comp_name.clone())
                                 .unwrap_or(comp_id),
                         )
                     };
@@ -377,16 +409,16 @@ impl Context {
 
                     let comp = self.get_compartment_mut(load_comp)?;
                     comp.library_names.insert(dep_unlib.name.clone(), idx);
-                    let mut recs =
-                        self.load_library(comp_id, dep_unlib.clone(), idx)
-                            .map_err(|e| {
-                                DynlinkError::new_collect(
-                                    DynlinkErrorKind::LibraryLoadFail {
-                                        library: dep_unlib.clone(),
-                                    },
-                                    vec![e],
-                                )
-                            })?;
+                    let mut recs = self
+                        .load_library(load_comp, dep_unlib.clone(), idx)
+                        .map_err(|e| {
+                            DynlinkError::new_collect(
+                                DynlinkErrorKind::LibraryLoadFail {
+                                    library: dep_unlib.clone(),
+                                },
+                                vec![e],
+                            )
+                        })?;
                     ids.append(&mut recs);
                     idx
                 };

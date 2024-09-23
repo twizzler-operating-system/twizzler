@@ -11,11 +11,13 @@ use twizzler_runtime_api::{AuxEntry, ObjID};
 
 use super::RunComp;
 
+#[derive(Debug)]
 pub struct RunCompLoader {
     loaded_extras: Vec<LoadInfo>,
     root_comp: LoadInfo,
 }
 
+#[derive(Debug)]
 struct LoadInfo {
     root_id: LibraryId,
     rt_id: LibraryId,
@@ -40,11 +42,12 @@ impl LoadInfo {
             comp_id: lib.compartment(),
             sctx_id,
             name: dynlink.get_compartment(lib.compartment())?.name.clone(),
-            ctor_info: dynlink.build_ctors_list(root_id)?,
+            ctor_info: dynlink.build_ctors_list(root_id, Some(lib.compartment()))?,
             entry: lib.get_entry_address()?,
         })
     }
 
+    /*
     fn build_runcomp(&self) -> miette::Result<RunComp> {
         Ok(RunComp::new(
             self.sctx_id,
@@ -56,6 +59,7 @@ impl LoadInfo {
             0,
         ))
     }
+    */
 }
 
 impl Drop for RunCompLoader {
@@ -105,6 +109,11 @@ impl RunCompLoader {
         root_unlib: UnloadedLibrary,
     ) -> miette::Result<Self> {
         struct UnloadOnDrop(Vec<LoadIds>);
+        impl Drop for UnloadOnDrop {
+            fn drop(&mut self) {
+                tracing::warn!("todo: drop");
+            }
+        }
         let root_comp_id = dynlink.add_compartment(comp_name)?;
         let loads =
             UnloadOnDrop(dynlink.load_library_in_compartment(root_comp_id, root_unlib.clone())?);
@@ -157,5 +166,7 @@ impl RunCompLoader {
         })
     }
 
-    pub fn start(self) -> miette::Result<Vec<ObjID>> {}
+    pub fn start(self) -> miette::Result<Vec<ObjID>> {
+        todo!()
+    }
 }

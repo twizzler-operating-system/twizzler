@@ -71,8 +71,9 @@ impl Monitor {
         let mut comp_mgr = compartment::CompartmentMgr::default();
         let mut space = space::Space::default();
 
+        let ctx = init.get_safe_context();
         // Build our TLS region, and create a template for the monitor compartment.
-        let super_tls = (unsafe { &mut *init.ctx })
+        let super_tls = ctx
             .get_compartment_mut(MONITOR_COMPARTMENT_ID)
             .unwrap()
             .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
@@ -105,7 +106,7 @@ impl Monitor {
         let space = Box::leak(Box::new(RwLock::new(space)));
         let thread_mgr = Box::leak(Box::new(RwLock::new(thread::ThreadMgr::default())));
         let comp_mgr = Box::leak(Box::new(RwLock::new(comp_mgr)));
-        let dynlink = Box::leak(Box::new(RwLock::new(unsafe { init.ctx.as_mut().unwrap() })));
+        let dynlink = Box::leak(Box::new(RwLock::new(ctx)));
         let library_handles = Box::leak(Box::new(RwLock::new(HandleMgr::new(None))));
         let compartment_handles = Box::leak(Box::new(RwLock::new(HandleMgr::new(None))));
 
@@ -186,6 +187,34 @@ impl Monitor {
         let rc = comps.get_mut(sctx)?;
         let pt = rc.get_per_thread(thread, &mut *space);
         pt.simple_buffer_id()
+    }
+
+    /// Write bytes to this per-compartment thread's simple buffer.
+    pub fn write_thread_simple_buffer(
+        &self,
+        sctx: ObjID,
+        thread: ObjID,
+        bytes: &[u8],
+    ) -> Option<usize> {
+        let mut locks = self.locks.lock(ThreadKey::get().unwrap());
+        let (ref mut space, _, ref mut comps, _, _, _) = *locks;
+        let rc = comps.get_mut(sctx)?;
+        let pt = rc.get_per_thread(thread, &mut *space);
+        Some(pt.write_bytes(bytes))
+    }
+
+    /// Read bytes from this per-compartment thread's simple buffer.
+    pub fn read_thread_simple_buffer(
+        &self,
+        sctx: ObjID,
+        thread: ObjID,
+        len: usize,
+    ) -> Option<Vec<u8>> {
+        let mut locks = self.locks.lock(ThreadKey::get().unwrap());
+        let (ref mut space, _, ref mut comps, _, _, _) = *locks;
+        let rc = comps.get_mut(sctx)?;
+        let pt = rc.get_per_thread(thread, &mut *space);
+        Some(pt.read_bytes(len))
     }
 }
 

@@ -26,6 +26,8 @@ members = [
     "src/runtime/monitor-api",
     "src/runtime/twz-rt",
     "src/lib/twizzler-futures", "src/bin/foo", 
+    "src/lib/bar",
+    "src/lib/bar/srv",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -44,6 +46,7 @@ initrd = [
     "crate:mnemosyne",
     "crate:stdfs_demo",
     "crate:foo",
+    "lib:bar-srv",
     #"third-party:hello-world-rs"
 ]
 

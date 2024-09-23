@@ -76,6 +76,18 @@ impl PerThread {
             .unwrap_or(0)
     }
 
+    /// Read bytes from this compartment-thread's simple buffer.
+    pub fn read_bytes(&mut self, len: usize) -> Vec<u8> {
+        let mut v = vec![0; len];
+        let readlen = self
+            .simple_buffer
+            .as_mut()
+            .map(|sb| sb.0.read(&mut v))
+            .unwrap_or(0);
+        v.truncate(readlen);
+        v
+    }
+
     /// Get the Object ID of this compartment thread's simple buffer.
     pub fn simple_buffer_id(&self) -> Option<ObjID> {
         Some(self.simple_buffer.as_ref()?.0.handle().id)

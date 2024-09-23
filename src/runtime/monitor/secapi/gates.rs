@@ -152,12 +152,12 @@ unsafe impl Crossing for LibraryInfo {}
 )]
 pub fn monitor_rt_load_compartment(
     info: &secgate::GateCallInfo,
-    root_id: ObjID,
+    name_len: u64,
 ) -> Result<Descriptor, LoadCompartmentError> {
     use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
-    monitor.load_compartment(caller, root_id)
+    monitor.load_compartment(caller, info.thread_id(), name_len as usize)
 }
 
 #[derive(Clone, Copy, Debug)]

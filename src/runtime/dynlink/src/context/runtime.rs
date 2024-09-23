@@ -4,6 +4,7 @@ use twizzler_abi::object::MAX_SIZE;
 
 use super::{Context, LoadedOrUnloaded};
 use crate::{
+    compartment::CompartmentId,
     library::{CtorInfo, LibraryId},
     tls::TlsRegion,
     DynlinkError,
@@ -46,12 +47,22 @@ impl RuntimeInitInfo {
 
 impl Context {
     /// Build up a list of constructors to call for a library and its dependencies.
-    pub fn build_ctors_list(&self, root_id: LibraryId) -> Result<Vec<CtorInfo>, DynlinkError> {
+    pub fn build_ctors_list(
+        &self,
+        root_id: LibraryId,
+        comp: Option<CompartmentId>,
+    ) -> Result<Vec<CtorInfo>, DynlinkError> {
         let mut ctors = vec![];
         self.with_dfs_postorder(root_id, |lib| match lib {
             LoadedOrUnloaded::Unloaded(_) => {}
             LoadedOrUnloaded::Loaded(lib) => {
-                ctors.push(lib.ctors);
+                if let Some(comp) = comp {
+                    if comp == lib.comp_id {
+                        ctors.push(lib.ctors);
+                    }
+                } else {
+                    ctors.push(lib.ctors);
+                }
             }
         });
         Ok(ctors)
@@ -63,7 +74,7 @@ impl Context {
         root_id: LibraryId,
         tls: TlsRegion,
     ) -> Result<RuntimeInitInfo, DynlinkError> {
-        let ctors = self.build_ctors_list(root_id)?;
+        let ctors = self.build_ctors_list(root_id, None)?;
         Ok(RuntimeInitInfo::new(
             tls,
             self,
