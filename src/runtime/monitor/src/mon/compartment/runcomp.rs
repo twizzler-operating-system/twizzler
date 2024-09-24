@@ -3,19 +3,23 @@ use std::{
     collections::HashMap,
     marker::PhantomData,
     ptr::NonNull,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use dynlink::compartment::CompartmentId;
 use monitor_api::SharedCompConfig;
+use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::syscall::{
     ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
-use twizzler_runtime_api::{MapError, ObjID};
+use twizzler_runtime_api::{MapError, MapFlags, ObjID, ObjectHandle};
 
 use super::{compconfig::CompConfigObject, compthread::CompThread};
-use crate::mon::space::{MapHandle, MapInfo};
+use crate::mon::space::{MapHandle, MapInfo, Space};
 
 /// Compartment is ready (loaded, reloacated, runtime started and ctors run).
 pub const COMP_READY: u64 = 0x1;
@@ -40,9 +44,46 @@ pub struct RunComp {
     alloc: Talc<ErrOnOom>,
     mapped_objects: HashMap<MapInfo, MapHandle>,
     flags: Box<AtomicU64>,
+    per_thread: HashMap<ObjID, PerThread>,
+}
+
+/// Per-thread data in a compartment.
+pub struct PerThread {
+    simple_buffer: Option<(SimpleBuffer, MapHandle)>,
+}
+
+impl PerThread {
+    /// Create a new PerThread. Note that this must succeed, so any allocation failures must be
+    /// handled gracefully. This means that if the thread fails to allocate a simple buffer, it
+    /// will just forego having one. This may cause a failure down the line, but it's the best we
+    /// can do without panicing.
+    fn new(instance: ObjID, th: ObjID, space: &mut Space) -> Self {
+        let handle = space
+            .safe_create_and_map_runtime_object(instance, MapFlags::READ | MapFlags::WRITE)
+            .ok();
+
+        Self {
+            simple_buffer: handle
+                .map(|handle| (SimpleBuffer::new(unsafe { handle.object_handle() }), handle)),
+        }
+    }
+
+    /// Write bytes into this compartment-thread's simple buffer.
+    pub fn write_bytes(&mut self, bytes: &[u8]) -> usize {
+        self.simple_buffer
+            .as_mut()
+            .map(|sb| sb.0.write(bytes))
+            .unwrap_or(0)
+    }
+
+    /// Get the Object ID of this compartment thread's simple buffer.
+    pub fn simple_buffer_id(&self) -> Option<ObjID> {
+        Some(self.simple_buffer.as_ref()?.0.handle().id)
+    }
 }
 
 impl RunComp {
+    /// Build a new runtime compartment.
     pub fn new(
         sctx: ObjID,
         instance: ObjID,
@@ -65,7 +106,20 @@ impl RunComp {
             alloc,
             mapped_objects: HashMap::default(),
             flags: Box::new(AtomicU64::new(flags)),
+            per_thread: HashMap::new(),
         }
+    }
+
+    /// Get per-thread data in this compartment.
+    pub fn get_per_thread(&mut self, id: ObjID, space: &mut Space) -> &mut PerThread {
+        self.per_thread
+            .entry(id)
+            .or_insert_with(|| PerThread::new(self.instance, id, space))
+    }
+
+    /// Remove all per-thread data for a given thread.
+    pub fn clean_per_thread_data(&mut self, id: ObjID) {
+        self.per_thread.remove(&id);
     }
 
     /// Map an object into this compartment.
@@ -157,6 +211,11 @@ impl RunComp {
             sleep: self.flag_waitable(flag),
             _pd: PhantomData,
         }
+    }
+
+    /// Get the raw flags bits for this RC.
+    pub fn raw_flags(&self) -> u64 {
+        self.flags.load(Ordering::SeqCst)
     }
 }
 
