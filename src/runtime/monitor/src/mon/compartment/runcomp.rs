@@ -39,12 +39,25 @@ pub struct RunComp {
     /// The dynlink ID of this compartment.
     pub compartment_id: CompartmentId,
     main: Option<CompThread>,
-    deps: Vec<ObjID>,
+    /// The dependencies of this compartment.
+    pub deps: Vec<ObjID>,
     comp_config_object: CompConfigObject,
     alloc: Talc<ErrOnOom>,
     mapped_objects: HashMap<MapInfo, MapHandle>,
     flags: Box<AtomicU64>,
     per_thread: HashMap<ObjID, PerThread>,
+}
+
+impl core::fmt::Debug for RunComp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunComp")
+            .field("sctx", &self.sctx)
+            .field("instance", &self.instance)
+            .field("name", &self.name)
+            .field("deps", &self.deps)
+            .field("dynlink_id", &self.compartment_id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Per-thread data in a compartment.

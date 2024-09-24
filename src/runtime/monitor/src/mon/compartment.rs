@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use dynlink::library::UnloadedLibrary;
+use dynlink::{compartment::CompartmentId, library::UnloadedLibrary};
 use happylock::ThreadKey;
 use secgate::util::Descriptor;
 use twizzler_runtime_api::ObjID;
@@ -24,6 +24,7 @@ pub use runcomp::*;
 pub struct CompartmentMgr {
     names: HashMap<String, ObjID>,
     instances: HashMap<ObjID, RunComp>,
+    dynlink_map: HashMap<CompartmentId, ObjID>,
 }
 
 impl CompartmentMgr {
@@ -38,6 +39,12 @@ impl CompartmentMgr {
         self.get(*id)
     }
 
+    /// Get a [RunComp] by name.
+    pub fn get_dynlinkid(&self, id: CompartmentId) -> Option<&RunComp> {
+        let id = self.dynlink_map.get(&id)?;
+        self.get(*id)
+    }
+
     /// Get a [RunComp] by instance ID.
     pub fn get_mut(&mut self, id: ObjID) -> Option<&mut RunComp> {
         self.instances.get_mut(&id)
@@ -49,9 +56,16 @@ impl CompartmentMgr {
         self.get_mut(*id)
     }
 
+    /// Get a [RunComp] by name.
+    pub fn get_dynlinkid_mut(&mut self, id: CompartmentId) -> Option<&mut RunComp> {
+        let id = self.dynlink_map.get(&id)?;
+        self.get_mut(*id)
+    }
+
     /// Insert a [RunComp].
     pub fn insert(&mut self, rc: RunComp) {
         self.names.insert(rc.name.clone(), rc.instance);
+        self.dynlink_map.insert(rc.compartment_id, rc.instance);
         self.instances.insert(rc.instance, rc);
     }
 
@@ -59,6 +73,7 @@ impl CompartmentMgr {
     pub fn remove(&mut self, id: ObjID) -> Option<RunComp> {
         let rc = self.instances.remove(&id)?;
         self.names.remove(&rc.name);
+        self.dynlink_map.remove(&rc.compartment_id);
         Some(rc)
     }
 
@@ -152,9 +167,25 @@ impl super::Monitor {
             .ok_or(LoadCompartmentError::Unknown)?;
         let name = String::from_utf8_lossy(&name_bytes);
         let root = UnloadedLibrary::new(name.clone());
-        let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
-        let loader = loader::RunCompLoader::new(&mut *dynlink, &name, root);
-        tracing::info!("loader: {:?}", loader);
+
+        let loader = {
+            let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
+
+            let loader = loader::RunCompLoader::new(&mut *dynlink, &name, root);
+            tracing::info!("loader: {:#?}", loader);
+            loader
+        }
+        .unwrap();
+
+        let (ref mut space, _, ref mut cmp, ref mut dynlink, _, _) =
+            &mut *self.locks.lock(ThreadKey::get().unwrap());
+        let comps = loader.build_rcs(&mut *cmp, &mut *dynlink, &mut *space);
+        tracing::info!("loader2: comps: {:?}", comps);
+
+        for c in comps.unwrap() {
+            let rc = cmp.get(c).unwrap();
+            tracing::info!("==> {}: {:#?}", c, rc);
+        }
 
         loop {}
         todo!()

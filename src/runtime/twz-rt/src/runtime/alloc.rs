@@ -21,8 +21,11 @@ const MIN_ALIGN: usize = 16;
 use talc::{OomHandler, Span, Talc};
 use tracing::warn;
 use twizzler_abi::{
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{
+        sys_object_create, sys_object_map, BackingType, LifetimeType, ObjectCreate,
+        ObjectCreateFlags,
+    },
 };
 use twizzler_runtime_api::MapFlags;
 
@@ -86,6 +89,20 @@ fn create_and_map() -> Option<(usize, ObjID)> {
         &[],
     )
     .ok()?;
+
+    if OUR_RUNTIME.state().contains(RuntimeState::IS_MONITOR) {
+        // Map directly, avoiding complex machinery in the monitor that depends on an allocator.
+        let slot = OUR_RUNTIME.allocate_slot().unwrap();
+        sys_object_map(
+            None,
+            id,
+            slot,
+            Protections::READ | Protections::WRITE,
+            twizzler_abi::syscall::MapFlags::empty(),
+        )
+        .unwrap();
+        return Some((slot, id));
+    }
 
     let slot = monitor_api::monitor_rt_object_map(id, MapFlags::READ | MapFlags::WRITE)
         .unwrap()

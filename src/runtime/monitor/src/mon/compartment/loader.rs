@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    ptr::null_mut,
+};
 
 use dynlink::{
     compartment::CompartmentId,
@@ -7,10 +10,12 @@ use dynlink::{
     DynlinkError,
 };
 use miette::IntoDiagnostic;
+use monitor_api::SharedCompConfig;
 use twizzler_abi::syscall::{BackingType, ObjectCreate, ObjectCreateFlags};
-use twizzler_runtime_api::{AuxEntry, ObjID};
+use twizzler_runtime_api::{AuxEntry, MapFlags, ObjID};
 
-use super::{CompartmentMgr, RunComp};
+use super::{CompConfigObject, CompartmentMgr, RunComp};
+use crate::mon::space::{MapHandle, Space};
 
 #[derive(Debug)]
 pub struct RunCompLoader {
@@ -48,19 +53,24 @@ impl LoadInfo {
         })
     }
 
-    fn build_runcomp(&self) -> Result<RunComp, DynlinkError> {
-        /*
+    fn build_runcomp(
+        &self,
+        dynlink: &mut Context,
+        cmp: &mut CompartmentMgr,
+        handle: MapHandle,
+    ) -> Result<RunComp, DynlinkError> {
+        let comp_config =
+            CompConfigObject::new(handle, SharedCompConfig::new(self.sctx_id, null_mut()));
+
         Ok(RunComp::new(
             self.sctx_id,
             self.sctx_id,
             self.name.clone(),
             self.comp_id,
-            deps: vec![],
+            vec![],
             comp_config,
             0,
         ))
-        */
-        todo!()
     }
 }
 
@@ -168,38 +178,51 @@ impl RunCompLoader {
         })
     }
 
-    pub fn build_rcs(self, cmp: &mut CompartmentMgr) -> miette::Result<Vec<ObjID>> {
-        let root_comp = &self.root_comp;
-        let loaded_extras = &self.loaded_extras;
+    pub fn build_rcs(
+        self,
+        cmp: &mut CompartmentMgr,
+        dynlink: &mut Context,
+        space: &mut Space,
+    ) -> miette::Result<Vec<ObjID>> {
+        let mut make_new_handle =
+            |id| space.safe_create_and_map_runtime_object(id, MapFlags::READ | MapFlags::WRITE);
+        let root_rc =
+            self.root_comp
+                .build_runcomp(dynlink, cmp, make_new_handle(self.root_comp.sctx_id)?)?;
 
-        let mut v = vec![];
-        let extras = DynlinkError::collect(
-            dynlink::DynlinkErrorKind::CompartmentLoadFail {
-                compartment: root_comp.name.clone(),
-            },
-            loaded_extras.iter().map(|cmp| cmp.build_runcomp()),
-        )?;
-        for rc in extras.into_iter().rev() {
+        let mut v = vec![root_rc.instance];
+        // Make all the handles first, for easier cleanup.
+        let handles = self
+            .loaded_extras
+            .iter()
+            .map(|extra| make_new_handle(extra.sctx_id))
+            .try_collect::<Vec<_>>()?;
+        // Construct the RunComps for all the extra compartments.
+        let mut extras = self
+            .loaded_extras
+            .iter()
+            .zip(handles)
+            .map(|extra| extra.0.build_runcomp(dynlink, cmp, extra.1))
+            .try_collect::<Vec<_>>()?;
+
+        for rc in extras.drain(..) {
             let id = rc.instance;
             v.push(id);
             cmp.insert(rc);
         }
-
-        let rc = root_comp.build_runcomp();
-        let rc = match rc {
-            Err(e) => {
-                // TODO: unload extras
-                return Err(e).into_diagnostic();
-            }
-            Ok(o) => o,
-        };
-        let id = rc.instance;
-        v.insert(0, id);
-        cmp.insert(rc);
-
-        // TODO: build dependency graph for compartments.
-
+        cmp.insert(root_rc);
         std::mem::forget(self);
+
+        for id in &v {
+            let Some(comp) = cmp.get(*id) else { continue };
+            let mut deps = dynlink
+                .compartment_dependencies(comp.compartment_id)?
+                .iter()
+                .filter_map(|item| cmp.get_dynlinkid(*item).map(|rc| rc.instance))
+                .collect();
+            cmp.get_mut(*id).unwrap().deps.append(&mut deps);
+        }
+
         Ok(v)
     }
 }

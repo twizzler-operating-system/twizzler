@@ -1,6 +1,6 @@
 //! Management of global context.
 
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, fmt::Display, ops::Index};
 
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 
@@ -184,11 +184,13 @@ impl Context {
     }
 
     /// Traverse the library graph with BFS, calling the callback for each library.
-    pub fn with_bfs(&self, root_id: LibraryId, mut f: impl FnMut(&LoadedOrUnloaded)) {
+    pub fn with_bfs(&self, root_id: LibraryId, mut f: impl FnMut(&LoadedOrUnloaded) -> bool) {
         let mut visit = petgraph::visit::Bfs::new(&self.library_deps, root_id.0);
         while let Some(node) = visit.next(&self.library_deps) {
             let dep = &self.library_deps[node];
-            f(dep)
+            if !f(dep) {
+                return;
+            }
         }
     }
 
@@ -216,6 +218,26 @@ impl Context {
         self.compartments.push(comp);
         self.compartment_names.insert(name, idx);
         Ok(CompartmentId(idx))
+    }
+
+    /// Get a list of external compartments that the given compartment depends on.
+    pub fn compartment_dependencies(
+        &self,
+        id: CompartmentId,
+    ) -> Result<Vec<CompartmentId>, DynlinkError> {
+        let comp = self.get_compartment(id)?;
+        let mut deps = vec![];
+        for lib in comp.library_ids() {
+            for n in self.library_deps.neighbors(lib.0) {
+                let neigh = self.library_deps[n].loaded().unwrap();
+                deps.push(neigh.comp_id);
+            }
+        }
+        deps.dedup();
+        if let Some(dep) = deps.iter().position(|dep| *dep == id) {
+            deps.remove(dep);
+        }
+        Ok(deps)
     }
 }
 

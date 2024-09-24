@@ -3,6 +3,7 @@
 #![feature(c_str_literals)]
 #![feature(new_uninit)]
 #![feature(hash_extract_if)]
+#![feature(iterator_try_collect)]
 
 use dynlink::engines::Backing;
 use tracing::{debug, info, warn, Level};
