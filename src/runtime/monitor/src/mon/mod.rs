@@ -9,9 +9,9 @@ use twizzler_runtime_api::{MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArg
 use twz_rt::{RuntimeState, RuntimeThreadControl, OUR_RUNTIME};
 
 use self::{
-    compartment::{CompConfigObject, CompartmentHandle, RunComp},
+    compartment::{CompConfigObject, CompartmentHandle, RunComp, StackObject},
     space::{MapHandle, MapInfo, Unmapper},
-    thread::{ManagedThread, ThreadCleaner},
+    thread::{ManagedThread, ThreadCleaner, DEFAULT_STACK_SIZE},
 };
 use crate::{api::MONITOR_INSTANCE_ID, init::InitDynlinkContext};
 
@@ -91,6 +91,13 @@ impl Monitor {
                 MapFlags::READ | MapFlags::WRITE,
             )
             .unwrap();
+
+        let stack_handle = space
+            .safe_create_and_map_runtime_object(
+                MONITOR_INSTANCE_ID,
+                MapFlags::READ | MapFlags::WRITE,
+            )
+            .unwrap();
         comp_mgr.insert(RunComp::new(
             MONITOR_INSTANCE_ID,
             MONITOR_INSTANCE_ID,
@@ -99,6 +106,7 @@ impl Monitor {
             vec![],
             CompConfigObject::new(handle, monitor_scc),
             0,
+            StackObject::new(stack_handle, DEFAULT_STACK_SIZE).unwrap(),
         ));
 
         // Allocate and leak all the locks (they are global and eternal, so we can do this to safely
@@ -139,7 +147,7 @@ impl Monitor {
         let monitor_dynlink_comp = locks.3.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
         locks
             .1
-            .start_thread(&mut *locks.0, monitor_dynlink_comp, main)
+            .start_thread(&mut *locks.0, monitor_dynlink_comp, main, None)
     }
 
     /// Spawn a thread into a given compartment, using initial thread arguments.

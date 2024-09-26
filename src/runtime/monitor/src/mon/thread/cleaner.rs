@@ -143,6 +143,9 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
             for comp in cmgr.compartments_mut() {
                 comp.clean_per_thread_data(th.id);
             }
+            if let Some(comp_id) = th.main_thread_comp {
+                cmgr.main_thread_exited(comp_id);
+            }
         }
 
         // Check for notifications, and sleep.

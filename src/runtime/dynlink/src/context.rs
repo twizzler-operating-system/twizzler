@@ -233,6 +233,7 @@ impl Context {
                 deps.push(neigh.comp_id);
             }
         }
+        deps.sort_unstable();
         deps.dedup();
         if let Some(dep) = deps.iter().position(|dep| *dep == id) {
             deps.remove(dep);

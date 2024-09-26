@@ -19,7 +19,11 @@ use twizzler_abi::syscall::{
 use twizzler_runtime_api::{MapError, MapFlags, ObjID, ObjectHandle};
 
 use super::{compconfig::CompConfigObject, compthread::CompThread};
-use crate::mon::space::{MapHandle, MapInfo, Space};
+use crate::mon::{
+    compartment::compthread::StackObject,
+    space::{MapHandle, MapInfo, Space},
+    thread::DEFAULT_STACK_SIZE,
+};
 
 /// Compartment is ready (loaded, reloacated, runtime started and ctors run).
 pub const COMP_READY: u64 = 0x1;
@@ -27,6 +31,12 @@ pub const COMP_READY: u64 = 0x1;
 pub const COMP_IS_BINARY: u64 = 0x2;
 /// Compartment runtime thread may exit.
 pub const COMP_THREAD_CAN_EXIT: u64 = 0x4;
+/// Compartment thread has been started once.
+pub const COMP_STARTED: u64 = 0x8;
+/// Compartment destructors have run.
+pub const COMP_DESTRUCTED: u64 = 0x10;
+/// Compartment thread has exited.
+pub const COMP_EXITED: u64 = 0x20;
 
 /// A runnable or running compartment.
 pub struct RunComp {
@@ -46,6 +56,7 @@ pub struct RunComp {
     mapped_objects: HashMap<MapInfo, MapHandle>,
     flags: Box<AtomicU64>,
     per_thread: HashMap<ObjID, PerThread>,
+    main_stack: Option<StackObject>,
 }
 
 impl core::fmt::Debug for RunComp {
@@ -117,6 +128,7 @@ impl RunComp {
         deps: Vec<ObjID>,
         comp_config_object: CompConfigObject,
         flags: u64,
+        main_stack: StackObject,
     ) -> Self {
         let mut alloc = Talc::new(ErrOnOom);
         unsafe { alloc.claim(comp_config_object.alloc_span()).unwrap() };
@@ -132,6 +144,7 @@ impl RunComp {
             mapped_objects: HashMap::default(),
             flags: Box::new(AtomicU64::new(flags)),
             per_thread: HashMap::new(),
+            main_stack: Some(main_stack),
         }
     }
 
@@ -199,6 +212,10 @@ impl RunComp {
     /// Set a flag on this compartment, and wakeup anyone waiting on flag change.
     pub fn set_flag(&self, val: u64) {
         self.flags.fetch_or(val, Ordering::SeqCst);
+        self.notify_state_changed();
+    }
+
+    pub fn notify_state_changed(&self) {
         let _ = twizzler_abi::syscall::sys_thread_sync(
             &mut [ThreadSync::new_wake(ThreadSyncWake::new(
                 ThreadSyncReference::Virtual(&*self.flags),
@@ -229,43 +246,41 @@ impl RunComp {
         }
     }
 
-    /// Return a waiter for this flag, allows calling .wait later to wait until a flag is set.
-    pub fn waiter(&self, flag: u64) -> RunCompReadyWaiter<'_> {
-        RunCompReadyWaiter {
-            flag,
-            sleep: self.flag_waitable(flag),
-            _pd: PhantomData,
-        }
-    }
-
     /// Get the raw flags bits for this RC.
     pub fn raw_flags(&self) -> u64 {
         self.flags.load(Ordering::SeqCst)
     }
-}
 
-/// Allows waiting for a compartment to set a flag, sleeping the calling thread until the flag is
-/// set.
-pub struct RunCompReadyWaiter<'a> {
-    flag: u64,
-    sleep: Option<ThreadSyncSleep>,
-    _pd: PhantomData<&'a ()>,
-}
-
-impl<'a> RunCompReadyWaiter<'a> {
-    /// Wait until the compartment is marked as ready.
-    pub fn wait(&self) {
-        loop {
-            let Some(sleep) = self.sleep else { return };
-            if sleep.ready() {
-                return;
-            }
-
-            if let Err(e) =
-                twizzler_abi::syscall::sys_thread_sync(&mut [ThreadSync::new_sleep(sleep)], None)
-            {
-                tracing::warn!("thread sync error: {:?}", e);
-            }
+    pub(crate) fn start_main_thread(&mut self, state: u64) -> Option<bool> {
+        if self.has_flag(COMP_STARTED) {
+            return Some(false);
         }
+        let state = state & !COMP_STARTED;
+        if self
+            .flags
+            .compare_exchange(
+                state,
+                state | COMP_STARTED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return None;
+        }
+
+        tracing::debug!("starting main thread for compartment {}", self.name);
+        debug_assert!(self.main.is_none());
+        let mt = match CompThread::new(self.main_stack.take().unwrap(), self.instance, || todo!()) {
+            Ok(mt) => mt,
+            Err(_) => {
+                self.set_flag(COMP_EXITED);
+                return None;
+            }
+        };
+        self.main = Some(mt);
+        self.notify_state_changed();
+
+        Some(true)
     }
 }

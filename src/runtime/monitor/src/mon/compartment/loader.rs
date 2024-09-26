@@ -9,13 +9,24 @@ use dynlink::{
     library::{CtorInfo, LibraryId, UnloadedLibrary},
     DynlinkError,
 };
+use happylock::ThreadKey;
 use miette::IntoDiagnostic;
 use monitor_api::SharedCompConfig;
 use twizzler_abi::syscall::{BackingType, ObjectCreate, ObjectCreateFlags};
 use twizzler_runtime_api::{AuxEntry, MapFlags, ObjID};
 
-use super::{CompConfigObject, CompartmentMgr, RunComp};
-use crate::mon::space::{MapHandle, Space};
+use super::{
+    CompConfigObject, CompartmentMgr, RunComp, StackObject, COMP_DESTRUCTED, COMP_EXITED,
+    COMP_READY, COMP_THREAD_CAN_EXIT,
+};
+use crate::{
+    gates::LoadCompartmentError,
+    mon::{
+        space::{MapHandle, Space},
+        thread::DEFAULT_STACK_SIZE,
+        Monitor,
+    },
+};
 
 #[derive(Debug)]
 pub struct RunCompLoader {
@@ -58,6 +69,7 @@ impl LoadInfo {
         dynlink: &mut Context,
         cmp: &mut CompartmentMgr,
         handle: MapHandle,
+        stack_object: StackObject,
     ) -> Result<RunComp, DynlinkError> {
         let comp_config =
             CompConfigObject::new(handle, SharedCompConfig::new(self.sctx_id, null_mut()));
@@ -70,6 +82,7 @@ impl LoadInfo {
             vec![],
             comp_config,
             0,
+            stack_object,
         ))
     }
 }
@@ -183,37 +196,46 @@ impl RunCompLoader {
         cmp: &mut CompartmentMgr,
         dynlink: &mut Context,
         space: &mut Space,
-    ) -> miette::Result<Vec<ObjID>> {
+    ) -> miette::Result<ObjID> {
         let mut make_new_handle =
             |id| space.safe_create_and_map_runtime_object(id, MapFlags::READ | MapFlags::WRITE);
-        let root_rc =
-            self.root_comp
-                .build_runcomp(dynlink, cmp, make_new_handle(self.root_comp.sctx_id)?)?;
 
-        let mut v = vec![root_rc.instance];
+        let root_rc = self.root_comp.build_runcomp(
+            dynlink,
+            cmp,
+            make_new_handle(self.root_comp.sctx_id)?,
+            StackObject::new(make_new_handle(self.root_comp.sctx_id)?, DEFAULT_STACK_SIZE)?,
+        )?;
+
+        let mut ids = vec![root_rc.instance];
         // Make all the handles first, for easier cleanup.
         let handles = self
             .loaded_extras
             .iter()
-            .map(|extra| make_new_handle(extra.sctx_id))
+            .map(|extra| {
+                Ok::<_, miette::Report>((
+                    make_new_handle(extra.sctx_id)?,
+                    StackObject::new(make_new_handle(extra.sctx_id)?, DEFAULT_STACK_SIZE)?,
+                ))
+            })
             .try_collect::<Vec<_>>()?;
         // Construct the RunComps for all the extra compartments.
         let mut extras = self
             .loaded_extras
             .iter()
             .zip(handles)
-            .map(|extra| extra.0.build_runcomp(dynlink, cmp, extra.1))
+            .map(|extra| extra.0.build_runcomp(dynlink, cmp, extra.1 .0, extra.1 .1))
             .try_collect::<Vec<_>>()?;
 
         for rc in extras.drain(..) {
-            let id = rc.instance;
-            v.push(id);
+            ids.push(rc.instance);
             cmp.insert(rc);
         }
         cmp.insert(root_rc);
         std::mem::forget(self);
 
-        for id in &v {
+        // Set all the dependency information.
+        for id in &ids {
             let Some(comp) = cmp.get(*id) else { continue };
             let mut deps = dynlink
                 .compartment_dependencies(comp.compartment_id)?
@@ -223,6 +245,43 @@ impl RunCompLoader {
             cmp.get_mut(*id).unwrap().deps.append(&mut deps);
         }
 
-        Ok(v)
+        Ok(ids[0])
+    }
+}
+
+impl Monitor {
+    pub(crate) fn start_compartment(&self, instance: ObjID) -> Result<(), LoadCompartmentError> {
+        let deps = {
+            let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
+            let rc = cmp.get(instance).ok_or(LoadCompartmentError::Unknown)?;
+            rc.deps.clone()
+        };
+        for dep in deps {
+            self.start_compartment(dep)?;
+        }
+
+        loop {
+            // Check the state of this compartment.
+            let state = self.load_compartment_flags(instance);
+
+            if state & COMP_EXITED != 0 || state & COMP_DESTRUCTED != 0 {
+                return Err(LoadCompartmentError::Unknown);
+            }
+
+            if state & COMP_READY != 0 {
+                return Ok(());
+            }
+
+            let mut cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
+            let rc = cmp.get_mut(instance).ok_or(LoadCompartmentError::Unknown)?;
+
+            let info = rc.start_main_thread(state);
+            drop(cmp);
+
+            if info.is_none() {
+                return Err(LoadCompartmentError::Unknown);
+            }
+            self.wait_for_compartment_state_change(instance, state);
+        }
     }
 }

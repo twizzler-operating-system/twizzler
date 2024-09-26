@@ -16,6 +16,7 @@ mod loader;
 mod runcomp;
 
 pub use compconfig::*;
+pub(crate) use compthread::StackObject;
 pub use loader::RunCompLoader;
 pub use runcomp::*;
 
@@ -98,6 +99,22 @@ impl CompartmentMgr {
     pub fn compartments_mut(&mut self) -> impl Iterator<Item = &mut RunComp> {
         self.instances.values_mut()
     }
+
+    pub fn update_compartment_flags(&mut self, instance: ObjID, f: impl FnOnce(u64) -> u64) {
+        todo!()
+    }
+
+    pub fn load_compartment_flags(&self, instance: ObjID) -> u64 {
+        todo!()
+    }
+
+    pub fn wait_for_compartment_state_change(&self, instance: ObjID, state: u64) {
+        todo!()
+    }
+
+    pub fn main_thread_exited(&mut self, instance: ObjID) {
+        todo!()
+    }
 }
 
 impl super::Monitor {
@@ -177,18 +194,21 @@ impl super::Monitor {
         }
         .unwrap();
 
-        let (ref mut space, _, ref mut cmp, ref mut dynlink, _, _) =
-            &mut *self.locks.lock(ThreadKey::get().unwrap());
-        let comps = loader.build_rcs(&mut *cmp, &mut *dynlink, &mut *space);
-        tracing::info!("loader2: comps: {:?}", comps);
+        let root_comp = {
+            let (ref mut space, _, ref mut cmp, ref mut dynlink, _, _) =
+                &mut *self.locks.lock(ThreadKey::get().unwrap());
+            loader
+                .build_rcs(&mut *cmp, &mut *dynlink, &mut *space)
+                .map_err(|_| LoadCompartmentError::Unknown)?
+        };
 
-        for c in comps.unwrap() {
-            let rc = cmp.get(c).unwrap();
-            tracing::info!("==> {}: {:#?}", c, rc);
-        }
+        let desc = self
+            .get_compartment_handle(caller, root_comp)
+            .ok_or(LoadCompartmentError::Unknown)?;
 
-        loop {}
-        todo!()
+        self.start_compartment(root_comp)?;
+
+        Ok(desc)
     }
 
     /// Drop a compartment handle.
@@ -196,6 +216,18 @@ impl super::Monitor {
         self.compartment_handles
             .write(ThreadKey::get().unwrap())
             .remove(caller, desc);
+    }
+
+    pub fn update_compartment_flags(&self, instance: ObjID, f: impl FnOnce(u64) -> u64) {
+        todo!()
+    }
+
+    pub fn load_compartment_flags(&self, instance: ObjID) -> u64 {
+        todo!()
+    }
+
+    pub fn wait_for_compartment_state_change(&self, instance: ObjID, state: u64) {
+        todo!()
     }
 }
 
