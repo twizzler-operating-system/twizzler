@@ -100,12 +100,28 @@ impl CompartmentMgr {
         self.instances.values_mut()
     }
 
-    pub fn update_compartment_flags(&mut self, instance: ObjID, f: impl FnOnce(u64) -> u64) {
-        todo!()
+    pub fn update_compartment_flags(
+        &mut self,
+        instance: ObjID,
+        f: impl FnOnce(u64) -> Option<u64>,
+    ) -> bool {
+        let Some(rc) = self.get_mut(instance) else {
+            return false;
+        };
+
+        let flags = rc.raw_flags();
+        let Some(new_flags) = f(flags) else {
+            return false;
+        };
+
+        rc.cas_flag(flags, new_flags).is_ok()
     }
 
     pub fn load_compartment_flags(&self, instance: ObjID) -> u64 {
-        todo!()
+        let Some(rc) = self.get(instance) else {
+            return 0;
+        };
+        rc.raw_flags()
     }
 
     pub fn wait_for_compartment_state_change(&self, instance: ObjID, state: u64) {
@@ -113,7 +129,7 @@ impl CompartmentMgr {
     }
 
     pub fn main_thread_exited(&mut self, instance: ObjID) {
-        todo!()
+        while !self.update_compartment_flags(instance, |old| Some(old | COMP_EXITED)) {}
     }
 }
 

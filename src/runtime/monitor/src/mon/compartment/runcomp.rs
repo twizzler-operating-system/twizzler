@@ -215,6 +215,17 @@ impl RunComp {
         self.notify_state_changed();
     }
 
+    /// Set a flag on this compartment, and wakeup anyone waiting on flag change.
+    pub fn cas_flag(&self, old: u64, new: u64) -> Result<u64, u64> {
+        let r = self
+            .flags
+            .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst);
+        if r.is_ok() {
+            self.notify_state_changed();
+        }
+        r
+    }
+
     pub fn notify_state_changed(&self) {
         let _ = twizzler_abi::syscall::sys_thread_sync(
             &mut [ThreadSync::new_wake(ThreadSyncWake::new(
