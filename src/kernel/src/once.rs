@@ -45,7 +45,7 @@ impl<T> Once<T> {
                 Ordering::SeqCst,
             ) {
                 Ok(_) => {
-                    // We willx initialize this Once.
+                    // We will initialize this Once.
                     // SAFETY: We are the only ones who can access the UnsafeCell, here, since we
                     // succeeded the cmpxchg above.
                     unsafe {
