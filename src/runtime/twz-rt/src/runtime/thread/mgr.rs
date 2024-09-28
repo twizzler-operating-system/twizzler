@@ -12,12 +12,15 @@ use twizzler_runtime_api::{
 };
 
 use super::internal::InternalThread;
-use crate::runtime::{
-    thread::{
-        tcb::{trampoline, RuntimeThreadControl, TLS_GEN_MGR},
-        MIN_STACK_ALIGN, THREAD_MGR,
+use crate::{
+    preinit_println,
+    runtime::{
+        thread::{
+            tcb::{trampoline, RuntimeThreadControl, TLS_GEN_MGR},
+            MIN_STACK_ALIGN, THREAD_MGR,
+        },
+        ReferenceRuntime, OUR_RUNTIME,
     },
-    ReferenceRuntime, OUR_RUNTIME,
 };
 
 pub(crate) struct ThreadManager {
@@ -126,7 +129,7 @@ pub extern "C" fn __twz_rt_cross_compartment_entry() {
     let id = inner.next_id().freeze();
     drop(inner);
     let tls = TLS_GEN_MGR
-        .lock()
+        .write()
         .unwrap()
         .get_next_tls_info(None, || RuntimeThreadControl::new(id))
         .unwrap();
@@ -141,7 +144,7 @@ impl ReferenceRuntime {
         // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
         let tls = TLS_GEN_MGR
-            .lock()
+            .write()
             .unwrap()
             .get_next_tls_info(None, || RuntimeThreadControl::new(0))
             .unwrap();

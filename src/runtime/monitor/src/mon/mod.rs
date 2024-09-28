@@ -4,12 +4,15 @@ use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
 use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use secgate::util::HandleMgr;
-use twizzler_abi::upcall::UpcallFrame;
+use twizzler_abi::{syscall::sys_thread_exit, upcall::UpcallFrame};
 use twizzler_runtime_api::{MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
 use twz_rt::{RuntimeState, RuntimeThreadControl, OUR_RUNTIME};
 
 use self::{
-    compartment::{CompConfigObject, CompartmentHandle, RunComp, StackObject},
+    compartment::{
+        CompConfigObject, CompartmentHandle, RunComp, StackObject, COMP_DESTRUCTED, COMP_EXITED,
+        COMP_IS_BINARY, COMP_READY, COMP_STARTED, COMP_THREAD_CAN_EXIT,
+    },
     space::{MapHandle, MapInfo, Unmapper},
     thread::{ManagedThread, ThreadCleaner, DEFAULT_STACK_SIZE},
 };
@@ -109,6 +112,7 @@ impl Monitor {
             StackObject::new(stack_handle, DEFAULT_STACK_SIZE).unwrap(),
             0, /* doesn't matter -- we won't be starting a main thread for this compartment in
                 * the normal way */
+            &[],
         ));
 
         // Allocate and leak all the locks (they are global and eternal, so we can do this to safely
@@ -227,12 +231,85 @@ impl Monitor {
         Some(pt.read_bytes(len))
     }
 
+    pub fn comp_name(&self, id: ObjID) -> Option<String> {
+        self.comp_mgr
+            .read(ThreadKey::get().unwrap())
+            .get(id)
+            .map(|rc| rc.name.clone())
+    }
+
     pub fn compartment_ctrl(
         &self,
         info: &secgate::GateCallInfo,
         cmd: MonitorCompControlCmd,
     ) -> Option<i32> {
-        todo!()
+        let Some(src) = info.source_context() else {
+            return None;
+        };
+        tracing::info!("=== cc: {:?} {:?}", info, cmd);
+        match cmd {
+            MonitorCompControlCmd::RuntimeReady => loop {
+                let state = self.load_compartment_flags(src);
+                if state & COMP_STARTED == 0
+                    || state & COMP_DESTRUCTED != 0
+                    || state & COMP_EXITED != 0
+                {
+                    tracing::warn!(
+                        "runtime main thread {} encountered invalid compartment {} state: {}",
+                        info.thread_id(),
+                        src,
+                        state
+                    );
+                    sys_thread_exit(127);
+                }
+
+                if self.update_compartment_flags(src, |state| Some(state | COMP_READY)) {
+                    tracing::debug!(
+                        "runtime main thread reached compartment ready state in {}",
+                        self.comp_name(src)
+                            .unwrap_or_else(|| String::from("unknown"))
+                    );
+                    break if state & COMP_IS_BINARY == 0 {
+                        Some(0)
+                    } else {
+                        None
+                    };
+                }
+            },
+            MonitorCompControlCmd::RuntimePostMain => {
+                loop {
+                    if self.update_compartment_flags(src, |state| {
+                        if state & COMP_IS_BINARY != 0 {
+                            Some(state | COMP_THREAD_CAN_EXIT)
+                        } else {
+                            None
+                        }
+                    }) {
+                        tracing::debug!(
+                            "runtime main thread reached compartment post-main state in {}",
+                            self.comp_name(src)
+                                .unwrap_or_else(|| String::from("unknown"))
+                        );
+                        break;
+                    }
+                }
+                loop {
+                    let flags = self.load_compartment_flags(src);
+                    if flags & COMP_THREAD_CAN_EXIT != 0 {
+                        if self.update_compartment_flags(src, |state| Some(state | COMP_DESTRUCTED))
+                        {
+                            tracing::debug!(
+                                "runtime main thread destructing in {}",
+                                self.comp_name(src)
+                                    .unwrap_or_else(|| String::from("unknown"))
+                            );
+                            break None;
+                        }
+                    }
+                    self.wait_for_compartment_state_change(src, flags);
+                }
+            }
+        }
     }
 }
 

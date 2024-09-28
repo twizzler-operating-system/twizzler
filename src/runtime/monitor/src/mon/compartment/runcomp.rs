@@ -9,14 +9,15 @@ use std::{
     },
 };
 
-use dynlink::{compartment::CompartmentId, context::Context};
-use monitor_api::SharedCompConfig;
+use dynlink::{compartment::CompartmentId, context::Context, library::CtorInfo};
+use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::syscall::{
     ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
-use twizzler_runtime_api::{MapError, MapFlags, ObjID, ObjectHandle};
+use twizzler_runtime_api::{AuxEntry, MapError, MapFlags, ObjID, ObjectHandle};
+use twz_rt::CompartmentInitInfo;
 
 use super::{compconfig::CompConfigObject, compthread::CompThread};
 use crate::mon::{
@@ -56,7 +57,7 @@ pub struct RunComp {
     mapped_objects: HashMap<MapInfo, MapHandle>,
     flags: Box<AtomicU64>,
     per_thread: HashMap<ObjID, PerThread>,
-    main_stack: Option<(StackObject, usize)>,
+    init_info: Option<(StackObject, usize, Vec<CtorInfo>)>,
 }
 
 impl core::fmt::Debug for RunComp {
@@ -130,6 +131,7 @@ impl RunComp {
         flags: u64,
         main_stack: StackObject,
         entry: usize,
+        ctors: &[CtorInfo],
     ) -> Self {
         let mut alloc = Talc::new(ErrOnOom);
         unsafe { alloc.claim(comp_config_object.alloc_span()).unwrap() };
@@ -145,7 +147,7 @@ impl RunComp {
             mapped_objects: HashMap::default(),
             flags: Box::new(AtomicU64::new(flags)),
             per_thread: HashMap::new(),
-            main_stack: Some((main_stack, entry)),
+            init_info: Some((main_stack, entry, ctors.to_vec())),
         }
     }
 
@@ -284,8 +286,39 @@ impl RunComp {
 
         tracing::debug!("starting main thread for compartment {}", self.name);
         debug_assert!(self.main.is_none());
-        let (stack, entry) = self.main_stack.take().unwrap();
-        let arg = 0;
+        // Unwrap-Ok: we only take this once, when starting the main thread.
+        let (stack, entry, ctors) = self.init_info.take().unwrap();
+        let mut build_aux = || -> Option<_> {
+            let comp_config_addr = self.comp_config_object.get_comp_config() as usize;
+            let ctors_in_comp = self.monitor_new_slice(&ctors).ok()?;
+
+            let comp_init_info = CompartmentInitInfo {
+                ctor_array_start: ctors_in_comp as usize,
+                ctor_array_len: ctors.len(),
+                comp_config_addr,
+            };
+            let comp_init_info_in_comp = self.monitor_new(comp_init_info).ok()?;
+
+            self.monitor_new_slice(&[
+                AuxEntry::RuntimeInfo(comp_init_info_in_comp as usize, 1),
+                AuxEntry::Null,
+            ])
+            .ok()
+        };
+
+        let arg = match build_aux() {
+            Some(aux) => aux as usize,
+            None => {
+                self.set_flag(COMP_EXITED);
+                return None;
+            }
+        };
+
+        if self.build_tls_template(dynlink).is_none() {
+            self.set_flag(COMP_EXITED);
+            return None;
+        }
+
         let mt = match CompThread::new(
             space,
             tmgr,
@@ -306,5 +339,21 @@ impl RunComp {
         self.notify_state_changed();
 
         Some(true)
+    }
+
+    fn build_tls_template(&mut self, dynlink: &mut Context) -> Option<()> {
+        let region = dynlink
+            .get_compartment_mut(self.compartment_id)
+            .unwrap()
+            .build_tls_region((), |layout| unsafe { self.alloc.malloc(layout) }.ok())
+            .ok()?;
+
+        let template: TlsTemplateInfo = region.into();
+        let tls_template = self.monitor_new(template).ok()?;
+
+        let config = self.comp_config_object.read_comp_config();
+        config.set_tls_template(tls_template);
+        self.comp_config_object.write_config(config);
+        Some(())
     }
 }

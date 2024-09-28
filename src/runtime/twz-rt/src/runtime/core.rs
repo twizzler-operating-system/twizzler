@@ -17,6 +17,7 @@ use crate::{
     RuntimeThreadControl,
 };
 
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct CompartmentInitInfo {
     pub ctor_array_start: usize,
@@ -177,11 +178,9 @@ impl ReferenceRuntime {
                 .ok(),
             );
         }
-        let tls = preinit_unwrap(
-            preinit_unwrap(TLS_GEN_MGR.lock().ok())
-                .get_next_tls_info(None, || RuntimeThreadControl::new(0)),
-        );
-        twizzler_abi::syscall::sys_thread_settls(tls as u64);
+        let mut tg = preinit_unwrap(TLS_GEN_MGR.write().ok());
+        let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
+        twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
 
         if init_info.ctor_array_start != 0 && init_info.ctor_array_len != 0 {
             let ctor_slice = unsafe {

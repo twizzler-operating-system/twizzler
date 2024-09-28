@@ -17,7 +17,7 @@ use twizzler_runtime_api::{AuxEntry, MapFlags, ObjID};
 
 use super::{
     CompConfigObject, CompartmentMgr, RunComp, StackObject, COMP_DESTRUCTED, COMP_EXITED,
-    COMP_READY, COMP_THREAD_CAN_EXIT,
+    COMP_IS_BINARY, COMP_READY, COMP_THREAD_CAN_EXIT,
 };
 use crate::{
     gates::LoadCompartmentError,
@@ -43,6 +43,7 @@ struct LoadInfo {
     comp_id: CompartmentId,
     ctor_info: Vec<CtorInfo>,
     entry: extern "C" fn(*const AuxEntry) -> !,
+    is_binary: bool,
 }
 
 impl LoadInfo {
@@ -51,6 +52,7 @@ impl LoadInfo {
         root_id: LibraryId,
         rt_id: LibraryId,
         sctx_id: ObjID,
+        is_binary: bool,
     ) -> Result<Self, DynlinkError> {
         let lib = dynlink.get_library(rt_id)?;
         Ok(Self {
@@ -61,6 +63,7 @@ impl LoadInfo {
             name: dynlink.get_compartment(lib.compartment())?.name.clone(),
             ctor_info: dynlink.build_ctors_list(root_id, Some(lib.compartment()))?,
             entry: lib.get_entry_address()?,
+            is_binary,
         })
     }
 
@@ -74,6 +77,7 @@ impl LoadInfo {
         let comp_config =
             CompConfigObject::new(handle, SharedCompConfig::new(self.sctx_id, null_mut()));
 
+        let flags = if self.is_binary { COMP_IS_BINARY } else { 0 };
         Ok(RunComp::new(
             self.sctx_id,
             self.sctx_id,
@@ -81,9 +85,10 @@ impl LoadInfo {
             self.comp_id,
             vec![],
             comp_config,
-            0,
+            flags,
             stack_object,
             self.entry as usize,
+            &self.ctor_info,
         ))
     }
 }
@@ -167,6 +172,7 @@ impl RunCompLoader {
                     load.lib,
                     rt_id,
                     get_new_sctx_instance(1.into()),
+                    false,
                 ))
             } else {
                 None
@@ -184,7 +190,13 @@ impl RunCompLoader {
         let rt_id = Self::maybe_inject_runtime(dynlink, root_id, root_comp_id)?;
 
         dynlink.relocate_all(root_id)?;
-        let root_comp = LoadInfo::new(dynlink, root_id, rt_id, get_new_sctx_instance(1.into()))?;
+        let root_comp = LoadInfo::new(
+            dynlink,
+            root_id,
+            rt_id,
+            get_new_sctx_instance(1.into()),
+            true,
+        )?;
         // We don't want to drop anymore, since now drop-cleanup will be handled by RunCompLoader.
         std::mem::forget(loads);
         Ok(RunCompLoader {
@@ -262,6 +274,9 @@ impl Monitor {
             self.start_compartment(dep)?;
         }
 
+        {
+            self.comp_mgr.write(ThreadKey::get().unwrap());
+        }
         loop {
             // Check the state of this compartment.
             let state = self.load_compartment_flags(instance);

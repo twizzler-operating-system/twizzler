@@ -88,6 +88,11 @@ pub struct TlsTemplateInfo {
     pub module_top_offset: usize,
 }
 
+// Safety: this type is designed to pass pointers to thread-local memory across boundaries, so we
+// assert this is safe.
+unsafe impl Send for TlsTemplateInfo {}
+unsafe impl Sync for TlsTemplateInfo {}
+
 impl From<TlsRegion> for TlsTemplateInfo {
     fn from(value: TlsRegion) -> Self {
         let offset = |ptr: NonNull<u8>| -> usize {

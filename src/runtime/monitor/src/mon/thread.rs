@@ -60,6 +60,9 @@ impl ThreadMgr {
 
     fn do_remove(&mut self, thread: &ManagedThread) {
         self.all.remove(&thread.id);
+        if let Some(ref cleaner) = self.cleaner.get() {
+            cleaner.untrack(thread.id);
+        }
     }
 
     unsafe fn spawn_thread(
@@ -151,13 +154,19 @@ impl ThreadMgr {
             sys_thread_exit(0);
         }
 
-        self.do_spawn(
+        let mt = self.do_spawn(
             space,
             monitor_dynlink_comp,
             managed_thread_entry,
             main_addr,
             main_thread_comp,
-        )
+        );
+        if let Ok(ref mt) = mt {
+            if let Some(ref cleaner) = self.cleaner.get() {
+                cleaner.track(mt.clone());
+            }
+        }
+        mt
     }
 }
 

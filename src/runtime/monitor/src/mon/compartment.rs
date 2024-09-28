@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{borrow::BorrowMut, collections::HashMap};
 
 use dynlink::{compartment::CompartmentId, library::UnloadedLibrary};
 use happylock::ThreadKey;
@@ -214,7 +214,6 @@ impl super::Monitor {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
 
             let loader = loader::RunCompLoader::new(&mut *dynlink, &name, root);
-            tracing::info!("loader: {:#?}", loader);
             loader
         }
         .unwrap();
@@ -266,6 +265,7 @@ impl super::Monitor {
         if sl.ready() {
             return;
         }
+        drop(cmp);
 
         let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(sl)], None);
     }

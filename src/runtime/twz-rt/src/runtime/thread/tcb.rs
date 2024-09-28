@@ -8,11 +8,11 @@
 use std::{
     alloc::GlobalAlloc,
     cell::UnsafeCell,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     panic::catch_unwind,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Mutex,
+        Mutex, RwLock,
     },
 };
 
@@ -135,7 +135,7 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
 
 #[derive(Default)]
 pub(crate) struct TlsGenMgr {
-    map: HashMap<u64, TlsGen>,
+    map: BTreeMap<u64, TlsGen>,
 }
 
 pub(crate) struct TlsGen {
@@ -145,11 +145,17 @@ pub(crate) struct TlsGen {
 
 unsafe impl Send for TlsGen {}
 
-lazy_static::lazy_static! {
-pub(crate) static ref TLS_GEN_MGR: Mutex<TlsGenMgr> = Mutex::new(TlsGenMgr::default());
-}
+pub(crate) static TLS_GEN_MGR: RwLock<TlsGenMgr> = RwLock::new(TlsGenMgr {
+    map: BTreeMap::new(),
+});
 
 impl TlsGenMgr {
+    pub fn need_new_gen(&self, mygen: Option<u64>) -> bool {
+        let cc = monitor_api::get_comp_config();
+        let template = unsafe { cc.get_tls_template().as_ref().unwrap() };
+        mygen.is_some_and(|mygen| mygen == template.gen)
+    }
+
     pub fn get_next_tls_info<T>(
         &mut self,
         mygen: Option<u64>,
