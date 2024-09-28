@@ -57,7 +57,7 @@ pub fn setup(data: &mut Disk) {
     fs.encode(data).unwrap();
 }
 
-const DISK_SIZE: usize = 0x1000000;
+const DISK_SIZE: usize = 0x10000000;
 const PAGE_SIZE: usize = 4096;
 const SECTOR_SIZE: usize = 512;
 const PAGE_MASK: usize = 0xFFF;

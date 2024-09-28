@@ -1460,6 +1460,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "genrandom"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.2.10",
+ "twizzler-abi",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.10"
 dependencies = [
