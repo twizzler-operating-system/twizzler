@@ -260,7 +260,6 @@ pub fn monitor_rt_object_map(
 )]
 pub fn monitor_rt_object_unmap(
     info: &secgate::GateCallInfo,
-    _slot: usize,
     id: ObjID,
     flags: twizzler_runtime_api::MapFlags,
 ) {

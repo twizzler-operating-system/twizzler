@@ -107,6 +107,8 @@ impl Monitor {
             CompConfigObject::new(handle, monitor_scc),
             0,
             StackObject::new(stack_handle, DEFAULT_STACK_SIZE).unwrap(),
+            0, /* doesn't matter -- we won't be starting a main thread for this compartment in
+                * the normal way */
         ));
 
         // Allocate and leak all the locks (they are global and eternal, so we can do this to safely

@@ -300,6 +300,9 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
 
     call_point.block = Box::new(parse2(quote::quote! {
         {
+            if unsafe {(*info)}.source_context().is_some() {
+                secgate::runtime_preentry();
+            }
             #unpacked_args
 
             // Call the user-written implementation, catching unwinds.
@@ -369,8 +372,9 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
     call_point.block = Box::new(parse2(quote::quote! {
         {
             #args_tuple
+            let frame = secgate::frame();
             // Allocate stack space for args + ret. Args::with_alloca also inits the memory.
-            secgate::GateCallInfo::with_alloca(0.into(), 0.into(), |info| {
+            let ret = secgate::GateCallInfo::with_alloca(secgate::get_thread_id(), secgate::get_sctx_id(), |info| {
                 #mod_name::Args::with_alloca(tuple, |args| {
                     #mod_name::Ret::with_alloca(|ret| {
                         // Call the trampoline in the mod.
@@ -380,7 +384,9 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
                         ret.into_inner().unwrap_or(secgate::SecGateReturn::<_>::NoReturnValue)
                     })
                 })
-            })
+            });
+            secgate::restore_frame(frame);
+            ret
         }
     })?);
 

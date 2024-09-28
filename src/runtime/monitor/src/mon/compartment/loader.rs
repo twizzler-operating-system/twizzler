@@ -83,6 +83,7 @@ impl LoadInfo {
             comp_config,
             0,
             stack_object,
+            self.entry as usize,
         ))
     }
 }
@@ -182,6 +183,7 @@ impl RunCompLoader {
         let root_id = loads.0[0].lib;
         let rt_id = Self::maybe_inject_runtime(dynlink, root_id, root_comp_id)?;
 
+        dynlink.relocate_all(root_id)?;
         let root_comp = LoadInfo::new(dynlink, root_id, rt_id, get_new_sctx_instance(1.into()))?;
         // We don't want to drop anymore, since now drop-cleanup will be handled by RunCompLoader.
         std::mem::forget(loads);
@@ -272,11 +274,13 @@ impl Monitor {
                 return Ok(());
             }
 
-            let mut cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
-            let rc = cmp.get_mut(instance).ok_or(LoadCompartmentError::Unknown)?;
+            let info = {
+                let (ref mut space, ref mut tmgr, ref mut cmp, ref mut dynlink, _, _) =
+                    *self.locks.lock(ThreadKey::get().unwrap());
+                let rc = cmp.get_mut(instance).ok_or(LoadCompartmentError::Unknown)?;
 
-            let info = rc.start_main_thread(state);
-            drop(cmp);
+                rc.start_main_thread(state, &mut *space, &mut *tmgr, &mut *dynlink)
+            };
 
             if info.is_none() {
                 return Err(LoadCompartmentError::Unknown);

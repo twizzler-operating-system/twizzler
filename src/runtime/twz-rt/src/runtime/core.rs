@@ -2,7 +2,10 @@
 
 use dynlink::{context::runtime::RuntimeInitInfo, library::CtorInfo};
 use monitor_api::SharedCompConfig;
-use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
+use twizzler_abi::{
+    syscall::KernelConsoleWriteFlags,
+    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
+};
 use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
 
 use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
@@ -210,3 +213,29 @@ impl ReferenceRuntime {
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
     }
 }
+
+#[allow(improper_ctypes)]
+extern "C" {
+    fn twizzler_call_lang_start(
+        main: fn(),
+        argc: isize,
+        argv: *const *const u8,
+        sigpipe: u8,
+    ) -> isize;
+}
+
+#[no_mangle]
+#[linkage = "weak"]
+pub extern "C" fn main(argc: i32, argv: *const *const u8) -> i32 {
+    //TODO: sigpipe?
+    unsafe { twizzler_call_lang_start(dead_end, argc as isize, argv, 0) as i32 }
+}
+
+fn dead_end() {
+    twizzler_abi::syscall::sys_thread_exit(0);
+}
+
+// TODO: we should probably get this for real.
+#[cfg(not(test))]
+#[no_mangle]
+pub extern "C" fn _init() {}

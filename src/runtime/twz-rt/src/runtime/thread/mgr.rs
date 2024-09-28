@@ -20,7 +20,7 @@ use crate::runtime::{
     ReferenceRuntime, OUR_RUNTIME,
 };
 
-pub(super) struct ThreadManager {
+pub(crate) struct ThreadManager {
     inner: Mutex<ThreadManagerInner>,
 }
 
@@ -118,6 +118,19 @@ impl<'a> Drop for IdDropper<'a> {
             self.tm.release_id(self.id)
         }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn __twz_rt_cross_compartment_entry() {
+    let mut inner = THREAD_MGR.inner.lock().unwrap();
+    let id = inner.next_id().freeze();
+    drop(inner);
+    let tls = TLS_GEN_MGR
+        .lock()
+        .unwrap()
+        .get_next_tls_info(None, || RuntimeThreadControl::new(id))
+        .unwrap();
+    twizzler_abi::syscall::sys_thread_settls(tls as u64);
 }
 
 impl ReferenceRuntime {

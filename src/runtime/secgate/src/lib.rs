@@ -4,6 +4,8 @@
 #![feature(naked_functions)]
 #![feature(auto_traits)]
 #![feature(negative_impls)]
+#![feature(linkage)]
+#![feature(core_intrinsics)]
 
 use core::ffi::CStr;
 use std::{cell::UnsafeCell, marker::Tuple, mem::MaybeUninit};
@@ -55,6 +57,12 @@ pub struct SecGateInfo<F> {
     pub imp: F,
     /// The name of this secure gate. This must be a pointer to a null-terminated C string.
     name: *const i8,
+}
+
+impl<F> core::fmt::Debug for SecGateInfo<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SecGateInfo({:p})", self.name)
+    }
 }
 
 impl<F> SecGateInfo<F> {
@@ -242,5 +250,50 @@ impl GateCallInfo {
             thread_id: self.thread_id(),
             src_ctx: self.src_ctx,
         }
+    }
+}
+
+pub fn get_thread_id() -> ObjID {
+    twizzler_abi::syscall::sys_thread_self_id()
+}
+
+pub fn get_sctx_id() -> ObjID {
+    twizzler_abi::syscall::sys_thread_active_sctx_id()
+}
+
+pub fn runtime_preentry() {
+    extern "C" {
+        #[linkage = "extern_weak"]
+        fn __twz_rt_cross_compartment_entry();
+    }
+
+    unsafe {
+        __twz_rt_cross_compartment_entry();
+    }
+}
+
+pub mod __imp {
+    #[linkage = "weak"]
+    #[no_mangle]
+    pub unsafe extern "C" fn __twz_rt_cross_compartment_entry() {
+        core::intrinsics::abort();
+    }
+}
+
+pub struct SecFrame {
+    tp: usize,
+}
+
+pub fn frame() -> SecFrame {
+    let mut val: usize;
+    unsafe {
+        core::arch::asm!("rdfsbase {}", out(reg) val);
+    }
+    SecFrame { tp: val }
+}
+
+pub fn restore_frame(frame: SecFrame) {
+    if frame.tp != 0 {
+        twizzler_abi::syscall::sys_thread_settls(frame.tp as u64);
     }
 }

@@ -22,7 +22,7 @@ pub(crate) use tcb::TLS_GEN_MGR;
 const MIN_STACK_ALIGN: usize = 128;
 
 lazy_static! {
-    static ref THREAD_MGR: ThreadManager = ThreadManager::new();
+    pub(crate) static ref THREAD_MGR: ThreadManager = ThreadManager::new();
 }
 
 impl ThreadRuntime for ReferenceRuntime {

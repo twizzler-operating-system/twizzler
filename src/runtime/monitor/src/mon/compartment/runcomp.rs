@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use dynlink::compartment::CompartmentId;
+use dynlink::{compartment::CompartmentId, context::Context};
 use monitor_api::SharedCompConfig;
 use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
@@ -22,7 +22,7 @@ use super::{compconfig::CompConfigObject, compthread::CompThread};
 use crate::mon::{
     compartment::compthread::StackObject,
     space::{MapHandle, MapInfo, Space},
-    thread::DEFAULT_STACK_SIZE,
+    thread::{ThreadMgr, DEFAULT_STACK_SIZE},
 };
 
 /// Compartment is ready (loaded, reloacated, runtime started and ctors run).
@@ -56,7 +56,7 @@ pub struct RunComp {
     mapped_objects: HashMap<MapInfo, MapHandle>,
     flags: Box<AtomicU64>,
     per_thread: HashMap<ObjID, PerThread>,
-    main_stack: Option<StackObject>,
+    main_stack: Option<(StackObject, usize)>,
 }
 
 impl core::fmt::Debug for RunComp {
@@ -129,6 +129,7 @@ impl RunComp {
         comp_config_object: CompConfigObject,
         flags: u64,
         main_stack: StackObject,
+        entry: usize,
     ) -> Self {
         let mut alloc = Talc::new(ErrOnOom);
         unsafe { alloc.claim(comp_config_object.alloc_span()).unwrap() };
@@ -144,7 +145,7 @@ impl RunComp {
             mapped_objects: HashMap::default(),
             flags: Box::new(AtomicU64::new(flags)),
             per_thread: HashMap::new(),
-            main_stack: Some(main_stack),
+            main_stack: Some((main_stack, entry)),
         }
     }
 
@@ -243,18 +244,13 @@ impl RunComp {
 
     /// Setup a [ThreadSyncSleep] for waiting until the flag is set. Returns None if the flag is
     /// already set.
-    pub fn flag_waitable(&self, flag: u64) -> Option<ThreadSyncSleep> {
-        let flags = self.flags.load(Ordering::SeqCst);
-        if flags & flag == 0 {
-            Some(ThreadSyncSleep::new(
-                ThreadSyncReference::Virtual(&*self.flags),
-                flags,
-                ThreadSyncOp::Equal,
-                ThreadSyncFlags::empty(),
-            ))
-        } else {
-            None
-        }
+    pub fn until_change(&self, cur: u64) -> ThreadSyncSleep {
+        ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(&*self.flags),
+            cur,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        )
     }
 
     /// Get the raw flags bits for this RC.
@@ -262,7 +258,13 @@ impl RunComp {
         self.flags.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn start_main_thread(&mut self, state: u64) -> Option<bool> {
+    pub(crate) fn start_main_thread(
+        &mut self,
+        state: u64,
+        space: &mut Space,
+        tmgr: &mut ThreadMgr,
+        dynlink: &mut Context,
+    ) -> Option<bool> {
         if self.has_flag(COMP_STARTED) {
             return Some(false);
         }
@@ -282,7 +284,18 @@ impl RunComp {
 
         tracing::debug!("starting main thread for compartment {}", self.name);
         debug_assert!(self.main.is_none());
-        let mt = match CompThread::new(self.main_stack.take().unwrap(), self.instance, || todo!()) {
+        let (stack, entry) = self.main_stack.take().unwrap();
+        let arg = 0;
+        let mt = match CompThread::new(
+            space,
+            tmgr,
+            dynlink,
+            stack,
+            self.instance,
+            Some(self.instance),
+            entry,
+            arg,
+        ) {
             Ok(mt) => mt,
             Err(_) => {
                 self.set_flag(COMP_EXITED);

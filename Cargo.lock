@@ -331,7 +331,9 @@ name = "bar-srv"
 version = "0.1.0"
 dependencies = [
  "ctor",
+ "monitor",
  "secgate",
+ "twz-rt",
 ]
 
 [[package]]
@@ -1124,6 +1126,8 @@ name = "foo"
 version = "0.1.0"
 dependencies = [
  "bar",
+ "monitor",
+ "twz-rt",
 ]
 
 [[package]]

@@ -39,6 +39,7 @@ impl core::fmt::Debug for UpcallFrame {
             .field("rflags", &format_args!("0x{:x}", self.rflags))
             .field("thread_ptr", &format_args!("0x{:x}", self.thread_ptr))
             .field("prior_ctx", &format_args!("0x{:x}", self.prior_ctx))
+            .field("rdi", &format_args!("0x{:x}", self.rdi))
             .finish_non_exhaustive()
     }
 }

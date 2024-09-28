@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use dynlink::{compartment::CompartmentId, library::UnloadedLibrary};
 use happylock::ThreadKey;
 use secgate::util::Descriptor;
+use twizzler_abi::syscall::{sys_thread_sync, ThreadSync, ThreadSyncSleep};
 use twizzler_runtime_api::ObjID;
 
 use crate::{
@@ -100,7 +101,7 @@ impl CompartmentMgr {
         self.instances.values_mut()
     }
 
-    pub fn update_compartment_flags(
+    fn update_compartment_flags(
         &mut self,
         instance: ObjID,
         f: impl FnOnce(u64) -> Option<u64>,
@@ -117,15 +118,22 @@ impl CompartmentMgr {
         rc.cas_flag(flags, new_flags).is_ok()
     }
 
-    pub fn load_compartment_flags(&self, instance: ObjID) -> u64 {
+    fn load_compartment_flags(&self, instance: ObjID) -> u64 {
         let Some(rc) = self.get(instance) else {
             return 0;
         };
         rc.raw_flags()
     }
 
-    pub fn wait_for_compartment_state_change(&self, instance: ObjID, state: u64) {
-        todo!()
+    fn wait_for_compartment_state_change(
+        &self,
+        instance: ObjID,
+        state: u64,
+    ) -> Option<ThreadSyncSleep> {
+        let Some(rc) = self.get(instance) else {
+            return None;
+        };
+        Some(rc.until_change(state))
     }
 
     pub fn main_thread_exited(&mut self, instance: ObjID) {
@@ -234,16 +242,31 @@ impl super::Monitor {
             .remove(caller, desc);
     }
 
-    pub fn update_compartment_flags(&self, instance: ObjID, f: impl FnOnce(u64) -> u64) {
-        todo!()
+    pub fn update_compartment_flags(
+        &self,
+        instance: ObjID,
+        f: impl FnOnce(u64) -> Option<u64>,
+    ) -> bool {
+        let mut cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
+        cmp.update_compartment_flags(instance, f)
     }
 
     pub fn load_compartment_flags(&self, instance: ObjID) -> u64 {
-        todo!()
+        let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
+        cmp.load_compartment_flags(instance)
     }
 
     pub fn wait_for_compartment_state_change(&self, instance: ObjID, state: u64) {
-        todo!()
+        let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
+        let Some(sl) = cmp.wait_for_compartment_state_change(instance, state) else {
+            return;
+        };
+
+        if sl.ready() {
+            return;
+        }
+
+        let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(sl)], None);
     }
 }
 

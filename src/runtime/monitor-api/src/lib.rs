@@ -7,6 +7,7 @@
 #![feature(pointer_is_aligned)]
 #![feature(result_flattening)]
 #![feature(thread_local)]
+#![feature(linkage)]
 use std::{
     alloc::Layout,
     marker::PhantomData,

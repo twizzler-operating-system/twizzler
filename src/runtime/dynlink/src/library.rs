@@ -17,6 +17,7 @@ use crate::{
     DynlinkError, DynlinkErrorKind,
 };
 
+#[derive(PartialEq, PartialOrd, Ord, Eq, Debug, Clone, Copy)]
 pub(crate) enum RelocState {
     /// Relocation has not started.
     Unrelocated,
@@ -195,7 +196,11 @@ impl Library {
         }))
     }
 
-    pub(crate) fn lookup_symbol(&self, name: &str) -> Result<RelocatedSymbol<'_>, DynlinkError> {
+    pub(crate) fn lookup_symbol(
+        &self,
+        name: &str,
+        allow_weak: bool,
+    ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
 
@@ -221,7 +226,7 @@ impl Library {
             {
                 if !sym.is_undefined() {
                     // TODO: proper weak symbol handling.
-                    if sym.st_bind() != STB_WEAK {
+                    if sym.st_bind() != STB_WEAK || allow_weak {
                         return Ok(RelocatedSymbol::new(sym, self));
                     } else {
                         tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
@@ -275,7 +280,12 @@ impl Library {
     }
 
     pub(crate) fn is_local_or_secgate_from(&self, other: &Library, name: &str) -> bool {
-        other.comp_id == self.comp_id || self.is_secgate(name)
+        other.comp_id == self.comp_id
+            || (self.reloc_state == RelocState::Relocated && self.is_secgate(name))
+    }
+
+    pub(crate) fn in_same_compartment_as(&self, other: &Library) -> bool {
+        other.comp_id == self.comp_id
     }
 
     fn is_secgate(&self, name: &str) -> bool {

@@ -72,9 +72,10 @@ struct RuntimeOom {
     objects: Vec<(usize, ObjID), FailAlloc>,
 }
 
-fn delete_obj(_id: ObjID) {
+fn release_object(id: ObjID) {
     // TODO
     warn!("unimplemented: delete object due to failure in allocator");
+    monitor_api::monitor_rt_object_unmap(id, MapFlags::READ | MapFlags::WRITE).unwrap();
 }
 
 fn create_and_map() -> Option<(usize, ObjID)> {
@@ -111,7 +112,7 @@ fn create_and_map() -> Option<(usize, ObjID)> {
     if let Some(slot) = slot {
         Some((slot.slot, id))
     } else {
-        delete_obj(id);
+        release_object(id);
         None
     }
 }
@@ -133,9 +134,7 @@ impl OomHandler for RuntimeOom {
                 .claim(Span::new(base as *mut _, top as *mut _))
                 .is_err()
             {
-                delete_obj(id);
-                monitor_api::monitor_rt_object_unmap(slot, id, MapFlags::READ | MapFlags::WRITE)
-                    .unwrap();
+                release_object(id);
                 return Err(());
             }
         }
