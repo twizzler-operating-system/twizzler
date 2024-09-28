@@ -29,9 +29,7 @@ impl CompThread {
     ) -> miette::Result<Self> {
         let frame = stack.get_entry_frame(instance, entry, arg);
         let start = move || {
-            println!("hello from main thread! going to frame: {:?}", frame);
             twizzler_abi::syscall::sys_sctx_attach(instance).unwrap();
-            println!("JUMP");
             unsafe { twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame) };
         };
         let mon = dynlink.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();

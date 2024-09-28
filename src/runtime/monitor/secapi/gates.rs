@@ -290,3 +290,23 @@ pub fn monitor_rt_get_thread_simple_buffer(info: &secgate::GateCallInfo) -> Opti
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.get_thread_simple_buffer(caller, info.thread_id())
 }
+
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+pub enum MonitorCompControlCmd {
+    RuntimeReady,
+    RuntimePostMain,
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_comp_ctrl(
+    info: &secgate::GateCallInfo,
+    cmd: MonitorCompControlCmd,
+) -> Option<i32> {
+    let monitor = crate::mon::get_monitor();
+    monitor.compartment_ctrl(info, cmd)
+}

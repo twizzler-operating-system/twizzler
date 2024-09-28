@@ -2,6 +2,7 @@
 
 use dynlink::{context::runtime::RuntimeInitInfo, library::CtorInfo};
 use monitor_api::SharedCompConfig;
+use secgate::SecGateReturn;
 use twizzler_abi::{
     syscall::KernelConsoleWriteFlags,
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
@@ -121,16 +122,27 @@ impl CoreRuntime for ReferenceRuntime {
         self.exit(ret.code);
     }
 
-    fn pre_main_hook(&self) {
+    fn pre_main_hook(&self) -> Option<i32> {
         preinit_println!("====== {}", TLS_TEST);
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
+            None
         } else {
             unsafe { self.set_runtime_ready() };
+
+            let ret = match monitor_api::monitor_rt_comp_ctrl(
+                monitor_api::MonitorCompControlCmd::RuntimeReady,
+            ) {
+                SecGateReturn::Success(ret) => ret,
+                _ => self.abort(),
+            };
+            ret
         }
     }
 
-    fn post_main_hook(&self) {}
+    fn post_main_hook(&self) {
+        monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimePostMain);
+    }
 }
 
 impl ReferenceRuntime {
@@ -238,4 +250,5 @@ fn dead_end() {
 // TODO: we should probably get this for real.
 #[cfg(not(test))]
 #[no_mangle]
+#[linkage = "weak"]
 pub extern "C" fn _init() {}

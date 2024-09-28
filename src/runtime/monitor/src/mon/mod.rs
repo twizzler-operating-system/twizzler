@@ -13,7 +13,7 @@ use self::{
     space::{MapHandle, MapInfo, Unmapper},
     thread::{ManagedThread, ThreadCleaner, DEFAULT_STACK_SIZE},
 };
-use crate::{api::MONITOR_INSTANCE_ID, init::InitDynlinkContext};
+use crate::{api::MONITOR_INSTANCE_ID, gates::MonitorCompControlCmd, init::InitDynlinkContext};
 
 pub(crate) mod compartment;
 pub mod library;
@@ -225,6 +225,14 @@ impl Monitor {
         let rc = comps.get_mut(sctx)?;
         let pt = rc.get_per_thread(thread, &mut *space);
         Some(pt.read_bytes(len))
+    }
+
+    pub fn compartment_ctrl(
+        &self,
+        info: &secgate::GateCallInfo,
+        cmd: MonitorCompControlCmd,
+    ) -> Option<i32> {
+        todo!()
     }
 }
 
