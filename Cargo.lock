@@ -1463,8 +1463,20 @@ dependencies = [
 name = "genrandom"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "getrandom 0.2.10",
+ "layout",
+ "lethe-gadget-fat",
+ "nvme",
+ "pci-ids",
+ "tickv",
  "twizzler-abi",
+ "twizzler-async",
+ "twizzler-driver",
+ "twizzler-net",
+ "twizzler-object",
+ "twizzler-queue",
+ "volatile",
 ]
 
 [[package]]

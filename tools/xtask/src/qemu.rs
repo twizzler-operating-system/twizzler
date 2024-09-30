@@ -68,14 +68,11 @@ impl QemuCommand {
 
         self.cmd
             .arg("--no-reboot") // exit instead of rebooting
-            .arg("-s"); // shorthand for -gdb tcp::1234
-                        // .arg("-serial")
-                        // .arg("mon:stdio");
-        self.cmd
-            .arg("-chardev")
-            .arg("stdio,id=char0,logfile=serial.log,signal=off")
-            .arg("-serial")
-            .arg("chardev:char0");
+            .arg("-s") // shorthand for -gdb tcp::1234
+            // .arg("-serial")
+            // .arg("mon:stdio")
+            .arg("-nographic");
+        self.cmd.arg("-serial").arg("mon:stdio");
 
         //-serial mon:stdio creates a multiplexed stdio backend connected
         // to the serial port and the QEMU monitor, and
