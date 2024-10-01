@@ -3,9 +3,8 @@ use rdrand::RdSeed;
 
 #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
 mod rndrs;
-
+#[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
 use rand_core::RngCore;
-
 #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
 use self::rndrs::Rndrs;
 use super::{register_entropy_source, EntropySource};

@@ -1,3 +1,5 @@
+#![feature(new_uninit)]
+
 extern crate twizzler_abi;
 
 use std::{
@@ -6,14 +8,14 @@ use std::{
     mem::{size_of, zeroed, MaybeUninit},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::channel,
+        mpsc::{self, channel},
         Arc, Mutex, RwLock,
     },
     thread,
     time::{Duration, Instant},
 };
 
-use getrandom::getrandom;
+use getrandom::getrandom_uninit;
 use layout::{io::SeekFrom, Read, Seek, Write};
 use lethe_gadget_fat::filesystem::FileSystem;
 use twizzler_async::{block_on, Task, Timer};
@@ -33,27 +35,49 @@ pub fn main() {
     println!("Created disk");
     // // return;
     const OBJ_SIZE: u64 = 0x4_000_000_000;
-    const BUF_SIZE: u64 = 0x1000;
-    const START_OFFSET: u64 = 6341787648;
+    const BUF_SIZE: u64 = 0x100000;
+    const BUF_SIZE_USIZE: usize = BUF_SIZE as usize;
+    const START_OFFSET: u64 = 0;
     const OFFSET_ITER: u64 = START_OFFSET / BUF_SIZE;
     const ITER_CT: u64 = OBJ_SIZE / BUF_SIZE;
     // fs.create_object(id, 1500);
-    let (tx, rx) = channel();
-    d.seek(SeekFrom::Start(START_OFFSET)).unwrap();
+    let (tx, rx) = mpsc::sync_channel(5);
+    d.seek(SeekFrom::Current(START_OFFSET as i64)).unwrap();
     println!("seeked forward");
-    let program_start = Instant::now();
     let gen_thread = thread::spawn(move || {
         for i in OFFSET_ITER..ITER_CT {
-            let buf = MaybeUninit<[u8; 1024]>::uninit();
-            getrandom(&mut buf);
-            let out = unsafe {buf.assume_init()};
-            print!("Genrated bytes in {:?},\t", getrandom_time);
+            let mut buf = Box::new_uninit_slice(BUF_SIZE_USIZE);
+            let start = Instant::now();
+            getrandom_uninit(&mut (*buf)).unwrap();
+            let out = unsafe { buf.assume_init() };
+            print!(
+                "Genrated {} / {} bytes in {:.2?},\t",
+                i * BUF_SIZE,
+                OBJ_SIZE,
+                Instant::now() - start
+            );
             tx.send(out).expect("should send message");
         }
     });
+    let program_start = Instant::now();
     let write_thread = thread::spawn(move || {
+        let mut iter_ct = OFFSET_ITER;
         for buf in rx {
-            d.write(buf);
+            let start = Instant::now();
+            d.write(&buf);
+            let end = Instant::now();
+            let curr_dur = end - program_start;
+            let iters_passed = iter_ct - OFFSET_ITER + 1;
+            let iters_left = ITER_CT - iter_ct;
+            let time_left = (curr_dur / iters_passed as u32) * iters_left as u32;
+            println!(
+                "Wrote {} / {} bytes in {:.2?}, {:.2} hours left",
+                iter_ct * BUF_SIZE,
+                OBJ_SIZE,
+                end - start,
+                time_left.as_secs_f64() / 60.0 / 60.0
+            );
+            iter_ct += 1;
         }
     });
     // for i in OFFSET_ITER..ITER_CT {

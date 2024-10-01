@@ -3,7 +3,7 @@ mod fortuna;
 mod jitter;
 
 use alloc::{boxed::Box, vec::Vec};
-use core::{any::Any, borrow::BorrowMut, time::Duration};
+use core::{borrow::BorrowMut, time::Duration};
 
 use cpu_trng::maybe_add_cpu_entropy_source;
 use fortuna::{Accumulator, Contributor};

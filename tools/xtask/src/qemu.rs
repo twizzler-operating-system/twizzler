@@ -71,7 +71,9 @@ impl QemuCommand {
             .arg("-s") // shorthand for -gdb tcp::1234
             // .arg("-serial")
             // .arg("mon:stdio")
-            .arg("-nographic");
+            .arg("-nographic")
+            .arg("-smp")
+            .arg("4");
         self.cmd.arg("-serial").arg("mon:stdio");
 
         //-serial mon:stdio creates a multiplexed stdio backend connected
