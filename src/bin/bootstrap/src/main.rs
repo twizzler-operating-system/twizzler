@@ -2,6 +2,7 @@ use std::process::exit;
 
 use dynlink::{
     compartment::MONITOR_COMPARTMENT_ID,
+    context::NewCompartmentFlags,
     engines::{Backing, ContextEngine},
     library::UnloadedLibrary,
     symbol::LookupFlags,
@@ -67,10 +68,12 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     let engine = Engine;
     let mut ctx = dynlink::context::Context::new(Box::new(engine));
     let unlib = UnloadedLibrary::new("libmonitor.so");
-    let monitor_comp_id = ctx.add_compartment("monitor").unwrap();
+    let monitor_comp_id = ctx
+        .add_compartment("monitor", NewCompartmentFlags::EXPORT_GATES)
+        .unwrap();
 
     let monitor_id = ctx
-        .load_library_in_compartment(monitor_comp_id, unlib)
+        .load_library_in_compartment(monitor_comp_id, unlib, true)
         .unwrap()[0]
         .lib;
 

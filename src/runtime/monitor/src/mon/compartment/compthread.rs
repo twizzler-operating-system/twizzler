@@ -11,7 +11,7 @@ use crate::mon::{
 
 pub(super) struct CompThread {
     stack_object: StackObject,
-    thread: ManagedThread,
+    pub(crate) thread: ManagedThread,
 }
 
 impl CompThread {

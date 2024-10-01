@@ -1,6 +1,6 @@
 use std::{borrow::BorrowMut, collections::HashMap};
 
-use dynlink::{compartment::CompartmentId, library::UnloadedLibrary};
+use dynlink::{compartment::CompartmentId, context::NewCompartmentFlags, library::UnloadedLibrary};
 use happylock::ThreadKey;
 use secgate::util::Descriptor;
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync, ThreadSyncSleep};
@@ -65,7 +65,12 @@ impl CompartmentMgr {
     }
 
     /// Insert a [RunComp].
-    pub fn insert(&mut self, rc: RunComp) {
+    pub fn insert(&mut self, mut rc: RunComp) {
+        if self.names.contains_key(&rc.name) {
+            // TODO
+            rc.name = format!("{}-", rc.name);
+            return self.insert(rc);
+        }
         self.names.insert(rc.name.clone(), rc.instance);
         self.dynlink_map.insert(rc.compartment_id, rc.instance);
         self.instances.insert(rc.instance, rc);
@@ -234,6 +239,7 @@ impl super::Monitor {
         caller: ObjID,
         thread: ObjID,
         name_len: usize,
+        new_comp_flags: NewCompartmentFlags,
     ) -> Result<Descriptor, LoadCompartmentError> {
         let sctx = caller; //TODO
         let name_bytes = self
@@ -245,16 +251,18 @@ impl super::Monitor {
         let loader = {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
 
-            let loader = loader::RunCompLoader::new(&mut *dynlink, &name, root);
+            let loader = loader::RunCompLoader::new(&mut *dynlink, &name, root, new_comp_flags);
             loader
         }
-        .unwrap();
+        .inspect_err(|e| tracing::debug!("failed to load {}: {}", name, e))
+        .map_err(|e| LoadCompartmentError::Unknown)?;
 
         let root_comp = {
             let (ref mut space, _, ref mut cmp, ref mut dynlink, _, _) =
                 &mut *self.locks.lock(ThreadKey::get().unwrap());
             loader
                 .build_rcs(&mut *cmp, &mut *dynlink, &mut *space)
+                .inspect_err(|e| tracing::debug!("failed to load {}: {}", name, e))
                 .map_err(|_| LoadCompartmentError::Unknown)?
         };
 

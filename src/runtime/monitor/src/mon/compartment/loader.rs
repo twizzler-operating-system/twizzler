@@ -5,7 +5,7 @@ use std::{
 
 use dynlink::{
     compartment::CompartmentId,
-    context::{Context, LoadIds},
+    context::{Context, LoadIds, NewCompartmentFlags},
     library::{CtorInfo, LibraryId, UnloadedLibrary},
     DynlinkError,
 };
@@ -127,7 +127,7 @@ impl RunCompLoader {
         }
 
         let rt_unlib = UnloadedLibrary::new(RUNTIME_NAME);
-        let loads = dynlink.load_library_in_compartment(comp_id, rt_unlib)?;
+        let loads = dynlink.load_library_in_compartment(comp_id, rt_unlib, false)?;
         dynlink.add_manual_dependency(root_id, loads[0].lib);
         Ok(loads[0].lib)
     }
@@ -138,6 +138,7 @@ impl RunCompLoader {
         dynlink: &mut Context,
         comp_name: &str,
         root_unlib: UnloadedLibrary,
+        new_comp_flags: NewCompartmentFlags,
     ) -> miette::Result<Self> {
         struct UnloadOnDrop(Vec<LoadIds>);
         impl Drop for UnloadOnDrop {
@@ -145,9 +146,12 @@ impl RunCompLoader {
                 tracing::warn!("todo: drop");
             }
         }
-        let root_comp_id = dynlink.add_compartment(comp_name)?;
-        let loads =
-            UnloadOnDrop(dynlink.load_library_in_compartment(root_comp_id, root_unlib.clone())?);
+        let root_comp_id = dynlink.add_compartment(comp_name, new_comp_flags)?;
+        let loads = UnloadOnDrop(dynlink.load_library_in_compartment(
+            root_comp_id,
+            root_unlib.clone(),
+            new_comp_flags.contains(NewCompartmentFlags::EXPORT_GATES),
+        )?);
 
         // The dynamic linker gives us a list of loaded libraries, and which compartments they ended
         // up in. For each of those, we may need to inject the runtime library. Collect all
@@ -190,12 +194,13 @@ impl RunCompLoader {
         let rt_id = Self::maybe_inject_runtime(dynlink, root_id, root_comp_id)?;
 
         dynlink.relocate_all(root_id)?;
+        let is_binary = dynlink.get_library(root_id)?.is_binary();
         let root_comp = LoadInfo::new(
             dynlink,
             root_id,
             rt_id,
             get_new_sctx_instance(1.into()),
-            true,
+            is_binary,
         )?;
         // We don't want to drop anymore, since now drop-cleanup will be handled by RunCompLoader.
         std::mem::forget(loads);
@@ -291,6 +296,11 @@ impl Monitor {
         let deps = {
             let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
             let rc = cmp.get(instance).ok_or(LoadCompartmentError::Unknown)?;
+            tracing::debug!(
+                "starting compartment {} (binary = {})",
+                rc.name,
+                rc.has_flag(COMP_IS_BINARY)
+            );
             rc.deps.clone()
         };
         for dep in deps {
@@ -305,6 +315,10 @@ impl Monitor {
             let state = self.load_compartment_flags(instance);
 
             if state & COMP_EXITED != 0 || state & COMP_DESTRUCTED != 0 {
+                tracing::error!(
+                    "tried to start compartment that has already exited (state: {:x})",
+                    state
+                );
                 return Err(LoadCompartmentError::Unknown);
             }
 

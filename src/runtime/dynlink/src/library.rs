@@ -3,7 +3,8 @@
 use std::fmt::{Debug, Display};
 
 use elf::{
-    abi::{PT_PHDR, PT_TLS, STB_WEAK},
+    abi::{DT_FLAGS_1, PT_PHDR, PT_TLS, STB_WEAK},
+    dynamic::Dyn,
     endian::NativeEndian,
     segment::{Elf64_Phdr, ProgramHeader},
     ParseError,
@@ -81,6 +82,7 @@ pub struct Library {
     pub full_obj: Backing,
     /// State of relocation.
     pub(crate) reloc_state: RelocState,
+    allows_gates: bool,
 
     pub backings: Vec<Backing>,
 
@@ -104,6 +106,7 @@ impl Library {
         tls_id: Option<TlsModId>,
         ctors: CtorInfo,
         secgate_info: SecgateInfo,
+        allows_gates: bool,
     ) -> Self {
         Self {
             name,
@@ -116,6 +119,7 @@ impl Library {
             comp_id,
             comp_name,
             secgate_info,
+            allows_gates,
         }
     }
 
@@ -127,6 +131,10 @@ impl Library {
     /// Get the compartment ID for this library.
     pub fn compartment(&self) -> CompartmentId {
         self.comp_id
+    }
+
+    pub fn allows_gates(&self) -> bool {
+        self.allows_gates
     }
 
     /// Get a raw pointer to the program headers for this library.
@@ -176,6 +184,27 @@ impl Library {
         let ptr: extern "C" fn(*const AuxEntry) -> ! =
             unsafe { core::mem::transmute(entry as usize) };
         Ok(ptr)
+    }
+
+    pub fn is_binary(&self) -> bool {
+        let Some(dynamic) = self
+            .get_elf()
+            .ok()
+            .and_then(|elf| elf.dynamic().ok())
+            .flatten()
+        else {
+            return false;
+        };
+        let Some(flags) = dynamic.iter().find_map(|ent| {
+            if ent.d_tag == DT_FLAGS_1 {
+                Some(ent.d_val())
+            } else {
+                None
+            }
+        }) else {
+            return false;
+        };
+        flags & elf::abi::DF_1_PIE as u64 != 0
     }
 
     // Helper to find the TLS program header.

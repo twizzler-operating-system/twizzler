@@ -1,3 +1,6 @@
+use std::fmt::{Debug, Display};
+
+use dynlink::context::NewCompartmentFlags;
 use secgate::{util::Descriptor, Crossing};
 use twizzler_runtime_api::{
     AddrRange, DlPhdrInfo, LibraryId, MapError, ObjID, SpawnError, ThreadSpawnArgs,
@@ -153,16 +156,30 @@ unsafe impl Crossing for LibraryInfo {}
 pub fn monitor_rt_load_compartment(
     info: &secgate::GateCallInfo,
     name_len: u64,
+    flags: u32,
 ) -> Result<Descriptor, LoadCompartmentError> {
     use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
-    monitor.load_compartment(caller, info.thread_id(), name_len as usize)
+    monitor.load_compartment(
+        caller,
+        info.thread_id(),
+        name_len as usize,
+        NewCompartmentFlags::from_bits(flags).ok_or(LoadCompartmentError::Unknown)?,
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum LoadCompartmentError {
     Unknown,
+}
+
+impl std::error::Error for LoadCompartmentError {}
+
+impl Display for LoadCompartmentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <Self as Debug>::fmt(self, f)
+    }
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]

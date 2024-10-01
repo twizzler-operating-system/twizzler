@@ -99,6 +99,7 @@ impl Context {
         let open_sym = || {
             if let Some((name, sym)) = symbol {
                 if let Ok(sym) = sym {
+                    /*
                     trace!(
                         "{}: found symbol {} at {:x} from {}",
                         lib,
@@ -106,6 +107,7 @@ impl Context {
                         sym.reloc_value(),
                         sym.lib
                     );
+                    */
                     Result::<_, DynlinkError>::Ok(sym)
                 } else {
                     error!("{}: needed symbol {} not found", lib, name);

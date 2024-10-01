@@ -211,10 +211,14 @@ impl Context {
     }
 
     /// Create a new compartment with a given name.
-    pub fn add_compartment(&mut self, name: impl ToString) -> Result<CompartmentId, DynlinkError> {
+    pub fn add_compartment(
+        &mut self,
+        name: impl ToString,
+        new_comp_flags: NewCompartmentFlags,
+    ) -> Result<CompartmentId, DynlinkError> {
         let name = name.to_string();
         let idx = self.compartments.len();
-        let comp = Compartment::new(name.clone(), CompartmentId(idx));
+        let comp = Compartment::new(name.clone(), CompartmentId(idx), new_comp_flags);
         self.compartments.push(comp);
         self.compartment_names.insert(name, idx);
         Ok(CompartmentId(idx))
@@ -260,5 +264,12 @@ impl<'a> Iterator for LibraryIter<'a> {
                 LoadedOrUnloaded::Loaded(lib) => return Some(lib),
             }
         }
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    pub struct NewCompartmentFlags : u32 {
+        const EXPORT_GATES = 0x1;
     }
 }

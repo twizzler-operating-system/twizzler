@@ -368,6 +368,13 @@ impl RunComp {
         Some(())
     }
 
+    pub(crate) fn read_error_code(&self) -> u64 {
+        let Some(ref main) = self.main else {
+            return 0;
+        };
+        main.thread.repr.get_repr().get_code()
+    }
+
     pub(crate) fn inc_use_count(&mut self) {
         self.use_count += 1;
         tracing::trace!(

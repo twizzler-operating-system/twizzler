@@ -4,8 +4,10 @@
 #![feature(new_uninit)]
 #![feature(hash_extract_if)]
 #![feature(iterator_try_collect)]
+#![feature(result_option_inspect)]
 
-use dynlink::engines::Backing;
+use dynlink::{context::NewCompartmentFlags, engines::Backing};
+use miette::IntoDiagnostic;
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
 use twizzler_abi::{
@@ -33,7 +35,7 @@ mod gates;
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::TRACE)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
@@ -71,8 +73,17 @@ pub fn main() {
 fn monitor_init() -> miette::Result<()> {
     info!("monitor early init completed, starting init");
 
-    let loader = monitor_api::CompartmentLoader::new("foo");
-    let hw_comp = loader.load().unwrap();
+    let loader =
+        monitor_api::CompartmentLoader::new("libbar_srv.so", NewCompartmentFlags::EXPORT_GATES);
+    let bar_comp = loader.load().into_diagnostic()?;
+
+    //loop {}
+
+    let loader = monitor_api::CompartmentLoader::new("foo", NewCompartmentFlags::empty());
+    let hw_comp = loader.load().into_diagnostic()?;
+
+    let loader = monitor_api::CompartmentLoader::new("foo", NewCompartmentFlags::empty());
+    let hw_comp = loader.load().into_diagnostic()?;
 
     Ok(())
 }

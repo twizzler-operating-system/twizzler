@@ -12,6 +12,7 @@ use tracing::{debug, warn};
 use super::{Context, LoadedOrUnloaded};
 use crate::{
     compartment::{Compartment, CompartmentId},
+    context::NewCompartmentFlags,
     engines::{LoadDirective, LoadFlags},
     library::{CtorInfo, Library, LibraryId, SecgateInfo, UnloadedLibrary},
     tls::TlsModule,
@@ -126,6 +127,7 @@ impl Context {
         comp_id: CompartmentId,
         unlib: UnloadedLibrary,
         idx: NodeIndex,
+        allows_gates: bool,
     ) -> Result<Library, DynlinkError> {
         let backing = self.engine.load_object(&unlib)?;
         let elf = backing.get_elf()?;
@@ -276,6 +278,7 @@ impl Context {
             tls_id,
             ctor_info,
             secgate_info,
+            allows_gates,
         ))
     }
 
@@ -288,7 +291,7 @@ impl Context {
                 let lib = self.get_library(LibraryId(*lib_id));
                 if let Ok(lib) = lib {
                     // Only allow cross-compartment refs for a library that has secure gates.
-                    if lib.secgate_info.info_addr.is_some() {
+                    if lib.secgate_info.info_addr.is_some() && lib.allows_gates() {
                         return Some((*lib_id, CompartmentId(idx), comp));
                     }
                     return None;
@@ -314,7 +317,9 @@ impl Context {
         let elf = backing.get_elf().ok()?;
         if self.has_secgate_info(&elf) {
             let name = format!("{}::{}", parent_comp_name, unlib.name);
-            let id = self.add_compartment(&name).ok()?;
+            let id = self
+                .add_compartment(&name, NewCompartmentFlags::empty())
+                .ok()?;
             tracing::debug!(
                 "creating new compartment {}({}) for library {}",
                 name,
@@ -334,6 +339,7 @@ impl Context {
         comp_id: CompartmentId,
         root_unlib: UnloadedLibrary,
         idx: NodeIndex,
+        allows_gates: bool,
     ) -> Result<Vec<LoadIds>, DynlinkError> {
         let root_comp_name = self.get_compartment(comp_id)?.name.clone();
         debug!(
@@ -342,14 +348,16 @@ impl Context {
         );
         let mut ids = vec![];
         // First load the main library.
-        let lib = self.load(comp_id, root_unlib.clone(), idx).map_err(|e| {
-            DynlinkError::new_collect(
-                DynlinkErrorKind::LibraryLoadFail {
-                    library: root_unlib.clone(),
-                },
-                vec![e],
-            )
-        })?;
+        let lib = self
+            .load(comp_id, root_unlib.clone(), idx, allows_gates)
+            .map_err(|e| {
+                DynlinkError::new_collect(
+                    DynlinkErrorKind::LibraryLoadFail {
+                        library: root_unlib.clone(),
+                    },
+                    vec![e],
+                )
+            })?;
         ids.push((&lib).into());
 
         // Second, go through deps
@@ -410,7 +418,7 @@ impl Context {
                     let comp = self.get_compartment_mut(load_comp)?;
                     comp.library_names.insert(dep_unlib.name.clone(), idx);
                     let mut recs = self
-                        .load_library(load_comp, dep_unlib.clone(), idx)
+                        .load_library(load_comp, dep_unlib.clone(), idx, false)
                         .map_err(|e| {
                             DynlinkError::new_collect(
                                 DynlinkErrorKind::LibraryLoadFail {
@@ -444,6 +452,7 @@ impl Context {
         &mut self,
         comp_id: CompartmentId,
         unlib: UnloadedLibrary,
+        allows_gates: bool,
     ) -> Result<Vec<LoadIds>, DynlinkError> {
         let idx = self.add_library(unlib.clone());
         // Step 1: insert into the compartment's library names.
@@ -459,6 +468,6 @@ impl Context {
         comp.library_names.insert(unlib.name.clone(), idx);
 
         // Step 2: load the library. This call recurses on dependencies.
-        self.load_library(comp_id, unlib.clone(), idx)
+        self.load_library(comp_id, unlib.clone(), idx, allows_gates)
     }
 }

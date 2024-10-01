@@ -18,7 +18,11 @@ use std::{
     },
 };
 
-use dynlink::tls::{Tcb, TlsRegion};
+use bitflags::Flags;
+use dynlink::{
+    context::NewCompartmentFlags,
+    tls::{Tcb, TlsRegion},
+};
 use secgate::util::{Descriptor, Handle};
 use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 
@@ -288,20 +292,22 @@ impl CompartmentHandle {
 /// A builder-type for loading compartments.
 pub struct CompartmentLoader {
     name: String,
+    flags: NewCompartmentFlags,
 }
 
 impl CompartmentLoader {
     /// Make a new compartment loader.
-    pub fn new(name: impl ToString) -> Self {
+    pub fn new(name: impl ToString, flags: NewCompartmentFlags) -> Self {
         Self {
             name: name.to_string(),
+            flags,
         }
     }
 
     /// Load the compartment.
     pub fn load(&self) -> Result<CompartmentHandle, gates::LoadCompartmentError> {
         let len = lazy_sb::write_bytes_to_sb(self.name.as_bytes());
-        let desc = gates::monitor_rt_load_compartment(len as u64)
+        let desc = gates::monitor_rt_load_compartment(len as u64, self.flags.bits())
             .ok()
             .ok_or(gates::LoadCompartmentError::Unknown)
             .flatten()?;
