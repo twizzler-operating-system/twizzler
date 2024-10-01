@@ -8,15 +8,10 @@
 
 use std::mem::ManuallyDrop;
 
-use dynlink::{context::NewCompartmentFlags, engines::Backing};
+use dynlink::context::NewCompartmentFlags;
 use miette::IntoDiagnostic;
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
-use twizzler_abi::{
-    aux::KernelInitInfo,
-    object::{MAX_SIZE, NULLPAGE_SIZE},
-};
-use twizzler_object::ObjID;
 use twz_rt::{set_upcall_handler, OUR_RUNTIME};
 
 mod compartment;
@@ -49,7 +44,7 @@ pub fn main() {
     }))
     .unwrap();
 
-    debug!("monitor entered, discovering dynlink context");
+    info!("monitor entered, discovering dynlink context");
     let init =
         init::bootstrap_dynlink_context().expect("failed to discover initial dynlink context");
 
@@ -61,7 +56,7 @@ pub fn main() {
     // Had to wait till now to be able to spawn threads.
     mon::get_monitor().start_background_threads();
 
-    debug!("Ok");
+    debug!("Ok, starting monitor main");
     std::env::set_var("RUST_BACKTRACE", "1");
     set_upcall_handler(&crate::upcall::upcall_monitor_handler).unwrap();
 
@@ -72,6 +67,7 @@ pub fn main() {
     warn!("monitor main thread exited");
 }
 
+#[allow(dead_code, unused_variables, unreachable_code)]
 fn monitor_init() -> miette::Result<()> {
     info!("monitor early init completed, starting init");
 
@@ -83,10 +79,12 @@ fn monitor_init() -> miette::Result<()> {
     // we want logboi to stick around
     let logboi_comp = ManuallyDrop::new(logboi_comp);
 
-    info!("starting global bar");
-    let loader =
-        monitor_api::CompartmentLoader::new("libbar_srv.so", NewCompartmentFlags::EXPORT_GATES);
-    let bar_comp = loader.load().into_diagnostic()?;
+    if false {
+        info!("starting global bar");
+        let loader =
+            monitor_api::CompartmentLoader::new("libbar_srv.so", NewCompartmentFlags::EXPORT_GATES);
+        let bar_comp = loader.load().into_diagnostic()?;
+    }
 
     info!("starting foo");
 
@@ -99,34 +97,4 @@ fn monitor_init() -> miette::Result<()> {
 
     loop {}
     Ok(())
-}
-
-fn bootstrap_name_res(mut name: &str) -> Option<Backing> {
-    if name.starts_with("libstd-") {
-        name = "libstd.so";
-    }
-    let id = find_init_name(name)?;
-    let obj = twizzler_runtime_api::get_runtime()
-        .map_object(id, twizzler_runtime_api::MapFlags::READ)
-        .ok()?;
-    Some(Backing::new(obj))
-}
-
-pub fn get_kernel_init_info() -> &'static KernelInitInfo {
-    unsafe {
-        (((twizzler_abi::slot::RESERVED_KERNEL_INIT * MAX_SIZE) + NULLPAGE_SIZE)
-            as *const KernelInitInfo)
-            .as_ref()
-            .unwrap()
-    }
-}
-
-fn find_init_name(name: &str) -> Option<ObjID> {
-    let init_info = get_kernel_init_info();
-    for n in init_info.names() {
-        if n.name() == name {
-            return Some(n.id());
-        }
-    }
-    None
 }

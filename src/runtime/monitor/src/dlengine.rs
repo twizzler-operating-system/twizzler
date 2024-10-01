@@ -4,6 +4,10 @@ use dynlink::{
     library::UnloadedLibrary,
     DynlinkError, DynlinkErrorKind,
 };
+use twizzler_abi::{
+    aux::KernelInitInfo,
+    object::{MAX_SIZE, NULLPAGE_SIZE},
+};
 use twizzler_runtime_api::{MapFlags, ObjID};
 
 pub struct Engine;
@@ -38,10 +42,29 @@ fn name_resolver(mut name: &str) -> Result<ObjID, DynlinkError> {
     if name.starts_with("libstd") {
         name = "libstd.so";
     }
-    crate::find_init_name(name).ok_or(
+    find_init_name(name).ok_or(
         DynlinkErrorKind::NameNotFound {
             name: name.to_string(),
         }
         .into(),
     )
+}
+
+pub fn get_kernel_init_info() -> &'static KernelInitInfo {
+    unsafe {
+        (((twizzler_abi::slot::RESERVED_KERNEL_INIT * MAX_SIZE) + NULLPAGE_SIZE)
+            as *const KernelInitInfo)
+            .as_ref()
+            .unwrap()
+    }
+}
+
+fn find_init_name(name: &str) -> Option<ObjID> {
+    let init_info = get_kernel_init_info();
+    for n in init_info.names() {
+        if n.name() == name {
+            return Some(n.id());
+        }
+    }
+    None
 }
