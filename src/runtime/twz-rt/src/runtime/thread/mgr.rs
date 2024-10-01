@@ -1,10 +1,11 @@
 //! Thread management routines, including spawn and join.
 
-use std::{alloc::Layout, collections::HashMap, sync::Mutex};
+use std::{alloc::Layout, collections::BTreeMap};
 
 use tracing::trace;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
+    simple_mutex::Mutex,
     thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_runtime_api::{
@@ -12,15 +13,12 @@ use twizzler_runtime_api::{
 };
 
 use super::internal::InternalThread;
-use crate::{
-    preinit_println,
-    runtime::{
-        thread::{
-            tcb::{trampoline, RuntimeThreadControl, TLS_GEN_MGR},
-            MIN_STACK_ALIGN, THREAD_MGR,
-        },
-        ReferenceRuntime, OUR_RUNTIME,
+use crate::runtime::{
+    thread::{
+        tcb::{trampoline, RuntimeThreadControl, TLS_GEN_MGR},
+        MIN_STACK_ALIGN, THREAD_MGR,
     },
+    ReferenceRuntime, OUR_RUNTIME,
 };
 
 pub(crate) struct ThreadManager {
@@ -28,21 +26,21 @@ pub(crate) struct ThreadManager {
 }
 
 impl ThreadManager {
-    pub(super) fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             inner: Mutex::new(ThreadManagerInner::new()),
         }
     }
 
     pub fn with_internal<R, F: FnOnce(&InternalThread) -> R>(&self, id: u32, f: F) -> Option<R> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock();
         Some(f(inner.all_threads.get(&id)?))
     }
 }
 
 #[derive(Default)]
 struct ThreadManagerInner {
-    all_threads: HashMap<u32, InternalThread>,
+    all_threads: BTreeMap<u32, InternalThread>,
     // Threads that have exited, but we haven't cleaned up yet.
     to_cleanup: Vec<InternalThread>,
     // Basic unique-ID system.
@@ -54,10 +52,12 @@ unsafe impl Send for ThreadManager {}
 unsafe impl Sync for ThreadManager {}
 
 impl ThreadManagerInner {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             next_id: 1,
-            ..Default::default()
+            all_threads: BTreeMap::new(),
+            to_cleanup: vec![],
+            id_stack: vec![],
         }
     }
 
@@ -125,7 +125,7 @@ impl<'a> Drop for IdDropper<'a> {
 
 #[no_mangle]
 pub extern "C" fn __twz_rt_cross_compartment_entry() {
-    let mut inner = THREAD_MGR.inner.lock().unwrap();
+    let mut inner = THREAD_MGR.inner.lock();
     let id = inner.next_id().freeze();
     drop(inner);
     let tls = TLS_GEN_MGR
@@ -156,7 +156,7 @@ impl ReferenceRuntime {
 
         // Take the thread management lock, so that when the new thread starts we cannot observe
         // that thread running without the management data being recorded.
-        let mut inner = THREAD_MGR.inner.lock().unwrap();
+        let mut inner = THREAD_MGR.inner.lock();
         let id = inner.next_id();
 
         // Set the thread's ID. After this the TCB is ready.
@@ -216,7 +216,7 @@ impl ReferenceRuntime {
     ) -> Result<(), JoinError> {
         trace!("joining on thread {} with timeout {:?}", id, timeout);
         let repr = {
-            let mut inner = THREAD_MGR.inner.lock().unwrap();
+            let mut inner = THREAD_MGR.inner.lock();
             inner.scan_for_exited_except(id);
             inner
                 .all_threads
@@ -230,7 +230,7 @@ impl ReferenceRuntime {
         loop {
             let (state, _code) = base.wait(timeout).ok_or(JoinError::Timeout)?;
             if state == ExecutionState::Exited {
-                let mut inner = THREAD_MGR.inner.lock().unwrap();
+                let mut inner = THREAD_MGR.inner.lock();
                 inner.prep_cleanup(id);
                 inner.do_thread_gc();
                 trace!("join {} completed", id);

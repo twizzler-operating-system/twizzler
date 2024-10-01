@@ -133,7 +133,7 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
 
         // Remove any exited threads from the thread manager.
         for (_, th) in cleanups.drain(..) {
-            tracing::debug!("cleaning thread: {}", th.id);
+            tracing::trace!("cleaning thread: {}", th.id);
             let monitor = get_monitor();
             {
                 let mut tmgr = monitor.thread_mgr.write(&mut key);
@@ -152,7 +152,7 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
         if data.notify.swap(0, Ordering::SeqCst) == 0 {
             // no notification, go to sleep. hold the lock over the sleep so that someone cannot
             // modify waits.threads on us while we're asleep.
-            tracing::info!("cleaner: => {:?}", ops);
+            tracing::trace!("cleaner sleep ops: {:?}", ops);
             if let Err(e) = sys_thread_sync(&mut ops, None) {
                 tracing::warn!("thread sync error: {}", e);
             }

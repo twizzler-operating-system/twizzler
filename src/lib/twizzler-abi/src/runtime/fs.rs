@@ -14,9 +14,9 @@ use crate::{
     runtime::{
         idcounter::IdCounter,
         object::{slot, slot::global_allocate},
-        simple_mutex::Mutex,
     },
     rustc_alloc::{boxed::Box, collections::BTreeMap},
+    simple_mutex::Mutex,
     syscall::{sys_object_map, UnmapFlags},
     thread::{ExecutionState, ThreadRepr},
 };
@@ -73,19 +73,17 @@ impl RustFsRuntime for MinimalRuntime {
             };
         }
 
-        let mut binding = get_fd_slots()
-            .lock();
+        let mut binding = get_fd_slots().lock();
 
         let elem = Arc::new(Mutex::new(FileDesc {
             slot_id: 0,
             pos: 0,
-            handle: handle
+            handle,
         }));
-        
+
         let fd = if binding.is_compact() {
             binding.push(elem)
-        }
-        else {
+        } else {
             let fd = binding.first_empty_slot_from(0).unwrap();
             binding.insert(fd, elem);
             fd

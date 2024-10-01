@@ -257,9 +257,32 @@ impl RunCompLoader {
                 .filter_map(|item| cmp.get_dynlinkid(*item).map(|rc| rc.instance))
                 .collect();
             cmp.get_mut(*id).unwrap().deps.append(&mut deps);
+
+            let Some(comp) = cmp.get(*id) else { continue };
+            tracing::trace!("set comp {} deps to {:?}", comp.name, comp.deps);
         }
+        Self::rec_inc_all_use_counts(cmp, ids[0], &HashSet::from_iter(ids.iter().cloned()));
 
         Ok(ids[0])
+    }
+
+    fn rec_inc_all_use_counts(
+        cmgr: &mut CompartmentMgr,
+        start: ObjID,
+        created: &HashSet<ObjID>,
+    ) -> Option<()> {
+        debug_assert!(created.contains(&start));
+        let rc = cmgr.get(start)?;
+        for dep in rc.deps.clone() {
+            if created.contains(&dep) {
+                Self::rec_inc_all_use_counts(cmgr, dep, created);
+            }
+            if let Some(rc) = cmgr.get_mut(dep) {
+                rc.inc_use_count();
+            }
+        }
+
+        Some(())
     }
 }
 

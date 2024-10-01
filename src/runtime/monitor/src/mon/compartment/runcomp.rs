@@ -58,6 +58,13 @@ pub struct RunComp {
     flags: Box<AtomicU64>,
     per_thread: HashMap<ObjID, PerThread>,
     init_info: Option<(StackObject, usize, Vec<CtorInfo>)>,
+    pub(crate) use_count: u64,
+}
+
+impl Drop for RunComp {
+    fn drop(&mut self) {
+        tracing::warn!("todo: runcomp drop");
+    }
 }
 
 impl core::fmt::Debug for RunComp {
@@ -67,6 +74,7 @@ impl core::fmt::Debug for RunComp {
             .field("instance", &self.instance)
             .field("name", &self.name)
             .field("deps", &self.deps)
+            .field("usecount", &self.use_count)
             .field("dynlink_id", &self.compartment_id)
             .finish_non_exhaustive()
     }
@@ -148,6 +156,7 @@ impl RunComp {
             flags: Box::new(AtomicU64::new(flags)),
             per_thread: HashMap::new(),
             init_info: Some((main_stack, entry, ctors.to_vec())),
+            use_count: 0,
         }
     }
 
@@ -214,6 +223,7 @@ impl RunComp {
 
     /// Set a flag on this compartment, and wakeup anyone waiting on flag change.
     pub fn set_flag(&self, val: u64) {
+        tracing::trace!("compartment {} set flag {:x}", self.name, val);
         self.flags.fetch_or(val, Ordering::SeqCst);
         self.notify_state_changed();
     }
@@ -224,6 +234,7 @@ impl RunComp {
             .flags
             .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst);
         if r.is_ok() {
+            tracing::trace!("compartment {} cas flag {:x} -> {:x}", self.name, old, new);
             self.notify_state_changed();
         }
         r
@@ -355,5 +366,30 @@ impl RunComp {
         config.set_tls_template(tls_template);
         self.comp_config_object.write_config(config);
         Some(())
+    }
+
+    pub(crate) fn inc_use_count(&mut self) {
+        self.use_count += 1;
+        tracing::trace!(
+            "compartment {} inc use count -> {}",
+            self.name,
+            self.use_count
+        );
+    }
+
+    pub(crate) fn dec_use_count(&mut self) -> bool {
+        debug_assert!(self.use_count > 0);
+        self.use_count -= 1;
+
+        tracing::trace!(
+            "compartment {} dec use count -> {}",
+            self.name,
+            self.use_count
+        );
+        let z = self.use_count == 0;
+        if z {
+            self.set_flag(COMP_THREAD_CAN_EXIT);
+        }
+        z
     }
 }

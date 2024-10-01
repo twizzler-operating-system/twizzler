@@ -17,7 +17,6 @@ pub mod load_elf;
 pub(crate) mod object;
 pub(crate) mod phdrs;
 mod process;
-mod simple_mutex;
 mod stdio;
 mod thread;
 mod time;

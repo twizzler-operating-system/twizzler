@@ -74,8 +74,6 @@ fn monitor_init() -> miette::Result<()> {
     let loader = monitor_api::CompartmentLoader::new("foo");
     let hw_comp = loader.load().unwrap();
 
-    loop {}
-
     Ok(())
 }
 

@@ -3,10 +3,7 @@
 use dynlink::{context::runtime::RuntimeInitInfo, library::CtorInfo};
 use monitor_api::SharedCompConfig;
 use secgate::SecGateReturn;
-use twizzler_abi::{
-    syscall::KernelConsoleWriteFlags,
-    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
-};
+use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
 use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
 
 use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
@@ -48,9 +45,6 @@ fn build_basic_aux(aux: &[AuxEntry]) -> BasicAux {
         env,
     }
 }
-
-#[thread_local]
-static TLS_TEST: usize = 3222;
 
 impl CoreRuntime for ReferenceRuntime {
     fn default_allocator(&self) -> &'static dyn std::alloc::GlobalAlloc {
@@ -124,7 +118,6 @@ impl CoreRuntime for ReferenceRuntime {
     }
 
     fn pre_main_hook(&self) -> Option<i32> {
-        preinit_println!("====== {}", TLS_TEST);
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
             None

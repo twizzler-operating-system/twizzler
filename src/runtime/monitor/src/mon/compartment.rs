@@ -114,6 +114,9 @@ impl CompartmentMgr {
         let Some(new_flags) = f(flags) else {
             return false;
         };
+        if flags == new_flags {
+            return true;
+        }
 
         rc.cas_flag(flags, new_flags).is_ok()
     }
@@ -139,6 +142,34 @@ impl CompartmentMgr {
     pub fn main_thread_exited(&mut self, instance: ObjID) {
         tracing::debug!("main thread for compartment {} exited", instance);
         while !self.update_compartment_flags(instance, |old| Some(old | COMP_EXITED)) {}
+
+        let Some(rc) = self.get(instance) else {
+            tracing::warn!("failed to find compartment {} during exit", instance);
+            return;
+        };
+        for dep in rc.deps.clone() {
+            self.dec_use_count(dep);
+        }
+
+        let Some(rc) = self.get_mut(instance) else {
+            tracing::warn!("failed to find compartment {} during exit", instance);
+            return;
+        };
+        if rc.use_count == 0 {
+            self.remove(instance);
+        }
+    }
+
+    pub fn dec_use_count(&mut self, instance: ObjID) {
+        let Some(rc) = self.get_mut(instance) else {
+            return;
+        };
+
+        let z = rc.dec_use_count();
+        let ex = rc.has_flag(COMP_EXITED);
+        if z && ex {
+            self.remove(instance);
+        }
     }
 }
 
@@ -172,18 +203,19 @@ impl super::Monitor {
 
     /// Open a compartment handle for this caller compartment.
     pub fn get_compartment_handle(&self, caller: ObjID, compartment: ObjID) -> Option<Descriptor> {
-        self.compartment_handles
-            .write(ThreadKey::get().unwrap())
-            .insert(
-                caller,
-                super::CompartmentHandle {
-                    instance: if compartment.as_u128() == 0 {
-                        caller
-                    } else {
-                        compartment
-                    },
+        let (_, _, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
+        let comp = comps.get_mut(compartment)?;
+        comp.inc_use_count();
+        ch.insert(
+            caller,
+            super::CompartmentHandle {
+                instance: if compartment.as_u128() == 0 {
+                    caller
+                } else {
+                    compartment
                 },
-            )
+            },
+        )
     }
 
     /// Open a handle to the n'th dependency compartment of a given compartment.
@@ -237,9 +269,16 @@ impl super::Monitor {
 
     /// Drop a compartment handle.
     pub fn drop_compartment_handle(&self, caller: ObjID, desc: Descriptor) {
-        self.compartment_handles
+        let comp = self
+            .compartment_handles
             .write(ThreadKey::get().unwrap())
             .remove(caller, desc);
+
+        if let Some(comp) = comp {
+            self.comp_mgr
+                .write(ThreadKey::get().unwrap())
+                .dec_use_count(comp.instance);
+        }
     }
 
     pub fn update_compartment_flags(

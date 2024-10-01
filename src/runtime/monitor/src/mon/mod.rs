@@ -246,7 +246,12 @@ impl Monitor {
         let Some(src) = info.source_context() else {
             return None;
         };
-        tracing::info!("=== cc: {:?} {:?}", info, cmd);
+        tracing::trace!(
+            "compartment ctrl from: {:?}, thread = {:?}: {:?}",
+            src,
+            info.thread_id(),
+            cmd
+        );
         match cmd {
             MonitorCompControlCmd::RuntimeReady => loop {
                 let state = self.load_compartment_flags(src);
@@ -279,10 +284,11 @@ impl Monitor {
             MonitorCompControlCmd::RuntimePostMain => {
                 loop {
                     if self.update_compartment_flags(src, |state| {
+                        // Binaries can exit immediately. All future cross-compartment calls fail.
                         if state & COMP_IS_BINARY != 0 {
                             Some(state | COMP_THREAD_CAN_EXIT)
                         } else {
-                            None
+                            Some(state)
                         }
                     }) {
                         tracing::debug!(

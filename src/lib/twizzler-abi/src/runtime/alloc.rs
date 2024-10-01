@@ -8,7 +8,7 @@ use talc::{OomHandler, Span};
 use super::object::slot::global_allocate;
 use crate::{
     object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
-    runtime::simple_mutex::Mutex,
+    simple_mutex::Mutex,
     syscall::{
         sys_object_create, sys_object_map, BackingType, LifetimeType, ObjectCreate,
         ObjectCreateFlags,

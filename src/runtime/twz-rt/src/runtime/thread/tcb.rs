@@ -8,11 +8,11 @@
 use std::{
     alloc::GlobalAlloc,
     cell::UnsafeCell,
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     panic::catch_unwind,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Mutex, RwLock,
+        RwLock,
     },
 };
 
@@ -21,7 +21,7 @@ use monitor_api::TlsTemplateInfo;
 use tracing::trace;
 use twizzler_runtime_api::CoreRuntime;
 
-use crate::{preinit_println, runtime::OUR_RUNTIME};
+use crate::runtime::OUR_RUNTIME;
 
 const THREAD_STARTED: u32 = 1;
 pub struct RuntimeThreadControl {
@@ -113,10 +113,6 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
             cur.flags.fetch_or(THREAD_STARTED, Ordering::SeqCst);
             trace!("thread {} started", cur.id());
         });
-        twizzler_abi::syscall::sys_kernel_console_write(
-            b"alive\n",
-            twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
-        );
         // Find the arguments. arg is a pointer to a Box::into_raw of a Box of ThreadSpawnArgs.
         let arg = unsafe {
             (arg as *const twizzler_runtime_api::ThreadSpawnArgs)
