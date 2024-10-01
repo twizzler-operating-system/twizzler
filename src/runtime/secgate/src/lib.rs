@@ -6,6 +6,7 @@
 #![feature(negative_impls)]
 #![feature(linkage)]
 #![feature(core_intrinsics)]
+#![feature(const_option)]
 
 use core::ffi::CStr;
 use std::{cell::UnsafeCell, marker::Tuple, mem::MaybeUninit};

@@ -168,7 +168,7 @@ impl Drop for UnmapOnDrop {
         if sys_object_unmap(None, self.slot, UnmapFlags::empty()).is_ok() {
             twz_rt::OUR_RUNTIME.release_slot(self.slot);
         } else {
-            tracing::warn!("failed to unmap slot {}", self.slot);
+            //tracing::warn!("failed to unmap slot {}", self.slot);
         }
     }
 }

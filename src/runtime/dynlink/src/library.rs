@@ -258,10 +258,10 @@ impl Library {
                     if sym.st_bind() != STB_WEAK || allow_weak {
                         return Ok(RelocatedSymbol::new(sym, self));
                     } else {
-                        tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
+                        tracing::debug!("lookup symbol {} skipping weak binding in {}", name, self);
                     }
                 } else {
-                    tracing::info!("undefined symbol: {}", name);
+                    tracing::debug!("undefined symbol: {}", name);
                 }
             }
             return Err(DynlinkErrorKind::NameNotFound {

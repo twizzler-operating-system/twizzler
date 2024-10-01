@@ -1,0 +1,16 @@
+[package]
+name = "logboi-srv"
+version = "0.1.0"
+edition = "2021"
+
+
+# Important for this to be a dylib, so it can run in an isolated compartment.
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+secgate = { path = "../../../runtime/secgate" }
+twz-rt = { path = "../../../runtime/twz-rt" }
+monitor = { path = "../../../runtime/monitor" }
+twizzler-abi = { path = "../../../lib/twizzler-abi" }
+twizzler-runtime-api = { path = "../../../lib/twizzler-runtime-api" }

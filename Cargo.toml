@@ -28,6 +28,8 @@ members = [
     "src/lib/twizzler-futures", "src/bin/foo", 
     "src/lib/bar",
     "src/lib/bar/srv",
+    "src/lib/logboi",
+    "src/lib/logboi/logboi-srv",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -47,6 +49,7 @@ initrd = [
     "crate:stdfs_demo",
     "crate:foo",
     "lib:bar-srv",
+    "lib:logboi-srv"
     #"third-party:hello-world-rs"
 ]
 

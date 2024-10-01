@@ -63,7 +63,7 @@ pub struct RunComp {
 
 impl Drop for RunComp {
     fn drop(&mut self) {
-        tracing::warn!("todo: runcomp drop");
+        //tracing::warn!("todo: runcomp drop");
     }
 }
 

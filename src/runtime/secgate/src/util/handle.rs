@@ -1,4 +1,4 @@
-use std::{collections::HashMap, num::NonZeroUsize};
+use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use stable_vec::StableVec;
 use twizzler_runtime_api::ObjID;
@@ -26,16 +26,19 @@ pub type Descriptor = u32;
 /// A manager for open handles, per compartment.
 #[derive(Default, Clone)]
 pub struct HandleMgr<ServerData> {
-    handles: HashMap<ObjID, StableVec<ServerData>>,
+    handles: BTreeMap<ObjID, StableVec<ServerData>>,
     max: Option<NonZeroUsize>,
 }
 
 impl<ServerData> HandleMgr<ServerData> {
     /// Construct a new HandleMgr.
-    pub fn new(max: Option<usize>) -> Self {
+    pub const fn new(max: Option<usize>) -> Self {
         Self {
-            handles: HashMap::new(),
-            max: max.map(|max| NonZeroUsize::new(max)).flatten(),
+            handles: BTreeMap::new(),
+            max: match max {
+                Some(m) => NonZeroUsize::new(m),
+                None => None,
+            },
         }
     }
 

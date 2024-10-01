@@ -6,6 +6,8 @@
 #![feature(iterator_try_collect)]
 #![feature(result_option_inspect)]
 
+use std::mem::ManuallyDrop;
+
 use dynlink::{context::NewCompartmentFlags, engines::Backing};
 use miette::IntoDiagnostic;
 use tracing::{debug, info, warn, Level};
@@ -35,7 +37,7 @@ mod gates;
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::TRACE)
+        .with_max_level(Level::INFO)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
@@ -73,18 +75,29 @@ pub fn main() {
 fn monitor_init() -> miette::Result<()> {
     info!("monitor early init completed, starting init");
 
+    info!("starting logboi...");
+    let loader =
+        monitor_api::CompartmentLoader::new("liblogboi_srv.so", NewCompartmentFlags::EXPORT_GATES);
+    let logboi_comp = loader.load().into_diagnostic()?;
+
+    // we want logboi to stick around
+    let logboi_comp = ManuallyDrop::new(logboi_comp);
+
+    info!("starting global bar");
     let loader =
         monitor_api::CompartmentLoader::new("libbar_srv.so", NewCompartmentFlags::EXPORT_GATES);
     let bar_comp = loader.load().into_diagnostic()?;
 
-    //loop {}
+    info!("starting foo");
 
     let loader = monitor_api::CompartmentLoader::new("foo", NewCompartmentFlags::empty());
     let hw_comp = loader.load().into_diagnostic()?;
 
+    info!("starting foo 2");
     let loader = monitor_api::CompartmentLoader::new("foo", NewCompartmentFlags::empty());
     let hw_comp = loader.load().into_diagnostic()?;
 
+    loop {}
     Ok(())
 }
 
