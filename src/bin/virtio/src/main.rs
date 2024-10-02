@@ -15,8 +15,8 @@ use virtio_drivers::transport::{
 };
 
 mod transport;
-mod virtio_common_cfg;
-mod virtqueue;
+
+use transport::TwizzlerTransport;
 
 const NET_QUEUE_SIZE: usize = 16;
 
@@ -30,8 +30,8 @@ fn get_pcie_offset(bus: u8, device: u8, function: u8) -> usize {
     ((bus as usize * 256) + (device as usize * 8) + function as usize) * 4096
 }
 
-// Finds the virtio-net device and creates a PciTransport to facilitate the driver.
-fn init_virtio_net() -> PciTransport {
+// Finds the virtio-net device and creates a transport to facilitate the driver.
+fn init_virtio_net() -> TwizzlerTransport {
     println!("Searching for virtio-net device");
 
     let device_root = twizzler_driver::get_bustree_root();
@@ -46,22 +46,7 @@ fn init_virtio_net() -> PciTransport {
                 {
                     println!("Found VirtIO networking device!");
 
-                    let mmio = device.get_mmio(0).unwrap();
-
-                    let off =
-                        get_pcie_offset(info.get_data().bus_nr, info.get_data().dev_nr, 0);
-                    let cfg = unsafe { mmio.get_mmio_offset_mut::<PcieFunctionHeader>(off) };
-
-                    let base = cfg.into_ptr().as_raw_ptr().as_ptr() as *mut u8;
-
-                    let mut pci_root = unsafe { PciRoot::new(base, Cam::MmioCam) };
-                    let device_function = DeviceFunction {
-                        bus: info.get_data().bus_nr,
-                        device: info.get_data().dev_nr,
-                        function: info.get_data().func_nr,
-                    };
-
-                    return PciTransport::new::<TestHal>(&mut pci_root, device_function).unwrap();
+                    return TwizzlerTransport::new(child).unwrap();
                 }
             }
         }
