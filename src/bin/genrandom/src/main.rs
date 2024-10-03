@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use getrandom::getrandom_uninit;
+use getrandom::{getrandom, getrandom_uninit};
 use layout::{io::SeekFrom, Read, Seek, Write};
 use lethe_gadget_fat::filesystem::FileSystem;
 use twizzler_async::{block_on, Task, Timer};
@@ -35,15 +35,16 @@ pub fn main() {
     println!("Created disk");
     // // return;
     const OBJ_SIZE: u64 = 0x4_000_000_000;
-    const BUF_SIZE: u64 = 0x100000;
+    const BUF_SIZE: u64 = 0x1000000;
     const BUF_SIZE_USIZE: usize = BUF_SIZE as usize;
     const START_OFFSET: u64 = 0;
     const OFFSET_ITER: u64 = START_OFFSET / BUF_SIZE;
     const ITER_CT: u64 = OBJ_SIZE / BUF_SIZE;
     // fs.create_object(id, 1500);
-    let (tx, rx) = mpsc::sync_channel(5);
     d.seek(SeekFrom::Current(START_OFFSET as i64)).unwrap();
     println!("seeked forward");
+    let mut buf = vec![0u8; BUF_SIZE_USIZE];
+    let (tx, rx) = mpsc::sync_channel(1);
     let gen_thread = thread::spawn(move || {
         for i in OFFSET_ITER..ITER_CT {
             let mut buf = Box::new_uninit_slice(BUF_SIZE_USIZE);
@@ -82,6 +83,7 @@ pub fn main() {
     });
     // for i in OFFSET_ITER..ITER_CT {
     //     let start = Instant::now();
+    //     getrandom(&mut buf);
     //     let end = Instant::now();
     //     let getrandom_time = end - start;
     //     print!("Genrated bytes in {:?},\t", getrandom_time);

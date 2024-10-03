@@ -57,7 +57,7 @@ impl QemuCommand {
             .create(true)
             .open("target/nvme.img")
         {
-            f.set_len(0x1000000).unwrap();
+            f.set_len(0x4_000_000_000).unwrap();
         }
 
         self.cmd
@@ -73,7 +73,7 @@ impl QemuCommand {
             // .arg("mon:stdio")
             .arg("-nographic")
             .arg("-smp")
-            .arg("4");
+            .arg("32");
         self.cmd.arg("-serial").arg("mon:stdio");
 
         //-serial mon:stdio creates a multiplexed stdio backend connected
