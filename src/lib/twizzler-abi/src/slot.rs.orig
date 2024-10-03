@@ -1,6 +1,4 @@
 //! Manage slots in the address space. Currently not finished.
-<<<<<<< HEAD
-=======
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -20,7 +18,6 @@ pub(crate) struct Context {
     pub global_alloc: TwzGlobalAlloc,
 }
 
->>>>>>> readme, pointers to verification target
 #[allow(dead_code)]
 pub const RESERVED_TEXT: usize = 0;
 #[allow(dead_code)]

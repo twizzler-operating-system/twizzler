@@ -30,7 +30,6 @@ limine = "0.1.11"
 twizzler-queue-raw = { version = "*", path = "../lib/twizzler-queue-raw", default-features = false }
 syscall_encode = { version = "0.1.2" }
 volatile = "0.5"
-<<<<<<< HEAD
 # for crypto
 p256 = { version = "0.13.2", default-features = false, features = ["ecdsa"] }
 sha2 = { version = "0.10.8", default-features = false, features = [
@@ -39,7 +38,6 @@ sha2 = { version = "0.10.8", default-features = false, features = [
 # [dev-dependencies] # kernel doesn't include dev dependencies when testing
 # for testing crypto
 hex-literal = { version = "0.4.1", default-features = false }
-=======
 uart_16550 = "0.3.0"
 x86 = "0.52.0"
 acpi = "4.1.1"
@@ -47,7 +45,6 @@ arm64 = { package = "aarch64-cpu", version = "9.3.1" }
 registers = { package = "tock-registers", version = "0.8.x" }
 fdt = "0.1.5"
 
->>>>>>> hacky kani build to xtask
 
 [target.x86_64-unknown-none.dependencies]
 uart_16550 = "0.3.0"
@@ -66,8 +63,6 @@ features = ["spin_no_std"]
 
 [package.metadata]
 twizzler-build = "kernel"
-<<<<<<< HEAD
-=======
 
 [profile.release]
 debug = true
@@ -77,4 +72,3 @@ opt-level = 1
 
 [package.metadata.kani.flags]
 features = ["std"]
->>>>>>> hacky kani build to xtask

@@ -3,8 +3,6 @@ use core::fmt::Display;
 
 use nonoverlapping_interval_tree::{IntervalValue, NonOverlappingIntervalTree};
 
-<<<<<<< HEAD
-=======
 //
 // KANI TODO
 //
@@ -75,7 +73,6 @@ use crate::mutex::Mutex;
 // }
 
 
->>>>>>> wip commit, basic functio
 use super::{
     pages::{Page, PageRef},
     pagevec::{PageVec, PageVecRef},

@@ -1,9 +1,4 @@
-<<<<<<< HEAD
 name: Kani Build and Run
-=======
-
-name: Kani 
->>>>>>> 73de36adf36e949d259f1388d0743ca73c227ec3
 
 on:
   push:
@@ -19,7 +14,6 @@ jobs:
     runs-on: self-hosted
 
     steps:
-<<<<<<< HEAD
     # Step 1: Cleanup
     - name: Cleanup Workspace
       run: |
@@ -56,30 +50,3 @@ jobs:
       run: |
         ./kani/scripts/cargo-kani --workspace --exclude monitor -Z stubbing -Z unstable-options --output-into-files
 
-=======
-    - name: Cleanup
-      run: |
-        ls -la 
-        rm -rf ./* || true
-        rm -rf ./.??* || true
-        ls -la 
-    - uses: actions/checkout@v2
-      with:
-        submodules: recursive
-    - name: Install latest nightly
-      uses: actions-rs/toolchain@v1
-      with:
-          toolchain: stable
-    - name: Bootstrap Toolchain
-      run: cargo bootstrap
-    # x86_64 is the default, builds in debug mode
-    - name: Build x86_64
-      run: cargo build-all
-    - name: Test x86_64 Debug
-      run: cargo start-qemu --tests --qemu-options=--nographic
-    - name: Test x86_64 Release
-      run: cargo start-qemu --profile release --tests --qemu-options=--nographic
-    # aarch64 is compiled for QEMU virt, builds in debug mode
-    - name: Build aarch64
-      run: cargo build-all -a aarch64 -m virt  
->>>>>>> 73de36adf36e949d259f1388d0743ca73c227ec3

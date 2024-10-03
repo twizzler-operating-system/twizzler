@@ -1,8 +1,5 @@
 //! Functions for manipulating threads.
 
-<<<<<<< HEAD
-use core::sync::atomic::{AtomicU64, Ordering};
-=======
 /*
 KANI_TODO
 */
@@ -14,7 +11,6 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
->>>>>>> readme, pointers to verification target
 #[cfg(not(feature = "kernel"))]
 use core::time::Duration;
 
