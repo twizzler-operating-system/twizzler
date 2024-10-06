@@ -245,16 +245,19 @@ impl super::Monitor {
         let name_bytes = self
             .read_thread_simple_buffer(caller, thread, name_len)
             .ok_or(LoadCompartmentError::Unknown)?;
-        let name = String::from_utf8_lossy(&name_bytes);
-        let root = UnloadedLibrary::new(name.clone());
+        let input = String::from_utf8_lossy(&name_bytes);
+        let mut split = input.split("::");
+        let compname = split.next().ok_or(LoadCompartmentError::Unknown)?;
+        let libname = split.next().ok_or(LoadCompartmentError::Unknown)?;
+        let root = UnloadedLibrary::new(libname);
 
         let loader = {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
 
-            let loader = loader::RunCompLoader::new(&mut *dynlink, &name, root, new_comp_flags);
+            let loader = loader::RunCompLoader::new(&mut *dynlink, &compname, root, new_comp_flags);
             loader
         }
-        .inspect_err(|e| tracing::debug!("failed to load {}: {}", name, e))
+        .inspect_err(|e| tracing::debug!("failed to load {}::{}: {}", compname, libname, e))
         .map_err(|e| LoadCompartmentError::Unknown)?;
 
         let root_comp = {
@@ -262,7 +265,7 @@ impl super::Monitor {
                 &mut *self.locks.lock(ThreadKey::get().unwrap());
             loader
                 .build_rcs(&mut *cmp, &mut *dynlink, &mut *space)
-                .inspect_err(|e| tracing::debug!("failed to load {}: {}", name, e))
+                .inspect_err(|e| tracing::debug!("failed to load {}::{}: {}", compname, libname, e))
                 .map_err(|_| LoadCompartmentError::Unknown)?
         };
 

@@ -10,6 +10,7 @@ use std::mem::ManuallyDrop;
 
 use dynlink::context::NewCompartmentFlags;
 use miette::IntoDiagnostic;
+use monitor_api::CompartmentFlags;
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
 use twz_rt::{set_upcall_handler, OUR_RUNTIME};
@@ -72,28 +73,42 @@ fn monitor_init() -> miette::Result<()> {
     info!("monitor early init completed, starting init");
 
     info!("starting logboi...");
-    let loader =
-        monitor_api::CompartmentLoader::new("liblogboi_srv.so", NewCompartmentFlags::EXPORT_GATES);
+    let loader = monitor_api::CompartmentLoader::new(
+        "logboi",
+        "liblogboi_srv.so",
+        NewCompartmentFlags::EXPORT_GATES,
+    );
     let logboi_comp = loader.load().into_diagnostic()?;
 
     // we want logboi to stick around
     let logboi_comp = ManuallyDrop::new(logboi_comp);
 
-    if false {
+    if true {
         info!("starting global bar");
-        let loader =
-            monitor_api::CompartmentLoader::new("libbar_srv.so", NewCompartmentFlags::EXPORT_GATES);
+        let loader = monitor_api::CompartmentLoader::new(
+            "bar",
+            "libbar_srv.so",
+            NewCompartmentFlags::EXPORT_GATES,
+        );
         let bar_comp = loader.load().into_diagnostic()?;
+        let _ = ManuallyDrop::new(bar_comp);
     }
 
     info!("starting foo");
 
-    let loader = monitor_api::CompartmentLoader::new("foo", NewCompartmentFlags::empty());
-    let hw_comp = loader.load().into_diagnostic()?;
+    let loader = monitor_api::CompartmentLoader::new("foo", "foo", NewCompartmentFlags::empty());
+    let foo = loader.load().into_diagnostic()?;
+
+    loop {
+        let info = foo.info();
+        if info.flags.contains(CompartmentFlags::EXITED) {
+            break;
+        }
+    }
 
     info!("starting foo 2");
-    let loader = monitor_api::CompartmentLoader::new("foo", NewCompartmentFlags::empty());
-    let hw_comp = loader.load().into_diagnostic()?;
+    let loader = monitor_api::CompartmentLoader::new("foo2", "foo", NewCompartmentFlags::empty());
+    let foo2 = loader.load().into_diagnostic()?;
 
     loop {}
     Ok(())

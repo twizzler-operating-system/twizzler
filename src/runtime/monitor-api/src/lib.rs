@@ -297,9 +297,13 @@ pub struct CompartmentLoader {
 
 impl CompartmentLoader {
     /// Make a new compartment loader.
-    pub fn new(name: impl ToString, flags: NewCompartmentFlags) -> Self {
+    pub fn new(
+        compname: impl ToString,
+        libname: impl ToString,
+        flags: NewCompartmentFlags,
+    ) -> Self {
         Self {
-            name: name.to_string(),
+            name: format!("{}::{}", compname.to_string(), libname.to_string()),
             flags,
         }
     }
@@ -478,6 +482,7 @@ bitflags::bitflags! {
     pub struct CompartmentFlags : u64 {
         /// Compartment is ready (libraries relocated and constructors run).
         const READY = 0x1;
+        const EXITED = 0x20;
     }
 }
 
