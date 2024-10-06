@@ -41,7 +41,7 @@ impl<T: Invariant> VectorBase<T> {
         unsafe { addr_of!(*self).byte_add(self.array_offset()).cast() }
     }
 
-    pub fn max(&self) -> usize {
+    pub fn capacity(&self) -> usize {
         self.max
             .map(|max| max as usize)
             .unwrap_or(MAX_SIZE - (NULLPAGE_SIZE * 8 + self.array_offset()) / size_of::<T>())
@@ -53,7 +53,7 @@ impl<T: Invariant> VectorBase<T> {
     {
         self.len.try_modify(
             |mut len| {
-                if *len as usize >= self.max() {
+                if *len as usize >= self.capacity() {
                     return Err(TxError::Abort(()));
                 }
 
@@ -71,6 +71,27 @@ impl<T: Invariant> VectorBase<T> {
         )
     }
 
+    pub fn pop_tx<'a>(&'a self, tx: impl TxHandle<'a>) -> Result<Option<T>, TxError>
+    where
+        T: CopyStorable,
+    {
+        self.len.try_modify(
+            |mut len| {
+                if *len == 0 {
+                    return Ok(None);
+                }
+
+                *len -= 1;
+                unsafe {
+                    let ptr = self.array_start().add(*len as usize);
+                    let value = ptr.read();
+                    Ok(Some(value))
+                }
+            },
+            &tx,
+        )
+    }
+
     pub fn get(&self, idx: usize) -> Option<&T> {
         if idx as u64 >= *self.len {
             return None;
@@ -78,6 +99,48 @@ impl<T: Invariant> VectorBase<T> {
         unsafe {
             let ptr = self.array_start().add(idx);
             Some(ptr.as_ref().unwrap())
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn len(&self) -> usize {
+        *self.len as usize
+    }
+
+    pub fn last(&self) -> Option<&T> {
+        if self.is_empty() {
+            None
+        } else {
+            self.get(self.len() - 1)
+        }
+    }
+
+    pub fn iter(&self) -> Iter<'_, T> {
+        Iter {
+            vec: self,
+            index: 0,
+        }
+    }
+}
+
+pub struct Iter<'a, T: Invariant> {
+    vec: &'a VectorBase<T>,
+    index: usize,
+}
+
+impl<'a, T: Invariant> Iterator for Iter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.vec.len() {
+            let item = self.vec.get(self.index);
+            self.index += 1;
+            item
+        } else {
+            None
         }
     }
 }
@@ -95,5 +158,29 @@ mod test {
         obj.tx(|tx| obj.base().push_tx(42, tx)).unwrap();
         let v = obj.base().get(0).cloned();
         assert_eq!(v, Some(42));
+    }
+
+    #[test]
+    fn test2() {
+        let obj = ObjectBuilder::default()
+            .init(VectorBase::<u32>::default())
+            .unwrap();
+
+        obj.tx(|tx| {
+            obj.base().push_tx(42, tx)?;
+            obj.base().push_tx(43, tx)?;
+            obj.base().push_tx(44, tx)
+        })
+        .unwrap();
+
+        assert_eq!(obj.base().len(), 3);
+        assert_eq!(obj.base().get(1).cloned(), Some(43));
+        assert_eq!(obj.base().last().cloned(), Some(44));
+
+        let sum: u32 = obj.base().iter().sum();
+        assert_eq!(sum, 129);
+
+        obj.tx(|tx| obj.base().pop_tx(tx)).unwrap();
+        assert_eq!(obj.base().len(), 2);
     }
 }
