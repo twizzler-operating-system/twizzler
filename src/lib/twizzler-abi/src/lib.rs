@@ -30,6 +30,7 @@ extern crate alloc as rustc_alloc;
 
 pub mod aux;
 pub mod device;
+pub mod klog;
 pub mod kso;
 pub mod marker;
 pub mod meta;

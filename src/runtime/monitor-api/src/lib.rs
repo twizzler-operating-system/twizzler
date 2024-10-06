@@ -135,7 +135,7 @@ impl TlsTemplateInfo {
 
         // Step 2a: "relocate" the pointers inside the DTV. First entry is the gen count, so skip
         // that.
-        for entry in dtv.iter_mut().skip(1) {
+        for (i, entry) in dtv.iter_mut().enumerate().skip(1) {
             let offset = (*entry).byte_offset_from(self.alloc_base.as_ptr());
             *entry = new.byte_offset(offset);
         }

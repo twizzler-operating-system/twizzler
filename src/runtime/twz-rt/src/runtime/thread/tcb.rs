@@ -6,7 +6,7 @@
 //! that might call into std (with one exception, below).
 
 use std::{
-    alloc::GlobalAlloc,
+    alloc::{GlobalAlloc, Layout},
     cell::UnsafeCell,
     collections::BTreeMap,
     panic::catch_unwind,
@@ -163,9 +163,7 @@ impl TlsGenMgr {
             return None;
         }
 
-        //crate::preinit_println!("T: {:?}", cc.sctx);
         let new = unsafe { OUR_RUNTIME.get_alloc().alloc(template.layout) };
-        //crate::preinit_println!("T2: {:?}", cc.sctx);
         let tlsgen = self.map.entry(template.gen).or_insert_with(|| TlsGen {
             template: *template,
             thread_count: 0,

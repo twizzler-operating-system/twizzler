@@ -125,6 +125,7 @@ impl<'a> Drop for IdDropper<'a> {
 
 #[no_mangle]
 pub extern "C" fn __twz_rt_cross_compartment_entry() {
+    twizzler_abi::syscall::sys_thread_settls(0);
     let mut inner = THREAD_MGR.inner.lock();
     let id = inner.next_id().freeze();
     drop(inner);

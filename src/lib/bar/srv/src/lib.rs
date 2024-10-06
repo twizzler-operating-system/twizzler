@@ -5,11 +5,15 @@ extern crate twz_rt;
 
 pub static mut GL: u32 = 0;
 
+#[thread_local]
+pub static mut TL: u32 = 0;
+
 #[secgate::secure_gate]
 pub fn bar_test() -> u32 {
     unsafe {
         GL += 1;
-        GL
+        TL += 1;
+        GL + TL
     }
 }
 

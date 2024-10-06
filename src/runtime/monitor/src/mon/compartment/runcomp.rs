@@ -17,7 +17,7 @@ use twizzler_abi::syscall::{
     ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
 use twizzler_runtime_api::{AuxEntry, MapError, MapFlags, ObjID, ObjectHandle};
-use twz_rt::CompartmentInitInfo;
+use twz_rt::{CompartmentInitInfo, RuntimeThreadControl};
 
 use super::{compconfig::CompConfigObject, compthread::CompThread};
 use crate::mon::{
@@ -356,7 +356,9 @@ impl RunComp {
         let region = dynlink
             .get_compartment_mut(self.compartment_id)
             .unwrap()
-            .build_tls_region((), |layout| unsafe { self.alloc.malloc(layout) }.ok())
+            .build_tls_region(RuntimeThreadControl::default(), |layout| {
+                unsafe { self.alloc.malloc(layout) }.ok()
+            })
             .ok()?;
 
         let template: TlsTemplateInfo = region.into();
