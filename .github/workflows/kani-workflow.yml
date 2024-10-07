@@ -30,5 +30,4 @@ jobs:
     - name: Bootstrap Toolchain
       run: cargo bootstrap
     - name: Run Kani
-      uses: model-checking/kani-github-action@v1.1
-    # x86_64 is the default, builds in debug mode
+      uses: model-checking/kani-github-action@v1.1 --workspace --exclude monitor -Z stubbing
