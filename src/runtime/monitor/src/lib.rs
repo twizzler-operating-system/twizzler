@@ -10,6 +10,7 @@ use std::mem::ManuallyDrop;
 
 use dynlink::context::NewCompartmentFlags;
 use miette::IntoDiagnostic;
+use mon::get_monitor;
 use monitor_api::CompartmentFlags;
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
@@ -94,6 +95,9 @@ fn monitor_init() -> miette::Result<()> {
         let _ = ManuallyDrop::new(bar_comp);
     }
 
+    let stats = get_monitor().stats();
+    info!("stats1: {:#?}", stats);
+
     info!("starting foo");
 
     let loader = monitor_api::CompartmentLoader::new("foo", "foo", NewCompartmentFlags::empty());
@@ -105,6 +109,12 @@ fn monitor_init() -> miette::Result<()> {
             break;
         }
     }
+
+    drop(foo);
+    let stats = get_monitor().stats();
+    info!("stats2: {:#?}", stats);
+
+    return Ok(());
 
     info!("starting foo 2");
     let loader = monitor_api::CompartmentLoader::new("foo2", "foo", NewCompartmentFlags::empty());

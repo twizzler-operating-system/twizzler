@@ -18,6 +18,8 @@ mod unmapper;
 pub use handle::MapHandle;
 pub use unmapper::Unmapper;
 
+use super::stat::SpaceStats;
+
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 /// A mapping of an object and flags.
 pub struct MapInfo {
@@ -51,6 +53,13 @@ fn mapflags_into_prot(flags: MapFlags) -> Protections {
 }
 
 impl Space {
+    /// Get the stats.
+    pub fn stat(&self) -> SpaceStats {
+        SpaceStats {
+            mapped: self.maps.len(),
+        }
+    }
+
     /// Map an object into the space.
     pub fn map(&mut self, info: MapInfo) -> Result<MapHandle, MapError> {
         // Can't use the entry API here because the closure may fail.

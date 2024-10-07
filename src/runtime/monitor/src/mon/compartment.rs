@@ -21,6 +21,8 @@ pub(crate) use compthread::StackObject;
 pub use loader::RunCompLoader;
 pub use runcomp::*;
 
+use super::stat::CompartmentMgrStats;
+
 /// Manages compartments.
 #[derive(Default)]
 pub struct CompartmentMgr {
@@ -174,6 +176,12 @@ impl CompartmentMgr {
         let ex = rc.has_flag(COMP_EXITED);
         if z && ex {
             self.remove(instance);
+        }
+    }
+
+    pub fn stat(&self) -> CompartmentMgrStats {
+        CompartmentMgrStats {
+            nr_compartments: self.instances.len(),
         }
     }
 }

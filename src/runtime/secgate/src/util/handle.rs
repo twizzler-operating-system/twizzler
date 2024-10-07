@@ -55,6 +55,13 @@ impl<ServerData> HandleMgr<ServerData> {
             .unwrap_or(0)
     }
 
+    /// Get the total number of open handles across all compartments.
+    pub fn total_count(&self) -> usize {
+        self.handles
+            .values()
+            .fold(0, |acc, val| acc + val.num_elements())
+    }
+
     /// Lookup the server data associated with a descriptor.
     pub fn lookup(&self, comp: ObjID, ds: Descriptor) -> Option<&ServerData> {
         let idx: usize = ds.try_into().ok()?;

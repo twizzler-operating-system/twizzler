@@ -21,6 +21,7 @@ use crate::{api::MONITOR_INSTANCE_ID, gates::MonitorCompControlCmd, init::InitDy
 pub(crate) mod compartment;
 pub mod library;
 pub(crate) mod space;
+pub mod stat;
 pub(crate) mod thread;
 
 /// A security monitor instance. All monitor logic is implemented as methods for this type.

@@ -21,6 +21,7 @@ use twz_rt::RuntimeThreadControl;
 use super::{
     get_monitor,
     space::{MapHandle, MapInfo, Space},
+    stat::ThreadMgrStats,
 };
 use crate::api::MONITOR_INSTANCE_ID;
 
@@ -62,6 +63,12 @@ impl ThreadMgr {
         self.all.remove(&thread.id);
         if let Some(ref cleaner) = self.cleaner.get() {
             cleaner.untrack(thread.id);
+        }
+    }
+
+    pub fn stat(&self) -> ThreadMgrStats {
+        ThreadMgrStats {
+            nr_threads: self.all.len(),
         }
     }
 
