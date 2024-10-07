@@ -30,4 +30,6 @@ jobs:
     - name: Bootstrap Toolchain
       run: cargo bootstrap
     - name: Run Kani
-      uses: model-checking/kani-github-action@v1.1 --workspace --exclude monitor -Z stubbing
+      uses: model-checking/kani-github-action@v1.1
+      with:
+        args: '--workspace --exclude monitor -Z stubbing'
