@@ -915,6 +915,7 @@ dependencies = [
  "miette",
  "petgraph",
  "secgate",
+ "stable-vec",
  "talc",
  "thiserror",
  "tracing",

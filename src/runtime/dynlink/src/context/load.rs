@@ -287,12 +287,12 @@ impl Context {
         unlib: &UnloadedLibrary,
     ) -> Option<(NodeIndex, CompartmentId, &Compartment)> {
         for (idx, comp) in self.compartments.iter().enumerate() {
-            if let Some(lib_id) = comp.library_names.get(&unlib.name) {
+            if let Some(lib_id) = comp.1.library_names.get(&unlib.name) {
                 let lib = self.get_library(LibraryId(*lib_id));
                 if let Ok(lib) = lib {
                     // Only allow cross-compartment refs for a library that has secure gates.
                     if lib.secgate_info.info_addr.is_some() && lib.allows_gates() {
-                        return Some((*lib_id, CompartmentId(idx), comp));
+                        return Some((*lib_id, CompartmentId(idx), comp.1));
                     }
                     return None;
                 }

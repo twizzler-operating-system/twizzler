@@ -1,6 +1,10 @@
 use std::{borrow::BorrowMut, collections::HashMap};
 
-use dynlink::{compartment::CompartmentId, context::NewCompartmentFlags, library::UnloadedLibrary};
+use dynlink::{
+    compartment::CompartmentId,
+    context::{Context, NewCompartmentFlags},
+    library::UnloadedLibrary,
+};
 use happylock::ThreadKey;
 use secgate::util::Descriptor;
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync, ThreadSyncSleep};
@@ -29,6 +33,7 @@ pub struct CompartmentMgr {
     names: HashMap<String, ObjID>,
     instances: HashMap<ObjID, RunComp>,
     dynlink_map: HashMap<CompartmentId, ObjID>,
+    cleanup_queue: Vec<RunComp>,
 }
 
 impl CompartmentMgr {
@@ -163,7 +168,9 @@ impl CompartmentMgr {
             return;
         };
         if rc.use_count == 0 {
-            self.remove(instance);
+            if let Some(rc) = self.remove(instance) {
+                self.cleanup_queue.push(rc)
+            }
         }
     }
 
@@ -175,13 +182,31 @@ impl CompartmentMgr {
         let z = rc.dec_use_count();
         let ex = rc.has_flag(COMP_EXITED);
         if z && ex {
-            self.remove(instance);
+            if let Some(rc) = self.remove(instance) {
+                self.cleanup_queue.push(rc)
+            }
         }
     }
 
     pub fn stat(&self) -> CompartmentMgrStats {
         CompartmentMgrStats {
             nr_compartments: self.instances.len(),
+        }
+    }
+
+    pub fn process_cleanup_queue(&mut self, dynlink: &mut Context) {
+        for rc in self.cleanup_queue.drain(..) {
+            dynlink.unload_compartment(rc.compartment_id);
+            /*
+            let Ok(dc) = dynlink.get_compartment_mut(rc.compartment_id) else {
+                continue;
+            };
+            let ids = dc.library_ids().collect::<Vec<_>>();
+            for id in ids {
+                tracing::info!("dynlink: remove id: {:?}", id);
+            }
+            tracing::info!("dynlink: remove comp: {:?}", rc.compartment_id);
+            */
         }
     }
 }
@@ -288,16 +313,14 @@ impl super::Monitor {
 
     /// Drop a compartment handle.
     pub fn drop_compartment_handle(&self, caller: ObjID, desc: Descriptor) {
-        let comp = self
-            .compartment_handles
-            .write(ThreadKey::get().unwrap())
-            .remove(caller, desc);
+        let (_, _, ref mut cmgr, ref mut dynlink, _, ref mut comp_handles) =
+            *self.locks.lock(ThreadKey::get().unwrap());
+        let comp = comp_handles.remove(caller, desc);
 
         if let Some(comp) = comp {
-            self.comp_mgr
-                .write(ThreadKey::get().unwrap())
-                .dec_use_count(comp.instance);
+            cmgr.dec_use_count(comp.instance);
         }
+        cmgr.process_cleanup_queue(&mut *dynlink);
     }
 
     pub fn update_compartment_flags(

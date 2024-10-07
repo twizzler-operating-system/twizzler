@@ -283,16 +283,11 @@ pub fn monitor_rt_object_unmap(
     use twz_rt::{RuntimeState, OUR_RUNTIME};
     if OUR_RUNTIME.state().contains(RuntimeState::READY) {
         let monitor = crate::mon::get_monitor();
-        let key = happylock::ThreadKey::get().unwrap();
-        monitor
-            .comp_mgr
-            .write(key)
-            .get_mut(
-                info.source_context()
-                    .unwrap_or(crate::api::MONITOR_INSTANCE_ID),
-            )
-            .unwrap()
-            .unmap_object(crate::mon::space::MapInfo { id, flags })
+        monitor.unmap_object(
+            info.source_context()
+                .unwrap_or(crate::api::MONITOR_INSTANCE_ID),
+            crate::mon::space::MapInfo { id, flags },
+        );
     }
 }
 

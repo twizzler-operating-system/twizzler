@@ -334,6 +334,12 @@ impl Library {
     }
 }
 
+impl Drop for Library {
+    fn drop(&mut self) {
+        tracing::info!("dynlink: drop library: {:?}", self);
+    }
+}
+
 impl Debug for Library {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Library")

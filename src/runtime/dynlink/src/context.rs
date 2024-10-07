@@ -3,6 +3,7 @@
 use std::{collections::HashMap, fmt::Display, ops::Index};
 
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
+use stable_vec::StableVec;
 
 use crate::{
     compartment::{Compartment, CompartmentId},
@@ -27,7 +28,7 @@ pub struct Context {
     // Track all the compartment names.
     compartment_names: HashMap<String, usize>,
     // Compartments get stable IDs from StableVec.
-    compartments: Vec<Compartment>,
+    compartments: StableVec<Compartment>,
 
     // This is the primary list of libraries, all libraries have an entry here, and they are
     // placed here independent of compartment. Edges denote dependency relationships, and may also
@@ -85,7 +86,7 @@ impl Context {
             engine,
             compartment_names: HashMap::new(),
             library_deps: StableDiGraph::new(),
-            compartments: Vec::new(),
+            compartments: StableVec::new(),
         }
     }
 
@@ -101,7 +102,7 @@ impl Context {
 
     /// Get a reference to a compartment back by ID.
     pub fn get_compartment(&self, id: CompartmentId) -> Result<&Compartment, DynlinkError> {
-        if self.compartments.len() <= id.0 {
+        if !self.compartments.has_element_at(id.0) {
             return Err(DynlinkErrorKind::InvalidCompartmentId { id }.into());
         }
         Ok(&self.compartments[id.0])
@@ -112,7 +113,7 @@ impl Context {
         &mut self,
         id: CompartmentId,
     ) -> Result<&mut Compartment, DynlinkError> {
-        if self.compartments.len() <= id.0 {
+        if !self.compartments.has_element_at(id.0) {
             return Err(DynlinkErrorKind::InvalidCompartmentId { id }.into());
         }
         Ok(&mut self.compartments[id.0])
@@ -210,6 +211,19 @@ impl Context {
         self.add_dep(parent.0, dependee.0);
     }
 
+    pub fn unload_compartment(&mut self, comp_id: CompartmentId) {
+        let Ok(comp) = self.get_compartment(comp_id) else {
+            return;
+        };
+        let name = comp.name.clone();
+        let ids = comp.library_ids().collect::<Vec<_>>();
+        for lib in ids {
+            self.library_deps.remove_node(lib.0);
+        }
+        self.compartment_names.remove(&name);
+        self.compartments.remove(comp_id.0);
+    }
+
     /// Create a new compartment with a given name.
     pub fn add_compartment(
         &mut self,
@@ -217,7 +231,7 @@ impl Context {
         new_comp_flags: NewCompartmentFlags,
     ) -> Result<CompartmentId, DynlinkError> {
         let name = name.to_string();
-        let idx = self.compartments.len();
+        let idx = self.compartments.next_push_index();
         let comp = Compartment::new(name.clone(), CompartmentId(idx), new_comp_flags);
         self.compartments.push(comp);
         self.compartment_names.insert(name, idx);

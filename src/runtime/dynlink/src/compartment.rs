@@ -83,3 +83,9 @@ impl Debug for Compartment {
         write!(f, "Compartment[{}]", self.name)
     }
 }
+
+impl Drop for Compartment {
+    fn drop(&mut self) {
+        println!("dynlink: drop compartment {:?}", self);
+    }
+}

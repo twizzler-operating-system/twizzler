@@ -195,6 +195,13 @@ impl Monitor {
         Ok(handle)
     }
 
+    pub fn unmap_object(&self, sctx: ObjID, info: MapInfo) {
+        self.unmapper
+            .get()
+            .unwrap()
+            .background_unmap_object_from_comp(sctx, info);
+    }
+
     /// Get the object ID for this compartment-thread's simple buffer.
     pub fn get_thread_simple_buffer(&self, sctx: ObjID, thread: ObjID) -> Option<ObjID> {
         let mut locks = self.locks.lock(ThreadKey::get().unwrap());
