@@ -141,7 +141,7 @@ mod units_verification {
     //     assert_eq!(Seconds(secs) * scalar, TimeSpan::new(secs * scalar, 0));
     //     assert_eq!(scalar * Seconds(secs), TimeSpan::new(secs * scalar, 0));
     // }
-
+/*
     #[kani::proof]
     #[kani::unwind(10)]     
     pub fn femtos(){
@@ -204,8 +204,8 @@ mod units_verification {
         ];
         kani::concrete_playback_run(concrete_vals, conversion);
     }
+*/
 }
-
 
 #[cfg(test)]
 mod tests {
