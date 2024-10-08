@@ -1,6 +1,6 @@
 #!/bin/bash
-cd ../kani
+cd ~/kani 
 cargo build-dev
-cd ../twizzler
+cd ~/twizzler
 ../kani/scripts/cargo-kani --workspace --exclude monitor -Z stubbing -Z unstable-options --output-into-files
 

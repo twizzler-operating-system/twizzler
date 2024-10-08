@@ -23,6 +23,8 @@ jobs:
     - uses: actions/checkout@v2
       with:
         submodules: recursive
+    - name: Run replace script
+      run: ./admin_scripts/replace.sh
     - name: Install latest nightly
       uses: actions-rs/toolchain@v1
       with:
