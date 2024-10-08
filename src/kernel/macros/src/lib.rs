@@ -1,13 +1,12 @@
 #![feature(extend_one)]
 
-use proc_macro::TokenStream;
-use proc_macro::TokenTree;
+use proc_macro::{TokenStream, TokenTree};
 extern crate proc_macro;
 
 #[proc_macro_attribute]
-// Okay, look, I know what you're gonna say. Why do we need to get this complicated just to do tests.
-// The answer is names. See, our friends in the rust community have not fully implemented this issue:
-// https://github.com/rust-lang/rust/issues/50297. Until this is implemented, I don't know how to grab
+// Okay, look, I know what you're gonna say. Why do we need to get this complicated just to do
+// tests. The answer is names. See, our friends in the rust community have not fully implemented
+// this issue: https://github.com/rust-lang/rust/issues/50297. Until this is implemented, I don't know how to grab
 // name from a test function in a way that makes the test _runner_ know the names of the tests it's
 // running. So we just embed the name ourselves using #[test_case].
 pub fn kernel_test(_attr: TokenStream, items: TokenStream) -> TokenStream {

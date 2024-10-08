@@ -1,5 +1,5 @@
 /// A Generic Interrupt Controller (GIC) v2 CPU Interface
-/// 
+///
 /// The full specification can be found here:
 ///     https://developer.arm.com/documentation/ihi0048/b?lang=en
 ///
@@ -8,7 +8,6 @@
 /// A summary of its functionality can be found in section 10.6
 /// "ARM Cortex-A Series Programmer’s Guide for ARMv8-A":
 ///     https://developer.arm.com/documentation/den0024/a/
-
 use registers::{
     interfaces::{Readable, Writeable},
     register_bitfields, register_structs,
@@ -16,7 +15,6 @@ use registers::{
 };
 
 use super::super::mmio::MmioRef;
-
 use crate::memory::VirtAddr;
 
 // Each register in the specification is prefixed with GICC_
@@ -38,11 +36,14 @@ register_bitfields! {
     /// Interrupt Acknowledge Register
     IAR [
         // bits [12:10] are used to identify the CPUID of an SGI
+        CPUID OFFSET(10) NUMBITS(3) [],
         InterruptID OFFSET(0) NUMBITS(10) []
     ],
 
     /// End of Interrupt Register
     EOIR [
+        // CPUID from an SGI
+        CPUID OFFSET(10) NUMBITS(3) [],
         // the EOIINTID field value
         InterruptID OFFSET(0) NUMBITS(10) []
     ]
@@ -89,7 +90,7 @@ impl GICC {
     }
 
     /// get the interrupt id for a pending interrupt signal
-    pub fn get_pending_interrupt_number(&self) -> u32 {
+    pub fn get_pending_interrupt_number(&self) -> (u32, Option<u32>) {
         // Reading the interrupt id causes the interrupt
         // to be marked active in the distributor. This
         // returns the interrupt id of the highest pending interrupt.
@@ -103,16 +104,26 @@ impl GICC {
             // - all pending interrupts are low priority
             panic!("spurious interrupt id detected!!");
         }
+        let cpuid = if super::GICD::SGI_ID_RANGE.contains(&int_id) {
+            Some(self.registers.IAR.read(IAR::CPUID))
+        } else {
+            None
+        };
         // every read of the IAR must have a matching write to the EOIR
-        int_id.into()
+        (int_id, cpuid)
     }
 
     /// notify cpu interface that processing of interrupt has completed
-    pub fn finish_active_interrupt(&self, int_id: u32) {
+    pub fn finish_active_interrupt(&self, int_id: u32, core: Option<u32>) {
         // A write to the EOIR corrsponds to the most recent valid
         // read of the IAR value. A return of a spurious ID from IAR
         // does not have to be written to EOIR.
-        self.registers.EOIR.write(EOIR::InterruptID.val(int_id as u32));
+        //
+        // If an SGI occured, a write to this field must be the CPUID
+        // otherwise this value should be zero.
+        self.registers
+            .EOIR
+            .write(EOIR::InterruptID.val(int_id as u32) + EOIR::CPUID.val(core.unwrap_or(0)));
     }
 
     /// print the configuration of the distributor

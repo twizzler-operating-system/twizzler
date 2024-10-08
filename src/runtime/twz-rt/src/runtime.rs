@@ -1,6 +1,9 @@
 //! Top level runtime module, managing the basic presentation of the runtime.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Mutex,
+};
 
 mod alloc;
 mod core;
@@ -14,11 +17,17 @@ mod thread;
 mod time;
 pub(crate) mod upcall;
 
+pub use core::CompartmentInitInfo;
+
 pub use thread::RuntimeThreadControl;
+pub use upcall::set_upcall_handler;
+
+use self::object::ObjectHandleManager;
 
 /// The runtime trait implementer itself.
 pub struct ReferenceRuntime {
     pub(crate) state: AtomicU32,
+    pub(crate) object_manager: Mutex<ObjectHandleManager>,
 }
 
 impl std::fmt::Debug for ReferenceRuntime {
@@ -39,22 +48,32 @@ bitflags::bitflags! {
     /// Various state flags for the runtime.
     pub struct RuntimeState : u32 {
         const READY = 1;
+        const IS_MONITOR = 2;
     }
 }
 
 impl ReferenceRuntime {
-    fn state(&self) -> RuntimeState {
+    /// Returns the runtime state flags.
+    pub fn state(&self) -> RuntimeState {
         RuntimeState::from_bits_truncate(self.state.load(Ordering::SeqCst))
     }
 
-    fn set_runtime_ready(&self) {
+    /// Set the runtime ready state. If the runtime has not been initialized, the result is
+    /// undefined.
+    pub unsafe fn set_runtime_ready(&self) {
         self.state
             .fetch_or(RuntimeState::READY.bits(), Ordering::SeqCst);
+    }
+
+    fn set_is_monitor(&self) {
+        self.state
+            .fetch_or(RuntimeState::IS_MONITOR.bits(), Ordering::SeqCst);
     }
 }
 
 pub static OUR_RUNTIME: ReferenceRuntime = ReferenceRuntime {
     state: AtomicU32::new(0),
+    object_manager: Mutex::new(ObjectHandleManager::new()),
 };
 
 #[cfg(feature = "runtime")]
@@ -62,6 +81,7 @@ pub(crate) mod do_impl {
     use twizzler_runtime_api::Runtime;
 
     use super::ReferenceRuntime;
+    use crate::preinit_println;
 
     impl Runtime for ReferenceRuntime {}
 
@@ -76,3 +96,13 @@ pub(crate) mod do_impl {
     #[used]
     static USE_MARKER: fn() -> &'static (dyn Runtime + Sync) = __twz_get_runtime;
 }
+
+// These are exported by libunwind, but not re-exported by the standard library that pulls that in.
+// Or, at least, that's what it seems like. In any case, they're no-ops in libunwind and musl, so
+// this is fine for now.
+#[no_mangle]
+pub fn __register_frame_info() {}
+#[no_mangle]
+pub fn __deregister_frame_info() {}
+#[no_mangle]
+pub fn __cxa_finalize() {}

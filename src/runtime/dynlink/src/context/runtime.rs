@@ -1,10 +1,13 @@
+use std::alloc::Layout;
+
+use twizzler_abi::object::MAX_SIZE;
+
+use super::{Context, LoadedOrUnloaded};
 use crate::{
     library::{CtorInfo, LibraryId},
     tls::TlsRegion,
     DynlinkError,
 };
-
-use super::{engine::ContextEngine, Context, LoadedOrUnloaded};
 
 #[repr(C)]
 pub struct RuntimeInitInfo {
@@ -13,6 +16,7 @@ pub struct RuntimeInitInfo {
     pub root_name: String,
     pub used_slots: Vec<usize>,
     pub ctors: Vec<CtorInfo>,
+    pub bootstrap_alloc_slot: usize,
 }
 
 // Safety: the pointers involved here are used for a one-time handoff during bootstrap.
@@ -20,24 +24,29 @@ unsafe impl Send for RuntimeInitInfo {}
 unsafe impl Sync for RuntimeInitInfo {}
 
 impl RuntimeInitInfo {
-    pub(crate) fn new<E: ContextEngine>(
+    pub(crate) fn new(
         tls_region: TlsRegion,
-        ctx: &Context<E>,
+        ctx: &Context,
         root_name: String,
         ctors: Vec<CtorInfo>,
     ) -> Self {
+        let alloc_test = unsafe { std::alloc::alloc(Layout::from_size_align(16, 8).unwrap()) }
+            as usize
+            / MAX_SIZE;
         Self {
             tls_region,
             ctx: ctx as *const _ as *const u8,
             root_name,
             used_slots: vec![],
             ctors,
+            bootstrap_alloc_slot: alloc_test,
         }
     }
 }
 
-impl<Engine: ContextEngine> Context<Engine> {
-    fn build_ctors(&self, root_id: LibraryId) -> Result<Vec<CtorInfo>, DynlinkError> {
+impl Context {
+    /// Build up a list of constructors to call for a library and its dependencies.
+    pub fn build_ctors_list(&self, root_id: LibraryId) -> Result<Vec<CtorInfo>, DynlinkError> {
         let mut ctors = vec![];
         self.with_dfs_postorder(root_id, |lib| match lib {
             LoadedOrUnloaded::Unloaded(_) => {}
@@ -54,7 +63,7 @@ impl<Engine: ContextEngine> Context<Engine> {
         root_id: LibraryId,
         tls: TlsRegion,
     ) -> Result<RuntimeInitInfo, DynlinkError> {
-        let ctors = self.build_ctors(root_id)?;
+        let ctors = self.build_ctors_list(root_id)?;
         Ok(RuntimeInitInfo::new(
             tls,
             self,

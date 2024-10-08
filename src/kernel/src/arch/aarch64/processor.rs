@@ -1,20 +1,19 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
-use arm64::registers::{TPIDR_EL1, MPIDR_EL1};
-use arm64::asm::{wfe, sev};
+use arm64::{
+    asm::{sev, wfe},
+    registers::{MPIDR_EL1, TPIDR_EL1},
+};
 use registers::interfaces::{Readable, Writeable};
 
 use crate::{
-    machine::processor::{BootMethod, BootArgs},
-    memory::VirtAddr,
-    processor::Processor,
-    once::Once,
     current_processor,
+    machine::processor::{BootArgs, BootMethod},
+    memory::VirtAddr,
+    once::Once,
+    processor::Processor,
 };
-
-#[allow(unused_imports)] // DEBUG
-use super::{interrupt::InterProcessorInterrupt};
 
 // initialize processor and any processor specific features
 pub fn init(tls: VirtAddr) {
@@ -41,7 +40,7 @@ pub fn enumerate_cpus() -> u32 {
 /// on the processor and register them in the time subsystem.
 pub fn enumerate_clocks() {
     // for now we utlize the physical timer (CNTPCT_EL0)
-    
+
     // save reference to the CNTP clock source into global array
     crate::time::register_clock(super::cntp::PhysicalTimer::new());
 }

@@ -8,7 +8,8 @@ use crate::{
     memory::frame::{free_frame, FrameAdapter, FrameRef},
 };
 
-/// Management for consistency, wrapping any cache-line flushing and TLB coherence into a single object.
+/// Management for consistency, wrapping any cache-line flushing and TLB coherence into a single
+/// object.
 pub(super) struct Consistency {
     cl: ArchCacheLineMgr,
     tlb: ArchTlbMgr,

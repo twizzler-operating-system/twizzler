@@ -2,12 +2,12 @@
 
 use core::{marker::PhantomData, ptr::NonNull};
 
-use crate::rustc_alloc::boxed::Box;
 use twizzler_runtime_api::{InternalHandleRefs, MapFlags, ObjectHandle};
 
 use crate::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     runtime::object::slot::global_allocate,
+    rustc_alloc::boxed::Box,
     syscall::{
         sys_object_create, sys_object_map, BackingType, LifetimeType, ObjectCreate,
         ObjectCreateFlags,
@@ -59,8 +59,8 @@ impl<T> InternalObject<T> {
         Some(Self {
             slot,
             runtime_handle: ObjectHandle::new(
-                raw,
-                id.as_u128(),
+                Some(raw),
+                id,
                 MapFlags::READ | MapFlags::WRITE,
                 (slot * MAX_SIZE) as *mut u8,
                 (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
@@ -83,7 +83,7 @@ impl<T> InternalObject<T> {
 
     #[allow(dead_code)]
     pub(crate) fn id(&self) -> ObjID {
-        ObjID::new(self.runtime_handle.id)
+        self.runtime_handle.id
     }
 
     #[allow(dead_code)]
@@ -99,8 +99,8 @@ impl<T> InternalObject<T> {
 
         Some(Self {
             runtime_handle: ObjectHandle::new(
-                NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap(),
-                id.as_u128(),
+                Some(NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap()),
+                id,
                 prot.into(),
                 (slot * MAX_SIZE) as *mut u8,
                 (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,

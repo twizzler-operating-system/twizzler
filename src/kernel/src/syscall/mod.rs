@@ -11,13 +11,15 @@ use twizzler_abi::{
     },
 };
 
-use crate::clock::{fill_with_every_first, fill_with_first_kind, fill_with_kind};
-use crate::memory::VirtAddr;
-use crate::time::TICK_SOURCES;
-
 use self::{
     object::{sys_new_handle, sys_sctx_attach, sys_unbind_handle},
     thread::thread_ctrl,
+};
+use crate::{
+    clock::{fill_with_every_first, fill_with_first_kind, fill_with_kind},
+    memory::VirtAddr,
+    thread::current_thread_ref,
+    time::TICK_SOURCES,
 };
 
 // TODO: move the handle stuff into its own file and make this private.

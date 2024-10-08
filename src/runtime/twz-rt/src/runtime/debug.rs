@@ -1,24 +1,27 @@
-use std::ffi::CString;
+use elf::segment::Elf64_Phdr;
+use twizzler_runtime_api::{AddrRange, DebugRuntime, Library, MapFlags};
 
-use twizzler_runtime_api::DebugRuntime;
+use super::{object::new_object_handle, ReferenceRuntime};
 
-use crate::monitor;
-
-use super::ReferenceRuntime;
-
-// Most of these implementations just delegate to asking the monitor for library
-// information. In the future, when we properly have compartments, these will get
-// more complicated.
 impl DebugRuntime for ReferenceRuntime {
     fn get_library(
         &self,
         id: twizzler_runtime_api::LibraryId,
     ) -> Option<twizzler_runtime_api::Library> {
-        monitor::get_monitor_actions().lookup_library_by_id(id)
+        let lib = monitor_api::CompartmentHandle::current().libs().nth(id.0)?;
+        let info = lib.info();
+        let handle = new_object_handle(info.objid, info.slot, MapFlags::READ);
+        Some(Library {
+            range: info.range,
+            dl_info: Some(info.dl_info),
+            id,
+            mapping: handle,
+        })
     }
 
     fn get_exeid(&self) -> Option<twizzler_runtime_api::LibraryId> {
-        monitor::get_monitor_actions().local_primary()
+        // root ID is always 0
+        Some(twizzler_runtime_api::LibraryId(0))
     }
 
     fn get_library_segment(
@@ -26,7 +29,18 @@ impl DebugRuntime for ReferenceRuntime {
         lib: &twizzler_runtime_api::Library,
         seg: usize,
     ) -> Option<twizzler_runtime_api::AddrRange> {
-        monitor::get_monitor_actions().get_segment(lib.id, seg)
+        const PT_LOAD: u32 = 1;
+        let slice = unsafe {
+            core::slice::from_raw_parts(
+                lib.dl_info?.phdr_start as *const Elf64_Phdr,
+                lib.dl_info?.phdr_num as usize,
+            )
+        };
+        let phdr = slice.iter().filter(|p| p.p_type == PT_LOAD).nth(seg)?;
+        Some(AddrRange {
+            start: lib.dl_info?.addr + phdr.p_vaddr as usize,
+            len: phdr.p_memsz as usize,
+        })
     }
 
     fn get_full_mapping(
@@ -42,39 +56,25 @@ impl DebugRuntime for ReferenceRuntime {
     ) -> core::ffi::c_int {
         let mut ret = 0;
         // Get the primary library for this compartment.
-        let mut id = self.get_exeid();
+        let mut id = self.get_exeid().unwrap().0;
         // Each library contains a field indicating the next library ID in this list.
-        while let Some(library) = id.and_then(|id| self.get_library(id)) {
-            if let Some(mut info) = library.dl_info {
-                // Read the name. If it's too long, just give up for now.
-                // TODO: improve this for longer names.
-                let mut buf = [0; 256];
-                let name = self
-                    .get_library_name(&library, &mut buf)
-                    .map(|len| {
-                        let mut v = buf[0..len].to_vec();
-                        // Null-terminate, since it needs to be a C string.
-                        v.push(0);
-                        CString::from_vec_with_nul(v).unwrap()
-                    })
-                    .unwrap_or_else(|| CString::new(b"???\0".to_vec()).unwrap());
-                info.name = name.as_c_str().as_ptr() as *const u8;
+        while let Some(library) = self.get_library(twizzler_runtime_api::LibraryId(id)) {
+            if let Some(info) = library.dl_info {
                 ret = f(info);
                 // dl_iterate_phdr returns early if the callback returns non-zero.
                 if ret != 0 {
                     return ret;
                 }
             }
-            id = library.next_id;
+            id += 1;
         }
         ret
     }
 
-    fn get_library_name(
+    fn next_library_id(
         &self,
-        lib: &twizzler_runtime_api::Library,
-        buf: &mut [u8],
-    ) -> Option<usize> {
-        monitor::get_monitor_actions().lookup_library_name(lib.id, buf)
+        id: twizzler_runtime_api::LibraryId,
+    ) -> Option<twizzler_runtime_api::LibraryId> {
+        Some(twizzler_runtime_api::LibraryId(id.0 + 1))
     }
 }

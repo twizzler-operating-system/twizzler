@@ -1,56 +1,43 @@
-use core::fmt;
-
-use crate::{arch::syscall::raw_syscall, object::ObjID};
+use num_enum::{FromPrimitive, IntoPrimitive};
 
 use super::{convert_codes_to_result, Syscall};
+use crate::{arch::syscall::raw_syscall, object::ObjID};
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
-#[repr(u32)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Eq,
+    Hash,
+    IntoPrimitive,
+    FromPrimitive,
+    thiserror::Error,
+)]
+#[repr(u64)]
 /// Possible error returns for [sys_sctx_attach].
 pub enum SctxAttachError {
     /// An unknown error occurred.
+    #[num_enum(default)]
+    #[error("unknown error")]
     Unknown = 0,
     /// One of the arguments was invalid.
+    #[error("invalid argument")]
     InvalidArgument = 1,
-    /// A source or tie object was not found.
+    /// An was not found.
+    #[error("object not found")]
     ObjectNotFound = 2,
     /// Permission denied.
+    #[error("permission denied")]
     PermissionDenied = 3,
+    /// Permission denied.
+    #[error("already attached")]
+    AlreadyAttached = 4,
 }
 
-impl SctxAttachError {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Unknown => "an unknown error occurred",
-            Self::InvalidArgument => "an argument was invalid",
-            Self::ObjectNotFound => "a referenced object was not found",
-            Self::PermissionDenied => "a source specification had an unsatisfiable range",
-        }
-    }
-}
-
-impl From<SctxAttachError> for u64 {
-    fn from(x: SctxAttachError) -> Self {
-        x as Self
-    }
-}
-
-impl From<u64> for SctxAttachError {
-    fn from(x: u64) -> Self {
-        match x {
-            3 => Self::PermissionDenied,
-            2 => Self::ObjectNotFound,
-            1 => Self::InvalidArgument,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl fmt::Display for SctxAttachError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
+impl core::error::Error for SctxAttachError {}
 
 /// Attach to a given security context.
 pub fn sys_sctx_attach(id: ObjID) -> Result<(), SctxAttachError> {
@@ -59,7 +46,7 @@ pub fn sys_sctx_attach(id: ObjID) -> Result<(), SctxAttachError> {
     convert_codes_to_result(
         code,
         val,
-        |c, _| c == 0,
+        |c, _| c == 1,
         |_, _| (),
         |_, v| SctxAttachError::from(v),
     )

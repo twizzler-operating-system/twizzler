@@ -7,18 +7,17 @@ use twizzler_abi::{
 };
 use x86::current::rflags::RFlags;
 
+use super::{
+    gdt::user_selectors,
+    set_interrupt,
+    thread::{Registers, UpcallAble},
+};
 use crate::{
     arch::amd64::apic::get_lapic,
     interrupt::{Destination, DynamicInterrupt},
     memory::{context::virtmem::PageFaultFlags, VirtAddr},
     processor::current_processor,
     thread::current_thread_ref,
-};
-
-use super::{
-    gdt::user_selectors,
-    set_interrupt,
-    thread::{Registers, UpcallAble},
 };
 
 pub const GENERIC_IPI_VECTOR: u32 = 200;
@@ -91,8 +90,8 @@ impl From<UpcallFrame> for IsrContext {
             rflags: frame.rflags,
 
             err: 0,
-            cs: sels.1.into(),
-            ss: sels.0.into(),
+            cs: sels.0.into(),
+            ss: sels.1.into(),
         }
     }
 }
@@ -155,6 +154,12 @@ impl core::fmt::Debug for IsrContext {
     }
 }
 
+impl IsrContext {
+    pub fn get_ip(&self) -> u64 {
+        self.rip
+    }
+}
+
 #[no_mangle]
 unsafe extern "C" fn common_handler_entry(
     ctx: *mut IsrContext,
@@ -173,6 +178,7 @@ unsafe extern "C" fn common_handler_entry(
             );
         }
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
+
         let t = current_thread_ref().unwrap();
         t.set_entry_registers(Registers::Interrupt(ctx, *ctx));
     }
@@ -180,10 +186,10 @@ unsafe extern "C" fn common_handler_entry(
 
     if user {
         let t = current_thread_ref().unwrap();
-        t.set_entry_registers(Registers::None);
         let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
-        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+        t.set_entry_registers(Registers::None);
         drop(t);
+        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
     }
 }
 
@@ -191,7 +197,10 @@ unsafe extern "C" fn common_handler_entry(
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn kernel_interrupt() {
-    core::arch::asm!("mov qword ptr [rsp - 8], 0", "sub rsp, 8", "xor rdx, rdx", "call {common}", "add rsp, 8", "jmp return_from_interrupt", common = sym common_handler_entry, options(noreturn));
+    core::arch::asm!("mov qword ptr [rsp - 8], 0", "sub rsp, 8", "xor rdx, rdx", 
+        "xor rcx, rcx",
+        "cld",
+        "call {common}", "add rsp, 8", "jmp return_from_interrupt", common = sym common_handler_entry, options(noreturn));
 }
 
 #[allow(clippy::missing_safety_doc)]
@@ -201,12 +210,15 @@ pub unsafe extern "C" fn kernel_interrupt() {
 pub unsafe extern "C" fn user_interrupt() {
     core::arch::asm!(
         "swapgs",
+        "lfence",
         "mov rcx, gs:8",
         "mov rdx, 1",
         "sub rsp, 8",
+        "cld",
         "call {common}", 
         "add rsp, 8",
         "swapgs",
+        "lfence",
         "jmp return_from_interrupt", common = sym common_handler_entry, options(noreturn));
 }
 
@@ -481,13 +493,10 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             }
             crate::thread::enter_kernel();
             crate::interrupt::set(true);
-            if let Ok(cr2_va) = VirtAddr::new(cr2 as u64) && let Ok(rip_va) = VirtAddr::new(ctx.rip) {
-            crate::memory::context::virtmem::page_fault(
-                cr2_va,
-                cause,
-                flags,
-                rip_va,
-            );
+            if let Ok(cr2_va) = VirtAddr::new(cr2 as u64)
+                && let Ok(rip_va) = VirtAddr::new(ctx.rip)
+            {
+                crate::memory::context::virtmem::page_fault(cr2_va, cause, flags, rip_va);
             } else {
                 // TODO: do we need to do something better?
                 let t = current_thread_ref().unwrap();

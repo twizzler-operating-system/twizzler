@@ -6,11 +6,12 @@ use std::{
     sync::Mutex,
 };
 
-use dynlink::tls::TlsRegion;
+use dynlink::tls::Tcb;
 use tracing::trace;
 use twizzler_abi::{object::NULLPAGE_SIZE, thread::ThreadRepr};
 use twizzler_runtime_api::{CoreRuntime, ObjectHandle, ThreadSpawnArgs};
 
+use super::RuntimeThreadControl;
 use crate::runtime::{thread::MIN_STACK_ALIGN, OUR_RUNTIME};
 
 /// Internal representation of a thread, tracking the resources
@@ -21,7 +22,7 @@ pub struct InternalThread {
     stack_size: usize,
     args_box: usize,
     pub(super) id: u32,
-    _tls: TlsRegion,
+    _tls: *mut Tcb<RuntimeThreadControl>,
     name: Mutex<CString>,
 }
 
@@ -32,7 +33,7 @@ impl InternalThread {
         stack_size: usize,
         args_box: usize,
         id: u32,
-        tls: TlsRegion,
+        tls: *mut Tcb<RuntimeThreadControl>,
     ) -> Self {
         Self {
             repr_handle,

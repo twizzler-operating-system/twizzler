@@ -2,16 +2,15 @@
 
 use core::ptr::NonNull;
 
-use crate::{rustc_alloc::boxed::Box, syscall::UnmapFlags};
 use twizzler_runtime_api::{InternalHandleRefs, MapError, ObjectHandle, ObjectRuntime};
 
+use super::MinimalRuntime;
 use crate::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     runtime::object::slot::global_allocate,
-    syscall::{sys_object_map, ObjectMapError},
+    rustc_alloc::boxed::Box,
+    syscall::{sys_object_map, ObjectMapError, UnmapFlags},
 };
-
-use super::MinimalRuntime;
 
 mod handle;
 
@@ -61,10 +60,9 @@ impl ObjectRuntime for MinimalRuntime {
         flags: twizzler_runtime_api::MapFlags,
     ) -> Result<twizzler_runtime_api::ObjectHandle, twizzler_runtime_api::MapError> {
         let slot = global_allocate().ok_or(MapError::OutOfResources)?;
-        let _ = sys_object_map(None, ObjID::new(id), slot, flags.into(), flags.into())
-            .map_err(|e| e.into())?;
+        let _ = sys_object_map(None, id, slot, flags.into(), flags.into()).map_err(|e| e.into())?;
         Ok(ObjectHandle::new(
-            NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap(),
+            Some(NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap()),
             id,
             flags,
             (slot * MAX_SIZE) as *mut u8,

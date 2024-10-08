@@ -2,20 +2,17 @@
 
 use core::{intrinsics::copy_nonoverlapping, mem::size_of};
 
-use crate::object::InternalObject;
+use twizzler_runtime_api::AuxEntry;
 
-use crate::syscall::UpcallTargetSpawnOption;
 use crate::{
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     slot::{RESERVED_DATA, RESERVED_STACK, RESERVED_TEXT},
     syscall::{
         sys_unbind_handle, BackingType, HandleType, LifetimeType, MapFlags, NewHandleFlags,
         ObjectCreate, ObjectCreateFlags, ObjectSource, ThreadSpawnArgs, ThreadSpawnFlags,
-        UnbindHandleFlags,
+        UnbindHandleFlags, UpcallTargetSpawnOption,
     },
 };
-
-use twizzler_runtime_api::AuxEntry;
 
 #[derive(Debug)]
 #[repr(C)]
@@ -356,7 +353,7 @@ pub fn spawn_new_executable(
     .unwrap();
     let mut idx = 0;
 
-    aux_array[idx] = AuxEntry::ExecId(exe.id().as_u128());
+    aux_array[idx] = AuxEntry::ExecId(exe.id());
     idx += 1;
     aux_array[idx] = AuxEntry::Arguments(args.len(), spawnargs_start as u64);
     idx += 1;

@@ -1,15 +1,14 @@
 use core::mem::size_of;
 
-use x86::current::task::TaskStateSegment;
-use x86::dtables::DescriptorTablePointer;
-use x86::segmentation::BuildDescriptor;
-use x86::segmentation::CodeSegmentType;
-use x86::segmentation::DataSegmentType;
-use x86::segmentation::Descriptor;
-use x86::segmentation::DescriptorBuilder;
-use x86::segmentation::SegmentDescriptorBuilder;
-use x86::segmentation::SegmentSelector;
-use x86::Ring;
+use x86::{
+    current::task::TaskStateSegment,
+    dtables::DescriptorTablePointer,
+    segmentation::{
+        BuildDescriptor, CodeSegmentType, DataSegmentType, Descriptor, DescriptorBuilder,
+        SegmentDescriptorBuilder, SegmentSelector,
+    },
+    Ring,
+};
 
 use crate::memory::VirtAddr;
 
@@ -75,12 +74,12 @@ impl GlobalDescriptorTable {
         }
     }
 
-    fn get_user_selectors(&self) -> (u16, u16) {
+    fn get_user_selectors(&self) -> (SegmentSelector, SegmentSelector) {
         // Third entry in the GDT is the user data selector
         let user_data_sel = SegmentSelector::new(3, Ring::Ring3);
         // Forth entry in the GDT is the user code selector
         let user_code_sel = SegmentSelector::new(4, Ring::Ring3);
-        (user_code_sel.index(), user_data_sel.index())
+        (user_code_sel, user_data_sel)
     }
 
     fn __do_add_entry(&mut self, entry: u64) -> usize {
@@ -139,7 +138,8 @@ pub fn init() {
 
 /// Get the user segment selectors. Returns (user-code-sel, user-data-sel).
 pub(super) fn user_selectors() -> (u16, u16) {
-    GDT.get_user_selectors()
+    let (code, data) = GDT.get_user_selectors();
+    (code.bits(), data.bits())
 }
 
 #[thread_local]

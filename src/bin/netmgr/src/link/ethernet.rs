@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use byteorder::ByteOrder;
-use byteorder::NetworkEndian;
+use byteorder::{ByteOrder, NetworkEndian};
 
-use crate::header::Header;
-use crate::link::nic::NicBuffer;
-use crate::link::IncomingPacketInfo;
-use crate::network::ipv4::handle_incoming_ipv4_packet;
+use crate::{
+    header::Header,
+    link::{nic::NicBuffer, IncomingPacketInfo},
+    network::ipv4::handle_incoming_ipv4_packet,
+};
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Default)]
 #[repr(C)]

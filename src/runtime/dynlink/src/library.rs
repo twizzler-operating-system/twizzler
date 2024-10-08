@@ -8,11 +8,14 @@ use elf::{
     segment::{Elf64_Phdr, ProgramHeader},
     ParseError,
 };
-
 use petgraph::stable_graph::NodeIndex;
 use secgate::RawSecGateInfo;
+use twizzler_runtime_api::AuxEntry;
 
-use crate::{symbol::RelocatedSymbol, tls::TlsModId, DynlinkError, DynlinkErrorKind};
+use crate::{
+    compartment::CompartmentId, engines::Backing, symbol::RelocatedSymbol, tls::TlsModId,
+    DynlinkError, DynlinkErrorKind,
+};
 
 pub(crate) enum RelocState {
     /// Relocation has not started.
@@ -23,35 +26,7 @@ pub(crate) enum RelocState {
     Relocated,
 }
 
-/// The core trait that represents loaded or mapped data.
-pub trait BackingData: Clone {
-    /// Get a pointer to the start of a region, and a length, denoting valid memory representing this object. The memory
-    /// region is valid.
-    fn data(&self) -> (*mut u8, usize);
-
-    /// Make a new backing data for holding allocated data for the dynamic linker.
-    fn new_data() -> Result<Self, DynlinkError>
-    where
-        Self: Sized;
-    fn load_addr(&self) -> usize;
-
-    /// Get the data as a slice.
-    fn slice(&self) -> &[u8] {
-        let data = self.data();
-        // Safety: a loaded library may have a slice constructed of its backing data.
-        unsafe { core::slice::from_raw_parts(data.0, data.1) }
-    }
-
-    type InnerType;
-    /// Get the inner implementation type.
-    fn to_inner(self) -> Self::InnerType;
-
-    /// Get the ELF file for this backing.
-    fn get_elf(&self) -> Result<elf::ElfBytes<'_, NativeEndian>, ParseError> {
-        elf::ElfBytes::minimal_parse(self.slice())
-    }
-}
-
+#[repr(C)]
 /// An unloaded library. It's just a name, really.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub struct UnloadedLibrary {
@@ -72,20 +47,35 @@ impl UnloadedLibrary {
 #[repr(transparent)]
 pub struct LibraryId(pub(crate) NodeIndex);
 
+impl From<twizzler_runtime_api::LibraryId> for LibraryId {
+    fn from(value: twizzler_runtime_api::LibraryId) -> Self {
+        LibraryId(NodeIndex::new(value.0))
+    }
+}
+
+impl Into<twizzler_runtime_api::LibraryId> for LibraryId {
+    fn into(self) -> twizzler_runtime_api::LibraryId {
+        twizzler_runtime_api::LibraryId(self.0.index())
+    }
+}
+
 impl Display for LibraryId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", &self.0.index())
     }
 }
 
+#[repr(C)]
 /// A loaded library. It may be in various relocation states.
-pub struct Library<Backing: BackingData> {
+pub struct Library {
     /// Name of this library.
     pub name: String,
     /// Node index for the dependency graph.
     pub(crate) idx: NodeIndex,
-    /// Compartment name this library is loaded in.
-    pub(crate) comp_name: String,
+    /// Compartment ID this library is loaded in.
+    pub(crate) comp_id: CompartmentId,
+    /// Just for debug and logging purposes.
+    comp_name: String,
     /// Object containing the full ELF data.
     pub full_obj: Backing,
     /// State of relocation.
@@ -102,10 +92,11 @@ pub struct Library<Backing: BackingData> {
 }
 
 #[allow(dead_code)]
-impl<Backing: BackingData> Library<Backing> {
+impl Library {
     pub(crate) fn new(
         name: String,
         idx: NodeIndex,
+        comp_id: CompartmentId,
         comp_name: String,
         full_obj: Backing,
         backings: Vec<Backing>,
@@ -121,6 +112,7 @@ impl<Backing: BackingData> Library<Backing> {
             tls_id,
             ctors,
             reloc_state: RelocState::Unrelocated,
+            comp_id,
             comp_name,
             secgate_info,
         }
@@ -129,6 +121,11 @@ impl<Backing: BackingData> Library<Backing> {
     /// Get the ID for this library
     pub fn id(&self) -> LibraryId {
         LibraryId(self.idx)
+    }
+
+    /// Get the compartment ID for this library.
+    pub fn compartment(&self) -> CompartmentId {
+        self.comp_id
     }
 
     /// Get a raw pointer to the program headers for this library.
@@ -165,6 +162,21 @@ impl<Backing: BackingData> Library<Backing> {
         (self.base_addr() + val as usize) as *mut T
     }
 
+    /// Get a function pointer to this library's entry address, if one exists.
+    pub fn get_entry_address(&self) -> Result<extern "C" fn(*const AuxEntry) -> !, DynlinkError> {
+        let entry = self.get_elf()?.ehdr.e_entry;
+        if entry == 0 {
+            return Err(DynlinkErrorKind::NoEntryAddress {
+                name: self.name.clone(),
+            }
+            .into());
+        }
+        let entry: *const u8 = self.laddr(entry);
+        let ptr: extern "C" fn(*const AuxEntry) -> ! =
+            unsafe { core::mem::transmute(entry as usize) };
+        Ok(ptr)
+    }
+
     // Helper to find the TLS program header.
     fn get_tls_phdr(&self) -> Result<Option<ProgramHeader>, DynlinkError> {
         Ok(self
@@ -183,10 +195,7 @@ impl<Backing: BackingData> Library<Backing> {
         }))
     }
 
-    pub(crate) fn lookup_symbol(
-        &self,
-        name: &str,
-    ) -> Result<RelocatedSymbol<'_, Backing>, DynlinkError> {
+    pub(crate) fn lookup_symbol(&self, name: &str) -> Result<RelocatedSymbol<'_>, DynlinkError> {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
 
@@ -265,6 +274,20 @@ impl<Backing: BackingData> Library<Backing> {
         .into())
     }
 
+    pub(crate) fn is_local_or_secgate_from(&self, other: &Library, name: &str) -> bool {
+        other.comp_id == self.comp_id || self.is_secgate(name)
+    }
+
+    fn is_secgate(&self, name: &str) -> bool {
+        self.iter_secgates()
+            .map(|gates| {
+                gates
+                    .iter()
+                    .any(|gate| gate.name().to_bytes() == name.as_bytes())
+            })
+            .unwrap_or(false)
+    }
+
     pub fn iter_secgates(&self) -> Option<&[RawSecGateInfo]> {
         let addr = self.secgate_info.info_addr?;
 
@@ -272,7 +295,7 @@ impl<Backing: BackingData> Library<Backing> {
     }
 }
 
-impl<B: BackingData> Debug for Library<B> {
+impl Debug for Library {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Library")
             .field("name", &self.name)
@@ -283,7 +306,7 @@ impl<B: BackingData> Debug for Library<B> {
     }
 }
 
-impl<B: BackingData> core::fmt::Display for Library<B> {
+impl core::fmt::Display for Library {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}::{}", &self.comp_name, &self.name)
     }
@@ -297,11 +320,12 @@ impl core::fmt::Display for UnloadedLibrary {
 
 /// Information about constructors for a library.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct CtorInfo {
     /// Legacy pointer to _init function for a library. Can be called with the C abi.
     pub legacy_init: usize,
-    /// Pointer to start of the init array, which contains functions pointers that can be called by the C abi.
+    /// Pointer to start of the init array, which contains functions pointers that can be called by
+    /// the C abi.
     pub init_array: usize,
     /// Length of the init array.
     pub init_array_len: usize,

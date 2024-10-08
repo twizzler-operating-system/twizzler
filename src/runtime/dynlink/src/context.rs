@@ -1,52 +1,47 @@
 //! Management of global context.
 
-use std::collections::HashMap;
-use std::fmt::Display;
+use std::{collections::HashMap, fmt::Display};
 
-use petgraph::stable_graph::NodeIndex;
-use petgraph::stable_graph::StableDiGraph;
-use stable_vec::StableVec;
+use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 
-use crate::compartment::CompartmentId;
-use crate::library::LibraryId;
-use crate::DynlinkErrorKind;
 use crate::{
-    compartment::Compartment,
-    library::{BackingData, Library, UnloadedLibrary},
-    DynlinkError,
+    compartment::{Compartment, CompartmentId},
+    engines::ContextEngine,
+    library::{Library, LibraryId, UnloadedLibrary},
+    DynlinkError, DynlinkErrorKind,
 };
 
-use self::engine::ContextEngine;
-
 mod deps;
-pub mod engine;
 mod load;
 mod relocate;
 pub mod runtime;
 mod syms;
 
+#[repr(C)]
 /// A dynamic linker context, the main state struct for this crate.
-pub struct Context<Engine: ContextEngine> {
+pub struct Context {
     // Implementation callbacks.
-    pub(crate) engine: Engine,
+    pub(crate) engine: Box<dyn ContextEngine + Send>,
     // Track all the compartment names.
     compartment_names: HashMap<String, usize>,
     // Compartments get stable IDs from StableVec.
-    compartments: StableVec<Compartment<Engine::Backing>>,
+    compartments: Vec<Compartment>,
 
     // This is the primary list of libraries, all libraries have an entry here, and they are
-    // placed here independent of compartment. Edges denote dependency relationships, and may also cross compartments.
-    pub(crate) library_deps: StableDiGraph<LoadedOrUnloaded<Engine::Backing>, ()>,
+    // placed here independent of compartment. Edges denote dependency relationships, and may also
+    // cross compartments.
+    pub(crate) library_deps: StableDiGraph<LoadedOrUnloaded, ()>,
 }
 
 // Libraries in the dependency graph are placed there before loading, so that they can participate
-// in dependency search. So we need to track both kinds of libraries that may be at a given index in the graph.
-pub enum LoadedOrUnloaded<Backing: BackingData> {
+// in dependency search. So we need to track both kinds of libraries that may be at a given index in
+// the graph.
+pub enum LoadedOrUnloaded {
     Unloaded(UnloadedLibrary),
-    Loaded(Library<Backing>),
+    Loaded(Library),
 }
 
-impl<Backing: BackingData> Display for LoadedOrUnloaded<Backing> {
+impl Display for LoadedOrUnloaded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LoadedOrUnloaded::Unloaded(unlib) => write!(f, "(unloaded){}", unlib),
@@ -55,7 +50,7 @@ impl<Backing: BackingData> Display for LoadedOrUnloaded<Backing> {
     }
 }
 
-impl<Backing: BackingData> LoadedOrUnloaded<Backing> {
+impl LoadedOrUnloaded {
     /// Get the name of this library, loaded or unloaded.
     pub fn name(&self) -> &str {
         match self {
@@ -65,7 +60,7 @@ impl<Backing: BackingData> LoadedOrUnloaded<Backing> {
     }
 
     /// Get back a reference to the underlying loaded library, if loaded.
-    pub fn loaded(&self) -> Option<&Library<Backing>> {
+    pub fn loaded(&self) -> Option<&Library> {
         match self {
             LoadedOrUnloaded::Unloaded(_) => None,
             LoadedOrUnloaded::Loaded(lib) => Some(lib),
@@ -73,7 +68,7 @@ impl<Backing: BackingData> LoadedOrUnloaded<Backing> {
     }
 
     /// Get back a mutable reference to the underlying loaded library, if loaded.
-    pub fn loaded_mut(&mut self) -> Option<&mut Library<Backing>> {
+    pub fn loaded_mut(&mut self) -> Option<&mut Library> {
         match self {
             LoadedOrUnloaded::Unloaded(_) => None,
             LoadedOrUnloaded::Loaded(lib) => Some(lib),
@@ -81,15 +76,20 @@ impl<Backing: BackingData> LoadedOrUnloaded<Backing> {
     }
 }
 
-impl<Engine: ContextEngine> Context<Engine> {
+impl Context {
     /// Construct a new dynamic linker context.
-    pub fn new(engine: Engine) -> Self {
+    pub fn new(engine: Box<dyn ContextEngine + Send>) -> Self {
         Self {
             engine,
             compartment_names: HashMap::new(),
             library_deps: StableDiGraph::new(),
-            compartments: StableVec::new(),
+            compartments: Vec::new(),
         }
+    }
+
+    /// Replace the callback engine for this context.
+    pub fn replace_engine(&mut self, engine: Box<dyn ContextEngine + Send>) {
+        self.engine = engine;
     }
 
     /// Lookup a compartment by name.
@@ -98,11 +98,8 @@ impl<Engine: ContextEngine> Context<Engine> {
     }
 
     /// Get a reference to a compartment back by ID.
-    pub fn get_compartment(
-        &self,
-        id: CompartmentId,
-    ) -> Result<&Compartment<Engine::Backing>, DynlinkError> {
-        if !self.compartments.has_element_at(id.0) {
+    pub fn get_compartment(&self, id: CompartmentId) -> Result<&Compartment, DynlinkError> {
+        if self.compartments.len() <= id.0 {
             return Err(DynlinkErrorKind::InvalidCompartmentId { id }.into());
         }
         Ok(&self.compartments[id.0])
@@ -112,11 +109,10 @@ impl<Engine: ContextEngine> Context<Engine> {
     pub fn get_compartment_mut(
         &mut self,
         id: CompartmentId,
-    ) -> Result<&mut Compartment<Engine::Backing>, DynlinkError> {
-        if !self.compartments.has_element_at(id.0) {
+    ) -> Result<&mut Compartment, DynlinkError> {
+        if self.compartments.len() <= id.0 {
             return Err(DynlinkErrorKind::InvalidCompartmentId { id }.into());
         }
-
         Ok(&mut self.compartments[id.0])
     }
 
@@ -127,7 +123,7 @@ impl<Engine: ContextEngine> Context<Engine> {
     }
 
     /// Get a reference to a library back by ID.
-    pub fn get_library(&self, id: LibraryId) -> Result<&Library<Engine::Backing>, DynlinkError> {
+    pub fn get_library(&self, id: LibraryId) -> Result<&Library, DynlinkError> {
         if !self.library_deps.contains_node(id.0) {
             return Err(DynlinkErrorKind::InvalidLibraryId { id }.into());
         }
@@ -141,10 +137,7 @@ impl<Engine: ContextEngine> Context<Engine> {
     }
 
     /// Get a mut reference to a library back by ID.
-    pub fn get_library_mut(
-        &mut self,
-        id: LibraryId,
-    ) -> Result<&mut Library<Engine::Backing>, DynlinkError> {
+    pub fn get_library_mut(&mut self, id: LibraryId) -> Result<&mut Library, DynlinkError> {
         if !self.library_deps.contains_node(id.0) {
             return Err(DynlinkErrorKind::InvalidLibraryId { id }.into());
         }
@@ -161,7 +154,7 @@ impl<Engine: ContextEngine> Context<Engine> {
     pub fn with_dfs_postorder<R>(
         &self,
         root_id: LibraryId,
-        mut f: impl FnMut(&LoadedOrUnloaded<Engine::Backing>) -> R,
+        mut f: impl FnMut(&LoadedOrUnloaded) -> R,
     ) -> Vec<R> {
         let mut rets = vec![];
         let mut visit = petgraph::visit::DfsPostOrder::new(&self.library_deps, root_id.0);
@@ -172,11 +165,12 @@ impl<Engine: ContextEngine> Context<Engine> {
         rets
     }
 
-    /// Traverse the library graph with DFS postorder, calling the callback for each library (mutable ref).
+    /// Traverse the library graph with DFS postorder, calling the callback for each library
+    /// (mutable ref).
     pub fn with_dfs_postorder_mut<R>(
         &mut self,
         root_id: LibraryId,
-        mut f: impl FnMut(&mut LoadedOrUnloaded<Engine::Backing>) -> R,
+        mut f: impl FnMut(&mut LoadedOrUnloaded) -> R,
     ) -> Vec<R> {
         let mut rets = vec![];
         let mut visit = petgraph::visit::DfsPostOrder::new(&self.library_deps, root_id.0);
@@ -188,11 +182,7 @@ impl<Engine: ContextEngine> Context<Engine> {
     }
 
     /// Traverse the library graph with BFS, calling the callback for each library.
-    pub fn with_bfs(
-        &self,
-        root_id: LibraryId,
-        mut f: impl FnMut(&LoadedOrUnloaded<Engine::Backing>),
-    ) {
+    pub fn with_bfs(&self, root_id: LibraryId, mut f: impl FnMut(&LoadedOrUnloaded)) {
         let mut visit = petgraph::visit::Bfs::new(&self.library_deps, root_id.0);
         while let Some(node) = visit.next(&self.library_deps) {
             let dep = &self.library_deps[node];
@@ -200,20 +190,50 @@ impl<Engine: ContextEngine> Context<Engine> {
         }
     }
 
+    pub fn libraries(&self) -> LibraryIter<'_> {
+        LibraryIter { ctx: self, next: 0 }
+    }
+
     pub(crate) fn add_library(&mut self, lib: UnloadedLibrary) -> NodeIndex {
         self.library_deps.add_node(LoadedOrUnloaded::Unloaded(lib))
     }
 
-    pub(crate) fn add_dep(&mut self, parent: &Library<Engine::Backing>, dep: NodeIndex) {
-        self.library_deps.add_edge(parent.idx, dep, ());
+    pub(crate) fn add_dep(&mut self, parent: NodeIndex, dep: NodeIndex) {
+        self.library_deps.add_edge(parent, dep, ());
+    }
+
+    pub fn add_manual_dependency(&mut self, parent: LibraryId, dependee: LibraryId) {
+        self.add_dep(parent.0, dependee.0);
     }
 
     /// Create a new compartment with a given name.
     pub fn add_compartment(&mut self, name: impl ToString) -> Result<CompartmentId, DynlinkError> {
         let name = name.to_string();
-        let comp = Compartment::new(name.clone());
-        let idx = self.compartments.push(comp);
+        let idx = self.compartments.len();
+        let comp = Compartment::new(name.clone(), CompartmentId(idx));
+        self.compartments.push(comp);
         self.compartment_names.insert(name, idx);
         Ok(CompartmentId(idx))
+    }
+}
+
+pub struct LibraryIter<'a> {
+    ctx: &'a Context,
+    next: usize,
+}
+
+impl<'a> Iterator for LibraryIter<'a> {
+    type Item = &'a Library;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let idx = self.ctx.library_deps.node_indices().nth(self.next)?;
+            self.next += 1;
+            let node = &self.ctx.library_deps[idx];
+            match node {
+                LoadedOrUnloaded::Unloaded(_) => {}
+                LoadedOrUnloaded::Loaded(lib) => return Some(lib),
+            }
+        }
     }
 }

@@ -5,15 +5,12 @@
 ///
 /// "Procedure Call Standard for the Arm® 64-bit Architecture (AArch64)":
 ///     https://github.com/ARM-software/abi-aa/releases/download/2023Q1/aapcs64.pdf
-
-use arm64::registers::{ELR_EL1, SP_EL0, SPSR_EL1};
+use arm64::registers::{ELR_EL1, SPSR_EL1, SP_EL0};
 use registers::interfaces::Writeable;
-
 use twizzler_abi::upcall::UpcallFrame;
 
-use crate::{memory::VirtAddr, syscall::SyscallContext};
-
-use super::{thread::UpcallAble, exception::ExceptionContext};
+use super::exception::ExceptionContext;
+use crate::{memory::VirtAddr, syscall::SyscallContext, thread::current_thread_ref};
 
 /// The register state needed to transition between kernel and user.
 ///
@@ -32,21 +29,6 @@ pub struct Armv8SyscallContext {
     x7: u64,
     elr: u64,
     sp: u64,
-}
-impl From<Armv8SyscallContext> for UpcallFrame {
-    fn from(_int: Armv8SyscallContext) -> Self {
-        todo!()
-    }
-}
-
-impl UpcallAble for Armv8SyscallContext {
-    fn set_upcall(&mut self, _target: usize, _frame: u64, _info: u64, _stack: u64) {
-        todo!()
-    }
-
-    fn get_stack_top(&self) -> u64 {
-        todo!()
-    }
 }
 
 // Arguments 0-5 are passed in via registers x0-x5,
@@ -104,17 +86,17 @@ pub unsafe fn return_to_user(context: &Armv8SyscallContext) -> ! {
     // set the stack pointer
     SP_EL0.set(context.sp);
 
-    // TODO: enable interrupts when we can support nested exception handling
-    // crate::interrupt::set(true);
-
     // configure the execution state for EL0:
     // - interrupts unmasked
     // - el0 exception level
     // - use sp_el0 stack pointer
     // - aarch64 execution state
     SPSR_EL1.write(
-        SPSR_EL1::D::Masked + SPSR_EL1::A::Masked + SPSR_EL1::I::Unmasked
-        + SPSR_EL1::F::Masked + SPSR_EL1::M::EL0t
+        SPSR_EL1::D::Masked
+            + SPSR_EL1::A::Masked
+            + SPSR_EL1::I::Unmasked
+            + SPSR_EL1::F::Masked
+            + SPSR_EL1::M::EL0t,
     );
 
     // TODO: zero out/copy all registers
@@ -130,9 +112,6 @@ pub unsafe fn return_to_user(context: &Armv8SyscallContext) -> ! {
 
 /// Service a system call according to the ABI defined in [`twizzler_abi`]
 pub fn handle_syscall(ctx: &mut ExceptionContext) {
-    crate::thread::enter_kernel();
-    crate::interrupt::set(true);
-
     let mut context: Armv8SyscallContext = Default::default();
     context.x0 = ctx.x0;
     context.x1 = ctx.x1;
@@ -145,8 +124,12 @@ pub fn handle_syscall(ctx: &mut ExceptionContext) {
     context.sp = ctx.sp;
     context.elr = ctx.elr;
 
+    crate::thread::enter_kernel();
+    crate::interrupt::set(true);
+
     crate::syscall::syscall_entry(&mut context);
-    // crate::interrupt::set(false);
+
+    crate::interrupt::set(false);
     crate::thread::exit_kernel();
 
     // copy over result values to exception return context
@@ -154,6 +137,38 @@ pub fn handle_syscall(ctx: &mut ExceptionContext) {
     ctx.x6 = context.x6;
     ctx.x7 = context.x7;
 
+    // check if we are restoring an upcall frame, and if so, do that.
+    handle_upcall(ctx);
+
     // returning from here will restore the calling context
     // and then call `eret` to jump back to user space
+}
+
+fn handle_upcall(ctx: &mut ExceptionContext) {
+    let cur_th = current_thread_ref().unwrap();
+
+    // if we have an upcall restore frame saved, fix up the register state
+    // before we return to user space.
+    let mut rf = cur_th.arch.upcall_restore_frame.borrow_mut();
+    if let Some(mut up_frame) = rf.take() {
+        emerglogln!("returning from upcall to user");
+        // we MUST manually drop this
+        drop(rf);
+
+        // TODO: SIMD registers
+
+        // restore the TLS registers which may have changed
+        unsafe {
+            core::arch::asm!(
+                 "msr tpidr_el0, x13",
+                 "msr tpidrro_el0, x14",
+                 in("x13") up_frame.tpidr,
+                 in("x14") up_frame.tpidrro
+            );
+            // modify the exception context registers directly
+            // using the upcall frame given to us
+            ctx.restore_from_upcall(&up_frame);
+        }
+    }
+    // from here we return using the normal syscall/exception return path
 }

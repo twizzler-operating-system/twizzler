@@ -241,15 +241,14 @@ fn exec2(name: &str, id: ObjID) -> Option<ObjID> {
     //println!("ELF: {:?}", elf);
 }
 
-fn exec_n(name: &str, id: ObjID, args: &[&str]) {
+fn exec_n(name: &str, id: ObjID, args: &[&str]) -> Option<ObjID> {
     let env: Vec<String> = std::env::vars()
         .map(|(n, v)| format!("{}={}", n, v))
         .collect();
     let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
     let mut fullargs = vec![name.as_bytes()];
     fullargs.extend(args.iter().map(|x| x.as_bytes()));
-    let _elf = twizzler_abi::runtime::load_elf::spawn_new_executable(id, &fullargs, &env_ref);
-    //println!("ELF: {:?}", elf);
+    twizzler_abi::runtime::load_elf::spawn_new_executable(id, &fullargs, &env_ref).ok()
 }
 
 fn find_init_name(name: &str) -> Option<ObjID> {
@@ -266,6 +265,13 @@ fn main() {
     println!("[init] starting userspace");
     let _foo = unsafe { FOO + BAR };
     println!("Hello, World {}", unsafe { FOO + BAR });
+
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .finish(),
+    )
+    .unwrap();
 
     let create = ObjectCreate::new(
         BackingType::Normal,
@@ -353,53 +359,8 @@ fn main() {
     twizzler_net::wait_until_network_manager_ready(netid);
     println!("network manager is up!");
 
-    if let Some(id) = find_init_name("test_bins") {
-        println!("=== found init test list ===");
-        let runtime = __twz_get_runtime();
-        let handle = runtime
-            .map_object(id.as_u128(), Protections::READ.into())
-            .unwrap();
-
-        let addr = unsafe { handle.start.add(NULLPAGE_SIZE) };
-        let bytes = unsafe {
-            core::slice::from_raw_parts(addr as *const u8, twizzler_abi::object::MAX_SIZE)
-        };
-        let bytes = &bytes[0..bytes.iter().position(|r| *r == 0).unwrap_or(0)];
-        let str = String::from_utf8(bytes.to_vec()).unwrap();
-        let mut test_failed = false;
-        for line in str.split("\n").filter(|l| !l.is_empty()) {
-            println!("STARTING TEST {}", line);
-            if let Some(id) = find_init_name(line) {
-                let tid = exec2(line, id);
-                if let Some(tid) = tid {
-                    let thandle = runtime
-                        .map_object(tid.as_u128(), Protections::READ.into())
-                        .unwrap();
-
-                    let taddr = unsafe { thandle.start.add(NULLPAGE_SIZE) };
-                    let tr = taddr as *const ThreadRepr;
-                    unsafe {
-                        let val = tr.as_ref().unwrap().wait(None);
-                        if let Some(val) = val {
-                            if val.0 == ExecutionState::Exited && val.1 != 0
-                                || val.0 == ExecutionState::Suspended
-                            {
-                                test_failed = true;
-                            }
-                        }
-                    }
-                }
-            } else {
-                println!("FAILED to start {}", line);
-                test_failed = true;
-            }
-        }
-        if test_failed {
-            println!("!!! TEST MODE FAILED");
-        }
-        #[allow(deprecated)]
-        twizzler_abi::syscall::sys_debug_shutdown(if test_failed { 1 } else { 0 });
-    }
+    run_tests("test_bins", false);
+    run_tests("bench_bins", true);
 
     println!("Hi, welcome to the basic twizzler test console.");
     println!("If you wanted line-editing, you've come to the wrong place.");
@@ -441,6 +402,53 @@ fn main() {
     }
 
     loop {}
+}
+
+fn run_tests(test_list_name: &str, benches: bool) {
+    if let Some(id) = find_init_name(test_list_name) {
+        println!("=== found init test list ===");
+        let runtime = __twz_get_runtime();
+        let handle = runtime.map_object(id, Protections::READ.into()).unwrap();
+
+        let addr = unsafe { handle.start.add(NULLPAGE_SIZE) };
+        let bytes = unsafe {
+            core::slice::from_raw_parts(addr as *const u8, twizzler_abi::object::MAX_SIZE)
+        };
+        let bytes = &bytes[0..bytes.iter().position(|r| *r == 0).unwrap_or(0)];
+        let str = String::from_utf8(bytes.to_vec()).unwrap();
+        let mut test_failed = false;
+        for line in str.split("\n").filter(|l| !l.is_empty()) {
+            println!("STARTING TEST {}", line);
+            if let Some(id) = find_init_name(line) {
+                let args = &if benches { ["--bench"] } else { ["--test"] };
+                let tid = exec_n(line, id, args);
+                if let Some(tid) = tid {
+                    let thandle = runtime.map_object(tid, Protections::READ.into()).unwrap();
+
+                    let taddr = unsafe { thandle.start.add(NULLPAGE_SIZE) };
+                    let tr = taddr as *const ThreadRepr;
+                    unsafe {
+                        let val = tr.as_ref().unwrap().wait(None);
+                        if let Some(val) = val {
+                            if val.0 == ExecutionState::Exited && val.1 != 0
+                                || val.0 == ExecutionState::Suspended
+                            {
+                                test_failed = true;
+                            }
+                        }
+                    }
+                }
+            } else {
+                println!("FAILED to start {}", line);
+                test_failed = true;
+            }
+        }
+        if test_failed {
+            println!("!!! TEST MODE FAILED");
+        }
+        #[allow(deprecated)]
+        twizzler_abi::syscall::sys_debug_shutdown(if test_failed { 1 } else { 0 });
+    }
 }
 
 /*

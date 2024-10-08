@@ -11,14 +11,13 @@ use twizzler_abi::{
     },
 };
 
+use super::{interrupt::IsrContext, syscall::X86SyscallContext};
 use crate::{
     arch::amd64::gdt::set_kernel_stack,
     memory::VirtAddr,
     processor::KERNEL_STACK_SIZE,
     thread::{current_thread_ref, Thread},
 };
-
-use super::{interrupt::IsrContext, syscall::X86SyscallContext};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Registers {
@@ -51,7 +50,7 @@ pub struct ArchThread {
     rsp: core::cell::UnsafeCell<u64>,
     pub user_fs: AtomicU64,
     xsave_inited: AtomicBool,
-    pub entry_registers: RefCell<Registers>,
+    entry_registers: RefCell<Registers>,
     /// The frame of an upcall to restore. The restoration path only occurs on the first
     /// return-from-syscall after entering from the syscall that provides the frame to restore.
     /// We store that frame here until we hit the syscall return path, which then restores the
@@ -82,16 +81,20 @@ unsafe extern "C" fn __do_switch(
         "pushfq",
         /* save the stack pointer. */
         "mov [rsi], rsp",
-        /* okay, now we can release the switch lock */
+        /* okay, now we can release the switch lock. We can probably relax this, but for now do
+         * a seq_cst store (mov + mfence). */
         "mov qword ptr [rcx], 0",
-        "sfence",
-        /* try to grab the new switch lock for the new thread. if we fail, jump to a spin loop */
-        "mov rax, [rdx]",
+        "mfence",
+        /* try to grab the new switch lock for the new thread. if we fail, jump to a spin loop.
+         * We use lock xchg to ensure single winner for setting the lock, which has seq_cst
+         * semantics. */
+        "grab_the_lock:",
+        "mov rax, 1",
+        "lock xchg rax, [rdx]",
         "test rax, rax",
         "jnz sw_wait",
         "do_the_switch:",
-        /* we can just store to the new switch lock, since we're guaranteed to be the only CPU here */
-        "mov qword ptr [rdx], 1",
+        "mfence",
         /* okay, now load the new stack pointer and restore */
         "mov rsp, [rdi]",
         "popfq",
@@ -105,12 +108,13 @@ unsafe extern "C" fn __do_switch(
         "pop rax",
         "jmp rax",
         "sw_wait:",
-        /* okay, so we have to wait. Just keep retrying to read zero from the lock, pausing in the meantime */
+        /* okay, so we have to wait. Just keep retrying to read zero from the lock, pausing in
+         * the meantime */
         "pause",
         "mov rax, [rdx]",
         "test rax, rax",
         "jnz sw_wait",
-        "jmp do_the_switch",
+        "jmp grab_the_lock",
         options(noreturn),
     )
 }
@@ -139,15 +143,12 @@ pub trait UpcallAble {
     fn get_stack_top(&self) -> u64;
 }
 
-fn same_object(a: usize, b: usize) -> bool {
-    a / MAX_SIZE == b / MAX_SIZE
-}
-
 fn set_upcall<T: UpcallAble + Copy>(
     regs: &mut T,
     target: UpcallTarget,
     info: UpcallInfo,
     source_ctx: ObjID,
+    thread_id: ObjID,
     sup: bool,
 ) -> bool
 where
@@ -159,11 +160,15 @@ where
     const RED_ZONE_SIZE: usize = 512;
     // Frame must be aligned for the xsave region (Intel says aligned on 64 bytes).
     const MIN_FRAME_ALIGN: usize = 64;
+    // Minimum amount of stack space we need left over for execution
+    const MIN_STACK_REMAINING: usize = 1024 * 1024; // 1MB
 
     let current_stack_pointer = regs.get_stack_top();
     // We only switch contexts if it was requested and we aren't in that context.
     // TODO: once security contexts are more fully implemented, we'll need to change this code.
-    let switch_to_super = sup && !same_object(target.super_stack, current_stack_pointer as usize);
+    let switch_to_super = sup
+        && !(current_stack_pointer as usize >= target.super_stack
+            && (current_stack_pointer as usize) < (target.super_stack + target.super_stack_size));
 
     let target_addr = if switch_to_super {
         target.super_address
@@ -173,6 +178,7 @@ where
 
     // If the address is not canonical, leave.
     let Ok(target_addr) = VirtAddr::new(target_addr as u64) else {
+        logln!("warning -- thread aborted to non-canonical jump address for upcall");
         return false;
     };
 
@@ -184,19 +190,25 @@ where
             UpcallHandlerFlags::empty()
         },
         source_ctx,
+        thread_id,
     };
 
     // Step 1: determine where we are going to put the frame. If we have
     // a supervisor stack, and we aren't currently on it, use that. Otherwise,
     // use the current stack pointer.
     let stack_pointer = if switch_to_super {
-        target.super_stack as u64
+        (target.super_stack + target.super_stack_size) as u64
     } else {
         current_stack_pointer
     };
 
-    // TODO: once security contexts are more implemented, we'll need to do a bunch of permission checks
-    // on the stack and target jump addresses.
+    if stack_pointer == 0 {
+        logln!("warning -- thread aborted to null stack pointer for upcall");
+        return false;
+    }
+
+    // TODO: once security contexts are more implemented, we'll need to do a bunch of permission
+    // checks on the stack and target jump addresses.
 
     // Don't touch the red zone for the function we were in.
     let stack_top = stack_pointer - RED_ZONE_SIZE as u64;
@@ -223,10 +235,17 @@ where
     let total_size = data_size + frame_size + frame_padding + RED_ZONE_SIZE;
     let total_size = (total_size + MIN_STACK_ALIGN) & !(MIN_STACK_ALIGN - 1);
 
-    let stack_object_base = (stack_top as usize / MAX_SIZE) * MAX_SIZE + NULLPAGE_SIZE;
-    if stack_object_base + total_size >= stack_pointer as usize {
-        // No space for our frame!
-        return false;
+    if switch_to_super {
+        if target.super_stack_size < (total_size + MIN_STACK_REMAINING) {
+            logln!("warning -- thread aborted due to insufficient super stack space");
+            return false;
+        }
+    } else {
+        let stack_object_base = (stack_top as usize / MAX_SIZE) * MAX_SIZE + NULLPAGE_SIZE;
+        if stack_object_base + (total_size + MIN_STACK_REMAINING) >= stack_pointer as usize {
+            logln!("warning -- thread aborted due to insufficient stack space");
+            return false;
+        }
     }
 
     // Step 3: write out the frame and the data into the stack.
@@ -234,7 +253,8 @@ where
     let frame_ptr = frame_start as usize as *mut UpcallFrame;
     let mut frame: UpcallFrame = (*regs).into();
 
-    // Step 3a: we need to fill out some extra stuff in the upcall frame, like the thread pointer and fpu state.
+    // Step 3a: we need to fill out some extra stuff in the upcall frame, like the thread pointer
+    // and fpu state.
     frame.thread_ptr = current_thread_ref()
         .unwrap()
         .arch
@@ -319,18 +339,29 @@ impl Thread {
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
         let source_ctx = self.secctx.active_id();
-        match *self.arch.entry_registers.borrow() {
+        let ok = match *self.arch.entry_registers.borrow() {
             Registers::None => {
-                panic!("tried to upcall to a thread that hasn't started yet");
+                panic!(
+                    "tried to upcall {:?} to a thread that hasn't started yet",
+                    info
+                );
             }
             Registers::Interrupt(int, _) => {
                 let int = unsafe { &mut *int };
-                set_upcall(int, target, info, source_ctx, sup);
+                set_upcall(int, target, info, source_ctx, self.objid(), sup)
             }
             Registers::Syscall(sys, _) => {
                 let sys = unsafe { &mut *sys };
-                set_upcall(sys, target, info, source_ctx, sup);
+                set_upcall(sys, target, info, source_ctx, self.objid(), sup)
             }
+        };
+        if !ok {
+            logln!(
+                "while trying to generate upcall: {:?} from {:?}",
+                info,
+                self.arch.entry_registers.borrow()
+            );
+            crate::thread::exit(UPCALL_EXIT_CODE);
         }
     }
 
@@ -343,6 +374,7 @@ impl Thread {
     }
 
     pub extern "C" fn arch_switch_to(&self, old_thread: &Thread) {
+        assert!(!crate::interrupt::get());
         unsafe {
             set_kernel_stack(
                 VirtAddr::new(self.kernel_stack.as_ref() as *const u8 as u64)

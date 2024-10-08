@@ -3,6 +3,7 @@ use core::{
     fmt::Write,
     sync::atomic::{AtomicBool, Ordering},
 };
+
 use lazy_static::lazy_static;
 
 use crate::interrupt::{Destination, TriggerMode};

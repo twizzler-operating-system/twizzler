@@ -21,3 +21,13 @@ twz-rt = { path = "../twz-rt", features = ["runtime"] }
 twizzler-object = { path = "../../lib/twizzler-object" }
 miette = "5.10"
 secgate = { path = "../secgate" }
+monitor-api = { path = "../monitor-api" }
+static_assertions = "1.1"
+lazy_static = "1.4"
+talc = "3.1"
+happylock = "0.3"
+parking_lot = "*"
+
+[features]
+secgate-impl = []
+default = ["secgate-impl"]

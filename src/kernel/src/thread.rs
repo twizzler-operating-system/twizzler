@@ -1,10 +1,10 @@
+use alloc::{boxed::Box, sync::Arc};
 use core::{
     alloc::Layout,
     cell::RefCell,
     sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
 };
 
-use alloc::{boxed::Box, sync::Arc};
 use intrusive_collections::{linked_list::AtomicLink, offset_of, RBTreeAtomicLink};
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
@@ -13,6 +13,10 @@ use twizzler_abi::{
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallTarget, UPCALL_EXIT_CODE},
 };
 
+use self::{
+    flags::{THREAD_IN_KERNEL, THREAD_PROC_IDLE},
+    priority::{Priority, PriorityClass},
+};
 use crate::{
     idcounter::{Id, IdCounter},
     interrupt,
@@ -21,11 +25,6 @@ use crate::{
     processor::{get_processor, KERNEL_STACK_SIZE},
     security::SecCtxMgr,
     spinlock::Spinlock,
-};
-
-use self::{
-    flags::{THREAD_IN_KERNEL, THREAD_PROC_IDLE},
-    priority::{Priority, PriorityClass},
 };
 
 pub mod entry;
@@ -269,6 +268,7 @@ impl Thread {
         self.id.value()
     }
 
+    #[track_caller]
     pub fn send_upcall(self: &ThreadRef, info: UpcallInfo) {
         if !self.is_current_thread() {
             panic!("cannot send upcall to a different thread");
@@ -338,6 +338,7 @@ impl<'a> Drop for CriticalGuard<'a> {
 }
 
 pub fn exit(code: u64) -> ! {
+    // TODO: we can do a quick sanity check here that we aren't holding any locks before we exit.
     {
         let th = current_thread_ref().unwrap();
         th.set_state_and_code(ExecutionState::Exited, code);

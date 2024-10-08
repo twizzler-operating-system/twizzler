@@ -1,9 +1,11 @@
 use std::process::exit;
 
 use dynlink::{
-    engines::{Backing, Engine},
+    compartment::MONITOR_COMPARTMENT_ID,
+    engines::{Backing, ContextEngine},
     library::UnloadedLibrary,
     symbol::LookupFlags,
+    DynlinkError, DynlinkErrorKind,
 };
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -20,30 +22,65 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     None
 }
 
+struct Engine;
+
+impl ContextEngine for Engine {
+    fn load_segments(
+        &mut self,
+        src: &Backing,
+        ld: &[dynlink::engines::LoadDirective],
+    ) -> Result<Vec<Backing>, dynlink::DynlinkError> {
+        dynlink::engines::twizzler::load_segments(src, ld)
+    }
+
+    fn load_object(&mut self, unlib: &UnloadedLibrary) -> Result<Backing, DynlinkError> {
+        let id = name_resolver(&unlib.name)?;
+        Ok(Backing::new(
+            twizzler_runtime_api::get_runtime()
+                .map_object(id, MapFlags::READ)
+                .map_err(|_err| DynlinkErrorKind::NewBackingFail)?,
+        ))
+    }
+
+    fn select_compartment(
+        &mut self,
+        _unlib: &UnloadedLibrary,
+    ) -> Option<dynlink::compartment::CompartmentId> {
+        Some(MONITOR_COMPARTMENT_ID)
+    }
+}
+
+fn name_resolver(mut name: &str) -> Result<ObjID, DynlinkError> {
+    if name.starts_with("libstd") {
+        name = "libstd.so";
+    }
+    find_init_name(name).ok_or(
+        DynlinkErrorKind::NameNotFound {
+            name: name.to_string(),
+        }
+        .into(),
+    )
+}
+
 fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     //miette::set_hook(Box::new(|_| Box::new(miette::DebugReportHandler::new()))).unwrap();
     let engine = Engine;
-    let mut ctx = dynlink::context::Context::new(engine);
+    let mut ctx = dynlink::context::Context::new(Box::new(engine));
     let unlib = UnloadedLibrary::new("libmonitor.so");
     let monitor_comp_id = ctx.add_compartment("monitor").unwrap();
 
     let monitor_id = ctx
-        .load_library_in_compartment(monitor_comp_id, unlib, |mut name| {
-            if name.starts_with("libstd") {
-                name = "libstd.so";
-            }
-            let id = find_init_name(name)?;
-            let obj = twizzler_runtime_api::get_runtime()
-                .map_object(id.as_u128(), MapFlags::READ)
-                .ok()?;
-            Some(Backing::new(obj))
-        })
+        .load_library_in_compartment(monitor_comp_id, unlib)
         .unwrap();
 
     ctx.relocate_all(monitor_id).unwrap();
 
     let monitor_compartment = ctx.get_compartment_mut(monitor_comp_id).unwrap();
-    let tls = monitor_compartment.build_tls_region(()).unwrap();
+    let tls = monitor_compartment
+        .build_tls_region((), |layout| unsafe {
+            std::ptr::NonNull::new(std::alloc::alloc_zeroed(layout))
+        })
+        .unwrap();
 
     debug!("context loaded, prepping jump to monitor");
     let entry = ctx
@@ -59,7 +96,7 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
 
     let mut info = ctx.build_runtime_info(monitor_id, tls).unwrap();
     let info_ptr = &info as *const _ as usize;
-    let aux = vec![AuxEntry::RuntimeInfo(info_ptr), AuxEntry::Null];
+    let aux = vec![AuxEntry::RuntimeInfo(info_ptr, 0), AuxEntry::Null];
 
     let mut used = vec![];
     used.reserve(SLOTS);

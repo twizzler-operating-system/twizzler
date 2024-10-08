@@ -13,17 +13,13 @@ use elf::{
 };
 use tracing::{debug, error, trace};
 
+use super::{Context, Library};
 use crate::{
+    arch::{REL_DTPMOD, REL_DTPOFF, REL_GOT, REL_PLT, REL_RELATIVE, REL_SYMBOLIC, REL_TPOFF},
     library::{LibraryId, RelocState},
     symbol::LookupFlags,
     DynlinkError, DynlinkErrorKind,
 };
-
-use crate::arch::{
-    REL_DTPMOD, REL_DTPOFF, REL_GOT, REL_PLT, REL_RELATIVE, REL_SYMBOLIC, REL_TPOFF,
-};
-
-use super::{engine::ContextEngine, Context, Library};
 
 // A relocation is either a REL type or a RELA type. The only difference is that
 // the RELA type contains an addend (used in the reloc calculations below).
@@ -63,7 +59,7 @@ impl EitherRel {
     }
 }
 
-impl<Engine: ContextEngine> Context<Engine> {
+impl Context {
     pub(crate) fn get_parsing_iter<P: ParseAt>(
         &self,
         start: *const u8,
@@ -79,7 +75,7 @@ impl<Engine: ContextEngine> Context<Engine> {
 
     fn do_reloc(
         &self,
-        lib: &Library<Engine::Backing>,
+        lib: &Library,
         rel: EitherRel,
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
@@ -193,7 +189,7 @@ impl<Engine: ContextEngine> Context<Engine> {
     #[allow(clippy::too_many_arguments)]
     fn process_rels(
         &self,
-        lib: &Library<Engine::Backing>,
+        lib: &Library,
         start: *const u8,
         ent: usize,
         sz: usize,
@@ -207,8 +203,8 @@ impl<Engine: ContextEngine> Context<Engine> {
             name,
             sz / ent
         );
-        // Try to parse the table as REL or RELA, according to ent size. If get_parsing_iter succeeds for a given
-        // relocation type, that's the correct one.
+        // Try to parse the table as REL or RELA, according to ent size. If get_parsing_iter
+        // succeeds for a given relocation type, that's the correct one.
         if let Some(rels) = self.get_parsing_iter(start, ent, sz) {
             DynlinkError::collect(
                 DynlinkErrorKind::RelocationSectionFail {
@@ -259,7 +255,8 @@ impl<Engine: ContextEngine> Context<Engine> {
         // Helper to lookup a single value in the dynamic table.
         let find_dyn_value = |tag| dynamic.iter().find(|d| d.d_tag == tag).map(|d| d.d_val());
 
-        // Many of the relocation tables are described in a similar way -- start, entry size, and table size (in bytes).
+        // Many of the relocation tables are described in a similar way -- start, entry size, and
+        // table size (in bytes).
         let find_dyn_rels = |tag, ent, sz| {
             let rel = find_dyn_entry(tag);
             let relent = find_dyn_value(ent);
@@ -328,7 +325,8 @@ impl<Engine: ContextEngine> Context<Engine> {
             )?;
         }
 
-        // This one is a little special in that instead of an entry size, we are given a relocation type.
+        // This one is a little special in that instead of an entry size, we are given a relocation
+        // type.
         if let Some((rel, kind, sz)) = jmprels {
             let ent = match kind as i64 {
                 DT_REL => 2,  // 2 usize long, according to ELF
@@ -366,9 +364,10 @@ impl<Engine: ContextEngine> Context<Engine> {
             }
         }
 
-        // We do this recursively instead of using a traversal, since we want to be able to prune nodes that
-        // we know we no longer need to relocate. But since the reloc state gets set at the end (so we can do this pruning),
-        // we'll need to track the visit states. In the end, this is depth-first postorder.
+        // We do this recursively instead of using a traversal, since we want to be able to prune
+        // nodes that we know we no longer need to relocate. But since the reloc state gets
+        // set at the end (so we can do this pruning), we'll need to track the visit states.
+        // In the end, this is depth-first postorder.
         let deps = self
             .library_deps
             .neighbors_directed(root_id.0, petgraph::Direction::Outgoing)
@@ -402,7 +401,8 @@ impl<Engine: ContextEngine> Context<Engine> {
         res
     }
 
-    /// Iterate through all libraries and process relocations for any libraries that haven't yet been relocated.
+    /// Iterate through all libraries and process relocations for any libraries that haven't yet
+    /// been relocated.
     pub fn relocate_all(&mut self, root_id: LibraryId) -> Result<(), DynlinkError> {
         let name = self.get_library(root_id)?.name.to_string();
         self.relocate_recursive(root_id).map_err(|e| {

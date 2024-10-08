@@ -4,7 +4,7 @@ use crate::upcall::{UpcallData, UpcallInfo};
 pub const XSAVE_LEN: usize = 1024;
 
 /// Arch-specific frame info for upcall.
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Copy)]
 #[repr(C, align(64))]
 pub struct UpcallFrame {
     pub xsave_region: [u8; XSAVE_LEN],
@@ -30,6 +30,19 @@ pub struct UpcallFrame {
     pub prior_ctx: crate::object::ObjID,
 }
 
+impl core::fmt::Debug for UpcallFrame {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("UpcallFrame")
+            .field("rip", &format_args!("0x{:x}", self.rip))
+            .field("rsp", &format_args!("0x{:x}", self.rsp))
+            .field("rbp", &format_args!("0x{:x}", self.rbp))
+            .field("rflags", &format_args!("0x{:x}", self.rflags))
+            .field("thread_ptr", &format_args!("0x{:x}", self.thread_ptr))
+            .field("prior_ctx", &format_args!("0x{:x}", self.prior_ctx))
+            .finish_non_exhaustive()
+    }
+}
+
 impl UpcallFrame {
     /// Get the instruction pointer of the frame.
     pub fn ip(&self) -> usize {
@@ -44,6 +57,41 @@ impl UpcallFrame {
     /// Get the base pointer of the frame.
     pub fn bp(&self) -> usize {
         self.rbp as usize
+    }
+
+    /// Build a new frame set up to enter a context at a start point.
+    pub fn new_entry_frame(
+        stack_base: usize,
+        stack_size: usize,
+        tp: usize,
+        ctx: crate::object::ObjID,
+        entry: usize,
+        arg: usize,
+    ) -> Self {
+        Self {
+            xsave_region: [0; XSAVE_LEN],
+            rip: entry as u64,
+            // Default has the interrupt enabled flag set, and the reserved bit.
+            rflags: 0x202,
+            rsp: (stack_base + stack_size - 8) as u64,
+            rbp: 0,
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rdi: arg as u64,
+            rsi: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            thread_ptr: tp as u64,
+            prior_ctx: ctx,
+        }
     }
 }
 

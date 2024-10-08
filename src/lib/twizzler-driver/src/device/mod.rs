@@ -2,14 +2,9 @@
 
 use std::fmt::Display;
 
-pub use twizzler_abi::device::BusType;
-pub use twizzler_abi::device::DeviceRepr;
-pub use twizzler_abi::device::DeviceType;
-use twizzler_abi::kso::KactionError;
-use twizzler_abi::kso::KactionValue;
-use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd};
-use twizzler_object::Object;
-use twizzler_object::{ObjID, ObjectInitError, ObjectInitFlags, Protections};
+pub use twizzler_abi::device::{BusType, DeviceRepr, DeviceType};
+use twizzler_abi::kso::{KactionCmd, KactionError, KactionFlags, KactionGenericCmd, KactionValue};
+use twizzler_object::{ObjID, Object, ObjectInitError, ObjectInitFlags, Protections};
 
 mod children;
 pub mod events;

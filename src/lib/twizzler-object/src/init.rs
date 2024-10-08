@@ -1,9 +1,9 @@
 use std::marker::PhantomData;
 
+pub use twizzler_abi::object::Protections;
 use twizzler_abi::{object::ObjID, syscall::ObjectMapError};
 
 use crate::object::Object;
-pub use twizzler_abi::object::Protections;
 
 bitflags::bitflags! {
     /// Flags to pass to object initialization routines.

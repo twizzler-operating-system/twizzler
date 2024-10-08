@@ -2,28 +2,23 @@
 
 use std::{alloc::Layout, collections::HashMap, sync::Mutex};
 
-use dynlink::tls::TlsRegion;
 use tracing::trace;
 use twizzler_abi::{
-    object::NULLPAGE_SIZE,
-    syscall::{sys_spawn, UpcallTargetSpawnOption},
+    object::{ObjID, NULLPAGE_SIZE},
     thread::{ExecutionState, ThreadRepr},
-    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
-use twizzler_runtime_api::{CoreRuntime, JoinError, MapFlags, ObjectRuntime, SpawnError};
-
-use crate::{
-    monitor::get_monitor_actions,
-    runtime::{
-        thread::{
-            tcb::{trampoline, RuntimeThreadControl},
-            MIN_STACK_ALIGN, THREAD_MGR,
-        },
-        ReferenceRuntime, OUR_RUNTIME,
-    },
+use twizzler_runtime_api::{
+    CoreRuntime, JoinError, MapFlags, ObjectRuntime, SpawnError, ThreadSpawnArgs,
 };
 
 use super::internal::InternalThread;
+use crate::runtime::{
+    thread::{
+        tcb::{trampoline, RuntimeThreadControl, TLS_GEN_MGR},
+        MIN_STACK_ALIGN, THREAD_MGR,
+    },
+    ReferenceRuntime, OUR_RUNTIME,
+};
 
 pub(super) struct ThreadManager {
     inner: Mutex<ThreadManagerInner>,
@@ -132,68 +127,56 @@ impl ReferenceRuntime {
     ) -> Result<u32, twizzler_runtime_api::SpawnError> {
         // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
-        let tls: TlsRegion = get_monitor_actions()
-            .allocate_tls_region()
-            .ok_or(SpawnError::Other)?;
+        let tls = TLS_GEN_MGR
+            .lock()
+            .unwrap()
+            .get_next_tls_info(None, || RuntimeThreadControl::new(0))
+            .unwrap();
         let stack_raw = unsafe {
             OUR_RUNTIME
                 .default_allocator()
                 .alloc_zeroed(Layout::from_size_align(args.stack_size, MIN_STACK_ALIGN).unwrap())
         } as usize;
 
-        // Take the thread management lock, so that when the new thread starts we cannot observe that thread
-        // running without the management data being recorded.
+        // Take the thread management lock, so that when the new thread starts we cannot observe
+        // that thread running without the management data being recorded.
         let mut inner = THREAD_MGR.inner.lock().unwrap();
         let id = inner.next_id();
 
         // Set the thread's ID. After this the TCB is ready.
         unsafe {
-            tls.get_thread_control_block::<RuntimeThreadControl>()
-                .as_mut()
-                .unwrap()
-                .runtime_data
-                .set_id(id.id);
+            tls.as_mut().unwrap().runtime_data.set_id(id.id);
         }
 
         let stack_size = args.stack_size;
         let arg_raw = Box::into_raw(args) as usize;
 
         trace!(
-            "spawning thread {} with stack {:x}, entry {:x}, and TLS {:x}",
+            "spawning thread {} with stack {:x}, entry {:x}, and TLS {:p}",
             id.id,
             stack_raw,
             trampoline as usize,
-            tls.get_thread_pointer_value(),
+            tls,
         );
 
-        let upcall_target = UpcallTarget::new(
-            crate::arch::rr_upcall_entry,
-            crate::arch::rr_upcall_entry,
-            0,
-            0,
-            0.into(),
-            [UpcallOptions {
-                flags: UpcallFlags::empty(),
-                mode: UpcallMode::CallSelf,
-            }; UpcallInfo::NR_UPCALLS],
-        );
+        let new_args = ThreadSpawnArgs {
+            stack_size,
+            start: trampoline as usize,
+            arg: arg_raw,
+        };
 
-        let thid = unsafe {
-            sys_spawn(twizzler_abi::syscall::ThreadSpawnArgs {
-                entry: trampoline as usize,
-                stack_base: stack_raw,
-                stack_size,
-                tls: tls.get_thread_pointer_value(),
-                arg: arg_raw,
-                flags: twizzler_abi::syscall::ThreadSpawnFlags::empty(),
-                vm_context_handle: None,
-                upcall_target: UpcallTargetSpawnOption::SetTo(upcall_target),
-            })
-        }
-        .map_err(|_| twizzler_runtime_api::SpawnError::KernelError)?;
+        let thid: ObjID = {
+            let res: secgate::SecGateReturn<Result<_, SpawnError>> =
+                monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
+            //let res = monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
+            match res {
+                secgate::SecGateReturn::Success(id) => ObjID::from(id?),
+                _ => return Err(SpawnError::Other),
+            }
+        };
 
         let thread_repr_obj = self
-            .map_object(thid.as_u128(), MapFlags::READ | MapFlags::WRITE)
+            .map_object(thid, MapFlags::READ | MapFlags::WRITE)
             .map_err(|_| SpawnError::Other)?;
 
         let thread = InternalThread::new(

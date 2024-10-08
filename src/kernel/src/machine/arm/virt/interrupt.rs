@@ -2,11 +2,16 @@ use lazy_static::lazy_static;
 
 use super::super::common::gicv2::GICv2;
 
+// used by generic kernel interrupt code
+pub const MIN_VECTOR: usize = GICv2::MIN_VECTOR;
+pub const MAX_VECTOR: usize = GICv2::MAX_VECTOR;
+pub const NUM_VECTORS: usize = GICv2::NUM_VECTORS;
+
 lazy_static! {
     /// System-wide reference to the interrupt controller
     pub static ref INTERRUPT_CONTROLLER: GICv2 = {
         use twizzler_abi::{device::CacheType, object::Protections};
-        
+
         use crate::memory::{
             PhysAddr,
             pagetables::{
@@ -15,7 +20,7 @@ lazy_static! {
             },
         };
         use crate::arch::memory::mmio::MMIO_ALLOCATOR;
-        
+
         // retrive the locations of the MMIO registers
         let (distributor_mmio, cpu_interface_mmio) = crate::machine::info::get_gicv2_info();
         // reserve regions of virtual address space for MMIO

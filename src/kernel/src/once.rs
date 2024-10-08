@@ -30,7 +30,8 @@ impl<T> Once<T> {
         }
     }
     /// Initialize the data once and only once, returning the data once it is initialized. The given
-    /// closure will only execute the first time this function is called, and otherwise will not be run.
+    /// closure will only execute the first time this function is called, and otherwise will not be
+    /// run.
     ///
     /// If multiple calls to call_once race, only one of them will run and initialize the data, the
     /// others will block.

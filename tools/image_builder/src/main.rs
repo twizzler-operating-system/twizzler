@@ -1,29 +1,30 @@
-use anyhow::{bail, Context};
 use std::{
     convert::TryFrom,
     fs::{self, File},
     io::{self, Seek, Write},
     path::{Path, PathBuf},
 };
+
+use anyhow::{bail, Context};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
 struct Args {
-  /// Path where disk image should be created
-  #[clap(short, long)]
-  disk_path: String,
-  /// Path to kernel binary
-  #[clap(short, long)]
-  kernel_path: String,
-  /// Path to initial ram disk
-  #[clap(short, long)]
-  initrd_path: String,
-  /// Command line string to be passed to kernel
-  #[clap(short, long)]
-  cmdline: Vec<String>,
-  /// EFI application binary used by bootloader
-  #[clap(short, long)]
-  efi_binary: String,
+    /// Path where disk image should be created
+    #[clap(short, long)]
+    disk_path: String,
+    /// Path to kernel binary
+    #[clap(short, long)]
+    kernel_path: String,
+    /// Path to initial ram disk
+    #[clap(short, long)]
+    initrd_path: String,
+    /// Command line string to be passed to kernel
+    #[clap(short, long)]
+    cmdline: Vec<String>,
+    /// EFI application binary used by bootloader
+    #[clap(short, long)]
+    efi_binary: String,
 }
 
 fn main() {
@@ -37,7 +38,13 @@ fn main() {
         let path = PathBuf::from(args.initrd_path);
         path.canonicalize().unwrap()
     };
-    create_disk_images(&disk_image_path, &kernel_binary_path, &initrd_path, args.cmdline.join(" "), args.efi_binary);
+    create_disk_images(
+        &disk_image_path,
+        &kernel_binary_path,
+        &initrd_path,
+        args.cmdline.join(" "),
+        args.efi_binary,
+    );
 }
 
 pub fn create_disk_images(
@@ -49,9 +56,13 @@ pub fn create_disk_images(
 ) -> PathBuf {
     //let kernel_manifest_path = locate_cargo_manifest::locate_manifest().unwrap();
     //let kernel_binary_name = kernel_binary_path.file_name().unwrap().to_str().unwrap();
-    if let Err(e) =
-        create_uefi_disk_image(disk_image_path, kernel_binary_path, initrd_path, cmdline, efi_binary)
-    {
+    if let Err(e) = create_uefi_disk_image(
+        disk_image_path,
+        kernel_binary_path,
+        initrd_path,
+        cmdline,
+        efi_binary,
+    ) {
         panic!("failed to create disk image: {:?}", e);
     }
     if !disk_image_path.exists() {

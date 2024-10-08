@@ -1,6 +1,6 @@
 //! # The Twizzler Reference Runtime
-//! The Reference Runtime implements the Runtime trait from twizzler-runtime-abi, and is designed to be the primary, fully supported
-//! programming environment on Twizzler.
+//! The Reference Runtime implements the Runtime trait from twizzler-runtime-abi, and is designed to
+//! be the primary, fully supported programming environment on Twizzler.
 //!
 //! This is a work in progress.
 
@@ -14,11 +14,14 @@
 
 pub(crate) mod arch;
 
-pub mod monitor;
+pub use arch::rr_upcall_entry;
+
 mod runtime;
-pub use runtime::OUR_RUNTIME;
+pub use runtime::{
+    set_upcall_handler, CompartmentInitInfo, RuntimeState, RuntimeThreadControl, OUR_RUNTIME,
+};
 
 mod error;
 pub use error::*;
 
-pub(crate) mod preinit;
+pub mod preinit;

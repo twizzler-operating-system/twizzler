@@ -19,33 +19,34 @@
 //!
 //! Note: this code is somewhat cursed, since it needs to do a bunch of funky low-level memory
 //! management without ever triggering the memory manager (can't allocate memory, since that could
-//! recurse or deadlock), and we'll need the ability to store sets of pages without allocating memory
-//! outside of this module as well, hence the intrusive linked list design. Additionally, the kernel
-//! needs to be able to access frame data from possibly any CPU, so the whole type must be both Sync
-//! and Send. This would be easy with the lock-around-inner trick, but this plays badly with the
-//! intrusive list, and so we do some cursed manual locking to ensure write isolation.
+//! recurse or deadlock), and we'll need the ability to store sets of pages without allocating
+//! memory outside of this module as well, hence the intrusive linked list design. Additionally, the
+//! kernel needs to be able to access frame data from possibly any CPU, so the whole type must be
+//! both Sync and Send. This would be easy with the lock-around-inner trick, but this plays badly
+//! with the intrusive list, and so we do some cursed manual locking to ensure write isolation.
 //!
-//! Note: This code uses intrusive linked lists (a type of intrusive data structure). These are standard
-//! practice in C kernels, but are rarely needed these days. An intrusive list is a list that stores the
-//! list's link data inside the nodes (`struct Foo {link: Link, ...}`) as opposed to storing the objects in
-//! the list (`struct ListItem<T> {item: T, link: Link}`). They are useful here because they can form
-//! arbitrary containers while ensuring no memory is allocated to store the list, something that is very
-//! important inside an allocator for physical pages. For more information, see: [https://docs.rs/intrusive-collections/latest/intrusive_collections/].
+//! Note: This code uses intrusive linked lists (a type of intrusive data structure). These are
+//! standard practice in C kernels, but are rarely needed these days. An intrusive list is a list
+//! that stores the list's link data inside the nodes (`struct Foo {link: Link, ...}`) as opposed to
+//! storing the objects in the list (`struct ListItem<T> {item: T, link: Link}`). They are useful
+//! here because they can form arbitrary containers while ensuring no memory is allocated to store
+//! the list, something that is very important inside an allocator for physical pages. For more information, see: [https://docs.rs/intrusive-collections/latest/intrusive_collections/].
 
+use alloc::vec::Vec;
 use core::{
     intrinsics::size_of,
     mem::transmute,
     sync::atomic::{AtomicU8, Ordering},
 };
 
-use crate::{arch::memory::frame::FRAME_SIZE, once::Once};
-use alloc::vec::Vec;
 use intrusive_collections::{intrusive_adapter, LinkedList, LinkedListLink};
 
-use crate::arch::memory::phys_to_virt;
-use crate::spinlock::Spinlock;
-
 use super::{MemoryRegion, MemoryRegionKind, PhysAddr};
+use crate::{
+    arch::memory::{frame::FRAME_SIZE, phys_to_virt},
+    once::Once,
+    spinlock::Spinlock,
+};
 
 pub type FrameRef = &'static Frame;
 pub type FrameMutRef = &'static mut Frame;
@@ -59,7 +60,8 @@ struct AllocationRegion {
     non_zeroed: LinkedList<FrameAdapter>,
 }
 
-// Safety: this is needed because of the raw pointer, but the raw pointer is static for the life of the kernel.
+// Safety: this is needed because of the raw pointer, but the raw pointer is static for the life of
+// the kernel.
 unsafe impl Send for AllocationRegion {}
 
 impl AllocationRegion {
@@ -89,7 +91,8 @@ impl AllocationRegion {
         // Unwrap-Ok: we know this address is in this region already
         // Safety: we are allocating a new, untouched frame here
         let frame = unsafe { self.get_frame_mut(next) }.unwrap();
-        // Safety: the frame can be reset since during admit_one we are the only ones with access to the frame data.
+        // Safety: the frame can be reset since during admit_one we are the only ones with access to
+        // the frame data.
         unsafe { frame.reset(next) };
         frame.set_admitted();
         frame.set_free();
@@ -209,15 +212,17 @@ impl core::fmt::Debug for Frame {
 }
 
 impl Frame {
-    // Safety: must only be called once, during admit_one, when the frame has not been initialized yet.
+    // Safety: must only be called once, during admit_one, when the frame has not been initialized
+    // yet.
     unsafe fn reset(&mut self, pa: PhysAddr) {
         self.lock.store(0, Ordering::SeqCst);
         self.flags.store(0, Ordering::SeqCst);
         let pa_ptr = &mut self.pa as *mut _;
         *pa_ptr = pa;
         self.link.force_unlink();
-        // This store acts as a release for pa as well, which synchronizes with a load in lock (or unlock), which is always called
-        // at least once during allocation, so any thread that accesses a frame syncs-with this write.
+        // This store acts as a release for pa as well, which synchronizes with a load in lock (or
+        // unlock), which is always called at least once during allocation, so any thread
+        // that accesses a frame syncs-with this write.
         self.unlock();
     }
 
@@ -271,7 +276,8 @@ impl Frame {
         self.unlock();
     }
 
-    /// Mark this frame as not being zeroed. Does not modify the physical memory controlled by this Frame.
+    /// Mark this frame as not being zeroed. Does not modify the physical memory controlled by this
+    /// Frame.
     pub fn set_not_zero(&self) {
         self.lock();
         self.flags
@@ -304,12 +310,12 @@ impl Frame {
         PhysicalFrameFlags::from_bits_truncate(self.flags.load(Ordering::SeqCst))
     }
 
-    /// Copy contents of one frame into another. If the other frame is marked as zeroed, copying will not happen. Both
-    /// frames are locked first.
+    /// Copy contents of one frame into another. If the other frame is marked as zeroed, copying
+    /// will not happen. Both frames are locked first.
     pub fn copy_contents_from(&self, other: &Frame) {
         self.lock();
-        // We don't need to lock the other frame, since if its contents aren't synchronized with this operation, it
-        // could have reordered to before or after.
+        // We don't need to lock the other frame, since if its contents aren't synchronized with
+        // this operation, it could have reordered to before or after.
         if other.is_zeroed() {
             // if both are zero, do nothing
             if self.is_zeroed() {
@@ -501,7 +507,8 @@ impl FrameIndexer {
     }
 }
 
-// Safety: this is needed because of the raw pointer, but the raw pointer is static for the life of the kernel.
+// Safety: this is needed because of the raw pointer, but the raw pointer is static for the life of
+// the kernel.
 unsafe impl Send for FrameIndexer {}
 unsafe impl Sync for FrameIndexer {}
 
@@ -527,7 +534,8 @@ pub fn init(regions: &[MemoryRegion]) {
 /// to reflect the correct state of the frame.
 ///
 /// # Panic
-/// Will panic if out of physical memory. For this reason, you probably want to use [try_alloc_frame].
+/// Will panic if out of physical memory. For this reason, you probably want to use
+/// [try_alloc_frame].
 ///
 /// # Examples
 /// ```
@@ -581,11 +589,11 @@ pub fn get_frame(pa: PhysAddr) -> Option<FrameRef> {
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
+
     use twizzler_kernel_macros::kernel_test;
 
-    use crate::utils::quick_random;
-
     use super::{alloc_frame, free_frame, get_frame, PhysicalFrameFlags};
+    use crate::utils::quick_random;
 
     #[kernel_test]
     fn test_get_frame() {

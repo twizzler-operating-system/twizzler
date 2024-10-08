@@ -1,21 +1,22 @@
 //! Compartments are an abstraction for isolation of library components, but they are not done yet.
 
-use petgraph::stable_graph::NodeIndex;
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
 };
 
+use petgraph::stable_graph::NodeIndex;
 use talc::{ErrOnOom, Talc};
 
-use crate::{library::BackingData, tls::TlsInfo};
+use crate::{engines::Backing, library::LibraryId, tls::TlsInfo};
 
-mod alloc;
 mod tls;
 
+#[repr(C)]
 /// A compartment that contains libraries (and a local runtime).
-pub struct Compartment<Backing: BackingData> {
+pub struct Compartment {
     pub name: String,
+    pub id: CompartmentId,
     // Library names are per-compartment.
     pub(crate) library_names: HashMap<String, NodeIndex>,
     // We maintain an allocator, so we can alloc data within the compartment.
@@ -38,10 +39,19 @@ impl Display for CompartmentId {
     }
 }
 
-impl<Backing: BackingData> Compartment<Backing> {
-    pub(crate) fn new(name: String) -> Self {
+impl CompartmentId {
+    /// Get the raw integer representing compartment ID.
+    pub fn raw(&self) -> usize {
+        self.0
+    }
+}
+
+pub const MONITOR_COMPARTMENT_ID: CompartmentId = CompartmentId(0);
+impl Compartment {
+    pub(crate) fn new(name: String, id: CompartmentId) -> Self {
         Self {
             name,
+            id,
             library_names: HashMap::new(),
             allocator: Talc::new(ErrOnOom),
             alloc_objects: vec![],
@@ -49,15 +59,20 @@ impl<Backing: BackingData> Compartment<Backing> {
             tls_gen: 0,
         }
     }
+
+    /// Get an iterator over the IDs of libraries in this compartment.
+    pub fn library_ids(&self) -> impl Iterator<Item = LibraryId> + '_ {
+        self.library_names.values().map(|idx| LibraryId(*idx))
+    }
 }
 
-impl<Backing: BackingData> core::fmt::Display for Compartment<Backing> {
+impl core::fmt::Display for Compartment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name)
     }
 }
 
-impl<Backing: BackingData> Debug for Compartment<Backing> {
+impl Debug for Compartment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Compartment[{}]", self.name)
     }

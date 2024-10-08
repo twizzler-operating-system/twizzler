@@ -1,15 +1,15 @@
 use core::{
-    fmt, ptr,
+    ptr,
     sync::atomic::{AtomicU32, AtomicU64},
     time::Duration,
 };
 
 use bitflags::bitflags;
-
-use crate::{arch::syscall::raw_syscall, object::ObjID};
+use num_enum::{FromPrimitive, IntoPrimitive};
 
 use super::{convert_codes_to_result, Syscall};
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+use crate::{arch::syscall::raw_syscall, object::ObjID};
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(u32)]
 /// Possible operations the kernel can perform when looking at the supplies reference and the
 /// supplied value. If the operation `*reference OP value` evaluates to true (or false if the INVERT
@@ -31,16 +31,17 @@ impl ThreadSyncOp {
 
 bitflags! {
     /// Flags to pass to sys_thread_sync.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ThreadSyncFlags: u32 {
         /// Invert the decision test for sleeping the thread.
         const INVERT = 1;
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(C)]
-/// A reference to a piece of data. May either be a non-realized persistent reference or a virtual address.
+/// A reference to a piece of data. May either be a non-realized persistent reference or a virtual
+/// address.
 pub enum ThreadSyncReference {
     ObjectRef(ObjID, usize),
     Virtual(*const AtomicU64),
@@ -62,7 +63,7 @@ impl ThreadSyncReference {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(C)]
 /// Specification for a thread sleep request.
 pub struct ThreadSyncSleep {
@@ -76,7 +77,7 @@ pub struct ThreadSyncSleep {
     pub flags: ThreadSyncFlags,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(C)]
 /// Specification for a thread wake request.
 pub struct ThreadSyncWake {
@@ -120,74 +121,53 @@ impl ThreadSyncSleep {
 impl ThreadSyncWake {
     /// Construct a new thread wake request. The reference works the same was as in
     /// [ThreadSyncSleep]. The kernel will wake up `count` threads that are sleeping on this
-    /// particular word of object memory. If you want to wake up all threads, you can supply `usize::MAX`.
+    /// particular word of object memory. If you want to wake up all threads, you can supply
+    /// `usize::MAX`.
     pub fn new(reference: ThreadSyncReference, count: usize) -> Self {
         Self { reference, count }
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Eq,
+    Hash,
+    IntoPrimitive,
+    FromPrimitive,
+    thiserror::Error,
+)]
 #[repr(u64)]
 /// Possible error returns for [sys_thread_sync].
 pub enum ThreadSyncError {
-    /// An unknown error.
+    /// An unknown error occurred.
+    #[num_enum(default)]
+    #[error("unknown error")]
     Unknown = 0,
-    /// The reference was invalid.
-    InvalidReference = 1,
-    /// An argument was invalid.
-    InvalidArgument = 2,
+    /// One of the arguments was invalid.
+    #[error("invalid argument")]
+    InvalidArgument = 1,
+    /// Invalid reference.
+    #[error("invalid reference")]
+    InvalidReference = 2,
     /// The operation timed out.
+    #[error("operation timed out")]
     Timeout = 3,
 }
+
+impl core::error::Error for ThreadSyncError {}
 
 /// Result of sync operations.
 pub type ThreadSyncResult = Result<usize, ThreadSyncError>;
 
-impl From<ThreadSyncError> for u64 {
-    fn from(x: ThreadSyncError) -> Self {
-        x as Self
-    }
-}
-
-impl ThreadSyncError {
-    /// Convert error to a human-readable string.
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Unknown => "an unknown error occurred",
-            Self::InvalidArgument => "an argument was invalid",
-            Self::InvalidReference => "a reference was invalid",
-            Self::Timeout => "the operation timed out",
-        }
-    }
-}
-
-impl From<u64> for ThreadSyncError {
-    fn from(x: u64) -> Self {
-        match x {
-            1 => Self::InvalidReference,
-            2 => Self::InvalidArgument,
-            3 => Self::Timeout,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl fmt::Display for ThreadSyncError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for ThreadSyncError {
-    fn description(&self) -> &str {
-        self.as_str()
-    }
-}
-
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
-/// Either a sleep or wake request. The syscall comprises of a number of either sleep or wake requests.
+/// Either a sleep or wake request. The syscall comprises of a number of either sleep or wake
+/// requests.
 pub enum ThreadSync {
     Sleep(ThreadSyncSleep, ThreadSyncResult),
     Wake(ThreadSyncWake, ThreadSyncResult),
@@ -229,11 +209,12 @@ impl ThreadSync {
 /// or slightly more due to scheduling uncertainty). If no operations are specified, the thread will
 /// sleep until the timeout expires.
 ///
-/// Returns either Ok(ready_count), indicating how many operations were immediately ready, or Err([ThreadSyncError]),
-/// indicating failure. After return, the kernel may have modified the ThreadSync entries to
-/// indicate additional information about each request, with Err to indicate error and Ok(n) to
-/// indicate success. For sleep requests, n is 0 if the operation went to sleep or 1 otherwise. For
-/// wakeup requests, n indicates the number of threads woken up by this operation.
+/// Returns either Ok(ready_count), indicating how many operations were immediately ready, or
+/// Err([ThreadSyncError]), indicating failure. After return, the kernel may have modified the
+/// ThreadSync entries to indicate additional information about each request, with Err to indicate
+/// error and Ok(n) to indicate success. For sleep requests, n is 0 if the operation went to sleep
+/// or 1 otherwise. For wakeup requests, n indicates the number of threads woken up by this
+/// operation.
 ///
 /// Note that spurious wakeups are possible, and that even if a timeout occurs the function may
 /// return Ok(0).

@@ -1,6 +1,6 @@
 use std::{fs::File, path::Path};
 
-use clap::{Command, Arg};
+use clap::{Arg, Command};
 use tar::Builder;
 
 fn main() {
@@ -22,7 +22,10 @@ fn main() {
                 .num_args(1..),
         );
     let matches = app.get_matches();
-    let initrd_output = matches.get_one::<String>("output").map(|s| s.as_str()).unwrap();
+    let initrd_output = matches
+        .get_one::<String>("output")
+        .map(|s| s.as_str())
+        .unwrap();
     let files = matches.get_many::<String>("files");
     let outfile = File::create(initrd_output).unwrap();
     let mut archive = Builder::new(outfile);

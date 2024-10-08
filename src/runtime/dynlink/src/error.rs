@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{
     compartment::CompartmentId,
-    context::engine::LoadDirective,
+    engines::LoadDirective,
     library::{LibraryId, UnloadedLibrary},
 };
 
@@ -116,6 +116,8 @@ pub enum DynlinkErrorKind {
         #[diagnostic_source]
         hdr_err: HeaderError,
     },
+    #[error("no entry address present")]
+    NoEntryAddress { name: String },
 }
 
 #[derive(Debug, Error, Diagnostic)]

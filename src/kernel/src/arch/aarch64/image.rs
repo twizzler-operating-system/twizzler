@@ -1,5 +1,4 @@
 /// TLS initialization for the kernel image
-
 use crate::{
     image::{TlsInfo, TlsVariant},
     memory::VirtAddr,

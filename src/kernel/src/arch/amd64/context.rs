@@ -62,7 +62,8 @@ impl ArchContext {
     /// Switch to a given set of page tables.
     ///
     /// # Safety
-    /// The specified target must be a root page table that will live as long as we are switched to it.
+    /// The specified target must be a root page table that will live as long as we are switched to
+    /// it.
     pub unsafe fn switch_to_target(tgt: &ArchContextTarget) {
         unsafe {
             if tgt.0 != x86::controlregs::cr3() {

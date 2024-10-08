@@ -46,7 +46,8 @@ impl<T: AsyncSetup> Async<T> {
     }
 
     /// Asynchronously run an operation that will sleep if not ready. The closure to run must return
-    /// `Result<_, T::Error>`, and should return `Err(T::WOULD_BLOCK)` if the operation is not ready.
+    /// `Result<_, T::Error>`, and should return `Err(T::WOULD_BLOCK)` if the operation is not
+    /// ready.
     pub async fn run_with<R>(
         &self,
         op: impl FnMut(&T) -> Result<R, T::Error>,
@@ -123,8 +124,9 @@ impl<T: AsyncDuplexSetup> AsyncDuplex<T> {
         self.handle.as_ref().unwrap()
     }
 
-    /// Asynchronously run a read-like operation that will sleep if not ready. The closure to run must return
-    /// `Result<_, T::ReadError>`, and should return `Err(T::READ_WOULD_BLOCK)` if the operation is not ready.
+    /// Asynchronously run a read-like operation that will sleep if not ready. The closure to run
+    /// must return `Result<_, T::ReadError>`, and should return `Err(T::READ_WOULD_BLOCK)` if
+    /// the operation is not ready.
     pub async fn read_with<R>(
         &self,
         op: impl FnMut(&T) -> Result<R, T::ReadError>,
@@ -140,8 +142,9 @@ impl<T: AsyncDuplexSetup> AsyncDuplex<T> {
         }
     }
 
-    /// Asynchronously run a write-like operation that will sleep if not ready. The closure to run must return
-    /// `Result<_, T::WriteError>`, and should return `Err(T::WRITE_WOULD_BLOCK)` if the operation is not ready.
+    /// Asynchronously run a write-like operation that will sleep if not ready. The closure to run
+    /// must return `Result<_, T::WriteError>`, and should return `Err(T::WRITE_WOULD_BLOCK)` if
+    /// the operation is not ready.
     pub async fn write_with<R>(
         &self,
         op: impl FnMut(&T) -> Result<R, T::WriteError>,

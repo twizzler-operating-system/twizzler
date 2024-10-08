@@ -1,9 +1,9 @@
 use alloc::collections::BTreeMap;
+
 use twizzler_abi::syscall::ThreadSyncOp;
 
-use crate::thread::{current_thread_ref, ThreadRef};
-
 use super::Object;
+use crate::thread::{current_thread_ref, ThreadRef};
 
 struct SleepEntry {
     threads: BTreeMap<u64, ThreadRef>,
@@ -68,7 +68,8 @@ impl SleepInfo {
                 count += 1;
                 p
             }) {
-                /* TODO (opt): if sync_sleep_done is also set, maybe we can just immeditately reschedule this thread. */
+                /* TODO (opt): if sync_sleep_done is also set, maybe we can just immeditately
+                 * reschedule this thread. */
                 crate::syscall::sync::add_to_requeue(t);
             }
         }
@@ -93,6 +94,27 @@ impl Object {
         let mut sleep_info = self.sleep_info.lock();
 
         let cur = unsafe { self.read_atomic_u64(offset) };
+        let res = op.check(cur, val);
+        if res {
+            if first_sleep {
+                thread.set_sync_sleep();
+            }
+            sleep_info.insert(offset, thread);
+        }
+        res
+    }
+
+    pub fn setup_sleep_word32(
+        &self,
+        offset: usize,
+        op: ThreadSyncOp,
+        val: u32,
+        first_sleep: bool,
+    ) -> bool {
+        let thread = current_thread_ref().unwrap();
+        let mut sleep_info = self.sleep_info.lock();
+
+        let cur = unsafe { self.read_atomic_u32(offset) };
         let res = op.check(cur, val);
         if res {
             if first_sleep {

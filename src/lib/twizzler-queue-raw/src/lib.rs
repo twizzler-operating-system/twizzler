@@ -4,7 +4,8 @@
 //! interacts with the object system.
 //!
 //! This library exists to provide an underlying implementation of the concurrent data structure for
-//! each individual raw queue so that this complex code can be reused in both userspace and the kernel.
+//! each individual raw queue so that this complex code can be reused in both userspace and the
+//! kernel.
 //!
 //! The basic design of a raw queue is two parts:
 //!
@@ -85,7 +86,8 @@ use twizzler_abi::marker::BaseType;
 #[repr(C)]
 /// A queue entry. All queues must be formed of these, as the queue algorithm uses data inside this
 /// struct as part of its operation. The cmd_slot is used internally to track turn, and the info is
-/// used by the full queue structure to manage completion. The data T is user data passed around the queue.
+/// used by the full queue structure to manage completion. The data T is user data passed around the
+/// queue.
 pub struct QueueEntry<T> {
     cmd_slot: u32,
     info: u32,
@@ -153,7 +155,8 @@ impl<S, C> BaseType for QueueBase<S, C> {
 }
 
 #[repr(C)]
-/// A raw queue header. This contains all the necessary counters and info to run the queue algorithm.
+/// A raw queue header. This contains all the necessary counters and info to run the queue
+/// algorithm.
 pub struct RawQueueHdr {
     l2len: usize,
     stride: usize,
@@ -515,10 +518,10 @@ unsafe impl<T: Send> Sync for RawQueue<T> {}
 /// Wait for receiving on multiple raw queues. If any of the passed raw queues can return data, they
 /// will do so by writing it into the output array at the same index that they are in the `queues`
 /// variable. The queues and output arrays must be the same length. If no data is available in any
-/// queues, then the function will call back on multi_wait, which it expects to wait until **any** of
-/// the pairs (&x, y) meet the condition that *x != y. Before returning any data, the function will
-/// callback on multi_ring, to inform multiple queues that data was taken from them. It expects the
-/// multi_ring function to wake up any waiting threads on the supplied words of memory.
+/// queues, then the function will call back on multi_wait, which it expects to wait until **any**
+/// of the pairs (&x, y) meet the condition that *x != y. Before returning any data, the function
+/// will callback on multi_ring, to inform multiple queues that data was taken from them. It expects
+/// the multi_ring function to wake up any waiting threads on the supplied words of memory.
 ///
 /// Note that both call backs specify the pointers as Option. In the case that an entry is None,
 /// there was no requested wait or wake operation for that queue, and that entry should be ignored.
@@ -535,7 +538,6 @@ unsafe impl<T: Send> Sync for RawQueue<T> {}
 ///
 /// The complexity of the multi_wait and multi_ring callbacks is present to avoid calling into the
 /// kernel often for high-contention queues.
-///
 pub fn multi_receive<T: Copy, W: Fn(&[(Option<&AtomicU64>, u64)]), R: Fn(&[Option<&AtomicU64>])>(
     queues: &[&RawQueue<T>],
     output: &mut [Option<QueueEntry<T>>],
@@ -639,10 +641,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     //   use syscalls::SyscallArgs;
-
     use crate::multi_receive;
-    use crate::QueueError;
-    use crate::{QueueEntry, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags};
+    use crate::{QueueEntry, QueueError, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags};
 
     fn wait(x: &AtomicU64, v: u64) {
         // println!("wait");

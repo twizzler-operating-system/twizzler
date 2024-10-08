@@ -6,6 +6,7 @@ use twizzler_net::{
     ListenFlags, PacketData, RxRequest, TxCompletion,
 };
 
+use super::TransportProto;
 use crate::{
     endpoint::{foreach_endpoint, EndPointKey},
     header::Header,
@@ -16,8 +17,6 @@ use crate::{
     network::ipv4::Ipv4Prot,
     HandleRef,
 };
-
-use super::TransportProto;
 
 pub struct Icmp;
 

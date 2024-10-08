@@ -1,4 +1,5 @@
-//! Wrapper functions around for raw_syscall, providing a typed and safer way to interact with the kernel.
+//! Wrapper functions around for raw_syscall, providing a typed and safer way to interact with the
+//! kernel.
 
 mod console;
 mod create;

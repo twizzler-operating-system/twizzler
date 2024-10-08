@@ -1,19 +1,18 @@
 /// A Generic Interrupt Controller (GIC) v2 driver interface
-/// 
+///
 /// The full specification can be found here:
 ///     https://developer.arm.com/documentation/ihi0048/b?lang=en
 ///
 /// A summary of its functionality can be found in section 10.6
 /// "ARM Cortex-A Series Programmer’s Guide for ARMv8-A":
 ///     https://developer.arm.com/documentation/den0024/a/
-
-mod gicd;
 mod gicc;
+mod gicd;
 
-use gicd::GICD;
 use gicc::GICC;
+use gicd::GICD;
 
-use crate::memory::VirtAddr;
+use crate::{interrupt::Destination, memory::VirtAddr};
 
 /// A representation of the Generic Interrupt Controller (GIC) v2
 pub struct GICv2 {
@@ -22,6 +21,12 @@ pub struct GICv2 {
 }
 
 impl GICv2 {
+    // used by generic kernel interrupt code
+    pub const MIN_VECTOR: usize = *GICD::SGI_ID_RANGE.start() as usize;
+    pub const MAX_VECTOR: usize = *GICD::SGI_ID_RANGE.end() as usize;
+    pub const NUM_VECTORS: usize =
+        (*GICD::SGI_ID_RANGE.end() - *GICD::SGI_ID_RANGE.start() + 1) as usize;
+
     pub fn new(distr_base: VirtAddr, local_base: VirtAddr) -> Self {
         Self {
             global: GICD::new(distr_base),
@@ -64,19 +69,31 @@ impl GICv2 {
         self.global.set_interrupt_target(int_id, core);
         // TODO: have the priority set to something reasonable
         // set the priority for the corresponding interrupt
-        self.global.set_interrupt_priority(int_id, GICD::HIGHEST_PRIORITY);
+        self.global
+            .set_interrupt_priority(int_id, GICD::HIGHEST_PRIORITY);
         // TODO: edge triggered or level sensitive??? see GICD_ICFGRn
     }
 
     /// Returns the pending interrupt ID from the controller, and
-    /// acknowledges the interrupt.
-    pub fn pending_interrupt(&self) -> u32 {
+    /// acknowledges the interrupt. Possibly returing the core ID
+    /// for an SW-generated interrupt.
+    pub fn pending_interrupt(&self) -> (u32, Option<u32>) {
         self.local.get_pending_interrupt_number()
     }
 
     /// Signal the controller that we have serviced the interrupt
-    pub fn finish_active_interrupt(&self, int_id: u32) {
-        self.local.finish_active_interrupt(int_id);
+    pub fn finish_active_interrupt(&self, int_id: u32, core: Option<u32>) {
+        self.local.finish_active_interrupt(int_id, core);
+    }
+
+    /// Send a software generated interrupt to another core
+    pub fn send_interrupt(&self, int_id: u32, dest: Destination) {
+        self.global.send_interrupt(int_id, dest);
+    }
+
+    /// Check if the interrupt is still pending.
+    pub fn is_interrupt_pending(&self, int_id: u32, dest: Destination) -> bool {
+        self.global.is_interrupt_pending(int_id, dest)
     }
 
     /// Print the configuration of the GIC
@@ -85,4 +102,3 @@ impl GICv2 {
         self.local.print_config();
     }
 }
-

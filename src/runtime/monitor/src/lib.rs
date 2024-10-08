@@ -1,25 +1,32 @@
 #![feature(naked_functions)]
 #![feature(thread_local)]
 #![feature(c_str_literals)]
+#![feature(new_uninit)]
+#![feature(hash_extract_if)]
 
-use std::sync::{Arc, Mutex};
-
-use dynlink::{engines::Backing, symbol::LookupFlags};
-use state::MonitorState;
-use tracing::{debug, info, trace, warn, Level};
+use dynlink::engines::Backing;
+use tracing::{debug, info, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
 };
 use twizzler_object::ObjID;
+use twz_rt::{set_upcall_handler, OUR_RUNTIME};
 
-use crate::runtime::init_actions;
-
+mod compartment;
 mod init;
-mod runtime;
+mod object;
 pub mod secgate_test;
-mod state;
+mod upcall;
+
+mod api;
+mod mon;
+
+pub use monitor_api::MappedObjectAddrs;
+
+#[path = "../secapi/gates.rs"]
+mod gates;
 
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
@@ -36,78 +43,44 @@ pub fn main() {
     }))
     .unwrap();
 
-    trace!("monitor entered, discovering dynlink context");
+    debug!("monitor entered, discovering dynlink context");
     let init =
         init::bootstrap_dynlink_context().expect("failed to discover initial dynlink context");
-    let state = Arc::new(Mutex::new(state::MonitorState::new(init)));
-    debug!(
-        "found dynlink context, with root {}",
-        state.lock().unwrap().root
-    );
 
-    init_actions(state.clone());
+    let mon = mon::Monitor::new(init);
+    mon::set_monitor(mon);
+
+    // Safety: the monitor is ready, and so we can set our runtime as ready to use the monitor.
+    unsafe { OUR_RUNTIME.set_runtime_ready() };
+    // Had to wait till now to be able to spawn threads.
+    mon::get_monitor().start_background_threads();
+
+    debug!("Ok");
     std::env::set_var("RUST_BACKTRACE", "1");
+    set_upcall_handler(&crate::upcall::upcall_monitor_handler).unwrap();
 
-    let main_thread = std::thread::spawn(|| monitor_init(state));
+    let main_thread = std::thread::spawn(|| monitor_init());
     let _r = main_thread.join().unwrap().map_err(|e| {
         tracing::error!("{:?}", e);
     });
     warn!("monitor main thread exited");
 }
 
-fn monitor_init(state: Arc<Mutex<MonitorState>>) -> miette::Result<()> {
+fn monitor_init() -> miette::Result<()> {
     info!("monitor early init completed, starting init");
-
-    {
-        let state = state.lock().unwrap();
-        let comp = state.dynlink.lookup_compartment("monitor").unwrap();
-        let mon = state.dynlink.lookup_library(comp, "libmonitor.so").unwrap();
-
-        let mon = state.dynlink.get_library(mon)?;
-
-        for gate in mon.iter_secgates().unwrap() {
-            let name = gate.name().to_string_lossy();
-            info!("secure gate in {} => {}: {:x}", mon.name, name, gate.imp);
-        }
-    }
-
-    load_hello_world_test(&state)?;
 
     Ok(())
 }
 
-fn load_hello_world_test(state: &Arc<Mutex<MonitorState>>) -> miette::Result<()> {
-    let lib = dynlink::library::UnloadedLibrary::new("libhello_world.so");
-
-    let mut state = state.lock().unwrap();
-    let test_comp_id = state.dynlink.add_compartment("test")?;
-
-    let libhw_id = state
-        .dynlink
-        .load_library_in_compartment(test_comp_id, lib, |mut name| {
-            if name.starts_with("libstd-") {
-                name = "libstd.so";
-            }
-            let id = find_init_name(name)?;
-            let obj = twizzler_runtime_api::get_runtime()
-                .map_object(id.as_u128(), twizzler_runtime_api::MapFlags::READ)
-                .ok()?;
-            Some(Backing::new(obj))
-        })?;
-
-    let _ = state.dynlink.relocate_all(libhw_id)?;
-    info!("lookup entry");
-
-    let sym = state
-        .dynlink
-        .lookup_symbol(libhw_id, "test_sec_call", LookupFlags::empty())?;
-
-    let addr = sym.reloc_value();
-    info!("addr = {:x}", addr);
-    let ptr: extern "C" fn() = unsafe { core::mem::transmute(addr as usize) };
-    (ptr)();
-
-    Ok(())
+fn bootstrap_name_res(mut name: &str) -> Option<Backing> {
+    if name.starts_with("libstd-") {
+        name = "libstd.so";
+    }
+    let id = find_init_name(name)?;
+    let obj = twizzler_runtime_api::get_runtime()
+        .map_object(id, twizzler_runtime_api::MapFlags::READ)
+        .ok()?;
+    Some(Backing::new(obj))
 }
 
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {

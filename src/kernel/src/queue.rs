@@ -1,6 +1,6 @@
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use twizzler_abi::{
     device::CacheType,
     object::Protections,

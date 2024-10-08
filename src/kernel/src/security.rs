@@ -1,4 +1,5 @@
 use alloc::{collections::BTreeMap, sync::Arc};
+
 use lazy_static::lazy_static;
 use twizzler_abi::{
     object::{ObjID, Protections},
@@ -88,7 +89,8 @@ impl SecCtxMgr {
         self.inner.lock().active.clone()
     }
 
-    /// Get the active ID. This is faster than active().id() and doesn't allocate memory (and only uses a spinlock).
+    /// Get the active ID. This is faster than active().id() and doesn't allocate memory (and only
+    /// uses a spinlock).
     pub fn active_id(&self) -> ObjID {
         *self.active_id.lock()
     }
@@ -135,6 +137,7 @@ impl SecCtxMgr {
         let mut inner = self.inner.lock();
         if let Some(mut ctx) = inner.inactive.remove(&id) {
             core::mem::swap(&mut ctx, &mut inner.active);
+            *self.active_id.lock() = id;
             // ctx now holds the old active context
             inner.inactive.insert(ctx.id(), ctx);
             SwitchResult::Switched
@@ -144,12 +147,17 @@ impl SecCtxMgr {
     }
 
     /// Attach a security context.
-    pub fn attach(&self, sctx: SecurityContextRef) {
-        self.inner.lock().inactive.insert(sctx.id(), sctx);
+    pub fn attach(&self, sctx: SecurityContextRef) -> Result<(), SctxAttachError> {
+        let mut inner = self.inner.lock();
+        if inner.active.id() == sctx.id() || inner.inactive.contains_key(&sctx.id()) {
+            return Err(SctxAttachError::AlreadyAttached);
+        }
+        inner.inactive.insert(sctx.id(), sctx);
+        Ok(())
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Debug)]
 /// Possible results of switching.
 pub enum SwitchResult {
     /// No switch was needed.
@@ -203,8 +211,9 @@ impl Drop for SecCtxMgr {
     fn drop(&mut self) {
         let mut global = GLOBAL_SECCTX_MGR.contexts.lock();
         let inner = self.inner.lock();
-        // Check the contexts we have a reference to. If the value is 2, then it's only us and the global mgr that have a ref.
-        // Since we hold the global mgr lock, this will not get incremented if no one else holds a ref.
+        // Check the contexts we have a reference to. If the value is 2, then it's only us and the
+        // global mgr that have a ref. Since we hold the global mgr lock, this will not get
+        // incremented if no one else holds a ref.
         for ctx in inner.inactive.values() {
             if ctx.id() != KERNEL_SCTX && Arc::strong_count(ctx) == 2 {
                 global.remove(&ctx.id());

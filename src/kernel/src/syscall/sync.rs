@@ -1,6 +1,6 @@
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::time::Duration;
 
-use alloc::{collections::BTreeMap, vec::Vec};
 use twizzler_abi::{
     syscall::{ThreadSync, ThreadSyncError, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake},
     thread::ExecutionState,
@@ -108,20 +108,12 @@ struct SleepEvent {
 
 fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent, ThreadSyncError> {
     let (obj, offset) = get_obj(sleep.reference)?;
-    /*
-    logln!(
-        "{} sleep {} {:x}",
-        current_thread_ref().unwrap().id(),
-        obj.id(),
-        offset
-    );
-    if let ThreadSyncReference::Virtual(p) = &sleep.reference {
-        logln!("  => {:p} {}", *p, unsafe {
-            (**p).load(core::sync::atomic::Ordering::SeqCst)
-        });
-    }
-    */
-    let did_sleep = obj.setup_sleep_word(offset, sleep.op, sleep.value, first_sleep);
+    let did_sleep = if matches!(sleep.reference, ThreadSyncReference::Virtual32(_)) {
+        obj.setup_sleep_word32(offset, sleep.op, sleep.value as u32, first_sleep)
+    } else {
+        obj.setup_sleep_word(offset, sleep.op, sleep.value, first_sleep)
+    };
+
     Ok(SleepEvent {
         obj,
         offset,
@@ -149,7 +141,7 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
     let thread = current_thread_ref().unwrap();
     let guard = thread.enter_critical();
     thread.set_sync_sleep();
-    crate::clock::register_timeout_callback(
+    let timeout_key = crate::clock::register_timeout_callback(
         // TODO: fix all our time types
         timeout.as_nanos() as u64,
         thread_sync_cb_timeout,
@@ -158,9 +150,9 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
     thread.set_sync_sleep_done();
     requeue_all();
     finish_blocking(guard);
+    drop(timeout_key);
 }
 
-// TODO: #42 on timeout, try to return Err(Timeout).
 pub fn sys_thread_sync(
     ops: &mut [ThreadSync],
     timeout: Option<&mut Duration>,
@@ -173,11 +165,13 @@ pub fn sys_thread_sync(
     }
     let mut ready_count = 0;
     let mut unsleeps = Vec::new();
+    let mut num_sleepers = 0;
 
     for op in ops {
         match op {
             ThreadSync::Sleep(sleep, result) => match prep_sleep(sleep, unsleeps.is_empty()) {
                 Ok(se) => {
+                    num_sleepers += 1;
                     *result = Ok(if se.did_sleep { 0 } else { 1 });
                     if se.did_sleep {
                         unsleeps.push(se);
@@ -187,51 +181,52 @@ pub fn sys_thread_sync(
                 }
                 Err(x) => *result = Err(x),
             },
-            ThreadSync::Wake(wake, result) => {
-                /*
-                if let ThreadSyncReference::Virtual(p) = &wake.reference {
-                    logln!(" wake => {:p} {}", *p, unsafe {
-                        (**p).load(core::sync::atomic::Ordering::SeqCst)
-                    });
-                }
-                */
-                match wakeup(wake) {
-                    Ok(count) => {
-                        *result = Ok(count);
-                        if count > 0 {
-                            ready_count += 1;
-                        }
-                    }
-                    Err(x) => {
-                        *result = Err(x);
+            ThreadSync::Wake(wake, result) => match wakeup(wake) {
+                Ok(count) => {
+                    *result = Ok(count);
+                    if count > 0 {
+                        ready_count += 1;
                     }
                 }
-            }
+                Err(x) => {
+                    *result = Err(x);
+                }
+            },
         }
     }
     let thread = current_thread_ref().unwrap();
-    {
+    let should_sleep = unsleeps.len() == num_sleepers && num_sleepers > 0;
+    let was_timedout = {
         let guard = thread.enter_critical();
-        if !unsleeps.is_empty() {
-            if let Some(timeout) = timeout {
+        let timeout_key = if should_sleep {
+            let timeout_key = timeout.map(|timeout| {
                 crate::clock::register_timeout_callback(
                     // TODO: fix all our time types
                     timeout.as_nanos() as u64,
                     thread_sync_cb_timeout,
                     thread.clone(),
-                );
-            }
+                )
+            });
             thread.set_sync_sleep_done();
-        }
+            timeout_key
+        } else {
+            None
+        };
         requeue_all();
-        if !unsleeps.is_empty() {
+        if should_sleep {
             finish_blocking(guard);
         } else {
             drop(guard);
         }
-    }
+        // If we have a timeout key, AND we don't find it during release, the timeout fired.
+        timeout_key.map(|tk| !tk.release()).unwrap_or(false)
+    };
     for op in unsleeps {
         undo_sleep(op);
     }
-    Ok(ready_count)
+    if was_timedout && ready_count == 0 {
+        Err(ThreadSyncError::Timeout)
+    } else {
+        Ok(ready_count)
+    }
 }

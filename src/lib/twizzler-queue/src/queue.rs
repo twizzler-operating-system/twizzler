@@ -1,18 +1,15 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use twizzler_abi::object::NULLPAGE_SIZE;
-use twizzler_abi::syscall::{
-    sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
-    ThreadSyncSleep, ThreadSyncWake,
+use twizzler_abi::{
+    object::NULLPAGE_SIZE,
+    syscall::{
+        sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
+        ThreadSyncSleep, ThreadSyncWake,
+    },
 };
 use twizzler_object::{CreateError, CreateSpec, Object};
-use twizzler_queue_raw::RawQueue;
-use twizzler_queue_raw::{QueueEntry, RawQueueHdr};
-
-pub use twizzler_queue_raw::QueueBase;
-pub use twizzler_queue_raw::QueueError;
-pub use twizzler_queue_raw::ReceiveFlags;
-pub use twizzler_queue_raw::SubmissionFlags;
+pub use twizzler_queue_raw::{QueueBase, QueueError, ReceiveFlags, SubmissionFlags};
+use twizzler_queue_raw::{QueueEntry, RawQueue, RawQueueHdr};
 
 /// A single queue, holding two subqueues (sending and completion). Objects of type S are sent
 /// across the sending queue, and completions of type C are sent back.

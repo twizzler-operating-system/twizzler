@@ -1,7 +1,9 @@
+use core::panic::PanicInfo;
+
 use addr2line::Context;
 use object::{Object, ObjectSection};
 
-use core::panic::PanicInfo;
+use crate::interrupt::disable;
 
 static mut DEBUG_CTX: Option<
     Context<addr2line::gimli::EndianReader<addr2line::gimli::RunTimeEndian, alloc::rc::Rc<[u8]>>>,
@@ -52,6 +54,7 @@ pub fn init(kernel_image: &'static [u8]) {
     unsafe { DEBUG_CTX = ctx };
 }
 
+const MAX_FRAMES: usize = 100;
 #[cfg(not(kani))]
 pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoint>) {
     let mut frame_nr = 0;
@@ -108,6 +111,10 @@ pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoin
         }
         frame_nr += 1;
 
+        if frame_nr > MAX_FRAMES {
+            return false;
+        }
+
         true // keep going to the next frame
     };
 
@@ -124,6 +131,7 @@ static DID_PANIC: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBoo
 #[cfg(not(kani))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    disable();
     let second_panic = DID_PANIC.swap(true, core::sync::atomic::Ordering::SeqCst);
     if second_panic {
         loop {}
@@ -146,6 +154,7 @@ fn panic(info: &PanicInfo) -> ! {
 
     loop {}
 }
+
 #[cfg(not(kani))]
 #[lang = "eh_personality"]
 pub extern "C" fn rust_eh_personality() {}

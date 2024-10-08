@@ -1,18 +1,16 @@
-use core::sync::atomic::{AtomicU64, Ordering};
-
 use alloc::{boxed::Box, vec::Vec};
-
-use crate::{
-    interrupt::Destination,
-    memory::VirtAddr,
-    once::Once,
-    processor::{current_processor, Processor},
-};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::{
     acpi::get_acpi_root,
     interrupt::InterProcessorInterrupt,
     memory::pagetables::{tlb_shootdown_handler, TlbShootdownInfo},
+};
+use crate::{
+    interrupt::Destination,
+    memory::VirtAddr,
+    once::Once,
+    processor::{current_processor, Processor},
 };
 
 #[repr(C)]
@@ -60,7 +58,8 @@ pub fn init(tls: VirtAddr) {
     let cpuid = x86::cpuid::CpuId::new().get_extended_feature_info();
     let mut gs_scratch = Box::new(GsScratch::new());
     gs_scratch.kernel_fs = tls.raw();
-    // Intentionally leak this memory, we don't need to reference it again outside interrupt assembly code.
+    // Intentionally leak this memory, we don't need to reference it again outside interrupt
+    // assembly code.
     let gs_scratch = Box::into_raw(gs_scratch);
     if let Some(ef) = cpuid {
         if ef.has_fsgsbase() {
