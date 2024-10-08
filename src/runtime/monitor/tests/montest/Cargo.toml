@@ -1,0 +1,13 @@
+[package]
+name = "montest"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+twz-rt = { path = "../../../twz-rt" }
+secgate = { path = "../../../secgate" }
+montest-lib = { path = "../montest-lib" }
+monitor = { path = "../../../monitor" }
+ctor = "*"

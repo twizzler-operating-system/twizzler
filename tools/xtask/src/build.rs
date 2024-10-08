@@ -252,7 +252,7 @@ fn build_twizzler<'a>(
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
 
-fn maybe_build_tests<'a>(
+fn maybe_build_tests_minruntime<'a>(
     workspace: &'a Workspace,
     build_config: &crate::BuildConfig,
     other_options: &OtherOptions,
@@ -291,6 +291,66 @@ fn maybe_build_tests<'a>(
                 "bootstrap" => None,
                 "secgate-macros" => None,
                 "layout-derive" => None,
+                "bar-srv" => None,
+                "foo" => None,
+                "bar" => None,
+                "logboi" => None,
+                "logboi-srv" => None,
+                "montest-lib" => None,
+                "montest" => None,
+                _ => Some(p.name().to_string()),
+            })
+            .collect(),
+    );
+    options.build_config.force_rebuild = other_options.needs_full_rebuild;
+    Ok(Some(cargo::ops::compile(workspace, &options)?))
+}
+
+fn maybe_build_tests<'a>(
+    workspace: &'a Workspace,
+    build_config: &crate::BuildConfig,
+    other_options: &OtherOptions,
+) -> anyhow::Result<Option<Compilation<'a>>> {
+    let mode = CompileMode::Test;
+    if !other_options.build_tests || !other_options.build_twizzler {
+        return Ok(None);
+    }
+    crate::toolchain::set_dynamic();
+    crate::toolchain::set_cc();
+    crate::print_status_line("collection: userspace::tests", Some(build_config));
+    let triple = Triple::new(
+        build_config.arch,
+        build_config.machine,
+        crate::triple::Host::Twizzler,
+        None,
+    );
+    let mut packages = locate_packages(workspace, None);
+    //packages.append(&mut locate_packages(workspace, Some("static")));
+    let mut options = CompileOptions::new(workspace.config(), mode)?;
+    options.build_config =
+        BuildConfig::new(workspace.config(), None, false, &[triple.to_string()], mode)?;
+    options.build_config.message_format = other_options.message_format;
+    if build_config.profile == Profile::Release {
+        options.build_config.requested_profile = InternedString::new("release");
+    }
+    options.spec = Packages::Packages(
+        packages
+            .iter()
+            .filter_map(|p| match p.name().as_str() {
+                "twizzler-kernel-macros" => None,
+                "twizzler-runtime-api" => None,
+                "nvme" => None,
+                "twz-rt" => None,
+                "monitor" => None,
+                "bootstrap" => None,
+                "secgate-macros" => None,
+                "layout-derive" => None,
+                "bar-srv" => None,
+                "foo" => None,
+                "bar" => None,
+                "logboi" => None,
+                "logboi-srv" => None,
+                "montest-lib" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),
@@ -420,6 +480,9 @@ pub(crate) struct TwizzlerCompilation {
     pub user_compilation: Option<Compilation<'this>>,
     #[borrows(static_workspace)]
     #[covariant]
+    pub test_minruntime_compilation: Option<Compilation<'this>>,
+    #[borrows(static_workspace)]
+    #[covariant]
     pub test_compilation: Option<Compilation<'this>>,
     #[borrows(kernel_workspace)]
     #[covariant]
@@ -499,6 +562,7 @@ fn compile(
         |w| build_kernel(w, mode, &bc, other_options),
         |w| build_static(w, mode, &bc, other_options),
         |w| build_twizzler(w, mode, &bc, other_options),
+        |w| maybe_build_tests_minruntime(w, &bc, other_options),
         |w| maybe_build_tests(w, &bc, other_options),
         |w| maybe_build_kernel_tests(w, &bc, other_options),
         |w| build_third_party(w, mode, &bc, other_options),

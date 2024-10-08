@@ -333,6 +333,17 @@ fn get_llvm_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
     Ok(llvm_bin)
 }
 
+pub fn get_rust_stage2_std(host_triple: &str, target_triple: &str) -> anyhow::Result<PathBuf> {
+    let curdir = std::env::current_dir().unwrap();
+    let dir = curdir
+        .join("toolchain/src/rust/build")
+        .join(host_triple)
+        .join("stage2-std")
+        .join(target_triple)
+        .join("release");
+    Ok(dir)
+}
+
 fn get_rustlib_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
     let curdir = std::env::current_dir().unwrap();
     let rustlib_bin = curdir

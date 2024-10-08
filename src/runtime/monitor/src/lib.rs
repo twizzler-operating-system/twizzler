@@ -6,14 +6,16 @@
 #![feature(iterator_try_collect)]
 #![feature(result_option_inspect)]
 
-use std::mem::ManuallyDrop;
+use std::{borrow::Borrow, mem::ManuallyDrop, time::Duration};
 
 use dynlink::context::NewCompartmentFlags;
 use miette::IntoDiagnostic;
 use mon::get_monitor;
-use monitor_api::CompartmentFlags;
+use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader};
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
+use twizzler_abi::object::NULLPAGE_SIZE;
+use twizzler_runtime_api::{get_runtime, MapFlags};
 use twz_rt::{set_upcall_handler, OUR_RUNTIME};
 
 mod compartment;
@@ -34,7 +36,7 @@ mod gates;
 pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
@@ -71,6 +73,57 @@ pub fn main() {
 
 #[allow(dead_code, unused_variables, unreachable_code)]
 fn monitor_init() -> miette::Result<()> {
+    if let Some(ki_name) = dlengine::get_kernel_init_info()
+        .names()
+        .iter()
+        .find(|iname| iname.name() == "monitor_test_info")
+    {
+        info!("starting monitor tests [{}]", ki_name.name());
+        let info = get_runtime()
+            .map_object(ki_name.id(), MapFlags::READ)
+            .unwrap();
+        let test_name_slice =
+            unsafe { core::slice::from_raw_parts(info.start.add(NULLPAGE_SIZE), 0x1000) };
+        let first_null = test_name_slice
+            .iter()
+            .position(|x| *x == 0)
+            .unwrap_or(0x1000 - 1);
+        let test_name = String::from_utf8_lossy(&test_name_slice[0..first_null]);
+        info!("monitor test binary: {}", test_name);
+        if let Some(ki_name) = dlengine::get_kernel_init_info()
+            .names()
+            .iter()
+            .find(|iname| iname.name() == test_name)
+        {
+            let comp: CompartmentHandle =
+                CompartmentLoader::new("montest", test_name, NewCompartmentFlags::empty())
+                    .load()
+                    .into_diagnostic()?;
+            let mut eb = 0;
+            let delay_exp_backoff = |state: &mut u64| {
+                let val = *state;
+                if val < 1000 {
+                    if val == 0 {
+                        *state = 1;
+                    } else {
+                        *state *= 2;
+                    }
+                }
+                tracing::info!("sleep: {}", val);
+                std::thread::sleep(Duration::from_millis(val));
+            };
+            while !comp.info().flags.contains(CompartmentFlags::EXITED) {
+                delay_exp_backoff(&mut eb);
+            }
+        } else {
+            tracing::error!("failed to start monitor tests: {}", ki_name.name());
+        }
+    }
+
+    let test_bin = CompartmentLoader::new("montest", "montest", NewCompartmentFlags::empty());
+    let test_bin = test_bin.load().into_diagnostic()?;
+
+    loop {}
     info!("monitor early init completed, starting init");
 
     info!("starting logboi...");

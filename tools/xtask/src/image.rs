@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::Context;
 use cargo::core::compiler::{Compilation, CompileTarget};
+use guess_host_triple::guess_host_triple;
 
 use crate::{build::TwizzlerCompilation, triple::Arch, BuildConfig, ImageOptions};
 
@@ -148,7 +149,11 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
 
         if let Some(ref test_comp) = comp.borrow_test_compilation() {
             let mut testlist = String::new();
+            let mut montest = None;
             for bin in test_comp.tests.iter() {
+                if bin.unit.pkg.name() == "montest" {
+                    montest = Some(bin.path.file_name().unwrap().to_string_lossy());
+                }
                 initrd_files.push(bin.path.clone());
                 testlist += &bin.path.file_name().unwrap().to_string_lossy();
                 testlist += "\n";
@@ -158,6 +163,13 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
                 let mut file = File::create(&test_file_path)?;
                 file.write_all(testlist.as_bytes())?;
                 initrd_files.push(test_file_path);
+
+                if let Some(montest) = montest {
+                    let test_file_path = get_genfile_path(comp, "monitor_test_info");
+                    let mut file = File::create(&test_file_path)?;
+                    file.write_all(montest.as_bytes())?;
+                    initrd_files.push(test_file_path);
+                }
             }
             if cli.benches {
                 let test_file_path = get_genfile_path(comp, "bench_bins");
@@ -170,6 +182,11 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
         }
 
         let mut lib_path = crate::toolchain::get_rustlib_lib(&cli.config.twz_triple().to_string())?;
+        let mut testso_path = crate::toolchain::get_rust_stage2_std(
+            guess_host_triple().unwrap(),
+            &cli.config.twz_triple().to_string(),
+        )?;
+        testso_path.push("libtest.so");
         let libstd_name = walkdir::WalkDir::new(lib_path.clone())
             .min_depth(1)
             .max_depth(2)
@@ -192,6 +209,7 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
 
         lib_path.push(libstd_name);
         initrd_files.push(lib_path);
+        initrd_files.push(testso_path);
 
         let initrd_path = get_genfile_path(comp, "initrd");
         let status = Command::new(get_tool_path(comp, "initrd_gen")?)

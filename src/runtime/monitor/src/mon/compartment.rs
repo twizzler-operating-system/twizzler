@@ -197,16 +197,6 @@ impl CompartmentMgr {
     pub fn process_cleanup_queue(&mut self, dynlink: &mut Context) {
         for rc in self.cleanup_queue.drain(..) {
             dynlink.unload_compartment(rc.compartment_id);
-            /*
-            let Ok(dc) = dynlink.get_compartment_mut(rc.compartment_id) else {
-                continue;
-            };
-            let ids = dc.library_ids().collect::<Vec<_>>();
-            for id in ids {
-                tracing::info!("dynlink: remove id: {:?}", id);
-            }
-            tracing::info!("dynlink: remove comp: {:?}", rc.compartment_id);
-            */
         }
     }
 }
@@ -290,7 +280,7 @@ impl super::Monitor {
             let loader = loader::RunCompLoader::new(&mut *dynlink, &compname, root, new_comp_flags);
             loader
         }
-        .inspect_err(|e| tracing::debug!("failed to load {}::{}: {}", compname, libname, e))
+        .inspect_err(|e| tracing::debug!("failed to load {}::{}: {:?}", compname, libname, e))
         .map_err(|e| LoadCompartmentError::Unknown)?;
 
         let root_comp = {
@@ -298,7 +288,14 @@ impl super::Monitor {
                 &mut *self.locks.lock(ThreadKey::get().unwrap());
             loader
                 .build_rcs(&mut *cmp, &mut *dynlink, &mut *space)
-                .inspect_err(|e| tracing::debug!("failed to load {}::{}: {}", compname, libname, e))
+                .inspect_err(|e| {
+                    tracing::debug!(
+                        "failed to build runtime compartments {}::{}: {}",
+                        compname,
+                        libname,
+                        e
+                    )
+                })
                 .map_err(|_| LoadCompartmentError::Unknown)?
         };
 

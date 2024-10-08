@@ -1,5 +1,5 @@
 
-#cargo-features = ["profile-rustflags"] 
+#cargo-features = ["profile-rustflags"]
 
 [workspace]
 members = [
@@ -23,9 +23,12 @@ members = [
     "src/lib/twizzler-runtime-api",
     "src/runtime/dynlink",
     "src/runtime/monitor",
+    "src/runtime/monitor/tests/montest",
+    "src/runtime/monitor/tests/montest-lib",
     "src/runtime/monitor-api",
     "src/runtime/twz-rt",
-    "src/lib/twizzler-futures", "src/bin/foo", 
+    "src/lib/twizzler-futures",
+    "src/bin/foo",
     "src/lib/bar",
     "src/lib/bar/srv",
     "src/lib/logboi",
@@ -49,7 +52,9 @@ initrd = [
     "crate:stdfs_demo",
     "crate:foo",
     "lib:bar-srv",
-    "lib:logboi-srv"
+    "lib:logboi-srv",
+    "crate:montest",
+    "lib:montest-lib",
     #"third-party:hello-world-rs"
 ]
 

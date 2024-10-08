@@ -42,6 +42,9 @@ fn name_resolver(mut name: &str) -> Result<ObjID, DynlinkError> {
     if name.starts_with("libstd") {
         name = "libstd.so";
     }
+    if name.starts_with("libtest") {
+        name = "libtest.so";
+    }
     find_init_name(name).ok_or(
         DynlinkErrorKind::NameNotFound {
             name: name.to_string(),
