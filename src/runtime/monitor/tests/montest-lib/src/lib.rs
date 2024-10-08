@@ -20,7 +20,10 @@ pub fn test_global_call_count() -> usize {
 
 #[secgate::secure_gate]
 pub fn test_internal_panic() -> usize {
-    panic!("test panic")
+    let x = std::panic::catch_unwind(|| {
+        panic!("test_panic");
+    });
+    return if x.is_err() { 1 } else { 0 };
 }
 
 #[secgate::secure_gate]

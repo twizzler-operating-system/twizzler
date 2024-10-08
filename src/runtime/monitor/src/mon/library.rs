@@ -1,6 +1,7 @@
 use dynlink::library::LibraryId;
 use happylock::ThreadKey;
 use secgate::util::Descriptor;
+use tracing::Level;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_runtime_api::{AddrRange, ObjID};
 
@@ -16,6 +17,7 @@ pub struct LibraryHandle {
 impl Monitor {
     /// Get LibraryInfo for a given library handle. Note that this will write to the
     /// compartment-thread's simple buffer.
+    #[tracing::instrument(skip(self), level = Level::DEBUG, ret)]
     pub fn get_library_info(
         &self,
         instance: ObjID,
@@ -52,6 +54,7 @@ impl Monitor {
     }
 
     /// Open a handle to the n'th library for a compartment.
+    #[tracing::instrument(skip(self), level = Level::DEBUG, ret)]
     pub fn get_library_handle(
         &self,
         caller: ObjID,

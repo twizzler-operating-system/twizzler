@@ -1,7 +1,15 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::{CStr, CString},
+    sync::Mutex,
+};
+
 use elf::segment::Elf64_Phdr;
 use twizzler_runtime_api::{AddrRange, DebugRuntime, Library, MapFlags};
 
 use super::{object::new_object_handle, ReferenceRuntime};
+
+static LIBNAMES: Mutex<BTreeMap<String, &'static [u8]>> = Mutex::new(BTreeMap::new());
 
 impl DebugRuntime for ReferenceRuntime {
     fn get_library(
@@ -9,7 +17,15 @@ impl DebugRuntime for ReferenceRuntime {
         id: twizzler_runtime_api::LibraryId,
     ) -> Option<twizzler_runtime_api::Library> {
         let lib = monitor_api::CompartmentHandle::current().libs().nth(id.0)?;
-        let info = lib.info();
+        let mut info = lib.info();
+        let mut lib_names = LIBNAMES.lock().ok()?;
+        if !lib_names.contains_key(&info.name) {
+            let mut name_bytes = info.name.clone().into_bytes();
+            name_bytes.push(0);
+            lib_names.insert(info.name.clone(), name_bytes.leak());
+        }
+        let name_ptr = lib_names.get(&info.name)?.as_ptr();
+        info.dl_info.name = name_ptr;
         let handle = new_object_handle(info.objid, info.slot, MapFlags::READ);
         Some(Library {
             range: info.range,
