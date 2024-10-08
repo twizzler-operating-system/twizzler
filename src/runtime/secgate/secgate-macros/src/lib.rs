@@ -208,7 +208,7 @@ fn handle_secure_gate(
 
 fn get_entry_sig(tree: &ItemFn) -> Signature {
     let mut sig = tree.sig.clone();
-    sig.abi = parse_quote!( extern "C" );
+    sig.abi = parse_quote!( extern "C-unwind" );
     sig.inputs = Punctuated::new();
     sig.inputs
         .push_value(parse_quote!(info: *const secgate::GateCallInfo));
@@ -229,7 +229,7 @@ fn build_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStr
     call_point.sig.ident = names.trampoline_name.clone();
     call_point.sig.abi = Some(syn::Abi {
         extern_token: syn::token::Extern::default(),
-        name: Some(LitStr::new("C", proc_macro2::Span::mixed_site())),
+        name: Some(LitStr::new("C-unwind", proc_macro2::Span::mixed_site())),
     });
     let entry_sig = get_entry_sig(tree);
     call_point.sig.output = entry_sig.output;
