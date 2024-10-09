@@ -1,5 +1,6 @@
 [target.x86_64-unknown-none]
 rustflags = [
+  "--emit=llvm-ir",
   "-C",
   "link-arg=--image-base=0xffffffff80100000",
   "-Cforce-unwind-tables",
@@ -7,15 +8,22 @@ rustflags = [
   "-C",
   "link-arg=--no-gc-sections",
   "-C",
+  "target-feature=+rdrand",                   # not supported when running qemu on ARM chips, will fail gracefully
+  "--cfg",
+  "chacha20_force_soft",
+  "-C",
   "debuginfo=2",
 ]
 
 [target.aarch64-unknown-none]
 rustflags = [
+  "--emit=llvm-ir",
   "-C",
   "link-args=-Tsrc/kernel/src/machine/arm/linker.ld",
   "-C",
   "link-arg=--image-base=0xffffffff80100000",
+  "--cfg",
+  "chacha20_force_soft",
 ]
 
 #[profile.dev]

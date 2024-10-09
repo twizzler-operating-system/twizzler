@@ -52,7 +52,11 @@ impl QemuCommand {
             image_info.disk_image.as_path().display()
         ));
 
-        if let Ok(f) = OpenOptions::new().write(true).create(true).open("target/nvme.img") {
+        if let Ok(f) = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open("target/nvme.img")
+        {
             f.set_len(0x1000000).unwrap();
         }
 
@@ -67,6 +71,7 @@ impl QemuCommand {
             .arg("-s") // shorthand for -gdb tcp::1234
             .arg("-serial")
             .arg("mon:stdio");
+
         //-serial mon:stdio creates a multiplexed stdio backend connected
         // to the serial port and the QEMU monitor, and
         // -nographic also multiplexes the console and the monitor to stdio.
