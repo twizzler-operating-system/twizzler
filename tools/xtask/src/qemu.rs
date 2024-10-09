@@ -57,7 +57,7 @@ impl QemuCommand {
             .create(true)
             .open("target/nvme.img")
         {
-            f.set_len(0x4_000_000_000).unwrap();
+            f.set_len(0x1000000).unwrap();
         }
 
         self.cmd
@@ -69,12 +69,8 @@ impl QemuCommand {
         self.cmd
             .arg("--no-reboot") // exit instead of rebooting
             .arg("-s") // shorthand for -gdb tcp::1234
-            // .arg("-serial")
-            // .arg("mon:stdio")
-            .arg("-nographic")
-            .arg("-smp")
-            .arg("32");
-        self.cmd.arg("-serial").arg("mon:stdio");
+            .arg("-serial")
+            .arg("mon:stdio");
 
         //-serial mon:stdio creates a multiplexed stdio backend connected
         // to the serial port and the QEMU monitor, and
