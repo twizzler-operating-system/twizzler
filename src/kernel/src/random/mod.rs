@@ -31,14 +31,12 @@ struct EntropySources {
 
 impl EntropySources {
     pub fn new() -> Self {
-        logln!("Created new entropy sources list");
         Self {
             sources: Vec::new(),
         }
     }
 
     pub fn has_sources(&self) -> bool {
-        logln!("source count: {}", self.source_count());
         self.source_count() != 0
     }
 
@@ -49,9 +47,7 @@ impl EntropySources {
         &mut self,
     ) -> Result<(), ()> {
         let source = Source::try_new()?;
-        logln!("pushing source!");
         self.sources.push((Box::new(source), Contributor::new()));
-        logln!("Sources count: {}", self.source_count());
         Ok(())
     }
 
@@ -89,14 +85,12 @@ pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
     if let Ok(()) = res {
         return true;
     }
-    logln!("need to seed accumulator");
     // try_fill_random_data only fails if unseeded
     // so the rest is trying to seed it/wait for it to be seeded
     let mut entropy_sources = ENTROPY_SOURCES
         .call_once(|| Mutex::new(EntropySources::new()))
         .lock();
     if entropy_sources.has_sources() {
-        logln!("has sources");
         entropy_sources.contribute_entropy(acc.borrow_mut());
         acc.try_fill_random_data(out)
             .expect("Should be seeded now & therefore shouldn't return an error");
@@ -113,7 +107,6 @@ pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
 
         // block for 2 seconds and hope for other entropy-generating work to get done in the
         // meantime
-        logln!("recursing");
         sys_thread_sync(&mut [], Some(&mut Duration::from_secs(2))).expect(
             "shouldn't panic because sys_thread_sync doesn't panic if no ops are passed in",
         );
@@ -158,9 +151,7 @@ pub fn start_entropy_contribution_thread() {
 }
 
 extern "C" fn contribute_entropy_regularly() {
-    logln!("Starting entropy contribution");
     loop {
-        logln!("Contributing entropy");
         let mut acc = ACCUMULATOR
             .call_once(|| Mutex::new(Accumulator::new()))
             .lock();
@@ -185,13 +176,12 @@ mod test {
     #[kernel_test]
     fn test_rand_gen() {
         let registered_jitter_entropy = maybe_add_jitter_entropy_source();
-        let mut into = [0u8; 1024];
+        let mut into = [0u8; 8];
         logln!("jitter entropy registered: {}", registered_jitter_entropy);
 
         getrandom(&mut into, false);
         for byte in into {
             logln!("{}", byte);
         }
-        // logln!("Into: {:?}", into)
     }
 }
