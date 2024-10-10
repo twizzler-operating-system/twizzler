@@ -243,8 +243,9 @@ dependencies = [
 
 [[package]]
 name = "async-io"
-version = "2.3.2"
-source = "git+https://github.com/twizzler-operating-system/async-io.git?branch=twizzler#90d7586871d1b7ad696f39daa056891b541d6646"
+version = "2.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "444b0228950ee6501b3568d3c93bf1176a1fdbc3b758dcd9475046d30f4dc7e8"
 dependencies = [
  "async-lock",
  "cfg-if 1.0.0",
@@ -256,8 +257,7 @@ dependencies = [
  "rustix",
  "slab",
  "tracing",
- "twizzler-futures",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2583,6 +2583,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d231dfb89cfffdbc30e7fc41579ed6066ad03abda9e567ccafae602b97ec5024"
 
 [[package]]
+name = "hermit-abi"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbf6a919d6cf397374f7dfeeea91d974c7c0a7221d0d0f4f20d859d329e53fcc"
+
+[[package]]
 name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4024,18 +4030,17 @@ checksum = "953ec861398dccce10c670dfeaf3ec4911ca479e9c02154b3a215178c5f566f2"
 
 [[package]]
 name = "polling"
-version = "3.6.0"
-source = "git+https://github.com/twizzler-operating-system/polling.git?branch=twizzler#83586e3bbde74954cc24e5d571a5d004a9d00c24"
+version = "3.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc2790cd301dec6cd3b7a025e4815cf825724a51c98dccfe6a3e55f05ffb6511"
 dependencies = [
- "bitflags 2.6.0",
  "cfg-if 1.0.0",
  "concurrent-queue",
  "hermit-abi",
  "pin-project-lite",
+ "rustix",
  "tracing",
- "twizzler-abi",
- "twizzler-futures",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
