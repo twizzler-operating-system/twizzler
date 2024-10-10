@@ -61,7 +61,7 @@ getrandom = { git = "https://github.com/twizzler-operating-system/getrandom-twiz
 polling = { git = "https://github.com/twizzler-operating-system/polling.git", branch = "twizzler" }
 async-io = { git = "https://github.com/twizzler-operating-system/async-io.git", branch = "twizzler" }
 async-executor = { git = "https://github.com/twizzler-operating-system/async-executor.git", branch = "twizzler" }
-twizzler-futures = { path = "src/lib/twizzler-futures" }
+#twizzler-futures = { path = "src/lib/twizzler-futures" }
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
 # lock_api comes from the parking_lot repo
