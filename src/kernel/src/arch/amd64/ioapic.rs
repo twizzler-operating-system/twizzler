@@ -219,8 +219,11 @@ fn disable_pic() {
         x86::io::outb(PIC1_DATA, mask1);
         iowait();
         x86::io::outb(PIC2_DATA, mask2);
+        iowait();
 
-        x86::io::outb(PIC2_DATA, 0xff);
         x86::io::outb(PIC1_DATA, 0xff);
+        iowait();
+        x86::io::outb(PIC2_DATA, 0xff);
+        iowait();
     }
 }

@@ -57,26 +57,31 @@ pub const LAPIC_INT_MASKED: u32 = 1 << 16;
 // Flags in the APIC base MSR
 const APIC_BASE_BSP_FLAG: u64 = 1 << 8;
 const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
+const APIC_ENABLE_X2MODE: u64 = 1 << 10;
 
 // The APIC can either be a standard APIC or x2APIC. We'll support
 // x2 eventually.
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 enum ApicVersion {
     XApic,
     X2Apic,
 }
 
+#[derive(Debug)]
 pub struct Lapic {
     version: ApicVersion,
     base: VirtAddr,
 }
 
+fn get_x2_msr_addr(reg: u32) -> u32 {
+    // See Intel manual chapter of APIC -- all x2 registers are the original register values
+    // shifted right 4 and offset by 0x800 into the MSR space.
+    0x800 | (reg >> 4)
+}
+
 impl Lapic {
-    fn new_apic(base: VirtAddr) -> Self {
-        Self {
-            version: ApicVersion::XApic,
-            base,
-        }
+    fn new_apic(base: VirtAddr, version: ApicVersion) -> Self {
+        Self { version, base }
     }
 
     /// Read a register from the local APIC.
@@ -84,7 +89,13 @@ impl Lapic {
     /// # Safety
     /// Caller must ensure that reg is a valid register in the APIC register space.
     pub unsafe fn read(&self, reg: u32) -> u32 {
-        core::ptr::read_volatile(self.base.offset(reg as usize).unwrap().as_ptr())
+        asm!("mfence;");
+        match self.version {
+            ApicVersion::XApic => {
+                core::ptr::read_volatile(self.base.offset(reg as usize).unwrap().as_ptr())
+            }
+            ApicVersion::X2Apic => rdmsr(get_x2_msr_addr(reg)) as u32,
+        }
     }
 
     /// Write a value to a register in the local APIC.
@@ -93,8 +104,17 @@ impl Lapic {
     /// Caller must ensure that reg is a valid register in the APIC register space.
     // Note: this does not need to take &mut self because the APIC is per-CPU.
     pub unsafe fn write(&self, reg: u32, val: u32) {
-        core::ptr::write_volatile(self.base.offset(reg as usize).unwrap().as_mut_ptr(), val);
-        self.read(LAPIC_ID);
+        asm!("mfence;");
+        match self.version {
+            ApicVersion::XApic => {
+                core::ptr::write_volatile(
+                    self.base.offset(reg as usize).unwrap().as_mut_ptr(),
+                    val,
+                );
+                self.read(LAPIC_ID);
+            }
+            ApicVersion::X2Apic => wrmsr(get_x2_msr_addr(reg), val.into()),
+        }
     }
 
     unsafe fn local_enable_set(&self, enable: bool) {
@@ -112,6 +132,20 @@ impl Lapic {
     pub fn eoi(&self) {
         unsafe {
             self.write(LAPIC_EOI, 0);
+        }
+    }
+
+    /// Write the interrupt control register.
+    pub fn write_icr(&self, hi: u32, lo: u32) {
+        match self.version {
+            ApicVersion::XApic => unsafe {
+                self.write(LAPIC_ICRHI, hi);
+                self.write(LAPIC_ICRLO, lo);
+            },
+            ApicVersion::X2Apic => {
+                let val = ((hi as u64) << 32) | lo as u64;
+                unsafe { wrmsr(get_x2_msr_addr(LAPIC_ICRLO), val) }
+            }
         }
     }
 
@@ -133,11 +167,15 @@ impl Lapic {
             self.write(LAPIC_LINT1, LAPIC_INT_MASKED);
             self.write(LAPIC_ERROR, LAPIC_ERR_VECTOR as u32);
             self.write(LAPIC_ESR, 0);
-            self.write(LAPIC_DFR, !0);
+            if matches!(self.version, ApicVersion::XApic) {
+                self.write(LAPIC_DFR, !0);
+            }
             self.write(LAPIC_TPR, 0);
 
-            // Assign all processors to group 1 in the logical addressing mode.
-            self.write(LAPIC_LDR, 1 << 24);
+            if matches!(self.version, ApicVersion::XApic) {
+                // Assign all processors to group 1 in the logical addressing mode.
+                self.write(LAPIC_LDR, 1 << 24);
+            }
 
             // Signal EOI
             self.write(LAPIC_EOI, 0);
@@ -187,13 +225,28 @@ fn supports_deadline() -> bool {
     })
 }
 
-fn global_enable() -> PhysAddr {
+fn supports_x2_mode() -> bool {
+    let cpuid = x86::cpuid::CpuId::new();
+    let features = cpuid.get_feature_info().unwrap();
+    features.has_x2apic()
+}
+
+fn global_enable() -> (PhysAddr, ApicVersion) {
     let mut base = unsafe { rdmsr(APIC_BASE) };
-    if base & APIC_GLOBAL_ENABLE == 0 {
-        base |= APIC_GLOBAL_ENABLE;
-        unsafe { wrmsr(APIC_BASE, base) };
+    base |= APIC_GLOBAL_ENABLE;
+    if supports_x2_mode() {
+        base |= APIC_ENABLE_X2MODE;
     }
-    PhysAddr::new(base & !0xfff).expect("invalid APIC base address")
+    unsafe { wrmsr(APIC_BASE, base) };
+    let vers = if supports_x2_mode() {
+        ApicVersion::X2Apic
+    } else {
+        ApicVersion::XApic
+    };
+    (
+        PhysAddr::new(base & !0xfff).expect("invalid APIC base address"),
+        vers,
+    )
 }
 
 static LAPIC: Once<Lapic> = Once::new();
@@ -204,14 +257,30 @@ pub fn get_lapic() -> &'static Lapic {
     LAPIC.poll().expect("must initialize APIC before use")
 }
 
+/// Get a handle to the local APIC for this core. Note that the returned pointer
+/// is actually shared by all cores, since there is no CPU-local state we need to keep
+/// for now. If the LAPIC is not initialized, return None.
+pub fn try_get_lapic() -> Option<&'static Lapic> {
+    LAPIC.poll()
+}
+
 pub fn init(bsp: bool) {
     let apic = if bsp {
-        let base = global_enable();
-        let apic = Lapic::new_apic(phys_to_virt(base));
+        let (base, version) = global_enable();
+        logln!("[x86::apic] initializing APIC version {:?}", version);
+        // TODO: make uncachable
+        let apic = Lapic::new_apic(phys_to_virt(base), version);
         LAPIC.call_once(|| apic)
     } else {
         get_lapic()
     };
+    if matches!(apic.version, ApicVersion::X2Apic) && !bsp {
+        let mut base = unsafe { rdmsr(APIC_BASE) } | APIC_GLOBAL_ENABLE;
+        if supports_x2_mode() {
+            base |= APIC_ENABLE_X2MODE;
+        }
+        unsafe { wrmsr(APIC_BASE, base) };
+    }
     apic.reset();
 }
 

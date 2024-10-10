@@ -14,7 +14,9 @@ use twizzler_abi::{
 };
 
 use self::virtmem::KernelObjectVirtHandle;
+use super::{PhysAddr, VirtAddr};
 use crate::{
+    memory::pagetables::{ContiguousProvider, MappingFlags, MappingSettings},
     obj::{InvalidateMode, ObjectRef, PageNumber},
     syscall::object::ObjectHandle,
 };

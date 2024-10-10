@@ -21,12 +21,10 @@ pub fn send_ipi(dest: Destination, vector: u32) {
     };
     unsafe {
         let apic = get_lapic();
-        apic.write(LAPIC_ICRHI, dest_val);
-        apic.write(
-            LAPIC_ICRLO,
+        apic.write_icr(
+            dest_val,
             vector | dest_short << LAPIC_ICRLO_DEST_SHORT_OFFSET,
         );
-
         while apic.read(LAPIC_ICRLO) & LAPIC_ICRLO_STATUS_PEND != 0 {
             core::arch::asm!("pause")
         }

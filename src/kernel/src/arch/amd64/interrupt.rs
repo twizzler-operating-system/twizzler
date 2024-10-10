@@ -13,7 +13,7 @@ use super::{
     thread::{Registers, UpcallAble},
 };
 use crate::{
-    arch::amd64::apic::get_lapic,
+    arch::amd64::apic::try_get_lapic,
     interrupt::{Destination, DynamicInterrupt},
     memory::{context::virtmem::PageFaultFlags, VirtAddr},
     processor::current_processor,
@@ -467,7 +467,13 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         );
     }
 
-    get_lapic().eoi();
+    let Some(lapic) = try_get_lapic() else {
+        panic!(
+            "got interrupt before initializing APIC: {}, {:#?}",
+            number, ctx
+        );
+    };
+    lapic.eoi();
     match number as u32 {
         14 => {
             let cr2 = unsafe { x86::controlregs::cr2() };
