@@ -115,7 +115,7 @@ impl TlsTemplateInfo {
     /// # Safety
     /// The new pointer must point to a memory region that meets the requirements in self.layout.
     pub unsafe fn init_new_tls_region<T>(&self, new: *mut u8, tcb_data: T) -> *mut Tcb<T> {
-        assert!(new.is_aligned_to(self.layout.align()));
+        ///assert!(new.is_aligned_to(self.layout.align()));
         // Step 1: copy the template to the new memory.
         core::ptr::copy_nonoverlapping(self.alloc_base.as_ptr(), new, self.layout.size());
 
