@@ -24,7 +24,7 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
             }
         }
     };
-
+/*
     //Log Date
     let date = Local::now().format("%Y-%m-%d-%H:%M:%S").to_string();
 
@@ -36,10 +36,10 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
     //Log Format
     let log_name = format!("./kani_test/log/{}.log", date);
     let log = File::create(log_name).expect("failed to open log");
-
+*/
     //Actually compose the command
     let mut cmd = Command::new("cargo");
-    cmd.stdout(log);
+//    cmd.stdout(log);
     cmd.arg("kani");
 
     //Pass any desired environment variables
@@ -60,9 +60,11 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
         cmd.arg(args);
     }
 
-    if true == cli.print_kani_argument {
-        println!("KANI CMD:{}", (pretty_cmd(&cmd)));
-    }
+    println!("Running Command:{}", (pretty_cmd(&cmd)));
+
+    let output = Command::new("sh")
+        .arg("./admin_scripts/kani_nvme_controller_value.sh")
+        .output();
 
     let status = cmd.status()?;
     if !status.success() {
@@ -70,6 +72,10 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
         // }
         // anyhow::bail!("Failed to run Kani: {}", pretty_cmd(&cmd));
     }
+
+    let output = Command::new("sh")
+        .arg("./admin_scripts/twizzler_nvme_controller_value.sh")
+        .output();
 
     Ok(())
 
@@ -98,8 +104,6 @@ pub fn kernel_flags() -> Vec<String> {
 
     flags.extend_from_slice(
         &[
-            "--output-format",
-            "terse",
             "--enable-unstable",
             "--ignore-global-asm",
             "-Zstubbing",
