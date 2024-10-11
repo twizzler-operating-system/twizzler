@@ -10,7 +10,6 @@ use chrono::prelude::*;
 
 //Verifies Kani is installed and launches it
 pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
-
     //Check Kani is installed
     match Command::new("cargo").args(["kani","--version"]).spawn() {
         Ok(_) => println!("Kani installed!"),
@@ -45,7 +44,7 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
     //Pass any desired environment variables
     // cmd.envs(env::vars());
     cmd.args(kernel_flags());
-
+    
     //Add kani args
     if let Some(args) = cli.kani_options {
         cmd.arg(args);
