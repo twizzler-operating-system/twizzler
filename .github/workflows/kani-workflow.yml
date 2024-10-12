@@ -21,9 +21,11 @@ jobs:
         rm -rf ./.??* || true
         ls -la 
     - uses: actions/checkout@v2
-      run: rustup update
       with:
         submodules: recursive
+
+    - name: Rust Update
+      run: rustup update
     - name: Run replace script
       run: ./admin_scripts/kani_nvme_controller_value.sh
     - name: Install latest nightly
