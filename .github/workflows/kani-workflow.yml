@@ -23,15 +23,13 @@ jobs:
     - uses: actions/checkout@v2
       with:
         submodules: recursive
-
-    - name: Rust Update
-      run: rustup update
     - name: Run replace script
       run: ./admin_scripts/kani_nvme_controller_value.sh
     - name: Install latest nightly
       uses: actions-rs/toolchain@v1
       with:
-          toolchain: stable
+          toolchain: 1.81.0
+          override: true 
     - name: Bootstrap Toolchain
       run: cargo bootstrap
     - name: Run Kani
