@@ -25,6 +25,7 @@ members = [
     "src/runtime/monitor",
     "src/runtime/monitor-api",
     "src/runtime/twz-rt",
+    "src/runtime/twizzler-rt-abi",
     "src/lib/twizzler-futures", 
 ]
 

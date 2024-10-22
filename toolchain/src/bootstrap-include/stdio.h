@@ -6,4 +6,7 @@
 #ifndef fprintf
 #define fprintf(...)
 #endif 
+
+extern int printf(const char *fmt, ...);
+
 #define stderr
