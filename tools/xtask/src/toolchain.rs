@@ -157,6 +157,7 @@ async fn download_files(client: &Client) -> anyhow::Result<()> {
 
 pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     if !cli.skip_submodules {
+        /*
         let status = Command::new("git")
             .arg("submodule")
             .arg("update")
@@ -167,6 +168,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         if !status.success() {
             anyhow::bail!("failed to update git submodules");
         }
+        */
         fs_extra::dir::create_all("toolchain/install", false)?;
         let client = Client::new();
         tokio::runtime::Builder::new_current_thread()
@@ -178,13 +180,13 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     let _ = std::fs::remove_file("toolchain/src/rust/config.toml");
     generate_config_toml()?;
 
-    let _ = fs_extra::dir::remove("toolchain/src/rust/library/twizzler-runtime-api");
+    let _ = fs_extra::dir::remove("toolchain/src/rust/library/twizzler-rt-abi");
     fs_extra::copy_items(
-        &["src/lib/twizzler-runtime-api"],
-        "toolchain/src/rust/library/twizzler-runtime-api",
+        &["src/runtime/twizzler-rt-abi"],
+        "toolchain/src/rust/library/twizzler-rt-abi",
         &fs_extra::dir::CopyOptions::new().copy_inside(true),
     )
-    .expect("failed to copy twizzler-runtime-api files");
+    .expect("failed to copy twizzler-rt-rbi files");
 
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
