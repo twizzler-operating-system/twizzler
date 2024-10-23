@@ -3651,9 +3651,8 @@ dependencies = [
 
 [[package]]
 name = "twizzler-types"
-version = "0.99.0"
+version = "0.1.0"
 dependencies = [
- "bitflags 2.6.0",
  "compiler_builtins",
  "rustc-std-workspace-core",
 ]
