@@ -180,13 +180,15 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     let _ = std::fs::remove_file("toolchain/src/rust/config.toml");
     generate_config_toml()?;
 
-    let _ = fs_extra::dir::remove("toolchain/src/rust/library/twizzler-rt-abi");
-    fs_extra::copy_items(
-        &["src/runtime/twizzler-rt-abi"],
-        "toolchain/src/rust/library/twizzler-rt-abi",
-        &fs_extra::dir::CopyOptions::new().copy_inside(true),
-    )
-    .expect("failed to copy twizzler-rt-rbi files");
+    let _ = fs_extra::dir::remove("toolchain/src/rust/library/twizzler-abis");
+    let status = Command::new("cp")
+        .arg("-R")
+        .arg("src/abi")
+        .arg("toolchain/src/rust/library/twizzler-abis")
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to copy twizzler ABI files");
+    }
 
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;

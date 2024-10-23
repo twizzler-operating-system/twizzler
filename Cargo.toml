@@ -21,12 +21,13 @@ members = [
     "src/lib/twizzler-async",
     "src/lib/twizzler-object",
     "src/lib/twizzler-runtime-api",
+    "src/lib/twizzler-futures",
     "src/runtime/dynlink",
     "src/runtime/monitor",
     "src/runtime/monitor-api",
     "src/runtime/twz-rt",
-    "src/runtime/twizzler-rt-abi",
-    "src/lib/twizzler-futures", 
+    "src/abi/rt-abi",
+    "src/abi/types", 
 ]
 
 exclude = ["toolchain/src/rust"]
