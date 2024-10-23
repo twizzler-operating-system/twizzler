@@ -3637,11 +3637,21 @@ dependencies = [
  "bitflags 2.6.0",
  "compiler_builtins",
  "rustc-std-workspace-core",
+ "twizzler-types",
 ]
 
 [[package]]
 name = "twizzler-runtime-api"
 version = "0.1.0"
+dependencies = [
+ "bitflags 2.6.0",
+ "compiler_builtins",
+ "rustc-std-workspace-core",
+]
+
+[[package]]
+name = "twizzler-types"
+version = "0.99.0"
 dependencies = [
  "bitflags 2.6.0",
  "compiler_builtins",

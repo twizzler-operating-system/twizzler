@@ -9,3 +9,6 @@
 [submodule "src/runtime/twizzler-rt-abi"]
 	path = src/runtime/twizzler-rt-abi
 	url = git@github.com:twizzler-operating-system/twizzler-rt-abi.git
+[submodule "src/abi"]
+	path = src/abi
+	url = git@github.com:twizzler-operating-system/abi.git
