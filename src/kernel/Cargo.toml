@@ -28,7 +28,7 @@ addr2line = { version = "0.16.0", default-features = false, features = [
 backtracer_core = { git = "https://github.com/twizzler-operating-system/backtracer", branch = "twizzler" }
 limine = "0.1.11"
 twizzler-queue-raw = { version = "*", path = "../lib/twizzler-queue-raw", default-features = false }
-syscall_encode = { version = "0.1.2" }
+#syscall_encode = { version = "0.1.2" }
 volatile = "0.5"
 # for crypto
 p256 = { version = "0.13.2", default-features = false, features = ["ecdsa"] }

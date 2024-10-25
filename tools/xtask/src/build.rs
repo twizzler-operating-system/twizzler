@@ -11,8 +11,10 @@ use cargo::{
     },
     ops::{CompileOptions, Packages},
     sources::RegistrySource,
+    sources::config::SourceConfigMap,
     util::interning::InternedString,
-    Config,
+    util::context::GlobalContext,
+    util::cache_lock::CacheLockMode,
 };
 use ouroboros::self_referencing;
 
@@ -99,9 +101,10 @@ fn build_third_party<'a>(
         return Ok(vec![]);
     }
     crate::toolchain::set_static();
-    let config = user_workspace.config();
-    let mut registry = PackageRegistry::new(config).unwrap();
-    let _g = config.acquire_package_cache_lock().unwrap();
+    let config = user_workspace.gctx();
+    let smap = SourceConfigMap::new(config)?;
+    let mut registry = PackageRegistry::new_with_source_config(config, smap)?;
+    let _g = config.acquire_package_cache_lock(CacheLockMode::MutateExclusive)?;
     let meta = user_workspace
         .custom_metadata()
         .expect("no third-party specification in Cargo.toml")
@@ -117,7 +120,7 @@ fn build_third_party<'a>(
         .unwrap()
         .iter()
         .map(|item| {
-            PackageId::new(
+            PackageId::try_new(
                 item.0,
                 item.1.as_str().unwrap(),
                 SourceId::crates_io(config).unwrap(),
@@ -174,7 +177,7 @@ fn build_tools<'a>(
     crate::toolchain::clear_cc();
     crate::print_status_line("collection: tools", None);
     let tools = locate_packages(workspace, Some("tool"));
-    let mut options = CompileOptions::new(workspace.config(), mode)?;
+    let mut options = CompileOptions::new(workspace.gctx(), mode)?;
     options.spec = Packages::Packages(tools.iter().map(|p| p.name().to_string()).collect());
     options.build_config.requested_profile = InternedString::new("release");
     options.build_config.message_format = other_options.message_format;
@@ -201,18 +204,19 @@ fn build_static<'a>(
         build_config.arch,
         crate::triple::Machine::Unknown,
         crate::triple::Host::Twizzler,
-        Some("minruntime"),
+        None,
     );
     let packages = locate_packages(workspace, Some("static"));
-    let mut options = CompileOptions::new(workspace.config(), mode)?;
+    let mut options = CompileOptions::new(workspace.gctx(), mode)?;
     options.build_config =
-        BuildConfig::new(workspace.config(), None, false, &[triple.to_string()], mode)?;
+        BuildConfig::new(workspace.gctx(), None, false, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
     }
     options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
+    //options.build_config.jobs = 1;
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
 
@@ -240,9 +244,9 @@ fn build_twizzler<'a>(
         None,
     );
     let packages = locate_packages(workspace, None);
-    let mut options = CompileOptions::new(workspace.config(), mode)?;
+    let mut options = CompileOptions::new(workspace.gctx(), mode)?;
     options.build_config =
-        BuildConfig::new(workspace.config(), None, false, &[triple.to_string()], mode)?;
+        BuildConfig::new(workspace.gctx(), None, false, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
@@ -268,13 +272,13 @@ fn maybe_build_tests<'a>(
         build_config.arch,
         build_config.machine,
         crate::triple::Host::Twizzler,
-        Some("minruntime"),
+        None,
     );
     let mut packages = locate_packages(workspace, None);
     packages.append(&mut locate_packages(workspace, Some("static")));
-    let mut options = CompileOptions::new(workspace.config(), mode)?;
+    let mut options = CompileOptions::new(workspace.gctx(), mode)?;
     options.build_config =
-        BuildConfig::new(workspace.config(), None, false, &[triple.to_string()], mode)?;
+        BuildConfig::new(workspace.gctx(), None, false, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
@@ -312,7 +316,7 @@ fn maybe_build_kernel_tests<'a>(
     crate::toolchain::clear_rustflags();
     crate::print_status_line("collection: kernel::tests", Some(build_config));
     let packages = locate_packages(workspace, Some("kernel"));
-    let mut options = CompileOptions::new(workspace.config(), mode)?;
+    let mut options = CompileOptions::new(workspace.gctx(), mode)?;
     if !build_config.is_default_target() {
         // the currently supported build target specs
         // have a value of "unknown" for the machine, but
@@ -329,7 +333,7 @@ fn maybe_build_kernel_tests<'a>(
         target_spec.insert_str(0, "src/kernel/target-spec/");
         target_spec.push_str(".json");
 
-        let bc = BuildConfig::new(workspace.config(), None, false, &[target_spec], mode)?;
+        let bc = BuildConfig::new(workspace.gctx(), None, false, &[target_spec], mode)?;
 
         options.build_config = bc;
     }
@@ -352,7 +356,7 @@ fn build_kernel<'a>(
     crate::toolchain::clear_rustflags();
     crate::print_status_line("collection: kernel", Some(build_config));
     let packages = locate_packages(workspace, Some("kernel"));
-    let mut options = CompileOptions::new(workspace.config(), mode)?;
+    let mut options = CompileOptions::new(workspace.gctx(), mode)?;
 
     if !build_config.is_default_target() {
         // the currently supported build target specs
@@ -370,7 +374,7 @@ fn build_kernel<'a>(
         target_spec.insert_str(0, "src/kernel/target-spec/");
         target_spec.push_str(".json");
 
-        let bc = BuildConfig::new(workspace.config(), None, false, &[target_spec], mode)?;
+        let bc = BuildConfig::new(workspace.gctx(), None, false, &[target_spec], mode)?;
 
         options.build_config = bc;
     }
@@ -387,9 +391,9 @@ fn build_kernel<'a>(
 #[self_referencing]
 pub(crate) struct TwizzlerCompilation {
     #[allow(dead_code)]
-    pub static_config: Config,
+    pub static_config: GlobalContext,
     #[allow(dead_code)]
-    pub user_config: Config,
+    pub user_config: GlobalContext,
 
     #[borrows(static_config)]
     #[covariant]
@@ -399,7 +403,7 @@ pub(crate) struct TwizzlerCompilation {
     pub user_workspace: Workspace<'this>,
 
     #[allow(dead_code)]
-    pub kernel_config: Config,
+    pub kernel_config: GlobalContext,
     #[borrows(kernel_config)]
     #[covariant]
     #[allow(dead_code)]
@@ -469,13 +473,13 @@ fn compile(
         mode.is_doc() || mode.is_check() || !other_options.build_twizzler || true,
     )?;
 
-    let mut config = Config::default()?;
+    let mut config = GlobalContext::default()?;
     config.configure(0, false, None, false, false, false, &None, &[], &[])?;
 
-    let mut static_config = Config::default()?;
+    let mut static_config = GlobalContext::default()?;
     static_config.configure(0, false, None, false, false, false, &None, &[], &[])?;
 
-    let mut kernel_config = Config::default()?;
+    let mut kernel_config = GlobalContext::default()?;
     // add in a feature flags to be used in the kernel
     let cli_config = get_cli_configs(bc, other_options).unwrap();
     kernel_config.configure(0, false, None, false, false, false, &None, &[], &cli_config)?;
@@ -513,7 +517,7 @@ pub(crate) fn do_docs(cli: DocOptions) -> anyhow::Result<TwizzlerCompilation> {
         needs_full_rebuild: false,
         build_twizzler: true,
     };
-    compile(cli.config, CompileMode::Doc { deps: false }, &other_options)
+    compile(cli.config, CompileMode::Doc { deps: false, json: false }, &other_options)
 }
 
 pub(crate) fn do_build(cli: BuildOptions) -> anyhow::Result<TwizzlerCompilation> {

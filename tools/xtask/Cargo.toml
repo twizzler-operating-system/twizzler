@@ -15,7 +15,7 @@ strum_macros = "0.25"
 # a bug prevents us from updating to lastest cargo. newest version no longer
 # seems to apply RUSTFLAGS when specified by environment, causing the build
 # to be incorrect for dynamic libraries
-cargo = { version = "0.67.1", features = ["vendored-openssl"] }
+cargo = { version = "0.83", features = ["vendored-openssl"] }
 
 ouroboros = "0.18.0"
 reqwest = { version = "0.11.10", features = ["stream"] }

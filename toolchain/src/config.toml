@@ -8,6 +8,7 @@ targets = "AArch64;X86"
 experimental-targets = ""
 ninja = true
 clang = true
+optimize = false
 
 [build]
 docs = false

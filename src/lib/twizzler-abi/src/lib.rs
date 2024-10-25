@@ -14,14 +14,11 @@
 #![feature(core_intrinsics)]
 #![feature(int_roundings)]
 #![feature(thread_local)]
-#![feature(pointer_byte_offsets)]
 #![feature(auto_traits)]
 #![feature(negative_impls)]
 #![allow(internal_features)]
 #![feature(rustc_attrs)]
-#![feature(asm_const)]
 #![feature(linkage)]
-#![feature(error_in_core)]
 #![feature(test)]
 pub mod arch;
 

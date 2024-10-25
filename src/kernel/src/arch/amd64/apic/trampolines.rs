@@ -24,7 +24,7 @@ use crate::{
 #[naked]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn trampoline_entry_code16() {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         ".code16gcc",
         "mov ax, [0x6f18]",
         "cli",
@@ -44,13 +44,12 @@ unsafe extern "C" fn trampoline_entry_code16() {
         ".byte 0x71",
         ".byte 0x08",
         ".byte 0x00",
-        options(noreturn)
     )
 }
 #[naked]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn trampoline_entry_code32() {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         ".code32",
         "mov ax, 16",
         "mov ds, ax",
@@ -83,14 +82,13 @@ unsafe extern "C" fn trampoline_entry_code32() {
         ".byte 0x00",
         ".byte 0x08",
         ".byte 0x00",
-        options(noreturn)
     )
 }
 
 #[naked]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn trampoline_entry_code64() {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         "lgdt [0x6f68]",
         "mov ax, 0x10",
         "mov ds, ax",
@@ -108,7 +106,6 @@ unsafe extern "C" fn trampoline_entry_code64() {
         "call rax",
         "ud2",
         stack_size = const(crate::processor::KERNEL_STACK_SIZE),
-        options(noreturn)
     )
 }
 

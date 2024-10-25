@@ -41,7 +41,6 @@
 #![feature(c_size_t)]
 #![feature(linkage)]
 #![feature(core_intrinsics)]
-#![feature(error_in_core)]
 
 use core::fmt::{Display, LowerHex, UpperHex};
 #[cfg_attr(feature = "kernel", allow(unused_imports))]

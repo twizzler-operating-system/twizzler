@@ -31,7 +31,7 @@ impl Runtime for MinimalRuntime {}
 
 #[inline]
 #[no_mangle]
-#[linkage = "extern_weak"]
+#[linkage = "weak"]
 // Returns a reference to the currently-linked Runtime implementation.
 pub fn __twz_get_runtime() -> &'static (dyn Runtime + Sync) {
     &OUR_RUNTIME
