@@ -24,7 +24,6 @@ use twizzler_runtime_api::{
 use super::ReferenceRuntime;
 
 struct FileDesc {
-    slot_id: u32,
     pos: u64,
     handle: ObjectHandle,
 }
@@ -51,15 +50,15 @@ impl RustFsRuntime for ReferenceRuntime {
     fn open(&self, path: &core::ffi::CStr) -> Result<RawFd, FsError> {
         let obj_id = ObjID::new(
             path.to_str()
-                .map_err(|err| (FsError::InvalidPath))?
+                .map_err(|_err| (FsError::InvalidPath))?
                 .parse::<u128>()
-                .map_err(|err| (FsError::InvalidPath))?,
+                .map_err(|_err| (FsError::InvalidPath))?,
         );
         let flags = twizzler_runtime_api::MapFlags::READ | twizzler_runtime_api::MapFlags::WRITE;
 
         let handle = self.map_object(obj_id, flags).unwrap();
 
-        let mut metadata_handle = unsafe {
+        let metadata_handle = unsafe {
             handle
                 .start
                 .offset(NULLPAGE_SIZE as isize)
@@ -78,18 +77,14 @@ impl RustFsRuntime for ReferenceRuntime {
         let fd = get_fd_slots()
             .lock()
             .unwrap()
-            .push(Arc::new(Mutex::new(FileDesc {
-                slot_id: 0,
-                pos: 0,
-                handle,
-            })));
+            .push(Arc::new(Mutex::new(FileDesc { pos: 0, handle })));
 
         Ok(fd.try_into().unwrap())
     }
 
     fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, FsError> {
         let binding = get_fd_slots().lock().unwrap();
-        let mut file_desc = binding
+        let file_desc = binding
             .get(fd.try_into().unwrap())
             .ok_or(FsError::LookupError)?;
 
@@ -158,7 +153,7 @@ impl RustFsRuntime for ReferenceRuntime {
             .ok_or(FsError::LookupError)?;
 
         let mut binding = file_desc.lock().unwrap();
-        let mut metadata_handle = unsafe { &mut *binding.handle.start.cast::<FileMetadata>() };
+        let metadata_handle = unsafe { &mut *binding.handle.start.cast::<FileMetadata>() };
 
         let new_pos: i64 = match pos {
             SeekFrom::Start(x) => x as i64,
