@@ -1,8 +1,6 @@
 //! Functions for manipulating threads.
 
-/*
-KANI_TODO
-*/
+
 
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -96,6 +94,13 @@ impl From<ThreadSpawnError> for SpawnError {
 }
 
 
+
+/*
+KANI_TODO: 
+- Explore more thread behavior/states
+- Finish syscall stub
+*/
+        
 #[cfg(kani)]
 mod thread_verif{
     use super::ExecutionState;
@@ -126,6 +131,7 @@ mod thread_verif{
         
     }
 
+    #[cfg(kani)]
     #[kani::proof]
     #[kani::stub(crate::arch::syscall::raw_syscall, stub_raw_syscall)]
     pub fn fixme_thread_set_state(){
