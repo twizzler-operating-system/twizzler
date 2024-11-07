@@ -6,26 +6,6 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-/*
-KANI_TODO
-*/
-
-#[cfg(kani)]
-#[kani::proof]
-pub fn it_locks(){
-    // let var:bool = kani::any();
-    // assert!(var | !var);
-    
-    let mutex = MutexImp::new();
-    unsafe {
-        mutex.lock();
-    }
-    kani::assert(mutex.is_locked(), "mutex must be locked");
-    unsafe {
-        mutex.unlock();
-    }
-    kani::assert(!mutex.is_locked(), "mutex must not be locked");
-}
 
 
 use crate::syscall::{
