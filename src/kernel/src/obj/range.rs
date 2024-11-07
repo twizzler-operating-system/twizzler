@@ -11,7 +11,7 @@ use nonoverlapping_interval_tree::{IntervalValue, NonOverlappingIntervalTree};
 //Includes Inline assembly in the dependencies. Not supported by kani
 //TODO: Currently runs out of memory :(
 #[cfg(kani)]
-mod page_range_tree_verification{
+mod page_range_tree_verification {
     use core::arch::x86_64::CpuidResult;
 
     use crate::memory::PhysAddr;
@@ -32,28 +32,142 @@ mod page_range_tree_verification{
         }
     }
 
-    // #[cfg(kani)]
-    // #[kani::stub(core::arch::x86_64::__cpuid_count, stub_cpu_count)]
-    // #[kani::proof]
-    // pub fn fixme_split_into_three(){ //Fixme makes Kani ignore this test for now.
-    //     let mut tree = PageRangeTree::new();
+    #[cfg(kani)]
+    #[kani::stub(core::arch::x86_64::__cpuid_count, stub_cpu_count)]
+    #[kani::proof]
+    #[kani::unwind(21)]
+    pub fn fixme_split_into_three(){ //Fixme makes Kani ignore this test for now.
+        let mut tree = PageRangeTree::new();
 
-    //     let addr1 = VirtAddr::new(kani::any());
-    //     let pn = PageNumber::from_address( addr1.unwrap());
+        let addr1 = VirtAddr::new(kani::any());
+        let pn = PageNumber::from_address( addr1.unwrap());
 
-    //     let page = get_page();
-    //     tree.add_page(pn, page);
+        let page = get_page();
+        tree.add_page(pn, page);
 
-    //     let addr2 = VirtAddr::new(kani::any());
-    //     let pn_split = PageNumber::from_address(addr2.unwrap());
-    //     let discard = kani::any();
+        let addr2 = VirtAddr::new(kani::any());
+        let pn_split = PageNumber::from_address(addr2.unwrap());
+        let discard = kani::any();
         
-    //     tree.split_into_three(pn_split, discard);
+        tree.split_into_three(pn_split, discard);
 
-    //     //What are our invariants
-    //     // tree.get(pn)
+        //What are our invariants
+        // tree.get(pn)
         
-    // }
+    }
+
+    /// Test generated for harness
+    /// `obj::range::page_range_tree_verification::fixme_split_into_three`
+    ///
+    /// Check for `assertion`: "called `Option::unwrap()` on a `None` value"
+    ///
+    /// # Warning
+    ///
+    /// Concrete playback tests combined with stubs or contracts is highly
+    /// experimental, and subject to change.
+    ///
+    /// The original harness has stubs which are not applied to this test.
+    /// This may cause a mismatch of non-deterministic values if the stub
+    /// creates any non-deterministic value.
+    /// The execution path may also differ, which can be used to refine the stub
+    /// logic.
+
+    #[test]
+    fn kani_concrete_playback_fixme_split_into_three_170356712538710354() {
+        let concrete_vals: Vec<Vec<u8>> = vec![
+        // 369094657ul
+        vec![1, 240, 255, 21, 0, 0, 0, 0],
+        // 8ul
+        vec![8, 0, 0, 0, 0, 0, 0, 0],
+        // 8
+        vec![8, 0, 0, 0],
+        // 0
+        vec![0, 0, 0, 0],
+        // 8
+        vec![8, 0, 0, 0],
+        // 0
+        vec![0, 0, 0, 0],
+        // 9
+        vec![9, 0, 0, 0],
+        // 9
+        vec![9, 0, 0, 0],
+        // 9
+        vec![9, 0, 0, 0],
+        // 9
+        vec![9, 0, 0, 0],
+    ];
+    kani::concrete_playback_run(concrete_vals, fixme_split_into_three);
+}
+
+    /// Test generated for harness
+    /// `obj::range::page_range_tree_verification::fixme_split_into_three`
+    ///
+    /// Check for `assertion`: "This is a placeholder message; Kani doesn't support message
+    /// formatted at runtime"
+    ///
+    /// # Warning
+    ///
+    /// Concrete playback tests combined with stubs or contracts is highly
+    /// experimental, and subject to change.
+    ///
+    /// The original harness has stubs which are not applied to this test.
+    /// This may cause a mismatch of non-deterministic values if the stub
+    /// creates any non-deterministic value.
+    /// The execution path may also differ, which can be used to refine the stub
+    /// logic.
+
+    #[test]
+    // #[kernel_test]
+    fn kani_concrete_playback_fixme_split_into_three_614110699596522657() {
+        let concrete_vals: Vec<Vec<u8>> = vec![
+            // 18446462598732840960ul
+            vec![0, 0, 0, 0, 0, 0, 255, 255],
+        ];
+        kani::concrete_playback_run(concrete_vals, fixme_split_into_three);
+    }
+
+/// Test generated for harness `obj::range::page_range_tree_verification::fixme_split_into_three`
+///
+/// Check for `assertion`: "called `Option::unwrap()` on a `None` value"
+///
+/// # Warning
+///
+/// Concrete playback tests combined with stubs or contracts is highly
+/// experimental, and subject to change.
+///
+/// The original harness has stubs which are not applied to this test.
+/// This may cause a mismatch of non-deterministic values if the stub
+/// creates any non-deterministic value.
+/// The execution path may also differ, which can be used to refine the stub
+/// logic.
+
+#[test]
+// #[kernel_test]
+fn kani_concrete_playback_fixme_split_into_three_11550795873425482636() {
+    let concrete_vals: Vec<Vec<u8>> = vec![
+        // 369094657ul
+        vec![1, 240, 255, 21, 0, 0, 0, 0],
+        // 8ul
+        vec![8, 0, 0, 0, 0, 0, 0, 0],
+        // 8
+        vec![8, 0, 0, 0],
+        // 1
+        vec![1, 0, 0, 0],
+        // 8
+        vec![8, 0, 0, 0],
+        // 8
+        vec![8, 0, 0, 0],
+        // 8
+        vec![8, 0, 0, 0],
+        // 8
+        vec![8, 0, 0, 0],
+        // 8
+        vec![8, 0, 0, 0],
+        // 8
+        vec![8, 0, 0, 0],
+    ];
+    kani::concrete_playback_run(concrete_vals, fixme_split_into_three);
+}
 
 
     //handle page enums
@@ -79,7 +193,6 @@ mod page_range_tree_verification{
             _ => Page::new_wired(pa.unwrap(), cache_type)
         }
     }
-
 }
 
 
