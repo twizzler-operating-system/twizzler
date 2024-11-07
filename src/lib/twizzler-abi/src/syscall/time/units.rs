@@ -6,9 +6,6 @@ pub const FEMTOS_PER_SEC: u64 = 1_000_000_000_000_000;
 pub const FEMTOS_PER_NANO: u64 = 1_000_000;
 pub const NANOS_PER_SEC: u64 = 1_000_000_000;
 
-/*
-KANI_TODO
-*/
 
 #[derive(Debug)]
 pub enum TimeUnitError {
@@ -126,11 +123,16 @@ macro_rules! impl_unit_conversion {
 impl_unit_conversion!(Seconds, FemtoSeconds, FEMTOS_PER_SEC);
 impl_unit_conversion!(NanoSeconds, FemtoSeconds, FEMTOS_PER_NANO);
 
+
+/*
+KANI_TODO:
+- Handle assertion failures gracefully
+- Figure out secs
+*/
 #[cfg(kani)]
 mod units_verification {
 
     use crate::syscall::{FemtoSeconds, Seconds, TimeSpan, FEMTOS_PER_SEC};
-
 
     // #[kani::proof]
     // #[kani::unwind(10)]     
@@ -141,7 +143,7 @@ mod units_verification {
     //     assert_eq!(Seconds(secs) * scalar, TimeSpan::new(secs * scalar, 0));
     //     assert_eq!(scalar * Seconds(secs), TimeSpan::new(secs * scalar, 0));
     // }
-/*
+
     #[kani::proof]
     #[kani::unwind(10)]     
     pub fn femtos(){
@@ -204,7 +206,7 @@ mod units_verification {
         ];
         kani::concrete_playback_run(concrete_vals, conversion);
     }
-*/
+
 }
 
 #[cfg(test)]
