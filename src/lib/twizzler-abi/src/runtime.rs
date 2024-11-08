@@ -24,6 +24,8 @@ mod time;
 pub(crate) mod tls;
 pub(crate) mod upcall;
 
+pub mod syms;
+
 #[derive(Default)]
 pub struct MinimalRuntime {}
 

@@ -2,11 +2,17 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define fflush(...)
-#ifndef fprintf
-#define fprintf(...)
-#endif 
 
 extern int printf(const char *fmt, ...);
+extern int fprintf(void *f, const char *fmt, ...);
 
-#define stderr
+#define stderr NULL
+
+#ifdef __cplusplus
+}
+#endif

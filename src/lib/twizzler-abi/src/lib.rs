@@ -20,6 +20,7 @@
 #![feature(rustc_attrs)]
 #![feature(linkage)]
 #![feature(test)]
+#![feature(c_variadic)]
 pub mod arch;
 
 #[allow(unused_extern_crates)]

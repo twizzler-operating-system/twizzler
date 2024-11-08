@@ -98,7 +98,7 @@ fn build_crtx(name: &str, build_info: &Triple) -> anyhow::Result<()> {
     let srcname = format!("{}.rs", name);
     let sourcepath = Path::new("toolchain/src/").join(srcname);
     let objpath = format!(
-        "toolchain/install/lib/rustlib/{}/lib/{}",
+        "toolchain/install/lib/rustlib/{}/lib/self-contained/{}",
         build_info.to_string(),
         objname
     );
