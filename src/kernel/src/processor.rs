@@ -505,7 +505,7 @@ pub fn generic_ipi_handler() {
 /// the context of the caller). The cond function will be called some multiple of times between
 /// calls to pause, and if cond returns false, then this function immediately returns. The
 /// [core::hint::spin_loop] function is called between calls to cond.
-pub fn spin_wait_until<R>(until: impl Fn() -> Option<R>, mut pause: impl FnMut()) -> R {
+pub fn spin_wait_until<R>(mut until: impl FnMut() -> Option<R>, mut pause: impl FnMut()) -> R {
     const NR_SPIN_LOOPS: usize = 100;
     loop {
         for _ in 0..NR_SPIN_LOOPS {
