@@ -6,7 +6,6 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 
 [dependencies]
 bitflags = "2.4.1"
-twizzler-runtime-api = { path = "../twizzler-runtime-api" }
 alloc = { version = "1.0.0", optional = true, package = "rustc-std-workspace-alloc" }
 talc = { version = "3.0", default-features = false, optional = true }
 bitset-core = { version = "0.1", optional = true, default-features = false }
@@ -40,6 +39,6 @@ version = "0.2.51"
 
 [features]
 # Activate if you want the minruntime to be compiled.
-runtime = ["volatile", "talc", "bitset-core", "twizzler-runtime-api/rt0"]
+runtime = ["volatile", "talc", "bitset-core"]
 # Activate if compiling for the kernel.
-kernel = ["volatile", "twizzler-runtime-api/kernel"]
+kernel = ["volatile"]

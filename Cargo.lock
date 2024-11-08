@@ -300,15 +300,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "atomic"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d818003e740b63afc82337e3160717f4f63078720a810b7b903e70a5d1d2994"
-dependencies = [
- "bytemuck",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -413,19 +404,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bootstrap"
-version = "0.1.0"
-dependencies = [
- "dynlink",
- "miette",
- "tracing",
- "tracing-subscriber",
- "twizzler-abi",
- "twizzler-object",
- "twizzler-runtime-api",
-]
-
-[[package]]
 name = "bstr"
 version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -441,12 +419,6 @@ name = "bumpalo"
 version = "3.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f30e7476521f6f8af1a1c4c0b8cc94f0bee37d91763d0ca2665f299b6cd8aec"
-
-[[package]]
-name = "bytemuck"
-version = "1.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "374d28ec25809ee0e23827c2ab573d729e293f281dfe393500e7ad618baa61c6"
 
 [[package]]
 name = "byteorder"
@@ -2363,18 +2335,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "happylock"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1949ae82dd58a6d8a76ec4761e3b1e01ffd9eb3871cb2d8eba6eda8e66a7b3d6"
-dependencies = [
- "lock_api",
- "once_cell",
- "parking_lot",
- "thread_local",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3179,38 +3139,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "monitor"
-version = "0.1.0"
-dependencies = [
- "dynlink",
- "happylock",
- "lazy_static",
- "miette",
- "monitor-api",
- "parking_lot",
- "secgate",
- "static_assertions",
- "talc",
- "tracing",
- "tracing-subscriber",
- "twizzler-abi",
- "twizzler-object",
- "twizzler-runtime-api",
- "twz-rt",
-]
-
-[[package]]
-name = "monitor-api"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.6.0",
- "dynlink",
- "secgate",
- "twizzler-abi",
- "twizzler-runtime-api",
 ]
 
 [[package]]
@@ -4502,9 +4430,6 @@ name = "talc"
 version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df4d2bae993eb37405b2d0efe7dbb7cb5eb36b2c16cdb484a0e24263a1a631e2"
-dependencies = [
- "lock_api",
-]
 
 [[package]]
 name = "tar"
@@ -4849,7 +4774,6 @@ dependencies = [
  "talc",
  "thiserror-no-std",
  "twizzler-rt-abi",
- "twizzler-runtime-api",
  "volatile",
 ]
 
@@ -4914,7 +4838,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-kernel-macros",
  "twizzler-queue-raw",
- "twizzler-runtime-api",
+ "twizzler-rt-abi",
  "uart_16550",
  "volatile",
  "x86 0.52.0",
@@ -4989,26 +4913,6 @@ version = "0.1.0"
 dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-core",
-]
-
-[[package]]
-name = "twz-rt"
-version = "0.1.0"
-dependencies = [
- "atomic",
- "bitflags 2.6.0",
- "dynlink",
- "elf",
- "lazy_static",
- "monitor-api",
- "secgate",
- "stable-vec",
- "static_assertions",
- "talc",
- "thiserror",
- "tracing",
- "twizzler-abi",
- "twizzler-runtime-api",
 ]
 
 [[package]]

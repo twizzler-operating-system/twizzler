@@ -53,8 +53,8 @@ impl Into<twizzler_runtime_api::MapError> for ObjectMapError {
     }
 }
 
-impl ObjectRuntime for MinimalRuntime {
-    fn map_object(
+impl MinimalRuntime {
+    pub fn map_object(
         &self,
         id: twizzler_runtime_api::ObjID,
         flags: twizzler_runtime_api::MapFlags,
@@ -70,7 +70,7 @@ impl ObjectRuntime for MinimalRuntime {
         ))
     }
 
-    fn release_handle(&self, handle: &mut twizzler_runtime_api::ObjectHandle) {
+    pub fn release_handle(&self, handle: &mut twizzler_runtime_api::ObjectHandle) {
         let slot = (handle.start as usize) / MAX_SIZE;
 
         if crate::syscall::sys_object_unmap(None, slot, UnmapFlags::empty()).is_ok() {

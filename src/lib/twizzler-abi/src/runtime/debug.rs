@@ -3,7 +3,7 @@
 use twizzler_runtime_api::{AddrRange, DebugRuntime, Library, LibraryId, MapFlags};
 
 use super::{
-    MinimalRuntime, __twz_get_runtime,
+    MinimalRuntime,
     load_elf::{ElfObject, PhdrType},
 };
 use crate::object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE};
@@ -18,12 +18,12 @@ fn get_execid() -> ObjID {
     unsafe { EXEC_ID }
 }
 
-impl DebugRuntime for MinimalRuntime {
-    fn get_library(
+impl MinimalRuntime {
+    pub fn get_library(
         &self,
         id: twizzler_runtime_api::LibraryId,
     ) -> Option<twizzler_runtime_api::Library> {
-        let mapping = __twz_get_runtime()
+        let mapping = self
             .map_object(get_execid(), MapFlags::READ)
             .ok()?;
         Some(Library {
@@ -37,11 +37,11 @@ impl DebugRuntime for MinimalRuntime {
         })
     }
 
-    fn get_exeid(&self) -> Option<twizzler_runtime_api::LibraryId> {
+    pub fn get_exeid(&self) -> Option<twizzler_runtime_api::LibraryId> {
         Some(LibraryId(0))
     }
 
-    fn get_library_segment(
+    pub fn get_library_segment(
         &self,
         lib: &twizzler_runtime_api::Library,
         seg: usize,
@@ -58,7 +58,7 @@ impl DebugRuntime for MinimalRuntime {
             .nth(seg)
     }
 
-    fn get_full_mapping(
+    pub fn get_full_mapping(
         &self,
         lib: &twizzler_runtime_api::Library,
     ) -> Option<twizzler_runtime_api::ObjectHandle> {
@@ -67,14 +67,14 @@ impl DebugRuntime for MinimalRuntime {
 
     // The minimal runtime doesn't provide this, since we can get segment information in a simpler
     // way for static binaries.
-    fn iterate_phdr(
+    pub fn iterate_phdr(
         &self,
         _f: &mut dyn FnMut(twizzler_runtime_api::DlPhdrInfo) -> core::ffi::c_int,
     ) -> core::ffi::c_int {
         0
     }
 
-    fn next_library_id(&self, _id: LibraryId) -> Option<LibraryId> {
+    pub fn next_library_id(&self, _id: LibraryId) -> Option<LibraryId> {
         None
     }
 }

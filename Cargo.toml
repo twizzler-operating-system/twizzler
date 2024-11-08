@@ -7,7 +7,7 @@ members = [
     "tools/image_builder",
     "tools/initrd_gen",
     "src/bin/init",
-    "src/bin/bootstrap",
+    #"src/bin/bootstrap",
     "src/bin/devmgr",
     "src/bin/netmgr",
     "src/bin/nettest",
@@ -22,10 +22,10 @@ members = [
     "src/lib/twizzler-object",
     "src/lib/twizzler-runtime-api",
     "src/lib/twizzler-futures",
-    "src/runtime/dynlink",
-    "src/runtime/monitor",
-    "src/runtime/monitor-api",
-    "src/runtime/twz-rt",
+    #"src/runtime/dynlink",
+    #"src/runtime/monitor",
+    #"src/runtime/monitor-api",
+    #"src/runtime/twz-rt",
     "src/abi/rt-abi",
     "src/abi/types", 
 ]
@@ -35,14 +35,14 @@ resolver = "2"
 
 [workspace.metadata]
 initrd = [
-    "crate:bootstrap",
+    #"crate:bootstrap",
     "crate:init",
     "crate:devmgr",
     "crate:netmgr",
     "crate:nettest",
     "crate:pager",
-    "lib:twz-rt",
-    "lib:monitor",
+    #"lib:twz-rt",
+    #"lib:monitor",
     "crate:mnemosyne",
     "crate:stdfs_demo",
     #"third-party:hello-world-rs"

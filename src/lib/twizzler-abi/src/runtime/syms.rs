@@ -1,3 +1,5 @@
+#![allow(unused_variables)]
+
 
 macro_rules! check_ffi_type {
     ($f1:ident) => {
@@ -65,35 +67,42 @@ macro_rules! check_ffi_type {
     }
 }
 
+use crate::runtime::OUR_RUNTIME;
+
 // core.h
+
+use twizzler_rt_abi::bindings::option_exit_code;
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_abort() {
-    todo!()
+    OUR_RUNTIME.abort();
 }
 check_ffi_type!(twz_rt_abort);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_exit(code: i32) {
-    todo!()
+    OUR_RUNTIME.exit(code);
 }
 check_ffi_type!(twz_rt_exit, _);
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_pre_main_hook() -> twizzler_rt_abi::bindings::option_exit_code {
-    todo!()
+pub unsafe extern "C-unwind" fn twz_rt_pre_main_hook() -> option_exit_code {
+    match OUR_RUNTIME.pre_main_hook() {
+        Some(ec) => option_exit_code { is_some: 1, value: ec },
+        None => option_exit_code { is_some: 0, value: 0 },
+    }
 }
 check_ffi_type!(twz_rt_pre_main_hook);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_post_main_hook() {
-    todo!()
+    OUR_RUNTIME.post_main_hook()
 }
 check_ffi_type!(twz_rt_post_main_hook);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_runtime_entry(arg: *const twizzler_rt_abi::bindings::runtime_info, std_entry: core::option::Option<unsafe extern "C-unwind" fn(arg1: twizzler_rt_abi::bindings::basic_aux) -> twizzler_rt_abi::bindings::basic_return>) {
-    todo!()
+    OUR_RUNTIME.runtime_entry(arg, std_entry.unwrap_unchecked())
 }
 check_ffi_type!(twz_rt_runtime_entry, _, _);
 

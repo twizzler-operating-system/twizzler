@@ -318,6 +318,7 @@ impl core::fmt::Display for UnloadedLibrary {
     }
 }
 
+// TODO: get this from ABI headers.
 /// Information about constructors for a library.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]

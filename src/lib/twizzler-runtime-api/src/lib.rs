@@ -769,10 +769,11 @@ extern "rust-call" {
     fn __twz_get_runtime(_a: ()) -> &'static (dyn Runtime + Sync);
 }
 
+/*
 /// Wrapper around call to __twz_get_runtime.
 pub fn get_runtime() -> &'static (dyn Runtime + Sync) {
     unsafe { __twz_get_runtime(()) }
-}
+}*/
 
 #[cfg(feature = "kernel")]
 pub mod __imp {
