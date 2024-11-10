@@ -104,6 +104,10 @@ static USER_MODULES: ModuleRequest = ModuleRequest::new();
 #[link_section = ".limine_reqs"]
 static DTB_REQ: DeviceTreeBlobRequest = DeviceTreeBlobRequest::new();
 
+#[used]
+#[link_section = ".limine_reqs"]
+static HHDM_REQ: HhdmRequest = HhdmRequest::new();
+
 // the kernel's entry point function from the limine bootloader
 // limine ensures we are in el1 (kernel mode)
 extern "C" fn limine_entry() -> ! {
@@ -133,6 +137,15 @@ extern "C" fn limine_entry() -> ! {
         .get_response()
         .expect("no kernel info specified for kernel")
         .file();
+
+    // Set the identity map offset used for fast physical to virtual translations.
+    // The offset is only initialized once at startup so it is safe to write directly.
+    let hhdm_info = HHDM_REQ
+        .get_response()
+        .expect("failed to get higher half direct ");
+    unsafe {
+        super::memory::PHYS_MEM_OFFSET = hhdm_info.offset();
+    }
 
     // generate generic boot info
     let mut boot_info = Armv8BootInfo {

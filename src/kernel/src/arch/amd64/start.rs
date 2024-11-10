@@ -4,8 +4,8 @@ use limine::{
     file::File,
     memory_map::EntryType,
     request::{
-        BootloaderInfoRequest, EntryPointRequest, FramebufferRequest, KernelFileRequest,
-        MemoryMapRequest, ModuleRequest, RsdpRequest,
+        BootloaderInfoRequest, EntryPointRequest, FramebufferRequest, HhdmRequest,
+        KernelFileRequest, MemoryMapRequest, ModuleRequest, RsdpRequest,
     },
     BaseRevision,
 };
@@ -87,6 +87,15 @@ extern "C" fn limine_entry() -> ! {
 
     LIMINE_BOOTINFO.get_response().unwrap();
 
+    // Set the identity map offset used for fast physical to virtual translations.
+    // The offset is only initialized once at startup so it is safe to write directly.
+    let hhdm_info = LIMINE_HHDM
+        .get_response()
+        .expect("failed to get higher half direct ");
+    unsafe {
+        super::memory::PHYS_MEM_OFFSET = hhdm_info.offset();
+    }
+
     let mut boot_info = LimineBootInfo {
         kernel: unsafe {
             LIMINE_KERNEL
@@ -135,6 +144,7 @@ static LIMINE_MOD: ModuleRequest = ModuleRequest::new();
 static LIMINE_MEM: MemoryMapRequest = MemoryMapRequest::new();
 static LIMINE_KERNEL: KernelFileRequest = KernelFileRequest::new();
 static LIMINE_TABLE: RsdpRequest = RsdpRequest::new();
+static LIMINE_HHDM: HhdmRequest = HhdmRequest::new();
 
 #[link_section = ".limine_reqs"]
 #[used]
@@ -157,6 +167,9 @@ static F6: &'static FramebufferRequest = &LIMINE_FB;
 #[link_section = ".limine_reqs"]
 #[used]
 static F7: &'static RsdpRequest = &LIMINE_TABLE;
+#[link_section = ".limine_reqs"]
+#[used]
+static F8: &'static HhdmRequest = &LIMINE_HHDM;
 #[link_section = ".limine_reqs"]
 #[used]
 static FEND: u64 = 0;
