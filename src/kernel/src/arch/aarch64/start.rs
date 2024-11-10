@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use core::ops::RangeInclusive;
 
 use limine::{request::*, *};
 
@@ -145,6 +146,21 @@ extern "C" fn limine_entry() -> ! {
         .expect("failed to get higher half direct ");
     unsafe {
         super::memory::PHYS_MEM_OFFSET = hhdm_info.offset();
+    }
+    // Some versions of the limine bootloader place the identity map at the
+    // bottom of the higher half range of addresses covered by TTBR1_EL1.
+    // This must be taken into account by the MMIO address allocator which
+    // starts allocating addresses from the lowest part of the kernel address range.
+    if hhdm_info.offset() == *VirtAddr::TTBR1_EL1.start() {
+        // the identity map covers the first 4 GB of memory
+        const IDENTITY_MAP_SIZE: u64 = 0x1_0000_0000;
+        unsafe {
+            use super::address::MMIO_RANGE;
+            MMIO_RANGE = RangeInclusive::new(
+                *MMIO_RANGE.start() + IDENTITY_MAP_SIZE,
+                *MMIO_RANGE.end() + IDENTITY_MAP_SIZE,
+            );
+        }
     }
 
     // generate generic boot info
