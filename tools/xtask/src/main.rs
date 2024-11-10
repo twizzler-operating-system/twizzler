@@ -127,7 +127,7 @@ struct ImageOptions {
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
     #[clap(long, short, help = "Share a file/directory with Twizzler")]
-    data: Option<PathBuf>
+    data: Option<PathBuf>,
 }
 
 impl From<ImageOptions> for BuildOptions {
@@ -161,7 +161,7 @@ struct QemuOptions {
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
     #[clap(long, short, help = "Share a file/directory with Twizzler")]
-    data: Option<PathBuf>
+    data: Option<PathBuf>,
 }
 
 impl From<&QemuOptions> for ImageOptions {
