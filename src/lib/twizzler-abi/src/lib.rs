@@ -45,8 +45,7 @@ pub mod upcall;
 unsafe fn internal_abort() -> ! {
     cfg_if::cfg_if! {
     if #[cfg(feature = "runtime")] {
-        let runtime = twizzler_runtime_api::get_runtime();
-        runtime.abort();
+        runtime::OUR_RUNTIME.abort();
     } else {
         core::intrinsics::abort();
     }

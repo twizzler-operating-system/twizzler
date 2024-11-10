@@ -2,7 +2,7 @@
 
 use core::{marker::PhantomData, ptr::NonNull};
 
-use twizzler_runtime_api::{InternalHandleRefs, MapFlags, ObjectHandle};
+use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
 use crate::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -53,18 +53,10 @@ impl<T> InternalObject<T> {
             crate::syscall::MapFlags::empty(),
         )
         .ok()?;
-        let rc = Box::new(InternalHandleRefs::default());
-        let raw = NonNull::new(Box::into_raw(rc)).unwrap();
 
         Some(Self {
             slot,
-            runtime_handle: ObjectHandle::new(
-                Some(raw),
-                id,
-                MapFlags::READ | MapFlags::WRITE,
-                (slot * MAX_SIZE) as *mut u8,
-                (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
-            ),
+            runtime_handle: todo!(),
             _pd: PhantomData,
         })
     }
@@ -83,7 +75,7 @@ impl<T> InternalObject<T> {
 
     #[allow(dead_code)]
     pub(crate) fn id(&self) -> ObjID {
-        self.runtime_handle.id
+        self.runtime_handle.id()
     }
 
     #[allow(dead_code)]
@@ -98,13 +90,7 @@ impl<T> InternalObject<T> {
             .ok()?;
 
         Some(Self {
-            runtime_handle: ObjectHandle::new(
-                Some(NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap()),
-                id,
-                prot.into(),
-                (slot * MAX_SIZE) as *mut u8,
-                (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
-            ),
+            runtime_handle: todo!(),
             slot,
             _pd: PhantomData,
         })
@@ -113,7 +99,7 @@ impl<T> InternalObject<T> {
     #[allow(dead_code)]
     pub(crate) fn offset<P>(&self, offset: usize) -> Option<*const P> {
         if offset >= NULLPAGE_SIZE && offset < MAX_SIZE {
-            Some(unsafe { self.runtime_handle.start.add(offset) as *const P })
+            Some(unsafe { self.runtime_handle.start().add(offset) as *const P })
         } else {
             None
         }
@@ -122,7 +108,7 @@ impl<T> InternalObject<T> {
     #[allow(dead_code)]
     pub(crate) fn offset_mut<P>(&mut self, offset: usize) -> Option<*mut P> {
         if offset >= NULLPAGE_SIZE && offset < MAX_SIZE {
-            Some(unsafe { self.runtime_handle.start.add(offset) as *mut P })
+            Some(unsafe { self.runtime_handle.start().add(offset) as *mut P })
         } else {
             None
         }
@@ -131,8 +117,7 @@ impl<T> InternalObject<T> {
 
 impl<T> Drop for InternalObject<T> {
     fn drop(&mut self) {
-        // TODO
-        //super::slot::global_release(self.slot);
+        todo!()
     }
 }
 

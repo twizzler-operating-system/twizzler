@@ -108,9 +108,15 @@ check_ffi_type!(twz_rt_runtime_entry, _, _);
 
 // alloc.h
 
+use twizzler_rt_abi::bindings::{alloc_flags, ZERO_MEMORY};
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_malloc(sz: usize, align: usize, flags: twizzler_rt_abi::bindings::alloc_flags) -> *mut ::core::ffi::c_void {
-    todo!()
+pub unsafe extern "C-unwind" fn twz_rt_malloc(sz: usize, align: usize, flags: alloc_flags) -> *mut ::core::ffi::c_void {
+    let Some(layout) = core::alloc::Layout::from_size_align(sz, align) else { return core::ptr::null_mut(); };
+    if flags & ZERO_MEMORY != 0 {
+        OUR_RUNTIME.default_allocator().alloc_zeroed(layout).cast()
+    } else {
+        OUR_RUNTIME.default_allocator().alloc(layout).cast()
+    }
 }
 check_ffi_type!(twz_rt_malloc, _, _, _);
 
@@ -121,7 +127,13 @@ pub unsafe extern "C-unwind" fn twz_rt_dealloc(
     align: usize,
     flags: twizzler_rt_abi::bindings::alloc_flags,
 ) {
-    todo!()
+    let Some(layout) = core::alloc::Layout::from_size_align(sz, align) else { return core::ptr::null_mut(); };
+    if flags & ZERO_MEMORY != 0 {
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr.cast::<u8>(), sz) };
+        slice.fill(0);
+        core::hint::black_box(slice);
+    }
+    OUR_RUNTIME.default_allocator().dealloc(ptr.cast(), layout);
 }
 check_ffi_type!(twz_rt_dealloc, _, _, _, _);
 
@@ -133,7 +145,11 @@ pub  unsafe extern "C-unwind" fn twz_rt_realloc(
     new_size: usize,
     flags: twizzler_rt_abi::bindings::alloc_flags,
 ) -> *mut ::core::ffi::c_void {
-    todo!()
+    let Some(layout) = core::alloc::Layout::from_size_align(sz, align) else { return core::ptr::null_mut(); };
+    if flags & ZERO_MEMORY != 0 {
+        todo!()
+    }
+    OUR_RUNTIME.default_allocator().realloc(ptr.cast(), layout, new_size).cast()
 }
 check_ffi_type!(twz_rt_realloc, _, _, _, _, _);
 
@@ -141,48 +157,56 @@ check_ffi_type!(twz_rt_realloc, _, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_futex_wait(ptr: *mut u32, expected: twizzler_rt_abi::bindings::futex_word, timeout: twizzler_rt_abi::bindings::option_duration) -> bool {
-    todo!()
+    if timeout.is_some != 0 {
+        OUR_RUNTIME.futex_wait(ptr, expected, Some(timeout.duration))
+    } else {
+        OUR_RUNTIME.futex_wait(ptr, expected, None)
+    }
 }
 check_ffi_type!(twz_rt_futex_wait, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_futex_wake(ptr: *mut u32, max: i64) -> bool {
-    todo!()
+    OUR_RUNTIME.futex_wake(ptr, max)
 }
 check_ffi_type!(twz_rt_futex_wake, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_yield_now() {
-    todo!()
+    OUR_RUNTIME.yield_now();
 }
 check_ffi_type!(twz_rt_yield_now);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_set_name(name: *const ::core::ffi::c_char) {
-    todo!()
+    OUR_RUNTIME.set_name(name);
 }
 check_ffi_type!(twz_rt_set_name, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_sleep(dur: twizzler_rt_abi::bindings::duration) {
-    todo!()
+    OUR_RUNTIME.sleep(dur);
 }
 check_ffi_type!(twz_rt_sleep, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_tls_get_addr(index: *mut twizzler_rt_abi::bindings::tls_index) -> *mut ::core::ffi::c_void {
-    todo!()
+    OUR_RUNTIME.tls_get_addr(index);
 }
 check_ffi_type!(twz_rt_tls_get_addr, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_spawn_thread(args: twizzler_rt_abi::bindings::spawn_args) -> twizzler_rt_abi::bindings::spawn_result {
-    todo!()
+    OUR_RUNTIME.spawn_thread(args);
 }
 check_ffi_type!(twz_rt_spawn_thread, _);
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_join_thread(id: twizzler_rt_abi::bindings::thread_id, timeout: twizzler_rt_abi::bindings::option_duration) -> twizzler_rt_abi::bindings::join_result {
-    todo!()
+    if timeout.is_some != 0 {
+        OUR_RUNTIME.join_thread(id, Some(timeout.duration))
+    } else {
+        OUR_RUNTIME.join_thread(id, None)
+    }
 }
 check_ffi_type!(twz_rt_join_thread, _, _);
 
@@ -261,13 +285,13 @@ check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _, _);
 use twizzler_rt_abi::bindings::{rt_objid, map_flags, object_handle, map_result};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_map_object(id: rt_objid, flags: map_flags) -> map_result {
-    todo!()
+    OUR_RUNTIME.map_object(id, flags)
 }
 check_ffi_type!(twz_rt_map_object, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_release_handle(handle: *mut object_handle) {
-    todo!()
+    OUR_RUNTIME.release_handle(handle)
 }
 check_ffi_type!(twz_rt_release_handle, _);
 
@@ -280,7 +304,11 @@ pub unsafe extern "C-unwind" fn __twz_rt_map_two_objects(
     res_1: *mut map_result,
     res_2: *mut map_result,
 ) {
-    todo!()
+    let (r1, r2) = OUR_RUNTIME.map_two_objects(id_1, flags_1, id_2, flags_2); 
+    unsafe {
+        res_1.write(r1);
+        res_2.write(r2);
+    }
 }
 check_ffi_type!(__twz_rt_map_two_objects, _, _, _, _, _, _);
 
@@ -289,13 +317,13 @@ check_ffi_type!(__twz_rt_map_two_objects, _, _, _, _, _, _);
 use twizzler_rt_abi::bindings::duration;
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_get_monotonic_time() -> duration {
-    todo!()
+    OUR_RUNTIME.get_monotonic_time()
 }
 check_ffi_type!(twz_rt_get_monotonic_time);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_get_system_time() -> duration {
-    todo!()
+    OUR_RUNTIME.get_system_time()
 }
 check_ffi_type!(twz_rt_get_system_time);
 
@@ -304,7 +332,11 @@ check_ffi_type!(twz_rt_get_system_time);
 use twizzler_rt_abi::bindings::{loaded_image, loaded_image_id, dl_phdr_info};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_get_loaded_image(id: loaded_image_id, li: *mut loaded_image) -> bool {
-    todo!()
+    let image_info = OUR_RUNTIME.get_image_info();
+    unsafe {
+        li.write(image_info);
+    }
+    true
 }
 check_ffi_type!(twz_rt_get_loaded_image, _, _);
 

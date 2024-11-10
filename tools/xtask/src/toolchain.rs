@@ -77,19 +77,7 @@ pub fn needs_reinstall() -> anyhow::Result<bool> {
         .unwrap()
         .modified()
         .expect("failed to get system time from metadata");
-    for entry in walkdir::WalkDir::new("src/lib/twizzler-runtime-api").min_depth(1) {
-        let entry = entry.expect("error walking directory");
-        let stat = entry
-            .metadata()
-            .with_context(|| format!("failed to read metadata for {}", entry.path().display()))?;
-        let mtime = stat
-            .modified()
-            .context("failed to get system time from mtime")?;
-
-        if mtime >= stamp {
-            return Ok(true);
-        }
-    }
+    // TODO
     Ok(false)
 }
 

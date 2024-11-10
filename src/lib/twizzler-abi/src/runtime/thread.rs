@@ -2,7 +2,7 @@
 
 use core::alloc::Layout;
 
-use twizzler_runtime_api::{CoreRuntime, JoinError, SpawnError, ThreadRuntime};
+use twizzler_rt_abi::thread::{JoinError, SpawnError, ThreadSpawnArgs, TlsIndex};
 
 use super::{object::InternalObject, MinimalRuntime};
 use crate::{
@@ -30,12 +30,12 @@ fn get_thread_slots() -> &'static Mutex<BTreeMap<u32, Arc<InternalThread>>> {
     &THREAD_SLOTS
 }
 
-impl ThreadRuntime for MinimalRuntime {
-    fn available_parallelism(&self) -> core::num::NonZeroUsize {
+impl MinimalRuntime {
+    pub fn available_parallelism(&self) -> core::num::NonZeroUsize {
         crate::syscall::sys_info().cpu_count()
     }
 
-    fn futex_wait(
+    pub fn futex_wait(
         &self,
         futex: &core::sync::atomic::AtomicU32,
         expected: u32,
@@ -62,7 +62,7 @@ impl ThreadRuntime for MinimalRuntime {
         }
     }
 
-    fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32) -> bool {
+    pub fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32) -> bool {
         let wake = ThreadSync::new_wake(ThreadSyncWake::new(
             ThreadSyncReference::Virtual32(futex),
             1,
@@ -72,7 +72,7 @@ impl ThreadRuntime for MinimalRuntime {
         false
     }
 
-    fn futex_wake_all(&self, futex: &core::sync::atomic::AtomicU32) {
+    pub fn futex_wake_all(&self, futex: &core::sync::atomic::AtomicU32) {
         let wake = ThreadSync::new_wake(ThreadSyncWake::new(
             ThreadSyncReference::Virtual32(futex),
             usize::MAX,
@@ -83,7 +83,7 @@ impl ThreadRuntime for MinimalRuntime {
     #[allow(dead_code)]
     #[allow(unused_variables)]
     #[allow(unreachable_code)]
-    fn spawn(&self, args: twizzler_runtime_api::ThreadSpawnArgs) -> Result<u32, SpawnError> {
+    pub fn spawn(&self, args: ThreadSpawnArgs) -> Result<u32, SpawnError> {
         const STACK_ALIGN: usize = 32;
         let stack_layout = Layout::from_size_align(args.stack_size, STACK_ALIGN).unwrap();
         if args.stack_size == 0 {
@@ -117,24 +117,24 @@ impl ThreadRuntime for MinimalRuntime {
         Ok(int_id)
     }
 
-    fn yield_now(&self) {
+    pub fn yield_now(&self) {
         crate::syscall::sys_thread_yield()
     }
 
-    fn set_name(&self, _name: &core::ffi::CStr) {}
+    pub fn set_name(&self, _name: &core::ffi::CStr) {}
 
-    fn sleep(&self, duration: core::time::Duration) {
+    pub fn sleep(&self, duration: core::time::Duration) {
         let _ = crate::syscall::sys_thread_sync(&mut [], Some(duration));
     }
 
-    fn join(&self, id: u32, timeout: Option<core::time::Duration>) -> Result<(), JoinError> {
+    pub fn join(&self, id: u32, timeout: Option<core::time::Duration>) -> Result<(), JoinError> {
         loop {
             let thread = {
                 get_thread_slots()
                     .lock()
                     .get(&id)
                     .cloned()
-                    .ok_or(JoinError::LookupError)?
+                    .ok_or(JoinError::ThreadNotFound)?
             };
             let data = thread.repr.base().wait(timeout);
             if let Some(data) = data {
@@ -149,7 +149,7 @@ impl ThreadRuntime for MinimalRuntime {
         }
     }
 
-    fn tls_get_addr(&self, _tls_index: &twizzler_runtime_api::TlsIndex) -> Option<*const u8> {
+    pub fn tls_get_addr(&self, _tls_index: &TlsIndex) -> Option<*const u8> {
         panic!("minimal runtime only supports LocalExec TLS model");
     }
 }

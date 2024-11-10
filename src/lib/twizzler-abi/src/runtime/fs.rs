@@ -6,7 +6,7 @@ use crate::print_err;
 use lazy_static::lazy_static;
 use rustc_alloc::{string::ToString, sync::Arc};
 use stable_vec::{self, StableVec};
-use twizzler_runtime_api::{FsError, ObjectHandle, ObjectRuntime, RawFd, RustFsRuntime, SeekFrom};
+use twizzler_rt_abi::{object::{ObjectHandle, MapFlags}, fd::{RawFd, OpenError}, io::{IoError, SeekFrom}};
 use lru::LruCache;
 use core::num::NonZeroUsize;
 use super::{object, MinimalRuntime};
@@ -45,21 +45,19 @@ fn get_fd_slots() -> &'static Mutex<StableVec<Arc<Mutex<FileDesc>>>> {
     &FD_SLOTS
 }
 
-impl RustFsRuntime for MinimalRuntime {
-    fn open(&self, path: &core::ffi::CStr) -> Result<RawFd, FsError> {
+impl MinimalRuntime {
+    pub fn open(&self, path: &str) -> Result<RawFd, OpenError> {
         let obj_id = ObjID::new(
-            path.to_str()
-                .map_err(|_err| (FsError::InvalidPath))?
-                .parse::<u128>()
-                .map_err(|_err| (FsError::InvalidPath))?,
+            path.parse::<u128>()
+                .map_err(|_err| (OpenError::InvalidArgument))?,
         );
-        let flags = twizzler_runtime_api::MapFlags::READ | twizzler_runtime_api::MapFlags::WRITE;
+        let flags = MapFlags::READ | MapFlags::WRITE;
 
         let handle = self.map_object(obj_id, flags).unwrap();
 
         let metadata_handle = unsafe {
             handle
-                .start
+                .start()
                 .offset(NULLPAGE_SIZE as isize)
                 .cast::<FileMetadata>()
         };
@@ -92,18 +90,18 @@ impl RustFsRuntime for MinimalRuntime {
         Ok(fd.try_into().unwrap())
     }
 
-    fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, FsError> {
+    fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, IoError> {
         let binding = get_fd_slots().lock();
         let file_desc = binding
             .get(fd.try_into().unwrap())
-            .ok_or(FsError::LookupError)?;
+            .ok_or(IoError::InvalidDesc)?;
 
         let mut binding = file_desc.lock();
 
         let metadata_handle = unsafe {
             binding
                 .handle
-                .start
+                .start()
                 .offset(NULLPAGE_SIZE as isize)
                 .cast::<FileMetadata>()
         };
@@ -135,18 +133,18 @@ impl RustFsRuntime for MinimalRuntime {
             );
 
             let object_ptr = if object_window == 0 {
-                binding.handle.start
+                binding.handle.start()
             } else {
                 if let Some(new_handle) = binding.map.get(&object_window) {
-                    new_handle.start
+                    new_handle.start()
                 } else {
                     let obj_id =
                         ((unsafe { *metadata_handle }).direct)[(object_window - 1) as usize];
-                    let flags = twizzler_runtime_api::MapFlags::READ
-                        | twizzler_runtime_api::MapFlags::WRITE;
+                    let flags = MapFlags::READ
+                        | MapFlags::WRITE;
                     let handle = self.map_object(obj_id, flags).unwrap();
                     binding.map.put(object_window, handle.clone());
-                    handle.start
+                    handle.start()
                 }
             };
 
@@ -169,18 +167,18 @@ impl RustFsRuntime for MinimalRuntime {
         Ok(bytes_read)
     }
 
-    fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, FsError> {
+    fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, IoError> {
         let binding = get_fd_slots().lock();
         let file_desc = binding
             .get(fd.try_into().unwrap())
-            .ok_or(FsError::LookupError)?;
+            .ok_or(IoError::InvalidDesc)?;
 
         let mut binding = file_desc.lock();
 
         let metadata_handle = unsafe {
             binding
                 .handle
-                .start
+                .start()
                 .offset(NULLPAGE_SIZE as isize)
                 .cast::<FileMetadata>()
         };
@@ -209,11 +207,11 @@ impl RustFsRuntime for MinimalRuntime {
             );
 
             let object_ptr = if object_window == 0 {
-                binding.handle.start
+                binding.handle.start()
             } else {
                 // If the object is already mapped, return it's pointer
                 if let Some(new_handle) = binding.map.get(&object_window) {
-                    new_handle.start
+                    new_handle.start()
                 }
                 // Otherwise check the direct map, if the ID is valid then map it, otherwise create
                 // the object, store it, then map it.
@@ -221,8 +219,8 @@ impl RustFsRuntime for MinimalRuntime {
                     let obj_id =
                         ((unsafe { *metadata_handle }).direct)[(object_window - 1) as usize];
                     
-                    let flags = twizzler_runtime_api::MapFlags::READ
-                        | twizzler_runtime_api::MapFlags::WRITE;
+                    let flags = MapFlags::READ
+                        | MapFlags::WRITE;
 
                     let mapped_id = if obj_id == 0.into() {
                         let create = ObjectCreate::new(
@@ -243,7 +241,7 @@ impl RustFsRuntime for MinimalRuntime {
                     let handle = self.map_object(mapped_id, flags).unwrap();
                     binding.map.push(object_window, handle.clone());
                     
-                    handle.start
+                    handle.start()
                 }
             };
 
@@ -267,30 +265,29 @@ impl RustFsRuntime for MinimalRuntime {
         Ok(bytes_written)
     }
 
-    fn close(&self, fd: RawFd) -> Result<(), FsError> {
+    fn close(&self, fd: RawFd) -> Option<()> {
         let file_desc = get_fd_slots()
             .lock()
-            .remove(fd.try_into().unwrap())
-            .ok_or(FsError::LookupError)?;
+            .remove(fd.try_into().unwrap())?;
 
         let mut binding = file_desc.lock();
 
         self.release_handle(&mut binding.handle);
 
-        Ok(())
+        Some(())
     }
 
-    fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, FsError> {
+    fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, IoError> {
         let binding = get_fd_slots().lock();
         let file_desc = binding
             .get(fd.try_into().unwrap())
-            .ok_or(FsError::LookupError)?;
+            .ok_or(IoError::InvalidDesc)?;
 
         let mut binding = file_desc.lock();
         let metadata_handle = unsafe {
             &mut *binding
                 .handle
-                .start
+                .start()
                 .offset(NULLPAGE_SIZE as isize)
                 .cast::<FileMetadata>()
         };
@@ -302,7 +299,7 @@ impl RustFsRuntime for MinimalRuntime {
         };
 
         if new_pos < 0 {
-            Err(FsError::SeekError)
+            Err(IoError::SeekError)
         } else {
             binding.pos = new_pos as u64;
             Ok(binding.pos.try_into().unwrap())

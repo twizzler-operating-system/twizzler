@@ -1,80 +1,38 @@
 //! Null implementation of the debug runtime.
 
-use twizzler_runtime_api::{AddrRange, DebugRuntime, Library, LibraryId, MapFlags};
-
 use super::{
     MinimalRuntime,
+    phdrs::PHDR_INFO,
     load_elf::{ElfObject, PhdrType},
 };
 use crate::object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE};
 
-static mut EXEC_ID: ObjID = ObjID::new(0);
-
-pub fn set_execid(id: ObjID) {
-    unsafe { EXEC_ID = id }
-}
-
-fn get_execid() -> ObjID {
-    unsafe { EXEC_ID }
-}
+use twizzler_rt_abi::bindings::{loaded_image, object_handle, dl_phdr_info};
 
 impl MinimalRuntime {
-    pub fn get_library(
-        &self,
-        id: twizzler_runtime_api::LibraryId,
-    ) -> Option<twizzler_runtime_api::Library> {
-        let mapping = self
-            .map_object(get_execid(), MapFlags::READ)
-            .ok()?;
-        Some(Library {
-            range: AddrRange {
-                start: mapping.start as usize + NULLPAGE_SIZE,
-                len: MAX_SIZE - NULLPAGE_SIZE,
-            },
-            mapping,
-            dl_info: None,
-            id,
-        })
-    }
-
-    pub fn get_exeid(&self) -> Option<twizzler_runtime_api::LibraryId> {
-        Some(LibraryId(0))
-    }
-
-    pub fn get_library_segment(
-        &self,
-        lib: &twizzler_runtime_api::Library,
-        seg: usize,
-    ) -> Option<twizzler_runtime_api::AddrRange> {
-        let exe = InternalObject::map(lib.mapping.id.into(), Protections::READ)?;
-        let elf = ElfObject::from_obj(&exe)?;
-
-        elf.phdrs()
-            .filter(|p| p.phdr_type() == PhdrType::Load)
-            .map(|p| twizzler_runtime_api::AddrRange {
-                start: p.vaddr as usize,
-                len: p.memsz as usize,
-            })
-            .nth(seg)
-    }
-
-    pub fn get_full_mapping(
-        &self,
-        lib: &twizzler_runtime_api::Library,
-    ) -> Option<twizzler_runtime_api::ObjectHandle> {
-        Some(lib.mapping.clone())
-    }
-
-    // The minimal runtime doesn't provide this, since we can get segment information in a simpler
-    // way for static binaries.
-    pub fn iterate_phdr(
-        &self,
-        _f: &mut dyn FnMut(twizzler_runtime_api::DlPhdrInfo) -> core::ffi::c_int,
-    ) -> core::ffi::c_int {
-        0
-    }
-
-    pub fn next_library_id(&self, _id: LibraryId) -> Option<LibraryId> {
-        None
+    pub fn get_image_info(&self) -> loaded_image {
+        loaded_image {
+           image_handle: object_handle {
+               id: 0,
+               runtime_info: core::ptr::null_mut(),
+               start: core::ptr::null_mut(),
+               meta: core::ptr::null_mut(),
+               map_flags: 0,
+               valid_len: (MAX_SIZE - NULLPAGE_SIZE * 2) as u32,
+           }, 
+           image_start: NULLPAGE_SIZE as *const core::ffi::c_void,
+           image_len: MAX_SIZE - NULLPAGE_SIZE * 2,
+           dl_info: dl_phdr_info {
+               addr: 0,
+               name: core::ptr::null_mut(),
+               phdr: unsafe {PHDR_INFO}.map(|info| info.as_ptr()).unwrap_or(core::ptr::null_mut()).cast(),
+               phnum: unsafe{PHDR_INFO}.map(|info| info.len()).unwrap_or(0) as u32,
+               adds: 0,
+               subs: 0,
+               tls_modid: 0,
+               tls_data: core::ptr::null_mut(),
+           },
+           id: 0, 
+        }
     }
 }
