@@ -135,7 +135,8 @@ pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
     let phys_mem_offset = phys_to_virt(PhysAddr::new(0).unwrap()).raw();
 
     let bios_reset = (phys_mem_offset + 0x467) as *mut u32;
-    *bios_reset = (TRAMPOLINE_ENTRY16 & 0xff000) << 12;
+    //*bios_reset = (TRAMPOLINE_ENTRY16 & 0xff000) << 12;
+    bios_reset.write_unaligned((TRAMPOLINE_ENTRY16 & 0xff000) << 12);
     let trampoline16 = (phys_mem_offset + TRAMPOLINE_ENTRY16 as u64) as *mut u8;
     trampoline16.copy_from_nonoverlapping(trampoline_entry_code16 as *const u8, 0x100);
     let trampoline32 = (TRAMPOLINE_ENTRY32 as u64) as *mut u8;
@@ -199,6 +200,7 @@ pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
     assert!(*pagetables >> 32 == 0);
     core::arch::asm!("mfence");
 
+    logln!("sending IPIs");
     get_lapic().clear_err();
     send_ipi(
         Destination::Single(cpu),
@@ -219,4 +221,5 @@ pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
         );
         pit::wait_ns(100000);
     }
+    logln!("sending IPIs: done");
 }
