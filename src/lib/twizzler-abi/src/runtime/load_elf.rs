@@ -300,9 +300,8 @@ pub fn spawn_new_executable(
     let stack_nullpage = RESERVED_STACK * MAX_SIZE;
     const STACK_OFFSET: usize = NULLPAGE_SIZE;
     const RT_INFO_OFFSET: usize = STACK_OFFSET + INITIAL_STACK_SIZE;
-    const MIN_ALIGN: usize = 32;
-    const MIN_INIT_OFFSET: usize = RT_INFO_OFFSET + core::cmp::max(size_of::<RuntimeInfo>(), MIN_ALIGN);
-    const ARGS_OFFSET: usize = MIN_INIT_OFFSET + core::cmp::max(size_of::<MinimalInitInfo>(), MIN_ALIGN);
+    const MIN_INIT_OFFSET: usize = RT_INFO_OFFSET + size_of::<RuntimeInfo>();
+    const ARGS_OFFSET: usize = MIN_INIT_OFFSET + size_of::<MinimalInitInfo>();
 
     fn copy_strings<T>(
         stack: &mut InternalObject<T>,

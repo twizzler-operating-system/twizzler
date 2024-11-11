@@ -62,22 +62,14 @@ impl MinimalRuntime {
         }
     }
 
-    pub fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32) -> bool {
+    pub fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32, count: usize) -> bool {
         let wake = ThreadSync::new_wake(ThreadSyncWake::new(
             ThreadSyncReference::Virtual32(futex),
-            1,
+            count,
         ));
         let _ = crate::syscall::sys_thread_sync(&mut [wake], None);
         // TODO
         false
-    }
-
-    pub fn futex_wake_all(&self, futex: &core::sync::atomic::AtomicU32) {
-        let wake = ThreadSync::new_wake(ThreadSyncWake::new(
-            ThreadSyncReference::Virtual32(futex),
-            usize::MAX,
-        ));
-        let _ = crate::syscall::sys_thread_sync(&mut [wake], None);
     }
 
     #[allow(dead_code)]
@@ -149,7 +141,7 @@ impl MinimalRuntime {
         }
     }
 
-    pub fn tls_get_addr(&self, _tls_index: &TlsIndex) -> Option<*const u8> {
+    pub fn tls_get_addr(&self, _tls_index: &TlsIndex) -> Option<*mut u8> {
         panic!("minimal runtime only supports LocalExec TLS model");
     }
 }

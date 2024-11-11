@@ -72,11 +72,51 @@ impl MinimalRuntime {
         */
     }
 
-    pub fn release_handle(&self, handle: &mut ObjectHandle) {
-        let slot = (handle.start() as usize) / MAX_SIZE;
+    pub fn release_handle(&self, handle: *mut twizzler_rt_abi::bindings::object_handle) {
+        let slot = (unsafe {(*handle).start} as usize) / MAX_SIZE;
 
         if crate::syscall::sys_object_unmap(None, slot, UnmapFlags::empty()).is_ok() {
             slot::global_release(slot);
         }
+    }
+
+    
+    /// Map two objects in sequence, useful for executable loading. The default implementation makes
+    /// no guarantees about ordering.
+    pub fn map_two_objects(
+        &self,
+        in_id_a: ObjID,
+        in_flags_a: MapFlags,
+        in_id_b: ObjID,
+        in_flags_b: MapFlags,
+    ) -> Result<(ObjectHandle, ObjectHandle), MapError> {
+        let map_and_check = |rev: bool| {
+            let (id_a, flags_a) = if rev {
+                (in_id_b, in_flags_b)
+            } else {
+                (in_id_a, in_flags_a)
+            };
+
+            let (id_b, flags_b) = if !rev {
+                (in_id_b, in_flags_b)
+            } else {
+                (in_id_a, in_flags_a)
+            };
+
+            let a = self.map_object(id_a, flags_a)?;
+            let b = self.map_object(id_b, flags_b)?;
+            let a_addr = a.start() as usize;
+            let b_addr = b.start() as usize;
+
+            if rev && a_addr > b_addr {
+                Ok((b, a))
+            } else if !rev && b_addr > a_addr {
+                Ok((a, b))
+            } else {
+                Err(MapError::Other)
+            }
+        };
+
+        map_and_check(false).or_else(|_| map_and_check(true))
     }
 }

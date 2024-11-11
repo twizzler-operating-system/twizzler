@@ -272,7 +272,8 @@ impl MinimalRuntime {
 
         let mut binding = file_desc.lock();
 
-        self.release_handle(&mut binding.handle);
+        // TODO
+        //self.release_handle(&mut binding.handle as *mut _);
 
         Some(())
     }
