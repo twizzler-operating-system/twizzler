@@ -4,8 +4,8 @@ use virtio_drivers::transport::{Transport, DeviceType, DeviceStatus};
 use virtio_drivers::transport::pci::VirtioPciError;
 use virtio_drivers::Error;
 
-use twizzler_abi::device::bus::pcie::{PcieDeviceInfo, PcieDeviceHeader};
-use twizzler_driver::device::{Device, MmioObject, InfoObject};
+use twizzler_abi::device::bus::pcie::PcieDeviceInfo;
+use twizzler_driver::device::Device;
 use twizzler_driver::bus::pcie::PcieCapability;
 use virtio_pcie::{VirtioIsrStatus, VirtioPciNotifyCap};
 use volatile::{map_field, VolatilePtr};
@@ -14,7 +14,7 @@ use core::ptr::NonNull;
 use core::mem::{size_of, align_of};
 
 pub mod virtio_pcie;
-use self::virtio_pcie::{VirtioPciCap, VirtioCommonCfg, VirtioCfgType, VirtioNetCfg, CfgLocation};
+use self::virtio_pcie::{VirtioPciCap, VirtioCommonCfg, VirtioCfgType, CfgLocation};
 
 pub struct TwizzlerTransport {
     device: Device,
@@ -29,7 +29,6 @@ pub struct TwizzlerTransport {
     config_space: Option<NonNull<[u32]>>,
 }
 
-// TODO: Finish this function
 impl TwizzlerTransport {
     pub fn new(device: Device) -> Result<Self, VirtioPciError> {
         let info = unsafe { device.get_info::<PcieDeviceInfo>(0).unwrap()};

@@ -1,20 +1,15 @@
 extern crate twizzler_abi;
 
 use twizzler_abi::device::BusType;
-use twizzler_driver::bus::pcie::{PcieDeviceInfo, PcieFunctionHeader};
+use twizzler_driver::bus::pcie::PcieDeviceInfo;
 
 mod hal;
 
 use hal::TestHal;
-use virtio_drivers::transport::{
-    pci::{
-        bus::{BarInfo, Cam, Command, DeviceFunction, PciRoot},
-        virtio_device_type, PciTransport,
-    },
-    DeviceType, Transport,
-};
+use virtio_drivers::transport::Transport;
 
 mod transport;
+mod tcp;
 
 use transport::TwizzlerTransport;
 
@@ -56,18 +51,12 @@ fn init_virtio_net() -> TwizzlerTransport {
 
 // Taken from Virtio drivers example
 fn virtio_net<T: Transport>(transport: T) {
-    let mut net =
-        virtio_drivers::device::net::VirtIONetRaw::<TestHal, T, NET_QUEUE_SIZE>::new(transport)
-            .expect("failed to create net driver");
-    println!("MAC address: {:02x?}", net.mac_address());
-
-    let mut buf = [0u8; 2048];
-    let (hdr_len, pkt_len) = net.receive_wait(&mut buf).expect("failed to recv");
-    println!(
-        "recv {} bytes: {:02x?}",
-        pkt_len,
-        &buf[hdr_len..hdr_len + pkt_len]
-    );
-    net.send(&buf[..hdr_len + pkt_len]).expect("failed to send");
-    println!("virtio-net test finished");
+    const NET_BUFFER_LEN: usize = 2048;
+        let net = virtio_drivers::device::net::VirtIONet::<TestHal, T, NET_QUEUE_SIZE>::new(
+            transport,
+            NET_BUFFER_LEN,
+        )
+        .expect("failed to create net driver");
+        println!("MAC address: {:02x?}", net.mac_address());
+        tcp::test_echo_server(net);
 }

@@ -1,8 +1,3 @@
-extern crate twizzler_abi;
-
-use twizzler_abi::device::BusType;
-use twizzler_driver::bus::pcie::{PcieDeviceInfo};
-
 const VENDOR_SPECIFIC_CAP_ID: u8 = 0x09;
 
 // Virtio vendor specific PCI Capability
