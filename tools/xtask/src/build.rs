@@ -216,7 +216,7 @@ fn build_static<'a>(
     }
     options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
-    //options.build_config.jobs = 1;
+    println!("==> {:?}", std::env::var("RUSTFLAGS"));
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
 
@@ -394,6 +394,10 @@ pub(crate) struct TwizzlerCompilation {
     pub static_config: GlobalContext,
     #[allow(dead_code)]
     pub user_config: GlobalContext,
+    #[allow(dead_code)]
+    pub tools_config: GlobalContext,
+    #[allow(dead_code)]
+    pub kernel_config: GlobalContext,
 
     #[borrows(static_config)]
     #[covariant]
@@ -401,21 +405,20 @@ pub(crate) struct TwizzlerCompilation {
     #[borrows(user_config)]
     #[covariant]
     pub user_workspace: Workspace<'this>,
-
-    #[allow(dead_code)]
-    pub kernel_config: GlobalContext,
+    #[borrows(tools_config)]
+    #[covariant]
+    pub tools_workspace: Workspace<'this>,
     #[borrows(kernel_config)]
     #[covariant]
     #[allow(dead_code)]
     pub kernel_workspace: Workspace<'this>,
 
-    #[borrows(user_workspace)]
+    #[borrows(tools_workspace)]
     #[covariant]
     pub tools_compilation: Compilation<'this>,
     #[borrows(kernel_workspace)]
     #[covariant]
     pub kernel_compilation: Compilation<'this>,
-
     #[borrows(static_workspace)]
     #[covariant]
     pub static_compilation: Option<Compilation<'this>>,
@@ -472,13 +475,21 @@ fn compile(
     crate::toolchain::init_for_build(
         mode.is_doc() || mode.is_check() || !other_options.build_twizzler || true,
     )?;
+    
+    let mut tools_config = GlobalContext::default()?;
+    tools_config.configure(0, false, None, false, false, false, &None, &[], &[])?;
+
+    crate::toolchain::set_cc();
+    crate::toolchain::set_dynamic();
 
     let mut config = GlobalContext::default()?;
     config.configure(0, false, None, false, false, false, &None, &[], &[])?;
 
+    crate::toolchain::set_static();
     let mut static_config = GlobalContext::default()?;
     static_config.configure(0, false, None, false, false, false, &None, &[], &[])?;
 
+    crate::toolchain::clear_rustflags();
     let mut kernel_config = GlobalContext::default()?;
     // add in a feature flags to be used in the kernel
     let cli_config = get_cli_configs(bc, other_options).unwrap();
@@ -495,9 +506,11 @@ fn compile(
     TwizzlerCompilation::try_new::<anyhow::Error>(
         static_config,
         config,
-        |c| Workspace::new(&manifest_path, c),
-        |c| Workspace::new(&manifest_path, c),
+        tools_config,
         kernel_config,
+        |c| Workspace::new(&manifest_path, c),
+        |c| Workspace::new(&manifest_path, c),
+        |c| Workspace::new(&manifest_path, c),
         |c| Workspace::new(&manifest_path, c),
         |w| build_tools(w, mode, other_options),
         |w| build_kernel(w, mode, &bc, other_options),

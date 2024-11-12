@@ -251,7 +251,11 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_write(
     len: usize,
     flags: io_flags,
 ) -> io_result {
-    todo!()
+    crate::syscall::sys_kernel_console_write(unsafe {core::slice::from_raw_parts(buf.cast(), len)}, crate::syscall::KernelConsoleWriteFlags::empty());
+    io_result {
+        error: twizzler_rt_abi::bindings::io_error_IoError_Success,
+        value: len, 
+    }
 }
 check_ffi_type!(twz_rt_fd_write, _, _, _, _);
 

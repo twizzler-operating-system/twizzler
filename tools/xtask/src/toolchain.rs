@@ -247,7 +247,7 @@ pub fn set_dynamic() {
 pub fn set_static() {
     std::env::set_var(
         "RUSTFLAGS",
-        "-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n",
+        "-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static",
     );
 }
 
