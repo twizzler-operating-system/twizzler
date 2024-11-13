@@ -3,6 +3,8 @@
 use core::{alloc::GlobalAlloc, ptr};
 
 use twizzler_rt_abi::core::{BasicAux, BasicReturn, RuntimeInfo, RUNTIME_INIT_MIN};
+use twizzler_rt_abi::info::SystemInfo;
+use twizzler_rt_abi::time::Monotonicity;
 
 use super::{
     alloc::MinimalAllocator,
@@ -54,7 +56,6 @@ impl MinimalRuntime {
         rt_info: *const RuntimeInfo,
         std_entry: unsafe extern "C-unwind" fn(BasicAux) -> BasicReturn,
     ) -> ! {
-        crate::print_err("test HELLO\n");
         let mut null_env: [*mut i8; 4] = [
             b"RUST_BACKTRACE=1\0".as_ptr() as *mut i8,
             ptr::null_mut(),
@@ -135,6 +136,20 @@ impl MinimalRuntime {
             })
         };
         self.exit(ret.code)
+    }
+
+    pub fn sysinfo(&self) -> SystemInfo {
+        let info = crate::syscall::sys_info();
+        SystemInfo {
+            clock_monotonicity: Monotonicity::Weak.into(),
+            available_parallelism: info.cpu_count().into(),
+            page_size: info.page_size(),
+        }
+    }
+
+    pub fn get_random(&self, buf: &mut [u8]) -> usize {
+        crate::print_err("todo: get random");
+        buf.len()
     }
 }
 

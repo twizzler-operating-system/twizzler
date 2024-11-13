@@ -10,6 +10,7 @@ use crate::{
     syscall::{sys_object_map, ObjectMapError, UnmapFlags},
 };
 use twizzler_rt_abi::object::{MapFlags, MapError, ObjectHandle};
+use core::sync::atomic::AtomicU64;
 
 mod handle;
 
@@ -52,6 +53,18 @@ impl Into<MapError> for ObjectMapError {
     }
 }
 
+#[repr(C)]
+struct RuntimeHandleInfo {
+    refs: AtomicU64,
+}
+
+fn new_runtime_info() -> *mut RuntimeHandleInfo {
+    let rhi = Box::new(RuntimeHandleInfo {
+        refs: AtomicU64::new(1),
+    });
+    Box::into_raw(rhi)
+}
+
 impl MinimalRuntime {
     pub fn map_object(
         &self,
@@ -60,16 +73,9 @@ impl MinimalRuntime {
     ) -> Result<ObjectHandle, MapError> {
         let slot = global_allocate().ok_or(MapError::OutOfResources)?;
         let _ = sys_object_map(None, id, slot, flags.into(), flags.into()).map_err(|e| e.into())?;
-        todo!()
-        /*
-        Ok(ObjectHandle::new(
-            Some(NonNull::new(Box::into_raw(Box::new(InternalHandleRefs::default()))).unwrap()),
-            id,
-            flags,
-            (slot * MAX_SIZE) as *mut u8,
-            (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
-        ))
-        */
+        let start = (slot * MAX_SIZE) as *mut _;
+        let meta = (((slot + 1) * MAX_SIZE) - NULLPAGE_SIZE) as *mut _;
+        Ok(unsafe {ObjectHandle::new(id, new_runtime_info().cast(), start, meta, flags, MAX_SIZE as u32)})
     }
 
     pub fn release_handle(&self, handle: *mut twizzler_rt_abi::bindings::object_handle) {

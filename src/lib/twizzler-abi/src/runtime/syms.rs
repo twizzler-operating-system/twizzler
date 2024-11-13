@@ -220,12 +220,14 @@ check_ffi_type!(twz_rt_join_thread, _, _);
 use twizzler_rt_abi::bindings::{open_info, open_result, descriptor};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
+        crate::print_err("!! open\n");
     todo!()
 }
 check_ffi_type!(twz_rt_fd_open, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_close(fd: descriptor) {
+        crate::print_err("!! close\n");
     todo!()
 }
 check_ffi_type!(twz_rt_fd_close, _);
@@ -240,6 +242,7 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_read(
     len: usize,
     flags: io_flags,
 ) -> io_result {
+        crate::print_err("!! read\n");
     todo!()
 }
 check_ffi_type!(twz_rt_fd_read, _, _, _, _);
@@ -261,6 +264,7 @@ check_ffi_type!(twz_rt_fd_write, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_seek(fd: descriptor, whence: whence, offset: i64) -> io_result {
+        crate::print_err("!! seek\n");
     todo!()
 }
 check_ffi_type!(twz_rt_fd_seek, _, _, _);
@@ -273,6 +277,7 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_preadv(
     nr_iovs: usize,
     flags: io_flags,
 ) -> io_result {
+        crate::print_err("!! pread\n");
     todo!()
 }
 check_ffi_type!(twz_rt_fd_preadv, _, _, _, _, _);
@@ -285,6 +290,7 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
     nr_iovs: usize,
     flags: io_flags,
 ) -> io_result {
+        crate::print_err("!! pwrite\n");
     todo!()
 }
 check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _, _);
@@ -368,6 +374,7 @@ pub unsafe extern "C-unwind" fn twz_rt_iter_phdr(
     >,
     data: *mut ::core::ffi::c_void,
 ) -> ::core::ffi::c_int {
+        crate::print_err("!! phdr\n");
     todo!()
 }
 check_ffi_type!(twz_rt_iter_phdr, _, _);
@@ -377,7 +384,7 @@ check_ffi_type!(twz_rt_iter_phdr, _, _);
 use twizzler_rt_abi::bindings::system_info;
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_get_sysinfo() -> system_info {
-    todo!()
+    OUR_RUNTIME.sysinfo()
 }
 check_ffi_type!(twz_rt_get_sysinfo);
 
@@ -390,7 +397,7 @@ pub unsafe extern "C-unwind" fn twz_rt_get_random(
     len: usize,
     flags: get_random_flags,
 ) -> usize {
-    todo!()
+    OUR_RUNTIME.get_random(unsafe { core::slice::from_raw_parts_mut(buf.cast(), len) })
 }
 check_ffi_type!(twz_rt_get_random, _, _, _);
 
@@ -398,30 +405,36 @@ check_ffi_type!(twz_rt_get_random, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn malloc(len: usize) -> *mut core::ffi::c_void {
+        crate::print_err("!! malloc\n");
     todo!()
 }
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn free(ptr: *mut core::ffi::c_void) {
+        crate::print_err("!! free\n");
     todo!()
 }
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn getenv(name: *const core::ffi::c_char) -> *const core::ffi::c_char {
+        crate::print_err("!! getenv\n");
     todo!()
 }
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn dl_iterate_phdr(cb: (), data: *mut core::ffi::c_void) -> i32 {
+        crate::print_err("!! dl_iter\n");
     todo!()
 }
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn fwrite(ptr: *const core::ffi::c_void, len: usize, nitems: usize, file: core::ffi::c_void) -> usize {
+        crate::print_err("!! fwrite\n");
     todo!()
 }
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn fprintf(file: *const core::ffi::c_void, fmt: *const core::ffi::c_char, ...) -> i32 {
+        crate::print_err("!! fprintf\n");
     todo!()
 }

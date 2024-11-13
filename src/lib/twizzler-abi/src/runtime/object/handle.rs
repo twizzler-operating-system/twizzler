@@ -54,9 +54,12 @@ impl<T> InternalObject<T> {
         )
         .ok()?;
 
+        let start = (slot * MAX_SIZE) as *mut _;
+        let meta = (((slot + 1) * MAX_SIZE) - NULLPAGE_SIZE) as *mut _;
+
         Some(Self {
             slot,
-            runtime_handle: todo!(),
+            runtime_handle: unsafe {ObjectHandle::new(id, super::new_runtime_info().cast(), start, meta, MapFlags::READ | MapFlags::WRITE, MAX_SIZE as u32)},
             _pd: PhantomData,
         })
     }
@@ -89,8 +92,11 @@ impl<T> InternalObject<T> {
         crate::syscall::sys_object_map(None, id, slot, prot, crate::syscall::MapFlags::empty())
             .ok()?;
 
+        let start = (slot * MAX_SIZE) as *mut _;
+        let meta = (((slot + 1) * MAX_SIZE) - NULLPAGE_SIZE) as *mut _;
+
         Some(Self {
-            runtime_handle: todo!(),
+            runtime_handle: unsafe {ObjectHandle::new(id, super::new_runtime_info().cast(), start, meta, prot.into(), MAX_SIZE as u32)},
             slot,
             _pd: PhantomData,
         })
@@ -117,7 +123,8 @@ impl<T> InternalObject<T> {
 
 impl<T> Drop for InternalObject<T> {
     fn drop(&mut self) {
-        todo!()
+        // TODO
+        //todo!()
     }
 }
 
