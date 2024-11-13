@@ -386,9 +386,11 @@ pub fn schedule(reinsert: bool) {
         interrupt::set(istate);
         return;
     }
+    drop(cur);
 
     do_schedule(reinsert);
     interrupt::set(istate);
+    let cur = current_thread_ref().unwrap();
     // Always check if we need to suspend before returning control.
     cur.maybe_suspend_self();
 }

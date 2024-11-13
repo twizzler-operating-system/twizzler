@@ -299,7 +299,7 @@ pub fn tls_ready() -> bool {
     crate::arch::processor::tls_ready()
 }
 
-pub const KERNEL_STACK_SIZE: usize = 1 * 512 * 1024; // 1MB
+pub const KERNEL_STACK_SIZE: usize = 512 * 1024; // 512KB
 
 pub fn init_cpu(tls_template: TlsInfo, bsp_id: u32) {
     let tcb_base = crate::arch::image::init_tls(tls_template);
