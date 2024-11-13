@@ -90,7 +90,7 @@ impl MinimalRuntime {
         Ok(fd.try_into().unwrap())
     }
 
-    fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, IoError> {
+    pub fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, IoError> {
         let binding = get_fd_slots().lock();
         let file_desc = binding
             .get(fd.try_into().unwrap())
@@ -167,7 +167,7 @@ impl MinimalRuntime {
         Ok(bytes_read)
     }
 
-    fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, IoError> {
+    pub fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, IoError> {
         let binding = get_fd_slots().lock();
         let file_desc = binding
             .get(fd.try_into().unwrap())
@@ -265,7 +265,7 @@ impl MinimalRuntime {
         Ok(bytes_written)
     }
 
-    fn close(&self, fd: RawFd) -> Option<()> {
+    pub fn close(&self, fd: RawFd) -> Option<()> {
         let file_desc = get_fd_slots()
             .lock()
             .remove(fd.try_into().unwrap())?;
@@ -278,7 +278,7 @@ impl MinimalRuntime {
         Some(())
     }
 
-    fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, IoError> {
+    pub fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, IoError> {
         let binding = get_fd_slots().lock();
         let file_desc = binding
             .get(fd.try_into().unwrap())

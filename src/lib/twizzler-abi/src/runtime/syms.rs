@@ -220,15 +220,21 @@ check_ffi_type!(twz_rt_join_thread, _, _);
 use twizzler_rt_abi::bindings::{open_info, open_result, descriptor};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
-        crate::print_err("!! open\n");
-    todo!()
+    let name = unsafe { core::slice::from_raw_parts(info.name.cast(), info.len) };
+    let name = core::str::from_utf8(name).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument);
+    match name {
+        Ok(name) => OUR_RUNTIME.open(name).into(),
+        Err(e) => open_result {
+            error: e as u32,
+            fd: 0
+        }
+    }
 }
 check_ffi_type!(twz_rt_fd_open, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_close(fd: descriptor) {
-        crate::print_err("!! close\n");
-    todo!()
+    OUR_RUNTIME.close(fd);
 }
 check_ffi_type!(twz_rt_fd_close, _);
 
@@ -236,20 +242,22 @@ check_ffi_type!(twz_rt_fd_close, _);
 
 use twizzler_rt_abi::bindings::{io_flags, io_result, whence, optional_offset, io_vec};
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_fd_read(
+pub unsafe extern "C-unwind" fn twz_rt_fd_pread(
     fd: descriptor,
+    opt_off: i64,
     buf: *mut ::core::ffi::c_void,
     len: usize,
     flags: io_flags,
 ) -> io_result {
-        crate::print_err("!! read\n");
+    crate::print_err("!! read\n");
     todo!()
 }
-check_ffi_type!(twz_rt_fd_read, _, _, _, _);
+check_ffi_type!(twz_rt_fd_pread, _, _, _, _, _);
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_fd_write(
+pub unsafe extern "C-unwind" fn twz_rt_fd_pwrite(
     fd: descriptor,
+    opt_off: i64,
     buf: *const ::core::ffi::c_void,
     len: usize,
     flags: io_flags,
@@ -260,11 +268,11 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_write(
         value: len, 
     }
 }
-check_ffi_type!(twz_rt_fd_write, _, _, _, _);
+check_ffi_type!(twz_rt_fd_pwrite, _, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_seek(fd: descriptor, whence: whence, offset: i64) -> io_result {
-        crate::print_err("!! seek\n");
+    crate::print_err("!! seek\n");
     todo!()
 }
 check_ffi_type!(twz_rt_fd_seek, _, _, _);
