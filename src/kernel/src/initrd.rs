@@ -36,6 +36,7 @@ pub fn init(modules: &[BootModule]) {
     for module in modules {
         let tar = tar_no_std::TarArchiveRef::new(module.as_slice());
         logln!("[kernel::initrd] loading module...");
+        let mut total_alloc = 0;
         for e in tar.entries() {
             let obj = obj::Object::new();
             logln!(
@@ -65,7 +66,9 @@ pub fn init(modules: &[BootModule]) {
             boot_objects
                 .name_map
                 .insert(e.filename().as_str().to_owned(), obj);
+            total_alloc += total;
         }
+        logln!("[kernel::initrd]  done: {} MB", total_alloc / (1024 * 1024));
     }
     BOOT_OBJECTS.call_once(|| boot_objects);
 }
