@@ -6,7 +6,7 @@ use crate::print_err;
 use lazy_static::lazy_static;
 use rustc_alloc::{string::ToString, sync::Arc};
 use stable_vec::{self, StableVec};
-use twizzler_rt_abi::{object::{ObjectHandle, MapFlags}, fd::{RawFd, OpenError}, io::{IoError, SeekFrom}};
+use twizzler_rt_abi::{object::{ObjectHandle, MapFlags}, fd::{RawFd, OpenError}, io::{IoError, SeekFrom, IoFlags}, bindings::io_vec};
 use lru::LruCache;
 use core::num::NonZeroUsize;
 use super::{object, MinimalRuntime};
@@ -91,6 +91,10 @@ impl MinimalRuntime {
     }
 
     pub fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, IoError> {
+        if fd == 0 || fd == 1 || fd == 2 {
+            let len = crate::syscall::sys_kernel_console_read(buf, crate::syscall::KernelConsoleReadFlags::empty()).map_err(|_| IoError::Other)?;
+            return Ok(len);
+        }
         let binding = get_fd_slots().lock();
         let file_desc = binding
             .get(fd.try_into().unwrap())
@@ -167,7 +171,33 @@ impl MinimalRuntime {
         Ok(bytes_read)
     }
 
+    pub fn fd_pread(&self, fd: RawFd, off: Option<u64>, buf: &mut [u8], flags: IoFlags) -> Result<usize, IoError> {
+        if off.is_some() {
+            return Err(IoError::SeekError);
+        }
+        self.read(fd, buf)
+    }
+
+    pub fn fd_pwrite(&self, fd: RawFd, off: Option<u64>, buf: &[u8], flags: IoFlags) -> Result<usize, IoError> {
+        if off.is_some() {
+            return Err(IoError::SeekError);
+        }
+        self.write(fd, buf)
+    }
+
+    pub fn fd_pwritev(&self, fd: RawFd, off: Option<u64>, buf: &[io_vec], flags: IoFlags) -> Result<usize, IoError> {
+        return Err(IoError::Other);
+    }
+
+    pub fn fd_preadv(&self, fd: RawFd, off: Option<u64>, buf: &[io_vec], flags: IoFlags) -> Result<usize, IoError> {
+        return Err(IoError::Other);
+    }
+
     pub fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, IoError> {
+        if fd == 0 || fd == 1 || fd == 2 {
+            crate::syscall::sys_kernel_console_write(buf, crate::syscall::KernelConsoleWriteFlags::empty());
+            return Ok(buf.len());
+        }
         let binding = get_fd_slots().lock();
         let file_desc = binding
             .get(fd.try_into().unwrap())

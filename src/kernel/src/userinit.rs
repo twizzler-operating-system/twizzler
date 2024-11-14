@@ -70,7 +70,15 @@ pub extern "C" fn user_init() {
             Protections::READ,
         )
         .unwrap();
+
         let init_obj = boot_objects.init.as_ref().expect("no init found");
+        crate::operations::map_object_into_context(
+            twizzler_abi::slot::RESERVED_IMAGE,
+            init_obj.clone(),
+            vm.clone(),
+            Protections::READ,
+        )
+        .unwrap();
         let obj1_data = crate::operations::read_object(init_obj);
         let elf = xmas_elf::ElfFile::new(&obj1_data).unwrap();
         let mut phinfo = None;

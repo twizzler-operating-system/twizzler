@@ -6,7 +6,7 @@ use twizzler_rt_abi::core::{RuntimeInfo, MinimalInitInfo, InitInfoPtrs, RUNTIME_
 
 use crate::{
     object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    slot::{RESERVED_DATA, RESERVED_STACK, RESERVED_TEXT},
+    slot::{RESERVED_DATA, RESERVED_STACK, RESERVED_TEXT, RESERVED_IMAGE},
     syscall::{
         sys_unbind_handle, BackingType, HandleType, LifetimeType, MapFlags, NewHandleFlags,
         ObjectCreate, ObjectCreateFlags, ObjectSource, ThreadSpawnArgs, ThreadSpawnFlags,
@@ -296,6 +296,14 @@ pub fn spawn_new_executable(
         MapFlags::empty(),
     )
     .map_err(|_| SpawnExecutableError::MapFailed)?;
+    crate::syscall::sys_object_map(
+        Some(vm_handle),
+        exe.id(),
+        RESERVED_IMAGE,
+        Protections::READ,
+        MapFlags::empty(),
+    )
+    .map_err(|_| SpawnExecutableError::MapFailed)?;
 
     let stack_nullpage = RESERVED_STACK * MAX_SIZE;
     const STACK_OFFSET: usize = NULLPAGE_SIZE;
@@ -358,7 +366,7 @@ pub fn spawn_new_executable(
         flags: 0,
         kind: RUNTIME_INIT_MIN,
         init_info: InitInfoPtrs {
-            min: min_init_ptr,
+            min: (stack_nullpage + MIN_INIT_OFFSET) as *mut _,
         },
     };
 
@@ -372,7 +380,7 @@ pub fn spawn_new_executable(
         stack_nullpage + STACK_OFFSET,
         INITIAL_STACK_SIZE,
         0,
-        rt_info_ptr as usize,
+        stack_nullpage + RT_INFO_OFFSET,
         ThreadSpawnFlags::empty(),
         Some(vm_handle),
         UpcallTargetSpawnOption::DefaultAbort,

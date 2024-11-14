@@ -23,8 +23,12 @@ unsafe impl Sync for Slot {}
 unsafe impl Send for Slot {}
 
 impl From<MapError> for ObjectInitError {
-    fn from(_: MapError) -> Self {
-        todo!()
+    fn from(me: MapError) -> Self {
+        match me {
+            MapError::OutOfResources => ObjectInitError::OutOfSlots,
+            MapError::NoSuchObject => ObjectInitError::ObjectNotFound,
+            _ => ObjectInitError::MappingFailed,
+        }
     }
 }
 

@@ -249,8 +249,13 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pread(
     len: usize,
     flags: io_flags,
 ) -> io_result {
-    crate::print_err("!! read\n");
-    todo!()
+    let off = if opt_off == twizzler_rt_abi::bindings::FD_POS {
+        None
+    } else {
+        Some(opt_off as u64)
+    };
+    let slice = unsafe { core::slice::from_raw_parts_mut(buf.cast::<u8>(), len) };
+    OUR_RUNTIME.fd_pread(fd, off, slice, twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags)).into()
 }
 check_ffi_type!(twz_rt_fd_pread, _, _, _, _, _);
 
@@ -262,44 +267,65 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pwrite(
     len: usize,
     flags: io_flags,
 ) -> io_result {
-    crate::syscall::sys_kernel_console_write(unsafe {core::slice::from_raw_parts(buf.cast(), len)}, crate::syscall::KernelConsoleWriteFlags::empty());
-    io_result {
-        error: twizzler_rt_abi::bindings::io_error_IoError_Success,
-        value: len, 
-    }
+    let off = if opt_off == twizzler_rt_abi::bindings::FD_POS {
+        None
+    } else {
+        Some(opt_off as u64)
+    };
+    let slice = unsafe { core::slice::from_raw_parts(buf.cast::<u8>(), len) };
+    OUR_RUNTIME.fd_pwrite(fd, off, slice, twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags)).into()
 }
 check_ffi_type!(twz_rt_fd_pwrite, _, _, _, _, _);
 
+use twizzler_rt_abi::io::SeekFrom;
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_seek(fd: descriptor, whence: whence, offset: i64) -> io_result {
-    crate::print_err("!! seek\n");
-    todo!()
+    let seek = match whence {
+        twizzler_rt_abi::bindings::WHENCE_START => SeekFrom::Start(offset as u64),
+        twizzler_rt_abi::bindings::WHENCE_END => SeekFrom::End(offset),
+        twizzler_rt_abi::bindings::WHENCE_CURRENT => SeekFrom::Current(offset),
+        _ => return io_result {
+            value: 0,
+            error: twizzler_rt_abi::bindings::io_error_IoError_SeekError,
+        }
+    };
+    OUR_RUNTIME.seek(fd, seek).into()
 }
 check_ffi_type!(twz_rt_fd_seek, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_preadv(
     fd: descriptor,
-    offset: optional_offset,
+    opt_off: optional_offset,
     iovs: *const io_vec,
     nr_iovs: usize,
     flags: io_flags,
 ) -> io_result {
-        crate::print_err("!! pread\n");
-    todo!()
+    let off = if opt_off == twizzler_rt_abi::bindings::FD_POS {
+        None
+    } else {
+        Some(opt_off as u64)
+    };
+    let slice = unsafe { core::slice::from_raw_parts(iovs, nr_iovs) };
+    OUR_RUNTIME.fd_preadv(fd, off, slice, twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags)).into()
 }
 check_ffi_type!(twz_rt_fd_preadv, _, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
     fd: descriptor,
-    offset: optional_offset,
+    opt_off: optional_offset,
     iovs: *const io_vec,
     nr_iovs: usize,
     flags: io_flags,
 ) -> io_result {
-        crate::print_err("!! pwrite\n");
-    todo!()
+    let off = if opt_off == twizzler_rt_abi::bindings::FD_POS {
+        None
+    } else {
+        Some(opt_off as u64)
+    };
+    let slice = unsafe { core::slice::from_raw_parts(iovs, nr_iovs) };
+    OUR_RUNTIME.fd_pwritev(fd, off, slice, twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags)).into()
 }
 check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _, _);
 
@@ -363,7 +389,9 @@ check_ffi_type!(twz_rt_get_system_time);
 use twizzler_rt_abi::bindings::{loaded_image, loaded_image_id, dl_phdr_info};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_get_loaded_image(id: loaded_image_id, li: *mut loaded_image) -> bool {
-    let image_info = OUR_RUNTIME.get_image_info();
+    let Some(image_info) = OUR_RUNTIME.get_image_info(id) else {
+        return false;
+    };
     unsafe {
         li.write(image_info);
     }
@@ -382,8 +410,9 @@ pub unsafe extern "C-unwind" fn twz_rt_iter_phdr(
     >,
     data: *mut ::core::ffi::c_void,
 ) -> ::core::ffi::c_int {
-        crate::print_err("!! phdr\n");
-    todo!()
+    OUR_RUNTIME.iterate_phdr(&mut |info| {
+        cb.unwrap()(&info, core::mem::size_of::<dl_phdr_info>(), data)
+    })
 }
 check_ffi_type!(twz_rt_iter_phdr, _, _);
 
@@ -425,24 +454,30 @@ pub unsafe extern "C-unwind" fn free(ptr: *mut core::ffi::c_void) {
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn getenv(name: *const core::ffi::c_char) -> *const core::ffi::c_char {
-        crate::print_err("!! getenv\n");
-    todo!()
+    core::ptr::null()
 }
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn dl_iterate_phdr(cb: (), data: *mut core::ffi::c_void) -> i32 {
-        crate::print_err("!! dl_iter\n");
-    todo!()
+pub unsafe extern "C-unwind" fn dl_iterate_phdr(cb: ::core::option::Option<
+        unsafe extern "C-unwind" fn(
+            arg1: *const dl_phdr_info,
+            size: usize,
+            data: *mut ::core::ffi::c_void,
+        ) -> ::core::ffi::c_int>, data: *mut core::ffi::c_void) -> i32 {
+    twz_rt_iter_phdr(cb, data)
 }
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn fwrite(ptr: *const core::ffi::c_void, len: usize, nitems: usize, file: core::ffi::c_void) -> usize {
-        crate::print_err("!! fwrite\n");
-    todo!()
+pub unsafe extern "C-unwind" fn fwrite(ptr: *const core::ffi::c_void, len: usize, nitems: usize, file: *const core::ffi::c_void) -> usize {
+    twz_rt_fd_pwrite(1, twizzler_rt_abi::bindings::FD_POS, ptr, len * nitems, 0);
+    len * nitems
 }
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn fprintf(file: *const core::ffi::c_void, fmt: *const core::ffi::c_char, ...) -> i32 {
-        crate::print_err("!! fprintf\n");
-    todo!()
+pub unsafe extern "C-unwind" fn fprintf(file: *const core::ffi::c_void, fmt: *const core::ffi::c_char, mut args: ...) -> i32 {
+    use printf_compat::{format, output};
+    let mut s = rustc_alloc::string::String::new();
+    let bytes_written = format(fmt, args.as_va_list(), output::fmt_write(&mut s));
+    twz_rt_fd_pwrite(1, twizzler_rt_abi::bindings::FD_POS, s.as_bytes().as_ptr().cast(), s.as_bytes().len(), 0);
+    bytes_written
 }

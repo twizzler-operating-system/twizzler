@@ -58,7 +58,7 @@ struct RuntimeHandleInfo {
     refs: AtomicU64,
 }
 
-fn new_runtime_info() -> *mut RuntimeHandleInfo {
+pub(crate) fn new_runtime_info() -> *mut RuntimeHandleInfo {
     let rhi = Box::new(RuntimeHandleInfo {
         refs: AtomicU64::new(1),
     });

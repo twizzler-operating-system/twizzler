@@ -40,6 +40,7 @@ pub mod slot;
 pub mod syscall;
 pub mod thread;
 pub mod upcall;
+pub mod klog;
 
 #[inline]
 unsafe fn internal_abort() -> ! {
