@@ -311,12 +311,24 @@ impl ArchTlbMgr {
         self.data.do_invalidation();
 
         if count > 0 {
+            // Ensure we don't wait too long -- TODO: this is because this TLB shootdown algorithm
+            // is Not Great (tm) and should be improved (targeted shootdown, pcid tracking, ...)
+            const MAX_ITERS: usize = 200;
             // Wait for each processor to report that it is done.
             with_each_active_processor(|p| {
+                let mut iters = 0;
                 if p.id != proc.id {
                     spin_wait_until(
                         || {
-                            if p.arch.tlb_shootdown_info.is_finished() {
+                            iters += 1;
+                            if p.arch.tlb_shootdown_info.is_finished() || iters >= MAX_ITERS {
+                                if iters >= MAX_ITERS {
+                                    logln!(
+                                        "warning -- TLB shootdown pause on CPUs {} -> {}",
+                                        proc.id,
+                                        p.id
+                                    );
+                                }
                                 Some(())
                             } else {
                                 None
