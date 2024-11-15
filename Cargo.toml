@@ -14,6 +14,8 @@ members = [
     "src/bin/pager",
     "src/bin/mnemosyne",
     "src/bin/stdfs_demo",
+    "src/bin/random_validation",
+    "src/bin/genrandom",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
@@ -26,6 +28,8 @@ members = [
     "src/runtime/monitor-api",
     "src/runtime/twz-rt",
     "src/lib/twizzler-futures", 
+    "src/lib/twizzler-futures",
+    "src/lib/getrandom-twizzler",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -42,7 +46,9 @@ initrd = [
     "lib:twz-rt",
     "lib:monitor",
     "crate:mnemosyne",
+    "crate:genrandom",
     "crate:stdfs_demo",
+    "crate:random_validation",
     #"third-party:hello-world-rs"
 ]
 

@@ -2,14 +2,7 @@ use p256::ecdsa::{
     signature::{self, Signer, Verifier},
     Signature, SigningKey, VerifyingKey,
 };
-use sha2::{
-    digest::{
-        consts::{B0, B1},
-        generic_array::GenericArray,
-        typenum::{UInt, UTerm},
-    },
-    Digest, Sha256,
-};
+use sha2::{Digest, Sha256};
 
 pub fn sha256(input: impl AsRef<[u8]>) -> [u8; 32] {
     let mut hasher = Sha256::new();

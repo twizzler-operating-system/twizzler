@@ -675,6 +675,10 @@ pub trait RustTimeRuntime {
     fn actual_monotonicity(&self) -> Monotonicity;
 }
 
+pub trait GetRandom {
+    fn get_random(&self, into: &mut [u8], nonblocking: bool) -> Result<(), ()>;
+}
+
 /// Possible types of monotonicity.
 pub enum Monotonicity {
     /// Not monotonic at all.

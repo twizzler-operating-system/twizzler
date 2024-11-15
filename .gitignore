@@ -4,3 +4,4 @@ toolchain/install
 workspace.code-workspace
 .target-xtask
 src/data
+.DS_Store

@@ -1,13 +1,19 @@
 use std::{
-    io,
+    future, io,
     io::{Error, ErrorKind},
-    sync::Arc,
+    mem::size_of,
+    sync::{Arc, Mutex, RwLock},
 };
 
 use layout::{
-    collections::raw::RawBytes, io::SeekFrom, Encode, Read, Seek, SourcedDynamic, Write, IO,
+    collections::raw::RawBytes,
+    io::{SeekFrom, StdIO},
+    ApplyLayout, Encode, Frame, Read, Seek, SourcedDynamic, Write, IO,
 };
-use lethe_gadget_fat::schema::{self, FATEntry, Superblock};
+use lethe_gadget_fat::{
+    filesystem::FileSystem,
+    schema::{self, FATEntry, Superblock},
+};
 use twizzler_async::block_on;
 
 use crate::nvme::{init_nvme, NvmeController};
@@ -57,9 +63,10 @@ pub fn setup(data: &mut Disk) {
     fs.encode(data).unwrap();
 }
 
-const DISK_SIZE: usize = 0x10000000;
+const DISK_SIZE: usize = 0x4_000_000_000 + 0x400;
 const PAGE_SIZE: usize = 4096;
 const SECTOR_SIZE: usize = 512;
+const PAGE_SHIFT: usize = 12;
 const PAGE_MASK: usize = 0xFFF;
 const LBA_COUNT: usize = DISK_SIZE / SECTOR_SIZE;
 
