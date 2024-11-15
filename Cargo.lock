@@ -625,6 +625,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo_toml"
+version = "0.20.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88da5a13c620b4ca0078845707ea9c3faf11edbc3ffd8497d11d686211cd1ac0"
+dependencies = [
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "cc"
 version = "1.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5345,15 +5355,18 @@ dependencies = [
  "anyhow",
  "cargo",
  "cargo_metadata",
+ "cargo_toml",
  "clap",
  "fs_extra",
  "futures",
  "futures-util",
+ "git2",
  "guess_host_triple",
  "home",
  "indicatif",
  "ouroboros",
  "reqwest",
+ "semver",
  "strum",
  "strum_macros",
  "tokio",

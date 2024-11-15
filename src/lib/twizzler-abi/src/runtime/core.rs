@@ -56,13 +56,8 @@ impl MinimalRuntime {
         rt_info: *const RuntimeInfo,
         std_entry: unsafe extern "C-unwind" fn(BasicAux) -> BasicReturn,
     ) -> ! {
-        crate::print_err("!!! IN RUNENTRY\n");
-        crate::klog_println!("IN RUNTIME ENTRY: {:p}", rt_info);
-        let mut null_env: [*mut i8; 7] = [
+        let mut null_env: [*mut i8; 4] = [
             b"RUST_BACKTRACE=1\0".as_ptr() as *mut i8,
-            b"LIBUNWIND_PRINT_UNWINDING=1\0".as_ptr() as *mut i8,
-            b"LIBUNWIND_PRINT_APIS=1\0".as_ptr() as *mut i8,
-            b"LIBUNWIND_PRINT_DWARF=1\0".as_ptr() as *mut i8,
             ptr::null_mut(),
             ptr::null_mut(),
             ptr::null_mut(),
@@ -72,15 +67,11 @@ impl MinimalRuntime {
         let mut env_ptr = (&mut null_env).as_mut_ptr();
 
         unsafe {
-            if rt_info.is_null() {
-                crate::print_err("IS NUL");
-            }
             let rt_info = rt_info.as_ref().unwrap();
             if rt_info.kind != RUNTIME_INIT_MIN {
                 crate::print_err("minimal runtime cannot initialize non-minimal runtime");
                 self.abort();
             } 
-        crate::print_err("!!! IN RUNENTRY 1\n");
             let min_init_info = &*rt_info.init_info.min;
             process_phdrs(core::slice::from_raw_parts(min_init_info.phdrs as *const Phdr, min_init_info.nr_phdrs));
             if !min_init_info.envp.is_null() {
@@ -92,7 +83,6 @@ impl MinimalRuntime {
             }
         }
 
-        crate::print_err("!!! IN RUNENTRY 2\n");
         let tls = init_tls();
         if let Some(tls) = tls {
             crate::syscall::sys_thread_settls(tls);
@@ -137,7 +127,6 @@ impl MinimalRuntime {
                 }
             }
         }
-        crate::print_err("!!! IN RUNENTRY 3\n");
 
         let ret = unsafe {
             std_entry(BasicAux {
@@ -159,7 +148,7 @@ impl MinimalRuntime {
     }
 
     pub fn get_random(&self, buf: &mut [u8]) -> usize {
-        crate::print_err("todo: get random");
+        // TODO
         buf.len()
     }
 }

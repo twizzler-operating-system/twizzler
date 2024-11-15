@@ -193,6 +193,16 @@ impl MinimalRuntime {
         return Err(IoError::Other);
     }
 
+    pub fn fd_get_info(&self, fd: RawFd) -> Option<twizzler_rt_abi::bindings::fd_info> {
+        let binding = get_fd_slots().lock();
+        if binding.get(fd.try_into().unwrap()).is_none() {
+               return None;
+        }
+        Some(twizzler_rt_abi::bindings::fd_info {
+            flags: 0
+        })
+    }
+
     pub fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, IoError> {
         if fd == 0 || fd == 1 || fd == 2 {
             crate::syscall::sys_kernel_console_write(buf, crate::syscall::KernelConsoleWriteFlags::empty());

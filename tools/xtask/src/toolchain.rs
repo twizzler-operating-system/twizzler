@@ -62,22 +62,59 @@ pub async fn download_file(client: &Client, url: &str, path: &str) -> anyhow::Re
     Ok(())
 }
 
-fn create_stamp() {
-    let mut file =
-        std::fs::File::create("toolchain/install/stamp").expect("failed to create stamp file");
-    file.write_all(&[0]).expect("failed to write stamp file");
+fn get_rust_commit() -> anyhow::Result<String> {
+    let repo = git2::Repository::open("toolchain/src/rust")?;
+    let cid = repo.head()?.peel_to_commit()?.id();
+    Ok(cid.to_string())
+}
+
+fn get_abi_version() -> anyhow::Result<semver::Version> {
+    let toml = cargo_toml::Manifest::from_path("src/abi/rt-abi/Cargo.toml")?;
+    let abipkg = toml.package.as_ref().unwrap();
+    Ok(semver::Version::parse(&abipkg.version.get().unwrap())?)
+}
+
+static STAMP_PATH: &str = "toolchain/install/stamp";
+static NEXT_STAMP_PATH: &str = "toolchain/install/.next_stamp";
+fn write_stamp(path: &str, rust_cid: &String, abi_vers: &String) -> anyhow::Result<()> {
+    std::fs::write(path, &format!("{}/{}", rust_cid, abi_vers))?;
+    Ok(())
+}
+
+fn move_stamp() -> anyhow::Result<()> {
+    std::fs::rename(NEXT_STAMP_PATH, STAMP_PATH)?;
+    Ok(())
 }
 
 pub fn needs_reinstall() -> anyhow::Result<bool> {
-    let stamp = std::fs::metadata("toolchain/install/stamp");
+    let stamp = std::fs::metadata(STAMP_PATH);
     if stamp.is_err() {
         return Ok(true);
     }
-    let stamp = stamp
-        .unwrap()
-        .modified()
-        .expect("failed to get system time from metadata");
-    // TODO
+    let stamp_data = std::fs::read_to_string(STAMP_PATH)?;
+    let vers = stamp_data.split("/").collect::<Vec<_>>();
+    if vers.len() != 2 {
+        eprintln!("WARNING -- stamp file has invalid format.");
+        return Ok(true);
+    }
+
+    let rust_commit = get_rust_commit()?;
+    let abi_version = get_abi_version()?;
+    // TODO: in the future, we'll want to do a full ABI semver req check here. For now
+    // we'll just do simple equality checking, especially during development when the
+    // ABI may be changing often anyway, and is pre-1.0.
+    if vers[0] != rust_commit || vers[1] != abi_version.to_string() {
+        eprintln!("WARNING -- Your toolchain is out of date. This is probably because");
+        eprintln!("        -- the repository updated to a new rustc commit, or the ABI");
+        eprintln!("        -- files were updated.");
+        eprintln!("Installed rust toolchain commit: {}", vers[0]);
+        eprintln!("toolchain/src/rust: HEAD commit: {}", rust_commit);
+        eprintln!("Installed toolchain has ABI version: {}", vers[1]);
+        eprintln!("src/abi/rt-abi provides ABI version: {}", abi_version);
+        eprintln!("note -- currently the ABI version check requires exact match, not semver.");
+        return Ok(true);
+    }
+    
     Ok(false)
 }
 
@@ -223,7 +260,10 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         build_crtx("crtn", target)?;
     }
 
-    let _stamp = create_stamp();
+    let rust_commit = get_rust_commit()?;
+    let abi_version = get_abi_version()?;
+    write_stamp(NEXT_STAMP_PATH, &rust_commit, &abi_version.to_string())?;
+    move_stamp()?;
 
     if !cli.keep_old_artifacts {
         let res = std::fs::remove_dir_all("target");
@@ -279,7 +319,8 @@ pub fn clear_rustflags() {
 
 pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
     if needs_reinstall()? && !abi_changes_ok {
-        anyhow::bail!("detected changes to twizzler-runtime-abi not reflected in current toolchain. This is probably because the twizzler-runtime-api crate files were updated, so you need to run `cargo bootstrap --skip-submodules' again.");
+        eprintln!("!! You'll need to recompile your toolchain. Running `cargo bootstrap` should resolve the issue.");
+        anyhow::bail!("toolchain needs reinstall: run cargo bootstrap.");
     }
     std::env::set_var("RUSTC", &get_rustc_path()?);
     std::env::set_var("RUSTDOC", &get_rustdoc_path()?);

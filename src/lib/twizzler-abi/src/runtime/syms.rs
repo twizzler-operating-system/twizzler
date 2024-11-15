@@ -238,6 +238,18 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_close(fd: descriptor) {
 }
 check_ffi_type!(twz_rt_fd_close, _);
 
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_get_info(fd: descriptor, fd_info: *mut twizzler_rt_abi::bindings::fd_info) -> bool {
+    match OUR_RUNTIME.fd_get_info(fd) {
+        Some(info) => {
+            fd_info.write(info);
+            true
+        },
+        None => false
+    }
+}
+check_ffi_type!(twz_rt_fd_get_info, _, _);
+
 // io.h
 
 use twizzler_rt_abi::bindings::{io_flags, io_result, whence, optional_offset, io_vec};

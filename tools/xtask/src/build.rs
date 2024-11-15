@@ -295,6 +295,8 @@ fn maybe_build_tests<'a>(
                 "bootstrap" => None,
                 "secgate-macros" => None,
                 "layout-derive" => None,
+                "twizzler-rt-abi" => None,
+                "twizzler-types" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),
@@ -473,7 +475,7 @@ fn compile(
 ) -> anyhow::Result<TwizzlerCompilation> {
     check_build_target(bc)?;
     crate::toolchain::init_for_build(
-        mode.is_doc() || mode.is_check() || !other_options.build_twizzler || true,
+        mode.is_doc() || mode.is_check() || !other_options.build_twizzler,
     )?;
     
     let mut tools_config = GlobalContext::default()?;
