@@ -8,4 +8,4 @@
 	branch = twizzler-dynlink
 [submodule "src/abi"]
 	path = src/abi
-	url = git@github.com:twizzler-operating-system/abi.git
+	url = ../../twizzler-operating-system/abi.git

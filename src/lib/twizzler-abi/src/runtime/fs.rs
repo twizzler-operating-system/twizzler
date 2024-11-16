@@ -16,14 +16,16 @@ use crate::{
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 
+#[derive(Clone)]
 struct FileDesc {
     pos: u64,
     handle: ObjectHandle,
     map: LruCache::<usize, ObjectHandle>, // Lazily loads object handles when using extensible files
 }
 
+#[derive(Clone)]
 enum FdKind {
-    File(FileDesc),
+    File(Arc<Mutex<FileDesc>>),
     Stdio,
 }
 
@@ -43,10 +45,10 @@ const DIRECT_OBJECT_COUNT: usize = 255; // The number of objects reachable from 
 const MAX_FILE_SIZE: u64 = WRITABLE_BYTES * 256;
 const MAX_LOADABLE_OBJECTS: usize = 16;
 lazy_static! {
-    static ref FD_SLOTS: Mutex<StableVec<Arc<Mutex<FdKind>>>> = Mutex::new(StableVec::from([FdKind::Stdio, FdKind::Stdio, FdKind::Stdio]));
+    static ref FD_SLOTS: Mutex<StableVec<FdKind>> = Mutex::new(StableVec::from([FdKind::Stdio, FdKind::Stdio, FdKind::Stdio]));
 }
 
-fn get_fd_slots() -> &'static Mutex<StableVec<Arc<Mutex<FdKind>>>> {
+fn get_fd_slots() -> &'static Mutex<StableVec<FdKind>> {
     &FD_SLOTS
 }
 
@@ -78,7 +80,7 @@ impl MinimalRuntime {
 
         let mut binding = get_fd_slots().lock();
 
-        let elem = Arc::new(Mutex::new(FdKind::File(FileDesc {
+        let elem = FdKind::File(Arc::new(Mutex::new(FileDesc {
             pos: 0,
             handle,
             map: LruCache::<usize, ObjectHandle>::new(NonZeroUsize::new(1).unwrap()),
@@ -101,13 +103,13 @@ impl MinimalRuntime {
             .get(fd.try_into().unwrap())
             .ok_or(IoError::InvalidDesc)?;
 
-        let mut binding = file_desc.lock();
-
-        let FdKind::File(binding) = binding else {
+        let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
             let len = crate::syscall::sys_kernel_console_read(buf, crate::syscall::KernelConsoleReadFlags::empty()).map_err(|_| IoError::Other)?;
             return Ok(len);
         };
+
+        let mut binding = file_desc.lock();
 
         let metadata_handle = unsafe {
             binding
@@ -220,13 +222,13 @@ impl MinimalRuntime {
             .get(fd.try_into().unwrap())
             .ok_or(IoError::InvalidDesc)?;
 
-        let mut binding = file_desc.lock();
-
-        let FdKind::File(binding) = binding else {
+        let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
             crate::syscall::sys_kernel_console_write(buf, crate::syscall::KernelConsoleWriteFlags::empty());
             return Ok(buf.len());
         };
+
+        let mut binding = file_desc.lock();
 
         let metadata_handle = unsafe {
             binding
@@ -323,12 +325,6 @@ impl MinimalRuntime {
             .lock()
             .remove(fd.try_into().unwrap())?;
 
-        let mut binding = file_desc.lock();
-
-        if let FdKind::File(binding) = binding {
-            self.release_handle(&mut binding.handle);
-        }
-
         Some(())
     }
 
@@ -338,11 +334,11 @@ impl MinimalRuntime {
             .get(fd.try_into().unwrap())
             .ok_or(IoError::InvalidDesc)?;
 
-        let mut binding = file_desc.lock();
-
-        let FdKind::File(binding) = binding else {
+        let FdKind::File(file_desc) = &file_desc else {
             return Err(IoError::SeekError);
         };
+
+        let mut binding = file_desc.lock();
 
         let metadata_handle = unsafe {
             &mut *binding
