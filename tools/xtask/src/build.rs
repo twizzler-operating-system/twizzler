@@ -491,7 +491,7 @@ fn compile(
         "target/tools",
     );
     let mut tools_config = GlobalContext::default()?;
-    tools_config.configure(5, false, None, false, false, false, &None, &[], &[])?;
+    tools_config.configure(0, false, None, false, false, false, &None, &[], &[])?;
 
     crate::toolchain::set_cc();
     crate::toolchain::set_dynamic();
