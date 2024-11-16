@@ -282,12 +282,20 @@ pub fn set_dynamic() {
         "RUSTFLAGS",
         "-C prefer-dynamic=y -Z staticlib-prefer-dynamic=y",
     );
+    std::env::set_var(
+        "CARGO_TARGET_DIR",
+        "target",
+    );
 }
 
 pub fn set_static() {
     std::env::set_var(
         "RUSTFLAGS",
         "-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static",
+    );
+    std::env::set_var(
+        "CARGO_TARGET_DIR",
+        "target/static",
     );
 }
 
@@ -315,6 +323,7 @@ pub fn clear_cc() {
 
 pub fn clear_rustflags() {
     std::env::remove_var("RUSTFLAGS");
+    std::env::remove_var("CARGO_TARGET_DIR");
 }
 
 pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
@@ -324,6 +333,7 @@ pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
     }
     std::env::set_var("RUSTC", &get_rustc_path()?);
     std::env::set_var("RUSTDOC", &get_rustdoc_path()?);
+    std::env::set_var("CARGO_CACHE_RUSTC_INFO", "0");
 
     let compiler_rt_path = "toolchain/src/rust/src/llvm-project/compiler-rt";
     std::env::set_var(

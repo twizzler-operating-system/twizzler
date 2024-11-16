@@ -121,13 +121,6 @@ impl<T> InternalObject<T> {
     }
 }
 
-impl<T> Drop for InternalObject<T> {
-    fn drop(&mut self) {
-        // TODO
-        //todo!()
-    }
-}
-
 impl From<Protections> for MapFlags {
     fn from(p: Protections) -> Self {
         let mut f = MapFlags::empty();

@@ -228,8 +228,7 @@ fn supports_deadline() -> bool {
 fn supports_x2_mode() -> bool {
     let cpuid = x86::cpuid::CpuId::new();
     let features = cpuid.get_feature_info().unwrap();
-    // TODO
-    features.has_x2apic() && false
+    features.has_x2apic()
 }
 
 fn global_enable() -> (PhysAddr, ApicVersion) {

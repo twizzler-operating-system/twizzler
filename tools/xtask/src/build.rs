@@ -85,9 +85,6 @@ fn get_cli_configs(
     // finish the cfg string
     write!(configs, "]")?;
 
-    // print the output
-    // println!("----{}----", configs);
-
     Ok(vec![configs])
 }
 
@@ -175,6 +172,10 @@ fn build_tools<'a>(
     other_options: &OtherOptions,
 ) -> anyhow::Result<Compilation<'a>> {
     crate::toolchain::clear_cc();
+    std::env::set_var(
+        "CARGO_TARGET_DIR",
+        "target/tools",
+    );
     crate::print_status_line("collection: tools", None);
     let tools = locate_packages(workspace, Some("tool"));
     let mut options = CompileOptions::new(workspace.gctx(), mode)?;
@@ -216,7 +217,6 @@ fn build_static<'a>(
     }
     options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
-    println!("==> {:?}", std::env::var("RUSTFLAGS"));
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
 
@@ -316,6 +316,10 @@ fn maybe_build_kernel_tests<'a>(
     }
     // The kernel config.toml sets its own rustflags.
     crate::toolchain::clear_rustflags();
+    std::env::set_var(
+        "CARGO_TARGET_DIR",
+        "target/kernel",
+    );
     crate::print_status_line("collection: kernel::tests", Some(build_config));
     let packages = locate_packages(workspace, Some("kernel"));
     let mut options = CompileOptions::new(workspace.gctx(), mode)?;
@@ -356,6 +360,10 @@ fn build_kernel<'a>(
 ) -> anyhow::Result<Compilation<'a>> {
     // The kernel config.toml sets its own rustflags.
     crate::toolchain::clear_rustflags();
+    std::env::set_var(
+        "CARGO_TARGET_DIR",
+        "target/kernel",
+    );
     crate::print_status_line("collection: kernel", Some(build_config));
     let packages = locate_packages(workspace, Some("kernel"));
     let mut options = CompileOptions::new(workspace.gctx(), mode)?;
@@ -478,8 +486,12 @@ fn compile(
         mode.is_doc() || mode.is_check() || !other_options.build_twizzler,
     )?;
     
+    std::env::set_var(
+        "CARGO_TARGET_DIR",
+        "target/tools",
+    );
     let mut tools_config = GlobalContext::default()?;
-    tools_config.configure(0, false, None, false, false, false, &None, &[], &[])?;
+    tools_config.configure(5, false, None, false, false, false, &None, &[], &[])?;
 
     crate::toolchain::set_cc();
     crate::toolchain::set_dynamic();
@@ -492,6 +504,10 @@ fn compile(
     static_config.configure(0, false, None, false, false, false, &None, &[], &[])?;
 
     crate::toolchain::clear_rustflags();
+    std::env::set_var(
+        "CARGO_TARGET_DIR",
+        "target/kernel",
+    );
     let mut kernel_config = GlobalContext::default()?;
     // add in a feature flags to be used in the kernel
     let cli_config = get_cli_configs(bc, other_options).unwrap();

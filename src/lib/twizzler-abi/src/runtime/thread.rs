@@ -68,7 +68,6 @@ impl MinimalRuntime {
             count,
         ));
         let _ = crate::syscall::sys_thread_sync(&mut [wake], None);
-        // TODO
         false
     }
 

@@ -1,6 +1,9 @@
 #![allow(unused_variables)]
 
 
+// This macro checks that our definition of a function is the same as that
+// defined by the bindings generated from bindgen. Thus the whole ABI
+// is type-checked! The only trick is that you have to specify the number of arguments.
 macro_rules! check_ffi_type {
     ($f1:ident) => {
         paste::paste! {

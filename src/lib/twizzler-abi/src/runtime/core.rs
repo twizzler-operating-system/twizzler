@@ -148,7 +148,7 @@ impl MinimalRuntime {
     }
 
     pub fn get_random(&self, buf: &mut [u8]) -> usize {
-        // TODO
+        // TODO: Once the Randomness PR is in, fix this.
         buf.len()
     }
 }
