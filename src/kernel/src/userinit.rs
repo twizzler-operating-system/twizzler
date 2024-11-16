@@ -103,9 +103,12 @@ pub extern "C" fn user_init() {
             }
         }
 
-        let rtinfo_start: u64 = (1 << 30) * 2 + 0x300000;
+        // Reserve a big stack size
+        const RTINFO_OFFSET: usize = 0x300000;
+        const STACKTOP_OFFSET: usize = 0x200000;
+        let rtinfo_start: u64 = MAX_SIZE * RESERVED_STACK + RTINFO_OFFSET;
         let rtinfo_start = rtinfo_start as *mut RuntimeInfo;
-        let min_start: u64 = (1 << 30) * 2 + 0x300000 + core::cmp::max(core::mem::size_of::<RuntimeInfo>() as u64, 32);
+        let min_start: u64 = MAX_SIZE * RESEREVED_STACK + RTINFO_OFFSET + core::cmp::max(core::mem::size_of::<RuntimeInfo>() as u64, core::mem::align_of::<MinimalInitInfo>());
         let min_start = min_start as *mut MinimalInitInfo;
 
         let (phdrs, nr_phdrs) = phinfo.map(|ph| (ph.virtual_addr(), ph.mem_size() as usize / elf.header.pt2.ph_entry_size() as usize)).unwrap_or((0, 0));
@@ -145,7 +148,7 @@ pub extern "C" fn user_init() {
     unsafe {
         crate::arch::jump_to_user(
             VirtAddr::new(entry).unwrap(),
-            VirtAddr::new((1 << 30) * 2 + 0x200000).unwrap(),
+            VirtAddr::new(MAX_SIZE * RESERVED_STACK + STACKTOP_OFFSET).unwrap(),
             rtinfo_start as u64,
         );
     }

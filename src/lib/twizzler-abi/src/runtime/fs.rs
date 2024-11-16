@@ -22,6 +22,11 @@ struct FileDesc {
     map: LruCache::<usize, ObjectHandle>, // Lazily loads object handles when using extensible files
 }
 
+enum FdKind {
+    File(FileDesc),
+    Stdio,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct FileMetadata {
@@ -38,10 +43,10 @@ const DIRECT_OBJECT_COUNT: usize = 255; // The number of objects reachable from 
 const MAX_FILE_SIZE: u64 = WRITABLE_BYTES * 256;
 const MAX_LOADABLE_OBJECTS: usize = 16;
 lazy_static! {
-    static ref FD_SLOTS: Mutex<StableVec<Arc<Mutex<FileDesc>>>> = Mutex::new(StableVec::new());
+    static ref FD_SLOTS: Mutex<StableVec<Arc<Mutex<FdKind>>>> = Mutex::new(StableVec::from([FdKind::Stdio, FdKind::Stdio, FdKind::Stdio]));
 }
 
-fn get_fd_slots() -> &'static Mutex<StableVec<Arc<Mutex<FileDesc>>>> {
+fn get_fd_slots() -> &'static Mutex<StableVec<Arc<Mutex<FdKind>>>> {
     &FD_SLOTS
 }
 
@@ -73,11 +78,11 @@ impl MinimalRuntime {
 
         let mut binding = get_fd_slots().lock();
 
-        let elem = Arc::new(Mutex::new(FileDesc {
+        let elem = Arc::new(Mutex::new(FdKind::File(FileDesc {
             pos: 0,
             handle,
             map: LruCache::<usize, ObjectHandle>::new(NonZeroUsize::new(1).unwrap()),
-        }));
+        })));
 
         let fd = if binding.is_compact() {
             binding.push(elem)
@@ -91,16 +96,18 @@ impl MinimalRuntime {
     }
 
     pub fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, IoError> {
-        if fd == 0 || fd == 1 || fd == 2 {
-            let len = crate::syscall::sys_kernel_console_read(buf, crate::syscall::KernelConsoleReadFlags::empty()).map_err(|_| IoError::Other)?;
-            return Ok(len);
-        }
         let binding = get_fd_slots().lock();
         let file_desc = binding
             .get(fd.try_into().unwrap())
             .ok_or(IoError::InvalidDesc)?;
 
         let mut binding = file_desc.lock();
+
+        let FdKind::File(binding) = binding else {
+            // Just do basic stdio via kernel console
+            let len = crate::syscall::sys_kernel_console_read(buf, crate::syscall::KernelConsoleReadFlags::empty()).map_err(|_| IoError::Other)?;
+            return Ok(len);
+        };
 
         let metadata_handle = unsafe {
             binding
@@ -215,6 +222,12 @@ impl MinimalRuntime {
 
         let mut binding = file_desc.lock();
 
+        let FdKind::File(binding) = binding else {
+            // Just do basic stdio via kernel console
+            crate::syscall::sys_kernel_console_write(buf, crate::syscall::KernelConsoleWriteFlags::empty());
+            return Ok(buf.len());
+        };
+
         let metadata_handle = unsafe {
             binding
                 .handle
@@ -312,8 +325,9 @@ impl MinimalRuntime {
 
         let mut binding = file_desc.lock();
 
-        // TODO
-        //self.release_handle(&mut binding.handle as *mut _);
+        if let FdKind::File(binding) = binding {
+            self.release_handle(&mut binding.handle);
+        }
 
         Some(())
     }
@@ -325,6 +339,11 @@ impl MinimalRuntime {
             .ok_or(IoError::InvalidDesc)?;
 
         let mut binding = file_desc.lock();
+
+        let FdKind::File(binding) = binding else {
+            return Err(IoError::SeekError);
+        };
+
         let metadata_handle = unsafe {
             &mut *binding
                 .handle
