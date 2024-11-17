@@ -348,6 +348,8 @@ fn main() {
         eprintln!("[init] failed to start pager");
     }
 
+    return;
+
     std::env::set_var("NETOBJ", format!("{}", netid.as_u128()));
     if let Some(id) = find_init_name("netmgr") {
         exec("netmgr", id, netid);

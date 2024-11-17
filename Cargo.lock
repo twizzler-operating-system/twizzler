@@ -3365,12 +3365,16 @@ dependencies = [
 name = "pager"
 version = "0.1.0"
 dependencies = [
+ "async-executor",
+ "async-io",
  "async-trait",
+ "futures",
  "nvme",
+ "polling",
  "tickv",
  "twizzler-abi",
- "twizzler-async",
  "twizzler-driver",
+ "twizzler-futures",
  "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
