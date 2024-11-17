@@ -1,17 +1,24 @@
 use core::{
     cmp::{max, min},
     intrinsics::size_of,
+    num::NonZeroUsize,
 };
-use crate::print_err;
+
 use lazy_static::lazy_static;
+use lru::LruCache;
 use rustc_alloc::{string::ToString, sync::Arc};
 use stable_vec::{self, StableVec};
-use twizzler_rt_abi::{object::{ObjectHandle, MapFlags}, fd::{RawFd, OpenError}, io::{IoError, SeekFrom, IoFlags}, bindings::io_vec};
-use lru::LruCache;
-use core::num::NonZeroUsize;
+use twizzler_rt_abi::{
+    bindings::io_vec,
+    fd::{OpenError, RawFd},
+    io::{IoError, IoFlags, SeekFrom},
+    object::{MapFlags, ObjectHandle},
+};
+
 use super::{object, MinimalRuntime};
 use crate::{
     object::{ObjID, NULLPAGE_SIZE},
+    print_err,
     runtime::simple_mutex::Mutex,
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
@@ -20,7 +27,7 @@ use crate::{
 struct FileDesc {
     pos: u64,
     handle: ObjectHandle,
-    map: LruCache::<usize, ObjectHandle>, // Lazily loads object handles when using extensible files
+    map: LruCache<usize, ObjectHandle>, // Lazily loads object handles when using extensible files
 }
 
 #[derive(Clone)]
@@ -45,7 +52,11 @@ const DIRECT_OBJECT_COUNT: usize = 255; // The number of objects reachable from 
 const MAX_FILE_SIZE: u64 = WRITABLE_BYTES * 256;
 const MAX_LOADABLE_OBJECTS: usize = 16;
 lazy_static! {
-    static ref FD_SLOTS: Mutex<StableVec<FdKind>> = Mutex::new(StableVec::from([FdKind::Stdio, FdKind::Stdio, FdKind::Stdio]));
+    static ref FD_SLOTS: Mutex<StableVec<FdKind>> = Mutex::new(StableVec::from([
+        FdKind::Stdio,
+        FdKind::Stdio,
+        FdKind::Stdio
+    ]));
 }
 
 fn get_fd_slots() -> &'static Mutex<StableVec<FdKind>> {
@@ -105,7 +116,11 @@ impl MinimalRuntime {
 
         let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
-            let len = crate::syscall::sys_kernel_console_read(buf, crate::syscall::KernelConsoleReadFlags::empty()).map_err(|_| IoError::Other)?;
+            let len = crate::syscall::sys_kernel_console_read(
+                buf,
+                crate::syscall::KernelConsoleReadFlags::empty(),
+            )
+            .map_err(|_| IoError::Other)?;
             return Ok(len);
         };
 
@@ -153,8 +168,7 @@ impl MinimalRuntime {
                 } else {
                     let obj_id =
                         ((unsafe { *metadata_handle }).direct)[(object_window - 1) as usize];
-                    let flags = MapFlags::READ
-                        | MapFlags::WRITE;
+                    let flags = MapFlags::READ | MapFlags::WRITE;
                     let handle = self.map_object(obj_id, flags).unwrap();
                     binding.map.put(object_window, handle.clone());
                     handle.start()
@@ -180,41 +194,66 @@ impl MinimalRuntime {
         Ok(bytes_read)
     }
 
-    pub fn fd_pread(&self, fd: RawFd, off: Option<u64>, buf: &mut [u8], flags: IoFlags) -> Result<usize, IoError> {
+    pub fn fd_pread(
+        &self,
+        fd: RawFd,
+        off: Option<u64>,
+        buf: &mut [u8],
+        flags: IoFlags,
+    ) -> Result<usize, IoError> {
         if off.is_some() {
             return Err(IoError::SeekError);
         }
         self.read(fd, buf)
     }
 
-    pub fn fd_pwrite(&self, fd: RawFd, off: Option<u64>, buf: &[u8], flags: IoFlags) -> Result<usize, IoError> {
+    pub fn fd_pwrite(
+        &self,
+        fd: RawFd,
+        off: Option<u64>,
+        buf: &[u8],
+        flags: IoFlags,
+    ) -> Result<usize, IoError> {
         if off.is_some() {
             return Err(IoError::SeekError);
         }
         self.write(fd, buf)
     }
 
-    pub fn fd_pwritev(&self, fd: RawFd, off: Option<u64>, buf: &[io_vec], flags: IoFlags) -> Result<usize, IoError> {
+    pub fn fd_pwritev(
+        &self,
+        fd: RawFd,
+        off: Option<u64>,
+        buf: &[io_vec],
+        flags: IoFlags,
+    ) -> Result<usize, IoError> {
         return Err(IoError::Other);
     }
 
-    pub fn fd_preadv(&self, fd: RawFd, off: Option<u64>, buf: &[io_vec], flags: IoFlags) -> Result<usize, IoError> {
+    pub fn fd_preadv(
+        &self,
+        fd: RawFd,
+        off: Option<u64>,
+        buf: &[io_vec],
+        flags: IoFlags,
+    ) -> Result<usize, IoError> {
         return Err(IoError::Other);
     }
 
     pub fn fd_get_info(&self, fd: RawFd) -> Option<twizzler_rt_abi::bindings::fd_info> {
         let binding = get_fd_slots().lock();
         if binding.get(fd.try_into().unwrap()).is_none() {
-               return None;
+            return None;
         }
-        Some(twizzler_rt_abi::bindings::fd_info {
-            flags: 0
-        })
+        Some(twizzler_rt_abi::bindings::fd_info { flags: 0 })
     }
 
     pub fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, IoError> {
         if fd == 0 || fd == 1 || fd == 2 {
-            crate::syscall::sys_kernel_console_write(buf, crate::syscall::KernelConsoleWriteFlags::empty());
+            crate::syscall::sys_kernel_console_write(
+                buf,
+                crate::syscall::KernelConsoleWriteFlags::empty(),
+            );
             return Ok(buf.len());
         }
         let binding = get_fd_slots().lock();
@@ -224,7 +263,10 @@ impl MinimalRuntime {
 
         let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
-            crate::syscall::sys_kernel_console_write(buf, crate::syscall::KernelConsoleWriteFlags::empty());
+            crate::syscall::sys_kernel_console_write(
+                buf,
+                crate::syscall::KernelConsoleWriteFlags::empty(),
+            );
             return Ok(buf.len());
         };
 
@@ -273,9 +315,8 @@ impl MinimalRuntime {
                 else {
                     let obj_id =
                         ((unsafe { *metadata_handle }).direct)[(object_window - 1) as usize];
-                    
-                    let flags = MapFlags::READ
-                        | MapFlags::WRITE;
+
+                    let flags = MapFlags::READ | MapFlags::WRITE;
 
                     let mapped_id = if obj_id == 0.into() {
                         let create = ObjectCreate::new(
@@ -295,7 +336,7 @@ impl MinimalRuntime {
 
                     let handle = self.map_object(mapped_id, flags).unwrap();
                     binding.map.push(object_window, handle.clone());
-                    
+
                     handle.start()
                 }
             };
@@ -321,9 +362,7 @@ impl MinimalRuntime {
     }
 
     pub fn close(&self, fd: RawFd) -> Option<()> {
-        let file_desc = get_fd_slots()
-            .lock()
-            .remove(fd.try_into().unwrap())?;
+        let file_desc = get_fd_slots().lock().remove(fd.try_into().unwrap())?;
 
         Some(())
     }

@@ -5,7 +5,7 @@ use std::{
 };
 
 use twizzler_abi::object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_rt_abi::object::{MapError, ObjectHandle, MapFlags};
+use twizzler_rt_abi::object::{MapError, MapFlags, ObjectHandle};
 
 use crate::{meta::FotEntry, ObjectInitError};
 

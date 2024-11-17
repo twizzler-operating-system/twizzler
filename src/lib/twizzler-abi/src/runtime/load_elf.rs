@@ -2,11 +2,11 @@
 
 use core::{intrinsics::copy_nonoverlapping, mem::size_of};
 
-use twizzler_rt_abi::core::{RuntimeInfo, MinimalInitInfo, InitInfoPtrs, RUNTIME_INIT_MIN};
+use twizzler_rt_abi::core::{InitInfoPtrs, MinimalInitInfo, RuntimeInfo, RUNTIME_INIT_MIN};
 
 use crate::{
     object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    slot::{RESERVED_DATA, RESERVED_STACK, RESERVED_TEXT, RESERVED_IMAGE},
+    slot::{RESERVED_DATA, RESERVED_IMAGE, RESERVED_STACK, RESERVED_TEXT},
     syscall::{
         sys_unbind_handle, BackingType, HandleType, LifetimeType, MapFlags, NewHandleFlags,
         ObjectCreate, ObjectCreateFlags, ObjectSource, ThreadSpawnArgs, ThreadSpawnFlags,
@@ -352,7 +352,9 @@ pub fn spawn_new_executable(
     let (spawnenv_start, _) = copy_strings(&mut stack, env, args_len);
 
     let rt_info_ptr = stack.offset_mut::<RuntimeInfo>(RT_INFO_OFFSET).unwrap();
-    let min_init_ptr = stack.offset_mut::<MinimalInitInfo>(MIN_INIT_OFFSET).unwrap();
+    let min_init_ptr = stack
+        .offset_mut::<MinimalInitInfo>(MIN_INIT_OFFSET)
+        .unwrap();
 
     let min_init = MinimalInitInfo {
         args: spawnargs_start as *mut *mut i8,

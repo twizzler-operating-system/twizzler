@@ -407,7 +407,8 @@ fn main() {
 fn run_tests(test_list_name: &str, benches: bool) {
     if let Some(id) = find_init_name(test_list_name) {
         println!("=== found init test list ===");
-        let handle = twizzler_rt_abi::object::twz_rt_map_object(id, Protections::READ.into()).unwrap();
+        let handle =
+            twizzler_rt_abi::object::twz_rt_map_object(id, Protections::READ.into()).unwrap();
 
         let addr = unsafe { handle.start().add(NULLPAGE_SIZE) };
         let bytes = unsafe {
@@ -422,7 +423,9 @@ fn run_tests(test_list_name: &str, benches: bool) {
                 let args = &if benches { ["--bench"] } else { ["--test"] };
                 let tid = exec_n(line, id, args);
                 if let Some(tid) = tid {
-                    let thandle = twizzler_rt_abi::object::twz_rt_map_object(tid, Protections::READ.into()).unwrap();
+                    let thandle =
+                        twizzler_rt_abi::object::twz_rt_map_object(tid, Protections::READ.into())
+                            .unwrap();
 
                     let taddr = unsafe { thandle.start().add(NULLPAGE_SIZE) };
                     let tr = taddr as *const ThreadRepr;

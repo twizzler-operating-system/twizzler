@@ -2,9 +2,11 @@
 
 use core::{alloc::GlobalAlloc, ptr};
 
-use twizzler_rt_abi::core::{BasicAux, BasicReturn, RuntimeInfo, RUNTIME_INIT_MIN};
-use twizzler_rt_abi::info::SystemInfo;
-use twizzler_rt_abi::time::Monotonicity;
+use twizzler_rt_abi::{
+    core::{BasicAux, BasicReturn, RuntimeInfo, RUNTIME_INIT_MIN},
+    info::SystemInfo,
+    time::Monotonicity,
+};
 
 use super::{
     alloc::MinimalAllocator,
@@ -71,9 +73,12 @@ impl MinimalRuntime {
             if rt_info.kind != RUNTIME_INIT_MIN {
                 crate::print_err("minimal runtime cannot initialize non-minimal runtime");
                 self.abort();
-            } 
+            }
             let min_init_info = &*rt_info.init_info.min;
-            process_phdrs(core::slice::from_raw_parts(min_init_info.phdrs as *const Phdr, min_init_info.nr_phdrs));
+            process_phdrs(core::slice::from_raw_parts(
+                min_init_info.phdrs as *const Phdr,
+                min_init_info.nr_phdrs,
+            ));
             if !min_init_info.envp.is_null() {
                 env_ptr = min_init_info.envp;
             }
@@ -154,8 +159,8 @@ impl MinimalRuntime {
 }
 
 pub mod rt0 {
-    //! rt0 defines a collection of functions that the basic Rust ABI expects to be defined by some part
-    //! of the C runtime:
+    //! rt0 defines a collection of functions that the basic Rust ABI expects to be defined by some
+    //! part of the C runtime:
     //!
     //!   - __tls_get_addr for handling non-local TLS regions.
     //!   - _start, the entry point of an executable (per-arch, as this is assembly code).
@@ -188,7 +193,7 @@ pub mod rt0 {
     static ENTRY: unsafe extern "C" fn() = _start;
 
     use twizzler_rt_abi::core::{BasicAux, BasicReturn, RuntimeInfo};
-    
+
     // The C-based entry point coming from arch-specific assembly _start function.
     unsafe extern "C" fn entry(arg: usize) -> ! {
         // Just trampoline to rust-abi code.

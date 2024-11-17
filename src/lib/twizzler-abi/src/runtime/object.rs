@@ -1,6 +1,8 @@
 //! Implementation of the object runtime.
 
-use core::ptr::NonNull;
+use core::{ptr::NonNull, sync::atomic::AtomicU64};
+
+use twizzler_rt_abi::object::{MapError, MapFlags, ObjectHandle};
 
 use super::MinimalRuntime;
 use crate::{
@@ -9,8 +11,6 @@ use crate::{
     rustc_alloc::boxed::Box,
     syscall::{sys_object_map, ObjectMapError, UnmapFlags},
 };
-use twizzler_rt_abi::object::{MapFlags, MapError, ObjectHandle};
-use core::sync::atomic::AtomicU64;
 
 mod handle;
 
@@ -66,27 +66,31 @@ pub(crate) fn new_runtime_info() -> *mut RuntimeHandleInfo {
 }
 
 impl MinimalRuntime {
-    pub fn map_object(
-        &self,
-        id: ObjID,
-        flags: MapFlags,
-    ) -> Result<ObjectHandle, MapError> {
+    pub fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError> {
         let slot = global_allocate().ok_or(MapError::OutOfResources)?;
         let _ = sys_object_map(None, id, slot, flags.into(), flags.into()).map_err(|e| e.into())?;
         let start = (slot * MAX_SIZE) as *mut _;
         let meta = (((slot + 1) * MAX_SIZE) - NULLPAGE_SIZE) as *mut _;
-        Ok(unsafe {ObjectHandle::new(id, new_runtime_info().cast(), start, meta, flags, MAX_SIZE as u32)})
+        Ok(unsafe {
+            ObjectHandle::new(
+                id,
+                new_runtime_info().cast(),
+                start,
+                meta,
+                flags,
+                MAX_SIZE as u32,
+            )
+        })
     }
 
     pub fn release_handle(&self, handle: *mut twizzler_rt_abi::bindings::object_handle) {
-        let slot = (unsafe {(*handle).start} as usize) / MAX_SIZE;
+        let slot = (unsafe { (*handle).start } as usize) / MAX_SIZE;
 
         if crate::syscall::sys_object_unmap(None, slot, UnmapFlags::empty()).is_ok() {
             slot::global_release(slot);
         }
     }
 
-    
     /// Map two objects in sequence, useful for executable loading. The default implementation makes
     /// no guarantees about ordering.
     pub fn map_two_objects(

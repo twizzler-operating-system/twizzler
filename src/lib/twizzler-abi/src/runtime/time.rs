@@ -2,7 +2,7 @@
 
 use core::time::Duration;
 
-use twizzler_rt_abi::{time::Monotonicity};
+use twizzler_rt_abi::time::Monotonicity;
 
 use super::MinimalRuntime;
 use crate::syscall::{sys_read_clock_info, ClockSource, ReadClockFlags};

@@ -59,7 +59,16 @@ impl<T> InternalObject<T> {
 
         Some(Self {
             slot,
-            runtime_handle: unsafe {ObjectHandle::new(id, super::new_runtime_info().cast(), start, meta, MapFlags::READ | MapFlags::WRITE, MAX_SIZE as u32)},
+            runtime_handle: unsafe {
+                ObjectHandle::new(
+                    id,
+                    super::new_runtime_info().cast(),
+                    start,
+                    meta,
+                    MapFlags::READ | MapFlags::WRITE,
+                    MAX_SIZE as u32,
+                )
+            },
             _pd: PhantomData,
         })
     }
@@ -96,7 +105,16 @@ impl<T> InternalObject<T> {
         let meta = (((slot + 1) * MAX_SIZE) - NULLPAGE_SIZE) as *mut _;
 
         Some(Self {
-            runtime_handle: unsafe {ObjectHandle::new(id, super::new_runtime_info().cast(), start, meta, prot.into(), MAX_SIZE as u32)},
+            runtime_handle: unsafe {
+                ObjectHandle::new(
+                    id,
+                    super::new_runtime_info().cast(),
+                    start,
+                    meta,
+                    prot.into(),
+                    MAX_SIZE as u32,
+                )
+            },
             slot,
             _pd: PhantomData,
         })

@@ -28,6 +28,7 @@ extern crate alloc as rustc_alloc;
 
 pub mod aux;
 pub mod device;
+pub mod klog;
 pub mod kso;
 pub mod marker;
 pub mod meta;
@@ -40,7 +41,6 @@ pub mod slot;
 pub mod syscall;
 pub mod thread;
 pub mod upcall;
-pub mod klog;
 
 #[inline]
 unsafe fn internal_abort() -> ! {

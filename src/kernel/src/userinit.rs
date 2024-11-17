@@ -2,10 +2,10 @@ use alloc::sync::Arc;
 
 use twizzler_abi::{
     aux::{KernelInitInfo, KernelInitName},
-    object::{MAX_SIZE, Protections},
+    object::{Protections, MAX_SIZE},
     slot::RESERVED_STACK,
 };
-use twizzler_rt_abi::core::{RuntimeInfo, MinimalInitInfo, RUNTIME_INIT_MIN, InitInfoPtrs};
+use twizzler_rt_abi::core::{InitInfoPtrs, MinimalInitInfo, RuntimeInfo, RUNTIME_INIT_MIN};
 use xmas_elf::program::SegmentData;
 
 use crate::{
@@ -109,10 +109,22 @@ pub extern "C" fn user_init() {
 
         let rtinfo_start = MAX_SIZE * RESERVED_STACK + RTINFO_OFFSET;
         let rtinfo_start = rtinfo_start as *mut RuntimeInfo;
-        let min_start = MAX_SIZE * RESERVED_STACK + RTINFO_OFFSET + core::cmp::max(core::mem::size_of::<RuntimeInfo>(), core::mem::align_of::<MinimalInitInfo>());
+        let min_start = MAX_SIZE * RESERVED_STACK
+            + RTINFO_OFFSET
+            + core::cmp::max(
+                core::mem::size_of::<RuntimeInfo>(),
+                core::mem::align_of::<MinimalInitInfo>(),
+            );
         let min_start = min_start as *mut MinimalInitInfo;
 
-        let (phdrs, nr_phdrs) = phinfo.map(|ph| (ph.virtual_addr(), ph.mem_size() as usize / elf.header.pt2.ph_entry_size() as usize)).unwrap_or((0, 0));
+        let (phdrs, nr_phdrs) = phinfo
+            .map(|ph| {
+                (
+                    ph.virtual_addr(),
+                    ph.mem_size() as usize / elf.header.pt2.ph_entry_size() as usize,
+                )
+            })
+            .unwrap_or((0, 0));
         let min_info = MinimalInitInfo {
             args: core::ptr::null_mut(),
             argc: 0,
