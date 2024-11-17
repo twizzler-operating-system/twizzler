@@ -140,7 +140,7 @@ fn main() {
         header.set_gid(md.gid().into());
         header.set_mode(md.mode());
         header.set_cksum();
-        
+
         archive
             .append_data(
                 &mut header,
@@ -151,5 +151,5 @@ fn main() {
                 Cursor::new(data),
             )
             .unwrap();
-        }
+    }
 }

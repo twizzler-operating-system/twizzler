@@ -1,17 +1,19 @@
 use core::{
     cmp::{max, min},
     intrinsics::size_of,
+    num::NonZeroUsize,
 };
-use crate::print_err;
+
 use lazy_static::lazy_static;
+use lru::LruCache;
 use rustc_alloc::{string::ToString, sync::Arc};
 use stable_vec::{self, StableVec};
 use twizzler_runtime_api::{FsError, ObjectHandle, ObjectRuntime, RawFd, RustFsRuntime, SeekFrom};
-use lru::LruCache;
-use core::num::NonZeroUsize;
+
 use super::{object, MinimalRuntime};
 use crate::{
     object::{ObjID, NULLPAGE_SIZE},
+    print_err,
     runtime::simple_mutex::Mutex,
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
@@ -19,7 +21,7 @@ use crate::{
 struct FileDesc {
     pos: u64,
     handle: ObjectHandle,
-    map: LruCache::<usize, ObjectHandle>, // Lazily loads object handles when using extensible files
+    map: LruCache<usize, ObjectHandle>, // Lazily loads object handles when using extensible files
 }
 
 #[repr(C)]
@@ -220,7 +222,7 @@ impl RustFsRuntime for MinimalRuntime {
                 else {
                     let obj_id =
                         ((unsafe { *metadata_handle }).direct)[(object_window - 1) as usize];
-                    
+
                     let flags = twizzler_runtime_api::MapFlags::READ
                         | twizzler_runtime_api::MapFlags::WRITE;
 
@@ -242,7 +244,7 @@ impl RustFsRuntime for MinimalRuntime {
 
                     let handle = self.map_object(mapped_id, flags).unwrap();
                     binding.map.push(object_window, handle.clone());
-                    
+
                     handle.start
                 }
             };
