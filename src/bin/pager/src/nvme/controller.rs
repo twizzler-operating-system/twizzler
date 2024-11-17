@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock, RwLock},
 };
 
+use async_executor::Task;
 use nvme::{
     admin::{CreateIOCompletionQueue, CreateIOSubmissionQueue},
     ds::{
@@ -16,7 +17,6 @@ use nvme::{
     hosted::memory::{PhysicalPageCollection, PrpMode},
     nvm::{ReadDword13, WriteDword13},
 };
-use twizzler_async::Task;
 use twizzler_driver::{
     dma::{DmaOptions, DmaPool, DMA_PAGE_SIZE},
     request::{Requester, SubmitRequest, SubmitSummaryWithResponses},
@@ -144,7 +144,7 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
 
     let req2 = req.clone();
     let ctrl2 = ctrl.clone();
-    let task = Task::spawn(async move {
+    let task = super::super::EXECUTOR.get().unwrap().spawn(async move {
         loop {
             let _i = int.next().await;
             //println!("got interrupt");

@@ -6,6 +6,7 @@ use std::{
     sync::Arc,
 };
 
+use futures::executor::block_on;
 use tickv::{success_codes::SuccessCode, ErrorCode, FlashController};
 use twizzler_object::ObjID;
 
@@ -32,7 +33,7 @@ impl FlashController<BLOCK_SIZE> for Storage {
         offset: usize,
         buf: &mut [u8; BLOCK_SIZE],
     ) -> Result<(), tickv::ErrorCode> {
-        twizzler_async::block_on(self.nvme.read_page(region_number as u64 * 8, buf, offset))
+        block_on(self.nvme.read_page(region_number as u64 * 8, buf, offset))
             .map_err(|_| tickv::ErrorCode::ReadFail)
     }
 
@@ -42,7 +43,7 @@ impl FlashController<BLOCK_SIZE> for Storage {
             let start = (address / BLOCK_SIZE) * SECTORS_TO_BLOCK;
             let thislen = min(BLOCK_SIZE - offset, buf.len());
 
-            twizzler_async::block_on(self.nvme.write_page(start as u64, &buf[0..thislen], offset))
+            block_on(self.nvme.write_page(start as u64, &buf[0..thislen], offset))
                 .map_err(|_| tickv::ErrorCode::WriteFail)?;
 
             buf = &buf[thislen..buf.len()];
@@ -52,7 +53,7 @@ impl FlashController<BLOCK_SIZE> for Storage {
     }
 
     fn erase_region(&self, region_number: usize) -> Result<(), tickv::ErrorCode> {
-        twizzler_async::block_on(self.nvme.write_page(
+        block_on(self.nvme.write_page(
             (region_number * SECTORS_TO_BLOCK) as u64,
             &[0xffu8; BLOCK_SIZE],
             0,
