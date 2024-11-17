@@ -180,11 +180,8 @@ impl From<&QemuOptions> for ImageOptions {
 
 #[derive(clap::Args, Debug)]
 struct BootstrapOptions {
-    #[clap(
-        long,
-        help = "Skip updating git submodules before bootstrapping the toolchain."
-    )]
-    skip_submodules: bool,
+    #[clap(long, help = "Skip downloading boot files from file server.")]
+    skip_downloads: bool,
     #[clap(
         long,
         help = "Don't remove the target/ directory after rebuilding the toolchain."

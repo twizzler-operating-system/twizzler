@@ -114,7 +114,7 @@ pub fn needs_reinstall() -> anyhow::Result<bool> {
         eprintln!("note -- currently the ABI version check requires exact match, not semver.");
         return Ok(true);
     }
-    
+
     Ok(false)
 }
 
@@ -181,25 +181,24 @@ async fn download_files(client: &Client) -> anyhow::Result<()> {
 }
 
 pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
-    if !cli.skip_submodules {
-        /*
-        let status = Command::new("git")
-            .arg("submodule")
-            .arg("update")
-            .arg("--init")
-            .arg("--recursive")
-            .arg("--depth=1")
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("failed to update git submodules");
-        }
-        */
-        fs_extra::dir::create_all("toolchain/install", false)?;
+    fs_extra::dir::create_all("toolchain/install", false)?;
+    if !cli.skip_downloads {
         let client = Client::new();
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
             .block_on(download_files(&client))?;
+    }
+
+    println!("installing bindgen");
+    let status = Command::new("cargo")
+        .arg("install")
+        .arg("--root")
+        .arg("toolchain/install")
+        .arg("bindgen-cli")
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to install bindgen");
     }
 
     let _ = std::fs::remove_file("toolchain/src/rust/config.toml");
@@ -217,7 +216,17 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
-    std::env::set_var("PATH", format!("{}:{}", lld_bin.to_string_lossy(), path));
+    std::env::set_var(
+        "PATH",
+        format!(
+            "{}:{}:{}",
+            lld_bin.to_string_lossy(),
+            std::fs::canonicalize("toolchain/install/bin")
+                .unwrap()
+                .to_string_lossy(),
+            path
+        ),
+    );
 
     let keep_args = if cli.keep_early_stages {
         vec![
@@ -282,10 +291,7 @@ pub fn set_dynamic() {
         "RUSTFLAGS",
         "-C prefer-dynamic=y -Z staticlib-prefer-dynamic=y",
     );
-    std::env::set_var(
-        "CARGO_TARGET_DIR",
-        "target",
-    );
+    std::env::set_var("CARGO_TARGET_DIR", "target");
 }
 
 pub fn set_static() {
@@ -293,10 +299,7 @@ pub fn set_static() {
         "RUSTFLAGS",
         "-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static",
     );
-    std::env::set_var(
-        "CARGO_TARGET_DIR",
-        "target/static",
-    );
+    std::env::set_var("CARGO_TARGET_DIR", "target/static");
 }
 
 pub fn set_cc() {
@@ -348,10 +351,13 @@ pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
     std::env::set_var(
         "PATH",
         format!(
-            "{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}",
             rustlib_bin.to_string_lossy(),
             lld_bin.to_string_lossy(),
             llvm_bin.to_string_lossy(),
+            std::fs::canonicalize("toolchain/install/bin")
+                .unwrap()
+                .to_string_lossy(),
             path
         ),
     );
