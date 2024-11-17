@@ -3607,7 +3607,6 @@ dependencies = [
  "nvme",
  "tickv",
  "twizzler-abi",
- "twizzler-async",
  "twizzler-driver",
  "twizzler-object",
  "twizzler-queue",
