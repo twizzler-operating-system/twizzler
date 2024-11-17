@@ -15,43 +15,41 @@ use tracing::{debug, error, trace};
 
 use super::{Context, Library};
 use crate::{
-    arch::{REL_DTPMOD, REL_DTPOFF, REL_GOT, REL_PLT, REL_RELATIVE, REL_SYMBOLIC, REL_TPOFF},
     library::{LibraryId, RelocState},
-    symbol::LookupFlags,
     DynlinkError, DynlinkErrorKind,
 };
 
 // A relocation is either a REL type or a RELA type. The only difference is that
 // the RELA type contains an addend (used in the reloc calculations below).
 #[derive(Debug)]
-enum EitherRel {
+pub enum EitherRel {
     Rel(Rel),
     Rela(Rela),
 }
 
 impl EitherRel {
-    fn r_type(&self) -> u32 {
+    pub fn r_type(&self) -> u32 {
         match self {
             EitherRel::Rel(r) => r.r_type,
             EitherRel::Rela(r) => r.r_type,
         }
     }
 
-    fn addend(&self) -> i64 {
+    pub fn addend(&self) -> i64 {
         match self {
             EitherRel::Rel(_) => 0,
             EitherRel::Rela(r) => r.r_addend,
         }
     }
 
-    fn offset(&self) -> u64 {
+    pub fn offset(&self) -> u64 {
         match self {
             EitherRel::Rel(r) => r.r_offset,
             EitherRel::Rela(r) => r.r_offset,
         }
     }
 
-    fn sym(&self) -> u32 {
+    pub fn sym(&self) -> u32 {
         match self {
             EitherRel::Rel(r) => r.r_sym,
             EitherRel::Rela(r) => r.r_sym,
@@ -71,119 +69,6 @@ impl Context {
             core::slice::from_raw_parts(start, sz)
         });
         Some(iter)
-    }
-
-    fn do_reloc(
-        &self,
-        lib: &Library,
-        rel: EitherRel,
-        strings: &StringTable,
-        syms: &SymbolTable<NativeEndian>,
-    ) -> Result<(), DynlinkError> {
-        let addend = rel.addend();
-        let base = lib.base_addr() as u64;
-        let target: *mut u64 = lib.laddr_mut(rel.offset());
-        // Lookup a symbol if the relocation's symbol index is non-zero.
-        let symbol = if rel.sym() != 0 {
-            let sym = syms.get(rel.sym() as usize)?;
-            let flags = LookupFlags::empty();
-            strings
-                .get(sym.st_name as usize)
-                .map(|name| (name, self.lookup_symbol(lib.id(), name, flags)))
-                .ok()
-        } else {
-            None
-        };
-
-        // Helper for logging errors.
-        let open_sym = || {
-            if let Some((name, sym)) = symbol {
-                if let Ok(sym) = sym {
-                    trace!(
-                        "{}: found symbol {} at {:x} from {}",
-                        lib,
-                        name,
-                        sym.reloc_value(),
-                        sym.lib
-                    );
-                    Result::<_, DynlinkError>::Ok(sym)
-                } else {
-                    error!("{}: needed symbol {} not found", lib, name);
-                    Err(DynlinkErrorKind::SymbolLookupFail {
-                        symname: name.to_string(),
-                        sourcelib: lib.name.to_string(),
-                    }
-                    .into())
-                }
-            } else {
-                error!("{}: invalid relocation, no symbol data", lib);
-                Err(DynlinkErrorKind::MissingSection {
-                    name: "symbol data".to_string(),
-                }
-                .into())
-            }
-        };
-
-        // This is where the magic happens.
-        match rel.r_type() {
-            REL_RELATIVE => unsafe { *target = base.wrapping_add_signed(addend) },
-            REL_SYMBOLIC => unsafe {
-                *target = open_sym()?.reloc_value().wrapping_add_signed(addend)
-            },
-            REL_PLT | REL_GOT => unsafe { *target = open_sym()?.reloc_value() },
-            REL_DTPMOD => {
-                // See the TLS module for understanding where the TLS ID is coming from.
-                let id = if rel.sym() == 0 {
-                    lib.tls_id
-                        .as_ref()
-                        .ok_or_else(|| DynlinkErrorKind::NoTLSInfo {
-                            library: lib.name.clone(),
-                        })?
-                        .tls_id()
-                } else {
-                    let other_lib = open_sym()?.lib;
-                    other_lib
-                        .tls_id
-                        .as_ref()
-                        .ok_or_else(|| DynlinkErrorKind::NoTLSInfo {
-                            library: other_lib.name.clone(),
-                        })?
-                        .tls_id()
-                };
-                unsafe { *target = id }
-            }
-            REL_DTPOFF => {
-                let val = open_sym().map(|sym| sym.raw_value()).unwrap_or(0);
-                unsafe { *target = val.wrapping_add_signed(addend) }
-            }
-            REL_TPOFF => {
-                if let Some(tls) = lib.tls_id {
-                    let val = open_sym().map(|sym| sym.raw_value()).unwrap_or(0);
-                    unsafe {
-                        *target = val
-                            .wrapping_sub(tls.offset() as u64)
-                            .wrapping_add_signed(addend)
-                    }
-                } else {
-                    error!("{}: TPOFF relocations require a PT_TLS segment", lib);
-                    Err(DynlinkErrorKind::NoTLSInfo {
-                        library: lib.name.clone(),
-                    })?
-                }
-            }
-            _ => {
-                error!("{}: unsupported relocation: {}", lib, rel.r_type());
-                Result::<_, DynlinkError>::Err(
-                    DynlinkErrorKind::UnsupportedReloc {
-                        library: lib.name.clone(),
-                        reloc: rel.r_type().to_string(),
-                    }
-                    .into(),
-                )?
-            }
-        }
-
-        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]

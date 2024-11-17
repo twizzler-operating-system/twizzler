@@ -1,4 +1,9 @@
-use crate::tls::{Tcb, TlsRegion};
+use crate::{
+    context::{relocate::EitherRel, Context},
+    library::Library,
+    tls::{Tcb, TlsRegion},
+    DynlinkError, DynlinkErrorKind,
+};
 
 pub(crate) const MINIMUM_TLS_ALIGNMENT: usize = 32;
 
@@ -8,6 +13,7 @@ pub use elf::abi::{
     R_AARCH64_TLS_DTPMOD as REL_DTPMOD, R_AARCH64_TLS_DTPREL as REL_DTPOFF,
     R_AARCH64_TLS_TPREL as REL_TPOFF,
 };
+use elf::{endian::NativeEndian, string_table::StringTable, symbol::SymbolTable};
 
 /// Get a pointer to the current thread control block, using the thread pointer.
 ///
@@ -23,8 +29,20 @@ impl TlsRegion {
     /// Get a pointer to the thread control block for this TLS region.
     ///
     /// # Safety
-    /// The TCB must actually contain runtime data of type T, and be initialized.    
+    /// The TCB must actually contain runtime data of type T, and be initialized.
     pub unsafe fn get_thread_control_block<T>(&self) -> *mut Tcb<T> {
+        todo!()
+    }
+}
+
+impl Context {
+    pub fn do_reloc(
+        &self,
+        lib: &Library,
+        rel: EitherRel,
+        strings: &StringTable,
+        syms: &SymbolTable<NativeEndian>,
+    ) -> Result<(), DynlinkError> {
         todo!()
     }
 }
