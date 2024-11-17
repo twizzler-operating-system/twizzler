@@ -64,8 +64,8 @@ impl SerialPort {
             // Enable DLAB
             self.write_reg(Self::LINE_CTRL, 0x80);
 
-            // Set maximum speed to 38400 bps by configuring DLL and DLM
-            self.write_reg(Self::DATA, 0x03);
+            // Set maximum speed to 115200 bps by configuring DLL and DLM
+            self.write_reg(Self::DATA, 0x01);
             self.write_reg(Self::INT_EN, 0x00);
 
             // Disable DLAB and set data word length to 8 bits
@@ -193,6 +193,11 @@ lazy_static! {
         serial_port.init();
         SimpleLock::new(serial_port)
     };
+    static ref SERIAL2: SimpleLock<SerialPort> = {
+        let mut serial_port = unsafe { SerialPort::new(0x2f8) };
+        serial_port.init();
+        SimpleLock::new(serial_port)
+    };
 }
 
 pub fn late_init() {
@@ -223,6 +228,9 @@ pub fn interrupt_handler() {
 pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
     unsafe {
         let _ = SERIAL1
+            .lock()
+            .write_str(core::str::from_utf8_unchecked(data));
+        let _ = SERIAL2
             .lock()
             .write_str(core::str::from_utf8_unchecked(data));
     }
