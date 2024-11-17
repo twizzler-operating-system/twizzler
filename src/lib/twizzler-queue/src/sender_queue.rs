@@ -8,7 +8,7 @@ use std::{
     task::{Poll, Waker},
 };
 
-use twizzler_async::{AsyncDuplex, AsyncDuplexSetup};
+//use twizzler_async::{AsyncDuplex, AsyncDuplexSetup};
 use twizzler_queue_raw::{QueueError, ReceiveFlags, SubmissionFlags};
 
 use crate::Queue;
@@ -59,6 +59,7 @@ pub struct QueueSender<S, C> {
     calls: Mutex<BTreeMap<u32, Arc<Mutex<WaitPoint<C>>>>>,
 }
 
+/*
 impl<S: Copy, C: Copy> AsyncDuplexSetup for QueueSenderInner<S, C> {
     type ReadError = QueueError;
     type WriteError = QueueError;
@@ -74,6 +75,7 @@ impl<S: Copy, C: Copy> AsyncDuplexSetup for QueueSenderInner<S, C> {
         self.queue.setup_write_sub_sleep()
     }
 }
+*/
 
 impl<S: Copy, C: Copy> QueueSender<S, C> {
     /// Build a new QueueSender from a [Queue].

@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree};
 use twizzler_abi::{object::ObjID, thread::ExecutionState};
 
@@ -65,7 +67,13 @@ impl CondVar {
     pub fn signal(&self) {
         let mut inner = self.inner.lock();
         let mut node = inner.queue.front_mut();
+        let mut threads_to_wake = Vec::new();
         while let Some(t) = node.remove() {
+            threads_to_wake.push(t);
+        }
+
+        drop(inner);
+        for t in threads_to_wake {
             schedule_thread(t);
         }
     }
@@ -96,7 +104,6 @@ mod tests {
 
     #[kernel_test]
     fn test_condvar() {
-        //logln!("a: {}", crate::interrupt::disable());
         let lock = Arc::new(Spinlock::new(0));
         let cv = Arc::new(CondVar::new());
         let cv2 = cv.clone();
