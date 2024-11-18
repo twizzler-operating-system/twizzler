@@ -5396,8 +5396,10 @@ dependencies = [
 name = "twizzler-queue"
 version = "0.1.0"
 dependencies = [
+ "async-io",
+ "futures",
  "twizzler-abi",
- "twizzler-async",
+ "twizzler-futures",
  "twizzler-object",
  "twizzler-queue-raw",
 ]
