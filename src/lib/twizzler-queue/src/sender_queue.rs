@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     future::Future,
+    pin::Pin,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc, Mutex,
@@ -8,7 +9,8 @@ use std::{
     task::{Poll, Waker},
 };
 
-//use twizzler_async::{AsyncDuplex, AsyncDuplexSetup};
+use async_io::Async;
+use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use twizzler_queue_raw::{QueueError, ReceiveFlags, SubmissionFlags};
 
 use crate::Queue;
@@ -22,12 +24,12 @@ struct WaitPoint<C> {
     waker: Option<Waker>,
 }
 
-struct WaitPointFuture<'a, S, C> {
+struct WaitPointFuture<'a, S: Copy + Send + Sync, C: Copy + Send + Sync> {
     state: Arc<Mutex<WaitPoint<C>>>,
     sender: &'a QueueSender<S, C>,
 }
 
-impl<'a, S: Copy, C: Copy> Future for WaitPointFuture<'a, S, C> {
+impl<'a, S: Copy + Send + Sync, C: Copy + Send + Sync> Future for WaitPointFuture<'a, S, C> {
     type Output = Result<(u32, C), QueueError>;
 
     fn poll(
@@ -52,38 +54,32 @@ impl<'a, S: Copy, C: Copy> Future for WaitPointFuture<'a, S, C> {
 /// completions to indicate that a request has been finished, and that the send ID can be reused.
 ///
 /// Thus, this queue interally allocates, sends, and reuses IDs for requests.
-pub struct QueueSender<S, C> {
+pub struct QueueSender<S: Copy, C: Copy> {
     counter: AtomicU32,
     reuse: Mutex<Vec<u32>>,
-    inner: AsyncDuplex<QueueSenderInner<S, C>>,
+    inner: Async<Pin<Box<QueueSenderInner<S, C>>>>,
     calls: Mutex<BTreeMap<u32, Arc<Mutex<WaitPoint<C>>>>>,
 }
 
-/*
-impl<S: Copy, C: Copy> AsyncDuplexSetup for QueueSenderInner<S, C> {
-    type ReadError = QueueError;
-    type WriteError = QueueError;
-
-    const READ_WOULD_BLOCK: Self::ReadError = QueueError::WouldBlock;
-    const WRITE_WOULD_BLOCK: Self::WriteError = QueueError::WouldBlock;
-
-    fn setup_read_sleep(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+impl<S: Copy, C: Copy> twizzler_futures::TwizzlerWaitable for QueueSenderInner<S, C> {
+    fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+        println!("starting wait item read");
         self.queue.setup_read_com_sleep()
     }
 
-    fn setup_write_sleep(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+    fn wait_item_write(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+        println!("starting wait item write");
         self.queue.setup_write_sub_sleep()
     }
 }
-*/
 
-impl<S: Copy, C: Copy> QueueSender<S, C> {
+impl<S: Copy + Sync + Send, C: Copy + Send + Sync> QueueSender<S, C> {
     /// Build a new QueueSender from a [Queue].
     pub fn new(queue: Queue<S, C>) -> Self {
         Self {
             counter: AtomicU32::new(0),
             reuse: Mutex::new(vec![]),
-            inner: AsyncDuplex::new(QueueSenderInner { queue }),
+            inner: Async::new(QueueSenderInner { queue }).unwrap(),
             calls: Mutex::new(BTreeMap::new()),
         }
     }
@@ -132,7 +128,7 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
     }
 
     /// Submit an item and await a completion.
-    pub async fn submit_and_wait(&self, item: S) -> Result<C, crate::QueueError> {
+    pub async fn submit_and_wait(&self, item: S) -> Result<C, std::io::Error> {
         let id = self.next_id();
         let state = Arc::new(Mutex::new(WaitPoint::<C> {
             item: None,
@@ -147,25 +143,39 @@ impl<S: Copy, C: Copy> QueueSender<S, C> {
             self.handle_completion(id, item);
         }
         self.inner
-            .write_with(|inner| inner.queue.submit(id, item, SubmissionFlags::NON_BLOCK))
+            .write_with(|inner| {
+                inner
+                    .queue
+                    .submit(id, item, SubmissionFlags::NON_BLOCK)
+                    .map_err(|e| e.into())
+            })
             .await?;
 
         let waiter = WaitPointFuture::<S, C> {
             state,
             sender: self,
         };
-        let item = Box::pin(waiter);
-        let recv = Box::pin(async {
+        let mut item = Box::pin(async { waiter.await }).fuse();
+        let mut recv = Box::pin(async {
             loop {
                 let (id, item) = self
                     .inner
-                    .read_with(|inner| inner.queue.get_completion(ReceiveFlags::NON_BLOCK))
+                    .read_with(|inner| {
+                        inner
+                            .queue
+                            .get_completion(ReceiveFlags::NON_BLOCK)
+                            .map_err(|e| e.into())
+                    })
                     .await
                     .unwrap();
                 self.handle_completion(id, item);
             }
-        });
-        let result = twizzler_async::wait_for_first(item, recv).await?;
+        })
+        .fuse();
+        let result = futures::select! {
+            item_res = item => item_res,
+            recv_res = recv => recv_res,
+        }?;
         self.release_id(id);
         Ok(result.1)
     }

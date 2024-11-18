@@ -72,7 +72,7 @@ fn main() {
             ));
             let x = res.await;
             println!(" pager:  got {:?} in response", x);
-            timeout.await;
+            //timeout.await;
         }
     })
     .detach();
