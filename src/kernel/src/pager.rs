@@ -63,6 +63,8 @@ fn pager_main() {
         current_thread_ref()
             .unwrap()
             .set_state(ExecutionState::Sleeping);
+        logln!("kernel: got response: {:?}", resp);
+        // TODO: enter normal pager operation...
         schedule(false);
     }
 }
