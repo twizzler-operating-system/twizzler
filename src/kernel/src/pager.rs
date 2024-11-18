@@ -59,6 +59,7 @@ fn pager_main() {
         logln!("kernel: submitted request");
         let resp = out.wait();
         logln!("kernel: got response: {:?}", resp);
+        // TODO: enter normal pager operation...
         schedule(false);
     }
 }
