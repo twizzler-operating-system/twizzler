@@ -18,12 +18,10 @@ impl<S: Copy + Send + Sync, C: Copy + Send + Sync> twizzler_futures::TwizzlerWai
     for CallbackQueueReceiverInner<S, C>
 {
     fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        println!("cb starting wait item read");
         self.queue.setup_read_sub_sleep()
     }
 
     fn wait_item_write(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        println!("cb starting wait item read");
         self.queue.setup_write_com_sleep()
     }
 }
