@@ -53,7 +53,7 @@ pub fn remove_from_requeue(thread: &ThreadRef) {
 // TODO: this is gross, we're manually trading out a critical guard with an interrupt guard because
 // we don't want to get interrupted... we need a better way to do this kind of consumable "don't
 // schedule until I say so".
-fn finish_blocking(guard: CriticalGuard) {
+pub fn finish_blocking(guard: CriticalGuard) {
     let thread = current_thread_ref().unwrap();
     crate::interrupt::with_disabled(|| {
         drop(guard);
