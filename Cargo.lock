@@ -4723,6 +4723,7 @@ dependencies = [
  "sha2",
  "slabmalloc",
  "smccc",
+ "stable-vec",
  "tar-no-std",
  "tock-registers",
  "twizzler-abi",
