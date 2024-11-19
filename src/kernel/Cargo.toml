@@ -33,6 +33,7 @@ p256 = { version = "0.13.2", default-features = false, features = ["ecdsa"] }
 sha2 = { version = "0.10.8", default-features = false, features = [
     "force-soft",
 ] }
+log = "*"
 # [dev-dependencies] # kernel doesn't include dev dependencies when testing
 # for testing crypto
 hex-literal = { version = "0.4.1", default-features = false }

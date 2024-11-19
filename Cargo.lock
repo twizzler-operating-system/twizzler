@@ -4712,6 +4712,7 @@ dependencies = [
  "lazy_static",
  "limine",
  "linked_list_allocator",
+ "log",
  "memoffset",
  "nonoverlapping_interval_tree",
  "object",
