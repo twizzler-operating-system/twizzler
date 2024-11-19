@@ -92,11 +92,8 @@ pub(crate) unsafe extern "C" fn upcall_entry2(
     frame: *mut UpcallFrame,
     data: *const UpcallData,
 ) -> ! {
-    use crate::runtime::__twz_get_runtime;
-
     crate::runtime::upcall::upcall_rust_entry(&*frame, &*data);
-    let runtime = __twz_get_runtime();
-    runtime.abort()
+    twizzler_rt_abi::core::twz_rt_abort();
 }
 
 #[cfg(feature = "runtime")]
