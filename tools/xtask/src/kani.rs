@@ -1,12 +1,9 @@
 use crate::KaniOptions;
-use std::env;
-use std::fs::{self, File};
-use std::path::Path;
+// use std::fs::{self, File};
 use std::process::Command;
-use std::io::{ErrorKind};
+use std::io::ErrorKind;
 
 use anyhow::bail;
-use chrono::prelude::*;
 
 //Verifies Kani is installed and launches it
 pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
@@ -61,7 +58,7 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
 
     println!("Running Command:{}", (pretty_cmd(&cmd)));
 
-    let output = Command::new("sh")
+    let _output = Command::new("sh")
         .arg("./admin_scripts/kani_nvme_controller_value.sh")
         .output();
 
@@ -72,7 +69,7 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
         // anyhow::bail!("Failed to run Kani: {}", pretty_cmd(&cmd));
     }
 
-    let output = Command::new("sh")
+    let _output = Command::new("sh")
         .arg("./admin_scripts/twizzler_nvme_controller_value.sh")
         .output();
 
