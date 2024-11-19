@@ -126,8 +126,11 @@ impl_unit_conversion!(NanoSeconds, FemtoSeconds, FEMTOS_PER_NANO);
 
 /*
 KANI_TODO:
-- Handle assertion failures gracefully
-- Figure out secs
+- Both Harnesses will fail with an overflow error with big enough values
+- Two options:
+ 1. Limit Kani Harness with uper bound for symbolic variable to prevent overflow condition
+ 2. Extend units to check/prevent values that would overflow.
+- Currently option one is followed
 */
 #[cfg(kani)]
 mod units_verification {
@@ -147,7 +150,6 @@ mod units_verification {
     #[kani::proof]
     #[kani::unwind(10)]     
     pub fn femtos(){
-
         let scalar: u64 = kani::any();
         let femtos: u64 = kani::any();
 
@@ -184,10 +186,16 @@ mod units_verification {
 
     #[kani::proof]
     pub fn conversion(){
-        let base_value = kani::any();
-        let femtos = FemtoSeconds(FEMTOS_PER_SEC * base_value);
-        let mut secs: Seconds = femtos.into();
 
+        //Overflow will fail, assume you will not enter a base value that overflows
+        //Bound product overflow by dividing type max value by operand
+        // LIMIT const used to establish assertion condition
+        const LIMIT: u64 =  u64::MAX;
+        let base_value = kani::any();
+        kani::assume((base_value ) < LIMIT/FEMTOS_PER_SEC);
+        let femtos = FemtoSeconds(FEMTOS_PER_SEC * base_value);
+
+        let mut secs: Seconds = femtos.into();
         assert_eq!(secs, Seconds(base_value));
 
         secs = Seconds(base_value);
