@@ -95,17 +95,31 @@ fn create_uefi_disk_image(
     // limine.cfg file
     let cfg_data = format!(
         r#"
-SERIAL=yes
-VERBOSE=yes
-TIMEOUT=1 
-DEFAULT_ENTRY=1
-:Twizzler
-RESOLUTION=800x600
-PROTOCOL=limine
-KERNEL_PATH=boot:///kernel.elf
-MODULE_PATH=boot:///initrd
-KERNEL_CMDLINE={}
-"#,
+# Specifies the timeout in seconds before the first entry is automatically booted.
+# If set to 0, boots default entry instantly (see default_entry option).
+timeout: 1
+# If set to yes, enable serial I/O for the bootloader.
+serial: yes
+# Print additional information during boot.
+verbose: yes
+# `default_entry` set to 1 by default (1-based index)
+
+# The entry name that will be displayed in the boot menu.
+/Twizzler
+    # We use the Limine boot protocol.
+    protocol: limine
+
+    # Path to the kernel to boot. boot():/ represents the partition on which limine.conf is located.
+    kernel_path: boot():/kernel.elf
+
+    # The path to a module. This option can be specified multiple times to specify multiple modules.
+    module_path: boot():/initrd
+
+    # The command line string to be passed to the kernel/executable.
+    kernel_cmdline: {}
+
+    # The resolution to be used.
+    resolution: 800x600"#,
         cmdline
     );
     // create fat partition
@@ -152,7 +166,7 @@ KERNEL_CMDLINE={}
         let mut kernel = root_dir.create_file("kernel.elf")?;
         kernel.truncate()?;
         io::copy(&mut fs::File::open(&kernel_binary_path)?, &mut kernel)?;
-        let mut cfg = root_dir.create_file("limine.cfg")?;
+        let mut cfg = root_dir.create_file("limine.conf")?;
         cfg.write_all(cfg_data.as_bytes())?;
         let mut initrd = root_dir.create_file("initrd")?;
         initrd.truncate()?;
