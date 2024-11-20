@@ -45,9 +45,13 @@ impl BumpAlloc {
     }
 }
 
-pub static MMIO_ALLOCATOR: Spinlock<BumpAlloc> = Spinlock::new({
-    let mmio_range_start = *VirtAddr::MMIO_RANGE.start();
-    let vaddr_start = unsafe { VirtAddr::new_unchecked(mmio_range_start) };
-    let length = VirtAddr::MMIO_RANGE_SIZE as usize;
-    BumpAlloc::new(vaddr_start, length)
-});
+lazy_static::lazy_static! {
+    pub static ref MMIO_ALLOCATOR: Spinlock<BumpAlloc> = {
+        Spinlock::new({
+            let mmio_range_start = unsafe { crate::arch::address::MMIO_RANGE.start() };
+            let vaddr_start = unsafe { VirtAddr::new_unchecked(*mmio_range_start) };
+            let length = crate::arch::address::MMIO_RANGE_SIZE as usize;
+            BumpAlloc::new(vaddr_start, length)
+        })
+    };
+}
