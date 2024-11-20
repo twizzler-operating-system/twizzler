@@ -2,7 +2,11 @@
 
 use core::{alloc::GlobalAlloc, ptr};
 
-use twizzler_runtime_api::{AuxEntry, BasicAux, BasicReturn, CoreRuntime};
+use twizzler_rt_abi::{
+    core::{BasicAux, BasicReturn, RuntimeInfo, RUNTIME_INIT_MIN},
+    info::SystemInfo,
+    time::Monotonicity,
+};
 
 use super::{
     alloc::MinimalAllocator,
@@ -29,57 +33,58 @@ extern "C" {
     fn _init();
 }
 
-impl CoreRuntime for MinimalRuntime {
-    fn default_allocator(&self) -> &'static dyn GlobalAlloc {
+impl MinimalRuntime {
+    pub fn default_allocator(&self) -> &'static dyn GlobalAlloc {
         &GLOBAL_ALLOCATOR
     }
 
-    fn exit(&self, code: i32) -> ! {
+    pub fn exit(&self, code: i32) -> ! {
         crate::syscall::sys_thread_exit(code as u64);
     }
 
-    fn abort(&self) -> ! {
+    pub fn abort(&self) -> ! {
         core::intrinsics::abort();
     }
 
+    pub fn pre_main_hook(&self) -> Option<i32> {
+        None
+    }
+
+    pub fn post_main_hook(&self) {}
+
     /// Called from _start to initialize the runtime and pass control to the Rust stdlib.
-    fn runtime_entry(
+    pub fn runtime_entry(
         &self,
-        mut aux_array: *const AuxEntry,
-        std_entry: unsafe extern "C" fn(BasicAux) -> BasicReturn,
+        rt_info: *const RuntimeInfo,
+        std_entry: unsafe extern "C-unwind" fn(BasicAux) -> BasicReturn,
     ) -> ! {
-        // If aux doesn't give us an environment, just use this default.
-        let null_env: [*const i8; 4] = [
-            b"RUST_BACKTRACE=1\0".as_ptr() as *const i8,
-            ptr::null(),
-            ptr::null(),
-            ptr::null(),
+        let mut null_env: [*mut i8; 4] = [
+            b"RUST_BACKTRACE=1\0".as_ptr() as *mut i8,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
         ];
-        let mut arg_ptr = ptr::null();
+        let mut arg_ptr = ptr::null_mut();
         let mut arg_count = 0;
-        let mut env_ptr = (&null_env).as_ptr();
+        let mut env_ptr = (&mut null_env).as_mut_ptr();
 
         unsafe {
-            while !aux_array.is_null() && *aux_array != AuxEntry::Null {
-                match *aux_array {
-                    AuxEntry::ProgramHeaders(paddr, pnum) => {
-                        process_phdrs(core::slice::from_raw_parts(paddr as *const Phdr, pnum))
-                    }
-                    AuxEntry::ExecId(id) => {
-                        super::debug::set_execid(id);
-                    }
-                    AuxEntry::Arguments(num, ptr) => {
-                        arg_count = num;
-                        arg_ptr = ptr as *const *const i8
-                    }
-                    AuxEntry::Environment(ptr) => {
-                        env_ptr = ptr as *const *const i8;
-                    }
-                    _ => {
-                        crate::print_err("unknown aux type");
-                    }
-                }
-                aux_array = aux_array.offset(1);
+            let rt_info = rt_info.as_ref().unwrap();
+            if rt_info.kind != RUNTIME_INIT_MIN {
+                crate::print_err("minimal runtime cannot initialize non-minimal runtime");
+                self.abort();
+            }
+            let min_init_info = &*rt_info.init_info.min;
+            process_phdrs(core::slice::from_raw_parts(
+                min_init_info.phdrs as *const Phdr,
+                min_init_info.nr_phdrs,
+            ));
+            if !min_init_info.envp.is_null() {
+                env_ptr = min_init_info.envp;
+            }
+            if !min_init_info.args.is_null() {
+                arg_ptr = min_init_info.args;
+                arg_count = min_init_info.argc;
             }
         }
 
@@ -135,6 +140,77 @@ impl CoreRuntime for MinimalRuntime {
                 env: env_ptr,
             })
         };
-        super::__twz_get_runtime().exit(ret.code)
+        self.exit(ret.code)
+    }
+
+    pub fn sysinfo(&self) -> SystemInfo {
+        let info = crate::syscall::sys_info();
+        SystemInfo {
+            clock_monotonicity: Monotonicity::Weak.into(),
+            available_parallelism: info.cpu_count().into(),
+            page_size: info.page_size(),
+        }
+    }
+
+    pub fn get_random(&self, buf: &mut [u8]) -> usize {
+        // TODO: Once the Randomness PR is in, fix this.
+        buf.len()
+    }
+}
+
+pub mod rt0 {
+    //! rt0 defines a collection of functions that the basic Rust ABI expects to be defined by some
+    //! part of the C runtime:
+    //!
+    //!   - __tls_get_addr for handling non-local TLS regions.
+    //!   - _start, the entry point of an executable (per-arch, as this is assembly code).
+
+    #[cfg(target_arch = "aarch64")]
+    #[no_mangle]
+    #[naked]
+    pub unsafe extern "C" fn _start() {
+        core::arch::naked_asm!(
+            "b {entry}",
+            entry = sym entry,
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[no_mangle]
+    #[naked]
+    pub unsafe extern "C" fn _start() {
+        // Align the stack and jump to rust code. If we come back, trigger an exception.
+        core::arch::naked_asm!(
+            "and rsp, 0xfffffffffffffff0",
+            "call {entry}",
+            "ud2",
+            entry = sym entry,
+        );
+    }
+
+    #[used]
+    // Ensure the compiler doesn't optimize us away!
+    static ENTRY: unsafe extern "C" fn() = _start;
+
+    use twizzler_rt_abi::core::{BasicAux, BasicReturn, RuntimeInfo};
+
+    // The C-based entry point coming from arch-specific assembly _start function.
+    unsafe extern "C" fn entry(arg: usize) -> ! {
+        // Just trampoline to rust-abi code.
+        rust_entry(arg as *const _)
+    }
+
+    /// Entry point for Rust code wishing to start from rt0.
+    ///
+    /// # Safety
+    /// Do not call this unless you are bootstrapping a runtime.
+    pub unsafe fn rust_entry(arg: *const RuntimeInfo) -> ! {
+        // All we need to do is grab the runtime and call its init function. We want to
+        // do as little as possible here.
+        twizzler_rt_abi::core::twz_rt_runtime_entry(arg, std_entry_from_runtime)
+    }
+
+    extern "C-unwind" {
+        fn std_entry_from_runtime(aux: BasicAux) -> BasicReturn;
     }
 }

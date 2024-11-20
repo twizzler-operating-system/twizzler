@@ -1,7 +1,11 @@
 #pragma once
 
-#define assert(...) (void)0
+#include<stdio.h>
+#include<stdlib.h>
 
-#ifndef fprintf
-#define fprintf(...) (void)0
+#ifdef DEBUG
+#define assert(x) ((void)(!(x) && fprintf(stderr, "assertion failed: " #x " at %s:%d", __FILE__, __LINE__) && (abort(), 1)))
+#else
+#define assert(x) ((void)sizeof(x))
 #endif
+

@@ -68,7 +68,7 @@ impl QemuCommand {
 
         self.cmd
             .arg("--no-reboot") // exit instead of rebooting
-            .arg("-s") // shorthand for -gdb tcp::1234
+            //.arg("-s") // shorthand for -gdb tcp::1234
             .arg("-serial")
             .arg("mon:stdio");
         //-serial mon:stdio creates a multiplexed stdio backend connected

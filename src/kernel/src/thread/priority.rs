@@ -135,6 +135,7 @@ impl Thread {
         self.flags
             .fetch_and(!THREAD_HAS_DONATED_PRIORITY, Ordering::SeqCst);
         *donated_priority = None;
+        drop(donated_priority);
         if current_priority < self.effective_priority() {
             self.maybe_reschedule_thread();
         }
@@ -167,6 +168,7 @@ impl Thread {
         *donated_priority = Some(pri);
         self.flags
             .fetch_or(THREAD_HAS_DONATED_PRIORITY, Ordering::SeqCst);
+        drop(donated_priority);
         if needs_resched {
             if let Some(cur) = current_thread_ref() {
                 if cur.id() == self.id() {

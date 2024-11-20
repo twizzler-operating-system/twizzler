@@ -379,16 +379,21 @@ fn do_schedule(reinsert: bool) {
 
 pub fn schedule(reinsert: bool) {
     let cur = current_thread_ref().unwrap();
-    /* TODO: switch to needs to also drop the ref on cur, somehow... */
     /* TODO: if we preempt, just put the thread back on our list (or decide to not resched) */
     let istate = interrupt::disable();
     if cur.is_critical() {
         interrupt::set(istate);
         return;
     }
+    // We have to drop cur here and get it again later, after the call to do_schedule, even though
+    // it will be the same thread later. This is because the final call to this function after a
+    // thread exits will never return here after going into do_schedule, so we have to ensure
+    // that cur is dropped before then.
+    drop(cur);
 
     do_schedule(reinsert);
     interrupt::set(istate);
+    let cur = current_thread_ref().unwrap();
     // Always check if we need to suspend before returning control.
     cur.maybe_suspend_self();
 }

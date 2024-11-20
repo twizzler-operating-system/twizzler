@@ -101,11 +101,8 @@ pub(crate) unsafe extern "C" fn upcall_entry2(
     rdi: *const UpcallFrame,
     rsi: *const UpcallData,
 ) -> ! {
-    use crate::runtime::__twz_get_runtime;
-
     crate::runtime::upcall::upcall_rust_entry(&*rdi, &*rsi);
-    let runtime = __twz_get_runtime();
-    runtime.abort()
+    crate::runtime::OUR_RUNTIME.abort()
 }
 
 #[cfg(feature = "runtime")]
