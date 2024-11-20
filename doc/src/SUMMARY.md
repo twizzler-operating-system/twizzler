@@ -35,3 +35,7 @@
 # Advanced Features
 
 - [Twizzler Build System Crate Metadata](./CargoMetadata.md)
+
+# Other
+
+- [Assorted Notes](./AssortedNotes.md)

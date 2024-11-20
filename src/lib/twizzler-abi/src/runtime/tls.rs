@@ -4,7 +4,6 @@
 const MIN_TLS_ALIGN: usize = 16;
 use core::alloc::Layout;
 
-use super::__twz_get_runtime;
 pub(crate) fn init_tls() -> Option<u64> {
     new_thread_tls().map(|(s, _, _, _)| s as u64)
 }
@@ -31,11 +30,10 @@ pub(crate) fn tls_variant1() -> Option<(usize, *mut u8, usize, usize)> {
             );
 
             // allocate a region of memory for the thread-local data initialized to zero
-            let runtime = __twz_get_runtime();
-            let tcb_base = runtime.default_allocator().alloc_zeroed(layout);
+            let tcb_base = super::OUR_RUNTIME.default_allocator().alloc_zeroed(layout);
             if tcb_base.is_null() {
                 crate::print_err("failed to allocate TLS");
-                runtime.abort();
+                super::OUR_RUNTIME.abort();
             }
 
             // Architechtures that use TLS Variant I (e.g. ARM) have the thread pointer
@@ -78,11 +76,10 @@ pub(crate) fn tls_variant2() -> Option<(usize, *mut u8, usize, usize)> {
                 Layout::from_size_align(full_tls_size, tls_align).ok(),
                 "failed to unwrap TLS layout",
             );
-            let runtime = __twz_get_runtime();
-            let tls = runtime.default_allocator().alloc_zeroed(layout);
+            let tls = super::OUR_RUNTIME.default_allocator().alloc_zeroed(layout);
             if tls.is_null() {
                 crate::print_err("failed to allocate TLS");
-                runtime.abort();
+                super::OUR_RUNTIME.abort();
             }
             let mem = tls.add(tls_size).sub((tls as usize) & (tls_align - 1));
             core::ptr::copy_nonoverlapping(info.template_start, mem.sub(offset), info.filsz);

@@ -2,11 +2,11 @@
 
 use core::{intrinsics::copy_nonoverlapping, mem::size_of};
 
-use twizzler_runtime_api::AuxEntry;
+use twizzler_rt_abi::core::{InitInfoPtrs, MinimalInitInfo, RuntimeInfo, RUNTIME_INIT_MIN};
 
 use crate::{
     object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    slot::{RESERVED_DATA, RESERVED_STACK, RESERVED_TEXT},
+    slot::{RESERVED_DATA, RESERVED_IMAGE, RESERVED_STACK, RESERVED_TEXT},
     syscall::{
         sys_unbind_handle, BackingType, HandleType, LifetimeType, MapFlags, NewHandleFlags,
         ObjectCreate, ObjectCreateFlags, ObjectSource, ThreadSpawnArgs, ThreadSpawnFlags,
@@ -296,13 +296,20 @@ pub fn spawn_new_executable(
         MapFlags::empty(),
     )
     .map_err(|_| SpawnExecutableError::MapFailed)?;
+    crate::syscall::sys_object_map(
+        Some(vm_handle),
+        exe.id(),
+        RESERVED_IMAGE,
+        Protections::READ,
+        MapFlags::empty(),
+    )
+    .map_err(|_| SpawnExecutableError::MapFailed)?;
 
     let stack_nullpage = RESERVED_STACK * MAX_SIZE;
-    let spawnaux_start = stack_nullpage + AUX_OFFSET;
     const STACK_OFFSET: usize = NULLPAGE_SIZE;
-    const AUX_OFFSET: usize = STACK_OFFSET + INITIAL_STACK_SIZE;
-    const MAX_AUX: usize = 32;
-    const ARGS_OFFSET: usize = AUX_OFFSET + MAX_AUX * size_of::<AuxEntry>();
+    const RT_INFO_OFFSET: usize = STACK_OFFSET + INITIAL_STACK_SIZE;
+    const MIN_INIT_OFFSET: usize = RT_INFO_OFFSET + size_of::<RuntimeInfo>();
+    const ARGS_OFFSET: usize = MIN_INIT_OFFSET + size_of::<MinimalInitInfo>();
 
     fn copy_strings<T>(
         stack: &mut InternalObject<T>,
@@ -344,33 +351,38 @@ pub fn spawn_new_executable(
     let (spawnargs_start, args_len) = copy_strings(&mut stack, args, 0);
     let (spawnenv_start, _) = copy_strings(&mut stack, env, args_len);
 
-    let aux_array = unsafe {
-        stack
-            .offset_mut::<[AuxEntry; 32]>(AUX_OFFSET)
-            .unwrap()
-            .as_mut()
-    }
-    .unwrap();
-    let mut idx = 0;
+    let rt_info_ptr = stack.offset_mut::<RuntimeInfo>(RT_INFO_OFFSET).unwrap();
+    let min_init_ptr = stack
+        .offset_mut::<MinimalInitInfo>(MIN_INIT_OFFSET)
+        .unwrap();
 
-    aux_array[idx] = AuxEntry::ExecId(exe.id());
-    idx += 1;
-    aux_array[idx] = AuxEntry::Arguments(args.len(), spawnargs_start as u64);
-    idx += 1;
-    aux_array[idx] = AuxEntry::Environment(spawnenv_start as u64);
-    idx += 1;
-    if let Some(phdr_vaddr) = phdr_vaddr {
-        aux_array[idx] = AuxEntry::ProgramHeaders(phdr_vaddr, elf.hdr.phnum.into());
-        idx += 1;
+    let min_init = MinimalInitInfo {
+        args: spawnargs_start as *mut *mut i8,
+        argc: args.len(),
+        envp: spawnenv_start as *mut *mut i8,
+        phdrs: phdr_vaddr.unwrap_or(0) as usize as *mut core::ffi::c_void,
+        nr_phdrs: elf.hdr.phnum as usize,
+    };
+
+    let rt_info = RuntimeInfo {
+        flags: 0,
+        kind: RUNTIME_INIT_MIN,
+        init_info: InitInfoPtrs {
+            min: (stack_nullpage + MIN_INIT_OFFSET) as *mut _,
+        },
+    };
+
+    unsafe {
+        min_init_ptr.write(min_init);
+        rt_info_ptr.write(rt_info);
     }
-    aux_array[idx] = AuxEntry::Null;
 
     let ts = ThreadSpawnArgs::new(
         elf.entry() as usize,
         stack_nullpage + STACK_OFFSET,
         INITIAL_STACK_SIZE,
         0,
-        spawnaux_start,
+        stack_nullpage + RT_INFO_OFFSET,
         ThreadSpawnFlags::empty(),
         Some(vm_handle),
         UpcallTargetSpawnOption::DefaultAbort,

@@ -63,6 +63,8 @@ fn main() {
     let outfile = File::create(initrd_output).unwrap();
 
     let mut archive = Builder::new(outfile);
+    archive.sparse(false);
+    archive.mode(tar::HeaderMode::Deterministic);
 
     for file in files.unwrap_or_default().map(|s| s.as_str()) {
         let mut f = File::open(file).unwrap();
@@ -140,7 +142,7 @@ fn main() {
         header.set_gid(md.gid().into());
         header.set_mode(md.mode());
         header.set_cksum();
-        
+
         archive
             .append_data(
                 &mut header,
@@ -151,5 +153,5 @@ fn main() {
                 Cursor::new(data),
             )
             .unwrap();
-        }
+    }
 }

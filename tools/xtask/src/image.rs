@@ -118,7 +118,11 @@ fn generate_data_folder(comp: &TwizzlerCompilation) -> PathBuf {
     destination
 }
 
-fn generate_initrd(initrd_files: Vec<PathBuf>, data_files: PathBuf, comp: &TwizzlerCompilation) -> anyhow::Result<PathBuf> {
+fn generate_initrd(
+    initrd_files: Vec<PathBuf>,
+    data_files: PathBuf,
+    comp: &TwizzlerCompilation,
+) -> anyhow::Result<PathBuf> {
     let initrd_path = get_genfile_path(comp, "initrd");
     let status = Command::new(get_tool_path(comp, "initrd_gen")?)
         .arg("--data")
@@ -236,7 +240,7 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     let initrd_files = build_initrd(&cli, &comp)?;
     let data_files = generate_data_folder(&comp);
     let initrd_path = generate_initrd(initrd_files, data_files, &comp)?;
-    
+
     crate::print_status_line("disk image", Some(&cli.config));
     let mut cmdline = String::new();
     if cli.tests {

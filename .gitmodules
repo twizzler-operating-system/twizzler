@@ -1,8 +1,11 @@
 [submodule "toolchain/src/rust"]
 	path = toolchain/src/rust
 	url = ../../twizzler-operating-system/rust.git
-	branch = twizzler
+	branch = twizzler-tcup2024
 [submodule "src/lib/nvme-rs"]
 	path = src/lib/nvme-rs
 	url = ../../twizzler-operating-system/nvme-rs.git
 	branch = twizzler-dynlink
+[submodule "src/abi"]
+	path = src/abi
+	url = ../../twizzler-operating-system/abi.git

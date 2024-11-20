@@ -12,7 +12,7 @@ pub struct Phdr {
     align: u64,
 }
 
-static mut PHDR_INFO: Option<&'static [Phdr]> = None;
+pub(crate) static mut PHDR_INFO: Option<&'static [Phdr]> = None;
 
 // Called during runtime init to work through phdrs.
 pub fn process_phdrs(phdrs: &'static [Phdr]) {
