@@ -1,5 +1,7 @@
 use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, sync::Arc};
 
+use object::ReadRef;
+
 use crate::{
     memory::VirtAddr,
     obj::{self, pages::Page, ObjectRef},
@@ -35,7 +37,10 @@ pub fn init(modules: &[BootModule]) {
     let mut boot_objects = BootObjects::default();
     for module in modules {
         let tar = tar_no_std::TarArchiveRef::new(module.as_slice());
-        logln!("[kernel::initrd] loading module...");
+        logln!(
+            "[kernel::initrd] loading module, {} MB...",
+            module.as_slice().len() / (1024 * 1024)
+        );
         let mut total_alloc = 0;
         for e in tar.entries() {
             let obj = obj::Object::new();
@@ -68,7 +73,10 @@ pub fn init(modules: &[BootModule]) {
                 .insert(e.filename().as_str().to_owned(), obj);
             total_alloc += total;
         }
-        logln!("[kernel::initrd]  done: {} MB", total_alloc / (1024 * 1024));
+        logln!(
+            "[kernel::initrd]  done, loaded {} MB of object data",
+            total_alloc / (1024 * 1024)
+        );
     }
     BOOT_OBJECTS.call_once(|| boot_objects);
 }
