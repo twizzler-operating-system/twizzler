@@ -1,6 +1,6 @@
 use core::{
     cmp::{max, min},
-    intrinsics::size_of,
+    mem::size_of,
     num::NonZeroUsize,
 };
 

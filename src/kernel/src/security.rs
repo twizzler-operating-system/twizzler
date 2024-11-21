@@ -11,6 +11,7 @@ use crate::{
     mutex::Mutex,
     obj::LookupFlags,
     spinlock::Spinlock,
+    thread::current_memory_context,
 };
 
 #[derive(Clone)]
@@ -30,6 +31,15 @@ pub struct SecCtxMgr {
 pub struct SecurityContext {
     kobj: Option<KernelObject<()>>,
     cache: BTreeMap<ObjID, PermsInfo>,
+}
+
+impl core::fmt::Debug for SecurityContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let id = self.kobj.as_ref().map(|ko| ko.id());
+        f.debug_struct("SecurityContext")
+            .field("id", &id)
+            .finish_non_exhaustive()
+    }
 }
 
 pub type SecurityContextRef = Arc<SecurityContext>;
@@ -140,6 +150,7 @@ impl SecCtxMgr {
             *self.active_id.lock() = id;
             // ctx now holds the old active context
             inner.inactive.insert(ctx.id(), ctx);
+            current_memory_context().map(|mc| mc.switch_to(id));
             SwitchResult::Switched
         } else {
             SwitchResult::NotAttached

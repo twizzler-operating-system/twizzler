@@ -134,7 +134,7 @@ impl ThreadRepr {
             ThreadSyncReference::Virtual(&self.status),
             state as u64,
             ThreadSyncOp::Equal,
-            ThreadSyncFlags::empty(),
+            ThreadSyncFlags::INVERT,
         )
     }
 
@@ -144,7 +144,7 @@ impl ThreadRepr {
             ThreadSyncReference::Virtual(&self.status),
             state as u64,
             ThreadSyncOp::Equal,
-            ThreadSyncFlags::INVERT,
+            ThreadSyncFlags::empty(),
         )
     }
 

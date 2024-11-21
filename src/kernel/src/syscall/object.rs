@@ -178,10 +178,10 @@ pub fn sys_unbind_handle(id: ObjID) {
 pub fn sys_sctx_attach(id: ObjID) -> Result<u32, SctxAttachError> {
     let sctx = get_sctx(id)?;
 
-    current_memory_context()
-        .unwrap()
-        .register_sctx(sctx.id(), ArchContext::new());
-    current_thread_ref().unwrap().secctx.attach(sctx)?;
+    let current_thread = current_thread_ref().unwrap();
+    let current_context = current_memory_context().unwrap();
+    current_context.register_sctx(sctx.id(), ArchContext::new());
+    current_thread.secctx.attach(sctx)?;
 
     Ok(0)
 }

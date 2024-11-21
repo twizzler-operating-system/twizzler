@@ -11,9 +11,9 @@ crate-type = ["rlib"]
 #ring = { version = "*", default-features = false, features = ["alloc"] }
 secgate-macros = { path = "secgate-macros" }
 static_assertions = "1.1.0"
-alloca = {version = "0.4", default-features = false}
+alloca = { version = "0.4", default-features = false }
 twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
-twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
 stable-vec = "0.4"
 
 [build-dependencies]

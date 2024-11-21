@@ -7,8 +7,9 @@ use twizzler_rt_abi::thread::{JoinError, SpawnError, ThreadSpawnArgs, TlsIndex};
 use super::{object::InternalObject, MinimalRuntime};
 use crate::{
     object::Protections,
-    runtime::{idcounter::IdCounter, simple_mutex::Mutex},
+    runtime::idcounter::IdCounter,
     rustc_alloc::collections::BTreeMap,
+    simple_mutex::Mutex,
     syscall::{
         ThreadSpawnError, ThreadSpawnFlags, ThreadSync, ThreadSyncError, ThreadSyncFlags,
         ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,

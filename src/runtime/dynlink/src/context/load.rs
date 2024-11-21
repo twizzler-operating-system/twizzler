@@ -18,6 +18,21 @@ use crate::{
     DynlinkError, DynlinkErrorKind, HeaderError,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+pub struct LoadIds {
+    pub comp: CompartmentId,
+    pub lib: LibraryId,
+}
+
+impl From<&Library> for LoadIds {
+    fn from(value: &Library) -> Self {
+        Self {
+            comp: value.comp_id,
+            lib: value.id(),
+        }
+    }
+}
+
 impl Context {
     pub(crate) fn get_secgate_info(
         &self,
@@ -111,6 +126,7 @@ impl Context {
         comp_id: CompartmentId,
         unlib: UnloadedLibrary,
         idx: NodeIndex,
+        allows_gates: bool,
     ) -> Result<Library, DynlinkError> {
         let backing = self.engine.load_object(&unlib)?;
         let elf = backing.get_elf()?;
@@ -261,6 +277,7 @@ impl Context {
             tls_id,
             ctor_info,
             secgate_info,
+            allows_gates,
         ))
     }
 
@@ -269,11 +286,11 @@ impl Context {
         unlib: &UnloadedLibrary,
     ) -> Option<(NodeIndex, CompartmentId, &Compartment)> {
         for (idx, comp) in self.compartments.iter().enumerate() {
-            if let Some(lib_id) = comp.library_names.get(&unlib.name) {
+            if let Some(lib_id) = comp.1.library_names.get(&unlib.name) {
                 let lib = self.get_library(LibraryId(*lib_id));
                 if let Ok(lib) = lib {
                     // Only allow cross-compartment refs for a library that has secure gates.
-                    if lib.secgate_info.info_addr.is_some() {
+                    if lib.secgate_info.info_addr.is_some() && lib.allows_gates() {
                         return Some((*lib_id, CompartmentId(idx), comp));
                     }
                     return None;
@@ -284,23 +301,63 @@ impl Context {
         None
     }
 
+    fn has_secgate_info(&self, elf: &elf::ElfBytes<'_, NativeEndian>) -> bool {
+        elf.section_header_by_name(".twz_secgate_info")
+            .ok()
+            .is_some_and(|s| s.is_some())
+    }
+
+    fn select_compartment(
+        &mut self,
+        unlib: &UnloadedLibrary,
+        parent_comp_name: String,
+    ) -> Option<CompartmentId> {
+        let backing = self.engine.load_object(unlib).ok()?;
+        let elf = backing.get_elf().ok()?;
+        if self.has_secgate_info(&elf) {
+            let name = format!("{}::{}", parent_comp_name, unlib.name);
+            let id = self
+                .add_compartment(&name, NewCompartmentFlags::empty())
+                .ok()?;
+            tracing::debug!(
+                "creating new compartment {}({}) for library {}",
+                name,
+                id,
+                unlib.name
+            );
+            // TODO: Handle collisions
+            Some(id)
+        } else {
+            None
+        }
+    }
+
     // Load a library and all its deps, using the supplied name resolution callback for deps.
     pub(crate) fn load_library(
         &mut self,
         comp_id: CompartmentId,
         root_unlib: UnloadedLibrary,
         idx: NodeIndex,
-    ) -> Result<NodeIndex, DynlinkError> {
-        debug!("loading library {} (idx = {:?})", root_unlib, idx);
+        allows_gates: bool,
+    ) -> Result<Vec<LoadIds>, DynlinkError> {
+        let root_comp_name = self.get_compartment(comp_id)?.name.clone();
+        debug!(
+            "loading library {} (idx = {:?}) in {}",
+            root_unlib, idx, root_comp_name
+        );
+        let mut ids = vec![];
         // First load the main library.
-        let lib = self.load(comp_id, root_unlib.clone(), idx).map_err(|e| {
-            DynlinkError::new_collect(
-                DynlinkErrorKind::LibraryLoadFail {
-                    library: root_unlib.clone(),
-                },
-                vec![e],
-            )
-        })?;
+        let lib = self
+            .load(comp_id, root_unlib.clone(), idx, allows_gates)
+            .map_err(|e| {
+                DynlinkError::new_collect(
+                    DynlinkErrorKind::LibraryLoadFail {
+                        library: root_unlib.clone(),
+                    },
+                    vec![e],
+                )
+            })?;
+        ids.push((&lib).into());
 
         // Second, go through deps
         let deps = self.enumerate_needed(&lib).map_err(|e| {
@@ -346,7 +403,7 @@ impl Context {
                         (
                             None,
                             self.engine
-                                .select_compartment(&dep_unlib)
+                                .select_compartment(&dep_unlib, root_comp_name.clone())
                                 .unwrap_or(comp_id),
                         )
                     };
@@ -360,7 +417,8 @@ impl Context {
 
                     let comp = self.get_compartment_mut(load_comp)?;
                     comp.library_names.insert(dep_unlib.name.clone(), idx);
-                    self.load_library(comp_id, dep_unlib.clone(), idx)
+                    let mut recs = self
+                        .load_library(load_comp, dep_unlib.clone(), idx, false)
                         .map_err(|e| {
                             DynlinkError::new_collect(
                                 DynlinkErrorKind::LibraryLoadFail {
@@ -368,7 +426,9 @@ impl Context {
                                 },
                                 vec![e],
                             )
-                        })?
+                        })?;
+                    ids.append(&mut recs);
+                    idx
                 };
                 self.add_dep(lib.idx, idx);
                 Ok(idx)
@@ -384,17 +444,16 @@ impl Context {
 
         assert_eq!(idx, lib.idx);
         self.library_deps[idx] = LoadedOrUnloaded::Loaded(lib);
-        Ok(idx)
+        Ok(ids)
     }
 
-    /// Load a library into a given compartment. The namer callback resolves names to Backing
-    /// objects, allowing the caller to hook into the "name-of-dependency" -> backing object
-    /// pipeline.
+    /// Load a library into a given compartment.
     pub fn load_library_in_compartment(
         &mut self,
         comp_id: CompartmentId,
         unlib: UnloadedLibrary,
-    ) -> Result<LibraryId, DynlinkError> {
+        allows_gates: bool,
+    ) -> Result<Vec<LoadIds>, DynlinkError> {
         let idx = self.add_library(unlib.clone());
         // Step 1: insert into the compartment's library names.
         let comp = self.get_compartment_mut(comp_id)?;
@@ -409,12 +468,6 @@ impl Context {
         comp.library_names.insert(unlib.name.clone(), idx);
 
         // Step 2: load the library. This call recurses on dependencies.
-        let idx = self.load_library(comp_id, unlib.clone(), idx)?;
-        match &self.library_deps[idx] {
-            LoadedOrUnloaded::Unloaded(_) => {
-                Err(DynlinkErrorKind::LibraryLoadFail { library: unlib }.into())
-            }
-            LoadedOrUnloaded::Loaded(_) => Ok(LibraryId(idx)),
-        }
+        self.load_library(comp_id, unlib.clone(), idx, allows_gates)
     }
 }
