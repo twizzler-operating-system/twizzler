@@ -17,7 +17,7 @@ use crate::{
     arch::SLOTS,
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
-    runtime::simple_mutex::Mutex,
+    simple_mutex::Mutex,
 };
 
 struct SlotTracker {

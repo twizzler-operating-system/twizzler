@@ -12,6 +12,7 @@ use tracing::{debug, warn};
 use super::{Context, LoadedOrUnloaded};
 use crate::{
     compartment::{Compartment, CompartmentId},
+    context::NewCompartmentFlags,
     engines::{LoadDirective, LoadFlags},
     library::{CtorInfo, Library, LibraryId, SecgateInfo, UnloadedLibrary},
     tls::TlsModule,
@@ -291,7 +292,7 @@ impl Context {
                 if let Ok(lib) = lib {
                     // Only allow cross-compartment refs for a library that has secure gates.
                     if lib.secgate_info.info_addr.is_some() && lib.allows_gates() {
-                        return Some((*lib_id, CompartmentId(idx), comp));
+                        return Some((*lib_id, CompartmentId(idx), comp.1));
                     }
                     return None;
                 }
@@ -402,8 +403,7 @@ impl Context {
                     } else {
                         (
                             None,
-                            self.engine
-                                .select_compartment(&dep_unlib, root_comp_name.clone())
+                            self.select_compartment(&dep_unlib, root_comp_name.clone())
                                 .unwrap_or(comp_id),
                         )
                     };

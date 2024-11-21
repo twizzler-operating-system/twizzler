@@ -19,7 +19,7 @@ use super::{object, MinimalRuntime};
 use crate::{
     object::{ObjID, NULLPAGE_SIZE},
     print_err,
-    runtime::simple_mutex::Mutex,
+    simple_mutex::Mutex,
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 

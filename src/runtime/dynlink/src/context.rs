@@ -225,7 +225,11 @@ impl Context {
     }
 
     /// Create a new compartment with a given name.
-    pub fn add_compartment(&mut self, name: impl ToString, new_comp_flags::NewCompartmentFlags) -> Result<CompartmentId, DynlinkError> {
+    pub fn add_compartment(
+        &mut self,
+        name: impl ToString,
+        new_comp_flags: NewCompartmentFlags,
+    ) -> Result<CompartmentId, DynlinkError> {
         let name = name.to_string();
         let idx = self.compartments.next_push_index();
         let comp = Compartment::new(name.clone(), CompartmentId(idx), new_comp_flags);

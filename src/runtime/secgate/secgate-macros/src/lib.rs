@@ -384,7 +384,7 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
             #args_tuple
             let frame = secgate::frame();
             // Allocate stack space for args + ret. Args::with_alloca also inits the memory.
-            secgate::GateCallInfo::with_alloca(secgate::get_thread_id(), secgate::get_sctx_id(), |info| {
+            let ret = secgate::GateCallInfo::with_alloca(secgate::get_thread_id(), secgate::get_sctx_id(), |info| {
                 #mod_name::Args::with_alloca(tuple, |args| {
                     #mod_name::Ret::with_alloca(|ret| {
                         // Call the trampoline in the mod.

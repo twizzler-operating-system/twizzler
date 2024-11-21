@@ -7,7 +7,7 @@ use twizzler_abi::{
 };
 
 use crate::{
-    memory::context::{KernelMemoryContext, KernelObject, ObjectContextInfo},
+    memory::context::{KernelMemoryContext, KernelObject, ObjectContextInfo, UserContext},
     mutex::Mutex,
     obj::LookupFlags,
     spinlock::Spinlock,

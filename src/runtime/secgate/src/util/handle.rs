@@ -36,8 +36,8 @@ impl<ServerData> HandleMgr<ServerData> {
         Self {
             handles: BTreeMap::new(),
             max: match max {
-                Some(m) => NonZeroUsize::new(max)
-                None => None
+                Some(m) => NonZeroUsize::new(m),
+                None => None,
             },
         }
     }
