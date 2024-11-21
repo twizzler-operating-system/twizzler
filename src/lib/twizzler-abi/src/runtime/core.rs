@@ -43,7 +43,7 @@ impl MinimalRuntime {
     }
 
     pub fn abort(&self) -> ! {
-        core::intrinsics::abort();
+        unsafe { core::intrinsics::abort() };
     }
 
     pub fn pre_main_hook(&self) -> Option<i32> {

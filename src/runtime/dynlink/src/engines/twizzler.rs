@@ -5,7 +5,7 @@ use twizzler_abi::{
         sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, ObjectSource,
     },
 };
-use twizzler_runtime_api::MapFlags;
+use twizzler_rt_abi::object::MapFlags;
 
 use super::{Backing, LoadDirective, LoadFlags};
 use crate::{DynlinkError, DynlinkErrorKind};
@@ -62,7 +62,7 @@ pub fn load_segments(src: &Backing, ld: &[LoadDirective]) -> Result<Vec<Backing>
         }
 
         Ok(ObjectSource::new_copy(
-            src.obj.id,
+            src.obj.id(),
             (src_start % MAX_SIZE) as u64,
             (dest_start % MAX_SIZE) as u64,
             len,
@@ -87,22 +87,20 @@ pub fn load_segments(src: &Backing, ld: &[LoadDirective]) -> Result<Vec<Backing>
     let text_id = sys_object_create(create_spec, &text_cmds, &[])
         .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
-    let runtime = twizzler_runtime_api::get_runtime();
+    #[allow(deprecated)]
+    let (text_handle, data_handle) = twizzler_rt_abi::object::twz_rt_map_two_objects(
+        text_id,
+        MapFlags::READ | MapFlags::EXEC,
+        data_id,
+        MapFlags::READ | MapFlags::WRITE,
+    )
+    .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
-    let (text_handle, data_handle) = runtime
-        .map_two_objects(
-            text_id,
-            MapFlags::READ | MapFlags::EXEC,
-            data_id,
-            MapFlags::READ | MapFlags::WRITE,
-        )
-        .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
-
-    if data_handle.start as usize != text_handle.start as usize + MAX_SIZE {
+    if data_handle.start() as usize != text_handle.start() as usize + MAX_SIZE {
         tracing::error!(
             "internal runtime error: failed to map text and data adjacent and in-order ({:p} {:p})",
-            text_handle.start,
-            data_handle.start
+            text_handle.start(),
+            data_handle.start()
         );
         return Err(DynlinkErrorKind::NewBackingFail.into());
     }

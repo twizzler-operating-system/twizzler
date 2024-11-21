@@ -8,7 +8,7 @@ use std::{
 };
 
 use tracing::{error, trace};
-use twizzler_runtime_api::TlsIndex;
+use twizzler_rt_abi::thread::TlsIndex;
 
 use crate::{
     arch::MINIMUM_TLS_ALIGNMENT, compartment::Compartment, DynlinkError, DynlinkErrorKind,

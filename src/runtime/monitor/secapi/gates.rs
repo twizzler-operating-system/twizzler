@@ -1,6 +1,8 @@
 use secgate::{util::Descriptor, Crossing};
-use twizzler_runtime_api::{
-    AddrRange, DlPhdrInfo, LibraryId, MapError, ObjID, SpawnError, ThreadSpawnArgs,
+use twizzler_rt_abi::{
+    debug::{DlPhdrInfo, LoadedImageId},
+    object::{MapError, ObjID},
+    thread::{SpawnError, ThreadSpawnArgs},
 };
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
@@ -76,7 +78,8 @@ pub struct LibraryInfo {
     pub compartment_id: ObjID,
     pub objid: ObjID,
     pub slot: usize,
-    pub range: AddrRange,
+    pub start: *const u8,
+    pub len: usize,
     pub dl_info: DlPhdrInfo,
     pub desc: Descriptor,
 }
@@ -218,7 +221,7 @@ pub fn monitor_rt_drop_library_handle(info: &secgate::GateCallInfo, desc: Descri
 pub fn monitor_rt_object_map(
     info: &secgate::GateCallInfo,
     id: ObjID,
-    flags: twizzler_runtime_api::MapFlags,
+    flags: twizzler_rt_abi::object::MapFlags,
 ) -> Result<crate::MappedObjectAddrs, MapError> {
     use twz_rt::{RuntimeState, OUR_RUNTIME};
 
@@ -262,7 +265,7 @@ pub fn monitor_rt_object_unmap(
     info: &secgate::GateCallInfo,
     _slot: usize,
     id: ObjID,
-    flags: twizzler_runtime_api::MapFlags,
+    flags: twizzler_rt_abi::object::MapFlags,
 ) {
     use twz_rt::{RuntimeState, OUR_RUNTIME};
     if OUR_RUNTIME.state().contains(RuntimeState::READY) {

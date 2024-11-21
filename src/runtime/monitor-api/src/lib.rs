@@ -3,10 +3,9 @@
 //! dependency.
 
 #![feature(naked_functions)]
-#![feature(pointer_byte_offsets)]
-#![feature(pointer_is_aligned)]
 #![feature(result_flattening)]
 #![feature(thread_local)]
+#![feature(pointer_is_aligned_to)]
 use std::{
     alloc::Layout,
     marker::PhantomData,
@@ -26,7 +25,7 @@ mod gates {
 }
 
 pub use gates::*;
-use twizzler_runtime_api::{AddrRange, DlPhdrInfo, LibraryId};
+use twizzler_rt_abi::debug::{DlPhdrInfo, LoadedImageId};
 
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and
 /// read-only from the compartment.
@@ -38,7 +37,7 @@ pub struct SharedCompConfig {
     // Pointer to the current TLS template. Read-only by compartment, writable by monitor.
     tls_template: AtomicPtr<TlsTemplateInfo>,
     /// The root library ID for this compartment. May be None if no libraries have been loaded.
-    pub root_library_id: Option<LibraryId>,
+    pub root_library_id: Option<LoadedImageId>,
 }
 
 struct CompConfigFinder {
@@ -177,8 +176,10 @@ pub struct LibraryInfo<'a> {
     pub compartment_id: ObjID,
     /// The object ID that the library was loaded from
     pub objid: ObjID,
-    /// The address range the library was loaded to
-    pub range: AddrRange,
+    /// The start address of range the library was loaded to
+    pub start: *const u8,
+    /// Length of range library was loaded to
+    pub len: usize,
     /// The DlPhdrInfo for this library
     pub dl_info: DlPhdrInfo,
     /// The slot of the library text.
@@ -194,13 +195,14 @@ impl<'a> LibraryInfo<'a> {
             name: lazy_sb::read_string_from_sb(raw.name_len),
             compartment_id: raw.compartment_id,
             objid: raw.objid,
-            range: raw.range,
+            start: raw.start,
+            len: raw.len,
             dl_info: raw.dl_info,
             slot: raw.slot,
             _pd: PhantomData,
             internal_name: name,
         };
-        this.dl_info.name = this.internal_name.as_ptr();
+        this.dl_info.name = this.internal_name.as_ptr().cast();
         this
     }
 }
@@ -491,7 +493,7 @@ mod lazy_sb {
     use std::cell::OnceCell;
 
     use secgate::util::SimpleBuffer;
-    use twizzler_runtime_api::MapFlags;
+    use twizzler_rt_abi::object::MapFlags;
 
     struct LazyThreadSimpleBuffer {
         sb: OnceCell<SimpleBuffer>,
@@ -509,9 +511,9 @@ mod lazy_sb {
                 .ok()
                 .flatten()
                 .expect("failed to get per-thread monitor simple buffer");
-            let oh = twizzler_runtime_api::get_runtime()
-                .map_object(id, MapFlags::READ | MapFlags::WRITE)
-                .unwrap();
+            let oh =
+                twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)
+                    .unwrap();
             SimpleBuffer::new(oh)
         }
 

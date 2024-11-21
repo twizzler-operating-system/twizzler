@@ -2,6 +2,7 @@ use std::process::exit;
 
 use dynlink::{
     compartment::MONITOR_COMPARTMENT_ID,
+    context::runtime::RuntimeInitInfo,
     engines::{Backing, ContextEngine},
     library::UnloadedLibrary,
     symbol::LookupFlags,
@@ -10,7 +11,10 @@ use dynlink::{
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 use twizzler_abi::{arch::SLOTS, object::ObjID, syscall::sys_object_read_map};
-use twizzler_runtime_api::{AuxEntry, MapFlags};
+use twizzler_rt_abi::{
+    core::{InitInfoPtrs, RuntimeInfo},
+    object::MapFlags,
+};
 
 fn find_init_name(name: &str) -> Option<ObjID> {
     let init_info = twizzler_abi::runtime::get_kernel_init_info();
@@ -36,8 +40,7 @@ impl ContextEngine for Engine {
     fn load_object(&mut self, unlib: &UnloadedLibrary) -> Result<Backing, DynlinkError> {
         let id = name_resolver(&unlib.name)?;
         Ok(Backing::new(
-            twizzler_runtime_api::get_runtime()
-                .map_object(id, MapFlags::READ)
+            twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ)
                 .map_err(|_err| DynlinkErrorKind::NewBackingFail)?,
         ))
     }
@@ -95,8 +98,15 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     let ptr: extern "C" fn(usize) = unsafe { core::mem::transmute(value) };
 
     let mut info = ctx.build_runtime_info(monitor_id, tls).unwrap();
-    let info_ptr = &info as *const _ as usize;
-    let aux = vec![AuxEntry::RuntimeInfo(info_ptr, 0), AuxEntry::Null];
+    let info_ptr = &mut info as *mut RuntimeInitInfo;
+    let mut rtinfo = RuntimeInfo {
+        flags: 0,
+        kind: twizzler_rt_abi::core::RUNTIME_INIT_MONITOR,
+        init_info: InitInfoPtrs {
+            monitor: info_ptr.cast(),
+        },
+    };
+    let rtinfo_ptr = &mut rtinfo as *mut RuntimeInfo;
 
     let mut used = vec![];
     used.reserve(SLOTS);
@@ -110,9 +120,8 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     }
     info.used_slots = used;
 
-    let aux_ptr = aux.as_slice().as_ptr();
     debug!("jumping to {:x}", value);
-    (ptr)(aux_ptr as usize);
+    (ptr)(rtinfo_ptr as usize);
 
     warn!("returned from monitor, exiting...");
     exit(0);
