@@ -7,8 +7,9 @@ use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     thread::{ExecutionState, ThreadRepr},
 };
-use twizzler_runtime_api::{
-    CoreRuntime, JoinError, MapFlags, ObjectRuntime, SpawnError, ThreadSpawnArgs,
+use twizzler_rt_abi::{
+    object::MapFlags,
+    thread::{JoinError, SpawnError, ThreadSpawnArgs},
 };
 
 use super::internal::InternalThread;
@@ -123,8 +124,8 @@ impl<'a> Drop for IdDropper<'a> {
 impl ReferenceRuntime {
     pub(super) fn impl_spawn(
         &self,
-        args: twizzler_runtime_api::ThreadSpawnArgs,
-    ) -> Result<u32, twizzler_runtime_api::SpawnError> {
+        args: twizzler_rt_abi::thread::ThreadSpawnArgs,
+    ) -> Result<u32, twizzler_rt_abi::thread::SpawnError> {
         // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
         let tls = TLS_GEN_MGR
@@ -205,12 +206,12 @@ impl ReferenceRuntime {
             inner
                 .all_threads
                 .get(&id)
-                .ok_or(JoinError::LookupError)?
+                .ok_or(JoinError::ThreadNotFound)?
                 .repr_handle()
                 .clone()
         };
         let base =
-            unsafe { (repr.start.add(NULLPAGE_SIZE) as *const ThreadRepr).as_ref() }.unwrap();
+            unsafe { (repr.start().add(NULLPAGE_SIZE) as *const ThreadRepr).as_ref() }.unwrap();
         loop {
             let (state, _code) = base.wait(timeout).ok_or(JoinError::Timeout)?;
             if state == ExecutionState::Exited {

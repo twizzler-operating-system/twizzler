@@ -12,12 +12,9 @@ mod file;
 mod object;
 mod process;
 mod slot;
-mod stdio;
 mod thread;
 mod time;
 pub(crate) mod upcall;
-
-pub use core::CompartmentInitInfo;
 
 pub use thread::RuntimeThreadControl;
 pub use upcall::set_upcall_handler;
@@ -76,33 +73,12 @@ pub static OUR_RUNTIME: ReferenceRuntime = ReferenceRuntime {
     object_manager: Mutex::new(ObjectHandleManager::new()),
 };
 
-#[cfg(feature = "runtime")]
-pub(crate) mod do_impl {
-    use twizzler_runtime_api::Runtime;
-
-    use super::ReferenceRuntime;
-    use crate::preinit_println;
-
-    impl Runtime for ReferenceRuntime {}
-
-    #[inline]
-    #[no_mangle]
-    // Returns a reference to the currently-linked Runtime implementation.
-    pub fn __twz_get_runtime() -> &'static (dyn Runtime + Sync) {
-        &super::OUR_RUNTIME
-    }
-
-    // Ensure the compiler doesn't optimize us away.
-    #[used]
-    static USE_MARKER: fn() -> &'static (dyn Runtime + Sync) = __twz_get_runtime;
-}
-
 // These are exported by libunwind, but not re-exported by the standard library that pulls that in.
 // Or, at least, that's what it seems like. In any case, they're no-ops in libunwind and musl, so
 // this is fine for now.
 #[no_mangle]
-pub fn __register_frame_info() {}
+pub extern "C" fn __register_frame_info() {}
 #[no_mangle]
-pub fn __deregister_frame_info() {}
+pub extern "C" fn __deregister_frame_info() {}
 #[no_mangle]
-pub fn __cxa_finalize() {}
+pub extern "C" fn __cxa_finalize() {}

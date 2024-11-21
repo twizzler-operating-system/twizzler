@@ -19,7 +19,6 @@ use std::{
 use dynlink::tls::Tcb;
 use monitor_api::TlsTemplateInfo;
 use tracing::trace;
-use twizzler_runtime_api::CoreRuntime;
 
 use crate::{preinit_println, runtime::OUR_RUNTIME};
 
@@ -119,7 +118,7 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
         );
         // Find the arguments. arg is a pointer to a Box::into_raw of a Box of ThreadSpawnArgs.
         let arg = unsafe {
-            (arg as *const twizzler_runtime_api::ThreadSpawnArgs)
+            (arg as *const twizzler_rt_abi::thread::ThreadSpawnArgs)
                 .as_ref()
                 .unwrap()
         };

@@ -16,9 +16,11 @@ use twizzler_abi::{
     syscall::{sys_object_map, UnmapFlags},
     thread::{ExecutionState, ThreadRepr},
 };
-use twizzler_runtime_api::{
-    FsError, InternalHandleRefs, JoinError, MapError, ObjectHandle, ObjectRuntime, RawFd,
-    RustFsRuntime, SeekFrom,
+use twizzler_rt_abi::{
+    fd::{OpenError, RawFd},
+    io::{IoError, SeekFrom},
+    object::{MapError, MapFlags, ObjectHandle},
+    thread::JoinError,
 };
 
 use super::ReferenceRuntime;
@@ -46,21 +48,21 @@ fn get_fd_slots() -> &'static Mutex<StableVec<Arc<Mutex<FileDesc>>>> {
     &FD_SLOTS
 }
 
-impl RustFsRuntime for ReferenceRuntime {
-    fn open(&self, path: &core::ffi::CStr) -> Result<RawFd, FsError> {
+impl ReferenceRuntime {
+    pub fn open(&self, path: &core::ffi::CStr) -> Result<RawFd, OpenError> {
         let obj_id = ObjID::new(
             path.to_str()
-                .map_err(|_err| (FsError::InvalidPath))?
+                .map_err(|_err| (OpenError::InvalidArgument))?
                 .parse::<u128>()
-                .map_err(|_err| (FsError::InvalidPath))?,
+                .map_err(|_err| (OpenError::InvalidArgument))?,
         );
-        let flags = twizzler_runtime_api::MapFlags::READ | twizzler_runtime_api::MapFlags::WRITE;
+        let flags = MapFlags::READ | MapFlags::WRITE;
 
         let handle = self.map_object(obj_id, flags).unwrap();
 
         let metadata_handle = unsafe {
             handle
-                .start
+                .start()
                 .offset(NULLPAGE_SIZE as isize)
                 .cast::<FileMetadata>()
         };
@@ -82,17 +84,17 @@ impl RustFsRuntime for ReferenceRuntime {
         Ok(fd.try_into().unwrap())
     }
 
-    fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, FsError> {
+    pub fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, IoError> {
         let binding = get_fd_slots().lock().unwrap();
         let file_desc = binding
             .get(fd.try_into().unwrap())
-            .ok_or(FsError::LookupError)?;
+            .ok_or(IoError::InvalidDesc)?;
 
         let mut binding = file_desc.lock().unwrap();
 
         unsafe {
             buf.as_mut_ptr().copy_from(
-                binding.handle.start.offset(
+                binding.handle.start().offset(
                     NULLPAGE_SIZE as isize
                         + binding.pos as isize
                         + size_of::<FileMetadata>() as isize,
@@ -106,18 +108,18 @@ impl RustFsRuntime for ReferenceRuntime {
         Ok(buf.len())
     }
 
-    fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, FsError> {
+    pub fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, IoError> {
         let binding = get_fd_slots().lock().unwrap();
         let file_desc = binding
             .get(fd.try_into().unwrap())
-            .ok_or(FsError::LookupError)?;
+            .ok_or(IoError::InvalidDesc)?;
 
         let mut binding = file_desc.lock().unwrap();
 
         unsafe {
             binding
                 .handle
-                .start
+                .start()
                 .offset(
                     NULLPAGE_SIZE as isize
                         + binding.pos as isize
@@ -131,29 +133,24 @@ impl RustFsRuntime for ReferenceRuntime {
         Ok(buf.len())
     }
 
-    fn close(&self, fd: RawFd) -> Result<(), FsError> {
-        let file_desc = get_fd_slots()
+    pub fn close(&self, fd: RawFd) -> Result<(), IoError> {
+        let _file_desc = get_fd_slots()
             .lock()
             .unwrap()
             .remove(fd.try_into().unwrap())
-            .ok_or(FsError::LookupError)?;
-
-        let mut binding = file_desc.lock().unwrap();
-
-        self.release_handle(&mut binding.handle);
-
+            .ok_or(IoError::InvalidDesc)?;
         Ok(())
     }
 
-    fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, FsError> {
+    fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, IoError> {
         let binding = get_fd_slots().lock().unwrap();
 
         let file_desc = binding
             .get(fd.try_into().unwrap())
-            .ok_or(FsError::LookupError)?;
+            .ok_or(IoError::InvalidDesc)?;
 
         let mut binding = file_desc.lock().unwrap();
-        let metadata_handle = unsafe { &mut *binding.handle.start.cast::<FileMetadata>() };
+        let metadata_handle = unsafe { &mut *binding.handle.start().cast::<FileMetadata>() };
 
         let new_pos: i64 = match pos {
             SeekFrom::Start(x) => x as i64,
@@ -162,7 +159,7 @@ impl RustFsRuntime for ReferenceRuntime {
         };
 
         if new_pos > metadata_handle.size.try_into().unwrap() || new_pos < 0 {
-            Err(FsError::SeekError)
+            Err(IoError::SeekError)
         } else {
             binding.pos = new_pos as u64;
             Ok(binding.pos.try_into().unwrap())

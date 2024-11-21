@@ -9,7 +9,7 @@ use std::{
 use dynlink::tls::Tcb;
 use tracing::trace;
 use twizzler_abi::{object::NULLPAGE_SIZE, thread::ThreadRepr};
-use twizzler_runtime_api::{CoreRuntime, ObjectHandle, ThreadSpawnArgs};
+use twizzler_rt_abi::{object::ObjectHandle, thread::ThreadSpawnArgs};
 
 use super::RuntimeThreadControl;
 use crate::runtime::{thread::MIN_STACK_ALIGN, OUR_RUNTIME};
@@ -51,7 +51,7 @@ impl InternalThread {
         // Safety: repr_handle ensures that the start memory will be alive, and that it contains
         // the thread repr struct at the base.
         unsafe {
-            (self.repr_handle.start.add(NULLPAGE_SIZE) as *const ThreadRepr)
+            (self.repr_handle.start().add(NULLPAGE_SIZE) as *const ThreadRepr)
                 .as_ref()
                 .unwrap()
         }

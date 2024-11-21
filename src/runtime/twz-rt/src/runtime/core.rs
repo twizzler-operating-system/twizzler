@@ -1,9 +1,12 @@
 //! Implements the core runtime functions.
 
-use dynlink::{context::runtime::RuntimeInitInfo, library::CtorInfo};
+use dynlink::context::runtime::RuntimeInitInfo;
 use monitor_api::SharedCompConfig;
 use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
-use twizzler_runtime_api::{AuxEntry, BasicAux, CoreRuntime};
+use twizzler_rt_abi::core::{
+    BasicAux, BasicReturn, CompartmentInitInfo, CtorSet, RuntimeInfo, RUNTIME_INIT_COMP,
+    RUNTIME_INIT_MONITOR,
+};
 
 use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
 use crate::{
@@ -13,46 +16,15 @@ use crate::{
     RuntimeThreadControl,
 };
 
-#[repr(C)]
-pub struct CompartmentInitInfo {
-    pub ctor_array_start: usize,
-    pub ctor_array_len: usize,
-    pub comp_config_addr: usize,
-}
-
-fn build_basic_aux(aux: &[AuxEntry]) -> BasicAux {
-    let args = aux
-        .iter()
-        .find_map(|aux| match aux {
-            AuxEntry::Arguments(len, addr) => Some((*len, *addr as usize as *const _)),
-            _ => None,
-        })
-        .unwrap_or((0, core::ptr::null()));
-
-    let env = aux
-        .iter()
-        .find_map(|aux| match aux {
-            AuxEntry::Environment(addr) => Some(*addr as usize as *const _),
-            _ => None,
-        })
-        .unwrap_or(core::ptr::null());
-
-    BasicAux {
-        argc: args.0,
-        args: args.1,
-        env,
-    }
-}
-
 #[thread_local]
 static TLS_TEST: usize = 3222;
 
-impl CoreRuntime for ReferenceRuntime {
-    fn default_allocator(&self) -> &'static dyn std::alloc::GlobalAlloc {
+impl ReferenceRuntime {
+    pub fn default_allocator(&self) -> &'static dyn std::alloc::GlobalAlloc {
         self.get_alloc()
     }
 
-    fn exit(&self, code: i32) -> ! {
+    pub fn exit(&self, code: i32) -> ! {
         if self.state().contains(RuntimeState::READY) {
             twizzler_abi::syscall::sys_thread_exit(code as u64);
         } else {
@@ -61,7 +33,7 @@ impl CoreRuntime for ReferenceRuntime {
         }
     }
 
-    fn abort(&self) -> ! {
+    pub fn abort(&self) -> ! {
         if self.state().contains(RuntimeState::READY) {
             preinit_abort();
         } else {
@@ -70,55 +42,52 @@ impl CoreRuntime for ReferenceRuntime {
         }
     }
 
-    fn runtime_entry(
+    pub fn runtime_entry(
         &self,
-        aux: *const twizzler_runtime_api::AuxEntry,
-        std_entry: unsafe extern "C" fn(
-            twizzler_runtime_api::BasicAux,
-        ) -> twizzler_runtime_api::BasicReturn,
+        rtinfo: *const RuntimeInfo,
+        std_entry: unsafe extern "C" fn(BasicAux) -> BasicReturn,
     ) -> ! {
-        // Step 1: build the aux slice (count until we see a null entry)
-        let aux_len = unsafe {
-            let mut count = 0;
-            let mut tmp = aux;
-            while !tmp.is_null() {
-                if preinit_unwrap(tmp.as_ref()) == &AuxEntry::Null {
-                    break;
-                }
-                tmp = tmp.add(1);
-                count += 1;
+        let rtinfo = unsafe { rtinfo.as_ref().unwrap() };
+        match rtinfo.kind {
+            RUNTIME_INIT_MONITOR => {
+                let init_info = unsafe {
+                    rtinfo
+                        .init_info
+                        .monitor
+                        .cast::<RuntimeInitInfo>()
+                        .as_ref()
+                        .unwrap()
+                };
+                self.init_for_monitor(init_info);
             }
-            count
-        };
-        let aux_slice = if aux.is_null() || aux_len == 0 {
-            preinit_println!("no AUX info provided");
-            preinit_abort();
-        } else {
-            unsafe { core::slice::from_raw_parts(aux, aux_len) }
-        };
-        // Step 2: do some early AUX processing
-        let (init_info, is_monitor) = preinit_unwrap(aux_slice.iter().find_map(|aux| match aux {
-            twizzler_runtime_api::AuxEntry::RuntimeInfo(info, data) => Some((*info, *data == 0)),
-            _ => None,
-        }));
-
-        if is_monitor {
-            let init_info =
-                unsafe { preinit_unwrap((init_info as *const RuntimeInitInfo).as_ref()) };
-            self.init_for_monitor(init_info);
-        } else {
-            let init_info =
-                unsafe { preinit_unwrap((init_info as *const CompartmentInitInfo).as_ref()) };
-            self.init_for_compartment(init_info);
+            RUNTIME_INIT_COMP => {
+                let init_info = unsafe {
+                    rtinfo
+                        .init_info
+                        .comp
+                        .cast::<CompartmentInitInfo>()
+                        .as_ref()
+                        .unwrap()
+                };
+                self.init_for_compartment(init_info);
+            }
+            x => {
+                preinit_println!("unsupported runtime kind: {}", x);
+                preinit_abort();
+            }
         }
 
         // Step 3: call into libstd to finish setting up the standard library and call main
-        let ba = build_basic_aux(aux_slice);
+        let ba = BasicAux {
+            argc: rtinfo.argc,
+            args: rtinfo.args,
+            env: rtinfo.envp,
+        };
         let ret = unsafe { std_entry(ba) };
         self.exit(ret.code);
     }
 
-    fn pre_main_hook(&self) {
+    pub fn pre_main_hook(&self) {
         preinit_println!("====== {}", TLS_TEST);
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
@@ -127,7 +96,7 @@ impl CoreRuntime for ReferenceRuntime {
         }
     }
 
-    fn post_main_hook(&self) {}
+    pub fn post_main_hook(&self) {}
 }
 
 impl ReferenceRuntime {
@@ -155,7 +124,7 @@ impl ReferenceRuntime {
         unsafe {
             preinit_unwrap(
                 monitor_api::set_comp_config(
-                    (init_info.comp_config_addr as *const SharedCompConfig)
+                    (init_info.comp_config_info as *const SharedCompConfig)
                         .as_ref()
                         .unwrap(),
                 )
@@ -168,24 +137,21 @@ impl ReferenceRuntime {
         );
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
 
-        if init_info.ctor_array_start != 0 && init_info.ctor_array_len != 0 {
+        if !init_info.ctor_set_array.is_null() && init_info.ctor_set_len != 0 {
             let ctor_slice = unsafe {
-                core::slice::from_raw_parts(
-                    init_info.ctor_array_start as *const CtorInfo,
-                    init_info.ctor_array_len,
-                )
+                core::slice::from_raw_parts(init_info.ctor_set_array, init_info.ctor_set_len)
             };
             self.init_ctors(ctor_slice);
         }
     }
 
-    fn init_ctors(&self, ctor_array: &[CtorInfo]) {
+    fn init_ctors(&self, ctor_array: &[CtorSet]) {
         for ctor in ctor_array {
             unsafe {
-                if ctor.legacy_init != 0 {
-                    (core::mem::transmute::<_, extern "C" fn()>(ctor.legacy_init))();
+                if let Some(legacy_init) = ctor.legacy_init {
+                    (core::mem::transmute::<_, extern "C" fn()>(legacy_init))();
                 }
-                if ctor.init_array > 0 && ctor.init_array_len > 0 {
+                if !ctor.init_array.is_null() && ctor.init_array_len > 0 {
                     let init_slice: &[usize] = core::slice::from_raw_parts(
                         ctor.init_array as *const usize,
                         ctor.init_array_len,

@@ -78,7 +78,7 @@ impl MinimalRuntime {
                 start,
                 meta,
                 flags,
-                MAX_SIZE as u32,
+                MAX_SIZE - NULLPAGE_SIZE * 2,
             )
         })
     }

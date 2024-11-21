@@ -108,6 +108,9 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
         init_info: InitInfoPtrs {
             monitor: info_ptr.cast(),
         },
+        args: core::ptr::null_mut(),
+        argc: 0,
+        envp: core::ptr::null_mut(),
     };
     let rtinfo_ptr = &mut rtinfo as *mut RuntimeInfo;
 

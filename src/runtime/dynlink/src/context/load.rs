@@ -8,13 +8,14 @@ use elf::{
 use petgraph::stable_graph::NodeIndex;
 use secgate::RawSecGateInfo;
 use tracing::{debug, warn};
+use twizzler_rt_abi::core::CtorSet;
 
 use super::{Context, LoadedOrUnloaded};
 use crate::{
     compartment::{Compartment, CompartmentId},
     context::NewCompartmentFlags,
     engines::{LoadDirective, LoadFlags},
-    library::{CtorInfo, Library, LibraryId, SecgateInfo, UnloadedLibrary},
+    library::{Library, LibraryId, SecgateInfo, UnloadedLibrary},
     tls::TlsModule,
     DynlinkError, DynlinkErrorKind, HeaderError,
 };
@@ -62,7 +63,7 @@ impl Context {
         libname: &str,
         elf: &elf::ElfBytes<'_, NativeEndian>,
         base_addr: usize,
-    ) -> Result<CtorInfo, DynlinkError> {
+    ) -> Result<CtorSet, DynlinkError> {
         let dynamic = elf
             .dynamic()?
             .ok_or_else(|| DynlinkErrorKind::MissingSection {
@@ -113,9 +114,9 @@ impl Context {
             "{}: ctor info: init_array: {:?} len={}, legacy: {:?}",
             libname, init_array, init_array_len, leg_init
         );
-        Ok(CtorInfo {
-            legacy_init: leg_init.unwrap_or_default(),
-            init_array: init_array.unwrap_or_default(),
+        Ok(CtorSet {
+            legacy_init: leg_init.map(|x| unsafe { std::mem::transmute(x) }),
+            init_array: init_array.unwrap_or_default() as *mut _,
             init_array_len,
         })
     }

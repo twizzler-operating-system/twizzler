@@ -357,9 +357,6 @@ pub fn spawn_new_executable(
         .unwrap();
 
     let min_init = MinimalInitInfo {
-        args: spawnargs_start as *mut *mut i8,
-        argc: args.len(),
-        envp: spawnenv_start as *mut *mut i8,
         phdrs: phdr_vaddr.unwrap_or(0) as usize as *mut core::ffi::c_void,
         nr_phdrs: elf.hdr.phnum as usize,
     };
@@ -370,6 +367,9 @@ pub fn spawn_new_executable(
         init_info: InitInfoPtrs {
             min: (stack_nullpage + MIN_INIT_OFFSET) as *mut _,
         },
+        args: spawnargs_start as *mut *mut i8,
+        argc: args.len(),
+        envp: spawnenv_start as *mut *mut i8,
     };
 
     unsafe {

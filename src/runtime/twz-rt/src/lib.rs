@@ -17,9 +17,7 @@ pub(crate) mod arch;
 pub use arch::rr_upcall_entry;
 
 mod runtime;
-pub use runtime::{
-    set_upcall_handler, CompartmentInitInfo, RuntimeState, RuntimeThreadControl, OUR_RUNTIME,
-};
+pub use runtime::{set_upcall_handler, RuntimeState, RuntimeThreadControl, OUR_RUNTIME};
 
 mod error;
 pub use error::*;

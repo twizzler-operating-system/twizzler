@@ -79,12 +79,12 @@ impl MinimalRuntime {
                 min_init_info.phdrs as *const Phdr,
                 min_init_info.nr_phdrs,
             ));
-            if !min_init_info.envp.is_null() {
-                env_ptr = min_init_info.envp;
+            if !rt_info.envp.is_null() {
+                env_ptr = rt_info.envp;
             }
-            if !min_init_info.args.is_null() {
-                arg_ptr = min_init_info.args;
-                arg_count = min_init_info.argc;
+            if !rt_info.args.is_null() {
+                arg_ptr = rt_info.args;
+                arg_count = rt_info.argc;
             }
         }
 

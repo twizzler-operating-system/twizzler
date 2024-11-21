@@ -66,7 +66,7 @@ impl<T> InternalObject<T> {
                     start,
                     meta,
                     MapFlags::READ | MapFlags::WRITE,
-                    MAX_SIZE as u32,
+                    MAX_SIZE - NULLPAGE_SIZE * 2,
                 )
             },
             _pd: PhantomData,
@@ -112,7 +112,7 @@ impl<T> InternalObject<T> {
                     start,
                     meta,
                     prot.into(),
-                    MAX_SIZE as u32,
+                    MAX_SIZE - NULLPAGE_SIZE * 2,
                 )
             },
             slot,

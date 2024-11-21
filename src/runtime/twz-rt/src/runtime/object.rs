@@ -1,11 +1,15 @@
-use std::{collections::HashMap, ptr::NonNull, sync::atomic::AtomicUsize};
+use std::{
+    collections::HashMap,
+    ptr::NonNull,
+    sync::atomic::{AtomicU64, AtomicUsize},
+};
 
 use tracing::warn;
 use twizzler_abi::{
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_map, ObjectMapError},
 };
-use twizzler_runtime_api::{MapError, MapFlags, ObjectHandle, ObjectRuntime};
+use twizzler_rt_abi::object::{MapError, MapFlags, ObjID, ObjectHandle};
 
 use super::ReferenceRuntime;
 
@@ -23,21 +27,32 @@ fn mapflags_into_prot(flags: MapFlags) -> Protections {
     prot
 }
 
-pub(crate) fn new_object_handle(
-    id: twizzler_runtime_api::ObjID,
-    slot: usize,
-    flags: MapFlags,
-) -> ObjectHandle {
-    ObjectHandle::new(
-        Some(NonNull::new(Box::into_raw(Box::default())).unwrap()),
-        id,
-        flags,
-        (slot * MAX_SIZE) as *mut u8,
-        (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut u8,
-    )
+#[repr(C)]
+struct RuntimeHandleInfo {
+    refs: AtomicU64,
 }
 
-fn map_sys_err(sys_err: ObjectMapError) -> twizzler_runtime_api::MapError {
+pub(crate) fn new_runtime_info() -> *mut RuntimeHandleInfo {
+    let rhi = Box::new(RuntimeHandleInfo {
+        refs: AtomicU64::new(1),
+    });
+    Box::into_raw(rhi)
+}
+
+pub(crate) fn new_object_handle(id: ObjID, slot: usize, flags: MapFlags) -> ObjectHandle {
+    unsafe {
+        ObjectHandle::new(
+            id,
+            new_runtime_info().cast(),
+            (slot * MAX_SIZE) as *mut _,
+            (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut _,
+            flags,
+            MAX_SIZE - NULLPAGE_SIZE * 2,
+        )
+    }
+}
+
+fn map_sys_err(sys_err: ObjectMapError) -> MapError {
     // TODO (dbittman): in a future PR, I plan to cleanup all the error handling between the API and
     // ABI crates.
     match sys_err {
@@ -49,13 +64,9 @@ fn map_sys_err(sys_err: ObjectMapError) -> twizzler_runtime_api::MapError {
     }
 }
 
-impl ObjectRuntime for ReferenceRuntime {
+impl ReferenceRuntime {
     #[tracing::instrument(ret, skip(self), level = "trace")]
-    fn map_object(
-        &self,
-        id: twizzler_runtime_api::ObjID,
-        flags: twizzler_runtime_api::MapFlags,
-    ) -> Result<twizzler_runtime_api::ObjectHandle, twizzler_runtime_api::MapError> {
+    pub fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError> {
         self.object_manager
             .lock()
             .unwrap()
@@ -63,15 +74,15 @@ impl ObjectRuntime for ReferenceRuntime {
     }
 
     #[tracing::instrument(skip(self), level = "trace")]
-    fn release_handle(&self, handle: &mut twizzler_runtime_api::ObjectHandle) {
+    pub fn release_handle(&self, handle: &mut ObjectHandle) {
         self.object_manager.lock().unwrap().release(handle)
     }
 
-    fn map_two_objects(
+    pub fn map_two_objects(
         &self,
-        in_id_a: twizzler_runtime_api::ObjID,
+        in_id_a: ObjID,
         in_flags_a: MapFlags,
-        in_id_b: twizzler_runtime_api::ObjID,
+        in_id_b: ObjID,
         in_flags_b: MapFlags,
     ) -> Result<(ObjectHandle, ObjectHandle), MapError> {
         let (slot_a, slot_b) = self.allocate_pair().ok_or(MapError::OutOfResources)?;
@@ -106,7 +117,7 @@ impl ObjectRuntime for ReferenceRuntime {
 
 /// A key for local (per-compartment) mappings of objects.
 #[derive(PartialEq, PartialOrd, Ord, Eq, Hash, Copy, Clone)]
-pub struct ObjectMapKey(pub twizzler_runtime_api::ObjID, pub MapFlags);
+pub struct ObjectMapKey(pub ObjID, pub MapFlags);
 
 /// A local slot for an object to be mapped, gotten from the monitor.
 pub struct LocalSlot {
@@ -165,16 +176,16 @@ impl ObjectHandleManager {
 
     /// Release a handle. If all handles have been released, calls to monitor to unmap.
     pub fn release(&mut self, handle: &mut ObjectHandle) {
-        let key = ObjectMapKey(handle.id.into(), handle.flags);
+        let key = ObjectMapKey(handle.id(), handle.map_flags());
         if let Some(entry) = self.map().get(&key) {
             if entry.refs.fetch_sub(1, atomic::Ordering::SeqCst) == 1 {
-                monitor_api::monitor_rt_object_unmap(entry.number, handle.id, handle.flags)
+                monitor_api::monitor_rt_object_unmap(entry.number, handle.id(), handle.map_flags())
                     .unwrap();
                 self.map().remove(&key);
             }
         }
 
         // Safety: we only create internal refs from Box.
-        let _boxed = unsafe { Box::from_raw(handle.internal_refs.unwrap().as_mut()) };
+        let _boxed = unsafe { Box::from_raw(handle.runtime_info()) };
     }
 }

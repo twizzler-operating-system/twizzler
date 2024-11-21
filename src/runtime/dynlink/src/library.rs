@@ -11,7 +11,10 @@ use elf::{
 };
 use petgraph::stable_graph::NodeIndex;
 use secgate::RawSecGateInfo;
-use twizzler_rt_abi::{core::RuntimeInfo, debug::LoadedImageId};
+use twizzler_rt_abi::{
+    core::{CtorSet, RuntimeInfo},
+    debug::LoadedImageId,
+};
 
 use crate::{
     compartment::CompartmentId, engines::Backing, symbol::RelocatedSymbol, tls::TlsModId,
@@ -90,7 +93,7 @@ pub struct Library {
     pub tls_id: Option<TlsModId>,
 
     /// Information about constructors.
-    pub(crate) ctors: CtorInfo,
+    pub(crate) ctors: CtorSet,
     pub(crate) secgate_info: SecgateInfo,
 }
 
@@ -104,7 +107,7 @@ impl Library {
         full_obj: Backing,
         backings: Vec<Backing>,
         tls_id: Option<TlsModId>,
-        ctors: CtorInfo,
+        ctors: CtorSet,
         secgate_info: SecgateInfo,
         allows_gates: bool,
     ) -> Self {
@@ -362,20 +365,6 @@ impl core::fmt::Display for UnloadedLibrary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}(unloaded)", &self.name)
     }
-}
-
-// TODO: get this from ABI headers.
-/// Information about constructors for a library.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct CtorInfo {
-    /// Legacy pointer to _init function for a library. Can be called with the C abi.
-    pub legacy_init: usize,
-    /// Pointer to start of the init array, which contains functions pointers that can be called by
-    /// the C abi.
-    pub init_array: usize,
-    /// Length of the init array.
-    pub init_array_len: usize,
 }
 
 #[derive(Debug, Clone, Default)]

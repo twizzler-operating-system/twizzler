@@ -24,7 +24,7 @@ use twizzler_abi::{
     object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
-use twizzler_runtime_api::MapFlags;
+use twizzler_rt_abi::object::MapFlags;
 
 use super::{ReferenceRuntime, OUR_RUNTIME};
 use crate::{preinit_println, runtime::RuntimeState};

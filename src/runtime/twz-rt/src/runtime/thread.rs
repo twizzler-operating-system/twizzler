@@ -6,7 +6,7 @@ use twizzler_abi::syscall::{
     sys_thread_sync, sys_thread_yield, ThreadSync, ThreadSyncError, ThreadSyncFlags, ThreadSyncOp,
     ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
-use twizzler_runtime_api::{CoreRuntime, JoinError, SpawnError, ThreadRuntime, TlsIndex};
+use twizzler_rt_abi::thread::{JoinError, SpawnError, ThreadSpawnArgs, TlsIndex};
 
 use self::tcb::with_current_thread;
 use super::ReferenceRuntime;
@@ -25,7 +25,7 @@ lazy_static! {
     static ref THREAD_MGR: ThreadManager = ThreadManager::new();
 }
 
-impl ThreadRuntime for ReferenceRuntime {
+impl ReferenceRuntime {
     fn available_parallelism(&self) -> core::num::NonZeroUsize {
         twizzler_abi::syscall::sys_info().cpu_count()
     }
@@ -100,7 +100,7 @@ impl ThreadRuntime for ReferenceRuntime {
         tp.get_addr(index)
     }
 
-    fn spawn(&self, args: twizzler_runtime_api::ThreadSpawnArgs) -> Result<u32, SpawnError> {
+    fn spawn(&self, args: ThreadSpawnArgs) -> Result<u32, SpawnError> {
         self.impl_spawn(args)
     }
 
