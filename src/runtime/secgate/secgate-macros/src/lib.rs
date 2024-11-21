@@ -239,7 +239,7 @@ fn build_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStr
     call_point.block = Box::new(parse2(quote::quote! {
         {
             #[cfg(target_arch = "x86_64")]
-            unsafe {core::arch::asm!(
+            unsafe {core::arch::naked_asm!(
                 "push rbp",
                 "push 0",
                 "push 0",
@@ -249,9 +249,9 @@ fn build_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStr
                 "pop rbp",
                 "pop rbp",
                 "ret",
-                sym #entry_name, options(noreturn))}
+                sym #entry_name)}
             #[cfg(target_arch = "aarch64")]
-            unsafe {core::arch::asm!("b {0}", sym #entry_name, options(noreturn))}
+            unsafe {core::arch::naked_asm!("b {0}", sym #entry_name)}
         }
     })?);
 

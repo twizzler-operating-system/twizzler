@@ -1,7 +1,8 @@
 use dynlink::context::{runtime::RuntimeInitInfo, Context};
-use twizzler_runtime_api::AuxEntry;
+use twizzler_rt_abi::core::{RuntimeInfo, RUNTIME_INIT_MONITOR};
+use twz_rt::{preinit::preinit_abort, preinit_println};
 
-static mut AUX: Option<*const RuntimeInitInfo> = None;
+static mut RTINFO: Option<*const RuntimeInitInfo> = None;
 
 pub(crate) struct InitDynlinkContext {
     pub ctx: *mut Context,
@@ -9,7 +10,7 @@ pub(crate) struct InitDynlinkContext {
 }
 
 pub(crate) fn bootstrap_dynlink_context() -> Option<InitDynlinkContext> {
-    let info = unsafe { AUX.unwrap().as_ref().unwrap() };
+    let info = unsafe { RTINFO.unwrap().as_ref().unwrap() };
     let ctx = info.ctx as *mut Context;
     let root = info.root_name.clone();
 
@@ -17,32 +18,17 @@ pub(crate) fn bootstrap_dynlink_context() -> Option<InitDynlinkContext> {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn monitor_entry_from_bootstrap(aux: *const AuxEntry) {
-    let aux_len = unsafe {
-        let mut count = 0;
-        let mut tmp = aux;
-        while !tmp.is_null() {
-            if tmp.as_ref().unwrap_unchecked() == &AuxEntry::Null {
-                break;
-            }
-            tmp = tmp.add(1);
-            count += 1;
-        }
-        count
-    };
-    let aux_slice = if aux.is_null() || aux_len == 0 {
-        unsafe { twizzler_runtime_api::rt0::rust_entry(aux) };
-    } else {
-        unsafe { core::slice::from_raw_parts(aux, aux_len) }
-    };
-    let runtime_info = aux_slice.iter().find_map(|x| match x {
-        AuxEntry::RuntimeInfo(r, 0) => Some(*r),
-        _ => None,
-    });
+pub unsafe extern "C" fn monitor_entry_from_bootstrap(rtinfo_ptr: *const RuntimeInfo) {
+    let rtinfo = unsafe { rtinfo_ptr.as_ref().unwrap() };
+    if rtinfo.kind != RUNTIME_INIT_MONITOR {
+        preinit_println!("cannot initialize monitor without monitor runtime init info");
+        preinit_abort();
+    }
+    let rt_init_info_ptr = rtinfo.init_info.monitor.cast();
 
     unsafe {
-        AUX = runtime_info.map(|info| info as *const RuntimeInitInfo);
-        twizzler_runtime_api::rt0::rust_entry(aux);
+        RTINFO = Some(rt_init_info_ptr);
+        twizzler_rt_abi::core::rt0::rust_entry(rtinfo_ptr)
     }
 }
 

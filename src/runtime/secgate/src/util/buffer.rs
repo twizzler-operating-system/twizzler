@@ -79,7 +79,7 @@ mod test {
     use twizzler_abi::syscall::{
         sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
     };
-    use twizzler_runtime_api::{get_runtime, MapFlags, ObjectHandle};
+    use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
     use super::*;
 
@@ -95,9 +95,8 @@ mod test {
             &[],
         )
         .unwrap();
-        get_runtime()
-            .map_object(id, MapFlags::READ | MapFlags::WRITE)
-            .unwrap()
+
+        twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE).unwrap()
     }
 
     #[test]

@@ -11,6 +11,7 @@
 #![feature(unboxed_closures)]
 #![feature(allocator_api)]
 #![feature(hash_extract_if)]
+#![feature(naked_functions)]
 
 pub(crate) mod arch;
 

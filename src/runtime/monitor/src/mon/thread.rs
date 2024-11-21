@@ -15,7 +15,10 @@ use twizzler_abi::{
     thread::{ExecutionState, ThreadRepr},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
-use twizzler_runtime_api::{MapFlags, ObjID, SpawnError};
+use twizzler_rt_abi::{
+    object::{MapFlags, ObjID},
+    thread::SpawnError,
+};
 use twz_rt::RuntimeThreadControl;
 
 use super::{
