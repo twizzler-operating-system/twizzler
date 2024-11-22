@@ -69,7 +69,7 @@ macro_rules! check_ffi_type {
     };
 }
 
-use std::ffi::CStr;
+use std::{ffi::CStr, os::fd::RawFd};
 
 use tracing::warn;
 // core.h
@@ -122,6 +122,12 @@ pub unsafe extern "C-unwind" fn twz_rt_runtime_entry(
     OUR_RUNTIME.runtime_entry(arg, std_entry.unwrap_unchecked())
 }
 check_ffi_type!(twz_rt_runtime_entry, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_cross_compartment_entry() {
+    warn!("TODO: cross-compartment-entry");
+}
+check_ffi_type!(twz_rt_cross_compartment_entry);
 
 // alloc.h
 
@@ -237,6 +243,13 @@ pub unsafe extern "C-unwind" fn twz_rt_tls_get_addr(
 check_ffi_type!(twz_rt_tls_get_addr, _);
 
 #[no_mangle]
+pub unsafe extern "C-unwind" fn __tls_get_addr(
+    index: *mut twizzler_rt_abi::bindings::tls_index,
+) -> *mut ::core::ffi::c_void {
+    twz_rt_tls_get_addr(index)
+}
+
+#[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_spawn_thread(
     args: twizzler_rt_abi::bindings::spawn_args,
 ) -> twizzler_rt_abi::bindings::spawn_result {
@@ -297,6 +310,17 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_get_info(
     }
 }
 check_ffi_type!(twz_rt_fd_get_info, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_cmd(
+    fd: descriptor,
+    cmd: twizzler_rt_abi::bindings::fd_cmd,
+    arg: *mut ::core::ffi::c_void,
+    ret: *mut ::core::ffi::c_void,
+) -> twizzler_rt_abi::bindings::fd_cmd_err {
+    1
+}
+check_ffi_type!(twz_rt_fd_cmd, _, _, _, _);
 
 // io.h
 
