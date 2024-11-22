@@ -10,9 +10,19 @@ use std::{
 use tracing::{error, trace};
 use twizzler_runtime_api::TlsIndex;
 
+// re-export TLS TCB definition
+pub use crate::arch::Tcb;
 use crate::{
-    arch::MINIMUM_TLS_ALIGNMENT, compartment::Compartment, DynlinkError, DynlinkErrorKind,
+    arch::{get_tls_variant, MINIMUM_TLS_ALIGNMENT},
+    compartment::Compartment,
+    DynlinkError, DynlinkErrorKind,
 };
+
+/// The TLS variant which determines the layout of the TLS region.
+pub enum TlsVariant {
+    Variant1,
+    Variant2,
+}
 
 #[derive(Clone)]
 pub(crate) struct TlsInfo {
@@ -86,23 +96,56 @@ impl TlsInfo {
         self.max_align = std::cmp::max(self.max_align, tm.template_align);
         self.max_align = self.max_align.next_power_of_two();
 
-        // The first module is placed so that the region ends at the thread pointer. Other regions
-        // are just placed at semi-arbitrary positions below that, so we don't need to be as careful
-        // about them.
-        if self.tls_mods.is_empty() {
-            // Set the offset so that the template ends at the thread pointer.
-            self.offset = tm.template_memsz
-                + ((tm.template_addr + tm.template_memsz).overflowing_neg().0
-                    & (tm.template_align - 1));
-        } else {
-            // Set the offset so that the region starts aligned and has enough room.
-            self.offset += tm.template_memsz + tm.template_align - 1;
-            self.offset -= (self.offset + tm.template_addr) & (tm.template_align - 1);
-        }
-        tm.offset = Some(self.offset);
+        let id = match get_tls_variant() {
+            TlsVariant::Variant1 => {
+                // the first module is aligned and placed after the thread pointer
+                if self.tls_mods.is_empty() {
+                    // aarch64 reserves the first two words after the thread pointer
+                    self.offset = 16;
+                    // make sure the current offset from the TP is aligned
+                    if !(self.offset as *const u8).is_aligned_to(tm.template_align) {
+                        let ptr = self.offset as *const u8;
+                        self.offset += ptr.align_offset(tm.template_align);
+                    }
+                    tm.offset = Some(self.offset);
+
+                    // account for the size of the module
+                    self.offset += tm.template_memsz;
+                } else {
+                    // make sure the offset is aligned
+                    if !(self.offset as *const u8).is_aligned_to(tm.template_align) {
+                        let ptr = self.offset as *const u8;
+                        self.offset += ptr.align_offset(tm.template_align);
+                    }
+
+                    // Set the offset so that the region starts aligned and has enough room.
+                    tm.offset = Some(self.offset);
+
+                    // account for the size of the module
+                    self.offset += tm.template_memsz;
+                }
+                TlsModId((self.tls_mods.len() + 1) as u64, tm.offset.unwrap())
+            }
+            TlsVariant::Variant2 => {
+                // The first module is placed so that the region ends at the thread pointer. Other
+                // regions are just placed at semi-arbitrary positions below that,
+                // so we don't need to be as careful about them.
+                if self.tls_mods.is_empty() {
+                    // Set the offset so that the template ends at the thread pointer.
+                    self.offset = tm.template_memsz
+                        + ((tm.template_addr + tm.template_memsz).overflowing_neg().0
+                            & (tm.template_align - 1));
+                } else {
+                    // Set the offset so that the region starts aligned and has enough room.
+                    self.offset += tm.template_memsz + tm.template_align - 1;
+                    self.offset -= (self.offset + tm.template_addr) & (tm.template_align - 1);
+                }
+                tm.offset = Some(self.offset);
+                TlsModId((self.tls_mods.len() + 1) as u64, self.offset)
+            }
+        };
 
         // Save the module ID + 1 (leave one slot in the DTV for the generation count).
-        let id = TlsModId((self.tls_mods.len() + 1) as u64, self.offset);
         tm.id = Some(id);
         self.tls_mods.push(tm);
         id
@@ -114,21 +157,60 @@ impl TlsInfo {
         alloc_base: NonNull<u8>,
         tcb: T,
     ) -> Result<TlsRegion, DynlinkError> {
+        // Given an allocation region, lets find all the interesting pointers.
         let layout = self
             .allocation_layout::<T>()
             .map_err(|err| DynlinkErrorKind::LayoutError { err })?;
 
-        // TODO: check all this for arm
-        // Given an allocation regions, lets find all the interesting pointers.
-        let mut base = usize::from(alloc_base.addr()) + layout.size() - size_of::<Tcb<T>>();
-        // Align for the thread pointer and the 1st TLS region.
-        base -= base & (layout.align() - 1);
-        let thread_pointer = NonNull::new(base as *mut u8).unwrap();
+        // thread pointer from base allocation
+        let thread_pointer = match get_tls_variant() {
+            TlsVariant::Variant1 => {
+                let mut base = usize::from(alloc_base.addr());
+                // this should already be an aligned allocation ...
+                base += base & (layout.align() - 1);
+                NonNull::new((base + size_of::<Tcb<T>>() - 16) as *mut u8).unwrap()
+            }
+            TlsVariant::Variant2 => {
+                let mut base = usize::from(alloc_base.addr()) + layout.size() - size_of::<Tcb<T>>();
+                // Align for the thread pointer and the 1st TLS region.
+                base -= base & (layout.align() - 1);
+                NonNull::new(base as *mut u8).unwrap()
+            }
+        };
+
+        let module_start = match get_tls_variant() {
+            TlsVariant::Variant1 => {
+                // where in the tls region we are after the TCB
+                let temp = unsafe { thread_pointer.as_ptr().add(16) };
+                // set it to align to the alignment of the first module
+                let padding_after_tcb = temp.align_offset(self.tls_mods[0].template_align);
+                NonNull::new(unsafe { temp.add(padding_after_tcb) }).unwrap()
+            }
+            TlsVariant::Variant2 => thread_pointer,
+        };
+
+        // calculate the start of the DTV
+        let dtv_ptr = match get_tls_variant() {
+            TlsVariant::Variant1 => {
+                // Variant 1 has the thread pointer pointing to the DTV pointer.
+                // offset at this point should be after the static TLS modules
+                let after_modules = unsafe { module_start.as_ptr().add(self.offset) };
+                let align_padding = after_modules.align_offset(align_of::<usize>());
+                let dtv_addr = unsafe { after_modules.add(align_padding).cast::<usize>() };
+                NonNull::new(dtv_addr).unwrap()
+            }
+            TlsVariant::Variant2 => alloc_base.cast(),
+        };
+
+        // AA: debug
+        let x = module_start.addr().get() - thread_pointer.addr().get();
+        trace!("offset from tp start to module start: {}, {:#08x}", x, x);
+
         let tls_region = TlsRegion {
             gen: self.gen,
-            module_top: thread_pointer,
+            module_top: module_start,
             thread_pointer,
-            dtv: alloc_base.cast(),
+            dtv: dtv_ptr,
             num_dtv_entries: self.dtv_len(),
             alloc_base,
             layout,
@@ -149,9 +231,7 @@ impl TlsInfo {
         unsafe { *tls_region.dtv.as_ptr() = self.gen as usize };
 
         // Finally fill out the control block.
-        unsafe {
-            (tls_region.thread_pointer.as_ptr() as *mut Tcb<T>).write(Tcb::new(&tls_region, tcb))
-        };
+        unsafe { (tls_region.get_thread_control_block()).write(Tcb::new(&tls_region, tcb)) };
 
         Ok(tls_region)
     }
@@ -174,17 +254,9 @@ impl TlsInfo {
     }
 }
 
-#[repr(C)]
-pub struct Tcb<T> {
-    pub self_ptr: *const Tcb<T>,
-    pub dtv: *const usize,
-    pub dtv_len: usize,
-    pub runtime_data: T,
-}
-
 impl<T> Tcb<T> {
     pub(crate) fn new(tls_region: &TlsRegion, tcb_data: T) -> Self {
-        let self_ptr = tls_region.thread_pointer.as_ptr() as *mut Tcb<T>;
+        let self_ptr = unsafe { tls_region.get_thread_control_block() };
         Self {
             self_ptr,
             dtv: tls_region.dtv.as_ptr(),
@@ -243,14 +315,21 @@ impl TlsRegion {
         let dtv_slice =
             unsafe { core::slice::from_raw_parts_mut(self.dtv.as_ptr(), self.num_dtv_entries) };
         let dtv_idx = tm.id.as_ref().unwrap().tls_id() as usize;
-        let dtv_val = unsafe { self.module_top.as_ptr().sub(tm.offset.unwrap()) };
+        let dtv_val = match get_tls_variant() {
+            // TODO: debug, shouldn't this be from thread_pointer top?
+            TlsVariant::Variant1 => unsafe { self.module_top.as_ptr().add(tm.offset.unwrap()) },
+            TlsVariant::Variant2 => unsafe { self.module_top.as_ptr().sub(tm.offset.unwrap()) },
+        };
         trace!("setting dtv entry {} <= {:p}", dtv_idx, dtv_val);
         dtv_slice[dtv_idx] = dtv_val as usize;
     }
 
     pub(crate) fn copy_in_module(&self, tm: &TlsModule) -> usize {
         unsafe {
-            let start = self.module_top.as_ptr().sub(tm.offset.unwrap());
+            let start = match get_tls_variant() {
+                TlsVariant::Variant1 => self.thread_pointer.as_ptr().add(tm.offset.unwrap()),
+                TlsVariant::Variant2 => self.module_top.as_ptr().sub(tm.offset.unwrap()),
+            };
             let src = tm.template_addr as *const u8;
             trace!(
                 "copy in static region {:p} => {:p} (filesz={}, memsz={})",

@@ -4,7 +4,7 @@ use crate::{
     context::{relocate::EitherRel, Context},
     library::Library,
     symbol::LookupFlags,
-    tls::{Tcb, TlsRegion},
+    tls::{TlsRegion, TlsVariant},
     DynlinkError, DynlinkErrorKind,
 };
 
@@ -21,6 +21,19 @@ use elf::{
     string_table::StringTable,
     symbol::SymbolTable,
 };
+
+#[repr(C)]
+pub struct Tcb<T> {
+    pub self_ptr: *const Tcb<T>,
+    pub dtv: *const usize,
+    pub dtv_len: usize,
+    pub runtime_data: T,
+}
+
+/// Return the TLS variant defined by the arch-specific ABI.
+pub fn get_tls_variant() -> TlsVariant {
+    TlsVariant::Variant2
+}
 
 /// Get a pointer to the current thread control block, using the thread pointer.
 ///
