@@ -1,37 +1,45 @@
+use dynlink::{compartment::MONITOR_COMPARTMENT_ID, context::Context};
+use miette::IntoDiagnostic;
 use twizzler_abi::{object::MAX_SIZE, upcall::UpcallFrame};
 use twizzler_rt_abi::object::ObjID;
 
+use super::CompartmentMgr;
 use crate::mon::{
-    space::MapHandle,
-    thread::{ManagedThread, DEFAULT_STACK_SIZE, STACK_SIZE_MIN_ALIGN},
+    space::{MapHandle, Space},
+    thread::{ManagedThread, ThreadMgr, DEFAULT_STACK_SIZE, STACK_SIZE_MIN_ALIGN},
 };
 
 pub(super) struct CompThread {
     stack_object: StackObject,
-    thread: ManagedThread,
+    pub(crate) thread: ManagedThread,
 }
 
 impl CompThread {
     /// Start a new thread using the given stack, in the provided security context instance, using
     /// the start function.
     pub fn new(
+        space: &mut Space,
+        tmgr: &mut ThreadMgr,
+        dynlink: &mut Context,
         stack: StackObject,
         instance: ObjID,
-        start: impl FnOnce() + Send + 'static,
+        main_thread_comp: Option<ObjID>,
+        entry: usize,
+        arg: usize,
     ) -> miette::Result<Self> {
-        todo!()
-    }
-
-    /// Get the entry frame for this thread into a given compartment.
-    pub fn get_entry_frame(&self, ctx: ObjID, entry: usize, arg: usize) -> UpcallFrame {
-        UpcallFrame::new_entry_frame(
-            self.stack_object.initial_stack_ptr(),
-            self.stack_object.stack_size(),
-            0,
-            ctx,
-            entry,
-            arg,
-        )
+        let frame = stack.get_entry_frame(instance, entry, arg);
+        let start = move || {
+            twizzler_abi::syscall::sys_sctx_attach(instance).unwrap();
+            unsafe { twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame) };
+        };
+        let mon = dynlink.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
+        let mt = tmgr
+            .start_thread(space, mon, Box::new(start), main_thread_comp)
+            .into_diagnostic()?;
+        Ok(Self {
+            stack_object: stack,
+            thread: mt,
+        })
     }
 }
 
@@ -66,5 +74,17 @@ impl StackObject {
     /// Get the initial stack pointer.
     pub fn initial_stack_ptr(&self) -> usize {
         self.stack_comp_start() + self.stack_size
+    }
+
+    /// Get the entry frame for this thread into a given compartment.
+    pub fn get_entry_frame(&self, ctx: ObjID, entry: usize, arg: usize) -> UpcallFrame {
+        UpcallFrame::new_entry_frame(
+            self.initial_stack_ptr(),
+            self.stack_size(),
+            0,
+            ctx,
+            entry,
+            arg,
+        )
     }
 }

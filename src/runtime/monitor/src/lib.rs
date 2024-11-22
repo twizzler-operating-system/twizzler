@@ -2,6 +2,7 @@
 #![feature(thread_local)]
 #![feature(hash_extract_if)]
 #![feature(new_zeroed_alloc)]
+#![feature(iterator_try_collect)]
 
 use dynlink::engines::Backing;
 use tracing::{debug, info, warn, Level};
@@ -14,6 +15,7 @@ use twizzler_object::ObjID;
 use twizzler_rt_abi::object::MapFlags;
 use twz_rt::{set_upcall_handler, OUR_RUNTIME};
 
+mod dlengine;
 mod init;
 pub mod secgate_test;
 mod upcall;
@@ -68,32 +70,4 @@ fn monitor_init() -> miette::Result<()> {
     info!("monitor early init completed, starting init");
 
     Ok(())
-}
-
-fn bootstrap_name_res(mut name: &str) -> Option<Backing> {
-    if name.starts_with("libstd-") {
-        name = "libstd.so";
-    }
-    let id = find_init_name(name)?;
-    let obj = twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ).ok()?;
-    Some(Backing::new(obj))
-}
-
-pub fn get_kernel_init_info() -> &'static KernelInitInfo {
-    unsafe {
-        (((twizzler_abi::slot::RESERVED_KERNEL_INIT * MAX_SIZE) + NULLPAGE_SIZE)
-            as *const KernelInitInfo)
-            .as_ref()
-            .unwrap()
-    }
-}
-
-fn find_init_name(name: &str) -> Option<ObjID> {
-    let init_info = get_kernel_init_info();
-    for n in init_info.names() {
-        if n.name() == name {
-            return Some(n.id());
-        }
-    }
-    None
 }

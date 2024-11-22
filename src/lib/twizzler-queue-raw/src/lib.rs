@@ -588,6 +588,7 @@ mod tests {
     //   use syscalls::SyscallArgs;
     use crate::multi_receive;
     use crate::{QueueEntry, QueueError, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags};
+    extern crate twizzler_minruntime;
 
     extern crate twizzler_minruntime;
     fn wait(x: &AtomicU64, v: u64) {

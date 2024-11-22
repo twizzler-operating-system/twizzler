@@ -11,6 +11,7 @@ use twizzler_object::Protections;
 use twizzler_rt_abi::object::{MapError, MapFlags, ObjID};
 
 use self::handle::MapHandleInner;
+use super::stat::SpaceStats;
 
 mod handle;
 mod unmapper;
@@ -51,6 +52,13 @@ fn mapflags_into_prot(flags: MapFlags) -> Protections {
 }
 
 impl Space {
+    /// Get the stats.
+    pub fn stat(&self) -> SpaceStats {
+        SpaceStats {
+            mapped: self.maps.len(),
+        }
+    }
+
     /// Map an object into the space.
     pub fn map(&mut self, info: MapInfo) -> Result<MapHandle, MapError> {
         // Can't use the entry API here because the closure may fail.

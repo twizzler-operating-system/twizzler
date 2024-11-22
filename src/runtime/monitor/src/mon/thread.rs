@@ -24,6 +24,7 @@ use twz_rt::RuntimeThreadControl;
 use super::{
     get_monitor,
     space::{MapHandle, MapInfo, Space},
+    stat::ThreadMgrStats,
 };
 use crate::api::MONITOR_INSTANCE_ID;
 
@@ -63,6 +64,15 @@ impl ThreadMgr {
 
     fn do_remove(&mut self, thread: &ManagedThread) {
         self.all.remove(&thread.id);
+        if let Some(ref cleaner) = self.cleaner.get() {
+            cleaner.untrack(thread.id);
+        }
+    }
+
+    pub fn stat(&self) -> ThreadMgrStats {
+        ThreadMgrStats {
+            nr_threads: self.all.len(),
+        }
     }
 
     unsafe fn spawn_thread(
@@ -103,6 +113,7 @@ impl ThreadMgr {
         monitor_dynlink_comp: &mut Compartment,
         start: unsafe extern "C" fn(usize) -> !,
         arg: usize,
+        main_thread_comp: Option<ObjID>,
     ) -> Result<ManagedThread, SpawnError> {
         let super_tls = monitor_dynlink_comp
             .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
@@ -130,6 +141,7 @@ impl ThreadMgr {
             repr: ManagedThreadRepr::new(repr),
             super_stack,
             super_tls,
+            main_thread_comp,
         }))
     }
 
@@ -140,6 +152,7 @@ impl ThreadMgr {
         space: &mut Space,
         monitor_dynlink_comp: &mut Compartment,
         main: Box<dyn FnOnce()>,
+        main_thread_comp: Option<ObjID>,
     ) -> Result<ManagedThread, SpawnError> {
         let main_addr = Box::into_raw(Box::new(main)) as usize;
         unsafe extern "C" fn managed_thread_entry(main: usize) -> ! {
@@ -151,7 +164,19 @@ impl ThreadMgr {
             sys_thread_exit(0);
         }
 
-        self.do_spawn(space, monitor_dynlink_comp, managed_thread_entry, main_addr)
+        let mt = self.do_spawn(
+            space,
+            monitor_dynlink_comp,
+            managed_thread_entry,
+            main_addr,
+            main_thread_comp,
+        );
+        if let Ok(ref mt) = mt {
+            if let Some(ref cleaner) = self.cleaner.get() {
+                cleaner.track(mt.clone());
+            }
+        }
+        mt
     }
 }
 
@@ -163,6 +188,7 @@ pub struct ManagedThreadInner {
     pub(crate) repr: ManagedThreadRepr,
     super_stack: Box<[MaybeUninit<u8>]>,
     super_tls: TlsRegion,
+    pub main_thread_comp: Option<ObjID>,
 }
 
 impl ManagedThreadInner {
