@@ -1,34 +1,40 @@
-use elf::segment::Elf64_Phdr;
+use twizzler_abi::object::NULLPAGE_SIZE;
 use twizzler_rt_abi::{
-    bindings::TWZ_RT_EXEID,
-    debug::{LoadedImage, LoadedImageId},
+    bindings::{dl_phdr_info, loaded_image, loaded_image_id},
     object::MapFlags,
 };
 
-use super::{object::new_object_handle, ReferenceRuntime};
+use super::ReferenceRuntime;
 
 impl ReferenceRuntime {
-    fn get_library(&self, id: LoadedImageId) -> Option<LoadedImage> {
+    pub fn get_image_info(&self, id: loaded_image_id) -> Option<loaded_image> {
         let lib = monitor_api::CompartmentHandle::current()
             .libs()
             .nth(id as usize)?;
         let info = lib.info();
-        let handle = new_object_handle(info.objid, info.slot, MapFlags::READ);
-        /*
-        Some(Library {
-            range: info.range,
-            dl_info: Some(info.dl_info),
+        let handle = self.map_object(info.objid, MapFlags::READ).ok()?;
+        Some(loaded_image {
+            image_start: unsafe { handle.start().add(NULLPAGE_SIZE).cast() },
+            image_len: handle.valid_len(),
+            image_handle: handle.into_raw(),
+            dl_info: info.dl_info,
             id,
-            mapping: handle,
         })
-        */
-        todo!()
     }
 
-    fn iterate_phdr(
+    pub fn iterate_phdr(
         &self,
-        f: &mut dyn FnMut(twizzler_rt_abi::debug::DlPhdrInfo) -> core::ffi::c_int,
+        f: &mut dyn FnMut(dl_phdr_info) -> core::ffi::c_int,
     ) -> core::ffi::c_int {
-        todo!()
+        let mut n = 0;
+        let mut ret = 0;
+        while let Some(image) = self.get_image_info(n) {
+            ret = f(image.dl_info);
+            if ret != 0 {
+                return ret;
+            }
+            n += 1;
+        }
+        ret
     }
 }
