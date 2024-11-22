@@ -23,6 +23,7 @@ use dynlink::{
 use secgate::util::{Descriptor, Handle};
 use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 
+#[allow(unused_imports, unused_variables, unexpected_cfgs)]
 mod gates {
     include! {"../../monitor/secapi/gates.rs"}
 }
@@ -505,11 +506,16 @@ impl MappedObjectAddrs {
     }
 }
 
+/// Get stats from the monitor
+pub fn stats() -> Option<gates::MonitorStats> {
+    gates::monitor_rt_stats().ok()
+}
+
 mod lazy_sb {
     //! A per-thread per-compartment simple buffer used for transferring strings between
     //! compartments and the monitor. This is necessary because the monitor runs at too low of a
     //! level for us to use nice shared memory techniques. This is simpler and more secure.
-    use std::cell::OnceCell;
+    use std::cell::{OnceCell, RefCell};
 
     use secgate::util::SimpleBuffer;
     use twizzler_rt_abi::object::MapFlags;
@@ -552,25 +558,22 @@ mod lazy_sb {
     }
 
     #[thread_local]
-    static mut LAZY_SB: LazyThreadSimpleBuffer = LazyThreadSimpleBuffer::new();
+    static LAZY_SB: RefCell<LazyThreadSimpleBuffer> = RefCell::new(LazyThreadSimpleBuffer::new());
 
     pub(super) fn read_string_from_sb(len: usize) -> String {
         let mut buf = vec![0u8; len];
-        // Safety: this is per thread, and we only ever create the reference here or in the other
-        // functions below.
-        let len = unsafe { LAZY_SB.read(&mut buf) };
+        let len = LAZY_SB.borrow_mut().read(&mut buf);
         String::from_utf8_lossy(&buf[0..len]).to_string()
     }
 
     pub(super) fn read_bytes_from_sb(len: usize) -> Vec<u8> {
         let mut buf = vec![0u8; len];
-        // Safety: see above.
-        let len = unsafe { LAZY_SB.read(&mut buf) };
+        let len = LAZY_SB.borrow_mut().read(&mut buf);
         buf.truncate(len);
         buf
     }
 
     pub(super) fn write_bytes_to_sb(buf: &[u8]) -> usize {
-        unsafe { LAZY_SB.write(buf) }
+        LAZY_SB.borrow_mut().write(buf)
     }
 }

@@ -11,7 +11,7 @@ use twizzler_object::Protections;
 use twizzler_rt_abi::object::{MapError, MapFlags, ObjID};
 
 use self::handle::MapHandleInner;
-use super::stat::SpaceStats;
+use crate::gates::SpaceStats;
 
 mod handle;
 mod unmapper;

@@ -3,42 +3,7 @@ use std::collections::HashSet;
 use happylock::ThreadKey;
 
 use super::Monitor;
-
-#[derive(Copy, Clone, Debug)]
-pub struct MonitorStats {
-    pub space: SpaceStats,
-    pub thread_mgr: ThreadMgrStats,
-    pub comp_mgr: CompartmentMgrStats,
-    pub handles: HandleStats,
-    pub dynlink: DynlinkStats,
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct SpaceStats {
-    pub mapped: usize,
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct ThreadMgrStats {
-    pub nr_threads: usize,
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct CompartmentMgrStats {
-    pub nr_compartments: usize,
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct HandleStats {
-    pub nr_comp_handles: usize,
-    pub nr_lib_handles: usize,
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct DynlinkStats {
-    pub nr_libs: usize,
-    pub nr_comps: usize,
-}
+use crate::gates::{DynlinkStats, HandleStats, MonitorStats};
 
 impl Monitor {
     pub fn stats(&self) -> MonitorStats {

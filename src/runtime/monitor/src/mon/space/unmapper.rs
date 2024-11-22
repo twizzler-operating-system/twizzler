@@ -8,7 +8,7 @@ use crate::mon::get_monitor;
 /// Manages a background thread that unmaps mappings.
 pub struct Unmapper {
     sender: Sender<UnmapCommand>,
-    thread: JoinHandle<()>,
+    _thread: JoinHandle<()>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -22,7 +22,7 @@ impl Unmapper {
     pub fn new() -> Self {
         let (sender, receiver) = std::sync::mpsc::channel();
         Self {
-            thread: std::thread::Builder::new()
+            _thread: std::thread::Builder::new()
                 .name("unmapper".to_string())
                 .spawn(move || loop {
                     let key = happylock::ThreadKey::get().unwrap();

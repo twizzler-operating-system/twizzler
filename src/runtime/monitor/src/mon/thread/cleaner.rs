@@ -20,7 +20,7 @@ use crate::mon::get_monitor;
 
 /// Tracks threads that do not exit cleanly, so their monitor-internal resources can be cleaned up.
 pub(crate) struct ThreadCleaner {
-    thread: std::thread::JoinHandle<()>,
+    _thread: std::thread::JoinHandle<()>,
     send: Sender<WaitOp>,
     inner: Pin<Arc<ThreadCleanerData>>,
 }
@@ -56,7 +56,7 @@ impl ThreadCleaner {
         Self {
             send,
             inner,
-            thread,
+            _thread: thread,
         }
     }
 

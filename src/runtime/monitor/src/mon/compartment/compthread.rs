@@ -3,14 +3,14 @@ use miette::IntoDiagnostic;
 use twizzler_abi::{object::MAX_SIZE, upcall::UpcallFrame};
 use twizzler_rt_abi::object::ObjID;
 
-use super::CompartmentMgr;
 use crate::mon::{
     space::{MapHandle, Space},
     thread::{ManagedThread, ThreadMgr, DEFAULT_STACK_SIZE, STACK_SIZE_MIN_ALIGN},
 };
 
+#[allow(dead_code)]
 pub(super) struct CompThread {
-    stack_object: StackObject,
+    pub(crate) stack_object: StackObject,
     pub(crate) thread: ManagedThread,
 }
 

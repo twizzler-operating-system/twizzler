@@ -6,7 +6,6 @@ static mut RTINFO: Option<*const RuntimeInitInfo> = None;
 
 pub(crate) struct InitDynlinkContext {
     pub ctx: *mut Context,
-    pub root: String,
 }
 
 impl InitDynlinkContext {
@@ -24,9 +23,8 @@ impl InitDynlinkContext {
 pub(crate) fn bootstrap_dynlink_context() -> Option<InitDynlinkContext> {
     let info = unsafe { RTINFO.unwrap().as_ref().unwrap() };
     let ctx = info.ctx as *mut Context;
-    let root = info.root_name.clone();
 
-    Some(InitDynlinkContext { ctx, root })
+    Some(InitDynlinkContext { ctx })
 }
 
 #[no_mangle]

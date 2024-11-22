@@ -1,12 +1,8 @@
 use std::{
     alloc::Layout,
     collections::HashMap,
-    marker::PhantomData,
     ptr::NonNull,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use dynlink::{compartment::CompartmentId, context::Context};
@@ -18,7 +14,7 @@ use twizzler_abi::syscall::{
 };
 use twizzler_rt_abi::{
     core::{CompartmentInitInfo, CtorSet, InitInfoPtrs, RuntimeInfo, RUNTIME_INIT_COMP},
-    object::{MapError, MapFlags, ObjID, ObjectHandle},
+    object::{MapError, MapFlags, ObjID},
 };
 use twz_rt::RuntimeThreadControl;
 
@@ -91,7 +87,7 @@ impl PerThread {
     /// handled gracefully. This means that if the thread fails to allocate a simple buffer, it
     /// will just forego having one. This may cause a failure down the line, but it's the best we
     /// can do without panicing.
-    fn new(instance: ObjID, th: ObjID, space: &mut Space) -> Self {
+    fn new(instance: ObjID, _th: ObjID, space: &mut Space) -> Self {
         let handle = space
             .safe_create_and_map_runtime_object(instance, MapFlags::READ | MapFlags::WRITE)
             .ok();
@@ -185,19 +181,9 @@ impl RunComp {
         // Unmapping handled by dropping
     }
 
-    /// Read the compartment config.
-    pub fn comp_config(&self) -> SharedCompConfig {
-        self.comp_config_object.read_comp_config()
-    }
-
     /// Get a pointer to the compartment config.
     pub fn comp_config_ptr(&self) -> *const SharedCompConfig {
         self.comp_config_object.get_comp_config()
-    }
-
-    /// Set the compartment config.
-    pub fn set_comp_config(&mut self, scc: SharedCompConfig) {
-        self.comp_config_object.write_config(scc)
     }
 
     /// Allocate some space in the compartment allocator, and initialize it.
@@ -311,12 +297,13 @@ impl RunComp {
                 comp_config_info: comp_config_info.cast(),
             };
             let comp_init_info_in_comp = self.monitor_new(comp_init_info).ok()?;
+            // TODO: fill out argc and argv and envp
             let rtinfo = RuntimeInfo {
                 flags: 0,
                 kind: RUNTIME_INIT_COMP,
-                args: todo!(),
-                argc: todo!(),
-                envp: todo!(),
+                args: core::ptr::null_mut(),
+                argc: 0,
+                envp: core::ptr::null_mut(),
                 init_info: InitInfoPtrs {
                     comp: comp_init_info_in_comp,
                 },
@@ -375,7 +362,8 @@ impl RunComp {
         Some(())
     }
 
-    pub(crate) fn read_error_code(&self) -> u64 {
+    #[allow(dead_code)]
+    pub fn read_error_code(&self) -> u64 {
         let Some(ref main) = self.main else {
             return 0;
         };

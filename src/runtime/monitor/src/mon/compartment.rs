@@ -6,14 +6,12 @@ use dynlink::{
     library::UnloadedLibrary,
 };
 use happylock::ThreadKey;
+use monitor_api::MONITOR_INSTANCE_ID;
 use secgate::util::Descriptor;
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync, ThreadSyncSleep};
 use twizzler_rt_abi::object::ObjID;
 
-use crate::{
-    api::MONITOR_INSTANCE_ID,
-    gates::{CompartmentInfo, LoadCompartmentError},
-};
+use crate::gates::{CompartmentInfo, CompartmentMgrStats, LoadCompartmentError};
 
 mod compconfig;
 mod compthread;
@@ -22,10 +20,7 @@ mod runcomp;
 
 pub use compconfig::*;
 pub(crate) use compthread::StackObject;
-pub use loader::RunCompLoader;
 pub use runcomp::*;
-
-use super::stat::CompartmentMgrStats;
 
 /// Manages compartments.
 #[derive(Default)]
@@ -43,7 +38,7 @@ impl CompartmentMgr {
     }
 
     /// Get a [RunComp] by name.
-    pub fn get_name(&self, name: &str) -> Option<&RunComp> {
+    pub fn _get_name(&self, name: &str) -> Option<&RunComp> {
         let id = self.names.get(name)?;
         self.get(*id)
     }
@@ -54,7 +49,7 @@ impl CompartmentMgr {
     }
 
     /// Get a [RunComp] by name.
-    pub fn get_name_mut(&mut self, name: &str) -> Option<&mut RunComp> {
+    pub fn _get_name_mut(&mut self, name: &str) -> Option<&mut RunComp> {
         let id = self.names.get(name)?;
         self.get_mut(*id)
     }
@@ -66,7 +61,7 @@ impl CompartmentMgr {
     }
 
     /// Get a [RunComp] by dynamic linker ID.
-    pub fn get_dynlinkid_mut(&mut self, id: CompartmentId) -> Option<&mut RunComp> {
+    pub fn _get_dynlinkid_mut(&mut self, id: CompartmentId) -> Option<&mut RunComp> {
         let id = self.dynlink_map.get(&id)?;
         self.get_mut(*id)
     }
@@ -92,19 +87,19 @@ impl CompartmentMgr {
     }
 
     /// Get the [RunComp] for the monitor.
-    pub fn get_monitor(&self) -> &RunComp {
+    pub fn _get_monitor(&self) -> &RunComp {
         // Unwrap-Ok: this instance is always present.
         self.get(MONITOR_INSTANCE_ID).unwrap()
     }
 
     /// Get the [RunComp] for the monitor.
-    pub fn get_monitor_mut(&mut self) -> &mut RunComp {
+    pub fn _get_monitor_mut(&mut self) -> &mut RunComp {
         // Unwrap-Ok: this instance is always present.
         self.get_mut(MONITOR_INSTANCE_ID).unwrap()
     }
 
     /// Get an iterator over all compartments.
-    pub fn compartments(&self) -> impl Iterator<Item = &RunComp> {
+    pub fn _compartments(&self) -> impl Iterator<Item = &RunComp> {
         self.instances.values()
     }
 
@@ -237,7 +232,7 @@ impl super::Monitor {
         ch.insert(
             caller,
             super::CompartmentHandle {
-                instance: if compartment.as_u128() == 0 {
+                instance: if compartment.raw() == 0 {
                     caller
                 } else {
                     compartment
@@ -249,9 +244,9 @@ impl super::Monitor {
     /// Open a handle to the n'th dependency compartment of a given compartment.
     pub fn get_compartment_deps(
         &self,
-        caller: ObjID,
-        desc: Option<Descriptor>,
-        dep_n: usize,
+        _caller: ObjID,
+        _desc: Option<Descriptor>,
+        _dep_n: usize,
     ) -> Option<Descriptor> {
         todo!()
     }
@@ -264,7 +259,6 @@ impl super::Monitor {
         name_len: usize,
         new_comp_flags: NewCompartmentFlags,
     ) -> Result<Descriptor, LoadCompartmentError> {
-        let sctx = caller; //TODO
         let name_bytes = self
             .read_thread_simple_buffer(caller, thread, name_len)
             .ok_or(LoadCompartmentError::Unknown)?;
@@ -281,7 +275,7 @@ impl super::Monitor {
             loader
         }
         .inspect_err(|e| tracing::debug!("failed to load {}::{}: {:?}", compname, libname, e))
-        .map_err(|e| LoadCompartmentError::Unknown)?;
+        .map_err(|_| LoadCompartmentError::Unknown)?;
 
         let root_comp = {
             let (ref mut space, _, ref mut cmp, ref mut dynlink, _, _) =

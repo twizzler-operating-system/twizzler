@@ -11,7 +11,7 @@ pub fn upcall_monitor_handler(frame: &mut UpcallFrame, info: &UpcallData) {
     if info.flags.contains(UpcallHandlerFlags::SWITCHED_CONTEXT) {
         info!("got monitor upcall {:?} {:?}", frame, info);
         // TODO
-        if nested || true {
+        if nested {
             twizzler_abi::syscall::sys_thread_exit(101);
         }
     } else {
@@ -23,4 +23,7 @@ pub fn upcall_monitor_handler(frame: &mut UpcallFrame, info: &UpcallData) {
         twizzler_abi::syscall::sys_thread_exit(101);
     }
     IN_UPCALL_HANDLER.store(nested, Ordering::SeqCst);
+
+    // TODO: we don't always need to exit.
+    twizzler_abi::syscall::sys_thread_exit(101);
 }

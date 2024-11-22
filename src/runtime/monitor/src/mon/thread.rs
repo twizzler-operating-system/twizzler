@@ -1,17 +1,15 @@
 use std::{
-    cell::OnceCell,
     collections::HashMap,
     mem::MaybeUninit,
     ptr::NonNull,
     sync::{Arc, OnceLock},
 };
 
-use dynlink::{compartment::Compartment, context::Context, tls::TlsRegion};
-use happylock::ThreadKey;
-use secgate::util::SimpleBuffer;
+use dynlink::{compartment::Compartment, tls::TlsRegion};
+use monitor_api::MONITOR_INSTANCE_ID;
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
-    syscall::{sys_spawn, sys_thread_exit, ObjectCreate, ThreadSyncSleep, UpcallTargetSpawnOption},
+    syscall::{sys_spawn, sys_thread_exit, ThreadSyncSleep, UpcallTargetSpawnOption},
     thread::{ExecutionState, ThreadRepr},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
@@ -21,12 +19,8 @@ use twizzler_rt_abi::{
 };
 use twz_rt::RuntimeThreadControl;
 
-use super::{
-    get_monitor,
-    space::{MapHandle, MapInfo, Space},
-    stat::ThreadMgrStats,
-};
-use crate::api::MONITOR_INSTANCE_ID;
+use super::space::{MapHandle, MapInfo, Space};
+use crate::gates::ThreadMgrStats;
 
 mod cleaner;
 pub(crate) use cleaner::ThreadCleaner;
@@ -37,8 +31,6 @@ pub const SUPER_UPCALL_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 pub const DEFAULT_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 /// Stack minimium alignment.
 pub const STACK_SIZE_MIN_ALIGN: usize = 0x1000; // 4K
-/// TLS minimum alignment.
-pub const DEFAULT_TLS_ALIGN: usize = 0x1000; // 4K
 
 /// Manages all threads owned by the monitor. Typically, this is all threads.
 /// Threads are spawned here and tracked in the background by a [cleaner::ThreadCleaner]. The thread
@@ -139,8 +131,8 @@ impl ThreadMgr {
         Ok(Arc::new(ManagedThreadInner {
             id,
             repr: ManagedThreadRepr::new(repr),
-            super_stack,
-            super_tls,
+            _super_stack: super_stack,
+            _super_tls: super_tls,
             main_thread_comp,
         }))
     }
@@ -186,8 +178,8 @@ pub struct ManagedThreadInner {
     pub id: ObjID,
     /// The thread repr.
     pub(crate) repr: ManagedThreadRepr,
-    super_stack: Box<[MaybeUninit<u8>]>,
-    super_tls: TlsRegion,
+    _super_stack: Box<[MaybeUninit<u8>]>,
+    _super_tls: TlsRegion,
     pub main_thread_comp: Option<ObjID>,
 }
 

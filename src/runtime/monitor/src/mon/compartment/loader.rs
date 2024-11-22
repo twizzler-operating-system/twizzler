@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    ptr::null_mut,
-};
+use std::{collections::HashSet, ptr::null_mut};
 
 use dynlink::{
     compartment::CompartmentId,
@@ -10,7 +7,6 @@ use dynlink::{
     DynlinkError,
 };
 use happylock::ThreadKey;
-use miette::IntoDiagnostic;
 use monitor_api::SharedCompConfig;
 use twizzler_abi::syscall::{BackingType, ObjectCreate, ObjectCreateFlags};
 use twizzler_rt_abi::{
@@ -20,7 +16,7 @@ use twizzler_rt_abi::{
 
 use super::{
     CompConfigObject, CompartmentMgr, RunComp, StackObject, COMP_DESTRUCTED, COMP_EXITED,
-    COMP_IS_BINARY, COMP_READY, COMP_THREAD_CAN_EXIT,
+    COMP_IS_BINARY, COMP_READY,
 };
 use crate::{
     gates::LoadCompartmentError,
@@ -31,20 +27,29 @@ use crate::{
     },
 };
 
+/// Tracks info for loaded, but not yet running, compartments.
 #[derive(Debug)]
 pub struct RunCompLoader {
     loaded_extras: Vec<LoadInfo>,
     root_comp: LoadInfo,
 }
 
+/// A single compartment, loaded but not yet running.
 #[derive(Debug, Clone)]
 struct LoadInfo {
+    // root (eg executable) library ID
+    #[allow(dead_code)]
     root_id: LibraryId,
+    // runtime library ID (maybe injected)
+    #[allow(dead_code)]
     rt_id: LibraryId,
+    // security context ID
     sctx_id: ObjID,
     name: String,
     comp_id: CompartmentId,
+    // all constructors for all libraries
     ctor_info: Vec<CtorSet>,
+    // entry point to call for the runtime to init this compartment
     entry: extern "C" fn(*const RuntimeInfo) -> !,
     is_binary: bool,
 }
@@ -72,8 +77,6 @@ impl LoadInfo {
 
     fn build_runcomp(
         &self,
-        dynlink: &mut Context,
-        cmp: &mut CompartmentMgr,
         handle: MapHandle,
         stack_object: StackObject,
     ) -> Result<RunComp, DynlinkError> {
@@ -105,7 +108,7 @@ impl Drop for RunCompLoader {
 const RUNTIME_NAME: &'static str = "libtwz_rt.so";
 
 fn get_new_sctx_instance(_sctx: ObjID) -> ObjID {
-    // TODO
+    // TODO: we don't support real sctx instances yet
     twizzler_abi::syscall::sys_object_create(
         ObjectCreate::new(
             BackingType::Normal,
@@ -120,6 +123,8 @@ fn get_new_sctx_instance(_sctx: ObjID) -> ObjID {
 }
 
 impl RunCompLoader {
+    // the runtime library might be in the dependency tree from the shared object files.
+    // if not, we need to insert it.
     fn maybe_inject_runtime(
         dynlink: &mut Context,
         root_id: LibraryId,
@@ -223,8 +228,6 @@ impl RunCompLoader {
             |id| space.safe_create_and_map_runtime_object(id, MapFlags::READ | MapFlags::WRITE);
 
         let root_rc = self.root_comp.build_runcomp(
-            dynlink,
-            cmp,
             make_new_handle(self.root_comp.sctx_id)?,
             StackObject::new(make_new_handle(self.root_comp.sctx_id)?, DEFAULT_STACK_SIZE)?,
         )?;
@@ -246,7 +249,7 @@ impl RunCompLoader {
             .loaded_extras
             .iter()
             .zip(handles)
-            .map(|extra| extra.0.build_runcomp(dynlink, cmp, extra.1 .0, extra.1 .1))
+            .map(|extra| extra.0.build_runcomp(extra.1 .0, extra.1 .1))
             .try_collect::<Vec<_>>()?;
 
         for rc in extras.drain(..) {

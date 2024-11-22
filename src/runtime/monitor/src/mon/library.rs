@@ -26,13 +26,14 @@ impl Monitor {
             *self.locks.lock(ThreadKey::get().unwrap());
         let handle = libhandles.lookup(instance, desc)?;
         let lib = dynlink.get_library(handle.id).ok()?;
+        // write the library name to the per-thread simple buffer
         let pt = comps.get_mut(instance)?.get_per_thread(thread, space);
         let name_len = pt.write_bytes(lib.name.as_bytes());
         Some(LibraryInfo {
             name_len,
             compartment_id: handle.comp,
             objid: lib.full_obj.object().id(),
-            slot: lib.base_addr() / MAX_SIZE,
+            slot: lib.full_obj.object().start() as usize / MAX_SIZE,
             start: (lib.full_obj.object().start() as usize + NULLPAGE_SIZE) as *mut _,
             len: MAX_SIZE - NULLPAGE_SIZE * 2,
             dl_info: twizzler_rt_abi::debug::DlPhdrInfo {
@@ -70,9 +71,9 @@ impl Monitor {
     /// Load a library in the given compartment.
     pub fn load_library(
         &self,
-        caller: ObjID,
-        id: ObjID,
-        comp: Option<Descriptor>,
+        _caller: ObjID,
+        _id: ObjID,
+        _comp: Option<Descriptor>,
     ) -> Result<Descriptor, LoadLibraryError> {
         todo!()
     }
