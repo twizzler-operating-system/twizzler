@@ -1,4 +1,4 @@
-use crate::object::MAX_SIZE;
+use twizzler_abi::object::MAX_SIZE;
 
 pub(crate) mod upcall;
 

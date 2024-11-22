@@ -17,14 +17,11 @@ pub(crate) unsafe extern "C-unwind" fn rr_upcall_entry2(
     frame: *mut UpcallFrame,
     info: *const UpcallData,
 ) -> ! {
-    use crate::runtime::do_impl::__twz_get_runtime;
-
     preinit_println!(
         "got upcall: {:?}, {:?}",
         frame.as_ref().unwrap(),
         info.as_ref().unwrap()
     );
     //crate::runtime::upcall::upcall_rust_entry(&*rdi, &*rsi);
-    let runtime = __twz_get_runtime();
-    runtime.abort()
+    twizzler_rt_abi::core::twz_rt_abort();
 }
