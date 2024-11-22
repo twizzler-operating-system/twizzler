@@ -276,7 +276,7 @@ pub fn frame() -> SecFrame {
         #[cfg(target_arch = "x86_64")]
         core::arch::asm!("rdfsbase {}", out(reg) val);
         #[cfg(not(target_arch = "x86_64"))]
-        core::arch::asm!("mrs {}, tpidr_elx", out(reg) val);
+        core::arch::asm!("mrs {}, tpidr_el0", out(reg) val);
     }
     SecFrame { tp: val }
 }
