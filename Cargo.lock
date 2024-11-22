@@ -4888,6 +4888,7 @@ dependencies = [
  "num_enum",
  "static_assertions",
  "thiserror-no-std",
+ "twizzler-minruntime",
  "twizzler-rt-abi",
  "volatile",
 ]
@@ -4913,6 +4914,7 @@ dependencies = [
  "futures",
  "twizzler-abi",
  "twizzler-async",
+ "twizzler-minruntime",
  "twizzler-object",
  "volatile",
 ]
@@ -5023,6 +5025,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.6.0",
  "twizzler-abi",
+ "twizzler-minruntime",
 ]
 
 [[package]]

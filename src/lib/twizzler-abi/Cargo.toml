@@ -21,3 +21,6 @@ version = "0.5"
 [features]
 # Activate if compiling for the kernel.
 kernel = ["volatile"]
+
+[dev-dependencies]
+twizzler-minruntime = { path = "../../runtime/minruntime" }
