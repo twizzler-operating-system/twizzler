@@ -159,7 +159,7 @@ impl Monitor {
         let monitor_dynlink_comp = locks.3.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
         locks
             .1
-            .start_thread(&mut *locks.0, monitor_dynlink_comp, main, None)
+            .start_thread(&mut locks.0, monitor_dynlink_comp, main, None)
     }
 
     /// Spawn a thread into a given compartment, using initial thread arguments.
@@ -259,9 +259,7 @@ impl Monitor {
         info: &secgate::GateCallInfo,
         cmd: MonitorCompControlCmd,
     ) -> Option<i32> {
-        let Some(src) = info.source_context() else {
-            return None;
-        };
+        let src = info.source_context()?;
         tracing::trace!(
             "compartment ctrl from: {:?}, thread = {:?}: {:?}",
             src,
@@ -328,16 +326,15 @@ impl Monitor {
                 // or we are a binary), ant then set the destructed flag and return.
                 loop {
                     let flags = self.load_compartment_flags(src);
-                    if flags & COMP_THREAD_CAN_EXIT != 0 {
-                        if self.update_compartment_flags(src, |state| Some(state | COMP_DESTRUCTED))
-                        {
-                            tracing::debug!(
-                                "runtime main thread destructing in {}",
-                                self.comp_name(src)
-                                    .unwrap_or_else(|| String::from("unknown"))
-                            );
-                            break None;
-                        }
+                    if flags & COMP_THREAD_CAN_EXIT != 0
+                        && self.update_compartment_flags(src, |state| Some(state | COMP_DESTRUCTED))
+                    {
+                        tracing::debug!(
+                            "runtime main thread destructing in {}",
+                            self.comp_name(src)
+                                .unwrap_or_else(|| String::from("unknown"))
+                        );
+                        break None;
                     }
                     self.wait_for_compartment_state_change(src, flags);
                 }

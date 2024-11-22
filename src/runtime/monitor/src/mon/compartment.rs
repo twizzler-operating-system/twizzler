@@ -140,9 +140,7 @@ impl CompartmentMgr {
         instance: ObjID,
         state: u64,
     ) -> Option<ThreadSyncSleep> {
-        let Some(rc) = self.get(instance) else {
-            return None;
-        };
+        let rc = self.get(instance)?;
         Some(rc.until_change(state))
     }
 
@@ -270,9 +268,7 @@ impl super::Monitor {
 
         let loader = {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
-
-            let loader = loader::RunCompLoader::new(&mut *dynlink, &compname, root, new_comp_flags);
-            loader
+            loader::RunCompLoader::new(*dynlink, compname, root, new_comp_flags)
         }
         .inspect_err(|e| tracing::debug!("failed to load {}::{}: {:?}", compname, libname, e))
         .map_err(|_| LoadCompartmentError::Unknown)?;

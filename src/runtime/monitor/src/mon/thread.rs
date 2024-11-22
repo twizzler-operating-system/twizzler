@@ -56,7 +56,7 @@ impl ThreadMgr {
 
     fn do_remove(&mut self, thread: &ManagedThread) {
         self.all.remove(&thread.id);
-        if let Some(ref cleaner) = self.cleaner.get() {
+        if let Some(cleaner) = self.cleaner.get() {
             cleaner.untrack(thread.id);
         }
     }
@@ -164,7 +164,7 @@ impl ThreadMgr {
             main_thread_comp,
         );
         if let Ok(ref mt) = mt {
-            if let Some(ref cleaner) = self.cleaner.get() {
+            if let Some(cleaner) = self.cleaner.get() {
                 cleaner.track(mt.clone());
             }
         }

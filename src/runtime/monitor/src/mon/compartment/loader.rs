@@ -105,7 +105,7 @@ impl Drop for RunCompLoader {
     }
 }
 
-const RUNTIME_NAME: &'static str = "libtwz_rt.so";
+const RUNTIME_NAME: &str = "libtwz_rt.so";
 
 fn get_new_sctx_instance(_sctx: ObjID) -> ObjID {
     // TODO: we don't support real sctx instances yet

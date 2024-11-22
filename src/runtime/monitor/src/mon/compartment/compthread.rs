@@ -17,6 +17,7 @@ pub(super) struct CompThread {
 impl CompThread {
     /// Start a new thread using the given stack, in the provided security context instance, using
     /// the start function.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         space: &mut Space,
         tmgr: &mut ThreadMgr,
@@ -52,7 +53,8 @@ impl StackObject {
     /// Make a new stack object from a given handle and stack size.
     pub fn new(handle: MapHandle, stack_size: usize) -> miette::Result<Self> {
         // Find the stack size, with max and min values, and correct alignment.
-        let stack_size = std::cmp::max(std::cmp::min(stack_size, MAX_SIZE / 2), DEFAULT_STACK_SIZE)
+        let stack_size = stack_size
+            .clamp(DEFAULT_STACK_SIZE, MAX_SIZE / 2)
             .next_multiple_of(STACK_SIZE_MIN_ALIGN);
 
         Ok(Self { handle, stack_size })

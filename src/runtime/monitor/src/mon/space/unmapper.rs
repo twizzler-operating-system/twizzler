@@ -28,7 +28,7 @@ impl Unmapper {
                     let key = happylock::ThreadKey::get().unwrap();
                     match receiver.recv() {
                         Ok(info) => {
-                            if let Err(_) = catch_unwind(|| {
+                            if catch_unwind(|| {
                                 let monitor = get_monitor();
                                 match info {
                                     UnmapCommand::CompDrop(id, info) => {
@@ -42,7 +42,9 @@ impl Unmapper {
                                         space.handle_drop(info);
                                     }
                                 }
-                            }) {
+                            })
+                            .is_err()
+                            {
                                 tracing::error!(
                                     "clean_call panicked -- exiting map cleaner thread"
                                 );

@@ -50,7 +50,7 @@ pub fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
     set_upcall_handler(&crate::upcall::upcall_monitor_handler).unwrap();
 
-    let main_thread = std::thread::spawn(|| monitor_init());
+    let main_thread = std::thread::spawn(monitor_init);
     let _r = main_thread.join().unwrap().map_err(|e| {
         tracing::error!("{:?}", e);
     });

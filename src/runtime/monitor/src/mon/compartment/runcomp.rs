@@ -126,6 +126,7 @@ impl PerThread {
 
 impl RunComp {
     /// Build a new runtime compartment.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sctx: ObjID,
         instance: ObjID,
@@ -191,7 +192,7 @@ impl RunComp {
         unsafe {
             let place: NonNull<T> = self.alloc.malloc(Layout::new::<T>())?.cast();
             place.as_ptr().write(data);
-            Ok(place.as_ptr() as *mut T)
+            Ok(place.as_ptr())
         }
     }
 
