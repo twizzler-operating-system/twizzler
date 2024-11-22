@@ -2,17 +2,16 @@
 
 use core::{marker::PhantomData, ptr::NonNull};
 
-use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
-
-use crate::{
+use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    runtime::object::slot::global_allocate,
-    rustc_alloc::boxed::Box,
     syscall::{
         sys_object_create, sys_object_map, BackingType, LifetimeType, ObjectCreate,
         ObjectCreateFlags,
     },
 };
+use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
+
+use super::slot::global_allocate;
 
 #[allow(dead_code)]
 pub(crate) struct InternalObject<T> {
@@ -50,7 +49,7 @@ impl<T> InternalObject<T> {
             id,
             slot,
             Protections::READ | Protections::WRITE,
-            crate::syscall::MapFlags::empty(),
+            twizzler_abi::syscall::MapFlags::empty(),
         )
         .ok()?;
 
@@ -98,8 +97,14 @@ impl<T> InternalObject<T> {
     #[allow(dead_code)]
     pub(crate) fn map(id: ObjID, prot: Protections) -> Option<Self> {
         let slot = super::slot::global_allocate()?;
-        crate::syscall::sys_object_map(None, id, slot, prot, crate::syscall::MapFlags::empty())
-            .ok()?;
+        twizzler_abi::syscall::sys_object_map(
+            None,
+            id,
+            slot,
+            prot,
+            twizzler_abi::syscall::MapFlags::empty(),
+        )
+        .ok()?;
 
         let start = (slot * MAX_SIZE) as *mut _;
         let meta = (((slot + 1) * MAX_SIZE) - NULLPAGE_SIZE) as *mut _;
@@ -136,23 +141,5 @@ impl<T> InternalObject<T> {
         } else {
             None
         }
-    }
-}
-
-impl From<Protections> for MapFlags {
-    fn from(p: Protections) -> Self {
-        let mut f = MapFlags::empty();
-        if p.contains(Protections::READ) {
-            f.insert(MapFlags::READ);
-        }
-
-        if p.contains(Protections::WRITE) {
-            f.insert(MapFlags::WRITE);
-        }
-
-        if p.contains(Protections::EXEC) {
-            f.insert(MapFlags::EXEC);
-        }
-        f
     }
 }

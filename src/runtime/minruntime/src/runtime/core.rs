@@ -2,6 +2,10 @@
 
 use core::{alloc::GlobalAlloc, ptr};
 
+use twizzler_abi::{
+    object::ObjID,
+    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
+};
 use twizzler_rt_abi::{
     core::{BasicAux, BasicReturn, RuntimeInfo, RUNTIME_INIT_MIN},
     info::SystemInfo,
@@ -13,10 +17,6 @@ use super::{
     phdrs::{process_phdrs, Phdr},
     tls::init_tls,
     MinimalRuntime,
-};
-use crate::{
-    object::ObjID,
-    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
 
 // Just keep a single, simple global allocator.
@@ -39,7 +39,7 @@ impl MinimalRuntime {
     }
 
     pub fn exit(&self, code: i32) -> ! {
-        crate::syscall::sys_thread_exit(code as u64);
+        twizzler_abi::syscall::sys_thread_exit(code as u64);
     }
 
     pub fn abort(&self) -> ! {
@@ -90,7 +90,7 @@ impl MinimalRuntime {
 
         let tls = init_tls();
         if let Some(tls) = tls {
-            crate::syscall::sys_thread_settls(tls);
+            twizzler_abi::syscall::sys_thread_settls(tls);
         } else {
             crate::print_err("failed to initialize TLS\n");
         }
@@ -106,7 +106,7 @@ impl MinimalRuntime {
                 mode: UpcallMode::CallSelf,
             }; UpcallInfo::NR_UPCALLS],
         );
-        crate::syscall::sys_thread_set_upcall(upcall_target);
+        twizzler_abi::syscall::sys_thread_set_upcall(upcall_target);
 
         unsafe {
             // Run preinit array
@@ -144,7 +144,7 @@ impl MinimalRuntime {
     }
 
     pub fn sysinfo(&self) -> SystemInfo {
-        let info = crate::syscall::sys_info();
+        let info = twizzler_abi::syscall::sys_info();
         SystemInfo {
             clock_monotonicity: Monotonicity::Weak.into(),
             available_parallelism: info.cpu_count().into(),

@@ -1,23 +1,21 @@
 [package]
-name = "twizzler-abi"
+name = "twizzler-minruntime"
 version = "0.1.0"
 edition = "2021"
 authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 
 [dependencies]
 bitflags = "2.4.1"
-bitset-core = { version = "0.1", optional = true, default-features = false }
+talc = { version = "3.0", default-features = false }
+bitset-core = { version = "0.1", default-features = false }
 cfg-if = "1.0"
 num_enum = { version = "0.7", default-features = false }
 thiserror = { package = "thiserror-no-std", version = "2.0", default-features = false }
+stable-vec = "0.4.1"
 lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
+lru = "0.12.4"
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-abi = { path = "../../lib/twizzler-abi" }
 static_assertions = "1"
-
-[dependencies.volatile]
-optional = true
-version = "0.5"
-
-[features]
-# Activate if compiling for the kernel.
-kernel = ["volatile"]
+paste = "1"
+printf-compat = { version = "0.1", default-features = false }

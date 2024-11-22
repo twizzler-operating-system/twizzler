@@ -111,7 +111,7 @@ impl MutexImp {
     }
 }
 
-pub(crate) struct Mutex<T> {
+pub struct Mutex<T> {
     imp: MutexImp,
     data: UnsafeCell<T>,
 }
@@ -158,7 +158,7 @@ unsafe impl<T> Sync for Mutex<T> where T: Send {}
 unsafe impl<T> Send for LockGuard<'_, T> where T: Send {}
 unsafe impl<T> Sync for LockGuard<'_, T> where T: Send + Sync {}
 
-pub(crate) struct LockGuard<'a, T> {
+pub struct LockGuard<'a, T> {
     lock: &'a Mutex<T>,
 }
 

@@ -2,10 +2,8 @@
 
 use core::{intrinsics::copy_nonoverlapping, mem::size_of};
 
-use twizzler_rt_abi::core::{InitInfoPtrs, MinimalInitInfo, RuntimeInfo, RUNTIME_INIT_MIN};
-
-use crate::{
-    object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+use twizzler_abi::{
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     slot::{RESERVED_DATA, RESERVED_IMAGE, RESERVED_STACK, RESERVED_TEXT},
     syscall::{
         sys_unbind_handle, BackingType, HandleType, LifetimeType, MapFlags, NewHandleFlags,
@@ -13,6 +11,9 @@ use crate::{
         UnbindHandleFlags, UpcallTargetSpawnOption,
     },
 };
+use twizzler_rt_abi::core::{InitInfoPtrs, MinimalInitInfo, RuntimeInfo, RUNTIME_INIT_MIN};
+
+use super::object::InternalObject;
 
 #[derive(Debug)]
 #[repr(C)]
@@ -198,9 +199,13 @@ pub fn spawn_new_executable(
         None,
         ObjectCreateFlags::empty(),
     );
-    let vm_handle = crate::syscall::sys_object_create(cs, &[], &[]).unwrap();
-    crate::syscall::sys_new_handle(vm_handle, HandleType::VmContext, NewHandleFlags::empty())
-        .map_err(|_| SpawnExecutableError::ObjectCreateFailed)?;
+    let vm_handle = twizzler_abi::syscall::sys_object_create(cs, &[], &[]).unwrap();
+    twizzler_abi::syscall::sys_new_handle(
+        vm_handle,
+        HandleType::VmContext,
+        NewHandleFlags::empty(),
+    )
+    .map_err(|_| SpawnExecutableError::ObjectCreateFailed)?;
 
     let phdr_vaddr = elf
         .phdrs()
@@ -266,13 +271,13 @@ pub fn spawn_new_executable(
         .map(|(_, c)| c)
         .collect();
 
-    let text = crate::syscall::sys_object_create(cs, &text_copy, &[]).unwrap();
-    let data = crate::syscall::sys_object_create(cs, &data_copy, &[]).unwrap();
+    let text = twizzler_abi::syscall::sys_object_create(cs, &text_copy, &[]).unwrap();
+    let data = twizzler_abi::syscall::sys_object_create(cs, &data_copy, &[]).unwrap();
 
     let mut stack = InternalObject::<()>::create_data_and_map()
         .ok_or(SpawnExecutableError::ObjectCreateFailed)?;
 
-    crate::syscall::sys_object_map(
+    twizzler_abi::syscall::sys_object_map(
         Some(vm_handle),
         text,
         RESERVED_TEXT,
@@ -280,7 +285,7 @@ pub fn spawn_new_executable(
         MapFlags::empty(),
     )
     .map_err(|_| SpawnExecutableError::MapFailed)?;
-    crate::syscall::sys_object_map(
+    twizzler_abi::syscall::sys_object_map(
         Some(vm_handle),
         data,
         RESERVED_DATA,
@@ -288,7 +293,7 @@ pub fn spawn_new_executable(
         MapFlags::empty(),
     )
     .map_err(|_| SpawnExecutableError::MapFailed)?;
-    crate::syscall::sys_object_map(
+    twizzler_abi::syscall::sys_object_map(
         Some(vm_handle),
         stack.id(),
         RESERVED_STACK,
@@ -296,7 +301,7 @@ pub fn spawn_new_executable(
         MapFlags::empty(),
     )
     .map_err(|_| SpawnExecutableError::MapFailed)?;
-    crate::syscall::sys_object_map(
+    twizzler_abi::syscall::sys_object_map(
         Some(vm_handle),
         exe.id(),
         RESERVED_IMAGE,
@@ -388,7 +393,7 @@ pub fn spawn_new_executable(
         UpcallTargetSpawnOption::DefaultAbort,
     );
     let thr = unsafe {
-        crate::syscall::sys_spawn(ts).map_err(|_| SpawnExecutableError::ThreadSpawnFailed)?
+        twizzler_abi::syscall::sys_spawn(ts).map_err(|_| SpawnExecutableError::ThreadSpawnFailed)?
     };
 
     sys_unbind_handle(vm_handle, UnbindHandleFlags::empty());

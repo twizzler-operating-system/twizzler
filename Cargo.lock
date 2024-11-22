@@ -421,6 +421,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
+ "twizzler-minruntime",
  "twizzler-object",
  "twizzler-rt-abi",
 ]
@@ -1067,6 +1068,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-async",
  "twizzler-driver",
+ "twizzler-minruntime",
  "twizzler-object",
  "volatile",
 ]
@@ -2716,6 +2718,7 @@ dependencies = [
  "tracing-subscriber",
  "twizzler-abi",
  "twizzler-futures",
+ "twizzler-minruntime",
  "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
@@ -3193,6 +3196,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-async",
  "twizzler-driver",
+ "twizzler-minruntime",
  "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
@@ -3279,6 +3283,7 @@ dependencies = [
  "lazy_static",
  "twizzler-abi",
  "twizzler-async",
+ "twizzler-minruntime",
  "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
@@ -3291,6 +3296,7 @@ dependencies = [
  "byteorder",
  "twizzler-abi",
  "twizzler-async",
+ "twizzler-minruntime",
  "twizzler-net",
  "twizzler-object",
 ]
@@ -3570,6 +3576,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-async",
  "twizzler-driver",
+ "twizzler-minruntime",
  "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
@@ -4037,12 +4044,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d626bb9dae77e28219937af045c257c28bfd3f69333c512553507f5f9798cb76"
 
 [[package]]
-name = "rustc-std-workspace-alloc"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff66d57013a5686e1917ed6a025d54dd591fcda71a41fe07edf4d16726aefa86"
-
-[[package]]
 name = "rustc-std-workspace-core"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4139,6 +4140,7 @@ dependencies = [
  "stable-vec",
  "static_assertions",
  "twizzler-abi",
+ "twizzler-minruntime",
  "twizzler-rt-abi",
 ]
 
@@ -4451,6 +4453,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-async",
  "twizzler-driver",
+ "twizzler-minruntime",
  "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
@@ -4881,18 +4884,9 @@ dependencies = [
  "bitflags 2.6.0",
  "bitset-core",
  "cfg-if 1.0.0",
- "compiler_builtins",
  "lazy_static",
- "libc",
- "lru",
  "num_enum",
- "paste",
- "printf-compat",
- "rustc-std-workspace-alloc",
- "rustc-std-workspace-core",
- "stable-vec",
  "static_assertions",
- "talc",
  "thiserror-no-std",
  "twizzler-rt-abi",
  "volatile",
@@ -4972,12 +4966,33 @@ name = "twizzler-kernel-macros"
 version = "0.0.0"
 
 [[package]]
+name = "twizzler-minruntime"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.6.0",
+ "bitset-core",
+ "cfg-if 1.0.0",
+ "lazy_static",
+ "lru",
+ "num_enum",
+ "paste",
+ "printf-compat",
+ "stable-vec",
+ "static_assertions",
+ "talc",
+ "thiserror-no-std",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+]
+
+[[package]]
 name = "twizzler-net"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.6.0",
  "twizzler-abi",
  "twizzler-async",
+ "twizzler-minruntime",
  "twizzler-object",
  "twizzler-queue",
 ]
@@ -5037,7 +5052,10 @@ dependencies = [
  "dynlink",
  "elf",
  "lazy_static",
+ "lru",
  "monitor-api",
+ "paste",
+ "printf-compat",
  "secgate",
  "stable-vec",
  "static_assertions",

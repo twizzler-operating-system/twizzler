@@ -4,9 +4,7 @@
 use core::{alloc::GlobalAlloc, ptr::NonNull};
 
 use talc::{OomHandler, Span};
-
-use super::object::slot::global_allocate;
-use crate::{
+use twizzler_abi::{
     object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
     simple_mutex::Mutex,
     syscall::{
@@ -14,6 +12,8 @@ use crate::{
         ObjectCreateFlags,
     },
 };
+
+use super::object::slot::global_allocate;
 
 pub struct MinimalAllocator {
     imp: Mutex<talc::Talc<MinimalOomHandler>>,
@@ -52,7 +52,7 @@ impl OomHandler for MinimalOomHandler {
             id,
             slot,
             Protections::READ | Protections::WRITE,
-            crate::syscall::MapFlags::empty(),
+            twizzler_abi::syscall::MapFlags::empty(),
         )
         .map_err(|_| ())?;
 

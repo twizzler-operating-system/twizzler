@@ -17,7 +17,7 @@ use twizzler_rt_abi::{
 };
 
 fn find_init_name(name: &str) -> Option<ObjID> {
-    let init_info = twizzler_abi::runtime::get_kernel_init_info();
+    let init_info = twizzler_minruntime::runtime::get_kernel_init_info();
     for n in init_info.names() {
         if n.name() == name {
             return Some(n.id());
@@ -66,7 +66,6 @@ fn name_resolver(mut name: &str) -> Result<ObjID, DynlinkError> {
 }
 
 fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
-    //miette::set_hook(Box::new(|_| Box::new(miette::DebugReportHandler::new()))).unwrap();
     let engine = Engine;
     let mut ctx = dynlink::context::Context::new(Box::new(engine));
     let unlib = UnloadedLibrary::new("libmonitor.so");
@@ -74,6 +73,7 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
         .add_compartment("monitor", NewCompartmentFlags::EXPORT_GATES)
         .unwrap();
 
+    info!("==> {}", monitor_comp_id);
     let monitor_id = ctx
         .load_library_in_compartment(monitor_comp_id, unlib, true)
         .unwrap()[0]
@@ -133,6 +133,7 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     exit(0);
 }
 
+extern crate twizzler_minruntime;
 fn main() {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::DEBUG)

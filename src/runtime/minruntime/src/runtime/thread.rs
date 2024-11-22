@@ -2,13 +2,8 @@
 
 use core::alloc::Layout;
 
-use twizzler_rt_abi::thread::{JoinError, SpawnError, ThreadSpawnArgs, TlsIndex};
-
-use super::{object::InternalObject, MinimalRuntime};
-use crate::{
+use twizzler_abi::{
     object::Protections,
-    runtime::idcounter::IdCounter,
-    rustc_alloc::collections::BTreeMap,
     simple_mutex::Mutex,
     syscall::{
         ThreadSpawnError, ThreadSpawnFlags, ThreadSync, ThreadSyncError, ThreadSyncFlags,
@@ -16,6 +11,9 @@ use crate::{
     },
     thread::{ExecutionState, ThreadRepr},
 };
+use twizzler_rt_abi::thread::{JoinError, SpawnError, ThreadSpawnArgs, TlsIndex};
+
+use super::{idcounter::IdCounter, object::InternalObject, MinimalRuntime};
 
 struct InternalThread {
     repr: InternalObject<ThreadRepr>,
@@ -23,7 +21,7 @@ struct InternalThread {
     int_id: u32,
 }
 
-use rustc_alloc::sync::Arc;
+use rustc_alloc::{collections::btree_map::BTreeMap, sync::Arc};
 static THREAD_SLOTS: Mutex<BTreeMap<u32, Arc<InternalThread>>> = Mutex::new(BTreeMap::new());
 static THREAD_ID_COUNTER: IdCounter = IdCounter::new_one();
 
@@ -33,7 +31,7 @@ fn get_thread_slots() -> &'static Mutex<BTreeMap<u32, Arc<InternalThread>>> {
 
 impl MinimalRuntime {
     pub fn available_parallelism(&self) -> core::num::NonZeroUsize {
-        crate::syscall::sys_info().cpu_count()
+        twizzler_abi::syscall::sys_info().cpu_count()
     }
 
     pub fn futex_wait(
@@ -47,11 +45,11 @@ impl MinimalRuntime {
             return true;
         }
 
-        let r = crate::syscall::sys_thread_sync(
+        let r = twizzler_abi::syscall::sys_thread_sync(
             &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
-                crate::syscall::ThreadSyncReference::Virtual32(futex),
+                twizzler_abi::syscall::ThreadSyncReference::Virtual32(futex),
                 expected as u64,
-                crate::syscall::ThreadSyncOp::Equal,
+                twizzler_abi::syscall::ThreadSyncOp::Equal,
                 ThreadSyncFlags::empty(),
             ))],
             timeout,
@@ -68,7 +66,7 @@ impl MinimalRuntime {
             ThreadSyncReference::Virtual32(futex),
             count,
         ));
-        let _ = crate::syscall::sys_thread_sync(&mut [wake], None);
+        let _ = twizzler_abi::syscall::sys_thread_sync(&mut [wake], None);
         false
     }
 
@@ -88,7 +86,7 @@ impl MinimalRuntime {
         let initial_stack = stack_base as usize;
         let initial_tls = tls_set;
         let thid = unsafe {
-            crate::syscall::sys_spawn(crate::syscall::ThreadSpawnArgs {
+            twizzler_abi::syscall::sys_spawn(twizzler_abi::syscall::ThreadSpawnArgs {
                 entry: args.start,
                 stack_base: initial_stack,
                 stack_size: args.stack_size,
@@ -96,7 +94,7 @@ impl MinimalRuntime {
                 arg: args.arg,
                 flags: ThreadSpawnFlags::empty(),
                 vm_context_handle: None,
-                upcall_target: crate::syscall::UpcallTargetSpawnOption::Inherit,
+                upcall_target: twizzler_abi::syscall::UpcallTargetSpawnOption::Inherit,
             })?
         };
 
@@ -110,13 +108,13 @@ impl MinimalRuntime {
     }
 
     pub fn yield_now(&self) {
-        crate::syscall::sys_thread_yield()
+        twizzler_abi::syscall::sys_thread_yield()
     }
 
     pub fn set_name(&self, _name: &core::ffi::CStr) {}
 
     pub fn sleep(&self, duration: core::time::Duration) {
-        let _ = crate::syscall::sys_thread_sync(&mut [], Some(duration));
+        let _ = twizzler_abi::syscall::sys_thread_sync(&mut [], Some(duration));
     }
 
     pub fn join(&self, id: u32, timeout: Option<core::time::Duration>) -> Result<(), JoinError> {
@@ -143,15 +141,5 @@ impl MinimalRuntime {
 
     pub fn tls_get_addr(&self, _tls_index: &TlsIndex) -> Option<*mut u8> {
         panic!("minimal runtime only supports LocalExec TLS model");
-    }
-}
-
-impl From<ThreadSpawnError> for SpawnError {
-    fn from(ts: ThreadSpawnError) -> Self {
-        match ts {
-            ThreadSpawnError::Unknown => Self::Other,
-            ThreadSpawnError::InvalidArgument => Self::InvalidArgument,
-            ThreadSpawnError::NotFound => Self::ObjectNotFound,
-        }
     }
 }

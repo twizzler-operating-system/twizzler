@@ -25,7 +25,8 @@ members = [
     "src/runtime/secgate",
     "src/runtime/monitor",
     "src/runtime/monitor-api",
-    "src/runtime/twz-rt",
+    "src/runtime/rt",
+    "src/runtime/minruntime",
     "src/abi/rt-abi",
     "src/abi/types",
 ]
@@ -41,7 +42,7 @@ initrd = [
     "crate:netmgr",
     "crate:nettest",
     "crate:pager",
-    #"lib:twz-rt",
+    "lib:twz-rt",
     "lib:monitor",
     "crate:mnemosyne",
     "crate:stdfs_demo",

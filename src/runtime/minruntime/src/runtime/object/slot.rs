@@ -12,8 +12,7 @@ pub fn global_release(slot: usize) {
 }
 
 use bitset_core::BitSet;
-
-use crate::{
+use twizzler_abi::{
     arch::SLOTS,
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
@@ -28,7 +27,7 @@ static SLOT_TRACKER: Mutex<SlotTracker> = Mutex::new(SlotTracker {
     bitmap: [0; SLOTS / 32],
 });
 
-use crate::slot::ALLOC_START;
+use twizzler_abi::slot::ALLOC_START;
 
 impl SlotTracker {
     fn alloc(&mut self) -> Option<usize> {
@@ -55,7 +54,7 @@ pub(crate) fn slot_to_start_and_meta(slot: usize) -> (usize, usize) {
 
 /// Get the initial kernel info for init. Only works for init.
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {
-    let (start, _) = slot_to_start_and_meta(crate::slot::RESERVED_KERNEL_INIT);
+    let (start, _) = slot_to_start_and_meta(twizzler_abi::slot::RESERVED_KERNEL_INIT);
     unsafe {
         ((start + NULLPAGE_SIZE) as *const KernelInitInfo)
             .as_ref()

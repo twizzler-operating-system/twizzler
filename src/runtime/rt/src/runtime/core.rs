@@ -3,9 +3,13 @@
 use dynlink::context::runtime::RuntimeInitInfo;
 use monitor_api::SharedCompConfig;
 use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
-use twizzler_rt_abi::core::{
-    BasicAux, BasicReturn, CompartmentInitInfo, CtorSet, RuntimeInfo, RUNTIME_INIT_COMP,
-    RUNTIME_INIT_MONITOR,
+use twizzler_rt_abi::{
+    core::{
+        BasicAux, BasicReturn, CompartmentInitInfo, CtorSet, ExitCode, RuntimeInfo,
+        RUNTIME_INIT_COMP, RUNTIME_INIT_MONITOR,
+    },
+    info::SystemInfo,
+    time::Monotonicity,
 };
 
 use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
@@ -45,7 +49,7 @@ impl ReferenceRuntime {
     pub fn runtime_entry(
         &self,
         rtinfo: *const RuntimeInfo,
-        std_entry: unsafe extern "C" fn(BasicAux) -> BasicReturn,
+        std_entry: unsafe extern "C-unwind" fn(BasicAux) -> BasicReturn,
     ) -> ! {
         let rtinfo = unsafe { rtinfo.as_ref().unwrap() };
         match rtinfo.kind {
@@ -87,16 +91,31 @@ impl ReferenceRuntime {
         self.exit(ret.code);
     }
 
-    pub fn pre_main_hook(&self) {
+    pub fn pre_main_hook(&self) -> Option<ExitCode> {
         preinit_println!("====== {}", TLS_TEST);
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
         } else {
             unsafe { self.set_runtime_ready() };
         }
+        None
     }
 
     pub fn post_main_hook(&self) {}
+
+    pub fn sysinfo(&self) -> SystemInfo {
+        let info = twizzler_abi::syscall::sys_info();
+        SystemInfo {
+            clock_monotonicity: Monotonicity::Weak.into(),
+            available_parallelism: info.cpu_count().into(),
+            page_size: info.page_size(),
+        }
+    }
+
+    pub fn get_random(&self, buf: &mut [u8]) -> usize {
+        // TODO: Once the Randomness PR is in, fix this.
+        buf.len()
+    }
 }
 
 impl ReferenceRuntime {

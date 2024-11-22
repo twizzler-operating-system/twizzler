@@ -9,7 +9,10 @@ use twizzler_abi::{
     object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_map, ObjectMapError},
 };
-use twizzler_rt_abi::object::{MapError, MapFlags, ObjID, ObjectHandle};
+use twizzler_rt_abi::{
+    bindings::object_handle,
+    object::{MapError, MapFlags, ObjID, ObjectHandle},
+};
 
 use super::ReferenceRuntime;
 
@@ -74,7 +77,7 @@ impl ReferenceRuntime {
     }
 
     #[tracing::instrument(skip(self), level = "trace")]
-    pub fn release_handle(&self, handle: &mut ObjectHandle) {
+    pub fn release_handle(&self, handle: *mut object_handle) {
         self.object_manager.lock().unwrap().release(handle)
     }
 
@@ -175,17 +178,20 @@ impl ObjectHandleManager {
     }
 
     /// Release a handle. If all handles have been released, calls to monitor to unmap.
-    pub fn release(&mut self, handle: &mut ObjectHandle) {
-        let key = ObjectMapKey(handle.id(), handle.map_flags());
+    pub fn release(&mut self, handle: *mut object_handle) {
+        let handle = unsafe { handle.as_ref().unwrap() };
+        let key = ObjectMapKey(
+            ObjID::new(handle.id),
+            MapFlags::from_bits_truncate(handle.map_flags),
+        );
         if let Some(entry) = self.map().get(&key) {
             if entry.refs.fetch_sub(1, atomic::Ordering::SeqCst) == 1 {
-                monitor_api::monitor_rt_object_unmap(entry.number, handle.id(), handle.map_flags())
-                    .unwrap();
+                monitor_api::monitor_rt_object_unmap(entry.number, key.0, key.1).unwrap();
                 self.map().remove(&key);
             }
         }
 
         // Safety: we only create internal refs from Box.
-        let _boxed = unsafe { Box::from_raw(handle.runtime_info()) };
+        let _boxed = unsafe { Box::from_raw(handle.runtime_info) };
     }
 }

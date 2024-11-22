@@ -102,7 +102,7 @@ impl Context {
 
     /// Get a reference to a compartment back by ID.
     pub fn get_compartment(&self, id: CompartmentId) -> Result<&Compartment, DynlinkError> {
-        if self.compartments.has_element_at(id.0) {
+        if !self.compartments.has_element_at(id.0) {
             return Err(DynlinkErrorKind::InvalidCompartmentId { id }.into());
         }
         Ok(&self.compartments[id.0])
@@ -113,7 +113,7 @@ impl Context {
         &mut self,
         id: CompartmentId,
     ) -> Result<&mut Compartment, DynlinkError> {
-        if self.compartments.has_element_at(id.0) {
+        if !self.compartments.has_element_at(id.0) {
             return Err(DynlinkErrorKind::InvalidCompartmentId { id }.into());
         }
         Ok(&mut self.compartments[id.0])
@@ -234,6 +234,7 @@ impl Context {
         let idx = self.compartments.next_push_index();
         let comp = Compartment::new(name.clone(), CompartmentId(idx), new_comp_flags);
         self.compartments.push(comp);
+        tracing::debug!("added compartment {} with ID {}", name, idx);
         self.compartment_names.insert(name, idx);
         Ok(CompartmentId(idx))
     }

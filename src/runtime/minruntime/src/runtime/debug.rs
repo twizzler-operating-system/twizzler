@@ -1,13 +1,9 @@
 //! Null implementation of the debug runtime.
 
+use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::bindings::{dl_phdr_info, loaded_image, loaded_image_id, object_handle};
 
-use super::{
-    load_elf::{ElfObject, PhdrType},
-    phdrs::PHDR_INFO,
-    MinimalRuntime,
-};
-use crate::object::{InternalObject, ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE};
+use super::{phdrs::PHDR_INFO, MinimalRuntime};
 
 const NAME: &'static core::ffi::CStr = c"<main>";
 impl MinimalRuntime {
@@ -24,7 +20,7 @@ impl MinimalRuntime {
                 map_flags: 0,
                 valid_len: (MAX_SIZE - NULLPAGE_SIZE * 2) as u32,
             },
-            image_start: ((MAX_SIZE * crate::slot::RESERVED_IMAGE) + NULLPAGE_SIZE)
+            image_start: ((MAX_SIZE * twizzler_abi::slot::RESERVED_IMAGE) + NULLPAGE_SIZE)
                 as *const core::ffi::c_void,
             image_len: MAX_SIZE - NULLPAGE_SIZE * 2,
             dl_info: dl_phdr_info {

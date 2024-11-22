@@ -3,8 +3,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use rustc_alloc::vec::Vec;
-
-use crate::simple_mutex::Mutex;
+use twizzler_abi::simple_mutex::Mutex;
 
 /// A manager for IDs of size u32.
 pub(crate) struct IdCounter {

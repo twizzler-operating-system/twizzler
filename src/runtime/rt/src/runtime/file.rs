@@ -3,11 +3,15 @@ use core::{
     mem::size_of,
     num::NonZeroUsize,
 };
+use std::sync::{Arc, Mutex};
 
 use lazy_static::lazy_static;
 use lru::LruCache;
-use rustc_alloc::{string::ToString, sync::Arc};
 use stable_vec::{self, StableVec};
+use twizzler_abi::{
+    object::{ObjID, NULLPAGE_SIZE},
+    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+};
 use twizzler_rt_abi::{
     bindings::io_vec,
     fd::{OpenError, RawFd},
@@ -15,13 +19,7 @@ use twizzler_rt_abi::{
     object::{MapFlags, ObjectHandle},
 };
 
-use super::{object, MinimalRuntime};
-use crate::{
-    object::{ObjID, NULLPAGE_SIZE},
-    print_err,
-    simple_mutex::Mutex,
-    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
-};
+use super::ReferenceRuntime;
 
 #[derive(Clone)]
 struct FileDesc {
@@ -63,7 +61,7 @@ fn get_fd_slots() -> &'static Mutex<StableVec<FdKind>> {
     &FD_SLOTS
 }
 
-impl MinimalRuntime {
+impl ReferenceRuntime {
     pub fn open(&self, path: &str) -> Result<RawFd, OpenError> {
         let obj_id = ObjID::new(
             path.parse::<u128>()
@@ -89,7 +87,7 @@ impl MinimalRuntime {
             };
         }
 
-        let mut binding = get_fd_slots().lock();
+        let mut binding = get_fd_slots().lock().unwrap();
 
         let elem = FdKind::File(Arc::new(Mutex::new(FileDesc {
             pos: 0,
@@ -109,22 +107,22 @@ impl MinimalRuntime {
     }
 
     pub fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, IoError> {
-        let binding = get_fd_slots().lock();
+        let binding = get_fd_slots().lock().unwrap();
         let file_desc = binding
             .get(fd.try_into().unwrap())
             .ok_or(IoError::InvalidDesc)?;
 
         let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
-            let len = crate::syscall::sys_kernel_console_read(
+            let len = twizzler_abi::syscall::sys_kernel_console_read(
                 buf,
-                crate::syscall::KernelConsoleReadFlags::empty(),
+                twizzler_abi::syscall::KernelConsoleReadFlags::empty(),
             )
             .map_err(|_| IoError::Other)?;
             return Ok(len);
         };
 
-        let mut binding = file_desc.lock();
+        let mut binding = file_desc.lock().unwrap();
 
         let metadata_handle = unsafe {
             binding
@@ -241,7 +239,7 @@ impl MinimalRuntime {
     }
 
     pub fn fd_get_info(&self, fd: RawFd) -> Option<twizzler_rt_abi::bindings::fd_info> {
-        let binding = get_fd_slots().lock();
+        let binding = get_fd_slots().lock().unwrap();
         if binding.get(fd.try_into().unwrap()).is_none() {
             return None;
         }
@@ -249,28 +247,21 @@ impl MinimalRuntime {
     }
 
     pub fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, IoError> {
-        if fd == 0 || fd == 1 || fd == 2 {
-            crate::syscall::sys_kernel_console_write(
-                buf,
-                crate::syscall::KernelConsoleWriteFlags::empty(),
-            );
-            return Ok(buf.len());
-        }
-        let binding = get_fd_slots().lock();
+        let binding = get_fd_slots().lock().unwrap();
         let file_desc = binding
             .get(fd.try_into().unwrap())
             .ok_or(IoError::InvalidDesc)?;
 
         let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
-            crate::syscall::sys_kernel_console_write(
+            twizzler_abi::syscall::sys_kernel_console_write(
                 buf,
-                crate::syscall::KernelConsoleWriteFlags::empty(),
+                twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
             );
             return Ok(buf.len());
         };
 
-        let mut binding = file_desc.lock();
+        let mut binding = file_desc.lock().unwrap();
 
         let metadata_handle = unsafe {
             binding
@@ -362,13 +353,16 @@ impl MinimalRuntime {
     }
 
     pub fn close(&self, fd: RawFd) -> Option<()> {
-        let file_desc = get_fd_slots().lock().remove(fd.try_into().unwrap())?;
+        let file_desc = get_fd_slots()
+            .lock()
+            .unwrap()
+            .remove(fd.try_into().unwrap())?;
 
         Some(())
     }
 
     pub fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, IoError> {
-        let binding = get_fd_slots().lock();
+        let binding = get_fd_slots().lock().unwrap();
         let file_desc = binding
             .get(fd.try_into().unwrap())
             .ok_or(IoError::InvalidDesc)?;
@@ -377,7 +371,7 @@ impl MinimalRuntime {
             return Err(IoError::SeekError);
         };
 
-        let mut binding = file_desc.lock();
+        let mut binding = file_desc.lock().unwrap();
 
         let metadata_handle = unsafe {
             &mut *binding

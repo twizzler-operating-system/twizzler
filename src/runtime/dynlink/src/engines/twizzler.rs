@@ -43,10 +43,6 @@ pub fn load_segments(src: &Backing, ld: &[LoadDirective]) -> Result<Vec<Backing>
             }));
         }
 
-        if directive.filesz != directive.memsz {
-            todo!()
-        }
-
         let src_start = (NULLPAGE_SIZE + directive.offset) & !(directive.align - 1);
         let dest_start = directive.vaddr & !(directive.align - 1);
         let len = (directive.vaddr - dest_start) + directive.filesz;

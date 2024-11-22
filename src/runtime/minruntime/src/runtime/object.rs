@@ -2,15 +2,15 @@
 
 use core::{ptr::NonNull, sync::atomic::AtomicU64};
 
+use rustc_alloc::boxed::Box;
+use slot::global_allocate;
+use twizzler_abi::{
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{sys_object_map, ObjectMapError, UnmapFlags},
+};
 use twizzler_rt_abi::object::{MapError, MapFlags, ObjectHandle};
 
 use super::MinimalRuntime;
-use crate::{
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    runtime::object::slot::global_allocate,
-    rustc_alloc::boxed::Box,
-    syscall::{sys_object_map, ObjectMapError, UnmapFlags},
-};
 
 mod handle;
 
@@ -18,40 +18,6 @@ mod handle;
 pub use handle::*;
 
 pub(crate) mod slot;
-
-impl From<MapFlags> for Protections {
-    fn from(value: MapFlags) -> Self {
-        let mut f = Self::empty();
-        if value.contains(MapFlags::READ) {
-            f.insert(Protections::READ);
-        }
-        if value.contains(MapFlags::WRITE) {
-            f.insert(Protections::WRITE);
-        }
-        if value.contains(MapFlags::EXEC) {
-            f.insert(Protections::EXEC);
-        }
-        f
-    }
-}
-
-impl From<MapFlags> for crate::syscall::MapFlags {
-    fn from(_value: MapFlags) -> Self {
-        Self::empty()
-    }
-}
-
-impl Into<MapError> for ObjectMapError {
-    fn into(self) -> MapError {
-        match self {
-            ObjectMapError::Unknown => MapError::Other,
-            ObjectMapError::ObjectNotFound => MapError::NoSuchObject,
-            ObjectMapError::InvalidSlot => MapError::Other,
-            ObjectMapError::InvalidProtections => MapError::PermissionDenied,
-            ObjectMapError::InvalidArgument => MapError::InvalidArgument,
-        }
-    }
-}
 
 #[repr(C)]
 struct RuntimeHandleInfo {
@@ -86,7 +52,7 @@ impl MinimalRuntime {
     pub fn release_handle(&self, handle: *mut twizzler_rt_abi::bindings::object_handle) {
         let slot = (unsafe { (*handle).start } as usize) / MAX_SIZE;
 
-        if crate::syscall::sys_object_unmap(None, slot, UnmapFlags::empty()).is_ok() {
+        if twizzler_abi::syscall::sys_object_unmap(None, slot, UnmapFlags::empty()).is_ok() {
             slot::global_release(slot);
         }
     }

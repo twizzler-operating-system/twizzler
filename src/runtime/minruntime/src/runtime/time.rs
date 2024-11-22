@@ -1,26 +1,24 @@
-//! Implements time routines.
+//! Implements the time runtime.
 
-use std::time::Duration;
+use core::time::Duration;
 
 use twizzler_abi::syscall::{sys_read_clock_info, ClockSource, ReadClockFlags};
 use twizzler_rt_abi::time::Monotonicity;
 
-use super::ReferenceRuntime;
+use super::MinimalRuntime;
 
-// TODO: determine actual monotonicity properties
-
-impl ReferenceRuntime {
-    fn get_monotonic(&self) -> Duration {
+impl MinimalRuntime {
+    pub fn get_monotonic(&self) -> Duration {
         let clock_info = sys_read_clock_info(ClockSource::BestMonotonic, ReadClockFlags::empty())
             .expect("failed to get monotonic time from kernel");
         Duration::from(clock_info.current_value())
     }
 
-    fn actual_monotonicity(&self) -> Monotonicity {
+    pub fn actual_monotonicity(&self) -> Monotonicity {
         Monotonicity::NonMonotonic
     }
 
-    fn get_system_time(&self) -> Duration {
+    pub fn get_system_time(&self) -> Duration {
         let clock_info = sys_read_clock_info(ClockSource::BestRealTime, ReadClockFlags::empty())
             .expect("failed to get monotonic time from kernel");
         Duration::from(clock_info.current_value())

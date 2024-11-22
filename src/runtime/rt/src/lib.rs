@@ -12,6 +12,7 @@
 #![feature(allocator_api)]
 #![feature(hash_extract_if)]
 #![feature(naked_functions)]
+#![feature(c_variadic)]
 
 pub(crate) mod arch;
 
@@ -24,3 +25,5 @@ mod error;
 pub use error::*;
 
 pub mod preinit;
+
+pub mod syms;
