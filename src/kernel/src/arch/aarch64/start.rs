@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
+use core::ops::RangeInclusive;
 
-use limine::*;
+use limine::{request::*, *};
 
 use crate::{
     initrd::BootModule,
@@ -25,7 +26,7 @@ struct Armv8BootInfo {
     ///
     /// This contains other useful information such as the kernel's
     /// command line parameters.
-    kernel: &'static File,
+    kernel: &'static limine::file::File,
 
     /// A list of user programs loaded into memory.
     ///
@@ -45,15 +46,15 @@ impl BootInfo for Armv8BootInfo {
 
     fn kernel_image_info(&self) -> (VirtAddr, usize) {
         (
-            VirtAddr::from_ptr(self.kernel.base.as_ptr().unwrap()),
-            self.kernel.length as usize,
+            VirtAddr::from_ptr(self.kernel.addr()),
+            self.kernel.size() as usize,
         )
     }
 
     fn get_system_table(&self, table: BootInfoSystemTable) -> VirtAddr {
         match table {
-            BootInfoSystemTable::Dtb => match DTB_REQ.get_response().get() {
-                Some(resp) => VirtAddr::new(resp.dtb_ptr.as_ptr().unwrap() as u64).unwrap(),
+            BootInfoSystemTable::Dtb => match DTB_REQ.get_response() {
+                Some(resp) => VirtAddr::from_ptr(resp.dtb_ptr()),
                 None => VirtAddr::new(0).unwrap(),
             },
             BootInfoSystemTable::Efi => todo!("get EFI system table"),
@@ -61,72 +62,61 @@ impl BootInfo for Armv8BootInfo {
     }
 
     fn get_cmd_line(&self) -> &'static str {
-        if let Some(cmd) = self.kernel.cmdline.as_ptr() {
-            let ptr = cmd as *const u8;
-            const MAX_CMD_LINE_LEN: usize = 0x1000;
-            let slice = unsafe { core::slice::from_raw_parts(ptr, MAX_CMD_LINE_LEN) };
-            let slice = &slice[0..slice.iter().position(|r| *r == 0).unwrap_or(0)];
-            core::str::from_utf8(slice).unwrap()
+        if !self.kernel.cmdline().is_empty() {
+            core::str::from_utf8(self.kernel.cmdline()).unwrap()
         } else {
             ""
         }
     }
 }
 
-impl From<MemoryMapEntryType> for MemoryRegionKind {
-    fn from(st: MemoryMapEntryType) -> Self {
+use limine::memory_map::EntryType;
+impl From<EntryType> for MemoryRegionKind {
+    fn from(st: EntryType) -> Self {
         match st {
-            MemoryMapEntryType::Usable => MemoryRegionKind::UsableRam,
-            MemoryMapEntryType::KernelAndModules => MemoryRegionKind::BootloaderReserved,
+            EntryType::USABLE => MemoryRegionKind::UsableRam,
+            EntryType::KERNEL_AND_MODULES => MemoryRegionKind::BootloaderReserved,
             _ => MemoryRegionKind::Reserved,
         }
     }
 }
 
 #[used]
-static ENTRY_POINT: EntryPointRequest = EntryPointRequest::new(0).entry(Ptr::new(limine_entry));
-
-#[used]
-static MEMORY_MAP: MemmapRequest = MemmapRequest::new(0);
-
-#[used]
-static KERNEL_ELF: KernelFileRequest = KernelFileRequest::new(0);
-
-#[used]
-static USER_MODULES: ModuleRequest = ModuleRequest::new(0);
-
-#[used]
-static DTB_REQ: DtbRequest = DtbRequest::new(0);
-
 #[link_section = ".limine_reqs"]
-#[used]
-static LR1: &'static EntryPointRequest = &ENTRY_POINT;
+static BASE_REVISION: BaseRevision = BaseRevision::new();
 
-#[link_section = ".limine_reqs"]
 #[used]
-static LR2: &'static MemmapRequest = &MEMORY_MAP;
+#[link_section = ".limine_reqs"]
+static ENTRY_POINT: EntryPointRequest = EntryPointRequest::new().with_entry_point(limine_entry);
 
-#[link_section = ".limine_reqs"]
 #[used]
-static LR3: &'static KernelFileRequest = &KERNEL_ELF;
+#[link_section = ".limine_reqs"]
+static MEMORY_MAP: MemoryMapRequest = MemoryMapRequest::new();
 
-#[link_section = ".limine_reqs"]
 #[used]
-static LR4: &'static ModuleRequest = &USER_MODULES;
+#[link_section = ".limine_reqs"]
+static KERNEL_ELF: KernelFileRequest = KernelFileRequest::new();
 
-#[link_section = ".limine_reqs"]
 #[used]
-static LR5: &'static DtbRequest = &DTB_REQ;
+#[link_section = ".limine_reqs"]
+static USER_MODULES: ModuleRequest = ModuleRequest::new();
+
+#[used]
+#[link_section = ".limine_reqs"]
+static DTB_REQ: DeviceTreeBlobRequest = DeviceTreeBlobRequest::new();
+
+#[used]
+#[link_section = ".limine_reqs"]
+static HHDM_REQ: HhdmRequest = HhdmRequest::new();
 
 // the kernel's entry point function from the limine bootloader
 // limine ensures we are in el1 (kernel mode)
-fn limine_entry() -> ! {
+extern "C" fn limine_entry() -> ! {
     // let's see what's in the memory map from limine
     let mmap = MEMORY_MAP
-        .get_response() // Ptr<MemmapResponse>
-        .get() // Option<'static T>
-        .expect("no memory map specified for kernel") // MemmapResponse
-        .memmap(); // &[NonNullPtr<MemmapEntry>]
+        .get_response()
+        .expect("no memory map specified for kernel")
+        .entries();
 
     // emerglogln!("[kernel] printing out memory map");
 
@@ -141,21 +131,37 @@ fn limine_entry() -> ! {
     // TODO: it should be ok if it is empty when -k is passed on the command line
     let modules = USER_MODULES
         .get_response()
-        .get()
         .expect("no modules specified for kernel -- no way to start init")
         .modules();
 
-    let kernel_elf = unsafe {
-        KERNEL_ELF
-            .get_response()
-            .get()
-            .expect("no kernel info specified for kernel")
-            .kernel_file
-            .as_ptr()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-    };
+    let kernel_elf = KERNEL_ELF
+        .get_response()
+        .expect("no kernel info specified for kernel")
+        .file();
+
+    // Set the identity map offset used for fast physical to virtual translations.
+    // The offset is only initialized once at startup so it is safe to write directly.
+    let hhdm_info = HHDM_REQ
+        .get_response()
+        .expect("failed to get higher half direct ");
+    unsafe {
+        super::memory::PHYS_MEM_OFFSET = hhdm_info.offset();
+    }
+    // Some versions of the limine bootloader place the identity map at the
+    // bottom of the higher half range of addresses covered by TTBR1_EL1.
+    // This must be taken into account by the MMIO address allocator which
+    // starts allocating addresses from the lowest part of the kernel address range.
+    if hhdm_info.offset() == *VirtAddr::TTBR1_EL1.start() {
+        // the identity map covers the first 4 GB of memory
+        const IDENTITY_MAP_SIZE: u64 = 0x1_0000_0000;
+        unsafe {
+            use super::address::MMIO_RANGE;
+            MMIO_RANGE = RangeInclusive::new(
+                *MMIO_RANGE.start() + IDENTITY_MAP_SIZE,
+                *MMIO_RANGE.end() + IDENTITY_MAP_SIZE,
+            );
+        }
+    }
 
     // generate generic boot info
     let mut boot_info = Armv8BootInfo {
@@ -189,29 +195,29 @@ fn limine_entry() -> ! {
         }
         if !skip_region {
             boot_info.memory.push(MemoryRegion {
-                kind: mem.typ.into(),
+                kind: mem.entry_type.into(),
                 start: PhysAddr::new(mem.base).unwrap(),
-                length: mem.len as usize,
+                length: mem.length as usize,
             });
         }
     }
 
     // function splits a memory region in half based on a reserved region
     fn split(
-        memmap: &NonNullPtr<MemmapEntry>,
+        memmap: &limine::memory_map::Entry,
         reserved: &MemoryRegion,
     ) -> (Option<MemoryRegion>, Option<MemoryRegion>) {
         let lhs = memmap.base;
-        let rhs = memmap.base + memmap.len;
+        let rhs = memmap.base + memmap.length;
 
         // case 1: take lhs range
         if reserved.start.raw() == lhs {
             (
                 None,
                 Some(MemoryRegion {
-                    kind: memmap.typ.into(),
+                    kind: memmap.entry_type.into(),
                     start: PhysAddr::new(memmap.base + reserved.length as u64).unwrap(),
-                    length: memmap.len as usize - reserved.length,
+                    length: memmap.length as usize - reserved.length,
                 }),
             )
         }
@@ -219,9 +225,9 @@ fn limine_entry() -> ! {
         else if reserved.start.raw() + reserved.length as u64 == rhs {
             (
                 Some(MemoryRegion {
-                    kind: memmap.typ.into(),
+                    kind: memmap.entry_type.into(),
                     start: PhysAddr::new(memmap.base).unwrap(),
-                    length: memmap.len as usize - reserved.length,
+                    length: memmap.length as usize - reserved.length,
                 }),
                 None,
             )
@@ -230,14 +236,14 @@ fn limine_entry() -> ! {
         else {
             (
                 Some(MemoryRegion {
-                    kind: memmap.typ.into(),
+                    kind: memmap.entry_type.into(),
                     start: PhysAddr::new(memmap.base).unwrap(),
                     length: (reserved.start.raw() - memmap.base) as usize,
                 }),
                 Some(MemoryRegion {
-                    kind: memmap.typ.into(),
+                    kind: memmap.entry_type.into(),
                     start: PhysAddr::new(reserved.start.raw() + reserved.length as u64).unwrap(),
-                    length: (memmap.len
+                    length: (memmap.length
                         - reserved.length as u64
                         - (reserved.start.raw() - memmap.base))
                         as usize,
@@ -250,8 +256,8 @@ fn limine_entry() -> ! {
     boot_info.modules = modules
         .iter()
         .map(|m| BootModule {
-            start: VirtAddr::new(m.base.as_ptr().unwrap() as u64).unwrap(),
-            length: m.length as usize,
+            start: VirtAddr::from_ptr(m.addr()),
+            length: m.size() as usize,
         })
         .collect();
 

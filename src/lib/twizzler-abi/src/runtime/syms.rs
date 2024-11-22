@@ -591,7 +591,7 @@ pub unsafe extern "C-unwind" fn fprintf(
 ) -> i32 {
     use printf_compat::{format, output};
     let mut s = rustc_alloc::string::String::new();
-    let bytes_written = format(fmt, args.as_va_list(), output::fmt_write(&mut s));
+    let bytes_written = format(fmt.cast(), args.as_va_list(), output::fmt_write(&mut s));
     twz_rt_fd_pwrite(
         1,
         twizzler_rt_abi::bindings::FD_POS,

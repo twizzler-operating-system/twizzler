@@ -27,6 +27,19 @@ pub struct PhysAddr(u64);
 #[derive(Debug, Clone, Copy)]
 pub struct NonCanonical;
 
+// The size of the virtual address range reserved for MMIO.
+pub const MMIO_RANGE_SIZE: u64 = 0x1000_0000_0000;
+
+// MMIO is used for communicating with devices. The kernel
+// reserves a region of its virtual address space to allocate
+// addresses to various drivers.
+pub static mut MMIO_RANGE: RangeInclusive<u64> = RangeInclusive::new(
+    // The start range of addresses used for MMIO
+    *VirtAddr::TTBR1_EL1.start(),
+    // The end range of addresses used for MMIO
+    *VirtAddr::TTBR1_EL1.start() + MMIO_RANGE_SIZE,
+);
+
 impl VirtAddr {
     /// The start of the kernel memory heap.
     pub const HEAP_START: Self = Self(0xFFFF_FF00_0000_0000);
@@ -48,24 +61,11 @@ impl VirtAddr {
     // 0xFFFF_FFFF_FFFF_FFFF to 0xFFFF_0000_0000_0000
     // Generally this is used to cover exclusively
     // kernel accessible memory (EL1).
-    const TTBR1_EL1: RangeInclusive<u64> = RangeInclusive::new(
+    pub(super) const TTBR1_EL1: RangeInclusive<u64> = RangeInclusive::new(
         // The start range of valid addresses that TTBR1 covers
         0xFFFF_0000_0000_0000,
         // The end range of valid addresses that TTBR1 covers
         0xFFFF_FFFF_FFFF_FFFF,
-    );
-
-    // The size of the virtual address range reserved for MMIO.
-    pub const MMIO_RANGE_SIZE: u64 = 0x1000_0000_0000;
-
-    // MMIO is used for communicating with devices. The kernel
-    // reserves a region of its virtual address space to allocate
-    // addresses to various drivers.
-    pub const MMIO_RANGE: RangeInclusive<u64> = RangeInclusive::new(
-        // The start range of addresses used for MMIO
-        *Self::TTBR1_EL1.start(),
-        // The end range of addresses used for MMIO
-        *Self::TTBR1_EL1.start() + Self::MMIO_RANGE_SIZE,
     );
 
     /// The bits that are valid which are used in address translation
