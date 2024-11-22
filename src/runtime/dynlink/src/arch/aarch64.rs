@@ -1,11 +1,12 @@
 use crate::{
     context::{relocate::EitherRel, Context},
     library::Library,
-    tls::{Tcb, TlsRegion},
+    symbol::LookupFlags,
+    tls::{TlsRegion, TlsVariant},
     DynlinkError, DynlinkErrorKind,
 };
 
-pub(crate) const MINIMUM_TLS_ALIGNMENT: usize = 32;
+pub(crate) const MINIMUM_TLS_ALIGNMENT: usize = 8;
 
 pub use elf::abi::{
     R_AARCH64_ABS64 as REL_SYMBOLIC, R_AARCH64_COPY as REL_COPY, R_AARCH64_GLOB_DAT as REL_GOT,
@@ -14,15 +15,35 @@ pub use elf::abi::{
     R_AARCH64_TLS_TPREL as REL_TPOFF,
 };
 use elf::{endian::NativeEndian, string_table::StringTable, symbol::SymbolTable};
+use tracing::error;
+use twizzler_runtime_api::{TlsDesc, TlsDescResolver};
+
+#[repr(C)]
+pub struct Tcb<T> {
+    // implementation-defined TCB data
+    pub dtv_len: usize,
+    pub runtime_data: T,
+    // aarch64 reserves the first 16 bytes of the TCB
+    // TPIDR_EL0 is set to point here.
+    pub dtv: *const usize,
+    pub self_ptr: *const Tcb<T>,
+}
+
+/// Return the TLS variant defined by the arch-specific ABI.
+pub const fn get_tls_variant() -> TlsVariant {
+    TlsVariant::Variant1
+}
 
 /// Get a pointer to the current thread control block, using the thread pointer.
 ///
 /// # Safety
 /// The TCB must actually contain runtime data of type T, and be initialized.
 pub unsafe fn get_current_thread_control_block<T>() -> *mut Tcb<T> {
+    // A pointer to the TCB lies in the second word after TPIDR_EL0
     let mut val: usize;
     core::arch::asm!("mrs {}, tpidr_el0", out(reg) val);
-    val as *mut _
+    let offset = std::mem::size_of::<T>() + std::mem::size_of::<usize>();
+    (val - offset) as *mut _
 }
 
 impl TlsRegion {
@@ -31,7 +52,11 @@ impl TlsRegion {
     /// # Safety
     /// The TCB must actually contain runtime data of type T, and be initialized.
     pub unsafe fn get_thread_control_block<T>(&self) -> *mut Tcb<T> {
-        todo!()
+        let thread_pointer = self.thread_pointer.as_ptr();
+        // the TCB exists above the thread pointer
+        let byte_offset = std::mem::size_of::<T>() + std::mem::size_of::<usize>();
+        let self_ptr = thread_pointer.sub(byte_offset);
+        self_ptr.cast()
     }
 }
 
@@ -129,6 +154,54 @@ impl Context {
                 // calculate S + A
                 *target = open_sym()?.reloc_value().wrapping_add_signed(addend);
             },
+            REL_TLSDESC => {
+                // calculate: TLSDESC(S+A)
+                //
+                // TLS descriptors are a fast way of resolving a symbol.
+                // TLS descriptors are allocated two pointer sized GOT entries,
+                // one being a function pointer to the resolver function,
+                // and another being an argument to be used by that resolver,
+                // typically the offset to that variable from the thread
+                // pointer register. Resolver functions are defined in libc
+                // so that they can be referenced by any program.
+
+                // get a pointer to the TLS descriptor
+                let desc_ptr = target.cast::<TlsDesc>();
+                let desc = unsafe { &mut *desc_ptr };
+
+                // set the TLS descriptor resolver function
+                let flags = LookupFlags::empty();
+                let tls_resolver = self
+                    .lookup_symbol(lib.id(), "_tlsdesc_static", flags)
+                    .expect("failed to find tls descriptor symbol");
+                desc.resolver = tls_resolver.reloc_value() as *const TlsDescResolver;
+
+                // set the parameter to be used directly in the resolver function
+                // calculate st_value + load_offset + addend
+                if rel.sym() == 0 {
+                    let tls_val = 0u64;
+                    let module_offset = lib
+                        .tls_id
+                        .as_ref()
+                        .ok_or_else(|| DynlinkErrorKind::NoTLSInfo {
+                            library: lib.name.clone(),
+                        })?
+                        .offset();
+                    desc.value = tls_val + module_offset as u64 + addend as u64;
+                } else {
+                    let sym_res = open_sym();
+                    let tls_val = sym_res.as_ref().map(|sym| sym.raw_value()).unwrap_or(0);
+                    let other_lib = sym_res?.lib;
+                    let module_offset = other_lib
+                        .tls_id
+                        .as_ref()
+                        .ok_or_else(|| DynlinkErrorKind::NoTLSInfo {
+                            library: other_lib.name.clone(),
+                        })?
+                        .offset();
+                    desc.value = tls_val + module_offset as u64 + addend as u64;
+                }
+            }
             _ => {
                 error!("{}: unsupported relocation: {}", lib, rel.r_type());
                 Result::<_, DynlinkError>::Err(

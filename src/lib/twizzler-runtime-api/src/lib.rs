@@ -58,6 +58,9 @@ use core::{
 #[cfg(feature = "rt0")]
 pub mod rt0;
 
+mod tls;
+pub use tls::*;
+
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 /// An object ID, represented as a transparent wrapper type. Any value where the upper 64 bits are
