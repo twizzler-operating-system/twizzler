@@ -261,6 +261,52 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     None
 }
 
+fn initialize_pager() { 
+    println!("starting pager");
+    const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
+    //Create Pager -> Kernel Queue
+    let pager_to_kernel_queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
+        &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
+        DEFAULT_PAGER_QUEUE_LEN,
+        DEFAULT_PAGER_QUEUE_LEN,
+    )
+    .unwrap();
+
+    sys_new_handle(
+        pager_to_kernel_queue.object().id(),
+        twizzler_abi::syscall::HandleType::PagerQueue,
+        NewHandleFlags::empty(),
+    )
+    .unwrap();
+
+    //Create Kernel -> Pager Queue
+    let kernel_to_pager_queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
+        &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
+        DEFAULT_PAGER_QUEUE_LEN,
+        DEFAULT_PAGER_QUEUE_LEN,
+    )
+    .unwrap();
+    sys_new_handle(
+        kernel_to_pager_queue.object().id(),
+        twizzler_abi::syscall::HandleType::PagerQueue,
+        NewHandleFlags::empty(),
+    )
+    .unwrap();
+    //Start Pager
+    if let Some(id) = find_init_name("pager") {
+        exec_n(
+            "pager",
+            id,
+            &[
+                &pager_to_kernel_queue.object().id().as_u128().to_string(),
+                &kernel_to_pager_queue.object().id().as_u128().to_string(),
+            ],
+        );
+    } else {
+        eprintln!("[init] failed to start pager");
+    }
+}
+
 fn main() {
     println!("[init] starting userspace");
     let _foo = unsafe { FOO + BAR };
@@ -308,45 +354,7 @@ fn main() {
     .unwrap();
     println!("device manager is up!");
 
-    println!("starting pager");
-    const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
-    let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
-        &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
-        DEFAULT_PAGER_QUEUE_LEN,
-        DEFAULT_PAGER_QUEUE_LEN,
-    )
-    .unwrap();
-
-    sys_new_handle(
-        queue.object().id(),
-        twizzler_abi::syscall::HandleType::PagerQueue,
-        NewHandleFlags::empty(),
-    )
-    .unwrap();
-    let queue2 = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
-        &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
-        DEFAULT_PAGER_QUEUE_LEN,
-        DEFAULT_PAGER_QUEUE_LEN,
-    )
-    .unwrap();
-    sys_new_handle(
-        queue2.object().id(),
-        twizzler_abi::syscall::HandleType::PagerQueue,
-        NewHandleFlags::empty(),
-    )
-    .unwrap();
-    if let Some(id) = find_init_name("pager") {
-        exec_n(
-            "pager",
-            id,
-            &[
-                &queue.object().id().as_u128().to_string(),
-                &queue2.object().id().as_u128().to_string(),
-            ],
-        );
-    } else {
-        eprintln!("[init] failed to start pager");
-    }
+    initialize_pager();
 
     std::env::set_var("NETOBJ", format!("{}", netid.as_u128()));
     if let Some(id) = find_init_name("netmgr") {
