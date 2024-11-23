@@ -74,7 +74,13 @@ fn main() {
             let x = res.await;
             println!(" pager:  got {:?} in response", x);
             timeout.await;
+            println!(" pager:  submitting request 2");
             // TODO: do some other stuff?
+            let res = sq.submit_and_wait(RequestFromPager::new(
+                twizzler_abi::pager::PagerRequest::Ready,
+            ));
+            let x = res.await;
+            println!(" pager:  got {:?} in response", x);
             std::future::pending::<()>().await;
         }
     })
