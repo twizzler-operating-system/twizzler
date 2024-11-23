@@ -8,11 +8,11 @@
 use std::{
     alloc::GlobalAlloc,
     cell::UnsafeCell,
-    collections::HashMap,
+    collections::BTreeMap,
     panic::catch_unwind,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Mutex,
+        RwLock,
     },
 };
 
@@ -20,7 +20,7 @@ use dynlink::tls::Tcb;
 use monitor_api::TlsTemplateInfo;
 use tracing::trace;
 
-use crate::{preinit_println, runtime::OUR_RUNTIME};
+use crate::runtime::OUR_RUNTIME;
 
 const THREAD_STARTED: u32 = 1;
 pub struct RuntimeThreadControl {
@@ -112,10 +112,6 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
             cur.flags.fetch_or(THREAD_STARTED, Ordering::SeqCst);
             trace!("thread {} started", cur.id());
         });
-        twizzler_abi::syscall::sys_kernel_console_write(
-            b"alive\n",
-            twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
-        );
         // Find the arguments. arg is a pointer to a Box::into_raw of a Box of ThreadSpawnArgs.
         let arg = unsafe {
             (arg as *const twizzler_rt_abi::thread::ThreadSpawnArgs)
@@ -134,7 +130,7 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
 
 #[derive(Default)]
 pub(crate) struct TlsGenMgr {
-    map: HashMap<u64, TlsGen>,
+    map: BTreeMap<u64, TlsGen>,
 }
 
 pub(crate) struct TlsGen {
@@ -144,11 +140,17 @@ pub(crate) struct TlsGen {
 
 unsafe impl Send for TlsGen {}
 
-lazy_static::lazy_static! {
-pub(crate) static ref TLS_GEN_MGR: Mutex<TlsGenMgr> = Mutex::new(TlsGenMgr::default());
-}
+pub(crate) static TLS_GEN_MGR: RwLock<TlsGenMgr> = RwLock::new(TlsGenMgr {
+    map: BTreeMap::new(),
+});
 
 impl TlsGenMgr {
+    pub fn need_new_gen(&self, mygen: Option<u64>) -> bool {
+        let cc = monitor_api::get_comp_config();
+        let template = unsafe { cc.get_tls_template().as_ref().unwrap() };
+        mygen.is_some_and(|mygen| mygen == template.gen)
+    }
+
     pub fn get_next_tls_info<T>(
         &mut self,
         mygen: Option<u64>,

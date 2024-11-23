@@ -250,7 +250,7 @@ fn build_twizzler<'a>(
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
 
-fn maybe_build_tests<'a>(
+fn maybe_build_tests_static<'a>(
     workspace: &'a Workspace,
     build_config: &crate::BuildConfig,
     static_compilation: &Option<Compilation<'a>>,
@@ -262,7 +262,7 @@ fn maybe_build_tests<'a>(
     }
     crate::toolchain::set_static();
     crate::toolchain::set_cc();
-    crate::print_status_line("collection: userspace::tests", Some(build_config));
+    crate::print_status_line("collection: userspace::tests-static", Some(build_config));
     let triple = Triple::new(
         build_config.arch,
         build_config.machine,
@@ -302,6 +302,71 @@ fn maybe_build_tests<'a>(
                 "twizzler-futures" => None,
                 "twizzler-async" => None,
                 "twizzler-queue" => None,
+                "montest-lib" => None,
+                "montest" => None,
+                _ => Some(p.name().to_string()),
+            })
+            .collect(),
+    );
+    options.build_config.force_rebuild = other_options.needs_full_rebuild;
+    Ok(Some(cargo::ops::compile(workspace, &options)?))
+}
+
+fn maybe_build_tests_dynamic<'a>(
+    workspace: &'a Workspace,
+    build_config: &crate::BuildConfig,
+    static_compilation: &Option<Compilation<'a>>,
+    other_options: &OtherOptions,
+) -> anyhow::Result<Option<Compilation<'a>>> {
+    let mode = CompileMode::Test;
+    if !other_options.build_tests || !other_options.build_twizzler {
+        return Ok(None);
+    }
+    crate::toolchain::set_dynamic();
+    crate::toolchain::set_cc();
+    crate::print_status_line("collection: userspace::tests", Some(build_config));
+    let triple = Triple::new(
+        build_config.arch,
+        build_config.machine,
+        crate::triple::Host::Twizzler,
+        None,
+    );
+    let mut packages = locate_packages(workspace, None);
+    let mut options = CompileOptions::new(workspace.gctx(), mode)?;
+    options.build_config =
+        BuildConfig::new(workspace.gctx(), None, false, &[triple.to_string()], mode)?;
+    options.build_config.message_format = other_options.message_format;
+    if build_config.profile == Profile::Release {
+        options.build_config.requested_profile = InternedString::new("release");
+    }
+    // TODO: once we have switched to the new runtime, all these should be removed.
+    options.spec = Packages::Packages(
+        packages
+            .iter()
+            .filter_map(|p| match p.name().as_str() {
+                "twizzler-kernel-macros" => None,
+                "nvme" => None,
+                "twz-rt" => None,
+                "monitor" => None,
+                "monitor-api" => None,
+                "bootstrap" => None,
+                "dynlink" => None,
+                "layout" => None,
+                "lethe-gadget-fat" => None,
+                "secgate-macros" => None,
+                "layout-derive" => None,
+                "twizzler-rt-abi" => None,
+                "twizzler-types" => None,
+                "twizzler-object" => None,
+                "twizzler-nando" => None,
+                "twizzler-net" => None,
+                "twizzler-futures" => None,
+                "twizzler-async" => None,
+                "twizzler-queue" => None,
+                "twizzler-queue-raw" => None,
+                "secgate" => None,
+                "twizzler-driver" => None,
+                "twizzler-abi" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),
@@ -436,7 +501,10 @@ pub(crate) struct TwizzlerCompilation {
     pub user_compilation: Option<Compilation<'this>>,
     #[borrows(static_workspace, static_compilation)]
     #[covariant]
-    pub test_compilation: Option<Compilation<'this>>,
+    pub static_test_compilation: Option<Compilation<'this>>,
+    #[borrows(user_workspace, user_compilation)]
+    #[covariant]
+    pub user_test_compilation: Option<Compilation<'this>>,
     #[borrows(kernel_workspace)]
     #[covariant]
     pub test_kernel_compilation: Option<Compilation<'this>>,
@@ -527,7 +595,8 @@ fn compile(
         |w| build_kernel(w, mode, &bc, other_options),
         |w| build_static(w, mode, &bc, other_options),
         |w| build_twizzler(w, mode, &bc, other_options),
-        |w, sc| maybe_build_tests(w, &bc, sc, other_options),
+        |w, sc| maybe_build_tests_static(w, &bc, sc, other_options),
+        |w, uc| maybe_build_tests_dynamic(w, &bc, uc, other_options),
         |w| maybe_build_kernel_tests(w, &bc, other_options),
         |w| build_third_party(w, mode, &bc, other_options),
     )

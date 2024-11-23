@@ -1,7 +1,6 @@
 //! Implements thread management routines.
 
 use dynlink::tls::Tcb;
-use lazy_static::lazy_static;
 use twizzler_abi::syscall::{
     sys_thread_sync, sys_thread_yield, ThreadSync, ThreadSyncError, ThreadSyncFlags, ThreadSyncOp,
     ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
@@ -21,9 +20,7 @@ pub(crate) use tcb::TLS_GEN_MGR;
 
 const MIN_STACK_ALIGN: usize = 128;
 
-lazy_static! {
-    static ref THREAD_MGR: ThreadManager = ThreadManager::new();
-}
+static THREAD_MGR: ThreadManager = ThreadManager::new();
 
 impl ReferenceRuntime {
     pub fn available_parallelism(&self) -> core::num::NonZeroUsize {

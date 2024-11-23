@@ -25,6 +25,8 @@ members = [
     "src/runtime/secgate",
     "src/runtime/monitor",
     "src/runtime/monitor-api",
+    "src/runtime/monitor/tests/montest",
+    "src/runtime/monitor/tests/montest-lib",
     "src/runtime/rt",
     "src/runtime/minruntime",
     "src/abi/rt-abi",
@@ -44,6 +46,8 @@ initrd = [
     "crate:pager",
     "lib:twz-rt",
     "lib:monitor",
+    "crate:montest",
+    "lib:montest-lib",
     "crate:mnemosyne",
     "crate:stdfs_demo",
     #"third-party:hello-world-rs"

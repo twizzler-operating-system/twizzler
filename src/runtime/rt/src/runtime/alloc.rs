@@ -19,15 +19,17 @@ use std::{
 const MIN_ALIGN: usize = 16;
 
 use talc::{OomHandler, Span, Talc};
-use tracing::warn;
 use twizzler_abi::{
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{
+        sys_object_create, sys_object_map, BackingType, LifetimeType, ObjectCreate,
+        ObjectCreateFlags,
+    },
 };
 use twizzler_rt_abi::object::MapFlags;
 
 use super::{ReferenceRuntime, OUR_RUNTIME};
-use crate::{preinit_println, runtime::RuntimeState};
+use crate::runtime::RuntimeState;
 
 static LOCAL_ALLOCATOR: LocalAllocator = LocalAllocator {
     runtime: &OUR_RUNTIME,
@@ -69,9 +71,8 @@ struct RuntimeOom {
     objects: Vec<(usize, ObjID), FailAlloc>,
 }
 
-fn delete_obj(_id: ObjID) {
-    // TODO
-    warn!("unimplemented: delete object due to failure in allocator");
+fn release_object(id: ObjID) {
+    monitor_api::monitor_rt_object_unmap(id, MapFlags::READ | MapFlags::WRITE).unwrap();
 }
 
 fn create_and_map() -> Option<(usize, ObjID)> {
@@ -87,6 +88,20 @@ fn create_and_map() -> Option<(usize, ObjID)> {
     )
     .ok()?;
 
+    if OUR_RUNTIME.state().contains(RuntimeState::IS_MONITOR) {
+        // Map directly, avoiding complex machinery in the monitor that depends on an allocator.
+        let slot = OUR_RUNTIME.allocate_slot().unwrap();
+        sys_object_map(
+            None,
+            id,
+            slot,
+            Protections::READ | Protections::WRITE,
+            twizzler_abi::syscall::MapFlags::empty(),
+        )
+        .unwrap();
+        return Some((slot, id));
+    }
+
     let slot = monitor_api::monitor_rt_object_map(id, MapFlags::READ | MapFlags::WRITE)
         .unwrap()
         .ok();
@@ -94,7 +109,7 @@ fn create_and_map() -> Option<(usize, ObjID)> {
     if let Some(slot) = slot {
         Some((slot.slot, id))
     } else {
-        delete_obj(id);
+        release_object(id);
         None
     }
 }
@@ -116,8 +131,7 @@ impl OomHandler for RuntimeOom {
                 .claim(Span::new(base as *mut _, top as *mut _))
                 .is_err()
             {
-                delete_obj(id);
-                monitor_api::monitor_rt_object_unmap(id, MapFlags::READ | MapFlags::WRITE).unwrap();
+                release_object(id);
                 return Err(());
             }
         }

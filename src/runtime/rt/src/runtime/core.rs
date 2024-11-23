@@ -2,6 +2,7 @@
 
 use dynlink::context::runtime::RuntimeInitInfo;
 use monitor_api::SharedCompConfig;
+use secgate::SecGateReturn;
 use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
 use twizzler_rt_abi::{
     core::{
@@ -95,13 +96,22 @@ impl ReferenceRuntime {
         preinit_println!("====== {}", TLS_TEST);
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
+            None
         } else {
             unsafe { self.set_runtime_ready() };
+            let ret = match monitor_api::monitor_rt_comp_ctrl(
+                monitor_api::MonitorCompControlCmd::RuntimeReady,
+            ) {
+                SecGateReturn::Success(ret) => ret,
+                _ => self.abort(),
+            };
+            ret
         }
-        None
     }
 
-    pub fn post_main_hook(&self) {}
+    pub fn post_main_hook(&self) {
+        monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimePostMain);
+    }
 
     pub fn sysinfo(&self) -> SystemInfo {
         let info = twizzler_abi::syscall::sys_info();
@@ -150,11 +160,9 @@ impl ReferenceRuntime {
                 .ok(),
             );
         }
-        let tls = preinit_unwrap(
-            preinit_unwrap(TLS_GEN_MGR.lock().ok())
-                .get_next_tls_info(None, || RuntimeThreadControl::new(0)),
-        );
-        twizzler_abi::syscall::sys_thread_settls(tls as u64);
+        let mut tg = preinit_unwrap(TLS_GEN_MGR.write().ok());
+        let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
+        twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
 
         if !init_info.ctor_set_array.is_null() && init_info.ctor_set_len != 0 {
             let ctor_slice = unsafe {
@@ -195,3 +203,30 @@ impl ReferenceRuntime {
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
     }
 }
+
+#[allow(improper_ctypes)]
+extern "C" {
+    fn twizzler_call_lang_start(
+        main: fn(),
+        argc: isize,
+        argv: *const *const u8,
+        sigpipe: u8,
+    ) -> isize;
+}
+
+#[no_mangle]
+#[linkage = "weak"]
+pub extern "C" fn main(argc: i32, argv: *const *const u8) -> i32 {
+    //TODO: sigpipe?
+    unsafe { twizzler_call_lang_start(dead_end, argc as isize, argv, 0) as i32 }
+}
+
+fn dead_end() {
+    twizzler_abi::syscall::sys_thread_exit(0);
+}
+
+// TODO: we should probably get this for real.
+#[cfg(not(test))]
+#[no_mangle]
+#[linkage = "weak"]
+pub extern "C" fn _init() {}

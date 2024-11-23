@@ -14,12 +14,10 @@ impl fmt::Write for PreinitLogger {
     }
 }
 
-static mut PREINIT_OUTPUT: PreinitLogger = PreinitLogger;
-
 #[doc(hidden)]
 pub fn _print_normal(args: core::fmt::Arguments) {
     use fmt::Write;
-    let _ = unsafe { &mut PREINIT_OUTPUT }.write_fmt(args);
+    let _ = PreinitLogger.write_fmt(args);
 }
 
 #[macro_export]
@@ -44,7 +42,7 @@ macro_rules! preinit_println {
 
 #[track_caller]
 pub fn preinit_abort() -> ! {
-    core::intrinsics::abort()
+    unsafe { core::intrinsics::abort() }
 }
 
 #[track_caller]

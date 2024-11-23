@@ -4,6 +4,7 @@
 //!
 //! This is a work in progress.
 
+#![allow(internal_features)]
 #![feature(core_intrinsics)]
 #![feature(thread_local)]
 #![feature(fmt_internals)]
@@ -11,8 +12,10 @@
 #![feature(unboxed_closures)]
 #![feature(allocator_api)]
 #![feature(hash_extract_if)]
+#![feature(btree_extract_if)]
 #![feature(naked_functions)]
 #![feature(c_variadic)]
+#![feature(linkage)]
 
 pub(crate) mod arch;
 
