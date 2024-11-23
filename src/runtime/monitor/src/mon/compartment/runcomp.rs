@@ -1,6 +1,8 @@
 use std::{
     alloc::Layout,
+    borrow::Cow,
     collections::HashMap,
+    ffi::{CStr, CString},
     ptr::NonNull,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -188,7 +190,7 @@ impl RunComp {
     }
 
     /// Allocate some space in the compartment allocator, and initialize it.
-    pub fn monitor_new<T: Copy + Sized + Send + Sync>(&mut self, data: T) -> Result<*mut T, ()> {
+    pub fn monitor_new<T: Copy + Sized>(&mut self, data: T) -> Result<*mut T, ()> {
         unsafe {
             let place: NonNull<T> = self.alloc.malloc(Layout::new::<T>())?.cast();
             place.as_ptr().write(data);
@@ -197,10 +199,7 @@ impl RunComp {
     }
 
     /// Allocate some space in the compartment allocator for a slice, and initialize it.
-    pub fn monitor_new_slice<T: Copy + Sized + Send + Sync>(
-        &mut self,
-        data: &[T],
-    ) -> Result<*mut T, ()> {
+    pub fn monitor_new_slice<T: Copy + Sized>(&mut self, data: &[T]) -> Result<*mut T, ()> {
         unsafe {
             let place = self.alloc.malloc(Layout::array::<T>(data.len()).unwrap())?;
             let slice = core::slice::from_raw_parts_mut(place.as_ptr() as *mut T, data.len());
@@ -265,6 +264,8 @@ impl RunComp {
         space: &mut Space,
         tmgr: &mut ThreadMgr,
         dynlink: &mut Context,
+        args: &[&CStr],
+        env: &[&CStr],
     ) -> Option<bool> {
         if self.has_flag(COMP_STARTED) {
             return Some(false);
@@ -292,6 +293,29 @@ impl RunComp {
                 self.comp_config_object.get_comp_config() as *mut SharedCompConfig;
             let ctors_in_comp = self.monitor_new_slice(&ctors).ok()?;
 
+            // TODO: unwrap
+            let mut args_in_comp: Vec<_> = args
+                .iter()
+                .map(|arg| self.monitor_new_slice(arg.to_bytes_with_nul()).unwrap())
+                .collect();
+
+            if args_in_comp.len() == 0 {
+                let cname = CString::new(self.name.as_bytes()).unwrap();
+                args_in_comp = vec![self.monitor_new_slice(cname.as_bytes()).unwrap()];
+            }
+            let argc = args_in_comp.len();
+
+            let mut envs_in_comp: Vec<_> = env
+                .iter()
+                .map(|arg| self.monitor_new_slice(arg.to_bytes_with_nul()).unwrap())
+                .collect();
+
+            args_in_comp.push(core::ptr::null_mut());
+            envs_in_comp.push(core::ptr::null_mut());
+
+            let args_in_comp_in_comp = self.monitor_new_slice(&args_in_comp).unwrap();
+            let envs_in_comp_in_comp = self.monitor_new_slice(&envs_in_comp).unwrap();
+
             let comp_init_info = CompartmentInitInfo {
                 ctor_set_array: ctors_in_comp,
                 ctor_set_len: ctors.len(),
@@ -302,9 +326,9 @@ impl RunComp {
             let rtinfo = RuntimeInfo {
                 flags: 0,
                 kind: RUNTIME_INIT_COMP,
-                args: core::ptr::null_mut(),
-                argc: 0,
-                envp: core::ptr::null_mut(),
+                args: args_in_comp_in_comp.cast(),
+                argc,
+                envp: envs_in_comp_in_comp.cast(),
                 init_info: InitInfoPtrs {
                     comp: comp_init_info_in_comp,
                 },

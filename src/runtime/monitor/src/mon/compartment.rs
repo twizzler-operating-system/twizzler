@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ffi::CStr, io::BufRead};
 
 use dynlink::{
     compartment::CompartmentId,
@@ -255,16 +255,40 @@ impl super::Monitor {
         caller: ObjID,
         thread: ObjID,
         name_len: usize,
+        args_len: usize,
+        env_len: usize,
         new_comp_flags: NewCompartmentFlags,
     ) -> Result<Descriptor, LoadCompartmentError> {
-        let name_bytes = self
-            .read_thread_simple_buffer(caller, thread, name_len)
+        let total_bytes = name_len + args_len + env_len;
+        let str_bytes = self
+            .read_thread_simple_buffer(caller, thread, total_bytes)
             .ok_or(LoadCompartmentError::Unknown)?;
+        let name_bytes = &str_bytes[0..name_len];
+        let arg_bytes = &str_bytes[name_len..(name_len + args_len)];
+        let env_bytes = &str_bytes[(name_len + args_len)..total_bytes];
+
         let input = String::from_utf8_lossy(&name_bytes);
         let mut split = input.split("::");
         let compname = split.next().ok_or(LoadCompartmentError::Unknown)?;
         let libname = split.next().ok_or(LoadCompartmentError::Unknown)?;
         let root = UnloadedLibrary::new(libname);
+        tracing::info!("A");
+
+        // parse args
+        let args_bytes = arg_bytes.split_inclusive(|b| *b == 0);
+        let mut args = args_bytes
+            .map(CStr::from_bytes_with_nul)
+            .try_collect::<Vec<_>>()
+            .map_err(|_| LoadCompartmentError::Unknown)?;
+        tracing::debug!("load {}: args: {:?}", compname, args);
+
+        // parse env
+        let envs_bytes = env_bytes.split_inclusive(|b| *b == 0);
+        let mut env = envs_bytes
+            .map(CStr::from_bytes_with_nul)
+            .try_collect::<Vec<_>>()
+            .map_err(|_| LoadCompartmentError::Unknown)?;
+        tracing::trace!("load {}: env: {:?}", compname, env);
 
         let loader = {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
@@ -293,7 +317,7 @@ impl super::Monitor {
             .get_compartment_handle(caller, root_comp)
             .ok_or(LoadCompartmentError::Unknown)?;
 
-        self.start_compartment(root_comp)?;
+        self.start_compartment(root_comp, &args, &env)?;
 
         Ok(desc)
     }

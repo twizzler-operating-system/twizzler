@@ -293,6 +293,8 @@ impl CompartmentHandle {
 /// A builder-type for loading compartments.
 pub struct CompartmentLoader {
     name: String,
+    args: Vec<String>,
+    env: Option<Vec<String>>,
     flags: NewCompartmentFlags,
 }
 
@@ -306,16 +308,63 @@ impl CompartmentLoader {
         Self {
             name: format!("{}::{}", compname.to_string(), libname.to_string()),
             flags,
+            env: None,
+            args: vec![],
         }
+    }
+
+    /// Append args to this compartment.
+    pub fn args<S: ToString>(&mut self, args: impl IntoIterator<Item = S>) -> &mut Self {
+        for arg in args.into_iter() {
+            self.args.push(arg.to_string())
+        }
+        self
+    }
+
+    /// Set the environment for the compartment
+    pub fn env(&mut self, env: Vec<String>) -> &mut Self {
+        self.env = Some(env);
+        self
     }
 
     /// Load the compartment.
     pub fn load(&self) -> Result<CompartmentHandle, gates::LoadCompartmentError> {
-        let len = lazy_sb::write_bytes_to_sb(self.name.as_bytes());
-        let desc = gates::monitor_rt_load_compartment(len as u64, self.flags.bits())
-            .ok()
-            .ok_or(gates::LoadCompartmentError::Unknown)
-            .flatten()?;
+        fn get_current_env() -> Vec<String> {
+            std::env::vars()
+                .map(|(var, val)| format!("{}={}", var, val))
+                .collect()
+        }
+        let name_len = self.name.as_bytes().len();
+        let args_len = self
+            .args
+            .iter()
+            .fold(0, |acc, arg| acc + arg.as_bytes().len() + 1);
+        let env = self.env.clone().unwrap_or_else(|| get_current_env());
+        let envs_len = env
+            .iter()
+            .fold(0, |acc, arg| acc + arg.as_bytes().len() + 1);
+        let mut bytes = self.name.as_bytes().to_vec();
+        for arg in &self.args {
+            bytes.extend_from_slice(arg.as_bytes());
+            bytes.push(0);
+        }
+        for env in env {
+            bytes.extend_from_slice(env.as_bytes());
+            bytes.push(0);
+        }
+        let len = lazy_sb::write_bytes_to_sb(&bytes);
+        if len < envs_len + args_len + name_len {
+            return Err(gates::LoadCompartmentError::Unknown);
+        }
+        let desc = gates::monitor_rt_load_compartment(
+            name_len as u64,
+            args_len as u64,
+            envs_len as u64,
+            self.flags.bits(),
+        )
+        .ok()
+        .ok_or(gates::LoadCompartmentError::Unknown)
+        .flatten()?;
         Ok(CompartmentHandle { desc: Some(desc) })
     }
 }

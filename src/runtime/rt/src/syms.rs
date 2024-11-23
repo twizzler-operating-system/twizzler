@@ -125,7 +125,7 @@ check_ffi_type!(twz_rt_runtime_entry, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_cross_compartment_entry() {
-    warn!("TODO: cross-compartment-entry");
+    OUR_RUNTIME.cross_compartment_entry();
 }
 check_ffi_type!(twz_rt_cross_compartment_entry);
 

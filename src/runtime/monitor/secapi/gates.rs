@@ -156,6 +156,8 @@ unsafe impl Crossing for LibraryInfo {}
 pub fn monitor_rt_load_compartment(
     info: &secgate::GateCallInfo,
     name_len: u64,
+    args_len: u64,
+    env_len: u64,
     flags: u32,
 ) -> Result<Descriptor, LoadCompartmentError> {
     let monitor = crate::mon::get_monitor();
@@ -164,6 +166,8 @@ pub fn monitor_rt_load_compartment(
         caller,
         info.thread_id(),
         name_len as usize,
+        args_len as usize,
+        env_len as usize,
         NewCompartmentFlags::from_bits(flags).ok_or(LoadCompartmentError::Unknown)?,
     )
 }

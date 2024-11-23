@@ -1,4 +1,4 @@
-use std::{collections::HashSet, ptr::null_mut};
+use std::{borrow::Cow, collections::HashSet, ffi::CStr, ptr::null_mut};
 
 use dynlink::{
     compartment::CompartmentId,
@@ -298,7 +298,12 @@ impl RunCompLoader {
 }
 
 impl Monitor {
-    pub(crate) fn start_compartment(&self, instance: ObjID) -> Result<(), LoadCompartmentError> {
+    pub(crate) fn start_compartment(
+        &self,
+        instance: ObjID,
+        args: &[&CStr],
+        env: &[&CStr],
+    ) -> Result<(), LoadCompartmentError> {
         let deps = {
             let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
             let rc = cmp.get(instance).ok_or(LoadCompartmentError::Unknown)?;
@@ -310,7 +315,7 @@ impl Monitor {
             rc.deps.clone()
         };
         for dep in deps {
-            self.start_compartment(dep)?;
+            self.start_compartment(dep, &[], env)?;
         }
 
         {
@@ -337,7 +342,7 @@ impl Monitor {
                     *self.locks.lock(ThreadKey::get().unwrap());
                 let rc = cmp.get_mut(instance).ok_or(LoadCompartmentError::Unknown)?;
 
-                rc.start_main_thread(state, &mut *space, &mut *tmgr, &mut *dynlink)
+                rc.start_main_thread(state, &mut *space, &mut *tmgr, &mut *dynlink, args, env)
             };
 
             if info.is_none() {

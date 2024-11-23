@@ -125,7 +125,7 @@ impl<'a> Drop for IdDropper<'a> {
 }
 
 impl ReferenceRuntime {
-    pub fn cross_compartment_entry() {
+    pub fn cross_compartment_entry(&self) {
         twizzler_abi::syscall::sys_thread_settls(0);
         let mut inner = THREAD_MGR.inner.lock();
         let id = inner.next_id().freeze();
