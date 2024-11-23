@@ -1,7 +1,7 @@
 use twizzler_abi::{
     object::ObjID,
     pager::{
-        CompletionToKernel, CompletionToPager, KernelCommand, RequestFromKernel, RequestFromPager,
+        CompletionToKernel, CompletionToPager, KernelCommand, RequestFromKernel, RequestFromPager, PagerRequest
     },
 };
 
@@ -25,7 +25,11 @@ pub(super) fn pager_request_handler_main() {
     loop {
         receiver.handle_request(|id, req| {
             logln!("kernel: got req {}:{:?} from pager", id, req);
-            CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
+            if req.cmd() == twizzler_abi::pager::PagerRequest::Ready {
+                return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::ReadyResp)
+            } else {
+                return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
+            }
         });
     }
 }
