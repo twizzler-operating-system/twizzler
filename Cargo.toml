@@ -9,6 +9,7 @@ members = [
     "src/bin/init",
     #"src/bin/bootstrap",
     "src/bin/devmgr",
+    "src/bin/etl_twizzler",  
     "src/bin/netmgr",
     "src/bin/nettest",
     "src/bin/pager",
@@ -41,6 +42,7 @@ initrd = [
     "crate:netmgr",
     "crate:nettest",
     "crate:pager",
+    "crate:etl_twizzler",
     #"lib:twz-rt",
     #"lib:monitor",
     "crate:mnemosyne",
@@ -68,3 +70,4 @@ twizzler-abi = { path = "src/lib/twizzler-abi" }
 parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
 # lock_api comes from the parking_lot repo
 lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
+filetime = { git = "https://github.com/CPTforever/filetime.git", branch = "twizzler" }
