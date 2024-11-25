@@ -51,6 +51,13 @@ fn mapflags_into_prot(flags: MapFlags) -> Protections {
     prot
 }
 
+extern "C-unwind" {
+    fn __monitor_get_slot() -> Option<usize>;
+    fn __monitor_get_pair() -> Option<(usize, usize)>;
+    fn __monitor_release_pair(pair: (usize, usize));
+    fn __monitor_release_slot(slot: usize);
+}
+
 impl Space {
     /// Get the stats.
     pub fn stat(&self) -> SpaceStats {
@@ -66,9 +73,7 @@ impl Space {
             Some(item) => item,
             None => {
                 // Not yet mapped, so allocate a slot and map it.
-                let slot = twz_rt::OUR_RUNTIME
-                    .allocate_slot()
-                    .ok_or(MapError::OutOfResources)?;
+                let slot = unsafe { __monitor_get_slot() }.ok_or(MapError::OutOfResources)?;
 
                 let Ok(_) = sys_object_map(
                     None,
@@ -77,7 +82,9 @@ impl Space {
                     mapflags_into_prot(info.flags),
                     twizzler_abi::syscall::MapFlags::empty(),
                 ) else {
-                    twz_rt::OUR_RUNTIME.release_slot(slot);
+                    unsafe {
+                        __monitor_release_slot(slot);
+                    }
                     return Err(MapError::Other);
                 };
 
@@ -174,7 +181,9 @@ pub(crate) struct UnmapOnDrop {
 impl Drop for UnmapOnDrop {
     fn drop(&mut self) {
         if sys_object_unmap(None, self.slot, UnmapFlags::empty()).is_ok() {
-            twz_rt::OUR_RUNTIME.release_slot(self.slot);
+            unsafe {
+                __monitor_release_slot(self.slot);
+            }
         } else {
             tracing::warn!("failed to unmap slot {}", self.slot);
         }
@@ -184,7 +193,7 @@ impl Drop for UnmapOnDrop {
 /// Map an object into the address space, without tracking it. This leaks the mapping, but is useful
 /// for bootstrapping. See the object mapping gate comments for more details.
 pub fn early_object_map(info: MapInfo) -> MappedObjectAddrs {
-    let slot = twz_rt::OUR_RUNTIME.allocate_slot().unwrap();
+    let slot = unsafe { __monitor_get_slot() }.unwrap();
 
     sys_object_map(
         None,

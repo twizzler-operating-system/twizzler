@@ -1,7 +1,9 @@
 //! Implements the core runtime functions.
 
+use std::{ffi::c_void, sync::OnceLock};
+
 use dynlink::context::runtime::RuntimeInitInfo;
-use monitor_api::SharedCompConfig;
+use monitor_api::{RuntimeThreadControl, SharedCompConfig};
 use secgate::SecGateReturn;
 use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
 use twizzler_rt_abi::{
@@ -18,11 +20,16 @@ use crate::{
     preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
     runtime::RuntimeState,
-    RuntimeThreadControl,
 };
 
 #[thread_local]
 static TLS_TEST: usize = 3222;
+
+#[derive(Copy, Clone)]
+struct PtrToInfo(*mut c_void);
+unsafe impl Send for PtrToInfo {}
+unsafe impl Sync for PtrToInfo {}
+static MON_RTINFO: OnceLock<Option<PtrToInfo>> = OnceLock::new();
 
 impl ReferenceRuntime {
     pub fn default_allocator(&self) -> &'static dyn std::alloc::GlobalAlloc {
@@ -47,6 +54,14 @@ impl ReferenceRuntime {
         }
     }
 
+    pub fn is_monitor(&self) -> Option<*mut c_void> {
+        MON_RTINFO
+            .get()
+            .as_ref()
+            .unwrap()
+            .map(|x| x.0 as *mut _ as *mut c_void)
+    }
+
     pub fn runtime_entry(
         &self,
         rtinfo: *const RuntimeInfo,
@@ -63,6 +78,7 @@ impl ReferenceRuntime {
                         .as_ref()
                         .unwrap()
                 };
+                MON_RTINFO.set(Some(PtrToInfo(init_info as *const _ as *mut _)));
                 self.init_for_monitor(init_info);
             }
             RUNTIME_INIT_COMP => {
@@ -74,6 +90,7 @@ impl ReferenceRuntime {
                         .as_ref()
                         .unwrap()
                 };
+                MON_RTINFO.set(None);
                 self.init_for_compartment(init_info);
             }
             x => {
@@ -131,8 +148,11 @@ impl ReferenceRuntime {
 impl ReferenceRuntime {
     fn init_for_monitor(&self, init_info: &RuntimeInitInfo) {
         let upcall_target = UpcallTarget::new(
-            Some(crate::arch::rr_upcall_entry),
-            Some(crate::arch::rr_upcall_entry),
+            Some(
+                twizzler_rt_abi::arch::__twz_rt_upcall_entry
+                    as unsafe extern "C-unwind" fn(_, _) -> !,
+            ),
+            Some(twizzler_rt_abi::arch::__twz_rt_upcall_entry),
             0,
             0,
             0,

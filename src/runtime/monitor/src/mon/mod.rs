@@ -6,7 +6,7 @@ use compartment::{
 };
 use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
-use monitor_api::{SharedCompConfig, TlsTemplateInfo, MONITOR_INSTANCE_ID};
+use monitor_api::{RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo, MONITOR_INSTANCE_ID};
 use secgate::util::HandleMgr;
 use thread::DEFAULT_STACK_SIZE;
 use twizzler_abi::{syscall::sys_thread_exit, upcall::UpcallFrame};
@@ -14,7 +14,6 @@ use twizzler_rt_abi::{
     object::{MapError, MapFlags, ObjID},
     thread::{SpawnError, ThreadSpawnArgs},
 };
-use twz_rt::{RuntimeState, RuntimeThreadControl, OUR_RUNTIME};
 
 use self::{
     compartment::{CompConfigObject, CompartmentHandle, RunComp},
@@ -68,7 +67,6 @@ impl Monitor {
     /// Start the background threads for the monitor instance. Must be done only once the monitor
     /// has been initialized.
     pub fn start_background_threads(&self) {
-        assert!(OUR_RUNTIME.state().contains(RuntimeState::READY));
         let cleaner = ThreadCleaner::new();
         self.unmapper.set(Unmapper::new()).ok().unwrap();
         self.thread_mgr

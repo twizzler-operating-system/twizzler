@@ -8,6 +8,10 @@ use twizzler_rt_abi::{
     thread::{SpawnError, ThreadSpawnArgs},
 };
 
+extern "C-unwind" {
+    fn __is_monitor_ready() -> bool;
+}
+
 /// Reserved instance ID for the security monitor.
 pub const MONITOR_INSTANCE_ID: ObjID = ObjID::new(0);
 
@@ -238,10 +242,8 @@ pub fn monitor_rt_object_map(
     id: ObjID,
     flags: twizzler_rt_abi::object::MapFlags,
 ) -> Result<crate::MappedObjectAddrs, MapError> {
-    use twz_rt::{RuntimeState, OUR_RUNTIME};
-
     use crate::mon::space::MapInfo;
-    if OUR_RUNTIME.state().contains(RuntimeState::READY) {
+    if unsafe { __is_monitor_ready() } {
         // Are we recursing from the monitor, with a lock held? In that case, use early_object_map
         // to map the object. This will leak this mapping, but this is both rare, and then
         // since the mapping is leaked, it can be used as an allocator object indefinitely
@@ -281,8 +283,7 @@ pub fn monitor_rt_object_unmap(
     id: ObjID,
     flags: twizzler_rt_abi::object::MapFlags,
 ) {
-    use twz_rt::{RuntimeState, OUR_RUNTIME};
-    if OUR_RUNTIME.state().contains(RuntimeState::READY) {
+    if unsafe { __is_monitor_ready() } {
         let monitor = crate::mon::get_monitor();
         monitor.unmap_object(
             info.source_context().unwrap_or(MONITOR_INSTANCE_ID),

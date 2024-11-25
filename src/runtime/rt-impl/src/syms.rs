@@ -69,13 +69,16 @@ macro_rules! check_ffi_type {
     };
 }
 
-use std::{ffi::CStr, os::fd::RawFd};
+use std::{
+    ffi::{c_void, CStr},
+    os::fd::RawFd,
+};
 
 use tracing::warn;
 // core.h
 use twizzler_rt_abi::bindings::option_exit_code;
 
-use crate::runtime::OUR_RUNTIME;
+use crate::{runtime::OUR_RUNTIME, set_upcall_handler};
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_abort() {
@@ -128,6 +131,14 @@ pub unsafe extern "C-unwind" fn twz_rt_cross_compartment_entry() {
     OUR_RUNTIME.cross_compartment_entry();
 }
 check_ffi_type!(twz_rt_cross_compartment_entry);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_set_upcall_handler(
+    handler: Option<unsafe extern "C-unwind" fn(frame: *mut c_void, data: *const c_void)>,
+) {
+    set_upcall_handler(handler);
+}
+check_ffi_type!(twz_rt_set_upcall_handler, _);
 
 // alloc.h
 
@@ -583,6 +594,8 @@ pub unsafe extern "C-unwind" fn free(ptr: *mut core::ffi::c_void) {
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn getenv(name: *const core::ffi::c_char) -> *const core::ffi::c_char {
+    let tp = dynlink::tls::get_current_thread_control_block::<()>();
+    twizzler_abi::klog_println!("GETENV: {:p}, tp={:p}", name, tp);
     let n = unsafe { CStr::from_ptr(name.cast()) };
     warn!(
         "called c:getenv with name = {:p}: `{:?}`: not yet implemented",
@@ -633,4 +646,39 @@ pub unsafe extern "C-unwind" fn fprintf(
         0,
     );
     bytes_written
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __monitor_get_slot() -> Option<usize> {
+    OUR_RUNTIME.allocate_slot()
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __monitor_release_slot(slot: usize) {
+    OUR_RUNTIME.release_slot(slot);
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __monitor_release_pair(slots: (usize, usize)) {
+    OUR_RUNTIME.release_pair(slots);
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __monitor_get_slot_pair() -> Option<(usize, usize)> {
+    OUR_RUNTIME.allocate_pair()
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __monitor_ready() {
+    OUR_RUNTIME.set_runtime_ready();
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __is_monitor_ready() -> bool {
+    OUR_RUNTIME.state().contains(crate::RuntimeState::READY)
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __is_monitor() -> Option<*mut c_void> {
+    OUR_RUNTIME.is_monitor()
 }

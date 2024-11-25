@@ -2,6 +2,7 @@
 
 use std::{alloc::Layout, collections::BTreeMap};
 
+use monitor_api::RuntimeThreadControl;
 use tracing::trace;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
@@ -16,7 +17,7 @@ use twizzler_rt_abi::{
 use super::internal::InternalThread;
 use crate::runtime::{
     thread::{
-        tcb::{trampoline, RuntimeThreadControl, TLS_GEN_MGR},
+        tcb::{trampoline, TLS_GEN_MGR},
         MIN_STACK_ALIGN, THREAD_MGR,
     },
     ReferenceRuntime, OUR_RUNTIME,

@@ -1,0 +1,30 @@
+[package]
+name = "twz-rt"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
+thiserror = "1.0"
+tracing = { version = "0.1", features = ["attributes"] }
+twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
+dynlink = { path = "../dynlink" }
+bitflags = "2.4"
+talc = { version = "3.1", default-features = false }
+lazy_static = "1.4"
+atomic = "0.6"
+elf = "0.7"
+static_assertions = "1.1"
+monitor-api = { path = "../monitor-api" }
+secgate = { path = "../secgate" }
+stable-vec = "0.4.1"
+lru = "0.12.4"
+paste = "1"
+printf-compat = { version = "0.1", default-features = false }
+
+[features]
+runtime = []
+default = ["runtime"]

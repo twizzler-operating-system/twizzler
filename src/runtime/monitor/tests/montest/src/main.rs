@@ -1,23 +1,36 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-extern crate monitor;
-extern crate montest_lib;
-extern crate twz_rt;
+extern crate secgate;
 
 secgate::secgate_prelude!();
 
+extern crate tracing;
+extern crate tracing_subscriber;
+extern crate twizzler_runtime;
 fn main() {
+    setup_logging();
     montest_lib::test_global_call_count();
+}
+use tracing::Level;
+fn setup_logging() {
+    let _ = tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_max_level(Level::DEBUG)
+            .finish(),
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
+    extern crate secgate;
 
+    use super::setup_logging;
     use crate::WAS_CTOR_RUN;
 
     #[test]
     fn test_tl_count() {
+        setup_logging();
         assert_eq!(
             secgate::SecGateReturn::Success(1),
             montest_lib::test_thread_local_call_count()
@@ -26,6 +39,7 @@ mod tests {
 
     #[test]
     fn test_gl_count() {
+        setup_logging();
         assert_eq!(
             secgate::SecGateReturn::Success(1),
             montest_lib::test_global_call_count()
@@ -34,6 +48,7 @@ mod tests {
 
     #[test]
     fn test_internal_panic() {
+        setup_logging();
         assert_eq!(
             secgate::SecGateReturn::CalleePanic,
             montest_lib::test_internal_panic()
@@ -42,6 +57,7 @@ mod tests {
 
     #[test]
     fn test_lib_ctors() {
+        setup_logging();
         assert_eq!(
             secgate::SecGateReturn::Success(true),
             montest_lib::test_was_ctor_run()
@@ -50,6 +66,7 @@ mod tests {
 
     #[test]
     fn test_bin_ctors() {
+        setup_logging();
         assert_eq!(true, WAS_CTOR_RUN.load(Ordering::SeqCst))
     }
 }

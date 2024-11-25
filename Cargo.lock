@@ -3252,7 +3252,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-object",
  "twizzler-rt-abi",
- "twz-rt",
+ "twizzler-runtime",
 ]
 
 [[package]]
@@ -3274,7 +3274,9 @@ dependencies = [
  "monitor",
  "montest-lib",
  "secgate",
- "twz-rt",
+ "tracing",
+ "tracing-subscriber",
+ "twizzler-runtime",
 ]
 
 [[package]]
@@ -3282,7 +3284,7 @@ name = "montest-lib"
 version = "0.1.0"
 dependencies = [
  "secgate",
- "twz-rt",
+ "twizzler-runtime",
 ]
 
 [[package]]
@@ -5065,6 +5067,14 @@ dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-core",
  "twizzler-types",
+]
+
+[[package]]
+name = "twizzler-runtime"
+version = "0.1.0"
+dependencies = [
+ "twizzler-rt-abi",
+ "twz-rt",
 ]
 
 [[package]]

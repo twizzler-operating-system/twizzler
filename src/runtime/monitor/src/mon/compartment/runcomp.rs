@@ -8,7 +8,7 @@ use std::{
 };
 
 use dynlink::{compartment::CompartmentId, context::Context};
-use monitor_api::{SharedCompConfig, TlsTemplateInfo};
+use monitor_api::{RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo};
 use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::syscall::{
@@ -18,7 +18,6 @@ use twizzler_rt_abi::{
     core::{CompartmentInitInfo, CtorSet, InitInfoPtrs, RuntimeInfo, RUNTIME_INIT_COMP},
     object::{MapError, MapFlags, ObjID},
 };
-use twz_rt::RuntimeThreadControl;
 
 use super::{compconfig::CompConfigObject, compthread::CompThread, StackObject};
 use crate::mon::{

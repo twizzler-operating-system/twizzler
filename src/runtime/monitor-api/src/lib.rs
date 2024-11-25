@@ -8,10 +8,11 @@
 #![feature(pointer_is_aligned_to)]
 use std::{
     alloc::Layout,
+    cell::UnsafeCell,
     marker::PhantomData,
     ptr::NonNull,
     sync::{
-        atomic::{AtomicPtr, Ordering},
+        atomic::{AtomicPtr, AtomicU32, Ordering},
         OnceLock,
     },
 };
@@ -624,5 +625,74 @@ mod lazy_sb {
 
     pub(super) fn write_bytes_to_sb(buf: &[u8]) -> usize {
         LAZY_SB.borrow_mut().write(buf)
+    }
+}
+
+pub const THREAD_STARTED: u32 = 1;
+pub struct RuntimeThreadControl {
+    // Need to keep a lock for the ID, though we don't expect to use it much.
+    pub internal_lock: AtomicU32,
+    pub flags: AtomicU32,
+    pub id: UnsafeCell<u32>,
+}
+
+impl Default for RuntimeThreadControl {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+impl RuntimeThreadControl {
+    pub const fn new(id: u32) -> Self {
+        Self {
+            internal_lock: AtomicU32::new(0),
+            flags: AtomicU32::new(0),
+            id: UnsafeCell::new(id),
+        }
+    }
+
+    fn write_lock(&self) {
+        loop {
+            let old = self.internal_lock.fetch_or(1, Ordering::Acquire);
+            if old == 0 {
+                break;
+            }
+        }
+    }
+
+    fn write_unlock(&self) {
+        self.internal_lock.fetch_and(!1, Ordering::Release);
+    }
+
+    fn read_lock(&self) {
+        loop {
+            let old = self.internal_lock.fetch_add(2, Ordering::Acquire);
+            // If this happens, something has gone very wrong.
+            if old > i32::MAX as u32 {
+                twizzler_rt_abi::core::twz_rt_abort();
+            }
+            if old & 1 == 0 {
+                break;
+            }
+        }
+    }
+
+    fn read_unlock(&self) {
+        self.internal_lock.fetch_sub(2, Ordering::Release);
+    }
+
+    pub fn set_id(&self, id: u32) {
+        self.write_lock();
+        unsafe {
+            *self.id.get().as_mut().unwrap() = id;
+        }
+        self.write_unlock();
+    }
+
+    pub fn id(&self) -> u32 {
+        self.read_lock();
+        let id = unsafe { *self.id.get().as_ref().unwrap() };
+        self.read_unlock();
+        id
     }
 }

@@ -13,10 +13,9 @@ use tracing::{debug, info, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
 use twizzler_abi::object::NULLPAGE_SIZE;
 use twizzler_rt_abi::object::MapFlags;
-use twz_rt::{set_upcall_handler, OUR_RUNTIME};
 
 mod dlengine;
-mod init;
+pub mod init;
 mod mon;
 mod upcall;
 
@@ -24,6 +23,13 @@ pub use monitor_api::MappedObjectAddrs;
 
 #[path = "../secapi/gates.rs"]
 mod gates;
+
+extern crate dynlink;
+extern crate twizzler_runtime;
+
+extern "C-unwind" {
+    fn __monitor_ready();
+}
 
 pub fn main() {
     // For early init, if something breaks, we really want to see everything...
@@ -50,12 +56,16 @@ pub fn main() {
 
     debug!("ok, starting monitor proper");
     // Safety: the monitor is ready, and so we can set our runtime as ready to use the monitor.
-    unsafe { OUR_RUNTIME.set_runtime_ready() };
+    unsafe { __monitor_ready() };
     // Had to wait till now to be able to spawn threads.
     mon::get_monitor().start_background_threads();
 
     std::env::set_var("RUST_BACKTRACE", "1");
-    set_upcall_handler(&crate::upcall::upcall_monitor_handler).unwrap();
+    unsafe {
+        twizzler_rt_abi::bindings::twz_rt_set_upcall_handler(Some(
+            crate::upcall::upcall_monitor_handler_entry,
+        ))
+    };
 
     let main_thread = std::thread::spawn(monitor_init);
     let _r = main_thread.join().unwrap().map_err(|e| {
@@ -88,6 +98,7 @@ fn monitor_init() -> miette::Result<()> {
         {
             let comp: CompartmentHandle =
                 CompartmentLoader::new("montest", test_name, NewCompartmentFlags::empty())
+                    .args(&["montest", "--help"])
                     .load()
                     .into_diagnostic()?;
             let mut eb = 0;

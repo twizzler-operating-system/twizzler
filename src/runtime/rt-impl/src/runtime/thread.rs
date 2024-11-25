@@ -15,7 +15,6 @@ mod internal;
 mod mgr;
 mod tcb;
 
-pub use tcb::RuntimeThreadControl;
 pub(crate) use tcb::TLS_GEN_MGR;
 
 const MIN_STACK_ALIGN: usize = 128;

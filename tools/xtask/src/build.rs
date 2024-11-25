@@ -296,6 +296,7 @@ fn maybe_build_tests_static<'a>(
                 "layout-derive" => None,
                 "twizzler-rt-abi" => None,
                 "twizzler-types" => None,
+                "twizzler-runtime" => None,
                 "twizzler-object" => None,
                 "twizzler-nando" => None,
                 "twizzler-net" => None,

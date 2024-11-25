@@ -1,8 +1,6 @@
-use dynlink::context::{runtime::RuntimeInitInfo, Context};
-use twizzler_rt_abi::core::{RuntimeInfo, RUNTIME_INIT_MONITOR};
-use twz_rt::{preinit::preinit_abort, preinit_println};
+use std::ffi::c_void;
 
-static mut RTINFO: Option<*const RuntimeInitInfo> = None;
+use dynlink::context::{runtime::RuntimeInitInfo, Context};
 
 pub(crate) struct InitDynlinkContext {
     pub ctx: *mut Context,
@@ -20,19 +18,29 @@ impl InitDynlinkContext {
     }
 }
 
+extern "C-unwind" {
+    fn __is_monitor() -> Option<*mut c_void>;
+}
 pub(crate) fn bootstrap_dynlink_context() -> Option<InitDynlinkContext> {
-    let info = unsafe { RTINFO.unwrap().as_ref().unwrap() };
+    let info = unsafe {
+        __is_monitor()
+            .unwrap()
+            .cast::<RuntimeInitInfo>()
+            .as_mut()
+            .unwrap()
+    };
     let ctx = info.ctx as *mut Context;
 
     Some(InitDynlinkContext { ctx })
 }
 
+/*
 #[no_mangle]
-pub unsafe extern "C" fn monitor_entry_from_bootstrap(rtinfo_ptr: *const RuntimeInfo) {
+pub unsafe extern "C" fn monitor_entry_from_bootstrap2(rtinfo_ptr: *const RuntimeInfo) {
     let rtinfo = unsafe { rtinfo_ptr.as_ref().unwrap() };
     if rtinfo.kind != RUNTIME_INIT_MONITOR {
-        preinit_println!("cannot initialize monitor without monitor runtime init info");
-        preinit_abort();
+        twizzler_abi::klog_println!("cannot initialize monitor without monitor runtime init info");
+        twizzler_rt_abi::core::twz_rt_abort();
     }
     let rt_init_info_ptr = rtinfo.init_info.monitor.cast();
 
@@ -42,6 +50,19 @@ pub unsafe extern "C" fn monitor_entry_from_bootstrap(rtinfo_ptr: *const Runtime
     }
 }
 
+/*
+#[cfg(target_arch = "x86_64")]
+#[naked]
+#[no_mangle]
+pub unsafe extern "C" fn monitor_entry_from_bootstrap(p: *const RuntimeInfo) -> ! {
+    core::arch::naked_asm!("jmp monitor_entry_from_bootstrap2")
+}*/
+
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!("monitor_entry_from_bootstrap: jmp monitor_entry_from_bootstrap2");
+
+*/
+/*
 #[allow(improper_ctypes)]
 extern "C" {
     fn twizzler_call_lang_start(
@@ -63,3 +84,5 @@ pub extern "C" fn main(argc: i32, argv: *const *const u8) -> i32 {
 #[cfg(not(test))]
 #[no_mangle]
 pub extern "C" fn _init() {}
+
+*/

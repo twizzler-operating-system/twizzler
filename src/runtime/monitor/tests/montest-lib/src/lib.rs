@@ -1,7 +1,7 @@
 #![feature(naked_functions)]
 #![feature(thread_local)]
 
-extern crate twz_rt;
+extern crate twizzler_runtime;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
