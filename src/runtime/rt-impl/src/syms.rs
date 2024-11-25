@@ -601,7 +601,8 @@ pub unsafe extern "C-unwind" fn getenv(name: *const core::ffi::c_char) -> *const
         "called c:getenv with name = {:p}: `{:?}`: not yet implemented",
         name, n
     );
-    core::ptr::null()
+    static ONE: &CStr = c"1";
+    ONE.as_ptr().cast()
 }
 
 #[no_mangle]

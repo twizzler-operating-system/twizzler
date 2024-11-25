@@ -5104,6 +5104,7 @@ dependencies = [
  "talc",
  "thiserror",
  "tracing",
+ "tracing-subscriber",
  "twizzler-abi",
  "twizzler-rt-abi",
 ]

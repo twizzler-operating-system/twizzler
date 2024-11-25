@@ -5,6 +5,7 @@ use std::{ffi::c_void, sync::OnceLock};
 use dynlink::context::runtime::RuntimeInitInfo;
 use monitor_api::{RuntimeThreadControl, SharedCompConfig};
 use secgate::SecGateReturn;
+use tracing::Level;
 use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
 use twizzler_rt_abi::{
     core::{
@@ -110,6 +111,13 @@ impl ReferenceRuntime {
     }
 
     pub fn pre_main_hook(&self) -> Option<ExitCode> {
+        // TODO: control this with env vars
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::fmt()
+                .with_max_level(Level::DEBUG)
+                .finish(),
+        )
+        .unwrap();
         preinit_println!("====== {}", TLS_TEST);
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();

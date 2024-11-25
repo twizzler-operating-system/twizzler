@@ -7,6 +7,24 @@ secgate::secgate_prelude!();
 extern crate tracing;
 extern crate tracing_subscriber;
 extern crate twizzler_runtime;
+
+mod montest_lib {
+    #[link(name = "montest_lib")]
+    extern "C" {}
+    use secgate::GateCallInfo;
+    #[secgate::secure_gate(options(info, api))]
+    pub fn test_was_ctor_run(info: &GateCallInfo) -> bool {}
+
+    #[secgate::secure_gate(options(info, api))]
+    pub fn test_internal_panic(info: &GateCallInfo) {}
+
+    #[secgate::secure_gate(options(info, api))]
+    pub fn test_global_call_count(info: &GateCallInfo) -> usize {}
+
+    #[secgate::secure_gate(options(info, api))]
+    pub fn test_thread_local_call_count(info: &GateCallInfo) -> usize {}
+}
+
 fn main() {
     setup_logging();
     montest_lib::test_global_call_count();
@@ -23,6 +41,8 @@ fn setup_logging() {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
+
+    use crate::montest_lib;
     extern crate secgate;
 
     use super::setup_logging;

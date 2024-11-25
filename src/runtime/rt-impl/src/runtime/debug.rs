@@ -16,6 +16,7 @@ impl ReferenceRuntime {
             .libs()
             .nth(id as usize)?;
         let mut info = lib.info();
+        tracing::info!("get_image_info: {:?}", info);
         let mut lib_names = LIBNAMES.lock().ok()?;
         if !lib_names.contains_key(&info.name) {
             let mut name_bytes = info.name.clone().into_bytes();

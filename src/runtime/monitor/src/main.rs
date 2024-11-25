@@ -98,7 +98,7 @@ fn monitor_init() -> miette::Result<()> {
         {
             let comp: CompartmentHandle =
                 CompartmentLoader::new("montest", test_name, NewCompartmentFlags::empty())
-                    .args(&["montest", "--help"])
+                    .args(&["montest", "--nocapture"])
                     .load()
                     .into_diagnostic()?;
             let mut eb = 0;
