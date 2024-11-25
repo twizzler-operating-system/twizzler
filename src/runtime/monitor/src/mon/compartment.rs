@@ -203,7 +203,7 @@ impl super::Monitor {
         thread: ObjID,
         desc: Option<Descriptor>,
     ) -> Option<CompartmentInfo> {
-        let (ref mut space, _, ref mut comps, _, _, ref comphandles) =
+        let (ref mut space, _, ref mut comps, ref dynlink, _, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = desc
             .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
@@ -213,12 +213,18 @@ impl super::Monitor {
         let pt = comps.get_mut(instance)?.get_per_thread(thread, space);
         let name_len = pt.write_bytes(name.as_bytes());
         let comp = comps.get(comp_id)?;
+        let nr_libs = dynlink
+            .get_compartment(comp.compartment_id)
+            .ok()?
+            .library_ids()
+            .count();
 
         Some(CompartmentInfo {
             name_len,
             id: comp_id,
             sctx: comp.sctx,
             flags: comp.raw_flags(),
+            nr_libs,
         })
     }
 
@@ -242,11 +248,20 @@ impl super::Monitor {
     /// Open a handle to the n'th dependency compartment of a given compartment.
     pub fn get_compartment_deps(
         &self,
-        _caller: ObjID,
-        _desc: Option<Descriptor>,
-        _dep_n: usize,
+        caller: ObjID,
+        desc: Option<Descriptor>,
+        dep_n: usize,
     ) -> Option<Descriptor> {
-        todo!()
+        let dep = {
+            let (_, _, ref mut comps, _, _, ref mut comphandles) =
+                *self.locks.lock(ThreadKey::get().unwrap());
+            let comp_id = desc
+                .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
+                .unwrap_or(Some(caller))?;
+            let comp = comps.get_mut(comp_id)?;
+            comp.deps.get(dep_n).cloned()
+        }?;
+        self.get_compartment_handle(caller, dep)
     }
 
     /// Load a new compartment with a root library ID, and return a compartment handle.

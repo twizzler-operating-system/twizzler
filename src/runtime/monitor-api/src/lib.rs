@@ -437,6 +437,8 @@ pub struct CompartmentInfo<'a> {
     pub sctx: ObjID,
     /// The compartment flags and status.
     pub flags: CompartmentFlags,
+    /// Number of libraries
+    pub nr_libs: usize,
     _pd: PhantomData<&'a ()>,
 }
 
@@ -447,6 +449,7 @@ impl<'a> CompartmentInfo<'a> {
             id: raw.id,
             sctx: raw.sctx,
             flags: CompartmentFlags::from_bits_truncate(raw.flags),
+            nr_libs: raw.nr_libs,
             _pd: PhantomData,
         }
     }

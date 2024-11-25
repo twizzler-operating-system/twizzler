@@ -3276,6 +3276,7 @@ dependencies = [
  "secgate",
  "tracing",
  "tracing-subscriber",
+ "twizzler-abi",
  "twizzler-runtime",
 ]
 
@@ -3284,6 +3285,7 @@ name = "montest-lib"
 version = "0.1.0"
 dependencies = [
  "secgate",
+ "twizzler-abi",
  "twizzler-runtime",
 ]
 

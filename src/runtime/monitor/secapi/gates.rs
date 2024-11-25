@@ -98,6 +98,7 @@ pub struct CompartmentInfo {
     pub id: ObjID,
     pub sctx: ObjID,
     pub flags: u64,
+    pub nr_libs: usize,
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]

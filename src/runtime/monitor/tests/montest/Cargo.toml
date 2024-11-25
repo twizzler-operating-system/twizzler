@@ -13,3 +13,4 @@ monitor = { path = "../../../monitor" }
 ctor = "*"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+twizzler-abi = { path = "../../../../lib/twizzler-abi" }

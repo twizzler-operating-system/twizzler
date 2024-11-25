@@ -65,7 +65,7 @@ impl Monitor {
         let rc = comps.get(comp_id)?;
         let dcomp = dynlink.get_compartment(rc.compartment_id).ok()?;
         let id = dcomp.library_ids().nth(num)?;
-        handles.insert(comp_id, LibraryHandle { comp: comp_id, id })
+        handles.insert(caller, LibraryHandle { comp: comp_id, id })
     }
 
     /// Load a library in the given compartment.
@@ -80,6 +80,7 @@ impl Monitor {
 
     /// Drop a library handle.
     pub fn drop_library_handle(&self, caller: ObjID, desc: Descriptor) {
+        //tracing::info!("drop: {}", desc);
         self.library_handles
             .write(ThreadKey::get().unwrap())
             .remove(caller, desc);

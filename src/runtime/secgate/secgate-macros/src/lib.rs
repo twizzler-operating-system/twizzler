@@ -240,14 +240,12 @@ fn build_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStr
         {
             #[cfg(target_arch = "x86_64")]
             unsafe {core::arch::naked_asm!(
+                "sub rsp, 0x1000",
                 "push rbp",
-                "push 0",
-                "push 0",
                 "mov rbp, rsp",
                 "call {0}",
                 "pop rbp",
-                "pop rbp",
-                "pop rbp",
+                "add rsp, 0x1000",
                 "ret",
                 sym #entry_name)}
             #[cfg(target_arch = "aarch64")]
