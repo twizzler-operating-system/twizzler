@@ -16,7 +16,7 @@ mod montest_lib {
     pub fn test_was_ctor_run(info: &GateCallInfo) -> bool {}
 
     #[secgate::secure_gate(options(info, api))]
-    pub fn test_internal_panic(info: &GateCallInfo) {}
+    pub fn test_internal_panic(info: &GateCallInfo, catch_it: bool) -> usize {}
 
     #[secgate::secure_gate(options(info, api))]
     pub fn test_global_call_count(info: &GateCallInfo) -> usize {}
@@ -67,11 +67,20 @@ mod tests {
     }
 
     #[test]
-    fn test_internal_panic() {
+    fn test_uncaught_internal_panic() {
         setup_logging();
         assert_eq!(
             secgate::SecGateReturn::CalleePanic,
-            montest_lib::test_internal_panic()
+            montest_lib::test_internal_panic(false)
+        );
+    }
+
+    #[test]
+    fn test_internal_panic() {
+        setup_logging();
+        assert_eq!(
+            secgate::SecGateReturn::Success(1),
+            montest_lib::test_internal_panic(true)
         );
     }
 

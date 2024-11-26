@@ -15,13 +15,6 @@ impl ReferenceRuntime {
     fn find_comp_dep_lib(&self, id: loaded_image_id) -> Option<(Option<String>, LibraryHandle)> {
         let n = id as usize;
         let current = CompartmentHandle::current();
-        /*
-        tracing::info!(
-            "find comp dep lib: {}, current has {}",
-            n,
-            current.info().nr_libs
-        );
-        */
         if let Some(image) = current.libs().nth(n) {
             return Some((None, image));
         }
@@ -29,7 +22,6 @@ impl ReferenceRuntime {
             return None;
         };
         for dep in current.deps() {
-            // tracing::info!("checking dep: {:?}", dep.info());
             if let Some(image) = dep.libs().nth(n) {
                 let name = dep.info().name.clone();
                 return Some((Some(name), image));
@@ -45,7 +37,7 @@ impl ReferenceRuntime {
     pub fn get_image_info(&self, id: loaded_image_id) -> Option<loaded_image> {
         let (cn, lib) = self.find_comp_dep_lib(id)?;
         let mut info = lib.info();
-        tracing::info!("get_image_info: {:?}", info);
+        tracing::trace!("get_image_info: {:?}", info);
         let mut lib_names = LIBNAMES.lock().ok()?;
         let fullname = if let Some(cn) = cn {
             format!("{}::{}", cn, info.name)

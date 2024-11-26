@@ -19,11 +19,14 @@ pub fn test_global_call_count() -> usize {
 }
 
 #[secgate::secure_gate]
-pub fn test_internal_panic() -> usize {
-    let x = std::panic::catch_unwind(|| {
-        panic!("test_panic");
-    });
-    return if x.is_err() { 1 } else { 0 };
+pub fn test_internal_panic(catch_it: bool) -> usize {
+    if catch_it {
+        let x = std::panic::catch_unwind(|| {
+            panic!("test_panic (to be caught)");
+        });
+        return if x.is_err() { 1 } else { 0 };
+    }
+    panic!("test_panic (not caught)");
 }
 
 #[secgate::secure_gate]

@@ -602,7 +602,8 @@ pub unsafe extern "C-unwind" fn getenv(name: *const core::ffi::c_char) -> *const
         name, n
     );
     static ONE: &CStr = c"1";
-    ONE.as_ptr().cast()
+    core::ptr::null_mut()
+    //ONE.as_ptr().cast()
 }
 
 #[no_mangle]
