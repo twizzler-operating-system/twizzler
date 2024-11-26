@@ -1,30 +1,13 @@
 extern crate twizzler_abi;
 
-use std::io::{Read};
-use std::{fs::{File, OpenOptions}, io::Write};
-use twizzler_abi::syscall::{ObjectCreate, BackingType, LifetimeType, ObjectCreateFlags};
+use std::{fs::File, io::Read};
 
 fn main() {
-    let create = ObjectCreate::new(
-        BackingType::Normal,
-        LifetimeType::Volatile,
-        None,
-        ObjectCreateFlags::empty(),
-    );
-    let id = twizzler_abi::syscall::sys_object_create(create, &[], &[]).unwrap();
+    let id: u128 = 0x1000000000000000a;
+    let mut f = File::create(id.to_string()).unwrap();
 
-    println!("Created object {}.", id);
+    let mut buf: [u8; 4096] = [0; 4096];
+    println!("bytes read: {}", f.read(&mut buf).unwrap());
 
-    {
-        let mut f = File::create(id.as_u128().to_string()).unwrap();
-        f.write("Hello world!\n".as_bytes());
-    }
-    
-    {
-        let mut f = File::create(id.as_u128().to_string()).unwrap();
-        let mut buf: [u8; 13] = [0; 13];
-        f.read(&mut buf);
-        println!("{}", String::from_utf8(buf.to_vec()).unwrap());
-    }
-
+    println!("Status: {}", std::str::from_utf8(&buf).unwrap());
 }

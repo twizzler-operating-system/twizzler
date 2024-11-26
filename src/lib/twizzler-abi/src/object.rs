@@ -6,7 +6,7 @@ pub const MAX_SIZE: usize = 1024 * 1024 * 1024;
 /// The size of the null page.
 pub const NULLPAGE_SIZE: usize = 0x1000;
 
-pub use twizzler_runtime_api::ObjID;
+pub use twizzler_rt_abi::object::ObjID;
 
 bitflags::bitflags! {
     /// Mapping protections for mapping objects into the address space.

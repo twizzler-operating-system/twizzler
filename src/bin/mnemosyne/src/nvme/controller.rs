@@ -146,7 +146,7 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
 
     let req2 = req.clone();
     let ctrl2 = ctrl.clone();
-    let task = twizzler_async::run(async {
+    twizzler_async::run(async {
         Task::spawn(async move {
             loop {
                 let _i = int.next().await;

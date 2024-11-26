@@ -102,7 +102,44 @@ fn get_genfile_path(comp: &TwizzlerCompilation, name: &str) -> PathBuf {
     path
 }
 
-fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Result<PathBuf> {
+fn generate_data_folder(comp: &TwizzlerCompilation) -> PathBuf {
+    let mut destination = comp.get_kernel_image(false).parent().unwrap().to_path_buf();
+    destination.push("data/");
+
+    let source = PathBuf::from("./src/data/");
+    Command::new("rsync")
+        .arg("-a")
+        .arg("--delete")
+        .arg(&source)
+        .arg(&destination)
+        .status()
+        .unwrap();
+
+    destination
+}
+
+fn generate_initrd(
+    initrd_files: Vec<PathBuf>,
+    data_files: PathBuf,
+    comp: &TwizzlerCompilation,
+) -> anyhow::Result<PathBuf> {
+    let initrd_path = get_genfile_path(comp, "initrd");
+    let status = Command::new(get_tool_path(comp, "initrd_gen")?)
+        .arg("--data")
+        .arg(&data_files)
+        .arg("--output")
+        .arg(&initrd_path)
+        .args(&initrd_files)
+        .status()?;
+
+    if status.success() {
+        Ok(initrd_path)
+    } else {
+        anyhow::bail!("failed to generate initrd");
+    }
+}
+
+fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Result<Vec<PathBuf>> {
     crate::print_status_line("initrd", Some(&cli.config));
     // Create an empty initrd if we are building just the kernel.
     // No user space components are required to run the code, but
@@ -112,7 +149,7 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
         let initrd_path = get_genfile_path(comp, "initrd");
         let result = File::create(&initrd_path);
         if result.is_ok() {
-            Ok(initrd_path)
+            Ok(vec![initrd_path])
         } else {
             anyhow::bail!("failed to generate initrd");
         }
@@ -193,23 +230,16 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
         lib_path.push(libstd_name);
         initrd_files.push(lib_path);
 
-        let initrd_path = get_genfile_path(comp, "initrd");
-        let status = Command::new(get_tool_path(comp, "initrd_gen")?)
-            .arg("--output")
-            .arg(&initrd_path)
-            .args(&initrd_files)
-            .status()?;
-        if status.success() {
-            Ok(initrd_path)
-        } else {
-            anyhow::bail!("failed to generate initrd");
-        }
+        Ok(initrd_files)
     }
 }
 
 pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
-    let comp = crate::build::do_build(cli.into())?;
-    let initrd_path = build_initrd(&cli, &comp)?;
+    let comp = crate::build::do_build(cli.clone().into())?;
+
+    let initrd_files = build_initrd(&cli, &comp)?;
+    let data_files = generate_data_folder(&comp);
+    let initrd_path = generate_initrd(initrd_files, data_files, &comp)?;
 
     crate::print_status_line("disk image", Some(&cli.config));
     let mut cmdline = String::new();

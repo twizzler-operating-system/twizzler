@@ -24,7 +24,7 @@ use crate::{
 #[naked]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn trampoline_entry_code16() {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         ".code16gcc",
         "mov ax, [0x6f18]",
         "cli",
@@ -44,13 +44,12 @@ unsafe extern "C" fn trampoline_entry_code16() {
         ".byte 0x71",
         ".byte 0x08",
         ".byte 0x00",
-        options(noreturn)
     )
 }
 #[naked]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn trampoline_entry_code32() {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         ".code32",
         "mov ax, 16",
         "mov ds, ax",
@@ -83,14 +82,13 @@ unsafe extern "C" fn trampoline_entry_code32() {
         ".byte 0x00",
         ".byte 0x08",
         ".byte 0x00",
-        options(noreturn)
     )
 }
 
 #[naked]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn trampoline_entry_code64() {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         "lgdt [0x6f68]",
         "mov ax, 0x10",
         "mov ds, ax",
@@ -108,7 +106,6 @@ unsafe extern "C" fn trampoline_entry_code64() {
         "call rax",
         "ud2",
         stack_size = const(crate::processor::KERNEL_STACK_SIZE),
-        options(noreturn)
     )
 }
 
@@ -138,7 +135,7 @@ pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
     let phys_mem_offset = phys_to_virt(PhysAddr::new(0).unwrap()).raw();
 
     let bios_reset = (phys_mem_offset + 0x467) as *mut u32;
-    *bios_reset = (TRAMPOLINE_ENTRY16 & 0xff000) << 12;
+    bios_reset.write_unaligned((TRAMPOLINE_ENTRY16 & 0xff000) << 12);
     let trampoline16 = (phys_mem_offset + TRAMPOLINE_ENTRY16 as u64) as *mut u8;
     trampoline16.copy_from_nonoverlapping(trampoline_entry_code16 as *const u8, 0x100);
     let trampoline32 = (TRAMPOLINE_ENTRY32 as u64) as *mut u8;

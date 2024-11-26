@@ -70,7 +70,7 @@ unsafe extern "C" fn __do_switch(
     newlock: *mut AtomicU64, //rdx
     oldlock: *mut AtomicU64, //rcx
 ) {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         /* save registers */
         "push rbp",
         "push rbx",
@@ -115,7 +115,6 @@ unsafe extern "C" fn __do_switch(
         "test rax, rax",
         "jnz sw_wait",
         "jmp grab_the_lock",
-        options(noreturn),
     )
 }
 

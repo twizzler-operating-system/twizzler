@@ -15,9 +15,7 @@ nonoverlapping_interval_tree = { version = "0.1.3", default-features = false }
 twizzler-abi = { path = "../lib/twizzler-abi", default-features = false, features = [
     "kernel",
 ] }
-twizzler-runtime-api = { path = "../lib/twizzler-runtime-api", default-features = false, features = [
-    "kernel",
-] }
+twizzler-rt-abi = { path = "../abi/rt-abi", features = ["kernel"] }
 fixedbitset = { version = "0.4.1", default-features = false }
 linked_list_allocator = "0.10"
 tar-no-std = "0.2.0"
@@ -26,15 +24,16 @@ addr2line = { version = "0.16.0", default-features = false, features = [
     "rustc-demangle",
 ] }
 backtracer_core = { git = "https://github.com/twizzler-operating-system/backtracer", branch = "twizzler" }
-limine = "0.1.11"
+limine = "0.2.0"
 twizzler-queue-raw = { version = "*", path = "../lib/twizzler-queue-raw", default-features = false }
-syscall_encode = { version = "0.1.2" }
+#syscall_encode = { version = "0.1.2" }
 volatile = "0.5"
 # for crypto
 p256 = { version = "0.13.2", default-features = false, features = ["ecdsa"] }
 sha2 = { version = "0.10.8", default-features = false, features = [
     "force-soft",
 ] }
+log = "*"
 # [dev-dependencies] # kernel doesn't include dev dependencies when testing
 # for testing crypto
 hex-literal = { version = "0.4.1", default-features = false }

@@ -1,18 +1,7 @@
 extern crate twizzler_abi;
 
-use std::{
-    fs::DirBuilder,
-    future,
-    mem::size_of,
-    sync::{Arc, Mutex, RwLock},
-    time::Duration,
-};
-
-use layout::{io::SeekFrom, Read, Seek, Write};
 use lethe_gadget_fat::filesystem::FileSystem;
-use twizzler_async::{block_on, Task, Timer};
 
-use crate::nvme::{init_nvme, NvmeController};
 mod disk;
 mod nvme;
 
@@ -42,7 +31,7 @@ pub fn main() {
 
             let size = value.parse::<usize>().unwrap();
             let mut buf = Vec::<u8>::with_capacity(size);
-            for i in 0..size {
+            for _ in 0..size {
                 buf.push(0);
             }
             fs.read_exact(id, &mut buf, 0).unwrap();

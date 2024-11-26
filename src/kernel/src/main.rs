@@ -3,19 +3,16 @@
 #![allow(internal_features)]
 #![feature(alloc_error_handler)]
 #![feature(thread_local)]
-#![feature(exclusive_range_pattern)]
 #![feature(naked_functions)]
 #![allow(dead_code)]
 #![feature(core_intrinsics)]
 #![feature(optimize_attribute)]
 #![feature(lang_items)]
-#![feature(asm_const)]
 #![feature(custom_test_frameworks)]
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(crate::test_runner)]
 #![feature(stmt_expr_attributes)]
 #![feature(int_roundings)]
-#![feature(const_option)]
 #![feature(let_chains)]
 #![feature(btree_extract_if)]
 #![feature(extract_if)]
@@ -82,6 +79,7 @@ pub fn is_test_mode() -> bool {
 
 fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
     arch::init(boot_info);
+    log::init();
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
     let cmdline = boot_info.get_cmd_line();
     for opt in cmdline.split(" ") {

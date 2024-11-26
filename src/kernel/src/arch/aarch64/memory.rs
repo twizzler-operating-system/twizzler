@@ -11,10 +11,12 @@ pub mod pagetables;
 /// a region of virtual memory to identity map
 /// all physical memory. This is convenient since
 /// calculating a physical to virtual address is simply
-/// va = base + offset
-const PHYS_MEM_OFFSET: u64 = 0xFFFF_8000_0000_0000;
+/// va = base + offset. Its value is set at early kernel
+/// initialization and currently is bootloader-specific.
+pub(super) static mut PHYS_MEM_OFFSET: u64 = 0;
 
-/* TODO: hide this */
+// TODO: choose where our own identity map lives
+
 pub fn phys_to_virt(pa: PhysAddr) -> VirtAddr {
-    VirtAddr::new(pa.raw() + PHYS_MEM_OFFSET).unwrap()
+    VirtAddr::new(pa.raw() + unsafe { PHYS_MEM_OFFSET }).unwrap()
 }

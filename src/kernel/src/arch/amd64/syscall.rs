@@ -222,7 +222,7 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
 #[allow(named_asm_labels)]
 #[naked]
 pub unsafe extern "C" fn syscall_entry() -> ! {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         /* syscall can only come from userspace, so we can safely blindly swapgs */
         "swapgs",
         "lfence",
@@ -251,6 +251,5 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
         "mov rsi, gs:8",
         "cld",
         "call syscall_entry_c",
-        options(noreturn),
     )
 }

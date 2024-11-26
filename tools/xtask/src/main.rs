@@ -114,9 +114,11 @@ struct CheckOptions {
     kernel: bool,
     #[clap(long)]
     all_targets: bool,
+    #[clap(long)]
+    keep_going: bool,
 }
 
-#[derive(Args, Debug, Clone, Copy)]
+#[derive(Args, Debug, Clone)]
 struct ImageOptions {
     #[clap(flatten)]
     pub config: BuildConfig,
@@ -126,6 +128,8 @@ struct ImageOptions {
     benches: bool,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
+    #[clap(long, short, help = "Share a file/directory with Twizzler")]
+    data: Option<PathBuf>,
 }
 
 impl From<ImageOptions> for BuildOptions {
@@ -158,6 +162,8 @@ struct QemuOptions {
     benches: bool,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
+    #[clap(long, short, help = "Share a file/directory with Twizzler")]
+    data: Option<PathBuf>,
 }
 
 impl From<&QemuOptions> for ImageOptions {
@@ -167,17 +173,15 @@ impl From<&QemuOptions> for ImageOptions {
             tests: qo.tests,
             benches: qo.benches,
             kernel: qo.kernel,
+            data: qo.data.clone(),
         }
     }
 }
 
 #[derive(clap::Args, Debug)]
 struct BootstrapOptions {
-    #[clap(
-        long,
-        help = "Skip updating git submodules before bootstrapping the toolchain."
-    )]
-    skip_submodules: bool,
+    #[clap(long, help = "Skip downloading boot files from file server.")]
+    skip_downloads: bool,
     #[clap(
         long,
         help = "Don't remove the target/ directory after rebuilding the toolchain."

@@ -5,7 +5,7 @@ use std::{
 };
 
 use twizzler_abi::object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_runtime_api::{MapError, ObjectHandle};
+use twizzler_rt_abi::object::{MapError, MapFlags, ObjectHandle};
 
 use crate::{meta::FotEntry, ObjectInitError};
 
@@ -23,38 +23,42 @@ unsafe impl Sync for Slot {}
 unsafe impl Send for Slot {}
 
 impl From<MapError> for ObjectInitError {
-    fn from(_: MapError) -> Self {
-        todo!()
+    fn from(me: MapError) -> Self {
+        match me {
+            MapError::OutOfResources => ObjectInitError::OutOfSlots,
+            MapError::NoSuchObject => ObjectInitError::ObjectNotFound,
+            _ => ObjectInitError::MappingFailed,
+        }
     }
 }
 
-fn into_map_flags(p: Protections) -> twizzler_runtime_api::MapFlags {
-    let mut flags = twizzler_runtime_api::MapFlags::empty();
+fn into_map_flags(p: Protections) -> MapFlags {
+    let mut flags = MapFlags::empty();
     if p.contains(Protections::EXEC) {
-        flags.insert(twizzler_runtime_api::MapFlags::EXEC);
+        flags.insert(MapFlags::EXEC);
     }
 
     if p.contains(Protections::READ) {
-        flags.insert(twizzler_runtime_api::MapFlags::READ);
+        flags.insert(MapFlags::READ);
     }
 
     if p.contains(Protections::WRITE) {
-        flags.insert(twizzler_runtime_api::MapFlags::WRITE);
+        flags.insert(MapFlags::WRITE);
     }
     flags
 }
 
-fn into_protections(flags: twizzler_runtime_api::MapFlags) -> Protections {
+fn into_protections(flags: MapFlags) -> Protections {
     let mut prot = Protections::empty();
-    if flags.contains(twizzler_runtime_api::MapFlags::EXEC) {
+    if flags.contains(MapFlags::EXEC) {
         prot.insert(Protections::EXEC);
     }
 
-    if flags.contains(twizzler_runtime_api::MapFlags::READ) {
+    if flags.contains(MapFlags::READ) {
         prot.insert(Protections::READ);
     }
 
-    if flags.contains(twizzler_runtime_api::MapFlags::WRITE) {
+    if flags.contains(MapFlags::WRITE) {
         prot.insert(Protections::WRITE);
     }
     prot
@@ -62,8 +66,7 @@ fn into_protections(flags: twizzler_runtime_api::MapFlags) -> Protections {
 
 impl Slot {
     fn new(id: ObjID, prot: Protections) -> Result<Self, ObjectInitError> {
-        let runtime = twizzler_runtime_api::get_runtime();
-        let rh = runtime.map_object(id, into_map_flags(prot))?;
+        let rh = twizzler_rt_abi::object::twz_rt_map_object(id, into_map_flags(prot))?;
         Ok(Self {
             id,
             prot,
@@ -73,8 +76,8 @@ impl Slot {
 
     pub fn new_from_handle(handle: ObjectHandle) -> Result<Self, ObjectInitError> {
         Ok(Self {
-            id: handle.id,
-            prot: into_protections(handle.flags),
+            id: handle.id(),
+            prot: into_protections(handle.map_flags()),
             runtime_handle: handle,
         })
     }
@@ -104,7 +107,7 @@ impl Slot {
 
     /// Get the vaddr of this slot's object's null page.
     pub fn vaddr_null(&self) -> usize {
-        self.runtime_handle.start as usize
+        self.runtime_handle.start() as usize
         //self.runtime_handle.base.expose_addr()
     }
 

@@ -2,9 +2,10 @@ use alloc::sync::Arc;
 
 use twizzler_abi::{
     aux::{KernelInitInfo, KernelInitName},
-    object::Protections,
+    object::{Protections, MAX_SIZE},
+    slot::RESERVED_STACK,
 };
-use twizzler_runtime_api::AuxEntry;
+use twizzler_rt_abi::core::{InitInfoPtrs, MinimalInitInfo, RuntimeInfo, RUNTIME_INIT_MIN};
 use xmas_elf::program::SegmentData;
 
 use crate::{
@@ -33,8 +34,11 @@ fn create_name_object() -> ObjectRef {
 }
 
 pub extern "C" fn user_init() {
+    // Reserve a big stack size
+    const RTINFO_OFFSET: usize = 0x300000;
+    const STACKTOP_OFFSET: usize = 0x200000;
     /* We need this scope to drop everything before we jump to user */
-    let (aux_start, entry) = {
+    let (rtinfo_start, entry) = {
         let vm = current_memory_context().unwrap();
         let boot_objects = get_boot_objects();
 
@@ -70,7 +74,15 @@ pub extern "C" fn user_init() {
             Protections::READ,
         )
         .unwrap();
+
         let init_obj = boot_objects.init.as_ref().expect("no init found");
+        crate::operations::map_object_into_context(
+            twizzler_abi::slot::RESERVED_IMAGE,
+            init_obj.clone(),
+            vm.clone(),
+            Protections::READ,
+        )
+        .unwrap();
         let obj1_data = crate::operations::read_object(init_obj);
         let elf = xmas_elf::ElfFile::new(&obj1_data).unwrap();
         let mut phinfo = None;
@@ -95,29 +107,42 @@ pub extern "C" fn user_init() {
             }
         }
 
-        fn append_aux(aux: *mut AuxEntry, entry: AuxEntry) -> *mut AuxEntry {
-            unsafe {
-                *aux = entry;
-                aux.add(1)
-            }
+        let rtinfo_start = MAX_SIZE * RESERVED_STACK + RTINFO_OFFSET;
+        let rtinfo_start = rtinfo_start as *mut RuntimeInfo;
+        let min_start = MAX_SIZE * RESERVED_STACK
+            + RTINFO_OFFSET
+            + core::cmp::max(
+                core::mem::size_of::<RuntimeInfo>(),
+                core::mem::align_of::<MinimalInitInfo>(),
+            );
+        let min_start = min_start as *mut MinimalInitInfo;
+
+        let (phdrs, nr_phdrs) = phinfo
+            .map(|ph| {
+                (
+                    ph.virtual_addr(),
+                    ph.mem_size() as usize / elf.header.pt2.ph_entry_size() as usize,
+                )
+            })
+            .unwrap_or((0, 0));
+        let min_info = MinimalInitInfo {
+            args: core::ptr::null_mut(),
+            argc: 0,
+            envp: core::ptr::null_mut(),
+            phdrs: phdrs as *mut core::ffi::c_void,
+            nr_phdrs,
+        };
+
+        let rt_info = RuntimeInfo {
+            flags: 0,
+            kind: RUNTIME_INIT_MIN,
+            init_info: InitInfoPtrs { min: min_start },
+        };
+
+        unsafe {
+            min_start.write(min_info);
+            rtinfo_start.write(rt_info);
         }
-
-        let aux_start: u64 = (1 << 30) * 2 + 0x300000;
-        let aux_start = aux_start as *mut AuxEntry;
-        let mut aux = aux_start;
-
-        if let Some(phinfo) = phinfo {
-            aux = append_aux(
-                aux,
-                AuxEntry::ProgramHeaders(
-                    phinfo.virtual_addr(),
-                    phinfo.mem_size() as usize / elf.header.pt2.ph_entry_size() as usize,
-                ),
-            )
-        }
-
-        aux = append_aux(aux, AuxEntry::ExecId(init_obj.id()));
-        append_aux(aux, AuxEntry::Null);
 
         // remove permission mappings from text segment
         let page_tree = obj_text.lock_page_tree();
@@ -130,14 +155,14 @@ pub extern "C" fn user_init() {
             );
         }
 
-        (aux_start, elf.header.pt2.entry_point())
+        (rtinfo_start, elf.header.pt2.entry_point())
     };
 
     unsafe {
         crate::arch::jump_to_user(
             VirtAddr::new(entry).unwrap(),
-            VirtAddr::new((1 << 30) * 2 + 0x200000).unwrap(),
-            aux_start as u64,
+            VirtAddr::new((MAX_SIZE * RESERVED_STACK + STACKTOP_OFFSET) as u64).unwrap(),
+            rtinfo_start as u64,
         );
     }
 }

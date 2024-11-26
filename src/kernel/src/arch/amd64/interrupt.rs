@@ -13,7 +13,7 @@ use super::{
     thread::{Registers, UpcallAble},
 };
 use crate::{
-    arch::amd64::apic::get_lapic,
+    arch::amd64::apic::try_get_lapic,
     interrupt::{Destination, DynamicInterrupt},
     memory::{context::virtmem::PageFaultFlags, VirtAddr},
     processor::current_processor,
@@ -197,10 +197,10 @@ unsafe extern "C" fn common_handler_entry(
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn kernel_interrupt() {
-    core::arch::asm!("mov qword ptr [rsp - 8], 0", "sub rsp, 8", "xor rdx, rdx", 
+    core::arch::naked_asm!("mov qword ptr [rsp - 8], 0", "sub rsp, 8", "xor rdx, rdx", 
         "xor rcx, rcx",
         "cld",
-        "call {common}", "add rsp, 8", "jmp return_from_interrupt", common = sym common_handler_entry, options(noreturn));
+        "call {common}", "add rsp, 8", "jmp return_from_interrupt", common = sym common_handler_entry);
 }
 
 #[allow(clippy::missing_safety_doc)]
@@ -208,7 +208,7 @@ pub unsafe extern "C" fn kernel_interrupt() {
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn user_interrupt() {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         "swapgs",
         "lfence",
         "mov rcx, gs:8",
@@ -219,14 +219,14 @@ pub unsafe extern "C" fn user_interrupt() {
         "add rsp, 8",
         "swapgs",
         "lfence",
-        "jmp return_from_interrupt", common = sym common_handler_entry, options(noreturn));
+        "jmp return_from_interrupt", common = sym common_handler_entry);
 }
 
 #[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn return_from_interrupt() -> ! {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         "pop r15",
         "pop r14",
         "pop r13",
@@ -244,7 +244,6 @@ pub unsafe extern "C" fn return_from_interrupt() -> ! {
         "pop rax",
         "add rsp, 8",
         "iretq",
-        options(noreturn)
     );
 }
 
@@ -262,7 +261,7 @@ macro_rules! interrupt {
         #[naked]
         #[allow(named_asm_labels)]
         unsafe extern "C" fn $name() {
-            core::arch::asm!(
+            core::arch::naked_asm!(
                 "mov qword ptr [rsp - 8], 0",
                 "sub rsp, 8",
                 "push rax",
@@ -285,7 +284,6 @@ macro_rules! interrupt {
                 concat!("mov rsi, ", $num),
                 "jz kernel_interrupt",
                 "jmp user_interrupt",
-                options(noreturn)
             )
         }
     };
@@ -295,7 +293,7 @@ macro_rules! interrupt_err {
         #[naked]
         #[allow(named_asm_labels)]
         unsafe extern "C" fn $name() {
-            core::arch::asm!(
+            core::arch::naked_asm!(
                 "push rax",
                 "push rbx",
                 "push rcx",
@@ -316,7 +314,6 @@ macro_rules! interrupt_err {
                 concat!("mov rsi, ", $num),
                 "jz kernel_interrupt",
                 "jmp user_interrupt",
-                options(noreturn)
             )
         }
     };
@@ -467,7 +464,13 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         );
     }
 
-    get_lapic().eoi();
+    let Some(lapic) = try_get_lapic() else {
+        panic!(
+            "got interrupt before initializing APIC: {}, {:#?}",
+            number, ctx
+        );
+    };
+    lapic.eoi();
     match number as u32 {
         14 => {
             let cr2 = unsafe { x86::controlregs::cr2() };
