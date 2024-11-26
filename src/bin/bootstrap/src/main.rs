@@ -73,7 +73,6 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
         .add_compartment("monitor", NewCompartmentFlags::EXPORT_GATES)
         .unwrap();
 
-    info!("==> {}", monitor_comp_id);
     let monitor_id = ctx
         .load_library_in_compartment(monitor_comp_id, unlib, true)
         .unwrap()[0]

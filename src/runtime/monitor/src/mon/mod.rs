@@ -258,7 +258,7 @@ impl Monitor {
         cmd: MonitorCompControlCmd,
     ) -> Option<i32> {
         let src = info.source_context()?;
-        tracing::trace!(
+        tracing::debug!(
             "compartment ctrl from: {:?}, thread = {:?}: {:?}",
             src,
             info.thread_id(),

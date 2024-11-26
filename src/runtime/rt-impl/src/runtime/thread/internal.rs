@@ -79,7 +79,7 @@ impl Drop for InternalThread {
             // Args is allocated by a box.
             let _args = Box::from_raw(self.args_box as *mut ThreadSpawnArgs);
             drop(_args);
-            tracing::warn!("TODO: drop TLS");
+            tracing::debug!("TODO: drop TLS");
         }
     }
 }

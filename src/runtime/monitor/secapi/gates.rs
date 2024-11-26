@@ -195,6 +195,21 @@ impl Display for LoadCompartmentError {
     not(feature = "secgate-impl"),
     secgate::secure_gate(options(info, api))
 )]
+pub fn monitor_rt_compartment_wait(
+    info: &secgate::GateCallInfo,
+    desc: Option<Descriptor>,
+    flags: u64,
+) -> u64 {
+    let monitor = crate::mon::get_monitor();
+    let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
+    monitor.compartment_wait(caller, desc, flags)
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
 pub fn monitor_rt_drop_compartment_handle(info: &secgate::GateCallInfo, desc: Descriptor) {
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);

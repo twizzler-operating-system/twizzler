@@ -245,6 +245,20 @@ impl super::Monitor {
         )
     }
 
+    pub fn compartment_wait(&self, caller: ObjID, desc: Option<Descriptor>, flags: u64) -> u64 {
+        let Some(instance) = ({
+            let comphandles = self._compartment_handles.write(ThreadKey::get().unwrap());
+            let comp_id = desc
+                .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
+                .unwrap_or(Some(caller));
+            comp_id
+        }) else {
+            return 0;
+        };
+        self.wait_for_compartment_state_change(instance, flags);
+        self.load_compartment_flags(instance)
+    }
+
     /// Open a handle to the n'th dependency compartment of a given compartment.
     pub fn get_compartment_deps(
         &self,
@@ -287,7 +301,6 @@ impl super::Monitor {
         let compname = split.next().ok_or(LoadCompartmentError::Unknown)?;
         let libname = split.next().ok_or(LoadCompartmentError::Unknown)?;
         let root = UnloadedLibrary::new(libname);
-        tracing::info!("A");
 
         // parse args
         let args_bytes = arg_bytes.split_inclusive(|b| *b == 0);

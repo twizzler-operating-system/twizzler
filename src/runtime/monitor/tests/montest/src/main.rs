@@ -11,7 +11,6 @@ extern crate twizzler_runtime;
 mod montest_lib {
     #[link(name = "montest_lib")]
     extern "C" {}
-    use secgate::GateCallInfo;
     #[secgate::secure_gate(options(info, api))]
     pub fn test_was_ctor_run(info: &GateCallInfo) -> bool {}
 

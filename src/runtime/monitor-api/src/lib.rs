@@ -475,6 +475,14 @@ impl CompartmentHandle {
     pub fn libs(&self) -> LibraryIter<'_> {
         LibraryIter::new(self)
     }
+
+    pub fn wait(&self, flags: CompartmentFlags) -> CompartmentFlags {
+        CompartmentFlags::from_bits_truncate(
+            gates::monitor_rt_compartment_wait(self.desc(), flags.bits())
+                .ok()
+                .unwrap_or(0),
+        )
+    }
 }
 
 /// An iterator over libraries in a compartment.
@@ -534,10 +542,18 @@ bitflags::bitflags! {
     /// Compartment state flags.
     #[derive(Clone, Debug, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
     pub struct CompartmentFlags : u64 {
-        /// Compartment is ready (libraries relocated and constructors run).
+        /// Compartment is ready (loaded, reloacated, runtime started and ctors run).
         const READY = 0x1;
-        /// The main thread has exited.
-        const EXITED = 0x2;
+        /// Compartment is a binary, not a library.
+        const IS_BINARY = 0x2;
+        /// Compartment runtime thread may exit.
+        const THREAD_CAN_EXIT = 0x4;
+        /// Compartment thread has been started once.
+        const STARTED = 0x8;
+        /// Compartment destructors have run.
+        const DESTRUCTED = 0x10;
+        /// Compartment thread has exited.
+        const EXITED = 0x20;
     }
 }
 

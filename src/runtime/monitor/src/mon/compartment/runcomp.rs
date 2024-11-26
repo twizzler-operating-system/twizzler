@@ -1,6 +1,5 @@
 use std::{
     alloc::Layout,
-    borrow::Cow,
     collections::HashMap,
     ffi::{CStr, CString},
     ptr::NonNull,
@@ -8,7 +7,7 @@ use std::{
 };
 
 use dynlink::{compartment::CompartmentId, context::Context};
-use monitor_api::{RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo};
+use monitor_api::{CompartmentFlags, RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo};
 use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::syscall::{
@@ -26,17 +25,17 @@ use crate::mon::{
 };
 
 /// Compartment is ready (loaded, reloacated, runtime started and ctors run).
-pub const COMP_READY: u64 = 0x1;
+pub const COMP_READY: u64 = CompartmentFlags::READY.bits();
 /// Compartment is a binary, not a library.
-pub const COMP_IS_BINARY: u64 = 0x2;
+pub const COMP_IS_BINARY: u64 = CompartmentFlags::IS_BINARY.bits();
 /// Compartment runtime thread may exit.
-pub const COMP_THREAD_CAN_EXIT: u64 = 0x4;
+pub const COMP_THREAD_CAN_EXIT: u64 = CompartmentFlags::THREAD_CAN_EXIT.bits();
 /// Compartment thread has been started once.
-pub const COMP_STARTED: u64 = 0x8;
+pub const COMP_STARTED: u64 = CompartmentFlags::STARTED.bits();
 /// Compartment destructors have run.
-pub const COMP_DESTRUCTED: u64 = 0x10;
+pub const COMP_DESTRUCTED: u64 = CompartmentFlags::DESTRUCTED.bits();
 /// Compartment thread has exited.
-pub const COMP_EXITED: u64 = 0x20;
+pub const COMP_EXITED: u64 = CompartmentFlags::EXITED.bits();
 
 /// A runnable or running compartment.
 pub struct RunComp {

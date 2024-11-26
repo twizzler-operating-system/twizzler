@@ -313,6 +313,8 @@ fn maybe_build_tests_static<'a>(
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
 
+// Once we merge the runtimes fully and switch to using the dynamic runtime as default,
+// we can merge a lot of this test infrastructure.
 fn maybe_build_tests_dynamic<'a>(
     workspace: &'a Workspace,
     build_config: &crate::BuildConfig,

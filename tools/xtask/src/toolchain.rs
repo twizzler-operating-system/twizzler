@@ -289,7 +289,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 pub fn set_dynamic() {
     std::env::set_var(
         "RUSTFLAGS",
-        "-C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -Z macro-backtrace",
+        "-C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined",
     );
     std::env::set_var("CARGO_TARGET_DIR", "target/dynamic");
 }

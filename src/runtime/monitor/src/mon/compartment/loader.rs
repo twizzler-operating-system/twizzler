@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashSet, ffi::CStr, ptr::null_mut};
+use std::{collections::HashSet, ffi::CStr, ptr::null_mut};
 
 use dynlink::{
     compartment::CompartmentId,
