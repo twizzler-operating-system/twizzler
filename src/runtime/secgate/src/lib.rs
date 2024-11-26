@@ -5,8 +5,6 @@
 #![feature(auto_traits)]
 #![feature(negative_impls)]
 #![feature(linkage)]
-#![feature(core_intrinsics)]
-#![feature(const_option)]
 #![feature(maybe_uninit_as_bytes)]
 
 use core::ffi::CStr;

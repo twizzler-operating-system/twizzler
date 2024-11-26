@@ -72,7 +72,7 @@ pub(crate) static TLS_GEN_MGR: RwLock<TlsGenMgr> = RwLock::new(TlsGenMgr {
 });
 
 impl TlsGenMgr {
-    pub fn need_new_gen(&self, mygen: Option<u64>) -> bool {
+    pub fn _need_new_gen(&self, mygen: Option<u64>) -> bool {
         let cc = monitor_api::get_comp_config();
         let template = unsafe { cc.get_tls_template().as_ref().unwrap() };
         mygen.is_some_and(|mygen| mygen == template.gen)

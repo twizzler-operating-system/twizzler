@@ -52,9 +52,9 @@ fn mapflags_into_prot(flags: MapFlags) -> Protections {
 }
 
 extern "C-unwind" {
-    fn __monitor_get_slot() -> Option<usize>;
-    fn __monitor_get_pair() -> Option<(usize, usize)>;
-    fn __monitor_release_pair(pair: (usize, usize));
+    fn __monitor_get_slot() -> isize;
+    fn __monitor_get_pair(one: *mut usize, two: *mut usize) -> bool;
+    fn __monitor_release_pair(one: usize, two: usize);
     fn __monitor_release_slot(slot: usize);
 }
 
@@ -73,7 +73,10 @@ impl Space {
             Some(item) => item,
             None => {
                 // Not yet mapped, so allocate a slot and map it.
-                let slot = unsafe { __monitor_get_slot() }.ok_or(MapError::OutOfResources)?;
+                let slot = unsafe { __monitor_get_slot() }
+                    .try_into()
+                    .ok()
+                    .ok_or(MapError::OutOfResources)?;
 
                 let Ok(_) = sys_object_map(
                     None,
@@ -180,12 +183,14 @@ pub(crate) struct UnmapOnDrop {
 
 impl Drop for UnmapOnDrop {
     fn drop(&mut self) {
-        if sys_object_unmap(None, self.slot, UnmapFlags::empty()).is_ok() {
-            unsafe {
+        match sys_object_unmap(None, self.slot, UnmapFlags::empty()) {
+            Ok(_) => unsafe {
                 __monitor_release_slot(self.slot);
+            },
+            Err(_e) => {
+                // TODO: once the kernel-side works properly, uncomment this.
+                //tracing::warn!("failed to unmap slot {}: {}", self.slot, e);
             }
-        } else {
-            tracing::warn!("failed to unmap slot {}", self.slot);
         }
     }
 }
@@ -193,7 +198,7 @@ impl Drop for UnmapOnDrop {
 /// Map an object into the address space, without tracking it. This leaks the mapping, but is useful
 /// for bootstrapping. See the object mapping gate comments for more details.
 pub fn early_object_map(info: MapInfo) -> MappedObjectAddrs {
-    let slot = unsafe { __monitor_get_slot() }.unwrap();
+    let slot = unsafe { __monitor_get_slot() }.try_into().unwrap();
 
     sys_object_map(
         None,

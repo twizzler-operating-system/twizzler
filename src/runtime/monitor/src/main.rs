@@ -35,7 +35,7 @@ pub fn main() {
     // For early init, if something breaks, we really want to see everything...
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::INFO)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
@@ -98,7 +98,7 @@ fn monitor_init() -> miette::Result<()> {
         {
             let comp: CompartmentHandle =
                 CompartmentLoader::new("montest", test_name, NewCompartmentFlags::empty())
-                    .args(&["montest", "--nocapture"])
+                    .args(&["montest"])
                     .load()
                     .into_diagnostic()?;
             let mut eb = 0;

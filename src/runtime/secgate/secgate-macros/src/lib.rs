@@ -1,4 +1,3 @@
-#![feature(c_str_literals)]
 #![feature(iterator_try_collect)]
 #![feature(proc_macro_diagnostic)]
 // syn doesn't allow us to easily fix this.
@@ -167,12 +166,10 @@ fn handle_secure_gate(
 
     let Info {
         mod_name,
-        fn_name,
         internal_fn_name,
         ..
     } = names;
     tree.sig.ident = parse_quote!(#internal_fn_name);
-    //tree.vis = parse_quote!(pub(crate));
 
     if entry_only {
         Ok(quote::quote! {
@@ -280,7 +277,6 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
         internal_fn_name,
         arg_names: all_arg_names,
         has_info,
-        mod_name,
         ..
     } = names;
     call_point.sig.ident = entry_name.clone();

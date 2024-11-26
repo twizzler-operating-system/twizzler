@@ -69,10 +69,7 @@ macro_rules! check_ffi_type {
     };
 }
 
-use std::{
-    ffi::{c_void, CStr},
-    os::fd::RawFd,
-};
+use std::ffi::{c_void, CStr};
 
 use tracing::warn;
 // core.h
@@ -136,7 +133,7 @@ check_ffi_type!(twz_rt_cross_compartment_entry);
 pub unsafe extern "C-unwind" fn twz_rt_set_upcall_handler(
     handler: Option<unsafe extern "C-unwind" fn(frame: *mut c_void, data: *const c_void)>,
 ) {
-    set_upcall_handler(handler);
+    let _ = set_upcall_handler(handler);
 }
 check_ffi_type!(twz_rt_set_upcall_handler, _);
 
@@ -594,16 +591,8 @@ pub unsafe extern "C-unwind" fn free(ptr: *mut core::ffi::c_void) {
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn getenv(name: *const core::ffi::c_char) -> *const core::ffi::c_char {
-    let tp = dynlink::tls::get_current_thread_control_block::<()>();
-    twizzler_abi::klog_println!("GETENV: {:p}, tp={:p}", name, tp);
     let n = unsafe { CStr::from_ptr(name.cast()) };
-    warn!(
-        "called c:getenv with name = {:p}: `{:?}`: not yet implemented",
-        name, n
-    );
-    static ONE: &CStr = c"1";
-    core::ptr::null_mut()
-    //ONE.as_ptr().cast()
+    OUR_RUNTIME.cgetenv(n)
 }
 
 #[no_mangle]
@@ -651,8 +640,11 @@ pub unsafe extern "C-unwind" fn fprintf(
 }
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn __monitor_get_slot() -> Option<usize> {
-    OUR_RUNTIME.allocate_slot()
+pub unsafe extern "C-unwind" fn __monitor_get_slot() -> isize {
+    match OUR_RUNTIME.allocate_slot() {
+        Some(s) => s.try_into().unwrap_or(-1),
+        None => -1,
+    }
 }
 
 #[no_mangle]
@@ -661,13 +653,18 @@ pub unsafe extern "C-unwind" fn __monitor_release_slot(slot: usize) {
 }
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn __monitor_release_pair(slots: (usize, usize)) {
-    OUR_RUNTIME.release_pair(slots);
+pub unsafe extern "C-unwind" fn __monitor_release_pair(one: usize, two: usize) {
+    OUR_RUNTIME.release_pair((one, two));
 }
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn __monitor_get_slot_pair() -> Option<(usize, usize)> {
-    OUR_RUNTIME.allocate_pair()
+pub unsafe extern "C-unwind" fn __monitor_get_slot_pair(one: *mut usize, two: *mut usize) -> bool {
+    let Some((a, b)) = OUR_RUNTIME.allocate_pair() else {
+        return false;
+    };
+    one.write(a);
+    two.write(b);
+    true
 }
 
 #[no_mangle]
@@ -681,6 +678,6 @@ pub unsafe extern "C-unwind" fn __is_monitor_ready() -> bool {
 }
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn __is_monitor() -> Option<*mut c_void> {
-    OUR_RUNTIME.is_monitor()
+pub unsafe extern "C-unwind" fn __is_monitor() -> *mut c_void {
+    OUR_RUNTIME.is_monitor().unwrap_or(core::ptr::null_mut())
 }

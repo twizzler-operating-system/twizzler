@@ -42,7 +42,10 @@ macro_rules! preinit_println {
 
 #[track_caller]
 pub fn preinit_abort() -> ! {
-    unsafe { core::intrinsics::abort() }
+    #[allow(unused_unsafe)]
+    unsafe {
+        core::intrinsics::abort()
+    }
 }
 
 #[track_caller]

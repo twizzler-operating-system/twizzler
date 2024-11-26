@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ffi::CStr, io::BufRead};
+use std::{collections::HashMap, ffi::CStr};
 
 use dynlink::{
     compartment::CompartmentId,
@@ -291,7 +291,7 @@ impl super::Monitor {
 
         // parse args
         let args_bytes = arg_bytes.split_inclusive(|b| *b == 0);
-        let mut args = args_bytes
+        let args = args_bytes
             .map(CStr::from_bytes_with_nul)
             .try_collect::<Vec<_>>()
             .map_err(|_| LoadCompartmentError::Unknown)?;
@@ -299,7 +299,7 @@ impl super::Monitor {
 
         // parse env
         let envs_bytes = env_bytes.split_inclusive(|b| *b == 0);
-        let mut env = envs_bytes
+        let env = envs_bytes
             .map(CStr::from_bytes_with_nul)
             .try_collect::<Vec<_>>()
             .map_err(|_| LoadCompartmentError::Unknown)?;

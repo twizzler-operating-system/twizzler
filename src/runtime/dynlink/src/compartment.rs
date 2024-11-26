@@ -7,7 +7,6 @@ use std::{
 
 use petgraph::stable_graph::NodeIndex;
 use talc::{ErrOnOom, Talc};
-use tracing::info;
 
 use crate::{context::NewCompartmentFlags, engines::Backing, library::LibraryId, tls::TlsInfo};
 
@@ -87,6 +86,6 @@ impl Debug for Compartment {
 
 impl Drop for Compartment {
     fn drop(&mut self) {
-        info!("dynlink: drop compartment {:?}", self);
+        tracing::debug!("dynlink: drop compartment {:?}", self);
     }
 }

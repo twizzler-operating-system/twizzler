@@ -1,6 +1,6 @@
 //! Management of global context.
 
-use std::{collections::HashMap, fmt::Display, ops::Index};
+use std::{collections::HashMap, fmt::Display};
 
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use stable_vec::StableVec;

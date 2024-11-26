@@ -1,6 +1,10 @@
 //! Implements the core runtime functions.
 
-use std::{ffi::c_void, sync::OnceLock};
+use std::{
+    collections::BTreeMap,
+    ffi::{c_char, c_void, CStr, CString},
+    sync::{Mutex, OnceLock},
+};
 
 use dynlink::context::runtime::RuntimeInitInfo;
 use monitor_api::{RuntimeThreadControl, SharedCompConfig};
@@ -22,9 +26,6 @@ use crate::{
     preinit_println,
     runtime::RuntimeState,
 };
-
-#[thread_local]
-static TLS_TEST: usize = 3222;
 
 #[derive(Copy, Clone)]
 struct PtrToInfo(*mut c_void);
@@ -63,6 +64,22 @@ impl ReferenceRuntime {
             .map(|x| x.0 as *mut _ as *mut c_void)
     }
 
+    pub fn cgetenv(&self, name: &CStr) -> *const c_char {
+        // TODO: this approach is very simple, but it leaks if the environment changes a lot.
+        static ENVMAP: Mutex<BTreeMap<String, CString>> = Mutex::new(BTreeMap::new());
+        let Ok(name) = name.to_str() else {
+            return core::ptr::null();
+        };
+        let Ok(val) = std::env::var(name) else {
+            return core::ptr::null();
+        };
+        let mut envmap = ENVMAP.lock().unwrap();
+        envmap
+            .entry(val.to_string())
+            .or_insert_with(|| CString::new(val.to_string()).unwrap())
+            .as_ptr()
+    }
+
     pub fn runtime_entry(
         &self,
         rtinfo: *const RuntimeInfo,
@@ -79,7 +96,7 @@ impl ReferenceRuntime {
                         .as_ref()
                         .unwrap()
                 };
-                MON_RTINFO.set(Some(PtrToInfo(init_info as *const _ as *mut _)));
+                let _ = MON_RTINFO.set(Some(PtrToInfo(init_info as *const _ as *mut _)));
                 self.init_for_monitor(init_info);
             }
             RUNTIME_INIT_COMP => {
@@ -91,7 +108,7 @@ impl ReferenceRuntime {
                         .as_ref()
                         .unwrap()
                 };
-                MON_RTINFO.set(None);
+                let _ = MON_RTINFO.set(None);
                 self.init_for_compartment(init_info);
             }
             x => {
@@ -114,11 +131,10 @@ impl ReferenceRuntime {
         // TODO: control this with env vars
         tracing::subscriber::set_global_default(
             tracing_subscriber::fmt()
-                .with_max_level(Level::DEBUG)
+                .with_max_level(Level::INFO)
                 .finish(),
         )
         .unwrap();
-        preinit_println!("====== {}", TLS_TEST);
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
             None
