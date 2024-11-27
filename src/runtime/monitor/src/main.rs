@@ -3,6 +3,7 @@
 #![feature(hash_extract_if)]
 #![feature(new_zeroed_alloc)]
 #![feature(iterator_try_collect)]
+#![feature(linkage)]
 
 use std::time::Duration;
 
@@ -35,7 +36,7 @@ pub fn main() {
     // For early init, if something breaks, we really want to see everything...
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
@@ -114,6 +115,42 @@ fn monitor_init() -> miette::Result<()> {
         }
     }
     info!("monitor early init completed, starting init");
+
+    // Load and wait for tests to complete
+    let lbcomp: CompartmentHandle =
+        CompartmentLoader::new("logboi", "liblogboi_impl.so", NewCompartmentFlags::empty())
+            .args(&["logboi"])
+            .load()
+            .into_diagnostic()?;
+    let mut flags = lbcomp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = lbcomp.wait(flags);
+    }
+    info!("logboi ready");
+    std::mem::forget(lbcomp);
+
+    // Load and wait for tests to complete
+    let comp: CompartmentHandle =
+        CompartmentLoader::new("baz", "baz", NewCompartmentFlags::empty())
+            .args(&["baz"])
+            .load()
+            .into_diagnostic()?;
+    let mut flags = comp.info().flags;
+    while !flags.contains(CompartmentFlags::EXITED) {
+        flags = comp.wait(flags);
+    }
+    info!("running baz again");
+    // Load and wait for tests to complete
+    let comp: CompartmentHandle =
+        CompartmentLoader::new("baz", "baz", NewCompartmentFlags::empty())
+            .args(&["baz"])
+            .load()
+            .into_diagnostic()?;
+    let mut flags = comp.info().flags;
+    while !flags.contains(CompartmentFlags::EXITED) {
+        flags = comp.wait(flags);
+    }
+
     // TODO: start init...
 
     Ok(())

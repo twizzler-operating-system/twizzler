@@ -305,6 +305,9 @@ fn maybe_build_tests_static<'a>(
                 "twizzler-queue" => None,
                 "montest-lib" => None,
                 "montest" => None,
+                "logboi" => None,
+                "logboi-impl" => None,
+                "baz" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),

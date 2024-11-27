@@ -1,3 +1,5 @@
+#![feature(linkage)]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 extern crate secgate;

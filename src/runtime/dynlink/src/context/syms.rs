@@ -17,11 +17,12 @@ impl Context {
         name: &str,
         lookup_flags: LookupFlags,
     ) -> Result<RelocatedSymbol<'a>, DynlinkError> {
+        tracing::info!("lookup_symbol: {}", name);
         let allow_weak = lookup_flags.contains(LookupFlags::ALLOW_WEAK);
         let start_lib = self.get_library(start_id)?;
         // First try looking up within ourselves.
         if !lookup_flags.contains(LookupFlags::SKIP_SELF) {
-            if let Ok(sym) = start_lib.lookup_symbol(name, allow_weak) {
+            if let Ok(sym) = start_lib.lookup_symbol(name, allow_weak, false) {
                 return Ok(sym);
             }
         }
@@ -40,7 +41,7 @@ impl Context {
                             {
                                 let allow_weak =
                                     allow_weak && dep.in_same_compartment_as(start_lib);
-                                if let Ok(sym) = dep.lookup_symbol(name, allow_weak) {
+                                if let Ok(sym) = dep.lookup_symbol(name, allow_weak, true) {
                                     return Ok(sym);
                                 }
                             }
@@ -52,7 +53,7 @@ impl Context {
 
         // Fall back to global search.
         if !lookup_flags.contains(LookupFlags::SKIP_GLOBAL) {
-            trace!("falling back to global search for {}", name);
+            tracing::info!("falling back to global search for {}", name);
 
             let res = self.lookup_symbol_global(start_lib, name, lookup_flags);
             if res.is_ok() {
@@ -89,7 +90,7 @@ impl Context {
                     {
                         let allow_weak = lookup_flags.contains(LookupFlags::ALLOW_WEAK)
                             && dep.in_same_compartment_as(start_lib);
-                        if let Ok(sym) = dep.lookup_symbol(name, allow_weak) {
+                        if let Ok(sym) = dep.lookup_symbol(name, allow_weak, true) {
                             return Ok(sym);
                         }
                     }
