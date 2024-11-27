@@ -236,7 +236,7 @@ impl Library {
     ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
-        tracing::info!("lookup {} in {}", name, self.name);
+        tracing::trace!("lookup {} in {}", name, self.name);
 
         /*
         if self.is_relocated() {
@@ -350,7 +350,6 @@ impl Library {
         let ret = self.do_lookup_symbol(&name, allow_weak);
         if allow_prefix && ret.is_err() && !name.starts_with("__TWIZZLER_SECURE_GATE_") {
             let name = format!("__TWIZZLER_SECURE_GATE_{}", name);
-            tracing::info!("trying with prefix: {}", name);
             if let Ok(o) = self.do_lookup_symbol(&name, allow_weak) {
                 return Ok(o);
             }

@@ -117,11 +117,14 @@ fn monitor_init() -> miette::Result<()> {
     info!("monitor early init completed, starting init");
 
     // Load and wait for tests to complete
-    let lbcomp: CompartmentHandle =
-        CompartmentLoader::new("logboi", "liblogboi_impl.so", NewCompartmentFlags::empty())
-            .args(&["logboi"])
-            .load()
-            .into_diagnostic()?;
+    let lbcomp: CompartmentHandle = CompartmentLoader::new(
+        "logboi",
+        "liblogboi_impl.so",
+        NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(&["logboi"])
+    .load()
+    .into_diagnostic()?;
     let mut flags = lbcomp.info().flags;
     while !flags.contains(CompartmentFlags::READY) {
         flags = lbcomp.wait(flags);
