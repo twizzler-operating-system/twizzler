@@ -9,8 +9,9 @@ edition = "2021"
 twizzler-net = { path = "../../lib/twizzler-net", features = ["manager"] }
 twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-async = { path = "../../lib/twizzler-async" }
-twizzler-abi = { path = "../../lib/twizzler-abi", features = ["runtime"] }
+twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-queue = { path = "../../lib/twizzler-queue" }
+twizzler-minruntime = { path = "../../runtime/minruntime" }
 lazy_static = "1.4.0"
 async-trait = "0.1.52"
 byteorder = "1.4.3"

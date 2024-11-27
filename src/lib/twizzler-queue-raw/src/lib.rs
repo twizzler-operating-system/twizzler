@@ -589,6 +589,7 @@ mod tests {
     use crate::multi_receive;
     use crate::{QueueEntry, QueueError, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags};
 
+    extern crate twizzler_minruntime;
     fn wait(x: &AtomicU64, v: u64) {
         // println!("wait");
         while x.load(Ordering::SeqCst) == v {

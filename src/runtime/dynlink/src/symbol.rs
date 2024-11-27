@@ -43,5 +43,7 @@ bitflags::bitflags! {
         const SKIP_GLOBAL = 4;
         /// Allow any symbols, not just secgates.
         const SKIP_SECGATE_CHECK = 8;
+        /// Allow lookup to include weak symbols.
+        const ALLOW_WEAK = 0x10;
     }
 }

@@ -1,5 +1,5 @@
 use twizzler_abi::{object::MAX_SIZE, upcall::UpcallFrame};
-use twizzler_runtime_api::ObjID;
+use twizzler_rt_abi::object::ObjID;
 
 use crate::mon::{
     space::MapHandle,

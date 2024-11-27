@@ -55,6 +55,7 @@ impl HandleData {
 pub type Handle = NmHandleManager<HandleData>;
 pub type HandleRef = Arc<Handle>;
 
+extern crate twizzler_minruntime;
 fn main() {
     println!("Hello from netmgr");
 

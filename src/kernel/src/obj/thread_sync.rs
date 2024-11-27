@@ -1,6 +1,6 @@
 use alloc::collections::BTreeMap;
 
-use twizzler_abi::syscall::ThreadSyncOp;
+use twizzler_abi::syscall::{ThreadSyncFlags, ThreadSyncOp};
 
 use super::Object;
 use crate::thread::{current_thread_ref, ThreadRef};
@@ -89,12 +89,13 @@ impl Object {
         op: ThreadSyncOp,
         val: u64,
         first_sleep: bool,
+        flags: ThreadSyncFlags,
     ) -> bool {
         let thread = current_thread_ref().unwrap();
         let mut sleep_info = self.sleep_info.lock();
 
         let cur = unsafe { self.read_atomic_u64(offset) };
-        let res = op.check(cur, val);
+        let res = op.check(cur, val, flags);
         if res {
             if first_sleep {
                 thread.set_sync_sleep();
@@ -110,12 +111,13 @@ impl Object {
         op: ThreadSyncOp,
         val: u32,
         first_sleep: bool,
+        flags: ThreadSyncFlags,
     ) -> bool {
         let thread = current_thread_ref().unwrap();
         let mut sleep_info = self.sleep_info.lock();
 
         let cur = unsafe { self.read_atomic_u32(offset) };
-        let res = op.check(cur, val);
+        let res = op.check(cur, val, flags);
         if res {
             if first_sleep {
                 thread.set_sync_sleep();

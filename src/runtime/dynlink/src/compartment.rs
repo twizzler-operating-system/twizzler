@@ -7,8 +7,9 @@ use std::{
 
 use petgraph::stable_graph::NodeIndex;
 use talc::{ErrOnOom, Talc};
+use tracing::info;
 
-use crate::{engines::Backing, library::LibraryId, tls::TlsInfo};
+use crate::{context::NewCompartmentFlags, engines::Backing, library::LibraryId, tls::TlsInfo};
 
 mod tls;
 
@@ -17,6 +18,7 @@ mod tls;
 pub struct Compartment {
     pub name: String,
     pub id: CompartmentId,
+    pub(crate) new_comp_flags: NewCompartmentFlags,
     // Library names are per-compartment.
     pub(crate) library_names: HashMap<String, NodeIndex>,
     // We maintain an allocator, so we can alloc data within the compartment.
@@ -48,10 +50,15 @@ impl CompartmentId {
 
 pub const MONITOR_COMPARTMENT_ID: CompartmentId = CompartmentId(0);
 impl Compartment {
-    pub(crate) fn new(name: String, id: CompartmentId) -> Self {
+    pub(crate) fn new(
+        name: String,
+        id: CompartmentId,
+        new_comp_flags: NewCompartmentFlags,
+    ) -> Self {
         Self {
             name,
             id,
+            new_comp_flags,
             library_names: HashMap::new(),
             allocator: Talc::new(ErrOnOom),
             alloc_objects: vec![],
@@ -75,5 +82,11 @@ impl core::fmt::Display for Compartment {
 impl Debug for Compartment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Compartment[{}]", self.name)
+    }
+}
+
+impl Drop for Compartment {
+    fn drop(&mut self) {
+        info!("dynlink: drop compartment {:?}", self);
     }
 }

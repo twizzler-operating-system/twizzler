@@ -9,7 +9,8 @@ edition = "2021"
 twizzler-net = { path = "../../lib/twizzler-net" }
 twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-async = { path = "../../lib/twizzler-async" }
-twizzler-abi = { path = "../../lib/twizzler-abi", features = ["runtime"] }
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-minruntime = { path = "../../runtime/minruntime" }
 byteorder = "1.4.3"
 [package.metadata]
 twizzler-build = "static"

@@ -65,6 +65,8 @@ impl From<DynlinkErrorKind> for DynlinkError {
 
 #[derive(Debug, Error, Diagnostic)]
 pub enum DynlinkErrorKind {
+    #[error("failed to load compartment {compartment}")]
+    CompartmentLoadFail { compartment: String },
     #[error("failed to load library {library}")]
     LibraryLoadFail { library: UnloadedLibrary },
     #[error("name not found: {name}")]

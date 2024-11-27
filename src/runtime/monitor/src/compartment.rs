@@ -13,7 +13,7 @@ use twizzler_abi::{
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_object::ObjID;
-use twizzler_runtime_api::{LibraryId, MapFlags, ObjectHandle};
+use twizzler_rt_abi::{debug::LoadedImageId, object::MapFlags, object::ObjectHandle};
 use twz_rt::RuntimeThreadControl;
 
 use crate::gates::{CompartmentInfo, LoadCompartmentError};

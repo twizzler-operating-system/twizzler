@@ -2,7 +2,7 @@ pub mod twizzler;
 
 use elf::{endian::NativeEndian, ParseError};
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_runtime_api::ObjectHandle;
+use twizzler_rt_abi::object::{self, ObjectHandle};
 
 use crate::{compartment::CompartmentId, library::UnloadedLibrary, DynlinkError};
 
@@ -47,11 +47,11 @@ bitflags::bitflags! {
 /// for treating Twizzler objects as object files.
 #[derive(Clone)]
 pub struct Backing {
-    obj: twizzler_runtime_api::ObjectHandle,
+    obj: object::ObjectHandle,
 }
 
 impl Backing {
-    pub fn new(inner: twizzler_runtime_api::ObjectHandle) -> Self {
+    pub fn new(inner: ObjectHandle) -> Self {
         Self { obj: inner }
     }
 }
@@ -59,7 +59,7 @@ impl Backing {
 impl Backing {
     pub(crate) fn data(&self) -> (*mut u8, usize) {
         (
-            unsafe { self.obj.start.add(NULLPAGE_SIZE) },
+            unsafe { self.obj.start().add(NULLPAGE_SIZE) },
             // one null-page, one meta-page
             MAX_SIZE - NULLPAGE_SIZE * 2,
         )
@@ -71,7 +71,7 @@ impl Backing {
     }
 
     pub(crate) fn load_addr(&self) -> usize {
-        self.obj.start as usize
+        self.obj.start() as usize
     }
 
     pub(crate) fn slice(&self) -> &[u8] {

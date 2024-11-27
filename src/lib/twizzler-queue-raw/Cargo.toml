@@ -7,8 +7,11 @@ edition = "2021"
 
 [dependencies]
 bitflags = "2.4.1"
-twizzler-abi = {path = "../twizzler-abi", version = "*"}
+twizzler-abi = { path = "../twizzler-abi", version = "*" }
 
 [features]
 std = []
 default = ["std"]
+
+[dev-dependencies]
+twizzler-minruntime = { path = "../../runtime/minruntime" }

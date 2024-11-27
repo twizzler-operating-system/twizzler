@@ -8,7 +8,7 @@ use std::{
 };
 
 use tracing::{error, trace};
-use twizzler_runtime_api::TlsIndex;
+use twizzler_rt_abi::thread::TlsIndex;
 
 use crate::{
     arch::MINIMUM_TLS_ALIGNMENT, compartment::Compartment, DynlinkError, DynlinkErrorKind,
@@ -193,10 +193,10 @@ impl<T> Tcb<T> {
         }
     }
 
-    pub fn get_addr(&self, index: &TlsIndex) -> Option<*const u8> {
+    pub fn get_addr(&self, index: &TlsIndex) -> Option<*mut u8> {
         unsafe {
             let slice = core::slice::from_raw_parts(self.dtv, self.dtv_len);
-            Some((slice.get(index.mod_id)? + index.offset) as *const _)
+            Some((slice.get(index.mod_id)? + index.offset) as *mut _)
         }
     }
 }

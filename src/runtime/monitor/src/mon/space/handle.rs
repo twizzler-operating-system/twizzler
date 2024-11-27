@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use monitor_api::MappedObjectAddrs;
-use twizzler_abi::object::NULLPAGE_SIZE;
-use twizzler_runtime_api::ObjectHandle;
+use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_rt_abi::object::ObjectHandle;
 
 use super::MapInfo;
 use crate::mon::get_monitor;
@@ -40,11 +40,12 @@ impl MapHandleInner {
 
     pub unsafe fn object_handle(&self) -> ObjectHandle {
         ObjectHandle::new(
-            None,
             self.info.id,
+            core::ptr::null_mut(),
+            self.map.start as *mut _,
+            self.map.meta as *mut _,
             self.info.flags,
-            self.map.start as *mut u8,
-            self.map.meta as *mut u8,
+            MAX_SIZE - NULLPAGE_SIZE * 2,
         )
     }
 }

@@ -1,8 +1,7 @@
 #![feature(naked_functions)]
 #![feature(thread_local)]
-#![feature(c_str_literals)]
-#![feature(new_uninit)]
 #![feature(hash_extract_if)]
+#![feature(new_zeroed_alloc)]
 
 use dynlink::engines::Backing;
 use tracing::{debug, info, warn, Level};
@@ -12,11 +11,10 @@ use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
 };
 use twizzler_object::ObjID;
+use twizzler_rt_abi::object::MapFlags;
 use twz_rt::{set_upcall_handler, OUR_RUNTIME};
 
-mod compartment;
 mod init;
-mod object;
 pub mod secgate_test;
 mod upcall;
 
@@ -77,9 +75,7 @@ fn bootstrap_name_res(mut name: &str) -> Option<Backing> {
         name = "libstd.so";
     }
     let id = find_init_name(name)?;
-    let obj = twizzler_runtime_api::get_runtime()
-        .map_object(id, twizzler_runtime_api::MapFlags::READ)
-        .ok()?;
+    let obj = twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ).ok()?;
     Some(Backing::new(obj))
 }
 

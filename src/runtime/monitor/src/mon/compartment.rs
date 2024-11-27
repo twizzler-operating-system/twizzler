@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use happylock::ThreadKey;
 use secgate::util::Descriptor;
-use twizzler_runtime_api::ObjID;
+use twizzler_rt_abi::object::ObjID;
 
 use crate::{
     api::MONITOR_INSTANCE_ID,

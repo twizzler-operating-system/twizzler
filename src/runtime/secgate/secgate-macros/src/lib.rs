@@ -208,7 +208,7 @@ fn handle_secure_gate(
 
 fn get_entry_sig(tree: &ItemFn) -> Signature {
     let mut sig = tree.sig.clone();
-    sig.abi = parse_quote!( extern "C" );
+    sig.abi = parse_quote!( extern "C-unwind" );
     sig.inputs = Punctuated::new();
     sig.inputs
         .push_value(parse_quote!(info: *const secgate::GateCallInfo));
@@ -229,7 +229,7 @@ fn build_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStr
     call_point.sig.ident = names.trampoline_name.clone();
     call_point.sig.abi = Some(syn::Abi {
         extern_token: syn::token::Extern::default(),
-        name: Some(LitStr::new("C", proc_macro2::Span::mixed_site())),
+        name: Some(LitStr::new("C-unwind", proc_macro2::Span::mixed_site())),
     });
     let entry_sig = get_entry_sig(tree);
     call_point.sig.output = entry_sig.output;
@@ -239,9 +239,19 @@ fn build_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStr
     call_point.block = Box::new(parse2(quote::quote! {
         {
             #[cfg(target_arch = "x86_64")]
-            unsafe {core::arch::asm!("jmp {0}", sym #entry_name, options(noreturn))}
+            unsafe {core::arch::naked_asm!(
+                "push rbp",
+                "push 0",
+                "push 0",
+                "mov rbp, rsp",
+                "call {0}",
+                "pop rbp",
+                "pop rbp",
+                "pop rbp",
+                "ret",
+                sym #entry_name)}
             #[cfg(target_arch = "aarch64")]
-            unsafe {core::arch::asm!("b {0}", sym #entry_name, options(noreturn))}
+            unsafe {core::arch::naked_asm!("b {0}", sym #entry_name)}
         }
     })?);
 
@@ -300,6 +310,9 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
 
     call_point.block = Box::new(parse2(quote::quote! {
         {
+            if unsafe {(*info)}.source_context().is_some() {
+                secgate::runtime_preentry();
+            }
             #unpacked_args
 
             // Call the user-written implementation, catching unwinds.
@@ -369,8 +382,9 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
     call_point.block = Box::new(parse2(quote::quote! {
         {
             #args_tuple
+            let frame = secgate::frame();
             // Allocate stack space for args + ret. Args::with_alloca also inits the memory.
-            secgate::GateCallInfo::with_alloca(0.into(), 0.into(), |info| {
+            let ret = secgate::GateCallInfo::with_alloca(secgate::get_thread_id(), secgate::get_sctx_id(), |info| {
                 #mod_name::Args::with_alloca(tuple, |args| {
                     #mod_name::Ret::with_alloca(|ret| {
                         // Call the trampoline in the mod.
@@ -380,7 +394,9 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
                         ret.into_inner().unwrap_or(secgate::SecGateReturn::<_>::NoReturnValue)
                     })
                 })
-            })
+            });
+            secgate::restore_frame(frame);
+            ret
         }
     })?);
 
