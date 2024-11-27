@@ -93,7 +93,7 @@ impl Context {
                         let allow_weak = lookup_flags.contains(LookupFlags::ALLOW_WEAK)
                             && dep.in_same_compartment_as(start_lib);
                         // TODO: special flag for allow self gates.
-                        let try_prefix = (idx != start_lib.id().0 || idx.index() == 0)
+                        let try_prefix = (idx != start_lib.id().0 || dep.allows_self_gates())
                             && (dep.allows_gates() || dep.in_same_compartment_as(start_lib));
                         if let Ok(sym) = dep.lookup_symbol(name, allow_weak, try_prefix) {
                             return Ok(sym);

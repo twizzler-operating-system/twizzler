@@ -31,6 +31,16 @@ pub(crate) enum RelocState {
     Relocated,
 }
 
+#[derive(PartialEq, PartialOrd, Ord, Eq, Debug, Clone, Copy)]
+pub enum AllowedGates {
+    /// Gates are not exported
+    Private,
+    /// Gates are exported to other compartments only
+    Public,
+    /// Gates are exported to all compartments
+    PublicInclSelf,
+}
+
 #[repr(C)]
 /// An unloaded library. It's just a name, really.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
@@ -85,7 +95,7 @@ pub struct Library {
     pub full_obj: Backing,
     /// State of relocation.
     pub(crate) reloc_state: RelocState,
-    allows_gates: bool,
+    allowed_gates: AllowedGates,
 
     pub backings: Vec<Backing>,
 
@@ -109,7 +119,7 @@ impl Library {
         tls_id: Option<TlsModId>,
         ctors: CtorSet,
         secgate_info: SecgateInfo,
-        allows_gates: bool,
+        allowed_gates: AllowedGates,
     ) -> Self {
         Self {
             name,
@@ -122,11 +132,16 @@ impl Library {
             comp_id,
             comp_name,
             secgate_info,
-            allows_gates,
+            allowed_gates,
         }
     }
+
     pub fn allows_gates(&self) -> bool {
-        self.allows_gates
+        self.allowed_gates != AllowedGates::Private
+    }
+
+    pub fn allows_self_gates(&self) -> bool {
+        self.allowed_gates == AllowedGates::PublicInclSelf
     }
 
     pub fn is_binary(&self) -> bool {
