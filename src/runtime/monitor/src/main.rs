@@ -5,8 +5,6 @@
 #![feature(iterator_try_collect)]
 #![feature(linkage)]
 
-use std::time::Duration;
-
 use dynlink::context::NewCompartmentFlags;
 use miette::IntoDiagnostic;
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader};
@@ -36,7 +34,7 @@ pub fn main() {
     // For early init, if something breaks, we really want to see everything...
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::INFO)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .finish();
@@ -119,7 +117,7 @@ fn monitor_init() -> miette::Result<()> {
     // Load and wait for tests to complete
     let lbcomp: CompartmentHandle = CompartmentLoader::new(
         "logboi",
-        "liblogboi_impl.so",
+        "liblogboi_srv.so",
         NewCompartmentFlags::EXPORT_GATES,
     )
     .args(&["logboi"])
@@ -132,21 +130,22 @@ fn monitor_init() -> miette::Result<()> {
     info!("logboi ready");
     std::mem::forget(lbcomp);
 
+    info!("running logboi test");
     // Load and wait for tests to complete
     let comp: CompartmentHandle =
-        CompartmentLoader::new("baz", "baz", NewCompartmentFlags::empty())
-            .args(&["baz"])
+        CompartmentLoader::new("logboi-test", "logboi-test", NewCompartmentFlags::empty())
+            .args(&["logboi-test"])
             .load()
             .into_diagnostic()?;
     let mut flags = comp.info().flags;
     while !flags.contains(CompartmentFlags::EXITED) {
         flags = comp.wait(flags);
     }
-    info!("running baz again");
+    info!("running logboi test again");
     // Load and wait for tests to complete
     let comp: CompartmentHandle =
-        CompartmentLoader::new("baz", "baz", NewCompartmentFlags::empty())
-            .args(&["baz"])
+        CompartmentLoader::new("logboi-test", "logboi-test", NewCompartmentFlags::empty())
+            .args(&["logboi-test"])
             .load()
             .into_diagnostic()?;
     let mut flags = comp.info().flags;

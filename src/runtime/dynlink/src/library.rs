@@ -6,7 +6,6 @@ use elf::{
     abi::{DT_FLAGS_1, PT_PHDR, PT_TLS, STB_WEAK},
     endian::NativeEndian,
     segment::{Elf64_Phdr, ProgramHeader},
-    symbol::Symbol,
     ParseError,
 };
 use petgraph::stable_graph::NodeIndex;
@@ -289,12 +288,6 @@ impl Library {
                 .flatten()
             {
                 if !sym.is_undefined() {
-                    tracing::info!(
-                        "==> {}: {} {}",
-                        name,
-                        sym.st_bind() == STB_WEAK,
-                        self.is_relocated() && self.is_secgate(name)
-                    );
                     // TODO: proper weak symbol handling.
                     if sym.st_bind() != STB_WEAK
                         || allow_weak

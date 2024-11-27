@@ -306,8 +306,8 @@ fn maybe_build_tests_static<'a>(
                 "montest-lib" => None,
                 "montest" => None,
                 "logboi" => None,
-                "logboi-impl" => None,
-                "baz" => None,
+                "logboi-srv" => None,
+                "logboi-test" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),

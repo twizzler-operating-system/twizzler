@@ -8,12 +8,9 @@ use proc_macro::{Diagnostic, Level};
 use proc_macro2::{Ident, TokenStream};
 use quote::{quote, ToTokens};
 use syn::{
-    parse::{Parse, ParseBuffer},
-    parse2, parse_quote,
-    punctuated::Punctuated,
-    token::Pub,
-    Attribute, BareFnArg, Error, ForeignItemFn, ItemFn, LitStr, Path, ReturnType, Signature, Token,
-    Type, TypeBareFn, TypePath, Visibility,
+    parse2, parse_quote, punctuated::Punctuated, token::Pub, Attribute, BareFnArg, Error,
+    ForeignItemFn, ItemFn, LitStr, Path, ReturnType, Signature, Token, Type, TypeBareFn, TypePath,
+    Visibility,
 };
 
 #[proc_macro_attribute]
@@ -35,7 +32,7 @@ struct Info {
     pub fn_name: Ident,
     pub internal_fn_name: Ident,
     pub trampoline_name: Ident,
-    pub trampoline_name_with_underscores: Ident,
+    pub trampoline_name_without_prefix: Ident,
     pub entry_name: Ident,
     pub struct_name: Ident,
     pub entry_type_name: Ident,
@@ -62,7 +59,7 @@ fn build_names(
         mod_name: Ident::new(&format!("{}{}_mod", PREFIX, base), base.span()),
         struct_name: Ident::new(&format!("{}_info", base).to_uppercase(), base.span()),
         trampoline_name: Ident::new(&format!("__TWIZZLER_SECURE_GATE_{}", base), base.span()),
-        trampoline_name_with_underscores: Ident::new(&format!("{}", base), base.span()),
+        trampoline_name_without_prefix: Ident::new(&format!("{}", base), base.span()),
         entry_name: Ident::new(&format!("{}_entry", base), base.span()),
         internal_fn_name: Ident::new(&format!("{}_direct", base), base.span()),
         entry_type_name: Ident::new(&format!("{}_EntryType", base), base.span()),
@@ -303,7 +300,7 @@ fn build_extern_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::T
     let mut entry_sig = get_entry_sig(tree);
     // This will be in an extern block.
     entry_sig.abi = None;
-    entry_sig.ident = names.trampoline_name_with_underscores.clone();
+    entry_sig.ident = names.trampoline_name_without_prefix.clone();
 
     let mut ffn = ForeignItemFn {
         attrs: vec![],
@@ -325,7 +322,7 @@ fn build_extern_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::T
     ffn2.attrs.push(parse_quote!(#[link_name = #tn]));
     ffn2.attrs.push(parse_quote!(#[no_mangle]));
     ffn2.attrs.push(parse_quote!(#[linkage = "weak"]));
-    ffn2.sig.ident = names.trampoline_name_with_underscores.clone();
+    ffn2.sig.ident = names.trampoline_name_without_prefix.clone();
     Ok(quote::quote!(extern "C" {
         #ffn
     }))
@@ -414,8 +411,7 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
 
     let Info {
         mod_name,
-        trampoline_name,
-        trampoline_name_with_underscores,
+        trampoline_name_without_prefix,
         arg_names,
         has_info,
         ..
@@ -447,7 +443,7 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
                     #mod_name::Ret::with_alloca(|ret| {
                         // Call the trampoline in the mod.
                         unsafe {
-                            #mod_name::#trampoline_name_with_underscores(info as *const _, args as *const _, ret as *mut _);
+                            #mod_name::#trampoline_name_without_prefix(info as *const _, args as *const _, ret as *mut _);
                         }
                         ret.into_inner()
                     })

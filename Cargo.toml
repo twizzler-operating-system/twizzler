@@ -31,7 +31,10 @@ members = [
     "src/runtime/rt-impl",
     "src/runtime/minruntime",
     "src/abi/rt-abi",
-    "src/abi/types", "src/srv/logboi", "src/srv/logboi/logboi-impl", "src/bin/baz",
+    "src/abi/types",
+    "src/srv/logboi",
+    "src/srv/logboi/logboi-srv",
+    "src/srv/logboi/logboi-test",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -51,8 +54,8 @@ initrd = [
     "lib:montest-lib",
     "crate:mnemosyne",
     "crate:stdfs_demo",
-    "crate:baz",
-    "lib:logboi-impl",
+    "crate:logboi-test",
+    "lib:logboi-srv",
     #"third-party:hello-world-rs"
 ]
 

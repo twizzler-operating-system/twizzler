@@ -287,6 +287,8 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 }
 
 pub fn set_dynamic() {
+    // This is a bit of a cursed linker line, but it's needed to work around some limitations in
+    // rust's linkage support.
     std::env::set_var(
         "RUSTFLAGS",
         "-C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols",

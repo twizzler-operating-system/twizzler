@@ -5,22 +5,13 @@ use crate::library::Library;
 /// A (relocated) symbol. Contains information about the symbol itself, like value and size, along
 /// with a reference to the library that it comes from.
 pub struct RelocatedSymbol<'lib> {
-    sym: Option<elf::symbol::Symbol>,
-    sc: usize,
+    sym: elf::symbol::Symbol,
     pub(crate) lib: &'lib Library,
 }
 
 impl<'lib> RelocatedSymbol<'lib> {
     pub(crate) fn new(sym: elf::symbol::Symbol, lib: &'lib Library) -> Self {
-        Self {
-            sym: Some(sym),
-            lib,
-            sc: 0,
-        }
-    }
-
-    pub(crate) fn new_sc(sc: usize, lib: &'lib Library) -> Self {
-        Self { sym: None, lib, sc }
+        Self { sym, lib }
     }
 
     /// Returns the relocated address of the symbol, i.e. the value of the symbol added to the base
@@ -31,15 +22,12 @@ impl<'lib> RelocatedSymbol<'lib> {
 
     /// Returns the raw symbol value (unrelocated).
     pub fn raw_value(&self) -> u64 {
-        if self.sc > 0 {
-            return self.sc as u64;
-        }
-        self.sym.as_ref().map(|s| s.st_value).unwrap_or_default()
+        self.sym.st_value
     }
 
     /// Returns the symbol's size.
     pub fn size(&self) -> u64 {
-        self.sym.as_ref().map(|s| s.st_size).unwrap_or_default()
+        self.sym.st_size
     }
 }
 

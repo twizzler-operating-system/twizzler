@@ -418,8 +418,13 @@ impl Context {
 
                     let comp = self.get_compartment_mut(load_comp)?;
                     comp.library_names.insert(dep_unlib.name.clone(), idx);
+                    let allowed_gates = if comp.id == comp_id {
+                        AllowedGates::Private
+                    } else {
+                        AllowedGates::Public
+                    };
                     let mut recs = self
-                        .load_library(load_comp, dep_unlib.clone(), idx, AllowedGates::Private)
+                        .load_library(load_comp, dep_unlib.clone(), idx, allowed_gates)
                         .map_err(|e| {
                             DynlinkError::new_collect(
                                 DynlinkErrorKind::LibraryLoadFail {

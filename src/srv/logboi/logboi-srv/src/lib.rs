@@ -8,8 +8,7 @@ extern crate twizzler_runtime;
 static NRCALL: AtomicUsize = AtomicUsize::new(0);
 
 pub type Bar = u32;
-#[cfg_attr(feature = "api", secgate::secure_gate)]
-#[cfg_attr(not(feature = "api"), secgate::secure_gate(options(info, api)))]
+#[secgate::secure_gate]
 pub fn foo(bar: Bar) {
     println!(
         "FOO: {}, {}",
