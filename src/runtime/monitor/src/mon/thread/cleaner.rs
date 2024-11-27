@@ -13,7 +13,7 @@ use twizzler_abi::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
     ThreadSyncSleep, ThreadSyncWake,
 };
-use twizzler_runtime_api::ObjID;
+use twizzler_rt_abi::object::ObjID;
 
 use super::ManagedThread;
 use crate::mon::get_monitor;

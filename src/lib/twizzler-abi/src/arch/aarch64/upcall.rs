@@ -85,27 +85,3 @@ impl UpcallFrame {
         todo!()
     }
 }
-
-#[no_mangle]
-#[cfg(feature = "runtime")]
-pub(crate) unsafe extern "C" fn upcall_entry2(
-    frame: *mut UpcallFrame,
-    data: *const UpcallData,
-) -> ! {
-    crate::runtime::upcall::upcall_rust_entry(&*frame, &*data);
-    twizzler_rt_abi::core::twz_rt_abort();
-}
-
-#[cfg(feature = "runtime")]
-#[no_mangle]
-pub(crate) unsafe extern "C-unwind" fn upcall_entry(
-    frame: *mut UpcallFrame,
-    data: *const UpcallData,
-) -> ! {
-    core::arch::asm!(
-        "b upcall_entry2",
-        in("x0") frame,
-        in("x1") data,
-        options(noreturn)
-    );
-}

@@ -3,20 +3,25 @@
 use std::fmt::{Debug, Display};
 
 use elf::{
-    abi::{PT_PHDR, PT_TLS, STB_WEAK},
+    abi::{DT_FLAGS_1, PT_PHDR, PT_TLS, STB_WEAK},
+    dynamic::Dyn,
     endian::NativeEndian,
     segment::{Elf64_Phdr, ProgramHeader},
     ParseError,
 };
 use petgraph::stable_graph::NodeIndex;
 use secgate::RawSecGateInfo;
-use twizzler_runtime_api::AuxEntry;
+use twizzler_rt_abi::{
+    core::{CtorSet, RuntimeInfo},
+    debug::LoadedImageId,
+};
 
 use crate::{
     compartment::CompartmentId, engines::Backing, symbol::RelocatedSymbol, tls::TlsModId,
     DynlinkError, DynlinkErrorKind,
 };
 
+#[derive(PartialEq, PartialOrd, Ord, Eq, Debug, Clone, Copy)]
 pub(crate) enum RelocState {
     /// Relocation has not started.
     Unrelocated,
@@ -47,15 +52,15 @@ impl UnloadedLibrary {
 #[repr(transparent)]
 pub struct LibraryId(pub(crate) NodeIndex);
 
-impl From<twizzler_runtime_api::LibraryId> for LibraryId {
-    fn from(value: twizzler_runtime_api::LibraryId) -> Self {
-        LibraryId(NodeIndex::new(value.0))
+impl From<LoadedImageId> for LibraryId {
+    fn from(value: LoadedImageId) -> Self {
+        LibraryId(NodeIndex::new(value as usize))
     }
 }
 
-impl Into<twizzler_runtime_api::LibraryId> for LibraryId {
-    fn into(self) -> twizzler_runtime_api::LibraryId {
-        twizzler_runtime_api::LibraryId(self.0.index())
+impl Into<LoadedImageId> for LibraryId {
+    fn into(self) -> LoadedImageId {
+        self.0.index() as u32
     }
 }
 
@@ -80,6 +85,7 @@ pub struct Library {
     pub full_obj: Backing,
     /// State of relocation.
     pub(crate) reloc_state: RelocState,
+    allows_gates: bool,
 
     pub backings: Vec<Backing>,
 
@@ -87,7 +93,7 @@ pub struct Library {
     pub tls_id: Option<TlsModId>,
 
     /// Information about constructors.
-    pub(crate) ctors: CtorInfo,
+    pub(crate) ctors: CtorSet,
     pub(crate) secgate_info: SecgateInfo,
 }
 
@@ -101,8 +107,9 @@ impl Library {
         full_obj: Backing,
         backings: Vec<Backing>,
         tls_id: Option<TlsModId>,
-        ctors: CtorInfo,
+        ctors: CtorSet,
         secgate_info: SecgateInfo,
+        allows_gates: bool,
     ) -> Self {
         Self {
             name,
@@ -115,7 +122,32 @@ impl Library {
             comp_id,
             comp_name,
             secgate_info,
+            allows_gates,
         }
+    }
+    pub fn allows_gates(&self) -> bool {
+        self.allows_gates
+    }
+
+    pub fn is_binary(&self) -> bool {
+        let Some(dynamic) = self
+            .get_elf()
+            .ok()
+            .and_then(|elf| elf.dynamic().ok())
+            .flatten()
+        else {
+            return false;
+        };
+        let Some(flags) = dynamic.iter().find_map(|ent| {
+            if ent.d_tag == DT_FLAGS_1 {
+                Some(ent.d_val())
+            } else {
+                None
+            }
+        }) else {
+            return false;
+        };
+        flags & elf::abi::DF_1_PIE as u64 != 0
     }
 
     /// Get the ID for this library
@@ -163,7 +195,9 @@ impl Library {
     }
 
     /// Get a function pointer to this library's entry address, if one exists.
-    pub fn get_entry_address(&self) -> Result<extern "C" fn(*const AuxEntry) -> !, DynlinkError> {
+    pub fn get_entry_address(
+        &self,
+    ) -> Result<extern "C" fn(*const RuntimeInfo) -> !, DynlinkError> {
         let entry = self.get_elf()?.ehdr.e_entry;
         if entry == 0 {
             return Err(DynlinkErrorKind::NoEntryAddress {
@@ -172,7 +206,7 @@ impl Library {
             .into());
         }
         let entry: *const u8 = self.laddr(entry);
-        let ptr: extern "C" fn(*const AuxEntry) -> ! =
+        let ptr: extern "C" fn(*const RuntimeInfo) -> ! =
             unsafe { core::mem::transmute(entry as usize) };
         Ok(ptr)
     }
@@ -195,7 +229,11 @@ impl Library {
         }))
     }
 
-    pub(crate) fn lookup_symbol(&self, name: &str) -> Result<RelocatedSymbol<'_>, DynlinkError> {
+    pub(crate) fn lookup_symbol(
+        &self,
+        name: &str,
+        allow_weak: bool,
+    ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
 
@@ -221,10 +259,10 @@ impl Library {
             {
                 if !sym.is_undefined() {
                     // TODO: proper weak symbol handling.
-                    if sym.st_bind() != STB_WEAK {
+                    if sym.st_bind() != STB_WEAK || allow_weak {
                         return Ok(RelocatedSymbol::new(sym, self));
                     } else {
-                        tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
+                        tracing::debug!("lookup symbol {} skipping weak binding in {}", name, self);
                     }
                 } else {
                     tracing::info!("undefined symbol: {}", name);
@@ -275,7 +313,12 @@ impl Library {
     }
 
     pub(crate) fn is_local_or_secgate_from(&self, other: &Library, name: &str) -> bool {
-        other.comp_id == self.comp_id || self.is_secgate(name)
+        self.in_same_compartment_as(other)
+            || (self.reloc_state == RelocState::Relocated && self.is_secgate(name))
+    }
+
+    pub(crate) fn in_same_compartment_as(&self, other: &Library) -> bool {
+        other.comp_id == self.comp_id
     }
 
     fn is_secgate(&self, name: &str) -> bool {
@@ -306,6 +349,12 @@ impl Debug for Library {
     }
 }
 
+impl Drop for Library {
+    fn drop(&mut self) {
+        tracing::info!("dynlink: drop library: {:?}", self);
+    }
+}
+
 impl core::fmt::Display for Library {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}::{}", &self.comp_name, &self.name)
@@ -316,20 +365,6 @@ impl core::fmt::Display for UnloadedLibrary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}(unloaded)", &self.name)
     }
-}
-
-// TODO: get this from ABI headers.
-/// Information about constructors for a library.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct CtorInfo {
-    /// Legacy pointer to _init function for a library. Can be called with the C abi.
-    pub legacy_init: usize,
-    /// Pointer to start of the init array, which contains functions pointers that can be called by
-    /// the C abi.
-    pub init_array: usize,
-    /// Length of the init array.
-    pub init_array_len: usize,
 }
 
 #[derive(Debug, Clone, Default)]

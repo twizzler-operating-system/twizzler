@@ -291,7 +291,7 @@ pub fn set_dynamic() {
         "RUSTFLAGS",
         "-C prefer-dynamic=y -Z staticlib-prefer-dynamic=y",
     );
-    std::env::set_var("CARGO_TARGET_DIR", "target");
+    std::env::set_var("CARGO_TARGET_DIR", "target/dynamic");
 }
 
 pub fn set_static() {

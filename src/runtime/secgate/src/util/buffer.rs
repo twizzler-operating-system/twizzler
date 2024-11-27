@@ -1,5 +1,5 @@
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_runtime_api::ObjectHandle;
+use twizzler_rt_abi::object::ObjectHandle;
 
 /// A simple buffer to use for transferring bytes between compartments, using shared memory via
 /// objects underneath.
@@ -10,18 +10,18 @@ pub struct SimpleBuffer {
 impl core::fmt::Debug for SimpleBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SimpleBuffer")
-            .field("id", &self.handle.id)
+            .field("id", &self.handle.id())
             .finish_non_exhaustive()
     }
 }
 
 impl SimpleBuffer {
     fn ptr_to_base(&self) -> *const u8 {
-        unsafe { self.handle.start.add(NULLPAGE_SIZE) }
+        unsafe { self.handle.start().add(NULLPAGE_SIZE) }
     }
 
     fn mut_ptr_to_base(&mut self) -> *mut u8 {
-        unsafe { self.handle.start.add(NULLPAGE_SIZE) }
+        unsafe { self.handle.start().add(NULLPAGE_SIZE) }
     }
 
     /// Build a new SimpleBuffer from an object handle.
@@ -79,7 +79,7 @@ mod test {
     use twizzler_abi::syscall::{
         sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
     };
-    use twizzler_runtime_api::{get_runtime, MapFlags, ObjectHandle};
+    use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
     use super::*;
 
@@ -95,9 +95,8 @@ mod test {
             &[],
         )
         .unwrap();
-        get_runtime()
-            .map_object(id, MapFlags::READ | MapFlags::WRITE)
-            .unwrap()
+
+        twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE).unwrap()
     }
 
     #[test]

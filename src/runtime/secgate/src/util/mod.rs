@@ -5,3 +5,6 @@ mod handle;
 
 pub use buffer::*;
 pub use handle::*;
+
+#[cfg(test)]
+extern crate twizzler_minruntime;

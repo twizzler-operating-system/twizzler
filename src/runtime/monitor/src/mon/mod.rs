@@ -5,7 +5,10 @@ use happylock::{LockCollection, RwLock, ThreadKey};
 use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use secgate::util::HandleMgr;
 use twizzler_abi::upcall::UpcallFrame;
-use twizzler_runtime_api::{MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
+use twizzler_rt_abi::{
+    object::{MapError, MapFlags, ObjID},
+    thread::{SpawnError, ThreadSpawnArgs},
+};
 use twz_rt::{RuntimeState, RuntimeThreadControl, OUR_RUNTIME};
 
 use self::{

@@ -362,6 +362,13 @@ impl Thread {
             );
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
+
+        if sup {
+            self.arch
+                .user_fs
+                .store(target.super_thread_ptr as u64, Ordering::SeqCst);
+            self.secctx.switch_context(target.super_ctx);
+        }
     }
 
     pub fn set_entry_registers(&self, regs: Registers) {

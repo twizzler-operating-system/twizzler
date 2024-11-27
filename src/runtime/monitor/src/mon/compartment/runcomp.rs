@@ -16,7 +16,7 @@ use talc::{ErrOnOom, Talc};
 use twizzler_abi::syscall::{
     ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
-use twizzler_runtime_api::{MapError, MapFlags, ObjID, ObjectHandle};
+use twizzler_rt_abi::object::{MapError, MapFlags, ObjID, ObjectHandle};
 
 use super::{compconfig::CompConfigObject, compthread::CompThread};
 use crate::mon::space::{MapHandle, MapInfo, Space};
@@ -78,7 +78,7 @@ impl PerThread {
 
     /// Get the Object ID of this compartment thread's simple buffer.
     pub fn simple_buffer_id(&self) -> Option<ObjID> {
-        Some(self.simple_buffer.as_ref()?.0.handle().id)
+        Some(self.simple_buffer.as_ref()?.0.handle().id())
     }
 }
 
