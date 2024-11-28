@@ -7,7 +7,7 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 [dependencies]
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
-twizzler-minruntime = { path = "../../runtime/minruntime" }
+twizzler-runtime = { path = "../../runtime/rt" }
 twizzler-net = { path = "../../lib/twizzler-net" }
 twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-queue = { path = "../../lib/twizzler-queue" }
@@ -19,6 +19,7 @@ async-executor = "1.9.1"
 polling = "3.6.0"
 futures = "*"
 twizzler-futures = { path = "../../lib/twizzler-futures" }
+monitor-api = { path = "../../runtime/monitor-api" }
 
-[package.metadata]
-twizzler-build = "static"
+#[package.metadata]
+#twizzler-build = "static"

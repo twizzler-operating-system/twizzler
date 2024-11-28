@@ -106,7 +106,7 @@ fn start_pcie(seg: Device) {
     }
 }
 
-extern crate twizzler_minruntime;
+extern crate twizzler_runtime;
 fn main() {
     println!("[devmgr] starting device manager {:?}", args());
     let id = args().into_iter().nth(1).unwrap().parse::<u128>().unwrap();

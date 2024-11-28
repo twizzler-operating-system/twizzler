@@ -15,4 +15,4 @@ bitflags = "2.4.1"
 volatile = { version = "0.5", features = ["unstable"] }
 
 [dev-dependencies]
-twizzler-minruntime = { path = "../../runtime/minruntime" }
+twizzler-runtime = { path = "../../runtime/rt" }

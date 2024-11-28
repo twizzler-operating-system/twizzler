@@ -40,5 +40,5 @@ pub fn get_bustree_root() -> BusTreeRoot {
 
 #[cfg(test)]
 mod tests {
-    extern crate twizzler_minruntime;
+    extern crate twizzler_runtime;
 }
