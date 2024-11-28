@@ -153,7 +153,17 @@ fn monitor_init() -> miette::Result<()> {
         flags = comp.wait(flags);
     }
 
-    // TODO: start init...
+    let comp: CompartmentHandle =
+        CompartmentLoader::new("init", "init", NewCompartmentFlags::empty())
+            .args(&["init"])
+            .load()
+            .into_diagnostic()?;
+    let mut flags = comp.info().flags;
+    while !flags.contains(CompartmentFlags::EXITED) {
+        flags = comp.wait(flags);
+    }
+
+    tracing::warn!("init exited");
 
     Ok(())
 }

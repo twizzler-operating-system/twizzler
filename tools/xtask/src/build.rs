@@ -371,8 +371,6 @@ fn maybe_build_tests_dynamic<'a>(
                 "twizzler-queue" => None,
                 "twizzler-queue-raw" => None,
                 "secgate" => None,
-                "twizzler-driver" => None,
-                "twizzler-abi" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),
@@ -505,9 +503,6 @@ pub(crate) struct TwizzlerCompilation {
     #[borrows(user_workspace)]
     #[covariant]
     pub user_compilation: Option<Compilation<'this>>,
-    #[borrows(static_workspace, static_compilation)]
-    #[covariant]
-    pub static_test_compilation: Option<Compilation<'this>>,
     #[borrows(user_workspace, user_compilation)]
     #[covariant]
     pub user_test_compilation: Option<Compilation<'this>>,
@@ -601,7 +596,6 @@ fn compile(
         |w| build_kernel(w, mode, &bc, other_options),
         |w| build_static(w, mode, &bc, other_options),
         |w| build_twizzler(w, mode, &bc, other_options),
-        |w, sc| maybe_build_tests_static(w, &bc, sc, other_options),
         |w, uc| maybe_build_tests_dynamic(w, &bc, uc, other_options),
         |w| maybe_build_kernel_tests(w, &bc, other_options),
         |w| build_third_party(w, mode, &bc, other_options),

@@ -18,7 +18,7 @@ use std::{
     },
 };
 
-use dynlink::{
+pub use dynlink::{
     context::NewCompartmentFlags,
     tls::{Tcb, TlsRegion},
 };

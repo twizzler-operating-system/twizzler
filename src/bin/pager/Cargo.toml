@@ -12,11 +12,11 @@ twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-queue = { path = "../../lib/twizzler-queue" }
 twizzler-async = { path = "../../lib/twizzler-async" }
 twizzler-driver = { path = "../../lib/twizzler-driver" }
-twizzler-minruntime = { path = "../../runtime/minruntime" }
+twizzler-runtime = { path = "../../runtime/rt" }
 nvme = { path = "../../lib/nvme-rs" }
 tickv = { version = "1.0.0" }
 async-trait = "0.1.66"
 volatile = "0.5"
 
-[package.metadata]
-twizzler-build = "static"
+#[package.metadata]
+#twizzler-build = "static"

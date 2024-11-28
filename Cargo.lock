@@ -1078,8 +1078,8 @@ dependencies = [
  "twizzler-abi",
  "twizzler-async",
  "twizzler-driver",
- "twizzler-minruntime",
  "twizzler-object",
+ "twizzler-runtime",
  "volatile",
 ]
 
@@ -2722,17 +2722,18 @@ dependencies = [
  "async-executor",
  "async-io",
  "futures",
+ "monitor-api",
  "polling",
  "rprompt",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
  "twizzler-futures",
- "twizzler-minruntime",
  "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
  "twizzler-rt-abi",
+ "twizzler-runtime",
 ]
 
 [[package]]
@@ -3634,10 +3635,10 @@ dependencies = [
  "twizzler-abi",
  "twizzler-async",
  "twizzler-driver",
- "twizzler-minruntime",
  "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
+ "twizzler-runtime",
  "volatile",
 ]
 
@@ -4946,8 +4947,8 @@ dependencies = [
  "num_enum",
  "static_assertions",
  "thiserror-no-std",
- "twizzler-minruntime",
  "twizzler-rt-abi",
+ "twizzler-runtime",
  "volatile",
 ]
 
@@ -4972,8 +4973,8 @@ dependencies = [
  "futures",
  "twizzler-abi",
  "twizzler-async",
- "twizzler-minruntime",
  "twizzler-object",
+ "twizzler-runtime",
  "volatile",
 ]
 
@@ -5052,9 +5053,9 @@ dependencies = [
  "bitflags 2.6.0",
  "twizzler-abi",
  "twizzler-async",
- "twizzler-minruntime",
  "twizzler-object",
  "twizzler-queue",
+ "twizzler-runtime",
 ]
 
 [[package]]
