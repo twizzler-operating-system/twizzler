@@ -7,12 +7,11 @@ edition = "2021"
 
 [dependencies]
 twizzler-abi = { path = "../../lib/twizzler-abi" }
-twizzler-net = { path = "../../lib/twizzler-net" }
 twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-queue = { path = "../../lib/twizzler-queue" }
 twizzler-async = { path = "../../lib/twizzler-async" }
 twizzler-driver = { path = "../../lib/twizzler-driver" }
-twizzler-runtime = { path = "../../runtime/rt" }
+twizzler-runtime = { path = "../../rt" }
 nvme = { path = "../../lib/nvme-rs" }
 lethe-gadget-fat = { path = "./fat" }
 layout = { path = "./fat/layout" }

@@ -10,6 +10,6 @@ crate-type = ["rlib"]
 [dependencies]
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
-secgate = { path = "../secgate" }
-dynlink = { path = "../dynlink" }
+secgate = { path = "../../lib/secgate" }
+dynlink = { path = "../../lib/dynlink" }
 bitflags = "2"

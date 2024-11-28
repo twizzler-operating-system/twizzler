@@ -23,7 +23,7 @@ impl TlsRegion {
     /// Get a pointer to the thread control block for this TLS region.
     ///
     /// # Safety
-    /// The TCB must actually contain runtime data of type T, and be initialized.    
+    /// The TCB must actually contain runtime data of type T, and be initialized.
     pub unsafe fn get_thread_control_block<T>(&self) -> *mut Tcb<T> {
         todo!()
     }

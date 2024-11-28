@@ -9,7 +9,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-secgate = { path = "../../../runtime/secgate" }
-twizzler-runtime = { path = "../../../runtime/rt" }
+secgate = { path = "../../lib/secgate" }
+twizzler-runtime = { path = "../../rt" }
 
 [features]

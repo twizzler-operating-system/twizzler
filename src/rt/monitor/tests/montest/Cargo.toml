@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-twizzler-runtime = { path = "../../../rt" }
-secgate = { path = "../../../secgate" }
+twizzler-runtime = { path = "../../.." }
+secgate = { path = "../../../../lib/secgate" }
 montest-lib = { path = "../montest-lib" }
 monitor = { path = "../../../monitor" }
 ctor = "*"

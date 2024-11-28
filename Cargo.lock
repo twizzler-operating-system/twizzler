@@ -2729,7 +2729,6 @@ dependencies = [
  "tracing-subscriber",
  "twizzler-abi",
  "twizzler-futures",
- "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
  "twizzler-rt-abi",
@@ -3090,7 +3089,6 @@ name = "logboi-test"
 version = "0.1.0"
 dependencies = [
  "logboi",
- "twizzler-runtime",
 ]
 
 [[package]]
@@ -3232,7 +3230,6 @@ dependencies = [
  "twizzler-abi",
  "twizzler-async",
  "twizzler-driver",
- "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
  "twizzler-runtime",
@@ -3331,33 +3328,6 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "tempfile",
-]
-
-[[package]]
-name = "netmgr"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "byteorder",
- "lazy_static",
- "twizzler-abi",
- "twizzler-async",
- "twizzler-minruntime",
- "twizzler-net",
- "twizzler-object",
- "twizzler-queue",
-]
-
-[[package]]
-name = "nettest"
-version = "0.1.0"
-dependencies = [
- "byteorder",
- "twizzler-abi",
- "twizzler-async",
- "twizzler-minruntime",
- "twizzler-net",
- "twizzler-object",
 ]
 
 [[package]]
@@ -3635,7 +3605,6 @@ dependencies = [
  "twizzler-abi",
  "twizzler-async",
  "twizzler-driver",
- "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
  "twizzler-runtime",
@@ -4199,7 +4168,6 @@ dependencies = [
  "stable-vec",
  "static_assertions",
  "twizzler-abi",
- "twizzler-minruntime",
  "twizzler-rt-abi",
 ]
 
@@ -4508,15 +4476,6 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "stdfs_demo"
 version = "0.1.0"
-dependencies = [
- "twizzler-abi",
- "twizzler-async",
- "twizzler-driver",
- "twizzler-net",
- "twizzler-object",
- "twizzler-queue",
- "twizzler-runtime",
-]
 
 [[package]]
 name = "strsim"
@@ -5042,18 +5001,6 @@ dependencies = [
  "thiserror-no-std",
  "twizzler-abi",
  "twizzler-rt-abi",
-]
-
-[[package]]
-name = "twizzler-net"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.6.0",
- "twizzler-abi",
- "twizzler-async",
- "twizzler-object",
- "twizzler-queue",
- "twizzler-runtime",
 ]
 
 [[package]]

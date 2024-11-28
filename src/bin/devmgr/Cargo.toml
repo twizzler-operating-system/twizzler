@@ -10,7 +10,7 @@ twizzler-driver = { path = "../../lib/twizzler-driver" }
 twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-async = { path = "../../lib/twizzler-async" }
-twizzler-runtime = { path = "../../runtime/rt" }
+twizzler-runtime = { path = "../../rt" }
 pci-ids = "0.2.4"
 async-trait = "0.1.56"
 #nvme = { path = "../../lib/nvme-rs" }
