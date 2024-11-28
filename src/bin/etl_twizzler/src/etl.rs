@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{self, BufRead, BufReader, Seek, SeekFrom},
+    io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
     path::PathBuf,
 };
 
@@ -45,7 +45,6 @@ where
     pub fn new(storage: W) -> Pack<W> {
         let mut tarchive = tar::Builder::new(storage);
         tarchive.mode(tar::HeaderMode::Deterministic);
-
         Pack { tarchive }
     }
 
@@ -56,29 +55,23 @@ where
         offset: u64,
     ) -> std::io::Result<()> {
         let f = File::open(&path)?;
-
         let mut buf_writer = BufReader::new(f);
-
         let mut header = Header::new_old();
-
         {
             let data = bincode::serialize(&SpecialData {
                 kind: pack_type,
                 offset,
             })
             .unwrap();
-
-            let bad_idea = header.as_old_mut();
-            bad_idea.pad[0..data.len()].copy_from_slice(&data);
+            let custom_metadata = header.as_old_mut();
+            custom_metadata.pad[0..data.len()].copy_from_slice(&data);
         }
-
         self.tarchive
             .append_data(&mut header, path, &mut buf_writer)?;
 
         Ok(())
     }
 
-    // When the thing you want to add isn't really a file, or is, it doesn't really matter
     pub fn stream_add<R: std::io::Read>(
         &mut self,
         stream: R,
@@ -93,17 +86,14 @@ where
                 offset,
             })
             .unwrap();
-
             let bad_idea = header.as_old_mut();
             bad_idea.pad[0..data.len()].copy_from_slice(&data);
         }
-
         {
             let mut buf_writer = BufReader::new(stream);
             self.tarchive
                 .append_data(&mut header, name, &mut buf_writer)?;
         }
-
         Ok(())
     }
 
@@ -132,10 +122,8 @@ pub fn form_twizzler_object<R: std::io::Read>(
     offset: u64,
 ) -> std::io::Result<twizzler_object::ObjID> {
     let twzid = create_twizzler_object();
-
     let handle =
         twizzler_rt_abi::object::twz_rt_map_object(twzid, Protections::WRITE.into()).unwrap();
-
     let mut stream = BufReader::new(stream);
 
     let offset = std::cmp::max(offset, MAX_SIZE as u64) + NULLPAGE_SIZE as u64;
@@ -151,10 +139,8 @@ pub fn form_twizzler_object<R: std::io::Read>(
 pub fn form_fs_file<R: std::io::Read>(stream: R, name: String, offset: u64) -> std::io::Result<()> {
     println!("forming {}", name);
     let mut writer = std::fs::File::create(name)?;
-
     writer.seek(SeekFrom::Start(offset))?;
     let mut stream = BufReader::new(stream);
-
     io::copy(&mut stream, &mut writer)?;
 
     Ok(())
@@ -169,9 +155,7 @@ pub fn form_persistent_vector<R: std::io::Read>(
     offset: u64,
 ) -> std::io::Result<()> {
     let mut writer = std::fs::File::create(name)?;
-
     writer.seek(SeekFrom::Start(offset))?;
-
     let stream: Vec<String> = BufReader::new(stream)
         .split(b'\n')
         .filter_map(|result| result.ok())
@@ -246,9 +230,7 @@ where
                     )
                     .as_bytes(),
                 )?;
-
                 let mut read_stream = BufReader::new(entry);
-
                 std::io::copy(&mut read_stream, write_stream)?;
             }
         }
@@ -265,7 +247,6 @@ where
             if let Ok(entry) = e {
                 let path = entry.path().unwrap().into_owned();
                 let str_path = path.to_str().unwrap();
-
                 if str_path == search {
                     let bad_idea: SpecialData =
                         bincode::deserialize(&entry.header().as_old().pad).unwrap();
@@ -276,9 +257,7 @@ where
                         )
                         .as_bytes(),
                     )?;
-
                     let mut read_stream = BufReader::new(entry);
-
                     std::io::copy(&mut read_stream, write_stream)?;
                 }
             }

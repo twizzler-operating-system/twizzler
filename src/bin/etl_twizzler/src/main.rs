@@ -17,8 +17,6 @@ use twizzler_abi::{
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
 // To signal main that the program is done running.
-// Bug: If the program crashes, it hangs forever
-// Isn't there a process table somewhere for main to look at it to cap this thing?
 #[cfg(target_os = "twizzler")]
 #[allow(non_snake_case)]
 fn SIGNAL_INIT() -> Option<()> {
@@ -56,19 +54,14 @@ enum Commands {
     Pack {
         #[arg(long)]
         make_file: bool,
-
         #[arg(long)]
         make_obj: bool,
-
         #[arg(long)]
         make_vector: bool,
-
         #[arg(long)]
         offset: Option<u64>,
-
         #[arg(long)]
         archive_name: Option<String>,
-
         file_list: Vec<String>,
     },
     Unpack {
