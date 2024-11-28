@@ -17,6 +17,3 @@ nvme = { path = "../../lib/nvme-rs" }
 tickv = { version = "1.0.0" }
 async-trait = "0.1.66"
 volatile = "0.5"
-
-#[package.metadata]
-#twizzler-build = "static"

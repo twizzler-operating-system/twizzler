@@ -12,7 +12,4 @@ twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-queue = { path = "../../lib/twizzler-queue" }
 twizzler-async = { path = "../../lib/twizzler-async" }
 twizzler-driver = { path = "../../lib/twizzler-driver" }
-twizzler-minruntime = { path = "../../runtime/minruntime" }
-
-[package.metadata]
-twizzler-build = "static"
+twizzler-runtime = { path = "../../runtime/rt" }
