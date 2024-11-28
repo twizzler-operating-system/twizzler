@@ -37,8 +37,3 @@ pub fn get_bustree_root() -> BusTreeRoot {
         .unwrap_objid();
     BusTreeRoot { root_id: id }
 }
-
-#[cfg(test)]
-mod tests {
-    extern crate twizzler_runtime;
-}

@@ -250,74 +250,6 @@ fn build_twizzler<'a>(
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
 
-fn maybe_build_tests_static<'a>(
-    workspace: &'a Workspace,
-    build_config: &crate::BuildConfig,
-    static_compilation: &Option<Compilation<'a>>,
-    other_options: &OtherOptions,
-) -> anyhow::Result<Option<Compilation<'a>>> {
-    let mode = CompileMode::Test;
-    if !other_options.build_tests || !other_options.build_twizzler {
-        return Ok(None);
-    }
-    crate::toolchain::set_static();
-    crate::toolchain::set_cc();
-    crate::print_status_line("collection: userspace::tests-static", Some(build_config));
-    let triple = Triple::new(
-        build_config.arch,
-        build_config.machine,
-        crate::triple::Host::Twizzler,
-        None,
-    );
-    let mut packages = locate_packages(workspace, None);
-    packages.append(&mut locate_packages(workspace, Some("static")));
-    let mut options = CompileOptions::new(workspace.gctx(), mode)?;
-    options.build_config =
-        BuildConfig::new(workspace.gctx(), None, false, &[triple.to_string()], mode)?;
-    options.build_config.message_format = other_options.message_format;
-    if build_config.profile == Profile::Release {
-        options.build_config.requested_profile = InternedString::new("release");
-    }
-    // TODO: once we have switched to the new runtime, all these should be removed.
-    options.spec = Packages::Packages(
-        packages
-            .iter()
-            .filter_map(|p| match p.name().as_str() {
-                "twizzler-kernel-macros" => None,
-                "nvme" => None,
-                "twz-rt" => None,
-                "monitor" => None,
-                "monitor-api" => None,
-                "bootstrap" => None,
-                "dynlink" => None,
-                "layout" => None,
-                "lethe-gadget-fat" => None,
-                "secgate-macros" => None,
-                "layout-derive" => None,
-                "twizzler-rt-abi" => None,
-                "twizzler-types" => None,
-                "twizzler-runtime" => None,
-                "twizzler-object" => None,
-                "twizzler-nando" => None,
-                "twizzler-net" => None,
-                "twizzler-futures" => None,
-                "twizzler-async" => None,
-                "twizzler-queue" => None,
-                "montest-lib" => None,
-                "montest" => None,
-                "logboi" => None,
-                "logboi-srv" => None,
-                "logboi-test" => None,
-                _ => Some(p.name().to_string()),
-            })
-            .collect(),
-    );
-    options.build_config.force_rebuild = other_options.needs_full_rebuild;
-    Ok(Some(cargo::ops::compile(workspace, &options)?))
-}
-
-// Once we merge the runtimes fully and switch to using the dynamic runtime as default,
-// we can merge a lot of this test infrastructure.
 fn maybe_build_tests_dynamic<'a>(
     workspace: &'a Workspace,
     build_config: &crate::BuildConfig,
@@ -345,32 +277,24 @@ fn maybe_build_tests_dynamic<'a>(
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
     }
-    // TODO: once we have switched to the new runtime, all these should be removed.
+    // Skip these. The macros don't compile right, here, and the others are low level and also don't
+    // compile right. Some are deprecated and pending removal with the new twizzler crate.
     options.spec = Packages::Packages(
         packages
             .iter()
             .filter_map(|p| match p.name().as_str() {
                 "twizzler-kernel-macros" => None,
-                "nvme" => None,
                 "twz-rt" => None,
                 "monitor" => None,
                 "monitor-api" => None,
                 "bootstrap" => None,
-                "dynlink" => None,
-                "layout" => None,
-                "lethe-gadget-fat" => None,
                 "secgate-macros" => None,
                 "layout-derive" => None,
-                "twizzler-rt-abi" => None,
-                "twizzler-types" => None,
                 "twizzler-object" => None,
                 "twizzler-nando" => None,
                 "twizzler-net" => None,
                 "twizzler-futures" => None,
                 "twizzler-async" => None,
-                "twizzler-queue" => None,
-                "twizzler-queue-raw" => None,
-                "secgate" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),
