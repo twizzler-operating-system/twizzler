@@ -16,10 +16,14 @@ use std::{
     },
 };
 
-use dynlink::tls::{Tcb, TlsRegion};
+use dynlink::{
+    context::NewCompartmentFlags,
+    tls::{Tcb, TlsRegion},
+};
 use secgate::util::{Descriptor, Handle};
 use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 
+#[allow(unused_imports, unused_variables, unexpected_cfgs)]
 mod gates {
     include! {"../../monitor/secapi/gates.rs"}
 }
@@ -85,6 +89,11 @@ pub struct TlsTemplateInfo {
     pub num_dtv_entries: usize,
     pub module_top_offset: usize,
 }
+
+// Safety: this type is designed to pass pointers to thread-local memory across boundaries, so we
+// assert this is safe.
+unsafe impl Send for TlsTemplateInfo {}
+unsafe impl Sync for TlsTemplateInfo {}
 
 impl From<TlsRegion> for TlsTemplateInfo {
     fn from(value: TlsRegion) -> Self {
@@ -283,18 +292,27 @@ impl CompartmentHandle {
 
 /// A builder-type for loading compartments.
 pub struct CompartmentLoader {
-    id: ObjID,
+    name: String,
+    flags: NewCompartmentFlags,
 }
 
 impl CompartmentLoader {
     /// Make a new compartment loader.
-    pub fn new(id: ObjID) -> Self {
-        Self { id }
+    pub fn new(
+        compname: impl ToString,
+        libname: impl ToString,
+        flags: NewCompartmentFlags,
+    ) -> Self {
+        Self {
+            name: format!("{}::{}", compname.to_string(), libname.to_string()),
+            flags,
+        }
     }
 
     /// Load the compartment.
     pub fn load(&self) -> Result<CompartmentHandle, gates::LoadCompartmentError> {
-        let desc = gates::monitor_rt_load_compartment(self.id)
+        let len = lazy_sb::write_bytes_to_sb(self.name.as_bytes());
+        let desc = gates::monitor_rt_load_compartment(len as u64, self.flags.bits())
             .ok()
             .ok_or(gates::LoadCompartmentError::Unknown)
             .flatten()?;
@@ -465,6 +483,8 @@ bitflags::bitflags! {
     pub struct CompartmentFlags : u64 {
         /// Compartment is ready (libraries relocated and constructors run).
         const READY = 0x1;
+        /// The main thread has exited.
+        const EXITED = 0x2;
     }
 }
 
@@ -486,11 +506,16 @@ impl MappedObjectAddrs {
     }
 }
 
+/// Get stats from the monitor
+pub fn stats() -> Option<gates::MonitorStats> {
+    gates::monitor_rt_stats().ok()
+}
+
 mod lazy_sb {
     //! A per-thread per-compartment simple buffer used for transferring strings between
     //! compartments and the monitor. This is necessary because the monitor runs at too low of a
     //! level for us to use nice shared memory techniques. This is simpler and more secure.
-    use std::cell::OnceCell;
+    use std::cell::{OnceCell, RefCell};
 
     use secgate::util::SimpleBuffer;
     use twizzler_rt_abi::object::MapFlags;
@@ -522,7 +547,7 @@ mod lazy_sb {
             sb.read(buf)
         }
 
-        fn _write(&mut self, buf: &[u8]) -> usize {
+        fn write(&mut self, buf: &[u8]) -> usize {
             if self.sb.get().is_none() {
                 // Unwrap-Ok: we know it's empty.
                 self.sb.set(Self::init()).unwrap();
@@ -533,21 +558,22 @@ mod lazy_sb {
     }
 
     #[thread_local]
-    static mut LAZY_SB: LazyThreadSimpleBuffer = LazyThreadSimpleBuffer::new();
+    static LAZY_SB: RefCell<LazyThreadSimpleBuffer> = RefCell::new(LazyThreadSimpleBuffer::new());
 
     pub(super) fn read_string_from_sb(len: usize) -> String {
         let mut buf = vec![0u8; len];
-        // Safety: this is per thread, and we only ever create the reference here or in the other
-        // read function below.
-        let len = unsafe { LAZY_SB.read(&mut buf) };
+        let len = LAZY_SB.borrow_mut().read(&mut buf);
         String::from_utf8_lossy(&buf[0..len]).to_string()
     }
 
     pub(super) fn read_bytes_from_sb(len: usize) -> Vec<u8> {
         let mut buf = vec![0u8; len];
-        // Safety: see above.
-        let len = unsafe { LAZY_SB.read(&mut buf) };
+        let len = LAZY_SB.borrow_mut().read(&mut buf);
         buf.truncate(len);
         buf
+    }
+
+    pub(super) fn write_bytes_to_sb(buf: &[u8]) -> usize {
+        LAZY_SB.borrow_mut().write(buf)
     }
 }

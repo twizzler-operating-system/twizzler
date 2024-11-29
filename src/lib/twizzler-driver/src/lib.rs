@@ -41,9 +41,4 @@ pub fn get_bustree_root() -> BusTreeRoot {
 #[cfg(test)]
 mod tests {
     extern crate twizzler_minruntime;
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
 }

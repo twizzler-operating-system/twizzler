@@ -20,7 +20,7 @@ use crate::mon::get_monitor;
 
 /// Tracks threads that do not exit cleanly, so their monitor-internal resources can be cleaned up.
 pub(crate) struct ThreadCleaner {
-    thread: std::thread::JoinHandle<()>,
+    _thread: std::thread::JoinHandle<()>,
     send: Sender<WaitOp>,
     inner: Pin<Arc<ThreadCleanerData>>,
 }
@@ -56,7 +56,7 @@ impl ThreadCleaner {
         Self {
             send,
             inner,
-            thread,
+            _thread: thread,
         }
     }
 
@@ -139,10 +139,14 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
                 let mut tmgr = monitor.thread_mgr.write(&mut key);
                 tmgr.do_remove(&th);
             }
-            let mut cmgr = monitor.comp_mgr.write(&mut key);
+            let (_, _, ref mut cmgr, ref mut dynlink, _, _) = *monitor.locks.lock(&mut key);
             for comp in cmgr.compartments_mut() {
                 comp.clean_per_thread_data(th.id);
             }
+            if let Some(comp_id) = th.main_thread_comp {
+                cmgr.main_thread_exited(comp_id);
+            }
+            cmgr.process_cleanup_queue(&mut *dynlink);
         }
 
         // Check for notifications, and sleep.

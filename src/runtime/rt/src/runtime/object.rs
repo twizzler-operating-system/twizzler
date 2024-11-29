@@ -186,7 +186,7 @@ impl ObjectHandleManager {
         );
         if let Some(entry) = self.map().get(&key) {
             if entry.refs.fetch_sub(1, atomic::Ordering::SeqCst) == 1 {
-                monitor_api::monitor_rt_object_unmap(entry.number, key.0, key.1).unwrap();
+                monitor_api::monitor_rt_object_unmap(key.0, key.1).unwrap();
                 self.map().remove(&key);
             }
         }

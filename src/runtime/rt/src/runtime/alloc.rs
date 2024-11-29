@@ -117,8 +117,7 @@ impl OomHandler for RuntimeOom {
                 .is_err()
             {
                 delete_obj(id);
-                monitor_api::monitor_rt_object_unmap(slot, id, MapFlags::READ | MapFlags::WRITE)
-                    .unwrap();
+                monitor_api::monitor_rt_object_unmap(id, MapFlags::READ | MapFlags::WRITE).unwrap();
                 return Err(());
             }
         }

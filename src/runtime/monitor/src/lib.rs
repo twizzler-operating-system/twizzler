@@ -2,24 +2,16 @@
 #![feature(thread_local)]
 #![feature(hash_extract_if)]
 #![feature(new_zeroed_alloc)]
+#![feature(iterator_try_collect)]
 
-use dynlink::engines::Backing;
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
-use twizzler_abi::{
-    aux::KernelInitInfo,
-    object::{MAX_SIZE, NULLPAGE_SIZE},
-};
-use twizzler_object::ObjID;
-use twizzler_rt_abi::object::MapFlags;
 use twz_rt::{set_upcall_handler, OUR_RUNTIME};
 
+mod dlengine;
 mod init;
-pub mod secgate_test;
-mod upcall;
-
-mod api;
 mod mon;
+mod upcall;
 
 pub use monitor_api::MappedObjectAddrs;
 
@@ -27,6 +19,7 @@ pub use monitor_api::MappedObjectAddrs;
 mod gates;
 
 pub fn main() {
+    // For early init, if something breaks, we really want to see everything...
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::DEBUG)
@@ -48,16 +41,16 @@ pub fn main() {
     let mon = mon::Monitor::new(init);
     mon::set_monitor(mon);
 
+    debug!("ok, starting monitor proper");
     // Safety: the monitor is ready, and so we can set our runtime as ready to use the monitor.
     unsafe { OUR_RUNTIME.set_runtime_ready() };
     // Had to wait till now to be able to spawn threads.
     mon::get_monitor().start_background_threads();
 
-    debug!("Ok");
     std::env::set_var("RUST_BACKTRACE", "1");
     set_upcall_handler(&crate::upcall::upcall_monitor_handler).unwrap();
 
-    let main_thread = std::thread::spawn(|| monitor_init());
+    let main_thread = std::thread::spawn(monitor_init);
     let _r = main_thread.join().unwrap().map_err(|e| {
         tracing::error!("{:?}", e);
     });
@@ -68,32 +61,4 @@ fn monitor_init() -> miette::Result<()> {
     info!("monitor early init completed, starting init");
 
     Ok(())
-}
-
-fn bootstrap_name_res(mut name: &str) -> Option<Backing> {
-    if name.starts_with("libstd-") {
-        name = "libstd.so";
-    }
-    let id = find_init_name(name)?;
-    let obj = twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ).ok()?;
-    Some(Backing::new(obj))
-}
-
-pub fn get_kernel_init_info() -> &'static KernelInitInfo {
-    unsafe {
-        (((twizzler_abi::slot::RESERVED_KERNEL_INIT * MAX_SIZE) + NULLPAGE_SIZE)
-            as *const KernelInitInfo)
-            .as_ref()
-            .unwrap()
-    }
-}
-
-fn find_init_name(name: &str) -> Option<ObjID> {
-    let init_info = get_kernel_init_info();
-    for n in init_info.names() {
-        if n.name() == name {
-            return Some(n.id());
-        }
-    }
-    None
 }
