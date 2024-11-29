@@ -1,17 +1,15 @@
 use std::{
-    cell::OnceCell,
     collections::HashMap,
     mem::MaybeUninit,
     ptr::NonNull,
     sync::{Arc, OnceLock},
 };
 
-use dynlink::{compartment::Compartment, context::Context, tls::TlsRegion};
-use happylock::ThreadKey;
-use secgate::util::SimpleBuffer;
+use dynlink::{compartment::Compartment, tls::TlsRegion};
+use monitor_api::MONITOR_INSTANCE_ID;
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
-    syscall::{sys_spawn, sys_thread_exit, ObjectCreate, ThreadSyncSleep, UpcallTargetSpawnOption},
+    syscall::{sys_spawn, sys_thread_exit, ThreadSyncSleep, UpcallTargetSpawnOption},
     thread::{ExecutionState, ThreadRepr},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
@@ -21,11 +19,8 @@ use twizzler_rt_abi::{
 };
 use twz_rt::RuntimeThreadControl;
 
-use super::{
-    get_monitor,
-    space::{MapHandle, MapInfo, Space},
-};
-use crate::api::MONITOR_INSTANCE_ID;
+use super::space::{MapHandle, MapInfo, Space};
+use crate::gates::ThreadMgrStats;
 
 mod cleaner;
 pub(crate) use cleaner::ThreadCleaner;
@@ -36,8 +31,6 @@ pub const SUPER_UPCALL_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 pub const DEFAULT_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 /// Stack minimium alignment.
 pub const STACK_SIZE_MIN_ALIGN: usize = 0x1000; // 4K
-/// TLS minimum alignment.
-pub const DEFAULT_TLS_ALIGN: usize = 0x1000; // 4K
 
 /// Manages all threads owned by the monitor. Typically, this is all threads.
 /// Threads are spawned here and tracked in the background by a [cleaner::ThreadCleaner]. The thread
@@ -63,6 +56,15 @@ impl ThreadMgr {
 
     fn do_remove(&mut self, thread: &ManagedThread) {
         self.all.remove(&thread.id);
+        if let Some(cleaner) = self.cleaner.get() {
+            cleaner.untrack(thread.id);
+        }
+    }
+
+    pub fn stat(&self) -> ThreadMgrStats {
+        ThreadMgrStats {
+            nr_threads: self.all.len(),
+        }
     }
 
     unsafe fn spawn_thread(
@@ -103,6 +105,7 @@ impl ThreadMgr {
         monitor_dynlink_comp: &mut Compartment,
         start: unsafe extern "C" fn(usize) -> !,
         arg: usize,
+        main_thread_comp: Option<ObjID>,
     ) -> Result<ManagedThread, SpawnError> {
         let super_tls = monitor_dynlink_comp
             .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
@@ -128,8 +131,9 @@ impl ThreadMgr {
         Ok(Arc::new(ManagedThreadInner {
             id,
             repr: ManagedThreadRepr::new(repr),
-            super_stack,
-            super_tls,
+            _super_stack: super_stack,
+            _super_tls: super_tls,
+            main_thread_comp,
         }))
     }
 
@@ -140,6 +144,7 @@ impl ThreadMgr {
         space: &mut Space,
         monitor_dynlink_comp: &mut Compartment,
         main: Box<dyn FnOnce()>,
+        main_thread_comp: Option<ObjID>,
     ) -> Result<ManagedThread, SpawnError> {
         let main_addr = Box::into_raw(Box::new(main)) as usize;
         unsafe extern "C" fn managed_thread_entry(main: usize) -> ! {
@@ -151,7 +156,19 @@ impl ThreadMgr {
             sys_thread_exit(0);
         }
 
-        self.do_spawn(space, monitor_dynlink_comp, managed_thread_entry, main_addr)
+        let mt = self.do_spawn(
+            space,
+            monitor_dynlink_comp,
+            managed_thread_entry,
+            main_addr,
+            main_thread_comp,
+        );
+        if let Ok(ref mt) = mt {
+            if let Some(cleaner) = self.cleaner.get() {
+                cleaner.track(mt.clone());
+            }
+        }
+        mt
     }
 }
 
@@ -161,8 +178,9 @@ pub struct ManagedThreadInner {
     pub id: ObjID,
     /// The thread repr.
     pub(crate) repr: ManagedThreadRepr,
-    super_stack: Box<[MaybeUninit<u8>]>,
-    super_tls: TlsRegion,
+    _super_stack: Box<[MaybeUninit<u8>]>,
+    _super_tls: TlsRegion,
+    pub main_thread_comp: Option<ObjID>,
 }
 
 impl ManagedThreadInner {

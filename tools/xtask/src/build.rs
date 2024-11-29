@@ -253,6 +253,7 @@ fn build_twizzler<'a>(
 fn maybe_build_tests<'a>(
     workspace: &'a Workspace,
     build_config: &crate::BuildConfig,
+    static_compilation: &Option<Compilation<'a>>,
     other_options: &OtherOptions,
 ) -> anyhow::Result<Option<Compilation<'a>>> {
     let mode = CompileMode::Test;
@@ -277,12 +278,12 @@ fn maybe_build_tests<'a>(
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
     }
+    // TODO: once we have switched to the new runtime, all these should be removed.
     options.spec = Packages::Packages(
         packages
             .iter()
             .filter_map(|p| match p.name().as_str() {
                 "twizzler-kernel-macros" => None,
-                "twizzler-runtime-api" => None,
                 "nvme" => None,
                 "twz-rt" => None,
                 "monitor" => None,
@@ -301,8 +302,6 @@ fn maybe_build_tests<'a>(
                 "twizzler-futures" => None,
                 "twizzler-async" => None,
                 "twizzler-queue" => None,
-                "twizzler-kernel-macros" => None,
-                "twizzler-runtime-api" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),
@@ -435,7 +434,7 @@ pub(crate) struct TwizzlerCompilation {
     #[borrows(user_workspace)]
     #[covariant]
     pub user_compilation: Option<Compilation<'this>>,
-    #[borrows(static_workspace)]
+    #[borrows(static_workspace, static_compilation)]
     #[covariant]
     pub test_compilation: Option<Compilation<'this>>,
     #[borrows(kernel_workspace)]
@@ -528,7 +527,7 @@ fn compile(
         |w| build_kernel(w, mode, &bc, other_options),
         |w| build_static(w, mode, &bc, other_options),
         |w| build_twizzler(w, mode, &bc, other_options),
-        |w| maybe_build_tests(w, &bc, other_options),
+        |w, sc| maybe_build_tests(w, &bc, sc, other_options),
         |w| maybe_build_kernel_tests(w, &bc, other_options),
         |w| build_third_party(w, mode, &bc, other_options),
     )
