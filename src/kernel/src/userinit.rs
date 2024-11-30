@@ -126,9 +126,6 @@ pub extern "C" fn user_init() {
             })
             .unwrap_or((0, 0));
         let min_info = MinimalInitInfo {
-            args: core::ptr::null_mut(),
-            argc: 0,
-            envp: core::ptr::null_mut(),
             phdrs: phdrs as *mut core::ffi::c_void,
             nr_phdrs,
         };
@@ -137,6 +134,9 @@ pub extern "C" fn user_init() {
             flags: 0,
             kind: RUNTIME_INIT_MIN,
             init_info: InitInfoPtrs { min: min_start },
+            args: core::ptr::null_mut(),
+            argc: 0,
+            envp: core::ptr::null_mut(),
         };
 
         unsafe {

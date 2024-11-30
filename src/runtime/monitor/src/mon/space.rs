@@ -8,9 +8,10 @@ use twizzler_abi::syscall::{
     ObjectSource, UnmapFlags,
 };
 use twizzler_object::Protections;
-use twizzler_runtime_api::{MapError, MapFlags, ObjID};
+use twizzler_rt_abi::object::{MapError, MapFlags, ObjID};
 
 use self::handle::MapHandleInner;
+use crate::gates::SpaceStats;
 
 mod handle;
 mod unmapper;
@@ -51,6 +52,13 @@ fn mapflags_into_prot(flags: MapFlags) -> Protections {
 }
 
 impl Space {
+    /// Get the stats.
+    pub fn stat(&self) -> SpaceStats {
+        SpaceStats {
+            mapped: self.maps.len(),
+        }
+    }
+
     /// Map an object into the space.
     pub fn map(&mut self, info: MapInfo) -> Result<MapHandle, MapError> {
         // Can't use the entry API here because the closure may fail.
@@ -70,7 +78,7 @@ impl Space {
                     twizzler_abi::syscall::MapFlags::empty(),
                 ) else {
                     twz_rt::OUR_RUNTIME.release_slot(slot);
-                    return Err(MapError::InternalError);
+                    return Err(MapError::Other);
                 };
 
                 let map = MappedObject {

@@ -3,10 +3,9 @@
 //! dependency.
 
 #![feature(naked_functions)]
-#![feature(pointer_byte_offsets)]
-#![feature(pointer_is_aligned)]
 #![feature(result_flattening)]
 #![feature(thread_local)]
+#![feature(pointer_is_aligned_to)]
 use std::{
     alloc::Layout,
     marker::PhantomData,
@@ -17,16 +16,20 @@ use std::{
     },
 };
 
-use dynlink::tls::{Tcb, TlsRegion};
+use dynlink::{
+    context::NewCompartmentFlags,
+    tls::{Tcb, TlsRegion},
+};
 use secgate::util::{Descriptor, Handle};
 use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 
+#[allow(unused_imports, unused_variables, unexpected_cfgs)]
 mod gates {
     include! {"../../monitor/secapi/gates.rs"}
 }
 
 pub use gates::*;
-use twizzler_runtime_api::{AddrRange, DlPhdrInfo, LibraryId};
+use twizzler_rt_abi::debug::{DlPhdrInfo, LoadedImageId};
 
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and
 /// read-only from the compartment.
@@ -38,7 +41,7 @@ pub struct SharedCompConfig {
     // Pointer to the current TLS template. Read-only by compartment, writable by monitor.
     tls_template: AtomicPtr<TlsTemplateInfo>,
     /// The root library ID for this compartment. May be None if no libraries have been loaded.
-    pub root_library_id: Option<LibraryId>,
+    pub root_library_id: Option<LoadedImageId>,
 }
 
 struct CompConfigFinder {
@@ -86,6 +89,11 @@ pub struct TlsTemplateInfo {
     pub num_dtv_entries: usize,
     pub module_top_offset: usize,
 }
+
+// Safety: this type is designed to pass pointers to thread-local memory across boundaries, so we
+// assert this is safe.
+unsafe impl Send for TlsTemplateInfo {}
+unsafe impl Sync for TlsTemplateInfo {}
 
 impl From<TlsRegion> for TlsTemplateInfo {
     fn from(value: TlsRegion) -> Self {
@@ -177,8 +185,10 @@ pub struct LibraryInfo<'a> {
     pub compartment_id: ObjID,
     /// The object ID that the library was loaded from
     pub objid: ObjID,
-    /// The address range the library was loaded to
-    pub range: AddrRange,
+    /// The start address of range the library was loaded to
+    pub start: *const u8,
+    /// Length of range library was loaded to
+    pub len: usize,
     /// The DlPhdrInfo for this library
     pub dl_info: DlPhdrInfo,
     /// The slot of the library text.
@@ -194,13 +204,14 @@ impl<'a> LibraryInfo<'a> {
             name: lazy_sb::read_string_from_sb(raw.name_len),
             compartment_id: raw.compartment_id,
             objid: raw.objid,
-            range: raw.range,
+            start: raw.start,
+            len: raw.len,
             dl_info: raw.dl_info,
             slot: raw.slot,
             _pd: PhantomData,
             internal_name: name,
         };
-        this.dl_info.name = this.internal_name.as_ptr();
+        this.dl_info.name = this.internal_name.as_ptr().cast();
         this
     }
 }
@@ -281,18 +292,27 @@ impl CompartmentHandle {
 
 /// A builder-type for loading compartments.
 pub struct CompartmentLoader {
-    id: ObjID,
+    name: String,
+    flags: NewCompartmentFlags,
 }
 
 impl CompartmentLoader {
     /// Make a new compartment loader.
-    pub fn new(id: ObjID) -> Self {
-        Self { id }
+    pub fn new(
+        compname: impl ToString,
+        libname: impl ToString,
+        flags: NewCompartmentFlags,
+    ) -> Self {
+        Self {
+            name: format!("{}::{}", compname.to_string(), libname.to_string()),
+            flags,
+        }
     }
 
     /// Load the compartment.
     pub fn load(&self) -> Result<CompartmentHandle, gates::LoadCompartmentError> {
-        let desc = gates::monitor_rt_load_compartment(self.id)
+        let len = lazy_sb::write_bytes_to_sb(self.name.as_bytes());
+        let desc = gates::monitor_rt_load_compartment(len as u64, self.flags.bits())
             .ok()
             .ok_or(gates::LoadCompartmentError::Unknown)
             .flatten()?;
@@ -463,6 +483,8 @@ bitflags::bitflags! {
     pub struct CompartmentFlags : u64 {
         /// Compartment is ready (libraries relocated and constructors run).
         const READY = 0x1;
+        /// The main thread has exited.
+        const EXITED = 0x2;
     }
 }
 
@@ -484,14 +506,19 @@ impl MappedObjectAddrs {
     }
 }
 
+/// Get stats from the monitor
+pub fn stats() -> Option<gates::MonitorStats> {
+    gates::monitor_rt_stats().ok()
+}
+
 mod lazy_sb {
     //! A per-thread per-compartment simple buffer used for transferring strings between
     //! compartments and the monitor. This is necessary because the monitor runs at too low of a
     //! level for us to use nice shared memory techniques. This is simpler and more secure.
-    use std::cell::OnceCell;
+    use std::cell::{OnceCell, RefCell};
 
     use secgate::util::SimpleBuffer;
-    use twizzler_runtime_api::MapFlags;
+    use twizzler_rt_abi::object::MapFlags;
 
     struct LazyThreadSimpleBuffer {
         sb: OnceCell<SimpleBuffer>,
@@ -509,9 +536,9 @@ mod lazy_sb {
                 .ok()
                 .flatten()
                 .expect("failed to get per-thread monitor simple buffer");
-            let oh = twizzler_runtime_api::get_runtime()
-                .map_object(id, MapFlags::READ | MapFlags::WRITE)
-                .unwrap();
+            let oh =
+                twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)
+                    .unwrap();
             SimpleBuffer::new(oh)
         }
 
@@ -520,7 +547,7 @@ mod lazy_sb {
             sb.read(buf)
         }
 
-        fn _write(&mut self, buf: &[u8]) -> usize {
+        fn write(&mut self, buf: &[u8]) -> usize {
             if self.sb.get().is_none() {
                 // Unwrap-Ok: we know it's empty.
                 self.sb.set(Self::init()).unwrap();
@@ -531,21 +558,22 @@ mod lazy_sb {
     }
 
     #[thread_local]
-    static mut LAZY_SB: LazyThreadSimpleBuffer = LazyThreadSimpleBuffer::new();
+    static LAZY_SB: RefCell<LazyThreadSimpleBuffer> = RefCell::new(LazyThreadSimpleBuffer::new());
 
     pub(super) fn read_string_from_sb(len: usize) -> String {
         let mut buf = vec![0u8; len];
-        // Safety: this is per thread, and we only ever create the reference here or in the other
-        // read function below.
-        let len = unsafe { LAZY_SB.read(&mut buf) };
+        let len = LAZY_SB.borrow_mut().read(&mut buf);
         String::from_utf8_lossy(&buf[0..len]).to_string()
     }
 
     pub(super) fn read_bytes_from_sb(len: usize) -> Vec<u8> {
         let mut buf = vec![0u8; len];
-        // Safety: see above.
-        let len = unsafe { LAZY_SB.read(&mut buf) };
+        let len = LAZY_SB.borrow_mut().read(&mut buf);
         buf.truncate(len);
         buf
+    }
+
+    pub(super) fn write_bytes_to_sb(buf: &[u8]) -> usize {
+        LAZY_SB.borrow_mut().write(buf)
     }
 }

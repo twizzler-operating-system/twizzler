@@ -100,6 +100,7 @@ fn ping(addr: Ipv4Addr) {
     });
 }
 
+extern crate twizzler_minruntime;
 fn main() {
     println!("Hello from nettest!");
     let handle = Arc::new(twizzler_net::open_nm_handle("nettest").unwrap());

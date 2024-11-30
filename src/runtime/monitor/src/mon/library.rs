@@ -2,7 +2,7 @@ use dynlink::library::LibraryId;
 use happylock::ThreadKey;
 use secgate::util::Descriptor;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_runtime_api::{AddrRange, ObjID};
+use twizzler_rt_abi::object::ObjID;
 
 use super::Monitor;
 use crate::gates::{LibraryInfo, LoadLibraryError};
@@ -26,26 +26,25 @@ impl Monitor {
             *self.locks.lock(ThreadKey::get().unwrap());
         let handle = libhandles.lookup(instance, desc)?;
         let lib = dynlink.get_library(handle.id).ok()?;
+        // write the library name to the per-thread simple buffer
         let pt = comps.get_mut(instance)?.get_per_thread(thread, space);
         let name_len = pt.write_bytes(lib.name.as_bytes());
         Some(LibraryInfo {
             name_len,
             compartment_id: handle.comp,
-            objid: lib.full_obj.object().id,
-            slot: lib.base_addr() / MAX_SIZE,
-            range: AddrRange {
-                start: lib.full_obj.object().start as usize + NULLPAGE_SIZE,
-                len: MAX_SIZE - NULLPAGE_SIZE * 2,
-            },
-            dl_info: twizzler_runtime_api::DlPhdrInfo {
+            objid: lib.full_obj.object().id(),
+            slot: lib.full_obj.object().start() as usize / MAX_SIZE,
+            start: (lib.full_obj.object().start() as usize + NULLPAGE_SIZE) as *mut _,
+            len: MAX_SIZE - NULLPAGE_SIZE * 2,
+            dl_info: twizzler_rt_abi::debug::DlPhdrInfo {
                 addr: lib.base_addr(),
                 name: core::ptr::null(),
-                phdr_start: lib.get_phdrs_raw()?.0 as *const _,
-                phdr_num: lib.get_phdrs_raw()?.1 as u32,
-                _adds: 0,
-                _subs: 0,
-                modid: lib.tls_id.map(|t| t.tls_id()).unwrap_or(0) as usize,
-                tls_data: core::ptr::null(),
+                phdr: lib.get_phdrs_raw()?.0 as *const _,
+                phnum: lib.get_phdrs_raw()?.1 as u32,
+                adds: 0,
+                subs: 0,
+                tls_modid: lib.tls_id.map(|t| t.tls_id()).unwrap_or(0) as usize,
+                tls_data: core::ptr::null_mut(),
             },
             desc,
         })
@@ -72,9 +71,9 @@ impl Monitor {
     /// Load a library in the given compartment.
     pub fn load_library(
         &self,
-        caller: ObjID,
-        id: ObjID,
-        comp: Option<Descriptor>,
+        _caller: ObjID,
+        _id: ObjID,
+        _comp: Option<Descriptor>,
     ) -> Result<Descriptor, LoadLibraryError> {
         todo!()
     }

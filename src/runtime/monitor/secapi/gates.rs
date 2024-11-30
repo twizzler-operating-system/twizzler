@@ -1,7 +1,15 @@
+use std::fmt::{Debug, Display};
+
+use dynlink::context::NewCompartmentFlags;
 use secgate::{util::Descriptor, Crossing};
-use twizzler_runtime_api::{
-    AddrRange, DlPhdrInfo, LibraryId, MapError, ObjID, SpawnError, ThreadSpawnArgs,
+use twizzler_rt_abi::{
+    debug::DlPhdrInfo,
+    object::{MapError, ObjID},
+    thread::{SpawnError, ThreadSpawnArgs},
 };
+
+/// Reserved instance ID for the security monitor.
+pub const MONITOR_INSTANCE_ID: ObjID = ObjID::new(0);
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
 #[cfg_attr(
@@ -29,7 +37,6 @@ pub fn monitor_rt_spawn_thread(
     secgate::secure_gate(options(info, api))
 )]
 pub fn monitor_rt_get_comp_config(info: &secgate::GateCallInfo) -> usize {
-    use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     monitor
         .get_comp_config(info.source_context().unwrap_or(MONITOR_INSTANCE_ID))
@@ -46,7 +53,6 @@ pub fn monitor_rt_get_library_info(
     info: &secgate::GateCallInfo,
     desc: Descriptor,
 ) -> Option<LibraryInfo> {
-    use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let instance = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     let thread = info.thread_id();
@@ -63,7 +69,6 @@ pub fn monitor_rt_get_library_handle(
     compartment: Option<Descriptor>,
     lib_n: usize,
 ) -> Option<Descriptor> {
-    use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.get_library_handle(caller, compartment, lib_n)
@@ -76,7 +81,8 @@ pub struct LibraryInfo {
     pub compartment_id: ObjID,
     pub objid: ObjID,
     pub slot: usize,
-    pub range: AddrRange,
+    pub start: *const u8,
+    pub len: usize,
     pub dl_info: DlPhdrInfo,
     pub desc: Descriptor,
 }
@@ -99,10 +105,9 @@ pub fn monitor_rt_get_compartment_handle(
     info: &secgate::GateCallInfo,
     compartment: ObjID,
 ) -> Option<Descriptor> {
-    use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
-    let compartment = if compartment.as_u128() == 0 {
+    let compartment = if compartment.raw() == 0 {
         caller
     } else {
         compartment
@@ -119,7 +124,6 @@ pub fn monitor_rt_get_compartment_info(
     info: &secgate::GateCallInfo,
     desc: Option<Descriptor>,
 ) -> Option<CompartmentInfo> {
-    use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.get_compartment_info(caller, info.thread_id(), desc)
@@ -135,7 +139,6 @@ pub fn monitor_rt_get_compartment_deps(
     desc: Option<Descriptor>,
     dep_n: usize,
 ) -> Option<Descriptor> {
-    use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.get_compartment_deps(caller, desc, dep_n)
@@ -152,17 +155,30 @@ unsafe impl Crossing for LibraryInfo {}
 )]
 pub fn monitor_rt_load_compartment(
     info: &secgate::GateCallInfo,
-    root_id: ObjID,
+    name_len: u64,
+    flags: u32,
 ) -> Result<Descriptor, LoadCompartmentError> {
-    use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
-    monitor.load_compartment(caller, root_id)
+    monitor.load_compartment(
+        caller,
+        info.thread_id(),
+        name_len as usize,
+        NewCompartmentFlags::from_bits(flags).ok_or(LoadCompartmentError::Unknown)?,
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum LoadCompartmentError {
     Unknown,
+}
+
+impl std::error::Error for LoadCompartmentError {}
+
+impl Display for LoadCompartmentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <Self as Debug>::fmt(self, f)
+    }
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
@@ -171,7 +187,6 @@ pub enum LoadCompartmentError {
     secgate::secure_gate(options(info, api))
 )]
 pub fn monitor_rt_drop_compartment_handle(info: &secgate::GateCallInfo, desc: Descriptor) {
-    use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.drop_compartment_handle(caller, desc)
@@ -187,13 +202,13 @@ pub fn monitor_rt_load_library(
     compartment: Option<Descriptor>,
     id: ObjID,
 ) -> Result<Descriptor, LoadLibraryError> {
-    use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.load_library(caller, id, compartment)
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub enum LoadLibraryError {
     Unknown,
 }
@@ -204,7 +219,6 @@ pub enum LoadLibraryError {
     secgate::secure_gate(options(info, api))
 )]
 pub fn monitor_rt_drop_library_handle(info: &secgate::GateCallInfo, desc: Descriptor) {
-    use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.drop_library_handle(caller, desc)
@@ -218,11 +232,11 @@ pub fn monitor_rt_drop_library_handle(info: &secgate::GateCallInfo, desc: Descri
 pub fn monitor_rt_object_map(
     info: &secgate::GateCallInfo,
     id: ObjID,
-    flags: twizzler_runtime_api::MapFlags,
+    flags: twizzler_rt_abi::object::MapFlags,
 ) -> Result<crate::MappedObjectAddrs, MapError> {
     use twz_rt::{RuntimeState, OUR_RUNTIME};
 
-    use crate::{api::MONITOR_INSTANCE_ID, mon::space::MapInfo};
+    use crate::mon::space::MapInfo;
     if OUR_RUNTIME.state().contains(RuntimeState::READY) {
         // Are we recursing from the monitor, with a lock held? In that case, use early_object_map
         // to map the object. This will leak this mapping, but this is both rare, and then
@@ -260,23 +274,16 @@ pub fn monitor_rt_object_map(
 )]
 pub fn monitor_rt_object_unmap(
     info: &secgate::GateCallInfo,
-    _slot: usize,
     id: ObjID,
-    flags: twizzler_runtime_api::MapFlags,
+    flags: twizzler_rt_abi::object::MapFlags,
 ) {
     use twz_rt::{RuntimeState, OUR_RUNTIME};
     if OUR_RUNTIME.state().contains(RuntimeState::READY) {
         let monitor = crate::mon::get_monitor();
-        let key = happylock::ThreadKey::get().unwrap();
-        monitor
-            .comp_mgr
-            .write(key)
-            .get_mut(
-                info.source_context()
-                    .unwrap_or(crate::api::MONITOR_INSTANCE_ID),
-            )
-            .unwrap()
-            .unmap_object(crate::mon::space::MapInfo { id, flags })
+        monitor.unmap_object(
+            info.source_context().unwrap_or(MONITOR_INSTANCE_ID),
+            crate::mon::space::MapInfo { id, flags },
+        );
     }
 }
 
@@ -286,8 +293,80 @@ pub fn monitor_rt_object_unmap(
     secgate::secure_gate(options(info, api))
 )]
 pub fn monitor_rt_get_thread_simple_buffer(info: &secgate::GateCallInfo) -> Option<ObjID> {
-    use crate::api::MONITOR_INSTANCE_ID;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.get_thread_simple_buffer(caller, info.thread_id())
+}
+
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+#[allow(dead_code)]
+pub enum MonitorCompControlCmd {
+    RuntimeReady,
+    RuntimePostMain,
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_comp_ctrl(
+    info: &secgate::GateCallInfo,
+    cmd: MonitorCompControlCmd,
+) -> Option<i32> {
+    let monitor = crate::mon::get_monitor();
+    monitor.compartment_ctrl(info, cmd)
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct MonitorStats {
+    pub space: SpaceStats,
+    pub thread_mgr: ThreadMgrStats,
+    pub comp_mgr: CompartmentMgrStats,
+    pub handles: HandleStats,
+    pub dynlink: DynlinkStats,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct SpaceStats {
+    pub mapped: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct ThreadMgrStats {
+    pub nr_threads: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct CompartmentMgrStats {
+    pub nr_compartments: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct HandleStats {
+    pub nr_comp_handles: usize,
+    pub nr_lib_handles: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct DynlinkStats {
+    pub nr_libs: usize,
+    pub nr_comps: usize,
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_stats(_info: &secgate::GateCallInfo) -> MonitorStats {
+    let monitor = crate::mon::get_monitor();
+    monitor.stats()
 }

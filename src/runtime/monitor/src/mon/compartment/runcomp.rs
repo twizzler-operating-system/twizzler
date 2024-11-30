@@ -1,25 +1,28 @@
 use std::{
     alloc::Layout,
     collections::HashMap,
-    marker::PhantomData,
     ptr::NonNull,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::atomic::{AtomicU64, Ordering},
 };
 
-use dynlink::compartment::CompartmentId;
-use monitor_api::SharedCompConfig;
+use dynlink::{compartment::CompartmentId, context::Context};
+use monitor_api::{SharedCompConfig, TlsTemplateInfo};
 use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::syscall::{
     ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
-use twizzler_runtime_api::{MapError, MapFlags, ObjID, ObjectHandle};
+use twizzler_rt_abi::{
+    core::{CompartmentInitInfo, CtorSet, InitInfoPtrs, RuntimeInfo, RUNTIME_INIT_COMP},
+    object::{MapError, MapFlags, ObjID},
+};
+use twz_rt::RuntimeThreadControl;
 
-use super::{compconfig::CompConfigObject, compthread::CompThread};
-use crate::mon::space::{MapHandle, MapInfo, Space};
+use super::{compconfig::CompConfigObject, compthread::CompThread, StackObject};
+use crate::mon::{
+    space::{MapHandle, MapInfo, Space},
+    thread::ThreadMgr,
+};
 
 /// Compartment is ready (loaded, reloacated, runtime started and ctors run).
 pub const COMP_READY: u64 = 0x1;
@@ -27,6 +30,12 @@ pub const COMP_READY: u64 = 0x1;
 pub const COMP_IS_BINARY: u64 = 0x2;
 /// Compartment runtime thread may exit.
 pub const COMP_THREAD_CAN_EXIT: u64 = 0x4;
+/// Compartment thread has been started once.
+pub const COMP_STARTED: u64 = 0x8;
+/// Compartment destructors have run.
+pub const COMP_DESTRUCTED: u64 = 0x10;
+/// Compartment thread has exited.
+pub const COMP_EXITED: u64 = 0x20;
 
 /// A runnable or running compartment.
 pub struct RunComp {
@@ -39,12 +48,33 @@ pub struct RunComp {
     /// The dynlink ID of this compartment.
     pub compartment_id: CompartmentId,
     main: Option<CompThread>,
-    deps: Vec<ObjID>,
+    pub deps: Vec<ObjID>,
     comp_config_object: CompConfigObject,
     alloc: Talc<ErrOnOom>,
     mapped_objects: HashMap<MapInfo, MapHandle>,
     flags: Box<AtomicU64>,
     per_thread: HashMap<ObjID, PerThread>,
+    init_info: Option<(StackObject, usize, Vec<CtorSet>)>,
+    pub(crate) use_count: u64,
+}
+
+impl Drop for RunComp {
+    fn drop(&mut self) {
+        //tracing::warn!("todo: runcomp drop");
+    }
+}
+
+impl core::fmt::Debug for RunComp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunComp")
+            .field("sctx", &self.sctx)
+            .field("instance", &self.instance)
+            .field("name", &self.name)
+            .field("deps", &self.deps)
+            .field("usecount", &self.use_count)
+            .field("dynlink_id", &self.compartment_id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Per-thread data in a compartment.
@@ -57,7 +87,7 @@ impl PerThread {
     /// handled gracefully. This means that if the thread fails to allocate a simple buffer, it
     /// will just forego having one. This may cause a failure down the line, but it's the best we
     /// can do without panicing.
-    fn new(instance: ObjID, th: ObjID, space: &mut Space) -> Self {
+    fn new(instance: ObjID, _th: ObjID, space: &mut Space) -> Self {
         let handle = space
             .safe_create_and_map_runtime_object(instance, MapFlags::READ | MapFlags::WRITE)
             .ok();
@@ -76,14 +106,27 @@ impl PerThread {
             .unwrap_or(0)
     }
 
+    /// Read bytes from this compartment-thread's simple buffer.
+    pub fn read_bytes(&mut self, len: usize) -> Vec<u8> {
+        let mut v = vec![0; len];
+        let readlen = self
+            .simple_buffer
+            .as_mut()
+            .map(|sb| sb.0.read(&mut v))
+            .unwrap_or(0);
+        v.truncate(readlen);
+        v
+    }
+
     /// Get the Object ID of this compartment thread's simple buffer.
     pub fn simple_buffer_id(&self) -> Option<ObjID> {
-        Some(self.simple_buffer.as_ref()?.0.handle().id)
+        Some(self.simple_buffer.as_ref()?.0.handle().id())
     }
 }
 
 impl RunComp {
     /// Build a new runtime compartment.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sctx: ObjID,
         instance: ObjID,
@@ -92,6 +135,9 @@ impl RunComp {
         deps: Vec<ObjID>,
         comp_config_object: CompConfigObject,
         flags: u64,
+        main_stack: StackObject,
+        entry: usize,
+        ctors: &[CtorSet],
     ) -> Self {
         let mut alloc = Talc::new(ErrOnOom);
         unsafe { alloc.claim(comp_config_object.alloc_span()).unwrap() };
@@ -107,6 +153,8 @@ impl RunComp {
             mapped_objects: HashMap::default(),
             flags: Box::new(AtomicU64::new(flags)),
             per_thread: HashMap::new(),
+            init_info: Some((main_stack, entry, ctors.to_vec())),
+            use_count: 0,
         }
     }
 
@@ -134,19 +182,9 @@ impl RunComp {
         // Unmapping handled by dropping
     }
 
-    /// Read the compartment config.
-    pub fn comp_config(&self) -> SharedCompConfig {
-        self.comp_config_object.read_comp_config()
-    }
-
     /// Get a pointer to the compartment config.
     pub fn comp_config_ptr(&self) -> *const SharedCompConfig {
         self.comp_config_object.get_comp_config()
-    }
-
-    /// Set the compartment config.
-    pub fn set_comp_config(&mut self, scc: SharedCompConfig) {
-        self.comp_config_object.write_config(scc)
     }
 
     /// Allocate some space in the compartment allocator, and initialize it.
@@ -154,7 +192,7 @@ impl RunComp {
         unsafe {
             let place: NonNull<T> = self.alloc.malloc(Layout::new::<T>())?.cast();
             place.as_ptr().write(data);
-            Ok(place.as_ptr() as *mut T)
+            Ok(place.as_ptr())
         }
     }
 
@@ -173,7 +211,24 @@ impl RunComp {
 
     /// Set a flag on this compartment, and wakeup anyone waiting on flag change.
     pub fn set_flag(&self, val: u64) {
+        tracing::trace!("compartment {} set flag {:x}", self.name, val);
         self.flags.fetch_or(val, Ordering::SeqCst);
+        self.notify_state_changed();
+    }
+
+    /// Set a flag on this compartment, and wakeup anyone waiting on flag change.
+    pub fn cas_flag(&self, old: u64, new: u64) -> Result<u64, u64> {
+        let r = self
+            .flags
+            .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst);
+        if r.is_ok() {
+            tracing::trace!("compartment {} cas flag {:x} -> {:x}", self.name, old, new);
+            self.notify_state_changed();
+        }
+        r
+    }
+
+    pub fn notify_state_changed(&self) {
         let _ = twizzler_abi::syscall::sys_thread_sync(
             &mut [ThreadSync::new_wake(ThreadSyncWake::new(
                 ThreadSyncReference::Virtual(&*self.flags),
@@ -190,57 +245,154 @@ impl RunComp {
 
     /// Setup a [ThreadSyncSleep] for waiting until the flag is set. Returns None if the flag is
     /// already set.
-    pub fn flag_waitable(&self, flag: u64) -> Option<ThreadSyncSleep> {
-        let flags = self.flags.load(Ordering::SeqCst);
-        if flags & flag == 0 {
-            Some(ThreadSyncSleep::new(
-                ThreadSyncReference::Virtual(&*self.flags),
-                flags,
-                ThreadSyncOp::Equal,
-                ThreadSyncFlags::empty(),
-            ))
-        } else {
-            None
-        }
-    }
-
-    /// Return a waiter for this flag, allows calling .wait later to wait until a flag is set.
-    pub fn waiter(&self, flag: u64) -> RunCompReadyWaiter<'_> {
-        RunCompReadyWaiter {
-            flag,
-            sleep: self.flag_waitable(flag),
-            _pd: PhantomData,
-        }
+    pub fn until_change(&self, cur: u64) -> ThreadSyncSleep {
+        ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(&*self.flags),
+            cur,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        )
     }
 
     /// Get the raw flags bits for this RC.
     pub fn raw_flags(&self) -> u64 {
         self.flags.load(Ordering::SeqCst)
     }
-}
 
-/// Allows waiting for a compartment to set a flag, sleeping the calling thread until the flag is
-/// set.
-pub struct RunCompReadyWaiter<'a> {
-    flag: u64,
-    sleep: Option<ThreadSyncSleep>,
-    _pd: PhantomData<&'a ()>,
-}
-
-impl<'a> RunCompReadyWaiter<'a> {
-    /// Wait until the compartment is marked as ready.
-    pub fn wait(&self) {
-        loop {
-            let Some(sleep) = self.sleep else { return };
-            if sleep.ready() {
-                return;
-            }
-
-            if let Err(e) =
-                twizzler_abi::syscall::sys_thread_sync(&mut [ThreadSync::new_sleep(sleep)], None)
-            {
-                tracing::warn!("thread sync error: {:?}", e);
-            }
+    pub(crate) fn start_main_thread(
+        &mut self,
+        state: u64,
+        space: &mut Space,
+        tmgr: &mut ThreadMgr,
+        dynlink: &mut Context,
+    ) -> Option<bool> {
+        if self.has_flag(COMP_STARTED) {
+            return Some(false);
         }
+        let state = state & !COMP_STARTED;
+        if self
+            .flags
+            .compare_exchange(
+                state,
+                state | COMP_STARTED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return None;
+        }
+
+        tracing::debug!("starting main thread for compartment {}", self.name);
+        debug_assert!(self.main.is_none());
+        // Unwrap-Ok: we only take this once, when starting the main thread.
+        let (stack, entry, ctors) = self.init_info.take().unwrap();
+        let mut build_init_info = || -> Option<_> {
+            let comp_config_info =
+                self.comp_config_object.get_comp_config() as *mut SharedCompConfig;
+            let ctors_in_comp = self.monitor_new_slice(&ctors).ok()?;
+
+            let comp_init_info = CompartmentInitInfo {
+                ctor_set_array: ctors_in_comp,
+                ctor_set_len: ctors.len(),
+                comp_config_info: comp_config_info.cast(),
+            };
+            let comp_init_info_in_comp = self.monitor_new(comp_init_info).ok()?;
+            // TODO: fill out argc and argv and envp
+            let rtinfo = RuntimeInfo {
+                flags: 0,
+                kind: RUNTIME_INIT_COMP,
+                args: core::ptr::null_mut(),
+                argc: 0,
+                envp: core::ptr::null_mut(),
+                init_info: InitInfoPtrs {
+                    comp: comp_init_info_in_comp,
+                },
+            };
+            self.monitor_new(rtinfo).ok()
+        };
+        let arg = match build_init_info() {
+            Some(arg) => arg as usize,
+            None => {
+                self.set_flag(COMP_EXITED);
+                return None;
+            }
+        };
+        if self.build_tls_template(dynlink).is_none() {
+            self.set_flag(COMP_EXITED);
+            return None;
+        }
+
+        let mt = match CompThread::new(
+            space,
+            tmgr,
+            dynlink,
+            stack,
+            self.instance,
+            Some(self.instance),
+            entry,
+            arg,
+        ) {
+            Ok(mt) => mt,
+            Err(_) => {
+                self.set_flag(COMP_EXITED);
+                return None;
+            }
+        };
+        self.main = Some(mt);
+        self.notify_state_changed();
+
+        Some(true)
+    }
+
+    fn build_tls_template(&mut self, dynlink: &mut Context) -> Option<()> {
+        let region = dynlink
+            .get_compartment_mut(self.compartment_id)
+            .unwrap()
+            .build_tls_region(RuntimeThreadControl::default(), |layout| {
+                unsafe { self.alloc.malloc(layout) }.ok()
+            })
+            .ok()?;
+
+        let template: TlsTemplateInfo = region.into();
+        let tls_template = self.monitor_new(template).ok()?;
+
+        let config = self.comp_config_object.read_comp_config();
+        config.set_tls_template(tls_template);
+        self.comp_config_object.write_config(config);
+        Some(())
+    }
+
+    #[allow(dead_code)]
+    pub fn read_error_code(&self) -> u64 {
+        let Some(ref main) = self.main else {
+            return 0;
+        };
+        main.thread.repr.get_repr().get_code()
+    }
+
+    pub(crate) fn inc_use_count(&mut self) {
+        self.use_count += 1;
+        tracing::trace!(
+            "compartment {} inc use count -> {}",
+            self.name,
+            self.use_count
+        );
+    }
+
+    pub(crate) fn dec_use_count(&mut self) -> bool {
+        debug_assert!(self.use_count > 0);
+        self.use_count -= 1;
+
+        tracing::trace!(
+            "compartment {} dec use count -> {}",
+            self.name,
+            self.use_count
+        );
+        let z = self.use_count == 0;
+        if z {
+            self.set_flag(COMP_THREAD_CAN_EXIT);
+        }
+        z
     }
 }

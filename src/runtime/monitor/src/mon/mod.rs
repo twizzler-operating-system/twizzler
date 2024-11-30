@@ -1,11 +1,19 @@
 use std::{ptr::NonNull, sync::OnceLock};
 
+use compartment::{
+    StackObject, COMP_DESTRUCTED, COMP_EXITED, COMP_IS_BINARY, COMP_READY, COMP_STARTED,
+    COMP_THREAD_CAN_EXIT,
+};
 use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
-use monitor_api::{SharedCompConfig, TlsTemplateInfo};
+use monitor_api::{SharedCompConfig, TlsTemplateInfo, MONITOR_INSTANCE_ID};
 use secgate::util::HandleMgr;
-use twizzler_abi::upcall::UpcallFrame;
-use twizzler_runtime_api::{MapError, MapFlags, ObjID, SpawnError, ThreadSpawnArgs};
+use thread::DEFAULT_STACK_SIZE;
+use twizzler_abi::{syscall::sys_thread_exit, upcall::UpcallFrame};
+use twizzler_rt_abi::{
+    object::{MapError, MapFlags, ObjID},
+    thread::{SpawnError, ThreadSpawnArgs},
+};
 use twz_rt::{RuntimeState, RuntimeThreadControl, OUR_RUNTIME};
 
 use self::{
@@ -13,11 +21,12 @@ use self::{
     space::{MapHandle, MapInfo, Unmapper},
     thread::{ManagedThread, ThreadCleaner},
 };
-use crate::{api::MONITOR_INSTANCE_ID, init::InitDynlinkContext};
+use crate::{gates::MonitorCompControlCmd, init::InitDynlinkContext};
 
 pub(crate) mod compartment;
 pub mod library;
 pub(crate) mod space;
+pub mod stat;
 pub(crate) mod thread;
 
 /// A security monitor instance. All monitor logic is implemented as methods for this type.
@@ -25,7 +34,8 @@ pub(crate) mod thread;
 /// mapping objects, 'thread_mgr', which manages all threads owned by the monitor (typically, all
 /// threads started by compartments), 'compartments', which manages compartment state, and
 /// 'dynlink', which contains the dynamic linker state. The unmapper allows for background unmapping
-/// and cleanup of objects and handles.
+/// and cleanup of objects and handles. There are also two hangle managers, for the monitor to hand
+/// out handles to libraries and compartments to callers.
 pub struct Monitor {
     locks: LockCollection<MonitorLocks<'static>>,
     unmapper: OnceLock<Unmapper>,
@@ -40,7 +50,7 @@ pub struct Monitor {
     /// Open handles to libraries.
     pub library_handles: &'static RwLock<HandleMgr<library::LibraryHandle>>,
     /// Open handles to compartments.
-    pub compartment_handles: &'static RwLock<HandleMgr<CompartmentHandle>>,
+    pub _compartment_handles: &'static RwLock<HandleMgr<CompartmentHandle>>,
 }
 
 // We allow locking individually, using eg mon.space.write(key), or locking the collection for more
@@ -71,8 +81,9 @@ impl Monitor {
         let mut comp_mgr = compartment::CompartmentMgr::default();
         let mut space = space::Space::default();
 
+        let ctx = init.get_safe_context();
         // Build our TLS region, and create a template for the monitor compartment.
-        let super_tls = (unsafe { &mut *init.ctx })
+        let super_tls = ctx
             .get_compartment_mut(MONITOR_COMPARTMENT_ID)
             .unwrap()
             .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
@@ -84,7 +95,13 @@ impl Monitor {
         // Set up the monitor's compartment.
         let monitor_scc =
             SharedCompConfig::new(MONITOR_INSTANCE_ID, template as *const _ as *mut _);
-        let handle = space
+        let cc_handle = space
+            .safe_create_and_map_runtime_object(
+                MONITOR_INSTANCE_ID,
+                MapFlags::READ | MapFlags::WRITE,
+            )
+            .unwrap();
+        let stack_handle = space
             .safe_create_and_map_runtime_object(
                 MONITOR_INSTANCE_ID,
                 MapFlags::READ | MapFlags::WRITE,
@@ -96,8 +113,12 @@ impl Monitor {
             "monitor".to_string(),
             MONITOR_COMPARTMENT_ID,
             vec![],
-            CompConfigObject::new(handle, monitor_scc),
+            CompConfigObject::new(cc_handle, monitor_scc),
             0,
+            StackObject::new(stack_handle, DEFAULT_STACK_SIZE).unwrap(),
+            0, /* doesn't matter -- we won't be starting a main thread for this compartment in
+                * the normal way */
+            &[],
         ));
 
         // Allocate and leak all the locks (they are global and eternal, so we can do this to safely
@@ -105,7 +126,7 @@ impl Monitor {
         let space = Box::leak(Box::new(RwLock::new(space)));
         let thread_mgr = Box::leak(Box::new(RwLock::new(thread::ThreadMgr::default())));
         let comp_mgr = Box::leak(Box::new(RwLock::new(comp_mgr)));
-        let dynlink = Box::leak(Box::new(RwLock::new(unsafe { init.ctx.as_mut().unwrap() })));
+        let dynlink = Box::leak(Box::new(RwLock::new(ctx)));
         let library_handles = Box::leak(Box::new(RwLock::new(HandleMgr::new(None))));
         let compartment_handles = Box::leak(Box::new(RwLock::new(HandleMgr::new(None))));
 
@@ -126,7 +147,7 @@ impl Monitor {
             comp_mgr,
             dynlink,
             library_handles,
-            compartment_handles,
+            _compartment_handles: compartment_handles,
         }
     }
 
@@ -138,7 +159,7 @@ impl Monitor {
         let monitor_dynlink_comp = locks.3.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
         locks
             .1
-            .start_thread(&mut *locks.0, monitor_dynlink_comp, main)
+            .start_thread(&mut locks.0, monitor_dynlink_comp, main, None)
     }
 
     /// Spawn a thread into a given compartment, using initial thread arguments.
@@ -179,6 +200,14 @@ impl Monitor {
         Ok(handle)
     }
 
+    /// Unmap an object from a given compartmen.
+    pub fn unmap_object(&self, sctx: ObjID, info: MapInfo) {
+        self.unmapper
+            .get()
+            .unwrap()
+            .background_unmap_object_from_comp(sctx, info);
+    }
+
     /// Get the object ID for this compartment-thread's simple buffer.
     pub fn get_thread_simple_buffer(&self, sctx: ObjID, thread: ObjID) -> Option<ObjID> {
         let mut locks = self.locks.lock(ThreadKey::get().unwrap());
@@ -186,6 +215,131 @@ impl Monitor {
         let rc = comps.get_mut(sctx)?;
         let pt = rc.get_per_thread(thread, &mut *space);
         pt.simple_buffer_id()
+    }
+
+    /// Write bytes to this per-compartment thread's simple buffer.
+    pub fn _write_thread_simple_buffer(
+        &self,
+        sctx: ObjID,
+        thread: ObjID,
+        bytes: &[u8],
+    ) -> Option<usize> {
+        let mut locks = self.locks.lock(ThreadKey::get().unwrap());
+        let (ref mut space, _, ref mut comps, _, _, _) = *locks;
+        let rc = comps.get_mut(sctx)?;
+        let pt = rc.get_per_thread(thread, &mut *space);
+        Some(pt.write_bytes(bytes))
+    }
+
+    /// Read bytes from this per-compartment thread's simple buffer.
+    pub fn read_thread_simple_buffer(
+        &self,
+        sctx: ObjID,
+        thread: ObjID,
+        len: usize,
+    ) -> Option<Vec<u8>> {
+        let mut locks = self.locks.lock(ThreadKey::get().unwrap());
+        let (ref mut space, _, ref mut comps, _, _, _) = *locks;
+        let rc = comps.get_mut(sctx)?;
+        let pt = rc.get_per_thread(thread, &mut *space);
+        Some(pt.read_bytes(len))
+    }
+
+    /// Read the name of a compartment.
+    pub fn comp_name(&self, id: ObjID) -> Option<String> {
+        self.comp_mgr
+            .read(ThreadKey::get().unwrap())
+            .get(id)
+            .map(|rc| rc.name.clone())
+    }
+
+    /// Perform a compartment control action on the calling compartment.
+    pub fn compartment_ctrl(
+        &self,
+        info: &secgate::GateCallInfo,
+        cmd: MonitorCompControlCmd,
+    ) -> Option<i32> {
+        let src = info.source_context()?;
+        tracing::trace!(
+            "compartment ctrl from: {:?}, thread = {:?}: {:?}",
+            src,
+            info.thread_id(),
+            cmd
+        );
+        match cmd {
+            // Here, the thread has indicated that it has initialized the runtime (and run
+            // constructors), and so is ready to call main. At this point, we make sure
+            // no errors have occurred and that we should continue. Update flags to
+            // ready via compare-and-swap to ensure no one has set an error flag, and
+            // return. If this compartment is a binary, then return None so the runtime will call
+            // main. Otherwise return Some(SUCCESS) so that the runtime immediately
+            // calls the post-main hook.
+            MonitorCompControlCmd::RuntimeReady => loop {
+                let state = self.load_compartment_flags(src);
+                if state & COMP_STARTED == 0
+                    || state & COMP_DESTRUCTED != 0
+                    || state & COMP_EXITED != 0
+                {
+                    tracing::warn!(
+                        "runtime main thread {} encountered invalid compartment {} state: {}",
+                        info.thread_id(),
+                        src,
+                        state
+                    );
+                    sys_thread_exit(127);
+                }
+
+                if self.update_compartment_flags(src, |state| Some(state | COMP_READY)) {
+                    tracing::debug!(
+                        "runtime main thread reached compartment ready state in {}",
+                        self.comp_name(src)
+                            .unwrap_or_else(|| String::from("unknown"))
+                    );
+                    break if state & COMP_IS_BINARY == 0 {
+                        Some(0)
+                    } else {
+                        None
+                    };
+                }
+            },
+            MonitorCompControlCmd::RuntimePostMain => {
+                // First we want to check if we are a binary, and if so, we don't have to wait
+                // around in here.
+                loop {
+                    if self.update_compartment_flags(src, |state| {
+                        // Binaries can exit immediately. All future cross-compartment calls fail.
+                        if state & COMP_IS_BINARY != 0 {
+                            Some(state | COMP_THREAD_CAN_EXIT)
+                        } else {
+                            Some(state)
+                        }
+                    }) {
+                        tracing::debug!(
+                            "runtime main thread reached compartment post-main state in {}",
+                            self.comp_name(src)
+                                .unwrap_or_else(|| String::from("unknown"))
+                        );
+                        break;
+                    }
+                }
+                // Wait until we are allowed to exit (no one has a living, callable reference to us,
+                // or we are a binary), ant then set the destructed flag and return.
+                loop {
+                    let flags = self.load_compartment_flags(src);
+                    if flags & COMP_THREAD_CAN_EXIT != 0
+                        && self.update_compartment_flags(src, |state| Some(state | COMP_DESTRUCTED))
+                    {
+                        tracing::debug!(
+                            "runtime main thread destructing in {}",
+                            self.comp_name(src)
+                                .unwrap_or_else(|| String::from("unknown"))
+                        );
+                        break None;
+                    }
+                    self.wait_for_compartment_state_change(src, flags);
+                }
+            }
+        }
     }
 }
 

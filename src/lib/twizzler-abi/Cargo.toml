@@ -6,40 +6,21 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 
 [dependencies]
 bitflags = "2.4.1"
-alloc = { version = "1.0.0", optional = true, package = "rustc-std-workspace-alloc" }
-talc = { version = "3.0", default-features = false, optional = true }
 bitset-core = { version = "0.1", optional = true, default-features = false }
 cfg-if = "1.0"
 num_enum = { version = "0.7", default-features = false }
 thiserror = { package = "thiserror-no-std", version = "2.0", default-features = false }
-stable-vec = "0.4.1"
 lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
-lru = "0.12.4"
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
 static_assertions = "1"
-paste = "1"
-printf-compat = { version = "0.1", default-features = false }
 
 [dependencies.volatile]
 optional = true
 version = "0.5"
 
-[dependencies.compiler_builtins]
-optional = true
-version = "0.1"
-
-[dependencies.core]
-optional = true
-package = "rustc-std-workspace-core"
-version = "1.0.0"
-
-[dependencies.libc]
-optional = true
-default-features = false
-version = "0.2.51"
-
 [features]
-# Activate if you want the minruntime to be compiled.
-runtime = ["volatile", "talc", "bitset-core"]
 # Activate if compiling for the kernel.
 kernel = ["volatile"]
+
+[dev-dependencies]
+twizzler-minruntime = { path = "../../runtime/minruntime" }
