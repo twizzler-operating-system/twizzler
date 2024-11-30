@@ -12,9 +12,10 @@ pub(crate) unsafe extern "C" fn upcall_entry2(
 
 #[no_mangle]
 pub(crate) unsafe extern "C-unwind" fn upcall_entry(
-    rdi: *mut UpcallFrame,
-    rsi: *const UpcallData,
+    rdi: *mut core::ffi::c_void,
+    rsi: *const core::ffi::c_void,
 ) -> ! {
+    let rdi: *const UpcallFrame = rdi.cast();
     core::arch::asm!(
         ".cfi_signal_frame",
         "mov rbp, rdx",

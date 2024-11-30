@@ -6,7 +6,7 @@ use std::{
 };
 
 use dynlink::{compartment::Compartment, tls::TlsRegion};
-use monitor_api::MONITOR_INSTANCE_ID;
+use monitor_api::{RuntimeThreadControl, MONITOR_INSTANCE_ID};
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
     syscall::{sys_spawn, sys_thread_exit, ThreadSyncSleep, UpcallTargetSpawnOption},
@@ -17,7 +17,6 @@ use twizzler_rt_abi::{
     object::{MapFlags, ObjID},
     thread::SpawnError,
 };
-use twz_rt::RuntimeThreadControl;
 
 use super::space::{MapHandle, MapInfo, Space};
 use crate::gates::ThreadMgrStats;
@@ -75,7 +74,7 @@ impl ThreadMgr {
     ) -> Result<ObjID, SpawnError> {
         let upcall_target = UpcallTarget::new(
             None,
-            Some(twz_rt::rr_upcall_entry),
+            Some(twizzler_rt_abi::arch::__twz_rt_upcall_entry),
             super_stack_start,
             SUPER_UPCALL_STACK_SIZE,
             super_thread_pointer,

@@ -8,6 +8,10 @@ use twizzler_rt_abi::{
     thread::{SpawnError, ThreadSpawnArgs},
 };
 
+extern "C-unwind" {
+    fn __is_monitor_ready() -> bool;
+}
+
 /// Reserved instance ID for the security monitor.
 pub const MONITOR_INSTANCE_ID: ObjID = ObjID::new(0);
 
@@ -94,6 +98,7 @@ pub struct CompartmentInfo {
     pub id: ObjID,
     pub sctx: ObjID,
     pub flags: u64,
+    pub nr_libs: usize,
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
@@ -156,6 +161,8 @@ unsafe impl Crossing for LibraryInfo {}
 pub fn monitor_rt_load_compartment(
     info: &secgate::GateCallInfo,
     name_len: u64,
+    args_len: u64,
+    env_len: u64,
     flags: u32,
 ) -> Result<Descriptor, LoadCompartmentError> {
     let monitor = crate::mon::get_monitor();
@@ -164,6 +171,8 @@ pub fn monitor_rt_load_compartment(
         caller,
         info.thread_id(),
         name_len as usize,
+        args_len as usize,
+        env_len as usize,
         NewCompartmentFlags::from_bits(flags).ok_or(LoadCompartmentError::Unknown)?,
     )
 }
@@ -179,6 +188,21 @@ impl Display for LoadCompartmentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         <Self as Debug>::fmt(self, f)
     }
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_compartment_wait(
+    info: &secgate::GateCallInfo,
+    desc: Option<Descriptor>,
+    flags: u64,
+) -> u64 {
+    let monitor = crate::mon::get_monitor();
+    let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
+    monitor.compartment_wait(caller, desc, flags)
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
@@ -234,10 +258,8 @@ pub fn monitor_rt_object_map(
     id: ObjID,
     flags: twizzler_rt_abi::object::MapFlags,
 ) -> Result<crate::MappedObjectAddrs, MapError> {
-    use twz_rt::{RuntimeState, OUR_RUNTIME};
-
     use crate::mon::space::MapInfo;
-    if OUR_RUNTIME.state().contains(RuntimeState::READY) {
+    if unsafe { __is_monitor_ready() } {
         // Are we recursing from the monitor, with a lock held? In that case, use early_object_map
         // to map the object. This will leak this mapping, but this is both rare, and then
         // since the mapping is leaked, it can be used as an allocator object indefinitely
@@ -277,8 +299,7 @@ pub fn monitor_rt_object_unmap(
     id: ObjID,
     flags: twizzler_rt_abi::object::MapFlags,
 ) {
-    use twz_rt::{RuntimeState, OUR_RUNTIME};
-    if OUR_RUNTIME.state().contains(RuntimeState::READY) {
+    if unsafe { __is_monitor_ready() } {
         let monitor = crate::mon::get_monitor();
         monitor.unmap_object(
             info.source_context().unwrap_or(MONITOR_INSTANCE_ID),

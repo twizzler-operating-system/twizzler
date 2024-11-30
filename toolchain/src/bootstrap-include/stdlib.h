@@ -13,7 +13,7 @@ _Noreturn static inline void abort(void) {
 }
 
 extern void *malloc(size_t len);
-char *getenv(const char *name);
+extern char *getenv(const char *name);
 extern void free(void *ptr);
 
 #ifdef __cplusplus

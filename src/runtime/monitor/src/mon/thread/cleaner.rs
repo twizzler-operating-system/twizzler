@@ -105,7 +105,6 @@ impl Waits {
     }
 }
 
-#[tracing::instrument(skip(data, recv))]
 fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<WaitOp>) {
     // TODO (dbittman): when we have support for async thread events, we can use that API.
     let mut ops = Vec::new();

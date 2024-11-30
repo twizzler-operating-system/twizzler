@@ -94,6 +94,7 @@ impl Context {
         } else {
             None
         };
+        let sn = symbol.as_ref().map(|s| s.0.to_string()).unwrap_or_default();
 
         // Helper for logging errors.
         let open_sym = || {
@@ -150,15 +151,19 @@ impl Context {
                 unsafe { *target = val.wrapping_add_signed(addend) }
             }
             REL_TPOFF => {
-                if let Some(tls) = lib.tls_id {
-                    let val = open_sym().map(|sym| sym.raw_value()).unwrap_or(0);
+                let sym = open_sym()?;
+                if let Some(tls) = sym.lib.tls_id {
                     unsafe {
-                        *target = val
+                        *target = sym
+                            .raw_value()
                             .wrapping_sub(tls.offset() as u64)
                             .wrapping_add_signed(addend)
                     }
                 } else {
-                    error!("{}: TPOFF relocations require a PT_TLS segment", lib);
+                    error!(
+                        "{}: TPOFF relocations require a PT_TLS segment (sym {})",
+                        lib, sn
+                    );
                     Err(DynlinkErrorKind::NoTLSInfo {
                         library: lib.name.clone(),
                     })?

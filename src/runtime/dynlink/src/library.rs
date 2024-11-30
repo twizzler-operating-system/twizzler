@@ -4,7 +4,6 @@ use std::fmt::{Debug, Display};
 
 use elf::{
     abi::{DT_FLAGS_1, PT_PHDR, PT_TLS, STB_WEAK},
-    dynamic::Dyn,
     endian::NativeEndian,
     segment::{Elf64_Phdr, ProgramHeader},
     ParseError,
@@ -351,7 +350,7 @@ impl Debug for Library {
 
 impl Drop for Library {
     fn drop(&mut self) {
-        tracing::info!("dynlink: drop library: {:?}", self);
+        tracing::debug!("dynlink: drop library: {:?}", self);
     }
 }
 

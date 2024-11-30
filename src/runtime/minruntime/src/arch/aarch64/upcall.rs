@@ -12,8 +12,8 @@ pub(crate) unsafe extern "C" fn upcall_entry2(
 
 #[no_mangle]
 pub(crate) unsafe extern "C-unwind" fn upcall_entry(
-    frame: *mut UpcallFrame,
-    data: *const UpcallData,
+    frame: *mut core::ffi::c_void,
+    data: *const core::ffi::c_void,
 ) -> ! {
     core::arch::asm!(
         "b upcall_entry2",

@@ -1,4 +1,3 @@
-#![feature(c_str_literals)]
 #![feature(iterator_try_collect)]
 #![feature(proc_macro_diagnostic)]
 // syn doesn't allow us to easily fix this.
@@ -167,12 +166,10 @@ fn handle_secure_gate(
 
     let Info {
         mod_name,
-        fn_name,
         internal_fn_name,
         ..
     } = names;
     tree.sig.ident = parse_quote!(#internal_fn_name);
-    //tree.vis = parse_quote!(pub(crate));
 
     if entry_only {
         Ok(quote::quote! {
@@ -208,7 +205,7 @@ fn handle_secure_gate(
 
 fn get_entry_sig(tree: &ItemFn) -> Signature {
     let mut sig = tree.sig.clone();
-    sig.abi = parse_quote!( extern "C-unwind" );
+    sig.abi = parse_quote!( extern "C" );
     sig.inputs = Punctuated::new();
     sig.inputs
         .push_value(parse_quote!(info: *const secgate::GateCallInfo));
@@ -229,7 +226,7 @@ fn build_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStr
     call_point.sig.ident = names.trampoline_name.clone();
     call_point.sig.abi = Some(syn::Abi {
         extern_token: syn::token::Extern::default(),
-        name: Some(LitStr::new("C-unwind", proc_macro2::Span::mixed_site())),
+        name: Some(LitStr::new("C", proc_macro2::Span::mixed_site())),
     });
     let entry_sig = get_entry_sig(tree);
     call_point.sig.output = entry_sig.output;
@@ -241,12 +238,8 @@ fn build_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStr
             #[cfg(target_arch = "x86_64")]
             unsafe {core::arch::naked_asm!(
                 "push rbp",
-                "push 0",
-                "push 0",
                 "mov rbp, rsp",
                 "call {0}",
-                "pop rbp",
-                "pop rbp",
                 "pop rbp",
                 "ret",
                 sym #entry_name)}
@@ -322,7 +315,7 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
                 std::process::Termination::report(std::process::ExitCode::from(101u8));
             }
             let wret = match impl_ret {
-                Ok(r) => secgate::SecGateReturn::<_>::Success(r),
+                Ok(r) => secgate::SecGateReturn::Success(r),
                 Err(_) => secgate::SecGateReturn::<_>::CalleePanic,
             };
 
@@ -391,7 +384,7 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
                         unsafe {
                             #mod_name::#trampoline_name(info as *const _, args as *const _, ret as *mut _);
                         }
-                        ret.into_inner().unwrap_or(secgate::SecGateReturn::<_>::NoReturnValue)
+                        ret.into_inner()
                     })
                 })
             });
@@ -481,7 +474,7 @@ fn build_types(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
         #[allow(non_camel_case_types)]
         type #entry_type_name = #ty;
         pub type Args = #arg_types;
-        pub type Ret = secgate::Return<secgate::SecGateReturn<#ret_type>>;
+        pub type Ret = secgate::Return<#ret_type>;
         pub const ARGS_SIZE: usize = core::mem::size_of::<Args>();
         pub const RET_SIZE: usize = core::mem::size_of::<Ret>();
     })

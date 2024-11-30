@@ -16,7 +16,6 @@ mod thread;
 mod time;
 pub(crate) mod upcall;
 
-pub use thread::RuntimeThreadControl;
 pub use upcall::set_upcall_handler;
 
 use self::object::ObjectHandleManager;

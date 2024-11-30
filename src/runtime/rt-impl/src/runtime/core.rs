@@ -1,7 +1,15 @@
 //! Implements the core runtime functions.
 
+use std::{
+    collections::BTreeMap,
+    ffi::{c_char, c_void, CStr, CString},
+    sync::{Mutex, OnceLock},
+};
+
 use dynlink::context::runtime::RuntimeInitInfo;
-use monitor_api::SharedCompConfig;
+use monitor_api::{RuntimeThreadControl, SharedCompConfig};
+use secgate::SecGateReturn;
+use tracing::Level;
 use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
 use twizzler_rt_abi::{
     core::{
@@ -17,11 +25,13 @@ use crate::{
     preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
     runtime::RuntimeState,
-    RuntimeThreadControl,
 };
 
-#[thread_local]
-static TLS_TEST: usize = 3222;
+#[derive(Copy, Clone)]
+struct PtrToInfo(*mut c_void);
+unsafe impl Send for PtrToInfo {}
+unsafe impl Sync for PtrToInfo {}
+static MON_RTINFO: OnceLock<Option<PtrToInfo>> = OnceLock::new();
 
 impl ReferenceRuntime {
     pub fn default_allocator(&self) -> &'static dyn std::alloc::GlobalAlloc {
@@ -46,6 +56,30 @@ impl ReferenceRuntime {
         }
     }
 
+    pub fn is_monitor(&self) -> Option<*mut c_void> {
+        MON_RTINFO
+            .get()
+            .as_ref()
+            .unwrap()
+            .map(|x| x.0 as *mut _ as *mut c_void)
+    }
+
+    pub fn cgetenv(&self, name: &CStr) -> *const c_char {
+        // TODO: this approach is very simple, but it leaks if the environment changes a lot.
+        static ENVMAP: Mutex<BTreeMap<String, CString>> = Mutex::new(BTreeMap::new());
+        let Ok(name) = name.to_str() else {
+            return core::ptr::null();
+        };
+        let Ok(val) = std::env::var(name) else {
+            return core::ptr::null();
+        };
+        let mut envmap = ENVMAP.lock().unwrap();
+        envmap
+            .entry(val.to_string())
+            .or_insert_with(|| CString::new(val.to_string()).unwrap())
+            .as_ptr()
+    }
+
     pub fn runtime_entry(
         &self,
         rtinfo: *const RuntimeInfo,
@@ -62,6 +96,7 @@ impl ReferenceRuntime {
                         .as_ref()
                         .unwrap()
                 };
+                let _ = MON_RTINFO.set(Some(PtrToInfo(init_info as *const _ as *mut _)));
                 self.init_for_monitor(init_info);
             }
             RUNTIME_INIT_COMP => {
@@ -73,6 +108,7 @@ impl ReferenceRuntime {
                         .as_ref()
                         .unwrap()
                 };
+                let _ = MON_RTINFO.set(None);
                 self.init_for_compartment(init_info);
             }
             x => {
@@ -92,16 +128,31 @@ impl ReferenceRuntime {
     }
 
     pub fn pre_main_hook(&self) -> Option<ExitCode> {
-        preinit_println!("====== {}", TLS_TEST);
+        // TODO: control this with env vars
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::fmt()
+                .with_max_level(Level::INFO)
+                .finish(),
+        )
+        .unwrap();
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
+            None
         } else {
             unsafe { self.set_runtime_ready() };
+            let ret = match monitor_api::monitor_rt_comp_ctrl(
+                monitor_api::MonitorCompControlCmd::RuntimeReady,
+            ) {
+                SecGateReturn::Success(ret) => ret,
+                _ => self.abort(),
+            };
+            ret
         }
-        None
     }
 
-    pub fn post_main_hook(&self) {}
+    pub fn post_main_hook(&self) {
+        monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimePostMain);
+    }
 
     pub fn sysinfo(&self) -> SystemInfo {
         let info = twizzler_abi::syscall::sys_info();
@@ -121,8 +172,11 @@ impl ReferenceRuntime {
 impl ReferenceRuntime {
     fn init_for_monitor(&self, init_info: &RuntimeInitInfo) {
         let upcall_target = UpcallTarget::new(
-            Some(crate::arch::rr_upcall_entry),
-            Some(crate::arch::rr_upcall_entry),
+            Some(
+                twizzler_rt_abi::arch::__twz_rt_upcall_entry
+                    as unsafe extern "C-unwind" fn(_, _) -> !,
+            ),
+            Some(twizzler_rt_abi::arch::__twz_rt_upcall_entry),
             0,
             0,
             0,
@@ -150,11 +204,9 @@ impl ReferenceRuntime {
                 .ok(),
             );
         }
-        let tls = preinit_unwrap(
-            preinit_unwrap(TLS_GEN_MGR.lock().ok())
-                .get_next_tls_info(None, || RuntimeThreadControl::new(0)),
-        );
-        twizzler_abi::syscall::sys_thread_settls(tls as u64);
+        let mut tg = preinit_unwrap(TLS_GEN_MGR.write().ok());
+        let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
+        twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
 
         if !init_info.ctor_set_array.is_null() && init_info.ctor_set_len != 0 {
             let ctor_slice = unsafe {
@@ -195,3 +247,30 @@ impl ReferenceRuntime {
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
     }
 }
+
+#[allow(improper_ctypes)]
+extern "C" {
+    fn twizzler_call_lang_start(
+        main: fn(),
+        argc: isize,
+        argv: *const *const u8,
+        sigpipe: u8,
+    ) -> isize;
+}
+
+#[no_mangle]
+#[linkage = "weak"]
+pub extern "C" fn main(argc: i32, argv: *const *const u8) -> i32 {
+    //TODO: sigpipe?
+    unsafe { twizzler_call_lang_start(dead_end, argc as isize, argv, 0) as i32 }
+}
+
+fn dead_end() {
+    twizzler_abi::syscall::sys_thread_exit(0);
+}
+
+// TODO: we should probably get this for real.
+#[cfg(not(test))]
+#[no_mangle]
+#[linkage = "weak"]
+pub extern "C" fn _init() {}

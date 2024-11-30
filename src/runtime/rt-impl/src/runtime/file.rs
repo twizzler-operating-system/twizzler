@@ -48,7 +48,7 @@ const WRITABLE_BYTES: u64 = (1 << 26) - size_of::<FileMetadata>() as u64 - NULLP
 const OBJECT_COUNT: usize = 256;
 const DIRECT_OBJECT_COUNT: usize = 255; // The number of objects reachable from the direct pointer list
 const MAX_FILE_SIZE: u64 = WRITABLE_BYTES * 256;
-const MAX_LOADABLE_OBJECTS: usize = 16;
+const _MAX_LOADABLE_OBJECTS: usize = 16;
 lazy_static! {
     static ref FD_SLOTS: Mutex<StableVec<FdKind>> = Mutex::new(StableVec::from([
         FdKind::Stdio,
@@ -197,7 +197,7 @@ impl ReferenceRuntime {
         fd: RawFd,
         off: Option<u64>,
         buf: &mut [u8],
-        flags: IoFlags,
+        _flags: IoFlags,
     ) -> Result<usize, IoError> {
         if off.is_some() {
             return Err(IoError::SeekError);
@@ -210,7 +210,7 @@ impl ReferenceRuntime {
         fd: RawFd,
         off: Option<u64>,
         buf: &[u8],
-        flags: IoFlags,
+        _flags: IoFlags,
     ) -> Result<usize, IoError> {
         if off.is_some() {
             return Err(IoError::SeekError);
@@ -220,20 +220,20 @@ impl ReferenceRuntime {
 
     pub fn fd_pwritev(
         &self,
-        fd: RawFd,
-        off: Option<u64>,
-        buf: &[io_vec],
-        flags: IoFlags,
+        _fd: RawFd,
+        _off: Option<u64>,
+        _buf: &[io_vec],
+        _flags: IoFlags,
     ) -> Result<usize, IoError> {
         return Err(IoError::Other);
     }
 
     pub fn fd_preadv(
         &self,
-        fd: RawFd,
-        off: Option<u64>,
-        buf: &[io_vec],
-        flags: IoFlags,
+        _fd: RawFd,
+        _off: Option<u64>,
+        _buf: &[io_vec],
+        _flags: IoFlags,
     ) -> Result<usize, IoError> {
         return Err(IoError::Other);
     }
@@ -353,7 +353,7 @@ impl ReferenceRuntime {
     }
 
     pub fn close(&self, fd: RawFd) -> Option<()> {
-        let file_desc = get_fd_slots()
+        let _file_desc = get_fd_slots()
             .lock()
             .unwrap()
             .remove(fd.try_into().unwrap())?;
