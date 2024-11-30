@@ -69,13 +69,13 @@ macro_rules! check_ffi_type {
     };
 }
 
-use std::{ffi::CStr, os::fd::RawFd};
+use std::ffi::{c_void, CStr};
 
 use tracing::warn;
 // core.h
 use twizzler_rt_abi::bindings::option_exit_code;
 
-use crate::runtime::OUR_RUNTIME;
+use crate::{runtime::OUR_RUNTIME, set_upcall_handler};
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_abort() {
@@ -125,9 +125,17 @@ check_ffi_type!(twz_rt_runtime_entry, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_cross_compartment_entry() {
-    warn!("TODO: cross-compartment-entry");
+    OUR_RUNTIME.cross_compartment_entry();
 }
 check_ffi_type!(twz_rt_cross_compartment_entry);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_set_upcall_handler(
+    handler: Option<unsafe extern "C-unwind" fn(frame: *mut c_void, data: *const c_void)>,
+) {
+    let _ = set_upcall_handler(handler);
+}
+check_ffi_type!(twz_rt_set_upcall_handler, _);
 
 // alloc.h
 
@@ -584,11 +592,7 @@ pub unsafe extern "C-unwind" fn free(ptr: *mut core::ffi::c_void) {
 #[no_mangle]
 pub unsafe extern "C-unwind" fn getenv(name: *const core::ffi::c_char) -> *const core::ffi::c_char {
     let n = unsafe { CStr::from_ptr(name.cast()) };
-    warn!(
-        "called c:getenv with name = {:p}: `{:?}`: not yet implemented",
-        name, n
-    );
-    core::ptr::null()
+    OUR_RUNTIME.cgetenv(n)
 }
 
 #[no_mangle]
@@ -633,4 +637,47 @@ pub unsafe extern "C-unwind" fn fprintf(
         0,
     );
     bytes_written
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __monitor_get_slot() -> isize {
+    match OUR_RUNTIME.allocate_slot() {
+        Some(s) => s.try_into().unwrap_or(-1),
+        None => -1,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __monitor_release_slot(slot: usize) {
+    OUR_RUNTIME.release_slot(slot);
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __monitor_release_pair(one: usize, two: usize) {
+    OUR_RUNTIME.release_pair((one, two));
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __monitor_get_slot_pair(one: *mut usize, two: *mut usize) -> bool {
+    let Some((a, b)) = OUR_RUNTIME.allocate_pair() else {
+        return false;
+    };
+    one.write(a);
+    two.write(b);
+    true
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __monitor_ready() {
+    OUR_RUNTIME.set_runtime_ready();
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __is_monitor_ready() -> bool {
+    OUR_RUNTIME.state().contains(crate::RuntimeState::READY)
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __is_monitor() -> *mut c_void {
+    OUR_RUNTIME.is_monitor().unwrap_or(core::ptr::null_mut())
 }

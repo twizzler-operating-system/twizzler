@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ffi::CStr};
 
 use dynlink::{
     compartment::CompartmentId,
@@ -203,7 +203,7 @@ impl super::Monitor {
         thread: ObjID,
         desc: Option<Descriptor>,
     ) -> Option<CompartmentInfo> {
-        let (ref mut space, _, ref mut comps, _, _, ref comphandles) =
+        let (ref mut space, _, ref mut comps, ref dynlink, _, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = desc
             .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
@@ -213,12 +213,18 @@ impl super::Monitor {
         let pt = comps.get_mut(instance)?.get_per_thread(thread, space);
         let name_len = pt.write_bytes(name.as_bytes());
         let comp = comps.get(comp_id)?;
+        let nr_libs = dynlink
+            .get_compartment(comp.compartment_id)
+            .ok()?
+            .library_ids()
+            .count();
 
         Some(CompartmentInfo {
             name_len,
             id: comp_id,
             sctx: comp.sctx,
             flags: comp.raw_flags(),
+            nr_libs,
         })
     }
 
@@ -239,14 +245,37 @@ impl super::Monitor {
         )
     }
 
+    pub fn compartment_wait(&self, caller: ObjID, desc: Option<Descriptor>, flags: u64) -> u64 {
+        let Some(instance) = ({
+            let comphandles = self._compartment_handles.write(ThreadKey::get().unwrap());
+            let comp_id = desc
+                .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
+                .unwrap_or(Some(caller));
+            comp_id
+        }) else {
+            return 0;
+        };
+        self.wait_for_compartment_state_change(instance, flags);
+        self.load_compartment_flags(instance)
+    }
+
     /// Open a handle to the n'th dependency compartment of a given compartment.
     pub fn get_compartment_deps(
         &self,
-        _caller: ObjID,
-        _desc: Option<Descriptor>,
-        _dep_n: usize,
+        caller: ObjID,
+        desc: Option<Descriptor>,
+        dep_n: usize,
     ) -> Option<Descriptor> {
-        todo!()
+        let dep = {
+            let (_, _, ref mut comps, _, _, ref mut comphandles) =
+                *self.locks.lock(ThreadKey::get().unwrap());
+            let comp_id = desc
+                .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
+                .unwrap_or(Some(caller))?;
+            let comp = comps.get_mut(comp_id)?;
+            comp.deps.get(dep_n).cloned()
+        }?;
+        self.get_compartment_handle(caller, dep)
     }
 
     /// Load a new compartment with a root library ID, and return a compartment handle.
@@ -255,16 +284,39 @@ impl super::Monitor {
         caller: ObjID,
         thread: ObjID,
         name_len: usize,
+        args_len: usize,
+        env_len: usize,
         new_comp_flags: NewCompartmentFlags,
     ) -> Result<Descriptor, LoadCompartmentError> {
-        let name_bytes = self
-            .read_thread_simple_buffer(caller, thread, name_len)
+        let total_bytes = name_len + args_len + env_len;
+        let str_bytes = self
+            .read_thread_simple_buffer(caller, thread, total_bytes)
             .ok_or(LoadCompartmentError::Unknown)?;
+        let name_bytes = &str_bytes[0..name_len];
+        let arg_bytes = &str_bytes[name_len..(name_len + args_len)];
+        let env_bytes = &str_bytes[(name_len + args_len)..total_bytes];
+
         let input = String::from_utf8_lossy(&name_bytes);
         let mut split = input.split("::");
         let compname = split.next().ok_or(LoadCompartmentError::Unknown)?;
         let libname = split.next().ok_or(LoadCompartmentError::Unknown)?;
         let root = UnloadedLibrary::new(libname);
+
+        // parse args
+        let args_bytes = arg_bytes.split_inclusive(|b| *b == 0);
+        let args = args_bytes
+            .map(CStr::from_bytes_with_nul)
+            .try_collect::<Vec<_>>()
+            .map_err(|_| LoadCompartmentError::Unknown)?;
+        tracing::debug!("load {}: args: {:?}", compname, args);
+
+        // parse env
+        let envs_bytes = env_bytes.split_inclusive(|b| *b == 0);
+        let env = envs_bytes
+            .map(CStr::from_bytes_with_nul)
+            .try_collect::<Vec<_>>()
+            .map_err(|_| LoadCompartmentError::Unknown)?;
+        tracing::trace!("load {}: env: {:?}", compname, env);
 
         let loader = {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
@@ -293,7 +345,7 @@ impl super::Monitor {
             .get_compartment_handle(caller, root_comp)
             .ok_or(LoadCompartmentError::Unknown)?;
 
-        self.start_compartment(root_comp)?;
+        self.start_compartment(root_comp, &args, &env)?;
 
         Ok(desc)
     }

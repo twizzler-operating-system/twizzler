@@ -1,8 +1,10 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    ffi::c_void,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use tracing::info;
 use twizzler_abi::upcall::{UpcallData, UpcallFrame, UpcallHandlerFlags};
-use twz_rt::preinit_println;
 #[thread_local]
 static IN_UPCALL_HANDLER: AtomicBool = AtomicBool::new(false);
 
@@ -15,7 +17,7 @@ pub fn upcall_monitor_handler(frame: &mut UpcallFrame, info: &UpcallData) {
             twizzler_abi::syscall::sys_thread_exit(101);
         }
     } else {
-        preinit_println!(
+        twizzler_abi::klog_println!(
             "monitor got unexpected upcall while in supervisor context: {:?} {:?}",
             frame,
             info
@@ -26,4 +28,13 @@ pub fn upcall_monitor_handler(frame: &mut UpcallFrame, info: &UpcallData) {
 
     // TODO: we don't always need to exit.
     twizzler_abi::syscall::sys_thread_exit(101);
+}
+
+pub extern "C-unwind" fn upcall_monitor_handler_entry(frame: *mut c_void, info: *const c_void) {
+    unsafe {
+        upcall_monitor_handler(
+            frame.cast::<UpcallFrame>().as_mut().unwrap(),
+            info.cast::<UpcallData>().as_ref().unwrap(),
+        );
+    }
 }

@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    ptr::NonNull,
     sync::atomic::{AtomicU64, AtomicUsize},
 };
 
@@ -31,7 +30,7 @@ fn mapflags_into_prot(flags: MapFlags) -> Protections {
 }
 
 #[repr(C)]
-struct RuntimeHandleInfo {
+pub(crate) struct RuntimeHandleInfo {
     refs: AtomicU64,
 }
 

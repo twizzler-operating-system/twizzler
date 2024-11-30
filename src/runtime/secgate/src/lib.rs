@@ -5,8 +5,7 @@
 #![feature(auto_traits)]
 #![feature(negative_impls)]
 #![feature(linkage)]
-#![feature(core_intrinsics)]
-#![feature(const_option)]
+#![feature(maybe_uninit_as_bytes)]
 
 use core::ffi::CStr;
 use std::{cell::UnsafeCell, marker::Tuple, mem::MaybeUninit};
@@ -126,7 +125,7 @@ impl<Args: Tuple + Crossing + Copy> Arguments<Args> {
 #[repr(C)]
 pub struct Return<T: Crossing + Copy> {
     isset: bool,
-    ret: MaybeUninit<T>,
+    ret: MaybeUninit<SecGateReturn<T>>,
 }
 
 impl<T: Copy + Crossing> Clone for Return<T> {
@@ -152,11 +151,11 @@ impl<T: Crossing + Copy> Return<T> {
 
     /// If a previous call to set is made, or this was constructed by new(), then into_inner
     /// returns the inner value. Otherwise, returns None.
-    pub fn into_inner(self) -> Option<T> {
+    pub fn into_inner(self) -> SecGateReturn<T> {
         if self.isset {
-            Some(unsafe { self.ret.assume_init() })
+            unsafe { self.ret.assume_init() }
         } else {
-            None
+            SecGateReturn::NoReturnValue
         }
     }
 
@@ -169,7 +168,7 @@ impl<T: Crossing + Copy> Return<T> {
     }
 
     /// Set the inner value. Future call to into_inner will return Some(val).
-    pub fn set(&mut self, val: T) {
+    pub fn set(&mut self, val: SecGateReturn<T>) {
         self.ret.write(val);
         self.isset = true;
     }
@@ -229,7 +228,7 @@ impl GateCallInfo {
 
     /// Get the ID of the source context, or None if the call was not cross-context.
     pub fn source_context(&self) -> Option<ObjID> {
-        if self.src_ctx.as_u128() == 0 {
+        if self.src_ctx.raw() == 0 {
             None
         } else {
             Some(self.src_ctx)
@@ -238,7 +237,7 @@ impl GateCallInfo {
 
     /// Get the ID of the calling thread.
     pub fn thread_id(&self) -> ObjID {
-        if self.thread_id.as_u128() == 0 {
+        if self.thread_id.raw() == 0 {
             twizzler_abi::syscall::sys_thread_self_id()
         } else {
             self.thread_id

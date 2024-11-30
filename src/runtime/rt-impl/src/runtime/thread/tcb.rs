@@ -7,89 +7,16 @@
 
 use std::{
     alloc::GlobalAlloc,
-    cell::UnsafeCell,
-    collections::HashMap,
+    collections::BTreeMap,
     panic::catch_unwind,
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Mutex,
-    },
+    sync::{atomic::Ordering, RwLock},
 };
 
 use dynlink::tls::Tcb;
-use monitor_api::TlsTemplateInfo;
+use monitor_api::{RuntimeThreadControl, TlsTemplateInfo, THREAD_STARTED};
 use tracing::trace;
 
-use crate::{preinit_println, runtime::OUR_RUNTIME};
-
-const THREAD_STARTED: u32 = 1;
-pub struct RuntimeThreadControl {
-    // Need to keep a lock for the ID, though we don't expect to use it much.
-    internal_lock: AtomicU32,
-    flags: AtomicU32,
-    id: UnsafeCell<u32>,
-}
-
-impl Default for RuntimeThreadControl {
-    fn default() -> Self {
-        Self::new(0)
-    }
-}
-
-impl RuntimeThreadControl {
-    pub const fn new(id: u32) -> Self {
-        Self {
-            internal_lock: AtomicU32::new(0),
-            flags: AtomicU32::new(0),
-            id: UnsafeCell::new(id),
-        }
-    }
-
-    fn write_lock(&self) {
-        loop {
-            let old = self.internal_lock.fetch_or(1, Ordering::Acquire);
-            if old == 0 {
-                break;
-            }
-        }
-    }
-
-    fn write_unlock(&self) {
-        self.internal_lock.fetch_and(!1, Ordering::Release);
-    }
-
-    fn read_lock(&self) {
-        loop {
-            let old = self.internal_lock.fetch_add(2, Ordering::Acquire);
-            // If this happens, something has gone very wrong.
-            if old > i32::MAX as u32 {
-                OUR_RUNTIME.abort();
-            }
-            if old & 1 == 0 {
-                break;
-            }
-        }
-    }
-
-    fn read_unlock(&self) {
-        self.internal_lock.fetch_sub(2, Ordering::Release);
-    }
-
-    pub fn set_id(&self, id: u32) {
-        self.write_lock();
-        unsafe {
-            *self.id.get().as_mut().unwrap() = id;
-        }
-        self.write_unlock();
-    }
-
-    pub fn id(&self) -> u32 {
-        self.read_lock();
-        let id = unsafe { *self.id.get().as_ref().unwrap() };
-        self.read_unlock();
-        id
-    }
-}
+use crate::runtime::OUR_RUNTIME;
 
 /// Run a closure using the current thread's control struct as the argument.
 pub(super) fn with_current_thread<R, F: FnOnce(&RuntimeThreadControl) -> R>(f: F) -> R {
@@ -112,10 +39,6 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
             cur.flags.fetch_or(THREAD_STARTED, Ordering::SeqCst);
             trace!("thread {} started", cur.id());
         });
-        twizzler_abi::syscall::sys_kernel_console_write(
-            b"alive\n",
-            twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
-        );
         // Find the arguments. arg is a pointer to a Box::into_raw of a Box of ThreadSpawnArgs.
         let arg = unsafe {
             (arg as *const twizzler_rt_abi::thread::ThreadSpawnArgs)
@@ -134,7 +57,7 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
 
 #[derive(Default)]
 pub(crate) struct TlsGenMgr {
-    map: HashMap<u64, TlsGen>,
+    map: BTreeMap<u64, TlsGen>,
 }
 
 pub(crate) struct TlsGen {
@@ -144,11 +67,17 @@ pub(crate) struct TlsGen {
 
 unsafe impl Send for TlsGen {}
 
-lazy_static::lazy_static! {
-pub(crate) static ref TLS_GEN_MGR: Mutex<TlsGenMgr> = Mutex::new(TlsGenMgr::default());
-}
+pub(crate) static TLS_GEN_MGR: RwLock<TlsGenMgr> = RwLock::new(TlsGenMgr {
+    map: BTreeMap::new(),
+});
 
 impl TlsGenMgr {
+    pub fn _need_new_gen(&self, mygen: Option<u64>) -> bool {
+        let cc = monitor_api::get_comp_config();
+        let template = unsafe { cc.get_tls_template().as_ref().unwrap() };
+        mygen.is_some_and(|mygen| mygen == template.gen)
+    }
+
     pub fn get_next_tls_info<T>(
         &mut self,
         mygen: Option<u64>,

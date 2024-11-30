@@ -8,10 +8,11 @@
 #![feature(pointer_is_aligned_to)]
 use std::{
     alloc::Layout,
+    cell::UnsafeCell,
     marker::PhantomData,
     ptr::NonNull,
     sync::{
-        atomic::{AtomicPtr, Ordering},
+        atomic::{AtomicPtr, AtomicU32, Ordering},
         OnceLock,
     },
 };
@@ -293,6 +294,8 @@ impl CompartmentHandle {
 /// A builder-type for loading compartments.
 pub struct CompartmentLoader {
     name: String,
+    args: Vec<String>,
+    env: Option<Vec<String>>,
     flags: NewCompartmentFlags,
 }
 
@@ -306,16 +309,63 @@ impl CompartmentLoader {
         Self {
             name: format!("{}::{}", compname.to_string(), libname.to_string()),
             flags,
+            env: None,
+            args: vec![],
         }
+    }
+
+    /// Append args to this compartment.
+    pub fn args<S: ToString>(&mut self, args: impl IntoIterator<Item = S>) -> &mut Self {
+        for arg in args.into_iter() {
+            self.args.push(arg.to_string())
+        }
+        self
+    }
+
+    /// Set the environment for the compartment
+    pub fn env(&mut self, env: Vec<String>) -> &mut Self {
+        self.env = Some(env);
+        self
     }
 
     /// Load the compartment.
     pub fn load(&self) -> Result<CompartmentHandle, gates::LoadCompartmentError> {
-        let len = lazy_sb::write_bytes_to_sb(self.name.as_bytes());
-        let desc = gates::monitor_rt_load_compartment(len as u64, self.flags.bits())
-            .ok()
-            .ok_or(gates::LoadCompartmentError::Unknown)
-            .flatten()?;
+        fn get_current_env() -> Vec<String> {
+            std::env::vars()
+                .map(|(var, val)| format!("{}={}", var, val))
+                .collect()
+        }
+        let name_len = self.name.as_bytes().len();
+        let args_len = self
+            .args
+            .iter()
+            .fold(0, |acc, arg| acc + arg.as_bytes().len() + 1);
+        let env = self.env.clone().unwrap_or_else(|| get_current_env());
+        let envs_len = env
+            .iter()
+            .fold(0, |acc, arg| acc + arg.as_bytes().len() + 1);
+        let mut bytes = self.name.as_bytes().to_vec();
+        for arg in &self.args {
+            bytes.extend_from_slice(arg.as_bytes());
+            bytes.push(0);
+        }
+        for env in env {
+            bytes.extend_from_slice(env.as_bytes());
+            bytes.push(0);
+        }
+        let len = lazy_sb::write_bytes_to_sb(&bytes);
+        if len < envs_len + args_len + name_len {
+            return Err(gates::LoadCompartmentError::Unknown);
+        }
+        let desc = gates::monitor_rt_load_compartment(
+            name_len as u64,
+            args_len as u64,
+            envs_len as u64,
+            self.flags.bits(),
+        )
+        .ok()
+        .ok_or(gates::LoadCompartmentError::Unknown)
+        .flatten()?;
         Ok(CompartmentHandle { desc: Some(desc) })
     }
 }
@@ -387,6 +437,8 @@ pub struct CompartmentInfo<'a> {
     pub sctx: ObjID,
     /// The compartment flags and status.
     pub flags: CompartmentFlags,
+    /// Number of libraries
+    pub nr_libs: usize,
     _pd: PhantomData<&'a ()>,
 }
 
@@ -397,6 +449,7 @@ impl<'a> CompartmentInfo<'a> {
             id: raw.id,
             sctx: raw.sctx,
             flags: CompartmentFlags::from_bits_truncate(raw.flags),
+            nr_libs: raw.nr_libs,
             _pd: PhantomData,
         }
     }
@@ -421,6 +474,14 @@ impl CompartmentHandle {
     /// Get an iterator over the libraries for this compartment.
     pub fn libs(&self) -> LibraryIter<'_> {
         LibraryIter::new(self)
+    }
+
+    pub fn wait(&self, flags: CompartmentFlags) -> CompartmentFlags {
+        CompartmentFlags::from_bits_truncate(
+            gates::monitor_rt_compartment_wait(self.desc(), flags.bits())
+                .ok()
+                .unwrap_or(0),
+        )
     }
 }
 
@@ -481,10 +542,18 @@ bitflags::bitflags! {
     /// Compartment state flags.
     #[derive(Clone, Debug, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
     pub struct CompartmentFlags : u64 {
-        /// Compartment is ready (libraries relocated and constructors run).
+        /// Compartment is ready (loaded, reloacated, runtime started and ctors run).
         const READY = 0x1;
-        /// The main thread has exited.
-        const EXITED = 0x2;
+        /// Compartment is a binary, not a library.
+        const IS_BINARY = 0x2;
+        /// Compartment runtime thread may exit.
+        const THREAD_CAN_EXIT = 0x4;
+        /// Compartment thread has been started once.
+        const STARTED = 0x8;
+        /// Compartment destructors have run.
+        const DESTRUCTED = 0x10;
+        /// Compartment thread has exited.
+        const EXITED = 0x20;
     }
 }
 
@@ -575,5 +644,74 @@ mod lazy_sb {
 
     pub(super) fn write_bytes_to_sb(buf: &[u8]) -> usize {
         LAZY_SB.borrow_mut().write(buf)
+    }
+}
+
+pub const THREAD_STARTED: u32 = 1;
+pub struct RuntimeThreadControl {
+    // Need to keep a lock for the ID, though we don't expect to use it much.
+    pub internal_lock: AtomicU32,
+    pub flags: AtomicU32,
+    pub id: UnsafeCell<u32>,
+}
+
+impl Default for RuntimeThreadControl {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+impl RuntimeThreadControl {
+    pub const fn new(id: u32) -> Self {
+        Self {
+            internal_lock: AtomicU32::new(0),
+            flags: AtomicU32::new(0),
+            id: UnsafeCell::new(id),
+        }
+    }
+
+    fn write_lock(&self) {
+        loop {
+            let old = self.internal_lock.fetch_or(1, Ordering::Acquire);
+            if old == 0 {
+                break;
+            }
+        }
+    }
+
+    fn write_unlock(&self) {
+        self.internal_lock.fetch_and(!1, Ordering::Release);
+    }
+
+    fn read_lock(&self) {
+        loop {
+            let old = self.internal_lock.fetch_add(2, Ordering::Acquire);
+            // If this happens, something has gone very wrong.
+            if old > i32::MAX as u32 {
+                twizzler_rt_abi::core::twz_rt_abort();
+            }
+            if old & 1 == 0 {
+                break;
+            }
+        }
+    }
+
+    fn read_unlock(&self) {
+        self.internal_lock.fetch_sub(2, Ordering::Release);
+    }
+
+    pub fn set_id(&self, id: u32) {
+        self.write_lock();
+        unsafe {
+            *self.id.get().as_mut().unwrap() = id;
+        }
+        self.write_unlock();
+    }
+
+    pub fn id(&self) -> u32 {
+        self.read_lock();
+        let id = unsafe { *self.id.get().as_ref().unwrap() };
+        self.read_unlock();
+        id
     }
 }

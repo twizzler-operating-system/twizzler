@@ -7,11 +7,11 @@ use std::{
 };
 
 use dynlink::tls::Tcb;
+use monitor_api::RuntimeThreadControl;
 use tracing::trace;
 use twizzler_abi::{object::NULLPAGE_SIZE, thread::ThreadRepr};
 use twizzler_rt_abi::{object::ObjectHandle, thread::ThreadSpawnArgs};
 
-use super::RuntimeThreadControl;
 use crate::runtime::{thread::MIN_STACK_ALIGN, OUR_RUNTIME};
 
 /// Internal representation of a thread, tracking the resources
@@ -79,7 +79,7 @@ impl Drop for InternalThread {
             // Args is allocated by a box.
             let _args = Box::from_raw(self.args_box as *mut ThreadSpawnArgs);
             drop(_args);
-            tracing::warn!("TODO: drop TLS");
+            tracing::debug!("TODO: drop TLS");
         }
     }
 }
