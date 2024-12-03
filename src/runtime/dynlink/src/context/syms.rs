@@ -1,5 +1,3 @@
-use tracing::trace;
-
 use super::{Context, LoadedOrUnloaded};
 use crate::{
     library::{Library, LibraryId},
@@ -21,7 +19,7 @@ impl Context {
         let start_lib = self.get_library(start_id)?;
         // First try looking up within ourselves.
         if !lookup_flags.contains(LookupFlags::SKIP_SELF) {
-            if let Ok(sym) = start_lib.lookup_symbol(name, allow_weak) {
+            if let Ok(sym) = start_lib.lookup_symbol(name, allow_weak, false) {
                 return Ok(sym);
             }
         }
@@ -40,7 +38,9 @@ impl Context {
                             {
                                 let allow_weak =
                                     allow_weak && dep.in_same_compartment_as(start_lib);
-                                if let Ok(sym) = dep.lookup_symbol(name, allow_weak) {
+                                let try_prefix =
+                                    dep.in_same_compartment_as(start_lib) || dep.allows_gates();
+                                if let Ok(sym) = dep.lookup_symbol(name, allow_weak, try_prefix) {
                                     return Ok(sym);
                                 }
                             }
@@ -52,7 +52,7 @@ impl Context {
 
         // Fall back to global search.
         if !lookup_flags.contains(LookupFlags::SKIP_GLOBAL) {
-            trace!("falling back to global search for {}", name);
+            tracing::trace!("falling back to global search for {}", name);
 
             let res = self.lookup_symbol_global(start_lib, name, lookup_flags);
             if res.is_ok() {
@@ -89,7 +89,9 @@ impl Context {
                     {
                         let allow_weak = lookup_flags.contains(LookupFlags::ALLOW_WEAK)
                             && dep.in_same_compartment_as(start_lib);
-                        if let Ok(sym) = dep.lookup_symbol(name, allow_weak) {
+                        let try_prefix = (idx != start_lib.id().0 || dep.allows_self_gates())
+                            && (dep.allows_gates() || dep.in_same_compartment_as(start_lib));
+                        if let Ok(sym) = dep.lookup_symbol(name, allow_weak, try_prefix) {
                             return Ok(sym);
                         }
                     }

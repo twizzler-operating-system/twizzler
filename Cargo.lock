@@ -3068,6 +3068,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
 
 [[package]]
+name = "logboi"
+version = "0.1.0"
+dependencies = [
+ "logboi-srv",
+ "secgate",
+ "twizzler-runtime",
+]
+
+[[package]]
+name = "logboi-srv"
+version = "0.1.0"
+dependencies = [
+ "secgate",
+ "twizzler-runtime",
+]
+
+[[package]]
+name = "logboi-test"
+version = "0.1.0"
+dependencies = [
+ "logboi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "lru"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

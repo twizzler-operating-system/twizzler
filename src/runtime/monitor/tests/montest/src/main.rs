@@ -1,28 +1,19 @@
+#![feature(linkage)]
+#![feature(native_link_modifiers_as_needed)]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
+extern crate montest_lib;
 extern crate secgate;
 
 secgate::secgate_prelude!();
 
+#[link(name = "montest_lib", kind = "dylib", modifiers = "-as-needed")]
+extern "C" {}
+
 extern crate tracing;
 extern crate tracing_subscriber;
 extern crate twizzler_runtime;
-
-mod montest_lib {
-    #[link(name = "montest_lib")]
-    extern "C" {}
-    #[secgate::secure_gate(options(info, api))]
-    pub fn test_was_ctor_run(info: &GateCallInfo) -> bool {}
-
-    #[secgate::secure_gate(options(info, api))]
-    pub fn test_internal_panic(info: &GateCallInfo, catch_it: bool) -> usize {}
-
-    #[secgate::secure_gate(options(info, api))]
-    pub fn test_global_call_count(info: &GateCallInfo) -> usize {}
-
-    #[secgate::secure_gate(options(info, api))]
-    pub fn test_thread_local_call_count(info: &GateCallInfo) -> usize {}
-}
 
 fn main() {
     setup_logging();

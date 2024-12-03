@@ -3,6 +3,7 @@
 //! dependency.
 
 #![feature(naked_functions)]
+#![feature(linkage)]
 #![feature(result_flattening)]
 #![feature(thread_local)]
 #![feature(pointer_is_aligned_to)]
