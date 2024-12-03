@@ -63,15 +63,50 @@ fn queue_init() -> (
     return (rq, sq);
 }
 
-fn async_runtime_init() -> &'static Executor<'static> {
+/*** 
+ * Async Runtime Initialization
+ * Creating n threads
+ ***/
+fn async_runtime_init(n: i32) -> &'static Executor<'static> {
     let ex = EXECUTOR.get_or_init(|| Executor::new());
 
-    let num_threads = 2;
-    for _ in 0..(num_threads - 1) {
+    for _ in 0..(n - 1) {
         std::thread::spawn(|| block_on(ex.run(std::future::pending::<()>())));
     }
 
     return ex;
+}
+
+/***
+ * Health Check
+ ***/
+fn health_check(
+    rq: &twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>, 
+    sq: &twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
+    ex: &'static Executor<'static>
+    ) -> Result<(), String> {
+    println!("Beginning Pager Health Check...");
+    block_on(ex.run(
+            async move{
+                let timeout = Timer::after(Duration::from_millis(1000));
+                println!("-- pager: submitting request on P2K Queue");
+
+                let res = sq.submit_and_wait(RequestFromPager::new(
+                        twizzler_abi::pager::PagerRequest::EchoReq,
+                        ));
+                let x = res.await;
+                println!(" pager:  got {:?} in response", x);
+                timeout.await;
+    }));
+
+    Ok(())
+}
+
+fn verify_health(health: Result<(), String>) {
+    match health {
+        Ok(()) => println!("Health Check Successful"),
+        Err(_) => println!("Health Check Unsuccessful")
+    }
 }
 
 /***
@@ -82,36 +117,24 @@ fn pager_init() -> (
     twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
     &'static Executor<'static>
     ) {
+    
+    //Init tracing
+    //Data Structure Initialization
     let (rq, sq) = queue_init();
-    let ex = async_runtime_init();
+    let ex = async_runtime_init(2);
+
+    let health = health_check(&rq, &sq, ex);
+    verify_health(health.clone());
+    drop(health);
+
     return (rq, sq, ex);
 }
 
 fn main() {
     let (rq, sq, ex) = pager_init();
-    
-
-    ex.spawn(async move {
-        loop {
-            let timeout = Timer::after(Duration::from_millis(1000));
-            println!(" pager:  submitting request");
-            let res = sq.submit_and_wait(RequestFromPager::new(
-                twizzler_abi::pager::PagerRequest::EchoReq,
-            ));
-            let x = res.await;
-            println!(" pager:  got {:?} in response", x);
-            timeout.await;
-            println!(" pager:  submitting request 2");
-            // TODO: do some other stuff?
-            let res = sq.submit_and_wait(RequestFromPager::new(
-                twizzler_abi::pager::PagerRequest::Ready,
-            ));
-            let x = res.await;
-            println!(" pager:  got {:?} in response", x);
-            std::future::pending::<()>().await;
-        }
-    })
-    .detach();
+    //Spawn listening queues
+    //Submit ready to kernel
+    //Return
 
     ex.spawn(async move {
         loop {
