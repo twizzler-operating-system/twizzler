@@ -19,50 +19,77 @@ async fn handle_request(_request: RequestFromKernel) -> Option<CompletionToKerne
     Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
 }
 
-#[repr(C, packed)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Foo {
-    x: u32,
-}
-
-extern crate twizzler_runtime;
 pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 
-fn main() {
-    let idstr = std::env::args().nth(1).unwrap();
-    let kidstr = std::env::args().nth(2).unwrap();
-    println!("Hello, world from pager: {} {}", idstr, kidstr);
-    let id = idstr.parse::<u128>().unwrap();
-    let kid = kidstr.parse::<u128>().unwrap();
 
-    let id = ObjID::new(id);
-    let kid = ObjID::new(kid);
+/*** 
+ * Queue Initializing
+ */
+fn attach_queue<T: std::marker::Copy, U: std::marker::Copy, Q>(
+    id_str: &str,
+    queue_constructor: impl FnOnce(twizzler_queue::Queue<T, U>) -> Q,
+) -> Result<Q, String> {
+    println!("Pager Attaching Queue: {}", id_str);
+
+    // Parse the ID from the string
+    let id = id_str.parse::<u128>().unwrap();
+    // Initialize the object
+    let obj_id = ObjID::new(id);
     let object = Object::init_id(
-        id,
+        obj_id,
         Protections::READ | Protections::WRITE,
         ObjectInitFlags::empty(),
-    )
-    .unwrap();
+    ).unwrap();
 
-    let kobject = Object::init_id(
-        kid,
-        Protections::READ | Protections::WRITE,
-        ObjectInitFlags::empty(),
-    )
-    .unwrap();
+    // Ensure the object is cast or transformed to match the expected `Queue` type
+    let queue: twizzler_queue::Queue<T, U> = twizzler_queue::Queue::from(object);
+    
+    Ok(queue_constructor(queue))
+}
 
-    let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::from(object);
-    let rq = twizzler_queue::CallbackQueueReceiver::new(queue);
+fn queue_args(i: usize) -> String {
+    return std::env::args().nth(i).unwrap();
+}
 
-    let kqueue = twizzler_queue::Queue::<RequestFromPager, CompletionToPager>::from(kobject);
-    let sq = twizzler_queue::QueueSender::new(kqueue);
+fn queue_init() -> (
+    twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>, 
+    twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>
+    ) {
+    println!("Hello, world from pager!");
 
+    let rq = attach_queue::<RequestFromKernel, CompletionToKernel, _>(&queue_args(1), twizzler_queue::CallbackQueueReceiver::new).unwrap();
+    let sq = attach_queue::<RequestFromPager, CompletionToPager, _>(&queue_args(2), twizzler_queue::QueueSender::new).unwrap();
+
+    return (rq, sq);
+}
+
+fn async_runtime_init() -> &'static Executor<'static> {
     let ex = EXECUTOR.get_or_init(|| Executor::new());
 
     let num_threads = 2;
     for _ in 0..(num_threads - 1) {
         std::thread::spawn(|| block_on(ex.run(std::future::pending::<()>())));
     }
+
+    return ex;
+}
+
+/***
+ * Pager Initialization generic function which calls specific initialization functions 
+ ***/
+fn pager_init() -> (
+    twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>, 
+    twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
+    &'static Executor<'static>
+    ) {
+    let (rq, sq) = queue_init();
+    let ex = async_runtime_init();
+    return (rq, sq, ex);
+}
+
+fn main() {
+    let (rq, sq, ex) = pager_init();
+    
 
     ex.spawn(async move {
         loop {
@@ -98,6 +125,12 @@ fn main() {
     })
     .detach();
     block_on(ex.run(std::future::pending::<()>()));
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Foo {
+    x: u32,
 }
 
 static mut RAND_STATE: u32 = 0;
