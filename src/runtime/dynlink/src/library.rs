@@ -30,6 +30,16 @@ pub(crate) enum RelocState {
     Relocated,
 }
 
+#[derive(PartialEq, PartialOrd, Ord, Eq, Debug, Clone, Copy)]
+pub enum AllowedGates {
+    /// Gates are not exported
+    Private,
+    /// Gates are exported to other compartments only
+    Public,
+    /// Gates are exported to all compartments
+    PublicInclSelf,
+}
+
 #[repr(C)]
 /// An unloaded library. It's just a name, really.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
@@ -84,7 +94,7 @@ pub struct Library {
     pub full_obj: Backing,
     /// State of relocation.
     pub(crate) reloc_state: RelocState,
-    allows_gates: bool,
+    allowed_gates: AllowedGates,
 
     pub backings: Vec<Backing>,
 
@@ -108,7 +118,7 @@ impl Library {
         tls_id: Option<TlsModId>,
         ctors: CtorSet,
         secgate_info: SecgateInfo,
-        allows_gates: bool,
+        allowed_gates: AllowedGates,
     ) -> Self {
         Self {
             name,
@@ -121,11 +131,16 @@ impl Library {
             comp_id,
             comp_name,
             secgate_info,
-            allows_gates,
+            allowed_gates,
         }
     }
+
     pub fn allows_gates(&self) -> bool {
-        self.allows_gates
+        self.allowed_gates != AllowedGates::Private
+    }
+
+    pub fn allows_self_gates(&self) -> bool {
+        self.allowed_gates == AllowedGates::PublicInclSelf
     }
 
     pub fn is_binary(&self) -> bool {
@@ -228,13 +243,29 @@ impl Library {
         }))
     }
 
-    pub(crate) fn lookup_symbol(
+    fn do_lookup_symbol(
         &self,
         name: &str,
         allow_weak: bool,
     ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
+        tracing::trace!("lookup {} in {}", name, self.name);
+
+        /*
+        if self.is_relocated() {
+            if let Some(gates) = self.iter_secgates() {
+                for sc in gates {
+                    if let Ok(gname) = sc.name().to_str() {
+                        if gname == name {
+                            tracing::info!("found as secure gate");
+                            return Ok(RelocatedSymbol::new_sc(sc.imp, self));
+                        }
+                    }
+                }
+            }
+        }
+        */
 
         // Try the GNU hash table, if present.
         if let Some(h) = &common.gnu_hash {
@@ -258,7 +289,10 @@ impl Library {
             {
                 if !sym.is_undefined() {
                     // TODO: proper weak symbol handling.
-                    if sym.st_bind() != STB_WEAK || allow_weak {
+                    if sym.st_bind() != STB_WEAK
+                        || allow_weak
+                        || (self.is_relocated() && self.is_secgate(name))
+                    {
                         return Ok(RelocatedSymbol::new(sym, self));
                     } else {
                         tracing::debug!("lookup symbol {} skipping weak binding in {}", name, self);
@@ -295,7 +329,10 @@ impl Library {
             {
                 if !sym.is_undefined() {
                     // TODO: proper weak symbol handling.
-                    if sym.st_bind() != STB_WEAK {
+                    if sym.st_bind() != STB_WEAK
+                        || allow_weak
+                        || (self.is_relocated() && self.is_secgate(name))
+                    {
                         return Ok(RelocatedSymbol::new(sym, self));
                     } else {
                         tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
@@ -305,19 +342,39 @@ impl Library {
                 }
             }
         }
+
         Err(DynlinkErrorKind::NameNotFound {
             name: name.to_string(),
         }
         .into())
     }
 
+    pub(crate) fn lookup_symbol(
+        &self,
+        name: &str,
+        allow_weak: bool,
+        allow_prefix: bool,
+    ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
+        let ret = self.do_lookup_symbol(&name, allow_weak);
+        if allow_prefix && ret.is_err() && !name.starts_with("__TWIZZLER_SECURE_GATE_") {
+            let name = format!("__TWIZZLER_SECURE_GATE_{}", name);
+            if let Ok(o) = self.do_lookup_symbol(&name, allow_weak) {
+                return Ok(o);
+            }
+        }
+        ret
+    }
+
     pub(crate) fn is_local_or_secgate_from(&self, other: &Library, name: &str) -> bool {
-        self.in_same_compartment_as(other)
-            || (self.reloc_state == RelocState::Relocated && self.is_secgate(name))
+        self.in_same_compartment_as(other) || (self.is_relocated() && self.is_secgate(name))
     }
 
     pub(crate) fn in_same_compartment_as(&self, other: &Library) -> bool {
         other.comp_id == self.comp_id
+    }
+
+    pub fn is_relocated(&self) -> bool {
+        self.reloc_state == RelocState::Relocated
     }
 
     fn is_secgate(&self, name: &str) -> bool {

@@ -4,7 +4,7 @@ use dynlink::{
     compartment::MONITOR_COMPARTMENT_ID,
     context::{runtime::RuntimeInitInfo, NewCompartmentFlags},
     engines::{Backing, ContextEngine},
-    library::UnloadedLibrary,
+    library::{AllowedGates, UnloadedLibrary},
     symbol::LookupFlags,
     DynlinkError, DynlinkErrorKind,
 };
@@ -74,7 +74,7 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
         .unwrap();
 
     let monitor_id = ctx
-        .load_library_in_compartment(monitor_comp_id, unlib, true)
+        .load_library_in_compartment(monitor_comp_id, unlib, AllowedGates::PublicInclSelf)
         .unwrap()[0]
         .lib;
 

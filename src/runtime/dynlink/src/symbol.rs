@@ -17,7 +17,7 @@ impl<'lib> RelocatedSymbol<'lib> {
     /// Returns the relocated address of the symbol, i.e. the value of the symbol added to the base
     /// address of the library it comes from.
     pub fn reloc_value(&self) -> u64 {
-        self.sym.st_value + self.lib.base_addr() as u64
+        self.raw_value() + self.lib.base_addr() as u64
     }
 
     /// Returns the raw symbol value (unrelocated).

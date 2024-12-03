@@ -3,7 +3,7 @@ use std::{collections::HashSet, ffi::CStr, ptr::null_mut};
 use dynlink::{
     compartment::CompartmentId,
     context::{Context, LoadIds, NewCompartmentFlags},
-    library::{LibraryId, UnloadedLibrary},
+    library::{AllowedGates, LibraryId, UnloadedLibrary},
     DynlinkError,
 };
 use happylock::ThreadKey;
@@ -135,7 +135,8 @@ impl RunCompLoader {
         }
 
         let rt_unlib = UnloadedLibrary::new(RUNTIME_NAME);
-        let loads = dynlink.load_library_in_compartment(comp_id, rt_unlib, false)?;
+        let loads =
+            dynlink.load_library_in_compartment(comp_id, rt_unlib, AllowedGates::Private)?;
         dynlink.add_manual_dependency(root_id, loads[0].lib);
         Ok(loads[0].lib)
     }
@@ -155,10 +156,15 @@ impl RunCompLoader {
             }
         }
         let root_comp_id = dynlink.add_compartment(comp_name, new_comp_flags)?;
+        let allowed_gates = if new_comp_flags.contains(NewCompartmentFlags::EXPORT_GATES) {
+            AllowedGates::Public
+        } else {
+            AllowedGates::Private
+        };
         let loads = UnloadOnDrop(dynlink.load_library_in_compartment(
             root_comp_id,
             root_unlib.clone(),
-            new_comp_flags.contains(NewCompartmentFlags::EXPORT_GATES),
+            allowed_gates,
         )?);
 
         // The dynamic linker gives us a list of loaded libraries, and which compartments they ended

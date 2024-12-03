@@ -3,8 +3,7 @@
 #![feature(hash_extract_if)]
 #![feature(new_zeroed_alloc)]
 #![feature(iterator_try_collect)]
-
-use std::time::Duration;
+#![feature(linkage)]
 
 use dynlink::context::NewCompartmentFlags;
 use miette::IntoDiagnostic;
@@ -114,6 +113,46 @@ fn monitor_init() -> miette::Result<()> {
         }
     }
     info!("monitor early init completed, starting init");
+
+    // Load and wait for tests to complete
+    let lbcomp: CompartmentHandle = CompartmentLoader::new(
+        "logboi",
+        "liblogboi_srv.so",
+        NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(&["logboi"])
+    .load()
+    .into_diagnostic()?;
+    let mut flags = lbcomp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = lbcomp.wait(flags);
+    }
+    info!("logboi ready");
+    std::mem::forget(lbcomp);
+
+    info!("running logboi test");
+    // Load and wait for tests to complete
+    let comp: CompartmentHandle =
+        CompartmentLoader::new("logboi-test", "logboi-test", NewCompartmentFlags::empty())
+            .args(&["logboi-test"])
+            .load()
+            .into_diagnostic()?;
+    let mut flags = comp.info().flags;
+    while !flags.contains(CompartmentFlags::EXITED) {
+        flags = comp.wait(flags);
+    }
+    info!("running logboi test again");
+    // Load and wait for tests to complete
+    let comp: CompartmentHandle =
+        CompartmentLoader::new("logboi-test", "logboi-test", NewCompartmentFlags::empty())
+            .args(&["logboi-test"])
+            .load()
+            .into_diagnostic()?;
+    let mut flags = comp.info().flags;
+    while !flags.contains(CompartmentFlags::EXITED) {
+        flags = comp.wait(flags);
+    }
+
     // TODO: start init...
 
     Ok(())
