@@ -15,7 +15,8 @@ use crate::store::{Key, KeyValueStore};
 mod nvme;
 mod store;
 
-async fn handle_request(_request: RequestFromKernel) -> Option<CompletionToKernel> {
+async fn handle_kernel_request(_request: RequestFromKernel) -> Option<CompletionToKernel> {
+    println!("Handling Kernel Request {:?}", _request);
     Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
 }
 
@@ -83,12 +84,15 @@ fn async_runtime_init(n: i32) -> &'static Executor<'static> {
 fn health_check(
     rq: &twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>, 
     sq: &twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
-    ex: &'static Executor<'static>
+    ex: &'static Executor<'static>,
+    timeout_ms: Option<u64>
     ) -> Result<(), String> {
+    let timeout_duration = Duration::from_millis(timeout_ms.unwrap_or(1000) as u64);
+
     println!("Beginning Pager Health Check...");
     block_on(ex.run(
             async move{
-                let timeout = Timer::after(Duration::from_millis(1000));
+                let timeout = Timer::after(timeout_duration);
                 println!("-- pager: submitting request on P2K Queue");
 
                 let res = sq.submit_and_wait(RequestFromPager::new(
@@ -123,31 +127,87 @@ fn pager_init() -> (
     let (rq, sq) = queue_init();
     let ex = async_runtime_init(2);
 
-    let health = health_check(&rq, &sq, ex);
+    let health = health_check(&rq, &sq, ex, None);
     verify_health(health.clone());
     drop(health);
 
     return (rq, sq, ex);
 }
 
+fn spawn_queues(
+    rq: twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>, 
+    sq: twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
+    ex: &'static Executor<'static>
+) {
+    println!("Spawning Queues...");
+    ex.spawn(listen_queue(rq, handle_kernel_request, ex)).detach();
+}
+
+async fn listen_queue<R, C, F>(
+    q: twizzler_queue::CallbackQueueReceiver<R, C>, 
+    handler: impl Fn(R) -> F,
+    ex: &'static Executor<'static>
+    ) 
+    where 
+    F: std::future::Future<Output = Option<C>> + Send + 'static,
+    R: std::fmt::Debug + Copy + Send + Sync,
+    C: std::fmt::Debug + Copy + Send + Sync + 'static
+    {
+        println!("-- pager: Queue Up");
+        loop {
+            let (id, request) = q.receive().await.unwrap(); 
+            println!("-- pager: got request from kernel: ({},{:?})", id, request);
+            ex.spawn(handler(request)).detach(); // Figure out how to put notify here
+        }
+}
+
+async fn notify<R, C>(q: twizzler_queue::CallbackQueueReceiver<R, C>, id: u32, res: Option<C>)
+    where
+    R: std::fmt::Debug + Copy + Send + Sync,
+    C: std::fmt::Debug + Copy + Send + Sync + 'static
+{
+    if let Some(res) = res {
+        q.complete(id, res).await.unwrap();
+    }
+}
+
 fn main() {
     let (rq, sq, ex) = pager_init();
+    spawn_queues(rq, sq, ex);
     //Spawn listening queues
     //Submit ready to kernel
     //Return
-
+    //
+/*
+    ex.spawn(async move {
+        loop {
+            let timeout = Timer::after(Duration::from_millis(1000));
+            println!(" pager:  submitting request");
+            let res = sq.submit_and_wait(RequestFromPager::new(
+                twizzler_abi::pager::PagerRequest::EchoReq,
+            ));
+            let x = res.await;
+            println!(" pager:  got {:?} in response", x);
+            timeout.await;
+            // TODO: do some other stuff?
+            std::future::pending::<()>().await;
+        }
+    })
+    .detach();
     ex.spawn(async move {
         loop {
             let (id, request) = rq.receive().await.unwrap();
             println!(" pager: got req from kernel: {} {:?}", id, request);
-            let reply = handle_request(request).await;
+            let reply = handle_kernel_request(request).await;
             if let Some(reply) = reply {
                 rq.complete(id, reply).await.unwrap();
             }
         }
     })
     .detach();
+*/
     block_on(ex.run(std::future::pending::<()>()));
+
 }
 
 #[repr(C, packed)]
