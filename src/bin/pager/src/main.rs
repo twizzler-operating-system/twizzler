@@ -4,6 +4,10 @@ use async_executor::{Executor, Task};
 use async_io::Timer;
 use futures::executor::block_on;
 use tickv::{success_codes::SuccessCode, ErrorCode};
+/*
+use tracing::{debug, info, warn, Level};
+use tracing_subscriber::FmtSubscriber;
+*/
 use twizzler_abi::pager::{
     CompletionToKernel, CompletionToPager, KernelCompletionData, RequestFromKernel,
     RequestFromPager,
@@ -15,13 +19,21 @@ use crate::store::{Key, KeyValueStore};
 mod nvme;
 mod store;
 
-async fn handle_kernel_request(_request: RequestFromKernel) -> Option<CompletionToKernel> {
-    println!("Handling Kernel Request {:?}", _request);
-    Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
-}
-
 pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 
+/***
+ * Tracing Init
+ ***/
+/*
+fn tracing_init() {
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .without_time()
+            .finish(),
+    ).unwrap();
+}
+*/
 
 /*** 
  * Queue Initializing
@@ -82,7 +94,7 @@ fn async_runtime_init(n: i32) -> &'static Executor<'static> {
  * Health Check
  ***/
 fn health_check(
-    rq: &twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>, 
+    _rq: &twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>, 
     sq: &twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
     ex: &'static Executor<'static>,
     timeout_ms: Option<u64>
@@ -122,7 +134,7 @@ fn pager_init() -> (
     &'static Executor<'static>
     ) {
     
-    //Init tracing
+    //tracing_init();
     //Data Structure Initialization
     let (rq, sq) = queue_init();
     let ex = async_runtime_init(2);
@@ -144,24 +156,29 @@ fn spawn_queues(
 }
 
 async fn listen_queue<R, C, F>(
-    q: twizzler_queue::CallbackQueueReceiver<R, C>, 
-    handler: impl Fn(R) -> F,
+    q: twizzler_queue::CallbackQueueReceiver<R, C>,
+    handler: impl Fn(R) -> F + Copy + Send + Sync + 'static,
     ex: &'static Executor<'static>
     ) 
     where 
     F: std::future::Future<Output = Option<C>> + Send + 'static,
-    R: std::fmt::Debug + Copy + Send + Sync,
+    R: std::fmt::Debug + Copy + Send + Sync + 'static,
     C: std::fmt::Debug + Copy + Send + Sync + 'static
     {
         println!("-- pager: Queue Up");
         loop {
             let (id, request) = q.receive().await.unwrap(); 
             println!("-- pager: got request from kernel: ({},{:?})", id, request);
-            ex.spawn(handler(request)).detach(); // Figure out how to put notify here
+            ex.spawn(
+                async move{
+                    let comp = handler(request).await;
+                    notify(&q, id, comp).await;
+                }
+                ).detach(); 
         }
 }
 
-async fn notify<R, C>(q: twizzler_queue::CallbackQueueReceiver<R, C>, id: u32, res: Option<C>)
+async fn notify<R, C>(q: &twizzler_queue::CallbackQueueReceiver<R, C>, id: u32, res: Option<C>)
     where
     R: std::fmt::Debug + Copy + Send + Sync,
     C: std::fmt::Debug + Copy + Send + Sync + 'static
@@ -169,6 +186,11 @@ async fn notify<R, C>(q: twizzler_queue::CallbackQueueReceiver<R, C>, id: u32, r
     if let Some(res) = res {
         q.complete(id, res).await.unwrap();
     }
+}
+
+async fn handle_kernel_request(request: RequestFromKernel) -> Option<CompletionToKernel> {
+    println!("Handling Kernel Request {:?}", request);
+    Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
 }
 
 fn main() {
