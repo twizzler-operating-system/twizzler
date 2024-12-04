@@ -16,6 +16,9 @@ use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
 use crate::store::{Key, KeyValueStore};
 
+use std::sync::mpsc::channel;
+use std::sync::Arc;
+
 mod nvme;
 mod store;
 
@@ -146,6 +149,7 @@ fn pager_init() -> (
     return (rq, sq, ex);
 }
 
+
 fn spawn_queues(
     rq: twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>, 
     sq: twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
@@ -165,20 +169,22 @@ async fn listen_queue<R, C, F>(
     R: std::fmt::Debug + Copy + Send + Sync + 'static,
     C: std::fmt::Debug + Copy + Send + Sync + 'static
     {
-        println!("-- pager: Queue Up");
+        println!("-- pager: Queue Receiving...");
+        let q = Arc::new(q);
         loop {
             let (id, request) = q.receive().await.unwrap(); 
             println!("-- pager: got request from kernel: ({},{:?})", id, request);
+
+            let qc = Arc::clone(&q);
             ex.spawn(
-                async move{
+                async move {
                     let comp = handler(request).await;
-                    notify(&q, id, comp).await;
-                }
-                ).detach(); 
-        }
+                    notify(qc, id, comp).await;
+                }).detach();
+       }
 }
 
-async fn notify<R, C>(q: &twizzler_queue::CallbackQueueReceiver<R, C>, id: u32, res: Option<C>)
+async fn notify<R, C>(q: Arc<twizzler_queue::CallbackQueueReceiver<R, C>>, id: u32, res: Option<C>)
     where
     R: std::fmt::Debug + Copy + Send + Sync,
     C: std::fmt::Debug + Copy + Send + Sync + 'static
@@ -186,16 +192,31 @@ async fn notify<R, C>(q: &twizzler_queue::CallbackQueueReceiver<R, C>, id: u32, 
     if let Some(res) = res {
         q.complete(id, res).await.unwrap();
     }
+    println!("-- pager: Request {} Complete", id);
 }
 
 async fn handle_kernel_request(request: RequestFromKernel) -> Option<CompletionToKernel> {
-    println!("Handling Kernel Request {:?}", request);
+    println!("-- pager: Handling Kernel Request {:?}", request);
     Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
 }
+
 
 fn main() {
     let (rq, sq, ex) = pager_init();
     spawn_queues(rq, sq, ex);
+    println!("Performing Test...");
+
+    let tq = attach_queue::<RequestFromKernel, CompletionToKernel, _>(&queue_args(1), twizzler_queue::QueueSender::new).unwrap();
+    block_on(ex.run(
+            async move{
+                println!("kernel: submitting request on K2P Queue");
+                let res = tq.submit_and_wait(RequestFromKernel::new(
+                        twizzler_abi::pager::KernelCommand::EchoReq,
+                        ));
+                let x = res.await;
+                println!("kernel:  got {:?} in response", x);
+    }));
+    println!("Test Completed");
     //Spawn listening queues
     //Submit ready to kernel
     //Return
