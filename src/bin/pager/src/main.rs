@@ -4,10 +4,10 @@ use async_executor::{Executor, Task};
 use async_io::Timer;
 use futures::executor::block_on;
 use tickv::{success_codes::SuccessCode, ErrorCode};
-/*
+
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
-*/
+
 use twizzler_abi::pager::{
     CompletionToKernel, CompletionToPager, KernelCompletionData, RequestFromKernel,
     RequestFromPager,
@@ -18,6 +18,7 @@ use crate::store::{Key, KeyValueStore};
 
 use std::sync::mpsc::channel;
 use std::sync::Arc;
+use std::error::Error;
 
 mod nvme;
 mod store;
@@ -27,7 +28,6 @@ pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 /***
  * Tracing Init
  ***/
-/*
 fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -36,7 +36,6 @@ fn tracing_init() {
             .finish(),
     ).unwrap();
 }
-*/
 
 /*** 
  * Queue Initializing
@@ -104,17 +103,17 @@ fn health_check(
     ) -> Result<(), String> {
     let timeout_duration = Duration::from_millis(timeout_ms.unwrap_or(1000) as u64);
 
-    println!("Beginning Pager Health Check...");
+    println!("[pager] pager health check start...");
     block_on(ex.run(
             async move{
                 let timeout = Timer::after(timeout_duration);
-                println!("-- pager: submitting request on P2K Queue");
+                println!("[pager] submitting request to kernel");
 
                 let res = sq.submit_and_wait(RequestFromPager::new(
                         twizzler_abi::pager::PagerRequest::EchoReq,
                         ));
                 let x = res.await;
-                println!(" pager:  got {:?} in response", x);
+                println!("[pager]  got {:?} in response", x);
                 timeout.await;
     }));
 
@@ -123,8 +122,8 @@ fn health_check(
 
 fn verify_health(health: Result<(), String>) {
     match health {
-        Ok(()) => println!("Health Check Successful"),
-        Err(_) => println!("Health Check Unsuccessful")
+        Ok(()) => println!("[pager] health check successful"),
+        Err(_) => println!("[pager] gealth check failed")
     }
 }
 
@@ -137,7 +136,7 @@ fn pager_init() -> (
     &'static Executor<'static>
     ) {
     
-    //tracing_init();
+    tracing_init();
     //Data Structure Initialization
     let (rq, sq) = queue_init();
     let ex = async_runtime_init(2);
@@ -152,10 +151,9 @@ fn pager_init() -> (
 
 fn spawn_queues(
     rq: twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>, 
-    sq: twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
     ex: &'static Executor<'static>
 ) {
-    println!("Spawning Queues...");
+    println!("[pager] spawning queues...");
     ex.spawn(listen_queue(rq, handle_kernel_request, ex)).detach();
 }
 
@@ -169,11 +167,11 @@ async fn listen_queue<R, C, F>(
     R: std::fmt::Debug + Copy + Send + Sync + 'static,
     C: std::fmt::Debug + Copy + Send + Sync + 'static
     {
-        println!("-- pager: Queue Receiving...");
+        println!("[pager] queue receiving...");
         let q = Arc::new(q);
         loop {
             let (id, request) = q.receive().await.unwrap(); 
-            println!("-- pager: got request from kernel: ({},{:?})", id, request);
+            println!("[pager] got request: ({},{:?})", id, request);
 
             let qc = Arc::clone(&q);
             ex.spawn(
@@ -192,64 +190,50 @@ async fn notify<R, C>(q: Arc<twizzler_queue::CallbackQueueReceiver<R, C>>, id: u
     if let Some(res) = res {
         q.complete(id, res).await.unwrap();
     }
-    println!("-- pager: Request {} Complete", id);
+    println!("[pager] request {} complete", id);
 }
 
 async fn handle_kernel_request(request: RequestFromKernel) -> Option<CompletionToKernel> {
-    println!("-- pager: Handling Kernel Request {:?}", request);
+    println!("[pager] handling kernel request {:?}", request);
     Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
 }
 
+async fn send_request<R, C>(q: twizzler_queue::QueueSender<R, C>, request: R) -> Result<C, Box<dyn std::error::Error>>
+    where
+    R: std::fmt::Debug + Copy + Send + Sync,
+    C: std::fmt::Debug + Copy + Send + Sync + 'static
+
+{
+    println!("[pager] submitting request {:?}", request);
+    return q.submit_and_wait(request).await.map_err(|e| Box::new(e) as Box<dyn std::error::Error>);
+}
+
+async fn report_ready(
+    q: twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
+    ex: &'static Executor<'static>,
+) -> bool {
+    println!("[pager] sending ready signal to kernel");
+    let request = RequestFromPager::new(twizzler_abi::pager::PagerRequest::Ready);
+
+    match send_request(q, request).await {
+        Ok(completion) => {
+            println!("[pager] received completion for ready signal: {:?}", completion);
+            true
+        }
+        Err(e) => {
+            eprintln!("[pager] error from ready signal {:?}", e);
+            false
+        }
+    }
+}
 
 fn main() {
     let (rq, sq, ex) = pager_init();
-    spawn_queues(rq, sq, ex);
-    println!("Performing Test...");
-
-    let tq = attach_queue::<RequestFromKernel, CompletionToKernel, _>(&queue_args(1), twizzler_queue::QueueSender::new).unwrap();
+    spawn_queues(rq, ex);
     block_on(ex.run(
-            async move{
-                println!("kernel: submitting request on K2P Queue");
-                let res = tq.submit_and_wait(RequestFromKernel::new(
-                        twizzler_abi::pager::KernelCommand::EchoReq,
-                        ));
-                let x = res.await;
-                println!("kernel:  got {:?} in response", x);
-    }));
-    println!("Test Completed");
-    //Spawn listening queues
-    //Submit ready to kernel
-    //Return
-    //
-/*
-    ex.spawn(async move {
-        loop {
-            let timeout = Timer::after(Duration::from_millis(1000));
-            println!(" pager:  submitting request");
-            let res = sq.submit_and_wait(RequestFromPager::new(
-                twizzler_abi::pager::PagerRequest::EchoReq,
-            ));
-            let x = res.await;
-            println!(" pager:  got {:?} in response", x);
-            timeout.await;
-            // TODO: do some other stuff?
-            std::future::pending::<()>().await;
-        }
-    })
-    .detach();
-    ex.spawn(async move {
-        loop {
-            let (id, request) = rq.receive().await.unwrap();
-            println!(" pager: got req from kernel: {} {:?}", id, request);
-            let reply = handle_kernel_request(request).await;
-            if let Some(reply) = reply {
-                rq.complete(id, reply).await.unwrap();
-            }
-        }
-    })
-    .detach();
-*/
-    block_on(ex.run(std::future::pending::<()>()));
+            async move {
+                report_ready(sq, ex).await;
+            }));
 
 }
 
