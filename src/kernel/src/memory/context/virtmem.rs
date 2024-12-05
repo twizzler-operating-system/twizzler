@@ -267,6 +267,7 @@ impl UserContext for VirtContext {
         slot: Slot,
         object_info: &ObjectContextInfo,
     ) -> Result<(), InsertError> {
+        logln!("inso: {:?}", slot.start_vaddr());
         let new_slot_info = VirtContextSlot {
             obj: object_info.object().clone(),
             slot,
@@ -307,6 +308,7 @@ impl UserContext for VirtContext {
         for arch in arches.values() {
             if let Some(maps) = slots.obj_to_slots(obj) {
                 for map in maps {
+                    logln!("invl: {:?}", map.start_vaddr());
                     let info = slots
                         .get(map)
                         .expect("invalid slot info for a mapped object");
@@ -327,6 +329,7 @@ impl UserContext for VirtContext {
     }
 
     fn remove_object(&self, info: Self::MappingInfo) {
+        logln!("remv: {:?}", info.start_vaddr());
         let mut slots = self.slots.lock();
         if let Some(slot) = slots.remove(info) {
             let arches = self.secctx.lock();
@@ -670,12 +673,13 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
             return;
         }
 
-        let sctx_id = current_thread_ref()
+        let mut sctx_id = current_thread_ref()
             .map(|ct| ct.secctx.active_id())
             .unwrap_or(KERNEL_SCTX);
         let user_ctx = current_memory_context();
         let (ctx, is_kern_obj) = if addr.is_kernel_object_memory() {
             assert!(!flags.contains(PageFaultFlags::USER));
+            sctx_id = KERNEL_SCTX;
             (kernel_context(), true)
         } else {
             (user_ctx.as_ref().unwrap_or_else(||

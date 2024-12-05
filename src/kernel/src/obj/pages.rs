@@ -40,6 +40,7 @@ impl Drop for Page {
             FrameOrWired::Frame(f) => {
                 free_frame(f);
             }
+            // Note: this could be a wired, but freeable page (see kernel quick control objects).
             FrameOrWired::Wired(_) => todo!(),
         }
     }
@@ -146,6 +147,7 @@ impl Object {
 
         if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
             let t = page.get_mut_to_val::<AtomicU64>(page_offset);
+            logln!("rau64: {:?}", page.physical_address());
             (*t).load(Ordering::SeqCst)
         } else {
             let page = Page::new();

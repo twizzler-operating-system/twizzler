@@ -95,6 +95,7 @@ impl Object {
         let mut sleep_info = self.sleep_info.lock();
 
         let cur = unsafe { self.read_atomic_u64(offset) };
+        logln!("check: read val: {}", cur);
         let res = op.check(cur, val, flags);
         if res {
             if first_sleep {

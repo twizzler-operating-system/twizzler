@@ -167,22 +167,42 @@ impl ThreadRepr {
     #[cfg(not(feature = "kernel"))]
     /// Wait for a thread's status to change, optionally timing out. Return value is None if timeout
     /// occurs, or Some((ExecutionState, code)) otherwise.
-    pub fn wait(&self, timeout: Option<Duration>) -> Option<(ExecutionState, u64)> {
+    pub fn wait(
+        &self,
+        expected: ExecutionState,
+        timeout: Option<Duration>,
+    ) -> Option<(ExecutionState, u64)> {
         let mut status = self.get_state();
         loop {
-            if status != ExecutionState::Running {
+            if status != expected {
                 return Some((status, self.code.load(Ordering::SeqCst)));
             }
-
-            let op = ThreadSync::new_sleep(ThreadSyncSleep::new(
-                crate::syscall::ThreadSyncReference::Virtual(&self.status),
-                0,
-                ThreadSyncOp::Equal,
-                ThreadSyncFlags::empty(),
-            ));
-            sys_thread_sync(&mut [op], timeout).unwrap();
+            let op = self.waitable_until_not(expected);
+            sys_thread_sync(&mut [ThreadSync::new_sleep(op)], timeout).unwrap();
             status = self.get_state();
-            if timeout.is_some() && status == ExecutionState::Running {
+            if timeout.is_some() && status == expected {
+                return None;
+            }
+        }
+    }
+
+    #[cfg(not(feature = "kernel"))]
+    /// Wait for a thread's status reach a target value, or exited, optionally timing out. The
+    /// actual execution state of the thread is returned.
+    pub fn wait_until(
+        &self,
+        target: ExecutionState,
+        timeout: Option<Duration>,
+    ) -> Option<(ExecutionState, u64)> {
+        let mut status = self.get_state();
+        loop {
+            if status == target {
+                return Some((status, self.code.load(Ordering::SeqCst)));
+            }
+            let op = self.waitable(target);
+            sys_thread_sync(&mut [ThreadSync::new_sleep(op)], timeout).unwrap();
+            status = self.get_state();
+            if timeout.is_some() && status != target {
                 return None;
             }
         }
