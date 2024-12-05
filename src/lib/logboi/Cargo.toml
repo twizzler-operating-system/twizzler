@@ -9,4 +9,5 @@ crate-type = ["rlib"]
 [dependencies]
 secgate = { path = "../../lib/secgate" }
 twizzler-runtime = { path = "../../rt" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
 logboi-srv = { path = "../../srv/logboi-srv" }

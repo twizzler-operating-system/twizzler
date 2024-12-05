@@ -118,6 +118,7 @@ impl MinimalRuntime {
     }
 
     pub fn join(&self, id: u32, timeout: Option<core::time::Duration>) -> Result<(), JoinError> {
+        let mut state = ExecutionState::Running;
         loop {
             let thread = {
                 get_thread_slots()
@@ -126,13 +127,14 @@ impl MinimalRuntime {
                     .cloned()
                     .ok_or(JoinError::ThreadNotFound)?
             };
-            let data = thread.repr.base().wait(timeout);
+            let data = thread.repr.base().wait(state, timeout);
             if let Some(data) = data {
                 if data.0 == ExecutionState::Exited {
                     get_thread_slots().lock().remove(&id);
                     THREAD_ID_COUNTER.release(id);
                     return Ok(());
                 }
+                state = data.0;
             } else if timeout.is_some() {
                 return Err(JoinError::Timeout);
             }

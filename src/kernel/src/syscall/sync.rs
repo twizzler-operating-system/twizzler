@@ -108,6 +108,11 @@ struct SleepEvent {
 
 fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent, ThreadSyncError> {
     let (obj, offset) = get_obj(sleep.reference)?;
+    logln!(
+        "    sync {}: found object {:?}",
+        current_thread_ref().unwrap().id(),
+        obj.id()
+    );
     let did_sleep = if matches!(sleep.reference, ThreadSyncReference::Virtual32(_)) {
         obj.setup_sleep_word32(
             offset,
@@ -163,6 +168,12 @@ pub fn sys_thread_sync(
     ops: &mut [ThreadSync],
     timeout: Option<&mut Duration>,
 ) -> Result<usize, ThreadSyncError> {
+    logln!(
+        "SYNC: {}: {:?} timeout: {:?}",
+        current_thread_ref().unwrap().id(),
+        ops,
+        timeout
+    );
     if let Some(ref timeout) = timeout {
         if ops.is_empty() {
             simple_timed_sleep(timeout);

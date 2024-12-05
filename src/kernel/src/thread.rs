@@ -6,6 +6,7 @@ use core::{
 };
 
 use intrusive_collections::{linked_list::AtomicLink, offset_of, RBTreeAtomicLink};
+use object::xcoff::C_NULL;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     syscall::ThreadSpawnArgs,
@@ -223,8 +224,16 @@ impl Thread {
         {
             panic!("cannot signal wake up in set_state_and_code due to call from critical section");
         }
+        logln!("SET STATE: {}", self.id());
         let base = self.control_object.base();
+        logln!("{}: setting state: {:?}", self.id(), state);
         let old_state = base.set_state(state, code);
+        logln!(
+            "{}: state is: {:?} => {:?}",
+            self.id(),
+            old_state,
+            base.get_state()
+        );
 
         // Note that since this value can be written to by userspace, we must check if we're
         // critical because we can't rely on userspace following the rules. Same for checking if
@@ -237,6 +246,12 @@ impl Thread {
             && !current_thread_ref().map_or(true, |ct| ct.is_critical())
             && old_state != ExecutionState::Exited
         {
+            logln!(
+                "wakeup word from exit {}: {:?} off: {:x}",
+                self.id(),
+                self.control_object.object().id(),
+                NULLPAGE_SIZE + offset_of!(ThreadRepr, status)
+            );
             self.control_object
                 .object()
                 .wakeup_word(NULLPAGE_SIZE + offset_of!(ThreadRepr, status), usize::MAX);

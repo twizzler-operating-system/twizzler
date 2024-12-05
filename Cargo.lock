@@ -1074,6 +1074,7 @@ name = "devmgr"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "logboi",
  "pci-ids",
  "twizzler-abi",
  "twizzler-async",
@@ -3073,6 +3074,7 @@ version = "0.1.0"
 dependencies = [
  "logboi-srv",
  "secgate",
+ "twizzler-rt-abi",
  "twizzler-runtime",
 ]
 
@@ -3081,6 +3083,8 @@ name = "logboi-srv"
 version = "0.1.0"
 dependencies = [
  "secgate",
+ "twizzler-abi",
+ "twizzler-rt-abi",
  "twizzler-runtime",
 ]
 

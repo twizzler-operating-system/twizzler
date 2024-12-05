@@ -7,6 +7,22 @@ fn main() {
     )
     .unwrap();
 
+    // Load and wait for tests to complete
+    let lbcomp: CompartmentHandle = CompartmentLoader::new(
+        "logboi",
+        "liblogboi_srv.so",
+        NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(&["logboi"])
+    .load()
+    .unwrap();
+    let mut flags = lbcomp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = lbcomp.wait(flags);
+    }
+    tracing::info!("logboi ready");
+    std::mem::forget(lbcomp);
+
     let create = ObjectCreate::new(
         BackingType::Normal,
         LifetimeType::Volatile,
@@ -195,6 +211,7 @@ use std::{
     time::Duration,
 };
 
+use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
 use twizzler_abi::{
     aux::KernelInitInfo,
     device::SubObjectType,

@@ -1,5 +1,5 @@
 use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree};
-use twizzler_abi::object::ObjID;
+use twizzler_abi::{object::ObjID, thread::ExecutionState};
 
 use crate::{
     sched::schedule_thread,
@@ -37,23 +37,29 @@ impl CondVar {
         mut guard: SpinLockGuard<'a, T>,
         istate: bool,
     ) -> SpinLockGuard<'a, T> {
-        crate::interrupt::with_disabled(|| {
-            let current_thread =
-                current_thread_ref().expect("cannot call wait before threading is enabled");
-            let mut inner = self.inner.lock();
-            inner.queue.insert(current_thread);
-            drop(inner);
-            let res = unsafe {
-                guard.force_unlock();
-                crate::sched::schedule(false);
-                crate::interrupt::set(istate);
-                guard.force_relock()
-            };
-            let current_thread = current_thread_ref().unwrap();
-            let mut inner = self.inner.lock();
-            inner.queue.find_mut(&current_thread.objid()).remove();
-            res
-        })
+        let current_thread =
+            current_thread_ref().expect("cannot call wait before threading is enabled");
+        crate::interrupt::set(false);
+        let mut inner = self.inner.lock();
+        inner.queue.insert(current_thread);
+        drop(inner);
+        let res = unsafe {
+            guard.force_unlock();
+            current_thread_ref()
+                .unwrap()
+                .set_state(ExecutionState::Sleeping);
+            crate::sched::schedule(false);
+            current_thread_ref()
+                .unwrap()
+                .set_state(ExecutionState::Running);
+            guard.force_relock()
+        };
+        let current_thread = current_thread_ref().unwrap();
+        let mut inner = self.inner.lock();
+        inner.queue.find_mut(&current_thread.objid()).remove();
+        drop(inner);
+        crate::interrupt::set(istate);
+        res
     }
 
     pub fn signal(&self) {
