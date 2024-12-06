@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
+use std::{collections::BTreeMap, sync::OnceLock, time::Duration, sync::{Arc, Mutex}};
 
 use async_executor::{Executor, Task};
 use async_io::Timer;
@@ -16,10 +16,10 @@ use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
 use crate::store::{Key, KeyValueStore};
 
-use std::sync::mpsc::channel;
-use std::sync::Arc;
 use std::error::Error;
+use crate::data::PagerData;
 
+mod data;
 mod nvme;
 mod store;
 
@@ -35,6 +35,15 @@ fn tracing_init() {
             .without_time()
             .finish(),
     ).unwrap();
+}
+
+/***
+ * Pager Data Structures Initialization
+ ***/
+fn data_structure_init() -> PagerData {
+    let pager_data = PagerData::new(); 
+    
+    return pager_data;
 }
 
 /*** 
@@ -133,11 +142,12 @@ fn verify_health(health: Result<(), String>) {
 fn pager_init() -> (
     twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>, 
     twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
+    PagerData,
     &'static Executor<'static>
     ) {
     
     tracing_init();
-    //Data Structure Initialization
+    let data = data_structure_init();
     let (rq, sq) = queue_init();
     let ex = async_runtime_init(2);
 
@@ -145,21 +155,23 @@ fn pager_init() -> (
     verify_health(health.clone());
     drop(health);
 
-    return (rq, sq, ex);
+    return (rq, sq, data, ex);
 }
 
 
 fn spawn_queues(
     rq: twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>, 
+    data: PagerData,
     ex: &'static Executor<'static>
 ) {
     println!("[pager] spawning queues...");
-    ex.spawn(listen_queue(rq, handle_kernel_request, ex)).detach();
+    ex.spawn(listen_queue(rq, data, handle_kernel_request, ex)).detach();
 }
 
 async fn listen_queue<R, C, F>(
     q: twizzler_queue::CallbackQueueReceiver<R, C>,
-    handler: impl Fn(R) -> F + Copy + Send + Sync + 'static,
+    data: PagerData,
+    handler: impl Fn(R, Arc<PagerData>) -> F + Copy + Send + Sync + 'static,
     ex: &'static Executor<'static>
     ) 
     where 
@@ -169,17 +181,19 @@ async fn listen_queue<R, C, F>(
     {
         println!("[pager] queue receiving...");
         let q = Arc::new(q);
+        let data = Arc::new(data);
         loop {
             let (id, request) = q.receive().await.unwrap(); 
             println!("[pager] got request: ({},{:?})", id, request);
 
             let qc = Arc::clone(&q);
+            let datac = Arc::clone(&data);
             ex.spawn(
                 async move {
-                    let comp = handler(request).await;
+                    let comp = handler(request, datac).await;
                     notify(qc, id, comp).await;
                 }).detach();
-       }
+        }
 }
 
 async fn notify<R, C>(q: Arc<twizzler_queue::CallbackQueueReceiver<R, C>>, id: u32, res: Option<C>)
@@ -193,7 +207,7 @@ async fn notify<R, C>(q: Arc<twizzler_queue::CallbackQueueReceiver<R, C>>, id: u
     println!("[pager] request {} complete", id);
 }
 
-async fn handle_kernel_request(request: RequestFromKernel) -> Option<CompletionToKernel> {
+async fn handle_kernel_request(request: RequestFromKernel, data: Arc<PagerData>) -> Option<CompletionToKernel> {
     println!("[pager] handling kernel request {:?}", request);
     Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
 }
@@ -228,8 +242,8 @@ async fn report_ready(
 }
 
 fn main() {
-    let (rq, sq, ex) = pager_init();
-    spawn_queues(rq, ex);
+    let (rq, sq, data, ex) = pager_init();
+    spawn_queues(rq, data.clone(), ex);
     block_on(ex.run(
             async move {
                 report_ready(sq, ex).await;
