@@ -184,4 +184,5 @@ pub fn test_echo_server<T: Transport>(dev: DeviceImpl<T>) {
             break;
         }
     }
+    println!("Done!");
 }

@@ -54,6 +54,7 @@ impl TwizzlerTransport {
             let virtio_cfg = virtio_cfg_ref.as_mut_ptr();
             match map_field!(virtio_cfg.cfg_type).read() {
                 VirtioCfgType::CommonCfg if common_cfg.is_none() => {
+                    println!("Common CFG found! Bar: {:?}, Offset: {:?}, Length: {:?}", map_field!(virtio_cfg.bar).read(), map_field!(virtio_cfg.offset).read(), map_field!(virtio_cfg.length).read());
                     common_cfg = Some(CfgLocation {
                         bar: map_field!(virtio_cfg.bar).read() as usize,
                         offset: map_field!(virtio_cfg.offset).read() as usize,
@@ -64,7 +65,7 @@ impl TwizzlerTransport {
                     let mut notify_ref = unsafe {mm.get_mmio_offset_mut::<VirtioPciNotifyCap>(off)};
                     let notify_cap = notify_ref.as_mut_ptr();
                     notify_offset_multiplier = map_field!(notify_cap.notify_off_multiplier).read();
-
+                    println!("Notify CFG found! Bar: {:?}, Offset: {:?}, Length: {:?}, Offset multiplier: {:?}", map_field!(virtio_cfg.bar).read(), map_field!(virtio_cfg.offset).read(), map_field!(virtio_cfg.length).read(), notify_offset_multiplier);
                     notify_region = Some(
                         CfgLocation {
                             bar: map_field!(virtio_cfg.bar).read() as usize,
@@ -75,6 +76,7 @@ impl TwizzlerTransport {
                 }
 
                 VirtioCfgType::IsrCfg if isr_status.is_none() => {
+                    println!("ISR CFG found! Bar: {:?}, Offset: {:?}, Length: {:?}", map_field!(virtio_cfg.bar).read(), map_field!(virtio_cfg.offset).read(), map_field!(virtio_cfg.length).read());
                     isr_status = Some(CfgLocation {
                         bar: map_field!(virtio_cfg.bar).read() as usize,
                         offset: map_field!(virtio_cfg.offset).read() as usize,
@@ -83,6 +85,7 @@ impl TwizzlerTransport {
                 }
 
                 VirtioCfgType::DeviceCfg if config_space.is_none() => {
+                    println!("Device CFG found! Bar: {:?}, Offset: {:?}, Length: {:?}", map_field!(virtio_cfg.bar).read(), map_field!(virtio_cfg.offset).read(), map_field!(virtio_cfg.length).read());
                     let bar_num = map_field!(virtio_cfg.bar).read() as usize;
                     let bar = device.find_mmio_bar(bar_num).unwrap();
                     let mut start = unsafe{bar.get_mmio_offset_mut::<u32>(map_field!(virtio_cfg.offset).read() as usize)};
@@ -159,7 +162,7 @@ impl Transport for TwizzlerTransport {
         let index = offset_bytes / size_of::<u16>();
 
         let notify_bar = self.device.find_mmio_bar(self.notify_region.bar).unwrap();
-        let mut start = unsafe {notify_bar.get_mmio_offset_mut::<u16>(self.notify_region.offset as usize).as_mut_ptr().as_raw_ptr().as_ptr()};
+        let start = unsafe {notify_bar.get_mmio_offset_mut::<u16>(self.notify_region.offset as usize).as_mut_ptr().as_raw_ptr().as_ptr()};
 
         let notify_ptr = unsafe {VolatilePtr::new(NonNull::from(core::slice::from_raw_parts_mut(start, self.notify_region.length as usize)))};
 
@@ -184,7 +187,7 @@ impl Transport for TwizzlerTransport {
         map_field!(ptr.device_status).write(status.bits() as u8);
     }
     
-    fn set_guest_page_size(&mut self, guest_page_size: u32) {
+    fn set_guest_page_size(&mut self, _guest_page_size: u32) {
         // No-op, the PCI transport doesn't care.
     }
     

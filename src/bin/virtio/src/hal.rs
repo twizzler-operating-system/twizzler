@@ -1,16 +1,13 @@
-use twizzler_abi::syscall::{BackingType, LifetimeType};
-use twizzler_abi::marker::{BaseType, BaseVersion, BaseTag};
-use twizzler_driver::dma::{Access, DmaOptions, DmaPool, DmaSliceRegion, DMA_PAGE_SIZE};
-use twizzler_object::{CreateSpec, Object};
+use twizzler_driver::dma::{Access, DmaOptions, DmaPool, DmaSliceRegion, DMA_PAGE_SIZE, SyncMode};
 
 use virtio_drivers::{BufferDirection, Hal, PhysAddr};
 
 use once_cell::sync::OnceCell; 
-use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use fragile::Fragile;
 use std::sync::Mutex;
 use core::ptr::NonNull;
+use std::ptr::copy_nonoverlapping;
 
 pub struct TestHal;
 
@@ -21,24 +18,6 @@ static DMA_POOL_BIDIRECTIONAL: OnceCell<DmaPool> = OnceCell::new();
 // The DmaSliceRegions contained within this hashmap are never operated upon after being inserted into this hashmap, only the memory beneath it is.
 // This hashmap is used to keep memory allocated while it is still in use.
 static ALLOCED: OnceCell<Mutex<HashMap<PhysAddr, Fragile<DmaSliceRegion<u8>>>>> = OnceCell::new();
-
-static BUFFERS: OnceCell<Mutex<HashMap<PhysAddr, Object<BufferWrapper>>>> = OnceCell::new();
-
-struct BufferWrapper {
-    buffer: NonNull<[u8]>
-}
-
-unsafe impl Send for BufferWrapper {}
-
-impl BaseType for BufferWrapper {
-    fn init<T>(_t: T) -> Self {
-        todo!()
-    }
-
-    fn tags() -> &'static [(BaseVersion, BaseTag)] {
-        todo!()
-    }
-}
 
 // Gets the global dma pool for the HAL in a given access direction. If it doesn't exist, create it.
 fn get_dma_pool(dir: BufferDirection) -> &'static DmaPool {
@@ -116,62 +95,99 @@ unsafe impl Hal for TestHal{
     fn dma_alloc(pages: usize, direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
         assert!(pages == 1, "Only 1 page supported");
 
-        let alloced = get_dma_pool(direction).allocate_array(pages * DMA_PAGE_SIZE, 0u8);
+        let pool = get_dma_pool(direction);
+        let alloced = pool.allocate_array(pages, 0u8).unwrap();
 
-        let mut dma_slice = alloced.unwrap();
-        let pin = dma_slice.pin().unwrap();
+        let mut dma_slice = alloced;
         
+        let pin = dma_slice.pin().unwrap();
         let phys_addr: virtio_drivers::PhysAddr =
             u64::from(pin.into_iter().next().unwrap().addr()) as virtio_drivers::PhysAddr;
-
-        let ptr = unsafe{dma_slice.get_mut().as_mut_ptr()};
+        let virt = unsafe{NonNull::<u8>::new(dma_slice.get_mut().as_mut_ptr())}.unwrap();
 
         // Persist the allocated memory so it isn't freed when the function returns
         insert_alloced(phys_addr, dma_slice);
 
-        println!("Allocated DMA buffer at: {:?} with phys addr: {:x}", ptr, phys_addr);
+        println!("Allocated DMA buffer at: {:?} with phys addr: {:x}", virt, phys_addr);
 
-        (phys_addr, NonNull::<u8>::new(ptr).unwrap())
+        (phys_addr as PhysAddr, virt)
     }
 
     unsafe fn dma_dealloc(_paddr: PhysAddr, _vaddr: NonNull<u8>, _pages: usize) -> i32 {
-        remove_alloced(_paddr);
-        0
+        let mut dma_region = remove_alloced(_paddr).unwrap().try_into_inner();
+        match dma_region {
+            Ok(mut dma_region) => {
+                dma_region.release_pin();
+                0
+            },
+            Err(_) => {
+                -1
+            }
+        }
     }
 
     unsafe fn mmio_phys_to_virt(_paddr: PhysAddr, _size: usize) -> NonNull<u8> {
         panic!("Should never be called as we have our own transport implementation");
     }
 
-    unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {
-        // let vaddr = buffer.as_ptr() as *mut u8 as usize;
-        // println!("Sharing buffer at {:?}", buffer);
-        // vaddr as PhysAddr
-        
-        let create_spec = &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal);
-        
-        let obj: Object<BufferWrapper> = Object::create_with(create_spec, |obj| unsafe {
-            let base: &mut BufferWrapper = obj.base_mut_unchecked().assume_init_mut();
-            base.buffer.copy_from(buffer, buffer.len());
-        }).unwrap(); 
+    unsafe fn share(buffer: NonNull<[u8]>, direction: BufferDirection) -> PhysAddr {
+        println!("Sharing buffer at: {:?}", buffer);
+        let buf_len = buffer.len();
 
+        assert!(buf_len <= DMA_PAGE_SIZE, "Hal::Share(): Buffer too large");
+        let (phys, virt) = TestHal::dma_alloc(1, direction);
 
+        let mut slice = remove_alloced(phys).unwrap().into_inner();
 
-        // Pin object and get phys address
-        
-        
-        // Hold onto the object until it's unshared.
-        let dict = BUFFERS.get_or_init(|| Mutex::new(HashMap::new()));
-        todo!();
+        let buf_casted = buffer.cast::<u8>();
+
+        let buf = buf_casted.as_ptr();
+        let dma_buf = virt.as_ptr();
+
+        // Copy the buffer to the DMA buffer
+
+        copy_nonoverlapping(buf, dma_buf, buf_len);
+
+        match direction {
+            BufferDirection::DriverToDevice => {
+                slice.sync(0..buf_len, SyncMode::PostCpuToDevice);
+            },
+            BufferDirection::DeviceToDriver => {
+                slice.sync(0..buf_len, SyncMode::PreDeviceToCpu);
+            },
+            _ => {}
+        }
+
+        // Persist the allocated memory so it isn't freed when the function returns
+        insert_alloced(phys, slice);
+
+        println!("Buffer copied to phys addr: {:x}", phys);
+
+        phys as PhysAddr
     }
-    unsafe fn unshare(_paddr: PhysAddr, _buffer: NonNull<[u8]>, _direction: BufferDirection) {
-        todo!();
-        //Find the associated object
+    unsafe fn unshare(paddr: PhysAddr, buffer: NonNull<[u8]>, direction: BufferDirection) {
+        // Gets DMA buffer and unallocates it
+        let mut dma_slice = remove_alloced(paddr).unwrap().into_inner();
         
+        match direction {
+            BufferDirection::DeviceToDriver => {
+                dma_slice.sync(0..buffer.len(), SyncMode::PostDeviceToCpu);
+            },
+            _ => {}
+        }
+
+        let buf_len = buffer.len();
+
+        let mut buf_casted = buffer.cast::<u8>();
         
-        // Copy the buffer back to the original buffer
+        let buf = buf_casted.as_ptr();
+        let dma_buf = unsafe{dma_slice.get_mut().as_ptr()};
 
+        // Copy the DMA buffer back to the buffer
+        copy_nonoverlapping(dma_buf, buf, buf_len);
 
-        // Unpin object
+        dma_slice.release_pin();
+
+        println!("Unshared contents of buffer at: {:?} with phys addr: {:x}", buffer, paddr);
     }
 }
