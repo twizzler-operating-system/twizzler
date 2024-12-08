@@ -31,7 +31,10 @@ members = [
     "src/abi/types",
     "src/lib/logboi",
     "src/srv/logboi-srv",
-    "src/bin/logboi-test",
+    "src/bin/logboi-test", 
+    "src/lib/naming",
+    "src/srv/naming-srv", 
+    "src/bin/naming-test",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -51,6 +54,8 @@ initrd = [
     "crate:stdfs_demo",
     "crate:logboi-test",
     "lib:logboi-srv",
+    "lib:naming-srv",
+    "crate:naming-test",
     #"third-party:hello-world-rs"
 ]
 

@@ -130,6 +130,21 @@ fn monitor_init() -> miette::Result<()> {
     info!("logboi ready");
     std::mem::forget(lbcomp);
 
+    let lbcomp: CompartmentHandle = CompartmentLoader::new(
+        "naming_srv`",
+        "libnaming_srv.so",
+        NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(&["naming"])
+    .load()
+    .into_diagnostic()?;
+    let mut flags = lbcomp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = lbcomp.wait(flags);
+    }
+    info!("naming ready");
+    std::mem::forget(lbcomp);
+
     info!("running logboi test");
     // Load and wait for tests to complete
     let comp: CompartmentHandle =
