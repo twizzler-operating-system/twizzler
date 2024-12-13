@@ -1,3 +1,5 @@
+use twizzler_rt_abi::object::{ObjID};
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub struct RequestFromKernel {
     cmd: KernelCommand,
@@ -16,6 +18,7 @@ impl RequestFromKernel {
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCommand {
     EchoReq,
+    PageDataReq(ObjID, ObjectRange),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
@@ -78,4 +81,35 @@ impl CompletionToPager {
 pub enum PagerCompletionData {
     EchoResp,
     ReadyResp,
+    DramPages(PhysRange),
 }
+
+pub struct PageDataReq {
+    objID: ObjID,
+    object_range: ObjectRange
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+pub struct PhysRange {
+    pub start: u64,
+    pub end: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+pub struct ObjectRange {
+    pub start: u64,
+    pub end: u64,
+}
+
+impl PhysRange {
+    pub fn new(start: u64, end: u64) -> Self {
+        Self { start, end }
+    }
+}
+
+impl ObjectRange {
+    pub fn new(start: u64, end: u64) -> Self {
+        Self { start, end }
+    }
+}
+
