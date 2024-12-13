@@ -1,7 +1,7 @@
 use twizzler_abi::{
     object::ObjID,
     pager::{
-        CompletionToKernel, CompletionToPager, KernelCommand, RequestFromKernel, RequestFromPager, PagerRequest
+        CompletionToKernel, CompletionToPager, KernelCommand, RequestFromKernel, RequestFromPager, PagerRequest, PhysRange
     },
 };
 
@@ -26,7 +26,7 @@ pub(super) fn pager_request_handler_main() {
         receiver.handle_request(|id, req| {
             logln!("kernel: got req {}:{:?} from pager", id, req);
             if req.cmd() == twizzler_abi::pager::PagerRequest::Ready {
-                return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::ReadyResp)
+                return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::DramPages(PhysRange::new(0x0000, 0x3E7FFF)))
             } else {
                 return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
             }
