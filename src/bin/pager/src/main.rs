@@ -9,8 +9,8 @@ use tracing::{debug, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use twizzler_abi::pager::{
-    CompletionToKernel, CompletionToPager, KernelCompletionData, RequestFromKernel,
-    RequestFromPager,
+    CompletionToKernel, CompletionToPager, KernelCompletionData, RequestFromKernel, KernelCommand,
+    RequestFromPager, PagerCompletionData, PhysRange, ObjectRange
 };
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
@@ -18,8 +18,10 @@ use crate::store::{Key, KeyValueStore};
 
 use std::error::Error;
 use crate::data::PagerData;
+use crate::helpers::{physrange_to_pages, PAGE};
 
 mod data;
+mod helpers;
 mod nvme;
 mod store;
 
@@ -44,6 +46,15 @@ fn data_structure_init() -> PagerData {
     let pager_data = PagerData::new(); 
     
     return pager_data;
+}
+
+
+/***
+ * Setup data structures and physical memory for use by pager
+ ***/
+fn memory_init(data: PagerData, range: PhysRange) {
+    let pages = physrange_to_pages(&range) as usize;
+    data.resize(pages);
 }
 
 /*** 
@@ -79,7 +90,6 @@ fn queue_init() -> (
     twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>, 
     twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>
     ) {
-    println!("Hello, world from pager!");
 
     let rq = attach_queue::<RequestFromKernel, CompletionToKernel, _>(&queue_args(1), twizzler_queue::CallbackQueueReceiver::new).unwrap();
     let sq = attach_queue::<RequestFromPager, CompletionToPager, _>(&queue_args(2), twizzler_queue::QueueSender::new).unwrap();
@@ -117,7 +127,7 @@ fn health_check(
             async move{
                 let timeout = Timer::after(timeout_duration);
                 println!("[pager] submitting request to kernel");
-
+                
                 let res = sq.submit_and_wait(RequestFromPager::new(
                         twizzler_abi::pager::PagerRequest::EchoReq,
                         ));
@@ -146,6 +156,7 @@ fn pager_init() -> (
     &'static Executor<'static>
     ) {
     
+    println!("[pager] init start");
     tracing_init();
     let data = data_structure_init();
     let (rq, sq) = queue_init();
@@ -155,6 +166,7 @@ fn pager_init() -> (
     verify_health(health.clone());
     drop(health);
 
+    println!("[pager] init complete");
     return (rq, sq, data, ex);
 }
 
@@ -209,7 +221,20 @@ async fn notify<R, C>(q: Arc<twizzler_queue::CallbackQueueReceiver<R, C>>, id: u
 
 async fn handle_kernel_request(request: RequestFromKernel, data: Arc<PagerData>) -> Option<CompletionToKernel> {
     println!("[pager] handling kernel request {:?}", request);
-    Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
+
+    match request.cmd() {
+        KernelCommand::PageDataReq(obj_id, range) => {
+            println!(
+                "Handling PageDataReq for ObjID: {:?}, Range: start = {}, end = {}",
+                obj_id, range.start, range.end
+                );
+            Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
+        }
+        KernelCommand::EchoReq => {
+            println!("Handling EchoReq");
+            Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
+        }
+    }
 }
 
 async fn send_request<R, C>(q: twizzler_queue::QueueSender<R, C>, request: R) -> Result<C, Box<dyn std::error::Error>>
@@ -225,30 +250,61 @@ async fn send_request<R, C>(q: twizzler_queue::QueueSender<R, C>, request: R) ->
 async fn report_ready(
     q: twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
     ex: &'static Executor<'static>,
-) -> bool {
+) -> Option<PagerCompletionData>{
     println!("[pager] sending ready signal to kernel");
     let request = RequestFromPager::new(twizzler_abi::pager::PagerRequest::Ready);
 
     match send_request(q, request).await {
         Ok(completion) => {
             println!("[pager] received completion for ready signal: {:?}", completion);
-            true
+            return Some(completion.data()); 
         }
         Err(e) => {
             eprintln!("[pager] error from ready signal {:?}", e);
-            false
+            return None;
         }
     }
+
 }
 
 fn main() {
     let (rq, sq, data, ex) = pager_init();
     spawn_queues(rq, data.clone(), ex);
-    block_on(ex.run(
-            async move {
-                report_ready(sq, ex).await;
-            }));
 
+    let phys_range: Option<PhysRange> = block_on(async move {
+        let res = report_ready(sq, ex).await;
+        match res {
+            Some(PagerCompletionData::DramPages(range)) => {
+                Some(range) // Return the range
+            }
+            _ => {
+                println!("[pager] ERROR: no range from ready request");
+                None
+            }
+        }
+    });
+
+    if let Some(range) = phys_range {
+        println!("[pager] initializing the pager with physical memory range: start: {}, end: {}", range.start, range.end);
+        memory_init(data, range);
+    } else {
+        println!("[pager] cannot complete pager initialization with no physical memory");
+    }
+
+
+    println!("Performing Test...");
+    let tq = attach_queue::<RequestFromKernel, CompletionToKernel, _>(&queue_args(1), twizzler_queue::QueueSender::new).unwrap();
+    block_on(
+            async move{
+                println!("kernel: submitting request on K2P Queue");
+                let res = tq.submit_and_wait(RequestFromKernel::new(
+                       twizzler_abi::pager::KernelCommand::PageDataReq(ObjID::new(1001), ObjectRange{ start: 0, end: 4096}),
+                        ));
+                let x = res.await;
+                println!("kernel:  got {:?} in response", x);
+    });
+    println!("Test Completed");
+    //Done
 }
 
 #[repr(C, packed)]
