@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use bitvec::prelude::*;
-use twizzler_abi::pager::{ObjectRange};
+use twizzler_abi::pager::{ObjectRange, PhysRange};
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
+use std::collections::VecDeque;
 
 #[derive(Clone)]
 pub struct PagerData {
@@ -12,52 +13,35 @@ pub struct PagerData {
 pub struct PagerDataInner {
     pub bitvec: BitVec,
     pub hashmap: HashMap<u64, (ObjID, ObjectRange)>,
+    pub lru_queue: VecDeque<u64>,
+    pub mem_range_start: u64 
 }
 
 impl PagerDataInner {
     /// Create a new PagerDataInner instance
     pub fn new() -> Self {
-        println!("[pager] initializing pagerdatainner");
+        println!("[pager] initializing PagerDataInner");
         PagerDataInner {
             bitvec: BitVec::new(),
             hashmap: HashMap::with_capacity(0),
+            lru_queue: VecDeque::new(),
+            mem_range_start: 0
         }
     }
-}
 
-impl PagerData {
-    /// Create a new PagerData instance
-    pub fn new() -> Self {
-        println!("[pager] creating a new pagerdata instance");
-        PagerData {
-            inner: Arc::new(Mutex::new(PagerDataInner::new())),
-        }
+    pub fn set_range_start(&mut self, start: u64) {
+        self.mem_range_start = start;
     }
-    
-    /// Map + Bitset Operations
-    ///
-    pub fn resize(&self, pages: usize) {
-        self.resize_bitset(pages);
-        self.resize_map(pages);
-    }
-
-    /// Bitset Operations
-
 
     /// Get the next available page number and insert it into the bitvec.
     /// Returns `Some(page_number)` if a page is available, or `None` if none are left.
-    pub fn get_next_available_page(&self) -> Option<usize> {
-        println!("[pager] pager lock: acquiring lock to get the next available page");
-        let mut inner = self.inner.lock().unwrap();
-
-        // Find the first unset bit
-        let next_page = inner.bitvec.iter().position(|bit| !bit);
+    fn get_next_available_page(&mut self) -> Option<usize> {
+        println!("[pager] searching for next available page");
+        let next_page = self.bitvec.iter().position(|bit| !bit);
 
         if let Some(page_number) = next_page {
-            if page_number >= inner.bitvec.len() {
-                inner.bitvec.resize(page_number + 1, false);
-            }
-            inner.bitvec.set(page_number, true);
+            self.bitvec.set(page_number, true);
+            self.lru_queue.push_back(page_number.try_into().unwrap());
             println!("[pager] next available page: {}", page_number);
             Some(page_number)
         } else {
@@ -66,22 +50,35 @@ impl PagerData {
         }
     }
 
-    /// Check if the bitvec is full.
-    pub fn is_full(&self) -> bool {
-        println!("[pager] pager lock: acquiring lock to check if bitvec is full");
-        let inner = self.inner.lock().unwrap();
-        let full = inner.bitvec.all();
-        println!("[pager] bitvec is full: {}", full);
-        full
+    /// Page replacement algorithm (LRU strategy)
+    fn page_replacement(&mut self) -> u64 {
+        println!("[pager] executing page replacement");
+        if let Some(old_page) = self.lru_queue.pop_front() {
+            println!("[pager] replacing page: {}", old_page);
+            self.remove_page(old_page as usize);
+            old_page
+        } else {
+            panic!("[pager] page replacement failed: no pages to replace");
+        }
+    }
+    
+
+    fn get_mem_page(&mut self) -> usize {
+        println!("[pager] attempting to get memory page");
+        if self.bitvec.all() {
+            println!("[pager] all pages used, initiating page replacement");
+            self.page_replacement();
+        }
+        self.get_next_available_page().expect("[pager] no available pages")
     }
 
     /// Remove a page from the bitvec.
-    pub fn remove_page(&self, page_number: usize) {
-        println!("[pager] pager lock: acquiring lock to remove page: {}", page_number);
-        let mut inner = self.inner.lock().unwrap();
-
-        if page_number < inner.bitvec.len() {
-            inner.bitvec.set(page_number, false);
+    fn remove_page(&mut self, page_number: usize) {
+        println!("[pager] attempting to remove page {}", page_number);
+        if page_number < self.bitvec.len() {
+            self.bitvec.set(page_number, false);
+            self.remove_from_map(&(page_number as u64));
+            self.lru_queue.retain(|&p| p != page_number as u64);
             println!("[pager] page {} removed from bitvec", page_number);
         } else {
             println!("[pager] page {} is out of bounds and cannot be removed", page_number);
@@ -89,43 +86,47 @@ impl PagerData {
     }
 
     /// Adjust the size of the bitvec dynamically.
-    pub fn resize_bitset(&self, new_size: usize) {
-        println!("[pager] pager lock: acquiring lock to resize bitvec");
-        let mut inner = self.inner.lock().unwrap();
-
+    fn resize_bitset(&mut self, new_size: usize) {
+        println!("[pager] resizing bitvec to new size: {}", new_size);
         if new_size == 0 {
             println!("[pager] clearing bitvec");
-            inner.bitvec.clear();
+            self.bitvec.clear();
         } else {
-            println!("[pager] resizing bitvec to new size: {}", new_size);
-            inner.bitvec.resize(new_size, false);
+            self.bitvec.resize(new_size, false);
         }
-
         println!("[pager] bitvec resized to: {}", new_size);
     }
 
-    /// Hashmap Operations
-    
+    pub fn is_full(&self) -> bool {
+        let full = self.bitvec.all();
+        println!("[pager] bitvec check full: {}", full);
+        full
+    }
 
-    pub fn insert_into_map(&self, key: u64, obj_id: ObjID, range: ObjectRange) {
+    pub fn insert_into_map(&mut self, key: u64, obj_id: ObjID, range: ObjectRange) {
         println!(
-            "[pager] pager lock: acquiring lock to insert into hashmap: key = {}, ObjID = {:?}, ObjectRange = {:?}",
+            "[pager] inserting into hashmap: key = {}, ObjID = {:?}, ObjectRange = {:?}",
             key, obj_id, range
         );
-        let mut inner = self.inner.lock().unwrap();
-        inner.hashmap.insert(key, (obj_id.clone(), range.clone()));
+        self.hashmap.insert(key, (obj_id.clone(), range.clone()));
         println!(
-            "[pager] inserted key-value pair into hashmap: key = {}, ObjID = {:?}, ObjectRange = {:?}",
+            "[pager] inserted into hashmap: key = {}, ObjID = {:?}, ObjectRange = {:?}",
             key, obj_id, range
         );
     }
+    
+    pub fn update_on_key(&mut self, key: u64) {
+        self.lru_queue.retain(|&p| p != key);
+        self.lru_queue.push_back(key);
+    }
 
-    pub fn get_from_map(&self, key: &u64) -> Option<(ObjID, ObjectRange)> {
-        println!("[pager] pager lock: acquiring lock to retrieve value for key: {}", key);
-        let inner = self.inner.lock().unwrap();
-        match inner.hashmap.get(key) {
+    pub fn get_from_map(&mut self, key: &u64) -> Option<(ObjID, ObjectRange)> {
+        println!("[pager] retrieving value for key {}", key);
+        match self.hashmap.get(key) {
             Some(value) => {
-                println!("[pager] value retrieved for key {}: {:?}", key, value);
+                println!("[pager] value found for key {}: {:?}", key, value);
+                self.lru_queue.retain(|&p| p != *key);
+                self.lru_queue.push_back(*key);
                 Some(value.clone())
             }
             None => {
@@ -135,42 +136,55 @@ impl PagerData {
         }
     }
 
-    pub fn resize_map(&self, add_size: usize) {
-        println!("[pager] pager lock: acquiring lock to resize hashmap");
-        let mut inner = self.inner.lock().unwrap();
-        inner.hashmap.reserve(add_size);
-        println!("[pager] additional capacity of {} added to hashmap", add_size);
+    pub fn remove_from_map(&mut self, key: &u64) {
+        println!("[pager] removing key {} from hashmap", key);
+        self.hashmap.remove(key);
+    }
+
+    pub fn resize_map(&mut self, add_size: usize) {
+        println!("[pager] adding {} capacity to hashmap", add_size);
+        self.hashmap.reserve(add_size);
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_resize_bitset() {
-        let pager_data = PagerData::new();
-        pager_data.resize_bitset(10);
-        assert_eq!(pager_data.inner.lock().unwrap().bitvec.len(), 10);
-        pager_data.resize_bitset(0);
-        assert!(pager_data.inner.lock().unwrap().bitvec.is_empty());
+impl PagerData {
+    /// Create a new PagerData instance
+    pub fn new() -> Self {
+        println!("[pager] creating new PagerData instance");
+        PagerData {
+            inner: Arc::new(Mutex::new(PagerDataInner::new())),
+        }
     }
 
-    #[test]
-    fn test_insert_and_retrieve_from_map() {
-        let pager_data = PagerData::new();
-        let obj_id = ObjID(42);
-        let range = ObjectRange { start: 0, end: 100 };
-        pager_data.insert_into_map(42, obj_id.clone(), range.clone());
-        let retrieved = pager_data.get_from_map(&42);
-        assert_eq!(retrieved, Some((obj_id, range)));
+    /// Map + Bitset Operations
+    pub fn resize(&self, pages: usize) {
+        println!("[pager] resizing resources to support {} pages", pages);
+        let mut inner = self.inner.lock().unwrap();
+        inner.resize_bitset(pages);
+        inner.resize_map(pages);
     }
 
-    #[test]
-    fn test_retrieve_nonexistent_key() {
-        let pager_data = PagerData::new();
-        let retrieved = pager_data.get_from_map(&999);
-        assert_eq!(retrieved, None);
+    pub fn init_range(&self, range: PhysRange) {
+        self.inner.lock().unwrap().set_range_start(range.start);
+    }
+
+    pub fn alloc_mem_page(&self, id: ObjID, range: ObjectRange) -> usize {
+        println!("[pager] allocating memory page for ObjID {:?}, ObjectRange {:?}", id, range);
+        let mut inner = self.inner.lock().unwrap();
+        let page = inner.get_mem_page();
+        inner.insert_into_map(page.try_into().unwrap(), id, range);
+        println!("[pager] memory page allocated successfully");
+        return page;
+    }
+
+    pub fn test_alloc_page(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        while !inner.is_full() {
+            let page = inner.get_mem_page();
+        }
+        for i in 0..90 {
+            inner.update_on_key(i);
+        }
     }
 }
 

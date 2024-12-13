@@ -16,6 +16,16 @@ pub fn physrange_to_pages(phys_range: &PhysRange) -> u64 {
     (range_size + PAGE - 1) / PAGE // Add PAGE - 1 for ceiling division by PAGE
 }
 
+/// Converts a `PhysRange` into the number of pages (4096 bytes per page).
+/// Returns a `u64` representing the total number of pages in the range.
+pub fn page_to_physrange(page_num: usize, range_start: u64) -> PhysRange {
+    let start = ((page_num as u64) * PAGE) + range_start;
+    let end = start + PAGE;
+
+    return PhysRange { start: start, end: end }
+
+}
+
 /// Converts an `ObjectRange` representing a single page into the page number.
 /// Assumes the range is within a valid memory mapping and spans exactly one page (4096 bytes).
 /// Returns the page number starting at 0.
