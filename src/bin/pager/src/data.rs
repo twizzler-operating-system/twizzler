@@ -5,6 +5,8 @@ use twizzler_abi::pager::{ObjectRange, PhysRange};
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 use std::collections::VecDeque;
 
+use crate::helpers::{page_in, page_to_physrange};
+
 #[derive(Clone)]
 pub struct PagerData {
     inner: Arc<Mutex<PagerDataInner>>,
@@ -19,6 +21,7 @@ pub struct PagerDataInner {
 
 impl PagerDataInner {
     /// Create a new PagerDataInner instance
+    /// Initializes the data structure for managing page allocations and replacements.
     pub fn new() -> Self {
         println!("[pager] initializing PagerDataInner");
         PagerDataInner {
@@ -29,12 +32,13 @@ impl PagerDataInner {
         }
     }
 
+    /// Set the starting address of the memory range to be managed.
     pub fn set_range_start(&mut self, start: u64) {
         self.mem_range_start = start;
     }
 
-    /// Get the next available page number and insert it into the bitvec.
-    /// Returns `Some(page_number)` if a page is available, or `None` if none are left.
+    /// Get the next available page number and mark it as used.
+    /// Returns the page number if available, or `None` if all pages are used.
     fn get_next_available_page(&mut self) -> Option<usize> {
         println!("[pager] searching for next available page");
         let next_page = self.bitvec.iter().position(|bit| !bit);
@@ -50,7 +54,8 @@ impl PagerDataInner {
         }
     }
 
-    /// Page replacement algorithm (LRU strategy)
+    /// Perform page replacement using the Least Recently Used (LRU) strategy.
+    /// Returns the identifier of the replaced page.
     fn page_replacement(&mut self) -> u64 {
         println!("[pager] executing page replacement");
         if let Some(old_page) = self.lru_queue.pop_front() {
@@ -61,8 +66,9 @@ impl PagerDataInner {
             panic!("[pager] page replacement failed: no pages to replace");
         }
     }
-    
 
+    /// Get a memory page for allocation.
+    /// Triggers page replacement if all pages are used.
     fn get_mem_page(&mut self) -> usize {
         println!("[pager] attempting to get memory page");
         if self.bitvec.all() {
@@ -72,7 +78,7 @@ impl PagerDataInner {
         self.get_next_available_page().expect("[pager] no available pages")
     }
 
-    /// Remove a page from the bitvec.
+    /// Remove a page from the bit vector, freeing it for future use.
     fn remove_page(&mut self, page_number: usize) {
         println!("[pager] attempting to remove page {}", page_number);
         if page_number < self.bitvec.len() {
@@ -85,7 +91,7 @@ impl PagerDataInner {
         }
     }
 
-    /// Adjust the size of the bitvec dynamically.
+    /// Resize the bit vector to accommodate more pages or clear it.
     fn resize_bitset(&mut self, new_size: usize) {
         println!("[pager] resizing bitvec to new size: {}", new_size);
         if new_size == 0 {
@@ -97,12 +103,14 @@ impl PagerDataInner {
         println!("[pager] bitvec resized to: {}", new_size);
     }
 
+    /// Check if all pages are currently in use.
     pub fn is_full(&self) -> bool {
         let full = self.bitvec.all();
         println!("[pager] bitvec check full: {}", full);
         full
     }
 
+    /// Insert an object and its associated range into the hashmap.
     pub fn insert_into_map(&mut self, key: u64, obj_id: ObjID, range: ObjectRange) {
         println!(
             "[pager] inserting into hashmap: key = {}, ObjID = {:?}, ObjectRange = {:?}",
@@ -114,12 +122,15 @@ impl PagerDataInner {
             key, obj_id, range
         );
     }
-    
+
+    /// Update the LRU queue based on access to a key.
     pub fn update_on_key(&mut self, key: u64) {
         self.lru_queue.retain(|&p| p != key);
         self.lru_queue.push_back(key);
     }
 
+    /// Retrieve an object and its range from the hashmap by key.
+    /// Updates the LRU queue to reflect access.
     pub fn get_from_map(&mut self, key: &u64) -> Option<(ObjID, ObjectRange)> {
         println!("[pager] retrieving value for key {}", key);
         match self.hashmap.get(key) {
@@ -136,11 +147,13 @@ impl PagerDataInner {
         }
     }
 
+    /// Remove a key and its associated value from the hashmap.
     pub fn remove_from_map(&mut self, key: &u64) {
         println!("[pager] removing key {} from hashmap", key);
         self.hashmap.remove(key);
     }
 
+    /// Reserve additional capacity in the hashmap.
     pub fn resize_map(&mut self, add_size: usize) {
         println!("[pager] adding {} capacity to hashmap", add_size);
         self.hashmap.reserve(add_size);
@@ -148,7 +161,8 @@ impl PagerDataInner {
 }
 
 impl PagerData {
-    /// Create a new PagerData instance
+    /// Create a new PagerData instance.
+    /// Wraps PagerDataInner with thread-safe access.
     pub fn new() -> Self {
         println!("[pager] creating new PagerData instance");
         PagerData {
@@ -156,7 +170,7 @@ impl PagerData {
         }
     }
 
-    /// Map + Bitset Operations
+    /// Resize the internal structures to accommodate the given number of pages.
     pub fn resize(&self, pages: usize) {
         println!("[pager] resizing resources to support {} pages", pages);
         let mut inner = self.inner.lock().unwrap();
@@ -164,27 +178,23 @@ impl PagerData {
         inner.resize_map(pages);
     }
 
+    /// Initialize the starting memory range for the pager.
     pub fn init_range(&self, range: PhysRange) {
         self.inner.lock().unwrap().set_range_start(range.start);
     }
 
-    pub fn alloc_mem_page(&self, id: ObjID, range: ObjectRange) -> usize {
-        println!("[pager] allocating memory page for ObjID {:?}, ObjectRange {:?}", id, range);
+    /// Allocate a memory page and associate it with an object and range.
+    /// Page in the data from disk
+    /// Returns the physical range corresponding to the allocated page.
+    pub fn fill_mem_page(&self, id: ObjID, obj_range: ObjectRange) -> PhysRange {
+        println!("[pager] allocating memory page for ObjID {:?}, ObjectRange {:?}", id, obj_range);
         let mut inner = self.inner.lock().unwrap();
         let page = inner.get_mem_page();
-        inner.insert_into_map(page.try_into().unwrap(), id, range);
+        inner.insert_into_map(page.try_into().unwrap(), id, obj_range);
+        let phys_range = page_to_physrange(page, 0);
+        page_in(id, obj_range, phys_range);
         println!("[pager] memory page allocated successfully");
-        return page;
-    }
-
-    pub fn test_alloc_page(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        while !inner.is_full() {
-            let page = inner.get_mem_page();
-        }
-        for i in 0..90 {
-            inner.update_on_key(i);
-        }
+        return phys_range;
     }
 }
 
