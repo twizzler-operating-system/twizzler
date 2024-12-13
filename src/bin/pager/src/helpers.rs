@@ -2,6 +2,8 @@ use twizzler_abi::pager::{
     PhysRange, ObjectRange
 };
 
+use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
+
 /// A constant representing the page size (4096 bytes per page).
 pub const PAGE: u64 = 4096;
 
@@ -34,6 +36,11 @@ pub fn objectrange_to_page_number(object_range: &ObjectRange) -> Option<u64> {
         return None; // Invalid ObjectRange for a single page
     }
     Some(object_range.start / PAGE)
+}
+
+
+pub fn page_in(obj_id: ObjID, obj_range: ObjectRange, phys_range: PhysRange) {
+    //Read from Disk -> Memory for Page, how??
 }
 
 #[cfg(test)]

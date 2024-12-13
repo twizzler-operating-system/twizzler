@@ -11,9 +11,7 @@ use crate::helpers::{physrange_to_pages, page_to_physrange, PAGE};
 use std::sync::Arc;
 
 fn page_data_req(data: Arc<PagerData>, id: ObjID, range: ObjectRange) -> PhysRange {
-    data.test_alloc_page();
-    let mempage = data.alloc_mem_page(id, range);
-    return page_to_physrange(mempage, 0);
+    return data.fill_mem_page(id, range);
 }
 
 pub async fn handle_kernel_request(request: RequestFromKernel, data: Arc<PagerData>) -> Option<CompletionToKernel> {
