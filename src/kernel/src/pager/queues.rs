@@ -42,6 +42,9 @@ pub(super) fn pager_compl_handler_main() {
             twizzler_abi::pager::KernelCompletionData::EchoResp => {
                 logln!("got echo response");
             }
+            twizzler_abi::pager::KernelCompletionData::PageDataReq(phys_range) => {
+                logln!("got physical range {:?}", phys_range);
+            }
         }
         sender.0.release_simple(SimpleId::from(completion.0));
     }

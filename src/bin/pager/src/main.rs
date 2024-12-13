@@ -19,7 +19,9 @@ use crate::store::{Key, KeyValueStore};
 use std::error::Error;
 use crate::data::PagerData;
 use crate::helpers::{physrange_to_pages, PAGE};
+use crate::request_handle::{handle_kernel_request};
 
+mod request_handle;
 mod data;
 mod helpers;
 mod nvme;
@@ -53,6 +55,7 @@ fn data_structure_init() -> PagerData {
  * Setup data structures and physical memory for use by pager
  ***/
 fn memory_init(data: PagerData, range: PhysRange) {
+    data.init_range(range);
     let pages = physrange_to_pages(&range) as usize;
     data.resize(pages);
 }
@@ -217,24 +220,6 @@ async fn notify<R, C>(q: Arc<twizzler_queue::CallbackQueueReceiver<R, C>>, id: u
         q.complete(id, res).await.unwrap();
     }
     println!("[pager] request {} complete", id);
-}
-
-async fn handle_kernel_request(request: RequestFromKernel, data: Arc<PagerData>) -> Option<CompletionToKernel> {
-    println!("[pager] handling kernel request {:?}", request);
-
-    match request.cmd() {
-        KernelCommand::PageDataReq(obj_id, range) => {
-            println!(
-                "Handling PageDataReq for ObjID: {:?}, Range: start = {}, end = {}",
-                obj_id, range.start, range.end
-                );
-            Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
-        }
-        KernelCommand::EchoReq => {
-            println!("Handling EchoReq");
-            Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
-        }
-    }
 }
 
 async fn send_request<R, C>(q: twizzler_queue::QueueSender<R, C>, request: R) -> Result<C, Box<dyn std::error::Error>>
