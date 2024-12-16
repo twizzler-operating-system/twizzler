@@ -230,11 +230,9 @@ impl ReferenceRuntime {
         let base =
             unsafe { (repr.start().add(NULLPAGE_SIZE) as *const ThreadRepr).as_ref() }.unwrap();
         loop {
-            tracing::info!("wait here");
             let (state, _code) = base
                 .wait_until(ExecutionState::Exited, timeout)
                 .ok_or(JoinError::Timeout)?;
-            tracing::info!("wait here: done");
             if state == ExecutionState::Exited {
                 let mut inner = THREAD_MGR.inner.lock();
                 inner.prep_cleanup(id);

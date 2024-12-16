@@ -213,11 +213,6 @@ fn zero_ok<T: Into<u64>>(t: T) -> (u64, u64) {
 pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
     match context.num().into() {
         Syscall::ObjectUnmap => {
-            logln!(
-                "unmap slot: {} ({:x})",
-                context.arg2::<u64>(),
-                context.arg2::<u64>() * MAX_SIZE as u64
-            );
             context.set_return_values(1u64, 0u64);
         }
         Syscall::Null => {

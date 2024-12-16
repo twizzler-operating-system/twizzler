@@ -78,10 +78,7 @@ impl<Base: BaseType> ControlObjectCacher<Base> {
     /// for this type.
     pub fn base(&self) -> &Base {
         match &self.quick_or_kernel {
-            QuickOrKernel::Quick(quick) => unsafe {
-                logln!("quick frame: {:?}", quick.base_frame.start_address());
-                quick.base_ptr.as_ref()
-            },
+            QuickOrKernel::Quick(quick) => unsafe { quick.base_ptr.as_ref() },
             QuickOrKernel::Kernel(kobj) => kobj.base(),
         }
     }

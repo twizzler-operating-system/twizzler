@@ -11,12 +11,6 @@ pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
 }
 
 pub fn thread_ctrl(cmd: ThreadControl, arg: u64) -> (u64, u64) {
-    logln!(
-        "TCTL: {}: {:?} {:x}",
-        current_thread_ref().unwrap().id(),
-        cmd,
-        arg
-    );
     match cmd {
         ThreadControl::SetUpcall => {
             let Some(data) = (unsafe { (arg as usize as *const UpcallTarget).as_ref() }) else {

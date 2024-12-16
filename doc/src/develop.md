@@ -18,26 +18,7 @@ runs on the Twizzler operating system you can follow these steps:
 2. Create a new program, named ```hello```.  The ```Cargo``` command will actually create the canonical ```Hello world``` program for you.
 ```cargo new --bin hello```
 
-3. Add the twizzler runtime. First, add the following to the main.rs file within hello/src:
-
-```rust
-extern crate twizzler_minruntime;
-```
-
-then, add the following to your Cargo.toml, under `[dependencies]`:
-
-```toml
-twizzler-minruntime = { path = "../../runtime/minruntime" }
-```
-
-and later in the file:
-
-```toml
-[package.metadata]
-twizzler-build = "static"
-```
-
-4. Change directory back to the project root, and edit the Cargo.toml file in the root directory to add the program to the Twizzler build system.
+3. Change directory back to the project root, and edit the Cargo.toml file in the root directory to add the program to the Twizzler build system.
 
 The following diff shows the two lines you need to add:
 

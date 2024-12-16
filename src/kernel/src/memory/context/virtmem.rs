@@ -267,7 +267,6 @@ impl UserContext for VirtContext {
         slot: Slot,
         object_info: &ObjectContextInfo,
     ) -> Result<(), InsertError> {
-        logln!("inso: {:?}", slot.start_vaddr());
         let new_slot_info = VirtContextSlot {
             obj: object_info.object().clone(),
             slot,
@@ -308,7 +307,6 @@ impl UserContext for VirtContext {
         for arch in arches.values() {
             if let Some(maps) = slots.obj_to_slots(obj) {
                 for map in maps {
-                    logln!("invl: {:?}", map.start_vaddr());
                     let info = slots
                         .get(map)
                         .expect("invalid slot info for a mapped object");
@@ -329,7 +327,6 @@ impl UserContext for VirtContext {
     }
 
     fn remove_object(&self, info: Self::MappingInfo) {
-        logln!("remv: {:?}", info.start_vaddr());
         let mut slots = self.slots.lock();
         if let Some(slot) = slots.remove(info) {
             let arches = self.secctx.lock();

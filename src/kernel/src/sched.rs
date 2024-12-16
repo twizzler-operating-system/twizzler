@@ -214,7 +214,6 @@ fn balance(topo: &CPUTopoNode) {
         let donor = get_processor(donor.cpuid);
         let recipient = get_processor(recipient.cpuid);
         let donor_load = donor.current_load();
-        // logln!("balance {:?} {}", cpuset, donor_load);
         if donor_load <= 2 {
             break;
         }
