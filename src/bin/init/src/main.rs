@@ -29,9 +29,8 @@ fn main() {
         None,
         ObjectCreateFlags::empty(),
     );
-    let netid = twizzler_abi::syscall::sys_object_create(create, &[], &[]).unwrap();
     let devid = twizzler_abi::syscall::sys_object_create(create, &[], &[]).unwrap();
-    println!("starting device manager");
+    info!("starting device manager");
     let dev_comp = monitor_api::CompartmentLoader::new(
         "devmgr",
         "devmgr",
@@ -41,7 +40,7 @@ fn main() {
     .load()
     .expect("failed to start device manager");
 
-    println!("waiting for device manager to come up");
+    debug!("waiting for device manager to come up");
     let obj = Object::<std::sync::atomic::AtomicU64>::init_id(
         devid,
         Protections::WRITE | Protections::READ,
@@ -59,9 +58,9 @@ fn main() {
         None,
     )
     .unwrap();
-    println!("device manager is up!");
+    debug!("device manager is up!");
 
-    println!("starting pager");
+    info!("starting pager");
     const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
     let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
         &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
@@ -95,8 +94,8 @@ fn main() {
     )
     .args([
         "pager",
-        &queue.object().id().as_u128().to_string(),
-        &queue2.object().id().as_u128().to_string(),
+        &queue.object().id().raw().to_string(),
+        &queue2.object().id().raw().to_string(),
     ])
     .load()
     .expect("failed to start pager");
@@ -109,36 +108,24 @@ fn main() {
 
     println!("Hi, welcome to the basic twizzler test console.");
     println!("If you wanted line-editing, you've come to the wrong place.");
-    println!("A couple commands you can run:");
-    println!("   - 'nt': Run the nettest program");
-    println!("... and that's it, but you can add your OWN things with the magic of PROGRAMMING.");
+    println!("To run a program, type its name.");
     loop {
         let reply = rprompt::prompt_reply_stdout("> ").unwrap();
-        println!("got: <{}>", reply);
-        /*
-        let cmd: Vec<&str> = reply.split(" ").collect();
-        if cmd.len() == 2 && cmd[0] == "run" {
-            if let Some(id) = find_init_name(cmd[1]) {
-                if cmd[1] == "nettest" {
-                    exec(cmd[1], id, netid);
-                } else {
-                    exec(cmd[1], id, ObjID::new(0));
-                }
-            } else {
-                eprintln!("[init] failed to start {}", cmd[1]);
-            }
+        let cmd: Vec<&str> = reply.split_whitespace().collect();
+        if cmd.len() == 0 {
+            continue;
         }
-
-        if cmd.len() == 1 && cmd[0] == "nt" {
-            if let Some(id) = find_init_name("nettest") {
-                exec("nettest", id, netid);
-            } else {
-                eprintln!("[init] failed to start nettest");
+        let comp = CompartmentLoader::new(cmd[0], cmd[0], NewCompartmentFlags::empty())
+            .args(&cmd)
+            .load();
+        if let Ok(comp) = comp {
+            let mut flags = comp.info().flags;
+            while !flags.contains(CompartmentFlags::EXITED) {
+                flags = comp.wait(flags);
             }
+        } else {
+            warn!("failed to start {}", cmd[0]);
         }
-        */
-
-        //  get_user_input();
     }
 }
 
@@ -212,6 +199,7 @@ use std::{
 };
 
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
+use tracing::{debug, info, warn};
 use twizzler_abi::{
     aux::KernelInitInfo,
     device::SubObjectType,
