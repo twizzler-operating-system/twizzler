@@ -106,9 +106,12 @@ fn start_pcie(seg: Device) {
     }
 }
 
-extern crate twizzler_minruntime;
+extern crate twizzler_runtime;
 fn main() {
     println!("[devmgr] starting device manager {:?}", args());
+    logboi::LogHandle::new()
+        .unwrap()
+        .log("Hello Logboi, from devmgr!".as_bytes());
     let id = args().into_iter().nth(1).unwrap().parse::<u128>().unwrap();
     let obj = Object::<std::sync::atomic::AtomicU64>::init_id(
         ObjID::new(id),

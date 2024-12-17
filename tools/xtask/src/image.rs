@@ -184,7 +184,7 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
         }
 
         // all the tests for init to run.
-        if let Some(ref test_comp) = comp.borrow_static_test_compilation() {
+        if let Some(ref test_comp) = comp.borrow_user_test_compilation() {
             let mut testlist = String::new();
             for bin in test_comp.tests.iter() {
                 initrd_files.push(bin.path.clone());
@@ -199,25 +199,6 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             }
             if cli.benches {
                 let test_file_path = get_genfile_path(comp, "bench_bins");
-                let mut file = File::create(&test_file_path)?;
-                file.write_all(testlist.as_bytes())?;
-                initrd_files.push(test_file_path);
-            }
-        } else {
-            assert!(!cli.tests && !cli.benches);
-        }
-
-        // all the tests for the monitor to run. Eventually this and the above will merge into
-        // one thing, but that will have to wait until the dynamic runtime is default.
-        if let Some(ref test_comp) = comp.borrow_user_test_compilation() {
-            let mut testlist = String::new();
-            for bin in test_comp.tests.iter() {
-                initrd_files.push(bin.path.clone());
-                testlist += &bin.path.file_name().unwrap().to_string_lossy();
-                testlist += "\n";
-            }
-            if cli.tests {
-                let test_file_path = get_genfile_path(comp, "monitor_test_bins");
                 let mut file = File::create(&test_file_path)?;
                 file.write_all(testlist.as_bytes())?;
                 initrd_files.push(test_file_path);

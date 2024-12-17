@@ -1,0 +1,20 @@
+[package]
+name = "secgate"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+#ring = { version = "*", default-features = false, features = ["alloc"] }
+secgate-macros = { path = "secgate-macros" }
+static_assertions = "1.1.0"
+alloca = { version = "0.4", default-features = false }
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
+stable-vec = "0.4"
+
+[build-dependencies]
+cc = "1.0"

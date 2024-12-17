@@ -12,6 +12,3 @@ twizzler-abi = { path = "../twizzler-abi", version = "*" }
 [features]
 std = []
 default = ["std"]
-
-[dev-dependencies]
-twizzler-minruntime = { path = "../../runtime/minruntime" }

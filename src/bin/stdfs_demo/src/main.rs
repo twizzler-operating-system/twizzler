@@ -1,8 +1,5 @@
-extern crate twizzler_abi;
-
 use std::{fs::File, io::Read};
 
-extern crate twizzler_minruntime;
 fn main() {
     let id: u128 = 0x1000000000000000a;
     let mut f = File::create(id.to_string()).unwrap();

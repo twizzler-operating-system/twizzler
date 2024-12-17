@@ -23,4 +23,4 @@ version = "0.5"
 kernel = ["volatile"]
 
 [dev-dependencies]
-twizzler-minruntime = { path = "../../runtime/minruntime" }
+#twizzler-runtime = { path = "../../runtime/rt" }
