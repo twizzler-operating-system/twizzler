@@ -147,7 +147,7 @@ pub fn handle_interrupt(number: u32) {
     let gi = get_global_interrupts();
     gi.ints[number as usize].raise();
     if number != 43 {
-        //logln!("external device interrupt {}", number);
+        // logln!("external device interrupt {}", number);
     }
 }
 
@@ -174,7 +174,7 @@ impl InterruptQueue {
     fn enqueue(&mut self, int: u32) {
         if self.is_full() {
             // TODO: extend this mechanism to avoid dropping interrupts
-            logln!("dropped interrupt {}", int);
+            // logln!("dropped interrupt {}", int);
             return;
         }
         self.queue[self.head] = int;
