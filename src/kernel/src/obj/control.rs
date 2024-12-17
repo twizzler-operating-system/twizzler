@@ -55,8 +55,8 @@ impl<Base: BaseType> ControlObjectCacher<Base> {
             let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
             let page = Page::new_wired(frame.start_address(), CacheType::WriteBack);
             let base_ptr = unsafe {
-                let ptr = page.get_mut_to_val(0);
-                *(core::mem::transmute::<_, &mut Base>(ptr)) = base;
+                let ptr = page.get_mut_to_val::<Base>(0);
+                ptr.write(base);
                 ptr
             };
             object.add_page(PageNumber::base_page(), page);
@@ -86,11 +86,5 @@ impl<Base: BaseType> ControlObjectCacher<Base> {
     /// Get the handle to the underlying object.
     pub fn object(&self) -> &ObjectRef {
         &self.object
-    }
-}
-
-impl<T> Drop for QuickBase<T> {
-    fn drop(&mut self) {
-        free_frame(self.base_frame);
     }
 }

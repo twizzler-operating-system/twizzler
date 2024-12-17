@@ -1,8 +1,0 @@
-[package]
-name = "twizzler-runtime"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-twizzler-rt-abi = { path = "../../abi/rt-abi" }
-twz-rt = { path = "../rt-impl" }

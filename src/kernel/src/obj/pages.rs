@@ -40,6 +40,7 @@ impl Drop for Page {
             FrameOrWired::Frame(f) => {
                 free_frame(f);
             }
+            // Note: this could be a wired, but freeable page (see kernel quick control objects).
             FrameOrWired::Wired(_) => todo!(),
         }
     }

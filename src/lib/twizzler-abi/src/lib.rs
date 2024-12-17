@@ -92,7 +92,6 @@ extern crate test;
 #[cfg(test)]
 mod tester {
     use crate::print_err;
-    extern crate twizzler_minruntime;
 
     #[bench]
     fn test_bench(bench: &mut test::Bencher) {

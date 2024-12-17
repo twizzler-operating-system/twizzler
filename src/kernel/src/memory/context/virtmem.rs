@@ -670,12 +670,13 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
             return;
         }
 
-        let sctx_id = current_thread_ref()
+        let mut sctx_id = current_thread_ref()
             .map(|ct| ct.secctx.active_id())
             .unwrap_or(KERNEL_SCTX);
         let user_ctx = current_memory_context();
         let (ctx, is_kern_obj) = if addr.is_kernel_object_memory() {
             assert!(!flags.contains(PageFaultFlags::USER));
+            sctx_id = KERNEL_SCTX;
             (kernel_context(), true)
         } else {
             (user_ctx.as_ref().unwrap_or_else(||
