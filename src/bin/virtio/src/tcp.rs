@@ -133,14 +133,13 @@ pub fn test_echo_server<T: Transport>(dev: DeviceImpl<T>) {
     let mut sockets = SocketSet::new(vec![]);
     let tcp_handle = sockets.add(tcp_socket);
 
-    println!("start a reverse echo server...");
+    println!("start a echo server...");
     let mut tcp_active = false;
     loop {
         let timestamp = Instant::now();
 
         iface.poll(timestamp, &mut device, &mut sockets);
 
-        // tcp:PORT: echo with reverse
         let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
         if !socket.is_open() {
             println!("listening on port {}...", PORT);
@@ -160,13 +159,10 @@ pub fn test_echo_server<T: Transport>(dev: DeviceImpl<T>) {
                     let recvd_len = buffer.len();
                     if !buffer.is_empty() {
                         println!("tcp:{} recv {} bytes: {:?}", PORT, recvd_len, buffer);
-                        let mut lines = buffer
+                        let lines = buffer
                             .split(|&b| b == b'\n')
                             .map(ToOwned::to_owned)
                             .collect::<Vec<_>>();
-                        for line in lines.iter_mut() {
-                            line.reverse();
-                        }
                         let data = lines.join(&b'\n');
                         (recvd_len, data)
                     } else {
@@ -181,8 +177,6 @@ pub fn test_echo_server<T: Transport>(dev: DeviceImpl<T>) {
         } else if socket.may_send() {
             println!("tcp:{} close", PORT);
             socket.close();
-            break;
         }
     }
-    println!("Done!");
 }

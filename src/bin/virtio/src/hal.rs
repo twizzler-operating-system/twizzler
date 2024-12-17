@@ -17,6 +17,7 @@ static DMA_POOL_BIDIRECTIONAL: OnceCell<DmaPool> = OnceCell::new();
 
 // The DmaSliceRegions contained within this hashmap are never operated upon after being inserted into this hashmap, only the memory beneath it is.
 // This hashmap is used to keep memory allocated while it is still in use.
+// Fragile type only allows the thread that original thread that created the object to call its destructor.
 static ALLOCED: OnceCell<Mutex<HashMap<PhysAddr, Fragile<DmaSliceRegion<u8>>>>> = OnceCell::new();
 
 // Gets the global dma pool for the HAL in a given access direction. If it doesn't exist, create it.
@@ -121,7 +122,7 @@ unsafe impl Hal for TestHal{
                 0
             },
             Err(_) => {
-                -1
+                1
             }
         }
     }
@@ -178,7 +179,7 @@ unsafe impl Hal for TestHal{
 
         let buf_len = buffer.len();
 
-        let mut buf_casted = buffer.cast::<u8>();
+        let buf_casted = buffer.cast::<u8>();
         
         let buf = buf_casted.as_ptr();
         let dma_buf = unsafe{dma_slice.get_mut().as_ptr()};

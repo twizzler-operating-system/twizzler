@@ -29,8 +29,31 @@ pub struct TwizzlerTransport {
     config_space: Option<NonNull<[u32]>>,
 }
 
+fn get_device() -> Device {
+    let device_root = twizzler_driver::get_bustree_root();
+    for device in device_root.children() {
+        if device.is_bus() && device.bus_type() == twizzler_abi::device::BusType::Pcie {
+            for child in device.children() {
+                let info = unsafe { child.get_info::<PcieDeviceInfo>(0).unwrap() };
+                // Can be modified later to let us select any other virtio device we want. For now, just network is good.
+                if info.get_data().class == 2
+                    && info.get_data().subclass == 0
+                    && info.get_data().progif == 0
+                    && info.get_data().vendor_id == 0x1AF4
+                {
+                    println!("Found VirtIO networking device!");
+
+                    return child;
+                }
+            }
+        }
+    }
+    panic!("No VirtIO networking device found");
+}
+
 impl TwizzlerTransport {
-    pub fn new(device: Device) -> Result<Self, VirtioPciError> {
+    pub fn new() -> Result<Self, VirtioPciError> {
+        let device = get_device();
         let info = unsafe { device.get_info::<PcieDeviceInfo>(0).unwrap()};
         if info.get_data().vendor_id != 0x1AF4 {
             println!("Vendor ID: {}", info.get_data().vendor_id);
