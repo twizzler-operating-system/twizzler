@@ -3,15 +3,15 @@ const VENDOR_SPECIFIC_CAP_ID: u8 = 0x09;
 // Virtio vendor specific PCI Capability
 #[repr(C)]
 pub struct VirtioPciCap {
-    pub cap_vndr: u8, /* Generic PCI field: PCI_CAP_ID_VNDR */
-    pub cap_next: u8, /* Generic PCI field: next ptr. */
-    pub cap_len: u8, /* Generic PCI field: capability length */
-    pub cfg_type: VirtioCfgType,  /* Identifies the structure. */
-    pub bar: u8, /* Where to find it. */
-    pub id: u8, /* Multiple capabilities of the same type */
-    pub padding: [u8; 2], /* Pad to full dword. */
-    pub offset: u32, /* Offset within bar. */
-    pub length: u32,  /* Length of the structure, in bytes. */
+    pub cap_vndr: u8,            /* Generic PCI field: PCI_CAP_ID_VNDR */
+    pub cap_next: u8,            /* Generic PCI field: next ptr. */
+    pub cap_len: u8,             /* Generic PCI field: capability length */
+    pub cfg_type: VirtioCfgType, /* Identifies the structure. */
+    pub bar: u8,                 /* Where to find it. */
+    pub id: u8,                  /* Multiple capabilities of the same type */
+    pub padding: [u8; 2],        /* Pad to full dword. */
+    pub offset: u32,             /* Offset within bar. */
+    pub length: u32,             /* Length of the structure, in bytes. */
 }
 
 // Virtio PCI capability with offsets or lengths greater than 4 GiB.
@@ -19,7 +19,7 @@ pub struct VirtioPciCap {
 pub struct VirtioPciCap64 {
     pub virtio_pci_cap: VirtioPciCap,
     pub offset_hi: u32,
-    pub length_hi: u32, 
+    pub length_hi: u32,
 }
 
 #[derive(Copy, Clone)]

@@ -2,15 +2,21 @@
 //!
 //! Ref: <https://github.com/smoltcp-rs/smoltcp/blob/master/examples/server.rs>
 
-use std::{vec, borrow::ToOwned, rc::Rc, vec::Vec};
 use core::{cell::RefCell, str::FromStr};
+use std::{borrow::ToOwned, rc::Rc, vec, vec::Vec};
 
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
-use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Address, HardwareAddress};
-use smoltcp::{socket::tcp, time::Instant};
-use virtio_drivers::device::net::{RxBuffer, VirtIONet};
-use virtio_drivers::{transport::Transport, Error};
+use smoltcp::{
+    iface::{Config, Interface, SocketSet},
+    phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
+    socket::tcp,
+    time::Instant,
+    wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address},
+};
+use virtio_drivers::{
+    device::net::{RxBuffer, VirtIONet},
+    transport::Transport,
+    Error,
+};
 
 use crate::{TestHal, NET_QUEUE_SIZE};
 
@@ -37,8 +43,14 @@ impl<T: Transport> DeviceWrapper<T> {
 }
 
 impl<T: Transport> Device for DeviceWrapper<T> {
-    type RxToken<'a> = VirtioRxToken<T> where Self: 'a;
-    type TxToken<'a> = VirtioTxToken<T> where Self: 'a;
+    type RxToken<'a>
+        = VirtioRxToken<T>
+    where
+        Self: 'a;
+    type TxToken<'a>
+        = VirtioTxToken<T>
+    where
+        Self: 'a;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         match self.inner.borrow_mut().receive() {
@@ -107,7 +119,7 @@ pub fn test_echo_server<T: Transport>(dev: DeviceImpl<T>) {
         panic!("This implementation only supports virtio-net which is an ethernet device");
     }
 
-    let hardware_addr = HardwareAddress::Ethernet(device.mac_address()); 
+    let hardware_addr = HardwareAddress::Ethernet(device.mac_address());
 
     // Create interface
     let mut config = Config::new(hardware_addr);
