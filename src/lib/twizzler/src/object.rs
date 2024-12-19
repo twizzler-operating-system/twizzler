@@ -2,18 +2,18 @@
 
 use std::marker::PhantomData;
 
-use fot::FotEntry;
-use twizzler_abi::{
-    meta::MetaInfo,
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
-};
+use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::object::ObjectHandle;
 
-use crate::{marker::BaseType, ptr::Ref};
+use crate::{marker::BaseType, ptr::Ref, tx::TxObject};
 
 mod builder;
 mod fot;
 mod meta;
+
+pub use builder::*;
+pub use fot::*;
+pub use meta::*;
 
 /// Operations common to structured objects.
 pub trait TypedObject {
@@ -98,6 +98,12 @@ impl RawObject for ObjectHandle {
 pub struct Object<Base> {
     handle: ObjectHandle,
     _pd: PhantomData<*const Base>,
+}
+
+impl<Base> Object<Base> {
+    pub fn tx(self) -> crate::tx::Result<TxObject<Base>> {
+        todo!()
+    }
 }
 
 impl<Base> RawObject for Object<Base> {

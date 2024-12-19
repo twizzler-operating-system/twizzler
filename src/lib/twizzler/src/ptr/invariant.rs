@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use super::{GlobalPtr, Ref};
 use crate::{
     marker::{Invariant, PhantomStoreEffect, Storable},
     tx::TxHandle,
@@ -14,7 +15,11 @@ pub struct InvPtr<T: Invariant> {
 }
 
 impl<T: Invariant> InvPtr<T> {
-    pub fn new_in<'a>(target: &impl TxHandle<'a>) -> Storable<Self> {
+    pub fn new_in(target: &impl TxHandle, global: impl Into<GlobalPtr<T>>) -> Storable<Self> {
+        todo!()
+    }
+
+    pub fn resolve<'a>(&self) -> Ref<'a, T> {
         todo!()
     }
 }

@@ -39,7 +39,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
 }
 
 impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
-    pub fn build(self, base: Base) -> Result<Object<Base>, CreateError> {
+    pub fn build(&self, base: Base) -> Result<Object<Base>, CreateError> {
         todo!()
     }
 }
@@ -72,13 +72,8 @@ impl<T> RawObject for UninitObject<T> {
     }
 }
 
-impl<'a, B> TxHandle<'a> for &mut UninitObject<B> {
-    fn tx_mut<T, E>(&self, data: *const T) -> crate::tx::TxResult<*mut T, E> {
-        todo!()
-    }
-}
-impl<'a, B> TxHandle<'a> for UninitObject<B> {
-    fn tx_mut<T, E>(&self, data: *const T) -> crate::tx::TxResult<*mut T, E> {
+impl<B> TxHandle for UninitObject<B> {
+    fn tx_mut(&self, data: *const u8, len: usize) -> crate::tx::Result<*mut u8> {
         todo!()
     }
 }
@@ -105,10 +100,7 @@ mod tests {
     impl BaseType for Foo {}
 
     impl Foo {
-        pub fn new_in<'a>(
-            target: &impl TxHandle<'a>,
-            ptr: Storable<InvPtr<u32>>,
-        ) -> Storable<Self> {
+        pub fn new_in(target: &impl TxHandle, ptr: Storable<InvPtr<u32>>) -> Storable<Self> {
             unsafe {
                 Storable::new(Foo {
                     ptr: ptr.into_inner_unchecked(),
@@ -125,8 +117,10 @@ mod tests {
 
         let builder = ObjectBuilder::<Foo>::default();
         let obj = builder
-            .build_with(|uo| Foo::new_in(&uo, InvPtr::new_in(&uo)))
+            .build_with(|uo| Foo::new_in(&uo, InvPtr::new_in(&uo, base)))
             .unwrap();
         let base_foo = obj.base();
+        let r = base_foo.ptr.resolve();
+        assert_eq!(*r, 42);
     }
 }
