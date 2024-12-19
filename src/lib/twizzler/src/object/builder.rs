@@ -4,8 +4,11 @@ use thiserror::Error;
 use twizzler_abi::syscall::{ObjectCreate, ObjectCreateError};
 use twizzler_rt_abi::object::{MapError, ObjectHandle};
 
-use super::RawObject;
-use crate::marker::BaseType;
+use super::{Object, RawObject};
+use crate::{
+    marker::{BaseType, Storable, StoreCopy},
+    tx::TxHandle,
+};
 
 #[derive(Clone, Copy, Debug, Error)]
 /// Possible errors from creating an object.
@@ -19,6 +22,7 @@ pub enum CreateError {
 }
 
 /// An object builder, for constructing objects using a builder API.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub struct ObjectBuilder<Base: BaseType> {
     spec: ObjectCreate,
     _pd: PhantomData<Base>,
@@ -31,6 +35,22 @@ impl<Base: BaseType> ObjectBuilder<Base> {
             spec,
             _pd: PhantomData,
         }
+    }
+}
+
+impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
+    pub fn build(self, base: Base) -> Result<Object<Base>, CreateError> {
+        todo!()
+    }
+}
+
+impl<Base: BaseType> ObjectBuilder<Base> {
+    pub fn build_with<F, SB>(self, ctor: F) -> Result<Object<Base>, CreateError>
+    where
+        F: FnOnce(UninitObject<Base>) -> SB,
+        SB: Into<Storable<Base>>,
+    {
+        todo!()
     }
 }
 
@@ -49,5 +69,64 @@ pub struct UninitObject<T> {
 impl<T> RawObject for UninitObject<T> {
     fn handle(&self) -> &ObjectHandle {
         &self.handle
+    }
+}
+
+impl<'a, B> TxHandle<'a> for &mut UninitObject<B> {
+    fn tx_mut<T, E>(&self, data: *const T) -> crate::tx::TxResult<*mut T, E> {
+        todo!()
+    }
+}
+impl<'a, B> TxHandle<'a> for UninitObject<B> {
+    fn tx_mut<T, E>(&self, data: *const T) -> crate::tx::TxResult<*mut T, E> {
+        todo!()
+    }
+}
+mod tests {
+    use super::ObjectBuilder;
+    use crate::{
+        marker::{BaseType, Storable, StoreCopy},
+        object::TypedObject,
+        ptr::{InvPtr, Ref},
+        tx::TxHandle,
+    };
+
+    fn builder_simple() {
+        let builder = ObjectBuilder::default();
+        let obj = builder.build(42u32).unwrap();
+        let base = obj.base();
+        assert_eq!(*base, 42);
+    }
+
+    struct Foo {
+        ptr: InvPtr<u32>,
+    }
+
+    impl BaseType for Foo {}
+
+    impl Foo {
+        pub fn new_in<'a>(
+            target: &impl TxHandle<'a>,
+            ptr: Storable<InvPtr<u32>>,
+        ) -> Storable<Self> {
+            unsafe {
+                Storable::new(Foo {
+                    ptr: ptr.into_inner_unchecked(),
+                })
+            }
+        }
+    }
+
+    fn builder_complex() {
+        let builder = ObjectBuilder::default();
+        let obj_1 = builder.build_with(|_uo| 42u32).unwrap();
+        let base = obj_1.base();
+        assert_eq!(*base, 42);
+
+        let builder = ObjectBuilder::<Foo>::default();
+        let obj = builder
+            .build_with(|uo| Foo::new_in(&uo, InvPtr::new_in(&uo)))
+            .unwrap();
+        let base_foo = obj.base();
     }
 }
