@@ -22,4 +22,20 @@ impl<T: Invariant> InvPtr<T> {
     pub fn resolve<'a>(&self) -> Ref<'a, T> {
         todo!()
     }
+
+    pub fn null() -> Self {
+        Self::from_raw_parts(0, 0)
+    }
+
+    pub fn from_raw_parts(idx: u64, offset: u64) -> Self {
+        Self {
+            value: (idx << 48) | offset,
+            _pse: PhantomStoreEffect,
+            _pd: PhantomData,
+        }
+    }
+
+    pub fn raw(&self) -> u64 {
+        self.value
+    }
 }
