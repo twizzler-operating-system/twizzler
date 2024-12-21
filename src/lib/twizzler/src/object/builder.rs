@@ -45,10 +45,9 @@ impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
 }
 
 impl<Base: BaseType> ObjectBuilder<Base> {
-    pub fn build_with<F, SB>(self, ctor: F) -> Result<Object<Base>, CreateError>
+    pub fn build_with<F>(self, ctor: F) -> Result<Object<Base>, CreateError>
     where
-        F: FnOnce(UninitObject<Base>) -> SB,
-        SB: Into<Storable<Base>>,
+        F: FnOnce(UninitObject<Base>) -> Storable<Base>,
     {
         todo!()
     }
@@ -111,7 +110,7 @@ mod tests {
 
     fn builder_complex() {
         let builder = ObjectBuilder::default();
-        let obj_1 = builder.build_with(|_uo| 42u32).unwrap();
+        let obj_1 = builder.build_with(|_uo| 42u32.into()).unwrap();
         let base = obj_1.base();
         assert_eq!(*base, 42);
 

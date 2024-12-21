@@ -1,37 +1,37 @@
-use std::alloc::Layout;
+use std::{
+    alloc::Layout,
+    mem::MaybeUninit,
+    ops::{Index, IndexMut},
+};
 
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 
 use crate::{
     alloc::Allocator,
-    marker::{Invariant, StoreCopy},
+    marker::{BaseType, Invariant, Storable, StoreCopy},
     object::ObjectBuilder,
-    ptr::InvPtr,
-    tx::{Result, TxHandle},
+    ptr::{InvPtr, Ref, RefMut, RefSlice, RefSliceMut},
+    tx::{Result, TxCell, TxHandle},
 };
 
-pub struct Vec<T: Invariant, Alloc: Allocator> {
+pub struct VecInner<T: Invariant> {
     len: usize,
     cap: usize,
     start: InvPtr<T>,
+}
+
+pub struct Vec<T: Invariant, Alloc: Allocator> {
+    inner: TxCell<VecInner<T>>,
     alloc: Alloc,
 }
 
-impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
-    /// Push an item, abstract over the allocator. Requires a transaction handle and T to be
-    /// StoreCopy, since it might move during resize.
-    pub fn push_copy(&self, item: T, tx: &impl TxHandle) -> Result<()> {
-        if self.len == self.cap {
-            // resize via allocator
-        }
-        // get start slice
-        // write item, tracking in tx
-        let this: *mut Self = tx
-            .tx_mut(self as *const _ as *const u8, size_of::<Self>())?
-            .cast();
-        let len = unsafe { &raw mut (*this).len };
-        unsafe { *len += 1 };
-        Ok(())
+impl<T: Invariant, A: Allocator> BaseType for Vec<T, A> {}
+
+impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
+    pub fn get<'a>(&'a self, idx: usize) -> Option<Ref<'a, T>> {
+        let r = self.inner.start.resolve();
+        let slice = unsafe { RefSlice::from_ref(r, self.inner.len) };
+        slice.get(idx)
     }
 }
 
@@ -40,28 +40,142 @@ struct SingleObject;
 impl Allocator for SingleObject {}
 
 impl<T: Invariant> Vec<T, SingleObject> {
-    pub fn new() -> Self {
+    pub fn new() -> Storable<Self> {
         let offset = size_of::<Self>().next_multiple_of(align_of::<T>());
-        Self {
-            cap: 0,
-            len: 0,
-            start: InvPtr::from_raw_parts(0, offset as u64),
-            alloc: SingleObject,
+        unsafe {
+            Storable::new(Self {
+                inner: TxCell::new(VecInner {
+                    cap: 0,
+                    len: 0,
+                    start: InvPtr::from_raw_parts(0, offset as u64),
+                }),
+                alloc: SingleObject,
+            })
         }
     }
 
-    /// Push an item. T need not be StoreCopy since it will definitely be pushed to only a single
-    /// object, and requries &mut self to ensure the transaction was already started.
-    pub fn push(&mut self, item: T, tx: &impl TxHandle) -> Result<()> {
-        if self.len == self.cap {
-            if self.start.raw() as usize + size_of::<T>() * self.cap >= MAX_SIZE - NULLPAGE_SIZE {
+    pub fn push(&self, item: T, tx: &impl TxHandle) -> Result<()> {
+        if self.inner.len == self.inner.cap {
+            if self.inner.start.raw() as usize + size_of::<T>() * self.inner.cap
+                >= MAX_SIZE - NULLPAGE_SIZE
+            {
                 return Err(crate::tx::TxError::Exhausted);
             }
-            self.cap += 1;
+            self.inner.get_mut(tx)?.cap += 1;
         }
         // get start slice
+        let mut r = unsafe {
+            RefSliceMut::from_ref(
+                self.inner
+                    .start
+                    .resolve()
+                    .cast::<MaybeUninit<T>>()
+                    .mutable(),
+                self.inner.cap,
+            )
+        };
         // write item, tracking in tx
-        self.len += 1;
+        tx.write_uninit(&mut r[self.inner.len], item)?;
+        self.inner.get_mut(tx)?.len += 1;
         Ok(())
+    }
+
+    pub fn push_with<F, Tx>(&self, f: F, tx: &Tx) -> Result<()>
+    where
+        F: FnOnce(&Tx) -> Storable<T>,
+        Tx: TxHandle,
+    {
+        if self.inner.len == self.inner.cap {
+            if self.inner.start.raw() as usize + size_of::<T>() * self.inner.cap
+                >= MAX_SIZE - NULLPAGE_SIZE
+            {
+                return Err(crate::tx::TxError::Exhausted);
+            }
+            self.inner.get_mut(tx)?.cap += 1;
+        }
+        // get start slice
+        let mut r = unsafe {
+            RefSliceMut::from_ref(
+                self.inner
+                    .start
+                    .resolve()
+                    .cast::<MaybeUninit<T>>()
+                    .mutable(),
+                self.inner.cap,
+            )
+        };
+        // write item, tracking in tx
+        let storable_item = f(tx);
+        tx.write_uninit(&mut r[self.inner.len], unsafe {
+            storable_item.into_inner_unchecked()
+        })?;
+        self.inner.get_mut(tx)?.len += 1;
+        Ok(())
+    }
+
+    pub fn pop(&mut self, tx: &impl TxHandle) -> Result<T> {
+        todo!()
+    }
+}
+
+mod tests {
+    use super::*;
+    use crate::{
+        marker::{BaseType, Invariant},
+        ptr::InvPtr,
+    };
+
+    #[derive(Copy, Clone)]
+    struct Simple {
+        x: u32,
+    }
+    unsafe impl Invariant for Simple {}
+
+    impl BaseType for Simple {}
+
+    struct Node {
+        ptr: InvPtr<Simple>,
+    }
+
+    // will be auto-generated by a derive macro
+    impl Node {
+        pub fn new_in(target: &impl TxHandle, ptr: Storable<InvPtr<Simple>>) -> Storable<Self> {
+            todo!()
+        }
+    }
+
+    impl BaseType for Node {}
+    unsafe impl Invariant for Node {}
+
+    #[test]
+    fn simple_push() {
+        let v = ObjectBuilder::<Vec<Simple, SingleObject>>::default()
+            .build_with(|uo| Vec::new())
+            .unwrap();
+
+        let tx = v.tx().unwrap();
+        tx.base().push(Simple { x: 42 }, &tx);
+
+        let base = tx.base();
+        let item = base.get(0).unwrap();
+        assert_eq!(item.x, 42);
+    }
+
+    #[test]
+    fn node_push() {
+        let simple_obj = ObjectBuilder::default().build(Simple { x: 3 }).unwrap();
+        let v = ObjectBuilder::<Vec<Node, SingleObject>>::default()
+            .build_with(|_uo| Vec::new())
+            .unwrap();
+
+        let tx = v.tx().unwrap();
+        tx.base().push_with(
+            |tx| Node::new_in(tx, InvPtr::new_in(tx, simple_obj.base())),
+            &tx,
+        );
+
+        let base = tx.base();
+        let item = base.get(0).unwrap();
+        assert_eq!(item.ptr.resolve().x, 3);
     }
 }
