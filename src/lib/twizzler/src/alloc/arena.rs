@@ -31,4 +31,12 @@ pub struct ArenaBase {}
 #[repr(C)]
 pub struct ArenaObjBase {}
 
-impl Allocator for ArenaAllocator {}
+impl Allocator for ArenaAllocator {
+    fn alloc(&self, layout: std::alloc::Layout) -> Result<GlobalPtr<u8>, std::alloc::AllocError> {
+        todo!()
+    }
+
+    unsafe fn dealloc(&self, ptr: GlobalPtr<u8>, layout: std::alloc::Layout) {
+        todo!()
+    }
+}

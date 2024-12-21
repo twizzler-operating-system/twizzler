@@ -1,3 +1,5 @@
+use std::mem::MaybeUninit;
+
 use super::Allocator;
 use crate::{
     marker::{Invariant, Storable},
@@ -18,9 +20,22 @@ impl<T: Invariant, Alloc: Allocator> InvBox<T, Alloc> {
     pub fn new_in(val: T, alloc: Alloc, tx: &impl TxHandle) -> Result<Storable<Self>> {
         todo!()
     }
+
+    pub fn new_inplace(place: &mut MaybeUninit<Self>, item: T, alloc: Alloc) -> Result<()> {
+        todo!()
+    }
+
+    pub fn new_inplace_with<F>(place: &mut MaybeUninit<Self>, ctor: F, alloc: Alloc) -> Result<()>
+    where
+        F: FnOnce(&mut MaybeUninit<T>) -> Result<()>,
+    {
+        todo!()
+    }
 }
 
 mod tests {
+    use std::{mem::MaybeUninit, ptr::addr_of_mut};
+
     use super::InvBox;
     use crate::{
         alloc::arena::{ArenaAllocator, ArenaBase, ArenaObject},
@@ -34,15 +49,15 @@ mod tests {
     }
 
     impl Foo {
-        pub fn new_in(
-            target: &impl TxHandle,
-            ptr: Storable<InvBox<u32, ArenaAllocator>>,
-        ) -> Storable<Self> {
-            unsafe {
-                Storable::new(Foo {
-                    x: ptr.into_inner_unchecked(),
-                })
-            }
+        pub fn new_inplace<
+            F: FnOnce(&mut MaybeUninit<InvBox<u32, ArenaAllocator>>) -> crate::tx::Result<()>,
+        >(
+            place: &mut MaybeUninit<Self>,
+            ctor: F,
+        ) -> crate::tx::Result<()> {
+            let ptr_place = place.as_mut_ptr();
+
+            Ok(())
         }
     }
 
@@ -51,7 +66,17 @@ mod tests {
         let builder = ObjectBuilder::<Foo>::default();
         let alloc = ArenaObject::new().allocator();
         let obj = builder
-            .build_with(|uo| Foo::new_in(&uo, InvBox::new_in(3, alloc, &uo).unwrap()))
+            .build_inplace(|mut uo| {
+                let place = uo.base_mut().as_mut_ptr();
+                let ptr_place = unsafe { addr_of_mut!((*place).x) };
+                let ptr = unsafe {
+                    ptr_place
+                        .cast::<MaybeUninit<InvBox<u32, ArenaAllocator>>>()
+                        .as_mut()
+                        .unwrap()
+                };
+                InvBox::new_inplace(ptr, 3, alloc)
+            })
             .unwrap();
         let base = obj.base();
         assert_eq!(*base.x.raw.resolve(), 3);
