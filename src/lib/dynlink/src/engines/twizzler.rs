@@ -49,10 +49,10 @@ pub fn load_segments(src: &Backing, ld: &[LoadDirective]) -> Result<Vec<Backing>
         // If this behaviour changes, we will need to explicitly handle it here.
         if directive.filesz != directive.memsz {
             if directive.filesz < directive.memsz {
-                tracing::warn!(
-                    "{} bytes after source need to be zeroed",
-                    directive.memsz - directive.filesz
-                );
+                // tracing::warn!(
+                //     "{} bytes after source implicitly zeroed",
+                //     directive.memsz - directive.filesz
+                // );
             } else {
                 todo!()
             }
