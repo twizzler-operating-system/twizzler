@@ -1,7 +1,7 @@
 use twizzler_abi::{
     object::ObjID,
     pager::{
-        CompletionToKernel, CompletionToPager, KernelCommand, RequestFromKernel, RequestFromPager, PagerRequest, PhysRange
+        CompletionToKernel, CompletionToPager, KernelCommand, RequestFromKernel, RequestFromPager, PagerRequest, PhysRange, ObjectRange
     },
 };
 
@@ -27,6 +27,16 @@ pub(super) fn pager_request_handler_main() {
             logln!("kernel: got req {}:{:?} from pager", id, req);
             if req.cmd() == twizzler_abi::pager::PagerRequest::Ready {
                 return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::DramPages(PhysRange::new(0x0000, 0x3E7FFF)))
+            } else if req.cmd() == twizzler_abi::pager::PagerRequest::TestReq {
+                let sender = SENDER.wait();
+                logln!("kernel: submitting request on K2P Queue");
+                let item = RequestFromKernel::new(
+                    twizzler_abi::pager::KernelCommand::PageDataReq(ObjID::new(1001), ObjectRange{ start: 0, end: 4096}),
+                );
+                let id = sender.0.next_simple().value() as u32;
+                let res = SENDER.wait().1.submit(item, id);
+ 
+                return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::TestResp)
             } else {
                 return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
             }
