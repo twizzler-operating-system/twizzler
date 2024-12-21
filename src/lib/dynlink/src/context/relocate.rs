@@ -16,7 +16,6 @@ use tracing::{debug, error, trace};
 use super::{Context, Library};
 use crate::{
     library::{LibraryId, RelocState},
-    symbol::LookupFlags,
     DynlinkError, DynlinkErrorKind,
 };
 

@@ -13,10 +13,9 @@ use crate::{
 pub(crate) const MINIMUM_TLS_ALIGNMENT: usize = 8;
 
 pub use elf::abi::{
-    R_AARCH64_ABS64 as REL_SYMBOLIC, R_AARCH64_COPY as REL_COPY, R_AARCH64_GLOB_DAT as REL_GOT,
+    R_AARCH64_ABS64 as REL_SYMBOLIC, R_AARCH64_GLOB_DAT as REL_GOT,
     R_AARCH64_JUMP_SLOT as REL_JUMP, R_AARCH64_RELATIVE as REL_RELATIVE,
-    R_AARCH64_TLSDESC as REL_TLSDESC, R_AARCH64_TLS_DTPMOD as REL_DTPMOD,
-    R_AARCH64_TLS_DTPREL as REL_DTPOFF, R_AARCH64_TLS_TPREL as REL_TPOFF,
+    R_AARCH64_TLSDESC as REL_TLSDESC, R_AARCH64_TLS_TPREL as REL_TPOFF,
 };
 
 #[repr(C)]
@@ -85,7 +84,6 @@ impl Context {
         } else {
             None
         };
-        let sn = symbol.as_ref().map(|s| s.0.to_string()).unwrap_or_default();
 
         // Helper for logging errors.
         let open_sym = || {
@@ -167,7 +165,7 @@ impl Context {
                 //   the ELF file (first PT_LOAD segment)
                 // - A is the addend
 
-                let in_mem_addr = lib.base_addr() as u64;
+                let in_mem_addr = base;
                 let elf = lib.get_elf().expect("failed to get elf");
                 // the starting address in the elf file is the VA in the first PT_LOAD segment
                 let load_hdrs = elf
@@ -219,7 +217,6 @@ impl Context {
             },
             _ => {
                 error!("{}: unsupported relocation: {}", lib, rel.r_type());
-                loop {}
                 Result::<_, DynlinkError>::Err(
                     DynlinkErrorKind::UnsupportedReloc {
                         library: lib.name.clone(),
