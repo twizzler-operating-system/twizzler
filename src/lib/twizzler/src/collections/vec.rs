@@ -149,12 +149,13 @@ mod tests {
 
     #[test]
     fn simple_push() {
-        let v = ObjectBuilder::<Vec<Simple, SingleObject>>::default()
+        let vobj = ObjectBuilder::<Vec<Simple, SingleObject>>::default()
             .build_with(|uo| Vec::new())
             .unwrap();
 
-        let tx = v.tx().unwrap();
+        let tx = vobj.tx().unwrap();
         tx.base().push(Simple { x: 42 }, &tx);
+        let vobj = tx.commit().unwrap();
 
         let base = tx.base();
         let item = base.get(0).unwrap();
@@ -164,17 +165,18 @@ mod tests {
     #[test]
     fn node_push() {
         let simple_obj = ObjectBuilder::default().build(Simple { x: 3 }).unwrap();
-        let v = ObjectBuilder::<Vec<Node, SingleObject>>::default()
+        let vobj = ObjectBuilder::<Vec<Node, SingleObject>>::default()
             .build_with(|_uo| Vec::new())
             .unwrap();
 
-        let tx = v.tx().unwrap();
+        let tx = vobj.tx().unwrap();
         tx.base().push_with(
             |tx| Node::new_in(tx, InvPtr::new_in(tx, simple_obj.base())),
             &tx,
         );
+        let vobj = tx.commit().unwrap();
 
-        let base = tx.base();
+        let base = vobj.base();
         let item = base.get(0).unwrap();
         assert_eq!(item.ptr.resolve().x, 3);
     }
