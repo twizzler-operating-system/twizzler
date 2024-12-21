@@ -51,6 +51,13 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     {
         todo!()
     }
+
+    pub fn build_inplace<F>(self, ctor: F) -> Result<Object<Base>, CreateError>
+    where
+        F: FnOnce(UninitObject<Base>) -> crate::tx::Result<()>,
+    {
+        todo!()
+    }
 }
 
 impl<Base: BaseType> Default for ObjectBuilder<Base> {
@@ -63,6 +70,16 @@ impl<Base: BaseType> Default for ObjectBuilder<Base> {
 pub struct UninitObject<T> {
     handle: ObjectHandle,
     _pd: PhantomData<*mut MaybeUninit<T>>,
+}
+
+impl<T> UninitObject<T> {
+    pub fn base_mut(&mut self) -> &mut MaybeUninit<T> {
+        todo!()
+    }
+
+    pub fn base(&self) -> &MaybeUninit<T> {
+        todo!()
+    }
 }
 
 impl<T> RawObject for UninitObject<T> {

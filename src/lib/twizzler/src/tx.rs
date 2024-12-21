@@ -16,6 +16,13 @@ pub trait TxHandle {
     fn write_uninit<T>(&self, target: &mut MaybeUninit<T>, value: T) -> Result<&mut T> {
         todo!()
     }
+
+    fn ctor_inplace<T, F>(&self, target: &MaybeUninit<T>, ctor: F) -> Result<()>
+    where
+        F: FnOnce(&mut MaybeUninit<T>) -> Result<()>,
+    {
+        todo!()
+    }
 }
 
 pub type Result<T> = std::result::Result<T, TxError>;

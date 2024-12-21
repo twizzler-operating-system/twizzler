@@ -104,6 +104,13 @@ impl<Base> Object<Base> {
     pub fn tx(self) -> crate::tx::Result<TxObject<Base>> {
         todo!()
     }
+
+    pub unsafe fn cast<U>(self) -> Object<U> {
+        Object {
+            handle: self.handle,
+            _pd: PhantomData,
+        }
+    }
 }
 
 impl<Base> RawObject for Object<Base> {
