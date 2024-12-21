@@ -222,7 +222,7 @@ async fn notify<R, C>(q: Arc<twizzler_queue::CallbackQueueReceiver<R, C>>, id: u
     println!("[pager] request {} complete", id);
 }
 
-async fn send_request<R, C>(q: twizzler_queue::QueueSender<R, C>, request: R) -> Result<C, Box<dyn std::error::Error>>
+async fn send_request<R, C>(q: Arc<twizzler_queue::QueueSender<R, C>>, request: R) -> Result<C, Box<dyn std::error::Error>>
     where
     R: std::fmt::Debug + Copy + Send + Sync,
     C: std::fmt::Debug + Copy + Send + Sync + 'static
@@ -233,7 +233,7 @@ async fn send_request<R, C>(q: twizzler_queue::QueueSender<R, C>, request: R) ->
 }
 
 async fn report_ready(
-    q: twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
+    q: Arc<twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>>,
     ex: &'static Executor<'static>,
 ) -> Option<PagerCompletionData>{
     println!("[pager] sending ready signal to kernel");
@@ -255,9 +255,11 @@ async fn report_ready(
 fn main() {
     let (rq, sq, data, ex) = pager_init();
     spawn_queues(rq, data.clone(), ex);
+    let sq = Arc::new(sq);
+    let sqc = Arc::clone(&sq);
 
     let phys_range: Option<PhysRange> = block_on(async move {
-        let res = report_ready(sq, ex).await;
+        let res = report_ready(sqc, ex).await;
         match res {
             Some(PagerCompletionData::DramPages(range)) => {
                 Some(range) // Return the range
@@ -278,16 +280,12 @@ fn main() {
 
 
     println!("Performing Test...");
-    let tq = attach_queue::<RequestFromKernel, CompletionToKernel, _>(&queue_args(1), twizzler_queue::QueueSender::new).unwrap();
-    block_on(
-            async move{
-                println!("kernel: submitting request on K2P Queue");
-                let res = tq.submit_and_wait(RequestFromKernel::new(
-                       twizzler_abi::pager::KernelCommand::PageDataReq(ObjID::new(1001), ObjectRange{ start: 0, end: 4096}),
-                        ));
-                let x = res.await;
-                println!("kernel:  got {:?} in response", x);
+    let sqc = Arc::clone(&sq);
+    block_on(async move {
+        let request = RequestFromPager::new(twizzler_abi::pager::PagerRequest::TestReq);
+        let _ = send_request(sqc, request).await.ok();
     });
+
     println!("Test Completed");
     //Done
 }

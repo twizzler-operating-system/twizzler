@@ -60,6 +60,7 @@ impl RequestFromPager {
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum PagerRequest {
     EchoReq,
+    TestReq,
     Ready,
 }
 
@@ -81,7 +82,7 @@ impl CompletionToPager {
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum PagerCompletionData {
     EchoResp,
-    ReadyResp,
+    TestResp,
     DramPages(PhysRange),
 }
 
