@@ -38,7 +38,6 @@ mod tests {
             target: &impl TxHandle,
             ptr: Storable<InvBox<u32, ArenaAllocator>>,
         ) -> Storable<Self> {
-            //ptr.check_target(target);
             unsafe {
                 Storable::new(Foo {
                     x: ptr.into_inner_unchecked(),
