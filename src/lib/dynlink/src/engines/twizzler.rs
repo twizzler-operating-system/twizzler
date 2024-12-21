@@ -43,13 +43,42 @@ pub fn load_segments(src: &Backing, ld: &[LoadDirective]) -> Result<Vec<Backing>
             }));
         }
 
-        let src_start = (NULLPAGE_SIZE + directive.offset) & !(directive.align - 1);
-        let dest_start = directive.vaddr & !(directive.align - 1);
-        let len = (directive.vaddr - dest_start) + directive.filesz;
+        // NOTE: Data that needs to be initialized to zero is not handled
+        // (filesz < memsz). The reason things work now is because
+        // the frame allocator in the kernel hands out zeroed pages by default.
+        // If this behaviour changes, we will need to explicitly handle it here.
+        if directive.filesz != directive.memsz {
+            if directive.filesz < directive.memsz {
+                tracing::warn!(
+                    "{} bytes after source need to be zeroed",
+                    directive.memsz - directive.filesz
+                );
+            } else {
+                todo!()
+            }
+        }
+
+        // the offset from the base of the object with the ELF executable data
+        let src_start = NULLPAGE_SIZE + directive.offset;
+        // the destination offset is the virtual address we want this data
+        // to be mapped into. since the different sections are seperated
+        // by object boundaries, we keep the object-relative offset
+        // we trust the destination offset to be after the NULL_PAGE
+        let dest_start = directive.vaddr as usize % MAX_SIZE;
+        // the size of the data that must be copied from the ELF
+        let len = directive.filesz;
 
         if !directive.load_flags.contains(LoadFlags::TARGETS_DATA) {
             // Ensure we can direct-map the object for the text directives.
-            if src_start != dest_start || directive.filesz != directive.memsz {
+            //
+            // The logic for direct mapping between x86_64 and aarch64 is different
+            // because the linker/compiler sets the page size to be 64K on aarch64.
+            // So we only check if we can direct map for x86_64. The source and
+            // destination offsets (for aarch64) would match up if a 64K page size
+            // for the NULLPAGE was used or we modified the destination address to
+            // be after the NULLPAGE. Loading still works on aarch64, but copies data.
+            #[cfg(target_arch = "x86_64")]
+            if src_start != dest_start {
                 // TODO: check len too.
                 return Err(DynlinkError::new(DynlinkErrorKind::LoadDirectiveFail {
                     dir: *directive,
@@ -59,8 +88,8 @@ pub fn load_segments(src: &Backing, ld: &[LoadDirective]) -> Result<Vec<Backing>
 
         Ok(ObjectSource::new_copy(
             src.obj.id(),
-            (src_start % MAX_SIZE) as u64,
-            (dest_start % MAX_SIZE) as u64,
+            src_start as u64,
+            dest_start as u64,
             len,
         ))
     };
