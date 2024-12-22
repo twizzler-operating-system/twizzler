@@ -28,6 +28,7 @@ use crate::{
 
 core::arch::global_asm!(r#"
 /// Exception Vector Table Definition for EL1 (Kernel)
+.global __exception_vector_table
 
 // Table must be aligned on a 2048 byte boundary (0x800)
 .align {TABLE_ALIGNMENT}

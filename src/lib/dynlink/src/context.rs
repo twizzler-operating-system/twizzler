@@ -14,7 +14,7 @@ use crate::{
 
 mod deps;
 mod load;
-mod relocate;
+pub(crate) mod relocate;
 pub mod runtime;
 mod syms;
 
