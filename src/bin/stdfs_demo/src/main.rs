@@ -1,5 +1,3 @@
-extern crate twizzler_abi;
-
 use std::{fs::File, io::Read};
 
 fn main() {

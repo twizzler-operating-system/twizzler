@@ -1,4 +1,4 @@
-extern crate twizzler_abi;
+extern crate twizzler_minruntime;
 
 mod hal;
 

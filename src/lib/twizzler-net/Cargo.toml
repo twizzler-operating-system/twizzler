@@ -6,14 +6,14 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-twizzler-object = {path = "../twizzler-object"}
-twizzler-abi = {path = "../twizzler-abi"}
-twizzler-async = {path="../twizzler-async"}
-twizzler-queue = {path="../twizzler-queue"}
+twizzler-object = { path = "../twizzler-object" }
+twizzler-abi = { path = "../twizzler-abi" }
+twizzler-async = { path = "../twizzler-async" }
+twizzler-queue = { path = "../twizzler-queue" }
 bitflags = "2.4.1"
 
 [features]
 manager = []
 
 [dev-dependencies]
-twizzler-abi = { path = "../twizzler-abi", features = ["runtime"]}
+twizzler-runtime = { path = "../../runtime/rt" }

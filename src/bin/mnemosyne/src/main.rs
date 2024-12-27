@@ -1,5 +1,3 @@
-extern crate twizzler_abi;
-
 use lethe_gadget_fat::filesystem::FileSystem;
 
 mod disk;
@@ -7,6 +5,7 @@ mod nvme;
 
 use disk::Disk;
 
+extern crate twizzler_runtime;
 pub fn main() {
     let command = std::env::args().nth(1).unwrap();
     let id = std::env::args().nth(2).unwrap().parse::<u128>().unwrap();

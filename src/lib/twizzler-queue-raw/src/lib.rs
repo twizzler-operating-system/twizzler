@@ -590,7 +590,6 @@ mod tests {
     use crate::{QueueEntry, QueueError, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags};
 
     fn wait(x: &AtomicU64, v: u64) {
-        // println!("wait");
         while x.load(Ordering::SeqCst) == v {
             core::hint::spin_loop();
         }

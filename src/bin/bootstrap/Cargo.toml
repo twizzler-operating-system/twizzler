@@ -5,13 +5,14 @@ edition = "2021"
 authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 
 [dependencies]
-twizzler-abi = { path = "../../lib/twizzler-abi", features = ["runtime"] }
-twizzler-runtime-api = { path = "../../lib/twizzler-runtime-api" }
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-minruntime = { path = "../../rt/minimal" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
 twizzler-object = { path = "../../lib/twizzler-object" }
-dynlink = { path = "../../runtime/dynlink" }
+dynlink = { path = "../../lib/dynlink" }
 tracing = "0.1"
 tracing-subscriber = "0.3.17"
-miette = { version = "5.10", features = [ ]}
+miette = { version = "5.10", features = [] }
 
 [package.metadata]
 twizzler-build = "static"

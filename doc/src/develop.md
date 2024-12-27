@@ -18,14 +18,7 @@ runs on the Twizzler operating system you can follow these steps:
 2. Create a new program, named ```hello```.  The ```Cargo``` command will actually create the canonical ```Hello world``` program for you.
 ```cargo new --bin hello```
 
-3. add the following to the main.rs file within hello/src:
-
-```rust
-extern crate twizzler_abi;
-```
-
-4. Edit the Cargo.toml file in the root directory to add the program to the Twizzler build system.
-```vi ../../Cargo.toml```
+3. Change directory back to the project root, and edit the Cargo.toml file in the root directory to add the program to the Twizzler build system.
 
 The following diff shows the two lines you need to add:
 
@@ -49,7 +42,7 @@ index 338455b..cb38fb5 100644
 +    "crate:hello",
  ]
  ```
- 
+
    4. Rebuild the system and start QEMU
 
 ```cargo start-qemu```
@@ -64,7 +57,7 @@ got: <run hello>
 
   6. Exit the simulator with ```Ctrl-a x```
 
-## Picking an Issue to Work 
+## Picking an Issue to Work
 
 Before reading this document make sure that you have worked through the build process, which is documented
 [here](https://github.com/twizzler-operating-system/twizzler/doc/src/BUILD.md).

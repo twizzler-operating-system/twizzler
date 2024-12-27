@@ -114,7 +114,7 @@ impl<T: Transport> TxToken for VirtioTxToken<T> {
 }
 
 // Gets the Virtio Net struct which implements the device used for smoltcp. Use this to create a smoltcp interface to send and receive packets.
-// NOTE: Can only be called once
+// NOTE: Only the first device used will work properly
 pub fn get_device() -> DeviceWrapper<TwizzlerTransport> {
     let net = VirtIONet::<TestHal, TwizzlerTransport, NET_QUEUE_SIZE>::new(
         TwizzlerTransport::new().unwrap(),
