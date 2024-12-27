@@ -110,7 +110,7 @@ unsafe impl Hal for TestHal {
     }
 
     unsafe fn dma_dealloc(_paddr: PhysAddr, _vaddr: NonNull<u8>, _pages: usize) -> i32 {
-        let mut dma_region = remove_alloced(_paddr).unwrap().try_into_inner();
+        let dma_region = remove_alloced(_paddr).unwrap().try_into_inner();
         match dma_region {
             Ok(mut dma_region) => {
                 dma_region.release_pin();
@@ -131,7 +131,7 @@ unsafe impl Hal for TestHal {
         assert!(buf_len <= DMA_PAGE_SIZE, "Hal::Share(): Buffer too large");
         let (phys, virt) = TestHal::dma_alloc(1, direction);
 
-        let mut slice = remove_alloced(phys).unwrap().into_inner();
+        let slice = remove_alloced(phys).unwrap().into_inner();
 
         let buf_casted = buffer.cast::<u8>();
 
