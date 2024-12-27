@@ -39,7 +39,7 @@ impl CompletionToKernel {
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCompletionData {
     EchoResp,
-    PageDataReq(PhysRange)
+    PageDataCompletion(PhysRange)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]

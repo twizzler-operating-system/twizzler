@@ -24,7 +24,7 @@ pub async fn handle_kernel_request(request: RequestFromKernel, data: Arc<PagerDa
                 obj_id, range.start, range.end
                 );
             let phys_range = page_data_req(data, obj_id, range);
-            Some(CompletionToKernel::new(KernelCompletionData::PageDataReq(phys_range)))
+            Some(CompletionToKernel::new(KernelCompletionData::PageDataCompletion(phys_range)))
         }
         KernelCommand::EchoReq => {
             println!("Handling EchoReq");
