@@ -1,6 +1,7 @@
 //! Simple echo server over TCP.
 //!
 //! Ref: <https://github.com/smoltcp-rs/smoltcp/blob/master/examples/server.rs>
+extern crate twizzler_minruntime;
 
 use core::{cell::RefCell, str::FromStr};
 use std::{borrow::ToOwned, rc::Rc, vec, vec::Vec};
@@ -18,13 +19,13 @@ use virtio_drivers::{
     Error,
 };
 
-use crate::{TwizzlerTransport, TestHal, NET_QUEUE_SIZE};
+use crate::hal::TestHal;
+use crate::transport::TwizzlerTransport;
+
+const NET_QUEUE_SIZE: usize = 16;
 
 type DeviceImpl<T> = VirtIONet<TestHal, T, NET_QUEUE_SIZE>;
 
-const IP: &str = "10.0.2.15"; // QEMU user networking default IP
-const GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
-const PORT: u16 = 5555;
 const NET_BUFFER_LEN: usize = 2048;
 
 pub struct DeviceWrapper<T: Transport> {
@@ -38,7 +39,7 @@ impl<T: Transport> DeviceWrapper<T> {
         }
     }
 
-    fn mac_address(&self) -> EthernetAddress {
+    pub fn mac_address(&self) -> EthernetAddress {
         EthernetAddress(self.inner.borrow().mac_address())
     }
 }
@@ -124,7 +125,11 @@ pub fn get_device() -> DeviceWrapper<TwizzlerTransport> {
     DeviceWrapper::<TwizzlerTransport>::new(net)
 }
 
-pub fn test_echo_server() {
+#[allow(dead_code)]
+fn test_echo_server() {
+    const IP: &str = "10.0.2.15"; // QEMU user networking default IP
+    const GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
+    const PORT: u16 = 5555;
     let mut device = get_device();
 
     if device.capabilities().medium != Medium::Ethernet {

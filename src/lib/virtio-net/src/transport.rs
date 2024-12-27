@@ -33,7 +33,11 @@ pub struct TwizzlerTransport {
 fn get_device() -> Device {
     let device_root = twizzler_driver::get_bustree_root();
     for device in device_root.children() {
+        println!("Here!");
+        println!("device is bus: {}", device.is_bus());
+        println!("device bus type: {:?}", device.bus_type());
         if device.is_bus() && device.bus_type() == twizzler_abi::device::BusType::Pcie {
+            println!("Found PCI device!");
             for child in device.children() {
                 let info = unsafe { child.get_info::<PcieDeviceInfo>(0).unwrap() };
                 // Can be modified later to let us select any other virtio device we want. For now,
@@ -47,6 +51,14 @@ fn get_device() -> Device {
 
                     return child;
                 }
+
+                println!(
+                    "[DEVICE INFO] Class: {:?}, Subclass: {:?}, ProgIF: {:?}, Vendor ID: {:?}",
+                    info.get_data().class,
+                    info.get_data().subclass,
+                    info.get_data().progif,
+                    info.get_data().vendor_id
+                );
             }
         }
     }

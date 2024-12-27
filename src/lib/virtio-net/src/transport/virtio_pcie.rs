@@ -1,3 +1,5 @@
+extern crate twizzler_minruntime;
+
 // Virtio vendor specific PCI Capability
 #[repr(C)]
 pub struct VirtioPciCap {

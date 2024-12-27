@@ -33,7 +33,8 @@ members = [
     "src/abi/types",
     "src/lib/logboi",
     "src/srv/logboi-srv",
-    "src/bin/logboi-test",
+    "src/bin/logboi-test", 
+    "src/lib/virtio-net",
 ]
 
 exclude = ["toolchain/src/rust"]
