@@ -5,7 +5,7 @@ mod hal;
 use hal::TestHal;
 use virtio_drivers::transport::Transport;
 
-mod tcp;
+pub mod tcp;
 mod transport;
 
 use transport::TwizzlerTransport;
@@ -18,12 +18,5 @@ fn main() {
 
 // Taken from Virtio drivers example
 fn virtio_net<T: Transport>(transport: T) {
-    const NET_BUFFER_LEN: usize = 2048;
-    let net = virtio_drivers::device::net::VirtIONet::<TestHal, T, NET_QUEUE_SIZE>::new(
-        transport,
-        NET_BUFFER_LEN,
-    )
-    .expect("failed to create net driver");
-    println!("MAC address: {:02x?}", net.mac_address());
-    tcp::test_echo_server(net);
+    tcp::test_echo_server();
 }

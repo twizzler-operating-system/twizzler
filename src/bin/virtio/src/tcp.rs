@@ -18,15 +18,16 @@ use virtio_drivers::{
     Error,
 };
 
-use crate::{TestHal, NET_QUEUE_SIZE};
+use crate::{TwizzlerTransport, TestHal, NET_QUEUE_SIZE};
 
 type DeviceImpl<T> = VirtIONet<TestHal, T, NET_QUEUE_SIZE>;
 
 const IP: &str = "10.0.2.15"; // QEMU user networking default IP
 const GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
 const PORT: u16 = 5555;
+const NET_BUFFER_LEN: usize = 2048;
 
-struct DeviceWrapper<T: Transport> {
+pub struct DeviceWrapper<T: Transport> {
     inner: Rc<RefCell<DeviceImpl<T>>>,
 }
 
@@ -76,8 +77,8 @@ impl<T: Transport> Device for DeviceWrapper<T> {
     }
 }
 
-struct VirtioRxToken<T: Transport>(Rc<RefCell<DeviceImpl<T>>>, RxBuffer);
-struct VirtioTxToken<T: Transport>(Rc<RefCell<DeviceImpl<T>>>);
+pub struct VirtioRxToken<T: Transport>(Rc<RefCell<DeviceImpl<T>>>, RxBuffer);
+pub struct VirtioTxToken<T: Transport>(Rc<RefCell<DeviceImpl<T>>>);
 
 impl<T: Transport> RxToken for VirtioRxToken<T> {
     fn consume<R, F>(self, f: F) -> R
@@ -85,12 +86,12 @@ impl<T: Transport> RxToken for VirtioRxToken<T> {
         F: FnOnce(&mut [u8]) -> R,
     {
         let mut rx_buf = self.1;
-        println!(
-            "RECV {} bytes: {:02X?}",
-            rx_buf.packet_len(),
-            rx_buf.packet()
-        );
-        println!("RX BUFFER ADDR: {:p}", rx_buf.packet_mut());
+        // println!(
+        //     "RECV {} bytes: {:02X?}",
+        //     rx_buf.packet_len(),
+        //     rx_buf.packet()
+        // );
+        // println!("RX BUFFER ADDR: {:p}", rx_buf.packet_mut());
         let result = f(rx_buf.packet_mut());
         self.0.borrow_mut().recycle_rx_buffer(rx_buf).unwrap();
         result
@@ -105,15 +106,26 @@ impl<T: Transport> TxToken for VirtioTxToken<T> {
         let mut dev = self.0.borrow_mut();
         let mut tx_buf = dev.new_tx_buffer(len);
         let result = f(tx_buf.packet_mut());
-        println!("SEND {} bytes: {:02X?}", len, tx_buf.packet());
-        println!("TX BUFFER ADDR: {:p}", tx_buf.packet_mut());
+        // println!("SEND {} bytes: {:02X?}", len, tx_buf.packet());
+        // println!("TX BUFFER ADDR: {:p}", tx_buf.packet_mut());
         dev.send(tx_buf).unwrap();
         result
     }
 }
 
-pub fn test_echo_server<T: Transport>(dev: DeviceImpl<T>) {
-    let mut device = DeviceWrapper::new(dev);
+// Gets the Virtio Net struct which implements the device used for smoltcp. Use this to create a smoltcp interface to send and receive packets.
+// NOTE: Can only be called once
+pub fn get_device() -> DeviceWrapper<TwizzlerTransport> {
+    let net = VirtIONet::<TestHal, TwizzlerTransport, NET_QUEUE_SIZE>::new(
+        TwizzlerTransport::new().unwrap(),
+        NET_BUFFER_LEN,
+    )
+    .expect("failed to create net driver");
+    DeviceWrapper::<TwizzlerTransport>::new(net)
+}
+
+pub fn test_echo_server() {
+    let mut device = get_device();
 
     if device.capabilities().medium != Medium::Ethernet {
         panic!("This implementation only supports virtio-net which is an ethernet device");
