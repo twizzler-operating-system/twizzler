@@ -29,7 +29,10 @@ fn get_dma_pool(dir: BufferDirection) -> &'static DmaPool {
                     Access::HostToDevice,
                     DmaOptions::empty(),
                 );
-                DMA_POOL_HOST_TO_DEVICE.set(pool);
+                match DMA_POOL_HOST_TO_DEVICE.set(pool) {
+                    Ok(_) => {}
+                    Err(_) => panic!("Failed to set DMA_POOL_HOST_TO_DEVICE"),
+                }
                 match DMA_POOL_HOST_TO_DEVICE.get() {
                     Some(pool) => pool,
                     None => panic!("Failed to set DMA_POOL_HOST_TO_DEVICE"),
@@ -44,7 +47,10 @@ fn get_dma_pool(dir: BufferDirection) -> &'static DmaPool {
                     Access::DeviceToHost,
                     DmaOptions::empty(),
                 );
-                DMA_POOL_DEVICE_TO_HOST.set(pool);
+                match DMA_POOL_DEVICE_TO_HOST.set(pool) {
+                    Ok(_) => {}
+                    Err(_) => panic!("Failed to set DMA_POOL_DEVICE_TO_HOST"),
+                };
                 match DMA_POOL_DEVICE_TO_HOST.get() {
                     Some(pool) => pool,
                     None => panic!("Failed to set DMA_POOL_DEVICE_TO_HOST"),
@@ -59,7 +65,10 @@ fn get_dma_pool(dir: BufferDirection) -> &'static DmaPool {
                     Access::BiDirectional,
                     DmaOptions::empty(),
                 );
-                DMA_POOL_BIDIRECTIONAL.set(pool);
+                match DMA_POOL_BIDIRECTIONAL.set(pool) {
+                    Ok(_) => {}
+                    Err(_) => panic!("Failed to set DMA_POOL_BIDIRECTIONAL"),
+                };
                 match DMA_POOL_BIDIRECTIONAL.get() {
                     Some(pool) => pool,
                     None => panic!("Failed to set DMA_POOL_BIDIRECTIONAL"),
@@ -101,10 +110,7 @@ unsafe impl Hal for TestHal {
         // Persist the allocated memory so it isn't freed when the function returns
         insert_alloced(phys_addr, dma_slice);
 
-        println!(
-            "Allocated DMA buffer at: {:?} with phys addr: {:x}",
-            virt, phys_addr
-        );
+        // println!("Allocated DMA buffer at: {:?} with phys addr: {:x}", virt, phys_addr);
 
         (phys_addr as PhysAddr, virt)
     }
@@ -125,7 +131,7 @@ unsafe impl Hal for TestHal {
     }
 
     unsafe fn share(buffer: NonNull<[u8]>, direction: BufferDirection) -> PhysAddr {
-        println!("Sharing buffer at: {:?}", buffer);
+        // println!("Sharing buffer at: {:?}", buffer);
         let buf_len = buffer.len();
 
         assert!(buf_len <= DMA_PAGE_SIZE, "Hal::Share(): Buffer too large");
@@ -155,7 +161,7 @@ unsafe impl Hal for TestHal {
         // Persist the allocated memory so it isn't freed when the function returns
         insert_alloced(phys, slice);
 
-        println!("Buffer copied to phys addr: {:x}", phys);
+        // println!("Buffer copied to phys addr: {:x}", phys);
 
         phys as PhysAddr
     }
@@ -182,9 +188,6 @@ unsafe impl Hal for TestHal {
 
         dma_slice.release_pin();
 
-        println!(
-            "Unshared contents of buffer at: {:?} with phys addr: {:x}",
-            buffer, paddr
-        );
+        // println!("Unshared contents of buffer at: {:?} with phys addr: {:x}", buffer, paddr);
     }
 }
