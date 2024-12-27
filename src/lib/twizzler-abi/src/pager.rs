@@ -19,6 +19,7 @@ impl RequestFromKernel {
 pub enum KernelCommand {
     EchoReq,
     PageDataReq(ObjID, ObjectRange),
+    ObjectInfoReq(ObjID),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
@@ -39,7 +40,8 @@ impl CompletionToKernel {
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCompletionData {
     EchoResp,
-    PageDataCompletion(PhysRange)
+    PageDataCompletion(PhysRange),
+    ObjectInfoCompletion(ObjectInfo)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
@@ -89,6 +91,17 @@ pub enum PagerCompletionData {
 pub struct PageDataReq {
     objID: ObjID,
     object_range: ObjectRange
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+pub struct ObjectInfo {
+    pub obj_id: ObjID
+}
+
+impl ObjectInfo {
+    pub fn new(obj_id: ObjID) -> Self {
+        Self { obj_id }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]

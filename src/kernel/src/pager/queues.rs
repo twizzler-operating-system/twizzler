@@ -29,9 +29,17 @@ pub(super) fn pager_request_handler_main() {
                 return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::DramPages(PhysRange::new(0x0000, 0x3E7FFF)))
             } else if req.cmd() == twizzler_abi::pager::PagerRequest::TestReq {
                 let sender = SENDER.wait();
-                logln!("kernel: submitting request on K2P Queue");
+                let obj_id = ObjID::new(1001);
+                logln!("kernel: submitting page data request on K2P Queue");
                 let item = RequestFromKernel::new(
-                    twizzler_abi::pager::KernelCommand::PageDataReq(ObjID::new(1001), ObjectRange{ start: 0, end: 4096}),
+                    twizzler_abi::pager::KernelCommand::PageDataReq(obj_id, ObjectRange{ start: 0, end: 4096}),
+                );
+                let id = sender.0.next_simple().value() as u32;
+                let res = SENDER.wait().1.submit(item, id);
+
+                logln!("kernel: submitting obj info request on K2P Queue");
+                let item = RequestFromKernel::new(
+                    twizzler_abi::pager::KernelCommand::ObjectInfoReq(obj_id),
                 );
                 let id = sender.0.next_simple().value() as u32;
                 let res = SENDER.wait().1.submit(item, id);
@@ -54,6 +62,9 @@ pub(super) fn pager_compl_handler_main() {
             }
             twizzler_abi::pager::KernelCompletionData::PageDataCompletion(phys_range) => {
                 logln!("got physical range {:?}", phys_range);
+            }
+            twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(obj_info) => {
+                logln!("got object info {:?}", obj_info);
             }
         }
         sender.0.release_simple(SimpleId::from(completion.0));
