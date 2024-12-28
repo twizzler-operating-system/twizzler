@@ -1,12 +1,19 @@
 mod batch;
 mod object;
+mod reference;
 mod unsafetx;
 
-use std::mem::MaybeUninit;
+use std::{alloc::AllocError, mem::MaybeUninit};
 
 pub use batch::*;
 pub use object::*;
+pub use reference::*;
 pub use unsafetx::*;
+
+use crate::{
+    alloc::{invbox::InvBox, Allocator},
+    marker::Invariant,
+};
 
 /// A trait for implementing per-object transaction handles.
 pub trait TxHandle {
@@ -20,6 +27,17 @@ pub trait TxHandle {
     fn ctor_inplace<T, F>(&self, target: &MaybeUninit<T>, ctor: F) -> Result<()>
     where
         F: FnOnce(&mut MaybeUninit<T>) -> Result<()>,
+    {
+        todo!()
+    }
+
+    fn new_box_with<T: Invariant, A: Allocator, F>(
+        &self,
+        alloc: &A,
+        ctor: F,
+    ) -> Result<InvBox<T, A>>
+    where
+        F: FnOnce(&mut MaybeUninit<T>),
     {
         todo!()
     }
@@ -64,5 +82,11 @@ impl<T> std::ops::Deref for TxCell<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl From<AllocError> for TxError {
+    fn from(value: AllocError) -> Self {
+        todo!()
     }
 }

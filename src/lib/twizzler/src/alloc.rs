@@ -3,36 +3,31 @@ use std::{
     mem::MaybeUninit,
 };
 
-use crate::{ptr::GlobalPtr, tx::TxHandle};
+use invbox::InvBox;
+
+use crate::{marker::Invariant, ptr::GlobalPtr, tx::TxHandle};
 
 pub mod arena;
+mod global;
 pub mod invbox;
+
+pub use global::OwnedGlobalPtr;
 
 pub trait Allocator {
     fn alloc(&self, layout: Layout) -> Result<GlobalPtr<u8>, AllocError>;
     unsafe fn dealloc(&self, ptr: GlobalPtr<u8>, layout: Layout);
 
-    fn tx_new<T>(&self, value: T, tx: &impl TxHandle) -> crate::tx::Result<GlobalPtr<T>> {
-        unsafe {
-            self.tx_new_inplace(
-                |place| {
-                    place.write(value);
-                    Ok(())
-                },
-                tx,
-            )
-        }
+    fn alloc_tx(&self, layout: Layout, _tx: &impl TxHandle) -> crate::tx::Result<GlobalPtr<u8>> {
+        self.alloc(layout).map_err(|e| e.into())
     }
-
-    unsafe fn tx_new_inplace<T, F>(
+    unsafe fn dealloc_tx(
         &self,
-        ctor: F,
-        tx: &impl TxHandle,
-    ) -> crate::tx::Result<GlobalPtr<T>>
-    where
-        F: FnOnce(&mut MaybeUninit<T>) -> crate::tx::Result<()>,
-    {
-        todo!()
+        ptr: GlobalPtr<u8>,
+        layout: Layout,
+        _tx: &impl TxHandle,
+    ) -> crate::tx::Result<()> {
+        self.dealloc(ptr, layout);
+        Ok(())
     }
 }
 

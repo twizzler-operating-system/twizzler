@@ -52,6 +52,7 @@ pub struct PhantomStoreEffect;
 impl !StoreCopy for PhantomStoreEffect {}
 impl !Unpin for PhantomStoreEffect {}
 
+/*
 #[derive(Debug)]
 pub struct Storable<T>(MaybeUninit<T>, Option<()>);
 
@@ -78,6 +79,7 @@ impl<T> Storable<T> {
         unsafe { self.0.assume_init() }
     }
 }
+*/
 
 pub trait BaseType {
     /// The fingerprint of this type.

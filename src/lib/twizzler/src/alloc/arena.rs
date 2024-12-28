@@ -1,5 +1,11 @@
-use super::Allocator;
-use crate::{object::Object, ptr::GlobalPtr};
+use std::mem::MaybeUninit;
+
+use super::{Allocator, OwnedGlobalPtr};
+use crate::{
+    object::Object,
+    ptr::{GlobalPtr, Ref},
+    tx::TxRef,
+};
 
 pub struct ArenaObject {
     obj: Object<ArenaBase>,
@@ -13,8 +19,23 @@ impl ArenaObject {
     pub fn allocator(&self) -> ArenaAllocator {
         todo!()
     }
+
+    pub fn alloc<T>(&self, value: T) -> OwnedGlobalPtr<T, ArenaAllocator> {
+        todo!()
+    }
+
+    pub fn alloc_inplace<T, F>(
+        &self,
+        ctor: F,
+    ) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>>
+    where
+        F: FnOnce(TxRef<MaybeUninit<T>>) -> crate::tx::Result<TxRef<T>>,
+    {
+        todo!()
+    }
 }
 
+#[derive(Clone, Copy)]
 pub struct ArenaAllocator {
     ptr: GlobalPtr<ArenaBase>,
 }

@@ -1,7 +1,10 @@
+use std::mem::MaybeUninit;
+
 use super::{Result, TxHandle};
 use crate::{
-    marker::BaseType,
-    object::{Object, RawObject, TypedObject},
+    alloc::{invbox::InvBox, Allocator},
+    marker::{BaseType, Invariant},
+    object::{FotEntry, Object, RawObject, TypedObject},
     ptr::RefMut,
 };
 
@@ -19,6 +22,24 @@ impl<T> TxObject<T> {
     }
 
     pub fn base_mut(&mut self) -> RefMut<'_, T> {
+        todo!()
+    }
+
+    pub fn write_box<U: Invariant, Alloc: Allocator>(
+        &mut self,
+        target: &mut MaybeUninit<InvBox<U, Alloc>>,
+        value: U,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    pub fn insert_fot(&mut self, fot: FotEntry) -> crate::tx::Result<u64> {
+        todo!()
+    }
+}
+
+impl<B> TxObject<MaybeUninit<B>> {
+    pub fn write(self, base: B) -> crate::tx::Result<TxObject<B>> {
         todo!()
     }
 }

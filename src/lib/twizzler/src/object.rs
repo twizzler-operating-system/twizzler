@@ -100,6 +100,12 @@ pub struct Object<Base> {
     _pd: PhantomData<*const Base>,
 }
 
+impl<B> Clone for Object<B> {
+    fn clone(&self) -> Self {
+        todo!()
+    }
+}
+
 impl<Base> Object<Base> {
     pub fn tx(self) -> crate::tx::Result<TxObject<Base>> {
         todo!()
