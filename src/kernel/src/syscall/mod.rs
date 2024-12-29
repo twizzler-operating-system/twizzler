@@ -225,6 +225,7 @@ fn zero_ok<T: Into<u64>>(t: T) -> (u64, u64) {
 }
 
 pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
+    // logln!("RECEIVED SYSCALL {}", context.num());
     match context.num().into() {
         Syscall::ObjectUnmap => {
             context.set_return_values(1u64, 0u64);

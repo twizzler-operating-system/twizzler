@@ -187,7 +187,7 @@
     html_favicon_url = "https://www.rust-lang.org/favicon.ico",
     html_root_url = "https://docs.rs/getrandom/0.2.10"
 )]
-#![no_std]
+// #![no_std]
 #![warn(rust_2018_idioms, unused_lifetimes, missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 

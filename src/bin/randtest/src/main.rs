@@ -15,7 +15,7 @@ fn main() {
     for b in into.as_mut() {
         *b = random();
     }
-    // getrandom(&mut into);
+    getrandom(&mut into);
 
     // u128::random();
 
