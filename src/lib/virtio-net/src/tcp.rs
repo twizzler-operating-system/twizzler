@@ -17,8 +17,7 @@ use virtio_drivers::{
     Error,
 };
 
-use crate::hal::TestHal;
-use crate::transport::TwizzlerTransport;
+use crate::{hal::TestHal, transport::TwizzlerTransport};
 
 const NET_QUEUE_SIZE: usize = 16;
 
@@ -112,8 +111,9 @@ impl<T: Transport> TxToken for VirtioTxToken<T> {
     }
 }
 
-// Gets the Virtio Net struct which implements the device used for smoltcp. Use this to create a smoltcp interface to send and receive packets.
-// NOTE: Only the first device used will work properly
+// Gets the Virtio Net struct which implements the device used for smoltcp. Use this to create a
+// smoltcp interface to send and receive packets. NOTE: Only the first device used will work
+// properly
 pub fn get_device() -> DeviceWrapper<TwizzlerTransport> {
     let net = VirtIONet::<TestHal, TwizzlerTransport, NET_QUEUE_SIZE>::new(
         TwizzlerTransport::new().unwrap(),

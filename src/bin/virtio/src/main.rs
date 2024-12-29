@@ -8,7 +8,6 @@ use smoltcp::{
     time::Instant,
     wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address},
 };
-
 use virtio_net::{get_device, DeviceWrapper};
 
 const IP: &str = "10.0.2.15"; // QEMU user networking default IP
