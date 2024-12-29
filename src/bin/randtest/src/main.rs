@@ -11,13 +11,12 @@ use getrandom::getrandom;
 // Alternatively find a way to compile dieharder, a C library, in twizzler.
 // debian package source: https://salsa.debian.org/edd/dieharder
 fn main() {
-    let mut into: [u8; 32] = Default::default();
-    for b in into.as_mut() {
+    let mut into1: [u8; 32] = Default::default();
+    for b in into1.as_mut() {
         *b = random();
     }
-    getrandom(&mut into);
+    let mut into2: [u8; 32] = Default::default();
+    getrandom(&mut into2);
 
-    // u128::random();
-
-    println!("bytes: {:?}", into);
+    println!("bytes: {:?}, {:?}", into1, into2);
 }

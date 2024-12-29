@@ -87,9 +87,7 @@ pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
     let mut acc: LockGuard<Accumulator> = ACCUMULATOR
         .call_once(|| Mutex::new(Accumulator::new()))
         .lock();
-    logln!("filling random data.");
     let res = acc.borrow_mut().try_fill_random_data(out);
-    logln!("filled random data.");
     if let Ok(()) = res {
         return true;
     }
@@ -160,12 +158,11 @@ pub fn start_entropy_contribution_thread() {
 }
 
 extern "C" fn contribute_entropy_regularly() {
-    logln!("Starting entropy contribution loop");
+    logln!("Starting entropy contribution loop; once every 100s");
     loop {
         crate::syscall::sync::sys_thread_sync(&mut [], Some(&mut Duration::from_secs(100))).expect(
             "shouldn't panic because sys_thread_sync doesn't panic if no ops are passed in",
         );
-        logln!("Contributing entropy");
         let mut acc = ACCUMULATOR
             .call_once(|| Mutex::new(Accumulator::new()))
             .lock();
@@ -173,7 +170,6 @@ extern "C" fn contribute_entropy_regularly() {
             .call_once(|| Mutex::new(EntropySources::new()))
             .lock();
         entropy_sources.contribute_entropy(&mut acc);
-        logln!("Contributed entropy");
         drop(entropy_sources);
         drop(acc);
         // break;
