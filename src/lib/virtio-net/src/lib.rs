@@ -1,8 +1,6 @@
 //! Virtio network device driver.
 //! 
 //! Provides smoltcp types for use with the virtio network device.
-extern crate twizzler_minruntime;
-
 mod tcp;
 mod transport;
 mod hal;

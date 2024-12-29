@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 twizzler-driver = { path = "../../lib/twizzler-driver" }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
-twizzler-minruntime = { path = "../../rt/minimal" }
 
 virtio-drivers = "0.7.5"
 volatile = { version = "0.5", features = ["unstable"] }

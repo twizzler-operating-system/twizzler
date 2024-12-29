@@ -1,8 +1,6 @@
 //! Simple echo server over TCP.
 //!
 //! Ref: <https://github.com/smoltcp-rs/smoltcp/blob/master/examples/server.rs>
-extern crate twizzler_minruntime;
-
 use core::{cell::RefCell, str::FromStr};
 use std::{borrow::ToOwned, rc::Rc, vec, vec::Vec};
 

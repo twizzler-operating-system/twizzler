@@ -1,5 +1,3 @@
-extern crate twizzler_minruntime;
-
 use core::{
     mem::{align_of, size_of},
     ptr::NonNull,

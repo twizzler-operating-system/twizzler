@@ -1,5 +1,3 @@
-extern crate twizzler_minruntime;
-
 use core::ptr::NonNull;
 use std::{collections::HashMap, ptr::copy_nonoverlapping, sync::Mutex};
 

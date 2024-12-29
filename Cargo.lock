@@ -5368,7 +5368,6 @@ dependencies = [
  "smoltcp",
  "twizzler-abi",
  "twizzler-driver",
- "twizzler-minruntime",
  "virtio-drivers",
  "volatile",
 ]
