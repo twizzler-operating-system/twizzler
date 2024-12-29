@@ -10,5 +10,3 @@ getrandom = { path = "../../lib/getrandom-twizzler" }
 diehardest = "1.0.0"
 twizzler-runtime = { path = "../../rt" }
 
-[package.metadata]
-twizzler-build = "static"
