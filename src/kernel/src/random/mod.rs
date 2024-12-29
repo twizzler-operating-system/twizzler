@@ -62,10 +62,7 @@ impl EntropySources {
             // add two events per source to each of the pools
             // Two events because fortuna::MIN_POOL_SIZE is 64 bytes and each event
             // is restricted to be 32 bytes at most
-            logln!("contributing entropy for source.");
             for i in 0..fortuna::POOL_COUNT * 2 {
-                logln!("iteration {}.", i);
-
                 if let Ok(_) = source.0.try_fill_entropy(&mut buf) {
                     accumulator
                         .add_random_event(&mut source.1, &buf)
@@ -73,6 +70,7 @@ impl EntropySources {
                 }
             }
         }
+        logln!("contributed entropy to pool");
     }
 }
 
@@ -85,10 +83,13 @@ static ENTROPY_SOURCES: Once<Mutex<EntropySources>> = Once::new();
 ///
 /// Returns whether or not it successfully filled the out buffer with entropy
 pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
+    // return false;
     let mut acc: LockGuard<Accumulator> = ACCUMULATOR
         .call_once(|| Mutex::new(Accumulator::new()))
         .lock();
+    logln!("filling random data.");
     let res = acc.borrow_mut().try_fill_random_data(out);
+    logln!("filled random data.");
     if let Ok(()) = res {
         return true;
     }
@@ -117,9 +118,9 @@ pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
         // block for 2 seconds and hope for other entropy-generating work to get done in the
         // meantime
         logln!("recursing");
-        sys_thread_sync(&mut [], Some(&mut Duration::from_secs(2))).expect(
-            "shouldn't panic because sys_thread_sync doesn't panic if no ops are passed in",
-        );
+        // sys_thread_sync(&mut [], Some(&mut Duration::from_secs(2))).expect(
+        //     "shouldn't panic because sys_thread_sync doesn't panic if no ops are passed in",
+        // );
         getrandom(out, nonblocking)
     }
 }
@@ -155,14 +156,15 @@ pub fn start_entropy_contribution_thread() {
     // FIXME: currently this thread never is actually run again due to
     // default_background priority coupled with sys_thread_sync never actually
     // causing the thread to resume.
-    run_closure_in_new_thread(Priority::default_background(), || {
-        contribute_entropy_regularly()
-    });
+    run_closure_in_new_thread(Priority::default_user(), || contribute_entropy_regularly());
 }
 
 extern "C" fn contribute_entropy_regularly() {
-    logln!("Starting entropy contribution");
+    logln!("Starting entropy contribution loop");
     loop {
+        crate::syscall::sync::sys_thread_sync(&mut [], Some(&mut Duration::from_secs(100))).expect(
+            "shouldn't panic because sys_thread_sync doesn't panic if no ops are passed in",
+        );
         logln!("Contributing entropy");
         let mut acc = ACCUMULATOR
             .call_once(|| Mutex::new(Accumulator::new()))
@@ -174,11 +176,7 @@ extern "C" fn contribute_entropy_regularly() {
         logln!("Contributed entropy");
         drop(entropy_sources);
         drop(acc);
-        break;
-        // crate::syscall::sync::sys_thread_sync(&mut [], Some(&mut Duration::from_secs(1000)))
-        //     .expect(
-        //         "shouldn't panic because sys_thread_sync doesn't panic if no ops are passed in",
-        //     );
+        // break;
     }
 }
 

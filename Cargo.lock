@@ -1139,12 +1139,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diehardest"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bf7b8b3a7d862afbe09a278e2e1f2f5967c0b44181f74f486483f3b6f040a74"
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4054,10 +4048,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "random_validation"
+name = "randtest"
 version = "0.1.0"
 dependencies = [
- "diehardest",
  "getrandom 0.2.10",
  "twizzler-runtime",
 ]

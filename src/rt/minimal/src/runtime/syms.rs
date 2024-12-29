@@ -535,7 +535,10 @@ pub unsafe extern "C-unwind" fn twz_rt_get_random(
     len: usize,
     flags: get_random_flags,
 ) -> usize {
-    OUR_RUNTIME.get_random(unsafe { core::slice::from_raw_parts_mut(buf.cast(), len) })
+    OUR_RUNTIME.get_random(
+        unsafe { core::slice::from_raw_parts_mut(buf.cast(), len) },
+        flags.into(),
+    )
 }
 check_ffi_type!(twz_rt_get_random, _, _, _);
 

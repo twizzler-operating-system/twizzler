@@ -4,9 +4,10 @@ use bitflags::bitflags;
 use num_enum::{FromPrimitive, IntoPrimitive};
 
 use super::{convert_codes_to_result, Syscall};
-use crate::arch::syscall::raw_syscall;
+use crate::{arch::syscall::raw_syscall, klog_println};
 
 bitflags! {
+    #[derive(Debug)]
     pub struct GetRandomFlags: u32 {
         const NONBLOCKING = 1 << 0;
         const UNEXPECTED = 2 << 0;
@@ -17,6 +18,16 @@ impl From<u64> for GetRandomFlags {
     fn from(value: u64) -> Self {
         match value {
             1 => GetRandomFlags::NONBLOCKING,
+            0 => GetRandomFlags::empty(),
+            _ => GetRandomFlags::UNEXPECTED,
+        }
+    }
+}
+impl From<u32> for GetRandomFlags {
+    fn from(value: u32) -> Self {
+        match value {
+            1 => GetRandomFlags::NONBLOCKING,
+            0 => GetRandomFlags::empty(),
             _ => GetRandomFlags::UNEXPECTED,
         }
     }
@@ -63,5 +74,6 @@ pub fn sys_get_random(
             ],
         )
     };
-    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, |_, v| v.into())
+    let out = convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, |_, v| v.into());
+    out
 }

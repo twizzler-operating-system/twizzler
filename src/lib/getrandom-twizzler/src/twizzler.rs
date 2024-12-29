@@ -9,21 +9,15 @@
 //! Implementation for Twizzler
 use core::{mem::MaybeUninit, num::NonZeroU32};
 
-use twizzler_abi::syscall::{sys_get_random, GetRandomError, GetRandomFlags};
-
+// use twizzler_abi::syscall::{sys_get_random, GetRandomError, GetRandomFlags};
 use crate::Error;
-
-pub fn getrandom_inner(dest: &mut [MaybeUninit<u8>]) -> Result<(), Error> {
-    sys_get_random(dest, GetRandomFlags::empty()).map_err(|e| {
-
-        let err_text = 
-        match e {
-        GetRandomError::Unseeded => 
-            "Unexpected error: get_random called with blocking so it should never return if generator is unseeded."
-        ,
-        GetRandomError::InvalidArgument => 
-            "Unexpected error: all arguments should be correct."
-        };
-        panic!("{}", err_text)
-    }).map(|_|{})
+pub fn getrandom_inner(mut dest: &mut [MaybeUninit<u8>]) -> Result<(), Error> {
+    let res = twizzler_rt_abi::random::twz_rt_get_random(
+        dest,
+        twizzler_rt_abi::random::GetRandomFlags::empty(),
+    );
+    if res == 0 {
+        panic!("failed to fill entropy bytes");
+    }
+    Ok(())
 }

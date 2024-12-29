@@ -23,6 +23,8 @@ libc = { version = "0.2.143", default-features = false }
 
 [target.'cfg(target_os = "twizzler")'.dependencies]
 twizzler-abi = { path = "../twizzler-abi" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-runtime = { path = "../../rt" }
 
 [target.'cfg(target_os = "wasi")'.dependencies]
 wasi = { version = "0.11", default-features = false }

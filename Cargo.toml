@@ -11,7 +11,8 @@ members = [
     "src/bin/devmgr",
     "src/bin/pager",
     "src/bin/mnemosyne",
-    "src/bin/random_validation",
+    # "src/bin/random_validation",
+    "src/bin/randtest",
     "src/bin/stdfs_demo",
     "src/bin/virtio",
     "src/bin/mnemosyne",
@@ -69,6 +70,8 @@ initrd = [
     "crate:stdfs_demo",
     "crate:logboi-test",
     "lib:logboi-srv",
+    # "crate:random_validation",
+    "crate:randtest"
     #"third-party:hello-world-rs"
 ]
 

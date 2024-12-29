@@ -162,7 +162,8 @@ fn type_get_random(into_ptr: u64, into_length: u64, flags: u64) -> Result<u64, G
     if !filled_buffer {
         Err(GetRandomError::Unseeded)
     } else {
-        Ok(0)
+        // either it fills the entire length with entropy or it doesn't fill anything
+        Ok(into_length)
     }
 }
 
