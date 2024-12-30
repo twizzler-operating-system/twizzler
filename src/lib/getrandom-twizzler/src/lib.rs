@@ -289,7 +289,7 @@ cfg_if! {
                         default, you may need to enable the \"js\" feature. \
                         For more information see: \
                         https://docs.rs/getrandom/#webassembly-support");
-    } else if #[cfg(target_arch="twizzler")] {
+    } else if #[cfg(target_os="twizzler")] {
         #[path = "twizzler.rs"] mod imp;
     } else {
         compile_error!("target is not supported, for more information see: \
