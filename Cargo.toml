@@ -12,6 +12,7 @@ members = [
     "src/bin/pager",
     "src/bin/mnemosyne",
     "src/bin/random_validation",
+    "src/bin/genrandom",
     "src/bin/randtest",
     "src/bin/stdfs_demo",
     "src/bin/virtio",
@@ -72,6 +73,8 @@ initrd = [
     "lib:logboi-srv",
     # "crate:random_validation",
     "crate:randtest",
+    "crate:randtest",
+    "crate:genrandom",
     #"third-party:hello-world-rs"
 ]
 

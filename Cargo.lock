@@ -1582,6 +1582,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "genrandom"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "getrandom 0.2.10",
+ "layout",
+ "lethe-gadget-fat",
+ "nvme",
+ "pci-ids",
+ "tickv",
+ "twizzler-abi",
+ "twizzler-async",
+ "twizzler-driver",
+ "twizzler-object",
+ "twizzler-queue",
+ "twizzler-runtime",
+ "volatile",
+]
+
+[[package]]
+name = "genrandom"
+version = "0.1.0"
+dependencies = [
+ "cfg-if 1.0.0",
+ "compiler_builtins",
+ "js-sys",
+ "libc",
+ "rustc-std-workspace-core",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+ "wasi",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.10"
 dependencies = [

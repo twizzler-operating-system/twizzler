@@ -1,0 +1,24 @@
+[package]
+name = "genrandom"
+version = "0.1.0"
+edition = "2021"
+
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-runtime = { path = "../../rt" }
+twizzler-object = { path = "../../lib/twizzler-object" }
+twizzler-queue = { path = "../../lib/twizzler-queue" }
+twizzler-async = { path = "../../lib/twizzler-async" }
+twizzler-driver = { path = "../../lib/twizzler-driver" }
+lethe-gadget-fat = { path = "../mnemosyne/fat" }
+nvme = { path = "../../lib/nvme-rs" }
+layout = { path = "../mnemosyne/fat/layout" }
+tickv = { version = "1.0.0" }
+async-trait = "0.1.66"
+volatile = "0.5"
+pci-ids = "0.2.4"
+
+getrandom = { path = "../../lib/getrandom-twizzler" }
