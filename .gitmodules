@@ -8,7 +8,7 @@
 	branch = twizzler-dynlink
 [submodule "src/abi"]
 	path = src/abi
-	url = ../abi.rs
+	url = ../abi.git
 	branch = zphrs-random
 [submodule "src/lib/getrandom-twizzler"]
 	path = src/lib/getrandom-twizzler
