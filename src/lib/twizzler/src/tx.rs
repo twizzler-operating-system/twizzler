@@ -1,21 +1,22 @@
-/// A trait for implementing transaction handles.
-///
-/// Takes a lifetime argument, 'obj. All object handles referenced by this transaction must have
-/// this lifetime or longer.
-pub trait TxHandle<'obj> {
-    /// Ensures transactional safety for mutably accessing data given by the range [data, data +
-    /// sizeof(T)).
-    fn tx_mut<T, E>(&self, data: *const T) -> TxResult<*mut T, E>;
+mod batch;
+mod object;
+mod unsafetx;
+
+pub use batch::*;
+pub use object::*;
+pub use unsafetx::*;
+
+/// A trait for implementing per-object transaction handles.
+pub trait TxHandle {
+    /// Ensures transactional safety for mutably accessing data in the range [data, data + len).
+    fn tx_mut(&self, data: *const u8, len: usize) -> Result<*mut u8>;
 }
 
-pub type TxResult<T, E = ()> = Result<T, TxError<E>>;
+pub type Result<T> = std::result::Result<T, TxError>;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, thiserror::Error)]
 /// Transaction errors, with user-definable abort type.
-pub enum TxError<E> {
-    /// Transaction aborted.
-    #[error("aborted: {0}")]
-    Abort(E),
+pub enum TxError {
     /// Resources exhausted.
     #[error("resources exhausted")]
     Exhausted,
