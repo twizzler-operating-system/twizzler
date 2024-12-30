@@ -63,6 +63,16 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
     }
 }
 
+impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
+    pub fn push_sc(&self, item: T, tx: &impl TxHandle) -> Result<()> {
+        todo!()
+    }
+
+    pub fn pop(&self, tx: &impl TxHandle) -> Result<T> {
+        todo!()
+    }
+}
+
 impl<T: Invariant, Alloc: Allocator + SingleObjectAllocator> Vec<T, Alloc> {
     pub fn push(&self, item: T, tx: &impl TxHandle) -> Result<()> {
         if self.inner.len == self.inner.cap {
@@ -93,11 +103,6 @@ impl<T: Invariant, Alloc: Allocator + SingleObjectAllocator> Vec<T, Alloc> {
         tx.write_uninit(&mut r[self.inner.len], item)?;
         self.inner.get_mut(tx)?.len += 1;
         Ok(())
-    }
-
-    // todo: only if storecopy
-    pub fn pop(&self, tx: &impl TxHandle) -> Result<T> {
-        todo!()
     }
 
     pub fn push_inplace<B, F>(&self, tx: &TxObject<B>, ctor: F) -> crate::tx::Result<()>
@@ -203,6 +208,16 @@ struct VecObject<T: Invariant, A: Allocator> {
     obj: Object<Vec<T, A>>,
 }
 
+impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
+    pub fn push_sc(&mut self, val: T) -> crate::tx::Result<()> {
+        todo!()
+    }
+
+    pub fn pop(&mut self) -> crate::tx::Result<T> {
+        todo!()
+    }
+}
+
 impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
     pub fn push(&mut self, val: T) -> crate::tx::Result<()> {
         todo!()
@@ -217,10 +232,5 @@ impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
         let r = base.push_inplace(&tx, ctor);
         tx.commit()?;
         r
-    }
-
-    // todo: only if storecopy
-    pub fn pop(&mut self) -> crate::tx::Result<T> {
-        todo!()
     }
 }

@@ -1,7 +1,5 @@
 //! Marker types for invariance, store side-effects, and base types.
 
-use std::mem::MaybeUninit;
-
 /// Indicates that a type is _invariant_ and thus can be stored in an object.
 ///
 /// # Safety
@@ -51,35 +49,6 @@ pub struct PhantomStoreEffect;
 
 impl !StoreCopy for PhantomStoreEffect {}
 impl !Unpin for PhantomStoreEffect {}
-
-/*
-#[derive(Debug)]
-pub struct Storable<T>(MaybeUninit<T>, Option<()>);
-
-unsafe impl<T> StoreCopy for Storable<T> {}
-
-impl<T: StoreCopy> From<T> for Storable<T> {
-    fn from(value: T) -> Self {
-        Self(MaybeUninit::new(value), None)
-    }
-}
-
-impl<T: StoreCopy> Storable<T> {
-    pub fn into_inner(self) -> T {
-        unsafe { self.0.assume_init() }
-    }
-}
-
-impl<T> Storable<T> {
-    pub unsafe fn new(value: T) -> Self {
-        Self(MaybeUninit::new(value), None)
-    }
-
-    pub unsafe fn into_inner_unchecked(self) -> T {
-        unsafe { self.0.assume_init() }
-    }
-}
-*/
 
 pub trait BaseType {
     /// The fingerprint of this type.

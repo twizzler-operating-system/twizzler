@@ -132,3 +132,9 @@ impl<Base: BaseType> TypedObject for Object<Base> {
         todo!()
     }
 }
+
+impl<B: BaseType> From<Object<B>> for Object<()> {
+    fn from(value: Object<B>) -> Self {
+        todo!()
+    }
+}

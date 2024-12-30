@@ -68,7 +68,7 @@ mod tests {
                 todo!()
             }
         }
-
+        // This would come from derive(Invariant)
         unsafe impl Invariant for Node {}
 
         let arena = ArenaObject::new();

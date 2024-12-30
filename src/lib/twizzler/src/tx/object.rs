@@ -25,14 +25,6 @@ impl<T> TxObject<T> {
         todo!()
     }
 
-    pub fn write_box<U: Invariant, Alloc: Allocator>(
-        &mut self,
-        target: &mut MaybeUninit<InvBox<U, Alloc>>,
-        value: U,
-    ) -> Result<()> {
-        todo!()
-    }
-
     pub fn insert_fot(&mut self, fot: FotEntry) -> crate::tx::Result<u64> {
         todo!()
     }
@@ -60,6 +52,12 @@ impl<B: BaseType> TypedObject for TxObject<B> {
     type Base = B;
 
     fn base(&self) -> crate::ptr::Ref<'_, Self::Base> {
+        todo!()
+    }
+}
+
+impl<B: BaseType> From<TxObject<B>> for TxObject<()> {
+    fn from(value: TxObject<B>) -> Self {
         todo!()
     }
 }
