@@ -147,7 +147,6 @@ pub fn handle_interrupt(number: u32) {
     let gi = get_global_interrupts();
     gi.ints[number as usize].raise();
     if number != 43 {
-        logln!("external device interrupt {}", number);
     }
 }
 
