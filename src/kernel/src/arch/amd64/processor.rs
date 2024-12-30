@@ -80,17 +80,36 @@ pub fn init(tls: VirtAddr) {
     unsafe {
         let mut cr4 = x86::controlregs::cr4() | x86::controlregs::Cr4::CR4_ENABLE_SSE;
         if has_xsave {
-            cr4 |= x86::controlregs::Cr4::CR4_ENABLE_OS_XSAVE;
+            cr4 |= x86::controlregs::Cr4::CR4_ENABLE_OS_XSAVE
+                | x86::controlregs::Cr4::CR4_UNMASKED_SSE;
         }
         x86::controlregs::cr4_write(cr4);
         if has_xsave {
             let xcr0 = x86::controlregs::xcr0();
             x86::controlregs::xcr0_write(
                 xcr0 | x86::controlregs::Xcr0::XCR0_SSE_STATE
+                    | x86::controlregs::Xcr0::XCR0_AVX_STATE
                     | x86::controlregs::Xcr0::XCR0_FPU_MMX_STATE,
             );
         }
     }
+}
+
+pub unsafe fn init_fpu_state() {
+    let mut f: u16 = 0;
+    let mut x: u32 = 0;
+    core::arch::asm!(
+        "finit",
+        "fstcw [rax]",
+        "or qword ptr [rax], 0x33f",
+        "fldcw [rax]",
+        "stmxcsr [rdx]",
+        "mfence",
+        "or qword ptr [rdx], 0x1f80",
+        "sfence",
+        "ldmxcsr [rdx]",
+        "stmxcsr [rdx]",
+        in("rax") &mut f, in("rdx") &mut x);
 }
 
 pub fn enumerate_cpus() -> u32 {

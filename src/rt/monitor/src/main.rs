@@ -114,60 +114,6 @@ fn monitor_init() -> miette::Result<()> {
     }
     info!("monitor early init completed, starting init");
 
-    // Load and wait for tests to complete
-    let lbcomp: CompartmentHandle = CompartmentLoader::new(
-        "logboi",
-        "liblogboi_srv.so",
-        NewCompartmentFlags::EXPORT_GATES,
-    )
-    .args(&["logboi"])
-    .load()
-    .into_diagnostic()?;
-    let mut flags = lbcomp.info().flags;
-    while !flags.contains(CompartmentFlags::READY) {
-        flags = lbcomp.wait(flags);
-    }
-    info!("logboi ready");
-    std::mem::forget(lbcomp);
-
-    let lbcomp: CompartmentHandle = CompartmentLoader::new(
-        "naming_srv`",
-        "libnaming_srv.so",
-        NewCompartmentFlags::EXPORT_GATES,
-    )
-    .args(&["naming"])
-    .load()
-    .into_diagnostic()?;
-    let mut flags = lbcomp.info().flags;
-    while !flags.contains(CompartmentFlags::READY) {
-        flags = lbcomp.wait(flags);
-    }
-    info!("naming ready");
-    std::mem::forget(lbcomp);
-
-    info!("running logboi test");
-    // Load and wait for tests to complete
-    let comp: CompartmentHandle =
-        CompartmentLoader::new("logboi-test", "logboi-test", NewCompartmentFlags::empty())
-            .args(&["logboi-test"])
-            .load()
-            .into_diagnostic()?;
-    let mut flags = comp.info().flags;
-    while !flags.contains(CompartmentFlags::EXITED) {
-        flags = comp.wait(flags);
-    }
-    info!("running logboi test again");
-    // Load and wait for tests to complete
-    let comp: CompartmentHandle =
-        CompartmentLoader::new("logboi-test", "logboi-test", NewCompartmentFlags::empty())
-            .args(&["logboi-test"])
-            .load()
-            .into_diagnostic()?;
-    let mut flags = comp.info().flags;
-    while !flags.contains(CompartmentFlags::EXITED) {
-        flags = comp.wait(flags);
-    }
-
     let comp: CompartmentHandle =
         CompartmentLoader::new("init", "init", NewCompartmentFlags::empty())
             .args(&["init"])

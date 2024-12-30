@@ -314,8 +314,9 @@ impl Monitor {
             let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
             let rc = cmp.get(instance).ok_or(LoadCompartmentError::Unknown)?;
             tracing::debug!(
-                "starting compartment {} (binary = {})",
+                "starting compartment {} ({}) (binary = {})",
                 rc.name,
+                rc.instance,
                 rc.has_flag(COMP_IS_BINARY)
             );
             rc.deps.clone()
@@ -323,26 +324,24 @@ impl Monitor {
         for dep in deps {
             self.start_compartment(dep, &[], env)?;
         }
-
-        {
-            self.comp_mgr.write(ThreadKey::get().unwrap());
+        // Check the state of this compartment.
+        let state = self.load_compartment_flags(instance);
+        if state & COMP_EXITED != 0 || state & COMP_DESTRUCTED != 0 {
+            tracing::error!(
+                "tried to start compartment ({:?}, {}) that has already exited (state: {:x})",
+                self.comp_name(instance),
+                instance,
+                state
+            );
+            return Err(LoadCompartmentError::Unknown);
         }
+
         loop {
             // Check the state of this compartment.
             let state = self.load_compartment_flags(instance);
-
-            if state & COMP_EXITED != 0 || state & COMP_DESTRUCTED != 0 {
-                tracing::error!(
-                    "tried to start compartment that has already exited (state: {:x})",
-                    state
-                );
-                return Err(LoadCompartmentError::Unknown);
-            }
-
             if state & COMP_READY != 0 {
                 return Ok(());
             }
-
             let info = {
                 let (ref mut space, ref mut tmgr, ref mut cmp, ref mut dynlink, _, _) =
                     *self.locks.lock(ThreadKey::get().unwrap());
@@ -350,7 +349,6 @@ impl Monitor {
 
                 rc.start_main_thread(state, &mut *space, &mut *tmgr, &mut *dynlink, args, env)
             };
-
             if info.is_none() {
                 return Err(LoadCompartmentError::Unknown);
             }

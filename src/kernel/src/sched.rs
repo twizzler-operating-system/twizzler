@@ -214,7 +214,6 @@ fn balance(topo: &CPUTopoNode) {
         let donor = get_processor(donor.cpuid);
         let recipient = get_processor(recipient.cpuid);
         let donor_load = donor.current_load();
-        // logln!("balance {:?} {}", cpuset, donor_load);
         if donor_load <= 2 {
             break;
         }
@@ -526,7 +525,13 @@ pub fn schedule_stattick(dt: Nanoseconds) {
         if cp.id == 0 {
             let all_threads = ALL_THREADS.lock();
             for t in all_threads.values() {
-                logln!("thread {}: {:?} {:?}", t.id(), t.stats, t.get_state());
+                logln!(
+                    "thread {}: {:?} {:?} {:x}",
+                    t.id(),
+                    t.stats,
+                    t.get_state(),
+                    t.flags.load(Ordering::SeqCst)
+                );
             }
         }
         //crate::clock::print_info();

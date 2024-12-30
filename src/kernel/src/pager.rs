@@ -1,13 +1,14 @@
 use twizzler_abi::{
     object::ObjID,
     pager::{CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager},
+    thread::ExecutionState,
 };
 
 use crate::{
     obj::{lookup_object, LookupFlags},
     queue::{ManagedQueueReceiver, ManagedQueueSender, QueueObject},
     sched::schedule,
-    thread::{entry::start_new_kernel, priority::Priority},
+    thread::{current_thread_ref, entry::start_new_kernel, priority::Priority},
 };
 
 struct PagerQueues {
@@ -59,6 +60,9 @@ fn pager_main() {
         logln!("submitted request");
         let resp = out.wait();
         logln!("got response: {:?}", resp);
+        current_thread_ref()
+            .unwrap()
+            .set_state(ExecutionState::Sleeping);
         schedule(false);
     }
 }
