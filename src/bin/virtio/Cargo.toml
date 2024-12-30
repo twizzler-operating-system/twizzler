@@ -1,0 +1,19 @@
+[package]
+name = "virtio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+virtio-net = { path = "../../lib/virtio-net" }
+
+[dependencies.smoltcp]
+version = "0.11.0"
+optional = false
+default-features = true
+features = [
+  "alloc", "log",
+  "medium-ethernet",
+  "proto-ipv4",
+  "socket-raw", "socket-icmp", "socket-udp", "socket-tcp",
+]
