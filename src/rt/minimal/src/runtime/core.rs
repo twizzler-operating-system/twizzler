@@ -35,11 +35,11 @@ impl CoreRuntime for MinimalRuntime {
     }
 
     fn exit(&self, code: i32) -> ! {
-        crate::syscall::sys_thread_exit(code as u64);
+        crate::syscall::sys_thread_exit(code as u64)
     }
 
     fn abort(&self) -> ! {
-        core::intrinsics::abort();
+        core::intrinsics::abort()
     }
 
     /// Called from _start to initialize the runtime and pass control to the Rust stdlib.
