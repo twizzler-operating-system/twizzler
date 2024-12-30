@@ -80,15 +80,12 @@ fn get_dma_pool(dir: BufferDirection) -> &'static DmaPool {
 
 fn insert_alloced(paddr: PhysAddr, dma_slice: DmaSliceRegion<u8>) {
     let dict = ALLOCED.get_or_init(|| Mutex::new(HashMap::new()));
-
     let wrapped = Fragile::new(dma_slice);
-
     dict.lock().unwrap().insert(paddr, wrapped);
 }
 
 fn remove_alloced(paddr: PhysAddr) -> Option<Fragile<DmaSliceRegion<u8>>> {
     let dict = ALLOCED.get_or_init(|| Mutex::new(HashMap::new()));
-
     dict.lock().unwrap().remove(&paddr)
 }
 
@@ -99,7 +96,6 @@ unsafe impl Hal for TestHal {
 
         let pool = get_dma_pool(direction);
         let alloced = pool.allocate_array(pages, 0u8).unwrap();
-
         let mut dma_slice = alloced;
 
         let pin = dma_slice.pin().unwrap();
@@ -109,9 +105,6 @@ unsafe impl Hal for TestHal {
 
         // Persist the allocated memory so it isn't freed when the function returns
         insert_alloced(phys_addr, dma_slice);
-
-        // println!("Allocated DMA buffer at: {:?} with phys addr: {:x}", virt, phys_addr);
-
         (phys_addr as PhysAddr, virt)
     }
 
@@ -131,21 +124,15 @@ unsafe impl Hal for TestHal {
     }
 
     unsafe fn share(buffer: NonNull<[u8]>, direction: BufferDirection) -> PhysAddr {
-        // println!("Sharing buffer at: {:?}", buffer);
         let buf_len = buffer.len();
-
         assert!(buf_len <= DMA_PAGE_SIZE, "Hal::Share(): Buffer too large");
         let (phys, virt) = TestHal::dma_alloc(1, direction);
-
         let slice = remove_alloced(phys).unwrap().into_inner();
-
+        
         let buf_casted = buffer.cast::<u8>();
-
         let buf = buf_casted.as_ptr();
         let dma_buf = virt.as_ptr();
-
         // Copy the buffer to the DMA buffer
-
         copy_nonoverlapping(buf, dma_buf, buf_len);
 
         match direction {
@@ -157,18 +144,13 @@ unsafe impl Hal for TestHal {
             }
             _ => {}
         }
-
         // Persist the allocated memory so it isn't freed when the function returns
         insert_alloced(phys, slice);
-
-        // println!("Buffer copied to phys addr: {:x}", phys);
-
         phys as PhysAddr
     }
     unsafe fn unshare(paddr: PhysAddr, buffer: NonNull<[u8]>, direction: BufferDirection) {
         // Gets DMA buffer and unallocates it
         let mut dma_slice = remove_alloced(paddr).unwrap().into_inner();
-
         match direction {
             BufferDirection::DeviceToDriver => {
                 dma_slice.sync(0..buffer.len(), SyncMode::PostDeviceToCpu);
@@ -177,17 +159,12 @@ unsafe impl Hal for TestHal {
         }
 
         let buf_len = buffer.len();
-
         let buf_casted = buffer.cast::<u8>();
-
         let buf = buf_casted.as_ptr();
         let dma_buf = unsafe { dma_slice.get_mut().as_ptr() };
 
         // Copy the DMA buffer back to the buffer
         copy_nonoverlapping(dma_buf, buf, buf_len);
-
         dma_slice.release_pin();
-
-        // println!("Unshared contents of buffer at: {:?} with phys addr: {:x}", buffer, paddr);
     }
 }
