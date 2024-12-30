@@ -18,6 +18,10 @@ impl<'obj, T> Ref<'obj, T> {
         self.ptr
     }
 
+    pub unsafe fn from_raw_parts(ptr: *const T, handle: *const ObjectHandle) -> Self {
+        todo!()
+    }
+
     pub unsafe fn cast<U>(self) -> Ref<'obj, U> {
         todo!()
     }

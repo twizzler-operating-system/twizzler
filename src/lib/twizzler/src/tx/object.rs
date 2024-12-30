@@ -13,6 +13,10 @@ pub struct TxObject<T> {
 }
 
 impl<T> TxObject<T> {
+    pub fn new(object: Object<T>) -> Result<Self> {
+        todo!()
+    }
+
     pub fn commit(self) -> Result<Object<T>> {
         todo!()
     }

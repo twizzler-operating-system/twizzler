@@ -131,6 +131,7 @@ impl CreateTieSpec {
     Eq,
     IntoPrimitive,
     FromPrimitive,
+    Hash,
     thiserror::Error,
 )]
 #[repr(u64)]
