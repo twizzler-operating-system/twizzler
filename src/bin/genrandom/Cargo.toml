@@ -21,4 +21,4 @@ async-trait = "0.1.66"
 volatile = "0.5"
 pci-ids = "0.2.4"
 
-getrandom = { path = "../../lib/getrandom-twizzler" }
+getrandom = "0.2"

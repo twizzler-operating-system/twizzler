@@ -7,4 +7,4 @@ edition = "2021"
 
 [dependencies]
 twizzler-runtime = { path = "../../rt" }
-getrandom = { path = "../../lib/getrandom-twizzler" }
+getrandom = "0.2"

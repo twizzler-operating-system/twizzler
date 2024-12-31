@@ -6,5 +6,5 @@ edition = "2021"
 [dependencies]
 bitflags = "2"
 thiserror = "2"
-twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-rt-abi = "0.99"
 twizzler-abi = { path = "../../lib/twizzler-abi" }

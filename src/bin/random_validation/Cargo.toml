@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-getrandom = { path = "../../lib/getrandom-twizzler" }
+getrandom = "0.2"
 diehardest = "1.0.0"
 twizzler-runtime = { path = "../../rt" }
 
