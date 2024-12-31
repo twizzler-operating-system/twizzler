@@ -1,271 +1,9 @@
-//#![no_std]
-#![feature(naked_functions)]
-#![feature(thread_local)]
-#![feature(duration_constants)]
-#![allow(unreachable_code)]
-//#![no_main]
-
-/*
-#[no_mangle]
-pub extern "C" fn std_runtime_starta() {
-    twizzler_abi::syscall::sys_kernel_console_write(
-        b"hello world\n",
-        twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
-    );
-    loop {}
-}
-*/
-
-/*
-#[panic_handler]
-pub fn __panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
-*/
-
-#[thread_local]
-static mut FOO: u32 = 42;
-#[thread_local]
-static mut BAR: u32 = 0;
-#[allow(named_asm_labels)]
-
-static BAZ: AtomicU64 = AtomicU64::new(0);
-
-fn test_thread_sync() {
-    let _j = std::thread::spawn(|| {
-        let reference = ThreadSyncReference::Virtual(&BAZ as *const AtomicU64);
-        let value = 0;
-        let wait = ThreadSync::new_sleep(ThreadSyncSleep::new(
-            reference,
-            value,
-            twizzler_abi::syscall::ThreadSyncOp::Equal,
-            ThreadSyncFlags::empty(),
-        ));
-
-        loop {
-            println!("{:?} going to sleep", std::thread::current().id());
-            let res = sys_thread_sync(&mut [wait], None);
-            println!("woke up: {:?} {:?}", res, wait.get_result());
-        }
-    });
-
-    let reference = ThreadSyncReference::Virtual(&BAZ as *const AtomicU64);
-    let wake = ThreadSync::new_wake(ThreadSyncWake::new(reference, 1));
-    let mut c = 0u64;
-    loop {
-        println!("{:?} waking up {}", std::thread::current().id(), c);
-        c += 1;
-        let res = sys_thread_sync(&mut [wake], None);
-        for _i in 0u64..40000u64 {}
-        println!("done {:?}", res);
-    }
-}
-
-fn test_thread_sync_timeout() {
-    let _j = std::thread::spawn(|| {
-        let reference = ThreadSyncReference::Virtual(&BAZ as *const AtomicU64);
-        let value = 0;
-        let wait = ThreadSync::new_sleep(ThreadSyncSleep::new(
-            reference,
-            value,
-            twizzler_abi::syscall::ThreadSyncOp::Equal,
-            ThreadSyncFlags::empty(),
-        ));
-
-        let mut c = 0u64;
-        loop {
-            println!("{:?} going to sleep {}", std::thread::current().id(), c);
-            let res = sys_thread_sync(&mut [wait], Some(Duration::MILLISECOND * 1000));
-            println!("woke up: {:?} {:?}", res, wait.get_result());
-            c += 1;
-        }
-    });
-
-    let reference = ThreadSyncReference::Virtual(&BAZ as *const AtomicU64);
-    let _wake = ThreadSync::new_wake(ThreadSyncWake::new(reference, 1));
-    let mut _c = 0u64;
-    loop {
-
-        // println!("{:?} waking up {}", std::thread::current().id(), c);
-        // c += 1;
-        // let res = sys_thread_sync(&mut [wake], None);
-        // for i in 0u64..40000u64 {}
-        // println!("done {:?}", res);
-    }
-}
-
-struct Foo {
-    x: u64,
-}
-
-fn test_mutex() {
-    let mutex: Arc<Mutex<Foo>> = Arc::new(Mutex::new(Foo { x: 0 }));
-    let mutex2 = mutex.clone();
-    std::thread::spawn(move || {
-        let mut c = 0u64;
-        loop {
-            let mut data = mutex.lock().unwrap();
-            data.x += 1;
-            let v = data.x;
-            c += 1;
-            if c % 1000000 == 0 {
-                println!("w {}", data.x);
-            }
-            assert_eq!(v, data.x);
-        }
-    });
-
-    let mut c = 0u64;
-    loop {
-        let mut data = mutex2.lock().unwrap();
-        data.x += 1;
-        c += 1;
-        let v = data.x;
-        // for i in 0..1000 {}
-        assert_eq!(v, data.x);
-        if c % 1000000 == 0 {
-            println!("a {}", data.x);
-        }
-        assert_eq!(v, data.x);
-    }
-}
-
-fn get_user_input() {
-    println!("enter some text:");
-    let mut s = String::new();
-    std::io::stdin()
-        .read_line(&mut s)
-        .expect("Did not enter a correct string");
-    println!("you typed: {}", s);
-}
-
-fn list_subobjs(level: usize, id: ObjID) {
-    let mut n = 0;
-    loop {
-        let res = sys_kaction(
-            KactionCmd::Generic(KactionGenericCmd::GetSubObject(
-                SubObjectType::Info.into(),
-                n,
-            )),
-            Some(id),
-            0,
-            0,
-            KactionFlags::empty(),
-        );
-        if res.is_err() {
-            break;
-        } else if let KactionValue::ObjID(id) = res.unwrap() {
-            println!("  sub {:indent$}info {}: {}", "", n, id, indent = level);
-        }
-        n += 1;
-    }
-
-    let mut n = 0;
-    loop {
-        let res = sys_kaction(
-            KactionCmd::Generic(KactionGenericCmd::GetSubObject(
-                SubObjectType::Mmio.into(),
-                n,
-            )),
-            Some(id),
-            0,
-            0,
-            KactionFlags::empty(),
-        );
-        if res.is_err() {
-            break;
-        } else if let KactionValue::ObjID(id) = res.unwrap() {
-            println!("  sub {:indent$}mmio {}: {}", "", n, id, indent = level);
-        }
-        n += 1;
-    }
-}
-
-fn enumerate_children(level: usize, id: ObjID) {
-    let mut n = 0;
-    loop {
-        let res = sys_kaction(
-            KactionCmd::Generic(KactionGenericCmd::GetChild(n)),
-            Some(id),
-            0,
-            0,
-            KactionFlags::empty(),
-        );
-        if res.is_err() {
-            break;
-        } else if let KactionValue::ObjID(id) = res.unwrap() {
-            println!("{:indent$}{}: {}", "", n, id, indent = level);
-            list_subobjs(level, id);
-            enumerate_children(level + 4, id);
-        }
-        n = n + 1;
-    }
-}
-
-fn test_kaction() {
-    let res = sys_kaction(
-        KactionCmd::Generic(KactionGenericCmd::GetKsoRoot),
-        None,
-        0,
-        0,
-        KactionFlags::empty(),
-    );
-    println!("{:?}", res);
-    let id = match res.unwrap() {
-        KactionValue::U64(_) => todo!(),
-        KactionValue::ObjID(id) => id,
-    };
-
-    enumerate_children(0, id);
-}
-
-fn exec(name: &str, id: ObjID, argid: ObjID) {
-    let env: Vec<String> = std::env::vars()
-        .map(|(n, v)| format!("{}={}", n, v))
-        .collect();
-    let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
-    let mut args = vec![name.as_bytes()];
-    let argstr = format!("{}", argid.as_u128());
-    args.push(argstr.as_bytes());
-    let _elf = twizzler_abi::runtime::load_elf::spawn_new_executable(id, &args, &env_ref);
-    //println!("ELF: {:?}", elf);
-}
-
-fn exec2(name: &str, id: ObjID) -> Option<ObjID> {
-    let env: Vec<String> = std::env::vars()
-        .map(|(n, v)| format!("{}={}", n, v))
-        .collect();
-    let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
-    let args = vec![name.as_bytes()];
-    twizzler_abi::runtime::load_elf::spawn_new_executable(id, &args, &env_ref).ok()
-    //println!("ELF: {:?}", elf);
-}
-
-fn exec_n(name: &str, id: ObjID, args: &[&str]) -> Option<ObjID> {
-    let env: Vec<String> = std::env::vars()
-        .map(|(n, v)| format!("{}={}", n, v))
-        .collect();
-    let env_ref: Vec<&[u8]> = env.iter().map(|x| x.as_str().as_bytes()).collect();
-    let mut fullargs = vec![name.as_bytes()];
-    fullargs.extend(args.iter().map(|x| x.as_bytes()));
-    twizzler_abi::runtime::load_elf::spawn_new_executable(id, &fullargs, &env_ref).ok()
-}
-
-fn find_init_name(name: &str) -> Option<ObjID> {
-    let init_info = twizzler_abi::runtime::get_kernel_init_info();
-    for n in init_info.names() {
-        if n.name() == name {
-            return Some(n.id());
-        }
-    }
-    None
-}
+extern crate twizzler_runtime;
 
 fn initialize_pager() { 
-    println!("starting pager");
+    info!("starting pager");
     const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
-    //Create Pager -> Kernel Queue
-    let pager_to_kernel_queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
+    let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
         &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
         DEFAULT_PAGER_QUEUE_LEN,
         DEFAULT_PAGER_QUEUE_LEN,
@@ -273,38 +11,38 @@ fn initialize_pager() {
     .unwrap();
 
     sys_new_handle(
-        pager_to_kernel_queue.object().id(),
+        queue.object().id(),
         twizzler_abi::syscall::HandleType::PagerQueue,
         NewHandleFlags::empty(),
     )
     .unwrap();
-
-    //Create Kernel -> Pager Queue
-    let kernel_to_pager_queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
+    let queue2 = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
         &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
         DEFAULT_PAGER_QUEUE_LEN,
         DEFAULT_PAGER_QUEUE_LEN,
     )
     .unwrap();
     sys_new_handle(
-        kernel_to_pager_queue.object().id(),
+        queue2.object().id(),
         twizzler_abi::syscall::HandleType::PagerQueue,
         NewHandleFlags::empty(),
     )
     .unwrap();
-    //Start Pager
-    if let Some(id) = find_init_name("pager") {
-        exec_n(
-            "pager",
-            id,
-            &[
-                &pager_to_kernel_queue.object().id().as_u128().to_string(),
-                &kernel_to_pager_queue.object().id().as_u128().to_string(),
-            ],
-        );
-    } else {
-        eprintln!("[init] failed to start pager");
-    }
+    let pager_comp = monitor_api::CompartmentLoader::new(
+        "pager",
+        "pager",
+        monitor_api::NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args([
+        "pager",
+        &queue.object().id().raw().to_string(),
+        &queue2.object().id().raw().to_string(),
+    ])
+    .load()
+    .expect("failed to start pager");
+
+    std::mem::forget(pager_comp);
+
 }
 
 fn main() {
@@ -369,9 +107,7 @@ fn main() {
     debug!("device manager is up!");
 
     initialize_pager();
-
     std::mem::forget(dev_comp);
-    std::mem::forget(pager_comp);
 
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
