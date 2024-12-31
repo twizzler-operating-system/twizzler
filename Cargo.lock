@@ -1616,13 +1616,13 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.2.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4567c8db10ae91089c99af84c68c38da3ec2f087c3f82960bcdbf3656b6f4d7"
+version = "0.2.16"
+source = "git+https://github.com/zphrs/getrandom-twizzler.git?branch=twizzler#4af6327eac1397e4672b4b947b996b1845c534a4"
 dependencies = [
  "cfg-if 1.0.0",
  "js-sys",
  "libc",
+ "twizzler-rt-abi",
  "wasi",
  "wasm-bindgen",
 ]
@@ -1734,7 +1734,7 @@ dependencies = [
  "gix-utils",
  "itoa",
  "thiserror 1.0.69",
- "winnow 0.6.20",
+ "winnow 0.6.21",
 ]
 
 [[package]]
@@ -1816,7 +1816,7 @@ dependencies = [
  "smallvec",
  "thiserror 1.0.69",
  "unicode-bom",
- "winnow 0.6.20",
+ "winnow 0.6.21",
 ]
 
 [[package]]
@@ -2103,7 +2103,7 @@ dependencies = [
  "itoa",
  "smallvec",
  "thiserror 1.0.69",
- "winnow 0.6.20",
+ "winnow 0.6.21",
 ]
 
 [[package]]
@@ -2226,7 +2226,7 @@ dependencies = [
  "gix-utils",
  "maybe-async",
  "thiserror 1.0.69",
- "winnow 0.6.20",
+ "winnow 0.6.21",
 ]
 
 [[package]]
@@ -2258,7 +2258,7 @@ dependencies = [
  "gix-validate",
  "memmap2",
  "thiserror 1.0.69",
- "winnow 0.6.20",
+ "winnow 0.6.21",
 ]
 
 [[package]]
@@ -3053,11 +3053,14 @@ checksum = "d75a2a4b1b190afb6f5425f10f6a8f959d2ea0b9c2b1d79553551850539e4674"
 
 [[package]]
 name = "jiff"
-version = "0.1.16"
+version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24a46169c7a10358cdccfb179910e8a5a392fc291bdb409da9aeece5b19786d8"
+checksum = "e997bf1906c6896eaa4b4086d4c9420b58ee2b2c7c23dcb99c616954c6bf6492"
 dependencies = [
  "jiff-tzdb-platform",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
  "serde",
  "windows-sys 0.59.0",
 ]
@@ -4049,6 +4052,15 @@ name = "portable-atomic"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "280dc24453071f1b63954171985a0b0d30058d287960968b9b2aca264c8d4ee6"
+
+[[package]]
+name = "portable-atomic-util"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8a2f0d8d040d7848a709caf78912debcc3f33ee4b3cac47d73d1e1069e83507"
+dependencies = [
+ "portable-atomic",
+]
 
 [[package]]
 name = "powerfmt"
@@ -5143,7 +5155,7 @@ dependencies = [
  "serde",
  "serde_spanned",
  "toml_datetime",
- "winnow 0.6.20",
+ "winnow 0.6.21",
 ]
 
 [[package]]
@@ -5900,9 +5912,9 @@ dependencies = [
 
 [[package]]
 name = "winnow"
-version = "0.6.20"
+version = "0.6.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36c1fec1a2bb5866f07c25f68c26e565c4c200aebb96d7e55710c19d3e8ac49b"
+checksum = "e6f5bb5257f2407a5425c6e749bfd9692192a73e70a6060516ac04f889087d68"
 dependencies = [
  "memchr",
 ]
@@ -6104,8 +6116,3 @@ dependencies = [
  "quote",
  "syn 2.0.93",
 ]
-
-[[patch.unused]]
-name = "getrandom"
-version = "0.2.10"
-source = "git+https://github.com/twizzler-operating-system/getrandom-twizzler.git?branch=twizzler#7a1d303f3e8b4853aba80f67540ccde10ae0dd22"
