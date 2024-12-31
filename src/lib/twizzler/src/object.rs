@@ -100,9 +100,22 @@ pub struct Object<Base> {
     _pd: PhantomData<*const Base>,
 }
 
+impl<B> Clone for Object<B> {
+    fn clone(&self) -> Self {
+        todo!()
+    }
+}
+
 impl<Base> Object<Base> {
     pub fn tx(self) -> crate::tx::Result<TxObject<Base>> {
         todo!()
+    }
+
+    pub unsafe fn cast<U>(self) -> Object<U> {
+        Object {
+            handle: self.handle,
+            _pd: PhantomData,
+        }
     }
 }
 
@@ -116,6 +129,12 @@ impl<Base: BaseType> TypedObject for Object<Base> {
     type Base = Base;
 
     fn base(&self) -> Ref<'_, Self::Base> {
+        todo!()
+    }
+}
+
+impl<B: BaseType> From<Object<B>> for Object<()> {
+    fn from(value: Object<B>) -> Self {
         todo!()
     }
 }

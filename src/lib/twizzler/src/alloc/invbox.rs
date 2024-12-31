@@ -1,8 +1,10 @@
-use super::Allocator;
+use std::mem::MaybeUninit;
+
+use super::{Allocator, OwnedGlobalPtr};
 use crate::{
-    marker::{Invariant, Storable},
-    ptr::InvPtr,
-    tx::{Result, TxHandle},
+    marker::Invariant,
+    ptr::{GlobalPtr, InvPtr, Ref},
+    tx::{Result, TxHandle, TxObject},
 };
 
 pub struct InvBox<T: Invariant, Alloc: Allocator> {
@@ -15,46 +17,62 @@ impl<T: Invariant, Alloc: Allocator> InvBox<T, Alloc> {
         todo!()
     }
 
-    pub fn new_in(val: T, alloc: Alloc, tx: &impl TxHandle) -> Result<Storable<Self>> {
+    pub fn new<B>(tx: &TxObject<B>, ogp: OwnedGlobalPtr<T, Alloc>) -> Self {
         todo!()
+    }
+
+    pub fn resolve(&self) -> Ref<'_, T> {
+        todo!()
+    }
+
+    pub fn global(&self) -> GlobalPtr<T> {
+        todo!()
+    }
+
+    pub fn as_ptr(&self) -> &InvPtr<T> {
+        &self.raw
     }
 }
 
 mod tests {
+    use std::{mem::MaybeUninit, ptr::addr_of_mut};
+
     use super::InvBox;
     use crate::{
         alloc::arena::{ArenaAllocator, ArenaBase, ArenaObject},
-        marker::{BaseType, Storable},
+        marker::BaseType,
         object::{ObjectBuilder, TypedObject},
-        tx::TxHandle,
+        tx::{TxHandle, TxObject},
     };
 
     struct Foo {
         x: InvBox<u32, ArenaAllocator>,
     }
+    impl BaseType for Foo {}
 
-    impl Foo {
-        pub fn new_in(
-            target: &impl TxHandle,
-            ptr: Storable<InvBox<u32, ArenaAllocator>>,
-        ) -> Storable<Self> {
-            //ptr.check_target(target);
-            unsafe {
-                Storable::new(Foo {
-                    x: ptr.into_inner_unchecked(),
-                })
-            }
-        }
+    fn box_simple() {
+        let alloc = ArenaObject::new();
+        let foo = alloc
+            .alloc_inplace(|tx| {
+                let x = InvBox::new(tx.tx(), alloc.alloc(3));
+                tx.write(Foo { x })
+            })
+            .unwrap();
+
+        let base = foo.resolve();
+        assert_eq!(*base.x.resolve(), 3);
     }
 
-    impl BaseType for Foo {}
-    fn box_simple() {
+    fn box_simple_builder() {
         let builder = ObjectBuilder::<Foo>::default();
-        let alloc = ArenaObject::new().allocator();
+        let alloc = ArenaObject::new();
         let obj = builder
-            .build_with(|uo| Foo::new_in(&uo, InvBox::new_in(3, alloc, &uo).unwrap()))
+            .build_inplace(|tx| {
+                let x = InvBox::new(&tx, alloc.alloc(3));
+                tx.write(Foo { x })
+            })
             .unwrap();
         let base = obj.base();
-        assert_eq!(*base.x.raw.resolve(), 3);
+        assert_eq!(*base.x.resolve(), 3);
     }
 }
