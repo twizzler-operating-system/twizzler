@@ -5,7 +5,7 @@ use crate::object::Object;
 
 #[derive(Default)]
 pub struct TxBatch {
-    txs: Vec<Box<dyn TxHandle>>,
+    txs: Vec<Box<TxObject<()>>>,
 }
 
 #[repr(transparent)]
