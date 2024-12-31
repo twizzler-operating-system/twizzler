@@ -1617,7 +1617,7 @@ dependencies = [
 [[package]]
 name = "getrandom"
 version = "0.2.16"
-source = "git+https://github.com/zphrs/getrandom-twizzler.git?branch=twizzler#4af6327eac1397e4672b4b947b996b1845c534a4"
+source = "git+https://github.com/twizzler-operating-system/getrandom-twizzler.git?branch=twizzler#e4b8c54e677acbf7048d5c82c746b291a83c506c"
 dependencies = [
  "cfg-if 1.0.0",
  "js-sys",

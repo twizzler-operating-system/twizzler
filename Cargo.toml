@@ -37,7 +37,7 @@ members = [
     "src/rt/minimal",
     "src/lib/logboi",
     "src/srv/logboi-srv",
-    "src/bin/logboi-test", 
+    "src/bin/logboi-test",
     "src/lib/virtio-net",
 ]
 
@@ -87,7 +87,7 @@ twizzler-abi = { path = "src/lib/twizzler-abi" }
 
 [patch.crates-io]
 #ring = { git = "https://github.com/twizzler-operating-system/ring-twizzler.git", branch = "twizzler" }
-getrandom = { git = "https://github.com/zphrs/getrandom-twizzler.git", branch = "twizzler" }
+getrandom = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler" }
 polling = { git = "https://github.com/twizzler-operating-system/polling.git", branch = "twizzler" }
 async-io = { git = "https://github.com/twizzler-operating-system/async-io.git", branch = "twizzler" }
 async-executor = { git = "https://github.com/twizzler-operating-system/async-executor.git", branch = "twizzler" }
