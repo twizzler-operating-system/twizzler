@@ -1608,13 +1608,13 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.2.16"
-source = "git+https://github.com/zphrs/getrandom-twizzler.git?branch=twizzler#bd5908214cb298d97d011575dbb6cb043cd115e0"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4567c8db10ae91089c99af84c68c38da3ec2f087c3f82960bcdbf3656b6f4d7"
 dependencies = [
  "cfg-if 1.0.0",
  "js-sys",
  "libc",
- "twizzler-rt-abi",
  "wasi",
  "wasm-bindgen",
 ]
@@ -6023,3 +6023,8 @@ dependencies = [
  "quote",
  "syn 2.0.93",
 ]
+
+[[patch.unused]]
+name = "getrandom"
+version = "0.2.10"
+source = "git+https://github.com/twizzler-operating-system/getrandom-twizzler.git?branch=twizzler#7a1d303f3e8b4853aba80f67540ccde10ae0dd22"
