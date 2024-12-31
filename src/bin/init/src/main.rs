@@ -1,4 +1,50 @@
 extern crate twizzler_runtime;
+
+fn initialize_pager() { 
+    info!("starting pager");
+    const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
+    let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
+        &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
+        DEFAULT_PAGER_QUEUE_LEN,
+        DEFAULT_PAGER_QUEUE_LEN,
+    )
+    .unwrap();
+
+    sys_new_handle(
+        queue.object().id(),
+        twizzler_abi::syscall::HandleType::PagerQueue,
+        NewHandleFlags::empty(),
+    )
+    .unwrap();
+    let queue2 = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
+        &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
+        DEFAULT_PAGER_QUEUE_LEN,
+        DEFAULT_PAGER_QUEUE_LEN,
+    )
+    .unwrap();
+    sys_new_handle(
+        queue2.object().id(),
+        twizzler_abi::syscall::HandleType::PagerQueue,
+        NewHandleFlags::empty(),
+    )
+    .unwrap();
+    let pager_comp = monitor_api::CompartmentLoader::new(
+        "pager",
+        "pager",
+        monitor_api::NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args([
+        "pager",
+        &queue.object().id().raw().to_string(),
+        &queue2.object().id().raw().to_string(),
+    ])
+    .load()
+    .expect("failed to start pager");
+
+    std::mem::forget(pager_comp);
+
+}
+
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -60,48 +106,8 @@ fn main() {
     .unwrap();
     debug!("device manager is up!");
 
-    info!("starting pager");
-    const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
-    let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
-        &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
-        DEFAULT_PAGER_QUEUE_LEN,
-        DEFAULT_PAGER_QUEUE_LEN,
-    )
-    .unwrap();
-
-    sys_new_handle(
-        queue.object().id(),
-        twizzler_abi::syscall::HandleType::PagerQueue,
-        NewHandleFlags::empty(),
-    )
-    .unwrap();
-    let queue2 = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
-        &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
-        DEFAULT_PAGER_QUEUE_LEN,
-        DEFAULT_PAGER_QUEUE_LEN,
-    )
-    .unwrap();
-    sys_new_handle(
-        queue2.object().id(),
-        twizzler_abi::syscall::HandleType::PagerQueue,
-        NewHandleFlags::empty(),
-    )
-    .unwrap();
-    let pager_comp = monitor_api::CompartmentLoader::new(
-        "pager",
-        "pager",
-        monitor_api::NewCompartmentFlags::EXPORT_GATES,
-    )
-    .args([
-        "pager",
-        &queue.object().id().raw().to_string(),
-        &queue2.object().id().raw().to_string(),
-    ])
-    .load()
-    .expect("failed to start pager");
-
+    initialize_pager();
     std::mem::forget(dev_comp);
-    std::mem::forget(pager_comp);
 
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
