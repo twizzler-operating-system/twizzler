@@ -70,7 +70,7 @@ impl EntropySources {
                 }
             }
         }
-        logln!("contributed entropy to pool");
+        // logln!("contributed entropy to pool");
     }
 }
 
