@@ -1,5 +1,6 @@
 #![allow(unused_variables)]
 
+use twizzler_abi::klog_println;
 // This macro checks that our definition of a function is the same as that
 // defined by the bindings generated from bindgen. Thus the whole ABI
 // is type-checked! The only trick is that you have to specify the number of arguments.
@@ -572,7 +573,10 @@ pub unsafe extern "C-unwind" fn twz_rt_get_random(
     len: usize,
     flags: get_random_flags,
 ) -> usize {
-    OUR_RUNTIME.get_random(unsafe { core::slice::from_raw_parts_mut(buf.cast(), len) })
+    OUR_RUNTIME.get_random(
+        unsafe { core::slice::from_raw_parts_mut(buf.cast(), len) },
+        flags.into(),
+    )
 }
 check_ffi_type!(twz_rt_get_random, _, _, _);
 

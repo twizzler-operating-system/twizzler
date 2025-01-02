@@ -17,7 +17,7 @@ thiserror = { package = "thiserror-no-std", version = "2.0", default-features = 
 stable-vec = "0.4.1"
 lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 lru = "0.12.4"
-twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-rt-abi = "0.99"
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 static_assertions = "1"
 paste = "1"

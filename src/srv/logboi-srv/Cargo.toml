@@ -12,6 +12,6 @@ crate-type = ["cdylib", "rlib"]
 secgate = { path = "../../lib/secgate" }
 twizzler-runtime = { path = "../../rt" }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
-twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-rt-abi = "0.99"
 
 [features]

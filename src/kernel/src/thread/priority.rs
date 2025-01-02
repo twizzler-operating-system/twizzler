@@ -1,13 +1,14 @@
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use super::{current_thread_ref, flags::THREAD_HAS_DONATED_PRIORITY, Thread};
-
+/// [`Thread`]s are triggered based on their priority, which is their [`PriorityClass`] coupled
+/// with their adjustment number. Their
+/// [`  PriorityClass`]
 #[derive(Default, Debug)]
 pub struct Priority {
     pub(super) class: PriorityClass,
     pub(super) adjust: AtomicI32,
 }
-
 impl Priority {
     #[allow(clippy::declare_interior_mutable_const)]
     pub const REALTIME: Self = Self {
@@ -68,15 +69,26 @@ impl Priority {
             adjust: Default::default(),
         }
     }
+
+    pub fn default_background() -> Self {
+        Self {
+            class: PriorityClass::Background,
+            adjust: Default::default(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
 #[repr(u32)]
 pub(super) enum PriorityClass {
+    /// Highest Priority
     RealTime = 0,
+    /// Second highest priority
     User = 1,
+    /// Third highest priority
     Background = 2,
     #[default]
+    /// Lowest priority
     Idle = 3,
     ClassCount = 4,
 }

@@ -1,9 +1,11 @@
 //! Implements the core runtime functions.
 
-use core::{alloc::GlobalAlloc, ptr};
+use core::{alloc::GlobalAlloc, mem::MaybeUninit, ptr};
 
 use twizzler_abi::{
+    klog_println,
     object::ObjID,
+    syscall::{sys_get_random, GetRandomFlags},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
 use twizzler_rt_abi::{
@@ -152,8 +154,9 @@ impl MinimalRuntime {
         }
     }
 
-    pub fn get_random(&self, buf: &mut [u8]) -> usize {
-        // TODO: Once the Randomness PR is in, fix this.
-        buf.len()
+    pub fn get_random(&self, buf: &mut [MaybeUninit<u8>], flags: GetRandomFlags) -> usize {
+        // rarely if ever would fail
+        let out = sys_get_random(buf, flags).expect("failed to get randomness from kernel");
+        out
     }
 }

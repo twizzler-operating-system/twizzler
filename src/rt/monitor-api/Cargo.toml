@@ -8,7 +8,7 @@ crate-type = ["rlib"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-rt-abi = "0.99"
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 secgate = { path = "../../lib/secgate" }
 dynlink = { path = "../../lib/dynlink" }

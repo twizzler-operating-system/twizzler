@@ -13,7 +13,7 @@ secgate-macros = { path = "secgate-macros" }
 static_assertions = "1.1.0"
 alloca = { version = "0.4", default-features = false }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
-twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-rt-abi = "0.99"
 stable-vec = "0.4"
 
 [build-dependencies]

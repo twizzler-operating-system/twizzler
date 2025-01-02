@@ -1,5 +1,6 @@
 //! Implements the core runtime functions.
 
+use core::mem::MaybeUninit;
 use std::{
     collections::BTreeMap,
     ffi::{c_char, c_void, CStr, CString},
@@ -10,7 +11,11 @@ use dynlink::context::runtime::RuntimeInitInfo;
 use monitor_api::{RuntimeThreadControl, SharedCompConfig};
 use secgate::SecGateReturn;
 use tracing::Level;
-use twizzler_abi::upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget};
+use twizzler_abi::{
+    klog_println,
+    syscall::{sys_get_random, GetRandomFlags},
+    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
+};
 use twizzler_rt_abi::{
     core::{
         BasicAux, BasicReturn, CompartmentInitInfo, CtorSet, ExitCode, RuntimeInfo,
@@ -163,9 +168,10 @@ impl ReferenceRuntime {
         }
     }
 
-    pub fn get_random(&self, buf: &mut [u8]) -> usize {
+    pub fn get_random(&self, buf: &mut [MaybeUninit<u8>], flags: GetRandomFlags) -> usize {
         // TODO: Once the Randomness PR is in, fix this.
-        buf.len()
+        let out = sys_get_random(buf, flags).expect("failed to get randomness from kernel");
+        out
     }
 }
 
