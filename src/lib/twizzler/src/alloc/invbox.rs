@@ -51,7 +51,7 @@ mod tests {
     impl BaseType for Foo {}
 
     fn box_simple() {
-        let alloc = ArenaObject::new();
+        let alloc = ArenaObject::new().unwrap();
         let foo = alloc
             .alloc_inplace(|tx| {
                 let x = InvBox::new(tx.tx(), alloc.alloc(3).unwrap());
@@ -65,7 +65,7 @@ mod tests {
 
     fn box_simple_builder() {
         let builder = ObjectBuilder::<Foo>::default();
-        let alloc = ArenaObject::new();
+        let alloc = ArenaObject::new().unwrap();
         let obj = builder
             .build_inplace(|tx| {
                 let x = InvBox::new(&tx, alloc.alloc(3).unwrap());

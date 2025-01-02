@@ -1,10 +1,13 @@
 use std::mem::MaybeUninit;
 
+use twizzler_abi::object::NULLPAGE_SIZE;
+
 use super::{Allocator, OwnedGlobalPtr, SingleObjectAllocator};
 use crate::{
-    object::Object,
+    marker::BaseType,
+    object::{CreateError, Object, ObjectBuilder, RawObject},
     ptr::{GlobalPtr, Ref},
-    tx::{TxObject, TxRef},
+    tx::{TxCell, TxObject, TxRef},
 };
 
 pub struct ArenaObject {
@@ -12,8 +15,11 @@ pub struct ArenaObject {
 }
 
 impl ArenaObject {
-    pub fn new() -> Self {
-        todo!()
+    pub fn new() -> crate::tx::Result<Self> {
+        let obj = ObjectBuilder::default().build(ArenaBase {
+            next: TxCell::new((NULLPAGE_SIZE * 2) as u64),
+        })?;
+        Ok(Self { obj })
     }
 
     pub fn tx(self) -> crate::tx::Result<TxObject<ArenaBase>> {
@@ -21,7 +27,9 @@ impl ArenaObject {
     }
 
     pub fn allocator(&self) -> ArenaAllocator {
-        todo!()
+        ArenaAllocator {
+            ptr: GlobalPtr::new(self.obj.id(), NULLPAGE_SIZE as u64),
+        }
     }
 
     pub fn alloc<T>(&self, value: T) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
@@ -53,10 +61,11 @@ impl ArenaAllocator {
 impl SingleObjectAllocator for ArenaAllocator {}
 
 #[repr(C)]
-pub struct ArenaBase {}
+pub struct ArenaBase {
+    next: TxCell<u64>,
+}
 
-#[repr(C)]
-pub struct ArenaObjBase {}
+impl BaseType for ArenaBase {}
 
 impl Allocator for ArenaAllocator {
     fn alloc(&self, layout: std::alloc::Layout) -> Result<GlobalPtr<u8>, std::alloc::AllocError> {
