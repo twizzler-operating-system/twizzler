@@ -6,3 +6,6 @@
 	path = src/lib/nvme-rs
 	url = ../../twizzler-operating-system/nvme-rs.git
 	branch = twizzler-dynlink
+[submodule "src/abi"]
+	path = src/abi
+	url = ../../twizzler-operating-system/abi.git
