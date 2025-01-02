@@ -16,32 +16,6 @@ use twizzler_abi::{
 #[cfg(target_os = "twizzler")]
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
-// To signal main that the program is done running.
-#[cfg(target_os = "twizzler")]
-#[allow(non_snake_case)]
-fn SIGNAL_INIT() -> Option<()> {
-    let id = std::env::var("booger").ok()?;
-    let id = id
-        .parse::<u128>()
-        .unwrap_or_else(|_| panic!("failed to parse object ID string {}", id));
-    let id = ObjID::new(id);
-    let obj = Object::<AtomicU64>::init_id(
-        id,
-        Protections::READ | Protections::WRITE,
-        ObjectInitFlags::empty(),
-    )
-    .unwrap();
-    let pt = unsafe { obj.base_mut_unchecked() };
-
-    pt.store(1, Ordering::SeqCst);
-    let op = ThreadSync::new_wake(ThreadSyncWake::new(
-        ThreadSyncReference::Virtual(pt as *const AtomicU64),
-        usize::MAX,
-    ));
-    let _ = twizzler_abi::syscall::sys_thread_sync(&mut [op], None);
-    Some(())
-}
-
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -164,7 +138,4 @@ fn main() {
             unpack.read(&mut stdout, query).unwrap()
         }
     }
-
-    #[cfg(target_os = "twizzler")]
-    SIGNAL_INIT();
 }

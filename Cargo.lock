@@ -200,7 +200,7 @@ dependencies = [
  "argh_shared",
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -296,7 +296,7 @@ checksum = "a66537f1bb974b254c98ed142ff995236e81b9d0fe4db0575f46612cb15eb0f9"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -573,7 +573,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 1.0.65",
  "time",
  "windows-sys 0.52.0",
 ]
@@ -651,7 +651,7 @@ dependencies = [
  "serde",
  "serde-untagged",
  "serde-value",
- "thiserror",
+ "thiserror 1.0.65",
  "toml",
  "unicode-xid",
  "url",
@@ -668,7 +668,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -750,7 +750,7 @@ dependencies = [
  "heck 0.5.0",
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -783,7 +783,7 @@ dependencies = [
  "nom",
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -864,7 +864,7 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 1.0.65",
  "url",
 ]
 
@@ -965,6 +965,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "026ac6ceace6298d2c557ef5ed798894962296469ec7842288ea64674201a2d1"
 
 [[package]]
+name = "ctor"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a2785755761f3ddc1492979ce1e48d2c00d09311c39e4466429188f3dd6501"
+dependencies = [
+ "quote",
+ "syn 2.0.90",
+]
+
+[[package]]
 name = "cty"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1022,7 +1032,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "strsim",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -1033,7 +1043,7 @@ checksum = "d336a2a514f6ccccaa3e09b02d41d35330c07ddf03a62165fcec10bb561c7806"
 dependencies = [
  "darling_core",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -1073,12 +1083,13 @@ name = "devmgr"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "logboi",
  "pci-ids",
  "twizzler-abi",
  "twizzler-async",
  "twizzler-driver",
- "twizzler-minruntime",
  "twizzler-object",
+ "twizzler-runtime",
  "volatile",
 ]
 
@@ -1114,7 +1125,7 @@ dependencies = [
  "secgate",
  "stable-vec",
  "talc",
- "thiserror",
+ "thiserror 1.0.65",
  "tracing",
  "twizzler-abi",
  "twizzler-object",
@@ -1470,7 +1481,7 @@ checksum = "89ca545a94061b6365f2c7355b4b32bd20df3ff95f02da9329b34ccc3bd6ee72"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -1619,7 +1630,7 @@ dependencies = [
  "once_cell",
  "prodash",
  "smallvec",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1632,7 +1643,7 @@ dependencies = [
  "gix-date 0.8.7",
  "gix-utils",
  "itoa",
- "thiserror",
+ "thiserror 1.0.65",
  "winnow 0.6.20",
 ]
 
@@ -1649,7 +1660,7 @@ dependencies = [
  "gix-trace",
  "kstring",
  "smallvec",
- "thiserror",
+ "thiserror 1.0.65",
  "unicode-bom",
 ]
 
@@ -1659,7 +1670,7 @@ version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10f78312288bd02052be5dbc2ecbc342c9f4eb791986d86c0a5c06b92dc72efa"
 dependencies = [
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1668,7 +1679,7 @@ version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c28b58ba04f0c004722344390af9dbc85888fbb84be1981afb934da4114d4cf"
 dependencies = [
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1694,7 +1705,7 @@ dependencies = [
  "gix-features",
  "gix-hash",
  "memmap2",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1713,7 +1724,7 @@ dependencies = [
  "memchr",
  "once_cell",
  "smallvec",
- "thiserror",
+ "thiserror 1.0.65",
  "unicode-bom",
  "winnow 0.6.20",
 ]
@@ -1728,7 +1739,7 @@ dependencies = [
  "bstr",
  "gix-path",
  "libc",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1745,7 +1756,7 @@ dependencies = [
  "gix-sec",
  "gix-trace",
  "gix-url",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1756,7 +1767,7 @@ checksum = "9eed6931f21491ee0aeb922751bd7ec97b4b2fe8fbfedcb678e2a2dce5f3b8c0"
 dependencies = [
  "bstr",
  "itoa",
- "thiserror",
+ "thiserror 1.0.65",
  "time",
 ]
 
@@ -1769,7 +1780,7 @@ dependencies = [
  "bstr",
  "itoa",
  "jiff",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1781,7 +1792,7 @@ dependencies = [
  "bstr",
  "gix-hash",
  "gix-object",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1801,7 +1812,7 @@ dependencies = [
  "gix-trace",
  "gix-utils",
  "gix-worktree",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1817,7 +1828,7 @@ dependencies = [
  "gix-path",
  "gix-ref",
  "gix-sec",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1838,7 +1849,7 @@ dependencies = [
  "parking_lot",
  "prodash",
  "sha1_smol",
- "thiserror",
+ "thiserror 1.0.65",
  "walkdir",
 ]
 
@@ -1860,7 +1871,7 @@ dependencies = [
  "gix-trace",
  "gix-utils",
  "smallvec",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1893,7 +1904,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f93d7df7366121b5018f947a04d37f034717e113dcf9ccd85c34b58e57a74d5e"
 dependencies = [
  "faster-hex",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1945,7 +1956,7 @@ dependencies = [
  "memmap2",
  "rustix",
  "smallvec",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1956,7 +1967,7 @@ checksum = "e3bc7fe297f1f4614774989c00ec8b1add59571dc9b024b4c00acb7dedd4e19d"
 dependencies = [
  "gix-tempfile",
  "gix-utils",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -1967,7 +1978,7 @@ checksum = "999ce923619f88194171a67fb3e6d613653b8d4d6078b529b15a765da0edcc17"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -1983,7 +1994,7 @@ dependencies = [
  "gix-object",
  "gix-revwalk",
  "smallvec",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2001,7 +2012,7 @@ dependencies = [
  "gix-validate",
  "itoa",
  "smallvec",
- "thiserror",
+ "thiserror 1.0.65",
  "winnow 0.6.20",
 ]
 
@@ -2022,7 +2033,7 @@ dependencies = [
  "gix-quote",
  "parking_lot",
  "tempfile",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2042,7 +2053,7 @@ dependencies = [
  "memmap2",
  "parking_lot",
  "smallvec",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2054,7 +2065,7 @@ dependencies = [
  "bstr",
  "faster-hex",
  "gix-trace",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2066,7 +2077,7 @@ dependencies = [
  "bstr",
  "faster-hex",
  "gix-trace",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2079,7 +2090,7 @@ dependencies = [
  "gix-trace",
  "home",
  "once_cell",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2094,7 +2105,7 @@ dependencies = [
  "gix-config-value",
  "gix-glob",
  "gix-path",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2107,7 +2118,7 @@ dependencies = [
  "gix-config-value",
  "parking_lot",
  "rustix",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2124,7 +2135,7 @@ dependencies = [
  "gix-transport",
  "gix-utils",
  "maybe-async",
- "thiserror",
+ "thiserror 1.0.65",
  "winnow 0.6.20",
 ]
 
@@ -2136,7 +2147,7 @@ checksum = "f89f9a1525dcfd9639e282ea939f5ab0d09d93cf2b90c1fc6104f1b9582a8e49"
 dependencies = [
  "bstr",
  "gix-utils",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2156,7 +2167,7 @@ dependencies = [
  "gix-utils",
  "gix-validate",
  "memmap2",
- "thiserror",
+ "thiserror 1.0.65",
  "winnow 0.6.20",
 ]
 
@@ -2171,7 +2182,7 @@ dependencies = [
  "gix-revision",
  "gix-validate",
  "smallvec",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2185,7 +2196,7 @@ dependencies = [
  "gix-hash",
  "gix-object",
  "gix-revwalk",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2200,7 +2211,7 @@ dependencies = [
  "gix-hashtable",
  "gix-object",
  "smallvec",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2227,7 +2238,7 @@ dependencies = [
  "gix-pathspec",
  "gix-refspec",
  "gix-url",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2265,7 +2276,7 @@ dependencies = [
  "gix-quote",
  "gix-sec",
  "gix-url",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2282,7 +2293,7 @@ dependencies = [
  "gix-object",
  "gix-revwalk",
  "smallvec",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2295,7 +2306,7 @@ dependencies = [
  "gix-features",
  "gix-path",
  "home",
- "thiserror",
+ "thiserror 1.0.65",
  "url",
 ]
 
@@ -2317,7 +2328,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82c27dd34a49b1addf193c92070bcbf3beaf6e10f16a78544de6372e146a0acf"
 dependencies = [
  "bstr",
- "thiserror",
+ "thiserror 1.0.65",
 ]
 
 [[package]]
@@ -2733,17 +2744,17 @@ dependencies = [
  "async-executor",
  "async-io",
  "futures",
+ "monitor-api",
  "polling",
  "rprompt",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
  "twizzler-futures",
- "twizzler-minruntime",
- "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
  "twizzler-rt-abi",
+ "twizzler-runtime",
 ]
 
 [[package]]
@@ -3079,6 +3090,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
 
 [[package]]
+name = "logboi"
+version = "0.1.0"
+dependencies = [
+ "logboi-srv",
+ "secgate",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
+name = "logboi-srv"
+version = "0.1.0"
+dependencies = [
+ "secgate",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
+name = "logboi-test"
+version = "0.1.0"
+dependencies = [
+ "logboi",
+]
+
+[[package]]
 name = "lru"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3104,7 +3142,7 @@ checksum = "5cf92c10c7e361d6b99666ec1c6f9805b0bea2c3bd8c78dc6fe98ac5bd78db11"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -3139,7 +3177,7 @@ checksum = "59bb584eaeeab6bd0226ccf3509a69d7936d148cf3d036ad350abe35e8c6856e"
 dependencies = [
  "miette-derive",
  "once_cell",
- "thiserror",
+ "thiserror 1.0.65",
  "unicode-width",
 ]
 
@@ -3151,7 +3189,7 @@ checksum = "49e7bc1560b95a3c4a25d03de42fe76ca718ab92d1a22a55b9b4cf67b3ae635c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -3218,10 +3256,9 @@ dependencies = [
  "twizzler-abi",
  "twizzler-async",
  "twizzler-driver",
- "twizzler-minruntime",
- "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
+ "twizzler-runtime",
  "volatile",
 ]
 
@@ -3264,7 +3301,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-object",
  "twizzler-rt-abi",
- "twz-rt",
+ "twizzler-runtime",
 ]
 
 [[package]]
@@ -3276,6 +3313,29 @@ dependencies = [
  "secgate",
  "twizzler-abi",
  "twizzler-rt-abi",
+]
+
+[[package]]
+name = "montest"
+version = "0.1.0"
+dependencies = [
+ "ctor",
+ "monitor",
+ "montest-lib",
+ "secgate",
+ "tracing",
+ "tracing-subscriber",
+ "twizzler-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
+name = "montest-lib"
+version = "0.1.0"
+dependencies = [
+ "secgate",
+ "twizzler-abi",
+ "twizzler-runtime",
 ]
 
 [[package]]
@@ -3294,33 +3354,6 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "tempfile",
-]
-
-[[package]]
-name = "netmgr"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "byteorder",
- "lazy_static",
- "twizzler-abi",
- "twizzler-async",
- "twizzler-minruntime",
- "twizzler-net",
- "twizzler-object",
- "twizzler-queue",
-]
-
-[[package]]
-name = "nettest"
-version = "0.1.0"
-dependencies = [
- "byteorder",
- "twizzler-abi",
- "twizzler-async",
- "twizzler-minruntime",
- "twizzler-net",
- "twizzler-object",
 ]
 
 [[package]]
@@ -3396,7 +3429,7 @@ checksum = "6c11e44798ad209ccdd91fc192f0526a369a01234f7373e1b141c96d7cee4f0e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -3472,7 +3505,7 @@ checksum = "a948666b637a0f465e8564c73e89d4dde00d72d4d473cc972f390fc3dcee7d9c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -3555,7 +3588,7 @@ dependencies = [
  "proc-macro-error",
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -3598,10 +3631,9 @@ dependencies = [
  "twizzler-abi",
  "twizzler-async",
  "twizzler-driver",
- "twizzler-minruntime",
- "twizzler-net",
  "twizzler-object",
  "twizzler-queue",
+ "twizzler-runtime",
  "volatile",
 ]
 
@@ -3854,9 +3886,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.89"
+version = "1.0.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f139b0662de085916d1fb67d2b4169d1addddda1919e696f3252b740b629986e"
+checksum = "37d3544b3f2748c54e147655edb5025752e2303145b5aefb3c3ea2c78b973bb0"
 dependencies = [
  "unicode-ident",
 ]
@@ -4079,7 +4111,7 @@ checksum = "8fb2b066405a6d48a1b39c0022270503e352ae84da0c24e1d5f8ffc38e97a325"
 dependencies = [
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 1.0.65",
  "tracing",
 ]
 
@@ -4128,9 +4160,9 @@ dependencies = [
 
 [[package]]
 name = "scoped-tls-hkt"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ddc765d3410d9f6c6ca071bf0b67f6b01e3ec4595dc3892f02677e75819dddc"
+checksum = "e9603871ffe5df3ac39cb624790c296dbd47a400d202f56bf3e414045099524d"
 
 [[package]]
 name = "scopeguard"
@@ -4162,7 +4194,6 @@ dependencies = [
  "stable-vec",
  "static_assertions",
  "twizzler-abi",
- "twizzler-minruntime",
  "twizzler-rt-abi",
 ]
 
@@ -4173,7 +4204,7 @@ dependencies = [
  "darling",
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -4246,7 +4277,7 @@ checksum = "7e85ad2009c50b58e87caa8cd6dac16bdf511bbfb7af6c33df902396aa480fa5"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -4471,15 +4502,6 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "stdfs_demo"
 version = "0.1.0"
-dependencies = [
- "twizzler-abi",
- "twizzler-async",
- "twizzler-driver",
- "twizzler-minruntime",
- "twizzler-net",
- "twizzler-object",
- "twizzler-queue",
-]
 
 [[package]]
 name = "strsim"
@@ -4503,7 +4525,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -4537,9 +4559,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.85"
+version = "2.0.90"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5023162dfcd14ef8f32034d8bcd4cc5ddc61ef7a247c024a33e24e1f24d21b56"
+checksum = "919d3b74a5dd0ccd15aeb8f93e7006bd9e14c295087c9896a110f490752bcf31"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4636,7 +4658,16 @@ version = "1.0.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d11abd9594d9b38965ef50805c5e469ca9cc6f197f883f717e0269a3057b3d5"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 1.0.65",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08f5383f3e0071702bf93ab5ee99b52d26936be9dedd9413067cbdcddcb6141a"
+dependencies = [
+ "thiserror-impl 2.0.8",
 ]
 
 [[package]]
@@ -4647,7 +4678,18 @@ checksum = "ae71770322cbd277e69d762a16c444af02aa0575ac0d174f0b9562d3b37f8602"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2f357fcec90b3caef6623a099691be676d033b40a058ac95d2a6ade6fa0c943"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -4849,7 +4891,7 @@ checksum = "34704c8d6ebcbc939824180af020566b01a7c01f80641264eba0999f6c2b6be7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]
@@ -4909,6 +4951,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3528ecfd12c466c6f163363caf2d02a71161dd5e1cc6ae7b34207ea2d42d81ed"
 
 [[package]]
+name = "twizzler"
+version = "0.99.0"
+dependencies = [
+ "bitflags 2.6.0",
+ "thiserror 2.0.8",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+]
+
+[[package]]
 name = "twizzler-abi"
 version = "0.1.0"
 dependencies = [
@@ -4919,7 +4971,6 @@ dependencies = [
  "num_enum",
  "static_assertions",
  "thiserror-no-std",
- "twizzler-minruntime",
  "twizzler-rt-abi",
  "volatile",
 ]
@@ -4945,7 +4996,6 @@ dependencies = [
  "futures",
  "twizzler-abi",
  "twizzler-async",
- "twizzler-minruntime",
  "twizzler-object",
  "volatile",
 ]
@@ -5019,18 +5069,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "twizzler-net"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.6.0",
- "twizzler-abi",
- "twizzler-async",
- "twizzler-minruntime",
- "twizzler-object",
- "twizzler-queue",
-]
-
-[[package]]
 name = "twizzler-object"
 version = "0.1.0"
 dependencies = [
@@ -5056,7 +5094,6 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.6.0",
  "twizzler-abi",
- "twizzler-minruntime",
 ]
 
 [[package]]
@@ -5067,6 +5104,14 @@ dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-core",
  "twizzler-types",
+]
+
+[[package]]
+name = "twizzler-runtime"
+version = "0.1.0"
+dependencies = [
+ "twizzler-rt-abi",
+ "twz-rt",
 ]
 
 [[package]]
@@ -5094,8 +5139,9 @@ dependencies = [
  "stable-vec",
  "static_assertions",
  "talc",
- "thiserror",
+ "thiserror 1.0.65",
  "tracing",
+ "tracing-subscriber",
  "twizzler-abi",
  "twizzler-rt-abi",
 ]
@@ -5264,7 +5310,7 @@ dependencies = [
  "once_cell",
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
  "wasm-bindgen-shared",
 ]
 
@@ -5298,7 +5344,7 @@ checksum = "54681b18a46765f095758388f2d0cf16eb8d4169b639ab575a8f5693af210c7b"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
  "wasm-bindgen-backend",
  "wasm-bindgen-shared",
 ]
@@ -5708,7 +5754,7 @@ checksum = "fa4f8080344d4671fb4e831a13ad1e68092748387dfc4f55e356242fae12ce3e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.90",
 ]
 
 [[package]]

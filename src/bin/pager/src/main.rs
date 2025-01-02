@@ -22,7 +22,7 @@ struct Foo {
     x: u32,
 }
 
-extern crate twizzler_minruntime;
+extern crate twizzler_runtime;
 fn main() {
     let idstr = std::env::args().nth(1).unwrap();
     let kidstr = std::env::args().nth(2).unwrap();

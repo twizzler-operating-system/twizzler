@@ -4,7 +4,7 @@ use dynlink::{
     compartment::MONITOR_COMPARTMENT_ID,
     context::{runtime::RuntimeInitInfo, NewCompartmentFlags},
     engines::{Backing, ContextEngine},
-    library::UnloadedLibrary,
+    library::{AllowedGates, UnloadedLibrary},
     symbol::LookupFlags,
     DynlinkError, DynlinkErrorKind,
 };
@@ -68,14 +68,13 @@ fn name_resolver(mut name: &str) -> Result<ObjID, DynlinkError> {
 fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     let engine = Engine;
     let mut ctx = dynlink::context::Context::new(Box::new(engine));
-    let unlib = UnloadedLibrary::new("libmonitor.so");
+    let unlib = UnloadedLibrary::new("monitor");
     let monitor_comp_id = ctx
         .add_compartment("monitor", NewCompartmentFlags::EXPORT_GATES)
         .unwrap();
 
-    info!("==> {}", monitor_comp_id);
     let monitor_id = ctx
-        .load_library_in_compartment(monitor_comp_id, unlib, true)
+        .load_library_in_compartment(monitor_comp_id, unlib, AllowedGates::PublicInclSelf)
         .unwrap()[0]
         .lib;
 
@@ -90,11 +89,7 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
 
     debug!("context loaded, prepping jump to monitor");
     let entry = ctx
-        .lookup_symbol(
-            monitor_id,
-            "monitor_entry_from_bootstrap",
-            LookupFlags::empty(),
-        )
+        .lookup_symbol(monitor_id, "_start", LookupFlags::empty())
         .unwrap();
 
     let value = entry.reloc_value() as usize;
@@ -136,13 +131,13 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
 extern crate twizzler_minruntime;
 fn main() {
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::INFO)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let runtime_lib = find_init_name("libtwz_rt.so").unwrap();
-    let monitor = find_init_name("libmonitor.so").unwrap();
+    let monitor = find_init_name("monitor").unwrap();
 
     info!("bootstrapping runtime monitor");
     start_runtime(monitor, runtime_lib);
