@@ -1,10 +1,10 @@
 use std::mem::MaybeUninit;
 
-use super::{Allocator, OwnedGlobalPtr};
+use super::{Allocator, OwnedGlobalPtr, SingleObjectAllocator};
 use crate::{
     object::Object,
     ptr::{GlobalPtr, Ref},
-    tx::TxRef,
+    tx::{TxObject, TxRef},
 };
 
 pub struct ArenaObject {
@@ -16,11 +16,15 @@ impl ArenaObject {
         todo!()
     }
 
+    pub fn tx(self) -> crate::tx::Result<TxObject<ArenaBase>> {
+        self.obj.tx()
+    }
+
     pub fn allocator(&self) -> ArenaAllocator {
         todo!()
     }
 
-    pub fn alloc<T>(&self, value: T) -> OwnedGlobalPtr<T, ArenaAllocator> {
+    pub fn alloc<T>(&self, value: T) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
         todo!()
     }
 
@@ -46,6 +50,8 @@ impl ArenaAllocator {
     }
 }
 
+impl SingleObjectAllocator for ArenaAllocator {}
+
 #[repr(C)]
 pub struct ArenaBase {}
 
@@ -58,6 +64,12 @@ impl Allocator for ArenaAllocator {
     }
 
     unsafe fn dealloc(&self, ptr: GlobalPtr<u8>, layout: std::alloc::Layout) {
+        todo!()
+    }
+}
+
+impl TxObject<ArenaBase> {
+    pub fn alloc<T>(&self, val: T) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
         todo!()
     }
 }
