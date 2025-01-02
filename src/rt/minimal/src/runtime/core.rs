@@ -1,18 +1,24 @@
 //! Implements the core runtime functions.
 
-use core::{alloc::GlobalAlloc, ptr};
+use core::{alloc::GlobalAlloc, mem::MaybeUninit, ptr};
 
-use twizzler_runtime_api::{AuxEntry, BasicAux, BasicReturn, CoreRuntime};
+use twizzler_abi::{
+    klog_println,
+    object::ObjID,
+    syscall::{sys_get_random, GetRandomFlags},
+    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
+};
+use twizzler_rt_abi::{
+    core::{BasicAux, BasicReturn, RuntimeInfo, RUNTIME_INIT_MIN},
+    info::SystemInfo,
+    time::Monotonicity,
+};
 
 use super::{
     alloc::MinimalAllocator,
     phdrs::{process_phdrs, Phdr},
     tls::init_tls,
     MinimalRuntime,
-};
-use crate::{
-    object::ObjID,
-    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
 
 // Just keep a single, simple global allocator.
@@ -29,63 +35,64 @@ extern "C" {
     fn _init();
 }
 
-impl CoreRuntime for MinimalRuntime {
-    fn default_allocator(&self) -> &'static dyn GlobalAlloc {
+impl MinimalRuntime {
+    pub fn default_allocator(&self) -> &'static dyn GlobalAlloc {
         &GLOBAL_ALLOCATOR
     }
 
-    fn exit(&self, code: i32) -> ! {
-        crate::syscall::sys_thread_exit(code as u64)
+    pub fn exit(&self, code: i32) -> ! {
+        twizzler_abi::syscall::sys_thread_exit(code as u64);
     }
 
-    fn abort(&self) -> ! {
-        core::intrinsics::abort()
+    pub fn abort(&self) -> ! {
+        unsafe { core::intrinsics::abort() };
     }
+
+    pub fn pre_main_hook(&self) -> Option<i32> {
+        None
+    }
+
+    pub fn post_main_hook(&self) {}
 
     /// Called from _start to initialize the runtime and pass control to the Rust stdlib.
-    fn runtime_entry(
+    pub fn runtime_entry(
         &self,
-        mut aux_array: *const AuxEntry,
-        std_entry: unsafe extern "C" fn(BasicAux) -> BasicReturn,
+        rt_info: *const RuntimeInfo,
+        std_entry: unsafe extern "C-unwind" fn(BasicAux) -> BasicReturn,
     ) -> ! {
-        // If aux doesn't give us an environment, just use this default.
-        let null_env: [*const i8; 4] = [
-            b"RUST_BACKTRACE=1\0".as_ptr() as *const i8,
-            ptr::null(),
-            ptr::null(),
-            ptr::null(),
+        let mut null_env: [*mut i8; 4] = [
+            b"RUST_BACKTRACE=1\0".as_ptr() as *mut i8,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
         ];
-        let mut arg_ptr = ptr::null();
+        let mut arg_ptr = ptr::null_mut();
         let mut arg_count = 0;
-        let mut env_ptr = (&null_env).as_ptr();
+        let mut env_ptr = (&mut null_env).as_mut_ptr();
 
         unsafe {
-            while !aux_array.is_null() && *aux_array != AuxEntry::Null {
-                match *aux_array {
-                    AuxEntry::ProgramHeaders(paddr, pnum) => {
-                        process_phdrs(core::slice::from_raw_parts(paddr as *const Phdr, pnum))
-                    }
-                    AuxEntry::ExecId(id) => {
-                        super::debug::set_execid(id);
-                    }
-                    AuxEntry::Arguments(num, ptr) => {
-                        arg_count = num;
-                        arg_ptr = ptr as *const *const i8
-                    }
-                    AuxEntry::Environment(ptr) => {
-                        env_ptr = ptr as *const *const i8;
-                    }
-                    _ => {
-                        crate::print_err("unknown aux type");
-                    }
-                }
-                aux_array = aux_array.offset(1);
+            let rt_info = rt_info.as_ref().unwrap();
+            if rt_info.kind != RUNTIME_INIT_MIN {
+                crate::print_err("minimal runtime cannot initialize non-minimal runtime");
+                self.abort();
+            }
+            let min_init_info = &*rt_info.init_info.min;
+            process_phdrs(core::slice::from_raw_parts(
+                min_init_info.phdrs as *const Phdr,
+                min_init_info.nr_phdrs,
+            ));
+            if !rt_info.envp.is_null() {
+                env_ptr = rt_info.envp;
+            }
+            if !rt_info.args.is_null() {
+                arg_ptr = rt_info.args;
+                arg_count = rt_info.argc;
             }
         }
 
         let tls = init_tls();
         if let Some(tls) = tls {
-            crate::syscall::sys_thread_settls(tls);
+            twizzler_abi::syscall::sys_thread_settls(tls);
         } else {
             crate::print_err("failed to initialize TLS\n");
         }
@@ -101,7 +108,7 @@ impl CoreRuntime for MinimalRuntime {
                 mode: UpcallMode::CallSelf,
             }; UpcallInfo::NR_UPCALLS],
         );
-        crate::syscall::sys_thread_set_upcall(upcall_target);
+        twizzler_abi::syscall::sys_thread_set_upcall(upcall_target);
 
         unsafe {
             // Run preinit array
@@ -135,6 +142,21 @@ impl CoreRuntime for MinimalRuntime {
                 env: env_ptr,
             })
         };
-        super::__twz_get_runtime().exit(ret.code)
+        self.exit(ret.code)
+    }
+
+    pub fn sysinfo(&self) -> SystemInfo {
+        let info = twizzler_abi::syscall::sys_info();
+        SystemInfo {
+            clock_monotonicity: Monotonicity::Weak.into(),
+            available_parallelism: info.cpu_count().into(),
+            page_size: info.page_size(),
+        }
+    }
+
+    pub fn get_random(&self, buf: &mut [MaybeUninit<u8>], flags: GetRandomFlags) -> usize {
+        // rarely if ever would fail
+        let out = sys_get_random(buf, flags).expect("failed to get randomness from kernel");
+        out
     }
 }
