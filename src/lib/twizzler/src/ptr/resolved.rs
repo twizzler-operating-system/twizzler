@@ -6,6 +6,7 @@ use std::{
 use twizzler_rt_abi::object::ObjectHandle;
 
 use super::GlobalPtr;
+use crate::object::RawObject;
 
 pub struct Ref<'obj, T> {
     ptr: *const T,
@@ -18,16 +19,32 @@ impl<'obj, T> Ref<'obj, T> {
         self.ptr
     }
 
+    pub fn offset(&self) -> u64 {
+        self.handle().ptr_local(self.ptr.cast()).unwrap() as u64
+    }
+
+    pub fn handle(&self) -> &ObjectHandle {
+        unsafe { self.handle.as_ref().unwrap_unchecked() }
+    }
+
     pub unsafe fn from_raw_parts(ptr: *const T, handle: *const ObjectHandle) -> Self {
-        todo!()
+        Self {
+            ptr,
+            handle,
+            _pd: PhantomData,
+        }
     }
 
     pub unsafe fn cast<U>(self) -> Ref<'obj, U> {
-        todo!()
+        Ref {
+            ptr: self.ptr.cast(),
+            handle: self.handle,
+            _pd: PhantomData,
+        }
     }
 
     pub unsafe fn mutable(self) -> RefMut<'obj, T> {
-        todo!()
+        RefMut::from_raw_parts(self.ptr as *mut T, self.handle)
     }
 }
 
@@ -41,7 +58,7 @@ impl<'obj, T> Deref for Ref<'obj, T> {
 
 impl<'a, T> From<Ref<'a, T>> for GlobalPtr<T> {
     fn from(value: Ref<'a, T>) -> Self {
-        todo!()
+        GlobalPtr::new(value.handle().id(), value.offset())
     }
 }
 
@@ -56,8 +73,28 @@ impl<'obj, T> RefMut<'obj, T> {
         self.ptr
     }
 
+    pub unsafe fn from_raw_parts(ptr: *mut T, handle: *const ObjectHandle) -> Self {
+        Self {
+            ptr,
+            handle,
+            _pd: PhantomData,
+        }
+    }
+
     pub unsafe fn cast<U>(self) -> RefMut<'obj, U> {
-        todo!()
+        RefMut {
+            ptr: self.ptr.cast(),
+            handle: self.handle,
+            _pd: PhantomData,
+        }
+    }
+
+    pub fn handle(&self) -> &ObjectHandle {
+        unsafe { self.handle.as_ref().unwrap_unchecked() }
+    }
+
+    pub fn offset(&self) -> u64 {
+        self.handle().ptr_local(self.ptr.cast()).unwrap() as u64
     }
 }
 
@@ -77,7 +114,7 @@ impl<'obj, T> DerefMut for RefMut<'obj, T> {
 
 impl<'a, T> From<RefMut<'a, T>> for GlobalPtr<T> {
     fn from(value: RefMut<'a, T>) -> Self {
-        todo!()
+        GlobalPtr::new(value.handle().id(), value.offset())
     }
 }
 
@@ -97,7 +134,8 @@ impl<'a, T> RefSlice<'a, T> {
     }
 
     pub fn get(&self, idx: usize) -> Option<Ref<'a, T>> {
-        todo!()
+        let ptr = self.as_slice().get(idx)?;
+        Some(unsafe { Ref::from_raw_parts(ptr, self.ptr.handle) })
     }
 }
 
@@ -130,8 +168,14 @@ impl<'a, T> RefSliceMut<'a, T> {
         unsafe { core::slice::from_raw_parts_mut(raw_ptr, self.len) }
     }
 
+    pub fn get(&self, idx: usize) -> Option<Ref<'a, T>> {
+        let ptr = self.as_slice().get(idx)?;
+        Some(unsafe { Ref::from_raw_parts(ptr, self.ptr.handle) })
+    }
+
     pub fn get_mut(&mut self, idx: usize) -> Option<RefMut<'_, T>> {
-        todo!()
+        let ptr = self.as_slice_mut().get_mut(idx)?;
+        Some(unsafe { RefMut::from_raw_parts(ptr, self.ptr.handle) })
     }
 }
 

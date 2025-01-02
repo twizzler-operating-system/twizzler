@@ -162,12 +162,3 @@ impl<Base: BaseType> TypedObject for Object<Base> {
         unsafe { Ref::from_raw_parts(base, self.handle()) }
     }
 }
-
-impl<B: BaseType> From<Object<B>> for Object<()> {
-    fn from(value: Object<B>) -> Self {
-        Self {
-            handle: value.into_handle(),
-            _pd: PhantomData,
-        }
-    }
-}

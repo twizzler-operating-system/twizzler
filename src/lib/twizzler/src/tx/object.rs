@@ -1,15 +1,19 @@
-use std::mem::MaybeUninit;
+use std::{borrow::Borrow, marker::PhantomData, mem::MaybeUninit};
+
+use twizzler_rt_abi::object::ObjectHandle;
 
 use super::{Result, TxHandle};
 use crate::{
-    alloc::{invbox::InvBox, Allocator},
+    alloc::{invbox::InvBox, Allocator, OwnedGlobalPtr},
     marker::{BaseType, Invariant},
     object::{FotEntry, Object, RawObject, TypedObject},
     ptr::RefMut,
 };
 
-pub struct TxObject<T> {
-    object: Object<T>,
+#[repr(C)]
+pub struct TxObject<T = ()> {
+    handle: ObjectHandle,
+    _pd: PhantomData<*mut T>,
 }
 
 impl<T> TxObject<T> {
@@ -48,7 +52,7 @@ impl<B> TxHandle for TxObject<B> {
 
 impl<T> RawObject for TxObject<T> {
     fn handle(&self) -> &twizzler_rt_abi::object::ObjectHandle {
-        self.object.handle()
+        &self.handle
     }
 }
 
@@ -60,9 +64,11 @@ impl<B: BaseType> TypedObject for TxObject<B> {
     }
 }
 
-impl<B: BaseType> From<TxObject<B>> for TxObject<()> {
-    fn from(value: TxObject<B>) -> Self {
-        todo!()
+impl<B> AsRef<TxObject<()>> for TxObject<B> {
+    fn as_ref(&self) -> &TxObject<()> {
+        let this = self as *const Self;
+        // Safety: This phantom data is the only generic field, and we are repr(C).
+        unsafe { this.cast::<TxObject<()>>().as_ref().unwrap() }
     }
 }
 

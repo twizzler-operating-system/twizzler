@@ -14,7 +14,7 @@ pub struct InvBox<T: Invariant, Alloc: Allocator> {
 
 impl<T: Invariant, Alloc: Allocator> InvBox<T, Alloc> {
     pub unsafe fn from_invptr(raw: InvPtr<T>, alloc: Alloc) -> Self {
-        todo!()
+        Self { raw, alloc }
     }
 
     pub fn new<B>(tx: &TxObject<B>, ogp: OwnedGlobalPtr<T, Alloc>) -> Self {
@@ -22,11 +22,11 @@ impl<T: Invariant, Alloc: Allocator> InvBox<T, Alloc> {
     }
 
     pub fn resolve(&self) -> Ref<'_, T> {
-        todo!()
+        unsafe { self.raw.resolve() }
     }
 
     pub fn global(&self) -> GlobalPtr<T> {
-        todo!()
+        self.raw.global()
     }
 
     pub fn as_ptr(&self) -> &InvPtr<T> {
@@ -54,7 +54,7 @@ mod tests {
         let alloc = ArenaObject::new();
         let foo = alloc
             .alloc_inplace(|tx| {
-                let x = InvBox::new(tx.tx(), alloc.alloc(3));
+                let x = InvBox::new(tx.tx(), alloc.alloc(3).unwrap());
                 tx.write(Foo { x })
             })
             .unwrap();
@@ -68,7 +68,7 @@ mod tests {
         let alloc = ArenaObject::new();
         let obj = builder
             .build_inplace(|tx| {
-                let x = InvBox::new(&tx, alloc.alloc(3));
+                let x = InvBox::new(&tx, alloc.alloc(3).unwrap());
                 tx.write(Foo { x })
             })
             .unwrap();

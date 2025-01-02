@@ -17,22 +17,16 @@ unsafe impl<T: Invariant, A: Allocator> Invariant for ListNode<T, A> {}
 
 impl<T: Invariant, A: Allocator + Clone> ListNode<T, A> {
     pub fn new(
+        tx: impl AsRef<TxObject>,
         value: T,
         next: Option<OwnedGlobalPtr<Self, A>>,
         alloc: A,
-    ) -> crate::tx::Result<OwnedGlobalPtr<Self, A>> {
-        todo!()
-    }
-
-    pub fn new_inplace<F>(
-        next: Option<OwnedGlobalPtr<Self, A>>,
-        alloc: A,
-        ctor: F,
-    ) -> crate::tx::Result<OwnedGlobalPtr<Self, A>>
-    where
-        F: FnOnce(TxRef<MaybeUninit<T>>) -> crate::tx::Result<TxRef<T>>,
-    {
-        todo!()
+    ) -> crate::tx::Result<Self> {
+        Ok(Self {
+            value,
+            next: next.map(|n| InvBox::new(tx.as_ref(), n)),
+            alloc,
+        })
     }
 }
 
@@ -45,9 +39,15 @@ mod tests {
 
     fn simple() {
         let arena = ArenaObject::new();
-        let node0 = ListNode::new(3, None, arena.allocator()).unwrap();
-        let node1 = ListNode::new(2, Some(node0), arena.allocator()).unwrap();
-        let node2 = ListNode::new(1, Some(node1), arena.allocator()).unwrap();
+        let alloc = arena.allocator();
+        let tx = arena.tx().unwrap();
+        let node0 = tx
+            .alloc(ListNode::new(&tx, 3, None, alloc).unwrap())
+            .unwrap();
+        let node1_val = ListNode::new(&tx, 2, Some(node0), alloc).unwrap();
+        let node1 = tx.alloc(node1_val).unwrap();
+        let node2_val = ListNode::new(&tx, 1, Some(node1), alloc).unwrap();
+        let node2 = tx.alloc(node2_val).unwrap();
 
         let rnode2 = node2.resolve();
         let rnode1 = rnode2.next.as_ref().unwrap().resolve();
@@ -64,7 +64,11 @@ mod tests {
         }
 
         impl Node {
-            fn new(value: u32, alloc: ArenaAllocator) -> Self {
+            fn new(
+                tx: impl AsRef<TxObject>,
+                value: u32,
+                alloc: ArenaAllocator,
+            ) -> crate::tx::Result<Self> {
                 todo!()
             }
         }
@@ -72,26 +76,21 @@ mod tests {
         unsafe impl Invariant for Node {}
 
         let arena = ArenaObject::new();
+        let alloc = arena.allocator();
         let data0 = arena.alloc(3);
-        let node0 = ListNode::new_inplace(None, arena.allocator(), |tx| {
-            let node = Node {
-                data: InvBox::new(tx.tx(), data0),
-            };
-            tx.write(node)
-        })
-        .unwrap();
-        let node1 = ListNode::new(
-            Node::new(2, arena.allocator()),
-            Some(node0),
-            arena.allocator(),
-        )
-        .unwrap();
-        let node2 = ListNode::new(
-            Node::new(1, arena.allocator()),
-            Some(node1),
-            arena.allocator(),
-        )
-        .unwrap();
+        let tx = arena.tx().unwrap();
+        let node0 = ListNode::new(&tx, Node::new(&tx, 3, alloc).unwrap(), None, alloc).unwrap();
+        let node0 = tx.alloc(node0).unwrap();
+        let node1 = tx
+            .alloc(
+                ListNode::new(&tx, Node::new(&tx, 2, alloc).unwrap(), Some(node0), alloc).unwrap(),
+            )
+            .unwrap();
+        let node2 = tx
+            .alloc(
+                ListNode::new(&tx, Node::new(&tx, 1, alloc).unwrap(), Some(node1), alloc).unwrap(),
+            )
+            .unwrap();
 
         let rnode2 = node2.resolve();
         let rnode1 = rnode2.next.as_ref().unwrap().resolve();

@@ -15,7 +15,11 @@ pub struct InvPtr<T: Invariant> {
 }
 
 impl<T: Invariant> InvPtr<T> {
-    pub unsafe fn resolve<'a>(&self) -> Ref<'a, T> {
+    pub fn global(&self) -> GlobalPtr<T> {
+        todo!()
+    }
+
+    pub unsafe fn resolve(&self) -> Ref<'_, T> {
         todo!()
     }
 
