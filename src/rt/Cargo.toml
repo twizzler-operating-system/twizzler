@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-twizzler-rt-abi = { path = "../abi/rt-abi" }
+twizzler-rt-abi = "0.99"
 twz-rt = { path = "reference" }
