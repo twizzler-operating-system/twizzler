@@ -1,5 +1,8 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 
+use async_executor::{Executor, Task};
+use async_io::Timer;
+use futures::executor::block_on;
 use tickv::{success_codes::SuccessCode, ErrorCode};
 use twizzler_abi::pager::{
     CompletionToKernel, CompletionToPager, KernelCompletionData, RequestFromKernel,
@@ -23,6 +26,8 @@ struct Foo {
 }
 
 extern crate twizzler_runtime;
+pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
+
 fn main() {
     let idstr = std::env::args().nth(1).unwrap();
     let kidstr = std::env::args().nth(2).unwrap();
@@ -52,30 +57,33 @@ fn main() {
     let kqueue = twizzler_queue::Queue::<RequestFromPager, CompletionToPager>::from(kobject);
     let sq = twizzler_queue::QueueSender::new(kqueue);
 
+    let ex = EXECUTOR.get_or_init(|| Executor::new());
+
     let num_threads = 2;
     for _ in 0..(num_threads - 1) {
-        std::thread::spawn(|| twizzler_async::run(std::future::pending::<()>()));
+        std::thread::spawn(|| block_on(ex.run(std::future::pending::<()>())));
     }
 
-    twizzler_async::Task::spawn(async move {
+    ex.spawn(async move {
         loop {
-            let timeout = twizzler_async::Timer::after(Duration::from_millis(1000));
-            println!("pager submitting request");
+            let timeout = Timer::after(Duration::from_millis(1000));
+            println!(" pager:  submitting request");
             let res = sq.submit_and_wait(RequestFromPager::new(
                 twizzler_abi::pager::PagerRequest::EchoReq,
             ));
             let x = res.await;
-            println!("pager got {:?} in response", x);
+            println!(" pager:  got {:?} in response", x);
             timeout.await;
-            break;
+            // TODO: do some other stuff?
+            std::future::pending::<()>().await;
         }
     })
     .detach();
 
-    twizzler_async::Task::spawn(async move {
+    ex.spawn(async move {
         loop {
             let (id, request) = rq.receive().await.unwrap();
-            println!("got req from kernel: {} {:?}", id, request);
+            println!(" pager: got req from kernel: {} {:?}", id, request);
             let reply = handle_request(request).await;
             if let Some(reply) = reply {
                 rq.complete(id, reply).await.unwrap();
@@ -83,7 +91,7 @@ fn main() {
         }
     })
     .detach();
-    twizzler_async::run(std::future::pending::<()>());
+    block_on(ex.run(std::future::pending::<()>()));
 }
 
 static mut RAND_STATE: u32 = 0;

@@ -56,7 +56,7 @@ pub struct NmHandleManager<T> {
 }
 
 impl NmHandle {
-    pub async fn handle<'a, F, Fut>(self: &'a Arc<NmHandle>, f: F) -> Result<(), QueueError>
+    pub async fn handle<'a, F, Fut>(self: &'a Arc<NmHandle>, f: F) -> Result<(), std::io::Error>
     where
         F: Fn(&'a Arc<NmHandle>, u32, RxRequest) -> Fut,
         Fut: Future<Output = RxCompletion>,
@@ -64,7 +64,7 @@ impl NmHandle {
         self.handler.handle(move |id, req| f(self, id, req)).await
     }
 
-    pub async fn submit(&self, req: TxRequest) -> Result<TxCompletion, QueueError> {
+    pub async fn submit(&self, req: TxRequest) -> Result<TxCompletion, std::io::Error> {
         self.sender.submit_and_wait(req).await
     }
 
@@ -125,21 +125,21 @@ impl<T> NmHandleManager<T> {
         &self.data
     }
 
-    pub async fn receive(&self) -> Result<(u32, TxRequest), QueueError> {
+    pub async fn receive(&self) -> Result<(u32, TxRequest), std::io::Error> {
         if self.is_terminated() {
-            Err(QueueError::Unknown)
+            Err(QueueError::Unknown.into())
         } else {
             self.handler.receive().await
         }
     }
 
-    pub async fn complete(&self, id: u32, reply: TxCompletion) -> Result<(), QueueError> {
+    pub async fn complete(&self, id: u32, reply: TxCompletion) -> Result<(), std::io::Error> {
         self.handler.complete(id, reply).await
     }
 
-    pub async fn submit(&self, req: RxRequest) -> Result<RxCompletion, QueueError> {
+    pub async fn submit(&self, req: RxRequest) -> Result<RxCompletion, std::io::Error> {
         if self.is_terminated() {
-            return Err(QueueError::Unknown);
+            return Err(QueueError::Unknown.into());
         }
         self.sender.submit_and_wait(req).await
     }

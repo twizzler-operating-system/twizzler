@@ -3843,11 +3843,13 @@ dependencies = [
 name = "pager"
 version = "0.1.0"
 dependencies = [
+ "async-executor",
+ "async-io",
  "async-trait",
+ "futures",
  "nvme",
  "tickv",
  "twizzler-abi",
- "twizzler-async",
  "twizzler-driver",
  "twizzler-object",
  "twizzler-queue",
@@ -5335,7 +5337,6 @@ dependencies = [
  "lazy_static",
  "limine",
  "linked_list_allocator",
- "log",
  "memoffset",
  "nonoverlapping_interval_tree",
  "object 0.32.2",
@@ -5347,6 +5348,7 @@ dependencies = [
  "sha2",
  "slabmalloc",
  "smccc",
+ "stable-vec",
  "tar-no-std",
  "tock-registers",
  "twizzler-abi",
@@ -5397,8 +5399,10 @@ dependencies = [
 name = "twizzler-queue"
 version = "0.1.0"
 dependencies = [
+ "async-io",
+ "futures",
  "twizzler-abi",
- "twizzler-async",
+ "twizzler-futures",
  "twizzler-object",
  "twizzler-queue-raw",
 ]
