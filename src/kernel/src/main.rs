@@ -82,7 +82,6 @@ pub fn is_test_mode() -> bool {
 
 fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
     arch::init(boot_info);
-    log::init();
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
     let cmdline = boot_info.get_cmd_line();
     for opt in cmdline.split(" ") {
