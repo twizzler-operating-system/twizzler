@@ -134,7 +134,6 @@ pub fn exclude_list() -> Vec<String> {
             "--workspace",
             "--exclude",
             "monitor",
-            "unicode-bidi", // "twizzler-abi"
         ]
         .map(String::from)
         .to_vec(),
