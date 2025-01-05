@@ -9,6 +9,7 @@ mod kaction;
 mod map;
 mod object_control;
 mod object_stat;
+mod random;
 mod security;
 mod spawn;
 mod thread_control;
@@ -57,6 +58,8 @@ pub enum Syscall {
     UnbindHandle,
     /// Attach to a security context.
     SctxAttach,
+    /// Gets random bytes
+    GetRandom,
     NumSyscalls,
 }
 
@@ -84,6 +87,7 @@ pub use kaction::*;
 pub use map::*;
 pub use object_control::*;
 pub use object_stat::*;
+pub use random::*;
 pub use security::*;
 pub use spawn::*;
 pub use thread_control::*;

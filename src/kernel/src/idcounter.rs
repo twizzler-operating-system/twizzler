@@ -35,6 +35,17 @@ impl SimpleId {
     }
 }
 
+impl From<u32> for SimpleId {
+    fn from(value: u32) -> Self {
+        Self { id: value as u64 }
+    }
+}
+impl From<u64> for SimpleId {
+    fn from(value: u64) -> Self {
+        Self { id: value }
+    }
+}
+
 impl IdCounter {
     pub const fn new() -> Self {
         Self {

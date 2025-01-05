@@ -56,3 +56,8 @@ pub trait BaseType {
         0
     }
 }
+
+impl BaseType for u8 {}
+impl BaseType for u16 {}
+impl BaseType for u32 {}
+impl BaseType for u64 {}

@@ -2,18 +2,18 @@
 
 use std::marker::PhantomData;
 
-use fot::FotEntry;
-use twizzler_abi::{
-    meta::MetaInfo,
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
-};
+use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::object::ObjectHandle;
 
-use crate::{marker::BaseType, ptr::Ref};
+use crate::{marker::BaseType, ptr::Ref, tx::TxObject};
 
 mod builder;
 mod fot;
 mod meta;
+
+pub use builder::*;
+pub use fot::*;
+pub use meta::*;
 
 /// Operations common to structured objects.
 pub trait TypedObject {
@@ -100,6 +100,25 @@ pub struct Object<Base> {
     _pd: PhantomData<*const Base>,
 }
 
+impl<B> Clone for Object<B> {
+    fn clone(&self) -> Self {
+        todo!()
+    }
+}
+
+impl<Base> Object<Base> {
+    pub fn tx(self) -> crate::tx::Result<TxObject<Base>> {
+        todo!()
+    }
+
+    pub unsafe fn cast<U>(self) -> Object<U> {
+        Object {
+            handle: self.handle,
+            _pd: PhantomData,
+        }
+    }
+}
+
 impl<Base> RawObject for Object<Base> {
     fn handle(&self) -> &ObjectHandle {
         &self.handle
@@ -110,6 +129,12 @@ impl<Base: BaseType> TypedObject for Object<Base> {
     type Base = Base;
 
     fn base(&self) -> Ref<'_, Self::Base> {
+        todo!()
+    }
+}
+
+impl<B: BaseType> From<Object<B>> for Object<()> {
+    fn from(value: Object<B>) -> Self {
         todo!()
     }
 }

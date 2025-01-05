@@ -4,10 +4,10 @@ use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionValue},
     object::{ObjID, Protections, MAX_SIZE},
     syscall::{
-        ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, HandleType,
-        KernelConsoleReadSource, ObjectCreateError, ObjectMapError, ObjectReadMapError,
-        ReadClockInfoError, ReadClockListError, ReadClockListFlags, SysInfo, Syscall,
-        ThreadSpawnError, ThreadSyncError,
+        ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, GetRandomError,
+        GetRandomFlags, HandleType, KernelConsoleReadSource, ObjectCreateError, ObjectMapError,
+        ObjectReadMapError, ReadClockInfoError, ReadClockListError, ReadClockListFlags, SysInfo,
+        Syscall, ThreadSpawnError, ThreadSyncError,
     },
 };
 
@@ -18,6 +18,7 @@ use self::{
 use crate::{
     clock::{fill_with_every_first, fill_with_first_kind, fill_with_kind},
     memory::VirtAddr,
+    random::getrandom,
     thread::current_thread_ref,
     time::TICK_SOURCES,
 };
@@ -153,6 +154,19 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClo
     }
 }
 
+fn type_get_random(into_ptr: u64, into_length: u64, flags: u64) -> Result<u64, GetRandomError> {
+    let flags: GetRandomFlags = flags.into();
+    let into_ptr = unsafe { create_user_slice(into_ptr, into_length) }
+        .ok_or(GetRandomError::InvalidArgument)?;
+    let filled_buffer = getrandom(into_ptr, flags.contains(GetRandomFlags::NONBLOCKING));
+    if !filled_buffer {
+        Err(GetRandomError::Unseeded)
+    } else {
+        // either it fills the entire length with entropy or it doesn't fill anything
+        Ok(into_length)
+    }
+}
+
 fn type_read_clock_list(
     clock: u64,
     clock_ptr: u64,
@@ -211,6 +225,7 @@ fn zero_ok<T: Into<u64>>(t: T) -> (u64, u64) {
 }
 
 pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
+    // logln!("RECEIVED SYSCALL {}", context.num());
     match context.num().into() {
         Syscall::ObjectUnmap => {
             context.set_return_values(1u64, 0u64);
@@ -387,6 +402,11 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
         }
         Syscall::ReadClockInfo => {
             let result = type_read_clock_info(context.arg0(), context.arg1(), context.arg2());
+            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
+            context.set_return_values(code, val);
+        }
+        Syscall::GetRandom => {
+            let result = type_get_random(context.arg0(), context.arg1(), context.arg2());
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
