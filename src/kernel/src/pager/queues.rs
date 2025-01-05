@@ -1,7 +1,7 @@
 use twizzler_abi::{
     object::ObjID,
     pager::{
-        CompletionToKernel, CompletionToPager, KernelCommand, RequestFromKernel, RequestFromPager,
+        CompletionToKernel, CompletionToPager, KernelCommand, RequestFromKernel, RequestFromPager, PagerRequest, PhysRange, ObjectRange
     },
 };
 
@@ -25,7 +25,29 @@ pub(super) fn pager_request_handler_main() {
     loop {
         receiver.handle_request(|id, req| {
             logln!("kernel: got req {}:{:?} from pager", id, req);
-            CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
+            if req.cmd() == twizzler_abi::pager::PagerRequest::Ready {
+                return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::DramPages(PhysRange::new(0x0000, 0x3E7FFF)))
+            } else if req.cmd() == twizzler_abi::pager::PagerRequest::TestReq {
+                let sender = SENDER.wait();
+                let obj_id = ObjID::new(1001);
+                logln!("kernel: submitting page data request on K2P Queue");
+                let item = RequestFromKernel::new(
+                    twizzler_abi::pager::KernelCommand::PageDataReq(obj_id, ObjectRange{ start: 0, end: 4096}),
+                );
+                let id = sender.0.next_simple().value() as u32;
+                let res = SENDER.wait().1.submit(item, id);
+
+                logln!("kernel: submitting obj info request on K2P Queue");
+                let item = RequestFromKernel::new(
+                    twizzler_abi::pager::KernelCommand::ObjectInfoReq(obj_id),
+                );
+                let id = sender.0.next_simple().value() as u32;
+                let res = SENDER.wait().1.submit(item, id);
+ 
+                return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::TestResp)
+            } else {
+                return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
+            }
         });
     }
 }
@@ -37,6 +59,12 @@ pub(super) fn pager_compl_handler_main() {
         match completion.1.data() {
             twizzler_abi::pager::KernelCompletionData::EchoResp => {
                 logln!("got echo response");
+            }
+            twizzler_abi::pager::KernelCompletionData::PageDataCompletion(phys_range) => {
+                logln!("got physical range {:?}", phys_range);
+            }
+            twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(obj_info) => {
+                logln!("got object info {:?}", obj_info);
             }
         }
         sender.0.release_simple(SimpleId::from(completion.0));
