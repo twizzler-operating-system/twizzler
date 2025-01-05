@@ -5,6 +5,9 @@ pub struct Gates {
     pub align: u64,
 }
 
+//NOTE: ask daniel about this
+static MAX_LEN: f32 = 1e9;
+
 pub enum GatesError {
     OutsideBounds,
     Unaligned,
@@ -22,11 +25,11 @@ impl Gates {
 
 impl Default for Gates {
     fn default() -> Self {
+        //NOTE: verify with daniel that these are the default values for gates
         Gates {
             offset: 0,
-            // what is the max length of an obj?
-            length: todo!(),
-            align: 1,
+            length: MAX_LEN as u64,
+            align: 0,
         }
     }
 }

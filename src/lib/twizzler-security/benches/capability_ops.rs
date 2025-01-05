@@ -1,7 +1,8 @@
+use std::hint::black_box;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use hex_literal::hex;
-use std::hint::black_box;
-use twizsec::{Cap, ObjectId, Permissions, SigningScheme, VerifyingKey};
+use twizzler_security::{Cap, ObjectId, Permissions, SigningScheme, VerifyingKey};
 
 // use cargo bench for these
 
@@ -20,6 +21,8 @@ fn verify_bench(c: &mut Criterion) {
         accessor_id,
         Permissions::READ | Permissions::WRITE,
         target_priv_key,
+        0,
+        Default::default(),
     )
     .unwrap();
 
@@ -49,6 +52,8 @@ fn creation_bench(c: &mut Criterion) {
                     black_box(accessor_id),
                     black_box(Permissions::READ | Permissions::WRITE),
                     black_box(target_priv_key),
+                    black_box(0),
+                    black_box(Default::default()),
                 )
             })
         },

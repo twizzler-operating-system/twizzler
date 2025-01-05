@@ -1,5 +1,5 @@
 use hex_literal::hex;
-use twizsec::{Cap, ObjectId, Permissions, SigningScheme, VerifyingKey};
+use twizzler_security::{Cap, Gates, ObjectId, Permissions, SigningScheme, VerifyingKey};
 
 #[test]
 fn creation_and_verification() {
@@ -17,6 +17,8 @@ fn creation_and_verification() {
         accessor_id,
         Permissions::READ | Permissions::WRITE,
         target_priv_key,
+        0,
+        Gates::default(),
     );
 
     let verifying_key = VerifyingKey::new(SigningScheme::Ecdsa, &target_priv_key).unwrap();
