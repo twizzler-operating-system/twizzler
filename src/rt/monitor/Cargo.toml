@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
-twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-rt-abi = "0.99"
 dynlink = { path = "../../lib/dynlink" }
 tracing = { version = "0.1", pub = false }
 tracing-subscriber = { version = "0.3", pub = false }

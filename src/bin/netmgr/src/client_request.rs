@@ -13,7 +13,7 @@ pub async fn handle_client_request(
     handle: &HandleRef,
     id: u32,
     request: TxRequest,
-) -> Result<(), QueueError> {
+) -> Result<(), std::io::Error> {
     println!("got txreq {:?}", request);
     let reply = match request {
         TxRequest::Echo(incoming_data) => {

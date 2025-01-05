@@ -14,7 +14,14 @@ members = [
     "src/bin/nettest",
     "src/bin/pager",
     "src/bin/mnemosyne",
+    "src/bin/random_validation",
+    "src/bin/genrandom",
+    "src/bin/randtest",
     "src/bin/stdfs_demo",
+    "src/bin/virtio",
+    "src/bin/mnemosyne",
+    "src/bin/stdfs_demo",
+    "src/bin/virtio",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
@@ -31,11 +38,10 @@ members = [
     "src/rt",
     "src/rt/reference",
     "src/rt/minimal",
-    "src/abi/rt-abi",
-    "src/abi/types",
     "src/lib/logboi",
     "src/srv/logboi-srv",
     "src/bin/logboi-test",
+    "src/lib/virtio-net",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -48,6 +54,7 @@ initrd = [
     "crate:devmgr",
     "crate:pager",
     "crate:etl_twizzler",
+    "crate:virtio",
     "lib:twz-rt",
     "crate:monitor",
     "crate:montest",
@@ -56,6 +63,20 @@ initrd = [
     "crate:stdfs_demo",
     "crate:logboi-test",
     "lib:logboi-srv",
+    "crate:random_validation",
+    "crate:virtio",
+    "lib:twz-rt",
+    "crate:monitor",
+    "crate:montest",
+    "lib:montest-lib",
+    "crate:mnemosyne",
+    "crate:stdfs_demo",
+    "crate:logboi-test",
+    "lib:logboi-srv",
+    # "crate:random_validation",
+    "crate:randtest",
+    "crate:randtest",
+    "crate:genrandom",
     #"third-party:hello-world-rs"
 ]
 
@@ -76,6 +97,7 @@ async-io = { git = "https://github.com/twizzler-operating-system/async-io.git", 
 async-executor = { git = "https://github.com/twizzler-operating-system/async-executor.git", branch = "twizzler" }
 twizzler-futures = { path = "src/lib/twizzler-futures" }
 twizzler-abi = { path = "src/lib/twizzler-abi" }
+twizzler-rt-abi = { git = "https://github.com/twizzler-operating-system/abi" }
 parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
 # lock_api comes from the parking_lot repo
 lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
