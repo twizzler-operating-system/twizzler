@@ -10,8 +10,6 @@ members = [
     "src/bin/bootstrap",
     "src/bin/devmgr",
     "src/bin/etl_twizzler",  
-    "src/bin/netmgr",
-    "src/bin/nettest",
     "src/bin/pager",
     "src/bin/mnemosyne",
     "src/bin/random_validation",

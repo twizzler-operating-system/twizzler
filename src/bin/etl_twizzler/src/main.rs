@@ -116,6 +116,8 @@ fn main() {
             for file in file_list {
                 pack.file_add(file.into(), pack_type, offset).unwrap();
             }
+
+            pack.build();
         }
         Commands::Unpack { archive_path } => {
             let archive = std::fs::File::open(archive_path).unwrap();

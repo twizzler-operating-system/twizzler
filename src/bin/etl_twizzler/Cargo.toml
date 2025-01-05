@@ -6,8 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [target.'cfg(target_os = "twizzler")'.dependencies]
-twizzler-abi = { path = "../../lib/twizzler-abi", features = ["runtime"] }
-twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-rt-abi = "0.99"
+twizzler-runtime = { path = "../../rt" }
 twizzler-object = { path = "../../lib/twizzler-object" }
 
 [dependencies]
@@ -15,6 +16,3 @@ bincode = "1.3.3"
 clap = { version = "4.5.21", features = [ "derive" ] }
 serde = { version = "1.0.104", features = ["derive"] }
 tar = { git = "https://github.com/CPTforever/tar-rs.git", branch = "twizzler", default-features = false } 
-
-[package.metadata]
-twizzler-build = "static"

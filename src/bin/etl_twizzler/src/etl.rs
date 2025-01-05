@@ -54,7 +54,9 @@ where
         pack_type: PackType,
         offset: u64,
     ) -> std::io::Result<()> {
-        let f = File::open(&path)?;
+        let mut f = File::open(&path)?;
+        let len = f.seek(SeekFrom::End(0))?;
+        f.seek(SeekFrom::Start(0))?;
         let mut buf_writer = BufReader::new(f);
         let mut header = Header::new_old();
         {
@@ -66,9 +68,11 @@ where
             let custom_metadata = header.as_old_mut();
             custom_metadata.pad[0..data.len()].copy_from_slice(&data);
         }
+        header.set_size(len);
+
         self.tarchive
             .append_data(&mut header, path, &mut buf_writer)?;
-
+         
         Ok(())
     }
 
@@ -89,10 +93,12 @@ where
             let bad_idea = header.as_old_mut();
             bad_idea.pad[0..data.len()].copy_from_slice(&data);
         }
+        let mut buf_writer = BufReader::new(stream);
+        let mut v = vec![];
+        buf_writer.read_to_end(&mut v)?;
         {
-            let mut buf_writer = BufReader::new(stream);
             self.tarchive
-                .append_data(&mut header, name, &mut buf_writer)?;
+                .append_data(&mut header, name, v.as_slice())?;
         }
         Ok(())
     }
@@ -147,8 +153,6 @@ pub fn form_fs_file<R: std::io::Read>(stream: R, name: String, offset: u64) -> s
 }
 
 // this doesn't exist yet unfortunately due to persistent vector stuff
-// would it be more powerful to instead have this to
-// convert a file to a memory representation of a persistent json?
 pub fn form_persistent_vector<R: std::io::Read>(
     stream: R,
     name: String,
@@ -212,6 +216,9 @@ where
                     }
                 }
             }
+            else if let Err(E) = e {
+                println!("{}", E);
+            } 
         }
 
         Ok(())
