@@ -18,6 +18,7 @@ members = [
     "src/bin/virtio",
     "src/bin/mnemosyne",
     "src/bin/stdfs_demo",
+    "src/bin/object-store-test",
     "src/bin/virtio",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
@@ -39,6 +40,7 @@ members = [
     "src/srv/logboi-srv",
     "src/bin/logboi-test",
     "src/lib/virtio-net",
+    "src/bin/object-store-test",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -69,10 +71,10 @@ initrd = [
     "crate:stdfs_demo",
     "crate:logboi-test",
     "lib:logboi-srv",
-    # "crate:random_validation",
     "crate:randtest",
     "crate:randtest",
     "crate:genrandom",
+    "crate:object-store-test",
     #"third-party:hello-world-rs"
 ]
 
