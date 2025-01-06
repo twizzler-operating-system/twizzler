@@ -1,13 +1,16 @@
-use std::mem::MaybeUninit;
+use std::{
+    alloc::{AllocError, Layout},
+    mem::MaybeUninit,
+};
 
-use twizzler_abi::object::NULLPAGE_SIZE;
+use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 
 use super::{Allocator, OwnedGlobalPtr, SingleObjectAllocator};
 use crate::{
     marker::BaseType,
-    object::{CreateError, Object, ObjectBuilder, RawObject},
+    object::{CreateError, Object, ObjectBuilder, RawObject, TypedObject},
     ptr::{GlobalPtr, Ref},
-    tx::{TxCell, TxObject, TxRef},
+    tx::{TxCell, TxError, TxHandle, TxObject, TxRef, UnsafeTxHandle},
 };
 
 pub struct ArenaObject {
@@ -33,17 +36,11 @@ impl ArenaObject {
     }
 
     pub fn alloc<T>(&self, value: T) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
-        todo!()
-    }
-
-    pub fn alloc_inplace<T, F>(
-        &self,
-        ctor: F,
-    ) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>>
-    where
-        F: FnOnce(TxRef<MaybeUninit<T>>) -> crate::tx::Result<TxRef<T>>,
-    {
-        todo!()
+        let layout = Layout::new::<T>();
+        let alloc = self.allocator().alloc(layout)?.cast::<MaybeUninit<T>>();
+        let mut ptr = unsafe { alloc.resolve().mutable() };
+        ptr.write(value);
+        Ok(unsafe { OwnedGlobalPtr::from_global(ptr.global().cast(), self.allocator()) })
     }
 }
 
@@ -67,18 +64,45 @@ pub struct ArenaBase {
 
 impl BaseType for ArenaBase {}
 
-impl Allocator for ArenaAllocator {
-    fn alloc(&self, layout: std::alloc::Layout) -> Result<GlobalPtr<u8>, std::alloc::AllocError> {
-        todo!()
-    }
+impl ArenaBase {
+    const MIN_ALIGN: usize = 16;
+    fn reserve(&self, layout: Layout, tx: &impl TxHandle) -> crate::tx::Result<u64> {
+        let align = std::cmp::max(layout.align(), Self::MIN_ALIGN);
+        let len = std::cmp::max(layout.size(), Self::MIN_ALIGN) as u64;
+        let next_cell = self.next.get_mut(tx)?;
+        let next = next_cell.next_multiple_of(align as u64);
+        if next + len > MAX_SIZE as u64 {
+            return Err(TxError::Exhausted);
+        }
 
-    unsafe fn dealloc(&self, ptr: GlobalPtr<u8>, layout: std::alloc::Layout) {
-        todo!()
+        *next_cell = next + len;
+        Ok(next)
     }
 }
 
+impl Allocator for ArenaAllocator {
+    fn alloc(&self, layout: std::alloc::Layout) -> Result<GlobalPtr<u8>, std::alloc::AllocError> {
+        // TODO: use try_resolve
+        let allocator = unsafe { self.ptr.resolve() };
+        let reserve = allocator
+            .reserve(layout, &unsafe { UnsafeTxHandle::new() })
+            .map_err(|_| AllocError)?;
+        let gp = GlobalPtr::new(allocator.handle().id(), reserve);
+        Ok(gp)
+    }
+
+    unsafe fn dealloc(&self, _ptr: GlobalPtr<u8>, _layout: std::alloc::Layout) {}
+}
+
 impl TxObject<ArenaBase> {
-    pub fn alloc<T>(&self, val: T) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
-        todo!()
+    pub fn alloc<T>(&self, value: T) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
+        let layout = Layout::new::<T>();
+        let alloc = ArenaAllocator {
+            ptr: GlobalPtr::new(self.id(), NULLPAGE_SIZE as u64),
+        };
+        let allocation = alloc.alloc(layout)?.cast::<MaybeUninit<T>>();
+        let mut ptr = unsafe { allocation.resolve().mutable() };
+        ptr.write(value);
+        Ok(unsafe { OwnedGlobalPtr::from_global(ptr.global().cast(), alloc) })
     }
 }

@@ -46,6 +46,10 @@ impl<'obj, T> Ref<'obj, T> {
     pub unsafe fn mutable(self) -> RefMut<'obj, T> {
         RefMut::from_raw_parts(self.ptr as *mut T, self.handle)
     }
+
+    pub fn global(&self) -> GlobalPtr<T> {
+        GlobalPtr::new(self.handle().id(), self.offset())
+    }
 }
 
 impl<'obj, T> Deref for Ref<'obj, T> {
@@ -95,6 +99,10 @@ impl<'obj, T> RefMut<'obj, T> {
 
     pub fn offset(&self) -> u64 {
         self.handle().ptr_local(self.ptr.cast()).unwrap() as u64
+    }
+
+    pub fn global(&self) -> GlobalPtr<T> {
+        GlobalPtr::new(self.handle().id(), self.offset())
     }
 }
 

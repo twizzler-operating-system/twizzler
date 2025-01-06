@@ -52,10 +52,10 @@ mod tests {
 
     fn box_simple() {
         let alloc = ArenaObject::new().unwrap();
-        let foo = alloc
-            .alloc_inplace(|tx| {
-                let x = InvBox::new(tx.tx(), alloc.alloc(3).unwrap());
-                tx.write(Foo { x })
+        let arena = alloc.tx().unwrap();
+        let foo = arena
+            .alloc(Foo {
+                x: InvBox::new(&arena, arena.alloc(3).unwrap()),
             })
             .unwrap();
 

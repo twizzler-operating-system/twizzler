@@ -39,7 +39,7 @@ mod tests {
 
     #[test]
     fn simple() {
-        let arena = ArenaObject::new();
+        let arena = ArenaObject::new().unwrap();
         let alloc = arena.allocator();
         let tx = arena.tx().unwrap();
         let node0 = tx
@@ -77,7 +77,7 @@ mod tests {
         // This would come from derive(Invariant)
         unsafe impl Invariant for Node {}
 
-        let arena = ArenaObject::new();
+        let arena = ArenaObject::new().unwrap();
         let alloc = arena.allocator();
         let data0 = arena.alloc(3);
         let tx = arena.tx().unwrap();

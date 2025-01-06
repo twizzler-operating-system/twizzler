@@ -18,19 +18,26 @@ pub struct TxObject<T = ()> {
 
 impl<T> TxObject<T> {
     pub fn new(object: Object<T>) -> Result<Self> {
-        todo!()
+        // TODO: start tx
+        Ok(Self {
+            handle: object.into_handle(),
+            _pd: PhantomData,
+        })
     }
 
     pub fn commit(self) -> Result<Object<T>> {
-        todo!()
+        // TODO: commit tx
+        Ok(unsafe { Object::from_handle_unchecked(self.handle) })
     }
 
     pub fn abort(self) -> Object<T> {
-        todo!()
+        // TODO: abort tx
+        unsafe { Object::from_handle_unchecked(self.handle) }
     }
 
     pub fn base_mut(&mut self) -> RefMut<'_, T> {
-        todo!()
+        // TODO: track base in tx
+        unsafe { RefMut::from_raw_parts(self.base_mut_ptr(), self.handle()) }
     }
 
     pub fn insert_fot(&mut self, fot: FotEntry) -> crate::tx::Result<u64> {
@@ -39,14 +46,17 @@ impl<T> TxObject<T> {
 }
 
 impl<B> TxObject<MaybeUninit<B>> {
-    pub fn write(self, base: B) -> crate::tx::Result<TxObject<B>> {
-        todo!()
+    pub fn write(self, baseval: B) -> crate::tx::Result<TxObject<B>> {
+        let base = unsafe { self.base_mut_ptr::<MaybeUninit<B>>().as_mut().unwrap() };
+        base.write(baseval);
+        TxObject::new(unsafe { Object::from_handle_unchecked(self.handle) })
     }
 }
 
 impl<B> TxHandle for TxObject<B> {
     fn tx_mut(&self, data: *const u8, len: usize) -> super::Result<*mut u8> {
-        todo!()
+        // TODO
+        Ok(data as *mut u8)
     }
 }
 
@@ -60,7 +70,7 @@ impl<B: BaseType> TypedObject for TxObject<B> {
     type Base = B;
 
     fn base(&self) -> crate::ptr::Ref<'_, Self::Base> {
-        todo!()
+        unsafe { crate::ptr::Ref::from_raw_parts(self.base_ptr(), self.handle()) }
     }
 }
 
