@@ -1,7 +1,8 @@
 use twizzler_abi::{
     object::ObjID,
     pager::{
-        CompletionToKernel, CompletionToPager, KernelCommand, RequestFromKernel, RequestFromPager, PagerRequest, PhysRange, ObjectRange
+        CompletionToKernel, CompletionToPager, KernelCommand, ObjectRange, PagerRequest, PhysRange,
+        RequestFromKernel, RequestFromPager,
     },
 };
 
@@ -26,14 +27,22 @@ pub(super) fn pager_request_handler_main() {
         receiver.handle_request(|id, req| {
             logln!("kernel: got req {}:{:?} from pager", id, req);
             if req.cmd() == twizzler_abi::pager::PagerRequest::Ready {
-                return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::DramPages(PhysRange::new(0x0000, 0x3E7FFF)))
+                return CompletionToPager::new(
+                    twizzler_abi::pager::PagerCompletionData::DramPages(PhysRange::new(
+                        0x0000, 0x3E7FFF,
+                    )),
+                );
             } else if req.cmd() == twizzler_abi::pager::PagerRequest::TestReq {
                 let sender = SENDER.wait();
                 let obj_id = ObjID::new(1001);
                 logln!("kernel: submitting page data request on K2P Queue");
-                let item = RequestFromKernel::new(
-                    twizzler_abi::pager::KernelCommand::PageDataReq(obj_id, ObjectRange{ start: 0, end: 4096}),
-                );
+                let item = RequestFromKernel::new(twizzler_abi::pager::KernelCommand::PageDataReq(
+                    obj_id,
+                    ObjectRange {
+                        start: 0,
+                        end: 4096,
+                    },
+                ));
                 let id = sender.0.next_simple().value() as u32;
                 let res = SENDER.wait().1.submit(item, id);
 
@@ -43,10 +52,10 @@ pub(super) fn pager_request_handler_main() {
                 );
                 let id = sender.0.next_simple().value() as u32;
                 let res = SENDER.wait().1.submit(item, id);
- 
-                return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::TestResp)
+
+                return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::TestResp);
             } else {
-                return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
+                return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp);
             }
         });
     }

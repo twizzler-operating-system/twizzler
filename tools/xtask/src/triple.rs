@@ -6,6 +6,7 @@ pub enum Machine {
     Rpi3,
     Virt,
     Morello,
+    BhyveMorello,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, EnumIter, clap::ValueEnum)]
@@ -77,6 +78,7 @@ impl From<Machine> for String {
             Machine::Rpi3 => "rpi3",
             Machine::Virt => "virt",
             Machine::Morello => "morello",
+            Machine::BhyveMorello => "bhyve",
         }
         .to_string()
     }
@@ -173,6 +175,7 @@ pub fn valid_targets() -> Vec<(Arch, Machine)> {
         (Arch::X86_64, Machine::Unknown),
         (Arch::Aarch64, Machine::Virt),
         (Arch::Aarch64, Machine::Morello),
+        (Arch::Aarch64, Machine::BhyveMorello),
     ];
     targets
 }

@@ -33,11 +33,22 @@ pub const MMIO_RANGE_SIZE: u64 = 0x1000_0000_0000;
 // MMIO is used for communicating with devices. The kernel
 // reserves a region of its virtual address space to allocate
 // addresses to various drivers.
+#[cfg(not(machine = "bhyve"))]
 pub static mut MMIO_RANGE: RangeInclusive<u64> = RangeInclusive::new(
     // The start range of addresses used for MMIO
     *VirtAddr::TTBR1_EL1.start(),
     // The end range of addresses used for MMIO
     *VirtAddr::TTBR1_EL1.start() + MMIO_RANGE_SIZE,
+);
+
+// NOTE: for some reason MMIO works around here, but not at the usual place
+const MEMORY_MAP_OFFSET: u64 = 0xffff000300000000;
+#[cfg(machine = "bhyve")]
+pub static mut MMIO_RANGE: RangeInclusive<u64> = RangeInclusive::new(
+    // The start range of addresses used for MMIO
+    MEMORY_MAP_OFFSET,
+    // The end range of addresses used for MMIO
+    MEMORY_MAP_OFFSET + MMIO_RANGE_SIZE,
 );
 
 impl VirtAddr {

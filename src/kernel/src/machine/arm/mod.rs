@@ -6,10 +6,10 @@ mod virt;
 pub use virt::*;
 
 /// Morello SDP for CHERI
-#[cfg(machine = "morello")]
+#[cfg(any(machine = "morello", machine = "bhyve"))]
 mod morello;
 
-#[cfg(machine = "morello")]
+#[cfg(any(machine = "morello", machine = "bhyve"))]
 pub use morello::*;
 
 mod common;

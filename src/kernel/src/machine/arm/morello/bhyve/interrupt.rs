@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
 
-use super::super::common::gicv3::GICv3;
+use crate::machine::arm::common::gicv3::GICv3;
 
 // used by generic kernel interrupt code
 pub const MIN_VECTOR: usize = GICv3::MIN_VECTOR;

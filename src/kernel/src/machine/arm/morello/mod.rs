@@ -1,10 +1,11 @@
-pub mod info;
-pub mod interrupt;
-pub mod memory;
-pub mod processor;
-pub mod serial;
+#[cfg(machine = "morello")]
+mod qemu;
 
-pub fn machine_post_init() {
-    // initialize uart with interrupts
-    serial::SERIAL.late_init();
-}
+#[cfg(machine = "morello")]
+pub use qemu::*;
+
+#[cfg(machine = "bhyve")]
+mod bhyve;
+
+#[cfg(machine = "bhyve")]
+pub use bhyve::*;

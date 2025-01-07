@@ -4,7 +4,7 @@ use arm64::registers::MPIDR_EL1;
 use registers::interfaces::Readable;
 
 // re-export boot module
-pub use super::super::common::boot::*;
+pub use crate::machine::arm::common::boot::*;
 use crate::machine::info::devicetree;
 
 pub fn enumerate_cpus() -> u32 {

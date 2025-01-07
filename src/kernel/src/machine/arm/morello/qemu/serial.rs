@@ -1,10 +1,10 @@
 use lazy_static::lazy_static;
 use twizzler_abi::object::Protections;
 
-use super::super::common::uart::PL011;
 use crate::{
     arch::memory::mmio::MMIO_ALLOCATOR,
     interrupt::{Destination, TriggerMode},
+    machine::arm::common::uart::PL011,
     memory::{
         pagetables::{ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings},
         PhysAddr,

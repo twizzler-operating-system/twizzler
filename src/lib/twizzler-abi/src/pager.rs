@@ -1,4 +1,4 @@
-use twizzler_rt_abi::object::{ObjID};
+use twizzler_rt_abi::object::ObjID;
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub struct RequestFromKernel {
@@ -41,7 +41,7 @@ impl CompletionToKernel {
 pub enum KernelCompletionData {
     EchoResp,
     PageDataCompletion(PhysRange),
-    ObjectInfoCompletion(ObjectInfo)
+    ObjectInfoCompletion(ObjectInfo),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
@@ -90,12 +90,12 @@ pub enum PagerCompletionData {
 
 pub struct PageDataReq {
     objID: ObjID,
-    object_range: ObjectRange
+    object_range: ObjectRange,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub struct ObjectInfo {
-    pub obj_id: ObjID
+    pub obj_id: ObjID,
 }
 
 impl ObjectInfo {
@@ -127,4 +127,3 @@ impl ObjectRange {
         Self { start, end }
     }
 }
-

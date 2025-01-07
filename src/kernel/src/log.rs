@@ -359,13 +359,13 @@ macro_rules! log {
 #[macro_export]
 macro_rules! logln {
     () => {
-        $crate::log!("\n")
+        $crate::log!("\r\n")
     };
     ($fmt:expr) => {
-        $crate::log!(concat!($fmt, "\n"))
+        $crate::log!(concat!($fmt, "\r\n"))
     };
     ($fmt:expr, $($arg:tt)*) => {
-        $crate::log!(concat!($fmt, "\n"), $($arg)*)
+        $crate::log!(concat!($fmt, "\r\n"), $($arg)*)
     };
 }
 
@@ -379,12 +379,12 @@ macro_rules! emerglog {
 #[macro_export]
 macro_rules! emerglogln {
     () => {
-        $crate::emerglog!("\n")
+        $crate::emerglog!("\r\n")
     };
     ($fmt:expr) => {
-        $crate::emerglog!(concat!($fmt, "\n"))
+        $crate::emerglog!(concat!($fmt, "\r\n"))
     };
     ($fmt:expr, $($arg:tt)*) => {
-        $crate::emerglog!(concat!($fmt, "\n"), $($arg)*)
+        $crate::emerglog!(concat!($fmt, "\r\n"), $($arg)*)
     };
 }

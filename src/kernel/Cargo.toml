@@ -58,8 +58,9 @@ registers = { package = "tock-registers", version = "0.8.x" }
 fdt = "0.1.5"
 smccc = "0.1.1"
 
-[target.'cfg(machine = "morello")'.dependencies]
-arm-gic = "0.1.0"
+[target.'cfg(any(machine = "morello", machine = "bhyve"))'.dependencies]
+arm-gic = "0.1.2"
+pretty-hex = "0.4.1"
 
 [dependencies.lazy_static]
 version = "1.0"

@@ -151,6 +151,7 @@ extern "C" fn limine_entry() -> ! {
     // bottom of the higher half range of addresses covered by TTBR1_EL1.
     // This must be taken into account by the MMIO address allocator which
     // starts allocating addresses from the lowest part of the kernel address range.
+    #[cfg(not(machine = "bhyve"))]
     if hhdm_info.offset() == *VirtAddr::TTBR1_EL1.start() {
         // the identity map covers the first 4 GB of memory
         const IDENTITY_MAP_SIZE: u64 = 0x1_0000_0000;
