@@ -41,9 +41,9 @@ async fn do_physrw_request(
     }
 }
 
-/// Writes buf.len() bytes from the buffer into physical addresses specified in phys. If the
-/// supplied physical range is shorter than the buffer, then the remaining bytes in the buffer are
-/// filled with 0.
+/// Writes phys.len() bytes from the buffer into physical addresses specified in phys. If the
+/// supplied buffer is shorter than the physical range, then the remaining bytes in the physical
+/// memory are filled with 0.
 pub async fn fill_physical_pages(
     queue: &QueueRef,
     buf: &[u8],
