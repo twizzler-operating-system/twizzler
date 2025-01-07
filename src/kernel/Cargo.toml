@@ -69,3 +69,17 @@ features = ["spin_no_std"]
 
 
 twizzler-build = "kernel"
+
+[profile.release]
+debug = true
+
+[profile.dev]
+opt-level = 1
+
+[target.'cfg(kani)'.dependencies]
+acpi = "4.1.1"
+arm64 = { package = "aarch64-cpu", version = "9.3.1" }
+registers = { package = "tock-registers", version = "0.8.x" }
+fdt = "0.1.5"
+uart_16550 = "0.3.0"
+x86 = "0.52.0"
