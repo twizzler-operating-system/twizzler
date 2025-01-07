@@ -67,7 +67,9 @@ impl QemuCommand {
             .arg("nvme,serial=deadbeef,drive=nvme");
 
         self.cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
-        self.cmd.arg("-netdev").arg("user,id=net0,hostfwd=tcp::5555-:5555");
+        self.cmd
+            .arg("-netdev")
+            .arg("user,id=net0,hostfwd=tcp::5555-:5555");
 
         self.cmd
             .arg("--no-reboot") // exit instead of rebooting

@@ -45,6 +45,7 @@ use super::{MemoryRegion, MemoryRegionKind, PhysAddr};
 use crate::{
     arch::memory::{frame::FRAME_SIZE, phys_to_virt},
     once::Once,
+    pager::pager_select_memory_regions,
     spinlock::Spinlock,
 };
 
@@ -519,7 +520,8 @@ static FI: Once<Vec<FrameIndexer>> = Once::new();
 /// # Arguments
 ///  * `regions`: An array of memory regions passed from the boot info system.
 pub fn init(regions: &[MemoryRegion]) {
-    let pfa = PhysicalFrameAllocator::new(regions);
+    let regions = pager_select_memory_regions(regions);
+    let pfa = PhysicalFrameAllocator::new(&regions);
     FI.call_once(|| pfa.regions.iter().map(|r| r.indexer.clone()).collect());
     PFA.call_once(|| Spinlock::new(pfa));
 }
