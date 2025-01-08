@@ -9,7 +9,7 @@ members = [
     "src/bin/init",
     "src/bin/bootstrap",
     "src/bin/devmgr",
-    "src/bin/etl_twizzler",  
+    "src/bin/etl_twizzler",
     "src/bin/pager",
     "src/bin/mnemosyne",
     "src/bin/random_validation",
@@ -95,7 +95,7 @@ async-io = { git = "https://github.com/twizzler-operating-system/async-io.git", 
 async-executor = { git = "https://github.com/twizzler-operating-system/async-executor.git", branch = "twizzler" }
 twizzler-futures = { path = "src/lib/twizzler-futures" }
 twizzler-abi = { path = "src/lib/twizzler-abi" }
-twizzler-rt-abi = { git = "https://github.com/twizzler-operating-system/abi" }
+twizzler-rt-abi = { path = "src/abi/rt-abi" }
 parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
 # lock_api comes from the parking_lot repo
 lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }

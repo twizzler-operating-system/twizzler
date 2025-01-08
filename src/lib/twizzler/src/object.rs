@@ -3,7 +3,7 @@
 use std::marker::PhantomData;
 
 use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_rt_abi::object::ObjectHandle;
+use twizzler_rt_abi::object::{MapError, MapFlags, ObjectHandle};
 
 use crate::{marker::BaseType, ptr::Ref, tx::TxObject};
 
@@ -102,13 +102,32 @@ pub struct Object<Base> {
 
 impl<B> Clone for Object<B> {
     fn clone(&self) -> Self {
-        todo!()
+        Self {
+            handle: self.handle.clone(),
+            _pd: PhantomData,
+        }
     }
 }
 
 impl<Base> Object<Base> {
     pub fn tx(self) -> crate::tx::Result<TxObject<Base>> {
-        todo!()
+        TxObject::new(self)
+    }
+
+    pub unsafe fn from_handle_unchecked(handle: ObjectHandle) -> Self {
+        Self {
+            handle,
+            _pd: PhantomData,
+        }
+    }
+
+    pub fn from_handle(handle: ObjectHandle) -> Result<Self, MapError> {
+        // TODO: check base fingerprint
+        unsafe { Ok(Self::from_handle_unchecked(handle)) }
+    }
+
+    pub fn into_handle(self) -> ObjectHandle {
+        self.handle
     }
 
     pub unsafe fn cast<U>(self) -> Object<U> {
@@ -116,6 +135,16 @@ impl<Base> Object<Base> {
             handle: self.handle,
             _pd: PhantomData,
         }
+    }
+
+    pub fn map(id: ObjID, flags: MapFlags) -> Result<Self, MapError> {
+        let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
+        Self::from_handle(handle)
+    }
+
+    pub unsafe fn map_unchecked(id: ObjID, flags: MapFlags) -> Result<Self, MapError> {
+        let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
+        unsafe { Ok(Self::from_handle_unchecked(handle)) }
     }
 }
 
@@ -129,12 +158,7 @@ impl<Base: BaseType> TypedObject for Object<Base> {
     type Base = Base;
 
     fn base(&self) -> Ref<'_, Self::Base> {
-        todo!()
-    }
-}
-
-impl<B: BaseType> From<Object<B>> for Object<()> {
-    fn from(value: Object<B>) -> Self {
-        todo!()
+        let base = self.base_ptr();
+        unsafe { Ref::from_raw_parts(base, self.handle()) }
     }
 }

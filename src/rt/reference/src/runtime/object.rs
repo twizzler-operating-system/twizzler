@@ -1,8 +1,6 @@
-use std::{
-    collections::HashMap,
-    sync::atomic::{AtomicU64, AtomicUsize},
-};
+use std::sync::atomic::AtomicU64;
 
+use handlecache::HandleCache;
 use tracing::warn;
 use twizzler_abi::{
     object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -14,6 +12,8 @@ use twizzler_rt_abi::{
 };
 
 use super::ReferenceRuntime;
+
+mod handlecache;
 
 fn mapflags_into_prot(flags: MapFlags) -> Protections {
     let mut prot = Protections::empty();
@@ -39,6 +39,13 @@ pub(crate) fn new_runtime_info() -> *mut RuntimeHandleInfo {
         refs: AtomicU64::new(1),
     });
     Box::into_raw(rhi)
+}
+
+pub(crate) fn free_runtime_info(ptr: *mut RuntimeHandleInfo) {
+    if ptr.is_null() {
+        return;
+    }
+    let _boxed = unsafe { Box::from_raw(ptr) };
 }
 
 pub(crate) fn new_object_handle(id: ObjID, slot: usize, flags: MapFlags) -> ObjectHandle {
@@ -71,13 +78,16 @@ impl ReferenceRuntime {
     pub fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError> {
         self.object_manager
             .lock()
-            .unwrap()
             .map_object(ObjectMapKey(id.into(), flags))
     }
 
     #[tracing::instrument(skip(self), level = "trace")]
     pub fn release_handle(&self, handle: *mut object_handle) {
-        self.object_manager.lock().unwrap().release(handle)
+        self.object_manager.lock().release(handle)
+    }
+
+    pub fn get_object_handle_from_ptr(&self, ptr: *const u8) -> Option<object_handle> {
+        self.object_manager.lock().get_handle(ptr)
     }
 
     pub fn map_two_objects(
@@ -118,79 +128,50 @@ impl ReferenceRuntime {
 }
 
 /// A key for local (per-compartment) mappings of objects.
-#[derive(PartialEq, PartialOrd, Ord, Eq, Hash, Copy, Clone)]
+#[derive(PartialEq, PartialOrd, Ord, Eq, Hash, Copy, Clone, Debug)]
 pub struct ObjectMapKey(pub ObjID, pub MapFlags);
 
-/// A local slot for an object to be mapped, gotten from the monitor.
-pub struct LocalSlot {
-    number: usize,
-    refs: AtomicUsize,
-}
-
-impl LocalSlot {
-    pub fn new(number: usize) -> Self {
-        Self {
-            number,
-            refs: AtomicUsize::new(0),
-        }
+impl ObjectMapKey {
+    pub fn from_raw_handle(handle: &object_handle) -> Self {
+        Self(
+            handle.id.into(),
+            MapFlags::from_bits_truncate(handle.map_flags),
+        )
     }
 }
 
 /// Per-compartment object management.
 pub struct ObjectHandleManager {
-    map: Option<HashMap<ObjectMapKey, LocalSlot>>,
+    cache: HandleCache,
 }
 
 impl ObjectHandleManager {
     pub const fn new() -> Self {
-        Self { map: None }
-    }
-
-    fn map(&mut self) -> &mut HashMap<ObjectMapKey, LocalSlot> {
-        if self.map.is_some() {
-            // Unwrap-Ok: is_some above.
-            return self.map.as_mut().unwrap();
+        Self {
+            cache: HandleCache::new(),
         }
-        self.map = Some(HashMap::new());
-        // Unwrap-Ok: set above.
-        self.map.as_mut().unwrap()
     }
 
     /// Map an object with this manager. Will call to monitor if needed.
     pub fn map_object(&mut self, key: ObjectMapKey) -> Result<ObjectHandle, MapError> {
-        if !self.map().contains_key(&key) {
-            self.map().insert(
-                key,
-                LocalSlot::new(
-                    monitor_api::monitor_rt_object_map(key.0, key.1)
-                        .unwrap()?
-                        .slot,
-                ),
-            );
+        if let Some(handle) = self.cache.activate(key) {
+            return Ok(ObjectHandle::from_raw(handle));
         }
+        let mapping = monitor_api::monitor_rt_object_map(key.0, key.1).unwrap()?;
+        let handle = new_object_handle(key.0, mapping.slot, key.1).into_raw();
+        self.cache.insert(handle);
+        Ok(ObjectHandle::from_raw(handle))
+    }
 
-        // Unwrap-Ok: we ensure key is present above.
-        let entry = self.map().get(&key).unwrap();
-        entry.refs.fetch_add(1, atomic::Ordering::SeqCst);
-
-        Ok(new_object_handle(key.0, entry.number, key.1))
+    /// Get an object handle from a pointer to within that object.
+    pub fn get_handle(&mut self, ptr: *const u8) -> Option<object_handle> {
+        let handle = self.cache.activate_from_ptr(ptr)?;
+        Some(ObjectHandle::from_raw(handle).clone().into_raw())
     }
 
     /// Release a handle. If all handles have been released, calls to monitor to unmap.
     pub fn release(&mut self, handle: *mut object_handle) {
-        let handle = unsafe { handle.as_ref().unwrap() };
-        let key = ObjectMapKey(
-            ObjID::new(handle.id),
-            MapFlags::from_bits_truncate(handle.map_flags),
-        );
-        if let Some(entry) = self.map().get(&key) {
-            if entry.refs.fetch_sub(1, atomic::Ordering::SeqCst) == 1 {
-                monitor_api::monitor_rt_object_unmap(key.0, key.1).unwrap();
-                self.map().remove(&key);
-            }
-        }
-
-        // Safety: we only create internal refs from Box.
-        let _boxed = unsafe { Box::from_raw(handle.runtime_info) };
+        let handle = unsafe { handle.as_mut().unwrap() };
+        self.cache.release(handle);
     }
 }

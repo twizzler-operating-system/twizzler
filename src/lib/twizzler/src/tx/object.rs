@@ -1,28 +1,43 @@
-use std::mem::MaybeUninit;
+use std::{borrow::Borrow, marker::PhantomData, mem::MaybeUninit};
+
+use twizzler_rt_abi::object::ObjectHandle;
 
 use super::{Result, TxHandle};
 use crate::{
-    alloc::{invbox::InvBox, Allocator},
+    alloc::{invbox::InvBox, Allocator, OwnedGlobalPtr},
     marker::{BaseType, Invariant},
     object::{FotEntry, Object, RawObject, TypedObject},
     ptr::RefMut,
 };
 
-pub struct TxObject<T> {
-    object: Object<T>,
+#[repr(C)]
+pub struct TxObject<T = ()> {
+    handle: ObjectHandle,
+    _pd: PhantomData<*mut T>,
 }
 
 impl<T> TxObject<T> {
+    pub fn new(object: Object<T>) -> Result<Self> {
+        // TODO: start tx
+        Ok(Self {
+            handle: object.into_handle(),
+            _pd: PhantomData,
+        })
+    }
+
     pub fn commit(self) -> Result<Object<T>> {
-        todo!()
+        // TODO: commit tx
+        Ok(unsafe { Object::from_handle_unchecked(self.handle) })
     }
 
     pub fn abort(self) -> Object<T> {
-        todo!()
+        // TODO: abort tx
+        unsafe { Object::from_handle_unchecked(self.handle) }
     }
 
     pub fn base_mut(&mut self) -> RefMut<'_, T> {
-        todo!()
+        // TODO: track base in tx
+        unsafe { RefMut::from_raw_parts(self.base_mut_ptr(), self.handle()) }
     }
 
     pub fn insert_fot(&mut self, fot: FotEntry) -> crate::tx::Result<u64> {
@@ -31,20 +46,23 @@ impl<T> TxObject<T> {
 }
 
 impl<B> TxObject<MaybeUninit<B>> {
-    pub fn write(self, base: B) -> crate::tx::Result<TxObject<B>> {
-        todo!()
+    pub fn write(self, baseval: B) -> crate::tx::Result<TxObject<B>> {
+        let base = unsafe { self.base_mut_ptr::<MaybeUninit<B>>().as_mut().unwrap() };
+        base.write(baseval);
+        TxObject::new(unsafe { Object::from_handle_unchecked(self.handle) })
     }
 }
 
 impl<B> TxHandle for TxObject<B> {
     fn tx_mut(&self, data: *const u8, len: usize) -> super::Result<*mut u8> {
-        todo!()
+        // TODO
+        Ok(data as *mut u8)
     }
 }
 
 impl<T> RawObject for TxObject<T> {
     fn handle(&self) -> &twizzler_rt_abi::object::ObjectHandle {
-        self.object.handle()
+        &self.handle
     }
 }
 
@@ -52,13 +70,15 @@ impl<B: BaseType> TypedObject for TxObject<B> {
     type Base = B;
 
     fn base(&self) -> crate::ptr::Ref<'_, Self::Base> {
-        todo!()
+        unsafe { crate::ptr::Ref::from_raw_parts(self.base_ptr(), self.handle()) }
     }
 }
 
-impl<B: BaseType> From<TxObject<B>> for TxObject<()> {
-    fn from(value: TxObject<B>) -> Self {
-        todo!()
+impl<B> AsRef<TxObject<()>> for TxObject<B> {
+    fn as_ref(&self) -> &TxObject<()> {
+        let this = self as *const Self;
+        // Safety: This phantom data is the only generic field, and we are repr(C).
+        unsafe { this.cast::<TxObject<()>>().as_ref().unwrap() }
     }
 }
 
