@@ -32,6 +32,8 @@ pub(crate) fn launch_kani(cli: KaniOptions) -> anyhow::Result<()> {
     let log = File::create(log_name).expect("failed to open log");
 */
     crate::toolchain::init_for_build(false)?;
+    crate::toolchain::set_cc();
+    crate::toolchain::set_static();
     //Actually compose the command
     let mut cmd = Command::new("cargo");
 //    cmd.stdout(log);
