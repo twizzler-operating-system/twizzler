@@ -1,16 +1,16 @@
 // extern crate twizzler_abi;
-use std::sync::{Arc, Mutex};
-
 // #[path="./tiny-http-twizzler/src/shim.rs"]
 // mod shim;
 use tiny_http::shim::SmolTcpListener as TcpListener;
 use tiny_http::{shim::SmolTcpStream as TcpStream, Response, Server};
-use std::io::{Read, Write};
-use std::thread;
+use std::{io::{Read, Write},
+        sync::{Arc, Mutex},
+        thread,};
+use std::net::Shutdown;
 
 // hello world made single threaded : TINY_HTTP
 fn main() {
-    let server = Arc::new(tiny_http::Server::http("127.0.0.1:9975").unwrap());
+    let server = Arc::new(Server::http("127.0.0.1:9975").unwrap());
     println!("Now listening on port 9975");
 
     let thread = thread::spawn(move || {
@@ -26,6 +26,7 @@ fn main() {
             request.respond(response).expect("Responded");
         }
     });
+
     let client = thread::spawn(move || {
         let _ = std_client(9975);
     });
@@ -33,48 +34,34 @@ fn main() {
     thread.join().unwrap();
     client.join().unwrap();
 }
-
-fn std_server() {
-    let listener = {
-        let m = Arc::new(Mutex::new(0)); // unlocked state
-        m.lock().unwrap();
-        println!("in standard server thread!");
-        println!("before bind()");
-        TcpListener::bind("127.0.0.1:1234").unwrap()
-    };
-    println!("after bind()");
-    // block to drop mutex after
-    match listener.accept() {
-        Ok((_socket, addr)) => println!("new client: {addr:?}"),
-        Err(e) => println!("couldn't get client: {e:?}"),
-    }
-    println!("accepted connection");
-}
-// tiny-http server
-fn tiny_http_server() {
-    println!("in tiny_http server thread!");
-    let server = Arc::new(Server::http("0.0.0.0:1234").unwrap());
-    println!("server: now listening on port 1234");
-    for rq in server.incoming_requests() {
-        let response = Response::from_string("hello world".to_string());
-        let _ = rq.respond(response);
-    }
-}
-
 fn std_client(port: u16) -> std::io::Result<()> {
     println!("in client thread!");
+    thread::sleep(std::time::Duration::from_millis(2000));
     let mut client = TcpStream::connect(("127.0.0.1", port))?;
-    println!("connected to server");
     let mut rx_buffer = [0; 2048];
     let msg = b"GET /notes HTTP/1.1\r\n\r\n";
-    client.write(msg)?;
-    println!("wrote msg");
+    let _result = client.write(msg)?;
+    thread::sleep(std::time::Duration::from_millis(2000));
     let _bytes_read = client.read(&mut rx_buffer)?;
-    println!("RECEIVED:");
     println!("{}", String::from_utf8((&rx_buffer[0..2048]).to_vec()).unwrap());
     Ok(())
 }
-// std client
+
+fn handle_connection(mut stream: (TcpStream, std::net::SocketAddr)) {
+    let mut stream1 = stream.0;
+    let mut buffer = [0; 512];
+    stream1.read(&mut buffer).unwrap();
+    println!("Request: {}", String::from_utf8_lossy(&buffer[..]));
+    stream1.shutdown(Shutdown::Write);
+}
+
+pub fn create_listener(listener: TcpListener) -> std::io::Result<()> {
+    let stream = listener.accept().unwrap();
+    handle_connection(stream);
+    Ok(())
+}
+
+// OLD std client
 // fn std_client(port: u16) {
 //     println!("in client thread!");
 //     let client = TcpStream::connect(("127.0.0.1", port));
