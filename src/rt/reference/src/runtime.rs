@@ -1,9 +1,6 @@
 //! Top level runtime module, managing the basic presentation of the runtime.
 
-use std::sync::{
-    atomic::{AtomicU32, Ordering},
-    Mutex,
-};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 mod alloc;
 mod core;
@@ -16,6 +13,7 @@ mod thread;
 mod time;
 pub(crate) mod upcall;
 
+use twizzler_abi::simple_mutex::Mutex;
 pub use upcall::set_upcall_handler;
 
 use self::object::ObjectHandleManager;

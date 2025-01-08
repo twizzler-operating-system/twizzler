@@ -13,6 +13,7 @@ pub use unsafetx::*;
 use crate::{
     alloc::{invbox::InvBox, Allocator},
     marker::Invariant,
+    object::CreateError,
 };
 
 /// A trait for implementing per-object transaction handles.
@@ -45,7 +46,7 @@ pub trait TxHandle {
 
 pub type Result<T> = std::result::Result<T, TxError>;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, thiserror::Error)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 /// Transaction errors, with user-definable abort type.
 pub enum TxError {
     /// Resources exhausted.
@@ -57,6 +58,9 @@ pub enum TxError {
     /// Invalid argument.
     #[error("invalid argument")]
     InvalidArgument,
+    /// Create error
+    #[error("create error")]
+    CreateError(#[from] CreateError),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
