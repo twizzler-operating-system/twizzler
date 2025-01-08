@@ -1,11 +1,6 @@
-use std::{
-    alloc::{AllocError, Layout},
-    mem::MaybeUninit,
-};
+use std::alloc::{AllocError, Layout};
 
-use invbox::InvBox;
-
-use crate::{marker::Invariant, ptr::GlobalPtr, tx::TxHandle};
+use crate::{ptr::GlobalPtr, tx::TxHandle};
 
 pub mod arena;
 mod global;

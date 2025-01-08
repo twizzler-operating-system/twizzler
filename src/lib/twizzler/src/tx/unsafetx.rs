@@ -9,7 +9,7 @@ impl UnsafeTxHandle {
 }
 
 impl TxHandle for UnsafeTxHandle {
-    fn tx_mut(&self, data: *const u8, len: usize) -> super::Result<*mut u8> {
-        todo!()
+    fn tx_mut(&self, data: *const u8, _len: usize) -> super::Result<*mut u8> {
+        Ok(data as *mut u8)
     }
 }

@@ -1,3 +1,5 @@
+use std::alloc::Layout;
+
 use super::Allocator;
 use crate::ptr::{GlobalPtr, Ref};
 
@@ -8,7 +10,8 @@ pub struct OwnedGlobalPtr<T, A: Allocator> {
 
 impl<T, A: Allocator> Drop for OwnedGlobalPtr<T, A> {
     fn drop(&mut self) {
-        todo!()
+        let layout = Layout::new::<T>();
+        unsafe { self.alloc.dealloc(self.global().cast(), layout) };
     }
 }
 
@@ -21,7 +24,7 @@ impl<T, A: Allocator> OwnedGlobalPtr<T, A> {
         Self { global, alloc }
     }
 
-    pub fn resolve(&self) -> Ref<'_, T> {
+    pub fn resolve<'a>(&self) -> Ref<'a, T> {
         todo!()
     }
 }
