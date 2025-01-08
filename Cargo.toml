@@ -42,11 +42,12 @@ members = [
     "src/lib/virtio-net",
     "src/lib/naming/naming-core",
     "src/lib/naming",
-    "src/srv/naming-srv", 
+    "src/srv/naming-srv",
     "src/bin/naming-test",
     "src/bin/object-store-test",
-    "src/lib/pager", 
     "src/bin/ls",
+    "src/lib/pager",
+    "src/bin/gadget",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -76,6 +77,7 @@ initrd = [
     "lib:montest-lib",
     "lib:logboi-srv",
     "lib:pager-srv",
+    "crate:gadget",
     #"third-party:hello-world-rs"
 ]
 
