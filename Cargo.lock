@@ -387,6 +387,10 @@ name = "bitflags"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b048fb63fd8b5923fc5aa7b340d8e156aec7ec02f0c78fa8a6ddc2613f6f71de"
+dependencies = [
+ "compiler_builtins",
+ "rustc-std-workspace-core",
+]
 
 [[package]]
 name = "bitmaps"
@@ -816,6 +820,15 @@ name = "colorchoice"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b63caa9aa9397e2d9480a9b13673856c78d8ac123288526c37d7839f2a86990"
+
+[[package]]
+name = "compiler_builtins"
+version = "0.1.142"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78013b42e2946a76d348a858fa5a06ca7d6b5cccdfccd660ea7a0aa4a44d40ca"
+dependencies = [
+ "rustc-std-workspace-core",
+]
 
 [[package]]
 name = "concurrent-queue"
@@ -3897,6 +3910,7 @@ dependencies = [
  "twizzler-driver",
  "twizzler-object",
  "twizzler-queue",
+ "twizzler-rt-abi",
  "twizzler-runtime",
  "volatile",
 ]
@@ -4431,6 +4445,12 @@ name = "rustc-demangle"
 version = "0.1.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "719b953e2095829ee67db738b3bfa9fa368c94900df327b3f07fe6e794d2fe1f"
+
+[[package]]
+name = "rustc-std-workspace-core"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa9c45b374136f52f2d6311062c7146bff20fec063c3f5d46a410bd937746955"
 
 [[package]]
 name = "rustfix"
@@ -5486,6 +5506,8 @@ name = "twizzler-rt-abi"
 version = "0.99.0"
 dependencies = [
  "bitflags 2.6.0",
+ "compiler_builtins",
+ "rustc-std-workspace-core",
  "twizzler-types",
 ]
 
@@ -5500,6 +5522,10 @@ dependencies = [
 [[package]]
 name = "twizzler-types"
 version = "0.1.0"
+dependencies = [
+ "compiler_builtins",
+ "rustc-std-workspace-core",
+]
 
 [[package]]
 name = "twz-rt"

@@ -1,3 +1,5 @@
+#![feature(ptr_sub_ptr)]
+
 use std::{
     collections::BTreeMap,
     error::Error,

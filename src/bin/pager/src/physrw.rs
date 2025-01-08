@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use twizzler_abi::pager::{CompletionToPager, PagerRequest, PhysRange, RequestFromPager};
 use twizzler_object::ObjID;
@@ -9,14 +9,9 @@ use crate::send_request;
 type Queue = QueueSender<RequestFromPager, CompletionToPager>;
 type QueueRef = Arc<Queue>;
 
-static SCTX_ID: OnceLock<ObjID> = OnceLock::new();
-
-fn get_sctx_id() -> ObjID {
-    *SCTX_ID.get_or_init(|| twizzler_abi::syscall::sys_thread_active_sctx_id())
-}
-
 fn get_object(ptr: *const u8) -> (ObjID, usize) {
-    todo!()
+    let handle = twizzler_rt_abi::object::twz_rt_get_object_handle(ptr).unwrap();
+    (handle.id(), unsafe { ptr.sub_ptr(handle.start()) })
 }
 
 async fn do_physrw_request(

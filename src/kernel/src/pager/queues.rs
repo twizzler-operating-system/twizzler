@@ -39,11 +39,9 @@ fn pager_request_copy_user_phys(
         return CompletionToPager::new(PagerCompletionData::Error);
     };
 
-    logln!("lookup {}", target_object);
     let Ok(object) = lookup_object(target_object, LookupFlags::empty()).ok_or(()) else {
         return CompletionToPager::new(PagerCompletionData::Error);
     };
-    logln!("found object! {}", object.id());
     let ko = kernel_context().insert_kernel_object::<()>(ObjectContextInfo::new(
         object,
         Protections::READ | Protections::WRITE,
