@@ -479,6 +479,14 @@ pub unsafe extern "C-unwind" fn twz_rt_release_handle(handle: *mut object_handle
 check_ffi_type!(twz_rt_release_handle, _);
 
 #[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_get_object_handle(ptr: *mut c_void) -> object_handle {
+    OUR_RUNTIME
+        .get_object_handle_from_ptr(ptr.cast())
+        .unwrap_or(object_handle::default())
+}
+check_ffi_type!(twz_rt_get_object_handle, _);
+
+#[no_mangle]
 pub unsafe extern "C-unwind" fn __twz_rt_map_two_objects(
     id_1: rt_objid,
     flags_1: map_flags,
