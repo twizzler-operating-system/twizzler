@@ -43,10 +43,11 @@ members = [
     "src/bin/logboi-test",
     "src/lib/virtio-net",
     "src/lib/naming",
-    "src/srv/naming-srv", 
+    "src/srv/naming-srv",
     "src/bin/naming-test",
     "src/bin/object-store-test",
     "src/lib/pager",
+    "src/bin/gadget",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -75,6 +76,7 @@ initrd = [
     "lib:montest-lib",
     "lib:logboi-srv",
     "lib:pager-srv",
+    "crate:gadget",
     #"third-party:hello-world-rs"
 ]
 
