@@ -1,0 +1,13 @@
+[package]
+name = "gadget"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embedded-io = { version = "*", features = ["std"] }
+noline = "*"
+twizzler-abi = "*"
+twizzler-rt-abi = "*"
+monitor-api = { path = "../../rt/monitor-api" }
+tracing = "*"
+tracing-subscriber = "*"
