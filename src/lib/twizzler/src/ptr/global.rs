@@ -1,9 +1,10 @@
 use std::{marker::PhantomData, sync::atomic::AtomicU32};
 
 use twizzler_abi::object::ObjID;
+use twizzler_rt_abi::object::MapFlags;
 
 use super::Ref;
-use crate::object::FotEntry;
+use crate::object::{FotEntry, Object, RawObject};
 
 #[derive(Debug, Default, PartialEq, PartialOrd, Ord, Eq, Hash)]
 /// A global pointer, containing a fully qualified object ID and offset.
@@ -27,7 +28,11 @@ impl<T> GlobalPtr<T> {
     }
 
     pub unsafe fn resolve(&self) -> Ref<'_, T> {
-        todo!()
+        let handle =
+            twizzler_rt_abi::object::twz_rt_map_object(self.id(), MapFlags::READ | MapFlags::WRITE)
+                .unwrap();
+        let ptr = handle.lea(self.offset() as usize, size_of::<T>()).unwrap();
+        Ref::from_handle(handle, ptr.cast())
     }
 
     pub fn is_null(&self) -> bool {

@@ -1,13 +1,13 @@
-use std::{borrow::Borrow, marker::PhantomData, mem::MaybeUninit};
+use std::{marker::PhantomData, mem::MaybeUninit};
 
 use twizzler_rt_abi::object::ObjectHandle;
 
 use super::{Result, TxHandle};
 use crate::{
-    alloc::{invbox::InvBox, Allocator, OwnedGlobalPtr},
-    marker::{BaseType, Invariant},
+    marker::BaseType,
     object::{FotEntry, Object, RawObject, TypedObject},
     ptr::RefMut,
+    tx::TxError,
 };
 
 #[repr(C)]
@@ -26,8 +26,9 @@ impl<T> TxObject<T> {
     }
 
     pub fn commit(self) -> Result<Object<T>> {
+        let this = std::hint::black_box(self);
         // TODO: commit tx
-        Ok(unsafe { Object::from_handle_unchecked(self.handle) })
+        Ok(unsafe { Object::from_handle_unchecked(this.handle) })
     }
 
     pub fn abort(self) -> Object<T> {
@@ -40,8 +41,9 @@ impl<T> TxObject<T> {
         unsafe { RefMut::from_raw_parts(self.base_mut_ptr(), self.handle()) }
     }
 
-    pub fn insert_fot(&self, fot: FotEntry) -> crate::tx::Result<u64> {
-        todo!()
+    pub fn insert_fot(&self, fot: &FotEntry) -> crate::tx::Result<u64> {
+        twizzler_rt_abi::object::twz_rt_insert_fot(self.handle(), (fot as *const FotEntry).cast())
+            .ok_or(TxError::Exhausted)
     }
 
     pub fn into_unit(self) -> TxObject<()> {

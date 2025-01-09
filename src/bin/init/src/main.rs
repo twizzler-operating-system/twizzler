@@ -116,7 +116,7 @@ fn main() {
     .unwrap();
     debug!("device manager is up!");
 
-    initialize_pager();
+    //initialize_pager();
     std::mem::forget(dev_comp);
 
     run_tests("test_bins", false);

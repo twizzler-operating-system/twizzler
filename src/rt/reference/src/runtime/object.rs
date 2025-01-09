@@ -1,4 +1,4 @@
-use std::{ffi::c_void, sync::atomic::AtomicU64, usize::MAX};
+use std::{ffi::c_void, mem::ManuallyDrop, sync::atomic::AtomicU64, usize::MAX};
 
 use handlecache::HandleCache;
 use tracing::warn;
@@ -101,6 +101,26 @@ impl ReferenceRuntime {
         })
     }
 
+    pub fn insert_fot(&self, handle: *mut object_handle, fot: *const u8) -> Option<u64> {
+        tracing::warn!("TODO: insert FOT entry");
+        None
+    }
+
+    pub fn resolve_fot(
+        &self,
+        handle: *mut object_handle,
+        idx: u64,
+        valid_len: usize,
+    ) -> Result<ObjectHandle, MapError> {
+        tracing::warn!("TODO: resolve FOT entry");
+        Err(MapError::Other)
+    }
+
+    pub fn resolve_fot_local(&self, ptr: *mut u8, idx: u64, valid_len: usize) -> *mut u8 {
+        tracing::warn!("TODO: resolve local FOT entry");
+        core::ptr::null_mut()
+    }
+
     pub fn map_two_objects(
         &self,
         in_id_a: ObjID,
@@ -166,7 +186,10 @@ impl ObjectHandleManager {
     /// Map an object with this manager. Will call to monitor if needed.
     pub fn map_object(&mut self, key: ObjectMapKey) -> Result<ObjectHandle, MapError> {
         if let Some(handle) = self.cache.activate(key) {
-            return Ok(ObjectHandle::from_raw(handle));
+            let oh = ObjectHandle::from_raw(handle);
+            let oh2 = oh.clone();
+            std::mem::forget(oh);
+            return Ok(oh2);
         }
         let mapping = monitor_api::monitor_rt_object_map(key.0, key.1).unwrap()?;
         let handle = new_object_handle(key.0, mapping.slot, key.1).into_raw();
@@ -176,8 +199,13 @@ impl ObjectHandleManager {
 
     /// Get an object handle from a pointer to within that object.
     pub fn get_handle(&mut self, ptr: *const u8) -> Option<object_handle> {
+        tracing::info!("in get_handle");
         let handle = self.cache.activate_from_ptr(ptr)?;
-        Some(ObjectHandle::from_raw(handle).clone().into_raw())
+        tracing::info!("in get_handle: done: {:p}", handle.runtime_info);
+        let oh = ObjectHandle::from_raw(handle);
+        let oh2 = oh.clone().into_raw();
+        std::mem::forget(oh);
+        Some(oh2)
     }
 
     /// Release a handle. If all handles have been released, calls to monitor to unmap.

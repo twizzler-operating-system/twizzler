@@ -8,6 +8,7 @@ use std::{alloc::AllocError, mem::MaybeUninit};
 pub use batch::*;
 pub use object::*;
 pub use reference::*;
+use twizzler_abi::klog_println;
 pub use unsafetx::*;
 
 use crate::{
@@ -22,18 +23,12 @@ pub trait TxHandle {
     fn tx_mut(&self, data: *const u8, len: usize) -> Result<*mut u8>;
 
     fn write_uninit<T>(&self, target: &mut MaybeUninit<T>, value: T) -> Result<&mut T> {
+        klog_println!("==> write uninit {:p}", target);
         let ptr = self
             .tx_mut((target as *mut MaybeUninit<T>).cast(), size_of::<T>())?
             .cast::<MaybeUninit<T>>();
         let target = unsafe { &mut *ptr };
         Ok(target.write(value))
-    }
-
-    fn ctor_inplace<T, F>(&self, target: &MaybeUninit<T>, ctor: F) -> Result<()>
-    where
-        F: FnOnce(&mut MaybeUninit<T>) -> Result<()>,
-    {
-        todo!()
     }
 
     fn new_box_with<T: Invariant, A: Allocator, F>(

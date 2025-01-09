@@ -45,15 +45,12 @@ impl CondVar {
         let mut inner = self.inner.lock();
         inner.queue.insert(current_thread);
         drop(inner);
+
+        let current_thread = current_thread_ref().unwrap();
+        let critical_guard = current_thread.enter_critical();
         let res = unsafe {
             guard.force_unlock();
-            current_thread_ref()
-                .unwrap()
-                .set_state(ExecutionState::Sleeping);
-            crate::sched::schedule(false);
-            current_thread_ref()
-                .unwrap()
-                .set_state(ExecutionState::Running);
+            crate::syscall::sync::finish_blocking(critical_guard);
             guard.force_relock()
         };
         let current_thread = current_thread_ref().unwrap();

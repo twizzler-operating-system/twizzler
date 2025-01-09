@@ -64,6 +64,15 @@ impl<'obj, T> Ref<'obj, T> {
             _pd: PhantomData,
         }
     }
+
+    pub fn from_handle(handle: ObjectHandle, ptr: *const T) -> Self {
+        Self {
+            ptr,
+            owned: true,
+            handle: Box::into_raw(Box::new(handle)),
+            _pd: PhantomData,
+        }
+    }
 }
 
 impl<'obj, T> Deref for Ref<'obj, T> {
