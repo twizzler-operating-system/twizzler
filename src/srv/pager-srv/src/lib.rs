@@ -11,7 +11,6 @@ use std::{
 use async_executor::{Executor, Task};
 use async_io::Timer;
 use futures::executor::block_on;
-use tickv::{success_codes::SuccessCode, ErrorCode};
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 use twizzler_abi::{
@@ -27,15 +26,12 @@ use crate::{
     data::PagerData,
     helpers::{physrange_to_pages, PAGE},
     request_handle::handle_kernel_request,
-    store::{Key, KeyValueStore},
 };
 
 mod data;
 mod helpers;
-mod nvme;
 mod physrw;
 mod request_handle;
-mod store;
 
 pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 
@@ -350,87 +346,4 @@ fn do_pager_start(q1: ObjID, q2: ObjID) {
 #[secgate::secure_gate]
 pub fn pager_start(q1: ObjID, q2: ObjID) {
     do_pager_start(q1, q2);
-}
-
-#[repr(C, packed)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Foo {
-    x: u32,
-}
-
-static mut RAND_STATE: u32 = 0;
-pub fn quick_random() -> u32 {
-    let state = unsafe { RAND_STATE };
-    let newstate = state.wrapping_mul(69069).wrapping_add(5);
-    unsafe {
-        RAND_STATE = newstate;
-    }
-    newstate >> 16
-}
-
-struct Tester<'a> {
-    kv: KeyValueStore<'a>,
-    truth: BTreeMap<Key, Foo>,
-}
-
-#[allow(dead_code)]
-impl<'a> Tester<'a> {
-    fn test(&mut self) {
-        const TEST_ITERS: u32 = 100000;
-        for i in 0..TEST_ITERS {
-            // Every once in a while, validate some things.
-            if i % 2000 == 0 {
-                self.validate_has_all();
-            }
-            let x = i % (10001 + i / 1000);
-            let k = Key::new(ObjID::new(0), x, store::KeyKind::ObjectInfo);
-            let _ = self.get(k);
-            let num = quick_random() % 3;
-            if num == 0 || num == 2 {
-                let _ = self.put(k, Foo { x });
-            } else if num == 1 {
-                let _ = self.del(k);
-            }
-        }
-    }
-
-    fn validate_has_all(&self) {
-        for (key, val) in self.truth.iter() {
-            let res: Foo = self.kv.get(*key).unwrap();
-            assert_eq!(res, *val);
-        }
-    }
-
-    fn get(&self, key: Key) -> Result<Foo, ErrorCode> {
-        let r = self.kv.get(key);
-        if r.is_ok() {
-            assert!(self.truth.contains_key(&key));
-            let t = self.truth.get(&key).unwrap();
-            assert_eq!(t, r.as_ref().unwrap());
-        } else {
-            assert!(!self.truth.contains_key(&key));
-        }
-        r
-    }
-
-    fn put(&mut self, key: Key, v: Foo) -> Result<SuccessCode, ErrorCode> {
-        let res = self.kv.put(key, v);
-        if res.is_ok() {
-            assert!(!self.truth.contains_key(&key));
-            self.truth.insert(key, v);
-        } else {
-            assert!(self.truth.contains_key(&key));
-        }
-        res
-    }
-
-    fn del(&mut self, key: Key) -> Result<SuccessCode, ErrorCode> {
-        let res = self.kv.del(key);
-        if res.is_err() {
-            assert!(!self.truth.contains_key(&key));
-        } else {
-            self.truth.remove(&key).unwrap();
-        }
-        res
-    }
 }
