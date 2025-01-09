@@ -1,18 +1,20 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 
-use crate::{Cap, ObjectId, Permissions};
+use crate::{Cap, Del, ObjectId, Permissions};
 
 pub struct SecCtx {
     // lowkey i have no idea what this is, maybe the object
     // the ctx is contained in? daniel said he was working on that.
     // obj: Option<KernelObject<()>>,
     caps: BTreeMap<ObjectId, Vec<Cap>>,
+    dels: BTreeMap<ObjectId, Vec<Del>>,
 }
 struct SecCtxMgr {
     //TODO: inner: Mutex<SecCtx>,
-    inner: SecCtx,
-    // the active security context id? how is this helpful? idk
-    // active_id: Spinlock<ObjectId>
+    inner: SecCtxMgrInner,
+    // the active security context id? how is this helpful? idk, also spinlock is behind the kernel
+    // mutex is also behind kernel, maybe we could make a sync crate?
+    // active_id: SpinLock<ObjectId>,
 }
 
 pub type SecCtxRef = Arc<SecCtx>;
@@ -21,9 +23,9 @@ struct SecCtxMgrInner {
     /// the active security context, add this later
     // active: Mutex<SecCtxRef>,
     active: SecCtxRef,
-    // cache of inactive, wait why are we indexing by objectid, how does this help?
-    // is it object id of something we want to index, and we hold refs to all ctx's that have that objectid in their caps?
+    // objectid here is the id of the security context
     inactive: BTreeMap<ObjectId, SecCtxRef>,
+    // inactive: Vec<SecCtxRef>,
 }
 
 /// Information about how we want to access an object for perms checking.
@@ -54,7 +56,6 @@ impl SecCtx {
             // cap.verify_sig(verifying_key)
             perm |= cap.permissions; // union of all permissions granted
         }
-
         perm
     }
 
@@ -96,13 +97,27 @@ impl SecCtxMgr {
     }
 
     /// Check access rights in the active context.
-    pub fn check_active_access(&self, _access_info: AccessInfo) -> &Permissions {
-        todo!()
+    pub fn check_active_access(&self, _access_info: AccessInfo) -> Permissions {
+        // what is the difference between lookup and check_active_access
+
+        self.inner.active.lookup(_access_info.target_id)
     }
 
     /// Search all attached contexts for access.
-    pub fn search_access(&self, _access_info: AccessInfo) -> &Permissions {
-        todo!()
+    pub fn search_access(&self, _access_info: AccessInfo) -> Permissions {
+        let active_perms = self.inner.active.lookup(_access_info.target_id);
+        if active_perms.is_empty() {
+            // do we want to look for the most permissive context or just the first context?
+            // here im just doing the first context
+            for (_, ctx) in self.inner.inactive.iter() {
+                let perms = ctx.lookup(_access_info.target_id);
+                if !perms.is_empty() {
+                    return perms;
+                }
+            }
+            return Permissions::empty();
+        }
+        return active_perms;
     }
 
     /// Build a new SctxMgr for user threads.
@@ -132,6 +147,7 @@ impl SecCtxMgr {
 
     /// Switch to the specified context.
     pub fn switch_context(&self, id: ObjectId) -> SwitchResult {
+        // dont have some of these primitives yet
         // if *self.active_id.lock() == id {
         //     return SwitchResult::NoSwitch;
         // }
@@ -153,6 +169,7 @@ impl SecCtxMgr {
     // Attach a security context.
     // dont have all the types here
     // pub fn attach(&self, sctx: SecCtxRef) -> Result<(), SctxAttachError> {
+    //     dont have access to these objects yet, ask daniel how to use these outside of kernel src
     //     let mut inner = self.inner.lock();
     //     if inner.active.id() == sctx.id() || inner.inactive.contains_key(&sctx.id()) {
     //         return Err(SctxAttachError::AlreadyAttached);
@@ -219,8 +236,8 @@ impl Clone for SecCtxMgr {
 //     fn drop(&mut self) {
 //         let mut global = GLOBAL_SECCTX_MGR.contexts.lock();
 //         let inner = self.inner.lock();
-//         // Check the contexts we have a reference to. If the value is 2, then it's only us and the
-//         // global mgr that have a ref. Since we hold the global mgr lock, this will not get
+//         // Check the contexts we have a reference to. If the value is 2, then it's only us and
+// the         // global mgr that have a ref. Since we hold the global mgr lock, this will not get
 //         // incremented if no one else holds a ref.
 //         for ctx in inner.inactive.values() {
 //             if ctx.id() != KERNEL_SCTX && Arc::strong_count(ctx) == 2 {

@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     flags::{CapFlags, HashingAlgo, SigningScheme},
-    CapError, Gates, GatesError, ObjectId, Permissions, VerifyingKey,
+    CapError, Gates, GatesError, ObjectId, Permissions, Revoc, VerifyingKey,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -16,7 +16,7 @@ pub struct Cap {
     pub permissions: Permissions,
     flags: CapFlags,
     gates: Gates,
-    pub revocation: u128,
+    pub revocation: Revoc,
     ///NOTE: AS BYTES
     siglen: u16,
     sig: [u8; 1024],
@@ -29,7 +29,7 @@ impl Cap {
         accessor: ObjectId,
         perms: Permissions,
         target_priv_key: [u8; 32], // with this key we can?
-        revocation: u128,
+        revocation: Revoc,
         gates: Gates,
     ) -> Result<Self, CapError> {
         let flags = CapFlags::SHA256 | CapFlags::ECDSA; // set flags
@@ -110,9 +110,11 @@ impl Cap {
     /// pass in proposed gates values, verifies that they fall within the range
     /// specified by this capability
     pub fn check_gate(&self, offset: u64, length: u64, align: u64) -> Result<(), GatesError> {
-        // the offset and length fields specify a region within the object. when the kernel switches a threads active context in addition to the validity checks
-        // described in sec 3.1, it checks to see if the instruction pointer is in a valid gate for the object it points to.
-        // The instruction pointer must reside within the region specified by offset and length and must be aligned on a value specified by align.
+        // the offset and length fields specify a region within the object. when the kernel switches
+        // a threads active context in addition to the validity checks described in sec 3.1,
+        // it checks to see if the instruction pointer is in a valid gate for the object it points
+        // to. The instruction pointer must reside within the region specified by offset and
+        // length and must be aligned on a value specified by align.
 
         //  assuming the layout is something like
         // ||||||||||||||||||||||||||||||||||||||||||||||||||||
@@ -138,7 +140,7 @@ impl Cap {
         perms: Permissions,
         flags: CapFlags,
         siglen: u16,
-        revocation: u128,
+        revocation: Revoc,
         gates: Gates,
     ) -> [u8; 76] {
         let mut hash_arr: [u8; 76] = [0; 76];
@@ -148,7 +150,7 @@ impl Cap {
         hash_arr[32] = perms.bits();
         hash_arr[33] = flags.bits();
         hash_arr[34..36].copy_from_slice(&siglen.to_le_bytes());
-        hash_arr[36..52].copy_from_slice(&revocation.to_le_bytes());
+        hash_arr[36..52].copy_from_slice(&revocation.serialize());
         hash_arr[52..60].copy_from_slice(&gates.offset.to_le_bytes());
         hash_arr[60..68].copy_from_slice(&gates.length.to_le_bytes());
         hash_arr[68..76].copy_from_slice(&gates.align.to_le_bytes());

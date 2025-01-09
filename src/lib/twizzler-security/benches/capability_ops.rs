@@ -21,7 +21,7 @@ fn verify_bench(c: &mut Criterion) {
         accessor_id,
         Permissions::READ | Permissions::WRITE,
         target_priv_key,
-        0,
+        Default::default(),
         Default::default(),
     )
     .unwrap();
@@ -52,7 +52,7 @@ fn creation_bench(c: &mut Criterion) {
                     black_box(accessor_id),
                     black_box(Permissions::READ | Permissions::WRITE),
                     black_box(target_priv_key),
-                    black_box(0),
+                    black_box(Default::default()),
                     black_box(Default::default()),
                 )
             })

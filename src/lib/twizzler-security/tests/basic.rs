@@ -17,7 +17,7 @@ fn creation_and_verification() {
         accessor_id,
         Permissions::READ | Permissions::WRITE,
         target_priv_key,
-        0,
+        Default::default(),
         Gates::default(),
     );
 
