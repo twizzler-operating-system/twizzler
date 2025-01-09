@@ -1,4 +1,5 @@
 #![feature(ptr_sub_ptr)]
+#![feature(naked_functions)]
 
 use std::{
     collections::BTreeMap,
@@ -13,9 +14,12 @@ use futures::executor::block_on;
 use tickv::{success_codes::SuccessCode, ErrorCode};
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
-use twizzler_abi::pager::{
-    CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionData, ObjectRange,
-    PagerCompletionData, PhysRange, RequestFromKernel, RequestFromPager,
+use twizzler_abi::{
+    klog_println,
+    pager::{
+        CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionData, ObjectRange,
+        PagerCompletionData, PhysRange, RequestFromKernel, RequestFromPager,
+    },
 };
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 
@@ -70,15 +74,11 @@ fn memory_init(data: PagerData, range: PhysRange) {
  * Queue Initializing
  */
 fn attach_queue<T: std::marker::Copy, U: std::marker::Copy, Q>(
-    id_str: &str,
+    obj_id: ObjID,
     queue_constructor: impl FnOnce(twizzler_queue::Queue<T, U>) -> Q,
 ) -> Result<Q, String> {
-    tracing::info!("Pager Attaching Queue: {}", id_str);
+    tracing::info!("Pager Attaching Queue: {}", obj_id);
 
-    // Parse the ID from the string
-    let id = id_str.parse::<u128>().unwrap();
-    // Initialize the object
-    let obj_id = ObjID::new(id);
     let object = Object::init_id(
         obj_id,
         Protections::READ | Protections::WRITE,
@@ -96,17 +96,20 @@ fn queue_args(i: usize) -> String {
     return std::env::args().nth(i).unwrap();
 }
 
-fn queue_init() -> (
+fn queue_init(
+    q1: ObjID,
+    q2: ObjID,
+) -> (
     twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>,
     twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
 ) {
     let rq = attach_queue::<RequestFromKernel, CompletionToKernel, _>(
-        &queue_args(1),
+        q1,
         twizzler_queue::CallbackQueueReceiver::new,
     )
     .unwrap();
     let sq = attach_queue::<RequestFromPager, CompletionToPager, _>(
-        &queue_args(2),
+        q2,
         twizzler_queue::QueueSender::new,
     )
     .unwrap();
@@ -165,7 +168,10 @@ fn verify_health(health: Result<(), String>) {
 /***
  * Pager Initialization generic function which calls specific initialization functions
  */
-fn pager_init() -> (
+fn pager_init(
+    q1: ObjID,
+    q2: ObjID,
+) -> (
     twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>,
     twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
     PagerData,
@@ -174,7 +180,7 @@ fn pager_init() -> (
     tracing::info!("init start");
     tracing_init();
     let data = data_structure_init();
-    let (rq, sq) = queue_init();
+    let (rq, sq) = queue_init(q1, q2);
     let ex = async_runtime_init(2);
 
     let health = health_check(&rq, &sq, ex, None);
@@ -267,8 +273,8 @@ async fn report_ready(
     }
 }
 
-fn main() {
-    let (rq, sq, data, ex) = pager_init();
+fn do_pager_start(q1: ObjID, q2: ObjID) {
+    let (rq, sq, data, ex) = pager_init(q1, q2);
     spawn_queues(rq, data.clone(), ex);
     let sq = Arc::new(sq);
     let sqc = Arc::clone(&sq);
@@ -339,6 +345,11 @@ fn main() {
 
     tracing::info!("Test Completed");
     //Done
+}
+
+#[secgate::secure_gate]
+pub fn pager_start(q1: ObjID, q2: ObjID) {
+    do_pager_start(q1, q2);
 }
 
 #[repr(C, packed)]
