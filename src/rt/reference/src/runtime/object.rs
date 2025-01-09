@@ -1,4 +1,4 @@
-use std::sync::atomic::AtomicU64;
+use std::{ffi::c_void, sync::atomic::AtomicU64, usize::MAX};
 
 use handlecache::HandleCache;
 use tracing::warn;
@@ -87,7 +87,18 @@ impl ReferenceRuntime {
     }
 
     pub fn get_object_handle_from_ptr(&self, ptr: *const u8) -> Option<object_handle> {
-        self.object_manager.lock().get_handle(ptr)
+        if let Some(handle) = self.object_manager.lock().get_handle(ptr) {
+            return Some(handle);
+        }
+
+        let id = self.get_alloc().get_id_from_ptr(ptr)?;
+        let slot = ptr as usize / MAX_SIZE;
+        Some(object_handle {
+            id: id.raw(),
+            start: (slot * MAX_SIZE) as *mut c_void,
+            map_flags: (MapFlags::READ | MapFlags::WRITE).bits(),
+            ..Default::default()
+        })
     }
 
     pub fn map_two_objects(

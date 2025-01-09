@@ -58,6 +58,7 @@ impl HandleCache {
     /// Activate, using a slot as key.
     pub fn activate_from_ptr(&mut self, ptr: *const u8) -> Option<object_handle> {
         let slot = (ptr as usize) / MAX_SIZE;
+        trace!("activate-from-ptr: {:p} (slot = {})", ptr, slot);
         let map = self.slotmap.get(&slot)?;
         self.activate(*map)
     }

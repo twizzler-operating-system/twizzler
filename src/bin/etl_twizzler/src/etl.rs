@@ -72,7 +72,7 @@ where
 
         self.tarchive
             .append_data(&mut header, path, &mut buf_writer)?;
-         
+
         Ok(())
     }
 
@@ -97,8 +97,7 @@ where
         let mut v = vec![];
         buf_writer.read_to_end(&mut v)?;
         {
-            self.tarchive
-                .append_data(&mut header, name, v.as_slice())?;
+            self.tarchive.append_data(&mut header, name, v.as_slice())?;
         }
         Ok(())
     }
@@ -215,10 +214,9 @@ where
                         form_persistent_vector(entry, path, bad_idea.offset)?;
                     }
                 }
-            }
-            else if let Err(E) = e {
+            } else if let Err(E) = e {
                 println!("{}", E);
-            } 
+            }
         }
 
         Ok(())

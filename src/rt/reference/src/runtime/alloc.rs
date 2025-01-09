@@ -62,6 +62,21 @@ pub struct LocalAllocator {
     bootstrap_alloc_slot: AtomicUsize,
 }
 
+impl LocalAllocator {
+    pub fn get_id_from_ptr(&self, ptr: *const u8) -> Option<ObjID> {
+        let slot = ptr as usize / MAX_SIZE;
+        let inner = self.inner.lock().ok()?;
+        let inner = inner.as_ref()?;
+        inner.talc.oom_handler.objects.iter().find_map(|info| {
+            if info.0 == slot {
+                Some(info.1)
+            } else {
+                None
+            }
+        })
+    }
+}
+
 struct LocalAllocatorInner {
     talc: Talc<RuntimeOom>,
 }

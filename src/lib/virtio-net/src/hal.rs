@@ -128,7 +128,7 @@ unsafe impl Hal for TestHal {
         assert!(buf_len <= DMA_PAGE_SIZE, "Hal::Share(): Buffer too large");
         let (phys, virt) = TestHal::dma_alloc(1, direction);
         let slice = remove_alloced(phys).unwrap().into_inner();
-        
+
         let buf_casted = buffer.cast::<u8>();
         let buf = buf_casted.as_ptr();
         let dma_buf = virt.as_ptr();

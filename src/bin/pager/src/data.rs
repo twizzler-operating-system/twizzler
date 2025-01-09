@@ -1,9 +1,11 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{Arc, Mutex},
+};
+
 use bitvec::prelude::*;
 use twizzler_abi::pager::{ObjectRange, PhysRange};
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
-use std::collections::VecDeque;
 
 use crate::helpers::{page_in, page_to_physrange};
 
@@ -16,7 +18,7 @@ pub struct PagerDataInner {
     pub bitvec: BitVec,
     pub hashmap: HashMap<u64, (ObjID, ObjectRange)>,
     pub lru_queue: VecDeque<u64>,
-    pub mem_range_start: u64 
+    pub mem_range_start: u64,
 }
 
 impl PagerDataInner {
@@ -28,7 +30,7 @@ impl PagerDataInner {
             bitvec: BitVec::new(),
             hashmap: HashMap::with_capacity(0),
             lru_queue: VecDeque::new(),
-            mem_range_start: 0
+            mem_range_start: 0,
         }
     }
 
@@ -87,7 +89,10 @@ impl PagerDataInner {
             self.lru_queue.retain(|&p| p != page_number as u64);
             tracing::info!("page {} removed from bitvec", page_number);
         } else {
-            tracing::info!("page {} is out of bounds and cannot be removed", page_number);
+            tracing::info!(
+                "page {} is out of bounds and cannot be removed",
+                page_number
+            );
         }
     }
 
@@ -114,12 +119,16 @@ impl PagerDataInner {
     pub fn insert_into_map(&mut self, key: u64, obj_id: ObjID, range: ObjectRange) {
         tracing::info!(
             "inserting into hashmap: key = {}, ObjID = {:?}, ObjectRange = {:?}",
-            key, obj_id, range
+            key,
+            obj_id,
+            range
         );
         self.hashmap.insert(key, (obj_id.clone(), range.clone()));
         tracing::info!(
             "inserted into hashmap: key = {}, ObjID = {:?}, ObjectRange = {:?}",
-            key, obj_id, range
+            key,
+            obj_id,
+            range
         );
     }
 
@@ -187,7 +196,11 @@ impl PagerData {
     /// Page in the data from disk
     /// Returns the physical range corresponding to the allocated page.
     pub fn fill_mem_page(&self, id: ObjID, obj_range: ObjectRange) -> PhysRange {
-        tracing::info!("allocating memory page for ObjID {:?}, ObjectRange {:?}", id, obj_range);
+        tracing::info!(
+            "allocating memory page for ObjID {:?}, ObjectRange {:?}",
+            id,
+            obj_range
+        );
         let mut inner = self.inner.lock().unwrap();
         let page = inner.get_mem_page();
         inner.insert_into_map(page.try_into().unwrap(), id, obj_range);
@@ -197,4 +210,3 @@ impl PagerData {
         return phys_range;
     }
 }
-
