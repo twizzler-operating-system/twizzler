@@ -40,8 +40,15 @@ impl<T> TxObject<T> {
         unsafe { RefMut::from_raw_parts(self.base_mut_ptr(), self.handle()) }
     }
 
-    pub fn insert_fot(&mut self, fot: FotEntry) -> crate::tx::Result<u64> {
+    pub fn insert_fot(&self, fot: FotEntry) -> crate::tx::Result<u64> {
         todo!()
+    }
+
+    pub fn into_unit(self) -> TxObject<()> {
+        TxObject {
+            handle: self.handle,
+            _pd: PhantomData,
+        }
     }
 }
 
@@ -99,6 +106,7 @@ mod tests {
         let obj = builder.build(Simple { x: 3 }).unwrap();
         let base = obj.base();
         assert_eq!(base.x, 3);
+        drop(base);
 
         let mut tx = obj.tx().unwrap();
         let mut base = tx.base_mut();

@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 use super::{GlobalPtr, Ref};
 use crate::{
     marker::{Invariant, PhantomStoreEffect},
+    object::FotEntry,
     tx::{Result, TxHandle, TxObject},
 };
 
@@ -44,6 +45,8 @@ impl<T: Invariant> InvPtr<T> {
     }
 
     pub fn new<B>(tx: &TxObject<B>, gp: impl Into<GlobalPtr<T>>) -> crate::tx::Result<Self> {
-        todo!()
+        let gp = gp.into();
+        let fote = tx.insert_fot(gp.into())?;
+        Ok(Self::from_raw_parts(fote, gp.offset()))
     }
 }

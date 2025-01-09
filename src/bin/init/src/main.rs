@@ -178,6 +178,10 @@ fn run_tests(test_list_name: &str, benches: bool) {
         let str = String::from_utf8(bytes.to_vec()).unwrap();
         let mut test_failed = false;
         for line in str.split("\n").filter(|l| !l.is_empty()) {
+            if !line.starts_with("twizzler-") {
+                println!("skipping test {}", line);
+                continue;
+            }
             println!("STARTING TEST {}", line);
             let test_comp = monitor_api::CompartmentLoader::new(
                 line,

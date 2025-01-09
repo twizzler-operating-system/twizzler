@@ -1,5 +1,6 @@
 use std::{
     marker::PhantomData,
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut, Index, IndexMut},
 };
 
@@ -11,6 +12,7 @@ use crate::object::RawObject;
 pub struct Ref<'obj, T> {
     ptr: *const T,
     handle: *const ObjectHandle,
+    owned: bool,
     _pd: PhantomData<&'obj T>,
 }
 
@@ -31,14 +33,17 @@ impl<'obj, T> Ref<'obj, T> {
         Self {
             ptr,
             handle,
+            owned: false,
             _pd: PhantomData,
         }
     }
 
     pub unsafe fn cast<U>(self) -> Ref<'obj, U> {
+        let this = ManuallyDrop::new(self);
         Ref {
-            ptr: self.ptr.cast(),
-            handle: self.handle,
+            ptr: this.ptr.cast(),
+            handle: this.handle,
+            owned: this.owned,
             _pd: PhantomData,
         }
     }
@@ -49,6 +54,15 @@ impl<'obj, T> Ref<'obj, T> {
 
     pub fn global(&self) -> GlobalPtr<T> {
         GlobalPtr::new(self.handle().id(), self.offset())
+    }
+
+    pub fn owned<'b>(&self) -> Ref<'b, T> {
+        Ref {
+            ptr: self.ptr,
+            owned: true,
+            handle: Box::into_raw(Box::new(self.handle().clone())),
+            _pd: PhantomData,
+        }
     }
 }
 
@@ -63,6 +77,14 @@ impl<'obj, T> Deref for Ref<'obj, T> {
 impl<'a, T> From<Ref<'a, T>> for GlobalPtr<T> {
     fn from(value: Ref<'a, T>) -> Self {
         GlobalPtr::new(value.handle().id(), value.offset())
+    }
+}
+
+impl<'a, T> Drop for Ref<'a, T> {
+    fn drop(&mut self) {
+        if self.owned {
+            let _boxed = unsafe { Box::from_raw(self.handle as *mut ObjectHandle) };
+        }
     }
 }
 
@@ -145,6 +167,10 @@ impl<'a, T> RefSlice<'a, T> {
         let ptr = self.as_slice().get(idx)?;
         Some(unsafe { Ref::from_raw_parts(ptr, self.ptr.handle) })
     }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
 }
 
 impl<'a, T> Index<usize> for RefSlice<'a, T> {
@@ -184,6 +210,10 @@ impl<'a, T> RefSliceMut<'a, T> {
     pub fn get_mut(&mut self, idx: usize) -> Option<RefMut<'_, T>> {
         let ptr = self.as_slice_mut().get_mut(idx)?;
         Some(unsafe { RefMut::from_raw_parts(ptr, self.ptr.handle) })
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
     }
 }
 

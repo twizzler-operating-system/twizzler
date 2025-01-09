@@ -1,8 +1,9 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::atomic::AtomicU32};
 
 use twizzler_abi::object::ObjID;
 
 use super::Ref;
+use crate::object::FotEntry;
 
 #[derive(Debug, Default, PartialEq, PartialOrd, Ord, Eq, Hash)]
 /// A global pointer, containing a fully qualified object ID and offset.
@@ -27,6 +28,18 @@ impl<T> GlobalPtr<T> {
 
     pub unsafe fn resolve(&self) -> Ref<'_, T> {
         todo!()
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.id.raw() == 0
+    }
+
+    pub fn id(&self) -> ObjID {
+        self.id
+    }
+
+    pub fn offset(&self) -> u64 {
+        self.offset
     }
 }
 
