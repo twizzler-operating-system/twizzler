@@ -56,6 +56,21 @@ fn main() {
     tracing::info!("logboi ready");
     std::mem::forget(lbcomp);
 
+    let nmcomp: CompartmentHandle = CompartmentLoader::new(
+        "naming",
+        "libnaming_srv.so",
+        NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(&["naming"])
+    .load()
+    .unwrap();
+    let mut flags = nmcomp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = nmcomp.wait(flags);
+    }
+    tracing::info!("naming ready");
+    std::mem::forget(nmcomp);
+
     let create = ObjectCreate::new(
         BackingType::Normal,
         LifetimeType::Volatile,

@@ -3612,6 +3612,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "naming"
+version = "0.1.0"
+dependencies = [
+ "naming-srv",
+ "secgate",
+ "twizzler-rt-abi",
+]
+
+[[package]]
+name = "naming-srv"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "lazy_static",
+ "secgate",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
+name = "naming-test"
+version = "0.1.0"
+dependencies = [
+ "naming",
+]
+
+[[package]]
 name = "native-tls"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
