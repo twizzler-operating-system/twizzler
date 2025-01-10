@@ -53,7 +53,7 @@ pub fn remove_from_requeue(thread: &ThreadRef) {
 // TODO: this is gross, we're manually trading out a critical guard with an interrupt guard because
 // we don't want to get interrupted... we need a better way to do this kind of consumable "don't
 // schedule until I say so".
-fn finish_blocking(guard: CriticalGuard) {
+pub fn finish_blocking(guard: CriticalGuard) {
     let thread = current_thread_ref().unwrap();
     crate::interrupt::with_disabled(|| {
         drop(guard);
@@ -109,9 +109,15 @@ struct SleepEvent {
 fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent, ThreadSyncError> {
     let (obj, offset) = get_obj(sleep.reference)?;
     let did_sleep = if matches!(sleep.reference, ThreadSyncReference::Virtual32(_)) {
-        obj.setup_sleep_word32(offset, sleep.op, sleep.value as u32, first_sleep)
+        obj.setup_sleep_word32(
+            offset,
+            sleep.op,
+            sleep.value as u32,
+            first_sleep,
+            sleep.flags,
+        )
     } else {
-        obj.setup_sleep_word(offset, sleep.op, sleep.value, first_sleep)
+        obj.setup_sleep_word(offset, sleep.op, sleep.value, first_sleep, sleep.flags)
     };
 
     Ok(SleepEvent {

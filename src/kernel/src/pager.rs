@@ -1,90 +1,68 @@
-use twizzler_abi::{
-    object::ObjID,
-    pager::{CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager},
-};
+use alloc::vec::Vec;
+
+use inflight::InflightManager;
+use request::ReqKind;
+use twizzler_abi::object::ObjID;
 
 use crate::{
-    obj::{lookup_object, LookupFlags},
-    queue::{ManagedQueueReceiver, ManagedQueueSender, QueueObject},
-    sched::schedule,
-    thread::{entry::start_new_kernel, priority::Priority},
+    memory::{MemoryRegion, MemoryRegionKind},
+    mutex::Mutex,
+    obj::{LookupFlags, ObjectRef},
+    once::Once,
+    syscall::sync::finish_blocking,
+    thread::current_thread_ref,
 };
 
-struct PagerQueues {
-    sender: Option<ManagedQueueSender<RequestFromKernel, CompletionToKernel>>,
-    receiver: Option<ManagedQueueReceiver<RequestFromPager, CompletionToPager>>,
+mod inflight;
+mod queues;
+mod request;
+
+pub use queues::init_pager_queue;
+pub use request::Request;
+
+static PAGER_MEMORY: Once<MemoryRegion> = Once::new();
+
+pub fn pager_select_memory_regions(regions: &[MemoryRegion]) -> Vec<MemoryRegion> {
+    let mut fa_regions = Vec::new();
+    for reg in regions {
+        if matches!(reg.kind, MemoryRegionKind::UsableRam) {
+            // TODO: don't just pick one, and don't just pick the first one.
+            if PAGER_MEMORY.poll().is_none() {
+                logln!("selecting pager region {:?}", reg);
+                PAGER_MEMORY.call_once(|| *reg);
+            } else {
+                fa_regions.push(*reg);
+            }
+        }
+    }
+    fa_regions
 }
 
-static mut PAGER_QUEUES: PagerQueues = PagerQueues {
-    sender: None,
-    receiver: None,
-};
-
-extern "C" fn pager_entry() {
-    pager_main();
+lazy_static::lazy_static! {
+    static ref INFLIGHT_MGR: Mutex<InflightManager> = Mutex::new(InflightManager::new());
 }
 
-extern "C" fn pager_compl_handler_entry() {
-    pager_compl_handler_main();
-}
-
-extern "C" fn pager_request_handler_entry() {
-    pager_request_handler_main();
-}
-
-fn pager_request_handler_main() {
-    let receiver = unsafe { PAGER_QUEUES.receiver.as_ref().unwrap() };
+pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     loop {
-        receiver.handle_request(|id, req| {
-            logln!("kernel got req {}:{:?} from pager", id, req);
-            CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
-        });
-    }
-}
+        logln!("trying to lookup info about object {}", id);
 
-fn pager_compl_handler_main() {
-    let sender = unsafe { PAGER_QUEUES.sender.as_ref().unwrap() };
-    loop {
-        sender.process_completion();
-    }
-}
+        match crate::obj::lookup_object(id, LookupFlags::empty()) {
+            crate::obj::LookupResult::Found(arc) => return Some(arc),
+            _ => {}
+        }
 
-fn pager_main() {
-    logln!("hello from pager thread");
-    let sender = unsafe { PAGER_QUEUES.sender.as_ref().unwrap() };
-    loop {
-        let out = sender.submit(RequestFromKernel::new(
-            twizzler_abi::pager::KernelCommand::EchoReq,
-        ));
-        logln!("submitted request");
-        let resp = out.wait();
-        logln!("got response: {:?}", resp);
-        schedule(false);
-    }
-}
+        let mut mgr = INFLIGHT_MGR.lock();
+        let inflight = mgr.add_request(ReqKind::new_info(id));
+        drop(mgr);
+        if let Some(pager_req) = inflight.pager_req() {
+            queues::submit_pager_request(pager_req);
+        }
 
-pub fn init_pager_queue(id: ObjID, outgoing: bool) {
-    let obj = match lookup_object(id, LookupFlags::empty()) {
-        crate::obj::LookupResult::Found(o) => o,
-        _ => panic!("pager queue not found"),
-    };
-    logln!(
-        "[kernel-pager] registered {} pager queue: {}",
-        if outgoing { "sender" } else { "receiver" },
-        id
-    );
-    if outgoing {
-        let queue = QueueObject::<RequestFromKernel, CompletionToKernel>::from_object(obj);
-        let sender = ManagedQueueSender::new(queue);
-        unsafe { PAGER_QUEUES.sender = Some(sender) };
-    } else {
-        let queue = QueueObject::<RequestFromPager, CompletionToPager>::from_object(obj);
-        let receiver = ManagedQueueReceiver::new(queue);
-        unsafe { PAGER_QUEUES.receiver = Some(receiver) };
-    }
-    if unsafe { PAGER_QUEUES.receiver.is_some() && PAGER_QUEUES.sender.is_some() } {
-        start_new_kernel(Priority::REALTIME, pager_entry, 0);
-        start_new_kernel(Priority::REALTIME, pager_compl_handler_entry, 0);
-        start_new_kernel(Priority::REALTIME, pager_request_handler_entry, 0);
+        let mut mgr = INFLIGHT_MGR.lock();
+        let thread = current_thread_ref().unwrap();
+        if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
+            drop(mgr);
+            finish_blocking(guard);
+        };
     }
 }

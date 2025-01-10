@@ -43,27 +43,23 @@ impl ObjectSource {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Default)]
 #[repr(C)]
 /// The backing memory type for this object. Currently doesn't do anything.
 pub enum BackingType {
     /// The default, let the kernel decide based on the [LifetimeType] of the object.
+    #[default]
     Normal = 0,
 }
 
-impl Default for BackingType {
-    fn default() -> Self {
-        Self::Normal
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Default)]
 #[repr(C)]
 /// The base lifetime type of the object. Note that this does not ensure that the object is stored
 /// in a specific type of memory, the kernel is allowed to migrate objects with the Normal
 /// [BackingType] as it sees fit. For more information on object lifetime, see [the book](https://twizzler-operating-system.github.io/nightly/book/object_lifetime.html).
 pub enum LifetimeType {
     /// This object is volatile, and is expected to be deleted after a power cycle.
+    #[default]
     Volatile = 0,
     /// This object is persistent, and should be deleted only after an explicit delete call.
     Persistent = 1,
@@ -71,7 +67,7 @@ pub enum LifetimeType {
 
 bitflags! {
     /// Flags to pass to the object create system call.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
     pub struct ObjectCreateFlags: u32 {
     }
 }
@@ -83,7 +79,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Default)]
 #[repr(C)]
 /// Full object creation specification, minus ties.
 pub struct ObjectCreate {
@@ -135,6 +131,7 @@ impl CreateTieSpec {
     Eq,
     IntoPrimitive,
     FromPrimitive,
+    Hash,
     thiserror::Error,
 )]
 #[repr(u64)]

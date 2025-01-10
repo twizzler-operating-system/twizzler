@@ -75,6 +75,8 @@ pub enum PcieCapability<'a> {
     Unknown(u8),
     Msi(VolatileRef<'a, MsiCapability>),
     MsiX(VolatileRef<'a, MsixCapability>),
+    VendorSpecific(usize), /* Offset to the capability, as vendor specific capabilities do not
+                            * have a consistent definition. */
 }
 
 impl<'a> Iterator for PcieCapabilityIterator<'a> {
@@ -92,6 +94,7 @@ impl<'a> Iterator for PcieCapabilityIterator<'a> {
                 0x11 => {
                     PcieCapability::MsiX(self.cfg.get_mmio_offset_mut::<MsixCapability>(self.off))
                 }
+                9 => PcieCapability::VendorSpecific(self.off),
                 x => PcieCapability::Unknown(x),
             };
             self.off = (map_field!(cap.next).read() & 0xfc) as usize;
@@ -109,7 +112,10 @@ fn calc_msg_info(vec: InterruptVector, level: bool) -> (u64, u32) {
 }
 
 impl Device {
-    fn pcie_capabilities<'a>(&'a self, mm: &'a MmioObject) -> Option<PcieCapabilityIterator<'a>> {
+    pub fn pcie_capabilities<'a>(
+        &'a self,
+        mm: &'a MmioObject,
+    ) -> Option<PcieCapabilityIterator<'a>> {
         let cfg = unsafe { mm.get_mmio_offset::<PcieDeviceHeader>(0) };
         let cfg = cfg.as_ptr();
         let ptr = map_field!(cfg.cap_ptr).read() & 0xfc;
@@ -124,7 +130,7 @@ impl Device {
         })
     }
 
-    fn find_mmio_bar(&self, bar: usize) -> Option<MmioObject> {
+    pub fn find_mmio_bar(&self, bar: usize) -> Option<MmioObject> {
         let mut idx = 0;
         while let Some(mm) = self.get_mmio(idx) {
             if mm.get_info().info == bar as u64 {

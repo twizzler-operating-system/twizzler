@@ -1,0 +1,8 @@
+[package]
+name = "twizzler-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+twizzler-rt-abi = "0.99"
+twz-rt = { path = "reference" }

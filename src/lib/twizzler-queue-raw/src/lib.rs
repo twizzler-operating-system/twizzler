@@ -77,6 +77,7 @@
 
 use core::{
     cell::UnsafeCell,
+    fmt::Display,
     marker::PhantomData,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
@@ -329,15 +330,20 @@ impl RawQueueHdr {
     fn setup_rec_sleep_simple(&self) -> (&AtomicU64, u64) {
         // TODO: an interface that undoes this.
         self.consumer_set_waiting(true);
-        let b = self.bell.load(Ordering::SeqCst);
-        (&self.bell, b)
+        let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
+        (&self.bell, t)
     }
 
     fn setup_send_sleep_simple(&self) -> (&AtomicU64, u64) {
         // TODO: an interface that undoes this.
         self.submitter_waiting();
-        let t = self.tail.load(Ordering::SeqCst);
-        (&self.tail, t)
+        let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
+        let h = self.head.load(Ordering::SeqCst) & 0x7fffffff;
+        if self.is_full(h, t) {
+            (&self.tail, t)
+        } else {
+            (&self.tail, u64::MAX)
+        }
     }
 
     fn setup_rec_sleep<'a, T>(
@@ -411,6 +417,27 @@ pub enum QueueError {
     Unknown,
     /// The operation would have blocked, and non-blocking operation was specified.
     WouldBlock,
+}
+
+impl Display for QueueError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unknown => write!(f, "unknown"),
+            Self::WouldBlock => write!(f, "would block"),
+        }
+    }
+}
+
+impl core::error::Error for QueueError {}
+
+#[cfg(feature = "std")]
+impl From<QueueError> for std::io::Error {
+    fn from(err: QueueError) -> Self {
+        match err {
+            QueueError::WouldBlock => std::io::Error::from(std::io::ErrorKind::WouldBlock),
+            _ => std::io::Error::from(std::io::ErrorKind::Other),
+        }
+    }
 }
 
 impl<T: Copy> RawQueue<T> {
@@ -590,7 +617,6 @@ mod tests {
     use crate::{QueueEntry, QueueError, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags};
 
     fn wait(x: &AtomicU64, v: u64) {
-        // println!("wait");
         while x.load(Ordering::SeqCst) == v {
             core::hint::spin_loop();
         }

@@ -1,0 +1,17 @@
+[package]
+name = "logboi-srv"
+version = "0.1.0"
+edition = "2021"
+
+# Important: this should be compiled as both an rlib, for exporting the trampoline,
+# and as a cdylib, as the actual .so file that will be exporting the gates.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+secgate = { path = "../../lib/secgate" }
+twizzler-runtime = { path = "../../rt" }
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-rt-abi = "0.99"
+
+[features]

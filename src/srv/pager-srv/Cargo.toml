@@ -1,0 +1,29 @@
+[package]
+name = "pager-srv"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-object = { path = "../../lib/twizzler-object" }
+twizzler-queue = { path = "../../lib/twizzler-queue" }
+#twizzler-async = { path = "../../lib/twizzler-async" }
+twizzler-driver = { path = "../../lib/twizzler-driver" }
+twizzler-runtime = { path = "../../rt" }
+object-store = { path = "object-store" }
+async-trait = "0.1.66"
+volatile = "0.5"
+tracing = "0.1"
+tracing-subscriber = "0.3.17"
+bitvec = "1.0.1"
+secgate = { path = "../../lib/secgate" }
+
+async-io = "2.3.2"
+async-executor = { version = "1.9.1", features = [] }
+polling = "3.6.0"
+futures = "*"

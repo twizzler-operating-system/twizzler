@@ -263,7 +263,7 @@ where
     unsafe {
         // We still need to save the fpu registers / sse state.
         if use_xsave() {
-            core::arch::asm!("xsave [{}]", in(reg) frame.xsave_region.as_ptr(), in("rax") 3, in("rdx") 0);
+            core::arch::asm!("xsave [{}]", in(reg) frame.xsave_region.as_ptr(), in("rax") 7, in("rdx") 0);
         } else {
             core::arch::asm!("fxsave [{}]", in(reg) frame.xsave_region.as_ptr());
         }
@@ -362,6 +362,13 @@ impl Thread {
             );
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
+
+        if sup {
+            self.arch
+                .user_fs
+                .store(target.super_thread_ptr as u64, Ordering::SeqCst);
+            self.secctx.switch_context(target.super_ctx);
+        }
     }
 
     pub fn set_entry_registers(&self, regs: Registers) {
@@ -383,32 +390,19 @@ impl Thread {
             );
             let do_xsave = use_xsave();
             if do_xsave {
-                core::arch::asm!("xsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
+                core::arch::asm!("xsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr(), in("rax") 7, in("rdx") 0);
             } else {
                 core::arch::asm!("fxsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr());
             }
             old_thread.arch.xsave_inited.store(true, Ordering::SeqCst);
             if self.arch.xsave_inited.load(Ordering::SeqCst) {
                 if do_xsave {
-                    core::arch::asm!("xrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") 3, in("rdx") 0);
+                    core::arch::asm!("xrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") 7, in("rdx") 0);
                 } else {
                     core::arch::asm!("fxrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr());
                 }
             } else {
-                let mut f: u16 = 0;
-                let mut x: u32 = 0;
-                core::arch::asm!(
-                    "finit",
-                    "fstcw [rax]",
-                    "or qword ptr [rax], 0x33f",
-                    "fldcw [rax]",
-                    "stmxcsr [rdx]",
-                    "mfence",
-                    "or qword ptr [rdx], 0x1f80",
-                    "sfence",
-                    "ldmxcsr [rdx]",
-                    "stmxcsr [rdx]",
-                    in("rax") &mut f, in("rdx") &mut x);
+                super::processor::init_fpu_state();
             }
         }
         let old_stack_save = old_thread.arch.rsp.get();

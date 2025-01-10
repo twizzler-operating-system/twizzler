@@ -1,5 +1,5 @@
 
-#cargo-features = ["profile-rustflags"] 
+#cargo-features = ["profile-rustflags"]
 
 [workspace]
 members = [
@@ -7,28 +7,43 @@ members = [
     "tools/image_builder",
     "tools/initrd_gen",
     "src/bin/init",
-    #"src/bin/bootstrap",
+    "src/bin/bootstrap",
     "src/bin/devmgr",
-    "src/bin/netmgr",
-    "src/bin/nettest",
-    "src/bin/pager",
+    "src/bin/etl_twizzler",
     "src/bin/mnemosyne",
     "src/bin/test-tiny-http",
+    "src/bin/random_validation",
+    "src/bin/genrandom",
+    "src/bin/randtest",
     "src/bin/stdfs_demo",
+    "src/bin/virtio",
+    "src/bin/mnemosyne",
+    "src/bin/stdfs_demo",
+    "src/bin/object-store-test",
+    "src/bin/virtio",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
-    "src/lib/twizzler-net",
     "src/lib/twizzler-async",
     "src/lib/twizzler-object",
-    #"src/lib/twizzler-runtime-api",
     "src/lib/twizzler-futures",
-    #"src/runtime/dynlink",
-    #"src/runtime/monitor",
-    #"src/runtime/monitor-api",
-    #"src/runtime/twz-rt",
-    "src/abi/rt-abi",
-    "src/abi/types", 
+    "src/lib/dynlink",
+    "src/lib/secgate",
+    "src/lib/twizzler",
+    "src/rt/monitor",
+    "src/rt/monitor-api",
+    "src/rt/monitor/tests/montest",
+    "src/rt/monitor/tests/montest-lib",
+    "src/rt",
+    "src/rt/reference",
+    "src/rt/minimal",
+    "src/lib/logboi",
+    "src/srv/logboi-srv",
+    "src/srv/pager-srv",
+    "src/bin/logboi-test",
+    "src/lib/virtio-net",
+    "src/bin/object-store-test",
+    "src/lib/pager",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -36,7 +51,7 @@ resolver = "2"
 
 [workspace.metadata]
 initrd = [
-    #"crate:bootstrap",
+    "crate:bootstrap",
     "crate:init",
     "crate:devmgr",
     "crate:netmgr",
@@ -45,8 +60,21 @@ initrd = [
     "crate:test-tiny-http",
     #"lib:twz-rt",
     #"lib:monitor",
+    "crate:etl_twizzler",
+    "crate:virtio",
+    "crate:monitor",
+    "crate:montest",
     "crate:mnemosyne",
     "crate:stdfs_demo",
+    "crate:logboi-test",
+    "crate:random_validation",
+    "crate:randtest",
+    "crate:genrandom",
+    "crate:object-store-test",
+    "lib:twz-rt",
+    "lib:montest-lib",
+    "lib:logboi-srv",
+    "lib:pager-srv",
     #"third-party:hello-world-rs"
 ]
 
@@ -67,6 +95,8 @@ async-io = { git = "https://github.com/twizzler-operating-system/async-io.git", 
 async-executor = { git = "https://github.com/twizzler-operating-system/async-executor.git", branch = "twizzler" }
 twizzler-futures = { path = "src/lib/twizzler-futures" }
 twizzler-abi = { path = "src/lib/twizzler-abi" }
+twizzler-rt-abi = { path = "src/abi/rt-abi" }
 parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
 # lock_api comes from the parking_lot repo
 lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
+filetime = { git = "https://github.com/CPTforever/filetime.git", branch = "twizzler" }

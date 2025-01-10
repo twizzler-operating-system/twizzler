@@ -1,0 +1,10 @@
+[package]
+name = "twizzler"
+version = "0.99.0"
+edition = "2021"
+
+[dependencies]
+bitflags = "2"
+thiserror = "2"
+twizzler-rt-abi = "0.99"
+twizzler-abi = { path = "../../lib/twizzler-abi" }

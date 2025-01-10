@@ -34,9 +34,8 @@ pub mod marker;
 pub mod meta;
 pub mod object;
 pub mod pager;
-#[cfg(feature = "runtime")]
-pub mod runtime;
 pub mod security;
+pub mod simple_mutex;
 pub mod slot;
 pub mod syscall;
 pub mod thread;
@@ -53,7 +52,7 @@ unsafe fn internal_abort() -> ! {
     }
 }
 
-fn print_err(err: &str) {
+pub fn print_err(err: &str) {
     syscall::sys_kernel_console_write(err.as_bytes(), syscall::KernelConsoleWriteFlags::empty());
 }
 

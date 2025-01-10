@@ -1,0 +1,27 @@
+[package]
+name = "monitor"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
+twizzler-rt-abi = "0.99"
+dynlink = { path = "../../lib/dynlink" }
+tracing = { version = "0.1", pub = false }
+tracing-subscriber = { version = "0.3", pub = false }
+twizzler-runtime = { path = "../" }
+twizzler-object = { path = "../../lib/twizzler-object" }
+miette = "5.10"
+secgate = { path = "../../lib/secgate" }
+monitor-api = { path = "../monitor-api" }
+static_assertions = "1.1"
+lazy_static = "1.4"
+talc = "3.1"
+happylock = "0.3"
+parking_lot = "*"
+
+[features]
+secgate-impl = []
+default = ["secgate-impl"]
