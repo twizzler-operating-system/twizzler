@@ -18,6 +18,7 @@ pub enum MemoryRegionKind {
     BootloaderReserved,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct MemoryRegion {
     pub start: PhysAddr,
     pub length: usize,

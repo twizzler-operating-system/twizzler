@@ -19,6 +19,7 @@ members = [
     "src/bin/virtio",
     "src/bin/mnemosyne",
     "src/bin/stdfs_demo",
+    "src/bin/object-store-test",
     "src/bin/virtio",
     "src/bin/cat",
     "src/kernel",
@@ -44,6 +45,7 @@ members = [
     "src/lib/naming",
     "src/srv/naming-srv", 
     "src/bin/naming-test",
+    "src/bin/object-store-test",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -75,12 +77,12 @@ initrd = [
     "crate:stdfs_demo",
     "crate:logboi-test",
     "lib:logboi-srv",
-    # "crate:random_validation",
     "crate:randtest",
     "crate:randtest",
     "crate:genrandom",
     "lib:naming-srv",
     "crate:naming-test",
+    "crate:object-store-test",
     #"third-party:hello-world-rs"
     "crate:cat",
 ]

@@ -1,6 +1,6 @@
 extern crate twizzler_runtime;
 
-fn initialize_pager() { 
+fn initialize_pager() {
     info!("starting pager");
     const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
     let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
@@ -42,7 +42,6 @@ fn initialize_pager() {
     .expect("failed to start pager");
 
     std::mem::forget(pager_comp);
-
 }
 
 fn main() {

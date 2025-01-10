@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
 twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-queue = { path = "../../lib/twizzler-queue" }
 #twizzler-async = { path = "../../lib/twizzler-async" }

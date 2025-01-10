@@ -1,52 +1,42 @@
+use alloc::vec::Vec;
+
 use inflight::InflightManager;
 use request::ReqKind;
-use twizzler_abi::{
-    object::ObjID,
-    pager::{CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager},
-    thread::ExecutionState,
-};
+use twizzler_abi::object::ObjID;
 
 use crate::{
+    memory::{MemoryRegion, MemoryRegionKind},
     mutex::Mutex,
-    obj::{lookup_object, LookupFlags, ObjectRef},
+    obj::{LookupFlags, ObjectRef},
     once::Once,
-    queue::{ManagedQueueReceiver, ManagedQueueSender, QueueObject},
-    sched::schedule,
     syscall::sync::finish_blocking,
-    thread::{current_thread_ref, entry::start_new_kernel, priority::Priority},
+    thread::current_thread_ref,
 };
 
 mod inflight;
 mod queues;
 mod request;
 
-pub use inflight::Inflight;
 pub use queues::init_pager_queue;
 pub use request::Request;
 
-/*
-extern "C" fn pager_entry() {
-    pager_main();
-}
-fn pager_main() {
-    logln!("kernel: hello from pager thread");
-    let sender = unsafe { PAGER_QUEUES.sender.as_ref().unwrap() };
-    loop {
-        let out = sender.submit(RequestFromKernel::new(
-            twizzler_abi::pager::KernelCommand::EchoReq,
-        ));
-        logln!("kernel: submitted request");
-        let resp = out.wait();
-        logln!("got response: {:?}", resp);
-        current_thread_ref()
-            .unwrap()
-            .set_state(ExecutionState::Sleeping);
-        logln!("kernel: got response: {:?}", resp);
-        // TODO: enter normal pager operation...
-        schedule(false);
+static PAGER_MEMORY: Once<MemoryRegion> = Once::new();
+
+pub fn pager_select_memory_regions(regions: &[MemoryRegion]) -> Vec<MemoryRegion> {
+    let mut fa_regions = Vec::new();
+    for reg in regions {
+        if matches!(reg.kind, MemoryRegionKind::UsableRam) {
+            // TODO: don't just pick one, and don't just pick the first one.
+            if PAGER_MEMORY.poll().is_none() {
+                logln!("selecting pager region {:?}", reg);
+                PAGER_MEMORY.call_once(|| *reg);
+            } else {
+                fa_regions.push(*reg);
+            }
+        }
     }
+    fa_regions
 }
-*/
 
 lazy_static::lazy_static! {
     static ref INFLIGHT_MGR: Mutex<InflightManager> = Mutex::new(InflightManager::new());

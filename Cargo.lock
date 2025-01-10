@@ -1432,6 +1432,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fatfs"
+version = "0.4.0"
+source = "git+https://github.com/rafalh/rust-fatfs.git#c4bb76929eb115f228720631b4110f827b998653"
+dependencies = [
+ "bitflags 2.6.0",
+ "log",
+]
+
+[[package]]
 name = "fdt"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2985,7 +2994,7 @@ dependencies = [
  "anyhow",
  "argh",
  "clap",
- "fatfs",
+ "fatfs 0.3.6",
  "gpt",
  "locate-cargo-manifest",
 ]
@@ -3775,6 +3784,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "object-store"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fatfs 0.4.0",
+ "nvme",
+ "pci-ids",
+ "twizzler-abi",
+ "twizzler-async",
+ "twizzler-driver",
+ "twizzler-object",
+ "twizzler-queue",
+ "volatile",
+]
+
+[[package]]
+name = "object-store-test"
+version = "0.1.0"
+dependencies = [
+ "object-store",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3949,6 +3981,7 @@ dependencies = [
  "twizzler-driver",
  "twizzler-object",
  "twizzler-queue",
+ "twizzler-rt-abi",
  "twizzler-runtime",
  "volatile",
 ]
