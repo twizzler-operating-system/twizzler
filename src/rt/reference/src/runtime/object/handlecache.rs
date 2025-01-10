@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use tracing::info as trace;
+use tracing::trace;
 use twizzler_abi::object::MAX_SIZE;
 use twizzler_rt_abi::bindings::object_handle;
 

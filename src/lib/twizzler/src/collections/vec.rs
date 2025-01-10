@@ -1,13 +1,9 @@
 use std::{
     alloc::{AllocError, Layout},
     mem::MaybeUninit,
-    ops::{Index, IndexMut},
 };
 
-use twizzler_abi::{
-    klog_println,
-    object::{MAX_SIZE, NULLPAGE_SIZE},
-};
+use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 
 use crate::{
     alloc::{Allocator, SingleObjectAllocator},
@@ -27,6 +23,7 @@ impl<T: Invariant> VecInner<T> {
     fn do_realloc<Alloc: Allocator>(
         &mut self,
         newcap: usize,
+        newlen: usize,
         alloc: &Alloc,
         tx: &TxObject<()>,
     ) -> crate::tx::Result<RefMut<T>> {
@@ -37,22 +34,13 @@ impl<T: Invariant> VecInner<T> {
 
         let new_layout = Layout::array::<T>(newcap).map_err(|_| AllocError)?;
         let old_layout = Layout::array::<T>(self.cap).map_err(|_| AllocError)?;
-        klog_println!("rea: {:?} {:?}", old_layout, new_layout);
 
-        klog_println!("resolve global");
         let old_global = self.start.global().cast();
-        klog_println!("realloc_tx");
         let new_alloc = alloc.realloc_tx(old_global, old_layout, new_layout.size(), tx)?;
 
-        klog_println!("set");
         self.start = InvPtr::new(tx, new_alloc.cast())?;
-        klog_println!(
-            "invptr set to: {} {} .. {:p}",
-            self.start.fot_index(),
-            self.start.offset(),
-            self
-        );
         self.cap = newcap;
+        self.len = newlen;
 
         Ok(unsafe { new_alloc.cast::<T>().resolve().owned().mutable() })
     }
@@ -74,10 +62,8 @@ impl Allocator for VecObjectAlloc {
         if layout.size() > MAX_SIZE - NULLPAGE_SIZE * 4 {
             return Err(std::alloc::AllocError);
         }
-        klog_println!("getting object handle");
         let obj = twizzler_rt_abi::object::twz_rt_get_object_handle((self as *const Self).cast())
             .unwrap();
-        klog_println!("got it!");
         Ok(GlobalPtr::new(obj.id(), (NULLPAGE_SIZE * 2) as u64))
     }
 
@@ -113,7 +99,8 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
     fn get_slice_grow(
         &self,
         tx: impl AsRef<TxObject>,
-    ) -> crate::tx::Result<RefSliceMut<'_, MaybeUninit<T>>> {
+    ) -> crate::tx::Result<RefMut<'_, MaybeUninit<T>>> {
+        let oldlen = self.inner.len;
         if self.inner.len == self.inner.cap {
             if self.inner.start.raw() as usize + size_of::<T>() * self.inner.cap
                 >= MAX_SIZE - NULLPAGE_SIZE
@@ -122,30 +109,31 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
             }
             let newcap = std::cmp::max(self.inner.cap, 1) * 2;
             let inner = self.inner.get_mut(tx.as_ref())?;
-            let r = inner.do_realloc(newcap, &self.alloc, tx.as_ref())?;
-            Ok(Self::maybe_uninit_slice(r, newcap))
+            let r = inner.do_realloc(newcap, oldlen + 1, &self.alloc, tx.as_ref())?;
+            Ok(Self::maybe_uninit_slice(r, newcap)
+                .get_mut(oldlen)
+                .unwrap()
+                .owned())
         } else {
+            self.inner.get_mut(tx.as_ref())?.len += 1;
             Ok(Self::maybe_uninit_slice(
                 unsafe { self.inner.start.resolve().mutable() },
                 self.inner.cap,
-            ))
+            )
+            .get_mut(oldlen)
+            .unwrap()
+            .owned())
         }
     }
 
     fn do_push(&self, item: T, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
-        klog_println!("do_push: 0");
         let mut r = self.get_slice_grow(&tx)?;
-        klog_println!("do_push: 2");
-
         // write item, tracking in tx
-        tx.as_ref().write_uninit(&mut r[self.inner.len], item)?;
-        klog_println!("do_push: 3");
-        self.inner.get_mut(tx.as_ref())?.len += 1;
-        klog_println!("do_push: x");
+        tx.as_ref().write_uninit(&mut *r, item)?;
         Ok(())
     }
 
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.inner.len
     }
 }
@@ -169,9 +157,8 @@ impl<T: Invariant, Alloc: Allocator + SingleObjectAllocator> Vec<T, Alloc> {
     where
         F: FnOnce(TxRef<MaybeUninit<T>>) -> crate::tx::Result<TxRef<T>>,
     {
-        let mut slice = self.get_slice_grow(&tx)?;
-        let ptr = &mut slice.as_slice_mut()[self.inner.len];
-        let txref = unsafe { TxRef::new(tx, ptr) };
+        let mut r = self.get_slice_grow(&tx)?;
+        let txref = unsafe { TxRef::new(tx, &mut *r) };
         let val = ctor(txref)?;
         val.into_tx().commit()?;
         Ok(())
@@ -213,32 +200,43 @@ mod tests {
 
     #[test]
     fn simple_push() {
-        twizzler_abi::klog_println!("A");
         let vobj = ObjectBuilder::default()
             .build_inplace(|tx| tx.write(Vec::new_in(VecObjectAlloc)))
             .unwrap();
 
-        twizzler_abi::klog_println!("B");
         let tx = vobj.tx().unwrap();
-        twizzler_abi::klog_println!("B1");
         tx.base().push(Simple { x: 42 }, &tx).unwrap();
-        twizzler_abi::klog_println!("B2");
+        tx.base().push(Simple { x: 43 }, &tx).unwrap();
         let vobj = tx.commit().unwrap();
 
-        twizzler_abi::klog_println!("C: {}", vobj.base().len());
         let base = vobj.base();
+        assert_eq!(base.len(), 2);
         let item = base.get(0).unwrap();
         assert_eq!(item.x, 42);
-        twizzler_abi::klog_println!("Z");
+        let item2 = base.get(1).unwrap();
+        assert_eq!(item2.x, 43);
     }
 
-    //#[test]
+    #[test]
     fn simple_push_vo() {
         let mut vec_obj = VecObject::new(ObjectBuilder::default()).unwrap();
         vec_obj.push(Simple { x: 42 }).unwrap();
 
         let item = vec_obj.get(0).unwrap();
         assert_eq!(item.x, 42);
+    }
+
+    #[test]
+    fn many_push_vo() {
+        let mut vec_obj = VecObject::new(ObjectBuilder::default()).unwrap();
+        for i in 0..100 {
+            vec_obj.push(Simple { x: i * i }).unwrap();
+        }
+
+        for i in 0..100 {
+            let item = vec_obj.get(i as usize).unwrap();
+            assert_eq!(item.x, i * i);
+        }
     }
 
     //#[test]

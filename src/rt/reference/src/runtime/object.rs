@@ -199,9 +199,7 @@ impl ObjectHandleManager {
 
     /// Get an object handle from a pointer to within that object.
     pub fn get_handle(&mut self, ptr: *const u8) -> Option<object_handle> {
-        tracing::info!("in get_handle");
         let handle = self.cache.activate_from_ptr(ptr)?;
-        tracing::info!("in get_handle: done: {:p}", handle.runtime_info);
         let oh = ObjectHandle::from_raw(handle);
         let oh2 = oh.clone().into_raw();
         std::mem::forget(oh);

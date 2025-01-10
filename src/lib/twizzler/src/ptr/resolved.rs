@@ -100,6 +100,7 @@ impl<'a, T> Drop for Ref<'a, T> {
 pub struct RefMut<'obj, T> {
     ptr: *mut T,
     handle: *const ObjectHandle,
+    owned: bool,
     _pd: PhantomData<&'obj mut T>,
 }
 
@@ -112,6 +113,7 @@ impl<'obj, T> RefMut<'obj, T> {
         Self {
             ptr,
             handle,
+            owned: false,
             _pd: PhantomData,
         }
     }
@@ -120,6 +122,7 @@ impl<'obj, T> RefMut<'obj, T> {
         RefMut {
             ptr: self.ptr.cast(),
             handle: self.handle,
+            owned: self.owned,
             _pd: PhantomData,
         }
     }
@@ -134,6 +137,15 @@ impl<'obj, T> RefMut<'obj, T> {
 
     pub fn global(&self) -> GlobalPtr<T> {
         GlobalPtr::new(self.handle().id(), self.offset())
+    }
+
+    pub fn owned<'b>(&self) -> RefMut<'b, T> {
+        RefMut {
+            ptr: self.ptr,
+            owned: true,
+            handle: Box::into_raw(Box::new(self.handle().clone())),
+            _pd: PhantomData,
+        }
     }
 }
 
@@ -154,6 +166,14 @@ impl<'obj, T> DerefMut for RefMut<'obj, T> {
 impl<'a, T> From<RefMut<'a, T>> for GlobalPtr<T> {
     fn from(value: RefMut<'a, T>) -> Self {
         GlobalPtr::new(value.handle().id(), value.offset())
+    }
+}
+
+impl<'a, T> Drop for RefMut<'a, T> {
+    fn drop(&mut self) {
+        if self.owned {
+            let _boxed = unsafe { Box::from_raw(self.handle as *mut ObjectHandle) };
+        }
     }
 }
 
