@@ -28,20 +28,8 @@ fn initialize_pager() {
         NewHandleFlags::empty(),
     )
     .unwrap();
-    let pager_comp = monitor_api::CompartmentLoader::new(
-        "pager",
-        "pager",
-        monitor_api::NewCompartmentFlags::EXPORT_GATES,
-    )
-    .args([
-        "pager",
-        &queue.object().id().raw().to_string(),
-        &queue2.object().id().raw().to_string(),
-    ])
-    .load()
-    .expect("failed to start pager");
 
-    std::mem::forget(pager_comp);
+    pager::pager_start(queue.object().id(), queue2.object().id());
 }
 
 fn main() {

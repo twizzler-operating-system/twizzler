@@ -1,21 +1,18 @@
 use std::sync::Arc;
 
 use twizzler_abi::pager::{
-    CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionData, ObjectInfo,
-    ObjectRange, PagerCompletionData, PhysRange, RequestFromKernel, RequestFromPager,
+    CompletionToKernel, KernelCommand, KernelCompletionData, ObjectInfo, ObjectRange, PhysRange,
+    RequestFromKernel,
 };
-use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
+use twizzler_object::ObjID;
 
-use crate::{
-    data::PagerData,
-    helpers::{page_to_physrange, physrange_to_pages, PAGE},
-};
+use crate::data::PagerData;
 
 fn page_data_req(data: Arc<PagerData>, id: ObjID, range: ObjectRange) -> PhysRange {
     return data.fill_mem_page(id, range);
 }
 
-fn object_info_req(data: Arc<PagerData>, id: ObjID) -> ObjectInfo {
+fn object_info_req(_data: Arc<PagerData>, id: ObjID) -> ObjectInfo {
     return ObjectInfo::new(id);
 }
 
@@ -23,11 +20,11 @@ pub async fn handle_kernel_request(
     request: RequestFromKernel,
     data: Arc<PagerData>,
 ) -> Option<CompletionToKernel> {
-    tracing::info!("handling kernel request {:?}", request);
+    tracing::debug!("handling kernel request {:?}", request);
 
     match request.cmd() {
         KernelCommand::PageDataReq(obj_id, range) => {
-            tracing::info!(
+            tracing::trace!(
                 "handling PageDataReq for ObjID: {:?}, Range: start = {}, end = {}",
                 obj_id,
                 range.start,
@@ -39,14 +36,14 @@ pub async fn handle_kernel_request(
             ))
         }
         KernelCommand::ObjectInfoReq(obj_id) => {
-            tracing::info!("handling ObjectInfo for ObjID: {:?}", obj_id);
+            tracing::trace!("handling ObjectInfo for ObjID: {:?}", obj_id);
             let obj_info = object_info_req(data, obj_id);
             Some(CompletionToKernel::new(
                 KernelCompletionData::ObjectInfoCompletion(obj_info),
             ))
         }
         KernelCommand::EchoReq => {
-            tracing::info!("handling EchoReq");
+            tracing::trace!("handling EchoReq");
             Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
         }
     }

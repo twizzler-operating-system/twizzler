@@ -1,13 +1,9 @@
 use std::{
-    borrow::BorrowMut,
-    io::{self, Error, ErrorKind},
-    ops::Deref,
-    sync::{Arc, LazyLock, Mutex, OnceLock},
+    io::{Error, ErrorKind},
+    sync::{Arc, LazyLock, Mutex},
 };
 
-use fatfs::{
-    FatType, FileSystem, FormatVolumeOptions, IntoStorage, IoBase, Read, Seek, SeekFrom, Write,
-};
+use fatfs::{FatType, FileSystem, FormatVolumeOptions, IoBase, Read, Seek, SeekFrom};
 use twizzler_async::block_on;
 
 use crate::nvme::{init_nvme, NvmeController};
@@ -26,9 +22,8 @@ impl Disk {
     }
 }
 
-static DISK: OnceLock<Disk> = OnceLock::new();
 pub static FS: LazyLock<Mutex<FileSystem<Disk>>> = LazyLock::new(|| {
-    let mut disk = Disk::new().unwrap();
+    let disk = Disk::new().unwrap();
     let fs_options = fatfs::FsOptions::new().update_accessed_date(false);
     let fs = FileSystem::new(disk, fs_options);
     if let Ok(fs) = fs {
@@ -78,7 +73,7 @@ impl fatfs::Read for Disk {
             } else {
                 left + buf.len() - bytes_written
             }; // If I want to write more than the boundary of a page
-            block_on(self.ctrl.read_page(lba as u64, &mut read_buffer, 0));
+            block_on(self.ctrl.read_page(lba as u64, &mut read_buffer, 0)).unwrap();
 
             let bytes_to_read = right - left;
             buf[bytes_written..bytes_written + bytes_to_read]
@@ -112,9 +107,10 @@ impl fatfs::Write for Disk {
             };
             if right - left != PAGE_SIZE {
                 let temp_pos: u64 = self.pos.try_into().unwrap();
-                self.seek(SeekFrom::Start(temp_pos & !PAGE_MASK as u64));
+                self.seek(SeekFrom::Start(temp_pos & !PAGE_MASK as u64))
+                    .unwrap();
                 self.read_exact(&mut write_buffer)?;
-                self.seek(SeekFrom::Start(temp_pos));
+                self.seek(SeekFrom::Start(temp_pos)).unwrap();
             }
 
             write_buffer[left..right].copy_from_slice(&buf[bytes_read..bytes_read + right - left]);
@@ -122,7 +118,7 @@ impl fatfs::Write for Disk {
 
             self.pos += right - left;
 
-            block_on(self.ctrl.write_page(lba as u64, &mut write_buffer, 0));
+            block_on(self.ctrl.write_page(lba as u64, &mut write_buffer, 0)).unwrap();
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 
@@ -142,7 +138,6 @@ impl fatfs::Seek for Disk {
             SeekFrom::Current(x) => (self.pos as i64) + x,
         };
         if new_pos > DISK_SIZE.try_into().unwrap() || new_pos < 0 {
-            println!("HERE!");
             Err(Error::new(ErrorKind::AddrInUse, "oh no!"))
         } else {
             self.pos = new_pos as usize;

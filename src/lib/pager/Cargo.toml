@@ -1,0 +1,13 @@
+[package]
+name = "pager"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+secgate = { path = "../../lib/secgate" }
+twizzler-runtime = { path = "../../rt" }
+twizzler-rt-abi = "0.99"
+pager-srv = { path = "../../srv/pager-srv" }

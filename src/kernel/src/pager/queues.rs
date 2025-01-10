@@ -71,7 +71,6 @@ fn pager_request_copy_user_phys(
 fn pager_test_request() -> CompletionToPager {
     let sender = SENDER.wait();
     let obj_id = ObjID::new(1001);
-    logln!("kernel: submitting page data request on K2P Queue");
     let item = RequestFromKernel::new(twizzler_abi::pager::KernelCommand::PageDataReq(
         obj_id,
         ObjectRange {
@@ -82,7 +81,6 @@ fn pager_test_request() -> CompletionToPager {
     let id = sender.0.next_simple().value() as u32;
     let res = SENDER.wait().1.submit(item, id);
 
-    logln!("kernel: submitting obj info request on K2P Queue");
     let item = RequestFromKernel::new(twizzler_abi::pager::KernelCommand::ObjectInfoReq(obj_id));
     let id = sender.0.next_simple().value() as u32;
     let res = SENDER.wait().1.submit(item, id);
@@ -93,30 +91,27 @@ fn pager_test_request() -> CompletionToPager {
 pub(super) fn pager_request_handler_main() {
     let receiver = RECEIVER.wait();
     loop {
-        receiver.handle_request(|id, req| {
-            logln!("kernel: got req {}:{:?} from pager", id, req);
-            match req.cmd() {
-                PagerRequest::EchoReq => {
-                    CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
-                }
-                PagerRequest::TestReq => pager_test_request(),
-                PagerRequest::Ready => {
-                    let reg = PAGER_MEMORY
-                        .poll()
-                        .map(|pm| (pm.start.raw(), pm.length))
-                        .unwrap_or((0, 0));
-                    CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::DramPages(
-                        PhysRange::new(reg.0, reg.0 + reg.1 as u64),
-                    ))
-                }
-                PagerRequest::CopyUserPhys {
-                    target_object,
-                    offset,
-                    len,
-                    phys,
-                    write_phys,
-                } => pager_request_copy_user_phys(target_object, offset, len, phys, write_phys),
+        receiver.handle_request(|id, req| match req.cmd() {
+            PagerRequest::EchoReq => {
+                CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
             }
+            PagerRequest::TestReq => pager_test_request(),
+            PagerRequest::Ready => {
+                let reg = PAGER_MEMORY
+                    .poll()
+                    .map(|pm| (pm.start.raw(), pm.length))
+                    .unwrap_or((0, 0));
+                CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::DramPages(
+                    PhysRange::new(reg.0, reg.0 + reg.1 as u64),
+                ))
+            }
+            PagerRequest::CopyUserPhys {
+                target_object,
+                offset,
+                len,
+                phys,
+                write_phys,
+            } => pager_request_copy_user_phys(target_object, offset, len, phys, write_phys),
         });
     }
 }
@@ -127,13 +122,13 @@ pub(super) fn pager_compl_handler_main() {
         let completion = sender.1.recv_completion();
         match completion.1.data() {
             twizzler_abi::pager::KernelCompletionData::EchoResp => {
-                logln!("got echo response");
+                //logln!("got echo response");
             }
             twizzler_abi::pager::KernelCompletionData::PageDataCompletion(phys_range) => {
-                logln!("got physical range {:?}", phys_range);
+                //logln!("got physical range {:?}", phys_range);
             }
             twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(obj_info) => {
-                logln!("got object info {:?}", obj_info);
+                //logln!("got object info {:?}", obj_info);
             }
         }
         sender.0.release_simple(SimpleId::from(completion.0));

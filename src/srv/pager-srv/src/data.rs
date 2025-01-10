@@ -5,7 +5,7 @@ use std::{
 
 use bitvec::prelude::*;
 use twizzler_abi::pager::{ObjectRange, PhysRange};
-use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
+use twizzler_object::ObjID;
 
 use crate::helpers::{page_in, page_to_physrange};
 
@@ -25,7 +25,7 @@ impl PagerDataInner {
     /// Create a new PagerDataInner instance
     /// Initializes the data structure for managing page allocations and replacements.
     pub fn new() -> Self {
-        tracing::info!("initializing PagerDataInner");
+        tracing::trace!("initializing PagerDataInner");
         PagerDataInner {
             bitvec: BitVec::new(),
             hashmap: HashMap::with_capacity(0),
@@ -42,16 +42,16 @@ impl PagerDataInner {
     /// Get the next available page number and mark it as used.
     /// Returns the page number if available, or `None` if all pages are used.
     fn get_next_available_page(&mut self) -> Option<usize> {
-        tracing::info!("searching for next available page");
+        tracing::trace!("searching for next available page");
         let next_page = self.bitvec.iter().position(|bit| !bit);
 
         if let Some(page_number) = next_page {
             self.bitvec.set(page_number, true);
             self.lru_queue.push_back(page_number.try_into().unwrap());
-            tracing::info!("next available page: {}", page_number);
+            tracing::trace!("next available page: {}", page_number);
             Some(page_number)
         } else {
-            tracing::info!("no available pages left");
+            tracing::debug!("no available pages left");
             None
         }
     }
@@ -59,9 +59,9 @@ impl PagerDataInner {
     /// Perform page replacement using the Least Recently Used (LRU) strategy.
     /// Returns the identifier of the replaced page.
     fn page_replacement(&mut self) -> u64 {
-        tracing::info!("executing page replacement");
+        tracing::debug!("executing page replacement");
         if let Some(old_page) = self.lru_queue.pop_front() {
-            tracing::info!("replacing page: {}", old_page);
+            tracing::trace!("replacing page: {}", old_page);
             self.remove_page(old_page as usize);
             old_page
         } else {
@@ -72,9 +72,9 @@ impl PagerDataInner {
     /// Get a memory page for allocation.
     /// Triggers page replacement if all pages are used.
     fn get_mem_page(&mut self) -> usize {
-        tracing::info!("attempting to get memory page");
+        tracing::debug!("attempting to get memory page");
         if self.bitvec.all() {
-            tracing::info!("all pages used, initiating page replacement");
+            tracing::trace!("all pages used, initiating page replacement");
             self.page_replacement();
         }
         self.get_next_available_page().expect("no available pages")
@@ -82,14 +82,14 @@ impl PagerDataInner {
 
     /// Remove a page from the bit vector, freeing it for future use.
     fn remove_page(&mut self, page_number: usize) {
-        tracing::info!("attempting to remove page {}", page_number);
+        tracing::debug!("attempting to remove page {}", page_number);
         if page_number < self.bitvec.len() {
             self.bitvec.set(page_number, false);
             self.remove_from_map(&(page_number as u64));
             self.lru_queue.retain(|&p| p != page_number as u64);
-            tracing::info!("page {} removed from bitvec", page_number);
+            tracing::trace!("page {} removed from bitvec", page_number);
         } else {
-            tracing::info!(
+            tracing::warn!(
                 "page {} is out of bounds and cannot be removed",
                 page_number
             );
@@ -98,33 +98,33 @@ impl PagerDataInner {
 
     /// Resize the bit vector to accommodate more pages or clear it.
     fn resize_bitset(&mut self, new_size: usize) {
-        tracing::info!("resizing bitvec to new size: {}", new_size);
+        tracing::debug!("resizing bitvec to new size: {}", new_size);
         if new_size == 0 {
-            tracing::info!("clearing bitvec");
+            tracing::trace!("clearing bitvec");
             self.bitvec.clear();
         } else {
             self.bitvec.resize(new_size, false);
         }
-        tracing::info!("bitvec resized to: {}", new_size);
+        tracing::trace!("bitvec resized to: {}", new_size);
     }
 
     /// Check if all pages are currently in use.
     pub fn is_full(&self) -> bool {
         let full = self.bitvec.all();
-        tracing::info!("bitvec check full: {}", full);
+        tracing::trace!("bitvec check full: {}", full);
         full
     }
 
     /// Insert an object and its associated range into the hashmap.
     pub fn insert_into_map(&mut self, key: u64, obj_id: ObjID, range: ObjectRange) {
-        tracing::info!(
+        tracing::trace!(
             "inserting into hashmap: key = {}, ObjID = {:?}, ObjectRange = {:?}",
             key,
             obj_id,
             range
         );
         self.hashmap.insert(key, (obj_id.clone(), range.clone()));
-        tracing::info!(
+        tracing::trace!(
             "inserted into hashmap: key = {}, ObjID = {:?}, ObjectRange = {:?}",
             key,
             obj_id,
@@ -141,16 +141,16 @@ impl PagerDataInner {
     /// Retrieve an object and its range from the hashmap by key.
     /// Updates the LRU queue to reflect access.
     pub fn get_from_map(&mut self, key: &u64) -> Option<(ObjID, ObjectRange)> {
-        tracing::info!("retrieving value for key {}", key);
+        tracing::trace!("retrieving value for key {}", key);
         match self.hashmap.get(key) {
             Some(value) => {
-                tracing::info!("value found for key {}: {:?}", key, value);
+                tracing::trace!("value found for key {}: {:?}", key, value);
                 self.lru_queue.retain(|&p| p != *key);
                 self.lru_queue.push_back(*key);
                 Some(value.clone())
             }
             None => {
-                tracing::info!("no value found for key: {}", key);
+                tracing::trace!("no value found for key: {}", key);
                 None
             }
         }
@@ -158,13 +158,13 @@ impl PagerDataInner {
 
     /// Remove a key and its associated value from the hashmap.
     pub fn remove_from_map(&mut self, key: &u64) {
-        tracing::info!("removing key {} from hashmap", key);
+        tracing::trace!("removing key {} from hashmap", key);
         self.hashmap.remove(key);
     }
 
     /// Reserve additional capacity in the hashmap.
     pub fn resize_map(&mut self, add_size: usize) {
-        tracing::info!("adding {} capacity to hashmap", add_size);
+        tracing::trace!("adding {} capacity to hashmap", add_size);
         self.hashmap.reserve(add_size);
     }
 }
@@ -173,7 +173,7 @@ impl PagerData {
     /// Create a new PagerData instance.
     /// Wraps PagerDataInner with thread-safe access.
     pub fn new() -> Self {
-        tracing::info!("creating new PagerData instance");
+        tracing::trace!("creating new PagerData instance");
         PagerData {
             inner: Arc::new(Mutex::new(PagerDataInner::new())),
         }
@@ -181,7 +181,7 @@ impl PagerData {
 
     /// Resize the internal structures to accommodate the given number of pages.
     pub fn resize(&self, pages: usize) {
-        tracing::info!("resizing resources to support {} pages", pages);
+        tracing::debug!("resizing resources to support {} pages", pages);
         let mut inner = self.inner.lock().unwrap();
         inner.resize_bitset(pages);
         inner.resize_map(pages);
@@ -196,7 +196,7 @@ impl PagerData {
     /// Page in the data from disk
     /// Returns the physical range corresponding to the allocated page.
     pub fn fill_mem_page(&self, id: ObjID, obj_range: ObjectRange) -> PhysRange {
-        tracing::info!(
+        tracing::debug!(
             "allocating memory page for ObjID {:?}, ObjectRange {:?}",
             id,
             obj_range
@@ -206,7 +206,7 @@ impl PagerData {
         inner.insert_into_map(page.try_into().unwrap(), id, obj_range);
         let phys_range = page_to_physrange(page, 0);
         page_in(id, obj_range, phys_range);
-        tracing::info!("memory page allocated successfully");
+        tracing::trace!("memory page allocated successfully");
         return phys_range;
     }
 }
