@@ -2,19 +2,17 @@
 #![feature(linkage)]
 
 use lazy_static::lazy_static;
-use std::any::Any;
-use std::{collections::HashMap, rc::Rc};
-use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, Mutex};
-use arrayvec::ArrayString;
+use std::{default, sync::Mutex};
 use twizzler_abi::{
     aux::KernelInitInfo,
-    slot::RESERVED_KERNEL_INIT,
     object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{LifetimeType, ObjectCreateFlags, BackingType, ObjectCreate, sys_object_create}
 };
-use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
-use secgate::util::SimpleBuffer;
+use twizzler_rt_abi::object::MapFlags;
+use secgate::{
+    secure_gate,
+    util::{Descriptor, HandleMgr, SimpleBuffer},
+};
 
 fn get_kernel_init_info() -> &'static KernelInitInfo {
     unsafe {
@@ -25,105 +23,141 @@ fn get_kernel_init_info() -> &'static KernelInitInfo {
     }
 }
 
-type Val = ObjID;
+pub struct NamespaceClient {
+    buffer: SimpleBuffer,
+}
+
+impl NamespaceClient {
+    fn new() -> Option<Self> {
+        // Create and map a handle for the simple buffer.
+        let id = sys_object_create(
+            ObjectCreate::new(
+                BackingType::Normal,
+                LifetimeType::Volatile,
+                None,
+                ObjectCreateFlags::empty(),
+            ),
+            &[],
+            &[],
+        )
+        .ok()?;
+        let handle =
+            twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::WRITE | MapFlags::READ)
+                .ok()?;
+        let buffer = SimpleBuffer::new(handle);
+        Some(Self { buffer })
+    }
+
+    fn sbid(&self) -> ObjID {
+        self.buffer.handle().id()
+    }
+}
+
+pub const MAX_KEY_SIZE: usize = 256;
+
+#[repr(C)]
+pub struct Schema {
+    pub key: [u8; MAX_KEY_SIZE],
+    pub val: u128
+}
+
+struct Namer {
+    handles: HandleMgr<NamespaceClient>,
+    names: Vec<Schema>,
+    count: usize
+}
+
+impl Namer {
+    const fn new() -> Self {
+        Self {
+            handles: HandleMgr::new(None),
+            names: Vec::<Schema>::new(),
+            count: 0,
+        }
+    }
+}
+
+struct NamerSrv {
+    inner: Mutex<Namer>
+}
 
 lazy_static! {
-    static ref HASHMAP: Mutex<HashMap<String, Val>> = {
-        let mut m: Mutex<HashMap<String, Val>> = Mutex::new(HashMap::new());
-        let mut h = m.lock().unwrap();
+    static ref NAMINGSERVICE: NamerSrv = {
+        let mut namer = Namer::new();
 
         let init_info = get_kernel_init_info();
-        let mut initrd_namespace: HashMap<String, Val> = HashMap::new();
+
         for n in init_info.names() {
-            let path = n.name();
-            initrd_namespace.insert(path.to_owned(), n.id());
+            let mut s = Schema { key: [0u8; 256], val: 0 };
+            let bytes = n.name().as_bytes();
+            s.key[..bytes.len()].copy_from_slice(&bytes[..bytes.len()]);
+            s.val = n.id().raw();
+            namer.names.push(s);
         }
 
-        drop(h);
-        m 
-    };
-    static ref OBJ_MAP: Mutex<HashMap<ObjID, SimpleBuffer>> = {
-        Mutex::new(HashMap::new())
+        NamerSrv { inner: Mutex::new(namer) }
     };
 }
 
-pub struct NamespaceHandle {
-    buf: SimpleBuffer,
-    id: ObjID
+#[secure_gate(options(info))]
+pub fn put(info: &secgate::GateCallInfo, desc: Descriptor) {
+    let mut namer = NAMINGSERVICE.inner.lock().unwrap();
+    let Some(client) = namer
+        .handles
+        .lookup(info.source_context().unwrap_or(0.into()), desc)
+    else {
+        return;
+    };
+
+    // should use buffer rather than copying
+    let mut buf = [0u8; std::mem::size_of::<Schema>()];
+    client.buffer.read(&mut buf);
+    let provided = unsafe {std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf)};
+
+    let foo = namer.names.iter_mut().find(|search| search.key == provided.key);
+    match foo {
+        Some(found) => found.val = provided.val,
+        None => namer.names.push(provided),
+    };
 }
 
-impl NamespaceHandle {
-    pub fn new() -> NamespaceHandle {
-        let id = buffer_request().unwrap();
-        let handle = twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE).unwrap();
+#[secure_gate(options(info))]
+pub fn get(info: &secgate::GateCallInfo, desc: Descriptor) -> Option<u128> {
+    let mut namer = NAMINGSERVICE.inner.lock().unwrap();
+    let Some(client) = namer
+        .handles
+        .lookup(info.source_context().unwrap_or(0.into()), desc)
+    else {
+        return None;
+    };
 
-        NamespaceHandle {
-            buf: SimpleBuffer::new(handle),
-            id: id
-        }
+    let mut buf = [0u8; std::mem::size_of::<Schema>()];
+    client.buffer.read(&mut buf);
+    let provided = unsafe {std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf)};
+
+    let foo: Option<&Schema> = namer.names.iter().find(|search| search.key == provided.key);
+    match foo {
+        Some(found) => Some(found.val),
+        None => None,
     }
-
-    pub fn put(&mut self, key: &str, val: ObjID) {
-        let bytes_written = self.buf.write(key.as_bytes());
-        put(self.id, bytes_written, val.into());
-    }
-
-    pub fn get(&mut self, key: &str) -> Option<ObjID> {
-        let bytes_written = self.buf.write(key.as_bytes());
-        get(self.id, bytes_written).unwrap()
-    }
 }
 
-// Creates an shared buffer between the service and caller
-#[secgate::secure_gate]
-pub fn buffer_request() -> ObjID {
-    let id = sys_object_create(
-        ObjectCreate::new(
-            BackingType::Normal,
-            LifetimeType::Volatile,
-            None,
-            ObjectCreateFlags::empty(),
-        ),
-        &[],
-        &[],
-    )
-    .unwrap();
-    let handle = twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE).unwrap();
+#[secure_gate(options(info))]
+pub fn open_handle(info: &secgate::GateCallInfo) -> Option<(Descriptor, ObjID)> {
+    let mut namer = NAMINGSERVICE.inner.lock().ok()?;
+    let client = NamespaceClient::new()?;
+    let id = client.sbid();
+    let desc = namer
+        .handles
+        .insert(info.source_context().unwrap_or(0.into()), client)?;
 
-    let mut obj_map = OBJ_MAP.lock().unwrap();
-    obj_map.insert(id, SimpleBuffer::new(handle));
-    id 
+    Some((desc, id))
 }
 
-#[secgate::secure_gate]
-pub fn buffer_free(id: ObjID) {
-
-}
-
-#[secgate::secure_gate]
-pub fn put(buf: ObjID, len_key: usize, val: ObjID) {
-    let mut h = HASHMAP.lock().unwrap();
-    let mut o = OBJ_MAP.lock().unwrap();
-
-    let handle = o.get(&buf).unwrap();
-    let mut buf = vec![0u8; len_key];
-    handle.read(&mut buf);
-
-    h.insert(String::from_utf8(buf).unwrap(), val);
-}
-
-#[secgate::secure_gate]
-pub fn get(buf: ObjID, len_key: usize) -> Option<ObjID> {
-    let mut h = HASHMAP.lock().unwrap();
-    let mut o = OBJ_MAP.lock().unwrap();
-
-    let handle = o.get(&buf).unwrap();
-    let mut buf = vec![0u8; len_key];
-    handle.read(&mut buf);
-
-    h.get(&String::from_utf8(buf).unwrap()).copied()
-}
-
-#[secgate::secure_gate]
-pub fn reload() {
+#[secure_gate(options(info))]
+pub fn close_handle(info: &secgate::GateCallInfo, desc: Descriptor) {
+    let mut namer = NAMINGSERVICE.inner.lock().unwrap();
+    namer
+        .handles
+        .remove(info.source_context().unwrap_or(0.into()), desc);
 }

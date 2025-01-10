@@ -20,6 +20,7 @@ members = [
     "src/bin/mnemosyne",
     "src/bin/stdfs_demo",
     "src/bin/virtio",
+    "src/bin/cat",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
@@ -81,6 +82,7 @@ initrd = [
     "lib:naming-srv",
     "crate:naming-test",
     #"third-party:hello-world-rs"
+    "crate:cat",
 ]
 
 [workspace.metadata.third-party]

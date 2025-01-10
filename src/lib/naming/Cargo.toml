@@ -9,3 +9,4 @@ crate-type = ["rlib"]
 [dependencies]
 naming-srv = { path = "../../srv/naming-srv" }
 secgate = { path = "../../lib/secgate" }
+twizzler-rt-abi = "0.99"
