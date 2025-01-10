@@ -2,14 +2,20 @@ use core::{ops::Sub, time::Duration};
 
 use twizzler_abi::syscall::TimeSpan;
 
-use crate::time::TICK_SOURCES;
+use crate::time::{Ticks, TICK_SOURCES};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Instant(TimeSpan);
 
 impl Instant {
     pub fn now() -> Instant {
-        let ticks = { TICK_SOURCES.lock()[0].read() };
+        let ticks = {
+            TICK_SOURCES
+                .lock()
+                .get(0)
+                .map(|ts| ts.read())
+                .unwrap_or(Ticks::default())
+        };
         let span = ticks.value * ticks.rate;
         Instant(span)
     }
@@ -21,14 +27,11 @@ impl Instant {
 
     #[allow(dead_code)]
     pub fn actually_monotonic() -> bool {
-        // use twizzler_runtime_api::Monotonicity;
-        // let runtime = twizzler_runtime_api::get_runtime();
-        // match runtime.actual_monotonicity() {
-        //     Monotonicity::NonMonotonic => false,
-        //     Monotonicity::Weak => true,
-        //     Monotonicity::Strict => true,
-        // }
-        true
+        TICK_SOURCES
+            .lock()
+            .get(0)
+            .map(|ts| ts.info().is_monotonic())
+            .unwrap_or_default()
     }
 
     pub fn checked_sub_instant(&self, other: &Instant) -> Option<Duration> {

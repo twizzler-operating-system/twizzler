@@ -4,6 +4,7 @@ use twizzler_abi::syscall::{ClockInfo, FemtoSeconds};
 
 use crate::spinlock::Spinlock;
 
+#[derive(Default, Debug, Clone, Copy)]
 pub struct Ticks {
     pub value: u64,
     pub rate: FemtoSeconds,
