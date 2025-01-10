@@ -41,6 +41,9 @@ members = [
     "src/srv/pager-srv",
     "src/bin/logboi-test",
     "src/lib/virtio-net",
+    "src/lib/naming",
+    "src/srv/naming-srv", 
+    "src/bin/naming-test",
     "src/bin/object-store-test",
     "src/lib/pager",
 ]
@@ -63,6 +66,8 @@ initrd = [
     "crate:random_validation",
     "crate:randtest",
     "crate:genrandom",
+    "lib:naming-srv",
+    "crate:naming-test",
     "crate:object-store-test",
     "lib:twz-rt",
     "lib:montest-lib",
