@@ -9,6 +9,6 @@
 [submodule "src/abi"]
 	path = src/abi
 	url = ../../twizzler-operating-system/abi.git
-[submodule "src/bin/src/bin/test-tiny-http/src/tiny-http-twizzler"]
-	path = src/bin/src/bin/test-tiny-http/src/tiny-http-twizzler
-	url = git@github.com:ClariseTG/tiny-http-twizzler.git
+[submodule "src/bin/test-tiny-http/src/tiny-http-twizzler"]
+	path = src/bin/test-tiny-http/src/tiny-http-twizzler
+	url = ../../twizzler-operating-system/tiny-http-twizzler.git
