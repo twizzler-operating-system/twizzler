@@ -131,19 +131,9 @@ fn main() {
     println!("To run a program, type its name.");
     loop {
         let reply = rprompt::prompt_reply_stdout("> ").unwrap();
-        println!("got: <{}>", reply);
-        /*
-        let cmd: Vec<&str> = reply.split(" ").collect();
-        if cmd.len() == 2 && cmd[0] == "run" {
-            if let Some(id) = find_init_name(cmd[1]) {
-                if cmd[1] == "nettest" {
-                    exec(cmd[1], id, netid);
-                } else {
-                    exec(cmd[1], id, ObjID::new(0));
-                }
-            } else {
-                eprintln!("[init] failed to start {}", cmd[1]);
-            }
+        let cmd: Vec<&str> = reply.split_whitespace().collect();
+        if cmd.len() == 0 {
+            continue;
         }
         let comp = CompartmentLoader::new(cmd[0], cmd[0], NewCompartmentFlags::empty())
             .args(&cmd)
@@ -156,9 +146,6 @@ fn main() {
         } else {
             warn!("failed to start {}", cmd[0]);
         }
-        */
-
-        //  get_user_input();
     }
 }
 
