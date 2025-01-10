@@ -1,10 +1,8 @@
-#[cfg(target_os = "twizzler")]
-extern crate twizzler_abi;
-#[cfg(target_os = "twizzler")]
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use clap::{Parser, Subcommand};
 use etl_twizzler::etl::{Pack, PackType, Unpack};
+
+#[cfg(target_os = "twizzler")]
+use naming::NamingHandle;
 #[cfg(target_os = "twizzler")]
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
@@ -15,6 +13,10 @@ use twizzler_abi::{
 };
 #[cfg(target_os = "twizzler")]
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
+#[cfg(target_os = "twizzler")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "twizzler")]
+use etl_twizzler::etl::{twizzler_name_get, twizzler_name_create};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -51,19 +53,6 @@ enum Commands {
     },
 }
 
-#[cfg(target_os = "twizzler")]
-fn create_twizzler_object() -> twizzler_object::ObjID {
-    let create = ObjectCreate::new(
-        BackingType::Normal,
-        LifetimeType::Persistent,
-        None,
-        ObjectCreateFlags::empty(),
-    );
-    let twzid = twizzler_abi::syscall::sys_object_create(create, &[], &[]).unwrap();
-
-    twzid
-}
-
 fn main() {
     let cli = Cli::parse();
     match cli.command {
@@ -77,11 +66,7 @@ fn main() {
         } => {
             let archive_stream = if let Some(archive_name) = archive_name {
                 #[cfg(target_os = "twizzler")]
-                let archive_name = {
-                    let twzid = create_twizzler_object();
-                    println!("twzid created: {}", twzid);
-                    twzid.as_u128().to_string()
-                };
+                let archive_name = twizzler_name_create(&archive_name).to_string();
 
                 let archive = std::fs::File::create(archive_name).unwrap();
                 Box::new(archive) as Box<dyn std::io::Write>
@@ -120,11 +105,17 @@ fn main() {
             pack.build();
         }
         Commands::Unpack { archive_path } => {
+            #[cfg(target_os = "twizzler")]
+            let archive_path = twizzler_name_get(&archive_path).to_string();
+
             let archive = std::fs::File::open(archive_path).unwrap();
             let unpack = Unpack::new(archive).unwrap();
             unpack.unpack().unwrap();
         }
         Commands::Inspect { archive_path } => {
+            #[cfg(target_os = "twizzler")]
+            let archive_path = twizzler_name_get(&archive_path).to_string();
+
             let archive = std::fs::File::open(archive_path).unwrap();
             let unpack = Unpack::new(archive).unwrap();
             let mut stdout = std::io::stdout().lock();
@@ -134,6 +125,9 @@ fn main() {
             archive_path,
             query,
         } => {
+            #[cfg(target_os = "twizzler")]
+            let archive_path = twizzler_name_get(&archive_path).to_string();
+
             let archive = std::fs::File::open(archive_path).unwrap();
             let unpack = Unpack::new(archive).unwrap();
             let mut stdout = std::io::stdout().lock();
