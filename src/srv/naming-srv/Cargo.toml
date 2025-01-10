@@ -9,7 +9,6 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-arrayvec = "0.7.6"
 lazy_static = "1.5.0"
 secgate = { path = "../../lib/secgate" }
 twizzler-runtime = { path = "../../rt" }
