@@ -68,6 +68,7 @@ where
         pack_type: PackType,
         offset: u64,
     ) -> std::io::Result<()> {
+        let old_path = &path;
         #[cfg(target_os = "twizzler")]
         let path = twizzler_name_create(&path.to_string_lossy()).to_string();
         let mut f = File::open(&path)?;
@@ -87,7 +88,7 @@ where
         header.set_size(len);
 
         self.tarchive
-            .append_data(&mut header, path, &mut buf_writer)?;
+            .append_data(&mut header, old_path, &mut buf_writer)?;
 
         Ok(())
     }
