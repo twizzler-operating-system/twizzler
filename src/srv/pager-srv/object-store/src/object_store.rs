@@ -39,7 +39,7 @@ pub fn create_object(obj_id: u128) -> Result<bool, Error> {
         Ok(_) => Ok(false),
         Err(e) => match e {
             fatfs::Error::NotFound => {
-                subdir.create_file(&b64);
+                subdir.create_file(&b64).unwrap();
                 Ok(true)
             }
             _ => Err(e.into()),
