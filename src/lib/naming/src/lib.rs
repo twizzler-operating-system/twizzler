@@ -52,13 +52,11 @@ impl NamingHandle {
         buffer[..length].copy_from_slice(&key_bytes[..length]);
 
         // I should write directly to the simple buffer
-        let mut s = naming_srv::Schema {
-            key: buffer,
-            val: val
-        };
+        let mut s = naming_srv::Schema { key: buffer, val };
 
-        // Interpret schema as a slice 
-        let bytes = unsafe {std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()], >(s)};
+        // Interpret schema as a slice
+        let bytes =
+            unsafe { std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(s) };
 
         let handle = self.buffer.write(&bytes);
 
@@ -75,11 +73,12 @@ impl NamingHandle {
         // I should write directly to the simple buffer
         let mut s = naming_srv::Schema {
             key: buffer,
-            val: 0
+            val: 0,
         };
 
-        // Interpret schema as a slice 
-        let bytes = unsafe {std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()], >(s)};
+        // Interpret schema as a slice
+        let bytes =
+            unsafe { std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(s) };
         let handle = self.buffer.write(&bytes);
 
         naming_srv::get(self.desc).unwrap()

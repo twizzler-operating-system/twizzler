@@ -21,7 +21,6 @@ members = [
     "src/bin/stdfs_demo",
     "src/bin/object-store-test",
     "src/bin/virtio",
-    "src/bin/cat",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
@@ -84,7 +83,6 @@ initrd = [
     "crate:naming-test",
     "crate:object-store-test",
     #"third-party:hello-world-rs"
-    "crate:cat",
 ]
 
 [workspace.metadata.third-party]

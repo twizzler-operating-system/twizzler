@@ -1,18 +1,19 @@
 #![feature(naked_functions)]
 #![feature(linkage)]
 
-use lazy_static::lazy_static;
 use std::{default, sync::Mutex};
-use twizzler_abi::{
-    aux::KernelInitInfo,
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{LifetimeType, ObjectCreateFlags, BackingType, ObjectCreate, sys_object_create}
-};
-use twizzler_rt_abi::object::MapFlags;
+
+use lazy_static::lazy_static;
 use secgate::{
     secure_gate,
     util::{Descriptor, HandleMgr, SimpleBuffer},
 };
+use twizzler_abi::{
+    aux::KernelInitInfo,
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+};
+use twizzler_rt_abi::object::MapFlags;
 
 fn get_kernel_init_info() -> &'static KernelInitInfo {
     unsafe {
@@ -58,13 +59,13 @@ pub const MAX_KEY_SIZE: usize = 256;
 #[repr(C)]
 pub struct Schema {
     pub key: [u8; MAX_KEY_SIZE],
-    pub val: u128
+    pub val: u128,
 }
 
 struct Namer {
     handles: HandleMgr<NamespaceClient>,
     names: Vec<Schema>,
-    count: usize
+    count: usize,
 }
 
 impl Namer {
@@ -78,7 +79,7 @@ impl Namer {
 }
 
 struct NamerSrv {
-    inner: Mutex<Namer>
+    inner: Mutex<Namer>,
 }
 
 lazy_static! {
@@ -88,14 +89,19 @@ lazy_static! {
         let init_info = get_kernel_init_info();
 
         for n in init_info.names() {
-            let mut s = Schema { key: [0u8; 256], val: 0 };
+            let mut s = Schema {
+                key: [0u8; 256],
+                val: 0,
+            };
             let bytes = n.name().as_bytes();
             s.key[..bytes.len()].copy_from_slice(&bytes[..bytes.len()]);
             s.val = n.id().raw();
             namer.names.push(s);
         }
 
-        NamerSrv { inner: Mutex::new(namer) }
+        NamerSrv {
+            inner: Mutex::new(namer),
+        }
     };
 }
 
@@ -112,9 +118,13 @@ pub fn put(info: &secgate::GateCallInfo, desc: Descriptor) {
     // should use buffer rather than copying
     let mut buf = [0u8; std::mem::size_of::<Schema>()];
     client.buffer.read(&mut buf);
-    let provided = unsafe {std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf)};
+    let provided =
+        unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
 
-    let foo = namer.names.iter_mut().find(|search| search.key == provided.key);
+    let foo = namer
+        .names
+        .iter_mut()
+        .find(|search| search.key == provided.key);
     match foo {
         Some(found) => found.val = provided.val,
         None => namer.names.push(provided),
@@ -133,7 +143,8 @@ pub fn get(info: &secgate::GateCallInfo, desc: Descriptor) -> Option<u128> {
 
     let mut buf = [0u8; std::mem::size_of::<Schema>()];
     client.buffer.read(&mut buf);
-    let provided = unsafe {std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf)};
+    let provided =
+        unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
 
     let foo: Option<&Schema> = namer.names.iter().find(|search| search.key == provided.key);
     match foo {
