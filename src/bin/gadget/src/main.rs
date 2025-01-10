@@ -83,6 +83,9 @@ fn demo(_args: &[&str]) {
     assert_eq!(&buf, b"test string!");
     let s = String::from_utf8(buf);
     tracing::debug!("got: {:?}", s);
+
+    tracing::info!("deleting file...");
+    std::fs::remove_file(&name).unwrap();
 }
 
 fn main() {
