@@ -3019,6 +3019,7 @@ dependencies = [
  "async-io",
  "futures",
  "monitor-api",
+ "pager",
  "polling",
  "rprompt",
  "tracing",
@@ -3956,14 +3957,24 @@ dependencies = [
 name = "pager"
 version = "0.1.0"
 dependencies = [
+ "pager-srv",
+ "secgate",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
+name = "pager-srv"
+version = "0.1.0"
+dependencies = [
  "async-executor",
  "async-io",
  "async-trait",
  "bitvec",
  "futures",
- "nvme",
+ "object-store",
  "polling",
- "tickv",
+ "secgate",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",

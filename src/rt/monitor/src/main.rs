@@ -112,8 +112,19 @@ fn monitor_init() -> miette::Result<()> {
             tracing::error!("failed to start monitor tests: {}", ki_name.name());
         }
     }
-    info!("monitor early init completed, starting init");
+    info!("monitor early init completed, starting pager");
 
+    let pager_comp = monitor_api::CompartmentLoader::new(
+        "pager-srv",
+        "libpager_srv.so",
+        monitor_api::NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(["pager-srv"])
+    .load()
+    .expect("failed to start pager");
+    std::mem::forget(pager_comp);
+
+    info!("starting init");
     let comp: CompartmentHandle =
         CompartmentLoader::new("init", "init", NewCompartmentFlags::empty())
             .args(&["init"])

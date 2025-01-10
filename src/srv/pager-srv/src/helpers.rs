@@ -1,5 +1,5 @@
 use twizzler_abi::pager::{ObjectRange, PhysRange};
-use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
+use twizzler_object::ObjID;
 
 /// A constant representing the page size (4096 bytes per page).
 pub const PAGE: u64 = 4096;

@@ -154,7 +154,6 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
     }
 
     pub fn complete(&self, item: C, info: u32) {
-        logln!("kernel: completing!! {}", info);
         self.completions.send(item, info)
     }
 
