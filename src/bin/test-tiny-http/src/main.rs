@@ -1,6 +1,4 @@
 // extern crate twizzler_abi;
-// #[path="./tiny-http-twizzler/src/shim.rs"]
-// mod shim;
 use tiny_http::shim::SmolTcpListener as TcpListener;
 use tiny_http::{shim::SmolTcpStream as TcpStream, Response, Server};
 use std::{io::{Read, Write},
@@ -27,7 +25,7 @@ fn main() {
         }
     });
 
-    let client = thread::spawn(move || {
+    let client = thread::spawn(|| {
         let _ = std_client(9975);
     });
 
@@ -36,13 +34,13 @@ fn main() {
 }
 fn std_client(port: u16) -> std::io::Result<()> {
     println!("in client thread!");
-    thread::sleep(std::time::Duration::from_millis(2000));
+    // thread::sleep(std::time::Duration::from_millis(1000));
     let mut client = TcpStream::connect(("127.0.0.1", port))?;
     let mut rx_buffer = [0; 2048];
     let msg = b"GET /notes HTTP/1.1\r\n\r\n";
     let _result = client.write(msg)?;
-    thread::sleep(std::time::Duration::from_millis(2000));
-    let _bytes_read = client.read(&mut rx_buffer)?;
+    // thread::sleep(std::time::Duration::from_millis(1000));
+    println!("{}", client.read(&mut rx_buffer)?);
     println!("{}", String::from_utf8((&rx_buffer[0..2048]).to_vec()).unwrap());
     Ok(())
 }
