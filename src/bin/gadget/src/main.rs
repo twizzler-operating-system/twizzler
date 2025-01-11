@@ -33,7 +33,7 @@ impl embedded_io::Write for TwzIo {
     }
 }
 
-fn show(args: &[&str]) {
+fn show(args: &[&str], namer: &mut NamingHandle) {
     if args.len() <= 1 {
         println!("usage: show <item>");
         println!("possible items: compartments, files, lethe");
@@ -48,6 +48,12 @@ fn show(args: &[&str]) {
             for comp in curr.deps() {
                 let info = comp.info();
                 println!(" -- {:?}", info);
+            }
+        }
+        "f" | "fi" | "files" => {
+            let names = namer.enumerate_names();
+            for name in names {
+                println!("{:<20} :: {}", name.0, name.1);
             }
         }
         _ => {
@@ -182,7 +188,7 @@ fn main() {
         }
         match split[0] {
             "show" => {
-                show(&split);
+                show(&split, &mut namer);
             }
             "quit" => {
                 break;

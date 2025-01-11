@@ -1,8 +1,13 @@
 #![feature(naked_functions)]
 #![feature(linkage)]
 
-use std::{default, sync::Mutex};
+use std::{
+    collections::{BTreeSet, HashSet},
+    default,
+    sync::Mutex,
+};
 
+use arrayvec::ArrayString;
 use lazy_static::lazy_static;
 use secgate::{
     secure_gate,
@@ -14,7 +19,6 @@ use twizzler_abi::{
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_rt_abi::object::MapFlags;
-use arrayvec::ArrayString;
 
 fn get_kernel_init_info() -> &'static KernelInitInfo {
     unsafe {
@@ -67,6 +71,7 @@ pub struct Schema {
 struct Namer {
     handles: HandleMgr<NamespaceClient>,
     names: Vec<Schema>,
+    initrds: BTreeSet<u128>,
 }
 
 impl Namer {
@@ -74,6 +79,7 @@ impl Namer {
         Self {
             handles: HandleMgr::new(None),
             names: Vec::<Schema>::new(),
+            initrds: BTreeSet::new(),
         }
     }
 }
@@ -96,6 +102,7 @@ lazy_static! {
             s.key = ArrayString::from(n.name()).unwrap();
             s.val = n.id().raw();
             namer.names.push(s);
+            namer.initrds.insert(n.id().raw());
         }
 
         NamerSrv {
@@ -183,17 +190,20 @@ pub fn enumerate_names(info: &secgate::GateCallInfo, desc: Descriptor) -> Option
     };
 
     let mut vec = Vec::<u8>::new();
+    let mut skipped = 0;
     for s in namer.names.clone() {
-        vec.extend_from_slice(
-            unsafe {
-                &std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(s)
-            }
-        );
+        if namer.initrds.contains(&s.val) {
+            skipped += 1;
+            continue;
+        }
+        vec.extend_from_slice(unsafe {
+            &std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(s)
+        });
     }
     let mut buffer = SimpleBuffer::new(client.buffer.handle().clone());
     buffer.write(&vec);
 
-    Some(namer.names.len())
+    Some(namer.names.len() - skipped)
 }
 
 #[secure_gate(options(info))]
@@ -211,7 +221,5 @@ pub fn remove(info: &secgate::GateCallInfo, desc: Descriptor) {
     let provided =
         unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
 
-    let foo = namer
-        .names
-        .retain(|x| x.key != provided.key);
+    let foo = namer.names.retain(|x| x.key != provided.key);
 }
