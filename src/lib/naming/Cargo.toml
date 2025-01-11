@@ -7,6 +7,7 @@ edition = "2021"
 crate-type = ["rlib"]
 
 [dependencies]
+arrayvec = "0.7.6"
 naming-srv = { path = "../../srv/naming-srv" }
 secgate = { path = "../../lib/secgate" }
 twizzler-rt-abi = "0.99"

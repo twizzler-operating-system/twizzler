@@ -14,6 +14,7 @@ use twizzler_abi::{
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_rt_abi::object::MapFlags;
+use arrayvec::ArrayString;
 
 fn get_kernel_init_info() -> &'static KernelInitInfo {
     unsafe {
@@ -57,15 +58,15 @@ impl NamespaceClient {
 pub const MAX_KEY_SIZE: usize = 256;
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct Schema {
-    pub key: [u8; MAX_KEY_SIZE],
+    pub key: ArrayString<MAX_KEY_SIZE>,
     pub val: u128,
 }
 
 struct Namer {
     handles: HandleMgr<NamespaceClient>,
     names: Vec<Schema>,
-    count: usize,
 }
 
 impl Namer {
@@ -73,7 +74,6 @@ impl Namer {
         Self {
             handles: HandleMgr::new(None),
             names: Vec::<Schema>::new(),
-            count: 0,
         }
     }
 }
@@ -90,11 +90,10 @@ lazy_static! {
 
         for n in init_info.names() {
             let mut s = Schema {
-                key: [0u8; 256],
+                key: ArrayString::new(),
                 val: 0,
             };
-            let bytes = n.name().as_bytes();
-            s.key[..bytes.len()].copy_from_slice(&bytes[..bytes.len()]);
+            s.key = ArrayString::from(n.name()).unwrap();
             s.val = n.id().raw();
             namer.names.push(s);
         }
@@ -171,4 +170,48 @@ pub fn close_handle(info: &secgate::GateCallInfo, desc: Descriptor) {
     namer
         .handles
         .remove(info.source_context().unwrap_or(0.into()), desc);
+}
+
+#[secure_gate(options(info))]
+pub fn enumerate_names(info: &secgate::GateCallInfo, desc: Descriptor) -> Option<usize> {
+    let mut namer = NAMINGSERVICE.inner.lock().unwrap();
+    let Some(client) = namer
+        .handles
+        .lookup(info.source_context().unwrap_or(0.into()), desc)
+    else {
+        return None;
+    };
+
+    let mut vec = Vec::<u8>::new();
+    for s in namer.names.clone() {
+        vec.extend_from_slice(
+            unsafe {
+                &std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(s)
+            }
+        );
+    }
+    let mut buffer = SimpleBuffer::new(client.buffer.handle().clone());
+    buffer.write(&vec);
+
+    Some(namer.names.len())
+}
+
+#[secure_gate(options(info))]
+pub fn remove(info: &secgate::GateCallInfo, desc: Descriptor) {
+    let mut namer = NAMINGSERVICE.inner.lock().unwrap();
+    let Some(client) = namer
+        .handles
+        .lookup(info.source_context().unwrap_or(0.into()), desc)
+    else {
+        return;
+    };
+
+    let mut buf = [0u8; std::mem::size_of::<Schema>()];
+    client.buffer.read(&mut buf);
+    let provided =
+        unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
+
+    let foo = namer
+        .names
+        .retain(|x| x.key != provided.key);
 }
