@@ -319,10 +319,12 @@ pub fn push_input_byte(byte: u8) {
         x => x,
     };
     NORMAL_CONSOLE.read_lock.lock().push_input_byte(byte);
+    /*
     if byte == 8 {
         let _ = write_bytes(&[8, b' '], KernelConsoleWriteFlags::DISCARD_ON_FULL);
     }
     let _ = write_bytes(&[byte], KernelConsoleWriteFlags::DISCARD_ON_FULL);
+    */
 }
 
 static EMERGENCY_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, EmergencyMessage> =

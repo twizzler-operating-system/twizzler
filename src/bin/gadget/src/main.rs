@@ -1,9 +1,12 @@
 use std::io::{Read, Write};
 
 use embedded_io::ErrorType;
+use logboi::LogHandle;
+use naming::NamingHandle;
 use tracing::Level;
-use twizzler_abi::syscall::{
-    sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
+use twizzler_abi::{
+    object::ObjID,
+    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 
 struct TwzIo;
@@ -88,14 +91,83 @@ fn demo(_args: &[&str]) {
     std::fs::remove_file(&name).unwrap();
 }
 
+fn read_file(args: &[&str], namer: &mut NamingHandle) {
+    if args.len() < 2 {
+        println!("usage: read <filename>");
+    }
+    let filename = args[1];
+    let Some(id) = namer.get(filename) else {
+        tracing::warn!("name {} not found", filename);
+        return;
+    };
+
+    let idname = id.to_string();
+    let mut file = std::fs::File::open(&idname).unwrap();
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).unwrap();
+    let s = String::from_utf8(buf);
+    if let Ok(s) = s {
+        println!("{}", s);
+    } else {
+        tracing::warn!("UTF-8 error when reading {}", filename);
+    }
+}
+
+fn write_file(args: &[&str], namer: &mut NamingHandle) {
+    if args.len() < 2 {
+        println!("usage: write <filename>");
+    }
+    let filename = args[1];
+    let Some(id) = namer.get(filename) else {
+        tracing::warn!("name {} not found", filename);
+        return;
+    };
+
+    let data = format!("hello gadget from file {}", filename);
+    let idname = id.to_string();
+    let mut file = std::fs::File::open(&idname).unwrap();
+    tracing::warn!("for now, we just write test data: `{}'", data);
+    file.write(data.as_bytes()).unwrap();
+
+    tracing::info!("calling sync!");
+    //file.sync_all().unwrap();
+}
+
+fn new_file(args: &[&str], namer: &mut NamingHandle) {
+    if args.len() < 2 {
+        println!("usage: new <filename>");
+    }
+    let filename = args[1];
+    if namer.get(filename).is_some() {
+        tracing::warn!("name {} already exists", filename);
+        return;
+    };
+    let file_id = sys_object_create(
+        ObjectCreate::new(
+            BackingType::Normal,
+            LifetimeType::Persistent,
+            None,
+            ObjectCreateFlags::empty(),
+        ),
+        &[],
+        &[],
+    )
+    .unwrap();
+    tracing::debug!("created new file object {}", file_id);
+    namer.put(filename, file_id.raw());
+}
+
 fn main() {
-    println!("GADGET DEMO\n");
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(Level::DEBUG)
             .finish(),
     )
     .unwrap();
+    let mut namer = NamingHandle::new().unwrap();
+    let mut logger = LogHandle::new().unwrap();
+    logger.log(b"Hello Logger!\n");
+    tracing::info!("testing namer: {:?}", namer.get("gadget"));
     let mut io = TwzIo;
     let mut buffer = [0; 1024];
     let mut editor = noline::builder::EditorBuilder::from_slice(&mut buffer)
@@ -117,6 +189,15 @@ fn main() {
             }
             "demo" => {
                 demo(&split);
+            }
+            "new" => {
+                new_file(&split, &mut namer);
+            }
+            "write" => {
+                write_file(&split, &mut namer);
+            }
+            "read" => {
+                read_file(&split, &mut namer);
             }
 
             _ => {

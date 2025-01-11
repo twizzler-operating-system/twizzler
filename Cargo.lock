@@ -1861,12 +1861,16 @@ name = "gadget"
 version = "0.1.0"
 dependencies = [
  "embedded-io",
+ "logboi",
  "monitor-api",
+ "naming",
  "noline",
+ "pager",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
  "twizzler-rt-abi",
+ "virtio-net",
 ]
 
 [[package]]
@@ -6268,7 +6272,7 @@ dependencies = [
 
 [[package]]
 name = "twizzler-rt-abi"
-version = "0.99.1"
+version = "0.99.0"
 dependencies = [
  "bitflags 2.8.0",
  "compiler_builtins",

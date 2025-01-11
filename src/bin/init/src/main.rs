@@ -153,6 +153,20 @@ fn main() {
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
 
+    tracing::info!("auto-starting gadget demo");
+
+    let comp = CompartmentLoader::new("gadget", "gadget", NewCompartmentFlags::empty())
+        .args(&["gadget"])
+        .load();
+    if let Ok(comp) = comp {
+        let mut flags = comp.info().flags;
+        while !flags.contains(CompartmentFlags::EXITED) {
+            flags = comp.wait(flags);
+        }
+    } else {
+        warn!("failed to start gadget demo");
+    }
+
     println!("Hi, welcome to the basic twizzler test console.");
     println!("If you wanted line-editing, you've come to the wrong place.");
     println!("To run a program, type its name.");
