@@ -598,11 +598,9 @@ fn wake(_x: &AtomicU64) {
 #[cfg(kani)]
 mod queue_kani {
 
-    // use std::sync::atomic::{AtomicU64, Ordering};
     use core::mem;
 
-    //   use syscalls::SyscallArgs;
-    use crate::{QueueEntry, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags};
+    use crate::{QueueEntry, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags, QueueError};
     use crate::{wait, wake};
 
     use core::convert::From;
@@ -610,26 +608,53 @@ mod queue_kani {
     #[kani::proof]
     pub fn transmision(){
 
-    let qh = RawQueueHdr::new(4, mem::size_of::<QueueEntry<u32>>());
+        let qh = RawQueueHdr::new(4, mem::size_of::<QueueEntry<u32>>());
 
-    let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
-    let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
+        let mut buffer = [QueueEntry::<i32>::default(); 1 << 4];
+        let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
 
-    let value: i32 = kani::any();
+        let value: i32 = kani::any();
 
-    let res = q.submit(
-        QueueEntry::new(value as u32, value),
-        wait,
-        wake,
-        SubmissionFlags::empty());
+        let res = q.submit(
+            QueueEntry::new(value as u32, value),
+            wait,
+            wake,
+            SubmissionFlags::empty());
 
-    assert_eq!(res, Ok(()));
+        assert_eq!(res, Ok(()));
 
-    let res = q.receive(wait, wake, ReceiveFlags::from_bits_retain(0));
-    assert!(res.is_ok());
-    assert_eq!(res.unwrap().info(), value as u32);
-    assert_eq!(res.unwrap().item(),value);
-}
+        let res = q.receive(wait, wake, ReceiveFlags::from_bits_retain(0));
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().info(), value as u32);
+        assert_eq!(res.unwrap().item(),value);
+    }
+
+    #[kani::proof]
+    fn it_fills() {
+        let qs: usize = kani::any();
+        kani::assume(qs > 6); //Of note: This only works for qs > 1
+        let qh = RawQueueHdr::new(qs, mem::size_of::<QueueEntry<u32>>());
+        let mut buffer = [QueueEntry::<i32>::default(); 1 << 2];
+        let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
+
+        let res = q.submit(QueueEntry::new(1, 7), wait, wake, SubmissionFlags::empty());
+        assert_eq!(res, Ok(()));
+        let res = q.submit(QueueEntry::new(2, 7), wait, wake, SubmissionFlags::empty());
+        assert_eq!(res, Ok(()));
+        let res = q.submit(QueueEntry::new(3, 7), wait, wake, SubmissionFlags::empty());
+        assert_eq!(res, Ok(()));
+        let res = q.submit(QueueEntry::new(4, 7), wait, wake, SubmissionFlags::empty());
+        assert_eq!(res, Ok(()));
+        let res = q.submit(
+            QueueEntry::new(1, 7),
+            wait,
+            wake,
+            SubmissionFlags::NON_BLOCK,
+        );
+        assert_eq!(res, Err(QueueError::WouldBlock));
+    }
+
+ 
 
 
 }
