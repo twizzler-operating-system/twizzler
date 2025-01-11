@@ -324,12 +324,14 @@ impl super::Monitor {
         desc: Option<Descriptor>,
         dep_n: usize,
     ) -> Option<Descriptor> {
+        tracing::info!("mon: getdep: {}", dep_n);
         let dep = {
             let (_, _, ref mut comps, _, _, ref mut comphandles) =
                 *self.locks.lock(ThreadKey::get().unwrap());
             let comp_id = desc
                 .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
                 .unwrap_or(Some(caller))?;
+            tracing::info!("mon: >> dep: {}", comp_id);
             let comp = comps.get_mut(comp_id)?;
             comp.deps.get(dep_n).cloned()
         }?;

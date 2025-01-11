@@ -341,13 +341,13 @@ impl ReferenceRuntime {
     }
 
     pub fn fd_cmd(&self, fd: RawFd, cmd: u32, _arg: *const u8, _ret: *mut u8) -> u32 {
-        tracing::warn!("fd_cmd: unimp: {} {}", fd, cmd);
         let binding = get_fd_slots().lock().unwrap();
 
         let Some(FdKind::File(bind)) = binding.get(fd.try_into().unwrap()) else {
             return 1;
         };
         let file = bind.lock().unwrap();
+        twizzler_abi::klog_println!("==> cmd: {}", cmd);
 
         let metadata_handle: &FileMetadata = unsafe {
             file.handle
@@ -359,11 +359,15 @@ impl ReferenceRuntime {
         };
         match cmd {
             twizzler_rt_abi::bindings::FD_CMD_SYNC => {
+                twizzler_abi::klog_println!("==> sync");
                 let mut ok = true;
                 for id in &metadata_handle.direct {
-                    if twizzler_abi::syscall::sys_object_ctrl(*id, ObjectControlCmd::Sync).is_err()
-                    {
-                        ok = false;
+                    if id.raw() != 0 {
+                        if twizzler_abi::syscall::sys_object_ctrl(*id, ObjectControlCmd::Sync)
+                            .is_err()
+                        {
+                            ok = false;
+                        }
                     }
                 }
                 if twizzler_abi::syscall::sys_object_ctrl(file.handle.id(), ObjectControlCmd::Sync)
@@ -378,15 +382,18 @@ impl ReferenceRuntime {
                 }
             }
             twizzler_rt_abi::bindings::FD_CMD_DELETE => {
+                twizzler_abi::klog_println!("==> del");
                 let mut ok = true;
                 for id in &metadata_handle.direct {
-                    if twizzler_abi::syscall::sys_object_ctrl(
-                        *id,
-                        ObjectControlCmd::Delete(DeleteFlags::empty()),
-                    )
-                    .is_err()
-                    {
-                        ok = false;
+                    if id.raw() != 0 {
+                        if twizzler_abi::syscall::sys_object_ctrl(
+                            *id,
+                            ObjectControlCmd::Delete(DeleteFlags::empty()),
+                        )
+                        .is_err()
+                        {
+                            ok = false;
+                        }
                     }
                 }
                 if twizzler_abi::syscall::sys_object_ctrl(
@@ -403,7 +410,10 @@ impl ReferenceRuntime {
                     1
                 }
             }
-            _ => 1,
+            _ => {
+                tracing::warn!("fd_cmd: unimp: {} {}", fd, cmd);
+                1
+            }
         }
     }
 

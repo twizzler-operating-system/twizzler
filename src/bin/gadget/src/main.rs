@@ -33,6 +33,22 @@ impl embedded_io::Write for TwzIo {
     }
 }
 
+fn lethe_cmd(args: &[&str], namer: &mut NamingHandle) {
+    if args.len() <= 1 {
+        println!("usage: lethe <cmd>");
+        println!("possible cmds: adv");
+        return;
+    }
+    match args[1] {
+        "a" | "adv" => {
+            tracing::warn!("unimplemented: lethe adv (advance epoch)");
+        }
+        _ => {
+            println!("unknown lethe cmd: {}", args[1]);
+        }
+    }
+}
+
 fn show(args: &[&str], namer: &mut NamingHandle) {
     if args.len() <= 1 {
         println!("usage: show <item>");
@@ -136,7 +152,7 @@ fn write_file(args: &[&str], namer: &mut NamingHandle) {
     file.write(data.as_bytes()).unwrap();
 
     tracing::info!("calling sync!");
-    //file.sync_all().unwrap();
+    file.sync_all().unwrap();
 }
 
 fn new_file(args: &[&str], namer: &mut NamingHandle) {
@@ -161,6 +177,22 @@ fn new_file(args: &[&str], namer: &mut NamingHandle) {
     .unwrap();
     tracing::debug!("created new file object {}", file_id);
     namer.put(filename, file_id.raw());
+}
+
+fn del_file(args: &[&str], namer: &mut NamingHandle) {
+    if args.len() < 2 {
+        println!("usage: write <filename>");
+    }
+    let filename = args[1];
+    let Some(id) = namer.get(filename) else {
+        tracing::warn!("name {} not found", filename);
+        return;
+    };
+    tracing::info!("deleting file...");
+    let idname = id.to_string();
+    std::fs::remove_file(&idname).unwrap();
+    tracing::info!("removing name...");
+    namer.remove(filename);
 }
 
 fn main() {
@@ -204,6 +236,12 @@ fn main() {
             }
             "read" => {
                 read_file(&split, &mut namer);
+            }
+            "del" => {
+                del_file(&split, &mut namer);
+            }
+            "lethe" => {
+                lethe_cmd(&split, &mut namer);
             }
 
             _ => {
