@@ -3,17 +3,18 @@ use p256::ecdsa::{
     Signature, SigningKey, VerifyingKey as p256VerifyingKey,
 };
 use sha2::{Digest, Sha256};
+use twizzler_abi::object::Protections;
 
 use crate::{
     flags::{CapFlags, HashingAlgo, SigningScheme},
-    CapError, Gates, GatesError, ObjectId, Permissions, Revoc, VerifyingKey,
+    CapError, Gates, GatesError, ObjectId, Revoc, VerifyingKey,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cap {
     pub target: ObjectId,
     pub accessor: ObjectId,
-    pub permissions: Permissions,
+    pub protections: Protections,
     flags: CapFlags,
     gates: Gates,
     pub revocation: Revoc,
@@ -27,7 +28,7 @@ impl Cap {
     pub fn new(
         target: ObjectId,
         accessor: ObjectId,
-        perms: Permissions,
+        prots: Protections,
         target_priv_key: [u8; 32], // with this key we can?
         revocation: Revoc,
         gates: Gates,
@@ -55,7 +56,7 @@ impl Cap {
         Ok(Cap {
             accessor,
             target,
-            permissions: perms,
+            protections: prots,
             flags,
             siglen,
             sig: sig_buf,
@@ -73,7 +74,7 @@ impl Cap {
         let hash_arr = Cap::serialize(
             self.accessor,
             self.target,
-            self.permissions,
+            self.protections,
             self.flags,
             self.siglen,
             self.revocation,
@@ -137,7 +138,7 @@ impl Cap {
     fn serialize(
         accessor: ObjectId,
         target: ObjectId,
-        perms: Permissions,
+        prots: Protections,
         flags: CapFlags,
         siglen: u16,
         revocation: Revoc,

@@ -1,5 +1,6 @@
 use hex_literal::hex;
-use twizzler_security::{Cap, Gates, ObjectId, Permissions, SigningScheme, VerifyingKey};
+use twizzler_abi::object::Protections;
+use twizzler_security::{Cap, Gates, ObjectId, SigningScheme, VerifyingKey};
 
 #[test]
 fn creation_and_verification() {
@@ -15,7 +16,7 @@ fn creation_and_verification() {
     let target_rw_cap = Cap::new(
         target_id,
         accessor_id,
-        Permissions::READ | Permissions::WRITE,
+        Protections::all(),
         target_priv_key,
         Default::default(),
         Gates::default(),

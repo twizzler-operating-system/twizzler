@@ -21,6 +21,8 @@ bitflags::bitflags! {
         const WRITE = 2;
         /// Exec allowed.
         const EXEC = 4;
+        /// Use allowedd.
+        const USE = 8;
     }
 }
 

@@ -12,7 +12,8 @@ as structs
 ## Security contexts
 - Alice's "user" context
   - holds the capability for alice's private data
-- Bob's "user" context
+- [x ] Bob's "user" context
+
   - holds the capability for bobs private data
 
 - "Root" ctx
