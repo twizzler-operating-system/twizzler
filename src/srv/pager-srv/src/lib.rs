@@ -331,3 +331,8 @@ fn do_pager_start(q1: ObjID, q2: ObjID) {
 pub fn pager_start(q1: ObjID, q2: ObjID) {
     do_pager_start(q1, q2);
 }
+
+#[secgate::secure_gate]
+pub fn sync_object(q1: ObjID) {
+    tracing::warn!("unimp: sync object secure gate: {}", q1);
+}
