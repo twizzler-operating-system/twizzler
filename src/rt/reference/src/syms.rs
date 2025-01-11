@@ -328,8 +328,7 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_cmd(
     arg: *mut ::core::ffi::c_void,
     ret: *mut ::core::ffi::c_void,
 ) -> twizzler_rt_abi::bindings::fd_cmd_err {
-    // TODO. Right now, just return an error value (non-zero).
-    1
+    OUR_RUNTIME.fd_cmd(fd, cmd, arg.cast(), ret.cast())
 }
 check_ffi_type!(twz_rt_fd_cmd, _, _, _, _);
 

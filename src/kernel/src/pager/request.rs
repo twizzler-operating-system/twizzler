@@ -8,9 +8,12 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum ReqKind {
+pub enum ReqKind {
     Info(ObjID),
     PageData(ObjID, usize, usize),
+    Sync(ObjID),
+    Del(ObjID),
+    Create(ObjID),
 }
 
 impl ReqKind {
@@ -22,10 +25,22 @@ impl ReqKind {
         ReqKind::PageData(obj_id, start, len)
     }
 
+    pub fn new_sync(obj_id: ObjID) -> Self {
+        ReqKind::Sync(obj_id)
+    }
+
+    pub fn new_del(obj_id: ObjID) -> Self {
+        ReqKind::Del(obj_id)
+    }
+
+    pub fn new_create(obj_id: ObjID) -> Self {
+        ReqKind::Create(obj_id)
+    }
+
     pub fn pages(&self) -> impl Iterator<Item = usize> {
         match self {
-            ReqKind::Info(_) => (0..0).into_iter(),
             ReqKind::PageData(_, start, len) => (*start..(*start + *len)).into_iter(),
+            _ => (0..0).into_iter(),
         }
     }
 
@@ -33,10 +48,17 @@ impl ReqKind {
         matches!(self, ReqKind::Info(_))
     }
 
+    pub fn needs_sync(&self) -> bool {
+        matches!(self, ReqKind::Sync(_)) || matches!(self, ReqKind::Del(_))
+    }
+
     pub fn objid(&self) -> ObjID {
         match self {
             ReqKind::Info(obj_id) => *obj_id,
             ReqKind::PageData(obj_id, _, _) => *obj_id,
+            ReqKind::Sync(obj_id) => *obj_id,
+            ReqKind::Del(obj_id) => *obj_id,
+            ReqKind::Create(obj_id) => *obj_id,
         }
     }
 }
@@ -45,7 +67,7 @@ pub struct Request {
     id: usize,
     reqkind: ReqKind,
     remaining_pages: BTreeSet<usize>,
-    info_ready: Option<bool>,
+    cmd_ready: bool,
     waiting_threads: Vec<ThreadRef>,
 }
 
@@ -58,11 +80,7 @@ impl Request {
         Self {
             id,
             reqkind,
-            info_ready: if reqkind.needs_info() {
-                Some(false)
-            } else {
-                None
-            },
+            cmd_ready: !(reqkind.needs_info() || reqkind.needs_sync()),
             waiting_threads: Vec::new(),
             remaining_pages,
         }
@@ -73,7 +91,7 @@ impl Request {
     }
 
     pub fn done(&self) -> bool {
-        self.info_ready.unwrap_or(true) && self.remaining_pages.is_empty()
+        self.cmd_ready && self.remaining_pages.is_empty()
     }
 
     pub fn signal(&mut self) {
@@ -82,8 +100,8 @@ impl Request {
         }
     }
 
-    pub fn info_ready(&mut self) {
-        self.info_ready.as_mut().map(|b| *b = true);
+    pub fn cmd_ready(&mut self) {
+        self.cmd_ready = true;
     }
 
     pub fn page_ready(&mut self, page: usize) {

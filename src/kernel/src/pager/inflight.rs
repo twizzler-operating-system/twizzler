@@ -1,7 +1,10 @@
 use alloc::collections::{btree_map::BTreeMap, btree_set::BTreeSet};
 
 use stable_vec::StableVec;
-use twizzler_abi::{object::ObjID, pager::RequestFromKernel};
+use twizzler_abi::{
+    object::{ObjID, NULLPAGE_SIZE},
+    pager::{KernelCommand, ObjectRange, RequestFromKernel},
+};
 
 use super::{request::ReqKind, Request};
 use crate::thread::{CriticalGuard, ThreadRef};
@@ -9,15 +12,29 @@ use crate::thread::{CriticalGuard, ThreadRef};
 pub struct Inflight {
     id: usize,
     rk: ReqKind,
+    needs_send: bool,
 }
 
 impl Inflight {
-    pub(super) fn new(id: usize, rk: ReqKind) -> Self {
-        Self { id, rk }
+    pub(super) fn new(id: usize, rk: ReqKind, needs_send: bool) -> Self {
+        Self { id, rk, needs_send }
     }
 
     pub(super) fn pager_req(&self) -> Option<RequestFromKernel> {
-        todo!()
+        if !self.needs_send {
+            return None;
+        }
+        let cmd = match self.rk {
+            ReqKind::Info(obj_id) => KernelCommand::ObjectInfoReq(obj_id),
+            ReqKind::PageData(obj_id, s, e) => KernelCommand::PageDataReq(
+                obj_id,
+                ObjectRange::new((s * NULLPAGE_SIZE) as u64, (e * NULLPAGE_SIZE) as u64),
+            ),
+            ReqKind::Sync(obj_id) => KernelCommand::ObjectSync(obj_id),
+            ReqKind::Del(obj_id) => todo!(),
+            ReqKind::Create(obj_id) => todo!(),
+        };
+        Some(RequestFromKernel::new(cmd))
     }
 }
 
@@ -25,6 +42,7 @@ impl Inflight {
 struct PerObjectData {
     page_map: BTreeMap<usize, BTreeSet<usize>>,
     info_list: BTreeSet<usize>,
+    sync_list: BTreeSet<usize>,
 }
 
 impl PerObjectData {
@@ -35,6 +53,9 @@ impl PerObjectData {
         if rk.needs_info() {
             self.info_list.insert(id);
         }
+        if rk.needs_sync() {
+            self.sync_list.insert(id);
+        }
     }
 
     fn remove_all(&mut self, rk: ReqKind, id: usize) {
@@ -43,6 +64,9 @@ impl PerObjectData {
         }
         if rk.needs_info() {
             self.info_list.remove(&id);
+        }
+        if rk.needs_sync() {
+            self.sync_list.remove(&id);
         }
     }
 }
@@ -64,7 +88,7 @@ impl InflightManager {
 
     pub fn add_request(&mut self, rk: ReqKind) -> Inflight {
         if let Some(id) = self.req_map.get(&rk) {
-            return Inflight::new(*id, rk);
+            return Inflight::new(*id, rk, false);
         }
         let id = self.requests.next_push_index();
         let request = Request::new(id, rk);
@@ -75,7 +99,7 @@ impl InflightManager {
             .entry(rk.objid())
             .or_insert_with(|| PerObjectData::default());
         per_obj.insert(rk, id);
-        Inflight::new(id, rk)
+        Inflight::new(id, rk, true)
     }
 
     fn remove_request(&mut self, id: usize) {
@@ -99,11 +123,15 @@ impl InflightManager {
         request.setup_wait(thread)
     }
 
-    pub fn info_ready(&mut self, objid: ObjID) {
+    pub fn cmd_ready(&mut self, objid: ObjID, sync: bool) {
         if let Some(po) = self.per_object.get_mut(&objid) {
-            for id in &po.info_list {
+            let list = if sync { &po.sync_list } else { &po.info_list };
+            for id in list {
                 if let Some(req) = self.requests.get_mut(*id) {
-                    req.info_ready();
+                    req.cmd_ready();
+                    if req.done() {
+                        req.signal();
+                    }
                 } else {
                     logln!("[pager] warning -- stale ID");
                 }
@@ -118,6 +146,9 @@ impl InflightManager {
                     for id in idset {
                         if let Some(req) = self.requests.get_mut(*id) {
                             req.page_ready(page);
+                            if req.done() {
+                                req.signal();
+                            }
                         } else {
                             logln!("[pager] warning -- stale ID");
                         }
