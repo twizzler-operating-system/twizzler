@@ -11,3 +11,7 @@ twizzler-rt-abi = "*"
 monitor-api = { path = "../../rt/monitor-api" }
 tracing = "*"
 tracing-subscriber = "*"
+virtio-net = { path = "../../lib/virtio-net" }
+pager = { path = "../../lib/pager" }
+naming = { path = "../../lib/naming" }
+logboi = { path = "../../lib/logboi" }
