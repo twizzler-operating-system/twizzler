@@ -1,10 +1,12 @@
 use alloc::boxed::Box;
 
-use crate::{Cap, Gates, ObjectId, Revoc};
+use twizzler_abi::object::ObjID;
+
+use crate::{Cap, Gates, Revoc};
 
 pub struct Del {
-    pub receiver: ObjectId,
-    pub provider: ObjectId,
+    pub receiver: ObjID,
+    pub provider: ObjID,
     // mask:
     // flags:
     gatemask: Gates,

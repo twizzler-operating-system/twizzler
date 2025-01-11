@@ -2,6 +2,7 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use hex_literal::hex;
+use twizzler_abi::object::Protections;
 use twizzler_security::{Cap, ObjectId, Permissions, SigningScheme, VerifyingKey};
 
 // use cargo bench for these
@@ -19,7 +20,7 @@ fn verify_bench(c: &mut Criterion) {
     let target_rw_cap = Cap::new(
         target_id,
         accessor_id,
-        Permissions::READ | Permissions::WRITE,
+        Protections::all(),
         target_priv_key,
         Default::default(),
         Default::default(),

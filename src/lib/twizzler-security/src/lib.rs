@@ -3,7 +3,6 @@
 #![allow(dead_code)]
 
 extern crate alloc;
-pub type ObjectId = u128;
 
 mod capability;
 pub mod crypto;
