@@ -15,7 +15,7 @@ twizzler-queue = { path = "../../lib/twizzler-queue" }
 #twizzler-async = { path = "../../lib/twizzler-async" }
 twizzler-driver = { path = "../../lib/twizzler-driver" }
 twizzler-runtime = { path = "../../rt" }
-object-store = { path = "object-store" }
+object-store = { path = "obliviate/object-store" }
 async-trait = "0.1.66"
 volatile = "0.5"
 tracing = "0.1"

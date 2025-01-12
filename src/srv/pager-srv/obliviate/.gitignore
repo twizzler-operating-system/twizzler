@@ -1,0 +1,12 @@
+# cargo
+/**/Cargo.lock
+/**/target
+
+# rustc
+/**/rustc-ice*
+
+# vscode
+.vscode/*
+
+# gdb
+/**/.gdb*

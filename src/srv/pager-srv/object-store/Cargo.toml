@@ -1,5 +1,5 @@
 [package]
-name = "object-store"
+name = "object-store-old"
 version = "0.1.0"
 edition = "2021"
 
