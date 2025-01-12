@@ -16,7 +16,7 @@ use crate::{
 };
 
 pub fn create_blank_object() -> ObjectRef {
-    let obj = crate::obj::Object::new();
+    let obj = crate::obj::Object::new_kernel();
     let obj = Arc::new(obj);
     crate::obj::register_object(obj.clone());
     obj

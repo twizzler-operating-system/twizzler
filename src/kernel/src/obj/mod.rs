@@ -8,7 +8,10 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use twizzler_abi::object::{ObjID, MAX_SIZE};
+use twizzler_abi::{
+    meta::MetaFlags,
+    object::{ObjID, MAX_SIZE},
+};
 
 use self::{pages::Page, thread_sync::SleepInfo};
 use crate::{
@@ -138,6 +141,39 @@ impl From<usize> for PageNumber {
 }
 
 static OID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+fn backup_id_gen() -> ObjID {
+    ((OID.fetch_add(1, Ordering::SeqCst) as u128) | (1u128 << 64)).into()
+}
+
+fn gen_id(nonce: ObjID, kuid: ObjID, flags: MetaFlags) -> ObjID {
+    #[repr(C)]
+    struct Ids {
+        nonce: ObjID,
+        kuid: ObjID,
+        flags: MetaFlags,
+    }
+    let mut ids = Ids { nonce, kuid, flags };
+    let ptr = core::ptr::addr_of_mut!(ids).cast::<u8>();
+    let slice = unsafe { core::slice::from_raw_parts_mut(ptr, size_of::<Ids>()) };
+    let hash = crate::crypto::sha256(slice);
+    let mut id_buf = [0u8; 16];
+    id_buf.copy_from_slice(&hash[0..16]);
+    for i in 0..16 {
+        id_buf[i] ^= hash[i + 16];
+    }
+    u128::from_ne_bytes(id_buf).into()
+}
+
+pub fn calculate_new_id(kuid: ObjID, flags: MetaFlags) -> ObjID {
+    let mut buf = [0u8; 16];
+    if !crate::random::getrandom(&mut buf, true) {
+        return backup_id_gen();
+    }
+    let nonce = u128::from_ne_bytes(buf);
+    gen_id(nonce.into(), kuid, flags)
+}
+
 impl Object {
     pub fn is_pending_delete(&self) -> bool {
         self.flags.load(Ordering::SeqCst) & OBJ_DELETED != 0
@@ -190,15 +226,19 @@ impl Object {
         Some((v, token))
     }
 
-    pub fn new() -> Self {
+    pub fn new(id: ObjID) -> Self {
         Self {
-            id: ((OID.fetch_add(1, Ordering::SeqCst) as u128) | (1u128 << 64)).into(),
+            id,
             flags: AtomicU32::new(0),
             range_tree: Mutex::new(range::PageRangeTree::new()),
             sleep_info: Mutex::new(SleepInfo::new()),
             pin_info: Mutex::new(PinInfo::default()),
             contexts: Mutex::new(ContextInfo::default()),
         }
+    }
+
+    pub fn new_kernel() -> Self {
+        Self::new(calculate_new_id(0.into(), MetaFlags::default()))
     }
 
     pub fn add_context(&self, ctx: &ContextRef) {
@@ -233,7 +273,7 @@ pub enum InvalidateMode {
 
 impl Default for Object {
     fn default() -> Self {
-        Self::new()
+        Self::new_kernel()
     }
 }
 

@@ -4,6 +4,7 @@ use alloc::{
 };
 
 use twizzler_abi::{
+    meta::MetaFlags,
     object::{ObjID, Protections},
     syscall::{
         CreateTieSpec, HandleType, MapFlags, MapInfo, NewHandleError, ObjectCreate,
@@ -15,20 +16,21 @@ use crate::{
     arch::context::ArchContext,
     memory::context::{Context, ContextRef},
     mutex::Mutex,
-    obj::{LookupFlags, Object, ObjectRef},
+    obj::{calculate_new_id, LookupFlags, Object, ObjectRef},
     once::Once,
     security::get_sctx,
     thread::{current_memory_context, current_thread_ref},
 };
 
 pub fn sys_object_create(
-    _create: &ObjectCreate,
+    create: &ObjectCreate,
     srcs: &[ObjectSource],
     _ties: &[CreateTieSpec],
 ) -> Result<ObjID, ObjectCreateError> {
-    let obj = Arc::new(Object::new());
+    let id = calculate_new_id(create.kuid, MetaFlags::default());
+    let obj = Arc::new(Object::new(id));
     for src in srcs {
-        if src.id.as_u128() == 0 {
+        if src.id.raw() == 0 {
             crate::obj::copy::zero_ranges(&obj, src.dest_start as usize, src.len)
         } else {
             let so = crate::obj::lookup_object(src.id, LookupFlags::empty())
