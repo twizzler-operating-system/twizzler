@@ -83,10 +83,10 @@ bitflags! {
 #[repr(C)]
 /// Full object creation specification, minus ties.
 pub struct ObjectCreate {
-    kuid: ObjID,
-    bt: BackingType,
-    lt: LifetimeType,
-    flags: ObjectCreateFlags,
+    pub kuid: ObjID,
+    pub bt: BackingType,
+    pub lt: LifetimeType,
+    pub flags: ObjectCreateFlags,
 }
 impl ObjectCreate {
     /// Build a new object create specification.
@@ -110,8 +110,8 @@ impl ObjectCreate {
 /// A specification of ties to create.
 /// (see [the book](https://twizzler-operating-system.github.io/nightly/book/object_lifetime.html) for more information on ties).
 pub struct CreateTieSpec {
-    id: ObjID,
-    flags: CreateTieFlags,
+    pub id: ObjID,
+    pub flags: CreateTieFlags,
 }
 
 impl CreateTieSpec {

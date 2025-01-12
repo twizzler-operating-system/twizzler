@@ -48,7 +48,7 @@ pub struct NanoSeconds(pub u64);
 #[repr(transparent)]
 pub struct PicoSeconds(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 #[repr(transparent)]
 pub struct FemtoSeconds(pub u64);
 

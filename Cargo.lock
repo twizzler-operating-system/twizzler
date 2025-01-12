@@ -3624,7 +3624,6 @@ dependencies = [
 name = "naming-srv"
 version = "0.1.0"
 dependencies = [
- "arrayvec",
  "lazy_static",
  "secgate",
  "twizzler-abi",

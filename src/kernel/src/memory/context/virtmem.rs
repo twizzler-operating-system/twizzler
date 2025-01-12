@@ -809,7 +809,7 @@ mod test {
 
     #[kernel_test]
     fn test_kernel_object() {
-        let obj = crate::obj::Object::new();
+        let obj = crate::obj::Object::new_kernel();
         let obj = Arc::new(obj);
         crate::obj::register_object(obj.clone());
 

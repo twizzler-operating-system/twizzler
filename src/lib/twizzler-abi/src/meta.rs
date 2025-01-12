@@ -6,12 +6,12 @@ use crate::{
 };
 
 /// Flags for objects.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct MetaFlags(u32);
 
 /// A nonce for avoiding object ID collision.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct Nonce(u128);
 

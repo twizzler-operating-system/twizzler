@@ -43,7 +43,7 @@ pub fn init(modules: &[BootModule]) {
         );
         let mut total_alloc = 0;
         for e in tar.entries() {
-            let obj = obj::Object::new();
+            let obj = obj::Object::new_kernel();
             logln!(
                 "[kernel::initrd]  loading {:?} -> {:x}",
                 e.filename(),

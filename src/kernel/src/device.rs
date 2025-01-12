@@ -61,7 +61,7 @@ static KSO_MANAGER: Once<KsoManager> = Once::new();
 
 fn get_kso_manager() -> &'static KsoManager {
     KSO_MANAGER.call_once(|| {
-        let root = Arc::new(crate::obj::Object::new());
+        let root = Arc::new(crate::obj::Object::new_kernel());
         crate::obj::register_object(root.clone());
         KsoManager {
             root,
@@ -171,7 +171,7 @@ pub fn create_busroot(
     bt: BusType,
     kaction: fn(DeviceRef, cmd: u32, arg: u64, arg2: u64) -> Result<KactionValue, KactionError>,
 ) -> DeviceRef {
-    let obj = Arc::new(crate::obj::Object::new());
+    let obj = Arc::new(crate::obj::Object::new_kernel());
     crate::obj::register_object(obj.clone());
     let device = Arc::new(Device {
         inner: Mutex::new(DeviceInner {
@@ -199,7 +199,7 @@ pub fn create_device(
     id: DeviceId,
     kaction: fn(DeviceRef, cmd: u32, arg: u64, arg: u64) -> Result<KactionValue, KactionError>,
 ) -> DeviceRef {
-    let obj = Arc::new(crate::obj::Object::new());
+    let obj = Arc::new(crate::obj::Object::new_kernel());
     crate::obj::register_object(obj.clone());
     let device = Arc::new(Device {
         inner: Mutex::new(DeviceInner {
@@ -236,7 +236,7 @@ impl Device {
     }
 
     pub fn add_info<T>(&self, info: &T) {
-        let obj = Arc::new(crate::obj::Object::new());
+        let obj = Arc::new(crate::obj::Object::new_kernel());
         obj.write_base(info);
         crate::obj::register_object(obj.clone());
         self.inner
@@ -246,7 +246,7 @@ impl Device {
     }
 
     pub fn add_mmio(&self, start: PhysAddr, end: PhysAddr, ct: CacheType, info: u64) {
-        let obj = Arc::new(crate::obj::Object::new());
+        let obj = Arc::new(crate::obj::Object::new_kernel());
         obj.map_phys(start, end, ct);
         let mmio_info = MmioInfo {
             length: (end - start) as u64,
