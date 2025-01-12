@@ -34,18 +34,13 @@ impl CondVar {
         }
     }
 
-    pub fn wait<'a, T>(
-        &self,
-        mut guard: SpinLockGuard<'a, T>,
-        istate: bool,
-    ) -> SpinLockGuard<'a, T> {
+    #[track_caller]
+    pub fn wait<'a, T>(&self, mut guard: SpinLockGuard<'a, T>) -> SpinLockGuard<'a, T> {
         let current_thread =
             current_thread_ref().expect("cannot call wait before threading is enabled");
-        crate::interrupt::set(false);
         let mut inner = self.inner.lock();
         inner.queue.insert(current_thread);
         drop(inner);
-
         let current_thread = current_thread_ref().unwrap();
         let critical_guard = current_thread.enter_critical();
         let res = unsafe {
@@ -57,21 +52,28 @@ impl CondVar {
         let mut inner = self.inner.lock();
         inner.queue.find_mut(&current_thread.objid()).remove();
         drop(inner);
-        crate::interrupt::set(istate);
         res
     }
 
     pub fn signal(&self) {
-        let mut inner = self.inner.lock();
-        let mut node = inner.queue.front_mut();
-        let mut threads_to_wake = Vec::new();
-        while let Some(t) = node.remove() {
-            threads_to_wake.push(t);
-        }
+        let mut threads_to_wake = Vec::with_capacity(8);
+        loop {
+            let mut inner = self.inner.lock();
+            if inner.queue.is_empty() {
+                break;
+            }
+            let mut node = inner.queue.front_mut();
+            while let Some(t) = node.remove() {
+                threads_to_wake.push(t);
+                if threads_to_wake.len() == 8 {
+                    break;
+                }
+            }
 
-        drop(inner);
-        for t in threads_to_wake {
-            schedule_thread(t);
+            drop(inner);
+            for t in threads_to_wake.drain(..) {
+                schedule_thread(t);
+            }
         }
     }
 
@@ -125,9 +127,9 @@ mod tests {
                 if *inner != 0 {
                     break 'inner;
                 }
-                cv2.wait(inner, true);
+                cv2.wait(inner);
             }
-            handle.1.wait(true);
+            handle.1.wait();
         }
     }
 }

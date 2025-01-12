@@ -273,7 +273,7 @@ mod test {
                     .collect();
 
                 for handle in handles {
-                    handle.1.wait(true);
+                    handle.1.wait();
                 }
                 let inner = lock.lock();
                 let val = *inner;
