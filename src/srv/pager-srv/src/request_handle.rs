@@ -32,7 +32,7 @@ pub async fn handle_kernel_request(
             );
             let phys_range = page_data_req(data, obj_id, range);
             Some(CompletionToKernel::new(
-                KernelCompletionData::PageDataCompletion(phys_range),
+                KernelCompletionData::PageDataCompletion(obj_id, range, phys_range),
             ))
         }
         KernelCommand::ObjectInfoReq(obj_id) => {
@@ -45,6 +45,20 @@ pub async fn handle_kernel_request(
         KernelCommand::EchoReq => {
             tracing::trace!("handling EchoReq");
             Some(CompletionToKernel::new(KernelCompletionData::EchoResp))
+        }
+        KernelCommand::ObjectSync(obj_id) => {
+            tracing::warn!("unimp: object sync: {}", obj_id);
+            Some(CompletionToKernel::new(KernelCompletionData::SyncOkay(
+                obj_id,
+            )))
+        }
+        KernelCommand::ObjectDel(obj_id) => {
+            tracing::warn!("unimp: object del: {}", obj_id);
+            Some(CompletionToKernel::new(KernelCompletionData::Error))
+        }
+        KernelCommand::ObjectCreate(object_info) => {
+            tracing::warn!("unimp: object create: {}", object_info.obj_id);
+            Some(CompletionToKernel::new(KernelCompletionData::Error))
         }
     }
 }

@@ -66,3 +66,31 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
         };
     }
 }
+
+fn cmd_object(req: ReqKind) {
+    let mut mgr = INFLIGHT_MGR.lock();
+    let inflight = mgr.add_request(req);
+    drop(mgr);
+    if let Some(pager_req) = inflight.pager_req() {
+        queues::submit_pager_request(pager_req);
+    }
+
+    let mut mgr = INFLIGHT_MGR.lock();
+    let thread = current_thread_ref().unwrap();
+    if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
+        drop(mgr);
+        finish_blocking(guard);
+    };
+}
+
+pub fn sync_object(id: ObjID) {
+    cmd_object(ReqKind::new_sync(id));
+}
+
+pub fn del_object(id: ObjID) {
+    cmd_object(ReqKind::new_del(id));
+}
+
+pub fn create_object(id: ObjID) {
+    cmd_object(ReqKind::new_create(id));
+}

@@ -48,6 +48,8 @@ pub enum ObjectControlCmd {
     CreateCommit,
     /// Delete an object.
     Delete(DeleteFlags),
+    /// Sync an entire object (non-transactionally)
+    Sync,
 }
 
 impl From<ObjectControlCmd> for (u64, u64) {
@@ -55,6 +57,7 @@ impl From<ObjectControlCmd> for (u64, u64) {
         match c {
             ObjectControlCmd::CreateCommit => (0, 0),
             ObjectControlCmd::Delete(x) => (1, x.bits()),
+            ObjectControlCmd::Sync => (2, 0),
         }
     }
 }
@@ -65,6 +68,7 @@ impl TryFrom<(u64, u64)> for ObjectControlCmd {
         Ok(match value.0 {
             0 => ObjectControlCmd::CreateCommit,
             1 => ObjectControlCmd::Delete(DeleteFlags::from_bits(value.1).ok_or(())?),
+            2 => ObjectControlCmd::Sync,
             _ => return Err(()),
         })
     }
@@ -72,7 +76,7 @@ impl TryFrom<(u64, u64)> for ObjectControlCmd {
 
 /// Perform a kernel operation on this object.
 pub fn sys_object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> Result<(), ObjectControlError> {
-    let (hi, lo) = id.split();
+    let [hi, lo] = id.parts();
     let (cmd, opts) = cmd.into();
     let args = [hi, lo, cmd, opts];
     let (code, val) = unsafe { raw_syscall(Syscall::ObjectCtrl, &args) };

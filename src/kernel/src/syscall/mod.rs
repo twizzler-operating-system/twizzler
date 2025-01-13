@@ -1,5 +1,6 @@
 use core::mem::MaybeUninit;
 
+use object::object_ctrl;
 use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionValue},
     object::{ObjID, Protections, MAX_SIZE},
@@ -398,6 +399,17 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
         Syscall::ThreadCtrl => {
             let (code, val) = thread_ctrl(context.arg0::<u64>().into(), context.arg1());
             context.set_return_values(code, val);
+            return;
+        }
+        Syscall::ObjectCtrl => {
+            let id = ObjID::from_parts([context.arg0(), context.arg1()]);
+            let cmd = (context.arg2::<u64>(), context.arg3::<u64>()).try_into();
+            if let Ok(cmd) = cmd {
+                let (code, val) = object_ctrl(id, cmd);
+                context.set_return_values(code, val);
+            } else {
+                context.set_return_values(1u64, 0u64);
+            }
             return;
         }
         Syscall::ReadClockInfo => {

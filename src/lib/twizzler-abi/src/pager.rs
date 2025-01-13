@@ -1,5 +1,7 @@
 use twizzler_rt_abi::object::ObjID;
 
+use crate::object::NULLPAGE_SIZE;
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub struct RequestFromKernel {
     cmd: KernelCommand,
@@ -20,6 +22,9 @@ pub enum KernelCommand {
     EchoReq,
     PageDataReq(ObjID, ObjectRange),
     ObjectInfoReq(ObjID),
+    ObjectSync(ObjID),
+    ObjectDel(ObjID),
+    ObjectCreate(ObjectInfo),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
@@ -39,9 +44,11 @@ impl CompletionToKernel {
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCompletionData {
+    Error,
     EchoResp,
-    PageDataCompletion(PhysRange),
+    PageDataCompletion(ObjID, ObjectRange, PhysRange),
     ObjectInfoCompletion(ObjectInfo),
+    SyncOkay(ObjID),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
@@ -98,8 +105,8 @@ pub enum PagerCompletionData {
 }
 
 pub struct PageDataReq {
-    objID: ObjID,
-    object_range: ObjectRange,
+    pub objID: ObjID,
+    pub object_range: ObjectRange,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
@@ -133,10 +140,26 @@ impl PhysRange {
     pub fn len(&self) -> usize {
         (self.end - self.start) as usize
     }
+
+    pub fn pages(&self) -> impl Iterator<Item = u64> {
+        let first_page = self.start / NULLPAGE_SIZE as u64;
+        let last_page = self.end / NULLPAGE_SIZE as u64;
+        first_page..last_page
+    }
 }
 
 impl ObjectRange {
     pub fn new(start: u64, end: u64) -> Self {
         Self { start, end }
+    }
+
+    pub fn len(&self) -> usize {
+        (self.end - self.start) as usize
+    }
+
+    pub fn pages(&self) -> impl Iterator<Item = u64> {
+        let first_page = self.start / NULLPAGE_SIZE as u64;
+        let last_page = self.end / NULLPAGE_SIZE as u64;
+        first_page..last_page
     }
 }
