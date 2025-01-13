@@ -12,7 +12,6 @@ use jitter::maybe_add_jitter_entropy_source;
 use crate::{
     mutex::{LockGuard, Mutex},
     once::Once,
-    syscall::sync::sys_thread_sync,
     thread::{entry::run_closure_in_new_thread, priority::Priority},
 };
 
@@ -31,14 +30,12 @@ struct EntropySources {
 
 impl EntropySources {
     pub fn new() -> Self {
-        logln!("Created new entropy sources list");
         Self {
             sources: Vec::new(),
         }
     }
 
     pub fn has_sources(&self) -> bool {
-        logln!("source count: {}", self.source_count());
         self.source_count() != 0
     }
 
@@ -49,9 +46,7 @@ impl EntropySources {
         &mut self,
     ) -> Result<(), ()> {
         let source = Source::try_new()?;
-        logln!("pushing source!");
         self.sources.push((Box::new(source), Contributor::new()));
-        logln!("Sources count: {}", self.source_count());
         Ok(())
     }
 
@@ -70,7 +65,6 @@ impl EntropySources {
                 }
             }
         }
-        // logln!("contributed entropy to pool");
     }
 }
 
@@ -78,7 +72,7 @@ static ACCUMULATOR: Once<Mutex<Accumulator>> = Once::new();
 static ENTROPY_SOURCES: Once<Mutex<EntropySources>> = Once::new();
 
 /// Generates randomness and fills the out buffer with entropy.
-///  
+///
 /// Will optionally block while waiting for entropy events.
 ///
 /// Returns whether or not it successfully filled the out buffer with entropy
@@ -91,17 +85,16 @@ pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
     if let Ok(()) = res {
         return true;
     }
-    logln!("need to seed accumulator");
     // try_fill_random_data only fails if unseeded
     // so the rest is trying to seed it/wait for it to be seeded
     let mut entropy_sources = ENTROPY_SOURCES
         .call_once(|| Mutex::new(EntropySources::new()))
         .lock();
     if entropy_sources.has_sources() {
-        logln!("has sources");
         entropy_sources.contribute_entropy(acc.borrow_mut());
-        acc.try_fill_random_data(out)
-            .expect("Should be seeded now & therefore shouldn't return an error");
+        let _ = acc.try_fill_random_data(out).inspect_err(|_| {
+            logln!("warning -- should be seeded now & therefore shouldn't return an error")
+        });
         drop((entropy_sources, acc));
         return getrandom(out, nonblocking);
     }
@@ -110,12 +103,12 @@ pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
         // doesn't block, returns false instead
         false
     } else {
+        // TODO: block on a condvar or something.
         // otherwise schedule and recurse in again after this thread gets picked up again
         // this way it allows other work to get done, work that might result in entropy events
 
         // block for 2 seconds and hope for other entropy-generating work to get done in the
         // meantime
-        logln!("recursing");
         // sys_thread_sync(&mut [], Some(&mut Duration::from_secs(2))).expect(
         //     "shouldn't panic because sys_thread_sync doesn't panic if no ops are passed in",
         // );
@@ -184,13 +177,8 @@ mod test {
     #[kernel_test]
     fn test_rand_gen() {
         let registered_jitter_entropy = maybe_add_jitter_entropy_source();
-        let mut into = [0u8; 1024];
         logln!("jitter entropy registered: {}", registered_jitter_entropy);
-
-        getrandom(&mut into, false);
-        for byte in into {
-            logln!("{}", byte);
-        }
-        // logln!("Into: {:?}", into)
+        let mut into = [0u8; 1024];
+        assert_eq!(getrandom(&mut into, false), true);
     }
 }

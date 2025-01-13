@@ -1,25 +1,22 @@
 use twizzler_abi::{
     device::CacheType,
-    object::{ObjID, Protections},
+    object::{ObjID, Protections, NULLPAGE_SIZE},
     pager::{
-        CompletionToKernel, CompletionToPager, KernelCommand, ObjectRange, PagerCompletionData,
-        PagerRequest, PhysRange, RequestFromKernel, RequestFromPager,
+        CompletionToKernel, CompletionToPager, ObjectRange, PagerCompletionData, PagerRequest,
+        PhysRange, RequestFromKernel, RequestFromPager,
     },
 };
 
-use super::request::ReqKind;
+use super::INFLIGHT_MGR;
 use crate::{
-    arch::{PhysAddr, VirtAddr},
+    arch::PhysAddr,
     idcounter::{IdCounter, SimpleId},
     memory::context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
-    obj::{lookup_object, LookupFlags},
+    obj::{lookup_object, pages::Page, LookupFlags, PageNumber},
     once::Once,
     pager::PAGER_MEMORY,
-    queue::{ManagedQueueReceiver, ManagedQueueSender, QueueObject},
-    syscall::object::sys_sctx_attach,
-    thread::{
-        current_memory_context, current_thread_ref, entry::start_new_kernel, priority::Priority,
-    },
+    queue::{ManagedQueueReceiver, QueueObject},
+    thread::{entry::start_new_kernel, priority::Priority},
 };
 
 static SENDER: Once<(
@@ -91,7 +88,7 @@ fn pager_test_request() -> CompletionToPager {
 pub(super) fn pager_request_handler_main() {
     let receiver = RECEIVER.wait();
     loop {
-        receiver.handle_request(|id, req| match req.cmd() {
+        receiver.handle_request(|_id, req| match req.cmd() {
             PagerRequest::EchoReq => {
                 CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
             }
@@ -124,11 +121,45 @@ pub(super) fn pager_compl_handler_main() {
             twizzler_abi::pager::KernelCompletionData::EchoResp => {
                 //logln!("got echo response");
             }
-            twizzler_abi::pager::KernelCompletionData::PageDataCompletion(phys_range) => {
-                //logln!("got physical range {:?}", phys_range);
+            twizzler_abi::pager::KernelCompletionData::PageDataCompletion(
+                objid,
+                obj_range,
+                phys_range,
+            ) => {
+                logln!(
+                    "kernel: pager compl: got physical range {:?} for object {} range {:?}",
+                    phys_range,
+                    objid,
+                    obj_range
+                );
+                if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
+                    let mut object_tree = object.lock_page_tree();
+
+                    for (objpage_nr, physpage_nr) in obj_range.pages().zip(phys_range.pages()) {
+                        let pn = PageNumber::from(objpage_nr as usize);
+                        let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
+                        logln!("kernel adding object {} page {} => {:?}", objid, pn, pa);
+                        object_tree.add_page(pn, Page::new_wired(pa, CacheType::WriteBack));
+                    }
+                    drop(object_tree);
+
+                    INFLIGHT_MGR
+                        .lock()
+                        .pages_ready(objid, obj_range.pages().map(|x| x as usize));
+                } else {
+                    logln!("kernel: pager: got unknown object ID");
+                }
             }
             twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(obj_info) => {
-                //logln!("got object info {:?}", obj_info);
+                logln!("kernel: pager compl: got object info {:?}", obj_info);
+                INFLIGHT_MGR.lock().cmd_ready(obj_info.obj_id, false);
+            }
+            twizzler_abi::pager::KernelCompletionData::SyncOkay(objid) => {
+                logln!("kernel: pager compl: got object sync {:?}", objid);
+                INFLIGHT_MGR.lock().cmd_ready(objid, true);
+            }
+            twizzler_abi::pager::KernelCompletionData::Error => {
+                logln!("pager returned error");
             }
         }
         sender.0.release_simple(SimpleId::from(completion.0));

@@ -244,7 +244,7 @@ extern "C" fn soft_timeout_clock() {
             drop(tq);
             timeout.call();
         } else {
-            TIMEOUT_THREAD_CONDVAR.wait(tq, true);
+            TIMEOUT_THREAD_CONDVAR.wait(tq);
         }
     }
 }

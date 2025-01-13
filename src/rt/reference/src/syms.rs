@@ -328,8 +328,7 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_cmd(
     arg: *mut ::core::ffi::c_void,
     ret: *mut ::core::ffi::c_void,
 ) -> twizzler_rt_abi::bindings::fd_cmd_err {
-    // TODO. Right now, just return an error value (non-zero).
-    1
+    OUR_RUNTIME.fd_cmd(fd, cmd, arg.cast(), ret.cast())
 }
 check_ffi_type!(twz_rt_fd_cmd, _, _, _, _);
 
@@ -485,6 +484,40 @@ pub unsafe extern "C-unwind" fn twz_rt_get_object_handle(ptr: *mut c_void) -> ob
         .unwrap_or(object_handle::default())
 }
 check_ffi_type!(twz_rt_get_object_handle, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_insert_fot(
+    handle: *mut object_handle,
+    fote: *mut c_void,
+) -> i64 {
+    match OUR_RUNTIME.insert_fot(handle, fote.cast()) {
+        Some(x) => x as i64,
+        None => -1,
+    }
+}
+check_ffi_type!(twz_rt_insert_fot, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_resolve_fot(
+    handle: *mut object_handle,
+    idx: u64,
+    valid_len: usize,
+) -> map_result {
+    OUR_RUNTIME.resolve_fot(handle, idx, valid_len).into()
+}
+check_ffi_type!(twz_rt_resolve_fot, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_resolve_fot_local(
+    ptr: *mut c_void,
+    idx: u64,
+    valid_len: usize,
+) -> *mut c_void {
+    OUR_RUNTIME
+        .resolve_fot_local(ptr.cast(), idx, valid_len)
+        .cast()
+}
+check_ffi_type!(twz_rt_resolve_fot_local, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn __twz_rt_map_two_objects(

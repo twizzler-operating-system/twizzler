@@ -1,7 +1,7 @@
 //! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use core::{intrinsics::size_of, marker::PhantomData, ptr::NonNull};
+use core::{marker::PhantomData, mem::size_of, ptr::NonNull};
 
 use twizzler_abi::{
     device::CacheType,
@@ -809,7 +809,7 @@ mod test {
 
     #[kernel_test]
     fn test_kernel_object() {
-        let obj = crate::obj::Object::new();
+        let obj = crate::obj::Object::new_kernel();
         let obj = Arc::new(obj);
         crate::obj::register_object(obj.clone());
 

@@ -1355,6 +1355,8 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "clap",
+ "lazy_static",
+ "naming",
  "serde",
  "tar 0.4.43 (git+https://github.com/CPTforever/tar-rs.git?branch=twizzler)",
  "twizzler-abi",
@@ -3615,6 +3617,7 @@ dependencies = [
 name = "naming"
 version = "0.1.0"
 dependencies = [
+ "arrayvec",
  "naming-srv",
  "secgate",
  "twizzler-rt-abi",

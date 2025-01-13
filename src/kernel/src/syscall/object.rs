@@ -4,10 +4,12 @@ use alloc::{
 };
 
 use twizzler_abi::{
+    meta::MetaFlags,
     object::{ObjID, Protections},
     syscall::{
-        CreateTieSpec, HandleType, MapFlags, MapInfo, NewHandleError, ObjectCreate,
-        ObjectCreateError, ObjectMapError, ObjectReadMapError, ObjectSource, SctxAttachError,
+        CreateTieSpec, HandleType, MapFlags, MapInfo, NewHandleError, ObjectControlCmd,
+        ObjectCreate, ObjectCreateError, ObjectMapError, ObjectReadMapError, ObjectSource,
+        SctxAttachError,
     },
 };
 
@@ -15,20 +17,21 @@ use crate::{
     arch::context::ArchContext,
     memory::context::{Context, ContextRef},
     mutex::Mutex,
-    obj::{LookupFlags, Object, ObjectRef},
+    obj::{calculate_new_id, LookupFlags, Object, ObjectRef},
     once::Once,
     security::get_sctx,
     thread::{current_memory_context, current_thread_ref},
 };
 
 pub fn sys_object_create(
-    _create: &ObjectCreate,
+    create: &ObjectCreate,
     srcs: &[ObjectSource],
     _ties: &[CreateTieSpec],
 ) -> Result<ObjID, ObjectCreateError> {
-    let obj = Arc::new(Object::new());
+    let id = calculate_new_id(create.kuid, MetaFlags::default());
+    let obj = Arc::new(Object::new(id));
     for src in srcs {
-        if src.id.as_u128() == 0 {
+        if src.id.raw() == 0 {
             crate::obj::copy::zero_ranges(&obj, src.dest_start as usize, src.len)
         } else {
             let so = crate::obj::lookup_object(src.id, LookupFlags::empty())
@@ -184,4 +187,16 @@ pub fn sys_sctx_attach(id: ObjID) -> Result<u32, SctxAttachError> {
     current_thread.secctx.attach(sctx)?;
 
     Ok(0)
+}
+
+pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
+    logln!("object ctrl: {} {:?}", id, cmd);
+    match cmd {
+        ObjectControlCmd::Sync => {
+            crate::pager::sync_object(id);
+        }
+        ObjectControlCmd::Delete(_) => {}
+        _ => {}
+    }
+    (0, 0)
 }
