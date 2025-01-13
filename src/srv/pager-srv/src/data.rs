@@ -4,7 +4,7 @@ use std::{
 };
 
 use bitvec::prelude::*;
-use twizzler_abi::pager::{ObjectRange, PhysRange};
+use twizzler_abi::pager::{ObjectInfo, ObjectRange, PhysRange};
 use twizzler_object::ObjID;
 
 use crate::helpers::{page_in, page_to_physrange};
@@ -208,5 +208,9 @@ impl PagerData {
         page_in(id, obj_range, phys_range);
         tracing::trace!("memory page allocated successfully");
         return phys_range;
+    }
+
+    pub fn lookup_object(&self, id: ObjID) -> Option<ObjectInfo> {
+        None
     }
 }

@@ -30,7 +30,7 @@ pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
+            .with_max_level(tracing::Level::DEBUG)
             .without_time()
             .finish(),
     )
@@ -158,8 +158,8 @@ fn pager_init(
     PagerData,
     &'static Executor<'static>,
 ) {
-    tracing::debug!("init start");
     tracing_init();
+    tracing::debug!("init start");
     let data = data_structure_init();
     let (rq, sq) = queue_init(q1, q2);
     let ex = async_runtime_init(2);
@@ -324,6 +324,19 @@ fn do_pager_start(q1: ObjID, q2: ObjID) {
     }
 
     tracing::info!("Test Completed");
+
+    tracing::info!("testing object store");
+
+    let res = object_store::create_object(123).unwrap();
+    assert_eq!(res, true);
+
+    object_store::write_all(123, b"test data!", 0).unwrap();
+
+    let mut buf = [0; 100];
+    object_store::read_exact(123, &mut buf, 0).unwrap();
+    let s = String::from_utf8_lossy(&buf).into_owned();
+    tracing::info!("read: {}", s);
+
     //Done
 }
 

@@ -161,6 +161,14 @@ pub(super) fn pager_compl_handler_main() {
             twizzler_abi::pager::KernelCompletionData::Error => {
                 logln!("pager returned error");
             }
+            twizzler_abi::pager::KernelCompletionData::NoSuchObject(obj_id) => {
+                logln!(
+                    "kernel: pager compl: got object info {:?}: no such object",
+                    obj_id
+                );
+                // TODO: record the error.
+                INFLIGHT_MGR.lock().cmd_ready(obj_id, false);
+            }
         }
         sender.0.release_simple(SimpleId::from(completion.0));
     }

@@ -12,8 +12,8 @@ fn page_data_req(data: Arc<PagerData>, id: ObjID, range: ObjectRange) -> PhysRan
     return data.fill_mem_page(id, range);
 }
 
-fn object_info_req(_data: Arc<PagerData>, id: ObjID) -> ObjectInfo {
-    return ObjectInfo::new(id);
+fn object_info_req(data: Arc<PagerData>, id: ObjID) -> Option<ObjectInfo> {
+    data.lookup_object(id)
 }
 
 pub async fn handle_kernel_request(
@@ -37,10 +37,15 @@ pub async fn handle_kernel_request(
         }
         KernelCommand::ObjectInfoReq(obj_id) => {
             tracing::trace!("handling ObjectInfo for ObjID: {:?}", obj_id);
-            let obj_info = object_info_req(data, obj_id);
-            Some(CompletionToKernel::new(
-                KernelCompletionData::ObjectInfoCompletion(obj_info),
-            ))
+            if let Some(obj_info) = object_info_req(data, obj_id) {
+                Some(CompletionToKernel::new(
+                    KernelCompletionData::ObjectInfoCompletion(obj_info),
+                ))
+            } else {
+                Some(CompletionToKernel::new(KernelCompletionData::NoSuchObject(
+                    obj_id,
+                )))
+            }
         }
         KernelCommand::EchoReq => {
             tracing::trace!("handling EchoReq");

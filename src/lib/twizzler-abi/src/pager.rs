@@ -48,6 +48,7 @@ pub enum KernelCompletionData {
     EchoResp,
     PageDataCompletion(ObjID, ObjectRange, PhysRange),
     ObjectInfoCompletion(ObjectInfo),
+    NoSuchObject(ObjID),
     SyncOkay(ObjID),
 }
 
