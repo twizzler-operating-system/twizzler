@@ -292,7 +292,7 @@ impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
         let tx = self.obj.clone().tx()?;
         let base = tx.base().owned();
         base.push_sc(val, &tx)?;
-        tx.commit()?;
+        self.obj = tx.commit()?;
         Ok(())
     }
 
@@ -319,7 +319,7 @@ impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
         let tx = self.obj.clone().tx()?;
         let base = tx.base().owned();
         base.push(val, &tx)?;
-        tx.commit()?;
+        self.obj = tx.commit()?;
         Ok(())
     }
 
