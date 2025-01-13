@@ -76,6 +76,9 @@ impl SplitPageRange {
 mod kani_page {
     use super::*;
     use crate::dma::pool::compact_range_list;
+    use super::DmaPool;
+    use crate::dma::{Access, DmaOptions};
+
 
     #[kani::proof]
     fn spr_split_multiple() {
@@ -94,6 +97,35 @@ mod kani_page {
             panic!("split broken");
         }
     }
+
+    #[kani::proof]
+    fn spr_split_single2() {
+        let s: usize = kani::any();
+        let l: usize = kani::any();
+        let r = SplitPageRange::new(s, l);
+        let split = r.split(0);
+        if let super::Split::Single(r) = split {
+            assert_eq!(r.len, l);
+            assert_eq!(r.start, s);
+        } else {
+            panic!("split broken");
+        }
+    }
+
+    #[kani::proof]
+    fn spr_merge() {
+        let s_1: usize = kani::any();
+        let l_1: usize = kani::any();
+        let s_2: usize = kani::any();
+        let l_2: usize = kani::any();
+        kani::assume(s_1 + l_1 < s_2);
+        let a = SplitPageRange::new(s_1, l_1);
+        let b = SplitPageRange::new(s_2, l_2);
+        let r = a.merge(b);
+        assert_eq!(r.start, s_1);
+        assert_eq!(r.len, l_1+l_2);
+    }
+
 }
 
 #[cfg(test)]
