@@ -56,6 +56,7 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
         let interrupt_state = crate::interrupt::disable();
         let ticket = self.next_ticket.0.fetch_add(1, Ordering::Relaxed);
         let mut iters = 0;
+        let caller = core::panic::Location::caller().clone();
         spin_wait_until(
             || {
                 if self.current.0.load(Ordering::Acquire) != ticket {
@@ -69,7 +70,6 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
                 Relax::relax(iters);
             },
         );
-        let caller = core::panic::Location::caller().clone();
         unsafe { *self.locked_from.get().as_mut().unwrap() = Some(caller) };
         LockGuard {
             lock: self,
@@ -123,11 +123,16 @@ impl<T, Relax: RelaxStrategy> LockGuard<'_, T, Relax> {
     pub unsafe fn force_unlock(&mut self) {
         self.dont_unlock_on_drop = true;
         self.lock.release();
-        crate::interrupt::set(self.interrupt_state);
     }
 
     pub unsafe fn force_relock(self) -> Self {
-        self.lock.lock()
+        let mut new_guard = self.lock.lock();
+        new_guard.interrupt_state = self.interrupt_state;
+        new_guard
+    }
+
+    pub fn int_state(&self) -> bool {
+        self.interrupt_state
     }
 }
 

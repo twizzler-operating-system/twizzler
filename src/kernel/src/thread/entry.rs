@@ -104,7 +104,9 @@ pub struct KthreadClosure<F, R> {
 
 impl<F, R> KthreadClosure<F, R> {
     /// Wait for the other thread to finish and provide the result.
-    pub fn wait(self: Arc<Self>, istate: bool) -> R {
+    #[track_caller]
+    pub fn wait(self: Arc<Self>) -> R {
+        let caller = core::panic::Location::caller();
         loop {
             current_processor().cleanup_exited();
             let guard = self.result.lock();
@@ -113,7 +115,7 @@ impl<F, R> KthreadClosure<F, R> {
                 // we initialize the MaybeUninit.
                 return unsafe { guard.1.assume_init_read() };
             }
-            self.signal.wait(guard, istate);
+            self.signal.wait(guard);
         }
     }
 }
@@ -187,7 +189,7 @@ mod test {
     fn test_closure() {
         let x = super::run_closure_in_new_thread(Priority::default_user(), || 42)
             .1
-            .wait(true);
+            .wait();
         assert_eq!(42, x);
     }
 }

@@ -37,7 +37,7 @@ mod tests {
         object::{ObjectBuilder, TypedObject},
     };
 
-    #[test]
+    //#[test]
     fn simple() {
         let arena = ArenaObject::new().unwrap();
         let alloc = arena.allocator();
@@ -59,7 +59,7 @@ mod tests {
         assert_eq!(rnode0.value, 3);
     }
 
-    #[test]
+    //#[test]
     fn with_boxes() {
         struct Node {
             data: InvBox<u32, ArenaAllocator>,

@@ -1,13 +1,13 @@
-use std::{borrow::Borrow, marker::PhantomData, mem::MaybeUninit};
+use std::{marker::PhantomData, mem::MaybeUninit};
 
-use twizzler_rt_abi::object::ObjectHandle;
+use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
 use super::{Result, TxHandle};
 use crate::{
-    alloc::{invbox::InvBox, Allocator, OwnedGlobalPtr},
-    marker::{BaseType, Invariant},
+    marker::BaseType,
     object::{FotEntry, Object, RawObject, TypedObject},
     ptr::RefMut,
+    tx::TxError,
 };
 
 #[repr(C)]
@@ -26,8 +26,11 @@ impl<T> TxObject<T> {
     }
 
     pub fn commit(self) -> Result<Object<T>> {
+        let handle = self.handle;
+        let new_obj =
+            unsafe { Object::map_unchecked(handle.id(), MapFlags::READ | MapFlags::WRITE) }?;
         // TODO: commit tx
-        Ok(unsafe { Object::from_handle_unchecked(self.handle) })
+        Ok(new_obj)
     }
 
     pub fn abort(self) -> Object<T> {
@@ -40,8 +43,16 @@ impl<T> TxObject<T> {
         unsafe { RefMut::from_raw_parts(self.base_mut_ptr(), self.handle()) }
     }
 
-    pub fn insert_fot(&mut self, fot: FotEntry) -> crate::tx::Result<u64> {
-        todo!()
+    pub fn insert_fot(&self, fot: &FotEntry) -> crate::tx::Result<u64> {
+        twizzler_rt_abi::object::twz_rt_insert_fot(self.handle(), (fot as *const FotEntry).cast())
+            .ok_or(TxError::Exhausted)
+    }
+
+    pub fn into_unit(self) -> TxObject<()> {
+        TxObject {
+            handle: self.handle,
+            _pd: PhantomData,
+        }
     }
 }
 
@@ -99,10 +110,12 @@ mod tests {
         let obj = builder.build(Simple { x: 3 }).unwrap();
         let base = obj.base();
         assert_eq!(base.x, 3);
+        drop(base);
 
         let mut tx = obj.tx().unwrap();
         let mut base = tx.base_mut();
         base.x = 42;
+        drop(base);
         let obj = tx.commit().unwrap();
         assert_eq!(obj.base().x, 42);
     }

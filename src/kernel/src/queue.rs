@@ -206,12 +206,12 @@ impl<C> Default for Outstanding<C> {
 
 impl<C: Copy> Outstanding<C> {
     pub fn wait(&self) -> C {
-        let mut data = self.data.lock();
         loop {
+            let data = self.data.lock();
             if let Some(c) = &*data {
                 return *c;
             }
-            data = self.cv.wait(data, true);
+            self.cv.wait(data);
         }
     }
 
