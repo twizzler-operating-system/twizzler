@@ -165,7 +165,7 @@ pub fn idle_main() -> ! {
                 || test_main(),
             )
             .1
-            .wait(true);
+            .wait();
         }
         start_new_init();
     }

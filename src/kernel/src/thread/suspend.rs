@@ -139,6 +139,6 @@ mod test {
         assert_eq!(cur, cur2);
         exit_flag.store(true, Ordering::SeqCst);
         test_thread.0.unsuspend_thread();
-        test_thread.1.wait(true);
+        test_thread.1.wait();
     }
 }

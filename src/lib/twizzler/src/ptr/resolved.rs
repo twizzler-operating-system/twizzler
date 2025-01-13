@@ -1,5 +1,6 @@
 use std::{
     marker::PhantomData,
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut, Index, IndexMut},
 };
 
@@ -11,6 +12,7 @@ use crate::object::RawObject;
 pub struct Ref<'obj, T> {
     ptr: *const T,
     handle: *const ObjectHandle,
+    owned: bool,
     _pd: PhantomData<&'obj T>,
 }
 
@@ -31,14 +33,17 @@ impl<'obj, T> Ref<'obj, T> {
         Self {
             ptr,
             handle,
+            owned: false,
             _pd: PhantomData,
         }
     }
 
     pub unsafe fn cast<U>(self) -> Ref<'obj, U> {
+        let this = ManuallyDrop::new(self);
         Ref {
-            ptr: self.ptr.cast(),
-            handle: self.handle,
+            ptr: this.ptr.cast(),
+            handle: this.handle,
+            owned: this.owned,
             _pd: PhantomData,
         }
     }
@@ -49,6 +54,24 @@ impl<'obj, T> Ref<'obj, T> {
 
     pub fn global(&self) -> GlobalPtr<T> {
         GlobalPtr::new(self.handle().id(), self.offset())
+    }
+
+    pub fn owned<'b>(&self) -> Ref<'b, T> {
+        Ref {
+            ptr: self.ptr,
+            owned: true,
+            handle: Box::into_raw(Box::new(self.handle().clone())),
+            _pd: PhantomData,
+        }
+    }
+
+    pub fn from_handle(handle: ObjectHandle, ptr: *const T) -> Self {
+        Self {
+            ptr,
+            owned: true,
+            handle: Box::into_raw(Box::new(handle)),
+            _pd: PhantomData,
+        }
     }
 }
 
@@ -66,9 +89,18 @@ impl<'a, T> From<Ref<'a, T>> for GlobalPtr<T> {
     }
 }
 
+impl<'a, T> Drop for Ref<'a, T> {
+    fn drop(&mut self) {
+        if self.owned {
+            let _boxed = unsafe { Box::from_raw(self.handle as *mut ObjectHandle) };
+        }
+    }
+}
+
 pub struct RefMut<'obj, T> {
     ptr: *mut T,
     handle: *const ObjectHandle,
+    owned: bool,
     _pd: PhantomData<&'obj mut T>,
 }
 
@@ -81,6 +113,7 @@ impl<'obj, T> RefMut<'obj, T> {
         Self {
             ptr,
             handle,
+            owned: false,
             _pd: PhantomData,
         }
     }
@@ -89,6 +122,7 @@ impl<'obj, T> RefMut<'obj, T> {
         RefMut {
             ptr: self.ptr.cast(),
             handle: self.handle,
+            owned: self.owned,
             _pd: PhantomData,
         }
     }
@@ -103,6 +137,15 @@ impl<'obj, T> RefMut<'obj, T> {
 
     pub fn global(&self) -> GlobalPtr<T> {
         GlobalPtr::new(self.handle().id(), self.offset())
+    }
+
+    pub fn owned<'b>(&self) -> RefMut<'b, T> {
+        RefMut {
+            ptr: self.ptr,
+            owned: true,
+            handle: Box::into_raw(Box::new(self.handle().clone())),
+            _pd: PhantomData,
+        }
     }
 }
 
@@ -126,6 +169,14 @@ impl<'a, T> From<RefMut<'a, T>> for GlobalPtr<T> {
     }
 }
 
+impl<'a, T> Drop for RefMut<'a, T> {
+    fn drop(&mut self) {
+        if self.owned {
+            let _boxed = unsafe { Box::from_raw(self.handle as *mut ObjectHandle) };
+        }
+    }
+}
+
 pub struct RefSlice<'a, T> {
     ptr: Ref<'a, T>,
     len: usize,
@@ -144,6 +195,10 @@ impl<'a, T> RefSlice<'a, T> {
     pub fn get(&self, idx: usize) -> Option<Ref<'a, T>> {
         let ptr = self.as_slice().get(idx)?;
         Some(unsafe { Ref::from_raw_parts(ptr, self.ptr.handle) })
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
     }
 }
 
@@ -184,6 +239,10 @@ impl<'a, T> RefSliceMut<'a, T> {
     pub fn get_mut(&mut self, idx: usize) -> Option<RefMut<'_, T>> {
         let ptr = self.as_slice_mut().get_mut(idx)?;
         Some(unsafe { RefMut::from_raw_parts(ptr, self.ptr.handle) })
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
     }
 }
 

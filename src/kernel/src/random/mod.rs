@@ -92,8 +92,9 @@ pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
         .lock();
     if entropy_sources.has_sources() {
         entropy_sources.contribute_entropy(acc.borrow_mut());
-        acc.try_fill_random_data(out)
-            .expect("Should be seeded now & therefore shouldn't return an error");
+        let _ = acc.try_fill_random_data(out).inspect_err(|_| {
+            logln!("warning -- should be seeded now & therefore shouldn't return an error")
+        });
         drop((entropy_sources, acc));
         return getrandom(out, nonblocking);
     }

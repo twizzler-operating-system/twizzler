@@ -18,12 +18,23 @@ impl<T> TxRef<T> {
         unsafe { RefMut::from_raw_parts(self.ptr, handle) }
     }
 
-    pub unsafe fn new(tx: TxObject<()>, ptr: *mut T) -> Self {
-        Self { ptr, tx: Some(tx) }
+    pub unsafe fn new<B>(tx: TxObject<B>, ptr: *mut T) -> Self {
+        Self {
+            ptr,
+            tx: Some(tx.into_unit()),
+        }
     }
 
     pub fn tx(&self) -> &TxObject<()> {
         self.tx.as_ref().unwrap()
+    }
+
+    pub fn tx_mut(&mut self) -> &mut TxObject<()> {
+        self.tx.as_mut().unwrap()
+    }
+
+    pub fn into_tx(mut self) -> TxObject<()> {
+        self.tx.take().unwrap()
     }
 }
 
