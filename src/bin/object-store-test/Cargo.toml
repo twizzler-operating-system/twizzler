@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 object-store = { version = "0.1.0", path = "../../srv/pager-srv/obliviate/object-store" }
+obliviate-core = { version = "0.1.0", path = "../../srv/pager-srv/obliviate/obliviate-core" }
+rand = "0.8.5"

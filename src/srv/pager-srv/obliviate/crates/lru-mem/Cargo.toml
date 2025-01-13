@@ -2,25 +2,20 @@
 name = "lru-mem"
 description = "An LRU cache implementation bounded by memory."
 version = "0.3.0"
-authors = [ "florian1345 <florian1345@gmx.de>" ]
+authors = ["florian1345 <florian1345@gmx.de>"]
 edition = "2021"
 documentation = "https://docs.rs/lru-mem/"
 license = "MIT OR Apache-2.0"
-categories = [ "data-structures" ]
+categories = ["data-structures"]
 readme = "README.md"
 repository = "https://github.com/florian1345/lru-mem"
-keywords = [ "lru", "cache" ]
+keywords = ["lru", "cache"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-hashbrown = { version = "0.14", features = [ "raw" ] }
-heapsize-derive = { path = "./heapsize-derive"}
+hashbrown = { version = "0.14", features = ["raw"] }
+heapsize-derive = { path = "./heapsize-derive" }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = [ "html_reports" ] }
 rand = "0.8"
-
-[[bench]]
-name = "bench"
-harness = false
