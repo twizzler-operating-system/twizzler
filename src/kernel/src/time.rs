@@ -34,7 +34,7 @@ where
     // best real-time or monotonic clock and then
     // TICK_SOURCES to read the data. References with Arc around
     // them still point to the same memory location.
-    if core::intrinsics::unlikely(clk_id == 0) {
+    if unsafe { core::intrinsics::unlikely(clk_id == 0) } {
         // reserve space for the real-time clock
         clock_list.push(clk.clone());
         // offset location of this clock source

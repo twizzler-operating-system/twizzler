@@ -1,7 +1,7 @@
 //! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use core::{intrinsics::size_of, marker::PhantomData, ptr::NonNull};
+use core::{marker::PhantomData, mem::size_of, ptr::NonNull};
 
 use twizzler_abi::{
     device::CacheType,

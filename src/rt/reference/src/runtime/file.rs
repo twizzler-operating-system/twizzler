@@ -10,7 +10,10 @@ use lru::LruCache;
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
-    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+    syscall::{
+        sys_object_create, BackingType, DeleteFlags, LifetimeType, ObjectControlCmd, ObjectCreate,
+        ObjectCreateFlags,
+    },
 };
 use twizzler_rt_abi::{
     bindings::io_vec,
@@ -244,6 +247,73 @@ impl ReferenceRuntime {
             return None;
         }
         Some(twizzler_rt_abi::bindings::fd_info { flags: 0 })
+    }
+
+    pub fn fd_cmd(&self, fd: RawFd, cmd: u32, arg: *const u8, ret: *mut u8) -> u32 {
+        tracing::warn!("fd_cmd: unimp: {} {}", fd, cmd);
+        let binding = get_fd_slots().lock().unwrap();
+
+        let Some(FdKind::File(bind)) = binding.get(fd.try_into().unwrap()) else {
+            return 1;
+        };
+        let file = bind.lock().unwrap();
+
+        let metadata_handle: &FileMetadata = unsafe {
+            file.handle
+                .start()
+                .offset(NULLPAGE_SIZE as isize)
+                .cast::<FileMetadata>()
+                .as_ref()
+                .unwrap()
+        };
+        match cmd {
+            twizzler_rt_abi::bindings::FD_CMD_SYNC => {
+                let mut ok = true;
+                for id in &metadata_handle.direct {
+                    if twizzler_abi::syscall::sys_object_ctrl(*id, ObjectControlCmd::Sync).is_err()
+                    {
+                        ok = false;
+                    }
+                }
+                if twizzler_abi::syscall::sys_object_ctrl(file.handle.id(), ObjectControlCmd::Sync)
+                    .is_err()
+                {
+                    return 1;
+                }
+                if ok {
+                    0
+                } else {
+                    1
+                }
+            }
+            twizzler_rt_abi::bindings::FD_CMD_DELETE => {
+                let mut ok = true;
+                for id in &metadata_handle.direct {
+                    if twizzler_abi::syscall::sys_object_ctrl(
+                        *id,
+                        ObjectControlCmd::Delete(DeleteFlags::empty()),
+                    )
+                    .is_err()
+                    {
+                        ok = false;
+                    }
+                }
+                if twizzler_abi::syscall::sys_object_ctrl(
+                    file.handle.id(),
+                    ObjectControlCmd::Delete(DeleteFlags::empty()),
+                )
+                .is_err()
+                {
+                    return 1;
+                }
+                if ok {
+                    0
+                } else {
+                    1
+                }
+            }
+            _ => 1,
+        }
     }
 
     pub fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, IoError> {

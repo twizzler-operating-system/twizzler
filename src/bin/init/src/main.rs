@@ -30,6 +30,14 @@ fn initialize_pager() {
     .unwrap();
 
     pager::pager_start(queue.object().id(), queue2.object().id());
+
+    tracing::info!("sync call test");
+    twizzler_abi::syscall::sys_object_ctrl(
+        queue.object().id(),
+        twizzler_abi::syscall::ObjectControlCmd::Sync,
+    )
+    .unwrap();
+    tracing::info!("sync call done!");
 }
 
 fn main() {

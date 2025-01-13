@@ -7,8 +7,9 @@ use twizzler_abi::{
     meta::MetaFlags,
     object::{ObjID, Protections},
     syscall::{
-        CreateTieSpec, HandleType, MapFlags, MapInfo, NewHandleError, ObjectCreate,
-        ObjectCreateError, ObjectMapError, ObjectReadMapError, ObjectSource, SctxAttachError,
+        CreateTieSpec, HandleType, MapFlags, MapInfo, NewHandleError, ObjectControlCmd,
+        ObjectCreate, ObjectCreateError, ObjectMapError, ObjectReadMapError, ObjectSource,
+        SctxAttachError,
     },
 };
 
@@ -186,4 +187,16 @@ pub fn sys_sctx_attach(id: ObjID) -> Result<u32, SctxAttachError> {
     current_thread.secctx.attach(sctx)?;
 
     Ok(0)
+}
+
+pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
+    logln!("object ctrl: {} {:?}", id, cmd);
+    match cmd {
+        ObjectControlCmd::Sync => {
+            crate::pager::sync_object(id);
+        }
+        ObjectControlCmd::Delete(_) => {}
+        _ => {}
+    }
+    (0, 0)
 }
