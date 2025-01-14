@@ -1,2 +1,0 @@
-[target.x86-64]
-rustflags = ["-C", "target-feature=+aes,+ssse3"]
