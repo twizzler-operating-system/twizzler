@@ -30,14 +30,6 @@ fn initialize_pager() {
     .unwrap();
 
     pager::pager_start(queue.object().id(), queue2.object().id());
-
-    tracing::info!("sync call test");
-    twizzler_abi::syscall::sys_object_ctrl(
-        queue.object().id(),
-        twizzler_abi::syscall::ObjectControlCmd::Sync,
-    )
-    .unwrap();
-    tracing::info!("sync call done!");
 }
 
 fn main() {
@@ -121,6 +113,27 @@ fn main() {
 
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
+
+    tracing::info!("starting paging test");
+    let obj = sys_object_create(
+        ObjectCreate::new(
+            BackingType::Normal,
+            LifetimeType::Persistent,
+            None,
+            ObjectCreateFlags::empty(),
+        ),
+        &[],
+        &[],
+    )
+    .unwrap();
+    tracing::info!("mapping");
+    let handle: ObjectHandle =
+        twizzler_rt_abi::object::twz_rt_map_object(obj, MapFlags::READ | MapFlags::WRITE).unwrap();
+    tracing::info!("writing");
+    let start: *mut u8 = unsafe { handle.start().add(NULLPAGE_SIZE) };
+    unsafe { *start = 42 };
+    tracing::info!("syncing");
+    twizzler_abi::syscall::sys_object_ctrl(handle.id(), ObjectControlCmd::Sync).unwrap();
 
     println!("Hi, welcome to the basic twizzler test console.");
     println!("If you wanted line-editing, you've come to the wrong place.");
@@ -223,21 +236,11 @@ use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     pager::{CompletionToKernel, RequestFromKernel},
     syscall::{
-        sys_kaction,
-        sys_new_handle,
-        sys_thread_sync,
-        BackingType,
-        LifetimeType, //MapFlags,
-        NewHandleFlags,
-        ObjectCreate,
-        ObjectCreateFlags,
-        ThreadSync,
-        ThreadSyncFlags,
-        ThreadSyncOp,
-        ThreadSyncReference,
-        ThreadSyncSleep,
-        ThreadSyncWake,
+        sys_kaction, sys_new_handle, sys_object_create, sys_thread_sync, BackingType, LifetimeType,
+        NewHandleFlags, ObjectControlCmd, ObjectCreate, ObjectCreateFlags, ThreadSync,
+        ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
     },
     thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_object::{CreateSpec, Object, ObjectInitFlags};
+use twizzler_rt_abi::object::{MapFlags, ObjectHandle};

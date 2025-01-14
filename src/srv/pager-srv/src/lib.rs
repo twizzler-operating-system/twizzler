@@ -1,19 +1,16 @@
 #![feature(ptr_sub_ptr)]
 #![feature(naked_functions)]
 
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::sync::{Arc, OnceLock};
 
 use async_executor::Executor;
-use async_io::Timer;
 use futures::executor::block_on;
 use twizzler_abi::pager::{
     CompletionToKernel, CompletionToPager, PagerCompletionData, PhysRange, RequestFromKernel,
     RequestFromPager,
 };
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
+use twizzler_queue::QueueSender;
 
 use crate::{data::PagerData, helpers::physrange_to_pages, request_handle::handle_kernel_request};
 
@@ -113,40 +110,6 @@ fn async_runtime_init(n: i32) -> &'static Executor<'static> {
 }
 
 /***
- * Health Check
- */
-fn health_check(
-    _rq: &twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>,
-    sq: &twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>,
-    ex: &'static Executor<'static>,
-    timeout_ms: Option<u64>,
-) -> Result<(), String> {
-    let timeout_duration = Duration::from_millis(timeout_ms.unwrap_or(1000) as u64);
-
-    tracing::info!("pager health check start...");
-    block_on(ex.run(async move {
-        let timeout = Timer::after(timeout_duration);
-        tracing::debug!("submitting request to kernel");
-
-        let res = sq.submit_and_wait(RequestFromPager::new(
-            twizzler_abi::pager::PagerRequest::EchoReq,
-        ));
-        let x = res.await;
-        tracing::debug!(" got {:?} in response", x);
-        timeout.await;
-    }));
-
-    Ok(())
-}
-
-fn verify_health(health: Result<(), String>) {
-    match health {
-        Ok(()) => tracing::info!("health check successful"),
-        Err(_) => tracing::info!("health check failed"),
-    }
-}
-
-/***
  * Pager Initialization generic function which calls specific initialization functions
  */
 fn pager_init(
@@ -164,36 +127,42 @@ fn pager_init(
     let (rq, sq) = queue_init(q1, q2);
     let ex = async_runtime_init(2);
 
-    let health = health_check(&rq, &sq, ex, None);
-    verify_health(health.clone());
-    drop(health);
-
     tracing::debug!("init complete");
     return (rq, sq, data, ex);
 }
 
 fn spawn_queues(
-    rq: twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>,
+    pager_rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+    kernel_rq: twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>,
     data: PagerData,
     ex: &'static Executor<'static>,
 ) {
     tracing::debug!("spawning queues...");
-    ex.spawn(listen_queue(rq, data, handle_kernel_request, ex))
-        .detach();
+    ex.spawn(listen_queue(
+        pager_rq.clone(),
+        kernel_rq,
+        data,
+        handle_kernel_request,
+        ex,
+    ))
+    .detach();
 }
 
-async fn listen_queue<R, C, F>(
-    q: twizzler_queue::CallbackQueueReceiver<R, C>,
+async fn listen_queue<R, C, PR, PC, F>(
+    pager_rq: Arc<QueueSender<PR, PC>>,
+    kernel_rq: twizzler_queue::CallbackQueueReceiver<R, C>,
     data: PagerData,
-    handler: impl Fn(R, Arc<PagerData>) -> F + Copy + Send + Sync + 'static,
+    handler: impl Fn(Arc<QueueSender<PR, PC>>, R, Arc<PagerData>) -> F + Copy + Send + Sync + 'static,
     ex: &'static Executor<'static>,
 ) where
     F: std::future::Future<Output = Option<C>> + Send + 'static,
     R: std::fmt::Debug + Copy + Send + Sync + 'static,
     C: std::fmt::Debug + Copy + Send + Sync + 'static,
+    PR: std::fmt::Debug + Copy + Send + Sync + 'static,
+    PC: std::fmt::Debug + Copy + Send + Sync + 'static,
 {
     tracing::debug!("queue receiving...");
-    let q = Arc::new(q);
+    let q = Arc::new(kernel_rq);
     let data = Arc::new(data);
     loop {
         let (id, request) = q.receive().await.unwrap();
@@ -201,8 +170,9 @@ async fn listen_queue<R, C, F>(
 
         let qc = Arc::clone(&q);
         let datac = Arc::clone(&data);
+        let prq = pager_rq.clone();
         ex.spawn(async move {
-            let comp = handler(request, datac).await;
+            let comp = handler(prq, request, datac).await;
             notify(&qc, id, comp).await;
         })
         .detach();
@@ -220,21 +190,6 @@ where
     tracing::trace!("request {} complete", id);
 }
 
-async fn send_request<R, C>(
-    q: &Arc<twizzler_queue::QueueSender<R, C>>,
-    request: R,
-) -> Result<C, Box<dyn std::error::Error>>
-where
-    R: std::fmt::Debug + Copy + Send + Sync,
-    C: std::fmt::Debug + Copy + Send + Sync + 'static,
-{
-    tracing::trace!("submitting request {:?}", request);
-    return q
-        .submit_and_wait(request)
-        .await
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>);
-}
-
 async fn report_ready(
     q: &Arc<twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>>,
     _ex: &'static Executor<'static>,
@@ -242,7 +197,7 @@ async fn report_ready(
     tracing::debug!("sending ready signal to kernel");
     let request = RequestFromPager::new(twizzler_abi::pager::PagerRequest::Ready);
 
-    match send_request(q, request).await {
+    match q.submit_and_wait(request).await {
         Ok(completion) => {
             tracing::debug!("received completion for ready signal: {:?}", completion);
             return Some(completion.data());
@@ -256,9 +211,8 @@ async fn report_ready(
 
 fn do_pager_start(q1: ObjID, q2: ObjID) {
     let (rq, sq, data, ex) = pager_init(q1, q2);
-    spawn_queues(rq, data.clone(), ex);
     let sq = Arc::new(sq);
-    let sqc = Arc::clone(&sq);
+    spawn_queues(&sq, rq, data.clone(), ex);
 
     let phys_range: Option<PhysRange> = block_on(async move {
         let res = report_ready(&sq, ex).await;
@@ -283,61 +237,6 @@ fn do_pager_start(q1: ObjID, q2: ObjID) {
     } else {
         tracing::error!("cannot complete pager initialization with no physical memory");
     }
-
-    tracing::info!("Performing Test...");
-    let sqc2 = sqc.clone();
-    block_on(async move {
-        let request = RequestFromPager::new(twizzler_abi::pager::PagerRequest::TestReq);
-        let _ = send_request(&sqc, request).await.ok();
-    });
-
-    if let Some(phys_range) = phys_range {
-        block_on(async move {
-            let mut buf = vec![0u8; 4096];
-            for (i, b) in (&mut buf).iter_mut().enumerate() {
-                *b = i as u8;
-            }
-            let mut buf2 = vec![0u8; 4096];
-            tracing::debug!("testing physrw: {:?}", &buf[0..10]);
-            assert_ne!(buf, buf2);
-            let start = phys_range.start;
-            let phys = PhysRange {
-                start,
-                end: start + buf.len() as u64,
-            };
-            tracing::debug!("filling physical pages: {:?} from {:p}", phys, buf.as_ptr());
-            physrw::fill_physical_pages(&sqc2, buf.as_slice(), phys)
-                .await
-                .unwrap();
-
-            tracing::debug!(
-                "reading physical pages: {:?} into {:p}",
-                phys,
-                buf2.as_ptr()
-            );
-            physrw::read_physical_pages(&sqc2, buf2.as_mut_slice(), phys)
-                .await
-                .unwrap();
-
-            assert_eq!(buf, buf2);
-        });
-    }
-
-    tracing::info!("Test Completed");
-
-    tracing::info!("testing object store");
-
-    let res = object_store::create_object(123).unwrap();
-    assert_eq!(res, true);
-
-    object_store::write_all(123, b"test data!", 0).unwrap();
-
-    let mut buf = [0; 100];
-    object_store::read_exact(123, &mut buf, 0).unwrap();
-    let s = String::from_utf8_lossy(&buf).into_owned();
-    tracing::info!("read: {}", s);
-
-    //Done
 }
 
 #[secgate::secure_gate]

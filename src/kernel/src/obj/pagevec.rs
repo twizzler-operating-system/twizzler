@@ -81,6 +81,17 @@ impl PageVec {
         pv
     }
 
+    pub fn try_get_page(&self, offset: usize) -> Option<PageRef> {
+        if offset >= self.pages.len() {
+            return None;
+        }
+        if let Some(ref page) = self.pages[offset] {
+            Some(page.clone())
+        } else {
+            None
+        }
+    }
+
     pub fn get_page(&mut self, offset: usize) -> PageRef {
         if offset >= self.pages.len() {
             self.pages.resize(offset + 1, None)

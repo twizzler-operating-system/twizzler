@@ -4302,6 +4302,7 @@ dependencies = [
  "async-trait",
  "bitvec",
  "futures",
+ "miette",
  "object-store",
  "polling",
  "secgate",

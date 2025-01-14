@@ -2,8 +2,8 @@ use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, NULLPAGE_SIZE},
     pager::{
-        CompletionToKernel, CompletionToPager, ObjectRange, PagerCompletionData, PagerRequest,
-        PhysRange, RequestFromKernel, RequestFromPager,
+        CompletionToKernel, CompletionToPager, PagerCompletionData, PagerRequest, PhysRange,
+        RequestFromKernel, RequestFromPager,
     },
 };
 
@@ -65,34 +65,10 @@ fn pager_request_copy_user_phys(
     CompletionToPager::new(PagerCompletionData::Okay)
 }
 
-fn pager_test_request() -> CompletionToPager {
-    let sender = SENDER.wait();
-    let obj_id = ObjID::new(1001);
-    let item = RequestFromKernel::new(twizzler_abi::pager::KernelCommand::PageDataReq(
-        obj_id,
-        ObjectRange {
-            start: 0,
-            end: 4096,
-        },
-    ));
-    let id = sender.0.next_simple().value() as u32;
-    let res = SENDER.wait().1.submit(item, id);
-
-    let item = RequestFromKernel::new(twizzler_abi::pager::KernelCommand::ObjectInfoReq(obj_id));
-    let id = sender.0.next_simple().value() as u32;
-    let res = SENDER.wait().1.submit(item, id);
-
-    return CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::TestResp);
-}
-
 pub(super) fn pager_request_handler_main() {
     let receiver = RECEIVER.wait();
     loop {
         receiver.handle_request(|_id, req| match req.cmd() {
-            PagerRequest::EchoReq => {
-                CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::EchoResp)
-            }
-            PagerRequest::TestReq => pager_test_request(),
             PagerRequest::Ready => {
                 let reg = PAGER_MEMORY
                     .poll()
@@ -118,9 +94,6 @@ pub(super) fn pager_compl_handler_main() {
     loop {
         let completion = sender.1.recv_completion();
         match completion.1.data() {
-            twizzler_abi::pager::KernelCompletionData::EchoResp => {
-                //logln!("got echo response");
-            }
             twizzler_abi::pager::KernelCompletionData::PageDataCompletion(
                 objid,
                 obj_range,

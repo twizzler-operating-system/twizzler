@@ -29,7 +29,7 @@ pub fn sys_object_create(
     _ties: &[CreateTieSpec],
 ) -> Result<ObjID, ObjectCreateError> {
     let id = calculate_new_id(create.kuid, MetaFlags::default());
-    let obj = Arc::new(Object::new(id));
+    let obj = Arc::new(Object::new(id, create.lt));
     for src in srcs {
         if src.id.raw() == 0 {
             crate::obj::copy::zero_ranges(&obj, src.dest_start as usize, src.len)

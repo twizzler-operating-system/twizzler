@@ -1,13 +1,99 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
+    default,
     sync::{Arc, Mutex},
 };
 
 use bitvec::prelude::*;
-use twizzler_abi::pager::{ObjectInfo, ObjectRange, PhysRange};
+use futures::TryFutureExt;
+use miette::Result;
+use twizzler_abi::pager::{
+    CompletionToPager, ObjectInfo, ObjectRange, PhysRange, RequestFromPager,
+};
 use twizzler_object::ObjID;
+use twizzler_queue::QueueSender;
 
-use crate::helpers::{page_in, page_to_physrange};
+use crate::helpers::{page_in, page_out, page_to_physrange, PAGE};
+
+type PageNum = u64;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PerPageData {
+    paddr: u64,
+}
+
+#[derive(Default)]
+pub struct PerObject {
+    id: ObjID,
+    page_map: HashMap<PageNum, PerPageData>,
+    meta_page_map: HashMap<PageNum, PerPageData>,
+}
+
+impl PerObject {
+    pub fn track(&mut self, obj_range: ObjectRange, phys_range: PhysRange) {
+        assert_eq!(obj_range.len(), PAGE as usize);
+        assert_eq!(phys_range.len(), PAGE as usize);
+
+        if let Some(old) = self.page_map.insert(
+            obj_range.start / PAGE,
+            PerPageData {
+                paddr: phys_range.start,
+            },
+        ) {
+            tracing::debug!("todo: release old: {:?}", old);
+        }
+    }
+
+    pub fn track_meta(&mut self, obj_range: ObjectRange, phys_range: PhysRange) {
+        assert_eq!(obj_range.len(), PAGE as usize);
+        assert_eq!(phys_range.len(), PAGE as usize);
+
+        if let Some(old) = self.meta_page_map.insert(
+            obj_range.start / PAGE,
+            PerPageData {
+                paddr: phys_range.start,
+            },
+        ) {
+            tracing::debug!("todo: release old: {:?}", old);
+        }
+    }
+
+    pub fn pages(&self) -> impl Iterator<Item = (ObjectRange, PerPageData)> + '_ {
+        self.page_map
+            .iter()
+            .map(|(x, y)| (ObjectRange::new(*x, *x + PAGE), *y))
+    }
+
+    pub fn meta_pages(&self) -> impl Iterator<Item = (ObjectRange, PerPageData)> + '_ {
+        self.meta_page_map
+            .iter()
+            .map(|(x, y)| (ObjectRange::new(*x, *x + PAGE), *y))
+    }
+
+    pub fn new(id: ObjID) -> Self {
+        Self {
+            id,
+            ..Default::default()
+        }
+    }
+
+    pub async fn sync(
+        &self,
+        rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+    ) -> Result<()> {
+        for p in self.pages() {
+            let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
+            page_out(rq, self.id, p.0, phys_range, false).await?;
+        }
+
+        for p in self.meta_pages() {
+            let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
+            page_out(rq, self.id, p.0, phys_range, true).await?;
+        }
+
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 pub struct PagerData {
@@ -16,8 +102,7 @@ pub struct PagerData {
 
 pub struct PagerDataInner {
     pub bitvec: BitVec,
-    pub hashmap: HashMap<u64, (ObjID, ObjectRange)>,
-    pub lru_queue: VecDeque<u64>,
+    pub per_obj: HashMap<ObjID, PerObject>,
     pub mem_range_start: u64,
 }
 
@@ -28,8 +113,7 @@ impl PagerDataInner {
         tracing::trace!("initializing PagerDataInner");
         PagerDataInner {
             bitvec: BitVec::new(),
-            hashmap: HashMap::with_capacity(0),
-            lru_queue: VecDeque::new(),
+            per_obj: HashMap::with_capacity(0),
             mem_range_start: 0,
         }
     }
@@ -47,7 +131,6 @@ impl PagerDataInner {
 
         if let Some(page_number) = next_page {
             self.bitvec.set(page_number, true);
-            self.lru_queue.push_back(page_number.try_into().unwrap());
             tracing::trace!("next available page: {}", page_number);
             Some(page_number)
         } else {
@@ -56,26 +139,12 @@ impl PagerDataInner {
         }
     }
 
-    /// Perform page replacement using the Least Recently Used (LRU) strategy.
-    /// Returns the identifier of the replaced page.
-    fn page_replacement(&mut self) -> u64 {
-        tracing::debug!("executing page replacement");
-        if let Some(old_page) = self.lru_queue.pop_front() {
-            tracing::trace!("replacing page: {}", old_page);
-            self.remove_page(old_page as usize);
-            old_page
-        } else {
-            panic!("page replacement failed: no pages to replace");
-        }
-    }
-
     /// Get a memory page for allocation.
     /// Triggers page replacement if all pages are used.
     fn get_mem_page(&mut self) -> usize {
         tracing::debug!("attempting to get memory page");
         if self.bitvec.all() {
-            tracing::trace!("all pages used, initiating page replacement");
-            self.page_replacement();
+            todo!()
         }
         self.get_next_available_page().expect("no available pages")
     }
@@ -85,8 +154,6 @@ impl PagerDataInner {
         tracing::debug!("attempting to remove page {}", page_number);
         if page_number < self.bitvec.len() {
             self.bitvec.set(page_number, false);
-            self.remove_from_map(&(page_number as u64));
-            self.lru_queue.retain(|&p| p != page_number as u64);
             tracing::trace!("page {} removed from bitvec", page_number);
         } else {
             tracing::warn!(
@@ -115,57 +182,12 @@ impl PagerDataInner {
         full
     }
 
-    /// Insert an object and its associated range into the hashmap.
-    pub fn insert_into_map(&mut self, key: u64, obj_id: ObjID, range: ObjectRange) {
-        tracing::trace!(
-            "inserting into hashmap: key = {}, ObjID = {:?}, ObjectRange = {:?}",
-            key,
-            obj_id,
-            range
-        );
-        self.hashmap.insert(key, (obj_id.clone(), range.clone()));
-        tracing::trace!(
-            "inserted into hashmap: key = {}, ObjID = {:?}, ObjectRange = {:?}",
-            key,
-            obj_id,
-            range
-        );
+    pub fn get_per_object(&mut self, id: ObjID) -> &PerObject {
+        self.per_obj.entry(id).or_insert_with(|| PerObject::new(id))
     }
 
-    /// Update the LRU queue based on access to a key.
-    pub fn update_on_key(&mut self, key: u64) {
-        self.lru_queue.retain(|&p| p != key);
-        self.lru_queue.push_back(key);
-    }
-
-    /// Retrieve an object and its range from the hashmap by key.
-    /// Updates the LRU queue to reflect access.
-    pub fn get_from_map(&mut self, key: &u64) -> Option<(ObjID, ObjectRange)> {
-        tracing::trace!("retrieving value for key {}", key);
-        match self.hashmap.get(key) {
-            Some(value) => {
-                tracing::trace!("value found for key {}: {:?}", key, value);
-                self.lru_queue.retain(|&p| p != *key);
-                self.lru_queue.push_back(*key);
-                Some(value.clone())
-            }
-            None => {
-                tracing::trace!("no value found for key: {}", key);
-                None
-            }
-        }
-    }
-
-    /// Remove a key and its associated value from the hashmap.
-    pub fn remove_from_map(&mut self, key: &u64) {
-        tracing::trace!("removing key {} from hashmap", key);
-        self.hashmap.remove(key);
-    }
-
-    /// Reserve additional capacity in the hashmap.
-    pub fn resize_map(&mut self, add_size: usize) {
-        tracing::trace!("adding {} capacity to hashmap", add_size);
-        self.hashmap.reserve(add_size);
+    pub fn get_per_object_mut(&mut self, id: ObjID) -> &mut PerObject {
+        self.per_obj.entry(id).or_insert_with(|| PerObject::new(id))
     }
 }
 
@@ -184,7 +206,6 @@ impl PagerData {
         tracing::debug!("resizing resources to support {} pages", pages);
         let mut inner = self.inner.lock().unwrap();
         inner.resize_bitset(pages);
-        inner.resize_map(pages);
     }
 
     /// Initialize the starting memory range for the pager.
@@ -195,22 +216,42 @@ impl PagerData {
     /// Allocate a memory page and associate it with an object and range.
     /// Page in the data from disk
     /// Returns the physical range corresponding to the allocated page.
-    pub fn fill_mem_page(&self, id: ObjID, obj_range: ObjectRange) -> PhysRange {
+    pub async fn fill_mem_page(
+        &self,
+        rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+        id: ObjID,
+        obj_range: ObjectRange,
+    ) -> Result<PhysRange> {
         tracing::debug!(
             "allocating memory page for ObjID {:?}, ObjectRange {:?}",
             id,
             obj_range
         );
-        let mut inner = self.inner.lock().unwrap();
-        let page = inner.get_mem_page();
-        inner.insert_into_map(page.try_into().unwrap(), id, obj_range);
-        let phys_range = page_to_physrange(page, 0);
-        page_in(id, obj_range, phys_range);
+        // TODO: remove this restriction
+        assert_eq!(obj_range.len(), 0x1000);
+        let phys_range = {
+            let mut inner = self.inner.lock().unwrap();
+            let page = inner.get_mem_page();
+            let po = inner.get_per_object_mut(id);
+            let phys_range = page_to_physrange(page, 0);
+            po.track(obj_range, phys_range);
+            phys_range
+        };
+        page_in(rq, id, obj_range, phys_range, false).await?;
         tracing::trace!("memory page allocated successfully");
-        return phys_range;
+        return Ok(phys_range);
     }
 
     pub fn lookup_object(&self, id: ObjID) -> Option<ObjectInfo> {
-        None
+        let mut b = [];
+        object_store::read_exact(id.raw(), &mut b, 0).ok()?;
+        Some(ObjectInfo::new(id))
+    }
+
+    pub fn sync(&self, rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>, id: ObjID) {
+        let mut inner = self.inner.lock().unwrap();
+        let _ = inner.get_per_object(id).sync(rq).inspect_err(|e| {
+            tracing::warn!("sync failed for {}: {}", id, e);
+        });
     }
 }
