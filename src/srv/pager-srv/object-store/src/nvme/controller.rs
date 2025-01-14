@@ -27,7 +27,6 @@ use volatile::map_field;
 use super::{dma::NvmeDmaRegion, requester::NvmeRequester};
 use crate::nvme::dma::NvmeDmaSliceRegion;
 
-#[allow(dead_code)]
 pub struct NvmeController {
     requester: RwLock<Vec<Requester<NvmeRequester>>>,
     admin_requester: RwLock<Option<Arc<Requester<NvmeRequester>>>>,
@@ -440,7 +439,6 @@ impl NvmeController {
         ident.dma_region().with(|ident| ident.clone())
     }
 
-    #[allow(dead_code)]
     pub async fn flash_len(&self) -> usize {
         if let Some(sz) = self.capacity.get() {
             *sz

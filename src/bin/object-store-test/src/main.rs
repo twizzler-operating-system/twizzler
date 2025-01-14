@@ -3,8 +3,7 @@ use std::{
     io::{BufReader, Read},
 };
 
-use object_store::FS;
-pub use object_store::*;
+use object_store::{FS, *};
 use obliviate_core::kms::PersistableKeyManagementScheme;
 
 fn get_unique_id() -> u128 {

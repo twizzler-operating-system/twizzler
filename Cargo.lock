@@ -2850,6 +2850,7 @@ dependencies = [
 [[package]]
 name = "heapsize-derive"
 version = "0.1.0"
+source = "git+https://github.com/twizzler-operating-system/obliviate.git#29b44e251984e46a538d24a1a2a432d2b94fe596"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3668,10 +3669,10 @@ dependencies = [
 [[package]]
 name = "lru-mem"
 version = "0.3.0"
+source = "git+https://github.com/twizzler-operating-system/obliviate.git#29b44e251984e46a538d24a1a2a432d2b94fe596"
 dependencies = [
  "hashbrown 0.14.5",
  "heapsize-derive",
- "rand",
 ]
 
 [[package]]
@@ -4077,9 +4078,9 @@ dependencies = [
 [[package]]
 name = "obliviate-core"
 version = "0.1.0"
+source = "git+https://github.com/twizzler-operating-system/obliviate.git#29b44e251984e46a538d24a1a2a432d2b94fe596"
 dependencies = [
  "aes",
- "anyhow",
  "bincode",
  "bit-set",
  "blake3",
@@ -4097,7 +4098,6 @@ dependencies = [
  "libc",
  "lru",
  "lru-mem",
- "nom",
  "num-traits",
  "once_cell",
  "paste",
@@ -4113,7 +4113,6 @@ dependencies = [
  "thiserror 1.0.69",
  "toml",
  "tracing",
- "unicode-width 0.1.14",
  "uuid",
  "walkdir",
 ]
