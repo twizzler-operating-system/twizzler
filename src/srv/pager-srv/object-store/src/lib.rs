@@ -4,8 +4,8 @@ mod fs;
 mod nvme;
 mod object_store;
 mod wrapped_extent;
+pub use fs::{format, FS};
 pub use object_store::*;
-pub use fs::FS;
 #[cfg(test)]
 mod tests {
     use std::{
