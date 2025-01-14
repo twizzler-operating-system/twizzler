@@ -6,7 +6,7 @@ use super::disk::Disk;
 
 pub const PAGE_SIZE: usize = 4096;
 pub const SECTOR_SIZE: usize = 512;
-pub fn format(disk: &mut Disk) {
+pub(crate) fn format(disk: &mut Disk) {
     let options = FormatVolumeOptions::new()
         .bytes_per_sector(SECTOR_SIZE as u16)
         .bytes_per_cluster(PAGE_SIZE as u32)

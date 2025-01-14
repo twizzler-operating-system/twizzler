@@ -4,7 +4,7 @@ mod fs;
 mod nvme;
 mod object_store;
 mod wrapped_extent;
-pub use fs::{format, FS};
+pub use fs::FS;
 pub use object_store::*;
 #[cfg(test)]
 mod tests {

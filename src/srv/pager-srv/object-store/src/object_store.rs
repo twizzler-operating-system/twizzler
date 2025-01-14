@@ -51,7 +51,7 @@ use fatfs::{
 };
 
 // use obliviate_core::kms::khf::Khf;
-use crate::fs::{FS, PAGE_SIZE};
+use crate::fs::{self, FS, PAGE_SIZE};
 use crate::{disk::Disk, fs::DISK, wrapped_extent::WrappedExtent};
 fn get_dir_path<'a>(
     fs: &'a mut fatfs::FileSystem<Disk, DefaultTimeProvider, LossyOemCpConverter>,
@@ -74,6 +74,15 @@ fn get_khf_locks<'a>() -> (MutexGuard<'a, MyKhf>, MutexGuard<'a, MyWal>) {
     let khf = KHF.lock().unwrap();
     let w = WAL.lock().unwrap();
     (khf, w)
+}
+
+/// Overwrites the existing disk with a new format.
+///
+/// WARNING: might not securely delete what used to be on the disk.
+///
+/// WARNING: is unlikely but it might panic
+pub fn format() {
+    fs::format(&mut DISK)
 }
 
 /// Returns true if file was created and false if the file already existed.
