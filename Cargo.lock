@@ -1866,6 +1866,7 @@ dependencies = [
  "naming",
  "noline",
  "pager",
+ "tiny_http",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
@@ -5889,36 +5890,6 @@ checksum = "2834e6017e3e5e4b9834939793b282bc03b37a3336245fa820e35e233e2a85de"
 dependencies = [
  "num-conv",
  "time-core",
-]
-
-[[package]]
-name = "tiny-keccak"
-version = "2.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c9d3793400a45f954c52e73d068316d76b6f4e36977e3fcebb13a2721e80237"
-dependencies = [
- "crunchy",
-]
-
-[[package]]
-name = "tiny_http"
-version = "0.12.0"
-dependencies = [
- "ascii",
- "byteorder",
- "chunked_transfer",
- "fdlimit",
- "httpdate",
- "lazy_static",
- "log",
- "native-tls",
- "openssl",
- "rustc-serialize",
- "rustls",
- "rustls-pemfile 0.2.1",
- "sha1 0.6.1",
- "smoltcp",
- "zeroize",
 ]
 
 [[package]]
