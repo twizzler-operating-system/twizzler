@@ -1,0 +1,11 @@
+[package]
+name = "test-tiny-http"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tiny_http = { path = "src/tiny-http-twizzler" }
+smoltcp = "0.11.0"
+tracing = "0.1"
