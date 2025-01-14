@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 chacha20 = { version = "0.9.1", features = ["std", "zeroize"] }
-fatfs = { git = "https://github.com/zphrs/rust-fatfs.git", branch = "zphrs-rwproxy", version = "0.4.0", features = [
+fatfs = { git = "https://github.com/twizzler-operating-system/rust-fatfs.git", branch = "zphrs-rwproxy", version = "0.4.0", features = [
     "std",
     "log_level_info",
     "lfn",

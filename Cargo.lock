@@ -1620,6 +1620,15 @@ dependencies = [
 [[package]]
 name = "fatfs"
 version = "0.4.0"
+source = "git+https://github.com/twizzler-operating-system/rust-fatfs.git?branch=zphrs-rwproxy#7286533f11ae77edb35e05fb21d08e56a8395a14"
+dependencies = [
+ "bitflags 2.7.0",
+ "log",
+]
+
+[[package]]
+name = "fatfs"
+version = "0.4.0"
 source = "git+https://github.com/zphrs/rust-fatfs.git?branch=zphrs-rwproxy#7286533f11ae77edb35e05fb21d08e56a8395a14"
 dependencies = [
  "bitflags 2.7.0",
@@ -4053,7 +4062,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chacha20",
- "fatfs 0.4.0",
+ "fatfs 0.4.0 (git+https://github.com/twizzler-operating-system/rust-fatfs.git?branch=zphrs-rwproxy)",
  "nvme",
  "obliviate-core",
  "pci-ids",
@@ -4090,7 +4099,7 @@ dependencies = [
  "ctr",
  "dashmap",
  "env_logger",
- "fatfs 0.4.0",
+ "fatfs 0.4.0 (git+https://github.com/zphrs/rust-fatfs.git?branch=zphrs-rwproxy)",
  "generic-array",
  "hashbrown 0.14.5",
  "hex",
