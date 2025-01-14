@@ -69,3 +69,15 @@ features = ["spin_no_std"]
 
 
 twizzler-build = "kernel"
+
+#[profile.release]
+#debug = true
+
+#[profile.dev]
+#opt-level = 1
+
+[target.'cfg(kani)'.dependencies]
+uart_16550 = "0.3.0"
+x86 = "0.52.0"
+acpi = "4.1.1"
+rdrand = { version = "0.8.3", default-features = false }

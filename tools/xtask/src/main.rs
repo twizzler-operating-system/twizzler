@@ -3,6 +3,7 @@ mod image;
 mod qemu;
 mod toolchain;
 mod triple;
+mod kani;
 
 use std::path::PathBuf;
 
@@ -73,6 +74,25 @@ impl BuildConfig {
         Triple::new(self.arch, machine, triple::Host::Twizzler, None)
     }
 }
+
+#[derive(Args, Debug)]
+struct KaniOptions {
+    //Kani options
+    #[clap(long, short, help = "Select package with preconfigured Kani support")]
+    select_supported_package: Option<String>,
+    #[clap(long, short, help = "Pass the kani specific flags for Kani to execute")]
+    kani_options: Option<String>,
+    #[clap(long, short, help = "Pass the cbmc specific flags for Kani to pass to CBMC")]
+    cbmc_options: Option<String>,
+    #[clap(long, short, help = "Pass the cbmc specific flags for Kani to pass to CBMC")]
+    cargo_options: Option<String>,
+    #[clap(long, short, help = "Print Statement sent for kani")]
+    print_kani_argument: bool,
+    
+    // #[clap(long, short, help = "Pass any desired environment variables")]
+    // env: String,
+}
+
 
 #[derive(Args, Debug)]
 struct BuildOptions {
@@ -208,6 +228,8 @@ enum Commands {
     MakeImage(ImageOptions),
     #[clap(about = "Boot a disk image in Qemu.")]
     StartQemu(QemuOptions),
+    #[clap(about = "Run Kani over Twizzler")]
+    Kani(KaniOptions),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -221,6 +243,7 @@ fn main() -> anyhow::Result<()> {
             Commands::Doc(x) => build::do_docs(x).map(|_| ()),
             Commands::MakeImage(x) => image::do_make_image(x).map(|_| ()),
             Commands::StartQemu(x) => qemu::do_start_qemu(x),
+            Commands::Kani(x) => kani::launch_kani(x).map(|_| ()),
         }
     } else {
         anyhow::bail!("you must specify a subcommand.");
