@@ -1,8 +1,12 @@
-use std::io::{Read, Write};
+use std::{
+    io::{Read, Write},
+    net::Ipv4Addr,
+};
 
 use embedded_io::ErrorType;
 use logboi::LogHandle;
 use naming::NamingHandle;
+use tiny_http::{Response, StatusCode};
 use tracing::Level;
 use twizzler_abi::{
     object::ObjID,
@@ -195,6 +199,16 @@ fn del_file(args: &[&str], namer: &mut NamingHandle) {
     namer.remove(filename);
 }
 
+fn setup_http() {
+    let server = tiny_http::Server::http((Ipv4Addr::new(127, 0, 0, 1), 80)).unwrap();
+    let mut reqs = server.incoming_requests();
+    while let Some(request) = reqs.next() {
+        tracing::info!("request: {:?}", request);
+        let response = Response::empty(400);
+        request.respond(response).unwrap();
+    }
+}
+
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -242,6 +256,9 @@ fn main() {
             }
             "lethe" => {
                 lethe_cmd(&split, &mut namer);
+            }
+            "http" => {
+                setup_http();
             }
 
             _ => {
