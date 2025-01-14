@@ -161,12 +161,12 @@ async fn listen_queue<R, C, PR, PC, F>(
     PR: std::fmt::Debug + Copy + Send + Sync + 'static,
     PC: std::fmt::Debug + Copy + Send + Sync + 'static,
 {
-    tracing::debug!("queue receiving...");
     let q = Arc::new(kernel_rq);
     let data = Arc::new(data);
     loop {
+        tracing::debug!("queue receiving...");
         let (id, request) = q.receive().await.unwrap();
-        tracing::trace!("got request: ({},{:?})", id, request);
+        tracing::debug!("got request: ({},{:?})", id, request);
 
         let qc = Arc::clone(&q);
         let datac = Arc::clone(&data);
@@ -187,7 +187,7 @@ where
     if let Some(res) = res {
         q.complete(id, res).await.unwrap();
     }
-    tracing::trace!("request {} complete", id);
+    tracing::debug!("request {} complete", id);
 }
 
 async fn report_ready(
@@ -237,6 +237,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) {
     } else {
         tracing::error!("cannot complete pager initialization with no physical memory");
     }
+    tracing::info!("pager ready");
 }
 
 #[secgate::secure_gate]

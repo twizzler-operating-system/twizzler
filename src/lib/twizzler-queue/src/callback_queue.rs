@@ -81,25 +81,33 @@ impl<S: Copy + Send + Sync, C: Copy + Send + Sync> CallbackQueueReceiver<S, C> {
 
     /// Receive a request without immediately returning a completion.
     pub async fn receive(&self) -> Result<(u32, S), std::io::Error> {
-        self.inner
+        twizzler_abi::klog_println!("rec: a");
+        let r = self
+            .inner
             .read_with(|inner| {
                 inner
                     .queue
                     .receive(ReceiveFlags::NON_BLOCK)
                     .map_err(|e| e.into())
             })
-            .await
+            .await;
+        twizzler_abi::klog_println!("rec: b");
+        r
     }
 
     /// Send a completion back to the sender.
     pub async fn complete(&self, id: u32, reply: C) -> Result<(), std::io::Error> {
-        self.inner
+        twizzler_abi::klog_println!("com: a");
+        let r = self
+            .inner
             .write_with(|inner| {
                 inner
                     .queue
                     .complete(id, reply, SubmissionFlags::NON_BLOCK)
                     .map_err(|e| e.into())
             })
-            .await
+            .await;
+        twizzler_abi::klog_println!("com: b");
+        r
     }
 }

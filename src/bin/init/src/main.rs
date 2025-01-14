@@ -129,6 +129,7 @@ fn main() {
     tracing::info!("mapping");
     let handle: ObjectHandle =
         twizzler_rt_abi::object::twz_rt_map_object(obj, MapFlags::READ | MapFlags::WRITE).unwrap();
+    std::thread::sleep(Duration::from_secs(1));
     tracing::info!("writing");
     let start: *mut u8 = unsafe { handle.start().add(NULLPAGE_SIZE) };
     unsafe { *start = 42 };

@@ -696,7 +696,9 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
 
         let page_number = PageNumber::from_address(addr);
         let slot_mgr = ctx.slots.lock();
-        if let Some(info) = slot_mgr.get(&slot) {
+        let info = slot_mgr.get(&slot).cloned();
+        drop(slot_mgr);
+        if let Some(info) = info {
             let id = info.obj.id();
             let null_upcall = UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
                 id,
@@ -720,14 +722,12 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
             if page_number.is_zero() {
                 // drop these mutexes in case upcall sending generetes a page fault.
                 drop(obj_page_tree);
-                drop(slot_mgr);
                 current_thread_ref().unwrap().send_upcall(null_upcall);
                 return;
             }
             if page_number.as_byte_offset() >= MAX_SIZE {
                 // drop these mutexes in case upcall sending generetes a page fault.
                 drop(obj_page_tree);
-                drop(slot_mgr);
                 current_thread_ref().unwrap().send_upcall(oob_upcall);
                 return;
             }
@@ -775,7 +775,6 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 });
             }
         } else {
-            drop(slot_mgr);
             current_thread_ref()
                 .unwrap()
                 .send_upcall(UpcallInfo::MemoryContextViolation(

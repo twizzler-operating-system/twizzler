@@ -148,9 +148,11 @@ pub(super) fn pager_compl_handler_main() {
 }
 
 pub fn submit_pager_request(item: RequestFromKernel) {
+    logln!("submit: {:?}", item);
     let sender = SENDER.wait();
     let id = sender.0.next_simple().value() as u32;
     SENDER.wait().1.submit(item, id);
+    logln!("submit-done: {:?}", item);
 }
 
 extern "C" fn pager_compl_handler_entry() {

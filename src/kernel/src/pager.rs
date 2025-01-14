@@ -74,7 +74,6 @@ pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
     let inflight = mgr.add_request(ReqKind::new_page_data(id, page.num(), 1));
     drop(mgr);
     if let Some(pager_req) = inflight.pager_req() {
-        logln!("submit: {:?}", pager_req);
         queues::submit_pager_request(pager_req);
     }
 
@@ -87,6 +86,7 @@ pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
 }
 
 fn cmd_object(req: ReqKind) {
+    logln!("cmd object: {:?}", req);
     let mut mgr = INFLIGHT_MGR.lock();
     let inflight = mgr.add_request(req);
     drop(mgr);
@@ -97,6 +97,7 @@ fn cmd_object(req: ReqKind) {
     let mut mgr = INFLIGHT_MGR.lock();
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
+        logln!("cmd object: blocking");
         drop(mgr);
         finish_blocking(guard);
     };

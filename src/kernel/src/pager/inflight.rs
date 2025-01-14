@@ -3,7 +3,7 @@ use alloc::collections::{btree_map::BTreeMap, btree_set::BTreeSet};
 use stable_vec::StableVec;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
-    pager::{KernelCommand, ObjectRange, RequestFromKernel},
+    pager::{KernelCommand, ObjectInfo, ObjectRange, RequestFromKernel},
 };
 
 use super::{request::ReqKind, Request};
@@ -26,13 +26,13 @@ impl Inflight {
         }
         let cmd = match self.rk {
             ReqKind::Info(obj_id) => KernelCommand::ObjectInfoReq(obj_id),
-            ReqKind::PageData(obj_id, s, e) => KernelCommand::PageDataReq(
+            ReqKind::PageData(obj_id, s, l) => KernelCommand::PageDataReq(
                 obj_id,
-                ObjectRange::new((s * NULLPAGE_SIZE) as u64, (e * NULLPAGE_SIZE) as u64),
+                ObjectRange::new((s * NULLPAGE_SIZE) as u64, ((s + l) * NULLPAGE_SIZE) as u64),
             ),
             ReqKind::Sync(obj_id) => KernelCommand::ObjectSync(obj_id),
             ReqKind::Del(obj_id) => todo!(),
-            ReqKind::Create(obj_id) => todo!(),
+            ReqKind::Create(obj_id) => KernelCommand::ObjectCreate(ObjectInfo::new(obj_id)),
         };
         Some(RequestFromKernel::new(cmd))
     }
