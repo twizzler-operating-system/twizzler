@@ -1531,7 +1531,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33d852cb9b869c2a9b3df2f71a3074817f01e1844f839a144f5fcef059a4eb5d"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1621,15 +1621,6 @@ dependencies = [
 name = "fatfs"
 version = "0.4.0"
 source = "git+https://github.com/twizzler-operating-system/rust-fatfs.git?branch=zphrs-rwproxy#7286533f11ae77edb35e05fb21d08e56a8395a14"
-dependencies = [
- "bitflags 2.7.0",
- "log",
-]
-
-[[package]]
-name = "fatfs"
-version = "0.4.0"
-source = "git+https://github.com/zphrs/rust-fatfs.git?branch=zphrs-rwproxy#7286533f11ae77edb35e05fb21d08e56a8395a14"
 dependencies = [
  "bitflags 2.7.0",
  "log",
@@ -2859,7 +2850,7 @@ dependencies = [
 [[package]]
 name = "heapsize-derive"
 version = "0.1.0"
-source = "git+https://github.com/twizzler-operating-system/obliviate.git#29b44e251984e46a538d24a1a2a432d2b94fe596"
+source = "git+https://github.com/twizzler-operating-system/obliviate.git#c1be5eff29d319d40eab9975ffa0d150ddb720fb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3368,7 +3359,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3518,7 +3509,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if 1.0.0",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -3678,7 +3669,7 @@ dependencies = [
 [[package]]
 name = "lru-mem"
 version = "0.3.0"
-source = "git+https://github.com/twizzler-operating-system/obliviate.git#29b44e251984e46a538d24a1a2a432d2b94fe596"
+source = "git+https://github.com/twizzler-operating-system/obliviate.git#c1be5eff29d319d40eab9975ffa0d150ddb720fb"
 dependencies = [
  "hashbrown 0.14.5",
  "heapsize-derive",
@@ -4062,7 +4053,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chacha20",
- "fatfs 0.4.0 (git+https://github.com/twizzler-operating-system/rust-fatfs.git?branch=zphrs-rwproxy)",
+ "fatfs 0.4.0",
  "nvme",
  "obliviate-core",
  "pci-ids",
@@ -4087,7 +4078,7 @@ dependencies = [
 [[package]]
 name = "obliviate-core"
 version = "0.1.0"
-source = "git+https://github.com/twizzler-operating-system/obliviate.git#29b44e251984e46a538d24a1a2a432d2b94fe596"
+source = "git+https://github.com/twizzler-operating-system/obliviate.git#c1be5eff29d319d40eab9975ffa0d150ddb720fb"
 dependencies = [
  "aes",
  "bincode",
@@ -4099,7 +4090,7 @@ dependencies = [
  "ctr",
  "dashmap",
  "env_logger",
- "fatfs 0.4.0 (git+https://github.com/zphrs/rust-fatfs.git?branch=zphrs-rwproxy)",
+ "fatfs 0.4.0",
  "generic-array",
  "hashbrown 0.14.5",
  "hex",
@@ -5664,7 +5655,7 @@ dependencies = [
  "getrandom",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6577,7 +6568,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

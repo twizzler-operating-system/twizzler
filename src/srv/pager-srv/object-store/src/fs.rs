@@ -16,17 +16,19 @@ pub(crate) fn format(disk: &mut Disk) {
 
 pub static DISK: LazyLock<Disk> = LazyLock::new(|| Disk::new().unwrap());
 
-pub static FS: LazyLock<Mutex<FileSystem<Disk>>> = LazyLock::new(|| {
+pub(crate) fn open_fs() -> FileSystem<Disk> {
     let disk = DISK.clone();
     let fs_options = fatfs::FsOptions::new().update_accessed_date(false);
     let fs = FileSystem::new(disk, fs_options);
     if let Ok(fs) = fs {
-        return Mutex::new(fs);
+        return fs;
     }
     drop(fs);
     let mut disk = Disk::new().unwrap();
     format(&mut disk);
     let fs =
         FileSystem::new(disk, fs_options).expect("disk should be formatted now so no more errors.");
-    Mutex::new(fs)
-});
+    fs
+}
+
+pub static FS: LazyLock<Mutex<FileSystem<Disk>>> = LazyLock::new(|| Mutex::new(open_fs()));
