@@ -1,7 +1,7 @@
 #![feature(naked_functions)]
 #![feature(linkage)]
 
-use std::{default, sync::Mutex};
+use std::{default, sync::{Arc, Mutex}};
 
 use lazy_static::lazy_static;
 use secgate::{
@@ -15,6 +15,10 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::object::MapFlags;
 use arrayvec::ArrayString;
+use twizzler::{collections::vec::VecObject, marker::Invariant, object::{ObjectBuilder, TypedObject}};
+use twizzler::collections::vec::Vec;
+use twizzler::object::Object;
+use twizzler::collections::vec::VecObjectAlloc;
 
 fn get_kernel_init_info() -> &'static KernelInitInfo {
     unsafe {
@@ -55,35 +59,37 @@ impl NamespaceClient {
     }
 }
 
-pub const MAX_KEY_SIZE: usize = 256;
+pub const MAX_KEY_SIZE: usize = 255;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Schema {
     pub key: ArrayString<MAX_KEY_SIZE>,
     pub val: u128,
 }
 
+unsafe impl Invariant for Schema {}
+
 struct Namer {
     handles: HandleMgr<NamespaceClient>,
-    names: Vec<Schema>,
+    names: VecObject<Schema, VecObjectAlloc>
 }
 
+unsafe impl Send for Namer {}
+unsafe impl Sync for Namer {}
+
 impl Namer {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             handles: HandleMgr::new(None),
-            names: Vec::<Schema>::new(),
+            names: VecObject::new(ObjectBuilder::default()).unwrap()
         }
     }
 }
 
-struct NamerSrv {
-    inner: Mutex<Namer>,
-}
-
 lazy_static! {
-    static ref NAMINGSERVICE: NamerSrv = {
+    static ref NAMINGSERVICE: Mutex<Namer> = {
+
         let mut namer = Namer::new();
 
         let init_info = get_kernel_init_info();
@@ -95,18 +101,16 @@ lazy_static! {
             };
             s.key = ArrayString::from(n.name()).unwrap();
             s.val = n.id().raw();
-            namer.names.push(s);
+            namer.names.push(s).unwrap();
         }
 
-        NamerSrv {
-            inner: Mutex::new(namer),
-        }
+        Mutex::new(namer)
     };
 }
 
 #[secure_gate(options(info))]
 pub fn put(info: &secgate::GateCallInfo, desc: Descriptor) {
-    let mut namer = NAMINGSERVICE.inner.lock().unwrap();
+    let mut namer = NAMINGSERVICE.lock().unwrap();
     let Some(client) = namer
         .handles
         .lookup(info.source_context().unwrap_or(0.into()), desc)
@@ -119,42 +123,42 @@ pub fn put(info: &secgate::GateCallInfo, desc: Descriptor) {
     client.buffer.read(&mut buf);
     let provided =
         unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
+    
+    for i in 0..namer.names.len() {
+        let foo = namer.names.get(i).unwrap();
+        if foo.key == provided.key {
+            unsafe {foo.mutable().val = provided.val}
+        }
+    }
 
-    let foo = namer
-        .names
-        .iter_mut()
-        .find(|search| search.key == provided.key);
-    match foo {
-        Some(found) => found.val = provided.val,
-        None => namer.names.push(provided),
-    };
+    namer.names.push(provided);
 }
 
 #[secure_gate(options(info))]
 pub fn get(info: &secgate::GateCallInfo, desc: Descriptor) -> Option<u128> {
-    let mut namer = NAMINGSERVICE.inner.lock().unwrap();
-    let Some(client) = namer
+    let mut namer = NAMINGSERVICE.lock().unwrap();
+    let client = namer
         .handles
-        .lookup(info.source_context().unwrap_or(0.into()), desc)
-    else {
-        return None;
-    };
+        .lookup(info.source_context().unwrap_or(0.into()), desc)?;
 
+    // should use buffer rather than copying
     let mut buf = [0u8; std::mem::size_of::<Schema>()];
     client.buffer.read(&mut buf);
     let provided =
         unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
 
-    let foo: Option<&Schema> = namer.names.iter().find(|search| search.key == provided.key);
-    match foo {
-        Some(found) => Some(found.val),
-        None => None,
+    for i in 0..namer.names.len() {
+        let foo = namer.names.get(i).unwrap();
+        if foo.key == provided.key {
+            return Some(foo.val);
+        }
     }
+    None
 }
 
 #[secure_gate(options(info))]
 pub fn open_handle(info: &secgate::GateCallInfo) -> Option<(Descriptor, ObjID)> {
-    let mut namer = NAMINGSERVICE.inner.lock().ok()?;
+    let mut namer = NAMINGSERVICE.lock().unwrap();
     let client = NamespaceClient::new()?;
     let id = client.sbid();
     let desc = namer
@@ -166,7 +170,7 @@ pub fn open_handle(info: &secgate::GateCallInfo) -> Option<(Descriptor, ObjID)> 
 
 #[secure_gate(options(info))]
 pub fn close_handle(info: &secgate::GateCallInfo, desc: Descriptor) {
-    let mut namer = NAMINGSERVICE.inner.lock().unwrap();
+    let mut namer = NAMINGSERVICE.lock().unwrap();
     namer
         .handles
         .remove(info.source_context().unwrap_or(0.into()), desc);
@@ -174,7 +178,7 @@ pub fn close_handle(info: &secgate::GateCallInfo, desc: Descriptor) {
 
 #[secure_gate(options(info))]
 pub fn enumerate_names(info: &secgate::GateCallInfo, desc: Descriptor) -> Option<usize> {
-    let mut namer = NAMINGSERVICE.inner.lock().unwrap();
+    let mut namer = NAMINGSERVICE.lock().unwrap();
     let Some(client) = namer
         .handles
         .lookup(info.source_context().unwrap_or(0.into()), desc)
@@ -182,11 +186,12 @@ pub fn enumerate_names(info: &secgate::GateCallInfo, desc: Descriptor) -> Option
         return None;
     };
 
-    let mut vec = Vec::<u8>::new();
-    for s in namer.names.clone() {
+    let mut vec = std::vec::Vec::<u8>::new();
+    for i in 0..namer.names.len() {
+        let foo = namer.names.get(i).unwrap();
         vec.extend_from_slice(
             unsafe {
-                &std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(s)
+                &std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(*foo.raw())
             }
         );
     }
@@ -198,7 +203,8 @@ pub fn enumerate_names(info: &secgate::GateCallInfo, desc: Descriptor) -> Option
 
 #[secure_gate(options(info))]
 pub fn remove(info: &secgate::GateCallInfo, desc: Descriptor) {
-    let mut namer = NAMINGSERVICE.inner.lock().unwrap();
+    todo!()
+    /*let mut namer = NAMINGSERVICE.inner.lock().unwrap();
     let Some(client) = namer
         .handles
         .lookup(info.source_context().unwrap_or(0.into()), desc)
@@ -213,5 +219,5 @@ pub fn remove(info: &secgate::GateCallInfo, desc: Descriptor) {
 
     let foo = namer
         .names
-        .retain(|x| x.key != provided.key);
+        .retain(|x| x.key != provided.key);*/
 }
