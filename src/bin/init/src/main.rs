@@ -136,6 +136,18 @@ fn main() {
     tracing::info!("syncing");
     twizzler_abi::syscall::sys_object_ctrl(handle.id(), ObjectControlCmd::Sync).unwrap();
 
+    let id = 0xb1606d619f766a469e418294b9860959u128;
+    tracing::info!("okay, opening an old object: {}", id);
+
+    let handle: ObjectHandle =
+        twizzler_rt_abi::object::twz_rt_map_object(id.into(), MapFlags::READ | MapFlags::WRITE)
+            .unwrap();
+    let start: *mut u8 = unsafe { handle.start().add(NULLPAGE_SIZE) };
+    tracing::info!("value: {}", unsafe { *start });
+    unsafe { *start += 1 };
+    tracing::info!("syncing");
+    twizzler_abi::syscall::sys_object_ctrl(handle.id(), ObjectControlCmd::Sync).unwrap();
+
     println!("Hi, welcome to the basic twizzler test console.");
     println!("If you wanted line-editing, you've come to the wrong place.");
     println!("To run a program, type its name.");

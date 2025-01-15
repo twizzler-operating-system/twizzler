@@ -238,6 +238,26 @@ fn do_pager_start(q1: ObjID, q2: ObjID) {
         tracing::error!("cannot complete pager initialization with no physical memory");
     }
     tracing::info!("pager ready");
+
+    /*
+    object_store::unlink_object(777);
+    let res = object_store::create_object(777).unwrap();
+    assert!(res);
+    let mut buf = [0; 0x1000];
+    let mut buf2 = [1; 0x1000];
+    let x = object_store::read_exact(777, &mut buf, 0);
+    let y = object_store::read_exact(777, &mut buf, 0x1000);
+    let w = object_store::write_all(777, &mut buf2, 0x1000);
+    let z = object_store::read_exact(777, &mut buf, 0x1000);
+    let w = object_store::write_all(777, &mut buf2, 0);
+    let z = object_store::read_exact(777, &mut buf, 0x1000);
+
+    tracing::info!("x: {:?}", x);
+    tracing::info!("y: {:?}", y);
+    tracing::info!("w: {:?}", w);
+    tracing::info!("z: {:?}", z);
+    assert_eq!(buf, buf2);
+    */
 }
 
 #[secgate::secure_gate]

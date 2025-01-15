@@ -23,13 +23,13 @@ pub struct PerPageData {
 }
 
 #[derive(Default)]
-pub struct PerObject {
+pub struct PerObjectInner {
     id: ObjID,
     page_map: HashMap<PageNum, PerPageData>,
     meta_page_map: HashMap<PageNum, PerPageData>,
 }
 
-impl PerObject {
+impl PerObjectInner {
     pub fn track(&mut self, obj_range: ObjectRange, phys_range: PhysRange) {
         assert_eq!(obj_range.len(), PAGE as usize);
         assert_eq!(phys_range.len(), PAGE as usize);
@@ -61,13 +61,13 @@ impl PerObject {
     pub fn pages(&self) -> impl Iterator<Item = (ObjectRange, PerPageData)> + '_ {
         self.page_map
             .iter()
-            .map(|(x, y)| (ObjectRange::new(*x, *x + PAGE), *y))
+            .map(|(x, y)| (ObjectRange::new(*x * PAGE, (*x + 1) * PAGE), *y))
     }
 
     pub fn meta_pages(&self) -> impl Iterator<Item = (ObjectRange, PerPageData)> + '_ {
         self.meta_page_map
             .iter()
-            .map(|(x, y)| (ObjectRange::new(*x, *x + PAGE), *y))
+            .map(|(x, y)| (ObjectRange::new(*x * PAGE, (*x + 1) * PAGE), *y))
     }
 
     pub fn new(id: ObjID) -> Self {
@@ -76,22 +76,51 @@ impl PerObject {
             ..Default::default()
         }
     }
+}
+
+#[derive(Clone)]
+pub struct PerObject {
+    id: ObjID,
+    inner: Arc<Mutex<PerObjectInner>>,
+}
+
+impl PerObject {
+    pub fn track(&self, obj_range: ObjectRange, phys_range: PhysRange) {
+        self.inner.lock().unwrap().track(obj_range, phys_range);
+    }
 
     pub async fn sync(
         &self,
         rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
     ) -> Result<()> {
-        for p in self.pages() {
+        let (pages, mpages) = {
+            let inner = self.inner.lock().unwrap();
+            let total = inner.page_map.len() + inner.meta_page_map.len();
+            tracing::info!("syncing {}: {} pages", self.id, total);
+            let pages = inner.pages().collect::<Vec<_>>();
+            let mpages = inner.meta_pages().collect::<Vec<_>>();
+            (pages, mpages)
+        };
+        for p in pages {
             let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
             page_out(rq, self.id, p.0, phys_range, false).await?;
         }
 
-        for p in self.meta_pages() {
+        for p in mpages {
             let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
             page_out(rq, self.id, p.0, phys_range, true).await?;
         }
 
         Ok(())
+    }
+}
+
+impl PerObject {
+    pub fn new(id: ObjID) -> Self {
+        Self {
+            id,
+            inner: Arc::new(Mutex::new(PerObjectInner::new(id))),
+        }
     }
 }
 
@@ -232,8 +261,8 @@ impl PagerData {
         let phys_range = {
             let mut inner = self.inner.lock().unwrap();
             let page = inner.get_mem_page();
+            let phys_range = page_to_physrange(page, inner.mem_range_start);
             let po = inner.get_per_object_mut(id);
-            let phys_range = page_to_physrange(page, 0);
             po.track(obj_range, phys_range);
             phys_range
         };
@@ -248,9 +277,16 @@ impl PagerData {
         Some(ObjectInfo::new(id))
     }
 
-    pub fn sync(&self, rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>, id: ObjID) {
-        let mut inner = self.inner.lock().unwrap();
-        let _ = inner.get_per_object(id).sync(rq).inspect_err(|e| {
+    pub async fn sync(
+        &self,
+        rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+        id: ObjID,
+    ) {
+        let po = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.get_per_object(id).clone()
+        };
+        let _ = po.sync(rq).await.inspect_err(|e| {
             tracing::warn!("sync failed for {}: {}", id, e);
         });
     }

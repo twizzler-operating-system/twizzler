@@ -61,7 +61,7 @@ pub async fn handle_kernel_request(
             }
         }
         KernelCommand::ObjectSync(obj_id) => {
-            data.sync(&rq, obj_id);
+            data.sync(&rq, obj_id).await;
             Some(CompletionToKernel::new(KernelCompletionData::SyncOkay(
                 obj_id,
             )))
@@ -78,6 +78,15 @@ pub async fn handle_kernel_request(
                 })
                 .is_err()
             {
+                let buf = [0; 0x1000];
+                let _ =
+                    object_store::write_all(object_info.obj_id.raw(), &buf, 0).inspect_err(|e| {
+                        tracing::warn!(
+                            "failed to write pager info page for object {}: {}",
+                            object_info.obj_id,
+                            e
+                        )
+                    });
                 Some(CompletionToKernel::new(KernelCompletionData::Error))
             } else {
                 Some(CompletionToKernel::new(

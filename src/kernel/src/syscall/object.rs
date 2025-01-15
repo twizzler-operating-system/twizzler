@@ -66,10 +66,12 @@ pub fn sys_object_map(
     };
     let obj = crate::obj::lookup_object(id, LookupFlags::empty());
     let obj = match obj {
-        crate::obj::LookupResult::NotFound => return Err(ObjectMapError::ObjectNotFound),
         crate::obj::LookupResult::WasDeleted => return Err(ObjectMapError::ObjectNotFound),
-        crate::obj::LookupResult::Pending => return Err(ObjectMapError::ObjectNotFound),
         crate::obj::LookupResult::Found(obj) => obj,
+        _ => match crate::pager::lookup_object_and_wait(id) {
+            Some(obj) => obj,
+            None => return Err(ObjectMapError::ObjectNotFound),
+        },
     };
     // TODO
     let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into());

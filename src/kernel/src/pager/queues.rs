@@ -1,3 +1,5 @@
+use alloc::sync::Arc;
+
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, NULLPAGE_SIZE},
@@ -5,6 +7,7 @@ use twizzler_abi::{
         CompletionToKernel, CompletionToPager, PagerCompletionData, PagerRequest, PhysRange,
         RequestFromKernel, RequestFromPager,
     },
+    syscall::LifetimeType,
 };
 
 use super::INFLIGHT_MGR;
@@ -12,7 +15,7 @@ use crate::{
     arch::PhysAddr,
     idcounter::{IdCounter, SimpleId},
     memory::context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
-    obj::{lookup_object, pages::Page, LookupFlags, PageNumber},
+    obj::{lookup_object, pages::Page, LookupFlags, Object, PageNumber},
     once::Once,
     pager::PAGER_MEMORY,
     queue::{ManagedQueueReceiver, QueueObject},
@@ -125,6 +128,8 @@ pub(super) fn pager_compl_handler_main() {
             }
             twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(obj_info) => {
                 logln!("kernel: pager compl: got object info {:?}", obj_info);
+                let obj = Object::new(obj_info.obj_id, LifetimeType::Persistent);
+                crate::obj::register_object(Arc::new(obj));
                 INFLIGHT_MGR.lock().cmd_ready(obj_info.obj_id, false);
             }
             twizzler_abi::pager::KernelCompletionData::SyncOkay(objid) => {

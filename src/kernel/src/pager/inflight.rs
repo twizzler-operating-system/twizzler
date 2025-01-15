@@ -1,4 +1,7 @@
-use alloc::collections::{btree_map::BTreeMap, btree_set::BTreeSet};
+use alloc::{
+    collections::{btree_map::BTreeMap, btree_set::BTreeSet},
+    vec::Vec,
+};
 
 use stable_vec::StableVec;
 use twizzler_abi::{
@@ -124,6 +127,7 @@ impl InflightManager {
     }
 
     pub fn cmd_ready(&mut self, objid: ObjID, sync: bool) {
+        let mut done = Vec::new();
         if let Some(po) = self.per_object.get_mut(&objid) {
             let list = if sync { &po.sync_list } else { &po.info_list };
             for id in list {
@@ -131,15 +135,20 @@ impl InflightManager {
                     req.cmd_ready();
                     if req.done() {
                         req.signal();
+                        done.push(*id);
                     }
                 } else {
                     logln!("[pager] warning -- stale ID");
                 }
             }
         }
+        for id in done {
+            self.remove_request(id);
+        }
     }
 
     pub fn pages_ready(&mut self, objid: ObjID, pages: impl IntoIterator<Item = usize>) {
+        let mut done = Vec::new();
         if let Some(po) = self.per_object.get_mut(&objid) {
             for page in pages {
                 if let Some(idset) = po.page_map.get(&page) {
@@ -148,6 +157,7 @@ impl InflightManager {
                             req.page_ready(page);
                             if req.done() {
                                 req.signal();
+                                done.push(*id);
                             }
                         } else {
                             logln!("[pager] warning -- stale ID");
@@ -155,6 +165,9 @@ impl InflightManager {
                     }
                 }
             }
+        }
+        for id in done {
+            self.remove_request(id);
         }
     }
 }
