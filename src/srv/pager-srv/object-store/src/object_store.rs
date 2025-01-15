@@ -51,7 +51,7 @@ static WAL: LazyLock<Mutex<MyWal>> = LazyLock::new(|| Mutex::new(open_wal()));
 static LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 use fatfs::{
-    DefaultTimeProvider, Dir, LossyOemCpConverter, Read as _, ReadWriteProxy, Seek as _, SeekFrom,
+    DefaultTimeProvider, Dir, LossyOemCpConverter, Read as _, ReadWriteProxy, Seek, SeekFrom,
     Write as _,
 };
 
@@ -100,6 +100,44 @@ pub fn format() {
     let mut wal = WAL.lock().unwrap();
     *wal = open_wal();
     drop(wal);
+}
+
+/// Returns the disk length of a given object on disk.
+pub fn disk_length(obj_id: u128) -> Result<u64, Error> {
+    let _unused = LOCK.lock().unwrap();
+    let mut fs = FS.lock().unwrap();
+    let id = encode_obj_id(obj_id);
+    let dir = get_dir_path(&mut fs, &id)?;
+    let mut file = dir.open_file(&id)?;
+    let len = file.seek(SeekFrom::End(0))?;
+    Ok(len)
+}
+
+/// Either gets a previously set config_id from disk or returns None
+pub fn get_config_id() -> Result<Option<u128>, Error> {
+    let _unused = LOCK.lock().unwrap();
+    let mut fs = FS.lock().unwrap();
+    let mut file = fs.root_dir().open_file("config_id");
+    let mut file = match file {
+        Ok(file) => file,
+        Err(err) => match err {
+            fatfs::Error::NotFound => return Ok(None),
+            err => Err(err)?,
+        },
+    };
+    let mut buf = [0u8; 16];
+    file.read_exact(&mut buf)?;
+    Ok(Some(u128::from_le_bytes(buf)))
+}
+
+pub fn set_config_id(id: u128) -> Result<(), Error> {
+    let _unused = LOCK.lock().unwrap();
+    let mut fs = FS.lock().unwrap();
+    let mut file = fs.root_dir().create_file("config_id")?;
+    file.truncate()?;
+    let bytes = id.to_le_bytes();
+    file.write_all(&bytes)?;
+    Ok(())
 }
 
 /// Returns true if file was created and false if the file already existed.
@@ -181,6 +219,7 @@ fn get_symmetric_cipher_from_key(disk_offset: u64, key: [u8; 32]) -> Result<ChaC
     cipher.seek(offset);
     Ok(cipher)
 }
+
 pub fn read_exact(obj_id: u128, buf: &mut [u8], off: u64) -> Result<(), Error> {
     let _unused = LOCK.lock().unwrap();
     let b64 = encode_obj_id(obj_id);
