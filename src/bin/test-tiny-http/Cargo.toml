@@ -9,3 +9,4 @@ edition = "2021"
 tiny_http = { path = "src/tiny-http-twizzler" }
 smoltcp = "0.11.0"
 tracing = "0.1"
+virtio-net = { path = "../../lib/virtio-net" }

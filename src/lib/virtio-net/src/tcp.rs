@@ -1,8 +1,12 @@
 //! Simple echo server over TCP.
 //!
 //! Ref: <https://github.com/smoltcp-rs/smoltcp/blob/master/examples/server.rs>
-use core::{cell::RefCell, str::FromStr};
-use std::{borrow::ToOwned, rc::Rc, vec, vec::Vec};
+use core::str::FromStr;
+use std::{
+    borrow::ToOwned,
+    sync::{Arc, Mutex},
+    vec::{self, Vec},
+};
 
 use smoltcp::{
     iface::{Config, Interface, SocketSet},
@@ -26,18 +30,18 @@ type DeviceImpl<T> = VirtIONet<TestHal, T, NET_QUEUE_SIZE>;
 const NET_BUFFER_LEN: usize = 2048;
 
 pub struct DeviceWrapper<T: Transport> {
-    inner: Rc<RefCell<DeviceImpl<T>>>,
+    inner: Arc<Mutex<DeviceImpl<T>>>,
 }
 
 impl<T: Transport> DeviceWrapper<T> {
     fn new(dev: DeviceImpl<T>) -> Self {
         DeviceWrapper {
-            inner: Rc::new(RefCell::new(dev)),
+            inner: Arc::new(Mutex::new(dev)),
         }
     }
 
     pub fn mac_address(&self) -> EthernetAddress {
-        EthernetAddress(self.inner.borrow().mac_address())
+        EthernetAddress(self.inner.lock().unwrap().mac_address())
     }
 }
 
@@ -52,7 +56,7 @@ impl<T: Transport> Device for DeviceWrapper<T> {
         Self: 'a;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        match self.inner.borrow_mut().receive() {
+        match self.inner.lock().unwrap().receive() {
             Ok(buf) => Some((
                 VirtioRxToken(self.inner.clone(), buf),
                 VirtioTxToken(self.inner.clone()),
@@ -75,8 +79,8 @@ impl<T: Transport> Device for DeviceWrapper<T> {
     }
 }
 
-pub struct VirtioRxToken<T: Transport>(Rc<RefCell<DeviceImpl<T>>>, RxBuffer);
-pub struct VirtioTxToken<T: Transport>(Rc<RefCell<DeviceImpl<T>>>);
+pub struct VirtioRxToken<T: Transport>(Arc<Mutex<DeviceImpl<T>>>, RxBuffer);
+pub struct VirtioTxToken<T: Transport>(Arc<Mutex<DeviceImpl<T>>>);
 
 impl<T: Transport> RxToken for VirtioRxToken<T> {
     fn consume<R, F>(self, f: F) -> R
@@ -84,14 +88,16 @@ impl<T: Transport> RxToken for VirtioRxToken<T> {
         F: FnOnce(&mut [u8]) -> R,
     {
         let mut rx_buf = self.1;
-        // println!(
-        //     "RECV {} bytes: {:02X?}",
-        //     rx_buf.packet_len(),
-        //     rx_buf.packet()
-        // );
+        /*
+        println!(
+            "RECV {} bytes: {:02X?}",
+            rx_buf.packet_len(),
+            rx_buf.packet()
+        );
+        */
         // println!("RX BUFFER ADDR: {:p}", rx_buf.packet_mut());
         let result = f(rx_buf.packet_mut());
-        self.0.borrow_mut().recycle_rx_buffer(rx_buf).unwrap();
+        self.0.lock().unwrap().recycle_rx_buffer(rx_buf).unwrap();
         result
     }
 }
@@ -101,10 +107,10 @@ impl<T: Transport> TxToken for VirtioTxToken<T> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let mut dev = self.0.borrow_mut();
+        let mut dev = self.0.lock().unwrap();
         let mut tx_buf = dev.new_tx_buffer(len);
         let result = f(tx_buf.packet_mut());
-        // println!("SEND {} bytes: {:02X?}", len, tx_buf.packet());
+        //println!("SEND {} bytes: {:02X?}", len, tx_buf.packet());
         // println!("TX BUFFER ADDR: {:p}", tx_buf.packet_mut());
         dev.send(tx_buf).unwrap();
         result
