@@ -30,9 +30,9 @@ pub fn sys_object_create(
 ) -> Result<ObjID, ObjectCreateError> {
     let id = calculate_new_id(create.kuid, MetaFlags::default());
     let obj = Arc::new(Object::new(id, create.lt));
-    logln!("create: lt = {:?}: {}", create.lt, obj.use_pager());
     if obj.use_pager() {
         crate::pager::create_object(id);
+        return Ok(obj.id());
     }
     for src in srcs {
         if src.id.raw() == 0 {
@@ -196,12 +196,13 @@ pub fn sys_sctx_attach(id: ObjID) -> Result<u32, SctxAttachError> {
 }
 
 pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
-    logln!("object ctrl: {} {:?}", id, cmd);
     match cmd {
         ObjectControlCmd::Sync => {
             crate::pager::sync_object(id);
         }
-        ObjectControlCmd::Delete(_) => {}
+        ObjectControlCmd::Delete(_) => {
+            crate::pager::del_object(id);
+        }
         _ => {}
     }
     (0, 0)

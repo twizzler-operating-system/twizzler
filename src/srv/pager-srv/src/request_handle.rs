@@ -33,23 +33,14 @@ pub async fn handle_kernel_request(
     tracing::debug!("handling kernel request {:?}", request);
 
     match request.cmd() {
-        KernelCommand::PageDataReq(obj_id, range) => {
-            tracing::debug!(
-                "handling PageDataReq for ObjID: {:?}, Range: start = {}, end = {}",
-                obj_id,
-                range.start,
-                range.end
-            );
-            Some(CompletionToKernel::new(
-                if let Some(phys_range) = page_data_req(&rq, data, obj_id, range).await {
-                    KernelCompletionData::PageDataCompletion(obj_id, range, phys_range)
-                } else {
-                    KernelCompletionData::Error
-                },
-            ))
-        }
+        KernelCommand::PageDataReq(obj_id, range) => Some(CompletionToKernel::new(
+            if let Some(phys_range) = page_data_req(&rq, data, obj_id, range).await {
+                KernelCompletionData::PageDataCompletion(obj_id, range, phys_range)
+            } else {
+                KernelCompletionData::Error
+            },
+        )),
         KernelCommand::ObjectInfoReq(obj_id) => {
-            tracing::trace!("handling ObjectInfo for ObjID: {:?}", obj_id);
             if let Some(obj_info) = object_info_req(data, obj_id) {
                 Some(CompletionToKernel::new(
                     KernelCompletionData::ObjectInfoCompletion(obj_info),
@@ -71,13 +62,14 @@ pub async fn handle_kernel_request(
             Some(CompletionToKernel::new(KernelCompletionData::Error))
         }
         KernelCommand::ObjectCreate(object_info) => {
+            tracing::debug!("A");
             let _ = object_store::unlink_object(object_info.obj_id.raw());
-            if object_store::create_object(object_info.obj_id.raw())
-                .inspect_err(|e| {
-                    tracing::warn!("failed to create object {}: {}", object_info.obj_id, e)
-                })
-                .is_err()
-            {
+            tracing::debug!("B");
+            if let Err(e) = object_store::create_object(object_info.obj_id.raw()) {
+                tracing::warn!("failed to create object {}: {}", object_info.obj_id, e);
+                Some(CompletionToKernel::new(KernelCompletionData::Error))
+            } else {
+                tracing::debug!("CRATE");
                 let buf = [0; 0x1000];
                 let _ =
                     object_store::write_all(object_info.obj_id.raw(), &buf, 0).inspect_err(|e| {
@@ -87,8 +79,7 @@ pub async fn handle_kernel_request(
                             e
                         )
                     });
-                Some(CompletionToKernel::new(KernelCompletionData::Error))
-            } else {
+                tracing::debug!("C");
                 Some(CompletionToKernel::new(
                     KernelCompletionData::ObjectInfoCompletion(object_info),
                 ))

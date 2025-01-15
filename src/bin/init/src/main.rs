@@ -129,14 +129,13 @@ fn main() {
     tracing::info!("mapping");
     let handle: ObjectHandle =
         twizzler_rt_abi::object::twz_rt_map_object(obj, MapFlags::READ | MapFlags::WRITE).unwrap();
-    std::thread::sleep(Duration::from_secs(1));
     tracing::info!("writing");
     let start: *mut u8 = unsafe { handle.start().add(NULLPAGE_SIZE) };
     unsafe { *start = 42 };
     tracing::info!("syncing");
     twizzler_abi::syscall::sys_object_ctrl(handle.id(), ObjectControlCmd::Sync).unwrap();
 
-    let id = 0xb1606d619f766a469e418294b9860959u128;
+    let id = 0x53ad3c0eabd72f567c6d11ea47f0b065u128;
     tracing::info!("okay, opening an old object: {}", id);
 
     let handle: ObjectHandle =

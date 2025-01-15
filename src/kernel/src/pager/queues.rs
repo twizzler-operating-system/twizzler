@@ -77,6 +77,7 @@ pub(super) fn pager_request_handler_main() {
                     .poll()
                     .map(|pm| (pm.start.raw(), pm.length))
                     .unwrap_or((0, 0));
+                INFLIGHT_MGR.lock().set_ready();
                 CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::DramPages(
                     PhysRange::new(reg.0, reg.0 + reg.1 as u64),
                 ))
@@ -102,19 +103,12 @@ pub(super) fn pager_compl_handler_main() {
                 obj_range,
                 phys_range,
             ) => {
-                logln!(
-                    "kernel: pager compl: got physical range {:?} for object {} range {:?}",
-                    phys_range,
-                    objid,
-                    obj_range
-                );
                 if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
                     let mut object_tree = object.lock_page_tree();
 
                     for (objpage_nr, physpage_nr) in obj_range.pages().zip(phys_range.pages()) {
                         let pn = PageNumber::from(objpage_nr as usize);
                         let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
-                        logln!("kernel adding object {} page {} => {:?}", objid, pn, pa);
                         object_tree.add_page(pn, Page::new_wired(pa, CacheType::WriteBack));
                     }
                     drop(object_tree);
@@ -127,13 +121,11 @@ pub(super) fn pager_compl_handler_main() {
                 }
             }
             twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(obj_info) => {
-                logln!("kernel: pager compl: got object info {:?}", obj_info);
                 let obj = Object::new(obj_info.obj_id, LifetimeType::Persistent);
                 crate::obj::register_object(Arc::new(obj));
                 INFLIGHT_MGR.lock().cmd_ready(obj_info.obj_id, false);
             }
             twizzler_abi::pager::KernelCompletionData::SyncOkay(objid) => {
-                logln!("kernel: pager compl: got object sync {:?}", objid);
                 INFLIGHT_MGR.lock().cmd_ready(objid, true);
             }
             twizzler_abi::pager::KernelCompletionData::Error => {
@@ -153,11 +145,9 @@ pub(super) fn pager_compl_handler_main() {
 }
 
 pub fn submit_pager_request(item: RequestFromKernel) {
-    logln!("submit: {:?}", item);
     let sender = SENDER.wait();
     let id = sender.0.next_simple().value() as u32;
     SENDER.wait().1.submit(item, id);
-    logln!("submit-done: {:?}", item);
 }
 
 extern "C" fn pager_compl_handler_entry() {

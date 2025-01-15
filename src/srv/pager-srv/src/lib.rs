@@ -102,7 +102,7 @@ fn queue_init(
 fn async_runtime_init(n: i32) -> &'static Executor<'static> {
     let ex = EXECUTOR.get_or_init(|| Executor::new());
 
-    for _ in 0..(n - 1) {
+    for _ in 0..n {
         std::thread::spawn(|| block_on(ex.run(std::future::pending::<()>())));
     }
 
@@ -125,7 +125,7 @@ fn pager_init(
     tracing::debug!("init start");
     let data = data_structure_init();
     let (rq, sq) = queue_init(q1, q2);
-    let ex = async_runtime_init(2);
+    let ex = async_runtime_init(4);
 
     tracing::debug!("init complete");
     return (rq, sq, data, ex);
@@ -164,9 +164,9 @@ async fn listen_queue<R, C, PR, PC, F>(
     let q = Arc::new(kernel_rq);
     let data = Arc::new(data);
     loop {
-        tracing::debug!("queue receiving...");
+        tracing::trace!("queue receiving...");
         let (id, request) = q.receive().await.unwrap();
-        tracing::debug!("got request: ({},{:?})", id, request);
+        tracing::trace!("got request: ({},{:?})", id, request);
 
         let qc = Arc::clone(&q);
         let datac = Arc::clone(&data);
@@ -187,7 +187,7 @@ where
     if let Some(res) = res {
         q.complete(id, res).await.unwrap();
     }
-    tracing::debug!("request {} complete", id);
+    tracing::trace!("request {} complete", id);
 }
 
 async fn report_ready(
@@ -211,6 +211,7 @@ async fn report_ready(
 
 fn do_pager_start(q1: ObjID, q2: ObjID) {
     let (rq, sq, data, ex) = pager_init(q1, q2);
+    object_store::init(ex);
     let sq = Arc::new(sq);
     spawn_queues(&sq, rq, data.clone(), ex);
 

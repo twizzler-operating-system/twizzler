@@ -14,7 +14,6 @@ fatfs = { git = "https://github.com/twizzler-operating-system/rust-fatfs.git", b
 ], default-features = false }
 obliviate-core = { version = "0.1.0", git = "https://github.com/twizzler-operating-system/obliviate.git" }
 rand = "0.8.5"
-twizzler-async = { path = "../../../lib/twizzler-async" }
 twizzler-abi = { path = "../../../lib/twizzler-abi" }
 twizzler-driver = { path = "../../../lib/twizzler-driver" }
 twizzler-object = { path = "../../../lib/twizzler-object" }
@@ -23,3 +22,7 @@ nvme = { path = "../../../lib/nvme-rs" }
 async-trait = "0.1.66"
 volatile = "0.5"
 pci-ids = "0.2.4"
+tracing = "*"
+
+async-io = "2.3.2"
+async-executor = { version = "1.9.1", features = [] }

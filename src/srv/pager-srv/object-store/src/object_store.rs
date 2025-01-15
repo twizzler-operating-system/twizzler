@@ -50,6 +50,7 @@ static WAL: LazyLock<Mutex<MyWal>> = LazyLock::new(|| Mutex::new(open_wal()));
 /// at the entrance of the function.
 static LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+use async_executor::Executor;
 use fatfs::{
     DefaultTimeProvider, Dir, LossyOemCpConverter, Read as _, ReadWriteProxy, Seek, SeekFrom,
     Write as _,
@@ -57,7 +58,16 @@ use fatfs::{
 
 // use obliviate_core::kms::khf::Khf;
 use crate::fs::{self, open_fs, FS, PAGE_SIZE};
-use crate::{disk::Disk, fs::DISK, wrapped_extent::WrappedExtent};
+use crate::{
+    disk::{Disk, EXECUTOR, FS},
+    fs::DISK,
+    wrapped_extent::WrappedExtent,
+};
+
+pub fn init(ex: &'static Executor<'static>) {
+    crate::disk::init(ex);
+}
+
 fn get_dir_path<'a>(
     fs: &'a mut fatfs::FileSystem<Disk, DefaultTimeProvider, LossyOemCpConverter>,
     encoded_obj_id: &EncodedObjectId,
@@ -149,10 +159,14 @@ pub fn clear_config_id() -> Result<(), Error> {
 pub fn create_object(obj_id: u128) -> Result<bool, Error> {
     let _unused = LOCK.lock().unwrap();
     let b64 = encode_obj_id(obj_id);
-    let mut fs = FS.lock().unwrap();
+    tracing::debug!("0");
+    let mut fs = FS.get().unwrap().lock().unwrap();
+    tracing::debug!("1");
     let subdir = get_dir_path(&mut fs, &b64)?;
+    tracing::debug!("1.4");
     // try to open it to check if it exists.
     let res = subdir.open_file(&b64);
+    tracing::debug!("2");
     match res {
         Ok(_) => Ok(false),
         Err(e) => match e {
@@ -228,7 +242,7 @@ fn get_symmetric_cipher_from_key(disk_offset: u64, key: [u8; 32]) -> Result<ChaC
 pub fn read_exact(obj_id: u128, buf: &mut [u8], off: u64) -> Result<(), Error> {
     let _unused = LOCK.lock().unwrap();
     let b64 = encode_obj_id(obj_id);
-    let mut fs = FS.lock().unwrap();
+    let mut fs = FS.get().unwrap().lock().unwrap();
     let subdir = get_dir_path(&mut fs, &b64)?;
     let mut file = subdir.open_file(&b64)?;
     file.seek(fatfs::SeekFrom::Start(off))?;

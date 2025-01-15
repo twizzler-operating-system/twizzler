@@ -55,7 +55,7 @@ pub async fn page_in(
     } else {
         obj_range.start
     };
-    tracing::info!("read_exact: offset: {}", start);
+    tracing::trace!("read_exact: offset: {}", start);
     let res = object_store::read_exact(obj_id.raw(), &mut buf, start)
         .inspect_err(|e| tracing::trace!("error in read from object store: {}", e));
     if res.is_err() {
@@ -75,7 +75,7 @@ pub async fn page_out(
     assert_eq!(obj_range.len(), 0x1000);
     assert_eq!(phys_range.len(), 0x1000);
 
-    tracing::info!("in pageout: {}: {:?} {:?}", obj_id, obj_range, phys_range);
+    tracing::trace!("pageout: {}: {:?} {:?}", obj_id, obj_range, phys_range);
     let mut buf = [0; 0x1000];
     physrw::read_physical_pages(rq, &mut buf, phys_range).await?;
     let start = if meta {
@@ -83,7 +83,7 @@ pub async fn page_out(
     } else {
         obj_range.start
     };
-    tracing::info!("write_all: offset: {}", start);
+    tracing::trace!("write_all: offset: {}", start);
     object_store::write_all(obj_id.raw(), &buf, start)
         .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
         .into_diagnostic()

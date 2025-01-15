@@ -129,3 +129,5 @@ mod tests {
         }
     }
 }
+
+pub use object_store::{create_object, init, read_exact, unlink_object, write_all};

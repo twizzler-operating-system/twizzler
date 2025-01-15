@@ -96,13 +96,14 @@ impl PerObject {
         let (pages, mpages) = {
             let inner = self.inner.lock().unwrap();
             let total = inner.page_map.len() + inner.meta_page_map.len();
-            tracing::info!("syncing {}: {} pages", self.id, total);
+            tracing::debug!("syncing {}: {} pages", self.id, total);
             let pages = inner.pages().collect::<Vec<_>>();
             let mpages = inner.meta_pages().collect::<Vec<_>>();
             (pages, mpages)
         };
         for p in pages {
             let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
+            tracing::debug!("sync: page: {:?} {:?}", p, phys_range);
             page_out(rq, self.id, p.0, phys_range, false).await?;
         }
 

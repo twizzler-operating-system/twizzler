@@ -34,7 +34,7 @@ impl Inflight {
                 ObjectRange::new((s * NULLPAGE_SIZE) as u64, ((s + l) * NULLPAGE_SIZE) as u64),
             ),
             ReqKind::Sync(obj_id) => KernelCommand::ObjectSync(obj_id),
-            ReqKind::Del(obj_id) => todo!(),
+            ReqKind::Del(obj_id) => KernelCommand::ObjectDel(obj_id),
             ReqKind::Create(obj_id) => KernelCommand::ObjectCreate(ObjectInfo::new(obj_id)),
         };
         Some(RequestFromKernel::new(cmd))
@@ -78,6 +78,7 @@ pub(super) struct InflightManager {
     requests: StableVec<Request>,
     req_map: BTreeMap<ReqKind, usize>,
     per_object: BTreeMap<ObjID, PerObjectData>,
+    pager_ready: bool,
 }
 
 impl InflightManager {
@@ -86,6 +87,7 @@ impl InflightManager {
             requests: StableVec::new(),
             req_map: BTreeMap::new(),
             per_object: BTreeMap::new(),
+            pager_ready: false,
         }
     }
 
@@ -169,5 +171,13 @@ impl InflightManager {
         for id in done {
             self.remove_request(id);
         }
+    }
+
+    pub fn set_ready(&mut self) {
+        self.pager_ready = true;
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.pager_ready
     }
 }

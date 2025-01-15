@@ -3,7 +3,9 @@ use std::{
     sync::Arc,
 };
 
-use fatfs::{IoBase, Read, Seek, SeekFrom, Write};
+use async_executor::Executor;
+use async_io::block_on;
+use fatfs::{FatType, FileSystem, FormatVolumeOptions, IoBase, Read, Seek, SeekFrom, Write};
 use twizzler_async::block_on;
 
 use crate::{
@@ -22,12 +24,56 @@ pub struct Disk {
 }
 
 impl Disk {
-    pub fn new() -> Result<Disk, ()> {
-        Ok(Disk {
-            ctrl: block_on(init_nvme()),
-            pos: 0,
-        })
+    pub fn new(ex: &'static Executor<'static>) -> Result<(Disk, Arc<NvmeController>), ()> {
+        let ctrl = block_on(init_nvme(ex));
+        Ok((
+            Disk {
+                ctrl: ctrl.clone(),
+                pos: 0,
+            },
+            ctrl,
+        ))
     }
+}
+
+pub static FS: OnceLock<Mutex<FileSystem<Disk>>> = OnceLock::new();
+pub static EXECUTOR: OnceLock<&'static Executor<'static>> = OnceLock::new();
+pub static NVME: OnceLock<Arc<NvmeController>> = OnceLock::new();
+
+pub fn init(ex: &'static Executor<'static>) {
+    let (fs, nvme) = do_init(ex);
+    let _ = FS.set(fs);
+    let _ = NVME.set(nvme);
+    let _ = EXECUTOR.set(ex);
+}
+
+fn do_init(ex: &'static Executor<'static>) -> (Mutex<FileSystem<Disk>>, Arc<NvmeController>) {
+    let (mut disk, nvme) = Disk::new(ex).unwrap();
+    let fs_options = fatfs::FsOptions::new().update_accessed_date(false);
+    let fs = FileSystem::new(disk, fs_options);
+    if let Ok(fs) = fs {
+        return (Mutex::new(fs), nvme);
+    }
+    drop(fs);
+    let (mut disk, nvme) = Disk::new(ex).unwrap();
+    format(&mut disk);
+    let fs =
+        FileSystem::new(disk, fs_options).expect("disk should be formatted now so no more errors.");
+    (Mutex::new(fs), nvme)
+}
+
+// impl IntoStorage<&mut Disk> for LazyLock<Disk> {
+//     fn into_storage(mut self) -> &mut Disk {
+//         &mut self
+//     }
+// }
+// is only called if unable to open fs
+fn format(disk: &mut Disk) {
+    let options = FormatVolumeOptions::new()
+        .bytes_per_sector(SECTOR_SIZE as u16)
+        .bytes_per_cluster(PAGE_SIZE as u32)
+        .fat_type(FatType::Fat32);
+    fatfs::format_volume(disk, options).unwrap();
 }
 
 impl IoBase for Disk {
