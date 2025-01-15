@@ -120,10 +120,8 @@ pub fn get_config_id() -> Result<Option<u128>, Error> {
     let mut file = fs.root_dir().open_file("config_id");
     let mut file = match file {
         Ok(file) => file,
-        Err(err) => match err {
-            fatfs::Error::NotFound => return Ok(None),
-            err => Err(err)?,
-        },
+        Err(fatfs::Error::NotFound) => return Ok(None),
+        err => err?,
     };
     let mut buf = [0u8; 16];
     file.read_exact(&mut buf)?;
@@ -137,6 +135,13 @@ pub fn set_config_id(id: u128) -> Result<(), Error> {
     file.truncate()?;
     let bytes = id.to_le_bytes();
     file.write_all(&bytes)?;
+    Ok(())
+}
+
+pub fn clear_config_id() -> Result<(), Error> {
+    let _unused = LOCK.lock().unwrap();
+    let mut fs = FS.lock().unwrap();
+    let mut file = fs.root_dir().remove("config_id")?;
     Ok(())
 }
 
