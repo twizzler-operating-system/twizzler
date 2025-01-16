@@ -43,7 +43,6 @@ lazy_static::lazy_static! {
 }
 
 pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
-    logln!("lookup: {}", id);
     loop {
         match crate::obj::lookup_object(id, LookupFlags::empty()) {
             crate::obj::LookupResult::Found(arc) => return Some(arc),
@@ -70,7 +69,6 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
 }
 
 pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
-    logln!("page: {}", id);
     let mut mgr = INFLIGHT_MGR.lock();
     if !mgr.is_ready() {
         return;
@@ -90,7 +88,6 @@ pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
 }
 
 fn cmd_object(req: ReqKind) {
-    logln!("cmd_object: {:?}", req);
     let mut mgr = INFLIGHT_MGR.lock();
     if !mgr.is_ready() {
         return;
@@ -104,7 +101,6 @@ fn cmd_object(req: ReqKind) {
     let mut mgr = INFLIGHT_MGR.lock();
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
-        logln!("cmd_object: {:?}: blocking", req);
         drop(mgr);
         finish_blocking(guard);
     };

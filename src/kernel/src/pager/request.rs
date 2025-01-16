@@ -95,11 +95,6 @@ impl Request {
     }
 
     pub fn done(&self) -> bool {
-        logln!(
-            "is-done? {} {}",
-            self.cmd_ready,
-            self.remaining_pages.is_empty()
-        );
         self.cmd_ready && self.remaining_pages.is_empty()
     }
 

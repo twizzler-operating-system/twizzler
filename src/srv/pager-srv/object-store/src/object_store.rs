@@ -159,14 +159,10 @@ pub fn clear_config_id() -> Result<(), Error> {
 pub fn create_object(obj_id: u128) -> Result<bool, Error> {
     let _unused = LOCK.lock().unwrap();
     let b64 = encode_obj_id(obj_id);
-    tracing::debug!("0");
     let mut fs = FS.get().unwrap().lock().unwrap();
-    tracing::debug!("1");
     let subdir = get_dir_path(&mut fs, &b64)?;
-    tracing::debug!("1.4");
     // try to open it to check if it exists.
     let res = subdir.open_file(&b64);
-    tracing::debug!("2");
     match res {
         Ok(_) => Ok(false),
         Err(e) => match e {

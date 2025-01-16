@@ -136,7 +136,7 @@ pub(super) fn pager_compl_handler_main() {
                     "kernel: pager compl: got object info {:?}: no such object",
                     obj_id
                 );
-                // TODO: record the error.
+                crate::obj::no_exist(obj_id);
                 INFLIGHT_MGR.lock().cmd_ready(obj_id, false);
             }
         }

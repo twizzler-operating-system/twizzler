@@ -62,14 +62,11 @@ pub async fn handle_kernel_request(
             Some(CompletionToKernel::new(KernelCompletionData::Error))
         }
         KernelCommand::ObjectCreate(object_info) => {
-            tracing::debug!("A");
             let _ = object_store::unlink_object(object_info.obj_id.raw());
-            tracing::debug!("B");
             if let Err(e) = object_store::create_object(object_info.obj_id.raw()) {
                 tracing::warn!("failed to create object {}: {}", object_info.obj_id, e);
                 Some(CompletionToKernel::new(KernelCompletionData::Error))
             } else {
-                tracing::debug!("CRATE");
                 let buf = [0; 0x1000];
                 let _ =
                     object_store::write_all(object_info.obj_id.raw(), &buf, 0).inspect_err(|e| {
@@ -79,7 +76,6 @@ pub async fn handle_kernel_request(
                             e
                         )
                     });
-                tracing::debug!("C");
                 Some(CompletionToKernel::new(
                     KernelCompletionData::ObjectInfoCompletion(object_info),
                 ))

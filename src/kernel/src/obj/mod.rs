@@ -1,5 +1,5 @@
 use alloc::{
-    collections::{btree_map::Entry, BTreeMap},
+    collections::{btree_map::Entry, btree_set::BTreeSet, BTreeMap},
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -325,6 +325,7 @@ pub type ObjectRef = Arc<Object>;
 
 struct ObjectManager {
     map: Mutex<BTreeMap<ObjID, ObjectRef>>,
+    no_exist: Mutex<BTreeSet<ObjID>>,
 }
 
 bitflags::bitflags! {
@@ -363,10 +364,14 @@ impl ObjectManager {
     fn new() -> Self {
         Self {
             map: Mutex::new(BTreeMap::new()),
+            no_exist: Mutex::new(BTreeSet::new()),
         }
     }
 
     fn lookup_object(&self, id: ObjID, flags: LookupFlags) -> LookupResult {
+        if self.no_exist.lock().contains(&id) {
+            return LookupResult::WasDeleted;
+        }
         self.map
             .lock()
             .get(&id)
@@ -397,4 +402,8 @@ pub fn lookup_object(id: ObjID, flags: LookupFlags) -> LookupResult {
 pub fn register_object(obj: Arc<Object>) {
     let om = &OBJ_MANAGER;
     om.register_object(obj);
+}
+
+pub fn no_exist(id: ObjID) {
+    OBJ_MANAGER.no_exist.lock().insert(id);
 }

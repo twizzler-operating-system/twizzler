@@ -103,12 +103,13 @@ impl PerObject {
         };
         for p in pages {
             let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
-            tracing::debug!("sync: page: {:?} {:?}", p, phys_range);
+            tracing::trace!("sync: page: {:?} {:?}", p, phys_range);
             page_out(rq, self.id, p.0, phys_range, false).await?;
         }
 
         for p in mpages {
             let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
+            tracing::trace!("sync: meta page: {:?} {:?}", p, phys_range);
             page_out(rq, self.id, p.0, phys_range, true).await?;
         }
 
@@ -172,7 +173,7 @@ impl PagerDataInner {
     /// Get a memory page for allocation.
     /// Triggers page replacement if all pages are used.
     fn get_mem_page(&mut self) -> usize {
-        tracing::debug!("attempting to get memory page");
+        tracing::trace!("attempting to get memory page");
         if self.bitvec.all() {
             todo!()
         }
@@ -181,7 +182,7 @@ impl PagerDataInner {
 
     /// Remove a page from the bit vector, freeing it for future use.
     fn remove_page(&mut self, page_number: usize) {
-        tracing::debug!("attempting to remove page {}", page_number);
+        tracing::trace!("attempting to remove page {}", page_number);
         if page_number < self.bitvec.len() {
             self.bitvec.set(page_number, false);
             tracing::trace!("page {} removed from bitvec", page_number);
