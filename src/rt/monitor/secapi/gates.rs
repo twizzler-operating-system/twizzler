@@ -139,6 +139,21 @@ pub fn monitor_rt_get_compartment_info(
     not(feature = "secgate-impl"),
     secgate::secure_gate(options(info, api))
 )]
+pub fn monitor_rt_compartment_dynamic_gate(
+    info: &secgate::GateCallInfo,
+    desc: Option<Descriptor>,
+    name_len: usize,
+) -> Option<usize> {
+    let monitor = crate::mon::get_monitor();
+    let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
+    monitor.get_compartment_gate_address(caller, info.thread_id(), desc, name_len)
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
 pub fn monitor_rt_get_compartment_deps(
     info: &secgate::GateCallInfo,
     desc: Option<Descriptor>,

@@ -7,10 +7,11 @@
 #![feature(result_flattening)]
 #![feature(thread_local)]
 #![feature(pointer_is_aligned_to)]
+#![feature(tuple_trait)]
 use std::{
     alloc::Layout,
     cell::UnsafeCell,
-    marker::PhantomData,
+    marker::{PhantomData, Tuple},
     ptr::NonNull,
     sync::{
         atomic::{AtomicPtr, AtomicU32, Ordering},
@@ -22,8 +23,14 @@ pub use dynlink::{
     context::NewCompartmentFlags,
     tls::{Tcb, TlsRegion},
 };
-use secgate::util::{Descriptor, Handle};
-use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
+use secgate::{
+    util::{Descriptor, Handle},
+    Crossing, DynamicSecGate,
+};
+use twizzler_abi::{
+    klog_println,
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+};
 
 #[allow(unused_imports, unused_variables, unexpected_cfgs)]
 mod gates {
@@ -289,6 +296,15 @@ impl CompartmentHandle {
     /// Get the descriptor for this handle, or None if the handle refers to the current compartment.
     pub fn desc(&self) -> Option<Descriptor> {
         self.desc
+    }
+
+    pub unsafe fn dynamic_gate<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
+        &self,
+        name: &str,
+    ) -> Option<DynamicSecGate<'_, A, R>> {
+        let name_len = lazy_sb::write_bytes_to_sb(name.as_bytes());
+        let address = gates::monitor_rt_compartment_dynamic_gate(self.desc, name_len).ok()??;
+        Some(DynamicSecGate::new(address))
     }
 }
 

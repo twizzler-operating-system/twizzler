@@ -8,7 +8,11 @@
 #![feature(maybe_uninit_as_bytes)]
 
 use core::ffi::CStr;
-use std::{cell::UnsafeCell, marker::Tuple, mem::MaybeUninit};
+use std::{
+    cell::UnsafeCell,
+    marker::{PhantomData, Tuple},
+    mem::MaybeUninit,
+};
 
 pub use secgate_macros::*;
 use twizzler_abi::object::ObjID;
@@ -284,4 +288,44 @@ pub fn restore_frame(frame: SecFrame) {
     if frame.tp != 0 {
         twizzler_abi::syscall::sys_thread_settls(frame.tp as u64);
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DynamicSecGate<'comp, A, R> {
+    address: usize,
+    _pd: PhantomData<&'comp (A, R)>,
+}
+
+impl<'comp, A, R> DynamicSecGate<'comp, A, R> {
+    pub unsafe fn new(address: usize) -> Self {
+        Self {
+            address,
+            _pd: PhantomData,
+        }
+    }
+}
+
+pub unsafe fn dynamic_gate_call<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
+    target: DynamicSecGate<A, R>,
+    args: A,
+) -> SecGateReturn<R> {
+    let frame = frame();
+    // Allocate stack space for args + ret. Args::with_alloca also inits the memory.
+    let ret = GateCallInfo::with_alloca(get_thread_id(), get_sctx_id(), |info| {
+        Arguments::<A>::with_alloca(args, |args| {
+            Return::<R>::with_alloca(|ret| {
+                // Call the trampoline in the mod.
+                unsafe {
+                        //#mod_name::#trampoline_name_without_prefix(info as *const _, args as *const _, ret as *mut _);
+                        #[cfg(target_arch = "x86_64")]
+                        core::arch::asm!("jmp {target}", target = in(reg) target.address, in("rdx") info as *const _, in("rcx") args as *const _, in("rdi") ret as *mut _);
+                        #[cfg(not(target_arch = "x86_64"))]
+                        todo!()
+                    }
+                ret.into_inner()
+            })
+        })
+    });
+    restore_frame(frame);
+    ret
 }
