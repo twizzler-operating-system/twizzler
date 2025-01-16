@@ -243,7 +243,7 @@ fn main() -> anyhow::Result<()> {
             Commands::Doc(x) => build::do_docs(x).map(|_| ()),
             Commands::MakeImage(x) => image::do_make_image(x).map(|_| ()),
             Commands::StartQemu(x) => qemu::do_start_qemu(x),
-            Commands::Kani(x) => kani::launch_kani(x).map(|_| ()),
+            Commands::Kani(x) => kani::launch_kani_pipelined(x).map(|_| ()),
         }
     } else {
         anyhow::bail!("you must specify a subcommand.");
