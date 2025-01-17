@@ -4,7 +4,7 @@ mod fs;
 mod nvme;
 mod object_store;
 mod wrapped_extent;
-pub use fs::FS;
+pub use disk::FS;
 pub use object_store::*;
 #[cfg(test)]
 mod tests {
@@ -13,7 +13,7 @@ mod tests {
         io::{BufReader, Read},
     };
 
-    use fs::FS;
+    use disk::FS;
     use obliviate_core::kms::PersistableKeyManagementScheme;
 
     use super::*;
@@ -94,7 +94,7 @@ mod tests {
         write_all(id, b"asdf", 0).unwrap();
         advance_epoch().unwrap();
         const ROOT_KEY: [u8; 32] = [0; 32];
-        let fs = FS.lock().unwrap();
+        let fs = FS.get().unwrap().lock().unwrap();
         let mut khf = KHF.lock().unwrap();
         *khf = MyKhf::load(ROOT_KEY, "lethe/khf", &fs).unwrap();
         drop(khf);
@@ -110,7 +110,8 @@ mod tests {
         // println!("{:?}", KHF.lock().unwrap());
         let out = (0..5).map(|_i| make_and_check_file(&mut working_bufs.0, &mut working_bufs.1));
         advance_epoch().unwrap();
-        *(KHF.lock().unwrap()) = MyKhf::load(ROOT_KEY, "lethe/khf", &FS.lock().unwrap()).unwrap();
+        *(KHF.lock().unwrap()) =
+            MyKhf::load(ROOT_KEY, "lethe/khf", &FS.get().unwrap().lock().unwrap()).unwrap();
         // println!("{:?}", KHF.lock().unwrap());
         for (value, id) in out {
             // make sure buf == read
@@ -121,7 +122,7 @@ mod tests {
             unlink_object(id).unwrap();
             advance_epoch().unwrap();
             *(KHF.lock().unwrap()) =
-                MyKhf::load(ROOT_KEY, "lethe/khf", &FS.lock().unwrap()).unwrap();
+                MyKhf::load(ROOT_KEY, "lethe/khf", &FS.get().unwrap().lock().unwrap()).unwrap();
             // println!("{:?}", KHF.lock().unwrap());
             // make sure object is unlinked
             let v = read_exact(id, &mut buf, 0).expect_err("should be error");
