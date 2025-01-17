@@ -49,7 +49,7 @@ impl CompartmentMgr {
     }
 
     /// Get a [RunComp] by name.
-    pub fn _get_name_mut(&mut self, name: &str) -> Option<&mut RunComp> {
+    pub fn get_name_mut(&mut self, name: &str) -> Option<&mut RunComp> {
         let id = self.names.get(name)?;
         self.get_mut(*id)
     }
@@ -273,6 +273,26 @@ impl super::Monitor {
                 } else {
                     compartment
                 },
+            },
+        )
+    }
+
+    /// Open a compartment handle for this caller compartment.
+    pub fn lookup_compartment(
+        &self,
+        instance: ObjID,
+        thread: ObjID,
+        name_len: usize,
+    ) -> Option<Descriptor> {
+        let name = self.read_thread_simple_buffer(instance, thread, name_len)?;
+        let name = String::from_utf8(name).ok()?;
+        let (_, _, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
+        let comp = comps.get_name_mut(&name)?;
+        comp.inc_use_count();
+        ch.insert(
+            instance,
+            super::CompartmentHandle {
+                instance: comp.instance,
             },
         )
     }

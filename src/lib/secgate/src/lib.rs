@@ -10,6 +10,7 @@
 use core::ffi::CStr;
 use std::{
     cell::UnsafeCell,
+    fmt::Debug,
     marker::{PhantomData, Tuple},
     mem::MaybeUninit,
 };
@@ -290,10 +291,22 @@ pub fn restore_frame(frame: SecFrame) {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct DynamicSecGate<'comp, A, R> {
     address: usize,
     _pd: PhantomData<&'comp (A, R)>,
+}
+
+impl<'a, A, R> Debug for DynamicSecGate<'a, A, R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "DynamicSecGate [{} -> {}] {{ address: {:x} }}",
+            std::any::type_name::<A>(),
+            std::any::type_name::<R>(),
+            self.address
+        )
+    }
 }
 
 impl<'comp, A, R> DynamicSecGate<'comp, A, R> {
@@ -318,7 +331,7 @@ pub unsafe fn dynamic_gate_call<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
                 unsafe {
                         //#mod_name::#trampoline_name_without_prefix(info as *const _, args as *const _, ret as *mut _);
                         #[cfg(target_arch = "x86_64")]
-                        core::arch::asm!("jmp {target}", target = in(reg) target.address, in("rdx") info as *const _, in("rcx") args as *const _, in("rdi") ret as *mut _);
+                        core::arch::asm!("call {target}", target = in(reg) target.address, in("rdi") info as *const _, in("rsi") args as *const _, in("rdx") ret as *mut _, clobber_abi("C"));
                         #[cfg(not(target_arch = "x86_64"))]
                         todo!()
                     }

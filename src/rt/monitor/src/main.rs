@@ -101,7 +101,7 @@ fn monitor_init() -> miette::Result<()> {
             // Load and wait for tests to complete
             let comp: CompartmentHandle =
                 CompartmentLoader::new("montest", test_name, NewCompartmentFlags::empty())
-                    .args(&["montest"])
+                    .args(&["montest", "--test-threads=1"])
                     .load()
                     .into_diagnostic()?;
             let mut flags = comp.info().flags;

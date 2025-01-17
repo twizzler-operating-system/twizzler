@@ -478,6 +478,18 @@ impl CompartmentHandle {
         Self { desc: None }
     }
 
+    /// Lookup a compartment by name.
+    pub fn lookup(name: impl AsRef<str>) -> Option<Self> {
+        let name_len = lazy_sb::write_bytes_to_sb(name.as_ref().as_bytes());
+        Some(Self {
+            desc: Some(
+                gates::monitor_rt_lookup_compartment(name_len)
+                    .ok()
+                    .flatten()?,
+            ),
+        })
+    }
+
     /// Get an iterator over this compartment's dependencies.
     pub fn deps(&self) -> CompartmentDepsIter {
         CompartmentDepsIter::new(self)

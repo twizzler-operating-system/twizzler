@@ -94,9 +94,11 @@ mod tests {
 
     #[test]
     fn test_dynamic_secgate() {
-        let comp = CompartmentHandle::current();
+        let current = CompartmentHandle::current();
+        let name = format!("{}::libmontest_lib.so", current.info().name);
+        let comp = CompartmentHandle::lookup(&name)
+            .expect(&format!("failed to open compartment: {}", &name));
         let gate = unsafe { comp.dynamic_gate::<(u32,), u32>("dynamic_test") }.unwrap();
-        klog_println!("found: {:?}", gate);
         let ret = unsafe { secgate::dynamic_gate_call(gate, (3,)).ok().unwrap() };
         assert_eq!(ret, 45);
     }
