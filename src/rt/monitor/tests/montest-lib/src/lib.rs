@@ -35,6 +35,11 @@ pub fn test_was_ctor_run() -> bool {
     WAS_CTOR_RUN.load(Ordering::SeqCst)
 }
 
+#[secgate::secure_gate]
+pub fn dynamic_test(x: u32) -> u32 {
+    42 + x
+}
+
 static WAS_CTOR_RUN: AtomicBool = AtomicBool::new(false);
 
 #[used]

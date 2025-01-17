@@ -5,15 +5,12 @@
 
 use core::{
     alloc::{GlobalAlloc, Layout},
-    cell::UnsafeCell,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::Ordering,
 };
-use std::{
-    alloc::Allocator,
-    mem::size_of,
-    sync::{atomic::AtomicUsize, Mutex},
-};
+use std::{alloc::Allocator, mem::size_of, sync::atomic::AtomicUsize};
+
+use twizzler_abi::simple_mutex::Mutex;
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const MIN_ALIGN: usize = 16;
@@ -32,10 +29,8 @@ use super::{ReferenceRuntime, OUR_RUNTIME};
 use crate::runtime::RuntimeState;
 
 static LOCAL_ALLOCATOR: LocalAllocator = LocalAllocator {
-    runtime: &OUR_RUNTIME,
-    early_lock: AtomicBool::new(false),
-    early_alloc: UnsafeCell::new(Some(LocalAllocatorInner::new())),
-    inner: Mutex::new(None),
+    _runtime: &OUR_RUNTIME,
+    inner: Mutex::new(LocalAllocatorInner::new()),
     bootstrap_alloc_slot: AtomicUsize::new(0),
 };
 
@@ -54,19 +49,15 @@ impl ReferenceRuntime {
 }
 
 pub struct LocalAllocator {
-    runtime: &'static ReferenceRuntime,
-    // early allocation need a lock, but mutex isn't usable yet.
-    early_lock: AtomicBool,
-    early_alloc: UnsafeCell<Option<LocalAllocatorInner>>,
-    inner: Mutex<Option<LocalAllocatorInner>>,
+    _runtime: &'static ReferenceRuntime,
+    inner: Mutex<LocalAllocatorInner>,
     bootstrap_alloc_slot: AtomicUsize,
 }
 
 impl LocalAllocator {
     pub fn get_id_from_ptr(&self, ptr: *const u8) -> Option<ObjID> {
         let slot = ptr as usize / MAX_SIZE;
-        let inner = self.inner.lock().ok()?;
-        let inner = inner.as_ref()?;
+        let inner = self.inner.lock();
         inner.talc.oom_handler.objects.iter().find_map(|info| {
             if info.0 == slot {
                 Some(info.1)
@@ -181,43 +172,14 @@ unsafe impl Allocator for FailAlloc {
 }
 
 unsafe impl GlobalAlloc for LocalAllocator {
+    #[track_caller]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let layout =
             Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), MIN_ALIGN))
                 .expect("layout alignment bump failed");
-        if self.runtime.state().contains(RuntimeState::READY) {
-            // Runtime is ready, we can use normal locking
-            let mut inner = self.inner.lock().unwrap();
-            if inner.is_none() {
-                // First ones in after bootstrap. Lock, and then grab the early_alloc, using it for
-                // ourselves.
-                while !self.early_lock.swap(true, Ordering::SeqCst) {
-                    core::hint::spin_loop()
-                }
-                assert!((*self.early_alloc.get()).is_some());
-                *inner = (*self.early_alloc.get()).take();
-                self.early_lock.store(false, Ordering::SeqCst);
-            }
-
-            let ptr = inner.as_mut().unwrap().do_alloc(layout);
-            ptr
-        } else {
-            // Runtime is NOT ready. Use a basic spinlock to prevent calls to std.
-            while !self.early_lock.swap(true, Ordering::SeqCst) {
-                core::hint::spin_loop()
-            }
-            assert!((*self.early_alloc.get()).is_some());
-            let ret = self
-                .early_alloc
-                .get()
-                .as_mut()
-                .unwrap()
-                .as_mut()
-                .unwrap()
-                .do_alloc(layout);
-            self.early_lock.store(false, Ordering::SeqCst);
-            ret
-        }
+        let mut inner = self.inner.lock();
+        let ptr = inner.do_alloc(layout);
+        ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -239,37 +201,8 @@ unsafe impl GlobalAlloc for LocalAllocator {
         {
             return;
         }
-
-        if self.runtime.state().contains(RuntimeState::READY) {
-            // Runtime is ready, we can use normal locking
-            let mut inner = self.inner.lock().unwrap();
-            if inner.is_none() {
-                // First ones in after bootstrap. Lock, and then grab the early_alloc, using it for
-                // ourselves.
-                while !self.early_lock.swap(true, Ordering::SeqCst) {
-                    core::hint::spin_loop()
-                }
-                assert!((*self.early_alloc.get()).is_some());
-                *inner = (*self.early_alloc.get()).take();
-                self.early_lock.store(false, Ordering::SeqCst);
-            }
-
-            inner.as_mut().unwrap().do_dealloc(ptr, layout);
-        } else {
-            // Runtime is NOT ready. Use a basic spinlock to prevent calls to std.
-            while !self.early_lock.swap(true, Ordering::SeqCst) {
-                core::hint::spin_loop()
-            }
-            assert!((*self.early_alloc.get()).is_some());
-            self.early_alloc
-                .get()
-                .as_mut()
-                .unwrap()
-                .as_mut()
-                .unwrap()
-                .do_dealloc(ptr, layout);
-            self.early_lock.store(false, Ordering::SeqCst);
-        }
+        let mut inner = self.inner.lock();
+        inner.do_dealloc(ptr, layout)
     }
 }
 

@@ -7,10 +7,11 @@
 #![feature(result_flattening)]
 #![feature(thread_local)]
 #![feature(pointer_is_aligned_to)]
+#![feature(tuple_trait)]
 use std::{
     alloc::Layout,
     cell::UnsafeCell,
-    marker::PhantomData,
+    marker::{PhantomData, Tuple},
     ptr::NonNull,
     sync::{
         atomic::{AtomicPtr, AtomicU32, Ordering},
@@ -22,8 +23,14 @@ pub use dynlink::{
     context::NewCompartmentFlags,
     tls::{Tcb, TlsRegion},
 };
-use secgate::util::{Descriptor, Handle};
-use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
+use secgate::{
+    util::{Descriptor, Handle},
+    Crossing, DynamicSecGate,
+};
+use twizzler_abi::{
+    klog_println,
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+};
 
 #[allow(unused_imports, unused_variables, unexpected_cfgs)]
 mod gates {
@@ -290,6 +297,15 @@ impl CompartmentHandle {
     pub fn desc(&self) -> Option<Descriptor> {
         self.desc
     }
+
+    pub unsafe fn dynamic_gate<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
+        &self,
+        name: &str,
+    ) -> Option<DynamicSecGate<'_, A, R>> {
+        let name_len = lazy_sb::write_bytes_to_sb(name.as_bytes());
+        let address = gates::monitor_rt_compartment_dynamic_gate(self.desc, name_len).ok()??;
+        Some(DynamicSecGate::new(address))
+    }
 }
 
 /// A builder-type for loading compartments.
@@ -460,6 +476,18 @@ impl CompartmentHandle {
     /// Get a handle to the current compartment.
     pub fn current() -> Self {
         Self { desc: None }
+    }
+
+    /// Lookup a compartment by name.
+    pub fn lookup(name: impl AsRef<str>) -> Option<Self> {
+        let name_len = lazy_sb::write_bytes_to_sb(name.as_ref().as_bytes());
+        Some(Self {
+            desc: Some(
+                gates::monitor_rt_lookup_compartment(name_len)
+                    .ok()
+                    .flatten()?,
+            ),
+        })
     }
 
     /// Get an iterator over this compartment's dependencies.
