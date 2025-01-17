@@ -29,7 +29,7 @@ type MyWal = SecureWAL<
 >;
 
 pub fn open_khf() -> MyKhf {
-    let fs = FS.lock().unwrap();
+    let fs = FS.get().unwrap().lock().unwrap();
     // let file = fs.root_dir().create_file("lethe/khf");
     let khf = MyKhf::load(ROOT_KEY, "lethe/khf", &fs).unwrap_or_else(|_e| MyKhf::new());
     khf
@@ -40,8 +40,14 @@ pub static KHF: LazyLock<Mutex<MyKhf>> = LazyLock::new(|| Mutex::new(open_khf())
 pub const ROOT_KEY: [u8; 32] = [0; 32];
 
 fn open_wal() -> MyWal {
-    FS.lock().unwrap().root_dir().create_dir("lethe").unwrap();
-    SecureWAL::open("lethe/wal".to_string(), ROOT_KEY, &FS).unwrap()
+    FS.get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .root_dir()
+        .create_dir("lethe")
+        .unwrap();
+    SecureWAL::open("lethe/wal".to_string(), ROOT_KEY, &FS.get().unwrap()).unwrap()
 }
 
 static WAL: LazyLock<Mutex<MyWal>> = LazyLock::new(|| Mutex::new(open_wal()));
@@ -50,14 +56,26 @@ static WAL: LazyLock<Mutex<MyWal>> = LazyLock::new(|| Mutex::new(open_wal()));
 /// at the entrance of the function.
 static LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+use async_executor::Executor;
 use fatfs::{
     DefaultTimeProvider, Dir, LossyOemCpConverter, Read as _, ReadWriteProxy, Seek, SeekFrom,
     Write as _,
 };
 
 // use obliviate_core::kms::khf::Khf;
-use crate::fs::{self, open_fs, FS, PAGE_SIZE};
-use crate::{disk::Disk, fs::DISK, wrapped_extent::WrappedExtent};
+use crate::{
+    disk::DISK,
+    fs::{self, PAGE_SIZE},
+};
+use crate::{
+    disk::{Disk, EXECUTOR, FS},
+    wrapped_extent::WrappedExtent,
+};
+
+pub fn init(ex: &'static Executor<'static>) {
+    crate::disk::init(ex);
+}
+
 fn get_dir_path<'a>(
     fs: &'a mut fatfs::FileSystem<Disk, DefaultTimeProvider, LossyOemCpConverter>,
     encoded_obj_id: &EncodedObjectId,
@@ -88,11 +106,11 @@ fn get_khf_locks<'a>() -> (MutexGuard<'a, MyKhf>, MutexGuard<'a, MyWal>) {
 /// WARNING: is unlikely but it might panic
 pub fn format() {
     let _unused = LOCK.lock();
-    let mut disk = DISK.clone();
+    let mut disk = DISK.get().unwrap().clone();
     fs::format(&mut disk);
     drop(disk);
-    let mut fs = FS.lock().unwrap();
-    *fs = open_fs();
+    let mut fs = FS.get().unwrap().lock().unwrap();
+    crate::disk::init(EXECUTOR.get().unwrap());
     drop(fs);
     let mut khf = KHF.lock().unwrap();
     *khf = open_khf();
@@ -105,7 +123,7 @@ pub fn format() {
 /// Returns the disk length of a given object on disk.
 pub fn disk_length(obj_id: u128) -> Result<u64, Error> {
     let _unused = LOCK.lock().unwrap();
-    let mut fs = FS.lock().unwrap();
+    let mut fs = FS.get().unwrap().lock().unwrap();
     let id = encode_obj_id(obj_id);
     let dir = get_dir_path(&mut fs, &id)?;
     let mut file = dir.open_file(&id)?;
@@ -116,7 +134,7 @@ pub fn disk_length(obj_id: u128) -> Result<u64, Error> {
 /// Either gets a previously set config_id from disk or returns None
 pub fn get_config_id() -> Result<Option<u128>, Error> {
     let _unused = LOCK.lock().unwrap();
-    let mut fs = FS.lock().unwrap();
+    let mut fs = FS.get().unwrap().lock().unwrap();
     let mut file = fs.root_dir().open_file("config_id");
     let mut file = match file {
         Ok(file) => file,
@@ -130,7 +148,7 @@ pub fn get_config_id() -> Result<Option<u128>, Error> {
 
 pub fn set_config_id(id: u128) -> Result<(), Error> {
     let _unused = LOCK.lock().unwrap();
-    let mut fs = FS.lock().unwrap();
+    let mut fs = FS.get().unwrap().lock().unwrap();
     let mut file = fs.root_dir().create_file("config_id")?;
     file.truncate()?;
     let bytes = id.to_le_bytes();
@@ -140,7 +158,7 @@ pub fn set_config_id(id: u128) -> Result<(), Error> {
 
 pub fn clear_config_id() -> Result<(), Error> {
     let _unused = LOCK.lock().unwrap();
-    let mut fs = FS.lock().unwrap();
+    let mut fs = FS.get().unwrap().lock().unwrap();
     let mut file = fs.root_dir().remove("config_id")?;
     Ok(())
 }
@@ -149,7 +167,7 @@ pub fn clear_config_id() -> Result<(), Error> {
 pub fn create_object(obj_id: u128) -> Result<bool, Error> {
     let _unused = LOCK.lock().unwrap();
     let b64 = encode_obj_id(obj_id);
-    let mut fs = FS.lock().unwrap();
+    let mut fs = FS.get().unwrap().lock().unwrap();
     let subdir = get_dir_path(&mut fs, &b64)?;
     // try to open it to check if it exists.
     let res = subdir.open_file(&b64);
@@ -173,7 +191,7 @@ pub fn unlink_object(obj_id: u128) -> Result<(), Error> {
     let (mut khf, wal) = get_khf_locks();
     // khf.delete(&wal, hash_obj_id(obj_id))
     //     .map_err(Error::other)?;
-    let mut fs = FS.lock().unwrap();
+    let mut fs = FS.get().unwrap().lock().unwrap();
     let subdir = get_dir_path(&mut fs, &b64)?;
     let mut file = subdir.open_file(&b64)?;
     for extent in file.extents() {
@@ -186,7 +204,7 @@ pub fn unlink_object(obj_id: u128) -> Result<(), Error> {
 
 pub fn get_all_object_ids() -> Result<Vec<u128>, Error> {
     let _unused = LOCK.lock().unwrap();
-    let fs = FS.lock().unwrap();
+    let fs = FS.get().unwrap().lock().unwrap();
     let id_root = fs.root_dir().create_dir("ids")?;
     let mut out = Vec::new();
     for folder in id_root.iter() {
@@ -228,7 +246,7 @@ fn get_symmetric_cipher_from_key(disk_offset: u64, key: [u8; 32]) -> Result<ChaC
 pub fn read_exact(obj_id: u128, buf: &mut [u8], off: u64) -> Result<(), Error> {
     let _unused = LOCK.lock().unwrap();
     let b64 = encode_obj_id(obj_id);
-    let mut fs = FS.lock().unwrap();
+    let mut fs = FS.get().unwrap().lock().unwrap();
     let subdir = get_dir_path(&mut fs, &b64)?;
     let mut file = subdir.open_file(&b64)?;
     file.seek(fatfs::SeekFrom::Start(off))?;
@@ -255,7 +273,7 @@ pub fn write_all(obj_id: u128, buf: &[u8], off: u64) -> Result<(), Error> {
     // call to get_khf_locks to make sure that khf is already initialized for
     // the later "get_symmetric_cipher" call
     let _ = get_khf_locks();
-    let mut fs = FS.lock().unwrap();
+    let mut fs = FS.get().unwrap().lock().unwrap();
     let subdir = get_dir_path(&mut fs, &b64)?;
     let mut file = subdir.open_file(&b64)?;
     let _new_pos = file.seek(fatfs::SeekFrom::Start(off))?;
@@ -293,7 +311,7 @@ pub fn advance_epoch() -> Result<(), Error> {
     drop((khf, wal));
     for (id, key) in updated_keys {
         let mut buf = vec![0; PAGE_SIZE];
-        let mut disk = DISK.clone();
+        let mut disk = DISK.get().unwrap().clone();
         let disk_offset = id * super::fs::PAGE_SIZE as u64;
         disk.seek(SeekFrom::Start(disk_offset))?;
         disk.read_exact(buf.as_mut_slice())?;
@@ -306,7 +324,7 @@ pub fn advance_epoch() -> Result<(), Error> {
         disk.write_all(&mut buf)?;
     }
     let (mut khf, wal) = get_khf_locks();
-    let fs = FS.lock().unwrap();
+    let fs = FS.get().unwrap().lock().unwrap();
     fs.root_dir().create_dir("tmp/")?;
     khf.persist(ROOT_KEY, "tmp/khf", &fs)
         .map_err(Error::other)?;

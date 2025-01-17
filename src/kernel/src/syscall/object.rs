@@ -29,7 +29,11 @@ pub fn sys_object_create(
     _ties: &[CreateTieSpec],
 ) -> Result<ObjID, ObjectCreateError> {
     let id = calculate_new_id(create.kuid, MetaFlags::default());
-    let obj = Arc::new(Object::new(id));
+    let obj = Arc::new(Object::new(id, create.lt));
+    if obj.use_pager() {
+        crate::pager::create_object(id);
+        return Ok(obj.id());
+    }
     for src in srcs {
         if src.id.raw() == 0 {
             crate::obj::copy::zero_ranges(&obj, src.dest_start as usize, src.len)
@@ -62,10 +66,12 @@ pub fn sys_object_map(
     };
     let obj = crate::obj::lookup_object(id, LookupFlags::empty());
     let obj = match obj {
-        crate::obj::LookupResult::NotFound => return Err(ObjectMapError::ObjectNotFound),
         crate::obj::LookupResult::WasDeleted => return Err(ObjectMapError::ObjectNotFound),
-        crate::obj::LookupResult::Pending => return Err(ObjectMapError::ObjectNotFound),
         crate::obj::LookupResult::Found(obj) => obj,
+        _ => match crate::pager::lookup_object_and_wait(id) {
+            Some(obj) => obj,
+            None => return Err(ObjectMapError::ObjectNotFound),
+        },
     };
     // TODO
     let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into());
@@ -190,12 +196,13 @@ pub fn sys_sctx_attach(id: ObjID) -> Result<u32, SctxAttachError> {
 }
 
 pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
-    logln!("object ctrl: {} {:?}", id, cmd);
     match cmd {
         ObjectControlCmd::Sync => {
             crate::pager::sync_object(id);
         }
-        ObjectControlCmd::Delete(_) => {}
+        ObjectControlCmd::Delete(_) => {
+            crate::pager::del_object(id);
+        }
         _ => {}
     }
     (0, 0)

@@ -1,6 +1,6 @@
 use super::{
     pages::Page,
-    range::{PageRange, PageRangeTree},
+    range::{PageRange, PageRangeTree, PageStatus},
     InvalidateMode, ObjectRef, PageNumber,
 };
 use crate::mutex::LockGuard;
@@ -73,7 +73,7 @@ fn copy_single(
 ) {
     let src_page = src_tree.get_page(src_point, false);
     let (dest_page, _) = dest_tree.get_or_add_page(dest_point, true, |_, _| Page::new());
-    if let Some((src_page, _)) = src_page {
+    if let PageStatus::Ready(src_page, _) = src_page {
         dest_page.as_mut_slice()[offset..max].copy_from_slice(&src_page.as_slice()[offset..max]);
     } else {
         // TODO: could skip this on freshly created page, if we can detect that. That's just an
@@ -90,7 +90,7 @@ fn zero_single(
     max: usize,
 ) {
     // if there's no page here, our work is done
-    if let Some((dest_page, _)) = dest_tree.get_page(dest_point, true) {
+    if let PageStatus::Ready(dest_page, _) = dest_tree.get_page(dest_point, true) {
         dest_page.as_mut_slice()[offset..max].fill(0);
     }
 }
@@ -138,6 +138,7 @@ pub fn copy_ranges(
             (0, _) | (_, 0) => 1,
             (_, _) => 2,
         };
+    crate::pager::ensure_in_core(src, src_start, nr_pages);
     // Step 1: lock the page trees for the objects, in a canonical order.
     let (mut src_tree, mut dest_tree) = crate::utils::lock_two(&src.range_tree, &dest.range_tree);
 
@@ -267,7 +268,7 @@ fn copy_bytes(
         let this_src_offset = (src_off + count_sofar) % PageNumber::PAGE_SIZE;
         let this_dest_offset = (dest_off + count_sofar) % PageNumber::PAGE_SIZE;
 
-        let this_length = if let Some((src_page, _)) = src_page {
+        let this_length = if let PageStatus::Ready(src_page, _) = src_page {
             let this_length = core::cmp::min(
                 core::cmp::min(
                     PageNumber::PAGE_SIZE - this_src_offset,

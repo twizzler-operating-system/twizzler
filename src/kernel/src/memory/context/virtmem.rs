@@ -30,7 +30,7 @@ use crate::{
         PhysAddr,
     },
     mutex::Mutex,
-    obj::{self, pages::Page, ObjectRef, PageNumber},
+    obj::{self, pages::Page, range::PageStatus, ObjectRef, PageNumber},
     security::KERNEL_SCTX,
     spinlock::Spinlock,
     thread::{current_memory_context, current_thread_ref},
@@ -696,7 +696,9 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
 
         let page_number = PageNumber::from_address(addr);
         let slot_mgr = ctx.slots.lock();
-        if let Some(info) = slot_mgr.get(&slot) {
+        let info = slot_mgr.get(&slot).cloned();
+        drop(slot_mgr);
+        if let Some(info) = info {
             let id = info.obj.id();
             let null_upcall = UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
                 id,
@@ -712,23 +714,25 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 addr.into(),
             ));
 
+            if info.obj.use_pager() {
+                crate::pager::get_object_page(&info.obj, page_number);
+            }
+
             let mut obj_page_tree = info.obj.lock_page_tree();
             if page_number.is_zero() {
                 // drop these mutexes in case upcall sending generetes a page fault.
                 drop(obj_page_tree);
-                drop(slot_mgr);
                 current_thread_ref().unwrap().send_upcall(null_upcall);
                 return;
             }
             if page_number.as_byte_offset() >= MAX_SIZE {
                 // drop these mutexes in case upcall sending generetes a page fault.
                 drop(obj_page_tree);
-                drop(slot_mgr);
                 current_thread_ref().unwrap().send_upcall(oob_upcall);
                 return;
             }
 
-            if let Some((page, cow)) =
+            if let PageStatus::Ready(page, cow) =
                 obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write)
             {
                 ctx.with_arch(sctx_id, |arch| {
@@ -749,9 +753,11 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
             } else {
                 let page = Page::new();
                 obj_page_tree.add_page(page_number, page);
-                let (page, cow) = obj_page_tree
-                    .get_page(page_number, cause == MemoryAccessKind::Write)
-                    .unwrap();
+                let PageStatus::Ready(page, cow) =
+                    obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write)
+                else {
+                    panic!("unreachable");
+                };
                 ctx.with_arch(sctx_id, |arch| {
                     // TODO: don't need all three every time.
                     arch.unmap(
@@ -769,7 +775,6 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 });
             }
         } else {
-            drop(slot_mgr);
             current_thread_ref()
                 .unwrap()
                 .send_upcall(UpcallInfo::MemoryContextViolation(
