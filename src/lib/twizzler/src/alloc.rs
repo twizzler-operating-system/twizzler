@@ -41,12 +41,9 @@ pub trait Allocator {
         unsafe {
             if !ptr.is_null() {
                 let new_res = new_alloc.resolve().mutable();
-                let mut new_slice = RefSliceMut::from_ref(new_res, new_layout.size());
                 let old_res = ptr.resolve();
-                let old_slice = RefSlice::from_ref(old_res, layout.size());
-                let copy_len = std::cmp::min(old_slice.len(), new_slice.len());
-                new_slice.as_slice_mut()[0..copy_len]
-                    .copy_from_slice(&old_slice.as_slice()[0..copy_len]);
+                let copy_len = std::cmp::min(layout.size(), new_layout.size());
+                new_res.raw().copy_from(old_res.raw(), copy_len);
             }
         }
         Ok(new_alloc)
