@@ -9,14 +9,8 @@ fn main() {
     let name = "hello world";
     match handle.get(name) {
         Some(x) => {
-            if x == 0 {
-                handle.remove(name);
-                println!("No more bottles of beer on the wall, no more bottles of beer. We've taken them down and passed them around; now we're drunk and passed out!");
-            }
-            else {
-                handle.put(name, x - 1);
-                println!("{} bottles of beer on the wall. {} bottles of beer! Take one down pass it around you got {} bottles of beer on the wall", x, x, x-1);
-            }
+            handle.put(name, x - 1);
+            println!("{} bottles of beer on the wall. {} bottles of beer! Take one down pass it around you got {} bottles of beer on the wall", x, x, x-1);
         }
         None => {
             handle.put(name, 3);
