@@ -36,6 +36,12 @@ impl PageRange {
         }
     }
 
+    fn try_get_page(&self, pn: PageNumber) -> Option<PageRef> {
+        assert!(pn >= self.start);
+        let off = pn - self.start;
+        self.pv.lock().try_get_page(self.offset + off)
+    }
+
     fn get_page(&self, pn: PageNumber) -> PageRef {
         assert!(pn >= self.start);
         let off = pn - self.start;
@@ -128,6 +134,11 @@ pub struct PageRangeTree {
     tree: NonOverlappingIntervalTree<PageNumber, PageRange>,
 }
 
+pub enum PageStatus {
+    Ready(PageRef, bool),
+    NoPage,
+}
+
 impl PageRangeTree {
     pub fn new() -> Self {
         Self {
@@ -183,15 +194,19 @@ impl PageRangeTree {
         Some((page, shared))
     }
 
-    pub fn get_page(&mut self, pn: PageNumber, is_write: bool) -> Option<(PageRef, bool)> {
-        let (page, shared) = self.do_get_page(pn)?;
+    pub fn get_page(&mut self, pn: PageNumber, is_write: bool) -> PageStatus {
+        let Some((page, shared)) = self.do_get_page(pn) else {
+            return PageStatus::NoPage;
+        };
         if !shared || !is_write {
-            return Some((page, shared));
+            return PageStatus::Ready(page, shared);
         }
         self.split_into_three(pn, false);
-        let (page, shared) = self.do_get_page(pn)?;
+        let Some((page, shared)) = self.do_get_page(pn) else {
+            return PageStatus::NoPage;
+        };
         assert!(!shared);
-        Some((page, false))
+        PageStatus::Ready(page, false)
     }
 
     pub fn get_or_add_page(
@@ -200,11 +215,14 @@ impl PageRangeTree {
         is_write: bool,
         if_not_present: impl Fn(PageNumber, bool) -> Page,
     ) -> (PageRef, bool) {
-        if let Some(out) = self.get_page(pn, is_write) {
-            return out;
+        if let PageStatus::Ready(p, s) = self.get_page(pn, is_write) {
+            return (p, s);
         }
         self.add_page(pn, if_not_present(pn, is_write));
-        self.get_page(pn, is_write).unwrap()
+        let PageStatus::Ready(p, s) = self.get_page(pn, is_write) else {
+            panic!("unreachable");
+        };
+        (p, s)
     }
 
     pub fn insert_replace(

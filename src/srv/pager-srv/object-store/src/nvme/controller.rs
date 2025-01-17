@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock, RwLock},
 };
 
+use async_executor::Executor;
 use nvme::{
     admin::{CreateIOCompletionQueue, CreateIOSubmissionQueue},
     ds::{
@@ -16,7 +17,6 @@ use nvme::{
     hosted::memory::{PhysicalPageCollection, PrpMode},
     nvm::{ReadDword13, WriteDword13},
 };
-use twizzler_async::Task;
 use twizzler_driver::{
     dma::{DmaOptions, DmaPool, DMA_PAGE_SIZE},
     request::{Requester, SubmitRequest, SubmitSummaryWithResponses},
@@ -30,14 +30,14 @@ use crate::nvme::dma::NvmeDmaSliceRegion;
 pub struct NvmeController {
     requester: RwLock<Vec<Requester<NvmeRequester>>>,
     admin_requester: RwLock<Option<Arc<Requester<NvmeRequester>>>>,
-    int_tasks: Mutex<Vec<Task<()>>>,
+    int_tasks: Mutex<Vec<async_executor::Task<()>>>,
     device_ctrl: DeviceController,
     dma_pool: DmaPool,
     capacity: OnceLock<usize>,
     block_size: OnceLock<usize>,
 }
 
-pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
+pub async fn init_controller(ctrl: &mut Arc<NvmeController>, ex: &'static Executor<'static>) {
     let bar = ctrl.device_ctrl.device().get_mmio(1).unwrap();
     let mut reg = unsafe {
         bar.get_mmio_offset_mut::<nvme::ds::controller::properties::ControllerProperties>(0)
@@ -142,29 +142,22 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
     );
     let req = Arc::new(Requester::new(req));
 
-    std::thread::spawn(|| twizzler_async::run(std::future::pending::<()>()));
-
     let req2 = req.clone();
     let ctrl2 = ctrl.clone();
-    twizzler_async::run(async {
-        Task::spawn(async move {
-            loop {
-                let _i = int.next().await;
-                //println!("got interrupt");
-                //println!("=== admin ===");
-                let resps = req2.driver().check_completions();
-                req2.finish(&resps);
-                for r in ctrl2.requester.read().unwrap().iter() {
-                    //println!("=== i/o ===");
-                    let c = r.driver().check_completions();
-                    r.finish(&c);
-                }
+    let task = ex.spawn(async move {
+        loop {
+            let _i = int.next().await;
+            //tracing::debug!("got interrupt {:?}", _i);
+            let resps = req2.driver().check_completions();
+            req2.finish(&resps);
+            for r in ctrl2.requester.read().unwrap().iter() {
+                let c = r.driver().check_completions();
+                r.finish(&c);
             }
-        })
-    })
-    .detach();
+        }
+    });
 
-    //ctrl.int_tasks.lock().unwrap().push(task);
+    ctrl.int_tasks.lock().unwrap().push(task);
 
     *ctrl.admin_requester.write().unwrap() = Some(req);
 

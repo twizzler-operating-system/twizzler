@@ -1,9 +1,12 @@
-use alloc::collections::{btree_map::BTreeMap, btree_set::BTreeSet};
+use alloc::{
+    collections::{btree_map::BTreeMap, btree_set::BTreeSet},
+    vec::Vec,
+};
 
 use stable_vec::StableVec;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
-    pager::{KernelCommand, ObjectRange, RequestFromKernel},
+    pager::{KernelCommand, ObjectInfo, ObjectRange, RequestFromKernel},
 };
 
 use super::{request::ReqKind, Request};
@@ -26,13 +29,13 @@ impl Inflight {
         }
         let cmd = match self.rk {
             ReqKind::Info(obj_id) => KernelCommand::ObjectInfoReq(obj_id),
-            ReqKind::PageData(obj_id, s, e) => KernelCommand::PageDataReq(
+            ReqKind::PageData(obj_id, s, l) => KernelCommand::PageDataReq(
                 obj_id,
-                ObjectRange::new((s * NULLPAGE_SIZE) as u64, (e * NULLPAGE_SIZE) as u64),
+                ObjectRange::new((s * NULLPAGE_SIZE) as u64, ((s + l) * NULLPAGE_SIZE) as u64),
             ),
             ReqKind::Sync(obj_id) => KernelCommand::ObjectSync(obj_id),
-            ReqKind::Del(obj_id) => todo!(),
-            ReqKind::Create(obj_id) => todo!(),
+            ReqKind::Del(obj_id) => KernelCommand::ObjectDel(obj_id),
+            ReqKind::Create(obj_id) => KernelCommand::ObjectCreate(ObjectInfo::new(obj_id)),
         };
         Some(RequestFromKernel::new(cmd))
     }
@@ -75,6 +78,7 @@ pub(super) struct InflightManager {
     requests: StableVec<Request>,
     req_map: BTreeMap<ReqKind, usize>,
     per_object: BTreeMap<ObjID, PerObjectData>,
+    pager_ready: bool,
 }
 
 impl InflightManager {
@@ -83,6 +87,7 @@ impl InflightManager {
             requests: StableVec::new(),
             req_map: BTreeMap::new(),
             per_object: BTreeMap::new(),
+            pager_ready: false,
         }
     }
 
@@ -124,6 +129,7 @@ impl InflightManager {
     }
 
     pub fn cmd_ready(&mut self, objid: ObjID, sync: bool) {
+        let mut done = Vec::new();
         if let Some(po) = self.per_object.get_mut(&objid) {
             let list = if sync { &po.sync_list } else { &po.info_list };
             for id in list {
@@ -131,15 +137,20 @@ impl InflightManager {
                     req.cmd_ready();
                     if req.done() {
                         req.signal();
+                        done.push(*id);
                     }
                 } else {
                     logln!("[pager] warning -- stale ID");
                 }
             }
         }
+        for id in done {
+            self.remove_request(id);
+        }
     }
 
     pub fn pages_ready(&mut self, objid: ObjID, pages: impl IntoIterator<Item = usize>) {
+        let mut done = Vec::new();
         if let Some(po) = self.per_object.get_mut(&objid) {
             for page in pages {
                 if let Some(idset) = po.page_map.get(&page) {
@@ -148,6 +159,7 @@ impl InflightManager {
                             req.page_ready(page);
                             if req.done() {
                                 req.signal();
+                                done.push(*id);
                             }
                         } else {
                             logln!("[pager] warning -- stale ID");
@@ -156,5 +168,16 @@ impl InflightManager {
                 }
             }
         }
+        for id in done {
+            self.remove_request(id);
+        }
+    }
+
+    pub fn set_ready(&mut self) {
+        self.pager_ready = true;
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.pager_ready
     }
 }

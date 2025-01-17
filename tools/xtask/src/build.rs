@@ -297,6 +297,7 @@ fn maybe_build_tests_dynamic<'a>(
                 "twizzler-async" => None,
                 "tiny_http" => None,
                 "test-tiny-http" => None,
+                "object-store" => None,
                 // for now -- tests aren't ready in this crate to run. Too many todo!()'s still.
                 //"twizzler" => None,
                 _ => Some(p.name().to_string()),

@@ -2,9 +2,12 @@
 
 use std::{
     collections::VecDeque,
+    io::{Error, ErrorKind},
+    pin::Pin,
     sync::{atomic::Ordering, Arc, Mutex},
 };
 
+use async_io::Async;
 use futures::future::select_all;
 use twizzler_abi::{
     device::{
@@ -14,7 +17,7 @@ use twizzler_abi::{
     kso::KactionError,
     syscall::{ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep},
 };
-use twizzler_async::{Async, AsyncSetup};
+use twizzler_futures::TwizzlerWaitable;
 
 use super::Device;
 
@@ -48,12 +51,13 @@ impl IntInner {
     }
 }
 
-impl AsyncSetup for IntInner {
-    type Error = bool;
+impl TwizzlerWaitable for IntInner {
+    fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+        let repr = self.repr();
+        repr.setup_interrupt_sleep(self.inum)
+    }
 
-    const WOULD_BLOCK: Self::Error = true;
-
-    fn setup_sleep(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+    fn wait_item_write(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
         let repr = self.repr();
         repr.setup_interrupt_sleep(self.inum)
     }
@@ -88,12 +92,17 @@ pub enum InterruptAllocationError {
     KernelError(KactionError),
 }
 
-impl AsyncSetup for MailboxInner {
-    type Error = bool;
+impl TwizzlerWaitable for MailboxInner {
+    fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+        ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(&self.repr().mailboxes[self.inum]),
+            0,
+            twizzler_abi::syscall::ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        )
+    }
 
-    const WOULD_BLOCK: Self::Error = true;
-
-    fn setup_sleep(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+    fn wait_item_write(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
         ThreadSyncSleep::new(
             ThreadSyncReference::Virtual(&self.repr().mailboxes[self.inum]),
             0,
@@ -106,8 +115,8 @@ impl AsyncSetup for MailboxInner {
 /// A manager for device events, including interrupt handling.
 pub struct DeviceEventStream {
     inner: Mutex<DeviceEventStreamInner>,
-    asyncs: Vec<Async<IntInner>>,
-    async_mb: Vec<Async<MailboxInner>>,
+    asyncs: Vec<Async<Pin<Box<IntInner>>>>,
+    async_mb: Vec<Async<Pin<Box<MailboxInner>>>>,
     device: Arc<Device>,
 }
 
@@ -174,11 +183,11 @@ impl DeviceEventStream {
     pub(crate) fn new(device: Arc<Device>) -> Self {
         let asyncs = (0..NUM_DEVICE_INTERRUPTS)
             .into_iter()
-            .map(|i| Async::new(IntInner::new(device.clone(), i)))
+            .map(|i| Async::new(IntInner::new(device.clone(), i)).unwrap())
             .collect();
         let async_mb = (0..(MailboxPriority::Num as usize))
             .into_iter()
-            .map(|i| Async::new(MailboxInner::new(device.clone(), i)))
+            .map(|i| Async::new(MailboxInner::new(device.clone(), i)).unwrap())
             .collect();
         Self {
             inner: Mutex::new(DeviceEventStreamInner::new()),
@@ -200,11 +209,11 @@ impl DeviceEventStream {
     fn future_of_int(
         &self,
         inum: usize,
-    ) -> impl std::future::Future<Output = Result<(usize, u64), bool>> + '_ {
-        Box::pin(self.asyncs[inum].run_with(move |ii| {
+    ) -> impl std::future::Future<Output = Result<(usize, u64), Error>> + '_ {
+        Box::pin(self.asyncs[inum].read_with(move |ii| {
             ii.repr()
                 .check_for_interrupt(ii.inum)
-                .ok_or(true)
+                .ok_or(ErrorKind::WouldBlock.into())
                 .map(|x| (inum, x))
         }))
     }
@@ -212,11 +221,11 @@ impl DeviceEventStream {
     fn future_of_mb(
         &self,
         inum: usize,
-    ) -> impl std::future::Future<Output = Result<(usize, u64), bool>> + '_ {
-        Box::pin(self.async_mb[inum].run_with(move |ii| {
+    ) -> impl std::future::Future<Output = Result<(usize, u64), Error>> + '_ {
+        Box::pin(self.async_mb[inum].read_with(move |ii| {
             ii.repr()
                 .check_for_mailbox(ii.inum)
-                .ok_or(true)
+                .ok_or(ErrorKind::WouldBlock.into())
                 .map(|x| (inum, x))
         }))
     }

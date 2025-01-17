@@ -1,5 +1,11 @@
-use twizzler_abi::pager::{ObjectRange, PhysRange};
+use std::{io::Error, sync::Arc};
+
+use miette::{IntoDiagnostic, Result};
+use twizzler_abi::pager::{CompletionToPager, ObjectRange, PhysRange, RequestFromPager};
 use twizzler_object::ObjID;
+use twizzler_queue::QueueSender;
+
+use crate::physrw;
 
 /// A constant representing the page size (4096 bytes per page).
 pub const PAGE: u64 = 4096;
@@ -33,8 +39,54 @@ pub fn objectrange_to_page_number(object_range: &ObjectRange) -> Option<u64> {
     Some(object_range.start / PAGE)
 }
 
-pub fn page_in(obj_id: ObjID, obj_range: ObjectRange, phys_range: PhysRange) {
-    //Read from Disk -> Memory for Page, how??
+pub async fn page_in(
+    rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+    obj_id: ObjID,
+    obj_range: ObjectRange,
+    phys_range: PhysRange,
+    meta: bool,
+) -> Result<()> {
+    assert_eq!(obj_range.len(), 0x1000);
+    assert_eq!(phys_range.len(), 0x1000);
+
+    let mut buf = [0; 0x1000];
+    let start = if meta {
+        obj_range.start + (1024 * 1024 * 1024)
+    } else {
+        obj_range.start
+    };
+    tracing::trace!("read_exact: offset: {}", start);
+    let res = object_store::read_exact(obj_id.raw(), &mut buf, start)
+        .inspect_err(|e| tracing::trace!("error in read from object store: {}", e));
+    if res.is_err() {
+        buf.fill(0);
+    }
+
+    physrw::fill_physical_pages(rq, &buf, phys_range).await
+}
+
+pub async fn page_out(
+    rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+    obj_id: ObjID,
+    obj_range: ObjectRange,
+    phys_range: PhysRange,
+    meta: bool,
+) -> Result<()> {
+    assert_eq!(obj_range.len(), 0x1000);
+    assert_eq!(phys_range.len(), 0x1000);
+
+    tracing::trace!("pageout: {}: {:?} {:?}", obj_id, obj_range, phys_range);
+    let mut buf = [0; 0x1000];
+    physrw::read_physical_pages(rq, &mut buf, phys_range).await?;
+    let start = if meta {
+        obj_range.start + (1024 * 1024 * 1024)
+    } else {
+        obj_range.start
+    };
+    tracing::trace!("write_all: offset: {}", start);
+    object_store::write_all(obj_id.raw(), &buf, start)
+        .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
+        .into_diagnostic()
 }
 
 #[cfg(test)]

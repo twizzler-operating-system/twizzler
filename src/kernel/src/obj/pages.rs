@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use twizzler_abi::device::{CacheType, MMIO_OFFSET};
 
-use super::{Object, PageNumber};
+use super::{range::PageStatus, Object, PageNumber};
 use crate::{
     arch::memory::{frame::FRAME_SIZE, phys_to_virt},
     memory::{
@@ -119,12 +119,13 @@ impl Page {
 
 impl Object {
     pub unsafe fn write_val_and_signal<T>(&self, offset: usize, val: T, wakeup_count: usize) {
+        assert!(!self.use_pager());
         {
             let mut obj_page_tree = self.lock_page_tree();
             let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
             let page_offset = offset % PageNumber::PAGE_SIZE;
 
-            if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
+            if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true) {
                 let t = page.get_mut_to_val::<T>(page_offset);
                 *t = val;
             } else {
@@ -141,11 +142,12 @@ impl Object {
     }
 
     pub unsafe fn read_atomic_u64(&self, offset: usize) -> u64 {
+        assert!(!self.use_pager());
         let mut obj_page_tree = self.lock_page_tree();
         let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
         let page_offset = offset % PageNumber::PAGE_SIZE;
 
-        if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
+        if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true) {
             let t = page.get_mut_to_val::<AtomicU64>(page_offset);
             (*t).load(Ordering::SeqCst)
         } else {
@@ -157,11 +159,12 @@ impl Object {
     }
 
     pub unsafe fn read_atomic_u32(&self, offset: usize) -> u32 {
+        assert!(!self.use_pager());
         let mut obj_page_tree = self.lock_page_tree();
         let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
         let page_offset = offset % PageNumber::PAGE_SIZE;
 
-        if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
+        if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true) {
             let t = page.get_mut_to_val::<AtomicU32>(page_offset);
             (*t).load(Ordering::SeqCst)
         } else {
@@ -186,7 +189,7 @@ impl Object {
 
                 let thislen = core::cmp::min(0x1000, len - count);
 
-                if let Some((page, _)) = obj_page_tree.get_page(page_number, true) {
+                if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true) {
                     let dest = &mut page.as_mut_slice()[0..thislen];
                     dest.copy_from_slice(&bytes[count..(count + thislen)]);
                     //let t = page.get_mut_to_val::<T>(page_offset);
@@ -202,6 +205,9 @@ impl Object {
 
                 offset += thislen;
                 count += thislen;
+            }
+            if self.use_pager() {
+                crate::pager::sync_object(self.id);
             }
         }
     }

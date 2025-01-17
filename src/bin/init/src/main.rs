@@ -30,14 +30,6 @@ fn initialize_pager() {
     .unwrap();
 
     pager::pager_start(queue.object().id(), queue2.object().id());
-
-    tracing::info!("sync call test");
-    twizzler_abi::syscall::sys_object_ctrl(
-        queue.object().id(),
-        twizzler_abi::syscall::ObjectControlCmd::Sync,
-    )
-    .unwrap();
-    tracing::info!("sync call done!");
 }
 
 fn main() {
@@ -223,21 +215,11 @@ use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     pager::{CompletionToKernel, RequestFromKernel},
     syscall::{
-        sys_kaction,
-        sys_new_handle,
-        sys_thread_sync,
-        BackingType,
-        LifetimeType, //MapFlags,
-        NewHandleFlags,
-        ObjectCreate,
-        ObjectCreateFlags,
-        ThreadSync,
-        ThreadSyncFlags,
-        ThreadSyncOp,
-        ThreadSyncReference,
-        ThreadSyncSleep,
-        ThreadSyncWake,
+        sys_kaction, sys_new_handle, sys_object_create, sys_thread_sync, BackingType, LifetimeType,
+        NewHandleFlags, ObjectControlCmd, ObjectCreate, ObjectCreateFlags, ThreadSync,
+        ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
     },
     thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_object::{CreateSpec, Object, ObjectInitFlags};
+use twizzler_rt_abi::object::{MapFlags, ObjectHandle};

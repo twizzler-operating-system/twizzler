@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
+use miette::{IntoDiagnostic, Result};
 use twizzler_abi::pager::{CompletionToPager, PagerRequest, PhysRange, RequestFromPager};
 use twizzler_object::ObjID;
 use twizzler_queue::QueueSender;
-
-use crate::send_request;
 
 type Queue = QueueSender<RequestFromPager, CompletionToPager>;
 type QueueRef = Arc<Queue>;
@@ -21,7 +20,7 @@ async fn do_physrw_request(
     len: usize,
     phys: PhysRange,
     write_phys: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> miette::Result<()> {
     let request = RequestFromPager::new(PagerRequest::CopyUserPhys {
         target_object,
         offset,
@@ -29,32 +28,24 @@ async fn do_physrw_request(
         phys,
         write_phys,
     });
-    let comp = send_request(queue, request).await?;
+    let comp = queue.submit_and_wait(request).await.into_diagnostic()?;
     match comp.data() {
         twizzler_abi::pager::PagerCompletionData::Okay => Ok(()),
-        _ => Err("invalid pager completion".to_owned().into()),
+        _ => miette::bail!("invalid pager completion"),
     }
 }
 
 /// Writes phys.len() bytes from the buffer into physical addresses specified in phys. If the
 /// supplied buffer is shorter than the physical range, then the remaining bytes in the physical
 /// memory are filled with 0.
-pub async fn fill_physical_pages(
-    queue: &QueueRef,
-    buf: &[u8],
-    phys: PhysRange,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn fill_physical_pages(queue: &QueueRef, buf: &[u8], phys: PhysRange) -> Result<()> {
     let obj = get_object(buf.as_ptr());
     do_physrw_request(queue, obj.0, obj.1, buf.len(), phys, true).await
 }
 
 /// Reads buf.len() bytes from physical addresses in phys into the buffer. If the supplied physical
 /// range is shorter than the buffer, then the remaining bytes in the buffer are filled with 0.
-pub async fn read_physical_pages(
-    queue: &QueueRef,
-    buf: &mut [u8],
-    phys: PhysRange,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn read_physical_pages(queue: &QueueRef, buf: &mut [u8], phys: PhysRange) -> Result<()> {
     let obj = get_object(buf.as_ptr());
     do_physrw_request(queue, obj.0, obj.1, buf.len(), phys, false).await
 }

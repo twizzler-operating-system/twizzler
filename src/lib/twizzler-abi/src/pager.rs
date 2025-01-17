@@ -19,7 +19,6 @@ impl RequestFromKernel {
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCommand {
-    EchoReq,
     PageDataReq(ObjID, ObjectRange),
     ObjectInfoReq(ObjID),
     ObjectSync(ObjID),
@@ -45,9 +44,9 @@ impl CompletionToKernel {
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCompletionData {
     Error,
-    EchoResp,
     PageDataCompletion(ObjID, ObjectRange, PhysRange),
     ObjectInfoCompletion(ObjectInfo),
+    NoSuchObject(ObjID),
     SyncOkay(ObjID),
 }
 
@@ -68,8 +67,6 @@ impl RequestFromPager {
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum PagerRequest {
-    EchoReq,
-    TestReq,
     Ready,
     CopyUserPhys {
         target_object: ObjID,
@@ -99,8 +96,6 @@ impl CompletionToPager {
 pub enum PagerCompletionData {
     Okay,
     Error,
-    EchoResp,
-    TestResp,
     DramPages(PhysRange),
 }
 

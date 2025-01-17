@@ -45,11 +45,15 @@ impl ReqKind {
     }
 
     pub fn needs_info(&self) -> bool {
-        matches!(self, ReqKind::Info(_))
+        matches!(self, ReqKind::Info(_)) || matches!(self, ReqKind::Create(_))
     }
 
     pub fn needs_sync(&self) -> bool {
         matches!(self, ReqKind::Sync(_)) || matches!(self, ReqKind::Del(_))
+    }
+
+    pub fn needs_cmd(&self) -> bool {
+        self.needs_sync() || self.needs_info()
     }
 
     pub fn objid(&self) -> ObjID {
@@ -80,7 +84,7 @@ impl Request {
         Self {
             id,
             reqkind,
-            cmd_ready: !(reqkind.needs_info() || reqkind.needs_sync()),
+            cmd_ready: !reqkind.needs_cmd(),
             waiting_threads: Vec::new(),
             remaining_pages,
         }
