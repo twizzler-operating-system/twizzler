@@ -19,7 +19,6 @@ members = [
     "src/bin/virtio",
     "src/bin/mnemosyne",
     "src/bin/stdfs_demo",
-    "src/bin/object-store-test",
     "src/bin/virtio",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
