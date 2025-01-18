@@ -15,6 +15,7 @@ alloca = { version = "0.4", default-features = false }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-rt-abi = "0.99"
 stable-vec = "0.4"
+twizzler-minruntime = {path = "../../rt/minimal"} # TODO: Implement Kani dependecy feature 
 
 [build-dependencies]
 cc = "1.0"
