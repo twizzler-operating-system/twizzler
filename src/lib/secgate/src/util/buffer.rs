@@ -74,6 +74,101 @@ impl SimpleBuffer {
     }
 }
 
+
+// #[cfg(kani)]
+mod buffer {
+
+    use twizzler_minruntime;
+    use twizzler_rt_abi::bindings::twz_rt_map_object;
+    use twizzler_abi::print_err;
+    use twizzler_abi::syscall::{
+        self, sys_object_create, BackingType, CreateTieSpec, LifetimeType, ObjectCreate, ObjectCreateFlags, Syscall,
+    };
+    use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
+
+    use super::*;
+
+    fn new_handle() -> ObjectHandle {
+        let id = sys_object_create(
+            ObjectCreate::new(
+                BackingType::Normal,
+                LifetimeType::Volatile,
+                None,
+                ObjectCreateFlags::empty(),
+            ),
+            &[],
+            &[],
+        )
+        .unwrap();
+
+        twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE).unwrap()
+    }
+
+
+    fn raw_syscall_kani_stub(call: Syscall, args: &[u64]) -> (u64, u64) {
+
+        // if core::intrinsics::unlikely(args.len() > 6) {
+        //     twizzler_abi::print_err("too many arguments to raw_syscall");
+        //     // crate::internal_abort();
+        // }
+        let a0 = *args.first().unwrap_or(&0u64);
+        let a1 = *args.get(1).unwrap_or(&0u64);
+        let mut a2 = *args.get(2).unwrap_or(&0u64);
+        let a3 = *args.get(3).unwrap_or(&0u64);
+        let a4 = *args.get(4).unwrap_or(&0u64);
+        let a5 = *args.get(5).unwrap_or(&0u64);
+
+        let mut num = call.num();
+        //TODO: Skip actual inline assembly invcation and register inputs
+        //TODO: Improve actual logic here
+
+        (num,a2)
+    }
+    
+    //TODO: Wrap fails at some point, unsure why
+    #[kani::proof]
+    #[kani::stub(twizzler_abi::arch::syscall::raw_syscall,raw_syscall_kani_stub)]
+    #[kani::stub(twizzler_rt_abi::bindings::twz_rt_map_object, twizzler_minruntime::runtime::syms::twz_rt_map_object)]
+    fn transfer() {
+        let obj = new_handle();
+        let mut sb = SimpleBuffer::new(obj);
+
+
+        let bytes: [u8; 100] = kani::any();
+        let wlen = sb.write(&bytes);
+        let mut buf = [0u8; 100];
+
+        assert_eq!(buf.len(), bytes.len());
+        assert_eq!(buf.len(), wlen);
+
+        let rlen = sb.read(&mut buf);
+        assert_eq!(rlen, wlen);
+        assert_eq!(&buf, &bytes);
+    }
+
+/// Test generated for harness `util::buffer::buffer::transfer`
+///
+/// Check for `assertion`: "This is a placeholder message; Kani doesn't support message formatted at runtime"
+///
+/// # Warning
+///
+/// Concrete playback tests combined with stubs or contracts is highly
+/// experimental, and subject to change.
+///
+/// The original harness has stubs which are not applied to this test.
+/// This may cause a mismatch of non-deterministic values if the stub
+/// creates any non-deterministic value.
+/// The execution path may also differ, which can be used to refine the stub
+/// logic.
+
+#[test]
+fn kani_concrete_playback_transfer_3656479332704793845() {
+    let concrete_vals: Vec<Vec<u8>> = vec![
+    ];
+    kani::concrete_playback_run(concrete_vals, transfer);
+}
+}
+
 #[cfg(test)]
 mod test {
     use twizzler_abi::syscall::{
