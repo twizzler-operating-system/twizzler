@@ -29,7 +29,22 @@ fn initialize_pager() {
     )
     .unwrap();
 
-    pager::pager_start(queue.object().id(), queue2.object().id());
+    let pager_comp: CompartmentHandle = monitor_api::CompartmentLoader::new(
+        "pager-srv",
+        "libpager_srv.so",
+        monitor_api::NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(["pager-srv"])
+    .load()
+    .expect("failed to start pager");
+
+    let pager_start = unsafe {
+        pager_comp
+            .dynamic_gate::<(ObjID, ObjID), ()>("pager_start")
+            .unwrap()
+    };
+    pager_start(queue.object().id(), queue2.object().id());
+    std::mem::forget(pager_comp);
 }
 
 fn main() {

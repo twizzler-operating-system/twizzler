@@ -486,7 +486,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
     let cp = current_processor();
     let cur = current_thread_ref();
     if let Some(ref cur) = cur {
-        if !cur.is_critical() && (cur.is_in_user() || cur.is_idle_thread()) {
+        if !cur.is_critical() && cur.is_in_user() {
             cp.cleanup_exited();
         }
         if cur.is_idle_thread() {

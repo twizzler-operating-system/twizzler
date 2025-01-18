@@ -3263,7 +3263,6 @@ dependencies = [
  "async-io",
  "futures",
  "monitor-api",
- "pager",
  "polling",
  "rprompt",
  "tracing",

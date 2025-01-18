@@ -297,6 +297,26 @@ pub struct DynamicSecGate<'comp, A, R> {
     _pd: PhantomData<&'comp (A, R)>,
 }
 
+impl<'a, A: Tuple + Crossing + Copy, R: Crossing + Copy> Fn<A> for DynamicSecGate<'a, A, R> {
+    extern "rust-call" fn call(&self, args: A) -> Self::Output {
+        unsafe { dynamic_gate_call(*self, args) }
+    }
+}
+
+impl<'a, A: Tuple + Crossing + Copy, R: Crossing + Copy> FnMut<A> for DynamicSecGate<'a, A, R> {
+    extern "rust-call" fn call_mut(&mut self, args: A) -> Self::Output {
+        unsafe { dynamic_gate_call(*self, args) }
+    }
+}
+
+impl<'a, A: Tuple + Crossing + Copy, R: Crossing + Copy> FnOnce<A> for DynamicSecGate<'a, A, R> {
+    type Output = SecGateReturn<R>;
+
+    extern "rust-call" fn call_once(self, args: A) -> Self::Output {
+        unsafe { dynamic_gate_call(self, args) }
+    }
+}
+
 impl<'a, A, R> Debug for DynamicSecGate<'a, A, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
