@@ -24,7 +24,8 @@ fn packages_with_harnesses() -> Vec<String> {
             // "twizzler-kernel", TODO: Current syntax erros, toolchain mismap?
             "twizzler-abi",
             "twizzler-driver",
-            "twizzler-queue-raw"
+            "twizzler-queue-raw",
+            "secgate"
         ]
         .map(String::from)
         .to_vec(),
@@ -43,6 +44,7 @@ fn pre_fixed_flags() -> Vec<String> {
             "-Zunstable-options",
             "--ignore-global-asm",
             "--output-into-files",
+            "-Zstubbing"
         ]
         .map(String::from)
         .to_vec(),
