@@ -32,6 +32,9 @@ fn setup_logging() {
 mod tests {
     use std::sync::atomic::Ordering;
 
+    use monitor_api::CompartmentHandle;
+    use twizzler_abi::klog_println;
+
     use crate::montest_lib;
     extern crate secgate;
 
@@ -87,6 +90,17 @@ mod tests {
     fn test_bin_ctors() {
         setup_logging();
         assert_eq!(true, WAS_CTOR_RUN.load(Ordering::SeqCst))
+    }
+
+    #[test]
+    fn test_dynamic_secgate() {
+        let current = CompartmentHandle::current();
+        let name = format!("{}::libmontest_lib.so", current.info().name);
+        let comp = CompartmentHandle::lookup(&name)
+            .expect(&format!("failed to open compartment: {}", &name));
+        let gate = unsafe { comp.dynamic_gate::<(u32,), u32>("dynamic_test") }.unwrap();
+        let ret = unsafe { secgate::dynamic_gate_call(gate, (3,)).ok().unwrap() };
+        assert_eq!(ret, 45);
     }
 }
 

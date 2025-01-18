@@ -1,5 +1,5 @@
 use alloc::{
-    collections::{btree_map::Entry, BTreeMap},
+    collections::{btree_map::Entry, btree_set::BTreeSet, BTreeMap},
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -8,9 +8,11 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
+use range::PageStatus;
 use twizzler_abi::{
     meta::MetaFlags,
     object::{ObjID, MAX_SIZE},
+    syscall::LifetimeType,
 };
 
 use self::{pages::Page, thread_sync::SleepInfo};
@@ -39,6 +41,7 @@ pub struct Object {
     sleep_info: Mutex<SleepInfo>,
     pin_info: Mutex<PinInfo>,
     contexts: Mutex<ContextInfo>,
+    lifetime_type: LifetimeType,
 }
 
 #[derive(Default)]
@@ -179,6 +182,10 @@ impl Object {
         self.flags.load(Ordering::SeqCst) & OBJ_DELETED != 0
     }
 
+    pub fn use_pager(&self) -> bool {
+        self.lifetime_type == LifetimeType::Persistent
+    }
+
     pub fn mark_for_delete(&self) {
         self.flags.fetch_or(OBJ_DELETED, Ordering::SeqCst);
     }
@@ -202,6 +209,7 @@ impl Object {
     }
 
     pub fn pin(&self, start: PageNumber, len: usize) -> Option<(Vec<PhysAddr>, u32)> {
+        assert!(!self.use_pager());
         let mut tree = self.lock_page_tree();
 
         let mut pin_info = self.pin_info.lock();
@@ -210,8 +218,8 @@ impl Object {
         for i in 0..len {
             // TODO: we'll need to handle failures here when we expand the paging system.
             let p = tree.get_page(start.offset(i), true);
-            if let Some(p) = p {
-                v.push(p.0.physical_address());
+            if let PageStatus::Ready(p, _) = p {
+                v.push(p.physical_address());
             } else {
                 let page = Page::new();
                 v.push(page.physical_address());
@@ -226,7 +234,7 @@ impl Object {
         Some((v, token))
     }
 
-    pub fn new(id: ObjID) -> Self {
+    pub fn new(id: ObjID, lifetime_type: LifetimeType) -> Self {
         Self {
             id,
             flags: AtomicU32::new(0),
@@ -234,11 +242,15 @@ impl Object {
             sleep_info: Mutex::new(SleepInfo::new()),
             pin_info: Mutex::new(PinInfo::default()),
             contexts: Mutex::new(ContextInfo::default()),
+            lifetime_type,
         }
     }
 
     pub fn new_kernel() -> Self {
-        Self::new(calculate_new_id(0.into(), MetaFlags::default()))
+        Self::new(
+            calculate_new_id(0.into(), MetaFlags::default()),
+            LifetimeType::Volatile,
+        )
     }
 
     pub fn add_context(&self, ctx: &ContextRef) {
@@ -313,6 +325,7 @@ pub type ObjectRef = Arc<Object>;
 
 struct ObjectManager {
     map: Mutex<BTreeMap<ObjID, ObjectRef>>,
+    no_exist: Mutex<BTreeSet<ObjID>>,
 }
 
 bitflags::bitflags! {
@@ -351,10 +364,14 @@ impl ObjectManager {
     fn new() -> Self {
         Self {
             map: Mutex::new(BTreeMap::new()),
+            no_exist: Mutex::new(BTreeSet::new()),
         }
     }
 
     fn lookup_object(&self, id: ObjID, flags: LookupFlags) -> LookupResult {
+        if self.no_exist.lock().contains(&id) {
+            return LookupResult::WasDeleted;
+        }
         self.map
             .lock()
             .get(&id)
@@ -385,4 +402,8 @@ pub fn lookup_object(id: ObjID, flags: LookupFlags) -> LookupResult {
 pub fn register_object(obj: Arc<Object>) {
     let om = &OBJ_MANAGER;
     om.register_object(obj);
+}
+
+pub fn no_exist(id: ObjID) {
+    OBJ_MANAGER.no_exist.lock().insert(id);
 }
