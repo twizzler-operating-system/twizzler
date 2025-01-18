@@ -97,6 +97,68 @@ impl<ServerData> HandleMgr<ServerData> {
     }
 }
 
+
+
+#[cfg(kani)]
+mod handle {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    struct FooHandle {
+        desc: Descriptor,
+        x: u32,
+        mgr: RefCell<HandleMgr<u32>>,
+        removed_data: Option<u32>,
+    }
+
+    impl Handle for FooHandle {
+        type OpenError = ();
+
+        type OpenInfo = (u32, RefCell<HandleMgr<u32>>);
+
+        fn open(info: Self::OpenInfo) -> Result<Self, Self::OpenError>
+        where
+            Self: Sized,
+        {
+            let desc = info.1.borrow_mut().insert(0.into(), info.0).unwrap();
+            Ok(Self {
+                desc,
+                x: info.0,
+                mgr: info.1,
+                removed_data: None,
+            })
+        }
+
+        fn release(&mut self) {
+            self.removed_data = self.mgr.borrow_mut().remove(0.into(), self.desc);
+        }
+    }
+
+    //TODO: Very long,  what is this actually proving rn. 
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn handle() {
+        const LIMIT: usize = 100;
+
+        let val = kani::any();
+        let info = kani::any();
+        kani::assume(val as usize <= LIMIT );
+        kani::assume(info as usize <= LIMIT );
+
+        let mgr = RefCell::new(HandleMgr::new(Some(val)));
+        let mut foo = FooHandle::open((info, mgr)).unwrap();
+
+        assert_eq!(foo.x, info);
+        let sd = foo.mgr.borrow().lookup(0.into(), foo.desc).cloned();
+        assert_eq!(sd, Some(info));
+
+        foo.release();
+        assert_eq!(foo.removed_data, Some(info));
+        assert!(foo.mgr.borrow().lookup(0.into(), foo.desc).is_none());
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::cell::RefCell;
