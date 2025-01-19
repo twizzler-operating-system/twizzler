@@ -1,12 +1,19 @@
 use std::fs::File;
 
-use naming::static_naming_factory;
-use naming::dynamic_naming_factory;
+use naming::{dynamic_naming_factory, static_naming_factory};
 
 fn main() {
     let mut handle = dynamic_naming_factory().unwrap();
 
-    println!("Behold the universe: {}", handle.enumerate_names().iter().map(|x| x.0.clone()).collect::<Vec<String>>().join(" "));
+    println!(
+        "Behold the universe: {}",
+        handle
+            .enumerate_names()
+            .iter()
+            .map(|x| x.0.clone())
+            .collect::<Vec<String>>()
+            .join(" ")
+    );
     let name = "hello world";
     match handle.get(name) {
         Some(x) => {

@@ -1,18 +1,22 @@
-use secgate::{DynamicSecGate, util::{Descriptor, Handle, SimpleBuffer}, SecGateReturn};
-use twizzler_rt_abi::object::ObjID;
-use monitor_api::CompartmentHandle;
 use std::sync::OnceLock;
-use crate::NamingHandle;
-use crate::api::NamerAPI;
+
+use monitor_api::CompartmentHandle;
+use secgate::{
+    util::{Descriptor, Handle, SimpleBuffer},
+    DynamicSecGate, SecGateReturn,
+};
+use twizzler_rt_abi::object::ObjID;
+
+use crate::{api::NamerAPI, NamingHandle};
 
 pub struct DynamicNamerAPI {
     _handle: &'static CompartmentHandle,
-    put: DynamicSecGate<'static, (Descriptor, ), ()>,
-    get: DynamicSecGate<'static, (Descriptor, ), Option<u128>>,
+    put: DynamicSecGate<'static, (Descriptor,), ()>,
+    get: DynamicSecGate<'static, (Descriptor,), Option<u128>>,
     open_handle: DynamicSecGate<'static, (), Option<(Descriptor, ObjID)>>,
-    close_handle: DynamicSecGate<'static, (Descriptor, ), ()>,
-    enumerate_names: DynamicSecGate<'static, (Descriptor, ), Option<usize>>,
-    remove: DynamicSecGate<'static, (Descriptor, ), ()>,
+    close_handle: DynamicSecGate<'static, (Descriptor,), ()>,
+    enumerate_names: DynamicSecGate<'static, (Descriptor,), Option<usize>>,
+    remove: DynamicSecGate<'static, (Descriptor,), ()>,
 }
 
 impl NamerAPI for DynamicNamerAPI {
@@ -42,7 +46,7 @@ impl NamerAPI for DynamicNamerAPI {
 }
 
 static DYNAMIC_NAMER_API: OnceLock<DynamicNamerAPI> = OnceLock::new();
- 
+
 pub fn dynamic_namer_api() -> &'static DynamicNamerAPI {
     DYNAMIC_NAMER_API.get_or_init(|| {
         let handle = Box::leak(Box::new(
@@ -52,12 +56,12 @@ pub fn dynamic_namer_api() -> &'static DynamicNamerAPI {
             _handle: handle,
             put: unsafe {
                 handle
-                    .dynamic_gate::<(Descriptor, ), ()>("put")
+                    .dynamic_gate::<(Descriptor,), ()>("put")
                     .expect("failed to find put gate call")
             },
             get: unsafe {
                 handle
-                    .dynamic_gate::<(Descriptor, ), Option<u128>>("get")
+                    .dynamic_gate::<(Descriptor,), Option<u128>>("get")
                     .expect("failed to find get gate call")
             },
             open_handle: unsafe {
@@ -67,17 +71,17 @@ pub fn dynamic_namer_api() -> &'static DynamicNamerAPI {
             },
             close_handle: unsafe {
                 handle
-                    .dynamic_gate::<(Descriptor, ), ()>("close_handle")
+                    .dynamic_gate::<(Descriptor,), ()>("close_handle")
                     .expect("failed to find close_handle gate call")
             },
             enumerate_names: unsafe {
                 handle
-                    .dynamic_gate::<(Descriptor, ), Option<usize>>("enumerate_names")
+                    .dynamic_gate::<(Descriptor,), Option<usize>>("enumerate_names")
                     .expect("failed to find enumerate_names gate call")
             },
             remove: unsafe {
                 handle
-                    .dynamic_gate::<(Descriptor, ), ()>("remove")
+                    .dynamic_gate::<(Descriptor,), ()>("remove")
                     .expect("failed to find remove gate call")
             },
         }

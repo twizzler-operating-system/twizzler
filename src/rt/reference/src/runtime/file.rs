@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use lazy_static::lazy_static;
 use lru::LruCache;
+use naming_core::dynamic::{dynamic_naming_factory, DynamicNamingHandle};
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
@@ -21,7 +22,7 @@ use twizzler_rt_abi::{
     io::{IoError, IoFlags, SeekFrom},
     object::{MapFlags, ObjectHandle},
 };
-use naming_core::dynamic::{dynamic_naming_factory, DynamicNamingHandle};
+
 use super::ReferenceRuntime;
 
 #[derive(Clone)]

@@ -2,12 +2,12 @@ use std::{
     fs::File,
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
     path::PathBuf,
+    sync::Mutex,
 };
+
 use lazy_static::lazy_static;
-use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tar::Header;
-
 #[cfg(target_os = "twizzler")]
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
@@ -47,9 +47,7 @@ where
     pub fn new(storage: W) -> Pack<W> {
         let mut tarchive = tar::Builder::new(storage);
         tarchive.mode(tar::HeaderMode::Deterministic);
-        Pack { 
-            tarchive: tarchive, 
-        }
+        Pack { tarchive }
     }
 
     pub fn file_add(
@@ -192,7 +190,7 @@ where
                     .to_owned();
                 let bad_idea: SpecialData =
                     bincode::deserialize(&entry.header().as_old().pad).unwrap();
-                
+
                 println!("unpacked {}", path);
                 match bad_idea.kind {
                     PackType::StdFile => {

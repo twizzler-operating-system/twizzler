@@ -1,15 +1,18 @@
-use secgate::{util::{Descriptor, Handle, SimpleBuffer}, SecGateReturn};
-use twizzler_rt_abi::object::{MapFlags, ObjID};
-use crate::api::NamerAPI;
-use crate::definitions::Schema;
 use arrayvec::ArrayString;
+use secgate::{
+    util::{Descriptor, Handle, SimpleBuffer},
+    SecGateReturn,
+};
+use twizzler_rt_abi::object::{MapFlags, ObjID};
+
+use crate::{api::NamerAPI, definitions::Schema};
 pub struct NamingHandle<'a, API: NamerAPI> {
     desc: u32,
     buffer: SimpleBuffer,
     api: &'a API,
 }
 
-impl<'a, API: NamerAPI>Drop for NamingHandle<'a, API> {
+impl<'a, API: NamerAPI> Drop for NamingHandle<'a, API> {
     fn drop(&mut self) {
         self.release();
     }
@@ -23,7 +26,10 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
 
     pub fn put(&mut self, key: &str, val: u128) {
         // I should write directly to the simple buffer
-        let mut s = Schema { key: ArrayString::from(key).unwrap(), val };
+        let mut s = Schema {
+            key: ArrayString::from(key).unwrap(),
+            val,
+        };
 
         // Interpret schema as a slice
         let bytes =
@@ -35,7 +41,10 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
     }
 
     pub fn get(&mut self, key: &str) -> Option<u128> {
-        let mut s = Schema { key: ArrayString::from(key).unwrap(), val: 0 };
+        let mut s = Schema {
+            key: ArrayString::from(key).unwrap(),
+            val: 0,
+        };
         let bytes =
             unsafe { std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(s) };
         let handle = self.buffer.write(&bytes);
@@ -44,7 +53,10 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
     }
 
     pub fn remove(&mut self, key: &str) {
-        let mut s = Schema { key: ArrayString::from(key).unwrap(), val: 0 };
+        let mut s = Schema {
+            key: ArrayString::from(key).unwrap(),
+            val: 0,
+        };
         let bytes =
             unsafe { std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(s) };
         let handle = self.buffer.write(&bytes);
@@ -79,14 +91,18 @@ impl<'a, API: NamerAPI> Handle for NamingHandle<'a, API> {
 
     fn open(info: Self::OpenInfo) -> Result<Self, Self::OpenError>
     where
-        Self: Sized {
+        Self: Sized,
+    {
         let (desc, id) = info.open_handle().ok().flatten().ok_or(())?;
-        println!("foo");
-        let handle = 
+        let handle =
             twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)
                 .map_err(|_| ())?;
         let sb = SimpleBuffer::new(handle);
-        Ok (Self {desc, buffer: sb, api: info })
+        Ok(Self {
+            desc,
+            buffer: sb,
+            api: info,
+        })
     }
 
     fn release(&mut self) {

@@ -1,6 +1,10 @@
-use secgate::{DynamicSecGate, util::{Descriptor, Handle, SimpleBuffer}, SecGateReturn};
-use twizzler_rt_abi::object::ObjID;
 use monitor_api::CompartmentHandle;
+use secgate::{
+    util::{Descriptor, Handle, SimpleBuffer},
+    DynamicSecGate, SecGateReturn,
+};
+use twizzler_rt_abi::object::ObjID;
+
 use crate::NamingHandle;
 
 pub trait NamerAPI {
@@ -11,5 +15,3 @@ pub trait NamerAPI {
     fn enumerate_names(&self, desc: Descriptor) -> SecGateReturn<Option<usize>>;
     fn remove(&self, desc: Descriptor) -> SecGateReturn<()>;
 }
-
-

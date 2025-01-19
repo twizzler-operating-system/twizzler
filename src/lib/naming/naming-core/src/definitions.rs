@@ -1,5 +1,5 @@
-use twizzler::marker::Invariant;
 use arrayvec::ArrayString;
+use twizzler::marker::Invariant;
 
 pub const MAX_KEY_SIZE: usize = 255;
 

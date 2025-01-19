@@ -2,6 +2,8 @@ use clap::{Parser, Subcommand};
 use etl_twizzler::etl::{Pack, PackType, Unpack};
 
 #[cfg(target_os = "twizzler")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "twizzler")]
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
@@ -11,9 +13,6 @@ use twizzler_abi::{
 };
 #[cfg(target_os = "twizzler")]
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
-#[cfg(target_os = "twizzler")]
-use std::sync::atomic::{AtomicU64, Ordering};
-
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
