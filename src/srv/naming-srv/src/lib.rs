@@ -183,12 +183,36 @@ pub fn remove(info: &secgate::GateCallInfo, desc: Descriptor) {
 
 #[secure_gate(options(info))]
 pub fn change_namespace(info: &secgate::GateCallInfo, desc: Descriptor) {
-    todo!()
+    let mut binding = NAMINGSERVICE.handles.lock().unwrap();
+    let Some(mut client) = binding.lookup_mut(info.source_context().unwrap_or(0.into()), desc) 
+    else {
+        return;
+    };
+
+    let mut buf = [0u8; std::mem::size_of::<Schema>()];
+    client.buffer.read(&mut buf);
+    let provided =
+        unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
+
+    client.session.change_namespace(provided.key.as_str());
 }
 
+
+
 #[secure_gate(options(info))]
-pub fn create_namespace(info: &secgate::GateCallInfo, desc: Descriptor) {
-    todo!()
+pub fn put_namespace(info: &secgate::GateCallInfo, desc: Descriptor) {
+    let binding = NAMINGSERVICE.handles.lock().unwrap();
+    let Some(client) = binding.lookup(info.source_context().unwrap_or(0.into()), desc) 
+    else {
+        return;
+    };
+
+    let mut buf = [0u8; std::mem::size_of::<Schema>()];
+    client.buffer.read(&mut buf);
+    let provided =
+        unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
+
+    client.session.put(provided.key.as_str(), EntryType::Namespace);
 }
 
 #[secure_gate(options(info))]
