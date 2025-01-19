@@ -14,7 +14,7 @@ fn main() {
             .collect::<Vec<String>>()
             .join(" ")
     );
-    let name = "hello world";
+    let name = "hello_world";
     match handle.get(name) {
         Some(x) => {
             handle.put(name, x - 1);

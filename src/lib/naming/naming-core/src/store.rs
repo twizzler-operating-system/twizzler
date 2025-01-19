@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, path::{Component, PathBuf}, sync::OnceLock};
+use std::{fs::OpenOptions, path::{Component, PathBuf}, sync::{MutexGuard, OnceLock}};
 
 use arrayvec::ArrayString;
 use monitor_api::CompartmentHandle;
@@ -12,36 +12,46 @@ use twizzler::{
 };
 use twizzler::ptr::Ref;
 use std::path::Path;
+use std::sync::Mutex;
 
-use crate::MAX_KEY_SIZE;
+use crate::{handle::Schema, MAX_KEY_SIZE};
 
 // Currently the way namespaces exist is each entry has a parent, 
 // And to determine the children of an entry, you linearly search 
 // for each entry's parent 
 
 // The short answer this is it will be gone once indirection exists
-// But I wanted to create the interface and prove it works first
+// But I wanted to create the interface first so I can replace it 
+// later
 
-#[derive(PartialEq)]
-enum EntryType {
+#[derive(Debug, PartialEq)]
+pub enum EntryType {
     Name(u128),
     Namespace
 }
 
+impl Default for EntryType {
+    fn default() -> Self {
+        EntryType::Name(0)
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct Entry {
     parent: usize,
+    curr: usize,
     name: ArrayString<MAX_KEY_SIZE>,
     entry_type: EntryType
 }
 
 unsafe impl Invariant for Entry {}
 
-// I should convert function returns to std::io::result
+// Ideally when transactions are finished the mutex is unnecessary
+// Though I don't know how to write this without the mutex :think:
 pub struct NameStore {
-    pub name_universe: VecObject<Entry, VecObjectAlloc>,
+    pub name_universe: Mutex<VecObject<Entry, VecObjectAlloc>>,
 }
 
-// Hopefully transactions will make this thread safe(r)
 unsafe impl Send for NameStore {}
 unsafe impl Sync for NameStore {}
 
@@ -50,16 +60,13 @@ impl NameStore {
         let mut store = VecObject::new(ObjectBuilder::default()).unwrap();
         store.push(Entry {
             parent: 0,
+            curr: 0,
             name: ArrayString::<MAX_KEY_SIZE>::from(&"/").unwrap(),
             entry_type: EntryType::Namespace,
         });
         NameStore {
-            name_universe: store
+            name_universe: Mutex::new(store)
         }
-    }
-
-    fn get_root(&self) -> Ref<'_, Entry> {
-        self.name_universe.get(0).unwrap()
     }
 
     // session is created from root
@@ -88,12 +95,7 @@ pub struct NameSession<'a> {
 }
 
 impl NameSession<'_> {
-    fn store(&self) -> &VecObject<Entry, VecObjectAlloc> {
-        &self.store.name_universe
-    }
-
-    // Not particularly thread safe, so it should be done inside a transaction
-    fn namei<P: AsRef<Path>>(&self, name: P) -> Option<Ref<Entry>> {
+    fn namei<'a, P: AsRef<Path>>(&self, store: &'a MutexGuard<'a, VecObject<Entry, VecObjectAlloc>>, name: P) -> Option<Ref<'a, Entry>> {
         // interpret path based on working directory
         let path = match name.as_ref().has_root() {
             true => {
@@ -107,25 +109,23 @@ impl NameSession<'_> {
         };
 
         let path_child = path.file_name();
-
         let mut index = 0;
         // traverse store based on path's components
         for item in path.components() {
             let mut found = false;
             match item {
                 Component::Prefix(prefix_component) => {
-                    println!("How did we get here?"); 
                     continue;
                 },
-                Component::RootDir => {index = 0;},
+                Component::RootDir => {index = 0; continue;},
                 Component::CurDir => continue,
                 Component::ParentDir => {
-                    index = self.store().get(index).unwrap().parent;
+                    index = store.get(index).unwrap().parent;
                 },
                 Component::Normal(os_str) => {
-                    for i in 0..self.store().len() {
-                        let entry = self.store().get(i).unwrap();
-                        if entry.name.as_str() != os_str.to_str().unwrap() && entry.parent != index {
+                    for i in 0..store.len() {
+                        let entry = store.get(i).unwrap();
+                        if entry.name.as_str() != os_str.to_str().unwrap() || entry.parent != index {
                             continue;
                         }
 
@@ -140,18 +140,55 @@ impl NameSession<'_> {
             }
         }
 
-        self.store().get(index)
+        store.get(index)
     }
 
-    pub fn put<P: AsRef<Path>>(&self, name: P, val: u128) {
-        let entry = match name.as_ref().parent() {
-            Some(parent) => self.namei(parent),
-            None => todo!(),
+    pub fn put<P: AsRef<Path>>(&self, name: P, val: EntryType) {
+        let mut store = self.store.name_universe.lock().unwrap();
+        let entry = {
+            let current_entry = self.namei(&store, &name);
+            match current_entry {
+                Some(entry) => {
+                    unsafe { 
+                        let mut entry: *mut Entry = entry.raw().cast_mut();
+                        if (*entry).entry_type != EntryType::Namespace {
+                            (*entry).entry_type = val; 
+                        }
+                    }
+
+                    return; 
+                },
+                None => Entry::default()
+            };
+    
+            let path_ref = match name.as_ref().parent() {
+                Some(parent) => self.namei(&store, parent),
+                None => {return;}, // ends in root or prefix
+            };
+            let entry = path_ref.unwrap();
+    
+            let child = name.as_ref().file_name();
+            if child == None {
+                return;
+            }
+    
+            Entry {
+                parent: entry.curr,
+                curr: store.len(),
+                name: ArrayString::from(&child.unwrap().to_str().unwrap()).unwrap(),
+                entry_type: val, 
+            }
         };
+
+        store.push(entry);
+
     }
 
     pub fn get<P: AsRef<Path>>(&self, name: P) -> Option<u128> {
-        self.namei(name).map_or(None, |f| {
+        let store = self.store.name_universe.lock().unwrap();
+        let entry = self.namei(&store, name);
+
+        entry.map_or(None, |f| {
             match f.entry_type {
                 EntryType::Name(id) => Some(id),
                 EntryType::Namespace => None,
@@ -159,10 +196,12 @@ impl NameSession<'_> {
         })
     }
 
-    pub fn enumerate_namespace<P: AsRef<Path>>(&self, name: P) -> std::vec::Vec<String> {
+    pub fn enumerate_namespace<P: AsRef<Path>>(&self, name: P) -> std::vec::Vec<Schema> {
+        let store = self.store.name_universe.lock().unwrap();
+
         let mut vec = std::vec::Vec::new();
 
-        let entry = match self.namei(name) {
+        let entry = match self.namei(&store, name) {
             Some(entry) => entry,
             None => return vec,
         };
@@ -171,10 +210,17 @@ impl NameSession<'_> {
             return vec;
         }
 
-        for i in 0..self.store().len() {
-            let search = self.store().get(i).unwrap();
-            if search.parent == entry.parent {
-                vec.push(search.name.to_string());
+        for i in 0..store.len() {
+            let search = store.get(i).unwrap();
+            if search.parent == entry.curr {
+                vec.push(Schema {
+                    
+                    key: ArrayString::from(&search.name.to_string()).unwrap(),
+                    val: match search.entry_type {
+                        EntryType::Name(x) => x,
+                        EntryType::Namespace => 0,
+                    },
+                });
             }
         }
 
