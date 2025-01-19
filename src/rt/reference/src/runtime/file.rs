@@ -21,7 +21,7 @@ use twizzler_rt_abi::{
     io::{IoError, IoFlags, SeekFrom},
     object::{MapFlags, ObjectHandle},
 };
-
+use naming_core::dynamic::{dynamic_naming_factory, DynamicNamingHandle};
 use super::ReferenceRuntime;
 
 #[derive(Clone)]
@@ -66,10 +66,8 @@ fn get_fd_slots() -> &'static Mutex<StableVec<FdKind>> {
 
 impl ReferenceRuntime {
     pub fn open(&self, path: &str) -> Result<RawFd, OpenError> {
-        let obj_id = ObjID::new(
-            path.parse::<u128>()
-                .map_err(|_err| (OpenError::InvalidArgument))?,
-        );
+        let mut handle = dynamic_naming_factory().unwrap();
+        let obj_id = ObjID::new(handle.get(path).unwrap());
         let flags = MapFlags::READ | MapFlags::WRITE;
 
         let handle = self.map_object(obj_id, flags).unwrap();

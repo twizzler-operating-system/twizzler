@@ -25,3 +25,4 @@ stable-vec = "0.4.1"
 lru = "0.12.4"
 paste = "1"
 printf-compat = { version = "0.1", default-features = false }
+naming-core = { path = "../../lib/naming/naming-core" }

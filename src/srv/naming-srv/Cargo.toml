@@ -16,5 +16,6 @@ twizzler-rt-abi = { path = "../../abi/rt-abi" }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler = { path = "../../lib/twizzler" }
 arrayvec = "0.7.6"
+naming-core = { path = "../../lib/naming/naming-core" }
 
 [features]

@@ -10,15 +10,16 @@ use secgate::{
 };
 use twizzler_abi::{
     aux::KernelInitInfo,
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
-use twizzler_rt_abi::object::MapFlags;
+use twizzler_rt_abi::object::{MapFlags, ObjID};
 use arrayvec::ArrayString;
-use twizzler::{collections::vec::VecObject, marker::Invariant, object::{ObjectBuilder, TypedObject}};
+use twizzler::{collections::vec::VecObject, marker::Invariant, object::{ObjectBuilder, TypedObject}, ptr::GlobalPtr};
 use twizzler::collections::vec::Vec;
 use twizzler::object::Object;
 use twizzler::collections::vec::VecObjectAlloc;
+use naming_core::definitions::Schema;
 
 fn get_kernel_init_info() -> &'static KernelInitInfo {
     unsafe {
@@ -58,17 +59,6 @@ impl NamespaceClient {
         self.buffer.handle().id()
     }
 }
-
-pub const MAX_KEY_SIZE: usize = 255;
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Schema {
-    pub key: ArrayString<MAX_KEY_SIZE>,
-    pub val: u128,
-}
-
-unsafe impl Invariant for Schema {}
 
 struct Namer {
     handles: HandleMgr<NamespaceClient>,
