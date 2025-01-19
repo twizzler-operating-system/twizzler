@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::{fs::OpenOptions, path::{Component, PathBuf}, sync::OnceLock};
 
 use arrayvec::ArrayString;
 use monitor_api::CompartmentHandle;
@@ -7,10 +7,16 @@ use secgate::{
     DynamicSecGate, SecGateReturn,
 };
 use twizzler_rt_abi::object::{MapFlags, ObjID};
+use twizzler::{
+    alloc::invbox::InvBox, collections::vec::{Vec, VecObject, VecObjectAlloc}, marker::Invariant, object::{Object, ObjectBuilder, TypedObject}, ptr::{GlobalPtr, InvPtr}
+};
+use twizzler::ptr::Ref;
+use std::path::Path;
 
 pub mod api;
-pub mod definitions;
 pub mod dynamic;
 pub mod handle;
+pub mod store;
 
-use handle::NamingHandle;
+pub const MAX_KEY_SIZE: usize = 255;
+

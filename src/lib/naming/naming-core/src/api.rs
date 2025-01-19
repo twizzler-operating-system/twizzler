@@ -5,7 +5,7 @@ use secgate::{
 };
 use twizzler_rt_abi::object::ObjID;
 
-use crate::NamingHandle;
+use crate::handle::NamingHandle;
 
 pub trait NamerAPI {
     fn put(&self, desc: Descriptor) -> SecGateReturn<()>;

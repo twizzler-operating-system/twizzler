@@ -7,7 +7,7 @@ use secgate::{
 };
 use twizzler_rt_abi::object::ObjID;
 
-use crate::{api::NamerAPI, NamingHandle};
+use crate::{api::NamerAPI, handle::NamingHandle};
 
 pub struct DynamicNamerAPI {
     _handle: &'static CompartmentHandle,
