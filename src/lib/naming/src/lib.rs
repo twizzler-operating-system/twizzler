@@ -35,6 +35,14 @@ impl NamerAPI for StaticNamingAPI {
     fn remove(&self, desc: Descriptor) -> secgate::SecGateReturn<()> {
         naming_srv::remove(desc)
     }
+    
+    fn change_namespace(&self, desc: Descriptor) -> secgate::SecGateReturn<()> {
+        naming_srv::change_namespace(desc)
+    }
+    
+    fn put_namespace(&self, desc: Descriptor) -> secgate::SecGateReturn<()> {
+        naming_srv::put_namespace(desc)
+    }
 }
 
 static STATIC_NAMING_API: StaticNamingAPI = StaticNamingAPI {};

@@ -206,15 +206,15 @@ impl NameSession<'_> {
             None => return vec,
         };
 
-        if entry.entry_type == EntryType::Name(0) {
+        if entry.entry_type != EntryType::Namespace {
             return vec;
         }
 
         for i in 0..store.len() {
             let search = store.get(i).unwrap();
+            println!("searching {:?}, curr {:?}", search, entry);
             if search.parent == entry.curr {
                 vec.push(Schema {
-                    
                     key: ArrayString::from(&search.name.to_string()).unwrap(),
                     val: match search.entry_type {
                         EntryType::Name(x) => x,
@@ -227,6 +227,25 @@ impl NameSession<'_> {
         vec
     }
 
+    pub fn change_namespace<P: AsRef<Path>>(&mut self, name: P) {
+        let store = self.store.name_universe.lock().unwrap();
+
+        let entry = self.namei(&store, &name);
+        
+        let entry = if entry.is_none() {
+            return;
+        } else {
+            entry.unwrap()
+        };
+
+        match entry.entry_type {
+            EntryType::Name(_) => {return;},
+            EntryType::Namespace => {
+                self.working_ns = PathBuf::from(name.as_ref());
+            },
+        }
+    }
+    
     // It's good that this doesn't exist yet because it would be really bad if it did
     pub fn remove<P: AsRef<Path>>(&self, name: P) {
         todo!()

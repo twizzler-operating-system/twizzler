@@ -95,6 +95,34 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
 
         r_vec
     }
+
+    pub fn change_namespace(&mut self, key: &str) {
+        let mut s = Schema {
+            key: ArrayString::from(key).unwrap(),
+            val: 0,
+        };
+        let bytes =
+            unsafe { std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(s) };
+        let handle = self.buffer.write(&bytes);
+
+        self.api.change_namespace(self.desc).unwrap()
+    }
+
+    pub fn put_namespace(&mut self, key: &str, val: u128) {
+        // I should write directly to the simple buffer
+        let mut s = Schema {
+            key: ArrayString::from(key).unwrap(),
+            val,
+        };
+
+        // Interpret schema as a slice
+        let bytes =
+            unsafe { std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(s) };
+
+        let handle = self.buffer.write(&bytes);
+
+        self.api.put_namespace(self.desc);
+    }
 }
 
 impl<'a, API: NamerAPI> Handle for NamingHandle<'a, API> {
