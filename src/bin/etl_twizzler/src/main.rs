@@ -2,8 +2,6 @@ use clap::{Parser, Subcommand};
 use etl_twizzler::etl::{Pack, PackType, Unpack};
 
 #[cfg(target_os = "twizzler")]
-use naming::NamingHandle;
-#[cfg(target_os = "twizzler")]
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
@@ -15,8 +13,7 @@ use twizzler_abi::{
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 #[cfg(target_os = "twizzler")]
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(target_os = "twizzler")]
-use etl_twizzler::etl::{twizzler_name_get, twizzler_name_create};
+
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -65,9 +62,6 @@ fn main() {
             offset,
         } => {
             let archive_stream = if let Some(archive_name) = archive_name {
-                #[cfg(target_os = "twizzler")]
-                let archive_name = twizzler_name_create(&archive_name).to_string();
-
                 let archive = std::fs::File::create(archive_name).unwrap();
                 Box::new(archive) as Box<dyn std::io::Write>
             } else {
@@ -105,17 +99,11 @@ fn main() {
             pack.build();
         }
         Commands::Unpack { archive_path } => {
-            #[cfg(target_os = "twizzler")]
-            let archive_path = twizzler_name_get(&archive_path).to_string();
-
             let archive = std::fs::File::open(archive_path).unwrap();
             let unpack = Unpack::new(archive).unwrap();
             unpack.unpack().unwrap();
         }
         Commands::Inspect { archive_path } => {
-            #[cfg(target_os = "twizzler")]
-            let archive_path = twizzler_name_get(&archive_path).to_string();
-
             let archive = std::fs::File::open(archive_path).unwrap();
             let unpack = Unpack::new(archive).unwrap();
             let mut stdout = std::io::stdout().lock();
@@ -125,9 +113,6 @@ fn main() {
             archive_path,
             query,
         } => {
-            #[cfg(target_os = "twizzler")]
-            let archive_path = twizzler_name_get(&archive_path).to_string();
-
             let archive = std::fs::File::open(archive_path).unwrap();
             let unpack = Unpack::new(archive).unwrap();
             let mut stdout = std::io::stdout().lock();
