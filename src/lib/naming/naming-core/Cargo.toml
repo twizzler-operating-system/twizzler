@@ -1,0 +1,11 @@
+[package]
+name = "naming-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arrayvec = "0.7.6"
+secgate = { path = "../../../lib/secgate" }
+monitor-api = { path = "../../../rt/monitor-api" }
+twizzler-rt-abi = "0.99"
+twizzler = { path = "../../../lib/twizzler" }

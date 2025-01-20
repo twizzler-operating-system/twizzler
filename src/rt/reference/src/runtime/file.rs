@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use lazy_static::lazy_static;
 use lru::LruCache;
+use naming_core::dynamic::{dynamic_naming_factory, DynamicNamingHandle};
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
@@ -66,10 +67,8 @@ fn get_fd_slots() -> &'static Mutex<StableVec<FdKind>> {
 
 impl ReferenceRuntime {
     pub fn open(&self, path: &str) -> Result<RawFd, OpenError> {
-        let obj_id = ObjID::new(
-            path.parse::<u128>()
-                .map_err(|_err| (OpenError::InvalidArgument))?,
-        );
+        let mut handle = dynamic_naming_factory().unwrap();
+        let obj_id = ObjID::new(handle.get(path).unwrap());
         let flags = MapFlags::READ | MapFlags::WRITE;
 
         let handle = self.map_object(obj_id, flags).unwrap();

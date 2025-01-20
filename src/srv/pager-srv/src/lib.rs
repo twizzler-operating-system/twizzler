@@ -209,14 +209,20 @@ async fn report_ready(
     }
 }
 
+static PAGER_DATA: OnceLock<(
+    PagerData,
+    Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+)> = OnceLock::new();
+
 fn do_pager_start(q1: ObjID, q2: ObjID) {
     let (rq, sq, data, ex) = pager_init(q1, q2);
     object_store::init(ex);
     let sq = Arc::new(sq);
+    let sqc = sq.clone();
     spawn_queues(&sq, rq, data.clone(), ex);
 
     let phys_range: Option<PhysRange> = block_on(async move {
-        let res = report_ready(&sq, ex).await;
+        let res = report_ready(&sqc, ex).await;
         match res {
             Some(PagerCompletionData::DramPages(range)) => {
                 Some(range) // Return the range
@@ -234,12 +240,13 @@ fn do_pager_start(q1: ObjID, q2: ObjID) {
             range.start,
             range.end
         );
-        memory_init(data, range);
+        memory_init(data.clone(), range);
     } else {
         tracing::error!("cannot complete pager initialization with no physical memory");
     }
     tracing::info!("pager ready");
 
+    let _ = PAGER_DATA.set((data, sq));
     /*
     object_store::unlink_object(777);
     let res = object_store::create_object(777).unwrap();
@@ -264,4 +271,16 @@ fn do_pager_start(q1: ObjID, q2: ObjID) {
 #[secgate::secure_gate]
 pub fn pager_start(q1: ObjID, q2: ObjID) {
     do_pager_start(q1, q2);
+}
+
+#[secgate::secure_gate]
+pub fn full_object_sync(id: ObjID) {
+    EXECUTOR
+        .get()
+        .unwrap()
+        .spawn(async move {
+            let pager = PAGER_DATA.get().unwrap();
+            pager.0.sync(&pager.1, id)
+        })
+        .detach();
 }

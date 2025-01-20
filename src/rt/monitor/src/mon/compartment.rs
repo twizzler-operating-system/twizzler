@@ -49,7 +49,7 @@ impl CompartmentMgr {
     }
 
     /// Get a [RunComp] by name.
-    pub fn _get_name_mut(&mut self, name: &str) -> Option<&mut RunComp> {
+    pub fn get_name_mut(&mut self, name: &str) -> Option<&mut RunComp> {
         let id = self.names.get(name)?;
         self.get_mut(*id)
     }
@@ -228,6 +228,38 @@ impl super::Monitor {
         })
     }
 
+    /// Get CompartmentInfo for this caller. Note that this will write to the compartment-thread's
+    /// simple buffer.
+    pub fn get_compartment_gate_address(
+        &self,
+        instance: ObjID,
+        thread: ObjID,
+        desc: Option<Descriptor>,
+        name_len: usize,
+    ) -> Option<usize> {
+        let name = self.read_thread_simple_buffer(instance, thread, name_len)?;
+        let (_, _, ref comps, ref dynlink, _, ref comphandles) =
+            *self.locks.lock(ThreadKey::get().unwrap());
+        let comp_id = desc
+            .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
+            .unwrap_or(Some(instance))?;
+        let name = String::from_utf8(name).ok()?;
+
+        let comp = comps.get(comp_id)?;
+        let dc = dynlink.get_compartment(comp.compartment_id).ok()?;
+        for lid in dc.library_ids() {
+            let lib = dynlink.get_library(lid).ok()?;
+            if let Some(gates) = lib.iter_secgates() {
+                for gate in gates {
+                    if gate.name().to_str().ok() == Some(name.as_str()) {
+                        return Some(gate.imp);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Open a compartment handle for this caller compartment.
     pub fn get_compartment_handle(&self, caller: ObjID, compartment: ObjID) -> Option<Descriptor> {
         let (_, _, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
@@ -241,6 +273,26 @@ impl super::Monitor {
                 } else {
                     compartment
                 },
+            },
+        )
+    }
+
+    /// Open a compartment handle for this caller compartment.
+    pub fn lookup_compartment(
+        &self,
+        instance: ObjID,
+        thread: ObjID,
+        name_len: usize,
+    ) -> Option<Descriptor> {
+        let name = self.read_thread_simple_buffer(instance, thread, name_len)?;
+        let name = String::from_utf8(name).ok()?;
+        let (_, _, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
+        let comp = comps.get_name_mut(&name)?;
+        comp.inc_use_count();
+        ch.insert(
+            instance,
+            super::CompartmentHandle {
+                instance: comp.instance,
             },
         )
     }

@@ -8,6 +8,9 @@ crate-type = ["rlib"]
 
 [dependencies]
 arrayvec = "0.7.6"
-naming-srv = { path = "../../srv/naming-srv" }
 secgate = { path = "../../lib/secgate" }
+monitor-api = { path = "../../rt/monitor-api" }
 twizzler-rt-abi = "0.99"
+twizzler = { path = "../../lib/twizzler" }
+naming-core = { path = "naming-core" }
+naming-srv = { path = "../../srv/naming-srv" }

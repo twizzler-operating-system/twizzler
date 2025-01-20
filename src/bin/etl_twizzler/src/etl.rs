@@ -2,14 +2,12 @@ use std::{
     fs::File,
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
     path::PathBuf,
+    sync::Mutex,
 };
+
 use lazy_static::lazy_static;
-use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tar::Header;
-
-#[cfg(target_os = "twizzler")]
-use naming::NamingHandle;
 #[cfg(target_os = "twizzler")]
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
@@ -20,14 +18,6 @@ use twizzler_abi::{
 };
 #[cfg(target_os = "twizzler")]
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
-
-// When the naming system gets integrated into the std::fs interface this will be removed
-#[cfg(target_os = "twizzler")]
-lazy_static! {
-    static ref NAMER: Mutex<NamingHandle> = {
-        Mutex::new(NamingHandle::new().unwrap())
-    };
-}
 
 // This type indicates what type of object you want to create, with the name inside
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Copy)]
@@ -57,9 +47,7 @@ where
     pub fn new(storage: W) -> Pack<W> {
         let mut tarchive = tar::Builder::new(storage);
         tarchive.mode(tar::HeaderMode::Deterministic);
-        Pack { 
-            tarchive: tarchive, 
-        }
+        Pack { tarchive }
     }
 
     pub fn file_add(
@@ -68,9 +56,6 @@ where
         pack_type: PackType,
         offset: u64,
     ) -> std::io::Result<()> {
-        let old_path = &path;
-        #[cfg(target_os = "twizzler")]
-        let path = twizzler_name_create(&path.to_string_lossy()).to_string();
         let mut f = File::open(&path)?;
         let len = f.seek(SeekFrom::End(0))?;
         f.seek(SeekFrom::Start(0))?;
@@ -88,7 +73,7 @@ where
         header.set_size(len);
 
         self.tarchive
-            .append_data(&mut header, old_path, &mut buf_writer)?;
+            .append_data(&mut header, &path, &mut buf_writer)?;
 
         Ok(())
     }
@@ -125,7 +110,11 @@ where
 }
 
 #[cfg(target_os = "twizzler")]
-pub fn create_twizzler_object() -> twizzler_object::ObjID {
+pub fn form_twizzler_object<R: std::io::Read>(
+    mut stream: R,
+    name: String,
+    offset: u64,
+) -> std::io::Result<twizzler_object::ObjID> {
     let create = ObjectCreate::new(
         BackingType::Normal,
         LifetimeType::Persistent,
@@ -134,35 +123,6 @@ pub fn create_twizzler_object() -> twizzler_object::ObjID {
     );
     let twzid = twizzler_abi::syscall::sys_object_create(create, &[], &[]).unwrap();
 
-    twzid
-}
-
-#[cfg(target_os = "twizzler")]
-pub fn twizzler_name_create(name: &str) -> u128 {
-    let mut namer = NAMER.lock().unwrap();
-    match namer.get(&name) {
-        Some(id) => id,
-        None => {
-            let twzid = create_twizzler_object();
-            namer.put(&name, twzid.as_u128());
-            twzid.as_u128()
-        },
-    }
-}
-
-#[cfg(target_os = "twizzler")]
-pub fn twizzler_name_get(name: &str) -> u128 {
-    let mut namer = NAMER.lock().unwrap();
-    namer.get(&name).unwrap()
-}
-
-#[cfg(target_os = "twizzler")]
-pub fn form_twizzler_object<R: std::io::Read>(
-    mut stream: R,
-    name: String,
-    offset: u64,
-) -> std::io::Result<twizzler_object::ObjID> {
-    let twzid = create_twizzler_object();
     let handle =
         twizzler_rt_abi::object::twz_rt_map_object(twzid, Protections::WRITE.into()).unwrap();
     let mut stream = BufReader::new(stream);
@@ -230,10 +190,8 @@ where
                     .to_owned();
                 let bad_idea: SpecialData =
                     bincode::deserialize(&entry.header().as_old().pad).unwrap();
-                
+
                 println!("unpacked {}", path);
-                #[cfg(target_os = "twizzler")]
-                let path = twizzler_name_create(&path).to_string();
                 match bad_idea.kind {
                     PackType::StdFile => {
                         form_fs_file(entry, path, bad_idea.offset)?;
