@@ -1,24 +1,30 @@
 #![feature(naked_functions)]
 #![feature(linkage)]
 
-use std::{default, sync::{Arc, Mutex}};
+use std::{
+    default,
+    sync::{Arc, Mutex},
+};
 
+use arrayvec::ArrayString;
 use lazy_static::lazy_static;
+use naming_core::definitions::Schema;
 use secgate::{
     secure_gate,
     util::{Descriptor, HandleMgr, SimpleBuffer},
 };
+use twizzler::{
+    collections::vec::{Vec, VecObject, VecObjectAlloc},
+    marker::Invariant,
+    object::{Object, ObjectBuilder, TypedObject},
+    ptr::GlobalPtr,
+};
 use twizzler_abi::{
     aux::KernelInitInfo,
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
-use twizzler_rt_abi::object::MapFlags;
-use arrayvec::ArrayString;
-use twizzler::{collections::vec::VecObject, marker::Invariant, object::{ObjectBuilder, TypedObject}};
-use twizzler::collections::vec::Vec;
-use twizzler::object::Object;
-use twizzler::collections::vec::VecObjectAlloc;
+use twizzler_rt_abi::object::{MapFlags, ObjID};
 
 fn get_kernel_init_info() -> &'static KernelInitInfo {
     unsafe {
@@ -59,20 +65,9 @@ impl NamespaceClient {
     }
 }
 
-pub const MAX_KEY_SIZE: usize = 255;
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Schema {
-    pub key: ArrayString<MAX_KEY_SIZE>,
-    pub val: u128,
-}
-
-unsafe impl Invariant for Schema {}
-
 struct Namer {
     handles: HandleMgr<NamespaceClient>,
-    names: VecObject<Schema, VecObjectAlloc>
+    names: VecObject<Schema, VecObjectAlloc>,
 }
 
 unsafe impl Send for Namer {}
@@ -82,14 +77,13 @@ impl Namer {
     fn new() -> Self {
         Self {
             handles: HandleMgr::new(None),
-            names: VecObject::new(ObjectBuilder::default()).unwrap()
+            names: VecObject::new(ObjectBuilder::default()).unwrap(),
         }
     }
 }
 
 lazy_static! {
     static ref NAMINGSERVICE: Mutex<Namer> = {
-
         let mut namer = Namer::new();
 
         let init_info = get_kernel_init_info();
@@ -123,11 +117,11 @@ pub fn put(info: &secgate::GateCallInfo, desc: Descriptor) {
     client.buffer.read(&mut buf);
     let provided =
         unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
-    
+
     for i in 0..namer.names.len() {
         let foo = namer.names.get(i).unwrap();
         if foo.key == provided.key {
-            unsafe {foo.mutable().val = provided.val}
+            unsafe { foo.mutable().val = provided.val }
         }
     }
 
@@ -189,11 +183,9 @@ pub fn enumerate_names(info: &secgate::GateCallInfo, desc: Descriptor) -> Option
     let mut vec = std::vec::Vec::<u8>::new();
     for i in 0..namer.names.len() {
         let foo = namer.names.get(i).unwrap();
-        vec.extend_from_slice(
-            unsafe {
-                &std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(*foo.raw())
-            }
-        );
+        vec.extend_from_slice(unsafe {
+            &std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(*foo.raw())
+        });
     }
     let mut buffer = SimpleBuffer::new(client.buffer.handle().clone());
     buffer.write(&vec);

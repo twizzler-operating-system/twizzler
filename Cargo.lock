@@ -3263,7 +3263,6 @@ dependencies = [
  "async-io",
  "futures",
  "monitor-api",
- "pager",
  "polling",
  "rprompt",
  "tracing",
@@ -3891,6 +3890,7 @@ version = "0.1.0"
 dependencies = [
  "ctor",
  "monitor",
+ "monitor-api",
  "montest-lib",
  "secgate",
  "tracing",

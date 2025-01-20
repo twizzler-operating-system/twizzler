@@ -174,6 +174,9 @@ pub fn idle_main() -> ! {
         current_processor().id
     );
     loop {
+        {
+            current_processor().cleanup_exited();
+        }
         sched::schedule(true);
         arch::processor::halt_and_wait();
     }

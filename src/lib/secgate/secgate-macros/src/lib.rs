@@ -8,9 +8,11 @@ use proc_macro::{Diagnostic, Level};
 use proc_macro2::{Ident, TokenStream};
 use quote::{quote, ToTokens};
 use syn::{
-    parse2, parse_quote, punctuated::Punctuated, token::Pub, Attribute, BareFnArg, Error,
-    ForeignItemFn, ItemFn, LitStr, Path, ReturnType, Signature, Token, Type, TypeBareFn, TypePath,
-    Visibility,
+    parse2, parse_quote,
+    punctuated::Punctuated,
+    token::{Pub, Unsafe},
+    Attribute, BareFnArg, Error, ForeignItemFn, ItemFn, LitStr, Path, ReturnType, Signature, Token,
+    Type, TypeBareFn, TypePath, Visibility,
 };
 
 #[proc_macro_attribute]
@@ -404,9 +406,9 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
 
 fn build_struct(_tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
     let Info {
-        mod_name: _mod_name,
+        mod_name,
         entry_type_name,
-        entry_name,
+        trampoline_name,
         fn_name,
         struct_name,
         ..
@@ -419,8 +421,8 @@ fn build_struct(_tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
 
     Ok(quote! {
         #[used]
-        pub static #struct_name: secgate::SecGateInfo<&'static #entry_type_name> =
-            secgate::SecGateInfo::new(&(#entry_name as #entry_type_name), unsafe {std::ffi::CStr::from_bytes_with_nul_unchecked(#str_lit)});
+        pub static #struct_name: secgate::SecGateInfo<#entry_type_name> =
+            secgate::SecGateInfo::new(#mod_name::trampoline_impl::#trampoline_name as #entry_type_name, unsafe {std::ffi::CStr::from_bytes_with_nul_unchecked(#str_lit)});
     })
 }
 
@@ -449,7 +451,7 @@ fn build_types(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
 
     let ty = TypeBareFn {
         lifetimes: None,
-        unsafety: entry_sig.unsafety,
+        unsafety: Some(Unsafe::default()),
         abi: entry_sig.abi,
         fn_token: entry_sig.fn_token,
         paren_token: entry_sig.paren_token,
