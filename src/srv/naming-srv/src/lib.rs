@@ -2,12 +2,12 @@
 #![feature(linkage)]
 
 use std::{
-    default, fs::OpenOptions, ops::DerefMut, path::Path, sync::{Arc, Mutex}
+    default, fs::OpenOptions, io::{Error, Result}, ops::DerefMut, path::Path, sync::{Arc, Mutex}
 };
 
 use arrayvec::ArrayString;
 use lazy_static::lazy_static;
-use naming_core::{handle::Schema, store::{NameStore, NameSession, EntryType}, MAX_KEY_SIZE};
+use naming_core::{handle::Schema, NameStore, NameSession, EntryType, MAX_KEY_SIZE};
 use secgate::{
     secure_gate,
     util::{Descriptor, HandleMgr, SimpleBuffer},
@@ -88,7 +88,7 @@ lazy_static! {
             let init_info = get_kernel_init_info();
     
             for n in init_info.names() {
-                session.put("/initrd/".to_owned() + n.name(), EntryType::Name(n.id().raw()));
+                session.put("/initrd/".to_owned() + n.name(), EntryType::Object(n.id().raw()));
             }
         }
         namer
@@ -129,7 +129,7 @@ pub fn put(info: &secgate::GateCallInfo, desc: Descriptor) {
     let provided =
         unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
 
-    client.session.put(provided.key.as_str(), EntryType::Name(provided.val));
+    client.session.put(provided.key.as_str(), EntryType::Object(provided.val));
 }
 
 #[secure_gate(options(info))]
@@ -145,7 +145,12 @@ pub fn get(info: &secgate::GateCallInfo, desc: Descriptor) -> Option<u128> {
     let provided =
         unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
     
-    client.session.get(provided.key.as_str())
+    let entry = client.session.get(provided.key.as_str()).ok()?;
+
+    match entry.entry_type {
+        EntryType::Object(x) => Some(x),
+        EntryType::Namespace => None,
+    }
 }
 
 #[secure_gate(options(info))]
@@ -162,14 +167,21 @@ pub fn enumerate_names(info: &secgate::GateCallInfo, desc: Descriptor) -> Option
         unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
 
     // TODO: make not bad
-    let mut vec1 = client.session.enumerate_namespace(provided.key);
+    let mut vec1 = client.session.enumerate_namespace(provided.key).ok()?;
     let len = vec1.len();
     let mut vec = std::vec::Vec::<u8>::new();
     for i in vec1 {
         vec.extend_from_slice(unsafe {
-            &std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(i)
-        });
-    }
+            &std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(Schema { 
+                key: i.name, 
+                val: match i.entry_type {
+                    EntryType::Object(x) => x,
+                    EntryType::Namespace => 0,
+                } 
+            })
+            });
+        }
+    
     let mut buffer = SimpleBuffer::new(client.buffer.handle().clone());
     buffer.write(&vec);
 

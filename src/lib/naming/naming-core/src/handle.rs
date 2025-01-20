@@ -5,9 +5,7 @@ use secgate::{
 };
 use twizzler_rt_abi::object::{MapFlags, ObjID};
 use twizzler::marker::Invariant;
-use crate::api::NamerAPI;
-
-pub const MAX_KEY_SIZE: usize = 255;
+use crate::{api::NamerAPI, MAX_KEY_SIZE};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -17,7 +15,6 @@ pub struct Schema {
 }
 
 unsafe impl Invariant for Schema {}
-
 
 pub struct NamingHandle<'a, API: NamerAPI> {
     desc: u32,
