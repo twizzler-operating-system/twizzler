@@ -6,7 +6,7 @@ use core::{
 
 use lazy_static::lazy_static;
 use lru::LruCache;
-use rustc_alloc::{string::ToString, sync::Arc};
+use rustc_alloc::sync::Arc;
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},

@@ -1552,7 +1552,6 @@ dependencies = [
  "bincode",
  "clap",
  "lazy_static",
- "naming",
  "serde",
  "tar 0.4.43 (git+https://github.com/CPTforever/tar-rs.git?branch=twizzler)",
  "twizzler-abi",
@@ -3913,8 +3912,22 @@ name = "naming"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "monitor-api",
+ "naming-core",
  "naming-srv",
  "secgate",
+ "twizzler",
+ "twizzler-rt-abi",
+]
+
+[[package]]
+name = "naming-core"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "monitor-api",
+ "secgate",
+ "twizzler",
  "twizzler-rt-abi",
 ]
 
@@ -3924,6 +3937,7 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "lazy_static",
+ "naming-core",
  "secgate",
  "twizzler",
  "twizzler-abi",
@@ -6160,6 +6174,7 @@ dependencies = [
  "num_enum",
  "paste",
  "printf-compat",
+ "spin 0.5.2",
  "stable-vec",
  "static_assertions",
  "talc",
@@ -6235,6 +6250,7 @@ dependencies = [
  "lazy_static",
  "lru",
  "monitor-api",
+ "naming-core",
  "paste",
  "printf-compat",
  "secgate",

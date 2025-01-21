@@ -1,11 +1,7 @@
-use std::{
-    any::TypeId,
-    mem::{ManuallyDrop, MaybeUninit},
-    ops::Deref,
-};
+use std::{mem::MaybeUninit, ops::Deref};
 
 use super::TxObject;
-use crate::{marker::BaseType, object::RawObject, ptr::RefMut};
+use crate::{object::RawObject, ptr::RefMut};
 
 pub struct TxRef<T> {
     ptr: *mut T,

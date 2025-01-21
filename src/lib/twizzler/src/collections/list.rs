@@ -1,11 +1,10 @@
-use std::mem::MaybeUninit;
-
 use crate::{
     alloc::{invbox::InvBox, Allocator, OwnedGlobalPtr},
     marker::{BaseType, Invariant},
-    tx::{Result, TxCell, TxHandle, TxObject, TxRef},
+    tx::TxObject,
 };
 
+#[allow(dead_code)]
 pub struct ListNode<T: Invariant, A: Allocator> {
     value: T,
     next: Option<InvBox<Self, A>>,
@@ -30,14 +29,12 @@ impl<T: Invariant, A: Allocator + Clone> ListNode<T, A> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        alloc::arena::{ArenaAllocator, ArenaObject},
-        object::{ObjectBuilder, TypedObject},
-    };
+    use crate::alloc::arena::{ArenaAllocator, ArenaObject};
 
-    //#[test]
+    #[test]
     fn simple() {
         let arena = ArenaObject::new().unwrap();
         let alloc = arena.allocator();
@@ -59,7 +56,7 @@ mod tests {
         assert_eq!(rnode0.value, 3);
     }
 
-    //#[test]
+    #[test]
     fn with_boxes() {
         struct Node {
             data: InvBox<u32, ArenaAllocator>,

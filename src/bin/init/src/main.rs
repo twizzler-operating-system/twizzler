@@ -50,7 +50,8 @@ fn initialize_pager() {
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
+            .with_max_level(tracing::Level::INFO)
+            .without_time()
             .finish(),
     )
     .unwrap();

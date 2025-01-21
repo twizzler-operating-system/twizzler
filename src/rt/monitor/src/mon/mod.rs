@@ -9,7 +9,7 @@ use happylock::{LockCollection, RwLock, ThreadKey};
 use monitor_api::{RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo, MONITOR_INSTANCE_ID};
 use secgate::util::HandleMgr;
 use thread::DEFAULT_STACK_SIZE;
-use twizzler_abi::{klog_println, syscall::sys_thread_exit, upcall::UpcallFrame};
+use twizzler_abi::{syscall::sys_thread_exit, upcall::UpcallFrame};
 use twizzler_rt_abi::{
     object::{MapError, MapFlags, ObjID},
     thread::{SpawnError, ThreadSpawnArgs},

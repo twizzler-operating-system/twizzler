@@ -1,10 +1,10 @@
-use std::{marker::PhantomData, sync::atomic::AtomicU32};
+use std::marker::PhantomData;
 
 use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::object::MapFlags;
 
 use super::Ref;
-use crate::object::{FotEntry, Object, RawObject};
+use crate::object::RawObject;
 
 #[derive(Debug, Default, PartialEq, PartialOrd, Ord, Eq, Hash)]
 /// A global pointer, containing a fully qualified object ID and offset.

@@ -6,8 +6,8 @@ use twizzler_rt_abi::object::ObjectHandle;
 use super::{GlobalPtr, Ref};
 use crate::{
     marker::{Invariant, PhantomStoreEffect},
-    object::{FotEntry, RawObject},
-    tx::{Result, TxHandle, TxObject},
+    object::RawObject,
+    tx::TxObject,
 };
 
 #[repr(C)]

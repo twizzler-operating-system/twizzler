@@ -143,7 +143,7 @@ impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
         self.do_push(item, tx)
     }
 
-    pub fn pop(&self, tx: &impl TxHandle) -> Result<T> {
+    pub fn pop(&self, _tx: &impl TxHandle) -> Result<T> {
         todo!()
     }
 }
@@ -165,6 +165,7 @@ impl<T: Invariant, Alloc: Allocator + SingleObjectAllocator> Vec<T, Alloc> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
