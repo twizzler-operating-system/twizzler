@@ -106,7 +106,6 @@ impl<F, R> KthreadClosure<F, R> {
     /// Wait for the other thread to finish and provide the result.
     #[track_caller]
     pub fn wait(self: Arc<Self>) -> R {
-        let caller = core::panic::Location::caller();
         loop {
             current_processor().cleanup_exited();
             let guard = self.result.lock();

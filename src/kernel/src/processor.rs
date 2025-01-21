@@ -1,6 +1,7 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     alloc::Layout,
+    cell::RefCell,
     ptr::null_mut,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
@@ -19,13 +20,13 @@ use crate::{
 };
 
 #[thread_local]
-static mut BOOT_KERNEL_STACK: *mut u8 = core::ptr::null_mut();
+static BOOT_KERNEL_STACK: RefCell<*mut u8> = RefCell::new(core::ptr::null_mut());
 
 #[thread_local]
-static mut CPU_ID: u32 = 0;
+static CPU_ID: RefCell<u32> = RefCell::new(0);
 
 #[thread_local]
-static mut CURRENT_PROCESSOR: *const Processor = null_mut();
+static CURRENT_PROCESSOR: RefCell<*const Processor> = RefCell::new(null_mut());
 
 #[derive(Debug, Default)]
 pub struct ProcessorStats {
@@ -268,11 +269,18 @@ pub fn current_processor() -> &'static Processor {
     if !tls_ready() {
         panic!("tried to read a thread-local value with no FS base set");
     }
-    unsafe { CURRENT_PROCESSOR.as_ref() }.unwrap()
+    unsafe { CURRENT_PROCESSOR.borrow().as_ref() }.unwrap()
 }
 
 const INIT: Option<Box<Processor>> = None;
 static mut ALL_PROCESSORS: [Option<Box<Processor>>; MAX_CPU_ID + 1] = [INIT; MAX_CPU_ID + 1];
+
+pub fn all_processors() -> &'static [Option<Box<Processor>>; MAX_CPU_ID + 1] {
+    unsafe {
+        #[allow(static_mut_refs)]
+        &ALL_PROCESSORS
+    }
+}
 
 pub fn get_processor(id: u32) -> &'static Processor {
     unsafe { ALL_PROCESSORS[id as usize].as_ref().unwrap() }
@@ -285,7 +293,7 @@ pub unsafe fn get_processor_mut(id: u32) -> &'static mut Processor {
 }
 
 pub fn with_each_active_processor(mut f: impl FnMut(&'static Processor)) {
-    for p in unsafe { &ALL_PROCESSORS } {
+    for p in all_processors() {
         if let Some(p) = p {
             if p.is_running() {
                 f(p)
@@ -305,9 +313,10 @@ pub fn init_cpu(tls_template: TlsInfo, bsp_id: u32) {
     let tcb_base = crate::arch::image::init_tls(tls_template);
     crate::arch::processor::init(tcb_base);
     unsafe {
-        BOOT_KERNEL_STACK = 0xfffffff000001000u64 as *mut u8; //TODO: get this from bootloader config?
-        CPU_ID = bsp_id;
-        CURRENT_PROCESSOR = &**ALL_PROCESSORS[CPU_ID as usize].as_ref().unwrap();
+        *BOOT_KERNEL_STACK.borrow_mut() = 0xfffffff000001000u64 as *mut u8; //TODO: get this from bootloader config?
+        *CPU_ID.borrow_mut() = bsp_id;
+        *CURRENT_PROCESSOR.borrow_mut() =
+            &**ALL_PROCESSORS[*CPU_ID.borrow() as usize].as_ref().unwrap();
     }
     let topo_path = arch::processor::get_topology();
     current_processor().set_topology(topo_path);
@@ -319,9 +328,9 @@ static CPU_MAIN_BARRIER: AtomicBool = AtomicBool::new(false);
 pub fn secondary_entry(id: u32, tcb_base: VirtAddr, kernel_stack_base: *mut u8) -> ! {
     crate::arch::processor::init(tcb_base);
     unsafe {
-        BOOT_KERNEL_STACK = kernel_stack_base;
-        CPU_ID = id;
-        CURRENT_PROCESSOR = &**ALL_PROCESSORS[id as usize].as_ref().unwrap();
+        *BOOT_KERNEL_STACK.borrow_mut() = kernel_stack_base;
+        *CPU_ID.borrow_mut() = id;
+        *CURRENT_PROCESSOR.borrow_mut() = &**ALL_PROCESSORS[id as usize].as_ref().unwrap();
     }
     arch::init_secondary();
     let topo_path = arch::processor::get_topology();
@@ -352,7 +361,7 @@ fn start_secondary_cpu(cpu: u32, tls_template: TlsInfo) {
 }
 
 pub fn boot_all_secondaries(tls_template: TlsInfo) {
-    for p in unsafe { &ALL_PROCESSORS }.iter().flatten() {
+    for p in all_processors().iter().flatten() {
         if !p.running.load(core::sync::atomic::Ordering::SeqCst) {
             start_secondary_cpu(p.id, tls_template);
         }
@@ -363,7 +372,7 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
     }
 
     let mut cpu_topo_root = CPUTopoNode::new(CPUTopoType::System);
-    for p in unsafe { &ALL_PROCESSORS }.iter().flatten() {
+    for p in all_processors().iter().flatten() {
         let topo_path = p.topology_path.wait();
         cpu_topo_root.set_cpu(p.id);
         let mut level = &mut cpu_topo_root;
@@ -393,7 +402,7 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
 }
 
 pub fn register(id: u32, bsp_id: u32) {
-    if id as usize >= unsafe { &ALL_PROCESSORS }.len() {
+    if id as usize >= all_processors().len() {
         logln!("processor ID {} not supported (too large)", id);
         return;
     }
@@ -408,7 +417,7 @@ pub fn register(id: u32, bsp_id: u32) {
 
 fn enqueue_ipi_task_many(incl_self: bool, task: &Arc<IpiTask>) {
     let current = current_processor();
-    for p in unsafe { &ALL_PROCESSORS }.iter().flatten() {
+    for p in all_processors().iter().flatten() {
         if p.id != current.id || incl_self {
             p.enqueue_ipi_task(task.clone());
         }

@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree};
-use twizzler_abi::{object::ObjID, thread::ExecutionState};
+use twizzler_abi::object::ObjID;
 
 use crate::{
     sched::schedule_thread,

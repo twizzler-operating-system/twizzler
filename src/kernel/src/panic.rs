@@ -1,37 +1,41 @@
+use alloc::{borrow::Cow, boxed::Box};
 use core::panic::PanicInfo;
 
-use addr2line::Context;
-use object::{Object, ObjectSection};
+use addr2line::{gimli::EndianSlice, Context};
+use object::{read::elf::ElfFile64, Object, ObjectSection};
 
-use crate::interrupt::disable;
+use crate::{interrupt::disable, once::Once};
 
-static mut DEBUG_CTX: Option<
-    Context<addr2line::gimli::EndianReader<addr2line::gimli::RunTimeEndian, alloc::rc::Rc<[u8]>>>,
-> = None;
+type ElfSlice = addr2line::gimli::read::EndianSlice<'static, addr2line::gimli::RunTimeEndian>;
+
+struct DebugCtx {
+    ctx: Context<ElfSlice>,
+}
+
+unsafe impl Send for DebugCtx {}
+unsafe impl Sync for DebugCtx {}
+
+static DEBUG_CTX: Once<DebugCtx> = Once::new();
 
 fn load_debug_context(
-    file: &object::read::elf::ElfFile64,
-) -> Option<
-    addr2line::Context<addr2line::gimli::read::EndianRcSlice<addr2line::gimli::RunTimeEndian>>,
-> {
+    file: &'static object::read::elf::ElfFile64,
+) -> Option<addr2line::Context<ElfSlice>> {
     let endian = addr2line::gimli::RunTimeEndian::Little; //TODO
     fn load_section(
         id: addr2line::gimli::SectionId,
-        file: &object::read::elf::ElfFile64,
+        file: &'static object::read::elf::ElfFile64,
         endian: addr2line::gimli::RunTimeEndian,
-    ) -> Result<addr2line::gimli::read::EndianRcSlice<addr2line::gimli::RunTimeEndian>, object::Error>
-    {
-        let data = file
-            .section_by_name(id.name())
-            .and_then(|section| section.uncompressed_data().ok())
-            .unwrap_or(alloc::borrow::Cow::Borrowed(&[]));
-        Ok(addr2line::gimli::EndianRcSlice::new(
-            alloc::rc::Rc::from(&*data),
-            endian,
-        ))
+    ) -> Option<ElfSlice> {
+        file.section_by_name(id.name()).and_then(|section| {
+            let data = section.uncompressed_data().ok()?;
+            Some(match data {
+                Cow::Borrowed(data) => EndianSlice::new(data, endian),
+                Cow::Owned(data) => EndianSlice::new(Box::leak(data.into_boxed_slice()), endian),
+            })
+        })
     }
 
-    let result = addr2line::gimli::Dwarf::load(|id| load_section(id, file, endian));
+    let result = addr2line::gimli::Dwarf::load(|id| load_section(id, file, endian).ok_or(()));
     match result {
         Ok(dwarf) => match addr2line::Context::from_dwarf(dwarf) {
             Ok(dwarf) => Some(dwarf),
@@ -40,18 +44,21 @@ fn load_debug_context(
                 None
             }
         },
-        Err(e) => {
-            logln!("loading debug information failed: {:?}", e);
+        Err(_) => {
+            logln!("loading debug information failed");
             None
         }
     }
 }
 
 pub fn init(kernel_image: &'static [u8]) {
+    static IMAGE: Once<ElfFile64> = Once::new();
     let image =
         object::read::elf::ElfFile64::parse(kernel_image).expect("failed to parse kernel image");
-    let ctx = load_debug_context(&image);
-    unsafe { DEBUG_CTX = ctx };
+    let image = IMAGE.call_once(|| image);
+    if let Some(ctx) = load_debug_context(&image) {
+        DEBUG_CTX.call_once(|| DebugCtx { ctx });
+    }
 }
 
 const MAX_FRAMES: usize = 100;
@@ -65,7 +72,7 @@ pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoin
         } else {
             // Resolve this instruction pointer to a symbol name
             let _ = backtracer_core::resolve(
-                if let Some(ref ctx) = unsafe { &DEBUG_CTX } {
+                if let Some(ctx) = DEBUG_CTX.poll().map(|d| &d.ctx) {
                     Some(ctx)
                 } else {
                     None

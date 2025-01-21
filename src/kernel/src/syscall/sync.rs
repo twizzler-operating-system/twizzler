@@ -22,14 +22,12 @@ struct Requeue {
 }
 
 /* TODO: make this thread-local */
-static mut REQUEUE: Once<Requeue> = Once::new();
+static REQUEUE: Once<Requeue> = Once::new();
 
 fn get_requeue_list() -> &'static Requeue {
-    unsafe {
-        REQUEUE.call_once(|| Requeue {
-            list: Spinlock::new(BTreeMap::new()),
-        })
-    }
+    REQUEUE.call_once(|| Requeue {
+        list: Spinlock::new(BTreeMap::new()),
+    })
 }
 
 pub fn requeue_all() {

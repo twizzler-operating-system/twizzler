@@ -3,7 +3,7 @@ use core::mem::MaybeUninit;
 use object::object_ctrl;
 use twizzler_abi::{
     kso::{KactionCmd, KactionError, KactionValue},
-    object::{ObjID, Protections, MAX_SIZE},
+    object::{ObjID, Protections},
     syscall::{
         ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, GetRandomError,
         GetRandomFlags, HandleType, KernelConsoleReadSource, ObjectCreateError, ObjectMapError,
@@ -20,7 +20,6 @@ use crate::{
     clock::{fill_with_every_first, fill_with_first_kind, fill_with_kind},
     memory::VirtAddr,
     random::getrandom,
-    thread::current_thread_ref,
     time::TICK_SOURCES,
 };
 
@@ -105,7 +104,7 @@ fn type_sys_kaction(
     let objid = if hi == 0 {
         None
     } else {
-        Some(ObjID::new_from_parts(hi, lo))
+        Some(ObjID::from_parts([hi, lo]))
     };
     crate::device::kaction(cmd, objid, arg, arg2)
 }
@@ -299,7 +298,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let _flags = context.arg3::<u64>();
             let result = handle_type
                 .try_into()
-                .and_then(|nh: HandleType| sys_new_handle(ObjID::new_from_parts(hi, lo), nh));
+                .and_then(|nh: HandleType| sys_new_handle(ObjID::from_parts([hi, lo]), nh));
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
@@ -307,7 +306,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let hi = context.arg0();
             let lo = context.arg1();
             let _flags = context.arg2::<u64>();
-            let id = ObjID::new_from_parts(hi, lo);
+            let id = ObjID::from_parts([hi, lo]);
             sys_unbind_handle(id);
             context.set_return_values(0u64, 0u64);
         }
@@ -318,7 +317,8 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let tie_ptr = context.arg3();
             let tie_len = context.arg4();
             let result = type_sys_object_create(create, src_ptr, src_len, tie_ptr, tie_len);
-            let (code, val) = convert_result_to_codes(result, |id| id.split(), zero_err);
+            let (code, val) =
+                convert_result_to_codes(result, |id| (id.parts()[0], id.parts()[1]), zero_err);
             context.set_return_values(code, val);
         }
         Syscall::Spawn => {
@@ -326,7 +326,8 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let args = unsafe { create_user_ptr(args) };
             if let Some(args) = args {
                 let result = thread::sys_spawn(args);
-                let (code, val) = convert_result_to_codes(result, |id| id.split(), zero_err);
+                let (code, val) =
+                    convert_result_to_codes(result, |id| (id.parts()[0], id.parts()[1]), zero_err);
                 context.set_return_values(code, val);
             } else {
                 context.set_return_values(0u64, ThreadSpawnError::InvalidArgument as u64);
@@ -337,7 +338,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let lo = context.arg1();
             let slot = context.arg2::<u64>() as usize;
             let prot = Protections::from_bits(context.arg3::<u64>() as u32);
-            let id = ObjID::new_from_parts(hi, lo);
+            let id = ObjID::from_parts([hi, lo]);
             let handle = context.arg5();
             let handle = unsafe { create_user_ptr(handle) };
             let result = if let Some(handle) = handle {
@@ -355,7 +356,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let hi = context.arg0();
             let lo = context.arg1();
             let slot = context.arg2::<u64>() as usize;
-            let id = ObjID::new_from_parts(hi, lo);
+            let id = ObjID::from_parts([hi, lo]);
             let out = context.arg3();
             let out = unsafe { create_user_ptr(out) };
             let result = if let Some(out) = out {
@@ -373,7 +374,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
         Syscall::SctxAttach => {
             let hi = context.arg0();
             let lo = context.arg1();
-            let id = ObjID::new_from_parts(hi, lo);
+            let id = ObjID::from_parts([hi, lo]);
             let result = sys_sctx_attach(id).map(|_| 0u64);
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
@@ -397,7 +398,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             }
         }
         Syscall::ThreadCtrl => {
-            let (code, val) = thread_ctrl(context.arg0::<u64>().into(), context.arg1());
+            let [code, val] = thread_ctrl(context.arg0::<u64>().into(), context.arg1());
             context.set_return_values(code, val);
             return;
         }
