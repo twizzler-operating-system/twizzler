@@ -182,7 +182,7 @@ where
 mod test {
     use twizzler_kernel_macros::kernel_test;
 
-    use crate::thread::{current_thread_ref, Priority};
+    use crate::thread::Priority;
 
     #[kernel_test]
     fn test_closure() {

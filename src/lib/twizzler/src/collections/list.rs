@@ -64,9 +64,9 @@ mod tests {
 
         impl Node {
             fn new(
-                tx: impl AsRef<TxObject>,
-                value: u32,
-                alloc: ArenaAllocator,
+                _tx: impl AsRef<TxObject>,
+                _value: u32,
+                _alloc: ArenaAllocator,
             ) -> crate::tx::Result<Self> {
                 todo!()
             }
@@ -76,7 +76,7 @@ mod tests {
 
         let arena = ArenaObject::new().unwrap();
         let alloc = arena.allocator();
-        let data0 = arena.alloc(3);
+        let _data0 = arena.alloc(3);
         let tx = arena.tx().unwrap();
         let node0 = ListNode::new(&tx, Node::new(&tx, 3, alloc).unwrap(), None, alloc).unwrap();
         let node0 = tx.alloc(node0).unwrap();

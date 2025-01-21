@@ -1,6 +1,4 @@
-use std::fs::File;
-
-use naming::{dynamic_naming_factory, static_naming_factory};
+use naming::dynamic_naming_factory;
 
 fn main() {
     let mut handle = dynamic_naming_factory().unwrap();

@@ -82,7 +82,7 @@ impl<S: Read + Write + Seek + IO> FileSystem<S> {
         Ok(free_head)
     }
 
-    pub(crate) fn free_block(&mut self, block: u64) -> Result<(), FSError<S::Error>> {
+    pub(crate) fn _free_block(&mut self, block: u64) -> Result<(), FSError<S::Error>> {
         let mut frame = self.frame()?;
         let mut fat = frame.fat()?;
 

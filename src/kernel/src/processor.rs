@@ -535,14 +535,13 @@ mod test {
 
     use twizzler_kernel_macros::kernel_test;
 
-    use super::ALL_PROCESSORS;
     use crate::interrupt::Destination;
 
     const NR_IPI_TEST_ITERS: usize = 1000;
     #[kernel_test]
     fn ipi_test() {
         for _ in 0..NR_IPI_TEST_ITERS {
-            let nr_cpus = unsafe { &ALL_PROCESSORS }.iter().flatten().count();
+            let nr_cpus = super::all_processors().iter().flatten().count();
             let counter = Arc::new(AtomicUsize::new(0));
             let counter2 = counter.clone();
             super::ipi_exec(

@@ -1,4 +1,4 @@
-use std::{io::Error, sync::Arc};
+use std::sync::Arc;
 
 use miette::{IntoDiagnostic, Result};
 use twizzler_abi::pager::{CompletionToPager, ObjectRange, PhysRange, RequestFromPager};
@@ -32,7 +32,7 @@ pub fn page_to_physrange(page_num: usize, range_start: u64) -> PhysRange {
 /// Converts an `ObjectRange` representing a single page into the page number.
 /// Assumes the range is within a valid memory mapping and spans exactly one page (4096 bytes).
 /// Returns the page number starting at 0.
-pub fn objectrange_to_page_number(object_range: &ObjectRange) -> Option<u64> {
+pub fn _objectrange_to_page_number(object_range: &ObjectRange) -> Option<u64> {
     if object_range.end - object_range.start != PAGE {
         return None; // Invalid ObjectRange for a single page
     }
@@ -123,24 +123,24 @@ mod tests {
             start: 0,
             end: 4096,
         };
-        assert_eq!(objectrange_to_page_number(&range), Some(0));
+        assert_eq!(_objectrange_to_page_number(&range), Some(0));
 
         let range = ObjectRange {
             start: 4096,
             end: 8192,
         };
-        assert_eq!(objectrange_to_page_number(&range), Some(1));
+        assert_eq!(_objectrange_to_page_number(&range), Some(1));
 
         let range = ObjectRange {
             start: 0,
             end: 8192,
         }; // Invalid range for one page
-        assert_eq!(objectrange_to_page_number(&range), None);
+        assert_eq!(_objectrange_to_page_number(&range), None);
 
         let range = ObjectRange {
             start: 8192,
             end: 12288,
         };
-        assert_eq!(objectrange_to_page_number(&range), Some(2));
+        assert_eq!(_objectrange_to_page_number(&range), Some(2));
     }
 }

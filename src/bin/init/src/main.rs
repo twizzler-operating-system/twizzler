@@ -184,7 +184,7 @@ fn run_tests(test_list_name: &str, benches: bool) {
         };
         let bytes = &bytes[0..bytes.iter().position(|r| *r == 0).unwrap_or(0)];
         let str = String::from_utf8(bytes.to_vec()).unwrap();
-        let mut test_failed = false;
+        let test_failed = false;
         for line in str.split("\n").filter(|l| !l.is_empty()) {
             println!("STARTING TEST {}", line);
             let test_comp = monitor_api::CompartmentLoader::new(
@@ -209,33 +209,15 @@ fn run_tests(test_list_name: &str, benches: bool) {
     }
 }
 
-/*
-#[naked]
-#[no_mangle]
-extern "C" fn _start() -> ! {
-    unsafe { asm!("call std_runtime_start", options(noreturn)) }
-}
-*/
-
-use std::{
-    sync::{atomic::AtomicU64, Arc, Mutex},
-    time::Duration,
-};
-
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
 use tracing::{debug, info, warn};
 use twizzler_abi::{
     aux::KernelInitInfo,
-    device::SubObjectType,
-    kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue},
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     pager::{CompletionToKernel, RequestFromKernel},
     syscall::{
-        sys_kaction, sys_new_handle, sys_object_create, sys_thread_sync, BackingType, LifetimeType,
-        NewHandleFlags, ObjectControlCmd, ObjectCreate, ObjectCreateFlags, ThreadSync,
-        ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+        sys_new_handle, BackingType, LifetimeType, NewHandleFlags, ObjectCreate, ObjectCreateFlags,
+        ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
     },
-    thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_object::{CreateSpec, Object, ObjectInitFlags};
-use twizzler_rt_abi::object::{MapFlags, ObjectHandle};

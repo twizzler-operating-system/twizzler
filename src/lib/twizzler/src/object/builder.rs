@@ -69,12 +69,7 @@ impl<Base: BaseType> Default for ObjectBuilder<Base> {
 #[cfg(test)]
 mod tests {
     use super::ObjectBuilder;
-    use crate::{
-        marker::{BaseType, StoreCopy},
-        object::TypedObject,
-        ptr::{GlobalPtr, InvPtr, Ref},
-        tx::{TxHandle, TxObject},
-    };
+    use crate::{marker::BaseType, object::TypedObject, ptr::InvPtr};
 
     #[test]
     fn builder_simple() {

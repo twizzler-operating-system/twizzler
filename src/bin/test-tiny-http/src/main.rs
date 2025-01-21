@@ -1,9 +1,11 @@
 // extern crate twizzler_abi;
-use tiny_http::shim::SmolTcpListener as TcpListener;
+use std::{
+    io::{Read, Write},
+    sync::Arc,
+    thread,
+};
+
 use tiny_http::{shim::SmolTcpStream as TcpStream, Response, Server};
-use std::{io::{Read, Write},
-        sync::{Arc},
-        thread,};
 
 // hello world made single threaded : TINY_HTTP
 fn main() {
@@ -18,7 +20,7 @@ fn main() {
                 request.url(),
                 request.headers()
             );
-    
+
             let response = Response::from_string("hello world");
             request.respond(response).expect("Responded");
         }
@@ -38,8 +40,9 @@ fn std_client(port: u16) -> std::io::Result<()> {
     let msg = b"GET /notes HTTP/1.1\r\n\r\n";
     let _result = client.write(msg)?;
     println!("{}", client.read(&mut rx_buffer)?);
-    println!("{}", String::from_utf8((&rx_buffer[0..2048]).to_vec()).unwrap());
+    println!(
+        "{}",
+        String::from_utf8((&rx_buffer[0..2048]).to_vec()).unwrap()
+    );
     Ok(())
 }
-
-

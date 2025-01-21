@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     io::Error,
-    sync::{LazyLock, Mutex, MutexGuard, OnceLock},
+    sync::{LazyLock, Mutex, MutexGuard},
 };
 
 use chacha20::{
@@ -109,7 +109,7 @@ pub fn format() {
     let mut disk = DISK.get().unwrap().clone();
     fs::format(&mut disk);
     drop(disk);
-    let mut fs = FS.get().unwrap().lock().unwrap();
+    let fs = FS.get().unwrap().lock().unwrap();
     crate::disk::init(EXECUTOR.get().unwrap());
     drop(fs);
     let mut khf = KHF.lock().unwrap();
@@ -134,8 +134,8 @@ pub fn disk_length(obj_id: u128) -> Result<u64, Error> {
 /// Either gets a previously set config_id from disk or returns None
 pub fn get_config_id() -> Result<Option<u128>, Error> {
     let _unused = LOCK.lock().unwrap();
-    let mut fs = FS.get().unwrap().lock().unwrap();
-    let mut file = fs.root_dir().open_file("config_id");
+    let fs = FS.get().unwrap().lock().unwrap();
+    let file = fs.root_dir().open_file("config_id");
     let mut file = match file {
         Ok(file) => file,
         Err(fatfs::Error::NotFound) => return Ok(None),
@@ -148,7 +148,7 @@ pub fn get_config_id() -> Result<Option<u128>, Error> {
 
 pub fn set_config_id(id: u128) -> Result<(), Error> {
     let _unused = LOCK.lock().unwrap();
-    let mut fs = FS.get().unwrap().lock().unwrap();
+    let fs = FS.get().unwrap().lock().unwrap();
     let mut file = fs.root_dir().create_file("config_id")?;
     file.truncate()?;
     let bytes = id.to_le_bytes();
@@ -158,8 +158,8 @@ pub fn set_config_id(id: u128) -> Result<(), Error> {
 
 pub fn clear_config_id() -> Result<(), Error> {
     let _unused = LOCK.lock().unwrap();
-    let mut fs = FS.get().unwrap().lock().unwrap();
-    let mut file = fs.root_dir().remove("config_id")?;
+    let fs = FS.get().unwrap().lock().unwrap();
+    let _file = fs.root_dir().remove("config_id")?;
     Ok(())
 }
 

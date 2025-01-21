@@ -85,8 +85,6 @@ extern crate test;
 
 #[cfg(test)]
 mod tester {
-    use crate::print_err;
-
     #[bench]
     fn test_bench(bench: &mut test::Bencher) {
         bench.iter(|| {

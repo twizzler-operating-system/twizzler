@@ -1,6 +1,4 @@
-use std::sync::{LazyLock, Mutex};
-
-use fatfs::{FatType, FileSystem, FormatVolumeOptions};
+use fatfs::{FatType, FormatVolumeOptions};
 
 use super::disk::Disk;
 
