@@ -2,22 +2,17 @@ use std::{
     fs::File,
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
     path::PathBuf,
-    sync::Mutex,
 };
 
-use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use tar::Header;
 #[cfg(target_os = "twizzler")]
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{
-        sys_thread_sync, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, ThreadSync,
-        ThreadSyncFlags, ThreadSyncReference, ThreadSyncWake,
-    },
+    syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 #[cfg(target_os = "twizzler")]
-use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
+use twizzler_object::Protections;
 
 // This type indicates what type of object you want to create, with the name inside
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Copy)]
@@ -111,7 +106,7 @@ where
 
 #[cfg(target_os = "twizzler")]
 pub fn form_twizzler_object<R: std::io::Read>(
-    mut stream: R,
+    stream: R,
     name: String,
     offset: u64,
 ) -> std::io::Result<twizzler_object::ObjID> {
@@ -132,7 +127,7 @@ pub fn form_twizzler_object<R: std::io::Read>(
     let slice =
         unsafe { std::slice::from_raw_parts_mut(handle_data_ptr, MAX_SIZE - offset as usize) };
 
-    stream.read(slice);
+    stream.read(slice)?;
 
     Ok(twzid)
 }
@@ -198,7 +193,7 @@ where
                     }
                     PackType::TwzObj => {
                         #[cfg(target_os = "twizzler")]
-                        form_twizzler_object(entry, path, bad_idea.offset);
+                        form_twizzler_object(entry, path, bad_idea.offset)?;
                         #[cfg(not(target_os = "twizzler"))]
                         form_fs_file(entry, path, bad_idea.offset)?;
                     }
@@ -206,8 +201,8 @@ where
                         form_persistent_vector(entry, path, bad_idea.offset)?;
                     }
                 }
-            } else if let Err(E) = e {
-                println!("{}", E);
+            } else if let Err(e) = e {
+                println!("{}", e);
             }
         }
 

@@ -1,4 +1,5 @@
-use std::fs::File;
+#![allow(dead_code)]
+
 use std::env::current_dir;
 
 use naming_core::{Entry, EntryType, NameSession, NameStore};

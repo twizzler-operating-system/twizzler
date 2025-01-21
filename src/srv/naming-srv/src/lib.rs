@@ -1,26 +1,20 @@
 #![feature(naked_functions)]
 #![feature(linkage)]
 
-use std::{
-    default, fs::OpenOptions, io::{Error, Result}, ops::DerefMut, path::Path, sync::{Arc, Mutex}
-};
+use std::{path::Path, sync::Mutex};
 
-use arrayvec::ArrayString;
 use lazy_static::lazy_static;
-use naming_core::{handle::Schema, NameStore, NameSession, EntryType, MAX_KEY_SIZE};
+use naming_core::{handle::Schema, NameStore, NameSession, EntryType};
 use secgate::{
     secure_gate,
     util::{Descriptor, HandleMgr, SimpleBuffer},
-};
-use twizzler::{
-    alloc::invbox::InvBox, collections::vec::{Vec, VecObject, VecObjectAlloc}, marker::Invariant, object::{Object, ObjectBuilder, TypedObject}, ptr::{GlobalPtr, InvPtr}
 };
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
-use twizzler_rt_abi::{bindings, object::{MapFlags, ObjID}};
+use twizzler_rt_abi::object::{MapFlags, ObjID};
 
 fn get_kernel_init_info() -> &'static KernelInitInfo {
     unsafe {
@@ -81,14 +75,14 @@ impl Namer<'_> {
 
 lazy_static! {
     static ref NAMINGSERVICE: Namer<'static> = {
-        let mut namer = Namer::new();
+        let namer = Namer::new();
         {
             let session = namer.names.root_session();
-            session.put(Path::new("/initrd"), EntryType::Namespace);
+            session.put(Path::new("/initrd"), EntryType::Namespace).unwrap();
             let init_info = get_kernel_init_info();
     
             for n in init_info.names() {
-                session.put("/initrd/".to_owned() + n.name(), EntryType::Object(n.id().raw()));
+                session.put("/initrd/".to_owned() + n.name(), EntryType::Object(n.id().raw())).unwrap();
             }
         }
         namer
@@ -129,7 +123,7 @@ pub fn put(info: &secgate::GateCallInfo, desc: Descriptor) {
     let provided =
         unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
 
-    client.session.put(provided.key.as_str(), EntryType::Object(provided.val));
+    let _ = client.session.put(provided.key.as_str(), EntryType::Object(provided.val));
 }
 
 #[secure_gate(options(info))]
@@ -167,7 +161,7 @@ pub fn enumerate_names(info: &secgate::GateCallInfo, desc: Descriptor) -> Option
         unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
 
     // TODO: make not bad
-    let mut vec1 = client.session.enumerate_namespace(provided.key).ok()?;
+    let vec1 = client.session.enumerate_namespace(provided.key).ok()?;
     let len = vec1.len();
     let mut vec = std::vec::Vec::<u8>::new();
     for i in vec1 {
@@ -196,7 +190,7 @@ pub fn remove(info: &secgate::GateCallInfo, desc: Descriptor) {
 #[secure_gate(options(info))]
 pub fn change_namespace(info: &secgate::GateCallInfo, desc: Descriptor) {
     let mut binding = NAMINGSERVICE.handles.lock().unwrap();
-    let Some(mut client) = binding.lookup_mut(info.source_context().unwrap_or(0.into()), desc) 
+    let Some(client) = binding.lookup_mut(info.source_context().unwrap_or(0.into()), desc) 
     else {
         return;
     };
@@ -206,7 +200,7 @@ pub fn change_namespace(info: &secgate::GateCallInfo, desc: Descriptor) {
     let provided =
         unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
 
-    client.session.change_namespace(provided.key.as_str());
+    let _ = client.session.change_namespace(provided.key.as_str());
 }
 
 
@@ -224,7 +218,7 @@ pub fn put_namespace(info: &secgate::GateCallInfo, desc: Descriptor) {
     let provided =
         unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
 
-    client.session.put(provided.key.as_str(), EntryType::Namespace);
+    let _ = client.session.put(provided.key.as_str(), EntryType::Namespace);
 }
 
 #[secure_gate(options(info))]

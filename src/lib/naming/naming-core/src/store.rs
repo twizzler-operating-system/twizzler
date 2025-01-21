@@ -127,10 +127,8 @@ impl NameSession<'_> {
 
         let path_child = path.file_name();
         let mut index = 0;
-        println!("searching!");
         // traverse store based on path's components
         for item in path.components() {
-            println!("component {:?} index {}", item, index);
             let mut found = false;
             match item {
                 Component::Prefix(prefix_component) => {
@@ -142,11 +140,8 @@ impl NameSession<'_> {
                     index = store.get(index).unwrap().parent;
                 },
                 Component::Normal(os_str) => {
-                    println!("store len {}", store.len());
                     for i in 0..store.len() {
-                        println!("getting {}", i);
                         let node = store.get(i).unwrap();
-                        println!("got {:?}", node);
                         if node.entry.name.as_str() != os_str.to_str().ok_or(ErrorKind::InvalidName)? || node.parent != index {
                             continue;
                         }
@@ -161,7 +156,7 @@ impl NameSession<'_> {
                 return Result::Err(ErrorKind::NotFound);
             }
         }
-        println!("got it {}", index);
+
         Ok(store.get(index).unwrap())
     }
 
@@ -174,11 +169,9 @@ impl NameSession<'_> {
         let mut store = self.store.name_universe.lock().map_err(|f| {ErrorKind::Other})?;
         let entry = {
             let current_entry = self.namei(&store, &name);
-            println!("{:?}", current_entry);
             match current_entry {
                 Ok(node) => {
                     unsafe { 
-                        println!("FOOO");
                         let mut mut_node = node.mutable();
                         if mut_node.entry.entry_type != EntryType::Namespace {
                             mut_node.entry.entry_type = val; 
@@ -194,23 +187,18 @@ impl NameSession<'_> {
                     }
                 }
             };
-
-            println!("foo");
     
             let entry = match name.as_ref().parent() {
                 Some(parent) => self.namei(&store, parent)?,
                 None => {return Err(ErrorKind::InvalidName);}, // ends in root or prefix
             };
             
-            let child = name.as_ref().file_name();
-            if child == None {
-                return Err(ErrorKind::InvalidName);
-            }
+            let child = name.as_ref().file_name().ok_or(ErrorKind::InvalidName)?;
     
             Node {
                 parent: entry.curr,
                 curr: store.len(),
-                entry: Entry::try_new(name, val)?
+                entry: Entry::try_new(child, val)?
             }
         };
 
