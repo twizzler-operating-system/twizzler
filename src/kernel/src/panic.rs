@@ -1,4 +1,4 @@
-use alloc::{borrow::Cow, boxed::Box};
+use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use core::panic::PanicInfo;
 
 use addr2line::{gimli::EndianSlice, Context};
@@ -26,13 +26,17 @@ fn load_debug_context(
         file: &'static object::read::elf::ElfFile64,
         endian: addr2line::gimli::RunTimeEndian,
     ) -> Option<ElfSlice> {
-        file.section_by_name(id.name()).and_then(|section| {
-            let data = section.uncompressed_data().ok()?;
-            Some(match data {
-                Cow::Borrowed(data) => EndianSlice::new(data, endian),
-                Cow::Owned(data) => EndianSlice::new(Box::leak(data.into_boxed_slice()), endian),
+        let data = file
+            .section_by_name(id.name())
+            .and_then(|section| {
+                let data = section.uncompressed_data().ok()?;
+                Some(match data {
+                    Cow::Borrowed(data) => data,
+                    Cow::Owned(data) => Box::leak(data.into_boxed_slice()),
+                })
             })
-        })
+            .unwrap_or_else(|| Box::leak(Vec::new().into_boxed_slice()));
+        Some(EndianSlice::new(data, endian))
     }
 
     let result = addr2line::gimli::Dwarf::load(|id| load_section(id, file, endian).ok_or(()));
