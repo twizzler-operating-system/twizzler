@@ -11,9 +11,7 @@ use twizzler_rt_abi::thread::SpawnError;
 use crate::syscall::*;
 use crate::{
     marker::BaseType,
-    syscall::{
-        ThreadSpawnError, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
-    },
+    syscall::{ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep},
 };
 #[allow(unused_imports)]
 use crate::{

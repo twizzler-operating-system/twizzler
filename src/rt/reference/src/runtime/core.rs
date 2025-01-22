@@ -12,7 +12,6 @@ use monitor_api::{RuntimeThreadControl, SharedCompConfig};
 use secgate::SecGateReturn;
 use tracing::Level;
 use twizzler_abi::{
-    klog_println,
     syscall::{sys_get_random, GetRandomFlags},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };

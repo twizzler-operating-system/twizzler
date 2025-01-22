@@ -1,9 +1,6 @@
 use std::alloc::{AllocError, Layout};
 
-use crate::{
-    ptr::{GlobalPtr, RefSlice, RefSliceMut},
-    tx::TxHandle,
-};
+use crate::{ptr::GlobalPtr, tx::TxHandle};
 
 pub mod arena;
 mod global;

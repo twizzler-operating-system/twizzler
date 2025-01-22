@@ -42,7 +42,12 @@ impl<Ctx: KernelMemoryContext + 'static> KernelAllocator<Ctx> {
         if start + layout.size() >= EARLY_ALLOCATION_SIZE {
             panic!("out of early memory");
         }
-        unsafe { EARLY_ALLOCATION_AREA.as_mut_ptr().add(start) as *mut u8 }
+        // Safety: this is safe because we are only ever handing out unique slices of this region,
+        // and this is then used as allocated memory. Also, at this point, there is only 1 thread.
+        #[allow(static_mut_refs)]
+        unsafe {
+            EARLY_ALLOCATION_AREA.as_mut_ptr().add(start) as *mut u8
+        }
     }
 }
 

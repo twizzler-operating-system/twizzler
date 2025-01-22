@@ -1,13 +1,17 @@
 #![feature(naked_functions)]
 #![feature(linkage)]
 
-use std::{path::Path, sync::Mutex};
+use std::sync::Mutex;
 
 use lazy_static::lazy_static;
 use naming_core::{handle::Schema, NameStore, NameSession, EntryType};
 use secgate::{
     secure_gate,
     util::{Descriptor, HandleMgr, SimpleBuffer},
+};
+use twizzler::{
+    collections::vec::{VecObject, VecObjectAlloc},
+    object::ObjectBuilder,
 };
 use twizzler_abi::{
     aux::KernelInitInfo,
@@ -183,7 +187,7 @@ pub fn enumerate_names(info: &secgate::GateCallInfo, desc: Descriptor) -> Option
 }
 
 #[secure_gate(options(info))]
-pub fn remove(info: &secgate::GateCallInfo, desc: Descriptor) {
+pub fn remove(_info: &secgate::GateCallInfo, _desc: Descriptor) {
     todo!()
 }
 

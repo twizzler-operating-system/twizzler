@@ -16,7 +16,7 @@ fn main() {
         *b = random();
     }
     let mut into2: [u8; 32] = Default::default();
-    getrandom(&mut into2);
+    getrandom(&mut into2).unwrap();
 
     println!("bytes: {:?}, {:?}", into1, into2);
 }

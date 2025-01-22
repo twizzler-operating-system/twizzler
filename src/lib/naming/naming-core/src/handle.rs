@@ -36,7 +36,7 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
 
     pub fn put(&mut self, key: &str, val: u128) {
         // I should write directly to the simple buffer
-        let mut s = Schema {
+        let s = Schema {
             key: ArrayString::from(key).unwrap(),
             val,
         };
@@ -45,31 +45,31 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         let bytes =
             unsafe { std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(s) };
 
-        let handle = self.buffer.write(&bytes);
+        let _handle = self.buffer.write(&bytes);
 
         self.api.put(self.desc);
     }
 
     pub fn get(&mut self, key: &str) -> Option<u128> {
-        let mut s = Schema {
+        let s = Schema {
             key: ArrayString::from(key).unwrap(),
             val: 0,
         };
         let bytes =
             unsafe { std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(s) };
-        let handle = self.buffer.write(&bytes);
+        let _handle = self.buffer.write(&bytes);
 
         self.api.get(self.desc).unwrap()
     }
 
     pub fn remove(&mut self, key: &str) {
-        let mut s = Schema {
+        let s = Schema {
             key: ArrayString::from(key).unwrap(),
             val: 0,
         };
         let bytes =
             unsafe { std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(s) };
-        let handle = self.buffer.write(&bytes);
+        let _handle = self.buffer.write(&bytes);
 
         self.api.remove(self.desc);
     }

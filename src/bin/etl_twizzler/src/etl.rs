@@ -149,7 +149,7 @@ pub fn form_persistent_vector<R: std::io::Read>(
 ) -> std::io::Result<()> {
     let mut writer = File::create(name)?;
     writer.seek(SeekFrom::Start(offset))?;
-    let stream: Vec<String> = BufReader::new(stream)
+    let _stream: Vec<String> = BufReader::new(stream)
         .split(b'\n')
         .filter_map(|result| result.ok())
         .filter_map(|line| String::from_utf8(line).ok())

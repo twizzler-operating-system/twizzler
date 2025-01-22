@@ -1,11 +1,9 @@
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
-    default,
+    collections::HashMap,
     sync::{Arc, Mutex},
 };
 
 use bitvec::prelude::*;
-use futures::TryFutureExt;
 use miette::Result;
 use twizzler_abi::pager::{
     CompletionToPager, ObjectInfo, ObjectRange, PhysRange, RequestFromPager,
@@ -24,6 +22,7 @@ pub struct PerPageData {
 
 #[derive(Default)]
 pub struct PerObjectInner {
+    #[allow(dead_code)]
     id: ObjID,
     page_map: HashMap<PageNum, PerPageData>,
     meta_page_map: HashMap<PageNum, PerPageData>,
@@ -44,7 +43,7 @@ impl PerObjectInner {
         }
     }
 
-    pub fn track_meta(&mut self, obj_range: ObjectRange, phys_range: PhysRange) {
+    pub fn _track_meta(&mut self, obj_range: ObjectRange, phys_range: PhysRange) {
         assert_eq!(obj_range.len(), PAGE as usize);
         assert_eq!(phys_range.len(), PAGE as usize);
 
@@ -181,7 +180,7 @@ impl PagerDataInner {
     }
 
     /// Remove a page from the bit vector, freeing it for future use.
-    fn remove_page(&mut self, page_number: usize) {
+    fn _remove_page(&mut self, page_number: usize) {
         tracing::trace!("attempting to remove page {}", page_number);
         if page_number < self.bitvec.len() {
             self.bitvec.set(page_number, false);
@@ -207,7 +206,7 @@ impl PagerDataInner {
     }
 
     /// Check if all pages are currently in use.
-    pub fn is_full(&self) -> bool {
+    pub fn _is_full(&self) -> bool {
         let full = self.bitvec.all();
         tracing::trace!("bitvec check full: {}", full);
         full

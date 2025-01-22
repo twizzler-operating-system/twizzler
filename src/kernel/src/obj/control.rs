@@ -13,7 +13,7 @@ use crate::{
             kernel_context, KernelMemoryContext, KernelObject, KernelObjectHandle,
             ObjectContextInfo,
         },
-        frame::{alloc_frame, free_frame, FrameRef, PhysicalFrameFlags},
+        frame::{alloc_frame, FrameRef, PhysicalFrameFlags},
     },
     obj::{pages::Page, ObjectRef, PageNumber},
     userinit::create_blank_object,

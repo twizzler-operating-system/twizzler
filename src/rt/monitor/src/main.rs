@@ -37,6 +37,7 @@ pub fn main() {
         .with_max_level(Level::INFO)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
+        .without_time()
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");

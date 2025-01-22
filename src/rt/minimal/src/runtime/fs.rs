@@ -6,11 +6,10 @@ use core::{
 
 use lazy_static::lazy_static;
 use lru::LruCache;
-use rustc_alloc::{string::ToString, sync::Arc};
+use rustc_alloc::sync::Arc;
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
-    print_err,
     simple_mutex::Mutex,
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
@@ -21,7 +20,7 @@ use twizzler_rt_abi::{
     object::{MapFlags, ObjectHandle},
 };
 
-use super::{object, MinimalRuntime};
+use super::MinimalRuntime;
 
 #[derive(Clone)]
 struct FileDesc {
@@ -50,7 +49,7 @@ const WRITABLE_BYTES: u64 = (1 << 26) - size_of::<FileMetadata>() as u64 - NULLP
 const OBJECT_COUNT: usize = 256;
 const DIRECT_OBJECT_COUNT: usize = 255; // The number of objects reachable from the direct pointer list
 const MAX_FILE_SIZE: u64 = WRITABLE_BYTES * 256;
-const MAX_LOADABLE_OBJECTS: usize = 16;
+const _MAX_LOADABLE_OBJECTS: usize = 16;
 lazy_static! {
     static ref FD_SLOTS: Mutex<StableVec<FdKind>> = Mutex::new(StableVec::from([
         FdKind::Stdio,
@@ -199,7 +198,7 @@ impl MinimalRuntime {
         fd: RawFd,
         off: Option<u64>,
         buf: &mut [u8],
-        flags: IoFlags,
+        _flags: IoFlags,
     ) -> Result<usize, IoError> {
         if off.is_some() {
             return Err(IoError::SeekError);
@@ -212,7 +211,7 @@ impl MinimalRuntime {
         fd: RawFd,
         off: Option<u64>,
         buf: &[u8],
-        flags: IoFlags,
+        _flags: IoFlags,
     ) -> Result<usize, IoError> {
         if off.is_some() {
             return Err(IoError::SeekError);
@@ -222,20 +221,20 @@ impl MinimalRuntime {
 
     pub fn fd_pwritev(
         &self,
-        fd: RawFd,
-        off: Option<u64>,
-        buf: &[io_vec],
-        flags: IoFlags,
+        _fd: RawFd,
+        _off: Option<u64>,
+        _buf: &[io_vec],
+        _flags: IoFlags,
     ) -> Result<usize, IoError> {
         return Err(IoError::Other);
     }
 
     pub fn fd_preadv(
         &self,
-        fd: RawFd,
-        off: Option<u64>,
-        buf: &[io_vec],
-        flags: IoFlags,
+        _fd: RawFd,
+        _off: Option<u64>,
+        _buf: &[io_vec],
+        _flags: IoFlags,
     ) -> Result<usize, IoError> {
         return Err(IoError::Other);
     }
@@ -355,7 +354,7 @@ impl MinimalRuntime {
     }
 
     pub fn close(&self, fd: RawFd) -> Option<()> {
-        let file_desc = get_fd_slots().lock().remove(fd.try_into().unwrap())?;
+        let _file_desc = get_fd_slots().lock().remove(fd.try_into().unwrap())?;
 
         Some(())
     }

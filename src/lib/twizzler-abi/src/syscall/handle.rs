@@ -22,7 +22,7 @@ pub enum NewHandleError {
     #[num_enum(default)]
     #[error("unknown error")]
     Unknown = 0,
-    /// One of the arguments was invalid.   
+    /// One of the arguments was invalid.
     #[error("invalid argument")]
     InvalidArgument = 1,
     /// The specified object is already a handle.
@@ -76,7 +76,7 @@ pub fn sys_new_handle(
     handle_type: HandleType,
     flags: NewHandleFlags,
 ) -> Result<u64, NewHandleError> {
-    let (hi, lo) = objid.split();
+    let [hi, lo] = objid.parts();
     let (code, val) = unsafe {
         raw_syscall(
             Syscall::NewHandle,
@@ -88,7 +88,7 @@ pub fn sys_new_handle(
 
 /// Unbind an object from handle status.
 pub fn sys_unbind_handle(objid: ObjID, flags: UnbindHandleFlags) {
-    let (hi, lo) = objid.split();
+    let [hi, lo] = objid.parts();
     unsafe {
         raw_syscall(Syscall::UnbindHandle, &[hi, lo, flags.bits()]);
     }
