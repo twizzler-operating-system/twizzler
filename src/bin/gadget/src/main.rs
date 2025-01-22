@@ -1,4 +1,5 @@
 use std::{
+    fs::OpenOptions,
     io::{Read, Write},
     net::Ipv4Addr,
 };
@@ -127,8 +128,8 @@ fn read_file(args: &[&str], namer: &mut NamingHandle) {
         return;
     };
 
-    let idname = id.to_string();
-    let mut file = std::fs::File::open(&idname).unwrap();
+    //let idname = id.to_string();
+    let mut file = std::fs::File::open(&filename).unwrap();
     let mut buf = Vec::new();
     file.read_to_end(&mut buf).unwrap();
     let s = String::from_utf8(buf);
@@ -151,7 +152,7 @@ fn write_file(args: &[&str], namer: &mut NamingHandle) {
 
     let data = format!("hello gadget from file {}", filename);
     let idname = id.to_string();
-    let mut file = std::fs::File::open(&idname).unwrap();
+    let mut file = OpenOptions::new().write(true).open(filename).unwrap();
     tracing::warn!("for now, we just write test data: `{}'", data);
     file.write(data.as_bytes()).unwrap();
 
@@ -162,6 +163,7 @@ fn write_file(args: &[&str], namer: &mut NamingHandle) {
 fn new_file(args: &[&str], namer: &mut NamingHandle) {
     if args.len() < 2 {
         println!("usage: new <filename>");
+        return;
     }
     let filename = args[1];
     if namer.get(filename).is_some() {
@@ -194,7 +196,11 @@ fn del_file(args: &[&str], namer: &mut NamingHandle) {
     };
     tracing::info!("deleting file...");
     let idname = id.to_string();
-    std::fs::remove_file(&idname).unwrap();
+    let res = std::fs::remove_file(&idname);
+    tracing::info!("got: {:?}", res);
+    if res.is_err() {
+        return;
+    }
     tracing::info!("removing name...");
     namer.remove(filename);
 }
@@ -213,6 +219,7 @@ fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(Level::DEBUG)
+            .without_time()
             .finish(),
     )
     .unwrap();
