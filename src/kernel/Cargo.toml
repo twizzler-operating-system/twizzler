@@ -27,8 +27,7 @@ object = { version = "0.32.1", default-features = false, features = ["read"] }
 addr2line = { version = "0.16.0", default-features = false, features = [
     "rustc-demangle",
 ] }
-#backtracer_core = { git = "https://github.com/twizzler-operating-system/backtracer", branch = "twizzler" }
-backtracer_core = { path = "../../backtracer" }
+backtracer_core = { git = "https://github.com/twizzler-operating-system/backtracer", branch = "twizzler" }
 limine = "0.2.0"
 twizzler-queue-raw = { version = "*", path = "../lib/twizzler-queue-raw", default-features = false }
 #syscall_encode = { version = "0.1.2" }
