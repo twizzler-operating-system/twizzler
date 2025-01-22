@@ -10,18 +10,18 @@ pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
     crate::thread::entry::start_new_user(*args)
 }
 
-pub fn thread_ctrl(cmd: ThreadControl, arg: u64) -> (u64, u64) {
+pub fn thread_ctrl(cmd: ThreadControl, arg: u64) -> [u64; 2] {
     match cmd {
         ThreadControl::SetUpcall => {
             let Some(data) = (unsafe { (arg as usize as *const UpcallTarget).as_ref() }) else {
-                return (1, 1);
+                return [1, 1];
             };
             // TODO: verify args, check perms.
             *current_thread_ref().unwrap().upcall_target.lock() = Some(*data);
         }
         ThreadControl::ResumeFromUpcall => {
             let Some(data) = (unsafe { (arg as usize as *const UpcallFrame).as_ref() }) else {
-                return (1, 1);
+                return [1, 1];
             };
             // TODO: verify args, check perms.
 
@@ -37,11 +37,11 @@ pub fn thread_ctrl(cmd: ThreadControl, arg: u64) -> (u64, u64) {
             // TODO: maybe give a priority drop?
             crate::sched::schedule(true);
         }
-        ThreadControl::GetSelfId => return current_thread_ref().unwrap().objid().split(),
+        ThreadControl::GetSelfId => return current_thread_ref().unwrap().objid().parts(),
         ThreadControl::GetActiveSctxId => {
-            return current_thread_ref().unwrap().secctx.active_id().split()
+            return current_thread_ref().unwrap().secctx.active_id().parts()
         }
         _ => todo!(),
     }
-    (0, 0)
+    [0, 0]
 }

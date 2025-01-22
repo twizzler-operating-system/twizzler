@@ -8,9 +8,9 @@ pub trait Random {
 }
 
 /// 13 tests in total implemented
-const TOTAL_TESTS: u32 = 13;
-pub const EXPECTED_SCORE: u32 = TOTAL_TESTS * 1024;
-pub fn crush<R: Random + Clone>(rand: R) -> u32 {
+pub const _TOTAL_TESTS: u32 = 13;
+pub const _EXPECTED_SCORE: u32 = _TOTAL_TESTS * 1024;
+pub fn _crush<R: Random + Clone>(rand: R) -> u32 {
     analysis::Report::new(rand.clone()).get_score().total() as u32
         + analysis::Report::new(transform::SkipOne(rand.clone()))
             .get_score()

@@ -1,4 +1,5 @@
 #![allow(unused_variables)]
+#![allow(non_snake_case)]
 
 // This macro checks that our definition of a function is the same as that
 // defined by the bindings generated from bindgen. Thus the whole ABI
@@ -69,7 +70,6 @@ macro_rules! check_ffi_type {
     };
 }
 
-use twizzler_abi::klog_println;
 // core.h
 use twizzler_rt_abi::bindings::option_exit_code;
 

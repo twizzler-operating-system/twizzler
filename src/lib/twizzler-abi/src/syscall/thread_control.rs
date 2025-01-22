@@ -90,7 +90,7 @@ pub fn sys_thread_settls(tls: u64) {
 /// Get the repr ID of the calling thread.
 pub fn sys_thread_self_id() -> ObjID {
     let (hi, lo) = unsafe { raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::GetSelfId as u64]) };
-    ObjID::new_from_parts(hi, lo)
+    ObjID::from_parts([hi, lo])
 }
 
 /// Get the active security context ID for the calling thread.
@@ -101,7 +101,7 @@ pub fn sys_thread_active_sctx_id() -> ObjID {
             &[ThreadControl::GetActiveSctxId as u64],
         )
     };
-    ObjID::new_from_parts(hi, lo)
+    ObjID::from_parts([hi, lo])
 }
 
 /// Set the upcall location for this thread.
@@ -144,13 +144,13 @@ pub fn sys_thread_ctrl(
     arg2: usize,
 ) -> (u64, u64) {
     let target = target.unwrap_or(ObjID::new(0));
-    let ids = target.split();
+    let ids = target.parts();
     unsafe {
         raw_syscall(
             Syscall::ThreadCtrl,
             &[
-                ids.0,
-                ids.1,
+                ids[0],
+                ids[1],
                 cmd as u64,
                 arg0 as u64,
                 arg1 as u64,

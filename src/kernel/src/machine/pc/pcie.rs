@@ -149,7 +149,7 @@ fn register_device(
             }
         }
         _ => {
-            logln!("[kernel::machine::pcie] unknown PCIe header type");
+            // do nothing -- don't know how to get BARs.
         }
     }
     let info = PcieDeviceInfo {

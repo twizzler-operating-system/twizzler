@@ -1,4 +1,4 @@
-use std::{ffi::c_void, mem::ManuallyDrop, sync::atomic::AtomicU64, usize::MAX};
+use std::{ffi::c_void, sync::atomic::AtomicU64};
 
 use handlecache::HandleCache;
 use tracing::warn;
@@ -101,22 +101,22 @@ impl ReferenceRuntime {
         })
     }
 
-    pub fn insert_fot(&self, handle: *mut object_handle, fot: *const u8) -> Option<u64> {
+    pub fn insert_fot(&self, _handle: *mut object_handle, _fot: *const u8) -> Option<u64> {
         tracing::warn!("TODO: insert FOT entry");
         None
     }
 
     pub fn resolve_fot(
         &self,
-        handle: *mut object_handle,
-        idx: u64,
-        valid_len: usize,
+        _handle: *mut object_handle,
+        _idx: u64,
+        _valid_len: usize,
     ) -> Result<ObjectHandle, MapError> {
         tracing::warn!("TODO: resolve FOT entry");
         Err(MapError::Other)
     }
 
-    pub fn resolve_fot_local(&self, ptr: *mut u8, idx: u64, valid_len: usize) -> *mut u8 {
+    pub fn resolve_fot_local(&self, _ptr: *mut u8, _idx: u64, _valid_len: usize) -> *mut u8 {
         tracing::warn!("TODO: resolve local FOT entry");
         core::ptr::null_mut()
     }

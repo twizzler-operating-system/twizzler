@@ -100,7 +100,7 @@ pub enum PagerCompletionData {
 }
 
 pub struct PageDataReq {
-    pub objID: ObjID,
+    pub objid: ObjID,
     pub object_range: ObjectRange,
 }
 

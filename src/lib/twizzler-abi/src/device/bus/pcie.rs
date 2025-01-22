@@ -1,7 +1,7 @@
-#[cfg(any(feature = "runtime", feature = "kernel"))]
+#[cfg(any(feature = "kernel"))]
 use core::{mem::size_of, ptr::NonNull};
 
-#[cfg(any(feature = "runtime", feature = "kernel"))]
+#[cfg(any(feature = "kernel"))]
 use volatile::VolatilePtr;
 
 use crate::kso::KactionError;
@@ -136,7 +136,7 @@ pub struct PcieBridgeHeader {
     pub bridge_control: u16,
 }
 
-#[cfg(any(feature = "runtime", feature = "kernel"))]
+#[cfg(any(feature = "kernel"))]
 pub fn get_bar(cfg: VolatilePtr<'_, PcieDeviceHeader>, n: usize) -> VolatilePtr<'_, u32> {
     unsafe {
         cfg.map(|mut x| {

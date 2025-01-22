@@ -1,10 +1,7 @@
 use std::sync::OnceLock;
 
 use monitor_api::CompartmentHandle;
-use secgate::{
-    util::{Descriptor, Handle, SimpleBuffer},
-    DynamicSecGate, SecGateReturn,
-};
+use secgate::{util::Descriptor, DynamicSecGate, SecGateReturn};
 use twizzler_rt_abi::object::ObjID;
 
 use crate::{api::NamerAPI, NamingHandle};

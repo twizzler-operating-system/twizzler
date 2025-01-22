@@ -57,7 +57,7 @@ impl EntropySources {
             // add two events per source to each of the pools
             // Two events because fortuna::MIN_POOL_SIZE is 64 bytes and each event
             // is restricted to be 32 bytes at most
-            for i in 0..fortuna::POOL_COUNT * 2 {
+            for _ in 0..fortuna::POOL_COUNT * 2 {
                 if let Ok(_) = source.0.try_fill_entropy(&mut buf) {
                     accumulator
                         .add_random_event(&mut source.1, &buf)

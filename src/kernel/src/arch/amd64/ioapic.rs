@@ -97,7 +97,6 @@ pub(super) fn set_interrupt(
     for ioapic in &*ioapics {
         if let Some(reg) = ioapic.gsi_to_reg(gsi) {
             unsafe {
-                logln!("setting {} {} masked={}", gsi, vector, masked);
                 ioapic.write_vector_data(
                     reg,
                     construct_interrupt_data(vector, masked, trigger, polarity, destination),
@@ -166,11 +165,6 @@ pub fn init() {
             acpi::platform::interrupt::Polarity::ActiveLow => PinPolarity::ActiveLow,
         };
 
-        logln!(
-            "remap {} {}",
-            iso.global_system_interrupt,
-            iso.isa_source + 32
-        );
         set_interrupt(
             iso.global_system_interrupt,
             iso.isa_source as u32 + 32,

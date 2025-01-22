@@ -16,6 +16,7 @@ use crate::{
     arch::amd64::apic::try_get_lapic,
     interrupt::{Destination, DynamicInterrupt},
     memory::{context::virtmem::PageFaultFlags, VirtAddr},
+    once::Once,
     processor::current_processor,
     thread::current_thread_ref,
 };
@@ -197,7 +198,7 @@ unsafe extern "C" fn common_handler_entry(
 #[no_mangle]
 #[naked]
 pub unsafe extern "C" fn kernel_interrupt() {
-    core::arch::naked_asm!("mov qword ptr [rsp - 8], 0", "sub rsp, 8", "xor rdx, rdx", 
+    core::arch::naked_asm!("mov qword ptr [rsp - 8], 0", "sub rsp, 8", "xor rdx, rdx",
         "xor rcx, rcx",
         "cld",
         "call {common}", "add rsp, 8", "jmp return_from_interrupt", common = sym common_handler_entry);
@@ -215,7 +216,7 @@ pub unsafe extern "C" fn user_interrupt() {
         "mov rdx, 1",
         "sub rsp, 8",
         "cld",
-        "call {common}", 
+        "call {common}",
         "add rsp, 8",
         "swapgs",
         "lfence",
@@ -1155,11 +1156,15 @@ fn set_handlers(idt: &mut InterruptDescriptorTable) {
     idt.set_handler(255, int255_handler, false, None);
 }
 
-static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
+static IDT: Once<InterruptDescriptorTable> = Once::new();
 pub fn init_idt() {
     unsafe {
-        set_handlers(&mut IDT);
-        IDT.load();
+        IDT.call_once(|| {
+            let mut idt = InterruptDescriptorTable::new();
+            set_handlers(&mut idt);
+            idt
+        })
+        .load();
     }
 }
 

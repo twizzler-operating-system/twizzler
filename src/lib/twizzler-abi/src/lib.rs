@@ -9,7 +9,7 @@
 //! All of these interfaces are potentially unstable and should not be used directly by most
 //! programs.
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 #![feature(naked_functions)]
 #![feature(core_intrinsics)]
 #![feature(int_roundings)]
@@ -43,13 +43,7 @@ pub mod upcall;
 
 #[inline]
 unsafe fn internal_abort() -> ! {
-    cfg_if::cfg_if! {
-    if #[cfg(feature = "runtime")] {
-        runtime::OUR_RUNTIME.abort();
-    } else {
-        core::intrinsics::abort();
-    }
-    }
+    core::intrinsics::abort();
 }
 
 pub fn print_err(err: &str) {
@@ -91,8 +85,6 @@ extern crate test;
 
 #[cfg(test)]
 mod tester {
-    use crate::print_err;
-
     #[bench]
     fn test_bench(bench: &mut test::Bencher) {
         bench.iter(|| {

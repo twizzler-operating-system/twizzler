@@ -57,17 +57,18 @@ impl From<(u64, u64)> for KactionValue {
         if x.0 == 0xFFFFFFFFFFFFFFFF {
             Self::U64(x.1)
         } else {
-            Self::ObjID(ObjID::new_from_parts(x.0, x.1))
+            Self::ObjID(ObjID::from_parts([x.0, x.1]))
         }
     }
 }
 
 impl From<KactionValue> for (u64, u64) {
     fn from(x: KactionValue) -> Self {
-        match x {
-            KactionValue::U64(x) => (0xffffffffffffffff, x),
-            KactionValue::ObjID(id) => id.split(),
-        }
+        let parts = match x {
+            KactionValue::U64(x) => [0xffffffffffffffff, x],
+            KactionValue::ObjID(id) => id.parts(),
+        };
+        (parts[0], parts[1])
     }
 }
 
