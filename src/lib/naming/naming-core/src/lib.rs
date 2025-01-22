@@ -2,7 +2,6 @@
 
 use std::{fs::OpenOptions, path::{Component, PathBuf}, sync::OnceLock};
 
-use arrayvec::ArrayString;
 use monitor_api::CompartmentHandle;
 use secgate::{
     util::{Descriptor, Handle, SimpleBuffer},

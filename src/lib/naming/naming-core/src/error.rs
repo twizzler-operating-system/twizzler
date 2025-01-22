@@ -11,8 +11,8 @@ impl ErrorKind {
     pub fn as_str(&self) -> &'static str {
         use ErrorKind::*;
         match self {
-            Other => "other error",
-            InvalidName => "Invalid Name",
+            Other => "Other error",
+            InvalidName => "Invalid name",
             NotFound => "Name was not found",
             NotNamespace => "Name isn't a namespace",
             NotFile => "Name is not a file",

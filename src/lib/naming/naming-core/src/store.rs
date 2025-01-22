@@ -1,4 +1,4 @@
-use std::{default, fs::OpenOptions, path::{Component, PathBuf}, sync::{MutexGuard, OnceLock}};
+use std::{collections::VecDeque, default, fs::OpenOptions, path::{Component, PathBuf}, sync::{MutexGuard, OnceLock}};
 
 use arrayvec::ArrayString;
 use monitor_api::CompartmentHandle;
@@ -71,6 +71,8 @@ pub struct NameStore {
 unsafe impl Send for NameStore {}
 unsafe impl Sync for NameStore {}
 
+// This is atrociously inefficient, but once indirection starts 
+// existing I can finally make this a tree instead of a flat vec
 impl NameStore {
     pub fn new() -> NameStore {
         let mut store = VecObject::new(ObjectBuilder::default()).unwrap();
@@ -111,7 +113,7 @@ pub struct NameSession<'a> {
 
 impl NameSession<'_> {
     // This function will return a reference to an entry described by name: P relative to working_ns 
-    // If the name: P is absolute then it will start at root instead of the working_ns 
+    // If the name is absolute then it will start at root instead of the working_ns 
     fn namei<'a, P: AsRef<Path>>(&self, store: &'a MutexGuard<'a, VecObject<Node, VecObjectAlloc>>, name: P) -> Result<Ref<'a, Node>> {
         // interpret path based on working directory
         let path = match name.as_ref().has_root() {
@@ -138,16 +140,17 @@ impl NameSession<'_> {
                 Component::CurDir => continue,
                 Component::ParentDir => {
                     index = store.get(index).unwrap().parent;
+                    continue;
                 },
                 Component::Normal(os_str) => {
+                    
                     for i in 0..store.len() {
                         let node = store.get(i).unwrap();
-                        if node.entry.name.as_str() != os_str.to_str().ok_or(ErrorKind::InvalidName)? || node.parent != index {
-                            continue;
+                        if node.entry.name.as_str() == os_str.to_str().ok_or(ErrorKind::InvalidName)? && node.parent == index {
+                            index = i;
+                            found = true;
+                            break;
                         }
-
-                        index = i;
-                        found = true;
                     }
                 },
             }
@@ -160,12 +163,26 @@ impl NameSession<'_> {
         Ok(store.get(index).unwrap())
     }
 
-    // Traverses the path and construct the canonical path
-    fn construct_canonical<'a, P: AsRef<Path>>(&self, store: &'a MutexGuard<'a, VecObject<Node, VecObjectAlloc>>, name: P) -> PathBuf {
-        todo!()
+    // Traverses the path and construct the canonical path given name relative to absolute path 
+    fn construct_canonical<'a, P: AsRef<Path>>(&self, store: &'a MutexGuard<'a, VecObject<Node, VecObjectAlloc>>, name: P) -> Result<(PathBuf, EntryType)> {
+        let path = PathBuf::new();
+
+        let mut vec = VecDeque::<String>::new();
+
+        let node = self.namei(&store, &name)?;
+        let mut current = node.curr;
+        while current != 0 {
+            vec.push_front(node.entry.name.to_string());
+            current = node.parent;
+        }
+
+        vec.push_front("/".to_owned());
+
+        Ok((PathBuf::from_iter(vec), node.entry.entry_type))
     }
 
     pub fn put<P: AsRef<Path>>(&self, name: P, val: EntryType) -> Result<()> {
+        //println!("Performing put {:?} as {:?}", name.as_ref(), val);
         let mut store = self.store.name_universe.lock().map_err(|f| {ErrorKind::Other})?;
         let entry = {
             let current_entry = self.namei(&store, &name);
@@ -239,14 +256,13 @@ impl NameSession<'_> {
     pub fn change_namespace<P: AsRef<Path>>(&mut self, name: P) -> Result<()> {
         let store = self.store.name_universe.lock().map_err(|f| {ErrorKind::Other})?;
 
-        let node = self.namei(&store, &name)?;
-
-        match node.entry.entry_type {
+        let (canonical_name, entry) = self.construct_canonical(&store, name)?;
+        match entry {
             EntryType::Object(_) => {
                 Result::Err(ErrorKind::NotNamespace)
             },
             EntryType::Namespace => {
-                self.working_ns = PathBuf::from(name.as_ref());
+                self.working_ns = PathBuf::from(canonical_name);
                 Ok(())
             },
         }
