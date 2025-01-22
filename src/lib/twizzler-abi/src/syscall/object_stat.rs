@@ -55,7 +55,7 @@ pub struct ObjectInfo {
 
 /// Read information about a given object.
 pub fn sys_object_stat(id: ObjID) -> Result<ObjectInfo, ObjectStatError> {
-    let (hi, lo) = id.split();
+    let [hi, lo] = id.parts();
     let mut obj_info = MaybeUninit::<ObjectInfo>::uninit();
     let args = [
         hi,

@@ -65,7 +65,7 @@ impl<B> TxObject<MaybeUninit<B>> {
 }
 
 impl<B> TxHandle for TxObject<B> {
-    fn tx_mut(&self, data: *const u8, len: usize) -> super::Result<*mut u8> {
+    fn tx_mut(&self, data: *const u8, _len: usize) -> super::Result<*mut u8> {
         // TODO
         Ok(data as *mut u8)
     }
@@ -93,6 +93,7 @@ impl<B> AsRef<TxObject<()>> for TxObject<B> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use crate::{
         marker::BaseType,
@@ -105,6 +106,7 @@ mod tests {
 
     impl BaseType for Simple {}
 
+    #[test]
     fn single_tx() {
         let builder = ObjectBuilder::default();
         let obj = builder.build(Simple { x: 3 }).unwrap();

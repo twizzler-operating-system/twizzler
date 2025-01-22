@@ -79,7 +79,7 @@ pub fn sys_object_map(
 }
 
 pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo, ObjectReadMapError> {
-    let vm = if handle.as_u128() == 0 {
+    let vm = if handle.raw() == 0 {
         current_memory_context().unwrap()
     } else {
         get_vmcontext_from_handle(handle).ok_or(ObjectReadMapError::InvalidArgument)?

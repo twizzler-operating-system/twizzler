@@ -1,4 +1,4 @@
-use core::mem::size_of;
+use core::{cell::RefCell, mem::size_of};
 
 use x86::{
     current::task::TaskStateSegment,
@@ -20,7 +20,7 @@ struct GlobalDescriptorTable {
 }
 
 impl GlobalDescriptorTable {
-    fn new(tss: &'static TaskStateSegment) -> Self {
+    fn new(tss: *const TaskStateSegment) -> Self {
         let kernel_code64: Descriptor =
             DescriptorBuilder::code_descriptor(0, 0xffffffff, CodeSegmentType::ExecuteReadAccessed)
                 .present()
@@ -100,26 +100,29 @@ impl GlobalDescriptorTable {
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 const STACK_SIZE: usize = 0x1000 * 5;
-static mut STACK: [u128; STACK_SIZE / 16] = [0; STACK_SIZE / 16];
 
-fn make_tss(stack: &'static [u128]) -> TaskStateSegment {
+fn make_tss(stack: *const u128) -> TaskStateSegment {
     let mut tss = TaskStateSegment::new();
     tss.set_ist(DOUBLE_FAULT_IST_INDEX as usize, {
-        let stack_start = VirtAddr::from_ptr(stack.as_ptr());
+        let stack_start = VirtAddr::from_ptr(stack);
         stack_start.offset(STACK_SIZE).unwrap().into()
     });
     tss
 }
 
 lazy_static::lazy_static! {
+    static ref STACK: [u128; STACK_SIZE / 16] = [0; STACK_SIZE / 16];
+}
+
+lazy_static::lazy_static! {
     static ref TSS: TaskStateSegment = {
-        make_tss(unsafe {&STACK})
+        make_tss(STACK.as_ptr())
     };
 }
 
 lazy_static::lazy_static! {
     static ref GDT: GlobalDescriptorTable = {
-        GlobalDescriptorTable::new(&TSS)
+        GlobalDescriptorTable::new(&*TSS)
     };
 }
 
@@ -143,19 +146,20 @@ pub(super) fn user_selectors() -> (u16, u16) {
 }
 
 #[thread_local]
-static mut SGDT: Option<GlobalDescriptorTable> = None;
+static SGDT: RefCell<Option<GlobalDescriptorTable>> = RefCell::new(None);
 #[thread_local]
-static mut STSS: Option<TaskStateSegment> = None;
+static STSS: RefCell<Option<TaskStateSegment>> = RefCell::new(None);
 #[thread_local]
-static mut DF_STACK: [u128; STACK_SIZE / 16] = [0; STACK_SIZE / 16];
+static DF_STACK: RefCell<[u128; STACK_SIZE / 16]> = RefCell::new([0; STACK_SIZE / 16]);
 
 pub fn init_secondary() {
     unsafe {
-        STSS = Some(make_tss(&DF_STACK));
-        SGDT = Some(GlobalDescriptorTable::new(STSS.as_ref().unwrap()));
-        SGDT.as_ref().unwrap().load();
-        x86::segmentation::load_cs(SGDT.as_ref().unwrap().code);
-        x86::task::load_tr(SGDT.as_ref().unwrap().tss);
+        let stack = DF_STACK.borrow();
+        *STSS.borrow_mut() = Some(make_tss(stack.as_ptr()));
+        *SGDT.borrow_mut() = Some(GlobalDescriptorTable::new(STSS.borrow().as_ref().unwrap()));
+        SGDT.borrow().as_ref().unwrap().load();
+        x86::segmentation::load_cs(SGDT.borrow().as_ref().unwrap().code);
+        x86::task::load_tr(SGDT.borrow().as_ref().unwrap().tss);
         x86::segmentation::load_ds(SegmentSelector::new(0, Ring::Ring0));
         x86::segmentation::load_ss(SegmentSelector::new(0, Ring::Ring0));
         //x86::segmentation::load_gs(SegmentSelector::new(0, Ring::Ring0));
@@ -165,7 +169,10 @@ pub fn init_secondary() {
 }
 
 pub unsafe fn set_kernel_stack(stack: VirtAddr) {
-    STSS.as_mut().unwrap().set_rsp(Ring::Ring0, stack.into());
+    STSS.borrow_mut()
+        .as_mut()
+        .unwrap()
+        .set_rsp(Ring::Ring0, stack.into());
     core::arch::asm!("mov gs:0, rax", in("rax") stack.raw());
     core::arch::asm!("mfence");
 }

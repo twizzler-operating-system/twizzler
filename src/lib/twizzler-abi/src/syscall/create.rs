@@ -172,7 +172,7 @@ pub fn sys_object_create(
         code,
         val,
         |c, _| c == 0,
-        crate::object::ObjID::new_from_parts,
+        |x, y| crate::object::ObjID::from_parts([x, y]),
         |_, v| ObjectCreateError::from(v),
     )
 }

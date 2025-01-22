@@ -3,8 +3,6 @@
 use core::{alloc::GlobalAlloc, mem::MaybeUninit, ptr};
 
 use twizzler_abi::{
-    klog_println,
-    object::ObjID,
     syscall::{sys_get_random, GetRandomFlags},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
@@ -45,7 +43,11 @@ impl MinimalRuntime {
     }
 
     pub fn abort(&self) -> ! {
-        unsafe { core::intrinsics::abort() };
+        // Unsure why this causes a warning without this.
+        #[allow(unused_unsafe)]
+        unsafe {
+            core::intrinsics::abort()
+        };
     }
 
     pub fn pre_main_hook(&self) -> Option<i32> {

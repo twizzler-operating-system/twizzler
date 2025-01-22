@@ -97,12 +97,10 @@ extern "C" fn limine_entry() -> ! {
     }
 
     let mut boot_info = LimineBootInfo {
-        kernel: unsafe {
-            LIMINE_KERNEL
-                .get_response()
-                .expect("no kernel info specified for kernel")
-                .file()
-        },
+        kernel: LIMINE_KERNEL
+            .get_response()
+            .expect("no kernel info specified for kernel")
+            .file(),
         maps: alloc::vec![],
         modules: alloc::vec![],
         rsdp: LIMINE_TABLE.get_response().map(

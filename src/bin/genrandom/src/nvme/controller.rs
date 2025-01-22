@@ -27,6 +27,7 @@ use volatile::map_field;
 use super::{dma::NvmeDmaRegion, requester::NvmeRequester};
 use crate::nvme::dma::NvmeDmaSliceRegion;
 
+#[allow(dead_code)]
 pub struct NvmeController {
     requester: RwLock<Vec<Requester<NvmeRequester>>>,
     admin_requester: RwLock<Option<Arc<Requester<NvmeRequester>>>>,
@@ -146,7 +147,7 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>) {
 
     let req2 = req.clone();
     let ctrl2 = ctrl.clone();
-    let task = twizzler_async::run(async {
+    let _task = twizzler_async::run(async {
         Task::spawn(async move {
             loop {
                 let _i = int.next().await;
@@ -439,7 +440,7 @@ impl NvmeController {
         ident.dma_region().with(|ident| ident.clone())
     }
 
-    pub async fn flash_len(&self) -> usize {
+    pub async fn _flash_len(&self) -> usize {
         if let Some(sz) = self.capacity.get() {
             *sz
         } else {

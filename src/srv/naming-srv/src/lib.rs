@@ -1,10 +1,7 @@
 #![feature(naked_functions)]
 #![feature(linkage)]
 
-use std::{
-    default,
-    sync::{Arc, Mutex},
-};
+use std::sync::Mutex;
 
 use arrayvec::ArrayString;
 use lazy_static::lazy_static;
@@ -14,10 +11,8 @@ use secgate::{
     util::{Descriptor, HandleMgr, SimpleBuffer},
 };
 use twizzler::{
-    collections::vec::{Vec, VecObject, VecObjectAlloc},
-    marker::Invariant,
-    object::{Object, ObjectBuilder, TypedObject},
-    ptr::GlobalPtr,
+    collections::vec::{VecObject, VecObjectAlloc},
+    object::ObjectBuilder,
 };
 use twizzler_abi::{
     aux::KernelInitInfo,
@@ -125,12 +120,13 @@ pub fn put(info: &secgate::GateCallInfo, desc: Descriptor) {
         }
     }
 
-    namer.names.push(provided);
+    // TODO: handle error
+    let _ = namer.names.push(provided);
 }
 
 #[secure_gate(options(info))]
 pub fn get(info: &secgate::GateCallInfo, desc: Descriptor) -> Option<u128> {
-    let mut namer = NAMINGSERVICE.lock().unwrap();
+    let namer = NAMINGSERVICE.lock().unwrap();
     let client = namer
         .handles
         .lookup(info.source_context().unwrap_or(0.into()), desc)?;
@@ -172,7 +168,7 @@ pub fn close_handle(info: &secgate::GateCallInfo, desc: Descriptor) {
 
 #[secure_gate(options(info))]
 pub fn enumerate_names(info: &secgate::GateCallInfo, desc: Descriptor) -> Option<usize> {
-    let mut namer = NAMINGSERVICE.lock().unwrap();
+    let namer = NAMINGSERVICE.lock().unwrap();
     let Some(client) = namer
         .handles
         .lookup(info.source_context().unwrap_or(0.into()), desc)
@@ -194,7 +190,7 @@ pub fn enumerate_names(info: &secgate::GateCallInfo, desc: Descriptor) -> Option
 }
 
 #[secure_gate(options(info))]
-pub fn remove(info: &secgate::GateCallInfo, desc: Descriptor) {
+pub fn remove(_info: &secgate::GateCallInfo, _desc: Descriptor) {
     todo!()
     /*let mut namer = NAMINGSERVICE.inner.lock().unwrap();
     let Some(client) = namer

@@ -32,7 +32,7 @@ pub fn kernel_test(_attr: TokenStream, items: TokenStream) -> TokenStream {
     let name = name.unwrap_or("unknown".to_string());
     // Write the test caller and the name into a test_case tuple
     let mut code: TokenStream = format!(
-        "#[test_case] const __X__{}: (&'static str, &'static dyn Fn()) = (\"{}\", &|| {{ {}(); }});",
+        "#[test_case] const __X_{}: (&'static str, &'static dyn Fn()) = (\"{}\", &|| {{ {}(); }});",
         name.to_uppercase(),
         name,
         name

@@ -6,8 +6,8 @@ use twizzler_abi::{
     object::Protections,
     simple_mutex::Mutex,
     syscall::{
-        ThreadSpawnError, ThreadSpawnFlags, ThreadSync, ThreadSyncError, ThreadSyncFlags,
-        ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+        ThreadSpawnFlags, ThreadSync, ThreadSyncError, ThreadSyncFlags, ThreadSyncReference,
+        ThreadSyncSleep, ThreadSyncWake,
     },
     thread::{ExecutionState, ThreadRepr},
 };

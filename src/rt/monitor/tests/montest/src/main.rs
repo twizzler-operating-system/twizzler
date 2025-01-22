@@ -33,7 +33,6 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use monitor_api::CompartmentHandle;
-    use twizzler_abi::klog_println;
 
     use crate::montest_lib;
     extern crate secgate;

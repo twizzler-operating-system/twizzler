@@ -8,7 +8,6 @@ use std::{alloc::AllocError, cell::UnsafeCell, mem::MaybeUninit};
 pub use batch::*;
 pub use object::*;
 pub use reference::*;
-use twizzler_abi::klog_println;
 use twizzler_rt_abi::object::MapError;
 pub use unsafetx::*;
 
@@ -33,8 +32,8 @@ pub trait TxHandle {
 
     fn new_box_with<T: Invariant, A: Allocator, F>(
         &self,
-        alloc: &A,
-        ctor: F,
+        _alloc: &A,
+        _ctor: F,
     ) -> Result<InvBox<T, A>>
     where
         F: FnOnce(&mut MaybeUninit<T>),

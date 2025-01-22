@@ -7,7 +7,7 @@ use twizzler_abi::object::ObjID;
 use crate::{
     memory::{MemoryRegion, MemoryRegionKind},
     mutex::Mutex,
-    obj::{lookup_object, LookupFlags, ObjectRef, PageNumber},
+    obj::{LookupFlags, ObjectRef, PageNumber},
     once::Once,
     syscall::sync::finish_blocking,
     thread::current_thread_ref,
@@ -28,7 +28,6 @@ pub fn pager_select_memory_regions(regions: &[MemoryRegion]) -> Vec<MemoryRegion
         if matches!(reg.kind, MemoryRegionKind::UsableRam) {
             // TODO: don't just pick one, and don't just pick the first one.
             if PAGER_MEMORY.poll().is_none() {
-                logln!("selecting pager region {:?}", reg);
                 PAGER_MEMORY.call_once(|| *reg);
             } else {
                 fa_regions.push(*reg);

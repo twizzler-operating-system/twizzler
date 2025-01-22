@@ -6,7 +6,6 @@ use core::{
 };
 
 use intrusive_collections::{linked_list::AtomicLink, offset_of, RBTreeAtomicLink};
-use object::xcoff::C_NULL;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     syscall::ThreadSpawnArgs,
@@ -76,8 +75,11 @@ pub type ThreadRef = Arc<Thread>;
 static CURRENT_THREAD: RefCell<Option<ThreadRef>> = RefCell::new(None);
 
 pub fn current_thread_ref() -> Option<ThreadRef> {
-    if core::intrinsics::unlikely(!crate::processor::tls_ready()) {
-        return None;
+    #[allow(unused_unsafe)]
+    unsafe {
+        if core::intrinsics::unlikely(!crate::processor::tls_ready()) {
+            return None;
+        }
     }
     interrupt::with_disabled(|| CURRENT_THREAD.borrow().clone())
 }

@@ -14,9 +14,8 @@ bitflags::bitflags! {
     }
 }
 
-pub type ResolverFn = extern "C" fn(ResolveRequest) -> Result<FotResolve, FotError>;
-
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Ord, Eq, Hash, Error)]
+#[repr(C)]
 pub enum FotError {
     #[error("invalid FOT index")]
     InvalidIndex,
@@ -24,8 +23,10 @@ pub enum FotError {
     InvalidFotEntry,
 }
 
+#[repr(C)]
 pub struct ResolveRequest {}
 
+#[repr(C)]
 pub struct FotResolve {}
 
 #[repr(C)]

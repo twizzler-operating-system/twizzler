@@ -88,7 +88,7 @@ pub enum ThreadSpawnError {
     #[error("unknown error")]
     #[num_enum(default)]
     Unknown = 0,
-    /// One of the arguments was invalid.   
+    /// One of the arguments was invalid.
     #[error("invalid argument")]
     InvalidArgument = 1,
     /// A specified object (handle) was not found.
@@ -105,7 +105,7 @@ pub unsafe fn sys_spawn(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError
         code,
         val,
         |c, _| c == 0,
-        crate::object::ObjID::new_from_parts,
+        |x, y| crate::object::ObjID::from_parts([x, y]),
         |_, v| ThreadSpawnError::from(v),
     )
 }

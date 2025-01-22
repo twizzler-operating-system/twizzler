@@ -2,12 +2,12 @@ use std::{alloc::AllocError, marker::PhantomData, mem::MaybeUninit};
 
 use thiserror::Error;
 use twizzler_abi::syscall::{ObjectCreate, ObjectCreateError};
-use twizzler_rt_abi::object::{MapError, MapFlags, ObjectHandle};
+use twizzler_rt_abi::object::{MapError, MapFlags};
 
-use super::{Object, RawObject};
+use super::Object;
 use crate::{
     marker::{BaseType, StoreCopy},
-    tx::{TxHandle, TxObject},
+    tx::TxObject,
 };
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -66,15 +66,12 @@ impl<Base: BaseType> Default for ObjectBuilder<Base> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::ObjectBuilder;
-    use crate::{
-        marker::{BaseType, StoreCopy},
-        object::TypedObject,
-        ptr::{GlobalPtr, InvPtr, Ref},
-        tx::{TxHandle, TxObject},
-    };
+    use crate::{marker::BaseType, object::TypedObject, ptr::InvPtr};
 
+    #[test]
     fn builder_simple() {
         let builder = ObjectBuilder::default();
         let obj = builder.build(42u32).unwrap();
@@ -87,6 +84,7 @@ mod tests {
     }
     impl BaseType for Foo {}
 
+    #[test]
     fn builder_complex() {
         let builder = ObjectBuilder::default();
         let obj_1 = builder.build(42u32).unwrap();

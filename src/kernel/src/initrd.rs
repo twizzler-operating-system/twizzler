@@ -1,7 +1,5 @@
 use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, sync::Arc};
 
-use object::ReadRef;
-
 use crate::{
     memory::VirtAddr,
     obj::{self, pages::Page, ObjectRef},

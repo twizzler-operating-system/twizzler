@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use lazy_static::lazy_static;
 use lru::LruCache;
-use naming_core::dynamic::{dynamic_naming_factory, DynamicNamingHandle};
+use naming_core::dynamic::dynamic_naming_factory;
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
@@ -248,7 +248,7 @@ impl ReferenceRuntime {
         Some(twizzler_rt_abi::bindings::fd_info { flags: 0 })
     }
 
-    pub fn fd_cmd(&self, fd: RawFd, cmd: u32, arg: *const u8, ret: *mut u8) -> u32 {
+    pub fn fd_cmd(&self, fd: RawFd, cmd: u32, _arg: *const u8, _ret: *mut u8) -> u32 {
         tracing::warn!("fd_cmd: unimp: {} {}", fd, cmd);
         let binding = get_fd_slots().lock().unwrap();
 

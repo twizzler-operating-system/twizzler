@@ -164,7 +164,7 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
         _ => panic!("pager queue not found"),
     };
     logln!(
-        "[kernel-pager] registered {} pager queue: {}",
+        "[kernel::pager] registered {} pager queue: {}",
         if outgoing { "sender" } else { "receiver" },
         id
     );

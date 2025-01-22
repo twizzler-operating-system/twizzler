@@ -1,9 +1,10 @@
 use std::marker::PhantomData;
 
-use super::{Result, TxHandle, TxObject};
+use super::{Result, TxObject};
 use crate::object::Object;
 
 #[derive(Default)]
+#[allow(dead_code)]
 pub struct TxBatch {
     txs: Vec<Box<TxObject<()>>>,
 }
@@ -20,6 +21,7 @@ impl<B> Clone for HandleIdx<B> {
 
 impl<B> Copy for HandleIdx<B> {}
 
+#[allow(unused_variables)]
 impl TxBatch {
     pub fn tx<B>(&mut self, obj: Object<B>) -> Result<HandleIdx<B>> {
         todo!()
@@ -38,6 +40,7 @@ impl TxBatch {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use crate::{
         marker::BaseType,
@@ -51,6 +54,7 @@ mod tests {
 
     impl BaseType for Simple {}
 
+    #[test]
     fn simple_batch_tx() {
         let builder = ObjectBuilder::default();
         let obj1 = builder.build(Simple { x: 3 }).unwrap();

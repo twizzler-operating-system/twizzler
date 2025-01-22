@@ -1,19 +1,6 @@
 use clap::{Parser, Subcommand};
 use etl_twizzler::etl::{Pack, PackType, Unpack};
 
-#[cfg(target_os = "twizzler")]
-use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(target_os = "twizzler")]
-use twizzler_abi::{
-    object::{MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{
-        sys_thread_sync, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, ThreadSync,
-        ThreadSyncFlags, ThreadSyncReference, ThreadSyncWake,
-    },
-};
-#[cfg(target_os = "twizzler")]
-use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
-
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {

@@ -253,7 +253,7 @@ fn build_twizzler<'a>(
 fn maybe_build_tests_dynamic<'a>(
     workspace: &'a Workspace,
     build_config: &crate::BuildConfig,
-    static_compilation: &Option<Compilation<'a>>,
+    _static_compilation: &Option<Compilation<'a>>,
     other_options: &OtherOptions,
 ) -> anyhow::Result<Option<Compilation<'a>>> {
     let mode = CompileMode::Test;
@@ -269,7 +269,7 @@ fn maybe_build_tests_dynamic<'a>(
         crate::triple::Host::Twizzler,
         None,
     );
-    let mut packages = locate_packages(workspace, None);
+    let packages = locate_packages(workspace, None);
     let mut options = CompileOptions::new(workspace.gctx(), mode)?;
     options.build_config =
         BuildConfig::new(workspace.gctx(), None, false, &[triple.to_string()], mode)?;

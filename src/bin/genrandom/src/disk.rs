@@ -1,19 +1,13 @@
 use std::{
-    future, io,
+    io,
     io::{Error, ErrorKind},
-    mem::size_of,
-    sync::{Arc, Mutex, RwLock},
+    sync::Arc,
 };
 
 use layout::{
-    collections::raw::RawBytes,
-    io::{SeekFrom, StdIO},
-    ApplyLayout, Encode, Frame, Read, Seek, SourcedDynamic, Write, IO,
+    collections::raw::RawBytes, io::SeekFrom, Encode, Read, Seek, SourcedDynamic, Write, IO,
 };
-use lethe_gadget_fat::{
-    filesystem::FileSystem,
-    schema::{self, FATEntry, Superblock},
-};
+use lethe_gadget_fat::schema::{self, FATEntry, Superblock};
 use twizzler_async::block_on;
 
 use crate::nvme::{init_nvme, NvmeController};
@@ -66,7 +60,7 @@ pub fn setup(data: &mut Disk) {
 const DISK_SIZE: usize = 0x4_000_000_000 + 0x400;
 const PAGE_SIZE: usize = 4096;
 const SECTOR_SIZE: usize = 512;
-const PAGE_SHIFT: usize = 12;
+const _PAGE_SHIFT: usize = 12;
 const PAGE_MASK: usize = 0xFFF;
 const LBA_COUNT: usize = DISK_SIZE / SECTOR_SIZE;
 
@@ -87,7 +81,7 @@ impl Read for Disk {
             } else {
                 left + buf.len() - bytes_written
             }; // If I want to write more than the boundary of a page
-            block_on(self.ctrl.read_page(lba as u64, &mut read_buffer, 0));
+            block_on(self.ctrl.read_page(lba as u64, &mut read_buffer, 0)).unwrap();
 
             let bytes_to_read = right - left;
             buf[bytes_written..bytes_written + bytes_to_read]
@@ -102,7 +96,7 @@ impl Read for Disk {
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
-        self.read(buf);
+        self.read(buf)?;
         Ok(())
     }
 }
@@ -126,9 +120,9 @@ impl Write for Disk {
             };
             if right - left != PAGE_SIZE {
                 let temp_pos: u64 = self.pos.try_into().unwrap();
-                self.seek(SeekFrom::Start(temp_pos & !PAGE_MASK as u64));
+                self.seek(SeekFrom::Start(temp_pos & !PAGE_MASK as u64))?;
                 self.read_exact(&mut write_buffer)?;
-                self.seek(SeekFrom::Start(temp_pos));
+                self.seek(SeekFrom::Start(temp_pos))?;
             }
 
             write_buffer[left..right].copy_from_slice(&buf[bytes_read..bytes_read + right - left]);
@@ -136,7 +130,7 @@ impl Write for Disk {
 
             self.pos += right - left;
 
-            block_on(self.ctrl.write_page(lba as u64, &mut write_buffer, 0));
+            block_on(self.ctrl.write_page(lba as u64, &mut write_buffer, 0)).unwrap();
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 
@@ -144,7 +138,7 @@ impl Write for Disk {
     }
 
     fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
-        self.write(buf);
+        self.write(buf)?;
 
         Ok(())
     }

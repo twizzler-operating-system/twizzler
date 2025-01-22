@@ -1,6 +1,6 @@
 //! Implements some helper types and functions for working with objects in this runtime.
 
-use core::{marker::PhantomData, ptr::NonNull};
+use core::marker::PhantomData;
 
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},

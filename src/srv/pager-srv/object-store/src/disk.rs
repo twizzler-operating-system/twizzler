@@ -1,11 +1,11 @@
 use std::{
-    io::{self, Error, ErrorKind},
+    io::{Error, ErrorKind},
     sync::{Arc, Mutex, OnceLock},
 };
 
 use async_executor::Executor;
 use async_io::block_on;
-use fatfs::{FatType, FileSystem, FormatVolumeOptions, IoBase, Read, Seek, SeekFrom, Write};
+use fatfs::{FileSystem, IoBase, Read, Seek, SeekFrom};
 
 use crate::{
     fs::{PAGE_SIZE, SECTOR_SIZE},
@@ -49,7 +49,7 @@ pub fn init(ex: &'static Executor<'static>) {
 }
 
 fn do_init(ex: &'static Executor<'static>) -> (Disk, Mutex<FileSystem<Disk>>, Arc<NvmeController>) {
-    let (mut disk, nvme) = Disk::new(ex).unwrap();
+    let (disk, nvme) = Disk::new(ex).unwrap();
     let fs_options = fatfs::FsOptions::new().update_accessed_date(false);
     let fs = FileSystem::new(disk.clone(), fs_options);
     if let Ok(fs) = fs {
@@ -84,7 +84,8 @@ impl fatfs::Read for Disk {
             } else {
                 left + buf.len() - bytes_written
             }; // If I want to write more than the boundary of a page
-            block_on(self.ctrl.read_page(lba as u64, &mut read_buffer, 0));
+            block_on(self.ctrl.read_page(lba as u64, &mut read_buffer, 0))
+                .map_err(|_| ErrorKind::Other)?;
 
             let bytes_to_read = right - left;
             buf[bytes_written..bytes_written + bytes_to_read]
@@ -118,9 +119,9 @@ impl fatfs::Write for Disk {
             };
             if right - left != PAGE_SIZE {
                 let temp_pos: u64 = self.pos.try_into().unwrap();
-                self.seek(SeekFrom::Start(temp_pos & !PAGE_MASK as u64));
+                self.seek(SeekFrom::Start(temp_pos & !PAGE_MASK as u64))?;
                 self.read_exact(&mut write_buffer)?;
-                self.seek(SeekFrom::Start(temp_pos));
+                self.seek(SeekFrom::Start(temp_pos))?;
             }
 
             write_buffer[left..right].copy_from_slice(&buf[bytes_read..bytes_read + right - left]);
@@ -128,7 +129,8 @@ impl fatfs::Write for Disk {
 
             self.pos += right - left;
 
-            block_on(self.ctrl.write_page(lba as u64, &mut write_buffer, 0));
+            block_on(self.ctrl.write_page(lba as u64, &mut write_buffer, 0))
+                .map_err(|_| ErrorKind::Other)?;
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 

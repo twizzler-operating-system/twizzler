@@ -74,14 +74,29 @@ pub trait KernelConsoleHardware {
     fn write(&self, data: &[u8], flags: KernelConsoleWriteFlags);
 }
 
-impl<T: KernelConsoleHardware> core::fmt::Write for KernelConsole<T, EmergencyMessage> {
+struct KernelConsoleRef<T: KernelConsoleHardware + 'static, M: MessageLevel + 'static> {
+    console: &'static KernelConsole<T, M>,
+}
+
+impl<T: KernelConsoleHardware + 'static, M: MessageLevel + 'static> KernelConsoleRef<T, M> {
+    pub fn write(
+        &self,
+        data: &[u8],
+        flags: KernelConsoleWriteFlags,
+    ) -> Result<(), ConsoleWriteError> {
+        self.console.hardware.write(data, flags);
+        self.console.inner.write_buffer(data, flags)
+    }
+}
+
+impl<T: KernelConsoleHardware> core::fmt::Write for KernelConsoleRef<T, EmergencyMessage> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         let _ = self.write(s.as_bytes(), KernelConsoleWriteFlags::empty());
         Ok(())
     }
 }
 
-impl<T: KernelConsoleHardware> core::fmt::Write for KernelConsole<T, NormalMessage> {
+impl<T: KernelConsoleHardware> core::fmt::Write for KernelConsoleRef<T, NormalMessage> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         let _ = self.write(s.as_bytes(), KernelConsoleWriteFlags::empty());
         Ok(())
@@ -221,6 +236,7 @@ impl KernelConsoleInner {
     }
 }
 
+/*
 impl<T: KernelConsoleHardware> KernelConsole<T, EmergencyMessage> {
     pub fn write(
         &self,
@@ -242,6 +258,7 @@ impl<T: KernelConsoleHardware> KernelConsole<T, NormalMessage> {
         self.inner.write_buffer(data, flags)
     }
 }
+*/
 
 impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
     fn read_buffer_bytes(&self, _slice: &mut [u8]) -> Result<usize, KernelConsoleReadBufferError> {
@@ -278,47 +295,46 @@ impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
 }
 
 pub fn write_bytes(slice: &[u8], flags: KernelConsoleWriteFlags) -> Result<(), ConsoleWriteError> {
-    unsafe { NORMAL_CONSOLE.write(slice, flags) }
+    let writer = KernelConsoleRef {
+        console: &NORMAL_CONSOLE,
+    };
+    writer.write(slice, flags)
 }
 
 pub fn read_bytes(
     slice: &mut [u8],
     flags: KernelConsoleReadFlags,
 ) -> Result<usize, KernelConsoleReadError> {
-    unsafe { NORMAL_CONSOLE.read_bytes(slice, flags) }
+    NORMAL_CONSOLE.read_bytes(slice, flags)
 }
 
 pub fn read_buffer_bytes(slice: &mut [u8]) -> Result<usize, KernelConsoleReadBufferError> {
-    unsafe { NORMAL_CONSOLE.read_buffer_bytes(slice) }
+    NORMAL_CONSOLE.read_buffer_bytes(slice)
 }
 
 pub fn push_input_byte(byte: u8) {
-    unsafe {
-        let byte = match byte {
-            13 => 10,
-            127 => 8,
-            x => x,
-        };
-        NORMAL_CONSOLE.read_lock.lock().push_input_byte(byte);
-        if byte == 8 {
-            let _ = write_bytes(&[8, b' '], KernelConsoleWriteFlags::DISCARD_ON_FULL);
-        }
-        let _ = write_bytes(&[byte], KernelConsoleWriteFlags::DISCARD_ON_FULL);
+    let byte = match byte {
+        13 => 10,
+        127 => 8,
+        x => x,
+    };
+    NORMAL_CONSOLE.read_lock.lock().push_input_byte(byte);
+    if byte == 8 {
+        let _ = write_bytes(&[8, b' '], KernelConsoleWriteFlags::DISCARD_ON_FULL);
     }
+    let _ = write_bytes(&[byte], KernelConsoleWriteFlags::DISCARD_ON_FULL);
 }
 
-static mut EMERGENCY_CONSOLE: KernelConsole<
-    crate::machine::MachineConsoleHardware,
-    EmergencyMessage,
-> = KernelConsole {
-    inner: &KERNEL_CONSOLE_MAIN,
-    hardware: crate::machine::MachineConsoleHardware::new(),
-    _pd: core::marker::PhantomData,
-    lock: Spinlock::new(()),
-    read_lock: Spinlock::new(KernelConsoleReadBuffer::new()),
-};
+static EMERGENCY_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, EmergencyMessage> =
+    KernelConsole {
+        inner: &KERNEL_CONSOLE_MAIN,
+        hardware: crate::machine::MachineConsoleHardware::new(),
+        _pd: core::marker::PhantomData,
+        lock: Spinlock::new(()),
+        read_lock: Spinlock::new(KernelConsoleReadBuffer::new()),
+    };
 
-static mut NORMAL_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, NormalMessage> =
+static NORMAL_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, NormalMessage> =
     KernelConsole {
         inner: &KERNEL_CONSOLE_MAIN,
         hardware: crate::machine::MachineConsoleHardware::new(),
@@ -330,21 +346,23 @@ static mut NORMAL_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware,
 #[doc(hidden)]
 pub fn _print_normal(args: ::core::fmt::Arguments) {
     let istate = interrupt::disable();
-    unsafe {
+    {
         let _guard = NORMAL_CONSOLE.lock.lock();
-        NORMAL_CONSOLE
-            .write_fmt(args)
-            .expect("printing to serial failed");
+        let mut writer = KernelConsoleRef {
+            console: &NORMAL_CONSOLE,
+        };
+        writer.write_fmt(args).expect("printing to serial failed");
     }
     interrupt::set(istate);
 }
 
 pub fn _print_emergency(args: ::core::fmt::Arguments) {
     let istate = interrupt::disable();
-    unsafe {
-        EMERGENCY_CONSOLE
-            .write_fmt(args)
-            .expect("printing to serial failed");
+    {
+        let mut writer = KernelConsoleRef {
+            console: &NORMAL_CONSOLE,
+        };
+        writer.write_fmt(args).expect("printing to serial failed");
     }
     interrupt::set(istate);
 }

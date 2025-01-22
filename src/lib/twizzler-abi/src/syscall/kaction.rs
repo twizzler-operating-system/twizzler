@@ -13,7 +13,7 @@ pub fn sys_kaction(
     arg2: u64,
     flags: KactionFlags,
 ) -> Result<KactionValue, KactionError> {
-    let (hi, lo) = id.map_or((0, 0), |id| id.split());
+    let [hi, lo] = id.map_or([0, 0], |id| id.parts());
     let (code, val) = unsafe {
         raw_syscall(
             Syscall::Kaction,

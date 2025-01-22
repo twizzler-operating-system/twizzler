@@ -132,6 +132,7 @@ extern crate twizzler_minruntime;
 fn main() {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
+        .without_time()
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");

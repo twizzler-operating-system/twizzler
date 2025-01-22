@@ -8,9 +8,9 @@ use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use super::{Allocator, OwnedGlobalPtr, SingleObjectAllocator};
 use crate::{
     marker::BaseType,
-    object::{CreateError, Object, ObjectBuilder, RawObject, TypedObject},
-    ptr::{GlobalPtr, Ref},
-    tx::{TxCell, TxError, TxHandle, TxObject, TxRef, UnsafeTxHandle},
+    object::{Object, ObjectBuilder, RawObject},
+    ptr::GlobalPtr,
+    tx::{TxCell, TxError, TxHandle, TxObject, UnsafeTxHandle},
 };
 
 pub struct ArenaObject {

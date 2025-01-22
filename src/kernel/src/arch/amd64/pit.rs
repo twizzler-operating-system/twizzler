@@ -1,6 +1,6 @@
 use x86::io::{inb, outb};
 
-use crate::clock::Nanoseconds;
+use crate::{clock::Nanoseconds, once::Once};
 
 const CHANNEL_READBACK: u8 = 3 << 6;
 const ACCESS_LATCH: u8 = 0;
@@ -26,14 +26,16 @@ fn pit_data(channel: u16) -> u16 {
     PIT_BASE + channel
 }
 
-static mut REAL_FREQ: u64 = 0;
-static mut CB: Option<fn(Nanoseconds)> = None;
+struct PitInfo {
+    cb: fn(Nanoseconds),
+    freq: u64,
+}
+
+static INFO: Once<PitInfo> = Once::new();
 
 pub fn timer_interrupt() {
-    unsafe {
-        if let Some(cb) = CB {
-            cb(1000000000 / REAL_FREQ);
-        }
+    if let Some(info) = INFO.poll() {
+        (info.cb)(1000000000 / info.freq);
     }
 }
 
@@ -48,15 +50,15 @@ pub fn setup_freq(hz: u64, cb: fn(Nanoseconds)) {
         outb(pit_data(0), (count & 0xff) as u8);
         outb(pit_data(0), ((count >> 8) & 0xff) as u8);
     }
-    unsafe {
-        REAL_FREQ = CRYSTAL_HZ / count;
-        CB = Some(cb);
-        logln!(
-            "[kernel::arch::x86-pit] setting up for statclock with freq {} ({} ms)",
-            REAL_FREQ,
-            (1000 / REAL_FREQ)
-        );
-    }
+    let info = INFO.call_once(|| PitInfo {
+        freq: CRYSTAL_HZ / count,
+        cb,
+    });
+    logln!(
+        "[kernel::arch::x86-pit] setting up for statclock with freq {} ({} ms)",
+        info.freq,
+        (1000 / info.freq)
+    );
 }
 
 pub fn wait_ns(ns: u64) {

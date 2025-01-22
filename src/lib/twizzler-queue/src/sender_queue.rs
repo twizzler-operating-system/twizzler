@@ -10,7 +10,7 @@ use std::{
 };
 
 use async_io::Async;
-use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
+use futures::FutureExt;
 use twizzler_queue_raw::{QueueError, ReceiveFlags, SubmissionFlags};
 
 use crate::Queue;

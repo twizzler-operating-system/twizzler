@@ -1,12 +1,12 @@
 //! Implementation of the object runtime.
 
-use core::{ptr::NonNull, sync::atomic::AtomicU64};
+use core::sync::atomic::AtomicU64;
 
 use rustc_alloc::boxed::Box;
 use slot::global_allocate;
 use twizzler_abi::{
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{sys_object_map, ObjectMapError, UnmapFlags},
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{sys_object_map, UnmapFlags},
 };
 use twizzler_rt_abi::object::{MapError, MapFlags, ObjectHandle};
 
@@ -20,7 +20,7 @@ pub use handle::*;
 pub(crate) mod slot;
 
 #[repr(C)]
-struct RuntimeHandleInfo {
+pub(crate) struct RuntimeHandleInfo {
     refs: AtomicU64,
 }
 

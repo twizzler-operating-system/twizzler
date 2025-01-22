@@ -143,7 +143,7 @@ impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
         self.do_push(item, tx)
     }
 
-    pub fn pop(&self, tx: &impl TxHandle) -> Result<T> {
+    pub fn pop(&self, _tx: &impl TxHandle) -> Result<T> {
         todo!()
     }
 }
@@ -165,6 +165,8 @@ impl<T: Invariant, Alloc: Allocator + SingleObjectAllocator> Vec<T, Alloc> {
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 mod tests {
     use super::*;
     use crate::{
@@ -239,7 +241,7 @@ mod tests {
         }
     }
 
-    //#[test]
+    #[test]
     fn node_push() {
         let simple_obj = ObjectBuilder::default().build(Simple { x: 3 }).unwrap();
         let vobj = ObjectBuilder::<Vec<Node, VecObjectAlloc>>::default()
@@ -262,7 +264,7 @@ mod tests {
         assert_eq!(unsafe { item.ptr.resolve() }.x, 3);
     }
 
-    //#[test]
+    #[test]
     fn vec_object() {
         let simple_obj = ObjectBuilder::default().build(Simple { x: 3 }).unwrap();
         let vo = VecObject::new(ObjectBuilder::default()).unwrap();

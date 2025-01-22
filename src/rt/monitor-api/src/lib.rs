@@ -27,10 +27,7 @@ use secgate::{
     util::{Descriptor, Handle},
     Crossing, DynamicSecGate,
 };
-use twizzler_abi::{
-    klog_println,
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
-};
+use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 
 #[allow(unused_imports, unused_variables, unexpected_cfgs)]
 mod gates {

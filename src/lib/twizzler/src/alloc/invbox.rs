@@ -1,10 +1,8 @@
-use std::mem::MaybeUninit;
-
 use super::{Allocator, OwnedGlobalPtr};
 use crate::{
     marker::Invariant,
     ptr::{GlobalPtr, InvPtr, Ref},
-    tx::{Result, TxHandle, TxObject},
+    tx::TxObject,
 };
 
 pub struct InvBox<T: Invariant, Alloc: Allocator> {
@@ -17,7 +15,7 @@ impl<T: Invariant, Alloc: Allocator> InvBox<T, Alloc> {
         Self { raw, alloc }
     }
 
-    pub fn new<B>(tx: &TxObject<B>, ogp: OwnedGlobalPtr<T, Alloc>) -> Self {
+    pub fn new<B>(_tx: &TxObject<B>, _ogp: OwnedGlobalPtr<T, Alloc>) -> Self {
         todo!()
     }
 
@@ -32,17 +30,19 @@ impl<T: Invariant, Alloc: Allocator> InvBox<T, Alloc> {
     pub fn as_ptr(&self) -> &InvPtr<T> {
         &self.raw
     }
+
+    pub fn alloc(&self) -> &Alloc {
+        &self.alloc
+    }
 }
 
+#[cfg(test)]
 mod tests {
-    use std::{mem::MaybeUninit, ptr::addr_of_mut};
-
     use super::InvBox;
     use crate::{
-        alloc::arena::{ArenaAllocator, ArenaBase, ArenaObject},
+        alloc::arena::{ArenaAllocator, ArenaObject},
         marker::BaseType,
         object::{ObjectBuilder, TypedObject},
-        tx::{TxHandle, TxObject},
     };
 
     struct Foo {
@@ -50,6 +50,7 @@ mod tests {
     }
     impl BaseType for Foo {}
 
+    #[test]
     fn box_simple() {
         let alloc = ArenaObject::new().unwrap();
         let arena = alloc.tx().unwrap();
@@ -63,6 +64,7 @@ mod tests {
         assert_eq!(*base.x.resolve(), 3);
     }
 
+    #[test]
     fn box_simple_builder() {
         let builder = ObjectBuilder::<Foo>::default();
         let alloc = ArenaObject::new().unwrap();

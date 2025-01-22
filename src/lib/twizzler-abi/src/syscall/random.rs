@@ -4,7 +4,7 @@ use bitflags::bitflags;
 use num_enum::{FromPrimitive, IntoPrimitive};
 
 use super::{convert_codes_to_result, Syscall};
-use crate::{arch::syscall::raw_syscall, klog_println};
+use crate::arch::syscall::raw_syscall;
 
 bitflags! {
     #[derive(Debug)]

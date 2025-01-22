@@ -1,33 +1,20 @@
-#![feature(new_uninit)]
-
 extern crate twizzler_runtime;
 
 use std::{
-    fs::DirBuilder,
-    future,
-    mem::{size_of, zeroed, MaybeUninit},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, channel},
-        Arc, Mutex, RwLock,
-    },
+    sync::mpsc::{self},
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use getrandom::{getrandom, getrandom_uninit};
-use layout::{io::SeekFrom, Read, Seek, Write};
-use lethe_gadget_fat::filesystem::FileSystem;
-use twizzler_async::{block_on, Task, Timer};
+use getrandom::getrandom_uninit;
+use layout::{io::SeekFrom, Seek, Write};
 
-use crate::nvme::{init_nvme, NvmeController};
 mod disk;
 mod nvme;
 
 use disk::Disk;
 
 pub fn main() {
-    let id = 20;
     println!("Running genrandom");
 
     let mut d = Disk::new().unwrap();
@@ -43,9 +30,9 @@ pub fn main() {
     // fs.create_object(id, 1500);
     d.seek(SeekFrom::Current(START_OFFSET as i64)).unwrap();
     println!("seeked forward");
-    let mut buf = vec![0u8; BUF_SIZE_USIZE];
+    let _buf = vec![0u8; BUF_SIZE_USIZE];
     let (tx, rx) = mpsc::sync_channel(1);
-    let gen_thread = thread::spawn(move || {
+    let _gen_thread = thread::spawn(move || {
         for i in OFFSET_ITER..ITER_CT {
             let mut buf = Box::new_uninit_slice(BUF_SIZE_USIZE);
             let start = Instant::now();
@@ -61,11 +48,11 @@ pub fn main() {
         }
     });
     let program_start = Instant::now();
-    let write_thread = thread::spawn(move || {
+    let _write_thread = thread::spawn(move || {
         let mut iter_ct = OFFSET_ITER;
         for buf in rx {
             let start = Instant::now();
-            d.write(&buf);
+            d.write(&buf).unwrap();
             let end = Instant::now();
             let curr_dur = end - program_start;
             let iters_passed = iter_ct - OFFSET_ITER + 1;

@@ -1,10 +1,9 @@
 extern crate twizzler_runtime;
-use std::mem::MaybeUninit;
 mod diehardest;
 
 use getrandom::getrandom;
 
-use crate::diehardest::{analysis::Report, crush};
+use crate::diehardest::analysis::Report;
 
 #[derive(Clone)]
 struct Rng;
@@ -12,7 +11,7 @@ struct Rng;
 impl diehardest::Random for Rng {
     fn get_random(&mut self) -> u64 {
         let mut into = [0u8; 8];
-        getrandom(&mut into);
+        getrandom(&mut into).unwrap();
         u64::from_ne_bytes(into)
     }
 }
@@ -22,7 +21,6 @@ impl diehardest::Random for Rng {
 // Alternatively find a way to compile dieharder, a C library, in twizzler.
 // debian package source: https://salsa.debian.org/edd/dieharder
 fn main() {
-    let mut into: [u8; 32] = Default::default();
     let report = Report::new(Rng);
     let score = report.get_score();
 

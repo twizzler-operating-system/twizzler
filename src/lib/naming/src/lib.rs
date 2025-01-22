@@ -3,10 +3,7 @@ extern "C" {}
 
 pub use naming_core::dynamic::*;
 use naming_core::{api::NamerAPI, handle::NamingHandle};
-use secgate::{
-    secure_gate,
-    util::{Descriptor, HandleMgr, SimpleBuffer},
-};
+use secgate::util::Descriptor;
 use twizzler_rt_abi::object::ObjID;
 
 pub struct StaticNamingAPI {}

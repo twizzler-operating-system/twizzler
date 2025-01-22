@@ -41,7 +41,7 @@ impl core::error::Error for SctxAttachError {}
 
 /// Attach to a given security context.
 pub fn sys_sctx_attach(id: ObjID) -> Result<(), SctxAttachError> {
-    let args = [id.split().0, id.split().1, 0, 0, 0];
+    let args = [id.parts()[0], id.parts()[1], 0, 0, 0];
     let (code, val) = unsafe { raw_syscall(Syscall::SctxAttach, &args) };
     convert_codes_to_result(
         code,

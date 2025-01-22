@@ -1,14 +1,14 @@
-use core::{cell::RefCell, str::FromStr};
-use std::{borrow::ToOwned, rc::Rc, vec, vec::Vec};
+use core::str::FromStr;
+use std::{borrow::ToOwned, vec, vec::Vec};
 
 use smoltcp::{
     iface::{Config, Interface, SocketSet},
-    phy::{Device, DeviceCapabilities, Medium},
+    phy::{Device, Medium},
     socket::tcp,
     time::Instant,
-    wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address},
+    wire::{HardwareAddress, IpAddress, IpCidr, Ipv4Address},
 };
-use virtio_net::{get_device, DeviceWrapper};
+use virtio_net::get_device;
 
 const IP: &str = "10.0.2.15"; // QEMU user networking default IP
 const GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway

@@ -95,7 +95,7 @@ impl HandleCache {
     }
 
     /// Flush all items in the inactive queue.
-    pub fn flush(&mut self) {
+    pub fn _flush(&mut self) {
         let to_remove = self.queued.drain(..).collect::<Vec<_>>();
         for item in to_remove {
             self.do_remove(item.1);
