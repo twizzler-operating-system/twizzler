@@ -5,7 +5,7 @@ use std::{
 
 use embedded_io::ErrorType;
 use logboi::LogHandle;
-use naming::NamingHandle;
+use naming::{static_naming_factory, StaticNamingAPI, StaticNamingHandle as NamingHandle};
 use tiny_http::{Response, StatusCode};
 use tracing::Level;
 use twizzler_abi::{
@@ -216,7 +216,7 @@ fn main() {
             .finish(),
     )
     .unwrap();
-    let mut namer = NamingHandle::new().unwrap();
+    let mut namer = static_naming_factory().unwrap();
     let mut logger = LogHandle::new().unwrap();
     logger.log(b"Hello Logger!\n");
     tracing::info!("testing namer: {:?}", namer.get("gadget"));
