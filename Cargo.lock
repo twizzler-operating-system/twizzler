@@ -357,6 +357,7 @@ dependencies = [
 [[package]]
 name = "backtracer_core"
 version = "0.0.7"
+source = "git+https://github.com/twizzler-operating-system/backtracer?branch=twizzler#0b85917581f463464fb30980fad86f7856334e46"
 dependencies = [
  "addr2line 0.16.0",
  "cfg-if 0.1.10",
@@ -6214,7 +6215,7 @@ dependencies = [
 
 [[package]]
 name = "twizzler-rt-abi"
-version = "0.99.0"
+version = "0.99.1"
 dependencies = [
  "bitflags 2.8.0",
  "compiler_builtins",
