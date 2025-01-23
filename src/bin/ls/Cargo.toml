@@ -1,0 +1,8 @@
+[package]
+name = "ls"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.26", features = ["derive"] }
+naming = { path = "../../lib/naming" }

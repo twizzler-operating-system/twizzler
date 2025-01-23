@@ -68,6 +68,12 @@ impl<ServerData> HandleMgr<ServerData> {
         self.handles.get(&comp).and_then(|sv| sv.get(idx))
     }
 
+    /// Lookup the server data associated with a descriptor.
+    pub fn lookup_mut(&mut self, comp: ObjID, ds: Descriptor) -> Option<&mut ServerData> {
+        let idx: usize = ds.try_into().ok()?;
+        self.handles.get_mut(&comp).and_then(|sv| sv.get_mut(idx))
+    }
+
     /// Insert new server data, and return a descriptor for it.
     pub fn insert(&mut self, comp: ObjID, sd: ServerData) -> Option<Descriptor> {
         let entry = self.handles.entry(comp).or_insert_with(|| StableVec::new());

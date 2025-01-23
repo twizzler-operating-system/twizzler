@@ -82,7 +82,7 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
     pub fn get<'a>(&'a self, idx: usize) -> Option<Ref<'a, T>> {
         let r = unsafe { self.inner.start.resolve() };
         let slice = unsafe { RefSlice::from_ref(r, self.inner.len) };
-        slice.get(idx)
+        slice.get(idx).map(|f| f.owned())
     }
 
     pub fn new_in(alloc: Alloc) -> Self {
