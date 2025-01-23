@@ -3676,6 +3676,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ls"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "naming",
+]
+
+[[package]]
 name = "managed"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3950,7 +3958,7 @@ dependencies = [
 name = "naming-test"
 version = "0.1.0"
 dependencies = [
- "naming",
+ "naming-core",
 ]
 
 [[package]]

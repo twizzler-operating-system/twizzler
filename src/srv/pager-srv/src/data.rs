@@ -57,6 +57,13 @@ impl PerObjectInner {
         }
     }
 
+    pub fn lookup(&self, obj_range: ObjectRange) -> Option<PhysRange> {
+        let key = obj_range.start / PAGE;
+        self.page_map
+            .get(&key)
+            .map(|ppd| PhysRange::new(ppd.paddr, PAGE))
+    }
+
     pub fn pages(&self) -> impl Iterator<Item = (ObjectRange, PerPageData)> + '_ {
         self.page_map
             .iter()
@@ -86,6 +93,10 @@ pub struct PerObject {
 impl PerObject {
     pub fn track(&self, obj_range: ObjectRange, phys_range: PhysRange) {
         self.inner.lock().unwrap().track(obj_range, phys_range);
+    }
+
+    pub fn lookup(&self, obj_range: ObjectRange) -> Option<PhysRange> {
+        self.inner.lock().unwrap().lookup(obj_range)
     }
 
     pub async fn sync(
@@ -252,6 +263,19 @@ impl PagerData {
         id: ObjID,
         obj_range: ObjectRange,
     ) -> Result<PhysRange> {
+        {
+            // See if we already allocated
+            let mut inner = self.inner.lock().unwrap();
+            let po = inner.get_per_object(id);
+            if let Some(phys_range) = po.lookup(obj_range) {
+                tracing::debug!(
+                    "already paged memory page for ObjID {:?}, ObjectRange {:?}",
+                    id,
+                    obj_range
+                );
+                return Ok(phys_range);
+            }
+        }
         tracing::debug!(
             "allocating memory page for ObjID {:?}, ObjectRange {:?}",
             id,
@@ -283,7 +307,6 @@ impl PagerData {
         rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
         id: ObjID,
     ) {
-        twizzler_abi::klog_println!("sync: {:?}", id);
         tracing::debug!("sync: {:?}", id);
         let po = {
             let mut inner = self.inner.lock().unwrap();
@@ -292,5 +315,6 @@ impl PagerData {
         let _ = po.sync(rq).await.inspect_err(|e| {
             tracing::warn!("sync failed for {}: {}", id, e);
         });
+        object_store::advance_epoch().unwrap();
     }
 }

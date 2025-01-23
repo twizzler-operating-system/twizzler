@@ -4,7 +4,7 @@
 use std::sync::{Arc, OnceLock};
 
 use async_executor::Executor;
-use futures::executor::block_on;
+use async_io::block_on;
 use twizzler_abi::pager::{
     CompletionToKernel, CompletionToPager, PagerCompletionData, PhysRange, RequestFromKernel,
     RequestFromPager,
@@ -248,13 +248,6 @@ fn do_pager_start(q1: ObjID, q2: ObjID) {
 
     let _ = PAGER_DATA.set((data, sq));
 
-    //object_store::create_object(123).unwrap();
-    //object_store::write_all(123, b"this is a test", 0).unwrap();
-    let mut buf = [0u8; 14];
-    object_store::read_exact(123, &mut buf, 0).unwrap();
-    let s = String::from_utf8(buf.to_vec()).unwrap();
-    println!("====== {}", s);
-
     /*
     object_store::unlink_object(777);
     let res = object_store::create_object(777).unwrap();
@@ -283,14 +276,12 @@ pub fn pager_start(q1: ObjID, q2: ObjID) {
 
 #[secgate::secure_gate]
 pub fn full_object_sync(id: ObjID) {
-    EXECUTOR
-        .get()
-        .unwrap()
-        .spawn(async move {
-            twizzler_abi::klog_println!("IN SYNC");
-            let pager = PAGER_DATA.get().unwrap();
-            twizzler_abi::klog_println!("IN SYNC2");
-            pager.0.sync(&pager.1, id).await
-        })
-        .detach();
+    twizzler_abi::klog_println!("IN SYNC: 0");
+    let task = EXECUTOR.get().unwrap().spawn(async move {
+        twizzler_abi::klog_println!("IN SYNC");
+        let pager = PAGER_DATA.get().unwrap();
+        twizzler_abi::klog_println!("IN SYNC2");
+        pager.0.sync(&pager.1, id).await
+    });
+    block_on(EXECUTOR.get().unwrap().run(async { task.await }));
 }

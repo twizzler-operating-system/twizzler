@@ -715,7 +715,14 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
             ));
 
             if info.obj.use_pager() {
-                crate::pager::get_object_page(&info.obj, page_number);
+                let mut obj_page_tree = info.obj.lock_page_tree();
+                if matches!(
+                    obj_page_tree.get_page(page_number, false),
+                    PageStatus::NoPage
+                ) {
+                    drop(obj_page_tree);
+                    crate::pager::get_object_page(&info.obj, page_number);
+                }
             }
 
             let mut obj_page_tree = info.obj.lock_page_tree();

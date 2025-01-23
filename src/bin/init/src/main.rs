@@ -150,7 +150,7 @@ fn main() {
         i += 1;
     }
 
-    let id = 0x2939f19be48aa79d64e518f9ed1b8314u128.into();
+    let id = 0xd51b37d3534000536055d28641c05317.into();
     println!("reusing object: {:?}", id);
 
     let obj =
