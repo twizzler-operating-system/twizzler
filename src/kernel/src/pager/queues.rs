@@ -75,7 +75,7 @@ pub(super) fn pager_request_handler_main() {
             PagerRequest::Ready => {
                 let reg = PAGER_MEMORY
                     .poll()
-                    .map(|pm| (pm.start.raw(), pm.length))
+                    .map(|pm| (pm[0].start.raw(), pm[0].length))
                     .unwrap_or((0, 0));
                 INFLIGHT_MGR.lock().set_ready();
                 CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::DramPages(

@@ -25,6 +25,19 @@ pub struct MemoryRegion {
     pub kind: MemoryRegionKind,
 }
 
+impl MemoryRegion {
+    pub fn split(mut self, len: usize) -> Option<(MemoryRegion, MemoryRegion)> {
+        if self.length <= len {
+            return None;
+        }
+        let mut second = self;
+        second.start = self.start.offset(len).ok()?;
+        second.length -= len;
+        self.length = len;
+        Some((self, second))
+    }
+}
+
 pub fn init<B: BootInfo>(boot_info: &B) {
     frame::init(boot_info.memory_regions());
     let kc = context::kernel_context();
