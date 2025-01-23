@@ -5,9 +5,10 @@ use core::{
 };
 use std::sync::{Arc, Mutex};
 
+use bitflags::bitflags;
 use lazy_static::lazy_static;
 use lru::LruCache;
-use naming_core::dynamic::dynamic_naming_factory;
+use naming_core::dynamic::{dynamic_naming_factory, DynamicNamingHandle};
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
@@ -17,7 +18,7 @@ use twizzler_abi::{
     },
 };
 use twizzler_rt_abi::{
-    bindings::io_vec,
+    bindings::{create_options, io_vec},
     fd::{OpenError, RawFd},
     io::{IoError, IoFlags, SeekFrom},
     object::{MapFlags, ObjectHandle},
@@ -52,27 +53,104 @@ const WRITABLE_BYTES: u64 = (1 << 26) - size_of::<FileMetadata>() as u64 - NULLP
 const OBJECT_COUNT: usize = 256;
 const DIRECT_OBJECT_COUNT: usize = 255; // The number of objects reachable from the direct pointer list
 const MAX_FILE_SIZE: u64 = WRITABLE_BYTES * 256;
-const _MAX_LOADABLE_OBJECTS: usize = 16;
+const MAX_LOADABLE_OBJECTS: usize = 16;
 lazy_static! {
     static ref FD_SLOTS: Mutex<StableVec<FdKind>> = Mutex::new(StableVec::from([
         FdKind::Stdio,
         FdKind::Stdio,
         FdKind::Stdio
     ]));
+    static ref HANDLE: Mutex<DynamicNamingHandle> = Mutex::new(dynamic_naming_factory().unwrap());
 }
 
 fn get_fd_slots() -> &'static Mutex<StableVec<FdKind>> {
     &FD_SLOTS
 }
 
+fn get_naming_handle() -> &'static Mutex<DynamicNamingHandle> {
+    &HANDLE
+}
+
+#[derive(Debug)]
+pub enum CreateOptions {
+    UNEXPECTED,
+    CreateKindExisting,
+    CreateKindNew,
+    CreateKindEither,
+}
+
+impl From<create_options> for CreateOptions {
+    fn from(value: create_options) -> Self {
+        match value.kind {
+            twizzler_rt_abi::bindings::CREATE_KIND_EITHER => CreateOptions::CreateKindEither,
+            twizzler_rt_abi::bindings::CREATE_KIND_NEW => CreateOptions::CreateKindNew,
+            twizzler_rt_abi::bindings::CREATE_KIND_EXISTING => CreateOptions::CreateKindExisting,
+            _ => CreateOptions::UNEXPECTED,
+        }
+    }
+}
+
+bitflags! {
+    #[derive(Debug)]
+    pub struct OperationOptions: u32 {
+        const OPEN_FLAG_READ = twizzler_rt_abi::bindings::OPEN_FLAG_READ;
+        const OPEN_FLAG_WRITE = twizzler_rt_abi::bindings::OPEN_FLAG_WRITE;
+        const OPEN_FLAG_TRUNCATE = twizzler_rt_abi::bindings::OPEN_FLAG_TRUNCATE;
+        const OPEN_FLAG_TAIL = twizzler_rt_abi::bindings::OPEN_FLAG_TAIL;
+    }
+}
+
+impl From<u32> for OperationOptions {
+    fn from(value: u32) -> Self {
+        OperationOptions::from_bits_truncate(value)
+    }
+}
+
 impl ReferenceRuntime {
-    pub fn open(&self, path: &str) -> Result<RawFd, OpenError> {
-        let mut handle = dynamic_naming_factory().unwrap();
-        let obj_id = ObjID::new(handle.get(path).unwrap());
-        let flags = MapFlags::READ | MapFlags::WRITE;
+    pub fn open(
+        &self,
+        path: &str,
+        create_opt: CreateOptions,
+        open_opt: OperationOptions,
+    ) -> Result<RawFd, OpenError> {
+        let mut session = get_naming_handle().lock().unwrap();
+
+        if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE)
+            && !open_opt.contains(OperationOptions::OPEN_FLAG_WRITE)
+        {
+            return Err(OpenError::InvalidArgument);
+        }
+        let create = ObjectCreate::new(
+            BackingType::Normal,
+            LifetimeType::Volatile,
+            None,
+            ObjectCreateFlags::empty(),
+        );
+        let flags = match (
+            open_opt.contains(OperationOptions::OPEN_FLAG_READ),
+            open_opt.contains(OperationOptions::OPEN_FLAG_WRITE),
+        ) {
+            (true, true) => MapFlags::READ | MapFlags::WRITE,
+            (true, false) => MapFlags::READ,
+            (false, true) => MapFlags::WRITE,
+            (false, false) => return Err(OpenError::InvalidArgument),
+        };
+        let obj_id: ObjID = match create_opt {
+            CreateOptions::UNEXPECTED => return Err(OpenError::InvalidArgument),
+            CreateOptions::CreateKindExisting => session.get(path).map_err(|e| e.into())?.into(),
+            CreateOptions::CreateKindNew => {
+                if session.get(path).is_ok() {
+                    return Err(OpenError::InvalidArgument);
+                }
+                sys_object_create(create, &[], &[]).map_err(|_| OpenError::Other)?
+            }
+            CreateOptions::CreateKindEither => session
+                .get(path)
+                .map(|x| ObjID::from(x))
+                .unwrap_or(sys_object_create(create, &[], &[]).map_err(|_| OpenError::Other)?),
+        };
 
         let handle = self.map_object(obj_id, flags).unwrap();
-
         let metadata_handle = unsafe {
             handle
                 .start()
@@ -88,14 +166,21 @@ impl ReferenceRuntime {
                 }
             };
         }
-
-        let mut binding = get_fd_slots().lock().unwrap();
+        if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE) {
+            unsafe {
+                { *metadata_handle }.size = 0;
+            }
+        }
 
         let elem = FdKind::File(Arc::new(Mutex::new(FileDesc {
             pos: 0,
             handle,
-            map: LruCache::<usize, ObjectHandle>::new(NonZeroUsize::new(1).unwrap()),
+            map: LruCache::<usize, ObjectHandle>::new(
+                NonZeroUsize::new(MAX_LOADABLE_OBJECTS).unwrap(),
+            ),
         })));
+
+        let mut binding = get_fd_slots().lock().unwrap();
 
         let fd = if binding.is_compact() {
             binding.push(elem)
@@ -104,7 +189,14 @@ impl ReferenceRuntime {
             binding.insert(fd, elem);
             fd
         };
+        session
+            .put(path, obj_id.raw())
+            .map_err(|_| OpenError::Other)?;
 
+        if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
+            self.seek(fd.try_into().unwrap(), SeekFrom::End(0))
+                .map_err(|_| OpenError::Other)?;
+        }
         Ok(fd.try_into().unwrap())
     }
 
@@ -331,7 +423,6 @@ impl ReferenceRuntime {
         };
 
         let mut binding = file_desc.lock().unwrap();
-
         let metadata_handle = unsafe {
             binding
                 .handle

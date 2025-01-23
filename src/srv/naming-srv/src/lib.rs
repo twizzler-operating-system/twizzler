@@ -1,18 +1,13 @@
 #![feature(naked_functions)]
 #![feature(linkage)]
+#[warn(unused_variables)]
+use std::{path::Path, sync::Mutex};
 
-use std::sync::Mutex;
-
-use arrayvec::ArrayString;
 use lazy_static::lazy_static;
-use naming_core::definitions::Schema;
+use naming_core::{Entry, EntryType, ErrorKind, NameSession, NameStore, Result};
 use secgate::{
     secure_gate,
     util::{Descriptor, HandleMgr, SimpleBuffer},
-};
-use twizzler::{
-    collections::vec::{VecObject, VecObjectAlloc},
-    object::ObjectBuilder,
 };
 use twizzler_abi::{
     aux::KernelInitInfo,
@@ -30,12 +25,13 @@ fn get_kernel_init_info() -> &'static KernelInitInfo {
     }
 }
 
-pub struct NamespaceClient {
+struct NamespaceClient<'a> {
+    session: NameSession<'a>,
     buffer: SimpleBuffer,
 }
 
-impl NamespaceClient {
-    fn new() -> Option<Self> {
+impl<'a> NamespaceClient<'a> {
+    fn new(session: NameSession<'a>) -> Option<Self> {
         // Create and map a handle for the simple buffer.
         let id = sys_object_create(
             ObjectCreate::new(
@@ -52,7 +48,7 @@ impl NamespaceClient {
             twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::WRITE | MapFlags::READ)
                 .ok()?;
         let buffer = SimpleBuffer::new(handle);
-        Some(Self { buffer })
+        Some(Self { session, buffer })
     }
 
     fn sbid(&self) -> ObjID {
@@ -60,152 +56,140 @@ impl NamespaceClient {
     }
 }
 
-struct Namer {
-    handles: HandleMgr<NamespaceClient>,
-    names: VecObject<Schema, VecObjectAlloc>,
+unsafe impl Send for Namer<'_> {}
+unsafe impl Sync for Namer<'_> {}
+
+struct Namer<'a> {
+    handles: Mutex<HandleMgr<NamespaceClient<'a>>>,
+    names: NameStore,
 }
 
-unsafe impl Send for Namer {}
-unsafe impl Sync for Namer {}
-
-impl Namer {
+impl Namer<'_> {
     fn new() -> Self {
         Self {
-            handles: HandleMgr::new(None),
-            names: VecObject::new(ObjectBuilder::default()).unwrap(),
+            handles: Mutex::new(HandleMgr::new(None)),
+            names: NameStore::new(),
         }
     }
 }
 
 lazy_static! {
-    static ref NAMINGSERVICE: Mutex<Namer> = {
-        let mut namer = Namer::new();
-
-        let init_info = get_kernel_init_info();
-
-        for n in init_info.names() {
-            let mut s = Schema {
-                key: ArrayString::new(),
-                val: 0,
-            };
-            s.key = ArrayString::from(n.name()).unwrap();
-            s.val = n.id().raw();
-            namer.names.push(s).unwrap();
-        }
-
-        Mutex::new(namer)
-    };
+    static ref NAMINGSERVICE: Namer<'static> = Namer::new();
 }
 
+// How would this work if I changed the root while handles were open?
+// Maybe the secure gates don't provide names until set_root is performed.
 #[secure_gate(options(info))]
-pub fn put(info: &secgate::GateCallInfo, desc: Descriptor) {
-    let mut namer = NAMINGSERVICE.lock().unwrap();
-    let Some(client) = namer
-        .handles
-        .lookup(info.source_context().unwrap_or(0.into()), desc)
-    else {
-        return;
-    };
+pub fn namer_start(_info: &secgate::GateCallInfo, _bootstrap: ObjID) {
+    // Assume some data structure that's inside _bootstrap to initalize names
+    let session = NAMINGSERVICE.names.root_session();
+    session
+        .put(Path::new("/initrd"), EntryType::Namespace)
+        .unwrap();
+    let init_info = get_kernel_init_info();
 
-    // should use buffer rather than copying
-    let mut buf = [0u8; std::mem::size_of::<Schema>()];
-    client.buffer.read(&mut buf);
-    let provided =
-        unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
-
-    for i in 0..namer.names.len() {
-        let foo = namer.names.get(i).unwrap();
-        if foo.key == provided.key {
-            unsafe { foo.mutable().val = provided.val }
-        }
+    for n in init_info.names() {
+        session
+            .put(
+                "/initrd/".to_owned() + n.name(),
+                EntryType::Object(n.id().raw()),
+            )
+            .unwrap();
     }
-
-    // TODO: handle error
-    let _ = namer.names.push(provided);
-}
-
-#[secure_gate(options(info))]
-pub fn get(info: &secgate::GateCallInfo, desc: Descriptor) -> Option<u128> {
-    let namer = NAMINGSERVICE.lock().unwrap();
-    let client = namer
-        .handles
-        .lookup(info.source_context().unwrap_or(0.into()), desc)?;
-
-    // should use buffer rather than copying
-    let mut buf = [0u8; std::mem::size_of::<Schema>()];
-    client.buffer.read(&mut buf);
-    let provided =
-        unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
-
-    for i in 0..namer.names.len() {
-        let foo = namer.names.get(i).unwrap();
-        if foo.key == provided.key {
-            return Some(foo.val);
-        }
-    }
-    None
 }
 
 #[secure_gate(options(info))]
 pub fn open_handle(info: &secgate::GateCallInfo) -> Option<(Descriptor, ObjID)> {
-    let mut namer = NAMINGSERVICE.lock().unwrap();
-    let client = NamespaceClient::new()?;
+    let mut binding = NAMINGSERVICE.handles.lock().unwrap();
+
+    let session = NAMINGSERVICE.names.root_session();
+    let client = NamespaceClient::new(session)?;
     let id = client.sbid();
-    let desc = namer
-        .handles
-        .insert(info.source_context().unwrap_or(0.into()), client)?;
+
+    let desc = binding.insert(info.source_context().unwrap_or(0.into()), client)?;
 
     Some((desc, id))
 }
 
 #[secure_gate(options(info))]
 pub fn close_handle(info: &secgate::GateCallInfo, desc: Descriptor) {
-    let mut namer = NAMINGSERVICE.lock().unwrap();
-    namer
-        .handles
-        .remove(info.source_context().unwrap_or(0.into()), desc);
+    let mut binding = NAMINGSERVICE.handles.lock().unwrap();
+
+    binding.remove(info.source_context().unwrap_or(0.into()), desc);
 }
 
 #[secure_gate(options(info))]
-pub fn enumerate_names(info: &secgate::GateCallInfo, desc: Descriptor) -> Option<usize> {
-    let namer = NAMINGSERVICE.lock().unwrap();
-    let Some(client) = namer
-        .handles
-        .lookup(info.source_context().unwrap_or(0.into()), desc)
-    else {
-        return None;
-    };
+pub fn put(info: &secgate::GateCallInfo, desc: Descriptor) -> Result<()> {
+    let mut binding = NAMINGSERVICE.handles.lock().unwrap();
+    let client = binding
+        .lookup_mut(info.source_context().unwrap_or(0.into()), desc)
+        .ok_or(ErrorKind::Other)?;
 
-    let mut vec = std::vec::Vec::<u8>::new();
-    for i in 0..namer.names.len() {
-        let foo = namer.names.get(i).unwrap();
-        vec.extend_from_slice(unsafe {
-            &std::mem::transmute::<Schema, [u8; std::mem::size_of::<Schema>()]>(*foo.raw())
-        });
-    }
-    let mut buffer = SimpleBuffer::new(client.buffer.handle().clone());
-    buffer.write(&vec);
-
-    Some(namer.names.len())
-}
-
-#[secure_gate(options(info))]
-pub fn remove(_info: &secgate::GateCallInfo, _desc: Descriptor) {
-    todo!()
-    /*let mut namer = NAMINGSERVICE.inner.lock().unwrap();
-    let Some(client) = namer
-        .handles
-        .lookup(info.source_context().unwrap_or(0.into()), desc)
-    else {
-        return;
-    };
-
-    let mut buf = [0u8; std::mem::size_of::<Schema>()];
+    let mut buf = [0u8; std::mem::size_of::<Entry>()];
     client.buffer.read(&mut buf);
-    let provided =
-        unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Schema>()], Schema>(buf) };
+    let provided = unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Entry>()], Entry>(buf) };
 
-    let foo = namer
-        .names
-        .retain(|x| x.key != provided.key);*/
+    client.session.put(provided.name, provided.entry_type)
+}
+
+#[secure_gate(options(info))]
+pub fn get(info: &secgate::GateCallInfo, desc: Descriptor) -> Result<Entry> {
+    let mut binding = NAMINGSERVICE.handles.lock().unwrap();
+    let client = binding
+        .lookup_mut(info.source_context().unwrap_or(0.into()), desc)
+        .ok_or(ErrorKind::Other)?;
+
+    let mut buf = [0u8; std::mem::size_of::<Entry>()];
+    client.buffer.read(&mut buf);
+    let provided = unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Entry>()], Entry>(buf) };
+
+    let entry = client.session.get(provided.name)?;
+
+    Ok(entry)
+}
+
+#[secure_gate(options(info))]
+pub fn remove(_info: &secgate::GateCallInfo, _desc: Descriptor) -> Result<()> {
+    todo!()
+}
+
+#[secure_gate(options(info))]
+pub fn enumerate_names(info: &secgate::GateCallInfo, desc: Descriptor) -> Result<usize> {
+    let mut binding = NAMINGSERVICE.handles.lock().unwrap();
+    let client = binding
+        .lookup_mut(info.source_context().unwrap_or(0.into()), desc)
+        .ok_or(ErrorKind::Other)?;
+
+    let mut buf = [0u8; std::mem::size_of::<Entry>()];
+    client.buffer.read(&mut buf);
+    let provided = unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Entry>()], Entry>(buf) };
+
+    // TODO: make not bad
+    let vec1 = client.session.enumerate_namespace(provided.name)?;
+    let len = vec1.len();
+
+    let mut buffer = SimpleBuffer::new(client.buffer.handle().clone());
+    let slice = unsafe {
+        std::slice::from_raw_parts(
+            vec1.as_ptr() as *const u8,
+            len * std::mem::size_of::<Entry>(),
+        )
+    };
+    buffer.write(slice);
+
+    Ok(len)
+}
+
+#[secure_gate(options(info))]
+pub fn change_namespace(info: &secgate::GateCallInfo, desc: Descriptor) -> Result<()> {
+    let mut binding = NAMINGSERVICE.handles.lock().unwrap();
+    let client = binding
+        .lookup_mut(info.source_context().unwrap_or(0.into()), desc)
+        .ok_or(ErrorKind::Other)?;
+
+    let mut buf = [0u8; std::mem::size_of::<Entry>()];
+    client.buffer.read(&mut buf);
+    let provided = unsafe { std::mem::transmute::<[u8; std::mem::size_of::<Entry>()], Entry>(buf) };
+
+    client.session.change_namespace(provided.name)
 }

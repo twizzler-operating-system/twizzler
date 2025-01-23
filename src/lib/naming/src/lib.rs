@@ -1,19 +1,19 @@
 #[link(name = "naming_srv")]
 extern "C" {}
 
-pub use naming_core::dynamic::*;
-use naming_core::{api::NamerAPI, handle::NamingHandle};
+use naming_core::{api::NamerAPI, handle::NamingHandle, Result};
+pub use naming_core::{dynamic::*, Entry, EntryType};
 use secgate::util::Descriptor;
 use twizzler_rt_abi::object::ObjID;
 
 pub struct StaticNamingAPI {}
 
 impl NamerAPI for StaticNamingAPI {
-    fn put(&self, desc: Descriptor) -> secgate::SecGateReturn<()> {
+    fn put(&self, desc: Descriptor) -> secgate::SecGateReturn<Result<()>> {
         naming_srv::put(desc)
     }
 
-    fn get(&self, desc: Descriptor) -> secgate::SecGateReturn<Option<u128>> {
+    fn get(&self, desc: Descriptor) -> secgate::SecGateReturn<Result<Entry>> {
         naming_srv::get(desc)
     }
 
@@ -25,12 +25,16 @@ impl NamerAPI for StaticNamingAPI {
         naming_srv::close_handle(desc)
     }
 
-    fn enumerate_names(&self, desc: Descriptor) -> secgate::SecGateReturn<Option<usize>> {
+    fn enumerate_names(&self, desc: Descriptor) -> secgate::SecGateReturn<Result<usize>> {
         naming_srv::enumerate_names(desc)
     }
 
-    fn remove(&self, desc: Descriptor) -> secgate::SecGateReturn<()> {
+    fn remove(&self, desc: Descriptor) -> secgate::SecGateReturn<Result<()>> {
         naming_srv::remove(desc)
+    }
+
+    fn change_namespace(&self, desc: Descriptor) -> secgate::SecGateReturn<Result<()>> {
+        naming_srv::change_namespace(desc)
     }
 }
 
