@@ -8,3 +8,5 @@ bitflags = "2"
 thiserror = "2"
 twizzler-rt-abi = "0.99"
 twizzler-abi = { path = "../../lib/twizzler-abi" }
+monitor-api = { path = "../../rt/monitor-api" }
+secgate = { path = "../../lib/secgate" }

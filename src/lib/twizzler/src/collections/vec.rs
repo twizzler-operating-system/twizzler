@@ -39,6 +39,7 @@ impl<T: Invariant> VecInner<T> {
         let new_alloc = alloc.realloc_tx(old_global, old_layout, new_layout.size(), tx)?;
 
         self.start = InvPtr::new(tx, new_alloc.cast())?;
+        println!("==> start: {:x}", self.start.raw());
         self.cap = newcap;
         self.len = newlen;
 
@@ -80,6 +81,7 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
     }
 
     pub fn get<'a>(&'a self, idx: usize) -> Option<Ref<'a, T>> {
+        println!("get ==> start: {:x}", self.inner.start.raw());
         let r = unsafe { self.inner.start.resolve() };
         let slice = unsafe { RefSlice::from_ref(r, self.inner.len) };
         slice.get(idx).map(|f| f.owned())
@@ -287,6 +289,18 @@ mod tests {
 
 pub struct VecObject<T: Invariant, A: Allocator> {
     obj: Object<Vec<T, A>>,
+}
+
+impl<T: Invariant, A: Allocator> From<Object<Vec<T, A>>> for VecObject<T, A> {
+    fn from(value: Object<Vec<T, A>>) -> Self {
+        Self { obj: value }
+    }
+}
+
+impl<T: Invariant, A: Allocator> VecObject<T, A> {
+    pub fn object(&self) -> &Object<Vec<T, A>> {
+        &self.obj
+    }
 }
 
 impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {

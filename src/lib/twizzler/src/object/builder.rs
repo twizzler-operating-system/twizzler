@@ -1,7 +1,7 @@
 use std::{alloc::AllocError, marker::PhantomData, mem::MaybeUninit};
 
 use thiserror::Error;
-use twizzler_abi::syscall::{ObjectCreate, ObjectCreateError};
+use twizzler_abi::syscall::{LifetimeType, ObjectCreate, ObjectCreateError};
 use twizzler_rt_abi::object::{MapError, MapFlags};
 
 use super::Object;
@@ -36,6 +36,12 @@ impl<Base: BaseType> ObjectBuilder<Base> {
             _pd: PhantomData,
         }
     }
+
+    /// Make the object persistent.
+    pub fn persist(mut self) -> Self {
+        self.spec.lt = LifetimeType::Persistent;
+        self
+    }
 }
 
 impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
@@ -51,9 +57,12 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     {
         let id = twizzler_abi::syscall::sys_object_create(self.spec, &[], &[])
             .map_err(CreateError::from)?;
+        let mut flags = MapFlags::READ | MapFlags::WRITE;
+        if self.spec.lt == LifetimeType::Persistent {
+            flags.insert(MapFlags::PERSIST);
+        }
         let mu_object = unsafe {
-            Object::<MaybeUninit<Base>>::map_unchecked(id, MapFlags::READ | MapFlags::WRITE)
-                .map_err(CreateError::from)
+            Object::<MaybeUninit<Base>>::map_unchecked(id, flags).map_err(CreateError::from)
         }?;
         let object = ctor(mu_object.tx()?)?;
         object.commit()

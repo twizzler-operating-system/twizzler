@@ -139,6 +139,40 @@ fn main() {
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
 
+    let builder = twizzler::object::ObjectBuilder::default().persist();
+    let mut obj = twizzler::collections::vec::VecObject::new(builder).unwrap();
+    println!("created object: {:?}", obj.object().id());
+    obj.push(3u32).unwrap();
+
+    let mut i = 0;
+    while let Some(x) = obj.get(i) {
+        println!("==> {}", *x);
+        i += 1;
+    }
+
+    let id = 0x2939f19be48aa79d64e518f9ed1b8314u128.into();
+    println!("reusing object: {:?}", id);
+
+    let obj =
+        twizzler::object::Object::map(id, MapFlags::PERSIST | MapFlags::WRITE | MapFlags::READ)
+            .unwrap();
+    let mut obj = twizzler::collections::vec::VecObject::from(obj);
+
+    let mut i = 0;
+    while let Some(x) = obj.get(i) {
+        println!("x==> {}", *x);
+        i += 1;
+    }
+
+    println!("pushing!");
+    obj.push(i as u32).unwrap();
+
+    let mut i = 0;
+    while let Some(x) = obj.get(i) {
+        println!("y==> {}", *x);
+        i += 1;
+    }
+
     println!("Hi, welcome to the basic twizzler test console.");
     println!("If you wanted line-editing, you've come to the wrong place.");
     println!("To run a program, type its name.");
@@ -220,6 +254,7 @@ fn run_tests(test_list_name: &str, benches: bool) {
 
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
 use tracing::{debug, info, warn};
+use twizzler::object::RawObject;
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -230,3 +265,4 @@ use twizzler_abi::{
     },
 };
 use twizzler_object::{CreateSpec, Object, ObjectInitFlags};
+use twizzler_rt_abi::object::MapFlags;

@@ -74,6 +74,8 @@ use crate::{
 
 pub fn init(ex: &'static Executor<'static>) {
     crate::disk::init(ex);
+    // ensure these init now.
+    let (_x, _y) = std::hint::black_box(get_khf_locks());
 }
 
 fn get_dir_path<'a>(
@@ -224,7 +226,9 @@ pub fn get_all_object_ids() -> Result<Vec<u128>, Error> {
     Ok(out)
 }
 fn get_symmetric_cipher(disk_offset: u64) -> Result<ChaCha20, Error> {
+    twizzler_abi::klog_println!("0");
     let (mut khf, wal) = get_khf_locks();
+    twizzler_abi::klog_println!("1");
     let chunk_id = disk_offset / (PAGE_SIZE as u64);
     let key = khf.derive_mut(&wal, chunk_id).map_err(Error::other)?;
     get_symmetric_cipher_from_key(disk_offset, key)
@@ -256,9 +260,13 @@ pub fn read_exact(obj_id: u128, buf: &mut [u8], off: u64) -> Result<(), Error> {
          disk_offset: u64,
          buffer: &mut [u8]|
          -> Result<usize, fatfs::Error<Error>> {
+            twizzler_abi::klog_println!("A");
             let out = disk.read(buffer)?;
+            twizzler_abi::klog_println!("B");
             let mut cipher = get_symmetric_cipher(disk_offset).map_err(|e| Error::other(e))?;
+            twizzler_abi::klog_println!("C");
             cipher.apply_keystream(buffer);
+            twizzler_abi::klog_println!("D");
             Ok(out)
         },
         || {},

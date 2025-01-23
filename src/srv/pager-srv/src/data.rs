@@ -283,6 +283,8 @@ impl PagerData {
         rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
         id: ObjID,
     ) {
+        twizzler_abi::klog_println!("sync: {:?}", id);
+        tracing::debug!("sync: {:?}", id);
         let po = {
             let mut inner = self.inner.lock().unwrap();
             inner.get_per_object(id).clone()
