@@ -47,6 +47,29 @@ fn initialize_pager() {
     std::mem::forget(pager_comp);
 }
 
+fn initialize_namer() {
+    info!("starting namer");
+
+    let nmcomp: CompartmentHandle = CompartmentLoader::new(
+        "naming",
+        "libnaming_srv.so",
+        NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(&["naming"])
+    .load()
+    .expect("failed to initialize namer");
+    let mut flags = nmcomp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = nmcomp.wait(flags);
+    }
+    tracing::info!("naming ready");
+
+    let namer_start = unsafe { nmcomp.dynamic_gate::<(ObjID,), ()>("namer_start").unwrap() };
+    namer_start(ObjID::default());
+
+    std::mem::forget(nmcomp);
+}
+
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -71,21 +94,6 @@ fn main() {
     }
     tracing::info!("logboi ready");
     std::mem::forget(lbcomp);
-
-    let nmcomp: CompartmentHandle = CompartmentLoader::new(
-        "naming",
-        "libnaming_srv.so",
-        NewCompartmentFlags::EXPORT_GATES,
-    )
-    .args(&["naming"])
-    .load()
-    .unwrap();
-    let mut flags = nmcomp.info().flags;
-    while !flags.contains(CompartmentFlags::READY) {
-        flags = nmcomp.wait(flags);
-    }
-    tracing::info!("naming ready");
-    std::mem::forget(nmcomp);
 
     let create = ObjectCreate::new(
         BackingType::Normal,
@@ -127,6 +135,7 @@ fn main() {
     initialize_pager();
     std::mem::forget(dev_comp);
 
+    initialize_namer();
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
 

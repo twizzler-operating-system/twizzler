@@ -74,33 +74,28 @@ impl Namer<'_> {
 }
 
 lazy_static! {
-    static ref NAMINGSERVICE: Namer<'static> = {
-        let namer = Namer::new();
-        {
-            let session = namer.names.root_session();
-            session
-                .put(Path::new("/initrd"), EntryType::Namespace)
-                .unwrap();
-            let init_info = get_kernel_init_info();
-
-            for n in init_info.names() {
-                session
-                    .put(
-                        "/initrd/".to_owned() + n.name(),
-                        EntryType::Object(n.id().raw()),
-                    )
-                    .unwrap();
-            }
-        }
-        namer
-    };
+    static ref NAMINGSERVICE: Namer<'static> = Namer::new();
 }
 
 // How would this work if I changed the root while handles were open?
 // Maybe the secure gates don't provide names until set_root is performed.
 #[secure_gate(options(info))]
-pub fn set_root(_info: &secgate::GateCallInfo) -> Option<(Descriptor, ObjID)> {
-    todo!()
+pub fn namer_start(_info: &secgate::GateCallInfo, _bootstrap: ObjID) {
+    // Assume some data structure that's inside _bootstrap to initalize names
+    let session = NAMINGSERVICE.names.root_session();
+    session
+        .put(Path::new("/initrd"), EntryType::Namespace)
+        .unwrap();
+    let init_info = get_kernel_init_info();
+
+    for n in init_info.names() {
+        session
+            .put(
+                "/initrd/".to_owned() + n.name(),
+                EntryType::Object(n.id().raw()),
+            )
+            .unwrap();
+    }
 }
 
 #[secure_gate(options(info))]
