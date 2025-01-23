@@ -1,48 +1,48 @@
-use std::{collections::VecDeque, path::{Component, PathBuf}, sync::MutexGuard};
+use std::{
+    collections::VecDeque,
+    path::{Component, Path, PathBuf},
+    sync::{Mutex, MutexGuard},
+};
 
 use arrayvec::ArrayString;
-use twizzler_rt_abi::object::{MapFlags, ObjID};
 use twizzler::{
-    alloc::invbox::InvBox, collections::vec::{Vec, VecObject, VecObjectAlloc}, marker::Invariant, object::{Object, ObjectBuilder, TypedObject}, ptr::{GlobalPtr, InvPtr}
+    collections::vec::{VecObject, VecObjectAlloc},
+    marker::Invariant,
+    object::ObjectBuilder,
+    ptr::Ref,
 };
-use twizzler::ptr::Ref;
-use std::path::Path;
-use std::sync::Mutex;
 
-use crate::{handle::Schema, Result, error::ErrorKind, MAX_KEY_SIZE};
+use crate::{error::ErrorKind, Result, MAX_KEY_SIZE};
 
-// Currently the way namespaces exist is each entry has a parent, 
-// And to determine the children of an entry, you linearly search 
-// for each entry's parent 
+// Currently the way namespaces exist is each entry has a parent,
+// And to determine the children of an entry, you linearly search
+// for each entry's parent
 
 // The short answer this is it will be gone once indirection exists
-// But I wanted to create the interface first so I can replace it 
+// But I wanted to create the interface first so I can replace it
 // later
 
-#[derive(Default, Debug, Eq, PartialEq, Clone, Copy)]
+#[derive(Default, Debug, Eq, PartialEq, Clone, Copy, PartialOrd, Ord)]
 pub enum EntryType {
+    Namespace,
     Object(u128),
     #[default]
-    Namespace
+    Name,
 }
 
 #[repr(C)]
 #[derive(Debug, Default, Eq, PartialEq, Clone, Copy)]
 pub struct Entry {
     pub name: ArrayString<MAX_KEY_SIZE>,
-    pub entry_type: EntryType
+    pub entry_type: EntryType,
 }
 
 impl Entry {
     pub fn try_new<P: AsRef<Path>>(name: P, entry_type: EntryType) -> Result<Entry> {
         Ok(Entry {
-            name: ArrayString::from(
-                name
-                .as_ref()
-                .to_str()
-                .ok_or(ErrorKind::InvalidName)?
-            ).map_err(|f| {ErrorKind::InvalidName})?,
-            entry_type: entry_type,
+            name: ArrayString::from(name.as_ref().to_str().ok_or(ErrorKind::InvalidName)?)
+                .map_err(|_| ErrorKind::InvalidName)?,
+            entry_type,
         })
     }
 }
@@ -51,8 +51,8 @@ impl Entry {
 #[derive(Debug, Eq, PartialEq)]
 struct Node {
     parent: usize,
-    curr: usize, 
-    entry: Entry
+    curr: usize,
+    entry: Entry,
 }
 
 unsafe impl Invariant for Node {}
@@ -66,18 +66,20 @@ pub struct NameStore {
 unsafe impl Send for NameStore {}
 unsafe impl Sync for NameStore {}
 
-// This is atrociously inefficient, but once indirection starts 
+// This is atrociously inefficient, but once indirection starts
 // existing I can finally make this a tree instead of a flat vec
 impl NameStore {
     pub fn new() -> NameStore {
         let mut store = VecObject::new(ObjectBuilder::default()).unwrap();
-        store.push(Node {
-            parent: 0,
-            curr: 0,
-            entry: Entry::try_new("/", EntryType::Namespace).unwrap()
-        });
+        store
+            .push(Node {
+                parent: 0,
+                curr: 0,
+                entry: Entry::try_new("/", EntryType::Namespace).unwrap(),
+            })
+            .unwrap();
         NameStore {
-            name_universe: Mutex::new(store)
+            name_universe: Mutex::new(store),
         }
     }
 
@@ -90,11 +92,11 @@ impl NameStore {
             working_ns: path,
         }
     }
-    
+
     pub fn root_session(&self) -> NameSession<'_> {
         NameSession {
             store: self,
-            working_ns: PathBuf::from("/")
+            working_ns: PathBuf::from("/"),
         }
     }
 }
@@ -103,18 +105,20 @@ impl NameStore {
 // and data races...
 pub struct NameSession<'a> {
     store: &'a NameStore,
-    working_ns: PathBuf
+    working_ns: PathBuf,
 }
 
 impl NameSession<'_> {
-    // This function will return a reference to an entry described by name: P relative to working_ns 
-    // If the name is absolute then it will start at root instead of the working_ns 
-    fn namei<'a, P: AsRef<Path>>(&self, store: &'a MutexGuard<'a, VecObject<Node, VecObjectAlloc>>, name: P) -> Result<Ref<'a, Node>> {
+    // This function will return a reference to an entry described by name: P relative to working_ns
+    // If the name is absolute then it will start at root instead of the working_ns
+    fn namei<'a, P: AsRef<Path>>(
+        &self,
+        store: &'a MutexGuard<'a, VecObject<Node, VecObjectAlloc>>,
+        name: P,
+    ) -> Result<Ref<'a, Node>> {
         // interpret path based on working directory
         let path = match name.as_ref().has_root() {
-            true => {
-                PathBuf::from(name.as_ref())
-            },
+            true => PathBuf::from(name.as_ref()),
             false => {
                 let mut path = self.working_ns.clone();
                 path.extend(name.as_ref());
@@ -122,32 +126,36 @@ impl NameSession<'_> {
             }
         };
 
-        let path_child = path.file_name();
         let mut index = 0;
         // traverse store based on path's components
         for item in path.components() {
             let mut found = false;
             match item {
-                Component::Prefix(prefix_component) => {
+                Component::Prefix(_) => {
                     continue;
-                },
-                Component::RootDir => {index = 0; continue;},
+                }
+                Component::RootDir => {
+                    index = 0;
+                    continue;
+                }
                 Component::CurDir => continue,
                 Component::ParentDir => {
                     index = store.get(index).unwrap().parent;
                     continue;
-                },
+                }
                 Component::Normal(os_str) => {
-                    
                     for i in 0..store.len() {
                         let node = store.get(i).unwrap();
-                        if node.entry.name.as_str() == os_str.to_str().ok_or(ErrorKind::InvalidName)? && node.parent == index {
+                        if node.entry.name.as_str()
+                            == os_str.to_str().ok_or(ErrorKind::InvalidName)?
+                            && node.parent == index
+                        {
                             index = i;
                             found = true;
                             break;
                         }
                     }
-                },
+                }
             }
 
             if !found {
@@ -158,15 +166,19 @@ impl NameSession<'_> {
         Ok(store.get(index).unwrap())
     }
 
-    // Traverses the path and construct the canonical path given name relative to absolute path 
-    fn construct_canonical<'a, P: AsRef<Path>>(&self, store: &'a MutexGuard<'a, VecObject<Node, VecObjectAlloc>>, name: P) -> Result<(PathBuf, EntryType)> {
-        let path = PathBuf::new();
-
+    // Traverses the path and construct the canonical path given name relative to absolute path
+    fn construct_canonical<'a, P: AsRef<Path>>(
+        &self,
+        store: &'a MutexGuard<'a, VecObject<Node, VecObjectAlloc>>,
+        name: P,
+    ) -> Result<(PathBuf, EntryType)> {
         let mut vec = VecDeque::<String>::new();
 
-        let node = self.namei(&store, &name)?;
+        let mut node = self.namei(&store, &name)?;
+
         let mut current = node.curr;
         while current != 0 {
+            node = store.get(current).unwrap();
             vec.push_front(node.entry.name.to_string());
             current = node.parent;
         }
@@ -177,50 +189,57 @@ impl NameSession<'_> {
     }
 
     pub fn put<P: AsRef<Path>>(&self, name: P, val: EntryType) -> Result<()> {
-        //println!("Performing put {:?} as {:?}", name.as_ref(), val);
-        let mut store = self.store.name_universe.lock().map_err(|_| {ErrorKind::Other})?;
+        let mut store = self
+            .store
+            .name_universe
+            .lock()
+            .map_err(|_| ErrorKind::Other)?;
         let entry = {
             let current_entry = self.namei(&store, &name);
-            match current_entry {
+            let _ = match current_entry {
                 Ok(node) => {
-                    unsafe { 
+                    unsafe {
                         let mut mut_node = node.mutable();
                         if mut_node.entry.entry_type != EntryType::Namespace {
-                            mut_node.entry.entry_type = val; 
+                            mut_node.entry.entry_type = val;
                         }
                     }
 
-                    return Ok(()); 
-                },
-                Err(x) => {
-                    match x {
-                        ErrorKind::NotFound => Entry::try_new(&name, val),
-                        _ => return Err(x)
-                    }
+                    return Ok(());
                 }
+                Err(x) => match x {
+                    ErrorKind::NotFound => Entry::try_new(&name, val),
+                    _ => return Err(x),
+                },
             };
-    
+
             let entry = match name.as_ref().parent() {
                 Some(parent) => self.namei(&store, parent)?,
-                None => {return Err(ErrorKind::InvalidName);}, // ends in root or prefix
+                None => {
+                    return Err(ErrorKind::InvalidName);
+                } // ends in root or prefix
             };
-            
+
             let child = name.as_ref().file_name().ok_or(ErrorKind::InvalidName)?;
-    
+
             Node {
                 parent: entry.curr,
                 curr: store.len(),
-                entry: Entry::try_new(child, val)?
+                entry: Entry::try_new(child, val)?,
             }
         };
 
-        store.push(entry);
+        store.push(entry).unwrap();
 
         Ok(())
     }
 
     pub fn get<P: AsRef<Path>>(&self, name: P) -> Result<Entry> {
-        let store = self.store.name_universe.lock().map_err(|_| {ErrorKind::Other})?;
+        let store = self
+            .store
+            .name_universe
+            .lock()
+            .map_err(|_| ErrorKind::Other)?;
         let node = self.namei(&store, name)?;
 
         let entry = (*node).entry;
@@ -228,7 +247,11 @@ impl NameSession<'_> {
     }
 
     pub fn enumerate_namespace<P: AsRef<Path>>(&self, name: P) -> Result<std::vec::Vec<Entry>> {
-        let store = self.store.name_universe.lock().map_err(|_| {ErrorKind::Other})?;
+        let store = self
+            .store
+            .name_universe
+            .lock()
+            .map_err(|_| ErrorKind::Other)?;
 
         let mut vec = std::vec::Vec::new();
 
@@ -238,10 +261,10 @@ impl NameSession<'_> {
             return Result::Err(ErrorKind::NotNamespace);
         }
 
-        for i in 0..store.len() {
+        for i in 1..store.len() {
             let search = store.get(i).unwrap();
             if search.parent == node.curr {
-                vec.push(unsafe {(*search).entry});
+                vec.push((*search).entry);
             }
         }
 
@@ -249,22 +272,23 @@ impl NameSession<'_> {
     }
 
     pub fn change_namespace<P: AsRef<Path>>(&mut self, name: P) -> Result<()> {
-        let store = self.store.name_universe.lock().map_err(|_| {ErrorKind::Other})?;
-
+        let store = self
+            .store
+            .name_universe
+            .lock()
+            .map_err(|_| ErrorKind::Other)?;
         let (canonical_name, entry) = self.construct_canonical(&store, name)?;
         match entry {
-            EntryType::Object(_) => {
-                Result::Err(ErrorKind::NotNamespace)
-            },
             EntryType::Namespace => {
                 self.working_ns = PathBuf::from(canonical_name);
                 Ok(())
-            },
+            }
+            _ => Result::Err(ErrorKind::NotNamespace),
         }
     }
-    
+
     // It's good that this doesn't exist yet because it would be really bad if it did
-    pub fn remove<P: AsRef<Path>>(&self, name: P) {
+    pub fn remove<P: AsRef<Path>>(&self, _name: P) {
         todo!()
     }
 }

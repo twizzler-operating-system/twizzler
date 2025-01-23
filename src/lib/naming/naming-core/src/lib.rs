@@ -2,11 +2,11 @@
 
 pub mod api;
 pub mod dynamic;
+mod error;
 pub mod handle;
 mod store;
-mod error;
 
 pub const MAX_KEY_SIZE: usize = 256;
 
-pub use error::{Result, ErrorKind};
-pub use store::{NameStore, NameSession, Entry, EntryType};
+pub use error::{ErrorKind, Result};
+pub use store::{Entry, EntryType, NameSession, NameStore};

@@ -4,8 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-naming = { path = "../../lib/naming" }
 naming-core = { path = "../../lib/naming/naming-core" }
-twizzler-abi = { path = "../../lib/twizzler-abi" }
-twizzler-rt-abi = "0.99"
-twizzler = { path = "../../lib/twizzler" }

@@ -1,4 +1,4 @@
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ErrorKind {
     Other,
     InvalidName,
@@ -20,7 +20,6 @@ impl ErrorKind {
     }
 }
 
-
 impl std::fmt::Display for ErrorKind {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         fmt.write_str(self.as_str())
@@ -39,5 +38,16 @@ impl Into<std::io::ErrorKind> for ErrorKind {
     }
 }
 
-pub type Result<T> = std::result::Result<T, ErrorKind>;
+impl Into<twizzler_rt_abi::fd::OpenError> for ErrorKind {
+    fn into(self) -> twizzler_rt_abi::fd::OpenError {
+        match self {
+            ErrorKind::Other => twizzler_rt_abi::fd::OpenError::Other,
+            ErrorKind::InvalidName => twizzler_rt_abi::fd::OpenError::InvalidArgument,
+            ErrorKind::NotFound => twizzler_rt_abi::fd::OpenError::LookupFail,
+            ErrorKind::NotNamespace => twizzler_rt_abi::fd::OpenError::InvalidArgument,
+            ErrorKind::NotFile => twizzler_rt_abi::fd::OpenError::InvalidArgument,
+        }
+    }
+}
 
+pub type Result<T> = std::result::Result<T, ErrorKind>;

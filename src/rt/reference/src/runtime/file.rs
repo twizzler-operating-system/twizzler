@@ -3,8 +3,9 @@ use core::{
     mem::size_of,
     num::NonZeroUsize,
 };
-use std::{iter::Map, sync::{Arc, Mutex}};
-use bitflags::{bitflags, Flags};
+use std::sync::{Arc, Mutex};
+
+use bitflags::bitflags;
 use lazy_static::lazy_static;
 use lru::LruCache;
 use naming_core::dynamic::{dynamic_naming_factory, DynamicNamingHandle};
@@ -16,7 +17,6 @@ use twizzler_abi::{
         ObjectCreateFlags,
     },
 };
-
 use twizzler_rt_abi::{
     bindings::{create_options, io_vec},
     fd::{OpenError, RawFd},
@@ -76,7 +76,7 @@ pub enum CreateOptions {
     UNEXPECTED,
     CreateKindExisting,
     CreateKindNew,
-    CreateKindEither
+    CreateKindEither,
 }
 
 impl From<create_options> for CreateOptions {
@@ -107,20 +107,29 @@ impl From<u32> for OperationOptions {
 }
 
 impl ReferenceRuntime {
-    pub fn open(&self, path: &str, create_opt: CreateOptions, open_opt: OperationOptions) -> Result<RawFd, OpenError> {
-        println!("opening: {:?} {:?} {:?}", path, create_opt, open_opt);
-        let mut session = get_naming_handle().lock().unwrap(); 
-        
-        if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE) && !open_opt.contains(OperationOptions::OPEN_FLAG_WRITE) {
-            return Err(OpenError::InvalidArgument)
+    pub fn open(
+        &self,
+        path: &str,
+        create_opt: CreateOptions,
+        open_opt: OperationOptions,
+    ) -> Result<RawFd, OpenError> {
+        let mut session = get_naming_handle().lock().unwrap();
+
+        if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE)
+            && !open_opt.contains(OperationOptions::OPEN_FLAG_WRITE)
+        {
+            return Err(OpenError::InvalidArgument);
         }
         let create = ObjectCreate::new(
             BackingType::Normal,
-            LifetimeType::Persistent,
+            LifetimeType::Volatile,
             None,
             ObjectCreateFlags::empty(),
         );
-        let flags = match (open_opt.contains(OperationOptions::OPEN_FLAG_READ), open_opt.contains(OperationOptions::OPEN_FLAG_WRITE)) {
+        let flags = match (
+            open_opt.contains(OperationOptions::OPEN_FLAG_READ),
+            open_opt.contains(OperationOptions::OPEN_FLAG_WRITE),
+        ) {
             (true, true) => MapFlags::READ | MapFlags::WRITE,
             (true, false) => MapFlags::READ,
             (false, true) => MapFlags::WRITE,
@@ -128,21 +137,19 @@ impl ReferenceRuntime {
         };
         let obj_id: ObjID = match create_opt {
             CreateOptions::UNEXPECTED => return Err(OpenError::InvalidArgument),
-            CreateOptions::CreateKindExisting => {
-                session.get(path).ok_or(OpenError::LookupFail)?.into()
-            },
+            CreateOptions::CreateKindExisting => session.get(path).map_err(|e| e.into())?.into(),
             CreateOptions::CreateKindNew => {
-                if session.get(path).is_some() {return Err(OpenError::InvalidArgument);}
+                if session.get(path).is_ok() {
+                    return Err(OpenError::InvalidArgument);
+                }
                 sys_object_create(create, &[], &[]).map_err(|_| OpenError::Other)?
-            },
-            CreateOptions::CreateKindEither => {
-                session
-                    .get(path)
-                    .map(|x| ObjID::from(x))
-                    .unwrap_or(sys_object_create(create, &[], &[]).map_err(|_| OpenError::Other)?)
-            },
+            }
+            CreateOptions::CreateKindEither => session
+                .get(path)
+                .map(|x| ObjID::from(x))
+                .unwrap_or(sys_object_create(create, &[], &[]).map_err(|_| OpenError::Other)?),
         };
-        
+
         let handle = self.map_object(obj_id, flags).unwrap();
         let metadata_handle = unsafe {
             handle
@@ -159,18 +166,19 @@ impl ReferenceRuntime {
                 }
             };
         }
-        if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE){
+        if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE) {
             unsafe {
-                {*metadata_handle}.size = 0;
+                { *metadata_handle }.size = 0;
             }
         }
 
         let elem = FdKind::File(Arc::new(Mutex::new(FileDesc {
             pos: 0,
             handle,
-            map: LruCache::<usize, ObjectHandle>::new(NonZeroUsize::new(MAX_LOADABLE_OBJECTS).unwrap()),
+            map: LruCache::<usize, ObjectHandle>::new(
+                NonZeroUsize::new(MAX_LOADABLE_OBJECTS).unwrap(),
+            ),
         })));
-
 
         let mut binding = get_fd_slots().lock().unwrap();
 
@@ -181,12 +189,14 @@ impl ReferenceRuntime {
             binding.insert(fd, elem);
             fd
         };
-        session.put(path, obj_id.raw());
+        session
+            .put(path, obj_id.raw())
+            .map_err(|_| OpenError::Other)?;
 
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
-            self.seek(fd.try_into().unwrap(), SeekFrom::End(0)).map_err(|_| OpenError::Other)?;
+            self.seek(fd.try_into().unwrap(), SeekFrom::End(0))
+                .map_err(|_| OpenError::Other)?;
         }
-
         Ok(fd.try_into().unwrap())
     }
 
@@ -413,7 +423,6 @@ impl ReferenceRuntime {
         };
 
         let mut binding = file_desc.lock().unwrap();
-
         let metadata_handle = unsafe {
             binding
                 .handle
