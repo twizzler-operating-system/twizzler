@@ -1,17 +1,14 @@
 #![feature(naked_functions)]
 #![feature(linkage)]
+#[warn(unused_variables)]
 
-use std::sync::Mutex;
+use std::{path::Path, sync::Mutex};
 
 use lazy_static::lazy_static;
 use naming_core::{handle::Schema, NameStore, NameSession, EntryType};
 use secgate::{
     secure_gate,
     util::{Descriptor, HandleMgr, SimpleBuffer},
-};
-use twizzler::{
-    collections::vec::{VecObject, VecObjectAlloc},
-    object::ObjectBuilder,
 };
 use twizzler_abi::{
     aux::KernelInitInfo,
@@ -91,6 +88,13 @@ lazy_static! {
         }
         namer
     };
+}
+
+// How would this work if I changed the root while handles were open?
+// Maybe the secure gates don't provide names until set_root is performed. 
+#[secure_gate(options(info))]
+pub fn set_root(info: &secgate::GateCallInfo) -> Option<(Descriptor, ObjID)> {
+    todo!()
 }
 
 #[secure_gate(options(info))]
@@ -207,8 +211,6 @@ pub fn change_namespace(info: &secgate::GateCallInfo, desc: Descriptor) {
     let _ = client.session.change_namespace(provided.key.as_str());
 }
 
-
-
 #[secure_gate(options(info))]
 pub fn put_namespace(info: &secgate::GateCallInfo, desc: Descriptor) {
     let binding = NAMINGSERVICE.handles.lock().unwrap();
@@ -229,4 +231,3 @@ pub fn put_namespace(info: &secgate::GateCallInfo, desc: Descriptor) {
 pub fn delete_namespace(info: &secgate::GateCallInfo, desc: Descriptor) {
     todo!()
 }
-

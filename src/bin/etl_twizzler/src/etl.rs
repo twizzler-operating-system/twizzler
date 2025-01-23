@@ -107,7 +107,7 @@ where
 #[cfg(target_os = "twizzler")]
 pub fn form_twizzler_object<R: std::io::Read>(
     stream: R,
-    name: String,
+    _name: String,
     offset: u64,
 ) -> std::io::Result<twizzler_object::ObjID> {
     let create = ObjectCreate::new(

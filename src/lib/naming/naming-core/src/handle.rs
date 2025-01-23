@@ -1,9 +1,6 @@
 use arrayvec::ArrayString;
-use secgate::{
-    util::{Descriptor, Handle, SimpleBuffer},
-    SecGateReturn,
-};
-use twizzler_rt_abi::object::{MapFlags, ObjID};
+use secgate::util::{Handle, SimpleBuffer};
+use twizzler_rt_abi::object::MapFlags;
 use twizzler::marker::Invariant;
 use crate::{api::NamerAPI, MAX_KEY_SIZE};
 

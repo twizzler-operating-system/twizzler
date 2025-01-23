@@ -1,11 +1,6 @@
-use std::{collections::VecDeque, default, fs::OpenOptions, path::{Component, PathBuf}, sync::{MutexGuard, OnceLock}};
+use std::{collections::VecDeque, path::{Component, PathBuf}, sync::MutexGuard};
 
 use arrayvec::ArrayString;
-use monitor_api::CompartmentHandle;
-use secgate::{
-    util::{Descriptor, Handle, SimpleBuffer},
-    DynamicSecGate, SecGateReturn,
-};
 use twizzler_rt_abi::object::{MapFlags, ObjID};
 use twizzler::{
     alloc::invbox::InvBox, collections::vec::{Vec, VecObject, VecObjectAlloc}, marker::Invariant, object::{Object, ObjectBuilder, TypedObject}, ptr::{GlobalPtr, InvPtr}
@@ -65,7 +60,7 @@ unsafe impl Invariant for Node {}
 // Ideally when transactions are finished the mutex is unnecessary
 // Though I don't know how to write this without the mutex :think:
 pub struct NameStore {
-    pub name_universe: Mutex<VecObject<Node, VecObjectAlloc>>,
+    name_universe: Mutex<VecObject<Node, VecObjectAlloc>>,
 }
 
 unsafe impl Send for NameStore {}
@@ -183,7 +178,7 @@ impl NameSession<'_> {
 
     pub fn put<P: AsRef<Path>>(&self, name: P, val: EntryType) -> Result<()> {
         //println!("Performing put {:?} as {:?}", name.as_ref(), val);
-        let mut store = self.store.name_universe.lock().map_err(|f| {ErrorKind::Other})?;
+        let mut store = self.store.name_universe.lock().map_err(|_| {ErrorKind::Other})?;
         let entry = {
             let current_entry = self.namei(&store, &name);
             match current_entry {
@@ -225,15 +220,15 @@ impl NameSession<'_> {
     }
 
     pub fn get<P: AsRef<Path>>(&self, name: P) -> Result<Entry> {
-        let store = self.store.name_universe.lock().map_err(|f| {ErrorKind::Other})?;
+        let store = self.store.name_universe.lock().map_err(|_| {ErrorKind::Other})?;
         let node = self.namei(&store, name)?;
 
-        let entry = unsafe {(*node).entry};
+        let entry = (*node).entry;
         Ok(entry)
     }
 
     pub fn enumerate_namespace<P: AsRef<Path>>(&self, name: P) -> Result<std::vec::Vec<Entry>> {
-        let store = self.store.name_universe.lock().map_err(|f| {ErrorKind::Other})?;
+        let store = self.store.name_universe.lock().map_err(|_| {ErrorKind::Other})?;
 
         let mut vec = std::vec::Vec::new();
 
@@ -254,7 +249,7 @@ impl NameSession<'_> {
     }
 
     pub fn change_namespace<P: AsRef<Path>>(&mut self, name: P) -> Result<()> {
-        let store = self.store.name_universe.lock().map_err(|f| {ErrorKind::Other})?;
+        let store = self.store.name_universe.lock().map_err(|_| {ErrorKind::Other})?;
 
         let (canonical_name, entry) = self.construct_canonical(&store, name)?;
         match entry {
