@@ -39,7 +39,6 @@ impl<T: Invariant> VecInner<T> {
         let new_alloc = alloc.realloc_tx(old_global, old_layout, new_layout.size(), tx)?;
 
         self.start = InvPtr::new(tx, new_alloc.cast())?;
-        println!("==> start: {:x}", self.start.raw());
         self.cap = newcap;
         self.len = newlen;
 
@@ -81,11 +80,6 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
     }
 
     pub fn get<'a>(&'a self, idx: usize) -> Option<Ref<'a, T>> {
-        println!(
-            "get ==> start: {:x}, len: {}",
-            self.inner.start.raw(),
-            self.inner.len
-        );
         let r = unsafe { self.inner.start.resolve() };
         let slice = unsafe { RefSlice::from_ref(r, self.inner.len) };
         slice.get(idx).map(|f| f.owned())

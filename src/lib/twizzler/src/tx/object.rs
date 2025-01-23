@@ -28,7 +28,6 @@ impl<T> TxObject<T> {
     pub fn commit(self) -> Result<Object<T>> {
         let handle = self.handle;
         let flags = handle.map_flags();
-        twizzler_abi::klog_println!("!! commit: {:?}", flags);
         if flags.contains(MapFlags::PERSIST) {
             crate::pager::sync_object(handle.id());
         }

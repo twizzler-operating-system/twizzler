@@ -139,39 +139,32 @@ fn main() {
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
 
-    let builder = twizzler::object::ObjectBuilder::default().persist();
-    let mut obj = twizzler::collections::vec::VecObject::new(builder).unwrap();
-    println!("created object: {:?}", obj.object().id());
-    obj.push(3u32).unwrap();
-
-    let mut i = 0;
-    while let Some(x) = obj.get(i) {
-        println!("==> {}", *x);
-        i += 1;
-    }
-
-    let id = 0xd51b37d3534000536055d28641c05317.into();
-    println!("reusing object: {:?}", id);
+    /*
+    let id = 0xd9bd444dcbf89a81aaed8b29b85cc30c.into();
+    println!("opening old vec object: {:?}", id);
 
     let obj =
         twizzler::object::Object::map(id, MapFlags::PERSIST | MapFlags::WRITE | MapFlags::READ)
             .unwrap();
     let mut obj = twizzler::collections::vec::VecObject::from(obj);
 
+    println!("current contents:");
     let mut i = 0;
     while let Some(x) = obj.get(i) {
-        println!("x==> {}", *x);
+        println!("  ==> {}", *x);
         i += 1;
     }
 
     println!("pushing!");
     obj.push(i as u32).unwrap();
 
+    println!("new contents:");
     let mut i = 0;
     while let Some(x) = obj.get(i) {
-        println!("y==> {}", *x);
+        println!("  ==> {}", *x);
         i += 1;
     }
+    */
 
     println!("Hi, welcome to the basic twizzler test console.");
     println!("If you wanted line-editing, you've come to the wrong place.");

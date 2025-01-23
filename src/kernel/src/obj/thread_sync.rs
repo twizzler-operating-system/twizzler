@@ -3,10 +3,23 @@ use alloc::collections::BTreeMap;
 use twizzler_abi::syscall::{ThreadSyncFlags, ThreadSyncOp};
 
 use super::Object;
-use crate::thread::{current_thread_ref, ThreadRef};
+use crate::{
+    syscall::sync::add_to_requeue,
+    thread::{current_thread_ref, ThreadRef},
+};
 
 struct SleepEntry {
     threads: BTreeMap<u64, ThreadRef>,
+}
+
+impl Drop for SleepEntry {
+    fn drop(&mut self) {
+        while let Some(t) = self.threads.pop_first() {
+            if t.1.reset_sync_sleep() {
+                add_to_requeue(t.1);
+            }
+        }
+    }
 }
 
 pub struct SleepInfo {

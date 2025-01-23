@@ -390,6 +390,29 @@ impl ObjectManager {
     }
 }
 
+pub fn scan_deleted() {
+    logln!("scanning deleted");
+    let mut om = OBJ_MANAGER.map.lock();
+    for dobj in om.extract_if(|_, obj| {
+        if obj.is_pending_delete() {
+            let ctx = obj.contexts.lock();
+            let pin = obj.pin_info.lock();
+
+            logln!(
+                "checking object: {}: {} {} ",
+                obj.id,
+                ctx.contexts.len(),
+                pin.pins.len()
+            );
+            ctx.contexts.len() == 0 && pin.pins.len() == 0
+        } else {
+            false
+        }
+    }) {
+        logln!("delete object: {}", dobj.0);
+    }
+}
+
 lazy_static::lazy_static! {
     static ref OBJ_MANAGER: ObjectManager = ObjectManager::new();
 }

@@ -28,6 +28,7 @@ impl Unmapper {
                     let key = happylock::ThreadKey::get().unwrap();
                     match receiver.recv() {
                         Ok(info) => {
+                            tracing::info!("!! {:?}", info);
                             if catch_unwind(|| {
                                 let monitor = get_monitor();
                                 match info {

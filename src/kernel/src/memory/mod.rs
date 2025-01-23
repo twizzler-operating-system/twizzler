@@ -8,6 +8,7 @@ pub mod frame;
 pub mod pagetables;
 
 pub use arch::{PhysAddr, VirtAddr};
+use twizzler_abi::object::NULLPAGE_SIZE;
 
 use self::context::{KernelMemoryContext, UserContext};
 
@@ -27,6 +28,7 @@ pub struct MemoryRegion {
 
 impl MemoryRegion {
     pub fn split(mut self, len: usize) -> Option<(MemoryRegion, MemoryRegion)> {
+        let len = len.next_multiple_of(NULLPAGE_SIZE);
         if self.length <= len {
             return None;
         }

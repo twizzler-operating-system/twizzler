@@ -40,7 +40,7 @@ pub fn pager_select_memory_regions(regions: &[MemoryRegion]) -> Vec<MemoryRegion
             // TODO: don't just pick one, and don't just pick the first one.
             if reserved >= MAX_RESERVE_KERNEL {
                 pager_regions.push(*reg);
-            } else if reg.length > NULLPAGE_SIZE {
+            } else if reg.length > NULLPAGE_SIZE * 2 {
                 let (first, second) = (*reg).split(reg.length / 2).unwrap();
                 reserved += first.length;
                 fa_regions.push(first);

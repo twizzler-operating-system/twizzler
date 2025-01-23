@@ -15,9 +15,9 @@ use twizzler_abi::{
 
 use crate::{
     arch::context::ArchContext,
-    memory::context::{Context, ContextRef},
+    memory::context::{virtmem::Slot, Context, ContextRef, UserContext},
     mutex::Mutex,
-    obj::{calculate_new_id, LookupFlags, Object, ObjectRef},
+    obj::{calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef},
     once::Once,
     security::get_sctx,
     thread::{current_memory_context, current_thread_ref},
@@ -76,6 +76,17 @@ pub fn sys_object_map(
     // TODO
     let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into());
     Ok(slot)
+}
+
+pub fn sys_object_unmap(handle: Option<ObjID>, slot: usize) -> Result<u64, u64> {
+    logln!("unmap: {}", slot);
+    let vm = if let Some(handle) = handle {
+        get_vmcontext_from_handle(handle).ok_or(0u64)?
+    } else {
+        current_memory_context().unwrap()
+    };
+    vm.remove_object(Slot::try_from(slot).map_err(|_| 0u64)?);
+    Ok(0)
 }
 
 pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo, ObjectReadMapError> {
@@ -201,7 +212,11 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
             crate::pager::sync_object(id);
         }
         ObjectControlCmd::Delete(_) => {
+            if let Some(obj) = lookup_object(id, LookupFlags::empty()).ok_or(()).ok() {
+                obj.mark_for_delete();
+            }
             crate::pager::del_object(id);
+            crate::obj::scan_deleted();
         }
         _ => {}
     }

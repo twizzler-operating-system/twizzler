@@ -27,7 +27,7 @@ pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
+            .with_max_level(tracing::Level::INFO)
             .without_time()
             .finish(),
     )
@@ -276,11 +276,8 @@ pub fn pager_start(q1: ObjID, q2: ObjID) {
 
 #[secgate::secure_gate]
 pub fn full_object_sync(id: ObjID) {
-    twizzler_abi::klog_println!("IN SYNC: 0");
     let task = EXECUTOR.get().unwrap().spawn(async move {
-        twizzler_abi::klog_println!("IN SYNC");
         let pager = PAGER_DATA.get().unwrap();
-        twizzler_abi::klog_println!("IN SYNC2");
         pager.0.sync(&pager.1, id).await
     });
     block_on(EXECUTOR.get().unwrap().run(async { task.await }));

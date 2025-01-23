@@ -103,6 +103,8 @@ impl PerObject {
         &self,
         rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
     ) -> Result<()> {
+        let nulls = [0; PAGE as usize];
+        object_store::write_all(self.id.raw(), &nulls, 0).unwrap();
         let (pages, mpages) = {
             let inner = self.inner.lock().unwrap();
             let total = inner.page_map.len() + inner.meta_page_map.len();
@@ -292,7 +294,7 @@ impl PagerData {
             phys_range
         };
         page_in(rq, id, obj_range, phys_range, false).await?;
-        tracing::trace!("memory page allocated successfully");
+        tracing::debug!("memory page allocated successfully: {:?}", phys_range);
         return Ok(phys_range);
     }
 

@@ -228,6 +228,19 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
     // logln!("RECEIVED SYSCALL {}", context.num());
     match context.num().into() {
         Syscall::ObjectUnmap => {
+            let hi = context.arg0();
+            let lo = context.arg1();
+            let slot = context.arg2::<u64>() as usize;
+            let handle = ObjID::from_parts([hi, lo]);
+            let handle = if handle.raw() == 0 {
+                None
+            } else {
+                Some(handle)
+            };
+            let result = object::sys_object_unmap(handle, slot);
+            crate::obj::scan_deleted();
+            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
+            context.set_return_values(code, val);
             context.set_return_values(1u64, 0u64);
         }
         Syscall::Null => {
