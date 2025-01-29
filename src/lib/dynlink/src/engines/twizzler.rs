@@ -2,9 +2,11 @@ use itertools::{Either, Itertools};
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
-        sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, ObjectSource,
+        sys_object_create, BackingType, CreateTieFlags, CreateTieSpec, LifetimeType, ObjectCreate,
+        ObjectCreateFlags, ObjectSource,
     },
 };
+use twizzler_object::ObjID;
 use twizzler_rt_abi::object::MapFlags;
 
 use super::{Backing, LoadDirective, LoadFlags};
@@ -18,12 +20,16 @@ fn within_object(slot: usize, addr: usize) -> bool {
 
 /// Load segments according to Twizzler requirements. Helper function for implementing a
 /// ContextEngine.
-pub fn load_segments(src: &Backing, ld: &[LoadDirective]) -> Result<Vec<Backing>, DynlinkError> {
+pub fn load_segments(
+    src: &Backing,
+    ld: &[LoadDirective],
+    instance: ObjID,
+) -> Result<Vec<Backing>, DynlinkError> {
     let create_spec = ObjectCreate::new(
         BackingType::Normal,
         LifetimeType::Volatile,
         None,
-        ObjectCreateFlags::empty(),
+        ObjectCreateFlags::DELETE,
     );
 
     let build_copy_cmd = |directive: &LoadDirective| {
@@ -106,11 +112,19 @@ pub fn load_segments(src: &Backing, ld: &[LoadDirective]) -> Result<Vec<Backing>
     let data_cmds = DynlinkError::collect(DynlinkErrorKind::NewBackingFail, data_cmds)?;
     let text_cmds = DynlinkError::collect(DynlinkErrorKind::NewBackingFail, text_cmds)?;
 
-    let data_id = sys_object_create(create_spec, &data_cmds, &[])
-        .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
+    let data_id = sys_object_create(
+        create_spec,
+        &data_cmds,
+        &[CreateTieSpec::new(instance, CreateTieFlags::empty())],
+    )
+    .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
-    let text_id = sys_object_create(create_spec, &text_cmds, &[])
-        .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
+    let text_id = sys_object_create(
+        create_spec,
+        &text_cmds,
+        &[CreateTieSpec::new(instance, CreateTieFlags::empty())],
+    )
+    .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
     #[allow(deprecated)]
     let (text_handle, data_handle) = twizzler_rt_abi::object::twz_rt_map_two_objects(

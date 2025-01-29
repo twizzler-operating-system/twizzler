@@ -9,9 +9,40 @@ use twizzler_abi::object::ObjID;
 use super::ObjectRef;
 use crate::mutex::Mutex;
 
-struct TiesStatic {
+pub struct TiesStatic {
     inner: Mutex<Ties<ObjID, ObjectRef>>,
 }
+
+impl TiesStatic {
+    pub const fn new() -> Self {
+        Self {
+            inner: Mutex::new(Ties::new()),
+        }
+    }
+
+    pub fn delete_object(&self, obj: ObjectRef) {
+        logln!("ties: tracking object: {}", obj.id());
+        self.inner.lock().delete_value(obj.id(), obj);
+    }
+
+    pub fn create_object_ties(&self, created_id: ObjID, ties: impl IntoIterator<Item = ObjID>) {
+        let ties = ties.into_iter().collect::<Vec<_>>();
+        if ties.is_empty() {
+            return;
+        }
+        logln!("ties: setting: {} => {:?}", created_id, ties);
+        self.inner.lock().insert_ties(created_id, ties);
+    }
+
+    pub fn lookup_object(&self, id: ObjID) -> Option<ObjectRef> {
+        self.inner.lock().lookup_deleted(id).map(|x| {
+            logln!("ties: found: {}", id);
+            x
+        })
+    }
+}
+
+pub(super) static TIE_MGR: TiesStatic = TiesStatic::new();
 
 #[derive(Default)]
 struct Ties<Key, Value> {
@@ -19,10 +50,16 @@ struct Ties<Key, Value> {
     pending_delete: BTreeMap<Key, Value>,
 }
 
-impl<K: Ord + PartialOrd + PartialEq + Debug + Copy + Clone, V> Ties<K, V> {
+impl<K: Ord + PartialOrd + PartialEq + Debug + Copy + Clone, V: Debug> Ties<K, V> {
+    const fn new() -> Self {
+        Self {
+            ties: BTreeMap::new(),
+            pending_delete: BTreeMap::new(),
+        }
+    }
+
     pub fn insert_ties(&mut self, obj: K, deps: impl IntoIterator<Item = K>) {
         for val in deps.into_iter() {
-            logln!("insert tie from {:?} to {:?}", obj, val);
             self.ties.entry(obj).or_default().insert(val);
         }
     }
@@ -36,11 +73,10 @@ impl<K: Ord + PartialOrd + PartialEq + Debug + Copy + Clone, V> Ties<K, V> {
     }
 
     fn delete_ties(&mut self, target: K) {
-        logln!("deleting ties to {:?}", target);
         for (objid, set) in self.ties.iter_mut() {
             set.remove(&target);
             if set.is_empty() {
-                logln!("  set for {:?} empty, removing", objid);
+                logln!("removing object: {:?}", objid);
                 self.pending_delete.remove(&objid);
             }
         }
@@ -53,11 +89,19 @@ impl<K: Ord + PartialOrd + PartialEq + Debug + Copy + Clone, V> Ties<K, V> {
             .extract_if(|_, val| val.is_empty())
             .collect::<Vec<_>>();
         if self.ties.get(&id).map_or(0, |set| set.len()) > 0 {
+            logln!("ties: pending-delete insert");
             self.pending_delete.insert(id, val);
         }
     }
 }
 
+impl<K: Ord + PartialOrd + PartialEq + Debug + Copy + Clone, V: Clone> Ties<K, V> {
+    pub fn lookup_deleted(&self, id: K) -> Option<V> {
+        self.pending_delete.get(&id).cloned()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -73,7 +117,6 @@ mod tests {
 
     impl Drop for Bar {
         fn drop(&mut self) {
-            logln!("destroy: {}", self.id);
             self.dest.store(true, Ordering::SeqCst);
         }
     }
@@ -138,7 +181,6 @@ mod tests {
 
         assert!(x_tracker.is_destroyed());
         assert!(y_tracker.is_destroyed());
-        loop {}
     }
 
     #[kernel_test]

@@ -121,7 +121,7 @@ pub(super) fn pager_compl_handler_main() {
                 }
             }
             twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(obj_info) => {
-                let obj = Object::new(obj_info.obj_id, LifetimeType::Persistent);
+                let obj = Object::new(obj_info.obj_id, LifetimeType::Persistent, &[]);
                 crate::obj::register_object(Arc::new(obj));
                 INFLIGHT_MGR.lock().cmd_ready(obj_info.obj_id, false);
             }

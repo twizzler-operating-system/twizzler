@@ -4,8 +4,8 @@ use miette::IntoDiagnostic;
 use monitor_api::MappedObjectAddrs;
 use twizzler_abi::syscall::{
     sys_object_create, sys_object_ctrl, sys_object_map, sys_object_unmap, BackingType,
-    CreateTieSpec, DeleteFlags, LifetimeType, ObjectControlCmd, ObjectCreate, ObjectCreateFlags,
-    ObjectSource, UnmapFlags,
+    CreateTieFlags, CreateTieSpec, DeleteFlags, LifetimeType, ObjectControlCmd, ObjectCreate,
+    ObjectCreateFlags, ObjectSource, UnmapFlags,
 };
 use twizzler_object::Protections;
 use twizzler_rt_abi::object::{MapError, MapFlags, ObjID};
@@ -166,10 +166,10 @@ impl Space {
                 BackingType::Normal,
                 LifetimeType::Volatile,
                 Some(instance),
-                ObjectCreateFlags::empty(),
+                ObjectCreateFlags::DELETE,
             ),
             &[],
-            &[],
+            &[CreateTieSpec::new(instance, CreateTieFlags::empty())],
             map_flags,
         )
     }

@@ -1,24 +1,48 @@
+use std::collections::HashSet;
+
 use dynlink::{
-    compartment::MONITOR_COMPARTMENT_ID,
-    engines::{Backing, ContextEngine},
+    compartment::{CompartmentId, MONITOR_COMPARTMENT_ID},
+    engines::{Backing, ContextEngine, LoadCtx},
     library::UnloadedLibrary,
     DynlinkError, DynlinkErrorKind,
 };
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{BackingType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_rt_abi::object::{MapFlags, ObjID};
 
 pub struct Engine;
+
+fn get_new_sctx_instance(_sctx: ObjID) -> ObjID {
+    // TODO: we don't support real sctx instances yet
+    twizzler_abi::syscall::sys_object_create(
+        ObjectCreate::new(
+            BackingType::Normal,
+            twizzler_abi::syscall::LifetimeType::Volatile,
+            None,
+            ObjectCreateFlags::empty(),
+        ),
+        &[],
+        &[],
+    )
+    .unwrap()
+}
 
 impl ContextEngine for Engine {
     fn load_segments(
         &mut self,
         src: &Backing,
         ld: &[dynlink::engines::LoadDirective],
+        comp_id: CompartmentId,
+        load_ctx: &mut LoadCtx,
     ) -> Result<Vec<Backing>, dynlink::DynlinkError> {
-        dynlink::engines::twizzler::load_segments(src, ld)
+        let instance = *load_ctx
+            .set
+            .entry(comp_id)
+            .or_insert_with(|| get_new_sctx_instance(1.into()));
+        dynlink::engines::twizzler::load_segments(src, ld, instance)
     }
 
     fn load_object(&mut self, unlib: &UnloadedLibrary) -> Result<Backing, DynlinkError> {

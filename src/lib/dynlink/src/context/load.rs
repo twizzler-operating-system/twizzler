@@ -14,7 +14,7 @@ use super::{Context, LoadedOrUnloaded};
 use crate::{
     compartment::{Compartment, CompartmentId},
     context::NewCompartmentFlags,
-    engines::{LoadDirective, LoadFlags},
+    engines::{LoadCtx, LoadDirective, LoadFlags},
     library::{AllowedGates, Library, LibraryId, SecgateInfo, UnloadedLibrary},
     tls::TlsModule,
     DynlinkError, DynlinkErrorKind, HeaderError,
@@ -129,6 +129,7 @@ impl Context {
         unlib: UnloadedLibrary,
         idx: NodeIndex,
         allowed_gates: AllowedGates,
+        load_ctx: &mut LoadCtx,
     ) -> Result<Library, DynlinkError> {
         let backing = self.engine.load_object(&unlib)?;
         let elf = backing.get_elf()?;
@@ -225,7 +226,9 @@ impl Context {
             .collect();
 
         // call the system impl to actually map things
-        let backings = self.engine.load_segments(&backing, &directives)?;
+        let backings = self
+            .engine
+            .load_segments(&backing, &directives, comp_id, load_ctx)?;
         if backings.is_empty() {
             return Err(DynlinkErrorKind::NewBackingFail.into());
         }
@@ -341,6 +344,7 @@ impl Context {
         root_unlib: UnloadedLibrary,
         idx: NodeIndex,
         allowed_gates: AllowedGates,
+        load_ctx: &mut LoadCtx,
     ) -> Result<Vec<LoadIds>, DynlinkError> {
         let root_comp_name = self.get_compartment(comp_id)?.name.clone();
         debug!(
@@ -350,7 +354,7 @@ impl Context {
         let mut ids = vec![];
         // First load the main library.
         let lib = self
-            .load(comp_id, root_unlib.clone(), idx, allowed_gates)
+            .load(comp_id, root_unlib.clone(), idx, allowed_gates, load_ctx)
             .map_err(|e| {
                 DynlinkError::new_collect(
                     DynlinkErrorKind::LibraryLoadFail {
@@ -424,7 +428,7 @@ impl Context {
                         AllowedGates::Public
                     };
                     let mut recs = self
-                        .load_library(load_comp, dep_unlib.clone(), idx, allowed_gates)
+                        .load_library(load_comp, dep_unlib.clone(), idx, allowed_gates, load_ctx)
                         .map_err(|e| {
                             DynlinkError::new_collect(
                                 DynlinkErrorKind::LibraryLoadFail {
@@ -459,6 +463,7 @@ impl Context {
         comp_id: CompartmentId,
         unlib: UnloadedLibrary,
         allowed_gates: AllowedGates,
+        load_ctx: &mut LoadCtx,
     ) -> Result<Vec<LoadIds>, DynlinkError> {
         let idx = self.add_library(unlib.clone());
         // Step 1: insert into the compartment's library names.
@@ -474,6 +479,6 @@ impl Context {
         comp.library_names.insert(unlib.name.clone(), idx);
 
         // Step 2: load the library. This call recurses on dependencies.
-        self.load_library(comp_id, unlib.clone(), idx, allowed_gates)
+        self.load_library(comp_id, unlib.clone(), idx, allowed_gates, load_ctx)
     }
 }

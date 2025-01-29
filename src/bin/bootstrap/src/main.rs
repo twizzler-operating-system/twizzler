@@ -1,9 +1,9 @@
 use std::process::exit;
 
 use dynlink::{
-    compartment::MONITOR_COMPARTMENT_ID,
+    compartment::{CompartmentId, MONITOR_COMPARTMENT_ID},
     context::{runtime::RuntimeInitInfo, NewCompartmentFlags},
-    engines::{Backing, ContextEngine},
+    engines::{Backing, ContextEngine, LoadCtx},
     library::{AllowedGates, UnloadedLibrary},
     symbol::LookupFlags,
     DynlinkError, DynlinkErrorKind,
@@ -33,8 +33,10 @@ impl ContextEngine for Engine {
         &mut self,
         src: &Backing,
         ld: &[dynlink::engines::LoadDirective],
+        _comp_id: CompartmentId,
+        _load_ctx: &mut LoadCtx,
     ) -> Result<Vec<Backing>, dynlink::DynlinkError> {
-        dynlink::engines::twizzler::load_segments(src, ld)
+        dynlink::engines::twizzler::load_segments(src, ld, 0.into())
     }
 
     fn load_object(&mut self, unlib: &UnloadedLibrary) -> Result<Backing, DynlinkError> {
@@ -74,7 +76,12 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
         .unwrap();
 
     let monitor_id = ctx
-        .load_library_in_compartment(monitor_comp_id, unlib, AllowedGates::PublicInclSelf)
+        .load_library_in_compartment(
+            monitor_comp_id,
+            unlib,
+            AllowedGates::PublicInclSelf,
+            &mut LoadCtx::default(),
+        )
         .unwrap()[0]
         .lib;
 
