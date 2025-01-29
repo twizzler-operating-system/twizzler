@@ -7,7 +7,7 @@ use core::fmt::Debug;
 use twizzler_abi::object::ObjID;
 
 use super::ObjectRef;
-use crate::mutex::Mutex;
+use crate::{mutex::Mutex, thread::current_memory_context};
 
 pub struct TiesStatic {
     inner: Mutex<Ties<ObjID, ObjectRef>>,
@@ -21,7 +21,13 @@ impl TiesStatic {
     }
 
     pub fn delete_object(&self, obj: ObjectRef) {
-        logln!("ties: tracking object: {}", obj.id());
+        let (c, p) = {
+            (
+                obj.contexts.lock().contexts.len(),
+                obj.pin_info.lock().pins.len(),
+            )
+        };
+        logln!("ties: tracking object: {} ({} {})", obj.id(), c, p);
         self.inner.lock().delete_value(obj.id(), obj);
     }
 
@@ -74,9 +80,15 @@ impl<K: Ord + PartialOrd + PartialEq + Debug + Copy + Clone, V: Debug> Ties<K, V
 
     fn delete_ties(&mut self, target: K) {
         for (objid, set) in self.ties.iter_mut() {
-            set.remove(&target);
+            if set.remove(&target) {
+                logln!(
+                    "cleared tie from {:?} -> {:?}: any more? {}",
+                    objid,
+                    target,
+                    !set.is_empty()
+                );
+            }
             if set.is_empty() {
-                logln!("removing object: {:?}", objid);
                 self.pending_delete.remove(&objid);
             }
         }
@@ -92,6 +104,7 @@ impl<K: Ord + PartialOrd + PartialEq + Debug + Copy + Clone, V: Debug> Ties<K, V
             logln!("ties: pending-delete insert");
             self.pending_delete.insert(id, val);
         }
+        current_memory_context().unwrap().print_objects();
     }
 }
 

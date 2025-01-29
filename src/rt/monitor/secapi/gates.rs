@@ -323,6 +323,35 @@ pub fn monitor_rt_object_map(
     not(feature = "secgate-impl"),
     secgate::secure_gate(options(info, api))
 )]
+pub fn monitor_rt_object_pair_map(
+    info: &secgate::GateCallInfo,
+    id: ObjID,
+    flags: twizzler_rt_abi::object::MapFlags,
+    id2: ObjID,
+    flags2: twizzler_rt_abi::object::MapFlags,
+) -> Result<(crate::MappedObjectAddrs, crate::MappedObjectAddrs), MapError> {
+    use crate::mon::space::MapInfo;
+    if unsafe { !__is_monitor_ready() } {
+        return Err(MapError::Other);
+    }
+    let monitor = crate::mon::get_monitor();
+    monitor
+        .map_pair(
+            info.source_context().unwrap_or(MONITOR_INSTANCE_ID),
+            MapInfo { id, flags },
+            MapInfo {
+                id: id2,
+                flags: flags2,
+            },
+        )
+        .map(|(one, two)| (one.addrs(), two.addrs()))
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
 pub fn monitor_rt_object_unmap(
     info: &secgate::GateCallInfo,
     id: ObjID,

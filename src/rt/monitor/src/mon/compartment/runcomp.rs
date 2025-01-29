@@ -183,9 +183,19 @@ impl RunComp {
         Ok(handle)
     }
 
+    pub fn has_mapping(&self, info: &MapInfo) -> bool {
+        self.mapped_objects.contains_key(info)
+    }
+
     /// Unmap and object from this compartment.
     pub fn unmap_object(&mut self, info: MapInfo) {
-        let _ = self.mapped_objects.remove(&info);
+        let x = self.mapped_objects.remove(&info);
+        if x.is_none() {
+            tracing::warn!(
+                "tried to comp-unmap an object that was not mapped by compartment: {:?}",
+                info
+            );
+        }
         // Unmapping handled by dropping
     }
 

@@ -128,6 +128,7 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     }
     info.used_slots = used;
 
+    std::mem::forget(ctx);
     debug!("jumping to {:x}", value);
     (ptr)(rtinfo_ptr as usize);
 

@@ -35,7 +35,20 @@ impl Unmapper {
                                     UnmapCommand::CompDrop(id, info) => {
                                         let mut cmgr = monitor.comp_mgr.write(key);
                                         if let Some(comp) = cmgr.get_mut(id) {
-                                            comp.unmap_object(info);
+                                            if comp.has_mapping(&info) {
+                                                comp.unmap_object(info);
+                                            } else {
+                                                tracing::info!("fallback unmap");
+                                                drop(cmgr);
+                                                let key = happylock::ThreadKey::get().unwrap();
+                                                let mut space = monitor.space.write(key);
+                                                space.handle_drop(info);
+                                            }
+                                        } else {
+                                            drop(cmgr);
+                                            let key = happylock::ThreadKey::get().unwrap();
+                                            let mut space = monitor.space.write(key);
+                                            space.handle_drop(info);
                                         }
                                     }
                                     UnmapCommand::SpaceUnmap(info) => {

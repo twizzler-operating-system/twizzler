@@ -9,6 +9,7 @@ use crate::mon::get_monitor;
 
 /// A handle for an object mapped into the address space. This handle is owning, and when dropped,
 /// the mapping is sent to the background unmapping thread.
+#[derive(Debug)]
 pub struct MapHandleInner {
     info: MapInfo,
     map: MappedObjectAddrs,

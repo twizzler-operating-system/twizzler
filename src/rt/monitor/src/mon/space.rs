@@ -53,7 +53,7 @@ fn mapflags_into_prot(flags: MapFlags) -> Protections {
 
 extern "C-unwind" {
     fn __monitor_get_slot() -> isize;
-    fn __monitor_get_pair(one: *mut usize, two: *mut usize) -> bool;
+    fn __monitor_get_slot_pair(one: *mut usize, two: *mut usize) -> bool;
     fn __monitor_release_pair(one: usize, two: usize);
     fn __monitor_release_slot(slot: usize);
 }
@@ -106,6 +106,70 @@ impl Space {
         Ok(Arc::new(MapHandleInner::new(info, item.addrs)))
     }
 
+    /// Map a pair of objects into the space.
+    pub fn map_pair(
+        &mut self,
+        info: MapInfo,
+        info2: MapInfo,
+    ) -> Result<(MapHandle, MapHandle), MapError> {
+        // Not yet mapped, so allocate a slot and map it.
+        let mut one = 0;
+        let mut two = 0;
+        if !unsafe { __monitor_get_slot_pair(&mut one, &mut two) } {
+            return Err(MapError::OutOfResources);
+        }
+
+        let Ok(_) = sys_object_map(
+            None,
+            info.id,
+            one,
+            mapflags_into_prot(info.flags),
+            twizzler_abi::syscall::MapFlags::empty(),
+        ) else {
+            unsafe {
+                __monitor_release_pair(one, two);
+            }
+            return Err(MapError::Other);
+        };
+
+        let Ok(_) = sys_object_map(
+            None,
+            info2.id,
+            two,
+            mapflags_into_prot(info2.flags),
+            twizzler_abi::syscall::MapFlags::empty(),
+        ) else {
+            let _ = sys_object_unmap(None, one, UnmapFlags::empty())
+                .inspect_err(|e| tracing::warn!("failed to unmap first in pair on error: {}", e));
+            unsafe {
+                __monitor_release_pair(one, two);
+            }
+            return Err(MapError::Other);
+        };
+
+        let map = MappedObject {
+            addrs: MappedObjectAddrs::new(one),
+            handle_count: 0,
+        };
+        let map2 = MappedObject {
+            addrs: MappedObjectAddrs::new(two),
+            handle_count: 0,
+        };
+        self.maps.insert(info, map);
+        self.maps.insert(info2, map2);
+        // Unwrap-Ok: just inserted.
+        let item = self.maps.get_mut(&info).unwrap();
+        item.handle_count += 1;
+        let addrs = item.addrs;
+        let item2 = self.maps.get_mut(&info2).unwrap();
+        item2.handle_count += 1;
+        let addrs2 = item2.addrs;
+        Ok((
+            Arc::new(MapHandleInner::new(info, addrs)),
+            Arc::new(MapHandleInner::new(info2, addrs2)),
+        ))
+    }
+
     /// Remove an object from the space. The actual unmapping syscall only happens once the returned
     /// value from this function is dropped.
     pub fn handle_drop(&mut self, info: MapInfo) -> Option<UnmapOnDrop> {
@@ -120,6 +184,7 @@ impl Space {
         }
 
         // Decrement and maybe actually unmap.
+        tracing::info!("handle count: {}", item.handle_count);
         item.handle_count -= 1;
         if item.handle_count == 0 {
             let slot = item.addrs.slot;

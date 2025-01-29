@@ -190,6 +190,7 @@ impl Monitor {
 
     /// Map an object into a given compartment.
     pub fn map_object(&self, sctx: ObjID, info: MapInfo) -> Result<MapHandle, MapError> {
+        tracing::info!("map: {}", info.id);
         let handle = self.space.write(ThreadKey::get().unwrap()).map(info)?;
 
         let mut comp_mgr = self.comp_mgr.write(ThreadKey::get().unwrap());
@@ -198,8 +199,28 @@ impl Monitor {
         Ok(handle)
     }
 
+    /// Map a pair of objects into a given compartment.
+    pub fn map_pair(
+        &self,
+        sctx: ObjID,
+        info: MapInfo,
+        info2: MapInfo,
+    ) -> Result<(MapHandle, MapHandle), MapError> {
+        let (handle, handle2) = self
+            .space
+            .write(ThreadKey::get().unwrap())
+            .map_pair(info, info2)?;
+
+        let mut comp_mgr = self.comp_mgr.write(ThreadKey::get().unwrap());
+        let rc = comp_mgr.get_mut(sctx).ok_or(MapError::InvalidArgument)?;
+        let handle = rc.map_object(info, handle)?;
+        let handle2 = rc.map_object(info2, handle2)?;
+        Ok((handle, handle2))
+    }
+
     /// Unmap an object from a given compartmen.
     pub fn unmap_object(&self, sctx: ObjID, info: MapInfo) {
+        tracing::info!("unmap: {}", info.id);
         self.unmapper
             .get()
             .unwrap()

@@ -176,6 +176,13 @@ impl VirtContext {
             .expect("cannot get arch mapper for unattached security context"))
     }
 
+    pub fn print_objects(&self) {
+        let slots = self.slots.lock();
+        for obj in &slots.objs {
+            logln!("{} => {:?}", obj.0, obj.1);
+        }
+    }
+
     pub fn register_sctx(&self, sctx: ObjID, arch: ArchContext) {
         let mut secctx = self.secctx.lock();
         if secctx.contains_key(&sctx) {

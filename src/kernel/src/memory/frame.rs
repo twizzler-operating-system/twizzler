@@ -570,6 +570,7 @@ pub fn try_alloc_frame(flags: PhysicalFrameFlags) -> Option<FrameRef> {
 /// If the frame's flags indicates that it is zeroed, it will be placed on
 /// the zeroed list.
 pub fn free_frame(frame: FrameRef) {
+    logln!("free: {:?}", frame.pa);
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
     PFA.wait().lock().free(frame);

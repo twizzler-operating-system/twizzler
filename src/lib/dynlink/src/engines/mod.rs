@@ -59,6 +59,12 @@ pub struct Backing {
     obj: object::ObjectHandle,
 }
 
+impl Drop for Backing {
+    fn drop(&mut self) {
+        tracing::warn!("drop backing: {}", self.obj.id());
+    }
+}
+
 impl Backing {
     pub fn new(inner: ObjectHandle) -> Self {
         Self { obj: inner }

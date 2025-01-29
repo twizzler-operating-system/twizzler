@@ -126,6 +126,13 @@ pub fn load_segments(
     )
     .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
+    tracing::info!(
+        "mapped segments in instance {} to {}, {}",
+        instance,
+        text_id,
+        data_id
+    );
+
     #[allow(deprecated)]
     let (text_handle, data_handle) = twizzler_rt_abi::object::twz_rt_map_two_objects(
         text_id,
