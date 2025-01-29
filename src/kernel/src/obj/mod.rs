@@ -32,6 +32,7 @@ pub mod pages;
 pub mod pagevec;
 pub mod range;
 pub mod thread_sync;
+pub mod ties;
 
 const OBJ_DELETED: u32 = 1;
 pub struct Object {
