@@ -45,6 +45,7 @@ fn recurse(handle: &mut StaticNamingHandle, foo: &mut PathBuf) {
 fn main() {
     let args = Args::parse();
 
+    println!("Zx");
     let mut namer = static_naming_factory().unwrap();
 
     if args.recursive {

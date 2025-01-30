@@ -170,7 +170,10 @@ fn main() {
     println!("If you wanted line-editing, you've come to the wrong place.");
     println!("To run a program, type its name.");
     loop {
-        let reply = rprompt::prompt_reply_stdout("> ").unwrap();
+        let mstats = monitor_api::stats().unwrap();
+        println!("{:?}", mstats);
+        //let reply = rprompt::prompt_reply_stdout("> ").unwrap();
+        let reply = "ls";
         let cmd: Vec<&str> = reply.split_whitespace().collect();
         if cmd.len() == 0 {
             continue;

@@ -197,12 +197,14 @@ impl CompartmentMgr {
 impl super::Monitor {
     /// Get CompartmentInfo for this caller. Note that this will write to the compartment-thread's
     /// simple buffer.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_compartment_info(
         &self,
         instance: ObjID,
         thread: ObjID,
         desc: Option<Descriptor>,
     ) -> Option<CompartmentInfo> {
+        tracing::warn!("get info");
         let (ref mut space, _, ref mut comps, ref dynlink, _, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = desc
@@ -297,7 +299,9 @@ impl super::Monitor {
         )
     }
 
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn compartment_wait(&self, caller: ObjID, desc: Option<Descriptor>, flags: u64) -> u64 {
+        tracing::warn!("wait");
         let Some(instance) = ({
             let comphandles = self._compartment_handles.write(ThreadKey::get().unwrap());
             let comp_id = desc
@@ -419,25 +423,35 @@ impl super::Monitor {
         instance: ObjID,
         f: impl FnOnce(u64) -> Option<u64>,
     ) -> bool {
+        tracing::debug!("ulock write");
         let mut cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
+        tracing::debug!("ulock write: ook");
         cmp.update_compartment_flags(instance, f)
     }
 
     pub fn load_compartment_flags(&self, instance: ObjID) -> u64 {
+        tracing::debug!("llock read");
         let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
+        tracing::debug!("llock read: ok");
         cmp.load_compartment_flags(instance)
     }
 
     pub fn wait_for_compartment_state_change(&self, instance: ObjID, state: u64) {
-        let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
-        let Some(sl) = cmp.wait_for_compartment_state_change(instance, state) else {
-            return;
-        };
+        let sl = {
+            tracing::debug!("wlock read");
+            let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
+            tracing::debug!("wlock read: ok");
+            let Some(sl) = cmp.wait_for_compartment_state_change(instance, state) else {
+                return;
+            };
 
-        if sl.ready() {
-            return;
-        }
-        drop(cmp);
+            if sl.ready() {
+                return;
+            }
+            drop(cmp);
+            tracing::debug!("wlock read: ok here");
+            sl
+        };
 
         let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(sl)], None);
     }
