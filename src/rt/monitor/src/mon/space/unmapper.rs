@@ -28,7 +28,7 @@ impl Unmapper {
                     let key = happylock::ThreadKey::get().unwrap();
                     match receiver.recv() {
                         Ok(info) => {
-                            tracing::info!("!! {:?}", info);
+                            tracing::debug!("unmapper command {:?}", info);
                             if catch_unwind(|| {
                                 let monitor = get_monitor();
                                 match info {
@@ -38,7 +38,6 @@ impl Unmapper {
                                             if comp.has_mapping(&info) {
                                                 comp.unmap_object(info);
                                             } else {
-                                                tracing::info!("fallback unmap");
                                                 drop(cmgr);
                                                 let key = happylock::ThreadKey::get().unwrap();
                                                 let mut space = monitor.space.write(key);

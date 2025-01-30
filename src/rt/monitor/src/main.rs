@@ -34,7 +34,7 @@ pub fn main() {
     // For early init, if something breaks, we really want to see everything...
     std::env::set_var("RUST_BACKTRACE", "full");
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .with_target(false)
         .with_span_events(FmtSpan::ACTIVE)
         .without_time()

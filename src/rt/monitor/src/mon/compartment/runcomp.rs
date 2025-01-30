@@ -188,7 +188,7 @@ impl RunComp {
     }
 
     /// Unmap and object from this compartment.
-    pub fn unmap_object(&mut self, info: MapInfo) {
+    pub fn unmap_object(&mut self, info: MapInfo) -> Option<MapHandle> {
         let x = self.mapped_objects.remove(&info);
         if x.is_none() {
             tracing::warn!(
@@ -196,7 +196,7 @@ impl RunComp {
                 info
             );
         }
-        // Unmapping handled by dropping
+        x
     }
 
     /// Get a pointer to the compartment config.

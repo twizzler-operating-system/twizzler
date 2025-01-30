@@ -365,6 +365,7 @@ impl Context {
             })?;
         ids.push((&lib).into());
 
+        tracing::debug!("enumerating deps for {}", lib);
         // Second, go through deps
         let deps = self.enumerate_needed(&lib).map_err(|e| {
             DynlinkError::new_collect(
@@ -452,6 +453,7 @@ impl Context {
             deps,
         )?;
 
+        tracing::debug!("HERE");
         assert_eq!(idx, lib.idx);
         self.library_deps[idx] = LoadedOrUnloaded::Loaded(lib);
         Ok(ids)

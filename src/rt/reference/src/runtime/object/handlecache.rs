@@ -82,7 +82,7 @@ impl HandleCache {
     /// Release a handle. Must only be called from runtime handle release (internal_refs == 0).
     pub fn release(&mut self, handle: &object_handle) {
         let map = ObjectMapKey::from_raw_handle(handle);
-        tracing::info!("release {:?}", map);
+        tracing::debug!("release {:?}", map);
         if let Some(handle) = self.active.remove(&map) {
             // If queue is full, evict.
             if self.queued.len() >= QUEUE_LEN {
@@ -100,7 +100,7 @@ impl HandleCache {
     pub fn flush(&mut self) {
         let to_remove = self.queued.drain(..).collect::<Vec<_>>();
         for item in to_remove {
-            tracing::info!("flush: remove: {}", item.0 .0);
+            tracing::trace!("flush: remove: {}", item.0 .0);
             self.do_remove(&item.1);
         }
     }

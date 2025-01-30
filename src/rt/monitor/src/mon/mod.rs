@@ -190,7 +190,6 @@ impl Monitor {
 
     /// Map an object into a given compartment.
     pub fn map_object(&self, sctx: ObjID, info: MapInfo) -> Result<MapHandle, MapError> {
-        tracing::info!("map: {}", info.id);
         let handle = self.space.write(ThreadKey::get().unwrap()).map(info)?;
 
         let mut comp_mgr = self.comp_mgr.write(ThreadKey::get().unwrap());
@@ -220,11 +219,19 @@ impl Monitor {
 
     /// Unmap an object from a given compartmen.
     pub fn unmap_object(&self, sctx: ObjID, info: MapInfo) {
-        tracing::info!("unmap: {}", info.id);
-        self.unmapper
-            .get()
-            .unwrap()
-            .background_unmap_object_from_comp(sctx, info);
+        if sctx != MONITOR_INSTANCE_ID {
+            let Some(key) = ThreadKey::get() else {
+                tracing::warn!("todo: recursive locked unmap");
+                return;
+            };
+
+            let mut comp_mgr = self.comp_mgr.write(key);
+            if let Some(comp) = comp_mgr.get_mut(sctx) {
+                let handle = comp.unmap_object(info);
+                drop(comp_mgr);
+                drop(handle);
+            }
+        }
     }
 
     /// Get the object ID for this compartment-thread's simple buffer.

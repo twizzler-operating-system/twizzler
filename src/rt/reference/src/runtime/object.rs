@@ -2,10 +2,7 @@ use std::{ffi::c_void, sync::atomic::AtomicU64};
 
 use handlecache::HandleCache;
 use tracing::warn;
-use twizzler_abi::{
-    object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{sys_object_map, ObjectMapError},
-};
+use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::{
     bindings::object_handle,
     object::{MapError, MapFlags, ObjID, ObjectHandle},
@@ -14,20 +11,6 @@ use twizzler_rt_abi::{
 use super::ReferenceRuntime;
 
 mod handlecache;
-
-fn mapflags_into_prot(flags: MapFlags) -> Protections {
-    let mut prot = Protections::empty();
-    if flags.contains(MapFlags::READ) {
-        prot.insert(Protections::READ);
-    }
-    if flags.contains(MapFlags::WRITE) {
-        prot.insert(Protections::WRITE);
-    }
-    if flags.contains(MapFlags::EXEC) {
-        prot.insert(Protections::EXEC);
-    }
-    prot
-}
 
 #[repr(C)]
 pub(crate) struct RuntimeHandleInfo {
@@ -61,18 +44,6 @@ pub(crate) fn new_object_handle(id: ObjID, slot: usize, flags: MapFlags) -> Obje
     }
 }
 
-fn map_sys_err(sys_err: ObjectMapError) -> MapError {
-    // TODO (dbittman): in a future PR, I plan to cleanup all the error handling between the API and
-    // ABI crates.
-    match sys_err {
-        ObjectMapError::Unknown => MapError::Other,
-        ObjectMapError::ObjectNotFound => MapError::NoSuchObject,
-        ObjectMapError::InvalidSlot => MapError::InvalidArgument,
-        ObjectMapError::InvalidProtections => MapError::PermissionDenied,
-        ObjectMapError::InvalidArgument => MapError::InvalidArgument,
-    }
-}
-
 impl ReferenceRuntime {
     #[tracing::instrument(ret, skip(self), level = "trace")]
     pub fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError> {
@@ -83,10 +54,8 @@ impl ReferenceRuntime {
 
     #[tracing::instrument(skip(self), level = "trace")]
     pub fn release_handle(&self, handle: *mut object_handle) {
-        tracing::warn!("release handle");
         self.object_manager.lock().release(handle);
         if self.is_monitor().is_some() {
-            tracing::warn!("flush cache");
             self.object_manager.lock().cache.flush();
         }
     }

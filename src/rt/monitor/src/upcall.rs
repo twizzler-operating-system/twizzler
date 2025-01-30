@@ -12,6 +12,7 @@ pub fn upcall_monitor_handler(frame: &mut UpcallFrame, info: &UpcallData) {
     let nested = IN_UPCALL_HANDLER.swap(true, Ordering::SeqCst);
     if info.flags.contains(UpcallHandlerFlags::SWITCHED_CONTEXT) {
         info!("got monitor upcall {:?} {:?}", frame, info);
+        loop {}
         // TODO
         if nested {
             twizzler_abi::syscall::sys_thread_exit(101);

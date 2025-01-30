@@ -184,7 +184,7 @@ impl Space {
         }
 
         // Decrement and maybe actually unmap.
-        tracing::info!("handle count: {}", item.handle_count);
+        tracing::debug!("drop: {:?}: handle count: {}", info, item.handle_count);
         item.handle_count -= 1;
         if item.handle_count == 0 {
             let slot = item.addrs.slot;

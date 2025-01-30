@@ -61,12 +61,13 @@ pub struct Backing {
 
 impl Drop for Backing {
     fn drop(&mut self) {
-        tracing::warn!("drop backing: {}", self.obj.id());
+        tracing::debug!("drop backing: {:?}: {:p}", self.obj.id(), self.obj.start());
     }
 }
 
 impl Backing {
     pub fn new(inner: ObjectHandle) -> Self {
+        tracing::debug!("new backing: {:?}: {:p}", inner.id(), inner.start());
         Self { obj: inner }
     }
 }

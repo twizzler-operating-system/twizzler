@@ -27,7 +27,7 @@ impl TiesStatic {
                 obj.pin_info.lock().pins.len(),
             )
         };
-        logln!("ties: tracking object: {} ({} {})", obj.id(), c, p);
+        //logln!("ties: tracking object: {} ({} {})", obj.id(), c, p);
         self.inner.lock().delete_value(obj.id(), obj);
     }
 
@@ -36,15 +36,12 @@ impl TiesStatic {
         if ties.is_empty() {
             return;
         }
-        logln!("ties: setting: {} => {:?}", created_id, ties);
+        //logln!("ties: setting: {} => {:?}", created_id, ties);
         self.inner.lock().insert_ties(created_id, ties);
     }
 
     pub fn lookup_object(&self, id: ObjID) -> Option<ObjectRef> {
-        self.inner.lock().lookup_deleted(id).map(|x| {
-            logln!("ties: found: {}", id);
-            x
-        })
+        self.inner.lock().lookup_deleted(id)
     }
 }
 
@@ -80,14 +77,7 @@ impl<K: Ord + PartialOrd + PartialEq + Debug + Copy + Clone, V: Debug> Ties<K, V
 
     fn delete_ties(&mut self, target: K) {
         for (objid, set) in self.ties.iter_mut() {
-            if set.remove(&target) {
-                logln!(
-                    "cleared tie from {:?} -> {:?}: any more? {}",
-                    objid,
-                    target,
-                    !set.is_empty()
-                );
-            }
+            set.remove(&target);
             if set.is_empty() {
                 self.pending_delete.remove(&objid);
             }
@@ -101,10 +91,8 @@ impl<K: Ord + PartialOrd + PartialEq + Debug + Copy + Clone, V: Debug> Ties<K, V
             .extract_if(|_, val| val.is_empty())
             .collect::<Vec<_>>();
         if self.ties.get(&id).map_or(0, |set| set.len()) > 0 {
-            logln!("ties: pending-delete insert");
             self.pending_delete.insert(id, val);
         }
-        current_memory_context().unwrap().print_objects();
     }
 }
 

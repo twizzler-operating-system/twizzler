@@ -391,7 +391,6 @@ impl ObjectManager {
         {
             return res;
         }
-        logln!("checking ties for {}", id);
         ties::TIE_MGR
             .lookup_object(id)
             .map_or(LookupResult::NotFound, |obj| LookupResult::Found(obj))
@@ -404,7 +403,6 @@ impl ObjectManager {
 }
 
 pub fn scan_deleted() {
-    logln!("scanning deleted");
     let dobjs = {
         let mut om = OBJ_MANAGER.map.lock();
         om.extract_if(|_, obj| {
@@ -412,12 +410,6 @@ pub fn scan_deleted() {
                 let ctx = obj.contexts.lock();
                 let pin = obj.pin_info.lock();
 
-                logln!(
-                    "checking object: {}: {} {} ",
-                    obj.id,
-                    ctx.contexts.len(),
-                    pin.pins.len()
-                );
                 ctx.contexts.len() == 0 && pin.pins.len() == 0
             } else {
                 false
@@ -426,7 +418,6 @@ pub fn scan_deleted() {
         .collect::<Vec<_>>()
     };
     for dobj in dobjs {
-        logln!("delete object: {}", dobj.0);
         ties::TIE_MGR.delete_object(dobj.1);
     }
 }

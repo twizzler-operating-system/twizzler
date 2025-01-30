@@ -54,7 +54,6 @@ pub fn sys_object_create(
     }
     crate::obj::register_object(obj.clone());
     if create.flags.contains(ObjectCreateFlags::DELETE) {
-        logln!("setting auto-delete object: {}", id);
         object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()));
     }
     Ok(obj.id())
@@ -86,7 +85,6 @@ pub fn sys_object_map(
 }
 
 pub fn sys_object_unmap(handle: Option<ObjID>, slot: usize) -> Result<u64, u64> {
-    logln!("unmap: {}", slot);
     let vm = if let Some(handle) = handle {
         get_vmcontext_from_handle(handle).ok_or(0u64)?
     } else {
