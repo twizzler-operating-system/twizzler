@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use inflight::InflightManager;
 use request::ReqKind;
-use twizzler_abi::object::ObjID;
+use twizzler_abi::object::{ObjID, NULLPAGE_SIZE};
 
 use crate::{
     memory::{MemoryRegion, MemoryRegionKind},
@@ -20,20 +20,58 @@ mod request;
 pub use queues::init_pager_queue;
 pub use request::Request;
 
-static PAGER_MEMORY: Once<MemoryRegion> = Once::new();
+static PAGER_MEMORY: Once<Vec<MemoryRegion>> = Once::new();
+
+const MAX_RESERVE_KERNEL: usize = 1024 * 1024 * 1024; // 1G
 
 pub fn pager_select_memory_regions(regions: &[MemoryRegion]) -> Vec<MemoryRegion> {
     let mut fa_regions = Vec::new();
+    let mut pager_regions = Vec::new();
+    let total = regions.iter().fold(0, |acc, val| {
+        if val.kind == MemoryRegionKind::UsableRam {
+            acc + val.length
+        } else {
+            acc
+        }
+    });
+    let mut reserved = 0;
     for reg in regions {
         if matches!(reg.kind, MemoryRegionKind::UsableRam) {
             // TODO: don't just pick one, and don't just pick the first one.
-            if PAGER_MEMORY.poll().is_none() {
-                PAGER_MEMORY.call_once(|| *reg);
+            if reserved >= MAX_RESERVE_KERNEL {
+                pager_regions.push(*reg);
+            } else if reg.length > NULLPAGE_SIZE * 2 {
+                let (first, second) = (*reg).split(reg.length / 2).unwrap();
+                reserved += first.length;
+                fa_regions.push(first);
+                pager_regions.push(second);
             } else {
+                reserved += reg.length;
                 fa_regions.push(*reg);
             }
         }
     }
+    let total_pager = pager_regions.iter().fold(0, |acc, val| {
+        if val.kind == MemoryRegionKind::UsableRam {
+            acc + val.length
+        } else {
+            acc
+        }
+    });
+    let total_kernel = fa_regions.iter().fold(0, |acc, val| {
+        if val.kind == MemoryRegionKind::UsableRam {
+            acc + val.length
+        } else {
+            acc
+        }
+    });
+    logln!(
+        "[kernel::pager] split memory: {} MB pager / {} MB kernel",
+        total_pager / (1024 * 1024),
+        total_kernel / (1024 * 1024)
+    );
+    assert_eq!(total, total_pager + total_kernel);
+    PAGER_MEMORY.call_once(|| pager_regions);
     fa_regions
 }
 

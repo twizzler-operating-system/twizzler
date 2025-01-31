@@ -34,8 +34,7 @@
 
 use alloc::vec::Vec;
 use core::{
-    intrinsics::size_of,
-    mem::transmute,
+    mem::{size_of, transmute},
     sync::atomic::{AtomicU8, Ordering},
 };
 

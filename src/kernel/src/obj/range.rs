@@ -134,6 +134,7 @@ pub struct PageRangeTree {
     tree: NonOverlappingIntervalTree<PageNumber, PageRange>,
 }
 
+#[derive(Debug)]
 pub enum PageStatus {
     Ready(PageRef, bool),
     NoPage,

@@ -245,6 +245,10 @@ fn get_symmetric_cipher_from_key(disk_offset: u64, key: [u8; 32]) -> Result<ChaC
 
 pub fn read_exact(obj_id: u128, buf: &mut [u8], off: u64) -> Result<(), Error> {
     let _unused = LOCK.lock().unwrap();
+    {
+        // ensure these init now.
+        let _ = get_khf_locks();
+    }
     let b64 = encode_obj_id(obj_id);
     let mut fs = FS.get().unwrap().lock().unwrap();
     let subdir = get_dir_path(&mut fs, &b64)?;

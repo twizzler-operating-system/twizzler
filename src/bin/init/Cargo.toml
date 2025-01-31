@@ -19,3 +19,4 @@ polling = "3.6.0"
 futures = "*"
 twizzler-futures = { path = "../../lib/twizzler-futures" }
 monitor-api = { path = "../../rt/monitor-api" }
+twizzler = { path = "../../lib/twizzler" }

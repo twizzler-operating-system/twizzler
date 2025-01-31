@@ -37,6 +37,8 @@ pub const STACK_SIZE_MIN_ALIGN: usize = 0x1000; // 4K
 pub struct ThreadMgr {
     all: HashMap<ObjID, ManagedThread>,
     cleaner: OnceLock<cleaner::ThreadCleaner>,
+    next_id: u32,
+    id_stack: Vec<u32>,
 }
 
 impl Default for ThreadMgr {
@@ -44,7 +46,28 @@ impl Default for ThreadMgr {
         Self {
             all: HashMap::default(),
             cleaner: OnceLock::new(),
+            next_id: 1,
+            id_stack: Vec::new(),
         }
+    }
+}
+
+struct IdDropper<'a> {
+    mgr: &'a mut ThreadMgr,
+    id: u32,
+}
+
+impl<'a> IdDropper<'a> {
+    pub fn freeze(self) -> u32 {
+        let id = self.id;
+        std::mem::forget(self);
+        id
+    }
+}
+
+impl<'a> Drop for IdDropper<'a> {
+    fn drop(&mut self) {
+        self.mgr.release_super_tid(self.id);
     }
 }
 
@@ -53,8 +76,22 @@ impl ThreadMgr {
         self.cleaner.set(cleaner).ok().unwrap();
     }
 
+    fn next_super_tid(&mut self) -> IdDropper<'_> {
+        let id = self.id_stack.pop().unwrap_or_else(|| {
+            let id = self.next_id;
+            self.next_id += 1;
+            id
+        });
+        IdDropper { mgr: self, id }
+    }
+
+    fn release_super_tid(&mut self, id: u32) {
+        self.id_stack.push(id);
+    }
+
     fn do_remove(&mut self, thread: &ManagedThread) {
         self.all.remove(&thread.id);
+        self.release_super_tid(thread.super_tid);
         if let Some(cleaner) = self.cleaner.get() {
             cleaner.untrack(thread.id);
         }
@@ -111,6 +148,11 @@ impl ThreadMgr {
                 NonNull::new(std::alloc::alloc_zeroed(layout))
             })
             .map_err(|_| SpawnError::Other)?;
+        let super_tid = self.next_super_tid().freeze();
+        unsafe {
+            let tcb = super_tls.get_thread_control_block::<RuntimeThreadControl>();
+            (*tcb).runtime_data.set_id(super_tid);
+        }
         let super_thread_pointer = super_tls.get_thread_pointer_value();
         let super_stack = Box::new_zeroed_slice(SUPER_UPCALL_STACK_SIZE);
         let id = unsafe {
@@ -129,6 +171,7 @@ impl ThreadMgr {
             .unwrap();
         Ok(Arc::new(ManagedThreadInner {
             id,
+            super_tid,
             repr: ManagedThreadRepr::new(repr),
             _super_stack: super_stack,
             _super_tls: super_tls,
@@ -175,6 +218,7 @@ impl ThreadMgr {
 pub struct ManagedThreadInner {
     /// The ID of the thread.
     pub id: ObjID,
+    pub super_tid: u32,
     /// The thread repr.
     pub(crate) repr: ManagedThreadRepr,
     _super_stack: Box<[MaybeUninit<u8>]>,
@@ -206,7 +250,6 @@ impl core::fmt::Debug for ManagedThreadInner {
 
 impl Drop for ManagedThreadInner {
     fn drop(&mut self) {
-        // TODO
         tracing::trace!("dropping ManagedThread {}", self.id);
     }
 }

@@ -150,6 +150,7 @@ impl Monitor {
     }
 
     /// Start a managed monitor thread.
+    #[tracing::instrument(skip(self, main), level = tracing::Level::DEBUG)]
     pub fn start_thread(&self, main: Box<dyn FnOnce()>) -> Result<ManagedThread, SpawnError> {
         let key = ThreadKey::get().unwrap();
         let locks = &mut *self.locks.lock(key);
@@ -161,6 +162,7 @@ impl Monitor {
     }
 
     /// Spawn a thread into a given compartment, using initial thread arguments.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn spawn_compartment_thread(
         &self,
         instance: ObjID,
@@ -183,12 +185,14 @@ impl Monitor {
     }
 
     /// Get the compartment config for the given compartment.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_comp_config(&self, sctx: ObjID) -> Option<*const SharedCompConfig> {
-        let comps = self.comp_mgr.read(ThreadKey::get().unwrap());
+        let comps = self.comp_mgr.write(ThreadKey::get().unwrap());
         Some(comps.get(sctx)?.comp_config_ptr())
     }
 
     /// Map an object into a given compartment.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn map_object(&self, sctx: ObjID, info: MapInfo) -> Result<MapHandle, MapError> {
         let handle = self.space.write(ThreadKey::get().unwrap()).map(info)?;
 
@@ -198,15 +202,44 @@ impl Monitor {
         Ok(handle)
     }
 
+    /// Map a pair of objects into a given compartment.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
+    pub fn map_pair(
+        &self,
+        sctx: ObjID,
+        info: MapInfo,
+        info2: MapInfo,
+    ) -> Result<(MapHandle, MapHandle), MapError> {
+        let (handle, handle2) = self
+            .space
+            .write(ThreadKey::get().unwrap())
+            .map_pair(info, info2)?;
+
+        let mut comp_mgr = self.comp_mgr.write(ThreadKey::get().unwrap());
+        let rc = comp_mgr.get_mut(sctx).ok_or(MapError::InvalidArgument)?;
+        let handle = rc.map_object(info, handle)?;
+        let handle2 = rc.map_object(info2, handle2)?;
+        Ok((handle, handle2))
+    }
+
     /// Unmap an object from a given compartmen.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn unmap_object(&self, sctx: ObjID, info: MapInfo) {
-        self.unmapper
-            .get()
-            .unwrap()
-            .background_unmap_object_from_comp(sctx, info);
+        let Some(key) = ThreadKey::get() else {
+            tracing::warn!("todo: recursive locked unmap");
+            return;
+        };
+
+        let mut comp_mgr = self.comp_mgr.write(key);
+        if let Some(comp) = comp_mgr.get_mut(sctx) {
+            let handle = comp.unmap_object(info);
+            drop(comp_mgr);
+            drop(handle);
+        }
     }
 
     /// Get the object ID for this compartment-thread's simple buffer.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_thread_simple_buffer(&self, sctx: ObjID, thread: ObjID) -> Option<ObjID> {
         let mut locks = self.locks.lock(ThreadKey::get().unwrap());
         let (ref mut space, _, ref mut comps, _, _, _) = *locks;
@@ -216,6 +249,7 @@ impl Monitor {
     }
 
     /// Write bytes to this per-compartment thread's simple buffer.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn _write_thread_simple_buffer(
         &self,
         sctx: ObjID,
@@ -230,6 +264,7 @@ impl Monitor {
     }
 
     /// Read bytes from this per-compartment thread's simple buffer.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn read_thread_simple_buffer(
         &self,
         sctx: ObjID,
@@ -244,6 +279,7 @@ impl Monitor {
     }
 
     /// Read the name of a compartment.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn comp_name(&self, id: ObjID) -> Option<String> {
         self.comp_mgr
             .read(ThreadKey::get().unwrap())
@@ -252,6 +288,7 @@ impl Monitor {
     }
 
     /// Perform a compartment control action on the calling compartment.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn compartment_ctrl(
         &self,
         info: &secgate::GateCallInfo,
@@ -289,9 +326,10 @@ impl Monitor {
 
                 if self.update_compartment_flags(src, |state| Some(state | COMP_READY)) {
                     tracing::debug!(
-                        "runtime main thread reached compartment ready state in {}",
+                        "runtime main thread reached compartment ready state in {}: {:x}",
                         self.comp_name(src)
-                            .unwrap_or_else(|| String::from("unknown"))
+                            .unwrap_or_else(|| String::from("unknown")),
+                        state
                     );
                     break if state & COMP_IS_BINARY == 0 {
                         Some(0)

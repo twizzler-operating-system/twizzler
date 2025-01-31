@@ -407,7 +407,7 @@ impl Debug for Library {
 
 impl Drop for Library {
     fn drop(&mut self) {
-        tracing::debug!("dynlink: drop library: {:?}", self);
+        //tracing::warn!("dynlink: drop library: {:?}", self);
     }
 }
 

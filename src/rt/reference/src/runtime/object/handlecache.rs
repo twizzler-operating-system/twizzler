@@ -73,7 +73,7 @@ impl HandleCache {
         self.slotmap.insert(slot, map);
     }
 
-    fn do_remove(&mut self, item: object_handle) {
+    fn do_remove(&mut self, item: &object_handle) {
         let slot = (item.start as usize) / MAX_SIZE;
         do_unmap(&item);
         self.slotmap.remove(&slot);
@@ -82,23 +82,26 @@ impl HandleCache {
     /// Release a handle. Must only be called from runtime handle release (internal_refs == 0).
     pub fn release(&mut self, handle: &object_handle) {
         let map = ObjectMapKey::from_raw_handle(handle);
-        trace!("release {:?}", map);
+        tracing::debug!("release {:?}", map);
         if let Some(handle) = self.active.remove(&map) {
             // If queue is full, evict.
             if self.queued.len() >= QUEUE_LEN {
                 let (oldmap, old) = self.queued.remove(0);
                 trace!("evict {:?}", oldmap);
-                self.do_remove(old);
+                self.do_remove(&old);
             }
             self.queued.push((map, handle));
+        } else {
+            self.do_remove(handle);
         }
     }
 
     /// Flush all items in the inactive queue.
-    pub fn _flush(&mut self) {
+    pub fn flush(&mut self) {
         let to_remove = self.queued.drain(..).collect::<Vec<_>>();
         for item in to_remove {
-            self.do_remove(item.1);
+            tracing::trace!("flush: remove: {}", item.0 .0);
+            self.do_remove(&item.1);
         }
     }
 }

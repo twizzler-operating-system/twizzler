@@ -11,7 +11,8 @@ use monitor_api::{CompartmentFlags, RuntimeThreadControl, SharedCompConfig, TlsT
 use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::syscall::{
-    ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+    DeleteFlags, ObjectControlCmd, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
+    ThreadSyncSleep, ThreadSyncWake,
 };
 use twizzler_rt_abi::{
     core::{CompartmentInitInfo, CtorSet, InitInfoPtrs, RuntimeInfo, RUNTIME_INIT_COMP},
@@ -61,6 +62,11 @@ pub struct RunComp {
 impl Drop for RunComp {
     fn drop(&mut self) {
         // TODO: check if we need to do anything.
+        let _ = twizzler_abi::syscall::sys_object_ctrl(
+            self.instance,
+            ObjectControlCmd::Delete(DeleteFlags::empty()),
+        )
+        .inspect_err(|e| tracing::warn!("failed to delete instance on RunComp drop: {}", e));
     }
 }
 
@@ -177,9 +183,15 @@ impl RunComp {
     }
 
     /// Unmap and object from this compartment.
-    pub fn unmap_object(&mut self, info: MapInfo) {
-        let _ = self.mapped_objects.remove(&info);
-        // Unmapping handled by dropping
+    pub fn unmap_object(&mut self, info: MapInfo) -> Option<MapHandle> {
+        let x = self.mapped_objects.remove(&info);
+        if x.is_none() {
+            tracing::warn!(
+                "tried to comp-unmap an object that was not mapped by compartment: {:?}",
+                info
+            );
+        }
+        x
     }
 
     /// Get a pointer to the compartment config.

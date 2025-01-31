@@ -41,7 +41,7 @@ impl QemuCommand {
 
     pub fn config(&mut self, options: &QemuOptions, image_info: ImageInfo) {
         // Set up the basic stuff, memory and bios, etc.
-        self.cmd.arg("-m").arg("2048,slots=4,maxmem=8G");
+        self.cmd.arg("-m").arg("4096,slots=4,maxmem=8G");
 
         // configure architechture specific parameters
         self.arch_config(options);

@@ -3,12 +3,12 @@ use std::{collections::HashSet, ffi::CStr, ptr::null_mut};
 use dynlink::{
     compartment::CompartmentId,
     context::{Context, LoadIds, NewCompartmentFlags},
+    engines::LoadCtx,
     library::{AllowedGates, LibraryId, UnloadedLibrary},
     DynlinkError,
 };
 use happylock::ThreadKey;
 use monitor_api::SharedCompConfig;
-use twizzler_abi::syscall::{BackingType, ObjectCreate, ObjectCreateFlags};
 use twizzler_rt_abi::{
     core::{CtorSet, RuntimeInfo},
     object::{MapFlags, ObjID},
@@ -107,21 +107,6 @@ impl Drop for RunCompLoader {
 
 const RUNTIME_NAME: &str = "libtwz_rt.so";
 
-fn get_new_sctx_instance(_sctx: ObjID) -> ObjID {
-    // TODO: we don't support real sctx instances yet
-    twizzler_abi::syscall::sys_object_create(
-        ObjectCreate::new(
-            BackingType::Normal,
-            twizzler_abi::syscall::LifetimeType::Volatile,
-            None,
-            ObjectCreateFlags::empty(),
-        ),
-        &[],
-        &[],
-    )
-    .unwrap()
-}
-
 impl RunCompLoader {
     // the runtime library might be in the dependency tree from the shared object files.
     // if not, we need to insert it.
@@ -129,14 +114,19 @@ impl RunCompLoader {
         dynlink: &mut Context,
         root_id: LibraryId,
         comp_id: CompartmentId,
+        load_ctx: &mut LoadCtx,
     ) -> Result<LibraryId, DynlinkError> {
         if let Some(id) = dynlink.lookup_library(comp_id, RUNTIME_NAME) {
             return Ok(id);
         }
 
         let rt_unlib = UnloadedLibrary::new(RUNTIME_NAME);
-        let loads =
-            dynlink.load_library_in_compartment(comp_id, rt_unlib, AllowedGates::Private)?;
+        let loads = dynlink.load_library_in_compartment(
+            comp_id,
+            rt_unlib,
+            AllowedGates::Private,
+            load_ctx,
+        )?;
         dynlink.add_manual_dependency(root_id, loads[0].lib);
         Ok(loads[0].lib)
     }
@@ -161,10 +151,12 @@ impl RunCompLoader {
         } else {
             AllowedGates::Private
         };
+        let mut load_ctx = LoadCtx::default();
         let loads = UnloadOnDrop(dynlink.load_library_in_compartment(
             root_comp_id,
             root_unlib.clone(),
             allowed_gates,
+            &mut load_ctx,
         )?);
 
         // The dynamic linker gives us a list of loaded libraries, and which compartments they ended
@@ -181,15 +173,16 @@ impl RunCompLoader {
                 cache.insert(load.comp);
 
                 // Inject the runtime library, careful to collect the error and keep going.
-                let rt_id = match Self::maybe_inject_runtime(dynlink, load.lib, load.comp) {
-                    Ok(id) => id,
-                    Err(e) => return Some(Err(e)),
-                };
+                let rt_id =
+                    match Self::maybe_inject_runtime(dynlink, load.lib, load.comp, &mut load_ctx) {
+                        Ok(id) => id,
+                        Err(e) => return Some(Err(e)),
+                    };
                 Some(LoadInfo::new(
                     dynlink,
                     load.lib,
                     rt_id,
-                    get_new_sctx_instance(1.into()),
+                    *load_ctx.set.get(&load.comp).unwrap(),
                     false,
                 ))
             } else {
@@ -205,7 +198,7 @@ impl RunCompLoader {
         )?;
 
         let root_id = loads.0[0].lib;
-        let rt_id = Self::maybe_inject_runtime(dynlink, root_id, root_comp_id)?;
+        let rt_id = Self::maybe_inject_runtime(dynlink, root_id, root_comp_id, &mut load_ctx)?;
 
         dynlink.relocate_all(root_id)?;
         let is_binary = dynlink.get_library(root_id)?.is_binary();
@@ -213,7 +206,7 @@ impl RunCompLoader {
             dynlink,
             root_id,
             rt_id,
-            get_new_sctx_instance(1.into()),
+            *load_ctx.set.get(&root_comp_id).unwrap(),
             is_binary,
         )?;
         // We don't want to drop anymore, since now drop-cleanup will be handled by RunCompLoader.
