@@ -182,10 +182,6 @@ impl RunComp {
         Ok(handle)
     }
 
-    pub fn has_mapping(&self, info: &MapInfo) -> bool {
-        self.mapped_objects.contains_key(info)
-    }
-
     /// Unmap and object from this compartment.
     pub fn unmap_object(&mut self, info: MapInfo) -> Option<MapHandle> {
         let x = self.mapped_objects.remove(&info);

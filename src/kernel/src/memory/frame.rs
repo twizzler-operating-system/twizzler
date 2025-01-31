@@ -544,7 +544,6 @@ pub fn init(regions: &[MemoryRegion]) {
 /// let zeroed_frame = alloc_frame(PhysicalFrameFlags::ZEROED);
 /// ```
 pub fn alloc_frame(flags: PhysicalFrameFlags) -> FrameRef {
-    logln!("alloc frame");
     let mut frame = { PFA.wait().lock().alloc(flags, false) };
     if frame.is_none() {
         frame = PFA.wait().lock().alloc(flags, true);
@@ -571,7 +570,6 @@ pub fn try_alloc_frame(flags: PhysicalFrameFlags) -> Option<FrameRef> {
 /// If the frame's flags indicates that it is zeroed, it will be placed on
 /// the zeroed list.
 pub fn free_frame(frame: FrameRef) {
-    logln!("free frame");
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
     PFA.wait().lock().free(frame);

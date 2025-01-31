@@ -9,7 +9,6 @@ use dynlink::{
 };
 use happylock::ThreadKey;
 use monitor_api::SharedCompConfig;
-use twizzler_abi::syscall::{BackingType, ObjectCreate, ObjectCreateFlags};
 use twizzler_rt_abi::{
     core::{CtorSet, RuntimeInfo},
     object::{MapFlags, ObjID},

@@ -379,7 +379,7 @@ impl ObjectManager {
         }
     }
 
-    fn lookup_object(&self, id: ObjID, flags: LookupFlags) -> LookupResult {
+    fn lookup_object(&self, id: ObjID, _flags: LookupFlags) -> LookupResult {
         if self.no_exist.lock().contains(&id) {
             return LookupResult::WasDeleted;
         }

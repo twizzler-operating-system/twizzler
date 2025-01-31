@@ -7,7 +7,7 @@ use core::fmt::Debug;
 use twizzler_abi::object::ObjID;
 
 use super::ObjectRef;
-use crate::{mutex::Mutex, thread::current_memory_context};
+use crate::mutex::Mutex;
 
 pub struct TiesStatic {
     inner: Mutex<Ties<ObjID, ObjectRef>>,
@@ -21,13 +21,6 @@ impl TiesStatic {
     }
 
     pub fn delete_object(&self, obj: ObjectRef) {
-        let (c, p) = {
-            (
-                obj.contexts.lock().contexts.len(),
-                obj.pin_info.lock().pins.len(),
-            )
-        };
-        //logln!("ties: tracking object: {} ({} {})", obj.id(), c, p);
         self.inner.lock().delete_value(obj.id(), obj);
     }
 
@@ -36,7 +29,6 @@ impl TiesStatic {
         if ties.is_empty() {
             return;
         }
-        //logln!("ties: setting: {} => {:?}", created_id, ties);
         self.inner.lock().insert_ties(created_id, ties);
     }
 

@@ -139,39 +139,12 @@ fn main() {
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
 
-    /*
-    let id = 0xd9bd444dcbf89a81aaed8b29b85cc30c.into();
-    println!("opening old vec object: {:?}", id);
-
-    let obj =
-        twizzler::object::Object::map(id, MapFlags::PERSIST | MapFlags::WRITE | MapFlags::READ)
-            .unwrap();
-    let mut obj = twizzler::collections::vec::VecObject::from(obj);
-
-    println!("current contents:");
-    let mut i = 0;
-    while let Some(x) = obj.get(i) {
-        println!("  ==> {}", *x);
-        i += 1;
-    }
-
-    println!("pushing!");
-    obj.push(i as u32).unwrap();
-
-    println!("new contents:");
-    let mut i = 0;
-    while let Some(x) = obj.get(i) {
-        println!("  ==> {}", *x);
-        i += 1;
-    }
-    */
-
     println!("Hi, welcome to the basic twizzler test console.");
     println!("If you wanted line-editing, you've come to the wrong place.");
     println!("To run a program, type its name.");
     loop {
-        let mstats = monitor_api::stats().unwrap();
-        println!("{:?}", mstats);
+        //let mstats = monitor_api::stats().unwrap();
+        //println!("{:?}", mstats);
         let reply = rprompt::prompt_reply_stdout("> ").unwrap();
         let cmd: Vec<&str> = reply.split_whitespace().collect();
         if cmd.len() == 0 {
@@ -249,7 +222,6 @@ fn run_tests(test_list_name: &str, benches: bool) {
 
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
 use tracing::{debug, info, warn};
-use twizzler::object::RawObject;
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -260,4 +232,3 @@ use twizzler_abi::{
     },
 };
 use twizzler_object::{CreateSpec, Object, ObjectInitFlags};
-use twizzler_rt_abi::object::MapFlags;

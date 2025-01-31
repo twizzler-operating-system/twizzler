@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use dynlink::{
     compartment::{CompartmentId, MONITOR_COMPARTMENT_ID},
     engines::{Backing, ContextEngine, LoadCtx},

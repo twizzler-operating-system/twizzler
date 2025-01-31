@@ -225,18 +225,16 @@ impl Monitor {
     /// Unmap an object from a given compartmen.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn unmap_object(&self, sctx: ObjID, info: MapInfo) {
-        if sctx != MONITOR_INSTANCE_ID {
-            let Some(key) = ThreadKey::get() else {
-                tracing::warn!("todo: recursive locked unmap");
-                return;
-            };
+        let Some(key) = ThreadKey::get() else {
+            tracing::warn!("todo: recursive locked unmap");
+            return;
+        };
 
-            let mut comp_mgr = self.comp_mgr.write(key);
-            if let Some(comp) = comp_mgr.get_mut(sctx) {
-                let handle = comp.unmap_object(info);
-                drop(comp_mgr);
-                drop(handle);
-            }
+        let mut comp_mgr = self.comp_mgr.write(key);
+        if let Some(comp) = comp_mgr.get_mut(sctx) {
+            let handle = comp.unmap_object(info);
+            drop(comp_mgr);
+            drop(handle);
         }
     }
 
