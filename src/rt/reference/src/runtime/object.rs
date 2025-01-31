@@ -139,17 +139,14 @@ impl ObjectHandleManager {
 
     /// Map an object with this manager. Will call to monitor if needed.
     pub fn map_object(&mut self, key: ObjectMapKey) -> Result<ObjectHandle, MapError> {
-        tracing::warn!("map: {:?}", key);
         if let Some(handle) = self.cache.activate(key) {
             let oh = ObjectHandle::from_raw(handle);
             let oh2 = oh.clone();
             std::mem::forget(oh);
             return Ok(oh2);
         }
-        tracing::warn!("monmap: {:?}", key);
         let mapping = monitor_api::monitor_rt_object_map(key.0, key.1).unwrap()?;
         let handle = new_object_handle(key.0, mapping.slot, key.1).into_raw();
-        tracing::warn!("okay {:?}", key);
         self.cache.insert(handle);
         Ok(ObjectHandle::from_raw(handle))
     }

@@ -116,6 +116,14 @@ mod tests {
         dest: Arc<AtomicBool>,
     }
 
+    impl Debug for Bar {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("Bar")
+                .field("id", &self.id)
+                .finish_non_exhaustive()
+        }
+    }
+
     impl Drop for Bar {
         fn drop(&mut self) {
             self.dest.store(true, Ordering::SeqCst);

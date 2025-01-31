@@ -32,7 +32,6 @@ struct NamespaceClient<'a> {
 
 impl<'a> NamespaceClient<'a> {
     fn new(session: NameSession<'a>) -> Option<Self> {
-        twizzler_abi::klog_println!("0");
         // Create and map a handle for the simple buffer.
         let id = sys_object_create(
             ObjectCreate::new(
@@ -45,11 +44,9 @@ impl<'a> NamespaceClient<'a> {
             &[],
         )
         .ok()?;
-        twizzler_abi::klog_println!("1");
         let handle =
             twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::WRITE | MapFlags::READ)
                 .ok()?;
-        twizzler_abi::klog_println!("2");
         let buffer = SimpleBuffer::new(handle);
         Some(Self { session, buffer })
     }
@@ -103,20 +100,14 @@ pub fn namer_start(_info: &secgate::GateCallInfo, _bootstrap: ObjID) {
 
 #[secure_gate(options(info))]
 pub fn open_handle(info: &secgate::GateCallInfo) -> Option<(Descriptor, ObjID)> {
-    twizzler_abi::klog_println!("naming open handle");
     let mut binding = NAMINGSERVICE.handles.lock().unwrap();
-    twizzler_abi::klog_println!("X");
 
     let session = NAMINGSERVICE.names.root_session();
-    twizzler_abi::klog_println!("Y");
     let client = NamespaceClient::new(session)?;
-    twizzler_abi::klog_println!("Y2");
     let id = client.sbid();
 
-    twizzler_abi::klog_println!("Z");
     let desc = binding.insert(info.source_context().unwrap_or(0.into()), client)?;
 
-    twizzler_abi::klog_println!("done");
     Some((desc, id))
 }
 

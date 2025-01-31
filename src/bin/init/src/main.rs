@@ -172,8 +172,7 @@ fn main() {
     loop {
         let mstats = monitor_api::stats().unwrap();
         println!("{:?}", mstats);
-        //let reply = rprompt::prompt_reply_stdout("> ").unwrap();
-        let reply = "ls";
+        let reply = rprompt::prompt_reply_stdout("> ").unwrap();
         let cmd: Vec<&str> = reply.split_whitespace().collect();
         if cmd.len() == 0 {
             continue;

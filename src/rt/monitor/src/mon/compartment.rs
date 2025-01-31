@@ -204,7 +204,6 @@ impl super::Monitor {
         thread: ObjID,
         desc: Option<Descriptor>,
     ) -> Option<CompartmentInfo> {
-        tracing::warn!("get info");
         let (ref mut space, _, ref mut comps, ref dynlink, _, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = desc
@@ -232,6 +231,7 @@ impl super::Monitor {
 
     /// Get CompartmentInfo for this caller. Note that this will write to the compartment-thread's
     /// simple buffer.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_compartment_gate_address(
         &self,
         instance: ObjID,
@@ -263,6 +263,7 @@ impl super::Monitor {
     }
 
     /// Open a compartment handle for this caller compartment.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_compartment_handle(&self, caller: ObjID, compartment: ObjID) -> Option<Descriptor> {
         let (_, _, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
         let comp = comps.get_mut(compartment)?;
@@ -280,6 +281,7 @@ impl super::Monitor {
     }
 
     /// Open a compartment handle for this caller compartment.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn lookup_compartment(
         &self,
         instance: ObjID,
@@ -301,7 +303,6 @@ impl super::Monitor {
 
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn compartment_wait(&self, caller: ObjID, desc: Option<Descriptor>, flags: u64) -> u64 {
-        tracing::warn!("wait");
         let Some(instance) = ({
             let comphandles = self._compartment_handles.write(ThreadKey::get().unwrap());
             let comp_id = desc
@@ -316,6 +317,7 @@ impl super::Monitor {
     }
 
     /// Open a handle to the n'th dependency compartment of a given compartment.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_compartment_deps(
         &self,
         caller: ObjID,
@@ -335,6 +337,7 @@ impl super::Monitor {
     }
 
     /// Load a new compartment with a root library ID, and return a compartment handle.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn load_compartment(
         &self,
         caller: ObjID,
@@ -407,6 +410,7 @@ impl super::Monitor {
     }
 
     /// Drop a compartment handle.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn drop_compartment_handle(&self, caller: ObjID, desc: Descriptor) {
         let (_, _, ref mut cmgr, ref mut dynlink, _, ref mut comp_handles) =
             *self.locks.lock(ThreadKey::get().unwrap());
@@ -418,29 +422,26 @@ impl super::Monitor {
         cmgr.process_cleanup_queue(&mut *dynlink);
     }
 
+    #[tracing::instrument(skip(self, f), level = tracing::Level::DEBUG)]
     pub fn update_compartment_flags(
         &self,
         instance: ObjID,
         f: impl FnOnce(u64) -> Option<u64>,
     ) -> bool {
-        tracing::debug!("ulock write");
         let mut cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
-        tracing::debug!("ulock write: ook");
         cmp.update_compartment_flags(instance, f)
     }
 
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn load_compartment_flags(&self, instance: ObjID) -> u64 {
-        tracing::debug!("llock read");
-        let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
-        tracing::debug!("llock read: ok");
+        let cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
         cmp.load_compartment_flags(instance)
     }
 
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn wait_for_compartment_state_change(&self, instance: ObjID, state: u64) {
         let sl = {
-            tracing::debug!("wlock read");
-            let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
-            tracing::debug!("wlock read: ok");
+            let cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
             let Some(sl) = cmp.wait_for_compartment_state_change(instance, state) else {
                 return;
             };
@@ -449,7 +450,6 @@ impl super::Monitor {
                 return;
             }
             drop(cmp);
-            tracing::debug!("wlock read: ok here");
             sl
         };
 

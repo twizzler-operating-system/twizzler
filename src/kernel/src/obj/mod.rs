@@ -283,7 +283,7 @@ impl Object {
 
 impl Drop for Object {
     fn drop(&mut self) {
-        logln!("Dropping object {}", self.id);
+        //logln!("Dropping object {}", self.id);
     }
 }
 

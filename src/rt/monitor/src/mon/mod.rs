@@ -150,6 +150,7 @@ impl Monitor {
     }
 
     /// Start a managed monitor thread.
+    #[tracing::instrument(skip(self, main), level = tracing::Level::DEBUG)]
     pub fn start_thread(&self, main: Box<dyn FnOnce()>) -> Result<ManagedThread, SpawnError> {
         let key = ThreadKey::get().unwrap();
         let locks = &mut *self.locks.lock(key);
@@ -186,21 +187,17 @@ impl Monitor {
     /// Get the compartment config for the given compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_comp_config(&self, sctx: ObjID) -> Option<*const SharedCompConfig> {
-        tracing::debug!("cclock read");
-        let comps = self.comp_mgr.read(ThreadKey::get().unwrap());
+        let comps = self.comp_mgr.write(ThreadKey::get().unwrap());
         Some(comps.get(sctx)?.comp_config_ptr())
     }
 
     /// Map an object into a given compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn map_object(&self, sctx: ObjID, info: MapInfo) -> Result<MapHandle, MapError> {
-        tracing::warn!("MON MAP: {:?}", info);
         let handle = self.space.write(ThreadKey::get().unwrap()).map(info)?;
 
-        tracing::warn!("MON MAP: {:?}: comp", info);
         let mut comp_mgr = self.comp_mgr.write(ThreadKey::get().unwrap());
         let rc = comp_mgr.get_mut(sctx).ok_or(MapError::InvalidArgument)?;
-        tracing::warn!("MON MAP: {:?}: comp-map", info);
         let handle = rc.map_object(info, handle)?;
         Ok(handle)
     }
@@ -244,6 +241,7 @@ impl Monitor {
     }
 
     /// Get the object ID for this compartment-thread's simple buffer.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_thread_simple_buffer(&self, sctx: ObjID, thread: ObjID) -> Option<ObjID> {
         let mut locks = self.locks.lock(ThreadKey::get().unwrap());
         let (ref mut space, _, ref mut comps, _, _, _) = *locks;
@@ -253,6 +251,7 @@ impl Monitor {
     }
 
     /// Write bytes to this per-compartment thread's simple buffer.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn _write_thread_simple_buffer(
         &self,
         sctx: ObjID,
@@ -267,6 +266,7 @@ impl Monitor {
     }
 
     /// Read bytes from this per-compartment thread's simple buffer.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn read_thread_simple_buffer(
         &self,
         sctx: ObjID,
@@ -281,6 +281,7 @@ impl Monitor {
     }
 
     /// Read the name of a compartment.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn comp_name(&self, id: ObjID) -> Option<String> {
         self.comp_mgr
             .read(ThreadKey::get().unwrap())
