@@ -9,7 +9,7 @@ use dynlink::context::NewCompartmentFlags;
 use miette::IntoDiagnostic;
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader};
 use tracing::{debug, info, warn, Level};
-use tracing_subscriber::{fmt::format::FmtSpan, FmtSubscriber};
+use tracing_subscriber::FmtSubscriber;
 use twizzler_abi::object::NULLPAGE_SIZE;
 use twizzler_rt_abi::object::MapFlags;
 
@@ -36,7 +36,6 @@ pub fn main() {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .with_target(false)
-        .with_span_events(FmtSpan::ACTIVE)
         .without_time()
         .finish();
 

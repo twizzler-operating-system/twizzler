@@ -2,10 +2,7 @@ use std::{ffi::c_void, sync::atomic::AtomicU64};
 
 use handlecache::HandleCache;
 use tracing::warn;
-use twizzler_abi::{
-    object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{sys_object_map, ObjectMapError},
-};
+use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::{
     bindings::object_handle,
     object::{MapError, MapFlags, ObjID, ObjectHandle},
@@ -14,20 +11,6 @@ use twizzler_rt_abi::{
 use super::ReferenceRuntime;
 
 mod handlecache;
-
-fn mapflags_into_prot(flags: MapFlags) -> Protections {
-    let mut prot = Protections::empty();
-    if flags.contains(MapFlags::READ) {
-        prot.insert(Protections::READ);
-    }
-    if flags.contains(MapFlags::WRITE) {
-        prot.insert(Protections::WRITE);
-    }
-    if flags.contains(MapFlags::EXEC) {
-        prot.insert(Protections::EXEC);
-    }
-    prot
-}
 
 #[repr(C)]
 pub(crate) struct RuntimeHandleInfo {
@@ -61,18 +44,6 @@ pub(crate) fn new_object_handle(id: ObjID, slot: usize, flags: MapFlags) -> Obje
     }
 }
 
-fn map_sys_err(sys_err: ObjectMapError) -> MapError {
-    // TODO (dbittman): in a future PR, I plan to cleanup all the error handling between the API and
-    // ABI crates.
-    match sys_err {
-        ObjectMapError::Unknown => MapError::Other,
-        ObjectMapError::ObjectNotFound => MapError::NoSuchObject,
-        ObjectMapError::InvalidSlot => MapError::InvalidArgument,
-        ObjectMapError::InvalidProtections => MapError::PermissionDenied,
-        ObjectMapError::InvalidArgument => MapError::InvalidArgument,
-    }
-}
-
 impl ReferenceRuntime {
     #[tracing::instrument(ret, skip(self), level = "trace")]
     pub fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError> {
@@ -83,7 +54,10 @@ impl ReferenceRuntime {
 
     #[tracing::instrument(skip(self), level = "trace")]
     pub fn release_handle(&self, handle: *mut object_handle) {
-        self.object_manager.lock().release(handle)
+        self.object_manager.lock().release(handle);
+        if self.is_monitor().is_some() {
+            self.object_manager.lock().cache.flush();
+        }
     }
 
     pub fn get_object_handle_from_ptr(&self, ptr: *const u8) -> Option<object_handle> {
@@ -128,33 +102,13 @@ impl ReferenceRuntime {
         in_id_b: ObjID,
         in_flags_b: MapFlags,
     ) -> Result<(ObjectHandle, ObjectHandle), MapError> {
-        let (slot_a, slot_b) = self.allocate_pair().ok_or(MapError::OutOfResources)?;
+        let mapping =
+            monitor_api::monitor_rt_object_pair_map(in_id_a, in_flags_a, in_id_b, in_flags_b)
+                .unwrap()?;
 
-        let prot_a = mapflags_into_prot(in_flags_a);
-        let prot_b = mapflags_into_prot(in_flags_b);
-
-        sys_object_map(
-            None,
-            in_id_a,
-            slot_a,
-            prot_a,
-            twizzler_abi::syscall::MapFlags::empty(),
-        )
-        .map_err(map_sys_err)?;
-
-        sys_object_map(
-            None,
-            in_id_b,
-            slot_b,
-            prot_b,
-            twizzler_abi::syscall::MapFlags::empty(),
-        )
-        .map_err(map_sys_err)?;
-
-        Ok((
-            new_object_handle(in_id_a, slot_a, in_flags_a),
-            new_object_handle(in_id_b, slot_b, in_flags_b),
-        ))
+        let handle = new_object_handle(in_id_a, mapping.0.slot, in_flags_a);
+        let handle2 = new_object_handle(in_id_b, mapping.1.slot, in_flags_b);
+        Ok((handle, handle2))
     }
 }
 

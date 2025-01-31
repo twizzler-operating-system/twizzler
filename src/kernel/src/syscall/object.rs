@@ -7,17 +7,17 @@ use twizzler_abi::{
     meta::MetaFlags,
     object::{ObjID, Protections},
     syscall::{
-        CreateTieSpec, HandleType, MapFlags, MapInfo, NewHandleError, ObjectControlCmd,
-        ObjectCreate, ObjectCreateError, ObjectMapError, ObjectReadMapError, ObjectSource,
-        SctxAttachError,
+        CreateTieSpec, DeleteFlags, HandleType, MapFlags, MapInfo, NewHandleError,
+        ObjectControlCmd, ObjectCreate, ObjectCreateError, ObjectCreateFlags, ObjectMapError,
+        ObjectReadMapError, ObjectSource, SctxAttachError,
     },
 };
 
 use crate::{
     arch::context::ArchContext,
-    memory::context::{Context, ContextRef},
+    memory::context::{virtmem::Slot, Context, ContextRef, UserContext},
     mutex::Mutex,
-    obj::{calculate_new_id, LookupFlags, Object, ObjectRef},
+    obj::{calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef},
     once::Once,
     security::get_sctx,
     thread::{current_memory_context, current_thread_ref},
@@ -26,12 +26,15 @@ use crate::{
 pub fn sys_object_create(
     create: &ObjectCreate,
     srcs: &[ObjectSource],
-    _ties: &[CreateTieSpec],
+    ties: &[CreateTieSpec],
 ) -> Result<ObjID, ObjectCreateError> {
     let id = calculate_new_id(create.kuid, MetaFlags::default());
-    let obj = Arc::new(Object::new(id, create.lt));
+    let obj = Arc::new(Object::new(id, create.lt, ties));
     if obj.use_pager() {
         crate::pager::create_object(id);
+        if create.flags.contains(ObjectCreateFlags::DELETE) {
+            object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()));
+        }
         return Ok(obj.id());
     }
     for src in srcs {
@@ -50,6 +53,9 @@ pub fn sys_object_create(
         }
     }
     crate::obj::register_object(obj.clone());
+    if create.flags.contains(ObjectCreateFlags::DELETE) {
+        object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()));
+    }
     Ok(obj.id())
 }
 
@@ -76,6 +82,16 @@ pub fn sys_object_map(
     // TODO
     let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into());
     Ok(slot)
+}
+
+pub fn sys_object_unmap(handle: Option<ObjID>, slot: usize) -> Result<u64, u64> {
+    let vm = if let Some(handle) = handle {
+        get_vmcontext_from_handle(handle).ok_or(0u64)?
+    } else {
+        current_memory_context().unwrap()
+    };
+    vm.remove_object(Slot::try_from(slot).map_err(|_| 0u64)?);
+    Ok(0)
 }
 
 pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo, ObjectReadMapError> {
@@ -201,7 +217,15 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
             crate::pager::sync_object(id);
         }
         ObjectControlCmd::Delete(_) => {
-            crate::pager::del_object(id);
+            let mut invoke_pager = true;
+            if let Some(obj) = lookup_object(id, LookupFlags::empty()).ok_or(()).ok() {
+                invoke_pager = obj.use_pager();
+                obj.mark_for_delete();
+            }
+            if invoke_pager {
+                crate::pager::del_object(id);
+            }
+            crate::obj::scan_deleted();
         }
         _ => {}
     }

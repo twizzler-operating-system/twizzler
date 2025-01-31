@@ -57,6 +57,13 @@ impl PerObjectInner {
         }
     }
 
+    pub fn lookup(&self, obj_range: ObjectRange) -> Option<PhysRange> {
+        let key = obj_range.start / PAGE;
+        self.page_map
+            .get(&key)
+            .map(|ppd| PhysRange::new(ppd.paddr, PAGE))
+    }
+
     pub fn pages(&self) -> impl Iterator<Item = (ObjectRange, PerPageData)> + '_ {
         self.page_map
             .iter()
@@ -88,10 +95,16 @@ impl PerObject {
         self.inner.lock().unwrap().track(obj_range, phys_range);
     }
 
+    pub fn lookup(&self, obj_range: ObjectRange) -> Option<PhysRange> {
+        self.inner.lock().unwrap().lookup(obj_range)
+    }
+
     pub async fn sync(
         &self,
         rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
     ) -> Result<()> {
+        let nulls = [0; PAGE as usize];
+        object_store::write_all(self.id.raw(), &nulls, 0).unwrap();
         let (pages, mpages) = {
             let inner = self.inner.lock().unwrap();
             let total = inner.page_map.len() + inner.meta_page_map.len();
@@ -252,6 +265,19 @@ impl PagerData {
         id: ObjID,
         obj_range: ObjectRange,
     ) -> Result<PhysRange> {
+        {
+            // See if we already allocated
+            let mut inner = self.inner.lock().unwrap();
+            let po = inner.get_per_object(id);
+            if let Some(phys_range) = po.lookup(obj_range) {
+                tracing::debug!(
+                    "already paged memory page for ObjID {:?}, ObjectRange {:?}",
+                    id,
+                    obj_range
+                );
+                return Ok(phys_range);
+            }
+        }
         tracing::debug!(
             "allocating memory page for ObjID {:?}, ObjectRange {:?}",
             id,
@@ -268,7 +294,7 @@ impl PagerData {
             phys_range
         };
         page_in(rq, id, obj_range, phys_range, false).await?;
-        tracing::trace!("memory page allocated successfully");
+        tracing::debug!("memory page allocated successfully: {:?}", phys_range);
         return Ok(phys_range);
     }
 
@@ -283,6 +309,7 @@ impl PagerData {
         rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
         id: ObjID,
     ) {
+        tracing::debug!("sync: {:?}", id);
         let po = {
             let mut inner = self.inner.lock().unwrap();
             inner.get_per_object(id).clone()
@@ -290,5 +317,6 @@ impl PagerData {
         let _ = po.sync(rq).await.inspect_err(|e| {
             tracing::warn!("sync failed for {}: {}", id, e);
         });
+        object_store::advance_epoch().unwrap();
     }
 }

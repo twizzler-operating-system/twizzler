@@ -169,7 +169,7 @@ impl ReferenceRuntime {
         let stack_size = args.stack_size;
         let arg_raw = Box::into_raw(args) as usize;
 
-        trace!(
+        tracing::trace!(
             "spawning thread {} with stack {:x}, entry {:x}, and TLS {:p}",
             id.id,
             stack_raw,
@@ -186,7 +186,6 @@ impl ReferenceRuntime {
         let thid: ObjID = {
             let res: secgate::SecGateReturn<Result<_, SpawnError>> =
                 monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
-            //let res = monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
             match res {
                 secgate::SecGateReturn::Success(id) => ObjID::from(id?),
                 _ => return Err(SpawnError::Other),

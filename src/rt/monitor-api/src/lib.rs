@@ -584,7 +584,7 @@ bitflags::bitflags! {
 }
 
 /// Contains raw mapping addresses, for use when translating to object handles for the runtime.
-#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Debug)]
 pub struct MappedObjectAddrs {
     pub slot: usize,
     pub start: usize,

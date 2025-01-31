@@ -1,7 +1,5 @@
 use std::{panic::catch_unwind, sync::mpsc::Sender, thread::JoinHandle};
 
-use twizzler_object::ObjID;
-
 use super::MapInfo;
 use crate::mon::get_monitor;
 
@@ -13,7 +11,6 @@ pub struct Unmapper {
 
 #[derive(Copy, Clone, Debug)]
 pub enum UnmapCommand {
-    CompDrop(ObjID, MapInfo),
     SpaceUnmap(MapInfo),
 }
 
@@ -28,15 +25,10 @@ impl Unmapper {
                     let key = happylock::ThreadKey::get().unwrap();
                     match receiver.recv() {
                         Ok(info) => {
+                            tracing::debug!("unmapper command {:?}", info);
                             if catch_unwind(|| {
                                 let monitor = get_monitor();
                                 match info {
-                                    UnmapCommand::CompDrop(id, info) => {
-                                        let mut cmgr = monitor.comp_mgr.write(key);
-                                        if let Some(comp) = cmgr.get_mut(id) {
-                                            comp.unmap_object(info);
-                                        }
-                                    }
                                     UnmapCommand::SpaceUnmap(info) => {
                                         let mut space = monitor.space.write(key);
                                         space.handle_drop(info);
@@ -70,23 +62,6 @@ impl Unmapper {
         // call to clean_call above panics. In any case, handle this gracefully.
         if self.sender.send(UnmapCommand::SpaceUnmap(info)).is_err() {
             tracing::warn!("failed to enqueue Unmap {:?} onto cleaner thread", info);
-        }
-    }
-
-    /// Enqueue a mapping to be unmapped.
-    pub fn background_unmap_object_from_comp(&self, comp: ObjID, info: MapInfo) {
-        // If the receiver is down, this will fail, but that also shouldn't happen, unless the
-        // call to clean_call above panics. In any case, handle this gracefully.
-        if self
-            .sender
-            .send(UnmapCommand::CompDrop(comp, info))
-            .is_err()
-        {
-            tracing::warn!(
-                "failed to enqueue CompDrop {}::{:?} onto cleaner thread",
-                comp,
-                info
-            );
         }
     }
 }

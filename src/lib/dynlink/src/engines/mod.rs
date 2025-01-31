@@ -1,11 +1,18 @@
 pub mod twizzler;
 
+use std::collections::HashMap;
+
 use elf::{endian::NativeEndian, ParseError};
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_object::ObjID;
 use twizzler_rt_abi::object::{self, ObjectHandle};
 
 use crate::{compartment::CompartmentId, library::UnloadedLibrary, DynlinkError};
 
+#[derive(Default)]
+pub struct LoadCtx {
+    pub set: HashMap<CompartmentId, ObjID>,
+}
 /// System-specific implementation functions for the dynamic linker, mostly
 /// involving loading objects.
 pub trait ContextEngine {
@@ -14,6 +21,8 @@ pub trait ContextEngine {
         &mut self,
         src: &Backing,
         ld: &[LoadDirective],
+        comp_id: CompartmentId,
+        load_ctx: &mut LoadCtx,
     ) -> Result<Vec<Backing>, DynlinkError>;
 
     /// Load a single object, based on the given unloaded library.
@@ -50,8 +59,15 @@ pub struct Backing {
     obj: object::ObjectHandle,
 }
 
+impl Drop for Backing {
+    fn drop(&mut self) {
+        tracing::debug!("drop backing: {:?}: {:p}", self.obj.id(), self.obj.start());
+    }
+}
+
 impl Backing {
     pub fn new(inner: ObjectHandle) -> Self {
+        tracing::debug!("new backing: {:?}: {:p}", inner.id(), inner.start());
         Self { obj: inner }
     }
 }

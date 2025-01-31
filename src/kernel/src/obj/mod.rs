@@ -12,7 +12,7 @@ use range::PageStatus;
 use twizzler_abi::{
     meta::MetaFlags,
     object::{ObjID, MAX_SIZE},
-    syscall::LifetimeType,
+    syscall::{CreateTieSpec, LifetimeType},
 };
 
 use self::{pages::Page, thread_sync::SleepInfo};
@@ -32,6 +32,7 @@ pub mod pages;
 pub mod pagevec;
 pub mod range;
 pub mod thread_sync;
+pub mod ties;
 
 const OBJ_DELETED: u32 = 1;
 pub struct Object {
@@ -42,6 +43,7 @@ pub struct Object {
     pin_info: Mutex<PinInfo>,
     contexts: Mutex<ContextInfo>,
     lifetime_type: LifetimeType,
+    ties: Vec<CreateTieSpec>,
 }
 
 #[derive(Default)]
@@ -234,7 +236,7 @@ impl Object {
         Some((v, token))
     }
 
-    pub fn new(id: ObjID, lifetime_type: LifetimeType) -> Self {
+    pub fn new(id: ObjID, lifetime_type: LifetimeType, ties: &[CreateTieSpec]) -> Self {
         Self {
             id,
             flags: AtomicU32::new(0),
@@ -242,6 +244,7 @@ impl Object {
             sleep_info: Mutex::new(SleepInfo::new()),
             pin_info: Mutex::new(PinInfo::default()),
             contexts: Mutex::new(ContextInfo::default()),
+            ties: ties.to_vec(),
             lifetime_type,
         }
     }
@@ -250,6 +253,7 @@ impl Object {
         Self::new(
             calculate_new_id(0.into(), MetaFlags::default()),
             LifetimeType::Volatile,
+            &[],
         )
     }
 
@@ -274,6 +278,12 @@ impl Object {
     pub fn print_page_tree(&self) {
         logln!("=== PAGE TREE OBJECT {} ===", self.id());
         self.range_tree.lock().print_tree();
+    }
+}
+
+impl Drop for Object {
+    fn drop(&mut self) {
+        //logln!("Dropping object {}", self.id);
     }
 }
 
@@ -329,6 +339,7 @@ struct ObjectManager {
 }
 
 bitflags::bitflags! {
+    #[derive(Debug)]
     pub struct LookupFlags: u32 {
         const ALLOW_DELETED = 1;
     }
@@ -368,25 +379,46 @@ impl ObjectManager {
         }
     }
 
-    fn lookup_object(&self, id: ObjID, flags: LookupFlags) -> LookupResult {
+    fn lookup_object(&self, id: ObjID, _flags: LookupFlags) -> LookupResult {
         if self.no_exist.lock().contains(&id) {
             return LookupResult::WasDeleted;
         }
-        self.map
+        if let Some(res) = self
+            .map
             .lock()
             .get(&id)
-            .map_or(LookupResult::NotFound, |obj| {
-                if !obj.is_pending_delete() || flags.contains(LookupFlags::ALLOW_DELETED) {
-                    LookupResult::Found(obj.clone())
-                } else {
-                    LookupResult::WasDeleted
-                }
-            })
+            .map(|obj| LookupResult::Found(obj.clone()))
+        {
+            return res;
+        }
+        ties::TIE_MGR
+            .lookup_object(id)
+            .map_or(LookupResult::NotFound, |obj| LookupResult::Found(obj))
     }
 
     fn register_object(&self, obj: Arc<Object>) {
         // TODO: what if it returns an obj
         self.map.lock().insert(obj.id(), obj);
+    }
+}
+
+pub fn scan_deleted() {
+    let dobjs = {
+        let mut om = OBJ_MANAGER.map.lock();
+        om.extract_if(|_, obj| {
+            if obj.is_pending_delete() {
+                let ctx = obj.contexts.lock();
+                let pin = obj.pin_info.lock();
+
+                ctx.contexts.len() == 0 && pin.pins.len() == 0
+            } else {
+                false
+            }
+        })
+        .collect::<Vec<_>>()
+    };
+    for dobj in dobjs {
+        ties::TIE_MGR.delete_object(dobj.1);
     }
 }
 
@@ -401,6 +433,7 @@ pub fn lookup_object(id: ObjID, flags: LookupFlags) -> LookupResult {
 
 pub fn register_object(obj: Arc<Object>) {
     let om = &OBJ_MANAGER;
+    ties::TIE_MGR.create_object_ties(obj.id(), obj.ties.iter().map(|tie| tie.id));
     om.register_object(obj);
 }
 

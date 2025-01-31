@@ -6,6 +6,7 @@ use super::Monitor;
 use crate::gates::{DynlinkStats, HandleStats, MonitorStats};
 
 impl Monitor {
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn stats(&self) -> MonitorStats {
         let (
             ref mut space,

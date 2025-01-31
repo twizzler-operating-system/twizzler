@@ -192,7 +192,7 @@ impl<'a, T> RefSlice<'a, T> {
         unsafe { core::slice::from_raw_parts(raw_ptr, self.len) }
     }
 
-    pub fn get(&self, idx: usize) -> Option<Ref<'a, T>> {
+    pub fn get(&self, idx: usize) -> Option<Ref<'_, T>> {
         let ptr = self.as_slice().get(idx)?;
         Some(unsafe { Ref::from_raw_parts(ptr, self.ptr.handle) })
     }

@@ -21,6 +21,7 @@ async fn do_physrw_request(
     phys: PhysRange,
     write_phys: bool,
 ) -> miette::Result<()> {
+    tracing::debug!("phys rw req: offset = {}", offset);
     let request = RequestFromPager::new(PagerRequest::CopyUserPhys {
         target_object,
         offset,

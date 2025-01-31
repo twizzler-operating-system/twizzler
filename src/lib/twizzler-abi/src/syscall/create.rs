@@ -69,6 +69,7 @@ bitflags! {
     /// Flags to pass to the object create system call.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
     pub struct ObjectCreateFlags: u32 {
+        const DELETE = 1;
     }
 }
 

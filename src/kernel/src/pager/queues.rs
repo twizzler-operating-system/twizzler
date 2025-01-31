@@ -75,7 +75,7 @@ pub(super) fn pager_request_handler_main() {
             PagerRequest::Ready => {
                 let reg = PAGER_MEMORY
                     .poll()
-                    .map(|pm| (pm.start.raw(), pm.length))
+                    .map(|pm| (pm[0].start.raw(), pm[0].length))
                     .unwrap_or((0, 0));
                 INFLIGHT_MGR.lock().set_ready();
                 CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::DramPages(
@@ -121,7 +121,7 @@ pub(super) fn pager_compl_handler_main() {
                 }
             }
             twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(obj_info) => {
-                let obj = Object::new(obj_info.obj_id, LifetimeType::Persistent);
+                let obj = Object::new(obj_info.obj_id, LifetimeType::Persistent, &[]);
                 crate::obj::register_object(Arc::new(obj));
                 INFLIGHT_MGR.lock().cmd_ready(obj_info.obj_id, false);
             }

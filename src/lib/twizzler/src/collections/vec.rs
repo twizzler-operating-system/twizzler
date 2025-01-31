@@ -289,6 +289,18 @@ pub struct VecObject<T: Invariant, A: Allocator> {
     obj: Object<Vec<T, A>>,
 }
 
+impl<T: Invariant, A: Allocator> From<Object<Vec<T, A>>> for VecObject<T, A> {
+    fn from(value: Object<Vec<T, A>>) -> Self {
+        Self { obj: value }
+    }
+}
+
+impl<T: Invariant, A: Allocator> VecObject<T, A> {
+    pub fn object(&self) -> &Object<Vec<T, A>> {
+        &self.obj
+    }
+}
+
 impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
     pub fn push_sc(&mut self, val: T) -> crate::tx::Result<()> {
         let tx = self.obj.clone().tx()?;
