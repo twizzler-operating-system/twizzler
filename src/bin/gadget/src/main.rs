@@ -72,9 +72,9 @@ fn show(args: &[&str], namer: &mut NamingHandle) {
             }
         }
         "f" | "fi" | "files" => {
-            let names = namer.enumerate_names();
+            let names = namer.enumerate_names().unwrap();
             for name in names {
-                println!("{:<20} :: {}", name.0, name.1);
+                println!("{:<20} :: {:?}", name.name, name.entry_type);
             }
         }
         _ => {
@@ -123,7 +123,7 @@ fn read_file(args: &[&str], namer: &mut NamingHandle) {
         println!("usage: read <filename>");
     }
     let filename = args[1];
-    let Some(id) = namer.get(filename) else {
+    let Ok(id) = namer.get(filename) else {
         tracing::warn!("name {} not found", filename);
         return;
     };
@@ -145,7 +145,7 @@ fn write_file(args: &[&str], namer: &mut NamingHandle) {
         println!("usage: write <filename>");
     }
     let filename = args[1];
-    let Some(id) = namer.get(filename) else {
+    let Ok(id) = namer.get(filename) else {
         tracing::warn!("name {} not found", filename);
         return;
     };
@@ -166,10 +166,11 @@ fn new_file(args: &[&str], namer: &mut NamingHandle) {
         return;
     }
     let filename = args[1];
-    if namer.get(filename).is_some() {
+    if namer.get(filename).is_ok() {
         tracing::warn!("name {} already exists", filename);
         return;
     };
+    /*
     let file_id = sys_object_create(
         ObjectCreate::new(
             BackingType::Normal,
@@ -183,6 +184,10 @@ fn new_file(args: &[&str], namer: &mut NamingHandle) {
     .unwrap();
     tracing::debug!("created new file object {}", file_id);
     namer.put(filename, file_id.raw());
+    */
+
+    let _f = std::fs::File::create(filename).unwrap();
+    tracing::debug!("created new file object {:x}", namer.get(filename).unwrap());
 }
 
 fn del_file(args: &[&str], namer: &mut NamingHandle) {
@@ -190,7 +195,7 @@ fn del_file(args: &[&str], namer: &mut NamingHandle) {
         println!("usage: write <filename>");
     }
     let filename = args[1];
-    let Some(id) = namer.get(filename) else {
+    let Ok(id) = namer.get(filename) else {
         tracing::warn!("name {} not found", filename);
         return;
     };
@@ -224,9 +229,12 @@ fn main() {
     )
     .unwrap();
     let mut namer = static_naming_factory().unwrap();
+    namer
+        .put("foo", 0x8dee3feffde41a140e61c5751f472211u128)
+        .unwrap();
     let mut logger = LogHandle::new().unwrap();
     logger.log(b"Hello Logger!\n");
-    tracing::info!("testing namer: {:?}", namer.get("gadget"));
+    tracing::info!("testing namer: {:?}", namer.get("initrd/gadget"));
     let mut io = TwzIo;
     let mut buffer = [0; 1024];
     let mut editor = noline::builder::EditorBuilder::from_slice(&mut buffer)

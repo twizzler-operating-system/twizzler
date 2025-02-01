@@ -67,7 +67,8 @@ pub async fn handle_kernel_request(
                 tracing::warn!("failed to create object {}: {}", object_info.obj_id, e);
                 Some(CompletionToKernel::new(KernelCompletionData::Error))
             } else {
-                let buf = [0; 0x1000];
+                // TODO: REMOVE ONCE WE HAVE RANDOM ACCESS
+                let buf = [0; 0x1000 * 32];
                 let _ =
                     object_store::write_all(object_info.obj_id.raw(), &buf, 0).inspect_err(|e| {
                         tracing::warn!(
