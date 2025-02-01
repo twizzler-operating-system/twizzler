@@ -27,7 +27,7 @@ pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
+            .with_max_level(tracing::Level::DEBUG)
             .without_time()
             .finish(),
     )
@@ -249,23 +249,20 @@ fn do_pager_start(q1: ObjID, q2: ObjID) {
     let _ = PAGER_DATA.set((data, sq));
 
     /*
-    object_store::unlink_object(777);
-    let res = object_store::create_object(777).unwrap();
-    assert!(res);
-    let mut buf = [0; 0x1000];
-    let mut buf2 = [1; 0x1000];
-    let x = object_store::read_exact(777, &mut buf, 0);
-    let y = object_store::read_exact(777, &mut buf, 0x1000);
-    let w = object_store::write_all(777, &mut buf2, 0x1000);
-    let z = object_store::read_exact(777, &mut buf, 0x1000);
-    let w = object_store::write_all(777, &mut buf2, 0);
-    let z = object_store::read_exact(777, &mut buf, 0x1000);
+    for id in object_store::get_all_object_ids().unwrap() {
+        tracing::info!("== {:x}", id);
+    }
 
-    tracing::info!("x: {:?}", x);
-    tracing::info!("y: {:?}", y);
-    tracing::info!("w: {:?}", w);
-    tracing::info!("z: {:?}", z);
-    assert_eq!(buf, buf2);
+    //object_store::create_object(17).unwrap();
+    //object_store::write_all(17, b"this is a test", 0).unwrap();
+
+    let mut buf = [0; 12];
+    object_store::read_exact(0x5d74fb7c3fe55e64131351157f1fd996u128, &mut buf, 0).unwrap();
+    println!("==> {}", String::from_utf8_lossy(&buf));
+    object_store::advance_epoch().unwrap();
+    object_store::read_exact(17, &mut buf, 0).unwrap();
+    println!("==> {}", String::from_utf8_lossy(&buf));
+    loop {}
     */
 }
 

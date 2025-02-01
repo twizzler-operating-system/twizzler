@@ -413,8 +413,9 @@ impl<T: Invariant> VecObject<T, VecObjectAlloc> {
 impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
     pub fn push(&mut self, val: T) -> crate::tx::Result<()> {
         let tx = self.obj.clone().tx()?;
-        let base = tx.base().owned();
+        let base = tx.base();
         base.push(val, &tx)?;
+        drop(base);
         self.obj = tx.commit()?;
         Ok(())
     }

@@ -3,7 +3,7 @@ use core::{
     mem::size_of,
     num::NonZeroUsize,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bitflags::bitflags;
 use lazy_static::lazy_static;
@@ -60,15 +60,15 @@ lazy_static! {
         FdKind::Stdio,
         FdKind::Stdio
     ]));
-    static ref HANDLE: Mutex<DynamicNamingHandle> = Mutex::new(dynamic_naming_factory().unwrap());
 }
+static HANDLE: OnceLock<Mutex<DynamicNamingHandle>> = OnceLock::new();
 
 fn get_fd_slots() -> &'static Mutex<StableVec<FdKind>> {
     &FD_SLOTS
 }
 
 fn get_naming_handle() -> &'static Mutex<DynamicNamingHandle> {
-    &HANDLE
+    HANDLE.get_or_init(|| Mutex::new(dynamic_naming_factory().unwrap()))
 }
 
 #[derive(Debug)]
@@ -113,6 +113,7 @@ impl ReferenceRuntime {
         create_opt: CreateOptions,
         open_opt: OperationOptions,
     ) -> Result<RawFd, OpenError> {
+        twizzler_abi::klog_println!("A");
         let mut session = get_naming_handle().lock().unwrap();
 
         if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE)
@@ -120,9 +121,10 @@ impl ReferenceRuntime {
         {
             return Err(OpenError::InvalidArgument);
         }
+        twizzler_abi::klog_println!("B");
         let create = ObjectCreate::new(
             BackingType::Normal,
-            LifetimeType::Volatile,
+            LifetimeType::Persistent,
             None,
             ObjectCreateFlags::empty(),
         );
@@ -150,6 +152,7 @@ impl ReferenceRuntime {
                 .unwrap_or(sys_object_create(create, &[], &[]).map_err(|_| OpenError::Other)?),
         };
 
+        twizzler_abi::klog_println!("C: {}", obj_id);
         let handle = self.map_object(obj_id, flags).unwrap();
         let metadata_handle = unsafe {
             handle
@@ -172,6 +175,7 @@ impl ReferenceRuntime {
             }
         }
 
+        twizzler_abi::klog_println!("D: {}", unsafe { *metadata_handle }.size);
         let elem = FdKind::File(Arc::new(Mutex::new(FileDesc {
             pos: 0,
             handle,
@@ -182,6 +186,7 @@ impl ReferenceRuntime {
 
         let mut binding = get_fd_slots().lock().unwrap();
 
+        twizzler_abi::klog_println!("F");
         let fd = if binding.is_compact() {
             binding.push(elem)
         } else {
@@ -189,10 +194,12 @@ impl ReferenceRuntime {
             binding.insert(fd, elem);
             fd
         };
+        twizzler_abi::klog_println!("F2");
         session
             .put(path, obj_id.raw())
             .map_err(|_| OpenError::Other)?;
 
+        twizzler_abi::klog_println!("G");
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
             self.seek(fd.try_into().unwrap(), SeekFrom::End(0))
                 .map_err(|_| OpenError::Other)?;
@@ -363,6 +370,7 @@ impl ReferenceRuntime {
                 let mut ok = true;
                 for id in &metadata_handle.direct {
                     if id.raw() != 0 {
+                        twizzler_abi::klog_println!("==> sync: syncing data: {}", id);
                         if twizzler_abi::syscall::sys_object_ctrl(*id, ObjectControlCmd::Sync)
                             .is_err()
                         {
@@ -370,6 +378,7 @@ impl ReferenceRuntime {
                         }
                     }
                 }
+                twizzler_abi::klog_println!("==> sync: syncing ctrl: {}", file.handle.id());
                 if twizzler_abi::syscall::sys_object_ctrl(file.handle.id(), ObjectControlCmd::Sync)
                     .is_err()
                 {
@@ -482,11 +491,16 @@ impl ReferenceRuntime {
                     let mapped_id = if obj_id == 0.into() {
                         let create = ObjectCreate::new(
                             BackingType::Normal,
-                            LifetimeType::Volatile,
+                            LifetimeType::Persistent,
                             None,
                             ObjectCreateFlags::empty(),
                         );
                         let new_id = sys_object_create(create, &[], &[]).unwrap();
+                        twizzler_abi::klog_println!(
+                            "==> new data object {} {}",
+                            new_id,
+                            object_window - 1
+                        );
                         unsafe {
                             (*metadata_handle).direct[(object_window - 1) as usize] = new_id;
                         }

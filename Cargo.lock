@@ -3977,6 +3977,7 @@ dependencies = [
  "monitor-api",
  "secgate",
  "twizzler",
+ "twizzler-abi",
  "twizzler-rt-abi",
 ]
 
