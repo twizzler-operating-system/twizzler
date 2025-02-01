@@ -1,6 +1,5 @@
 use std::{
     marker::PhantomData,
-    mem::ManuallyDrop,
     ops::{Deref, DerefMut, Index, IndexMut},
 };
 
@@ -39,17 +38,25 @@ impl<'obj, T> Ref<'obj, T> {
     }
 
     pub unsafe fn cast<U>(self) -> Ref<'obj, U> {
-        let this = ManuallyDrop::new(self);
-        Ref {
-            ptr: this.ptr.cast(),
-            handle: this.handle,
-            owned: this.owned,
+        let ret = Ref {
+            ptr: self.ptr.cast(),
+            handle: self.handle,
+            owned: self.owned,
             _pd: PhantomData,
-        }
+        };
+        std::mem::forget(self);
+        ret
     }
 
     pub unsafe fn mutable(self) -> RefMut<'obj, T> {
-        RefMut::from_raw_parts(self.ptr as *mut T, self.handle)
+        let ret = RefMut {
+            ptr: self.ptr as *mut T,
+            handle: self.handle,
+            owned: self.owned,
+            _pd: PhantomData,
+        };
+        std::mem::forget(self);
+        ret
     }
 
     pub fn global(&self) -> GlobalPtr<T> {
@@ -119,12 +126,14 @@ impl<'obj, T> RefMut<'obj, T> {
     }
 
     pub unsafe fn cast<U>(self) -> RefMut<'obj, U> {
-        RefMut {
+        let ret = RefMut {
             ptr: self.ptr.cast(),
             handle: self.handle,
             owned: self.owned,
             _pd: PhantomData,
-        }
+        };
+        std::mem::forget(self);
+        ret
     }
 
     pub fn handle(&self) -> &ObjectHandle {
@@ -231,7 +240,7 @@ impl<'a, T> RefSliceMut<'a, T> {
         unsafe { core::slice::from_raw_parts_mut(raw_ptr, self.len) }
     }
 
-    pub fn get(&self, idx: usize) -> Option<Ref<'a, T>> {
+    pub fn get(&self, idx: usize) -> Option<Ref<'_, T>> {
         let ptr = self.as_slice().get(idx)?;
         Some(unsafe { Ref::from_raw_parts(ptr, self.ptr.handle) })
     }

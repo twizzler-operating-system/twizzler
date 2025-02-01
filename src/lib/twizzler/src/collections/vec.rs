@@ -146,6 +146,30 @@ impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
     pub fn pop(&self, _tx: &impl TxHandle) -> Result<T> {
         todo!()
     }
+
+    pub fn remove(&self, idx: usize, tx: impl AsRef<TxObject>) -> Result<T> {
+        if idx >= self.len() {
+            return Err(crate::tx::TxError::InvalidArgument);
+        }
+        let item = self.get(idx).unwrap();
+        let val = unsafe { item.raw().read() };
+        let inner = self.inner.get_mut(tx.as_ref())?;
+        let mut rslice = unsafe {
+            RefSliceMut::from_ref(inner.start.resolve().mutable().cast::<u8>(), inner.cap)
+        };
+        let slice = rslice.as_slice_mut();
+        let ptr = tx
+            .as_ref()
+            .tx_mut(slice.as_ptr(), slice.len() * size_of::<T>())?;
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, slice.len() * size_of::<T>()) };
+        let byte_idx_start = (idx + 1) * size_of::<T>();
+        let byte_idx = idx * size_of::<T>();
+        let byte_end = self.len() * size_of::<T>();
+        slice.copy_within(byte_idx_start..byte_end, byte_idx);
+        inner.len -= 1;
+
+        Ok(val)
+    }
 }
 
 impl<T: Invariant, Alloc: Allocator + SingleObjectAllocator> Vec<T, Alloc> {
@@ -226,6 +250,52 @@ mod tests {
 
         let item = vec_obj.get(0).unwrap();
         assert_eq!(item.x, 42);
+    }
+
+    #[test]
+    fn simple_remove_vo() {
+        let mut vec_obj = VecObject::new(ObjectBuilder::default()).unwrap();
+        vec_obj.push(Simple { x: 42 }).unwrap();
+
+        let item = vec_obj.get(0).unwrap();
+        assert_eq!(item.x, 42);
+        drop(item);
+        let ritem = vec_obj.remove(0).unwrap();
+
+        assert_eq!(ritem.x, 42);
+    }
+
+    #[test]
+    fn multi_remove_vo() {
+        let mut vec_obj = VecObject::new(ObjectBuilder::default()).unwrap();
+        vec_obj.push(Simple { x: 42 }).unwrap();
+        vec_obj.push(Simple { x: 43 }).unwrap();
+        vec_obj.push(Simple { x: 44 }).unwrap();
+
+        let item = vec_obj.get(0).unwrap();
+        assert_eq!(item.x, 42);
+        drop(item);
+        let item = vec_obj.get(1).unwrap();
+        assert_eq!(item.x, 43);
+        drop(item);
+        let item = vec_obj.get(2).unwrap();
+        assert_eq!(item.x, 44);
+        drop(item);
+        let item = vec_obj.get(3);
+        assert!(item.is_none());
+        drop(item);
+
+        let ritem = vec_obj.remove(1).unwrap();
+        assert_eq!(ritem.x, 43);
+
+        let item = vec_obj.get(0).unwrap();
+        assert_eq!(item.x, 42);
+        drop(item);
+        let item = vec_obj.get(1).unwrap();
+        assert_eq!(item.x, 44);
+        drop(item);
+        let item = vec_obj.get(2);
+        assert!(item.is_none());
     }
 
     #[test]
@@ -312,6 +382,14 @@ impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
 
     pub fn pop(&mut self) -> crate::tx::Result<T> {
         todo!()
+    }
+
+    pub fn remove(&mut self, idx: usize) -> crate::tx::Result<T> {
+        let tx = self.obj.clone().tx()?;
+        let base = tx.base().owned();
+        let val = base.remove(idx, &tx)?;
+        self.obj = tx.commit()?;
+        Ok(val)
     }
 }
 
