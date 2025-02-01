@@ -5,6 +5,7 @@ use std::sync::{Arc, OnceLock};
 
 use async_executor::Executor;
 use async_io::block_on;
+use secgate::secure_gate;
 use twizzler_abi::pager::{
     CompletionToKernel, CompletionToPager, PagerCompletionData, PhysRange, RequestFromKernel,
     RequestFromPager,
@@ -278,4 +279,16 @@ pub fn full_object_sync(id: ObjID) {
         pager.0.sync(&pager.1, id).await
     });
     block_on(EXECUTOR.get().unwrap().run(async { task.await }));
+}
+
+#[secgate::secure_gate]
+pub fn show_lethe() {
+    object_store::with_khf(|khf| {
+        println!("{:#?}", khf);
+    });
+}
+
+#[secgate::secure_gate]
+pub fn adv_lethe() {
+    object_store::advance_epoch().unwrap();
 }
