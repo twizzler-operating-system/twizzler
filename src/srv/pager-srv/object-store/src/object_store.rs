@@ -39,6 +39,11 @@ pub static KHF: LazyLock<Mutex<MyKhf>> = LazyLock::new(|| Mutex::new(open_khf())
 // FIXME should use a randomly generated root key for each device.
 pub const ROOT_KEY: [u8; 32] = [0; 32];
 
+pub fn with_khf<R>(f: impl FnOnce(&mut MyKhf) -> R) -> R {
+    let mut khf = KHF.lock().unwrap();
+    f(&mut *khf)
+}
+
 fn open_wal() -> MyWal {
     FS.get()
         .unwrap()

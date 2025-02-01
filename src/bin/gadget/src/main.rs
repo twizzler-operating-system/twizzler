@@ -46,7 +46,7 @@ fn lethe_cmd(args: &[&str], namer: &mut NamingHandle) {
     }
     match args[1] {
         "a" | "adv" => {
-            tracing::warn!("unimplemented: lethe adv (advance epoch)");
+            pager::adv_lethe();
         }
         _ => {
             println!("unknown lethe cmd: {}", args[1]);
@@ -61,6 +61,9 @@ fn show(args: &[&str], namer: &mut NamingHandle) {
         return;
     }
     match args[1] {
+        "l" | "le" | "lethe" => {
+            pager::show_lethe();
+        }
         "c" | "comp" | "compartments" => {
             let curr = monitor_api::CompartmentHandle::current();
             let info = curr.info();
@@ -70,6 +73,12 @@ fn show(args: &[&str], namer: &mut NamingHandle) {
                 let info = comp.info();
                 println!(" -- {:?}", info);
             }
+            let namer = monitor_api::CompartmentHandle::lookup("naming").unwrap();
+            println!(" -- {:?}", namer.info());
+            let logger = monitor_api::CompartmentHandle::lookup("logboi").unwrap();
+            println!(" -- {:?}", logger.info());
+            let pager = monitor_api::CompartmentHandle::lookup("pager-srv").unwrap();
+            println!(" -- {:?}", pager.info());
         }
         "f" | "fi" | "files" => {
             let names = namer.enumerate_names().unwrap();
@@ -230,7 +239,7 @@ fn main() {
     .unwrap();
     let mut namer = static_naming_factory().unwrap();
     namer
-        .put("foo", 0x8dee3feffde41a140e61c5751f472211u128)
+        .put("foo", 283546585606427761870258416152243015626u128)
         .unwrap();
     let mut logger = LogHandle::new().unwrap();
     logger.log(b"Hello Logger!\n");
