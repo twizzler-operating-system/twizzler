@@ -214,8 +214,8 @@ fn del_file(args: &[&str], namer: &mut NamingHandle) {
     if res.is_err() {
         return;
     }
-    tracing::info!("removing name...");
-    namer.remove(filename).unwrap();
+    //tracing::info!("removing name...");
+    //namer.remove(filename, false).unwrap();
 }
 
 fn setup_http() {
@@ -237,9 +237,7 @@ fn main() {
     )
     .unwrap();
     let mut namer = static_naming_factory().unwrap();
-    namer
-        .put("foo", 283546585606427761870258416152243015626u128)
-        .unwrap();
+
     let mut logger = LogHandle::new().unwrap();
     logger.log(b"Hello Logger!\n");
     tracing::info!("testing namer: {:?}", namer.get("initrd/gadget"));

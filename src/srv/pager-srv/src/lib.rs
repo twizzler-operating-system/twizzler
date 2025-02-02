@@ -6,6 +6,10 @@ use std::sync::{Arc, OnceLock};
 use async_executor::Executor;
 use async_io::block_on;
 use secgate::secure_gate;
+use twizzler::{
+    collections::vec::{VecObject, VecObjectAlloc},
+    object::{ObjectBuilder, RawObject},
+};
 use twizzler_abi::pager::{
     CompletionToKernel, CompletionToPager, PagerCompletionData, PhysRange, RequestFromKernel,
     RequestFromPager,
@@ -215,7 +219,7 @@ static PAGER_DATA: OnceLock<(
     Arc<QueueSender<RequestFromPager, CompletionToPager>>,
 )> = OnceLock::new();
 
-fn do_pager_start(q1: ObjID, q2: ObjID) {
+fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data, ex) = pager_init(q1, q2);
     object_store::init(ex);
     let sq = Arc::new(sq);
@@ -249,10 +253,17 @@ fn do_pager_start(q1: ObjID, q2: ObjID) {
 
     let _ = PAGER_DATA.set((data, sq));
 
-    return;
+    let bootstrap_id = object_store::get_config_id().unwrap().unwrap_or_else(|| {
+        tracing::info!("creating new naming object");
+        let vo = VecObject::<u32, VecObjectAlloc>::new(ObjectBuilder::default().persist()).unwrap();
+        object_store::set_config_id(vo.object().id().raw()).unwrap();
+        vo.object().id().raw()
+    });
+    tracing::info!("found root namespace: {:x}", bootstrap_id);
     for id in object_store::get_all_object_ids().unwrap() {
         tracing::info!("== {:x}", id);
     }
+    return bootstrap_id.into();
 
     object_store::create_object(17).unwrap();
 
@@ -291,8 +302,8 @@ fn do_pager_start(q1: ObjID, q2: ObjID) {
 }
 
 #[secgate::secure_gate]
-pub fn pager_start(q1: ObjID, q2: ObjID) {
-    do_pager_start(q1, q2);
+pub fn pager_start(q1: ObjID, q2: ObjID) -> ObjID {
+    do_pager_start(q1, q2)
 }
 
 #[secgate::secure_gate]

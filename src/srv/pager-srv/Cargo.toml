@@ -16,6 +16,7 @@ twizzler-driver = { path = "../../lib/twizzler-driver" }
 twizzler-runtime = { path = "../../rt" }
 secgate = { path = "../../lib/secgate" }
 object-store = { path = "object-store" }
+twizzler = { path = "../../lib/twizzler" }
 
 async-trait = "0.1.66"
 volatile = "0.5"
