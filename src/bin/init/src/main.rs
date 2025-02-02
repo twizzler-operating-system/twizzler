@@ -1,6 +1,6 @@
 extern crate twizzler_runtime;
 
-fn initialize_pager() {
+fn initialize_pager() -> ObjID {
     info!("starting pager");
     const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
     let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
@@ -40,11 +40,12 @@ fn initialize_pager() {
 
     let pager_start = unsafe {
         pager_comp
-            .dynamic_gate::<(ObjID, ObjID), ()>("pager_start")
+            .dynamic_gate::<(ObjID, ObjID), ObjID>("pager_start")
             .unwrap()
     };
-    pager_start(queue.object().id(), queue2.object().id());
+    let bootstrap_id = pager_start(queue.object().id(), queue2.object().id()).unwrap();
     std::mem::forget(pager_comp);
+    bootstrap_id
 }
 
 fn initialize_namer(bootstrap: ObjID) {
@@ -66,6 +67,7 @@ fn initialize_namer(bootstrap: ObjID) {
     let namer_start = unsafe { nmcomp.dynamic_gate::<(ObjID,), ()>("namer_start").unwrap() };
     namer_start(bootstrap);
 
+    /*
     let mut handle = dynamic_naming_factory().unwrap();
     let kernel_init_info = get_kernel_init_info();
     let _ = handle.remove("/initrd", true);
@@ -73,6 +75,7 @@ fn initialize_namer(bootstrap: ObjID) {
     for name in kernel_init_info.names() {
         let _ = handle.put(&format!("/initrd/{}", name.name()), name.id().raw());
     }
+    */
 
     tracing::info!("naming ready");
 
@@ -141,14 +144,10 @@ fn main() {
     .unwrap();
     debug!("device manager is up!");
 
-    initialize_pager();
+    let bootstrap_id = initialize_pager();
     std::mem::forget(dev_comp);
 
-    // This will be loaded from the object store instead
-    let foo: VecObject<u32, VecObjectAlloc> =
-        VecObject::new(ObjectBuilder::default().persist()).unwrap();
-    let id = foo.object().id();
-    initialize_namer(id);
+    initialize_namer(bootstrap_id);
 
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
