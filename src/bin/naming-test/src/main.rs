@@ -5,7 +5,6 @@ use naming_core::{Entry, EntryType, ErrorKind, NameStore};
 fn test_single_put_then_get() {
     println!("doing test_single_put_then_get");
     let store = NameStore::new();
-
     let session = store.root_session();
     assert_eq!(session.put("foo", EntryType::Object(1)), Ok(()));
     assert_eq!(
@@ -125,7 +124,7 @@ fn traverse_namespace_nested_1() {
 }
 
 fn traverse_namespace_nested_2() {
-    println!("doing test_traverse_namespace");
+    println!("doing test_traverse_namespace_2");
 
     let store = NameStore::new();
 
@@ -254,6 +253,79 @@ fn traverse_namespace_nested_2() {
     );
 }
 
+fn remove() {
+    println!("doing remove");
+
+    let store = NameStore::new();
+
+    let mut session = store.root_session();
+    session.put("/a", EntryType::Object(1));
+    assert_eq!(session.get("/a"), Entry::try_new("a", EntryType::Object(1)));
+    assert_eq!(session.remove("a", false), Ok(()));
+    assert_eq!(session.get("/a"), Err(ErrorKind::NotFound));
+
+    session.put("/a", EntryType::Object(1));
+    assert_eq!(session.get("/a"), Entry::try_new("a", EntryType::Object(1)));
+}
+
+fn remove_nested() {
+    println!("doing remove_nested");
+
+    let store = NameStore::new();
+
+    let mut session = store.root_session();
+    session.put("/b", EntryType::Object(1));
+    session.put("/c", EntryType::Object(1));
+    session.put("/a", EntryType::Namespace);
+    session.put("/a/a", EntryType::Namespace);
+    session.put("/a/a/a", EntryType::Object(1));
+    session.put("/a/a/b", EntryType::Object(2));
+    
+    assert_eq!(session.get("/a/a/a"), Entry::try_new("a", EntryType::Object(1)));
+    assert_eq!(session.remove("/a/a", false), Err(ErrorKind::NotFile));
+    assert_eq!(session.remove("/a/a/a", false), Ok(()));
+
+    assert_eq!(session.remove("b", false), Ok(()));
+    assert_eq!(session.remove("c", false), Ok(()));
+    assert_eq!(session.get("/a/a/a"), Err(ErrorKind::NotFound));
+    assert_eq!(session.get("/a/a/b"), Entry::try_new("b", EntryType::Object(2)));
+}
+
+fn remove_recursive() {
+    println!("doing remove_recursive");
+
+    let store = NameStore::new();
+
+    let mut session = store.root_session();
+
+    session.put("/a", EntryType::Namespace);
+    session.put("/b", EntryType::Namespace);
+    session.put("/a/c", EntryType::Namespace);
+    session.put("/a/d", EntryType::Namespace);
+    session.put("/b/e", EntryType::Namespace);
+    session.put("/b/f", EntryType::Namespace);
+    session.put("/g", EntryType::Object(0));
+    session.put("/h", EntryType::Object(1));
+    session.put("/a/i", EntryType::Object(0));
+    session.put("/b/j", EntryType::Object(1));
+    
+    assert_eq!(session.remove("a", true), Ok(()));
+    assert_eq!(session.remove("a", true), Err(ErrorKind::NotFound));
+
+    assert_eq!(session.get("b"), Entry::try_new("b", EntryType::Namespace));
+    assert_eq!(session.get("b/e"), Entry::try_new("e", EntryType::Namespace));
+    assert_eq!(session.get("b/f"), Entry::try_new("f", EntryType::Namespace));
+    assert_eq!(session.get("g"), Entry::try_new("g", EntryType::Object(0)));
+    assert_eq!(session.get("h"), Entry::try_new("h", EntryType::Object(1)));
+    
+    assert_eq!(session.remove("b", true), Ok(()));
+
+    assert_eq!(session.get("e"), Err(ErrorKind::NotFound));
+    assert_eq!(session.get("f"), Err(ErrorKind::NotFound));
+    assert_eq!(session.get("g"), Entry::try_new("g", EntryType::Object(0)));
+    assert_eq!(session.get("h"), Entry::try_new("h", EntryType::Object(1)));
+}
+
 fn main() {
     test_single_put_then_get();
     test_multi_put_then_get();
@@ -261,4 +333,7 @@ fn main() {
     namespace_nested();
     traverse_namespace_nested_1();
     traverse_namespace_nested_2();
+    remove();
+    remove_nested();
+    remove_recursive();
 }

@@ -29,8 +29,8 @@ impl NamerAPI for StaticNamingAPI {
         naming_srv::enumerate_names(desc)
     }
 
-    fn remove(&self, desc: Descriptor) -> secgate::SecGateReturn<Result<()>> {
-        naming_srv::remove(desc)
+    fn remove(&self, desc: Descriptor, recursive: bool) -> secgate::SecGateReturn<Result<()>> {
+        naming_srv::remove(desc, recursive)
     }
 
     fn change_namespace(&self, desc: Descriptor) -> secgate::SecGateReturn<Result<()>> {
