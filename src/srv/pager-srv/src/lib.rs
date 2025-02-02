@@ -249,22 +249,45 @@ fn do_pager_start(q1: ObjID, q2: ObjID) {
 
     let _ = PAGER_DATA.set((data, sq));
 
-    /*
+    return;
     for id in object_store::get_all_object_ids().unwrap() {
         tracing::info!("== {:x}", id);
     }
 
-    //object_store::create_object(17).unwrap();
-    //object_store::write_all(17, b"this is a test", 0).unwrap();
+    object_store::create_object(17).unwrap();
 
+    object_store::with_khf(|khf| {
+        tracing::info!("newobj {:#?}", khf);
+    });
+    object_store::write_all(17, b"this is a test", 0).unwrap();
+
+    object_store::with_khf(|khf| {
+        tracing::info!("written {:#?}", khf);
+    });
+
+    object_store::advance_epoch().unwrap();
+    object_store::with_khf(|khf| {
+        tracing::info!("written-adv {:#?}", khf);
+    });
+
+    object_store::unlink_object(17).unwrap();
+
+    object_store::with_khf(|khf| {
+        tracing::info!("removed {:#?}", khf);
+    });
+    object_store::advance_epoch().unwrap();
+
+    object_store::with_khf(|khf| {
+        tracing::info!("removed-adv {:#?}", khf);
+    });
+
+    loop {}
     let mut buf = [0; 12];
     object_store::read_exact(0x5d74fb7c3fe55e64131351157f1fd996u128, &mut buf, 0).unwrap();
     println!("==> {}", String::from_utf8_lossy(&buf));
     object_store::advance_epoch().unwrap();
     object_store::read_exact(17, &mut buf, 0).unwrap();
     println!("==> {}", String::from_utf8_lossy(&buf));
-    loop {}
-    */
 }
 
 #[secgate::secure_gate]

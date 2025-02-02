@@ -204,19 +204,18 @@ fn del_file(args: &[&str], namer: &mut NamingHandle) {
         println!("usage: write <filename>");
     }
     let filename = args[1];
-    let Ok(id) = namer.get(filename) else {
+    let Ok(_) = namer.get(filename) else {
         tracing::warn!("name {} not found", filename);
         return;
     };
     tracing::info!("deleting file...");
-    let idname = id.to_string();
-    let res = std::fs::remove_file(&idname);
+    let res = std::fs::remove_file(&filename);
     tracing::info!("got: {:?}", res);
     if res.is_err() {
         return;
     }
     tracing::info!("removing name...");
-    namer.remove(filename);
+    namer.remove(filename).unwrap();
 }
 
 fn setup_http() {
