@@ -3,20 +3,17 @@
 #[warn(unused_variables)]
 use std::sync::Mutex;
 
-use lazy_static::lazy_static;
 use lazy_init::LazyTransform;
+use lazy_static::lazy_static;
 use naming_core::{Entry, ErrorKind, NameSession, NameStore, Result};
 use secgate::{
     secure_gate,
     util::{Descriptor, HandleMgr, SimpleBuffer},
 };
-use twizzler_abi::{
-    aux::KernelInitInfo,
-    object::{MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+use twizzler_abi::syscall::{
+    sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
 };
 use twizzler_rt_abi::object::{MapFlags, ObjID};
-
 
 struct NamespaceClient<'a> {
     session: NameSession<'a>,
@@ -69,7 +66,7 @@ impl Namer<'_> {
         let names = NameStore::new_in(id)?;
         Ok(Self {
             handles: Mutex::new(HandleMgr::new(None)),
-            names: names
+            names,
         })
     }
 }
@@ -82,7 +79,9 @@ lazy_static! {
 #[secure_gate(options(info))]
 pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) {
     NAMINGSERVICE.get_or_create(|_| {
-        Namer::new_in(bootstrap).or::<ErrorKind>(Ok(Namer::new())).unwrap()
+        Namer::new_in(bootstrap)
+            .or::<ErrorKind>(Ok(Namer::new()))
+            .unwrap()
     });
 }
 

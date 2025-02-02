@@ -257,14 +257,13 @@ fn remove() {
     println!("doing remove");
 
     let store = NameStore::new();
+    let session = store.root_session();
 
-    let mut session = store.root_session();
-    session.put("/a", EntryType::Object(1));
+    assert_eq!(session.put("/a", EntryType::Object(1)), Ok(()));
     assert_eq!(session.get("/a"), Entry::try_new("a", EntryType::Object(1)));
     assert_eq!(session.remove("a", false), Ok(()));
     assert_eq!(session.get("/a"), Err(ErrorKind::NotFound));
-
-    session.put("/a", EntryType::Object(1));
+    assert_eq!(session.put("/a", EntryType::Object(1)), Ok(()));
     assert_eq!(session.get("/a"), Entry::try_new("a", EntryType::Object(1)));
 }
 
@@ -272,23 +271,29 @@ fn remove_nested() {
     println!("doing remove_nested");
 
     let store = NameStore::new();
-
-    let mut session = store.root_session();
-    session.put("/b", EntryType::Object(1));
-    session.put("/c", EntryType::Object(1));
-    session.put("/a", EntryType::Namespace);
-    session.put("/a/a", EntryType::Namespace);
-    session.put("/a/a/a", EntryType::Object(1));
-    session.put("/a/a/b", EntryType::Object(2));
+    let session = store.root_session();
     
-    assert_eq!(session.get("/a/a/a"), Entry::try_new("a", EntryType::Object(1)));
+    assert_eq!(session.put("/b", EntryType::Object(1)), Ok(()));
+    assert_eq!(session.put("/c", EntryType::Object(1)), Ok(()));
+    assert_eq!(session.put("/a", EntryType::Namespace), Ok(()));
+    assert_eq!(session.put("/a/a", EntryType::Namespace), Ok(()));
+    assert_eq!(session.put("/a/a/a", EntryType::Object(1)), Ok(()));
+    assert_eq!(session.put("/a/a/b", EntryType::Object(2)), Ok(()));
+
+    assert_eq!(
+        session.get("/a/a/a"),
+        Entry::try_new("a", EntryType::Object(1))
+    );
     assert_eq!(session.remove("/a/a", false), Err(ErrorKind::NotFile));
     assert_eq!(session.remove("/a/a/a", false), Ok(()));
 
     assert_eq!(session.remove("b", false), Ok(()));
     assert_eq!(session.remove("c", false), Ok(()));
     assert_eq!(session.get("/a/a/a"), Err(ErrorKind::NotFound));
-    assert_eq!(session.get("/a/a/b"), Entry::try_new("b", EntryType::Object(2)));
+    assert_eq!(
+        session.get("/a/a/b"),
+        Entry::try_new("b", EntryType::Object(2))
+    );
 }
 
 fn remove_recursive() {
@@ -296,28 +301,34 @@ fn remove_recursive() {
 
     let store = NameStore::new();
 
-    let mut session = store.root_session();
+    let session = store.root_session();
 
-    session.put("/a", EntryType::Namespace);
-    session.put("/b", EntryType::Namespace);
-    session.put("/a/c", EntryType::Namespace);
-    session.put("/a/d", EntryType::Namespace);
-    session.put("/b/e", EntryType::Namespace);
-    session.put("/b/f", EntryType::Namespace);
-    session.put("/g", EntryType::Object(0));
-    session.put("/h", EntryType::Object(1));
-    session.put("/a/i", EntryType::Object(0));
-    session.put("/b/j", EntryType::Object(1));
-    
+    assert_eq!(session.put("/a", EntryType::Namespace), Ok(()));
+    assert_eq!(session.put("/b", EntryType::Namespace), Ok(()));
+    assert_eq!(session.put("/a/c", EntryType::Namespace), Ok(()));
+    assert_eq!(session.put("/a/d", EntryType::Namespace), Ok(()));
+    assert_eq!(session.put("/b/e", EntryType::Namespace), Ok(()));
+    assert_eq!(session.put("/b/f", EntryType::Namespace), Ok(()));
+    assert_eq!(session.put("/g", EntryType::Object(0)), Ok(()));
+    assert_eq!(session.put("/h", EntryType::Object(1)), Ok(()));
+    assert_eq!(session.put("/a/i", EntryType::Object(0)), Ok(()));
+    assert_eq!(session.put("/b/j", EntryType::Object(1)), Ok(()));
+
     assert_eq!(session.remove("a", true), Ok(()));
     assert_eq!(session.remove("a", true), Err(ErrorKind::NotFound));
 
     assert_eq!(session.get("b"), Entry::try_new("b", EntryType::Namespace));
-    assert_eq!(session.get("b/e"), Entry::try_new("e", EntryType::Namespace));
-    assert_eq!(session.get("b/f"), Entry::try_new("f", EntryType::Namespace));
+    assert_eq!(
+        session.get("b/e"),
+        Entry::try_new("e", EntryType::Namespace)
+    );
+    assert_eq!(
+        session.get("b/f"),
+        Entry::try_new("f", EntryType::Namespace)
+    );
     assert_eq!(session.get("g"), Entry::try_new("g", EntryType::Object(0)));
     assert_eq!(session.get("h"), Entry::try_new("h", EntryType::Object(1)));
-    
+
     assert_eq!(session.remove("b", true), Ok(()));
 
     assert_eq!(session.get("e"), Err(ErrorKind::NotFound));

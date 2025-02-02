@@ -13,7 +13,7 @@ pub struct DynamicNamerAPI {
     open_handle: DynamicSecGate<'static, (), Option<(Descriptor, ObjID)>>,
     close_handle: DynamicSecGate<'static, (Descriptor,), ()>,
     enumerate_names: DynamicSecGate<'static, (Descriptor,), Result<usize>>,
-    remove: DynamicSecGate<'static, (Descriptor, bool,), Result<()>>,
+    remove: DynamicSecGate<'static, (Descriptor, bool), Result<()>>,
     change_namespace: DynamicSecGate<'static, (Descriptor,), Result<()>>,
 }
 

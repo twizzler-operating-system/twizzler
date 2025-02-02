@@ -68,13 +68,10 @@ fn initialize_namer(bootstrap: ObjID) {
 
     let mut handle = dynamic_naming_factory().unwrap();
     let kernel_init_info = get_kernel_init_info();
-
-    // Load the initrd names from the kernel, removing the old names
-    // Maybe there should be a mounting system or something?
-    //handle.remove("/initrd", true);
-    handle.put_namespace("/initrd");
+    let _ = handle.remove("/initrd", true);
+    let _ = handle.put_namespace("/initrd");
     for name in kernel_init_info.names() {
-        handle.put(&format!("/initrd/{}", name.name()), name.id().raw());
+        let _ = handle.put(&format!("/initrd/{}", name.name()), name.id().raw());
     }
 
     tracing::info!("naming ready");
@@ -147,11 +144,12 @@ fn main() {
     initialize_pager();
     std::mem::forget(dev_comp);
 
-    let foo: VecObject<u32, VecObjectAlloc> = VecObject::new(ObjectBuilder::default().persist()).unwrap();
-    // This id will be loaded from the object store
+    // This will be loaded from the object store instead
+    let foo: VecObject<u32, VecObjectAlloc> =
+        VecObject::new(ObjectBuilder::default().persist()).unwrap();
     let id = foo.object().id();
     initialize_namer(id);
-    
+
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
 
@@ -237,8 +235,12 @@ fn run_tests(test_list_name: &str, benches: bool) {
 }
 
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
+use naming_core::dynamic::dynamic_naming_factory;
 use tracing::{debug, info, warn};
-use twizzler::{collections::vec::{VecObject, VecObjectAlloc}, object::{ObjectBuilder, RawObject}};
+use twizzler::{
+    collections::vec::{VecObject, VecObjectAlloc},
+    object::{ObjectBuilder, RawObject},
+};
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -249,4 +251,3 @@ use twizzler_abi::{
     },
 };
 use twizzler_object::{CreateSpec, Object, ObjectInitFlags};
-use naming_core::dynamic::dynamic_naming_factory;

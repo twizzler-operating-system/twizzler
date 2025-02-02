@@ -1,5 +1,7 @@
 use std::{
-    collections::{HashSet, VecDeque}, hash::Hash, mem::{swap, MaybeUninit}, ops::DerefMut, path::{Component, Path, PathBuf}, sync::{Mutex, MutexGuard}
+    collections::{HashSet, VecDeque},
+    path::{Component, Path, PathBuf},
+    sync::{Mutex, MutexGuard},
 };
 
 use arrayvec::ArrayString;
@@ -9,7 +11,7 @@ use twizzler::{
     object::{Object, ObjectBuilder},
     ptr::Ref,
 };
-use twizzler_rt_abi::object::{ObjID, MapFlags};
+use twizzler_rt_abi::object::{MapFlags, ObjID};
 
 use crate::{error::ErrorKind, Result, MAX_KEY_SIZE};
 
@@ -54,6 +56,7 @@ struct Node {
     entry: Entry,
 }
 
+#[allow(dead_code)]
 impl Node {
     fn is_namespace(&self) -> bool {
         self.entry.entry_type == EntryType::Namespace
@@ -99,7 +102,7 @@ impl NameStore {
                 entry: Entry::try_new("/", EntryType::Namespace).unwrap(),
             })
             .unwrap();
-        
+
         NameStore {
             name_universe: Mutex::new(store),
         }
@@ -107,7 +110,10 @@ impl NameStore {
 
     // Loads in an existing object store from an Object ID
     pub fn new_in(id: ObjID) -> Result<NameStore> {
-        let mut store = VecObject::from(Object::map(id, MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST).map_err(|_| ErrorKind::NotFound)?);
+        let mut store = VecObject::from(
+            Object::map(id, MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST)
+                .map_err(|_| ErrorKind::NotFound)?,
+        );
 
         // todo make "/" not an entry
         if store.get(0).is_none() {
@@ -118,7 +124,6 @@ impl NameStore {
                     entry: Entry::try_new("/", EntryType::Namespace).unwrap(),
                 })
                 .unwrap();
-        
         }
         Ok(NameStore {
             name_universe: Mutex::new(store),
@@ -346,31 +351,36 @@ impl NameSession<'_> {
         }
 
         drop(entry);
-        
+
         // Copies a node to another index. If it's a directory
         // it will fix all the child nodes if they exist
-        unsafe fn swap_node(store: &MutexGuard<VecObject<Node, VecObjectAlloc>>, old: usize, new: usize) {
+        unsafe fn swap_node(
+            store: &MutexGuard<VecObject<Node, VecObjectAlloc>>,
+            old: usize,
+            new: usize,
+        ) {
             let mut old_node = store.get(old).unwrap().mutable();
             let mut new_node = store.get(new).unwrap().mutable();
             std::ptr::swap(old_node.raw(), new_node.raw());
             std::mem::swap(&mut old_node.curr, &mut new_node.curr);
 
-            unsafe {
-                for i in 0..store.len() {
-                    let mut node = unsafe { store.get(i).unwrap().mutable()};
-                    // If the node's parent is pointing to where the swapped node is, fix it
-                    if old_node.is_namespace() && node.parent == new_node.curr {
-                        node.parent = old_node.curr;
-                    }
-                    if new_node.is_namespace() && node.parent == old_node.curr {
-                        node.parent = new_node.curr;
-                    }
+            for i in 0..store.len() {
+                let mut node = unsafe { store.get(i).unwrap().mutable() };
+                // If the node's parent is pointing to where the swapped node is, fix it
+                if old_node.is_namespace() && node.parent == new_node.curr {
+                    node.parent = old_node.curr;
+                }
+                if new_node.is_namespace() && node.parent == old_node.curr {
+                    node.parent = new_node.curr;
                 }
             }
+        }
 
-        };
-
-        fn recurse_helper(store: &MutexGuard<VecObject<Node, VecObjectAlloc>>, set: &mut HashSet<usize>, index: usize) {
+        fn recurse_helper(
+            store: &MutexGuard<VecObject<Node, VecObjectAlloc>>,
+            set: &mut HashSet<usize>,
+            index: usize,
+        ) {
             let node: Ref<'_, Node> = store.get(index).unwrap();
             set.insert(index);
             if !node.is_namespace() {
@@ -378,10 +388,12 @@ impl NameSession<'_> {
             }
             for i in 1..store.len() {
                 let candidate = store.get(i).unwrap();
-                if candidate.parent != node.curr { continue; }
+                if candidate.parent != node.curr {
+                    continue;
+                }
                 recurse_helper(store, set, candidate.curr);
             }
-        };
+        }
 
         if recursive {
             let mut candidates = HashSet::new();
@@ -390,41 +402,43 @@ impl NameSession<'_> {
             // Swap valid nodes to the left with all invalid nodes to the right
             // Then trim the vector of invalid nodes
             let mut left: usize = 1;
-            let mut right: usize = store.len() - 1;            
+            let mut right: usize = store.len() - 1;
             while left < right {
                 let left_node: Ref<'_, Node> = store.get(left).unwrap();
                 let right_node: Ref<'_, Node> = store.get(right).unwrap();
-                
+
                 // I want the right node to contain a valid node that is able to be swapped
                 // If the left node contains an invalid node...
-                match (candidates.contains(&left_node.curr), candidates.contains(&right_node.curr)) {
+                match (
+                    candidates.contains(&left_node.curr),
+                    candidates.contains(&right_node.curr),
+                ) {
                     (true, true) => {
                         right -= 1; // right fish for valid
-                    },
+                    }
                     (true, false) => {
                         candidates.remove(&left);
                         unsafe { swap_node(&store, left, right) }; // swap left and right
                         right -= 1;
-                    },
+                    }
                     (false, true) => {
                         right -= 1;
-                    },
+                    }
                     (false, false) => {
                         left += 1; // left fish for invalid
-                    },
+                    }
                 }
             }
 
-            // pop off all the candidates 
-            for i in 0..candidates_num {
+            // pop off all the candidates
+            for _ in 0..candidates_num {
                 let end = store.len();
-                store.remove(end - 1);
+                store.remove(end - 1).unwrap();
             }
-        }
-        else {
+        } else {
             unsafe { swap_node(&store, index, store.len() - 1) };
             let end = store.len();
-            store.remove(end - 1);
+            store.remove(end - 1).unwrap();
         }
 
         Ok(())
