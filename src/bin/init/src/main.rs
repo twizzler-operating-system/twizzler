@@ -47,7 +47,7 @@ fn initialize_pager() {
     std::mem::forget(pager_comp);
 }
 
-fn initialize_namer() {
+fn initialize_namer(bootstrap: ObjID) {
     info!("starting namer");
 
     let nmcomp: CompartmentHandle = CompartmentLoader::new(
@@ -62,10 +62,19 @@ fn initialize_namer() {
     while !flags.contains(CompartmentFlags::READY) {
         flags = nmcomp.wait(flags);
     }
-    tracing::info!("naming ready");
 
     let namer_start = unsafe { nmcomp.dynamic_gate::<(ObjID,), ()>("namer_start").unwrap() };
-    namer_start(ObjID::default());
+    namer_start(bootstrap);
+
+    let mut handle = dynamic_naming_factory().unwrap();
+    let kernel_init_info = get_kernel_init_info();
+    let _ = handle.remove("/initrd", true);
+    let _ = handle.put_namespace("/initrd");
+    for name in kernel_init_info.names() {
+        let _ = handle.put(&format!("/initrd/{}", name.name()), name.id().raw());
+    }
+
+    tracing::info!("naming ready");
 
     std::mem::forget(nmcomp);
 }
@@ -135,7 +144,12 @@ fn main() {
     initialize_pager();
     std::mem::forget(dev_comp);
 
-    initialize_namer();
+    // This will be loaded from the object store instead
+    let foo: VecObject<u32, VecObjectAlloc> =
+        VecObject::new(ObjectBuilder::default().persist()).unwrap();
+    let id = foo.object().id();
+    initialize_namer(id);
+
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
 
@@ -221,7 +235,12 @@ fn run_tests(test_list_name: &str, benches: bool) {
 }
 
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
+use naming_core::dynamic::dynamic_naming_factory;
 use tracing::{debug, info, warn};
+use twizzler::{
+    collections::vec::{VecObject, VecObjectAlloc},
+    object::{ObjectBuilder, RawObject},
+};
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},

@@ -10,6 +10,6 @@ pub trait NamerAPI {
     fn open_handle(&self) -> SecGateReturn<Option<(Descriptor, ObjID)>>;
     fn close_handle(&self, desc: Descriptor) -> SecGateReturn<()>;
     fn enumerate_names(&self, desc: Descriptor) -> SecGateReturn<Result<usize>>;
-    fn remove(&self, desc: Descriptor) -> SecGateReturn<Result<()>>;
+    fn remove(&self, desc: Descriptor, recursive: bool) -> SecGateReturn<Result<()>>;
     fn change_namespace(&self, desc: Descriptor) -> SecGateReturn<Result<()>>;
 }

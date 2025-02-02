@@ -46,13 +46,13 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         }
     }
 
-    pub fn remove(&mut self, path: &str) -> Result<()> {
+    pub fn remove(&mut self, path: &str, recursive: bool) -> Result<()> {
         let s = Entry::try_new(path, EntryType::Namespace)?;
 
         let bytes = unsafe { std::mem::transmute::<Entry, [u8; std::mem::size_of::<Entry>()]>(s) };
         let _handle = self.buffer.write(&bytes);
 
-        self.api.remove(self.desc).unwrap()
+        self.api.remove(self.desc, recursive).unwrap()
     }
 
     pub fn enumerate_names_relative(&mut self, path: &str) -> Result<Vec<Entry>> {
