@@ -272,7 +272,7 @@ fn remove_nested() {
 
     let store = NameStore::new();
     let session = store.root_session();
-    
+
     assert_eq!(session.put("/b", EntryType::Object(1)), Ok(()));
     assert_eq!(session.put("/c", EntryType::Object(1)), Ok(()));
     assert_eq!(session.put("/a", EntryType::Namespace), Ok(()));
@@ -337,6 +337,23 @@ fn remove_recursive() {
     assert_eq!(session.get("h"), Entry::try_new("h", EntryType::Object(1)));
 }
 
+fn load_from_object() {
+    println!("doing load_from_object");
+
+    let id = {
+        let store = NameStore::new();
+        let session = store.root_session();
+        session.put("a", EntryType::Name).unwrap();
+        store.id()
+    };
+
+    {
+        let store = NameStore::new_in(id).expect("NameStore should have loaded properly");
+        let session = store.root_session();
+        assert_eq!(session.get("a"), Entry::try_new("a", EntryType::Name));
+    }
+}
+
 fn main() {
     test_single_put_then_get();
     test_multi_put_then_get();
@@ -347,4 +364,5 @@ fn main() {
     remove();
     remove_nested();
     remove_recursive();
+    load_from_object();
 }

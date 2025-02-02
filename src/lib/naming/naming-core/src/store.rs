@@ -8,7 +8,7 @@ use arrayvec::ArrayString;
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
     marker::Invariant,
-    object::{Object, ObjectBuilder},
+    object::{Object, ObjectBuilder, RawObject},
     ptr::Ref,
 };
 use twizzler_rt_abi::object::{MapFlags, ObjID};
@@ -85,6 +85,7 @@ unsafe impl Invariant for Node {}
 // Though I don't know how to write this without the mutex :think:
 pub struct NameStore {
     name_universe: Mutex<VecObject<Node, VecObjectAlloc>>,
+    backing_id: ObjID,
 }
 
 unsafe impl Send for NameStore {}
@@ -102,9 +103,10 @@ impl NameStore {
                 entry: Entry::try_new("/", EntryType::Namespace).unwrap(),
             })
             .unwrap();
-
+        let id = store.object().id();
         NameStore {
             name_universe: Mutex::new(store),
+            backing_id: id,
         }
     }
 
@@ -127,7 +129,12 @@ impl NameStore {
         }
         Ok(NameStore {
             name_universe: Mutex::new(store),
+            backing_id: id,
         })
+    }
+
+    pub fn id(&self) -> ObjID {
+        self.backing_id
     }
 
     // session is created from root
