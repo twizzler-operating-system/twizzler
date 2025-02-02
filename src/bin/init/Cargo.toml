@@ -20,3 +20,4 @@ futures = "*"
 twizzler-futures = { path = "../../lib/twizzler-futures" }
 monitor-api = { path = "../../rt/monitor-api" }
 twizzler = { path = "../../lib/twizzler" }
+naming-core = { path = "../../lib/naming/naming-core" }
