@@ -58,8 +58,13 @@ pub async fn handle_kernel_request(
             )))
         }
         KernelCommand::ObjectDel(obj_id) => {
-            tracing::warn!("unimp: object del: {}", obj_id);
-            Some(CompletionToKernel::new(KernelCompletionData::Error))
+            if object_store::unlink_object(obj_id.raw()).is_ok() {
+                let _ = object_store::advance_epoch()
+                    .inspect_err(|e| tracing::warn!("failed to advance epoch: {}", e));
+            }
+            Some(CompletionToKernel::new(KernelCompletionData::SyncOkay(
+                obj_id,
+            )))
         }
         KernelCommand::ObjectCreate(object_info) => {
             let _ = object_store::unlink_object(object_info.obj_id.raw());

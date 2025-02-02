@@ -113,7 +113,7 @@ impl ReferenceRuntime {
         create_opt: CreateOptions,
         open_opt: OperationOptions,
     ) -> Result<RawFd, OpenError> {
-        twizzler_abi::klog_println!("A");
+        twizzler_abi::klog_println!("A: {}", path);
         let mut session = get_naming_handle().lock().unwrap();
 
         if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE)
@@ -135,7 +135,7 @@ impl ReferenceRuntime {
             (true, true) => MapFlags::READ | MapFlags::WRITE,
             (true, false) => MapFlags::READ,
             (false, true) => MapFlags::WRITE,
-            (false, false) => return Err(OpenError::InvalidArgument),
+            (false, false) => MapFlags::READ,
         };
         let obj_id: ObjID = match create_opt {
             CreateOptions::UNEXPECTED => return Err(OpenError::InvalidArgument),
