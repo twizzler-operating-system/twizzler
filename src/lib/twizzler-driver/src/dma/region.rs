@@ -31,6 +31,8 @@ pub struct DmaRegion<T: DeviceSync> {
     _pd: PhantomData<T>,
 }
 
+unsafe impl<T: DeviceSync> Send for DmaRegion<T> {}
+
 /// A region of DMA memory, represented in virtual memory as type `[T; len]`, with a particular
 /// access mode and options.
 pub struct DmaSliceRegion<T: DeviceSync> {

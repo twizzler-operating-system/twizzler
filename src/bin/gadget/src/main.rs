@@ -224,10 +224,41 @@ fn setup_http() {
     tracing::info!("server ready");
     let mut reqs = server.incoming_requests();
     tracing::info!("waiting for requests");
-    while let Some(request) = reqs.next() {
+    while let Some(mut request) = reqs.next() {
         tracing::info!("request: {:?}", request);
-        let response = Response::empty(400);
-        request.respond(response).unwrap();
+        let mut buf = Vec::new();
+        request.as_reader().read_to_end(&mut buf);
+        let path = request.url();
+        tracing::info!("path: {}", path);
+        let _ = match request.method() {
+            tiny_http::Method::Get => {
+                let file = OpenOptions::new().read(true).open(path);
+                match file {
+                    Ok(file) => request.respond(Response::from_file(file)),
+                    Err(e) => request.respond(Response::empty(404)),
+                }
+            }
+            tiny_http::Method::Post => {
+                let _f = std::fs::File::create(path).unwrap();
+                drop(_f);
+                let mut file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(path);
+
+                match file {
+                    Ok(mut file) => {
+                        file.write(&buf);
+                        file.sync_all();
+                        request.respond(Response::empty(400))
+                    }
+                    Err(e) => request.respond(Response::empty(404)),
+                }
+            }
+            _ => request.respond(Response::empty(500)),
+        }
+        .unwrap();
     }
 }
 
