@@ -58,7 +58,7 @@ fn get_device() -> Device {
 }
 
 impl TwizzlerTransport {
-    pub fn new() -> Result<Self, VirtioPciError> {
+    pub fn new(notifier: std::sync::mpsc::Sender<()>) -> Result<Self, VirtioPciError> {
         let device = Arc::new(get_device());
         let int = device.allocate_interrupt(0).unwrap();
         device
@@ -162,6 +162,7 @@ impl TwizzlerTransport {
         let thread = std::thread::spawn(move || loop {
             if int_device.repr().check_for_interrupt(0).is_some() {
                 //println!("virtio int: ready");
+                notifier.send(());
             }
 
             /*

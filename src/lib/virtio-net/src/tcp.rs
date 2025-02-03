@@ -119,15 +119,16 @@ impl<T: Transport> TxToken for VirtioTxToken<T> {
 // Gets the Virtio Net struct which implements the device used for smoltcp. Use this to create a
 // smoltcp interface to send and receive packets. NOTE: Only the first device used will work
 // properly
-pub fn get_device() -> DeviceWrapper<TwizzlerTransport> {
+pub fn get_device(notifier: std::sync::mpsc::Sender<()>) -> DeviceWrapper<TwizzlerTransport> {
     let net = VirtIONet::<TestHal, TwizzlerTransport, NET_QUEUE_SIZE>::new(
-        TwizzlerTransport::new().unwrap(),
+        TwizzlerTransport::new(notifier).unwrap(),
         NET_BUFFER_LEN,
     )
     .expect("failed to create net driver");
     DeviceWrapper::<TwizzlerTransport>::new(net)
 }
 
+/*
 #[allow(dead_code)]
 fn test_echo_server() {
     const IP: &str = "10.0.2.15"; // QEMU user networking default IP
@@ -212,3 +213,4 @@ fn test_echo_server() {
         }
     }
 }
+*/
