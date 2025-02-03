@@ -78,7 +78,9 @@ impl SleepInfo {
             }
             for (_, t) in se.threads.extract_if(|_, v| {
                 let p = count < max_count && v.reset_sync_sleep();
-                count += 1;
+                if p {
+                    count += 1;
+                }
                 p
             }) {
                 /* TODO (opt): if sync_sleep_done is also set, maybe we can just immeditately

@@ -1,4 +1,4 @@
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use twizzler_abi::{
     arch::XSAVE_LEN,
@@ -1194,14 +1194,16 @@ pub fn allocate_interrupt_vector(
     _opts: InterruptAllocateOptions,
 ) -> Option<DynamicInterrupt> {
     // TODO: Actually track interrupts, and allocate based on priority and flags.
+    static INT: AtomicU32 = AtomicU32::new(64);
+    let int = INT.fetch_add(1, Ordering::SeqCst);
     set_interrupt(
-        64,
+        int,
         false,
         crate::interrupt::TriggerMode::Edge,
         crate::interrupt::PinPolarity::ActiveHigh,
         Destination::Bsp,
     );
-    Some(DynamicInterrupt::new(64))
+    Some(DynamicInterrupt::new(int as usize))
 }
 
 impl Drop for DynamicInterrupt {

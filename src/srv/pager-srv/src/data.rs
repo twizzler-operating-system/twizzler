@@ -104,7 +104,10 @@ impl PerObject {
         rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
     ) -> Result<()> {
         let nulls = [0; PAGE as usize];
-        object_store::write_all(self.id.raw(), &nulls, 0).unwrap();
+        if object_store::write_all(self.id.raw(), &nulls, 0).is_err() {
+            // TODO
+            return Ok(());
+        }
         let (pages, mpages) = {
             let inner = self.inner.lock().unwrap();
             let total = inner.page_map.len() + inner.meta_page_map.len();

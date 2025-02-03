@@ -7,6 +7,7 @@ use std::{
 use embedded_io::ErrorType;
 use logboi::LogHandle;
 use naming::{static_naming_factory, StaticNamingAPI, StaticNamingHandle as NamingHandle};
+use pager::adv_lethe;
 use tiny_http::{Response, StatusCode};
 use tracing::Level;
 use twizzler_abi::{
@@ -214,11 +215,13 @@ fn del_file(args: &[&str], namer: &mut NamingHandle) {
     if res.is_err() {
         return;
     }
-    //tracing::info!("removing name...");
-    //namer.remove(filename, false).unwrap();
+    tracing::info!("removing name...");
+    namer.remove(filename, false).unwrap();
+    tracing::info!("epoch...");
+    adv_lethe();
 }
 
-fn setup_http() {
+fn setup_http(namer: &mut NamingHandle) {
     tracing::info!("setting up http");
     let server = tiny_http::Server::http((Ipv4Addr::new(127, 0, 0, 1), 5555)).unwrap();
     tracing::info!("server ready");
@@ -228,35 +231,40 @@ fn setup_http() {
         tracing::info!("request: {:?}", request);
         let mut buf = Vec::new();
         request.as_reader().read_to_end(&mut buf);
-        let path = request.url();
+        let path = request.url().to_string();
         tracing::info!("path: {}", path);
         let _ = match request.method() {
             tiny_http::Method::Get => {
-                let file = OpenOptions::new().read(true).open(path);
+                let file = OpenOptions::new().read(true).open(&path);
                 match file {
                     Ok(file) => request.respond(Response::from_file(file)),
-                    Err(e) => request.respond(Response::empty(404)),
+                    Err(e) => request.respond(
+                        Response::from_string(format!("file {} not found", path))
+                            .with_status_code(404),
+                    ),
                 }
             }
             tiny_http::Method::Post => {
-                let _f = std::fs::File::create(path).unwrap();
-                drop(_f);
                 let mut file = OpenOptions::new()
                     .read(true)
                     .write(true)
                     .create(true)
-                    .open(path);
+                    .truncate(true)
+                    .open(&path);
 
                 match file {
                     Ok(mut file) => {
                         file.write(&buf);
                         file.sync_all();
-                        request.respond(Response::empty(400))
+                        request.respond(Response::empty(200))
                     }
-                    Err(e) => request.respond(Response::empty(404)),
+                    Err(e) => request.respond(
+                        Response::from_string(format!("file {} could not be created", path))
+                            .with_status_code(500),
+                    ),
                 }
             }
-            _ => request.respond(Response::empty(500)),
+            _ => request.respond(Response::empty(400)),
         }
         .unwrap();
     }
@@ -314,7 +322,7 @@ fn main() {
                 lethe_cmd(&split, &mut namer);
             }
             "http" => {
-                setup_http();
+                setup_http(&mut namer);
             }
 
             _ => {

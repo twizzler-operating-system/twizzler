@@ -24,7 +24,7 @@ pub struct Disk {
 
 impl Disk {
     pub fn new(ex: &'static Executor<'static>) -> Result<(Disk, Arc<NvmeController>), ()> {
-        let ctrl = block_on(init_nvme(ex));
+        let ctrl = block_on(EXECUTOR.get().unwrap().run(init_nvme(ex)));
         Ok((
             Disk {
                 ctrl: ctrl.clone(),
@@ -41,22 +41,21 @@ pub static EXECUTOR: OnceLock<&'static Executor<'static>> = OnceLock::new();
 pub static NVME: OnceLock<Arc<NvmeController>> = OnceLock::new();
 
 pub fn init(ex: &'static Executor<'static>) {
+    let _ = EXECUTOR.set(ex);
     let (disk, fs, nvme) = do_init(ex);
     let _ = DISK.set(disk);
     let _ = FS.set(fs);
     let _ = NVME.set(nvme);
-    let _ = EXECUTOR.set(ex);
 }
 
 fn do_init(ex: &'static Executor<'static>) -> (Disk, Mutex<FileSystem<Disk>>, Arc<NvmeController>) {
-    let (disk, nvme) = Disk::new(ex).unwrap();
+    let (mut disk, nvme) = Disk::new(ex).unwrap();
     let fs_options = fatfs::FsOptions::new().update_accessed_date(false);
     let fs = FileSystem::new(disk.clone(), fs_options);
     if let Ok(fs) = fs {
         return (disk, Mutex::new(fs), nvme);
     }
     drop(fs);
-    let (mut disk, nvme) = Disk::new(ex).unwrap();
     super::fs::format(&mut disk);
     let fs = FileSystem::new(disk.clone(), fs_options)
         .expect("disk should be formatted now so no more errors.");
@@ -84,8 +83,12 @@ impl fatfs::Read for Disk {
             } else {
                 left + buf.len() - bytes_written
             }; // If I want to write more than the boundary of a page
-            block_on(self.ctrl.read_page(lba as u64, &mut read_buffer, 0))
-                .map_err(|_| ErrorKind::Other)?;
+            block_on(EXECUTOR.get().unwrap().run(self.ctrl.read_page(
+                lba as u64,
+                &mut read_buffer,
+                0,
+            )))
+            .map_err(|_| ErrorKind::Other)?;
 
             let bytes_to_read = right - left;
             buf[bytes_written..bytes_written + bytes_to_read]
@@ -129,8 +132,12 @@ impl fatfs::Write for Disk {
 
             self.pos += right - left;
 
-            block_on(self.ctrl.write_page(lba as u64, &mut write_buffer, 0))
-                .map_err(|_| ErrorKind::Other)?;
+            block_on(EXECUTOR.get().unwrap().run(self.ctrl.write_page(
+                lba as u64,
+                &mut write_buffer,
+                0,
+            )))
+            .map_err(|_| ErrorKind::Other)?;
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 
