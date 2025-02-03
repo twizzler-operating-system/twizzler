@@ -5918,7 +5918,6 @@ dependencies = [
  "rustls-pemfile 0.2.1",
  "sha1 0.6.1",
  "smoltcp",
- "virtio-net",
  "zeroize",
 ]
 

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::{Error, ErrorKind},
     sync::{Arc, Mutex, OnceLock},
 };
@@ -6,6 +7,7 @@ use std::{
 use async_executor::Executor;
 use async_io::block_on;
 use fatfs::{FileSystem, IoBase, Read, Seek, SeekFrom};
+use twizzler_abi::klog_println;
 
 use crate::{
     fs::{PAGE_SIZE, SECTOR_SIZE},
@@ -20,6 +22,7 @@ const LBA_COUNT: usize = DISK_SIZE / SECTOR_SIZE;
 pub struct Disk {
     ctrl: Arc<NvmeController>,
     pub pos: usize,
+    cache: HashMap<u64, Box<[u8; 4096]>>,
 }
 
 impl Disk {
@@ -29,6 +32,7 @@ impl Disk {
             Disk {
                 ctrl: ctrl.clone(),
                 pos: 0,
+                cache: HashMap::new(),
             },
             ctrl,
         ))
@@ -83,12 +87,18 @@ impl fatfs::Read for Disk {
             } else {
                 left + buf.len() - bytes_written
             }; // If I want to write more than the boundary of a page
-            block_on(EXECUTOR.get().unwrap().run(self.ctrl.read_page(
-                lba as u64,
-                &mut read_buffer,
-                0,
-            )))
-            .map_err(|_| ErrorKind::Other)?;
+
+            if let Some(cached) = self.cache.get(&(lba as u64)) {
+                read_buffer.copy_from_slice(&cached[0..4096]);
+            } else {
+                block_on(EXECUTOR.get().unwrap().run(self.ctrl.read_page(
+                    lba as u64,
+                    &mut read_buffer,
+                    0,
+                )))
+                .map_err(|_| ErrorKind::Other)?;
+                self.cache.insert(lba as u64, Box::new(read_buffer));
+            }
 
             let bytes_to_read = right - left;
             buf[bytes_written..bytes_written + bytes_to_read]
@@ -132,6 +142,7 @@ impl fatfs::Write for Disk {
 
             self.pos += right - left;
 
+            self.cache.remove(&(lba as u64));
             block_on(EXECUTOR.get().unwrap().run(self.ctrl.write_page(
                 lba as u64,
                 &mut write_buffer,

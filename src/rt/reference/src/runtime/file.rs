@@ -382,7 +382,7 @@ impl ReferenceRuntime {
             twizzler_rt_abi::bindings::FD_CMD_DELETE => {
                 let mut ok = true;
                 for id in &metadata_handle.direct {
-                    if id.raw() != 0 {
+                    if id.raw() != 0 && false {
                         if twizzler_abi::syscall::sys_object_ctrl(
                             *id,
                             ObjectControlCmd::Delete(DeleteFlags::empty()),
