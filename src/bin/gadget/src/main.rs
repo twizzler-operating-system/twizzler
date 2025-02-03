@@ -283,7 +283,7 @@ fn main() {
     let mut namer = static_naming_factory().unwrap();
     let mut logger = LogHandle::new().unwrap();
     logger.log(b"Hello Logger!\n");
-    tracing::info!("testing namer: {:?}", namer.get("initrd/gadget"));
+    //tracing::info!("testing namer: {:?}", namer.get("initrd/gadget"));
     let mut io = TwzIo;
     let mut buffer = [0; 1024];
     let mut editor = noline::builder::EditorBuilder::from_slice(&mut buffer)

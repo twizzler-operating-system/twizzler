@@ -142,7 +142,7 @@ impl fatfs::Write for Disk {
 
             self.pos += right - left;
 
-            self.cache.remove(&(lba as u64));
+            self.cache.insert(lba as u64, Box::new(write_buffer));
             block_on(EXECUTOR.get().unwrap().run(self.ctrl.write_page(
                 lba as u64,
                 &mut write_buffer,

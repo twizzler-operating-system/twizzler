@@ -81,11 +81,10 @@ lazy_static! {
 pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(Level::DEBUG)
+            .with_max_level(Level::INFO)
             .finish(),
     )
     .unwrap();
-    tracing::info!("TRACE TEST");
     NAMINGSERVICE.get_or_create(|_| {
         Namer::new_in(bootstrap)
             .or::<ErrorKind>(Ok(Namer::new()))

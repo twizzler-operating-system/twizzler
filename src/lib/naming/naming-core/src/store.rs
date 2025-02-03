@@ -117,18 +117,6 @@ impl NameStore {
                 .map_err(|_| ErrorKind::NotFound)?,
         );
 
-        println!(
-            "namer: bootstrap from {}: {:?}",
-            id,
-            store.object().handle().map_flags()
-        );
-
-        println!("enumerate: {}", store.len());
-        for i in 1..store.len() {
-            let search = store.get(i).unwrap();
-            println!("!! {:?}", &*search);
-        }
-
         // todo make "/" not an entry
         if store.get(0).is_none() {
             store
@@ -295,11 +283,6 @@ impl NameSession<'_> {
             }
         };
 
-        println!(
-            "put: {:?} :: {:?}",
-            entry,
-            store.object().handle().map_flags()
-        );
         store.push(entry).unwrap();
 
         Ok(())
@@ -332,10 +315,8 @@ impl NameSession<'_> {
             return Result::Err(ErrorKind::NotNamespace);
         }
 
-        println!("enumerate: {}", store.len());
         for i in 1..store.len() {
             let search = store.get(i).unwrap();
-            println!("!! {:?}", &*search);
             if search.parent == node.curr {
                 vec.push((*search).entry);
             }
