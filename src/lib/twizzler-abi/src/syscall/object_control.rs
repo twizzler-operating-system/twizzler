@@ -79,7 +79,6 @@ pub fn sys_object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> Result<(), ObjectCon
     let [hi, lo] = id.parts();
     let c = cmd.clone();
     let (cmd, opts) = cmd.into();
-    crate::klog_println!("cmd: {:?}:: {}", c, cmd);
     let args = [hi, lo, cmd, opts];
     let (code, val) = unsafe { raw_syscall(Syscall::ObjectCtrl, &args) };
     convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), justval)

@@ -55,7 +55,6 @@ pub async fn page_in(
     } else {
         obj_range.start
     };
-    tracing::debug!("read_exact: offset: {}", start);
     let res = object_store::read_exact(obj_id.raw(), &mut buf, start)
         .inspect_err(|e| tracing::debug!("error in read from object store: {}", e));
     if res.is_err() {
@@ -83,7 +82,6 @@ pub async fn page_out(
     } else {
         obj_range.start
     };
-    tracing::debug!("write_all: offset: {}", start);
     object_store::write_all(obj_id.raw(), &buf, start)
         .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
         .into_diagnostic()
