@@ -66,6 +66,7 @@ use fatfs::{
     DefaultTimeProvider, Dir, LossyOemCpConverter, Read as _, ReadWriteProxy, Seek, SeekFrom,
     Write as _,
 };
+use twizzler_abi::klog_println;
 
 // use obliviate_core::kms::khf::Khf;
 use crate::{
