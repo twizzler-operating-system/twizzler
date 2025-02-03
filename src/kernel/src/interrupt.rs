@@ -82,6 +82,7 @@ pub struct WakeInfo {
 
 impl WakeInfo {
     pub fn wake(&self, val: u64) {
+        //logln!("wake! {}", val);
         unsafe {
             self.obj.write_val_and_signal(self.offset, val, usize::MAX);
         }
@@ -196,20 +197,26 @@ static INT_THREAD_CONDVAR: CondVar = CondVar::new();
 extern "C" fn soft_interrupt_waker() {
     /* TODO: use some heuristic to decide if we need to spend more time handling timeouts */
     loop {
+        //logln!("soft int");
         let mut iq = INT_QUEUE.lock();
         let mut ints = [0; INTQUEUE_LEN];
         let mut count = 0;
+        // logln!("a");
         while let Some(int) = iq.dequeue() {
             ints[count] = int;
             count += 1;
         }
 
+        //logln!("x: {}", count);
         if count > 0 {
+            //logln!("h1");
             drop(iq);
             for i in 0..count {
                 handle_interrupt(ints[i]);
             }
+            //logln!("h2");
         } else {
+            //logln!("w");
             INT_THREAD_CONDVAR.wait(iq);
         }
     }
@@ -217,16 +224,18 @@ extern "C" fn soft_interrupt_waker() {
 
 pub fn init() {
     INT_THREAD.call_once(|| {
-        crate::thread::entry::start_new_kernel(Priority::REALTIME, soft_interrupt_waker, 0)
+        crate::thread::entry::start_new_kernel(Priority::default_user(), soft_interrupt_waker, 0)
     });
 }
 
 pub fn external_interrupt_entry(number: u32) {
+    //logln!("ext int{}", number);
     let mut iq = INT_QUEUE.lock();
     iq.enqueue(number);
     INT_THREAD_CONDVAR.signal();
 }
 
+#[derive(Debug)]
 pub struct DynamicInterrupt {
     vec: usize,
 }
@@ -235,7 +244,10 @@ pub fn allocate_interrupt(
     pri: InterruptPriority,
     opts: InterruptAllocateOptions,
 ) -> Option<DynamicInterrupt> {
-    crate::arch::interrupt::allocate_interrupt_vector(pri, opts)
+    logln!("alloc int {:?} {:?}", pri, opts);
+    let x = crate::arch::interrupt::allocate_interrupt_vector(pri, opts);
+    logln!("alloc int: {:?}", x);
+    x
 }
 
 impl DynamicInterrupt {

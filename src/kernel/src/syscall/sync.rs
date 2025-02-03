@@ -143,16 +143,16 @@ fn thread_sync_cb_timeout(thread: ThreadRef) {
 
 fn simple_timed_sleep(timeout: &&mut Duration) {
     let thread = current_thread_ref().unwrap();
-    let guard = thread.enter_critical();
     thread.set_sync_sleep();
+    requeue_all();
+    let guard = thread.enter_critical();
+    thread.set_sync_sleep_done();
     let timeout_key = crate::clock::register_timeout_callback(
         // TODO: fix all our time types
         timeout.as_nanos() as u64,
         thread_sync_cb_timeout,
         thread.clone(),
     );
-    thread.set_sync_sleep_done();
-    requeue_all();
     finish_blocking(guard);
     drop(timeout_key);
 }
@@ -161,6 +161,7 @@ pub fn sys_thread_sync(
     ops: &mut [ThreadSync],
     timeout: Option<&mut Duration>,
 ) -> Result<usize, ThreadSyncError> {
+    //logln!("sleep: {:?}, {:?}", ops, timeout);
     if let Some(ref timeout) = timeout {
         if ops.is_empty() {
             simple_timed_sleep(timeout);
@@ -201,7 +202,9 @@ pub fn sys_thread_sync(
     let thread = current_thread_ref().unwrap();
     let should_sleep = unsleeps.len() == num_sleepers && num_sleepers > 0;
     let was_timedout = {
+        requeue_all();
         let guard = thread.enter_critical();
+        thread.set_sync_sleep_done();
         let timeout_key = if should_sleep {
             let timeout_key = timeout.map(|timeout| {
                 crate::clock::register_timeout_callback(
@@ -211,12 +214,10 @@ pub fn sys_thread_sync(
                     thread.clone(),
                 )
             });
-            thread.set_sync_sleep_done();
             timeout_key
         } else {
             None
         };
-        requeue_all();
         if should_sleep {
             finish_blocking(guard);
         } else {
@@ -228,6 +229,8 @@ pub fn sys_thread_sync(
     for op in unsleeps {
         undo_sleep(op);
     }
+    thread.reset_sync_sleep_done();
+    thread.reset_sync_sleep();
     if was_timedout && ready_count == 0 {
         Err(ThreadSyncError::Timeout)
     } else {

@@ -2,9 +2,13 @@ use core::{
     mem::{align_of, size_of},
     ptr::NonNull,
 };
+use std::sync::Arc;
 
-use twizzler_abi::device::bus::pcie::PcieDeviceInfo;
-use twizzler_driver::{bus::pcie::PcieCapability, device::Device};
+use twizzler_abi::{
+    device::{bus::pcie::PcieDeviceInfo, DeviceInterruptFlags, InterruptVector},
+    syscall::{sys_thread_sync, ThreadSync},
+};
+use twizzler_driver::{bus::pcie::PcieCapability, device::Device, DeviceController};
 use virtio_drivers::{
     transport::{pci::VirtioPciError, DeviceStatus, DeviceType, Transport},
     Error,
@@ -16,7 +20,7 @@ pub mod virtio_pcie;
 use self::virtio_pcie::{CfgLocation, VirtioCfgType, VirtioCommonCfg, VirtioPciCap};
 
 pub struct TwizzlerTransport {
-    device: Device,
+    device: Arc<Device>,
 
     common_cfg: CfgLocation,
 
@@ -55,7 +59,13 @@ fn get_device() -> Device {
 
 impl TwizzlerTransport {
     pub fn new() -> Result<Self, VirtioPciError> {
-        let device = get_device();
+        let device = Arc::new(get_device());
+        let int = device.allocate_interrupt(0).unwrap();
+        device
+            .repr_mut()
+            .register_interrupt(int.1 as usize, int.0, DeviceInterruptFlags::empty());
+        let int_device = device.clone();
+
         let info = unsafe { device.get_info::<PcieDeviceInfo>(0).unwrap() };
         if info.get_data().vendor_id != 0x1AF4 {
             println!("Vendor ID: {}", info.get_data().vendor_id);
@@ -148,6 +158,27 @@ impl TwizzlerTransport {
         let common_cfg = common_cfg.ok_or(VirtioPciError::MissingCommonConfig)?;
         let notify_region = notify_region.ok_or(VirtioPciError::MissingNotifyConfig)?;
         let isr_status = isr_status.ok_or(VirtioPciError::MissingIsrConfig)?;
+
+        let thread = std::thread::spawn(move || loop {
+            if int_device.repr().check_for_interrupt(0).is_some() {
+                println!("virtio int: ready");
+            }
+
+            /*
+            let bar = int_device.find_mmio_bar(isr_status.bar).unwrap();
+            let mut reference =
+                unsafe { bar.get_mmio_offset_mut::<VirtioIsrStatus>(isr_status.offset) };
+            let ptr = reference.as_mut_ptr();
+
+            let status = ptr.read();
+            if status & 0x3 != 0 {
+
+            }
+            */
+
+            let int_sleep = int_device.repr().setup_interrupt_sleep(0);
+            let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(int_sleep)], None);
+        });
 
         Ok(Self {
             device,
@@ -278,11 +309,13 @@ impl Transport for TwizzlerTransport {
             unsafe { bar.get_mmio_offset_mut::<VirtioCommonCfg>(self.common_cfg.offset) };
         let ptr = reference.as_mut_ptr();
 
+        map_field!(ptr.config_msix_vector).write(0);
         map_field!(ptr.queue_select).write(queue);
         map_field!(ptr.queue_size).write(size as u16);
         map_field!(ptr.queue_desc).write(descriptors.try_into().unwrap());
         map_field!(ptr.queue_driver).write(driver_area.try_into().unwrap());
         map_field!(ptr.queue_device).write(device_area.try_into().unwrap());
+        map_field!(ptr.queue_msix_vector).write(0);
         map_field!(ptr.queue_enable).write(1);
     }
 

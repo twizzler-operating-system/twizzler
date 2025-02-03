@@ -213,7 +213,7 @@ impl Device {
         Err(InterruptAllocationError::Unsupported)
     }
 
-    pub(crate) fn allocate_interrupt(
+    pub fn allocate_interrupt(
         &self,
         inum: usize,
     ) -> Result<(InterruptVector, u32), InterruptAllocationError> {

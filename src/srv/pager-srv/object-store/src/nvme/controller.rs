@@ -147,7 +147,7 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>, ex: &'static Execut
     let task = ex.spawn(async move {
         loop {
             let _i = int.next().await;
-            //tracing::debug!("got interrupt {:?}", _i);
+            //tracing::info!("got interrupt {:?}", _i);
             let resps = req2.driver().check_completions();
             req2.finish(&resps);
             for r in ctrl2.requester.read().unwrap().iter() {

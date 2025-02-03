@@ -262,6 +262,18 @@ fn kaction(device: DeviceRef, cmd: u32, arg: u64, arg2: u64) -> Result<KactionVa
 
             let dev = register_device(device, seg, bus as u8, dev as u8, func as u8)
                 .ok_or(KactionError::Unknown)?;
+            /*
+            let offset = pcie_calculate_int_sync_offset(0).ok_or(KactionError::InvalidArgument)?;
+            let wi = WakeInfo::new(dev.object(), offset);
+            crate::interrupt::set_userspace_interrupt_wakeup(43, wi);
+            arch::set_interrupt(
+                43,
+                false,
+                crate::interrupt::TriggerMode::Edge,
+                crate::interrupt::PinPolarity::ActiveHigh,
+                crate::interrupt::Destination::Bsp,
+            );
+            */
             Ok(KactionValue::ObjID(dev.objid()))
         }
         PcieKactionSpecific::AllocateInterrupt => allocate_interrupt(device, arg, arg2),
