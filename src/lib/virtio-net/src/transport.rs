@@ -161,7 +161,7 @@ impl TwizzlerTransport {
 
         let thread = std::thread::spawn(move || loop {
             if int_device.repr().check_for_interrupt(0).is_some() {
-                println!("virtio int: ready");
+                //println!("virtio int: ready");
             }
 
             /*

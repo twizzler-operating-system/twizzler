@@ -260,9 +260,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
         vo.object().id().raw()
     });
     tracing::info!("found root namespace: {:x}", bootstrap_id);
-    for id in object_store::get_all_object_ids().unwrap() {
-        tracing::info!("== {:x}", id);
-    }
+
     return bootstrap_id.into();
 
     object_store::create_object(17).unwrap();

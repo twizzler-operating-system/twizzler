@@ -417,13 +417,6 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             return;
         }
         Syscall::ObjectCtrl => {
-            logln!(
-                "==> {} {} {} {}",
-                context.arg0::<u64>(),
-                context.arg1::<u64>(),
-                context.arg2::<u64>(),
-                context.arg3::<u64>(),
-            );
             let id = ObjID::from_parts([context.arg0(), context.arg1()]);
             let cmd = (context.arg2::<u64>(), context.arg3::<u64>()).try_into();
             if let Ok(cmd) = cmd {

@@ -197,26 +197,20 @@ static INT_THREAD_CONDVAR: CondVar = CondVar::new();
 extern "C" fn soft_interrupt_waker() {
     /* TODO: use some heuristic to decide if we need to spend more time handling timeouts */
     loop {
-        //logln!("soft int");
         let mut iq = INT_QUEUE.lock();
         let mut ints = [0; INTQUEUE_LEN];
         let mut count = 0;
-        // logln!("a");
         while let Some(int) = iq.dequeue() {
             ints[count] = int;
             count += 1;
         }
 
-        //logln!("x: {}", count);
         if count > 0 {
-            //logln!("h1");
             drop(iq);
             for i in 0..count {
                 handle_interrupt(ints[i]);
             }
-            //logln!("h2");
         } else {
-            //logln!("w");
             INT_THREAD_CONDVAR.wait(iq);
         }
     }
@@ -229,7 +223,6 @@ pub fn init() {
 }
 
 pub fn external_interrupt_entry(number: u32) {
-    //logln!("ext int{}", number);
     let mut iq = INT_QUEUE.lock();
     iq.enqueue(number);
     INT_THREAD_CONDVAR.signal();
@@ -244,10 +237,7 @@ pub fn allocate_interrupt(
     pri: InterruptPriority,
     opts: InterruptAllocateOptions,
 ) -> Option<DynamicInterrupt> {
-    logln!("alloc int {:?} {:?}", pri, opts);
-    let x = crate::arch::interrupt::allocate_interrupt_vector(pri, opts);
-    logln!("alloc int: {:?}", x);
-    x
+    crate::arch::interrupt::allocate_interrupt_vector(pri, opts)
 }
 
 impl DynamicInterrupt {
