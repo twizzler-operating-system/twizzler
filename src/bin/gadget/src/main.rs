@@ -219,8 +219,11 @@ fn del_file(args: &[&str], namer: &mut NamingHandle) {
 }
 
 fn setup_http() {
-    let server = tiny_http::Server::http((Ipv4Addr::new(127, 0, 0, 1), 80)).unwrap();
+    tracing::info!("setting up http");
+    let server = tiny_http::Server::http((Ipv4Addr::new(127, 0, 0, 1), 5555)).unwrap();
+    tracing::info!("server ready");
     let mut reqs = server.incoming_requests();
+    tracing::info!("waiting for requests");
     while let Some(request) = reqs.next() {
         tracing::info!("request: {:?}", request);
         let response = Response::empty(400);
@@ -236,8 +239,9 @@ fn main() {
             .finish(),
     )
     .unwrap();
-    let mut namer = static_naming_factory().unwrap();
+    tracing_log::LogTracer::init().unwrap();
 
+    let mut namer = static_naming_factory().unwrap();
     let mut logger = LogHandle::new().unwrap();
     logger.log(b"Hello Logger!\n");
     tracing::info!("testing namer: {:?}", namer.get("initrd/gadget"));

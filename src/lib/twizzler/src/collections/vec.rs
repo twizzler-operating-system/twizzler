@@ -41,6 +41,12 @@ impl<T: Invariant> VecInner<T> {
         self.start = InvPtr::new(tx, new_alloc.cast())?;
         self.cap = newcap;
         self.len = newlen;
+        tracing::debug!(
+            "set start: {:x} len {}, cap {}",
+            self.start.raw(),
+            self.len,
+            self.cap
+        );
 
         Ok(unsafe { new_alloc.cast::<T>().resolve().owned().mutable() })
     }
@@ -101,6 +107,7 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         tx: impl AsRef<TxObject>,
     ) -> crate::tx::Result<RefMut<'_, MaybeUninit<T>>> {
         let oldlen = self.inner.len;
+        tracing::debug!("len: {}, cap: {}", self.inner.len, self.inner.cap);
         if self.inner.len == self.inner.cap {
             if self.inner.start.raw() as usize + size_of::<T>() * self.inner.cap
                 >= MAX_SIZE - NULLPAGE_SIZE
@@ -110,25 +117,26 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
             let newcap = std::cmp::max(self.inner.cap, 1) * 2;
             let inner = self.inner.get_mut(tx.as_ref())?;
             let r = inner.do_realloc(newcap, oldlen + 1, &self.alloc, tx.as_ref())?;
+            tracing::debug!("grow {:p}", r.raw());
             Ok(Self::maybe_uninit_slice(r, newcap)
                 .get_mut(oldlen)
                 .unwrap()
                 .owned())
         } else {
             self.inner.get_mut(tx.as_ref())?.len += 1;
-            Ok(Self::maybe_uninit_slice(
-                unsafe { self.inner.start.resolve().mutable() },
-                self.inner.cap,
-            )
-            .get_mut(oldlen)
-            .unwrap()
-            .owned())
+            let resptr = unsafe { self.inner.start.resolve().mutable() };
+            tracing::debug!("no grow {:p}", resptr.raw());
+            Ok(Self::maybe_uninit_slice(resptr, self.inner.cap)
+                .get_mut(oldlen)
+                .unwrap()
+                .owned())
         }
     }
 
     fn do_push(&self, item: T, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
         let mut r = self.get_slice_grow(&tx)?;
         // write item, tracking in tx
+        tracing::debug!("store value: {:p}", r.raw());
         tx.as_ref().write_uninit(&mut *r, item)?;
         Ok(())
     }
@@ -148,10 +156,12 @@ impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
     }
 
     pub fn remove(&self, idx: usize, tx: impl AsRef<TxObject>) -> Result<T> {
+        tracing::debug!("idx: {idx}");
         if idx >= self.len() {
             return Err(crate::tx::TxError::InvalidArgument);
         }
         let item = self.get(idx).unwrap();
+        tracing::debug!("item_addr: {:p}", item.raw());
         let val = unsafe { item.raw().read() };
         let inner = self.inner.get_mut(tx.as_ref())?;
         let mut rslice = unsafe {
@@ -165,7 +175,16 @@ impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
         let byte_idx_start = (idx + 1) * size_of::<T>();
         let byte_idx = idx * size_of::<T>();
         let byte_end = self.len() * size_of::<T>();
+        tracing::debug!(
+            "slice byte copy: {} {} {}",
+            byte_idx,
+            byte_idx_start,
+            byte_end
+        );
         slice.copy_within(byte_idx_start..byte_end, byte_idx);
+        if byte_idx_start == byte_end {
+            slice[byte_idx..byte_idx_start].fill(0);
+        }
         inner.len -= 1;
 
         Ok(val)

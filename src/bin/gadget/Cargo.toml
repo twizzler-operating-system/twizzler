@@ -16,3 +16,4 @@ pager = { path = "../../lib/pager" }
 naming = { path = "../../lib/naming" }
 logboi = { path = "../../lib/logboi" }
 tiny_http = { path = "../test-tiny-http/src/tiny-http-twizzler" }
+tracing-log = "*"

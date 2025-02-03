@@ -10,6 +10,7 @@ use secgate::{
     secure_gate,
     util::{Descriptor, HandleMgr, SimpleBuffer},
 };
+use tracing::Level;
 use twizzler_abi::syscall::{
     sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
 };
@@ -78,11 +79,19 @@ lazy_static! {
 // How would this work if I changed the root while handles were open?
 #[secure_gate(options(info))]
 pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) {
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_max_level(Level::DEBUG)
+            .finish(),
+    )
+    .unwrap();
+    tracing::info!("TRACE TEST");
     NAMINGSERVICE.get_or_create(|_| {
         Namer::new_in(bootstrap)
             .or::<ErrorKind>(Ok(Namer::new()))
             .unwrap()
     });
+    tracing::info!("namer ready");
 }
 
 #[secure_gate(options(info))]
