@@ -1,7 +1,6 @@
 use core::ptr::NonNull;
 use std::{collections::HashMap, ptr::copy_nonoverlapping, sync::Mutex};
 
-use fragile::Fragile;
 use once_cell::sync::OnceCell;
 use twizzler_driver::dma::{Access, DmaOptions, DmaPool, DmaSliceRegion, SyncMode, DMA_PAGE_SIZE};
 use virtio_drivers::{BufferDirection, Hal, PhysAddr};
@@ -16,7 +15,7 @@ static DMA_POOL_BIDIRECTIONAL: OnceCell<DmaPool> = OnceCell::new();
 // into this hashmap, only the memory beneath it is. This hashmap is used to keep memory allocated
 // while it is still in use. Fragile type only allows the thread that original thread that created
 // the object to call its destructor.
-static ALLOCED: OnceCell<Mutex<HashMap<PhysAddr, Fragile<DmaSliceRegion<u8>>>>> = OnceCell::new();
+static ALLOCED: OnceCell<Mutex<HashMap<PhysAddr, DmaSliceRegion<u8>>>> = OnceCell::new();
 
 // Gets the global dma pool for the HAL in a given access direction. If it doesn't exist, create it.
 fn get_dma_pool(dir: BufferDirection) -> &'static DmaPool {
@@ -80,11 +79,10 @@ fn get_dma_pool(dir: BufferDirection) -> &'static DmaPool {
 
 fn insert_alloced(paddr: PhysAddr, dma_slice: DmaSliceRegion<u8>) {
     let dict = ALLOCED.get_or_init(|| Mutex::new(HashMap::new()));
-    let wrapped = Fragile::new(dma_slice);
-    dict.lock().unwrap().insert(paddr, wrapped);
+    dict.lock().unwrap().insert(paddr, dma_slice);
 }
 
-fn remove_alloced(paddr: PhysAddr) -> Option<Fragile<DmaSliceRegion<u8>>> {
+fn remove_alloced(paddr: PhysAddr) -> Option<DmaSliceRegion<u8>> {
     let dict = ALLOCED.get_or_init(|| Mutex::new(HashMap::new()));
     dict.lock().unwrap().remove(&paddr)
 }
@@ -109,14 +107,9 @@ unsafe impl Hal for TestHal {
     }
 
     unsafe fn dma_dealloc(_paddr: PhysAddr, _vaddr: NonNull<u8>, _pages: usize) -> i32 {
-        let dma_region = remove_alloced(_paddr).unwrap().try_into_inner();
-        match dma_region {
-            Ok(mut dma_region) => {
-                dma_region.release_pin();
-                0
-            }
-            Err(_) => 1,
-        }
+        let mut dma_region = remove_alloced(_paddr).unwrap();
+        dma_region.release_pin();
+        0
     }
 
     unsafe fn mmio_phys_to_virt(_paddr: PhysAddr, _size: usize) -> NonNull<u8> {
@@ -127,7 +120,7 @@ unsafe impl Hal for TestHal {
         let buf_len = buffer.len();
         assert!(buf_len <= DMA_PAGE_SIZE, "Hal::Share(): Buffer too large");
         let (phys, virt) = TestHal::dma_alloc(1, direction);
-        let slice = remove_alloced(phys).unwrap().into_inner();
+        let slice = remove_alloced(phys).unwrap();
 
         let buf_casted = buffer.cast::<u8>();
         let buf = buf_casted.as_ptr();
@@ -150,7 +143,7 @@ unsafe impl Hal for TestHal {
     }
     unsafe fn unshare(paddr: PhysAddr, buffer: NonNull<[u8]>, direction: BufferDirection) {
         // Gets DMA buffer and unallocates it
-        let mut dma_slice = remove_alloced(paddr).unwrap().into_inner();
+        let mut dma_slice = remove_alloced(paddr).unwrap();
         match direction {
             BufferDirection::DeviceToDriver => {
                 dma_slice.sync(0..buffer.len(), SyncMode::PostDeviceToCpu);

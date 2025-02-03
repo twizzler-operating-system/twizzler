@@ -28,6 +28,8 @@ pub struct TwizzlerTransport {
     config_space: Option<NonNull<[u32]>>,
 }
 
+unsafe impl Send for TwizzlerTransport {}
+
 fn get_device() -> Device {
     let device_root = twizzler_driver::get_bustree_root();
     for device in device_root.children() {
