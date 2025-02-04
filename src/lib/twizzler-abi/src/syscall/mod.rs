@@ -17,7 +17,8 @@ mod thread_sync;
 mod time;
 
 use crate::arch::syscall::raw_syscall;
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(C)]
 /// All possible Synchronous syscalls into the Twizzler kernel.
 pub enum Syscall {
@@ -118,5 +119,23 @@ fn justval<T: From<u64>>(_: u64, v: u64) -> T {
 pub fn sys_debug_shutdown(code: u32) {
     unsafe {
         raw_syscall(Syscall::Null, &[0x12345678, code as u64]);
+    }
+}
+
+#[cfg(kani)]
+mod kani_test_syscall_things {
+    use super::*;
+
+    #[kani::proof]
+    fn test_null() {
+        let n: usize = kani::any();
+        kani::assume(n > Syscall::NumSyscalls.num().try_into().unwrap());
+        assert_eq!(Syscall::from(n), Syscall::Null);
+    }
+
+    #[kani::proof] 
+    fn test_num() {
+        let syscall: Syscall = kani::any();
+        assert_eq!(syscall.num(), syscall as u64);
     }
 }

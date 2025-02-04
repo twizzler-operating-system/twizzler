@@ -1,5 +1,96 @@
 #![allow(dead_code)]
 
+
+#[cfg(kani)]
+mod naming {
+    use naming_core::{Entry, EntryType, ErrorKind, NameStore};
+
+    use twizzler_minruntime;
+    use twizzler_abi::syscall::{
+        self, sys_object_create, BackingType, CreateTieSpec, LifetimeType, ObjectCreate, ObjectCreateFlags, Syscall,
+    };
+
+    fn raw_syscall_kani_stub(call: Syscall, args: &[u64]) -> (u64, u64) {
+
+        // if core::intrinsics::unlikely(args.len() > 6) {
+        //     twizzler_abi::print_err("too many arguments to raw_syscall");
+        //     // crate::internal_abort();
+        // }
+        let a0 = *args.first().unwrap_or(&0u64);
+        let a1 = *args.get(1).unwrap_or(&0u64);
+        let mut a2 = *args.get(2).unwrap_or(&0u64);
+        let a3 = *args.get(3).unwrap_or(&0u64);
+        let a4 = *args.get(4).unwrap_or(&0u64);
+        let a5 = *args.get(5).unwrap_or(&0u64);
+
+        let mut num = call.num();
+        //TODO: Skip actual inline assembly invcation and register inputs
+        //TODO: Improve actual logic here
+
+        (num,a2)
+    }
+ 
+    #[kani::proof]
+    #[kani::stub(twizzler_abi::arch::syscall::raw_syscall,raw_syscall_kani_stub)]
+    #[kani::stub(twizzler_rt_abi::bindings::twz_rt_map_object, twizzler_minruntime::runtime::syms::twz_rt_map_object)]
+    #[kani::unwind(20)]
+    fn test_single_put_then_get() {
+        let store = NameStore::new();
+        
+        let num: u128 = kani::any();
+        let session = store.root_session();
+        assert_eq!(session.put("foo", EntryType::Object(num)), Ok(()));
+        assert_eq!(
+            session.get("foo"),
+            Entry::try_new("foo", EntryType::Object(num))
+        );
+    }
+
+
+    #[kani::proof]
+    #[kani::stub(twizzler_abi::arch::syscall::raw_syscall,raw_syscall_kani_stub)]
+    #[kani::stub(twizzler_rt_abi::bindings::twz_rt_map_object, twizzler_minruntime::runtime::syms::twz_rt_map_object)]
+    #[kani::unwind(20)]
+    fn test_e() {
+        let store = NameStore::new();
+        
+        let e: EntryType = kani::any();
+        let session = store.root_session();
+        assert_eq!(session.put("foo", e), Ok(()));
+        assert_eq!(
+            session.get("foo"),
+            Entry::try_new("foo", e)
+        );
+    }
+
+#[kani::proof]
+#[kani::stub(twizzler_abi::arch::syscall::raw_syscall, raw_syscall_kani_stub)]
+#[kani::stub(twizzler_rt_abi::bindings::twz_rt_map_object, twizzler_minruntime::runtime::syms::twz_rt_map_object)]
+    #[kani::unwind(20)]
+    fn kani_traverse_namespace_nested_1() {
+        let store = NameStore::new();
+        let mut session = store.root_session();
+
+        assert_eq!(session.put("namespace", EntryType::Namespace), Ok(()));
+        assert_eq!(session.put("foo", EntryType::Object(0)), Ok(()));
+
+        assert_eq!(session.change_namespace("namespace"), Ok(()));
+
+        let obj_id: u128 = kani::any();
+        assert_eq!(session.put("foo", EntryType::Object(obj_id)), Ok(()));
+
+        assert_eq!(
+            session.get("foo"),
+            Entry::try_new("foo", EntryType::Object(obj_id))
+        );
+        assert_eq!(
+            session.get("/foo"),
+            Entry::try_new("foo", EntryType::Object(0))
+        );
+    }
+
+}
+
 use naming_core::{Entry, EntryType, ErrorKind, NameStore};
 
 fn test_single_put_then_get() {

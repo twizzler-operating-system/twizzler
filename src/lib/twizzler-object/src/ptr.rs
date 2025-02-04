@@ -138,3 +138,40 @@ impl<Target> AtomicInvPtr<Target> {
         &mut self.raw as *mut AtomicU64
     }
 }
+
+#[cfg(kani)]
+mod kani_invptr {
+    
+    use super::*;
+
+    #[kani::proof]
+    fn test_ipoffset() {
+        let raw: u64 = kani::any(); 
+        let offset = ipoffset(raw);
+        let mask = (1u64 << 48) - 1; // 0x0000_FFFF_FFFF_FFFF
+        
+        assert_eq!(offset, raw & mask);
+    }
+
+    #[kani::proof]
+    fn test_ipfote() {
+        let raw: u64 = kani::any();
+        let fote = ipfote(raw);
+        assert_eq!(fote, raw >> 48);
+    }
+
+    #[kani::proof]
+    fn test_fote_offset_roundtrip() {
+        let fote: usize = kani::any();
+        let offset: u64 = kani::any();
+
+        kani::assume(offset < ipoffset(u64::MAX));
+        kani::assume(fote < ipfote(u64::MAX).try_into().unwrap());
+
+        let invptr = InvPtr::<u8>::from_parts(fote, offset);
+        let (out_fote, out_offset) = unsafe { invptr.parts_unguarded() };
+        assert_eq!(out_fote, fote, "FOTE mismatch after roundtrip");
+        assert_eq!(out_offset, offset, "Offset mismatch after roundtrip");
+
+    }
+}

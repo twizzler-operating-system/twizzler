@@ -75,7 +75,7 @@ impl SimpleBuffer {
 }
 
 
-// #[cfg(kani)]
+#[cfg(kani)]
 mod buffer {
 
     use twizzler_minruntime;

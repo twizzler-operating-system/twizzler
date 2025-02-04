@@ -7,3 +7,6 @@ edition = "2021"
 object-store = { version = "0.1.0", path = "../../srv/pager-srv/object-store" }
 obliviate-core = { version = "0.1.0", git = "https://github.com/twizzler-operating-system/obliviate.git" }
 rand = "0.8.5"
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-minruntime = {path = "../../rt/minimal"} # TODO: Implement Kani dependecy feature 
+

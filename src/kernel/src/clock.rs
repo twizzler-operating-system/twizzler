@@ -184,7 +184,7 @@ impl TimeoutQueue {
     // Remove a timeout key. Returns true if the key was actually removed (timeout hasn't fired).
     fn remove(&mut self, key: &TimeoutKey) -> bool {
         let old_len = self.queues[key.window].len();
-        for _ in self.queues[key.window].extract_if(|entry| entry.key == key.key) {}
+        for _ in self.queues[key.window].extract_if(|_, entry| entry.key == key.key) {}
         self.release_key(key.key);
         // Did we remove anything?
         old_len != self.queues[key.window].len()

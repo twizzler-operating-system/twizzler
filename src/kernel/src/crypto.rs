@@ -52,3 +52,4 @@ mod test {
         verify(&pub_key, message, signature).expect("should be a valid signature");
     }
 }
+

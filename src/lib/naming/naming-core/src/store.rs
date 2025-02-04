@@ -23,6 +23,7 @@ use crate::{error::ErrorKind, Result, MAX_KEY_SIZE};
 // later
 
 #[derive(Default, Debug, Eq, PartialEq, Clone, Copy, PartialOrd, Ord)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 pub enum EntryType {
     Namespace,
     Object(u128),

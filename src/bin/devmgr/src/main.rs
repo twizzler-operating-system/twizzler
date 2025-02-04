@@ -14,6 +14,18 @@ use volatile::{access::ReadOnly, map_field, VolatilePtr};
 
 //mod nvme_test;
 
+#[cfg(kani)]
+mod kani_devmgr {
+    #[kani::proof]
+    fn get_pcie_offset_kani() {
+        let bus: u8 = kani::any();
+        let device: u8 = kani::any();
+        let function: u8 = kani::any();
+
+        let res = get_pcie_offset(bus, device, function);
+    }
+}
+
 fn get_pcie_offset(bus: u8, device: u8, function: u8) -> usize {
     ((bus as usize * 256) + (device as usize * 8) + function as usize) * 4096
 }

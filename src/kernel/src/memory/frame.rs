@@ -629,3 +629,21 @@ mod tests {
         }
     }
 }
+
+#[cfg(kani)]
+mod kani_frame {
+    use alloc::vec::Vec;
+
+    use twizzler_kernel_macros::kernel_test;
+
+    use super::{alloc_frame, free_frame, get_frame, PhysicalFrameFlags};
+    use crate::utils::quick_random;
+
+    #[kani::proof]
+    fn test_get_frame() {
+        let frame = alloc_frame(PhysicalFrameFlags::empty());
+        let addr = frame.start_address();
+        let test_frame = get_frame(addr).unwrap();
+        assert!(core::ptr::eq(frame as *const _, test_frame as *const _));
+    }
+}

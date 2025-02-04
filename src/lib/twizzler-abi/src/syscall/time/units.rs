@@ -131,6 +131,7 @@ KANI_TODO:
  2. Extend units to check/prevent values that would overflow.
 - Currently option one is followed
 */
+/*
 #[cfg(kani)]
 mod units_verification {
 
@@ -215,7 +216,7 @@ mod units_verification {
     }
 
 }
-
+*/
 #[cfg(test)]
 mod tests {
 

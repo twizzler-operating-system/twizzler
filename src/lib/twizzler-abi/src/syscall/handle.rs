@@ -40,6 +40,7 @@ impl core::error::Error for NewHandleError {}
 
 /// Possible kernel handle types.
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(u64)]
 pub enum HandleType {
     VmContext = 0,
@@ -92,4 +93,32 @@ pub fn sys_unbind_handle(objid: ObjID, flags: UnbindHandleFlags) {
     unsafe {
         raw_syscall(Syscall::UnbindHandle, &[hi, lo, flags.bits()]);
     }
+}
+
+#[cfg(kani)]
+mod syscall_test {
+    use super::*;
+
+    #[kani::proof]
+    fn test_handle_type_try_from_valid() {
+        assert_eq!(HandleType::try_from(0), Ok(HandleType::VmContext));
+        assert_eq!(HandleType::try_from(1), Ok(HandleType::PagerQueue));
+    }
+
+    #[kani::proof]
+    fn test_handle_type_try_from_invalid() {
+        let val: u64 = kani::any();
+        kani::assume(val > 1);
+        assert_eq!(HandleType::try_from(val), Err(NewHandleError::InvalidArgument));
+    }
+
+    #[kani::proof]
+    fn test_handle_flip_flop() {
+        let original: HandleType = kani::any();
+        let converted: u64 = original as u64;
+        let back: Result<HandleType, _> = HandleType::try_from(converted);
+
+        assert_eq!(back, Ok(original));
+    }
+
 }

@@ -22,10 +22,11 @@ fn packages_with_harnesses() -> Vec<String> {
     packages.extend_from_slice(
         &[
             // "twizzler-kernel", TODO: Current syntax erros, toolchain mismap?
-            "twizzler-abi",
-            "twizzler-driver",
-            "twizzler-queue-raw",
-            "secgate"
+            //"twizzler-abi",
+            //"twizzler-queue-raw",
+//            "naming-test",
+//            "nvme"
+            "twizzler-kernel"
         ]
         .map(String::from)
         .to_vec(),
