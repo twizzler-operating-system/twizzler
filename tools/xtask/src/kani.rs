@@ -285,4 +285,8 @@ pub(crate) fn launch_kani_pipelined(cli: KaniOptions) -> anyhow::Result<()>{
 
     Ok(())
 
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> 3b6f468d31027c369266c1dfe9a00111eb00ada7
