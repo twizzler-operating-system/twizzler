@@ -309,6 +309,18 @@ fn setup_http(namer: &mut NamingHandle) {
                             .with_status_code(500),
                     ),
                 }
+            },
+            tiny_http::Method::Delete => {
+                let result = fs::remove_file(&path);
+                match result {
+                    Ok(()) => request.respond(Response::empty(200)),
+                    Err(ErrorKind::NotFound) => request.respond(
+                        Response::from_string(format!("file {} not found", path)).with_status_code(404),
+                    ),
+                    Err(e) => resquest.respond(
+                        Response::from_string(format!("error: {:?}", e)).with_status_code(500),
+                    )
+                }
             }
             _ => request.respond(Response::empty(400)),
         }
