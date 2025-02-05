@@ -25,6 +25,7 @@ members = [
     "src/lib/twizzler-async",
     "src/lib/twizzler-object",
     "src/lib/twizzler-futures",
+    "src/lib/twizzler-security",
     "src/lib/dynlink",
     "src/lib/secgate",
     "src/lib/twizzler",
