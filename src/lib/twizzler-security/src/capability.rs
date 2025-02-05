@@ -146,8 +146,8 @@ impl Cap {
     ) -> [u8; 79] {
         let mut hash_arr: [u8; 79] = [0; 79];
 
-        hash_arr[0..16].copy_from_slice(&accessor.as_u128().to_le_bytes());
-        hash_arr[16..32].copy_from_slice(&target.as_u128().to_le_bytes());
+        hash_arr[0..16].copy_from_slice(&accessor.raw().to_le_bytes());
+        hash_arr[16..32].copy_from_slice(&target.raw().to_le_bytes());
         hash_arr[32..36].copy_from_slice(&prots.bits().to_le_bytes());
         hash_arr[36] = flags.bits();
         hash_arr[37..39].copy_from_slice(&siglen.to_le_bytes());

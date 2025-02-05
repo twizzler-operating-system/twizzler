@@ -21,7 +21,8 @@ impl SecCtx {
     }
 
     pub fn add_cap(&mut self) {
-        let x = self.uobj.base();
+        todo!()
+        // let x = self.uobj.base();
     }
 
     pub fn remove_cap(&mut self) {}
