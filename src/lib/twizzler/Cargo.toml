@@ -10,3 +10,5 @@ twizzler-rt-abi = "0.99"
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 monitor-api = { path = "../../rt/monitor-api" }
 secgate = { path = "../../lib/secgate" }
+twizzler-minruntime = {path = "../../rt/minimal"} # TODO: Implement Kani dependecy feature 
+

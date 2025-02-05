@@ -20,7 +20,7 @@ pub struct ArenaObject {
 impl ArenaObject {
     pub fn new() -> crate::tx::Result<Self> {
         let obj = ObjectBuilder::default().build(ArenaBase {
-            next: TxCell::new((NULLPAGE_SIZE * 2) as u64),
+            next: TxCell::new((NULLPAGE_SIZE * 2) as u32),
         })?;
         Ok(Self { obj })
     }
