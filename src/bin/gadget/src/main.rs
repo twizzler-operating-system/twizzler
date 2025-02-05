@@ -311,15 +311,20 @@ fn setup_http(namer: &mut NamingHandle) {
                 }
             },
             tiny_http::Method::Delete => {
-                let result = fs::remove_file(&path);
+                let result = std::fs::remove_file(&path);
                 match result {
                     Ok(()) => request.respond(Response::empty(200)), // successful delete
-                    Err(ErrorKind::NotFound) => request.respond(
-                        Response::from_string(format!("file {} not found", path)).with_status_code(404), // not found
-                    ),
-                    Err(e) => resquest.respond(
-                        Response::from_string(format!("error: {:?}", e)).with_status_code(500), // internal error
-                    )
+                    Err(e) => {
+                        if let ErrorKind::NotFound = e.kind() {
+                            request.respond(
+                                Response::from_string(format!("file {} not found", path)).with_status_code(404), // not found
+                            )
+                        } else {
+                            request.respond(
+                                Response::from_string(format!("error: {:?}", e)).with_status_code(500), // internal error
+                            )
+                        }
+                    }
                 }
             }
             _ => request.respond(Response::empty(400)),
