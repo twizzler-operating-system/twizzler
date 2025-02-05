@@ -25,12 +25,27 @@ pub enum CtxMapItemType {
 }
 
 impl SecCtxMap {
-    pub fn new(sec_ctx_id: ObjID) -> Self {
+    pub fn parse(sec_ctx_id: ObjID) -> *mut Self {
         let obj = Object::<SecCtxMap>::map(sec_ctx_id, MapFlags::READ).unwrap();
-        let ptr = obj.base_ptr::<SecCtxMap>();
+        obj.base_mut_ptr::<SecCtxMap>()
+    }
+
+    /// inserts a CtxMapItemType into the SecCtxMap and returns the write offset into the object
+    pub fn insert(ptr: *mut Self, target_id: ObjID, item_type: CtxMapItemType, len: u32) -> u32 {
         unsafe {
-            let map = *ptr;
-            return map;
+            let ap = *ptr;
+
+            //TODO: need to actually calculate this out / worry abut allocation strategies
+            let write_offset = ap.len * len + size_of::<SecCtxMap>() as u32;
+            ap.map[len] = CtxMapItem {
+                target_id,
+                item_type,
+                len,
+                offset: write_offset,
+            };
+            ap.len += 1;
+
+            return write_offset;
         }
     }
 
