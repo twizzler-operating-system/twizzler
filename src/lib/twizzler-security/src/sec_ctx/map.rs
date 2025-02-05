@@ -33,11 +33,11 @@ impl SecCtxMap {
     /// inserts a CtxMapItemType into the SecCtxMap and returns the write offset into the object
     pub fn insert(ptr: *mut Self, target_id: ObjID, item_type: CtxMapItemType, len: u32) -> u32 {
         unsafe {
-            let ap = *ptr;
+            let mut ap = *ptr;
 
-            //TODO: need to actually calculate this out / worry abut allocation strategies
+            //TODO: need to actually calculate this out / worry about allocation strategies
             let write_offset = ap.len * len + size_of::<SecCtxMap>() as u32;
-            ap.map[len] = CtxMapItem {
+            ap.map[len as usize] = CtxMapItem {
                 target_id,
                 item_type,
                 len,

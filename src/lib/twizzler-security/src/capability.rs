@@ -122,7 +122,14 @@ impl Cap {
         // offset |                                       | length
         //        {                                       }
         // the proposed offset must lay in this region
-        if self.gates.offset < offset || offset > self.gates.offset + length {
+
+        //TODO: this needs to be fixed so that any 'chunk' inside of the reigion is valid too
+        // if self.gates.offset < offset || offset > self.gates.offset + length {
+        //     return Err(GatesError::OutsideBounds);
+        // }
+
+        //TODO: make sure this is correct
+        if !(offset + length < self.gates.length && offset > self.gates.offset) {
             return Err(GatesError::OutsideBounds);
         }
 
