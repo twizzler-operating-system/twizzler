@@ -24,6 +24,7 @@ pub enum KernelCommand {
     ObjectSync(ObjID),
     ObjectDel(ObjID),
     ObjectCreate(ObjectInfo),
+    DramPages(PhysRange),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
@@ -43,6 +44,7 @@ impl CompletionToKernel {
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCompletionData {
+    Okay,
     Error,
     PageDataCompletion(ObjID, ObjectRange, PhysRange),
     ObjectInfoCompletion(ObjectInfo),

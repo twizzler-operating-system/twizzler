@@ -4,8 +4,8 @@ use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, NULLPAGE_SIZE},
     pager::{
-        CompletionToKernel, CompletionToPager, PagerCompletionData, PagerRequest, PhysRange,
-        RequestFromKernel, RequestFromPager,
+        CompletionToKernel, CompletionToPager, KernelCommand, PagerCompletionData, PagerRequest,
+        PhysRange, RequestFromKernel, RequestFromPager,
     },
     syscall::LifetimeType,
 };
@@ -73,14 +73,17 @@ pub(super) fn pager_request_handler_main() {
     loop {
         receiver.handle_request(|_id, req| match req.cmd() {
             PagerRequest::Ready => {
-                let reg = PAGER_MEMORY
-                    .poll()
-                    .map(|pm| (pm[0].start.raw(), pm[0].length))
-                    .unwrap_or((0, 0));
+                let regs = PAGER_MEMORY.poll().unwrap();
+                for reg in regs {
+                    submit_pager_request(RequestFromKernel::new(KernelCommand::DramPages(
+                        PhysRange::new(
+                            reg.start.raw(),
+                            reg.start.offset(reg.length).unwrap().raw(),
+                        ),
+                    )));
+                }
                 INFLIGHT_MGR.lock().set_ready();
-                CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::DramPages(
-                    PhysRange::new(reg.0, reg.0 + reg.1 as u64),
-                ))
+                CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::Okay)
             }
             PagerRequest::CopyUserPhys {
                 target_object,
@@ -139,6 +142,7 @@ pub(super) fn pager_compl_handler_main() {
                 crate::obj::no_exist(obj_id);
                 INFLIGHT_MGR.lock().cmd_ready(obj_id, false);
             }
+            twizzler_abi::pager::KernelCompletionData::Okay => {}
         }
         sender.0.release_simple(SimpleId::from(completion.0));
     }

@@ -16,7 +16,7 @@ use twizzler_abi::pager::{
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 use twizzler_queue::QueueSender;
 
-use crate::{data::PagerData, helpers::physrange_to_pages, request_handle::handle_kernel_request};
+use crate::{data::PagerData, request_handle::handle_kernel_request};
 
 mod data;
 mod helpers;
@@ -45,15 +45,6 @@ fn data_structure_init() -> PagerData {
     let pager_data = PagerData::new();
 
     return pager_data;
-}
-
-/***
- * Setup data structures and physical memory for use by pager
- */
-fn memory_init(data: PagerData, range: PhysRange) {
-    data.init_range(range);
-    let pages = physrange_to_pages(&range) as usize;
-    data.resize(pages);
 }
 
 /***
@@ -225,30 +216,10 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let sqc = sq.clone();
     spawn_queues(&sq, rq, data.clone(), ex);
 
-    let phys_range: Option<PhysRange> = block_on(async move {
+    block_on(ex.run(async move {
         let res = report_ready(&sqc, ex).await;
-        match res {
-            Some(PagerCompletionData::DramPages(range)) => {
-                Some(range) // Return the range
-            }
-            _ => {
-                tracing::error!("ERROR: no range from ready request");
-                None
-            }
-        }
-    });
-
-    if let Some(range) = phys_range {
-        tracing::info!(
-            "initializing the pager with physical memory range: start: {}, end: {}",
-            range.start,
-            range.end
-        );
-        memory_init(data.clone(), range);
-    } else {
-        tracing::error!("cannot complete pager initialization with no physical memory");
-    }
-    tracing::info!("pager ready");
+    }));
+    tracing::info!("pager ready with {} MB memory", data.avail_mem());
 
     let _ = PAGER_DATA.set((data, sq));
 

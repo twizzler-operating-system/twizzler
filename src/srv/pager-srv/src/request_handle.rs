@@ -87,5 +87,10 @@ pub async fn handle_kernel_request(
                 ))
             }
         }
+        KernelCommand::DramPages(phys_range) => {
+            tracing::debug!("tracking {} MB memory", phys_range.len() / (1024 * 1024));
+            data.init_range(phys_range);
+            Some(CompletionToKernel::new(KernelCompletionData::Okay))
+        }
     }
 }

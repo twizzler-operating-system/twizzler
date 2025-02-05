@@ -15,13 +15,13 @@ use virtio_drivers::{
     Error,
 };
 
-use crate::{hal::TestHal, transport::TwizzlerTransport};
+use crate::{hal::TwzHal, transport::TwizzlerTransport};
 
-const NET_QUEUE_SIZE: usize = 16;
+const NET_QUEUE_SIZE: usize = 64;
 
-type DeviceImpl<T> = VirtIONet<TestHal, T, NET_QUEUE_SIZE>;
+type DeviceImpl<T> = VirtIONet<TwzHal, T, NET_QUEUE_SIZE>;
 
-const NET_BUFFER_LEN: usize = 2048;
+const NET_BUFFER_LEN: usize = 4096;
 
 pub struct DeviceWrapper<T: Transport> {
     inner: Arc<Mutex<DeviceImpl<T>>>,
@@ -107,7 +107,7 @@ impl<T: Transport> TxToken for VirtioTxToken<T> {
 pub fn get_device(
     notifier: std::sync::mpsc::Sender<Option<(SocketHandle, u16)>>,
 ) -> DeviceWrapper<TwizzlerTransport> {
-    let net = VirtIONet::<TestHal, TwizzlerTransport, NET_QUEUE_SIZE>::new(
+    let net = VirtIONet::<TwzHal, TwizzlerTransport, NET_QUEUE_SIZE>::new(
         TwizzlerTransport::new(notifier).unwrap(),
         NET_BUFFER_LEN,
     )

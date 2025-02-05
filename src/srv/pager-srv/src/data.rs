@@ -11,7 +11,7 @@ use twizzler_abi::pager::{
 use twizzler_object::ObjID;
 use twizzler_queue::QueueSender;
 
-use crate::helpers::{page_in, page_out, page_to_physrange, PAGE};
+use crate::helpers::{page_in, page_out, PAGE};
 
 type PageNum = u64;
 
@@ -146,10 +146,81 @@ pub struct PagerData {
     inner: Arc<Mutex<PagerDataInner>>,
 }
 
+impl PagerData {
+    pub fn avail_mem(&self) -> usize {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .memory
+            .regions
+            .iter()
+            .fold(0, |acc, item| acc + item.avail())
+    }
+}
+
 pub struct PagerDataInner {
+    memory: Memory,
     pub bitvec: BitVec,
     pub per_obj: HashMap<ObjID, PerObject>,
-    pub mem_range_start: u64,
+}
+
+struct Region {
+    unused_start: u64,
+    end: u64,
+    stack: Vec<u64>,
+}
+
+impl Region {
+    pub fn avail(&self) -> usize {
+        let unused = self.end - self.unused_start;
+        unused as usize + self.stack.len() * PAGE as usize
+    }
+
+    pub fn new(range: PhysRange) -> Self {
+        Self {
+            unused_start: range.start,
+            end: range.end,
+            stack: Vec::new(),
+        }
+    }
+    pub fn get_page(&mut self) -> Option<u64> {
+        self.stack.pop().or_else(|| {
+            if self.unused_start == self.end {
+                None
+            } else {
+                let next = self.unused_start;
+                self.unused_start += PAGE;
+                Some(next)
+            }
+        })
+    }
+
+    pub fn release_page(&mut self, page: u64) {
+        if self.unused_start - PAGE == page {
+            self.unused_start -= PAGE;
+        } else {
+            self.stack.push(page);
+        }
+    }
+}
+
+#[derive(Default)]
+struct Memory {
+    regions: Vec<Region>,
+}
+
+impl Memory {
+    pub fn push(&mut self, region: Region) {
+        self.regions.push(region);
+    }
+
+    pub fn get_page(&mut self) -> Option<u64> {
+        for region in &mut self.regions {
+            if let Some(page) = region.get_page() {
+                return Some(page);
+            }
+        }
+        None
+    }
 }
 
 impl PagerDataInner {
@@ -160,72 +231,21 @@ impl PagerDataInner {
         PagerDataInner {
             bitvec: BitVec::new(),
             per_obj: HashMap::with_capacity(0),
-            mem_range_start: 0,
+            memory: Memory::default(),
         }
-    }
-
-    /// Set the starting address of the memory range to be managed.
-    pub fn set_range_start(&mut self, start: u64) {
-        self.mem_range_start = start;
     }
 
     /// Get the next available page number and mark it as used.
     /// Returns the page number if available, or `None` if all pages are used.
-    fn get_next_available_page(&mut self) -> Option<usize> {
-        tracing::trace!("searching for next available page");
-        let next_page = self.bitvec.iter().position(|bit| !bit);
-
-        if let Some(page_number) = next_page {
-            self.bitvec.set(page_number, true);
-            tracing::trace!("next available page: {}", page_number);
-            Some(page_number)
-        } else {
-            tracing::debug!("no available pages left");
-            None
-        }
+    fn get_next_available_page(&mut self) -> Option<u64> {
+        self.memory.get_page()
     }
 
     /// Get a memory page for allocation.
     /// Triggers page replacement if all pages are used.
-    fn get_mem_page(&mut self) -> usize {
+    fn get_mem_page(&mut self) -> u64 {
         tracing::trace!("attempting to get memory page");
-        if self.bitvec.all() {
-            todo!()
-        }
         self.get_next_available_page().expect("no available pages")
-    }
-
-    /// Remove a page from the bit vector, freeing it for future use.
-    fn _remove_page(&mut self, page_number: usize) {
-        tracing::trace!("attempting to remove page {}", page_number);
-        if page_number < self.bitvec.len() {
-            self.bitvec.set(page_number, false);
-            tracing::trace!("page {} removed from bitvec", page_number);
-        } else {
-            tracing::warn!(
-                "page {} is out of bounds and cannot be removed",
-                page_number
-            );
-        }
-    }
-
-    /// Resize the bit vector to accommodate more pages or clear it.
-    fn resize_bitset(&mut self, new_size: usize) {
-        tracing::debug!("resizing bitvec to new size: {}", new_size);
-        if new_size == 0 {
-            tracing::trace!("clearing bitvec");
-            self.bitvec.clear();
-        } else {
-            self.bitvec.resize(new_size, false);
-        }
-        tracing::trace!("bitvec resized to: {}", new_size);
-    }
-
-    /// Check if all pages are currently in use.
-    pub fn _is_full(&self) -> bool {
-        let full = self.bitvec.all();
-        tracing::trace!("bitvec check full: {}", full);
-        full
     }
 
     pub fn get_per_object(&mut self, id: ObjID) -> &PerObject {
@@ -247,16 +267,9 @@ impl PagerData {
         }
     }
 
-    /// Resize the internal structures to accommodate the given number of pages.
-    pub fn resize(&self, pages: usize) {
-        tracing::debug!("resizing resources to support {} pages", pages);
-        let mut inner = self.inner.lock().unwrap();
-        inner.resize_bitset(pages);
-    }
-
     /// Initialize the starting memory range for the pager.
     pub fn init_range(&self, range: PhysRange) {
-        self.inner.lock().unwrap().set_range_start(range.start);
+        self.inner.lock().unwrap().memory.push(Region::new(range));
     }
 
     /// Allocate a memory page and associate it with an object and range.
@@ -291,7 +304,7 @@ impl PagerData {
         let phys_range = {
             let mut inner = self.inner.lock().unwrap();
             let page = inner.get_mem_page();
-            let phys_range = page_to_physrange(page, inner.mem_range_start);
+            let phys_range = PhysRange::new(page, page + PAGE);
             let po = inner.get_per_object_mut(id);
             po.track(obj_range, phys_range);
             phys_range

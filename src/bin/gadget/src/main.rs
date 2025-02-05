@@ -218,10 +218,13 @@ fn setup_http(namer: &mut NamingHandle) {
     tracing::info!("server ready");
     let mut reqs = server.incoming_requests();
     while let Some(mut request) = reqs.next() {
+        if let Some(ra) = request.remote_addr() {
+            tracing::info!("connection from: {}", ra);
+        }
         let mut buf = Vec::new();
-        request.as_reader().read_to_end(&mut buf).unwrap();
         let path = request.url().to_string();
         tracing::info!("serving {} {}", request.method(), path);
+        request.as_reader().read_to_end(&mut buf).unwrap();
         let _ = match request.method() {
             tiny_http::Method::Get => match namer.change_namespace(&path) {
                 Ok(_) => {
@@ -285,7 +288,9 @@ fn setup_http(namer: &mut NamingHandle) {
 
                 match file {
                     Ok(mut file) => {
+                        tracing::info!("writing...");
                         file.write(&buf).unwrap();
+                        tracing::info!("syncing...");
                         file.sync_all().unwrap();
                         request.respond(Response::empty(200))
                     }
@@ -294,26 +299,19 @@ fn setup_http(namer: &mut NamingHandle) {
                             .with_status_code(500),
                     ),
                 }
-            },
+            }
             tiny_http::Method::Delete => {
-                match namer.change_namespace(&path) {
-                    Ok(_) => {
-                        match std::fs::remove_file(&path) {
-                            Ok(()) => {request.respond(Response::empty(200))},
-                            Err(e) => {request.respond(
-                                Response::from_string(format!("error: {:?}", e)).with_status_code(500), // internal error
-                            )}
-                        }
-                    }
-                    Err(ErrorKind::NotFound) => {
-                        request.respond(
-                            Response::from_string(format!("file {} not found", path)).with_status_code(404), // not found
-                        )
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {
+                        namer.remove(&path, false).unwrap();
+                        pager::adv_lethe();
+                        request.respond(Response::empty(200))
                     }
                     Err(e) => {
                         request.respond(
-                            Response::from_string(format!("error: {:?}", e)).with_status_code(500), // internal error
-                        )
+                                    Response::from_string(format!("error: {:?}", e))
+                                        .with_status_code(500), // internal error
+                                )
                     }
                 }
             }
