@@ -4,9 +4,11 @@ use std::{
     net::Ipv4Addr,
 };
 
+use arrayvec::ArrayString;
+
 use embedded_io::ErrorType;
 use logboi::LogHandle;
-use naming::{static_naming_factory, StaticNamingAPI, StaticNamingHandle as NamingHandle};
+use naming::{static_naming_factory, StaticNamingAPI, StaticNamingHandle as NamingHandle, ErrorKind, Entry, EntryType};
 use pager::adv_lethe;
 use tiny_http::{Response, StatusCode};
 use tracing::Level;
@@ -235,14 +237,52 @@ fn setup_http(namer: &mut NamingHandle) {
         tracing::info!("path: {}", path);
         let _ = match request.method() {
             tiny_http::Method::Get => {
-                let file = OpenOptions::new().read(true).open(&path);
-                match file {
-                    Ok(file) => request.respond(Response::from_file(file)),
-                    Err(e) => request.respond(
-                        Response::from_string(format!("file {} not found", path))
+                match namer.change_namespace(&path) {
+                    Ok(_) => {
+                        let names = namer.enumerate_names().unwrap();
+                        let mut html = String::from("<!DOCTYPE html><html><head><title>Index</title></head><body><ul>");
+                        
+                        for entry in names {
+                            match entry.entry_type {
+                                EntryType::Object(_) => {
+                                    html.push_str(&format!(r#"<li><a href="{}/">{}/</a></li>"#, entry.name.as_str(), entry.name.as_str()));
+                                },
+                                EntryType::Namespace => {
+                                    html.push_str(&format!(r#"<li><a href="{}/">{}/</a></li>"#, entry.name.as_str(), entry.name.as_str()));
+                                },
+                                _ => {}
+                            }
+                        }
+
+                        html.push_str("</ul></body></html>");
+                        
+                        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html"[..]).unwrap();
+                        request.respond(Response::from_string(html).with_header(header))
+                    },
+                    Err(ErrorKind::NotNamespace) => {
+                        let file = OpenOptions::new().read(true).open(&path);
+                            match file {
+                                Ok(file) => request.respond(Response::from_file(file)),
+                                Err(e) => request.respond(
+                                    Response::from_string(format!("file {} not found", path))
+                                    .with_status_code(500),
+                                    ),
+                            }
+                    }
+                    Err(ErrorKind::NotFound) => {
+                        request.respond(
+                            Response::from_string(format!("file {} not found", path))
                             .with_status_code(404),
-                    ),
+                        )
+                    }
+                    Err(e) => {
+                        request.respond(
+                            Response::from_string(format!("error: {:?}", e))
+                            .with_status_code(500),
+                        )
+                    }
                 }
+
             }
             tiny_http::Method::Post => {
                 let mut file = OpenOptions::new()

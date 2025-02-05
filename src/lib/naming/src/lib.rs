@@ -2,7 +2,7 @@
 extern "C" {}
 
 use naming_core::{api::NamerAPI, handle::NamingHandle, Result};
-pub use naming_core::{dynamic::*, Entry, EntryType};
+pub use naming_core::{dynamic::*, Entry, EntryType, ErrorKind};
 use secgate::util::Descriptor;
 use twizzler_rt_abi::object::ObjID;
 
