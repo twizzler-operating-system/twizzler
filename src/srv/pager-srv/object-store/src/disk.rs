@@ -7,7 +7,6 @@ use std::{
 use async_executor::Executor;
 use async_io::block_on;
 use fatfs::{FileSystem, IoBase, Read, Seek, SeekFrom};
-use twizzler_abi::klog_println;
 
 use crate::{
     fs::{PAGE_SIZE, SECTOR_SIZE},

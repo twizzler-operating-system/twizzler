@@ -248,12 +248,7 @@ fn run_tests(test_list_name: &str, benches: bool) {
 }
 
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
-use naming_core::dynamic::dynamic_naming_factory;
 use tracing::{debug, info, warn};
-use twizzler::{
-    collections::vec::{VecObject, VecObjectAlloc},
-    object::{ObjectBuilder, RawObject},
-};
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},

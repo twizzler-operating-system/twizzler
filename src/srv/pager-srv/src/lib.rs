@@ -5,7 +5,6 @@ use std::sync::{Arc, OnceLock};
 
 use async_executor::Executor;
 use async_io::block_on;
-use secgate::secure_gate;
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
     object::{ObjectBuilder, RawObject},
@@ -263,6 +262,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
 
     return bootstrap_id.into();
 
+    /*
     object_store::create_object(17).unwrap();
 
     object_store::with_khf(|khf| {
@@ -297,6 +297,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     object_store::advance_epoch().unwrap();
     object_store::read_exact(17, &mut buf, 0).unwrap();
     println!("==> {}", String::from_utf8_lossy(&buf));
+    */
 }
 
 #[secgate::secure_gate]

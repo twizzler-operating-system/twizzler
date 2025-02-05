@@ -1854,6 +1854,7 @@ dependencies = [
 name = "gadget"
 version = "0.1.0"
 dependencies = [
+ "arrayvec",
  "embedded-io",
  "logboi",
  "monitor-api",
@@ -6498,6 +6499,7 @@ version = "0.1.0"
 dependencies = [
  "once_cell",
  "smoltcp",
+ "tracing",
  "twizzler-abi",
  "twizzler-driver",
  "virtio-drivers",

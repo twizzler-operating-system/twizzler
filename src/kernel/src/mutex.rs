@@ -13,6 +13,8 @@
 //! a thread that holds a mutex will run with the highest of the priorities of all threads sleeping
 //! on that mutex.
 
+// TODO: reenable priority donation, and make it cheaper.
+
 use core::{cell::UnsafeCell, sync::atomic::AtomicU64};
 
 use intrusive_collections::{intrusive_adapter, LinkedList};
@@ -94,15 +96,17 @@ impl<T> Mutex<T> {
                 logln!("mutex: {:?}: {}", core::panic::Location::caller(), i);
             }
             let guard = current_thread.as_ref().map(|ct| ct.enter_critical());
-            let reinsert = {
+            let _reinsert = {
                 let mut queue = self.queue.lock();
                 if !queue.owned {
                     queue.owned = true;
+                    /*
                     if let Some(ref thread) = current_thread {
                         if let Some(ref pri) = queue.pri {
-                            //thread.donate_priority(pri.clone());
+                            thread.donate_priority(pri.clone());
                         }
                     }
+                    */
 
                     queue.owner = current_thread.clone();
                     break;
@@ -120,14 +124,16 @@ impl<T> Mutex<T> {
                         thread.set_state(ExecutionState::Sleeping);
                         queue.queue.push_back(thread.clone());
                         reinsert = false;
-                        //queue.pri = queue.queue.iter().map(|t| t.effective_priority()).max();
+                        /*
+                        queue.pri = queue.queue.iter().map(|t| t.effective_priority()).max();
                         if let Some(ref owner) = queue.owner {
                             if let Some(ref pri) = queue.pri {
-                                //if pri > &owner.effective_priority() {
-                                //owner.donate_priority(pri.clone());
-                                //}
+                                if pri > &owner.effective_priority() {
+                                owner.donate_priority(pri.clone());
+                                }
                             }
                         }
+                        */
                     }
                 }
                 reinsert
@@ -137,10 +143,8 @@ impl<T> Mutex<T> {
             if let Some(guard) = guard {
                 finish_blocking(guard);
             }
-            //crate::interrupt::set(istate);
         }
 
-        //crate::interrupt::set(istate);
         LockGuard {
             lock: self,
             prev_donated_priority: None,
@@ -181,13 +185,15 @@ impl<T> core::ops::DerefMut for LockGuard<'_, T> {
 
 impl<T> Drop for LockGuard<'_, T> {
     fn drop(&mut self) {
+        /*
         if let Some(ref prev) = self.prev_donated_priority {
             if let Some(thread) = current_thread_ref() {
-                //thread.donate_priority(prev.clone());
+                thread.donate_priority(prev.clone());
             }
         } else if let Some(thread) = current_thread_ref() {
-            //thread.remove_donated_priority();
+            thread.remove_donated_priority();
         }
+        */
         self.lock.release();
     }
 }

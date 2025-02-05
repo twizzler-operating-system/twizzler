@@ -4,18 +4,14 @@ use std::{
     net::Ipv4Addr,
 };
 
-use arrayvec::ArrayString;
-
 use embedded_io::ErrorType;
-use logboi::LogHandle;
-use naming::{static_naming_factory, StaticNamingAPI, StaticNamingHandle as NamingHandle, ErrorKind, Entry, EntryType};
-use monitor_api::{CompartmentHandle, LibraryHandle};
+use monitor_api::CompartmentHandle;
+use naming::{static_naming_factory, EntryType, ErrorKind, StaticNamingHandle as NamingHandle};
 use pager::adv_lethe;
-use tiny_http::{Response, StatusCode};
+use tiny_http::Response;
 use tracing::Level;
-use twizzler_abi::{
-    object::ObjID,
-    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+use twizzler_abi::syscall::{
+    sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
 };
 
 struct TwzIo;
@@ -42,7 +38,7 @@ impl embedded_io::Write for TwzIo {
     }
 }
 
-fn lethe_cmd(args: &[&str], namer: &mut NamingHandle) {
+fn lethe_cmd(args: &[&str], _namer: &mut NamingHandle) {
     if args.len() <= 1 {
         println!("usage: lethe <cmd>");
         println!("possible cmds: adv");
@@ -143,7 +139,7 @@ fn read_file(args: &[&str], namer: &mut NamingHandle) {
         println!("usage: read <filename>");
     }
     let filename = args[1];
-    let Ok(id) = namer.get(filename) else {
+    let Ok(_id) = namer.get(filename) else {
         tracing::warn!("name {} not found", filename);
         return;
     };
@@ -165,13 +161,12 @@ fn write_file(args: &[&str], namer: &mut NamingHandle) {
         println!("usage: write <filename>");
     }
     let filename = args[1];
-    let Ok(id) = namer.get(filename) else {
+    let Ok(_id) = namer.get(filename) else {
         tracing::warn!("name {} not found", filename);
         return;
     };
 
     let data = format!("hello gadget from file {}", filename);
-    let idname = id.to_string();
     let mut file = OpenOptions::new().write(true).open(filename).unwrap();
     tracing::warn!("for now, we just write test data: `{}'", data);
     file.write(data.as_bytes()).unwrap();
@@ -240,60 +235,63 @@ fn setup_http(namer: &mut NamingHandle) {
     while let Some(mut request) = reqs.next() {
         tracing::info!("request: {:?}", request);
         let mut buf = Vec::new();
-        request.as_reader().read_to_end(&mut buf);
+        request.as_reader().read_to_end(&mut buf).unwrap();
         let path = request.url().to_string();
         tracing::info!("path: {}", path);
         let _ = match request.method() {
-            tiny_http::Method::Get => {
-                match namer.change_namespace(&path) {
-                    Ok(_) => {
-                        let names = namer.enumerate_names().unwrap();
-                        let mut html = String::from("<!DOCTYPE html><html><head><title>Index</title></head><body><ul>");
-                        
-                        for entry in names {
-                            match entry.entry_type {
-                                EntryType::Object(_) => {
-                                    html.push_str(&format!(r#"<li><a href="{}/">{}/</a></li>"#, entry.name.as_str(), entry.name.as_str()));
-                                },
-                                EntryType::Namespace => {
-                                    html.push_str(&format!(r#"<li><a href="{}/">{}/</a></li>"#, entry.name.as_str(), entry.name.as_str()));
-                                },
-                                _ => {}
-                            }
-                        }
+            tiny_http::Method::Get => match namer.change_namespace(&path) {
+                Ok(_) => {
+                    let names = namer.enumerate_names().unwrap();
+                    let mut html = String::from(
+                        "<!DOCTYPE html><html><head><title>Index</title></head><body><ul>",
+                    );
 
-                        html.push_str("</ul></body></html>");
-                        
-                        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html"[..]).unwrap();
-                        request.respond(Response::from_string(html).with_header(header))
-                    },
-                    Err(ErrorKind::NotNamespace) => {
-                        let file = OpenOptions::new().read(true).open(&path);
-                            match file {
-                                Ok(file) => request.respond(Response::from_file(file)),
-                                Err(e) => request.respond(
-                                    Response::from_string(format!("file {} not found", path))
-                                    .with_status_code(500),
-                                    ),
+                    for entry in names {
+                        match entry.entry_type {
+                            EntryType::Object(_) => {
+                                html.push_str(&format!(
+                                    r#"<li><a href="{}/">{}/</a></li>"#,
+                                    entry.name.as_str(),
+                                    entry.name.as_str()
+                                ));
                             }
+                            EntryType::Namespace => {
+                                html.push_str(&format!(
+                                    r#"<li><a href="{}/">{}/</a></li>"#,
+                                    entry.name.as_str(),
+                                    entry.name.as_str()
+                                ));
+                            }
+                            _ => {}
+                        }
                     }
-                    Err(ErrorKind::NotFound) => {
-                        request.respond(
-                            Response::from_string(format!("file {} not found", path))
-                            .with_status_code(404),
-                        )
-                    }
-                    Err(e) => {
-                        request.respond(
-                            Response::from_string(format!("error: {:?}", e))
-                            .with_status_code(500),
-                        )
+
+                    html.push_str("</ul></body></html>");
+
+                    let header =
+                        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html"[..])
+                            .unwrap();
+                    request.respond(Response::from_string(html).with_header(header))
+                }
+                Err(ErrorKind::NotNamespace) => {
+                    let file = OpenOptions::new().read(true).open(&path);
+                    match file {
+                        Ok(file) => request.respond(Response::from_file(file)),
+                        Err(e) => request.respond(
+                            Response::from_string(format!("file {} not found: {}", path, e))
+                                .with_status_code(500),
+                        ),
                     }
                 }
-
-            }
+                Err(ErrorKind::NotFound) => request.respond(
+                    Response::from_string(format!("file {} not found", path)).with_status_code(404),
+                ),
+                Err(e) => request.respond(
+                    Response::from_string(format!("error: {:?}", e)).with_status_code(500),
+                ),
+            },
             tiny_http::Method::Post => {
-                let mut file = OpenOptions::new()
+                let file = OpenOptions::new()
                     .read(true)
                     .write(true)
                     .create(true)
@@ -302,12 +300,12 @@ fn setup_http(namer: &mut NamingHandle) {
 
                 match file {
                     Ok(mut file) => {
-                        file.write(&buf);
-                        file.sync_all();
+                        file.write(&buf).unwrap();
+                        file.sync_all().unwrap();
                         request.respond(Response::empty(200))
                     }
                     Err(e) => request.respond(
-                        Response::from_string(format!("file {} could not be created", path))
+                        Response::from_string(format!("file {} could not be created: {}", path, e))
                             .with_status_code(500),
                     ),
                 }
@@ -329,8 +327,14 @@ fn main() {
     tracing_log::LogTracer::init().unwrap();
 
     let mut namer = static_naming_factory().unwrap();
-    let mut logger = LogHandle::new().unwrap();
-    logger.log(b"Hello Logger!\n");
+    //let mut logger = LogHandle::new().unwrap();
+    //logger.log(b"Hello Logger!\n");
+
+    std::thread::spawn(|| {
+        let mut namer = static_naming_factory().unwrap();
+        setup_http(&mut namer);
+    });
+
     //tracing::info!("testing namer: {:?}", namer.get("initrd/gadget"));
     let mut io = TwzIo;
     let mut buffer = [0; 1024];
@@ -339,7 +343,6 @@ fn main() {
         .unwrap();
     loop {
         let line = editor.readline("gadget> ", &mut io).unwrap();
-        println!("got: {}", line);
         let split = line.split_whitespace().collect::<Vec<_>>();
         if split.len() == 0 {
             continue;
@@ -369,10 +372,9 @@ fn main() {
             "lethe" => {
                 lethe_cmd(&split, &mut namer);
             }
-            "http" => {
-                setup_http(&mut namer);
-            }
-
+            //"http" => {
+            //    setup_http(&mut namer);
+            //}
             _ => {
                 println!("unknown command {}", split[0]);
             }

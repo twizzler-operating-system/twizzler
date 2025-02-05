@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use smoltcp::iface::SocketHandle;
 use twizzler_abi::{
-    device::{bus::pcie::PcieDeviceInfo, DeviceInterruptFlags, InterruptVector},
+    device::{bus::pcie::PcieDeviceInfo, DeviceInterruptFlags},
     syscall::{sys_thread_sync, ThreadSync},
 };
-use twizzler_driver::{bus::pcie::PcieCapability, device::Device, DeviceController};
+use twizzler_driver::{bus::pcie::PcieCapability, device::Device};
 use virtio_drivers::{
     transport::{pci::VirtioPciError, DeviceStatus, DeviceType, Transport},
     Error,
@@ -48,7 +48,7 @@ fn get_device() -> Device {
                     && info.get_data().progif == 0
                     && info.get_data().vendor_id == 0x1AF4
                 {
-                    println!("Found VirtIO networking device!");
+                    tracing::debug!("Found VirtIO networking device!");
 
                     return child;
                 }
@@ -71,7 +71,7 @@ impl TwizzlerTransport {
 
         let info = unsafe { device.get_info::<PcieDeviceInfo>(0).unwrap() };
         if info.get_data().vendor_id != 0x1AF4 {
-            println!("Vendor ID: {}", info.get_data().vendor_id);
+            tracing::trace!("Vendor ID: {}", info.get_data().vendor_id);
             return Err(VirtioPciError::InvalidVendorId(info.get_data().vendor_id));
         }
 
@@ -94,7 +94,7 @@ impl TwizzlerTransport {
             let virtio_cfg = virtio_cfg_ref.as_mut_ptr();
             match map_field!(virtio_cfg.cfg_type).read() {
                 VirtioCfgType::CommonCfg if common_cfg.is_none() => {
-                    println!(
+                    tracing::trace!(
                         "Common CFG found! Bar: {:?}, Offset: {:?}, Length: {:?}",
                         map_field!(virtio_cfg.bar).read(),
                         map_field!(virtio_cfg.offset).read(),
@@ -111,7 +111,7 @@ impl TwizzlerTransport {
                         unsafe { mm.get_mmio_offset_mut::<VirtioPciNotifyCap>(off) };
                     let notify_cap = notify_ref.as_mut_ptr();
                     notify_offset_multiplier = map_field!(notify_cap.notify_off_multiplier).read();
-                    println!("Notify CFG found! Bar: {:?}, Offset: {:?}, Length: {:?}, Offset multiplier: {:?}", map_field!(virtio_cfg.bar).read(), map_field!(virtio_cfg.offset).read(), map_field!(virtio_cfg.length).read(), notify_offset_multiplier);
+                    tracing::trace!("Notify CFG found! Bar: {:?}, Offset: {:?}, Length: {:?}, Offset multiplier: {:?}", map_field!(virtio_cfg.bar).read(), map_field!(virtio_cfg.offset).read(), map_field!(virtio_cfg.length).read(), notify_offset_multiplier);
                     notify_region = Some(CfgLocation {
                         bar: map_field!(virtio_cfg.bar).read() as usize,
                         offset: map_field!(virtio_cfg.offset).read() as usize,
@@ -120,7 +120,7 @@ impl TwizzlerTransport {
                 }
 
                 VirtioCfgType::IsrCfg if isr_status.is_none() => {
-                    println!(
+                    tracing::trace!(
                         "ISR CFG found! Bar: {:?}, Offset: {:?}, Length: {:?}",
                         map_field!(virtio_cfg.bar).read(),
                         map_field!(virtio_cfg.offset).read(),
@@ -134,7 +134,7 @@ impl TwizzlerTransport {
                 }
 
                 VirtioCfgType::DeviceCfg if config_space.is_none() => {
-                    println!(
+                    tracing::trace!(
                         "Device CFG found! Bar: {:?}, Offset: {:?}, Length: {:?}",
                         map_field!(virtio_cfg.bar).read(),
                         map_field!(virtio_cfg.offset).read(),
@@ -162,26 +162,21 @@ impl TwizzlerTransport {
         let notify_region = notify_region.ok_or(VirtioPciError::MissingNotifyConfig)?;
         let isr_status = isr_status.ok_or(VirtioPciError::MissingIsrConfig)?;
 
-        let thread = std::thread::spawn(move || loop {
-            if int_device.repr().check_for_interrupt(0).is_some() {
-                //println!("virtio int: ready");
-                notifier.send(None);
+        let _thread = std::thread::spawn(move || loop {
+            for _ in 0..10 {
+                for _ in 0..100 {
+                    if int_device.repr().check_for_interrupt(0).is_some() {
+                        let _ = notifier.send(None);
+                    }
+                    core::hint::spin_loop();
+                }
+                twizzler_abi::syscall::sys_thread_yield();
             }
 
-            /*
-            let bar = int_device.find_mmio_bar(isr_status.bar).unwrap();
-            let mut reference =
-                unsafe { bar.get_mmio_offset_mut::<VirtioIsrStatus>(isr_status.offset) };
-            let ptr = reference.as_mut_ptr();
-
-            let status = ptr.read();
-            if status & 0x3 != 0 {
-
+            if int_device.repr().check_for_interrupt(0).is_none() {
+                let int_sleep = int_device.repr().setup_interrupt_sleep(0);
+                let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(int_sleep)], None);
             }
-            */
-
-            let int_sleep = int_device.repr().setup_interrupt_sleep(0);
-            let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(int_sleep)], None);
         });
 
         Ok(Self {
