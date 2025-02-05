@@ -10,7 +10,7 @@ use std::{
 };
 
 use smoltcp::{
-    iface::{Config, Interface, SocketSet},
+    iface::{Config, Interface, SocketHandle, SocketSet},
     phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
     socket::tcp,
     time::Instant,
@@ -119,7 +119,9 @@ impl<T: Transport> TxToken for VirtioTxToken<T> {
 // Gets the Virtio Net struct which implements the device used for smoltcp. Use this to create a
 // smoltcp interface to send and receive packets. NOTE: Only the first device used will work
 // properly
-pub fn get_device(notifier: std::sync::mpsc::Sender<()>) -> DeviceWrapper<TwizzlerTransport> {
+pub fn get_device(
+    notifier: std::sync::mpsc::Sender<Option<(SocketHandle, u16)>>,
+) -> DeviceWrapper<TwizzlerTransport> {
     let net = VirtIONet::<TestHal, TwizzlerTransport, NET_QUEUE_SIZE>::new(
         TwizzlerTransport::new(notifier).unwrap(),
         NET_BUFFER_LEN,

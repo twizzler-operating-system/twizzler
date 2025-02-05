@@ -9,6 +9,7 @@ use arrayvec::ArrayString;
 use embedded_io::ErrorType;
 use logboi::LogHandle;
 use naming::{static_naming_factory, StaticNamingAPI, StaticNamingHandle as NamingHandle, ErrorKind, Entry, EntryType};
+use monitor_api::{CompartmentHandle, LibraryHandle};
 use pager::adv_lethe;
 use tiny_http::{Response, StatusCode};
 use tracing::Level;
@@ -68,20 +69,27 @@ fn show(args: &[&str], namer: &mut NamingHandle) {
             pager::show_lethe();
         }
         "c" | "comp" | "compartments" => {
-            let curr = monitor_api::CompartmentHandle::current();
-            let info = curr.info();
-            println!("current compartment: {:?}", info);
-            println!("dependencies:");
-            for comp in curr.deps() {
-                let info = comp.info();
-                println!(" -- {:?}", info);
+            fn print_compartment(ch: CompartmentHandle) {
+                let info = ch.info();
+                println!(" -- {} (state: {:?})", info.name, info.flags);
+                for lib in ch.libs() {
+                    let libinfo = lib.info();
+                    println!("     -- {:30} {}", libinfo.name, libinfo.objid,)
+                }
             }
+
+            let gadget = monitor_api::CompartmentHandle::lookup("gadget").unwrap();
+            let init = monitor_api::CompartmentHandle::lookup("init").unwrap();
+            let monitor = monitor_api::CompartmentHandle::lookup("monitor").unwrap();
             let namer = monitor_api::CompartmentHandle::lookup("naming").unwrap();
-            println!(" -- {:?}", namer.info());
             let logger = monitor_api::CompartmentHandle::lookup("logboi").unwrap();
-            println!(" -- {:?}", logger.info());
             let pager = monitor_api::CompartmentHandle::lookup("pager-srv").unwrap();
-            println!(" -- {:?}", pager.info());
+            print_compartment(monitor);
+            print_compartment(init);
+            print_compartment(gadget);
+            print_compartment(namer);
+            print_compartment(logger);
+            print_compartment(pager);
         }
         "f" | "fi" | "files" => {
             let names = namer.enumerate_names().unwrap();

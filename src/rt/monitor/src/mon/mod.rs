@@ -6,7 +6,9 @@ use compartment::{
 };
 use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
-use monitor_api::{RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo, MONITOR_INSTANCE_ID};
+use monitor_api::{
+    CompartmentFlags, RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo, MONITOR_INSTANCE_ID,
+};
 use secgate::util::HandleMgr;
 use thread::DEFAULT_STACK_SIZE;
 use twizzler_abi::{syscall::sys_thread_exit, upcall::UpcallFrame};
@@ -112,7 +114,7 @@ impl Monitor {
             MONITOR_COMPARTMENT_ID,
             vec![],
             CompConfigObject::new(cc_handle, monitor_scc),
-            0,
+            (CompartmentFlags::READY | CompartmentFlags::STARTED).bits(),
             StackObject::new(stack_handle, DEFAULT_STACK_SIZE).unwrap(),
             0, /* doesn't matter -- we won't be starting a main thread for this compartment in
                 * the normal way */
