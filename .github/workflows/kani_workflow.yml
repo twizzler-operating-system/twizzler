@@ -26,7 +26,7 @@ jobs:
       - name: Install latest nightly
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: 1.81.0
+          toolchain: 1.82.0
           override: true
       - name: Bootstrap Toolchain
         run: cargo bootstrap
