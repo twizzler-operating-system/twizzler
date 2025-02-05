@@ -1,5 +1,6 @@
+use p256::ecdsa::SigningKey;
+
 use crate::{CapError, SigningScheme};
-use p256::{ecdsa::SigningKey, elliptic_curve::bigint::Random, SecretKey};
 
 #[derive(Clone, Copy)]
 // making our own struct for verifying key since we need to be able to support keys with different

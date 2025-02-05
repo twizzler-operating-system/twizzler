@@ -1,5 +1,5 @@
 use map::SecCtxMap;
-use twizzler::object::{Object, RawObject};
+use twizzler::object::Object;
 
 pub mod map;
 

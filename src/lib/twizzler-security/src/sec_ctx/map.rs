@@ -1,5 +1,5 @@
 use twizzler::object::{Object, RawObject};
-use twizzler_abi::{object::ObjID, upcall::ObjectMemoryFaultInfo};
+use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::object::MapFlags;
 
 const MAX_SEC_CTX_MAP_LEN: u8 = 100;
@@ -26,7 +26,6 @@ pub enum CtxMapItemType {
 
 impl SecCtxMap {
     pub fn new(sec_ctx_id: ObjID) -> Self {
-        // todo!()
         let obj = Object::<SecCtxMap>::map(sec_ctx_id, MapFlags::READ).unwrap();
         let ptr = obj.base_ptr::<SecCtxMap>();
         unsafe {
