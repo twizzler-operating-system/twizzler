@@ -311,6 +311,27 @@ fn setup_http(namer: &mut NamingHandle) {
                 }
             },
             tiny_http::Method::Delete => {
+                match namer.change_namespace(&path) {
+                    Ok(_) => {
+                        match std::fs::remove_file(&path) {
+                            Ok(()) => {request.respond(Response::empty(200))},
+                            Err(e) => {request.respond(
+                                Response::from_string(format!("error: {:?}", e)).with_status_code(500), // internal error
+                            )}
+                        }
+                    }
+                    Err(ErrorKind::NotFound) => {
+                        request.respond(
+                            Response::from_string(format!("file {} not found", path)).with_status_code(404), // not found
+                        )
+                    }
+                    Err(e) => {
+                        request.respond(
+                            Response::from_string(format!("error: {:?}", e)).with_status_code(500), // internal error
+                        )
+                    }
+                }
+                /*
                 let result = std::fs::remove_file(&path);
                 match result {
                     Ok(()) => request.respond(Response::empty(200)), // successful delete
@@ -326,6 +347,7 @@ fn setup_http(namer: &mut NamingHandle) {
                         }
                     }
                 }
+                */
             }
             _ => request.respond(Response::empty(400)),
         }
