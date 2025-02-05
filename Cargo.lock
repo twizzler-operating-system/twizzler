@@ -6225,6 +6225,7 @@ dependencies = [
  "bitflags 2.8.0",
  "lazy_static",
  "twizzler-abi",
+ "twizzler-minruntime",
  "twizzler-rt-abi",
 ]
 

@@ -11,3 +11,5 @@ twizzler-abi = { path = "../twizzler-abi" }
 bitflags = "2.4.1"
 lazy_static = "1.4.0"
 twizzler-rt-abi = "0.99"
+twizzler-minruntime = {path = "../../rt/minimal"} # TODO: Implement Kani dependecy feature 
+

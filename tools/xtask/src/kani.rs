@@ -22,11 +22,11 @@ fn packages_with_harnesses() -> Vec<String> {
     packages.extend_from_slice(
         &[
             // "twizzler-kernel", TODO: Current syntax erros, toolchain mismap?
-            //"twizzler-abi",
+            "twizzler-abi",
+            //"twizzler-object",
             //"twizzler-queue-raw",
 //            "naming-test",
 //            "nvme"
-            "twizzler-kernel"
         ]
         .map(String::from)
         .to_vec(),
@@ -284,9 +284,4 @@ pub(crate) fn launch_kani_pipelined(cli: KaniOptions) -> anyhow::Result<()>{
     }
 
     Ok(())
-
-<<<<<<< HEAD
 }
-=======
-}
->>>>>>> 3b6f468d31027c369266c1dfe9a00111eb00ada7

@@ -121,4 +121,26 @@ mod syscall_test {
         assert_eq!(back, Ok(original));
     }
 
+    #[kani::proof]
+    fn test_handle_flip_flop_reverse() {
+        let original: u64 = kani::any();
+        let back: Result<HandleType, _> = HandleType::try_from(original);
+        let res = match back {
+            Ok(back) => {back as u64},
+            Err(_) => {0},
+        };
+
+        assert_eq!(original, res);
+    }
+
+    #[kani::proof]
+    fn round_trip_unknown_values() {
+        let val: u64 = kani::any();
+        kani::assume(val > 4); // out of known range
+        let from_val = NewHandleError::from_primitive(val);
+        assert_eq!(from_val, NewHandleError::Unknown);
+    }
+
+
+
 }

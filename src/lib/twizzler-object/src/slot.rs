@@ -8,11 +8,10 @@ use twizzler_abi::object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::object::{MapError, MapFlags, ObjectHandle};
 
 use crate::{meta::FotEntry, ObjectInitError};
-
-/// A slot for an object in active memory. All unique combinations of an object ID and Protections
-/// are given a slot. The exact slot locations may be reused. Typically, slots are reference
+/// A slot for an object in active memory. All unique combinations of an object ID and Protections are given a slot. The exact slot locations may be reused. Typically, slots are reference
 /// counted, and when dropped, release the slot for reuse. The object may or may not be unmapped
 /// immediately following the slot's drop.
+#[derive(Clone)]
 pub struct Slot {
     id: ObjID,
     prot: Protections,
@@ -157,4 +156,57 @@ pub fn get(id: ObjID, prot: Protections) -> Result<Arc<Slot>, ObjectInitError> {
     let w = Arc::downgrade(&slot);
     slots.insert((id, prot), w);
     Ok(slot)
+}
+
+
+#[cfg(kani)]
+mod kani_slot {
+    use super::*;
+    use twizzler_minruntime;
+    use twizzler_abi::syscall::{
+        self, sys_object_create, BackingType, CreateTieSpec, LifetimeType, ObjectCreate, ObjectCreateFlags, Syscall,
+    };
+
+    fn raw_syscall_kani_stub(call: Syscall, args: &[u64]) -> (u64, u64) {
+
+        // if core::intrinsics::unlikely(args.len() > 6) {
+        //     twizzler_abi::print_err("too many arguments to raw_syscall");
+        //     // crate::internal_abort();
+        // }
+        let a0 = *args.first().unwrap_or(&0u64);
+        let a1 = *args.get(1).unwrap_or(&0u64);
+        let mut a2 = *args.get(2).unwrap_or(&0u64);
+        let a3 = *args.get(3).unwrap_or(&0u64);
+        let a4 = *args.get(4).unwrap_or(&0u64);
+        let a5 = *args.get(5).unwrap_or(&0u64);
+
+        let mut num = call.num();
+        //TODO: Skip actual inline assembly invcation and register inputs
+        //TODO: Improve actual logic here
+
+        (num,a2)
+    }
+ 
+    #[kani::proof]
+    #[kani::stub(twizzler_abi::arch::syscall::raw_syscall,raw_syscall_kani_stub)]
+    #[kani::stub(twizzler_rt_abi::bindings::twz_rt_map_object, twizzler_minruntime::runtime::syms::twz_rt_map_object)]
+    fn create_slot() {
+        let id: u128 = kani::any();
+        let obj = ObjID::new(id);
+        let slot = Slot::new(obj, Protections::READ | Protections::WRITE | Protections::EXEC);
+        
+        let base = slot.clone().expect("").vaddr_base();
+        let null = slot.clone().expect("").vaddr_null();
+        let meta = slot.clone().expect("").vaddr_meta();
+
+        assert!(base > null);
+        assert!(base < meta);
+        assert!(null < meta);
+
+        let off = kani::any();
+        let b = slot.clone().expect("").raw_lea_mut::<u64>(off);
+        b.wrapping_add(4);
+        let v = slot.clone().expect("").raw_lea::<u64>(off);
+        assert_eq!(v, b);
+    }
 }
