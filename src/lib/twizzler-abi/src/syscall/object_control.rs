@@ -77,7 +77,6 @@ impl TryFrom<(u64, u64)> for ObjectControlCmd {
 /// Perform a kernel operation on this object.
 pub fn sys_object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> Result<(), ObjectControlError> {
     let [hi, lo] = id.parts();
-    let c = cmd.clone();
     let (cmd, opts) = cmd.into();
     let args = [hi, lo, cmd, opts];
     let (code, val) = unsafe { raw_syscall(Syscall::ObjectCtrl, &args) };

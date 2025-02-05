@@ -208,6 +208,7 @@ impl ReferenceRuntime {
 
         let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
+            drop(binding);
             let len = twizzler_abi::syscall::sys_kernel_console_read(
                 buf,
                 twizzler_abi::syscall::KernelConsoleReadFlags::empty(),
@@ -422,6 +423,7 @@ impl ReferenceRuntime {
 
         let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
+            drop(binding);
             twizzler_abi::syscall::sys_kernel_console_write(
                 buf,
                 twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),

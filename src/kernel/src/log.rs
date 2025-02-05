@@ -7,7 +7,7 @@ use twizzler_abi::syscall::{
     KernelConsoleReadBufferError, KernelConsoleReadError, KernelConsoleReadFlags,
 };
 
-use crate::{interrupt, spinlock::Spinlock};
+use crate::{condvar::CondVar, interrupt, spinlock::Spinlock};
 
 const KEC_BUFFER_LEN: usize = 4096;
 const MAX_SINGLE_WRITE: usize = KEC_BUFFER_LEN / 2;
@@ -37,7 +37,8 @@ impl KernelConsoleReadBuffer {
             pos: 0,
         }
     }
-    pub fn push_input_byte(&mut self, byte: u8) {
+
+    fn push_input_byte(&mut self, byte: u8) {
         if self.pos == INPUT_BUFFER_SIZE {
             return;
         }
@@ -61,6 +62,7 @@ pub struct KernelConsole<T: KernelConsoleHardware, Level: MessageLevel> {
     hardware: T,
     lock: Spinlock<()>,
     read_lock: Spinlock<KernelConsoleReadBuffer>,
+    read_cv: CondVar,
     _pd: core::marker::PhantomData<Level>,
 }
 unsafe impl<T: KernelConsoleHardware, Level: MessageLevel> Sync for KernelConsole<T, Level> {}
@@ -236,30 +238,6 @@ impl KernelConsoleInner {
     }
 }
 
-/*
-impl<T: KernelConsoleHardware> KernelConsole<T, EmergencyMessage> {
-    pub fn write(
-        &self,
-        data: &[u8],
-        flags: KernelConsoleWriteFlags,
-    ) -> Result<(), ConsoleWriteError> {
-        self.hardware.write(data, flags);
-        self.inner.write_buffer(data, flags)
-    }
-}
-
-impl<T: KernelConsoleHardware> KernelConsole<T, NormalMessage> {
-    pub fn write(
-        &self,
-        data: &[u8],
-        flags: KernelConsoleWriteFlags,
-    ) -> Result<(), ConsoleWriteError> {
-        self.hardware.write(data, flags);
-        self.inner.write_buffer(data, flags)
-    }
-}
-*/
-
 impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
     fn read_buffer_bytes(&self, _slice: &mut [u8]) -> Result<usize, KernelConsoleReadBufferError> {
         todo!()
@@ -276,18 +254,21 @@ impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
                 break;
             }
             let b = &mut slice[i];
-            let read = self.read_lock.lock().read_byte();
-            if let Some(x) = read {
-                *b = match x {
-                    4 => return Ok(i),
-                    _ => x,
-                };
-                i += 1;
-            } else if flags.contains(KernelConsoleReadFlags::NONBLOCKING) || i > 0 {
-                return Ok(i);
-            } else {
-                // TODO: sleep
-                crate::sched::schedule(true);
+            let mut reader = self.read_lock.lock();
+            match reader.read_byte() {
+                Some(x) => {
+                    *b = match x {
+                        4 => return Ok(i),
+                        _ => x,
+                    };
+                    i += 1;
+                }
+                None => {
+                    if flags.contains(KernelConsoleReadFlags::NONBLOCKING) || i > 0 {
+                        return Ok(i);
+                    }
+                    self.read_cv.wait(reader);
+                }
             }
         }
         Ok(slice.len())
@@ -319,12 +300,7 @@ pub fn push_input_byte(byte: u8) {
         x => x,
     };
     NORMAL_CONSOLE.read_lock.lock().push_input_byte(byte);
-    /*
-    if byte == 8 {
-        let _ = write_bytes(&[8, b' '], KernelConsoleWriteFlags::DISCARD_ON_FULL);
-    }
-    let _ = write_bytes(&[byte], KernelConsoleWriteFlags::DISCARD_ON_FULL);
-    */
+    NORMAL_CONSOLE.read_cv.signal();
 }
 
 static EMERGENCY_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, EmergencyMessage> =
@@ -334,6 +310,7 @@ static EMERGENCY_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, 
         _pd: core::marker::PhantomData,
         lock: Spinlock::new(()),
         read_lock: Spinlock::new(KernelConsoleReadBuffer::new()),
+        read_cv: CondVar::new(),
     };
 
 static NORMAL_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, NormalMessage> =
@@ -343,6 +320,7 @@ static NORMAL_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, Nor
         _pd: core::marker::PhantomData,
         lock: Spinlock::new(()),
         read_lock: Spinlock::new(KernelConsoleReadBuffer::new()),
+        read_cv: CondVar::new(),
     };
 
 #[doc(hidden)]
