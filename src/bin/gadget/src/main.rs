@@ -2,6 +2,7 @@ use std::{
     fs::OpenOptions,
     io::{Read, Write},
     net::Ipv4Addr,
+    time::Duration,
 };
 
 use embedded_io::ErrorType;
@@ -90,7 +91,9 @@ fn show(args: &[&str], namer: &mut NamingHandle) {
         "f" | "fi" | "files" => {
             let names = namer.enumerate_names().unwrap();
             for name in names {
-                println!("{:<20} :: {:?}", name.name, name.entry_type);
+                if let EntryType::Object(id) = name.entry_type {
+                    println!("{:<20} :: {:x}", name.name, id);
+                }
             }
         }
         _ => {
@@ -185,24 +188,10 @@ fn new_file(args: &[&str], namer: &mut NamingHandle) {
         tracing::warn!("name {} already exists", filename);
         return;
     };
-    /*
-    let file_id = sys_object_create(
-        ObjectCreate::new(
-            BackingType::Normal,
-            LifetimeType::Persistent,
-            None,
-            ObjectCreateFlags::empty(),
-        ),
-        &[],
-        &[],
-    )
-    .unwrap();
-    tracing::debug!("created new file object {}", file_id);
-    namer.put(filename, file_id.raw());
-    */
 
+    tracing::info!("creating new file: {}", filename);
     let _f = std::fs::File::create(filename).unwrap();
-    tracing::debug!("created new file object {:x}", namer.get(filename).unwrap());
+    tracing::info!("created new file object {:x}", namer.get(filename).unwrap());
 }
 
 fn del_file(args: &[&str], namer: &mut NamingHandle) {
@@ -210,19 +199,16 @@ fn del_file(args: &[&str], namer: &mut NamingHandle) {
         println!("usage: write <filename>");
     }
     let filename = args[1];
-    let Ok(_) = namer.get(filename) else {
+    let Ok(id) = namer.get(filename) else {
         tracing::warn!("name {} not found", filename);
         return;
     };
-    tracing::info!("deleting file...");
-    let res = std::fs::remove_file(&filename);
-    tracing::info!("got: {:?}", res);
-    if res.is_err() {
-        return;
-    }
-    tracing::info!("removing name...");
+    tracing::info!("deleting file {}, objid: {}", filename, id);
+    std::fs::remove_file(&filename).unwrap();
+    //tracing::info!("removing name...");
     namer.remove(filename, false).unwrap();
-    tracing::info!("epoch...");
+    tracing::info!("This now requires we issue a lethe epoch, since keys have changed.");
+    tracing::info!("Epoch...");
     adv_lethe();
 }
 
@@ -231,13 +217,11 @@ fn setup_http(namer: &mut NamingHandle) {
     let server = tiny_http::Server::http((Ipv4Addr::new(127, 0, 0, 1), 5555)).unwrap();
     tracing::info!("server ready");
     let mut reqs = server.incoming_requests();
-    tracing::info!("waiting for requests");
     while let Some(mut request) = reqs.next() {
-        tracing::info!("request: {:?}", request);
         let mut buf = Vec::new();
         request.as_reader().read_to_end(&mut buf).unwrap();
         let path = request.url().to_string();
-        tracing::info!("path: {}", path);
+        tracing::info!("serving {} {}", request.method(), path);
         let _ = match request.method() {
             tiny_http::Method::Get => match namer.change_namespace(&path) {
                 Ok(_) => {
@@ -297,6 +281,7 @@ fn setup_http(namer: &mut NamingHandle) {
                     .create(true)
                     .truncate(true)
                     .open(&path);
+                tracing::info!("created new file object {:x}", namer.get(&path).unwrap());
 
                 match file {
                     Ok(mut file) => {
@@ -316,10 +301,18 @@ fn setup_http(namer: &mut NamingHandle) {
     }
 }
 
+fn banner() -> &'static str {
+    r"
+ ___  _ _ _  _  __  ___  ___  __
+|_ _|| | | || |/ _||_ _|| __||  \
+ | | | V V || |\_ \ | | | _| | o )
+ |_|  \_n_/ |_||__/ |_| |___||__/"
+}
+
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(Level::DEBUG)
+            .with_max_level(Level::INFO)
             .without_time()
             .finish(),
     )
@@ -336,6 +329,11 @@ fn main() {
     });
 
     //tracing::info!("testing namer: {:?}", namer.get("initrd/gadget"));
+
+    std::thread::sleep(Duration::from_millis(500));
+    println!("{}", banner());
+    println!("       TWISTED GADGET DEMO");
+
     let mut io = TwzIo;
     let mut buffer = [0; 1024];
     let mut editor = noline::builder::EditorBuilder::from_slice(&mut buffer)
