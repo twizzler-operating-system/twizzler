@@ -166,6 +166,7 @@ impl TwizzlerTransport {
             for _ in 0..10 {
                 for _ in 0..100 {
                     if int_device.repr().check_for_interrupt(0).is_some() {
+                        //tracing::info!("virtio int");
                         let _ = notifier.send(None);
                     }
                     core::hint::spin_loop();
@@ -175,6 +176,7 @@ impl TwizzlerTransport {
 
             if int_device.repr().check_for_interrupt(0).is_none() {
                 let int_sleep = int_device.repr().setup_interrupt_sleep(0);
+                //tracing::info!("virtio int: sleep");
                 let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(int_sleep)], None);
             }
         });
