@@ -311,14 +311,9 @@ fn setup_http(namer: &mut NamingHandle) {
                 }
             },
             tiny_http::Method::Delete => {
-                match namer.change_namespace(&path) {
+                match namer.remove(&path, false) {
                     Ok(_) => {
-                        match std::fs::remove_file(&path) {
-                            Ok(()) => {request.respond(Response::empty(200))},
-                            Err(e) => {request.respond(
-                                Response::from_string(format!("error: {:?}", e)).with_status_code(500), // internal error
-                            )}
-                        }
+                        request.respond(Response::empty(200))
                     }
                     Err(ErrorKind::NotFound) => {
                         request.respond(
