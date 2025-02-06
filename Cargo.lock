@@ -4406,6 +4406,7 @@ dependencies = [
  "async-io",
  "async-trait",
  "bitvec",
+ "colored",
  "futures",
  "miette 7.4.0",
  "nvme",

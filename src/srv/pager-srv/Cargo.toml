@@ -32,3 +32,4 @@ async-io = "2.3.2"
 async-executor = { version = "1.9.1", features = [] }
 polling = "3.6.0"
 futures = "*"
+colored = "*"
