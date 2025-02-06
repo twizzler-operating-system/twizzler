@@ -40,7 +40,7 @@ impl SecCtxMap {
 
             //TODO: need to actually calculate this out / worry about allocation strategies
             let write_offset = ap.len * len + size_of::<SecCtxMap>() as u32;
-            ap.map[len as usize] = CtxMapItem {
+            ap.map[ap.len as usize] = CtxMapItem {
                 target_id,
                 item_type,
                 len,
