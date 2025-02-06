@@ -22,6 +22,8 @@ fn main() {
         .unwrap();
     let ptr = SecCtxMap::parse(vobj.id());
     println!("ptr: {:#?}", ptr);
+    let ptr = SecCtxMap::parse(vobj.id());
+    println!("again ptr: {:#?}", ptr);
 
     let map = SecCtxMap::insert(ptr, id.into(), CtxMapItemType::Cap, 100);
     println!("map we just modified: {:#?}", map);
