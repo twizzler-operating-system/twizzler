@@ -1,5 +1,5 @@
 use twizzler::object::{Object, RawObject};
-use twizzler_abi::object::ObjID;
+use twizzler_abi::{marker::BaseType, object::ObjID};
 use twizzler_rt_abi::object::MapFlags;
 
 const MAX_SEC_CTX_MAP_LEN: u8 = 100;
@@ -54,3 +54,13 @@ impl SecCtxMap {
     // remove
     // lookup
 }
+
+// impl BaseType for SecCtxMap{
+//     fn init<T>(_t: T) -> Self {
+//         SecCtxMap::parse(_t)
+//     }
+
+//      fn tags() -> &'static [(twizzler_abi::marker::BaseVersion, twizzler_abi::marker::BaseTag)] {
+
+//      }
+// }

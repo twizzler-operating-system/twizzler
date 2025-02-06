@@ -5150,6 +5150,13 @@ dependencies = [
 [[package]]
 name = "sec-test"
 version = "0.1.0"
+dependencies = [
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-object",
+ "twizzler-rt-abi",
+ "twizzler-security",
+]
 
 [[package]]
 name = "sec1"
