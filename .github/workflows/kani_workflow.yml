@@ -41,5 +41,5 @@ jobs:
       - name: Run Kani
         uses: model-checking/kani-github-action@v1.1
         with:
-          args: '--enable-unstable -Zunstable-options --ignore-global-asm --output-into-files -Zstubbing -p twizzler-abi -p twizzler-object -p twizzler -p naming-test"
+          args: '--enable-unstable -Zunstable-options --ignore-global-asm --output-into-files -Zstubbing -p twizzler-abi -p twizzler-object -p twizzler -p naming-test'
 
