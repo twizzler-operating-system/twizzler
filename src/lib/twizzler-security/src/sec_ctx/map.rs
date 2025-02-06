@@ -1,11 +1,12 @@
 use twizzler::{
-    marker::{BaseType, StoreCopy},
+    collections::vec::Vec,
+    marker::{BaseType, Invariant, StoreCopy},
     object::{Object, RawObject},
 };
 use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::object::MapFlags;
 
-const MAX_SEC_CTX_MAP_LEN: u8 = 100;
+const MAX_SEC_CTX_MAP_LEN: usize = 100;
 
 #[derive(Clone, Copy)]
 pub struct SecCtxMap {
@@ -13,7 +14,7 @@ pub struct SecCtxMap {
     len: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct CtxMapItem {
     target_id: ObjID,
     item_type: CtxMapItemType,
@@ -21,7 +22,7 @@ pub struct CtxMapItem {
     offset: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum CtxMapItemType {
     Cap,
     Del,
@@ -36,17 +37,17 @@ impl SecCtxMap {
     /// inserts a CtxMapItemType into the SecCtxMap and returns the write offset into the object
     pub fn insert(ptr: *mut Self, target_id: ObjID, item_type: CtxMapItemType, len: u32) -> u32 {
         unsafe {
-            let mut ap = *ptr;
+            let mut map = *ptr;
 
             //TODO: need to actually calculate this out / worry about allocation strategies
-            let write_offset = ap.len * len + size_of::<SecCtxMap>() as u32;
-            ap.map[ap.len as usize] = CtxMapItem {
+            let write_offset = map.len * len + size_of::<SecCtxMap>() as u32;
+            map.map[map.len as usize] = CtxMapItem {
                 target_id,
                 item_type,
                 len,
                 offset: write_offset,
             };
-            ap.len += 1;
+            map.len += 1;
 
             return write_offset;
         }
@@ -64,6 +65,50 @@ impl SecCtxMap {
         }
     }
 
+    // size && array of items
+    pub fn lookup(ptr: *mut Self, target_id: ObjID) -> (usize, [CtxMapItem; MAX_SEC_CTX_MAP_LEN]) {
+        unsafe {
+            let mut map = *ptr;
+
+            // Vec
+            // let x: Vec<CtxMapItem> = map
+            //     .map
+            //     .into_iter()
+            //     .enumerate()
+            //     .filter(|(i, item)| {
+            //         if *i >= map.len as usize {
+            //             return false;
+            //         }
+
+            //         item.target_id == target_id
+            //     })
+            //     .map(|(_, i)| i)
+            //     .collect();
+            //
+            let mut buf = [CtxMapItem {
+                target_id: 0.into(),
+                item_type: CtxMapItemType::Del,
+                len: 0,
+                offset: 0,
+            }; MAX_SEC_CTX_MAP_LEN as usize];
+
+            let mut len = 0;
+
+            for (i, item) in map.map.into_iter().enumerate() {
+                if i > map.len as usize {
+                    break;
+                }
+
+                if item.target_id == target_id {
+                    buf[len] = item;
+                    len += 1;
+                }
+            }
+
+            return (len, buf);
+        }
+    }
+
     //TODO:
     // insert
     // remove
@@ -72,6 +117,7 @@ impl SecCtxMap {
 
 impl BaseType for SecCtxMap {
     fn fingerprint() -> u64 {
+        // lol
         69
     }
 }
