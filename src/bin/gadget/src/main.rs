@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use colored::Colorize;
 use embedded_io::ErrorType;
 use monitor_api::CompartmentHandle;
 use naming::{static_naming_factory, EntryType, ErrorKind, StaticNamingHandle as NamingHandle};
@@ -284,13 +285,26 @@ fn setup_http(namer: &mut NamingHandle) {
                     .create(true)
                     .truncate(true)
                     .open(&path);
-                tracing::info!("created new file object {:x}", namer.get(&path).unwrap());
+                tracing::debug!("created new file object {:x}", namer.get(&path).unwrap());
+
+                println!(
+                    "  -> The Gadget just created a file, named {}, with internal ID {}.",
+                    path.italic(),
+                    namer.get(&path).unwrap()
+                );
+                println!(
+                    "  -> Next, we'll write the file data and sync. {}",
+                    "All data that goes to flash is encrypted.".bright_red()
+                );
 
                 match file {
                     Ok(mut file) => {
                         tracing::info!("writing...");
                         file.write(&buf).unwrap();
                         tracing::info!("syncing...");
+                        println!("  -> During sync, we'll issue a {}, which will update keys and reencrypt as necessary.", "Lethe epoch".bright_blue().italic());
+                        println!("  -> Note, though, that here we've just written file data to new sectors, already encrypted.");
+                        println!("     So little work is done during epoch, this time.");
                         file.sync_all().unwrap();
                         request.respond(Response::empty(200))
                     }
@@ -301,9 +315,11 @@ fn setup_http(namer: &mut NamingHandle) {
                 }
             }
             tiny_http::Method::Delete => {
+                println!("  -> First we'll remove the file, and then issue another {}.", "Lethe epoch".bright_blue().italic());
                 match std::fs::remove_file(&path) {
                     Ok(()) => {
                         namer.remove(&path, false).unwrap();
+                        println!("  -> This time, the epoch has more work to do, since file blocks have been deleted.");
                         pager::adv_lethe();
                         request.respond(Response::empty(200))
                     }
@@ -368,6 +384,18 @@ fn main() {
         match split[0] {
             "show" => {
                 show(&split, &mut namer);
+            }
+            "intro" => {
+                println!("Welcome to the {}!", "Twisted Demo".bold());
+                println!("This demo will show of creation, writing, reading, and deleting files");
+                println!(
+                    "from the Twisted Gadget. Files are stored using {}, the provable-deletion",
+                    "Lethe".bold()
+                );
+                println!(
+                    "filesystem developed as part of the Twisted project. The operating system"
+                );
+                println!("is {}, which enables strong isolation and cabability-based security, written in Rust.", "Twizzler".bold());
             }
             "quit" => {
                 break;
