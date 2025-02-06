@@ -404,6 +404,11 @@ fn main() {
             "quit" => {
                 break;
             }
+            "clear" => {
+                print!("\x1b[2J");
+                println!("{}", banner());
+                println!("       TWISTED GADGET DEMO");
+            }
             "demo" => {
                 demo(&split);
             }
