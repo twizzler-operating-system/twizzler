@@ -35,5 +35,5 @@ jobs:
       - name: Run Kani
         uses: model-checking/kani-github-action@v1.1
         with:
-          args: '--workspace --exclude monitor -Z stubbing -p nvme'
+          args: '--enable-unstable -Zunstable-options --ignore-global-asm --output-into-files -Zstubbing -p nvme'
 
