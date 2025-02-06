@@ -6,7 +6,7 @@ use twizzler::{
 use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::object::MapFlags;
 
-const MAX_SEC_CTX_MAP_LEN: usize = 100;
+const MAX_SEC_CTX_MAP_LEN: usize = 5;
 
 #[derive(Clone, Copy)]
 pub struct SecCtxMap {
