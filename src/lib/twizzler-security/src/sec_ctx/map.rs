@@ -30,7 +30,7 @@ pub enum CtxMapItemType {
 
 impl SecCtxMap {
     pub fn parse(sec_ctx_id: ObjID) -> *mut Self {
-        let obj = Object::<SecCtxMap>::map(sec_ctx_id, MapFlags::READ).unwrap();
+        let obj = Object::<SecCtxMap>::map(sec_ctx_id, MapFlags::READ | MapFlags::WRITE).unwrap();
         obj.base_mut_ptr::<SecCtxMap>()
     }
 
