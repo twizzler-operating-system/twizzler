@@ -5,7 +5,7 @@ use twizzler_abi::pager::{CompletionToPager, ObjectRange, PhysRange, RequestFrom
 use twizzler_object::ObjID;
 use twizzler_queue::QueueSender;
 
-use crate::physrw;
+use crate::{physrw, PagerContext};
 
 /// A constant representing the page size (4096 bytes per page).
 pub const PAGE: u64 = 4096;
@@ -21,7 +21,7 @@ pub fn _objectrange_to_page_number(object_range: &ObjectRange) -> Option<u64> {
 }
 
 pub async fn page_in(
-    rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+    ctx: &PagerContext,
     obj_id: ObjID,
     obj_range: ObjectRange,
     phys_range: PhysRange,
@@ -36,17 +36,19 @@ pub async fn page_in(
     } else {
         obj_range.start
     };
-    let res = object_store::read_exact(obj_id.raw(), &mut buf, start)
+    let res = ctx
+        .ostore
+        .read_exact(obj_id.raw(), &mut buf, start)
         .inspect_err(|e| tracing::debug!("error in read from object store: {}", e));
     if res.is_err() {
         buf.fill(0);
     }
 
-    physrw::fill_physical_pages(rq, &buf, phys_range).await
+    physrw::fill_physical_pages(&ctx.sender, &buf, phys_range).await
 }
 
 pub async fn page_out(
-    rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+    ctx: &PagerContext,
     obj_id: ObjID,
     obj_range: ObjectRange,
     phys_range: PhysRange,
@@ -57,13 +59,14 @@ pub async fn page_out(
 
     tracing::debug!("pageout: {}: {:?} {:?}", obj_id, obj_range, phys_range);
     let mut buf = [0; 0x1000];
-    physrw::read_physical_pages(rq, &mut buf, phys_range).await?;
+    physrw::read_physical_pages(&ctx.sender, &mut buf, phys_range).await?;
     let start = if meta {
         obj_range.start + (1024 * 1024 * 1024)
     } else {
         obj_range.start
     };
-    object_store::write_all(obj_id.raw(), &buf, start)
+    ctx.ostore
+        .write_all(obj_id.raw(), &buf, start)
         .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
         .into_diagnostic()
 }

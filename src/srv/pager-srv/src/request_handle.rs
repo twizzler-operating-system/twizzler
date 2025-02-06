@@ -7,41 +7,36 @@ use twizzler_abi::pager::{
 use twizzler_object::ObjID;
 use twizzler_queue::QueueSender;
 
-use crate::data::PagerData;
+use crate::{data::PagerData, PagerContext};
 
-async fn page_data_req(
-    rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
-    data: Arc<PagerData>,
-    id: ObjID,
-    range: ObjectRange,
-) -> Option<PhysRange> {
-    data.fill_mem_page(rq, id, range)
+async fn page_data_req(ctx: &PagerContext, id: ObjID, range: ObjectRange) -> Option<PhysRange> {
+    ctx.data
+        .fill_mem_page(ctx, id, range)
         .await
         .inspect_err(|e| tracing::warn!("page data request failed: {}", e))
         .ok()
 }
 
-fn object_info_req(data: Arc<PagerData>, id: ObjID) -> Option<ObjectInfo> {
-    data.lookup_object(id)
+fn object_info_req(ctx: &PagerContext, id: ObjID) -> Option<ObjectInfo> {
+    ctx.data.lookup_object(ctx, id)
 }
 
 pub async fn handle_kernel_request(
-    rq: Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+    ctx: &PagerContext,
     request: RequestFromKernel,
-    data: Arc<PagerData>,
 ) -> Option<CompletionToKernel> {
     tracing::debug!("handling kernel request {:?}", request);
 
     match request.cmd() {
         KernelCommand::PageDataReq(obj_id, range) => Some(CompletionToKernel::new(
-            if let Some(phys_range) = page_data_req(&rq, data, obj_id, range).await {
+            if let Some(phys_range) = page_data_req(ctx, obj_id, range).await {
                 KernelCompletionData::PageDataCompletion(obj_id, range, phys_range)
             } else {
                 KernelCompletionData::Error
             },
         )),
         KernelCommand::ObjectInfoReq(obj_id) => {
-            if let Some(obj_info) = object_info_req(data, obj_id) {
+            if let Some(obj_info) = object_info_req(ctx, obj_id) {
                 Some(CompletionToKernel::new(
                     KernelCompletionData::ObjectInfoCompletion(obj_info),
                 ))
@@ -52,14 +47,16 @@ pub async fn handle_kernel_request(
             }
         }
         KernelCommand::ObjectSync(obj_id) => {
-            data.sync(&rq, obj_id).await;
+            ctx.data.sync(ctx, obj_id).await;
             Some(CompletionToKernel::new(KernelCompletionData::SyncOkay(
                 obj_id,
             )))
         }
         KernelCommand::ObjectDel(obj_id) => {
-            if object_store::unlink_object(obj_id.raw()).is_ok() {
-                let _ = object_store::advance_epoch()
+            if ctx.ostore.unlink_object(obj_id.raw()).is_ok() {
+                let _ = ctx
+                    .ostore
+                    .advance_epoch()
                     .inspect_err(|e| tracing::warn!("failed to advance epoch: {}", e));
             }
             Some(CompletionToKernel::new(KernelCompletionData::SyncOkay(
@@ -67,15 +64,17 @@ pub async fn handle_kernel_request(
             )))
         }
         KernelCommand::ObjectCreate(object_info) => {
-            let _ = object_store::unlink_object(object_info.obj_id.raw());
-            if let Err(e) = object_store::create_object(object_info.obj_id.raw()) {
+            let _ = ctx.ostore.unlink_object(object_info.obj_id.raw());
+            if let Err(e) = ctx.ostore.create_object(object_info.obj_id.raw()) {
                 tracing::warn!("failed to create object {}: {}", object_info.obj_id, e);
                 Some(CompletionToKernel::new(KernelCompletionData::Error))
             } else {
                 // TODO: REMOVE ONCE WE HAVE RANDOM ACCESS
                 let buf = [0; 0x1000 * 32];
-                let _ =
-                    object_store::write_all(object_info.obj_id.raw(), &buf, 0).inspect_err(|e| {
+                let _ = ctx
+                    .ostore
+                    .write_all(object_info.obj_id.raw(), &buf, 0)
+                    .inspect_err(|e| {
                         tracing::warn!(
                             "failed to write pager info page for object {}: {}",
                             object_info.obj_id,
@@ -89,7 +88,7 @@ pub async fn handle_kernel_request(
         }
         KernelCommand::DramPages(phys_range) => {
             tracing::debug!("tracking {} MB memory", phys_range.len() / (1024 * 1024));
-            data.init_range(phys_range);
+            ctx.data.init_range(phys_range);
             Some(CompletionToKernel::new(KernelCompletionData::Okay))
         }
     }

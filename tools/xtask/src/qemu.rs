@@ -57,7 +57,7 @@ impl QemuCommand {
             .create(true)
             .open("target/nvme.img")
         {
-            f.set_len(0x1000000).unwrap();
+            f.set_len(0x100000000).unwrap();
         }
 
         self.cmd

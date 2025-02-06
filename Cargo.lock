@@ -2879,7 +2879,7 @@ dependencies = [
 [[package]]
 name = "heapsize-derive"
 version = "0.1.0"
-source = "git+https://github.com/twizzler-operating-system/obliviate.git#c1be5eff29d319d40eab9975ffa0d150ddb720fb"
+source = "git+https://github.com/twizzler-operating-system/obliviate.git?branch=nonstatic_lifetime_support#b02c4e35ff9c3ac6f2bebfbb30a4994248a8d173"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3325,6 +3325,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "intervaltree"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "270bc34e57047cab801a8c871c124d9dc7132f6473c6401f645524f4e6edd111"
+dependencies = [
+ "serde",
+ "smallvec",
+]
+
+[[package]]
 name = "intrusive-collections"
 version = "0.9.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3705,7 +3715,7 @@ dependencies = [
 [[package]]
 name = "lru-mem"
 version = "0.3.0"
-source = "git+https://github.com/twizzler-operating-system/obliviate.git#c1be5eff29d319d40eab9975ffa0d150ddb720fb"
+source = "git+https://github.com/twizzler-operating-system/obliviate.git?branch=nonstatic_lifetime_support#b02c4e35ff9c3ac6f2bebfbb30a4994248a8d173"
 dependencies = [
  "hashbrown 0.14.5",
  "heapsize-derive",
@@ -4150,36 +4160,20 @@ dependencies = [
 name = "object-store"
 version = "0.1.0"
 dependencies = [
- "async-executor",
- "async-io",
  "async-trait",
  "chacha20",
  "fatfs 0.4.0",
- "nvme",
+ "intervaltree",
  "obliviate-core",
  "pci-ids",
  "rand",
- "tracing",
- "twizzler-abi",
- "twizzler-driver",
- "twizzler-object",
- "twizzler-queue",
  "volatile",
-]
-
-[[package]]
-name = "object-store-test"
-version = "0.1.0"
-dependencies = [
- "object-store",
- "obliviate-core",
- "rand",
 ]
 
 [[package]]
 name = "obliviate-core"
 version = "0.1.0"
-source = "git+https://github.com/twizzler-operating-system/obliviate.git#c1be5eff29d319d40eab9975ffa0d150ddb720fb"
+source = "git+https://github.com/twizzler-operating-system/obliviate.git?branch=nonstatic_lifetime_support#b02c4e35ff9c3ac6f2bebfbb30a4994248a8d173"
 dependencies = [
  "aes",
  "bincode",
@@ -4404,10 +4398,12 @@ dependencies = [
  "bitvec",
  "futures",
  "miette 7.4.0",
+ "nvme",
  "object-store",
  "polling",
  "secgate",
  "tracing",
+ "tracing-log",
  "tracing-subscriber",
  "twizzler",
  "twizzler-abi",

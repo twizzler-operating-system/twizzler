@@ -11,7 +11,10 @@ use twizzler_abi::pager::{
 use twizzler_object::ObjID;
 use twizzler_queue::QueueSender;
 
-use crate::helpers::{page_in, page_out, PAGE};
+use crate::{
+    helpers::{page_in, page_out, PAGE},
+    PagerContext,
+};
 
 type PageNum = u64;
 
@@ -99,12 +102,9 @@ impl PerObject {
         self.inner.lock().unwrap().lookup(obj_range)
     }
 
-    pub async fn sync(
-        &self,
-        rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
-    ) -> Result<()> {
+    pub async fn sync(&self, ctx: &PagerContext) -> Result<()> {
         let nulls = [0; PAGE as usize];
-        if object_store::write_all(self.id.raw(), &nulls, 0).is_err() {
+        if ctx.ostore.write_all(self.id.raw(), &nulls, 0).is_err() {
             // TODO
             return Ok(());
         }
@@ -119,13 +119,13 @@ impl PerObject {
         for p in pages {
             let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
             tracing::trace!("sync: page: {:?} {:?}", p, phys_range);
-            page_out(rq, self.id, p.0, phys_range, false).await?;
+            page_out(ctx, self.id, p.0, phys_range, false).await?;
         }
 
         for p in mpages {
             let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
             tracing::trace!("sync: meta page: {:?} {:?}", p, phys_range);
-            page_out(rq, self.id, p.0, phys_range, true).await?;
+            page_out(ctx, self.id, p.0, phys_range, true).await?;
         }
 
         Ok(())
@@ -277,7 +277,7 @@ impl PagerData {
     /// Returns the physical range corresponding to the allocated page.
     pub async fn fill_mem_page(
         &self,
-        rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+        ctx: &PagerContext,
         id: ObjID,
         obj_range: ObjectRange,
     ) -> Result<PhysRange> {
@@ -309,29 +309,25 @@ impl PagerData {
             po.track(obj_range, phys_range);
             phys_range
         };
-        page_in(rq, id, obj_range, phys_range, false).await?;
+        page_in(ctx, id, obj_range, phys_range, false).await?;
         tracing::debug!("memory page allocated successfully: {:?}", phys_range);
         return Ok(phys_range);
     }
 
-    pub fn lookup_object(&self, id: ObjID) -> Option<ObjectInfo> {
+    pub fn lookup_object(&self, ctx: &PagerContext, id: ObjID) -> Option<ObjectInfo> {
         let mut b = [];
-        object_store::read_exact(id.raw(), &mut b, 0).ok()?;
+        ctx.ostore.read_exact(id.raw(), &mut b, 0).ok()?;
         Some(ObjectInfo::new(id))
     }
 
-    pub async fn sync(
-        &self,
-        rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
-        id: ObjID,
-    ) {
+    pub async fn sync(&self, ctx: &PagerContext, id: ObjID) {
         let po = {
             let mut inner = self.inner.lock().unwrap();
             inner.get_per_object(id).clone()
         };
-        let _ = po.sync(rq).await.inspect_err(|e| {
+        let _ = po.sync(ctx).await.inspect_err(|e| {
             tracing::warn!("sync failed for {}: {}", id, e);
         });
-        object_store::advance_epoch().unwrap();
+        ctx.ostore.advance_epoch().unwrap();
     }
 }
