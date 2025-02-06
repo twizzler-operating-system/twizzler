@@ -8,7 +8,7 @@ use twizzler_rt_abi::object::MapFlags;
 
 const MAX_SEC_CTX_MAP_LEN: usize = 5;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct SecCtxMap {
     map: [CtxMapItem; MAX_SEC_CTX_MAP_LEN as usize],
     len: u32,
@@ -35,7 +35,13 @@ impl SecCtxMap {
     }
 
     /// inserts a CtxMapItemType into the SecCtxMap and returns the write offset into the object
-    pub fn insert(ptr: *mut Self, target_id: ObjID, item_type: CtxMapItemType, len: u32) -> u32 {
+    // pub fn insert(ptr: *mut Self, target_id: ObjID, item_type: CtxMapItemType, len: u32) -> u32 {
+    pub fn insert(
+        ptr: *mut Self,
+        target_id: ObjID,
+        item_type: CtxMapItemType,
+        len: u32,
+    ) -> SecCtxMap {
         unsafe {
             let mut map = *ptr;
 
@@ -49,7 +55,9 @@ impl SecCtxMap {
             };
             map.len += 1;
 
-            return write_offset;
+            return map;
+
+            // return write_offset;
         }
     }
 

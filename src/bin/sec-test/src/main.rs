@@ -23,9 +23,9 @@ fn main() {
     let ptr = SecCtxMap::parse(vobj.id());
     println!("ptr: {:#?}", ptr);
 
-    SecCtxMap::insert(ptr, id.into(), CtxMapItemType::Cap, 100);
+    let map = SecCtxMap::insert(ptr, id.into(), CtxMapItemType::Cap, 100);
+    println!("map we just modified: {:#?}", map);
 
     let (len, buf) = SecCtxMap::lookup(ptr, id.into());
-
-    println!("thing we just put in: {:?}", buf);
+    println!("lookup results {:#?}", buf);
 }
