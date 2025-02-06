@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use async_executor::Executor;
 use async_io::block_on;
+use colored::Colorize;
 use disk::Disk;
-use object_store::ObjectStore;
+use object_store::{key_fprint, LetheState, ObjectStore};
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
     object::{ObjectBuilder, RawObject},
@@ -221,7 +222,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     block_on(ex.run(async move {
         let res = report_ready(&ctx, ex).await;
     }));
-    tracing::info!("pager ready with {} MB memory", ctx.data.avail_mem());
+    tracing::info!("pager ready");
 
     let bootstrap_id = ctx.ostore.get_config_id().unwrap().unwrap_or_else(|| {
         tracing::info!("creating new naming object");
@@ -286,7 +287,59 @@ pub fn full_object_sync(id: ObjID) {
 }
 
 #[secgate::secure_gate]
-pub fn show_lethe() {}
+pub fn show_lethe() {
+    colored::control::set_override(true);
+    static LAST: Mutex<Option<LetheState>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    let state = PAGER_CTX.get().unwrap().ostore.get_lethe_state().unwrap();
+    for po in &state.list {
+        println!("{}", po);
+    }
+    for root in &state.roots {
+        if let Some(last) = &*last {
+            let item = last.roots.iter().find(|x| x.0 == root.0 && x.1 == root.1);
+            if let Some(item) = item {
+                if root.2 != item.2 {
+                    println!(
+                        " ({}, {}) -- {} -> {}",
+                        root.0,
+                        root.1,
+                        format!("{:8x}", key_fprint(&item.2)).blue(),
+                        format!("{:8x}", key_fprint(&root.2)).blue(),
+                    );
+                } else {
+                    println!(" ({}, {}) -- {:8x}", root.0, root.1, key_fprint(&root.2));
+                }
+            } else {
+                println!(
+                    " ({}, {}) -- {} {}",
+                    root.0,
+                    root.1,
+                    format!("{:8x}", key_fprint(&root.2)).green(),
+                    "[new]".green(),
+                );
+            }
+        } else {
+            println!(" ({}, {}) -- {:8x}", root.0, root.1, key_fprint(&root.2));
+        }
+    }
+    if let Some(last) = &*last {
+        for root in &last.roots {
+            let item = state.roots.iter().find(|x| x.0 == root.0 && x.1 == root.1);
+            if item.is_none() {
+                println!(
+                    " ({}, {}) -- {} {}",
+                    root.0,
+                    root.1,
+                    format!("{:8x}", key_fprint(&root.2)).red(),
+                    "[deleted]".red()
+                );
+            }
+        }
+    }
+
+    *last = Some(state);
+}
 
 #[secgate::secure_gate]
 pub fn adv_lethe() {
