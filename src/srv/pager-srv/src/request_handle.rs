@@ -70,7 +70,7 @@ pub async fn handle_kernel_request(
                 Some(CompletionToKernel::new(KernelCompletionData::Error))
             } else {
                 // TODO: REMOVE ONCE WE HAVE RANDOM ACCESS
-                let buf = [0; 0x1000 * 4];
+                let buf = [0; 0x1000 * 8];
                 let _ = ctx
                     .ostore
                     .write_all(object_info.obj_id.raw(), &buf, 0)
