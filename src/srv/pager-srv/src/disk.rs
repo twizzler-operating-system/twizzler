@@ -1,82 +1,64 @@
 use std::{
     collections::HashMap,
+    i64,
     io::{Error, ErrorKind},
-    sync::{Arc, Mutex, OnceLock},
+    sync::Arc,
+    u32, u64,
 };
 
 use async_executor::Executor;
 use async_io::block_on;
-use fatfs::{FileSystem, IoBase, Read, Seek, SeekFrom};
+use object_store::fat::{IoBase, Read, Seek, SeekFrom, Write};
 
-use crate::{
-    fs::{PAGE_SIZE, SECTOR_SIZE},
-    nvme::{init_nvme, NvmeController},
-};
+use crate::nvme::{init_nvme, NvmeController};
 
-const DISK_SIZE: usize = 0x40000000;
-const PAGE_MASK: usize = 0xFFF;
-const LBA_COUNT: usize = DISK_SIZE / SECTOR_SIZE;
+const PAGE_SIZE: usize = 0x1000;
+const SECTOR_SIZE: usize = 512;
 
 #[derive(Clone)]
 pub struct Disk {
     ctrl: Arc<NvmeController>,
     pub pos: usize,
     cache: HashMap<u64, Box<[u8; 4096]>>,
+    pub len: usize,
+    ex: &'static Executor<'static>,
 }
 
 impl Disk {
-    pub fn new(ex: &'static Executor<'static>) -> Result<(Disk, Arc<NvmeController>), ()> {
-        let ctrl = block_on(EXECUTOR.get().unwrap().run(init_nvme(ex)));
-        Ok((
-            Disk {
-                ctrl: ctrl.clone(),
-                pos: 0,
-                cache: HashMap::new(),
-            },
+    pub async fn new(ex: &'static Executor<'static>) -> Result<Disk, ()> {
+        let ctrl = init_nvme(ex).await;
+        let len = ctrl.flash_len().await;
+        let len = std::cmp::max(len, u32::MAX as usize / SECTOR_SIZE);
+        Ok(Disk {
             ctrl,
-        ))
+            pos: 0,
+            cache: HashMap::new(),
+            len,
+            ex,
+        })
     }
-}
 
-pub static DISK: OnceLock<Disk> = OnceLock::new();
-pub static FS: OnceLock<Mutex<FileSystem<Disk>>> = OnceLock::new();
-pub static EXECUTOR: OnceLock<&'static Executor<'static>> = OnceLock::new();
-pub static NVME: OnceLock<Arc<NvmeController>> = OnceLock::new();
-
-pub fn init(ex: &'static Executor<'static>) {
-    let _ = EXECUTOR.set(ex);
-    let (disk, fs, nvme) = do_init(ex);
-    let _ = DISK.set(disk);
-    let _ = FS.set(fs);
-    let _ = NVME.set(nvme);
-}
-
-fn do_init(ex: &'static Executor<'static>) -> (Disk, Mutex<FileSystem<Disk>>, Arc<NvmeController>) {
-    let (mut disk, nvme) = Disk::new(ex).unwrap();
-    let fs_options = fatfs::FsOptions::new().update_accessed_date(false);
-    let fs = FileSystem::new(disk.clone(), fs_options);
-    if let Ok(fs) = fs {
-        return (disk, Mutex::new(fs), nvme);
+    pub fn nvme(&self) -> &Arc<NvmeController> {
+        &self.ctrl
     }
-    drop(fs);
-    super::fs::format(&mut disk);
-    let fs = FileSystem::new(disk.clone(), fs_options)
-        .expect("disk should be formatted now so no more errors.");
-    (disk, Mutex::new(fs), nvme)
+
+    pub fn lba_count(&self) -> usize {
+        self.len / SECTOR_SIZE
+    }
 }
 
 impl IoBase for Disk {
     type Error = std::io::Error;
 }
 
-impl fatfs::Read for Disk {
+impl Read for Disk {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
         let mut lba = (self.pos / PAGE_SIZE) * 8;
         let mut bytes_written: usize = 0;
         let mut read_buffer: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
 
         while bytes_written != buf.len() {
-            if lba >= LBA_COUNT {
+            if lba >= self.lba_count() {
                 break;
             }
 
@@ -90,11 +72,10 @@ impl fatfs::Read for Disk {
             if let Some(cached) = self.cache.get(&(lba as u64)) {
                 read_buffer.copy_from_slice(&cached[0..4096]);
             } else {
-                block_on(EXECUTOR.get().unwrap().run(self.ctrl.read_page(
-                    lba as u64,
-                    &mut read_buffer,
-                    0,
-                )))
+                block_on(
+                    self.ex
+                        .run(self.ctrl.read_page(lba as u64, &mut read_buffer, 0)),
+                )
                 .map_err(|_| ErrorKind::Other)?;
                 self.cache.insert(lba as u64, Box::new(read_buffer));
             }
@@ -112,14 +93,14 @@ impl fatfs::Read for Disk {
     }
 }
 
-impl fatfs::Write for Disk {
+impl Write for Disk {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
         let mut lba = (self.pos / PAGE_SIZE) * 8;
         let mut bytes_read = 0;
         let mut write_buffer: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
 
         while bytes_read != buf.len() {
-            if lba >= LBA_COUNT {
+            if lba >= self.lba_count() {
                 break;
             }
 
@@ -131,7 +112,7 @@ impl fatfs::Write for Disk {
             };
             if right - left != PAGE_SIZE {
                 let temp_pos: u64 = self.pos.try_into().unwrap();
-                self.seek(SeekFrom::Start(temp_pos & !PAGE_MASK as u64))?;
+                self.seek(SeekFrom::Start(temp_pos & !(PAGE_SIZE - 1) as u64))?;
                 self.read_exact(&mut write_buffer)?;
                 self.seek(SeekFrom::Start(temp_pos))?;
             }
@@ -142,11 +123,10 @@ impl fatfs::Write for Disk {
             self.pos += right - left;
 
             self.cache.insert(lba as u64, Box::new(write_buffer));
-            block_on(EXECUTOR.get().unwrap().run(self.ctrl.write_page(
-                lba as u64,
-                &mut write_buffer,
-                0,
-            )))
+            block_on(
+                self.ex
+                    .run(self.ctrl.write_page(lba as u64, &mut write_buffer, 0)),
+            )
             .map_err(|_| ErrorKind::Other)?;
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
@@ -159,19 +139,18 @@ impl fatfs::Write for Disk {
     }
 }
 
-impl fatfs::Seek for Disk {
+impl Seek for Disk {
     fn seek(&mut self, pos: SeekFrom) -> Result<u64, Self::Error> {
         let new_pos: i64 = match pos {
-            SeekFrom::Start(x) => x as i64,
-            SeekFrom::End(x) => (DISK_SIZE as i64) - x,
-            SeekFrom::Current(x) => (self.pos as i64) + x,
+            SeekFrom::Start(x) => x.try_into().unwrap_or(i64::MAX),
+            SeekFrom::End(x) => self.len.try_into().unwrap_or(i64::MAX).saturating_add(x),
+            SeekFrom::Current(x) => self.pos.try_into().unwrap_or(i64::MAX).saturating_add(x),
         };
-        if new_pos > DISK_SIZE.try_into().unwrap() || new_pos < 0 {
-            println!("HERE!");
-            Err(Error::new(ErrorKind::AddrInUse, "oh no!"))
+        if new_pos > self.len.try_into().unwrap_or(i64::MAX) || new_pos < 0 {
+            Err(ErrorKind::UnexpectedEof.into())
         } else {
             self.pos = new_pos as usize;
-            Ok(self.pos.try_into().unwrap())
+            Ok(self.pos.try_into().unwrap_or(u64::MAX))
         }
     }
 }
