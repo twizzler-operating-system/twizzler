@@ -25,6 +25,9 @@ fn main() {
 
     let map = SecCtxMap::insert(ptr, id.into(), CtxMapItemType::Cap, 100);
     println!("map we just modified: {:#?}", map);
+    unsafe {
+        println!("map we just modified again: {:#?}", (*ptr));
+    }
 
     let (len, buf) = SecCtxMap::lookup(ptr, id.into());
     println!("lookup results {:#?}", buf);
