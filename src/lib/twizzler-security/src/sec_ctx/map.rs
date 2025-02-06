@@ -1,3 +1,5 @@
+use core::array;
+
 use twizzler::{
     collections::vec::Vec,
     marker::{BaseType, Invariant, StoreCopy},
@@ -8,13 +10,15 @@ use twizzler_rt_abi::object::MapFlags;
 
 const MAX_SEC_CTX_MAP_LEN: usize = 5;
 
-#[derive(Clone, Copy, Debug)]
+// #[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SecCtxMap {
     map: [CtxMapItem; MAX_SEC_CTX_MAP_LEN as usize],
     len: u32,
 }
 
-#[derive(Clone, Copy, Debug)]
+// #[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct CtxMapItem {
     target_id: ObjID,
     item_type: CtxMapItemType,
@@ -35,40 +39,40 @@ impl SecCtxMap {
     }
 
     /// inserts a CtxMapItemType into the SecCtxMap and returns the write offset into the object
-    // pub fn insert(ptr: *mut Self, target_id: ObjID, item_type: CtxMapItemType, len: u32) -> u32 {
-    pub fn insert(
-        ptr: *mut Self,
-        target_id: ObjID,
-        item_type: CtxMapItemType,
-        len: u32,
-    ) -> SecCtxMap {
+    pub fn insert(ptr: *mut Self, target_id: ObjID, item_type: CtxMapItemType, len: u32) -> u32 {
+        // pub fn insert(
+        //     ptr: *mut Self,
+        //     target_id: ObjID,
+        //     item_type: CtxMapItemType,
+        //     len: u32,
+        // ) -> SecCtxMap {
         unsafe {
-            let mut map = *ptr;
+            // let mut map = *ptr;
 
             //TODO: need to actually calculate this out / worry about allocation strategies
-            let write_offset = map.len * len + size_of::<SecCtxMap>() as u32;
-            map.map[map.len as usize] = CtxMapItem {
+            let write_offset = (*ptr).len * len + size_of::<SecCtxMap>() as u32;
+            (*ptr).map[(*ptr).len as usize] = CtxMapItem {
                 target_id,
                 item_type,
                 len,
                 offset: write_offset,
             };
-            map.len += 1;
+            (*ptr).len += 1;
 
-            return map;
+            // return map;
 
-            // return write_offset;
+            return write_offset;
         }
     }
 
     pub fn new() -> Self {
         Self {
-            map: [CtxMapItem {
+            map: array::from_fn(|_| CtxMapItem {
                 target_id: 0.into(),
                 item_type: CtxMapItemType::Del,
                 len: 0,
                 offset: 0,
-            }; MAX_SEC_CTX_MAP_LEN as usize],
+            }),
             len: 0,
         }
     }
@@ -76,7 +80,7 @@ impl SecCtxMap {
     // size && array of items
     pub fn lookup(ptr: *mut Self, target_id: ObjID) -> (usize, [CtxMapItem; MAX_SEC_CTX_MAP_LEN]) {
         unsafe {
-            let mut map = *ptr;
+            // let mut map = *ptr;
 
             // Vec
             // let x: Vec<CtxMapItem> = map
@@ -93,17 +97,24 @@ impl SecCtxMap {
             //     .map(|(_, i)| i)
             //     .collect();
             //
-            let mut buf = [CtxMapItem {
+            let mut buf = array::from_fn(|_i| CtxMapItem {
                 target_id: 0.into(),
                 item_type: CtxMapItemType::Del,
                 len: 0,
                 offset: 0,
-            }; MAX_SEC_CTX_MAP_LEN as usize];
+            });
+
+            //     [CtxMapItem {
+            //     target_id: 0.into(),
+            //     item_type: CtxMapItemType::Del,
+            //     len: 0,
+            //     offset: 0,
+            // }; MAX_SEC_CTX_MAP_LEN as usize];
 
             let mut len = 0;
 
-            for (i, item) in map.map.into_iter().enumerate() {
-                if i > map.len as usize {
+            for (i, item) in (*ptr).clone().map.into_iter().enumerate() {
+                if i > (*ptr).len as usize {
                     break;
                 }
 
