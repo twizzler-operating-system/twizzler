@@ -48,6 +48,7 @@ members = [
     "src/bin/object-store-test",
     "src/lib/pager", 
     "src/bin/ls",
+    "src/bin/sec-test",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -70,6 +71,7 @@ initrd = [
     "crate:randtest",
     "crate:genrandom",
     "crate:ls",
+    "crate:sec-test",
     "lib:naming-srv",
     "crate:naming-test",
     "crate:object-store-test",
@@ -77,11 +79,11 @@ initrd = [
     "lib:montest-lib",
     "lib:logboi-srv",
     "lib:pager-srv",
-    #"third-party:hello-world-rs"
+    #"third-party:sec-test-world-rs"
 ]
 
 [workspace.metadata.third-party]
-# hello-world-rs = "1.0.0"
+# sec-test-world-rs = "1.0.0"
 
 [profile.release]
 debug = true
