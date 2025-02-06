@@ -3262,6 +3262,7 @@ dependencies = [
  "async-io",
  "futures",
  "monitor-api",
+ "naming-core",
  "polling",
  "rprompt",
  "tracing",
@@ -3448,6 +3449,12 @@ dependencies = [
  "quote",
  "syn 1.0.109",
 ]
+
+[[package]]
+name = "lazy-init"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f40963626ac12dcaf92afc15e4c3db624858c92fd9f8ba2125eaada3ac2706f"
 
 [[package]]
 name = "lazy_static"
@@ -3945,6 +3952,7 @@ name = "naming-srv"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "lazy-init",
  "lazy_static",
  "naming-core",
  "secgate",
@@ -5140,6 +5148,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sec-test"
+version = "0.1.0"
+dependencies = [
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-object",
+ "twizzler-rt-abi",
+ "twizzler-security",
+]
+
+[[package]]
 name = "sec1"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6243,6 +6262,18 @@ version = "0.1.0"
 dependencies = [
  "twizzler-rt-abi",
  "twz-rt",
+]
+
+[[package]]
+name = "twizzler-security"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.8.0",
+ "p256",
+ "sha2",
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-rt-abi",
 ]
 
 [[package]]
