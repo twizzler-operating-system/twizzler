@@ -40,15 +40,7 @@ impl SecCtxMap {
 
     /// inserts a CtxMapItemType into the SecCtxMap and returns the write offset into the object
     pub fn insert(ptr: *mut Self, target_id: ObjID, item_type: CtxMapItemType, len: u32) -> u32 {
-        // pub fn insert(
-        //     ptr: *mut Self,
-        //     target_id: ObjID,
-        //     item_type: CtxMapItemType,
-        //     len: u32,
-        // ) -> SecCtxMap {
         unsafe {
-            // let mut map = *ptr;
-
             //TODO: need to actually calculate this out / worry about allocation strategies
             let write_offset = (*ptr).len * len + size_of::<SecCtxMap>() as u32;
             (*ptr).map[(*ptr).len as usize] = CtxMapItem {
@@ -58,8 +50,6 @@ impl SecCtxMap {
                 offset: write_offset,
             };
             (*ptr).len += 1;
-
-            // return map;
 
             return write_offset;
         }
@@ -80,36 +70,12 @@ impl SecCtxMap {
     // size && array of items
     pub fn lookup(ptr: *mut Self, target_id: ObjID) -> (usize, [CtxMapItem; MAX_SEC_CTX_MAP_LEN]) {
         unsafe {
-            // let mut map = *ptr;
-
-            // Vec
-            // let x: Vec<CtxMapItem> = map
-            //     .map
-            //     .into_iter()
-            //     .enumerate()
-            //     .filter(|(i, item)| {
-            //         if *i >= map.len as usize {
-            //             return false;
-            //         }
-
-            //         item.target_id == target_id
-            //     })
-            //     .map(|(_, i)| i)
-            //     .collect();
-            //
             let mut buf = array::from_fn(|_i| CtxMapItem {
                 target_id: 0.into(),
                 item_type: CtxMapItemType::Del,
                 len: 0,
                 offset: 0,
             });
-
-            //     [CtxMapItem {
-            //     target_id: 0.into(),
-            //     item_type: CtxMapItemType::Del,
-            //     len: 0,
-            //     offset: 0,
-            // }; MAX_SEC_CTX_MAP_LEN as usize];
 
             let mut len = 0;
 
