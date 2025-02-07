@@ -1,7 +1,4 @@
-use std::{
-    fs::File,
-    io::{BufRead, Read},
-};
+use std::fs::File;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use twizzler::object::{Object, ObjectBuilder, RawObject};
@@ -24,12 +21,12 @@ pub struct Args {
 #[derive(Subcommand, Debug)]
 #[command(args_conflicts_with_subcommands = true)]
 pub enum Commands {
-    Read {
+    ReadThing {
         #[arg(short, long, value_parser)]
         obj_id: String,
     },
     /// Search various aspects within the service.
-    Write {
+    WriteThing {
         #[arg(short, long, value_parser)]
         obj_id: String,
     },
@@ -40,8 +37,12 @@ fn main() {
 
     match args.command {
         Some(command) => match command {
-            Read(obj_id) => {}
-            Write(obj_id) => {}
+            Commands::ReadThing { obj_id } => {
+                todo!()
+            }
+            Commands::WriteThing { obj_id } => {
+                todo!()
+            }
         },
         None => {
             // some fantasy object we want to create a cap for
