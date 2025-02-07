@@ -21,14 +21,14 @@ pub struct Args {
 #[derive(Subcommand, Debug)]
 #[command(args_conflicts_with_subcommands = true)]
 pub enum Commands {
-    ReadThing {
+    Read {
         #[arg(short, long, value_parser)]
-        obj_id: String,
+        id: String,
     },
     /// Search various aspects within the service.
-    WriteThing {
+    Write {
         #[arg(short, long, value_parser)]
-        obj_id: String,
+        id: String,
     },
 }
 
@@ -37,10 +37,16 @@ fn main() {
 
     match args.command {
         Some(command) => match command {
-            Commands::ReadThing { obj_id } => {
-                todo!()
+            Commands::Read { id } => {
+                let sec_ctx_id = id.parse::<u128>().unwrap().into();
+                let ptr = SecCtxMap::parse(sec_ctx_id);
+                println!("ptr: {:#?}", ptr);
+
+                let (len, buf) = SecCtxMap::lookup(ptr, sec_ctx_id);
+                println!("lookup results {:#?}", buf);
             }
-            Commands::WriteThing { obj_id } => {
+
+            Commands::Write { id } => {
                 todo!()
             }
         },
@@ -52,10 +58,10 @@ fn main() {
                 .build(SecCtxMap::new())
                 .unwrap();
 
+            println!("SecCtxObjId: {}", vobj.id());
+
             let ptr = SecCtxMap::parse(vobj.id());
             println!("ptr: {:#?}", ptr);
-            let ptr = SecCtxMap::parse(vobj.id());
-            println!("again ptr: {:#?}", ptr);
 
             let writeable_offset = SecCtxMap::insert(ptr, id.into(), CtxMapItemType::Cap, 100);
 
