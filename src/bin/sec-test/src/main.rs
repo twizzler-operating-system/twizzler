@@ -1,9 +1,12 @@
 use std::fs::File;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use twizzler::object::{Object, ObjectBuilder, RawObject};
+use twizzler::{
+    marker::{BaseType, StoreCopy},
+    object::{Object, ObjectBuilder, RawObject, TypedObject},
+    tx::TxObject,
+};
 use twizzler_abi::{
-    marker::BaseType,
     object::ObjID,
     syscall::{BackingType, LifetimeType, ObjectCreate},
 };
@@ -45,10 +48,14 @@ fn main() {
                 let sec_ctx_id = u128::from_str_radix(id, 16).unwrap().into();
                 // let sec_ctx_id = id.parse::<u128>().unwrap().into();
 
-                let ptr = SecCtxMap::parse(sec_ctx_id);
-                println!("ptr: {:#?}", ptr);
+                // let ptr = SecCtxMap::parse(sec_ctx_id);
 
-                let (len, buf) = SecCtxMap::lookup(ptr, sec_ctx_id);
+                let map =
+                    Object::<SecCtxMap>::map(sec_ctx_id, MapFlags::READ | MapFlags::WRITE).unwrap();
+
+                println!("Object Id: {:#?}", map.id());
+
+                let (len, buf) = SecCtxMap::lookup(map, sec_ctx_id);
                 println!("lookup results {:#?}", buf);
             }
 
@@ -69,8 +76,8 @@ fn main() {
 
             println!("SecCtxObjId: {}", vobj.id());
 
-            let ptr = SecCtxMap::parse(vobj.id());
-            println!("ptr: {:#?}", ptr);
+            // let ptr = SecCtxMap::parse(vobj.id());
+            // println!("ptr: {:#?}", ptr);
 
             let (writeable_offset, vobj) =
                 SecCtxMap::insert(vobj, id.into(), CtxMapItemType::Cap, 100);
@@ -78,10 +85,10 @@ fn main() {
             println!("SecCtxObjId: {}", vobj.id());
 
             unsafe {
-                println!("map: {:#?}", (*ptr));
+                println!("map: {:#?}", *vobj.base_ptr::<SecCtxMap>());
             }
 
-            let (len, buf) = SecCtxMap::lookup(ptr, id.into());
+            let (len, buf) = SecCtxMap::lookup(vobj, id.into());
             println!("lookup results {:#?}", buf);
         }
     }

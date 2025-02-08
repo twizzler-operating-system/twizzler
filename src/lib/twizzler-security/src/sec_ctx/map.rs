@@ -2,7 +2,7 @@ use core::array;
 
 use twizzler::{
     marker::{BaseType, StoreCopy},
-    object::{Object, RawObject},
+    object::{Object, RawObject, TypedObject},
     tx::TxObject,
 };
 use twizzler_abi::object::ObjID;
@@ -33,10 +33,11 @@ pub enum CtxMapItemType {
 }
 
 impl SecCtxMap {
-    pub fn parse(sec_ctx_id: ObjID) -> *mut Self {
-        let obj = Object::<SecCtxMap>::map(sec_ctx_id, MapFlags::READ | MapFlags::WRITE).unwrap();
-        obj.base_mut_ptr::<SecCtxMap>()
-    }
+    // pub fn parse(sec_ctx_id: ObjID) -> *mut Self {
+
+    // let obj = Object::<SecCtxMap>::map(sec_ctx_id, MapFlags::READ |
+    // MapFlags::WRITE).unwrap(); obj.base_mut_ptr::<SecCtxMap>()
+    // }
 
     /// inserts a CtxMapItemType into the SecCtxMap and returns the write offset into the object
     pub fn insert(
@@ -80,7 +81,10 @@ impl SecCtxMap {
     }
 
     /// size && array of items
-    pub fn lookup(ptr: *mut Self, target_id: ObjID) -> (usize, [CtxMapItem; MAX_SEC_CTX_MAP_LEN]) {
+    pub fn lookup(
+        obj: Object<Self>,
+        target_id: ObjID,
+    ) -> (usize, [CtxMapItem; MAX_SEC_CTX_MAP_LEN]) {
         unsafe {
             let mut buf = array::from_fn(|_i| CtxMapItem {
                 target_id: 0.into(),
@@ -91,8 +95,10 @@ impl SecCtxMap {
 
             let mut len = 0;
 
-            for (i, item) in (*ptr).clone().map.into_iter().enumerate() {
-                if i > (*ptr).len as usize {
+            let base = obj.base();
+
+            for (i, item) in base.clone().map.into_iter().enumerate() {
+                if i > base.len as usize {
                     break;
                 }
 
