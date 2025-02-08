@@ -5,7 +5,7 @@ use twizzler::object::{Object, ObjectBuilder, RawObject};
 use twizzler_abi::{
     marker::BaseType,
     object::ObjID,
-    syscall::{BackingType, LifetimeType},
+    syscall::{BackingType, LifetimeType, ObjectCreate},
 };
 use twizzler_object::{CreateSpec, Object as TwizObj};
 use twizzler_rt_abi::object::MapFlags;
@@ -31,7 +31,8 @@ pub enum Commands {
         id: String,
     },
 }
-// sec-test read --id 0x17a141a4073bf5004a5853cbe1088053
+
+// sec-test read --id 0xf5befa7a3560c49face6a8f63d97d487
 fn main() {
     let args = Args::parse();
 
@@ -59,9 +60,15 @@ fn main() {
             // some fantasy object we want to create a cap for
             let id: u128 = 0x1000000000000a;
 
-            let vobj = ObjectBuilder::<SecCtxMap>::default()
-                .build(SecCtxMap::new())
-                .unwrap();
+            // how to build a persistent object
+            let vobj = ObjectBuilder::<SecCtxMap>::new(ObjectCreate::new(
+                BackingType::Normal,
+                LifetimeType::Persistent,
+                Default::default(),
+                Default::default(),
+            ))
+            .build(SecCtxMap::new())
+            .unwrap();
 
             println!("SecCtxObjId: {}", vobj.id());
 
