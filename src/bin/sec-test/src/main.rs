@@ -35,7 +35,7 @@ pub enum Commands {
     },
 }
 
-// sec-test read --id 0x6ebb1d27dae01bb5a69fd0c30f024ce4
+// sec-test read --id 0xed24505bd9a28b350ec0f5179c99d473
 
 fn main() {
     let args = Args::parse();
@@ -49,13 +49,14 @@ fn main() {
                 // let sec_ctx_id = id.parse::<u128>().unwrap().into();
 
                 // let ptr = SecCtxMap::parse(sec_ctx_id);
+                let id: u128 = 0x1000000000000a;
 
                 let map =
                     Object::<SecCtxMap>::map(sec_ctx_id, MapFlags::READ | MapFlags::WRITE).unwrap();
 
                 println!("Object Id: {:#?}", map.id());
 
-                let (len, buf) = SecCtxMap::lookup(map, sec_ctx_id);
+                let (len, buf) = SecCtxMap::lookup(map, id.into());
                 println!("lookup results {:#?}", buf);
             }
 
@@ -78,6 +79,8 @@ fn main() {
 
             // let ptr = SecCtxMap::parse(vobj.id());
             // println!("ptr: {:#?}", ptr);
+            //
+            let vobj_id = vobj.id();
 
             let (writeable_offset, vobj) =
                 SecCtxMap::insert(vobj, id.into(), CtxMapItemType::Cap, 100);
@@ -89,6 +92,15 @@ fn main() {
             }
 
             let (len, buf) = SecCtxMap::lookup(vobj, id.into());
+            println!("lookup results {:#?}", buf);
+
+            println!("\n\n\n============================\n\n\n");
+
+            let map = Object::<SecCtxMap>::map(vobj_id, MapFlags::READ | MapFlags::WRITE).unwrap();
+
+            println!("Object Id: {:#?}", map.id());
+
+            let (len, buf) = SecCtxMap::lookup(map, id.into());
             println!("lookup results {:#?}", buf);
         }
     }
