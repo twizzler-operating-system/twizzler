@@ -67,7 +67,7 @@ impl SecCtxMap {
         }
     }
 
-    // size && array of items
+    /// size && array of items
     pub fn lookup(ptr: *mut Self, target_id: ObjID) -> (usize, [CtxMapItem; MAX_SEC_CTX_MAP_LEN]) {
         unsafe {
             let mut buf = array::from_fn(|_i| CtxMapItem {
@@ -108,16 +108,3 @@ impl BaseType for SecCtxMap {
 }
 
 unsafe impl StoreCopy for SecCtxMap {}
-
-// impl BaseType for SecCtxMap {
-//     fn init<T>(_t: T) -> Self {
-//         unsafe { *SecCtxMap::parse(_t) }
-//     }
-
-//     fn tags() -> &'static [(
-//         twizzler_abi::marker::BaseVersion,
-//         twizzler_abi::marker::BaseTag,
-//     )] {
-//         todo!()
-//     }
-// }

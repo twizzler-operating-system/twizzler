@@ -31,14 +31,18 @@ pub enum Commands {
         id: String,
     },
 }
-
+// sec-test read --id 0x17a141a4073bf5004a5853cbe1088053
 fn main() {
     let args = Args::parse();
 
     match args.command {
         Some(command) => match command {
             Commands::Read { id } => {
-                let sec_ctx_id = id.parse::<u128>().unwrap().into();
+                let id = id.trim_start_matches("0x");
+
+                let sec_ = u128::from_str_radix(id, 16).unwrap();
+                // let sec_ctx_id = id.parse::<u128>().unwrap().into();
+
                 let ptr = SecCtxMap::parse(sec_ctx_id);
                 println!("ptr: {:#?}", ptr);
 
@@ -50,6 +54,7 @@ fn main() {
                 todo!()
             }
         },
+
         None => {
             // some fantasy object we want to create a cap for
             let id: u128 = 0x1000000000000a;
