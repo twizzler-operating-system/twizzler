@@ -32,7 +32,7 @@ pub enum Commands {
     },
 }
 
-// sec-test read --id 0x888ba73992d4a2604962f696280ee32c
+// sec-test read --id 0xbe40aa58410292de9677d638d994567e
 
 fn main() {
     let args = Args::parse();
@@ -63,7 +63,7 @@ fn main() {
 
             // how to build a persistent object
             let vobj = ObjectBuilder::<SecCtxMap>::default()
-                // .persist()
+                .persist()
                 .build(SecCtxMap::new())
                 .unwrap();
 
