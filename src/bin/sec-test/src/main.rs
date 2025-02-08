@@ -35,7 +35,7 @@ pub enum Commands {
     },
 }
 
-// sec-test read --id 0xed24505bd9a28b350ec0f5179c99d473
+// sec-test read --id 0x742b229c9ab2506580bcc2386f5b77d4
 
 fn main() {
     let args = Args::parse();
