@@ -40,7 +40,7 @@ fn main() {
             Commands::Read { id } => {
                 let id = id.trim_start_matches("0x");
 
-                let sec_ = u128::from_str_radix(id, 16).unwrap();
+                let sec_ctx_id = u128::from_str_radix(id, 16).unwrap().into();
                 // let sec_ctx_id = id.parse::<u128>().unwrap().into();
 
                 let ptr = SecCtxMap::parse(sec_ctx_id);
