@@ -72,7 +72,7 @@ fn main() {
             let ptr = SecCtxMap::parse(vobj.id());
             println!("ptr: {:#?}", ptr);
 
-            let writeable_offset = SecCtxMap::insert(ptr, id.into(), CtxMapItemType::Cap, 100);
+            let writeable_offset = SecCtxMap::insert(vobj, id.into(), CtxMapItemType::Cap, 100);
 
             unsafe {
                 println!("map: {:#?}", (*ptr));

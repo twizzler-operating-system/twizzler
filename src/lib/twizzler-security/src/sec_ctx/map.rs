@@ -1,9 +1,9 @@
 use core::array;
 
 use twizzler::{
-    collections::vec::Vec,
-    marker::{BaseType, Invariant, StoreCopy},
+    marker::{BaseType, StoreCopy},
     object::{Object, RawObject},
+    tx::TxObject,
 };
 use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::object::MapFlags;
@@ -39,20 +39,27 @@ impl SecCtxMap {
     }
 
     /// inserts a CtxMapItemType into the SecCtxMap and returns the write offset into the object
-    pub fn insert(ptr: *mut Self, target_id: ObjID, item_type: CtxMapItemType, len: u32) -> u32 {
-        unsafe {
-            //TODO: need to actually calculate this out / worry about allocation strategies
-            let write_offset = (*ptr).len * len + size_of::<SecCtxMap>() as u32;
-            (*ptr).map[(*ptr).len as usize] = CtxMapItem {
-                target_id,
-                item_type,
-                len,
-                offset: write_offset,
-            };
-            (*ptr).len += 1;
+    pub fn insert(obj: Object<Self>, target_id: ObjID, item_type: CtxMapItemType, len: u32) -> u32 {
+        let mut tx = obj.tx().unwrap();
+        let mut base = tx.base_mut();
 
-            return write_offset;
-        }
+        //TODO: need to actually calculate this out / worry about allocation strategies
+        let write_offset = base.len * len + size_of::<SecCtxMap>() as u32;
+        let len = base.len;
+
+        base.map[len as usize] = CtxMapItem {
+            target_id,
+            item_type,
+            len,
+            offset: write_offset,
+        };
+        base.len += 1;
+
+        drop(base);
+
+        tx.commit().unwrap();
+
+        return write_offset;
     }
 
     pub fn new() -> Self {
