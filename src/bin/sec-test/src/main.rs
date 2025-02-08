@@ -32,7 +32,7 @@ pub enum Commands {
     },
 }
 
-// sec-test read --id 0xbe40aa58410292de9677d638d994567e
+// sec-test read --id 0x6ebb1d27dae01bb5a69fd0c30f024ce4
 
 fn main() {
     let args = Args::parse();
@@ -72,7 +72,10 @@ fn main() {
             let ptr = SecCtxMap::parse(vobj.id());
             println!("ptr: {:#?}", ptr);
 
-            let writeable_offset = SecCtxMap::insert(vobj, id.into(), CtxMapItemType::Cap, 100);
+            let (writeable_offset, vobj) =
+                SecCtxMap::insert(vobj, id.into(), CtxMapItemType::Cap, 100);
+
+            println!("SecCtxObjId: {}", vobj.id());
 
             unsafe {
                 println!("map: {:#?}", (*ptr));

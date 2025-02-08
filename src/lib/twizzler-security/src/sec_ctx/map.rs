@@ -39,7 +39,12 @@ impl SecCtxMap {
     }
 
     /// inserts a CtxMapItemType into the SecCtxMap and returns the write offset into the object
-    pub fn insert(obj: Object<Self>, target_id: ObjID, item_type: CtxMapItemType, len: u32) -> u32 {
+    pub fn insert(
+        obj: Object<Self>,
+        target_id: ObjID,
+        item_type: CtxMapItemType,
+        len: u32,
+    ) -> (u32, Object<Self>) {
         let mut tx = obj.tx().unwrap();
         let mut base = tx.base_mut();
 
@@ -57,9 +62,9 @@ impl SecCtxMap {
 
         drop(base);
 
-        tx.commit().unwrap();
+        let obj = tx.commit().unwrap();
 
-        return write_offset;
+        return (write_offset, obj);
     }
 
     pub fn new() -> Self {
