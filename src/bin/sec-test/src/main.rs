@@ -63,7 +63,7 @@ fn main() {
 
             // how to build a persistent object
             let vobj = ObjectBuilder::<SecCtxMap>::default()
-                .persist()
+                // .persist()
                 .build(SecCtxMap::new())
                 .unwrap();
 
