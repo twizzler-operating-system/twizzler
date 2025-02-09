@@ -10,9 +10,15 @@ use twizzler_abi::{
     object::ObjID,
     syscall::{BackingType, LifetimeType, ObjectCreate},
 };
-use twizzler_object::{CreateSpec, Object as TwizObj};
+use twizzler_object::{CreateSpec, Object as TwizObj, Protections};
 use twizzler_rt_abi::object::MapFlags;
-use twizzler_security::sec_ctx::map::{CtxMapItemType, SecCtxMap};
+use twizzler_security::{
+    sec_ctx::{
+        map::{CtxMapItemType, SecCtxMap},
+        SecCtx,
+    },
+    Cap,
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -59,46 +65,72 @@ fn main() {
             }
 
             Commands::Write { id } => {
-                todo!()
+                // some fantasy object we want to create a cap for
+                let id: u128 = 0x1000000000000a;
+
+                // how to build a persistent object
+                let vobj = ObjectBuilder::<SecCtxMap>::default()
+                    // .persist()
+                    .build(SecCtxMap::default())
+                    .unwrap();
+
+                println!("SecCtxObjId: {}", vobj.id());
+
+                // let ptr = SecCtxMap::parse(vobj.id());
+                // println!("ptr: {:#?}", ptr);
+                //
+                let vobj_id = vobj.id();
+
+                let writeable_offset = SecCtxMap::insert(&vobj, id.into(), CtxMapItemType::Cap);
+
+                println!("SecCtxObjId: {}", vobj_id);
+
+                // unsafe {
+                //     println!("map: {:#?}", *vobj.base_ptr::<SecCtxMap>());
+                // }
+
+                let res = SecCtxMap::lookup(&vobj, id.into());
+                println!("lookup results {:#?}", res);
+
+                println!("\n\n\n============================\n\n\n");
+
+                let map =
+                    Object::<SecCtxMap>::map(vobj_id, MapFlags::READ | MapFlags::WRITE).unwrap();
+
+                println!("Object Id: {:#?}", map.id());
+
+                let res = SecCtxMap::lookup(&map, id.into());
+                println!("lookup results {:#?}", res);
             }
         },
 
         None => {
-            // some fantasy object we want to create a cap for
-            let id: u128 = 0x1000000000000a;
+            let sec_ctx = SecCtx::default();
 
-            // how to build a persistent object
-            let vobj = ObjectBuilder::<SecCtxMap>::default()
-                // .persist()
-                .build(SecCtxMap::default())
-                .unwrap();
+            let target = 0x123.into();
+            let accessor = 0x321.into();
+            let prots = Protections::all();
+            let target_priv_key = rand_32();
 
-            println!("SecCtxObjId: {}", vobj.id());
+            let cap = Cap::new(
+                target,
+                accessor,
+                prots,
+                target_priv_key,
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap();
 
-            // let ptr = SecCtxMap::parse(vobj.id());
-            // println!("ptr: {:#?}", ptr);
-            //
-            let vobj_id = vobj.id();
+            sec_ctx.add_cap(cap);
 
-            let writeable_offset = SecCtxMap::insert(&vobj, id.into(), CtxMapItemType::Cap);
-
-            println!("SecCtxObjId: {}", vobj_id);
-
-            // unsafe {
-            //     println!("map: {:#?}", *vobj.base_ptr::<SecCtxMap>());
-            // }
-
-            let res = SecCtxMap::lookup(&vobj, id.into());
-            println!("lookup results {:#?}", res);
-
-            println!("\n\n\n============================\n\n\n");
-
-            let map = Object::<SecCtxMap>::map(vobj_id, MapFlags::READ | MapFlags::WRITE).unwrap();
-
-            println!("Object Id: {:#?}", map.id());
-
-            let res = SecCtxMap::lookup(&map, id.into());
-            println!("lookup results {:#?}", res);
+            println!("{}", sec_ctx);
         }
     }
+}
+
+pub fn rand_32() -> [u8; 32] {
+    let mut dest = [0 as u8; 32];
+    getrandom::getrandom(&mut dest).unwrap();
+    dest
 }

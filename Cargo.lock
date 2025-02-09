@@ -5152,6 +5152,7 @@ name = "sec-test"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "getrandom",
  "twizzler",
  "twizzler-abi",
  "twizzler-object",

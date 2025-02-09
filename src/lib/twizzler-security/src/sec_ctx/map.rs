@@ -19,9 +19,9 @@ const MAX_SEC_CTX_MAP_LEN: usize = 5;
 /// {Capabilities, Delegations} inside the object
 pub struct SecCtxMap {
     /// buffer of map items
-    map: [CtxMapItem; MAX_SEC_CTX_MAP_LEN as usize],
+    pub buf: [CtxMapItem; MAX_SEC_CTX_MAP_LEN as usize],
     /// internal length to keep track of how full map is
-    len: u32,
+    pub len: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -63,7 +63,7 @@ impl SecCtxMap {
         // to appease the compiler
         let len = base.len;
 
-        base.map[len as usize] = CtxMapItem {
+        base.buf[len as usize] = CtxMapItem {
             target_id,
             item_type,
             offset: write_offset,
@@ -86,7 +86,7 @@ impl SecCtxMap {
 
         let base = sec_obj.base();
 
-        for (i, item) in base.clone().map.into_iter().enumerate() {
+        for (i, item) in base.clone().buf.into_iter().enumerate() {
             if i > base.len as usize {
                 break;
             }

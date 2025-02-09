@@ -11,5 +11,6 @@ twizzler-security = {path = "../../lib/twizzler-security"}
 twizzler = { path = "../../lib/twizzler" }
 twizzler-rt-abi = "0.99"
 clap = "4.5.28"
+getrandom = "0.2"
 
 

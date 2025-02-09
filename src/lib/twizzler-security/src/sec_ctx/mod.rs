@@ -1,5 +1,9 @@
-use map::SecCtxMap;
-use twizzler::object::Object;
+use core::fmt::{write, Display};
+
+use map::{CtxMapItemType, SecCtxMap};
+use twizzler::object::{Object, ObjectBuilder, RawObject, TypedObject};
+use twizzler_abi::object::ObjID;
+use twizzler_rt_abi::object::{MapError, MapFlags};
 
 use crate::Cap;
 
@@ -12,7 +16,40 @@ pub mod map;
 // get the object id for the security context its attached to?
 pub struct SecCtx {
     uobj: Object<SecCtxMap>,
-    map: *mut SecCtxMap,
+}
+
+impl Default for SecCtx {
+    fn default() -> Self {
+        let obj = ObjectBuilder::default()
+            .build(SecCtxMap::default())
+            .unwrap();
+
+        Self { uobj: obj }
+    }
+}
+
+impl Display for SecCtx {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let binding = self.uobj.clone();
+        let map = binding.base();
+
+        write!(f, "Sec Ctx ObjID: {}", self.uobj.id());
+        for (i, entry) in map.buf.into_iter().enumerate().take(map.len as usize) {
+            write!(f, "Entry {}: {:#?}\n", i, entry);
+        }
+
+        Ok(())
+    }
+}
+
+impl TryFrom<ObjID> for SecCtx {
+    type Error = MapError;
+
+    fn try_from(value: ObjID) -> Result<Self, Self::Error> {
+        let uobj = Object::<SecCtxMap>::map(value, MapFlags::READ | MapFlags::WRITE)?;
+
+        Ok(Self { uobj })
+    }
 }
 
 impl SecCtx {
@@ -22,15 +59,20 @@ impl SecCtx {
         todo!("unsure how to get attached sec_ctx as of rn")
     }
 
-    pub fn add_cap(&mut self, cap: Cap) {
-        todo!()
-        // let _write_at_offset = SecCtxMap::insert(
-        //     self.map,
-        //     cap.target,
-        //     map::CtxMapItemType::Cap,
-        //     size_of::<Cap>() as u32,
-        // );
-        //TODO: how do i write into an object
+    pub fn add_cap(&self, cap: Cap) {
+        // first add it to the map to get the write offset
+        let write_offset = SecCtxMap::insert(&self.uobj, cap.target, CtxMapItemType::Cap);
+
+        let tx = self.uobj.clone().tx().unwrap();
+
+        let ptr = tx.lea_mut(write_offset as usize, size_of::<Cap>()).unwrap();
+
+        unsafe {
+            let mut in_ctx_cap = *ptr.cast::<Cap>();
+            in_ctx_cap = cap;
+        }
+
+        tx.commit().unwrap();
     }
 
     pub fn remove_cap(&mut self) {}
