@@ -35,8 +35,8 @@ pub enum Commands {
     },
 }
 
-// sec-test read --id 0x742b229c9ab2506580bcc2386f5b77d4
-
+// sec-test read --id 0xd4b0930f0bbc0bb745af3a196e4014ed
+//
 fn main() {
     let args = Args::parse();
 
@@ -56,7 +56,7 @@ fn main() {
 
                 println!("Object Id: {:#?}", map.id());
 
-                let res = SecCtxMap::lookup(map, id.into());
+                let res = SecCtxMap::lookup(&map, id.into());
                 println!("lookup results {:#?}", res);
             }
 
@@ -82,8 +82,7 @@ fn main() {
             //
             let vobj_id = vobj.id();
 
-            let writeable_offset =
-                SecCtxMap::insert(vobj.clone(), id.into(), CtxMapItemType::Cap, 100);
+            let writeable_offset = SecCtxMap::insert(&vobj, id.into(), CtxMapItemType::Cap);
 
             println!("SecCtxObjId: {}", vobj_id);
 
@@ -91,7 +90,7 @@ fn main() {
             //     println!("map: {:#?}", *vobj.base_ptr::<SecCtxMap>());
             // }
 
-            let res = SecCtxMap::lookup(vobj, id.into());
+            let res = SecCtxMap::lookup(&vobj, id.into());
             println!("lookup results {:#?}", res);
 
             println!("\n\n\n============================\n\n\n");
@@ -100,7 +99,7 @@ fn main() {
 
             println!("Object Id: {:#?}", map.id());
 
-            let res = SecCtxMap::lookup(map, id.into());
+            let res = SecCtxMap::lookup(&map, id.into());
             println!("lookup results {:#?}", res);
         }
     }
