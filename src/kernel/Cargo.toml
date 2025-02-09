@@ -20,6 +20,10 @@ twizzler-abi = { path = "../lib/twizzler-abi", default-features = false, feature
 twizzler-rt-abi = { version = "0.99", features = [
     "kernel",
 ], default-features = false }
+
+# twizzler-security = {path = "../lib/twizzler-security"}
+
+
 fixedbitset = { version = "0.4.1", default-features = false }
 linked_list_allocator = "0.10"
 tar-no-std = "0.2.0"
