@@ -49,11 +49,11 @@ pub struct SecCtxMapLookupResult {
 
 impl SecCtxMap {
     /// inserts a CtxMapItemType into the SecCtxMap and returns the write offset into the object
-    pub fn insert(obj: &Object<Self>, target_id: ObjID, item_type: CtxMapItemType) -> u32 {
-        let mut tx = obj.clone().tx().unwrap();
+    pub fn insert(sec_obj: &Object<Self>, target_id: ObjID, item_type: CtxMapItemType) -> u32 {
+        let mut tx = sec_obj.clone().tx().unwrap();
         let mut base = tx.base_mut();
 
-        //TODO: Find a way to map the write offset into an object so it doesnt overwrite
+        //TODO: Find a way to map the write offset into  object so it doesnt overwrite
         // other data
         let write_offset = match item_type {
             CtxMapItemType::Cap => base.len + size_of::<Cap>() as u32,
@@ -78,18 +78,13 @@ impl SecCtxMap {
         write_offset
     }
 
-    pub fn new() -> Self {
-        Self {
-            map: [CtxMapItem::default(); MAX_SEC_CTX_MAP_LEN],
-            len: 0,
-        }
-    }
-
-    pub fn lookup(obj: &Object<Self>, target_id: ObjID) -> SecCtxMapLookupResult {
+    /// Looks up whether or not there exists a map entry for the given target object
+    /// inside of the sec_obj
+    pub fn lookup(sec_obj: &Object<Self>, target_id: ObjID) -> SecCtxMapLookupResult {
         let mut buf = [CtxMapItem::default(); MAX_SEC_CTX_MAP_LEN];
         let mut len = 0;
 
-        let base = obj.base();
+        let base = sec_obj.base();
 
         for (i, item) in base.clone().map.into_iter().enumerate() {
             if i > base.len as usize {
@@ -105,8 +100,10 @@ impl SecCtxMap {
         SecCtxMapLookupResult { len, items: buf }
     }
 
-    //TODO:
-    // remove
+    // lowkey dont know what the semantics for removal are
+    pub fn remove() {
+        todo!()
+    }
 }
 
 impl BaseType for SecCtxMap {
@@ -115,5 +112,3 @@ impl BaseType for SecCtxMap {
         69
     }
 }
-
-// unsafe impl StoreCopy for SecCtxMap {}
