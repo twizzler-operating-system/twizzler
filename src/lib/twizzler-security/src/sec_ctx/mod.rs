@@ -23,12 +23,13 @@ impl SecCtx {
     }
 
     pub fn add_cap(&mut self, cap: Cap) {
-        let _write_at_offset = SecCtxMap::insert(
-            self.map,
-            cap.target,
-            map::CtxMapItemType::Cap,
-            size_of::<Cap>() as u32,
-        );
+        todo!()
+        // let _write_at_offset = SecCtxMap::insert(
+        //     self.map,
+        //     cap.target,
+        //     map::CtxMapItemType::Cap,
+        //     size_of::<Cap>() as u32,
+        // );
         //TODO: how do i write into an object
     }
 
