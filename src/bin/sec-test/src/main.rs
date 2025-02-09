@@ -46,9 +46,7 @@ fn main() {
                 let id = id.trim_start_matches("0x");
 
                 let sec_ctx_id = u128::from_str_radix(id, 16).unwrap().into();
-                // let sec_ctx_id = id.parse::<u128>().unwrap().into();
 
-                // let ptr = SecCtxMap::parse(sec_ctx_id);
                 let id: u128 = 0x1000000000000a;
 
                 let map =
@@ -71,7 +69,7 @@ fn main() {
 
             // how to build a persistent object
             let vobj = ObjectBuilder::<SecCtxMap>::default()
-                .persist()
+                // .persist()
                 .build(SecCtxMap::new())
                 .unwrap();
 
