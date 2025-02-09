@@ -1,3 +1,4 @@
+use alloc::rc::Rc;
 use core::array;
 
 use twizzler::{
@@ -10,15 +11,15 @@ use twizzler_rt_abi::object::MapFlags;
 
 const MAX_SEC_CTX_MAP_LEN: usize = 5;
 
-// #[derive(Clone, Copy, Debug)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
+// #[derive(Clone, Debug)]
 pub struct SecCtxMap {
     map: [CtxMapItem; MAX_SEC_CTX_MAP_LEN as usize],
     len: u32,
 }
 
-// #[derive(Clone, Copy, Debug)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
+// #[derive(Clone, Debug)]
 pub struct CtxMapItem {
     target_id: ObjID,
     item_type: CtxMapItemType,
@@ -30,6 +31,12 @@ pub struct CtxMapItem {
 pub enum CtxMapItemType {
     Cap,
     Del,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct SecCtxMapLookupResult {
+    pub len: usize,
+    pub items: [CtxMapItem; MAX_SEC_CTX_MAP_LEN],
 }
 
 impl SecCtxMap {
@@ -45,7 +52,8 @@ impl SecCtxMap {
         target_id: ObjID,
         item_type: CtxMapItemType,
         len: u32,
-    ) -> (u32, Object<Self>) {
+        // ) -> (u32, Object<Self>) {
+    ) -> u32 {
         let mut tx = obj.tx().unwrap();
         let mut base = tx.base_mut();
 
@@ -63,9 +71,10 @@ impl SecCtxMap {
 
         drop(base);
 
-        let obj = tx.commit().unwrap();
+        tx.commit().unwrap();
 
-        return (write_offset, obj);
+        write_offset
+        // return (write_offset, obj);
     }
 
     pub fn new() -> Self {
@@ -80,36 +89,37 @@ impl SecCtxMap {
         }
     }
 
-    /// size && array of items
     pub fn lookup(
         obj: Object<Self>,
         target_id: ObjID,
-    ) -> (usize, [CtxMapItem; MAX_SEC_CTX_MAP_LEN]) {
-        unsafe {
-            let mut buf = array::from_fn(|_i| CtxMapItem {
-                target_id: 0.into(),
-                item_type: CtxMapItemType::Del,
-                len: 0,
-                offset: 0,
-            });
+        // ) -> (usize, [CtxMapItem; MAX_SEC_CTX_MAP_LEN]) {
+    ) -> SecCtxMapLookupResult {
+        // ) -> Option<Rc<[CtxMapItem]>> {
+        let base = obj.base();
 
-            let mut len = 0;
+        let mut buf = array::from_fn(|_i| CtxMapItem {
+            target_id: 0.into(),
+            item_type: CtxMapItemType::Del,
+            len: 0,
+            offset: 0,
+        });
 
-            let base = obj.base();
+        let mut len = 0;
 
-            for (i, item) in base.clone().map.into_iter().enumerate() {
-                if i > base.len as usize {
-                    break;
-                }
+        let base = obj.base();
 
-                if item.target_id == target_id {
-                    buf[len] = item;
-                    len += 1;
-                }
+        for (i, item) in base.clone().map.into_iter().enumerate() {
+            if i > base.len as usize {
+                break;
             }
 
-            return (len, buf);
+            if item.target_id == target_id {
+                buf[len] = item;
+                len += 1;
+            }
         }
+
+        SecCtxMapLookupResult { len, items: buf }
     }
 
     //TODO:
@@ -125,4 +135,4 @@ impl BaseType for SecCtxMap {
     }
 }
 
-unsafe impl StoreCopy for SecCtxMap {}
+// unsafe impl StoreCopy for SecCtxMap {}

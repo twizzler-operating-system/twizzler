@@ -56,8 +56,8 @@ fn main() {
 
                 println!("Object Id: {:#?}", map.id());
 
-                let (len, buf) = SecCtxMap::lookup(map, id.into());
-                println!("lookup results {:#?}", buf);
+                let res = SecCtxMap::lookup(map, id.into());
+                println!("lookup results {:#?}", res);
             }
 
             Commands::Write { id } => {
@@ -82,17 +82,17 @@ fn main() {
             //
             let vobj_id = vobj.id();
 
-            let (writeable_offset, vobj) =
-                SecCtxMap::insert(vobj, id.into(), CtxMapItemType::Cap, 100);
+            let writeable_offset =
+                SecCtxMap::insert(vobj.clone(), id.into(), CtxMapItemType::Cap, 100);
 
-            println!("SecCtxObjId: {}", vobj.id());
+            println!("SecCtxObjId: {}", vobj_id);
 
-            unsafe {
-                println!("map: {:#?}", *vobj.base_ptr::<SecCtxMap>());
-            }
+            // unsafe {
+            //     println!("map: {:#?}", *vobj.base_ptr::<SecCtxMap>());
+            // }
 
-            let (len, buf) = SecCtxMap::lookup(vobj, id.into());
-            println!("lookup results {:#?}", buf);
+            let res = SecCtxMap::lookup(vobj, id.into());
+            println!("lookup results {:#?}", res);
 
             println!("\n\n\n============================\n\n\n");
 
@@ -100,8 +100,8 @@ fn main() {
 
             println!("Object Id: {:#?}", map.id());
 
-            let (len, buf) = SecCtxMap::lookup(map, id.into());
-            println!("lookup results {:#?}", buf);
+            let res = SecCtxMap::lookup(map, id.into());
+            println!("lookup results {:#?}", res);
         }
     }
 }
