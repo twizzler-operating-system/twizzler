@@ -7,7 +7,7 @@ use async_executor::Executor;
 use async_io::block_on;
 use colored::Colorize;
 use disk::Disk;
-use object_store::{key_fprint, LetheState, ObjectStore};
+use object_store::{key_fprint, LetheIoWrapper, LetheObjectStore, LetheState};
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
     object::{ObjectBuilder, RawObject},
@@ -200,7 +200,7 @@ async fn report_ready(
 struct PagerContext {
     data: PagerData,
     sender: Arc<QueueSender<RequestFromPager, CompletionToPager>>,
-    ostore: ObjectStore<disk::Disk>,
+    ostore: LetheObjectStore<LetheIoWrapper<disk::Disk>>,
 }
 
 static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
@@ -208,7 +208,8 @@ static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
 fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data, ex) = pager_init(q1, q2);
     let disk = block_on(ex.run(Disk::new(ex))).unwrap();
-    let ostore = object_store::ObjectStore::open(disk, [0; 32]);
+    let disk = LetheIoWrapper::new(disk);
+    let ostore = object_store::LetheObjectStore::open(disk, [0; 32]);
     let sq = Arc::new(sq);
     let sqc = sq.clone();
     let _ = PAGER_CTX.set(PagerContext {
@@ -224,10 +225,10 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     }));
     tracing::info!("pager ready");
 
-    let bootstrap_id = ctx.ostore.get_config_id().unwrap().unwrap_or_else(|| {
+    let bootstrap_id = ctx.ostore.do_get_config_id().unwrap().unwrap_or_else(|| {
         tracing::info!("creating new naming object");
         let vo = VecObject::<u32, VecObjectAlloc>::new(ObjectBuilder::default().persist()).unwrap();
-        ctx.ostore.set_config_id(vo.object().id().raw()).unwrap();
+        ctx.ostore.do_set_config_id(vo.object().id().raw()).unwrap();
         vo.object().id().raw()
     });
     tracing::info!("found root namespace: {:x}", bootstrap_id);
