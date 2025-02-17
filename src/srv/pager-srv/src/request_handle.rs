@@ -65,7 +65,7 @@ pub async fn handle_kernel_request(
         }
         KernelCommand::ObjectCreate(object_info) => {
             let _ = ctx.ostore.unlink_object(object_info.obj_id.raw());
-            if let Err(e) = ctx.ostore.create_object(object_info.obj_id.raw()) {
+            if let Err(e) = ctx.ostore.do_create_object(object_info.obj_id.raw()) {
                 tracing::warn!("failed to create object {}: {}", object_info.obj_id, e);
                 Some(CompletionToKernel::new(KernelCompletionData::Error))
             } else {

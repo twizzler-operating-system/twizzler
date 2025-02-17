@@ -1,14 +1,13 @@
 use std::{
     collections::HashMap,
     i64,
-    io::{Error, ErrorKind},
+    io::{Error, ErrorKind, Read, Seek, SeekFrom, Write},
     sync::Arc,
     u32, u64,
 };
 
 use async_executor::Executor;
 use async_io::block_on;
-use object_store::fat::{IoBase, Read, Seek, SeekFrom, Write};
 
 use crate::nvme::{init_nvme, NvmeController};
 
@@ -45,10 +44,6 @@ impl Disk {
     pub fn lba_count(&self) -> usize {
         self.len / SECTOR_SIZE
     }
-}
-
-impl IoBase for Disk {
-    type Error = std::io::Error;
 }
 
 impl Read for Disk {
@@ -140,7 +135,7 @@ impl Write for Disk {
 }
 
 impl Seek for Disk {
-    fn seek(&mut self, pos: SeekFrom) -> Result<u64, Self::Error> {
+    fn seek(&mut self, pos: SeekFrom) -> Result<u64, Error> {
         let new_pos: i64 = match pos {
             SeekFrom::Start(x) => x.try_into().unwrap_or(i64::MAX),
             SeekFrom::End(x) => self.len.try_into().unwrap_or(i64::MAX).saturating_add(x),
