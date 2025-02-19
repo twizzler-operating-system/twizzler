@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_executor::Executor;
 use twizzler_abi::device::BusType;
-use twizzler_driver::{bus::pcie::PcieDeviceInfo, DeviceController};
+use twizzler_driver::{bus::pcie::PcieDeviceInfo, device::Device, DeviceController};
 
 mod controller;
 mod dma;
@@ -11,31 +11,29 @@ mod requester;
 
 pub use controller::NvmeController;
 
-pub async fn init_nvme(ex: &'static Executor<'static>) -> Arc<NvmeController> {
-    let device_root = twizzler_driver::get_bustree_root();
-    for device in device_root.children() {
-        if device.is_bus() && device.bus_type() == BusType::Pcie {
-            for child in device.children() {
-                let info = unsafe { child.get_info::<PcieDeviceInfo>(0).unwrap() };
-                if info.get_data().class == 1
-                    && info.get_data().subclass == 8
-                    && info.get_data().progif == 2
-                {
-                    tracing::debug!(
-                        "found nvme controller {:x}.{:x}.{:x}",
-                        info.get_data().bus_nr,
-                        info.get_data().dev_nr,
-                        info.get_data().func_nr
-                    );
+pub async fn init_nvme(ex: &'static Executor<'static>) -> Option<Arc<NvmeController>> {
+    let devices = devmgr::get_devices(devmgr::DriverSpec {
+        supported: devmgr::Supported::PcieClass(1, 8, 2),
+    })?;
 
-                    let mut ctrl = Arc::new(NvmeController::new(
-                        DeviceController::new_from_device(child),
-                    ));
-                    controller::init_controller(&mut ctrl, ex).await;
-                    return ctrl;
-                }
-            }
+    for device in &devices {
+        let device = Device::new(device.id).ok();
+        if let Some(device) = device {
+            let info = unsafe { device.get_info::<PcieDeviceInfo>(0).unwrap() };
+            tracing::info!(
+                "found nvme controller at {:02x}:{:02x}.{:02x}",
+                info.get_data().bus_nr,
+                info.get_data().dev_nr,
+                info.get_data().func_nr
+            );
+
+            let mut ctrl = Arc::new(NvmeController::new(DeviceController::new_from_device(
+                device,
+            )));
+            controller::init_controller(&mut ctrl, ex).await;
+            return Some(ctrl);
         }
     }
-    panic!("no nvme controller found");
+
+    None
 }

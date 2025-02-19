@@ -25,7 +25,7 @@ pub struct Disk {
 
 impl Disk {
     pub async fn new(ex: &'static Executor<'static>) -> Result<Disk, ()> {
-        let ctrl = init_nvme(ex).await;
+        let ctrl = init_nvme(ex).await.expect("failed to open nvme controller");
         let len = ctrl.flash_len().await;
         let len = std::cmp::max(len, u32::MAX as usize / SECTOR_SIZE);
         Ok(Disk {

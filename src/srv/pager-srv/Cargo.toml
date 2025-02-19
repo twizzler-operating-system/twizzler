@@ -18,6 +18,7 @@ secgate = { path = "../../lib/secgate" }
 object-store = { path = "object-store" }
 twizzler = { path = "../../lib/twizzler" }
 nvme = { path = "../../lib/nvme-rs" }
+devmgr = { path = "../../lib/devmgr" }
 
 async-trait = "0.1.66"
 volatile = "0.5"

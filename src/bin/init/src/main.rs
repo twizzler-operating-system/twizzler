@@ -50,7 +50,6 @@ fn initialize_pager() -> ObjID {
 
 fn initialize_namer(bootstrap: ObjID) {
     info!("starting namer");
-
     let nmcomp: CompartmentHandle = CompartmentLoader::new(
         "naming",
         "libnaming_srv.so",
@@ -66,22 +65,30 @@ fn initialize_namer(bootstrap: ObjID) {
 
     let namer_start = unsafe { nmcomp.dynamic_gate::<(ObjID,), ()>("namer_start").unwrap() };
     namer_start(bootstrap);
-
-    /*
-    let mut handle = dynamic_naming_factory().unwrap();
-    let kernel_init_info = get_kernel_init_info();
-    let _ = handle.remove("/initrd", true);
-    let _ = handle.put_namespace("/initrd");
-    for name in kernel_init_info.names() {
-        let _ = handle.put(&format!("/initrd/{}", name.name()), name.id().raw());
-    }
-    */
-
     tracing::info!("naming ready");
-
     std::mem::forget(nmcomp);
 }
 
+fn initialize_devmgr() {
+    info!("starting device manager");
+    let devcomp: CompartmentHandle = CompartmentLoader::new(
+        "devmgr",
+        "libdevmgr_srv.so",
+        NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(&["devmgr"])
+    .load()
+    .expect("failed to initialize device manager");
+    let mut flags = devcomp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = devcomp.wait(flags);
+    }
+
+    let devmgr_start = unsafe { devcomp.dynamic_gate::<(), ()>("devmgr_start").unwrap() };
+    devmgr_start();
+    tracing::info!("device manager ready");
+    std::mem::forget(devcomp);
+}
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -107,45 +114,9 @@ fn main() {
     tracing::info!("logboi ready");
     std::mem::forget(lbcomp);
 
-    let create = ObjectCreate::new(
-        BackingType::Normal,
-        LifetimeType::Volatile,
-        None,
-        ObjectCreateFlags::empty(),
-    );
-    let devid = twizzler_abi::syscall::sys_object_create(create, &[], &[]).unwrap();
-    info!("starting device manager");
-    let dev_comp = monitor_api::CompartmentLoader::new(
-        "devmgr",
-        "devmgr",
-        monitor_api::NewCompartmentFlags::EXPORT_GATES,
-    )
-    .args(["devmgr", &devid.raw().to_string()])
-    .load()
-    .expect("failed to start device manager");
-
-    debug!("waiting for device manager to come up");
-    let obj = Object::<std::sync::atomic::AtomicU64>::init_id(
-        devid,
-        Protections::WRITE | Protections::READ,
-        ObjectInitFlags::empty(),
-    )
-    .unwrap();
-    let base = unsafe { obj.base_unchecked() };
-    twizzler_abi::syscall::sys_thread_sync(
-        &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
-            ThreadSyncReference::Virtual(base),
-            0,
-            ThreadSyncOp::Equal,
-            ThreadSyncFlags::empty(),
-        ))],
-        None,
-    )
-    .unwrap();
-    debug!("device manager is up!");
+    initialize_devmgr();
 
     let bootstrap_id = initialize_pager();
-    std::mem::forget(dev_comp);
 
     initialize_namer(bootstrap_id);
 
@@ -248,14 +219,11 @@ fn run_tests(test_list_name: &str, benches: bool) {
 }
 
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     pager::{CompletionToKernel, RequestFromKernel},
-    syscall::{
-        sys_new_handle, BackingType, LifetimeType, NewHandleFlags, ObjectCreate, ObjectCreateFlags,
-        ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
-    },
+    syscall::{sys_new_handle, BackingType, LifetimeType, NewHandleFlags},
 };
-use twizzler_object::{CreateSpec, Object, ObjectInitFlags};
+use twizzler_object::CreateSpec;

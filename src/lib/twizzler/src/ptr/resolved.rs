@@ -82,6 +82,12 @@ impl<'obj, T> Ref<'obj, T> {
     }
 }
 
+impl<'obj, T: core::fmt::Debug> core::fmt::Debug for Ref<'obj, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.deref())
+    }
+}
+
 impl<'obj, T> Deref for Ref<'obj, T> {
     type Target = T;
 
@@ -155,6 +161,12 @@ impl<'obj, T> RefMut<'obj, T> {
             handle: Box::into_raw(Box::new(self.handle().clone())),
             _pd: PhantomData,
         }
+    }
+}
+
+impl<'obj, T: core::fmt::Debug> core::fmt::Debug for RefMut<'obj, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.deref())
     }
 }
 
