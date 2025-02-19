@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 twizzler-driver = { path = "../../lib/twizzler-driver" }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
+devmgr = { path = "../../lib/devmgr" }
 virtio-drivers = "0.7.5"
 volatile = { version = "0.5", features = ["unstable"] }
 once_cell = "1.19.0"

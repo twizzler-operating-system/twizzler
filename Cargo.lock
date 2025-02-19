@@ -1354,13 +1354,27 @@ dependencies = [
 name = "devmgr"
 version = "0.1.0"
 dependencies = [
+ "monitor-api",
+ "twizzler",
+ "twizzler-rt-abi",
+]
+
+[[package]]
+name = "devmgr-srv"
+version = "0.1.0"
+dependencies = [
  "async-trait",
- "logboi",
- "pci-ids",
+ "devmgr",
+ "pci_types",
+ "secgate",
+ "tracing",
+ "tracing-subscriber",
+ "twizzler",
  "twizzler-abi",
  "twizzler-async",
  "twizzler-driver",
  "twizzler-object",
+ "twizzler-rt-abi",
  "twizzler-runtime",
  "volatile",
 ]
@@ -4466,6 +4480,7 @@ dependencies = [
  "async-trait",
  "bitvec",
  "colored",
+ "devmgr",
  "futures",
  "miette 7.4.0",
  "nvme",
@@ -4576,6 +4591,16 @@ dependencies = [
  "phf_codegen",
  "proc-macro2",
  "quote",
+]
+
+[[package]]
+name = "pci_types"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4325c6aa3cca3373503b1527e75756f9fbfe5fd76be4b4c8a143ee47430b8e0"
+dependencies = [
+ "bit_field",
+ "bitflags 2.8.0",
 ]
 
 [[package]]
@@ -6563,6 +6588,7 @@ dependencies = [
 name = "virtio-net"
 version = "0.1.0"
 dependencies = [
+ "devmgr",
  "once_cell",
  "smoltcp",
  "tracing",

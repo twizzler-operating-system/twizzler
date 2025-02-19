@@ -82,6 +82,7 @@ pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(Level::INFO)
+            .without_time()
             .finish(),
     )
     .unwrap();
@@ -90,7 +91,6 @@ pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) {
             .or::<ErrorKind>(Ok(Namer::new()))
             .unwrap()
     });
-    tracing::info!("namer ready");
 }
 
 #[secure_gate(options(info))]

@@ -35,34 +35,34 @@ pub struct TwizzlerTransport {
 
 unsafe impl Send for TwizzlerTransport {}
 
-fn get_device() -> Device {
-    let device_root = twizzler_driver::get_bustree_root();
-    for device in device_root.children() {
-        if device.is_bus() && device.bus_type() == twizzler_abi::device::BusType::Pcie {
-            for child in device.children() {
-                let info = unsafe { child.get_info::<PcieDeviceInfo>(0).unwrap() };
-                // Can be modified later to let us select any other virtio device we want. For now,
-                // just network is good.
-                if info.get_data().class == 2
-                    && info.get_data().subclass == 0
-                    && info.get_data().progif == 0
-                    && info.get_data().vendor_id == 0x1AF4
-                {
-                    tracing::debug!("Found VirtIO networking device!");
+fn get_device() -> Option<Device> {
+    let devices = devmgr::get_devices(devmgr::DriverSpec {
+        supported: devmgr::Supported::PcieClass(2, 0, 0),
+    })?;
 
-                    return child;
-                }
+    for device in &devices {
+        let device = Device::new(device.id).ok();
+        if let Some(device) = device {
+            let info = unsafe { device.get_info::<PcieDeviceInfo>(0).unwrap() };
+            if info.get_data().vendor_id == 0x1AF4 {
+                tracing::info!(
+                    "found virtio-net controller at {:02x}:{:02x}.{:02x}",
+                    info.get_data().bus_nr,
+                    info.get_data().dev_nr,
+                    info.get_data().func_nr
+                );
+                return Some(device);
             }
         }
     }
-    panic!("No VirtIO networking device found");
+    None
 }
 
 impl TwizzlerTransport {
     pub fn new(
         notifier: std::sync::mpsc::Sender<Option<(SocketHandle, u16)>>,
     ) -> Result<Self, VirtioPciError> {
-        let device = Arc::new(get_device());
+        let device = Arc::new(get_device().expect("failed to find virtio-net device"));
         let int = device.allocate_interrupt(0).unwrap();
         device
             .repr_mut()
