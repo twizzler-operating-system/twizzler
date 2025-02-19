@@ -27,10 +27,9 @@ pub async fn init_nvme(ex: &'static Executor<'static>) -> Option<Arc<NvmeControl
                 info.get_data().func_nr
             );
 
-            let mut ctrl = Arc::new(NvmeController::new(DeviceController::new_from_device(
-                device,
-            )));
-            controller::init_controller(&mut ctrl, ex).await;
+            let ctrl = Arc::new(NvmeController::new(device).ok()?);
+            let ident = ctrl.identify_controller().await;
+            tracing::info!("ident: {:?}", ident);
             return Some(ctrl);
         }
     }
