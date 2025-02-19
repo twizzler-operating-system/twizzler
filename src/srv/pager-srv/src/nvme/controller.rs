@@ -1,9 +1,11 @@
 use std::{
+    io::ErrorKind,
     mem::size_of,
     sync::{Arc, Mutex, OnceLock, RwLock},
 };
 
 use async_executor::Executor;
+use async_io::Async;
 use nvme::{
     admin::{CreateIOCompletionQueue, CreateIOSubmissionQueue},
     ds::{
@@ -18,33 +20,45 @@ use nvme::{
     nvm::{ReadDword13, WriteDword13},
 };
 use twizzler_driver::{
-    dma::{DmaOptions, DmaPool, DMA_PAGE_SIZE},
-    request::{Requester, SubmitRequest, SubmitSummaryWithResponses},
-    DeviceController,
+    device::Device,
+    dma::{DmaOptions, DmaPool, DmaRegion, DMA_PAGE_SIZE},
+    request::{RequestDriver, SubmitRequest},
 };
 use volatile::map_field;
 
-use super::{dma::NvmeDmaRegion, requester::NvmeRequester};
+use super::{
+    dma::NvmeDmaRegion,
+    requester::{InflightRequest, NvmeRequester},
+};
 use crate::nvme::dma::NvmeDmaSliceRegion;
 
-pub struct NvmeController {
-    requester: RwLock<Vec<Requester<NvmeRequester>>>,
-    admin_requester: RwLock<Option<Arc<Requester<NvmeRequester>>>>,
-    int_tasks: Mutex<Vec<async_executor::Task<()>>>,
-    device_ctrl: DeviceController,
+struct NvmeControllerInner {
+    data_requester: NvmeRequester,
+    admin_requester: NvmeRequester,
+    device: Device,
     dma_pool: DmaPool,
+}
+
+pub struct NvmeController {
+    inner: NvmeControllerInner,
     capacity: OnceLock<usize>,
     block_size: OnceLock<usize>,
 }
 
-pub async fn init_controller(ctrl: &mut Arc<NvmeController>, ex: &'static Executor<'static>) {
-    let bar = ctrl.device_ctrl.device().get_mmio(1).unwrap();
+const ADMIN_QUEUE_LEN: u16 = 32;
+const DATA_QUEUE_ID: u16 = 1;
+const DATA_QUEUE_LEN: u16 = 32;
+
+fn init_controller(mut device: Device, mut dma_pool: DmaPool) -> std::io::Result<NvmeController> {
+    let bar = device.get_mmio(1).unwrap();
     let mut reg = unsafe {
         bar.get_mmio_offset_mut::<nvme::ds::controller::properties::ControllerProperties>(0)
     };
     let reg = reg.as_mut_ptr();
 
-    let int = ctrl.device_ctrl.allocate_interrupt().unwrap();
+    let int = device
+        .allocate_interrupt(0)
+        .expect("failed to allocate interrupt");
     let config = ControllerConfig::new();
     map_field!(reg.configuration).write(config);
 
@@ -53,17 +67,21 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>, ex: &'static Execut
     }
 
     let aqa = nvme::ds::controller::properties::aqa::AdminQueueAttributes::new()
-        .with_completion_queue_size(32 - 1)
-        .with_submission_queue_size(32 - 1);
+        .with_completion_queue_size(ADMIN_QUEUE_LEN - 1)
+        .with_submission_queue_size(ADMIN_QUEUE_LEN - 1);
     map_field!(reg.admin_queue_attr).write(aqa);
 
-    let saq = ctrl
-        .dma_pool
-        .allocate_array(32, nvme::ds::queue::subentry::CommonCommand::default())
+    let saq = dma_pool
+        .allocate_array(
+            ADMIN_QUEUE_LEN as usize,
+            nvme::ds::queue::subentry::CommonCommand::default(),
+        )
         .unwrap();
-    let caq = ctrl
-        .dma_pool
-        .allocate_array(32, nvme::ds::queue::comentry::CommonCompletion::default())
+    let caq = dma_pool
+        .allocate_array(
+            ADMIN_QUEUE_LEN as usize,
+            nvme::ds::queue::comentry::CommonCompletion::default(),
+        )
         .unwrap();
 
     let mut saq = NvmeDmaSliceRegion::new(saq);
@@ -110,7 +128,7 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>, ex: &'static Execut
     let smem = unsafe {
         core::slice::from_raw_parts_mut(
             saq.dma_region_mut().get_mut().as_mut_ptr() as *mut u8,
-            32 * size_of::<CommonCommand>(),
+            ADMIN_QUEUE_LEN as usize * size_of::<CommonCommand>(),
         )
     };
     const C_STRIDE: usize = size_of::<CommonCompletion>();
@@ -120,10 +138,10 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>, ex: &'static Execut
     let cmem = unsafe {
         core::slice::from_raw_parts_mut(
             caq.dma_region_mut().get_mut().as_mut_ptr() as *mut u8,
-            32 * size_of::<CommonCompletion>(),
+            ADMIN_QUEUE_LEN as usize * size_of::<CommonCompletion>(),
         )
     };
-    let cq = nvme::queue::CompletionQueue::new(cmem, 32, C_STRIDE).unwrap();
+    let cq = nvme::queue::CompletionQueue::new(cmem, ADMIN_QUEUE_LEN, C_STRIDE).unwrap();
 
     let mut saq_bell = unsafe { bar.get_mmio_offset::<u32>(0x1000) };
     let mut caq_bell = unsafe {
@@ -132,79 +150,78 @@ pub async fn init_controller(ctrl: &mut Arc<NvmeController>, ex: &'static Execut
         )
     };
 
-    let req = NvmeRequester::new(
+    let mut admin_requester = NvmeRequester::new(
         Mutex::new(sq),
         Mutex::new(cq),
         saq_bell.as_mut_ptr().as_raw_ptr().as_ptr(),
         caq_bell.as_mut_ptr().as_raw_ptr().as_ptr(),
+        bar,
         saq,
         caq,
     );
-    let req = Arc::new(Requester::new(req));
+    let interrupt_thread_main = |inum: usize| loop {
+        let more = device.repr().check_for_interrupt(inum).is_some();
 
-    let req2 = req.clone();
-    let ctrl2 = ctrl.clone();
-    let task = ex.spawn(async move {
-        loop {
-            let _i = int.next().await;
-            //tracing::info!("got interrupt {:?}", _i);
-            let resps = req2.driver().check_completions();
-            req2.finish(&resps);
-            for r in ctrl2.requester.read().unwrap().iter() {
-                let c = r.driver().check_completions();
-                r.finish(&c);
-            }
+        while let Some(_req) = admin_requester.get_completion() {}
+
+        if !more {
+            device.repr().wait_for_interrupt(inum, None);
         }
-    });
+    };
 
-    ctrl.int_tasks.lock().unwrap().push(task);
+    let cqid = DATA_QUEUE_ID.into();
+    let sqid = DATA_QUEUE_ID.into();
 
-    *ctrl.admin_requester.write().unwrap() = Some(req);
+    let req = NvmeController::create_queue_pair(
+        &mut admin_requester,
+        &mut dma_pool,
+        &mut device,
+        cqid,
+        sqid,
+        QueuePriority::Medium,
+        DATA_QUEUE_LEN as usize,
+    )?;
 
-    let cqid = 1.into();
-    let sqid = 1.into();
-
-    let req = ctrl
-        .create_queue_pair(cqid, sqid, QueuePriority::Medium, 32)
-        .await;
-
-    ctrl.requester.write().unwrap().push(req);
+    Ok(NvmeController {
+        inner: NvmeControllerInner {
+            data_requester: req,
+            admin_requester,
+            device,
+            dma_pool,
+        },
+        capacity: OnceLock::new(),
+        block_size: OnceLock::new(),
+    })
 }
 
 impl NvmeController {
-    pub fn new(device_ctrl: DeviceController) -> Self {
-        Self {
-            requester: Default::default(),
-            admin_requester: Default::default(),
-            int_tasks: Default::default(),
-            device_ctrl,
-            dma_pool: DmaPool::new(
-                DmaPool::default_spec(),
-                twizzler_driver::dma::Access::BiDirectional,
-                DmaOptions::empty(),
-            ),
-            capacity: OnceLock::new(),
-            block_size: OnceLock::new(),
-        }
+    pub fn new(device: Device) -> std::io::Result<Self> {
+        let dma_pool = DmaPool::new(
+            DmaPool::default_spec(),
+            twizzler_driver::dma::Access::BiDirectional,
+            DmaOptions::empty(),
+        );
+
+        init_controller(device, dma_pool)
     }
 
-    async fn create_queue_pair(
-        &self,
+    fn create_queue_pair(
+        admin_requester: &mut NvmeRequester,
+        dma_pool: &mut DmaPool,
+        device: &mut Device,
         cqid: QueueId,
         sqid: QueueId,
         priority: QueuePriority,
         queue_len: usize,
-    ) -> Requester<NvmeRequester> {
-        let saq = self
-            .dma_pool
+    ) -> std::io::Result<NvmeRequester> {
+        let saq = dma_pool
             .allocate_array(
                 queue_len,
                 nvme::ds::queue::subentry::CommonCommand::default(),
             )
             .unwrap();
 
-        let caq = self
-            .dma_pool
+        let caq = dma_pool
             .allocate_array(
                 queue_len,
                 nvme::ds::queue::comentry::CommonCompletion::default(),
@@ -222,7 +239,7 @@ impl NvmeController {
         let smem = unsafe {
             core::slice::from_raw_parts_mut(
                 saq.dma_region_mut().get_mut().as_mut_ptr() as *mut u8,
-                32 * size_of::<CommonCommand>(),
+                queue_len * size_of::<CommonCommand>(),
             )
         };
 
@@ -234,7 +251,7 @@ impl NvmeController {
         let cmem = unsafe {
             core::slice::from_raw_parts_mut(
                 caq.dma_region_mut().get_mut().as_mut_ptr() as *mut u8,
-                32 * size_of::<CommonCompletion>(),
+                queue_len * size_of::<CommonCompletion>(),
             )
         };
 
@@ -244,11 +261,12 @@ impl NvmeController {
         {
             // TODO: we should save these NvmeDmaRegions so they don't drop (dropping is okay, but
             // this leaks memory )
+
             let cmd = CreateIOCompletionQueue::new(
                 CommandId::new(),
                 cqid,
                 (&mut caq)
-                    .get_prp_list_or_buffer(PrpMode::Single, &self.dma_pool)
+                    .get_prp_list_or_buffer(PrpMode::Single, dma_pool)
                     .unwrap(),
                 ((queue_len - 1) as u16).into(),
                 0,
@@ -256,19 +274,17 @@ impl NvmeController {
             );
 
             let cmd: CommonCommand = cmd.into();
-            let responses = self
-                .admin_requester
-                .read()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .submit_for_response(&mut [SubmitRequest::new(cmd)])
-                .await
-                .unwrap();
-
-            match responses.await {
-                SubmitSummaryWithResponses::Responses(_) => {}
-                x => eprintln!("error creating completion queue {:?}", x),
+            let inflight = admin_requester.submit(cmd).unwrap();
+            loop {
+                if let Some(resp) = admin_requester.get_completion() {
+                    if resp.status().is_error() {
+                        return Err(ErrorKind::Other.into());
+                    }
+                    if inflight.id != resp.command_id().into() {
+                        tracing::error!("got other command ID for queue create command");
+                    }
+                    break;
+                }
             }
         }
 
@@ -277,35 +293,34 @@ impl NvmeController {
                 CommandId::new(),
                 sqid,
                 (&mut saq)
-                    .get_prp_list_or_buffer(PrpMode::Single, &self.dma_pool)
+                    .get_prp_list_or_buffer(PrpMode::Single, dma_pool)
                     .unwrap(),
                 ((queue_len - 1) as u16).into(),
                 cqid,
                 priority,
             );
             let cmd: CommonCommand = cmd.into();
-            let responses = self
-                .admin_requester
-                .read()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .submit_for_response(&mut [SubmitRequest::new(cmd)])
-                .await
-                .unwrap();
-            match responses.await {
-                SubmitSummaryWithResponses::Responses(_) => {}
-                x => eprintln!("error creating submission queue {:?}", x),
+            let cmd: CommonCommand = cmd.into();
+            let inflight = admin_requester.submit(cmd).unwrap();
+            loop {
+                if let Some(resp) = admin_requester.get_completion() {
+                    if resp.status().is_error() {
+                        return Err(ErrorKind::Other.into());
+                    }
+                    if inflight.id != resp.command_id().into() {
+                        tracing::error!("got other command ID for queue create command");
+                    }
+                    break;
+                }
             }
         }
 
-        let bar = self.device_ctrl.device().get_mmio(1).unwrap();
+        let bar = device.get_mmio(1).unwrap();
         let reg = unsafe {
             bar.get_mmio_offset::<nvme::ds::controller::properties::ControllerProperties>(0)
         };
         let reg = reg.into_ptr();
         let bell_stride: usize = map_field!(reg.capabilities).read().doorbell_stride_bytes();
-        let _ = 0;
         let mut saq_bell = unsafe {
             bar.get_mmio_offset::<u32>(0x1000 + (u16::from(sqid) as usize) * 2 * bell_stride)
         };
@@ -318,15 +333,22 @@ impl NvmeController {
             Mutex::new(cq),
             saq_bell.as_mut_ptr().as_raw_ptr().as_ptr(),
             caq_bell.as_mut_ptr().as_raw_ptr().as_ptr(),
+            bar,
             saq,
             caq,
         );
 
-        Requester::new(req)
+        Ok(req)
     }
 
-    pub async fn identify_controller(&self) -> IdentifyControllerDataStructure {
+    pub fn send_identify_controller(
+        &self,
+    ) -> Option<(
+        InflightRequest<'_>,
+        NvmeDmaRegion<IdentifyControllerDataStructure>,
+    )> {
         let ident = self
+            .inner
             .dma_pool
             .allocate(nvme::ds::identify::controller::IdentifyControllerDataStructure::default())
             .unwrap();
@@ -337,18 +359,55 @@ impl NvmeController {
             (&mut ident)
                 .get_dptr(
                     nvme::hosted::memory::DptrMode::Prp(PrpMode::Single),
-                    &self.dma_pool,
+                    &self.inner.dma_pool,
+                )
+                .unwrap(),
+            None,
+        );
+        let ident_cmd: CommonCommand = ident_cmd.into();
+        let inflight = self.inner.admin_requester.submit(ident_cmd)?;
+
+        Some((inflight, ident))
+    }
+
+    pub fn poll(&self, inflight: &InflightRequest) -> std::io::Result<CommonCompletion> {
+        self.inner.data_requester.poll(inflight)
+    }
+
+    pub async fn identify_controller(&self) -> std::io::Result<IdentifyControllerDataStructure> {
+        // TODO: queue full
+        let (inflight, ident_dma) = self.send_identify_controller().unwrap();
+        let asif = Async::new(inflight)?;
+        let cc = asif.read_with(|inflight| self.poll(&*inflight)).await?;
+        if cc.status().is_error() {
+            return Err(ErrorKind::Other.into());
+        }
+        Ok(ident_dma.dma_region().with(|ident| ident.clone()))
+    }
+
+    /*
+    pub async fn async_identify_controller(&self) -> IdentifyControllerDataStructure {
+        let ident = self
+            .inner
+            .dma_pool
+            .allocate(nvme::ds::identify::controller::IdentifyControllerDataStructure::default())
+            .unwrap();
+        let mut ident = NvmeDmaRegion::new(ident);
+        let ident_cmd = nvme::admin::Identify::new(
+            CommandId::new(),
+            nvme::admin::IdentifyCNSValue::IdentifyController,
+            (&mut ident)
+                .get_dptr(
+                    nvme::hosted::memory::DptrMode::Prp(PrpMode::Single),
+                    &self.inner.dma_pool,
                 )
                 .unwrap(),
             None,
         );
         let ident_cmd: CommonCommand = ident_cmd.into();
         let responses = self
+            .inner
             .admin_requester
-            .read()
-            .unwrap()
-            .as_ref()
-            .unwrap()
             .submit_for_response(&mut [SubmitRequest::new(ident_cmd)])
             .await;
         let responses = responses.unwrap().await;
@@ -536,4 +595,5 @@ impl NvmeController {
             block_size
         }
     }
+    */
 }

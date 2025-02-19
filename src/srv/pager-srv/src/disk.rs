@@ -26,7 +26,8 @@ pub struct Disk {
 impl Disk {
     pub async fn new(ex: &'static Executor<'static>) -> Result<Disk, ()> {
         let ctrl = init_nvme(ex).await.expect("failed to open nvme controller");
-        let len = ctrl.flash_len().await;
+        let len = todo!();
+        //let len = ctrl.flash_len().await;
         let len = std::cmp::max(len, u32::MAX as usize / SECTOR_SIZE);
         Ok(Disk {
             ctrl,
@@ -67,11 +68,14 @@ impl Read for Disk {
             if let Some(cached) = self.cache.get(&(lba as u64)) {
                 read_buffer.copy_from_slice(&cached[0..4096]);
             } else {
+                /*
                 block_on(
                     self.ex
                         .run(self.ctrl.read_page(lba as u64, &mut read_buffer, 0)),
                 )
                 .map_err(|_| ErrorKind::Other)?;
+                */
+                todo!();
                 self.cache.insert(lba as u64, Box::new(read_buffer));
             }
 
@@ -118,11 +122,14 @@ impl Write for Disk {
             self.pos += right - left;
 
             self.cache.insert(lba as u64, Box::new(write_buffer));
+            /*
             block_on(
                 self.ex
                     .run(self.ctrl.write_page(lba as u64, &mut write_buffer, 0)),
             )
             .map_err(|_| ErrorKind::Other)?;
+            */
+            todo!();
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 

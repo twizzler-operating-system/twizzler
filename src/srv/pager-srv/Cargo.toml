@@ -19,6 +19,7 @@ object-store = { path = "object-store" }
 twizzler = { path = "../../lib/twizzler" }
 nvme = { path = "../../lib/nvme-rs" }
 devmgr = { path = "../../lib/devmgr" }
+slab = { version = "*", features = [] }
 
 async-trait = "0.1.66"
 volatile = "0.5"
@@ -31,6 +32,7 @@ tracing-log = "*"
 
 async-io = "2.3.2"
 async-executor = { version = "1.9.1", features = [] }
+twizzler-futures = { path = "../../lib/twizzler-futures" }
 polling = "3.6.0"
 futures = "*"
 colored = "*"
