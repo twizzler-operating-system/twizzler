@@ -10,10 +10,14 @@ use nvme::{
     admin::{CreateIOCompletionQueue, CreateIOSubmissionQueue},
     ds::{
         controller::properties::config::ControllerConfig,
-        identify::controller::IdentifyControllerDataStructure,
+        identify::{
+            controller::IdentifyControllerDataStructure, namespace::IdentifyNamespaceDataStructure,
+        },
         namespace::{NamespaceId, NamespaceList},
         queue::{
-            comentry::CommonCompletion, subentry::CommonCommand, CommandId, QueueId, QueuePriority,
+            comentry::CommonCompletion,
+            subentry::{CommonCommand, Dptr},
+            CommandId, QueueId, QueuePriority,
         },
     },
     hosted::memory::{PhysicalPageCollection, PrpMode},
@@ -370,19 +374,233 @@ impl NvmeController {
         Some((inflight, ident))
     }
 
-    pub fn poll(&self, inflight: &InflightRequest) -> std::io::Result<CommonCompletion> {
-        self.inner.data_requester.poll(inflight)
+    pub fn send_list_namespaces(
+        &self,
+    ) -> Option<(InflightRequest<'_>, NvmeDmaRegion<[u8; DMA_PAGE_SIZE]>)> {
+        let nslist = self.inner.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
+        let mut nslist = NvmeDmaRegion::new(nslist);
+        let nslist_cmd = nvme::admin::Identify::new(
+            CommandId::new(),
+            nvme::admin::IdentifyCNSValue::ActiveNamespaceIdList(NamespaceId::default()),
+            (&mut nslist)
+                .get_dptr(
+                    nvme::hosted::memory::DptrMode::Prp(PrpMode::Single),
+                    &self.inner.dma_pool,
+                )
+                .unwrap(),
+            None,
+        );
+        let nslist_cmd: CommonCommand = nslist_cmd.into();
+        let inflight = self.inner.admin_requester.submit(nslist_cmd)?;
+        Some((inflight, nslist))
+    }
+
+    pub fn send_identify_namespace(
+        &self,
+        nsid: NamespaceId,
+    ) -> Option<(
+        InflightRequest<'_>,
+        NvmeDmaRegion<IdentifyNamespaceDataStructure>,
+    )> {
+        let ident = self
+            .inner
+            .dma_pool
+            .allocate(nvme::ds::identify::namespace::IdentifyNamespaceDataStructure::default())
+            .unwrap();
+        let mut ident = NvmeDmaRegion::new(ident);
+        let ident_cmd = nvme::admin::Identify::new(
+            CommandId::new(),
+            nvme::admin::IdentifyCNSValue::IdentifyNamespace(nsid),
+            (&mut ident)
+                .get_dptr(
+                    nvme::hosted::memory::DptrMode::Prp(PrpMode::Single),
+                    &self.inner.dma_pool,
+                )
+                .unwrap(),
+            None,
+        );
+        let ident_cmd: CommonCommand = ident_cmd.into();
+        let inflight = self.inner.admin_requester.submit(ident_cmd)?;
+        Some((inflight, ident))
     }
 
     pub async fn identify_controller(&self) -> std::io::Result<IdentifyControllerDataStructure> {
         // TODO: queue full
         let (inflight, ident_dma) = self.send_identify_controller().unwrap();
         let asif = Async::new(inflight)?;
-        let cc = asif.read_with(|inflight| self.poll(&*inflight)).await?;
+        let cc = asif.read_with(|inflight| inflight.poll()).await?;
         if cc.status().is_error() {
+            tracing::warn!("nvme error");
             return Err(ErrorKind::Other.into());
         }
         Ok(ident_dma.dma_region().with(|ident| ident.clone()))
+    }
+
+    pub async fn identify_namespace(
+        &self,
+        nsid: NamespaceId,
+    ) -> std::io::Result<IdentifyNamespaceDataStructure> {
+        // TODO: queue full
+        let (inflight, ident_dma) = self.send_identify_namespace(nsid).unwrap();
+        let asif = Async::new(inflight)?;
+        let cc = asif.read_with(|inflight| inflight.poll()).await?;
+        if cc.status().is_error() {
+            tracing::warn!("nvme error");
+            return Err(ErrorKind::Other.into());
+        }
+        Ok(ident_dma.dma_region().with(|ident| ident.clone()))
+    }
+
+    pub async fn flash_len(&self) -> usize {
+        if let Some(sz) = self.capacity.get() {
+            *sz
+        } else {
+            let ns = self
+                .identify_namespace(NamespaceId::new(1u32))
+                .await
+                .unwrap();
+            let block_size = ns.lba_formats()[ns.formatted_lba_size.index()].data_size();
+            let _ = self.capacity.set(block_size * ns.capacity as usize);
+            block_size * ns.capacity as usize
+        }
+    }
+
+    pub async fn get_lba_size(&self) -> usize {
+        if let Some(sz) = self.block_size.get() {
+            *sz
+        } else {
+            let ns = self
+                .identify_namespace(NamespaceId::new(1u32))
+                .await
+                .unwrap();
+            let block_size = ns.lba_formats()[ns.formatted_lba_size.index()].data_size();
+            let _ = self.block_size.set(block_size);
+            block_size
+        }
+    }
+
+    pub fn blocking_get_lba_size(&self) -> usize {
+        if let Some(sz) = self.block_size.get() {
+            *sz
+        } else {
+            let (inflight, dma) = self
+                .send_identify_namespace(NamespaceId::new(1u32))
+                .unwrap();
+            let cc = loop {
+                inflight.req.get_completion();
+                if let Ok(cc) = inflight.poll() {
+                    break cc;
+                }
+            };
+            if cc.status().is_error() {
+                panic!("error on ident ns")
+            }
+            let ns = dma.dma_region().with(|ident| ident.clone());
+            let block_size = ns.lba_formats()[ns.formatted_lba_size.index()].data_size();
+            let _ = self.block_size.set(block_size);
+            block_size
+        }
+    }
+
+    pub fn send_read_page(
+        &self,
+        lba_start: u64,
+        dptr: Dptr,
+        nr_blocks_per_page: usize,
+    ) -> Option<InflightRequest<'_>> {
+        let cmd = nvme::nvm::ReadCommand::new(
+            CommandId::new(),
+            NamespaceId::new(1u32),
+            dptr,
+            lba_start,
+            nr_blocks_per_page as u16,
+            ReadDword13::default(),
+        );
+        let cmd: CommonCommand = cmd.into();
+        self.inner.data_requester.submit(cmd)
+    }
+
+    pub fn send_write_page(
+        &self,
+        lba_start: u64,
+        dptr: Dptr,
+        nr_blocks_per_page: usize,
+    ) -> Option<InflightRequest<'_>> {
+        let cmd = nvme::nvm::WriteCommand::new(
+            CommandId::new(),
+            NamespaceId::new(1u32),
+            dptr,
+            lba_start,
+            nr_blocks_per_page as u16,
+            WriteDword13::default(),
+        );
+        let cmd: CommonCommand = cmd.into();
+        self.inner.data_requester.submit(cmd)
+    }
+
+    pub async fn read_page(
+        &self,
+        lba_start: u64,
+        out_buffer: &mut [u8],
+        offset: usize,
+    ) -> std::io::Result<()> {
+        let nr_blocks = DMA_PAGE_SIZE / self.get_lba_size().await;
+        let buffer = self.inner.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
+        let mut buffer = NvmeDmaRegion::new(buffer);
+        let dptr = (&mut buffer)
+            .get_dptr(
+                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
+                &self.inner.dma_pool,
+            )
+            .unwrap();
+        // TODO: queue full
+        let inflight = self.send_read_page(0, dptr, nr_blocks).unwrap();
+        let asif = Async::new(inflight)?;
+        let cc = asif.read_with(|inflight| inflight.poll()).await?;
+        if cc.status().is_error() {
+            return Err(ErrorKind::Other.into());
+        }
+        buffer.dma_region().with(|data| {
+            out_buffer.copy_from_slice(&data[offset..DMA_PAGE_SIZE]);
+            Ok(())
+        })
+    }
+
+    pub fn blocking_read_page(
+        &self,
+
+        lba_start: u64,
+        out_buffer: &mut [u8],
+        offset: usize,
+    ) -> std::io::Result<()> {
+        let nr_blocks = DMA_PAGE_SIZE / self.blocking_get_lba_size();
+        let buffer = self.inner.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
+        let mut buffer = NvmeDmaRegion::new(buffer);
+        let dptr = (&mut buffer)
+            .get_dptr(
+                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
+                &self.inner.dma_pool,
+            )
+            .unwrap();
+        // TODO: queue full
+        let inflight = self.send_read_page(0, dptr, nr_blocks).unwrap();
+
+        let cc = loop {
+            inflight.req.get_completion();
+            if let Ok(cc) = inflight.poll() {
+                if cc.command_id() == inflight.id.into() {
+                    break cc;
+                }
+            }
+        };
+
+        if cc.status().is_error() {
+            return Err(ErrorKind::Other.into());
+        }
+        buffer.dma_region().with(|data| {
+            out_buffer.copy_from_slice(&data[offset..DMA_PAGE_SIZE]);
+            Ok(())
+        })
     }
 
     /*

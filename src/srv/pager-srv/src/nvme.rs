@@ -28,8 +28,12 @@ pub async fn init_nvme(ex: &'static Executor<'static>) -> Option<Arc<NvmeControl
             );
 
             let ctrl = Arc::new(NvmeController::new(device).ok()?);
-            let ident = ctrl.identify_controller().await;
-            tracing::info!("ident: {:?}", ident);
+            //let ident = ctrl.identify_controller().await.unwrap();
+            //tracing::info!("ident: {:?}", ident);
+
+            let mut buf = [0; 0x1000];
+            ctrl.blocking_read_page(0, &mut buf, 0).unwrap();
+
             return Some(ctrl);
         }
     }
