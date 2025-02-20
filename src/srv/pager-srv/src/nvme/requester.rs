@@ -35,8 +35,14 @@ pub struct NvmeRequester {
 }
 
 pub struct InflightRequest<'a> {
-    req: &'a NvmeRequester,
+    pub req: &'a NvmeRequester,
     pub id: u16,
+}
+
+impl<'a> InflightRequest<'a> {
+    pub fn poll(&self) -> std::io::Result<CommonCompletion> {
+        self.req.poll(self)
+    }
 }
 
 unsafe impl Send for NvmeRequester {}
@@ -175,9 +181,10 @@ impl NvmeRequester {
     }
 
     pub fn poll(&self, inflight: &InflightRequest) -> std::io::Result<CommonCompletion> {
-        tracing::info!("drop ifr {}", inflight.id);
+        tracing::info!("poll ifr {}", inflight.id);
         let requests = self.requests.lock().unwrap();
         let Some(entry) = requests.get(inflight.id as usize) else {
+            tracing::warn!("sadness");
             return Err(ErrorKind::Other.into());
         };
         if entry.flags.load(Ordering::SeqCst) & READY != 0 {
