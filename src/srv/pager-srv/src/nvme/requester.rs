@@ -59,11 +59,9 @@ pub struct NvmeRequest {
 
 impl<'a> Drop for InflightRequest<'a> {
     fn drop(&mut self) {
-        tracing::info!("drop ifr {}", self.id);
         let mut requests = self.req.requests.lock().unwrap();
         let entry = requests.get(self.id as usize).unwrap();
         if entry.flags.fetch_or(DROPPED, Ordering::SeqCst) & READY != 0 {
-            tracing::info!("{} dropped while ready", self.id);
             requests.remove(self.id as usize);
         }
     }
@@ -137,12 +135,10 @@ impl NvmeRequester {
         self.subq.lock().unwrap().update_head(resp.new_sq_head());
         self.com_bell().write(bell as u32);
         let id: u16 = resp.command_id().into();
-        tracing::info!("got {} as compl", id);
         let mut requests = self.requests.lock().unwrap();
         let entry = requests.get(id as usize).unwrap();
         unsafe { entry.ready.get().as_mut().unwrap().write(resp) };
         if entry.flags.fetch_or(READY, Ordering::SeqCst) & DROPPED != 0 {
-            tracing::info!("{} already dropped", id);
             requests.remove(id as usize);
         } else {
             let _ = twizzler_abi::syscall::sys_thread_sync(
@@ -159,32 +155,25 @@ impl NvmeRequester {
 
     #[inline]
     pub fn submit(&self, mut cmd: CommonCommand) -> Option<InflightRequest<'_>> {
-        tracing::info!("0");
         let mut requests = self.requests.lock().unwrap();
         let entry = requests.vacant_entry();
         let id = entry.key() as u16;
-        tracing::info!("a: {}", id);
         cmd.set_cid(id.into());
         entry.insert(NvmeRequest::new(cmd));
         let entry = requests.get(id as usize)?;
-        tracing::info!("b: {}", id);
         let mut sq = self.subq.lock().unwrap();
         if let Some(tail) = sq.submit(&entry.cmd) {
             self.sub_bell().write(tail as u32);
-            tracing::info!("c: {}", id);
             Some(InflightRequest { req: self, id })
         } else {
             requests.remove(id as usize);
-            tracing::info!("x: {}", id);
             None
         }
     }
 
     pub fn poll(&self, inflight: &InflightRequest) -> std::io::Result<CommonCompletion> {
-        tracing::info!("poll ifr {}", inflight.id);
         let requests = self.requests.lock().unwrap();
         let Some(entry) = requests.get(inflight.id as usize) else {
-            tracing::warn!("sadness");
             return Err(ErrorKind::Other.into());
         };
         if entry.flags.load(Ordering::SeqCst) & READY != 0 {

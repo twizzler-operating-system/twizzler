@@ -52,7 +52,7 @@ pub enum SyncMode {
 
 bitflags::bitflags! {
     /// Options for DMA regions.
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     pub struct DmaOptions : u64 {
         /// Region functions will not perform automatic coherence.
         const UNSAFE_MANUAL_COHERENCE = 1;

@@ -4210,7 +4210,7 @@ name = "nvme"
 version = "0.1.0"
 dependencies = [
  "modular-bitfield",
- "volatile",
+ "volatile_cell",
 ]
 
 [[package]]
@@ -5158,6 +5158,12 @@ dependencies = [
  "cfg-if 1.0.0",
  "ordered-multimap",
 ]
+
+[[package]]
+name = "rust-libcore"
+version = "0.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae7a33830cc02d03ae1e50057d0e4e4b1a84be09bfb158bf95e9c3f3373aa453"
 
 [[package]]
 name = "rustc-demangle"
@@ -6605,6 +6611,15 @@ name = "volatile"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f05a5337d258c4ef40d920ffcc5a729278951d57e6596f8b62ca7d4827613e77"
+
+[[package]]
+name = "volatile_cell"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e89c44c56cc47ef6c4fccb52a3a5c48c4306929294fdf4ffe67321a0071bba72"
+dependencies = [
+ "rust-libcore",
+]
 
 [[package]]
 name = "walkdir"
