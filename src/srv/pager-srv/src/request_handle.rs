@@ -53,10 +53,10 @@ pub async fn handle_kernel_request(
             )))
         }
         KernelCommand::ObjectDel(obj_id) => {
-            if ctx.ostore.unlink_object(obj_id.raw()).is_ok() {
+            if ctx.paged_ostore.delete_object(obj_id.raw()).is_ok() {
                 let _ = ctx
-                    .ostore
-                    .advance_epoch()
+                    .paged_ostore
+                    .flush()
                     .inspect_err(|e| tracing::warn!("failed to advance epoch: {}", e));
             }
             Some(CompletionToKernel::new(KernelCompletionData::SyncOkay(
@@ -64,16 +64,16 @@ pub async fn handle_kernel_request(
             )))
         }
         KernelCommand::ObjectCreate(object_info) => {
-            let _ = ctx.ostore.unlink_object(object_info.obj_id.raw());
-            if let Err(e) = ctx.ostore.do_create_object(object_info.obj_id.raw()) {
+            let _ = ctx.paged_ostore.delete_object(object_info.obj_id.raw());
+            if let Err(e) = ctx.paged_ostore.create_object(object_info.obj_id.raw()) {
                 tracing::warn!("failed to create object {}: {}", object_info.obj_id, e);
                 Some(CompletionToKernel::new(KernelCompletionData::Error))
             } else {
                 // TODO: REMOVE ONCE WE HAVE RANDOM ACCESS
                 let buf = [0; 0x1000 * 8];
                 let _ = ctx
-                    .ostore
-                    .write_all(object_info.obj_id.raw(), &buf, 0)
+                    .paged_ostore
+                    .write_object(object_info.obj_id.raw(), 0, &buf)
                     .inspect_err(|e| {
                         tracing::warn!(
                             "failed to write pager info page for object {}: {}",

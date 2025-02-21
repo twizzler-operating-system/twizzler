@@ -1,13 +1,16 @@
 #![feature(ptr_sub_ptr)]
 #![feature(naked_functions)]
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::{
+    any::Any,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use async_executor::Executor;
 use async_io::block_on;
 use colored::Colorize;
-use disk::Disk;
-use object_store::{key_fprint, LetheIoWrapper, LetheObjectStore, LetheState};
+use disk::{Disk, DiskPageRequest};
+use object_store::{key_fprint, LetheIoWrapper, LetheObjectStore, LetheState, PagedObjectStore};
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
     object::{ObjectBuilder, RawObject},
@@ -200,7 +203,8 @@ async fn report_ready(
 struct PagerContext {
     data: PagerData,
     sender: Arc<QueueSender<RequestFromPager, CompletionToPager>>,
-    ostore: LetheObjectStore<LetheIoWrapper<disk::Disk>>,
+    //ostore: LetheObjectStore<LetheIoWrapper<disk::Disk>>,
+    paged_ostore: Box<dyn PagedObjectStore<DiskPageRequest> + 'static + Sync + Send>,
 }
 
 static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
@@ -209,13 +213,24 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data, ex) = pager_init(q1, q2);
     let disk = block_on(ex.run(Disk::new(ex))).unwrap();
     let disk = LetheIoWrapper::new(disk);
-    let ostore = object_store::LetheObjectStore::open(disk, [0; 32]);
+    let ostore = object_store::LetheObjectStore::open(disk.clone(), [0; 32]);
+    let (name, ostore): (
+        &str,
+        Box<dyn PagedObjectStore<DiskPageRequest> + Send + Sync + 'static>,
+    ) = match ostore {
+        Ok(o) => ("lethe", Box::new(o)),
+        Err(_) => (
+            "ext2",
+            Box::new(object_store::Ext2ObjectStore::new(disk.into_inner(), 0).unwrap()),
+        ),
+    };
+    tracing::info!("opened object store as {}", name);
     let sq = Arc::new(sq);
     let sqc = sq.clone();
     let _ = PAGER_CTX.set(PagerContext {
         data,
         sender: sq,
-        ostore,
+        paged_ostore: ostore,
     });
     let ctx = PAGER_CTX.get().unwrap();
     spawn_queues(ctx, rq, ex);
@@ -225,10 +240,12 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     }));
     tracing::info!("pager ready");
 
-    let bootstrap_id = ctx.ostore.do_get_config_id().unwrap().unwrap_or_else(|| {
+    let bootstrap_id = ctx.paged_ostore.get_config_id().unwrap_or_else(|_| {
         tracing::info!("creating new naming object");
         let vo = VecObject::<u32, VecObjectAlloc>::new(ObjectBuilder::default().persist()).unwrap();
-        ctx.ostore.do_set_config_id(vo.object().id().raw()).unwrap();
+        ctx.paged_ostore
+            .set_config_id(vo.object().id().raw())
+            .unwrap();
         vo.object().id().raw()
     });
     tracing::info!("found root namespace: {:x}", bootstrap_id);
@@ -289,6 +306,7 @@ pub fn full_object_sync(id: ObjID) {
 
 #[secgate::secure_gate]
 pub fn show_lethe() {
+    /*
     colored::control::set_override(true);
     static LAST: Mutex<Option<LetheState>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap();
@@ -340,9 +358,10 @@ pub fn show_lethe() {
     }
 
     *last = Some(state);
+    */
 }
 
 #[secgate::secure_gate]
 pub fn adv_lethe() {
-    PAGER_CTX.get().unwrap().ostore.advance_epoch().unwrap();
+    PAGER_CTX.get().unwrap().paged_ostore.flush().unwrap();
 }
