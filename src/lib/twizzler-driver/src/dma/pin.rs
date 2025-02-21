@@ -44,6 +44,12 @@ impl PhysInfo {
     }
 }
 
+impl From<PhysInfo> for u64 {
+    fn from(p: PhysInfo) -> Self {
+        p.addr.into()
+    }
+}
+
 impl From<PhysAddr> for u64 {
     fn from(p: PhysAddr) -> Self {
         p.0

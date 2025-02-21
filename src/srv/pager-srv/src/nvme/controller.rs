@@ -428,9 +428,13 @@ impl NvmeController {
         // TODO: queue full
         let (inflight, ident_dma) = self.send_identify_controller().unwrap();
         let asif = Async::new(inflight)?;
-        let cc = asif.read_with(|inflight| inflight.poll()).await?;
+        let cc = asif
+            .read_with(|inflight| {
+                while let Some(cc) = inflight.req.get_completion() {}
+                inflight.poll()
+            })
+            .await?;
         if cc.status().is_error() {
-            tracing::warn!("nvme error");
             return Err(ErrorKind::Other.into());
         }
         Ok(ident_dma.dma_region().with(|ident| ident.clone()))
@@ -445,7 +449,6 @@ impl NvmeController {
         let asif = Async::new(inflight)?;
         let cc = asif.read_with(|inflight| inflight.poll()).await?;
         if cc.status().is_error() {
-            tracing::warn!("nvme error");
             return Err(ErrorKind::Other.into());
         }
         Ok(ident_dma.dma_region().with(|ident| ident.clone()))
@@ -568,7 +571,6 @@ impl NvmeController {
 
     pub fn blocking_read_page(
         &self,
-
         lba_start: u64,
         out_buffer: &mut [u8],
         offset: usize,
@@ -583,7 +585,7 @@ impl NvmeController {
             )
             .unwrap();
         // TODO: queue full
-        let inflight = self.send_read_page(0, dptr, nr_blocks).unwrap();
+        let inflight = self.send_read_page(lba_start, dptr, nr_blocks).unwrap();
 
         let cc = loop {
             inflight.req.get_completion();
@@ -601,6 +603,77 @@ impl NvmeController {
             out_buffer.copy_from_slice(&data[offset..DMA_PAGE_SIZE]);
             Ok(())
         })
+    }
+
+    pub fn blocking_write_page(
+        &self,
+        lba_start: u64,
+        in_buffer: &[u8],
+        offset: usize,
+    ) -> std::io::Result<()> {
+        let nr_blocks = DMA_PAGE_SIZE / self.blocking_get_lba_size();
+        let mut buffer = self.inner.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
+        buffer.with_mut(|data| data[offset..(offset + in_buffer.len())].copy_from_slice(in_buffer));
+        let mut buffer = NvmeDmaRegion::new(buffer);
+        let dptr = (&mut buffer)
+            .get_dptr(
+                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
+                &self.inner.dma_pool,
+            )
+            .unwrap();
+        // TODO: queue full
+        let inflight = self.send_write_page(lba_start, dptr, nr_blocks).unwrap();
+
+        let cc = loop {
+            inflight.req.get_completion();
+            if let Ok(cc) = inflight.poll() {
+                if cc.command_id() == inflight.id.into() {
+                    break cc;
+                }
+            }
+        };
+
+        if cc.status().is_error() {
+            return Err(ErrorKind::Other.into());
+        }
+        Ok(())
+    }
+
+    pub fn blocking_write_pages<const NR: usize>(
+        &self,
+        lba_start: u64,
+        in_buffer: &[u8],
+    ) -> std::io::Result<()> {
+        let nr_blocks = DMA_PAGE_SIZE * NR / self.blocking_get_lba_size();
+        let mut buffer = self
+            .inner
+            .dma_pool
+            .allocate_array(NR * DMA_PAGE_SIZE, 0u8)
+            .unwrap();
+        buffer.with_mut(0..buffer.len(), |data| data.copy_from_slice(in_buffer));
+        let mut buffer = NvmeDmaSliceRegion::new(buffer);
+        let dptr = (&mut buffer)
+            .get_dptr(
+                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
+                &self.inner.dma_pool,
+            )
+            .unwrap();
+        // TODO: queue full
+        let inflight = self.send_write_page(lba_start, dptr, nr_blocks).unwrap();
+
+        let cc = loop {
+            inflight.req.get_completion();
+            if let Ok(cc) = inflight.poll() {
+                if cc.command_id() == inflight.id.into() {
+                    break cc;
+                }
+            }
+        };
+
+        if cc.status().is_error() {
+            return Err(ErrorKind::Other.into());
+        }
+        Ok(())
     }
 
     /*

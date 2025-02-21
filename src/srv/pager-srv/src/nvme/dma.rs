@@ -4,6 +4,7 @@ use nvme::{
 };
 use twizzler_driver::dma::{DeviceSync, DmaPin, DmaPool, DmaRegion, DmaSliceRegion, DMA_PAGE_SIZE};
 
+#[derive(Debug)]
 struct PrpMgr {
     _list: Vec<DmaSliceRegion<u64>>,
     mode: PrpMode,
@@ -33,7 +34,7 @@ impl<'a, T: DeviceSync> NvmeDmaRegion<T> {
     }
 }
 
-fn __get_prp_list_or_buffer(pin: DmaPin, dma: &DmaPool, mode: PrpMode) -> PrpMgr {
+pub fn get_prp_list_or_buffer(pin: DmaPin, dma: &DmaPool, mode: PrpMode) -> PrpMgr {
     let entries_per_page = DMA_PAGE_SIZE / 8;
     let pin_len = pin.len();
     let mut pin_iter = pin.into_iter();
@@ -41,15 +42,15 @@ fn __get_prp_list_or_buffer(pin: DmaPin, dma: &DmaPool, mode: PrpMode) -> PrpMgr
     let prp = match pin_len {
         1 => PrpMgr {
             _list: vec![],
-            embed: [pin_iter.next().unwrap().addr().into(), 0],
+            embed: [pin_iter.next().unwrap().into(), 0],
             mode,
             buffer: true,
         },
         2 if mode == PrpMode::Double => PrpMgr {
             _list: vec![],
             embed: [
-                pin_iter.next().unwrap().addr().into(),
-                pin_iter.next().unwrap().addr().into(),
+                pin_iter.next().unwrap().into(),
+                pin_iter.next().unwrap().into(),
             ],
             mode,
             buffer: false,
@@ -97,6 +98,7 @@ fn __get_prp_list_or_buffer(pin: DmaPin, dma: &DmaPool, mode: PrpMode) -> PrpMgr
             }
         }
     };
+    //tracing::info!("got: {:?}", prp);
     prp
 }
 
@@ -134,7 +136,7 @@ impl<'a, T: DeviceSync> PhysicalPageCollection for &'a mut NvmeDmaRegion<T> {
         }
 
         let pin = self.reg.pin().unwrap();
-        self.prp = Some(__get_prp_list_or_buffer(pin, dma, mode));
+        self.prp = Some(get_prp_list_or_buffer(pin, dma, mode));
         Some(self.prp.as_ref().unwrap().prp_list_or_buffer())
     }
 
@@ -176,7 +178,7 @@ impl<'a, T: DeviceSync> PhysicalPageCollection for &'a mut NvmeDmaSliceRegion<T>
         }
 
         let pin = self.reg.pin().unwrap();
-        self.prp = Some(__get_prp_list_or_buffer(pin, dma, mode));
+        self.prp = Some(get_prp_list_or_buffer(pin, dma, mode));
         Some(self.prp.as_ref().unwrap().prp_list_or_buffer())
     }
 
