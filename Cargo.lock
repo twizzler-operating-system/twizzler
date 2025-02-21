@@ -2773,14 +2773,13 @@ dependencies = [
 
 [[package]]
 name = "happylock"
-version = "0.3.0"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1949ae82dd58a6d8a76ec4761e3b1e01ffd9eb3871cb2d8eba6eda8e66a7b3d6"
+checksum = "95a9c5f45d0c6a03e4cfb73cbb249e96b61c63dd64124f9f106fd9bd8d082cb5"
 dependencies = [
  "lock_api",
- "once_cell",
+ "mutants",
  "parking_lot",
- "thread_local",
 ]
 
 [[package]]
@@ -3262,6 +3261,7 @@ dependencies = [
  "async-io",
  "futures",
  "monitor-api",
+ "naming-core",
  "polling",
  "rprompt",
  "tracing",
@@ -3448,6 +3448,12 @@ dependencies = [
  "quote",
  "syn 1.0.109",
 ]
+
+[[package]]
+name = "lazy-init"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f40963626ac12dcaf92afc15e4c3db624858c92fd9f8ba2125eaada3ac2706f"
 
 [[package]]
 name = "lazy_static"
@@ -3917,6 +3923,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "mutants"
+version = "0.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
+
+[[package]]
 name = "naming"
 version = "0.1.0"
 dependencies = [
@@ -3945,6 +3957,7 @@ name = "naming-srv"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "lazy-init",
  "lazy_static",
  "naming-core",
  "secgate",

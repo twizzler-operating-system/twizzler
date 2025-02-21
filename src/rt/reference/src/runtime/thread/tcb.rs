@@ -5,16 +5,12 @@
 //! library, really, nearly arbitrarily, so we just avoid any complex code in here
 //! that might call into std (with one exception, below).
 
-use std::{
-    alloc::GlobalAlloc,
-    collections::BTreeMap,
-    panic::catch_unwind,
-    sync::{atomic::Ordering, RwLock},
-};
+use std::{alloc::GlobalAlloc, collections::BTreeMap, panic::catch_unwind, sync::atomic::Ordering};
 
 use dynlink::tls::Tcb;
 use monitor_api::{RuntimeThreadControl, TlsTemplateInfo, THREAD_STARTED};
 use tracing::trace;
+use twizzler_abi::simple_mutex::Mutex;
 
 use crate::runtime::OUR_RUNTIME;
 
@@ -67,7 +63,7 @@ pub(crate) struct TlsGen {
 
 unsafe impl Send for TlsGen {}
 
-pub(crate) static TLS_GEN_MGR: RwLock<TlsGenMgr> = RwLock::new(TlsGenMgr {
+pub(crate) static TLS_GEN_MGR: Mutex<TlsGenMgr> = Mutex::new(TlsGenMgr {
     map: BTreeMap::new(),
 });
 

@@ -22,7 +22,6 @@ impl Unmapper {
             _thread: std::thread::Builder::new()
                 .name("unmapper".to_string())
                 .spawn(move || loop {
-                    let key = happylock::ThreadKey::get().unwrap();
                     match receiver.recv() {
                         Ok(info) => {
                             tracing::debug!("unmapper command {:?}", info);
@@ -30,7 +29,7 @@ impl Unmapper {
                                 let monitor = get_monitor();
                                 match info {
                                     UnmapCommand::SpaceUnmap(info) => {
-                                        let mut space = monitor.space.write(key);
+                                        let mut space = monitor.space.lock().unwrap();
                                         space.handle_drop(info);
                                     }
                                 }

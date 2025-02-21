@@ -211,17 +211,22 @@ impl Context {
         self.add_dep(parent.0, dependee.0);
     }
 
-    pub fn unload_compartment(&mut self, comp_id: CompartmentId) {
+    pub fn unload_compartment(
+        &mut self,
+        comp_id: CompartmentId,
+    ) -> (Option<Compartment>, Vec<LoadedOrUnloaded>) {
         let Ok(comp) = self.get_compartment(comp_id) else {
-            return;
+            return (None, vec![]);
         };
         let name = comp.name.clone();
-        let ids = comp.library_ids().collect::<Vec<_>>();
-        for lib in ids {
-            self.library_deps.remove_node(lib.0);
-        }
+        let ids = comp.library_ids();
+        let nodes = ids
+            .collect::<Vec<_>>()
+            .iter()
+            .filter_map(|id| self.library_deps.remove_node(id.0))
+            .collect();
         self.compartment_names.remove(&name);
-        self.compartments.remove(comp_id.0);
+        (self.compartments.remove(comp_id.0), nodes)
     }
 
     /// Create a new compartment with a given name.

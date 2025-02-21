@@ -1,4 +1,7 @@
-use std::{ptr::NonNull, sync::OnceLock};
+use std::{
+    ptr::NonNull,
+    sync::{Mutex, OnceLock},
+};
 
 use compartment::{
     StackObject, COMP_DESTRUCTED, COMP_EXITED, COMP_IS_BINARY, COMP_READY, COMP_STARTED,
@@ -39,7 +42,7 @@ pub struct Monitor {
     locks: LockCollection<MonitorLocks<'static>>,
     unmapper: OnceLock<Unmapper>,
     /// Management of address space.
-    pub space: &'static RwLock<space::Space>,
+    pub space: &'static Mutex<space::Space>,
     /// Management of all threads.
     pub thread_mgr: &'static RwLock<thread::ThreadMgr>,
     /// Management of compartments.
@@ -55,7 +58,6 @@ pub struct Monitor {
 // We allow locking individually, using eg mon.space.write(key), or locking the collection for more
 // complex operations that touch multiple pieces of state.
 type MonitorLocks<'a> = (
-    &'a RwLock<space::Space>,
     &'a RwLock<thread::ThreadMgr>,
     &'a RwLock<compartment::CompartmentMgr>,
     &'a RwLock<&'static mut dynlink::context::Context>,
@@ -121,7 +123,7 @@ impl Monitor {
 
         // Allocate and leak all the locks (they are global and eternal, so we can do this to safely
         // and correctly get &'static lifetime)
-        let space = Box::leak(Box::new(RwLock::new(space)));
+        let space = Box::leak(Box::new(Mutex::new(space)));
         let thread_mgr = Box::leak(Box::new(RwLock::new(thread::ThreadMgr::default())));
         let comp_mgr = Box::leak(Box::new(RwLock::new(comp_mgr)));
         let dynlink = Box::leak(Box::new(RwLock::new(ctx)));
@@ -131,7 +133,6 @@ impl Monitor {
         // Okay to call try_new here, since it's not many locks and only happens once.
         Self {
             locks: LockCollection::try_new((
-                &*space,
                 &*thread_mgr,
                 &*comp_mgr,
                 &*dynlink,
@@ -155,10 +156,8 @@ impl Monitor {
         let key = ThreadKey::get().unwrap();
         let locks = &mut *self.locks.lock(key);
 
-        let monitor_dynlink_comp = locks.3.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
-        locks
-            .1
-            .start_thread(&mut locks.0, monitor_dynlink_comp, main, None)
+        let monitor_dynlink_comp = locks.2.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
+        locks.0.start_thread(monitor_dynlink_comp, main, None)
     }
 
     /// Spawn a thread into a given compartment, using initial thread arguments.
@@ -194,7 +193,7 @@ impl Monitor {
     /// Map an object into a given compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn map_object(&self, sctx: ObjID, info: MapInfo) -> Result<MapHandle, MapError> {
-        let handle = self.space.write(ThreadKey::get().unwrap()).map(info)?;
+        let handle = self.space.lock().unwrap().map(info)?;
 
         let mut comp_mgr = self.comp_mgr.write(ThreadKey::get().unwrap());
         let rc = comp_mgr.get_mut(sctx).ok_or(MapError::InvalidArgument)?;
@@ -210,10 +209,7 @@ impl Monitor {
         info: MapInfo,
         info2: MapInfo,
     ) -> Result<(MapHandle, MapHandle), MapError> {
-        let (handle, handle2) = self
-            .space
-            .write(ThreadKey::get().unwrap())
-            .map_pair(info, info2)?;
+        let (handle, handle2) = self.space.lock().unwrap().map_pair(info, info2)?;
 
         let mut comp_mgr = self.comp_mgr.write(ThreadKey::get().unwrap());
         let rc = comp_mgr.get_mut(sctx).ok_or(MapError::InvalidArgument)?;
@@ -242,9 +238,9 @@ impl Monitor {
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_thread_simple_buffer(&self, sctx: ObjID, thread: ObjID) -> Option<ObjID> {
         let mut locks = self.locks.lock(ThreadKey::get().unwrap());
-        let (ref mut space, _, ref mut comps, _, _, _) = *locks;
+        let (_, ref mut comps, _, _, _) = *locks;
         let rc = comps.get_mut(sctx)?;
-        let pt = rc.get_per_thread(thread, &mut *space);
+        let pt = rc.get_per_thread(thread);
         pt.simple_buffer_id()
     }
 
@@ -257,9 +253,9 @@ impl Monitor {
         bytes: &[u8],
     ) -> Option<usize> {
         let mut locks = self.locks.lock(ThreadKey::get().unwrap());
-        let (ref mut space, _, ref mut comps, _, _, _) = *locks;
+        let (_, ref mut comps, _, _, _) = *locks;
         let rc = comps.get_mut(sctx)?;
-        let pt = rc.get_per_thread(thread, &mut *space);
+        let pt = rc.get_per_thread(thread);
         Some(pt.write_bytes(bytes))
     }
 
@@ -272,9 +268,9 @@ impl Monitor {
         len: usize,
     ) -> Option<Vec<u8>> {
         let mut locks = self.locks.lock(ThreadKey::get().unwrap());
-        let (ref mut space, _, ref mut comps, _, _, _) = *locks;
+        let (_, ref mut comps, _, _, _) = *locks;
         let rc = comps.get_mut(sctx)?;
-        let pt = rc.get_per_thread(thread, &mut *space);
+        let pt = rc.get_per_thread(thread);
         Some(pt.read_bytes(len))
     }
 

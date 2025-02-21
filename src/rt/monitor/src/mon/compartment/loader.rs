@@ -20,11 +20,7 @@ use super::{
 };
 use crate::{
     gates::LoadCompartmentError,
-    mon::{
-        space::{MapHandle, Space},
-        thread::DEFAULT_STACK_SIZE,
-        Monitor,
-    },
+    mon::{get_monitor, space::MapHandle, thread::DEFAULT_STACK_SIZE, Monitor},
 };
 
 /// Tracks info for loaded, but not yet running, compartments.
@@ -221,10 +217,14 @@ impl RunCompLoader {
         self,
         cmp: &mut CompartmentMgr,
         dynlink: &mut Context,
-        space: &mut Space,
     ) -> miette::Result<ObjID> {
-        let mut make_new_handle =
-            |id| space.safe_create_and_map_runtime_object(id, MapFlags::READ | MapFlags::WRITE);
+        let make_new_handle = |id| {
+            get_monitor()
+                .space
+                .lock()
+                .unwrap()
+                .safe_create_and_map_runtime_object(id, MapFlags::READ | MapFlags::WRITE)
+        };
 
         let root_rc = self.root_comp.build_runcomp(
             make_new_handle(self.root_comp.sctx_id)?,
@@ -336,11 +336,11 @@ impl Monitor {
                 return Ok(());
             }
             let info = {
-                let (ref mut space, ref mut tmgr, ref mut cmp, ref mut dynlink, _, _) =
+                let (ref mut tmgr, ref mut cmp, ref mut dynlink, _, _) =
                     *self.locks.lock(ThreadKey::get().unwrap());
                 let rc = cmp.get_mut(instance).ok_or(LoadCompartmentError::Unknown)?;
 
-                rc.start_main_thread(state, &mut *space, &mut *tmgr, &mut *dynlink, args, env)
+                rc.start_main_thread(state, &mut *tmgr, &mut *dynlink, args, env)
             };
             if info.is_none() {
                 return Err(LoadCompartmentError::Unknown);

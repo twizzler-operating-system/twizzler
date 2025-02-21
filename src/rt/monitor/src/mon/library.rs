@@ -22,19 +22,19 @@ impl Monitor {
         thread: ObjID,
         desc: Descriptor,
     ) -> Option<LibraryInfo> {
-        let (ref mut space, _, ref mut comps, ref dynlink, ref libhandles, _) =
+        let (_, ref mut comps, ref dynlink, ref libhandles, _) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let handle = libhandles.lookup(instance, desc)?;
         let lib = dynlink.get_library(handle.id).ok()?;
         // write the library name to the per-thread simple buffer
-        let pt = comps.get_mut(instance)?.get_per_thread(thread, space);
+        let pt = comps.get_mut(instance)?.get_per_thread(thread);
         let name_len = pt.write_bytes(lib.name.as_bytes());
         Some(LibraryInfo {
             name_len,
             compartment_id: handle.comp,
-            objid: lib.full_obj.object().id(),
-            slot: lib.full_obj.object().start() as usize / MAX_SIZE,
-            start: (lib.full_obj.object().start() as usize + NULLPAGE_SIZE) as *mut _,
+            objid: lib.full_obj.id(),
+            slot: lib.full_obj.load_addr() / MAX_SIZE,
+            start: (lib.full_obj.load_addr() + NULLPAGE_SIZE) as *mut _,
             len: MAX_SIZE - NULLPAGE_SIZE * 2,
             dl_info: twizzler_rt_abi::debug::DlPhdrInfo {
                 addr: lib.base_addr(),
@@ -57,7 +57,7 @@ impl Monitor {
         comp: Option<Descriptor>,
         num: usize,
     ) -> Option<Descriptor> {
-        let (_, _, ref mut comps, ref dynlink, ref mut handles, ref comphandles) =
+        let (_, ref mut comps, ref dynlink, ref mut handles, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = comp
             .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))

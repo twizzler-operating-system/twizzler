@@ -7,7 +7,6 @@ use twizzler_abi::{
     },
 };
 use twizzler_object::ObjID;
-use twizzler_rt_abi::object::MapFlags;
 
 use super::{Backing, LoadDirective, LoadFlags};
 use crate::{DynlinkError, DynlinkErrorKind};
@@ -24,6 +23,7 @@ pub fn load_segments(
     src: &Backing,
     ld: &[LoadDirective],
     instance: ObjID,
+    map: impl FnOnce(ObjID, ObjID) -> Result<(Backing, Backing), DynlinkError>,
 ) -> Result<Vec<Backing>, DynlinkError> {
     let create_spec = ObjectCreate::new(
         BackingType::Normal,
@@ -93,7 +93,7 @@ pub fn load_segments(
         }
 
         Ok(ObjectSource::new_copy(
-            src.obj.id(),
+            src.id(),
             src_start as u64,
             dest_start as u64,
             len,
@@ -133,23 +133,6 @@ pub fn load_segments(
         data_id
     );
 
-    #[allow(deprecated)]
-    let (text_handle, data_handle) = twizzler_rt_abi::object::twz_rt_map_two_objects(
-        text_id,
-        MapFlags::READ | MapFlags::EXEC,
-        data_id,
-        MapFlags::READ | MapFlags::WRITE,
-    )
-    .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
-
-    if data_handle.start() as usize != text_handle.start() as usize + MAX_SIZE {
-        tracing::error!(
-            "internal runtime error: failed to map text and data adjacent and in-order ({:p} {:p})",
-            text_handle.start(),
-            data_handle.start()
-        );
-        return Err(DynlinkErrorKind::NewBackingFail.into());
-    }
-
-    Ok(vec![Backing::new(text_handle), Backing::new(data_handle)])
+    let (text, data) = map(text_id, data_id)?;
+    Ok(vec![text, data])
 }

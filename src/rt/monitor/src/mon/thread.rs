@@ -18,7 +18,10 @@ use twizzler_rt_abi::{
     thread::SpawnError,
 };
 
-use super::space::{MapHandle, MapInfo, Space};
+use super::{
+    get_monitor,
+    space::{MapHandle, MapInfo},
+};
 use crate::gates::ThreadMgrStats;
 
 mod cleaner;
@@ -137,7 +140,6 @@ impl ThreadMgr {
 
     fn do_spawn(
         &mut self,
-        space: &mut Space,
         monitor_dynlink_comp: &mut Compartment,
         start: unsafe extern "C" fn(usize) -> !,
         arg: usize,
@@ -163,7 +165,10 @@ impl ThreadMgr {
                 arg,
             )?
         };
-        let repr = space
+        let repr = get_monitor()
+            .space
+            .lock()
+            .unwrap()
             .map(MapInfo {
                 id,
                 flags: MapFlags::READ,
@@ -183,7 +188,6 @@ impl ThreadMgr {
     /// monitor-mode, and will have no connection to any compartment.
     pub fn start_thread(
         &mut self,
-        space: &mut Space,
         monitor_dynlink_comp: &mut Compartment,
         main: Box<dyn FnOnce()>,
         main_thread_comp: Option<ObjID>,
@@ -199,7 +203,6 @@ impl ThreadMgr {
         }
 
         let mt = self.do_spawn(
-            space,
             monitor_dynlink_comp,
             managed_thread_entry,
             main_addr,

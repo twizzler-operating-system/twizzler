@@ -132,8 +132,7 @@ impl ReferenceRuntime {
         let id = inner.next_id().freeze();
         drop(inner);
         let tls = TLS_GEN_MGR
-            .write()
-            .unwrap()
+            .lock()
             .get_next_tls_info(None, || RuntimeThreadControl::new(id))
             .unwrap();
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
@@ -146,8 +145,7 @@ impl ReferenceRuntime {
         // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
         let tls = TLS_GEN_MGR
-            .write()
-            .unwrap()
+            .lock()
             .get_next_tls_info(None, || RuntimeThreadControl::new(0))
             .unwrap();
         let stack_raw = unsafe {

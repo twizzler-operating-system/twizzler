@@ -10,7 +10,11 @@ use dynlink::{
 };
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
-use twizzler_abi::{arch::SLOTS, object::ObjID, syscall::sys_object_read_map};
+use twizzler_abi::{
+    arch::SLOTS,
+    object::{ObjID, MAX_SIZE},
+    syscall::sys_object_read_map,
+};
 use twizzler_rt_abi::{
     core::{InitInfoPtrs, RuntimeInfo},
     object::MapFlags,
@@ -36,7 +40,27 @@ impl ContextEngine for Engine {
         _comp_id: CompartmentId,
         _load_ctx: &mut LoadCtx,
     ) -> Result<Vec<Backing>, dynlink::DynlinkError> {
-        dynlink::engines::twizzler::load_segments(src, ld, 0.into())
+        let map = |text_id, data_id| {
+            #[allow(deprecated)]
+            let (text_handle, data_handle) = twizzler_rt_abi::object::twz_rt_map_two_objects(
+                text_id,
+                MapFlags::READ | MapFlags::EXEC,
+                data_id,
+                MapFlags::READ | MapFlags::WRITE,
+            )
+            .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
+
+            if data_handle.start() as usize != text_handle.start() as usize + MAX_SIZE {
+                tracing::error!(
+                        "internal runtime error: failed to map text and data adjacent and in-order ({:p} {:p})",
+                        text_handle.start(),
+                        data_handle.start()
+                    );
+                return Err(DynlinkErrorKind::NewBackingFail.into());
+            }
+            Ok((Backing::new(text_handle), Backing::new(data_handle)))
+        };
+        dynlink::engines::twizzler::load_segments(src, ld, 0.into(), map)
     }
 
     fn load_object(&mut self, unlib: &UnloadedLibrary) -> Result<Backing, DynlinkError> {
