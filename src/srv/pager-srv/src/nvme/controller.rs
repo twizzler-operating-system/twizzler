@@ -447,7 +447,12 @@ impl NvmeController {
         // TODO: queue full
         let (inflight, ident_dma) = self.send_identify_namespace(nsid).unwrap();
         let asif = Async::new(inflight)?;
-        let cc = asif.read_with(|inflight| inflight.poll()).await?;
+        let cc = asif
+            .read_with(|inflight| {
+                while let Some(_) = inflight.req.get_completion() {}
+                inflight.poll()
+            })
+            .await?;
         if cc.status().is_error() {
             return Err(ErrorKind::Other.into());
         }

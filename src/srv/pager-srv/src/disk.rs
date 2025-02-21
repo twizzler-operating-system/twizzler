@@ -7,12 +7,33 @@ use std::{
 };
 
 use async_executor::Executor;
-use async_io::block_on;
+use object_store::PagingImp;
 
 use crate::nvme::{init_nvme, NvmeController};
 
 const PAGE_SIZE: usize = 0x1000;
 const SECTOR_SIZE: usize = 512;
+
+pub struct DiskPageRequest {
+    phys_addr_list: Vec<u64>,
+    ctrl: Arc<NvmeController>,
+}
+
+impl PagingImp for DiskPageRequest {
+    type PhysAddr = u64;
+
+    fn fill_from_buffer(&mut self, buf: &[u8]) {
+        todo!()
+    }
+
+    fn read_to_buffer(&self, buf: &mut [u8]) {
+        todo!()
+    }
+
+    fn phys_addrs(&self) -> impl Iterator<Item = &'_ Self::PhysAddr> {
+        self.phys_addr_list.iter()
+    }
+}
 
 #[derive(Clone)]
 pub struct Disk {
@@ -26,9 +47,10 @@ pub struct Disk {
 impl Disk {
     pub async fn new(ex: &'static Executor<'static>) -> Result<Disk, ()> {
         let ctrl = init_nvme(ex).await.expect("failed to open nvme controller");
-        let len = todo!();
-        //let len = ctrl.flash_len().await;
+        tracing::info!("getting len");
+        let len = ctrl.flash_len().await;
         let len = std::cmp::max(len, u32::MAX as usize / SECTOR_SIZE);
+        tracing::info!("disk ready");
         Ok(Disk {
             ctrl,
             pos: 0,
@@ -44,6 +66,16 @@ impl Disk {
 
     pub fn lba_count(&self) -> usize {
         self.len / SECTOR_SIZE
+    }
+
+    pub fn new_paging_request<P: PagingImp>(
+        &self,
+        pages: impl IntoIterator<Item = u64>,
+    ) -> DiskPageRequest {
+        DiskPageRequest {
+            phys_addr_list: pages.into_iter().collect(),
+            ctrl: self.ctrl.clone(),
+        }
     }
 }
 
@@ -68,14 +100,9 @@ impl Read for Disk {
             if let Some(cached) = self.cache.get(&(lba as u64)) {
                 read_buffer.copy_from_slice(&cached[0..4096]);
             } else {
-                /*
-                block_on(
-                    self.ex
-                        .run(self.ctrl.read_page(lba as u64, &mut read_buffer, 0)),
-                )
-                .map_err(|_| ErrorKind::Other)?;
-                */
-                todo!();
+                self.ctrl
+                    .blocking_read_page(lba as u64, &mut read_buffer, 0)
+                    .map_err(|_| ErrorKind::Other)?;
                 self.cache.insert(lba as u64, Box::new(read_buffer));
             }
 
@@ -122,14 +149,9 @@ impl Write for Disk {
             self.pos += right - left;
 
             self.cache.insert(lba as u64, Box::new(write_buffer));
-            /*
-            block_on(
-                self.ex
-                    .run(self.ctrl.write_page(lba as u64, &mut write_buffer, 0)),
-            )
-            .map_err(|_| ErrorKind::Other)?;
-            */
-            todo!();
+            self.ctrl
+                .blocking_write_page(lba as u64, &mut write_buffer, 0)
+                .map_err(|_| ErrorKind::Other)?;
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 

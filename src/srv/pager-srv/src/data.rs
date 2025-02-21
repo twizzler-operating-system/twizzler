@@ -104,7 +104,11 @@ impl PerObject {
 
     pub async fn sync(&self, ctx: &PagerContext) -> Result<()> {
         let nulls = [0; PAGE as usize];
-        if ctx.ostore.write_all(self.id.raw(), &nulls, 0).is_err() {
+        if ctx
+            .paged_ostore
+            .write_object(self.id.raw(), 0, &nulls)
+            .is_err()
+        {
             // TODO
             return Ok(());
         }
@@ -316,7 +320,7 @@ impl PagerData {
 
     pub fn lookup_object(&self, ctx: &PagerContext, id: ObjID) -> Option<ObjectInfo> {
         let mut b = [];
-        ctx.ostore.read_exact(id.raw(), &mut b, 0).ok()?;
+        ctx.paged_ostore.read_object(id.raw(), 0, &mut b).ok()?;
         Some(ObjectInfo::new(id))
     }
 
@@ -328,6 +332,6 @@ impl PagerData {
         let _ = po.sync(ctx).await.inspect_err(|e| {
             tracing::warn!("sync failed for {}: {}", id, e);
         });
-        ctx.ostore.advance_epoch().unwrap();
+        ctx.paged_ostore.flush().unwrap();
     }
 }

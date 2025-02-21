@@ -16,6 +16,19 @@ mod requester;
 
 pub use controller::NvmeController;
 
+/*
+fn bench_nvme_seq_read(ctrl: &NvmeController, pg_count: usize) {
+    for offset in (0..END).step_by(DMA_PAGE_SIZE * pg_count) {
+        let page = offset / (DMA_PAGE_SIZE * pg_count);
+        let mut buf = [0; DMA_PAGE_SIZE];
+        let lbas_per_page = DMA_PAGE_SIZE * pg_count / ctrl.blocking_get_lba_size();
+        let lba = page * lbas_per_page;
+        ctrl.blocking_read_page(lba as u64, &mut buf, 0).unwrap();
+        assert_eq!(should_be_buf, buf);
+    }
+}
+*/
+
 pub async fn init_nvme(ex: &'static Executor<'static>) -> Option<Arc<NvmeController>> {
     let devices = devmgr::get_devices(devmgr::DriverSpec {
         supported: devmgr::Supported::PcieClass(1, 8, 2),
@@ -34,6 +47,7 @@ pub async fn init_nvme(ex: &'static Executor<'static>) -> Option<Arc<NvmeControl
 
             let ctrl = Arc::new(NvmeController::new(device).ok()?);
 
+            /*
             const NR: usize = 128;
             const END: usize = 1024 * 1024 * 1024 * 100;
             if true {
@@ -84,6 +98,7 @@ pub async fn init_nvme(ex: &'static Executor<'static>) -> Option<Arc<NvmeControl
                 assert_eq!(should_be_buf, buf);
             }
             loop {}
+            */
             return Some(ctrl);
         }
     }

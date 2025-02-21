@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use miette::{IntoDiagnostic, Result};
+use object_store::PageRequest;
 use twizzler_abi::pager::{CompletionToPager, ObjectRange, PhysRange, RequestFromPager};
 use twizzler_object::ObjID;
 use twizzler_queue::QueueSender;
 
-use crate::{physrw, PagerContext};
+use crate::{disk::DiskPageRequest, physrw, PagerContext};
 
 /// A constant representing the page size (4096 bytes per page).
 pub const PAGE: u64 = 4096;
@@ -37,8 +38,8 @@ pub async fn page_in(
         obj_range.start
     };
     let res = ctx
-        .ostore
-        .read_exact(obj_id.raw(), &mut buf, start)
+        .paged_ostore
+        .read_object(obj_id.raw(), start, &mut buf)
         .inspect_err(|e| tracing::debug!("error in read from object store: {}", e));
     if res.is_err() {
         buf.fill(0);
@@ -65,10 +66,38 @@ pub async fn page_out(
     } else {
         obj_range.start
     };
-    ctx.ostore
-        .write_all(obj_id.raw(), &buf, start)
+    ctx.paged_ostore
+        .write_object(obj_id.raw(), start, &buf)
         .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
         .into_diagnostic()
+}
+
+pub async fn page_out_many(
+    ctx: &'static PagerContext,
+    obj_id: ObjID,
+    reqs: &'static [PageRequest<DiskPageRequest>],
+) -> Result<usize> {
+    blocking::unblock(move || {
+        ctx.paged_ostore
+            .page_out_object(obj_id.raw(), reqs)
+            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
+            .into_diagnostic()
+    })
+    .await
+}
+
+pub async fn page_in_many(
+    ctx: &'static PagerContext,
+    obj_id: ObjID,
+    reqs: &'static mut [PageRequest<DiskPageRequest>],
+) -> Result<usize> {
+    blocking::unblock(move || {
+        ctx.paged_ostore
+            .page_in_object(obj_id.raw(), reqs)
+            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
+            .into_diagnostic()
+    })
+    .await
 }
 
 #[cfg(test)]
