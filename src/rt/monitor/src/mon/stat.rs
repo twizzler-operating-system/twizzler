@@ -9,7 +9,6 @@ impl Monitor {
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn stats(&self) -> MonitorStats {
         let (
-            ref mut space,
             ref mut threads,
             ref mut comp,
             ref mut dynlink,
@@ -31,7 +30,7 @@ impl Monitor {
             nr_lib_handles: lib_handles.total_count(),
         };
         MonitorStats {
-            space: space.stat(),
+            space: self.space.lock().unwrap().stat(),
             thread_mgr: threads.stat(),
             comp_mgr: comp.stat(),
             handles,

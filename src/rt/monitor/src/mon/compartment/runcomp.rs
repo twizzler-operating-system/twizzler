@@ -21,7 +21,8 @@ use twizzler_rt_abi::{
 
 use super::{compconfig::CompConfigObject, compthread::CompThread, StackObject};
 use crate::mon::{
-    space::{MapHandle, MapInfo, Space},
+    get_monitor,
+    space::{MapHandle, MapInfo},
     thread::ThreadMgr,
 };
 
@@ -93,8 +94,11 @@ impl PerThread {
     /// handled gracefully. This means that if the thread fails to allocate a simple buffer, it
     /// will just forego having one. This may cause a failure down the line, but it's the best we
     /// can do without panicing.
-    fn new(instance: ObjID, _th: ObjID, space: &mut Space) -> Self {
-        let handle = space
+    fn new(instance: ObjID, _th: ObjID) -> Self {
+        let handle = get_monitor()
+            .space
+            .lock()
+            .unwrap()
             .safe_create_and_map_runtime_object(instance, MapFlags::READ | MapFlags::WRITE)
             .ok();
 
@@ -165,10 +169,10 @@ impl RunComp {
     }
 
     /// Get per-thread data in this compartment.
-    pub fn get_per_thread(&mut self, id: ObjID, space: &mut Space) -> &mut PerThread {
+    pub fn get_per_thread(&mut self, id: ObjID) -> &mut PerThread {
         self.per_thread
             .entry(id)
-            .or_insert_with(|| PerThread::new(self.instance, id, space))
+            .or_insert_with(|| PerThread::new(self.instance, id))
     }
 
     /// Remove all per-thread data for a given thread.
@@ -271,7 +275,6 @@ impl RunComp {
     pub(crate) fn start_main_thread(
         &mut self,
         state: u64,
-        space: &mut Space,
         tmgr: &mut ThreadMgr,
         dynlink: &mut Context,
         args: &[&CStr],
@@ -358,7 +361,6 @@ impl RunComp {
         }
 
         let mt = match CompThread::new(
-            space,
             tmgr,
             dynlink,
             stack,

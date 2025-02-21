@@ -209,7 +209,7 @@ impl ReferenceRuntime {
                 .ok(),
             );
         }
-        let mut tg = preinit_unwrap(TLS_GEN_MGR.write().ok());
+        let mut tg = TLS_GEN_MGR.lock();
         let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
         twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
 

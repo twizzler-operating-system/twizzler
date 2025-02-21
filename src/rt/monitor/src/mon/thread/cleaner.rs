@@ -138,14 +138,17 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
                 let mut tmgr = monitor.thread_mgr.write(&mut key);
                 tmgr.do_remove(&th);
             }
-            let (_, _, ref mut cmgr, ref mut dynlink, _, _) = *monitor.locks.lock(&mut key);
-            for comp in cmgr.compartments_mut() {
-                comp.clean_per_thread_data(th.id);
-            }
-            if let Some(comp_id) = th.main_thread_comp {
-                cmgr.main_thread_exited(comp_id);
-            }
-            cmgr.process_cleanup_queue(&mut *dynlink);
+            let comps = {
+                let (_, ref mut cmgr, ref mut dynlink, _, _) = *monitor.locks.lock(&mut key);
+                for comp in cmgr.compartments_mut() {
+                    comp.clean_per_thread_data(th.id);
+                }
+                if let Some(comp_id) = th.main_thread_comp {
+                    cmgr.main_thread_exited(comp_id);
+                }
+                cmgr.process_cleanup_queue(&mut *dynlink)
+            };
+            drop(comps);
         }
 
         // Check for notifications, and sleep.

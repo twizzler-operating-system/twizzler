@@ -1,8 +1,8 @@
 use std::{collections::HashMap, ffi::CStr};
 
 use dynlink::{
-    compartment::CompartmentId,
-    context::{Context, NewCompartmentFlags},
+    compartment::{Compartment, CompartmentId},
+    context::{Context, LoadedOrUnloaded, NewCompartmentFlags},
     library::UnloadedLibrary,
 };
 use happylock::ThreadKey;
@@ -160,6 +160,7 @@ impl CompartmentMgr {
             tracing::warn!("failed to find compartment {} during exit", instance);
             return;
         };
+        tracing::trace!("runcomp usecount: {}", rc.use_count);
         if rc.use_count == 0 {
             if let Some(rc) = self.remove(instance) {
                 self.cleanup_queue.push(rc)
@@ -187,10 +188,16 @@ impl CompartmentMgr {
         }
     }
 
-    pub fn process_cleanup_queue(&mut self, dynlink: &mut Context) {
-        for rc in self.cleanup_queue.drain(..) {
-            dynlink.unload_compartment(rc.compartment_id);
-        }
+    pub fn process_cleanup_queue(
+        &mut self,
+        dynlink: &mut Context,
+    ) -> (Vec<Option<Compartment>>, Vec<Vec<LoadedOrUnloaded>>) {
+        let (comps, libs) = self
+            .cleanup_queue
+            .drain(..)
+            .map(|c| dynlink.unload_compartment(c.compartment_id))
+            .unzip();
+        (comps, libs)
     }
 }
 
@@ -204,14 +211,14 @@ impl super::Monitor {
         thread: ObjID,
         desc: Option<Descriptor>,
     ) -> Option<CompartmentInfo> {
-        let (ref mut space, _, ref mut comps, ref dynlink, _, ref comphandles) =
+        let (_, ref mut comps, ref dynlink, _, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = desc
             .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
             .unwrap_or(Some(instance))?;
 
         let name = comps.get(comp_id)?.name.clone();
-        let pt = comps.get_mut(instance)?.get_per_thread(thread, space);
+        let pt = comps.get_mut(instance)?.get_per_thread(thread);
         let name_len = pt.write_bytes(name.as_bytes());
         let comp = comps.get(comp_id)?;
         let nr_libs = dynlink
@@ -240,7 +247,7 @@ impl super::Monitor {
         name_len: usize,
     ) -> Option<usize> {
         let name = self.read_thread_simple_buffer(instance, thread, name_len)?;
-        let (_, _, ref comps, ref dynlink, _, ref comphandles) =
+        let (_, ref comps, ref dynlink, _, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = desc
             .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
@@ -265,7 +272,7 @@ impl super::Monitor {
     /// Open a compartment handle for this caller compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_compartment_handle(&self, caller: ObjID, compartment: ObjID) -> Option<Descriptor> {
-        let (_, _, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
+        let (_, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
         let comp = comps.get_mut(compartment)?;
         comp.inc_use_count();
         ch.insert(
@@ -290,7 +297,7 @@ impl super::Monitor {
     ) -> Option<Descriptor> {
         let name = self.read_thread_simple_buffer(instance, thread, name_len)?;
         let name = String::from_utf8(name).ok()?;
-        let (_, _, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
+        let (_, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
         let comp = comps.get_name_mut(&name)?;
         comp.inc_use_count();
         ch.insert(
@@ -325,7 +332,7 @@ impl super::Monitor {
         dep_n: usize,
     ) -> Option<Descriptor> {
         let dep = {
-            let (_, _, ref mut comps, _, _, ref mut comphandles) =
+            let (_, ref mut comps, _, _, ref mut comphandles) =
                 *self.locks.lock(ThreadKey::get().unwrap());
             let comp_id = desc
                 .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
@@ -385,10 +392,10 @@ impl super::Monitor {
         .map_err(|_| LoadCompartmentError::Unknown)?;
 
         let root_comp = {
-            let (ref mut space, _, ref mut cmp, ref mut dynlink, _, _) =
+            let (_, ref mut cmp, ref mut dynlink, _, _) =
                 &mut *self.locks.lock(ThreadKey::get().unwrap());
             loader
-                .build_rcs(&mut *cmp, &mut *dynlink, &mut *space)
+                .build_rcs(&mut *cmp, &mut *dynlink)
                 .inspect_err(|e| {
                     tracing::debug!(
                         "failed to build runtime compartments {}::{}: {}",
@@ -412,14 +419,18 @@ impl super::Monitor {
     /// Drop a compartment handle.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn drop_compartment_handle(&self, caller: ObjID, desc: Descriptor) {
-        let (_, _, ref mut cmgr, ref mut dynlink, _, ref mut comp_handles) =
-            *self.locks.lock(ThreadKey::get().unwrap());
-        let comp = comp_handles.remove(caller, desc);
+        let comps = {
+            let (_, ref mut cmgr, ref mut dynlink, _, ref mut comp_handles) =
+                *self.locks.lock(ThreadKey::get().unwrap());
+            let comp = comp_handles.remove(caller, desc);
 
-        if let Some(comp) = comp {
-            cmgr.dec_use_count(comp.instance);
-        }
-        cmgr.process_cleanup_queue(&mut *dynlink);
+            if let Some(comp) = comp {
+                cmgr.dec_use_count(comp.instance);
+            }
+            cmgr.process_cleanup_queue(&mut *dynlink)
+        };
+        tracing::trace!("HRE");
+        drop(comps);
     }
 
     #[tracing::instrument(skip(self, f), level = tracing::Level::DEBUG)]

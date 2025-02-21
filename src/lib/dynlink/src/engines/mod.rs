@@ -1,11 +1,11 @@
 pub mod twizzler;
 
-use std::collections::HashMap;
+use std::{any::Any, collections::HashMap, sync::Arc};
 
 use elf::{endian::NativeEndian, ParseError};
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_object::ObjID;
-use twizzler_rt_abi::object::{self, ObjectHandle};
+use twizzler_rt_abi::object::ObjectHandle;
 
 use crate::{compartment::CompartmentId, library::UnloadedLibrary, DynlinkError};
 
@@ -56,38 +56,49 @@ bitflags::bitflags! {
 /// for treating Twizzler objects as object files.
 #[derive(Clone)]
 pub struct Backing {
-    obj: object::ObjectHandle,
+    _owner: Arc<dyn Any>,
+    start: *mut u8,
+    len: usize,
+    id: ObjID,
 }
 
-impl Drop for Backing {
-    fn drop(&mut self) {
-        tracing::debug!("drop backing: {:?}: {:p}", self.obj.id(), self.obj.start());
-    }
-}
+unsafe impl Send for Backing {}
+unsafe impl Sync for Backing {}
 
 impl Backing {
     pub fn new(inner: ObjectHandle) -> Self {
-        tracing::debug!("new backing: {:?}: {:p}", inner.id(), inner.start());
-        Self { obj: inner }
+        unsafe {
+            Self::new_owned(
+                inner.start(),
+                MAX_SIZE - NULLPAGE_SIZE * 2,
+                inner.id(),
+                Arc::new(inner),
+            )
+        }
+    }
+
+    pub unsafe fn new_owned(start: *mut u8, len: usize, id: ObjID, owner: Arc<dyn Any>) -> Self {
+        Self {
+            _owner: owner,
+            start,
+            len,
+            id,
+        }
     }
 }
 
 impl Backing {
     pub(crate) fn data(&self) -> (*mut u8, usize) {
-        (
-            unsafe { self.obj.start().add(NULLPAGE_SIZE) },
-            // one null-page, one meta-page
-            MAX_SIZE - NULLPAGE_SIZE * 2,
-        )
+        (unsafe { self.start.add(NULLPAGE_SIZE) }, self.len)
     }
 
     /// Get the underlying object handle.
-    pub fn object(&self) -> &ObjectHandle {
-        &self.obj
+    pub fn id(&self) -> ObjID {
+        self.id
     }
 
-    pub(crate) fn load_addr(&self) -> usize {
-        self.obj.start() as usize
+    pub fn load_addr(&self) -> usize {
+        self.start as usize
     }
 
     pub(crate) fn slice(&self) -> &[u8] {
