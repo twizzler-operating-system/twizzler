@@ -25,7 +25,7 @@ use nvme::{
 };
 use twizzler_driver::{
     device::Device,
-    dma::{DmaOptions, DmaPool, DmaRegion, DMA_PAGE_SIZE},
+    dma::{DmaOptions, DmaPool, DmaRegion, PhysInfo, DMA_PAGE_SIZE},
     request::{RequestDriver, SubmitRequest},
 };
 use volatile::map_field;
@@ -642,6 +642,74 @@ impl NvmeController {
             return Err(ErrorKind::Other.into());
         }
         Ok(())
+    }
+
+    pub fn sequential_write<const PAGE_SIZE: usize>(
+        &self,
+        disk_page_start: u64,
+        phys: &[PhysInfo],
+    ) -> std::io::Result<usize> {
+        // TODO: get from controller
+        let count = phys.len().min(128);
+        let dptr = super::dma::get_prp_list_or_buffer(
+            &phys[0..count],
+            &self.inner.dma_pool,
+            PrpMode::Double,
+        )
+        .prp_list_or_buffer()
+        .dptr();
+        let lba_size = self.blocking_get_lba_size();
+        let lbas_per_page = PAGE_SIZE / lba_size;
+        let lba_start = disk_page_start * lbas_per_page as u64;
+        let nr_blocks = phys.len() * lbas_per_page;
+        let inflight = self.send_write_page(lba_start, dptr, nr_blocks).unwrap();
+        let cc = loop {
+            inflight.req.get_completion();
+            if let Ok(cc) = inflight.poll() {
+                if cc.command_id() == inflight.id.into() {
+                    break cc;
+                }
+            }
+        };
+
+        if cc.status().is_error() {
+            return Err(ErrorKind::Other.into());
+        }
+        Ok(count)
+    }
+
+    pub fn sequential_read<const PAGE_SIZE: usize>(
+        &self,
+        disk_page_start: u64,
+        phys: &[PhysInfo],
+    ) -> std::io::Result<usize> {
+        // TODO: get from controller
+        let count = phys.len().min(128);
+        let dptr = super::dma::get_prp_list_or_buffer(
+            &phys[0..count],
+            &self.inner.dma_pool,
+            PrpMode::Double,
+        )
+        .prp_list_or_buffer()
+        .dptr();
+        let lba_size = self.blocking_get_lba_size();
+        let lbas_per_page = PAGE_SIZE / lba_size;
+        let lba_start = disk_page_start * lbas_per_page as u64;
+        let nr_blocks = phys.len() * lbas_per_page;
+        let inflight = self.send_read_page(lba_start, dptr, nr_blocks).unwrap();
+        let cc = loop {
+            inflight.req.get_completion();
+            if let Ok(cc) = inflight.poll() {
+                if cc.command_id() == inflight.id.into() {
+                    break cc;
+                }
+            }
+        };
+
+        if cc.status().is_error() {
+            return Err(ErrorKind::Other.into());
+        }
+        Ok(count)
     }
 
     pub fn blocking_write_pages<const NR: usize>(

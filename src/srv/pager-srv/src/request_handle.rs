@@ -9,7 +9,11 @@ use twizzler_queue::QueueSender;
 
 use crate::{data::PagerData, PagerContext};
 
-async fn page_data_req(ctx: &PagerContext, id: ObjID, range: ObjectRange) -> Option<PhysRange> {
+async fn page_data_req(
+    ctx: &'static PagerContext,
+    id: ObjID,
+    range: ObjectRange,
+) -> Option<PhysRange> {
     ctx.data
         .fill_mem_page(ctx, id, range)
         .await
@@ -22,7 +26,7 @@ fn object_info_req(ctx: &PagerContext, id: ObjID) -> Option<ObjectInfo> {
 }
 
 pub async fn handle_kernel_request(
-    ctx: &PagerContext,
+    ctx: &'static PagerContext,
     request: RequestFromKernel,
 ) -> Option<CompletionToKernel> {
     tracing::debug!("handling kernel request {:?}", request);

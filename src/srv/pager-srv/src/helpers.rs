@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use miette::{IntoDiagnostic, Result};
-use object_store::PageRequest;
+use object_store::{PageRequest, PagingImp};
 use twizzler_abi::pager::{CompletionToPager, ObjectRange, PhysRange, RequestFromPager};
 use twizzler_object::ObjID;
 use twizzler_queue::QueueSender;
@@ -22,7 +22,7 @@ pub fn _objectrange_to_page_number(object_range: &ObjectRange) -> Option<u64> {
 }
 
 pub async fn page_in(
-    ctx: &PagerContext,
+    ctx: &'static PagerContext,
     obj_id: ObjID,
     obj_range: ObjectRange,
     phys_range: PhysRange,
@@ -31,12 +31,8 @@ pub async fn page_in(
     assert_eq!(obj_range.len(), 0x1000);
     assert_eq!(phys_range.len(), 0x1000);
 
+    /*
     let mut buf = [0; 0x1000];
-    let start = if meta {
-        obj_range.start + (1024 * 1024 * 1024)
-    } else {
-        obj_range.start
-    };
     let res = ctx
         .paged_ostore
         .read_object(obj_id.raw(), start, &mut buf)
@@ -44,8 +40,15 @@ pub async fn page_in(
     if res.is_err() {
         buf.fill(0);
     }
-
     physrw::fill_physical_pages(&ctx.sender, &buf, phys_range).await
+    */
+    let imp = ctx
+        .disk
+        .new_paging_request::<DiskPageRequest>([phys_range.start]);
+    let start_page = obj_range.start / DiskPageRequest::page_size() as u64;
+    let nr_pages = obj_range.len() / DiskPageRequest::page_size();
+    let reqs = vec![PageRequest::new(imp, start_page as i64, nr_pages as u32)];
+    page_in_many(ctx, obj_id, reqs).await.map(|_| ())
 }
 
 pub async fn page_out(
@@ -89,11 +92,11 @@ pub async fn page_out_many(
 pub async fn page_in_many(
     ctx: &'static PagerContext,
     obj_id: ObjID,
-    reqs: &'static mut [PageRequest<DiskPageRequest>],
+    mut reqs: Vec<PageRequest<DiskPageRequest>>,
 ) -> Result<usize> {
     blocking::unblock(move || {
         ctx.paged_ostore
-            .page_in_object(obj_id.raw(), reqs)
+            .page_in_object(obj_id.raw(), &mut reqs)
             .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
             .into_diagnostic()
     })

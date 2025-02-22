@@ -159,6 +159,10 @@ impl PagerData {
             .iter()
             .fold(0, |acc, item| acc + item.avail())
     }
+
+    pub fn alloc_page(&self) -> Option<u64> {
+        self.inner.lock().unwrap().get_next_available_page()
+    }
 }
 
 pub struct PagerDataInner {
@@ -281,7 +285,7 @@ impl PagerData {
     /// Returns the physical range corresponding to the allocated page.
     pub async fn fill_mem_page(
         &self,
-        ctx: &PagerContext,
+        ctx: &'static PagerContext,
         id: ObjID,
         obj_range: ObjectRange,
     ) -> Result<PhysRange> {

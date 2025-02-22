@@ -10,7 +10,10 @@ use async_executor::Executor;
 use async_io::block_on;
 use colored::Colorize;
 use disk::{Disk, DiskPageRequest};
-use object_store::{key_fprint, LetheIoWrapper, LetheObjectStore, LetheState, PagedObjectStore};
+use nvme::NvmeController;
+use object_store::{
+    key_fprint, LetheIoWrapper, LetheObjectStore, LetheState, PageRequest, PagedObjectStore,
+};
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
     object::{ObjectBuilder, RawObject},
@@ -203,8 +206,8 @@ async fn report_ready(
 struct PagerContext {
     data: PagerData,
     sender: Arc<QueueSender<RequestFromPager, CompletionToPager>>,
-    //ostore: LetheObjectStore<LetheIoWrapper<disk::Disk>>,
     paged_ostore: Box<dyn PagedObjectStore<DiskPageRequest> + 'static + Sync + Send>,
+    disk: Disk,
 }
 
 static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
@@ -212,6 +215,7 @@ static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
 fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data, ex) = pager_init(q1, q2);
     let disk = block_on(ex.run(Disk::new(ex))).unwrap();
+    let diskc = disk.clone();
     let disk = LetheIoWrapper::new(disk);
     let ostore = object_store::LetheObjectStore::open(disk.clone(), [0; 32]);
     let (name, ostore): (
@@ -231,6 +235,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
         data,
         sender: sq,
         paged_ostore: ostore,
+        disk: diskc,
     });
     let ctx = PAGER_CTX.get().unwrap();
     spawn_queues(ctx, rq, ex);
@@ -249,6 +254,38 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
         vo.object().id().raw()
     });
     tracing::info!("found root namespace: {:x}", bootstrap_id);
+
+    let pager = PAGER_CTX.get().unwrap();
+    pager.paged_ostore.delete_object(123);
+    pager.paged_ostore.create_object(123).unwrap();
+    let mut buf = vec![0; 0x1000 * 100];
+    for b in buf.iter_mut().enumerate() {
+        *b.1 = b.0 as u8;
+    }
+    pager.paged_ostore.write_object(123, 0, &buf).unwrap();
+
+    let get_4_pages = || {
+        [
+            pager.data.alloc_page().unwrap(),
+            pager.data.alloc_page().unwrap(),
+            pager.data.alloc_page().unwrap(),
+            pager.data.alloc_page().unwrap(),
+        ]
+    };
+
+    let mut reqs = [PageRequest::new(
+        pager
+            .disk
+            .new_paging_request::<DiskPageRequest>(get_4_pages()),
+        10,
+        4,
+    )];
+    PAGER_CTX
+        .get()
+        .unwrap()
+        .paged_ostore
+        .page_in_object(123, &mut reqs)
+        .unwrap();
 
     return bootstrap_id.into();
 
