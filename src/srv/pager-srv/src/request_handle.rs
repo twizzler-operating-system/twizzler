@@ -73,18 +73,6 @@ pub async fn handle_kernel_request(
                 tracing::warn!("failed to create object {}: {}", object_info.obj_id, e);
                 Some(CompletionToKernel::new(KernelCompletionData::Error))
             } else {
-                // TODO: REMOVE ONCE WE HAVE RANDOM ACCESS
-                let buf = [0; 0x1000 * 8];
-                let _ = ctx
-                    .paged_ostore
-                    .write_object(object_info.obj_id.raw(), 0, &buf)
-                    .inspect_err(|e| {
-                        tracing::warn!(
-                            "failed to write pager info page for object {}: {}",
-                            object_info.obj_id,
-                            e
-                        )
-                    });
                 Some(CompletionToKernel::new(
                     KernelCompletionData::ObjectInfoCompletion(object_info),
                 ))

@@ -195,6 +195,13 @@ impl PageRangeTree {
         Some((page, shared))
     }
 
+    fn try_do_get_page(&self, pn: PageNumber) -> Option<(PageRef, bool)> {
+        let range = self.get(pn)?;
+        let page = range.try_get_page(pn)?;
+        let shared = range.is_shared();
+        Some((page, shared))
+    }
+
     pub fn get_page(&mut self, pn: PageNumber, is_write: bool) -> PageStatus {
         let Some((page, shared)) = self.do_get_page(pn) else {
             return PageStatus::NoPage;
@@ -208,6 +215,13 @@ impl PageRangeTree {
         };
         assert!(!shared);
         PageStatus::Ready(page, false)
+    }
+
+    pub fn try_get_page(&mut self, pn: PageNumber) -> PageStatus {
+        let Some((page, shared)) = self.try_do_get_page(pn) else {
+            return PageStatus::NoPage;
+        };
+        PageStatus::Ready(page, shared)
     }
 
     pub fn get_or_add_page(

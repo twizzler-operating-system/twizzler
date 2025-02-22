@@ -6,7 +6,7 @@ use twizzler_abi::pager::{CompletionToPager, ObjectRange, PhysRange, RequestFrom
 use twizzler_object::ObjID;
 use twizzler_queue::QueueSender;
 
-use crate::{disk::DiskPageRequest, physrw, PagerContext};
+use crate::{disk::DiskPageRequest, physrw, PagerContext, EXECUTOR};
 
 /// A constant representing the page size (4096 bytes per page).
 pub const PAGE: u64 = 4096;
@@ -52,7 +52,7 @@ pub async fn page_in(
 }
 
 pub async fn page_out(
-    ctx: &PagerContext,
+    ctx: &'static PagerContext,
     obj_id: ObjID,
     obj_range: ObjectRange,
     phys_range: PhysRange,
@@ -62,6 +62,14 @@ pub async fn page_out(
     assert_eq!(phys_range.len(), 0x1000);
 
     tracing::debug!("pageout: {}: {:?} {:?}", obj_id, obj_range, phys_range);
+    let imp = ctx
+        .disk
+        .new_paging_request::<DiskPageRequest>([phys_range.start]);
+    let start_page = obj_range.start / DiskPageRequest::page_size() as u64;
+    let nr_pages = obj_range.len() / DiskPageRequest::page_size();
+    let reqs = vec![PageRequest::new(imp, start_page as i64, nr_pages as u32)];
+    page_out_many(ctx, obj_id, reqs).await.map(|_| ())
+    /*
     let mut buf = [0; 0x1000];
     physrw::read_physical_pages(&ctx.sender, &mut buf, phys_range).await?;
     let start = if meta {
@@ -73,20 +81,21 @@ pub async fn page_out(
         .write_object(obj_id.raw(), start, &buf)
         .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
         .into_diagnostic()
+    */
 }
 
 pub async fn page_out_many(
     ctx: &'static PagerContext,
     obj_id: ObjID,
-    reqs: &'static [PageRequest<DiskPageRequest>],
+    reqs: Vec<PageRequest<DiskPageRequest>>,
 ) -> Result<usize> {
-    blocking::unblock(move || {
-        ctx.paged_ostore
-            .page_out_object(obj_id.raw(), reqs)
-            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
-            .into_diagnostic()
-    })
-    .await
+    //blocking::unblock(move || {
+    ctx.paged_ostore
+        .page_out_object(obj_id.raw(), &reqs)
+        .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
+        .into_diagnostic()
+    //})
+    //.await
 }
 
 pub async fn page_in_many(
@@ -94,13 +103,13 @@ pub async fn page_in_many(
     obj_id: ObjID,
     mut reqs: Vec<PageRequest<DiskPageRequest>>,
 ) -> Result<usize> {
-    blocking::unblock(move || {
-        ctx.paged_ostore
-            .page_in_object(obj_id.raw(), &mut reqs)
-            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
-            .into_diagnostic()
-    })
-    .await
+    //blocking::unblock(move || {
+    ctx.paged_ostore
+        .page_in_object(obj_id.raw(), &mut reqs)
+        .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
+        .into_diagnostic()
+    //})
+    //.await
 }
 
 #[cfg(test)]

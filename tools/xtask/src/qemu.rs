@@ -4,6 +4,8 @@ use std::{
     process::{Command, ExitStatus},
 };
 
+use anyhow::bail;
+
 use crate::{
     image::ImageInfo,
     triple::{Arch, Machine},
@@ -52,12 +54,38 @@ impl QemuCommand {
             image_info.disk_image.as_path().display()
         ));
 
+        let already_exists = std::fs::exists("target/nvme.img").unwrap();
         if let Ok(f) = OpenOptions::new()
             .write(true)
             .create(true)
             .open("target/nvme.img")
         {
             f.set_len(1024 * 1024 * 1024 * 100).unwrap();
+        }
+
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                std::env::var("PATH").unwrap(),
+                "/opt/homebrew/opt/e2fsprogs/sbin/"
+            ),
+        );
+        if !already_exists {
+            if !Command::new("mke2fs")
+                .arg("-b")
+                .arg("4096")
+                .arg("-qF")
+                .arg("-E")
+                .arg("test_fs")
+                .arg("target/nvme.img")
+                .arg("10000000")
+                .status()
+                .unwrap()
+                .success()
+            {
+                panic!("failed to run mke2fs on nvme.img");
+            }
         }
 
         self.cmd

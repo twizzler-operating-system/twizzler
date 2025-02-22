@@ -23,15 +23,19 @@ use volatile::VolatilePtr;
 
 use super::dma::NvmeDmaSliceRegion;
 
-pub struct NvmeRequester {
-    subq: Mutex<SubmissionQueue>,
-    comq: Mutex<CompletionQueue>,
+pub struct NvmeRequesterInner {
+    subq: SubmissionQueue,
+    comq: CompletionQueue,
     sub_bell: *mut u32,
     com_bell: *mut u32,
-    requests: Mutex<Slab<NvmeRequest>>,
+    requests: Slab<NvmeRequest>,
     _sub_dma: NvmeDmaSliceRegion<CommonCommand>,
     _com_dma: NvmeDmaSliceRegion<CommonCompletion>,
     _bar_obj: MmioObject,
+}
+
+pub struct NvmeRequester {
+    inner: Mutex<NvmeRequesterInner>,
 }
 
 pub struct InflightRequest<'a> {
@@ -59,7 +63,7 @@ pub struct NvmeRequest {
 
 impl<'a> Drop for InflightRequest<'a> {
     fn drop(&mut self) {
-        let mut requests = self.req.requests.lock().unwrap();
+        let requests = &mut self.req.inner.lock().unwrap().requests;
         let entry = requests.get(self.id as usize).unwrap();
         if entry.flags.fetch_or(DROPPED, Ordering::SeqCst) & READY != 0 {
             requests.remove(self.id as usize);
@@ -69,7 +73,7 @@ impl<'a> Drop for InflightRequest<'a> {
 
 impl<'a> TwizzlerWaitable for InflightRequest<'a> {
     fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        let requests = self.req.requests.lock().unwrap();
+        let requests = &self.req.inner.lock().unwrap().requests;
         let req = requests.get(self.id as usize).unwrap();
         ThreadSyncSleep::new(
             ThreadSyncReference::Virtual(&req.flags),
@@ -94,10 +98,10 @@ impl NvmeRequest {
     }
 }
 
-impl NvmeRequester {
+impl NvmeRequesterInner {
     pub fn new(
-        subq: Mutex<SubmissionQueue>,
-        comq: Mutex<CompletionQueue>,
+        subq: SubmissionQueue,
+        comq: CompletionQueue,
         sub_bell: *mut u32,
         com_bell: *mut u32,
         bar_obj: MmioObject,
@@ -109,7 +113,7 @@ impl NvmeRequester {
             comq,
             sub_bell,
             com_bell,
-            requests: Mutex::new(Slab::new()),
+            requests: Slab::new(),
             _sub_dma: sub_dma,
             _com_dma: com_dma,
             _bar_obj: bar_obj,
@@ -127,19 +131,17 @@ impl NvmeRequester {
     }
 
     #[inline]
-    pub fn get_completion(&self) -> Option<CommonCompletion> {
-        let mut comq = self.comq.lock().unwrap();
-        let Some((bell, resp)) = comq.get_completion::<CommonCompletion>() else {
+    pub fn get_completion(&mut self) -> Option<CommonCompletion> {
+        let Some((bell, resp)) = self.comq.get_completion::<CommonCompletion>() else {
             return None;
         };
-        self.subq.lock().unwrap().update_head(resp.new_sq_head());
+        self.subq.update_head(resp.new_sq_head());
         self.com_bell().write(bell as u32);
         let id: u16 = resp.command_id().into();
-        let mut requests = self.requests.lock().unwrap();
-        let entry = requests.get(id as usize).unwrap();
+        let entry = self.requests.get(id as usize).unwrap();
         unsafe { entry.ready.get().as_mut().unwrap().write(resp) };
         if entry.flags.fetch_or(READY, Ordering::SeqCst) & DROPPED != 0 {
-            requests.remove(id as usize);
+            self.requests.remove(id as usize);
         } else {
             let _ = twizzler_abi::syscall::sys_thread_sync(
                 &mut [ThreadSync::new_wake(ThreadSyncWake::new(
@@ -154,26 +156,24 @@ impl NvmeRequester {
     }
 
     #[inline]
-    pub fn submit(&self, mut cmd: CommonCommand) -> Option<InflightRequest<'_>> {
-        let mut requests = self.requests.lock().unwrap();
-        let entry = requests.vacant_entry();
+    pub fn submit(&mut self, mut cmd: CommonCommand) -> Option<u16> {
+        let entry = self.requests.vacant_entry();
         let id = entry.key() as u16;
         cmd.set_cid(id.into());
         entry.insert(NvmeRequest::new(cmd));
-        let entry = requests.get(id as usize)?;
-        let mut sq = self.subq.lock().unwrap();
-        if let Some(tail) = sq.submit(&entry.cmd) {
+        let entry = self.requests.get(id as usize)?;
+        if let Some(tail) = self.subq.submit(&entry.cmd) {
             self.sub_bell().write(tail as u32);
-            Some(InflightRequest { req: self, id })
+            Some(id)
         } else {
-            requests.remove(id as usize);
+            self.requests.remove(id as usize);
             None
         }
     }
 
+    #[inline]
     pub fn poll(&self, inflight: &InflightRequest) -> std::io::Result<CommonCompletion> {
-        let requests = self.requests.lock().unwrap();
-        let Some(entry) = requests.get(inflight.id as usize) else {
+        let Some(entry) = self.requests.get(inflight.id as usize) else {
             return Err(ErrorKind::Other.into());
         };
         if entry.flags.load(Ordering::SeqCst) & READY != 0 {
@@ -181,5 +181,46 @@ impl NvmeRequester {
         } else {
             Err(ErrorKind::WouldBlock.into())
         }
+    }
+}
+
+impl NvmeRequester {
+    pub fn new(
+        subq: SubmissionQueue,
+        comq: CompletionQueue,
+        sub_bell: *mut u32,
+        com_bell: *mut u32,
+        bar_obj: MmioObject,
+        sub_dma: NvmeDmaSliceRegion<CommonCommand>,
+        com_dma: NvmeDmaSliceRegion<CommonCompletion>,
+    ) -> Self {
+        Self {
+            inner: Mutex::new(NvmeRequesterInner::new(
+                subq, comq, sub_bell, com_bell, bar_obj, sub_dma, com_dma,
+            )),
+        }
+    }
+
+    #[inline]
+    pub fn submit(&self, cmd: CommonCommand) -> Option<InflightRequest<'_>> {
+        let id = self.inner.lock().unwrap().submit(cmd)?;
+        Some(InflightRequest { req: self, id })
+    }
+
+    pub fn poll(&self, inflight: &InflightRequest) -> std::io::Result<CommonCompletion> {
+        self.inner.lock().unwrap().poll(inflight)
+    }
+
+    pub fn check_completions(&self) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let mut more = false;
+        while let Some(_) = inner.get_completion() {
+            more = true;
+        }
+        more
+    }
+
+    pub fn get_completion(&self) -> Option<CommonCompletion> {
+        self.inner.lock().unwrap().get_completion()
     }
 }

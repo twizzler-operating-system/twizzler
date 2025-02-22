@@ -87,7 +87,7 @@ impl PagingImp for DiskPageRequest {
             .zip(self.phys_addrs())
             .filter_map(|(x, y)| if let Some(x) = x { Some((x, y)) } else { None })
             .collect::<Vec<_>>();
-        tracing::info!("pairs: {:?}", pairs);
+        tracing::debug!("page-in: pairs: {:?}", pairs);
         pairs.sort_by_key(|p| p.0);
         let (dp, pp): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
         let mut offset = 0;
@@ -98,8 +98,45 @@ impl PagingImp for DiskPageRequest {
         });
         let mut count = 0;
         for (dp, pp) in runs {
-            tracing::info!("  seqread: {:?} => {:?}", dp, pp);
+            tracing::debug!("  seqread: {:?} => {:?}", dp, pp);
             let len = self.ctrl.sequential_read::<PAGE_SIZE>(dp[0], pp)?;
+            assert_eq!(len, pp.len());
+            count += len;
+        }
+        Ok(count)
+    }
+
+    fn page_out(&self, disk_pages: impl Iterator<Item = Option<u64>>) -> std::io::Result<usize> {
+        //https://stackoverflow.com/questions/50380352/how-can-i-group-consecutive-integers-in-a-vector-in-rust
+        fn consecutive_slices(data: &[u64]) -> impl Iterator<Item = &[u64]> {
+            let mut slice_start = 0;
+            (1..=data.len()).flat_map(move |i| {
+                if i == data.len() || data[i - 1] + 1 != data[i] {
+                    let begin = slice_start;
+                    slice_start = i;
+                    Some(&data[begin..i])
+                } else {
+                    None
+                }
+            })
+        }
+        let mut pairs = disk_pages
+            .zip(self.phys_addrs())
+            .filter_map(|(x, y)| if let Some(x) = x { Some((x, y)) } else { None })
+            .collect::<Vec<_>>();
+        tracing::debug!("page-out: pairs: {:?}", pairs);
+        pairs.sort_by_key(|p| p.0);
+        let (dp, pp): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+        let mut offset = 0;
+        let runs = consecutive_slices(&dp).map(|run| {
+            let pair = (run, &pp[offset..(offset + run.len())]);
+            offset += run.len();
+            pair
+        });
+        let mut count = 0;
+        for (dp, pp) in runs {
+            tracing::debug!("  seqwrite: {:?} => {:?}", dp, pp);
+            let len = self.ctrl.sequential_write::<PAGE_SIZE>(dp[0], pp)?;
             assert_eq!(len, pp.len());
             count += len;
         }

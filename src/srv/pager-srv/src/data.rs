@@ -102,16 +102,7 @@ impl PerObject {
         self.inner.lock().unwrap().lookup(obj_range)
     }
 
-    pub async fn sync(&self, ctx: &PagerContext) -> Result<()> {
-        let nulls = [0; PAGE as usize];
-        if ctx
-            .paged_ostore
-            .write_object(self.id.raw(), 0, &nulls)
-            .is_err()
-        {
-            // TODO
-            return Ok(());
-        }
+    pub async fn sync(&self, ctx: &'static PagerContext) -> Result<()> {
         let (pages, mpages) = {
             let inner = self.inner.lock().unwrap();
             let total = inner.page_map.len() + inner.meta_page_map.len();
@@ -328,7 +319,7 @@ impl PagerData {
         Some(ObjectInfo::new(id))
     }
 
-    pub async fn sync(&self, ctx: &PagerContext, id: ObjID) {
+    pub async fn sync(&self, ctx: &'static PagerContext, id: ObjID) {
         let po = {
             let mut inner = self.inner.lock().unwrap();
             inner.get_per_object(id).clone()
