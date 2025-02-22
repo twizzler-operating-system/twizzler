@@ -10,11 +10,18 @@ use embedded_io::ErrorType;
 use monitor_api::CompartmentHandle;
 use naming::{static_naming_factory, EntryType, ErrorKind, StaticNamingHandle as NamingHandle};
 use pager::adv_lethe;
+use rand::seq::SliceRandom;
 use tiny_http::Response;
 use tracing::Level;
+use twizzler::{
+    collections::vec::VecObject,
+    marker::Invariant,
+    object::{ObjectBuilder, RawObject},
+};
 use twizzler_abi::syscall::{
     sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
 };
+use twizzler_rt_abi::object::MapFlags;
 
 struct TwzIo;
 
@@ -344,6 +351,63 @@ fn banner() -> &'static str {
  |_|  \_n_/ |_||__/ |_| |___||__/"
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TestVecItem {
+    x: u32,
+}
+unsafe impl Invariant for TestVecItem {}
+
+fn gdtest(args: &[&str], namer: &mut NamingHandle) {
+    let id = namer.get("test-vec");
+    let mut vo = if let Ok(id) = id {
+        let obj = twizzler::object::Object::map(
+            id.into(),
+            MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST,
+        )
+        .unwrap();
+        VecObject::from(obj)
+    } else {
+        let builder = ObjectBuilder::default().persist();
+        let vo = VecObject::new(builder).unwrap();
+        namer.remove("test-vec", false);
+        namer.put("test-vec", vo.object().id().raw()).unwrap();
+        vo
+    };
+
+    println!("vec object is: {}", vo.object().id());
+
+    match args[1] {
+        "w" | "write" => {
+            for i in 0..10000 {
+                println!("{}", i);
+                vo.push_sc(TestVecItem { x: i }).unwrap();
+            }
+        }
+        "r" | "read" => {
+            let mut indicies = (0..10000).collect::<Vec<_>>();
+            indicies.shuffle(&mut rand::thread_rng());
+            let mut err = 0;
+            for i in &indicies {
+                let val = vo.get(*i);
+                println!("==> {}: {:?}", i, val);
+                if let Some(val) = val {
+                    if val.x != *i as u32 {
+                        println!("!!! MISMATCH !!!");
+                        err += 1;
+                    }
+                }
+            }
+            if err > 0 {
+                println!("ERRORS: {}", err);
+            }
+        }
+        _ => {
+            println!("unknown test-vec cmd {}", args[1]);
+        }
+    }
+}
+
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -408,6 +472,9 @@ fn main() {
                 print!("\x1b[2J");
                 println!("{}", banner());
                 println!("       TWISTED GADGET DEMO");
+            }
+            "test" => {
+                gdtest(&split, &mut namer);
             }
             "demo" => {
                 demo(&split);

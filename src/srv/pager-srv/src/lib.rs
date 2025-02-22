@@ -255,38 +255,6 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     });
     tracing::info!("found root namespace: {:x}", bootstrap_id);
 
-    let pager = PAGER_CTX.get().unwrap();
-    pager.paged_ostore.delete_object(123);
-    pager.paged_ostore.create_object(123).unwrap();
-    let mut buf = vec![0; 0x1000 * 100];
-    for b in buf.iter_mut().enumerate() {
-        *b.1 = b.0 as u8;
-    }
-    pager.paged_ostore.write_object(123, 0, &buf).unwrap();
-
-    let get_4_pages = || {
-        [
-            pager.data.alloc_page().unwrap(),
-            pager.data.alloc_page().unwrap(),
-            pager.data.alloc_page().unwrap(),
-            pager.data.alloc_page().unwrap(),
-        ]
-    };
-
-    let mut reqs = [PageRequest::new(
-        pager
-            .disk
-            .new_paging_request::<DiskPageRequest>(get_4_pages()),
-        10,
-        4,
-    )];
-    PAGER_CTX
-        .get()
-        .unwrap()
-        .paged_ostore
-        .page_in_object(123, &mut reqs)
-        .unwrap();
-
     return bootstrap_id.into();
 
     /*
@@ -336,7 +304,7 @@ pub fn pager_start(q1: ObjID, q2: ObjID) -> ObjID {
 pub fn full_object_sync(id: ObjID) {
     let task = EXECUTOR.get().unwrap().spawn(async move {
         let pager = PAGER_CTX.get().unwrap();
-        pager.data.sync(&pager, id).await
+        pager.data.sync(&pager, id).await;
     });
     block_on(EXECUTOR.get().unwrap().run(async { task.await }));
 }

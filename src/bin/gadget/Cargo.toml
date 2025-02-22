@@ -19,3 +19,5 @@ tiny_http = { path = "../test-tiny-http/src/tiny-http-twizzler" }
 tracing-log = "*"
 arrayvec = "0.7.6"
 colored = "*"
+twizzler = { path = "../../lib/twizzler" }
+rand = "*"

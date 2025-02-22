@@ -1,7 +1,9 @@
 use std::{
+    cell::OnceCell,
     io::ErrorKind,
     mem::size_of,
     sync::{Arc, Mutex, OnceLock, RwLock},
+    thread::{JoinHandle, Thread},
 };
 
 use async_executor::Executor;
@@ -44,9 +46,10 @@ struct NvmeControllerInner {
 }
 
 pub struct NvmeController {
-    inner: NvmeControllerInner,
+    inner: Arc<NvmeControllerInner>,
     capacity: OnceLock<usize>,
     block_size: OnceLock<usize>,
+    int_thr: OnceLock<JoinHandle<()>>,
 }
 
 const ADMIN_QUEUE_LEN: u16 = 32;
@@ -155,23 +158,14 @@ fn init_controller(mut device: Device, mut dma_pool: DmaPool) -> std::io::Result
     };
 
     let mut admin_requester = NvmeRequester::new(
-        Mutex::new(sq),
-        Mutex::new(cq),
+        sq,
+        cq,
         saq_bell.as_mut_ptr().as_raw_ptr().as_ptr(),
         caq_bell.as_mut_ptr().as_raw_ptr().as_ptr(),
         bar,
         saq,
         caq,
     );
-    let interrupt_thread_main = |inum: usize| loop {
-        let more = device.repr().check_for_interrupt(inum).is_some();
-
-        while let Some(_req) = admin_requester.get_completion() {}
-
-        if !more {
-            device.repr().wait_for_interrupt(inum, None);
-        }
-    };
 
     let cqid = DATA_QUEUE_ID.into();
     let sqid = DATA_QUEUE_ID.into();
@@ -187,15 +181,29 @@ fn init_controller(mut device: Device, mut dma_pool: DmaPool) -> std::io::Result
     )?;
 
     Ok(NvmeController {
-        inner: NvmeControllerInner {
+        inner: Arc::new(NvmeControllerInner {
             data_requester: req,
             admin_requester,
             device,
             dma_pool,
-        },
+        }),
         capacity: OnceLock::new(),
         block_size: OnceLock::new(),
+        int_thr: OnceLock::new(),
     })
+}
+
+fn interrupt_thread_main(inner: &NvmeControllerInner, inum: usize) {
+    loop {
+        let more = inner.device.repr().check_for_interrupt(inum).is_some();
+
+        let more_a = inner.admin_requester.check_completions();
+        let more_d = inner.data_requester.check_completions();
+
+        if !more && !more_a && !more_d {
+            inner.device.repr().wait_for_interrupt(inum, None);
+        }
+    }
 }
 
 impl NvmeController {
@@ -206,7 +214,19 @@ impl NvmeController {
             DmaOptions::empty(),
         );
 
-        init_controller(device, dma_pool)
+        let ctrl = init_controller(device, dma_pool)?;
+        let inner = ctrl.inner.clone();
+        ctrl.int_thr
+            .set(
+                std::thread::Builder::new()
+                    .name("nvme-int-0".to_string())
+                    .spawn(move || {
+                        interrupt_thread_main(&inner, 0);
+                    })
+                    .unwrap(),
+            )
+            .unwrap();
+        Ok(ctrl)
     }
 
     fn create_queue_pair(
@@ -333,8 +353,8 @@ impl NvmeController {
         };
 
         let req = NvmeRequester::new(
-            Mutex::new(sq),
-            Mutex::new(cq),
+            sq,
+            cq,
             saq_bell.as_mut_ptr().as_raw_ptr().as_ptr(),
             caq_bell.as_mut_ptr().as_raw_ptr().as_ptr(),
             bar,
