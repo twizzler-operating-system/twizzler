@@ -2,10 +2,12 @@ use nvme::{
     ds::cmd::PrpListOrBuffer,
     hosted::memory::{PhysicalPageCollection, PrpMode},
 };
-use twizzler_driver::dma::{DeviceSync, DmaPin, DmaPool, DmaRegion, DmaSliceRegion, DMA_PAGE_SIZE};
+use twizzler_driver::dma::{
+    DeviceSync, DmaPin, DmaPool, DmaRegion, DmaSliceRegion, PhysInfo, DMA_PAGE_SIZE,
+};
 
 #[derive(Debug)]
-struct PrpMgr {
+pub struct PrpMgr {
     _list: Vec<DmaSliceRegion<u64>>,
     mode: PrpMode,
     buffer: bool,
@@ -34,7 +36,7 @@ impl<'a, T: DeviceSync> NvmeDmaRegion<T> {
     }
 }
 
-pub fn get_prp_list_or_buffer(pin: DmaPin, dma: &DmaPool, mode: PrpMode) -> PrpMgr {
+pub fn get_prp_list_or_buffer(pin: &[PhysInfo], dma: &DmaPool, mode: PrpMode) -> PrpMgr {
     let entries_per_page = DMA_PAGE_SIZE / 8;
     let pin_len = pin.len();
     let mut pin_iter = pin.into_iter();
@@ -103,7 +105,7 @@ pub fn get_prp_list_or_buffer(pin: DmaPin, dma: &DmaPool, mode: PrpMode) -> PrpM
 }
 
 impl PrpMgr {
-    fn prp_list_or_buffer(&self) -> PrpListOrBuffer {
+    pub fn prp_list_or_buffer(&self) -> PrpListOrBuffer {
         match self.mode {
             PrpMode::Double => {
                 if self.buffer {
@@ -136,7 +138,7 @@ impl<'a, T: DeviceSync> PhysicalPageCollection for &'a mut NvmeDmaRegion<T> {
         }
 
         let pin = self.reg.pin().unwrap();
-        self.prp = Some(get_prp_list_or_buffer(pin, dma, mode));
+        self.prp = Some(get_prp_list_or_buffer(pin.backing, dma, mode));
         Some(self.prp.as_ref().unwrap().prp_list_or_buffer())
     }
 
@@ -178,7 +180,7 @@ impl<'a, T: DeviceSync> PhysicalPageCollection for &'a mut NvmeDmaSliceRegion<T>
         }
 
         let pin = self.reg.pin().unwrap();
-        self.prp = Some(get_prp_list_or_buffer(pin, dma, mode));
+        self.prp = Some(get_prp_list_or_buffer(pin.backing, dma, mode));
         Some(self.prp.as_ref().unwrap().prp_list_or_buffer())
     }
 
