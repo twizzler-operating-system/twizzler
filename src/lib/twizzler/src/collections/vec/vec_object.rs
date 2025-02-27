@@ -9,6 +9,7 @@ use crate::{
     tx::TxRef,
 };
 
+#[derive(Clone)]
 pub struct VecObject<T: Invariant, A: Allocator> {
     obj: Object<Vec<T, A>>,
 }
@@ -132,6 +133,14 @@ impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
         self.obj = tx.commit()?;
         Ok(val)
     }
+
+    pub fn split_off(&mut self, _point: usize) -> crate::tx::Result<Self> {
+        todo!()
+    }
+
+    pub fn swap_remove(&mut self, _idx: usize) -> crate::tx::Result<T> {
+        todo!()
+    }
 }
 
 impl<T: Invariant> VecObject<T, VecObjectAlloc> {
@@ -186,6 +195,16 @@ impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
         base.remove_inplace(idx, &tx)?;
         self.obj = tx.commit()?;
         Ok(())
+    }
+
+    pub fn swap_remove_inplace(&mut self, _idx: usize) -> crate::tx::Result<()> {
+        todo!()
+    }
+}
+
+impl<T: Invariant + StoreCopy, A: Allocator> Extend<T> for VecObject<T, A> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        self.append(iter).unwrap();
     }
 }
 
