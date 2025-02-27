@@ -97,7 +97,7 @@ mod tests {
     fn builder_complex() {
         let builder = ObjectBuilder::default();
         let obj_1 = builder.build(42u32).unwrap();
-        let base = obj_1.base();
+        let base = obj_1.base_ref();
         assert_eq!(*base, 42);
 
         let builder = ObjectBuilder::<Foo>::default();

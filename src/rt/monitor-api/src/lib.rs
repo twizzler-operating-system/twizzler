@@ -551,11 +551,9 @@ impl<'a> Iterator for CompartmentDepsIter<'a> {
     type Item = CompartmentHandle;
 
     fn next(&mut self) -> Option<Self::Item> {
-        twizzler_abi::klog_println!("next: {}", self.n);
         let desc = gates::monitor_rt_get_compartment_deps(self.comp.desc, self.n)
             .ok()
             .flatten()?;
-        twizzler_abi::klog_println!("next: found {}", desc);
         self.n += 1;
         Some(CompartmentHandle { desc: Some(desc) })
     }

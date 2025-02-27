@@ -381,7 +381,7 @@ fn gdtest(args: &[&str], namer: &mut NamingHandle) {
         "w" | "write" => {
             for i in 0..10000 {
                 println!("{}", i);
-                vo.push_sc(TestVecItem { x: i }).unwrap();
+                vo.push(TestVecItem { x: i }).unwrap();
             }
         }
         "r" | "read" => {
