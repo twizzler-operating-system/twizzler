@@ -384,6 +384,10 @@ fn gdtest(args: &[&str], namer: &mut NamingHandle) {
                 vo.push(TestVecItem { x: i }).unwrap();
             }
         }
+        "a" | "append" => {
+            vo.append((0..10000).into_iter().map(|x| TestVecItem { x }))
+                .unwrap();
+        }
         "r" | "read" => {
             let mut indicies = (0..10000).collect::<Vec<_>>();
             indicies.shuffle(&mut rand::thread_rng());
