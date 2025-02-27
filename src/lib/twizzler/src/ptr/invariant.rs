@@ -33,26 +33,26 @@ impl<T: Invariant> InvPtr<T> {
         GlobalPtr::new(re.id(), self.offset())
     }
 
+    #[inline(always)]
     fn local_resolve(&self) -> *const T {
         let this = self as *const Self;
         this.map_addr(|addr| (addr & !(MAX_SIZE - 1)) + self.offset() as usize)
             .cast()
     }
 
+    #[inline]
     pub unsafe fn resolve(&self) -> Ref<'_, T> {
+        if core::intrinsics::likely(self.is_local()) {
+            Ref::from_ptr(self.local_resolve())
+        } else {
+            self.slow_resolve()
+        }
+    }
+
+    #[inline(never)]
+    unsafe fn slow_resolve(&self) -> Ref<'_, T> {
         let fote = self.fot_index();
         let obj = Self::get_this(self);
-        if fote == 0 {
-            // TODO: this is inefficient
-            /*
-            let ptr = obj
-                .lea(self.offset() as usize, size_of::<T>())
-                .unwrap()
-                .cast();
-            return Ref::from_handle(obj, ptr);
-            */
-            return Ref::from_raw_parts(self.local_resolve(), core::ptr::null());
-        }
         let re = twizzler_rt_abi::object::twz_rt_resolve_fot(&obj, fote, MAX_SIZE).unwrap();
         let ptr = re
             .lea(self.offset() as usize, size_of::<T>())
@@ -73,14 +73,22 @@ impl<T: Invariant> InvPtr<T> {
         }
     }
 
+    #[inline(always)]
     pub fn fot_index(&self) -> u64 {
         self.value >> 48
     }
 
+    #[inline(always)]
+    pub fn is_local(&self) -> bool {
+        self.fot_index() == 0
+    }
+
+    #[inline(always)]
     pub fn offset(&self) -> u64 {
         self.value & ((1 << 48) - 1)
     }
 
+    #[inline]
     pub fn raw(&self) -> u64 {
         self.value
     }

@@ -111,7 +111,7 @@ impl<T: Invariant> VecInner<T> {
     ) -> crate::tx::Result<R> {
         let r = unsafe { self.start.resolve() };
         let slice = unsafe { RefSlice::from_ref(r, self.len) };
-        let item = slice.get(idx).unwrap();
+        let item = slice.get_ref(idx).unwrap();
         let mut item = item.tx(tx)?;
         f(&mut *item)
     }
@@ -150,9 +150,16 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         unsafe { RefSliceMut::from_ref(r.cast(), cap) }
     }
 
-    pub fn get<'a>(&'a self, idx: usize) -> Option<Ref<'a, T>> {
+    #[inline]
+    pub fn get<'a>(&'a self, idx: usize) -> Option<&T> {
         let slice = self.as_slice();
-        slice.get_into(idx)
+        slice.as_slice().get(idx)
+    }
+
+    #[inline]
+    pub fn get_ref<'a>(&'a self, idx: usize) -> Option<Ref<'a, T>> {
+        let slice = self.as_slice();
+        slice.get_ref(idx)
     }
 
     pub fn get_mut(
@@ -162,7 +169,7 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
     ) -> crate::tx::Result<Option<RefMut<'_, T>>> {
         let slice = self.as_slice();
         slice
-            .get(idx)
+            .get_ref(idx)
             .map(|f| f.owned().tx(tx.as_ref()))
             .transpose()
     }
@@ -231,6 +238,7 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         Ok(())
     }
 
+    #[inline]
     pub fn as_slice(&self) -> RefSlice<'_, T> {
         let r = unsafe { self.inner.start.resolve() };
         let slice = unsafe { RefSlice::from_ref(r, self.inner.len) };

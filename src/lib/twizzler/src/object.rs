@@ -164,6 +164,7 @@ impl<Base: BaseType> TypedObject for Object<Base> {
         unsafe { Ref::from_raw_parts(base, self.handle()) }
     }
 
+    #[inline]
     fn base(&self) -> &Self::Base {
         unsafe { self.base_ptr::<Self::Base>().as_ref().unwrap_unchecked() }
     }
