@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     marker::PhantomData,
     ops::{Deref, DerefMut, Index, IndexMut, RangeBounds},
 };
@@ -10,8 +11,8 @@ use crate::{object::RawObject, tx::TxHandle};
 
 pub struct Ref<'obj, T> {
     ptr: *const T,
-    handle: *const ObjectHandle,
-    owned: bool,
+    handle: Cell<*const ObjectHandle>,
+    owned: Cell<bool>,
     _pd: PhantomData<&'obj T>,
 }
 
@@ -25,14 +26,21 @@ impl<'obj, T> Ref<'obj, T> {
     }
 
     pub fn handle(&self) -> &ObjectHandle {
-        unsafe { self.handle.as_ref().unwrap_unchecked() }
+        if self.handle.get().is_null() {
+            let handle =
+                twizzler_rt_abi::object::twz_rt_get_object_handle(self.ptr.cast()).unwrap();
+            self.handle.set(Box::into_raw(Box::new(handle)));
+            self.owned.set(true);
+        }
+
+        unsafe { self.handle.get().as_ref().unwrap_unchecked() }
     }
 
     pub unsafe fn from_raw_parts(ptr: *const T, handle: *const ObjectHandle) -> Self {
         Self {
             ptr,
-            handle,
-            owned: false,
+            handle: Cell::new(handle),
+            owned: Cell::new(false),
             _pd: PhantomData,
         }
     }
@@ -40,8 +48,8 @@ impl<'obj, T> Ref<'obj, T> {
     pub unsafe fn cast<U>(self) -> Ref<'obj, U> {
         let ret = Ref {
             ptr: self.ptr.cast(),
-            handle: self.handle,
-            owned: self.owned,
+            handle: Cell::new(self.handle.get()),
+            owned: Cell::new(self.owned.get()),
             _pd: PhantomData,
         };
         std::mem::forget(self);
@@ -51,8 +59,8 @@ impl<'obj, T> Ref<'obj, T> {
     unsafe fn mutable_to(self, ptr: *mut T) -> RefMut<'obj, T> {
         let ret = RefMut {
             ptr,
-            handle: self.handle,
-            owned: self.owned,
+            handle: Cell::new(self.handle.get()),
+            owned: Cell::new(self.owned.get()),
             _pd: PhantomData,
         };
         std::mem::forget(self);
@@ -71,8 +79,8 @@ impl<'obj, T> Ref<'obj, T> {
     pub fn owned<'b>(&self) -> Ref<'b, T> {
         Ref {
             ptr: self.ptr,
-            owned: true,
-            handle: Box::into_raw(Box::new(self.handle().clone())),
+            owned: Cell::new(true),
+            handle: Cell::new(Box::into_raw(Box::new(self.handle().clone()))),
             _pd: PhantomData,
         }
     }
@@ -80,8 +88,8 @@ impl<'obj, T> Ref<'obj, T> {
     pub fn from_handle(handle: ObjectHandle, ptr: *const T) -> Self {
         Self {
             ptr,
-            owned: true,
-            handle: Box::into_raw(Box::new(handle)),
+            owned: Cell::new(true),
+            handle: Cell::new(Box::into_raw(Box::new(handle))),
             _pd: PhantomData,
         }
     }
@@ -114,16 +122,16 @@ impl<'a, T> From<Ref<'a, T>> for GlobalPtr<T> {
 
 impl<'a, T> Drop for Ref<'a, T> {
     fn drop(&mut self) {
-        if self.owned {
-            let _boxed = unsafe { Box::from_raw(self.handle as *mut ObjectHandle) };
+        if self.owned.get() {
+            let _boxed = unsafe { Box::from_raw(self.handle.get() as *mut ObjectHandle) };
         }
     }
 }
 
 pub struct RefMut<'obj, T> {
     ptr: *mut T,
-    handle: *const ObjectHandle,
-    owned: bool,
+    handle: Cell<*const ObjectHandle>,
+    owned: Cell<bool>,
     _pd: PhantomData<&'obj mut T>,
 }
 
@@ -135,8 +143,8 @@ impl<'obj, T> RefMut<'obj, T> {
     pub unsafe fn from_raw_parts(ptr: *mut T, handle: *const ObjectHandle) -> Self {
         Self {
             ptr,
-            handle,
-            owned: false,
+            handle: Cell::new(handle),
+            owned: Cell::new(false),
             _pd: PhantomData,
         }
     }
@@ -144,8 +152,8 @@ impl<'obj, T> RefMut<'obj, T> {
     pub unsafe fn cast<U>(self) -> RefMut<'obj, U> {
         let ret = RefMut {
             ptr: self.ptr.cast(),
-            handle: self.handle,
-            owned: self.owned,
+            handle: Cell::new(self.handle.get()),
+            owned: Cell::new(self.owned.get()),
             _pd: PhantomData,
         };
         std::mem::forget(self);
@@ -153,7 +161,13 @@ impl<'obj, T> RefMut<'obj, T> {
     }
 
     pub fn handle(&self) -> &ObjectHandle {
-        unsafe { self.handle.as_ref().unwrap_unchecked() }
+        if self.handle.get().is_null() {
+            let handle =
+                twizzler_rt_abi::object::twz_rt_get_object_handle(self.ptr.cast()).unwrap();
+            self.handle.set(Box::into_raw(Box::new(handle)));
+            self.owned.set(true);
+        }
+        unsafe { self.handle.get().as_ref().unwrap_unchecked() }
     }
 
     pub fn offset(&self) -> u64 {
@@ -167,8 +181,8 @@ impl<'obj, T> RefMut<'obj, T> {
     pub fn owned<'b>(&self) -> RefMut<'b, T> {
         RefMut {
             ptr: self.ptr,
-            owned: true,
-            handle: Box::into_raw(Box::new(self.handle().clone())),
+            owned: Cell::new(true),
+            handle: Cell::new(Box::into_raw(Box::new(self.handle().clone()))),
             _pd: PhantomData,
         }
     }
@@ -202,8 +216,8 @@ impl<'a, T> From<RefMut<'a, T>> for GlobalPtr<T> {
 
 impl<'a, T> Drop for RefMut<'a, T> {
     fn drop(&mut self) {
-        if self.owned {
-            let _boxed = unsafe { Box::from_raw(self.handle as *mut ObjectHandle) };
+        if self.owned.get() {
+            let _boxed = unsafe { Box::from_raw(self.handle.get() as *mut ObjectHandle) };
         }
     }
 }
@@ -225,7 +239,7 @@ impl<'a, T> RefSlice<'a, T> {
 
     pub fn get(&self, idx: usize) -> Option<Ref<'_, T>> {
         let ptr = self.as_slice().get(idx)?;
-        Some(unsafe { Ref::from_raw_parts(ptr, self.ptr.handle) })
+        Some(unsafe { Ref::from_raw_parts(ptr, self.ptr.handle.get()) })
     }
 
     pub fn get_into(self, idx: usize) -> Option<Ref<'a, T>> {
@@ -294,12 +308,12 @@ impl<'a, T> RefSliceMut<'a, T> {
 
     pub fn get(&self, idx: usize) -> Option<Ref<'_, T>> {
         let ptr = self.as_slice().get(idx)?;
-        Some(unsafe { Ref::from_raw_parts(ptr, self.ptr.handle) })
+        Some(unsafe { Ref::from_raw_parts(ptr, self.ptr.handle.get()) })
     }
 
     pub fn get_mut(&mut self, idx: usize) -> Option<RefMut<'_, T>> {
         let ptr = self.as_slice_mut().get_mut(idx)?;
-        Some(unsafe { RefMut::from_raw_parts(ptr, self.ptr.handle) })
+        Some(unsafe { RefMut::from_raw_parts(ptr, self.ptr.handle.get()) })
     }
 
     pub fn len(&self) -> usize {
