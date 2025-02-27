@@ -1,12 +1,12 @@
 use std::{
     marker::PhantomData,
-    ops::{Deref, DerefMut, Index, IndexMut},
+    ops::{Deref, DerefMut, Index, IndexMut, RangeBounds},
 };
 
 use twizzler_rt_abi::object::ObjectHandle;
 
 use super::GlobalPtr;
-use crate::object::RawObject;
+use crate::{object::RawObject, tx::TxHandle};
 
 pub struct Ref<'obj, T> {
     ptr: *const T,
@@ -48,15 +48,20 @@ impl<'obj, T> Ref<'obj, T> {
         ret
     }
 
-    pub unsafe fn mutable(self) -> RefMut<'obj, T> {
+    unsafe fn mutable_to(self, ptr: *mut T) -> RefMut<'obj, T> {
         let ret = RefMut {
-            ptr: self.ptr as *mut T,
+            ptr,
             handle: self.handle,
             owned: self.owned,
             _pd: PhantomData,
         };
         std::mem::forget(self);
         ret
+    }
+
+    pub unsafe fn mutable(self) -> RefMut<'obj, T> {
+        let ptr = self.ptr as *mut T;
+        self.mutable_to(ptr)
     }
 
     pub fn global(&self) -> GlobalPtr<T> {
@@ -79,6 +84,11 @@ impl<'obj, T> Ref<'obj, T> {
             handle: Box::into_raw(Box::new(handle)),
             _pd: PhantomData,
         }
+    }
+
+    pub fn tx(self, tx: &(impl TxHandle + 'obj)) -> crate::tx::Result<RefMut<'obj, T>> {
+        let ptr = tx.tx_mut(self.ptr.cast(), size_of::<T>())?;
+        Ok(unsafe { self.mutable_to(ptr.cast()) })
     }
 }
 
@@ -220,6 +230,29 @@ impl<'a, T> RefSlice<'a, T> {
 
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    pub fn tx(
+        self,
+        range: impl RangeBounds<usize>,
+        tx: &(impl TxHandle + 'a),
+    ) -> crate::tx::Result<RefSliceMut<'a, T>> {
+        let start = match range.start_bound() {
+            std::ops::Bound::Included(n) => *n,
+            std::ops::Bound::Excluded(n) => n.saturating_add(1),
+            std::ops::Bound::Unbounded => 0,
+        };
+        let end = match range.start_bound() {
+            std::ops::Bound::Included(n) => n.saturating_add(1),
+            std::ops::Bound::Excluded(n) => *n,
+            std::ops::Bound::Unbounded => self.len,
+        };
+        let len = end - start;
+        unsafe {
+            let ptr = tx.tx_mut(self.ptr.ptr.add(start).cast(), size_of::<T>() * len)?;
+            let r = self.ptr.mutable_to(ptr.cast());
+            Ok(RefSliceMut::from_ref(r, len))
+        }
     }
 }
 

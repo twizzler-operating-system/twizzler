@@ -117,7 +117,7 @@ pub fn get_devices(spec: DriverSpec) -> Option<ObjID> {
             tracing::debug!("found devices {:?} for spec {:?}", ids, spec);
             let mut owned_devices_object = VecObject::new(ObjectBuilder::default()).ok()?;
             for id in ids {
-                owned_devices_object.push_sc(OwnedDevice { id }).ok()?;
+                owned_devices_object.push(OwnedDevice { id }).ok()?;
             }
             // TODO: on-drop for this object.
             Some(owned_devices_object.object().id())

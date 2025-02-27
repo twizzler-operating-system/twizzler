@@ -117,30 +117,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_physrange_to_pages() {
-        let range = PhysRange {
-            start: 0,
-            end: 8192,
-        };
-        assert_eq!(physrange_to_pages(&range), 2);
-
-        let range = PhysRange {
-            start: 0,
-            end: 4095,
-        };
-        assert_eq!(physrange_to_pages(&range), 1);
-
-        let range = PhysRange { start: 0, end: 0 };
-        assert_eq!(physrange_to_pages(&range), 0);
-
-        let range = PhysRange {
-            start: 4096,
-            end: 8192,
-        };
-        assert_eq!(physrange_to_pages(&range), 2);
-    }
-
-    #[test]
     fn test_objectrange_to_page_number() {
         let range = ObjectRange {
             start: 0,

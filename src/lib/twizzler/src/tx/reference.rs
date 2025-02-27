@@ -14,7 +14,7 @@ impl<T> TxRef<T> {
         unsafe { RefMut::from_raw_parts(self.ptr, handle) }
     }
 
-    pub unsafe fn new<B>(tx: TxObject<B>, ptr: *mut T) -> Self {
+    pub unsafe fn from_raw_parts<B>(tx: TxObject<B>, ptr: *mut T) -> Self {
         Self {
             ptr,
             tx: Some(tx.into_unit()),
@@ -32,6 +32,10 @@ impl<T> TxRef<T> {
     pub fn into_tx(mut self) -> TxObject<()> {
         self.tx.take().unwrap()
     }
+
+    pub fn raw(&self) -> *mut T {
+        self.ptr
+    }
 }
 
 impl<T> TxRef<MaybeUninit<T>> {
@@ -39,7 +43,7 @@ impl<T> TxRef<MaybeUninit<T>> {
         unsafe {
             let ptr = self.ptr.as_mut().unwrap_unchecked();
             let tx = self.tx.take().unwrap();
-            Ok(TxRef::<T>::new(tx, ptr.write(val)))
+            Ok(TxRef::<T>::from_raw_parts(tx, ptr.write(val)))
         }
     }
 }
@@ -55,6 +59,6 @@ impl<T> Deref for TxRef<T> {
 impl<T> Drop for TxRef<T> {
     #[track_caller]
     fn drop(&mut self) {
-        todo!()
+        let _ = self.tx.take().map(|tx| tx.commit());
     }
 }
