@@ -152,7 +152,7 @@ impl<T: Invariant> VecObject<T, VecObjectAlloc> {
 
     pub fn get(&self, idx: usize) -> Option<Ref<'_, T>> {
         // TODO: inefficient
-        self.obj.base().get(idx).map(|r| r.owned())
+        self.obj.base().get(idx)
     }
 }
 
