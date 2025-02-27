@@ -84,6 +84,10 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
         self.obj.base().as_slice()
     }
 
+    pub fn slice(&self, range: impl RangeBounds<usize>) -> RefSlice<'_, T> {
+        self.obj.base().as_slice().slice(range)
+    }
+
     pub fn with_mut_slice<R>(
         &mut self,
         range: impl RangeBounds<usize>,
@@ -150,9 +154,14 @@ impl<T: Invariant> VecObject<T, VecObjectAlloc> {
         })
     }
 
-    pub fn get(&self, idx: usize) -> Option<Ref<'_, T>> {
-        // TODO: inefficient
-        self.obj.base().get(idx)
+    #[inline]
+    pub fn get(&self, idx: usize) -> Option<&T> {
+        self.object().base().get(idx)
+    }
+
+    #[inline]
+    pub fn get_ref(&self, idx: usize) -> Option<Ref<'_, T>> {
+        self.object().base().get_ref(idx)
     }
 }
 

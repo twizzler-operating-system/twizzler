@@ -2,6 +2,7 @@
 #![feature(auto_traits)]
 #![feature(strict_provenance)]
 #![feature(allocator_api)]
+#![feature(core_intrinsics)]
 
 pub mod alloc;
 pub mod collections;

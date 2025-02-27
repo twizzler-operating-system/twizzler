@@ -217,7 +217,7 @@ impl NameSession<'_> {
             }
         }
 
-        Ok(store.get(index).unwrap())
+        Ok(store.get_ref(index).unwrap())
     }
 
     // Traverses the path and construct the canonical path given name relative to absolute path
@@ -232,7 +232,7 @@ impl NameSession<'_> {
 
         let mut current = node.curr;
         while current != 0 {
-            node = store.get(current).unwrap();
+            node = store.get_ref(current).unwrap();
             vec.push_front(node.entry.name.to_string());
             current = node.parent;
         }
@@ -366,13 +366,13 @@ impl NameSession<'_> {
             old: usize,
             new: usize,
         ) {
-            let mut old_node = store.get(old).unwrap().mutable();
-            let mut new_node = store.get(new).unwrap().mutable();
+            let mut old_node = store.get_ref(old).unwrap().mutable();
+            let mut new_node = store.get_ref(new).unwrap().mutable();
             std::ptr::swap(old_node.raw(), new_node.raw());
             std::mem::swap(&mut old_node.curr, &mut new_node.curr);
 
             for i in 0..store.len() {
-                let mut node = unsafe { store.get(i).unwrap().mutable() };
+                let mut node = unsafe { store.get_ref(i).unwrap().mutable() };
                 // If the node's parent is pointing to where the swapped node is, fix it
                 if old_node.is_namespace() && node.parent == new_node.curr {
                     node.parent = old_node.curr;
@@ -388,7 +388,7 @@ impl NameSession<'_> {
             set: &mut HashSet<usize>,
             index: usize,
         ) {
-            let node: Ref<'_, Node> = store.get(index).unwrap();
+            let node: Ref<'_, Node> = store.get_ref(index).unwrap();
             set.insert(index);
             if !node.is_namespace() {
                 return;
@@ -411,8 +411,8 @@ impl NameSession<'_> {
             let mut left: usize = 1;
             let mut right: usize = store.len() - 1;
             while left < right {
-                let left_node: Ref<'_, Node> = store.get(left).unwrap();
-                let right_node: Ref<'_, Node> = store.get(right).unwrap();
+                let left_node: Ref<'_, Node> = store.get_ref(left).unwrap();
+                let right_node: Ref<'_, Node> = store.get_ref(right).unwrap();
 
                 // I want the right node to contain a valid node that is able to be swapped
                 // If the left node contains an invalid node...

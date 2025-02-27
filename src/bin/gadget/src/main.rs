@@ -389,16 +389,34 @@ fn gdtest(args: &[&str], namer: &mut NamingHandle) {
             vo.append((0..10_000_000).into_iter().map(|x| TestVecItem { x }))
                 .unwrap();
         }
+        "rs" | "read-all-slices" => {
+            let mut indicies = (0..vo.len()).collect::<Vec<_>>();
+            indicies.shuffle(&mut rand::thread_rng());
+            start = Instant::now();
+            let mut err = 0;
+            let slice = vo.slice(..);
+            for i in &indicies {
+                let val = slice.get(*i).unwrap();
+                assert_eq!(val.x, *i as u32);
+                //println!("{} {:?}", i, *val);
+                std::hint::black_box(val);
+            }
+            if err > 0 {
+                println!("ERRORS: {}", err);
+            }
+        }
         "ra" | "read-all" => {
             let mut indicies = (0..vo.len()).collect::<Vec<_>>();
             indicies.shuffle(&mut rand::thread_rng());
             start = Instant::now();
             let mut err = 0;
-            let vslice = vo.as_slice();
-            let slice = vslice.as_slice();
+            //let vslice = vo.as_slice();
+            //let slice = vslice.as_slice();
             for i in &indicies {
-                let val = slice[*i];
-
+                //let val = vslice[*i];
+                let val = vo.get(*i).unwrap();
+                assert_eq!(val.x, *i as u32);
+                //println!("{} {:?}", i, *val);
                 std::hint::black_box(val);
             }
             if err > 0 {
