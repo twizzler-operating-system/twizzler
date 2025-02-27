@@ -2,7 +2,7 @@ use std::{
     fs::OpenOptions,
     io::{Read, Write},
     net::Ipv4Addr,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use colored::Colorize;
@@ -377,6 +377,7 @@ fn gdtest(args: &[&str], namer: &mut NamingHandle) {
 
     println!("vec object is: {}", vo.object().id());
 
+    let mut start = Instant::now();
     match args[1] {
         "w" | "write" => {
             for i in 0..10000 {
@@ -385,8 +386,24 @@ fn gdtest(args: &[&str], namer: &mut NamingHandle) {
             }
         }
         "a" | "append" => {
-            vo.append((0..10000).into_iter().map(|x| TestVecItem { x }))
+            vo.append((0..10_000_000).into_iter().map(|x| TestVecItem { x }))
                 .unwrap();
+        }
+        "ra" | "read-all" => {
+            let mut indicies = (0..vo.len()).collect::<Vec<_>>();
+            indicies.shuffle(&mut rand::thread_rng());
+            start = Instant::now();
+            let mut err = 0;
+            let vslice = vo.as_slice();
+            let slice = vslice.as_slice();
+            for i in &indicies {
+                let val = slice[*i];
+
+                std::hint::black_box(val);
+            }
+            if err > 0 {
+                println!("ERRORS: {}", err);
+            }
         }
         "r" | "read" => {
             let mut indicies = (0..10000).collect::<Vec<_>>();
@@ -410,6 +427,8 @@ fn gdtest(args: &[&str], namer: &mut NamingHandle) {
             println!("unknown test-vec cmd {}", args[1]);
         }
     }
+    let end = Instant::now();
+    println!("time = {:?}", end - start);
 }
 
 fn main() {

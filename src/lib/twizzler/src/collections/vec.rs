@@ -152,7 +152,7 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
 
     pub fn get<'a>(&'a self, idx: usize) -> Option<Ref<'a, T>> {
         let slice = self.as_slice();
-        slice.get(idx).map(|f| f.owned())
+        slice.get_into(idx)
     }
 
     pub fn get_mut(

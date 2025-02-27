@@ -228,6 +228,13 @@ impl<'a, T> RefSlice<'a, T> {
         Some(unsafe { Ref::from_raw_parts(ptr, self.ptr.handle) })
     }
 
+    pub fn get_into(self, idx: usize) -> Option<Ref<'a, T>> {
+        let ptr = self.as_slice().get(idx)? as *const T;
+        let mut r = self.ptr;
+        r.ptr = ptr;
+        Some(r)
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
