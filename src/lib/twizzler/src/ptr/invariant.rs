@@ -33,16 +33,25 @@ impl<T: Invariant> InvPtr<T> {
         GlobalPtr::new(re.id(), self.offset())
     }
 
+    fn local_resolve(&self) -> *const T {
+        let this = self as *const Self;
+        this.map_addr(|addr| (addr & !(MAX_SIZE - 1)) + self.offset() as usize)
+            .cast()
+    }
+
     pub unsafe fn resolve(&self) -> Ref<'_, T> {
         let fote = self.fot_index();
         let obj = Self::get_this(self);
         if fote == 0 {
             // TODO: this is inefficient
+            /*
             let ptr = obj
                 .lea(self.offset() as usize, size_of::<T>())
                 .unwrap()
                 .cast();
             return Ref::from_handle(obj, ptr);
+            */
+            return Ref::from_raw_parts(self.local_resolve(), core::ptr::null());
         }
         let re = twizzler_rt_abi::object::twz_rt_resolve_fot(&obj, fote, MAX_SIZE).unwrap();
         let ptr = re
