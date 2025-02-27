@@ -285,7 +285,7 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
 }
 
 impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
-    pub fn push_sc(&self, item: T, tx: impl AsRef<TxObject>) -> Result<()> {
+    pub fn push(&self, item: T, tx: impl AsRef<TxObject>) -> Result<()> {
         self.do_push(item, tx)
     }
 
@@ -311,11 +311,11 @@ impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
 }
 
 impl<T: Invariant, Alloc: Allocator + SingleObjectAllocator> Vec<T, Alloc> {
-    pub fn push(&self, item: T, tx: impl AsRef<TxObject>) -> Result<()> {
+    pub fn push_inplace(&self, item: T, tx: impl AsRef<TxObject>) -> Result<()> {
         self.do_push(item, tx)
     }
 
-    fn push_inplace<B, F>(&self, tx: TxObject<B>, ctor: F) -> crate::tx::Result<()>
+    fn push_ctor<B, F>(&self, tx: TxObject<B>, ctor: F) -> crate::tx::Result<()>
     where
         F: FnOnce(TxRef<MaybeUninit<T>>) -> crate::tx::Result<TxRef<T>>,
     {
@@ -346,7 +346,7 @@ mod tests {
     impl BaseType for Simple {}
 
     struct Node {
-        ptr: InvPtr<Simple>,
+        pub ptr: InvPtr<Simple>,
     }
 
     impl Node {
@@ -458,7 +458,7 @@ mod tests {
 
         let tx = vobj.tx().unwrap();
         let base = tx.base_ref().owned();
-        base.push(
+        base.push_inplace(
             Node {
                 ptr: InvPtr::new(&tx, simple_obj.base_ref()).unwrap(),
             },
@@ -476,7 +476,7 @@ mod tests {
     fn vec_object() {
         let simple_obj = ObjectBuilder::default().build(Simple { x: 3 }).unwrap();
         let vo = VecObject::new(ObjectBuilder::default()).unwrap();
-        vo.push_tx(|mut place| {
+        vo.push_ctor(|mut place| {
             let node = Node {
                 ptr: InvPtr::new(place.tx_mut(), simple_obj.base_ref())?,
             };
@@ -484,11 +484,11 @@ mod tests {
         })
         .unwrap();
 
-        vo.push_tx(|place| Node::new_inplace(place, simple_obj.base_ref()))
+        vo.push_ctor(|place| Node::new_inplace(place, simple_obj.base_ref()))
             .unwrap();
 
         let base = vo.object().base();
         let item = base.get(0).unwrap();
-        assert_eq!(unsafe { item.ptr.resolve() }.x, 3);
+        assert_eq!(unsafe { item.ptr.resolve().x }, 3);
     }
 }

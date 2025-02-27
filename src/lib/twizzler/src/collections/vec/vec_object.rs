@@ -100,7 +100,17 @@ impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
     pub fn push(&mut self, val: T) -> crate::tx::Result<()> {
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref().owned();
-        base.push_sc(val, &tx)?;
+        base.push(val, &tx)?;
+        self.obj = tx.commit()?;
+        Ok(())
+    }
+
+    pub fn append(&mut self, vals: impl IntoIterator<Item = T>) -> crate::tx::Result<()> {
+        let tx = self.obj.clone().tx()?;
+        let base = tx.base_ref().owned();
+        for val in vals {
+            base.push(val, &tx)?;
+        }
         self.obj = tx.commit()?;
         Ok(())
     }
@@ -141,19 +151,30 @@ impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
     pub fn push_inplace(&mut self, val: T) -> crate::tx::Result<()> {
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref();
-        base.push(val, &tx)?;
+        base.push_inplace(val, &tx)?;
         drop(base);
         self.obj = tx.commit()?;
         Ok(())
     }
 
-    pub fn push_tx<F>(&self, ctor: F) -> crate::tx::Result<()>
+    pub fn append_inplace(&mut self, vals: impl IntoIterator<Item = T>) -> crate::tx::Result<()> {
+        let tx = self.obj.clone().tx()?;
+        let base = tx.base_ref();
+        for val in vals {
+            base.push_inplace(val, &tx)?;
+        }
+        drop(base);
+        self.obj = tx.commit()?;
+        Ok(())
+    }
+
+    pub fn push_ctor<F>(&self, ctor: F) -> crate::tx::Result<()>
     where
         F: FnOnce(TxRef<MaybeUninit<T>>) -> crate::tx::Result<TxRef<T>>,
     {
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref().owned();
-        base.push_inplace(tx, ctor)
+        base.push_ctor(tx, ctor)
     }
 
     pub fn remove_inplace(&mut self, idx: usize) -> crate::tx::Result<()> {
