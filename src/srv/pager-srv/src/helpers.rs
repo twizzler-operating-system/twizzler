@@ -1,12 +1,9 @@
-use std::sync::Arc;
-
 use miette::{IntoDiagnostic, Result};
 use object_store::{PageRequest, PagingImp};
-use twizzler_abi::pager::{CompletionToPager, ObjectRange, PhysRange, RequestFromPager};
+use twizzler_abi::pager::{ObjectRange, PhysRange};
 use twizzler_object::ObjID;
-use twizzler_queue::QueueSender;
 
-use crate::{disk::DiskPageRequest, physrw, PagerContext, EXECUTOR};
+use crate::{disk::DiskPageRequest, PagerContext};
 
 /// A constant representing the page size (4096 bytes per page).
 pub const PAGE: u64 = 4096;
@@ -31,17 +28,10 @@ pub async fn page_in(
     assert_eq!(obj_range.len(), 0x1000);
     assert_eq!(phys_range.len(), 0x1000);
 
-    /*
-    let mut buf = [0; 0x1000];
-    let res = ctx
-        .paged_ostore
-        .read_object(obj_id.raw(), start, &mut buf)
-        .inspect_err(|e| tracing::debug!("error in read from object store: {}", e));
-    if res.is_err() {
-        buf.fill(0);
+    if meta {
+        panic!("unsupported");
     }
-    physrw::fill_physical_pages(&ctx.sender, &buf, phys_range).await
-    */
+
     let imp = ctx
         .disk
         .new_paging_request::<DiskPageRequest>([phys_range.start]);
@@ -61,6 +51,10 @@ pub async fn page_out(
     assert_eq!(obj_range.len(), 0x1000);
     assert_eq!(phys_range.len(), 0x1000);
 
+    if meta {
+        panic!("unsupported");
+    }
+
     tracing::debug!("pageout: {}: {:?} {:?}", obj_id, obj_range, phys_range);
     let imp = ctx
         .disk
@@ -69,19 +63,6 @@ pub async fn page_out(
     let nr_pages = obj_range.len() / DiskPageRequest::page_size();
     let reqs = vec![PageRequest::new(imp, start_page as i64, nr_pages as u32)];
     page_out_many(ctx, obj_id, reqs).await.map(|_| ())
-    /*
-    let mut buf = [0; 0x1000];
-    physrw::read_physical_pages(&ctx.sender, &mut buf, phys_range).await?;
-    let start = if meta {
-        obj_range.start + (1024 * 1024 * 1024)
-    } else {
-        obj_range.start
-    };
-    ctx.paged_ostore
-        .write_object(obj_id.raw(), start, &buf)
-        .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
-        .into_diagnostic()
-    */
 }
 
 pub async fn page_out_many(

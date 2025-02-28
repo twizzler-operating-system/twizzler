@@ -1,12 +1,10 @@
 use std::{
-    cell::OnceCell,
     io::ErrorKind,
     mem::size_of,
-    sync::{Arc, Mutex, OnceLock, RwLock},
-    thread::{JoinHandle, Thread},
+    sync::{Arc, OnceLock},
+    thread::JoinHandle,
 };
 
-use async_executor::Executor;
 use async_io::Async;
 use nvme::{
     admin::{CreateIOCompletionQueue, CreateIOSubmissionQueue},
@@ -15,7 +13,7 @@ use nvme::{
         identify::{
             controller::IdentifyControllerDataStructure, namespace::IdentifyNamespaceDataStructure,
         },
-        namespace::{NamespaceId, NamespaceList},
+        namespace::NamespaceId,
         queue::{
             comentry::CommonCompletion,
             subentry::{CommonCommand, Dptr},
@@ -27,8 +25,7 @@ use nvme::{
 };
 use twizzler_driver::{
     device::Device,
-    dma::{DmaOptions, DmaPool, DmaRegion, PhysInfo, DMA_PAGE_SIZE},
-    request::{RequestDriver, SubmitRequest},
+    dma::{DmaOptions, DmaPool, PhysInfo, DMA_PAGE_SIZE},
 };
 use volatile::map_field;
 
@@ -63,7 +60,7 @@ fn init_controller(mut device: Device, mut dma_pool: DmaPool) -> std::io::Result
     };
     let reg = reg.as_mut_ptr();
 
-    let int = device
+    let _int = device
         .allocate_interrupt(0)
         .expect("failed to allocate interrupt");
     let config = ControllerConfig::new();
@@ -206,6 +203,7 @@ fn interrupt_thread_main(inner: &NvmeControllerInner, inum: usize) {
     }
 }
 
+#[allow(dead_code)]
 impl NvmeController {
     pub fn new(device: Device) -> std::io::Result<Self> {
         let dma_pool = DmaPool::new(
@@ -450,7 +448,7 @@ impl NvmeController {
         let asif = Async::new(inflight)?;
         let cc = asif
             .read_with(|inflight| {
-                while let Some(cc) = inflight.req.get_completion() {}
+                while let Some(_) = inflight.req.get_completion() {}
                 inflight.poll()
             })
             .await?;
@@ -535,6 +533,7 @@ impl NvmeController {
         lba_start: u64,
         dptr: Dptr,
         nr_blocks_per_page: usize,
+        block: bool,
     ) -> Option<InflightRequest<'_>> {
         let cmd = nvme::nvm::ReadCommand::new(
             CommandId::new(),
@@ -545,7 +544,11 @@ impl NvmeController {
             ReadDword13::default(),
         );
         let cmd: CommonCommand = cmd.into();
-        self.inner.data_requester.submit(cmd)
+        if block {
+            self.inner.data_requester.submit_wait(cmd, None)
+        } else {
+            self.inner.data_requester.submit(cmd)
+        }
     }
 
     pub fn send_write_page(
@@ -553,6 +556,7 @@ impl NvmeController {
         lba_start: u64,
         dptr: Dptr,
         nr_blocks_per_page: usize,
+        block: bool,
     ) -> Option<InflightRequest<'_>> {
         let cmd = nvme::nvm::WriteCommand::new(
             CommandId::new(),
@@ -563,7 +567,11 @@ impl NvmeController {
             WriteDword13::default(),
         );
         let cmd: CommonCommand = cmd.into();
-        self.inner.data_requester.submit(cmd)
+        if block {
+            self.inner.data_requester.submit_wait(cmd, None)
+        } else {
+            self.inner.data_requester.submit(cmd)
+        }
     }
 
     pub async fn read_page(
@@ -582,7 +590,9 @@ impl NvmeController {
             )
             .unwrap();
         // TODO: queue full
-        let inflight = self.send_read_page(0, dptr, nr_blocks).unwrap();
+        let inflight = self
+            .send_read_page(lba_start, dptr, nr_blocks, false)
+            .unwrap();
         let asif = Async::new(inflight)?;
         let cc = asif.read_with(|inflight| inflight.poll()).await?;
         if cc.status().is_error() {
@@ -610,7 +620,9 @@ impl NvmeController {
             )
             .unwrap();
         // TODO: queue full
-        let inflight = self.send_read_page(lba_start, dptr, nr_blocks).unwrap();
+        let inflight = self
+            .send_read_page(lba_start, dptr, nr_blocks, true)
+            .unwrap();
 
         let cc = loop {
             inflight.req.get_completion();
@@ -647,7 +659,9 @@ impl NvmeController {
             )
             .unwrap();
         // TODO: queue full
-        let inflight = self.send_write_page(lba_start, dptr, nr_blocks).unwrap();
+        let inflight = self
+            .send_write_page(lba_start, dptr, nr_blocks, true)
+            .unwrap();
 
         let cc = loop {
             inflight.req.get_completion();
@@ -682,7 +696,9 @@ impl NvmeController {
         let lbas_per_page = PAGE_SIZE / lba_size;
         let lba_start = disk_page_start * lbas_per_page as u64;
         let nr_blocks = phys.len() * lbas_per_page;
-        let inflight = self.send_write_page(lba_start, dptr, nr_blocks).unwrap();
+        let inflight = self
+            .send_write_page(lba_start, dptr, nr_blocks, true)
+            .unwrap();
         let cc = loop {
             inflight.req.get_completion();
             if let Ok(cc) = inflight.poll() {
@@ -716,7 +732,9 @@ impl NvmeController {
         let lbas_per_page = PAGE_SIZE / lba_size;
         let lba_start = disk_page_start * lbas_per_page as u64;
         let nr_blocks = phys.len() * lbas_per_page;
-        let inflight = self.send_read_page(lba_start, dptr, nr_blocks).unwrap();
+        let inflight = self
+            .send_read_page(lba_start, dptr, nr_blocks, true)
+            .unwrap();
         let cc = loop {
             inflight.req.get_completion();
             if let Ok(cc) = inflight.poll() {
@@ -752,7 +770,9 @@ impl NvmeController {
             )
             .unwrap();
         // TODO: queue full
-        let inflight = self.send_write_page(lba_start, dptr, nr_blocks).unwrap();
+        let inflight = self
+            .send_write_page(lba_start, dptr, nr_blocks, true)
+            .unwrap();
 
         let cc = loop {
             inflight.req.get_completion();
@@ -768,216 +788,4 @@ impl NvmeController {
         }
         Ok(())
     }
-
-    /*
-    pub async fn async_identify_controller(&self) -> IdentifyControllerDataStructure {
-        let ident = self
-            .inner
-            .dma_pool
-            .allocate(nvme::ds::identify::controller::IdentifyControllerDataStructure::default())
-            .unwrap();
-        let mut ident = NvmeDmaRegion::new(ident);
-        let ident_cmd = nvme::admin::Identify::new(
-            CommandId::new(),
-            nvme::admin::IdentifyCNSValue::IdentifyController,
-            (&mut ident)
-                .get_dptr(
-                    nvme::hosted::memory::DptrMode::Prp(PrpMode::Single),
-                    &self.inner.dma_pool,
-                )
-                .unwrap(),
-            None,
-        );
-        let ident_cmd: CommonCommand = ident_cmd.into();
-        let responses = self
-            .inner
-            .admin_requester
-            .submit_for_response(&mut [SubmitRequest::new(ident_cmd)])
-            .await;
-        let responses = responses.unwrap().await;
-        match responses {
-            SubmitSummaryWithResponses::Responses(_resp) => {}
-            _ => panic!("got err for ident"),
-        }
-
-        ident.dma_region().with(|ident| ident.clone())
-    }
-
-    pub async fn identify_namespace(
-        &self,
-    ) -> nvme::ds::identify::namespace::IdentifyNamespaceDataStructure {
-        let nslist = self.dma_pool.allocate([0u8; 4096]).unwrap();
-        let mut nslist = NvmeDmaRegion::new(nslist);
-        let nslist_cmd = nvme::admin::Identify::new(
-            CommandId::new(),
-            nvme::admin::IdentifyCNSValue::ActiveNamespaceIdList(NamespaceId::default()),
-            (&mut nslist)
-                .get_dptr(
-                    nvme::hosted::memory::DptrMode::Prp(PrpMode::Single),
-                    &self.dma_pool,
-                )
-                .unwrap(),
-            None,
-        );
-        let nslist_cmd: CommonCommand = nslist_cmd.into();
-        let responses = self
-            .admin_requester
-            .read()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .submit_for_response(&mut [SubmitRequest::new(nslist_cmd)])
-            .await;
-        let responses = responses.unwrap().await;
-        match responses {
-            SubmitSummaryWithResponses::Responses(_resp) => {}
-            _ => panic!("got err for ident"),
-        }
-
-        nslist.dma_region().with(|nslist| {
-            let lslist = NamespaceList::new(nslist);
-            for _id in lslist.into_iter() {
-                // TODO: do something with IDs
-            }
-        });
-
-        let ident = self
-            .dma_pool
-            .allocate(nvme::ds::identify::namespace::IdentifyNamespaceDataStructure::default())
-            .unwrap();
-        let mut ident = NvmeDmaRegion::new(ident);
-        let ident_cmd = nvme::admin::Identify::new(
-            CommandId::new(),
-            nvme::admin::IdentifyCNSValue::IdentifyNamespace(NamespaceId::new(1u32)),
-            (&mut ident)
-                .get_dptr(
-                    nvme::hosted::memory::DptrMode::Prp(PrpMode::Single),
-                    &self.dma_pool,
-                )
-                .unwrap(),
-            None,
-        );
-        let ident_cmd: CommonCommand = ident_cmd.into();
-        let responses = self
-            .admin_requester
-            .read()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .submit_for_response(&mut [SubmitRequest::new(ident_cmd)])
-            .await;
-        let responses = responses.unwrap().await;
-        match responses {
-            SubmitSummaryWithResponses::Responses(_resp) => {}
-            _ => panic!("got err for ident"),
-        }
-
-        ident.dma_region().with(|ident| ident.clone())
-    }
-
-    pub async fn flash_len(&self) -> usize {
-        if let Some(sz) = self.capacity.get() {
-            *sz
-        } else {
-            self.identify_controller().await;
-            let ns = self.identify_namespace().await;
-            let block_size = ns.lba_formats()[ns.formatted_lba_size.index()].data_size();
-            let _ = self.capacity.set(block_size * ns.capacity as usize);
-            block_size * ns.capacity as usize
-        }
-    }
-
-    pub async fn read_page(
-        &self,
-        lba_start: u64,
-        out_buffer: &mut [u8],
-        offset: usize,
-    ) -> Result<(), ()> {
-        let nr_blocks = DMA_PAGE_SIZE / self.get_lba_size().await;
-        let buffer = self.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
-        let mut buffer = NvmeDmaRegion::new(buffer);
-        let dptr = (&mut buffer)
-            .get_dptr(
-                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
-                &self.dma_pool,
-            )
-            .unwrap();
-        let cmd = nvme::nvm::ReadCommand::new(
-            CommandId::new(),
-            NamespaceId::new(1u32),
-            dptr,
-            lba_start,
-            nr_blocks as u16,
-            ReadDword13::default(),
-        );
-        let cmd: CommonCommand = cmd.into();
-        let responses = self.requester.read().unwrap()[0]
-            .submit_for_response(&mut [SubmitRequest::new(cmd)])
-            .await;
-        match responses.unwrap().await {
-            SubmitSummaryWithResponses::Responses(_) => buffer.dma_region().with(|data| {
-                out_buffer.copy_from_slice(&data[offset..DMA_PAGE_SIZE]);
-                Ok(())
-            }),
-            SubmitSummaryWithResponses::Errors(_, _r) => Err(()),
-            SubmitSummaryWithResponses::Shutdown => Err(()),
-        }
-    }
-
-    pub async fn write_page(
-        &self,
-        lba_start: u64,
-        in_buffer: &[u8],
-        offset: usize,
-    ) -> Result<(), ()> {
-        let nr_blocks = DMA_PAGE_SIZE / self.get_lba_size().await;
-        let mut buffer = self.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
-
-        let len = in_buffer.len();
-        if offset + len > DMA_PAGE_SIZE {
-            panic!("cannot write past a page");
-        }
-        if offset != 0 || len != DMA_PAGE_SIZE {
-            unsafe { self.read_page(lba_start, buffer.get_mut(), 0).await? };
-        }
-        buffer.with_mut(|data| data[offset..(offset + len)].copy_from_slice(in_buffer));
-
-        let mut buffer = NvmeDmaRegion::new(buffer);
-        let dptr = (&mut buffer)
-            .get_dptr(
-                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
-                &self.dma_pool,
-            )
-            .unwrap();
-        let cmd = nvme::nvm::WriteCommand::new(
-            CommandId::new(),
-            NamespaceId::new(1u32),
-            dptr,
-            lba_start,
-            nr_blocks as u16,
-            WriteDword13::default(),
-        );
-        let cmd: CommonCommand = cmd.into();
-        let responses = self.requester.read().unwrap()[0]
-            .submit_for_response(&mut [SubmitRequest::new(cmd)])
-            .await;
-        match responses.unwrap().await {
-            SubmitSummaryWithResponses::Responses(_) => Ok(()),
-            SubmitSummaryWithResponses::Errors(_, _r) => Err(()),
-            SubmitSummaryWithResponses::Shutdown => Err(()),
-        }
-    }
-
-    pub async fn get_lba_size(&self) -> usize {
-        if let Some(sz) = self.block_size.get() {
-            *sz
-        } else {
-            self.identify_controller().await;
-            let ns = self.identify_namespace().await;
-            let block_size = ns.lba_formats()[ns.formatted_lba_size.index()].data_size();
-            let _ = self.block_size.set(block_size);
-            block_size
-        }
-    }
-    */
 }

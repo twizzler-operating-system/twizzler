@@ -3,7 +3,7 @@ use nvme::{
     hosted::memory::{PhysicalPageCollection, PrpMode},
 };
 use twizzler_driver::dma::{
-    DeviceSync, DmaPin, DmaPool, DmaRegion, DmaSliceRegion, PhysInfo, DMA_PAGE_SIZE,
+    DeviceSync, DmaPool, DmaRegion, DmaSliceRegion, PhysInfo, DMA_PAGE_SIZE,
 };
 
 #[derive(Debug)]

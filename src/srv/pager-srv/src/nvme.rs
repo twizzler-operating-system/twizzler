@@ -1,14 +1,6 @@
-use core::panic;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 
-use async_executor::Executor;
-use twizzler_abi::device::BusType;
-use twizzler_driver::{
-    bus::pcie::PcieDeviceInfo, device::Device, dma::DMA_PAGE_SIZE, DeviceController,
-};
+use twizzler_driver::{bus::pcie::PcieDeviceInfo, device::Device};
 
 mod controller;
 mod dma;
@@ -16,20 +8,7 @@ mod requester;
 
 pub use controller::NvmeController;
 
-/*
-fn bench_nvme_seq_read(ctrl: &NvmeController, pg_count: usize) {
-    for offset in (0..END).step_by(DMA_PAGE_SIZE * pg_count) {
-        let page = offset / (DMA_PAGE_SIZE * pg_count);
-        let mut buf = [0; DMA_PAGE_SIZE];
-        let lbas_per_page = DMA_PAGE_SIZE * pg_count / ctrl.blocking_get_lba_size();
-        let lba = page * lbas_per_page;
-        ctrl.blocking_read_page(lba as u64, &mut buf, 0).unwrap();
-        assert_eq!(should_be_buf, buf);
-    }
-}
-*/
-
-pub async fn init_nvme(ex: &'static Executor<'static>) -> Option<Arc<NvmeController>> {
+pub async fn init_nvme() -> Option<Arc<NvmeController>> {
     let devices = devmgr::get_devices(devmgr::DriverSpec {
         supported: devmgr::Supported::PcieClass(1, 8, 2),
     })?;
@@ -46,62 +25,8 @@ pub async fn init_nvme(ex: &'static Executor<'static>) -> Option<Arc<NvmeControl
             );
 
             let ctrl = Arc::new(NvmeController::new(device).ok()?);
-
-            /*
-            const NR: usize = 128;
-            const END: usize = 1024 * 1024 * 1024 * 100;
-            if true {
-                let mut last_msg = Instant::now();
-                for offset in (0..END).step_by(DMA_PAGE_SIZE * NR) {
-                    let page = offset / (DMA_PAGE_SIZE * NR);
-                    if page % 100 == 0 {
-                        let now = Instant::now();
-                        if now.duration_since(last_msg) > Duration::from_secs(1) {
-                            last_msg = now;
-                            println!(
-                                "written {} KB / {} KB ({}%)",
-                                offset / 1024,
-                                END / 1024,
-                                (offset * 100) / END
-                            );
-                        }
-                    }
-                    let mut buf = [(page % 97) as u8; DMA_PAGE_SIZE * NR];
-                    let lbas_per_page = DMA_PAGE_SIZE / ctrl.blocking_get_lba_size();
-                    let lba = page * lbas_per_page * NR;
-                    ctrl.blocking_write_pages::<NR>(lba as u64, &mut buf)
-                        .unwrap();
-                }
-            }
-
-            println!("reading back...");
-            let mut last_msg = Instant::now();
-            for offset in (0..END).step_by(DMA_PAGE_SIZE * NR) {
-                let page = offset / (DMA_PAGE_SIZE * NR);
-                if page % 100 == 0 {
-                    let now = Instant::now();
-                    if now.duration_since(last_msg) > Duration::from_secs(1) {
-                        last_msg = now;
-                        println!(
-                            "written {} KB / {} KB ({}%)",
-                            offset / 1024,
-                            END / 1024,
-                            (offset * 100) / END
-                        );
-                    }
-                }
-                let should_be_buf = [((offset / (DMA_PAGE_SIZE * NR)) % 97) as u8; 0x1000];
-                let mut buf = [0; DMA_PAGE_SIZE];
-                let lbas_per_page = DMA_PAGE_SIZE * NR / ctrl.blocking_get_lba_size();
-                let lba = page * lbas_per_page;
-                ctrl.blocking_read_page(lba as u64, &mut buf, 0).unwrap();
-                assert_eq!(should_be_buf, buf);
-            }
-            loop {}
-            */
             return Some(ctrl);
         }
     }
-
     None
 }

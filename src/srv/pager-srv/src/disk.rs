@@ -144,6 +144,7 @@ impl PagingImp for DiskPageRequest {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct Disk {
     ctrl: Arc<NvmeController>,
@@ -155,7 +156,7 @@ pub struct Disk {
 
 impl Disk {
     pub async fn new(ex: &'static Executor<'static>) -> Result<Disk, ()> {
-        let ctrl = init_nvme(ex).await.expect("failed to open nvme controller");
+        let ctrl = init_nvme().await.expect("failed to open nvme controller");
         tracing::info!("getting len");
         let len = ctrl.flash_len().await;
         let len = std::cmp::max(len, u32::MAX as usize / SECTOR_SIZE);
@@ -167,10 +168,6 @@ impl Disk {
             len,
             ex,
         })
-    }
-
-    pub fn nvme(&self) -> &Arc<NvmeController> {
-        &self.ctrl
     }
 
     pub fn lba_count(&self) -> usize {

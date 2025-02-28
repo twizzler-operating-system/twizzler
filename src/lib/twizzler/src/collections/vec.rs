@@ -151,13 +151,13 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
     }
 
     #[inline]
-    pub fn get<'a>(&'a self, idx: usize) -> Option<&T> {
+    pub fn get(&self, idx: usize) -> Option<&T> {
         let slice = self.as_slice();
         slice.as_slice().get(idx)
     }
 
     #[inline]
-    pub fn get_ref<'a>(&'a self, idx: usize) -> Option<Ref<'a, T>> {
+    pub fn get_ref(&self, idx: usize) -> Option<Ref<'_, T>> {
         let slice = self.as_slice();
         slice.get_ref(idx)
     }

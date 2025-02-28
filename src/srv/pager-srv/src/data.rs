@@ -3,13 +3,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use bitvec::prelude::*;
 use miette::Result;
-use twizzler_abi::pager::{
-    CompletionToPager, ObjectInfo, ObjectRange, PhysRange, RequestFromPager,
-};
+use twizzler_abi::pager::{ObjectInfo, ObjectRange, PhysRange};
 use twizzler_object::ObjID;
-use twizzler_queue::QueueSender;
 
 use crate::{
     helpers::{page_in, page_out, PAGE},
@@ -141,6 +137,7 @@ pub struct PagerData {
     inner: Arc<Mutex<PagerDataInner>>,
 }
 
+#[allow(dead_code)]
 impl PagerData {
     pub fn avail_mem(&self) -> usize {
         let inner = self.inner.lock().unwrap();
@@ -158,7 +155,6 @@ impl PagerData {
 
 pub struct PagerDataInner {
     memory: Memory,
-    pub bitvec: BitVec,
     pub per_obj: HashMap<ObjID, PerObject>,
 }
 
@@ -168,6 +164,7 @@ struct Region {
     stack: Vec<u64>,
 }
 
+#[allow(dead_code)]
 impl Region {
     pub fn avail(&self) -> usize {
         let unused = self.end - self.unused_start;
@@ -228,7 +225,6 @@ impl PagerDataInner {
     pub fn new() -> Self {
         tracing::trace!("initializing PagerDataInner");
         PagerDataInner {
-            bitvec: BitVec::new(),
             per_obj: HashMap::with_capacity(0),
             memory: Memory::default(),
         }
