@@ -11,7 +11,6 @@ twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-runtime = { path = "../../rt" }
 twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-queue = { path = "../../lib/twizzler-queue" }
-twizzler-async = { path = "../../lib/twizzler-async" }
 twizzler-driver = { path = "../../lib/twizzler-driver" }
 lethe-gadget-fat = { path = "../mnemosyne/fat" }
 nvme = { path = "../../lib/nvme-rs" }

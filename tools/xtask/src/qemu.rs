@@ -4,8 +4,6 @@ use std::{
     process::{Command, ExitStatus},
 };
 
-use anyhow::bail;
-
 use crate::{
     image::ImageInfo,
     triple::{Arch, Machine},
