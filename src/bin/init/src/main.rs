@@ -1,3 +1,6 @@
+use std::io::{Read, Write};
+
+use embedded_io::ErrorType;
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
 use tracing::{info, warn};
 use twizzler_abi::{
@@ -7,6 +10,30 @@ use twizzler_abi::{
     syscall::{sys_new_handle, BackingType, LifetimeType, NewHandleFlags},
 };
 use twizzler_object::CreateSpec;
+
+struct TwzIo;
+
+impl ErrorType for TwzIo {
+    type Error = std::io::Error;
+}
+
+impl embedded_io::Read for TwzIo {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        let len = std::io::stdin().read(buf)?;
+
+        Ok(len)
+    }
+}
+
+impl embedded_io::Write for TwzIo {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        std::io::stdout().write(buf)
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        std::io::stdout().flush()
+    }
+}
 
 fn initialize_pager() -> ObjID {
     info!("starting pager");
@@ -132,13 +159,18 @@ fn main() {
     run_tests("bench_bins", true);
 
     println!("Hi, welcome to the basic twizzler test console.");
-    println!("If you wanted line-editing, you've come to the wrong place.");
     println!("To run a program, type its name.");
+
+    let mut io = TwzIo;
+    let mut buffer = [0; 1024];
+    let mut editor = noline::builder::EditorBuilder::from_slice(&mut buffer)
+        .build_sync(&mut io)
+        .unwrap();
     loop {
         //let mstats = monitor_api::stats().unwrap();
         //println!("{:?}", mstats);
-        let reply = rprompt::prompt_reply_stdout("> ").unwrap();
-        let cmd: Vec<&str> = reply.split_whitespace().collect();
+        let line = editor.readline("twz> ", &mut io).unwrap();
+        let cmd = line.split_whitespace().collect::<Vec<_>>();
         if cmd.len() == 0 {
             continue;
         }

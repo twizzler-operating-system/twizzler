@@ -3362,11 +3362,12 @@ version = "0.1.0"
 dependencies = [
  "async-executor",
  "async-io",
+ "embedded-io",
  "futures",
  "monitor-api",
  "naming-core",
+ "noline",
  "polling",
- "rprompt",
  "tracing",
  "tracing-subscriber",
  "twizzler",
@@ -5086,12 +5087,6 @@ dependencies = [
  "serde",
  "serde_derive",
 ]
-
-[[package]]
-name = "rprompt"
-version = "1.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b386f4748bdae2aefc96857f5fda07647f851d089420e577831e2a14b45230f8"
 
 [[package]]
 name = "rsdp"
