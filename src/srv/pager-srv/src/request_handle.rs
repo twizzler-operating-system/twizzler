@@ -1,13 +1,10 @@
-use std::sync::Arc;
-
 use twizzler_abi::pager::{
-    CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionData, ObjectInfo,
-    ObjectRange, PhysRange, RequestFromKernel, RequestFromPager,
+    CompletionToKernel, KernelCommand, KernelCompletionData, ObjectInfo, ObjectRange, PhysRange,
+    RequestFromKernel,
 };
 use twizzler_object::ObjID;
-use twizzler_queue::QueueSender;
 
-use crate::{data::PagerData, PagerContext};
+use crate::PagerContext;
 
 async fn page_data_req(
     ctx: &'static PagerContext,

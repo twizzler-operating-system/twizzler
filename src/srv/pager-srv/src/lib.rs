@@ -1,26 +1,18 @@
 #![feature(ptr_sub_ptr)]
 #![feature(naked_functions)]
 
-use std::{
-    any::Any,
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::sync::{Arc, OnceLock};
 
 use async_executor::Executor;
 use async_io::block_on;
-use colored::Colorize;
 use disk::{Disk, DiskPageRequest};
-use nvme::NvmeController;
-use object_store::{
-    key_fprint, LetheIoWrapper, LetheObjectStore, LetheState, PageRequest, PagedObjectStore,
-};
+use object_store::{LetheIoWrapper, PagedObjectStore};
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
     object::{ObjectBuilder, RawObject},
 };
 use twizzler_abi::pager::{
-    CompletionToKernel, CompletionToPager, PagerCompletionData, PhysRange, RequestFromKernel,
-    RequestFromPager,
+    CompletionToKernel, CompletionToPager, PagerCompletionData, RequestFromKernel, RequestFromPager,
 };
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 use twizzler_queue::QueueSender;
@@ -230,7 +222,6 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     };
     tracing::info!("opened object store as {}", name);
     let sq = Arc::new(sq);
-    let sqc = sq.clone();
     let _ = PAGER_CTX.set(PagerContext {
         data,
         sender: sq,
@@ -241,7 +232,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     spawn_queues(ctx, rq, ex);
 
     block_on(ex.run(async move {
-        let res = report_ready(&ctx, ex).await;
+        let _ = report_ready(&ctx, ex).await.unwrap();
     }));
     tracing::info!("pager ready");
 
@@ -256,43 +247,6 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     tracing::info!("found root namespace: {:x}", bootstrap_id);
 
     return bootstrap_id.into();
-
-    /*
-    object_store::create_object(17).unwrap();
-
-    object_store::with_khf(|khf| {
-        tracing::info!("newobj {:#?}", khf);
-    });
-    object_store::write_all(17, b"this is a test", 0).unwrap();
-
-    object_store::with_khf(|khf| {
-        tracing::info!("written {:#?}", khf);
-    });
-
-    object_store::advance_epoch().unwrap();
-    object_store::with_khf(|khf| {
-        tracing::info!("written-adv {:#?}", khf);
-    });
-
-    object_store::unlink_object(17).unwrap();
-
-    object_store::with_khf(|khf| {
-        tracing::info!("removed {:#?}", khf);
-    });
-    object_store::advance_epoch().unwrap();
-
-    object_store::with_khf(|khf| {
-        tracing::info!("removed-adv {:#?}", khf);
-    });
-
-    loop {}
-    let mut buf = [0; 12];
-    object_store::read_exact(0x5d74fb7c3fe55e64131351157f1fd996u128, &mut buf, 0).unwrap();
-    println!("==> {}", String::from_utf8_lossy(&buf));
-    object_store::advance_epoch().unwrap();
-    object_store::read_exact(17, &mut buf, 0).unwrap();
-    println!("==> {}", String::from_utf8_lossy(&buf));
-    */
 }
 
 #[secgate::secure_gate]
@@ -307,63 +261,6 @@ pub fn full_object_sync(id: ObjID) {
         pager.data.sync(&pager, id).await;
     });
     block_on(EXECUTOR.get().unwrap().run(async { task.await }));
-}
-
-#[secgate::secure_gate]
-pub fn show_lethe() {
-    /*
-    colored::control::set_override(true);
-    static LAST: Mutex<Option<LetheState>> = Mutex::new(None);
-    let mut last = LAST.lock().unwrap();
-    let state = PAGER_CTX.get().unwrap().ostore.get_lethe_state().unwrap();
-    for po in &state.list {
-        println!("{}", po);
-    }
-    for root in &state.roots {
-        if let Some(last) = &*last {
-            let item = last.roots.iter().find(|x| x.0 == root.0 && x.1 == root.1);
-            if let Some(item) = item {
-                if root.2 != item.2 {
-                    println!(
-                        " ({}, {}) -- {} -> {}",
-                        root.0,
-                        root.1,
-                        format!("{:8x}", key_fprint(&item.2)).blue(),
-                        format!("{:8x}", key_fprint(&root.2)).blue(),
-                    );
-                } else {
-                    println!(" ({}, {}) -- {:8x}", root.0, root.1, key_fprint(&root.2));
-                }
-            } else {
-                println!(
-                    " ({}, {}) -- {} {}",
-                    root.0,
-                    root.1,
-                    format!("{:8x}", key_fprint(&root.2)).green(),
-                    "[new]".green(),
-                );
-            }
-        } else {
-            println!(" ({}, {}) -- {:8x}", root.0, root.1, key_fprint(&root.2));
-        }
-    }
-    if let Some(last) = &*last {
-        for root in &last.roots {
-            let item = state.roots.iter().find(|x| x.0 == root.0 && x.1 == root.1);
-            if item.is_none() {
-                println!(
-                    " ({}, {}) -- {} {}",
-                    root.0,
-                    root.1,
-                    format!("{:8x}", key_fprint(&root.2)).red(),
-                    "[deleted]".red()
-                );
-            }
-        }
-    }
-
-    *last = Some(state);
-    */
 }
 
 #[secgate::secure_gate]

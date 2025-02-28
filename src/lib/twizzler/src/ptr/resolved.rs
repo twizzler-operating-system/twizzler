@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    cell::{Cell, OnceCell},
+    cell::OnceCell,
     marker::PhantomData,
     ops::{Deref, DerefMut, Index, IndexMut, RangeBounds},
 };

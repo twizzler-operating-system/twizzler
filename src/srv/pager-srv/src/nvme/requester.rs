@@ -5,8 +5,9 @@ use std::{
     ptr::NonNull,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex, OnceLock,
+        Condvar, Mutex,
     },
+    time::Duration,
 };
 
 use nvme::{
@@ -36,6 +37,7 @@ pub struct NvmeRequesterInner {
 
 pub struct NvmeRequester {
     inner: Mutex<NvmeRequesterInner>,
+    cv: Condvar,
 }
 
 pub struct InflightRequest<'a> {
@@ -198,6 +200,7 @@ impl NvmeRequester {
             inner: Mutex::new(NvmeRequesterInner::new(
                 subq, comq, sub_bell, com_bell, bar_obj, sub_dma, com_dma,
             )),
+            cv: Condvar::new(),
         }
     }
 
@@ -205,6 +208,29 @@ impl NvmeRequester {
     pub fn submit(&self, cmd: CommonCommand) -> Option<InflightRequest<'_>> {
         let id = self.inner.lock().unwrap().submit(cmd)?;
         Some(InflightRequest { req: self, id })
+    }
+
+    #[inline]
+    pub fn submit_wait(
+        &self,
+        cmd: CommonCommand,
+        timeout: Option<Duration>,
+    ) -> Option<InflightRequest<'_>> {
+        let mut inner = self.inner.lock().unwrap();
+        loop {
+            if let Some(id) = inner.submit(cmd) {
+                return Some(InflightRequest { req: self, id });
+            }
+            if let Some(timeout) = timeout {
+                let (guard, to) = self.cv.wait_timeout(inner, timeout).unwrap();
+                if to.timed_out() {
+                    return None;
+                }
+                inner = guard;
+            } else {
+                inner = self.cv.wait(inner).unwrap();
+            }
+        }
     }
 
     pub fn poll(&self, inflight: &InflightRequest) -> std::io::Result<CommonCompletion> {
@@ -217,10 +243,17 @@ impl NvmeRequester {
         while let Some(_) = inner.get_completion() {
             more = true;
         }
+        if more {
+            self.cv.notify_all();
+        }
         more
     }
 
     pub fn get_completion(&self) -> Option<CommonCompletion> {
-        self.inner.lock().unwrap().get_completion()
+        let cc = self.inner.lock().unwrap().get_completion();
+        if cc.is_some() {
+            self.cv.notify_one();
+        }
+        cc
     }
 }

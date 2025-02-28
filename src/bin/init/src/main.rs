@@ -1,4 +1,12 @@
-extern crate twizzler_runtime;
+use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
+use tracing::{info, warn};
+use twizzler_abi::{
+    aux::KernelInitInfo,
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    pager::{CompletionToKernel, RequestFromKernel},
+    syscall::{sys_new_handle, BackingType, LifetimeType, NewHandleFlags},
+};
+use twizzler_object::CreateSpec;
 
 fn initialize_pager() -> ObjID {
     info!("starting pager");
@@ -98,7 +106,7 @@ fn main() {
     )
     .unwrap();
 
-    // Load and wait for tests to complete
+    tracing::info!("starting logger");
     let lbcomp: CompartmentHandle = CompartmentLoader::new(
         "logboi",
         "liblogboi_srv.so",
@@ -111,7 +119,6 @@ fn main() {
     while !flags.contains(CompartmentFlags::READY) {
         flags = lbcomp.wait(flags);
     }
-    tracing::info!("logboi ready");
     std::mem::forget(lbcomp);
 
     initialize_devmgr();
@@ -120,22 +127,9 @@ fn main() {
 
     initialize_namer(bootstrap_id);
 
+    // Load and wait for tests to complete
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
-
-    tracing::info!("auto-starting gadget demo");
-
-    let comp = CompartmentLoader::new("gadget", "gadget", NewCompartmentFlags::empty())
-        .args(&["gadget"])
-        .load();
-    if let Ok(comp) = comp {
-        let mut flags = comp.info().flags;
-        while !flags.contains(CompartmentFlags::EXITED) {
-            flags = comp.wait(flags);
-        }
-    } else {
-        warn!("failed to start gadget demo");
-    }
 
     println!("Hi, welcome to the basic twizzler test console.");
     println!("If you wanted line-editing, you've come to the wrong place.");
@@ -217,13 +211,3 @@ fn run_tests(test_list_name: &str, benches: bool) {
         twizzler_abi::syscall::sys_debug_shutdown(if test_failed { 1 } else { 0 });
     }
 }
-
-use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
-use tracing::{info, warn};
-use twizzler_abi::{
-    aux::KernelInitInfo,
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    pager::{CompletionToKernel, RequestFromKernel},
-    syscall::{sys_new_handle, BackingType, LifetimeType, NewHandleFlags},
-};
-use twizzler_object::CreateSpec;

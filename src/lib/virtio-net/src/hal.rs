@@ -5,7 +5,6 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-use once_cell::sync::OnceCell;
 use twizzler_driver::dma::{Access, DmaOptions, DmaPool, DmaSliceRegion, SyncMode, DMA_PAGE_SIZE};
 use virtio_drivers::{BufferDirection, Hal, PhysAddr};
 
@@ -105,7 +104,7 @@ unsafe impl Hal for TwzHal {
         // Copy the buffer to the DMA buffer
         copy_nonoverlapping(buf, dma_buf, buf_len);
 
-        let mut twzhal = get_twz_hal().lock().unwrap();
+        let twzhal = get_twz_hal().lock().unwrap();
         if let Some(dma_slice) = twzhal.shared.get(&phys) {
             match direction {
                 BufferDirection::DriverToDevice => {

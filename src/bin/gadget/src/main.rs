@@ -70,9 +70,6 @@ fn show(args: &[&str], namer: &mut NamingHandle) {
         return;
     }
     match args[1] {
-        "l" | "le" | "lethe" => {
-            pager::show_lethe();
-        }
         "c" | "comp" | "compartments" => {
             fn print_compartment(ch: CompartmentHandle) {
                 let info = ch.info();
@@ -370,7 +367,7 @@ fn gdtest(args: &[&str], namer: &mut NamingHandle) {
     } else {
         let builder = ObjectBuilder::default().persist();
         let vo = VecObject::new(builder).unwrap();
-        namer.remove("test-vec", false);
+        let _ = namer.remove("test-vec", false);
         namer.put("test-vec", vo.object().id().raw()).unwrap();
         vo
     };
@@ -393,34 +390,21 @@ fn gdtest(args: &[&str], namer: &mut NamingHandle) {
             let mut indicies = (0..vo.len()).collect::<Vec<_>>();
             indicies.shuffle(&mut rand::thread_rng());
             start = Instant::now();
-            let mut err = 0;
             let slice = vo.slice(..);
             for i in &indicies {
                 let val = slice.get(*i).unwrap();
                 assert_eq!(val.x, *i as u32);
-                //println!("{} {:?}", i, *val);
                 std::hint::black_box(val);
-            }
-            if err > 0 {
-                println!("ERRORS: {}", err);
             }
         }
         "ra" | "read-all" => {
             let mut indicies = (0..vo.len()).collect::<Vec<_>>();
             indicies.shuffle(&mut rand::thread_rng());
             start = Instant::now();
-            let mut err = 0;
-            //let vslice = vo.as_slice();
-            //let slice = vslice.as_slice();
             for i in &indicies {
-                //let val = vslice[*i];
                 let val = vo.get(*i).unwrap();
                 assert_eq!(val.x, *i as u32);
-                //println!("{} {:?}", i, *val);
                 std::hint::black_box(val);
-            }
-            if err > 0 {
-                println!("ERRORS: {}", err);
             }
         }
         "r" | "read" => {
