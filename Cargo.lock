@@ -270,7 +270,7 @@ version = "1.9.1"
 source = "git+https://github.com/twizzler-operating-system/async-executor.git?branch=twizzler#6db91013bf7ec4590a2fd60973cb579501ee3c52"
 dependencies = [
  "async-lock",
- "async-task 4.7.1",
+ "async-task",
  "concurrent-queue",
  "fastrand",
  "futures-lite",
@@ -306,12 +306,6 @@ dependencies = [
  "event-listener-strategy",
  "pin-project-lite",
 ]
-
-[[package]]
-name = "async-task"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c17772156ef2829aadc587461c7753af20b7e8db1529bc66855add962a3b35d3"
 
 [[package]]
 name = "async-task"
@@ -521,7 +515,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "703f41c54fc768e63e091340b424302bb1c29ef4aa0c7f10fe849dfb114d29ea"
 dependencies = [
  "async-channel",
- "async-task 4.7.1",
+ "async-task",
  "futures-io",
  "futures-lite",
  "piper",
@@ -1396,7 +1390,6 @@ dependencies = [
  "tracing-subscriber",
  "twizzler",
  "twizzler-abi",
- "twizzler-async",
  "twizzler-driver",
  "twizzler-object",
  "twizzler-rt-abi",
@@ -5231,12 +5224,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "scoped-tls-hkt"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9603871ffe5df3ac39cb624790c296dbd47a400d202f56bf3e414045099524d"
-
-[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6202,18 +6189,6 @@ dependencies = [
  "thiserror-no-std",
  "twizzler-rt-abi",
  "volatile",
-]
-
-[[package]]
-name = "twizzler-async"
-version = "0.1.0"
-dependencies = [
- "async-task 3.0.0",
- "futures-util",
- "lazy_static",
- "scoped-tls-hkt",
- "stable-vec",
- "twizzler-abi",
 ]
 
 [[package]]

@@ -13,7 +13,6 @@ crate-type = ["cdylib", "rlib"]
 twizzler-driver = { path = "../../lib/twizzler-driver" }
 twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
-twizzler-async = { path = "../../lib/twizzler-async" }
 twizzler-runtime = { path = "../../rt" }
 pci_types = "*"
 async-trait = "0.1.56"

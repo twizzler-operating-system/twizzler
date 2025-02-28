@@ -9,7 +9,6 @@ edition = "2021"
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-object = { path = "../../lib/twizzler-object" }
 twizzler-queue = { path = "../../lib/twizzler-queue" }
-twizzler-async = { path = "../../lib/twizzler-async" }
 twizzler-driver = { path = "../../lib/twizzler-driver" }
 twizzler-runtime = { path = "../../rt" }
 nvme = { path = "../../lib/nvme-rs" }
