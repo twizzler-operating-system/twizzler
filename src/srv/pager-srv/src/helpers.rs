@@ -1,3 +1,5 @@
+use std::ops::Add;
+
 use miette::{IntoDiagnostic, Result};
 use object_store::{PageRequest, PagingImp};
 use twizzler_abi::pager::{ObjectRange, PhysRange};
@@ -16,6 +18,25 @@ pub fn _objectrange_to_page_number(object_range: &ObjectRange) -> Option<u64> {
         return None; // Invalid ObjectRange for a single page
     }
     Some(object_range.start / PAGE)
+}
+
+//https://stackoverflow.com/questions/50380352/how-can-i-group-consecutive-integers-in-a-vector-in-rust
+pub fn consecutive_slices<T: PartialEq + Add + From<u32> + Copy>(
+    data: &[T],
+) -> impl Iterator<Item = &[T]>
+where
+    T::Output: PartialEq<T>,
+{
+    let mut slice_start = 0;
+    (1..=data.len()).flat_map(move |i| {
+        if i == data.len() || data[i - 1] + 1u32.into() != data[i] {
+            let begin = slice_start;
+            slice_start = i;
+            Some(&data[begin..i])
+        } else {
+            None
+        }
+    })
 }
 
 pub async fn page_in(
@@ -71,10 +92,16 @@ pub async fn page_out_many(
     reqs: Vec<PageRequest<DiskPageRequest>>,
 ) -> Result<usize> {
     //blocking::unblock(move || {
-    ctx.paged_ostore
-        .page_out_object(obj_id.raw(), &reqs)
-        .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
-        .into_diagnostic()
+    let mut reqslice = &reqs[..];
+    while reqslice.len() > 0 {
+        let donecount = ctx
+            .paged_ostore
+            .page_out_object(obj_id.raw(), &reqs)
+            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
+            .into_diagnostic()?;
+        reqslice = &reqslice[donecount..];
+    }
+    Ok(reqs.len())
     //})
     //.await
 }

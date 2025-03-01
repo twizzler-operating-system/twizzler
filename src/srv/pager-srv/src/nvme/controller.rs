@@ -695,7 +695,7 @@ impl NvmeController {
         let lba_size = self.blocking_get_lba_size();
         let lbas_per_page = PAGE_SIZE / lba_size;
         let lba_start = disk_page_start * lbas_per_page as u64;
-        let nr_blocks = phys.len() * lbas_per_page;
+        let nr_blocks = count * lbas_per_page;
         let inflight = self
             .send_write_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
@@ -709,6 +709,7 @@ impl NvmeController {
         };
 
         if cc.status().is_error() {
+            tracing::warn!("got nvme error: {:?}", cc);
             return Err(ErrorKind::Other.into());
         }
         Ok(count)
@@ -731,7 +732,7 @@ impl NvmeController {
         let lba_size = self.blocking_get_lba_size();
         let lbas_per_page = PAGE_SIZE / lba_size;
         let lba_start = disk_page_start * lbas_per_page as u64;
-        let nr_blocks = phys.len() * lbas_per_page;
+        let nr_blocks = count * lbas_per_page;
         let inflight = self
             .send_read_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
@@ -745,6 +746,7 @@ impl NvmeController {
         };
 
         if cc.status().is_error() {
+            tracing::warn!("got nvme error: {:?}", cc);
             return Err(ErrorKind::Other.into());
         }
         Ok(count)

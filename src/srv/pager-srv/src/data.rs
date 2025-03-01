@@ -3,12 +3,15 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use itertools::Itertools;
 use miette::Result;
+use object_store::PageRequest;
 use twizzler_abi::pager::{ObjectInfo, ObjectRange, PhysRange};
 use twizzler_object::ObjID;
 
 use crate::{
-    helpers::{page_in, page_out, PAGE},
+    disk::DiskPageRequest,
+    helpers::{page_in, page_out, page_out_many, PAGE},
     PagerContext,
 };
 
@@ -99,19 +102,45 @@ impl PerObject {
     }
 
     pub async fn sync(&self, ctx: &'static PagerContext) -> Result<()> {
+        tracing::debug!("sync: {}", self.id);
         let (pages, mpages) = {
             let inner = self.inner.lock().unwrap();
             let total = inner.page_map.len() + inner.meta_page_map.len();
             tracing::debug!("syncing {}: {} pages", self.id, total);
-            let pages = inner.pages().collect::<Vec<_>>();
-            let mpages = inner.meta_pages().collect::<Vec<_>>();
+            let mut pages = inner.pages().map(|p| (p.0, vec![p.1])).collect::<Vec<_>>();
+            pages.sort_by_key(|p| p.0);
+            let pages = pages
+                .into_iter()
+                .coalesce(|mut x, y| {
+                    if x.0.end == y.0.start {
+                        x.1.extend(y.1);
+                        Ok((ObjectRange::new(x.0.start, y.0.end), x.1))
+                    } else {
+                        Err((x, y))
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mut mpages = inner.meta_pages().collect::<Vec<_>>();
+            mpages.sort_by_key(|p| p.0);
             (pages, mpages)
         };
-        for p in pages {
-            let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
-            tracing::trace!("sync: page: {:?} {:?}", p, phys_range);
-            page_out(ctx, self.id, p.0, phys_range, false).await?;
-        }
+
+        let reqs = pages
+            .into_iter()
+            .map(|p| {
+                let start_page = p.0.pages().next().unwrap();
+                let nr_pages = p.1.len();
+                assert_eq!(nr_pages, p.0.pages().count());
+                PageRequest::new(
+                    ctx.disk
+                        .new_paging_request::<DiskPageRequest>(p.1.into_iter().map(|pd| pd.paddr)),
+                    start_page as i64,
+                    nr_pages as u32,
+                )
+            })
+            .collect_vec();
+
+        page_out_many(ctx, self.id, reqs).await?;
 
         for p in mpages {
             let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
