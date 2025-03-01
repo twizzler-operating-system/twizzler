@@ -1,6 +1,41 @@
-extern crate twizzler_runtime;
+use std::io::{Read, Write};
 
-fn initialize_pager() {
+use embedded_io::ErrorType;
+use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
+use tracing::{info, warn};
+use twizzler_abi::{
+    aux::KernelInitInfo,
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    pager::{CompletionToKernel, RequestFromKernel},
+    syscall::{sys_new_handle, BackingType, LifetimeType, NewHandleFlags},
+};
+use twizzler_object::CreateSpec;
+
+struct TwzIo;
+
+impl ErrorType for TwzIo {
+    type Error = std::io::Error;
+}
+
+impl embedded_io::Read for TwzIo {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        let len = std::io::stdin().read(buf)?;
+
+        Ok(len)
+    }
+}
+
+impl embedded_io::Write for TwzIo {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        std::io::stdout().write(buf)
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        std::io::stdout().flush()
+    }
+}
+
+fn initialize_pager() -> ObjID {
     info!("starting pager");
     const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
     let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
@@ -40,16 +75,16 @@ fn initialize_pager() {
 
     let pager_start = unsafe {
         pager_comp
-            .dynamic_gate::<(ObjID, ObjID), ()>("pager_start")
+            .dynamic_gate::<(ObjID, ObjID), ObjID>("pager_start")
             .unwrap()
     };
-    pager_start(queue.object().id(), queue2.object().id());
+    let bootstrap_id = pager_start(queue.object().id(), queue2.object().id()).unwrap();
     std::mem::forget(pager_comp);
+    bootstrap_id
 }
 
 fn initialize_namer(bootstrap: ObjID) {
     info!("starting namer");
-
     let nmcomp: CompartmentHandle = CompartmentLoader::new(
         "naming",
         "libnaming_srv.so",
@@ -65,20 +100,30 @@ fn initialize_namer(bootstrap: ObjID) {
 
     let namer_start = unsafe { nmcomp.dynamic_gate::<(ObjID,), ()>("namer_start").unwrap() };
     namer_start(bootstrap);
-
-    let mut handle = dynamic_naming_factory().unwrap();
-    let kernel_init_info = get_kernel_init_info();
-    let _ = handle.remove("/initrd", true);
-    let _ = handle.put_namespace("/initrd");
-    for name in kernel_init_info.names() {
-        let _ = handle.put(&format!("/initrd/{}", name.name()), name.id().raw());
-    }
-
     tracing::info!("naming ready");
-
     std::mem::forget(nmcomp);
 }
 
+fn initialize_devmgr() {
+    info!("starting device manager");
+    let devcomp: CompartmentHandle = CompartmentLoader::new(
+        "devmgr",
+        "libdevmgr_srv.so",
+        NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(&["devmgr"])
+    .load()
+    .expect("failed to initialize device manager");
+    let mut flags = devcomp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = devcomp.wait(flags);
+    }
+
+    let devmgr_start = unsafe { devcomp.dynamic_gate::<(), ()>("devmgr_start").unwrap() };
+    devmgr_start();
+    tracing::info!("device manager ready");
+    std::mem::forget(devcomp);
+}
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -88,7 +133,7 @@ fn main() {
     )
     .unwrap();
 
-    // Load and wait for tests to complete
+    tracing::info!("starting logger");
     let lbcomp: CompartmentHandle = CompartmentLoader::new(
         "logboi",
         "liblogboi_srv.so",
@@ -101,66 +146,31 @@ fn main() {
     while !flags.contains(CompartmentFlags::READY) {
         flags = lbcomp.wait(flags);
     }
-    tracing::info!("logboi ready");
     std::mem::forget(lbcomp);
 
-    let create = ObjectCreate::new(
-        BackingType::Normal,
-        LifetimeType::Volatile,
-        None,
-        ObjectCreateFlags::empty(),
-    );
-    let devid = twizzler_abi::syscall::sys_object_create(create, &[], &[]).unwrap();
-    info!("starting device manager");
-    let dev_comp = monitor_api::CompartmentLoader::new(
-        "devmgr",
-        "devmgr",
-        monitor_api::NewCompartmentFlags::EXPORT_GATES,
-    )
-    .args(["devmgr", &devid.raw().to_string()])
-    .load()
-    .expect("failed to start device manager");
+    initialize_devmgr();
 
-    debug!("waiting for device manager to come up");
-    let obj = Object::<std::sync::atomic::AtomicU64>::init_id(
-        devid,
-        Protections::WRITE | Protections::READ,
-        ObjectInitFlags::empty(),
-    )
-    .unwrap();
-    let base = unsafe { obj.base_unchecked() };
-    twizzler_abi::syscall::sys_thread_sync(
-        &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
-            ThreadSyncReference::Virtual(base),
-            0,
-            ThreadSyncOp::Equal,
-            ThreadSyncFlags::empty(),
-        ))],
-        None,
-    )
-    .unwrap();
-    debug!("device manager is up!");
+    let bootstrap_id = initialize_pager();
 
-    initialize_pager();
-    std::mem::forget(dev_comp);
+    initialize_namer(bootstrap_id);
 
-    // This will be loaded from the object store instead
-    let foo: VecObject<u32, VecObjectAlloc> =
-        VecObject::new(ObjectBuilder::default().persist()).unwrap();
-    let id = foo.object().id();
-    initialize_namer(id);
-
+    // Load and wait for tests to complete
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
 
     println!("Hi, welcome to the basic twizzler test console.");
-    println!("If you wanted line-editing, you've come to the wrong place.");
     println!("To run a program, type its name.");
+
+    let mut io = TwzIo;
+    let mut buffer = [0; 1024];
+    let mut editor = noline::builder::EditorBuilder::from_slice(&mut buffer)
+        .build_sync(&mut io)
+        .unwrap();
     loop {
         //let mstats = monitor_api::stats().unwrap();
         //println!("{:?}", mstats);
-        let reply = rprompt::prompt_reply_stdout("> ").unwrap();
-        let cmd: Vec<&str> = reply.split_whitespace().collect();
+        let line = editor.readline("twz> ", &mut io).unwrap();
+        let cmd = line.split_whitespace().collect::<Vec<_>>();
         if cmd.len() == 0 {
             continue;
         }
@@ -233,21 +243,3 @@ fn run_tests(test_list_name: &str, benches: bool) {
         twizzler_abi::syscall::sys_debug_shutdown(if test_failed { 1 } else { 0 });
     }
 }
-
-use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
-use naming_core::dynamic::dynamic_naming_factory;
-use tracing::{debug, info, warn};
-use twizzler::{
-    collections::vec::{VecObject, VecObjectAlloc},
-    object::{ObjectBuilder, RawObject},
-};
-use twizzler_abi::{
-    aux::KernelInitInfo,
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    pager::{CompletionToKernel, RequestFromKernel},
-    syscall::{
-        sys_new_handle, BackingType, LifetimeType, NewHandleFlags, ObjectCreate, ObjectCreateFlags,
-        ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
-    },
-};
-use twizzler_object::{CreateSpec, Object, ObjectInitFlags};

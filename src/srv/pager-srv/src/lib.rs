@@ -5,17 +5,24 @@ use std::sync::{Arc, OnceLock};
 
 use async_executor::Executor;
 use async_io::block_on;
+use disk::{Disk, DiskPageRequest};
+use object_store::{LetheIoWrapper, PagedObjectStore};
+use twizzler::{
+    collections::vec::{VecObject, VecObjectAlloc},
+    object::{ObjectBuilder, RawObject},
+};
 use twizzler_abi::pager::{
-    CompletionToKernel, CompletionToPager, PagerCompletionData, PhysRange, RequestFromKernel,
-    RequestFromPager,
+    CompletionToKernel, CompletionToPager, PagerCompletionData, RequestFromKernel, RequestFromPager,
 };
 use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
 use twizzler_queue::QueueSender;
 
-use crate::{data::PagerData, helpers::physrange_to_pages, request_handle::handle_kernel_request};
+use crate::{data::PagerData, request_handle::handle_kernel_request};
 
 mod data;
+mod disk;
 mod helpers;
+mod nvme;
 mod physrw;
 mod request_handle;
 
@@ -32,6 +39,7 @@ fn tracing_init() {
             .finish(),
     )
     .unwrap();
+    tracing_log::LogTracer::init().unwrap();
 }
 
 /***
@@ -41,15 +49,6 @@ fn data_structure_init() -> PagerData {
     let pager_data = PagerData::new();
 
     return pager_data;
-}
-
-/***
- * Setup data structures and physical memory for use by pager
- */
-fn memory_init(data: PagerData, range: PhysRange) {
-    data.init_range(range);
-    let pages = physrange_to_pages(&range) as usize;
-    data.resize(pages);
 }
 
 /***
@@ -132,47 +131,34 @@ fn pager_init(
 }
 
 fn spawn_queues(
-    pager_rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+    ctx: &'static PagerContext,
     kernel_rq: twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>,
-    data: PagerData,
     ex: &'static Executor<'static>,
 ) {
     tracing::debug!("spawning queues...");
-    ex.spawn(listen_queue(
-        pager_rq.clone(),
-        kernel_rq,
-        data,
-        handle_kernel_request,
-        ex,
-    ))
-    .detach();
+    ex.spawn(listen_queue(kernel_rq, ctx, handle_kernel_request, ex))
+        .detach();
 }
 
-async fn listen_queue<R, C, PR, PC, F>(
-    pager_rq: Arc<QueueSender<PR, PC>>,
+async fn listen_queue<R, C, F>(
     kernel_rq: twizzler_queue::CallbackQueueReceiver<R, C>,
-    data: PagerData,
-    handler: impl Fn(Arc<QueueSender<PR, PC>>, R, Arc<PagerData>) -> F + Copy + Send + Sync + 'static,
+    ctx: &'static PagerContext,
+    handler: impl Fn(&'static PagerContext, R) -> F + Copy + Send + Sync + 'static,
     ex: &'static Executor<'static>,
 ) where
     F: std::future::Future<Output = Option<C>> + Send + 'static,
     R: std::fmt::Debug + Copy + Send + Sync + 'static,
     C: std::fmt::Debug + Copy + Send + Sync + 'static,
-    PR: std::fmt::Debug + Copy + Send + Sync + 'static,
-    PC: std::fmt::Debug + Copy + Send + Sync + 'static,
 {
     let q = Arc::new(kernel_rq);
-    let data = Arc::new(data);
     loop {
         tracing::trace!("queue receiving...");
         let (id, request) = q.receive().await.unwrap();
         tracing::trace!("got request: ({},{:?})", id, request);
 
         let qc = Arc::clone(&q);
-        let datac = Arc::clone(&data);
-        let prq = pager_rq.clone();
         ex.spawn(async move {
-            let comp = handler(prq, request, datac).await;
+            let comp = handler(ctx, request).await;
             notify(&qc, id, comp).await;
         })
         .detach();
@@ -191,13 +177,13 @@ where
 }
 
 async fn report_ready(
-    q: &Arc<twizzler_queue::QueueSender<RequestFromPager, CompletionToPager>>,
+    ctx: &PagerContext,
     _ex: &'static Executor<'static>,
 ) -> Option<PagerCompletionData> {
     tracing::debug!("sending ready signal to kernel");
     let request = RequestFromPager::new(twizzler_abi::pager::PagerRequest::Ready);
 
-    match q.submit_and_wait(request).await {
+    match ctx.sender.submit_and_wait(request).await {
         Ok(completion) => {
             tracing::debug!("received completion for ready signal: {:?}", completion);
             return Some(completion.data());
@@ -209,76 +195,75 @@ async fn report_ready(
     }
 }
 
-static PAGER_DATA: OnceLock<(
-    PagerData,
-    Arc<QueueSender<RequestFromPager, CompletionToPager>>,
-)> = OnceLock::new();
+struct PagerContext {
+    data: PagerData,
+    sender: Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+    paged_ostore: Box<dyn PagedObjectStore<DiskPageRequest> + 'static + Sync + Send>,
+    disk: Disk,
+}
 
-fn do_pager_start(q1: ObjID, q2: ObjID) {
+static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
+
+fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data, ex) = pager_init(q1, q2);
-    object_store::init(ex);
+    let disk = block_on(ex.run(Disk::new(ex))).unwrap();
+    let diskc = disk.clone();
+    let disk = LetheIoWrapper::new(disk);
+    let ostore = object_store::LetheObjectStore::open(disk.clone(), [0; 32]);
+    let (name, ostore): (
+        &str,
+        Box<dyn PagedObjectStore<DiskPageRequest> + Send + Sync + 'static>,
+    ) = match ostore {
+        Ok(o) => ("lethe", Box::new(o)),
+        Err(_) => (
+            "ext2",
+            Box::new(object_store::Ext2ObjectStore::new(disk.into_inner(), 0).unwrap()),
+        ),
+    };
+    tracing::info!("opened object store as {}", name);
     let sq = Arc::new(sq);
-    let sqc = sq.clone();
-    spawn_queues(&sq, rq, data.clone(), ex);
-
-    let phys_range: Option<PhysRange> = block_on(async move {
-        let res = report_ready(&sqc, ex).await;
-        match res {
-            Some(PagerCompletionData::DramPages(range)) => {
-                Some(range) // Return the range
-            }
-            _ => {
-                tracing::error!("ERROR: no range from ready request");
-                None
-            }
-        }
+    let _ = PAGER_CTX.set(PagerContext {
+        data,
+        sender: sq,
+        paged_ostore: ostore,
+        disk: diskc,
     });
+    let ctx = PAGER_CTX.get().unwrap();
+    spawn_queues(ctx, rq, ex);
 
-    if let Some(range) = phys_range {
-        tracing::info!(
-            "initializing the pager with physical memory range: start: {}, end: {}",
-            range.start,
-            range.end
-        );
-        memory_init(data.clone(), range);
-    } else {
-        tracing::error!("cannot complete pager initialization with no physical memory");
-    }
+    block_on(ex.run(async move {
+        let _ = report_ready(&ctx, ex).await.unwrap();
+    }));
     tracing::info!("pager ready");
 
-    let _ = PAGER_DATA.set((data, sq));
+    let bootstrap_id = ctx.paged_ostore.get_config_id().unwrap_or_else(|_| {
+        tracing::info!("creating new naming object");
+        let vo = VecObject::<u32, VecObjectAlloc>::new(ObjectBuilder::default().persist()).unwrap();
+        ctx.paged_ostore
+            .set_config_id(vo.object().id().raw())
+            .unwrap();
+        vo.object().id().raw()
+    });
+    tracing::info!("found root namespace: {:x}", bootstrap_id);
 
-    /*
-    object_store::unlink_object(777);
-    let res = object_store::create_object(777).unwrap();
-    assert!(res);
-    let mut buf = [0; 0x1000];
-    let mut buf2 = [1; 0x1000];
-    let x = object_store::read_exact(777, &mut buf, 0);
-    let y = object_store::read_exact(777, &mut buf, 0x1000);
-    let w = object_store::write_all(777, &mut buf2, 0x1000);
-    let z = object_store::read_exact(777, &mut buf, 0x1000);
-    let w = object_store::write_all(777, &mut buf2, 0);
-    let z = object_store::read_exact(777, &mut buf, 0x1000);
-
-    tracing::info!("x: {:?}", x);
-    tracing::info!("y: {:?}", y);
-    tracing::info!("w: {:?}", w);
-    tracing::info!("z: {:?}", z);
-    assert_eq!(buf, buf2);
-    */
+    return bootstrap_id.into();
 }
 
 #[secgate::secure_gate]
-pub fn pager_start(q1: ObjID, q2: ObjID) {
-    do_pager_start(q1, q2);
+pub fn pager_start(q1: ObjID, q2: ObjID) -> ObjID {
+    do_pager_start(q1, q2)
 }
 
 #[secgate::secure_gate]
 pub fn full_object_sync(id: ObjID) {
     let task = EXECUTOR.get().unwrap().spawn(async move {
-        let pager = PAGER_DATA.get().unwrap();
-        pager.0.sync(&pager.1, id).await
+        let pager = PAGER_CTX.get().unwrap();
+        pager.data.sync(&pager, id).await;
     });
     block_on(EXECUTOR.get().unwrap().run(async { task.await }));
+}
+
+#[secgate::secure_gate]
+pub fn adv_lethe() {
+    PAGER_CTX.get().unwrap().paged_ostore.flush().unwrap();
 }

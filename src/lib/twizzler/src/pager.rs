@@ -29,5 +29,5 @@ fn pager_api() -> &'static PagerAPI {
 }
 
 pub fn sync_object(id: ObjID) {
-    (pager_api().full_sync_call)(id).unwrap()
+    (pager_api().full_sync_call)(id).unwrap();
 }

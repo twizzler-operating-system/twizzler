@@ -5,13 +5,16 @@ use std::sync::Mutex;
 
 use lazy_init::LazyTransform;
 use lazy_static::lazy_static;
-use naming_core::{Entry, ErrorKind, NameSession, NameStore, Result};
+use naming_core::{Entry, EntryType, ErrorKind, NameSession, NameStore, Result};
 use secgate::{
     secure_gate,
     util::{Descriptor, HandleMgr, SimpleBuffer},
 };
-use twizzler_abi::syscall::{
-    sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
+use tracing::Level;
+use twizzler_abi::{
+    aux::KernelInitInfo,
+    object::{MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_rt_abi::object::{MapFlags, ObjID};
 
@@ -75,13 +78,48 @@ lazy_static! {
     static ref NAMINGSERVICE: LazyTransform<(), Namer<'static>> = LazyTransform::new(());
 }
 
+fn get_kernel_init_info() -> &'static KernelInitInfo {
+    unsafe {
+        (((twizzler_abi::slot::RESERVED_KERNEL_INIT * MAX_SIZE) + NULLPAGE_SIZE)
+            as *const KernelInitInfo)
+            .as_ref()
+            .unwrap()
+    }
+}
+
 // How would this work if I changed the root while handles were open?
 #[secure_gate(options(info))]
 pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) {
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_max_level(Level::INFO)
+            .without_time()
+            .finish(),
+    )
+    .unwrap();
+
     NAMINGSERVICE.get_or_create(|_| {
-        Namer::new_in(bootstrap)
+        let namer = Namer::new_in(bootstrap)
             .or::<ErrorKind>(Ok(Namer::new()))
-            .unwrap()
+            .unwrap();
+        let _ = namer.names.root_session().remove("initrd", true);
+        namer
+            .names
+            .root_session()
+            .put("/initrd", EntryType::Namespace)
+            .unwrap();
+        for n in get_kernel_init_info().names() {
+            namer
+                .names
+                .root_session()
+                .put(
+                    &format!("/initrd/{}", n.name()),
+                    EntryType::Object(n.id().raw()),
+                )
+                .unwrap();
+        }
+
+        namer
     });
 }
 

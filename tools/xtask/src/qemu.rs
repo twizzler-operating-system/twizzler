@@ -52,12 +52,38 @@ impl QemuCommand {
             image_info.disk_image.as_path().display()
         ));
 
+        let already_exists = std::fs::exists("target/nvme.img").unwrap();
         if let Ok(f) = OpenOptions::new()
             .write(true)
             .create(true)
             .open("target/nvme.img")
         {
-            f.set_len(0x1000000).unwrap();
+            f.set_len(1024 * 1024 * 1024 * 100).unwrap();
+        }
+
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                std::env::var("PATH").unwrap(),
+                "/opt/homebrew/opt/e2fsprogs/sbin/"
+            ),
+        );
+        if !already_exists {
+            if !Command::new("mke2fs")
+                .arg("-b")
+                .arg("4096")
+                .arg("-qF")
+                .arg("-E")
+                .arg("test_fs")
+                .arg("target/nvme.img")
+                .arg("10000000")
+                .status()
+                .unwrap()
+                .success()
+            {
+                panic!("failed to run mke2fs on nvme.img");
+            }
         }
 
         self.cmd
@@ -69,7 +95,7 @@ impl QemuCommand {
         self.cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
         self.cmd
             .arg("-netdev")
-            .arg("user,id=net0,hostfwd=tcp::5555-:5555");
+            .arg("user,id=net0,hostfwd=tcp::5556-:5555");
 
         self.cmd
             .arg("--no-reboot") // exit instead of rebooting

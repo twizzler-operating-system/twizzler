@@ -82,6 +82,7 @@ pub struct WakeInfo {
 
 impl WakeInfo {
     pub fn wake(&self, val: u64) {
+        //logln!("wake! {}", val);
         unsafe {
             self.obj.write_val_and_signal(self.offset, val, usize::MAX);
         }
@@ -217,7 +218,7 @@ extern "C" fn soft_interrupt_waker() {
 
 pub fn init() {
     INT_THREAD.call_once(|| {
-        crate::thread::entry::start_new_kernel(Priority::REALTIME, soft_interrupt_waker, 0)
+        crate::thread::entry::start_new_kernel(Priority::default_user(), soft_interrupt_waker, 0)
     });
 }
 
@@ -227,6 +228,7 @@ pub fn external_interrupt_entry(number: u32) {
     INT_THREAD_CONDVAR.signal();
 }
 
+#[derive(Debug)]
 pub struct DynamicInterrupt {
     vec: usize,
 }

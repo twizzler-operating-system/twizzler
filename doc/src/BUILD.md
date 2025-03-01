@@ -17,12 +17,11 @@ To run qemu through the build system, you'll need qemu installed.
 ## Overview
 
 Installing the tools:
-  1. sudo apt install build-essential
-  2. sudo apt install python
-  3. sudo apt install cmake
-  4. sudo apt install ninja-build
-  5. Install Rust https://www.rust-lang.org/tools/install
-  6. Clone submodules: `git submodule update --init --recursive`
+  1. sudo apt install build-essential python cmake ninja-build llvm-18
+  2. Install Rust https://www.rust-lang.org/tools/install
+
+Note that we depend on the system LLVM for some initial bindgen commands. The minimum version for this is 18.
+On ubuntu, this can be selected for building twizzler by env vars: `export LLVM_CONFIG_PATH=/usr/bin/llvm-config-18`.
 
 Building Twizzler is done in several steps:
 
@@ -44,6 +43,7 @@ This step takes the longest, but only has to happen once. Run
 
 ```
 cd where/you/cloned/twizzler
+git submodule update --init --recursive
 cargo bootstrap
 ```
 
@@ -79,7 +79,7 @@ You can start Twizzler in Qemu by running
 cargo start-qemu
 ```
 
-which will bootup a qemu instance. If you want to run the release mode version, you can run 
+which will bootup a qemu instance. If you want to run the release mode version, you can run
 
 ```
 cargo start-qemu --profile release

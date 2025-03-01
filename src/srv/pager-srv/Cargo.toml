@@ -16,6 +16,12 @@ twizzler-driver = { path = "../../lib/twizzler-driver" }
 twizzler-runtime = { path = "../../rt" }
 secgate = { path = "../../lib/secgate" }
 object-store = { path = "object-store" }
+twizzler = { path = "../../lib/twizzler" }
+nvme = { path = "../../lib/nvme-rs" }
+devmgr = { path = "../../lib/devmgr" }
+slab = { version = "*", features = [] }
+blocking = "*"
+itertools = "*"
 
 async-trait = "0.1.66"
 volatile = "0.5"
@@ -24,8 +30,11 @@ bitvec = "1.0.1"
 tracing = "0.1"
 tracing-subscriber = "0.3.17"
 miette = "*"
+tracing-log = "*"
 
 async-io = "2.3.2"
 async-executor = { version = "1.9.1", features = [] }
+twizzler-futures = { path = "../../lib/twizzler-futures" }
 polling = "3.6.0"
 futures = "*"
+colored = "*"

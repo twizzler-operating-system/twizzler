@@ -3,15 +3,17 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use bitvec::prelude::*;
+use itertools::Itertools;
 use miette::Result;
-use twizzler_abi::pager::{
-    CompletionToPager, ObjectInfo, ObjectRange, PhysRange, RequestFromPager,
-};
+use object_store::PageRequest;
+use twizzler_abi::pager::{ObjectInfo, ObjectRange, PhysRange};
 use twizzler_object::ObjID;
-use twizzler_queue::QueueSender;
 
-use crate::helpers::{page_in, page_out, page_to_physrange, PAGE};
+use crate::{
+    disk::DiskPageRequest,
+    helpers::{page_in, page_out, page_out_many, PAGE},
+    PagerContext,
+};
 
 type PageNum = u64;
 
@@ -99,30 +101,51 @@ impl PerObject {
         self.inner.lock().unwrap().lookup(obj_range)
     }
 
-    pub async fn sync(
-        &self,
-        rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
-    ) -> Result<()> {
-        let nulls = [0; PAGE as usize];
-        object_store::write_all(self.id.raw(), &nulls, 0).unwrap();
+    pub async fn sync(&self, ctx: &'static PagerContext) -> Result<()> {
+        tracing::debug!("sync: {}", self.id);
         let (pages, mpages) = {
             let inner = self.inner.lock().unwrap();
             let total = inner.page_map.len() + inner.meta_page_map.len();
             tracing::debug!("syncing {}: {} pages", self.id, total);
-            let pages = inner.pages().collect::<Vec<_>>();
-            let mpages = inner.meta_pages().collect::<Vec<_>>();
+            let mut pages = inner.pages().map(|p| (p.0, vec![p.1])).collect::<Vec<_>>();
+            pages.sort_by_key(|p| p.0);
+            let pages = pages
+                .into_iter()
+                .coalesce(|mut x, y| {
+                    if x.0.end == y.0.start {
+                        x.1.extend(y.1);
+                        Ok((ObjectRange::new(x.0.start, y.0.end), x.1))
+                    } else {
+                        Err((x, y))
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mut mpages = inner.meta_pages().collect::<Vec<_>>();
+            mpages.sort_by_key(|p| p.0);
             (pages, mpages)
         };
-        for p in pages {
-            let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
-            tracing::trace!("sync: page: {:?} {:?}", p, phys_range);
-            page_out(rq, self.id, p.0, phys_range, false).await?;
-        }
+
+        let reqs = pages
+            .into_iter()
+            .map(|p| {
+                let start_page = p.0.pages().next().unwrap();
+                let nr_pages = p.1.len();
+                assert_eq!(nr_pages, p.0.pages().count());
+                PageRequest::new(
+                    ctx.disk
+                        .new_paging_request::<DiskPageRequest>(p.1.into_iter().map(|pd| pd.paddr)),
+                    start_page as i64,
+                    nr_pages as u32,
+                )
+            })
+            .collect_vec();
+
+        page_out_many(ctx, self.id, reqs).await?;
 
         for p in mpages {
             let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
             tracing::trace!("sync: meta page: {:?} {:?}", p, phys_range);
-            page_out(rq, self.id, p.0, phys_range, true).await?;
+            page_out(ctx, self.id, p.0, phys_range, true).await?;
         }
 
         Ok(())
@@ -143,10 +166,86 @@ pub struct PagerData {
     inner: Arc<Mutex<PagerDataInner>>,
 }
 
+#[allow(dead_code)]
+impl PagerData {
+    pub fn avail_mem(&self) -> usize {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .memory
+            .regions
+            .iter()
+            .fold(0, |acc, item| acc + item.avail())
+    }
+
+    pub fn alloc_page(&self) -> Option<u64> {
+        self.inner.lock().unwrap().get_next_available_page()
+    }
+}
+
 pub struct PagerDataInner {
-    pub bitvec: BitVec,
+    memory: Memory,
     pub per_obj: HashMap<ObjID, PerObject>,
-    pub mem_range_start: u64,
+}
+
+struct Region {
+    unused_start: u64,
+    end: u64,
+    stack: Vec<u64>,
+}
+
+#[allow(dead_code)]
+impl Region {
+    pub fn avail(&self) -> usize {
+        let unused = self.end - self.unused_start;
+        unused as usize + self.stack.len() * PAGE as usize
+    }
+
+    pub fn new(range: PhysRange) -> Self {
+        Self {
+            unused_start: range.start,
+            end: range.end,
+            stack: Vec::new(),
+        }
+    }
+    pub fn get_page(&mut self) -> Option<u64> {
+        self.stack.pop().or_else(|| {
+            if self.unused_start == self.end {
+                None
+            } else {
+                let next = self.unused_start;
+                self.unused_start += PAGE;
+                Some(next)
+            }
+        })
+    }
+
+    pub fn release_page(&mut self, page: u64) {
+        if self.unused_start - PAGE == page {
+            self.unused_start -= PAGE;
+        } else {
+            self.stack.push(page);
+        }
+    }
+}
+
+#[derive(Default)]
+struct Memory {
+    regions: Vec<Region>,
+}
+
+impl Memory {
+    pub fn push(&mut self, region: Region) {
+        self.regions.push(region);
+    }
+
+    pub fn get_page(&mut self) -> Option<u64> {
+        for region in &mut self.regions {
+            if let Some(page) = region.get_page() {
+                return Some(page);
+            }
+        }
+        None
+    }
 }
 
 impl PagerDataInner {
@@ -155,74 +254,22 @@ impl PagerDataInner {
     pub fn new() -> Self {
         tracing::trace!("initializing PagerDataInner");
         PagerDataInner {
-            bitvec: BitVec::new(),
             per_obj: HashMap::with_capacity(0),
-            mem_range_start: 0,
+            memory: Memory::default(),
         }
-    }
-
-    /// Set the starting address of the memory range to be managed.
-    pub fn set_range_start(&mut self, start: u64) {
-        self.mem_range_start = start;
     }
 
     /// Get the next available page number and mark it as used.
     /// Returns the page number if available, or `None` if all pages are used.
-    fn get_next_available_page(&mut self) -> Option<usize> {
-        tracing::trace!("searching for next available page");
-        let next_page = self.bitvec.iter().position(|bit| !bit);
-
-        if let Some(page_number) = next_page {
-            self.bitvec.set(page_number, true);
-            tracing::trace!("next available page: {}", page_number);
-            Some(page_number)
-        } else {
-            tracing::debug!("no available pages left");
-            None
-        }
+    fn get_next_available_page(&mut self) -> Option<u64> {
+        self.memory.get_page()
     }
 
     /// Get a memory page for allocation.
     /// Triggers page replacement if all pages are used.
-    fn get_mem_page(&mut self) -> usize {
+    fn get_mem_page(&mut self) -> u64 {
         tracing::trace!("attempting to get memory page");
-        if self.bitvec.all() {
-            todo!()
-        }
         self.get_next_available_page().expect("no available pages")
-    }
-
-    /// Remove a page from the bit vector, freeing it for future use.
-    fn _remove_page(&mut self, page_number: usize) {
-        tracing::trace!("attempting to remove page {}", page_number);
-        if page_number < self.bitvec.len() {
-            self.bitvec.set(page_number, false);
-            tracing::trace!("page {} removed from bitvec", page_number);
-        } else {
-            tracing::warn!(
-                "page {} is out of bounds and cannot be removed",
-                page_number
-            );
-        }
-    }
-
-    /// Resize the bit vector to accommodate more pages or clear it.
-    fn resize_bitset(&mut self, new_size: usize) {
-        tracing::debug!("resizing bitvec to new size: {}", new_size);
-        if new_size == 0 {
-            tracing::trace!("clearing bitvec");
-            self.bitvec.clear();
-        } else {
-            self.bitvec.resize(new_size, false);
-        }
-        tracing::trace!("bitvec resized to: {}", new_size);
-    }
-
-    /// Check if all pages are currently in use.
-    pub fn _is_full(&self) -> bool {
-        let full = self.bitvec.all();
-        tracing::trace!("bitvec check full: {}", full);
-        full
     }
 
     pub fn get_per_object(&mut self, id: ObjID) -> &PerObject {
@@ -244,16 +291,9 @@ impl PagerData {
         }
     }
 
-    /// Resize the internal structures to accommodate the given number of pages.
-    pub fn resize(&self, pages: usize) {
-        tracing::debug!("resizing resources to support {} pages", pages);
-        let mut inner = self.inner.lock().unwrap();
-        inner.resize_bitset(pages);
-    }
-
     /// Initialize the starting memory range for the pager.
     pub fn init_range(&self, range: PhysRange) {
-        self.inner.lock().unwrap().set_range_start(range.start);
+        self.inner.lock().unwrap().memory.push(Region::new(range));
     }
 
     /// Allocate a memory page and associate it with an object and range.
@@ -261,7 +301,7 @@ impl PagerData {
     /// Returns the physical range corresponding to the allocated page.
     pub async fn fill_mem_page(
         &self,
-        rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+        ctx: &'static PagerContext,
         id: ObjID,
         obj_range: ObjectRange,
     ) -> Result<PhysRange> {
@@ -288,35 +328,30 @@ impl PagerData {
         let phys_range = {
             let mut inner = self.inner.lock().unwrap();
             let page = inner.get_mem_page();
-            let phys_range = page_to_physrange(page, inner.mem_range_start);
+            let phys_range = PhysRange::new(page, page + PAGE);
             let po = inner.get_per_object_mut(id);
             po.track(obj_range, phys_range);
             phys_range
         };
-        page_in(rq, id, obj_range, phys_range, false).await?;
+        page_in(ctx, id, obj_range, phys_range, false).await?;
         tracing::debug!("memory page allocated successfully: {:?}", phys_range);
         return Ok(phys_range);
     }
 
-    pub fn lookup_object(&self, id: ObjID) -> Option<ObjectInfo> {
+    pub fn lookup_object(&self, ctx: &PagerContext, id: ObjID) -> Option<ObjectInfo> {
         let mut b = [];
-        object_store::read_exact(id.raw(), &mut b, 0).ok()?;
+        ctx.paged_ostore.read_object(id.raw(), 0, &mut b).ok()?;
         Some(ObjectInfo::new(id))
     }
 
-    pub async fn sync(
-        &self,
-        rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
-        id: ObjID,
-    ) {
-        tracing::debug!("sync: {:?}", id);
+    pub async fn sync(&self, ctx: &'static PagerContext, id: ObjID) {
         let po = {
             let mut inner = self.inner.lock().unwrap();
             inner.get_per_object(id).clone()
         };
-        let _ = po.sync(rq).await.inspect_err(|e| {
+        let _ = po.sync(ctx).await.inspect_err(|e| {
             tracing::warn!("sync failed for {}: {}", id, e);
         });
-        object_store::advance_epoch().unwrap();
+        ctx.paged_ostore.flush().unwrap();
     }
 }

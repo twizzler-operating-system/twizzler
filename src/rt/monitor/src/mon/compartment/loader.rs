@@ -269,7 +269,7 @@ impl RunCompLoader {
             cmp.get_mut(*id).unwrap().deps.append(&mut deps);
 
             let Some(comp) = cmp.get(*id) else { continue };
-            tracing::trace!("set comp {} deps to {:?}", comp.name, comp.deps);
+            tracing::debug!("set comp {} deps to {:?}", comp.name, comp.deps);
         }
         Self::rec_inc_all_use_counts(cmp, ids[0], &HashSet::from_iter(ids.iter().cloned()));
 

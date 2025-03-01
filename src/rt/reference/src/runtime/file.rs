@@ -3,7 +3,7 @@ use core::{
     mem::size_of,
     num::NonZeroUsize,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bitflags::bitflags;
 use lazy_static::lazy_static;
@@ -60,15 +60,15 @@ lazy_static! {
         FdKind::Stdio,
         FdKind::Stdio
     ]));
-    static ref HANDLE: Mutex<DynamicNamingHandle> = Mutex::new(dynamic_naming_factory().unwrap());
 }
+static HANDLE: OnceLock<Mutex<DynamicNamingHandle>> = OnceLock::new();
 
 fn get_fd_slots() -> &'static Mutex<StableVec<FdKind>> {
     &FD_SLOTS
 }
 
 fn get_naming_handle() -> &'static Mutex<DynamicNamingHandle> {
-    &HANDLE
+    HANDLE.get_or_init(|| Mutex::new(dynamic_naming_factory().unwrap()))
 }
 
 #[derive(Debug)]
@@ -122,7 +122,7 @@ impl ReferenceRuntime {
         }
         let create = ObjectCreate::new(
             BackingType::Normal,
-            LifetimeType::Volatile,
+            LifetimeType::Persistent,
             None,
             ObjectCreateFlags::empty(),
         );
@@ -133,7 +133,7 @@ impl ReferenceRuntime {
             (true, true) => MapFlags::READ | MapFlags::WRITE,
             (true, false) => MapFlags::READ,
             (false, true) => MapFlags::WRITE,
-            (false, false) => return Err(OpenError::InvalidArgument),
+            (false, false) => MapFlags::READ,
         };
         let obj_id: ObjID = match create_opt {
             CreateOptions::UNEXPECTED => return Err(OpenError::InvalidArgument),
@@ -208,6 +208,7 @@ impl ReferenceRuntime {
 
         let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
+            drop(binding);
             let len = twizzler_abi::syscall::sys_kernel_console_read(
                 buf,
                 twizzler_abi::syscall::KernelConsoleReadFlags::empty(),
@@ -341,7 +342,6 @@ impl ReferenceRuntime {
     }
 
     pub fn fd_cmd(&self, fd: RawFd, cmd: u32, _arg: *const u8, _ret: *mut u8) -> u32 {
-        tracing::warn!("fd_cmd: unimp: {} {}", fd, cmd);
         let binding = get_fd_slots().lock().unwrap();
 
         let Some(FdKind::File(bind)) = binding.get(fd.try_into().unwrap()) else {
@@ -361,9 +361,12 @@ impl ReferenceRuntime {
             twizzler_rt_abi::bindings::FD_CMD_SYNC => {
                 let mut ok = true;
                 for id in &metadata_handle.direct {
-                    if twizzler_abi::syscall::sys_object_ctrl(*id, ObjectControlCmd::Sync).is_err()
-                    {
-                        ok = false;
+                    if id.raw() != 0 {
+                        if twizzler_abi::syscall::sys_object_ctrl(*id, ObjectControlCmd::Sync)
+                            .is_err()
+                        {
+                            ok = false;
+                        }
                     }
                 }
                 if twizzler_abi::syscall::sys_object_ctrl(file.handle.id(), ObjectControlCmd::Sync)
@@ -380,13 +383,15 @@ impl ReferenceRuntime {
             twizzler_rt_abi::bindings::FD_CMD_DELETE => {
                 let mut ok = true;
                 for id in &metadata_handle.direct {
-                    if twizzler_abi::syscall::sys_object_ctrl(
-                        *id,
-                        ObjectControlCmd::Delete(DeleteFlags::empty()),
-                    )
-                    .is_err()
-                    {
-                        ok = false;
+                    if id.raw() != 0 && false {
+                        if twizzler_abi::syscall::sys_object_ctrl(
+                            *id,
+                            ObjectControlCmd::Delete(DeleteFlags::empty()),
+                        )
+                        .is_err()
+                        {
+                            ok = false;
+                        }
                     }
                 }
                 if twizzler_abi::syscall::sys_object_ctrl(
@@ -403,7 +408,10 @@ impl ReferenceRuntime {
                     1
                 }
             }
-            _ => 1,
+            _ => {
+                tracing::warn!("fd_cmd: unimp: {} {}", fd, cmd);
+                1
+            }
         }
     }
 
@@ -415,6 +423,7 @@ impl ReferenceRuntime {
 
         let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
+            drop(binding);
             twizzler_abi::syscall::sys_kernel_console_write(
                 buf,
                 twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
@@ -472,7 +481,7 @@ impl ReferenceRuntime {
                     let mapped_id = if obj_id == 0.into() {
                         let create = ObjectCreate::new(
                             BackingType::Normal,
-                            LifetimeType::Volatile,
+                            LifetimeType::Persistent,
                             None,
                             ObjectCreateFlags::empty(),
                         );

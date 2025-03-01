@@ -31,8 +31,19 @@ pub struct DmaRegion<T: DeviceSync> {
     _pd: PhantomData<T>,
 }
 
+impl<T: DeviceSync> core::fmt::Debug for DmaRegion<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DmaRegion")
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
+unsafe impl<T: DeviceSync> Send for DmaRegion<T> {}
+
 /// A region of DMA memory, represented in virtual memory as type `[T; len]`, with a particular
 /// access mode and options.
+#[derive(Debug)]
 pub struct DmaSliceRegion<T: DeviceSync> {
     region: DmaRegion<T>,
     len: usize,

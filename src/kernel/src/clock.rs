@@ -10,6 +10,7 @@ use crate::{
     once::Once,
     processor::current_processor,
     spinlock::Spinlock,
+    syscall::sync::requeue_all,
     thread::{priority::Priority, ThreadRef},
     time::{ClockHardware, Ticks, CLOCK_OFFSET, TICK_SOURCES},
 };
@@ -243,6 +244,7 @@ extern "C" fn soft_timeout_clock() {
         if let Some(timeout) = timeout {
             drop(tq);
             timeout.call();
+            requeue_all();
         } else {
             TIMEOUT_THREAD_CONDVAR.wait(tq);
         }

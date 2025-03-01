@@ -229,12 +229,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "array-init"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d62b7694a562cdf5a74227903507c56ab2cc8bdd1f781ed5cb4cf9c9f810bfc"
-
-[[package]]
 name = "arraydeque"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -259,12 +253,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d92bec98840b8f03a5ff5413de5293bfcd8bf96467cf5452609f939ec6f5de16"
 
 [[package]]
+name = "async-channel"
+version = "2.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89b47800b0be77592da0afd425cc03468052844aff33b84e33cc696f64e77b6a"
+dependencies = [
+ "concurrent-queue",
+ "event-listener-strategy",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "async-executor"
 version = "1.9.1"
 source = "git+https://github.com/twizzler-operating-system/async-executor.git?branch=twizzler#6db91013bf7ec4590a2fd60973cb579501ee3c52"
 dependencies = [
  "async-lock",
- "async-task 4.7.1",
+ "async-task",
  "concurrent-queue",
  "fastrand",
  "futures-lite",
@@ -303,12 +309,6 @@ dependencies = [
 
 [[package]]
 name = "async-task"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c17772156ef2829aadc587461c7753af20b7e8db1529bc66855add962a3b35d3"
-
-[[package]]
-name = "async-task"
 version = "4.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b75356056920673b02621b35afd0f7dda9306d03c79a30f5c56c44cf256e3de"
@@ -332,6 +332,12 @@ checksum = "8d818003e740b63afc82337e3160717f4f63078720a810b7b903e70a5d1d2994"
 dependencies = [
  "bytemuck",
 ]
+
+[[package]]
+name = "atomic-waker"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "autocfg"
@@ -503,6 +509,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "blocking"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "703f41c54fc768e63e091340b424302bb1c29ef4aa0c7f10fe849dfb114d29ea"
+dependencies = [
+ "async-channel",
+ "async-task",
+ "futures-io",
+ "futures-lite",
+ "piper",
+]
+
+[[package]]
 name = "bootstrap"
 version = "0.1.0"
 dependencies = [
@@ -603,7 +622,7 @@ dependencies = [
  "humantime",
  "ignore",
  "im-rc",
- "indexmap 2.7.0",
+ "indexmap 2.7.1",
  "itertools 0.13.0",
  "jobserver",
  "lazycell",
@@ -903,6 +922,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b63caa9aa9397e2d9480a9b13673856c78d8ac123288526c37d7839f2a86990"
 
 [[package]]
+name = "colored"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fde0e0ec90c9dfb3b4b1a0891a7dcd0e2bffde2f7efed5fe7c9bb00e5bfb915e"
+dependencies = [
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "compiler_builtins"
 version = "0.1.144"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1065,6 +1093,12 @@ checksum = "a97769d94ddab943e4510d138150169a2758b5ef3eb191a9ee688de3e23ef7b3"
 dependencies = [
  "cfg-if 1.0.0",
 ]
+
+[[package]]
+name = "critical-section"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 
 [[package]]
 name = "crossbeam-channel"
@@ -1314,16 +1348,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive_more"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a9b99b9cbbe49445b21764dc0625032a89b145a2642e67603e1c936f5458d05"
+dependencies = [
+ "derive_more-impl",
+]
+
+[[package]]
+name = "derive_more-impl"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7330aeadfbe296029522e6c40f315320aba36fc43a5b3632f3795348f3bd22"
+dependencies = [
+ "convert_case",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.96",
+ "unicode-xid",
+]
+
+[[package]]
 name = "devmgr"
 version = "0.1.0"
 dependencies = [
+ "monitor-api",
+ "twizzler",
+ "twizzler-rt-abi",
+]
+
+[[package]]
+name = "devmgr-srv"
+version = "0.1.0"
+dependencies = [
  "async-trait",
- "logboi",
- "pci-ids",
+ "devmgr",
+ "pci_types",
+ "secgate",
+ "tracing",
+ "tracing-subscriber",
+ "twizzler",
  "twizzler-abi",
- "twizzler-async",
  "twizzler-driver",
  "twizzler-object",
+ "twizzler-rt-abi",
  "twizzler-runtime",
  "volatile",
 ]
@@ -1417,6 +1486,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "efs"
+version = "0.4.2"
+source = "git+https://github.com/dbittman/efs#3ab723d6cb209b1bb02242d04104856b48369034"
+dependencies = [
+ "bitflags 2.8.0",
+ "cfg-if 1.0.0",
+ "derive_more",
+ "itertools 0.11.0",
+ "once_cell",
+ "regex",
+ "spin 0.9.8",
+]
+
+[[package]]
 name = "either"
 version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1447,6 +1530,21 @@ dependencies = [
  "sec1",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "embedded-io"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
+name = "embedded-io-async"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ff09972d4073aa8c299395be75161d582e7629cd663171d62af73c8d50dba3f"
+dependencies = [
+ "embedded-io",
 ]
 
 [[package]]
@@ -1620,7 +1718,7 @@ dependencies = [
 [[package]]
 name = "fatfs"
 version = "0.4.0"
-source = "git+https://github.com/twizzler-operating-system/rust-fatfs.git?branch=zphrs-rwproxy#c5c87fd77022f85e91979b4daa8b077053774cc9"
+source = "git+https://github.com/twizzler-operating-system/rust-fatfs.git?branch=zphrs-rwproxy#362521863afdf22b64e34a58326f1675e2bc6a9b"
 dependencies = [
  "bitflags 2.8.0",
  "log",
@@ -1720,12 +1818,6 @@ checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
 ]
-
-[[package]]
-name = "fragile"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c2141d6d6c8512188a7891b4b01590a45f6dac67afb4f255c4124dbb86d4eaa"
 
 [[package]]
 name = "fs_extra"
@@ -1842,6 +1934,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "gadget"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "colored",
+ "embedded-io",
+ "logboi",
+ "monitor-api",
+ "naming",
+ "noline",
+ "pager",
+ "rand",
+ "tiny_http",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+ "virtio-net",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1850,26 +1965,6 @@ dependencies = [
  "typenum",
  "version_check",
  "zeroize",
-]
-
-[[package]]
-name = "genrandom"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "getrandom",
- "layout",
- "lethe-gadget-fat",
- "nvme",
- "pci-ids",
- "tickv",
- "twizzler-abi",
- "twizzler-async",
- "twizzler-driver",
- "twizzler-object",
- "twizzler-queue",
- "twizzler-runtime",
- "volatile",
 ]
 
 [[package]]
@@ -2014,18 +2109,18 @@ dependencies = [
 
 [[package]]
 name = "gix-bitmap"
-version = "0.2.13"
+version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d48b897b4bbc881aea994b4a5bbb340a04979d7be9089791304e04a9fbc66b53"
+checksum = "b1db9765c69502650da68f0804e3dc2b5f8ccc6a2d104ca6c85bc40700d37540"
 dependencies = [
  "thiserror 2.0.11",
 ]
 
 [[package]]
 name = "gix-chunk"
-version = "0.4.10"
+version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6ffbeb3a5c0b8b84c3fe4133a6f8c82fa962f4caefe8d0762eced025d3eb4f7"
+checksum = "0b1f1d8764958699dc764e3f727cef280ff4d1bd92c107bbf8acd85b30c1bd6f"
 dependencies = [
  "thiserror 2.0.11",
 ]
@@ -2079,9 +2174,9 @@ dependencies = [
 
 [[package]]
 name = "gix-config-value"
-version = "0.14.10"
+version = "0.14.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49aaeef5d98390a3bcf9dbc6440b520b793d1bf3ed99317dc407b02be995b28e"
+checksum = "11365144ef93082f3403471dbaa94cfe4b5e72743bdb9560719a251d439f4cee"
 dependencies = [
  "bitflags 2.8.0",
  "bstr",
@@ -2430,9 +2525,9 @@ dependencies = [
 
 [[package]]
 name = "gix-path"
-version = "0.10.13"
+version = "0.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afc292ef1a51e340aeb0e720800338c805975724c1dfbd243185452efd8645b7"
+checksum = "c40f12bb65a8299be0cfb90fe718e3be236b7a94b434877012980863a883a99f"
 dependencies = [
  "bstr",
  "gix-trace",
@@ -2489,9 +2584,9 @@ dependencies = [
 
 [[package]]
 name = "gix-quote"
-version = "0.4.14"
+version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64a1e282216ec2ab2816cd57e6ed88f8009e634aec47562883c05ac8a7009a63"
+checksum = "e49357fccdb0c85c0d3a3292a9f6db32d9b3535959b5471bb9624908f4a066c6"
 dependencies = [
  "bstr",
  "gix-utils",
@@ -2564,9 +2659,9 @@ dependencies = [
 
 [[package]]
 name = "gix-sec"
-version = "0.10.10"
+version = "0.10.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8b876ef997a955397809a2ec398d6a45b7a55b4918f2446344330f778d14fd6"
+checksum = "d84dae13271f4313f8d60a166bf27e54c968c7c33e2ffd31c48cafe5da649875"
 dependencies = [
  "bitflags 2.8.0",
  "gix-path",
@@ -2604,9 +2699,9 @@ dependencies = [
 
 [[package]]
 name = "gix-trace"
-version = "0.1.11"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04bdde120c29f1fc23a24d3e115aeeea3d60d8e65bab92cc5f9d90d9302eb952"
+checksum = "7c396a2036920c69695f760a65e7f2677267ccf483f25046977d87e4cb2665f7"
 
 [[package]]
 name = "gix-transport"
@@ -2660,9 +2755,9 @@ dependencies = [
 
 [[package]]
 name = "gix-utils"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba427e3e9599508ed98a6ddf8ed05493db114564e338e41f6a996d2e4790335f"
+checksum = "ff08f24e03ac8916c478c8419d7d3c33393da9bb41fa4c24455d5406aeefd35f"
 dependencies = [
  "bstr",
  "fastrand",
@@ -2764,7 +2859,7 @@ dependencies = [
  "futures-sink",
  "futures-util",
  "http",
- "indexmap 2.7.0",
+ "indexmap 2.7.1",
  "slab",
  "tokio",
  "tokio-util",
@@ -2849,7 +2944,7 @@ dependencies = [
 [[package]]
 name = "heapsize-derive"
 version = "0.1.0"
-source = "git+https://github.com/twizzler-operating-system/obliviate.git#c1be5eff29d319d40eab9975ffa0d150ddb720fb"
+source = "git+https://github.com/twizzler-operating-system/obliviate.git?branch=nonstatic_lifetime_support#b02c4e35ff9c3ac6f2bebfbb30a4994248a8d173"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3231,9 +3326,9 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.7.0"
+version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62f822373a4fe84d4bb149bf54e584a7f4abec90e072ed49cda0edea5b95471f"
+checksum = "8c9c992b02b5b4c94ea26e32fe5bccb7aa7d9f390ab5c1221ff895bc7ea8b652"
 dependencies = [
  "equivalent",
  "hashbrown 0.15.2",
@@ -3259,11 +3354,12 @@ version = "0.1.0"
 dependencies = [
  "async-executor",
  "async-io",
+ "embedded-io",
  "futures",
  "monitor-api",
  "naming-core",
+ "noline",
  "polling",
- "rprompt",
  "tracing",
  "tracing-subscriber",
  "twizzler",
@@ -3295,6 +3391,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "intervaltree"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "270bc34e57047cab801a8c871c124d9dc7132f6473c6401f645524f4e6edd111"
+dependencies = [
+ "serde",
+ "smallvec",
+]
+
+[[package]]
 name = "intrusive-collections"
 version = "0.9.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3305,9 +3411,9 @@ dependencies = [
 
 [[package]]
 name = "ipnet"
-version = "2.10.1"
+version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddc24109865250148c2e0f3d25d4f0f479571723792d3802153c60922a4fb708"
+checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -3320,6 +3426,15 @@ name = "itertools"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "284f18f85651fe11e8a991b2adb42cb078325c996ed026d994719efcfca1d54b"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1c173a5686ce8bfa551b3563d0c2170bf24ca44da99c7ca4bfdab5418c3fe57"
 dependencies = [
  "either",
 ]
@@ -3432,22 +3547,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "layout"
-version = "0.1.0"
-dependencies = [
- "array-init",
- "layout-derive",
- "twizzler-abi",
-]
-
-[[package]]
-name = "layout-derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
+name = "lazy-init"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f40963626ac12dcaf92afc15e4c3db624858c92fd9f8ba2125eaada3ac2706f"
 
 [[package]]
 name = "lazy-init"
@@ -3469,14 +3572,6 @@ name = "lazycell"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
-
-[[package]]
-name = "lethe-gadget-fat"
-version = "0.1.0"
-dependencies = [
- "layout",
- "twizzler-abi",
-]
 
 [[package]]
 name = "libc"
@@ -3675,7 +3770,7 @@ dependencies = [
 [[package]]
 name = "lru-mem"
 version = "0.3.0"
-source = "git+https://github.com/twizzler-operating-system/obliviate.git#c1be5eff29d319d40eab9975ffa0d150ddb720fb"
+source = "git+https://github.com/twizzler-operating-system/obliviate.git?branch=nonstatic_lifetime_support#b02c4e35ff9c3ac6f2bebfbb30a4994248a8d173"
 dependencies = [
  "hashbrown 0.14.5",
  "heapsize-derive",
@@ -3827,25 +3922,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mnemosyne"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "layout",
- "lethe-gadget-fat",
- "nvme",
- "pci-ids",
- "tickv",
- "twizzler-abi",
- "twizzler-async",
- "twizzler-driver",
- "twizzler-object",
- "twizzler-queue",
- "twizzler-runtime",
- "volatile",
-]
-
-[[package]]
 name = "modular-bitfield"
 version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3949,6 +4025,7 @@ dependencies = [
  "monitor-api",
  "secgate",
  "twizzler",
+ "twizzler-abi",
  "twizzler-rt-abi",
 ]
 
@@ -3961,6 +4038,8 @@ dependencies = [
  "lazy_static",
  "naming-core",
  "secgate",
+ "tracing",
+ "tracing-subscriber",
  "twizzler",
  "twizzler-abi",
  "twizzler-rt-abi",
@@ -3996,6 +4075,17 @@ name = "no-std-compat"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df270209a7f04d62459240d890ecb792714d5db12c92937823574a09930276b4"
+
+[[package]]
+name = "noline"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8100b250810ea78c34882c7bc511ebf9ce8b284ef34486e23f2779b6a7e2e345"
+dependencies = [
+ "embedded-io",
+ "embedded-io-async",
+ "num_enum",
+]
 
 [[package]]
 name = "nom"
@@ -4087,7 +4177,6 @@ name = "nvme"
 version = "0.1.0"
 dependencies = [
  "modular-bitfield",
- "volatile",
 ]
 
 [[package]]
@@ -4112,36 +4201,24 @@ dependencies = [
 name = "object-store"
 version = "0.1.0"
 dependencies = [
- "async-executor",
- "async-io",
  "async-trait",
  "chacha20",
+ "efs",
  "fatfs 0.4.0",
- "nvme",
+ "intervaltree",
+ "lru",
  "obliviate-core",
  "pci-ids",
  "rand",
  "tracing",
- "twizzler-abi",
- "twizzler-driver",
- "twizzler-object",
- "twizzler-queue",
+ "tracing-subscriber",
  "volatile",
-]
-
-[[package]]
-name = "object-store-test"
-version = "0.1.0"
-dependencies = [
- "object-store",
- "obliviate-core",
- "rand",
 ]
 
 [[package]]
 name = "obliviate-core"
 version = "0.1.0"
-source = "git+https://github.com/twizzler-operating-system/obliviate.git#c1be5eff29d319d40eab9975ffa0d150ddb720fb"
+source = "git+https://github.com/twizzler-operating-system/obliviate.git?branch=nonstatic_lifetime_support#b02c4e35ff9c3ac6f2bebfbb30a4994248a8d173"
 dependencies = [
  "aes",
  "bincode",
@@ -4185,6 +4262,10 @@ name = "once_cell"
 version = "1.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1261fe7e33c73b354eab43b1273a57c8f967d0391e80353e51f764ac02cf6775"
+dependencies = [
+ "critical-section",
+ "portable-atomic",
+]
 
 [[package]]
 name = "opener"
@@ -4364,15 +4445,24 @@ dependencies = [
  "async-io",
  "async-trait",
  "bitvec",
+ "blocking",
+ "colored",
+ "devmgr",
  "futures",
+ "itertools 0.9.0",
  "miette 7.4.0",
+ "nvme",
  "object-store",
  "polling",
  "secgate",
+ "slab",
  "tracing",
+ "tracing-log",
  "tracing-subscriber",
+ "twizzler",
  "twizzler-abi",
  "twizzler-driver",
+ "twizzler-futures",
  "twizzler-object",
  "twizzler-queue",
  "twizzler-rt-abi",
@@ -4474,6 +4564,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pci_types"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4325c6aa3cca3373503b1527e75756f9fbfe5fd76be4b4c8a143ee47430b8e0"
+dependencies = [
+ "bit_field",
+ "bitflags 2.8.0",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4540,7 +4640,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
  "fixedbitset",
- "indexmap 2.7.0",
+ "indexmap 2.7.1",
 ]
 
 [[package]]
@@ -4592,6 +4692,17 @@ name = "pin-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
+
+[[package]]
+name = "piper"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96c8c490f422ef9a4efd2cb5b42b76c8613d7e7dfc1caf667b8a3350a5acc066"
+dependencies = [
+ "atomic-waker",
+ "fastrand",
+ "futures-io",
+]
 
 [[package]]
 name = "pkcs8"
@@ -4983,12 +5094,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rprompt"
-version = "1.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b386f4748bdae2aefc96857f5fda07647f851d089420e577831e2a14b45230f8"
-
-[[package]]
 name = "rsdp"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5131,12 +5236,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "scoped-tls-hkt"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9603871ffe5df3ac39cb624790c296dbd47a400d202f56bf3e414045099524d"
-
-[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5227,9 +5326,9 @@ dependencies = [
 
 [[package]]
 name = "semver"
-version = "1.0.24"
+version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cb6eb87a131f756572d7fb904f6e7b68633f09cca868c5df1c4b8d1a694bbba"
+checksum = "f79dfe2d285b0488816f30e700a7438c5a73d816b5b7d3ac72fbc48b0d185e03"
 dependencies = [
  "serde",
 ]
@@ -5286,9 +5385,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.135"
+version = "1.0.137"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b0d7ba2887406110130a978386c4e1befb98c674b4fba677954e4db976630d9"
+checksum = "930cfb6e6abf99298aaad7d29abbef7a9999a9a8806a40088f55f0dcec03146b"
 dependencies = [
  "itoa",
  "memchr",
@@ -5327,7 +5426,7 @@ dependencies = [
  "chrono",
  "hex",
  "indexmap 1.9.3",
- "indexmap 2.7.0",
+ "indexmap 2.7.1",
  "serde",
  "serde_derive",
  "serde_json",
@@ -5815,12 +5914,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tickv"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c61f292d344c68f447d717efc2ebb9b5e9de3c859fef183dd2ab69fa5897f08a"
-
-[[package]]
 name = "time"
 version = "0.3.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5880,6 +5973,7 @@ dependencies = [
  "rustls-pemfile 0.2.1",
  "sha1 0.6.1",
  "smoltcp",
+ "virtio-net",
  "zeroize",
 ]
 
@@ -5979,7 +6073,7 @@ version = "0.19.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b5bb770da30e5cbfde35a2d7b9b8a2c4b8ef89548a7a6aeab5c9a576e3e7421"
 dependencies = [
- "indexmap 2.7.0",
+ "indexmap 2.7.1",
  "toml_datetime",
  "winnow 0.5.40",
 ]
@@ -5990,7 +6084,7 @@ version = "0.22.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ae48d6208a266e853d946088ed816055e556cc6028c5e8e2b84d9fa5dd7c7f5"
 dependencies = [
- "indexmap 2.7.0",
+ "indexmap 2.7.1",
  "serde",
  "serde_spanned",
  "toml_datetime",
@@ -6089,6 +6183,7 @@ dependencies = [
  "monitor-api",
  "secgate",
  "thiserror 2.0.11",
+ "tracing",
  "twizzler-abi",
  "twizzler-rt-abi",
 ]
@@ -6106,18 +6201,6 @@ dependencies = [
  "thiserror-no-std",
  "twizzler-rt-abi",
  "volatile",
-]
-
-[[package]]
-name = "twizzler-async"
-version = "0.1.0"
-dependencies = [
- "async-task 3.0.0",
- "futures-util",
- "lazy_static",
- "scoped-tls-hkt",
- "stable-vec",
- "twizzler-abi",
 ]
 
 [[package]]
@@ -6441,14 +6524,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "virtio"
-version = "0.1.0"
-dependencies = [
- "smoltcp",
- "virtio-net",
-]
-
-[[package]]
 name = "virtio-drivers"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6464,9 +6539,10 @@ dependencies = [
 name = "virtio-net"
 version = "0.1.0"
 dependencies = [
- "fragile",
+ "devmgr",
  "once_cell",
  "smoltcp",
+ "tracing",
  "twizzler-abi",
  "twizzler-driver",
  "virtio-drivers",

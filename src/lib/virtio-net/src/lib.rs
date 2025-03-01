@@ -6,3 +6,4 @@ mod tcp;
 mod transport;
 
 pub use tcp::{get_device, DeviceWrapper, VirtioRxToken, VirtioTxToken};
+pub use transport::TwizzlerTransport;
