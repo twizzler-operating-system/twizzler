@@ -28,7 +28,7 @@ impl Display for Device {
 }
 
 impl Device {
-    fn new(id: ObjID) -> Result<Self, ObjectInitError> {
+    pub fn new(id: ObjID) -> Result<Self, ObjectInitError> {
         let obj = Object::init_id(
             id,
             Protections::WRITE | Protections::READ,
@@ -81,5 +81,9 @@ impl Device {
         value2: u64,
     ) -> Result<KactionValue, KactionError> {
         twizzler_abi::syscall::sys_kaction(action, Some(self.obj.id()), value, value2, flags)
+    }
+
+    pub fn id(&self) -> ObjID {
+        self.obj.id()
     }
 }

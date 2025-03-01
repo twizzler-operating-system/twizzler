@@ -11,7 +11,7 @@ mod region;
 use std::cell::UnsafeCell;
 
 pub use object::DmaObject;
-pub use pin::{DmaPin, PinError};
+pub use pin::{DmaPin, PhysAddr, PhysInfo, PinError};
 pub use pool::DmaPool;
 pub use region::{DmaRegion, DmaSliceRegion};
 
@@ -52,7 +52,7 @@ pub enum SyncMode {
 
 bitflags::bitflags! {
     /// Options for DMA regions.
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     pub struct DmaOptions : u64 {
         /// Region functions will not perform automatic coherence.
         const UNSAFE_MANUAL_COHERENCE = 1;

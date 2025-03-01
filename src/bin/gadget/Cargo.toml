@@ -1,0 +1,23 @@
+[package]
+name = "gadget"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embedded-io = { version = "*", features = ["std"] }
+noline = "*"
+twizzler-abi = "*"
+twizzler-rt-abi = "*"
+monitor-api = { path = "../../rt/monitor-api" }
+tracing = "*"
+tracing-subscriber = "*"
+virtio-net = { path = "../../lib/virtio-net" }
+pager = { path = "../../lib/pager" }
+naming = { path = "../../lib/naming" }
+logboi = { path = "../../lib/logboi" }
+tiny_http = { path = "../test-tiny-http/src/tiny-http-twizzler" }
+tracing-log = "*"
+arrayvec = "0.7.6"
+colored = "*"
+twizzler = { path = "../../lib/twizzler" }
+rand = "*"

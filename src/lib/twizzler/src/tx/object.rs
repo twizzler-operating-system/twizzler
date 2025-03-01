@@ -31,8 +31,7 @@ impl<T> TxObject<T> {
         if flags.contains(MapFlags::PERSIST) {
             crate::pager::sync_object(handle.id());
         }
-        let new_obj =
-            unsafe { Object::map_unchecked(handle.id(), MapFlags::READ | MapFlags::WRITE) }?;
+        let new_obj = unsafe { Object::map_unchecked(handle.id(), flags) }?;
         // TODO: commit tx
         Ok(new_obj)
     }
@@ -84,8 +83,12 @@ impl<T> RawObject for TxObject<T> {
 impl<B: BaseType> TypedObject for TxObject<B> {
     type Base = B;
 
-    fn base(&self) -> crate::ptr::Ref<'_, Self::Base> {
+    fn base_ref(&self) -> crate::ptr::Ref<'_, Self::Base> {
         unsafe { crate::ptr::Ref::from_raw_parts(self.base_ptr(), self.handle()) }
+    }
+
+    fn base(&self) -> &Self::Base {
+        unsafe { self.base_ptr::<Self::Base>().as_ref().unwrap_unchecked() }
     }
 }
 
@@ -114,7 +117,7 @@ mod tests {
     fn single_tx() {
         let builder = ObjectBuilder::default();
         let obj = builder.build(Simple { x: 3 }).unwrap();
-        let base = obj.base();
+        let base = obj.base_ref();
         assert_eq!(base.x, 3);
         drop(base);
 

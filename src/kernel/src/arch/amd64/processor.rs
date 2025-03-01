@@ -46,7 +46,7 @@ pub fn init(tls: VirtAddr) {
             x86::msr::IA32_LSTAR,
             super::syscall::syscall_entry as usize as u64,
         );
-        x86::msr::wrmsr(x86::msr::IA32_STAR, (0x10 << 48) | (0x8 << 32));
+        x86::msr::wrmsr(x86::msr::IA32_STAR, (0x13 << 48) | (0x8 << 32));
         x86::msr::wrmsr(x86::msr::IA32_FMASK, 0xffffffffffffffff);
     }
     /* unsafe {

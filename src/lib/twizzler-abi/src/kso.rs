@@ -261,6 +261,7 @@ pub fn unpack_kaction_pin_token_and_len(val: u64) -> Option<(u32, usize)> {
     ))
 }
 
+#[derive(Debug)]
 #[repr(u32)]
 pub enum InterruptPriority {
     High,
@@ -269,6 +270,7 @@ pub enum InterruptPriority {
 }
 
 bitflags::bitflags! {
+    #[derive(Debug)]
     pub struct InterruptAllocateOptions:u32 {
         const UNIQUE = 0x1;
     }

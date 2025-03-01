@@ -1,33 +1,14 @@
-use std::sync::Arc;
+use std::ops::Add;
 
 use miette::{IntoDiagnostic, Result};
-use twizzler_abi::pager::{CompletionToPager, ObjectRange, PhysRange, RequestFromPager};
+use object_store::{PageRequest, PagingImp};
+use twizzler_abi::pager::{ObjectRange, PhysRange};
 use twizzler_object::ObjID;
-use twizzler_queue::QueueSender;
 
-use crate::physrw;
+use crate::{disk::DiskPageRequest, PagerContext};
 
 /// A constant representing the page size (4096 bytes per page).
 pub const PAGE: u64 = 4096;
-
-/// Converts a `PhysRange` into the number of pages (4096 bytes per page).
-/// Returns a `u64` representing the total number of pages in the range.
-pub fn physrange_to_pages(phys_range: &PhysRange) -> u64 {
-    if phys_range.end <= phys_range.start {
-        return 0;
-    }
-    let range_size = phys_range.end - phys_range.start;
-    (range_size + PAGE - 1) / PAGE // Add PAGE - 1 for ceiling division by PAGE
-}
-
-/// Converts a `PhysRange` into the number of pages (4096 bytes per page).
-/// Returns a `u64` representing the total number of pages in the range.
-pub fn page_to_physrange(page_num: usize, range_start: u64) -> PhysRange {
-    let start = ((page_num as u64) * PAGE) + range_start;
-    let end = start + PAGE;
-
-    return PhysRange { start, end };
-}
 
 /// Converts an `ObjectRange` representing a single page into the page number.
 /// Assumes the range is within a valid memory mapping and spans exactly one page (4096 bytes).
@@ -39,8 +20,27 @@ pub fn _objectrange_to_page_number(object_range: &ObjectRange) -> Option<u64> {
     Some(object_range.start / PAGE)
 }
 
+//https://stackoverflow.com/questions/50380352/how-can-i-group-consecutive-integers-in-a-vector-in-rust
+pub fn consecutive_slices<T: PartialEq + Add + From<u32> + Copy>(
+    data: &[T],
+) -> impl Iterator<Item = &[T]>
+where
+    T::Output: PartialEq<T>,
+{
+    let mut slice_start = 0;
+    (1..=data.len()).flat_map(move |i| {
+        if i == data.len() || data[i - 1] + 1u32.into() != data[i] {
+            let begin = slice_start;
+            slice_start = i;
+            Some(&data[begin..i])
+        } else {
+            None
+        }
+    })
+}
+
 pub async fn page_in(
-    rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+    ctx: &'static PagerContext,
     obj_id: ObjID,
     obj_range: ObjectRange,
     phys_range: PhysRange,
@@ -49,24 +49,21 @@ pub async fn page_in(
     assert_eq!(obj_range.len(), 0x1000);
     assert_eq!(phys_range.len(), 0x1000);
 
-    let mut buf = [0; 0x1000];
-    let start = if meta {
-        obj_range.start + (1024 * 1024 * 1024)
-    } else {
-        obj_range.start
-    };
-    tracing::debug!("read_exact: offset: {}", start);
-    let res = object_store::read_exact(obj_id.raw(), &mut buf, start)
-        .inspect_err(|e| tracing::debug!("error in read from object store: {}", e));
-    if res.is_err() {
-        buf.fill(0);
+    if meta {
+        panic!("unsupported");
     }
 
-    physrw::fill_physical_pages(rq, &buf, phys_range).await
+    let imp = ctx
+        .disk
+        .new_paging_request::<DiskPageRequest>([phys_range.start]);
+    let start_page = obj_range.start / DiskPageRequest::page_size() as u64;
+    let nr_pages = obj_range.len() / DiskPageRequest::page_size();
+    let reqs = vec![PageRequest::new(imp, start_page as i64, nr_pages as u32)];
+    page_in_many(ctx, obj_id, reqs).await.map(|_| ())
 }
 
 pub async fn page_out(
-    rq: &Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+    ctx: &'static PagerContext,
     obj_id: ObjID,
     obj_range: ObjectRange,
     phys_range: PhysRange,
@@ -75,47 +72,57 @@ pub async fn page_out(
     assert_eq!(obj_range.len(), 0x1000);
     assert_eq!(phys_range.len(), 0x1000);
 
+    if meta {
+        panic!("unsupported");
+    }
+
     tracing::debug!("pageout: {}: {:?} {:?}", obj_id, obj_range, phys_range);
-    let mut buf = [0; 0x1000];
-    physrw::read_physical_pages(rq, &mut buf, phys_range).await?;
-    let start = if meta {
-        obj_range.start + (1024 * 1024 * 1024)
-    } else {
-        obj_range.start
-    };
-    tracing::debug!("write_all: offset: {}", start);
-    object_store::write_all(obj_id.raw(), &buf, start)
+    let imp = ctx
+        .disk
+        .new_paging_request::<DiskPageRequest>([phys_range.start]);
+    let start_page = obj_range.start / DiskPageRequest::page_size() as u64;
+    let nr_pages = obj_range.len() / DiskPageRequest::page_size();
+    let reqs = vec![PageRequest::new(imp, start_page as i64, nr_pages as u32)];
+    page_out_many(ctx, obj_id, reqs).await.map(|_| ())
+}
+
+pub async fn page_out_many(
+    ctx: &'static PagerContext,
+    obj_id: ObjID,
+    reqs: Vec<PageRequest<DiskPageRequest>>,
+) -> Result<usize> {
+    //blocking::unblock(move || {
+    let mut reqslice = &reqs[..];
+    while reqslice.len() > 0 {
+        let donecount = ctx
+            .paged_ostore
+            .page_out_object(obj_id.raw(), &reqs)
+            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
+            .into_diagnostic()?;
+        reqslice = &reqslice[donecount..];
+    }
+    Ok(reqs.len())
+    //})
+    //.await
+}
+
+pub async fn page_in_many(
+    ctx: &'static PagerContext,
+    obj_id: ObjID,
+    mut reqs: Vec<PageRequest<DiskPageRequest>>,
+) -> Result<usize> {
+    //blocking::unblock(move || {
+    ctx.paged_ostore
+        .page_in_object(obj_id.raw(), &mut reqs)
         .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
         .into_diagnostic()
+    //})
+    //.await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_physrange_to_pages() {
-        let range = PhysRange {
-            start: 0,
-            end: 8192,
-        };
-        assert_eq!(physrange_to_pages(&range), 2);
-
-        let range = PhysRange {
-            start: 0,
-            end: 4095,
-        };
-        assert_eq!(physrange_to_pages(&range), 1);
-
-        let range = PhysRange { start: 0, end: 0 };
-        assert_eq!(physrange_to_pages(&range), 0);
-
-        let range = PhysRange {
-            start: 4096,
-            end: 8192,
-        };
-        assert_eq!(physrange_to_pages(&range), 2);
-    }
 
     #[test]
     fn test_objectrange_to_page_number() {

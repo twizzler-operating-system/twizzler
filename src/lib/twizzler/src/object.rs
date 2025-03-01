@@ -21,7 +21,9 @@ pub trait TypedObject {
     type Base: BaseType;
 
     /// Returns a resolved reference to the object's base.
-    fn base(&self) -> Ref<'_, Self::Base>;
+    fn base_ref(&self) -> Ref<'_, Self::Base>;
+
+    fn base(&self) -> &Self::Base;
 }
 
 /// Operations common to all objects, with raw pointers.
@@ -157,8 +159,13 @@ impl<Base> RawObject for Object<Base> {
 impl<Base: BaseType> TypedObject for Object<Base> {
     type Base = Base;
 
-    fn base(&self) -> Ref<'_, Self::Base> {
+    fn base_ref(&self) -> Ref<'_, Self::Base> {
         let base = self.base_ptr();
         unsafe { Ref::from_raw_parts(base, self.handle()) }
+    }
+
+    #[inline]
+    fn base(&self) -> &Self::Base {
+        unsafe { self.base_ptr::<Self::Base>().as_ref().unwrap_unchecked() }
     }
 }

@@ -4,7 +4,7 @@ use crate::arch::DMA_PAGE_SIZE;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
 /// A physical address. Must be aligned on [DMA_PAGE_SIZE].
-pub struct PhysAddr(u64);
+pub struct PhysAddr(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
 /// Information about a page of DMA memory, including it's physical address.
@@ -20,7 +20,7 @@ pub struct DmaPinIter<'a> {
 
 /// A representation of some pinned memory for a region.
 pub struct DmaPin<'a> {
-    backing: &'a [PhysInfo],
+    pub backing: &'a [PhysInfo],
 }
 
 impl<'a> DmaPin<'a> {
@@ -34,13 +34,25 @@ impl<'a> DmaPin<'a> {
 }
 
 impl PhysInfo {
-    pub(crate) fn new(addr: PhysAddr) -> Self {
+    pub fn new(addr: PhysAddr) -> Self {
         Self { addr }
     }
 
     /// Get the address of this DMA memory page.
     pub fn addr(&self) -> PhysAddr {
         self.addr
+    }
+}
+
+impl From<PhysInfo> for u64 {
+    fn from(p: PhysInfo) -> Self {
+        p.addr.into()
+    }
+}
+
+impl From<&PhysInfo> for u64 {
+    fn from(p: &PhysInfo) -> Self {
+        p.addr.into()
     }
 }
 
