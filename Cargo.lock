@@ -4438,6 +4438,7 @@ dependencies = [
  "colored",
  "devmgr",
  "futures",
+ "itertools 0.9.0",
  "miette 7.4.0",
  "nvme",
  "object-store",
