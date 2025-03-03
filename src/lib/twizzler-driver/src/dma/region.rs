@@ -1,6 +1,7 @@
 use core::{marker::PhantomData, ops::Range};
 use std::sync::Arc;
 
+use twizzler::object::RawObject;
 use twizzler_abi::{
     kso::{
         pack_kaction_pin_start_and_len, unpack_kaction_pin_token_and_len, KactionCmd, KactionFlags,
@@ -65,9 +66,9 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
                     .0
                     .dma_object()
                     .object()
-                    .base_mut_unchecked() as *mut () as *mut u8)
-                    .add(offset)
-                    .sub(NULLPAGE_SIZE)
+                    .base_mut_ptr::<u8>())
+                .add(offset)
+                .sub(NULLPAGE_SIZE)
             },
             len,
             access,

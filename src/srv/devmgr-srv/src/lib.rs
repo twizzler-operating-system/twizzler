@@ -4,14 +4,13 @@ use devmgr::{DriverSpec, OwnedDevice};
 use pci_types::device_type::DeviceType;
 use twizzler::{
     collections::vec::VecObject,
-    object::{ObjectBuilder, RawObject},
+    object::{ObjID, ObjectBuilder},
 };
 use twizzler_abi::kso::{KactionCmd, KactionFlags};
 use twizzler_driver::{
     bus::pcie::{PcieDeviceInfo, PcieFunctionHeader, PcieKactionSpecific},
     device::{BusType, Device},
 };
-use twizzler_object::ObjID;
 use volatile::map_field;
 
 fn get_pcie_offset(bus: u8, device: u8, function: u8) -> usize {

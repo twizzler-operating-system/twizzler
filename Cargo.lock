@@ -531,7 +531,6 @@ dependencies = [
  "tracing-subscriber",
  "twizzler-abi",
  "twizzler-minruntime",
- "twizzler-object",
  "twizzler-rt-abi",
 ]
 
@@ -1391,7 +1390,6 @@ dependencies = [
  "twizzler",
  "twizzler-abi",
  "twizzler-driver",
- "twizzler-object",
  "twizzler-rt-abi",
  "twizzler-runtime",
  "volatile",
@@ -1458,7 +1456,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tracing",
  "twizzler-abi",
- "twizzler-object",
  "twizzler-rt-abi",
 ]
 
@@ -1653,7 +1650,6 @@ dependencies = [
  "serde",
  "tar 0.4.43 (git+https://github.com/CPTforever/tar-rs.git?branch=twizzler)",
  "twizzler-abi",
- "twizzler-object",
  "twizzler-rt-abi",
  "twizzler-runtime",
 ]
@@ -3365,7 +3361,6 @@ dependencies = [
  "twizzler",
  "twizzler-abi",
  "twizzler-futures",
- "twizzler-object",
  "twizzler-queue",
  "twizzler-rt-abi",
  "twizzler-runtime",
@@ -3952,7 +3947,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
- "twizzler-object",
  "twizzler-rt-abi",
  "twizzler-runtime",
 ]
@@ -4457,7 +4451,6 @@ dependencies = [
  "twizzler-abi",
  "twizzler-driver",
  "twizzler-futures",
- "twizzler-object",
  "twizzler-queue",
  "twizzler-rt-abi",
  "twizzler-runtime",
@@ -6205,9 +6198,10 @@ dependencies = [
  "async-trait",
  "bitflags 2.8.0",
  "futures",
+ "twizzler",
  "twizzler-abi",
  "twizzler-futures",
- "twizzler-object",
+ "twizzler-rt-abi",
  "volatile",
 ]
 
@@ -6288,16 +6282,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "twizzler-object"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.8.0",
- "lazy_static",
- "twizzler-abi",
- "twizzler-rt-abi",
-]
-
-[[package]]
 name = "twizzler-queue"
 version = "0.1.0"
 dependencies = [
@@ -6305,8 +6289,8 @@ dependencies = [
  "futures",
  "twizzler-abi",
  "twizzler-futures",
- "twizzler-object",
  "twizzler-queue-raw",
+ "twizzler-rt-abi",
 ]
 
 [[package]]

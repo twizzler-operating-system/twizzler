@@ -7,9 +7,9 @@ use twizzler_abi::{
         ThreadSyncSleep, ThreadSyncWake,
     },
 };
-use twizzler_object::{CreateError, CreateSpec, Object};
 pub use twizzler_queue_raw::{QueueBase, QueueError, ReceiveFlags, SubmissionFlags};
 use twizzler_queue_raw::{QueueEntry, RawQueue, RawQueueHdr};
+use twizzler_rt_abi::object::ObjectHandle;
 
 /// A single queue, holding two subqueues (sending and completion). Objects of type S are sent
 /// across the sending queue, and completions of type C are sent back.
@@ -18,28 +18,42 @@ pub struct Queue<S, C> {
     completion: RawQueue<C>,
     sub_rec_count: AtomicBool,
     com_rec_count: AtomicBool,
-    object: Object<QueueBase<S, C>>,
+    object: ObjectHandle,
 }
 
-fn get_raw_sub<S: Copy, C>(obj: &Object<QueueBase<S, C>>) -> RawQueue<S> {
-    let base = unsafe { obj.base_unchecked() };
-    let hdr = obj.raw_lea(base.sub_hdr);
-    let buf = obj.raw_lea_mut(base.sub_buf);
-    unsafe { RawQueue::new(hdr, buf) }
+fn base<S, C>(obj: &ObjectHandle) -> &mut QueueBase<S, C> {
+    unsafe {
+        obj.start()
+            .add(NULLPAGE_SIZE)
+            .cast::<QueueBase<S, C>>()
+            .as_mut()
+            .unwrap()
+    }
 }
 
-fn get_raw_com<S, C: Copy>(obj: &Object<QueueBase<S, C>>) -> RawQueue<C> {
-    let base = unsafe { obj.base_unchecked() };
-    let hdr = obj.raw_lea(base.com_hdr);
-    let buf = obj.raw_lea_mut(base.com_buf);
-    unsafe { RawQueue::new(hdr, buf) }
+fn get_raw_sub<S: Copy, C>(obj: &ObjectHandle) -> RawQueue<S> {
+    let base = base::<S, C>(obj);
+    unsafe {
+        let hdr = obj.start().add(base.sub_hdr).cast();
+        let buf = obj.start().add(base.sub_buf).cast();
+        RawQueue::new(hdr, buf)
+    }
 }
 
-impl<S: Copy, C: Copy> From<Object<QueueBase<S, C>>> for Queue<S, C> {
-    fn from(x: Object<QueueBase<S, C>>) -> Self {
+fn get_raw_com<S, C: Copy>(obj: &ObjectHandle) -> RawQueue<C> {
+    let base = base::<S, C>(obj);
+    unsafe {
+        let hdr = obj.start().add(base.com_hdr).cast();
+        let buf = obj.start().add(base.com_buf).cast();
+        RawQueue::new(hdr, buf)
+    }
+}
+
+impl<S: Copy, C: Copy> From<ObjectHandle> for Queue<S, C> {
+    fn from(x: ObjectHandle) -> Self {
         Self {
-            submission: get_raw_sub(&x),
-            completion: get_raw_com(&x),
+            submission: get_raw_sub::<S, C>(&x),
+            completion: get_raw_com::<S, C>(&x),
             sub_rec_count: AtomicBool::new(false),
             com_rec_count: AtomicBool::new(false),
             object: x,
@@ -67,37 +81,38 @@ fn ring(pt: &AtomicU64) {
 
 impl<S: Copy, C: Copy> Queue<S, C> {
     /// Get a handle to the internal object that holds the queue data.
-    pub fn object(&self) -> &Object<QueueBase<S, C>> {
+    pub fn handle(&self) -> &ObjectHandle {
         &self.object
     }
 
     /// Create a new Twizzler queue object.
-    pub fn create(
-        create_spec: &CreateSpec,
-        sub_queue_len: usize,
-        com_queue_len: usize,
-    ) -> Result<Self, CreateError> {
+    pub fn init(obj: &ObjectHandle, sub_queue_len: usize, com_queue_len: usize) {
         const HDR_LEN: usize = 0x1000;
-        let obj: Object<QueueBase<S, C>> = Object::create_with(create_spec, |obj| unsafe {
-            // TODO: verify things
-            let sub_len = (core::mem::size_of::<S>() * sub_queue_len) * 2;
-            //let com_len = (core::mem::size_of::<C>() * com_queue_len) * 2;
-            let (sub_hdr, com_hdr) = {
-                let base: &mut QueueBase<S, C> = obj.base_mut_unchecked().assume_init_mut();
-                base.sub_hdr = NULLPAGE_SIZE + HDR_LEN;
-                base.com_hdr = base.sub_hdr + HDR_LEN;
-                base.sub_buf = base.com_hdr + HDR_LEN;
-                base.com_buf = base.sub_buf + sub_len;
-                (base.sub_hdr, base.com_hdr)
+        // TODO: verify things
+        let sub_len = (core::mem::size_of::<S>() * sub_queue_len) * 2;
+        //let com_len = (core::mem::size_of::<C>() * com_queue_len) * 2;
+        let (sub_hdr, com_hdr) = {
+            let base: &mut QueueBase<S, C> = unsafe {
+                obj.start()
+                    .add(NULLPAGE_SIZE)
+                    .cast::<QueueBase<S, C>>()
+                    .as_mut()
+                    .unwrap()
             };
-            let srq: *mut RawQueueHdr = obj.raw_lea_mut(sub_hdr);
-            let crq: *mut RawQueueHdr = obj.raw_lea_mut(com_hdr);
+            base.sub_hdr = NULLPAGE_SIZE + HDR_LEN;
+            base.com_hdr = base.sub_hdr + HDR_LEN;
+            base.sub_buf = base.com_hdr + HDR_LEN;
+            base.com_buf = base.sub_buf + sub_len;
+            (base.sub_hdr, base.com_hdr)
+        };
+        unsafe {
+            let srq: *mut RawQueueHdr = obj.start().add(sub_hdr).cast();
+            let crq: *mut RawQueueHdr = obj.start().add(com_hdr).cast();
             let l2len = sub_queue_len.next_power_of_two().ilog2();
             srq.write(RawQueueHdr::new(l2len as usize, core::mem::size_of::<S>()));
             let l2len = com_queue_len.next_power_of_two().ilog2();
             crq.write(RawQueueHdr::new(l2len as usize, core::mem::size_of::<C>()));
-        })?;
-        Ok(obj.into())
+        }
     }
 
     fn with_guard<R>(&self, sub: bool, f: impl FnOnce() -> R) -> R {

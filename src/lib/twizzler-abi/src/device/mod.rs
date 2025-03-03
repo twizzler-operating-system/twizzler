@@ -186,15 +186,7 @@ pub struct DeviceRepr {
     pub interrupts: [DeviceInterrupt; NUM_DEVICE_INTERRUPTS],
     pub mailboxes: [AtomicU64; MailboxPriority::Num as usize],
 }
-impl crate::marker::BaseType for DeviceRepr {
-    fn init<T>(_t: T) -> Self {
-        todo!()
-    }
 
-    fn tags() -> &'static [(crate::marker::BaseVersion, crate::marker::BaseTag)] {
-        todo!()
-    }
-}
 impl Display for DeviceRepr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(

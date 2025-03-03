@@ -1,12 +1,11 @@
 use itertools::{Either, Itertools};
 use twizzler_abi::{
-    object::{MAX_SIZE, NULLPAGE_SIZE},
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
         sys_object_create, BackingType, CreateTieFlags, CreateTieSpec, LifetimeType, ObjectCreate,
         ObjectCreateFlags, ObjectSource,
     },
 };
-use twizzler_object::ObjID;
 
 use super::{Backing, LoadDirective, LoadFlags};
 use crate::{DynlinkError, DynlinkErrorKind};

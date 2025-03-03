@@ -1,8 +1,8 @@
+use twizzler::object::ObjID;
 use twizzler_abi::pager::{
     CompletionToKernel, KernelCommand, KernelCompletionData, ObjectInfo, ObjectRange, PhysRange,
     RequestFromKernel,
 };
-use twizzler_object::ObjID;
 
 use crate::PagerContext;
 

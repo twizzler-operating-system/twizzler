@@ -2,8 +2,8 @@
 #![feature(auto_traits)]
 #![feature(negative_impls)]
 use device::DeviceChildrenIterator;
+use twizzler::object::ObjID;
 use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd};
-use twizzler_object::ObjID;
 
 mod arch;
 pub mod bus;

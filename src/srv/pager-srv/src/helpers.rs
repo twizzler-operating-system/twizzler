@@ -2,8 +2,8 @@ use std::ops::Add;
 
 use miette::{IntoDiagnostic, Result};
 use object_store::{PageRequest, PagingImp};
+use twizzler::object::ObjID;
 use twizzler_abi::pager::{ObjectRange, PhysRange};
-use twizzler_object::ObjID;
 
 use crate::{disk::DiskPageRequest, PagerContext};
 

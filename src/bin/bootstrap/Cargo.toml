@@ -8,7 +8,6 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-minruntime = { path = "../../rt/minimal" }
 twizzler-rt-abi = "0.99"
-twizzler-object = { path = "../../lib/twizzler-object" }
 dynlink = { path = "../../lib/dynlink" }
 tracing = "0.1"
 tracing-subscriber = "0.3.17"

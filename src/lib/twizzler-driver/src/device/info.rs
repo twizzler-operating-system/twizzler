@@ -1,5 +1,6 @@
+use twizzler::object::{ObjID, Object, RawObject};
 use twizzler_abi::device::SubObjectType;
-use twizzler_object::{ObjID, Object, ObjectInitError, ObjectInitFlags, Protections};
+use twizzler_rt_abi::object::{MapError, MapFlags};
 
 use super::Device;
 
@@ -9,15 +10,15 @@ pub struct InfoObject<T> {
 }
 
 impl<T> InfoObject<T> {
-    fn new(id: ObjID) -> Result<Self, ObjectInitError> {
+    fn new(id: ObjID) -> Result<Self, MapError> {
         Ok(Self {
-            obj: Object::init_id(id, Protections::READ, ObjectInitFlags::empty())?,
+            obj: unsafe { Object::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?,
         })
     }
 
     /// Get a reference to the data contained within an info type subobject.
     pub fn get_data(&self) -> &T {
-        unsafe { self.obj.base_unchecked() }
+        unsafe { self.obj.base_ptr::<T>().as_ref().unwrap() }
     }
 }
 
