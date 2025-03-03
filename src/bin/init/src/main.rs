@@ -3,13 +3,14 @@ use std::io::{Read, Write};
 use embedded_io::ErrorType;
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
 use tracing::{info, warn};
+use twizzler::object::RawObject;
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    pager::{CompletionToKernel, RequestFromKernel},
-    syscall::{sys_new_handle, BackingType, LifetimeType, NewHandleFlags},
+    pager::{CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager},
+    syscall::{sys_new_handle, NewHandleFlags},
 };
-use twizzler_object::CreateSpec;
+use twizzler_queue::Queue;
 
 struct TwzIo;
 
@@ -38,27 +39,36 @@ impl embedded_io::Write for TwzIo {
 fn initialize_pager() -> ObjID {
     info!("starting pager");
     const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
-    let queue = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
-        &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
-        DEFAULT_PAGER_QUEUE_LEN,
-        DEFAULT_PAGER_QUEUE_LEN,
-    )
-    .unwrap();
+    let queue_obj = twizzler::object::ObjectBuilder::<()>::default()
+        .build_ctor(|obj| {
+            twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::init(
+                obj.handle(),
+                DEFAULT_PAGER_QUEUE_LEN,
+                DEFAULT_PAGER_QUEUE_LEN,
+            )
+        })
+        .expect("failed to create pager queue");
+    let queue = Queue::<RequestFromKernel, CompletionToKernel>::from(queue_obj.into_handle());
 
     sys_new_handle(
-        queue.object().id(),
+        queue.handle().id(),
         twizzler_abi::syscall::HandleType::PagerQueue,
         NewHandleFlags::empty(),
     )
-    .unwrap();
-    let queue2 = twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::create(
-        &CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
-        DEFAULT_PAGER_QUEUE_LEN,
-        DEFAULT_PAGER_QUEUE_LEN,
-    )
-    .unwrap();
+    .expect("failed to setup pager queue");
+
+    let queue2_obj = twizzler::object::ObjectBuilder::<()>::default()
+        .build_ctor(|obj| {
+            twizzler_queue::Queue::<RequestFromPager, CompletionToPager>::init(
+                obj.handle(),
+                DEFAULT_PAGER_QUEUE_LEN,
+                DEFAULT_PAGER_QUEUE_LEN,
+            )
+        })
+        .expect("failed to create pager queue");
+    let queue2 = Queue::<RequestFromPager, CompletionToPager>::from(queue2_obj.into_handle());
     sys_new_handle(
-        queue2.object().id(),
+        queue2.handle().id(),
         twizzler_abi::syscall::HandleType::PagerQueue,
         NewHandleFlags::empty(),
     )
@@ -78,7 +88,7 @@ fn initialize_pager() -> ObjID {
             .dynamic_gate::<(ObjID, ObjID), ObjID>("pager_start")
             .unwrap()
     };
-    let bootstrap_id = pager_start(queue.object().id(), queue2.object().id()).unwrap();
+    let bootstrap_id = pager_start(queue.handle().id(), queue2.handle().id()).unwrap();
     std::mem::forget(pager_comp);
     bootstrap_id
 }

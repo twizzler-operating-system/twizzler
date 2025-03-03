@@ -42,6 +42,11 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         self.spec.lt = LifetimeType::Persistent;
         self
     }
+
+    /// Cast the base type.
+    pub fn cast<U: BaseType>(self) -> ObjectBuilder<U> {
+        ObjectBuilder::<U>::new(self.spec)
+    }
 }
 
 impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
@@ -66,6 +71,24 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         }?;
         let object = ctor(mu_object.tx()?)?;
         object.commit()
+    }
+
+    pub fn build_ctor<F>(&self, ctor: F) -> crate::tx::Result<Object<Base>>
+    where
+        F: FnOnce(&mut TxObject<MaybeUninit<Base>>),
+    {
+        let id = twizzler_abi::syscall::sys_object_create(self.spec, &[], &[])
+            .map_err(CreateError::from)?;
+        let mut flags = MapFlags::READ | MapFlags::WRITE;
+        if self.spec.lt == LifetimeType::Persistent {
+            flags.insert(MapFlags::PERSIST);
+        }
+        let mu_object = unsafe {
+            Object::<MaybeUninit<Base>>::map_unchecked(id, flags).map_err(CreateError::from)
+        }?;
+        let mut tx = mu_object.tx()?;
+        ctor(&mut tx);
+        Ok(unsafe { tx.commit()?.cast() })
     }
 }
 

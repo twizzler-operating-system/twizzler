@@ -7,12 +7,12 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tar::Header;
 #[cfg(target_os = "twizzler")]
+use twizzler_abi::object::Protections;
+#[cfg(target_os = "twizzler")]
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
-#[cfg(target_os = "twizzler")]
-use twizzler_object::Protections;
 
 // This type indicates what type of object you want to create, with the name inside
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Copy)]
@@ -109,7 +109,7 @@ pub fn form_twizzler_object<R: std::io::Read>(
     stream: R,
     _name: String,
     offset: u64,
-) -> std::io::Result<twizzler_object::ObjID> {
+) -> std::io::Result<twizzler_abi::object::ObjID> {
     let create = ObjectCreate::new(
         BackingType::Normal,
         LifetimeType::Persistent,

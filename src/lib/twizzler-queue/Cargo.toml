@@ -10,6 +10,6 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 twizzler-queue-raw = { path = "../twizzler-queue-raw" }
 twizzler-futures = { path = "../twizzler-futures" }
 twizzler-abi = { path = "../twizzler-abi" }
-twizzler-object = { path = "../twizzler-object" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
 async-io = "*"
 futures = "*"

@@ -6,8 +6,8 @@ use std::{
 use itertools::Itertools;
 use miette::Result;
 use object_store::PageRequest;
+use twizzler::object::ObjID;
 use twizzler_abi::pager::{ObjectInfo, ObjectRange, PhysRange};
-use twizzler_object::ObjID;
 
 use crate::{
     disk::DiskPageRequest,

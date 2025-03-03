@@ -1,11 +1,11 @@
 use std::sync::Mutex;
 
+use twizzler::object::{ObjID, Object};
 use twizzler_abi::{
     kso::{KactionCmd, KactionFlags, KactionGenericCmd},
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::sys_kaction,
 };
-use twizzler_object::{ObjID, Object};
 
 use super::{Access, DeviceSync, DmaOptions, DmaRegion, DmaSliceRegion};
 
@@ -62,7 +62,7 @@ impl DmaObject {
     /// Create a new [DmaObject] from an existing object handle.
     pub fn new<T>(obj: Object<T>) -> Self {
         Self {
-            obj: unsafe { obj.transmute() },
+            obj: unsafe { obj.cast() },
             releasable_pins: Mutex::new(Vec::new()),
         }
     }

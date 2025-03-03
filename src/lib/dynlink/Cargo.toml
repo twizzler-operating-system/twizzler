@@ -9,7 +9,6 @@ edition = "2021"
 twizzler-rt-abi = "0.99"
 secgate = { path = "../secgate" }
 tracing = "0.1"
-twizzler-object = { path = "../../lib/twizzler-object" }
 thiserror = "1.0"
 talc = { version = "3.0", default-features = false }
 anyhow = "1.0"

@@ -8,7 +8,7 @@ use arrayvec::ArrayString;
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
     marker::Invariant,
-    object::{Object, ObjectBuilder, RawObject},
+    object::{Object, ObjectBuilder},
     ptr::Ref,
 };
 use twizzler_rt_abi::object::{MapFlags, ObjID};

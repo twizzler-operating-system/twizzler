@@ -1,11 +1,10 @@
 use std::sync::{Arc, Mutex};
 
-use twizzler_abi::{
-    marker::BaseType,
-    object::{MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{BackingType, LifetimeType},
+use twizzler::{
+    marker::{BaseType, Invariant},
+    object::ObjectBuilder,
 };
-use twizzler_object::{CreateSpec, Object};
+use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 
 use super::{Access, DeviceSync, DmaObject, DmaOptions, DmaRegion, DmaSliceRegion, DMA_PAGE_SIZE};
 
@@ -161,7 +160,7 @@ pub(super) struct AllocatableDmaObject {
 /// A pool for allocating DMA regions that all share a common access type and DMA options.
 pub struct DmaPool {
     opts: DmaOptions,
-    spec: CreateSpec,
+    spec: ObjectBuilder<()>,
     access: Access,
     objects: Mutex<Vec<Arc<AllocatableDmaObject>>>,
 }
@@ -175,20 +174,11 @@ pub enum AllocationError {
     InternalError,
 }
 
+#[repr(C)]
 struct EmptyBase;
 
-impl BaseType for EmptyBase {
-    fn init<T>(_t: T) -> Self {
-        Self
-    }
-
-    fn tags() -> &'static [(
-        twizzler_abi::marker::BaseVersion,
-        twizzler_abi::marker::BaseTag,
-    )] {
-        &[]
-    }
-}
+unsafe impl Invariant for EmptyBase {}
+impl BaseType for EmptyBase {}
 
 // Merge adjacent regions by sorting, comparing pairs, and merging if they are adjacent.
 // Keep going until we cannot merge anymore.
@@ -249,11 +239,12 @@ impl AllocatableDmaObject {
         })
     }
 
-    fn new(spec: &CreateSpec) -> Result<AllocatableDmaObject, AllocationError> {
+    fn new(spec: ObjectBuilder<()>) -> Result<AllocatableDmaObject, AllocationError> {
         Ok(AllocatableDmaObject {
             // TODO: automatic object deletion.
             dma: DmaObject::new::<EmptyBase>(
-                Object::create::<EmptyBase>(spec, EmptyBase)
+                spec.cast()
+                    .build(EmptyBase)
                     .map_err(|_| AllocationError::InternalError)?,
             ),
             freelist: Mutex::new(vec![SplitPageRange::new(
@@ -268,7 +259,7 @@ impl DmaPool {
     /// Create a new DmaPool with access and DMA options, where each created underlying Twizzler
     /// object is created using the provided [CreateSpec]. If default (volatile) options are
     /// acceptable for the create spec, use the [crate::dma::DmaPool::default_spec] function.
-    pub fn new(spec: CreateSpec, access: Access, opts: DmaOptions) -> Self {
+    pub fn new(spec: ObjectBuilder<()>, access: Access, opts: DmaOptions) -> Self {
         Self {
             opts,
             spec,
@@ -277,14 +268,12 @@ impl DmaPool {
         }
     }
 
-    /// Generate a default [CreateSpec] for use in creating Twizzler DMA objects. By default,
-    /// Twizzler objects for DMA are placed in volatile memory with a volatile lifetime.
-    pub fn default_spec() -> CreateSpec {
-        CreateSpec::new(LifetimeType::Volatile, BackingType::Normal)
+    pub fn default_spec() -> ObjectBuilder<()> {
+        ObjectBuilder::default()
     }
 
     fn new_object(&self) -> Result<Arc<AllocatableDmaObject>, AllocationError> {
-        let obj = Arc::new(AllocatableDmaObject::new(&self.spec)?);
+        let obj = Arc::new(AllocatableDmaObject::new(self.spec)?);
         Ok(obj)
     }
 

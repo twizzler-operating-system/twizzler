@@ -1,5 +1,5 @@
+use twizzler::object::ObjID;
 use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd};
-use twizzler_object::ObjID;
 
 use super::Device;
 

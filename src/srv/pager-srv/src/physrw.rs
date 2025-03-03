@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use miette::{IntoDiagnostic, Result};
+use twizzler::object::ObjID;
 use twizzler_abi::pager::{CompletionToPager, PagerRequest, PhysRange, RequestFromPager};
-use twizzler_object::ObjID;
 use twizzler_queue::QueueSender;
 
 type Queue = QueueSender<RequestFromPager, CompletionToPager>;

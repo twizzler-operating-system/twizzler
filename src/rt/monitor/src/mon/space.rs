@@ -2,12 +2,14 @@ use std::{collections::HashMap, sync::Arc};
 
 use miette::IntoDiagnostic;
 use monitor_api::MappedObjectAddrs;
-use twizzler_abi::syscall::{
-    sys_object_create, sys_object_ctrl, sys_object_map, sys_object_unmap, BackingType,
-    CreateTieFlags, CreateTieSpec, DeleteFlags, LifetimeType, ObjectControlCmd, ObjectCreate,
-    ObjectCreateFlags, ObjectSource, UnmapFlags,
+use twizzler_abi::{
+    object::Protections,
+    syscall::{
+        sys_object_create, sys_object_ctrl, sys_object_map, sys_object_unmap, BackingType,
+        CreateTieFlags, CreateTieSpec, DeleteFlags, LifetimeType, ObjectControlCmd, ObjectCreate,
+        ObjectCreateFlags, ObjectSource, UnmapFlags,
+    },
 };
-use twizzler_object::Protections;
 use twizzler_rt_abi::object::{MapError, MapFlags, ObjID};
 
 use self::handle::MapHandleInner;

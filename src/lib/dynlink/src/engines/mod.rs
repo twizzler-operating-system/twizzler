@@ -3,8 +3,7 @@ pub mod twizzler;
 use std::{any::Any, collections::HashMap, sync::Arc};
 
 use elf::{endian::NativeEndian, ParseError};
-use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_object::ObjID;
+use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::object::ObjectHandle;
 
 use crate::{compartment::CompartmentId, library::UnloadedLibrary, DynlinkError};

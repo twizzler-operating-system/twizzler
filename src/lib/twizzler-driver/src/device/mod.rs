@@ -2,9 +2,9 @@
 
 use std::fmt::Display;
 
+use twizzler::object::{ObjID, Object, RawObject};
 pub use twizzler_abi::device::{BusType, DeviceRepr, DeviceType};
 use twizzler_abi::kso::{KactionCmd, KactionError, KactionFlags, KactionGenericCmd, KactionValue};
-use twizzler_object::{ObjID, Object, ObjectInitError, ObjectInitFlags, Protections};
 
 mod children;
 pub mod events;
@@ -14,6 +14,7 @@ mod mmio;
 pub use children::DeviceChildrenIterator;
 pub use info::InfoObject;
 pub use mmio::MmioObject;
+use twizzler_rt_abi::object::{MapError, MapFlags};
 
 /// A handle for a device.
 pub struct Device {
@@ -28,12 +29,8 @@ impl Display for Device {
 }
 
 impl Device {
-    pub fn new(id: ObjID) -> Result<Self, ObjectInitError> {
-        let obj = Object::init_id(
-            id,
-            Protections::WRITE | Protections::READ,
-            ObjectInitFlags::empty(),
-        )?;
+    pub fn new(id: ObjID) -> Result<Self, MapError> {
+        let obj = unsafe { Object::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?;
 
         Ok(Self { obj })
     }
@@ -53,12 +50,12 @@ impl Device {
 
     /// Get a reference to a device's representation data.
     pub fn repr(&self) -> &DeviceRepr {
-        self.obj.base().unwrap()
+        unsafe { self.obj.base_ptr::<DeviceRepr>().as_ref().unwrap() }
     }
 
     /// Get a mutable reference to a device's representation data.
     pub fn repr_mut(&self) -> &mut DeviceRepr {
-        unsafe { self.obj.base_mut_unchecked() }
+        unsafe { self.obj.base_mut_ptr::<DeviceRepr>().as_mut().unwrap() }
     }
 
     /// Is this device a bus?

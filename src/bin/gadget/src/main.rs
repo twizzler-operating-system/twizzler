@@ -13,11 +13,7 @@ use pager::adv_lethe;
 use rand::seq::SliceRandom;
 use tiny_http::Response;
 use tracing::Level;
-use twizzler::{
-    collections::vec::VecObject,
-    marker::Invariant,
-    object::{ObjectBuilder, RawObject},
-};
+use twizzler::{collections::vec::VecObject, marker::Invariant, object::ObjectBuilder};
 use twizzler_abi::syscall::{
     sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
 };

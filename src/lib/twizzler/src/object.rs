@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::object::{MapError, MapFlags, ObjectHandle};
 
 use crate::{marker::BaseType, ptr::Ref, tx::TxObject};
@@ -14,6 +14,7 @@ mod meta;
 pub use builder::*;
 pub use fot::*;
 pub use meta::*;
+pub use twizzler_rt_abi::object::ObjID;
 
 /// Operations common to structured objects.
 pub trait TypedObject {
@@ -102,6 +103,9 @@ pub struct Object<Base> {
     _pd: PhantomData<*const Base>,
 }
 
+unsafe impl<Base> Sync for Object<Base> {}
+unsafe impl<Base> Send for Object<Base> {}
+
 impl<B> Clone for Object<B> {
     fn clone(&self) -> Self {
         Self {
@@ -147,6 +151,10 @@ impl<Base> Object<Base> {
     pub unsafe fn map_unchecked(id: ObjID, flags: MapFlags) -> Result<Self, MapError> {
         let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
         unsafe { Ok(Self::from_handle_unchecked(handle)) }
+    }
+
+    pub fn id(&self) -> ObjID {
+        self.handle.id()
     }
 }
 

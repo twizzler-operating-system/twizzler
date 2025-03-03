@@ -9,13 +9,13 @@ use disk::{Disk, DiskPageRequest};
 use object_store::{LetheIoWrapper, PagedObjectStore};
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
-    object::{ObjectBuilder, RawObject},
+    object::{ObjID, Object, ObjectBuilder},
 };
 use twizzler_abi::pager::{
     CompletionToKernel, CompletionToPager, PagerCompletionData, RequestFromKernel, RequestFromPager,
 };
-use twizzler_object::{ObjID, Object, ObjectInitFlags, Protections};
-use twizzler_queue::QueueSender;
+use twizzler_queue::{QueueBase, QueueSender};
+use twizzler_rt_abi::object::MapFlags;
 
 use crate::{data::PagerData, request_handle::handle_kernel_request};
 
@@ -60,16 +60,12 @@ fn attach_queue<T: std::marker::Copy, U: std::marker::Copy, Q>(
 ) -> Result<Q, String> {
     tracing::debug!("Pager Attaching Queue: {}", obj_id);
 
-    let object = Object::init_id(
-        obj_id,
-        Protections::READ | Protections::WRITE,
-        ObjectInitFlags::empty(),
-    )
-    .unwrap();
+    let object = unsafe {
+        Object::<QueueBase<T, U>>::map_unchecked(obj_id, MapFlags::READ | MapFlags::WRITE).unwrap()
+    };
 
     // Ensure the object is cast or transformed to match the expected `Queue` type
-    let queue: twizzler_queue::Queue<T, U> = twizzler_queue::Queue::from(object);
-
+    let queue: twizzler_queue::Queue<T, U> = twizzler_queue::Queue::from(object.into_handle());
     Ok(queue_constructor(queue))
 }
 

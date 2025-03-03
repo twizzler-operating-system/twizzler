@@ -1,8 +1,9 @@
+use twizzler::object::{ObjID, Object, RawObject};
 use twizzler_abi::{
     device::{MmioInfo, SubObjectType, MMIO_OFFSET},
     object::NULLPAGE_SIZE,
 };
-use twizzler_object::{ObjID, Object, ObjectInitError, ObjectInitFlags, Protections};
+use twizzler_rt_abi::object::{MapError, MapFlags};
 use volatile::access::{ReadOnly, ReadWrite};
 
 use super::Device;
@@ -13,19 +14,15 @@ pub struct MmioObject {
 }
 
 impl MmioObject {
-    pub(crate) fn new(id: ObjID) -> Result<Self, ObjectInitError> {
+    pub(crate) fn new(id: ObjID) -> Result<Self, MapError> {
         Ok(Self {
-            obj: Object::init_id(
-                id,
-                Protections::READ | Protections::WRITE,
-                ObjectInitFlags::empty(),
-            )?,
+            obj: unsafe { Object::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?,
         })
     }
 
     /// Get a reference to an MMIO subobject's info data.
     pub fn get_info(&self) -> &MmioInfo {
-        self.obj.base().unwrap()
+        unsafe { self.obj.base_ptr::<MmioInfo>().as_ref().unwrap() }
     }
 
     /// Get the base of the memory mapped IO region.
@@ -36,7 +33,7 @@ impl MmioObject {
         &self,
         offset: usize,
     ) -> volatile::VolatileRef<'_, T, ReadOnly> {
-        let ptr = self.obj.base().unwrap() as *const MmioInfo as *const u8;
+        let ptr = self.obj.base_ptr::<u8>();
         volatile::VolatileRef::from_ref(
             (ptr.add(MMIO_OFFSET + offset).sub(NULLPAGE_SIZE) as *mut T)
                 .as_mut()
@@ -52,7 +49,7 @@ impl MmioObject {
         &self,
         offset: usize,
     ) -> volatile::VolatileRef<'_, T, ReadWrite> {
-        let ptr = self.obj.base().unwrap() as *const MmioInfo as *const u8;
+        let ptr = self.obj.base_ptr::<u8>();
         volatile::VolatileRef::from_mut_ref(
             (ptr.add(MMIO_OFFSET + offset).sub(NULLPAGE_SIZE) as *mut T)
                 .as_mut()

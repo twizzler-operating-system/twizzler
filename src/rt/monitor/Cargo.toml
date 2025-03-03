@@ -12,7 +12,6 @@ dynlink = { path = "../../lib/dynlink" }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3" }
 twizzler-runtime = { path = "../" }
-twizzler-object = { path = "../../lib/twizzler-object" }
 miette = "5.10"
 secgate = { path = "../../lib/secgate" }
 monitor-api = { path = "../monitor-api" }
