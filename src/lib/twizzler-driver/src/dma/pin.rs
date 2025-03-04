@@ -119,15 +119,12 @@ pub enum PinError {
 
 #[cfg(test)]
 mod tests {
-    use twizzler_abi::syscall::{BackingType, LifetimeType};
-    use twizzler_object::CreateSpec;
-
     use crate::dma::{Access, DmaOptions, DmaPool};
 
     #[test]
     fn pin_kaction() {
         let pool = DmaPool::new(
-            CreateSpec::new(LifetimeType::Volatile, BackingType::Normal),
+            DmaPool::default_spec(),
             Access::BiDirectional,
             DmaOptions::default(),
         );

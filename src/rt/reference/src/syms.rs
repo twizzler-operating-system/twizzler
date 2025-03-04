@@ -284,6 +284,13 @@ check_ffi_type!(twz_rt_join_thread, _, _);
 
 // fd.h
 
+fn std_error_to_open_error(err: std::io::ErrorKind) -> twizzler_rt_abi::fd::OpenError {
+    match err {
+        // TODO
+        _ => twizzler_rt_abi::fd::OpenError::Other,
+    }
+}
+
 use twizzler_rt_abi::bindings::{descriptor, open_info, open_result};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
@@ -293,6 +300,7 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
     match name {
         Ok(name) => OUR_RUNTIME
             .open(name, info.create.into(), info.flags.into())
+            .map_err(|e| std_error_to_open_error(e.kind()))
             .into(),
         Err(e) => open_result {
             error: e as u32,
@@ -336,6 +344,13 @@ check_ffi_type!(twz_rt_fd_cmd, _, _, _, _);
 
 // io.h
 
+fn std_error_to_io_error(err: std::io::ErrorKind) -> twizzler_rt_abi::io::IoError {
+    match err {
+        // TODO
+        _ => twizzler_rt_abi::io::IoError::Other,
+    }
+}
+
 use twizzler_rt_abi::bindings::{io_flags, io_result, io_vec, optional_offset, whence};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pread(
@@ -358,6 +373,7 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pread(
             slice,
             twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags),
         )
+        .map_err(|e| std_error_to_io_error(e.kind()))
         .into()
 }
 check_ffi_type!(twz_rt_fd_pread, _, _, _, _, _);
@@ -383,11 +399,21 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pwrite(
             slice,
             twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags),
         )
+        .map_err(|e| std_error_to_io_error(e.kind()))
         .into()
 }
 check_ffi_type!(twz_rt_fd_pwrite, _, _, _, _, _);
 
 use twizzler_rt_abi::io::SeekFrom;
+
+fn twz_sf_to_std_sf(sf: SeekFrom) -> std::io::SeekFrom {
+    match sf {
+        SeekFrom::Start(pos) => std::io::SeekFrom::Start(pos),
+        SeekFrom::End(pos) => std::io::SeekFrom::End(pos),
+        SeekFrom::Current(pos) => std::io::SeekFrom::Current(pos),
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_seek(
     fd: descriptor,
@@ -405,7 +431,10 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_seek(
             }
         }
     };
-    OUR_RUNTIME.seek(fd, seek).into()
+    OUR_RUNTIME
+        .seek(fd, twz_sf_to_std_sf(seek))
+        .map_err(|e| std_error_to_io_error(e.kind()))
+        .into()
 }
 check_ffi_type!(twz_rt_fd_seek, _, _, _);
 
@@ -430,6 +459,7 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_preadv(
             slice,
             twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags),
         )
+        .map_err(|e| std_error_to_io_error(e.kind()))
         .into()
 }
 check_ffi_type!(twz_rt_fd_preadv, _, _, _, _, _);
@@ -455,6 +485,7 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
             slice,
             twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags),
         )
+        .map_err(|e| std_error_to_io_error(e.kind()))
         .into()
 }
 check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _, _);

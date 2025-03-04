@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use twizzler::object::RawObject;
 use twizzler_abi::{
     aux::KernelInitInfo,
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
     pager::{CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager},
     syscall::{sys_new_handle, NewHandleFlags},
 };
@@ -217,39 +217,22 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     None
 }
 
-fn run_tests(test_list_name: &str, benches: bool) {
-    if let Some(id) = find_init_name(test_list_name) {
+fn run_tests(test_list_name: &str, _benches: bool) {
+    if let Some(_id) = find_init_name(test_list_name) {
         println!("=== found init test list ===");
-        let handle =
-            twizzler_rt_abi::object::twz_rt_map_object(id, Protections::READ.into()).unwrap();
 
-        let addr = unsafe { handle.start().add(NULLPAGE_SIZE) };
-        let bytes = unsafe {
-            core::slice::from_raw_parts(addr as *const u8, twizzler_abi::object::MAX_SIZE)
-        };
-        let bytes = &bytes[0..bytes.iter().position(|r| *r == 0).unwrap_or(0)];
-        let str = String::from_utf8(bytes.to_vec()).unwrap();
-        let test_failed = false;
-        for line in str.split("\n").filter(|l| !l.is_empty()) {
-            println!("STARTING TEST {}", line);
-            let test_comp = monitor_api::CompartmentLoader::new(
-                line,
-                line,
-                monitor_api::NewCompartmentFlags::empty(),
-            )
-            .args(&[line, if benches { "--bench" } else { "--test" }])
+        let comp = CompartmentLoader::new("unittest", "unittest", NewCompartmentFlags::empty())
+            .args(&["unittest"])
             .load()
-            .expect("failed to load specified test");
-            let mut flags = test_comp.info().flags;
-            while !flags.contains(monitor_api::CompartmentFlags::EXITED) {
-                flags = test_comp.wait(flags);
-            }
+            .expect("failed to start unittest");
+        let mut flags = comp.info().flags;
+        while !flags.contains(CompartmentFlags::EXITED) {
+            flags = comp.wait(flags);
         }
-        // TODO: get exit status, and set this
-        if test_failed {
-            println!("!!! TEST MODE FAILED");
-        }
+
+        println!("unittests finished");
+
         #[allow(deprecated)]
-        twizzler_abi::syscall::sys_debug_shutdown(if test_failed { 1 } else { 0 });
+        twizzler_abi::syscall::sys_debug_shutdown(0);
     }
 }

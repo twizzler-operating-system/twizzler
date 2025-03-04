@@ -41,6 +41,7 @@ members = [
     "src/bin/gadget",
     "src/lib/devmgr",
     "src/srv/devmgr-srv",
+    "src/bin/unittest",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -67,6 +68,7 @@ initrd = [
     "lib:logboi-srv",
     "lib:pager-srv",
     "crate:gadget",
+    "crate:unittest",
     #"third-party:hello-world-rs"
 ]
 

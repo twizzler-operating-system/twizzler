@@ -4437,7 +4437,7 @@ dependencies = [
  "colored",
  "devmgr",
  "futures",
- "itertools 0.9.0",
+ "itertools 0.13.0",
  "miette 7.4.0",
  "nvme",
  "object-store",
@@ -6433,6 +6433,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
+name = "unittest"
+version = "0.1.0"
+dependencies = [
+ "monitor-api",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "untrusted"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6532,6 +6541,15 @@ name = "volatile"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f05a5337d258c4ef40d920ffcc5a729278951d57e6596f8b62ca7d4827613e77"
+
+[[package]]
+name = "wait-timeout"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "walkdir"
@@ -6965,6 +6983,7 @@ dependencies = [
  "toml_edit 0.19.15",
  "tracing",
  "tracing-subscriber",
+ "wait-timeout",
  "walkdir",
 ]
 
