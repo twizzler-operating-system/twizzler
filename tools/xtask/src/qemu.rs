@@ -1,7 +1,9 @@
 use std::{
     fs::OpenOptions,
+    io::{Stdin, Write},
     path::Path,
-    process::{Command, ExitStatus},
+    process::{Command, ExitStatus, Stdio},
+    time::Duration,
 };
 
 use crate::{
@@ -176,7 +178,41 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
     let mut run_cmd = QemuCommand::new(&cli);
     run_cmd.config(&cli, image_info);
 
-    let exit_status = run_cmd.status()?;
+    use wait_timeout::ChildExt;
+    let timeout = cli.tests;
+    let heartbeat = cli.tests;
+    if heartbeat {
+        run_cmd.cmd.stdin(Stdio::piped());
+    }
+
+    let mut child = run_cmd.cmd.spawn()?;
+
+    let mut child_stdin = child.stdin.take();
+    let exit_status = if timeout {
+        if heartbeat {
+            let mut i = 0;
+            loop {
+                if let Some(es) = child.wait_timeout(Duration::from_secs(10))? {
+                    break Some(es);
+                }
+                child_stdin.as_mut().unwrap().write(b"status\n").unwrap();
+                i += 1;
+                if i > 10 {
+                    break None;
+                }
+            }
+        } else {
+            child.wait_timeout(Duration::from_secs(60))?
+        }
+    } else {
+        Some(child.wait()?)
+    };
+
+    let Some(exit_status) = exit_status else {
+        eprintln!("qemu timed out");
+        std::process::exit(34);
+    };
+
     if exit_status.success() {
         Ok(())
     } else {

@@ -263,3 +263,13 @@ pub fn full_object_sync(id: ObjID) {
 pub fn adv_lethe() {
     PAGER_CTX.get().unwrap().paged_ostore.flush().unwrap();
 }
+
+#[secgate::secure_gate]
+pub fn disk_len(id: ObjID) -> u64 {
+    PAGER_CTX
+        .get()
+        .unwrap()
+        .paged_ostore
+        .len(id.raw())
+        .unwrap_or(0)
+}
