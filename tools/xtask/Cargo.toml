@@ -33,5 +33,7 @@ semver = "1.0"
 git2 = "0.19"
 wait-timeout = "*"
 
+unittest-report = { path = "../../src/bin/unittest/unittest-report" }
+
 [package.metadata]
 twizzler-build = "xtask"

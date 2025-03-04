@@ -7,3 +7,4 @@ edition = "2021"
 serde = "*"
 serde_json = "*"
 monitor-api = { path = "../../rt/monitor-api" }
+unittest-report = { path = "unittest-report" }

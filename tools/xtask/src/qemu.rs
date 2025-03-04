@@ -1,10 +1,13 @@
 use std::{
     fs::OpenOptions,
-    io::{Stdin, Write},
+    io::{BufRead, BufReader, Stdin, Write},
     path::Path,
     process::{Command, ExitStatus, Stdio},
+    str::FromStr,
     time::Duration,
 };
+
+use unittest_report::ReportStatus;
 
 use crate::{
     image::ImageInfo,
@@ -183,11 +186,33 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
     let heartbeat = cli.tests;
     if heartbeat {
         run_cmd.cmd.stdin(Stdio::piped());
+        run_cmd.cmd.stdout(Stdio::piped());
     }
 
     let mut child = run_cmd.cmd.spawn()?;
 
     let mut child_stdin = child.stdin.take();
+    let child_stdout = child.stdout.take();
+
+    let reader_thread = std::thread::spawn(|| {
+        let reader = BufReader::new(child_stdout.unwrap());
+        let mut ret = None;
+        for line in reader.lines().into_iter() {
+            if let Ok(line) = line {
+                println!(" ==> {}", line.trim());
+                if line.trim().starts_with("REPORT ") {
+                    let line = line.trim().strip_prefix("REPORT ").unwrap();
+                    let report = unittest_report::Report::from_str(line.trim());
+                    if let Ok(ReportStatus::Ready(report)) = report.map(|report| report.status) {
+                        ret = Some(report);
+                        break;
+                    }
+                }
+            }
+        }
+        ret
+    });
+
     let exit_status = if timeout {
         if heartbeat {
             let mut i = 0;
@@ -210,15 +235,38 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
 
     let Some(exit_status) = exit_status else {
         eprintln!("qemu timed out");
+        child.kill().unwrap();
         std::process::exit(34);
     };
 
+    let report = reader_thread.join().unwrap();
+    if let Some(report) = report {
+        let successes = report.tests.iter().filter(|t| t.passed).count();
+        let total = report.tests.len();
+        println!(
+            "TEST RESULTS: {} passed, {} failed, {} total -- time: {:2} seconds",
+            successes,
+            total - successes,
+            total,
+            report.time.as_millis() as f64 / 1000.0,
+        );
+    } else {
+        eprintln!("qemu didn't produce report");
+        std::process::exit(34);
+    }
+
     if exit_status.success() {
+        if cli.repeat {
+            return do_start_qemu(cli);
+        }
         Ok(())
     } else {
         if cli.tests || cli.benches {
             if exit_status.code().unwrap() == 1 {
                 eprintln!("qemu reports tests passed");
+                if cli.repeat {
+                    return do_start_qemu(cli);
+                }
                 std::process::exit(0);
             } else {
                 eprintln!("qemu reports tests failed");
