@@ -1,47 +1,6 @@
-use std::{
-    io::BufRead,
-    sync::OnceLock,
-    time::{Duration, Instant},
-};
+use std::{io::BufRead, sync::OnceLock, time::Instant};
 
-use serde::Serialize;
-
-#[derive(Serialize, Debug)]
-struct Report {
-    status: ReportStatus,
-}
-
-impl Report {
-    fn pending() -> Self {
-        Self {
-            status: ReportStatus::Pending,
-        }
-    }
-
-    fn ready(info: ReportInfo) -> Self {
-        Self {
-            status: ReportStatus::Ready(info),
-        }
-    }
-}
-
-#[derive(Serialize, Debug)]
-enum ReportStatus {
-    Pending,
-    Ready(ReportInfo),
-}
-
-#[derive(Serialize, Debug)]
-struct ReportInfo {
-    time: Duration,
-    tests: Vec<TestResult>,
-}
-
-#[derive(Serialize, Debug)]
-struct TestResult {
-    name: String,
-    passed: bool,
-}
+use unittest_report::{Report, ReportInfo, TestResult};
 
 static RESULT: OnceLock<Report> = OnceLock::new();
 

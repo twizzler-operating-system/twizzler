@@ -42,6 +42,7 @@ members = [
     "src/lib/devmgr",
     "src/srv/devmgr-srv",
     "src/bin/unittest",
+    "src/bin/unittest/unittest-report",
 ]
 
 exclude = ["toolchain/src/rust"]

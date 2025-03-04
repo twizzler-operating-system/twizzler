@@ -6439,6 +6439,15 @@ dependencies = [
  "monitor-api",
  "serde",
  "serde_json",
+ "unittest-report",
+]
+
+[[package]]
+name = "unittest-report"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -6983,6 +6992,7 @@ dependencies = [
  "toml_edit 0.19.15",
  "tracing",
  "tracing-subscriber",
+ "unittest-report",
  "wait-timeout",
  "walkdir",
 ]

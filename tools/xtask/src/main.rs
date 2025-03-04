@@ -164,6 +164,12 @@ struct QemuOptions {
     kernel: bool,
     #[clap(long, short, help = "Share a file/directory with Twizzler")]
     data: Option<PathBuf>,
+    #[clap(
+        long,
+        short,
+        help = "Restart qemu if it exits, unless it returns failure"
+    )]
+    repeat: bool,
 }
 
 impl From<&QemuOptions> for ImageOptions {
