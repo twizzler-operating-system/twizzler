@@ -23,6 +23,9 @@ struct LimineBootInfo {
     rsdp: Option<u64>,
 }
 
+unsafe impl Send for LimineBootInfo {}
+unsafe impl Sync for LimineBootInfo {}
+
 pub enum BootInfoSystemTable {
     Rsdp,
     Efi,
@@ -129,7 +132,7 @@ extern "C" fn limine_entry() -> ! {
             length: m.size() as usize,
         })
         .collect();
-    crate::kernel_main(&mut boot_info);
+    crate::kernel_main(boot_info);
 }
 
 #[used]

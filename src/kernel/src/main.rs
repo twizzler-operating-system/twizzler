@@ -52,11 +52,13 @@ extern crate alloc;
 
 extern crate bitflags;
 
+use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use arch::BootInfoSystemTable;
 use initrd::BootModule;
 use memory::{MemoryRegion, VirtAddr};
+use once::Once;
 use random::start_entropy_contribution_thread;
 
 use crate::{processor::current_processor, thread::entry::start_new_init};
@@ -80,7 +82,14 @@ pub fn is_test_mode() -> bool {
     TEST_MODE.load(Ordering::SeqCst)
 }
 
-fn kernel_main<B: BootInfo>(boot_info: &mut B) -> ! {
+static BOOT_INFO: Once<Box<dyn BootInfo + Send + Sync>> = Once::new();
+
+pub fn get_boot_info() -> &'static dyn BootInfo {
+    &**BOOT_INFO.poll().unwrap()
+}
+
+fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
+    let boot_info = &**BOOT_INFO.call_once(|| Box::new(boot_info));
     arch::init(boot_info);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
     let cmdline = boot_info.get_cmd_line();

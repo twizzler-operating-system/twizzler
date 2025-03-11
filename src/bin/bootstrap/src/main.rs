@@ -1,4 +1,4 @@
-use std::process::exit;
+use std::{ffi::CString, process::exit};
 
 use dynlink::{
     compartment::{CompartmentId, MONITOR_COMPARTMENT_ID},
@@ -128,14 +128,24 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
 
     let mut info = ctx.build_runtime_info(monitor_id, tls).unwrap();
     let info_ptr = &mut info as *mut RuntimeInitInfo;
+
+    let mut args = std::env::args()
+        .map(|arg| {
+            let cs = CString::new(arg).unwrap();
+            Box::leak(cs.into_boxed_c_str()).as_ptr() as *mut i8
+        })
+        .collect::<Vec<_>>();
+    args.push(core::ptr::null_mut());
+    let args = Box::leak(args.into_boxed_slice());
+
     let mut rtinfo = RuntimeInfo {
         flags: 0,
         kind: twizzler_rt_abi::core::RUNTIME_INIT_MONITOR,
         init_info: InitInfoPtrs {
             monitor: info_ptr.cast(),
         },
-        args: core::ptr::null_mut(),
-        argc: 0,
+        args: args.as_ptr() as *mut *mut i8,
+        argc: args.len() - 1,
         envp: core::ptr::null_mut(),
     };
     let rtinfo_ptr = &mut rtinfo as *mut RuntimeInfo;

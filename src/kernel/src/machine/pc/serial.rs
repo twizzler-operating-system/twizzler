@@ -107,7 +107,6 @@ impl SerialPort {
 
     pub fn has_pending(&mut self) -> bool {
         let iid = unsafe { self.read_reg(Self::IID) };
-        logln!("iid {:x}", iid);
         iid & 1 != 0
     }
 
@@ -217,11 +216,15 @@ pub fn interrupt_handler() {
         0 => {
             let _msr = serial.read_modem_status();
         }
-        _ => {
+        _ => loop {
             let x = serial.receive();
             drop(serial);
             crate::log::push_input_byte(x);
-        }
+            serial = SERIAL1.lock();
+            if !serial.line_sts().contains(LineStsFlags::INPUT_FULL) {
+                break;
+            }
+        },
     }
 }
 

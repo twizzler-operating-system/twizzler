@@ -130,6 +130,8 @@ struct ImageOptions {
     kernel: bool,
     #[clap(long, short, help = "Share a file/directory with Twizzler")]
     data: Option<PathBuf>,
+    #[clap(long, help = "Auto-start a program in init.")]
+    autostart: Option<String>,
 }
 
 impl From<ImageOptions> for BuildOptions {
@@ -170,6 +172,8 @@ struct QemuOptions {
         help = "Restart qemu if it exits, unless it returns failure"
     )]
     repeat: bool,
+    #[clap(long, help = "Auto-start a program in init.")]
+    autostart: Option<String>,
 }
 
 impl From<&QemuOptions> for ImageOptions {
@@ -180,6 +184,7 @@ impl From<&QemuOptions> for ImageOptions {
             benches: qo.benches,
             kernel: qo.kernel,
             data: qo.data.clone(),
+            autostart: qo.autostart.clone(),
         }
     }
 }

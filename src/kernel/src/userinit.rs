@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use twizzler_abi::{
     aux::{KernelInitInfo, KernelInitName},
@@ -9,6 +9,7 @@ use twizzler_rt_abi::core::{InitInfoPtrs, MinimalInitInfo, RuntimeInfo, RUNTIME_
 use xmas_elf::program::SegmentData;
 
 use crate::{
+    get_boot_info,
     initrd::get_boot_objects,
     memory::{context::UserContext, VirtAddr},
     obj::ObjectRef,
@@ -36,6 +37,8 @@ fn create_name_object() -> ObjectRef {
 pub extern "C" fn user_init() {
     // Reserve a big stack size
     const RTINFO_OFFSET: usize = 0x300000;
+    const ARGS_OFFSET: usize = 0x400000;
+    const ARGV_OFFSET: usize = 0x500000;
     const STACKTOP_OFFSET: usize = 0x200000;
     /* We need this scope to drop everything before we jump to user */
     let (rtinfo_start, entry) = {
@@ -130,12 +133,32 @@ pub extern "C" fn user_init() {
             nr_phdrs,
         };
 
+        let boot_info = get_boot_info();
+        let argc = boot_info.get_cmd_line().split_whitespace().count();
+        let mut write_ptr = (MAX_SIZE * RESERVED_STACK + ARGS_OFFSET) as *mut u8;
+        let mut ptrs = boot_info
+            .get_cmd_line()
+            .split_whitespace()
+            .map(|arg| {
+                let len = arg.bytes().len() + 1;
+                let slice = unsafe { core::slice::from_raw_parts_mut(write_ptr, len) };
+                slice[..len - 1].copy_from_slice(arg.as_bytes());
+                slice[len - 1] = 0;
+                unsafe { write_ptr = write_ptr.add(len) };
+                slice.as_mut_ptr()
+            })
+            .collect::<Vec<_>>();
+        ptrs.push(core::ptr::null_mut());
+        let argv_ptr = (MAX_SIZE * RESERVED_STACK + ARGV_OFFSET) as *mut *mut u8;
+        let argv_slice = unsafe { core::slice::from_raw_parts_mut(argv_ptr, argc + 1) };
+        argv_slice.copy_from_slice(&*ptrs);
+
         let rt_info = RuntimeInfo {
             flags: 0,
             kind: RUNTIME_INIT_MIN,
             init_info: InitInfoPtrs { min: min_start },
-            args: core::ptr::null_mut(),
-            argc: 0,
+            args: argv_ptr.cast(),
+            argc,
             envp: core::ptr::null_mut(),
         };
 
