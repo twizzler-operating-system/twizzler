@@ -195,22 +195,26 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
     let child_stdout = child.stdout.take();
 
     let reader_thread = std::thread::spawn(|| {
-        let reader = BufReader::new(child_stdout.unwrap());
-        let mut ret = None;
-        for line in reader.lines().into_iter() {
-            if let Ok(line) = line {
-                println!(" ==> {}", line.trim());
-                if line.trim().starts_with("REPORT ") {
-                    let line = line.trim().strip_prefix("REPORT ").unwrap();
-                    let report = unittest_report::Report::from_str(line.trim());
-                    if let Ok(ReportStatus::Ready(report)) = report.map(|report| report.status) {
-                        ret = Some(report);
-                        break;
+        if let Some(child_stdout) = child_stdout {
+            let reader = BufReader::new(child_stdout);
+            let mut ret = None;
+            for line in reader.lines().into_iter() {
+                if let Ok(line) = line {
+                    println!(" ==> {}", line.trim());
+                    if line.trim().starts_with("REPORT ") {
+                        let line = line.trim().strip_prefix("REPORT ").unwrap();
+                        let report = unittest_report::Report::from_str(line.trim());
+                        if let Ok(ReportStatus::Ready(report)) = report.map(|report| report.status) {
+                            ret = Some(report);
+                            break;
+                        }
                     }
                 }
             }
+            ret
+        } else {
+            None
         }
-        ret
     });
 
     let exit_status = if timeout {
@@ -220,7 +224,7 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
                 if let Some(es) = child.wait_timeout(Duration::from_secs(10))? {
                     break Some(es);
                 }
-                child_stdin.as_mut().unwrap().write(b"status\n").unwrap();
+                child_stdin.as_mut().unwrap().write_all(b"status\n").unwrap();
                 i += 1;
                 if i > 10 {
                     break None;
@@ -239,7 +243,7 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
         std::process::exit(34);
     };
 
-    let report = reader_thread.join().unwrap();
+    let report = reader_thread.join().ok().flatten();
     if let Some(report) = report {
         let successes = report.tests.iter().filter(|t| t.passed).count();
         let total = report.tests.len();
@@ -250,7 +254,7 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
             total,
             report.time.as_millis() as f64 / 1000.0,
         );
-    } else {
+    } else if cli.tests {
         eprintln!("qemu didn't produce report");
         std::process::exit(34);
     }

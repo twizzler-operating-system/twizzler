@@ -114,9 +114,13 @@ fn monitor_init() -> miette::Result<()> {
     }
 
     info!("monitor early init completed, starting init");
+    let mut args = vec!["init".to_string()];
+    for arg in std::env::args() {
+        args.push(arg);
+    }
     let comp: CompartmentHandle =
         CompartmentLoader::new("init", "init", NewCompartmentFlags::empty())
-            .args(&["init"])
+            .args(&args)
             .load()
             .into_diagnostic()?;
     let mut flags = comp.info().flags;

@@ -143,6 +143,14 @@ fn main() {
     )
     .unwrap();
 
+    let mut autostart = None;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--tests" => {}
+            _ => autostart = Some(arg),
+        }
+    }
+
     tracing::info!("starting logger");
     let lbcomp: CompartmentHandle = CompartmentLoader::new(
         "logboi",
@@ -169,6 +177,22 @@ fn main() {
     run_tests("bench_bins", true);
 
     println!("Hi, welcome to the basic twizzler test console.");
+
+    if let Some(autostart) = autostart {
+        println!("autostart: {}", autostart);
+        let comp = CompartmentLoader::new(&autostart, &autostart, NewCompartmentFlags::empty())
+            .args(&[&autostart])
+            .load();
+        if let Ok(comp) = comp {
+            let mut flags = comp.info().flags;
+            while !flags.contains(CompartmentFlags::EXITED) {
+                flags = comp.wait(flags);
+            }
+        } else {
+            warn!("failed to start {}", autostart);
+        }
+    }
+
     println!("To run a program, type its name.");
 
     let mut io = TwzIo;

@@ -42,7 +42,7 @@ members = [
     "src/lib/devmgr",
     "src/srv/devmgr-srv",
     "src/bin/unittest",
-    "src/bin/unittest/unittest-report",
+    "src/bin/unittest/unittest-report", "src/bin/serialecho", "tools/serialtest",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -70,6 +70,7 @@ initrd = [
     "lib:pager-srv",
     "crate:gadget",
     "crate:unittest",
+    "crate:serialecho",
     #"third-party:hello-world-rs"
 ]
 

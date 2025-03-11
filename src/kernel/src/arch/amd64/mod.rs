@@ -28,7 +28,7 @@ pub use apic::{poke_cpu, send_ipi};
 pub use start::BootInfoSystemTable;
 
 use self::apic::get_lapic;
-pub fn init<B: BootInfo>(boot_info: &B) {
+pub fn init(boot_info: &dyn BootInfo) {
     gdt::init();
     interrupt::init_idt();
     apic::init(true);

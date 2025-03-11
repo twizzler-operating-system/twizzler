@@ -277,7 +277,10 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
         cmdline.push_str("--tests ");
     }
     if cli.benches {
-        cmdline.push_str("--benches");
+        cmdline.push_str("--benches ");
+    }
+    if let Some(autostart) = cli.autostart {
+        cmdline.push_str(autostart.as_str());
     }
     let efi_binary = match cli.config.arch {
         Arch::X86_64 => "toolchain/install/BOOTX64.EFI",

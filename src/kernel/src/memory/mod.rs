@@ -40,7 +40,7 @@ impl MemoryRegion {
     }
 }
 
-pub fn init<B: BootInfo>(boot_info: &B) {
+pub fn init(boot_info: &dyn BootInfo) {
     frame::init(boot_info.memory_regions());
     let kc = context::kernel_context();
     kc.switch_to(KERNEL_SCTX);

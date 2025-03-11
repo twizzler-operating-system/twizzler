@@ -13,6 +13,12 @@ fn main() {
     let start = Instant::now();
     for line in std::io::BufReader::new(file).lines() {
         if let Ok(line) = &line {
+            if line.contains("\u{0000}") {
+                continue;
+            }
+            if !line.is_ascii() {
+                continue;
+            }
             println!("STARTING {}", line);
             if let Ok(test_comp) = monitor_api::CompartmentLoader::new(
                 line,
