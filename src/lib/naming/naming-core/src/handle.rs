@@ -41,7 +41,7 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
             .unwrap()
     }
 
-    pub fn get(&mut self, path: &str) -> Result<u128> {
+    pub fn get(&mut self, path: &str) -> Result<ObjID> {
         let name_len = self.write_buffer(path)?;
         self.api.get(self.desc, name_len).unwrap().map(|n| n.id)
     }
