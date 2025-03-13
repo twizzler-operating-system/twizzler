@@ -2,11 +2,12 @@
 
 pub mod api;
 pub mod dynamic;
-mod error;
 pub mod handle;
 mod store;
 
 pub const MAX_KEY_SIZE: usize = 256;
+pub const PATH_MAX: usize = 4096;
 
-pub use error::{ErrorKind, Result};
-pub use store::{Entry, EntryType, NameSession, NameStore};
+pub type Result<T> = std::result::Result<T, std::io::ErrorKind>;
+
+pub use store::{NameSession, NameStore, NsNode, NsNodeKind};

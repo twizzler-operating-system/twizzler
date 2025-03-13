@@ -1,7 +1,10 @@
+use std::{io::ErrorKind, path::Path};
+
 use secgate::util::{Handle, SimpleBuffer};
+use twizzler::object::ObjID;
 use twizzler_rt_abi::object::MapFlags;
 
-use crate::{api::NamerAPI, Entry, EntryType, ErrorKind, Result};
+use crate::{api::NamerAPI, NsNode, NsNodeKind, Result, PATH_MAX};
 
 pub struct NamingHandle<'a, API: NamerAPI> {
     desc: u32,
@@ -17,53 +20,42 @@ impl<'a, API: NamerAPI> Drop for NamingHandle<'a, API> {
 
 // TODO don't need seperate functions for names and namespaces?
 impl<'a, API: NamerAPI> NamingHandle<'a, API> {
+    fn write_buffer<P: AsRef<Path>>(&mut self, path: P) -> Result<usize> {
+        let bytes = path.as_ref().as_os_str().as_encoded_bytes();
+        if bytes.len() > PATH_MAX {
+            Err(ErrorKind::InvalidFilename)
+        } else {
+            Ok(self.buffer.write(bytes))
+        }
+    }
+
     /// Open a new logging handle.
     pub fn new(api: &'a API) -> Option<Self> {
         NamingHandle::open(api).ok()
     }
 
-    pub fn put(&mut self, path: &str, val: u128) -> Result<()> {
-        // I should write directly to the simple buffer
-        let s = Entry::try_new(path, EntryType::Object(val))?;
-
-        // Interpret Entry as a slice
-        let bytes = unsafe { std::mem::transmute::<Entry, [u8; std::mem::size_of::<Entry>()]>(s) };
-
-        let _handle = self.buffer.write(&bytes);
-
-        self.api.put(self.desc).unwrap()
+    pub fn put<P: AsRef<Path>>(&mut self, path: P, id: ObjID) -> Result<()> {
+        let name_len = self.write_buffer(path)?;
+        self.api
+            .put(self.desc, name_len, id, NsNodeKind::Object)
+            .unwrap()
     }
 
     pub fn get(&mut self, path: &str) -> Result<u128> {
-        let s = Entry::try_new(path, EntryType::Name)?; // Todo: Find better pattern to describe entries
-
-        let bytes = unsafe { std::mem::transmute::<Entry, [u8; std::mem::size_of::<Entry>()]>(s) };
-        let _handle = self.buffer.write(&bytes);
-
-        match self.api.get(self.desc).unwrap()?.entry_type {
-            EntryType::Object(x) => Ok(x),
-            _ => Err(ErrorKind::NotNamespace),
-        }
+        let name_len = self.write_buffer(path)?;
+        self.api.get(self.desc, name_len).unwrap().map(|n| n.id)
     }
 
-    pub fn remove(&mut self, path: &str, recursive: bool) -> Result<()> {
-        let s = Entry::try_new(path, EntryType::Namespace)?;
-
-        let bytes = unsafe { std::mem::transmute::<Entry, [u8; std::mem::size_of::<Entry>()]>(s) };
-        let _handle = self.buffer.write(&bytes);
-
-        self.api.remove(self.desc, recursive).unwrap()
+    pub fn remove(&mut self, path: &str) -> Result<()> {
+        let name_len = self.write_buffer(path)?;
+        self.api.remove(self.desc, name_len).unwrap()
     }
 
-    pub fn enumerate_names_relative(&mut self, path: &str) -> Result<Vec<Entry>> {
-        let s = Entry::try_new(path, EntryType::Namespace)?;
+    pub fn enumerate_names_relative(&mut self, path: &str) -> Result<Vec<NsNode>> {
+        let name_len = self.write_buffer(path)?;
+        let element_count = self.api.enumerate_names(self.desc, name_len).unwrap()?;
 
-        let bytes = unsafe { std::mem::transmute::<Entry, [u8; std::mem::size_of::<Entry>()]>(s) };
-        let _handle = self.buffer.write(&bytes);
-
-        let element_count = self.api.enumerate_names(self.desc).unwrap().unwrap();
-
-        let mut buf_vec = vec![0u8; element_count * std::mem::size_of::<Entry>()];
+        let mut buf_vec = vec![0u8; element_count * std::mem::size_of::<NsNode>()];
         self.buffer.read(&mut buf_vec);
         let mut r_vec = Vec::new();
 
@@ -71,8 +63,8 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
             unsafe {
                 let entry_ptr = buf_vec
                     .as_ptr()
-                    .offset((std::mem::size_of::<Entry>() * i).try_into().unwrap())
-                    as *const Entry;
+                    .offset((std::mem::size_of::<NsNode>() * i).try_into().unwrap())
+                    as *const NsNode;
                 r_vec.push(*entry_ptr);
             }
         }
@@ -80,40 +72,20 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         Ok(r_vec)
     }
 
-    pub fn enumerate_names(&mut self) -> Result<Vec<Entry>> {
+    pub fn enumerate_names(&mut self) -> Result<Vec<NsNode>> {
         self.enumerate_names_relative(&".")
     }
 
     pub fn change_namespace(&mut self, path: &str) -> Result<()> {
-        let s = Entry::try_new(path, EntryType::Namespace)?;
-
-        let bytes = unsafe { std::mem::transmute::<Entry, [u8; std::mem::size_of::<Entry>()]>(s) };
-        let _handle = self.buffer.write(&bytes);
-
-        self.api.change_namespace(self.desc).unwrap()
+        let name_len = self.write_buffer(path)?;
+        self.api.change_namespace(self.desc, name_len).unwrap()
     }
 
     pub fn put_namespace(&mut self, path: &str) -> Result<()> {
-        let s = Entry::try_new(path, EntryType::Namespace)?;
-        let bytes = unsafe { std::mem::transmute::<Entry, [u8; std::mem::size_of::<Entry>()]>(s) };
-        let _handle = self.buffer.write(&bytes);
-        self.api.put(self.desc).unwrap()
-    }
-
-    pub fn get_namespace(&mut self, path: &str) -> Result<()> {
-        let s = Entry::try_new(path, EntryType::Namespace)?;
-
-        let bytes = unsafe { std::mem::transmute::<Entry, [u8; std::mem::size_of::<Entry>()]>(s) };
-        let _handle = self.buffer.write(&bytes);
-
-        match self.api.get(self.desc).unwrap()?.entry_type {
-            EntryType::Namespace => Ok(()),
-            _ => Err(ErrorKind::NotNamespace),
-        }
-    }
-
-    pub fn get_working_namespace(&mut self) -> Result<Entry> {
-        todo!()
+        let name_len = self.write_buffer(path)?;
+        self.api
+            .put(self.desc, name_len, 0.into(), NsNodeKind::Namespace)
+            .unwrap()
     }
 }
 

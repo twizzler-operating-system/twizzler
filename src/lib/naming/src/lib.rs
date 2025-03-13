@@ -2,19 +2,25 @@
 extern "C" {}
 
 use naming_core::{api::NamerAPI, handle::NamingHandle, Result};
-pub use naming_core::{dynamic::*, Entry, EntryType, ErrorKind};
+pub use naming_core::{dynamic::*, NsNode, NsNodeKind};
 use secgate::util::Descriptor;
 use twizzler_rt_abi::object::ObjID;
 
 pub struct StaticNamingAPI {}
 
 impl NamerAPI for StaticNamingAPI {
-    fn put(&self, desc: Descriptor) -> secgate::SecGateReturn<Result<()>> {
-        naming_srv::put(desc)
+    fn put(
+        &self,
+        desc: Descriptor,
+        name_len: usize,
+        id: ObjID,
+        kind: NsNodeKind,
+    ) -> secgate::SecGateReturn<Result<()>> {
+        naming_srv::put(desc, name_len, id, kind)
     }
 
-    fn get(&self, desc: Descriptor) -> secgate::SecGateReturn<Result<Entry>> {
-        naming_srv::get(desc)
+    fn get(&self, desc: Descriptor, name_len: usize) -> secgate::SecGateReturn<Result<NsNode>> {
+        naming_srv::get(desc, name_len)
     }
 
     fn open_handle(&self) -> secgate::SecGateReturn<Option<(Descriptor, ObjID)>> {
@@ -25,16 +31,24 @@ impl NamerAPI for StaticNamingAPI {
         naming_srv::close_handle(desc)
     }
 
-    fn enumerate_names(&self, desc: Descriptor) -> secgate::SecGateReturn<Result<usize>> {
-        naming_srv::enumerate_names(desc)
+    fn enumerate_names(
+        &self,
+        desc: Descriptor,
+        name_len: usize,
+    ) -> secgate::SecGateReturn<Result<usize>> {
+        naming_srv::enumerate_names(desc, name_len)
     }
 
-    fn remove(&self, desc: Descriptor, recursive: bool) -> secgate::SecGateReturn<Result<()>> {
-        naming_srv::remove(desc, recursive)
+    fn remove(&self, desc: Descriptor, name_len: usize) -> secgate::SecGateReturn<Result<()>> {
+        naming_srv::remove(desc, name_len)
     }
 
-    fn change_namespace(&self, desc: Descriptor) -> secgate::SecGateReturn<Result<()>> {
-        naming_srv::change_namespace(desc)
+    fn change_namespace(
+        &self,
+        desc: Descriptor,
+        name_len: usize,
+    ) -> secgate::SecGateReturn<Result<()>> {
+        naming_srv::change_namespace(desc, name_len)
     }
 }
 

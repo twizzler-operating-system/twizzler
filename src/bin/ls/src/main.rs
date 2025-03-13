@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, path::PathBuf};
 
 use clap::Parser;
-use naming::{static_naming_factory, EntryType, StaticNamingHandle};
+use naming::{static_naming_factory, NsNodeKind, StaticNamingHandle};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -14,9 +14,9 @@ struct Args {
 fn recurse(handle: &mut StaticNamingHandle, foo: &mut PathBuf) {
     let mut names = handle.enumerate_names().unwrap();
     names.sort_by(|a, b| {
-        if a.entry_type == EntryType::Namespace {
+        if a.kind == NsNodeKind::Namespace {
             Ordering::Greater
-        } else if b.entry_type == EntryType::Namespace {
+        } else if b.kind == NsNodeKind::Namespace {
             Ordering::Less
         } else {
             a.name.cmp(&b.name)
@@ -31,7 +31,7 @@ fn recurse(handle: &mut StaticNamingHandle, foo: &mut PathBuf) {
     }
     println!("\n");
     for x in &names {
-        if x.entry_type != EntryType::Namespace {
+        if x.kind != NsNodeKind::Namespace {
             break;
         }
         foo.push(x.name);
@@ -56,9 +56,9 @@ fn main() {
             .enumerate_names_relative(&args.path.unwrap_or("/".to_string()))
             .unwrap();
         names.sort_by(|a, b| {
-            if a.entry_type == EntryType::Namespace {
+            if a.kind == NsNodeKind::Namespace {
                 Ordering::Greater
-            } else if b.entry_type == EntryType::Namespace {
+            } else if b.kind == NsNodeKind::Namespace {
                 Ordering::Less
             } else {
                 a.name.cmp(&b.name)

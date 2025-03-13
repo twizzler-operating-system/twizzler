@@ -1,12 +1,16 @@
 #![allow(dead_code)]
 
-use naming_core::{Entry, EntryType, ErrorKind, NameStore};
+use naming_core::{NameStore, NsNodeKind};
+use twizzler::object::ObjID;
 
 fn test_single_put_then_get() {
     println!("doing test_single_put_then_get");
     let store = NameStore::new();
     let session = store.root_session();
-    assert_eq!(session.put("foo", EntryType::Object(1)), Ok(()));
+    assert_eq!(
+        session.put("foo", ObjID::new(1), NsNodeKind::Object),
+        Ok(())
+    );
     assert_eq!(
         session.get("foo"),
         Entry::try_new("foo", EntryType::Object(1))

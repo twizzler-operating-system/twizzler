@@ -208,9 +208,7 @@ impl ReferenceRuntime {
             binding.insert(fd, elem);
             fd
         };
-        session
-            .put(path, obj_id.raw())
-            .map_err(|_| ErrorKind::Other)?;
+        session.put(path, obj_id)?;
 
         drop(binding);
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
