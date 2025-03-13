@@ -4035,13 +4035,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "naming-test"
-version = "0.1.0"
-dependencies = [
- "naming-core",
-]
-
-[[package]]
 name = "native-tls"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

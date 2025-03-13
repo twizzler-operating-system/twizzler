@@ -1,6 +1,6 @@
 use std::{
     fs::OpenOptions,
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     net::Ipv4Addr,
     time::{Duration, Instant},
 };
@@ -8,7 +8,7 @@ use std::{
 use colored::Colorize;
 use embedded_io::ErrorType;
 use monitor_api::CompartmentHandle;
-use naming::{static_naming_factory, EntryType, ErrorKind, StaticNamingHandle as NamingHandle};
+use naming::{static_naming_factory, NsNodeKind, StaticNamingHandle as NamingHandle};
 use pager::adv_lethe;
 use rand::seq::SliceRandom;
 use tiny_http::Response;
@@ -92,9 +92,7 @@ fn show(args: &[&str], namer: &mut NamingHandle) {
         "f" | "fi" | "files" => {
             let names = namer.enumerate_names().unwrap();
             for name in names {
-                if let EntryType::Object(id) = name.entry_type {
-                    println!("{:<20} :: {:x}", name.name, id);
-                }
+                println!("{:<20} :: {:x}", name.name, name.id);
             }
         }
         _ => {
@@ -207,7 +205,7 @@ fn del_file(args: &[&str], namer: &mut NamingHandle) {
     tracing::info!("deleting file {}, objid: {}", filename, id);
     std::fs::remove_file(&filename).unwrap();
     //tracing::info!("removing name...");
-    namer.remove(filename, false).unwrap();
+    namer.remove(filename).unwrap();
     tracing::info!("This now requires we issue a lethe epoch, since keys have changed.");
     tracing::info!("Epoch...");
     adv_lethe();
@@ -235,15 +233,15 @@ fn setup_http(namer: &mut NamingHandle) {
                     );
 
                     for entry in names {
-                        match entry.entry_type {
-                            EntryType::Object(_) => {
+                        match entry.kind {
+                            NsNodeKind::Object => {
                                 html.push_str(&format!(
                                     r#"<li><a href="{}/">{}/</a></li>"#,
                                     entry.name.as_str(),
                                     entry.name.as_str()
                                 ));
                             }
-                            EntryType::Namespace => {
+                            NsNodeKind::Namespace => {
                                 html.push_str(&format!(
                                     r#"<li><a href="{}/">{}/</a></li>"#,
                                     entry.name.as_str(),
@@ -261,7 +259,7 @@ fn setup_http(namer: &mut NamingHandle) {
                             .unwrap();
                     request.respond(Response::from_string(html).with_header(header))
                 }
-                Err(ErrorKind::NotNamespace) => {
+                Err(ErrorKind::NotADirectory) => {
                     let file = OpenOptions::new().read(true).open(&path);
                     match file {
                         Ok(file) => request.respond(Response::from_file(file)),
@@ -363,8 +361,8 @@ fn gdtest(args: &[&str], namer: &mut NamingHandle) {
     } else {
         let builder = ObjectBuilder::default().persist();
         let vo = VecObject::new(builder).unwrap();
-        let _ = namer.remove("test-vec", false);
-        namer.put("test-vec", vo.object().id().raw()).unwrap();
+        let _ = namer.remove("test-vec");
+        namer.put("test-vec", vo.object().id()).unwrap();
         vo
     };
 

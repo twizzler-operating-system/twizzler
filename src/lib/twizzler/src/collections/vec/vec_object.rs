@@ -9,9 +9,16 @@ use crate::{
     tx::TxRef,
 };
 
-#[derive(Clone)]
 pub struct VecObject<T: Invariant, A: Allocator> {
     obj: Object<Vec<T, A>>,
+}
+
+impl<T: Invariant, A: Allocator> Clone for VecObject<T, A> {
+    fn clone(&self) -> Self {
+        Self {
+            obj: self.obj.clone(),
+        }
+    }
 }
 
 impl<T: Invariant, A: Allocator> From<Object<Vec<T, A>>> for VecObject<T, A> {

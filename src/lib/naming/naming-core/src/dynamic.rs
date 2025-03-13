@@ -4,26 +4,32 @@ use monitor_api::CompartmentHandle;
 use secgate::{util::Descriptor, DynamicSecGate, SecGateReturn};
 use twizzler_rt_abi::object::ObjID;
 
-use crate::{api::NamerAPI, handle::NamingHandle, Entry, Result};
+use crate::{api::NamerAPI, handle::NamingHandle, NsNode, NsNodeKind, Result};
 
 pub struct DynamicNamerAPI {
     _handle: &'static CompartmentHandle,
-    put: DynamicSecGate<'static, (Descriptor,), Result<()>>,
-    get: DynamicSecGate<'static, (Descriptor,), Result<Entry>>,
+    put: DynamicSecGate<'static, (Descriptor, usize, ObjID, NsNodeKind), Result<()>>,
+    get: DynamicSecGate<'static, (Descriptor, usize), Result<NsNode>>,
     open_handle: DynamicSecGate<'static, (), Option<(Descriptor, ObjID)>>,
     close_handle: DynamicSecGate<'static, (Descriptor,), ()>,
-    enumerate_names: DynamicSecGate<'static, (Descriptor,), Result<usize>>,
-    remove: DynamicSecGate<'static, (Descriptor, bool), Result<()>>,
-    change_namespace: DynamicSecGate<'static, (Descriptor,), Result<()>>,
+    enumerate_names: DynamicSecGate<'static, (Descriptor, usize), Result<usize>>,
+    remove: DynamicSecGate<'static, (Descriptor, usize), Result<()>>,
+    change_namespace: DynamicSecGate<'static, (Descriptor, usize), Result<()>>,
 }
 
 impl NamerAPI for DynamicNamerAPI {
-    fn put(&self, desc: Descriptor) -> SecGateReturn<Result<()>> {
-        (self.put)(desc)
+    fn put(
+        &self,
+        desc: Descriptor,
+        name_len: usize,
+        id: ObjID,
+        kind: NsNodeKind,
+    ) -> SecGateReturn<Result<()>> {
+        (self.put)(desc, name_len, id, kind)
     }
 
-    fn get(&self, desc: Descriptor) -> SecGateReturn<Result<Entry>> {
-        (self.get)(desc)
+    fn get(&self, desc: Descriptor, name_len: usize) -> SecGateReturn<Result<NsNode>> {
+        (self.get)(desc, name_len)
     }
 
     fn open_handle(&self) -> SecGateReturn<Option<(Descriptor, ObjID)>> {
@@ -34,16 +40,16 @@ impl NamerAPI for DynamicNamerAPI {
         (self.close_handle)(desc)
     }
 
-    fn enumerate_names(&self, desc: Descriptor) -> SecGateReturn<Result<usize>> {
-        (self.enumerate_names)(desc)
+    fn enumerate_names(&self, desc: Descriptor, name_len: usize) -> SecGateReturn<Result<usize>> {
+        (self.enumerate_names)(desc, name_len)
     }
 
-    fn remove(&self, desc: Descriptor, recursive: bool) -> SecGateReturn<Result<()>> {
-        (self.remove)(desc, recursive)
+    fn remove(&self, desc: Descriptor, name_len: usize) -> SecGateReturn<Result<()>> {
+        (self.remove)(desc, name_len)
     }
 
-    fn change_namespace(&self, desc: Descriptor) -> SecGateReturn<Result<()>> {
-        (self.change_namespace)(desc)
+    fn change_namespace(&self, desc: Descriptor, name_len: usize) -> SecGateReturn<Result<()>> {
+        (self.change_namespace)(desc, name_len)
     }
 }
 
@@ -58,12 +64,12 @@ pub fn dynamic_namer_api() -> &'static DynamicNamerAPI {
             _handle: handle,
             put: unsafe {
                 handle
-                    .dynamic_gate::<(Descriptor,), Result<()>>("put")
+                    .dynamic_gate("put")
                     .expect("failed to find put gate call")
             },
             get: unsafe {
                 handle
-                    .dynamic_gate::<(Descriptor,), Result<Entry>>("get")
+                    .dynamic_gate("get")
                     .expect("failed to find get gate call")
             },
             open_handle: unsafe {
@@ -78,17 +84,17 @@ pub fn dynamic_namer_api() -> &'static DynamicNamerAPI {
             },
             enumerate_names: unsafe {
                 handle
-                    .dynamic_gate::<(Descriptor,), Result<usize>>("enumerate_names")
+                    .dynamic_gate("enumerate_names")
                     .expect("failed to find enumerate_names gate call")
             },
             remove: unsafe {
                 handle
-                    .dynamic_gate::<(Descriptor, bool), Result<()>>("remove")
+                    .dynamic_gate("remove")
                     .expect("failed to find remove gate call")
             },
             change_namespace: unsafe {
                 handle
-                    .dynamic_gate::<(Descriptor,), Result<()>>("change_namespace")
+                    .dynamic_gate("change_namespace")
                     .expect("failed to find change_namespace gate call")
             },
         }
