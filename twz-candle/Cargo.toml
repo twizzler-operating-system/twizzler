@@ -1,0 +1,19 @@
+[package]
+name = "twz-candle"
+version = "0.1.0"
+edition = "2021"
+authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tracing = "*"
+candle-nn = { git = "https://github.com/dbittman/candle", branch = "dbittman" }
+candle-core = { git = "https://github.com/dbittman/candle", branch = "dbittman" }
+candle-transformers = { git = "https://github.com/dbittman/candle", branch = "dbittman" }
+tokenizers = {git="https://github.com/dbittman/tokenizers.git", default-features = false, features = ["fancy-regex"]}
+anyhow = "*"
+tracing-subscriber = "*"
+tracing-chrome = "*"
+serde_json = "*"
+
+

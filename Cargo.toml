@@ -43,6 +43,7 @@ members = [
     "src/bin/unittest",
     "src/bin/unittest/unittest-report", "src/bin/serialecho", "tools/serialtest",
     "src/lib/pager/pager-dynamic", "src/bin/uuhelper",
+    "twz-candle"
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -71,6 +72,7 @@ initrd = [
     "crate:unittest",
     "crate:serialecho",
     "crate:uuhelper",
+    "crate:twz-candle"
     #"third-party:hello-world-rs"
 ]
 

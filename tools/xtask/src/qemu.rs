@@ -44,7 +44,7 @@ impl QemuCommand {
         }
     }
 
-    pub fn config(&mut self, options: &QemuOptions, image_info: ImageInfo) {
+    pub fn config(&mut self, options: &QemuOptions, image_info: &ImageInfo) {
         // Set up the basic stuff, memory and bios, etc.
         self.cmd.arg("-m").arg("4096,slots=4,maxmem=8G");
 
@@ -173,9 +173,18 @@ impl QemuCommand {
 
 pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
     let image_info = crate::image::do_make_image((&cli).into())?;
+    loop {
+        run_qemu(&cli, &image_info)?;
+        if !cli.repeat {
+            break;
+        }
+    }
+    Ok(())
+}
 
+pub(crate) fn run_qemu(cli: &QemuOptions, image_info: &ImageInfo) -> anyhow::Result<()> {
     let mut run_cmd = QemuCommand::new(&cli);
-    run_cmd.config(&cli, image_info);
+    run_cmd.config(&cli, &image_info);
 
     use wait_timeout::ChildExt;
     let timeout = cli.tests;
@@ -261,16 +270,13 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
     }
 
     if exit_status.success() {
-        if cli.repeat {
-            return do_start_qemu(cli);
-        }
         Ok(())
     } else {
         if cli.tests || cli.benches {
             if exit_status.code().unwrap() == 1 {
                 eprintln!("qemu reports tests passed");
                 if cli.repeat {
-                    return do_start_qemu(cli);
+                    return Ok(());
                 }
                 std::process::exit(0);
             } else {
