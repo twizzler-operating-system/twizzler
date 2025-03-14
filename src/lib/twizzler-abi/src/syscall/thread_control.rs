@@ -1,6 +1,6 @@
 use num_enum::{FromPrimitive, IntoPrimitive};
 
-use super::Syscall;
+use super::{convert_codes_to_result, Syscall};
 use crate::{
     arch::syscall::raw_syscall,
     object::ObjID,
@@ -59,6 +59,8 @@ pub enum ThreadControl {
     GetSelfId = 17,
     /// Get the ID of the active security context.
     GetActiveSctxId = 18,
+    /// Set the ID of the active security context.
+    SetActiveSctxId = 19,
 }
 
 /// Exit the thread. The code will be written to the [crate::thread::ThreadRepr] for the current
@@ -102,6 +104,21 @@ pub fn sys_thread_active_sctx_id() -> ObjID {
         )
     };
     ObjID::from_parts([hi, lo])
+}
+
+/// Get the active security context ID for the calling thread.
+pub fn sys_thread_set_active_sctx_id(id: ObjID) -> Result<(), ()> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                ThreadControl::SetActiveSctxId as u64,
+                id.parts()[0],
+                id.parts()[1],
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), |_, _| ())
 }
 
 /// Set the upcall location for this thread.

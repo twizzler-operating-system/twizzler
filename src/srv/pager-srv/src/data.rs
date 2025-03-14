@@ -6,11 +6,13 @@ use std::{
 use itertools::Itertools;
 use miette::Result;
 use object_store::PageRequest;
+use secgate::util::{Descriptor, HandleMgr};
 use twizzler::object::ObjID;
 use twizzler_abi::pager::{ObjectInfo, ObjectRange, PhysRange};
 
 use crate::{
     disk::DiskPageRequest,
+    handle::PagerClient,
     helpers::{page_in, page_out, page_out_many, PAGE},
     PagerContext,
 };
@@ -161,7 +163,6 @@ impl PerObject {
     }
 }
 
-#[derive(Clone)]
 pub struct PagerData {
     inner: Arc<Mutex<PagerDataInner>>,
 }
@@ -185,6 +186,7 @@ impl PagerData {
 pub struct PagerDataInner {
     memory: Memory,
     pub per_obj: HashMap<ObjID, PerObject>,
+    pub handles: HandleMgr<PagerClient>,
 }
 
 struct Region {
@@ -256,6 +258,7 @@ impl PagerDataInner {
         PagerDataInner {
             per_obj: HashMap::with_capacity(0),
             memory: Memory::default(),
+            handles: HandleMgr::new(None),
         }
     }
 
@@ -353,5 +356,35 @@ impl PagerData {
             tracing::warn!("sync failed for {}: {}", id, e);
         });
         ctx.paged_ostore.flush().unwrap();
+    }
+
+    pub fn with_handle<R>(
+        &self,
+        comp: ObjID,
+        ds: Descriptor,
+        f: impl FnOnce(&PagerClient) -> R,
+    ) -> Option<R> {
+        let inner = self.inner.lock().unwrap();
+        Some(f(inner.handles.lookup(comp, ds)?))
+    }
+
+    pub fn with_handle_mut<R>(
+        &self,
+        comp: ObjID,
+        ds: Descriptor,
+        f: impl FnOnce(&mut PagerClient) -> R,
+    ) -> Option<R> {
+        let mut inner = self.inner.lock().unwrap();
+        Some(f(inner.handles.lookup_mut(comp, ds)?))
+    }
+
+    pub fn new_handle(&self, comp: ObjID) -> Option<Descriptor> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.handles.insert(comp, PagerClient::new()?)
+    }
+
+    pub fn drop_handle(&self, comp: ObjID, ds: Descriptor) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.handles.remove(comp, ds);
     }
 }

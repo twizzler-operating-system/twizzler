@@ -411,7 +411,8 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             }
         }
         Syscall::ThreadCtrl => {
-            let [code, val] = thread_ctrl(context.arg0::<u64>().into(), context.arg1());
+            let [code, val] =
+                thread_ctrl(context.arg0::<u64>().into(), context.arg1(), context.arg2());
             context.set_return_values(code, val);
             return;
         }

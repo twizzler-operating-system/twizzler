@@ -266,12 +266,16 @@ pub fn get_sctx_id() -> ObjID {
     twizzler_abi::syscall::sys_thread_active_sctx_id()
 }
 
-pub fn runtime_preentry() {
-    twizzler_rt_abi::core::twz_rt_cross_compartment_entry();
+pub fn runtime_preentry() -> SecGateReturn<()> {
+    match twizzler_rt_abi::core::twz_rt_cross_compartment_entry() {
+        Ok(_) => SecGateReturn::Success(()),
+        Err(_) => SecGateReturn::PermissionDenied,
+    }
 }
 
 pub struct SecFrame {
     tp: usize,
+    sctx: ObjID,
 }
 
 pub fn frame() -> SecFrame {
@@ -282,13 +286,16 @@ pub fn frame() -> SecFrame {
         #[cfg(not(target_arch = "x86_64"))]
         core::arch::asm!("mrs {}, tpidr_el0", out(reg) val);
     }
-    SecFrame { tp: val }
+    // TODO: do this without calling the kernel.
+    let sctx = twizzler_abi::syscall::sys_thread_active_sctx_id();
+    SecFrame { tp: val, sctx }
 }
 
 pub fn restore_frame(frame: SecFrame) {
     if frame.tp != 0 {
         twizzler_abi::syscall::sys_thread_settls(frame.tp as u64);
     }
+    twizzler_abi::syscall::sys_thread_set_active_sctx_id(frame.sctx).unwrap();
 }
 
 #[derive(Clone, Copy)]

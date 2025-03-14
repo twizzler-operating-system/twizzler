@@ -19,6 +19,7 @@ arrayvec = "0.7.6"
 naming-core = { path = "../../lib/naming/naming-core" }
 lazy-init = "0.5.1"
 tracing = "*"
+pager = { path = "../../lib/pager/"}
 tracing-subscriber = "*"
 
 [features]

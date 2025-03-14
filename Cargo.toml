@@ -42,6 +42,7 @@ members = [
     "src/srv/devmgr-srv",
     "src/bin/unittest",
     "src/bin/unittest/unittest-report", "src/bin/serialecho", "tools/serialtest",
+    "src/lib/pager/pager-dynamic",
 ]
 
 exclude = ["toolchain/src/rust"]

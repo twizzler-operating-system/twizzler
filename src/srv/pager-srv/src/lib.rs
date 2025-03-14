@@ -1,11 +1,16 @@
 #![feature(ptr_sub_ptr)]
 #![feature(naked_functions)]
+#![feature(io_error_more)]
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    path::Path,
+    sync::{Arc, OnceLock},
+};
 
 use async_executor::Executor;
 use async_io::block_on;
 use disk::{Disk, DiskPageRequest};
+use handle::PATH_EXTERNAL_MAX;
 use object_store::{LetheIoWrapper, PagedObjectStore};
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
@@ -21,10 +26,13 @@ use crate::{data::PagerData, request_handle::handle_kernel_request};
 
 mod data;
 mod disk;
+mod handle;
 mod helpers;
 mod nvme;
 mod physrw;
 mod request_handle;
+
+pub use handle::{pager_close_handle, pager_open_handle};
 
 pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 
@@ -196,6 +204,25 @@ struct PagerContext {
     sender: Arc<QueueSender<RequestFromPager, CompletionToPager>>,
     paged_ostore: Box<dyn PagedObjectStore<DiskPageRequest> + 'static + Sync + Send>,
     disk: Disk,
+}
+
+impl PagerContext {
+    pub fn enumerate_external<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> std::io::Result<Vec<Box<[u8; PATH_EXTERNAL_MAX]>>> {
+        Ok(self
+            .paged_ostore
+            .enumerate_external(path.as_ref())?
+            .iter()
+            .map(|s| {
+                let mut b = Box::new([0; PATH_EXTERNAL_MAX]);
+                let len = s.as_bytes().len().min(PATH_EXTERNAL_MAX);
+                b[0..len].copy_from_slice(&s.as_bytes()[0..len]);
+                b
+            })
+            .collect())
+    }
 }
 
 static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();

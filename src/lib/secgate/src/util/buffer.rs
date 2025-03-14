@@ -62,6 +62,17 @@ impl SimpleBuffer {
         len
     }
 
+    pub fn read_offset(&self, buffer: &mut [u8], offset: usize) -> usize {
+        let base_raw = self.ptr_to_base();
+        if offset >= self.max_len() {
+            return 0;
+        }
+        let len = core::cmp::min(buffer.len(), self.max_len() - offset);
+        let base = unsafe { core::slice::from_raw_parts(base_raw.add(offset), len) };
+        (&mut buffer[0..len]).copy_from_slice(base);
+        len
+    }
+
     /// Write bytes from `buffer` into the SimpleBuffer, up to the size of the supplied buffer. The
     /// actual number of bytes copied is returned.
     pub fn write(&mut self, buffer: &[u8]) -> usize {
@@ -69,6 +80,20 @@ impl SimpleBuffer {
         let len = core::cmp::min(buffer.len(), self.max_len());
         // Safety: See read function.
         let base = unsafe { core::slice::from_raw_parts_mut(base_raw, len) };
+        base.copy_from_slice(&buffer[0..len]);
+        len
+    }
+
+    /// Write bytes from `buffer` into the SimpleBuffer at provided offset, up to the size of the
+    /// supplied buffer, minus the offset. The actual number of bytes copied is returned.
+    pub fn write_offset(&mut self, buffer: &[u8], offset: usize) -> usize {
+        let base_raw = self.mut_ptr_to_base();
+        if offset >= self.max_len() {
+            return 0;
+        }
+        let len = core::cmp::min(buffer.len(), self.max_len() - offset);
+        // Safety: See read function.
+        let base = unsafe { core::slice::from_raw_parts_mut(base_raw.add(offset), len) };
         base.copy_from_slice(&buffer[0..len]);
         len
     }

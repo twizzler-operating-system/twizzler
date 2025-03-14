@@ -5,7 +5,11 @@ use std::marker::PhantomData;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::object::{MapError, MapFlags, ObjectHandle};
 
-use crate::{marker::BaseType, ptr::Ref, tx::TxObject};
+use crate::{
+    marker::BaseType,
+    ptr::Ref,
+    tx::{TxError, TxObject},
+};
 
 mod builder;
 mod fot;
@@ -145,7 +149,16 @@ impl<Base> Object<Base> {
 
     pub fn map(id: ObjID, flags: MapFlags) -> Result<Self, MapError> {
         let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
+        tracing::debug!("map: {} {:?} => {:?}", id, flags, handle.start());
         Self::from_handle(handle)
+    }
+
+    pub fn update(self) -> crate::tx::Result<Self> {
+        let id = self.id();
+        let flags = self.handle().map_flags();
+        drop(self);
+
+        Self::map(id, flags).map_err(TxError::from)
     }
 
     pub unsafe fn map_unchecked(id: ObjID, flags: MapFlags) -> Result<Self, MapError> {

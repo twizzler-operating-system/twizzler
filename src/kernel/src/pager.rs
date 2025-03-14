@@ -83,6 +83,7 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     loop {
         match crate::obj::lookup_object(id, LookupFlags::empty()) {
             crate::obj::LookupResult::Found(arc) => return Some(arc),
+            crate::obj::LookupResult::WasDeleted => return None,
             _ => {}
         }
 
