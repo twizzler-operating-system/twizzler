@@ -1,0 +1,10 @@
+[package]
+name = "pager-dynamic"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+secgate = { path = "../../../lib/secgate" }
+twizzler-abi = { path = "../../../lib/twizzler-abi" }
+twizzler-rt-abi = "0.99"
+monitor-api = { path = "../../../rt/monitor-api" }

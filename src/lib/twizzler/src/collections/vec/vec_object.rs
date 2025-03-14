@@ -32,6 +32,10 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
         &self.obj
     }
 
+    pub fn into_object(self) -> Object<Vec<T, A>> {
+        self.obj
+    }
+
     pub fn iter(&self) -> VecIter<'_, T> {
         if self.len() == 0 {
             return VecIter {

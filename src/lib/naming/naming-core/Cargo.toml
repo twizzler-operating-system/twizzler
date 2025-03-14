@@ -9,4 +9,5 @@ secgate = { path = "../../../lib/secgate" }
 monitor-api = { path = "../../../rt/monitor-api" }
 twizzler-rt-abi = "0.99"
 twizzler = { path = "../../../lib/twizzler" }
-twizzler-abi = { path = "../../../lib/twizzler-abi" }
+tracing = "*"
+pager-dynamic = { path = "../../../lib/pager/pager-dynamic" }

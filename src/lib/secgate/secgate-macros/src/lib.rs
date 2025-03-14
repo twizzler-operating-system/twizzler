@@ -312,7 +312,12 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
     call_point.block = Box::new(parse2(quote::quote! {
         {
             if unsafe {(*info)}.source_context().is_some() {
-                secgate::runtime_preentry();
+                let pe_ret = secgate::runtime_preentry();
+                if !matches!(pe_ret, secgate::SecGateReturn::Success(_)) {
+                    let ret = unsafe {ret.as_mut().unwrap()};
+                    ret.set(secgate::SecGateReturn::PermissionDenied);
+                    return;
+                }
             }
             #unpacked_args
 

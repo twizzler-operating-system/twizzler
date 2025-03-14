@@ -4011,9 +4011,10 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "monitor-api",
+ "pager-dynamic",
  "secgate",
+ "tracing",
  "twizzler",
- "twizzler-abi",
  "twizzler-rt-abi",
 ]
 
@@ -4025,6 +4026,7 @@ dependencies = [
  "lazy-init",
  "lazy_static",
  "naming-core",
+ "pager",
  "secgate",
  "tracing",
  "tracing-subscriber",
@@ -4415,6 +4417,16 @@ dependencies = [
  "secgate",
  "twizzler-rt-abi",
  "twizzler-runtime",
+]
+
+[[package]]
+name = "pager-dynamic"
+version = "0.1.0"
+dependencies = [
+ "monitor-api",
+ "secgate",
+ "twizzler-abi",
+ "twizzler-rt-abi",
 ]
 
 [[package]]
@@ -6285,6 +6297,7 @@ dependencies = [
  "lru",
  "monitor-api",
  "naming-core",
+ "pager-dynamic",
  "paste",
  "printf-compat",
  "secgate",

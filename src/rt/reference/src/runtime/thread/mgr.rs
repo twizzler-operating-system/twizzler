@@ -7,6 +7,7 @@ use tracing::trace;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     simple_mutex::Mutex,
+    syscall::SctxAttachError,
     thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_rt_abi::{
@@ -126,8 +127,20 @@ impl<'a> Drop for IdDropper<'a> {
 }
 
 impl ReferenceRuntime {
-    pub fn cross_compartment_entry(&self) {
+    pub fn cross_compartment_entry(&self) -> Result<(), ()> {
         twizzler_abi::syscall::sys_thread_settls(0);
+        if OUR_RUNTIME.is_monitor().is_some() {
+            twizzler_abi::syscall::sys_thread_set_active_sctx_id(0.into())?;
+        } else {
+            match twizzler_abi::syscall::sys_sctx_attach(monitor_api::get_comp_config().sctx) {
+                Ok(_) => Ok(()),
+                Err(SctxAttachError::AlreadyAttached) => Ok(()),
+                Err(_) => Err(()),
+            }?;
+            twizzler_abi::syscall::sys_thread_set_active_sctx_id(
+                monitor_api::get_comp_config().sctx,
+            )?;
+        }
         let mut inner = THREAD_MGR.inner.lock();
         let id = inner.next_id().freeze();
         drop(inner);
@@ -136,6 +149,7 @@ impl ReferenceRuntime {
             .get_next_tls_info(None, || RuntimeThreadControl::new(id))
             .unwrap();
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
+        Ok(())
     }
 
     pub(super) fn impl_spawn(

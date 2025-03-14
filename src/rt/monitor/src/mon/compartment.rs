@@ -406,6 +406,7 @@ impl super::Monitor {
                 })
                 .map_err(|_| LoadCompartmentError::Unknown)?
         };
+        tracing::trace!("loaded {} as {}", compname, root_comp);
 
         let desc = self
             .get_compartment_handle(caller, root_comp)

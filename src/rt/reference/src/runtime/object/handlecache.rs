@@ -87,11 +87,13 @@ impl HandleCache {
             // If queue is full, evict.
             if self.queued.len() >= QUEUE_LEN {
                 let (oldmap, old) = self.queued.remove(0);
-                trace!("evict {:?}", oldmap);
+                tracing::debug!("evict {:?}", oldmap);
                 self.do_remove(&old);
             }
+            tracing::debug!("queuing");
             self.queued.push((map, handle));
         } else {
+            tracing::debug!("do_remove");
             self.do_remove(handle);
         }
     }
