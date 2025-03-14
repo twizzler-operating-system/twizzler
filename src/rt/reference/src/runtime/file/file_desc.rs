@@ -47,7 +47,6 @@ impl FileDesc {
         flags: MapFlags,
         create_opts: &CreateOptions,
     ) -> std::io::Result<Self> {
-        tracing::info!("mapping");
         let handle = OUR_RUNTIME.map_object(obj_id, flags).unwrap();
         let metadata_handle = unsafe {
             handle
@@ -74,7 +73,6 @@ impl FileDesc {
                 { *metadata_handle }.size = 0;
             }
         }
-        tracing::info!("desk ok");
 
         Ok(FileDesc {
             pos: 0,

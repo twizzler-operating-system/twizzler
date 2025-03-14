@@ -92,7 +92,7 @@ fn show(args: &[&str], namer: &mut NamingHandle) {
         "f" | "fi" | "files" => {
             let names = namer.enumerate_names().unwrap();
             for name in names {
-                println!("{:<20} :: {:x}", name.name, name.id);
+                println!("{:<20} :: {:x}", name.name(), name.id);
             }
         }
         _ => {
@@ -237,18 +237,17 @@ fn setup_http(namer: &mut NamingHandle) {
                             NsNodeKind::Object => {
                                 html.push_str(&format!(
                                     r#"<li><a href="{}/">{}/</a></li>"#,
-                                    entry.name.as_str(),
-                                    entry.name.as_str()
+                                    entry.name(),
+                                    entry.name()
                                 ));
                             }
                             NsNodeKind::Namespace => {
                                 html.push_str(&format!(
                                     r#"<li><a href="{}/">{}/</a></li>"#,
-                                    entry.name.as_str(),
-                                    entry.name.as_str()
+                                    entry.name(),
+                                    entry.name()
                                 ));
                             }
-                            _ => {}
                         }
                     }
 

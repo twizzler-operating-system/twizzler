@@ -13,7 +13,7 @@ fn test_single_put_then_get() {
     );
     assert_eq!(
         session.get("foo"),
-        Entry::try_new("foo", EntryType::Object(1))
+        
     );
 }
 
