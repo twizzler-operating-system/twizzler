@@ -8,3 +8,4 @@ secgate = { path = "../../../lib/secgate" }
 twizzler-abi = { path = "../../../lib/twizzler-abi" }
 twizzler-rt-abi = "0.99"
 monitor-api = { path = "../../../rt/monitor-api" }
+object-store = { path = "../../../srv/pager-srv/object-store" }

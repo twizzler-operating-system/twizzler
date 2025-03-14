@@ -781,6 +781,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cat"
+version = "0.1.0"
+
+[[package]]
 name = "cc"
 version = "1.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4011,6 +4015,7 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "monitor-api",
+ "object-store",
  "pager-dynamic",
  "secgate",
  "tracing",
@@ -4424,6 +4429,7 @@ name = "pager-dynamic"
 version = "0.1.0"
 dependencies = [
  "monitor-api",
+ "object-store",
  "secgate",
  "twizzler-abi",
  "twizzler-rt-abi",

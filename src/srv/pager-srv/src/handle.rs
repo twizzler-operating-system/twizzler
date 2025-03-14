@@ -1,5 +1,6 @@
 use std::{io::ErrorKind, path::PathBuf};
 
+use object_store::ExternalFile;
 use secgate::{
     secure_gate,
     util::{Descriptor, SimpleBuffer},
@@ -70,51 +71,31 @@ pub fn pager_close_handle(info: &secgate::GateCallInfo, desc: Descriptor) {
     pager.drop_handle(comp, desc);
 }
 
-pub const PATH_EXTERNAL_MAX: usize = 4096;
 #[secure_gate(options(info))]
 pub fn pager_enumerate_external(
     info: &secgate::GateCallInfo,
     desc: Descriptor,
-    name_len: usize,
+    id: ObjID,
 ) -> Result<usize, ErrorKind> {
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap();
-    let path = pager
-        .data
-        .with_handle(comp, desc, |pc| pc.read_buffer(name_len))
-        .ok_or(ErrorKind::InvalidInput)??;
 
-    let items = pager.enumerate_external(path).map_err(|e| e.kind())?;
+    let items = pager.enumerate_external(id).map_err(|e| e.kind())?;
 
     pager
         .data
         .with_handle_mut(comp, desc, |pc| {
             let mut len = 0;
             for (idx, item) in items.iter().enumerate() {
-                let bytes = &(**item);
-                len += pc.buffer.write_offset(bytes, idx * PATH_EXTERNAL_MAX);
+                let ptr = item as *const ExternalFile;
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(ptr.cast::<u8>(), size_of::<ExternalFile>())
+                };
+                len += pc
+                    .buffer
+                    .write_offset(bytes, idx * size_of::<ExternalFile>());
             }
             len
         })
         .ok_or(ErrorKind::InvalidInput)
-}
-
-#[secure_gate(options(info))]
-pub fn pager_stat_external(
-    info: &secgate::GateCallInfo,
-    desc: Descriptor,
-    name_len: usize,
-) -> Result<(ObjID, bool), ErrorKind> {
-    let comp = info.source_context().unwrap_or(0.into());
-    let pager = &PAGER_CTX.get().unwrap();
-    let path = pager
-        .data
-        .with_handle(comp, desc, |pc| pc.read_buffer(name_len))
-        .ok_or(ErrorKind::InvalidInput)??;
-
-    pager
-        .paged_ostore
-        .open_external(path.as_path())
-        .map(|x| (x.0.into(), x.1))
-        .map_err(|e| e.kind())
 }

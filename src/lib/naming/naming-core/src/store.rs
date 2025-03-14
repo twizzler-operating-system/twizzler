@@ -6,6 +6,9 @@ use std::{
 };
 
 use arrayvec::ArrayString;
+use ext::ExtNamespace;
+use nsobj::NamespaceObject;
+use object_store::objid_to_ino;
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
     marker::Invariant,
@@ -15,6 +18,9 @@ use twizzler::{
 use twizzler_rt_abi::object::{MapError, MapFlags, ObjID};
 
 use crate::{Result, MAX_KEY_SIZE};
+
+mod ext;
+mod nsobj;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
@@ -32,7 +38,7 @@ const NSID_ROOT: ObjID = ObjID::new(0);
 pub struct NsNode {
     pub kind: NsNodeKind,
     pub id: ObjID,
-    pub name: ArrayString<MAX_KEY_SIZE>,
+    name: ArrayString<MAX_KEY_SIZE>,
 }
 unsafe impl Invariant for NsNode {}
 
@@ -43,104 +49,24 @@ impl NsNode {
         Ok(Self { kind, id, name })
     }
 
-    fn ext(name: ArrayString<MAX_KEY_SIZE>) -> Self {
+    pub fn ext(name: ArrayString<MAX_KEY_SIZE>) -> Self {
         Self::ns(name, NSID_EXTERNAL)
     }
 
-    fn ns(name: ArrayString<MAX_KEY_SIZE>, id: ObjID) -> Self {
+    pub fn ns(name: ArrayString<MAX_KEY_SIZE>, id: ObjID) -> Self {
         Self {
             kind: NsNodeKind::Namespace,
             id,
             name,
         }
     }
-}
 
-#[derive(Clone)]
-pub struct NamespaceObject {
-    persist: bool,
-    obj: Arc<Mutex<Option<VecObject<NsNode, VecObjectAlloc>>>>,
-}
-
-#[derive(Clone)]
-struct ExtNamespace {
-    name: Option<String>,
-    prefix: PathBuf,
-    parent: Option<ObjID>,
-}
-impl Namespace for ExtNamespace {
-    fn new(_persist: bool, parent: Option<ObjID>) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Self {
-            name: None,
-            parent,
-            prefix: "/".to_owned().into(),
-        })
-    }
-
-    fn open(_id: ObjID, _persist: bool) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Self {
-            name: None,
-            parent: None,
-            prefix: "/".to_owned().into(),
-        })
-    }
-
-    fn find(&self, name: &str) -> Option<NsNode> {
-        if let Some(mut h) = pager_dynamic::PagerHandle::new() {
-            let mut path = self.prefix.clone();
-            path.push(name);
-            let (id, is_ns) = h.stat_external(&path).ok()?;
-            let kind = if is_ns {
-                NsNodeKind::Namespace
-            } else {
-                NsNodeKind::Object
-            };
-            NsNode::new(kind, id, name).ok()
-        } else {
-            None
-        }
-    }
-
-    fn insert(&self, _node: NsNode) -> Option<NsNode> {
-        None
-    }
-
-    fn remove(&self, _name: &str) -> Option<NsNode> {
-        None
-    }
-
-    fn id(&self) -> ObjID {
-        NSID_EXTERNAL
-    }
-
-    fn persist(&self) -> bool {
-        false
-    }
-
-    fn items(&self) -> Vec<NsNode> {
-        if let Some(mut h) = pager_dynamic::PagerHandle::new() {
-            if let Ok(items) = h.enumerate_external(&self.prefix) {
-                return items
-                    .iter()
-                    .map(|i| NsNode::new(NsNodeKind::Object, 0.into(), i).unwrap())
-                    .collect();
-            }
-        }
-        vec![]
+    pub fn name(&self) -> &str {
+        self.name.as_str()
     }
 }
 
 trait Namespace {
-    fn new(persist: bool, parent: Option<ObjID>) -> Result<Self>
-    where
-        Self: Sized;
-
     fn open(id: ObjID, persist: bool) -> Result<Self>
     where
         Self: Sized;
@@ -164,111 +90,6 @@ trait Namespace {
     }
 
     fn persist(&self) -> bool;
-}
-
-impl NamespaceObject {
-    fn with_obj<R>(&self, f: impl FnOnce(&mut VecObject<NsNode, VecObjectAlloc>) -> R) -> R {
-        //self.update();
-        let mut g = self.obj.lock().unwrap();
-        f(g.as_mut().unwrap())
-    }
-
-    fn replace_obj(
-        &self,
-        f: impl FnOnce(VecObject<NsNode, VecObjectAlloc>) -> VecObject<NsNode, VecObjectAlloc>,
-    ) {
-        let mut g = self.obj.lock().unwrap();
-        *g = Some(f(g.take().unwrap()))
-    }
-
-    fn update(&self) {
-        // TODO: this unwrap is bad.
-        self.replace_obj(|obj| VecObject::from(obj.into_object().update().unwrap()));
-    }
-}
-
-impl Namespace for NamespaceObject {
-    fn new(persist: bool, parent: Option<ObjID>) -> Result<Self> {
-        let mut builder = ObjectBuilder::default();
-        if persist {
-            builder = builder.persist();
-        }
-        let mut this = Self {
-            persist,
-            obj: Arc::new(Mutex::new(Some(
-                VecObject::new(builder).map_err(|_| ErrorKind::Other)?,
-            ))),
-        };
-        if let Some(id) = parent {
-            this.insert(NsNode::new(NsNodeKind::Namespace, id, "..")?);
-        }
-        this.insert(NsNode::new(NsNodeKind::Namespace, this.id(), ".")?);
-        Ok(this)
-    }
-
-    fn open(id: ObjID, persist: bool) -> Result<Self> {
-        let mut map_flags = MapFlags::READ | MapFlags::WRITE;
-        if persist {
-            map_flags.insert(MapFlags::PERSIST);
-        }
-        Ok(Self {
-            persist,
-            obj: Arc::new(Mutex::new(Some(VecObject::from(
-                Object::map(id, map_flags).map_err(|_| ErrorKind::Other)?,
-            )))),
-        })
-    }
-
-    fn find(&self, name: &str) -> Option<NsNode> {
-        self.with_obj(|obj| {
-            for entry in obj.iter() {
-                if entry.name.as_str() == name {
-                    return Some(*entry);
-                }
-            }
-            None
-        })
-    }
-
-    fn insert(&self, node: NsNode) -> Option<NsNode> {
-        self.with_obj(|obj| {
-            obj.push(node).unwrap();
-            None
-        })
-    }
-
-    fn remove(&self, name: &str) -> Option<NsNode> {
-        self.with_obj(|obj| {
-            for (idx, entry) in obj.iter().enumerate() {
-                let entry = *entry;
-                if entry.name.as_str() == name {
-                    obj.remove(idx).unwrap();
-                    return Some(entry);
-                }
-            }
-            None
-        })
-    }
-
-    fn parent_id(&self) -> Option<ObjID> {
-        self.find("..").map(|n| n.id)
-    }
-
-    fn id(&self) -> ObjID {
-        self.with_obj(|obj| obj.object().id())
-    }
-
-    fn len(&self) -> usize {
-        self.with_obj(|obj| obj.len())
-    }
-
-    fn persist(&self) -> bool {
-        self.persist
-    }
-
-    fn items(&self) -> Vec<NsNode> {
-        self.with_obj(|obj| obj.iter().cloned().collect())
-    }
 }
 
 pub struct NameStore {
@@ -332,7 +153,7 @@ pub struct NameSession<'a> {
 
 impl NameSession<'_> {
     fn open_namespace(&self, id: ObjID, persist: bool) -> Result<Arc<dyn Namespace>> {
-        Ok(if id == NSID_EXTERNAL {
+        Ok(if id == NSID_EXTERNAL || objid_to_ino(id.raw()).is_some() {
             Arc::new(ExtNamespace::open(id, persist)?)
         } else {
             Arc::new(NamespaceObject::open(id, persist)?)

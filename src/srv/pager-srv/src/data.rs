@@ -5,7 +5,7 @@ use std::{
 
 use itertools::Itertools;
 use miette::Result;
-use object_store::PageRequest;
+use object_store::{objid_to_ino, PageRequest};
 use secgate::util::{Descriptor, HandleMgr};
 use twizzler::object::ObjID;
 use twizzler_abi::pager::{ObjectInfo, ObjectRange, PhysRange};
@@ -343,6 +343,10 @@ impl PagerData {
 
     pub fn lookup_object(&self, ctx: &PagerContext, id: ObjID) -> Option<ObjectInfo> {
         let mut b = [];
+        if objid_to_ino(id.raw()).is_some() {
+            ctx.paged_ostore.find_external(id.raw()).ok()?;
+            return Some(ObjectInfo::new(id));
+        }
         ctx.paged_ostore.read_object(id.raw(), 0, &mut b).ok()?;
         Some(ObjectInfo::new(id))
     }
