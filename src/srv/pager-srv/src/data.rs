@@ -8,10 +8,7 @@ use miette::Result;
 use object_store::{objid_to_ino, PageRequest};
 use secgate::util::{Descriptor, HandleMgr};
 use twizzler::object::ObjID;
-use twizzler_abi::{
-    object::MAX_SIZE,
-    pager::{ObjectInfo, ObjectRange, PhysRange},
-};
+use twizzler_abi::pager::{ObjectInfo, ObjectRange, PhysRange};
 
 use crate::{
     disk::DiskPageRequest,

@@ -1,17 +1,11 @@
 use twizzler::object::ObjID;
 
-use super::{Namespace, NsNode, NsNodeKind, NSID_EXTERNAL};
+use super::{Namespace, NsNode, NsNodeKind};
 use crate::Result;
 
 #[derive(Clone)]
 pub struct ExtNamespace {
     id: ObjID,
-}
-
-impl ExtNamespace {
-    pub fn open_root() -> Result<Self> {
-        Self::open(NSID_EXTERNAL, false)
-    }
 }
 
 impl Namespace for ExtNamespace {

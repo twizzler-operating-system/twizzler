@@ -24,7 +24,7 @@ impl NamespaceObject {
         if persist {
             builder = builder.persist();
         }
-        let mut this = Self {
+        let this = Self {
             persist,
             obj: Arc::new(Mutex::new(Some(
                 VecObject::new(builder).map_err(|_| ErrorKind::Other)?,
@@ -41,19 +41,6 @@ impl NamespaceObject {
         //self.update();
         let mut g = self.obj.lock().unwrap();
         f(g.as_mut().unwrap())
-    }
-
-    fn replace_obj(
-        &self,
-        f: impl FnOnce(VecObject<NsNode, VecObjectAlloc>) -> VecObject<NsNode, VecObjectAlloc>,
-    ) {
-        let mut g = self.obj.lock().unwrap();
-        *g = Some(f(g.take().unwrap()))
-    }
-
-    fn update(&self) {
-        // TODO: this unwrap is bad.
-        self.replace_obj(|obj| VecObject::from(obj.into_object().update().unwrap()));
     }
 }
 

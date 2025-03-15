@@ -6,11 +6,14 @@ use std::{
 use bitflags::bitflags;
 use file_desc::FileDesc;
 use lazy_static::lazy_static;
-use naming_core::dynamic::{dynamic_naming_factory, DynamicNamingHandle};
+use naming_core::{
+    dynamic::{dynamic_naming_factory, DynamicNamingHandle},
+    NsNodeKind,
+};
 use raw_file::RawFile;
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    object::ObjID,
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_rt_abi::{
@@ -30,6 +33,7 @@ enum FdKind {
     File(Arc<Mutex<FileDesc>>),
     RawFile(Arc<Mutex<RawFile>>),
     Stdio,
+    Dir(ObjID),
 }
 
 impl FdKind {
@@ -37,7 +41,7 @@ impl FdKind {
         match self {
             FdKind::File(arc) => arc.lock().unwrap().seek(pos),
             FdKind::RawFile(arc) => arc.lock().unwrap().seek(pos),
-            FdKind::Stdio => Err(std::io::ErrorKind::Other.into()),
+            _ => Err(std::io::ErrorKind::Other.into()),
         }
     }
 
@@ -45,7 +49,13 @@ impl FdKind {
         match self {
             FdKind::File(arc) => arc.lock().unwrap().stat(),
             FdKind::RawFile(arc) => arc.lock().unwrap().stat(),
-            FdKind::Stdio => Ok(FdInfo {
+            FdKind::Dir(id) => Ok(FdInfo {
+                flags: twizzler_rt_abi::fd::FdFlags::from_bits_truncate(0),
+                kind: twizzler_rt_abi::fd::FdKind::Directory,
+                size: 0,
+                id: id.raw(),
+            }),
+            _ => Ok(FdInfo {
                 flags: twizzler_rt_abi::fd::FdFlags::from_bits_truncate(0),
                 kind: twizzler_rt_abi::fd::FdKind::Other,
                 size: 0,
@@ -75,6 +85,7 @@ impl Read for FdKind {
                 .map_err(|_| ErrorKind::Other)?;
                 Ok(len)
             }
+            FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
         }
     }
 }
@@ -91,6 +102,7 @@ impl Write for FdKind {
                 );
                 Ok(buf.len())
             }
+            FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
         }
     }
 
@@ -99,6 +111,7 @@ impl Write for FdKind {
             FdKind::File(arc) => arc.lock().unwrap().flush(),
             FdKind::RawFile(arc) => arc.lock().unwrap().flush(),
             FdKind::Stdio => Ok(()),
+            FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
         }
     }
 }
@@ -184,34 +197,40 @@ impl ReferenceRuntime {
             (false, true) => MapFlags::WRITE,
             (false, false) => MapFlags::READ,
         };
-        let (obj_id, did_create) = match create_opt {
+        let (obj_id, did_create, is_dir) = match create_opt {
             CreateOptions::UNEXPECTED => return Err(ErrorKind::InvalidInput.into()),
-            CreateOptions::CreateKindExisting => (
-                session.get(path).map_err(|_| ErrorKind::Other)?.into(),
-                false,
-            ),
+            CreateOptions::CreateKindExisting => {
+                let n = session.get(path).map_err(|_| ErrorKind::Other)?;
+                (n.id, false, matches!(n.kind, NsNodeKind::Namespace))
+            }
             CreateOptions::CreateKindNew => {
                 if session.get(path).is_ok() {
-                    return Err(ErrorKind::InvalidInput.into());
+                    return Err(ErrorKind::AlreadyExists.into());
                 }
                 (
                     sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?,
                     true,
+                    false,
                 )
             }
             CreateOptions::CreateKindEither => session
                 .get(path)
-                .map(|x| (ObjID::from(x), false))
+                .map(|x| (ObjID::from(x.id), false, false))
                 .unwrap_or((
                     sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?,
                     true,
+                    false,
                 )),
         };
 
-        let elem = if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
-            FdKind::File(Arc::new(Mutex::new(elem)))
+        let elem = if is_dir {
+            FdKind::Dir(obj_id)
         } else {
-            FdKind::RawFile(Arc::new(Mutex::new(RawFile::open(obj_id, flags)?)))
+            if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
+                FdKind::File(Arc::new(Mutex::new(elem)))
+            } else {
+                FdKind::RawFile(Arc::new(Mutex::new(RawFile::open(obj_id, flags)?)))
+            }
         };
 
         let mut binding = get_fd_slots().lock().unwrap();
@@ -348,7 +367,6 @@ impl ReferenceRuntime {
         buf: &mut [twizzler_rt_abi::fd::NameEntry],
         off: usize,
     ) -> std::io::Result<usize> {
-        tracing::debug!("fd_enumerate: {} {}", buf.len(), off);
         let stat = self.fd_get_info(fd).ok_or(ErrorKind::Other)?;
         let mut session = get_naming_handle().lock().unwrap();
         let names = session.enumerate_names_nsid(stat.id.into())?;

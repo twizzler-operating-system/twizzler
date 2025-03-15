@@ -6,7 +6,6 @@ use twizzler_rt_abi::{
     object::{MapFlags, ObjectHandle, MEXT_SIZED},
 };
 
-use super::FdKind;
 use crate::OUR_RUNTIME;
 
 #[derive(Clone)]

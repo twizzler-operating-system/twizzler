@@ -190,7 +190,10 @@ fn new_file(args: &[&str], namer: &mut NamingHandle) {
 
     tracing::info!("creating new file: {}", filename);
     let _f = std::fs::File::create(filename).unwrap();
-    tracing::info!("created new file object {:x}", namer.get(filename).unwrap());
+    tracing::info!(
+        "created new file object {:x}",
+        namer.get(filename).unwrap().id
+    );
 }
 
 fn del_file(args: &[&str], namer: &mut NamingHandle) {
@@ -202,7 +205,7 @@ fn del_file(args: &[&str], namer: &mut NamingHandle) {
         tracing::warn!("name {} not found", filename);
         return;
     };
-    tracing::info!("deleting file {}, objid: {}", filename, id);
+    tracing::info!("deleting file {}, objid: {}", filename, id.id);
     std::fs::remove_file(&filename).unwrap();
     //tracing::info!("removing name...");
     namer.remove(filename).unwrap();
@@ -282,13 +285,13 @@ fn setup_http(namer: &mut NamingHandle) {
                     .create(true)
                     .truncate(true)
                     .open(&path);
-                tracing::debug!("created new file object {:x}", namer.get(&path).unwrap());
+                tracing::debug!("created new file object {:x}", namer.get(&path).unwrap().id);
 
                 println!(
                     "  -> The Gadget just created a file, named {}",
                     path.italic(),
                 );
-                println!("  -> It has internal ID {:x}.", namer.get(&path).unwrap());
+                println!("  -> It has internal ID {:x}.", namer.get(&path).unwrap().id);
                 println!(
                     "  -> Next, we'll write the file data and sync. {}",
                     "All data that goes to flash is encrypted.".red()
@@ -352,7 +355,7 @@ fn gdtest(args: &[&str], namer: &mut NamingHandle) {
     let id = namer.get("test-vec");
     let mut vo = if let Ok(id) = id {
         let obj = twizzler::object::Object::map(
-            id.into(),
+            id.id.into(),
             MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST,
         )
         .unwrap();
