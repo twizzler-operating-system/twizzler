@@ -9,3 +9,6 @@ bootstrap = "run --release --target-dir=.target-xtask --package xtask -- bootstr
 
 [build]
 rustdocflags = "-Zunstable-options --enable-index-page"
+
+[env]
+PROJECT_NAME_FOR_VERSION_STRING = "twizzler uucoreutils"

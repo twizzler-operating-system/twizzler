@@ -1,0 +1,97 @@
+
+[package]
+name = "uuhelper"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["feat_os_twizzler"]
+
+feat_os_twizzler = [
+    "base32",
+    "base64",
+    "basename",
+    "basenc",
+    "cat",
+    "cksum",
+    "comm",
+    "csplit",
+    "cut",
+    "date",
+    "echo",
+    "expand",
+    "factor",
+    "false",
+    "fmt",
+    "fold",
+    "ls",
+    "nl",
+    "numfmt",
+    "od",
+    "paste",
+    "pr",
+    "printenv",
+    "printf",
+    "ptx",
+    "seq",
+    "shuf",
+    "sleep",
+    "sort",
+    "sum",
+    "tr",
+    "true",
+    "tsort",
+    "unexpand",
+    "uniq",
+    "yes",
+]
+
+[dependencies]
+base32 = { optional = true, version = "0.0.30", package = "uu_base32", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+base64 = { optional = true, version = "0.0.30", package = "uu_base64", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+basename = { optional = true, version = "0.0.30", package = "uu_basename", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+basenc = { optional = true, version = "0.0.30", package = "uu_basenc", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+cat = { optional = true, version = "0.0.30", package = "uu_cat", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+cksum = { optional = true, version = "0.0.30", package = "uu_cksum", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+comm = { optional = true, version = "0.0.30", package = "uu_comm", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+csplit = { optional = true, version = "0.0.30", package = "uu_csplit", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+cut = { optional = true, version = "0.0.30", package = "uu_cut", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+date = { optional = true, version = "0.0.30", package = "uu_date", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+echo = { optional = true, version = "0.0.30", package = "uu_echo", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+expand = { optional = true, version = "0.0.30", package = "uu_expand", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+factor = { optional = true, version = "0.0.30", package = "uu_factor", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+false = { optional = true, version = "0.0.30", package = "uu_false", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+fmt = { optional = true, version = "0.0.30", package = "uu_fmt", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+fold = { optional = true, version = "0.0.30", package = "uu_fold", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+join = { optional = true, version = "0.0.30", package = "uu_join", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+ls = { optional = true, version = "0.0.30", package = "uu_ls", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+nl = { optional = true, version = "0.0.30", package = "uu_nl", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+numfmt = { optional = true, version = "0.0.30", package = "uu_numfmt", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+od = { optional = true, version = "0.0.30", package = "uu_od", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+paste = { optional = true, version = "0.0.30", package = "uu_paste", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+printenv = { optional = true, version = "0.0.30", package = "uu_printenv", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+printf = { optional = true, version = "0.0.30", package = "uu_printf", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+pr = { optional = true, version = "0.0.30", package = "uu_pr", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+ptx = { optional = true, version = "0.0.30", package = "uu_ptx", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+seq = { optional = true, version = "0.0.30", package = "uu_seq", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+shuf = { optional = true, version = "0.0.30", package = "uu_shuf", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+sleep = { optional = true, version = "0.0.30", package = "uu_sleep", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+sort = { optional = true, version = "0.0.30", package = "uu_sort", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+sum = { optional = true, version = "0.0.30", package = "uu_sum", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+tr = { optional = true, version = "0.0.30", package = "uu_tr", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+true = { optional = true, version = "0.0.30", package = "uu_true", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+tsort = { optional = true, version = "0.0.30", package = "uu_tsort", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+unexpand = { optional = true, version = "0.0.30", package = "uu_unexpand", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+uniq = { optional = true, version = "0.0.30", package = "uu_uniq", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+yes = { optional = true, version = "0.0.30", package = "uu_yes", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+uucore = { version = "0.0.30", package = "uucore", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
+clap = "4.5.27"
+clap_complete = "4.5.44"
+phf = { version = "0.11.1", default-features = false }
+phf_codegen = "0.11.1"
+textwrap = "0.16.1"
+clap_mangen = "0.2.26"
+
+[build-dependencies]
+phf = { version = "0.11.1", default-features = false }
+phf_codegen = "0.11.1"

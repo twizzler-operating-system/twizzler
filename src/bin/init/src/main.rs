@@ -197,7 +197,9 @@ fn main() {
 
     let mut io = TwzIo;
     let mut buffer = [0; 1024];
+    let mut history = [0; 1024];
     let mut editor = noline::builder::EditorBuilder::from_slice(&mut buffer)
+        .with_slice_history(&mut history)
         .build_sync(&mut io)
         .unwrap();
     loop {
