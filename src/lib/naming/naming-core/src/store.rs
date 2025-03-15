@@ -1,21 +1,15 @@
 use std::{
-    collections::{HashSet, VecDeque},
     io::ErrorKind,
     path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::Arc,
 };
 
 use arrayvec::ArrayString;
 use ext::ExtNamespace;
 use nsobj::NamespaceObject;
 use object_store::objid_to_ino;
-use twizzler::{
-    collections::vec::{VecObject, VecObjectAlloc},
-    marker::Invariant,
-    object::{Object, ObjectBuilder},
-    ptr::Ref,
-};
-use twizzler_rt_abi::object::{MapError, MapFlags, ObjID};
+use twizzler::marker::Invariant;
+use twizzler_rt_abi::object::ObjID;
 
 use crate::{Result, MAX_KEY_SIZE};
 
@@ -31,7 +25,6 @@ pub enum NsNodeKind {
 unsafe impl Invariant for NsNodeKind {}
 
 const NSID_EXTERNAL: ObjID = ObjID::new(1);
-const NSID_ROOT: ObjID = ObjID::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
@@ -134,7 +127,7 @@ impl NameStore {
             store: self,
             working_ns: None,
         };
-        this.change_namespace(namespace);
+        this.change_namespace(namespace).unwrap();
         this
     }
 

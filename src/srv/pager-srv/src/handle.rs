@@ -1,4 +1,4 @@
-use std::{io::ErrorKind, path::PathBuf};
+use std::io::ErrorKind;
 
 use object_store::ExternalFile;
 use secgate::{
@@ -43,14 +43,6 @@ impl PagerClient {
                 .ok()?;
         let buffer = SimpleBuffer::new(handle);
         Some(Self { buffer })
-    }
-
-    fn read_buffer(&self, name_len: usize) -> Result<PathBuf, ErrorKind> {
-        let mut buf = vec![0; name_len];
-        self.buffer.read(&mut buf);
-        Ok(PathBuf::from(
-            String::from_utf8(buf).map_err(|_| ErrorKind::InvalidFilename)?,
-        ))
     }
 }
 

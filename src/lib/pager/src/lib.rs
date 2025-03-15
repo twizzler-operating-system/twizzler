@@ -1,5 +1,4 @@
-use secgate::util::{Descriptor, Handle, SimpleBuffer};
-use twizzler_rt_abi::object::{MapFlags, ObjID};
+use twizzler_rt_abi::object::ObjID;
 
 #[link(name = "pager_srv")]
 extern "C" {}
