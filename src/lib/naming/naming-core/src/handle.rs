@@ -51,6 +51,26 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         self.api.remove(self.desc, name_len).unwrap()
     }
 
+    pub fn enumerate_names_nsid(&mut self, nsid: ObjID) -> Result<Vec<NsNode>> {
+        let element_count = self.api.enumerate_names_nsid(self.desc, nsid).unwrap()?;
+
+        let mut buf_vec = vec![0u8; element_count * std::mem::size_of::<NsNode>()];
+        self.buffer.read(&mut buf_vec);
+        let mut r_vec = Vec::new();
+
+        for i in 0..element_count {
+            unsafe {
+                let entry_ptr = buf_vec
+                    .as_ptr()
+                    .offset((std::mem::size_of::<NsNode>() * i).try_into().unwrap())
+                    as *const NsNode;
+                r_vec.push(*entry_ptr);
+            }
+        }
+
+        Ok(r_vec)
+    }
+
     pub fn enumerate_names_relative(&mut self, path: &str) -> Result<Vec<NsNode>> {
         let name_len = self.write_buffer(path)?;
         let element_count = self.api.enumerate_names(self.desc, name_len).unwrap()?;

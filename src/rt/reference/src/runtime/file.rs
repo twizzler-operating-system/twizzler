@@ -15,7 +15,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{
     bindings::{create_options, io_vec},
-    fd::RawFd,
+    fd::{FdInfo, RawFd},
     io::IoFlags,
     object::MapFlags,
 };
@@ -38,6 +38,19 @@ impl FdKind {
             FdKind::File(arc) => arc.lock().unwrap().seek(pos),
             FdKind::RawFile(arc) => arc.lock().unwrap().seek(pos),
             FdKind::Stdio => Err(std::io::ErrorKind::Other.into()),
+        }
+    }
+
+    fn stat(&mut self) -> std::io::Result<FdInfo> {
+        match self {
+            FdKind::File(arc) => arc.lock().unwrap().stat(),
+            FdKind::RawFile(arc) => arc.lock().unwrap().stat(),
+            FdKind::Stdio => Ok(FdInfo {
+                flags: twizzler_rt_abi::fd::FdFlags::from_bits_truncate(0),
+                kind: twizzler_rt_abi::fd::FdKind::Other,
+                size: 0,
+                id: 0,
+            }),
         }
     }
 
@@ -171,32 +184,34 @@ impl ReferenceRuntime {
             (false, true) => MapFlags::WRITE,
             (false, false) => MapFlags::READ,
         };
-        let obj_id: ObjID = match create_opt {
+        let (obj_id, did_create) = match create_opt {
             CreateOptions::UNEXPECTED => return Err(ErrorKind::InvalidInput.into()),
-            CreateOptions::CreateKindExisting => {
-                session.get(path).map_err(|_| ErrorKind::Other)?.into()
-            }
+            CreateOptions::CreateKindExisting => (
+                session.get(path).map_err(|_| ErrorKind::Other)?.into(),
+                false,
+            ),
             CreateOptions::CreateKindNew => {
                 if session.get(path).is_ok() {
                     return Err(ErrorKind::InvalidInput.into());
                 }
-                sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?
+                (
+                    sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?,
+                    true,
+                )
             }
             CreateOptions::CreateKindEither => session
                 .get(path)
-                .map(|x| ObjID::from(x))
-                .unwrap_or(sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?),
+                .map(|x| (ObjID::from(x), false))
+                .unwrap_or((
+                    sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?,
+                    true,
+                )),
         };
 
-        let raw_len = MAX_SIZE - NULLPAGE_SIZE * 2;
         let elem = if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
             FdKind::File(Arc::new(Mutex::new(elem)))
         } else {
-            FdKind::RawFile(Arc::new(Mutex::new(RawFile::open(
-                obj_id,
-                flags,
-                raw_len.min(0x1000 * 8), //TODO
-            )?)))
+            FdKind::RawFile(Arc::new(Mutex::new(RawFile::open(obj_id, flags)?)))
         };
 
         let mut binding = get_fd_slots().lock().unwrap();
@@ -208,7 +223,10 @@ impl ReferenceRuntime {
             binding.insert(fd, elem);
             fd
         };
-        session.put(path, obj_id)?;
+
+        if did_create {
+            session.put(path, obj_id)?;
+        }
 
         drop(binding);
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
@@ -276,11 +294,11 @@ impl ReferenceRuntime {
     }
 
     pub fn fd_get_info(&self, fd: RawFd) -> Option<twizzler_rt_abi::bindings::fd_info> {
-        let binding = get_fd_slots().lock().unwrap();
-        if binding.get(fd.try_into().unwrap()).is_none() {
+        let mut binding = get_fd_slots().lock().unwrap();
+        let Some(fd) = binding.get_mut(fd.try_into().unwrap()) else {
             return None;
-        }
-        Some(twizzler_rt_abi::bindings::fd_info { flags: 0 })
+        };
+        fd.stat().ok().map(|x| x.into())
     }
 
     pub fn fd_cmd(&self, fd: RawFd, cmd: u32, arg: *const u8, ret: *mut u8) -> u32 {
@@ -322,5 +340,42 @@ impl ReferenceRuntime {
         drop(binding);
 
         file_desc.seek(pos)
+    }
+
+    pub fn fd_enumerate(
+        &self,
+        fd: RawFd,
+        buf: &mut [twizzler_rt_abi::fd::NameEntry],
+        off: usize,
+    ) -> std::io::Result<usize> {
+        tracing::debug!("fd_enumerate: {} {}", buf.len(), off);
+        let stat = self.fd_get_info(fd).ok_or(ErrorKind::Other)?;
+        let mut session = get_naming_handle().lock().unwrap();
+        let names = session.enumerate_names_nsid(stat.id.into())?;
+        if off >= names.len() {
+            return Ok(0);
+        }
+        let end = (off + buf.len()).min(names.len());
+        let count = end - off;
+        for i in 0..count {
+            let name = &names[off + i];
+            let ne = twizzler_rt_abi::fd::NameEntry::new(
+                name.name().as_bytes(),
+                twizzler_rt_abi::fd::FdInfo {
+                    kind: match name.kind {
+                        naming_core::NsNodeKind::Namespace => {
+                            twizzler_rt_abi::fd::FdKind::Directory
+                        }
+                        naming_core::NsNodeKind::Object => twizzler_rt_abi::fd::FdKind::Regular,
+                    },
+                    flags: twizzler_rt_abi::fd::FdFlags::empty(),
+                    id: name.id.raw(),
+                    size: 0,
+                }
+                .into(),
+            );
+            buf[i] = ne;
+        }
+        Ok(count)
     }
 }

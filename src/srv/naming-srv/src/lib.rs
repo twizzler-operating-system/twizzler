@@ -229,6 +229,34 @@ pub fn enumerate_names(
 }
 
 #[secure_gate(options(info))]
+pub fn enumerate_names_nsid(
+    info: &secgate::GateCallInfo,
+    desc: Descriptor,
+    id: ObjID,
+) -> Result<usize> {
+    let service = NAMINGSERVICE.get().unwrap();
+    let mut binding = service.handles.lock().unwrap();
+    let client = binding
+        .lookup_mut(info.source_context().unwrap_or(0.into()), desc)
+        .ok_or(ErrorKind::Other)?;
+
+    // TODO: make not bad
+    let vec1 = client.session.enumerate_namespace_nsid(id)?;
+    let len = vec1.len();
+
+    let mut buffer = SimpleBuffer::new(client.buffer.handle().clone());
+    let slice = unsafe {
+        std::slice::from_raw_parts(
+            vec1.as_ptr() as *const u8,
+            len * std::mem::size_of::<NsNode>(),
+        )
+    };
+    buffer.write(slice);
+
+    Ok(len)
+}
+
+#[secure_gate(options(info))]
 pub fn change_namespace(
     info: &secgate::GateCallInfo,
     desc: Descriptor,

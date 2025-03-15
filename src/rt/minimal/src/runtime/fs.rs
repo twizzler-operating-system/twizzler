@@ -9,7 +9,7 @@ use lru::LruCache;
 use rustc_alloc::sync::Arc;
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
-    object::{ObjID, NULLPAGE_SIZE},
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
     simple_mutex::Mutex,
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
@@ -244,7 +244,12 @@ impl MinimalRuntime {
         if binding.get(fd.try_into().unwrap()).is_none() {
             return None;
         }
-        Some(twizzler_rt_abi::bindings::fd_info { flags: 0 })
+        Some(twizzler_rt_abi::bindings::fd_info {
+            flags: 0,
+            kind: twizzler_rt_abi::fd::FdKind::Regular.into(),
+            len: (MAX_SIZE - NULLPAGE_SIZE * 2) as u64,
+            id: 0,
+        })
     }
 
     pub fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, IoError> {

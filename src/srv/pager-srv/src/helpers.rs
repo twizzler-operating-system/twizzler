@@ -1,9 +1,13 @@
 use std::ops::Add;
 
 use miette::{IntoDiagnostic, Result};
-use object_store::{PageRequest, PagingImp};
-use twizzler::object::ObjID;
-use twizzler_abi::pager::{ObjectRange, PhysRange};
+use object_store::{objid_to_ino, PageRequest, PagingImp};
+use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_SIZED};
+use twizzler_abi::{
+    object::MAX_SIZE,
+    pager::{ObjectRange, PhysRange},
+};
+use twizzler_rt_abi::object::Nonce;
 
 use crate::{disk::DiskPageRequest, PagerContext};
 
@@ -44,19 +48,52 @@ pub async fn page_in(
     obj_id: ObjID,
     obj_range: ObjectRange,
     phys_range: PhysRange,
-    meta: bool,
 ) -> Result<()> {
     assert_eq!(obj_range.len(), 0x1000);
     assert_eq!(phys_range.len(), 0x1000);
 
-    if meta {
-        panic!("unsupported");
-    }
-
     let imp = ctx
         .disk
         .new_paging_request::<DiskPageRequest>([phys_range.start]);
-    let start_page = obj_range.start / DiskPageRequest::page_size() as u64;
+    let mut start_page = obj_range.start / DiskPageRequest::page_size() as u64;
+
+    if obj_range.start == (MAX_SIZE as u64) - PAGE {
+        tracing::debug!("found meta page, using 0 page");
+        start_page = 0;
+        if objid_to_ino(obj_id.raw()).is_some() {
+            unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
+                ::core::slice::from_raw_parts(
+                    (p as *const T) as *const u8,
+                    ::core::mem::size_of::<T>(),
+                )
+            }
+            let len = ctx
+                .paged_ostore
+                .find_external(obj_id.raw())
+                .into_diagnostic()?;
+            tracing::debug!("building meta page for external file, len: {}", len);
+            let mut buffer = [0; PAGE as usize];
+            let meta = MetaInfo {
+                nonce: Nonce(0),
+                kuid: ObjID::new(0),
+                flags: MetaFlags(0),
+                fotcount: 0,
+                extcount: 1,
+            };
+            let me = MetaExt {
+                tag: MEXT_SIZED,
+                value: len as u64,
+            };
+            unsafe {
+                buffer[0..size_of::<MetaInfo>()].copy_from_slice(any_as_u8_slice(&meta));
+                buffer[size_of::<MetaInfo>()..(size_of::<MetaInfo>() + size_of::<MetaExt>())]
+                    .copy_from_slice(any_as_u8_slice(&me));
+            }
+            crate::physrw::fill_physical_pages(&ctx.sender, &buffer, phys_range).await?;
+            return Ok(());
+        }
+    }
+
     let nr_pages = obj_range.len() / DiskPageRequest::page_size();
     let reqs = vec![PageRequest::new(imp, start_page as i64, nr_pages as u32)];
     page_in_many(ctx, obj_id, reqs).await.map(|_| ())
@@ -67,14 +104,9 @@ pub async fn page_out(
     obj_id: ObjID,
     obj_range: ObjectRange,
     phys_range: PhysRange,
-    meta: bool,
 ) -> Result<()> {
     assert_eq!(obj_range.len(), 0x1000);
     assert_eq!(phys_range.len(), 0x1000);
-
-    if meta {
-        panic!("unsupported");
-    }
 
     tracing::debug!("pageout: {}: {:?} {:?}", obj_id, obj_range, phys_range);
     let imp = ctx

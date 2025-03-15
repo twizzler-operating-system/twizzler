@@ -8,7 +8,10 @@ use miette::Result;
 use object_store::{objid_to_ino, PageRequest};
 use secgate::util::{Descriptor, HandleMgr};
 use twizzler::object::ObjID;
-use twizzler_abi::pager::{ObjectInfo, ObjectRange, PhysRange};
+use twizzler_abi::{
+    object::MAX_SIZE,
+    pager::{ObjectInfo, ObjectRange, PhysRange},
+};
 
 use crate::{
     disk::DiskPageRequest,
@@ -147,7 +150,7 @@ impl PerObject {
         for p in mpages {
             let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
             tracing::trace!("sync: meta page: {:?} {:?}", p, phys_range);
-            page_out(ctx, self.id, p.0, phys_range, true).await?;
+            page_out(ctx, self.id, p.0, phys_range).await?;
         }
 
         Ok(())
@@ -336,7 +339,7 @@ impl PagerData {
             po.track(obj_range, phys_range);
             phys_range
         };
-        page_in(ctx, id, obj_range, phys_range, false).await?;
+        page_in(ctx, id, obj_range, phys_range).await?;
         tracing::debug!("memory page allocated successfully: {:?}", phys_range);
         return Ok(phys_range);
     }

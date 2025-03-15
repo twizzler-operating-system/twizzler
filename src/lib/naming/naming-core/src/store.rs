@@ -265,6 +265,12 @@ impl NameSession<'_> {
         Ok(items)
     }
 
+    pub fn enumerate_namespace_nsid(&self, id: ObjID) -> Result<std::vec::Vec<NsNode>> {
+        let ns = self.open_namespace(id, false)?;
+        let items = ns.items();
+        Ok(items)
+    }
+
     pub fn change_namespace<P: AsRef<Path>>(&mut self, name: P) -> Result<()> {
         let (node, container) = self.namei_exist(name)?;
         match node.kind {

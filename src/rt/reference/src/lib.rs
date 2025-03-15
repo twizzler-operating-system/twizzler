@@ -14,6 +14,7 @@
 #![feature(naked_functions)]
 #![feature(c_variadic)]
 #![feature(linkage)]
+#![feature(c_size_t)]
 
 pub(crate) mod arch;
 

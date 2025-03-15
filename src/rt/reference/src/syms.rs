@@ -342,6 +342,24 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_cmd(
 }
 check_ffi_type!(twz_rt_fd_cmd, _, _, _, _);
 
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_enumerate_names(
+    fd: descriptor,
+    buf: *mut twizzler_rt_abi::bindings::name_entry,
+    len: ::core::ffi::c_size_t,
+    off: ::core::ffi::c_size_t,
+) -> ::core::ffi::c_ssize_t {
+    match OUR_RUNTIME.fd_enumerate(
+        fd,
+        unsafe { core::slice::from_raw_parts_mut(buf, len) },
+        off,
+    ) {
+        Ok(len) => len as isize,
+        Err(_) => -1,
+    }
+}
+check_ffi_type!(twz_rt_fd_enumerate_names, _, _, _, _);
+
 // io.h
 
 fn std_error_to_io_error(err: std::io::ErrorKind) -> twizzler_rt_abi::io::IoError {

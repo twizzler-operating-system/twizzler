@@ -16,6 +16,7 @@ pub trait NamerAPI {
     fn open_handle(&self) -> SecGateReturn<Option<(Descriptor, ObjID)>>;
     fn close_handle(&self, desc: Descriptor) -> SecGateReturn<()>;
     fn enumerate_names(&self, desc: Descriptor, name_len: usize) -> SecGateReturn<Result<usize>>;
+    fn enumerate_names_nsid(&self, desc: Descriptor, id: ObjID) -> SecGateReturn<Result<usize>>;
     fn remove(&self, desc: Descriptor, name_len: usize) -> SecGateReturn<Result<()>>;
     fn change_namespace(&self, desc: Descriptor, name_len: usize) -> SecGateReturn<Result<()>>;
 }
