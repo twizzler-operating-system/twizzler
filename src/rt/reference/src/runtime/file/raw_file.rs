@@ -1,8 +1,12 @@
 use std::io::{ErrorKind, Read, SeekFrom, Write};
 
-use twizzler_abi::object::{ObjID, NULLPAGE_SIZE};
-use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
+use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_rt_abi::{
+    fd::FdInfo,
+    object::{MapFlags, ObjectHandle, MEXT_SIZED},
+};
 
+use super::FdKind;
 use crate::OUR_RUNTIME;
 
 #[derive(Clone)]
@@ -13,11 +17,15 @@ pub struct RawFile {
 }
 
 impl RawFile {
-    pub fn open(obj_id: ObjID, flags: MapFlags, len: usize) -> std::io::Result<Self> {
+    pub fn open(obj_id: ObjID, flags: MapFlags) -> std::io::Result<Self> {
         let handle = OUR_RUNTIME.map_object(obj_id, flags).unwrap();
+        let len = handle
+            .find_meta_ext(MEXT_SIZED)
+            .map(|me| me.value)
+            .unwrap_or((MAX_SIZE - NULLPAGE_SIZE * 2) as u64);
         Ok(Self {
             pos: 0,
-            len: len as u64,
+            len,
             handle,
         })
     }
@@ -35,6 +43,15 @@ impl RawFile {
             self.pos = new_pos as u64;
             Ok(self.pos.try_into().unwrap())
         }
+    }
+
+    pub fn stat(&self) -> std::io::Result<FdInfo> {
+        Ok(FdInfo {
+            kind: twizzler_rt_abi::fd::FdKind::Regular,
+            size: self.len,
+            flags: twizzler_rt_abi::fd::FdFlags::empty(),
+            id: self.handle.id().raw(),
+        })
     }
 }
 

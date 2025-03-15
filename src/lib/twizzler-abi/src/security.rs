@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-use crate::{marker::BaseType, object::ObjID};
+use crate::object::ObjID;
 
 #[repr(C)]
 pub struct SecurityContextBase {
@@ -14,15 +14,5 @@ bitflags! {
         const WRITE = 2;
         const EXEC = 4;
         const USE = 8;
-    }
-}
-
-impl BaseType for SecurityContextBase {
-    fn init<T>(_t: T) -> Self {
-        todo!()
-    }
-
-    fn tags() -> &'static [(crate::marker::BaseVersion, crate::marker::BaseTag)] {
-        todo!()
     }
 }

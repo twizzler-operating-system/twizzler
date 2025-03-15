@@ -9,10 +9,7 @@ use twizzler_rt_abi::thread::SpawnError;
 
 #[cfg(not(feature = "kernel"))]
 use crate::syscall::*;
-use crate::{
-    marker::BaseType,
-    syscall::{ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep},
-};
+use crate::syscall::{ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep};
 #[allow(unused_imports)]
 use crate::{
     object::{ObjID, Protections},
@@ -31,16 +28,6 @@ pub struct ThreadRepr {
     #[cfg(feature = "kernel")]
     pub status: AtomicU64,
     code: AtomicU64,
-}
-
-impl BaseType for ThreadRepr {
-    fn init<T>(_t: T) -> Self {
-        Self::default()
-    }
-
-    fn tags() -> &'static [(crate::marker::BaseVersion, crate::marker::BaseTag)] {
-        todo!()
-    }
 }
 
 /// Possible execution states for a thread. The transitions available are:

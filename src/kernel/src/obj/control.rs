@@ -5,7 +5,7 @@
 
 use core::ptr::NonNull;
 
-use twizzler_abi::{device::CacheType, marker::BaseType, object::Protections};
+use twizzler_abi::{device::CacheType, object::Protections};
 
 use crate::{
     memory::{
@@ -39,7 +39,7 @@ pub struct ControlObjectCacher<Base> {
 unsafe impl<Base> Send for ControlObjectCacher<Base> {}
 unsafe impl<Base> Sync for ControlObjectCacher<Base> {}
 
-impl<Base: BaseType> ControlObjectCacher<Base> {
+impl<Base> ControlObjectCacher<Base> {
     /// Create a new control object cacher, making a new, blank object for it. Initialize the base
     /// with the provided initial data.
     pub fn new(base: Base) -> Self {

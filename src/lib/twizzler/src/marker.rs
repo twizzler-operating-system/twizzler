@@ -7,6 +7,10 @@
 ///   - Be FFI safe.
 ///   - Be stable in-memory (independent of architecture). This means, among other things, that the
 ///     type must be fixed-width. For example, usize is not `Invariant`.
+#[rustc_on_unimplemented(
+    message = "`{Self}` is not safe to be stored in an object",
+    label = "`{Self}` is not safe to be stored in an object"
+)]
 pub unsafe trait Invariant {}
 
 unsafe impl Invariant for u8 {}
@@ -49,7 +53,10 @@ pub struct PhantomStoreEffect;
 
 impl !StoreCopy for PhantomStoreEffect {}
 impl !Unpin for PhantomStoreEffect {}
-
+#[rustc_on_unimplemented(
+    message = "`{Self}` is not safe to be stored as an object's base",
+    label = "`{Self}` is not safe to be stored as an object's base"
+)]
 pub trait BaseType {
     /// The fingerprint of this type.
     fn fingerprint() -> u64 {

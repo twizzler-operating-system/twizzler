@@ -12,7 +12,10 @@ use twizzler_abi::{
         ObjectCreateFlags,
     },
 };
-use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
+use twizzler_rt_abi::{
+    fd::FdInfo,
+    object::{MapFlags, ObjectHandle},
+};
 
 use super::{CreateOptions, OperationOptions};
 use crate::OUR_RUNTIME;
@@ -104,6 +107,23 @@ impl FileDesc {
             self.pos = new_pos as u64;
             Ok(self.pos.try_into().unwrap())
         }
+    }
+
+    pub fn stat(&self) -> std::io::Result<FdInfo> {
+        let metadata_handle = unsafe {
+            &mut *self
+                .handle
+                .start()
+                .offset(NULLPAGE_SIZE as isize)
+                .cast::<FileMetadata>()
+        };
+
+        Ok(FdInfo {
+            kind: twizzler_rt_abi::fd::FdKind::Regular,
+            size: metadata_handle.size,
+            flags: twizzler_rt_abi::fd::FdFlags::empty(),
+            id: self.handle.id().raw(),
+        })
     }
 
     pub fn fd_cmd(&mut self, cmd: u32, _arg: *const u8, _ret: *mut u8) -> u32 {

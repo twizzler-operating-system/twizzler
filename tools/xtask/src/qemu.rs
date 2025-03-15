@@ -1,8 +1,8 @@
 use std::{
     fs::OpenOptions,
-    io::{BufRead, BufReader, Stdin, Write},
+    io::{BufRead, BufReader, Write},
     path::Path,
-    process::{Command, ExitStatus, Stdio},
+    process::{Command, Stdio},
     str::FromStr,
     time::Duration,
 };
@@ -169,10 +169,6 @@ impl QemuCommand {
             }
         }
     }
-
-    pub fn status(&mut self) -> std::io::Result<ExitStatus> {
-        self.cmd.status()
-    }
 }
 
 pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
@@ -204,7 +200,8 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
                     if line.trim().starts_with("REPORT ") {
                         let line = line.trim().strip_prefix("REPORT ").unwrap();
                         let report = unittest_report::Report::from_str(line.trim());
-                        if let Ok(ReportStatus::Ready(report)) = report.map(|report| report.status) {
+                        if let Ok(ReportStatus::Ready(report)) = report.map(|report| report.status)
+                        {
                             ret = Some(report);
                             break;
                         }
@@ -224,7 +221,11 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
                 if let Some(es) = child.wait_timeout(Duration::from_secs(10))? {
                     break Some(es);
                 }
-                child_stdin.as_mut().unwrap().write_all(b"status\n").unwrap();
+                child_stdin
+                    .as_mut()
+                    .unwrap()
+                    .write_all(b"status\n")
+                    .unwrap();
                 i += 1;
                 if i > 10 {
                     break None;

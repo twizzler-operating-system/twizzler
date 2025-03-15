@@ -98,15 +98,6 @@ pub struct MmioInfo {
     pub info: u64,
 }
 
-impl crate::marker::BaseType for MmioInfo {
-    fn init<T>(_t: T) -> Self {
-        todo!()
-    }
-
-    fn tags() -> &'static [(crate::marker::BaseVersion, crate::marker::BaseTag)] {
-        todo!()
-    }
-}
 /// An mmio object has, at its base, a [MmioInfo] struct. At this offset, the mmio mapping actually
 /// starts.
 pub const MMIO_OFFSET: usize = 0x2000;

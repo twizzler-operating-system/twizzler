@@ -45,6 +45,13 @@ fn recurse(handle: &mut StaticNamingHandle, foo: &mut PathBuf) {
 fn main() {
     let args = Args::parse();
 
+    use std::fs;
+
+    let paths = fs::read_dir(&args.path.as_ref().unwrap_or(&"/".to_string())).unwrap();
+    for path in paths {
+        println!("Name: {}", path.unwrap().path().display())
+    }
+
     let mut namer = static_naming_factory().unwrap();
 
     if args.recursive {

@@ -39,6 +39,14 @@ impl NamerAPI for StaticNamingAPI {
         naming_srv::enumerate_names(desc, name_len)
     }
 
+    fn enumerate_names_nsid(
+        &self,
+        desc: Descriptor,
+        id: ObjID,
+    ) -> secgate::SecGateReturn<Result<usize>> {
+        naming_srv::enumerate_names_nsid(desc, id)
+    }
+
     fn remove(&self, desc: Descriptor, name_len: usize) -> secgate::SecGateReturn<Result<()>> {
         naming_srv::remove(desc, name_len)
     }
