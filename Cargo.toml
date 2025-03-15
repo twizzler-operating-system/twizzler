@@ -42,7 +42,7 @@ members = [
     "src/srv/devmgr-srv",
     "src/bin/unittest",
     "src/bin/unittest/unittest-report", "src/bin/serialecho", "tools/serialtest",
-    "src/lib/pager/pager-dynamic", "src/bin/cat",
+    "src/lib/pager/pager-dynamic", "src/bin/uuhelper",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -70,7 +70,7 @@ initrd = [
     "crate:gadget",
     "crate:unittest",
     "crate:serialecho",
-    "crate:cat",
+    "crate:uuhelper",
     #"third-party:hello-world-rs"
 ]
 
@@ -86,6 +86,8 @@ twizzler-abi = { path = "src/lib/twizzler-abi" }
 [patch.crates-io]
 #ring = { git = "https://github.com/twizzler-operating-system/ring-twizzler.git", branch = "twizzler" }
 getrandom = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler" }
+# Note: we can have multiple versions. This key ("getrandom02") is ignored in favor of the "package" field.
+getrandom02 = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler-0.2", package = "getrandom" }
 polling = { git = "https://github.com/twizzler-operating-system/polling.git", branch = "twizzler" }
 async-io = { git = "https://github.com/twizzler-operating-system/async-io.git", branch = "twizzler" }
 async-executor = { git = "https://github.com/twizzler-operating-system/async-executor.git", branch = "twizzler" }
@@ -96,3 +98,8 @@ parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.
 # lock_api comes from the parking_lot repo
 lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
 filetime = { git = "https://github.com/CPTforever/filetime.git", branch = "twizzler" }
+iana-time-zone = { git = "https://github.com/twizzler-operating-system/iana-time-zone.git", branch = "twizzler" }
+hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", branch = "twizzler" }
+ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }
+memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
+
