@@ -9,23 +9,29 @@ use twizzler::{
 };
 use twizzler_rt_abi::object::MapFlags;
 
-use super::{Namespace, NsNode, NsNodeKind};
+use super::{Namespace, NsNode, NsNodeKind, ParentInfo};
 use crate::Result;
 
 #[derive(Clone)]
 pub struct NamespaceObject {
     persist: bool,
     obj: Arc<Mutex<Option<VecObject<NsNode, VecObjectAlloc>>>>,
+    parent_info: Option<ParentInfo>,
 }
 
 impl NamespaceObject {
-    pub fn new(persist: bool, parent: Option<ObjID>) -> Result<Self> {
+    pub fn new(
+        persist: bool,
+        parent: Option<ObjID>,
+        parent_info: Option<ParentInfo>,
+    ) -> Result<Self> {
         let mut builder = ObjectBuilder::default();
         if persist {
             builder = builder.persist();
         }
         let this = Self {
             persist,
+            parent_info,
             obj: Arc::new(Mutex::new(Some(
                 VecObject::new(builder).map_err(|_| ErrorKind::Other)?,
             ))),
@@ -45,13 +51,14 @@ impl NamespaceObject {
 }
 
 impl Namespace for NamespaceObject {
-    fn open(id: ObjID, persist: bool) -> Result<Self> {
+    fn open(id: ObjID, persist: bool, parent_info: Option<ParentInfo>) -> Result<Self> {
         let mut map_flags = MapFlags::READ | MapFlags::WRITE;
         if persist {
             map_flags.insert(MapFlags::PERSIST);
         }
         Ok(Self {
             persist,
+            parent_info,
             obj: Arc::new(Mutex::new(Some(VecObject::from(
                 Object::map(id, map_flags).map_err(|_| ErrorKind::Other)?,
             )))),
@@ -89,8 +96,8 @@ impl Namespace for NamespaceObject {
         })
     }
 
-    fn parent_id(&self) -> Option<ObjID> {
-        self.find("..").map(|n| n.id)
+    fn parent(&self) -> Option<&ParentInfo> {
+        self.parent_info.as_ref()
     }
 
     fn id(&self) -> ObjID {

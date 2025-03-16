@@ -97,7 +97,7 @@ twizzler-rt-abi = { path = "src/abi/rt-abi" }
 parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
 # lock_api comes from the parking_lot repo
 lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
-filetime = { git = "https://github.com/CPTforever/filetime.git", branch = "twizzler" }
+filetime = { git = "https://github.com/twizzler-operating-system/filetime.git", branch = "twizzler" }
 iana-time-zone = { git = "https://github.com/twizzler-operating-system/iana-time-zone.git", branch = "twizzler" }
 hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", branch = "twizzler" }
 ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }

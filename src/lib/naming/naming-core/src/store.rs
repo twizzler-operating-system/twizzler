@@ -59,8 +59,23 @@ impl NsNode {
     }
 }
 
+#[derive(Clone)]
+struct ParentInfo {
+    ns: Arc<dyn Namespace>,
+    name_in_parent: String,
+}
+
+impl ParentInfo {
+    fn new(ns: Arc<dyn Namespace>, name_in_parent: impl ToString) -> Self {
+        Self {
+            ns,
+            name_in_parent: name_in_parent.to_string(),
+        }
+    }
+}
+
 trait Namespace {
-    fn open(id: ObjID, persist: bool) -> Result<Self>
+    fn open(id: ObjID, persist: bool, parent_info: Option<ParentInfo>) -> Result<Self>
     where
         Self: Sized;
 
@@ -70,9 +85,7 @@ trait Namespace {
 
     fn remove(&self, name: &str) -> Option<NsNode>;
 
-    fn parent_id(&self) -> Option<ObjID> {
-        self.find("..").map(|n| n.id)
-    }
+    fn parent(&self) -> Option<&ParentInfo>;
 
     fn id(&self) -> ObjID;
 
@@ -95,7 +108,7 @@ unsafe impl Sync for NameStore {}
 impl NameStore {
     pub fn new() -> NameStore {
         let this = NameStore {
-            nameroot: Arc::new(NamespaceObject::new(false, None).unwrap()),
+            nameroot: Arc::new(NamespaceObject::new(false, None, None).unwrap()),
         };
         this.nameroot
             .insert(NsNode::ext(ArrayString::from("ext").unwrap()));
@@ -145,11 +158,16 @@ pub struct NameSession<'a> {
 }
 
 impl NameSession<'_> {
-    fn open_namespace(&self, id: ObjID, persist: bool) -> Result<Arc<dyn Namespace>> {
+    fn open_namespace(
+        &self,
+        id: ObjID,
+        persist: bool,
+        parent_info: Option<ParentInfo>,
+    ) -> Result<Arc<dyn Namespace>> {
         Ok(if id == NSID_EXTERNAL || objid_to_ino(id.raw()).is_some() {
-            Arc::new(ExtNamespace::open(id, persist)?)
+            Arc::new(ExtNamespace::open(id, persist, parent_info)?)
         } else {
-            Arc::new(NamespaceObject::open(id, persist)?)
+            Arc::new(NamespaceObject::open(id, persist, parent_info)?)
         })
     }
 
@@ -175,7 +193,9 @@ impl NameSession<'_> {
                     return Err(ErrorKind::NotADirectory);
                 }
                 tracing::debug!("traversing to {} => {}", node.name, node.id);
-                namespace = self.open_namespace(node.id, namespace.persist())?;
+                let parent_info = ParentInfo::new(namespace, node.name());
+                namespace =
+                    self.open_namespace(node.id, parent_info.ns.persist(), Some(parent_info))?;
             }
             match item {
                 Component::Prefix(_) => {
@@ -194,12 +214,15 @@ impl NameSession<'_> {
                     remname = PathBuf::from(".");
                 }
                 Component::ParentDir => {
-                    let parent = namespace.parent_id().ok_or(ErrorKind::InvalidFilename)?;
-                    namespace = self
-                        .open_namespace(parent, namespace.persist())
-                        .ok()
-                        .ok_or(ErrorKind::InvalidFilename)?;
-                    remname = PathBuf::from("..");
+                    if let Some(parent) = namespace.parent() {
+                        node = Some(NsNode::new(
+                            NsNodeKind::Namespace,
+                            parent.ns.id(),
+                            &parent.name_in_parent,
+                        )?);
+                        namespace = parent.ns.clone();
+                        remname = PathBuf::from("..");
+                    }
                     continue;
                 }
                 Component::Normal(os_str) => {
@@ -227,7 +250,14 @@ impl NameSession<'_> {
 
     pub fn mkns<P: AsRef<Path>>(&self, name: P, persist: bool) -> Result<()> {
         let (_node, container, remname) = self.namei(&name)?;
-        let ns = NamespaceObject::new(persist, Some(container.id()))?;
+        let ns = NamespaceObject::new(
+            persist,
+            Some(container.id()),
+            Some(ParentInfo::new(
+                container.clone(),
+                remname.display().to_string(),
+            )),
+        )?;
         container.insert(NsNode::new(NsNodeKind::Namespace, ns.id(), remname)?);
         Ok(())
     }
@@ -246,12 +276,16 @@ impl NameSession<'_> {
 
     pub fn enumerate_namespace<P: AsRef<Path>>(&self, name: P) -> Result<std::vec::Vec<NsNode>> {
         tracing::debug!("enumerate: {:?}", name.as_ref());
-        let (node, _) = self.namei_exist(name)?;
+        let (node, container) = self.namei_exist(name)?;
         if node.kind != NsNodeKind::Namespace {
             return Err(ErrorKind::NotADirectory);
         }
         tracing::debug!("opening namespace: {}", node.id);
-        let ns = self.open_namespace(node.id, false)?;
+        let ns = self.open_namespace(
+            node.id,
+            false,
+            Some(ParentInfo::new(container, node.name())),
+        )?;
         tracing::debug!("found namespace with {:?} items", ns.len());
         let items = ns.items();
         tracing::debug!("collected: {:?}", items);
@@ -259,7 +293,7 @@ impl NameSession<'_> {
     }
 
     pub fn enumerate_namespace_nsid(&self, id: ObjID) -> Result<std::vec::Vec<NsNode>> {
-        let ns = self.open_namespace(id, false)?;
+        let ns = self.open_namespace(id, false, None)?;
         let items = ns.items();
         Ok(items)
     }
@@ -268,7 +302,11 @@ impl NameSession<'_> {
         let (node, container) = self.namei_exist(name)?;
         match node.kind {
             NsNodeKind::Namespace => {
-                self.working_ns = Some(self.open_namespace(node.id, container.persist())?);
+                self.working_ns = Some(self.open_namespace(
+                    node.id,
+                    container.persist(),
+                    Some(ParentInfo::new(container, node.name())),
+                )?);
                 Ok(())
             }
             NsNodeKind::Object => Err(ErrorKind::Other),

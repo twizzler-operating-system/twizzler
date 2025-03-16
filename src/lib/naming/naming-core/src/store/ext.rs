@@ -1,19 +1,20 @@
 use twizzler::object::ObjID;
 
-use super::{Namespace, NsNode, NsNodeKind};
+use super::{Namespace, NsNode, NsNodeKind, ParentInfo};
 use crate::Result;
 
 #[derive(Clone)]
 pub struct ExtNamespace {
     id: ObjID,
+    parent_info: Option<ParentInfo>,
 }
 
 impl Namespace for ExtNamespace {
-    fn open(id: ObjID, _persist: bool) -> Result<Self>
+    fn open(id: ObjID, _persist: bool, parent_info: Option<ParentInfo>) -> Result<Self>
     where
         Self: Sized,
     {
-        Ok(Self { id })
+        Ok(Self { id, parent_info })
     }
 
     fn find(&self, name: &str) -> Option<NsNode> {
@@ -34,6 +35,10 @@ impl Namespace for ExtNamespace {
 
     fn persist(&self) -> bool {
         false
+    }
+
+    fn parent(&self) -> Option<&ParentInfo> {
+        self.parent_info.as_ref()
     }
 
     fn items(&self) -> Vec<NsNode> {
