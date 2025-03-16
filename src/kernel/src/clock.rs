@@ -1,6 +1,7 @@
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use arrayvec::ArrayVec;
 use twizzler_abi::syscall::{
     Clock, ClockID, ClockInfo, ClockKind, FemtoSeconds, ReadClockListError,
 };
@@ -30,30 +31,26 @@ pub fn statclock(dt: Nanoseconds) {
 }
 
 const NR_WINDOWS: usize = 1024;
+const NR_SLOTS: usize = 1024;
 
-struct TimeoutOnce<T: Send, F: FnOnce(T)> {
-    cb: F,
-    data: T,
+struct TimeoutOnce {
+    cb: fn(Option<ThreadRef>, usize),
+    data: usize,
+    th: Option<ThreadRef>,
 }
 
-impl<T: Send, F: FnOnce(T)> TimeoutOnce<T, F> {
-    fn new(cb: F, data: T) -> Self {
-        Self { cb, data }
+impl TimeoutOnce {
+    fn new(cb: fn(Option<ThreadRef>, usize), th: Option<ThreadRef>, data: usize) -> Self {
+        Self { cb, data, th }
     }
-}
 
-trait Timeout {
-    fn call(self: Box<Self>);
-}
-
-impl<T: Send, F: FnOnce(T)> Timeout for TimeoutOnce<T, F> {
-    fn call(self: Box<Self>) {
-        (self.cb)(self.data)
+    fn call(self) {
+        (self.cb)(self.th, self.data)
     }
 }
 
 struct TimeoutEntry {
-    timeout: Box<dyn Timeout + Send>,
+    timeout: TimeoutOnce,
     expire_ticks: u64,
     key: usize,
 }
@@ -78,11 +75,11 @@ impl TimeoutEntry {
 
 #[derive(Debug)]
 struct TimeoutQueue {
-    queues: [Vec<TimeoutEntry>; NR_WINDOWS],
+    queues: [ArrayVec<TimeoutEntry, NR_SLOTS>; NR_WINDOWS],
     current: usize,
     next_wake: usize,
     soft_current: usize,
-    keys: Vec<usize>,
+    keys: ArrayVec<usize, NR_SLOTS>,
     next_key: usize,
 }
 
@@ -111,13 +108,13 @@ impl Drop for TimeoutKey {
 
 impl TimeoutQueue {
     const fn new() -> Self {
-        const INIT: Vec<TimeoutEntry> = Vec::new();
+        const INIT: ArrayVec<TimeoutEntry, NR_SLOTS> = ArrayVec::new_const();
         Self {
             queues: [INIT; NR_WINDOWS],
             current: 0,
             next_wake: 0,
             soft_current: 0,
-            keys: Vec::new(),
+            keys: ArrayVec::new_const(),
             next_key: 0,
         }
     }
@@ -165,7 +162,7 @@ impl TimeoutQueue {
         NR_WINDOWS as u64
     }
 
-    fn insert(&mut self, time: Nanoseconds, timeout: Box<dyn Timeout + Send>) -> TimeoutKey {
+    fn insert(&mut self, time: Nanoseconds, timeout: TimeoutOnce) -> Option<TimeoutKey> {
         let ticks = nano_to_ticks(time);
         let expire_ticks = self.current + ticks as usize;
         let window = expire_ticks % NR_WINDOWS;
@@ -175,17 +172,20 @@ impl TimeoutQueue {
             expire_ticks: expire_ticks as u64,
             key,
         };
-        self.queues[window].push(entry);
+        if self.queues[window].try_push(entry).is_err() {
+            self.release_key(key);
+            return None;
+        }
         if expire_ticks < self.next_wake {
             // TODO: #41 signal CPU to wake up early.
         }
-        TimeoutKey { key, window }
+        Some(TimeoutKey { key, window })
     }
 
     // Remove a timeout key. Returns true if the key was actually removed (timeout hasn't fired).
     fn remove(&mut self, key: &TimeoutKey) -> bool {
         let old_len = self.queues[key.window].len();
-        for _ in self.queues[key.window].extract_if(|entry| entry.key == key.key) {}
+        self.queues[key.window].retain(|entry| entry.key != key.key);
         self.release_key(key.key);
         // Did we remove anything?
         old_len != self.queues[key.window].len()
@@ -227,13 +227,14 @@ pub fn print_info() {
 
 fn timeout_thread_set_has_work() {}
 
-pub fn register_timeout_callback<T: 'static + Send, F: FnOnce(T) + Send + 'static>(
+pub fn register_timeout_callback(
     time: Nanoseconds,
-    cb: F,
-    data: T,
-) -> TimeoutKey {
-    let timeout = TimeoutOnce::new(cb, data);
-    TIMEOUT_QUEUE.lock().insert(time, Box::new(timeout))
+    cb: fn(Option<ThreadRef>, usize),
+    thread: Option<ThreadRef>,
+    data: usize,
+) -> Option<TimeoutKey> {
+    let timeout = TimeoutOnce::new(cb, thread, data);
+    TIMEOUT_QUEUE.lock().insert(time, timeout)
 }
 
 extern "C" fn soft_timeout_clock() {

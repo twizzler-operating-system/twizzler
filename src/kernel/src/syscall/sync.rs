@@ -134,7 +134,8 @@ fn wakeup(wake: &ThreadSyncWake) -> Result<usize, ThreadSyncError> {
     Ok(obj.wakeup_word(offset, wake.count))
 }
 
-fn thread_sync_cb_timeout(thread: ThreadRef) {
+fn thread_sync_cb_timeout(thread: Option<ThreadRef>, _x: usize) {
+    let thread = thread.unwrap();
     if thread.reset_sync_sleep() {
         add_to_requeue(thread);
     }
@@ -143,6 +144,7 @@ fn thread_sync_cb_timeout(thread: ThreadRef) {
 
 fn simple_timed_sleep(timeout: &&mut Duration) {
     let thread = current_thread_ref().unwrap();
+    let cloned_th = thread.clone();
     thread.set_sync_sleep();
     requeue_all();
     let guard = thread.enter_critical();
@@ -151,9 +153,19 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
         // TODO: fix all our time types
         timeout.as_nanos() as u64,
         thread_sync_cb_timeout,
-        thread.clone(),
+        Some(cloned_th),
+        0,
     );
-    finish_blocking(guard);
+    if timeout_key.is_none() {
+        drop(guard);
+        logln!("warn -- timeout failed setup");
+        if thread.reset_sync_sleep() {
+            add_to_requeue(thread);
+        }
+        requeue_all();
+    } else {
+        finish_blocking(guard);
+    }
     drop(timeout_key);
 }
 
@@ -200,31 +212,38 @@ pub fn sys_thread_sync(
         }
     }
     let thread = current_thread_ref().unwrap();
-    let should_sleep = unsleeps.len() == num_sleepers && num_sleepers > 0;
+    let mut should_sleep = unsleeps.len() == num_sleepers && num_sleepers > 0;
     let was_timedout = {
+        let cloned_th = thread.clone();
         requeue_all();
         let guard = thread.enter_critical();
         thread.set_sync_sleep_done();
         let timeout_key = if should_sleep {
             let timeout_key = timeout.map(|timeout| {
-                crate::clock::register_timeout_callback(
+                let tk = crate::clock::register_timeout_callback(
                     // TODO: fix all our time types
                     timeout.as_nanos() as u64,
                     thread_sync_cb_timeout,
-                    thread.clone(),
-                )
+                    Some(cloned_th),
+                    0,
+                );
+                if tk.is_none() {
+                    should_sleep = false;
+                }
+                tk
             });
             timeout_key
         } else {
             None
-        };
+        }
+        .flatten();
         if should_sleep {
             finish_blocking(guard);
         } else {
             drop(guard);
         }
         // If we have a timeout key, AND we don't find it during release, the timeout fired.
-        timeout_key.map(|tk| !tk.release()).unwrap_or(false)
+        timeout_key.is_some_and(|tk| !tk.release())
     };
     for op in unsleeps {
         undo_sleep(op);

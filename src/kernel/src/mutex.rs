@@ -148,6 +148,7 @@ impl<T> Mutex<T> {
         LockGuard {
             lock: self,
             prev_donated_priority: None,
+            dont_unlock_on_drop: false,
         }
     }
 
@@ -168,6 +169,19 @@ impl<T> Mutex<T> {
 pub struct LockGuard<'a, T> {
     lock: &'a Mutex<T>,
     prev_donated_priority: Option<Priority>,
+    dont_unlock_on_drop: bool,
+}
+
+impl<'a, T> LockGuard<'a, T> {
+    pub unsafe fn force_unlock(&mut self) {
+        self.dont_unlock_on_drop = true;
+        self.lock.release();
+    }
+
+    pub unsafe fn force_relock(self) -> Self {
+        let new_guard = self.lock.lock();
+        new_guard
+    }
 }
 
 impl<T> core::ops::Deref for LockGuard<'_, T> {
@@ -185,6 +199,9 @@ impl<T> core::ops::DerefMut for LockGuard<'_, T> {
 
 impl<T> Drop for LockGuard<'_, T> {
     fn drop(&mut self) {
+        if self.dont_unlock_on_drop {
+            return;
+        }
         /*
         if let Some(ref prev) = self.prev_donated_priority {
             if let Some(thread) = current_thread_ref() {

@@ -9,7 +9,7 @@ use core::{
 use slabmalloc::{AllocationError, Allocator, LargeObjectPage, ObjectPage, ZoneAllocator};
 
 use super::context::{Context, KernelMemoryContext};
-use crate::spinlock::Spinlock;
+use crate::{spinlock::Spinlock, thread::current_thread_ref};
 
 #[alloc_error_handler]
 fn alloc_error_handler(layout: Layout) -> ! {
@@ -72,7 +72,16 @@ impl<Ctx: KernelMemoryContext + 'static> KernelAllocatorInner<Ctx> {
 }
 
 unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<Ctx> {
+    #[track_caller]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if current_thread_ref().is_some_and(|ct| ct.is_critical()) {
+            logln!(
+                "warn -- critical alloc: {:?}: {}",
+                layout,
+                core::panic::Location::caller()
+            );
+            crate::panic::backtrace(false, None);
+        }
         let mut inner = self.inner.lock();
 
         if inner.is_none() {

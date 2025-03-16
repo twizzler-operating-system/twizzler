@@ -9,7 +9,6 @@ use crate::{
     mutex::Mutex,
     obj::{LookupFlags, ObjectRef, PageNumber},
     once::Once,
-    syscall::sync::finish_blocking,
     thread::current_thread_ref,
 };
 
@@ -80,6 +79,12 @@ lazy_static::lazy_static! {
 }
 
 pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
+    if current_thread_ref().is_some_and(|ct| ct.is_critical()) {
+        logln!(
+            "warn -- pager activation from critical thread {}",
+            core::panic::Location::caller()
+        );
+    }
     loop {
         match crate::obj::lookup_object(id, LookupFlags::empty()) {
             crate::obj::LookupResult::Found(arc) => return Some(arc),
@@ -97,12 +102,8 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
             queues::submit_pager_request(pager_req);
         }
 
-        let mut mgr = INFLIGHT_MGR.lock();
-        let thread = current_thread_ref().unwrap();
-        if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
-            drop(mgr);
-            finish_blocking(guard);
-        };
+        let mgr = INFLIGHT_MGR.lock();
+        InflightManager::wait(mgr, inflight);
     }
 }
 
@@ -117,15 +118,17 @@ pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
         queues::submit_pager_request(pager_req);
     }
 
-    let mut mgr = INFLIGHT_MGR.lock();
-    let thread = current_thread_ref().unwrap();
-    if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
-        drop(mgr);
-        finish_blocking(guard);
-    };
+    let mgr = INFLIGHT_MGR.lock();
+    InflightManager::wait(mgr, inflight);
 }
 
 fn cmd_object(req: ReqKind) {
+    if current_thread_ref().is_some_and(|ct| ct.is_critical()) {
+        logln!(
+            "warn -- pager activation from critical thread {}",
+            core::panic::Location::caller()
+        );
+    }
     let mut mgr = INFLIGHT_MGR.lock();
     if !mgr.is_ready() {
         return;
@@ -136,12 +139,8 @@ fn cmd_object(req: ReqKind) {
         queues::submit_pager_request(pager_req);
     }
 
-    let mut mgr = INFLIGHT_MGR.lock();
-    let thread = current_thread_ref().unwrap();
-    if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
-        drop(mgr);
-        finish_blocking(guard);
-    };
+    let mgr = INFLIGHT_MGR.lock();
+    InflightManager::wait(mgr, inflight);
 }
 
 pub fn sync_object(id: ObjID) {
@@ -156,7 +155,14 @@ pub fn create_object(id: ObjID) {
     cmd_object(ReqKind::new_create(id));
 }
 
+#[track_caller]
 pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize) {
+    if current_thread_ref().is_some_and(|ct| ct.is_critical()) {
+        logln!(
+            "warn -- pager activation from critical thread {}",
+            core::panic::Location::caller()
+        );
+    }
     if !obj.use_pager() {
         return;
     }

@@ -63,7 +63,7 @@ impl QemuCommand {
             .create(true)
             .open("target/nvme.img")
         {
-            f.set_len(1024 * 1024 * 1024 * 100).unwrap();
+            f.set_len(1024 * 1024 * 1024 * 300).unwrap();
         }
 
         std::env::set_var(
@@ -82,7 +82,6 @@ impl QemuCommand {
                 .arg("-E")
                 .arg("test_fs")
                 .arg("target/nvme.img")
-                .arg("10000000")
                 .status()
                 .unwrap()
                 .success()

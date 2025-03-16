@@ -10,7 +10,7 @@ use twizzler_abi::{
 };
 
 use super::{request::ReqKind, Request};
-use crate::thread::{CriticalGuard, ThreadRef};
+use crate::mutex::LockGuard;
 
 pub struct Inflight {
     id: usize,
@@ -117,15 +117,17 @@ impl InflightManager {
         }
     }
 
-    pub fn setup_wait<'a>(
-        &mut self,
-        inflight: &Inflight,
-        thread: &'a ThreadRef,
-    ) -> Option<CriticalGuard<'a>> {
-        let Some(request) = self.requests.get_mut(inflight.id) else {
-            return None;
-        };
-        request.setup_wait(thread)
+    pub fn wait(mut this: LockGuard<'_, Self>, inflight: Inflight) {
+        loop {
+            let Some(request) = this.requests.get(inflight.id) else {
+                return;
+            };
+            if request.done() {
+                return;
+            }
+            let cv = request.cv().clone();
+            this = cv.wait_mutex(this);
+        }
     }
 
     pub fn cmd_ready(&mut self, objid: ObjID, sync: bool) {

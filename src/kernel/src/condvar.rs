@@ -1,9 +1,8 @@
-use alloc::vec::Vec;
-
 use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree};
 use twizzler_abi::object::ObjID;
 
 use crate::{
+    mutex::LockGuard,
     sched::schedule_thread,
     spinlock::{SpinLockGuard, Spinlock},
     thread::{current_thread_ref, Thread, ThreadRef},
@@ -55,8 +54,29 @@ impl CondVar {
         res
     }
 
+    #[track_caller]
+    pub fn wait_mutex<'a, T>(&self, mut guard: LockGuard<'a, T>) -> LockGuard<'a, T> {
+        let current_thread =
+            current_thread_ref().expect("cannot call wait before threading is enabled");
+        let mut inner = self.inner.lock();
+        inner.queue.insert(current_thread);
+        drop(inner);
+        let current_thread = current_thread_ref().unwrap();
+        let critical_guard = current_thread.enter_critical();
+        let res = unsafe {
+            guard.force_unlock();
+            crate::syscall::sync::finish_blocking(critical_guard);
+            guard.force_relock()
+        };
+        let current_thread = current_thread_ref().unwrap();
+        let mut inner = self.inner.lock();
+        inner.queue.find_mut(&current_thread.objid()).remove();
+        drop(inner);
+        res
+    }
+
     pub fn signal(&self) {
-        let mut threads_to_wake = Vec::with_capacity(8);
+        let mut threads_to_wake = arrayvec::ArrayVec::<_, 8>::new();
         loop {
             let mut inner = self.inner.lock();
             if inner.queue.is_empty() {

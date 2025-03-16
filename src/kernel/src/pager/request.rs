@@ -1,11 +1,8 @@
-use alloc::{collections::btree_set::BTreeSet, vec::Vec};
+use alloc::{collections::btree_set::BTreeSet, sync::Arc};
 
 use twizzler_abi::object::ObjID;
 
-use crate::{
-    sched::schedule_thread,
-    thread::{CriticalGuard, ThreadRef},
-};
+use crate::{condvar::CondVar};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ReqKind {
@@ -72,7 +69,7 @@ pub struct Request {
     reqkind: ReqKind,
     remaining_pages: BTreeSet<usize>,
     cmd_ready: bool,
-    waiting_threads: Vec<ThreadRef>,
+    cv: Arc<CondVar>,
 }
 
 impl Request {
@@ -85,8 +82,8 @@ impl Request {
             id,
             reqkind,
             cmd_ready: !reqkind.needs_cmd(),
-            waiting_threads: Vec::new(),
             remaining_pages,
+            cv: Arc::new(CondVar::new()),
         }
     }
 
@@ -98,10 +95,8 @@ impl Request {
         self.cmd_ready && self.remaining_pages.is_empty()
     }
 
-    pub fn signal(&mut self) {
-        for thread in self.waiting_threads.drain(..) {
-            schedule_thread(thread);
-        }
+    pub fn signal(&self) {
+        self.cv.signal();
     }
 
     pub fn cmd_ready(&mut self) {
@@ -112,12 +107,7 @@ impl Request {
         self.remaining_pages.remove(&page);
     }
 
-    pub fn setup_wait<'a>(&mut self, thread: &'a ThreadRef) -> Option<CriticalGuard<'a>> {
-        if self.done() {
-            return None;
-        }
-        let critical = thread.enter_critical();
-        self.waiting_threads.push(thread.clone());
-        Some(critical)
+    pub fn cv(&self) -> &Arc<CondVar> {
+        &self.cv
     }
 }

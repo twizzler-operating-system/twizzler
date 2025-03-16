@@ -666,8 +666,8 @@ dependencies = [
 
 [[package]]
 name = "candle-core"
-version = "0.8.3"
-source = "git+https://github.com/dbittman/candle?branch=dbittman#0b6d60ba2c43457ef7c832bb5d8570493f56eecd"
+version = "0.8.4"
+source = "git+https://github.com/dbittman/candle?branch=dbittman#2b6ccac58ce29546e0aad55c7b8aa843e059c770"
 dependencies = [
  "byteorder",
  "gemm 0.17.1",
@@ -675,8 +675,8 @@ dependencies = [
  "memmap2",
  "num-traits",
  "num_cpus",
- "rand 0.8.5",
- "rand_distr 0.4.3",
+ "rand 0.9.0",
+ "rand_distr",
  "rayon",
  "safetensors",
  "thiserror 1.0.69",
@@ -688,8 +688,8 @@ dependencies = [
 
 [[package]]
 name = "candle-nn"
-version = "0.8.3"
-source = "git+https://github.com/dbittman/candle?branch=dbittman#0b6d60ba2c43457ef7c832bb5d8570493f56eecd"
+version = "0.8.4"
+source = "git+https://github.com/dbittman/candle?branch=dbittman#2b6ccac58ce29546e0aad55c7b8aa843e059c770"
 dependencies = [
  "candle-core",
  "half",
@@ -703,15 +703,15 @@ dependencies = [
 
 [[package]]
 name = "candle-transformers"
-version = "0.8.3"
-source = "git+https://github.com/dbittman/candle?branch=dbittman#0b6d60ba2c43457ef7c832bb5d8570493f56eecd"
+version = "0.8.4"
+source = "git+https://github.com/dbittman/candle?branch=dbittman#2b6ccac58ce29546e0aad55c7b8aa843e059c770"
 dependencies = [
  "byteorder",
  "candle-core",
  "candle-nn",
  "fancy-regex 0.13.0",
  "num-traits",
- "rand 0.8.5",
+ "rand 0.9.0",
  "rayon",
  "serde",
  "serde_json",
@@ -1107,7 +1107,7 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fde0e0ec90c9dfb3b4b1a0891a7dcd0e2bffde2f7efed5fe7c9bb00e5bfb915e"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1501,7 +1501,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "18e4fdb82bd54a12e42fb58a800dcae6b9e13982238ce2296dc3570b92148e1f"
 dependencies = [
  "data-encoding",
- "syn 2.0.96",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -1922,7 +1922,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33d852cb9b869c2a9b3df2f71a3074817f01e1844f839a144f5fcef059a4eb5d"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3460,7 +3460,7 @@ dependencies = [
  "crunchy",
  "num-traits",
  "rand 0.9.0",
- "rand_distr 0.5.1",
+ "rand_distr",
 ]
 
 [[package]]
@@ -4087,7 +4087,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4217,7 +4217,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if 1.0.0",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -5783,16 +5783,6 @@ dependencies = [
 
 [[package]]
 name = "rand_distr"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32cb0b9bc82b0a0876c2dd994a7e7a2683d3e7390ca40e6886785ef0c7e3ee31"
-dependencies = [
- "num-traits",
- "rand 0.8.5",
-]
-
-[[package]]
-name = "rand_distr"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a8615d50dcf34fa31f7ab52692afec947c4dd0ab803cc87cb3b0b4570ff7463"
@@ -6140,7 +6130,7 @@ dependencies = [
  "errno 0.3.10",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6886,7 +6876,7 @@ dependencies = [
  "getrandom 0.2.16",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7339,6 +7329,7 @@ dependencies = [
  "acpi",
  "addr2line 0.16.0",
  "arm-gic",
+ "arrayvec",
  "backtracer_core",
  "bitflags 2.8.0",
  "chacha20",

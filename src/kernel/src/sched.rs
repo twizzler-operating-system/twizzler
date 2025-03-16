@@ -480,7 +480,9 @@ pub fn schedule_resched() {
 static STAT_COUNTER: AtomicU64 = AtomicU64::new(0);
 const PRINT_STATS: bool = false;
 pub fn schedule_stattick(dt: Nanoseconds) {
-    schedule_maybe_rebalance(dt);
+    if current_thread_ref().is_some_and(|ct| !ct.is_critical()) {
+        schedule_maybe_rebalance(dt);
+    }
 
     let s = STAT_COUNTER.fetch_add(1, Ordering::SeqCst);
     let cp = current_processor();

@@ -415,6 +415,7 @@ impl GlobalPageAlloc {
             CacheType::WriteBack,
             MappingFlags::GLOBAL,
         );
+        logln!("extend gpa");
         mapper.with_arch(KERNEL_SCTX, |arch| {
             arch.map(cursor, &mut phys, &settings);
         });
@@ -568,6 +569,7 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
             // since object invalidation always informs the kernel context.
             slots.remove(self.slot);
         }
+        logln!("dropping kobj");
         kctx.with_arch(KERNEL_SCTX, |arch| {
             arch.unmap(MappingCursor::new(self.start_addr(), MAX_SIZE));
         });
