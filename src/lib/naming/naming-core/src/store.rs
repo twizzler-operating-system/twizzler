@@ -177,26 +177,38 @@ impl NameSession<'_> {
         &self,
         name: P,
     ) -> Result<(Option<NsNode>, Arc<dyn Namespace>, PathBuf)> {
-        let mut namespace = if name.as_ref().has_root() {
-            &self.store.nameroot
+        let (mut namespace, mut node) = if name.as_ref().has_root() {
+            (
+                self.store.nameroot.clone(),
+                Some(NsNode::new(NsNodeKind::Namespace, self.store.nameroot.id(), "/").unwrap()),
+            )
         } else {
-            self.working_ns.as_ref().unwrap_or(&self.store.nameroot)
+            let ns = self.working_ns.as_ref().unwrap_or(&self.store.nameroot);
+            (
+                ns.clone(),
+                Some(NsNode::new(NsNodeKind::Namespace, ns.id(), "/").unwrap()),
+            )
+        };
+        if name.as_ref().components().next().is_none() {
+            return Ok((None, namespace, "".into()));
         }
-        .clone();
-        let mut node: Option<NsNode> = None;
         tracing::debug!("namei: {:?}", name.as_ref());
         let mut remname = name.as_ref().to_owned();
         // traverse store based on path's components
+        let mut do_traverse = false;
         for item in name.as_ref().components() {
-            if let Some(node) = node.take() {
-                if node.kind != NsNodeKind::Namespace {
-                    return Err(ErrorKind::NotADirectory);
+            if do_traverse {
+                if let Some(node) = node.take() {
+                    if node.kind != NsNodeKind::Namespace {
+                        return Err(ErrorKind::NotADirectory);
+                    }
+                    tracing::debug!("traversing to {} => {}", node.name, node.id);
+                    let parent_info = ParentInfo::new(namespace, node.name());
+                    namespace =
+                        self.open_namespace(node.id, parent_info.ns.persist(), Some(parent_info))?;
                 }
-                tracing::debug!("traversing to {} => {}", node.name, node.id);
-                let parent_info = ParentInfo::new(namespace, node.name());
-                namespace =
-                    self.open_namespace(node.id, parent_info.ns.persist(), Some(parent_info))?;
             }
+            do_traverse = false;
             match item {
                 Component::Prefix(_) => {
                     continue;
@@ -230,6 +242,7 @@ impl NameSession<'_> {
                     node = namespace.find(os_str.to_str().ok_or(ErrorKind::InvalidFilename)?);
                     tracing::debug!("again from the top");
                     remname = PathBuf::from(os_str);
+                    do_traverse = true;
                 }
             }
         }
