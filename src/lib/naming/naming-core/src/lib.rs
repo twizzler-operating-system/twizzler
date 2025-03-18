@@ -10,4 +10,4 @@ pub const PATH_MAX: usize = 4096;
 
 pub type Result<T> = std::result::Result<T, std::io::ErrorKind>;
 
-pub use store::{NameSession, NameStore, NsNode, NsNodeKind};
+pub use store::{GetFlags, NameSession, NameStore, NsNode, NsNodeKind};

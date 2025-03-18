@@ -7,7 +7,7 @@ use std::{io::ErrorKind, path::PathBuf};
 
 use lazy_init::LazyTransform;
 use lazy_static::lazy_static;
-use naming_core::{NameSession, NameStore, NsNode, NsNodeKind, Result, PATH_MAX};
+use naming_core::{GetFlags, NameSession, NameStore, NsNode, Result, PATH_MAX};
 use secgate::{
     secure_gate,
     util::{Descriptor, HandleMgr, SimpleBuffer},
@@ -56,6 +56,17 @@ impl<'a> NamespaceClient<'a> {
         }
         let mut buf = vec![0; name_len];
         self.buffer.read(&mut buf);
+        Ok(PathBuf::from(
+            String::from_utf8(buf).map_err(|_| ErrorKind::InvalidFilename)?,
+        ))
+    }
+
+    fn read_buffer_at(&self, name_len: usize, off: usize) -> Result<PathBuf> {
+        if name_len >= PATH_MAX {
+            return Err(ErrorKind::InvalidFilename);
+        }
+        let mut buf = vec![0; name_len];
+        self.buffer.read_offset(&mut buf, off);
         Ok(PathBuf::from(
             String::from_utf8(buf).map_err(|_| ErrorKind::InvalidFilename)?,
         ))
@@ -120,7 +131,7 @@ pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) {
             namer
                 .names
                 .root_session()
-                .put(&format!("/initrd/{}", n.name()), n.id(), NsNodeKind::Object)
+                .put(&format!("/initrd/{}", n.name()), n.id())
                 .unwrap();
         }
 
@@ -157,7 +168,6 @@ pub fn put(
     desc: Descriptor,
     name_len: usize,
     id: ObjID,
-    kind: NsNodeKind,
 ) -> Result<()> {
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();
@@ -167,11 +177,16 @@ pub fn put(
 
     let path = client.read_buffer(name_len)?;
 
-    client.session.put(path, id, kind)
+    client.session.put(path, id)
 }
 
 #[secure_gate(options(info))]
-pub fn get(info: &secgate::GateCallInfo, desc: Descriptor, name_len: usize) -> Result<NsNode> {
+pub fn mkns(
+    info: &secgate::GateCallInfo,
+    desc: Descriptor,
+    name_len: usize,
+    persist: bool,
+) -> Result<()> {
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();
     let client = binding
@@ -180,7 +195,44 @@ pub fn get(info: &secgate::GateCallInfo, desc: Descriptor, name_len: usize) -> R
 
     let path = client.read_buffer(name_len)?;
 
-    client.session.get(path)
+    client.session.mkns(path, persist)
+}
+
+#[secure_gate(options(info))]
+pub fn link(
+    info: &secgate::GateCallInfo,
+    desc: Descriptor,
+    name_len: usize,
+    link_len: usize,
+) -> Result<()> {
+    let service = NAMINGSERVICE.get().unwrap();
+    let mut binding = service.handles.lock().unwrap();
+    let client = binding
+        .lookup_mut(info.source_context().unwrap_or(0.into()), desc)
+        .ok_or(ErrorKind::Other)?;
+
+    let path = client.read_buffer(name_len)?;
+    let link = client.read_buffer_at(link_len, name_len)?;
+
+    client.session.link(path, link)
+}
+
+#[secure_gate(options(info))]
+pub fn get(
+    info: &secgate::GateCallInfo,
+    desc: Descriptor,
+    name_len: usize,
+    flags: GetFlags,
+) -> Result<NsNode> {
+    let service = NAMINGSERVICE.get().unwrap();
+    let mut binding = service.handles.lock().unwrap();
+    let client = binding
+        .lookup_mut(info.source_context().unwrap_or(0.into()), desc)
+        .ok_or(ErrorKind::Other)?;
+
+    let path = client.read_buffer(name_len)?;
+
+    client.session.get(path, flags)
 }
 
 #[secure_gate(options(info))]

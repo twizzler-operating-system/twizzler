@@ -9,7 +9,7 @@ use twizzler::{
 };
 use twizzler_rt_abi::object::MapFlags;
 
-use super::{Namespace, NsNode, NsNodeKind, ParentInfo};
+use super::{Namespace, NsNode, ParentInfo};
 use crate::Result;
 
 #[derive(Clone)]
@@ -37,9 +37,9 @@ impl NamespaceObject {
             ))),
         };
         if let Some(id) = parent {
-            this.insert(NsNode::new(NsNodeKind::Namespace, id, "..")?);
+            this.insert(NsNode::ns("..", id)?);
         }
-        this.insert(NsNode::new(NsNodeKind::Namespace, this.id(), ".")?);
+        this.insert(NsNode::ns(".", this.id())?);
         Ok(this)
     }
 
@@ -68,7 +68,10 @@ impl Namespace for NamespaceObject {
     fn find(&self, name: &str) -> Option<NsNode> {
         self.with_obj(|obj| {
             for entry in obj.iter() {
-                if entry.name.as_str() == name {
+                let Ok(en) = entry.name() else {
+                    continue;
+                };
+                if en == name {
                     return Some(*entry);
                 }
             }
@@ -87,7 +90,10 @@ impl Namespace for NamespaceObject {
         self.with_obj(|obj| {
             for (idx, entry) in obj.iter().enumerate() {
                 let entry = *entry;
-                if entry.name.as_str() == name {
+                let Ok(en) = entry.name() else {
+                    continue;
+                };
+                if en == name {
                     obj.remove(idx).unwrap();
                     return Some(entry);
                 }

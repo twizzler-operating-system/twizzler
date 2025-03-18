@@ -8,7 +8,7 @@ use std::{
 use colored::Colorize;
 use embedded_io::ErrorType;
 use monitor_api::CompartmentHandle;
-use naming::{static_naming_factory, NsNodeKind, StaticNamingHandle as NamingHandle};
+use naming::{static_naming_factory, GetFlags, NsNodeKind, StaticNamingHandle as NamingHandle};
 use pager::adv_lethe;
 use rand::seq::SliceRandom;
 use tiny_http::Response;
@@ -92,7 +92,7 @@ fn show(args: &[&str], namer: &mut NamingHandle) {
         "f" | "fi" | "files" => {
             let names = namer.enumerate_names().unwrap();
             for name in names {
-                println!("{:<20} :: {:x}", name.name(), name.id);
+                println!("{:<20} :: {:x}", name.name().unwrap(), name.id);
             }
         }
         _ => {
@@ -141,7 +141,7 @@ fn read_file(args: &[&str], namer: &mut NamingHandle) {
         println!("usage: read <filename>");
     }
     let filename = args[1];
-    let Ok(_id) = namer.get(filename) else {
+    let Ok(_id) = namer.get(filename, GetFlags::FOLLOW_SYMLINK) else {
         tracing::warn!("name {} not found", filename);
         return;
     };
@@ -163,7 +163,7 @@ fn write_file(args: &[&str], namer: &mut NamingHandle) {
         println!("usage: write <filename>");
     }
     let filename = args[1];
-    let Ok(_id) = namer.get(filename) else {
+    let Ok(_id) = namer.get(filename, GetFlags::FOLLOW_SYMLINK) else {
         tracing::warn!("name {} not found", filename);
         return;
     };
@@ -183,7 +183,7 @@ fn new_file(args: &[&str], namer: &mut NamingHandle) {
         return;
     }
     let filename = args[1];
-    if namer.get(filename).is_ok() {
+    if namer.get(filename, GetFlags::FOLLOW_SYMLINK).is_ok() {
         tracing::warn!("name {} already exists", filename);
         return;
     };
@@ -192,7 +192,7 @@ fn new_file(args: &[&str], namer: &mut NamingHandle) {
     let _f = std::fs::File::create(filename).unwrap();
     tracing::info!(
         "created new file object {:x}",
-        namer.get(filename).unwrap().id
+        namer.get(filename, GetFlags::FOLLOW_SYMLINK).unwrap().id
     );
 }
 
@@ -201,7 +201,7 @@ fn del_file(args: &[&str], namer: &mut NamingHandle) {
         println!("usage: write <filename>");
     }
     let filename = args[1];
-    let Ok(id) = namer.get(filename) else {
+    let Ok(id) = namer.get(filename, GetFlags::FOLLOW_SYMLINK) else {
         tracing::warn!("name {} not found", filename);
         return;
     };
@@ -240,17 +240,18 @@ fn setup_http(namer: &mut NamingHandle) {
                             NsNodeKind::Object => {
                                 html.push_str(&format!(
                                     r#"<li><a href="{}/">{}/</a></li>"#,
-                                    entry.name(),
-                                    entry.name()
+                                    entry.name().unwrap(),
+                                    entry.name().unwrap()
                                 ));
                             }
                             NsNodeKind::Namespace => {
                                 html.push_str(&format!(
                                     r#"<li><a href="{}/">{}/</a></li>"#,
-                                    entry.name(),
-                                    entry.name()
+                                    entry.name().unwrap(),
+                                    entry.name().unwrap()
                                 ));
                             }
+                            _ => {}
                         }
                     }
 
@@ -285,13 +286,13 @@ fn setup_http(namer: &mut NamingHandle) {
                     .create(true)
                     .truncate(true)
                     .open(&path);
-                tracing::debug!("created new file object {:x}", namer.get(&path).unwrap().id);
+                tracing::debug!("created new file object {:x}", namer.get(&path, GetFlags::FOLLOW_SYMLINK).unwrap().id);
 
                 println!(
                     "  -> The Gadget just created a file, named {}",
                     path.italic(),
                 );
-                println!("  -> It has internal ID {:x}.", namer.get(&path).unwrap().id);
+                println!("  -> It has internal ID {:x}.", namer.get(&path, GetFlags::FOLLOW_SYMLINK).unwrap().id);
                 println!(
                     "  -> Next, we'll write the file data and sync. {}",
                     "All data that goes to flash is encrypted.".red()
@@ -352,7 +353,7 @@ pub struct TestVecItem {
 unsafe impl Invariant for TestVecItem {}
 
 fn gdtest(args: &[&str], namer: &mut NamingHandle) {
-    let id = namer.get("test-vec");
+    let id = namer.get("test-vec", GetFlags::FOLLOW_SYMLINK);
     let mut vo = if let Ok(id) = id {
         let obj = twizzler::object::Object::map(
             id.id.into(),
@@ -384,7 +385,7 @@ fn gdtest(args: &[&str], namer: &mut NamingHandle) {
         }
         "rs" | "read-all-slices" => {
             let mut indicies = (0..vo.len()).collect::<Vec<_>>();
-            indicies.shuffle(&mut rand::thread_rng());
+            indicies.shuffle(&mut rand::rng());
             start = Instant::now();
             let slice = vo.slice(..);
             for i in &indicies {
@@ -395,7 +396,7 @@ fn gdtest(args: &[&str], namer: &mut NamingHandle) {
         }
         "ra" | "read-all" => {
             let mut indicies = (0..vo.len()).collect::<Vec<_>>();
-            indicies.shuffle(&mut rand::thread_rng());
+            indicies.shuffle(&mut rand::rng());
             start = Instant::now();
             for i in &indicies {
                 let val = vo.get(*i).unwrap();
@@ -405,7 +406,7 @@ fn gdtest(args: &[&str], namer: &mut NamingHandle) {
         }
         "r" | "read" => {
             let mut indicies = (0..10000).collect::<Vec<_>>();
-            indicies.shuffle(&mut rand::thread_rng());
+            indicies.shuffle(&mut rand::rng());
             let mut err = 0;
             for i in &indicies {
                 let val = vo.get(*i);
