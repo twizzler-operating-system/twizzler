@@ -4,12 +4,14 @@ use monitor_api::CompartmentHandle;
 use secgate::{util::Descriptor, DynamicSecGate, SecGateReturn};
 use twizzler_rt_abi::object::ObjID;
 
-use crate::{api::NamerAPI, handle::NamingHandle, NsNode, NsNodeKind, Result};
+use crate::{api::NamerAPI, handle::NamingHandle, GetFlags, NsNode, Result};
 
 pub struct DynamicNamerAPI {
     _handle: &'static CompartmentHandle,
-    put: DynamicSecGate<'static, (Descriptor, usize, ObjID, NsNodeKind), Result<()>>,
-    get: DynamicSecGate<'static, (Descriptor, usize), Result<NsNode>>,
+    put: DynamicSecGate<'static, (Descriptor, usize, ObjID), Result<()>>,
+    mkns: DynamicSecGate<'static, (Descriptor, usize, bool), Result<()>>,
+    link: DynamicSecGate<'static, (Descriptor, usize, usize), Result<()>>,
+    get: DynamicSecGate<'static, (Descriptor, usize, GetFlags), Result<NsNode>>,
     open_handle: DynamicSecGate<'static, (), Option<(Descriptor, ObjID)>>,
     close_handle: DynamicSecGate<'static, (Descriptor,), ()>,
     enumerate_names: DynamicSecGate<'static, (Descriptor, usize), Result<usize>>,
@@ -19,18 +21,17 @@ pub struct DynamicNamerAPI {
 }
 
 impl NamerAPI for DynamicNamerAPI {
-    fn put(
+    fn put(&self, desc: Descriptor, name_len: usize, id: ObjID) -> SecGateReturn<Result<()>> {
+        (self.put)(desc, name_len, id)
+    }
+
+    fn get(
         &self,
         desc: Descriptor,
         name_len: usize,
-        id: ObjID,
-        kind: NsNodeKind,
-    ) -> SecGateReturn<Result<()>> {
-        (self.put)(desc, name_len, id, kind)
-    }
-
-    fn get(&self, desc: Descriptor, name_len: usize) -> SecGateReturn<Result<NsNode>> {
-        (self.get)(desc, name_len)
+        flags: GetFlags,
+    ) -> SecGateReturn<Result<NsNode>> {
+        (self.get)(desc, name_len, flags)
     }
 
     fn open_handle(&self) -> SecGateReturn<Option<(Descriptor, ObjID)>> {
@@ -56,6 +57,19 @@ impl NamerAPI for DynamicNamerAPI {
     fn change_namespace(&self, desc: Descriptor, name_len: usize) -> SecGateReturn<Result<()>> {
         (self.change_namespace)(desc, name_len)
     }
+
+    fn mkns(&self, desc: Descriptor, name_len: usize, persist: bool) -> SecGateReturn<Result<()>> {
+        (self.mkns)(desc, name_len, persist)
+    }
+
+    fn link(
+        &self,
+        desc: Descriptor,
+        name_len: usize,
+        link_name: usize,
+    ) -> SecGateReturn<Result<()>> {
+        (self.link)(desc, name_len, link_name)
+    }
 }
 
 static DYNAMIC_NAMER_API: OnceLock<DynamicNamerAPI> = OnceLock::new();
@@ -70,6 +84,16 @@ pub fn dynamic_namer_api() -> &'static DynamicNamerAPI {
             put: unsafe {
                 handle
                     .dynamic_gate("put")
+                    .expect("failed to find put gate call")
+            },
+            mkns: unsafe {
+                handle
+                    .dynamic_gate("mkns")
+                    .expect("failed to find put gate call")
+            },
+            link: unsafe {
+                handle
+                    .dynamic_gate("link")
                     .expect("failed to find put gate call")
             },
             get: unsafe {

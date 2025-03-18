@@ -1,6 +1,6 @@
 use twizzler::object::ObjID;
 
-use super::{Namespace, NsNode, NsNodeKind, ParentInfo};
+use super::{Namespace, NsNode, ParentInfo};
 use crate::Result;
 
 #[derive(Clone)]
@@ -18,7 +18,9 @@ impl Namespace for ExtNamespace {
     }
 
     fn find(&self, name: &str) -> Option<NsNode> {
-        self.items().into_iter().find(|i| i.name() == name)
+        self.items()
+            .into_iter()
+            .find(|i| i.name().is_ok_and(|n| n == name))
     }
 
     fn insert(&self, _node: NsNode) -> Option<NsNode> {
@@ -47,13 +49,14 @@ impl Namespace for ExtNamespace {
                 return items
                     .iter()
                     .filter_map(|i| {
-                        let kind = match i.kind {
-                            ExternalKind::Regular => NsNodeKind::Object,
-                            ExternalKind::Directory => NsNodeKind::Namespace,
-                            _ => NsNodeKind::Object,
-                        };
-                        i.name()
-                            .and_then(|name| NsNode::new(kind, i.id.into(), name).ok())
+                        i.name().and_then(|name| {
+                            match i.kind {
+                                ExternalKind::Directory => NsNode::ns(name, i.id.into()),
+                                // TODO: symlink
+                                _ => NsNode::obj(name, i.id.into()),
+                            }
+                            .ok()
+                        })
                     })
                     .collect();
             } else {

@@ -12,3 +12,4 @@ twizzler = { path = "../../../lib/twizzler" }
 tracing = "*"
 pager-dynamic = { path = "../../../lib/pager/pager-dynamic" }
 object-store = { path = "../../../srv/pager-srv/object-store"}
+bitflags = "2"

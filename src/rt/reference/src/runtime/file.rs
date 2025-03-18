@@ -8,7 +8,7 @@ use file_desc::FileDesc;
 use lazy_static::lazy_static;
 use naming_core::{
     dynamic::{dynamic_naming_factory, DynamicNamingHandle},
-    NsNodeKind,
+    GetFlags, NsNodeKind,
 };
 use raw_file::RawFile;
 use stable_vec::{self, StableVec};
@@ -200,11 +200,13 @@ impl ReferenceRuntime {
         let (obj_id, did_create, is_dir) = match create_opt {
             CreateOptions::UNEXPECTED => return Err(ErrorKind::InvalidInput.into()),
             CreateOptions::CreateKindExisting => {
-                let n = session.get(path).map_err(|_| ErrorKind::Other)?;
+                let n = session
+                    .get(path, GetFlags::FOLLOW_SYMLINK)
+                    .map_err(|_| ErrorKind::Other)?;
                 (n.id, false, matches!(n.kind, NsNodeKind::Namespace))
             }
             CreateOptions::CreateKindNew => {
-                if session.get(path).is_ok() {
+                if session.get(path, GetFlags::empty()).is_ok() {
                     return Err(ErrorKind::AlreadyExists.into());
                 }
                 (
@@ -214,7 +216,7 @@ impl ReferenceRuntime {
                 )
             }
             CreateOptions::CreateKindEither => session
-                .get(path)
+                .get(path, GetFlags::FOLLOW_SYMLINK)
                 .map(|x| (ObjID::from(x.id), false, false))
                 .unwrap_or((
                     sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?,
@@ -377,14 +379,18 @@ impl ReferenceRuntime {
         let count = end - off;
         for i in 0..count {
             let name = &names[off + i];
+            let Ok(entry_name) = name.name() else {
+                continue;
+            };
             let ne = twizzler_rt_abi::fd::NameEntry::new(
-                name.name().as_bytes(),
+                entry_name.as_bytes(),
                 twizzler_rt_abi::fd::FdInfo {
                     kind: match name.kind {
                         naming_core::NsNodeKind::Namespace => {
                             twizzler_rt_abi::fd::FdKind::Directory
                         }
                         naming_core::NsNodeKind::Object => twizzler_rt_abi::fd::FdKind::Regular,
+                        naming_core::NsNodeKind::SymLink => twizzler_rt_abi::fd::FdKind::SymLink,
                     },
                     flags: twizzler_rt_abi::fd::FdFlags::empty(),
                     id: name.id.raw(),

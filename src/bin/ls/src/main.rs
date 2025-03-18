@@ -25,8 +25,8 @@ fn recurse(handle: &mut StaticNamingHandle, foo: &mut PathBuf) {
 
     println!("{}:", foo.display());
     for x in &names {
-        foo.push(x.name());
-        print!("{} ", x.name());
+        foo.push(x.name().unwrap());
+        print!("{} ", x.name().unwrap());
         foo.pop();
     }
     println!("\n");
@@ -34,8 +34,8 @@ fn recurse(handle: &mut StaticNamingHandle, foo: &mut PathBuf) {
         if x.kind != NsNodeKind::Namespace {
             break;
         }
-        foo.push(x.name());
-        handle.change_namespace(&x.name()).unwrap();
+        foo.push(x.name().unwrap());
+        handle.change_namespace(&x.name().unwrap()).unwrap();
         recurse(handle, foo);
         handle.change_namespace("..").unwrap();
         foo.pop();
@@ -72,7 +72,7 @@ fn main() {
             }
         });
         for x in &names {
-            print!("{} ", x.name());
+            print!("{} ", x.name().unwrap());
         }
         println!("")
     }

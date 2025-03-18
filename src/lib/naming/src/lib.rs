@@ -2,7 +2,7 @@
 extern "C" {}
 
 use naming_core::{api::NamerAPI, handle::NamingHandle, Result};
-pub use naming_core::{dynamic::*, NsNode, NsNodeKind};
+pub use naming_core::{dynamic::*, GetFlags, NsNode, NsNodeKind};
 use secgate::util::Descriptor;
 use twizzler_rt_abi::object::ObjID;
 
@@ -14,13 +14,17 @@ impl NamerAPI for StaticNamingAPI {
         desc: Descriptor,
         name_len: usize,
         id: ObjID,
-        kind: NsNodeKind,
     ) -> secgate::SecGateReturn<Result<()>> {
-        naming_srv::put(desc, name_len, id, kind)
+        naming_srv::put(desc, name_len, id)
     }
 
-    fn get(&self, desc: Descriptor, name_len: usize) -> secgate::SecGateReturn<Result<NsNode>> {
-        naming_srv::get(desc, name_len)
+    fn get(
+        &self,
+        desc: Descriptor,
+        name_len: usize,
+        flags: GetFlags,
+    ) -> secgate::SecGateReturn<Result<NsNode>> {
+        naming_srv::get(desc, name_len, flags)
     }
 
     fn open_handle(&self) -> secgate::SecGateReturn<Option<(Descriptor, ObjID)>> {
@@ -57,6 +61,24 @@ impl NamerAPI for StaticNamingAPI {
         name_len: usize,
     ) -> secgate::SecGateReturn<Result<()>> {
         naming_srv::change_namespace(desc, name_len)
+    }
+
+    fn mkns(
+        &self,
+        desc: Descriptor,
+        name_len: usize,
+        persist: bool,
+    ) -> secgate::SecGateReturn<Result<()>> {
+        naming_srv::mkns(desc, name_len, persist)
+    }
+
+    fn link(
+        &self,
+        desc: Descriptor,
+        name_len: usize,
+        link_len: usize,
+    ) -> secgate::SecGateReturn<Result<()>> {
+        naming_srv::link(desc, name_len, link_len)
     }
 }
 

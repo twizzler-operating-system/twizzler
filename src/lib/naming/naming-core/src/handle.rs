@@ -4,7 +4,7 @@ use secgate::util::{Handle, SimpleBuffer};
 use twizzler::object::ObjID;
 use twizzler_rt_abi::object::MapFlags;
 
-use crate::{api::NamerAPI, NsNode, NsNodeKind, Result, PATH_MAX};
+use crate::{api::NamerAPI, GetFlags, NsNode, Result, PATH_MAX};
 
 pub struct NamingHandle<'a, API: NamerAPI> {
     desc: u32,
@@ -29,6 +29,15 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         }
     }
 
+    fn write_buffer_at<P: AsRef<Path>>(&mut self, path: P, off: usize) -> Result<usize> {
+        let bytes = path.as_ref().as_os_str().as_encoded_bytes();
+        if bytes.len() > PATH_MAX {
+            Err(ErrorKind::InvalidFilename)
+        } else {
+            Ok(self.buffer.write_offset(bytes, off))
+        }
+    }
+
     /// Open a new logging handle.
     pub fn new(api: &'a API) -> Option<Self> {
         NamingHandle::open(api).ok()
@@ -36,14 +45,12 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
 
     pub fn put<P: AsRef<Path>>(&mut self, path: P, id: ObjID) -> Result<()> {
         let name_len = self.write_buffer(path)?;
-        self.api
-            .put(self.desc, name_len, id, NsNodeKind::Object)
-            .unwrap()
+        self.api.put(self.desc, name_len, id).unwrap()
     }
 
-    pub fn get(&mut self, path: &str) -> Result<NsNode> {
+    pub fn get(&mut self, path: &str, flags: GetFlags) -> Result<NsNode> {
         let name_len = self.write_buffer(path)?;
-        self.api.get(self.desc, name_len).unwrap()
+        self.api.get(self.desc, name_len, flags).unwrap()
     }
 
     pub fn remove(&mut self, path: &str) -> Result<()> {
@@ -71,7 +78,7 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         Ok(r_vec)
     }
 
-    pub fn enumerate_names_relative(&mut self, path: &str) -> Result<Vec<NsNode>> {
+    pub fn enumerate_names_relative<P: AsRef<Path>>(&mut self, path: P) -> Result<Vec<NsNode>> {
         let name_len = self.write_buffer(path)?;
         let element_count = self.api.enumerate_names(self.desc, name_len).unwrap()?;
 
@@ -96,16 +103,20 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         self.enumerate_names_relative(&".")
     }
 
-    pub fn change_namespace(&mut self, path: &str) -> Result<()> {
+    pub fn change_namespace<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let name_len = self.write_buffer(path)?;
         self.api.change_namespace(self.desc, name_len).unwrap()
     }
 
-    pub fn put_namespace(&mut self, path: &str) -> Result<()> {
+    pub fn put_namespace<P: AsRef<Path>>(&mut self, path: P, persist: bool) -> Result<()> {
         let name_len = self.write_buffer(path)?;
-        self.api
-            .put(self.desc, name_len, 0.into(), NsNodeKind::Namespace)
-            .unwrap()
+        self.api.mkns(self.desc, name_len, persist).unwrap()
+    }
+
+    pub fn symlink<P: AsRef<Path>, L: AsRef<Path>>(&mut self, path: P, link: L) -> Result<()> {
+        let name_len = self.write_buffer(path)?;
+        let link_len = self.write_buffer_at(link, name_len)?;
+        self.api.link(self.desc, name_len, link_len).unwrap()
     }
 }
 
