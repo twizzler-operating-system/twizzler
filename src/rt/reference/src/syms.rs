@@ -297,12 +297,15 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_open_anon(
     kind: open_anon_kind,
     flags: u32,
 ) -> open_result {
+    let Ok(kind) = kind.try_into() else {
+        return Err(twizzler_rt_abi::fd::OpenError::Other).into();
+    };
     OUR_RUNTIME
-        .open_anon(kind.into(), info.flags.into())
+        .open_anon(kind, flags.into())
         .map_err(|e| std_error_to_open_error(e.kind()))
         .into()
 }
-check_ffi_type!(twz_rt_fd_open_anon, _);
+check_ffi_type!(twz_rt_fd_open_anon, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
@@ -322,23 +325,26 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
 }
 check_ffi_type!(twz_rt_fd_open, _);
 
+use core::ffi::c_char;
+
+use twizzler_rt_abi::bindings::open_error;
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_fd_remove(name: *const c_char, len: usize) -> open_result {
+pub unsafe extern "C-unwind" fn twz_rt_fd_remove(name: *const c_char, len: usize) -> open_error {
     let name = unsafe { core::slice::from_raw_parts(name.cast(), len) };
     let name =
         core::str::from_utf8(name).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument);
     match name {
-        Ok(name) => OUR_RUNTIME
+        Ok(name) => match OUR_RUNTIME
             .remove(name)
             .map_err(|e| std_error_to_open_error(e.kind()))
-            .into(),
-        Err(e) => open_result {
-            error: e as u32,
-            fd: 0,
+        {
+            Ok(_) => twizzler_rt_abi::bindings::open_error_OpenError_Success,
+            Err(e) => e.into(),
         },
+        Err(e) => e as u32,
     }
 }
-check_ffi_type!(twz_rt_fd_remove, _);
+check_ffi_type!(twz_rt_fd_remove, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_close(fd: descriptor) {
@@ -389,6 +395,78 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_enumerate_names(
     }
 }
 check_ffi_type!(twz_rt_fd_enumerate_names, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_mkns(name: *const c_char, len: usize) -> open_error {
+    let name = unsafe { core::slice::from_raw_parts(name.cast(), len) };
+    let name =
+        core::str::from_utf8(name).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument);
+    match name {
+        Ok(name) => match OUR_RUNTIME
+            .mkns(name)
+            .map_err(|e| std_error_to_open_error(e.kind()))
+        {
+            Ok(_) => twizzler_rt_abi::bindings::open_error_OpenError_Success,
+            Err(e) => e.into(),
+        },
+        Err(e) => e as u32,
+    }
+}
+check_ffi_type!(twz_rt_fd_mkns, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_symlink(
+    name: *const c_char,
+    len: usize,
+    target: *const c_char,
+    target_len: usize,
+) -> open_error {
+    let name = unsafe { core::slice::from_raw_parts(name.cast(), len) };
+    let name =
+        core::str::from_utf8(name).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument);
+    let target = unsafe { core::slice::from_raw_parts(target.cast(), target_len) };
+    let Ok(target) =
+        core::str::from_utf8(target).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument)
+    else {
+        return twizzler_rt_abi::fd::OpenError::InvalidArgument.into();
+    };
+    match name {
+        Ok(name) => match OUR_RUNTIME
+            .symlink(name, target)
+            .map_err(|e| std_error_to_open_error(e.kind()))
+        {
+            Ok(_) => twizzler_rt_abi::bindings::open_error_OpenError_Success,
+            Err(e) => e.into(),
+        },
+        Err(e) => e as u32,
+    }
+}
+check_ffi_type!(twz_rt_fd_symlink, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_readlink(
+    name: *const c_char,
+    len: usize,
+    target: *mut c_char,
+    target_len: usize,
+    read_len: *mut u64,
+) -> open_error {
+    let name = unsafe { core::slice::from_raw_parts(name.cast(), len) };
+    let name =
+        core::str::from_utf8(name).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument);
+    let target = unsafe { core::slice::from_raw_parts_mut(target.cast(), target_len) };
+    match name {
+        Ok(name) => match OUR_RUNTIME
+            .readlink(name, target, unsafe { read_len.as_mut().unwrap() })
+            .map_err(|e| std_error_to_open_error(e.kind()))
+        {
+            Ok(_) => twizzler_rt_abi::bindings::open_error_OpenError_Success,
+            Err(e) => e.into(),
+        },
+        Err(e) => e as u32,
+    }
+}
+check_ffi_type!(twz_rt_fd_readlink, _, _, _, _, _);
 
 // io.h
 

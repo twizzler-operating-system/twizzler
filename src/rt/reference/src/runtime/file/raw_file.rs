@@ -50,6 +50,10 @@ impl RawFile {
             size: self.len,
             flags: twizzler_rt_abi::fd::FdFlags::empty(),
             id: self.handle.id().raw(),
+            unix_mode: 0,
+            accessed: std::time::Duration::ZERO,
+            modified: std::time::Duration::ZERO,
+            created: std::time::Duration::ZERO,
         })
     }
 }

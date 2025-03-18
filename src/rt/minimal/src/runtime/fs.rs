@@ -2,6 +2,7 @@ use core::{
     cmp::{max, min},
     mem::size_of,
     num::NonZeroUsize,
+    time::Duration,
 };
 
 use lazy_static::lazy_static;
@@ -249,6 +250,10 @@ impl MinimalRuntime {
             kind: twizzler_rt_abi::fd::FdKind::Regular.into(),
             len: (MAX_SIZE - NULLPAGE_SIZE * 2) as u64,
             id: 0,
+            created: Duration::from_secs(0).into(),
+            modified: Duration::from_secs(0).into(),
+            accessed: Duration::from_secs(0).into(),
+            unix_mode: 0,
         })
     }
 
