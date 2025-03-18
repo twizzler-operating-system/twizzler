@@ -1,6 +1,7 @@
 use std::{
     io::{ErrorKind, Read, SeekFrom, Write},
     sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
 
 use bitflags::bitflags;
@@ -18,7 +19,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{
     bindings::{create_options, io_vec},
-    fd::{FdInfo, RawFd},
+    fd::{FdInfo, OpenAnonKind, RawFd},
     io::IoFlags,
     object::MapFlags,
 };
@@ -54,12 +55,20 @@ impl FdKind {
                 kind: twizzler_rt_abi::fd::FdKind::Directory,
                 size: 0,
                 id: id.raw(),
+                created: Duration::from_secs(0).into(),
+                modified: Duration::from_secs(0).into(),
+                accessed: Duration::from_secs(0).into(),
+                unix_mode: 0,
             }),
             _ => Ok(FdInfo {
                 flags: twizzler_rt_abi::fd::FdFlags::from_bits_truncate(0),
                 kind: twizzler_rt_abi::fd::FdKind::Other,
                 size: 0,
                 id: 0,
+                created: Duration::from_secs(0).into(),
+                modified: Duration::from_secs(0).into(),
+                accessed: Duration::from_secs(0).into(),
+                unix_mode: 0,
             }),
         }
     }
@@ -257,70 +266,42 @@ impl ReferenceRuntime {
         Ok(fd.try_into().unwrap())
     }
 
-    pub fn open_anon(
-        &self,
-        kind: OpenAnonKind,
-        open_opt: OperationOptions,
-    ) -> std::io::Result<RawFd> {
+    pub fn mkns(&self, name: &str) -> std::io::Result<()> {
         let mut session = get_naming_handle().lock().unwrap();
 
-        if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE)
-            && !open_opt.contains(OperationOptions::OPEN_FLAG_WRITE)
-        {
-            return Err(ErrorKind::InvalidInput.into());
-        }
-        let create = ObjectCreate::new(
-            BackingType::Normal,
-            LifetimeType::Persistent,
-            None,
-            ObjectCreateFlags::empty(),
-        );
-        let flags = match (
-            open_opt.contains(OperationOptions::OPEN_FLAG_READ),
-            open_opt.contains(OperationOptions::OPEN_FLAG_WRITE),
-        ) {
-            (true, true) => MapFlags::READ | MapFlags::WRITE,
-            (true, false) => MapFlags::READ,
-            (false, true) => MapFlags::WRITE,
-            (false, false) => MapFlags::READ,
-        };
-        let (obj_id, did_create, is_dir) = match create_opt {
-            CreateOptions::UNEXPECTED => return Err(ErrorKind::InvalidInput.into()),
-            CreateOptions::CreateKindExisting => {
-                let n = session
-                    .get(path, GetFlags::FOLLOW_SYMLINK)
-                    .map_err(|_| ErrorKind::Other)?;
-                (n.id, false, matches!(n.kind, NsNodeKind::Namespace))
-            }
-            CreateOptions::CreateKindNew => {
-                if session.get(path, GetFlags::empty()).is_ok() {
-                    return Err(ErrorKind::AlreadyExists.into());
-                }
-                (
-                    sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?,
-                    true,
-                    false,
-                )
-            }
-            CreateOptions::CreateKindEither => session
-                .get(path, GetFlags::FOLLOW_SYMLINK)
-                .map(|x| (ObjID::from(x.id), false, false))
-                .unwrap_or((
-                    sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?,
-                    true,
-                    false,
-                )),
-        };
+        session.put_namespace(name, true)?;
+        Ok(())
+    }
 
-        let elem = if is_dir {
-            FdKind::Dir(obj_id)
-        } else {
-            if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
-                FdKind::File(Arc::new(Mutex::new(elem)))
-            } else {
-                FdKind::RawFile(Arc::new(Mutex::new(RawFile::open(obj_id, flags)?)))
-            }
-        };
+    pub fn symlink(&self, name: &str, target: &str) -> std::io::Result<()> {
+        let mut session = get_naming_handle().lock().unwrap();
+
+        session.symlink(name, target)?;
+        Ok(())
+    }
+
+    pub fn readlink(
+        &self,
+        name: &str,
+        target: &mut [u8],
+        read_len: &mut u64,
+    ) -> std::io::Result<()> {
+        let mut session = get_naming_handle().lock().unwrap();
+        let node = session.get(name, GetFlags::empty())?;
+
+        let link = node.readlink()?;
+        let len = target.len().min(link.as_bytes().len());
+        target[0..len].copy_from_slice(&link.as_bytes()[0..len]);
+        *read_len = len as u64;
+        Ok(())
+    }
+
+    pub fn open_anon(
+        &self,
+        _kind: OpenAnonKind,
+        open_opt: OperationOptions,
+    ) -> std::io::Result<RawFd> {
+        let elem = FdKind::Stdio;
 
         let mut binding = get_fd_slots().lock().unwrap();
 
@@ -332,10 +313,6 @@ impl ReferenceRuntime {
             fd
         };
 
-        if did_create {
-            session.put(path, obj_id)?;
-        }
-
         drop(binding);
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
             self.seek(fd.try_into().unwrap(), SeekFrom::End(0))
@@ -344,9 +321,9 @@ impl ReferenceRuntime {
         Ok(fd.try_into().unwrap())
     }
 
-    pub fn remove(&self, path: &str) -> std::io::Result<RawFd> {
+    pub fn remove(&self, path: &str) -> std::io::Result<()> {
         let mut session = get_naming_handle().lock().unwrap();
-        session.remove(path)
+        Ok(session.remove(path)?)
     }
 
     pub fn read(&self, fd: RawFd, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -487,6 +464,10 @@ impl ReferenceRuntime {
                     flags: twizzler_rt_abi::fd::FdFlags::empty(),
                     id: name.id.raw(),
                     size: 0,
+                    unix_mode: 0,
+                    accessed: std::time::Duration::ZERO,
+                    modified: std::time::Duration::ZERO,
+                    created: std::time::Duration::ZERO,
                 }
                 .into(),
             );

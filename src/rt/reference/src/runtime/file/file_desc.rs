@@ -8,7 +8,7 @@ use lru::LruCache;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     syscall::{
-        sys_object_create, BackingType, DeleteFlags, LifetimeType, ObjectControlCmd, ObjectCreate,
+        sys_object_create, BackingType, LifetimeType, ObjectControlCmd, ObjectCreate,
         ObjectCreateFlags,
     },
 };
@@ -123,6 +123,10 @@ impl FileDesc {
             size: metadata_handle.size,
             flags: twizzler_rt_abi::fd::FdFlags::empty(),
             id: self.handle.id().raw(),
+            unix_mode: 0,
+            accessed: std::time::Duration::ZERO,
+            modified: std::time::Duration::ZERO,
+            created: std::time::Duration::ZERO,
         })
     }
 
@@ -158,34 +162,36 @@ impl FileDesc {
                     1
                 }
             }
-            twizzler_rt_abi::bindings::FD_CMD_DELETE => {
-                let mut ok = true;
-                for id in &metadata_handle.direct {
-                    if id.raw() != 0 && false {
-                        if twizzler_abi::syscall::sys_object_ctrl(
-                            *id,
-                            ObjectControlCmd::Delete(DeleteFlags::empty()),
-                        )
-                        .is_err()
-                        {
-                            ok = false;
+            /*
+                        twizzler_rt_abi::bindings::FD_CMD_DELETE => {
+                            let mut ok = true;
+                            for id in &metadata_handle.direct {
+                                if id.raw() != 0 && false {
+                                    if twizzler_abi::syscall::sys_object_ctrl(
+                                        *id,
+                                        ObjectControlCmd::Delete(DeleteFlags::empty()),
+                                    )
+                                    .is_err()
+                                    {
+                                        ok = false;
+                                    }
+                                }
+                            }
+                            if twizzler_abi::syscall::sys_object_ctrl(
+                                self.handle.id(),
+                                ObjectControlCmd::Delete(DeleteFlags::empty()),
+                            )
+                            .is_err()
+                            {
+                                return 1;
+                            }
+                            if ok {
+                                0
+                            } else {
+                                1
+                            }
                         }
-                    }
-                }
-                if twizzler_abi::syscall::sys_object_ctrl(
-                    self.handle.id(),
-                    ObjectControlCmd::Delete(DeleteFlags::empty()),
-                )
-                .is_err()
-                {
-                    return 1;
-                }
-                if ok {
-                    0
-                } else {
-                    1
-                }
-            }
+            */
             _ => 1,
         }
     }
