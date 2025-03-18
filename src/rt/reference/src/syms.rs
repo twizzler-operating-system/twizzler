@@ -291,7 +291,19 @@ fn std_error_to_open_error(err: std::io::ErrorKind) -> twizzler_rt_abi::fd::Open
     }
 }
 
-use twizzler_rt_abi::bindings::{descriptor, open_info, open_result};
+use twizzler_rt_abi::bindings::{descriptor, open_anon_kind, open_info, open_result};
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_open_anon(
+    kind: open_anon_kind,
+    flags: u32,
+) -> open_result {
+    OUR_RUNTIME
+        .open_anon(kind.into(), info.flags.into())
+        .map_err(|e| std_error_to_open_error(e.kind()))
+        .into()
+}
+check_ffi_type!(twz_rt_fd_open_anon, _);
+
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
     let name = unsafe { core::slice::from_raw_parts(info.name.cast(), info.len) };
@@ -309,6 +321,24 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
     }
 }
 check_ffi_type!(twz_rt_fd_open, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_remove(name: *const c_char, len: usize) -> open_result {
+    let name = unsafe { core::slice::from_raw_parts(name.cast(), len) };
+    let name =
+        core::str::from_utf8(name).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument);
+    match name {
+        Ok(name) => OUR_RUNTIME
+            .remove(name)
+            .map_err(|e| std_error_to_open_error(e.kind()))
+            .into(),
+        Err(e) => open_result {
+            error: e as u32,
+            fd: 0,
+        },
+    }
+}
+check_ffi_type!(twz_rt_fd_remove, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_close(fd: descriptor) {

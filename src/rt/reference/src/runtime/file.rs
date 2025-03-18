@@ -257,6 +257,98 @@ impl ReferenceRuntime {
         Ok(fd.try_into().unwrap())
     }
 
+    pub fn open_anon(
+        &self,
+        kind: OpenAnonKind,
+        open_opt: OperationOptions,
+    ) -> std::io::Result<RawFd> {
+        let mut session = get_naming_handle().lock().unwrap();
+
+        if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE)
+            && !open_opt.contains(OperationOptions::OPEN_FLAG_WRITE)
+        {
+            return Err(ErrorKind::InvalidInput.into());
+        }
+        let create = ObjectCreate::new(
+            BackingType::Normal,
+            LifetimeType::Persistent,
+            None,
+            ObjectCreateFlags::empty(),
+        );
+        let flags = match (
+            open_opt.contains(OperationOptions::OPEN_FLAG_READ),
+            open_opt.contains(OperationOptions::OPEN_FLAG_WRITE),
+        ) {
+            (true, true) => MapFlags::READ | MapFlags::WRITE,
+            (true, false) => MapFlags::READ,
+            (false, true) => MapFlags::WRITE,
+            (false, false) => MapFlags::READ,
+        };
+        let (obj_id, did_create, is_dir) = match create_opt {
+            CreateOptions::UNEXPECTED => return Err(ErrorKind::InvalidInput.into()),
+            CreateOptions::CreateKindExisting => {
+                let n = session
+                    .get(path, GetFlags::FOLLOW_SYMLINK)
+                    .map_err(|_| ErrorKind::Other)?;
+                (n.id, false, matches!(n.kind, NsNodeKind::Namespace))
+            }
+            CreateOptions::CreateKindNew => {
+                if session.get(path, GetFlags::empty()).is_ok() {
+                    return Err(ErrorKind::AlreadyExists.into());
+                }
+                (
+                    sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?,
+                    true,
+                    false,
+                )
+            }
+            CreateOptions::CreateKindEither => session
+                .get(path, GetFlags::FOLLOW_SYMLINK)
+                .map(|x| (ObjID::from(x.id), false, false))
+                .unwrap_or((
+                    sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?,
+                    true,
+                    false,
+                )),
+        };
+
+        let elem = if is_dir {
+            FdKind::Dir(obj_id)
+        } else {
+            if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
+                FdKind::File(Arc::new(Mutex::new(elem)))
+            } else {
+                FdKind::RawFile(Arc::new(Mutex::new(RawFile::open(obj_id, flags)?)))
+            }
+        };
+
+        let mut binding = get_fd_slots().lock().unwrap();
+
+        let fd = if binding.is_compact() {
+            binding.push(elem)
+        } else {
+            let fd = binding.first_empty_slot_from(0).unwrap();
+            binding.insert(fd, elem);
+            fd
+        };
+
+        if did_create {
+            session.put(path, obj_id)?;
+        }
+
+        drop(binding);
+        if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
+            self.seek(fd.try_into().unwrap(), SeekFrom::End(0))
+                .map_err(|_| ErrorKind::Other)?;
+        }
+        Ok(fd.try_into().unwrap())
+    }
+
+    pub fn remove(&self, path: &str) -> std::io::Result<RawFd> {
+        let mut session = get_naming_handle().lock().unwrap();
+        session.remove(path)
+    }
+
     pub fn read(&self, fd: RawFd, buf: &mut [u8]) -> std::io::Result<usize> {
         let binding = get_fd_slots().lock().unwrap();
         let mut file_desc = binding
