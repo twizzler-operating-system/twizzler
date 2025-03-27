@@ -16,7 +16,7 @@ static_assertions = "1"
 
 [dependencies.volatile]
 optional = true
-version = "0.5"
+version = "0.6"
 
 [features]
 # Activate if compiling for the kernel.

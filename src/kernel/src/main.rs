@@ -16,6 +16,7 @@
 #![feature(let_chains)]
 #![feature(btree_extract_if)]
 #![feature(extract_if)]
+#![feature(allocator_api)]
 
 #[macro_use]
 pub mod log;
@@ -93,8 +94,7 @@ struct Logger {}
 
 impl ::log::Log for Logger {
     fn enabled(&self, metadata: &::log::Metadata) -> bool {
-        true
-        //metadata.level() <= Level::Trace
+        metadata.level() <= Level::Trace
     }
 
     fn log(&self, record: &::log::Record) {

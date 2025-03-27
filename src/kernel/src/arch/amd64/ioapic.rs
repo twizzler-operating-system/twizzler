@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use acpi::{madt::Madt, sdt::Signature, InterruptModel};
+use acpi::{madt::Madt, InterruptModel};
 
 use super::{acpi::get_acpi_root, memory::phys_to_virt, processor::get_bsp_id};
 use crate::{
@@ -109,14 +109,11 @@ pub(super) fn set_interrupt(
 pub fn init() {
     let acpi = get_acpi_root();
 
-    let madt = unsafe {
-        acpi.get_sdt::<Madt>(Signature::MADT)
-            .expect("unable to get MADT ACPI table")
-            .expect("unable to find MADT ACPI table")
-            .virtual_start()
-            .as_ref()
-    };
-    let model = madt.parse_interrupt_model();
+    let madt = acpi
+        .find_table::<Madt>()
+        .expect("unable to find MADT ACPI table");
+    let madt = madt.get();
+    let model = madt.parse_interrupt_model_in(alloc::alloc::Global);
     let model = if let InterruptModel::Apic(model) = model.unwrap().0 {
         model
     } else {
@@ -129,7 +126,7 @@ pub fn init() {
     if model.io_apics.is_empty() {
         unimplemented!("no IOAPIC found");
     }
-    for ioapic in &model.io_apics {
+    for ioapic in model.io_apics.iter() {
         let ioapic = IOApic::new(
             ioapic.id,
             PhysAddr::new(ioapic.address as u64).unwrap(),
@@ -152,7 +149,7 @@ pub fn init() {
         IOAPICS.lock().push(ioapic);
     }
 
-    for iso in &model.interrupt_source_overrides {
+    for iso in model.interrupt_source_overrides.iter() {
         // TODO: verify these mappings
         let trigger = match iso.trigger_mode {
             acpi::platform::interrupt::TriggerMode::SameAsBus => TriggerMode::Edge,

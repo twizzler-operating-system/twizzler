@@ -11,7 +11,7 @@ edition = "2021"
 locate-cargo-manifest = "0.2.0" # for locating the kernel's `Cargo.toml`
 anyhow = "1.0"
 fatfs = "0.3"
-gpt = "3.1"
+gpt = "4.1"
 argh = "0.1.12"
 clap = { version = "4.0", features = ["derive"] }
 

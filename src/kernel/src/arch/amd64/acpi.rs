@@ -32,14 +32,26 @@ impl acpi::AcpiHandler for AcpiHandlerImpl {
     fn unmap_physical_region<T>(_region: &acpi::PhysicalMapping<Self, T>) {}
 }
 
-static ACPI: Once<acpi::AcpiTables<AcpiHandlerImpl>> = Once::new();
+struct AcpiWrap(acpi::AcpiTables<AcpiHandlerImpl>);
+
+pub struct AcpiSliceOwner {}
+
+// TODO: lock the ACPI tables, etc
+unsafe impl Send for AcpiWrap {}
+unsafe impl Sync for AcpiWrap {}
+
+static ACPI: Once<AcpiWrap> = Once::new();
 static HANDLER: AcpiHandlerImpl = AcpiHandlerImpl {};
 
 pub fn init(rsdp: u64) {
-    ACPI.call_once(|| unsafe { acpi::AcpiTables::from_rsdp(HANDLER, rsdp as usize).unwrap() });
+    ACPI.call_once(|| {
+        AcpiWrap(unsafe { acpi::AcpiTables::from_rsdp(HANDLER, rsdp as usize).unwrap() })
+    });
 }
 
 pub fn get_acpi_root() -> &'static AcpiTables<AcpiHandlerImpl> {
-    ACPI.poll()
+    &ACPI
+        .poll()
         .expect("need to call acpi::init before get_acpi_root")
+        .0
 }
