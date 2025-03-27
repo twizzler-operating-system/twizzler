@@ -34,19 +34,21 @@ pub fn get_boot_objects() -> &'static BootObjects {
 pub fn init(modules: &[BootModule]) {
     let mut boot_objects = BootObjects::default();
     for module in modules {
-        let tar = tar_no_std::TarArchiveRef::new(module.as_slice());
+        let tar = tar_no_std::TarArchiveRef::new(module.as_slice())
+            .expect("failed to open initrd as tar file");
         logln!(
             "[kernel::initrd] loading module, {} MB...",
             module.as_slice().len() / (1024 * 1024)
         );
         let mut total_alloc = 0;
         for e in tar.entries() {
+            let filename = e.filename();
+            logln!("==> {:?}", filename);
+            let Ok(name) = filename.as_str() else {
+                continue;
+            };
             let obj = obj::Object::new_kernel();
-            logln!(
-                "[kernel::initrd]  loading {:?} -> {:x}",
-                e.filename(),
-                obj.id()
-            );
+            logln!("[kernel::initrd]  loading {:?} -> {:x}", name, obj.id());
             let data = e.data();
             let mut total = 0;
             let mut pagenr = 1;
@@ -63,12 +65,11 @@ pub fn init(modules: &[BootModule]) {
             }
             let obj = Arc::new(obj);
             obj::register_object(obj.clone());
-            if e.filename().as_str() == "bootstrap" {
+
+            if name == "bootstrap" {
                 boot_objects.init = Some(obj.clone());
             }
-            boot_objects
-                .name_map
-                .insert(e.filename().as_str().to_owned(), obj);
+            boot_objects.name_map.insert(name.to_owned(), obj);
             total_alloc += total;
         }
         logln!(

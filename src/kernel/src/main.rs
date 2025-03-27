@@ -55,6 +55,7 @@ extern crate bitflags;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use ::log::Level;
 use arch::BootInfoSystemTable;
 use initrd::BootModule;
 use memory::{MemoryRegion, VirtAddr};
@@ -88,10 +89,38 @@ pub fn get_boot_info() -> &'static dyn BootInfo {
     &**BOOT_INFO.poll().unwrap()
 }
 
+struct Logger {}
+
+impl ::log::Log for Logger {
+    fn enabled(&self, metadata: &::log::Metadata) -> bool {
+        true
+        //metadata.level() <= Level::Trace
+    }
+
+    fn log(&self, record: &::log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+
+        logln!(
+            "{}:{} -- {}",
+            record.level(),
+            record.target(),
+            record.args()
+        );
+    }
+
+    fn flush(&self) {}
+}
+
+static LOGGER: Logger = Logger {};
+
 fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
+    ::log::set_logger(&LOGGER).unwrap();
     let boot_info = &**BOOT_INFO.call_once(|| Box::new(boot_info));
     arch::init(boot_info);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
+    ::log::warn!("TEST LOG");
     let cmdline = boot_info.get_cmd_line();
     for opt in cmdline.split(" ") {
         if opt == "--tests" {
