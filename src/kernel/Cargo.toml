@@ -22,7 +22,7 @@ twizzler-rt-abi = { version = "0.99", features = [
 ], default-features = false }
 fixedbitset = { version = "0.4.1", default-features = false }
 linked_list_allocator = "0.10"
-tar-no-std = "0.2.0"
+tar-no-std = "0.3"
 object = { version = "0.32.1", default-features = false, features = ["read"] }
 addr2line = { version = "0.16.0", default-features = false, features = [
     "rustc-demangle",
