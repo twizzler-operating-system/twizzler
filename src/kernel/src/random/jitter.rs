@@ -1,4 +1,4 @@
-use rand_core::RngCore;
+use rand_core::TryRngCore;
 // see https://docs.rs/rand_jitter/0.4.0/rand_jitter/struct.JitterRng.html#example
 use rand_jitter::JitterRng;
 
@@ -23,8 +23,8 @@ impl EntropySource for Jitter {
         Ok(Jitter(jrng))
     }
     // shouldn't ever fail
-    fn try_fill_entropy(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-        self.0.try_fill_bytes(dest)
+    fn try_fill_entropy(&mut self, dest: &mut [u8]) -> Result<(), ()> {
+        self.0.try_fill_bytes(dest).map_err(|_| ())
     }
 }
 

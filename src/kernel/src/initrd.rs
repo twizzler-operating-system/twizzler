@@ -43,7 +43,6 @@ pub fn init(modules: &[BootModule]) {
         let mut total_alloc = 0;
         for e in tar.entries() {
             let filename = e.filename();
-            logln!("==> {:?}", filename);
             let Ok(name) = filename.as_str() else {
                 continue;
             };

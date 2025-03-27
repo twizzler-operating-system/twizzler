@@ -120,7 +120,7 @@ pub fn enumerate_cpus() -> u32 {
     let bsp_id = get_bsp_id(Some(&procinfo));
 
     crate::processor::register(procinfo.boot_processor.local_apic_id, bsp_id);
-    for p in procinfo.application_processors {
+    for p in procinfo.application_processors.iter() {
         crate::processor::register(p.local_apic_id, bsp_id);
     }
 
@@ -292,7 +292,9 @@ pub fn tls_ready() -> bool {
     //unsafe { x86::bits64::segmentation::rdfsbase() != 0 }
 }
 
-pub fn get_bsp_id(maybe_processor_info: Option<&acpi::platform::ProcessorInfo>) -> u32 {
+pub fn get_bsp_id(
+    maybe_processor_info: Option<&acpi::platform::ProcessorInfo<alloc::alloc::Global>>,
+) -> u32 {
     match maybe_processor_info {
         None => {
             let acpi = get_acpi_root();

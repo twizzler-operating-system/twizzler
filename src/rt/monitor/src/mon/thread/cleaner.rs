@@ -110,7 +110,6 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
     let mut ops = Vec::new();
     let mut cleanups = Vec::new();
     let mut waits = Waits::default();
-    let mut key = happylock::ThreadKey::get().unwrap();
     loop {
         ops.truncate(0);
         // Apply any waiting operations.
@@ -135,11 +134,13 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
             tracing::debug!("cleaning thread: {}", th.id);
             let monitor = get_monitor();
             {
-                let mut tmgr = monitor.thread_mgr.write(&mut key);
+                let key = happylock::ThreadKey::get().unwrap();
+                let mut tmgr = monitor.thread_mgr.write(key);
                 tmgr.do_remove(&th);
             }
             let comps = {
-                let (_, ref mut cmgr, ref mut dynlink, _, _) = *monitor.locks.lock(&mut key);
+                let key = happylock::ThreadKey::get().unwrap();
+                let (_, ref mut cmgr, ref mut dynlink, _, _) = *monitor.locks.lock(key);
                 for comp in cmgr.compartments_mut() {
                     comp.clean_per_thread_data(th.id);
                 }

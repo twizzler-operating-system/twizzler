@@ -27,8 +27,9 @@ impl EntropySource for CpuEntropy {
         let cpu = Rndrs::try_new()?;
         Ok(Self { cpu })
     }
-    fn try_fill_entropy(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-        Ok(self.cpu.try_fill_bytes(dest)?)
+
+    fn try_fill_entropy(&mut self, dest: &mut [u8]) -> Result<(), ()> {
+        Ok(self.cpu.try_fill_bytes(dest).map_err(|_| ())?)
     }
 }
 

@@ -21,7 +21,7 @@ pub trait EntropySource {
     fn try_new() -> Result<Self, ()>
     where
         Self: Sized;
-    fn try_fill_entropy(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error>;
+    fn try_fill_entropy(&mut self, dest: &mut [u8]) -> Result<(), ()>;
 }
 
 struct EntropySources {
@@ -42,6 +42,7 @@ impl EntropySources {
     pub fn source_count(&self) -> usize {
         self.sources.len()
     }
+
     pub fn try_register_source<Source: EntropySource + 'static + Send + Sync>(
         &mut self,
     ) -> Result<(), ()> {

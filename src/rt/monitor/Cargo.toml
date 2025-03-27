@@ -12,13 +12,13 @@ dynlink = { path = "../../lib/dynlink" }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3" }
 twizzler-runtime = { path = "../" }
-miette = "5.10"
+miette = "7.5"
 secgate = { path = "../../lib/secgate" }
 monitor-api = { path = "../monitor-api" }
 static_assertions = "1.1"
 lazy_static = "1.4"
-talc = "3.1"
-happylock = "0.4.3"
+talc = "4.4"
+happylock = "0.5.0"
 parking_lot = "*"
 
 [features]

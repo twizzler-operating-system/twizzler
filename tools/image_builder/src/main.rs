@@ -206,7 +206,6 @@ verbose: yes
         let block_size_bytes: u64 = block_size.into();
         let mut disk = gpt::GptConfig::new()
             .writable(true)
-            .initialized(false)
             .logical_block_size(block_size)
             .create_from_device(Box::new(&mut image), None)
             .context("failed to open UEFI disk image")?;

@@ -23,7 +23,7 @@ blocking = "*"
 itertools = "*"
 
 async-trait = "0.1.66"
-volatile = "0.5"
+volatile = "0.6"
 bitvec = "1.0.1"
 
 tracing = "0.1"
