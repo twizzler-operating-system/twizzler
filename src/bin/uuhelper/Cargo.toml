@@ -24,6 +24,7 @@ feat_os_twizzler = [
     "false",
     "fmt",
     "fold",
+    "ln",
     "ls",
     "nl",
     "numfmt",
@@ -64,6 +65,7 @@ false = { optional = true, version = "0.0.30", package = "uu_false", git = "http
 fmt = { optional = true, version = "0.0.30", package = "uu_fmt", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
 fold = { optional = true, version = "0.0.30", package = "uu_fold", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
 join = { optional = true, version = "0.0.30", package = "uu_join", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+ln = { optional = true, version = "0.0.30", package = "uu_ln", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
 ls = { optional = true, version = "0.0.30", package = "uu_ls", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
 nl = { optional = true, version = "0.0.30", package = "uu_nl", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
 numfmt = { optional = true, version = "0.0.30", package = "uu_numfmt", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}

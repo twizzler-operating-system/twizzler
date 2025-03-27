@@ -451,26 +451,54 @@ impl ReferenceRuntime {
             let Ok(entry_name) = name.name() else {
                 continue;
             };
-            let ne = twizzler_rt_abi::fd::NameEntry::new(
-                entry_name.as_bytes(),
-                twizzler_rt_abi::fd::FdInfo {
-                    kind: match name.kind {
-                        naming_core::NsNodeKind::Namespace => {
-                            twizzler_rt_abi::fd::FdKind::Directory
-                        }
-                        naming_core::NsNodeKind::Object => twizzler_rt_abi::fd::FdKind::Regular,
-                        naming_core::NsNodeKind::SymLink => twizzler_rt_abi::fd::FdKind::SymLink,
-                    },
-                    flags: twizzler_rt_abi::fd::FdFlags::empty(),
-                    id: name.id.raw(),
-                    size: 0,
-                    unix_mode: 0,
-                    accessed: std::time::Duration::ZERO,
-                    modified: std::time::Duration::ZERO,
-                    created: std::time::Duration::ZERO,
-                }
-                .into(),
-            );
+            let ne = if name.kind == NsNodeKind::SymLink {
+                twizzler_rt_abi::fd::NameEntry::new_symlink(
+                    entry_name.as_bytes(),
+                    name.readlink()?.as_bytes(),
+                    twizzler_rt_abi::fd::FdInfo {
+                        kind: match name.kind {
+                            naming_core::NsNodeKind::Namespace => {
+                                twizzler_rt_abi::fd::FdKind::Directory
+                            }
+                            naming_core::NsNodeKind::Object => twizzler_rt_abi::fd::FdKind::Regular,
+                            naming_core::NsNodeKind::SymLink => {
+                                twizzler_rt_abi::fd::FdKind::SymLink
+                            }
+                        },
+                        flags: twizzler_rt_abi::fd::FdFlags::empty(),
+                        id: name.id.raw(),
+                        size: 0,
+                        unix_mode: 0,
+                        accessed: std::time::Duration::ZERO,
+                        modified: std::time::Duration::ZERO,
+                        created: std::time::Duration::ZERO,
+                    }
+                    .into(),
+                )
+            } else {
+                twizzler_rt_abi::fd::NameEntry::new(
+                    entry_name.as_bytes(),
+                    twizzler_rt_abi::fd::FdInfo {
+                        kind: match name.kind {
+                            naming_core::NsNodeKind::Namespace => {
+                                twizzler_rt_abi::fd::FdKind::Directory
+                            }
+                            naming_core::NsNodeKind::Object => twizzler_rt_abi::fd::FdKind::Regular,
+                            naming_core::NsNodeKind::SymLink => {
+                                twizzler_rt_abi::fd::FdKind::SymLink
+                            }
+                        },
+                        flags: twizzler_rt_abi::fd::FdFlags::empty(),
+                        id: name.id.raw(),
+                        size: 0,
+                        unix_mode: 0,
+                        accessed: std::time::Duration::ZERO,
+                        modified: std::time::Duration::ZERO,
+                        created: std::time::Duration::ZERO,
+                    }
+                    .into(),
+                )
+            };
             buf[i] = ne;
         }
         Ok(count)
