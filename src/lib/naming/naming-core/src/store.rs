@@ -134,6 +134,7 @@ trait Namespace {
 
     fn items(&self) -> Vec<NsNode>;
 
+    #[allow(dead_code)]
     fn len(&self) -> usize {
         self.items().len()
     }
@@ -222,7 +223,7 @@ impl NameSession<'_> {
         nr_derefs: usize,
         deref: bool,
     ) -> Result<(std::result::Result<NsNode, PathBuf>, Arc<dyn Namespace>)> {
-        tracing::debug!("namei: {:?}", name.as_ref());
+        tracing::trace!("namei: {:?}", name.as_ref());
 
         let mut namespace = self
             .working_ns
@@ -262,9 +263,8 @@ impl NameSession<'_> {
                     }
                 }
                 Component::Normal(os_str) => {
-                    tracing::debug!("lookup component {:?}", os_str);
+                    tracing::trace!("lookup component {:?}", os_str);
                     node = namespace.find(os_str.to_str().ok_or(ErrorKind::InvalidFilename)?);
-                    tracing::debug!("again from the top");
 
                     // Did we find something?
                     let Some(thisnode) = node else {
@@ -358,26 +358,27 @@ impl NameSession<'_> {
     }
 
     pub fn enumerate_namespace<P: AsRef<Path>>(&self, name: P) -> Result<std::vec::Vec<NsNode>> {
-        tracing::debug!("enumerate: {:?}", name.as_ref());
+        tracing::trace!("enumerate: {:?}", name.as_ref());
         let (node, container) = self.namei_exist(name, Self::MAX_SYMLINK_DEREF, true)?;
         if node.kind != NsNodeKind::Namespace {
             return Err(ErrorKind::NotADirectory);
         }
-        tracing::debug!("opening namespace: {}", node.id);
+        tracing::trace!("opening namespace: {}", node.id);
         let ns = self.open_namespace(
             node.id,
             false,
             Some(ParentInfo::new(container, node.name()?)),
         )?;
-        tracing::debug!("found namespace with {:?} items", ns.len());
         let items = ns.items();
-        tracing::debug!("collected: {:?}", items);
+        tracing::trace!("collected: {:?}", items);
         Ok(items)
     }
 
     pub fn enumerate_namespace_nsid(&self, id: ObjID) -> Result<std::vec::Vec<NsNode>> {
+        tracing::trace!("opening namespace-ensid: {}", id);
         let ns = self.open_namespace(id, false, None)?;
         let items = ns.items();
+        tracing::trace!("collected: {:?}", items);
         Ok(items)
     }
 

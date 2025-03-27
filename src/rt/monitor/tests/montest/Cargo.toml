@@ -9,7 +9,6 @@ edition = "2021"
 twizzler-runtime = { path = "../../.." }
 secgate = { path = "../../../../lib/secgate" }
 montest-lib = { path = "../montest-lib" }
-monitor = { path = "../../../monitor" }
 monitor-api = { path = "../../../monitor-api" }
 ctor = "*"
 tracing = "0.1"
