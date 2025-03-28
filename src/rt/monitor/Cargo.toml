@@ -20,6 +20,7 @@ lazy_static = "1.4"
 talc = "4.4"
 happylock = "0.5.0"
 parking_lot = "*"
+naming-core = { path = "../../lib/naming/naming-core/" }
 
 [features]
 secgate-impl = []

@@ -113,7 +113,7 @@ fn get_kernel_init_info() -> &'static KernelInitInfo {
 
 // How would this work if I changed the root while handles were open?
 #[secure_gate(options(info))]
-pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) {
+pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) -> ObjID {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(Level::INFO)
@@ -122,21 +122,24 @@ pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) {
     )
     .unwrap();
 
-    NAMINGSERVICE.get_or_create(|_| {
-        let namer = Namer::new_with(bootstrap)
-            .or::<ErrorKind>(Ok(Namer::new()))
-            .unwrap();
-        namer.names.root_session().mkns("/initrd", false).unwrap();
-        for n in get_kernel_init_info().names() {
-            namer
-                .names
-                .root_session()
-                .put(&format!("/initrd/{}", n.name()), n.id())
+    NAMINGSERVICE
+        .get_or_create(|_| {
+            let namer = Namer::new_with(bootstrap)
+                .or::<ErrorKind>(Ok(Namer::new()))
                 .unwrap();
-        }
+            namer.names.root_session().mkns("/initrd", false).unwrap();
+            for n in get_kernel_init_info().names() {
+                namer
+                    .names
+                    .root_session()
+                    .put(&format!("/initrd/{}", n.name()), n.id())
+                    .unwrap();
+            }
 
-        namer
-    });
+            namer
+        })
+        .names
+        .id()
 }
 
 #[secure_gate(options(info))]

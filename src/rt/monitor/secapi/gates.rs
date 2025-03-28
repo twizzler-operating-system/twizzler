@@ -449,3 +449,13 @@ pub fn monitor_rt_stats(_info: &secgate::GateCallInfo) -> MonitorStats {
     let monitor = crate::mon::get_monitor();
     monitor.stats()
 }
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_set_nameroot(info: &secgate::GateCallInfo, root: ObjID) -> Result<(), ()> {
+    let monitor = crate::mon::get_monitor();
+    monitor.set_nameroot(info, root)
+}

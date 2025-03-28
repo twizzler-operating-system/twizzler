@@ -71,6 +71,7 @@ impl Namespace for NamespaceObject {
                 let Ok(en) = entry.name() else {
                     continue;
                 };
+                tracing::trace!("compare: {}: {}", en, name);
                 if en == name {
                     return Some(*entry);
                 }

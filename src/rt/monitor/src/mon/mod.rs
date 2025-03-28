@@ -375,6 +375,11 @@ impl Monitor {
             }
         }
     }
+
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
+    pub fn set_nameroot(&self, _info: &secgate::GateCallInfo, root: ObjID) -> Result<(), ()> {
+        crate::dlengine::set_naming(root)
+    }
 }
 
 static MONITOR: OnceLock<Monitor> = OnceLock::new();

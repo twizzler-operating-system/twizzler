@@ -93,7 +93,7 @@ fn initialize_pager() -> ObjID {
     bootstrap_id
 }
 
-fn initialize_namer(bootstrap: ObjID) {
+fn initialize_namer(bootstrap: ObjID) -> ObjID {
     info!("starting namer");
     let nmcomp: CompartmentHandle = CompartmentLoader::new(
         "naming",
@@ -108,10 +108,15 @@ fn initialize_namer(bootstrap: ObjID) {
         flags = nmcomp.wait(flags);
     }
 
-    let namer_start = unsafe { nmcomp.dynamic_gate::<(ObjID,), ()>("namer_start").unwrap() };
-    namer_start(bootstrap);
+    let namer_start = unsafe {
+        nmcomp
+            .dynamic_gate::<(ObjID,), ObjID>("namer_start")
+            .unwrap()
+    };
+    let root_id = namer_start(bootstrap);
     tracing::info!("naming ready");
     std::mem::forget(nmcomp);
+    root_id.ok().expect("failed to start namer")
 }
 
 fn initialize_devmgr() {
@@ -170,11 +175,29 @@ fn main() {
 
     let bootstrap_id = initialize_pager();
 
-    initialize_namer(bootstrap_id);
+    let root_id = initialize_namer(bootstrap_id);
+
+    // Set new nameroot for the monitor
+    tracing::info!("setting monitor nameroot: {}", root_id);
+    let _ = monitor_api::set_nameroot(root_id)
+        .inspect_err(|_| tracing::warn!("failed to set nameroot for monitor"));
 
     // Load and wait for tests to complete
     run_tests("test_bins", false);
     run_tests("bench_bins", true);
+
+    let utils = [
+        "ls", "cat", "base64", "base32", "basename", "basenc", "cksum", "comm", "csplit", "cut",
+        "date", "echo", "expand", "factor", "false", "fmt", "fold", "ln", "nl", "numfmt", "od",
+        "paste", "pr", "printenv", "printf", "ptx", "seq", "shuf", "sleep", "sort", "sum", "tr",
+        "true", "tsort", "unexpand", "uniq", "yes",
+    ];
+    for util in utils {
+        let link = format!("/initrd/{}", util);
+        tracing::debug!("creating link: {}", link);
+        let _ = std::os::twizzler::fs::symlink("uuhelper", link)
+            .inspect_err(|e| tracing::warn!("failed to softlink util {}: {}", util, e));
+    }
 
     println!("Hi, welcome to the basic twizzler test console.");
 

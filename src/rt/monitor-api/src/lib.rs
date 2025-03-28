@@ -741,3 +741,7 @@ impl RuntimeThreadControl {
         id
     }
 }
+
+pub fn set_nameroot(root: ObjID) -> Result<(), ()> {
+    gates::monitor_rt_set_nameroot(root).unwrap()
+}
