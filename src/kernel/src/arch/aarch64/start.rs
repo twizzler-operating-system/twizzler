@@ -35,6 +35,9 @@ struct Armv8BootInfo {
     modules: Vec<BootModule>,
 }
 
+unsafe impl Send for Armv8BootInfo {}
+unsafe impl Sync for Armv8BootInfo {}
+
 impl BootInfo for Armv8BootInfo {
     fn memory_regions(&self) -> &'static [MemoryRegion] {
         unsafe { core::intrinsics::transmute(&self.memory[..]) }
@@ -261,5 +264,5 @@ extern "C" fn limine_entry() -> ! {
         })
         .collect();
 
-    crate::kernel_main(&mut boot_info)
+    crate::kernel_main(boot_info)
 }

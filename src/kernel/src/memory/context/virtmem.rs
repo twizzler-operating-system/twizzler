@@ -799,7 +799,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
 mod test {
     use alloc::sync::Arc;
 
-    use twizzler_abi::{marker::BaseType, object::Protections};
+    use twizzler_abi::object::Protections;
     use twizzler_kernel_macros::kernel_test;
 
     use crate::memory::context::{
@@ -808,19 +808,6 @@ mod test {
 
     struct Foo {
         x: u32,
-    }
-
-    impl BaseType for Foo {
-        fn init<T>(_t: T) -> Self {
-            Foo { x: 0 }
-        }
-
-        fn tags() -> &'static [(
-            twizzler_abi::marker::BaseVersion,
-            twizzler_abi::marker::BaseTag,
-        )] {
-            todo!()
-        }
     }
 
     #[kernel_test]

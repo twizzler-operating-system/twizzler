@@ -24,12 +24,12 @@ impl EntropySource for CpuEntropy {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         let cpu = RdSeed::new().or(Err(()))?;
         #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
-        let cpu = Rndrs::try_new()?;
+        let cpu = Rndrs::try_new().or(Err(()))?;
         Ok(Self { cpu })
     }
 
     fn try_fill_entropy(&mut self, dest: &mut [u8]) -> Result<(), ()> {
-        Ok(self.cpu.try_fill_bytes(dest).map_err(|_| ())?)
+        Ok(self.cpu.try_fill_entropy(dest).map_err(|_| ())?)
     }
 }
 

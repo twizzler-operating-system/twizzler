@@ -6,7 +6,7 @@ use crate::{arch::BootInfoSystemTable, once::Once, BootInfo};
 // We use device tree to describe the hardware on this machine
 static FDT: Once<Fdt<'static>> = Once::new();
 
-pub fn init<B: BootInfo>(boot_info: &B) {
+pub fn init<B: BootInfo + ?Sized>(boot_info: &B) {
     FDT.call_once(|| {
         let dtb = {
             // try to find device tree location using the bootloader
