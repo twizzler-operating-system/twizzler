@@ -1,9 +1,12 @@
+use std::sync::OnceLock;
+
 use dynlink::{
     compartment::{CompartmentId, MONITOR_COMPARTMENT_ID},
     engines::{Backing, ContextEngine, LoadCtx},
     library::UnloadedLibrary,
     DynlinkError, DynlinkErrorKind,
 };
+use naming_core::{GetFlags, NameStore, NsNodeKind};
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
@@ -119,6 +122,43 @@ impl ContextEngine for Engine {
     }
 }
 
+static NAMING: OnceLock<NameStore> = OnceLock::new();
+
+pub fn set_naming(root: ObjID) -> Result<(), ()> {
+    NAMING
+        .set(NameStore::new_with_root(root).map_err(|_| ())?)
+        .map_err(|_| ())
+}
+
+pub fn naming() -> Option<&'static NameStore> {
+    NAMING.get()
+}
+
+fn do_name_resolver(name: &str) -> Result<ObjID, DynlinkError> {
+    if let Some(namer) = naming() {
+        let session = namer.root_session();
+        let node = session.get(name, GetFlags::FOLLOW_SYMLINK).map_err(|_| {
+            DynlinkErrorKind::NameNotFound {
+                name: name.to_string(),
+            }
+        })?;
+        return match node.kind {
+            NsNodeKind::Object => Ok(node.id),
+            _ => Err(DynlinkErrorKind::NameNotFound {
+                name: name.to_string(),
+            }
+            .into()),
+        };
+    }
+
+    find_init_name(name).ok_or(
+        DynlinkErrorKind::NameNotFound {
+            name: name.to_string(),
+        }
+        .into(),
+    )
+}
+
 fn name_resolver(mut name: &str) -> Result<ObjID, DynlinkError> {
     if name.starts_with("libstd") {
         name = "libstd.so";
@@ -126,12 +166,13 @@ fn name_resolver(mut name: &str) -> Result<ObjID, DynlinkError> {
     if name.starts_with("libtest") {
         name = "libtest.so";
     }
-    find_init_name(name).ok_or(
-        DynlinkErrorKind::NameNotFound {
-            name: name.to_string(),
-        }
-        .into(),
-    )
+
+    if let Ok(r) = do_name_resolver(name) {
+        return Ok(r);
+    }
+
+    let initrdname = format!("/initrd/{}", name);
+    do_name_resolver(initrdname.as_str())
 }
 
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {

@@ -190,8 +190,10 @@ impl RunComp {
     pub fn unmap_object(&mut self, info: MapInfo) -> Option<MapHandle> {
         let x = self.mapped_objects.remove(&info);
         if x.is_none() {
-            tracing::warn!(
-                "tried to comp-unmap an object that was not mapped by compartment: {:?}",
+            // TODO:: this happens occasionally, but it doesn't seem to be an issue?
+            tracing::debug!(
+                "tried to comp-unmap an object that was not mapped by compartment ({}): {:?}",
+                self.name,
                 info
             );
         }

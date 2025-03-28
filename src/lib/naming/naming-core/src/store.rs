@@ -164,11 +164,20 @@ impl NameStore {
         let this = Self::new();
         this.nameroot.insert(NsNode::ns("data", id).unwrap());
         tracing::debug!(
-            "new_with: root={}, data={:?}",
+            "new_with: data={}, data={:?}, root={}",
             id,
-            this.nameroot.find("data")
+            this.nameroot.find("data"),
+            this.id()
         );
         Ok(this)
+    }
+
+    // Loads in an existing object store from an Object ID
+    pub fn new_with_root(id: ObjID) -> Result<NameStore> {
+        let namespace = NamespaceObject::open(id, false, None)?;
+        Ok(Self {
+            nameroot: Arc::new(namespace),
+        })
     }
 
     pub fn id(&self) -> ObjID {
@@ -219,17 +228,19 @@ impl NameSession<'_> {
     // If the name is absolute then it will start at root instead of the working_ns
     fn namei<P: AsRef<Path>>(
         &self,
+        namespace: Option<Arc<dyn Namespace>>,
         name: P,
         nr_derefs: usize,
         deref: bool,
     ) -> Result<(std::result::Result<NsNode, PathBuf>, Arc<dyn Namespace>)> {
         tracing::trace!("namei: {:?}", name.as_ref());
 
-        let mut namespace = self
-            .working_ns
-            .as_ref()
-            .unwrap_or(&self.store.nameroot)
-            .clone();
+        let mut namespace = namespace.unwrap_or_else(|| {
+            self.working_ns
+                .as_ref()
+                .unwrap_or(&self.store.nameroot)
+                .clone()
+        });
 
         let components = name.as_ref().components().collect::<Vec<_>>();
         if components.is_empty() {
@@ -263,11 +274,16 @@ impl NameSession<'_> {
                     }
                 }
                 Component::Normal(os_str) => {
-                    tracing::trace!("lookup component {:?}", os_str);
+                    tracing::trace!(
+                        "lookup component {:?}: {}",
+                        os_str.as_encoded_bytes(),
+                        os_str.to_str().ok_or(ErrorKind::InvalidFilename)?
+                    );
                     node = namespace.find(os_str.to_str().ok_or(ErrorKind::InvalidFilename)?);
 
                     // Did we find something?
                     let Some(thisnode) = node else {
+                        tracing::trace!("failed to find component: (is_last = {})", is_last);
                         // Last component: return with this name, None.
                         if is_last {
                             return Ok((Err(os_str.into()), namespace));
@@ -277,12 +293,15 @@ impl NameSession<'_> {
                     };
                     // If symlink, deref. But keep track of recursion.
                     if thisnode.kind == NsNodeKind::SymLink {
+                        tracing::trace!("found symlink: {} {} {}", nr_derefs, deref, is_last);
                         if nr_derefs == 0 {
                             return Err(ErrorKind::FilesystemLoop);
                         }
                         if deref || !is_last {
                             let ldname = thisnode.readlink()?;
-                            let (lnode, lcont) = self.namei_exist(ldname, nr_derefs - 1, deref)?;
+                            tracing::trace!("search with: {}", ldname);
+                            let (lnode, lcont) =
+                                self.namei_exist(Some(namespace), ldname, nr_derefs - 1, deref)?;
                             node = Some(lnode);
                             namespace = lcont;
                         }
@@ -312,16 +331,17 @@ impl NameSession<'_> {
 
     fn namei_exist<'a, P: AsRef<Path>>(
         &self,
+        namespace: Option<Arc<dyn Namespace>>,
         name: P,
         nr_derefs: usize,
         deref: bool,
     ) -> Result<(NsNode, Arc<dyn Namespace>)> {
-        let (n, ns) = self.namei(name, nr_derefs, deref)?;
+        let (n, ns) = self.namei(namespace, name, nr_derefs, deref)?;
         Ok((n.ok().ok_or(ErrorKind::NotFound)?, ns))
     }
 
     pub fn mkns<P: AsRef<Path>>(&self, name: P, persist: bool) -> Result<()> {
-        let (node, container) = self.namei(&name, Self::MAX_SYMLINK_DEREF, false)?;
+        let (node, container) = self.namei(None, &name, Self::MAX_SYMLINK_DEREF, false)?;
         let Err(name) = node else {
             return Err(ErrorKind::AlreadyExists);
         };
@@ -339,7 +359,7 @@ impl NameSession<'_> {
 
     pub fn put<P: AsRef<Path>>(&self, name: P, id: ObjID) -> Result<()> {
         tracing::debug!("put {:?}: {}", name.as_ref(), id);
-        let (node, container) = self.namei(&name, Self::MAX_SYMLINK_DEREF, false)?;
+        let (node, container) = self.namei(None, &name, Self::MAX_SYMLINK_DEREF, false)?;
         let Err(name) = node else {
             return Err(ErrorKind::AlreadyExists);
         };
@@ -349,7 +369,9 @@ impl NameSession<'_> {
     }
 
     pub fn get<P: AsRef<Path>>(&self, name: P, flags: GetFlags) -> Result<NsNode> {
+        tracing::debug!("get {:?}: {:?}", name.as_ref(), flags);
         let (node, _) = self.namei_exist(
+            None,
             name,
             Self::MAX_SYMLINK_DEREF,
             flags.contains(GetFlags::FOLLOW_SYMLINK),
@@ -359,7 +381,7 @@ impl NameSession<'_> {
 
     pub fn enumerate_namespace<P: AsRef<Path>>(&self, name: P) -> Result<std::vec::Vec<NsNode>> {
         tracing::trace!("enumerate: {:?}", name.as_ref());
-        let (node, container) = self.namei_exist(name, Self::MAX_SYMLINK_DEREF, true)?;
+        let (node, container) = self.namei_exist(None, name, Self::MAX_SYMLINK_DEREF, true)?;
         if node.kind != NsNodeKind::Namespace {
             return Err(ErrorKind::NotADirectory);
         }
@@ -383,7 +405,8 @@ impl NameSession<'_> {
     }
 
     pub fn change_namespace<P: AsRef<Path>>(&mut self, name: P) -> Result<()> {
-        let (node, container) = self.namei_exist(name, Self::MAX_SYMLINK_DEREF, true)?;
+        tracing::debug!("change_ns: {:?}", name.as_ref());
+        let (node, container) = self.namei_exist(None, name, Self::MAX_SYMLINK_DEREF, true)?;
         match node.kind {
             NsNodeKind::Namespace => {
                 self.working_ns = Some(self.open_namespace(
@@ -398,7 +421,7 @@ impl NameSession<'_> {
     }
 
     pub fn remove<P: AsRef<Path>>(&self, name: P) -> Result<()> {
-        let (node, container) = self.namei_exist(&name, Self::MAX_SYMLINK_DEREF, false)?;
+        let (node, container) = self.namei_exist(None, &name, Self::MAX_SYMLINK_DEREF, false)?;
         container
             .remove(node.name()?)
             .map(|_| ())
@@ -406,7 +429,7 @@ impl NameSession<'_> {
     }
 
     pub fn link<P: AsRef<Path>, L: AsRef<Path>>(&self, name: P, link: L) -> Result<()> {
-        let (node, container) = self.namei(&name, Self::MAX_SYMLINK_DEREF, false)?;
+        let (node, container) = self.namei(None, &name, Self::MAX_SYMLINK_DEREF, false)?;
         let Err(name) = node else {
             return Err(ErrorKind::AlreadyExists);
         };
@@ -416,7 +439,7 @@ impl NameSession<'_> {
     }
 
     pub fn readlink<P: AsRef<Path>>(&self, name: P) -> Result<PathBuf> {
-        let (node, _) = self.namei_exist(name, Self::MAX_SYMLINK_DEREF, false)?;
+        let (node, _) = self.namei_exist(None, name, Self::MAX_SYMLINK_DEREF, false)?;
         node.readlink().map(PathBuf::from)
     }
 }
