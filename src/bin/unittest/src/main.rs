@@ -45,6 +45,7 @@ fn main() {
         }
     }
     let dur = Instant::now() - start;
+    println!("unittest: tests finished, waiting for status request");
     RESULT
         .set(Report::ready(ReportInfo {
             time: dur,
@@ -60,6 +61,7 @@ fn io_heartbeat() {
         match buf.as_str().trim() {
             "status" => {
                 if let Some(report) = RESULT.get() {
+                    println!("unittest: creating report");
                     println!("REPORT {}", serde_json::to_string(report).unwrap());
                     return;
                 } else {

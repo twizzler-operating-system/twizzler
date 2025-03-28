@@ -1,8 +1,14 @@
 use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, sync::Arc};
 
+use twizzler_abi::{
+    meta::{MetaExt, MetaFlags, MetaInfo, MEXT_SIZED},
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+};
+use twizzler_rt_abi::object::Nonce;
+
 use crate::{
     memory::VirtAddr,
-    obj::{self, pages::Page, ObjectRef},
+    obj::{self, pages::Page, ObjectRef, PageNumber},
     once::Once,
 };
 pub struct BootModule {
@@ -30,7 +36,9 @@ pub fn get_boot_objects() -> &'static BootObjects {
         .poll()
         .expect("tried to get BootObjects before processing modules")
 }
-
+unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
+    ::core::slice::from_raw_parts((p as *const T) as *const u8, ::core::mem::size_of::<T>())
+}
 pub fn init(modules: &[BootModule]) {
     let mut boot_objects = BootObjects::default();
     for module in modules {
@@ -62,6 +70,31 @@ pub fn init(modules: &[BootModule]) {
                 total += thislen;
                 pagenr += 1;
             }
+
+            let mut buffer = [0; 0x1000];
+            let meta = MetaInfo {
+                nonce: Nonce(0),
+                kuid: ObjID::new(0),
+                flags: MetaFlags(0),
+                fotcount: 0,
+                extcount: 1,
+            };
+            let me = MetaExt {
+                tag: MEXT_SIZED,
+                value: e.data().len() as u64,
+            };
+            unsafe {
+                buffer[0..size_of::<MetaInfo>()].copy_from_slice(any_as_u8_slice(&meta));
+                buffer[size_of::<MetaInfo>()..(size_of::<MetaInfo>() + size_of::<MetaExt>())]
+                    .copy_from_slice(any_as_u8_slice(&me));
+            }
+            let page = Page::new();
+            let va: *mut u8 = page.as_virtaddr().as_mut_ptr();
+            unsafe {
+                va.copy_from(buffer.as_ptr(), 0x1000);
+            }
+            obj.add_page(PageNumber::from_offset(MAX_SIZE - NULLPAGE_SIZE), page);
+
             let obj = Arc::new(obj);
             obj::register_object(obj.clone());
 

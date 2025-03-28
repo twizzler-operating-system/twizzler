@@ -23,7 +23,7 @@ pub use address::{PhysAddr, VirtAddr};
 pub use interrupt::{init_interrupts, send_ipi, set_interrupt};
 pub use start::BootInfoSystemTable;
 
-pub fn init<B: BootInfo>(boot_info: &B) {
+pub fn init<B: BootInfo + Send + Sync + 'static + ?Sized>(boot_info: &B) {
     // initialize exceptions by setting up our exception vectors
     exception::init();
     // configure registers needed by the memory management system
