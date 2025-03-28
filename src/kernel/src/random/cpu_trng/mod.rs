@@ -28,8 +28,14 @@ impl EntropySource for CpuEntropy {
         Ok(Self { cpu })
     }
 
+    #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
     fn try_fill_entropy(&mut self, dest: &mut [u8]) -> Result<(), ()> {
         Ok(self.cpu.try_fill_entropy(dest).map_err(|_| ())?)
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn try_fill_entropy(&mut self, dest: &mut [u8]) -> Result<(), ()> {
+        Ok(self.cpu.try_fill_bytes(dest).map_err(|_| ())?)
     }
 }
 
