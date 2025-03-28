@@ -35,6 +35,7 @@ enum FdKind {
     RawFile(Arc<Mutex<RawFile>>),
     Stdio,
     Dir(ObjID),
+    SymLink,
 }
 
 impl FdKind {
@@ -55,6 +56,16 @@ impl FdKind {
                 kind: twizzler_rt_abi::fd::FdKind::Directory,
                 size: 0,
                 id: id.raw(),
+                created: Duration::from_secs(0).into(),
+                modified: Duration::from_secs(0).into(),
+                accessed: Duration::from_secs(0).into(),
+                unix_mode: 0,
+            }),
+            FdKind::SymLink => Ok(FdInfo {
+                flags: twizzler_rt_abi::fd::FdFlags::from_bits_truncate(0),
+                kind: twizzler_rt_abi::fd::FdKind::SymLink,
+                size: 0,
+                id: 0,
                 created: Duration::from_secs(0).into(),
                 modified: Duration::from_secs(0).into(),
                 accessed: Duration::from_secs(0).into(),
@@ -95,6 +106,7 @@ impl Read for FdKind {
                 Ok(len)
             }
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
+            FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
         }
     }
 }
@@ -112,6 +124,7 @@ impl Write for FdKind {
                 Ok(buf.len())
             }
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
+            FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
         }
     }
 
@@ -121,6 +134,7 @@ impl Write for FdKind {
             FdKind::RawFile(arc) => arc.lock().unwrap().flush(),
             FdKind::Stdio => Ok(()),
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
+            FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
         }
     }
 }
@@ -168,6 +182,7 @@ bitflags! {
         const OPEN_FLAG_WRITE = twizzler_rt_abi::bindings::OPEN_FLAG_WRITE;
         const OPEN_FLAG_TRUNCATE = twizzler_rt_abi::bindings::OPEN_FLAG_TRUNCATE;
         const OPEN_FLAG_TAIL = twizzler_rt_abi::bindings::OPEN_FLAG_TAIL;
+        const OPEN_FLAG_SYMLINK = twizzler_rt_abi::bindings::OPEN_FLAG_SYMLINK;
     }
 }
 
@@ -206,13 +221,16 @@ impl ReferenceRuntime {
             (false, true) => MapFlags::WRITE,
             (false, false) => MapFlags::READ,
         };
-        let (obj_id, did_create, is_dir) = match create_opt {
+        let get_flags = if open_opt.contains(OperationOptions::OPEN_FLAG_SYMLINK) {
+            GetFlags::empty()
+        } else {
+            GetFlags::FOLLOW_SYMLINK
+        };
+        let (obj_id, did_create, kind) = match create_opt {
             CreateOptions::UNEXPECTED => return Err(ErrorKind::InvalidInput.into()),
             CreateOptions::CreateKindExisting => {
-                let n = session
-                    .get(path, GetFlags::FOLLOW_SYMLINK)
-                    .map_err(|_| ErrorKind::Other)?;
-                (n.id, false, matches!(n.kind, NsNodeKind::Namespace))
+                let n = session.get(path, get_flags).map_err(|_| ErrorKind::Other)?;
+                (n.id, false, n.kind)
             }
             CreateOptions::CreateKindNew => {
                 if session.get(path, GetFlags::empty()).is_ok() {
@@ -221,27 +239,29 @@ impl ReferenceRuntime {
                 (
                     sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?,
                     true,
-                    false,
+                    NsNodeKind::Object,
                 )
             }
             CreateOptions::CreateKindEither => session
-                .get(path, GetFlags::FOLLOW_SYMLINK)
-                .map(|x| (ObjID::from(x.id), false, false))
+                .get(path, get_flags)
+                .map(|x| (ObjID::from(x.id), false, x.kind))
                 .unwrap_or((
                     sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?,
                     true,
-                    false,
+                    NsNodeKind::Object,
                 )),
         };
 
-        let elem = if is_dir {
-            FdKind::Dir(obj_id)
-        } else {
-            if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
-                FdKind::File(Arc::new(Mutex::new(elem)))
-            } else {
-                FdKind::RawFile(Arc::new(Mutex::new(RawFile::open(obj_id, flags)?)))
+        let elem = match kind {
+            NsNodeKind::Namespace => FdKind::Dir(obj_id),
+            NsNodeKind::Object => {
+                if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
+                    FdKind::File(Arc::new(Mutex::new(elem)))
+                } else {
+                    FdKind::RawFile(Arc::new(Mutex::new(RawFile::open(obj_id, flags)?)))
+                }
             }
+            NsNodeKind::SymLink => FdKind::SymLink,
         };
 
         let mut binding = get_fd_slots().lock().unwrap();
