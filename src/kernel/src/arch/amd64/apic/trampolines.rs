@@ -6,14 +6,16 @@ use x86::{
 use crate::{
     arch::{
         amd64::{
-            apic::local::{
-                get_lapic, LAPIC_ICRLO_ASSERT, LAPIC_ICRLO_INIT, LAPIC_ICRLO_LEVEL,
-                LAPIC_ICRLO_STARTUP,
+            apic::{
+                ipi::raw_send_ipi,
+                local::{
+                    get_lapic, LAPIC_ICRLO_ASSERT, LAPIC_ICRLO_INIT, LAPIC_ICRLO_LEVEL,
+                    LAPIC_ICRLO_STARTUP,
+                },
             },
             pit,
         },
         memory::phys_to_virt,
-        send_ipi,
     },
     interrupt::Destination,
     memory::{PhysAddr, VirtAddr},
@@ -199,23 +201,24 @@ pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
     assert!(*pagetables >> 32 == 0);
     core::arch::asm!("mfence");
 
+    logln!("sending to cpu {}", cpu);
     get_lapic().clear_err();
-    send_ipi(
+    raw_send_ipi(
         Destination::Single(cpu),
-        LAPIC_ICRLO_INIT | LAPIC_ICRLO_LEVEL | LAPIC_ICRLO_ASSERT,
+        LAPIC_ICRLO_INIT | LAPIC_ICRLO_ASSERT | LAPIC_ICRLO_LEVEL,
     );
     pit::wait_ns(100000);
 
-    send_ipi(
+    raw_send_ipi(
         Destination::Single(cpu),
         LAPIC_ICRLO_INIT | LAPIC_ICRLO_LEVEL,
     );
     pit::wait_ns(100000);
 
     for _ in 0..3 {
-        send_ipi(
+        raw_send_ipi(
             Destination::Single(cpu),
-            LAPIC_ICRLO_STARTUP | ((TRAMPOLINE_ENTRY16 >> 12) & 0xff),
+            LAPIC_ICRLO_STARTUP | ((TRAMPOLINE_ENTRY16 >> 12) & 0xff) | LAPIC_ICRLO_ASSERT,
         );
         pit::wait_ns(100000);
     }
