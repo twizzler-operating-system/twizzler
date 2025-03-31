@@ -313,7 +313,7 @@ impl ArchTlbMgr {
         if count > 0 {
             // Ensure we don't wait too long -- TODO: this is because this TLB shootdown algorithm
             // is Not Great (tm) and should be improved (targeted shootdown, pcid tracking, ...)
-            const MAX_ITERS: usize = 200;
+            const MAX_ITERS: usize = 3000;
             // Wait for each processor to report that it is done.
             with_each_active_processor(|p| {
                 let mut iters = 0;
@@ -321,6 +321,12 @@ impl ArchTlbMgr {
                     spin_wait_until(
                         || {
                             iters += 1;
+                            if iters >= MAX_ITERS / 2 {
+                                super::super::super::apic::send_ipi(
+                                    Destination::Single(p.id),
+                                    TLB_SHOOTDOWN_VECTOR,
+                                );
+                            }
                             if p.arch.tlb_shootdown_info.is_finished() || iters >= MAX_ITERS {
                                 if iters >= MAX_ITERS {
                                     logln!(

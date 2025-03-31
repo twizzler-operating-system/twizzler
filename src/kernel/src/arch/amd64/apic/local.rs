@@ -139,7 +139,8 @@ impl Lapic {
     pub fn write_icr(&self, hi: u32, lo: u32) {
         match self.version {
             ApicVersion::XApic => unsafe {
-                self.write(LAPIC_ICRHI, hi);
+                const LAPIC_ICRHI_ID_OFFSET: u32 = 24;
+                self.write(LAPIC_ICRHI, hi << LAPIC_ICRHI_ID_OFFSET);
                 self.write(LAPIC_ICRLO, lo);
             },
             ApicVersion::X2Apic => {
