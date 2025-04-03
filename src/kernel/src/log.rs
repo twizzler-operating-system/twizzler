@@ -3,8 +3,10 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use twizzler_abi::syscall::{
-    KernelConsoleReadBufferError, KernelConsoleReadError, KernelConsoleReadFlags,
+use twizzler_abi::syscall::KernelConsoleReadFlags;
+use twizzler_rt_abi::{
+    error::{IoError, TwzError},
+    Result,
 };
 
 use crate::{condvar::CondVar, interrupt, spinlock::Spinlock};
@@ -21,8 +23,6 @@ pub struct EmergencyMessage;
 impl MessageLevel for EmergencyMessage {}
 pub struct NormalMessage;
 impl MessageLevel for NormalMessage {}
-
-pub struct ConsoleWriteError;
 
 const INPUT_BUFFER_SIZE: usize = 1024;
 pub struct KernelConsoleReadBuffer {
@@ -81,11 +81,7 @@ struct KernelConsoleRef<T: KernelConsoleHardware + 'static, M: MessageLevel + 's
 }
 
 impl<T: KernelConsoleHardware + 'static, M: MessageLevel + 'static> KernelConsoleRef<T, M> {
-    pub fn write(
-        &self,
-        data: &[u8],
-        flags: KernelConsoleWriteFlags,
-    ) -> Result<(), ConsoleWriteError> {
+    pub fn write(&self, data: &[u8], flags: KernelConsoleWriteFlags) -> Result<()> {
         self.console.hardware.write(data, flags);
         self.console.inner.write_buffer(data, flags)
     }
@@ -195,11 +191,7 @@ impl KernelConsoleInner {
             .is_ok()
     }
 
-    fn write_buffer(
-        &self,
-        data: &[u8],
-        flags: KernelConsoleWriteFlags,
-    ) -> Result<(), ConsoleWriteError> {
+    fn write_buffer(&self, data: &[u8], flags: KernelConsoleWriteFlags) -> Result<()> {
         let data = &data[0..core::cmp::min(data.len(), MAX_SINGLE_WRITE)];
 
         loop {
@@ -210,7 +202,7 @@ impl KernelConsoleInner {
                 flags.contains(KernelConsoleWriteFlags::DISCARD_ON_FULL),
             );
             if !ok {
-                return Err(ConsoleWriteError {});
+                return Err(TwzError::from(IoError::DataLoss));
             }
 
             if !self.try_commit(state, new_state) {
@@ -239,15 +231,11 @@ impl KernelConsoleInner {
 }
 
 impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
-    fn read_buffer_bytes(&self, _slice: &mut [u8]) -> Result<usize, KernelConsoleReadBufferError> {
+    fn read_buffer_bytes(&self, _slice: &mut [u8]) -> Result<usize> {
         todo!()
     }
 
-    fn read_bytes(
-        &self,
-        slice: &mut [u8],
-        flags: KernelConsoleReadFlags,
-    ) -> Result<usize, KernelConsoleReadError> {
+    fn read_bytes(&self, slice: &mut [u8], flags: KernelConsoleReadFlags) -> Result<usize> {
         let mut i = 0;
         loop {
             if i == slice.len() {
@@ -275,21 +263,18 @@ impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
     }
 }
 
-pub fn write_bytes(slice: &[u8], flags: KernelConsoleWriteFlags) -> Result<(), ConsoleWriteError> {
+pub fn write_bytes(slice: &[u8], flags: KernelConsoleWriteFlags) -> Result<()> {
     let writer = KernelConsoleRef {
         console: &NORMAL_CONSOLE,
     };
     writer.write(slice, flags)
 }
 
-pub fn read_bytes(
-    slice: &mut [u8],
-    flags: KernelConsoleReadFlags,
-) -> Result<usize, KernelConsoleReadError> {
+pub fn read_bytes(slice: &mut [u8], flags: KernelConsoleReadFlags) -> Result<usize> {
     NORMAL_CONSOLE.read_bytes(slice, flags)
 }
 
-pub fn read_buffer_bytes(slice: &mut [u8]) -> Result<usize, KernelConsoleReadBufferError> {
+pub fn read_buffer_bytes(slice: &mut [u8]) -> Result<usize> {
     NORMAL_CONSOLE.read_buffer_bytes(slice)
 }
 

@@ -4,8 +4,9 @@ use dynlink::context::NewCompartmentFlags;
 use secgate::{util::Descriptor, Crossing};
 use twizzler_rt_abi::{
     debug::DlPhdrInfo,
-    object::{MapError, ObjID},
-    thread::{SpawnError, ThreadSpawnArgs},
+    error::{ArgumentError, ResourceError, TwzError},
+    object::ObjID,
+    thread::ThreadSpawnArgs,
 };
 
 extern "C-unwind" {
@@ -25,7 +26,7 @@ pub fn monitor_rt_spawn_thread(
     args: ThreadSpawnArgs,
     thread_pointer: usize,
     stack_pointer: usize,
-) -> Result<ObjID, SpawnError> {
+) -> Result<ObjID, TwzError> {
     let monitor = crate::mon::get_monitor();
     monitor.spawn_compartment_thread(
         info.source_context().unwrap_or(0.into()),
@@ -193,7 +194,7 @@ pub fn monitor_rt_load_compartment(
     args_len: u64,
     env_len: u64,
     flags: u32,
-) -> Result<Descriptor, LoadCompartmentError> {
+) -> Result<Descriptor, TwzError> {
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.load_compartment(
@@ -202,21 +203,8 @@ pub fn monitor_rt_load_compartment(
         name_len as usize,
         args_len as usize,
         env_len as usize,
-        NewCompartmentFlags::from_bits(flags).ok_or(LoadCompartmentError::Unknown)?,
+        NewCompartmentFlags::from_bits(flags).ok_or(ArgumentError::InvalidArgument)?,
     )
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum LoadCompartmentError {
-    Unknown,
-}
-
-impl std::error::Error for LoadCompartmentError {}
-
-impl Display for LoadCompartmentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        <Self as Debug>::fmt(self, f)
-    }
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
@@ -254,7 +242,7 @@ pub fn monitor_rt_load_library(
     info: &secgate::GateCallInfo,
     compartment: Option<Descriptor>,
     id: ObjID,
-) -> Result<Descriptor, LoadLibraryError> {
+) -> Result<Descriptor, TwzError> {
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.load_library(caller, id, compartment)
@@ -286,7 +274,7 @@ pub fn monitor_rt_object_map(
     info: &secgate::GateCallInfo,
     id: ObjID,
     flags: twizzler_rt_abi::object::MapFlags,
-) -> Result<crate::MappedObjectAddrs, MapError> {
+) -> Result<crate::MappedObjectAddrs, TwzError> {
     use crate::mon::space::MapInfo;
     if unsafe { __is_monitor_ready() } {
         // Are we recursing from the monitor, with a lock held? In that case, use early_object_map
@@ -329,10 +317,10 @@ pub fn monitor_rt_object_pair_map(
     flags: twizzler_rt_abi::object::MapFlags,
     id2: ObjID,
     flags2: twizzler_rt_abi::object::MapFlags,
-) -> Result<(crate::MappedObjectAddrs, crate::MappedObjectAddrs), MapError> {
+) -> Result<(crate::MappedObjectAddrs, crate::MappedObjectAddrs), TwzError> {
     use crate::mon::space::MapInfo;
     if unsafe { !__is_monitor_ready() } {
-        return Err(MapError::Other);
+        return Err(ResourceError::Unavailable.into());
     }
     let monitor = crate::mon::get_monitor();
     monitor
@@ -455,7 +443,7 @@ pub fn monitor_rt_stats(_info: &secgate::GateCallInfo) -> MonitorStats {
     not(feature = "secgate-impl"),
     secgate::secure_gate(options(info, api))
 )]
-pub fn monitor_rt_set_nameroot(info: &secgate::GateCallInfo, root: ObjID) -> Result<(), ()> {
+pub fn monitor_rt_set_nameroot(info: &secgate::GateCallInfo, root: ObjID) -> Result<(), TwzError> {
     let monitor = crate::mon::get_monitor();
     monitor.set_nameroot(info, root)
 }

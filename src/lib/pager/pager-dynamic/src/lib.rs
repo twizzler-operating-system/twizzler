@@ -16,8 +16,7 @@ struct PagerAPI {
     full_sync_call: DynamicSecGate<'static, (ObjID,), ()>,
     open_handle: DynamicSecGate<'static, (), Option<(Descriptor, ObjID)>>,
     close_handle: DynamicSecGate<'static, (Descriptor,), ()>,
-    enumerate_external:
-        DynamicSecGate<'static, (Descriptor, ObjID), Result<usize, std::io::ErrorKind>>,
+    enumerate_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
 }
 
 static PAGER_API: OnceLock<PagerAPI> = OnceLock::new();
@@ -84,7 +83,7 @@ impl Handle for PagerHandle {
     }
 
     fn release(&mut self) {
-        (pager_api().close_handle)(self.desc);
+        let _ = (pager_api().close_handle)(self.desc);
     }
 }
 
@@ -102,7 +101,8 @@ impl PagerHandle {
     }
 
     pub fn enumerate_external(&mut self, id: ObjID) -> std::io::Result<Vec<ExternalFile>> {
-        let len = (pager_api().enumerate_external)(self.desc, id).unwrap()?;
+        let len = (pager_api().enumerate_external)(self.desc, id)
+            .map_err(|e| std::io::Error::new(e.into(), "enumerate external"))?;
 
         let mut off = 0;
         let mut v = Vec::new();

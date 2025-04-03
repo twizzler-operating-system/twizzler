@@ -6,66 +6,12 @@ use core::mem::MaybeUninit;
 
 use bitflags::bitflags;
 pub use clock::*;
-use num_enum::{FromPrimitive, IntoPrimitive};
 pub use timedefs::*;
+use twizzler_rt_abi::Result;
 pub use units::*;
 
-use super::{convert_codes_to_result, Syscall};
+use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::arch::syscall::raw_syscall;
-
-#[derive(
-    Debug,
-    Copy,
-    Clone,
-    PartialEq,
-    PartialOrd,
-    Ord,
-    Eq,
-    Hash,
-    IntoPrimitive,
-    FromPrimitive,
-    thiserror::Error,
-)]
-#[repr(u64)]
-/// Possible error returns for [sys_read_clock_info].
-pub enum ReadClockInfoError {
-    /// An unknown error occurred.
-    #[num_enum(default)]
-    #[error("unknown error")]
-    Unknown = 0,
-    /// One of the arguments was invalid.
-    #[error("invalid argument")]
-    InvalidArgument = 1,
-}
-
-impl core::error::Error for ReadClockInfoError {}
-
-#[derive(
-    Debug,
-    Copy,
-    Clone,
-    PartialEq,
-    PartialOrd,
-    Ord,
-    Eq,
-    Hash,
-    IntoPrimitive,
-    FromPrimitive,
-    thiserror::Error,
-)]
-#[repr(u64)]
-/// Possible error returns for [sys_read_clock_info].
-pub enum ReadClockListError {
-    /// An unknown error occurred.
-    #[num_enum(default)]
-    #[error("unknown error")]
-    Unknown = 0,
-    /// One of the arguments was invalid.
-    #[error("invalid argument")]
-    InvalidArgument = 1,
-}
-
-impl core::error::Error for ReadClockListError {}
 
 bitflags! {
     /// Flags to pass to [`sys_read_clock_info`].
@@ -115,10 +61,7 @@ impl From<ClockSource> for u64 {
 }
 
 /// Read information about a give clock, as specified by clock source.
-pub fn sys_read_clock_info(
-    clock_source: ClockSource,
-    flags: ReadClockFlags,
-) -> Result<ClockInfo, ReadClockInfoError> {
+pub fn sys_read_clock_info(clock_source: ClockSource, flags: ReadClockFlags) -> Result<ClockInfo> {
     let mut clock_info = MaybeUninit::uninit();
     let (code, val) = unsafe {
         raw_syscall(
@@ -135,7 +78,7 @@ pub fn sys_read_clock_info(
         val,
         |c, _| c != 0,
         |_, _| unsafe { clock_info.assume_init() },
-        |_, v| v.into(),
+        twzerr,
     )
 }
 
@@ -175,7 +118,7 @@ pub fn sys_read_clock_list(
     clocks: &mut [Clock],
     start: u64,
     flags: ReadClockListFlags,
-) -> Result<usize, ReadClockListError> {
+) -> Result<usize> {
     let (code, val) = unsafe {
         raw_syscall(
             Syscall::ReadClockList,
@@ -188,5 +131,5 @@ pub fn sys_read_clock_list(
             ],
         )
     };
-    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, |_, v| v.into())
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, twzerr)
 }

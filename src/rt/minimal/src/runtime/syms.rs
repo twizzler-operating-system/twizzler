@@ -70,8 +70,9 @@ macro_rules! check_ffi_type {
     };
 }
 
+use twizzler_rt_abi::error::{ArgumentError, TwzError};
 // core.h
-use twizzler_rt_abi::bindings::option_exit_code;
+use twizzler_rt_abi::{bindings::option_exit_code, error::RawTwzError};
 
 use crate::runtime::OUR_RUNTIME;
 
@@ -245,14 +246,14 @@ check_ffi_type!(twz_rt_spawn_thread, _);
 pub unsafe extern "C-unwind" fn twz_rt_join_thread(
     id: twizzler_rt_abi::bindings::thread_id,
     timeout: twizzler_rt_abi::bindings::option_duration,
-) -> twizzler_rt_abi::bindings::join_result {
+) -> twizzler_rt_abi::bindings::twz_error {
     match if timeout.is_some != 0 {
         OUR_RUNTIME.join(id, Some(timeout.dur.into()))
     } else {
         OUR_RUNTIME.join(id, None)
     } {
-        Ok(_) => twizzler_rt_abi::bindings::join_result_Join_Success,
-        Err(e) => e.into(),
+        Ok(_) => RawTwzError::success().raw(),
+        Err(e) => e.raw(),
     }
 }
 check_ffi_type!(twz_rt_join_thread, _, _);
@@ -263,12 +264,12 @@ use twizzler_rt_abi::bindings::{descriptor, open_info, open_result};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
     let name = unsafe { core::slice::from_raw_parts(info.name.cast(), info.len) };
-    let name =
-        core::str::from_utf8(name).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument);
+    let name = core::str::from_utf8(name)
+        .map_err(|_| twizzler_rt_abi::error::ArgumentError::InvalidArgument);
     match name {
         Ok(name) => OUR_RUNTIME.open(name).into(),
         Err(e) => open_result {
-            error: e as u32,
+            err: TwzError::from(e).raw(),
             fd: 0,
         },
     }
@@ -362,8 +363,8 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_seek(
         twizzler_rt_abi::bindings::WHENCE_CURRENT => SeekFrom::Current(offset),
         _ => {
             return io_result {
-                value: 0,
-                error: twizzler_rt_abi::bindings::io_error_IoError_SeekError,
+                val: 0,
+                err: TwzError::from(ArgumentError::InvalidArgument).raw(),
             }
         }
     };
@@ -424,11 +425,11 @@ check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _, _);
 // object.h
 
 use twizzler_rt_abi::{
-    bindings::{map_flags, map_result, object_handle, rt_objid},
+    bindings::{map_flags, map_result, object_handle, objid},
     object::MapFlags,
 };
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_map_object(id: rt_objid, flags: map_flags) -> map_result {
+pub unsafe extern "C-unwind" fn twz_rt_map_object(id: objid, flags: map_flags) -> map_result {
     OUR_RUNTIME
         .map_object(id.into(), MapFlags::from_bits_truncate(flags))
         .into()
@@ -443,9 +444,9 @@ check_ffi_type!(twz_rt_release_handle, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn __twz_rt_map_two_objects(
-    id_1: rt_objid,
+    id_1: objid,
     flags_1: map_flags,
-    id_2: rt_objid,
+    id_2: objid,
     flags_2: map_flags,
     res_1: *mut map_result,
     res_2: *mut map_result,

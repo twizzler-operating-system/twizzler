@@ -35,7 +35,10 @@ mod gates {
 }
 
 pub use gates::*;
-use twizzler_rt_abi::debug::{DlPhdrInfo, LoadedImageId};
+use twizzler_rt_abi::{
+    debug::{DlPhdrInfo, LoadedImageId},
+    error::{ArgumentError, GenericError, TwzError},
+};
 
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and
 /// read-only from the compartment.
@@ -264,11 +267,11 @@ impl<'a> LibraryLoader<'a> {
     }
 
     /// Load the library.
-    pub fn load(&self) -> Result<LibraryHandle, gates::LoadLibraryError> {
+    pub fn load(&self) -> Result<LibraryHandle, TwzError> {
         let desc: Descriptor =
             gates::monitor_rt_load_library(self.comp.map(|comp| comp.desc).flatten(), self.id)
                 .ok()
-                .ok_or(gates::LoadLibraryError::Unknown)
+                .ok_or(GenericError::Internal.into())
                 .flatten()?;
         Ok(LibraryHandle { desc })
     }
@@ -343,7 +346,7 @@ impl CompartmentLoader {
     }
 
     /// Load the compartment.
-    pub fn load(&self) -> Result<CompartmentHandle, gates::LoadCompartmentError> {
+    pub fn load(&self) -> Result<CompartmentHandle, TwzError> {
         fn get_current_env() -> Vec<String> {
             std::env::vars()
                 .map(|(var, val)| format!("{}={}", var, val))
@@ -369,7 +372,7 @@ impl CompartmentLoader {
         }
         let len = lazy_sb::write_bytes_to_sb(&bytes);
         if len < envs_len + args_len + name_len {
-            return Err(gates::LoadCompartmentError::Unknown);
+            return Err(ArgumentError::InvalidArgument.into());
         }
         let desc = gates::monitor_rt_load_compartment(
             name_len as u64,
@@ -378,14 +381,14 @@ impl CompartmentLoader {
             self.flags.bits(),
         )
         .ok()
-        .ok_or(gates::LoadCompartmentError::Unknown)
+        .ok_or(GenericError::Internal.into())
         .flatten()?;
         Ok(CompartmentHandle { desc: Some(desc) })
     }
 }
 
 impl Handle for CompartmentHandle {
-    type OpenError = ();
+    type OpenError = TwzError;
 
     type OpenInfo = ObjID;
 
@@ -396,7 +399,7 @@ impl Handle for CompartmentHandle {
         let desc = gates::monitor_rt_get_compartment_handle(info)
             .ok()
             .flatten()
-            .ok_or(())?;
+            .ok_or(GenericError::Internal)?;
         Ok(CompartmentHandle { desc: Some(desc) })
     }
 
@@ -408,7 +411,7 @@ impl Handle for CompartmentHandle {
 }
 
 impl Handle for LibraryHandle {
-    type OpenError = ();
+    type OpenError = TwzError;
 
     type OpenInfo = (Option<Descriptor>, usize);
 
@@ -419,7 +422,7 @@ impl Handle for LibraryHandle {
         let desc = gates::monitor_rt_get_library_handle(info.0, info.1)
             .ok()
             .flatten()
-            .ok_or(())?;
+            .ok_or(GenericError::Internal)?;
         Ok(LibraryHandle { desc })
     }
 
@@ -742,6 +745,6 @@ impl RuntimeThreadControl {
     }
 }
 
-pub fn set_nameroot(root: ObjID) -> Result<(), ()> {
+pub fn set_nameroot(root: ObjID) -> Result<(), TwzError> {
     gates::monitor_rt_set_nameroot(root).unwrap()
 }

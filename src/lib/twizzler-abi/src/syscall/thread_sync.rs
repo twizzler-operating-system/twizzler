@@ -5,9 +5,9 @@ use core::{
 };
 
 use bitflags::bitflags;
-use num_enum::{FromPrimitive, IntoPrimitive};
+use twizzler_rt_abi::error::TwzError;
 
-use super::{convert_codes_to_result, Syscall};
+use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::{arch::syscall::raw_syscall, object::ObjID};
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(u32)]
@@ -139,41 +139,8 @@ impl ThreadSyncWake {
     }
 }
 
-#[derive(
-    Debug,
-    Copy,
-    Clone,
-    PartialEq,
-    PartialOrd,
-    Ord,
-    Eq,
-    Hash,
-    IntoPrimitive,
-    FromPrimitive,
-    thiserror::Error,
-)]
-#[repr(u64)]
-/// Possible error returns for [sys_thread_sync].
-pub enum ThreadSyncError {
-    /// An unknown error occurred.
-    #[num_enum(default)]
-    #[error("unknown error")]
-    Unknown = 0,
-    /// One of the arguments was invalid.
-    #[error("invalid argument")]
-    InvalidArgument = 1,
-    /// Invalid reference.
-    #[error("invalid reference")]
-    InvalidReference = 2,
-    /// The operation timed out.
-    #[error("operation timed out")]
-    Timeout = 3,
-}
-
-impl core::error::Error for ThreadSyncError {}
-
 /// Result of sync operations.
-pub type ThreadSyncResult = Result<usize, ThreadSyncError>;
+pub type ThreadSyncResult = Result<usize, TwzError>;
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
@@ -232,7 +199,7 @@ impl ThreadSync {
 pub fn sys_thread_sync(
     operations: &mut [ThreadSync],
     timeout: Option<Duration>,
-) -> Result<usize, ThreadSyncError> {
+) -> Result<usize, TwzError> {
     let ptr = operations.as_mut_ptr();
     let count = operations.len();
     let timeout = timeout
@@ -245,11 +212,5 @@ pub fn sys_thread_sync(
             &[ptr as u64, count as u64, timeout as u64],
         )
     };
-    convert_codes_to_result(
-        code,
-        val,
-        |c, _| c != 0,
-        |_, v| v as usize,
-        |_, v| ThreadSyncError::from(v),
-    )
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, twzerr)
 }

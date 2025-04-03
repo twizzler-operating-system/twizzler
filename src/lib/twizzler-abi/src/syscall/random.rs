@@ -1,9 +1,9 @@
 use core::mem::MaybeUninit;
 
 use bitflags::bitflags;
-use num_enum::{FromPrimitive, IntoPrimitive};
+use twizzler_rt_abi::Result;
 
-use super::{convert_codes_to_result, Syscall};
+use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::arch::syscall::raw_syscall;
 
 bitflags! {
@@ -33,37 +33,7 @@ impl From<u32> for GetRandomFlags {
     }
 }
 
-#[derive(
-    Debug,
-    Copy,
-    Clone,
-    PartialEq,
-    PartialOrd,
-    Ord,
-    Eq,
-    Hash,
-    IntoPrimitive,
-    FromPrimitive,
-    thiserror::Error,
-)]
-#[repr(u64)]
-/// Possible error returns for [sys_read_clock_info].
-pub enum GetRandomError {
-    /// An unknown error occurred.
-    #[num_enum(default)]
-    #[error("Random is not seeded yet and the NONBLOCKING flag was passed in.")]
-    Unseeded = 0,
-    /// One of the arguments was invalid.
-    #[error("invalid argument")]
-    InvalidArgument = 1,
-}
-
-impl core::error::Error for GetRandomError {}
-
-pub fn sys_get_random(
-    dest: &mut [MaybeUninit<u8>],
-    flags: GetRandomFlags,
-) -> Result<usize, GetRandomError> {
+pub fn sys_get_random(dest: &mut [MaybeUninit<u8>], flags: GetRandomFlags) -> Result<usize> {
     let (code, val) = unsafe {
         raw_syscall(
             Syscall::GetRandom,
@@ -74,6 +44,6 @@ pub fn sys_get_random(
             ],
         )
     };
-    let out = convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, |_, v| v.into());
+    let out = convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, twzerr);
     out
 }

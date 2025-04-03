@@ -1414,7 +1414,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "18e4fdb82bd54a12e42fb58a800dcae6b9e13982238ce2296dc3570b92148e1f"
 dependencies = [
  "data-encoding",
- "syn 2.0.100",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -1597,7 +1597,7 @@ dependencies = [
 [[package]]
 name = "efs"
 version = "0.4.2"
-source = "git+https://github.com/dbittman/efs#3ab723d6cb209b1bb02242d04104856b48369034"
+source = "git+https://github.com/dbittman/efs?branch=twizzler-2025-04#5d660088d5e2be47b73ac1dd8c33ebb7610ef530"
 dependencies = [
  "bitflags 2.9.0",
  "cfg-if 1.0.0",

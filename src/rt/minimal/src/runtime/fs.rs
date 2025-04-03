@@ -16,9 +16,11 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{
     bindings::io_vec,
-    fd::{OpenError, RawFd},
-    io::{IoError, IoFlags, SeekFrom},
+    error::{ArgumentError, GenericError, IoError},
+    fd::RawFd,
+    io::{IoFlags, SeekFrom},
     object::{MapFlags, ObjectHandle},
+    Result,
 };
 
 use super::MinimalRuntime;
@@ -64,10 +66,10 @@ fn get_fd_slots() -> &'static Mutex<StableVec<FdKind>> {
 }
 
 impl MinimalRuntime {
-    pub fn open(&self, path: &str) -> Result<RawFd, OpenError> {
+    pub fn open(&self, path: &str) -> Result<RawFd> {
         let obj_id = ObjID::new(
             path.parse::<u128>()
-                .map_err(|_err| (OpenError::InvalidArgument))?,
+                .map_err(|_err| (ArgumentError::InvalidArgument))?,
         );
         let flags = MapFlags::READ | MapFlags::WRITE;
 
@@ -108,11 +110,11 @@ impl MinimalRuntime {
         Ok(fd.try_into().unwrap())
     }
 
-    pub fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize, IoError> {
+    pub fn read(&self, fd: RawFd, buf: &mut [u8]) -> Result<usize> {
         let binding = get_fd_slots().lock();
         let file_desc = binding
             .get(fd.try_into().unwrap())
-            .ok_or(IoError::InvalidDesc)?;
+            .ok_or(ArgumentError::BadHandle)?;
 
         let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
@@ -120,7 +122,7 @@ impl MinimalRuntime {
                 buf,
                 twizzler_abi::syscall::KernelConsoleReadFlags::empty(),
             )
-            .map_err(|_| IoError::Other)?;
+            .map_err(|_| IoError::DeviceError)?;
             return Ok(len);
         };
 
@@ -200,9 +202,9 @@ impl MinimalRuntime {
         off: Option<u64>,
         buf: &mut [u8],
         _flags: IoFlags,
-    ) -> Result<usize, IoError> {
+    ) -> Result<usize> {
         if off.is_some() {
-            return Err(IoError::SeekError);
+            return Err(IoError::SeekFailed.into());
         }
         self.read(fd, buf)
     }
@@ -213,9 +215,9 @@ impl MinimalRuntime {
         off: Option<u64>,
         buf: &[u8],
         _flags: IoFlags,
-    ) -> Result<usize, IoError> {
+    ) -> Result<usize> {
         if off.is_some() {
-            return Err(IoError::SeekError);
+            return Err(IoError::SeekFailed.into());
         }
         self.write(fd, buf)
     }
@@ -226,8 +228,8 @@ impl MinimalRuntime {
         _off: Option<u64>,
         _buf: &[io_vec],
         _flags: IoFlags,
-    ) -> Result<usize, IoError> {
-        return Err(IoError::Other);
+    ) -> Result<usize> {
+        return Err(GenericError::NotSupported.into());
     }
 
     pub fn fd_preadv(
@@ -236,8 +238,8 @@ impl MinimalRuntime {
         _off: Option<u64>,
         _buf: &[io_vec],
         _flags: IoFlags,
-    ) -> Result<usize, IoError> {
-        return Err(IoError::Other);
+    ) -> Result<usize> {
+        return Err(GenericError::NotSupported.into());
     }
 
     pub fn fd_get_info(&self, fd: RawFd) -> Option<twizzler_rt_abi::bindings::fd_info> {
@@ -257,11 +259,11 @@ impl MinimalRuntime {
         })
     }
 
-    pub fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize, IoError> {
+    pub fn write(&self, fd: RawFd, buf: &[u8]) -> Result<usize> {
         let binding = get_fd_slots().lock();
         let file_desc = binding
             .get(fd.try_into().unwrap())
-            .ok_or(IoError::InvalidDesc)?;
+            .ok_or(ArgumentError::BadHandle)?;
 
         let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
@@ -369,14 +371,14 @@ impl MinimalRuntime {
         Some(())
     }
 
-    pub fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize, IoError> {
+    pub fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize> {
         let binding = get_fd_slots().lock();
         let file_desc = binding
             .get(fd.try_into().unwrap())
-            .ok_or(IoError::InvalidDesc)?;
+            .ok_or(ArgumentError::BadHandle)?;
 
         let FdKind::File(file_desc) = &file_desc else {
-            return Err(IoError::SeekError);
+            return Err(IoError::SeekFailed.into());
         };
 
         let mut binding = file_desc.lock();
@@ -396,7 +398,7 @@ impl MinimalRuntime {
         };
 
         if new_pos < 0 {
-            Err(IoError::SeekError)
+            Err(IoError::SeekFailed.into())
         } else {
             binding.pos = new_pos as u64;
             Ok(binding.pos.try_into().unwrap())

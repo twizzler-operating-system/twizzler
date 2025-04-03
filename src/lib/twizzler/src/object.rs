@@ -3,13 +3,12 @@
 use std::marker::PhantomData;
 
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_rt_abi::object::{MapError, MapFlags, ObjectHandle};
-
-use crate::{
-    marker::BaseType,
-    ptr::Ref,
-    tx::{TxError, TxObject},
+use twizzler_rt_abi::{
+    error::TwzError,
+    object::{MapFlags, ObjectHandle},
 };
+
+use crate::{marker::BaseType, ptr::Ref, tx::TxObject};
 
 mod builder;
 mod fot;
@@ -131,7 +130,7 @@ impl<Base> Object<Base> {
         }
     }
 
-    pub fn from_handle(handle: ObjectHandle) -> Result<Self, MapError> {
+    pub fn from_handle(handle: ObjectHandle) -> Result<Self, TwzError> {
         // TODO: check base fingerprint
         unsafe { Ok(Self::from_handle_unchecked(handle)) }
     }
@@ -147,7 +146,7 @@ impl<Base> Object<Base> {
         }
     }
 
-    pub fn map(id: ObjID, flags: MapFlags) -> Result<Self, MapError> {
+    pub fn map(id: ObjID, flags: MapFlags) -> Result<Self, TwzError> {
         let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
         tracing::debug!("map: {} {:?} => {:?}", id, flags, handle.start());
         Self::from_handle(handle)
@@ -158,10 +157,10 @@ impl<Base> Object<Base> {
         let flags = self.handle().map_flags();
         drop(self);
 
-        Self::map(id, flags).map_err(TxError::from)
+        Self::map(id, flags)
     }
 
-    pub unsafe fn map_unchecked(id: ObjID, flags: MapFlags) -> Result<Self, MapError> {
+    pub unsafe fn map_unchecked(id: ObjID, flags: MapFlags) -> Result<Self, TwzError> {
         let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
         unsafe { Ok(Self::from_handle_unchecked(handle)) }
     }

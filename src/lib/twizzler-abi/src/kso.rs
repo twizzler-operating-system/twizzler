@@ -3,6 +3,11 @@
 
 use core::fmt::Display;
 
+use twizzler_rt_abi::{
+    error::{ArgumentError, TwzError},
+    Result,
+};
+
 use crate::object::ObjID;
 
 /// Maximum name length for a KSO.
@@ -106,46 +111,6 @@ impl KactionValue {
     }
 }
 
-/// Possible error values for KAction.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-#[repr(C)]
-pub enum KactionError {
-    /// An unknown error.
-    Unknown = 0,
-    /// An argument was invalid.
-    InvalidArgument = 1,
-    /// The object was not found.
-    NotFound = 2,
-    /// Failed to allocate a resource due to exhaustion.
-    ResourceAllocationFailed = 3,
-    /// The request required a memory allocation that could not be satisfied.
-    OutOfMemory = 4,
-}
-
-impl From<u64> for KactionError {
-    fn from(x: u64) -> Self {
-        match x {
-            1 => KactionError::InvalidArgument,
-            2 => KactionError::NotFound,
-            3 => KactionError::ResourceAllocationFailed,
-            4 => KactionError::OutOfMemory,
-            _ => KactionError::Unknown,
-        }
-    }
-}
-
-impl From<KactionError> for u64 {
-    fn from(x: KactionError) -> Self {
-        match x {
-            KactionError::Unknown => 0,
-            KactionError::InvalidArgument => 1,
-            KactionError::NotFound => 2,
-            KactionError::ResourceAllocationFailed => 3,
-            KactionError::OutOfMemory => 4,
-        }
-    }
-}
-
 bitflags::bitflags! {
     /// Possible flags for kaction.
     pub struct KactionFlags: u64 {
@@ -182,8 +147,8 @@ impl From<KactionGenericCmd> for u32 {
 }
 
 impl TryFrom<u32> for KactionGenericCmd {
-    type Error = KactionError;
-    fn try_from(x: u32) -> Result<KactionGenericCmd, KactionError> {
+    type Error = TwzError;
+    fn try_from(x: u32) -> Result<KactionGenericCmd> {
         let (h, l) = ((x >> 16) as u16, (x & 0xffff) as u16);
         let v = match h {
             0 => KactionGenericCmd::GetKsoRoot,
@@ -191,7 +156,7 @@ impl TryFrom<u32> for KactionGenericCmd {
             2 => KactionGenericCmd::GetSubObject((l >> 8) as u8, l as u8),
             3 => KactionGenericCmd::PinPages(l),
             4 => KactionGenericCmd::ReleasePin,
-            _ => return Err(KactionError::InvalidArgument),
+            _ => return Err(ArgumentError::InvalidArgument.into()),
         };
         Ok(v)
     }
@@ -216,13 +181,13 @@ impl From<KactionCmd> for u64 {
 }
 
 impl TryFrom<u64> for KactionCmd {
-    type Error = KactionError;
-    fn try_from(x: u64) -> Result<KactionCmd, KactionError> {
+    type Error = TwzError;
+    fn try_from(x: u64) -> Result<KactionCmd> {
         let (h, l) = ((x >> 32) as u32, (x & 0xffffffff) as u32);
         let v = match h {
             0 => KactionCmd::Generic(KactionGenericCmd::try_from(l)?),
             1 => KactionCmd::Specific(l),
-            _ => return Err(KactionError::InvalidArgument),
+            _ => return Err(ArgumentError::InvalidArgument.into()),
         };
         Ok(v)
     }

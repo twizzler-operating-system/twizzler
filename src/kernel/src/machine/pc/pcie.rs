@@ -9,9 +9,10 @@ use twizzler_abi::{
         },
         BusType, CacheType, DeviceId, DeviceInterrupt, DeviceRepr, NUM_DEVICE_INTERRUPTS,
     },
-    kso::{unpack_kaction_int_pri_and_opts, KactionError, KactionValue},
+    kso::{unpack_kaction_int_pri_and_opts, KactionValue},
     object::{ObjID, NULLPAGE_SIZE},
 };
+use twizzler_rt_abi::error::{ArgumentError, GenericError, ObjectError, ResourceError};
 use volatile::map_field;
 
 use crate::{
@@ -223,10 +224,10 @@ fn allocate_interrupt(
     device: DeviceRef,
     arg: u64,
     arg2: u64,
-) -> Result<KactionValue, KactionError> {
-    let (pri, opts) = unpack_kaction_int_pri_and_opts(arg).ok_or(KactionError::InvalidArgument)?;
-    let vector = crate::interrupt::allocate_interrupt(pri, opts)
-        .ok_or(KactionError::ResourceAllocationFailed)?;
+) -> twizzler_rt_abi::Result<KactionValue> {
+    let (pri, opts) = unpack_kaction_int_pri_and_opts(arg).ok_or(ArgumentError::InvalidArgument)?;
+    let vector =
+        crate::interrupt::allocate_interrupt(pri, opts).ok_or(ResourceError::OutOfResources)?;
 
     let mut maps = get_int_map().lock();
     let state = if let Some(x) = maps.get_mut(&device.objid()) {
@@ -238,7 +239,7 @@ fn allocate_interrupt(
 
     let num = vector.num();
     let offset =
-        pcie_calculate_int_sync_offset(arg2 as usize).ok_or(KactionError::InvalidArgument)?;
+        pcie_calculate_int_sync_offset(arg2 as usize).ok_or(ArgumentError::InvalidArgument)?;
     let wi = WakeInfo::new(device.object(), offset);
     crate::interrupt::set_userspace_interrupt_wakeup(num as u32, wi);
     state.ints.push(vector);
@@ -246,7 +247,12 @@ fn allocate_interrupt(
     Ok(KactionValue::U64(num as u64))
 }
 
-fn kaction(device: DeviceRef, cmd: u32, arg: u64, arg2: u64) -> Result<KactionValue, KactionError> {
+fn kaction(
+    device: DeviceRef,
+    cmd: u32,
+    arg: u64,
+    arg2: u64,
+) -> twizzler_rt_abi::Result<KactionValue> {
     let cmd: PcieKactionSpecific = cmd.try_into()?;
     match cmd {
         PcieKactionSpecific::RegisterDevice => {
@@ -256,12 +262,12 @@ fn kaction(device: DeviceRef, cmd: u32, arg: u64, arg2: u64) -> Result<KactionVa
             let seg = DEVS
                 .lock()
                 .get(&device.objid())
-                .ok_or(KactionError::NotFound)?
+                .ok_or(ObjectError::NoSuchObject)?
                 .segnr;
             // logln!("register device {:x} {:x} {:x}", bus, dev, func);
 
             let dev = register_device(device, seg, bus as u8, dev as u8, func as u8)
-                .ok_or(KactionError::Unknown)?;
+                .ok_or(GenericError::Internal)?;
             /*
             let offset = pcie_calculate_int_sync_offset(0).ok_or(KactionError::InvalidArgument)?;
             let wi = WakeInfo::new(dev.object(), offset);

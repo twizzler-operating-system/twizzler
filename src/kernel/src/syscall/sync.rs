@@ -2,8 +2,12 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use core::time::Duration;
 
 use twizzler_abi::{
-    syscall::{ThreadSync, ThreadSyncError, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake},
+    syscall::{ThreadSync, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake},
     thread::ExecutionState,
+};
+use twizzler_rt_abi::{
+    error::{ArgumentError, GenericError},
+    Result,
 };
 
 use crate::{
@@ -62,7 +66,7 @@ pub fn finish_blocking(guard: CriticalGuard) {
 }
 
 // TODO: uses-virtaddr
-fn get_obj_and_offset(addr: VirtAddr) -> Result<(ObjectRef, usize), ThreadSyncError> {
+fn get_obj_and_offset(addr: VirtAddr) -> Result<(ObjectRef, usize)> {
     // let t = current_thread_ref().unwrap();
     // TODO: prevent user from waiting on kernel object memory
     let user_vmc = current_memory_context();
@@ -71,21 +75,18 @@ fn get_obj_and_offset(addr: VirtAddr) -> Result<(ObjectRef, usize), ThreadSyncEr
         .map(|x| &**x)
         .unwrap_or_else(|| &kernel_context());
     let mapping = vmc
-        .lookup_object(
-            addr.try_into()
-                .map_err(|_| ThreadSyncError::InvalidReference)?,
-        )
-        .ok_or(ThreadSyncError::InvalidReference)?;
+        .lookup_object(addr.try_into().map_err(|_| ArgumentError::InvalidAddress)?)
+        .ok_or(ArgumentError::InvalidAddress)?;
     let offset = (addr.raw() as usize) % (1024 * 1024 * 1024); //TODO: arch-dep, centralize these calculations somewhere, see PageNumber
     Ok((mapping.object().clone(), offset))
 }
 
-fn get_obj(reference: ThreadSyncReference) -> Result<(ObjectRef, usize), ThreadSyncError> {
+fn get_obj(reference: ThreadSyncReference) -> Result<(ObjectRef, usize)> {
     Ok(match reference {
         ThreadSyncReference::ObjectRef(id, offset) => {
             let obj = match crate::obj::lookup_object(id, LookupFlags::empty()) {
                 crate::obj::LookupResult::Found(o) => o,
-                _ => return Err(ThreadSyncError::InvalidReference),
+                _ => return Err(ArgumentError::InvalidAddress.into()),
             };
             (obj, offset)
         }
@@ -104,7 +105,7 @@ struct SleepEvent {
     did_sleep: bool,
 }
 
-fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent, ThreadSyncError> {
+fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent> {
     let (obj, offset) = get_obj(sleep.reference)?;
     let did_sleep = if matches!(sleep.reference, ThreadSyncReference::Virtual32(_)) {
         obj.setup_sleep_word32(
@@ -129,7 +130,7 @@ fn undo_sleep(sleep: SleepEvent) {
     sleep.obj.remove_from_sleep_word(sleep.offset);
 }
 
-fn wakeup(wake: &ThreadSyncWake) -> Result<usize, ThreadSyncError> {
+fn wakeup(wake: &ThreadSyncWake) -> Result<usize> {
     let (obj, offset) = get_obj(wake.reference)?;
     Ok(obj.wakeup_word(offset, wake.count))
 }
@@ -157,10 +158,7 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
     drop(timeout_key);
 }
 
-pub fn sys_thread_sync(
-    ops: &mut [ThreadSync],
-    timeout: Option<&mut Duration>,
-) -> Result<usize, ThreadSyncError> {
+pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -> Result<usize> {
     //logln!("sleep: {:?}, {:?}", ops, timeout);
     if let Some(ref timeout) = timeout {
         if ops.is_empty() {
@@ -232,7 +230,7 @@ pub fn sys_thread_sync(
     thread.reset_sync_sleep_done();
     thread.reset_sync_sleep();
     if was_timedout && ready_count == 0 {
-        Err(ThreadSyncError::Timeout)
+        Err(GenericError::TimedOut.into())
     } else {
         Ok(ready_count)
     }

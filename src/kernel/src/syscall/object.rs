@@ -7,10 +7,13 @@ use twizzler_abi::{
     meta::MetaFlags,
     object::{ObjID, Protections},
     syscall::{
-        CreateTieSpec, DeleteFlags, HandleType, MapFlags, MapInfo, NewHandleError,
-        ObjectControlCmd, ObjectCreate, ObjectCreateError, ObjectCreateFlags, ObjectMapError,
-        ObjectReadMapError, ObjectSource, SctxAttachError,
+        CreateTieSpec, DeleteFlags, HandleType, MapFlags, MapInfo, ObjectControlCmd, ObjectCreate,
+        ObjectCreateFlags, ObjectSource,
     },
+};
+use twizzler_rt_abi::{
+    error::{ArgumentError, NamingError, ObjectError, ResourceError},
+    Result,
 };
 
 use crate::{
@@ -27,7 +30,7 @@ pub fn sys_object_create(
     create: &ObjectCreate,
     srcs: &[ObjectSource],
     ties: &[CreateTieSpec],
-) -> Result<ObjID, ObjectCreateError> {
+) -> Result<ObjID> {
     let id = calculate_new_id(create.kuid, MetaFlags::default());
     let obj = Arc::new(Object::new(id, create.lt, ties));
     if obj.use_pager() {
@@ -42,7 +45,7 @@ pub fn sys_object_create(
             crate::obj::copy::zero_ranges(&obj, src.dest_start as usize, src.len)
         } else {
             let so = crate::obj::lookup_object(src.id, LookupFlags::empty())
-                .ok_or(ObjectCreateError::ObjectNotFound)?;
+                .ok_or(ObjectError::NoSuchObject)?;
             crate::obj::copy::copy_ranges(
                 &so,
                 src.src_start as usize,
@@ -64,19 +67,19 @@ pub fn sys_object_map(
     slot: usize,
     prot: Protections,
     handle: Option<ObjID>,
-) -> Result<usize, ObjectMapError> {
+) -> Result<usize> {
     let vm = if let Some(handle) = handle {
-        get_vmcontext_from_handle(handle).ok_or(ObjectMapError::ObjectNotFound)?
+        get_vmcontext_from_handle(handle).ok_or(ObjectError::NoSuchObject)?
     } else {
         current_memory_context().unwrap()
     };
     let obj = crate::obj::lookup_object(id, LookupFlags::empty());
     let obj = match obj {
-        crate::obj::LookupResult::WasDeleted => return Err(ObjectMapError::ObjectNotFound),
+        crate::obj::LookupResult::WasDeleted => return Err(ObjectError::NoSuchObject.into()),
         crate::obj::LookupResult::Found(obj) => obj,
         _ => match crate::pager::lookup_object_and_wait(id) {
             Some(obj) => obj,
-            None => return Err(ObjectMapError::ObjectNotFound),
+            None => return Err(ObjectError::NoSuchObject.into()),
         },
     };
     // TODO
@@ -84,25 +87,23 @@ pub fn sys_object_map(
     Ok(slot)
 }
 
-pub fn sys_object_unmap(handle: Option<ObjID>, slot: usize) -> Result<u64, u64> {
+pub fn sys_object_unmap(handle: Option<ObjID>, slot: usize) -> Result<u64> {
     let vm = if let Some(handle) = handle {
-        get_vmcontext_from_handle(handle).ok_or(0u64)?
+        get_vmcontext_from_handle(handle).ok_or(ArgumentError::BadHandle)?
     } else {
         current_memory_context().unwrap()
     };
-    vm.remove_object(Slot::try_from(slot).map_err(|_| 0u64)?);
+    vm.remove_object(Slot::try_from(slot).map_err(|_| ArgumentError::InvalidArgument)?);
     Ok(0)
 }
 
-pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo, ObjectReadMapError> {
+pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo> {
     let vm = if handle.raw() == 0 {
         current_memory_context().unwrap()
     } else {
-        get_vmcontext_from_handle(handle).ok_or(ObjectReadMapError::InvalidArgument)?
+        get_vmcontext_from_handle(handle).ok_or(ArgumentError::InvalidArgument)?
     };
-    let info = vm
-        .lookup_slot(slot)
-        .ok_or(ObjectReadMapError::InvalidSlot)?;
+    let info = vm.lookup_slot(slot).ok_or(ArgumentError::InvalidAddress)?;
     Ok(MapInfo {
         id: info.object().id(),
         prot: info.mapping_settings(false, false).perms(),
@@ -128,14 +129,14 @@ struct Handle<T: ObjectHandle> {
 }
 
 impl<T: ObjectHandle + Clone> Handle<T> {
-    fn new<NewFn>(id: ObjID, new: NewFn) -> Result<Self, NewHandleError>
+    fn new<NewFn>(id: ObjID, new: NewFn) -> Result<Self>
     where
         NewFn: FnOnce(ObjectRef) -> T::HandleType,
     {
         let obj = crate::obj::lookup_object(id, LookupFlags::empty());
         let obj = match obj {
             crate::obj::LookupResult::Found(obj) => obj,
-            _ => return Err(NewHandleError::NotFound),
+            _ => return Err(ObjectError::NoSuchObject.into()),
         };
         Ok(Handle {
             obj: obj.clone(),
@@ -167,10 +168,10 @@ pub fn get_vmcontext_from_handle(id: ObjID) -> Option<ContextRef> {
     ah.lock().vm_contexts.get(&id).map(|x| x.item.clone())
 }
 
-pub fn sys_new_handle(id: ObjID, handle_type: HandleType) -> Result<u64, NewHandleError> {
+pub fn sys_new_handle(id: ObjID, handle_type: HandleType) -> Result<u64> {
     let mut ah = get_all_handles().lock();
     if ah.all.contains(&id) {
-        return Err(NewHandleError::AlreadyHandle);
+        return Err(NamingError::AlreadyBound.into());
     }
     match handle_type {
         HandleType::VmContext => ah
@@ -178,7 +179,7 @@ pub fn sys_new_handle(id: ObjID, handle_type: HandleType) -> Result<u64, NewHand
             .insert(id, Handle::new(id, |_obj| Context::new())?),
         HandleType::PagerQueue => {
             if ah.pager_q_count == 2 {
-                return Err(NewHandleError::HandleSaturated);
+                return Err(ResourceError::OutOfNames.into());
             }
             ah.pager_q_count += 1;
             crate::pager::init_pager_queue(id, ah.pager_q_count == 1);
@@ -200,7 +201,7 @@ pub fn sys_unbind_handle(id: ObjID) {
 }
 
 // Note: placeholder types
-pub fn sys_sctx_attach(id: ObjID) -> Result<u32, SctxAttachError> {
+pub fn sys_sctx_attach(id: ObjID) -> Result<u32> {
     let sctx = get_sctx(id)?;
 
     let current_thread = current_thread_ref().unwrap();

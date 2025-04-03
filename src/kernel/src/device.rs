@@ -8,11 +8,15 @@ use twizzler_abi::{
         SubObjectType,
     },
     kso::{
-        pack_kaction_pin_token_and_len, unpack_kaction_pin_start_and_len, KactionCmd, KactionError,
+        pack_kaction_pin_token_and_len, unpack_kaction_pin_start_and_len, KactionCmd,
         KactionGenericCmd, KactionValue, KsoHdr,
     },
     object::{ObjID, NULLPAGE_SIZE},
     syscall::PinnedPage,
+};
+use twizzler_rt_abi::{
+    error::{ArgumentError, GenericError, ObjectError},
+    Result,
 };
 
 use crate::{
@@ -31,7 +35,7 @@ pub struct DeviceInner {
 
 pub struct Device {
     inner: Mutex<DeviceInner>,
-    kaction: fn(DeviceRef, cmd: u32, arg: u64, arg2: u64) -> Result<KactionValue, KactionError>,
+    kaction: fn(DeviceRef, cmd: u32, arg: u64, arg2: u64) -> Result<KactionValue>,
     bus_type: BusType,
     dev_type: DeviceType,
     id: ObjID,
@@ -70,39 +74,36 @@ fn get_kso_manager() -> &'static KsoManager {
     })
 }
 
-pub fn kaction(
-    cmd: KactionCmd,
-    id: Option<ObjID>,
-    arg: u64,
-    arg2: u64,
-) -> Result<KactionValue, KactionError> {
+pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Result<KactionValue> {
     match cmd {
         KactionCmd::Generic(cmd) => match cmd {
             KactionGenericCmd::ReleasePin => {
-                let id = id.ok_or(KactionError::InvalidArgument)?;
-                let obj = lookup_object(id, LookupFlags::empty()).ok_or(KactionError::NotFound)?;
+                let id = id.ok_or(ArgumentError::InvalidArgument)?;
+                let obj =
+                    lookup_object(id, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
                 let pin = arg as u32;
                 obj.release_pin(pin);
                 Ok(KactionValue::U64(0))
             }
             KactionGenericCmd::PinPages(_np) => {
-                let id = id.ok_or(KactionError::InvalidArgument)?;
-                let obj = lookup_object(id, LookupFlags::empty()).ok_or(KactionError::NotFound)?;
+                let id = id.ok_or(ArgumentError::InvalidArgument)?;
+                let obj =
+                    lookup_object(id, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
 
                 let (start, len) =
-                    unpack_kaction_pin_start_and_len(arg2).ok_or(KactionError::InvalidArgument)?;
+                    unpack_kaction_pin_start_and_len(arg2).ok_or(ArgumentError::InvalidArgument)?;
 
                 let slice = unsafe { create_user_slice::<PinnedPage>(arg, len as u64) }
-                    .ok_or(KactionError::InvalidArgument)?;
+                    .ok_or(ArgumentError::InvalidArgument)?;
 
                 let (pins, token) = obj
                     .pin(
                         (start as usize)
                             .try_into()
-                            .map_err(|_| KactionError::InvalidArgument)?,
+                            .map_err(|_| ArgumentError::InvalidArgument)?,
                         slice.len(),
                     )
-                    .ok_or(KactionError::Unknown)?;
+                    .ok_or(GenericError::Internal)?;
                 let len: u32 = core::cmp::min(pins.len(), len as usize).try_into().unwrap();
 
                 for i in 0..(len as usize) {
@@ -121,45 +122,51 @@ pub fn kaction(
                 if let Some(id) = id {
                     if id == ksom.root.id() {
                         ksom.get_child_id(n as usize)
-                            .map_or(Err(KactionError::NotFound), |x| Ok(KactionValue::ObjID(x)))
+                            .map_or(Err(ArgumentError::BadHandle.into()), |x| {
+                                Ok(KactionValue::ObjID(x))
+                            })
                     } else {
                         let dm = get_device_map().lock();
                         if let Some(dev) = dm.get(&id) {
                             dev.get_child_id(n as usize)
-                                .map_or(Err(KactionError::NotFound), |x| Ok(KactionValue::ObjID(x)))
+                                .map_or(Err(ArgumentError::BadHandle.into()), |x| {
+                                    Ok(KactionValue::ObjID(x))
+                                })
                         } else {
-                            Err(KactionError::InvalidArgument)
+                            Err(ArgumentError::InvalidArgument.into())
                         }
                     }
                 } else {
-                    Err(KactionError::InvalidArgument)
+                    Err(ArgumentError::InvalidArgument.into())
                 }
             }
             KactionGenericCmd::GetSubObject(t, n) => {
                 let ksom = get_kso_manager();
                 if let Some(id) = id {
                     if id == ksom.root.id() {
-                        Err(KactionError::InvalidArgument)
+                        Err(ArgumentError::InvalidArgument.into())
                     } else {
                         let dm = get_device_map().lock();
                         if let Some(dev) = dm.get(&id) {
                             dev.get_subobj_id(t, n as usize)
-                                .map_or(Err(KactionError::NotFound), |x| Ok(KactionValue::ObjID(x)))
+                                .map_or(Err(ArgumentError::BadHandle.into()), |x| {
+                                    Ok(KactionValue::ObjID(x))
+                                })
                         } else {
-                            Err(KactionError::InvalidArgument)
+                            Err(ArgumentError::InvalidArgument.into())
                         }
                     }
                 } else {
-                    Err(KactionError::InvalidArgument)
+                    Err(ArgumentError::InvalidArgument.into())
                 }
             }
         },
-        KactionCmd::Specific(cmd) => id.map_or(Err(KactionError::InvalidArgument), |id| {
+        KactionCmd::Specific(cmd) => id.map_or(Err(ArgumentError::InvalidArgument.into()), |id| {
             let dev = {
                 let dm = get_device_map().lock();
                 dm.get(&id).cloned()
             };
-            dev.map_or(Err(KactionError::NotFound), |dev| {
+            dev.map_or(Err(ArgumentError::BadHandle.into()), |dev| {
                 (dev.kaction)(dev.clone(), cmd, arg, arg2)
             })
         }),
@@ -169,7 +176,7 @@ pub fn kaction(
 pub fn create_busroot(
     name: &str,
     bt: BusType,
-    kaction: fn(DeviceRef, cmd: u32, arg: u64, arg2: u64) -> Result<KactionValue, KactionError>,
+    kaction: fn(DeviceRef, cmd: u32, arg: u64, arg2: u64) -> Result<KactionValue>,
 ) -> DeviceRef {
     let obj = Arc::new(crate::obj::Object::new_kernel());
     crate::obj::register_object(obj.clone());
@@ -197,7 +204,7 @@ pub fn create_device(
     name: &str,
     bt: BusType,
     id: DeviceId,
-    kaction: fn(DeviceRef, cmd: u32, arg: u64, arg: u64) -> Result<KactionValue, KactionError>,
+    kaction: fn(DeviceRef, cmd: u32, arg: u64, arg: u64) -> Result<KactionValue>,
 ) -> DeviceRef {
     let obj = Arc::new(crate::obj::Object::new_kernel());
     crate::obj::register_object(obj.clone());

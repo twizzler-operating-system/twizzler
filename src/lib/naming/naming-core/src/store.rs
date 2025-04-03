@@ -1,6 +1,5 @@
 use core::str;
 use std::{
-    io::ErrorKind,
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
@@ -10,7 +9,10 @@ use ext::ExtNamespace;
 use nsobj::NamespaceObject;
 use object_store::objid_to_ino;
 use twizzler::marker::Invariant;
-use twizzler_rt_abi::object::ObjID;
+use twizzler_rt_abi::{
+    error::{ArgumentError, GenericError, NamingError},
+    object::ObjID,
+};
 
 use crate::{Result, MAX_KEY_SIZE};
 
@@ -50,7 +52,7 @@ impl NsNode {
         Ok(if let Some(link_name) = link_name {
             let lname = link_name.as_ref().as_os_str().as_encoded_bytes();
             if lname.len() + name.len() > MAX_KEY_SIZE {
-                return Err(ErrorKind::InvalidFilename);
+                return Err(ArgumentError::InvalidArgument.into());
             }
             let mut cname = [0; MAX_KEY_SIZE];
             cname[0..name.len()].copy_from_slice(&name);
@@ -89,16 +91,16 @@ impl NsNode {
 
     pub fn name(&self) -> Result<&str> {
         let bytes = &self.name[0..(self.name_len as usize)];
-        str::from_utf8(bytes).map_err(|_| ErrorKind::InvalidFilename)
+        str::from_utf8(bytes).map_err(|_| GenericError::Internal.into())
     }
 
     pub fn readlink(&self) -> Result<&str> {
         if self.kind != NsNodeKind::SymLink {
-            return Err(ErrorKind::InvalidInput);
+            return Err(NamingError::WrongNameKind.into());
         }
         let bytes =
             &self.name[(self.name_len as usize)..(self.name_len as usize + self.link_len as usize)];
-        str::from_utf8(bytes).map_err(|_| ErrorKind::InvalidFilename)
+        str::from_utf8(bytes).map_err(|_| GenericError::Internal.into())
     }
 }
 
@@ -264,7 +266,7 @@ impl NameSession<'_> {
                         node = Some(NsNode::ns(&parent.name_in_parent, parent.ns.id())?);
                         namespace = parent.ns.clone();
                     } else {
-                        node = Some(namespace.find("..").ok_or(ErrorKind::NotFound)?);
+                        node = Some(namespace.find("..").ok_or(NamingError::NotFound)?);
                         let parent_info = ParentInfo::new(namespace, "..");
                         namespace = self.open_namespace(
                             node.as_ref().unwrap().id,
@@ -277,9 +279,9 @@ impl NameSession<'_> {
                     tracing::trace!(
                         "lookup component {:?}: {}",
                         os_str.as_encoded_bytes(),
-                        os_str.to_str().ok_or(ErrorKind::InvalidFilename)?
+                        os_str.to_str().ok_or(ArgumentError::InvalidArgument)?
                     );
-                    node = namespace.find(os_str.to_str().ok_or(ErrorKind::InvalidFilename)?);
+                    node = namespace.find(os_str.to_str().ok_or(ArgumentError::InvalidArgument)?);
 
                     // Did we find something?
                     let Some(thisnode) = node else {
@@ -288,14 +290,14 @@ impl NameSession<'_> {
                         if is_last {
                             return Ok((Err(os_str.into()), namespace));
                         } else {
-                            return Err(ErrorKind::NotFound);
+                            return Err(NamingError::NotFound.into());
                         }
                     };
                     // If symlink, deref. But keep track of recursion.
                     if thisnode.kind == NsNodeKind::SymLink {
                         tracing::trace!("found symlink: {} {} {}", nr_derefs, deref, is_last);
                         if nr_derefs == 0 {
-                            return Err(ErrorKind::FilesystemLoop);
+                            return Err(NamingError::LinkLoop.into());
                         }
                         if deref || !is_last {
                             let ldname = thisnode.readlink()?;
@@ -337,13 +339,13 @@ impl NameSession<'_> {
         deref: bool,
     ) -> Result<(NsNode, Arc<dyn Namespace>)> {
         let (n, ns) = self.namei(namespace, name, nr_derefs, deref)?;
-        Ok((n.ok().ok_or(ErrorKind::NotFound)?, ns))
+        Ok((n.ok().ok_or(NamingError::NotFound)?, ns))
     }
 
     pub fn mkns<P: AsRef<Path>>(&self, name: P, persist: bool) -> Result<()> {
         let (node, container) = self.namei(None, &name, Self::MAX_SYMLINK_DEREF, false)?;
         let Err(name) = node else {
-            return Err(ErrorKind::AlreadyExists);
+            return Err(NamingError::AlreadyExists.into());
         };
         let ns = NamespaceObject::new(
             persist,
@@ -361,7 +363,7 @@ impl NameSession<'_> {
         tracing::debug!("put {:?}: {}", name.as_ref(), id);
         let (node, container) = self.namei(None, &name, Self::MAX_SYMLINK_DEREF, false)?;
         let Err(name) = node else {
-            return Err(ErrorKind::AlreadyExists);
+            return Err(NamingError::AlreadyExists.into());
         };
 
         container.insert(NsNode::obj(name, id)?);
@@ -383,7 +385,7 @@ impl NameSession<'_> {
         tracing::trace!("enumerate: {:?}", name.as_ref());
         let (node, container) = self.namei_exist(None, name, Self::MAX_SYMLINK_DEREF, true)?;
         if node.kind != NsNodeKind::Namespace {
-            return Err(ErrorKind::NotADirectory);
+            return Err(NamingError::WrongNameKind.into());
         }
         tracing::trace!("opening namespace: {}", node.id);
         let ns = self.open_namespace(
@@ -416,7 +418,7 @@ impl NameSession<'_> {
                 )?);
                 Ok(())
             }
-            _ => Err(ErrorKind::Other),
+            _ => Err(NamingError::WrongNameKind.into()),
         }
     }
 
@@ -425,13 +427,13 @@ impl NameSession<'_> {
         container
             .remove(node.name()?)
             .map(|_| ())
-            .ok_or(ErrorKind::NotFound)
+            .ok_or(NamingError::NotFound.into())
     }
 
     pub fn link<P: AsRef<Path>, L: AsRef<Path>>(&self, name: P, link: L) -> Result<()> {
         let (node, container) = self.namei(None, &name, Self::MAX_SYMLINK_DEREF, false)?;
         let Err(name) = node else {
-            return Err(ErrorKind::AlreadyExists);
+            return Err(NamingError::AlreadyExists.into());
         };
 
         container.insert(NsNode::symlink(name, link)?);
