@@ -12,7 +12,6 @@ optimize = true
 assertions = true
 
 [build]
-docs = false
 target = []
 submodules = false
 

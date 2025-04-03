@@ -254,6 +254,19 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         anyhow::bail!("failed to compile rust toolchain");
     }
 
+    /*
+        let doc_status = Command::new("./x.py")
+            .arg("doc")
+            .arg("--stage")
+            .arg("0")
+            .args(&keep_args)
+            .current_dir("toolchain/src/rust")
+            .status()?;
+        if !doc_status.success() {
+            anyhow::bail!("failed to document rust libraries");
+        }
+    */
+
     let src_status = Command::new("./x.py")
         .arg("install")
         .arg("src")
@@ -465,7 +478,7 @@ fn generate_config_toml() -> anyhow::Result<()> {
         toml["build"]["target"].as_array_mut().unwrap().push(tstr);
     }
 
-    let mut out = File::create("toolchain/src/rust/config.toml")?;
+    let mut out = File::create("toolchain/src/rust/bootstrap.toml")?;
     out.write_all(toml.to_string().as_bytes())?;
     Ok(())
 }
