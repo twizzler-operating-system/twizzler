@@ -124,7 +124,7 @@ check_ffi_type!(twz_rt_runtime_entry, _, _);
 
 // alloc.h
 
-use twizzler_rt_abi::bindings::{alloc_flags, ZERO_MEMORY};
+use twizzler_rt_abi::bindings::{alloc_flags, io_ctx, ZERO_MEMORY};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_malloc(
     sz: usize,
@@ -299,56 +299,34 @@ check_ffi_type!(twz_rt_fd_get_info, _, _);
 
 // io.h
 
-use twizzler_rt_abi::bindings::{io_flags, io_result, io_vec, optional_offset, whence};
+use twizzler_rt_abi::bindings::{io_result, io_vec, whence};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pread(
     fd: descriptor,
-    opt_off: i64,
     buf: *mut ::core::ffi::c_void,
     len: usize,
-    flags: io_flags,
+    ctx: *mut io_ctx,
 ) -> io_result {
-    let off = if opt_off == twizzler_rt_abi::bindings::FD_POS {
-        None
-    } else {
-        Some(opt_off as u64)
-    };
     let slice = unsafe { core::slice::from_raw_parts_mut(buf.cast::<u8>(), len) };
     OUR_RUNTIME
-        .fd_pread(
-            fd,
-            off,
-            slice,
-            twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags),
-        )
+        .fd_pread(fd, slice, unsafe { ctx.as_mut() })
         .into()
 }
-check_ffi_type!(twz_rt_fd_pread, _, _, _, _, _);
+check_ffi_type!(twz_rt_fd_pread, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pwrite(
     fd: descriptor,
-    opt_off: i64,
     buf: *const ::core::ffi::c_void,
     len: usize,
-    flags: io_flags,
+    ctx: *mut io_ctx,
 ) -> io_result {
-    let off = if opt_off == twizzler_rt_abi::bindings::FD_POS {
-        None
-    } else {
-        Some(opt_off as u64)
-    };
     let slice = unsafe { core::slice::from_raw_parts(buf.cast::<u8>(), len) };
     OUR_RUNTIME
-        .fd_pwrite(
-            fd,
-            off,
-            slice,
-            twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags),
-        )
+        .fd_pwrite(fd, slice, unsafe { ctx.as_mut() })
         .into()
 }
-check_ffi_type!(twz_rt_fd_pwrite, _, _, _, _, _);
+check_ffi_type!(twz_rt_fd_pwrite, _, _, _, _);
 
 use twizzler_rt_abi::io::SeekFrom;
 #[no_mangle]
@@ -375,52 +353,30 @@ check_ffi_type!(twz_rt_fd_seek, _, _, _);
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_preadv(
     fd: descriptor,
-    opt_off: optional_offset,
     iovs: *const io_vec,
     nr_iovs: usize,
-    flags: io_flags,
+    ctx: *mut io_ctx,
 ) -> io_result {
-    let off = if opt_off == twizzler_rt_abi::bindings::FD_POS {
-        None
-    } else {
-        Some(opt_off as u64)
-    };
     let slice = unsafe { core::slice::from_raw_parts(iovs, nr_iovs) };
     OUR_RUNTIME
-        .fd_preadv(
-            fd,
-            off,
-            slice,
-            twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags),
-        )
+        .fd_preadv(fd, slice, unsafe { ctx.as_mut() })
         .into()
 }
-check_ffi_type!(twz_rt_fd_preadv, _, _, _, _, _);
+check_ffi_type!(twz_rt_fd_preadv, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
     fd: descriptor,
-    opt_off: optional_offset,
     iovs: *const io_vec,
     nr_iovs: usize,
-    flags: io_flags,
+    ctx: *mut io_ctx,
 ) -> io_result {
-    let off = if opt_off == twizzler_rt_abi::bindings::FD_POS {
-        None
-    } else {
-        Some(opt_off as u64)
-    };
     let slice = unsafe { core::slice::from_raw_parts(iovs, nr_iovs) };
     OUR_RUNTIME
-        .fd_pwritev(
-            fd,
-            off,
-            slice,
-            twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags),
-        )
+        .fd_pwritev(fd, slice, unsafe { ctx.as_mut() })
         .into()
 }
-check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _, _);
+check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _);
 
 // object.h
 
@@ -584,7 +540,7 @@ pub unsafe extern "C-unwind" fn fwrite(
     nitems: usize,
     file: *const core::ffi::c_void,
 ) -> usize {
-    twz_rt_fd_pwrite(1, twizzler_rt_abi::bindings::FD_POS, ptr, len * nitems, 0);
+    twz_rt_fd_pwrite(1, ptr, len * nitems, core::ptr::null_mut());
     len * nitems
 }
 
@@ -599,10 +555,9 @@ pub unsafe extern "C-unwind" fn fprintf(
     let bytes_written = format(fmt.cast(), args.as_va_list(), output::fmt_write(&mut s));
     twz_rt_fd_pwrite(
         1,
-        twizzler_rt_abi::bindings::FD_POS,
         s.as_bytes().as_ptr().cast(),
         s.as_bytes().len(),
-        0,
+        core::ptr::null_mut(),
     );
     bytes_written
 }

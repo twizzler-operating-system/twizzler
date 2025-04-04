@@ -9,12 +9,12 @@ use secgate::{
     DynamicSecGate,
 };
 use twizzler_abi::object::ObjID;
-use twizzler_rt_abi::object::MapFlags;
+use twizzler_rt_abi::{error::TwzError, object::MapFlags, Result};
 
 struct PagerAPI {
     _handle: &'static CompartmentHandle,
     full_sync_call: DynamicSecGate<'static, (ObjID,), ()>,
-    open_handle: DynamicSecGate<'static, (), Option<(Descriptor, ObjID)>>,
+    open_handle: DynamicSecGate<'static, (), (Descriptor, ObjID)>,
     close_handle: DynamicSecGate<'static, (Descriptor,), ()>,
     enumerate_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
 }
@@ -66,18 +66,17 @@ pub struct PagerHandle {
 }
 
 impl Handle for PagerHandle {
-    type OpenError = ();
+    type OpenError = TwzError;
 
     type OpenInfo = ();
 
-    fn open(_info: Self::OpenInfo) -> Result<Self, Self::OpenError>
+    fn open(_info: Self::OpenInfo) -> Result<Self>
     where
         Self: Sized,
     {
-        let (desc, id) = (pager_api().open_handle)().ok().flatten().ok_or(())?;
+        let (desc, id) = (pager_api().open_handle)()?;
         let handle =
-            twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)
-                .map_err(|_| ())?;
+            twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)?;
         let sb = SimpleBuffer::new(handle);
         Ok(Self { desc, buffer: sb })
     }
@@ -100,9 +99,8 @@ impl PagerHandle {
         Self::open(()).ok()
     }
 
-    pub fn enumerate_external(&mut self, id: ObjID) -> std::io::Result<Vec<ExternalFile>> {
-        let len = (pager_api().enumerate_external)(self.desc, id)
-            .map_err(|e| std::io::Error::new(e.into(), "enumerate external"))?;
+    pub fn enumerate_external(&mut self, id: ObjID) -> Result<Vec<ExternalFile>> {
+        let len = (pager_api().enumerate_external)(self.desc, id)?;
 
         let mut off = 0;
         let mut v = Vec::new();

@@ -15,10 +15,10 @@ use twizzler_abi::{
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_rt_abi::{
-    bindings::io_vec,
+    bindings::{io_ctx, io_vec},
     error::{ArgumentError, GenericError, IoError},
     fd::RawFd,
-    io::{IoFlags, SeekFrom},
+    io::SeekFrom,
     object::{MapFlags, ObjectHandle},
     Result,
 };
@@ -196,38 +196,19 @@ impl MinimalRuntime {
         Ok(bytes_read)
     }
 
-    pub fn fd_pread(
-        &self,
-        fd: RawFd,
-        off: Option<u64>,
-        buf: &mut [u8],
-        _flags: IoFlags,
-    ) -> Result<usize> {
-        if off.is_some() {
-            return Err(IoError::SeekFailed.into());
-        }
+    pub fn fd_pread(&self, fd: RawFd, buf: &mut [u8], _ctx: Option<&mut io_ctx>) -> Result<usize> {
         self.read(fd, buf)
     }
 
-    pub fn fd_pwrite(
-        &self,
-        fd: RawFd,
-        off: Option<u64>,
-        buf: &[u8],
-        _flags: IoFlags,
-    ) -> Result<usize> {
-        if off.is_some() {
-            return Err(IoError::SeekFailed.into());
-        }
+    pub fn fd_pwrite(&self, fd: RawFd, buf: &[u8], _ctx: Option<&mut io_ctx>) -> Result<usize> {
         self.write(fd, buf)
     }
 
     pub fn fd_pwritev(
         &self,
         _fd: RawFd,
-        _off: Option<u64>,
         _buf: &[io_vec],
-        _flags: IoFlags,
+        _ctx: Option<&mut io_ctx>,
     ) -> Result<usize> {
         return Err(GenericError::NotSupported.into());
     }
@@ -235,9 +216,8 @@ impl MinimalRuntime {
     pub fn fd_preadv(
         &self,
         _fd: RawFd,
-        _off: Option<u64>,
         _buf: &[io_vec],
-        _flags: IoFlags,
+        _ctx: Option<&mut io_ctx>,
     ) -> Result<usize> {
         return Err(GenericError::NotSupported.into());
     }
