@@ -1,4 +1,5 @@
 use std::{
+    ffi::c_void,
     io::{ErrorKind, Read, SeekFrom, Write},
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
@@ -18,10 +19,11 @@ use twizzler_abi::{
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_rt_abi::{
-    bindings::{create_options, io_vec},
+    bindings::{create_options, io_ctx, io_vec},
+    error::{ArgumentError, GenericError, IoError, NamingError, TwzError},
     fd::{FdInfo, OpenAnonKind, RawFd},
-    io::IoFlags,
     object::MapFlags,
+    Result,
 };
 
 use super::ReferenceRuntime;
@@ -39,15 +41,15 @@ enum FdKind {
 }
 
 impl FdKind {
-    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<usize> {
+    fn seek(&mut self, pos: SeekFrom) -> Result<usize> {
         match self {
             FdKind::File(arc) => arc.lock().unwrap().seek(pos),
             FdKind::RawFile(arc) => arc.lock().unwrap().seek(pos),
-            _ => Err(std::io::ErrorKind::Other.into()),
+            _ => Err(GenericError::NotSupported.into()),
         }
     }
 
-    fn stat(&mut self) -> std::io::Result<FdInfo> {
+    fn stat(&mut self) -> Result<FdInfo> {
         match self {
             FdKind::File(arc) => arc.lock().unwrap().stat(),
             FdKind::RawFile(arc) => arc.lock().unwrap().stat(),
@@ -84,10 +86,10 @@ impl FdKind {
         }
     }
 
-    pub fn fd_cmd(&self, cmd: u32, arg: *const u8, ret: *mut u8) -> u32 {
+    pub fn fd_cmd(&self, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
         match self {
             FdKind::File(arc) => arc.lock().unwrap().fd_cmd(cmd, arg, ret),
-            _ => 1,
+            _ => Err(TwzError::NOT_SUPPORTED),
         }
     }
 }
@@ -102,6 +104,7 @@ impl Read for FdKind {
                     buf,
                     twizzler_abi::syscall::KernelConsoleReadFlags::empty(),
                 )
+                //TODO
                 .map_err(|_| ErrorKind::Other)?;
                 Ok(len)
             }
@@ -198,13 +201,13 @@ impl ReferenceRuntime {
         path: &str,
         create_opt: CreateOptions,
         open_opt: OperationOptions,
-    ) -> std::io::Result<RawFd> {
+    ) -> Result<RawFd> {
         let mut session = get_naming_handle().lock().unwrap();
 
         if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE)
             && !open_opt.contains(OperationOptions::OPEN_FLAG_WRITE)
         {
-            return Err(ErrorKind::InvalidInput.into());
+            return Err(TwzError::INVALID_ARGUMENT);
         }
         let create = ObjectCreate::new(
             BackingType::Normal,
@@ -227,17 +230,17 @@ impl ReferenceRuntime {
             GetFlags::FOLLOW_SYMLINK
         };
         let (obj_id, did_create, kind) = match create_opt {
-            CreateOptions::UNEXPECTED => return Err(ErrorKind::InvalidInput.into()),
+            CreateOptions::UNEXPECTED => return Err(TwzError::INVALID_ARGUMENT),
             CreateOptions::CreateKindExisting => {
-                let n = session.get(path, get_flags).map_err(|_| ErrorKind::Other)?;
+                let n = session.get(path, get_flags)?;
                 (n.id, false, n.kind)
             }
             CreateOptions::CreateKindNew => {
                 if session.get(path, GetFlags::empty()).is_ok() {
-                    return Err(ErrorKind::AlreadyExists.into());
+                    return Err(NamingError::AlreadyExists.into());
                 }
                 (
-                    sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?,
+                    sys_object_create(create, &[], &[])?,
                     true,
                     NsNodeKind::Object,
                 )
@@ -246,7 +249,7 @@ impl ReferenceRuntime {
                 .get(path, get_flags)
                 .map(|x| (ObjID::from(x.id), false, x.kind))
                 .unwrap_or((
-                    sys_object_create(create, &[], &[]).map_err(|_| ErrorKind::Other)?,
+                    sys_object_create(create, &[], &[])?,
                     true,
                     NsNodeKind::Object,
                 )),
@@ -280,32 +283,26 @@ impl ReferenceRuntime {
 
         drop(binding);
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
-            self.seek(fd.try_into().unwrap(), SeekFrom::End(0))
-                .map_err(|_| ErrorKind::Other)?;
+            self.seek(fd.try_into().unwrap(), SeekFrom::End(0))?;
         }
         Ok(fd.try_into().unwrap())
     }
 
-    pub fn mkns(&self, name: &str) -> std::io::Result<()> {
+    pub fn mkns(&self, name: &str) -> Result<()> {
         let mut session = get_naming_handle().lock().unwrap();
 
         session.put_namespace(name, true)?;
         Ok(())
     }
 
-    pub fn symlink(&self, name: &str, target: &str) -> std::io::Result<()> {
+    pub fn symlink(&self, name: &str, target: &str) -> Result<()> {
         let mut session = get_naming_handle().lock().unwrap();
 
         session.symlink(name, target)?;
         Ok(())
     }
 
-    pub fn readlink(
-        &self,
-        name: &str,
-        target: &mut [u8],
-        read_len: &mut u64,
-    ) -> std::io::Result<()> {
+    pub fn readlink(&self, name: &str, target: &mut [u8], read_len: &mut u64) -> Result<()> {
         let mut session = get_naming_handle().lock().unwrap();
         let node = session.get(name, GetFlags::empty())?;
 
@@ -320,7 +317,9 @@ impl ReferenceRuntime {
         &self,
         _kind: OpenAnonKind,
         open_opt: OperationOptions,
-    ) -> std::io::Result<RawFd> {
+        _bind_info: *mut c_void,
+        _bind_info_len: usize,
+    ) -> Result<RawFd> {
         let elem = FdKind::Stdio;
 
         let mut binding = get_fd_slots().lock().unwrap();
@@ -335,72 +334,41 @@ impl ReferenceRuntime {
 
         drop(binding);
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
-            self.seek(fd.try_into().unwrap(), SeekFrom::End(0))
-                .map_err(|_| ErrorKind::Other)?;
+            self.seek(fd.try_into().unwrap(), SeekFrom::End(0))?;
         }
         Ok(fd.try_into().unwrap())
     }
 
-    pub fn remove(&self, path: &str) -> std::io::Result<()> {
+    pub fn remove(&self, path: &str) -> Result<()> {
         let mut session = get_naming_handle().lock().unwrap();
         Ok(session.remove(path)?)
     }
 
-    pub fn read(&self, fd: RawFd, buf: &mut [u8]) -> std::io::Result<usize> {
+    pub fn read(&self, fd: RawFd, buf: &mut [u8], _ctx: *mut io_ctx) -> Result<usize> {
         let binding = get_fd_slots().lock().unwrap();
         let mut file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
-            .ok_or(ErrorKind::NotFound)?;
+            .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
 
-        file_desc.read(buf)
+        file_desc.read(buf).map_err(|_| IoError::Other.into())
     }
 
-    pub fn fd_pread(
-        &self,
-        fd: RawFd,
-        off: Option<u64>,
-        buf: &mut [u8],
-        _flags: IoFlags,
-    ) -> std::io::Result<usize> {
-        if off.is_some() {
-            return Err(ErrorKind::Unsupported.into());
-        }
-        self.read(fd, buf)
+    pub fn fd_pread(&self, fd: RawFd, buf: &mut [u8], ctx: *mut io_ctx) -> Result<usize> {
+        self.read(fd, buf, ctx).map_err(|_| IoError::Other.into())
     }
 
-    pub fn fd_pwrite(
-        &self,
-        fd: RawFd,
-        off: Option<u64>,
-        buf: &[u8],
-        _flags: IoFlags,
-    ) -> std::io::Result<usize> {
-        if off.is_some() {
-            return Err(ErrorKind::Unsupported.into());
-        }
-        self.write(fd, buf)
+    pub fn fd_pwrite(&self, fd: RawFd, buf: &[u8], ctx: *mut io_ctx) -> Result<usize> {
+        self.write(fd, buf, ctx).map_err(|_| IoError::Other.into())
     }
 
-    pub fn fd_pwritev(
-        &self,
-        _fd: RawFd,
-        _off: Option<u64>,
-        _buf: &[io_vec],
-        _flags: IoFlags,
-    ) -> std::io::Result<usize> {
-        return Err(ErrorKind::Unsupported.into());
+    pub fn fd_pwritev(&self, _fd: RawFd, _buf: &[io_vec], _ctx: *mut io_ctx) -> Result<usize> {
+        return Err(TwzError::NOT_SUPPORTED);
     }
 
-    pub fn fd_preadv(
-        &self,
-        _fd: RawFd,
-        _off: Option<u64>,
-        _buf: &[io_vec],
-        _flags: IoFlags,
-    ) -> std::io::Result<usize> {
-        return Err(ErrorKind::Unsupported.into());
+    pub fn fd_preadv(&self, _fd: RawFd, _buf: &[io_vec], _ctx: *mut io_ctx) -> Result<usize> {
+        return Err(TwzError::NOT_SUPPORTED);
     }
 
     pub fn fd_get_info(&self, fd: RawFd) -> Option<twizzler_rt_abi::bindings::fd_info> {
@@ -411,25 +379,26 @@ impl ReferenceRuntime {
         fd.stat().ok().map(|x| x.into())
     }
 
-    pub fn fd_cmd(&self, fd: RawFd, cmd: u32, arg: *const u8, ret: *mut u8) -> u32 {
+    pub fn fd_cmd(&self, fd: RawFd, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
         let binding = get_fd_slots().lock().unwrap();
         let file_desc = binding.get(fd.try_into().unwrap()).cloned();
         drop(binding);
 
         file_desc
             .map(|file_desc| file_desc.fd_cmd(cmd, arg, ret))
-            .unwrap_or(1)
+            .ok_or(TwzError::INVALID_ARGUMENT)
+            .flatten()
     }
 
-    pub fn write(&self, fd: RawFd, buf: &[u8]) -> std::io::Result<usize> {
+    pub fn write(&self, fd: RawFd, buf: &[u8], _ctx: *mut io_ctx) -> Result<usize> {
         let binding = get_fd_slots().lock().unwrap();
         let mut file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
-            .ok_or(ErrorKind::NotFound)?;
+            .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
 
-        file_desc.write(buf)
+        file_desc.write(buf).map_err(|_| IoError::Other.into())
     }
 
     pub fn close(&self, fd: RawFd) -> Option<()> {
@@ -441,15 +410,15 @@ impl ReferenceRuntime {
         Some(())
     }
 
-    pub fn seek(&self, fd: RawFd, pos: SeekFrom) -> std::io::Result<usize> {
+    pub fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize> {
         let binding = get_fd_slots().lock().unwrap();
         let mut file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
-            .ok_or(ErrorKind::NotFound)?;
+            .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
 
-        file_desc.seek(pos)
+        file_desc.seek(pos).map_err(|_| IoError::Other.into())
     }
 
     pub fn fd_enumerate(
@@ -457,8 +426,8 @@ impl ReferenceRuntime {
         fd: RawFd,
         buf: &mut [twizzler_rt_abi::fd::NameEntry],
         off: usize,
-    ) -> std::io::Result<usize> {
-        let stat = self.fd_get_info(fd).ok_or(ErrorKind::Other)?;
+    ) -> Result<usize> {
+        let stat = self.fd_get_info(fd).ok_or(ArgumentError::BadHandle)?;
         let mut session = get_naming_handle().lock().unwrap();
         let names = session.enumerate_names_nsid(stat.id.into())?;
         if off >= names.len() {

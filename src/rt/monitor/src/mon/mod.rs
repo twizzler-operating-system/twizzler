@@ -16,8 +16,9 @@ use secgate::util::HandleMgr;
 use thread::DEFAULT_STACK_SIZE;
 use twizzler_abi::{syscall::sys_thread_exit, upcall::UpcallFrame};
 use twizzler_rt_abi::{
-    object::{MapError, MapFlags, ObjID},
-    thread::{SpawnError, ThreadSpawnArgs},
+    error::{ArgumentError, GenericError, ObjectError, TwzError},
+    object::{MapFlags, ObjID},
+    thread::ThreadSpawnArgs,
 };
 
 use self::{
@@ -187,18 +188,18 @@ impl Monitor {
 
     /// Get the compartment config for the given compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
-    pub fn get_comp_config(&self, sctx: ObjID) -> Option<*const SharedCompConfig> {
+    pub fn get_comp_config(&self, sctx: ObjID) -> Result<*const SharedCompConfig, TwzError> {
         let comps = self.comp_mgr.write(ThreadKey::get().unwrap());
-        Some(comps.get(sctx)?.comp_config_ptr())
+        Ok(comps.get(sctx)?.comp_config_ptr())
     }
 
     /// Map an object into a given compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
-    pub fn map_object(&self, sctx: ObjID, info: MapInfo) -> Result<MapHandle, MapError> {
+    pub fn map_object(&self, sctx: ObjID, info: MapInfo) -> Result<MapHandle, TwzError> {
         let handle = self.space.lock().unwrap().map(info)?;
 
         let mut comp_mgr = self.comp_mgr.write(ThreadKey::get().unwrap());
-        let rc = comp_mgr.get_mut(sctx).ok_or(MapError::InvalidArgument)?;
+        let rc = comp_mgr.get_mut(sctx)?;
         let handle = rc.map_object(info, handle)?;
         Ok(handle)
     }
@@ -210,11 +211,11 @@ impl Monitor {
         sctx: ObjID,
         info: MapInfo,
         info2: MapInfo,
-    ) -> Result<(MapHandle, MapHandle), MapError> {
+    ) -> Result<(MapHandle, MapHandle), TwzError> {
         let (handle, handle2) = self.space.lock().unwrap().map_pair(info, info2)?;
 
         let mut comp_mgr = self.comp_mgr.write(ThreadKey::get().unwrap());
-        let rc = comp_mgr.get_mut(sctx).ok_or(MapError::InvalidArgument)?;
+        let rc = comp_mgr.get_mut(sctx)?;
         let handle = rc.map_object(info, handle)?;
         let handle2 = rc.map_object(info2, handle2)?;
         Ok((handle, handle2))
@@ -229,7 +230,7 @@ impl Monitor {
         };
 
         let mut comp_mgr = self.comp_mgr.write(key);
-        if let Some(comp) = comp_mgr.get_mut(sctx) {
+        if let Ok(comp) = comp_mgr.get_mut(sctx) {
             let handle = comp.unmap_object(info);
             drop(comp_mgr);
             drop(handle);
@@ -238,12 +239,12 @@ impl Monitor {
 
     /// Get the object ID for this compartment-thread's simple buffer.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
-    pub fn get_thread_simple_buffer(&self, sctx: ObjID, thread: ObjID) -> Option<ObjID> {
+    pub fn get_thread_simple_buffer(&self, sctx: ObjID, thread: ObjID) -> Result<ObjID, TwzError> {
         let mut locks = self.locks.lock(ThreadKey::get().unwrap());
         let (_, ref mut comps, _, _, _) = *locks;
         let rc = comps.get_mut(sctx)?;
         let pt = rc.get_per_thread(thread);
-        pt.simple_buffer_id()
+        pt.simple_buffer_id().ok_or(GenericError::Internal.into())
     }
 
     /// Write bytes to this per-compartment thread's simple buffer.
@@ -253,12 +254,12 @@ impl Monitor {
         sctx: ObjID,
         thread: ObjID,
         bytes: &[u8],
-    ) -> Option<usize> {
+    ) -> Result<usize, TwzError> {
         let mut locks = self.locks.lock(ThreadKey::get().unwrap());
         let (_, ref mut comps, _, _, _) = *locks;
         let rc = comps.get_mut(sctx)?;
         let pt = rc.get_per_thread(thread);
-        Some(pt.write_bytes(bytes))
+        Ok(pt.write_bytes(bytes))
     }
 
     /// Read bytes from this per-compartment thread's simple buffer.
@@ -268,17 +269,17 @@ impl Monitor {
         sctx: ObjID,
         thread: ObjID,
         len: usize,
-    ) -> Option<Vec<u8>> {
+    ) -> Result<Vec<u8>, TwzError> {
         let mut locks = self.locks.lock(ThreadKey::get().unwrap());
         let (_, ref mut comps, _, _, _) = *locks;
         let rc = comps.get_mut(sctx)?;
         let pt = rc.get_per_thread(thread);
-        Some(pt.read_bytes(len))
+        Ok(pt.read_bytes(len))
     }
 
     /// Read the name of a compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
-    pub fn comp_name(&self, id: ObjID) -> Option<String> {
+    pub fn comp_name(&self, id: ObjID) -> Result<String, TwzError> {
         self.comp_mgr
             .read(ThreadKey::get().unwrap())
             .get(id)
@@ -326,7 +327,7 @@ impl Monitor {
                     tracing::debug!(
                         "runtime main thread reached compartment ready state in {}: {:x}",
                         self.comp_name(src)
-                            .unwrap_or_else(|| String::from("unknown")),
+                            .unwrap_or_else(|_| String::from("unknown")),
                         state
                     );
                     break if state & COMP_IS_BINARY == 0 {
@@ -351,7 +352,7 @@ impl Monitor {
                         tracing::debug!(
                             "runtime main thread reached compartment post-main state in {}",
                             self.comp_name(src)
-                                .unwrap_or_else(|| String::from("unknown"))
+                                .unwrap_or_else(|_| String::from("unknown"))
                         );
                         break;
                     }
@@ -366,7 +367,7 @@ impl Monitor {
                         tracing::debug!(
                             "runtime main thread destructing in {}",
                             self.comp_name(src)
-                                .unwrap_or_else(|| String::from("unknown"))
+                                .unwrap_or_else(|_| String::from("unknown"))
                         );
                         break None;
                     }
@@ -377,7 +378,7 @@ impl Monitor {
     }
 
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
-    pub fn set_nameroot(&self, _info: &secgate::GateCallInfo, root: ObjID) -> Result<(), ()> {
+    pub fn set_nameroot(&self, _info: &secgate::GateCallInfo, root: ObjID) -> Result<(), TwzError> {
         crate::dlengine::set_naming(root)
     }
 }

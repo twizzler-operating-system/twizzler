@@ -5,7 +5,9 @@ use tracing::warn;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::{
     bindings::object_handle,
-    object::{MapError, MapFlags, ObjID, ObjectHandle},
+    error::{ArgumentError, TwzError},
+    object::{MapFlags, ObjID, ObjectHandle},
+    Result,
 };
 
 use super::ReferenceRuntime;
@@ -46,7 +48,7 @@ pub(crate) fn new_object_handle(id: ObjID, slot: usize, flags: MapFlags) -> Obje
 
 impl ReferenceRuntime {
     #[tracing::instrument(ret, skip(self), level = "trace")]
-    pub fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError> {
+    pub fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle> {
         self.object_manager
             .lock()
             .map_object(ObjectMapKey(id.into(), flags))
@@ -60,14 +62,17 @@ impl ReferenceRuntime {
         }
     }
 
-    pub fn get_object_handle_from_ptr(&self, ptr: *const u8) -> Option<object_handle> {
+    pub fn get_object_handle_from_ptr(&self, ptr: *const u8) -> Result<object_handle> {
         if let Some(handle) = self.object_manager.lock().get_handle(ptr) {
-            return Some(handle);
+            return Ok(handle);
         }
 
-        let id = self.get_alloc().get_id_from_ptr(ptr)?;
+        let id = self
+            .get_alloc()
+            .get_id_from_ptr(ptr)
+            .ok_or(ArgumentError::InvalidAddress)?;
         let slot = ptr as usize / MAX_SIZE;
-        Some(object_handle {
+        Ok(object_handle {
             id: id.raw(),
             start: (slot * MAX_SIZE) as *mut c_void,
             map_flags: (MapFlags::READ | MapFlags::WRITE).bits(),
@@ -75,9 +80,9 @@ impl ReferenceRuntime {
         })
     }
 
-    pub fn insert_fot(&self, _handle: *mut object_handle, _fot: *const u8) -> Option<u64> {
+    pub fn insert_fot(&self, _handle: *mut object_handle, _fot: *const u8) -> Result<u32> {
         tracing::warn!("TODO: insert FOT entry");
-        None
+        Err(TwzError::NOT_SUPPORTED)
     }
 
     pub fn resolve_fot(
@@ -85,9 +90,9 @@ impl ReferenceRuntime {
         _handle: *mut object_handle,
         _idx: u64,
         _valid_len: usize,
-    ) -> Result<ObjectHandle, MapError> {
+    ) -> Result<ObjectHandle> {
         tracing::warn!("TODO: resolve FOT entry");
-        Err(MapError::Other)
+        Err(TwzError::NOT_SUPPORTED)
     }
 
     pub fn resolve_fot_local(&self, _ptr: *mut u8, _idx: u64, _valid_len: usize) -> *mut u8 {
@@ -101,10 +106,9 @@ impl ReferenceRuntime {
         in_flags_a: MapFlags,
         in_id_b: ObjID,
         in_flags_b: MapFlags,
-    ) -> Result<(ObjectHandle, ObjectHandle), MapError> {
+    ) -> Result<(ObjectHandle, ObjectHandle)> {
         let mapping =
-            monitor_api::monitor_rt_object_pair_map(in_id_a, in_flags_a, in_id_b, in_flags_b)
-                .unwrap()?;
+            monitor_api::monitor_rt_object_pair_map(in_id_a, in_flags_a, in_id_b, in_flags_b)?;
 
         let handle = new_object_handle(in_id_a, mapping.0.slot, in_flags_a);
         let handle2 = new_object_handle(in_id_b, mapping.1.slot, in_flags_b);
@@ -138,14 +142,14 @@ impl ObjectHandleManager {
     }
 
     /// Map an object with this manager. Will call to monitor if needed.
-    pub fn map_object(&mut self, key: ObjectMapKey) -> Result<ObjectHandle, MapError> {
+    pub fn map_object(&mut self, key: ObjectMapKey) -> Result<ObjectHandle> {
         if let Some(handle) = self.cache.activate(key) {
             let oh = ObjectHandle::from_raw(handle);
             let oh2 = oh.clone();
             std::mem::forget(oh);
             return Ok(oh2);
         }
-        let mapping = monitor_api::monitor_rt_object_map(key.0, key.1).unwrap()?;
+        let mapping = monitor_api::monitor_rt_object_map(key.0, key.1)?;
         let handle = new_object_handle(key.0, mapping.slot, key.1).into_raw();
         self.cache.insert(handle);
         Ok(ObjectHandle::from_raw(handle))

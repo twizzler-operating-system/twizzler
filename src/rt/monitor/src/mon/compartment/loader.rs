@@ -11,6 +11,7 @@ use happylock::ThreadKey;
 use monitor_api::SharedCompConfig;
 use twizzler_rt_abi::{
     core::{CtorSet, RuntimeInfo},
+    error::{GenericError, ObjectError, TwzError},
     object::{MapFlags, ObjID},
 };
 
@@ -18,10 +19,7 @@ use super::{
     CompConfigObject, CompartmentMgr, RunComp, StackObject, COMP_DESTRUCTED, COMP_EXITED,
     COMP_IS_BINARY, COMP_READY,
 };
-use crate::{
-    gates::LoadCompartmentError,
-    mon::{get_monitor, space::MapHandle, thread::DEFAULT_STACK_SIZE, Monitor},
-};
+use crate::mon::{get_monitor, space::MapHandle, thread::DEFAULT_STACK_SIZE, Monitor};
 
 /// Tracks info for loaded, but not yet running, compartments.
 #[derive(Debug)]
@@ -260,15 +258,15 @@ impl RunCompLoader {
 
         // Set all the dependency information.
         for id in &ids {
-            let Some(comp) = cmp.get(*id) else { continue };
+            let Ok(comp) = cmp.get(*id) else { continue };
             let mut deps = dynlink
                 .compartment_dependencies(comp.compartment_id)?
                 .iter()
-                .filter_map(|item| cmp.get_dynlinkid(*item).map(|rc| rc.instance))
+                .filter_map(|item| cmp.get_dynlinkid(*item).map(|rc| rc.instance).ok())
                 .collect();
             cmp.get_mut(*id).unwrap().deps.append(&mut deps);
 
-            let Some(comp) = cmp.get(*id) else { continue };
+            let Ok(comp) = cmp.get(*id) else { continue };
             tracing::debug!("set comp {} deps to {:?}", comp.name, comp.deps);
         }
         Self::rec_inc_all_use_counts(cmp, ids[0], &HashSet::from_iter(ids.iter().cloned()));
@@ -282,12 +280,12 @@ impl RunCompLoader {
         created: &HashSet<ObjID>,
     ) -> Option<()> {
         debug_assert!(created.contains(&start));
-        let rc = cmgr.get(start)?;
+        let rc = cmgr.get(start).ok()?;
         for dep in rc.deps.clone() {
             if created.contains(&dep) {
                 Self::rec_inc_all_use_counts(cmgr, dep, created);
             }
-            if let Some(rc) = cmgr.get_mut(dep) {
+            if let Ok(rc) = cmgr.get_mut(dep) {
                 rc.inc_use_count();
             }
         }
@@ -302,10 +300,10 @@ impl Monitor {
         instance: ObjID,
         args: &[&CStr],
         env: &[&CStr],
-    ) -> Result<(), LoadCompartmentError> {
+    ) -> Result<(), TwzError> {
         let deps = {
             let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
-            let rc = cmp.get(instance).ok_or(LoadCompartmentError::Unknown)?;
+            let rc = cmp.get(instance)?;
             tracing::debug!(
                 "starting compartment {} ({}) (binary = {})",
                 rc.name,
@@ -326,7 +324,7 @@ impl Monitor {
                 instance,
                 state
             );
-            return Err(LoadCompartmentError::Unknown);
+            return Err(GenericError::Internal.into());
         }
 
         loop {
@@ -338,12 +336,12 @@ impl Monitor {
             let info = {
                 let (ref mut tmgr, ref mut cmp, ref mut dynlink, _, _) =
                     *self.locks.lock(ThreadKey::get().unwrap());
-                let rc = cmp.get_mut(instance).ok_or(LoadCompartmentError::Unknown)?;
+                let rc = cmp.get_mut(instance)?;
 
                 rc.start_main_thread(state, &mut *tmgr, &mut *dynlink, args, env)
             };
             if info.is_none() {
-                return Err(LoadCompartmentError::Unknown);
+                return Err(GenericError::Internal.into());
             }
             self.wait_for_compartment_state_change(instance, state);
         }

@@ -74,7 +74,8 @@ use std::ffi::{c_void, CStr};
 
 use tracing::warn;
 // core.h
-use twizzler_rt_abi::bindings::option_exit_code;
+use twizzler_rt_abi::bindings::{io_ctx, option_exit_code, twz_error, u32_result};
+use twizzler_rt_abi::error::{ArgumentError, RawTwzError, TwzError};
 
 use crate::{runtime::OUR_RUNTIME, set_upcall_handler};
 
@@ -270,55 +271,48 @@ check_ffi_type!(twz_rt_spawn_thread, _);
 pub unsafe extern "C-unwind" fn twz_rt_join_thread(
     id: twizzler_rt_abi::bindings::thread_id,
     timeout: twizzler_rt_abi::bindings::option_duration,
-) -> twizzler_rt_abi::bindings::join_result {
+) -> twizzler_rt_abi::bindings::twz_error {
     match if timeout.is_some != 0 {
         OUR_RUNTIME.join(id, Some(timeout.dur.into()))
     } else {
         OUR_RUNTIME.join(id, None)
     } {
-        Ok(_) => twizzler_rt_abi::bindings::join_result_Join_Success,
-        Err(e) => e.into(),
+        Ok(_) => RawTwzError::success().raw(),
+        Err(e) => e.raw(),
     }
 }
 check_ffi_type!(twz_rt_join_thread, _, _);
 
 // fd.h
 
-fn std_error_to_open_error(err: std::io::ErrorKind) -> twizzler_rt_abi::fd::OpenError {
-    match err {
-        // TODO
-        _ => twizzler_rt_abi::fd::OpenError::Other,
-    }
-}
-
 use twizzler_rt_abi::bindings::{descriptor, open_anon_kind, open_info, open_result};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_open_anon(
     kind: open_anon_kind,
     flags: u32,
+    bind_info: *mut c_void,
+    bind_info_len: usize,
 ) -> open_result {
     let Ok(kind) = kind.try_into() else {
-        return Err(twizzler_rt_abi::fd::OpenError::Other).into();
+        return Err(ArgumentError::InvalidArgument.into()).into();
     };
     OUR_RUNTIME
-        .open_anon(kind, flags.into())
-        .map_err(|e| std_error_to_open_error(e.kind()))
+        .open_anon(kind, flags.into(), bind_info, bind_info_len)
         .into()
 }
-check_ffi_type!(twz_rt_fd_open_anon, _, _);
+check_ffi_type!(twz_rt_fd_open_anon, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
     let name = unsafe { core::slice::from_raw_parts(info.name.cast(), info.len) };
-    let name =
-        core::str::from_utf8(name).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument);
+    let name = core::str::from_utf8(name)
+        .map_err(|_| twizzler_rt_abi::error::ArgumentError::InvalidArgument);
     match name {
         Ok(name) => OUR_RUNTIME
             .open(name, info.create.into(), info.flags.into())
-            .map_err(|e| std_error_to_open_error(e.kind()))
             .into(),
         Err(e) => open_result {
-            error: e as u32,
+            err: TwzError::from(e).raw(),
             fd: 0,
         },
     }
@@ -327,21 +321,16 @@ check_ffi_type!(twz_rt_fd_open, _);
 
 use core::ffi::c_char;
 
-use twizzler_rt_abi::bindings::open_error;
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_fd_remove(name: *const c_char, len: usize) -> open_error {
+pub unsafe extern "C-unwind" fn twz_rt_fd_remove(name: *const c_char, len: usize) -> twz_error {
     let name = unsafe { core::slice::from_raw_parts(name.cast(), len) };
-    let name =
-        core::str::from_utf8(name).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument);
+    let name = core::str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT.raw());
     match name {
-        Ok(name) => match OUR_RUNTIME
-            .remove(name)
-            .map_err(|e| std_error_to_open_error(e.kind()))
-        {
-            Ok(_) => twizzler_rt_abi::bindings::open_error_OpenError_Success,
-            Err(e) => e.into(),
+        Ok(name) => match OUR_RUNTIME.remove(name) {
+            Ok(_) => RawTwzError::success().raw(),
+            Err(e) => e.raw(),
         },
-        Err(e) => e as u32,
+        Err(e) => e,
     }
 }
 check_ffi_type!(twz_rt_fd_remove, _, _);
@@ -373,8 +362,11 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_cmd(
     cmd: twizzler_rt_abi::bindings::fd_cmd,
     arg: *mut ::core::ffi::c_void,
     ret: *mut ::core::ffi::c_void,
-) -> twizzler_rt_abi::bindings::fd_cmd_err {
-    OUR_RUNTIME.fd_cmd(fd, cmd, arg.cast(), ret.cast())
+) -> twz_error {
+    match OUR_RUNTIME.fd_cmd(fd, cmd, arg.cast(), ret.cast()) {
+        Ok(_) => RawTwzError::success().raw(),
+        Err(e) => e.raw(),
+    }
 }
 check_ffi_type!(twz_rt_fd_cmd, _, _, _, _);
 
@@ -384,32 +376,27 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_enumerate_names(
     buf: *mut twizzler_rt_abi::bindings::name_entry,
     len: ::core::ffi::c_size_t,
     off: ::core::ffi::c_size_t,
-) -> ::core::ffi::c_ssize_t {
-    match OUR_RUNTIME.fd_enumerate(
-        fd,
-        unsafe { core::slice::from_raw_parts_mut(buf, len) },
-        off,
-    ) {
-        Ok(len) => len as isize,
-        Err(_) => -1,
-    }
+) -> io_result {
+    OUR_RUNTIME
+        .fd_enumerate(
+            fd,
+            unsafe { core::slice::from_raw_parts_mut(buf, len) },
+            off,
+        )
+        .into()
 }
 check_ffi_type!(twz_rt_fd_enumerate_names, _, _, _, _);
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_fd_mkns(name: *const c_char, len: usize) -> open_error {
+pub unsafe extern "C-unwind" fn twz_rt_fd_mkns(name: *const c_char, len: usize) -> twz_error {
     let name = unsafe { core::slice::from_raw_parts(name.cast(), len) };
-    let name =
-        core::str::from_utf8(name).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument);
+    let name = core::str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT.raw());
     match name {
-        Ok(name) => match OUR_RUNTIME
-            .mkns(name)
-            .map_err(|e| std_error_to_open_error(e.kind()))
-        {
-            Ok(_) => twizzler_rt_abi::bindings::open_error_OpenError_Success,
-            Err(e) => e.into(),
+        Ok(name) => match OUR_RUNTIME.mkns(name) {
+            Ok(_) => RawTwzError::success().raw(),
+            Err(e) => e.raw(),
         },
-        Err(e) => e as u32,
+        Err(e) => e,
     }
 }
 check_ffi_type!(twz_rt_fd_mkns, _, _);
@@ -420,25 +407,20 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_symlink(
     len: usize,
     target: *const c_char,
     target_len: usize,
-) -> open_error {
+) -> twz_error {
     let name = unsafe { core::slice::from_raw_parts(name.cast(), len) };
-    let name =
-        core::str::from_utf8(name).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument);
+    let name = core::str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT.raw());
     let target = unsafe { core::slice::from_raw_parts(target.cast(), target_len) };
-    let Ok(target) =
-        core::str::from_utf8(target).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument)
+    let Ok(target) = core::str::from_utf8(target).map_err(|_| TwzError::INVALID_ARGUMENT.raw())
     else {
-        return twizzler_rt_abi::fd::OpenError::InvalidArgument.into();
+        return TwzError::INVALID_ARGUMENT.into();
     };
     match name {
-        Ok(name) => match OUR_RUNTIME
-            .symlink(name, target)
-            .map_err(|e| std_error_to_open_error(e.kind()))
-        {
-            Ok(_) => twizzler_rt_abi::bindings::open_error_OpenError_Success,
-            Err(e) => e.into(),
+        Ok(name) => match OUR_RUNTIME.symlink(name, target) {
+            Ok(_) => RawTwzError::success().raw(),
+            Err(e) => e.raw(),
         },
-        Err(e) => e as u32,
+        Err(e) => e,
     }
 }
 check_ffi_type!(twz_rt_fd_symlink, _, _, _, _);
@@ -450,85 +432,46 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_readlink(
     target: *mut c_char,
     target_len: usize,
     read_len: *mut u64,
-) -> open_error {
+) -> twz_error {
     let name = unsafe { core::slice::from_raw_parts(name.cast(), len) };
-    let name =
-        core::str::from_utf8(name).map_err(|_| twizzler_rt_abi::fd::OpenError::InvalidArgument);
+    let name = core::str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT.raw());
     let target = unsafe { core::slice::from_raw_parts_mut(target.cast(), target_len) };
     match name {
-        Ok(name) => match OUR_RUNTIME
-            .readlink(name, target, unsafe { read_len.as_mut().unwrap() })
-            .map_err(|e| std_error_to_open_error(e.kind()))
+        Ok(name) => match OUR_RUNTIME.readlink(name, target, unsafe { read_len.as_mut().unwrap() })
         {
-            Ok(_) => twizzler_rt_abi::bindings::open_error_OpenError_Success,
-            Err(e) => e.into(),
+            Ok(_) => RawTwzError::success().raw(),
+            Err(e) => e.raw(),
         },
-        Err(e) => e as u32,
+        Err(e) => e,
     }
 }
 check_ffi_type!(twz_rt_fd_readlink, _, _, _, _, _);
 
 // io.h
-
-fn std_error_to_io_error(err: std::io::ErrorKind) -> twizzler_rt_abi::io::IoError {
-    match err {
-        // TODO
-        _ => twizzler_rt_abi::io::IoError::Other,
-    }
-}
-
-use twizzler_rt_abi::bindings::{io_flags, io_result, io_vec, optional_offset, whence};
+use twizzler_rt_abi::bindings::{io_result, io_vec, whence};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pread(
     fd: descriptor,
-    opt_off: i64,
     buf: *mut ::core::ffi::c_void,
     len: usize,
-    flags: io_flags,
+    ctx: *mut io_ctx,
 ) -> io_result {
-    let off = if opt_off == twizzler_rt_abi::bindings::FD_POS {
-        None
-    } else {
-        Some(opt_off as u64)
-    };
     let slice = unsafe { core::slice::from_raw_parts_mut(buf.cast::<u8>(), len) };
-    OUR_RUNTIME
-        .fd_pread(
-            fd,
-            off,
-            slice,
-            twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags),
-        )
-        .map_err(|e| std_error_to_io_error(e.kind()))
-        .into()
+    OUR_RUNTIME.fd_pread(fd, slice, ctx).into()
 }
-check_ffi_type!(twz_rt_fd_pread, _, _, _, _, _);
+check_ffi_type!(twz_rt_fd_pread, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pwrite(
     fd: descriptor,
-    opt_off: i64,
     buf: *const ::core::ffi::c_void,
     len: usize,
-    flags: io_flags,
+    ctx: *mut io_ctx,
 ) -> io_result {
-    let off = if opt_off == twizzler_rt_abi::bindings::FD_POS {
-        None
-    } else {
-        Some(opt_off as u64)
-    };
     let slice = unsafe { core::slice::from_raw_parts(buf.cast::<u8>(), len) };
-    OUR_RUNTIME
-        .fd_pwrite(
-            fd,
-            off,
-            slice,
-            twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags),
-        )
-        .map_err(|e| std_error_to_io_error(e.kind()))
-        .into()
+    OUR_RUNTIME.fd_pwrite(fd, slice, ctx).into()
 }
-check_ffi_type!(twz_rt_fd_pwrite, _, _, _, _, _);
+check_ffi_type!(twz_rt_fd_pwrite, _, _, _, _);
 
 use twizzler_rt_abi::io::SeekFrom;
 
@@ -552,78 +495,47 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_seek(
         twizzler_rt_abi::bindings::WHENCE_CURRENT => SeekFrom::Current(offset),
         _ => {
             return io_result {
-                value: 0,
-                error: twizzler_rt_abi::bindings::io_error_IoError_SeekError,
+                val: 0,
+                err: TwzError::INVALID_ARGUMENT.raw(),
             }
         }
     };
-    OUR_RUNTIME
-        .seek(fd, twz_sf_to_std_sf(seek))
-        .map_err(|e| std_error_to_io_error(e.kind()))
-        .into()
+    OUR_RUNTIME.seek(fd, twz_sf_to_std_sf(seek)).into()
 }
 check_ffi_type!(twz_rt_fd_seek, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_preadv(
     fd: descriptor,
-    opt_off: optional_offset,
     iovs: *const io_vec,
     nr_iovs: usize,
-    flags: io_flags,
+    ctx: *mut io_ctx,
 ) -> io_result {
-    let off = if opt_off == twizzler_rt_abi::bindings::FD_POS {
-        None
-    } else {
-        Some(opt_off as u64)
-    };
     let slice = unsafe { core::slice::from_raw_parts(iovs, nr_iovs) };
-    OUR_RUNTIME
-        .fd_preadv(
-            fd,
-            off,
-            slice,
-            twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags),
-        )
-        .map_err(|e| std_error_to_io_error(e.kind()))
-        .into()
+    OUR_RUNTIME.fd_preadv(fd, slice, ctx).into()
 }
-check_ffi_type!(twz_rt_fd_preadv, _, _, _, _, _);
+check_ffi_type!(twz_rt_fd_preadv, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
     fd: descriptor,
-    opt_off: optional_offset,
     iovs: *const io_vec,
     nr_iovs: usize,
-    flags: io_flags,
+    ctx: *mut io_ctx,
 ) -> io_result {
-    let off = if opt_off == twizzler_rt_abi::bindings::FD_POS {
-        None
-    } else {
-        Some(opt_off as u64)
-    };
     let slice = unsafe { core::slice::from_raw_parts(iovs, nr_iovs) };
-    OUR_RUNTIME
-        .fd_pwritev(
-            fd,
-            off,
-            slice,
-            twizzler_rt_abi::io::IoFlags::from_bits_truncate(flags),
-        )
-        .map_err(|e| std_error_to_io_error(e.kind()))
-        .into()
+    OUR_RUNTIME.fd_pwritev(fd, slice, ctx).into()
 }
-check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _, _);
+check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _);
 
 // object.h
 
 use twizzler_rt_abi::{
-    bindings::{map_flags, map_result, object_handle, rt_objid},
+    bindings::{map_flags, map_result, object_handle, objid},
     object::MapFlags,
 };
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_map_object(id: rt_objid, flags: map_flags) -> map_result {
+pub unsafe extern "C-unwind" fn twz_rt_map_object(id: objid, flags: map_flags) -> map_result {
     OUR_RUNTIME
         .map_object(id.into(), MapFlags::from_bits_truncate(flags))
         .into()
@@ -648,11 +560,8 @@ check_ffi_type!(twz_rt_get_object_handle, _);
 pub unsafe extern "C-unwind" fn twz_rt_insert_fot(
     handle: *mut object_handle,
     fote: *mut c_void,
-) -> i64 {
-    match OUR_RUNTIME.insert_fot(handle, fote.cast()) {
-        Some(x) => x as i64,
-        None => -1,
-    }
+) -> u32_result {
+    OUR_RUNTIME.insert_fot(handle, fote.cast()).into()
 }
 check_ffi_type!(twz_rt_insert_fot, _, _);
 
@@ -680,9 +589,9 @@ check_ffi_type!(twz_rt_resolve_fot_local, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn __twz_rt_map_two_objects(
-    id_1: rt_objid,
+    id_1: objid,
     flags_1: map_flags,
-    id_2: rt_objid,
+    id_2: objid,
     flags_2: map_flags,
     res_1: *mut map_result,
     res_2: *mut map_result,
@@ -820,7 +729,7 @@ pub unsafe extern "C-unwind" fn fwrite(
     nitems: usize,
     file: *const core::ffi::c_void,
 ) -> usize {
-    twz_rt_fd_pwrite(1, twizzler_rt_abi::bindings::FD_POS, ptr, len * nitems, 0);
+    twz_rt_fd_pwrite(1, ptr, len * nitems, core::ptr::null_mut());
     len * nitems
 }
 
@@ -835,10 +744,9 @@ pub unsafe extern "C-unwind" fn fprintf(
     let bytes_written = format(fmt.cast(), args.as_va_list(), output::fmt_write(&mut s));
     twz_rt_fd_pwrite(
         1,
-        twizzler_rt_abi::bindings::FD_POS,
         s.as_bytes().as_ptr().cast(),
         s.as_bytes().len(),
-        0,
+        core::ptr::null_mut(),
     );
     bytes_written
 }

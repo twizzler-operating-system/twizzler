@@ -9,7 +9,6 @@ use std::{
 
 use dynlink::context::runtime::RuntimeInitInfo;
 use monitor_api::{RuntimeThreadControl, SharedCompConfig};
-use secgate::SecGateReturn;
 use tracing::Level;
 use twizzler_abi::{
     syscall::{sys_get_random, GetRandomFlags},
@@ -147,7 +146,7 @@ impl ReferenceRuntime {
             let ret = match monitor_api::monitor_rt_comp_ctrl(
                 monitor_api::MonitorCompControlCmd::RuntimeReady,
             ) {
-                SecGateReturn::Success(ret) => ret,
+                Ok(ret) => ret,
                 _ => self.abort(),
             };
             ret

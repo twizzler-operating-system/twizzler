@@ -9,12 +9,12 @@
 #![feature(array_windows)]
 #![feature(unboxed_closures)]
 #![feature(allocator_api)]
-#![feature(hash_extract_if)]
 #![feature(btree_extract_if)]
 #![feature(naked_functions)]
 #![feature(c_variadic)]
 #![feature(linkage)]
 #![feature(c_size_t)]
+#![feature(result_flattening)]
 
 pub(crate) mod arch;
 

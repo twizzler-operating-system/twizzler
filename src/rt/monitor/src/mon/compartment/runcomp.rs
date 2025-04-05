@@ -16,7 +16,8 @@ use twizzler_abi::syscall::{
 };
 use twizzler_rt_abi::{
     core::{CompartmentInitInfo, CtorSet, InitInfoPtrs, RuntimeInfo, RUNTIME_INIT_COMP},
-    object::{MapError, MapFlags, ObjID},
+    error::TwzError,
+    object::{MapFlags, ObjID},
 };
 
 use super::{compconfig::CompConfigObject, compthread::CompThread, StackObject};
@@ -181,7 +182,7 @@ impl RunComp {
     }
 
     /// Map an object into this compartment.
-    pub fn map_object(&mut self, info: MapInfo, handle: MapHandle) -> Result<MapHandle, MapError> {
+    pub fn map_object(&mut self, info: MapInfo, handle: MapHandle) -> Result<MapHandle, TwzError> {
         self.mapped_objects.insert(info, handle.clone());
         Ok(handle)
     }

@@ -11,8 +11,8 @@ use syn::{
     parse2, parse_quote,
     punctuated::Punctuated,
     token::{Pub, Unsafe},
-    Attribute, BareFnArg, Error, ForeignItemFn, ItemFn, LitStr, Path, ReturnType, Signature, Token,
-    Type, TypeBareFn, TypePath, Visibility,
+    Attribute, BareFnArg, Error, ForeignItemFn, ItemFn, LitStr, ReturnType, Signature, Token, Type,
+    TypeBareFn, Visibility,
 };
 
 #[proc_macro_attribute]
@@ -315,7 +315,7 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
                 let pe_ret = secgate::runtime_preentry();
                 if !matches!(pe_ret, Ok(_)) {
                     let ret = unsafe {ret.as_mut().unwrap()};
-                    ret.set(twizzler_rt_abi::error::GenericError::AccessDenied.into());
+                    ret.set(Err(twizzler_rt_abi::error::GenericError::AccessDenied.into()));
                     return;
                 }
             }
@@ -328,8 +328,8 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
                 std::process::Termination::report(std::process::ExitCode::from(101u8));
             }
             let wret = match impl_ret {
-                Ok(r) => Ok(r),
-                Err(_) => twizzler_rt_abi::error::GenericError::Internal.into(),
+                Ok(r) => r,
+                Err(_) => Err(twizzler_rt_abi::error::GenericError::Internal.into()),
             };
 
             // Success -- write the return value.
@@ -352,14 +352,7 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
         ReturnType::Default => Box::new(parse_quote!(())),
         ReturnType::Type(_, ty) => ty.clone(),
     };
-    let rt_path: Path = parse_quote! { Result<#ret_type, twizzler_rt_abi::error::TwzError> };
-    call_point.sig.output = ReturnType::Type(
-        Default::default(),
-        Box::new(Type::Path(TypePath {
-            qself: None,
-            path: rt_path,
-        })),
-    );
+    call_point.sig.output = ReturnType::Type(Default::default(), ret_type);
 
     let Info {
         mod_name,
@@ -402,7 +395,7 @@ fn build_public_call(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenSt
                 })
             });
             secgate::restore_frame(frame);
-            ret
+            ret.ok_or(twizzler_rt_abi::error::ResourceError::Unavailable)?
         }
     })?);
 

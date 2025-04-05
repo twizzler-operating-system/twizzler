@@ -7,12 +7,13 @@ use tracing::trace;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     simple_mutex::Mutex,
-    syscall::SctxAttachError,
     thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_rt_abi::{
+    error::{ArgumentError, TwzError},
     object::MapFlags,
-    thread::{JoinError, SpawnError, ThreadSpawnArgs},
+    thread::ThreadSpawnArgs,
+    Result,
 };
 
 use super::internal::InternalThread;
@@ -127,16 +128,12 @@ impl<'a> Drop for IdDropper<'a> {
 }
 
 impl ReferenceRuntime {
-    pub fn cross_compartment_entry(&self) -> Result<(), ()> {
+    pub fn cross_compartment_entry(&self) -> Result<()> {
         twizzler_abi::syscall::sys_thread_settls(0);
         if OUR_RUNTIME.is_monitor().is_some() {
             twizzler_abi::syscall::sys_thread_set_active_sctx_id(0.into())?;
         } else {
-            match twizzler_abi::syscall::sys_sctx_attach(monitor_api::get_comp_config().sctx) {
-                Ok(_) => Ok(()),
-                Err(SctxAttachError::AlreadyAttached) => Ok(()),
-                Err(_) => Err(()),
-            }?;
+            twizzler_abi::syscall::sys_sctx_attach(monitor_api::get_comp_config().sctx)?;
             twizzler_abi::syscall::sys_thread_set_active_sctx_id(
                 monitor_api::get_comp_config().sctx,
             )?;
@@ -152,10 +149,7 @@ impl ReferenceRuntime {
         Ok(())
     }
 
-    pub(super) fn impl_spawn(
-        &self,
-        args: twizzler_rt_abi::thread::ThreadSpawnArgs,
-    ) -> Result<u32, twizzler_rt_abi::thread::SpawnError> {
+    pub(super) fn impl_spawn(&self, args: twizzler_rt_abi::thread::ThreadSpawnArgs) -> Result<u32> {
         // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
         let tls = TLS_GEN_MGR
@@ -196,17 +190,16 @@ impl ReferenceRuntime {
         };
 
         let thid: ObjID = {
-            let res: secgate::SecGateReturn<Result<_, SpawnError>> =
+            let res: Result<_> =
                 monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
+
             match res {
-                secgate::SecGateReturn::Success(id) => ObjID::from(id?),
-                _ => return Err(SpawnError::Other),
+                Ok(id) => ObjID::from(id),
+                Err(e) => return Err(e),
             }
         };
 
-        let thread_repr_obj = self
-            .map_object(thid, MapFlags::READ | MapFlags::WRITE)
-            .map_err(|_| SpawnError::Other)?;
+        let thread_repr_obj = self.map_object(thid, MapFlags::READ | MapFlags::WRITE)?;
 
         let thread = InternalThread::new(
             thread_repr_obj,
@@ -222,11 +215,7 @@ impl ReferenceRuntime {
         Ok(id)
     }
 
-    pub(super) fn impl_join(
-        &self,
-        id: u32,
-        timeout: Option<std::time::Duration>,
-    ) -> Result<(), JoinError> {
+    pub(super) fn impl_join(&self, id: u32, timeout: Option<std::time::Duration>) -> Result<()> {
         trace!("joining on thread {} with timeout {:?}", id, timeout);
         let repr = {
             let mut inner = THREAD_MGR.inner.lock();
@@ -234,7 +223,7 @@ impl ReferenceRuntime {
             inner
                 .all_threads
                 .get(&id)
-                .ok_or(JoinError::ThreadNotFound)?
+                .ok_or(TwzError::Argument(ArgumentError::BadHandle))?
                 .repr_handle()
                 .clone()
         };
@@ -243,7 +232,7 @@ impl ReferenceRuntime {
         loop {
             let (state, _code) = base
                 .wait_until(ExecutionState::Exited, timeout)
-                .ok_or(JoinError::Timeout)?;
+                .ok_or(TwzError::TIMED_OUT)?;
             if state == ExecutionState::Exited {
                 let mut inner = THREAD_MGR.inner.lock();
                 inner.prep_cleanup(id);

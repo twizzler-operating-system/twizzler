@@ -3,7 +3,10 @@ use twizzler::{
     marker::Invariant,
     object::Object,
 };
-use twizzler_rt_abi::object::{MapFlags, ObjID};
+use twizzler_rt_abi::{
+    error::TwzError,
+    object::{MapFlags, ObjID},
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -25,13 +28,13 @@ pub struct OwnedDevice {
 
 unsafe impl Invariant for OwnedDevice {}
 
-pub fn get_devices(spec: DriverSpec) -> Option<VecObject<OwnedDevice, VecObjectAlloc>> {
+pub fn get_devices(spec: DriverSpec) -> Result<VecObject<OwnedDevice, VecObjectAlloc>, TwzError> {
     let devcomp = monitor_api::CompartmentHandle::lookup("devmgr")?;
     let get_devices = unsafe {
         devcomp
-            .dynamic_gate::<(DriverSpec,), Option<ObjID>>("get_devices")
+            .dynamic_gate::<(DriverSpec,), ObjID>("get_devices")
             .unwrap()
     };
-    let id = (get_devices)(spec).ok().flatten()?;
-    Some(VecObject::from(Object::map(id, MapFlags::READ).ok()?))
+    let id = (get_devices)(spec)?;
+    Ok(VecObject::from(Object::map(id, MapFlags::READ)?))
 }

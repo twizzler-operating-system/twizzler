@@ -17,7 +17,7 @@ use std::{
 
 pub use secgate_macros::*;
 use twizzler_abi::object::ObjID;
-use twizzler_rt_abi::error::{RawTwzError, ResourceError, TwzError};
+use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 pub mod util;
 
@@ -99,7 +99,7 @@ impl<Args: Tuple + Crossing + Copy> Arguments<Args> {
 #[repr(C)]
 pub struct Return<T: Crossing + Copy> {
     isset: bool,
-    ret: MaybeUninit<Result<T, RawTwzError>>,
+    ret: MaybeUninit<T>,
 }
 
 impl<T: Copy + Crossing> Clone for Return<T> {
@@ -125,11 +125,11 @@ impl<T: Crossing + Copy> Return<T> {
 
     /// If a previous call to set is made, or this was constructed by new(), then into_inner
     /// returns the inner value. Otherwise, returns None.
-    pub fn into_inner(self) -> Result<T, TwzError> {
+    pub fn into_inner(self) -> Option<T> {
         if self.isset {
-            unsafe { self.ret.assume_init() }.map_err(|e| e.error())
+            Some(unsafe { self.ret.assume_init() })
         } else {
-            Err(ResourceError::Unavailable.into())
+            None
         }
     }
 
@@ -142,8 +142,8 @@ impl<T: Crossing + Copy> Return<T> {
     }
 
     /// Set the inner value. Future call to into_inner will return Some(val).
-    pub fn set(&mut self, val: Result<T, TwzError>) {
-        self.ret.write(val.map_err(|e| RawTwzError::new(e.raw())));
+    pub fn set(&mut self, val: T) {
+        self.ret.write(val);
         self.isset = true;
     }
 }
@@ -319,7 +319,7 @@ pub unsafe fn dynamic_gate_call<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
     // Allocate stack space for args + ret. Args::with_alloca also inits the memory.
     let ret = GateCallInfo::with_alloca(get_thread_id(), get_sctx_id(), |info| {
         Arguments::<A>::with_alloca(args, |args| {
-            Return::<R>::with_alloca(|ret| {
+            Return::<Result<R, TwzError>>::with_alloca(|ret| {
                 // Call the trampoline in the mod.
                 unsafe {
                         //#mod_name::#trampoline_name_without_prefix(info as *const _, args as *const _, ret as *mut _);
@@ -333,5 +333,5 @@ pub unsafe fn dynamic_gate_call<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
         })
     });
     restore_frame(frame);
-    ret
+    ret.ok_or(ResourceError::Unavailable)?
 }

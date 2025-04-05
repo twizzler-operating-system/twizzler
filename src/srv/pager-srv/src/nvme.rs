@@ -11,7 +11,8 @@ pub use controller::NvmeController;
 pub async fn init_nvme() -> Option<Arc<NvmeController>> {
     let devices = devmgr::get_devices(devmgr::DriverSpec {
         supported: devmgr::Supported::PcieClass(1, 8, 2),
-    })?;
+    })
+    .ok()?;
 
     for device in &devices {
         let device = Device::new(device.id).ok();

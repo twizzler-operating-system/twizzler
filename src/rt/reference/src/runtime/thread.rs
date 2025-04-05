@@ -2,10 +2,14 @@
 
 use dynlink::tls::Tcb;
 use twizzler_abi::syscall::{
-    sys_thread_sync, sys_thread_yield, ThreadSync, ThreadSyncError, ThreadSyncFlags, ThreadSyncOp,
+    sys_thread_sync, sys_thread_yield, ThreadSync, ThreadSyncFlags, ThreadSyncOp,
     ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
-use twizzler_rt_abi::thread::{JoinError, SpawnError, ThreadSpawnArgs, TlsIndex};
+use twizzler_rt_abi::{
+    error::TwzError,
+    thread::{ThreadSpawnArgs, TlsIndex},
+    Result,
+};
 
 use self::tcb::with_current_thread;
 use super::ReferenceRuntime;
@@ -47,7 +51,7 @@ impl ReferenceRuntime {
             timeout,
         );
 
-        !matches!(r, Err(ThreadSyncError::Timeout))
+        !matches!(r, Err(TwzError::TIMED_OUT))
     }
 
     pub fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32, count: usize) -> bool {
@@ -87,11 +91,11 @@ impl ReferenceRuntime {
         tp.get_addr(index)
     }
 
-    pub fn spawn(&self, args: ThreadSpawnArgs) -> Result<u32, SpawnError> {
+    pub fn spawn(&self, args: ThreadSpawnArgs) -> Result<u32> {
         self.impl_spawn(args)
     }
 
-    pub fn join(&self, id: u32, timeout: Option<std::time::Duration>) -> Result<(), JoinError> {
+    pub fn join(&self, id: u32, timeout: Option<std::time::Duration>) -> Result<()> {
         self.impl_join(id, timeout)
     }
 }
