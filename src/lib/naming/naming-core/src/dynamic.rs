@@ -33,8 +33,9 @@ impl NamerAPI for DynamicNamerAPI {
         (self.open_handle)()
     }
 
-    fn close_handle(&self, desc: Descriptor) -> () {
+    fn close_handle(&self, desc: Descriptor) -> Result<()> {
         let _ = (self.close_handle)(desc);
+        Ok(())
     }
 
     fn enumerate_names(&self, desc: Descriptor, name_len: usize) -> Result<usize> {

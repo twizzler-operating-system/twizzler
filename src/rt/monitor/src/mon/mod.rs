@@ -155,7 +155,7 @@ impl Monitor {
 
     /// Start a managed monitor thread.
     #[tracing::instrument(skip(self, main), level = tracing::Level::DEBUG)]
-    pub fn start_thread(&self, main: Box<dyn FnOnce()>) -> Result<ManagedThread, SpawnError> {
+    pub fn start_thread(&self, main: Box<dyn FnOnce()>) -> Result<ManagedThread, TwzError> {
         let key = ThreadKey::get().unwrap();
         let locks = &mut *self.locks.lock(key);
 
@@ -171,7 +171,7 @@ impl Monitor {
         args: ThreadSpawnArgs,
         stack_ptr: usize,
         thread_ptr: usize,
-    ) -> Result<ObjID, SpawnError> {
+    ) -> Result<ObjID, TwzError> {
         let thread = self.start_thread(Box::new(move || {
             let frame = UpcallFrame::new_entry_frame(
                 stack_ptr,

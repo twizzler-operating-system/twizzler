@@ -20,6 +20,9 @@ Installing the tools:
   1. sudo apt install build-essential python cmake ninja-build llvm-18
   2. Install Rust https://www.rust-lang.org/tools/install
 
+Note that you'll need mke2fs (typically found in e2fsprogs). Most Linux installations should already have this
+command available. On MacOS, with brew, it can be installed with `brew install e2fsprogs`.
+
 Note that we depend on the system LLVM for some initial bindgen commands. The minimum version for this is 18.
 On ubuntu, this can be selected for building twizzler by env vars: `export LLVM_CONFIG_PATH=/usr/bin/llvm-config-18`.
 

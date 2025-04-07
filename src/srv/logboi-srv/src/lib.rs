@@ -13,7 +13,10 @@ use twizzler_abi::{
         LifetimeType, ObjectCreate, ObjectCreateFlags,
     },
 };
-use twizzler_rt_abi::object::MapFlags;
+use twizzler_rt_abi::{
+    error::{ArgumentError, GenericError, ResourceError, TwzError},
+    object::MapFlags,
+};
 
 // Per-client metadata.
 struct LogClient {
@@ -72,34 +75,40 @@ static LOGBOI: LogBoi = LogBoi {
 };
 
 #[secure_gate(options(info))]
-pub fn logboi_open_handle(info: &secgate::GateCallInfo) -> Option<(Descriptor, ObjID)> {
-    let mut logger = LOGBOI.inner.lock().ok()?;
-    let client = LogClient::new()?;
+pub fn logboi_open_handle(info: &secgate::GateCallInfo) -> Result<(Descriptor, ObjID), TwzError> {
+    let mut logger = LOGBOI.inner.lock().ok().ok_or(GenericError::Internal)?;
+    let client = LogClient::new().ok_or(ResourceError::Unavailable)?;
     let id = client.sbid();
     let desc = logger
         .handles
-        .insert(info.source_context().unwrap_or(0.into()), client)?;
+        .insert(info.source_context().unwrap_or(0.into()), client)
+        .ok_or(ResourceError::Unavailable)?;
 
-    Some((desc, id))
+    Ok((desc, id))
 }
 
 #[secure_gate(options(info))]
-pub fn logboi_close_handle(info: &secgate::GateCallInfo, desc: Descriptor) {
+pub fn logboi_close_handle(info: &secgate::GateCallInfo, desc: Descriptor) -> Result<(), TwzError> {
     let mut logger = LOGBOI.inner.lock().unwrap();
     logger
         .handles
         .remove(info.source_context().unwrap_or(0.into()), desc);
+    Ok(())
 }
 
 #[secure_gate(options(info))]
-pub fn logboi_post(info: &secgate::GateCallInfo, desc: Descriptor, buf_len: usize) {
+pub fn logboi_post(
+    info: &secgate::GateCallInfo,
+    desc: Descriptor,
+    buf_len: usize,
+) -> Result<(), TwzError> {
     let mut buf = vec![0u8; buf_len];
     let mut logger = LOGBOI.inner.lock().unwrap();
     let Some(client) = logger
         .handles
         .lookup(info.source_context().unwrap_or(0.into()), desc)
     else {
-        return;
+        return Err(ArgumentError::BadHandle.into());
     };
     let len = client.buffer.read(&mut buf);
     let msg = format!(
@@ -109,4 +118,5 @@ pub fn logboi_post(info: &secgate::GateCallInfo, desc: Descriptor, buf_len: usiz
     );
     logger.count += 1;
     let _ = sys_kernel_console_write(msg.as_bytes(), KernelConsoleWriteFlags::DISCARD_ON_FULL);
+    Ok(())
 }

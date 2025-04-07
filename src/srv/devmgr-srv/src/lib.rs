@@ -77,7 +77,7 @@ fn start_pcie(seg: Device) {
 }
 
 #[secgate::secure_gate]
-pub fn devmgr_start() {
+pub fn devmgr_start() -> Result<(), TwzError> {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
@@ -92,6 +92,7 @@ pub fn devmgr_start() {
             start_pcie(device);
         }
     }
+    Ok(())
 }
 
 #[secgate::secure_gate]
