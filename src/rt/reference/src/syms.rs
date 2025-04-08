@@ -74,7 +74,7 @@ use std::ffi::{c_void, CStr};
 
 use tracing::warn;
 // core.h
-use twizzler_rt_abi::bindings::{io_ctx, option_exit_code, twz_error, u32_result};
+use twizzler_rt_abi::bindings::{endpoint, io_ctx, option_exit_code, twz_error, u32_result};
 use twizzler_rt_abi::error::{ArgumentError, RawTwzError, TwzError};
 
 use crate::{runtime::OUR_RUNTIME, set_upcall_handler};
@@ -472,6 +472,30 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pwrite(
     OUR_RUNTIME.fd_pwrite(fd, slice, ctx).into()
 }
 check_ffi_type!(twz_rt_fd_pwrite, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_pwrite_to(
+    fd: descriptor,
+    buf: *const ::core::ffi::c_void,
+    len: usize,
+    ctx: *mut io_ctx,
+    ep: *const endpoint,
+) -> io_result {
+    todo!()
+}
+check_ffi_type!(twz_rt_fd_pwrite_to, _, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_pread_from(
+    fd: descriptor,
+    buf: *mut ::core::ffi::c_void,
+    len: usize,
+    ctx: *mut io_ctx,
+    ep: *mut endpoint,
+) -> io_result {
+    todo!()
+}
+check_ffi_type!(twz_rt_fd_pread_from, _, _, _, _, _);
 
 use twizzler_rt_abi::io::SeekFrom;
 

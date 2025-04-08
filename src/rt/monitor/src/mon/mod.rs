@@ -16,7 +16,7 @@ use secgate::util::HandleMgr;
 use thread::DEFAULT_STACK_SIZE;
 use twizzler_abi::{syscall::sys_thread_exit, upcall::UpcallFrame};
 use twizzler_rt_abi::{
-    error::{ArgumentError, GenericError, ObjectError, TwzError},
+    error::{GenericError, TwzError},
     object::{MapFlags, ObjID},
     thread::ThreadSpawnArgs,
 };

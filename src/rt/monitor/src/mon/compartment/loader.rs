@@ -11,7 +11,7 @@ use happylock::ThreadKey;
 use monitor_api::SharedCompConfig;
 use twizzler_rt_abi::{
     core::{CtorSet, RuntimeInfo},
-    error::{GenericError, ObjectError, TwzError},
+    error::{GenericError, TwzError},
     object::{MapFlags, ObjID},
 };
 

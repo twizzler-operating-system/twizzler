@@ -10,7 +10,7 @@ use twizzler_abi::{
     thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_rt_abi::{
-    error::{ArgumentError, TwzError},
+    error::{ArgumentError, NamingError, TwzError},
     object::MapFlags,
     thread::ThreadSpawnArgs,
     Result,
@@ -131,12 +131,22 @@ impl ReferenceRuntime {
     pub fn cross_compartment_entry(&self) -> Result<()> {
         twizzler_abi::syscall::sys_thread_settls(0);
         if OUR_RUNTIME.is_monitor().is_some() {
-            twizzler_abi::syscall::sys_thread_set_active_sctx_id(0.into())?;
+            twizzler_abi::syscall::sys_thread_set_active_sctx_id(0.into()).inspect_err(|e| {
+                twizzler_abi::klog_println!("failed to set sctx: {}", e);
+            })?;
         } else {
-            twizzler_abi::syscall::sys_sctx_attach(monitor_api::get_comp_config().sctx)?;
+            let _ = twizzler_abi::syscall::sys_sctx_attach(monitor_api::get_comp_config().sctx)
+                .inspect_err(|e| {
+                    if !matches!(e, TwzError::Naming(NamingError::AlreadyBound)) {
+                        twizzler_abi::klog_println!("failed to attach sctx: {}", e);
+                    }
+                });
             twizzler_abi::syscall::sys_thread_set_active_sctx_id(
                 monitor_api::get_comp_config().sctx,
-            )?;
+            )
+            .inspect_err(|e| {
+                twizzler_abi::klog_println!("failed to set-a sctx: {}", e);
+            })?;
         }
         let mut inner = THREAD_MGR.inner.lock();
         let id = inner.next_id().freeze();

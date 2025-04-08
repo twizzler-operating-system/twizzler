@@ -9,7 +9,7 @@ use object_store::{objid_to_ino, PageRequest};
 use secgate::util::{Descriptor, HandleMgr};
 use twizzler::object::ObjID;
 use twizzler_abi::pager::{ObjectInfo, ObjectRange, PhysRange};
-use twizzler_rt_abi::error::{ArgumentError, NamingError, ResourceError, TwzError};
+use twizzler_rt_abi::error::{ArgumentError, ResourceError, TwzError};
 
 use crate::{
     disk::DiskPageRequest,

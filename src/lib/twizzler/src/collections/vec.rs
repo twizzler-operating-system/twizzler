@@ -406,7 +406,6 @@ mod tests {
 
         let item = vec_obj.get(0).unwrap();
         assert_eq!(item.x, 42);
-        drop(item);
         let ritem = vec_obj.remove(0).unwrap();
 
         assert_eq!(ritem.x, 42);
@@ -421,26 +420,20 @@ mod tests {
 
         let item = vec_obj.get(0).unwrap();
         assert_eq!(item.x, 42);
-        drop(item);
         let item = vec_obj.get(1).unwrap();
         assert_eq!(item.x, 43);
-        drop(item);
         let item = vec_obj.get(2).unwrap();
         assert_eq!(item.x, 44);
-        drop(item);
         let item = vec_obj.get(3);
         assert!(item.is_none());
-        drop(item);
 
         let ritem = vec_obj.remove(1).unwrap();
         assert_eq!(ritem.x, 43);
 
         let item = vec_obj.get(0).unwrap();
         assert_eq!(item.x, 42);
-        drop(item);
         let item = vec_obj.get(1).unwrap();
         assert_eq!(item.x, 44);
-        drop(item);
         let item = vec_obj.get(2);
         assert!(item.is_none());
     }

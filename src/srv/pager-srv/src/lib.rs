@@ -1,4 +1,3 @@
-#![feature(ptr_sub_ptr)]
 #![feature(naked_functions)]
 #![feature(io_error_more)]
 

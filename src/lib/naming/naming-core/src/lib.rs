@@ -1,5 +1,3 @@
-#![feature(io_error_more)]
-
 pub mod api;
 pub mod dynamic;
 pub mod handle;

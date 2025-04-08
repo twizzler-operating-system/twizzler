@@ -313,10 +313,13 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
         {
             if unsafe {(*info)}.source_context().is_some() {
                 let pe_ret = secgate::runtime_preentry();
-                if !matches!(pe_ret, Ok(_)) {
-                    let ret = unsafe {ret.as_mut().unwrap()};
-                    ret.set(Err(twizzler_rt_abi::error::GenericError::AccessDenied.into()));
-                    return;
+                match pe_ret {
+                    Ok(_) => {},
+                    Err(e) => {
+                        let ret = unsafe {ret.as_mut().unwrap()};
+                        ret.set(Err(e));
+                        return;
+                    }
                 }
             }
             #unpacked_args

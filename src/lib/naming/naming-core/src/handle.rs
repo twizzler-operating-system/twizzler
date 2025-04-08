@@ -144,6 +144,9 @@ impl<'a, API: NamerAPI> Handle for NamingHandle<'a, API> {
     }
 
     fn release(&mut self) {
-        self.api.close_handle(self.desc);
+        let _ = self
+            .api
+            .close_handle(self.desc)
+            .inspect_err(|e| tracing::warn!("{}", e));
     }
 }

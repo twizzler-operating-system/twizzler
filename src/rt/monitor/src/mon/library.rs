@@ -8,7 +8,7 @@ use twizzler_rt_abi::{
 };
 
 use super::Monitor;
-use crate::gates::{LibraryInfo, LoadLibraryError};
+use crate::gates::LibraryInfo;
 
 /// A handle to a library.
 pub struct LibraryHandle {

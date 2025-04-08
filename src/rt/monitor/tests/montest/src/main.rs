@@ -17,7 +17,7 @@ extern crate twizzler_runtime;
 
 fn main() {
     setup_logging();
-    montest_lib::test_global_call_count();
+    montest_lib::test_global_call_count().unwrap();
 }
 use tracing::Level;
 fn setup_logging() {

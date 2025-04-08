@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 
 use dynlink::context::NewCompartmentFlags;
 use secgate::{util::Descriptor, Crossing};
@@ -250,12 +250,6 @@ pub fn monitor_rt_load_library(
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.load_library(caller, id, compartment)
-}
-
-#[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
-pub enum LoadLibraryError {
-    Unknown,
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]

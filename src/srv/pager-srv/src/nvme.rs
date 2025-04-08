@@ -7,12 +7,12 @@ mod dma;
 mod requester;
 
 pub use controller::NvmeController;
+use twizzler_rt_abi::error::{NamingError, TwzError};
 
-pub async fn init_nvme() -> Option<Arc<NvmeController>> {
+pub async fn init_nvme() -> Result<Arc<NvmeController>, TwzError> {
     let devices = devmgr::get_devices(devmgr::DriverSpec {
         supported: devmgr::Supported::PcieClass(1, 8, 2),
-    })
-    .ok()?;
+    })?;
 
     for device in &devices {
         let device = Device::new(device.id).ok();
@@ -25,9 +25,9 @@ pub async fn init_nvme() -> Option<Arc<NvmeController>> {
                 info.get_data().func_nr
             );
 
-            let ctrl = Arc::new(NvmeController::new(device).ok()?);
-            return Some(ctrl);
+            let ctrl = Arc::new(NvmeController::new(device)?);
+            return Ok(ctrl);
         }
     }
-    None
+    Err(NamingError::NotFound.into())
 }

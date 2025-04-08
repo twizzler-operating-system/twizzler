@@ -154,7 +154,8 @@ impl ReferenceRuntime {
     }
 
     pub fn post_main_hook(&self) {
-        monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimePostMain);
+        monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimePostMain)
+            .unwrap();
     }
 
     pub fn sysinfo(&self) -> SystemInfo {
