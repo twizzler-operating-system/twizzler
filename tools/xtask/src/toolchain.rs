@@ -214,6 +214,40 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         anyhow::bail!("failed to copy twizzler ABI files");
     }
 
+    println!("copying headers");
+    let status = Command::new("cp")
+        .arg("-R")
+        .arg("src/abi/include")
+        .arg("toolchain/src/mlibc/sysdeps/twizzler/include")
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to copy twizzler ABI headers");
+    }
+
+    let current_dir = std::env::current_dir().unwrap();
+    let install_dir = current_dir.join("toolchain/install");
+    let status = Command::new("meson")
+        .arg("setup")
+        .arg(format!("-Dprefix={}", install_dir.display()))
+        .arg("-Dheaders_only=true")
+        .arg("--cross-file=../x86_64-twizzler.txt")
+        .arg("build")
+        .current_dir(current_dir.join("toolchain/src/mlibc"))
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to setup mlibc (headers only)");
+    }
+
+    let status = Command::new("meson")
+        .arg("install")
+        .arg("-C")
+        .arg("build")
+        .current_dir(current_dir.join("toolchain/src/mlibc"))
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to install mlibc headers");
+    }
+
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
     std::env::set_var(
