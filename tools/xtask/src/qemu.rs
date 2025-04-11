@@ -1,6 +1,7 @@
 use std::{
     fs::OpenOptions,
     io::{BufRead, BufReader, Write},
+    net::TcpListener,
     path::Path,
     process::{Command, Stdio},
     str::FromStr,
@@ -98,9 +99,22 @@ impl QemuCommand {
             .arg("nvme,serial=deadbeef,drive=nvme");
 
         self.cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
+
+        let port = match TcpListener::bind("0.0.0.0:0") {
+            Ok(listener) => {
+                let socket_addr = listener.local_addr().unwrap();
+                socket_addr.port()
+            }
+            Err(e) => {
+                panic!("Failed to allocate port on host! {e}");
+            }
+        };
+
+        println!("Allocated port {} for Qemu!", port);
+
         self.cmd
             .arg("-netdev")
-            .arg("user,id=net0,hostfwd=tcp::5556-:5555");
+            .arg(format!("user,id=net0,hostfwd=tcp::{}-:5555", port));
 
         self.cmd
             .arg("--no-reboot") // exit instead of rebooting
