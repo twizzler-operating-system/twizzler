@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::Context;
+use fs_extra::dir::CopyOptions;
 use guess_host_triple::guess_host_triple;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
@@ -289,19 +290,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             anyhow::bail!("failed to compile rust toolchain");
         }
 
-        /*
-            let doc_status = Command::new("./x.py")
-                .arg("doc")
-                .arg("--stage")
-                .arg("0")
-                .args(&keep_args)
-                .current_dir("toolchain/src/rust")
-                .status()?;
-            if !doc_status.success() {
-                anyhow::bail!("failed to document rust libraries");
-            }
-        */
-
         let src_status = Command::new("./x.py")
             .arg("install")
             .arg("src")
@@ -350,6 +338,13 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         println!("Copy: {} -> {}", src, dst);
         std::fs::copy(src, dst)?;
     }
+    let items = ["bin", "include", "lib", "libexec", "share"]
+        .into_iter()
+        .map(|name| format!("toolchain/src/rust/build/host/llvm/{}", name))
+        .collect::<Vec<_>>();
+
+    println!("copying LLVM toolchain...");
+    fs_extra::copy_items(&items, "toolchain/install", &CopyOptions::new())?;
 
     let rust_commit = get_rust_commit()?;
     let abi_version = get_abi_version()?;
@@ -365,6 +360,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         }
     }
 
+    println!("ready!");
     Ok(())
 }
 
