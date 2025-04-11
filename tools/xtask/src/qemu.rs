@@ -1,6 +1,7 @@
 use std::{
     fs::OpenOptions,
     io::{BufRead, BufReader, Write},
+    net::TcpListener,
     path::Path,
     process::{Command, Stdio},
     str::FromStr,
@@ -98,9 +99,34 @@ impl QemuCommand {
             .arg("nvme,serial=deadbeef,drive=nvme");
 
         self.cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
+
+        let port = {
+            let listener = match TcpListener::bind("0.0.0.0:5555") {
+                Ok(l) => l,
+                Err(_) => {
+                    println!(
+                        "Failed to allocate default port 5555 on host, dynamically assigning."
+                    );
+                    match TcpListener::bind("0.0.0.0:0") {
+                        Ok(l) => l,
+                        Err(e) => {
+                            panic!("Port allocation for Qemu failed! {}", e);
+                        }
+                    }
+                }
+            };
+
+            listener
+                .local_addr()
+                .expect("Expected to get local address.")
+                .port()
+        };
+
+        println!("Allocated port {} for Qemu!", port);
+
         self.cmd
             .arg("-netdev")
-            .arg("user,id=net0,hostfwd=tcp::5556-:5555");
+            .arg(format!("user,id=net0,hostfwd=tcp::{}-:5555", port));
 
         self.cmd
             .arg("--no-reboot") // exit instead of rebooting
