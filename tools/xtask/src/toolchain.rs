@@ -330,6 +330,25 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             get_llvm_native_runtime(&target)?,
             get_llvm_native_runtime_install(&target)?,
         )?;
+
+        for name in &["crtbegin", "crtend", "crtbeginS", "crtendS"] {
+            let src = format!("toolchain/src/rust/build/{}/native/crt/{}.o", &target, name);
+            let dst = format!("toolchain/install/lib/clang/20/lib/{}/{}.o", &target, name);
+            std::fs::copy(src, dst)?;
+        }
+        for name in &["crti", "crtn"] {
+            let src = format!(
+                "toolchain/install/lib/rustlib/{}/lib/self-contained/{}.o",
+                &target, name
+            );
+            let dst = format!("toolchain/install/lib/clang/20/lib/{}/{}.o", &target, name);
+            println!("Copy: {} -> {}", src, dst);
+            std::fs::copy(src, dst)?;
+        }
+        let src = format!("toolchain/install/lib/rustlib/{}/lib/libunwind.a", &target);
+        let dst = format!("toolchain/install/lib/clang/20/lib/{}/libunwind.a", &target);
+        println!("Copy: {} -> {}", src, dst);
+        std::fs::copy(src, dst)?;
     }
 
     let rust_commit = get_rust_commit()?;
