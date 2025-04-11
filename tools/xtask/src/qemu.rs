@@ -100,14 +100,26 @@ impl QemuCommand {
 
         self.cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
 
-        let port = match TcpListener::bind("0.0.0.0:0") {
-            Ok(listener) => {
-                let socket_addr = listener.local_addr().unwrap();
-                socket_addr.port()
-            }
-            Err(e) => {
-                panic!("Failed to allocate port on host! {e}");
-            }
+        let port = {
+            let listener = match TcpListener::bind("0.0.0.0:5555") {
+                Ok(l) => l,
+                Err(_) => {
+                    println!(
+                        "Failed to allocate default port 5555 on host, dynamically assigning."
+                    );
+                    match TcpListener::bind("0.0.0.0:0") {
+                        Ok(l) => l,
+                        Err(e) => {
+                            panic!("Port allocation for Qemu failed! {}", e);
+                        }
+                    }
+                }
+            };
+
+            listener
+                .local_addr()
+                .expect("Expected to get local address.")
+                .port()
         };
 
         println!("Allocated port {} for Qemu!", port);
