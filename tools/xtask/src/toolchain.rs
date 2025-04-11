@@ -280,26 +280,24 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 
     std::env::set_var("BOOTSTRAP_SKIP_TARGET_SANITY", "1");
 
-    /*
-        let status = Command::new("./x.py")
-            .arg("install")
-            .args(&keep_args)
-            .current_dir("toolchain/src/rust")
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("failed to compile rust toolchain");
-        }
+    let status = Command::new("./x.py")
+        .arg("install")
+        .args(&keep_args)
+        .current_dir("toolchain/src/rust")
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to compile rust toolchain");
+    }
 
-        let src_status = Command::new("./x.py")
-            .arg("install")
-            .arg("src")
-            .args(keep_args)
-            .current_dir("toolchain/src/rust")
-            .status()?;
-        if !src_status.success() {
-            anyhow::bail!("failed to install rust source");
-        }
-    */
+    let src_status = Command::new("./x.py")
+        .arg("install")
+        .arg("src")
+        .args(keep_args)
+        .current_dir("toolchain/src/rust")
+        .status()?;
+    if !src_status.success() {
+        anyhow::bail!("failed to install rust source");
+    }
 
     for target in &crate::triple::all_possible_platforms() {
         build_crtx("crti", target)?;
