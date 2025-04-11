@@ -279,41 +279,57 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 
     std::env::set_var("BOOTSTRAP_SKIP_TARGET_SANITY", "1");
 
-    let status = Command::new("./x.py")
-        .arg("install")
-        .args(&keep_args)
-        .current_dir("toolchain/src/rust")
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("failed to compile rust toolchain");
-    }
-
     /*
-        let doc_status = Command::new("./x.py")
-            .arg("doc")
-            .arg("--stage")
-            .arg("0")
+        let status = Command::new("./x.py")
+            .arg("install")
             .args(&keep_args)
             .current_dir("toolchain/src/rust")
             .status()?;
-        if !doc_status.success() {
-            anyhow::bail!("failed to document rust libraries");
+        if !status.success() {
+            anyhow::bail!("failed to compile rust toolchain");
+        }
+
+        /*
+            let doc_status = Command::new("./x.py")
+                .arg("doc")
+                .arg("--stage")
+                .arg("0")
+                .args(&keep_args)
+                .current_dir("toolchain/src/rust")
+                .status()?;
+            if !doc_status.success() {
+                anyhow::bail!("failed to document rust libraries");
+            }
+        */
+
+        let src_status = Command::new("./x.py")
+            .arg("install")
+            .arg("src")
+            .args(keep_args)
+            .current_dir("toolchain/src/rust")
+            .status()?;
+        if !src_status.success() {
+            anyhow::bail!("failed to install rust source");
         }
     */
-
-    let src_status = Command::new("./x.py")
-        .arg("install")
-        .arg("src")
-        .args(keep_args)
-        .current_dir("toolchain/src/rust")
-        .status()?;
-    if !src_status.success() {
-        anyhow::bail!("failed to install rust source");
-    }
 
     for target in &crate::triple::all_possible_platforms() {
         build_crtx("crti", target)?;
         build_crtx("crtn", target)?;
+        let target = target.to_string();
+        println!(
+            "Copy: {} -> {}",
+            get_llvm_native_runtime(&target)?.display(),
+            get_llvm_native_runtime_install(&target)?.display()
+        );
+
+        let _ =
+            std::fs::create_dir_all(get_llvm_native_runtime_install(&target)?.parent().unwrap());
+
+        std::fs::copy(
+            get_llvm_native_runtime(&target)?,
+            get_llvm_native_runtime_install(&target)?,
+        )?;
     }
 
     let rust_commit = get_rust_commit()?;
@@ -468,6 +484,28 @@ pub fn get_rust_stage2_std(host_triple: &str, target_triple: &str) -> anyhow::Re
         .join("stage2-std")
         .join(target_triple)
         .join("release");
+    Ok(dir)
+}
+
+pub fn get_llvm_native_runtime(target_triple: &str) -> anyhow::Result<PathBuf> {
+    let curdir = std::env::current_dir().unwrap();
+    let arch = target_triple.split("-").next().unwrap();
+    let archive_name = format!("libclang_rt.builtins-{}.a", arch);
+    let dir = curdir
+        .join("toolchain/src/rust/build")
+        .join(target_triple)
+        .join("native/sanitizers/build/lib/twizzler")
+        .join(archive_name);
+    Ok(dir)
+}
+
+pub fn get_llvm_native_runtime_install(target_triple: &str) -> anyhow::Result<PathBuf> {
+    let curdir = std::env::current_dir().unwrap();
+    let archive_name = "libclang_rt.builtins.a";
+    let dir = curdir
+        .join("toolchain/install/lib/clang/20/lib")
+        .join(target_triple)
+        .join(archive_name);
     Ok(dir)
 }
 
