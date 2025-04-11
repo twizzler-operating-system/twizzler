@@ -10,7 +10,7 @@ use x86::{
     Ring,
 };
 
-use crate::memory::VirtAddr;
+use crate::{memory::VirtAddr, once::Once};
 
 struct GlobalDescriptorTable {
     entries: [u64; 8],
@@ -110,27 +110,25 @@ fn make_tss(stack: *const u128) -> TaskStateSegment {
     tss
 }
 
-lazy_static::lazy_static! {
-    static ref STACK: [u128; STACK_SIZE / 16] = [0; STACK_SIZE / 16];
+static STACK: [u128; STACK_SIZE / 16] = [0; STACK_SIZE / 16];
+static TSS: Once<TaskStateSegment> = Once::new();
+static GDT: Once<GlobalDescriptorTable> = Once::new();
+
+fn get_gdt() -> &'static GlobalDescriptorTable {
+    GDT.call_once(|| GlobalDescriptorTable::new(get_tss()))
 }
 
-lazy_static::lazy_static! {
-    static ref TSS: TaskStateSegment = {
-        make_tss(STACK.as_ptr())
-    };
-}
-
-lazy_static::lazy_static! {
-    static ref GDT: GlobalDescriptorTable = {
-        GlobalDescriptorTable::new(&*TSS)
-    };
+fn get_tss() -> &'static TaskStateSegment {
+    TSS.call_once(|| make_tss(STACK.as_ptr()))
 }
 
 pub fn init() {
     unsafe {
-        GDT.load();
-        x86::segmentation::load_cs(GDT.code);
-        x86::task::load_tr(GDT.tss);
+        get_gdt().load();
+        x86::segmentation::load_cs(get_gdt().code);
+
+        x86::task::load_tr(get_gdt().tss);
+
         x86::segmentation::load_ds(SegmentSelector::new(0, Ring::Ring0));
         x86::segmentation::load_ss(SegmentSelector::new(0, Ring::Ring0));
         x86::segmentation::load_gs(SegmentSelector::new(0, Ring::Ring0));
@@ -141,7 +139,7 @@ pub fn init() {
 
 /// Get the user segment selectors. Returns (user-code-sel, user-data-sel).
 pub(super) fn user_selectors() -> (u16, u16) {
-    let (code, data) = GDT.get_user_selectors();
+    let (code, data) = get_gdt().get_user_selectors();
     (code.bits(), data.bits())
 }
 
