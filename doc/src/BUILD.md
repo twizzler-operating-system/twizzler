@@ -21,7 +21,8 @@ Installing the tools:
   2. Install Rust https://www.rust-lang.org/tools/install
 
 Note that we depend on the system LLVM for some initial bindgen commands. The minimum version for this is 18.
-On ubuntu, this can be selected for building twizzler by env vars: `export LLVM_CONFIG_PATH=/usr/bin/llvm-config-18`.
+On ubuntu, this can be selected for building twizzler by env vars: `export LLVM_CONFIG_PATH=/usr/bin/llvm-config-18`. 
+This step is necessary for an AMD CPU machine and the toolchain will fail to compile without it. 
 
 Building Twizzler is done in several steps:
 
@@ -83,6 +84,12 @@ which will bootup a qemu instance. If you want to run the release mode version, 
 
 ```
 cargo start-qemu --profile release
+```
+
+For the current AMD version, to run the release mode version, you can run
+
+```
+cargo start-qemu -p=release -q='-nographic'
 ```
 
 ## Step 4: Exiting Twizzler
