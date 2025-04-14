@@ -1,0 +1,20 @@
+[binaries]
+c = '/Users/dbittman/src/twisted/twizzler/toolchain/install/bin/clang'
+cpp = '/Users/dbittman/src/twisted/twizzler/toolchain/install/bin/clang++'
+ar = '/Users/dbittman/src/twisted/twizzler/toolchain/install/bin/llvm-ar'
+strip = '/Users/dbittman/src/twisted/twizzler/toolchain/install/bin/llvm-strip'
+
+[built-in options]
+c_args = ['-B/Users/dbittman/src/twisted/twizzler/toolchain/src/rust/build/host/lld/bin',  '-isysroot', '/Users/dbittman/src/twisted/twizzler/toolchain/install/sysroots/aarch64-unknown-twizzler', '-target', 'aarch64-unknown-twizzler']
+c_link_args = ['-B/Users/dbittman/src/twisted/twizzler/toolchain/src/rust/build/host/lld/bin',  '-isysroot', '/Users/dbittman/src/twisted/twizzler/toolchain/install/sysroots/aarch64-unknown-twizzler', '-target', 'aarch64-unknown-twizzler']
+cpp_args = ['-B/Users/dbittman/src/twisted/twizzler/toolchain/src/rust/build/host/lld/bin',  '-isysroot', '/Users/dbittman/src/twisted/twizzler/toolchain/install/sysroots/aarch64-unknown-twizzler', '-target', 'aarch64-unknown-twizzler']
+cpp_link_args = ['-B/Users/dbittman/src/twisted/twizzler/toolchain/src/rust/build/host/lld/bin',  '-isysroot', '/Users/dbittman/src/twisted/twizzler/toolchain/install/sysroots/aarch64-unknown-twizzler', '-target', 'aarch64-unknown-twizzler']
+default_library = 'static'
+
+
+[host_machine]
+system = 'twizzler'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
+

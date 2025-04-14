@@ -1,5 +1,6 @@
 use std::{
-    fs::File,
+    env::current_dir,
+    fs::{remove_dir_all, File},
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
@@ -232,6 +233,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         .arg(format!("-Dprefix={}", install_dir.display()))
         .arg("-Dheaders_only=true")
         .arg("--cross-file=../x86_64-twizzler.txt")
+        .arg("--buildtype=debugoptimized")
         .arg("build")
         .current_dir(current_dir.join("toolchain/src/mlibc"))
         .status()?;
@@ -241,6 +243,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 
     let status = Command::new("meson")
         .arg("install")
+        .arg("-q")
         .arg("-C")
         .arg("build")
         .current_dir(current_dir.join("toolchain/src/mlibc"))
@@ -280,23 +283,25 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 
     std::env::set_var("BOOTSTRAP_SKIP_TARGET_SANITY", "1");
 
-    let status = Command::new("./x.py")
-        .arg("install")
-        .args(&keep_args)
-        .current_dir("toolchain/src/rust")
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("failed to compile rust toolchain");
-    }
+    if !cli.skip_rust {
+        let status = Command::new("./x.py")
+            .arg("install")
+            .args(&keep_args)
+            .current_dir("toolchain/src/rust")
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to compile rust toolchain");
+        }
 
-    let src_status = Command::new("./x.py")
-        .arg("install")
-        .arg("src")
-        .args(keep_args)
-        .current_dir("toolchain/src/rust")
-        .status()?;
-    if !src_status.success() {
-        anyhow::bail!("failed to install rust source");
+        let src_status = Command::new("./x.py")
+            .arg("install")
+            .arg("src")
+            .args(keep_args)
+            .current_dir("toolchain/src/rust")
+            .status()?;
+        if !src_status.success() {
+            anyhow::bail!("failed to install rust source");
+        }
     }
 
     for target in &crate::triple::all_possible_platforms() {
@@ -342,7 +347,59 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         .collect::<Vec<_>>();
 
     println!("copying LLVM toolchain...");
-    fs_extra::copy_items(&items, "toolchain/install", &CopyOptions::new())?;
+    fs_extra::copy_items(
+        &items,
+        "toolchain/install",
+        &CopyOptions::new().overwrite(true),
+    )?;
+
+    for target_triple in all_possible_platforms() {
+        let current_dir = std::env::current_dir().unwrap();
+        let sysroot_dir = current_dir.join(format!(
+            "toolchain/install/sysroots/{}",
+            target_triple.to_string()
+        ));
+        let build_dir = current_dir.join(format!(
+            "toolchain/src/mlibc/build-{}",
+            target_triple.to_string()
+        ));
+        let cross_file = format!("../{}-twizzler.txt", target_triple.arch.to_string());
+
+        let _ = remove_dir_all(&build_dir);
+
+        let status = Command::new("meson")
+            .arg("setup")
+            .arg(format!("-Dprefix={}", sysroot_dir.display()))
+            //   .arg("-Duse_freestnd_hdrs=disabled")
+            .arg(format!("--cross-file={}", cross_file))
+            .arg("--buildtype=debugoptimized")
+            .arg(&build_dir)
+            .current_dir(current_dir.join("toolchain/src/mlibc"))
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to setup mlibc");
+        }
+        let status = Command::new("meson")
+            .arg("compile")
+            .arg("-C")
+            .arg(&build_dir)
+            .current_dir(current_dir.join("toolchain/src/mlibc"))
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to build mlibc");
+        }
+
+        let status = Command::new("meson")
+            .arg("install")
+            .arg("-q")
+            .arg("-C")
+            .arg(&build_dir)
+            .current_dir(current_dir.join("toolchain/src/mlibc"))
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to install mlibc");
+        }
+    }
 
     let rust_commit = get_rust_commit()?;
     let abi_version = get_abi_version()?;
@@ -382,7 +439,7 @@ pub fn set_static() {
 
 pub fn set_cc() {
     // When compiling crates that compile C code (e.g. alloca), we need to use our clang.
-    let clang_path = Path::new("toolchain/src/rust/build/host/llvm/bin/clang")
+    let clang_path = Path::new("toolchain/install/bin/clang")
         .canonicalize()
         .unwrap();
     std::env::set_var("CC", clang_path);
