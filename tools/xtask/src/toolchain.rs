@@ -1,5 +1,4 @@
 use std::{
-    env::current_dir,
     fs::{remove_dir_all, File},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -226,30 +225,42 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         anyhow::bail!("failed to copy twizzler ABI headers");
     }
 
-    let current_dir = std::env::current_dir().unwrap();
-    let install_dir = current_dir.join("toolchain/install");
-    let status = Command::new("meson")
-        .arg("setup")
-        .arg(format!("-Dprefix={}", install_dir.display()))
-        .arg("-Dheaders_only=true")
-        .arg("--cross-file=../x86_64-twizzler.txt")
-        .arg("--buildtype=debugoptimized")
-        .arg("build")
-        .current_dir(current_dir.join("toolchain/src/mlibc"))
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("failed to setup mlibc (headers only)");
-    }
+    for target_triple in all_possible_platforms() {
+        let current_dir = std::env::current_dir().unwrap();
+        let sysroot_dir = current_dir.join(format!(
+            "toolchain/install/sysroots/{}",
+            target_triple.to_string()
+        ));
+        let build_dir = current_dir.join(format!(
+            "toolchain/src/mlibc/build-{}",
+            target_triple.to_string()
+        ));
+        let cross_file = format!("../{}-twizzler.txt", target_triple.arch.to_string());
 
-    let status = Command::new("meson")
-        .arg("install")
-        .arg("-q")
-        .arg("-C")
-        .arg("build")
-        .current_dir(current_dir.join("toolchain/src/mlibc"))
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("failed to install mlibc headers");
+        let _ = remove_dir_all(&build_dir);
+        let status = Command::new("meson")
+            .arg("setup")
+            .arg(format!("-Dprefix={}", sysroot_dir.display()))
+            .arg("-Dheaders_only=true")
+            .arg(format!("--cross-file={}", cross_file))
+            .arg("--buildtype=debugoptimized")
+            .arg(build_dir)
+            .current_dir(current_dir.join("toolchain/src/mlibc"))
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to setup mlibc (headers only)");
+        }
+
+        let status = Command::new("meson")
+            .arg("install")
+            .arg("-q")
+            .arg("-C")
+            .arg("build")
+            .current_dir(current_dir.join("toolchain/src/mlibc"))
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to install mlibc headers");
+        }
     }
 
     let path = std::env::var("PATH").unwrap();
@@ -353,6 +364,10 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         &CopyOptions::new().overwrite(true),
     )?;
 
+    let usr_link = "toolchain/install/usr";
+    let _ = std::fs::remove_file(usr_link);
+    std::os::unix::fs::symlink(".", usr_link)?;
+
     for target_triple in all_possible_platforms() {
         let current_dir = std::env::current_dir().unwrap();
         let sysroot_dir = current_dir.join(format!(
@@ -399,6 +414,10 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         if !status.success() {
             anyhow::bail!("failed to install mlibc");
         }
+
+        let usr_link = sysroot_dir.join("usr");
+        let _ = std::fs::remove_file(&usr_link);
+        std::os::unix::fs::symlink(".", usr_link)?;
     }
 
     let rust_commit = get_rust_commit()?;
@@ -419,13 +438,17 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn set_dynamic() {
+pub fn set_dynamic(target: &Triple) {
     // This is a bit of a cursed linker line, but it's needed to work around some limitations in
     // rust's linkage support.
-    std::env::set_var(
-        "RUSTFLAGS",
-        "-C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols",
-    );
+    let sysroot_path = Path::new(&format!(
+        "toolchain/install/sysroots/{}/lib",
+        target.to_string()
+    ))
+    .canonicalize()
+    .unwrap();
+    let args = format!("-C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {}", sysroot_path.display(), sysroot_path.display());
+    std::env::set_var("RUSTFLAGS", args);
     std::env::set_var("CARGO_TARGET_DIR", "target/dynamic");
 }
 
@@ -437,26 +460,43 @@ pub fn set_static() {
     std::env::set_var("CARGO_TARGET_DIR", "target/static");
 }
 
-pub fn set_cc() {
+pub fn set_cc(target: &Triple) {
     // When compiling crates that compile C code (e.g. alloca), we need to use our clang.
     let clang_path = Path::new("toolchain/install/bin/clang")
         .canonicalize()
         .unwrap();
-    std::env::set_var("CC", clang_path);
+    std::env::set_var("CC", &clang_path);
+    std::env::set_var("LD", &clang_path);
+    std::env::set_var("CXX", &clang_path);
 
     // We don't have any real system-include files, but we can provide these extremely simple ones.
-    let inc_path = Path::new("toolchain/src/bootstrap-include")
-        .canonicalize()
-        .unwrap();
+    let sysroot_path = Path::new(&format!(
+        "toolchain/install/sysroots/{}",
+        target.to_string()
+    ))
+    .canonicalize()
+    .unwrap();
     // We don't yet support stack protector. Also, don't pull in standard lib includes, as those may
     // go to the system includes.
-    let cflags = format!("-fno-stack-protector -nostdlibinc -I{}", inc_path.display());
-    std::env::set_var("CFLAGS", cflags);
+    let cflags = format!(
+        "-fno-stack-protector -isysroot {} -target {} --sysroot {}",
+        sysroot_path.display(),
+        target.to_string(),
+        sysroot_path.display(),
+    );
+    std::env::set_var("CFLAGS", &cflags);
+    std::env::set_var("LDFLAGS", &cflags);
+    std::env::set_var("CXXFLAGS", &cflags);
 }
 
 pub fn clear_cc() {
     std::env::remove_var("CC");
+    std::env::remove_var("CXX");
+    std::env::remove_var("LD");
+    std::env::remove_var("CC");
+    std::env::remove_var("CXXFLAGS");
     std::env::remove_var("CFLAGS");
+    std::env::remove_var("LDFLAGS");
 }
 
 pub fn clear_rustflags() {

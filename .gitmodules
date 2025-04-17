@@ -15,3 +15,6 @@
 [submodule "src/srv/pager-srv/object-store"]
 	path = src/srv/pager-srv/object-store
 	url = git@github.com:twizzler-operating-system/object-store.git
+[submodule "toolchain/src/mlibc"]
+	path = toolchain/src/mlibc
+	url = git@github.com:twizzler-operating-system/mlibc.git
