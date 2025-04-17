@@ -2,6 +2,10 @@
 
 .PHONY: all bootstrap build run clean
 
+
+# Set environment variables at the top level
+export LLVM_CONFIG_PATH := /usr/bin/llvm-config-18
+
 all: bootstrap build run
 
 init:
@@ -11,7 +15,7 @@ init:
 
 bootstrap:
 	@echo "Bootstrapping project ..."
-	cargo boostrap
+	cargo bootstrap
 
 build:
 	@echo "Building all components ..."
@@ -19,6 +23,7 @@ build:
 
 run:
 	@echo "Starting QEMU ..."
+	cargo build-all
 	cargo start-qemu -p=release -q='-nographic'
 
 help:
