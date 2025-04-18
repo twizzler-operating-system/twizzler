@@ -7,7 +7,7 @@
 #![feature(linkage)]
 #![feature(maybe_uninit_as_bytes)]
 
-use core::ffi::CStr;
+use core::ffi::{c_char, CStr};
 use std::{
     cell::UnsafeCell,
     fmt::Debug,
@@ -30,7 +30,7 @@ pub struct SecGateInfo<F> {
     /// check that is has the same size as usize (sorry cheri, we'll fix this another time)
     pub imp: F,
     /// The name of this secure gate. This must be a pointer to a null-terminated C string.
-    name: *const i8,
+    name: *const c_char,
 }
 
 impl<F> core::fmt::Debug for SecGateInfo<F> {

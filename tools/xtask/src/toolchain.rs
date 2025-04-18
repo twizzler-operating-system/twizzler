@@ -234,13 +234,9 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         let build_dir_name = format!("build-{}", target_triple.to_string());
         let src_dir = current_dir.join("toolchain/src/mlibc");
         let build_dir = src_dir.join(&build_dir_name);
-        let cross_file = format!("../{}-twizzler.txt", target_triple.arch.to_string());
-        let cross_file_path = format!(
-            "toolchain/src/{}-twizzler.txt",
-            target_triple.arch.to_string()
-        );
+        let cross_file = format!("{}/meson-cross-twizzler.txt", sysroot_dir.display());
 
-        let mut cf = File::create(cross_file_path)?;
+        let mut cf = File::create(&cross_file)?;
         writeln!(&mut cf, "[binaries]")?;
         for tool in [
             ("c", "clang"),
@@ -279,7 +275,8 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             .arg("setup")
             .arg(format!("-Dprefix={}", sysroot_dir.display()))
             .arg("-Dheaders_only=true")
-            .arg(format!("--cross-file={}", cross_file))
+            .arg("-Ddefault_library=static")
+            .arg(format!("--cross-file={}", &cross_file))
             .arg("--buildtype=debugoptimized")
             .arg(&build_dir)
             .current_dir(current_dir.join("toolchain/src/mlibc"))
@@ -414,14 +411,14 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         let build_dir_name = format!("build-{}", target_triple.to_string());
         let src_dir = current_dir.join("toolchain/src/mlibc");
         let build_dir = src_dir.join(&build_dir_name);
-        let cross_file = format!("../{}-twizzler.txt", target_triple.arch.to_string());
+        let cross_file = format!("{}/meson-cross-twizzler.txt", sysroot_dir.display());
 
         let _ = remove_dir_all(&build_dir);
 
         let status = Command::new("meson")
             .arg("setup")
             .arg(format!("-Dprefix={}", sysroot_dir.display()))
-            //   .arg("-Duse_freestnd_hdrs=disabled")
+            .arg("-Ddefault_library=static")
             .arg(format!("--cross-file={}", cross_file))
             .arg("--buildtype=debugoptimized")
             .arg(&build_dir_name)
