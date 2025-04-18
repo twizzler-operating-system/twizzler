@@ -231,10 +231,9 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             "toolchain/install/sysroots/{}",
             target_triple.to_string()
         ));
-        let build_dir = current_dir.join(format!(
-            "toolchain/src/mlibc/build-{}",
-            target_triple.to_string()
-        ));
+        let build_dir_name = format!("build-{}", target_triple.to_string());
+        let src_dir = current_dir.join("toolchain/src/mlibc");
+        let build_dir = src_dir.join(&build_dir_name);
         let cross_file = format!("../{}-twizzler.txt", target_triple.arch.to_string());
 
         let _ = remove_dir_all(&build_dir);
@@ -244,7 +243,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             .arg("-Dheaders_only=true")
             .arg(format!("--cross-file={}", cross_file))
             .arg("--buildtype=debugoptimized")
-            .arg(build_dir)
+            .arg(&build_dir)
             .current_dir(current_dir.join("toolchain/src/mlibc"))
             .status()?;
         if !status.success() {
@@ -255,7 +254,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             .arg("install")
             .arg("-q")
             .arg("-C")
-            .arg("build")
+            .arg(&build_dir)
             .current_dir(current_dir.join("toolchain/src/mlibc"))
             .status()?;
         if !status.success() {
@@ -374,10 +373,9 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             "toolchain/install/sysroots/{}",
             target_triple.to_string()
         ));
-        let build_dir = current_dir.join(format!(
-            "toolchain/src/mlibc/build-{}",
-            target_triple.to_string()
-        ));
+        let build_dir_name = format!("build-{}", target_triple.to_string());
+        let src_dir = current_dir.join("toolchain/src/mlibc");
+        let build_dir = src_dir.join(&build_dir_name);
         let cross_file = format!("../{}-twizzler.txt", target_triple.arch.to_string());
 
         let _ = remove_dir_all(&build_dir);
@@ -388,7 +386,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             //   .arg("-Duse_freestnd_hdrs=disabled")
             .arg(format!("--cross-file={}", cross_file))
             .arg("--buildtype=debugoptimized")
-            .arg(&build_dir)
+            .arg(&build_dir_name)
             .current_dir(current_dir.join("toolchain/src/mlibc"))
             .status()?;
         if !status.success() {
@@ -397,7 +395,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         let status = Command::new("meson")
             .arg("compile")
             .arg("-C")
-            .arg(&build_dir)
+            .arg(&build_dir_name)
             .current_dir(current_dir.join("toolchain/src/mlibc"))
             .status()?;
         if !status.success() {
@@ -408,7 +406,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             .arg("install")
             .arg("-q")
             .arg("-C")
-            .arg(&build_dir)
+            .arg(&build_dir_name)
             .current_dir(current_dir.join("toolchain/src/mlibc"))
             .status()?;
         if !status.success() {
