@@ -236,6 +236,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         let build_dir = src_dir.join(&build_dir_name);
         let cross_file = format!("{}/meson-cross-twizzler.txt", sysroot_dir.display());
 
+        std::fs::create_dir_all(&sysroot_dir)?;
         let mut cf = File::create(&cross_file)?;
         writeln!(&mut cf, "[binaries]")?;
         for tool in [
