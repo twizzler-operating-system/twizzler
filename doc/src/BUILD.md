@@ -17,8 +17,10 @@ To run qemu through the build system, you'll need qemu installed.
 ## Overview
 
 Installing the tools:
-  1. sudo apt install build-essential python cmake ninja-build llvm-18
+  1. sudo apt install build-essential python3 python3-pip cmake ninja-build llvm-18
   2. Install Rust https://www.rust-lang.org/tools/install
+  3. Install meson (needed to build libc): pip3 install meson
+     note: you'll need the pip bin directory in your path.
 
 Note that you'll need mke2fs (typically found in e2fsprogs). Most Linux installations should already have this
 command available. On MacOS, with brew, it can be installed with `brew install e2fsprogs`.
