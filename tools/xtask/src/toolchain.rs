@@ -235,6 +235,44 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         let src_dir = current_dir.join("toolchain/src/mlibc");
         let build_dir = src_dir.join(&build_dir_name);
         let cross_file = format!("../{}-twizzler.txt", target_triple.arch.to_string());
+        let cross_file_path = format!(
+            "toolchain/src/{}-twizzler.txt",
+            target_triple.arch.to_string()
+        );
+
+        let mut cf = File::create(cross_file_path)?;
+        writeln!(&mut cf, "[binaries]")?;
+        for tool in [
+            ("c", "clang"),
+            ("cpp", "clang++"),
+            ("ar", "llvm-ar"),
+            ("strip", "llvm-strip"),
+        ] {
+            let path = current_dir.join("toolchain/install/bin");
+            let path = path.join(tool.1);
+            writeln!(&mut cf, "{} = '{}'", tool.0, path.display())?;
+        }
+
+        writeln!(&mut cf, "[built-in options]")?;
+        let lld_path = current_dir.join("toolchain/src/rust/build/host/lld/bin");
+        for tool in ["c_args", "c_link_args", "cpp_args", "cpp_link_args"] {
+            writeln!(
+                &mut cf,
+                "{} = ['-B{}', '-isysroot', '{}', '--sysroot', '{}', '-target', '{}']",
+                tool,
+                lld_path.display(),
+                sysroot_dir.display(),
+                sysroot_dir.display(),
+                target_triple.to_string()
+            )?;
+        }
+
+        writeln!(&mut cf, "[host_machine]")?;
+        writeln!(&mut cf, "system = 'twizzler'")?;
+        writeln!(&mut cf, "cpu_family = '{}'", target_triple.arch.to_string())?;
+        writeln!(&mut cf, "cpu = '{}'", target_triple.arch.to_string())?;
+        writeln!(&mut cf, "endian = 'little'")?;
+        drop(cf);
 
         let _ = remove_dir_all(&build_dir);
         let status = Command::new("meson")
