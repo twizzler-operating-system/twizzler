@@ -22,6 +22,8 @@ Installing the tools:
 
 Note that we depend on the system LLVM for some initial bindgen commands. The minimum version for this is 18.
 On ubuntu, this can be selected for building twizzler by env vars: `export LLVM_CONFIG_PATH=/usr/bin/llvm-config-18`.
+- Note that its possible for the build system to work without this export, but if something is broken and you havent done this step, its best to start here.
+
 
 Building Twizzler is done in several steps:
 
@@ -83,6 +85,11 @@ which will bootup a qemu instance. If you want to run the release mode version, 
 
 ```
 cargo start-qemu --profile release
+```
+
+you can specify `debug` or `release` builds like so, and pass in qemu flags using the following syntax.
+```
+cargo start-qemu -p=release -q='-nographic'
 ```
 
 ## Step 4: Exiting Twizzler

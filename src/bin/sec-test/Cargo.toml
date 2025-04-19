@@ -1,0 +1,15 @@
+[package]
+name = "sec-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+twizzler-abi = {path = "../../lib/twizzler-abi"}
+twizzler-security = {path = "../../lib/twizzler-security"}
+
+twizzler = { path = "../../lib/twizzler" }
+twizzler-rt-abi = "0.99"
+clap = "4.5.28"
+getrandom = "0.2"
+
+
