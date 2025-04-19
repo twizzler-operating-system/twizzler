@@ -87,8 +87,7 @@ which will bootup a qemu instance. If you want to run the release mode version, 
 cargo start-qemu --profile release
 ```
 
-For the current AMD version, to run the release mode version, you can run
-
+you can specify `debug` or `release` builds like so, and pass in qemu flags using the following syntax.
 ```
 cargo start-qemu -p=release -q='-nographic'
 ```
