@@ -21,8 +21,9 @@ Installing the tools:
   2. Install Rust https://www.rust-lang.org/tools/install
 
 Note that we depend on the system LLVM for some initial bindgen commands. The minimum version for this is 18.
-On ubuntu, this can be selected for building twizzler by env vars: `export LLVM_CONFIG_PATH=/usr/bin/llvm-config-18`. 
-This step is necessary for an AMD CPU machine and the toolchain will fail to compile without it. 
+On ubuntu, this can be selected for building twizzler by env vars: `export LLVM_CONFIG_PATH=/usr/bin/llvm-config-18`.
+- Note that its possible for the build system to work without this export, but if something is broken and you havent done this step, its best to start here.
+
 
 Building Twizzler is done in several steps:
 
