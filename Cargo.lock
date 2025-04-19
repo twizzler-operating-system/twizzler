@@ -6668,6 +6668,8 @@ dependencies = [
  "bitflags 2.9.0",
  "blake3",
  "ed25519-dalek",
+ "p256",
+ "sha2",
  "twizzler",
  "twizzler-abi",
  "twizzler-rt-abi",
