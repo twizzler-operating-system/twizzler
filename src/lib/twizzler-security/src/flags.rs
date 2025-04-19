@@ -3,14 +3,16 @@ use bitflags::bitflags;
 use crate::CapError;
 
 #[derive(PartialEq, Copy, Clone, Debug, Eq, Ord, PartialOrd)]
-pub struct CapFlags(u8);
+pub struct CapFlags(u16);
 
 #[rustfmt::skip] // so the bits are all nice and neat
 bitflags! {
-    impl CapFlags: u8 {
+    impl CapFlags: u16 {
         //NOTE: flags here indicate which algorithm was used for signature generation.
-        const Ed25519=  0b00000001;
-        const Blake3 =   0b00000010;
+        const Ed25519=  1;
+        const Blake3 =   2;
+        const Sha256 = 4;
+        const Ecdsa = 8;
         // non removable tag here
     }
 }
@@ -18,41 +20,67 @@ bitflags! {
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum SigningScheme {
     Ed25519,
+    //TODO: implement this
+    Ecdsa,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum HashingAlgo {
     Blake3,
+    //TODO: implement this
+    Sha256,
 }
 
 impl CapFlags {
     pub(crate) fn parse(&self) -> Result<(HashingAlgo, SigningScheme), CapError> {
-        let mut hashing_algo = None;
-        let mut signing_scheme = None;
+        let hashing_algo: HashingAlgo = self.try_into()?;
+        let signing_scheme: SigningScheme = self.try_into()?;
 
-        for flag in self.iter() {
-            match flag {
-                CapFlags::Ed25519 => {
-                    if signing_scheme.is_some() {
-                        return Err(CapError::InvalidFlags);
-                    }
-                    signing_scheme = Some(SigningScheme::Ed25519)
+        Ok((hashing_algo, signing_scheme))
+    }
+}
+
+impl TryFrom<&CapFlags> for HashingAlgo {
+    type Error = CapError;
+    fn try_from(value: CapFlags) -> Result<Self, Self::Error> {
+        let mut result = None;
+
+        for flag in value.iter() {
+            if let Some(algo) = match flag {
+                CapFlags::Sha256 => Some(HashingAlgo::Sha256),
+                CapFlags::Blake3 => Some(HashingAlgo::Blake3),
+                _ => None,
+            } {
+                if result.is_some() {
+                    return Err(CapError::InvalidFlags);
                 }
-                CapFlags::Blake3 => {
-                    if hashing_algo.is_some() {
-                        return Err(CapError::InvalidFlags);
-                    }
-                    hashing_algo = Some(HashingAlgo::Blake3)
-                }
-                _ => {} // not a fan of this but have to otherwise it bugs you
-            };
+
+                result = Some(algo);
+            }
         }
 
-        // sanity check
-        if hashing_algo.is_none() || signing_scheme.is_none() {
-            return Err(CapError::InvalidFlags);
+        result.ok_or(CapError::InvalidFlags)
+    }
+}
+impl TryFrom<&CapFlags> for SigningScheme {
+    type Error = CapError;
+    fn try_from(value: CapFlags) -> Result<Self, Self::Error> {
+        let mut result = None;
+
+        for flag in value.iter() {
+            if let Some(algo) = match flag {
+                CapFlags::Ed25519 => Some(SigningScheme::Ed25519),
+                CapFlags::Ecdsa => Some(SigningScheme::Ecdsa),
+                _ => None,
+            } {
+                if result.is_some() {
+                    return Err(CapError::InvalidFlags);
+                }
+
+                result = Some(algo);
+            }
         }
 
-        Ok((hashing_algo.unwrap(), signing_scheme.unwrap()))
+        result.ok_or(CapError::InvalidFlags)
     }
 }

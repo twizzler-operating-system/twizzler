@@ -57,7 +57,7 @@ pub struct Cap {
     sig: Signature,
 }
 
-const CAP_SERIALIZED_LEN: usize = 77;
+const CAP_SERIALIZED_LEN: usize = 78;
 
 impl Cap {
     /// creating a new capability, revoc specified in expiration data in ns from unix epoch
@@ -153,11 +153,11 @@ impl Cap {
         hash_arr[0..16].copy_from_slice(&accessor.raw().to_le_bytes());
         hash_arr[16..32].copy_from_slice(&target.raw().to_le_bytes());
         hash_arr[32..36].copy_from_slice(&prots.bits().to_le_bytes());
-        hash_arr[36] = flags.bits();
-        hash_arr[37..53].copy_from_slice(&revocation.to_bytes());
-        hash_arr[53..61].copy_from_slice(&gates.offset.to_le_bytes());
-        hash_arr[61..69].copy_from_slice(&gates.length.to_le_bytes());
-        hash_arr[69..77].copy_from_slice(&gates.align.to_le_bytes());
+        hash_arr[36..37] = flags.bits().to_le_bytes();
+        hash_arr[38..54].copy_from_slice(&revocation.to_bytes());
+        hash_arr[54..62].copy_from_slice(&gates.offset.to_le_bytes());
+        hash_arr[62..70].copy_from_slice(&gates.length.to_le_bytes());
+        hash_arr[70..78].copy_from_slice(&gates.align.to_le_bytes());
         hash_arr
     }
 }
