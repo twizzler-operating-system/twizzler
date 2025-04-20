@@ -34,7 +34,8 @@ impl From<EdSignature> for Signature {
 impl From<EcdsaSignature> for Signature {
     fn from(value: EcdsaSignature) -> Self {
         let mut buf = [0_u8; MAX_SIG_SIZE];
-        let slice = value.to_bytes().as_slice();
+        let binding = value.to_bytes();
+        let slice = binding.as_slice();
         buf[0..slice.len()].copy_from_slice(slice);
 
         Self {

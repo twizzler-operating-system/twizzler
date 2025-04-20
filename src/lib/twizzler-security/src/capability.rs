@@ -76,9 +76,7 @@ impl Cap {
 
         let hash = blake3::hash(&hash_arr);
 
-        let sig = target_priv_key
-            .sign(hash.as_bytes())
-            .map_err(|_| SecError::InvalidPrivateKey)?;
+        let sig = target_priv_key.sign(hash.as_bytes())?;
 
         Ok(Cap {
             accessor,

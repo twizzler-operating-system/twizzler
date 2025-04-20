@@ -45,7 +45,9 @@ impl SigningKey {
                 // instead of hardcoding in a key length?
                 let key =
                     EcdsaSigningKey::from_slice(slice).map_err(|_| SecError::InvalidSigningKey)?;
-                let bytes = key.to_bytes().as_slice();
+
+                let binding = key.to_bytes();
+                let bytes = &binding.as_slice();
 
                 let mut buf = [0_u8; MAX_KEY_SIZE];
 
@@ -101,6 +103,7 @@ impl TryFrom<&SigningKey> for EcdsaSigningKey {
             return Err(SecError::InvalidScheme);
         }
 
-        Ok(EcdsaSigningKey::from_slice(value.as_bytes()).map_err(|_| SecError::InvalidSigningKey))
+        Ok(EcdsaSigningKey::from_slice(value.as_bytes())
+            .map_err(|_| SecError::InvalidSigningKey)?)
     }
 }

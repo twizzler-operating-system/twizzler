@@ -19,9 +19,7 @@ impl VerifyingKey {
     pub fn new(scheme: SigningScheme, target_private_key: SigningKey) -> Result<Self, SecError> {
         match scheme {
             SigningScheme::Ed25519 => {
-                let signing_key: EdSigningKey = (&target_private_key)
-                    .try_into()
-                    .map_err(|_e| SecError::InvalidPrivateKey)?;
+                let signing_key: EdSigningKey = (&target_private_key).try_into()?;
                 let vkey = signing_key.verifying_key();
                 let mut buff = [0; MAX_KEY_SIZE];
                 buff[0..PUBLIC_KEY_LENGTH].copy_from_slice(vkey.as_bytes());
@@ -41,7 +39,7 @@ impl VerifyingKey {
         match scheme {
             SigningScheme::Ed25519 => {
                 if slice.len() != PUBLIC_KEY_LENGTH {
-                    return Err(SecError::InvalidKeyLength);
+                    return Err(SecError::InvalidVerifyKey);
                 }
 
                 let mut buf = [0_u8; MAX_KEY_SIZE];
