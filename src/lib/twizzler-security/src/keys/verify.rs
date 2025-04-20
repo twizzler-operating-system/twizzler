@@ -31,6 +31,9 @@ impl VerifyingKey {
                     scheme,
                 })
             }
+            SigningScheme::Ecdsa => {
+                unimplemented!("Workout how ecdsa verifying key is formed")
+            }
         }
     }
 
