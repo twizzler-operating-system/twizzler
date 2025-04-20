@@ -105,20 +105,19 @@ impl Cap {
 
         let hash_algo: HashingAlgo = self.flags.try_into()?;
 
-        let hash = match hash_algo {
+        match hash_algo {
             HashingAlgo::Blake3 => {
-                let bind = blake3::hash(&hash_arr).as_bytes();
-                bind.as_slice()
+                let bind = blake3::hash(&hash_arr);
+                let bind = bind.as_bytes();
+                verifying_key.verify(bind.as_slice(), &self.sig)
             }
             HashingAlgo::Sha256 => {
                 let mut hasher = sha2::Sha256::new();
                 hasher.update(&hash_arr);
                 let result = hasher.finalize();
-                result.as_slice()
+                verifying_key.verify(result.as_slice(), &self.sig)
             }
-        };
-
-        verifying_key.verify(hash, &self.sig)
+        }
     }
 
     /// pass in proposed gates values, verifies that they fall within the range
