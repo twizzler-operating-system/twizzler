@@ -43,7 +43,8 @@ impl SigningKey {
                 // the crate doesnt expose a const to verify key length,
                 // next best thing is to just ensure that key creation works
                 // instead of hardcoding in a key length?
-                let key = EcdsaSigningKey::from_slice(slice).map_err(KeyError::InvalidKeyLength)?;
+                let key =
+                    EcdsaSigningKey::from_slice(slice).map_err(|_| KeyError::InvalidKeyLength)?;
                 let bytes = key.to_bytes().as_slice();
 
                 let mut buf = [0_u8; MAX_KEY_SIZE];
@@ -71,9 +72,7 @@ impl SigningKey {
             }
             SigningScheme::Ecdsa => {
                 let mut signing_key: EcdsaSigningKey = self.try_into()?;
-                // let key = EcdsaSigningKey::from_slice(self.as_bytes())
-                //     .map_err(KeyError::InvalidKeyLength)?;
-                let sig: EcdsaSignature = signing_key.sign(msg);
+                Ok(signing_key.sign(msg).into())
             }
         }
     }
@@ -87,7 +86,10 @@ impl TryFrom<&SigningKey> for EdSigningKey {
             return Err(KeyError::InvalidScheme);
         }
 
-        Ok(EdSigningKey::from_bytes(value.as_bytes()))
+        let mut buf = [0_u8; SIGNATURE_LENGTH];
+        buf.copy_from_slice(value.as_bytes());
+
+        Ok(EdSigningKey::from_bytes(&buf))
     }
 }
 
