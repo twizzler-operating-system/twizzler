@@ -1,4 +1,4 @@
-use crate::{CapError, SigningScheme};
+use crate::SigningScheme;
 
 mod sig;
 mod sign;

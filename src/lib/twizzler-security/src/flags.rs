@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-use crate::CapError;
+use crate::SecError;
 
 #[derive(PartialEq, Copy, Clone, Debug, Eq, Ord, PartialOrd)]
 pub struct CapFlags(u16);
@@ -32,7 +32,7 @@ pub enum HashingAlgo {
 }
 
 impl CapFlags {
-    pub(crate) fn parse(&self) -> Result<(HashingAlgo, SigningScheme), CapError> {
+    pub(crate) fn parse(&self) -> Result<(HashingAlgo, SigningScheme), SecError> {
         let hashing_algo: HashingAlgo = self.try_into()?;
         let signing_scheme: SigningScheme = self.try_into()?;
 
@@ -41,7 +41,7 @@ impl CapFlags {
 }
 
 impl TryFrom<&CapFlags> for HashingAlgo {
-    type Error = CapError;
+    type Error = SecError;
     fn try_from(value: &CapFlags) -> Result<Self, Self::Error> {
         let mut result = None;
 
@@ -52,18 +52,18 @@ impl TryFrom<&CapFlags> for HashingAlgo {
                 _ => None,
             } {
                 if result.is_some() {
-                    return Err(CapError::InvalidFlags);
+                    return Err(SecError::InvalidFlags);
                 }
 
                 result = Some(algo);
             }
         }
 
-        result.ok_or(CapError::InvalidFlags)
+        result.ok_or(SecError::InvalidFlags)
     }
 }
 impl TryFrom<&CapFlags> for SigningScheme {
-    type Error = CapError;
+    type Error = SecError;
     fn try_from(value: &CapFlags) -> Result<Self, Self::Error> {
         let mut result = None;
 
@@ -74,13 +74,13 @@ impl TryFrom<&CapFlags> for SigningScheme {
                 _ => None,
             } {
                 if result.is_some() {
-                    return Err(CapError::InvalidFlags);
+                    return Err(SecError::InvalidFlags);
                 }
 
                 result = Some(algo);
             }
         }
 
-        result.ok_or(CapError::InvalidFlags)
+        result.ok_or(SecError::InvalidFlags)
     }
 }

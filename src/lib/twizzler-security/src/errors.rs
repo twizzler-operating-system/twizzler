@@ -10,5 +10,5 @@ pub enum SecError {
     InvalidSignature,
 
     OutsideBounds,
-    Unailgned
+    Unaligned,
 }

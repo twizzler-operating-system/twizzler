@@ -60,7 +60,7 @@ impl TryFrom<&Signature> for EcdsaSignature {
     type Error = SecError;
     fn try_from(value: &Signature) -> Result<Self, Self::Error> {
         if value.scheme != SigningScheme::Ecdsa {
-            return Err(KeyError::InvalidScheme);
+            return Err(SecError::InvalidScheme);
         }
 
         Ok(EcdsaSignature::from_slice(value.as_bytes()).map_err(|_| SecError::InvalidSignature)?)

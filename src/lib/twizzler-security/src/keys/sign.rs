@@ -27,7 +27,7 @@ impl SigningKey {
         match scheme {
             SigningScheme::Ed25519 => {
                 if slice.len() != SECRET_KEY_LENGTH {
-                    return Err(SecError::InvalidKeyLength);
+                    return Err(SecError::InvalidPrivateKey);
                 }
 
                 let mut buf = [0_u8; MAX_KEY_SIZE];
@@ -44,7 +44,7 @@ impl SigningKey {
                 // next best thing is to just ensure that key creation works
                 // instead of hardcoding in a key length?
                 let key =
-                    EcdsaSigningKey::from_slice(slice).map_err(|_| SecError::InvalidKeyLength)?;
+                    EcdsaSigningKey::from_slice(slice).map_err(|_| SecError::InvalidPrivateKey)?;
                 let bytes = key.to_bytes().as_slice();
 
                 let mut buf = [0_u8; MAX_KEY_SIZE];
