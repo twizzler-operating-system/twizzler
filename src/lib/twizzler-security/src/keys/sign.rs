@@ -1,10 +1,8 @@
-use core::mem::uninitialized;
-
-//TODO: ideally this stuff would take place inside the kernel.
 use ed25519_dalek::{
     ed25519::signature::SignerMut, SecretKey, SigningKey as EdSigningKey, SECRET_KEY_LENGTH,
     SIGNATURE_LENGTH,
 };
+use p256::ecdsa::SigningKey as EcdsaSigningKey;
 
 use super::{KeyError, Signature, VerifyingKey, MAX_KEY_SIZE};
 use crate::{CapError, SigningScheme};
@@ -42,7 +40,21 @@ impl SigningKey {
                 })
             }
             SigningScheme::Ecdsa => {
-                unimplemented!("Workout how ecdsa signing key is built up")
+                // the crate doesnt expose a const to verify key length,
+                // next best thing is to just ensure that key creation works
+                // instead of hardcoding in a key length?
+                let key = EcdsaSigningKey::from_slice(slice).map_err(KeyError::InvalidKeyLength)?;
+                let bytes = key.to_bytes().as_slice();
+
+                let mut buf = [0_u8; MAX_KEY_SIZE];
+
+                buf[0..bytes.len()].copy_from_slice(bytes);
+
+                Ok(Self {
+                    key: buf,
+                    len: bytes.len(),
+                    scheme: SigningScheme::Ecdsa,
+                })
             }
         }
     }
@@ -54,12 +66,14 @@ impl SigningKey {
     pub fn sign(&self, msg: &[u8]) -> Result<Signature, KeyError> {
         match self.scheme {
             SigningScheme::Ed25519 => {
-                let buf = [0_u8; SECRET_KEY_LENGTH];
                 let mut signing_key: EdSigningKey = self.try_into()?;
                 Ok(signing_key.sign(msg).into())
             }
             SigningScheme::Ecdsa => {
-                unimplemented!("Workout how ecdsa signature is formed")
+                let mut signing_key: EcdsaSigningKey = self.try_into()?;
+                // let key = EcdsaSigningKey::from_slice(self.as_bytes())
+                //     .map_err(KeyError::InvalidKeyLength)?;
+                let sig = signing_key.sign(msg);
             }
         }
     }
@@ -73,8 +87,17 @@ impl TryFrom<&SigningKey> for EdSigningKey {
             return Err(KeyError::InvalidScheme);
         }
 
-        let mut buf = [0_u8; SECRET_KEY_LENGTH];
-        buf.copy_from_slice(value.as_bytes());
-        Ok(EdSigningKey::from_bytes(&buf))
+        Ok(EdSigningKey::from_bytes(value.as_bytes()))
+    }
+}
+
+impl TryFrom<&SigningKey> for EcdsaSigningKey {
+    type Error = KeyError;
+    fn try_from(value: &SigningKey) -> Result<Self, Self::Error> {
+        if value.scheme != SigningScheme::Ecdsa {
+            return Err(KeyError::InvalidScheme);
+        }
+
+        Ok(EcdsaSigningKey::from_slice(value.as_bytes()))
     }
 }
