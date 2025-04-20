@@ -73,7 +73,7 @@ impl SigningKey {
                 let mut signing_key: EcdsaSigningKey = self.try_into()?;
                 // let key = EcdsaSigningKey::from_slice(self.as_bytes())
                 //     .map_err(KeyError::InvalidKeyLength)?;
-                let sig = signing_key.sign(msg);
+                let sig: EcdsaSignature = signing_key.sign(msg);
             }
         }
     }

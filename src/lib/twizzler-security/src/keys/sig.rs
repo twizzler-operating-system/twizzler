@@ -1,4 +1,5 @@
 use ed25519_dalek::{Signature as EdSignature, SIGNATURE_LENGTH};
+use p256::ecdsa::Signature as EcdsaSignature;
 
 use super::{KeyError, MAX_SIG_SIZE};
 use crate::{CapError, SigningScheme};
@@ -37,8 +38,17 @@ impl TryFrom<&Signature> for EdSignature {
             return Err(KeyError::InvalidScheme);
         }
 
-        let mut buf = [0_u8; SIGNATURE_LENGTH];
-        buf.copy_from_slice(value.as_bytes());
-        Ok(EdSignature::from_bytes(&buf))
+        Ok(EdSignature::from_bytes(value.as_bytes()))
+    }
+}
+
+impl TryFrom<&Signature> for EcdsaSignature {
+    type Error = KeyError;
+    fn try_from(value: &Signature) -> Result<Self, Self::Error> {
+        if value.scheme != SigningScheme::Ecdsa {
+            return Err(KeyError::InvalidScheme);
+        }
+
+        Ok(EcdsaSignature::from_slice(value.as_bytes()))
     }
 }
