@@ -5,7 +5,7 @@ pub enum SecError {
     InvalidScheme,
 
     InvalidVerifyKey,
-    InvalidPrivateKey,
+    InvalidSigningKey,
 
     InvalidSignature,
 

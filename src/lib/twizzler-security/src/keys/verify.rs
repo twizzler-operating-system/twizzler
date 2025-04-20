@@ -16,12 +16,12 @@ pub struct VerifyingKey {
 }
 
 impl VerifyingKey {
-    pub fn new(scheme: SigningScheme, target_private_key: SigningKey) -> Result<Self, CapError> {
+    pub fn new(scheme: SigningScheme, target_private_key: SigningKey) -> Result<Self, SecError> {
         match scheme {
             SigningScheme::Ed25519 => {
                 let signing_key: EdSigningKey = (&target_private_key)
                     .try_into()
-                    .map_err(|_e| CapError::InvalidPrivateKey)?;
+                    .map_err(|_e| SecError::InvalidPrivateKey)?;
                 let vkey = signing_key.verifying_key();
                 let mut buff = [0; MAX_KEY_SIZE];
                 buff[0..PUBLIC_KEY_LENGTH].copy_from_slice(vkey.as_bytes());
@@ -65,16 +65,16 @@ impl VerifyingKey {
     }
 
     /// Checks whether the `sig` can be verified.
-    pub fn verify(&self, msg: &[u8], sig: &Signature) -> Result<(), CapError> {
+    pub fn verify(&self, msg: &[u8], sig: &Signature) -> Result<(), SecError> {
         match self.scheme {
             SigningScheme::Ed25519 => {
                 let vkey: EdVerifyingKey =
-                    self.try_into().map_err(|_| CapError::InvalidVerifyKey)?;
+                    self.try_into().map_err(|_| SecError::InvalidVerifyKey)?;
                 vkey.verify(
                     msg,
-                    &EdSignature::try_from(sig).map_err(|e| CapError::InvalidSignature)?,
+                    &EdSignature::try_from(sig).map_err(|e| SecError::InvalidSignature)?,
                 )
-                .map_err(|_| CapError::InvalidSignature)
+                .map_err(|_| SecError::InvalidSignature)
             }
             SigningScheme::Ecdsa => {
                 unimplemented!("Workout how ecdsa signature is formed")
