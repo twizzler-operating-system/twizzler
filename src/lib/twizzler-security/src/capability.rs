@@ -3,7 +3,7 @@ use twizzler_abi::object::{ObjID, Protections};
 
 use crate::{
     flags::{CapFlags, HashingAlgo, SigningScheme},
-    CapError, Gates, GatesError, Revoc, Signature, SigningKey, VerifyingKey,
+    Gates, GatesError, Revoc, SecError, Signature, SigningKey, VerifyingKey,
 };
 
 /// A capability that represents authorization for a [Security Context](`crate::sec_ctx::SecCtx`) to
@@ -68,7 +68,7 @@ impl Cap {
         target_priv_key: SigningKey,
         revocation: Revoc,
         gates: Gates,
-    ) -> Result<Self, CapError> {
+    ) -> Result<Self, SecError> {
         let flags = CapFlags::Blake3 | CapFlags::Ed25519; // set flags
         let siglen = SIGNATURE_LENGTH;
 
@@ -78,7 +78,7 @@ impl Cap {
 
         let sig = target_priv_key
             .sign(hash.as_bytes())
-            .map_err(|_| CapError::InvalidPrivateKey)?;
+            .map_err(|_| SecError::InvalidPrivateKey)?;
 
         Ok(Cap {
             accessor,
@@ -92,7 +92,7 @@ impl Cap {
     }
 
     /// verifies signature inside capability
-    pub fn verify_sig(&self, verifying_key: VerifyingKey) -> Result<(), CapError> {
+    pub fn verify_sig(&self, verifying_key: VerifyingKey) -> Result<(), SecError> {
         let hash_arr = Self::serialize(
             self.accessor,
             self.target,
@@ -108,7 +108,7 @@ impl Cap {
 
     /// pass in proposed gates values, verifies that they fall within the range
     /// specified by this capability
-    pub fn check_gate(&self, offset: u64, length: u64, align: u64) -> Result<(), GatesError> {
+    pub fn check_gate(&self, offset: u64, length: u64, align: u64) -> Result<(), SecError> {
         // the offset and length fields specify a region within the object. when the kernel switches
         // a threads active context in addition to the validity checks described in sec 3.1,
         // it checks to see if the instruction pointer is in a valid gate for the object it points
@@ -123,17 +123,17 @@ impl Cap {
 
         //TODO: this needs to be fixed so that any 'chunk' inside of the reigion is valid too
         // if self.gates.offset < offset || offset > self.gates.offset + length {
-        //     return Err(GatesError::OutsideBounds);
+        //     return Err(SecError::OutsideBounds);
         // }
 
         //TODO: make sure this is correct
         if !(offset + length < self.gates.length && offset > self.gates.offset) {
-            return Err(GatesError::OutsideBounds);
+            return Err(SecError::OutsideBounds);
         }
 
         //NOTE: not completely sure this is how you check alignment.
         if self.gates.align != align {
-            return Err(GatesError::Unaligned);
+            return Err(SecError::Unaligned);
         }
 
         Ok(())

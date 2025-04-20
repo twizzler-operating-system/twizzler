@@ -8,4 +8,7 @@ pub enum SecError {
     InvalidPrivateKey,
 
     InvalidSignature,
+
+    OutsideBounds,
+    Unailgned
 }
