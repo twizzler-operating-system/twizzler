@@ -50,6 +50,9 @@ impl VerifyingKey {
                     scheme: SigningScheme::Ed25519,
                 })
             }
+            SigningScheme::Ecdsa => {
+                unimplemented!("Workout how ecdsa signing key is built up")
+            }
         }
     }
 
@@ -69,6 +72,9 @@ impl VerifyingKey {
                     &EdSignature::try_from(sig).map_err(|e| CapError::InvalidSignature)?,
                 )
                 .map_err(|_| CapError::InvalidSignature)
+            }
+            SigningScheme::Ecdsa => {
+                unimplemented!("Workout how ecdsa signature is formed")
             }
         }
     }

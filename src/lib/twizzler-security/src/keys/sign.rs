@@ -1,3 +1,5 @@
+use core::mem::uninitialized;
+
 //TODO: ideally this stuff would take place inside the kernel.
 use ed25519_dalek::{
     ed25519::signature::SignerMut, SecretKey, SigningKey as EdSigningKey, SECRET_KEY_LENGTH,
@@ -39,6 +41,9 @@ impl SigningKey {
                     scheme: SigningScheme::Ed25519,
                 })
             }
+            SigningScheme::Ecdsa => {
+                unimplemented!("Workout how ecdsa signing key is built up")
+            }
         }
     }
 
@@ -50,9 +55,11 @@ impl SigningKey {
         match self.scheme {
             SigningScheme::Ed25519 => {
                 let buf = [0_u8; SECRET_KEY_LENGTH];
-
                 let mut signing_key: EdSigningKey = self.try_into()?;
                 Ok(signing_key.sign(msg).into())
+            }
+            SigningScheme::Ecdsa => {
+                unimplemented!("Workout how ecdsa signature is formed")
             }
         }
     }

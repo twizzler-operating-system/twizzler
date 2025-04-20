@@ -42,7 +42,7 @@ impl CapFlags {
 
 impl TryFrom<&CapFlags> for HashingAlgo {
     type Error = CapError;
-    fn try_from(value: CapFlags) -> Result<Self, Self::Error> {
+    fn try_from(value: &CapFlags) -> Result<Self, Self::Error> {
         let mut result = None;
 
         for flag in value.iter() {
@@ -64,7 +64,7 @@ impl TryFrom<&CapFlags> for HashingAlgo {
 }
 impl TryFrom<&CapFlags> for SigningScheme {
     type Error = CapError;
-    fn try_from(value: CapFlags) -> Result<Self, Self::Error> {
+    fn try_from(value: &CapFlags) -> Result<Self, Self::Error> {
         let mut result = None;
 
         for flag in value.iter() {
