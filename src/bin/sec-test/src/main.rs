@@ -119,6 +119,8 @@ fn main() {
                 target_priv_key,
                 Default::default(),
                 Default::default(),
+                Default::default(),
+                Default::default(),
             )
             .unwrap();
 
