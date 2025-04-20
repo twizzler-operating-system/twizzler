@@ -1,8 +1,9 @@
 use ed25519_dalek::{Signature as EdSignature, SIGNATURE_LENGTH};
 use p256::ecdsa::{signature::PrehashSignature, Signature as EcdsaSignature};
 
-use super::MAX_SIG_SIZE;
 use crate::{SecError, SigningScheme};
+
+const MAX_SIG_SIZE: usize = 128;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Signature {
