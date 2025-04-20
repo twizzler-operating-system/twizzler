@@ -33,8 +33,8 @@ pub enum HashingAlgo {
 
 impl CapFlags {
     pub(crate) fn parse(&self) -> Result<(HashingAlgo, SigningScheme), SecError> {
-        let hashing_algo: HashingAlgo = self.try_into()?;
-        let signing_scheme: SigningScheme = self.try_into()?;
+        let hashing_algo: HashingAlgo = (*self).try_into()?;
+        let signing_scheme: SigningScheme = (*self).try_into()?;
 
         Ok((hashing_algo, signing_scheme))
     }
