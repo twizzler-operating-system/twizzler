@@ -40,7 +40,7 @@ impl CapFlags {
     }
 }
 
-impl TryFrom<&CapFlags> for HashingAlgo {
+impl TryFrom<CapFlags> for HashingAlgo {
     type Error = SecError;
     fn try_from(value: &CapFlags) -> Result<Self, Self::Error> {
         let mut result = None;
@@ -62,7 +62,7 @@ impl TryFrom<&CapFlags> for HashingAlgo {
         result.ok_or(SecError::InvalidFlags)
     }
 }
-impl TryFrom<&CapFlags> for SigningScheme {
+impl TryFrom<CapFlags> for SigningScheme {
     type Error = SecError;
     fn try_from(value: &CapFlags) -> Result<Self, Self::Error> {
         let mut result = None;
