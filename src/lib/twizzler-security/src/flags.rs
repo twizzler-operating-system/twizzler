@@ -17,17 +17,17 @@ bitflags! {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub enum SigningScheme {
+    #[default]
     Ed25519,
-    //TODO: implement this
     Ecdsa,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub enum HashingAlgo {
+    #[default]
     Blake3,
-    //TODO: implement this
     Sha256,
 }
 

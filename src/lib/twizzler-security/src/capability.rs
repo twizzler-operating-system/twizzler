@@ -1,4 +1,5 @@
 use ed25519_dalek::SIGNATURE_LENGTH;
+use sha2::Digest;
 use twizzler_abi::object::{ObjID, Protections};
 
 use crate::{
@@ -68,6 +69,8 @@ impl Cap {
         target_priv_key: SigningKey,
         revocation: Revoc,
         gates: Gates,
+        hashing_algo: HashingAlgo,
+        signing_scheme: SigningScheme,
     ) -> Result<Self, SecError> {
         let flags = CapFlags::Blake3 | CapFlags::Ed25519; // set flags
         let siglen = SIGNATURE_LENGTH;
@@ -100,8 +103,22 @@ impl Cap {
             self.gates,
         );
 
-        let hash = blake3::hash(&hash_arr);
-        verifying_key.verify(hash.as_bytes(), &self.sig)
+        let hash_algo: HashingAlgo = self.flags.try_into()?;
+
+        let hash = match hash_algo {
+            HashingAlgo::Blake3 => {
+                let bind = blake3::hash(&hash_arr).as_bytes();
+                bind.as_slice()
+            }
+            HashingAlgo::Sha256 => {
+                let mut hasher = sha2::Sha256::new();
+                hasher.update(&hash_arr);
+                let result = hasher.finalize();
+                result.as_slice()
+            }
+        };
+
+        verifying_key.verify(hash, &self.sig)
     }
 
     /// pass in proposed gates values, verifies that they fall within the range
