@@ -92,8 +92,6 @@ impl TryFrom<&VerifyingKey> for EdVerifyingKey {
         let mut buf = [0_u8; PUBLIC_KEY_LENGTH];
         buf.copy_from_slice(value.as_bytes());
 
-        //TODO: this isnt the right error map, work on the error types and adjust accordingly, for
-        // all
-        EdVerifyingKey::from_bytes(&buf).map_err(|e| SecError::InvalidScheme)
+        EdVerifyingKey::from_bytes(&buf).map_err(|e| SecError::InvalidVerifyKey)
     }
 }
