@@ -2,7 +2,7 @@ use ed25519_dalek::{
     ed25519::signature::SignerMut, SecretKey, SigningKey as EdSigningKey, SECRET_KEY_LENGTH,
     SIGNATURE_LENGTH,
 };
-use p256::ecdsa::SigningKey as EcdsaSigningKey;
+use p256::ecdsa::{signature::Signer, Signature as EcdsaSignature, SigningKey as EcdsaSigningKey};
 
 use super::{KeyError, Signature, VerifyingKey, MAX_KEY_SIZE};
 use crate::{CapError, SigningScheme};
