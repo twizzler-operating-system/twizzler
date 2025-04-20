@@ -3,8 +3,8 @@ use ed25519_dalek::{
     VerifyingKey as EdVerifyingKey, PUBLIC_KEY_LENGTH,
 };
 
-use super::{KeyError, Signature, SigningKey, MAX_KEY_SIZE};
-use crate::{CapError, SigningScheme};
+use super::{Signature, SigningKey, MAX_KEY_SIZE};
+use crate::{SecError, SigningScheme};
 
 // making our own struct for verifying key since we need to be able to support keys with different
 // schemes, (meaning they could also be different lengths)
@@ -37,11 +37,11 @@ impl VerifyingKey {
         }
     }
 
-    pub fn from_slice(slice: &[u8], scheme: SigningScheme) -> Result<Self, KeyError> {
+    pub fn from_slice(slice: &[u8], scheme: SigningScheme) -> Result<Self, SecError> {
         match scheme {
             SigningScheme::Ed25519 => {
                 if slice.len() != PUBLIC_KEY_LENGTH {
-                    return Err(KeyError::InvalidKeyLength);
+                    return Err(SecError::InvalidKeyLength);
                 }
 
                 let mut buf = [0_u8; MAX_KEY_SIZE];
@@ -84,11 +84,11 @@ impl VerifyingKey {
 }
 
 impl TryFrom<&VerifyingKey> for EdVerifyingKey {
-    type Error = KeyError;
+    type Error = SecError;
 
-    fn try_from(value: &VerifyingKey) -> Result<EdVerifyingKey, KeyError> {
+    fn try_from(value: &VerifyingKey) -> Result<EdVerifyingKey, SecError> {
         if value.scheme != SigningScheme::Ed25519 {
-            return Err(KeyError::InvalidScheme);
+            return Err(SecError::InvalidScheme);
         }
 
         let mut buf = [0_u8; PUBLIC_KEY_LENGTH];
@@ -96,6 +96,6 @@ impl TryFrom<&VerifyingKey> for EdVerifyingKey {
 
         //TODO: this isnt the right error map, work on the error types and adjust accordingly, for
         // all
-        EdVerifyingKey::from_bytes(&buf).map_err(|e| KeyError::InvalidScheme)
+        EdVerifyingKey::from_bytes(&buf).map_err(|e| SecError::InvalidScheme)
     }
 }
