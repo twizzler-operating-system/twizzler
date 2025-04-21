@@ -297,6 +297,9 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             anyhow::bail!("failed to install mlibc headers");
         }
     }
+    let current_dir = std::env::current_dir().unwrap();
+    let llvm_config = current_dir.join("toolchain/install/bin/llvm-config");
+    std::env::set_var("TWIZZLER_ABI_LLVM_CONFIG", llvm_config);
 
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
