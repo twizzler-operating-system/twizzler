@@ -298,8 +298,9 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         }
     }
     let current_dir = std::env::current_dir().unwrap();
-    let llvm_config = current_dir.join("toolchain/install/bin/llvm-config");
-    std::env::set_var("TWIZZLER_ABI_LLVM_CONFIG", llvm_config);
+    let builtin_headers =
+        current_dir.join("toolchain/src/rust/build/host/llvm/lib/clang/20/include/");
+    std::env::set_var("TWIZZLER_ABI_BUILTIN_HEADERS", builtin_headers);
 
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
