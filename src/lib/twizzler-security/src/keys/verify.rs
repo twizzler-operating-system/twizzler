@@ -1,10 +1,11 @@
-use core::slice::SlicePattern;
-
 use ed25519_dalek::{
     ed25519, Signature as EdSignature, SigningKey as EdSigningKey, Verifier,
     VerifyingKey as EdVerifyingKey, PUBLIC_KEY_LENGTH,
 };
-use p256::ecdsa::{SigningKey as EcdsaSigningKey, VerifyingKey as EcdsaVerifyingKey};
+use p256::{
+    ecdsa::{SigningKey as EcdsaSigningKey, VerifyingKey as EcdsaVerifyingKey},
+    elliptic_curve::sec1::EncodedPoint,
+};
 
 use super::{Signature, SigningKey, MAX_KEY_SIZE};
 use crate::{SecError, SigningScheme};
@@ -29,23 +30,25 @@ impl VerifyingKey {
                 Ok(VerifyingKey {
                     key: buf,
                     len: PUBLIC_KEY_LENGTH,
-                    scheme,
+                    scheme: *scheme,
                 })
             }
             SigningScheme::Ecdsa => {
-                // unimplemented!("Workout how ecdsa verifying key is formed")
-                let vkey = EcdsaVerifyingKey::from(TryInto::<EcdsaSigningKey>::try_into(
-                    target_private_key,
-                )?);
-                let bytes = vkey.to_sec1_bytes().as_slice();
-                let mut buf = [0; MAX_KEY_SIZE];
-                buf[0..bytes.len()].copy_from_slice(bytes);
+                unimplemented!("Workout how ecdsa verifying key is formed")
+                // let vkey = EcdsaVerifyingKey::from(TryInto::<EcdsaSigningKey>::try_into(
+                //     target_private_key,
+                // )?);
+                // let sec1 = vkey.to_encoded_point(false);
+                // let bytes = vkey.to_sec1_bytes().as_slice();
 
-                Ok(VerifyingKey {
-                    key: buf,
-                    len: bytes.len(),
-                    scheme: SigningScheme::Ecdsa,
-                })
+                // let mut buf = [0; MAX_KEY_SIZE];
+                // buf[0..bytes.len()].copy_from_slice(bytes);
+
+                // Ok(VerifyingKey {
+                //     key: buf,
+                //     len: bytes.len(),
+                //     scheme: SigningScheme::Ecdsa,
+                // })
             }
         }
     }
@@ -67,17 +70,21 @@ impl VerifyingKey {
                 })
             }
             SigningScheme::Ecdsa => {
-                let key = EcdsaVerifyingKey::from_sec1_bytes(slice)
-                    .map_err(|_| SecError::InvalidVerifyKey)?;
+                unimplemented!("figure out how to deserialize this key")
+                // let point =
+                //     EncodedPoint::from_bytes(slice).map_err(|_| SecError::InvalidVerifyKey)?;
 
-                // ok its valid!
-                let mut buf = [0; MAX_KEY_SIZE];
-                buf[0..slice.len()].copy_from_slice(slice);
-                Ok(VerifyingKey {
-                    key: buf,
-                    len: slice.len(),
-                    scheme: SigningScheme::Ecdsa,
-                })
+                // let key = EcdsaVerifyingKey::from_encoded_point(point)
+                //     .map_err(|_| SecError::InvalidVerifyKey)?;
+
+                // // ok its valid!
+                // let mut buf = [0; MAX_KEY_SIZE];
+                // buf[0..slice.len()].copy_from_slice(slice);
+                // Ok(VerifyingKey {
+                //     key: buf,
+                //     len: slice.len(),
+                //     scheme: SigningScheme::Ecdsa,
+                // })
             }
         }
     }
