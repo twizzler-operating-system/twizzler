@@ -17,7 +17,7 @@ pub struct SigningKey {
 
 impl SigningKey {
     //TODO: gate this behind the `kernel` feature
-    pub fn new(scheme: SigningScheme) -> (Self, VerifyingKey) {
+    pub fn new(scheme: &SigningScheme) -> (Self, VerifyingKey) {
         let secret_key = SecretKey::default();
         todo!("should generate signing/verifying key in kernel")
     }
