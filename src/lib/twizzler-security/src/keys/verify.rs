@@ -67,7 +67,17 @@ impl VerifyingKey {
                 })
             }
             SigningScheme::Ecdsa => {
-                unimplemented!("Workout how ecdsa signing key is built up")
+                let key = EcdsaVerifyingKey::from_sec1_bytes(slice)
+                    .map_err(|_| SecError::InvalidVerifyKey)?;
+
+                // ok its valid!
+                let mut buf = [0; MAX_KEY_SIZE];
+                buf[0..slice.len()].copy_from_slice(slice);
+                Ok(VerifyingKey {
+                    key: buf,
+                    len: slice.len(),
+                    scheme: SigningScheme::Ecdsa,
+                })
             }
         }
     }
