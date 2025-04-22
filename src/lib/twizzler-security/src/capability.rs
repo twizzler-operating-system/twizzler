@@ -22,11 +22,10 @@ use crate::{
 /// * `target` - The object ID this capability grants access to
 /// * `accessor` - The security context ID in which this capability resides
 /// * `protections` - The specific access rights this capability grants
-/// * `flags` - Cryptographic configuration for capability validation
+/// * `flags` - Specifies the cryptographic primitives used to form the signature
 /// * `gates` - Allows access into an object in a specified range
 /// * `revocation` - Specifies when the capability is invalid
-/// * `siglen` - Length of the cryptographic signature in bytes
-/// * `sig` - Cryptographic signature that validates this capability
+/// * `signature` - the signature of the capability
 ///
 /// # Examples
 ///

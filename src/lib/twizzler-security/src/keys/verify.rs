@@ -1,7 +1,10 @@
+use core::slice::SlicePattern;
+
 use ed25519_dalek::{
     ed25519, Signature as EdSignature, SigningKey as EdSigningKey, Verifier,
     VerifyingKey as EdVerifyingKey, PUBLIC_KEY_LENGTH,
 };
+use p256::ecdsa::{SigningKey as EcdsaSigningKey, VerifyingKey as EcdsaVerifyingKey};
 
 use super::{Signature, SigningKey, MAX_KEY_SIZE};
 use crate::{SecError, SigningScheme};
@@ -21,16 +24,28 @@ impl VerifyingKey {
             SigningScheme::Ed25519 => {
                 let signing_key: EdSigningKey = (&target_private_key).try_into()?;
                 let vkey = signing_key.verifying_key();
-                let mut buff = [0; MAX_KEY_SIZE];
-                buff[0..PUBLIC_KEY_LENGTH].copy_from_slice(vkey.as_bytes());
+                let mut buf = [0; MAX_KEY_SIZE];
+                buf[0..PUBLIC_KEY_LENGTH].copy_from_slice(vkey.as_bytes());
                 Ok(VerifyingKey {
-                    key: buff,
+                    key: buf,
                     len: PUBLIC_KEY_LENGTH,
                     scheme,
                 })
             }
             SigningScheme::Ecdsa => {
-                unimplemented!("Workout how ecdsa verifying key is formed")
+                // unimplemented!("Workout how ecdsa verifying key is formed")
+                let vkey = EcdsaVerifyingKey::from(TryInto::<EcdsaSigningKey>::try_into(
+                    target_private_key,
+                )?);
+                let bytes = vkey.to_sec1_bytes().as_slice();
+                let mut buf = [0; MAX_KEY_SIZE];
+                buf[0..bytes.len()].copy_from_slice(bytes);
+
+                Ok(VerifyingKey {
+                    key: buf,
+                    len: bytes.len(),
+                    scheme: SigningScheme::Ecdsa,
+                })
             }
         }
     }
