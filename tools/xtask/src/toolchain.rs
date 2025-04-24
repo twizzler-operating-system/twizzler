@@ -12,6 +12,7 @@ use guess_host_triple::guess_host_triple;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use toml_edit::DocumentMut;
+use walkdir::WalkDir;
 
 use crate::{
     triple::{all_possible_platforms, Triple},
@@ -181,16 +182,7 @@ async fn download_files(client: &Client) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
-    fs_extra::dir::create_all("toolchain/install", false)?;
-    if !cli.skip_downloads {
-        let client = Client::new();
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
-            .block_on(download_files(&client))?;
-    }
-
+fn install_build_tools(_cli: &BootstrapOptions) -> anyhow::Result<()> {
     println!("installing bindgen");
     let status = Command::new("cargo")
         .arg("install")
@@ -201,6 +193,60 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     if !status.success() {
         anyhow::bail!("failed to install bindgen");
     }
+
+    println!("installing meson & ninja");
+    let status = Command::new("pip3")
+        .arg("install")
+        .arg("--prefix")
+        .arg("toolchain/install")
+        .arg("--force-reinstall")
+        .arg("--no-warn-script-location")
+        .arg("meson")
+        .arg("ninja")
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to install meson and ninja");
+    }
+
+    let mut target = None;
+    let mut already_done = false;
+    for file in WalkDir::new("toolchain/install/lib").max_depth(1) {
+        if let Ok(file) = file {
+            let name = file.file_name().to_str().unwrap();
+            if name.starts_with("python") && name != "python" {
+                target = Some(name.to_string());
+            }
+            if name == "python" {
+                already_done = true;
+            }
+        }
+    }
+
+    if !already_done {
+        if let Some(target) = target {
+            std::os::unix::fs::symlink(target, "toolchain/install/lib/python")?;
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
+    fs_extra::dir::create_all("toolchain/install", false)?;
+    if !cli.skip_downloads {
+        let client = Client::new();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(download_files(&client))?;
+    }
+
+    install_build_tools(&cli)?;
+    let current_dir = std::env::current_dir().unwrap();
+    std::env::set_var(
+        "PYTHONPATH",
+        current_dir.join("toolchain/install/lib/python/site-packages"),
+    );
 
     let _ = std::fs::remove_file("toolchain/src/rust/config.toml");
     generate_config_toml()?;
@@ -224,6 +270,20 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     if !status.success() {
         anyhow::bail!("failed to copy twizzler ABI headers");
     }
+
+    let path = std::env::var("PATH").unwrap();
+    let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
+    std::env::set_var(
+        "PATH",
+        format!(
+            "{}:{}:{}",
+            lld_bin.to_string_lossy(),
+            std::fs::canonicalize("toolchain/install/bin")
+                .unwrap()
+                .to_string_lossy(),
+            path
+        ),
+    );
 
     for target_triple in all_possible_platforms() {
         let current_dir = std::env::current_dir().unwrap();
@@ -301,20 +361,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     let builtin_headers =
         current_dir.join("toolchain/src/rust/build/host/llvm/lib/clang/20/include/");
     std::env::set_var("TWIZZLER_ABI_BUILTIN_HEADERS", builtin_headers);
-
-    let path = std::env::var("PATH").unwrap();
-    let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
-    std::env::set_var(
-        "PATH",
-        format!(
-            "{}:{}:{}",
-            lld_bin.to_string_lossy(),
-            std::fs::canonicalize("toolchain/install/bin")
-                .unwrap()
-                .to_string_lossy(),
-            path
-        ),
-    );
 
     let keep_args = if cli.keep_early_stages {
         vec![
@@ -550,6 +596,11 @@ pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
     std::env::set_var("RUSTC", &get_rustc_path()?);
     std::env::set_var("RUSTDOC", &get_rustdoc_path()?);
     std::env::set_var("CARGO_CACHE_RUSTC_INFO", "0");
+    let current_dir = std::env::current_dir().unwrap();
+    std::env::set_var(
+        "PYTHONPATH",
+        current_dir.join("toolchain/install/lib/python/site-packages"),
+    );
 
     let compiler_rt_path = "toolchain/src/rust/src/llvm-project/compiler-rt";
     std::env::set_var(
@@ -674,10 +725,13 @@ fn generate_config_toml() -> anyhow::Result<()> {
         .unwrap()
         .push(host_triple);
 
+    let host_cc = std::env::var("CC").unwrap_or("/usr/bin/clang".to_string());
+    let host_cxx = std::env::var("CXX").unwrap_or("/usr/bin/clang++".to_string());
+    let host_ld = std::env::var("LD").unwrap_or("/usr/bin/clang++".to_string());
     toml["target"][host_triple]["llvm-has-rust-patches"] = toml_edit::value(true);
-    toml["target"][host_triple]["cc"] = toml_edit::value("/usr/bin/clang");
-    toml["target"][host_triple]["cxx"] = toml_edit::value("/usr/bin/clang++");
-    toml["target"][host_triple]["linker"] = toml_edit::value("/usr/bin/clang++");
+    toml["target"][host_triple]["cc"] = toml_edit::value(host_cc);
+    toml["target"][host_triple]["cxx"] = toml_edit::value(host_cxx);
+    toml["target"][host_triple]["linker"] = toml_edit::value(host_ld);
 
     for triple in all_possible_platforms() {
         let clang = llvm_bin.join("clang").to_str().unwrap().to_string();

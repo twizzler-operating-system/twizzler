@@ -7,20 +7,16 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  LLVM_CONFIG_PATH: /usr/bin/llvm-config-18
 
-jobs:
+jobs: 
+  setup:
+    uses: ./.github/workflows/setup.yml
   build:
+    needs: setup
     runs-on: self-hosted
-    environment: Docs Build
 
     steps:
-    - uses: actions/checkout@v2
-      with:
-        submodules: recursive
-    - name: Install latest nightly
-      uses: actions-rs/toolchain@v1
-      with:
-          toolchain: stable
     - name: Keygen
       run: |
         echo "$DEPLOY_KEY_DATA" > deploy_key
