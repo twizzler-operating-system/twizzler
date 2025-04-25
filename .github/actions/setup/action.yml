@@ -16,6 +16,6 @@ runs:
       with:
         cmake-version: '3.20.x'
     - name: Setup llvm
-      run: wget -qO- https://apt.llvm.org/llvm.sh | bash -s -- 18
+      run: (wget -qO- https://apt.llvm.org/llvm.sh | bash -s -- 18) || true
       shell: bash
 
