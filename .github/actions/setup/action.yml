@@ -6,7 +6,7 @@ runs:
     - name: Install latest nightly
       uses: actions-rs/toolchain@v1
       with:
-          toolchain: stable
+          toolchain: nightly
     - name: Setup Python
       uses: actions/setup-python@v5
       with:
