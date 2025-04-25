@@ -1,3 +1,4 @@
 fn main() {
-    cc::Build::new().flag("-v").file("src/hw.c").compile("hw");
+    cc::Build::new().file("src/hw.c").compile("hw");
+    println!("cargo::rustc-link-lib=c");
 }

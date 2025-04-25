@@ -265,7 +265,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     let status = Command::new("cp")
         .arg("-R")
         .arg("src/abi/include")
-        .arg("toolchain/src/mlibc/sysdeps/twizzler/include")
+        .arg("toolchain/src/mlibc/sysdeps/twizzler")
         .status()?;
     if !status.success() {
         anyhow::bail!("failed to copy twizzler ABI headers");

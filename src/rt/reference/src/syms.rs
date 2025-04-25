@@ -73,6 +73,7 @@ macro_rules! check_ffi_type {
 use std::ffi::{c_void, CStr};
 
 use tracing::warn;
+use twizzler_abi::object::ObjID;
 // core.h
 use twizzler_rt_abi::bindings::{endpoint, io_ctx, option_exit_code, twz_error, u32_result};
 use twizzler_rt_abi::error::{ArgumentError, RawTwzError, TwzError};
@@ -554,10 +555,31 @@ check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _);
 
 // object.h
 
+fn result_id_to_bindings(value: Result<ObjID, TwzError>) -> objid_result {
+    match value {
+        Ok(id) => objid_result {
+            err: RawTwzError::success().raw(),
+            __bindgen_padding_0: 0,
+            val: id.raw(),
+        },
+        Err(err) => objid_result {
+            err: err.raw(),
+            __bindgen_padding_0: 0,
+            val: 0,
+        },
+    }
+}
+
 use twizzler_rt_abi::{
-    bindings::{map_flags, map_result, object_handle, objid},
+    bindings::{map_flags, map_result, object_handle, objid, objid_result},
     object::MapFlags,
 };
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_create_rtobj() -> objid_result {
+    result_id_to_bindings(OUR_RUNTIME.create_rtobj())
+}
+check_ffi_type!(twz_rt_create_rtobj);
+
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_map_object(id: objid, flags: map_flags) -> map_result {
     OUR_RUNTIME

@@ -2,7 +2,10 @@ use std::{ffi::c_void, sync::atomic::AtomicU64};
 
 use handlecache::HandleCache;
 use tracing::warn;
-use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_abi::{
+    object::{MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{sys_object_create, CreateTieFlags, CreateTieSpec, ObjectCreate},
+};
 use twizzler_rt_abi::{
     bindings::object_handle,
     error::{ArgumentError, TwzError},
@@ -52,6 +55,15 @@ impl ReferenceRuntime {
         self.object_manager
             .lock()
             .map_object(ObjectMapKey(id.into(), flags))
+    }
+
+    pub fn create_rtobj(&self) -> Result<ObjID> {
+        let tie_id = monitor_api::get_comp_config().sctx;
+        sys_object_create(
+            ObjectCreate::default(),
+            &[],
+            &[CreateTieSpec::new(tie_id, CreateTieFlags::empty())],
+        )
     }
 
     #[tracing::instrument(skip(self), level = "trace")]
