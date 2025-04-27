@@ -1,5 +1,6 @@
 use core::fmt::{write, Display};
 
+use log::debug;
 use map::{CtxMapItemType, SecCtxMap};
 use twizzler::object::{Object, ObjectBuilder, RawObject, TypedObject};
 use twizzler_abi::object::ObjID;
@@ -61,17 +62,26 @@ impl SecCtx {
 
     pub fn add_cap(&self, cap: Cap) {
         // first add it to the map to get the write offset
+        debug!("1");
         let write_offset = SecCtxMap::insert(&self.uobj, cap.target, CtxMapItemType::Cap);
 
+        debug!("2");
         let tx = self.uobj.clone().tx().unwrap();
 
+        debug!("3");
         let ptr = tx.lea_mut(write_offset as usize, size_of::<Cap>()).unwrap();
 
+        debug!("write offset: {:#?}", write_offset);
+        debug!("ptr: {:#?}", ptr);
+
+        debug!("4");
         unsafe {
             let mut in_ctx_cap = *ptr.cast::<Cap>();
+            debug!("5");
             in_ctx_cap = cap;
         }
 
+        debug!("6");
         tx.commit().unwrap();
     }
 

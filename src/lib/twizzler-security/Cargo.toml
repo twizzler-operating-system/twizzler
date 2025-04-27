@@ -3,7 +3,6 @@ name = "twizzler-security"
 version = "0.1.0"
 edition = "2021"
 
-
 [dependencies]
 bitflags = "2.4.1"
 sha2 = { version = "0.10.8", default-features = false, features = [
@@ -11,12 +10,19 @@ sha2 = { version = "0.10.8", default-features = false, features = [
 ] }
 p256 = { version = "0.13.2", default-features = false, features = ["ecdsa"] }
 
-ed25519-dalek = { version = "2", default-features = false }
+ed25519-dalek = { version = "2.1.1", default-features = false ,features = ["fast", "asm"]}
 blake3 = { version = "=1.6.1", default-features = false, features = [
     "traits-preview",
 ] }
 
-twizzler-abi = { path = "../twizzler-abi" }
-twizzler = { path = "../twizzler" }
-twizzler-rt-abi = "0.99"
+twizzler-abi = { path = "../twizzler-abi"}
+twizzler = { path = "../twizzler" , optional = true}
+twizzler-rt-abi = {version = "0.99", optional = true}
+log = "0.4.27"
 
+[features]
+default = ["user"]
+kernel = ["twizzler-abi/kernel"]
+user = ["dep:twizzler", "dep:twizzler-rt-abi"]
+
+# ok so the user trait should enable the 

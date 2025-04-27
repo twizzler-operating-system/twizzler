@@ -983,6 +983,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cbd0f76e066e64fdc5631e3bb46381254deab9ef1158292f27c8c57e3bf3fe59"
 
 [[package]]
+name = "colog"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c426b7af8d5e0ad79de6713996632ce31f0d68ba84068fb0d654b396e519df0"
+dependencies = [
+ "colored 2.2.0",
+ "env_logger",
+ "log",
+]
+
+[[package]]
 name = "color-print"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1008,6 +1019,16 @@ name = "colorchoice"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b63caa9aa9397e2d9480a9b13673856c78d8ac123288526c37d7839f2a86990"
+
+[[package]]
+name = "colored"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
+dependencies = [
+ "lazy_static",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "colored"
@@ -4725,7 +4746,7 @@ dependencies = [
  "async-trait",
  "bitvec",
  "blocking",
- "colored",
+ "colored 3.0.0",
  "devmgr",
  "futures",
  "itertools 0.14.0",
@@ -5577,7 +5598,9 @@ name = "sec-test"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "colog",
  "getrandom 0.2.16",
+ "log",
  "twizzler",
  "twizzler-abi",
  "twizzler-rt-abi",
@@ -5811,6 +5834,16 @@ dependencies = [
  "cfg-if 1.0.0",
  "cpufeatures",
  "digest",
+ "sha2-asm",
+]
+
+[[package]]
+name = "sha2-asm"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b845214d6175804686b2bd482bcffe96651bb2d1200742b712003504a2dac1ab"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -6668,6 +6701,7 @@ dependencies = [
  "bitflags 2.9.0",
  "blake3",
  "ed25519-dalek",
+ "log",
  "p256",
  "sha2",
  "twizzler",

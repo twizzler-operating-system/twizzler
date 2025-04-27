@@ -1,12 +1,13 @@
 use alloc::rc::Rc;
 use core::{array, default};
 
+use log::debug;
 use twizzler::{
     marker::{BaseType, StoreCopy},
     object::{Object, RawObject, TypedObject},
     tx::TxObject,
 };
-use twizzler_abi::object::ObjID;
+use twizzler_abi::object::{ObjID, NULLPAGE_SIZE};
 use twizzler_rt_abi::object::MapFlags;
 
 use crate::{Cap, Del};
@@ -41,6 +42,9 @@ pub enum CtxMapItemType {
     Del,
 }
 
+const OBJECT_ROOT_OFFSET: usize =
+    size_of::<CtxMapItem>() * MAX_SEC_CTX_MAP_LEN + size_of::<u32>() + NULLPAGE_SIZE;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SecCtxMapLookupResult {
     pub len: usize,
@@ -55,10 +59,17 @@ impl SecCtxMap {
 
         //TODO: Find a way to map the write offset into  object so it doesnt overwrite
         // other data
-        let write_offset = match item_type {
+        let mut write_offset = match item_type {
             CtxMapItemType::Cap => base.len + size_of::<Cap>() as u32,
             CtxMapItemType::Del => base.len + size_of::<Del>() as u32,
-        };
+        } + OBJECT_ROOT_OFFSET as u32;
+
+        debug!("write_offset before adjustment: {:#02x}", write_offset);
+        let alignment = write_offset % 0x10;
+        debug!("alginment:{:#02x}", alignment);
+
+        write_offset += (0x10 - alignment);
+        debug!("write_offset after adjustment: {:#02x}", write_offset);
 
         // to appease the compiler
         let len = base.len;

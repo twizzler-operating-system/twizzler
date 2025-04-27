@@ -1,6 +1,8 @@
 use std::fs::File;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use colog::{basic_builder, default_builder};
+use log::LevelFilter;
 use twizzler::{
     marker::{BaseType, StoreCopy},
     object::{Object, ObjectBuilder, RawObject, TypedObject},
@@ -44,6 +46,9 @@ pub enum Commands {
 //
 fn main() {
     let args = Args::parse();
+    let mut builder = default_builder();
+    builder.filter_level(LevelFilter::Trace);
+    builder.init();
 
     match args.command {
         Some(command) => match command {
