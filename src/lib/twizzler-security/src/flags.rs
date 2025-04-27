@@ -19,8 +19,8 @@ bitflags! {
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub enum SigningScheme {
-    #[default]
     Ed25519,
+    #[default]
     Ecdsa,
 }
 

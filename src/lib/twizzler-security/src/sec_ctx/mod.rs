@@ -75,6 +75,8 @@ impl SecCtx {
         debug!("ptr: {:#?}", ptr);
 
         debug!("4");
+
+
         unsafe {
             let mut in_ctx_cap = *ptr.cast::<Cap>();
             debug!("5");
@@ -83,6 +85,10 @@ impl SecCtx {
 
         debug!("6");
         tx.commit().unwrap();
+    }
+
+    pub fn id(&self) -> ObjID {
+        self.uobj.id()
     }
 
     pub fn remove_cap(&mut self) {}

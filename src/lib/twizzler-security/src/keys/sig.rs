@@ -1,4 +1,4 @@
-use ed25519_dalek::{Signature as EdSignature, SIGNATURE_LENGTH};
+// use ed25519_dalek::{Signature as EdSignature, SIGNATURE_LENGTH};
 use p256::ecdsa::{signature::PrehashSignature, Signature as EcdsaSignature};
 
 use crate::{SecError, SigningScheme};
@@ -18,19 +18,19 @@ impl Signature {
     }
 }
 
-impl From<EdSignature> for Signature {
-    fn from(value: EdSignature) -> Self {
-        let mut buf = [0_u8; MAX_SIG_SIZE];
+// impl From<EdSignature> for Signature {
+//     fn from(value: EdSignature) -> Self {
+//         let mut buf = [0_u8; MAX_SIG_SIZE];
 
-        buf[0..SIGNATURE_LENGTH].copy_from_slice(&value.to_bytes());
+//         buf[0..SIGNATURE_LENGTH].copy_from_slice(&value.to_bytes());
 
-        Self {
-            buf,
-            len: SIGNATURE_LENGTH,
-            scheme: SigningScheme::Ed25519,
-        }
-    }
-}
+//         Self {
+//             buf,
+//             len: SIGNATURE_LENGTH,
+//             scheme: SigningScheme::Ed25519,
+//         }
+//     }
+// }
 
 impl From<EcdsaSignature> for Signature {
     fn from(value: EcdsaSignature) -> Self {
@@ -47,16 +47,16 @@ impl From<EcdsaSignature> for Signature {
     }
 }
 
-impl TryFrom<&Signature> for EdSignature {
-    type Error = SecError;
-    fn try_from(value: &Signature) -> Result<Self, Self::Error> {
-        if value.scheme != SigningScheme::Ed25519 {
-            return Err(SecError::InvalidScheme);
-        }
+// impl TryFrom<&Signature> for EdSignature {
+//     type Error = SecError;
+//     fn try_from(value: &Signature) -> Result<Self, Self::Error> {
+//         if value.scheme != SigningScheme::Ed25519 {
+//             return Err(SecError::InvalidScheme);
+//         }
 
-        Ok(EdSignature::from_slice(value.as_bytes()).map_err(|_| SecError::InvalidSignature)?)
-    }
-}
+//         Ok(EdSignature::from_slice(value.as_bytes()).map_err(|_| SecError::InvalidSignature)?)
+//     }
+// }
 
 impl TryFrom<&Signature> for EcdsaSignature {
     type Error = SecError;

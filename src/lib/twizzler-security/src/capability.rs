@@ -1,4 +1,4 @@
-use ed25519_dalek::SIGNATURE_LENGTH;
+// use ed25519_dalek::SIGNATURE_LENGTH;
 use sha2::Digest;
 use twizzler_abi::object::{ObjID, Protections};
 
@@ -72,7 +72,6 @@ impl Cap {
         signing_scheme: SigningScheme,
     ) -> Result<Self, SecError> {
         let flags = CapFlags::Blake3 | CapFlags::Ed25519; // set flags
-        let siglen = SIGNATURE_LENGTH;
 
         let hash_arr = Cap::serialize(accessor, target, prots, flags, revocation, gates);
 

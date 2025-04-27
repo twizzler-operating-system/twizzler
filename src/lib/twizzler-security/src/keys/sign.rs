@@ -1,7 +1,7 @@
-use ed25519_dalek::{
-    ed25519::signature::SignerMut, SecretKey, SigningKey as EdSigningKey, SECRET_KEY_LENGTH,
-    SIGNATURE_LENGTH,
-};
+// use ed25519_dalek::{
+//     ed25519::signature::SignerMut, SecretKey, SigningKey as EdSigningKey, SECRET_KEY_LENGTH,
+//     SIGNATURE_LENGTH,
+// };
 use p256::ecdsa::{signature::Signer, Signature as EcdsaSignature, SigningKey as EcdsaSigningKey};
 
 use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
@@ -18,26 +18,26 @@ pub struct SigningKey {
 impl SigningKey {
     //TODO: gate this behind the `kernel` feature
     pub fn new(scheme: &SigningScheme) -> (Self, VerifyingKey) {
-        let secret_key = SecretKey::default();
-        todo!("should generate signing/verifying key in kernel")
+        todo!("do something :sob:")
     }
 
     /// Builds up a signing key from a slice of bytes and a specified signing scheme.
     pub fn from_slice(slice: &[u8], scheme: SigningScheme) -> Result<Self, SecError> {
         match scheme {
             SigningScheme::Ed25519 => {
-                if slice.len() != SECRET_KEY_LENGTH {
-                    return Err(SecError::InvalidSigningKey);
-                }
+                unimplemented!("until we figure out whats wrong with data layout")
+                // if slice.len() != SECRET_KEY_LENGTH {
+                //     return Err(SecError::InvalidSigningKey);
+                // }
 
-                let mut buf = [0_u8; MAX_KEY_SIZE];
+                // let mut buf = [0_u8; MAX_KEY_SIZE];
 
-                buf[0..SECRET_KEY_LENGTH].copy_from_slice(slice);
-                Ok(Self {
-                    key: buf,
-                    len: slice.len(),
-                    scheme: SigningScheme::Ed25519,
-                })
+                // buf[0..SECRET_KEY_LENGTH].copy_from_slice(slice);
+                // Ok(Self {
+                //     key: buf,
+                //     len: slice.len(),
+                //     scheme: SigningScheme::Ed25519,
+                // })
             }
             SigningScheme::Ecdsa => {
                 // the crate doesnt expose a const to verify key length,
@@ -69,8 +69,9 @@ impl SigningKey {
     pub fn sign(&self, msg: &[u8]) -> Result<Signature, SecError> {
         match self.scheme {
             SigningScheme::Ed25519 => {
-                let mut signing_key: EdSigningKey = self.try_into()?;
-                Ok(signing_key.sign(msg).into())
+                // let mut signing_key: EdSigningKey = self.try_into()?;
+                // Ok(signing_key.sign(msg).into())
+                unimplemented!("until we figure out whats wrong with data layout")
             }
             SigningScheme::Ecdsa => {
                 let mut signing_key: EcdsaSigningKey = self.try_into()?;
@@ -81,20 +82,20 @@ impl SigningKey {
     }
 }
 
-impl TryFrom<&SigningKey> for EdSigningKey {
-    type Error = SecError;
+// impl TryFrom<&SigningKey> for EdSigningKey {
+//     type Error = SecError;
 
-    fn try_from(value: &SigningKey) -> Result<Self, Self::Error> {
-        if value.scheme != SigningScheme::Ed25519 {
-            return Err(SecError::InvalidScheme);
-        }
+//     fn try_from(value: &SigningKey) -> Result<Self, Self::Error> {
+//         if value.scheme != SigningScheme::Ed25519 {
+//             return Err(SecError::InvalidScheme);
+//         }
 
-        let mut buf = [0_u8; SECRET_KEY_LENGTH];
-        buf.copy_from_slice(value.as_bytes());
+//         let mut buf = [0_u8; SECRET_KEY_LENGTH];
+//         buf.copy_from_slice(value.as_bytes());
 
-        Ok(EdSigningKey::from_bytes(&buf))
-    }
-}
+//         Ok(EdSigningKey::from_bytes(&buf))
+//     }
+// }
 
 impl TryFrom<&SigningKey> for EcdsaSigningKey {
     type Error = SecError;

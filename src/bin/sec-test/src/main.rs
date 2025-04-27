@@ -115,7 +115,7 @@ fn main() {
             let accessor = 0x321.into();
             let prots = Protections::all();
             let target_priv_key =
-                SigningKey::from_slice(&rand_32(), SigningScheme::Ed25519).expect("should work");
+                SigningKey::from_slice(&rand_32(), Default::default()).expect("should work");
 
             let cap = Cap::new(
                 target,
@@ -132,6 +132,13 @@ fn main() {
             sec_ctx.add_cap(cap);
 
             println!("{}", sec_ctx);
+
+            let id = sec_ctx.id();
+            drop(sec_ctx);
+
+            let sec_ctx: SecCtx = id.try_into().unwrap();
+
+            println!("just read: {}", sec_ctx)
         }
     }
 }

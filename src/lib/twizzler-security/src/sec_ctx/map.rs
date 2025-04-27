@@ -42,8 +42,7 @@ pub enum CtxMapItemType {
     Del,
 }
 
-const OBJECT_ROOT_OFFSET: usize =
-    size_of::<CtxMapItem>() * MAX_SEC_CTX_MAP_LEN + size_of::<u32>() + NULLPAGE_SIZE;
+const OBJECT_ROOT_OFFSET: usize = size_of::<SecCtxMap>() + NULLPAGE_SIZE;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SecCtxMapLookupResult {
