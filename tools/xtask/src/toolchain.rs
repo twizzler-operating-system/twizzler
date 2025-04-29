@@ -200,6 +200,7 @@ fn install_build_tools(_cli: &BootstrapOptions) -> anyhow::Result<()> {
         .arg("--prefix")
         .arg("toolchain/install")
         .arg("--force-reinstall")
+        .arg("--ignore-installed")
         .arg("--no-warn-script-location")
         .arg("meson")
         .arg("ninja")
