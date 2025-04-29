@@ -17,16 +17,14 @@ To run qemu through the build system, you'll need qemu installed.
 ## Overview
 
 Installing the tools:
-  1. sudo apt install build-essential python3 python3-pip cmake ninja-build llvm-18
+  1. sudo apt install build-essential python3 python3-pip cmake ninja-build
   2. Install Rust https://www.rust-lang.org/tools/install
-  3. Install meson (needed to build libc): pip3 install meson
-     note: you'll need the pip bin directory in your path.
 
 Note that you'll need mke2fs (typically found in e2fsprogs). Most Linux installations should already have this
 command available. On MacOS, with brew, it can be installed with `brew install e2fsprogs`.
 
 Note that we depend on the system LLVM for some initial bindgen commands. The minimum version for this is 18.
-On ubuntu, this can be selected for building twizzler by env vars: `export LLVM_CONFIG_PATH=/usr/bin/llvm-config-18`.
+See here: https://apt.llvm.org/ for install instructions. You may need to `export LLVM_CONFIG_PATH=/usr/bin/llvm-config-18`.
 
 Building Twizzler is done in several steps:
 
@@ -89,6 +87,8 @@ which will bootup a qemu instance. If you want to run the release mode version, 
 ```
 cargo start-qemu --profile release
 ```
+
+When running from command line, if you don't have access to a screen, QEMU may require you add `-q=-nographic` to the command.
 
 ## Step 4: Exiting Twizzler
 

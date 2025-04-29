@@ -45,13 +45,16 @@ See [conduct.md](doc/src/conduct.md) for details.
 <root>
     doc -- documentation files
     src
-        bin -- Twizzler userspace programs
+        bin    -- Twizzler userspace programs
         kernel -- the Twizzler kernel itself
-        lib -- libraries for Twizzler
+        lib    -- libraries for Twizzler
+        rt     -- Runtime libraries and security monitor
+        ports  -- Third-party explicitly ported software
     target (once built) -- compilation artifacts
     toolchain -- sources for all aspects of the Rust toolchain used to build Twizzler
         install (once built) -- install location for the toolchain
         src -- sources for the toolchain
-            rust -- cloned repo for Rust, modified for Twizzler userspace
+            rust  -- cloned repo for Rust, modified for Twizzler userspace
+            mlibc -- cloned repo for mlibc, a C library, patched for Twizzler
     tools -- build tools, like the build system orchestrator xtask
 ```
