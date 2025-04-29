@@ -207,6 +207,7 @@ pub fn late_init() {
         crate::interrupt::PinPolarity::ActiveHigh,
         Destination::Bsp,
     );
+    interrupt_handler();
 }
 
 pub fn interrupt_handler() {

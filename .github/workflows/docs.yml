@@ -3,20 +3,29 @@ name: Docs
 on:
   push:
     branches: [ main ]
-    paths-ignore: '**/README.md'
 
 env:
   CARGO_TERM_COLOR: always
   LLVM_CONFIG_PATH: /usr/bin/llvm-config-18
+  CC: clang-18
+  CXX: clang++-18
+  LD: clang++-18
 
 jobs: 
-  setup:
-    uses: ./.github/workflows/setup.yml
-  build:
-    needs: setup
+  build_docs:
     runs-on: self-hosted
-
     steps:
+    - name: Cleanup
+      run: |
+        ls -la 
+        rm -rf ./* || true
+        rm -rf ./.??* || true
+        ls -la 
+    - uses: actions/checkout@v2
+      with:
+        submodules: recursive
+    - id: setup
+      uses: ./.github/actions/setup
     - name: Keygen
       run: |
         echo "$DEPLOY_KEY_DATA" > deploy_key
