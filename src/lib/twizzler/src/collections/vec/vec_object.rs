@@ -1,5 +1,7 @@
 use std::{mem::MaybeUninit, ops::RangeBounds};
 
+use twizzler_rt_abi::error::ArgumentError;
+
 use super::{Vec, VecObjectAlloc};
 use crate::{
     alloc::{Allocator, SingleObjectAllocator},
@@ -140,7 +142,7 @@ impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
 
     pub fn remove(&mut self, idx: usize) -> crate::tx::Result<T> {
         if idx >= self.len() {
-            return Err(crate::tx::TxError::InvalidArgument);
+            return Err(ArgumentError::InvalidArgument.into());
         }
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref().owned();
@@ -208,7 +210,7 @@ impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
 
     pub fn remove_inplace(&mut self, idx: usize) -> crate::tx::Result<()> {
         if idx >= self.len() {
-            return Err(crate::tx::TxError::InvalidArgument);
+            return Err(ArgumentError::InvalidArgument.into());
         }
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref().owned();

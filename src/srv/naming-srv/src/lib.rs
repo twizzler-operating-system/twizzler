@@ -18,7 +18,10 @@ use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
-use twizzler_rt_abi::object::{MapFlags, ObjID};
+use twizzler_rt_abi::{
+    error::{ArgumentError, ResourceError},
+    object::{MapFlags, ObjID},
+};
 
 struct NamespaceClient<'a> {
     session: NameSession<'a>,
@@ -52,7 +55,7 @@ impl<'a> NamespaceClient<'a> {
 
     fn read_buffer(&self, name_len: usize) -> Result<PathBuf> {
         if name_len >= PATH_MAX {
-            return Err(ErrorKind::InvalidFilename);
+            return Err(ArgumentError::InvalidArgument.into());
         }
         let mut buf = vec![0; name_len];
         self.buffer.read(&mut buf);
@@ -63,12 +66,12 @@ impl<'a> NamespaceClient<'a> {
 
     fn read_buffer_at(&self, name_len: usize, off: usize) -> Result<PathBuf> {
         if name_len >= PATH_MAX {
-            return Err(ErrorKind::InvalidFilename);
+            return Err(ArgumentError::InvalidArgument.into());
         }
         let mut buf = vec![0; name_len];
         self.buffer.read_offset(&mut buf, off);
         Ok(PathBuf::from(
-            String::from_utf8(buf).map_err(|_| ErrorKind::InvalidFilename)?,
+            String::from_utf8(buf).map_err(|_| ArgumentError::InvalidArgument)?,
         ))
     }
 }
@@ -113,7 +116,7 @@ fn get_kernel_init_info() -> &'static KernelInitInfo {
 
 // How would this work if I changed the root while handles were open?
 #[secure_gate(options(info))]
-pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) -> ObjID {
+pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) -> Result<ObjID> {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(Level::INFO)
@@ -122,7 +125,7 @@ pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) -> ObjID {
     )
     .unwrap();
 
-    NAMINGSERVICE
+    Ok(NAMINGSERVICE
         .get_or_create(|_| {
             let namer = Namer::new_with(bootstrap)
                 .or::<ErrorKind>(Ok(Namer::new()))
@@ -139,30 +142,33 @@ pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) -> ObjID {
             namer
         })
         .names
-        .id()
+        .id())
 }
 
 #[secure_gate(options(info))]
-pub fn open_handle(info: &secgate::GateCallInfo) -> Option<(Descriptor, ObjID)> {
-    let service = NAMINGSERVICE.get()?;
+pub fn open_handle(info: &secgate::GateCallInfo) -> Result<(Descriptor, ObjID)> {
+    let service = NAMINGSERVICE.get().ok_or(ResourceError::Unavailable)?;
     let mut binding = service.handles.lock().unwrap();
 
     let session = service.names.root_session();
-    let client = NamespaceClient::new(session)?;
+    let client = NamespaceClient::new(session).ok_or(ResourceError::Unavailable)?;
     let id = client.sbid();
 
-    let desc = binding.insert(info.source_context().unwrap_or(0.into()), client)?;
+    let desc = binding
+        .insert(info.source_context().unwrap_or(0.into()), client)
+        .ok_or(ResourceError::OutOfResources)?;
 
-    Some((desc, id))
+    Ok((desc, id))
 }
 
 #[secure_gate(options(info))]
-pub fn close_handle(info: &secgate::GateCallInfo, desc: Descriptor) {
+pub fn close_handle(info: &secgate::GateCallInfo, desc: Descriptor) -> Result<()> {
     let service = NAMINGSERVICE.get().unwrap();
 
     let mut binding = service.handles.lock().unwrap();
 
     binding.remove(info.source_context().unwrap_or(0.into()), desc);
+    Ok(())
 }
 
 #[secure_gate(options(info))]
@@ -176,7 +182,7 @@ pub fn put(
     let mut binding = service.handles.lock().unwrap();
     let client = binding
         .lookup_mut(info.source_context().unwrap_or(0.into()), desc)
-        .ok_or(ErrorKind::Other)?;
+        .ok_or(ArgumentError::BadHandle)?;
 
     let path = client.read_buffer(name_len)?;
 
@@ -194,7 +200,7 @@ pub fn mkns(
     let mut binding = service.handles.lock().unwrap();
     let client = binding
         .lookup_mut(info.source_context().unwrap_or(0.into()), desc)
-        .ok_or(ErrorKind::Other)?;
+        .ok_or(ArgumentError::BadHandle)?;
 
     let path = client.read_buffer(name_len)?;
 

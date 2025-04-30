@@ -12,7 +12,10 @@ use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{BackingType, ObjectCreate, ObjectCreateFlags},
 };
-use twizzler_rt_abi::object::{MapFlags, ObjID};
+use twizzler_rt_abi::{
+    error::{NamingError, TwzError},
+    object::{MapFlags, ObjID},
+};
 
 use crate::mon::{get_monitor, space::MapInfo};
 
@@ -124,10 +127,10 @@ impl ContextEngine for Engine {
 
 static NAMING: OnceLock<NameStore> = OnceLock::new();
 
-pub fn set_naming(root: ObjID) -> Result<(), ()> {
+pub fn set_naming(root: ObjID) -> Result<(), TwzError> {
     NAMING
-        .set(NameStore::new_with_root(root).map_err(|_| ())?)
-        .map_err(|_| ())
+        .set(NameStore::new_with_root(root)?)
+        .map_err(|_| NamingError::AlreadyBound.into())
 }
 
 pub fn naming() -> Option<&'static NameStore> {

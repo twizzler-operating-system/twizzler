@@ -5,9 +5,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 
 #[cfg(not(feature = "kernel"))]
-use twizzler_rt_abi::thread::SpawnError;
-
-#[cfg(not(feature = "kernel"))]
 use crate::syscall::*;
 use crate::syscall::{ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep};
 #[allow(unused_imports)]
@@ -60,17 +57,6 @@ impl ExecutionState {
             2 => ExecutionState::Suspended,
             255 => ExecutionState::Exited,
             _ => ExecutionState::Running,
-        }
-    }
-}
-
-#[cfg(not(feature = "kernel"))]
-impl From<ThreadSpawnError> for SpawnError {
-    fn from(ts: ThreadSpawnError) -> Self {
-        match ts {
-            ThreadSpawnError::Unknown => Self::Other,
-            ThreadSpawnError::InvalidArgument => Self::InvalidArgument,
-            ThreadSpawnError::NotFound => Self::ObjectNotFound,
         }
     }
 }

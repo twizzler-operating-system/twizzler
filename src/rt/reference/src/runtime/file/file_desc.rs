@@ -13,8 +13,10 @@ use twizzler_abi::{
     },
 };
 use twizzler_rt_abi::{
+    error::{ArgumentError, GenericError},
     fd::FdInfo,
     object::{MapFlags, ObjectHandle},
+    Result,
 };
 
 use super::{CreateOptions, OperationOptions};
@@ -86,7 +88,7 @@ impl FileDesc {
         })
     }
 
-    pub fn seek(&mut self, pos: SeekFrom) -> std::io::Result<usize> {
+    pub fn seek(&mut self, pos: SeekFrom) -> Result<usize> {
         let metadata_handle = unsafe {
             &mut *self
                 .handle
@@ -102,14 +104,14 @@ impl FileDesc {
         };
 
         if new_pos < 0 {
-            Err(ErrorKind::InvalidInput.into())
+            Err(ArgumentError::InvalidArgument.into())
         } else {
             self.pos = new_pos as u64;
             Ok(self.pos.try_into().unwrap())
         }
     }
 
-    pub fn stat(&self) -> std::io::Result<FdInfo> {
+    pub fn stat(&self) -> Result<FdInfo> {
         let metadata_handle = unsafe {
             &mut *self
                 .handle
@@ -130,7 +132,7 @@ impl FileDesc {
         })
     }
 
-    pub fn fd_cmd(&mut self, cmd: u32, _arg: *const u8, _ret: *mut u8) -> u32 {
+    pub fn fd_cmd(&mut self, cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
         let metadata_handle: &FileMetadata = unsafe {
             self.handle
                 .start()
@@ -141,26 +143,13 @@ impl FileDesc {
         };
         match cmd {
             twizzler_rt_abi::bindings::FD_CMD_SYNC => {
-                let mut ok = true;
                 for id in &metadata_handle.direct {
                     if id.raw() != 0 {
-                        if twizzler_abi::syscall::sys_object_ctrl(*id, ObjectControlCmd::Sync)
-                            .is_err()
-                        {
-                            ok = false;
-                        }
+                        twizzler_abi::syscall::sys_object_ctrl(*id, ObjectControlCmd::Sync)?;
                     }
                 }
-                if twizzler_abi::syscall::sys_object_ctrl(self.handle.id(), ObjectControlCmd::Sync)
-                    .is_err()
-                {
-                    return 1;
-                }
-                if ok {
-                    0
-                } else {
-                    1
-                }
+                twizzler_abi::syscall::sys_object_ctrl(self.handle.id(), ObjectControlCmd::Sync)?;
+                Ok(())
             }
             /*
                         twizzler_rt_abi::bindings::FD_CMD_DELETE => {
@@ -192,7 +181,7 @@ impl FileDesc {
                             }
                         }
             */
-            _ => 1,
+            _ => Err(GenericError::NoSuchOperation.into()),
         }
     }
 }

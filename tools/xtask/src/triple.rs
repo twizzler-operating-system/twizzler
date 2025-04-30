@@ -102,9 +102,9 @@ impl ToString for Host {
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Triple {
-    machine: Machine,
-    arch: Arch,
-    host: Host,
+    pub machine: Machine,
+    pub arch: Arch,
+    pub host: Host,
     env: Option<String>,
 }
 

@@ -2,7 +2,7 @@
 
 use std::{
     collections::VecDeque,
-    io::{Error, ErrorKind},
+    io::ErrorKind,
     pin::Pin,
     sync::{atomic::Ordering, Arc, Mutex},
 };
@@ -14,10 +14,13 @@ use twizzler_abi::{
         BusType, DeviceInterruptFlags, DeviceRepr, InterruptVector, MailboxPriority,
         NUM_DEVICE_INTERRUPTS,
     },
-    kso::KactionError,
     syscall::{ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep},
 };
 use twizzler_futures::TwizzlerWaitable;
+use twizzler_rt_abi::{
+    error::{ResourceError, TwzError},
+    Result,
+};
 
 use super::Device;
 
@@ -81,17 +84,6 @@ impl MailboxInner {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-/// Possible errors for interrupt allocation.
-pub enum InterruptAllocationError {
-    /// The device has run out of interrupt vectors that can be used.
-    NoMoreInterrupts,
-    /// Some option was unsupported.
-    Unsupported,
-    /// The kernel encountered an error.
-    KernelError(KactionError),
-}
-
 impl TwizzlerWaitable for MailboxInner {
     fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
         ThreadSyncSleep::new(
@@ -152,9 +144,7 @@ impl DeviceEventStream {
     }
 
     /// Allocate a new interrupt on this device.
-    pub(crate) fn allocate_interrupt(
-        self: &Arc<Self>,
-    ) -> Result<InterruptInfo, InterruptAllocationError> {
+    pub(crate) fn allocate_interrupt(self: &Arc<Self>) -> Result<InterruptInfo> {
         // SAFETY: We grab ownership of the interrupt repr data via the atomic swap.
         for i in 0..NUM_DEVICE_INTERRUPTS {
             if self.device.repr().interrupts[i]
@@ -164,7 +154,7 @@ impl DeviceEventStream {
             {
                 let (vec, devint) = match self.device.bus_type() {
                     BusType::Pcie => self.device.allocate_interrupt(i)?,
-                    _ => return Err(InterruptAllocationError::Unsupported),
+                    _ => return Err(TwzError::NOT_SUPPORTED),
                 };
                 self.device
                     .repr_mut()
@@ -177,7 +167,7 @@ impl DeviceEventStream {
                 });
             }
         }
-        Err(InterruptAllocationError::NoMoreInterrupts)
+        Err(TwzError::Resource(ResourceError::OutOfResources))
     }
 
     pub(crate) fn new(device: Arc<Device>) -> Self {
@@ -209,7 +199,7 @@ impl DeviceEventStream {
     fn future_of_int(
         &self,
         inum: usize,
-    ) -> impl std::future::Future<Output = Result<(usize, u64), Error>> + '_ {
+    ) -> impl std::future::Future<Output = std::io::Result<(usize, u64)>> + '_ {
         Box::pin(self.asyncs[inum].read_with(move |ii| {
             ii.repr()
                 .check_for_interrupt(ii.inum)
@@ -221,7 +211,7 @@ impl DeviceEventStream {
     fn future_of_mb(
         &self,
         inum: usize,
-    ) -> impl std::future::Future<Output = Result<(usize, u64), Error>> + '_ {
+    ) -> impl std::future::Future<Output = std::io::Result<(usize, u64)>> + '_ {
         Box::pin(self.async_mb[inum].read_with(move |ii| {
             ii.repr()
                 .check_for_mailbox(ii.inum)

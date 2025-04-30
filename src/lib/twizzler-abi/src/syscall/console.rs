@@ -1,40 +1,8 @@
 use bitflags::bitflags;
-use num_enum::{FromPrimitive, IntoPrimitive};
+use twizzler_rt_abi::Result;
 
-use super::{convert_codes_to_result, Syscall};
+use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::arch::syscall::raw_syscall;
-
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    IntoPrimitive,
-    FromPrimitive,
-    thiserror::Error,
-)]
-#[repr(u64)]
-/// Possible errors returned by reading from the kernel console's input.
-pub enum KernelConsoleReadError {
-    /// Unknown error.
-    #[num_enum(default)]
-    #[error("unknown error")]
-    Unknown = 0,
-    /// Operation would block, but non-blocking was requested.
-    #[error("would block")]
-    WouldBlock = 1,
-    /// Failed to read because there was no input mechanism made available to the kernel.
-    #[error("no such device")]
-    NoSuchDevice = 2,
-    /// The input mechanism had an internal error.
-    #[error("I/O error")]
-    IOError = 3,
-}
-
-impl core::error::Error for KernelConsoleReadError {}
 
 bitflags! {
     /// Flags to pass to [sys_kernel_console_read].
@@ -81,10 +49,7 @@ impl From<KernelConsoleReadFlags> for u64 {
 /// kernel console output buffer, use [sys_kernel_console_read_buffer].
 ///
 /// Returns the number of bytes read on success and [KernelConsoleReadError] on failure.
-pub fn sys_kernel_console_read(
-    buffer: &mut [u8],
-    flags: KernelConsoleReadFlags,
-) -> Result<usize, KernelConsoleReadError> {
+pub fn sys_kernel_console_read(buffer: &mut [u8], flags: KernelConsoleReadFlags) -> Result<usize> {
     let (code, val) = unsafe {
         raw_syscall(
             Syscall::KernelConsoleRead,
@@ -96,34 +61,8 @@ pub fn sys_kernel_console_read(
             ],
         )
     };
-    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, |_, v| v.into())
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, twzerr)
 }
-
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    IntoPrimitive,
-    FromPrimitive,
-    thiserror::Error,
-)]
-#[repr(u64)]
-/// Possible errors returned by reading from the kernel console's input.
-pub enum KernelConsoleReadBufferError {
-    /// Unknown error.
-    #[num_enum(default)]
-    #[error("unknown error")]
-    Unknown = 0,
-    /// Operation would block, but non-blocking was requested.
-    #[error("would block")]
-    WouldBlock = 1,
-}
-
-impl core::error::Error for KernelConsoleReadBufferError {}
 
 bitflags! {
     /// Flags to pass to [sys_kernel_console_read_buffer].
@@ -149,7 +88,7 @@ impl From<KernelConsoleReadBufferFlags> for u64 {
 pub fn sys_kernel_console_read_buffer(
     buffer: &mut [u8],
     flags: KernelConsoleReadBufferFlags,
-) -> Result<usize, KernelConsoleReadBufferError> {
+) -> Result<usize> {
     let (code, val) = unsafe {
         raw_syscall(
             Syscall::KernelConsoleRead,
@@ -161,7 +100,7 @@ pub fn sys_kernel_console_read_buffer(
             ],
         )
     };
-    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, |_, v| v.into())
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, twzerr)
 }
 
 bitflags! {

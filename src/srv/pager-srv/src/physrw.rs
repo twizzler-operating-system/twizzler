@@ -10,7 +10,9 @@ type QueueRef = Arc<Queue>;
 
 fn get_object(ptr: *const u8) -> (ObjID, usize) {
     let handle = twizzler_rt_abi::object::twz_rt_get_object_handle(ptr).unwrap();
-    (handle.id(), unsafe { ptr.sub_ptr(handle.start()) })
+    (handle.id(), unsafe {
+        ptr.offset_from_unsigned(handle.start())
+    })
 }
 
 async fn do_physrw_request(

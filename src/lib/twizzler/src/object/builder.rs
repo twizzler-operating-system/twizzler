@@ -1,25 +1,13 @@
-use std::{alloc::AllocError, marker::PhantomData, mem::MaybeUninit};
+use std::{marker::PhantomData, mem::MaybeUninit};
 
-use thiserror::Error;
-use twizzler_abi::syscall::{LifetimeType, ObjectCreate, ObjectCreateError};
-use twizzler_rt_abi::object::{MapError, MapFlags};
+use twizzler_abi::syscall::{LifetimeType, ObjectCreate};
+use twizzler_rt_abi::object::MapFlags;
 
 use super::Object;
 use crate::{
     marker::{BaseType, StoreCopy},
     tx::TxObject,
 };
-
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-/// Possible errors from creating an object.
-pub enum CreateError {
-    #[error(transparent)]
-    Create(#[from] ObjectCreateError),
-    #[error(transparent)]
-    Map(#[from] MapError),
-    #[error(transparent)]
-    Alloc(#[from] AllocError),
-}
 
 /// An object builder, for constructing objects using a builder API.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -60,15 +48,12 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     where
         F: FnOnce(TxObject<MaybeUninit<Base>>) -> crate::tx::Result<TxObject<Base>>,
     {
-        let id = twizzler_abi::syscall::sys_object_create(self.spec, &[], &[])
-            .map_err(CreateError::from)?;
+        let id = twizzler_abi::syscall::sys_object_create(self.spec, &[], &[])?;
         let mut flags = MapFlags::READ | MapFlags::WRITE;
         if self.spec.lt == LifetimeType::Persistent {
             flags.insert(MapFlags::PERSIST);
         }
-        let mu_object = unsafe {
-            Object::<MaybeUninit<Base>>::map_unchecked(id, flags).map_err(CreateError::from)
-        }?;
+        let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
         let object = ctor(mu_object.tx()?)?;
         object.commit()
     }
@@ -77,15 +62,12 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     where
         F: FnOnce(&mut TxObject<MaybeUninit<Base>>),
     {
-        let id = twizzler_abi::syscall::sys_object_create(self.spec, &[], &[])
-            .map_err(CreateError::from)?;
+        let id = twizzler_abi::syscall::sys_object_create(self.spec, &[], &[])?;
         let mut flags = MapFlags::READ | MapFlags::WRITE;
         if self.spec.lt == LifetimeType::Persistent {
             flags.insert(MapFlags::PERSIST);
         }
-        let mu_object = unsafe {
-            Object::<MaybeUninit<Base>>::map_unchecked(id, flags).map_err(CreateError::from)
-        }?;
+        let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
         let mut tx = mu_object.tx()?;
         ctor(&mut tx);
         Ok(unsafe { tx.commit()?.cast() })

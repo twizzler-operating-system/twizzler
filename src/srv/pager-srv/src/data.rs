@@ -9,6 +9,7 @@ use object_store::{objid_to_ino, PageRequest};
 use secgate::util::{Descriptor, HandleMgr};
 use twizzler::object::ObjID;
 use twizzler_abi::pager::{ObjectInfo, ObjectRange, PhysRange};
+use twizzler_rt_abi::error::{ArgumentError, ResourceError, TwzError};
 
 use crate::{
     disk::DiskPageRequest,
@@ -367,9 +368,12 @@ impl PagerData {
         comp: ObjID,
         ds: Descriptor,
         f: impl FnOnce(&PagerClient) -> R,
-    ) -> Option<R> {
+    ) -> Result<R, TwzError> {
         let inner = self.inner.lock().unwrap();
-        Some(f(inner.handles.lookup(comp, ds)?))
+        Ok(f(inner
+            .handles
+            .lookup(comp, ds)
+            .ok_or(ArgumentError::BadHandle)?))
     }
 
     pub fn with_handle_mut<R>(
@@ -382,9 +386,12 @@ impl PagerData {
         Some(f(inner.handles.lookup_mut(comp, ds)?))
     }
 
-    pub fn new_handle(&self, comp: ObjID) -> Option<Descriptor> {
+    pub fn new_handle(&self, comp: ObjID) -> Result<Descriptor, TwzError> {
         let mut inner = self.inner.lock().unwrap();
-        inner.handles.insert(comp, PagerClient::new()?)
+        inner
+            .handles
+            .insert(comp, PagerClient::new()?)
+            .ok_or(ResourceError::OutOfResources.into())
     }
 
     pub fn drop_handle(&self, comp: ObjID, ds: Descriptor) {

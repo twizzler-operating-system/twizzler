@@ -3,24 +3,29 @@ name: Docs
 on:
   push:
     branches: [ main ]
-    paths-ignore: '**/README.md'
 
 env:
   CARGO_TERM_COLOR: always
+  LLVM_CONFIG_PATH: /usr/bin/llvm-config-18
+  CC: clang-18
+  CXX: clang++-18
+  LD: clang++-18
 
-jobs:
-  build:
+jobs: 
+  build_docs:
     runs-on: self-hosted
-    environment: Docs Build
-
     steps:
+    - name: Cleanup
+      run: |
+        ls -la 
+        rm -rf ./* || true
+        rm -rf ./.??* || true
+        ls -la 
     - uses: actions/checkout@v2
       with:
         submodules: recursive
-    - name: Install latest nightly
-      uses: actions-rs/toolchain@v1
-      with:
-          toolchain: stable
+    - id: setup
+      uses: ./.github/actions/setup
     - name: Keygen
       run: |
         echo "$DEPLOY_KEY_DATA" > deploy_key
@@ -37,11 +42,11 @@ jobs:
         curl -Lf https://github.com/rust-lang/mdBook/releases/download/v0.4.13/mdbook-v0.4.13-x86_64-unknown-linux-gnu.tar.gz | tar -xz --directory=./mdbook
         echo `pwd`/mdbook >> $GITHUB_PATH
     - name: Bootstrap Toolchain
-      run: cargo bootstrap
+      run: cargo +nightly bootstrap
     - name: Build
-      run: cargo doc-all
+      run: cargo +nightly doc-all
     - name: Copy
-      run: mkdir -p twizzler-operating-system.github.io/nightly && cp -r target/x86_64-unknown-twizzler/doc twizzler-operating-system.github.io/nightly/
+      run: mkdir -p twizzler-operating-system.github.io/nightly && cp -r target/dynamic/x86_64-unknown-twizzler/doc twizzler-operating-system.github.io/nightly/
     - name: Build Book
       run: cd doc && mdbook build
     - name: Copy Book

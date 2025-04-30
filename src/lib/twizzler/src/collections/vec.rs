@@ -5,6 +5,7 @@ use std::{
 };
 
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_rt_abi::error::{ArgumentError, ResourceError};
 
 use crate::{
     alloc::{Allocator, SingleObjectAllocator},
@@ -195,7 +196,7 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
             if self.inner.start.raw() as usize + size_of::<T>() * self.inner.cap
                 >= MAX_SIZE - NULLPAGE_SIZE
             {
-                return Err(crate::tx::TxError::Exhausted);
+                return Err(ResourceError::OutOfMemory.into());
             }
             let newcap = std::cmp::max(self.inner.cap, 1) * 2;
             let inner = self.inner.get_mut(tx.as_ref())?;
@@ -248,7 +249,7 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
     pub fn remove_inplace(&self, idx: usize, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
         let inner = self.inner.get_mut(tx.as_ref())?;
         if idx >= inner.len {
-            return Err(crate::tx::TxError::InvalidArgument);
+            return Err(ArgumentError::InvalidArgument.into());
         }
         inner.with_mut(idx, tx.as_ref(), |item| {
             unsafe { core::ptr::drop_in_place(item) };
@@ -310,7 +311,7 @@ impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
     pub fn remove(&self, idx: usize, tx: impl AsRef<TxObject>) -> Result<T> {
         let inner = self.inner.get_mut(tx.as_ref())?;
         if idx >= inner.len {
-            return Err(crate::tx::TxError::InvalidArgument);
+            return Err(ArgumentError::InvalidArgument.into());
         }
         let val = inner.with_slice(|slice| unsafe { ((&slice[idx]) as *const T).read() });
         inner.do_remove(idx, tx)?;
@@ -405,7 +406,6 @@ mod tests {
 
         let item = vec_obj.get(0).unwrap();
         assert_eq!(item.x, 42);
-        drop(item);
         let ritem = vec_obj.remove(0).unwrap();
 
         assert_eq!(ritem.x, 42);
@@ -420,26 +420,20 @@ mod tests {
 
         let item = vec_obj.get(0).unwrap();
         assert_eq!(item.x, 42);
-        drop(item);
         let item = vec_obj.get(1).unwrap();
         assert_eq!(item.x, 43);
-        drop(item);
         let item = vec_obj.get(2).unwrap();
         assert_eq!(item.x, 44);
-        drop(item);
         let item = vec_obj.get(3);
         assert!(item.is_none());
-        drop(item);
 
         let ritem = vec_obj.remove(1).unwrap();
         assert_eq!(ritem.x, 43);
 
         let item = vec_obj.get(0).unwrap();
         assert_eq!(item.x, 42);
-        drop(item);
         let item = vec_obj.get(1).unwrap();
         assert_eq!(item.x, 44);
-        drop(item);
         let item = vec_obj.get(2);
         assert!(item.is_none());
     }

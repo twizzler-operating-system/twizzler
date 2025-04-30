@@ -46,6 +46,7 @@ unsafe extern "C" fn trampoline_entry_code16() {
         ".byte 0x71",
         ".byte 0x08",
         ".byte 0x00",
+        ".code64",
     )
 }
 #[naked]
@@ -84,6 +85,7 @@ unsafe extern "C" fn trampoline_entry_code32() {
         ".byte 0x00",
         ".byte 0x08",
         ".byte 0x00",
+        ".code64",
     )
 }
 

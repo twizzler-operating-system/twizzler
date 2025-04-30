@@ -2,14 +2,16 @@ use core::mem::MaybeUninit;
 
 use object::object_ctrl;
 use twizzler_abi::{
-    kso::{KactionCmd, KactionError, KactionValue},
+    kso::{KactionCmd, KactionValue},
     object::{ObjID, Protections},
     syscall::{
-        ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, GetRandomError,
-        GetRandomFlags, HandleType, KernelConsoleReadSource, ObjectCreateError, ObjectMapError,
-        ObjectReadMapError, ReadClockInfoError, ReadClockListError, ReadClockListFlags, SysInfo,
-        Syscall, ThreadSpawnError, ThreadSyncError,
+        ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, GetRandomFlags, HandleType,
+        KernelConsoleReadSource, ReadClockListFlags, SysInfo, Syscall,
     },
+};
+use twizzler_rt_abi::{
+    error::{ArgumentError, ResourceError, TwzError},
+    Result,
 };
 
 use self::{
@@ -68,19 +70,19 @@ fn type_sys_object_create(
     src_len: u64,
     tie_ptr: u64,
     tie_len: u64,
-) -> Result<ObjID, ObjectCreateError> {
+) -> Result<ObjID> {
     let srcs =
-        unsafe { create_user_slice(src_ptr, src_len) }.ok_or(ObjectCreateError::InvalidArgument)?;
+        unsafe { create_user_slice(src_ptr, src_len) }.ok_or(ArgumentError::InvalidArgument)?;
     let ties =
-        unsafe { create_user_slice(tie_ptr, tie_len) }.ok_or(ObjectCreateError::InvalidArgument)?;
-    let create = unsafe { create_user_ptr(create) }.ok_or(ObjectCreateError::InvalidArgument)?;
+        unsafe { create_user_slice(tie_ptr, tie_len) }.ok_or(ArgumentError::InvalidArgument)?;
+    let create = unsafe { create_user_ptr(create) }.ok_or(ArgumentError::InvalidArgument)?;
     object::sys_object_create(create, srcs, ties)
 }
 
-fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<usize, ThreadSyncError> {
-    let slice = unsafe { create_user_slice(ptr, len) }.ok_or(ThreadSyncError::InvalidArgument)?;
+fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<usize> {
+    let slice = unsafe { create_user_slice(ptr, len) }.ok_or(ArgumentError::InvalidArgument)?;
     let timeout =
-        unsafe { create_user_nullable_ptr(timeoutptr) }.ok_or(ThreadSyncError::InvalidArgument)?;
+        unsafe { create_user_nullable_ptr(timeoutptr) }.ok_or(ArgumentError::InvalidArgument)?;
     sync::sys_thread_sync(slice, timeout)
 }
 
@@ -99,7 +101,7 @@ fn type_sys_kaction(
     arg: u64,
     _flags: u64,
     arg2: u64,
-) -> Result<KactionValue, KactionError> {
+) -> Result<KactionValue> {
     let cmd = KactionCmd::try_from(cmd)?;
     let objid = if hi == 0 {
         None
@@ -109,10 +111,10 @@ fn type_sys_kaction(
     crate::device::kaction(cmd, objid, arg, arg2)
 }
 
-fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClockInfoError> {
+fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64> {
     let source: ClockSource = src.into();
     let info_ptr: &mut MaybeUninit<ClockInfo> =
-        unsafe { create_user_ptr(info) }.ok_or(ReadClockInfoError::InvalidArgument)?;
+        unsafe { create_user_ptr(info) }.ok_or(ArgumentError::InvalidArgument)?;
 
     match source {
         ClockSource::BestMonotonic => {
@@ -139,7 +141,7 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClo
             let ticks = {
                 let clock_list = TICK_SOURCES.lock();
                 if src as usize > clock_list.len() {
-                    return Err(ReadClockInfoError::InvalidArgument);
+                    return Err(ArgumentError::InvalidArgument.into());
                 }
                 clock_list[src as usize].read()
             };
@@ -154,13 +156,13 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64, ReadClo
     }
 }
 
-fn type_get_random(into_ptr: u64, into_length: u64, flags: u64) -> Result<u64, GetRandomError> {
+fn type_get_random(into_ptr: u64, into_length: u64, flags: u64) -> Result<u64> {
     let flags: GetRandomFlags = flags.into();
     let into_ptr = unsafe { create_user_slice(into_ptr, into_length) }
-        .ok_or(GetRandomError::InvalidArgument)?;
+        .ok_or(ArgumentError::InvalidArgument)?;
     let filled_buffer = getrandom(into_ptr, flags.contains(GetRandomFlags::NONBLOCKING));
     if !filled_buffer {
-        Err(GetRandomError::Unseeded)
+        Err(ResourceError::Unavailable.into())
     } else {
         // either it fills the entire length with entropy or it doesn't fill anything
         Ok(into_length)
@@ -173,18 +175,18 @@ fn type_read_clock_list(
     slice_len: u64,
     start: u64,
     flags: u64,
-) -> Result<u64, ReadClockListError> {
+) -> Result<u64> {
     // convert u64 back into things
     let slice = match unsafe { create_user_slice(clock_ptr, slice_len) } {
         Some(x) => x,
-        None => return Err(ReadClockListError::Unknown), // unknown error
+        None => return Err(ArgumentError::InvalidArgument.into()), // unknown error
     }; // maybe use ok or
 
     let kind: ClockKind = clock.into();
 
     let list_flags = match ReadClockListFlags::from_bits(flags as u32) {
         Some(x) => x,
-        None => return Err(ReadClockListError::InvalidArgument), // invalid flag present
+        None => return Err(ArgumentError::InvalidArgument.into()), // invalid flag present
     };
 
     const EMPTY: ReadClockListFlags = ReadClockListFlags::empty();
@@ -192,13 +194,13 @@ fn type_read_clock_list(
         ReadClockListFlags::ALL_CLOCKS | EMPTY => fill_with_every_first(slice, start),
         ReadClockListFlags::ONLY_KIND => fill_with_kind(slice, kind, start),
         ReadClockListFlags::FIRST_KIND => fill_with_first_kind(slice, kind),
-        _ => Err(ReadClockListError::InvalidArgument), // invalid flag combination
+        _ => return Err(ArgumentError::InvalidArgument.into()), // invalid flag present
     }
     .map(|x| x as u64)
 }
 
 #[inline]
-fn convert_result_to_codes<T, E, F, G>(result: Result<T, E>, f: F, g: G) -> (u64, u64)
+fn convert_result_to_codes<T, E, F, G>(result: core::result::Result<T, E>, f: F, g: G) -> (u64, u64)
 where
     F: Fn(T) -> (u64, u64),
     G: Fn(E) -> (u64, u64),
@@ -269,7 +271,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let ptr = context.arg1();
             let len = context.arg2();
             let source: KernelConsoleReadSource = source.into();
-            let res = if let Some(slice) = unsafe { create_user_slice(ptr, len) } {
+            let res: Result<_> = if let Some(slice) = unsafe { create_user_slice(ptr, len) } {
                 match source {
                     KernelConsoleReadSource::Console => {
                         let flags =
@@ -287,7 +289,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
                     }
                 }
             } else {
-                Err(0u64)
+                Err(ArgumentError::InvalidArgument.into())
             }
             .map(|x| x as u64);
             let (code, val) = convert_result_to_codes(res, zero_ok, one_err);
@@ -343,7 +345,8 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
                     convert_result_to_codes(result, |id| (id.parts()[0], id.parts()[1]), zero_err);
                 context.set_return_values(code, val);
             } else {
-                context.set_return_values(0u64, ThreadSpawnError::InvalidArgument as u64);
+                context
+                    .set_return_values(0u64, TwzError::from(ArgumentError::InvalidArgument).raw());
             }
         }
         Syscall::ObjectMap => {
@@ -355,12 +358,12 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let handle = context.arg5();
             let handle = unsafe { create_user_ptr(handle) };
             let result = if let Some(handle) = handle {
-                prot.map_or(Err(ObjectMapError::InvalidProtections), |prot| {
+                prot.map_or(Err(ArgumentError::InvalidArgument.into()), |prot| {
                     object::sys_object_map(id, slot, prot, *handle)
                 })
                 .map(|r| r as u64)
             } else {
-                Err(ObjectMapError::InvalidArgument)
+                Err(ArgumentError::InvalidArgument.into())
             };
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
@@ -372,13 +375,13 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let id = ObjID::from_parts([hi, lo]);
             let out = context.arg3();
             let out = unsafe { create_user_ptr(out) };
-            let result = if let Some(out) = out {
+            let result: Result<_> = if let Some(out) = out {
                 object::sys_object_readmap(id, slot).map(|info| {
                     *out = info;
                     0u64
                 })
             } else {
-                Err(ObjectReadMapError::InvalidArgument)
+                Err(ArgumentError::InvalidArgument.into())
             };
 
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);

@@ -1,10 +1,8 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
 use lazy_static::lazy_static;
-use twizzler_abi::{
-    object::{ObjID, Protections},
-    syscall::SctxAttachError,
-};
+use twizzler_abi::object::{ObjID, Protections};
+use twizzler_rt_abi::error::{NamingError, ObjectError};
 
 use crate::{
     memory::context::{KernelMemoryContext, KernelObject, ObjectContextInfo, UserContext},
@@ -158,10 +156,10 @@ impl SecCtxMgr {
     }
 
     /// Attach a security context.
-    pub fn attach(&self, sctx: SecurityContextRef) -> Result<(), SctxAttachError> {
+    pub fn attach(&self, sctx: SecurityContextRef) -> twizzler_rt_abi::Result<()> {
         let mut inner = self.inner.lock();
         if inner.active.id() == sctx.id() || inner.inactive.contains_key(&sctx.id()) {
-            return Err(SctxAttachError::AlreadyAttached);
+            return Err(NamingError::AlreadyBound.into());
         }
         inner.inactive.insert(sctx.id(), sctx);
         Ok(())
@@ -201,9 +199,9 @@ lazy_static! {
 }
 
 /// Get a security contexts from the global cache.
-pub fn get_sctx(id: ObjID) -> Result<SecurityContextRef, SctxAttachError> {
-    let obj = crate::obj::lookup_object(id, LookupFlags::empty())
-        .ok_or(SctxAttachError::ObjectNotFound)?;
+pub fn get_sctx(id: ObjID) -> twizzler_rt_abi::Result<SecurityContextRef> {
+    let obj =
+        crate::obj::lookup_object(id, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
     let mut global = GLOBAL_SECCTX_MGR.contexts.lock();
     let entry = global.entry(id).or_insert_with(|| {
         // TODO: use control object cacher.

@@ -93,6 +93,7 @@ pub use spawn::*;
 pub use thread_control::*;
 pub use thread_sync::*;
 pub use time::*;
+use twizzler_rt_abi::error::{RawTwzError, TwzError};
 
 #[inline]
 fn convert_codes_to_result<T, E, D, F, G>(code: u64, val: u64, d: D, f: F, g: G) -> Result<T, E>
@@ -109,8 +110,8 @@ where
 }
 
 #[inline]
-fn justval<T: From<u64>>(_: u64, v: u64) -> T {
-    v.into()
+fn twzerr(_: u64, v: u64) -> TwzError {
+    RawTwzError::new(v).error()
 }
 
 /// Shutdown the computer.

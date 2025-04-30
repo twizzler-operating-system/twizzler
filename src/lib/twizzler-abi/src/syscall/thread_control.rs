@@ -1,6 +1,7 @@
 use num_enum::{FromPrimitive, IntoPrimitive};
+use twizzler_rt_abi::error::TwzError;
 
-use super::{convert_codes_to_result, Syscall};
+use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::{
     arch::syscall::raw_syscall,
     object::ObjID,
@@ -107,7 +108,7 @@ pub fn sys_thread_active_sctx_id() -> ObjID {
 }
 
 /// Get the active security context ID for the calling thread.
-pub fn sys_thread_set_active_sctx_id(id: ObjID) -> Result<(), ()> {
+pub fn sys_thread_set_active_sctx_id(id: ObjID) -> Result<(), TwzError> {
     let (code, val) = unsafe {
         raw_syscall(
             Syscall::ThreadCtrl,
@@ -118,7 +119,7 @@ pub fn sys_thread_set_active_sctx_id(id: ObjID) -> Result<(), ()> {
             ],
         )
     };
-    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), |_, _| ())
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), twzerr)
 }
 
 /// Set the upcall location for this thread.

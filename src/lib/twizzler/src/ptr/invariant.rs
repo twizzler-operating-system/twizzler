@@ -65,9 +65,9 @@ impl<T: Invariant> InvPtr<T> {
         Self::from_raw_parts(0, 0)
     }
 
-    pub fn from_raw_parts(idx: u64, offset: u64) -> Self {
+    pub fn from_raw_parts(idx: u32, offset: u64) -> Self {
         Self {
-            value: (idx << 48) | offset,
+            value: ((idx as u64) << 48) | offset,
             _pse: PhantomStoreEffect,
             _pd: PhantomData,
         }

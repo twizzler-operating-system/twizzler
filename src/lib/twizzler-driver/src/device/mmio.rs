@@ -3,7 +3,7 @@ use twizzler_abi::{
     device::{MmioInfo, SubObjectType, MMIO_OFFSET},
     object::NULLPAGE_SIZE,
 };
-use twizzler_rt_abi::object::{MapError, MapFlags};
+use twizzler_rt_abi::{object::MapFlags, Result};
 use volatile::access::{ReadOnly, ReadWrite};
 
 use super::Device;
@@ -14,7 +14,7 @@ pub struct MmioObject {
 }
 
 impl MmioObject {
-    pub(crate) fn new(id: ObjID) -> Result<Self, MapError> {
+    pub(crate) fn new(id: ObjID) -> Result<Self> {
         Ok(Self {
             obj: unsafe { Object::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?,
         })

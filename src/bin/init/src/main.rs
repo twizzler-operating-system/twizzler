@@ -135,7 +135,7 @@ fn initialize_devmgr() {
     }
 
     let devmgr_start = unsafe { devcomp.dynamic_gate::<(), ()>("devmgr_start").unwrap() };
-    devmgr_start();
+    devmgr_start().unwrap();
     tracing::info!("device manager ready");
     std::mem::forget(devcomp);
 }

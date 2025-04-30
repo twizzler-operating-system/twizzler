@@ -3,18 +3,17 @@ mod object;
 mod reference;
 mod unsafetx;
 
-use std::{alloc::AllocError, cell::UnsafeCell, mem::MaybeUninit};
+use std::{cell::UnsafeCell, mem::MaybeUninit};
 
 pub use batch::*;
 pub use object::*;
 pub use reference::*;
-use twizzler_rt_abi::object::MapError;
+use twizzler_rt_abi::error::TwzError;
 pub use unsafetx::*;
 
 use crate::{
     alloc::{invbox::InvBox, Allocator},
     marker::Invariant,
-    object::CreateError,
 };
 
 /// A trait for implementing per-object transaction handles.
@@ -42,27 +41,7 @@ pub trait TxHandle {
     }
 }
 
-pub type Result<T> = std::result::Result<T, TxError>;
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
-/// Transaction errors, with user-definable abort type.
-pub enum TxError {
-    /// Resources exhausted.
-    #[error("resources exhausted")]
-    Exhausted,
-    /// Tried to mutate immutable data.
-    #[error("object is immutable")]
-    Immutable,
-    /// Invalid argument.
-    #[error("invalid argument")]
-    InvalidArgument,
-    /// Create error
-    #[error("create error")]
-    CreateError(#[from] CreateError),
-    /// Map error
-    #[error("mapping error")]
-    MapError(#[from] MapError),
-}
+pub type Result<T> = std::result::Result<T, TwzError>;
 
 #[repr(transparent)]
 pub struct TxCell<T>(UnsafeCell<T>);
@@ -96,11 +75,5 @@ impl<T> std::ops::Deref for TxCell<T> {
 
     fn deref(&self) -> &Self::Target {
         unsafe { self.0.get().as_ref().unwrap() }
-    }
-}
-
-impl From<AllocError> for TxError {
-    fn from(_value: AllocError) -> Self {
-        TxError::Exhausted
     }
 }

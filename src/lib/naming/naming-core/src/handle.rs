@@ -1,8 +1,11 @@
-use std::{io::ErrorKind, path::Path};
+use std::path::Path;
 
 use secgate::util::{Handle, SimpleBuffer};
 use twizzler::object::ObjID;
-use twizzler_rt_abi::object::MapFlags;
+use twizzler_rt_abi::{
+    error::{ArgumentError, TwzError},
+    object::MapFlags,
+};
 
 use crate::{api::NamerAPI, GetFlags, NsNode, Result, PATH_MAX};
 
@@ -23,7 +26,7 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
     fn write_buffer<P: AsRef<Path>>(&mut self, path: P) -> Result<usize> {
         let bytes = path.as_ref().as_os_str().as_encoded_bytes();
         if bytes.len() > PATH_MAX {
-            Err(ErrorKind::InvalidFilename)
+            Err(ArgumentError::InvalidArgument.into())
         } else {
             Ok(self.buffer.write(bytes))
         }
@@ -32,7 +35,7 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
     fn write_buffer_at<P: AsRef<Path>>(&mut self, path: P, off: usize) -> Result<usize> {
         let bytes = path.as_ref().as_os_str().as_encoded_bytes();
         if bytes.len() > PATH_MAX {
-            Err(ErrorKind::InvalidFilename)
+            Err(ArgumentError::InvalidArgument.into())
         } else {
             Ok(self.buffer.write_offset(bytes, off))
         }
@@ -45,21 +48,21 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
 
     pub fn put<P: AsRef<Path>>(&mut self, path: P, id: ObjID) -> Result<()> {
         let name_len = self.write_buffer(path)?;
-        self.api.put(self.desc, name_len, id).unwrap()
+        self.api.put(self.desc, name_len, id)
     }
 
     pub fn get(&mut self, path: &str, flags: GetFlags) -> Result<NsNode> {
         let name_len = self.write_buffer(path)?;
-        self.api.get(self.desc, name_len, flags).unwrap()
+        self.api.get(self.desc, name_len, flags)
     }
 
     pub fn remove(&mut self, path: &str) -> Result<()> {
         let name_len = self.write_buffer(path)?;
-        self.api.remove(self.desc, name_len).unwrap()
+        self.api.remove(self.desc, name_len)
     }
 
     pub fn enumerate_names_nsid(&mut self, nsid: ObjID) -> Result<Vec<NsNode>> {
-        let element_count = self.api.enumerate_names_nsid(self.desc, nsid).unwrap()?;
+        let element_count = self.api.enumerate_names_nsid(self.desc, nsid)?;
 
         let mut buf_vec = vec![0u8; element_count * std::mem::size_of::<NsNode>()];
         self.buffer.read(&mut buf_vec);
@@ -80,7 +83,7 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
 
     pub fn enumerate_names_relative<P: AsRef<Path>>(&mut self, path: P) -> Result<Vec<NsNode>> {
         let name_len = self.write_buffer(path)?;
-        let element_count = self.api.enumerate_names(self.desc, name_len).unwrap()?;
+        let element_count = self.api.enumerate_names(self.desc, name_len)?;
 
         let mut buf_vec = vec![0u8; element_count * std::mem::size_of::<NsNode>()];
         self.buffer.read(&mut buf_vec);
@@ -105,23 +108,23 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
 
     pub fn change_namespace<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let name_len = self.write_buffer(path)?;
-        self.api.change_namespace(self.desc, name_len).unwrap()
+        self.api.change_namespace(self.desc, name_len)
     }
 
     pub fn put_namespace<P: AsRef<Path>>(&mut self, path: P, persist: bool) -> Result<()> {
         let name_len = self.write_buffer(path)?;
-        self.api.mkns(self.desc, name_len, persist).unwrap()
+        self.api.mkns(self.desc, name_len, persist)
     }
 
     pub fn symlink<P: AsRef<Path>, L: AsRef<Path>>(&mut self, path: P, link: L) -> Result<()> {
         let name_len = self.write_buffer(path)?;
         let link_len = self.write_buffer_at(link, name_len)?;
-        self.api.link(self.desc, name_len, link_len).unwrap()
+        self.api.link(self.desc, name_len, link_len)
     }
 }
 
 impl<'a, API: NamerAPI> Handle for NamingHandle<'a, API> {
-    type OpenError = ();
+    type OpenError = TwzError;
 
     type OpenInfo = &'a API;
 
@@ -129,10 +132,9 @@ impl<'a, API: NamerAPI> Handle for NamingHandle<'a, API> {
     where
         Self: Sized,
     {
-        let (desc, id) = info.open_handle().ok().flatten().ok_or(())?;
+        let (desc, id) = info.open_handle()?;
         let handle =
-            twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)
-                .map_err(|_| ())?;
+            twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)?;
         let sb = SimpleBuffer::new(handle);
         Ok(Self {
             desc,
@@ -142,6 +144,9 @@ impl<'a, API: NamerAPI> Handle for NamingHandle<'a, API> {
     }
 
     fn release(&mut self) {
-        self.api.close_handle(self.desc);
+        let _ = self
+            .api
+            .close_handle(self.desc)
+            .inspect_err(|e| tracing::warn!("{}", e));
     }
 }

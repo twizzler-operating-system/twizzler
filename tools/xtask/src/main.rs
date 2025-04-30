@@ -193,6 +193,8 @@ impl From<&QemuOptions> for ImageOptions {
 struct BootstrapOptions {
     #[clap(long, help = "Skip downloading boot files from file server.")]
     skip_downloads: bool,
+    #[clap(long, help = "Skip compiling the rust toolchain (not recommended...).")]
+    skip_rust: bool,
     #[clap(
         long,
         help = "Don't remove the target/ directory after rebuilding the toolchain."

@@ -6,12 +6,16 @@ use twizzler_abi::{
     object::Protections,
     simple_mutex::Mutex,
     syscall::{
-        ThreadSpawnFlags, ThreadSync, ThreadSyncError, ThreadSyncFlags, ThreadSyncReference,
-        ThreadSyncSleep, ThreadSyncWake,
+        ThreadSpawnFlags, ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep,
+        ThreadSyncWake,
     },
     thread::{ExecutionState, ThreadRepr},
 };
-use twizzler_rt_abi::thread::{JoinError, SpawnError, ThreadSpawnArgs, TlsIndex};
+use twizzler_rt_abi::{
+    error::{ArgumentError, GenericError, TwzError},
+    thread::{ThreadSpawnArgs, TlsIndex},
+    Result,
+};
 
 use super::{idcounter::IdCounter, object::InternalObject, MinimalRuntime};
 
@@ -56,7 +60,7 @@ impl MinimalRuntime {
         );
 
         match r {
-            Err(ThreadSyncError::Timeout) => return false,
+            Err(TwzError::Generic(GenericError::TimedOut)) => return false,
             _ => return true,
         }
     }
@@ -73,11 +77,11 @@ impl MinimalRuntime {
     #[allow(dead_code)]
     #[allow(unused_variables)]
     #[allow(unreachable_code)]
-    pub fn spawn(&self, args: ThreadSpawnArgs) -> Result<u32, SpawnError> {
+    pub fn spawn(&self, args: ThreadSpawnArgs) -> Result<u32> {
         const STACK_ALIGN: usize = 32;
         let stack_layout = Layout::from_size_align(args.stack_size, STACK_ALIGN).unwrap();
         if args.stack_size == 0 {
-            return Err(SpawnError::InvalidArgument);
+            return Err(ArgumentError::InvalidArgument.into());
         }
         let stack_base = unsafe { self.default_allocator().alloc(stack_layout) };
         let (tls_set, tls_base, tls_len, tls_align) =
@@ -117,7 +121,7 @@ impl MinimalRuntime {
         let _ = twizzler_abi::syscall::sys_thread_sync(&mut [], Some(duration));
     }
 
-    pub fn join(&self, id: u32, timeout: Option<core::time::Duration>) -> Result<(), JoinError> {
+    pub fn join(&self, id: u32, timeout: Option<core::time::Duration>) -> Result<()> {
         let mut state = ExecutionState::Running;
         loop {
             let thread = {
@@ -125,7 +129,7 @@ impl MinimalRuntime {
                     .lock()
                     .get(&id)
                     .cloned()
-                    .ok_or(JoinError::ThreadNotFound)?
+                    .ok_or(ArgumentError::BadHandle)?
             };
             let data = thread.repr.base().wait(state, timeout);
             if let Some(data) = data {
@@ -136,7 +140,7 @@ impl MinimalRuntime {
                 }
                 state = data.0;
             } else if timeout.is_some() {
-                return Err(JoinError::Timeout);
+                return Err(GenericError::TimedOut.into());
             }
         }
     }

@@ -9,3 +9,5 @@
 #define assert(x) ((void)sizeof(x))
 #endif
 
+
+#define static_assert(...) 

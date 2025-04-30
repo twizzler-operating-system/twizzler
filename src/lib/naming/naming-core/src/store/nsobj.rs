@@ -1,7 +1,4 @@
-use std::{
-    io::ErrorKind,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
@@ -32,9 +29,7 @@ impl NamespaceObject {
         let this = Self {
             persist,
             parent_info,
-            obj: Arc::new(Mutex::new(Some(
-                VecObject::new(builder).map_err(|_| ErrorKind::Other)?,
-            ))),
+            obj: Arc::new(Mutex::new(Some(VecObject::new(builder)?))),
         };
         if let Some(id) = parent {
             this.insert(NsNode::ns("..", id)?);
@@ -59,9 +54,9 @@ impl Namespace for NamespaceObject {
         Ok(Self {
             persist,
             parent_info,
-            obj: Arc::new(Mutex::new(Some(VecObject::from(
-                Object::map(id, map_flags).map_err(|_| ErrorKind::Other)?,
-            )))),
+            obj: Arc::new(Mutex::new(Some(VecObject::from(Object::map(
+                id, map_flags,
+            )?)))),
         })
     }
 

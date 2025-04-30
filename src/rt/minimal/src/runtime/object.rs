@@ -8,7 +8,11 @@ use twizzler_abi::{
     object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_map, UnmapFlags},
 };
-use twizzler_rt_abi::object::{MapError, MapFlags, ObjectHandle};
+use twizzler_rt_abi::{
+    error::{GenericError, ResourceError},
+    object::{MapFlags, ObjectHandle},
+    Result,
+};
 
 use super::MinimalRuntime;
 
@@ -32,9 +36,9 @@ pub(crate) fn new_runtime_info() -> *mut RuntimeHandleInfo {
 }
 
 impl MinimalRuntime {
-    pub fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle, MapError> {
-        let slot = global_allocate().ok_or(MapError::OutOfResources)?;
-        let _ = sys_object_map(None, id, slot, flags.into(), flags.into()).map_err(|e| e.into())?;
+    pub fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle> {
+        let slot = global_allocate().ok_or(ResourceError::OutOfResources)?;
+        let _ = sys_object_map(None, id, slot, flags.into(), flags.into())?;
         let start = (slot * MAX_SIZE) as *mut _;
         let meta = (((slot + 1) * MAX_SIZE) - NULLPAGE_SIZE) as *mut _;
         Ok(unsafe {
@@ -65,7 +69,7 @@ impl MinimalRuntime {
         in_flags_a: MapFlags,
         in_id_b: ObjID,
         in_flags_b: MapFlags,
-    ) -> Result<(ObjectHandle, ObjectHandle), MapError> {
+    ) -> Result<(ObjectHandle, ObjectHandle)> {
         let map_and_check = |rev: bool| {
             let (id_a, flags_a) = if rev {
                 (in_id_b, in_flags_b)
@@ -89,7 +93,7 @@ impl MinimalRuntime {
             } else if !rev && b_addr > a_addr {
                 Ok((a, b))
             } else {
-                Err(MapError::Other)
+                Err(GenericError::Internal.into())
             }
         };
 

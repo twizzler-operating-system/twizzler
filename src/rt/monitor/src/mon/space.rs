@@ -10,7 +10,10 @@ use twizzler_abi::{
         ObjectCreateFlags, ObjectSource, UnmapFlags,
     },
 };
-use twizzler_rt_abi::object::{MapError, MapFlags, ObjID};
+use twizzler_rt_abi::{
+    error::{ResourceError, TwzError},
+    object::{MapFlags, ObjID},
+};
 
 use self::handle::MapHandleInner;
 use crate::gates::SpaceStats;
@@ -69,7 +72,7 @@ impl Space {
     }
 
     /// Map an object into the space.
-    pub fn map(&mut self, info: MapInfo) -> Result<MapHandle, MapError> {
+    pub fn map(&mut self, info: MapInfo) -> Result<MapHandle, TwzError> {
         // Can't use the entry API here because the closure may fail.
         let item = match self.maps.get_mut(&info) {
             Some(item) => item,
@@ -78,19 +81,20 @@ impl Space {
                 let slot = unsafe { __monitor_get_slot() }
                     .try_into()
                     .ok()
-                    .ok_or(MapError::OutOfResources)?;
+                    .ok_or(ResourceError::OutOfResources)?;
 
-                let Ok(_) = sys_object_map(
+                let res = sys_object_map(
                     None,
                     info.id,
                     slot,
                     mapflags_into_prot(info.flags),
                     twizzler_abi::syscall::MapFlags::empty(),
-                ) else {
+                );
+                let Ok(_) = res else {
                     unsafe {
                         __monitor_release_slot(slot);
                     }
-                    return Err(MapError::Other);
+                    return Err(res.unwrap_err());
                 };
 
                 let map = MappedObject {
@@ -113,40 +117,42 @@ impl Space {
         &mut self,
         info: MapInfo,
         info2: MapInfo,
-    ) -> Result<(MapHandle, MapHandle), MapError> {
+    ) -> Result<(MapHandle, MapHandle), TwzError> {
         // Not yet mapped, so allocate a slot and map it.
         let mut one = 0;
         let mut two = 0;
         if !unsafe { __monitor_get_slot_pair(&mut one, &mut two) } {
-            return Err(MapError::OutOfResources);
+            return Err(ResourceError::OutOfResources.into());
         }
 
-        let Ok(_) = sys_object_map(
+        let res = sys_object_map(
             None,
             info.id,
             one,
             mapflags_into_prot(info.flags),
             twizzler_abi::syscall::MapFlags::empty(),
-        ) else {
+        );
+        if res.is_err() {
             unsafe {
                 __monitor_release_pair(one, two);
             }
-            return Err(MapError::Other);
+            return Err(res.unwrap_err());
         };
 
-        let Ok(_) = sys_object_map(
+        let res = sys_object_map(
             None,
             info2.id,
             two,
             mapflags_into_prot(info2.flags),
             twizzler_abi::syscall::MapFlags::empty(),
-        ) else {
+        );
+        if res.is_err() {
             let _ = sys_object_unmap(None, one, UnmapFlags::empty())
                 .inspect_err(|e| tracing::warn!("failed to unmap first in pair on error: {}", e));
             unsafe {
                 __monitor_release_pair(one, two);
             }
-            return Err(MapError::Other);
+            return Err(res.unwrap_err());
         };
 
         let map = MappedObject {

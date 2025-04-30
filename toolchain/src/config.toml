@@ -12,9 +12,10 @@ optimize = true
 assertions = true
 
 [build]
-docs = false
 target = []
 submodules = false
+docs = true
+sanitizers = true
 
 [rust]
 lld = true

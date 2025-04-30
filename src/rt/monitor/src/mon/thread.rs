@@ -14,8 +14,8 @@ use twizzler_abi::{
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
 use twizzler_rt_abi::{
+    error::{GenericError, TwzError},
     object::{MapFlags, ObjID},
-    thread::SpawnError,
 };
 
 use super::{
@@ -111,7 +111,7 @@ impl ThreadMgr {
         super_stack_start: usize,
         super_thread_pointer: usize,
         arg: usize,
-    ) -> Result<ObjID, SpawnError> {
+    ) -> Result<ObjID, TwzError> {
         let upcall_target = UpcallTarget::new(
             None,
             Some(twizzler_rt_abi::arch::__twz_rt_upcall_entry),
@@ -135,7 +135,6 @@ impl ThreadMgr {
             vm_context_handle: None,
             upcall_target: UpcallTargetSpawnOption::SetTo(upcall_target),
         })
-        .map_err(|_| SpawnError::KernelError)
     }
 
     fn do_spawn(
@@ -144,12 +143,12 @@ impl ThreadMgr {
         start: unsafe extern "C" fn(usize) -> !,
         arg: usize,
         main_thread_comp: Option<ObjID>,
-    ) -> Result<ManagedThread, SpawnError> {
+    ) -> Result<ManagedThread, TwzError> {
         let super_tls = monitor_dynlink_comp
             .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
                 NonNull::new(std::alloc::alloc_zeroed(layout))
             })
-            .map_err(|_| SpawnError::Other)?;
+            .map_err(|_| GenericError::Internal)?;
         let super_tid = self.next_super_tid().freeze();
         unsafe {
             let tcb = super_tls.get_thread_control_block::<RuntimeThreadControl>();
@@ -191,7 +190,7 @@ impl ThreadMgr {
         monitor_dynlink_comp: &mut Compartment,
         main: Box<dyn FnOnce()>,
         main_thread_comp: Option<ObjID>,
-    ) -> Result<ManagedThread, SpawnError> {
+    ) -> Result<ManagedThread, TwzError> {
         let main_addr = Box::into_raw(Box::new(main)) as usize;
         unsafe extern "C" fn managed_thread_entry(main: usize) -> ! {
             {

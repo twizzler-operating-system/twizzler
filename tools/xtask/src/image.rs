@@ -107,13 +107,12 @@ fn generate_data_folder(comp: &TwizzlerCompilation) -> PathBuf {
     destination.push("data/");
 
     let source = PathBuf::from("./src/data/");
-    Command::new("rsync")
+    let _ = Command::new("rsync")
         .arg("-a")
         .arg("--delete")
         .arg(&source)
         .arg(&destination)
-        .status()
-        .unwrap();
+        .status();
 
     destination
 }

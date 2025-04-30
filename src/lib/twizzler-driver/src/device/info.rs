@@ -1,6 +1,6 @@
 use twizzler::object::{ObjID, Object, RawObject};
 use twizzler_abi::device::SubObjectType;
-use twizzler_rt_abi::object::{MapError, MapFlags};
+use twizzler_rt_abi::{object::MapFlags, Result};
 
 use super::Device;
 
@@ -10,7 +10,7 @@ pub struct InfoObject<T> {
 }
 
 impl<T> InfoObject<T> {
-    fn new(id: ObjID) -> Result<Self, MapError> {
+    fn new(id: ObjID) -> Result<Self> {
         Ok(Self {
             obj: unsafe { Object::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?,
         })

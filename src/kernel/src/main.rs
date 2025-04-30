@@ -15,7 +15,6 @@
 #![feature(int_roundings)]
 #![feature(let_chains)]
 #![feature(btree_extract_if)]
-#![feature(extract_if)]
 #![feature(allocator_api)]
 
 #[macro_use]

@@ -1,0 +1,8 @@
+[package]
+name = "hw-c"
+version = "0.1.0"
+
+[dependencies]
+
+[build-dependencies]
+cc = "*"

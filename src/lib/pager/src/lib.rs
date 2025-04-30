@@ -12,5 +12,5 @@ pub fn sync_object(id: ObjID) {
 }
 
 pub fn adv_lethe() {
-    pager_srv::adv_lethe();
+    pager_srv::adv_lethe().unwrap();
 }

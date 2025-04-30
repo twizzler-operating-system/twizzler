@@ -1,7 +1,7 @@
 use bitflags::bitflags;
-use num_enum::{FromPrimitive, IntoPrimitive};
+use twizzler_rt_abi::Result;
 
-use super::{convert_codes_to_result, Syscall};
+use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::{arch::syscall::raw_syscall, object::ObjID};
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Default)]
@@ -35,7 +35,7 @@ impl ObjectSource {
     /// Construct a new ObjectSource.
     pub fn new_zero(dest_start: u64, len: usize) -> Self {
         Self {
-            id: 0.into(),
+            id: ObjID::new(0),
             src_start: 0,
             dest_start,
             len,
@@ -98,7 +98,7 @@ impl ObjectCreate {
         flags: ObjectCreateFlags,
     ) -> Self {
         Self {
-            kuid: kuid.unwrap_or_else(|| 0.into()),
+            kuid: kuid.unwrap_or_else(|| ObjID::new(0)),
             bt,
             lt,
             flags,
@@ -122,45 +122,12 @@ impl CreateTieSpec {
     }
 }
 
-#[derive(
-    Debug,
-    Copy,
-    Clone,
-    PartialEq,
-    PartialOrd,
-    Ord,
-    Eq,
-    IntoPrimitive,
-    FromPrimitive,
-    Hash,
-    thiserror::Error,
-)]
-#[repr(u64)]
-/// Possible error returns for [sys_object_create].
-pub enum ObjectCreateError {
-    /// An unknown error occurred.
-    #[num_enum(default)]
-    #[error("unknown error")]
-    Unknown = 0,
-    /// One of the arguments was invalid.
-    #[error("invalid argument")]
-    InvalidArgument = 1,
-    /// A source or tie object was not found.
-    #[error("source or tie object not found")]
-    ObjectNotFound = 2,
-    /// The kernel could not handle one of the source ranges.
-    #[error("invalid source directive")]
-    InvalidSource = 3,
-}
-
-impl core::error::Error for ObjectCreateError {}
-
 /// Create an object, returning either its ID or an error.
 pub fn sys_object_create(
     create: ObjectCreate,
     sources: &[ObjectSource],
     ties: &[CreateTieSpec],
-) -> Result<ObjID, ObjectCreateError> {
+) -> Result<ObjID> {
     let args = [
         &create as *const ObjectCreate as u64,
         sources.as_ptr() as u64,
@@ -174,6 +141,6 @@ pub fn sys_object_create(
         val,
         |c, _| c == 0,
         |x, y| crate::object::ObjID::from_parts([x, y]),
-        |_, v| ObjectCreateError::from(v),
+        twzerr,
     )
 }

@@ -1,53 +1,11 @@
-use num_enum::{FromPrimitive, IntoPrimitive};
+use twizzler_rt_abi::Result;
 
-use super::{convert_codes_to_result, Syscall};
+use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::{arch::syscall::raw_syscall, object::ObjID};
 
-#[derive(
-    Debug,
-    Copy,
-    Clone,
-    PartialEq,
-    PartialOrd,
-    Ord,
-    Eq,
-    Hash,
-    IntoPrimitive,
-    FromPrimitive,
-    thiserror::Error,
-)]
-#[repr(u64)]
-/// Possible error returns for [sys_sctx_attach].
-pub enum SctxAttachError {
-    /// An unknown error occurred.
-    #[num_enum(default)]
-    #[error("unknown error")]
-    Unknown = 0,
-    /// One of the arguments was invalid.
-    #[error("invalid argument")]
-    InvalidArgument = 1,
-    /// An was not found.
-    #[error("object not found")]
-    ObjectNotFound = 2,
-    /// Permission denied.
-    #[error("permission denied")]
-    PermissionDenied = 3,
-    /// Permission denied.
-    #[error("already attached")]
-    AlreadyAttached = 4,
-}
-
-impl core::error::Error for SctxAttachError {}
-
 /// Attach to a given security context.
-pub fn sys_sctx_attach(id: ObjID) -> Result<(), SctxAttachError> {
+pub fn sys_sctx_attach(id: ObjID) -> Result<()> {
     let args = [id.parts()[0], id.parts()[1], 0, 0, 0];
     let (code, val) = unsafe { raw_syscall(Syscall::SctxAttach, &args) };
-    convert_codes_to_result(
-        code,
-        val,
-        |c, _| c == 1,
-        |_, _| (),
-        |_, v| SctxAttachError::from(v),
-    )
+    convert_codes_to_result(code, val, |c, _| c == 1, |_, _| (), twzerr)
 }

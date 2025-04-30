@@ -100,7 +100,6 @@
 //! allows symbol lookup to work, even if libraries' dependency relationships may cross compartment
 //! boundaries.
 
-#![feature(strict_provenance)]
 #![feature(never_type)]
 #![feature(iterator_try_collect)]
 #![feature(allocator_api)]

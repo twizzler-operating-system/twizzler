@@ -82,5 +82,5 @@ impl<T> !DeviceSync for *const T {}
 impl<T> !DeviceSync for *mut T {}
 impl<T> !DeviceSync for &T {}
 impl<T> !DeviceSync for &mut T {}
-impl<T> !DeviceSync for UnsafeCell<T> {}
-impl<T> !DeviceSync for std::cell::Cell<T> {}
+impl<T: ?Sized> !DeviceSync for UnsafeCell<T> {}
+impl<T: ?Sized> !DeviceSync for std::cell::Cell<T> {}

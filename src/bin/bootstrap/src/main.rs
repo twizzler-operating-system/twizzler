@@ -1,4 +1,7 @@
-use std::{ffi::CString, process::exit};
+use std::{
+    ffi::{c_char, CString},
+    process::exit,
+};
 
 use dynlink::{
     compartment::{CompartmentId, MONITOR_COMPARTMENT_ID},
@@ -144,7 +147,7 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
         init_info: InitInfoPtrs {
             monitor: info_ptr.cast(),
         },
-        args: args.as_ptr() as *mut *mut i8,
+        args: args.as_ptr() as *mut *mut c_char,
         argc: args.len() - 1,
         envp: core::ptr::null_mut(),
     };

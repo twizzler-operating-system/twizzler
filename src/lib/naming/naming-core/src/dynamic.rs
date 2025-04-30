@@ -1,73 +1,64 @@
 use std::sync::OnceLock;
 
 use monitor_api::CompartmentHandle;
-use secgate::{util::Descriptor, DynamicSecGate, SecGateReturn};
+use secgate::{util::Descriptor, DynamicSecGate};
 use twizzler_rt_abi::object::ObjID;
 
 use crate::{api::NamerAPI, handle::NamingHandle, GetFlags, NsNode, Result};
 
 pub struct DynamicNamerAPI {
     _handle: &'static CompartmentHandle,
-    put: DynamicSecGate<'static, (Descriptor, usize, ObjID), Result<()>>,
-    mkns: DynamicSecGate<'static, (Descriptor, usize, bool), Result<()>>,
-    link: DynamicSecGate<'static, (Descriptor, usize, usize), Result<()>>,
-    get: DynamicSecGate<'static, (Descriptor, usize, GetFlags), Result<NsNode>>,
-    open_handle: DynamicSecGate<'static, (), Option<(Descriptor, ObjID)>>,
+    put: DynamicSecGate<'static, (Descriptor, usize, ObjID), ()>,
+    mkns: DynamicSecGate<'static, (Descriptor, usize, bool), ()>,
+    link: DynamicSecGate<'static, (Descriptor, usize, usize), ()>,
+    get: DynamicSecGate<'static, (Descriptor, usize, GetFlags), NsNode>,
+    open_handle: DynamicSecGate<'static, (), (Descriptor, ObjID)>,
     close_handle: DynamicSecGate<'static, (Descriptor,), ()>,
-    enumerate_names: DynamicSecGate<'static, (Descriptor, usize), Result<usize>>,
-    enumerate_names_nsid: DynamicSecGate<'static, (Descriptor, ObjID), Result<usize>>,
-    remove: DynamicSecGate<'static, (Descriptor, usize), Result<()>>,
-    change_namespace: DynamicSecGate<'static, (Descriptor, usize), Result<()>>,
+    enumerate_names: DynamicSecGate<'static, (Descriptor, usize), usize>,
+    enumerate_names_nsid: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
+    remove: DynamicSecGate<'static, (Descriptor, usize), ()>,
+    change_namespace: DynamicSecGate<'static, (Descriptor, usize), ()>,
 }
 
 impl NamerAPI for DynamicNamerAPI {
-    fn put(&self, desc: Descriptor, name_len: usize, id: ObjID) -> SecGateReturn<Result<()>> {
+    fn put(&self, desc: Descriptor, name_len: usize, id: ObjID) -> Result<()> {
         (self.put)(desc, name_len, id)
     }
 
-    fn get(
-        &self,
-        desc: Descriptor,
-        name_len: usize,
-        flags: GetFlags,
-    ) -> SecGateReturn<Result<NsNode>> {
+    fn get(&self, desc: Descriptor, name_len: usize, flags: GetFlags) -> Result<NsNode> {
         (self.get)(desc, name_len, flags)
     }
 
-    fn open_handle(&self) -> SecGateReturn<Option<(Descriptor, ObjID)>> {
+    fn open_handle(&self) -> Result<(Descriptor, ObjID)> {
         (self.open_handle)()
     }
 
-    fn close_handle(&self, desc: Descriptor) -> SecGateReturn<()> {
-        (self.close_handle)(desc)
+    fn close_handle(&self, desc: Descriptor) -> Result<()> {
+        let _ = (self.close_handle)(desc);
+        Ok(())
     }
 
-    fn enumerate_names(&self, desc: Descriptor, name_len: usize) -> SecGateReturn<Result<usize>> {
+    fn enumerate_names(&self, desc: Descriptor, name_len: usize) -> Result<usize> {
         (self.enumerate_names)(desc, name_len)
     }
 
-    fn enumerate_names_nsid(&self, desc: Descriptor, id: ObjID) -> SecGateReturn<Result<usize>> {
+    fn enumerate_names_nsid(&self, desc: Descriptor, id: ObjID) -> Result<usize> {
         (self.enumerate_names_nsid)(desc, id)
     }
 
-    fn remove(&self, desc: Descriptor, name_len: usize) -> SecGateReturn<Result<()>> {
+    fn remove(&self, desc: Descriptor, name_len: usize) -> Result<()> {
         (self.remove)(desc, name_len)
     }
 
-    fn change_namespace(&self, desc: Descriptor, name_len: usize) -> SecGateReturn<Result<()>> {
+    fn change_namespace(&self, desc: Descriptor, name_len: usize) -> Result<()> {
         (self.change_namespace)(desc, name_len)
     }
 
-    fn mkns(&self, desc: Descriptor, name_len: usize, persist: bool) -> SecGateReturn<Result<()>> {
+    fn mkns(&self, desc: Descriptor, name_len: usize, persist: bool) -> Result<()> {
         (self.mkns)(desc, name_len, persist)
     }
 
-    fn link(
-        &self,
-        desc: Descriptor,
-        name_len: usize,
-        link_name: usize,
-    ) -> SecGateReturn<Result<()>> {
+    fn link(&self, desc: Descriptor, name_len: usize, link_name: usize) -> Result<()> {
         (self.link)(desc, name_len, link_name)
     }
 }
@@ -103,7 +94,7 @@ pub fn dynamic_namer_api() -> &'static DynamicNamerAPI {
             },
             open_handle: unsafe {
                 handle
-                    .dynamic_gate::<(), Option<(Descriptor, ObjID)>>("open_handle")
+                    .dynamic_gate::<(), (Descriptor, ObjID)>("open_handle")
                     .expect("failed to find open_handle gate call")
             },
             close_handle: unsafe {

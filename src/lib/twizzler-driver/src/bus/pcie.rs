@@ -5,14 +5,15 @@ use std::ptr::NonNull;
 pub use twizzler_abi::device::bus::pcie::*;
 use twizzler_abi::{
     device::InterruptVector,
-    kso::{KactionCmd, KactionError, KactionFlags},
+    kso::{KactionCmd, KactionFlags},
 };
+use twizzler_rt_abi::{error::TwzError, Result};
 use volatile::{
     access::{Access, ReadWrite, Readable},
     map_field, VolatilePtr, VolatileRef,
 };
 
-use crate::device::{events::InterruptAllocationError, Device, MmioObject};
+use crate::device::{Device, MmioObject};
 
 pub struct PcieCapabilityIterator<'a> {
     _dev: &'a Device,
@@ -146,12 +147,12 @@ impl Device {
         msix: volatile::VolatilePtr<'_, MsixCapability, ReadWrite>,
         vec: InterruptVector,
         inum: usize,
-    ) -> Result<u32, InterruptAllocationError> {
+    ) -> Result<u32> {
         let (bar, offset) = MsixCapability::get_table_info(msix);
         map_field!(msix.msg_ctrl).write(1 << 15);
         let mmio = self
             .find_mmio_bar(bar.into())
-            .ok_or(InterruptAllocationError::Unsupported)?;
+            .ok_or(TwzError::NOT_SUPPORTED)?;
         let table = unsafe {
             let start = mmio
                 .get_mmio_offset::<MsixTableEntry>(offset)
@@ -174,26 +175,16 @@ impl Device {
         &self,
         _msi: &VolatilePtr<'_, MsiCapability, ReadWrite>,
         _vec: InterruptVector,
-    ) -> Result<u32, InterruptAllocationError> {
+    ) -> Result<u32> {
         todo!()
     }
 
-    fn allocate_pcie_interrupt(
-        &self,
-        vec: InterruptVector,
-        inum: usize,
-    ) -> Result<u32, InterruptAllocationError> {
+    fn allocate_pcie_interrupt(&self, vec: InterruptVector, inum: usize) -> Result<u32> {
         // Prefer MSI-X
         let mm = self.find_mmio_bar(0xff).unwrap();
-        for cap in self
-            .pcie_capabilities(&mm)
-            .ok_or(InterruptAllocationError::Unsupported)?
-        {
+        for cap in self.pcie_capabilities(&mm).ok_or(TwzError::NOT_SUPPORTED)? {
             if let PcieCapability::MsiX(mut m) = cap {
-                for msitest in self
-                    .pcie_capabilities(&mm)
-                    .ok_or(InterruptAllocationError::Unsupported)?
-                {
+                for msitest in self.pcie_capabilities(&mm).ok_or(TwzError::NOT_SUPPORTED)? {
                     if let PcieCapability::Msi(mut msi) = msitest {
                         let msi = msi.as_mut_ptr();
                         map_field!(msi.msg_ctrl).write(0);
@@ -202,33 +193,22 @@ impl Device {
                 return self.allocate_msix_interrupt(m.as_mut_ptr(), vec, inum);
             }
         }
-        for cap in self
-            .pcie_capabilities(&mm)
-            .ok_or(InterruptAllocationError::Unsupported)?
-        {
+        for cap in self.pcie_capabilities(&mm).ok_or(TwzError::NOT_SUPPORTED)? {
             if let PcieCapability::Msi(mut m) = cap {
                 return self.allocate_msi_interrupt(&m.as_mut_ptr(), vec);
             }
         }
-        Err(InterruptAllocationError::Unsupported)
+        Err(TwzError::NOT_SUPPORTED)
     }
 
-    pub fn allocate_interrupt(
-        &self,
-        inum: usize,
-    ) -> Result<(InterruptVector, u32), InterruptAllocationError> {
-        let vec = self
-            .kaction(
-                KactionCmd::Specific(PcieKactionSpecific::AllocateInterrupt.into()),
-                0,
-                KactionFlags::empty(),
-                inum as u64,
-            )
-            .map_err(|e| InterruptAllocationError::KernelError(e))?;
-        let vec = vec
-            .unwrap_u64()
-            .try_into()
-            .map_err(|_| InterruptAllocationError::KernelError(KactionError::Unknown))?;
+    pub fn allocate_interrupt(&self, inum: usize) -> Result<(InterruptVector, u32)> {
+        let vec = self.kaction(
+            KactionCmd::Specific(PcieKactionSpecific::AllocateInterrupt.into()),
+            0,
+            KactionFlags::empty(),
+            inum as u64,
+        )?;
+        let vec = vec.unwrap_u64().try_into()?;
         let int = self.allocate_pcie_interrupt(vec, inum)?;
         Ok((vec, int))
     }

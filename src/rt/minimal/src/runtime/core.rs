@@ -1,6 +1,6 @@
 //! Implements the core runtime functions.
 
-use core::{alloc::GlobalAlloc, mem::MaybeUninit, ptr};
+use core::{alloc::GlobalAlloc, ffi::c_char, mem::MaybeUninit, ptr};
 
 use twizzler_abi::{
     syscall::{sys_get_random, GetRandomFlags},
@@ -62,8 +62,8 @@ impl MinimalRuntime {
         rt_info: *const RuntimeInfo,
         std_entry: unsafe extern "C-unwind" fn(BasicAux) -> BasicReturn,
     ) -> ! {
-        let mut null_env: [*mut i8; 4] = [
-            b"RUST_BACKTRACE=1\0".as_ptr() as *mut i8,
+        let mut null_env: [*mut c_char; 4] = [
+            b"RUST_BACKTRACE=1\0".as_ptr() as *mut c_char,
             ptr::null_mut(),
             ptr::null_mut(),
             ptr::null_mut(),
