@@ -6,10 +6,8 @@ pub const MAX_SIZE: usize = 1024 * 1024 * 1024;
 /// The size of the null page.
 pub const NULLPAGE_SIZE: usize = 0x1000;
 
+use twizzler_rt_abi::object::MapFlags;
 pub use twizzler_rt_abi::object::ObjID;
-use twizzler_rt_abi::object::{MapError, MapFlags};
-
-use crate::syscall::ObjectMapError;
 
 bitflags::bitflags! {
     /// Mapping protections for mapping objects into the address space.
@@ -61,17 +59,5 @@ impl From<MapFlags> for Protections {
 impl From<MapFlags> for crate::syscall::MapFlags {
     fn from(_value: MapFlags) -> Self {
         Self::empty()
-    }
-}
-
-impl Into<MapError> for ObjectMapError {
-    fn into(self) -> MapError {
-        match self {
-            ObjectMapError::Unknown => MapError::Other,
-            ObjectMapError::ObjectNotFound => MapError::NoSuchObject,
-            ObjectMapError::InvalidSlot => MapError::Other,
-            ObjectMapError::InvalidProtections => MapError::PermissionDenied,
-            ObjectMapError::InvalidArgument => MapError::InvalidArgument,
-        }
     }
 }

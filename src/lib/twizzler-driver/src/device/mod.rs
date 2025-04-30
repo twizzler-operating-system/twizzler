@@ -4,7 +4,7 @@ use std::fmt::Display;
 
 use twizzler::object::{ObjID, Object, RawObject};
 pub use twizzler_abi::device::{BusType, DeviceRepr, DeviceType};
-use twizzler_abi::kso::{KactionCmd, KactionError, KactionFlags, KactionGenericCmd, KactionValue};
+use twizzler_abi::kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue};
 
 mod children;
 pub mod events;
@@ -14,7 +14,7 @@ mod mmio;
 pub use children::DeviceChildrenIterator;
 pub use info::InfoObject;
 pub use mmio::MmioObject;
-use twizzler_rt_abi::object::{MapError, MapFlags};
+use twizzler_rt_abi::{object::MapFlags, Result};
 
 /// A handle for a device.
 pub struct Device {
@@ -29,7 +29,7 @@ impl Display for Device {
 }
 
 impl Device {
-    pub fn new(id: ObjID) -> Result<Self, MapError> {
+    pub fn new(id: ObjID) -> Result<Self> {
         let obj = unsafe { Object::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?;
 
         Ok(Self { obj })
@@ -76,7 +76,7 @@ impl Device {
         value: u64,
         flags: KactionFlags,
         value2: u64,
-    ) -> Result<KactionValue, KactionError> {
+    ) -> Result<KactionValue> {
         twizzler_abi::syscall::sys_kaction(action, Some(self.obj.id()), value, value2, flags)
     }
 

@@ -1,4 +1,3 @@
-use std::io::ErrorKind;
 
 use object_store::ExternalFile;
 use secgate::{
@@ -9,7 +8,7 @@ use twizzler::object::ObjID;
 use twizzler_abi::syscall::{
     sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
 };
-use twizzler_rt_abi::object::MapFlags;
+use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
 use crate::PAGER_CTX;
 
@@ -25,7 +24,7 @@ impl PagerClient {
 }
 
 impl PagerClient {
-    pub fn new() -> Option<Self> {
+    pub fn new() -> Result<Self, TwzError> {
         // Create and map a handle for the simple buffer.
         let id = sys_object_create(
             ObjectCreate::new(
@@ -36,31 +35,30 @@ impl PagerClient {
             ),
             &[],
             &[],
-        )
-        .ok()?;
+        )?;
         let handle =
-            twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::WRITE | MapFlags::READ)
-                .ok()?;
+            twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::WRITE | MapFlags::READ)?;
         let buffer = SimpleBuffer::new(handle);
-        Some(Self { buffer })
+        Ok(Self { buffer })
     }
 }
 
 #[secure_gate(options(info))]
-pub fn pager_open_handle(info: &secgate::GateCallInfo) -> Option<(Descriptor, ObjID)> {
+pub fn pager_open_handle(info: &secgate::GateCallInfo) -> Result<(Descriptor, ObjID), TwzError> {
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap().data;
     let handle = pager.new_handle(comp)?;
     let id = pager.with_handle(comp, handle, |pc| pc.sbid())?;
 
-    Some((handle, id))
+    Ok((handle, id))
 }
 
 #[secure_gate(options(info))]
-pub fn pager_close_handle(info: &secgate::GateCallInfo, desc: Descriptor) {
+pub fn pager_close_handle(info: &secgate::GateCallInfo, desc: Descriptor) -> Result<(), TwzError> {
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap().data;
     pager.drop_handle(comp, desc);
+    Ok(())
 }
 
 #[secure_gate(options(info))]
@@ -68,11 +66,11 @@ pub fn pager_enumerate_external(
     info: &secgate::GateCallInfo,
     desc: Descriptor,
     id: ObjID,
-) -> Result<usize, ErrorKind> {
+) -> Result<usize, TwzError> {
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap();
 
-    let items = pager.enumerate_external(id).map_err(|e| e.kind())?;
+    let items = pager.enumerate_external(id)?;
 
     pager
         .data
@@ -89,5 +87,5 @@ pub fn pager_enumerate_external(
             }
             len
         })
-        .ok_or(ErrorKind::InvalidInput)
+        .ok_or(TwzError::INVALID_ARGUMENT)
 }

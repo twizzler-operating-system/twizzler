@@ -3,8 +3,9 @@ use core::mem::MaybeUninit;
 
 use twizzler_abi::{
     object::ObjID,
-    syscall::{ThreadSpawnArgs, ThreadSpawnError, ThreadSpawnFlags, UpcallTargetSpawnOption},
+    syscall::{ThreadSpawnArgs, ThreadSpawnFlags, UpcallTargetSpawnOption},
 };
+use twizzler_rt_abi::error::ArgumentError;
 
 use super::{current_memory_context, current_thread_ref, priority::Priority, Thread, ThreadRef};
 use crate::{
@@ -35,9 +36,9 @@ extern "C" fn user_new_start() {
     }
 }
 
-pub fn start_new_user(args: ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
+pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
     let mut thread = if let Some(handle) = args.vm_context_handle {
-        let vmc = get_vmcontext_from_handle(handle).ok_or(ThreadSpawnError::NotFound)?;
+        let vmc = get_vmcontext_from_handle(handle).ok_or(ArgumentError::BadHandle)?;
         Thread::new(Some(vmc), Some(args), Priority::default_user())
     } else {
         Thread::new(

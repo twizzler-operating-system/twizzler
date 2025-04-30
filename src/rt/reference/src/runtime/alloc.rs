@@ -108,9 +108,7 @@ fn create_and_map() -> Option<(usize, ObjID)> {
         return Some((slot, id));
     }
 
-    let slot = monitor_api::monitor_rt_object_map(id, MapFlags::READ | MapFlags::WRITE)
-        .unwrap()
-        .ok();
+    let slot = monitor_api::monitor_rt_object_map(id, MapFlags::READ | MapFlags::WRITE).ok();
 
     if let Some(slot) = slot {
         Some((slot.slot, id))

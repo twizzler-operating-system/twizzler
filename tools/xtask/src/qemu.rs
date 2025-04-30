@@ -85,7 +85,7 @@ impl QemuCommand {
                 .arg("target/nvme.img")
                 .arg("10000000")
                 .status()
-                .unwrap()
+                .expect("failed to create disk image")
                 .success()
             {
                 panic!("failed to run mke2fs on nvme.img");

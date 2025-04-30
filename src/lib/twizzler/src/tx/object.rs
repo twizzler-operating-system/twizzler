@@ -7,7 +7,6 @@ use crate::{
     marker::BaseType,
     object::{FotEntry, Object, RawObject, TypedObject},
     ptr::RefMut,
-    tx::TxError,
 };
 
 #[repr(C)]
@@ -46,9 +45,8 @@ impl<T> TxObject<T> {
         unsafe { RefMut::from_raw_parts(self.base_mut_ptr(), self.handle()) }
     }
 
-    pub fn insert_fot(&self, fot: &FotEntry) -> crate::tx::Result<u64> {
+    pub fn insert_fot(&self, fot: &FotEntry) -> crate::tx::Result<u32> {
         twizzler_rt_abi::object::twz_rt_insert_fot(self.handle(), (fot as *const FotEntry).cast())
-            .ok_or(TxError::Exhausted)
     }
 
     pub fn into_unit(self) -> TxObject<()> {

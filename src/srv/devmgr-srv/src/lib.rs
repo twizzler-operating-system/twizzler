@@ -11,6 +11,7 @@ use twizzler_driver::{
     bus::pcie::{PcieDeviceInfo, PcieFunctionHeader, PcieKactionSpecific},
     device::{BusType, Device},
 };
+use twizzler_rt_abi::error::TwzError;
 use volatile::map_field;
 
 fn get_pcie_offset(bus: u8, device: u8, function: u8) -> usize {
@@ -76,7 +77,7 @@ fn start_pcie(seg: Device) {
 }
 
 #[secgate::secure_gate]
-pub fn devmgr_start() {
+pub fn devmgr_start() -> Result<(), TwzError> {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
@@ -91,10 +92,11 @@ pub fn devmgr_start() {
             start_pcie(device);
         }
     }
+    Ok(())
 }
 
 #[secgate::secure_gate]
-pub fn get_devices(spec: DriverSpec) -> Option<ObjID> {
+pub fn get_devices(spec: DriverSpec) -> Result<ObjID, TwzError> {
     match spec.supported {
         devmgr::Supported::PcieClass(class, subclass, progif) => {
             let device_root = twizzler_driver::get_bustree_root();
@@ -114,12 +116,12 @@ pub fn get_devices(spec: DriverSpec) -> Option<ObjID> {
             }
 
             tracing::debug!("found devices {:?} for spec {:?}", ids, spec);
-            let mut owned_devices_object = VecObject::new(ObjectBuilder::default()).ok()?;
+            let mut owned_devices_object = VecObject::new(ObjectBuilder::default())?;
             for id in ids {
-                owned_devices_object.push(OwnedDevice { id }).ok()?;
+                owned_devices_object.push(OwnedDevice { id })?;
             }
             // TODO: on-drop for this object.
-            Some(owned_devices_object.object().id())
+            Ok(owned_devices_object.object().id())
         }
     }
 }

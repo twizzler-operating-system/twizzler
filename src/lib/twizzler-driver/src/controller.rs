@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use twizzler_abi::device::MailboxPriority;
+use twizzler_rt_abi::Result;
 
 use crate::device::{
-    events::{DeviceEventStream, InterruptAllocationError, InterruptInfo},
+    events::{DeviceEventStream, InterruptInfo},
     Device,
 };
 
@@ -34,7 +35,7 @@ impl DeviceController {
     }
 
     /// Allocate a new interrupt on this device.
-    pub fn allocate_interrupt(&self) -> Result<InterruptInfo, InterruptAllocationError> {
+    pub fn allocate_interrupt(&self) -> Result<InterruptInfo> {
         self.events.allocate_interrupt()
     }
 

@@ -2,10 +2,11 @@
 
 use core::{
     fmt::Display,
-    num::TryFromIntError,
     sync::atomic::{AtomicU16, AtomicU64, Ordering},
     time::Duration,
 };
+
+use twizzler_rt_abi::error::TwzError;
 
 use crate::{
     kso::KsoHdr,
@@ -113,10 +114,10 @@ bitflags::bitflags! {
 pub struct InterruptVector(u32);
 
 impl TryFrom<u64> for InterruptVector {
-    type Error = TryFromIntError;
+    type Error = TwzError;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
-        let u: u32 = value.try_into()?;
+        let u: u32 = value.try_into().map_err(|_| TwzError::INVALID_ARGUMENT)?;
         Ok(InterruptVector(u))
     }
 }

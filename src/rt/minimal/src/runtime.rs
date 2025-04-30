@@ -11,7 +11,7 @@ mod core;
 mod debug;
 mod fs;
 mod idcounter;
-pub mod load_elf;
+//pub mod load_elf;
 pub(crate) mod object;
 pub(crate) mod phdrs;
 mod process;
