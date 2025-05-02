@@ -205,6 +205,15 @@ fn install_build_tools(_cli: &BootstrapOptions) -> anyhow::Result<()> {
         .arg("meson")
         .arg("ninja")
         .status()?;
+
+    // we dont care if this fails, only added as a precaution for how
+    // pip installs things
+    let _ = Command::new("mv")
+        .arg("toolchain/install/local/bin/ninja")
+        .arg("toolchain/install/local/bin/meson")
+        .arg("toolchain/install/bin")
+        .status();
+
     if !status.success() {
         anyhow::bail!("failed to install meson and ninja");
     }
@@ -273,9 +282,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     }
 
     let path = std::env::var("PATH").unwrap();
-    println!("1");
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
-    println!("2");
     std::env::set_var(
         "PATH",
         format!(
@@ -287,7 +294,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             path
         ),
     );
-    println!("3");
 
     for target_triple in all_possible_platforms() {
         let current_dir = std::env::current_dir().unwrap();
@@ -300,10 +306,8 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         let build_dir = src_dir.join(&build_dir_name);
         let cross_file = format!("{}/meson-cross-twizzler.txt", sysroot_dir.display());
 
-        println!("4: {:?}", sysroot_dir);
         std::fs::create_dir_all(&sysroot_dir)?;
 
-        println!("5: {:?}", cross_file);
         let mut cf = File::create(&cross_file)?;
 
         writeln!(&mut cf, "[binaries]")?;
@@ -338,10 +342,8 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         writeln!(&mut cf, "cpu = '{}'", target_triple.arch.to_string())?;
         writeln!(&mut cf, "endian = 'little'")?;
         drop(cf);
-        println!("6");
 
         let _ = remove_dir_all(&build_dir);
-        println!("7");
         let status = Command::new("meson")
             .arg("setup")
             .arg(format!("-Dprefix={}", sysroot_dir.display()))
@@ -352,7 +354,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             .arg(&build_dir)
             .current_dir(current_dir.join("toolchain/src/mlibc"))
             .status()?;
-        println!("8");
         if !status.success() {
             anyhow::bail!("failed to setup mlibc (headers only)");
         }
