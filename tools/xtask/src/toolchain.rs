@@ -209,8 +209,7 @@ fn install_build_tools(_cli: &BootstrapOptions) -> anyhow::Result<()> {
     // we dont care if this fails, only added as a precaution for how
     // pip installs things
     let _ = Command::new("mv")
-        .arg("toolchain/install/local/bin/ninja")
-        .arg("toolchain/install/local/bin/meson")
+        .arg("toolchain/install/local/bin")
         .arg("toolchain/install/bin")
         .status();
 
