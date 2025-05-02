@@ -71,8 +71,6 @@ initrd = [
     "crate:uuhelper",
 
     "crate:sec-test",
-
-
     "crate:hw-c"
 
     #"third-party:hello-world-rs"

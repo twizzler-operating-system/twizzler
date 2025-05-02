@@ -273,7 +273,9 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     }
 
     let path = std::env::var("PATH").unwrap();
+    println!("1");
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
+    println!("2");
     std::env::set_var(
         "PATH",
         format!(
@@ -285,6 +287,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             path
         ),
     );
+    println!("3");
 
     for target_triple in all_possible_platforms() {
         let current_dir = std::env::current_dir().unwrap();
@@ -297,7 +300,10 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         let build_dir = src_dir.join(&build_dir_name);
         let cross_file = format!("{}/meson-cross-twizzler.txt", sysroot_dir.display());
 
+        println!("4: {:?}", sysroot_dir);
         std::fs::create_dir_all(&sysroot_dir)?;
+
+        println!("5");
         let mut cf = File::create(&cross_file)?;
         writeln!(&mut cf, "[binaries]")?;
         for tool in [
