@@ -303,8 +303,9 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         println!("4: {:?}", sysroot_dir);
         std::fs::create_dir_all(&sysroot_dir)?;
 
-        println!("5");
+        println!("5: {:?}", cross_file);
         let mut cf = File::create(&cross_file)?;
+
         writeln!(&mut cf, "[binaries]")?;
         for tool in [
             ("c", "clang"),
