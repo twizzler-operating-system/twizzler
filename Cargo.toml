@@ -70,10 +70,10 @@ initrd = [
     "crate:unittest",
     "crate:uuhelper",
 
-    "crate:sec-test"
+    "crate:sec-test",
 
 
-    "crate:hw-c",
+    "crate:hw-c"
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",
