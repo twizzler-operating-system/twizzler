@@ -1,37 +1,10 @@
-use num_enum::{FromPrimitive, IntoPrimitive};
+use twizzler_rt_abi::{
+    error::{ArgumentError, TwzError},
+    Result,
+};
 
-use super::{convert_codes_to_result, justval, Syscall};
+use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::{arch::syscall::raw_syscall, object::ObjID};
-
-#[derive(
-    Debug,
-    Copy,
-    Clone,
-    PartialEq,
-    PartialOrd,
-    Ord,
-    Eq,
-    Hash,
-    IntoPrimitive,
-    FromPrimitive,
-    thiserror::Error,
-)]
-#[repr(u64)]
-/// Possible error returns for [sys_object_ctrl].
-pub enum ObjectControlError {
-    /// An unknown error occurred.
-    #[num_enum(default)]
-    #[error("unknown error")]
-    Unknown = 0,
-    /// One of the arguments was invalid.
-    #[error("invalid argument")]
-    InvalidArgument = 1,
-    /// Invalid object ID.
-    #[error("invalid object ID")]
-    InvalidID = 2,
-}
-
-impl core::error::Error for ObjectControlError {}
 
 bitflags::bitflags! {
     /// Flags to control operation of the object delete operation.
@@ -63,22 +36,24 @@ impl From<ObjectControlCmd> for (u64, u64) {
 }
 
 impl TryFrom<(u64, u64)> for ObjectControlCmd {
-    type Error = ();
-    fn try_from(value: (u64, u64)) -> Result<Self, Self::Error> {
+    type Error = TwzError;
+    fn try_from(value: (u64, u64)) -> Result<Self> {
         Ok(match value.0 {
             0 => ObjectControlCmd::CreateCommit,
-            1 => ObjectControlCmd::Delete(DeleteFlags::from_bits(value.1).ok_or(())?),
+            1 => ObjectControlCmd::Delete(
+                DeleteFlags::from_bits(value.1).ok_or(ArgumentError::InvalidArgument)?,
+            ),
             2 => ObjectControlCmd::Sync,
-            _ => return Err(()),
+            _ => return Err(ArgumentError::InvalidArgument.into()),
         })
     }
 }
 
 /// Perform a kernel operation on this object.
-pub fn sys_object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> Result<(), ObjectControlError> {
+pub fn sys_object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> Result<()> {
     let [hi, lo] = id.parts();
     let (cmd, opts) = cmd.into();
     let args = [hi, lo, cmd, opts];
     let (code, val) = unsafe { raw_syscall(Syscall::ObjectCtrl, &args) };
-    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), justval)
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), twzerr)
 }

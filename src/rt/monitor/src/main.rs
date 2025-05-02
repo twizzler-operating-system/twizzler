@@ -1,6 +1,5 @@
 #![feature(naked_functions)]
 #![feature(thread_local)]
-#![feature(hash_extract_if)]
 #![feature(new_zeroed_alloc)]
 #![feature(iterator_try_collect)]
 #![feature(linkage)]

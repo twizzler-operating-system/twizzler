@@ -1,39 +1,9 @@
 use core::mem::MaybeUninit;
 
-use num_enum::{FromPrimitive, IntoPrimitive};
+use twizzler_rt_abi::Result;
 
-use super::{convert_codes_to_result, justval, BackingType, LifetimeType, Syscall};
+use super::{convert_codes_to_result, twzerr, BackingType, LifetimeType, Syscall};
 use crate::{arch::syscall::raw_syscall, object::ObjID};
-
-#[derive(
-    Debug,
-    Copy,
-    Clone,
-    PartialEq,
-    PartialOrd,
-    Ord,
-    Eq,
-    Hash,
-    IntoPrimitive,
-    FromPrimitive,
-    thiserror::Error,
-)]
-#[repr(u64)]
-/// Possible error returns for [sys_object_stat].
-pub enum ObjectStatError {
-    /// An unknown error occurred.
-    #[num_enum(default)]
-    #[error("unknown error")]
-    Unknown = 0,
-    /// One of the arguments was invalid.
-    #[error("invalid argument")]
-    InvalidArgument = 1,
-    /// Invalid Object ID.
-    #[error("invalid ID")]
-    InvalidID = 2,
-}
-
-impl core::error::Error for ObjectStatError {}
 
 /// Information about an object, according to the local kernel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -54,7 +24,7 @@ pub struct ObjectInfo {
 }
 
 /// Read information about a given object.
-pub fn sys_object_stat(id: ObjID) -> Result<ObjectInfo, ObjectStatError> {
+pub fn sys_object_stat(id: ObjID) -> Result<ObjectInfo> {
     let [hi, lo] = id.parts();
     let mut obj_info = MaybeUninit::<ObjectInfo>::uninit();
     let args = [
@@ -68,6 +38,6 @@ pub fn sys_object_stat(id: ObjID) -> Result<ObjectInfo, ObjectStatError> {
         val,
         |c, _| c != 0,
         |_, _| unsafe { obj_info.assume_init() },
-        justval,
+        twzerr,
     )
 }

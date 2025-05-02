@@ -1,12 +1,13 @@
 use twizzler_abi::{
     object::ObjID,
-    syscall::{ThreadControl, ThreadSpawnArgs, ThreadSpawnError},
+    syscall::{ThreadControl, ThreadSpawnArgs},
     upcall::{UpcallFrame, UpcallTarget},
 };
+use twizzler_rt_abi::Result;
 
 use crate::{security::SwitchResult, thread::current_thread_ref};
 
-pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID, ThreadSpawnError> {
+pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID> {
     crate::thread::entry::start_new_user(*args)
 }
 

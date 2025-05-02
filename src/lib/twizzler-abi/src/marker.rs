@@ -22,7 +22,7 @@ impl<T> !ObjSafe for *const T {}
 impl<T> !ObjSafe for *mut T {}
 impl<T> !ObjSafe for &T {}
 impl<T> !ObjSafe for &mut T {}
-impl<T> !ObjSafe for UnsafeCell<T> {}
+impl<T: ?Sized> !ObjSafe for UnsafeCell<T> {}
 unsafe impl ObjSafe for AtomicBool {}
 unsafe impl ObjSafe for AtomicU16 {}
 unsafe impl ObjSafe for AtomicU32 {}

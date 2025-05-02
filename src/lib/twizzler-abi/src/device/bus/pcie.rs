@@ -1,10 +1,13 @@
 #[cfg(any(feature = "kernel"))]
 use core::{mem::size_of, ptr::NonNull};
 
+use twizzler_rt_abi::{
+    error::{ArgumentError, TwzError},
+    Result,
+};
 #[cfg(any(feature = "kernel"))]
 use volatile::VolatilePtr;
 
-use crate::kso::KactionError;
 /// The base struct for an info sub-object for a PCIe bus.
 #[allow(dead_code)]
 #[repr(C)]
@@ -48,13 +51,13 @@ impl From<PcieKactionSpecific> for u32 {
 }
 
 impl TryFrom<u32> for PcieKactionSpecific {
-    type Error = KactionError;
+    type Error = TwzError;
 
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
+    fn try_from(value: u32) -> Result<Self> {
         Ok(match value {
             0 => PcieKactionSpecific::RegisterDevice,
             1 => PcieKactionSpecific::AllocateInterrupt,
-            _ => return Err(KactionError::InvalidArgument),
+            _ => return Err(ArgumentError::InvalidArgument.into()),
         })
     }
 }

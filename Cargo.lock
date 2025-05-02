@@ -1619,7 +1619,7 @@ dependencies = [
 [[package]]
 name = "efs"
 version = "0.4.2"
-source = "git+https://github.com/dbittman/efs#3ab723d6cb209b1bb02242d04104856b48369034"
+source = "git+https://github.com/dbittman/efs?branch=twizzler-2025-04#5d660088d5e2be47b73ac1dd8c33ebb7610ef530"
 dependencies = [
  "bitflags 2.9.0",
  "cfg-if 1.0.0",
@@ -3180,6 +3180,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b112acc8b3adf4b107a8ec20977da0273a8c386765a3ec0229bd500a1443f9f"
 
 [[package]]
+name = "hw-c"
+version = "0.1.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "hyper"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4173,6 +4180,7 @@ version = "0.1.0"
 dependencies = [
  "secgate",
  "twizzler-abi",
+ "twizzler-rt-abi",
  "twizzler-runtime",
 ]
 
@@ -6819,7 +6827,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 [[package]]
 name = "uu_base32"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -6828,7 +6836,7 @@ dependencies = [
 [[package]]
 name = "uu_base64"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uu_base32",
@@ -6838,7 +6846,7 @@ dependencies = [
 [[package]]
 name = "uu_basename"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -6847,7 +6855,7 @@ dependencies = [
 [[package]]
 name = "uu_basenc"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uu_base32",
@@ -6857,7 +6865,7 @@ dependencies = [
 [[package]]
 name = "uu_cat"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "nix",
@@ -6868,7 +6876,7 @@ dependencies = [
 [[package]]
 name = "uu_cksum"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "hex",
@@ -6879,7 +6887,7 @@ dependencies = [
 [[package]]
 name = "uu_comm"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -6888,7 +6896,7 @@ dependencies = [
 [[package]]
 name = "uu_csplit"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "regex",
@@ -6899,7 +6907,7 @@ dependencies = [
 [[package]]
 name = "uu_cut"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "bstr",
  "clap",
@@ -6910,7 +6918,7 @@ dependencies = [
 [[package]]
 name = "uu_date"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "chrono",
  "clap",
@@ -6923,7 +6931,7 @@ dependencies = [
 [[package]]
 name = "uu_echo"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -6932,7 +6940,7 @@ dependencies = [
 [[package]]
 name = "uu_expand"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "unicode-width 0.2.0",
@@ -6942,7 +6950,7 @@ dependencies = [
 [[package]]
 name = "uu_factor"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "num-bigint",
@@ -6956,7 +6964,7 @@ dependencies = [
 [[package]]
 name = "uu_false"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -6965,7 +6973,7 @@ dependencies = [
 [[package]]
 name = "uu_fmt"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "unicode-width 0.2.0",
@@ -6975,7 +6983,7 @@ dependencies = [
 [[package]]
 name = "uu_fold"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -6984,7 +6992,7 @@ dependencies = [
 [[package]]
 name = "uu_join"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "memchr",
@@ -6994,7 +7002,7 @@ dependencies = [
 [[package]]
 name = "uu_ln"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -7003,7 +7011,7 @@ dependencies = [
 [[package]]
 name = "uu_ls"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "ansi-width",
  "chrono",
@@ -7020,7 +7028,7 @@ dependencies = [
 [[package]]
 name = "uu_nl"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "regex",
@@ -7030,7 +7038,7 @@ dependencies = [
 [[package]]
 name = "uu_numfmt"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -7039,7 +7047,7 @@ dependencies = [
 [[package]]
 name = "uu_od"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "byteorder",
  "clap",
@@ -7050,7 +7058,7 @@ dependencies = [
 [[package]]
 name = "uu_paste"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -7059,7 +7067,7 @@ dependencies = [
 [[package]]
 name = "uu_pr"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "chrono",
  "clap",
@@ -7072,7 +7080,7 @@ dependencies = [
 [[package]]
 name = "uu_printenv"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -7081,7 +7089,7 @@ dependencies = [
 [[package]]
 name = "uu_printf"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -7090,7 +7098,7 @@ dependencies = [
 [[package]]
 name = "uu_ptx"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "regex",
@@ -7100,7 +7108,7 @@ dependencies = [
 [[package]]
 name = "uu_seq"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "bigdecimal",
  "clap",
@@ -7113,7 +7121,7 @@ dependencies = [
 [[package]]
 name = "uu_shuf"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "memchr",
@@ -7125,7 +7133,7 @@ dependencies = [
 [[package]]
 name = "uu_sleep"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "fundu",
@@ -7135,7 +7143,7 @@ dependencies = [
 [[package]]
 name = "uu_sort"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "binary-heap-plus",
  "clap",
@@ -7157,7 +7165,7 @@ dependencies = [
 [[package]]
 name = "uu_sum"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -7166,7 +7174,7 @@ dependencies = [
 [[package]]
 name = "uu_tr"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "nom 8.0.0",
@@ -7176,7 +7184,7 @@ dependencies = [
 [[package]]
 name = "uu_true"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -7185,7 +7193,7 @@ dependencies = [
 [[package]]
 name = "uu_tsort"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "thiserror 2.0.12",
@@ -7195,7 +7203,7 @@ dependencies = [
 [[package]]
 name = "uu_unexpand"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "unicode-width 0.2.0",
@@ -7205,7 +7213,7 @@ dependencies = [
 [[package]]
 name = "uu_uniq"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "uucore",
@@ -7214,7 +7222,7 @@ dependencies = [
 [[package]]
 name = "uu_yes"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "clap",
  "itertools 0.14.0",
@@ -7225,7 +7233,7 @@ dependencies = [
 [[package]]
 name = "uucore"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -7264,7 +7272,7 @@ dependencies = [
 [[package]]
 name = "uucore_procs"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7274,7 +7282,7 @@ dependencies = [
 [[package]]
 name = "uuhelp_parser"
 version = "0.0.30"
-source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#5d1ee4ef107d89c70acfe29c1833995bc7f173b3"
+source = "git+https://github.com/twizzler-operating-system/coreutils.git?branch=twizzler#6a7afa979f3bf88773cbc09b33670e59a1f91627"
 
 [[package]]
 name = "uuhelper"

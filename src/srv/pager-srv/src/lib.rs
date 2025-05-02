@@ -1,4 +1,3 @@
-#![feature(ptr_sub_ptr)]
 #![feature(naked_functions)]
 #![feature(io_error_more)]
 
@@ -16,7 +15,7 @@ use twizzler_abi::pager::{
     CompletionToKernel, CompletionToPager, PagerCompletionData, RequestFromKernel, RequestFromPager,
 };
 use twizzler_queue::{QueueBase, QueueSender};
-use twizzler_rt_abi::object::MapFlags;
+use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
 use crate::{data::PagerData, request_handle::handle_kernel_request};
 
@@ -203,7 +202,7 @@ struct PagerContext {
 }
 
 impl PagerContext {
-    pub fn enumerate_external(&self, id: ObjID) -> std::io::Result<Vec<ExternalFile>> {
+    pub fn enumerate_external(&self, id: ObjID) -> Result<Vec<ExternalFile>, TwzError> {
         Ok(self
             .paged_ostore
             .enumerate_external(id.raw())?
@@ -261,30 +260,33 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
 }
 
 #[secgate::secure_gate]
-pub fn pager_start(q1: ObjID, q2: ObjID) -> ObjID {
-    do_pager_start(q1, q2)
+pub fn pager_start(q1: ObjID, q2: ObjID) -> Result<ObjID, TwzError> {
+    Ok(do_pager_start(q1, q2))
 }
 
 #[secgate::secure_gate]
-pub fn full_object_sync(id: ObjID) {
+pub fn full_object_sync(id: ObjID) -> Result<(), TwzError> {
     let task = EXECUTOR.get().unwrap().spawn(async move {
         let pager = PAGER_CTX.get().unwrap();
         pager.data.sync(&pager, id).await;
     });
     block_on(EXECUTOR.get().unwrap().run(async { task.await }));
+    Ok(())
 }
 
 #[secgate::secure_gate]
-pub fn adv_lethe() {
+pub fn adv_lethe() -> Result<(), TwzError> {
     PAGER_CTX.get().unwrap().paged_ostore.flush().unwrap();
+    Ok(())
 }
 
 #[secgate::secure_gate]
-pub fn disk_len(id: ObjID) -> u64 {
+pub fn disk_len(id: ObjID) -> Result<u64, TwzError> {
     PAGER_CTX
         .get()
         .unwrap()
         .paged_ostore
         .len(id.raw())
-        .unwrap_or(0)
+        // TODO: err
+        .map_err(|_| TwzError::NOT_SUPPORTED)
 }

@@ -2,7 +2,7 @@
 extern "C" {}
 
 use secgate::util::{Descriptor, Handle, SimpleBuffer};
-use twizzler_rt_abi::object::MapFlags;
+use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
 /// An open handle to the logging service.
 pub struct LogHandle {
@@ -14,7 +14,7 @@ pub struct LogHandle {
 // You can see that internally, this is where most of the secure gate APIs
 // are actually used, so that interface is abstracted from the programmer.
 impl Handle for LogHandle {
-    type OpenError = ();
+    type OpenError = TwzError;
 
     type OpenInfo = ();
 
@@ -22,16 +22,15 @@ impl Handle for LogHandle {
     where
         Self: Sized,
     {
-        let (desc, id) = logboi_srv::logboi_open_handle().ok().flatten().ok_or(())?;
+        let (desc, id) = logboi_srv::logboi_open_handle()?;
         let handle =
-            twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)
-                .map_err(|_| ())?;
+            twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)?;
         let sb = SimpleBuffer::new(handle);
         Ok(Self { desc, buffer: sb })
     }
 
     fn release(&mut self) {
-        logboi_srv::logboi_close_handle(self.desc);
+        let _ = logboi_srv::logboi_close_handle(self.desc);
     }
 }
 

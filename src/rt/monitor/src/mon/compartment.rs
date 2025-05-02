@@ -9,9 +9,12 @@ use happylock::ThreadKey;
 use monitor_api::MONITOR_INSTANCE_ID;
 use secgate::util::Descriptor;
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync, ThreadSyncSleep};
-use twizzler_rt_abi::object::ObjID;
+use twizzler_rt_abi::{
+    error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
+    object::ObjID,
+};
 
-use crate::gates::{CompartmentInfo, CompartmentMgrStats, LoadCompartmentError};
+use crate::gates::{CompartmentInfo, CompartmentMgrStats};
 
 mod compconfig;
 mod compthread;
@@ -33,36 +36,44 @@ pub struct CompartmentMgr {
 
 impl CompartmentMgr {
     /// Get a [RunComp] by instance ID.
-    pub fn get(&self, id: ObjID) -> Option<&RunComp> {
-        self.instances.get(&id)
+    pub fn get(&self, id: ObjID) -> Result<&RunComp, TwzError> {
+        self.instances.get(&id).ok_or(TwzError::INVALID_ARGUMENT)
     }
 
     /// Get a [RunComp] by name.
-    pub fn _get_name(&self, name: &str) -> Option<&RunComp> {
-        let id = self.names.get(name)?;
+    pub fn _get_name(&self, name: &str) -> Result<&RunComp, TwzError> {
+        let id = self.names.get(name).ok_or(TwzError::INVALID_ARGUMENT)?;
         self.get(*id)
     }
 
     /// Get a [RunComp] by instance ID.
-    pub fn get_mut(&mut self, id: ObjID) -> Option<&mut RunComp> {
-        self.instances.get_mut(&id)
+    pub fn get_mut(&mut self, id: ObjID) -> Result<&mut RunComp, TwzError> {
+        self.instances
+            .get_mut(&id)
+            .ok_or(TwzError::INVALID_ARGUMENT)
     }
 
     /// Get a [RunComp] by name.
-    pub fn get_name_mut(&mut self, name: &str) -> Option<&mut RunComp> {
-        let id = self.names.get(name)?;
+    pub fn get_name_mut(&mut self, name: &str) -> Result<&mut RunComp, TwzError> {
+        let id = self.names.get(name).ok_or(TwzError::INVALID_ARGUMENT)?;
         self.get_mut(*id)
     }
 
     /// Get a [RunComp] by dynamic linker ID.
-    pub fn get_dynlinkid(&self, id: CompartmentId) -> Option<&RunComp> {
-        let id = self.dynlink_map.get(&id)?;
+    pub fn get_dynlinkid(&self, id: CompartmentId) -> Result<&RunComp, TwzError> {
+        let id = self
+            .dynlink_map
+            .get(&id)
+            .ok_or(TwzError::INVALID_ARGUMENT)?;
         self.get(*id)
     }
 
     /// Get a [RunComp] by dynamic linker ID.
-    pub fn _get_dynlinkid_mut(&mut self, id: CompartmentId) -> Option<&mut RunComp> {
-        let id = self.dynlink_map.get(&id)?;
+    pub fn _get_dynlinkid_mut(&mut self, id: CompartmentId) -> Result<&mut RunComp, TwzError> {
+        let id = self
+            .dynlink_map
+            .get(&id)
+            .ok_or(TwzError::INVALID_ARGUMENT)?;
         self.get_mut(*id)
     }
 
@@ -113,7 +124,7 @@ impl CompartmentMgr {
         instance: ObjID,
         f: impl FnOnce(u64) -> Option<u64>,
     ) -> bool {
-        let Some(rc) = self.get_mut(instance) else {
+        let Ok(rc) = self.get_mut(instance) else {
             return false;
         };
 
@@ -129,7 +140,7 @@ impl CompartmentMgr {
     }
 
     fn load_compartment_flags(&self, instance: ObjID) -> u64 {
-        let Some(rc) = self.get(instance) else {
+        let Ok(rc) = self.get(instance) else {
             return 0;
         };
         rc.raw_flags()
@@ -139,16 +150,16 @@ impl CompartmentMgr {
         &self,
         instance: ObjID,
         state: u64,
-    ) -> Option<ThreadSyncSleep> {
+    ) -> Result<ThreadSyncSleep, TwzError> {
         let rc = self.get(instance)?;
-        Some(rc.until_change(state))
+        Ok(rc.until_change(state))
     }
 
     pub fn main_thread_exited(&mut self, instance: ObjID) {
         tracing::debug!("main thread for compartment {} exited", instance);
         while !self.update_compartment_flags(instance, |old| Some(old | COMP_EXITED)) {}
 
-        let Some(rc) = self.get(instance) else {
+        let Ok(rc) = self.get(instance) else {
             tracing::warn!("failed to find compartment {} during exit", instance);
             return;
         };
@@ -156,7 +167,7 @@ impl CompartmentMgr {
             self.dec_use_count(dep);
         }
 
-        let Some(rc) = self.get_mut(instance) else {
+        let Ok(rc) = self.get_mut(instance) else {
             tracing::warn!("failed to find compartment {} during exit", instance);
             return;
         };
@@ -169,7 +180,7 @@ impl CompartmentMgr {
     }
 
     pub fn dec_use_count(&mut self, instance: ObjID) {
-        let Some(rc) = self.get_mut(instance) else {
+        let Ok(rc) = self.get_mut(instance) else {
             return;
         };
 
@@ -210,12 +221,13 @@ impl super::Monitor {
         instance: ObjID,
         thread: ObjID,
         desc: Option<Descriptor>,
-    ) -> Option<CompartmentInfo> {
+    ) -> Result<CompartmentInfo, TwzError> {
         let (_, ref mut comps, ref dynlink, _, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = desc
             .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
-            .unwrap_or(Some(instance))?;
+            .unwrap_or(Some(instance))
+            .ok_or(TwzError::INVALID_ARGUMENT)?;
 
         let name = comps.get(comp_id)?.name.clone();
         let pt = comps.get_mut(instance)?.get_per_thread(thread);
@@ -223,11 +235,12 @@ impl super::Monitor {
         let comp = comps.get(comp_id)?;
         let nr_libs = dynlink
             .get_compartment(comp.compartment_id)
-            .ok()?
+            .ok()
+            .ok_or(TwzError::INVALID_ARGUMENT)?
             .library_ids()
             .count();
 
-        Some(CompartmentInfo {
+        Ok(CompartmentInfo {
             name_len,
             id: comp_id,
             sctx: comp.sctx,
@@ -245,33 +258,45 @@ impl super::Monitor {
         thread: ObjID,
         desc: Option<Descriptor>,
         name_len: usize,
-    ) -> Option<usize> {
+    ) -> Result<usize, TwzError> {
         let name = self.read_thread_simple_buffer(instance, thread, name_len)?;
         let (_, ref comps, ref dynlink, _, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = desc
             .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
-            .unwrap_or(Some(instance))?;
-        let name = String::from_utf8(name).ok()?;
+            .unwrap_or(Some(instance))
+            .ok_or(TwzError::INVALID_ARGUMENT)?;
+        let name = String::from_utf8(name)
+            .ok()
+            .ok_or(TwzError::INVALID_ARGUMENT)?;
 
         let comp = comps.get(comp_id)?;
-        let dc = dynlink.get_compartment(comp.compartment_id).ok()?;
+        let dc = dynlink
+            .get_compartment(comp.compartment_id)
+            .ok()
+            .ok_or(TwzError::INVALID_ARGUMENT)?;
         for lid in dc.library_ids() {
-            let lib = dynlink.get_library(lid).ok()?;
+            let lib = dynlink
+                .get_library(lid)
+                .map_err(|_| GenericError::Internal)?;
             if let Some(gates) = lib.iter_secgates() {
                 for gate in gates {
                     if gate.name().to_str().ok() == Some(name.as_str()) {
-                        return Some(gate.imp);
+                        return Ok(gate.imp);
                     }
                 }
             }
         }
-        None
+        Err(NamingError::NotFound.into())
     }
 
     /// Open a compartment handle for this caller compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
-    pub fn get_compartment_handle(&self, caller: ObjID, compartment: ObjID) -> Option<Descriptor> {
+    pub fn get_compartment_handle(
+        &self,
+        caller: ObjID,
+        compartment: ObjID,
+    ) -> Result<Descriptor, TwzError> {
         let (_, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
         let comp = comps.get_mut(compartment)?;
         comp.inc_use_count();
@@ -285,6 +310,7 @@ impl super::Monitor {
                 },
             },
         )
+        .ok_or(ResourceError::OutOfResources.into())
     }
 
     /// Open a compartment handle for this caller compartment.
@@ -294,9 +320,11 @@ impl super::Monitor {
         instance: ObjID,
         thread: ObjID,
         name_len: usize,
-    ) -> Option<Descriptor> {
+    ) -> Result<Descriptor, TwzError> {
         let name = self.read_thread_simple_buffer(instance, thread, name_len)?;
-        let name = String::from_utf8(name).ok()?;
+        let name = String::from_utf8(name)
+            .ok()
+            .ok_or(TwzError::INVALID_ARGUMENT)?;
         let (_, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
         let comp = comps.get_name_mut(&name)?;
         comp.inc_use_count();
@@ -306,6 +334,7 @@ impl super::Monitor {
                 instance: comp.instance,
             },
         )
+        .ok_or(ResourceError::OutOfResources.into())
     }
 
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
@@ -330,16 +359,18 @@ impl super::Monitor {
         caller: ObjID,
         desc: Option<Descriptor>,
         dep_n: usize,
-    ) -> Option<Descriptor> {
+    ) -> Result<Descriptor, TwzError> {
         let dep = {
             let (_, ref mut comps, _, _, ref mut comphandles) =
                 *self.locks.lock(ThreadKey::get().unwrap());
             let comp_id = desc
                 .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
-                .unwrap_or(Some(caller))?;
+                .unwrap_or(Some(caller))
+                .ok_or(ArgumentError::InvalidArgument)?;
             let comp = comps.get_mut(comp_id)?;
             comp.deps.get(dep_n).cloned()
-        }?;
+        }
+        .ok_or(TwzError::INVALID_ARGUMENT)?;
         self.get_compartment_handle(caller, dep)
     }
 
@@ -353,19 +384,17 @@ impl super::Monitor {
         args_len: usize,
         env_len: usize,
         new_comp_flags: NewCompartmentFlags,
-    ) -> Result<Descriptor, LoadCompartmentError> {
+    ) -> Result<Descriptor, TwzError> {
         let total_bytes = name_len + args_len + env_len;
-        let str_bytes = self
-            .read_thread_simple_buffer(caller, thread, total_bytes)
-            .ok_or(LoadCompartmentError::Unknown)?;
+        let str_bytes = self.read_thread_simple_buffer(caller, thread, total_bytes)?;
         let name_bytes = &str_bytes[0..name_len];
         let arg_bytes = &str_bytes[name_len..(name_len + args_len)];
         let env_bytes = &str_bytes[(name_len + args_len)..total_bytes];
 
         let input = String::from_utf8_lossy(&name_bytes);
         let mut split = input.split("::");
-        let compname = split.next().ok_or(LoadCompartmentError::Unknown)?;
-        let libname = split.next().ok_or(LoadCompartmentError::Unknown)?;
+        let compname = split.next().ok_or(TwzError::INVALID_ARGUMENT)?;
+        let libname = split.next().ok_or(TwzError::INVALID_ARGUMENT)?;
         let root = UnloadedLibrary::new(libname);
 
         // parse args
@@ -373,7 +402,7 @@ impl super::Monitor {
         let args = args_bytes
             .map(CStr::from_bytes_with_nul)
             .try_collect::<Vec<_>>()
-            .map_err(|_| LoadCompartmentError::Unknown)?;
+            .map_err(|_| TwzError::INVALID_ARGUMENT)?;
         tracing::debug!("load {}: args: {:?}", compname, args);
 
         // parse env
@@ -381,36 +410,26 @@ impl super::Monitor {
         let env = envs_bytes
             .map(CStr::from_bytes_with_nul)
             .try_collect::<Vec<_>>()
-            .map_err(|_| LoadCompartmentError::Unknown)?;
+            .map_err(|_| TwzError::INVALID_ARGUMENT)?;
         tracing::trace!("load {}: env: {:?}", compname, env);
 
         let loader = {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
             loader::RunCompLoader::new(*dynlink, compname, root, new_comp_flags)
         }
-        .inspect_err(|e| tracing::debug!("failed to load {}::{}: {:?}", compname, libname, e))
-        .map_err(|_| LoadCompartmentError::Unknown)?;
+        .map_err(|_| GenericError::Internal)?;
 
         let root_comp = {
             let (_, ref mut cmp, ref mut dynlink, _, _) =
                 &mut *self.locks.lock(ThreadKey::get().unwrap());
+            // TODO: dynlink err map
             loader
                 .build_rcs(&mut *cmp, &mut *dynlink)
-                .inspect_err(|e| {
-                    tracing::debug!(
-                        "failed to build runtime compartments {}::{}: {}",
-                        compname,
-                        libname,
-                        e
-                    )
-                })
-                .map_err(|_| LoadCompartmentError::Unknown)?
+                .map_err(|_| GenericError::Internal)?
         };
         tracing::trace!("loaded {} as {}", compname, root_comp);
 
-        let desc = self
-            .get_compartment_handle(caller, root_comp)
-            .ok_or(LoadCompartmentError::Unknown)?;
+        let desc = self.get_compartment_handle(caller, root_comp)?;
 
         self.start_compartment(root_comp, &args, &env)?;
 
@@ -454,7 +473,7 @@ impl super::Monitor {
     pub fn wait_for_compartment_state_change(&self, instance: ObjID, state: u64) {
         let sl = {
             let cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
-            let Some(sl) = cmp.wait_for_compartment_state_change(instance, state) else {
+            let Ok(sl) = cmp.wait_for_compartment_state_change(instance, state) else {
                 return;
             };
 

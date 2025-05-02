@@ -37,7 +37,7 @@ members = [
     "src/bin/unittest",
     "src/bin/unittest/unittest-report",
     "src/lib/pager/pager-dynamic",
-    "src/bin/uuhelper",
+    "src/bin/uuhelper", "src/ports/hw-c",
 
 
     #"src/bin/etl_twizzler",
@@ -68,7 +68,12 @@ initrd = [
     "lib:pager-srv",
     "crate:unittest",
     "crate:uuhelper",
+
     "crate:sec-test"
+
+
+    "crate:hw-c",
+
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",
     #"crate:etl_twizzler",

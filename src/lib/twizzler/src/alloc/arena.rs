@@ -4,13 +4,14 @@ use std::{
 };
 
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_rt_abi::error::ResourceError;
 
 use super::{Allocator, OwnedGlobalPtr, SingleObjectAllocator};
 use crate::{
     marker::BaseType,
     object::{Object, ObjectBuilder, RawObject},
     ptr::GlobalPtr,
-    tx::{TxCell, TxError, TxHandle, TxObject, UnsafeTxHandle},
+    tx::{TxCell, TxHandle, TxObject, UnsafeTxHandle},
 };
 
 pub struct ArenaObject {
@@ -72,7 +73,7 @@ impl ArenaBase {
         let next_cell = self.next.get_mut(tx)?;
         let next = next_cell.next_multiple_of(align as u64);
         if next + len > MAX_SIZE as u64 {
-            return Err(TxError::Exhausted);
+            return Err(ResourceError::OutOfMemory.into());
         }
 
         *next_cell = next + len;

@@ -1,7 +1,9 @@
-use super::{convert_codes_to_result, Syscall};
+use twizzler_rt_abi::Result;
+
+use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::{
     arch::syscall::raw_syscall,
-    kso::{KactionCmd, KactionError, KactionFlags, KactionValue},
+    kso::{KactionCmd, KactionFlags, KactionValue},
     object::ObjID,
 };
 
@@ -12,7 +14,7 @@ pub fn sys_kaction(
     arg: u64,
     arg2: u64,
     flags: KactionFlags,
-) -> Result<KactionValue, KactionError> {
+) -> Result<KactionValue> {
     let [hi, lo] = id.map_or([0, 0], |id| id.parts());
     let (code, val) = unsafe {
         raw_syscall(
@@ -25,7 +27,7 @@ pub fn sys_kaction(
         val,
         |c, _| c == 0,
         |c, v| KactionValue::from((c, v)),
-        |_, v| KactionError::from(v),
+        twzerr,
     )
 }
 

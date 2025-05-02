@@ -2,8 +2,10 @@ use std::io::{ErrorKind, Read, SeekFrom, Write};
 
 use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::{
+    error::ArgumentError,
     fd::FdInfo,
     object::{MapFlags, ObjectHandle, MEXT_SIZED},
+    Result,
 };
 
 use crate::OUR_RUNTIME;
@@ -16,7 +18,7 @@ pub struct RawFile {
 }
 
 impl RawFile {
-    pub fn open(obj_id: ObjID, flags: MapFlags) -> std::io::Result<Self> {
+    pub fn open(obj_id: ObjID, flags: MapFlags) -> Result<Self> {
         let handle = OUR_RUNTIME.map_object(obj_id, flags).unwrap();
         let len = handle
             .find_meta_ext(MEXT_SIZED)
@@ -29,7 +31,7 @@ impl RawFile {
         })
     }
 
-    pub fn seek(&mut self, pos: SeekFrom) -> std::io::Result<usize> {
+    pub fn seek(&mut self, pos: SeekFrom) -> Result<usize> {
         let new_pos: i64 = match pos {
             SeekFrom::Start(x) => x as i64,
             SeekFrom::End(x) => (self.len as i64) - x,
@@ -37,14 +39,14 @@ impl RawFile {
         };
 
         if new_pos < 0 {
-            Err(ErrorKind::InvalidInput.into())
+            Err(ArgumentError::InvalidArgument.into())
         } else {
             self.pos = new_pos as u64;
             Ok(self.pos.try_into().unwrap())
         }
     }
 
-    pub fn stat(&self) -> std::io::Result<FdInfo> {
+    pub fn stat(&self) -> Result<FdInfo> {
         Ok(FdInfo {
             kind: twizzler_rt_abi::fd::FdKind::Regular,
             size: self.len,
