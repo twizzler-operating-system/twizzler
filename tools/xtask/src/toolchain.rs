@@ -338,8 +338,10 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         writeln!(&mut cf, "cpu = '{}'", target_triple.arch.to_string())?;
         writeln!(&mut cf, "endian = 'little'")?;
         drop(cf);
+        println!("6");
 
         let _ = remove_dir_all(&build_dir);
+        println!("7");
         let status = Command::new("meson")
             .arg("setup")
             .arg(format!("-Dprefix={}", sysroot_dir.display()))
@@ -350,6 +352,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             .arg(&build_dir)
             .current_dir(current_dir.join("toolchain/src/mlibc"))
             .status()?;
+        println!("8");
         if !status.success() {
             anyhow::bail!("failed to setup mlibc (headers only)");
         }
