@@ -218,7 +218,8 @@ extern "C" fn soft_interrupt_waker() {
 
 pub fn init() {
     INT_THREAD.call_once(|| {
-        crate::thread::entry::start_new_kernel(Priority::default_user(), soft_interrupt_waker, 0)
+        // TODO: priority?
+        crate::thread::entry::start_new_kernel(Priority::USER, soft_interrupt_waker, 0)
     });
 }
 

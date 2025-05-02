@@ -181,7 +181,8 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
         RECEIVER.call_once(|| receiver);
     }
     if SENDER.poll().is_some() && RECEIVER.poll().is_some() {
-        start_new_kernel(Priority::default_user(), pager_compl_handler_entry, 0);
-        start_new_kernel(Priority::default_user(), pager_request_handler_entry, 0);
+        // TODO: these should be higher?
+        start_new_kernel(Priority::USER, pager_compl_handler_entry, 0);
+        start_new_kernel(Priority::USER, pager_request_handler_entry, 0);
     }
 }

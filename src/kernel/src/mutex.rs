@@ -79,17 +79,15 @@ impl<T> Mutex<T> {
     #[track_caller]
     pub fn lock(&self) -> LockGuard<'_, T> {
         let current_thread = current_thread_ref();
-        //let current_donated_priority = current_thread
-        //.as_ref()
-        //.and_then(|t| t.get_donated_priority());
+        let current_donated_priority = current_thread
+            .as_ref()
+            .and_then(|t| t.get_donated_priority());
 
         if let Some(ref current_thread) = current_thread {
-            /* TODO: maybe try to support critical threads by falling back to a spinloop? */
             assert!(!current_thread.is_critical());
         }
 
         let mut i = 0;
-        //let mut istate;
         loop {
             i += 1;
             if i > 100 {
@@ -100,13 +98,11 @@ impl<T> Mutex<T> {
                 let mut queue = self.queue.lock();
                 if !queue.owned {
                     queue.owned = true;
-                    /*
                     if let Some(ref thread) = current_thread {
                         if let Some(ref pri) = queue.pri {
                             thread.donate_priority(pri.clone());
                         }
                     }
-                    */
 
                     queue.owner = current_thread.clone();
                     break;
@@ -124,16 +120,14 @@ impl<T> Mutex<T> {
                         thread.set_state(ExecutionState::Sleeping);
                         queue.queue.push_back(thread.clone());
                         reinsert = false;
-                        /*
                         queue.pri = queue.queue.iter().map(|t| t.effective_priority()).max();
                         if let Some(ref owner) = queue.owner {
                             if let Some(ref pri) = queue.pri {
                                 if pri > &owner.effective_priority() {
-                                owner.donate_priority(pri.clone());
+                                    owner.donate_priority(pri.clone());
                                 }
                             }
                         }
-                        */
                     }
                 }
                 reinsert
@@ -147,7 +141,7 @@ impl<T> Mutex<T> {
 
         LockGuard {
             lock: self,
-            prev_donated_priority: None,
+            prev_donated_priority: current_donated_priority,
         }
     }
 
@@ -185,7 +179,6 @@ impl<T> core::ops::DerefMut for LockGuard<'_, T> {
 
 impl<T> Drop for LockGuard<'_, T> {
     fn drop(&mut self) {
-        /*
         if let Some(ref prev) = self.prev_donated_priority {
             if let Some(thread) = current_thread_ref() {
                 thread.donate_priority(prev.clone());
@@ -193,7 +186,6 @@ impl<T> Drop for LockGuard<'_, T> {
         } else if let Some(thread) = current_thread_ref() {
             thread.remove_donated_priority();
         }
-        */
         self.lock.release();
     }
 }
@@ -271,7 +263,7 @@ mod test {
                 let handles: Vec<_> = locks
                     .into_iter()
                     .map(|lock| {
-                        run_closure_in_new_thread(Priority::default_user(), move || {
+                        run_closure_in_new_thread(Priority::USER, move || {
                             for _ in 0..INNER_ITER {
                                 let mut inner = lock.lock();
                                 if quick_random() % 20 == 0 {

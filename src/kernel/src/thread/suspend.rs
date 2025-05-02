@@ -122,7 +122,7 @@ mod test {
         let incr = Arc::new(Spinlock::new(0));
         let incr2 = incr.clone();
         let exit_flag = &AtomicBool::default();
-        let test_thread = run_closure_in_new_thread(Priority::default_user(), move || loop {
+        let test_thread = run_closure_in_new_thread(Priority::USER, move || loop {
             if exit_flag.load(Ordering::SeqCst) {
                 break;
             }
