@@ -6,6 +6,7 @@ pub mod allocator;
 pub mod context;
 pub mod frame;
 pub mod pagetables;
+pub mod tracker;
 
 pub use arch::{PhysAddr, VirtAddr};
 use twizzler_abi::object::NULLPAGE_SIZE;

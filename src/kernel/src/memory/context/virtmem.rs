@@ -27,6 +27,7 @@ use crate::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
             PhysAddrProvider, Table, ZeroPageProvider,
         },
+        tracker::{FrameAllocFlags, FrameAllocator},
         PhysAddr,
     },
     mutex::Mutex,
@@ -409,7 +410,8 @@ struct GlobalPageAlloc {
 impl GlobalPageAlloc {
     fn extend(&mut self, len: usize, mapper: &VirtContext) {
         let cursor = MappingCursor::new(self.end, len);
-        let mut phys = ZeroPageProvider::default();
+        // TODO: wait-ok?
+        let mut phys = ZeroPageProvider::new(FrameAllocFlags::KERNEL);
         let settings = MappingSettings::new(
             Protections::READ | Protections::WRITE,
             CacheType::WriteBack,
@@ -429,7 +431,7 @@ impl GlobalPageAlloc {
     fn init(&mut self, mapper: &VirtContext) {
         let len = 2 * 1024 * 1024;
         let cursor = MappingCursor::new(self.end, len);
-        let mut phys = ZeroPageProvider::default();
+        let mut phys = ZeroPageProvider::new(FrameAllocFlags::KERNEL);
         let settings = MappingSettings::new(
             Protections::READ | Protections::WRITE,
             CacheType::WriteBack,
@@ -742,10 +744,13 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 current_thread_ref().unwrap().send_upcall(oob_upcall);
                 return;
             }
-
-            if let PageStatus::Ready(page, cow) =
-                obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write)
-            {
+            let mut fa = FrameAllocator::new(FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK);
+            let status = obj_page_tree.get_page(
+                page_number,
+                cause == MemoryAccessKind::Write,
+                Some(&mut fa),
+            );
+            if let PageStatus::Ready(page, cow) = status {
                 ctx.with_arch(sctx_id, |arch| {
                     // TODO: don't need all three every time.
                     arch.unmap(
@@ -761,12 +766,14 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                         &info.mapping_settings(cow, is_kern_obj),
                     );
                 });
-            } else {
-                let page = Page::new();
-                obj_page_tree.add_page(page_number, page);
-                let PageStatus::Ready(page, cow) =
-                    obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write)
-                else {
+            } else if matches!(status, PageStatus::NoPage) {
+                let page = Page::new(fa.try_allocate().unwrap());
+                obj_page_tree.add_page(page_number, page, Some(&mut fa));
+                let PageStatus::Ready(page, cow) = obj_page_tree.get_page(
+                    page_number,
+                    cause == MemoryAccessKind::Write,
+                    Some(&mut fa),
+                ) else {
                     panic!("unreachable");
                 };
                 ctx.with_arch(sctx_id, |arch| {

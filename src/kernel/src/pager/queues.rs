@@ -4,8 +4,8 @@ use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, NULLPAGE_SIZE},
     pager::{
-        CompletionToKernel, CompletionToPager, KernelCommand, PagerCompletionData, PagerRequest,
-        PhysRange, RequestFromKernel, RequestFromPager,
+        CompletionToKernel, CompletionToPager, PagerCompletionData, PagerRequest, PhysRange,
+        RequestFromKernel, RequestFromPager,
     },
     syscall::LifetimeType,
 };
@@ -17,7 +17,6 @@ use crate::{
     memory::context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
     obj::{lookup_object, pages::Page, LookupFlags, Object, PageNumber},
     once::Once,
-    pager::PAGER_MEMORY,
     queue::{ManagedQueueReceiver, QueueObject},
     thread::{entry::start_new_kernel, priority::Priority},
 };
@@ -73,15 +72,18 @@ pub(super) fn pager_request_handler_main() {
     loop {
         receiver.handle_request(|_id, req| match req.cmd() {
             PagerRequest::Ready => {
-                let regs = PAGER_MEMORY.poll().unwrap();
-                for reg in regs {
-                    submit_pager_request(RequestFromKernel::new(KernelCommand::DramPages(
-                        PhysRange::new(
-                            reg.start.raw(),
-                            reg.start.offset(reg.length).unwrap().raw(),
-                        ),
-                    )));
-                }
+                /*
+                                let regs = PAGER_MEMORY.poll().unwrap();
+                                for reg in regs {
+                                    submit_pager_request(RequestFromKernel::new(KernelCommand::DramPages(
+                                        PhysRange::new(
+                                            reg.start.raw(),
+                                            reg.start.offset(reg.length).unwrap().raw(),
+                                        ),
+                                    )));
+                                }
+                */
+                // TODO
                 INFLIGHT_MGR.lock().set_ready();
                 CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::Okay)
             }
@@ -112,7 +114,8 @@ pub(super) fn pager_compl_handler_main() {
                     for (objpage_nr, physpage_nr) in obj_range.pages().zip(phys_range.pages()) {
                         let pn = PageNumber::from(objpage_nr as usize);
                         let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
-                        object_tree.add_page(pn, Page::new_wired(pa, CacheType::WriteBack));
+                        // TODO: will need to supply allocator
+                        object_tree.add_page(pn, Page::new_wired(pa, CacheType::WriteBack), None);
                     }
                     drop(object_tree);
 

@@ -44,7 +44,6 @@ use super::{MemoryRegion, MemoryRegionKind, PhysAddr};
 use crate::{
     arch::memory::{frame::FRAME_SIZE, phys_to_virt},
     once::Once,
-    pager::pager_select_memory_regions,
     spinlock::Spinlock,
 };
 
@@ -305,6 +304,20 @@ impl Frame {
             .fetch_or(PhysicalFrameFlags::ALLOCATED.bits(), Ordering::SeqCst);
     }
 
+    pub fn set_kernel(&self, kernel: bool) {
+        if kernel {
+            self.flags
+                .fetch_or(PhysicalFrameFlags::KERNEL.bits(), Ordering::SeqCst);
+        } else {
+            self.flags
+                .fetch_and(!PhysicalFrameFlags::KERNEL.bits(), Ordering::SeqCst);
+        }
+    }
+
+    pub fn is_kernel(&self) -> bool {
+        self.flags.load(Ordering::SeqCst) & PhysicalFrameFlags::KERNEL.bits() != 0
+    }
+
     /// Get the current flags.
     pub fn get_flags(&self) -> PhysicalFrameFlags {
         PhysicalFrameFlags::from_bits_truncate(self.flags.load(Ordering::SeqCst))
@@ -376,6 +389,8 @@ bitflags::bitflags! {
         const ALLOCATED = 2;
         /// (internal) The frame has been admitted into the frame tracking system.
         const ADMITTED = 4;
+        /// (internal) The frame is owned by the kernel.
+        const KERNEL = 8;
     }
 }
 
@@ -519,31 +534,13 @@ static FI: Once<Vec<FrameIndexer>> = Once::new();
 /// # Arguments
 ///  * `regions`: An array of memory regions passed from the boot info system.
 pub fn init(regions: &[MemoryRegion]) {
-    let regions = pager_select_memory_regions(regions);
-    let pfa = PhysicalFrameAllocator::new(&regions);
+    crate::memory::tracker::init(regions);
+    let pfa = PhysicalFrameAllocator::new(regions);
     FI.call_once(|| pfa.regions.iter().map(|r| r.indexer.clone()).collect());
     PFA.call_once(|| Spinlock::new(pfa));
 }
 
-/// Allocate a physical frame.
-///
-/// The `flags` argument allows one to control if the resulting frame is
-/// zeroed or not. Note that passing [PhysicalFrameFlags]::ZEROED guarantees that the returned frame
-/// is zeroed, but the converse is not true.
-///
-/// The returned frame will have its ZEROED flag cleared. In the future, this will probably change
-/// to reflect the correct state of the frame.
-///
-/// # Panic
-/// Will panic if out of physical memory. For this reason, you probably want to use
-/// [try_alloc_frame].
-///
-/// # Examples
-/// ```
-/// let uninitialized_frame = alloc_frame(PhysicalFrameFlags::empty());
-/// let zeroed_frame = alloc_frame(PhysicalFrameFlags::ZEROED);
-/// ```
-pub fn alloc_frame(flags: PhysicalFrameFlags) -> FrameRef {
+pub(super) fn raw_alloc_frame(flags: PhysicalFrameFlags) -> FrameRef {
     let mut frame = { PFA.wait().lock().alloc(flags, false) };
     if frame.is_none() {
         frame = PFA.wait().lock().alloc(flags, true);
@@ -559,17 +556,11 @@ pub fn alloc_frame(flags: PhysicalFrameFlags) -> FrameRef {
     frame
 }
 
-/// Try to allocate a physical frame. The flags argument is the same as in [alloc_frame]. Returns
-/// None if no physical frame is available.
-pub fn try_alloc_frame(flags: PhysicalFrameFlags) -> Option<FrameRef> {
-    Some(alloc_frame(flags))
+pub(super) fn raw_try_alloc_frame(flags: PhysicalFrameFlags) -> Option<FrameRef> {
+    Some(raw_alloc_frame(flags))
 }
 
-/// Free a physical frame.
-///
-/// If the frame's flags indicates that it is zeroed, it will be placed on
-/// the zeroed list.
-pub fn free_frame(frame: FrameRef) {
+pub(super) fn raw_free_frame(frame: FrameRef) {
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
     PFA.wait().lock().free(frame);
@@ -593,12 +584,12 @@ mod tests {
 
     use twizzler_kernel_macros::kernel_test;
 
-    use super::{alloc_frame, free_frame, get_frame, PhysicalFrameFlags};
+    use super::{get_frame, raw_alloc_frame, raw_free_frame, PhysicalFrameFlags};
     use crate::utils::quick_random;
 
     #[kernel_test]
     fn test_get_frame() {
-        let frame = alloc_frame(PhysicalFrameFlags::empty());
+        let frame = raw_alloc_frame(PhysicalFrameFlags::empty());
         let addr = frame.start_address();
         let test_frame = get_frame(addr).unwrap();
         assert!(core::ptr::eq(frame as *const _, test_frame as *const _));
@@ -613,9 +604,9 @@ mod tests {
             let z = quick_random();
             if x % 2 == 0 && stack.len() < 1000 {
                 let frame = if y % 3 == 0 {
-                    alloc_frame(PhysicalFrameFlags::ZEROED)
+                    raw_alloc_frame(PhysicalFrameFlags::ZEROED)
                 } else {
-                    alloc_frame(PhysicalFrameFlags::empty())
+                    raw_alloc_frame(PhysicalFrameFlags::empty())
                 };
                 if z % 5 == 0 {
                     frame.zero();
@@ -623,7 +614,7 @@ mod tests {
                 stack.push(frame);
             } else {
                 if let Some(frame) = stack.pop() {
-                    free_frame(frame);
+                    raw_free_frame(frame);
                 }
             }
         }

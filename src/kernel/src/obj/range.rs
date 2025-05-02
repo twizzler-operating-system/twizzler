@@ -8,7 +8,7 @@ use super::{
     pagevec::{PageVec, PageVecRef},
     PageNumber,
 };
-use crate::mutex::Mutex;
+use crate::{memory::tracker::FrameAllocator, mutex::Mutex};
 
 pub struct PageRange {
     pub start: PageNumber,
@@ -42,17 +42,11 @@ impl PageRange {
         self.pv.lock().try_get_page(self.offset + off)
     }
 
-    fn get_page(&self, pn: PageNumber) -> PageRef {
-        assert!(pn >= self.start);
-        let off = pn - self.start;
-        self.pv.lock().get_page(self.offset + off)
-    }
-
-    fn add_page(&self, pn: PageNumber, page: Page) {
+    fn add_page(&self, pn: PageNumber, page: Page) -> Arc<Page> {
         assert!(pn >= self.start);
         assert!(pn < self.start.offset(self.length));
         let off = pn - self.start;
-        self.pv.lock().add_page(self.offset + off, page);
+        self.pv.lock().add_page(self.offset + off, page)
     }
 
     pub fn pv_ref_count(&self) -> usize {
@@ -138,6 +132,7 @@ pub struct PageRangeTree {
 pub enum PageStatus {
     Ready(PageRef, bool),
     NoPage,
+    AllocFail,
 }
 
 impl PageRangeTree {
@@ -159,16 +154,31 @@ impl PageRangeTree {
         self.tree.remove(pn)
     }
 
-    fn split_into_three(&mut self, pn: PageNumber, discard: bool) {
+    fn split_into_three(
+        &mut self,
+        pn: PageNumber,
+        discard: bool,
+        allocator: &mut FrameAllocator,
+    ) -> bool {
         let Some(range) = self.tree.remove(&pn) else {
-            return;
+            // No work to do
+            return true;
         };
         let (r1, mut r2, r3) = range.split_at(pn);
         /* r2 is always the one we want */
         let pv = if discard {
             PageVec::new()
         } else {
-            r2.pv.lock().clone_pages_limited(r2.offset, r2.length)
+            let Some(pv) = r2
+                .pv
+                .lock()
+                .clone_pages_limited(r2.offset, r2.length, allocator)
+            else {
+                // Failed to allocate pages, restore the tree.
+                self.tree.insert(range.range(), range);
+                return false;
+            };
+            pv
         };
 
         r2.pv = Arc::new(Mutex::new(pv));
@@ -186,13 +196,7 @@ impl PageRangeTree {
             let res = self.insert_replace(r3.range(), r3);
             assert_eq!(res.len(), 0);
         }
-    }
-
-    fn do_get_page(&self, pn: PageNumber) -> Option<(PageRef, bool)> {
-        let range = self.get(pn)?;
-        let page = range.get_page(pn);
-        let shared = range.is_shared();
-        Some((page, shared))
+        true
     }
 
     fn try_do_get_page(&self, pn: PageNumber) -> Option<(PageRef, bool)> {
@@ -202,15 +206,24 @@ impl PageRangeTree {
         Some((page, shared))
     }
 
-    pub fn get_page(&mut self, pn: PageNumber, is_write: bool) -> PageStatus {
-        let Some((page, shared)) = self.do_get_page(pn) else {
+    pub fn get_page(
+        &mut self,
+        pn: PageNumber,
+        is_write: bool,
+        allocator: Option<&mut FrameAllocator>,
+    ) -> PageStatus {
+        let Some((page, shared)) = self.try_do_get_page(pn) else {
             return PageStatus::NoPage;
         };
         if !shared || !is_write {
             return PageStatus::Ready(page, shared);
         }
-        self.split_into_three(pn, false);
-        let Some((page, shared)) = self.do_get_page(pn) else {
+        if let Some(allocator) = allocator {
+            if !self.split_into_three(pn, false, allocator) {
+                return PageStatus::AllocFail;
+            }
+        }
+        let Some((page, shared)) = self.try_do_get_page(pn) else {
             return PageStatus::NoPage;
         };
         assert!(!shared);
@@ -222,22 +235,6 @@ impl PageRangeTree {
             return PageStatus::NoPage;
         };
         PageStatus::Ready(page, shared)
-    }
-
-    pub fn get_or_add_page(
-        &mut self,
-        pn: PageNumber,
-        is_write: bool,
-        if_not_present: impl Fn(PageNumber, bool) -> Page,
-    ) -> (PageRef, bool) {
-        if let PageStatus::Ready(p, s) = self.get_page(pn, is_write) {
-            return (p, s);
-        }
-        self.add_page(pn, if_not_present(pn, is_write));
-        let PageStatus::Ready(p, s) = self.get_page(pn, is_write) else {
-            panic!("unreachable");
-        };
-        (p, s)
     }
 
     pub fn insert_replace(
@@ -276,15 +273,24 @@ impl PageRangeTree {
         todo!()
     }
 
-    pub fn add_page(&mut self, pn: PageNumber, page: Page) {
+    pub fn add_page(
+        &mut self,
+        pn: PageNumber,
+        page: Page,
+        allocator: Option<&mut FrameAllocator>,
+    ) -> Option<Arc<Page>> {
         const MAX_EXTENSION_ALLOWED: usize = 16;
         let range = self.tree.get(&pn);
         if let Some(mut range) = range {
             if range.is_shared() {
-                self.split_into_three(pn, true);
+                if let Some(allocator) = allocator {
+                    if !self.split_into_three(pn, true, allocator) {
+                        return None;
+                    }
+                }
                 range = self.tree.get(&pn).unwrap();
             }
-            range.add_page(pn, page);
+            Some(range.add_page(pn, page))
         } else {
             // Try to extend a previous range.
             if let Some((_, prev_range)) =
@@ -295,17 +301,18 @@ impl PageRangeTree {
                 if !prev_range.is_shared() && diff <= MAX_EXTENSION_ALLOWED {
                     let mut prev_range = self.tree.remove(&end).unwrap();
                     prev_range.length += diff;
-                    prev_range.add_page(pn, page);
+                    let p = prev_range.add_page(pn, page);
                     let kicked = self.tree.insert_replace(prev_range.range(), prev_range);
                     assert_eq!(kicked.len(), 0);
-                    return;
+                    return Some(p);
                 }
             }
             let mut range = PageRange::new(pn);
             range.length = 1;
-            range.add_page(pn, page);
+            let p = range.add_page(pn, page);
             let kicked = self.tree.insert_replace(pn..pn.next(), range);
             assert_eq!(kicked.len(), 0);
+            Some(p)
         }
     }
 

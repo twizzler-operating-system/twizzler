@@ -7,8 +7,8 @@ mod test {
     use crate::{
         arch::{address::VirtAddr, memory::pagetables::Table},
         memory::{
-            frame::{alloc_frame, PhysicalFrameFlags},
             pagetables::{phys_provider, Mapper, MappingCursor, MappingFlags, MappingSettings},
+            tracker::{alloc_frame, FrameAllocFlags},
         },
     };
 
@@ -23,7 +23,7 @@ mod test {
 
     #[kernel_test]
     fn test_count() {
-        let mut m = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
+        let mut m = Mapper::new(alloc_frame(FrameAllocFlags::ZEROED).start_address());
         for i in 0..Table::PAGE_TABLE_ENTRIES {
             let c = m.root().read_count();
             assert_eq!(c, i);
@@ -39,7 +39,7 @@ mod test {
             return;
         }
         let page_size = Table::level_to_page_size(level);
-        let mut m = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
+        let mut m = Mapper::new(alloc_frame(FrameAllocFlags::ZEROED).start_address());
         assert_eq!(
             m.readmap(MappingCursor::new(VirtAddr::new(0).unwrap(), 0))
                 .next(),

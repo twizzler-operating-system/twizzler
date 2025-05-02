@@ -84,7 +84,8 @@ impl WakeInfo {
     pub fn wake(&self, val: u64) {
         //logln!("wake! {}", val);
         unsafe {
-            self.obj.write_val_and_signal(self.offset, val, usize::MAX);
+            self.obj
+                .try_write_val_and_signal(self.offset, val, usize::MAX);
         }
     }
 

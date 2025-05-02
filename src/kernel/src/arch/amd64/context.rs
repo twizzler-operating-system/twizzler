@@ -1,11 +1,12 @@
 use crate::{
     arch::memory::pagetables::{Entry, EntryFlags},
     memory::{
-        frame::{alloc_frame, free_frame, get_frame, PhysicalFrameFlags},
+        frame::get_frame,
         pagetables::{
             DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
             PhysAddrProvider,
         },
+        tracker::{alloc_frame, free_frame, FrameAllocFlags},
         VirtAddr,
     },
     mutex::Mutex,
@@ -27,9 +28,9 @@ pub struct ArchContextTarget(u64);
 
 lazy_static::lazy_static! {
     static ref KERNEL_MAPPER: Spinlock<Mapper> = {
-        let mut m = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
+        let mut m = Mapper::new(alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL).start_address());
         for idx in 256..512 {
-            m.set_top_level_table(idx, Entry::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address(), EntryFlags::intermediate()));
+            m.set_top_level_table(idx, Entry::new(alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL).start_address(), EntryFlags::intermediate()));
         }
         Spinlock::new(m)
     };
@@ -114,7 +115,12 @@ impl ArchContext {
 
 impl ArchContextInner {
     fn new() -> Self {
-        let mut mapper = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
+        let mut mapper = Mapper::new(
+            alloc_frame(
+                FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK,
+            )
+            .start_address(),
+        );
         let km = KERNEL_MAPPER.lock();
         for idx in 256..512 {
             mapper.set_top_level_table(idx, km.get_top_level_table(idx));

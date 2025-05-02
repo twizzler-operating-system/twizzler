@@ -3,7 +3,7 @@ use super::{
     range::{PageRange, PageRangeTree, PageStatus},
     InvalidateMode, ObjectRef, PageNumber,
 };
-use crate::mutex::LockGuard;
+use crate::{memory::tracker::FrameAllocator, mutex::LockGuard};
 
 // Given a page range and a subrange within it, split it into two parts, the part before the
 // subrange, and the part after. Each part may be None if its length is zero (consider splitting
@@ -70,9 +70,20 @@ fn copy_single(
     src_point: PageNumber,
     offset: usize,
     max: usize,
-) {
-    let src_page = src_tree.get_page(src_point, false);
-    let (dest_page, _) = dest_tree.get_or_add_page(dest_point, true, |_, _| Page::new());
+    allocator: &mut FrameAllocator,
+) -> Option<()> {
+    let src_page = src_tree.get_page(src_point, false, None);
+    let dest_page = dest_tree.get_page(dest_point, true, Some(allocator));
+    let dest_page = match dest_page {
+        PageStatus::Ready(page, _) => page,
+        PageStatus::NoPage => dest_tree.add_page(
+            dest_point,
+            Page::new(allocator.try_allocate()?),
+            Some(allocator),
+        )?,
+        PageStatus::AllocFail => return None,
+    };
+
     if let PageStatus::Ready(src_page, _) = src_page {
         dest_page.as_mut_slice()[offset..max].copy_from_slice(&src_page.as_slice()[offset..max]);
     } else {
@@ -80,6 +91,7 @@ fn copy_single(
         // optimization, though.
         dest_page.as_mut_slice()[offset..max].fill(0);
     }
+    Some(())
 }
 
 // Zero a single, partial page.
@@ -90,7 +102,7 @@ fn zero_single(
     max: usize,
 ) {
     // if there's no page here, our work is done
-    if let PageStatus::Ready(dest_page, _) = dest_tree.get_page(dest_point, true) {
+    if let PageStatus::Ready(dest_page, _) = dest_tree.get_page(dest_point, true, None) {
         dest_page.as_mut_slice()[offset..max].fill(0);
     }
 }
@@ -116,6 +128,7 @@ pub fn copy_ranges(
     dest: &ObjectRef,
     dest_off: usize,
     byte_length: usize,
+    allocator: &mut FrameAllocator,
 ) {
     let src_start = PageNumber::from_offset(src_off);
     let dest_start = PageNumber::from_offset(dest_off);
@@ -162,6 +175,7 @@ pub fn copy_ranges(
             &mut dest_tree,
             dest_off,
             byte_length,
+            allocator,
         );
         return;
     }
@@ -178,6 +192,7 @@ pub fn copy_ranges(
             src_point,
             start_offset,
             PageNumber::PAGE_SIZE,
+            allocator,
         );
         dest_point = dest_point.offset(1);
         src_point = src_point.offset(1);
@@ -236,6 +251,7 @@ pub fn copy_ranges(
             src_point,
             0,
             end_offset,
+            allocator,
         );
     }
 }
@@ -246,7 +262,8 @@ fn copy_bytes(
     dest_tree: &mut PageRangeTree,
     dest_off: usize,
     byte_length: usize,
-) {
+    allocator: &mut FrameAllocator,
+) -> Option<()> {
     if byte_length > PageNumber::PAGE_SIZE * 3 {
         logln!(
             "warning -- copying many pages (~{}) manually due to misaligned copy-from directive",
@@ -261,8 +278,18 @@ fn copy_bytes(
     let mut remaining = byte_length;
 
     while remaining > 0 {
-        let src_page = src_tree.get_page(src_point, false);
-        let (dest_page, _) = dest_tree.get_or_add_page(dest_point, true, |_, _| Page::new());
+        let src_page = src_tree.get_page(src_point, false, None);
+        let dest_page = dest_tree.get_page(dest_point, true, Some(allocator));
+        let dest_page = match dest_page {
+            PageStatus::Ready(page, _) => page,
+            PageStatus::NoPage => dest_tree.add_page(
+                dest_point,
+                Page::new(allocator.try_allocate()?),
+                Some(allocator),
+            )?,
+            PageStatus::AllocFail => return None,
+        };
+
         let count_sofar = byte_length - remaining;
 
         let this_src_offset = (src_off + count_sofar) % PageNumber::PAGE_SIZE;
@@ -297,6 +324,7 @@ fn copy_bytes(
         }
         remaining -= this_length;
     }
+    Some(())
 }
 
 /// Zero a range of bytes in an object. The provided values need not be page-aligned.
@@ -424,8 +452,11 @@ mod test {
 
     use super::copy_ranges;
     use crate::{
-        memory::context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
-        obj::{copy::zero_ranges, pages::Page, ObjectRef, PageNumber},
+        memory::{
+            context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+            tracker::{FrameAllocFlags, FrameAllocator},
+        },
+        obj::{copy::zero_ranges, pages::Page, range::PageStatus, ObjectRef, PageNumber},
         userinit::create_blank_object,
     };
 
@@ -467,8 +498,9 @@ mod test {
         dest: &ObjectRef,
         dest_off: usize,
         byte_length: usize,
+        allocator: &mut FrameAllocator,
     ) {
-        copy_ranges(src, src_off, dest, dest_off, byte_length);
+        copy_ranges(src, src_off, dest, dest_off, byte_length, allocator);
         check_slices(src, src_off, dest, dest_off, byte_length);
     }
 
@@ -506,15 +538,24 @@ mod test {
         let src = create_blank_object();
         let dest = create_blank_object();
 
+        let mut allocator = FrameAllocator::new(FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED);
         // Skip the null page, otherwise fill the source with pages that have different fills
         for p in 1..255u8 {
             let mut tree: crate::mutex::LockGuard<'_, crate::obj::range::PageRangeTree> =
                 src.lock_page_tree();
-            let (sp, _) = tree.get_or_add_page(
-                PageNumber::from_offset((p as usize) * PageNumber::PAGE_SIZE),
-                true,
-                |_, _| Page::new(),
-            );
+            let pn = PageNumber::from_offset((p as usize) * PageNumber::PAGE_SIZE);
+            let sp = tree.get_page(pn, true, Some(&mut allocator));
+            let sp = match sp {
+                PageStatus::Ready(page, _) => page,
+                PageStatus::NoPage => tree
+                    .add_page(
+                        pn,
+                        Page::new(allocator.try_allocate().unwrap()),
+                        Some(&mut allocator),
+                    )
+                    .unwrap(),
+                PageStatus::AllocFail => panic!("out of memory"),
+            };
             sp.as_mut_slice().fill(p);
         }
 
@@ -539,7 +580,7 @@ mod test {
             let dest_off = calc_off(dest_counting_page_num, dest_off_misalign);
             src_counting_page_num += nr_pages;
             dest_counting_page_num += nr_pages;
-            copy_ranges_and_check(&src, src_off, &dest, dest_off, len);
+            copy_ranges_and_check(&src, src_off, &dest, dest_off, len, &mut allocator);
         };
 
         // Basic test
@@ -549,8 +590,9 @@ mod test {
         // function).
         let second_page = ps * 2;
         let third_page = ps * 3;
-        copy_ranges_and_check(&src, second_page, &dest, second_page, ps);
-        copy_ranges_and_check(&src, third_page, &dest, second_page, ps);
+        let mut allocator2 = FrameAllocator::new(FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED);
+        copy_ranges_and_check(&src, second_page, &dest, second_page, ps, &mut allocator2);
+        copy_ranges_and_check(&src, third_page, &dest, second_page, ps, &mut allocator2);
 
         // Misaligned, single page
         do_check(abit, abit, ps);
@@ -577,8 +619,22 @@ mod test {
         // Test two back-to-back ranges. This first copy will copy (page(2) + abit) -> (page(2) +
         // abit) for a len of a page. So the end point will be (page(3) + abit), which is
         // where the second copy starts.
-        copy_ranges(&src, second_page + abit, &dest, second_page + abit, ps);
-        copy_ranges_and_check(&src, third_page + abit, &dest, third_page + abit, ps);
+        copy_ranges(
+            &src,
+            second_page + abit,
+            &dest,
+            second_page + abit,
+            ps,
+            &mut allocator,
+        );
+        copy_ranges_and_check(
+            &src,
+            third_page + abit,
+            &dest,
+            third_page + abit,
+            ps,
+            &mut allocator,
+        );
         // Make sure we didn't overwrite the first copy.
         check_slices(&src, second_page + abit, &dest, second_page + abit, ps);
     }

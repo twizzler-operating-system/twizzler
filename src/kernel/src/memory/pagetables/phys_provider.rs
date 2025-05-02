@@ -1,6 +1,9 @@
 use crate::{
     arch::address::PhysAddr,
-    memory::frame::{alloc_frame, free_frame, FrameRef, PhysicalFrameFlags},
+    memory::{
+        frame::FrameRef,
+        tracker::{alloc_frame, free_frame, FrameAllocFlags},
+    },
 };
 
 /// A trait for providing a set of physical pages to the mapping function.
@@ -11,11 +14,21 @@ pub trait PhysAddrProvider {
     fn consume(&mut self, len: usize);
 }
 
-#[derive(Default)]
 /// An implementation of [PhysAddrProvider] that just allocates and returns freshly allocated and
 /// zeroed frames.
 pub struct ZeroPageProvider {
+    flags: FrameAllocFlags,
     current: Option<FrameRef>,
+}
+
+impl ZeroPageProvider {
+    /// Create a new [ZeroPageProvider].
+    pub fn new(flags: FrameAllocFlags) -> Self {
+        Self {
+            flags: flags | FrameAllocFlags::ZEROED,
+            current: None,
+        }
+    }
 }
 
 impl PhysAddrProvider for ZeroPageProvider {
@@ -23,7 +36,7 @@ impl PhysAddrProvider for ZeroPageProvider {
         match self.current {
             Some(frame) => (frame.start_address(), frame.size()),
             None => {
-                let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
+                let frame = alloc_frame(self.flags);
                 self.current = Some(frame);
                 (frame.start_address(), frame.size())
             }

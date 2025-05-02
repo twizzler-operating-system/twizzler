@@ -21,6 +21,7 @@ use crate::{
     idcounter::{IdCounter, SimpleId, StableId},
     memory::{
         context::{kernel_context, Context, ContextRef, UserContext},
+        tracker::{alloc_frame, FrameAllocFlags, FrameAllocator},
         PhysAddr, VirtAddr,
     },
     mutex::{LockGuard, Mutex},
@@ -196,9 +197,14 @@ impl Object {
         self.range_tree.lock()
     }
 
-    pub fn add_page(&self, pn: PageNumber, page: pages::Page) {
+    pub fn add_page(
+        &self,
+        pn: PageNumber,
+        page: pages::Page,
+        allocator: Option<&mut FrameAllocator>,
+    ) {
         let mut range_tree = self.range_tree.lock();
-        range_tree.add_page(pn, page);
+        range_tree.add_page(pn, page, allocator);
     }
 
     pub fn id(&self) -> ObjID {
@@ -219,13 +225,14 @@ impl Object {
         let mut v = Vec::new();
         for i in 0..len {
             // TODO: we'll need to handle failures here when we expand the paging system.
-            let p = tree.get_page(start.offset(i), true);
+            let p = tree.get_page(start.offset(i), true, None);
             if let PageStatus::Ready(p, _) = p {
                 v.push(p.physical_address());
             } else {
-                let page = Page::new();
+                let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK);
+                let page = Page::new(frame);
                 v.push(page.physical_address());
-                tree.add_page(start.offset(i), page);
+                tree.add_page(start.offset(i), page, None);
             }
         }
 

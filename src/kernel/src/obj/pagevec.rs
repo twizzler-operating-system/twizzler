@@ -4,7 +4,7 @@ use super::{
     pages::{Page, PageRef},
     range::PageRange,
 };
-use crate::mutex::Mutex;
+use crate::{memory::tracker::FrameAllocator, mutex::Mutex};
 
 pub struct PageVec {
     pages: Vec<Option<PageRef>>,
@@ -59,26 +59,21 @@ impl PageVec {
         str
     }
 
-    pub fn clone_pages(&self) -> Self {
-        let mut pv = Self::new();
-        for (i, p) in self.pages.iter().enumerate() {
-            if let Some(page) = p {
-                pv.pages.resize(i + 1, None);
-                pv.pages[i] = Some(Arc::new(page.copy_page()));
-            }
-        }
-        pv
-    }
-
-    pub fn clone_pages_limited(&self, start: usize, len: usize) -> Self {
+    pub fn clone_pages_limited(
+        &self,
+        start: usize,
+        len: usize,
+        allocator: &mut FrameAllocator,
+    ) -> Option<Self> {
         let mut pv = Self::new();
         for (di, si) in (start..(start + len)).enumerate() {
             if let Some(page) = &self.pages[si] {
                 pv.pages.resize(di + 1, None);
-                pv.pages[di] = Some(Arc::new(page.copy_page()));
+                let frame = allocator.try_allocate()?;
+                pv.pages[di] = Some(Arc::new(page.copy_page(frame, page.cache_type())));
             }
         }
-        pv
+        Some(pv)
     }
 
     pub fn try_get_page(&self, offset: usize) -> Option<PageRef> {
@@ -92,23 +87,13 @@ impl PageVec {
         }
     }
 
-    pub fn get_page(&mut self, offset: usize) -> PageRef {
-        if offset >= self.pages.len() {
-            self.pages.resize(offset + 1, None)
-        }
-        if let Some(ref page) = self.pages[offset] {
-            page.clone()
-        } else {
-            self.pages[offset] = Some(Arc::new(Page::new()));
-            self.pages[offset].as_ref().unwrap().clone()
-        }
-    }
-
-    pub fn add_page(&mut self, offset: usize, page: Page) {
+    pub fn add_page(&mut self, offset: usize, page: Page) -> Arc<Page> {
         if offset >= self.pages.len() {
             self.pages.reserve((offset + 1) * 2);
             self.pages.resize(offset + 1, None)
         }
-        self.pages[offset] = Some(Arc::new(page));
+        let page = Arc::new(page);
+        self.pages[offset] = Some(page.clone());
+        page
     }
 }
