@@ -4,7 +4,7 @@ use log::debug;
 use map::{CtxMapItemType, SecCtxMap};
 use twizzler::object::{Object, ObjectBuilder, RawObject, TypedObject};
 use twizzler_abi::object::ObjID;
-use twizzler_rt_abi::object::{MapError, MapFlags};
+use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
 use crate::Cap;
 
@@ -44,7 +44,7 @@ impl Display for SecCtx {
 }
 
 impl TryFrom<ObjID> for SecCtx {
-    type Error = MapError;
+    type Error = TwzError;
 
     fn try_from(value: ObjID) -> Result<Self, Self::Error> {
         let uobj = Object::<SecCtxMap>::map(value, MapFlags::READ | MapFlags::WRITE)?;
