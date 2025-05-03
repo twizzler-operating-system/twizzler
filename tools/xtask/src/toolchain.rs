@@ -12,7 +12,6 @@ use guess_host_triple::guess_host_triple;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use toml_edit::DocumentMut;
-use walkdir::WalkDir;
 
 use crate::{
     triple::{all_possible_platforms, Triple},
@@ -197,36 +196,17 @@ fn install_build_tools(_cli: &BootstrapOptions) -> anyhow::Result<()> {
     println!("installing meson & ninja");
     let status = Command::new("pip3")
         .arg("install")
-        .arg("--prefix")
-        .arg("toolchain/install")
+        .arg("--target")
+        .arg("toolchain/install/python")
         .arg("--force-reinstall")
         .arg("--ignore-installed")
         .arg("--no-warn-script-location")
+        .arg("--upgrade")
         .arg("meson")
         .arg("ninja")
         .status()?;
     if !status.success() {
         anyhow::bail!("failed to install meson and ninja");
-    }
-
-    let mut target = None;
-    let mut already_done = false;
-    for file in WalkDir::new("toolchain/install/lib").max_depth(1) {
-        if let Ok(file) = file {
-            let name = file.file_name().to_str().unwrap();
-            if name.starts_with("python") && name != "python" {
-                target = Some(name.to_string());
-            }
-            if name == "python" {
-                already_done = true;
-            }
-        }
-    }
-
-    if !already_done {
-        if let Some(target) = target {
-            std::os::unix::fs::symlink(target, "toolchain/install/lib/python")?;
-        }
     }
 
     Ok(())
@@ -246,7 +226,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     let current_dir = std::env::current_dir().unwrap();
     std::env::set_var(
         "PYTHONPATH",
-        current_dir.join("toolchain/install/lib/python/site-packages"),
+        current_dir.join("toolchain/install/python"),
     );
 
     let _ = std::fs::remove_file("toolchain/src/rust/config.toml");
@@ -277,9 +257,12 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     std::env::set_var(
         "PATH",
         format!(
-            "{}:{}:{}",
+            "{}:{}:{}:{}",
             lld_bin.to_string_lossy(),
             std::fs::canonicalize("toolchain/install/bin")
+                .unwrap()
+                .to_string_lossy(),
+            std::fs::canonicalize("toolchain/install/python/bin")
                 .unwrap()
                 .to_string_lossy(),
             path
@@ -451,8 +434,11 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     )?;
 
     let usr_link = "toolchain/install/usr";
+    let local_link = "toolchain/install/local";
     let _ = std::fs::remove_file(usr_link);
     std::os::unix::fs::symlink(".", usr_link)?;
+    let _ = std::fs::remove_file(local_link);
+    std::os::unix::fs::symlink(".", local_link)?;
 
     for target_triple in all_possible_platforms() {
         let current_dir = std::env::current_dir().unwrap();
@@ -600,7 +586,7 @@ pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
     let current_dir = std::env::current_dir().unwrap();
     std::env::set_var(
         "PYTHONPATH",
-        current_dir.join("toolchain/install/lib/python/site-packages"),
+        current_dir.join("toolchain/install/python"),
     );
 
     let compiler_rt_path = "toolchain/src/rust/src/llvm-project/compiler-rt";
