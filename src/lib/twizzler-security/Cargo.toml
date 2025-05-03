@@ -25,5 +25,6 @@ log = {version = "0.4.27", optional = true}
 default = ["user"]
 # kernel = ["twizzler-abi/kernel", "dep:twizzler-rt-abi", "twizzler-rt-abi/kernel"]
 kernel = ["twizzler-abi/kernel", "twizzler-rt-abi/kernel"]
-user = ["dep:twizzler", "dep:twizzler-rt-abi"]
+# user = ["dep:twizzler", "dep:twizzler-rt-abi"]
+user = ["dep:twizzler",]
 log = ["dep:log"]
