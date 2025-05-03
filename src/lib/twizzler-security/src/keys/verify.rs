@@ -14,7 +14,7 @@ use p256::{
 };
 
 use super::{Signature, SigningKey, MAX_KEY_SIZE};
-use crate::{SecError, SigningScheme};
+use crate::{SecurityError, SigningScheme};
 
 // making our own struct for verifying key since we need to be able to support keys with different
 // schemes, (meaning they could also be different lengths)
@@ -26,7 +26,10 @@ pub struct VerifyingKey {
 }
 
 impl VerifyingKey {
-    pub fn new(scheme: &SigningScheme, target_private_key: &SigningKey) -> Result<Self, SecError> {
+    pub fn new(
+        scheme: &SigningScheme,
+        target_private_key: &SigningKey,
+    ) -> Result<Self, SecurityError> {
         #[cfg(feature = "log")]
         debug!("Creating new verifying key with scheme: {:?}", scheme);
         match scheme {
@@ -62,11 +65,11 @@ impl VerifyingKey {
         }
     }
 
-    pub fn from_slice(slice: &[u8], scheme: &SigningScheme) -> Result<Self, SecError> {
+    pub fn from_slice(slice: &[u8], scheme: &SigningScheme) -> Result<Self, SecurityError> {
         match scheme {
             SigningScheme::Ed25519 => {
                 // if slice.len() != PUBLIC_KEY_LENGTH {
-                //     return Err(SecError::InvalidVerifyKey);
+                //     return Err(SecurityError::InvalidKey);
                 // }
 
                 // let mut buf = [0_u8; MAX_KEY_SIZE];
@@ -88,7 +91,7 @@ impl VerifyingKey {
                             e
                         );
 
-                        SecError::InvalidVerifyKey
+                        SecurityError::InvalidKey
                     })?;
 
                 let key = EcdsaVerifyingKey::from_encoded_point(&point).map_err(|e| {
@@ -98,7 +101,7 @@ impl VerifyingKey {
                         e
                     );
 
-                    SecError::InvalidVerifyKey
+                    SecurityError::InvalidKey
                 })?;
 
                 let mut buf = [0; MAX_KEY_SIZE];
@@ -118,16 +121,16 @@ impl VerifyingKey {
     }
 
     /// Checks whether the `sig` can be verified.
-    pub fn verify(&self, msg: &[u8], sig: &Signature) -> Result<(), SecError> {
+    pub fn verify(&self, msg: &[u8], sig: &Signature) -> Result<(), SecurityError> {
         match self.scheme {
             SigningScheme::Ed25519 => {
                 // let vkey: EdVerifyingKey =
-                //     self.try_into().map_err(|_| SecError::InvalidVerifyKey)?;
+                //     self.try_into().map_err(|_| SecurityError::InvalidKey)?;
                 // vkey.verify(
                 //     msg,
-                //     &EdSignature::try_from(sig).map_err(|e| SecError::InvalidSignature)?,
+                //     &EdSignature::try_from(sig).map_err(|e| SecurityError::InvalidSignature)?,
                 // )
-                // .map_err(|_| SecError::InvalidSignature)
+                // .map_err(|_| SecurityError::InvalidSignature)
                 unimplemented!("until we figure out data layout")
             }
             SigningScheme::Ecdsa => {
@@ -137,7 +140,7 @@ impl VerifyingKey {
                     #[cfg(feature = "log")]
                     error!("Failed verification of signature due to: {:#?}", e);
 
-                    SecError::InvalidSignature
+                    SecurityError::SignatureMismatch
                 })
             }
         }
@@ -145,22 +148,22 @@ impl VerifyingKey {
 }
 
 // impl TryFrom<&VerifyingKey> for EdVerifyingKey {
-//     type Error = SecError;
+//     type Error = SecurityError;
 
-//     fn try_from(value: &VerifyingKey) -> Result<EdVerifyingKey, SecError> {
+//     fn try_from(value: &VerifyingKey) -> Result<EdVerifyingKey, SecurityError> {
 //         if value.scheme != SigningScheme::Ed25519 {
-//             return Err(SecError::InvalidScheme);
+//             return Err(SecurityError::InvalidScheme);
 //         }
 
 //         let mut buf = [0_u8; PUBLIC_KEY_LENGTH];
 //         buf.copy_from_slice(value.as_bytes());
 
-//         EdVerifyingKey::from_bytes(&buf).map_err(|e| SecError::InvalidVerifyKey)
+//         EdVerifyingKey::from_bytes(&buf).map_err(|e| SecurityError::InvalidKey)
 //     }
 // }
 //
 impl TryFrom<&VerifyingKey> for EcdsaVerifyingKey {
-    type Error = SecError;
+    type Error = SecurityError;
     fn try_from(value: &VerifyingKey) -> Result<Self, Self::Error> {
         let point: EncodedPoint<NistP256> = EncodedPoint::<NistP256>::from_bytes(value.as_bytes())
             .map_err(|e| {
@@ -170,7 +173,7 @@ impl TryFrom<&VerifyingKey> for EcdsaVerifyingKey {
                     e
                 );
 
-                SecError::InvalidVerifyKey
+                SecurityError::InvalidKey
             })?;
 
         let key = EcdsaVerifyingKey::from_encoded_point(&point).map_err(|e| {
@@ -180,7 +183,7 @@ impl TryFrom<&VerifyingKey> for EcdsaVerifyingKey {
                 e
             );
 
-            SecError::InvalidVerifyKey
+            SecurityError::InvalidKey
         })?;
 
         Ok(key)

@@ -7,7 +7,7 @@ use log::{debug, error};
 use p256::ecdsa::{signature::Signer, Signature as EcdsaSignature, SigningKey as EcdsaSigningKey};
 
 use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
-use crate::{SecError, SigningScheme};
+use crate::{SecurityError, SigningScheme};
 
 /// The Objects signing key stored internally in the kernel used during the signing of capabilities.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -26,12 +26,12 @@ impl SigningKey {
     }
 
     /// Builds up a signing key from a slice of bytes and a specified signing scheme.
-    pub fn from_slice(slice: &[u8], scheme: SigningScheme) -> Result<Self, SecError> {
+    pub fn from_slice(slice: &[u8], scheme: SigningScheme) -> Result<Self, SecurityError> {
         match scheme {
             SigningScheme::Ed25519 => {
                 unimplemented!("until we figure out whats wrong with data layout")
                 // if slice.len() != SECRET_KEY_LENGTH {
-                //     return Err(SecError::InvalidSigningKey);
+                //     return Err(SecurityError::InvalidKey);
                 // }
 
                 // let mut buf = [0_u8; MAX_KEY_SIZE];
@@ -53,7 +53,7 @@ impl SigningKey {
                         "Unable to create EcdsaSigningKey from slice due to: {:#?}!",
                         e
                     );
-                    SecError::InvalidSigningKey
+                    SecurityError::InvalidKey
                 })?;
 
                 let binding = key.to_bytes();
@@ -76,7 +76,7 @@ impl SigningKey {
         &self.key[0..self.len]
     }
 
-    pub fn sign(&self, msg: &[u8]) -> Result<Signature, SecError> {
+    pub fn sign(&self, msg: &[u8]) -> Result<Signature, SecurityError> {
         match self.scheme {
             SigningScheme::Ed25519 => {
                 // let mut signing_key: EdSigningKey = self.try_into()?;
@@ -93,11 +93,11 @@ impl SigningKey {
 }
 
 // impl TryFrom<&SigningKey> for EdSigningKey {
-//     type Error = SecError;
+//     type Error = SecurityError;
 
 //     fn try_from(value: &SigningKey) -> Result<Self, Self::Error> {
 //         if value.scheme != SigningScheme::Ed25519 {
-//             return Err(SecError::InvalidScheme);
+//             return Err(SecurityError::InvalidScheme);
 //         }
 
 //         let mut buf = [0_u8; SECRET_KEY_LENGTH];
@@ -108,18 +108,18 @@ impl SigningKey {
 // }
 
 impl TryFrom<&SigningKey> for EcdsaSigningKey {
-    type Error = SecError;
+    type Error = SecurityError;
     fn try_from(value: &SigningKey) -> Result<Self, Self::Error> {
         if value.scheme != SigningScheme::Ecdsa {
             #[cfg(feature = "log")]
             error!("Cannot convert SigningKey to EcdsaSigningKey due to scheme mismatch. SigningKey scheme: {:?}", value.scheme);
-            return Err(SecError::InvalidScheme);
+            return Err(SecurityError::InvalidScheme);
         }
 
         Ok(EcdsaSigningKey::from_slice(value.as_bytes()).map_err(|e| {
             #[cfg(feature = "log")]
             error!("Cannot build EcdsaSigningKey from slice due to: {:?}", e);
-            SecError::InvalidSigningKey
+            SecurityError::InvalidKey
         })?)
     }
 }
