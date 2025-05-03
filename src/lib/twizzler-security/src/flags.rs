@@ -75,14 +75,14 @@ impl TryFrom<CapFlags> for HashingAlgo {
                 _ => None,
             } {
                 if result.is_some() {
-                    return Err(SecurityError::InvalidFlags);
+                    return Err(SecurityError::InvalidScheme);
                 }
 
                 result = Some(algo);
             }
         }
 
-        result.ok_or(SecurityError::InvalidFlags)
+        result.ok_or(SecurityError::InvalidScheme)
     }
 }
 impl TryFrom<CapFlags> for SigningScheme {
@@ -97,13 +97,13 @@ impl TryFrom<CapFlags> for SigningScheme {
                 _ => None,
             } {
                 if result.is_some() {
-                    return Err(SecurityError::InvalidFlags);
+                    return Err(SecurityError::InvalidScheme);
                 }
 
                 result = Some(algo);
             }
         }
 
-        result.ok_or(SecurityError::InvalidFlags)
+        result.ok_or(SecurityError::InvalidScheme)
     }
 }
