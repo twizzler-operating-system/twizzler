@@ -7,9 +7,10 @@ extern crate alloc;
 #[cfg(all(feature = "kernel", feature = "user"))]
 compile_error!("feature \"kernel\" and feature \"user\" cannot be enabled at the same time");
 
+pub(crate) use twizzler_rt_abi::error::SecurityError;
+
 mod capability;
 mod delegation;
-mod errors;
 mod flags;
 mod gates;
 mod keys;
@@ -20,7 +21,6 @@ pub mod sec_ctx;
 
 pub use capability::*;
 pub use delegation::*;
-pub use errors::*;
 pub use flags::*;
 pub use gates::*;
 pub use keys::*;
