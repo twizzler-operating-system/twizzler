@@ -4,9 +4,11 @@ use log::{debug, trace};
 use sha2::Digest;
 use twizzler_abi::object::{ObjID, Protections};
 
+
+
 use crate::{
     flags::{CapFlags, HashingAlgo, SigningScheme},
-    Gates, GatesError, Revoc, SecError, Signature, SigningKey, VerifyingKey,
+    Gates, Revoc, Signature, SigningKey, VerifyingKey,
 };
 
 /// A capability that represents authorization for a [Security Context](`crate::sec_ctx::SecCtx`) to

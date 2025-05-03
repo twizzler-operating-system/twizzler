@@ -1,14 +1,14 @@
-#[derive(Debug)]
-pub enum SecError {
-    InvalidFlags,
+// #[derive(Debug)]
+// pub enum SecError {
+//     InvalidFlags,
 
-    InvalidScheme,
+//     InvalidScheme,
 
-    InvalidVerifyKey,
-    InvalidSigningKey,
+//     InvalidVerifyKey,
+//     InvalidSigningKey,
 
-    InvalidSignature,
+//     InvalidSignature,
 
-    OutsideBounds,
-    Unaligned,
-}
+//     OutsideBounds,
+//     Unaligned,
+// }

@@ -8,7 +8,7 @@ use twizzler::{
     tx::TxObject,
 };
 use twizzler_abi::object::{ObjID, NULLPAGE_SIZE};
-use twizzler_rt_abi::object::MapFlags;
+use twizzler_rt_abi::{error::SecurityError, object::MapFlags};
 
 use crate::{Cap, Del};
 
