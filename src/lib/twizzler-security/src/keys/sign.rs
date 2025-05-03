@@ -31,7 +31,7 @@ impl SigningKey {
             SigningScheme::Ed25519 => {
                 unimplemented!("until we figure out whats wrong with data layout")
                 // if slice.len() != SECRET_KEY_LENGTH {
-                //     return Err(SecurityError::InvalidSigningKey);
+                //     return Err(SecurityError::InvalidKey);
                 // }
 
                 // let mut buf = [0_u8; MAX_KEY_SIZE];
@@ -53,7 +53,7 @@ impl SigningKey {
                         "Unable to create EcdsaSigningKey from slice due to: {:#?}!",
                         e
                     );
-                    SecurityError::InvalidSigningKey
+                    SecurityError::InvalidKey
                 })?;
 
                 let binding = key.to_bytes();
@@ -119,7 +119,7 @@ impl TryFrom<&SigningKey> for EcdsaSigningKey {
         Ok(EcdsaSigningKey::from_slice(value.as_bytes()).map_err(|e| {
             #[cfg(feature = "log")]
             error!("Cannot build EcdsaSigningKey from slice due to: {:?}", e);
-            SecurityError::InvalidSigningKey
+            SecurityError::InvalidKey
         })?)
     }
 }

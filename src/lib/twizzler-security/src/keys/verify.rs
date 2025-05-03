@@ -69,7 +69,7 @@ impl VerifyingKey {
         match scheme {
             SigningScheme::Ed25519 => {
                 // if slice.len() != PUBLIC_KEY_LENGTH {
-                //     return Err(SecurityError::InvalidVerifyKey);
+                //     return Err(SecurityError::InvalidKey);
                 // }
 
                 // let mut buf = [0_u8; MAX_KEY_SIZE];
@@ -91,7 +91,7 @@ impl VerifyingKey {
                             e
                         );
 
-                        SecurityError::InvalidVerifyKey
+                        SecurityError::InvalidKey
                     })?;
 
                 let key = EcdsaVerifyingKey::from_encoded_point(&point).map_err(|e| {
@@ -101,7 +101,7 @@ impl VerifyingKey {
                         e
                     );
 
-                    SecurityError::InvalidVerifyKey
+                    SecurityError::InvalidKey
                 })?;
 
                 let mut buf = [0; MAX_KEY_SIZE];
@@ -125,7 +125,7 @@ impl VerifyingKey {
         match self.scheme {
             SigningScheme::Ed25519 => {
                 // let vkey: EdVerifyingKey =
-                //     self.try_into().map_err(|_| SecurityError::InvalidVerifyKey)?;
+                //     self.try_into().map_err(|_| SecurityError::InvalidKey)?;
                 // vkey.verify(
                 //     msg,
                 //     &EdSignature::try_from(sig).map_err(|e| SecurityError::InvalidSignature)?,
@@ -158,7 +158,7 @@ impl VerifyingKey {
 //         let mut buf = [0_u8; PUBLIC_KEY_LENGTH];
 //         buf.copy_from_slice(value.as_bytes());
 
-//         EdVerifyingKey::from_bytes(&buf).map_err(|e| SecurityError::InvalidVerifyKey)
+//         EdVerifyingKey::from_bytes(&buf).map_err(|e| SecurityError::InvalidKey)
 //     }
 // }
 //
