@@ -1,4 +1,6 @@
 // use ed25519_dalek::{Signature as EdSignature, SIGNATURE_LENGTH};
+#[cfg(feature = "log")]
+use log::{debug, error};
 use p256::ecdsa::{signature::PrehashSignature, Signature as EcdsaSignature};
 
 use crate::{SecError, SigningScheme};
@@ -62,9 +64,15 @@ impl TryFrom<&Signature> for EcdsaSignature {
     type Error = SecError;
     fn try_from(value: &Signature) -> Result<Self, Self::Error> {
         if value.scheme != SigningScheme::Ecdsa {
+            #[cfg(feature = "log")]
+            error!("Cannot convert Signature to EcdsaSignature due to scheme mismatch. SigningScheme: {:?}", value.scheme);
             return Err(SecError::InvalidScheme);
         }
 
-        Ok(EcdsaSignature::from_slice(value.as_bytes()).map_err(|_| SecError::InvalidSignature)?)
+        Ok(EcdsaSignature::from_slice(value.as_bytes()).map_err(|e| {
+            #[cfg(feature = "log")]
+            error!("Failed to construct a EcdsaSignature due to: {:?}", e);
+            SecError::InvalidSignature
+        })?)
     }
 }

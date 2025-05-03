@@ -1,5 +1,5 @@
 use alloc::rc::Rc;
-use core::{array, default};
+use core::{array, default, fmt::Display};
 
 use log::debug;
 use twizzler::{
@@ -51,24 +51,22 @@ pub struct SecCtxMapLookupResult {
 }
 
 impl SecCtxMap {
-    /// inserts a CtxMapItemType into the SecCtxMap and returns the write offset into the object
-    pub fn insert(sec_obj: &Object<Self>, target_id: ObjID, item_type: CtxMapItemType) -> u32 {
+    /// inserts a CtxMapItemType into the SecCtxMap and returns the pointer into the object
+    /// TODO: there exists an error where you run out of map entries lol
+    pub fn insert(sec_obj: &Object<Self>, target_id: ObjID, item_type: CtxMapItemType) -> *mut Cap {
         let mut tx = sec_obj.clone().tx().unwrap();
         let mut base = tx.base_mut();
 
         //TODO: Find a way to map the write offset into  object so it doesnt overwrite
         // other data
         let mut write_offset = match item_type {
-            CtxMapItemType::Cap => base.len + size_of::<Cap>() as u32,
-            CtxMapItemType::Del => base.len + size_of::<Del>() as u32,
-        } + OBJECT_ROOT_OFFSET as u32;
+            CtxMapItemType::Cap => base.len as usize + size_of::<Cap>(),
+            CtxMapItemType::Del => base.len as usize + size_of::<Del>(),
+        } + OBJECT_ROOT_OFFSET;
 
-        debug!("write_offset before adjustment: {:#02x}", write_offset);
         let alignment = write_offset % 0x10;
-        debug!("alginment:{:#02x}", alignment);
 
         write_offset += (0x10 - alignment);
-        debug!("write_offset after adjustment: {:#02x}", write_offset);
 
         // to appease the compiler
         let len = base.len;
@@ -76,16 +74,17 @@ impl SecCtxMap {
         base.buf[len as usize] = CtxMapItem {
             target_id,
             item_type,
-            offset: write_offset,
+            offset: write_offset as u32,
         };
 
         base.len += 1;
 
-        drop(base);
+        let ptr = tx.lea_mut(write_offset, size_of::<Cap>()).expect(
+            "Write offset
+            should not result in a pointer outside of the object",
+        );
 
-        tx.commit().unwrap();
-
-        write_offset
+        ptr.cast::<Cap>()
     }
 
     /// Looks up whether or not there exists a map entry for the given target object
@@ -120,5 +119,14 @@ impl BaseType for SecCtxMap {
     fn fingerprint() -> u64 {
         // lol
         69
+    }
+}
+
+impl Display for CtxMapItem {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Target Id: {:?}\n", self.target_id);
+        write!(f, "Item Type: {:?}\n", self.item_type);
+        write!(f, "Offset: {:#X}\n", self.offset);
+        Ok(())
     }
 }

@@ -1,3 +1,6 @@
+use alloc::string::String;
+use core::{fmt::Display, str::FromStr};
+
 use bitflags::bitflags;
 
 use crate::SecError;
@@ -17,6 +20,26 @@ bitflags! {
     }
 }
 
+impl Display for CapFlags {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("CapFlags {");
+        for flag in self.iter() {
+            match flag {
+                CapFlags::Ed25519 => f.write_str(" ED25519 ")?,
+                CapFlags::Ecdsa => f.write_str(" Ecdsa ")?,
+                CapFlags::Blake3 => f.write_str(" Blake3 ")?,
+                CapFlags::Sha256 => f.write_str(" SHA256 ")?,
+                // have to do this due to how bitflags work
+                _ => (),
+            };
+        }
+
+        f.write_str("}")?;
+
+        Ok(())
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub enum SigningScheme {
     Ed25519,
@@ -33,8 +56,8 @@ pub enum HashingAlgo {
 
 impl CapFlags {
     pub(crate) fn parse(&self) -> Result<(HashingAlgo, SigningScheme), SecError> {
-        let hashing_algo: HashingAlgo = (*self).try_into()?;
-        let signing_scheme: SigningScheme = (*self).try_into()?;
+        let hashing_algo: HashingAlgo = self.clone().try_into()?;
+        let signing_scheme: SigningScheme = self.clone().try_into()?;
 
         Ok((hashing_algo, signing_scheme))
     }

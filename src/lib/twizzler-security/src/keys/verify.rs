@@ -1,3 +1,5 @@
+#[cfg(feature = "log")]
+use log::{debug, error};
 // use ed25519_dalek::{
 //     ed25519, Signature as EdSignature, SigningKey as EdSigningKey, Verifier,
 //     VerifyingKey as EdVerifyingKey, PUBLIC_KEY_LENGTH,
@@ -25,6 +27,8 @@ pub struct VerifyingKey {
 
 impl VerifyingKey {
     pub fn new(scheme: &SigningScheme, target_private_key: &SigningKey) -> Result<Self, SecError> {
+        #[cfg(feature = "log")]
+        debug!("Creating new verifying key with scheme: {:?}", scheme);
         match scheme {
             SigningScheme::Ed25519 => {
                 // let signing_key: EdSigningKey = target_private_key.try_into()?;
@@ -42,6 +46,7 @@ impl VerifyingKey {
                 let vkey = EcdsaVerifyingKey::from(TryInto::<EcdsaSigningKey>::try_into(
                     target_private_key,
                 )?);
+
                 let point = vkey.to_encoded_point(false);
                 let bytes = point.as_bytes();
 
@@ -76,10 +81,25 @@ impl VerifyingKey {
             }
             SigningScheme::Ecdsa => {
                 let point: EncodedPoint<NistP256> = EncodedPoint::<NistP256>::from_bytes(slice)
-                    .map_err(|_| SecError::InvalidVerifyKey)?;
+                    .map_err(|e| {
+                        #[cfg(feature = "log")]
+                        error!(
+                            "Unable to create an encoded point from bytes due to :{:?}",
+                            e
+                        );
 
-                let key = EcdsaVerifyingKey::from_encoded_point(&point)
-                    .map_err(|_| SecError::InvalidVerifyKey)?;
+                        SecError::InvalidVerifyKey
+                    })?;
+
+                let key = EcdsaVerifyingKey::from_encoded_point(&point).map_err(|e| {
+                    #[cfg(feature = "log")]
+                    error!(
+                        "Unable to create an EcdsaVerifyingKey from encoded point, due to :{:?}",
+                        e
+                    );
+
+                    SecError::InvalidVerifyKey
+                })?;
 
                 let mut buf = [0; MAX_KEY_SIZE];
                 buf[0..slice.len()].copy_from_slice(slice);
@@ -113,8 +133,12 @@ impl VerifyingKey {
             SigningScheme::Ecdsa => {
                 let key: EcdsaVerifyingKey = self.try_into()?;
                 let ecdsa_sig: EcdsaSignature = sig.try_into()?;
-                key.verify(msg, &ecdsa_sig)
-                    .map_err(|_| SecError::InvalidSignature)
+                key.verify(msg, &ecdsa_sig).map_err(|e| {
+                    #[cfg(feature = "log")]
+                    error!("Failed verification of signature due to: {:#?}", e);
+
+                    SecError::InvalidSignature
+                })
             }
         }
     }
@@ -139,10 +163,25 @@ impl TryFrom<&VerifyingKey> for EcdsaVerifyingKey {
     type Error = SecError;
     fn try_from(value: &VerifyingKey) -> Result<Self, Self::Error> {
         let point: EncodedPoint<NistP256> = EncodedPoint::<NistP256>::from_bytes(value.as_bytes())
-            .map_err(|_| SecError::InvalidVerifyKey)?;
+            .map_err(|e| {
+                #[cfg(feature = "log")]
+                error!(
+                    "Failed to create an encoded point from bytes due to :{:#?}",
+                    e
+                );
 
-        let key = EcdsaVerifyingKey::from_encoded_point(&point)
-            .map_err(|_| SecError::InvalidVerifyKey)?;
+                SecError::InvalidVerifyKey
+            })?;
+
+        let key = EcdsaVerifyingKey::from_encoded_point(&point).map_err(|e| {
+            #[cfg(feature = "log")]
+            error!(
+                "Failed to create a EcdsaVerifyingKey out of an encoded point due to :{:#?}",
+                e
+            );
+
+            SecError::InvalidVerifyKey
+        })?;
 
         Ok(key)
     }

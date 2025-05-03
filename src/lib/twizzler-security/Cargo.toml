@@ -19,11 +19,10 @@ blake3 = { version = "=1.6.1", default-features = false, features = [
 twizzler-abi = { path = "../twizzler-abi"}
 twizzler = { path = "../twizzler" , optional = true}
 twizzler-rt-abi = {version = "0.99", optional = true}
-log = "0.4.27"
+log = {version = "0.4.27", optional = true}
 
 [features]
 default = ["user"]
 kernel = ["twizzler-abi/kernel"]
 user = ["dep:twizzler", "dep:twizzler-rt-abi"]
-
-# ok so the user trait should enable the 
+log = ["dep:log"]

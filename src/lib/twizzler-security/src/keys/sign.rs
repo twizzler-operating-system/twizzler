@@ -1,3 +1,5 @@
+#[cfg(feature = "log")]
+use log::{debug, error};
 // use ed25519_dalek::{
 //     ed25519::signature::SignerMut, SecretKey, SigningKey as EdSigningKey, SECRET_KEY_LENGTH,
 //     SIGNATURE_LENGTH,
@@ -16,8 +18,10 @@ pub struct SigningKey {
 }
 
 impl SigningKey {
-    //TODO: gate this behind the `kernel` feature
     pub fn new(scheme: &SigningScheme) -> (Self, VerifyingKey) {
+        #[cfg(feature = "log")]
+        debug!("Creating new signing key with scheme: {:?}", scheme);
+
         todo!("do something :sob:")
     }
 
@@ -43,8 +47,14 @@ impl SigningKey {
                 // the crate doesnt expose a const to verify key length,
                 // next best thing is to just ensure that key creation works
                 // instead of hardcoding in a key length?
-                let key =
-                    EcdsaSigningKey::from_slice(slice).map_err(|_| SecError::InvalidSigningKey)?;
+                let key = EcdsaSigningKey::from_slice(slice).map_err(|e| {
+                    #[cfg(feature = "log")]
+                    error!(
+                        "Unable to create EcdsaSigningKey from slice due to: {:#?}!",
+                        e
+                    );
+                    SecError::InvalidSigningKey
+                })?;
 
                 let binding = key.to_bytes();
                 let bytes = &binding.as_slice();
@@ -101,10 +111,15 @@ impl TryFrom<&SigningKey> for EcdsaSigningKey {
     type Error = SecError;
     fn try_from(value: &SigningKey) -> Result<Self, Self::Error> {
         if value.scheme != SigningScheme::Ecdsa {
+            #[cfg(feature = "log")]
+            error!("Cannot convert SigningKey to EcdsaSigningKey due to scheme mismatch. SigningKey scheme: {:?}", value.scheme);
             return Err(SecError::InvalidScheme);
         }
 
-        Ok(EcdsaSigningKey::from_slice(value.as_bytes())
-            .map_err(|_| SecError::InvalidSigningKey)?)
+        Ok(EcdsaSigningKey::from_slice(value.as_bytes()).map_err(|e| {
+            #[cfg(feature = "log")]
+            error!("Cannot build EcdsaSigningKey from slice due to: {:?}", e);
+            SecError::InvalidSigningKey
+        })?)
     }
 }

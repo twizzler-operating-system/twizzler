@@ -1,4 +1,6 @@
 // use ed25519_dalek::SIGNATURE_LENGTH;
+#[cfg(feature = "log")]
+use log::{debug, trace};
 use sha2::Digest;
 use twizzler_abi::object::{ObjID, Protections};
 
@@ -73,6 +75,12 @@ impl Cap {
     ) -> Result<Self, SecError> {
         let flags = CapFlags::Blake3 | CapFlags::Ed25519; // set flags
 
+        #[cfg(feature = "log")]
+        debug!(
+            "Using flags: {} to create capability for target: {:?}",
+            flags, target
+        );
+
         let hash_arr = Cap::serialize(accessor, target, prots, flags, revocation, gates);
 
         let hash = blake3::hash(&hash_arr);
@@ -105,11 +113,15 @@ impl Cap {
 
         match hash_algo {
             HashingAlgo::Blake3 => {
+                #[cfg(feature = "log")]
+                debug!("Hashing via blake3");
                 let bind = blake3::hash(&hash_arr);
                 let bind = bind.as_bytes();
                 verifying_key.verify(bind.as_slice(), &self.sig)
             }
             HashingAlgo::Sha256 => {
+                #[cfg(feature = "log")]
+                debug!("Hashing via Sha256");
                 let mut hasher = sha2::Sha256::new();
                 hasher.update(&hash_arr);
                 let result = hasher.finalize();
@@ -161,7 +173,6 @@ impl Cap {
         gates: Gates,
     ) -> [u8; CAP_SERIALIZED_LEN] {
         let mut hash_arr: [u8; CAP_SERIALIZED_LEN] = [0; CAP_SERIALIZED_LEN];
-
         hash_arr[0..16].copy_from_slice(&accessor.raw().to_le_bytes());
         hash_arr[16..32].copy_from_slice(&target.raw().to_le_bytes());
         hash_arr[32..36].copy_from_slice(&prots.bits().to_le_bytes());

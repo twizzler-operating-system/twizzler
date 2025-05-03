@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 twizzler-abi = {path = "../../lib/twizzler-abi"}
-twizzler-security = {path = "../../lib/twizzler-security", features = ["user"]}
+twizzler-security = {path = "../../lib/twizzler-security", features = ["user", "log"]}
 
 twizzler = { path = "../../lib/twizzler" }
 twizzler-rt-abi = "0.99"

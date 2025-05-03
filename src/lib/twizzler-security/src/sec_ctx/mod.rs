@@ -34,9 +34,9 @@ impl Display for SecCtx {
         let binding = self.uobj.clone();
         let map = binding.base();
 
-        write!(f, "Sec Ctx ObjID: {}", self.uobj.id());
+        write!(f, "Sec Ctx ObjID: {} {{\n", self.uobj.id());
         for (i, entry) in map.buf.into_iter().enumerate().take(map.len as usize) {
-            write!(f, "Entry {}: {:#?}\n", i, entry);
+            write!(f, "Entry {}: {}\n", i, entry);
         }
 
         Ok(())
@@ -61,30 +61,17 @@ impl SecCtx {
     }
 
     pub fn add_cap(&self, cap: Cap) {
-        // first add it to the map to get the write offset
-        debug!("1");
-        let write_offset = SecCtxMap::insert(&self.uobj, cap.target, CtxMapItemType::Cap);
+        let mut ptr = SecCtxMap::insert(&self.uobj, cap.target, CtxMapItemType::Cap);
 
-        debug!("2");
         let tx = self.uobj.clone().tx().unwrap();
 
-        debug!("3");
-        let ptr = tx.lea_mut(write_offset as usize, size_of::<Cap>()).unwrap();
-
-        debug!("write offset: {:#?}", write_offset);
-        debug!("ptr: {:#?}", ptr);
-
-        debug!("4");
-
-
         unsafe {
-            let mut in_ctx_cap = *ptr.cast::<Cap>();
-            debug!("5");
-            in_ctx_cap = cap;
+            *ptr = cap;
         }
 
-        debug!("6");
         tx.commit().unwrap();
+
+        debug!("Added capability at ptr: {:#?}", ptr);
     }
 
     pub fn id(&self) -> ObjID {
