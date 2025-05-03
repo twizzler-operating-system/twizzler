@@ -18,11 +18,12 @@ blake3 = { version = "=1.6.1", default-features = false, features = [
 
 twizzler-abi = { path = "../twizzler-abi"}
 twizzler = { path = "../twizzler" , optional = true}
-twizzler-rt-abi = {version = "0.99", optional = true}
+twizzler-rt-abi = {version = "0.99", default-features = false}
 log = {version = "0.4.27", optional = true}
 
 [features]
 default = ["user"]
-kernel = ["twizzler-abi/kernel", "dep:twizzler-rt-abi", "twizzler-rt-abi/kernel"]
+# kernel = ["twizzler-abi/kernel", "dep:twizzler-rt-abi", "twizzler-rt-abi/kernel"]
+kernel = ["twizzler-abi/kernel", "twizzler-rt-abi/kernel"]
 user = ["dep:twizzler", "dep:twizzler-rt-abi"]
 log = ["dep:log"]
