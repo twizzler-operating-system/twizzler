@@ -1,8 +1,8 @@
-use core::fmt::{write, Display};
+use core::fmt::Display;
 
 use log::debug;
 use map::{CtxMapItemType, SecCtxMap};
-use twizzler::object::{Object, ObjectBuilder, RawObject, TypedObject};
+use twizzler::object::{Object, ObjectBuilder, TypedObject};
 use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
@@ -34,9 +34,9 @@ impl Display for SecCtx {
         let binding = self.uobj.clone();
         let map = binding.base();
 
-        write!(f, "Sec Ctx ObjID: {} {{\n", self.uobj.id());
+        write!(f, "Sec Ctx ObjID: {} {{\n", self.uobj.id())?;
         for (i, entry) in map.buf.into_iter().enumerate().take(map.len as usize) {
-            write!(f, "Entry {}: {}\n", i, entry);
+            write!(f, "Entry {}: {}\n", i, entry)?;
         }
 
         Ok(())
@@ -61,7 +61,7 @@ impl SecCtx {
     }
 
     pub fn add_cap(&self, cap: Cap) {
-        let mut ptr = SecCtxMap::insert(&self.uobj, cap.target, CtxMapItemType::Cap);
+        let ptr = SecCtxMap::insert(&self.uobj, cap.target, CtxMapItemType::Cap);
 
         let tx = self.uobj.clone().tx().unwrap();
 

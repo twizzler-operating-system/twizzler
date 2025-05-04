@@ -1,5 +1,4 @@
-use alloc::string::String;
-use core::{fmt::Display, str::FromStr};
+use core::fmt::Display;
 
 use bitflags::bitflags;
 
@@ -22,7 +21,7 @@ bitflags! {
 
 impl Display for CapFlags {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("CapFlags {");
+        f.write_str("CapFlags {")?;
         for flag in self.iter() {
             match flag {
                 CapFlags::Ed25519 => f.write_str(" ED25519 ")?,
@@ -105,5 +104,23 @@ impl TryFrom<CapFlags> for SigningScheme {
         }
 
         result.ok_or(SecurityError::InvalidScheme)
+    }
+}
+
+impl From<SigningScheme> for CapFlags {
+    fn from(value: SigningScheme) -> Self {
+        match value {
+            SigningScheme::Ed25519 => CapFlags::Ed25519,
+            SigningScheme::Ecdsa => CapFlags::Ecdsa,
+        }
+    }
+}
+
+impl From<HashingAlgo> for CapFlags {
+    fn from(value: HashingAlgo) -> Self {
+        match value {
+            HashingAlgo::Blake3 => CapFlags::Blake3,
+            HashingAlgo::Sha256 => CapFlags::Sha256,
+        }
     }
 }

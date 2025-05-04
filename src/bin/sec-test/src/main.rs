@@ -1,24 +1,15 @@
-use std::fs::File;
-
-use clap::{Parser, Subcommand, ValueEnum};
-use colog::{basic_builder, default_builder};
+use clap::{Parser, Subcommand};
+use colog::default_builder;
 use log::LevelFilter;
-use twizzler::{
-    marker::{BaseType, StoreCopy},
-    object::{Object, ObjectBuilder, RawObject, TypedObject},
-    tx::TxObject,
-};
-use twizzler_abi::{
-    object::{ObjID, Protections},
-    syscall::{BackingType, LifetimeType, ObjectCreate},
-};
+use twizzler::object::{Object, ObjectBuilder};
+use twizzler_abi::object::Protections;
 use twizzler_rt_abi::object::MapFlags;
 use twizzler_security::{
     sec_ctx::{
         map::{CtxMapItemType, SecCtxMap},
         SecCtx,
     },
-    Cap, SigningKey, SigningScheme,
+    Cap, SigningKey,
 };
 
 #[derive(Parser, Debug)]
@@ -69,10 +60,8 @@ fn main() {
             }
 
             Commands::Write { id } => {
-                // some fantasy object we want to create a cap for
-                let id: u128 = 0x1000000000000a;
-
                 // how to build a persistent object
+                let id: u128 = id.parse().expect("id should be valid u128");
                 let vobj = ObjectBuilder::<SecCtxMap>::default()
                     // .persist()
                     .build(SecCtxMap::default())
@@ -80,18 +69,12 @@ fn main() {
 
                 println!("SecCtxObjId: {}", vobj.id());
 
-                // let ptr = SecCtxMap::parse(vobj.id());
-                // println!("ptr: {:#?}", ptr);
-                //
                 let vobj_id = vobj.id();
 
-                let writeable_offset = SecCtxMap::insert(&vobj, id.into(), CtxMapItemType::Cap);
+                let cap_ptr = SecCtxMap::insert(&vobj, id.into(), CtxMapItemType::Cap);
 
+                println!("Ptr: {:#?}", cap_ptr);
                 println!("SecCtxObjId: {}", vobj_id);
-
-                // unsafe {
-                //     println!("map: {:#?}", *vobj.base_ptr::<SecCtxMap>());
-                // }
 
                 let res = SecCtxMap::lookup(&vobj, id.into());
                 println!("lookup results {:#?}", res);

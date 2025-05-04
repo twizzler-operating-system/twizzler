@@ -84,21 +84,22 @@ impl VerifyingKey {
             }
             SigningScheme::Ecdsa => {
                 let point: EncodedPoint<NistP256> = EncodedPoint::<NistP256>::from_bytes(slice)
-                    .map_err(|e| {
+                    .map_err(|_e| {
                         #[cfg(feature = "log")]
                         error!(
                             "Unable to create an encoded point from bytes due to :{:?}",
-                            e
+                            _e
                         );
 
                         SecurityError::InvalidKey
                     })?;
 
-                let key = EcdsaVerifyingKey::from_encoded_point(&point).map_err(|e| {
+                // we create key here to ensure its valid
+                let _key = EcdsaVerifyingKey::from_encoded_point(&point).map_err(|_e| {
                     #[cfg(feature = "log")]
                     error!(
                         "Unable to create an EcdsaVerifyingKey from encoded point, due to :{:?}",
-                        e
+                        _e
                     );
 
                     SecurityError::InvalidKey
@@ -136,9 +137,9 @@ impl VerifyingKey {
             SigningScheme::Ecdsa => {
                 let key: EcdsaVerifyingKey = self.try_into()?;
                 let ecdsa_sig: EcdsaSignature = sig.try_into()?;
-                key.verify(msg, &ecdsa_sig).map_err(|e| {
+                key.verify(msg, &ecdsa_sig).map_err(|_e| {
                     #[cfg(feature = "log")]
-                    error!("Failed verification of signature due to: {:#?}", e);
+                    error!("Failed verification of signature due to: {:#?}", _e);
 
                     SecurityError::SignatureMismatch
                 })
@@ -166,21 +167,21 @@ impl TryFrom<&VerifyingKey> for EcdsaVerifyingKey {
     type Error = SecurityError;
     fn try_from(value: &VerifyingKey) -> Result<Self, Self::Error> {
         let point: EncodedPoint<NistP256> = EncodedPoint::<NistP256>::from_bytes(value.as_bytes())
-            .map_err(|e| {
+            .map_err(|_e| {
                 #[cfg(feature = "log")]
                 error!(
                     "Failed to create an encoded point from bytes due to :{:#?}",
-                    e
+                    _e
                 );
 
                 SecurityError::InvalidKey
             })?;
 
-        let key = EcdsaVerifyingKey::from_encoded_point(&point).map_err(|e| {
+        let key = EcdsaVerifyingKey::from_encoded_point(&point).map_err(|_e| {
             #[cfg(feature = "log")]
             error!(
                 "Failed to create a EcdsaVerifyingKey out of an encoded point due to :{:#?}",
-                e
+                _e
             );
 
             SecurityError::InvalidKey

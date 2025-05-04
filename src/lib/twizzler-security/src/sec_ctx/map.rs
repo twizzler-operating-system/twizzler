@@ -1,16 +1,13 @@
-use alloc::rc::Rc;
-use core::{array, default, fmt::Display};
+use core::fmt::Display;
 
 use log::debug;
 use twizzler::{
-    marker::{BaseType, StoreCopy},
+    marker::BaseType,
     object::{Object, RawObject, TypedObject},
-    tx::TxObject,
 };
 use twizzler_abi::object::{ObjID, NULLPAGE_SIZE};
-use twizzler_rt_abi::object::MapFlags;
 
-use crate::{Cap, Del, SecurityError};
+use crate::{Cap, Del};
 
 const MAX_SEC_CTX_MAP_LEN: usize = 5;
 
@@ -64,14 +61,15 @@ impl SecCtxMap {
             CtxMapItemType::Del => base.len as usize + size_of::<Del>(),
         } + OBJECT_ROOT_OFFSET;
 
+        debug!("write offset into object for entry: {:#X}", write_offset);
+
         let alignment = write_offset % 0x10;
 
-        write_offset += (0x10 - alignment);
+        write_offset += 0x10 - alignment;
 
-        // to appease the compiler
-        let len = base.len;
+        let binding = base.len as usize;
 
-        base.buf[len as usize] = CtxMapItem {
+        base.buf[binding] = CtxMapItem {
             target_id,
             item_type,
             offset: write_offset as u32,
@@ -124,9 +122,9 @@ impl BaseType for SecCtxMap {
 
 impl Display for CtxMapItem {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Target Id: {:?}\n", self.target_id);
-        write!(f, "Item Type: {:?}\n", self.item_type);
-        write!(f, "Offset: {:#X}\n", self.offset);
+        write!(f, "Target Id: {:?}\n", self.target_id)?;
+        write!(f, "Item Type: {:?}\n", self.item_type)?;
+        write!(f, "Offset: {:#X}\n", self.offset)?;
         Ok(())
     }
 }

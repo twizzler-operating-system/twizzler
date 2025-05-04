@@ -18,9 +18,9 @@ pub struct SigningKey {
 }
 
 impl SigningKey {
-    pub fn new(scheme: &SigningScheme) -> (Self, VerifyingKey) {
+    pub fn new(_scheme: &SigningScheme) -> (Self, VerifyingKey) {
         #[cfg(feature = "log")]
-        debug!("Creating new signing key with scheme: {:?}", scheme);
+        debug!("Creating new signing key with scheme: {:?}", _scheme);
 
         todo!("do something :sob:")
     }
@@ -47,11 +47,11 @@ impl SigningKey {
                 // the crate doesnt expose a const to verify key length,
                 // next best thing is to just ensure that key creation works
                 // instead of hardcoding in a key length?
-                let key = EcdsaSigningKey::from_slice(slice).map_err(|e| {
+                let key = EcdsaSigningKey::from_slice(slice).map_err(|_e| {
                     #[cfg(feature = "log")]
                     error!(
                         "Unable to create EcdsaSigningKey from slice due to: {:#?}!",
-                        e
+                        _e
                     );
                     SecurityError::InvalidKey
                 })?;
@@ -84,7 +84,7 @@ impl SigningKey {
                 unimplemented!("until we figure out whats wrong with data layout")
             }
             SigningScheme::Ecdsa => {
-                let mut signing_key: EcdsaSigningKey = self.try_into()?;
+                let signing_key: EcdsaSigningKey = self.try_into()?;
                 let sig: EcdsaSignature = signing_key.sign(msg);
                 Ok(sig.into())
             }
@@ -116,9 +116,9 @@ impl TryFrom<&SigningKey> for EcdsaSigningKey {
             return Err(SecurityError::InvalidScheme);
         }
 
-        Ok(EcdsaSigningKey::from_slice(value.as_bytes()).map_err(|e| {
+        Ok(EcdsaSigningKey::from_slice(value.as_bytes()).map_err(|_e| {
             #[cfg(feature = "log")]
-            error!("Cannot build EcdsaSigningKey from slice due to: {:?}", e);
+            error!("Cannot build EcdsaSigningKey from slice due to: {:?}", _e);
             SecurityError::InvalidKey
         })?)
     }

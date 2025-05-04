@@ -1,5 +1,3 @@
-use crate::SigningScheme;
-
 mod sig;
 mod sign;
 mod verify;

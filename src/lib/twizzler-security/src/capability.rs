@@ -1,6 +1,6 @@
 // use ed25519_dalek::SIGNATURE_LENGTH;
 #[cfg(feature = "log")]
-use log::{debug, trace};
+use log::debug;
 use sha2::Digest;
 use twizzler_abi::object::{ObjID, Protections};
 
@@ -73,7 +73,10 @@ impl Cap {
         hashing_algo: HashingAlgo,
         signing_scheme: SigningScheme,
     ) -> Result<Self, SecurityError> {
-        let flags = CapFlags::Blake3 | CapFlags::Ed25519; // set flags
+        let hashing_algo: CapFlags = hashing_algo.into();
+        let signing_scheme: CapFlags = signing_scheme.into();
+
+        let flags = hashing_algo | signing_scheme; // set flags
 
         #[cfg(feature = "log")]
         debug!(
