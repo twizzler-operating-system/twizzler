@@ -1,6 +1,9 @@
-use twizzler_rt_abi::object::ObjID;
+use twizzler_rt_abi::{error::RawTwzError, object::ObjID};
 
-use crate::object::NULLPAGE_SIZE;
+use crate::{
+    object::NULLPAGE_SIZE,
+    syscall::{BackingType, LifetimeType},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub struct RequestFromKernel {
@@ -15,15 +18,26 @@ impl RequestFromKernel {
     pub fn cmd(&self) -> KernelCommand {
         self.cmd
     }
+
+    pub fn id(&self) -> Option<ObjID> {
+        match self.cmd() {
+            KernelCommand::PageDataReq(objid, _) => Some(objid),
+            KernelCommand::ObjectInfoReq(objid) => Some(objid),
+            KernelCommand::ObjectEvict(info) => Some(info.obj_id),
+            KernelCommand::ObjectDel(objid) => Some(objid),
+            KernelCommand::ObjectCreate(objid, _) => Some(objid),
+            KernelCommand::DramPages(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCommand {
     PageDataReq(ObjID, ObjectRange),
     ObjectInfoReq(ObjID),
-    ObjectSync(ObjID),
+    ObjectEvict(ObjectEvictInfo),
     ObjectDel(ObjID),
-    ObjectCreate(ObjectInfo),
+    ObjectCreate(ObjID, ObjectInfo),
     DramPages(PhysRange),
 }
 
@@ -45,11 +59,9 @@ impl CompletionToKernel {
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCompletionData {
     Okay,
-    Error,
+    Error(RawTwzError),
     PageDataCompletion(ObjID, ObjectRange, PhysRange),
     ObjectInfoCompletion(ObjectInfo),
-    NoSuchObject(ObjID),
-    SyncOkay(ObjID),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
@@ -97,8 +109,9 @@ impl CompletionToPager {
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum PagerCompletionData {
     Okay,
-    Error,
+    Error(RawTwzError),
     DramPages(PhysRange),
+    Ready(ObjID),
 }
 
 pub struct PageDataReq {
@@ -108,12 +121,16 @@ pub struct PageDataReq {
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub struct ObjectInfo {
-    pub obj_id: ObjID,
+    pub lifetime: LifetimeType,
+    pub backing: BackingType,
 }
 
 impl ObjectInfo {
-    pub fn new(obj_id: ObjID) -> Self {
-        Self { obj_id }
+    pub fn new(lifetime: LifetimeType) -> Self {
+        Self {
+            lifetime,
+            backing: BackingType::Normal,
+        }
     }
 }
 
@@ -158,5 +175,21 @@ impl ObjectRange {
         let first_page = self.start / NULLPAGE_SIZE as u64;
         let last_page = self.end / NULLPAGE_SIZE as u64;
         first_page..last_page
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+pub struct ObjectEvictInfo {
+    pub obj_id: ObjID,
+    pub range: ObjectRange,
+    pub phys: PhysRange,
+    pub flags: ObjectEvictFlags,
+}
+
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+    pub struct ObjectEvictFlags: u32 {
+        const SYNC = 1;
+        const FENCE = 2;
     }
 }

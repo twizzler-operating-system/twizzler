@@ -1,20 +1,22 @@
-use alloc::sync::Arc;
+use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, NULLPAGE_SIZE},
     pager::{
-        CompletionToKernel, CompletionToPager, PagerCompletionData, PagerRequest, PhysRange,
-        RequestFromKernel, RequestFromPager,
+        CompletionToKernel, CompletionToPager, KernelCommand, PagerCompletionData, PagerRequest,
+        PhysRange, RequestFromKernel, RequestFromPager,
     },
     syscall::LifetimeType,
 };
+use twizzler_rt_abi::error::{ObjectError, TwzError};
 
 use super::INFLIGHT_MGR;
 use crate::{
     arch::PhysAddr,
     idcounter::{IdCounter, SimpleId},
     memory::context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+    mutex::Mutex,
     obj::{lookup_object, pages::Page, LookupFlags, Object, PageNumber},
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},
@@ -24,6 +26,7 @@ use crate::{
 static SENDER: Once<(
     IdCounter,
     QueueObject<RequestFromKernel, CompletionToKernel>,
+    Mutex<BTreeMap<u32, RequestFromKernel>>,
 )> = Once::new();
 static RECEIVER: Once<ManagedQueueReceiver<RequestFromPager, CompletionToPager>> = Once::new();
 
@@ -35,11 +38,15 @@ fn pager_request_copy_user_phys(
     write_phys: bool,
 ) -> CompletionToPager {
     let Ok(phys_start) = PhysAddr::new(phys.start) else {
-        return CompletionToPager::new(PagerCompletionData::Error);
+        return CompletionToPager::new(PagerCompletionData::Error(
+            TwzError::INVALID_ARGUMENT.into(),
+        ));
     };
 
     let Ok(object) = lookup_object(target_object, LookupFlags::empty()).ok_or(()) else {
-        return CompletionToPager::new(PagerCompletionData::Error);
+        return CompletionToPager::new(PagerCompletionData::Error(
+            TwzError::INVALID_ARGUMENT.into(),
+        ));
     };
     let ko = kernel_context().insert_kernel_object::<()>(ObjectContextInfo::new(
         object,
@@ -47,7 +54,9 @@ fn pager_request_copy_user_phys(
         CacheType::WriteBack,
     ));
     let Ok(vaddr) = ko.start_addr().offset(offset) else {
-        return CompletionToPager::new(PagerCompletionData::Error);
+        return CompletionToPager::new(PagerCompletionData::Error(
+            TwzError::INVALID_ARGUMENT.into(),
+        ));
     };
 
     let vphys = phys_start.kernel_vaddr();
@@ -102,7 +111,12 @@ pub(super) fn pager_compl_handler_main() {
     let sender = SENDER.wait();
     loop {
         let completion = sender.1.recv_completion();
-        match completion.1.data() {
+        let Some(request) = sender.2.lock().get(&completion.0).copied() else {
+            logln!("warn -- received completion for unknown request");
+            continue;
+        };
+
+        let done = match completion.1.data() {
             twizzler_abi::pager::KernelCompletionData::PageDataCompletion(
                 objid,
                 obj_range,
@@ -125,35 +139,58 @@ pub(super) fn pager_compl_handler_main() {
                 } else {
                     logln!("kernel: pager: got unknown object ID");
                 }
+                false
             }
-            twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(obj_info) => {
-                let obj = Object::new(obj_info.obj_id, LifetimeType::Persistent, &[]);
-                crate::obj::register_object(Arc::new(obj));
-                INFLIGHT_MGR.lock().cmd_ready(obj_info.obj_id, false);
+            twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(_) => {
+                if let Some(id) = request.id() {
+                    let obj = Object::new(id, LifetimeType::Persistent, &[]);
+                    crate::obj::register_object(Arc::new(obj));
+                    INFLIGHT_MGR.lock().cmd_ready(id, false);
+                }
+                false
             }
-            twizzler_abi::pager::KernelCompletionData::SyncOkay(objid) => {
-                INFLIGHT_MGR.lock().cmd_ready(objid, true);
+            twizzler_abi::pager::KernelCompletionData::Error(err) => {
+                logln!("pager returned error: {}", err.error());
+                match err.error() {
+                    TwzError::Object(ObjectError::NoSuchObject) => {
+                        if let KernelCommand::ObjectInfoReq(obj_id) = request.cmd() {
+                            crate::obj::no_exist(obj_id);
+                            INFLIGHT_MGR.lock().cmd_ready(obj_id, false);
+                        }
+                    }
+                    _ => {}
+                }
+                true
             }
-            twizzler_abi::pager::KernelCompletionData::Error => {
-                logln!("pager returned error");
+            twizzler_abi::pager::KernelCompletionData::Okay => {
+                match request.cmd() {
+                    KernelCommand::ObjectEvict(info) => {
+                        INFLIGHT_MGR.lock().cmd_ready(info.obj_id, true);
+                    }
+                    _ => {}
+                }
+                true
             }
-            twizzler_abi::pager::KernelCompletionData::NoSuchObject(obj_id) => {
-                logln!(
-                    "kernel: pager compl: got object info {:?}: no such object",
-                    obj_id
-                );
-                crate::obj::no_exist(obj_id);
-                INFLIGHT_MGR.lock().cmd_ready(obj_id, false);
-            }
-            twizzler_abi::pager::KernelCompletionData::Okay => {}
+        };
+        if done {
+            sender.2.lock().remove(&completion.0);
+            sender.0.release_simple(SimpleId::from(completion.0));
         }
-        sender.0.release_simple(SimpleId::from(completion.0));
     }
 }
 
 pub fn submit_pager_request(item: RequestFromKernel) {
     let sender = SENDER.wait();
     let id = sender.0.next_simple().value() as u32;
+    let old = sender.2.lock().insert(id, item);
+    if let Some(old) = old {
+        logln!(
+            "warn -- replaced old item on request index ({}: {:?} -> {:?})",
+            id,
+            old,
+            item
+        );
+    }
     SENDER.wait().1.submit(item, id);
 }
 
@@ -177,7 +214,7 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
     );
     if outgoing {
         let queue = QueueObject::<RequestFromKernel, CompletionToKernel>::from_object(obj);
-        SENDER.call_once(|| (IdCounter::new(), queue));
+        SENDER.call_once(|| (IdCounter::new(), queue, Mutex::new(BTreeMap::new())));
     } else {
         let queue = QueueObject::<RequestFromPager, CompletionToPager>::from_object(obj);
         let receiver = ManagedQueueReceiver::new(queue);
