@@ -4,14 +4,14 @@ use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, NULLPAGE_SIZE},
     pager::{
-        CompletionToKernel, CompletionToPager, KernelCommand, PagerCompletionData, PagerRequest,
-        PhysRange, RequestFromKernel, RequestFromPager,
+        CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionFlags, ObjectInfo,
+        ObjectRange, PagerCompletionData, PagerRequest, PhysRange, RequestFromKernel,
+        RequestFromPager,
     },
-    syscall::LifetimeType,
 };
 use twizzler_rt_abi::error::{ObjectError, TwzError};
 
-use super::INFLIGHT_MGR;
+use super::{provide_pager_memory, DEFAULT_PAGER_OUTSTANDING_FRAMES, INFLIGHT_MGR};
 use crate::{
     arch::PhysAddr,
     idcounter::{IdCounter, SimpleId},
@@ -81,19 +81,8 @@ pub(super) fn pager_request_handler_main() {
     loop {
         receiver.handle_request(|_id, req| match req.cmd() {
             PagerRequest::Ready => {
-                /*
-                                let regs = PAGER_MEMORY.poll().unwrap();
-                                for reg in regs {
-                                    submit_pager_request(RequestFromKernel::new(KernelCommand::DramPages(
-                                        PhysRange::new(
-                                            reg.start.raw(),
-                                            reg.start.offset(reg.length).unwrap().raw(),
-                                        ),
-                                    )));
-                                }
-                */
-                // TODO
                 INFLIGHT_MGR.lock().set_ready();
+                provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
                 CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::Okay)
             }
             PagerRequest::CopyUserPhys {
@@ -107,6 +96,45 @@ pub(super) fn pager_request_handler_main() {
     }
 }
 
+fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range: PhysRange) {
+    if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
+        let mut object_tree = object.lock_page_tree();
+
+        for (objpage_nr, physpage_nr) in obj_range.pages().zip(phys_range.pages()) {
+            let pn = PageNumber::from(objpage_nr as usize);
+            let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
+            // TODO: will need to supply allocator
+            object_tree.add_page(pn, Page::new_wired(pa, CacheType::WriteBack), None);
+        }
+        drop(object_tree);
+
+        INFLIGHT_MGR
+            .lock()
+            .pages_ready(objid, obj_range.pages().map(|x| x as usize));
+    } else {
+        logln!("kernel: pager: got unknown object ID");
+    }
+}
+
+fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo) {
+    let obj = Object::new(id, info.lifetime, &[]);
+    crate::obj::register_object(Arc::new(obj));
+    INFLIGHT_MGR.lock().cmd_ready(id, false);
+}
+
+fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError) {
+    logln!("pager returned error: {} for {:?}", err, request);
+    match err {
+        TwzError::Object(ObjectError::NoSuchObject) => {
+            if let KernelCommand::ObjectInfoReq(obj_id) = request.cmd() {
+                crate::obj::no_exist(obj_id);
+                INFLIGHT_MGR.lock().cmd_ready(obj_id, false);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(super) fn pager_compl_handler_main() {
     let sender = SENDER.wait();
     loop {
@@ -116,63 +144,34 @@ pub(super) fn pager_compl_handler_main() {
             continue;
         };
 
-        let done = match completion.1.data() {
+        match completion.1.data() {
             twizzler_abi::pager::KernelCompletionData::PageDataCompletion(
                 objid,
                 obj_range,
                 phys_range,
-            ) => {
-                if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
-                    let mut object_tree = object.lock_page_tree();
-
-                    for (objpage_nr, physpage_nr) in obj_range.pages().zip(phys_range.pages()) {
-                        let pn = PageNumber::from(objpage_nr as usize);
-                        let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
-                        // TODO: will need to supply allocator
-                        object_tree.add_page(pn, Page::new_wired(pa, CacheType::WriteBack), None);
-                    }
-                    drop(object_tree);
-
-                    INFLIGHT_MGR
-                        .lock()
-                        .pages_ready(objid, obj_range.pages().map(|x| x as usize));
-                } else {
-                    logln!("kernel: pager: got unknown object ID");
-                }
-                false
-            }
-            twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(_) => {
-                if let Some(id) = request.id() {
-                    let obj = Object::new(id, LifetimeType::Persistent, &[]);
-                    crate::obj::register_object(Arc::new(obj));
-                    INFLIGHT_MGR.lock().cmd_ready(id, false);
-                }
-                false
+            ) => pager_compl_handle_page_data(objid, obj_range, phys_range),
+            twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(id, info) => {
+                pager_compl_handle_object_info(id, info)
             }
             twizzler_abi::pager::KernelCompletionData::Error(err) => {
-                logln!("pager returned error: {}", err.error());
-                match err.error() {
-                    TwzError::Object(ObjectError::NoSuchObject) => {
-                        if let KernelCommand::ObjectInfoReq(obj_id) = request.cmd() {
-                            crate::obj::no_exist(obj_id);
-                            INFLIGHT_MGR.lock().cmd_ready(obj_id, false);
-                        }
-                    }
-                    _ => {}
-                }
-                true
+                pager_compl_handle_error(request, err.error())
             }
-            twizzler_abi::pager::KernelCompletionData::Okay => {
-                match request.cmd() {
-                    KernelCommand::ObjectEvict(info) => {
-                        INFLIGHT_MGR.lock().cmd_ready(info.obj_id, true);
-                    }
-                    _ => {}
-                }
-                true
-            }
+            _ => {}
         };
-        if done {
+
+        match request.cmd() {
+            KernelCommand::ObjectEvict(info) => {
+                if matches!(
+                    completion.1.data(),
+                    twizzler_abi::pager::KernelCompletionData::Okay
+                ) {
+                    INFLIGHT_MGR.lock().cmd_ready(info.obj_id, true);
+                }
+            }
+            _ => {}
+        }
+
+        if completion.1.flags().contains(KernelCompletionFlags::DONE) {
             sender.2.lock().remove(&completion.0);
             sender.0.release_simple(SimpleId::from(completion.0));
         }

@@ -21,6 +21,7 @@ devmgr = { path = "../../lib/devmgr" }
 slab = { version = "*", features = [] }
 blocking = "*"
 itertools = "*"
+stable-vec = "*"
 
 async-trait = "0.1.66"
 volatile = "0.6"

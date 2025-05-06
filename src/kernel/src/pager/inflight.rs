@@ -44,6 +44,7 @@ impl Inflight {
             ReqKind::Create(obj_id) => {
                 KernelCommand::ObjectCreate(obj_id, ObjectInfo::new(LifetimeType::Persistent))
             }
+            ReqKind::Pages(phys_range) => KernelCommand::DramPages(phys_range),
         };
         Some(RequestFromKernel::new(cmd))
     }
@@ -107,11 +108,13 @@ impl InflightManager {
         let request = Request::new(id, rk);
         self.requests.push(request);
         self.req_map.insert(rk, id);
-        let per_obj = self
-            .per_object
-            .entry(rk.objid())
-            .or_insert_with(|| PerObjectData::default());
-        per_obj.insert(rk, id);
+        if let Some(objid) = rk.objid() {
+            let per_obj = self
+                .per_object
+                .entry(objid)
+                .or_insert_with(|| PerObjectData::default());
+            per_obj.insert(rk, id);
+        }
         Inflight::new(id, rk, true)
     }
 
@@ -120,8 +123,10 @@ impl InflightManager {
             return;
         };
         self.req_map.remove(&request.reqkind());
-        if let Some(po) = self.per_object.get_mut(&request.reqkind().objid()) {
-            po.remove_all(request.reqkind(), id);
+        if let Some(objid) = request.reqkind().objid() {
+            if let Some(po) = self.per_object.get_mut(&objid) {
+                po.remove_all(request.reqkind(), id);
+            }
         }
     }
 

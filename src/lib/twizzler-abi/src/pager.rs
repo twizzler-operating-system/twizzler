@@ -1,3 +1,4 @@
+use bitflags::bitflags;
 use twizzler_rt_abi::{error::RawTwzError, object::ObjID};
 
 use crate::{
@@ -44,15 +45,27 @@ pub enum KernelCommand {
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub struct CompletionToKernel {
     data: KernelCompletionData,
+    flags: KernelCompletionFlags,
+}
+
+bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+    pub struct KernelCompletionFlags: u32 {
+        const DONE = 1;
+    }
 }
 
 impl CompletionToKernel {
-    pub fn new(data: KernelCompletionData) -> Self {
-        Self { data }
+    pub fn new(data: KernelCompletionData, flags: KernelCompletionFlags) -> Self {
+        Self { data, flags }
     }
 
     pub fn data(&self) -> KernelCompletionData {
         self.data
+    }
+
+    pub fn flags(&self) -> KernelCompletionFlags {
+        self.flags
     }
 }
 
@@ -61,7 +74,7 @@ pub enum KernelCompletionData {
     Okay,
     Error(RawTwzError),
     PageDataCompletion(ObjID, ObjectRange, PhysRange),
-    ObjectInfoCompletion(ObjectInfo),
+    ObjectInfoCompletion(ObjID, ObjectInfo),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
@@ -111,7 +124,6 @@ pub enum PagerCompletionData {
     Okay,
     Error(RawTwzError),
     DramPages(PhysRange),
-    Ready(ObjID),
 }
 
 pub struct PageDataReq {

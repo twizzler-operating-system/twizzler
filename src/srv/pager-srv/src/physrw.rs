@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use miette::{IntoDiagnostic, Result};
 use twizzler::object::ObjID;
 use twizzler_abi::pager::{CompletionToPager, PagerRequest, PhysRange, RequestFromPager};
 use twizzler_queue::QueueSender;
+use twizzler_rt_abi::{error::TwzError, Result};
 
 type Queue = QueueSender<RequestFromPager, CompletionToPager>;
 type QueueRef = Arc<Queue>;
@@ -22,7 +22,7 @@ async fn do_physrw_request(
     len: usize,
     phys: PhysRange,
     write_phys: bool,
-) -> miette::Result<()> {
+) -> Result<()> {
     let request = RequestFromPager::new(PagerRequest::CopyUserPhys {
         target_object,
         offset,
@@ -30,10 +30,11 @@ async fn do_physrw_request(
         phys,
         write_phys,
     });
-    let comp = queue.submit_and_wait(request).await.into_diagnostic()?;
+    let comp = queue.submit_and_wait(request).await?;
     match comp.data() {
         twizzler_abi::pager::PagerCompletionData::Okay => Ok(()),
-        _ => miette::bail!("invalid pager completion"),
+        twizzler_abi::pager::PagerCompletionData::Error(e) => Err(e.error()),
+        _ => Err(TwzError::INVALID_ARGUMENT),
     }
 }
 

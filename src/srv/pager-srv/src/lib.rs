@@ -37,7 +37,7 @@ pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
+            .with_max_level(tracing::Level::DEBUG)
             .without_time()
             .finish(),
     )
@@ -145,7 +145,7 @@ async fn listen_queue<R, C, F>(
     handler: impl Fn(&'static PagerContext, R) -> F + Copy + Send + Sync + 'static,
     ex: &'static Executor<'static>,
 ) where
-    F: std::future::Future<Output = Option<C>> + Send + 'static,
+    F: std::future::Future<Output = C> + Send + 'static,
     R: std::fmt::Debug + Copy + Send + Sync + 'static,
     C: std::fmt::Debug + Copy + Send + Sync + 'static,
 {
@@ -164,14 +164,12 @@ async fn listen_queue<R, C, F>(
     }
 }
 
-async fn notify<R, C>(q: &Arc<twizzler_queue::CallbackQueueReceiver<R, C>>, id: u32, res: Option<C>)
+async fn notify<R, C>(q: &Arc<twizzler_queue::CallbackQueueReceiver<R, C>>, id: u32, res: C)
 where
     R: std::fmt::Debug + Copy + Send + Sync,
     C: std::fmt::Debug + Copy + Send + Sync + 'static,
 {
-    if let Some(res) = res {
-        q.complete(id, res).await.unwrap();
-    }
+    q.complete(id, res).await.unwrap();
     tracing::trace!("request {} complete", id);
 }
 

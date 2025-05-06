@@ -80,6 +80,33 @@ impl AllocationRegion {
         self.indexer.get_frame_mut(pa)
     }
 
+    fn admit_region(&mut self, max: usize) -> Option<(PhysAddr, usize)> {
+        let taken = (self.next_for_init - self.indexer.start) / FRAME_SIZE;
+        let remaining = (self.indexer.len / FRAME_SIZE) - taken;
+        let num = remaining.min(max);
+        if num == 0 {
+            return None;
+        }
+
+        let start = self.next_for_init;
+        self.next_for_init = self.next_for_init.offset(FRAME_SIZE * num).unwrap();
+
+        for addr in (start.raw()..(start.raw() + (FRAME_SIZE * num) as u64)).step_by(FRAME_SIZE) {
+            let addr = PhysAddr::new(addr).unwrap();
+            // Unwrap-Ok: we know this address is in this region already
+            // Safety: we are allocating a new, untouched frame here
+            let frame = unsafe { self.get_frame_mut(addr) }.unwrap();
+            // Safety: the frame can be reset since during admit_one we are the only ones with
+            // access to the frame data.
+            unsafe { frame.reset(addr) };
+            frame.set_admitted();
+            frame.set_free();
+            self.non_zeroed.push_back(frame);
+        }
+
+        Some((start, num))
+    }
+
     fn admit_one(&mut self) -> bool {
         let next = self.next_for_init;
         if !self.contains(next) {
@@ -184,6 +211,7 @@ impl AllocationRegion {
 #[doc(hidden)]
 struct PhysicalFrameAllocator {
     regions: Vec<AllocationRegion>,
+    admitted_regions: Vec<(PhysAddr, usize)>,
     region_idx: usize,
 }
 
@@ -398,6 +426,7 @@ impl PhysicalFrameAllocator {
     fn new(memory_regions: &[MemoryRegion]) -> PhysicalFrameAllocator {
         Self {
             region_idx: 0,
+            admitted_regions: Vec::new(),
             regions: memory_regions
                 .iter()
                 .filter_map(|m| {
@@ -409,6 +438,37 @@ impl PhysicalFrameAllocator {
                 })
                 .collect(),
         }
+    }
+
+    fn free_region(&mut self, start: PhysAddr, len: usize) {
+        self.admitted_regions.push((start, len));
+    }
+
+    fn alloc_region(&mut self, max: usize, flags: PhysicalFrameFlags) -> Option<(PhysAddr, usize)> {
+        fn zero_region(addr: PhysAddr, len: usize) {
+            for off in 0..len {
+                let frame = get_frame(addr.offset(off * FRAME_SIZE).unwrap());
+                frame.unwrap().zero();
+            }
+        }
+        let pos = self.admitted_regions.iter().position(|reg| reg.1 <= max);
+        if let Some(reg) = pos.map(|pos| self.admitted_regions.remove(pos)) {
+            if flags.contains(PhysicalFrameFlags::ZEROED) {
+                zero_region(reg.0, reg.1);
+            }
+            return Some(reg);
+        }
+        for reg in &mut self.regions {
+            let ad_reg = reg.admit_region(max);
+            if let Some(ad_reg) = ad_reg {
+                if flags.contains(PhysicalFrameFlags::ZEROED) {
+                    zero_region(ad_reg.0, ad_reg.1);
+                }
+                return Some(ad_reg);
+            }
+        }
+
+        None
     }
 
     fn alloc(&mut self, flags: PhysicalFrameFlags, fallback: bool) -> Option<FrameRef> {
@@ -431,7 +491,16 @@ impl PhysicalFrameAllocator {
                 return frame;
             }
         }
-        panic!("out of memory");
+        if let Some(reg) = self.admitted_regions.pop() {
+            for off in 0..reg.1 {
+                let pa = reg.0.offset(off * FRAME_SIZE).unwrap();
+                let frame = get_frame(pa).unwrap();
+                self.free(frame);
+            }
+            self.__do_alloc_fallback()
+        } else {
+            panic!("out of memory");
+        }
     }
 
     fn __do_alloc(&mut self, flags: PhysicalFrameFlags) -> Option<FrameRef> {
@@ -576,6 +645,18 @@ pub fn get_frame(pa: PhysAddr) -> Option<FrameRef> {
         }
     }
     None
+}
+
+pub(super) fn raw_try_alloc_region(
+    max: usize,
+    flags: PhysicalFrameFlags,
+) -> Option<(PhysAddr, usize)> {
+    let reg = { PFA.wait().lock().alloc_region(max, flags) };
+    reg
+}
+
+pub(super) fn raw_free_region(start: PhysAddr, len: usize) {
+    PFA.wait().lock().free_region(start, len);
 }
 
 #[cfg(test)]

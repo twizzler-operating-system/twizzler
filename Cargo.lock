@@ -4717,6 +4717,7 @@ dependencies = [
  "polling",
  "secgate",
  "slab",
+ "stable-vec",
  "tracing",
  "tracing-log",
  "tracing-subscriber",
