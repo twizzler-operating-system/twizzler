@@ -1,7 +1,7 @@
 // use ed25519_dalek::SIGNATURE_LENGTH;
 #[cfg(feature = "log")]
 use log::debug;
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 use twizzler_abi::object::{ObjID, Protections};
 
 use crate::{
@@ -73,10 +73,10 @@ impl Cap {
         hashing_algo: HashingAlgo,
         signing_scheme: SigningScheme,
     ) -> Result<Self, SecurityError> {
-        let hashing_algo: CapFlags = hashing_algo.into();
-        let signing_scheme: CapFlags = signing_scheme.into();
+        let cf_hashing_algo: CapFlags = hashing_algo.into();
+        let cf_signing_scheme: CapFlags = signing_scheme.into();
 
-        let flags = hashing_algo | signing_scheme; // set flags
+        let flags = cf_hashing_algo | cf_signing_scheme; // set flags
 
         #[cfg(feature = "log")]
         debug!(
@@ -86,9 +86,18 @@ impl Cap {
 
         let hash_arr = Cap::serialize(accessor, target, prots, flags, revocation, gates);
 
-        let hash = blake3::hash(&hash_arr);
+        let hash = match hashing_algo {
+            HashingAlgo::Blake3 => {
+                unimplemented!("running into problems with blake3 compilation on aarch64");
+            }
+            HashingAlgo::Sha256 => {
+                let hasher = Sha256::new();
+                hasher.update(hash_arr);
+                hasher.finalize().as_slice()
+            }
+        };
 
-        let sig = target_priv_key.sign(hash.as_bytes())?;
+        let sig = target_priv_key.sign(hash)?;
 
         Ok(Cap {
             accessor,
