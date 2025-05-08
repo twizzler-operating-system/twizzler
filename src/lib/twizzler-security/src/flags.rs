@@ -48,8 +48,8 @@ pub enum SigningScheme {
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub enum HashingAlgo {
-    Blake3,
     #[default]
+    Blake3,
     Sha256,
 }
 

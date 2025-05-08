@@ -86,20 +86,19 @@ impl Cap {
 
         let hash_arr = Cap::serialize(accessor, target, prots, flags, revocation, gates);
 
-        let hash = match hashing_algo {
+        let sig = match hashing_algo {
             HashingAlgo::Blake3 => {
                 // unimplemented!("running into problems with blake3 compilation on aarch64");
                 let hash = blake3::hash(&hash_arr);
-                hash.as_bytes()
+                target_priv_key.sign(hash.as_bytes())?
             }
             HashingAlgo::Sha256 => {
-                let hasher = Sha256::new();
+                let mut hasher = Sha256::new();
                 hasher.update(hash_arr);
-                hasher.finalize().as_slice()
+                let hash = hasher.finalize();
+                target_priv_key.sign(hash.as_slice())?
             }
         };
-
-        let sig = target_priv_key.sign(hash)?;
 
         Ok(Cap {
             accessor,
