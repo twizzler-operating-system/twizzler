@@ -1,0 +1,31 @@
+[package]
+name = "twizzler-security"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitflags = "2.4.1"
+sha2 = { version = "0.10.8", default-features = false, features = [
+    "force-soft",
+] }
+p256 = { version = "0.13.2", default-features = false, features = ["ecdsa"] }
+
+# until we figure out whats wrong with tha thang
+# ed25519-dalek = { version = "2.1.1", default-features = false ,features = ["fast", "asm"]}
+blake3 = { version = "1.8.2", default-features = false, features = [
+    "traits-preview",
+    "no_neon"
+] }
+
+twizzler-abi = { path = "../twizzler-abi"}
+twizzler = { path = "../twizzler" , optional = true}
+twizzler-rt-abi = {version = "0.99", default-features = false}
+log = {version = "0.4.27", optional = true}
+
+[features]
+default = ["user"]
+# kernel = ["twizzler-abi/kernel", "dep:twizzler-rt-abi", "twizzler-rt-abi/kernel"]
+kernel = ["twizzler-abi/kernel", "twizzler-rt-abi/kernel"]
+# user = ["dep:twizzler", "dep:twizzler-rt-abi"]
+user = ["dep:twizzler",]
+log = ["dep:log"]
