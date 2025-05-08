@@ -12,6 +12,8 @@ members = [
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
     "src/lib/twizzler-futures",
+    "src/lib/twizzler-security",
+    "src/bin/sec-test",
     "src/lib/dynlink",
     "src/lib/secgate",
     "src/lib/twizzler",
@@ -35,7 +37,9 @@ members = [
     "src/bin/unittest",
     "src/bin/unittest/unittest-report",
     "src/lib/pager/pager-dynamic",
-    "src/bin/uuhelper", "src/ports/hw-c",
+    "src/bin/uuhelper",
+    "src/ports/hw-c"
+
 
     #"src/bin/etl_twizzler",
     #"src/bin/test-tiny-http",
@@ -66,7 +70,9 @@ initrd = [
     "crate:unittest",
     "crate:uuhelper",
 
-    "crate:hw-c",
+    "crate:sec-test",
+    "crate:hw-c"
+
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",
     #"crate:etl_twizzler",

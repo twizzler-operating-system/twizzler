@@ -7,8 +7,9 @@ make-image = "run --release --target-dir=.target-xtask --package xtask -- make-i
 start-qemu = "run --release --target-dir=.target-xtask --package xtask -- start-qemu"
 bootstrap = "run --release --target-dir=.target-xtask --package xtask -- bootstrap"
 
+
 [build]
 rustdocflags = "-Zunstable-options --enable-index-page"
-
+rustflags = ["--cfg", "curve25519_dalek_backend=\"serial\""]
 [env]
 PROJECT_NAME_FOR_VERSION_STRING = "twizzler uucoreutils"
