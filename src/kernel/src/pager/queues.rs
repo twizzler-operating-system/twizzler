@@ -15,12 +15,20 @@ use super::{inflight_mgr, provide_pager_memory, DEFAULT_PAGER_OUTSTANDING_FRAMES
 use crate::{
     arch::PhysAddr,
     idcounter::{IdCounter, SimpleId},
-    memory::context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+    is_test_mode,
+    memory::{
+        context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+        sim_memory_pressure,
+        tracker::start_reclaim_thread,
+    },
     mutex::Mutex,
     obj::{lookup_object, pages::Page, LookupFlags, Object, PageNumber},
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},
-    thread::{entry::start_new_kernel, priority::Priority},
+    thread::{
+        entry::{run_closure_in_new_thread, start_new_kernel},
+        priority::Priority,
+    },
 };
 
 static SENDER: Once<(
@@ -83,6 +91,15 @@ pub(super) fn pager_request_handler_main() {
             PagerRequest::Ready => {
                 inflight_mgr().lock().set_ready();
                 provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
+
+                start_reclaim_thread();
+                // TODO
+                if is_test_mode() || true {
+                    run_closure_in_new_thread(Priority::USER, || {
+                        sim_memory_pressure();
+                    });
+                }
+
                 CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::Okay)
             }
             PagerRequest::CopyUserPhys {

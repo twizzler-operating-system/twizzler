@@ -23,6 +23,9 @@ pub struct MemoryTracker {
     page_data: AtomicUsize,
     idle: AtomicUsize,
     total: AtomicUsize,
+    allocated: AtomicUsize,
+    freed: AtomicUsize,
+    reclaimed: AtomicUsize,
     pager_outstanding: AtomicUsize,
     reclaim: Once<ReclaimThread>,
     waiters: Spinlock<LinkedList<LinkAdapter>>,
@@ -38,6 +41,7 @@ impl MemoryTracker {
         };
         assert!(old > 0);
         self.idle.fetch_add(1, Ordering::SeqCst);
+        self.freed.fetch_add(1, Ordering::SeqCst);
         crate::memory::frame::raw_free_frame(frame);
         self.wake();
     }
@@ -48,6 +52,7 @@ impl MemoryTracker {
         } else {
             PhysicalFrameFlags::empty()
         };
+        self.consider_reclaim();
         let region = crate::memory::frame::raw_try_alloc_region(max, pff)?;
         let region = FrameRegion {
             range: PhysRange {
@@ -67,6 +72,9 @@ impl MemoryTracker {
                 .fetch_add(region.num_frames(), Ordering::SeqCst);
         }
         self.idle.fetch_sub(region.num_frames(), Ordering::SeqCst);
+        self.allocated
+            .fetch_add(region.num_frames(), Ordering::SeqCst);
+        self.consider_reclaim();
         Some(region)
     }
 
@@ -79,6 +87,7 @@ impl MemoryTracker {
                 .fetch_sub(region.num_frames(), Ordering::SeqCst);
         }
         self.idle.fetch_add(region.num_frames(), Ordering::SeqCst);
+        self.freed.fetch_add(region.num_frames(), Ordering::SeqCst);
         crate::memory::frame::raw_free_region(
             PhysAddr::new(region.range.start).unwrap(),
             region.num_frames(),
@@ -92,6 +101,7 @@ impl MemoryTracker {
             PhysicalFrameFlags::empty()
         };
         loop {
+            self.consider_reclaim();
             if let Some(frame) = crate::memory::frame::raw_try_alloc_frame(pff) {
                 if flags.contains(FrameAllocFlags::KERNEL) {
                     frame.set_kernel(true);
@@ -101,6 +111,7 @@ impl MemoryTracker {
                     self.page_data.fetch_add(1, Ordering::SeqCst);
                 }
                 let old = self.idle.fetch_sub(1, Ordering::SeqCst);
+                self.allocated.fetch_add(1, Ordering::SeqCst);
                 assert!(old > 0);
                 return Some(frame);
             }
@@ -151,23 +162,22 @@ impl MemoryTracker {
         }
     }
 
-    fn should_reclaim(&self) -> bool {
+    fn kern_cond(&self) -> bool {
         let idle = self.idle();
         let kern = self.kernel_used();
-        let page = self.page_data();
-
         let k2 = kern * 2;
+        idle < k2
+    }
+
+    fn page_cond(&self) -> bool {
+        let idle = self.idle();
+        let page = self.page_data();
         let split_idle = idle / 2;
+        page >= split_idle
+    }
 
-        logln!(
-            "should reclaim? {} {} {}, {}",
-            idle,
-            kern,
-            page,
-            page >= split_idle || idle < k2
-        );
-
-        page >= split_idle || idle < k2
+    fn should_reclaim(&self) -> bool {
+        self.page_cond() || self.kern_cond()
     }
 
     fn idle(&self) -> usize {
@@ -186,6 +196,22 @@ impl MemoryTracker {
         self.page_data.load(Ordering::Acquire)
     }
 
+    fn allocated(&self) -> usize {
+        self.allocated.load(Ordering::Acquire)
+    }
+
+    fn reclaimed(&self) -> usize {
+        self.reclaimed.load(Ordering::Acquire)
+    }
+
+    fn freed(&self) -> usize {
+        self.freed.load(Ordering::Acquire)
+    }
+
+    fn track_reclaimed(&self, count: usize) {
+        self.reclaimed.fetch_add(count, Ordering::SeqCst);
+    }
+
     fn track_frame_pager(&self) {
         self.pager_outstanding.fetch_add(1, Ordering::SeqCst);
     }
@@ -202,18 +228,37 @@ impl MemoryTracker {
     fn pager_outstanding(&self) -> usize {
         self.pager_outstanding.load(Ordering::SeqCst)
     }
+
+    fn start_reclaim_thread(&self) {
+        self.reclaim.call_once(|| ReclaimThread::new());
+    }
 }
 
 pub static TRACKER: Once<MemoryTracker> = Once::new();
 
 pub fn print_tracker_stats() {
     let tracker = TRACKER.poll().expect("page tracker not initialized");
+    let total = tracker.total();
+    let idle = tracker.idle();
+    let kern = tracker.kernel_used();
+    let page = tracker.page_data();
+    let loan = tracker.pager_outstanding();
     logln!("memory status (in frames):");
-    logln!("       total: {}", tracker.total());
-    logln!("        idle: {}", tracker.idle());
-    logln!("      kernel: {}", tracker.kernel_used());
-    logln!("        page: {}", tracker.page_data());
-    logln!("  pager-loan: {}", tracker.pager_outstanding());
+    logln!(
+        "       total: {} -- a: {} f: {} r: {}",
+        total,
+        tracker.allocated(),
+        tracker.freed(),
+        tracker.reclaimed()
+    );
+    logln!("        idle: {} {}%", idle, (idle * 100) / total);
+    logln!("      kernel: {} {}%", kern, (kern * 100) / total);
+    logln!(
+        "        page: {} {}% ({} loaned)",
+        page,
+        (page * 100) / total,
+        loan
+    );
 }
 
 /// Allocate a physical frame. Flags specify zeroing, ownership tracking, and if waiting is okay.
@@ -307,6 +352,26 @@ pub fn get_outstanding_pager_pages() -> usize {
         .pager_outstanding()
 }
 
+pub fn start_reclaim_thread() {
+    TRACKER
+        .poll()
+        .expect("page tracker not initialized")
+        .start_reclaim_thread();
+}
+
+pub fn reclaim(frames: impl IntoIterator<Item = FrameRef>) {
+    TRACKER
+        .poll()
+        .unwrap()
+        .reclaim
+        .poll()
+        .unwrap()
+        .state
+        .lock()
+        .extend(frames);
+    TRACKER.poll().unwrap().reclaim.poll().unwrap().cv.signal();
+}
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct FrameAllocFlags: u32 {
@@ -321,7 +386,7 @@ bitflags! {
 
 struct ReclaimThread {
     th: ThreadRef,
-    state: Spinlock<()>,
+    state: Spinlock<Vec<FrameRef>>,
     cv: CondVar,
 }
 
@@ -332,19 +397,58 @@ impl ReclaimThread {
         }
         Self {
             th: start_new_kernel(Priority::REALTIME, reclaim_start, 0),
-            state: Spinlock::new(()),
+            state: Spinlock::new(Vec::new()),
             cv: CondVar::new(),
         }
     }
 }
 
+#[allow(unused_assignments)]
+#[allow(unused_variables)]
 fn reclaim_main() {
     let tracker = TRACKER.wait();
     let rt = tracker.reclaim.wait();
     let mut state = rt.state.lock();
+    const MAX_RECLAIM_ROUNDS: usize = 1000;
+    const MAX_PER_ROUND: usize = 100;
     loop {
-        logln!("reclaim thread triggered");
-        state = rt.cv.wait(state);
+        let mut count = 0;
+        let mut rounds = 0;
+        while tracker.should_reclaim() {
+            let mut thisround = 0;
+            /*
+            0. Any directly passed pages-to-reclaim.
+            1. Try to reclaim unused, backed object memory
+            2. Try to reclaim rarely touched, backed object memory
+            3. If should_reclaim because 2*k < idle, try to reclaim from kern alloc.
+            4. If should_reclaim because page > idle / 2, then cache replacement clean objects.
+            5. If pressure is high, cache replace any object.
+            */
+            while let Some(f) = state.pop() {
+                //free_frame(f);
+                count += 1;
+                thisround += 1;
+                if thisround >= MAX_PER_ROUND {
+                    break;
+                }
+            }
+
+            if thisround < MAX_PER_ROUND {
+                // TODO
+            }
+
+            if rounds > MAX_RECLAIM_ROUNDS {
+                break;
+            }
+            drop(state);
+            crate::sched::schedule(true);
+            state = rt.state.lock();
+            rounds += 1;
+        }
+        tracker.track_reclaimed(count);
+        if !tracker.should_reclaim() || count == 0 {
+            state = rt.cv.wait(state);
+        }
     }
 }
 
@@ -354,6 +458,9 @@ pub fn init(regions: &[MemoryRegion]) {
         MemoryTracker {
             kernel_used: AtomicUsize::new(0),
             page_data: AtomicUsize::new(0),
+            allocated: AtomicUsize::new(0),
+            freed: AtomicUsize::new(0),
+            reclaimed: AtomicUsize::new(0),
             idle: AtomicUsize::new(total),
             total: AtomicUsize::new(total),
             pager_outstanding: AtomicUsize::new(0),
