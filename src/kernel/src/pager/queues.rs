@@ -94,7 +94,7 @@ pub(super) fn pager_request_handler_main() {
 
                 start_reclaim_thread();
                 // TODO
-                if is_test_mode() || true {
+                if is_test_mode() && false {
                     run_closure_in_new_thread(Priority::USER, || {
                         sim_memory_pressure();
                     });

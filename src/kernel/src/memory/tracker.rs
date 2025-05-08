@@ -443,7 +443,6 @@ fn reclaim_main() {
     let mut state = rt.state.lock();
     const MAX_RECLAIM_ROUNDS: usize = 1000;
     const MAX_PER_ROUND: usize = 100;
-    let mut real = false;
     loop {
         let mut count = 0;
         let mut rounds = 0;
@@ -457,15 +456,12 @@ fn reclaim_main() {
             4. If should_reclaim because page > idle / 2, then cache replacement clean objects.
             5. If pressure is high, cache replace any object.
             */
-            if get_waiting_threads() > 1 || real {
-                real = true;
-                while let Some(f) = state.pop() {
-                    free_frame(f);
-                    count += 1;
-                    thisround += 1;
-                    if thisround >= MAX_PER_ROUND {
-                        break;
-                    }
+            while let Some(f) = state.pop() {
+                free_frame(f);
+                count += 1;
+                thisround += 1;
+                if thisround >= MAX_PER_ROUND {
+                    break;
                 }
             }
 
