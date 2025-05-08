@@ -43,6 +43,7 @@ use intrusive_collections::{intrusive_adapter, LinkedList, LinkedListLink};
 use super::{MemoryRegion, MemoryRegionKind, PhysAddr};
 use crate::{
     arch::memory::{frame::FRAME_SIZE, phys_to_virt},
+    memory::tracker::print_tracker_stats,
     once::Once,
     spinlock::Spinlock,
 };
@@ -440,6 +441,12 @@ impl PhysicalFrameAllocator {
         }
     }
 
+    fn total(&self) -> usize {
+        self.regions
+            .iter()
+            .fold(0, |acc, region| region.pages + acc)
+    }
+
     fn free_region(&mut self, start: PhysAddr, len: usize) {
         self.admitted_regions.push((start, len));
     }
@@ -499,6 +506,7 @@ impl PhysicalFrameAllocator {
             }
             self.__do_alloc_fallback()
         } else {
+            print_tracker_stats();
             panic!("out of memory");
         }
     }
@@ -603,10 +611,11 @@ static FI: Once<Vec<FrameIndexer>> = Once::new();
 /// # Arguments
 ///  * `regions`: An array of memory regions passed from the boot info system.
 pub fn init(regions: &[MemoryRegion]) {
-    crate::memory::tracker::init(regions);
     let pfa = PhysicalFrameAllocator::new(regions);
+    let total = pfa.total();
     FI.call_once(|| pfa.regions.iter().map(|r| r.indexer.clone()).collect());
     PFA.call_once(|| Spinlock::new(pfa));
+    crate::memory::tracker::init(total, total, 0);
 }
 
 pub(super) fn raw_alloc_frame(flags: PhysicalFrameFlags) -> FrameRef {
