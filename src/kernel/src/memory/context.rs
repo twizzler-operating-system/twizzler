@@ -16,6 +16,7 @@ use twizzler_abi::{
 use self::virtmem::KernelObjectVirtHandle;
 use crate::{
     obj::{InvalidateMode, ObjectRef, PageNumber},
+    once::Once,
     syscall::object::ObjectHandle,
 };
 
@@ -132,18 +133,16 @@ pub trait KernelObjectHandle<T> {
 
 pub type KernelObject<T> = KernelObjectVirtHandle<T>;
 
-lazy_static::lazy_static! {
-    static ref KERNEL_CONTEXT: ContextRef = {
-        let c = virtmem::VirtContext::new_kernel();
-        c.init_kernel_context();
-        Arc::new(c)
-    };
-}
+static KERNEL_CONTEXT: Once<ContextRef> = Once::new();
 
 /// Return a reference to the kernel context. The kernel context is the default context that a
 /// thread is in if it's not a userland thread. It's the main context used during init and during
 /// secondary processor initialization. It may be used to manipulate kernel memory mappings the same
 /// as any other context.
 pub fn kernel_context() -> &'static ContextRef {
-    &KERNEL_CONTEXT
+    KERNEL_CONTEXT.call_once(|| {
+        let c = virtmem::VirtContext::new_kernel();
+        c.init_kernel_context();
+        Arc::new(c)
+    })
 }

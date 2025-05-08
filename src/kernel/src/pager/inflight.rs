@@ -6,7 +6,10 @@ use alloc::{
 use stable_vec::StableVec;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
-    pager::{KernelCommand, ObjectEvictInfo, ObjectInfo, ObjectRange, RequestFromKernel},
+    pager::{
+        KernelCommand, ObjectEvictFlags, ObjectEvictInfo, ObjectInfo, ObjectRange, PhysRange,
+        RequestFromKernel,
+    },
     syscall::LifetimeType,
 };
 
@@ -36,9 +39,9 @@ impl Inflight {
             ),
             ReqKind::Sync(obj_id) => KernelCommand::ObjectEvict(ObjectEvictInfo {
                 obj_id,
-                range: todo!(),
-                phys: todo!(),
-                flags: todo!(),
+                range: ObjectRange::new(0, 0),
+                phys: PhysRange::new(0, 0),
+                flags: ObjectEvictFlags::SYNC | ObjectEvictFlags::FENCE,
             }),
             ReqKind::Del(obj_id) => KernelCommand::ObjectDel(obj_id),
             ReqKind::Create(obj_id) => {

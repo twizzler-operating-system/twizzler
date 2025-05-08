@@ -30,9 +30,7 @@ struct PcieKernelInfo {
     segnr: u16,
 }
 
-lazy_static::lazy_static! {
-    static ref DEVS: Mutex<BTreeMap<ObjID, PcieKernelInfo>> = Mutex::new(BTreeMap::new());
-}
+static DEVS: Mutex<BTreeMap<ObjID, PcieKernelInfo>> = Mutex::new(BTreeMap::new());
 
 fn register_device(
     parent: DeviceRef,

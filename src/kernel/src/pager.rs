@@ -9,6 +9,7 @@ use crate::{
     memory::tracker::FrameAllocFlags,
     mutex::Mutex,
     obj::{LookupFlags, ObjectRef, PageNumber},
+    once::Once,
     syscall::sync::finish_blocking,
     thread::current_thread_ref,
 };
@@ -23,8 +24,10 @@ pub use request::Request;
 pub const MAX_PAGER_OUTSTANDING_FRAMES: usize = 65536;
 pub const DEFAULT_PAGER_OUTSTANDING_FRAMES: usize = 1024;
 
-lazy_static::lazy_static! {
-    static ref INFLIGHT_MGR: Mutex<InflightManager> = Mutex::new(InflightManager::new());
+static INFLIGHT_MGR: Once<Mutex<InflightManager>> = Once::new();
+
+fn inflight_mgr() -> &'static Mutex<InflightManager> {
+    INFLIGHT_MGR.call_once(|| Mutex::new(InflightManager::new()))
 }
 
 pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
@@ -35,7 +38,7 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
             _ => {}
         }
 
-        let mut mgr = INFLIGHT_MGR.lock();
+        let mut mgr = inflight_mgr().lock();
         if !mgr.is_ready() {
             return None;
         }
@@ -45,7 +48,7 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
             queues::submit_pager_request(pager_req);
         }
 
-        let mut mgr = INFLIGHT_MGR.lock();
+        let mut mgr = inflight_mgr().lock();
         let thread = current_thread_ref().unwrap();
         if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
             drop(mgr);
@@ -55,7 +58,7 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
 }
 
 pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
-    let mut mgr = INFLIGHT_MGR.lock();
+    let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
     }
@@ -65,7 +68,7 @@ pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
         queues::submit_pager_request(pager_req);
     }
 
-    let mut mgr = INFLIGHT_MGR.lock();
+    let mut mgr = inflight_mgr().lock();
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
@@ -74,7 +77,7 @@ pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
 }
 
 fn cmd_object(req: ReqKind) {
-    let mut mgr = INFLIGHT_MGR.lock();
+    let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
     }
@@ -84,7 +87,7 @@ fn cmd_object(req: ReqKind) {
         queues::submit_pager_request(pager_req);
     }
 
-    let mut mgr = INFLIGHT_MGR.lock();
+    let mut mgr = inflight_mgr().lock();
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
@@ -121,6 +124,11 @@ pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) {
 fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
     let mut ranges = Vec::new();
     let mut count = 0;
+    if crate::memory::tracker::get_outstanding_pager_pages() + min_frames
+        >= MAX_PAGER_OUTSTANDING_FRAMES
+    {
+        return Vec::new();
+    }
     while count < min_frames {
         let req_max = (min_frames - count).min(DEFAULT_PAGER_OUTSTANDING_FRAMES);
         if let Some(reg) =
@@ -144,7 +152,7 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
 }
 
 pub fn provide_pager_memory(min_frames: usize, wait: bool) {
-    let mut mgr = INFLIGHT_MGR.lock();
+    let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
     }
@@ -176,7 +184,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
 
     if wait {
         for inflight in &inflights {
-            let mut mgr = INFLIGHT_MGR.lock();
+            let mut mgr = inflight_mgr().lock();
             let thread = current_thread_ref().unwrap();
             if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
                 drop(mgr);

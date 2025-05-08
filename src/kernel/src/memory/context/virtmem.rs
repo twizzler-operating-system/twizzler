@@ -32,6 +32,7 @@ use crate::{
     },
     mutex::Mutex,
     obj::{self, pages::Page, range::PageStatus, ObjectRef, PageNumber},
+    once::Once,
     security::KERNEL_SCTX,
     spinlock::Spinlock,
     thread::{current_memory_context, current_thread_ref},
@@ -62,11 +63,17 @@ struct SlotMgr {
     objs: BTreeMap<ObjID, Vec<Slot>>,
 }
 
-lazy_static::lazy_static! {
-    static ref KERNEL_SLOT_COUNTER: Mutex<KernelSlotCounter> = Mutex::new(KernelSlotCounter {
-        cur_kernel_slot: Slot::try_from(VirtAddr::start_kernel_object_memory()).unwrap().raw(),
-        kernel_slots_nums: Vec::new(),
-    });
+static KERNEL_SLOT_COUNTER: Once<Mutex<KernelSlotCounter>> = Once::new();
+
+fn kernel_slot_counter() -> &'static Mutex<KernelSlotCounter> {
+    KERNEL_SLOT_COUNTER.call_once(|| {
+        Mutex::new(KernelSlotCounter {
+            cur_kernel_slot: Slot::try_from(VirtAddr::start_kernel_object_memory())
+                .unwrap()
+                .raw(),
+            kernel_slots_nums: Vec::new(),
+        })
+    })
 }
 
 /// A representation of a slot number.
@@ -498,7 +505,7 @@ impl KernelMemoryContext for VirtContext {
 
     fn insert_kernel_object<T>(&self, info: ObjectContextInfo) -> Self::Handle<T> {
         let mut slots = self.slots.lock();
-        let mut kernel_slots_counter = KERNEL_SLOT_COUNTER.lock();
+        let mut kernel_slots_counter = kernel_slot_counter().lock();
         let slot = kernel_slots_counter
             .kernel_slots_nums
             .pop()
@@ -573,7 +580,10 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
         kctx.with_arch(KERNEL_SCTX, |arch| {
             arch.unmap(MappingCursor::new(self.start_addr(), MAX_SIZE));
         });
-        KERNEL_SLOT_COUNTER.lock().kernel_slots_nums.push(self.slot);
+        kernel_slot_counter()
+            .lock()
+            .kernel_slots_nums
+            .push(self.slot);
     }
 }
 

@@ -25,6 +25,7 @@ use crate::{
         PhysAddr, VirtAddr,
     },
     mutex::{LockGuard, Mutex},
+    once::Once,
 };
 
 pub mod control;
@@ -411,7 +412,7 @@ impl ObjectManager {
 
 pub fn scan_deleted() {
     let dobjs = {
-        let mut om = OBJ_MANAGER.map.lock();
+        let mut om = obj_manager().map.lock();
         om.extract_if(|_, obj| {
             if obj.is_pending_delete() {
                 let ctx = obj.contexts.lock();
@@ -429,21 +430,21 @@ pub fn scan_deleted() {
     }
 }
 
-lazy_static::lazy_static! {
-    static ref OBJ_MANAGER: ObjectManager = ObjectManager::new();
+static OBJ_MANAGER: Once<ObjectManager> = Once::new();
+
+fn obj_manager() -> &'static ObjectManager {
+    OBJ_MANAGER.call_once(|| ObjectManager::new())
 }
 
 pub fn lookup_object(id: ObjID, flags: LookupFlags) -> LookupResult {
-    let om = &OBJ_MANAGER;
-    om.lookup_object(id, flags)
+    obj_manager().lookup_object(id, flags)
 }
 
 pub fn register_object(obj: Arc<Object>) {
-    let om = &OBJ_MANAGER;
     ties::TIE_MGR.create_object_ties(obj.id(), obj.ties.iter().map(|tie| tie.id));
-    om.register_object(obj);
+    obj_manager().register_object(obj);
 }
 
 pub fn no_exist(id: ObjID) {
-    OBJ_MANAGER.no_exist.lock().insert(id);
+    obj_manager().no_exist.lock().insert(id);
 }

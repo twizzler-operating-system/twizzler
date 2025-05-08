@@ -6546,7 +6546,6 @@ dependencies = [
  "fixedbitset",
  "hex-literal",
  "intrusive-collections",
- "lazy_static",
  "limine",
  "linked_list_allocator",
  "log",

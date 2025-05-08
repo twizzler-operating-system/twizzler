@@ -1,6 +1,5 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use lazy_static::lazy_static;
 use twizzler_abi::object::{ObjID, Protections};
 use twizzler_rt_abi::error::{NamingError, ObjectError};
 
@@ -8,6 +7,7 @@ use crate::{
     memory::context::{KernelMemoryContext, KernelObject, ObjectContextInfo, UserContext},
     mutex::Mutex,
     obj::LookupFlags,
+    once::Once,
     spinlock::Spinlock,
     thread::current_memory_context,
 };
@@ -192,17 +192,19 @@ struct GlobalSecCtxMgr {
     contexts: Mutex<BTreeMap<ObjID, SecurityContextRef>>,
 }
 
-lazy_static! {
-    static ref GLOBAL_SECCTX_MGR: GlobalSecCtxMgr = GlobalSecCtxMgr {
-        contexts: Default::default()
-    };
+static GLOBAL_SECCTX_MGR: Once<GlobalSecCtxMgr> = Once::new();
+
+fn global_secctx_mgr() -> &'static GlobalSecCtxMgr {
+    GLOBAL_SECCTX_MGR.call_once(|| GlobalSecCtxMgr {
+        contexts: Default::default(),
+    })
 }
 
 /// Get a security contexts from the global cache.
 pub fn get_sctx(id: ObjID) -> twizzler_rt_abi::Result<SecurityContextRef> {
     let obj =
         crate::obj::lookup_object(id, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
-    let mut global = GLOBAL_SECCTX_MGR.contexts.lock();
+    let mut global = global_secctx_mgr().contexts.lock();
     let entry = global.entry(id).or_insert_with(|| {
         // TODO: use control object cacher.
         let kobj =
@@ -218,7 +220,7 @@ pub fn get_sctx(id: ObjID) -> twizzler_rt_abi::Result<SecurityContextRef> {
 
 impl Drop for SecCtxMgr {
     fn drop(&mut self) {
-        let mut global = GLOBAL_SECCTX_MGR.contexts.lock();
+        let mut global = global_secctx_mgr().contexts.lock();
         let inner = self.inner.lock();
         // Check the contexts we have a reference to. If the value is 2, then it's only us and the
         // global mgr that have a ref. Since we hold the global mgr lock, this will not get

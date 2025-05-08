@@ -2,7 +2,6 @@ use alloc::boxed::Box;
 use core::sync::atomic::Ordering;
 
 use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree};
-use lazy_static::lazy_static;
 use twizzler_abi::{object::ObjID, thread::ExecutionState};
 
 use super::{
@@ -11,15 +10,17 @@ use super::{
 };
 use crate::{
     interrupt::Destination,
+    once::Once,
     processor::ipi_exec,
     sched::{schedule, schedule_resched, schedule_thread},
     spinlock::Spinlock,
     thread::current_thread_ref,
 };
 
-lazy_static! {
-    static ref SUSPENDED_THREADS: Spinlock<RBTree<SuspendNodeAdapter>> =
-        Spinlock::new(RBTree::new(SuspendNodeAdapter::new()));
+static SUSPENDED_THREADS: Once<Spinlock<RBTree<SuspendNodeAdapter>>> = Once::new();
+
+fn suspended_threads() -> &'static Spinlock<RBTree<SuspendNodeAdapter>> {
+    SUSPENDED_THREADS.call_once(|| Spinlock::new(RBTree::new(SuspendNodeAdapter::new())))
 }
 
 intrusive_adapter!(pub SuspendNodeAdapter = ThreadRef: Thread { suspend_link: intrusive_collections::rbtree::AtomicLink });
@@ -69,7 +70,7 @@ impl Thread {
             // Do this before inserting the thread, to ensure no one writes Running here before we
             // suspend.
             self.set_state(ExecutionState::Suspended);
-            let mut suspended_threads = SUSPENDED_THREADS.lock();
+            let mut suspended_threads = suspended_threads().lock();
             assert!(suspended_threads.find(&self.objid()).is_null());
             suspended_threads.insert(self.clone());
         }
@@ -88,7 +89,7 @@ impl Thread {
     /// If a thread is suspended, then wake it up. Returns false if that thread was not on the
     /// suspend list.
     pub fn unsuspend_thread(self: &ThreadRef) -> bool {
-        let mut suspended_threads = SUSPENDED_THREADS.lock();
+        let mut suspended_threads = suspended_threads().lock();
         if suspended_threads.find_mut(&self.objid()).remove().is_some() {
             // Just throw it on a queue, it'll cleanup its own flag mess.
             schedule_thread(self.clone());

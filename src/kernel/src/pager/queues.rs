@@ -11,7 +11,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::error::{ObjectError, TwzError};
 
-use super::{provide_pager_memory, DEFAULT_PAGER_OUTSTANDING_FRAMES, INFLIGHT_MGR};
+use super::{inflight_mgr, provide_pager_memory, DEFAULT_PAGER_OUTSTANDING_FRAMES};
 use crate::{
     arch::PhysAddr,
     idcounter::{IdCounter, SimpleId},
@@ -81,7 +81,7 @@ pub(super) fn pager_request_handler_main() {
     loop {
         receiver.handle_request(|_id, req| match req.cmd() {
             PagerRequest::Ready => {
-                INFLIGHT_MGR.lock().set_ready();
+                inflight_mgr().lock().set_ready();
                 provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
                 CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::Okay)
             }
@@ -108,7 +108,7 @@ fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range
         }
         drop(object_tree);
 
-        INFLIGHT_MGR
+        inflight_mgr()
             .lock()
             .pages_ready(objid, obj_range.pages().map(|x| x as usize));
     } else {
@@ -119,7 +119,7 @@ fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range
 fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo) {
     let obj = Object::new(id, info.lifetime, &[]);
     crate::obj::register_object(Arc::new(obj));
-    INFLIGHT_MGR.lock().cmd_ready(id, false);
+    inflight_mgr().lock().cmd_ready(id, false);
 }
 
 fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError) {
@@ -128,7 +128,7 @@ fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError) {
         TwzError::Object(ObjectError::NoSuchObject) => {
             if let KernelCommand::ObjectInfoReq(obj_id) = request.cmd() {
                 crate::obj::no_exist(obj_id);
-                INFLIGHT_MGR.lock().cmd_ready(obj_id, false);
+                inflight_mgr().lock().cmd_ready(obj_id, false);
             }
         }
         _ => {}
@@ -165,7 +165,7 @@ pub(super) fn pager_compl_handler_main() {
                     completion.1.data(),
                     twizzler_abi::pager::KernelCompletionData::Okay
                 ) {
-                    INFLIGHT_MGR.lock().cmd_ready(info.obj_id, true);
+                    inflight_mgr().lock().cmd_ready(info.obj_id, true);
                 }
             }
             _ => {}
