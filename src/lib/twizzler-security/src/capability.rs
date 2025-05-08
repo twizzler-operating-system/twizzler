@@ -88,7 +88,9 @@ impl Cap {
 
         let hash = match hashing_algo {
             HashingAlgo::Blake3 => {
-                unimplemented!("running into problems with blake3 compilation on aarch64");
+                // unimplemented!("running into problems with blake3 compilation on aarch64");
+                let hash = blake3::hash(&hash_arr);
+                hash.as_bytes()
             }
             HashingAlgo::Sha256 => {
                 let hasher = Sha256::new();
@@ -125,12 +127,12 @@ impl Cap {
 
         match hash_algo {
             HashingAlgo::Blake3 => {
-                #[cfg(feature = "log")]
-                error!("running into problems with blake3 compilation on aarch64");
-                unimplemented!("running into problems with blake3 compilation on aarch64");
-                // let bind = blake3::hash(&hash_arr);
-                // let bind = bind.as_bytes();
-                // verifying_key.verify(bind.as_slice(), &self.sig)
+                // #[cfg(feature = "log")]
+                // error!("running into problems with blake3 compilation on aarch64");
+                // unimplemented!("running into problems with blake3 compilation on aarch64");
+                let hash = blake3::hash(&hash_arr);
+                let bind = hash.as_bytes();
+                verifying_key.verify(bind.as_slice(), &self.sig)
             }
             HashingAlgo::Sha256 => {
                 #[cfg(feature = "log")]
