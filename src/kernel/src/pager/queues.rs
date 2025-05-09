@@ -1,30 +1,40 @@
-use alloc::sync::Arc;
+use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, NULLPAGE_SIZE},
     pager::{
-        CompletionToKernel, CompletionToPager, KernelCommand, PagerCompletionData, PagerRequest,
-        PhysRange, RequestFromKernel, RequestFromPager,
+        CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionFlags, ObjectInfo,
+        ObjectRange, PagerCompletionData, PagerRequest, PhysRange, RequestFromKernel,
+        RequestFromPager,
     },
-    syscall::LifetimeType,
 };
+use twizzler_rt_abi::error::{ObjectError, TwzError};
 
-use super::INFLIGHT_MGR;
+use super::{inflight_mgr, provide_pager_memory, DEFAULT_PAGER_OUTSTANDING_FRAMES};
 use crate::{
     arch::PhysAddr,
     idcounter::{IdCounter, SimpleId},
-    memory::context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+    is_test_mode,
+    memory::{
+        context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+        sim_memory_pressure,
+        tracker::start_reclaim_thread,
+    },
+    mutex::Mutex,
     obj::{lookup_object, pages::Page, LookupFlags, Object, PageNumber},
     once::Once,
-    pager::PAGER_MEMORY,
     queue::{ManagedQueueReceiver, QueueObject},
-    thread::{entry::start_new_kernel, priority::Priority},
+    thread::{
+        entry::{run_closure_in_new_thread, start_new_kernel},
+        priority::Priority,
+    },
 };
 
 static SENDER: Once<(
     IdCounter,
     QueueObject<RequestFromKernel, CompletionToKernel>,
+    Mutex<BTreeMap<u32, RequestFromKernel>>,
 )> = Once::new();
 static RECEIVER: Once<ManagedQueueReceiver<RequestFromPager, CompletionToPager>> = Once::new();
 
@@ -36,11 +46,15 @@ fn pager_request_copy_user_phys(
     write_phys: bool,
 ) -> CompletionToPager {
     let Ok(phys_start) = PhysAddr::new(phys.start) else {
-        return CompletionToPager::new(PagerCompletionData::Error);
+        return CompletionToPager::new(PagerCompletionData::Error(
+            TwzError::INVALID_ARGUMENT.into(),
+        ));
     };
 
     let Ok(object) = lookup_object(target_object, LookupFlags::empty()).ok_or(()) else {
-        return CompletionToPager::new(PagerCompletionData::Error);
+        return CompletionToPager::new(PagerCompletionData::Error(
+            TwzError::INVALID_ARGUMENT.into(),
+        ));
     };
     let ko = kernel_context().insert_kernel_object::<()>(ObjectContextInfo::new(
         object,
@@ -48,7 +62,9 @@ fn pager_request_copy_user_phys(
         CacheType::WriteBack,
     ));
     let Ok(vaddr) = ko.start_addr().offset(offset) else {
-        return CompletionToPager::new(PagerCompletionData::Error);
+        return CompletionToPager::new(PagerCompletionData::Error(
+            TwzError::INVALID_ARGUMENT.into(),
+        ));
     };
 
     let vphys = phys_start.kernel_vaddr();
@@ -73,16 +89,17 @@ pub(super) fn pager_request_handler_main() {
     loop {
         receiver.handle_request(|_id, req| match req.cmd() {
             PagerRequest::Ready => {
-                let regs = PAGER_MEMORY.poll().unwrap();
-                for reg in regs {
-                    submit_pager_request(RequestFromKernel::new(KernelCommand::DramPages(
-                        PhysRange::new(
-                            reg.start.raw(),
-                            reg.start.offset(reg.length).unwrap().raw(),
-                        ),
-                    )));
+                inflight_mgr().lock().set_ready();
+                provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
+
+                start_reclaim_thread();
+                // TODO
+                if is_test_mode() && false {
+                    run_closure_in_new_thread(Priority::USER, || {
+                        sim_memory_pressure();
+                    });
                 }
-                INFLIGHT_MGR.lock().set_ready();
+
                 CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::Okay)
             }
             PagerRequest::CopyUserPhys {
@@ -96,61 +113,100 @@ pub(super) fn pager_request_handler_main() {
     }
 }
 
+fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range: PhysRange) {
+    if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
+        let mut object_tree = object.lock_page_tree();
+
+        for (objpage_nr, physpage_nr) in obj_range.pages().zip(phys_range.pages()) {
+            let pn = PageNumber::from(objpage_nr as usize);
+            let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
+            // TODO: will need to supply allocator
+            object_tree.add_page(pn, Page::new_wired(pa, CacheType::WriteBack), None);
+        }
+        drop(object_tree);
+
+        inflight_mgr()
+            .lock()
+            .pages_ready(objid, obj_range.pages().map(|x| x as usize));
+    } else {
+        logln!("kernel: pager: got unknown object ID");
+    }
+}
+
+fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo) {
+    let obj = Object::new(id, info.lifetime, &[]);
+    crate::obj::register_object(Arc::new(obj));
+    inflight_mgr().lock().cmd_ready(id, false);
+}
+
+fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError) {
+    logln!("pager returned error: {} for {:?}", err, request);
+    match err {
+        TwzError::Object(ObjectError::NoSuchObject) => {
+            if let KernelCommand::ObjectInfoReq(obj_id) = request.cmd() {
+                crate::obj::no_exist(obj_id);
+                inflight_mgr().lock().cmd_ready(obj_id, false);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(super) fn pager_compl_handler_main() {
     let sender = SENDER.wait();
     loop {
         let completion = sender.1.recv_completion();
+        let Some(request) = sender.2.lock().get(&completion.0).copied() else {
+            logln!("warn -- received completion for unknown request");
+            continue;
+        };
+
         match completion.1.data() {
             twizzler_abi::pager::KernelCompletionData::PageDataCompletion(
                 objid,
                 obj_range,
                 phys_range,
-            ) => {
-                if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
-                    let mut object_tree = object.lock_page_tree();
+            ) => pager_compl_handle_page_data(objid, obj_range, phys_range),
+            twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(id, info) => {
+                pager_compl_handle_object_info(id, info)
+            }
+            twizzler_abi::pager::KernelCompletionData::Error(err) => {
+                pager_compl_handle_error(request, err.error())
+            }
+            _ => {}
+        };
 
-                    for (objpage_nr, physpage_nr) in obj_range.pages().zip(phys_range.pages()) {
-                        let pn = PageNumber::from(objpage_nr as usize);
-                        let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
-                        object_tree.add_page(pn, Page::new_wired(pa, CacheType::WriteBack));
-                    }
-                    drop(object_tree);
-
-                    INFLIGHT_MGR
-                        .lock()
-                        .pages_ready(objid, obj_range.pages().map(|x| x as usize));
-                } else {
-                    logln!("kernel: pager: got unknown object ID");
+        match request.cmd() {
+            KernelCommand::ObjectEvict(info) => {
+                if matches!(
+                    completion.1.data(),
+                    twizzler_abi::pager::KernelCompletionData::Okay
+                ) {
+                    inflight_mgr().lock().cmd_ready(info.obj_id, true);
                 }
             }
-            twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(obj_info) => {
-                let obj = Object::new(obj_info.obj_id, LifetimeType::Persistent, &[]);
-                crate::obj::register_object(Arc::new(obj));
-                INFLIGHT_MGR.lock().cmd_ready(obj_info.obj_id, false);
-            }
-            twizzler_abi::pager::KernelCompletionData::SyncOkay(objid) => {
-                INFLIGHT_MGR.lock().cmd_ready(objid, true);
-            }
-            twizzler_abi::pager::KernelCompletionData::Error => {
-                logln!("pager returned error");
-            }
-            twizzler_abi::pager::KernelCompletionData::NoSuchObject(obj_id) => {
-                logln!(
-                    "kernel: pager compl: got object info {:?}: no such object",
-                    obj_id
-                );
-                crate::obj::no_exist(obj_id);
-                INFLIGHT_MGR.lock().cmd_ready(obj_id, false);
-            }
-            twizzler_abi::pager::KernelCompletionData::Okay => {}
+            _ => {}
         }
-        sender.0.release_simple(SimpleId::from(completion.0));
+
+        if completion.1.flags().contains(KernelCompletionFlags::DONE) {
+            sender.2.lock().remove(&completion.0);
+            sender.0.release_simple(SimpleId::from(completion.0));
+        }
     }
 }
 
 pub fn submit_pager_request(item: RequestFromKernel) {
     let sender = SENDER.wait();
     let id = sender.0.next_simple().value() as u32;
+    let old = sender.2.lock().insert(id, item);
+    if let Some(old) = old {
+        logln!(
+            "warn -- replaced old item on request index ({}: {:?} -> {:?})",
+            id,
+            old,
+            item
+        );
+    }
     SENDER.wait().1.submit(item, id);
 }
 
@@ -174,14 +230,15 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
     );
     if outgoing {
         let queue = QueueObject::<RequestFromKernel, CompletionToKernel>::from_object(obj);
-        SENDER.call_once(|| (IdCounter::new(), queue));
+        SENDER.call_once(|| (IdCounter::new(), queue, Mutex::new(BTreeMap::new())));
     } else {
         let queue = QueueObject::<RequestFromPager, CompletionToPager>::from_object(obj);
         let receiver = ManagedQueueReceiver::new(queue);
         RECEIVER.call_once(|| receiver);
     }
     if SENDER.poll().is_some() && RECEIVER.poll().is_some() {
-        start_new_kernel(Priority::default_user(), pager_compl_handler_entry, 0);
-        start_new_kernel(Priority::default_user(), pager_request_handler_entry, 0);
+        // TODO: these should be higher?
+        start_new_kernel(Priority::USER, pager_compl_handler_entry, 0);
+        start_new_kernel(Priority::USER, pager_request_handler_entry, 0);
     }
 }

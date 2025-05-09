@@ -1,6 +1,6 @@
 use alloc::{collections::btree_set::BTreeSet, vec::Vec};
 
-use twizzler_abi::object::ObjID;
+use twizzler_abi::{object::ObjID, pager::PhysRange};
 
 use crate::{
     sched::schedule_thread,
@@ -14,6 +14,7 @@ pub enum ReqKind {
     Sync(ObjID),
     Del(ObjID),
     Create(ObjID),
+    Pages(PhysRange),
 }
 
 impl ReqKind {
@@ -37,6 +38,10 @@ impl ReqKind {
         ReqKind::Create(obj_id)
     }
 
+    pub fn new_pager_memory(range: PhysRange) -> Self {
+        ReqKind::Pages(range)
+    }
+
     pub fn pages(&self) -> impl Iterator<Item = usize> {
         match self {
             ReqKind::PageData(_, start, len) => (*start..(*start + *len)).into_iter(),
@@ -56,14 +61,15 @@ impl ReqKind {
         self.needs_sync() || self.needs_info()
     }
 
-    pub fn objid(&self) -> ObjID {
-        match self {
+    pub fn objid(&self) -> Option<ObjID> {
+        Some(match self {
             ReqKind::Info(obj_id) => *obj_id,
             ReqKind::PageData(obj_id, _, _) => *obj_id,
             ReqKind::Sync(obj_id) => *obj_id,
             ReqKind::Del(obj_id) => *obj_id,
             ReqKind::Create(obj_id) => *obj_id,
-        }
+            ReqKind::Pages(_) => return None,
+        })
     }
 }
 

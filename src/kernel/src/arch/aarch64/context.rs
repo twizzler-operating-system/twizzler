@@ -3,14 +3,16 @@ use arm64::registers::{TTBR0_EL1, TTBR1_EL1};
 use crate::{
     arch::memory::pagetables::{Entry, EntryFlags, Table},
     memory::{
-        frame::{alloc_frame, free_frame, get_frame, PhysicalFrameFlags},
+        frame::get_frame,
         pagetables::{
             DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
             PhysAddrProvider,
         },
+        tracker::{alloc_frame, free_frame, FrameAllocFlags},
         PhysAddr,
     },
     mutex::Mutex,
+    once::Once,
     spinlock::Spinlock,
     VirtAddr,
 };
@@ -31,30 +33,31 @@ pub struct ArchContext {
 pub struct ArchContextTarget(PhysAddr);
 
 // default kernel mapper that is shared among all kernel instances of ArchContext
-lazy_static::lazy_static! {
-    static ref KERNEL_MAPPER: Spinlock<Mapper> = {
+static KERNEL_MAPPER: Once<(Spinlock<Mapper>, PhysAddr)> = Once::new();
+
+fn kernel_mapper() -> &'static (Spinlock<Mapper>, PhysAddr) {
+    KERNEL_MAPPER.call_once(|| {
         let mut m = Mapper::new(
             // allocate a new physical page frame to hold the
             // data for the page table root
-            alloc_frame(PhysicalFrameFlags::ZEROED).start_address()
+            alloc_frame(FrameAllocFlags::ZEROED).start_address(),
         );
         // initialize half of the page table entries
-        for idx in (Table::PAGE_TABLE_ENTRIES/2)..Table::PAGE_TABLE_ENTRIES {
+        for idx in (Table::PAGE_TABLE_ENTRIES / 2)..Table::PAGE_TABLE_ENTRIES {
             // write out PT entries for a top level table
             // whose entries point to another zeroed page
-            m.set_top_level_table(idx,
+            m.set_top_level_table(
+                idx,
                 Entry::new(
-                    alloc_frame(PhysicalFrameFlags::ZEROED)
-                        .start_address(),
+                    alloc_frame(FrameAllocFlags::ZEROED).start_address(),
                     // intermediate here means another page table
-                    EntryFlags::intermediate()
-                )
+                    EntryFlags::intermediate(),
+                ),
             );
         }
-        Spinlock::new(m)
-    };
-
-    static ref KERNEL_TABLE_ADDR: PhysAddr = KERNEL_MAPPER.lock().root_address();
+        let root = m.root_address();
+        (Spinlock::new(m), root)
+    })
 }
 
 impl Default for ArchContext {
@@ -94,7 +97,7 @@ impl ArchContext {
         // TODO: If the incoming target is already the current user table, this should be a no-op.
         // Also, we don't need to set the kernel tables each time.
         // write TTBR1
-        TTBR1_EL1.set_baddr(KERNEL_TABLE_ADDR.raw());
+        TTBR1_EL1.set_baddr(kernel_mapper().1.raw());
         // write TTBR0
         TTBR0_EL1.set_baddr(tgt.0.raw());
         core::arch::asm!(
@@ -117,18 +120,21 @@ impl ArchContext {
     ) {
         // decide if this goes into the global kernel mappings, or
         // the local per-context mappings
-        if cursor.start().is_kernel() {
+        let ops = if cursor.start().is_kernel() {
             // upper half addresses go to TTBR1_EL1
-            KERNEL_MAPPER.lock().map(cursor, phys, settings);
+            kernel_mapper().0.lock().map(cursor, phys, settings)
         } else {
             // lower half addresses go to TTBR0_EL1
-            self.inner.lock().map(cursor, phys, settings);
+            self.inner.lock().map(cursor, phys, settings)
+        };
+        if let Err(ops) = ops {
+            ops.run_all();
         }
     }
 
     pub fn change(&self, cursor: MappingCursor, settings: &MappingSettings) {
         if cursor.start().is_kernel() {
-            KERNEL_MAPPER.lock().change(cursor, settings);
+            kernel_mapper().0.lock().change(cursor, settings);
         } else {
             self.inner.lock().change(cursor, settings);
         }
@@ -136,7 +142,7 @@ impl ArchContext {
 
     pub fn unmap(&self, cursor: MappingCursor) {
         let ops = if cursor.start().is_kernel() {
-            KERNEL_MAPPER.lock().unmap(cursor)
+            kernel_mapper().0.lock().unmap(cursor)
         } else {
             self.inner.lock().unmap(cursor)
         };
@@ -152,7 +158,7 @@ impl ArchContextInner {
     fn new() -> Self {
         // we need to create a new mapper object by allocating
         // some memory for the page table.
-        let mapper = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
+        let mapper = Mapper::new(alloc_frame(FrameAllocFlags::ZEROED).start_address());
         Self { mapper }
     }
 
@@ -161,8 +167,8 @@ impl ArchContextInner {
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
         settings: &MappingSettings,
-    ) {
-        self.mapper.map(cursor, phys, settings);
+    ) -> Result<(), DeferredUnmappingOps> {
+        self.mapper.map(cursor, phys, settings)
     }
 
     fn change(&mut self, cursor: MappingCursor, settings: &MappingSettings) {

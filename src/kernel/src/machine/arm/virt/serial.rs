@@ -1,30 +1,28 @@
-use lazy_static::lazy_static;
 use twizzler_abi::object::Protections;
 
 use super::super::common::uart::PL011;
 use crate::{
-    arch::memory::mmio::MMIO_ALLOCATOR,
+    arch::memory::mmio::mmio_allocator,
     interrupt::{Destination, TriggerMode},
     memory::{
         pagetables::{ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings},
         PhysAddr,
     },
+    once::Once,
 };
 
-lazy_static! {
-    // TODO: add a spinlock here
-    pub static ref SERIAL: PL011 = {
+pub fn serial() -> &'static PL011 {
+    SERIAL.call_once(|| {
         let (clock_freq, mmio) = crate::machine::info::get_uart_info();
         // the desired virtal address for this region of mmio
         let uart_mmio_base = {
-            MMIO_ALLOCATOR.lock().alloc(mmio.length as usize)
+            mmio_allocator()
+                .lock()
+                .alloc(mmio.length as usize)
                 .expect("failed to allocate MMIO region")
         };
         // configure mapping settings for this region of memory
-        let cursor = MappingCursor::new(
-            uart_mmio_base,
-            mmio.length as usize,
-        );
+        let cursor = MappingCursor::new(uart_mmio_base, mmio.length as usize);
         let mut phys = ContiguousProvider::new(
             unsafe { PhysAddr::new_unchecked(mmio.info) },
             mmio.length as usize,
@@ -43,18 +41,22 @@ lazy_static! {
         }
 
         // create instance of the PL011 UART driver
-        let serial_port = unsafe {
-            PL011::new(uart_mmio_base.into())
-        };
+        let serial_port = unsafe { PL011::new(uart_mmio_base.into()) };
         serial_port.early_init(clock_freq as u32);
         serial_port
-    };
+    })
+}
+// TODO: add a spinlock here
+static SERIAL: Once<PL011> = Once::new();
 
-    pub static ref SERIAL_INT_ID: u32 = {
+static SERIAL_INT_ID: Once<u32> = Once::new();
+
+pub fn serial_int_id() -> u32 {
+    *SERIAL_INT_ID.call_once(|| {
         let int_num = crate::machine::info::get_uart_interrupt_num()
             .expect("failed to decode UART interrupt number");
         int_num
-    };
+    })
 }
 
 impl PL011 {
@@ -81,7 +83,7 @@ impl PL011 {
         }
 
         crate::arch::set_interrupt(
-            *SERIAL_INT_ID,
+            serial_int_id(),
             false,
             TriggerMode::Edge,
             crate::interrupt::PinPolarity::ActiveHigh,
@@ -100,15 +102,15 @@ pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
     // allocating physical frames for the page tables.
     if crate::memory::is_init() {
         unsafe {
-            SERIAL.write_str(core::str::from_utf8_unchecked(data));
+            serial().write_str(core::str::from_utf8_unchecked(data));
         }
     }
 }
 
 pub fn serial_interrupt_handler() {
-    let byte = SERIAL.rx_byte();
+    let byte = serial().rx_byte();
     if let Some(x) = byte {
         crate::log::push_input_byte(x);
     }
-    SERIAL.clear_rx_interrupt();
+    serial().clear_rx_interrupt();
 }

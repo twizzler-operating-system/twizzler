@@ -1,15 +1,23 @@
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{Arc, Mutex},
+    task::Waker,
 };
 
 use itertools::Itertools;
-use miette::Result;
 use object_store::{objid_to_ino, PageRequest};
 use secgate::util::{Descriptor, HandleMgr};
+use stable_vec::StableVec;
 use twizzler::object::ObjID;
-use twizzler_abi::pager::{ObjectInfo, ObjectRange, PhysRange};
-use twizzler_rt_abi::error::{ArgumentError, ResourceError, TwzError};
+use twizzler_abi::{
+    pager::{ObjectInfo, ObjectRange, PhysRange},
+    syscall::LifetimeType,
+};
+use twizzler_rt_abi::{
+    error::{ArgumentError, ResourceError},
+    Result,
+};
 
 use crate::{
     disk::DiskPageRequest,
@@ -182,12 +190,59 @@ impl PagerData {
     pub fn alloc_page(&self) -> Option<u64> {
         self.inner.lock().unwrap().get_next_available_page()
     }
+
+    pub fn try_alloc_page(&self) -> core::result::Result<u64, MemoryWaiter> {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(page) = inner.get_next_available_page() {
+            return Ok(page);
+        }
+        let pos = inner.waiters.push(None);
+        tracing::debug!("memory allocation failed");
+        drop(inner);
+        Err(MemoryWaiter::new(pos, self.inner.clone()))
+    }
 }
 
 pub struct PagerDataInner {
     memory: Memory,
+    waiters: StableVec<Option<Waker>>,
     pub per_obj: HashMap<ObjID, PerObject>,
     pub handles: HandleMgr<PagerClient>,
+}
+
+pub struct MemoryWaiter {
+    pos: usize,
+    inner: Arc<Mutex<PagerDataInner>>,
+}
+
+impl MemoryWaiter {
+    pub fn new(pos: usize, inner: Arc<Mutex<PagerDataInner>>) -> Self {
+        Self { pos, inner }
+    }
+}
+
+impl Future for MemoryWaiter {
+    type Output = u64;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let mut inner = self.inner.lock().unwrap();
+
+        if let Some(page) = inner.get_next_available_page() {
+            std::task::Poll::Ready(page)
+        } else {
+            inner.waiters[self.pos] = Some(cx.waker().clone());
+            std::task::Poll::Pending
+        }
+    }
+}
+
+impl Drop for MemoryWaiter {
+    fn drop(&mut self) {
+        self.inner.lock().unwrap().waiters.remove(self.pos);
+    }
 }
 
 struct Region {
@@ -260,6 +315,7 @@ impl PagerDataInner {
             per_obj: HashMap::with_capacity(0),
             memory: Memory::default(),
             handles: HandleMgr::new(None),
+            waiters: StableVec::new(),
         }
     }
 
@@ -267,13 +323,6 @@ impl PagerDataInner {
     /// Returns the page number if available, or `None` if all pages are used.
     fn get_next_available_page(&mut self) -> Option<u64> {
         self.memory.get_page()
-    }
-
-    /// Get a memory page for allocation.
-    /// Triggers page replacement if all pages are used.
-    fn get_mem_page(&mut self) -> u64 {
-        tracing::trace!("attempting to get memory page");
-        self.get_next_available_page().expect("no available pages")
     }
 
     pub fn get_per_object(&mut self, id: ObjID) -> &PerObject {
@@ -296,8 +345,14 @@ impl PagerData {
     }
 
     /// Initialize the starting memory range for the pager.
-    pub fn init_range(&self, range: PhysRange) {
-        self.inner.lock().unwrap().memory.push(Region::new(range));
+    pub fn add_memory_range(&self, range: PhysRange) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.memory.push(Region::new(range));
+        for item in inner.waiters.values() {
+            if let Some(waker) = item {
+                waker.wake_by_ref();
+            }
+        }
     }
 
     /// Allocate a memory page and associate it with an object and range.
@@ -330,11 +385,19 @@ impl PagerData {
         // TODO: remove this restriction
         assert_eq!(obj_range.len(), 0x1000);
         let phys_range = {
-            let mut inner = self.inner.lock().unwrap();
-            let page = inner.get_mem_page();
+            let page = match self.try_alloc_page() {
+                Ok(page) => page,
+                Err(mw) => {
+                    tracing::debug!("out of memory -- task waiting");
+                    mw.await
+                }
+            };
             let phys_range = PhysRange::new(page, page + PAGE);
-            let po = inner.get_per_object_mut(id);
-            po.track(obj_range, phys_range);
+            self.inner
+                .lock()
+                .unwrap()
+                .get_per_object_mut(id)
+                .track(obj_range, phys_range);
             phys_range
         };
         page_in(ctx, id, obj_range, phys_range).await?;
@@ -342,14 +405,14 @@ impl PagerData {
         return Ok(phys_range);
     }
 
-    pub fn lookup_object(&self, ctx: &PagerContext, id: ObjID) -> Option<ObjectInfo> {
+    pub fn lookup_object(&self, ctx: &PagerContext, id: ObjID) -> Result<ObjectInfo> {
         let mut b = [];
         if objid_to_ino(id.raw()).is_some() {
-            ctx.paged_ostore.find_external(id.raw()).ok()?;
-            return Some(ObjectInfo::new(id));
+            ctx.paged_ostore.find_external(id.raw())?;
+            return Ok(ObjectInfo::new(LifetimeType::Persistent));
         }
-        ctx.paged_ostore.read_object(id.raw(), 0, &mut b).ok()?;
-        Some(ObjectInfo::new(id))
+        ctx.paged_ostore.read_object(id.raw(), 0, &mut b)?;
+        Ok(ObjectInfo::new(LifetimeType::Persistent))
     }
 
     pub async fn sync(&self, ctx: &'static PagerContext, id: ObjID) {
@@ -368,7 +431,7 @@ impl PagerData {
         comp: ObjID,
         ds: Descriptor,
         f: impl FnOnce(&PagerClient) -> R,
-    ) -> Result<R, TwzError> {
+    ) -> Result<R> {
         let inner = self.inner.lock().unwrap();
         Ok(f(inner
             .handles
@@ -386,7 +449,7 @@ impl PagerData {
         Some(f(inner.handles.lookup_mut(comp, ds)?))
     }
 
-    pub fn new_handle(&self, comp: ObjID) -> Result<Descriptor, TwzError> {
+    pub fn new_handle(&self, comp: ObjID) -> Result<Descriptor> {
         let mut inner = self.inner.lock().unwrap();
         inner
             .handles

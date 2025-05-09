@@ -7,7 +7,8 @@ use super::{range::PageStatus, Object, PageNumber};
 use crate::{
     arch::memory::{frame::FRAME_SIZE, phys_to_virt},
     memory::{
-        frame::{self, free_frame, FrameRef, PhysicalFrameFlags},
+        frame::FrameRef,
+        tracker::{alloc_frame, free_frame, FrameAllocFlags},
         PhysAddr, VirtAddr,
     },
 };
@@ -28,12 +29,6 @@ pub struct Page {
 
 pub type PageRef = Arc<Page>;
 
-impl Default for Page {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Drop for Page {
     fn drop(&mut self) {
         match self.frame {
@@ -47,11 +42,9 @@ impl Drop for Page {
 }
 
 impl Page {
-    // TODO: we should have a way of allocating non-zero pages, for pages that will be immediately
-    // overwritten.
-    pub fn new() -> Self {
+    pub fn new(frame: FrameRef) -> Self {
         Self {
-            frame: FrameOrWired::Frame(frame::alloc_frame(PhysicalFrameFlags::ZEROED)),
+            frame: FrameOrWired::Frame(frame),
             cache_type: CacheType::WriteBack,
         }
     }
@@ -99,16 +92,14 @@ impl Page {
         }
     }
 
-    pub fn copy_page(&self) -> Self {
-        let new_frame = frame::alloc_frame(PhysicalFrameFlags::empty());
+    pub fn copy_page(&self, new_frame: FrameRef, new_cache_type: CacheType) -> Self {
         match self.frame {
             FrameOrWired::Frame(f) => new_frame.copy_contents_from(f),
             FrameOrWired::Wired(p) => new_frame.copy_contents_from_physaddr(p),
         }
         Self {
             frame: FrameOrWired::Frame(new_frame),
-            // TODO: maybe this should default to write-back instead?
-            cache_type: self.cache_type,
+            cache_type: new_cache_type,
         }
     }
 
@@ -118,24 +109,21 @@ impl Page {
 }
 
 impl Object {
-    pub unsafe fn write_val_and_signal<T>(&self, offset: usize, val: T, wakeup_count: usize) {
+    /// Try to write a value to an object at a given offset and signal a wakeup.
+    ///
+    /// If the object does not have a page at the given offset, the write will not be performed, but
+    /// a wakeup will still occur.
+    pub unsafe fn try_write_val_and_signal<T>(&self, offset: usize, val: T, wakeup_count: usize) {
         assert!(!self.use_pager());
         {
             let mut obj_page_tree = self.lock_page_tree();
             let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
             let page_offset = offset % PageNumber::PAGE_SIZE;
 
-            if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true) {
+            if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true, None) {
                 let t = page.get_mut_to_val::<T>(page_offset);
                 *t = val;
-            } else {
-                let page = Page::new();
-                obj_page_tree.add_page(page_number, page);
-                drop(obj_page_tree);
-                self.write_val_and_signal(offset, val, wakeup_count);
-                return;
             }
-            drop(obj_page_tree);
         }
         self.wakeup_word(offset, wakeup_count);
         crate::syscall::sync::requeue_all();
@@ -147,14 +135,11 @@ impl Object {
         let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
         let page_offset = offset % PageNumber::PAGE_SIZE;
 
-        if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true) {
+        if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true, None) {
             let t = page.get_mut_to_val::<AtomicU64>(page_offset);
             (*t).load(Ordering::SeqCst)
         } else {
-            let page = Page::new();
-            obj_page_tree.add_page(page_number, page);
-            drop(obj_page_tree);
-            self.read_atomic_u64(offset)
+            0
         }
     }
 
@@ -164,14 +149,11 @@ impl Object {
         let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
         let page_offset = offset % PageNumber::PAGE_SIZE;
 
-        if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true) {
+        if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true, None) {
             let t = page.get_mut_to_val::<AtomicU32>(page_offset);
             (*t).load(Ordering::SeqCst)
         } else {
-            let page = Page::new();
-            obj_page_tree.add_page(page_number, page);
-            drop(obj_page_tree);
-            self.read_atomic_u32(offset)
+            0
         }
     }
 
@@ -185,22 +167,21 @@ impl Object {
             let mut count = 0;
             while count < len {
                 let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
-                //let page_offset = offset % PageNumber::PAGE_SIZE;
-
                 let thislen = core::cmp::min(0x1000, len - count);
 
-                if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true) {
+                if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true, None)
+                {
                     let dest = &mut page.as_mut_slice()[0..thislen];
                     dest.copy_from_slice(&bytes[count..(count + thislen)]);
-                    //let t = page.get_mut_to_val::<T>(page_offset);
-                    //(t as *mut T).copy_from(info as *const T, 1);
                 } else {
-                    let page = Page::new();
+                    let page = Page::new(alloc_frame(
+                        FrameAllocFlags::KERNEL
+                            | FrameAllocFlags::WAIT_OK
+                            | FrameAllocFlags::ZEROED,
+                    ));
                     let dest = &mut page.as_mut_slice()[0..thislen];
                     dest.copy_from_slice(&bytes[count..(count + thislen)]);
-                    //let t = page.get_mut_to_val::<T>(page_offset);
-                    //(t as *mut T).copy_from(info as *const T, 1);
-                    obj_page_tree.add_page(page_number, page);
+                    obj_page_tree.add_page(page_number, page, None);
                 }
 
                 offset += thislen;
@@ -219,7 +200,7 @@ impl Object {
             let pn = pn_start.offset(i);
             let addr = start.offset(i * PageNumber::PAGE_SIZE).unwrap();
             let page = Page::new_wired(addr, ct);
-            self.add_page(pn, page);
+            self.add_page(pn, page, None);
         }
     }
 }

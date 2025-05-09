@@ -39,13 +39,9 @@ extern "C" fn user_new_start() {
 pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
     let mut thread = if let Some(handle) = args.vm_context_handle {
         let vmc = get_vmcontext_from_handle(handle).ok_or(ArgumentError::BadHandle)?;
-        Thread::new(Some(vmc), Some(args), Priority::default_user())
+        Thread::new(Some(vmc), Some(args), Priority::USER)
     } else {
-        Thread::new(
-            current_memory_context(),
-            Some(args),
-            Priority::default_user(),
-        )
+        Thread::new(current_memory_context(), Some(args), Priority::USER)
     };
     match args.upcall_target {
         UpcallTargetSpawnOption::DefaultAbort => {}
@@ -67,11 +63,7 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
 }
 
 pub fn start_new_init() {
-    let mut thread = Thread::new(
-        Some(Arc::new(Context::new())),
-        None,
-        Priority::default_user(),
-    );
+    let mut thread = Thread::new(Some(Arc::new(Context::new())), None, Priority::USER);
     thread.secctx = SecCtxMgr::new(Arc::new(SecurityContext::new(None)));
     unsafe {
         thread.init(user_init);
@@ -187,7 +179,7 @@ mod test {
 
     #[kernel_test]
     fn test_closure() {
-        let x = super::run_closure_in_new_thread(Priority::default_user(), || 42)
+        let x = super::run_closure_in_new_thread(Priority::USER, || 42)
             .1
             .wait();
         assert_eq!(42, x);

@@ -12,6 +12,8 @@ use registers::{
 };
 use twizzler_abi::device::CacheType;
 
+use crate::once::Once;
+
 // TODO: check the bounds of this
 pub type AttributeIndex = u8;
 
@@ -229,12 +231,10 @@ impl From<MemoryAttribute> for CacheType {
 }
 
 // TODO: maybe this resource should have a lock? However, it rarely changes
-lazy_static::lazy_static! {
-    static ref MEMORY_ATTR_MANAGER: MemoryAttributeManager = MemoryAttributeManager::new();
-}
+static MEMORY_ATTR_MANAGER: Once<MemoryAttributeManager> = Once::new();
 
 pub fn memory_attr_manager() -> &'static MemoryAttributeManager {
-    &MEMORY_ATTR_MANAGER
+    MEMORY_ATTR_MANAGER.call_once(|| MemoryAttributeManager::new())
 }
 
 // unpredictable states

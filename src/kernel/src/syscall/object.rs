@@ -18,7 +18,11 @@ use twizzler_rt_abi::{
 
 use crate::{
     arch::context::ArchContext,
-    memory::context::{virtmem::Slot, Context, ContextRef, UserContext},
+    memory::{
+        context::{virtmem::Slot, Context, ContextRef, UserContext},
+        frame::PHYS_LEVEL_LAYOUTS,
+        tracker::{FrameAllocFlags, FrameAllocator},
+    },
     mutex::Mutex,
     obj::{calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef},
     once::Once,
@@ -46,12 +50,17 @@ pub fn sys_object_create(
         } else {
             let so = crate::obj::lookup_object(src.id, LookupFlags::empty())
                 .ok_or(ObjectError::NoSuchObject)?;
+            let mut fa = FrameAllocator::new(
+                FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
+                PHYS_LEVEL_LAYOUTS[0],
+            );
             crate::obj::copy::copy_ranges(
                 &so,
                 src.src_start as usize,
                 &obj,
                 src.dest_start as usize,
                 src.len,
+                &mut fa,
             )
         }
     }
