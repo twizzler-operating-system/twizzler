@@ -145,8 +145,8 @@ struct ObjectPageProvider<'a> {
 }
 
 impl<'a> PhysAddrProvider for ObjectPageProvider<'a> {
-    fn peek(&mut self) -> (crate::arch::address::PhysAddr, usize) {
-        (self.page.physical_address(), PageNumber::PAGE_SIZE)
+    fn peek(&mut self) -> Option<(crate::arch::address::PhysAddr, usize)> {
+        Some((self.page.physical_address(), PageNumber::PAGE_SIZE))
     }
 
     fn consume(&mut self, _len: usize) {}

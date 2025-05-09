@@ -120,12 +120,15 @@ impl ArchContext {
     ) {
         // decide if this goes into the global kernel mappings, or
         // the local per-context mappings
-        if cursor.start().is_kernel() {
+        let ops = if cursor.start().is_kernel() {
             // upper half addresses go to TTBR1_EL1
-            kernel_mapper().0.lock().map(cursor, phys, settings);
+            kernel_mapper().0.lock().map(cursor, phys, settings)
         } else {
             // lower half addresses go to TTBR0_EL1
-            self.inner.lock().map(cursor, phys, settings);
+            self.inner.lock().map(cursor, phys, settings)
+        };
+        if let Err(ops) = ops {
+            ops.run_all();
         }
     }
 
@@ -164,8 +167,8 @@ impl ArchContextInner {
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
         settings: &MappingSettings,
-    ) {
-        self.mapper.map(cursor, phys, settings);
+    ) -> Result<(), DeferredUnmappingOps> {
+        self.mapper.map(cursor, phys, settings)
     }
 
     fn change(&mut self, cursor: MappingCursor, settings: &MappingSettings) {

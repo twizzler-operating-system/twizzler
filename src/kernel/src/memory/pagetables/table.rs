@@ -5,9 +5,9 @@ use crate::{
         memory::pagetables::{Entry, EntryFlags, Table},
     },
     memory::{
-        frame::{get_frame, FrameRef},
+        frame::{get_frame, FrameRef, PHYS_LEVEL_LAYOUTS},
         pagetables::MappingFlags,
-        tracker::{alloc_frame, FrameAllocFlags},
+        tracker::{try_alloc_frame, FrameAllocFlags},
     },
 };
 
@@ -54,14 +54,18 @@ impl Table {
             && phys_len >= page_size
     }
 
-    fn populate(&mut self, index: usize, flags: EntryFlags) {
+    fn populate(&mut self, index: usize, flags: EntryFlags) -> Option<()> {
         let count = self.read_count();
         let entry = &mut self[index];
         if !entry.is_present() {
-            let frame = alloc_frame(FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED);
+            let frame = try_alloc_frame(
+                FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+                PHYS_LEVEL_LAYOUTS[0],
+            )?;
             *entry = Entry::new(frame.start_address(), flags);
             self.set_count(count + 1);
         }
+        Some(())
     }
 
     fn update_entry(
@@ -109,7 +113,7 @@ impl Table {
         level: usize,
         phys: &mut impl PhysAddrProvider,
         settings: &MappingSettings,
-    ) {
+    ) -> Option<()> {
         let start_index = Self::get_index(cursor.start(), level);
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
@@ -124,7 +128,7 @@ impl Table {
                 continue;
             }
 
-            let paddr = phys.peek();
+            let paddr = phys.peek()?;
             if Self::can_map_at(cursor.start(), paddr.0, cursor.remaining(), paddr.1, level) {
                 self.update_entry(
                     consist,
@@ -145,7 +149,7 @@ impl Table {
                 phys.consume(Self::level_to_page_size(level));
             } else {
                 assert_ne!(level, Self::last_level());
-                self.populate(idx, EntryFlags::intermediate());
+                self.populate(idx, EntryFlags::intermediate())?;
                 let next_table = self.next_table_mut(idx).unwrap();
                 next_table.map(consist, cursor, Self::next_level(level), phys, settings);
             }
@@ -156,6 +160,7 @@ impl Table {
                 break;
             }
         }
+        Some(())
     }
 
     pub(super) fn unmap(

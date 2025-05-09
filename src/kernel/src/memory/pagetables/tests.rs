@@ -14,8 +14,8 @@ mod test {
 
     struct StaticProvider {}
     impl PhysAddrProvider for StaticProvider {
-        fn peek(&mut self) -> (crate::arch::address::PhysAddr, usize) {
-            (crate::arch::address::PhysAddr::new(0).unwrap(), usize::MAX)
+        fn peek(&mut self) -> Option<(crate::arch::address::PhysAddr, usize)> {
+            Some((crate::arch::address::PhysAddr::new(0).unwrap(), usize::MAX))
         }
 
         fn consume(&mut self, _len: usize) {}
@@ -62,7 +62,7 @@ mod test {
             CacheType::WriteBack,
             MappingFlags::empty(),
         );
-        m.map(cur, &mut phys, &settings);
+        let _ = m.map(cur, &mut phys, &settings);
 
         let mut reader = m.readmap(cur);
         let read = reader.nth(0).unwrap();
