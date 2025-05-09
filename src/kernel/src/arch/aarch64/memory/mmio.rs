@@ -2,7 +2,7 @@
 use core::alloc::Layout;
 
 use super::frame::FRAME_SIZE;
-use crate::{memory::VirtAddr, spinlock::Spinlock};
+use crate::{memory::VirtAddr, once::Once, spinlock::Spinlock};
 
 /// A simple bump allocator that does not reclaim memory.
 /// This intended operating mode is okay for now. Addresses
@@ -45,13 +45,15 @@ impl BumpAlloc {
     }
 }
 
-lazy_static::lazy_static! {
-    pub static ref MMIO_ALLOCATOR: Spinlock<BumpAlloc> = {
+static MMIO_ALLOCATOR: Once<Spinlock<BumpAlloc>> = Once::new();
+
+pub fn mmio_allocator() -> &'static Spinlock<BumpAlloc> {
+    MMIO_ALLOCATOR.call_once(|| {
         Spinlock::new({
             let mmio_range_start = unsafe { crate::arch::address::MMIO_RANGE.start() };
             let vaddr_start = unsafe { VirtAddr::new_unchecked(*mmio_range_start) };
             let length = crate::arch::address::MMIO_RANGE_SIZE as usize;
             BumpAlloc::new(vaddr_start, length)
         })
-    };
+    })
 }
