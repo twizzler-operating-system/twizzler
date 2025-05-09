@@ -52,10 +52,10 @@ pub async fn handle_kernel_request(
             }
             Err(e) => KernelCompletionData::Error(TwzError::from(e).into()),
         },
-        KernelCommand::ObjectCreate(id, _object_info) => {
+        KernelCommand::ObjectCreate(id, object_info) => {
             let _ = ctx.paged_ostore.delete_object(id.raw());
             match ctx.paged_ostore.create_object(id.raw()) {
-                Ok(_) => KernelCompletionData::Okay,
+                Ok(_) => KernelCompletionData::ObjectInfoCompletion(id, object_info),
                 Err(e) => {
                     tracing::warn!("failed to create object {}: {}", id, e);
                     KernelCompletionData::Error(TwzError::from(e).into())

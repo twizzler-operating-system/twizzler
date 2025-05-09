@@ -23,6 +23,7 @@ use crate::{
     },
     idcounter::{Id, IdCounter, StableId},
     memory::{
+        frame::PHYS_LEVEL_LAYOUTS,
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
             PhysAddrProvider, Table, ZeroPageProvider,
@@ -754,7 +755,10 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 current_thread_ref().unwrap().send_upcall(oob_upcall);
                 return;
             }
-            let mut fa = FrameAllocator::new(FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK);
+            let mut fa = FrameAllocator::new(
+                FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
+                PHYS_LEVEL_LAYOUTS[0],
+            );
             let status = obj_page_tree.get_page(
                 page_number,
                 cause == MemoryAccessKind::Write,

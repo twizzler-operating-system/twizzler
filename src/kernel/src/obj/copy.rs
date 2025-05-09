@@ -454,6 +454,7 @@ mod test {
     use crate::{
         memory::{
             context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+            frame::PHYS_LEVEL_LAYOUTS,
             tracker::{FrameAllocFlags, FrameAllocator},
         },
         obj::{copy::zero_ranges, pages::Page, range::PageStatus, ObjectRef, PageNumber},
@@ -538,7 +539,10 @@ mod test {
         let src = create_blank_object();
         let dest = create_blank_object();
 
-        let mut allocator = FrameAllocator::new(FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED);
+        let mut allocator = FrameAllocator::new(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
         // Skip the null page, otherwise fill the source with pages that have different fills
         for p in 1..255u8 {
             let mut tree: crate::mutex::LockGuard<'_, crate::obj::range::PageRangeTree> =
@@ -590,7 +594,10 @@ mod test {
         // function).
         let second_page = ps * 2;
         let third_page = ps * 3;
-        let mut allocator2 = FrameAllocator::new(FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED);
+        let mut allocator2 = FrameAllocator::new(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
         copy_ranges_and_check(&src, second_page, &dest, second_page, ps, &mut allocator2);
         copy_ranges_and_check(&src, third_page, &dest, second_page, ps, &mut allocator2);
 

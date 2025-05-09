@@ -5,8 +5,7 @@ use request::ReqKind;
 use twizzler_abi::{object::ObjID, pager::PhysRange};
 
 use crate::{
-    arch::memory::frame::FRAME_SIZE,
-    memory::tracker::FrameAllocFlags,
+    memory::{frame::PHYS_LEVEL_LAYOUTS, tracker::FrameAllocFlags},
     mutex::Mutex,
     obj::{LookupFlags, ObjectRef, PageNumber},
     once::Once,
@@ -131,19 +130,32 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
     }
     while count < min_frames {
         let req_max = (min_frames - count).min(DEFAULT_PAGER_OUTSTANDING_FRAMES);
-        if let Some(reg) =
-            crate::memory::tracker::try_alloc_region(req_max, FrameAllocFlags::ZEROED)
-        {
-            count += reg.num_frames();
-            crate::memory::tracker::track_region_pager(reg.range);
-            ranges.push(reg.range);
+        let level = if req_max * PHYS_LEVEL_LAYOUTS[0].size() >= PHYS_LEVEL_LAYOUTS[1].size() {
+            1
         } else {
-            if let Some(frame) = crate::memory::tracker::try_alloc_frame(FrameAllocFlags::ZEROED) {
+            0
+        };
+
+        if let Some(frame) = crate::memory::tracker::try_alloc_frame(
+            FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[level],
+        ) {
+            count += PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
+            crate::memory::tracker::track_page_pager(frame);
+            ranges.push(PhysRange::new(
+                frame.start_address().raw(),
+                frame.start_address().offset(frame.size()).unwrap().raw(),
+            ));
+        } else {
+            if let Some(frame) = crate::memory::tracker::try_alloc_frame(
+                FrameAllocFlags::ZEROED,
+                PHYS_LEVEL_LAYOUTS[0],
+            ) {
                 count += 1;
                 crate::memory::tracker::track_page_pager(frame);
                 ranges.push(PhysRange::new(
                     frame.start_address().raw(),
-                    frame.start_address().raw() + FRAME_SIZE as u64,
+                    frame.start_address().offset(frame.size()).unwrap().raw(),
                 ));
             }
         }

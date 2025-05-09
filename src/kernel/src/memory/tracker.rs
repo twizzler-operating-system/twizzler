@@ -1,12 +1,15 @@
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::{
+    alloc::Layout,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use bitflags::bitflags;
 use intrusive_collections::{intrusive_adapter, LinkedList};
 use twizzler_abi::{pager::PhysRange, thread::ExecutionState};
 
 use super::{
-    frame::{get_frame, FrameRef, PhysicalFrameFlags},
+    frame::{get_frame, FrameRef, PhysicalFrameFlags, PHYS_LEVEL_LAYOUTS},
     PhysAddr,
 };
 use crate::{
@@ -35,67 +38,20 @@ intrusive_adapter!(pub LinkAdapter = ThreadRef: Thread { mutex_link: intrusive_c
 
 impl MemoryTracker {
     fn free_frame(&self, frame: FrameRef) {
+        let count = frame.size() / FRAME_SIZE;
         let old = if frame.is_kernel() {
-            self.kernel_used.fetch_sub(1, Ordering::SeqCst)
+            self.kernel_used.fetch_sub(count, Ordering::SeqCst)
         } else {
-            self.page_data.fetch_sub(1, Ordering::SeqCst)
+            self.page_data.fetch_sub(count, Ordering::SeqCst)
         };
         assert!(old > 0);
-        self.idle.fetch_add(1, Ordering::SeqCst);
-        self.freed.fetch_add(1, Ordering::SeqCst);
+        self.idle.fetch_add(count, Ordering::SeqCst);
+        self.freed.fetch_add(count, Ordering::SeqCst);
         crate::memory::frame::raw_free_frame(frame);
         self.wake();
     }
 
-    fn try_alloc_region(&self, max: usize, flags: FrameAllocFlags) -> Option<FrameRegion> {
-        let pff = if flags.contains(FrameAllocFlags::ZEROED) {
-            PhysicalFrameFlags::ZEROED
-        } else {
-            PhysicalFrameFlags::empty()
-        };
-        self.consider_reclaim();
-        let region = crate::memory::frame::raw_try_alloc_region(max, pff)?;
-        let region = FrameRegion {
-            range: PhysRange {
-                start: region.0.raw(),
-                end: region.0.raw() + (region.1 * FRAME_SIZE) as u64,
-            },
-            flags,
-        };
-        for frame in region.frames() {
-            frame.set_kernel(flags.contains(FrameAllocFlags::KERNEL));
-        }
-        if flags.contains(FrameAllocFlags::KERNEL) {
-            self.kernel_used
-                .fetch_add(region.num_frames(), Ordering::SeqCst);
-        } else {
-            self.page_data
-                .fetch_add(region.num_frames(), Ordering::SeqCst);
-        }
-        self.idle.fetch_sub(region.num_frames(), Ordering::SeqCst);
-        self.allocated
-            .fetch_add(region.num_frames(), Ordering::SeqCst);
-        self.consider_reclaim();
-        Some(region)
-    }
-
-    fn free_region(&self, region: FrameRegion) {
-        if region.flags.contains(FrameAllocFlags::KERNEL) {
-            self.kernel_used
-                .fetch_sub(region.num_frames(), Ordering::SeqCst);
-        } else {
-            self.page_data
-                .fetch_sub(region.num_frames(), Ordering::SeqCst);
-        }
-        self.idle.fetch_add(region.num_frames(), Ordering::SeqCst);
-        self.freed.fetch_add(region.num_frames(), Ordering::SeqCst);
-        crate::memory::frame::raw_free_region(
-            PhysAddr::new(region.range.start).unwrap(),
-            region.num_frames(),
-        );
-    }
-
-    fn try_alloc_frame(&self, flags: FrameAllocFlags) -> Option<FrameRef> {
+    fn try_alloc_frame(&self, flags: FrameAllocFlags, layout: Layout) -> Option<FrameRef> {
         let pff = if flags.contains(FrameAllocFlags::ZEROED) {
             PhysicalFrameFlags::ZEROED
         } else {
@@ -105,24 +61,25 @@ impl MemoryTracker {
             self.consider_reclaim();
             let idle = self.idle();
 
-            if idle > 0 {
+            let count = layout.size() / FRAME_SIZE;
+            if idle >= count {
                 let did_sub = self
                     .idle
-                    .compare_exchange(idle, idle - 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .compare_exchange(idle, idle - count, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok();
                 if did_sub {
-                    if let Some(frame) = crate::memory::frame::raw_try_alloc_frame(pff) {
+                    if let Some(frame) = crate::memory::frame::raw_alloc_frame(pff, layout) {
                         if flags.contains(FrameAllocFlags::KERNEL) {
                             frame.set_kernel(true);
-                            self.kernel_used.fetch_add(1, Ordering::SeqCst);
+                            self.kernel_used.fetch_add(count, Ordering::SeqCst);
                         } else {
                             frame.set_kernel(false);
-                            self.page_data.fetch_add(1, Ordering::SeqCst);
+                            self.page_data.fetch_add(count, Ordering::SeqCst);
                         }
-                        self.allocated.fetch_add(1, Ordering::SeqCst);
+                        self.allocated.fetch_add(count, Ordering::SeqCst);
                         return Some(frame);
                     } else {
-                        self.idle.fetch_add(1, Ordering::SeqCst);
+                        self.idle.fetch_add(count, Ordering::SeqCst);
                     }
                 } else {
                     continue;
@@ -138,7 +95,8 @@ impl MemoryTracker {
     }
 
     fn alloc_frame(&self, flags: FrameAllocFlags) -> FrameRef {
-        self.try_alloc_frame(flags).expect("cannot wait for page")
+        self.try_alloc_frame(flags, PHYS_LEVEL_LAYOUTS[0])
+            .expect("cannot wait for page")
     }
 
     fn wait(&self, old_idle: usize) {
@@ -148,8 +106,7 @@ impl MemoryTracker {
             self.idle()
         );
         let Some(current_thread) = current_thread_ref() else {
-            logln!("warning -- cannot wait on memory before threading initialized");
-            return;
+            panic!("warning -- cannot wait on memory before threading initialized");
         };
         self.waiting.fetch_add(1, Ordering::SeqCst);
         let guard = current_thread.enter_critical();
@@ -236,17 +193,14 @@ impl MemoryTracker {
         self.reclaimed.fetch_add(count, Ordering::SeqCst);
     }
 
-    fn track_frame_pager(&self) {
-        self.pager_outstanding.fetch_add(1, Ordering::SeqCst);
-    }
-
-    fn track_region_pager(&self, range: PhysRange) {
+    fn track_frame_pager(&self, frame: FrameRef) {
         self.pager_outstanding
-            .fetch_add(range.len() / FRAME_SIZE, Ordering::SeqCst);
+            .fetch_add(frame.size() / FRAME_SIZE, Ordering::SeqCst);
     }
 
-    fn untrack_frame_pager(&self) {
-        self.pager_outstanding.fetch_sub(1, Ordering::SeqCst);
+    fn untrack_frame_pager(&self, frame: FrameRef) {
+        self.pager_outstanding
+            .fetch_sub(frame.size() / FRAME_SIZE, Ordering::SeqCst);
     }
 
     fn pager_outstanding(&self) -> usize {
@@ -313,25 +267,11 @@ pub fn alloc_frame(flags: FrameAllocFlags) -> FrameRef {
 
 /// Try to allocate a physical frame. The flags argument is the same as in [alloc_frame]. Returns
 /// None if no physical frame is available.
-pub fn try_alloc_frame(flags: FrameAllocFlags) -> Option<FrameRef> {
+pub fn try_alloc_frame(flags: FrameAllocFlags, layout: Layout) -> Option<FrameRef> {
     TRACKER
         .poll()
         .expect("page tracker not initialized")
-        .try_alloc_frame(flags)
-}
-
-pub fn try_alloc_region(max: usize, flags: FrameAllocFlags) -> Option<FrameRegion> {
-    TRACKER
-        .poll()
-        .expect("page tracker not initialized")
-        .try_alloc_region(max, flags)
-}
-
-pub fn free_region(region: FrameRegion) {
-    TRACKER
-        .poll()
-        .expect("page tracker not initialized")
-        .free_region(region)
+        .try_alloc_frame(flags, layout)
 }
 
 /// Free a physical frame.
@@ -346,27 +286,19 @@ pub fn free_frame(frame: FrameRef) {
 }
 
 /// Track a page as owned by the pager.
-pub fn track_page_pager(_frame: FrameRef) {
+pub fn track_page_pager(frame: FrameRef) {
     TRACKER
         .poll()
         .expect("page tracker not initialized")
-        .track_frame_pager()
-}
-
-/// Track a region as owned by the pager.
-pub fn track_region_pager(range: PhysRange) {
-    TRACKER
-        .poll()
-        .expect("page tracker not initialized")
-        .track_region_pager(range)
+        .track_frame_pager(frame)
 }
 
 /// Track a page as owned by the pager.
-pub fn untrack_page_pager(_frame: FrameRef) {
+pub fn untrack_page_pager(frame: FrameRef) {
     TRACKER
         .poll()
         .expect("page tracker not initialized")
-        .untrack_frame_pager()
+        .untrack_frame_pager(frame)
 }
 
 /// Get outstanding pager pages
@@ -502,20 +434,22 @@ pub fn init(total: usize, idle: usize, kern: usize) {
 
 pub struct FrameAllocator {
     flags: FrameAllocFlags,
+    layout: Layout,
     frames: Vec<FrameRef>,
 }
 
 impl FrameAllocator {
-    pub fn new(flags: FrameAllocFlags) -> Self {
+    pub fn new(flags: FrameAllocFlags, layout: Layout) -> Self {
         FrameAllocator {
             flags,
+            layout,
             frames: Vec::new(),
         }
     }
 
     pub fn try_allocate(&mut self) -> Option<FrameRef> {
         if self.frames.len() == 0 {
-            try_alloc_frame(self.flags)
+            try_alloc_frame(self.flags, self.layout)
         } else {
             self.frames.pop()
         }
