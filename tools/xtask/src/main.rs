@@ -102,6 +102,8 @@ enum MessageFormat {
 
 #[derive(Args, Debug)]
 struct CheckOptions {
+    #[clap(short, long)]
+    package: Option<String>,
     #[clap(flatten)]
     pub config: BuildConfig,
     #[clap(long, short)]
@@ -116,6 +118,8 @@ struct CheckOptions {
     all_targets: bool,
     #[clap(long)]
     keep_going: bool,
+    #[clap(long)]
+    bin: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]

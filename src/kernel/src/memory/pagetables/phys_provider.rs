@@ -1,31 +1,44 @@
 use crate::{
     arch::address::PhysAddr,
-    memory::frame::{alloc_frame, free_frame, FrameRef, PhysicalFrameFlags},
+    memory::{
+        frame::FrameRef,
+        tracker::{alloc_frame, free_frame, FrameAllocFlags},
+    },
 };
 
 /// A trait for providing a set of physical pages to the mapping function.
 pub trait PhysAddrProvider {
     /// Get the current physical frame.
-    fn peek(&mut self) -> (PhysAddr, usize);
+    fn peek(&mut self) -> Option<(PhysAddr, usize)>;
     /// Consume the current frame and go to the next one.
     fn consume(&mut self, len: usize);
 }
 
-#[derive(Default)]
 /// An implementation of [PhysAddrProvider] that just allocates and returns freshly allocated and
 /// zeroed frames.
 pub struct ZeroPageProvider {
+    flags: FrameAllocFlags,
     current: Option<FrameRef>,
 }
 
+impl ZeroPageProvider {
+    /// Create a new [ZeroPageProvider].
+    pub fn new(flags: FrameAllocFlags) -> Self {
+        Self {
+            flags: flags | FrameAllocFlags::ZEROED,
+            current: None,
+        }
+    }
+}
+
 impl PhysAddrProvider for ZeroPageProvider {
-    fn peek(&mut self) -> (PhysAddr, usize) {
+    fn peek(&mut self) -> Option<(PhysAddr, usize)> {
         match self.current {
-            Some(frame) => (frame.start_address(), frame.size()),
+            Some(frame) => Some((frame.start_address(), frame.size())),
             None => {
-                let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
+                let frame = alloc_frame(self.flags);
                 self.current = Some(frame);
-                (frame.start_address(), frame.size())
+                Some((frame.start_address(), frame.size()))
             }
         }
     }
@@ -60,8 +73,8 @@ impl ContiguousProvider {
 }
 
 impl PhysAddrProvider for ContiguousProvider {
-    fn peek(&mut self) -> (PhysAddr, usize) {
-        (self.next, self.rem)
+    fn peek(&mut self) -> Option<(PhysAddr, usize)> {
+        Some((self.next, self.rem))
     }
 
     fn consume(&mut self, len: usize) {

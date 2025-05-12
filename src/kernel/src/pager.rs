@@ -2,10 +2,10 @@ use alloc::vec::Vec;
 
 use inflight::InflightManager;
 use request::ReqKind;
-use twizzler_abi::object::{ObjID, NULLPAGE_SIZE};
+use twizzler_abi::{object::ObjID, pager::PhysRange};
 
 use crate::{
-    memory::{MemoryRegion, MemoryRegionKind},
+    memory::{frame::PHYS_LEVEL_LAYOUTS, tracker::FrameAllocFlags},
     mutex::Mutex,
     obj::{LookupFlags, ObjectRef, PageNumber},
     once::Once,
@@ -20,63 +20,13 @@ mod request;
 pub use queues::init_pager_queue;
 pub use request::Request;
 
-static PAGER_MEMORY: Once<Vec<MemoryRegion>> = Once::new();
+pub const MAX_PAGER_OUTSTANDING_FRAMES: usize = 65536;
+pub const DEFAULT_PAGER_OUTSTANDING_FRAMES: usize = 1024;
 
-const MAX_RESERVE_KERNEL: usize = 1024 * 1024 * 1024; // 1G
+static INFLIGHT_MGR: Once<Mutex<InflightManager>> = Once::new();
 
-pub fn pager_select_memory_regions(regions: &[MemoryRegion]) -> Vec<MemoryRegion> {
-    let mut fa_regions = Vec::new();
-    let mut pager_regions = Vec::new();
-    let total = regions.iter().fold(0, |acc, val| {
-        if val.kind == MemoryRegionKind::UsableRam {
-            acc + val.length
-        } else {
-            acc
-        }
-    });
-    let mut reserved = 0;
-    for reg in regions {
-        if matches!(reg.kind, MemoryRegionKind::UsableRam) {
-            // TODO: don't just pick one, and don't just pick the first one.
-            if reserved >= MAX_RESERVE_KERNEL {
-                pager_regions.push(*reg);
-            } else if reg.length > NULLPAGE_SIZE * 2 {
-                let (first, second) = (*reg).split(reg.length / 2).unwrap();
-                reserved += first.length;
-                fa_regions.push(first);
-                pager_regions.push(second);
-            } else {
-                reserved += reg.length;
-                fa_regions.push(*reg);
-            }
-        }
-    }
-    let total_pager = pager_regions.iter().fold(0, |acc, val| {
-        if val.kind == MemoryRegionKind::UsableRam {
-            acc + val.length
-        } else {
-            acc
-        }
-    });
-    let total_kernel = fa_regions.iter().fold(0, |acc, val| {
-        if val.kind == MemoryRegionKind::UsableRam {
-            acc + val.length
-        } else {
-            acc
-        }
-    });
-    logln!(
-        "[kernel::pager] split memory: {} MB pager / {} MB kernel",
-        total_pager / (1024 * 1024),
-        total_kernel / (1024 * 1024)
-    );
-    assert_eq!(total, total_pager + total_kernel);
-    PAGER_MEMORY.call_once(|| pager_regions);
-    fa_regions
-}
-
-lazy_static::lazy_static! {
-    static ref INFLIGHT_MGR: Mutex<InflightManager> = Mutex::new(InflightManager::new());
+fn inflight_mgr() -> &'static Mutex<InflightManager> {
+    INFLIGHT_MGR.call_once(|| Mutex::new(InflightManager::new()))
 }
 
 pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
@@ -87,7 +37,7 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
             _ => {}
         }
 
-        let mut mgr = INFLIGHT_MGR.lock();
+        let mut mgr = inflight_mgr().lock();
         if !mgr.is_ready() {
             return None;
         }
@@ -97,7 +47,7 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
             queues::submit_pager_request(pager_req);
         }
 
-        let mut mgr = INFLIGHT_MGR.lock();
+        let mut mgr = inflight_mgr().lock();
         let thread = current_thread_ref().unwrap();
         if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
             drop(mgr);
@@ -107,7 +57,7 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
 }
 
 pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
-    let mut mgr = INFLIGHT_MGR.lock();
+    let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
     }
@@ -117,7 +67,7 @@ pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
         queues::submit_pager_request(pager_req);
     }
 
-    let mut mgr = INFLIGHT_MGR.lock();
+    let mut mgr = inflight_mgr().lock();
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
@@ -126,7 +76,7 @@ pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
 }
 
 fn cmd_object(req: ReqKind) {
-    let mut mgr = INFLIGHT_MGR.lock();
+    let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
     }
@@ -136,7 +86,7 @@ fn cmd_object(req: ReqKind) {
         queues::submit_pager_request(pager_req);
     }
 
-    let mut mgr = INFLIGHT_MGR.lock();
+    let mut mgr = inflight_mgr().lock();
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
@@ -168,4 +118,90 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize) {
 
 pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) {
     ensure_in_core(obj, pn, 1);
+}
+
+fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
+    let mut ranges = Vec::new();
+    let mut count = 0;
+    if crate::memory::tracker::get_outstanding_pager_pages() + min_frames
+        >= MAX_PAGER_OUTSTANDING_FRAMES
+    {
+        return Vec::new();
+    }
+    while count < min_frames {
+        let req_max = (min_frames - count).min(DEFAULT_PAGER_OUTSTANDING_FRAMES);
+        let level = if req_max * PHYS_LEVEL_LAYOUTS[0].size() >= PHYS_LEVEL_LAYOUTS[1].size() {
+            1
+        } else {
+            0
+        };
+
+        if let Some(frame) = crate::memory::tracker::try_alloc_frame(
+            FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[level],
+        ) {
+            count += PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
+            crate::memory::tracker::track_page_pager(frame);
+            ranges.push(PhysRange::new(
+                frame.start_address().raw(),
+                frame.start_address().offset(frame.size()).unwrap().raw(),
+            ));
+        } else {
+            if let Some(frame) = crate::memory::tracker::try_alloc_frame(
+                FrameAllocFlags::ZEROED,
+                PHYS_LEVEL_LAYOUTS[0],
+            ) {
+                count += 1;
+                crate::memory::tracker::track_page_pager(frame);
+                ranges.push(PhysRange::new(
+                    frame.start_address().raw(),
+                    frame.start_address().offset(frame.size()).unwrap().raw(),
+                ));
+            }
+        }
+    }
+    ranges
+}
+
+pub fn provide_pager_memory(min_frames: usize, wait: bool) {
+    let mut mgr = inflight_mgr().lock();
+    if !mgr.is_ready() {
+        return;
+    }
+    //print_tracker_stats();
+    let ranges = get_memory_for_pager(min_frames);
+    logln!(
+        "allocated {} ranges for pager (min_frames = {}, total = {} KB)",
+        ranges.len(),
+        min_frames,
+        ranges.iter().fold(0, |acc, x| acc + x.len()) / 1024
+    );
+    //print_tracker_stats();
+
+    let inflights = ranges
+        .iter()
+        .map(|range| {
+            let req = ReqKind::new_pager_memory(*range);
+            mgr.add_request(req)
+        })
+        .collect::<Vec<_>>();
+
+    drop(mgr);
+
+    for inflight in &inflights {
+        if let Some(pager_req) = inflight.pager_req() {
+            queues::submit_pager_request(pager_req);
+        }
+    }
+
+    if wait {
+        for inflight in &inflights {
+            let mut mgr = inflight_mgr().lock();
+            let thread = current_thread_ref().unwrap();
+            if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
+                drop(mgr);
+                finish_blocking(guard);
+            };
+        }
+    }
 }

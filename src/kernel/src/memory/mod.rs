@@ -6,8 +6,12 @@ pub mod allocator;
 pub mod context;
 pub mod frame;
 pub mod pagetables;
+pub mod tracker;
+
+use alloc::vec::Vec;
 
 pub use arch::{PhysAddr, VirtAddr};
+use tracker::{alloc_frame, print_tracker_stats, reclaim, FrameAllocFlags};
 use twizzler_abi::object::NULLPAGE_SIZE;
 
 use self::context::{KernelMemoryContext, UserContext};
@@ -60,4 +64,23 @@ pub fn is_init() -> bool {
 pub fn prep_smp() {
     let kc = context::kernel_context();
     kc.prep_smp();
+}
+
+pub fn sim_memory_pressure() {
+    logln!("TEST -- simulating memory pressure");
+
+    let alloc_frames = || {
+        (0..4096)
+            .map(|_| alloc_frame(FrameAllocFlags::WAIT_OK))
+            .collect::<Vec<_>>()
+    };
+    const NUM_ITERS: usize = 1024;
+    //let mut alloced = Vec::new();
+    for i in 0..NUM_ITERS {
+        logln!("iteration {} / {}", i, NUM_ITERS);
+        print_tracker_stats();
+        let frames = alloc_frames();
+        //alloced.push(frames);
+        reclaim(frames);
+    }
 }

@@ -148,7 +148,7 @@ pub fn start_entropy_contribution_thread() {
     // FIXME: currently this thread never is actually run again due to
     // default_background priority coupled with sys_thread_sync never actually
     // causing the thread to resume.
-    run_closure_in_new_thread(Priority::default_user(), || contribute_entropy_regularly());
+    run_closure_in_new_thread(Priority::USER, || contribute_entropy_regularly());
 }
 
 extern "C" fn contribute_entropy_regularly() {

@@ -23,14 +23,17 @@ use crate::{
     },
     idcounter::{Id, IdCounter, StableId},
     memory::{
+        frame::PHYS_LEVEL_LAYOUTS,
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
             PhysAddrProvider, Table, ZeroPageProvider,
         },
+        tracker::{FrameAllocFlags, FrameAllocator},
         PhysAddr,
     },
     mutex::Mutex,
     obj::{self, pages::Page, range::PageStatus, ObjectRef, PageNumber},
+    once::Once,
     security::KERNEL_SCTX,
     spinlock::Spinlock,
     thread::{current_memory_context, current_thread_ref},
@@ -61,11 +64,17 @@ struct SlotMgr {
     objs: BTreeMap<ObjID, Vec<Slot>>,
 }
 
-lazy_static::lazy_static! {
-    static ref KERNEL_SLOT_COUNTER: Mutex<KernelSlotCounter> = Mutex::new(KernelSlotCounter {
-        cur_kernel_slot: Slot::try_from(VirtAddr::start_kernel_object_memory()).unwrap().raw(),
-        kernel_slots_nums: Vec::new(),
-    });
+static KERNEL_SLOT_COUNTER: Once<Mutex<KernelSlotCounter>> = Once::new();
+
+fn kernel_slot_counter() -> &'static Mutex<KernelSlotCounter> {
+    KERNEL_SLOT_COUNTER.call_once(|| {
+        Mutex::new(KernelSlotCounter {
+            cur_kernel_slot: Slot::try_from(VirtAddr::start_kernel_object_memory())
+                .unwrap()
+                .raw(),
+            kernel_slots_nums: Vec::new(),
+        })
+    })
 }
 
 /// A representation of a slot number.
@@ -136,8 +145,8 @@ struct ObjectPageProvider<'a> {
 }
 
 impl<'a> PhysAddrProvider for ObjectPageProvider<'a> {
-    fn peek(&mut self) -> (crate::arch::address::PhysAddr, usize) {
-        (self.page.physical_address(), PageNumber::PAGE_SIZE)
+    fn peek(&mut self) -> Option<(crate::arch::address::PhysAddr, usize)> {
+        Some((self.page.physical_address(), PageNumber::PAGE_SIZE))
     }
 
     fn consume(&mut self, _len: usize) {}
@@ -409,7 +418,8 @@ struct GlobalPageAlloc {
 impl GlobalPageAlloc {
     fn extend(&mut self, len: usize, mapper: &VirtContext) {
         let cursor = MappingCursor::new(self.end, len);
-        let mut phys = ZeroPageProvider::default();
+        // TODO: wait-ok?
+        let mut phys = ZeroPageProvider::new(FrameAllocFlags::KERNEL);
         let settings = MappingSettings::new(
             Protections::READ | Protections::WRITE,
             CacheType::WriteBack,
@@ -429,7 +439,7 @@ impl GlobalPageAlloc {
     fn init(&mut self, mapper: &VirtContext) {
         let len = 2 * 1024 * 1024;
         let cursor = MappingCursor::new(self.end, len);
-        let mut phys = ZeroPageProvider::default();
+        let mut phys = ZeroPageProvider::new(FrameAllocFlags::KERNEL);
         let settings = MappingSettings::new(
             Protections::READ | Protections::WRITE,
             CacheType::WriteBack,
@@ -496,7 +506,7 @@ impl KernelMemoryContext for VirtContext {
 
     fn insert_kernel_object<T>(&self, info: ObjectContextInfo) -> Self::Handle<T> {
         let mut slots = self.slots.lock();
-        let mut kernel_slots_counter = KERNEL_SLOT_COUNTER.lock();
+        let mut kernel_slots_counter = kernel_slot_counter().lock();
         let slot = kernel_slots_counter
             .kernel_slots_nums
             .pop()
@@ -571,7 +581,10 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
         kctx.with_arch(KERNEL_SCTX, |arch| {
             arch.unmap(MappingCursor::new(self.start_addr(), MAX_SIZE));
         });
-        KERNEL_SLOT_COUNTER.lock().kernel_slots_nums.push(self.slot);
+        kernel_slot_counter()
+            .lock()
+            .kernel_slots_nums
+            .push(self.slot);
     }
 }
 
@@ -742,10 +755,16 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                 current_thread_ref().unwrap().send_upcall(oob_upcall);
                 return;
             }
-
-            if let PageStatus::Ready(page, cow) =
-                obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write)
-            {
+            let mut fa = FrameAllocator::new(
+                FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
+                PHYS_LEVEL_LAYOUTS[0],
+            );
+            let status = obj_page_tree.get_page(
+                page_number,
+                cause == MemoryAccessKind::Write,
+                Some(&mut fa),
+            );
+            if let PageStatus::Ready(page, cow) = status {
                 ctx.with_arch(sctx_id, |arch| {
                     // TODO: don't need all three every time.
                     arch.unmap(
@@ -761,12 +780,14 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
                         &info.mapping_settings(cow, is_kern_obj),
                     );
                 });
-            } else {
-                let page = Page::new();
-                obj_page_tree.add_page(page_number, page);
-                let PageStatus::Ready(page, cow) =
-                    obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write)
-                else {
+            } else if matches!(status, PageStatus::NoPage) {
+                let page = Page::new(fa.try_allocate().unwrap());
+                obj_page_tree.add_page(page_number, page, Some(&mut fa));
+                let PageStatus::Ready(page, cow) = obj_page_tree.get_page(
+                    page_number,
+                    cause == MemoryAccessKind::Write,
+                    Some(&mut fa),
+                ) else {
                     panic!("unreachable");
                 };
                 ctx.with_arch(sctx_id, |arch| {

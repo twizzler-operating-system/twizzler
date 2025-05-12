@@ -6,5 +6,5 @@ pub mod serial;
 
 pub fn machine_post_init() {
     // initialize uart with interrupts
-    serial::SERIAL.late_init();
+    serial::serial().late_init();
 }

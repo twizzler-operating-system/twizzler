@@ -4,9 +4,10 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use lazy_static::lazy_static;
-
-use crate::interrupt::{Destination, TriggerMode};
+use crate::{
+    interrupt::{Destination, TriggerMode},
+    once::Once,
+};
 
 pub struct SerialPort {
     port: u16,
@@ -186,17 +187,24 @@ unsafe impl<T> Sync for SimpleLock<T> where T: Send {}
 unsafe impl<T> Send for SimpleGuard<'_, T> where T: Send {}
 unsafe impl<T> Sync for SimpleGuard<'_, T> where T: Send + Sync {}
 
-lazy_static! {
-    static ref SERIAL1: SimpleLock<SerialPort> = {
+static SERIAL1: Once<SimpleLock<SerialPort>> = Once::new();
+
+fn serial1() -> &'static SimpleLock<SerialPort> {
+    SERIAL1.call_once(|| {
         let mut serial_port = unsafe { SerialPort::new(0x3f8) };
         serial_port.init();
         SimpleLock::new(serial_port)
-    };
-    static ref SERIAL2: SimpleLock<SerialPort> = {
+    })
+}
+
+static SERIAL2: Once<SimpleLock<SerialPort>> = Once::new();
+
+fn serial2() -> &'static SimpleLock<SerialPort> {
+    SERIAL2.call_once(|| {
         let mut serial_port = unsafe { SerialPort::new(0x2f8) };
         serial_port.init();
         SimpleLock::new(serial_port)
-    };
+    })
 }
 
 pub fn late_init() {
@@ -211,7 +219,7 @@ pub fn late_init() {
 }
 
 pub fn interrupt_handler() {
-    let mut serial = SERIAL1.lock();
+    let mut serial = serial1().lock();
     let status = serial.read_iid();
     match (status >> 1) & 7 {
         0 => {
@@ -221,7 +229,7 @@ pub fn interrupt_handler() {
             let x = serial.receive();
             drop(serial);
             crate::log::push_input_byte(x);
-            serial = SERIAL1.lock();
+            serial = serial1().lock();
             if !serial.line_sts().contains(LineStsFlags::INPUT_FULL) {
                 break;
             }
@@ -231,10 +239,10 @@ pub fn interrupt_handler() {
 
 pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
     unsafe {
-        let _ = SERIAL1
+        let _ = serial1()
             .lock()
             .write_str(core::str::from_utf8_unchecked(data));
-        let _ = SERIAL2
+        let _ = serial2()
             .lock()
             .write_str(core::str::from_utf8_unchecked(data));
     }
