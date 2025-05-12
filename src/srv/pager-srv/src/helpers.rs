@@ -1,13 +1,12 @@
 use std::ops::Add;
 
-use miette::{IntoDiagnostic, Result};
 use object_store::{objid_to_ino, PageRequest, PagingImp};
 use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_SIZED};
 use twizzler_abi::{
     object::MAX_SIZE,
     pager::{ObjectRange, PhysRange},
 };
-use twizzler_rt_abi::object::Nonce;
+use twizzler_rt_abi::{object::Nonce, Result};
 
 use crate::{disk::DiskPageRequest, PagerContext};
 
@@ -67,10 +66,7 @@ pub async fn page_in(
                     ::core::mem::size_of::<T>(),
                 )
             }
-            let len = ctx
-                .paged_ostore
-                .find_external(obj_id.raw())
-                .into_diagnostic()?;
+            let len = ctx.paged_ostore.find_external(obj_id.raw())?;
             tracing::debug!("building meta page for external file, len: {}", len);
             let mut buffer = [0; PAGE as usize];
             let meta = MetaInfo {
@@ -129,8 +125,7 @@ pub async fn page_out_many(
         let donecount = ctx
             .paged_ostore
             .page_out_object(obj_id.raw(), &reqs)
-            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
-            .into_diagnostic()?;
+            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
         reqslice = &reqslice[donecount..];
     }
     Ok(reqs.len())
@@ -144,10 +139,10 @@ pub async fn page_in_many(
     mut reqs: Vec<PageRequest<DiskPageRequest>>,
 ) -> Result<usize> {
     //blocking::unblock(move || {
-    ctx.paged_ostore
+    Ok(ctx
+        .paged_ostore
         .page_in_object(obj_id.raw(), &mut reqs)
-        .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))
-        .into_diagnostic()
+        .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?)
     //})
     //.await
 }

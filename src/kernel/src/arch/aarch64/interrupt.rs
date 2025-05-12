@@ -14,8 +14,8 @@ use super::{
 use crate::{
     interrupt::{Destination, DynamicInterrupt, PinPolarity, TriggerMode},
     machine::{
-        interrupt::INTERRUPT_CONTROLLER,
-        serial::{serial_interrupt_handler, SERIAL_INT_ID},
+        interrupt::interrupt_controller,
+        serial::{serial_int_id, serial_interrupt_handler},
     },
     processor::{current_processor, generic_ipi_handler},
 };
@@ -108,14 +108,14 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
     // Get pending IRQ number from GIC CPU Interface
     // and possibly return the core number that interrupted us.
     // Doing so acknowledges the pending interrupt.
-    let (irq_number, sender_core) = INTERRUPT_CONTROLLER.pending_interrupt();
+    let (irq_number, sender_core) = interrupt_controller().pending_interrupt();
 
     match irq_number {
         PhysicalTimer::INTERRUPT_ID => {
             // call timer interrupt handler
             cntp_interrupt_handler();
         }
-        _ if irq_number == *SERIAL_INT_ID => {
+        _ if irq_number == serial_int_id() => {
             // call the serial interrupt handler
             serial_interrupt_handler();
         }
@@ -125,7 +125,7 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
         _ => panic!("unknown irq number! {}", irq_number),
     }
     // signal the GIC that we have serviced the IRQ
-    INTERRUPT_CONTROLLER.finish_active_interrupt(irq_number, sender_core);
+    interrupt_controller().finish_active_interrupt(irq_number, sender_core);
 
     crate::interrupt::post_interrupt()
 }
@@ -135,9 +135,9 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
 //----------------------------
 pub fn send_ipi(dest: Destination, vector: u32) {
     // tell the interrupt controller to send and interrupt
-    INTERRUPT_CONTROLLER.send_interrupt(vector, dest);
+    interrupt_controller().send_interrupt(vector, dest);
     // wait while interrupt has not been recieved
-    while INTERRUPT_CONTROLLER.is_interrupt_pending(vector, dest) {
+    while interrupt_controller().is_interrupt_pending(vector, dest) {
         core::hint::spin_loop();
     }
 }
@@ -173,15 +173,15 @@ pub fn init_interrupts() {
 
     // initialize interrupt controller
     if cpu.is_bsp() {
-        INTERRUPT_CONTROLLER.configure_global();
+        interrupt_controller().configure_global();
     }
-    INTERRUPT_CONTROLLER.configure_local();
+    interrupt_controller().configure_local();
 
     // enable this CPU to recieve interrupts from the timer
     // by configuring the interrupt controller to route
     // the timer's interrupt to us
-    INTERRUPT_CONTROLLER.route_interrupt(PhysicalTimer::INTERRUPT_ID, cpu.id);
-    INTERRUPT_CONTROLLER.enable_interrupt(PhysicalTimer::INTERRUPT_ID);
+    interrupt_controller().route_interrupt(PhysicalTimer::INTERRUPT_ID, cpu.id);
+    interrupt_controller().enable_interrupt(PhysicalTimer::INTERRUPT_ID);
 }
 
 pub fn set_interrupt(
@@ -192,8 +192,10 @@ pub fn set_interrupt(
     destination: Destination,
 ) {
     match destination {
-        Destination::Bsp => INTERRUPT_CONTROLLER.route_interrupt(num, current_processor().bsp_id()),
+        Destination::Bsp => {
+            interrupt_controller().route_interrupt(num, current_processor().bsp_id())
+        }
         _ => todo!("routing interrupt: {:?}", destination),
     }
-    INTERRUPT_CONTROLLER.enable_interrupt(num);
+    interrupt_controller().enable_interrupt(num);
 }

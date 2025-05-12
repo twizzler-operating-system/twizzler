@@ -5,7 +5,7 @@ use crate::{
         address::{PhysAddr, VirtAddr},
         memory::pagetables::{ArchCacheLineMgr, ArchTlbMgr},
     },
-    memory::frame::{free_frame, FrameAdapter, FrameRef},
+    memory::frame::{FrameAdapter, FrameRef},
 };
 
 /// Management for consistency, wrapping any cache-line flushing and TLB coherence into a single
@@ -69,7 +69,7 @@ impl Drop for DeferredUnmappingOps {
 impl DeferredUnmappingOps {
     pub fn run_all(mut self) {
         while let Some(page) = self.pages.pop_back() {
-            free_frame(page)
+            crate::memory::tracker::free_frame(page)
         }
     }
 }

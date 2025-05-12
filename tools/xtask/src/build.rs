@@ -95,6 +95,7 @@ fn build_third_party<'a>(
         return Ok(vec![]);
     }
     crate::toolchain::set_static();
+    crate::toolchain::set_cc(&build_config.twz_triple());
     let config = user_workspace.gctx();
     let smap = SourceConfigMap::new(config)?;
     let mut registry = PackageRegistry::new_with_source_config(config, smap)?;

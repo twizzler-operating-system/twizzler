@@ -198,7 +198,7 @@ pub fn idle_main() -> ! {
             // Run tests on a high priority thread, so any threads spawned by tests
             // don't preempt the testing thread.
             crate::thread::entry::run_closure_in_new_thread(
-                crate::thread::priority::Priority::default_realtime(),
+                crate::thread::priority::Priority::REALTIME,
                 || test_main(),
             )
             .1

@@ -7,7 +7,10 @@ use twizzler_abi::{
 use twizzler_rt_abi::object::Nonce;
 
 use crate::{
-    memory::VirtAddr,
+    memory::{
+        tracker::{alloc_frame, FrameAllocFlags},
+        VirtAddr,
+    },
     obj::{self, pages::Page, ObjectRef, PageNumber},
     once::Once,
 };
@@ -60,13 +63,15 @@ pub fn init(modules: &[BootModule]) {
             let mut total = 0;
             let mut pagenr = 1;
             while total < data.len() {
-                let page = Page::new();
+                let page = Page::new(alloc_frame(
+                    FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+                ));
                 let va: *mut u8 = page.as_virtaddr().as_mut_ptr();
                 let thislen = core::cmp::min(4096, data.len() - total);
                 unsafe {
                     va.copy_from(data.as_ptr().add(total), thislen);
                 }
-                obj.add_page(pagenr.into(), page);
+                obj.add_page(pagenr.into(), page, None);
                 total += thislen;
                 pagenr += 1;
             }
@@ -88,12 +93,18 @@ pub fn init(modules: &[BootModule]) {
                 buffer[size_of::<MetaInfo>()..(size_of::<MetaInfo>() + size_of::<MetaExt>())]
                     .copy_from_slice(any_as_u8_slice(&me));
             }
-            let page = Page::new();
+            let page = Page::new(alloc_frame(
+                FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+            ));
             let va: *mut u8 = page.as_virtaddr().as_mut_ptr();
             unsafe {
                 va.copy_from(buffer.as_ptr(), 0x1000);
             }
-            obj.add_page(PageNumber::from_offset(MAX_SIZE - NULLPAGE_SIZE), page);
+            obj.add_page(
+                PageNumber::from_offset(MAX_SIZE - NULLPAGE_SIZE),
+                page,
+                None,
+            );
 
             let obj = Arc::new(obj);
             obj::register_object(obj.clone());

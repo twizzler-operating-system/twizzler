@@ -24,7 +24,9 @@ fixedbitset = { version = "0.5.7", default-features = false }
 linked_list_allocator = "0.10"
 tar-no-std = "0.3"
 object = { version = "0.36.7", default-features = false, features = ["read"] }
-addr2line = { version = "0.16", default-features = false, features = ["rustc-demangle"] }
+addr2line = { version = "0.16", default-features = false, features = [
+    "rustc-demangle",
+] }
 backtracer_core = { git = "https://github.com/twizzler-operating-system/backtracer", branch = "twizzler" }
 limine = "0.2.0"
 twizzler-queue-raw = { version = "*", path = "../lib/twizzler-queue-raw", default-features = false }
@@ -49,7 +51,7 @@ twizzler-security = {path = "../lib/twizzler-security", features = ["kernel"],de
 rdrand = { version = "0.8.3", default-features = false }
 uart_16550 = "0.3.0"
 x86 = "0.52.0"
-acpi = { version = "5.2.0", features = ["alloc"]}
+acpi = { version = "5.2.0", features = ["alloc"] }
 
 [target.aarch64-unknown-none.dependencies]
 arm64 = { package = "aarch64-cpu", version = "9.3.1" }
@@ -60,11 +62,5 @@ smccc = "0.2.0"
 [target.'cfg(machine = "morello")'.dependencies]
 arm-gic = "0.2.2"
 
-[dependencies.lazy_static]
-version = "1.0"
-features = ["spin_no_std"]
-
 [package.metadata]
-
-
 twizzler-build = "kernel"

@@ -110,7 +110,7 @@ mod tests {
 
         const ITERS: usize = 500;
         for _ in 0..ITERS {
-            let handle = run_closure_in_new_thread(Priority::default_user(), || {
+            let handle = run_closure_in_new_thread(Priority::USER, || {
                 let _ = crate::syscall::sync::sys_thread_sync(
                     &mut [],
                     Some(&mut Duration::from_millis(1)),

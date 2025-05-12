@@ -13,7 +13,8 @@ use crate::{
             kernel_context, KernelMemoryContext, KernelObject, KernelObjectHandle,
             ObjectContextInfo,
         },
-        frame::{alloc_frame, FrameRef, PhysicalFrameFlags},
+        frame::FrameRef,
+        tracker::{alloc_frame, FrameAllocFlags},
     },
     obj::{pages::Page, ObjectRef, PageNumber},
     userinit::create_blank_object,
@@ -52,14 +53,16 @@ impl<Base> ControlObjectCacher<Base> {
             ));
             QuickOrKernel::Kernel(kobj)
         } else {
-            let frame = alloc_frame(PhysicalFrameFlags::ZEROED);
+            let frame = alloc_frame(
+                FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK | FrameAllocFlags::KERNEL,
+            );
             let page = Page::new_wired(frame.start_address(), CacheType::WriteBack);
             let base_ptr = unsafe {
                 let ptr = page.get_mut_to_val::<Base>(0);
                 ptr.write(base);
                 ptr
             };
-            object.add_page(PageNumber::base_page(), page);
+            object.add_page(PageNumber::base_page(), page, None);
             QuickOrKernel::Quick(QuickBase {
                 base_ptr: NonNull::new(base_ptr).unwrap(),
                 base_frame: frame,

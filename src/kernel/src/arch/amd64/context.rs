@@ -1,14 +1,16 @@
 use crate::{
     arch::memory::pagetables::{Entry, EntryFlags},
     memory::{
-        frame::{alloc_frame, free_frame, get_frame, PhysicalFrameFlags},
+        frame::get_frame,
         pagetables::{
             DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
             PhysAddrProvider,
         },
+        tracker::{alloc_frame, free_frame, FrameAllocFlags},
         VirtAddr,
     },
     mutex::Mutex,
+    once::Once,
     spinlock::Spinlock,
 };
 
@@ -25,14 +27,24 @@ pub struct ArchContext {
 #[repr(transparent)]
 pub struct ArchContextTarget(u64);
 
-lazy_static::lazy_static! {
-    static ref KERNEL_MAPPER: Spinlock<Mapper> = {
-        let mut m = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
+static KERNEL_MAPPER: Once<Spinlock<Mapper>> = Once::new();
+
+fn kernel_mapper() -> &'static Spinlock<Mapper> {
+    KERNEL_MAPPER.call_once(|| {
+        let mut m = Mapper::new(
+            alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL).start_address(),
+        );
         for idx in 256..512 {
-            m.set_top_level_table(idx, Entry::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address(), EntryFlags::intermediate()));
+            m.set_top_level_table(
+                idx,
+                Entry::new(
+                    alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL).start_address(),
+                    EntryFlags::intermediate(),
+                ),
+            );
         }
         Spinlock::new(m)
-    };
+    })
 }
 
 impl Default for ArchContext {
@@ -78,16 +90,19 @@ impl ArchContext {
         phys: &mut impl PhysAddrProvider,
         settings: &MappingSettings,
     ) {
-        if cursor.start().is_kernel() {
-            KERNEL_MAPPER.lock().map(cursor, phys, settings);
+        let ops = if cursor.start().is_kernel() {
+            kernel_mapper().lock().map(cursor, phys, settings)
         } else {
-            self.inner.lock().map(cursor, phys, settings);
+            self.inner.lock().map(cursor, phys, settings)
+        };
+        if let Err(ops) = ops {
+            ops.run_all();
         }
     }
 
     pub fn change(&self, cursor: MappingCursor, settings: &MappingSettings) {
         if cursor.start().is_kernel() {
-            KERNEL_MAPPER.lock().change(cursor, settings);
+            kernel_mapper().lock().change(cursor, settings);
         } else {
             self.inner.lock().change(cursor, settings);
         }
@@ -95,7 +110,7 @@ impl ArchContext {
 
     pub fn unmap(&self, cursor: MappingCursor) {
         let ops = if cursor.start().is_kernel() {
-            KERNEL_MAPPER.lock().unmap(cursor)
+            kernel_mapper().lock().unmap(cursor)
         } else {
             self.inner.lock().unmap(cursor)
         };
@@ -104,7 +119,7 @@ impl ArchContext {
 
     pub fn readmap<R>(&self, cursor: MappingCursor, f: impl Fn(MapReader) -> R) -> R {
         let r = if cursor.start().is_kernel() {
-            f(KERNEL_MAPPER.lock().readmap(cursor))
+            f(kernel_mapper().lock().readmap(cursor))
         } else {
             f(self.inner.lock().mapper.readmap(cursor))
         };
@@ -114,8 +129,13 @@ impl ArchContext {
 
 impl ArchContextInner {
     fn new() -> Self {
-        let mut mapper = Mapper::new(alloc_frame(PhysicalFrameFlags::ZEROED).start_address());
-        let km = KERNEL_MAPPER.lock();
+        let mut mapper = Mapper::new(
+            alloc_frame(
+                FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK,
+            )
+            .start_address(),
+        );
+        let km = kernel_mapper().lock();
         for idx in 256..512 {
             mapper.set_top_level_table(idx, km.get_top_level_table(idx));
         }
@@ -127,8 +147,8 @@ impl ArchContextInner {
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
         settings: &MappingSettings,
-    ) {
-        self.mapper.map(cursor, phys, settings);
+    ) -> Result<(), DeferredUnmappingOps> {
+        self.mapper.map(cursor, phys, settings)
     }
 
     fn change(&mut self, cursor: MappingCursor, settings: &MappingSettings) {

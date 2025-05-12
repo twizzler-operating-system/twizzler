@@ -84,7 +84,8 @@ impl WakeInfo {
     pub fn wake(&self, val: u64) {
         //logln!("wake! {}", val);
         unsafe {
-            self.obj.write_val_and_signal(self.offset, val, usize::MAX);
+            self.obj
+                .try_write_val_and_signal(self.offset, val, usize::MAX);
         }
     }
 
@@ -218,7 +219,8 @@ extern "C" fn soft_interrupt_waker() {
 
 pub fn init() {
     INT_THREAD.call_once(|| {
-        crate::thread::entry::start_new_kernel(Priority::default_user(), soft_interrupt_waker, 0)
+        // TODO: priority?
+        crate::thread::entry::start_new_kernel(Priority::USER, soft_interrupt_waker, 0)
     });
 }
 

@@ -74,11 +74,22 @@ impl Mapper {
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
         settings: &MappingSettings,
-    ) {
+    ) -> Result<(), DeferredUnmappingOps> {
         let mut consist = Consistency::new(self.root);
         let level = self.start_level;
         let root = self.root_mut();
-        root.map(&mut consist, cursor, level, phys, settings);
+        if root
+            .map(&mut consist, cursor, level, phys, settings)
+            .is_none()
+        {
+            drop(consist);
+            let mut consist = Consistency::new(self.root);
+            let root = self.root_mut();
+            root.unmap(&mut consist, cursor, level);
+            Err(consist.into_deferred())
+        } else {
+            Ok(())
+        }
     }
 
     #[must_use]

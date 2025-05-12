@@ -3,6 +3,7 @@ use core::{
     alloc::Layout,
     cell::RefCell,
     sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
+    u32,
 };
 
 use intrusive_collections::{linked_list::AtomicLink, offset_of, RBTreeAtomicLink};
@@ -15,7 +16,7 @@ use twizzler_abi::{
 
 use self::{
     flags::{THREAD_IN_KERNEL, THREAD_PROC_IDLE},
-    priority::{Priority, PriorityClass},
+    priority::Priority,
 };
 use crate::{
     idcounter::{Id, IdCounter},
@@ -45,14 +46,14 @@ pub struct ThreadStats {
 
 pub struct Thread {
     pub arch: crate::arch::thread::ArchThread,
-    pub priority: Priority,
+    pub priority: AtomicU32,
     pub flags: AtomicU32,
     pub last_cpu: AtomicI32,
     pub affinity: AtomicI32,
     pub critical_counter: AtomicU64,
     id: Id<'static>,
     pub switch_lock: AtomicU64,
-    pub donated_priority: Spinlock<Option<Priority>>,
+    pub donated_priority: AtomicU32,
     pub current_processor_queue: AtomicI32,
     memory_context: Option<ContextRef>,
     pub kernel_stack: Box<[u8; KERNEL_STACK_SIZE]>,
@@ -112,7 +113,7 @@ impl Thread {
         };
         Self {
             arch: crate::arch::thread::ArchThread::new(),
-            priority,
+            priority: AtomicU32::new(priority.raw()),
             id: ID_COUNTER.next(),
             flags: AtomicU32::new(THREAD_IN_KERNEL),
             kernel_stack: unsafe { Box::from_raw(core::intrinsics::transmute(kernel_stack)) },
@@ -120,7 +121,7 @@ impl Thread {
             switch_lock: AtomicU64::new(0),
             affinity: AtomicI32::new(-1),
             last_cpu: AtomicI32::new(-1),
-            donated_priority: Spinlock::new(None),
+            donated_priority: AtomicU32::new(u32::MAX),
             current_processor_queue: AtomicI32::new(-1),
             stats: ThreadStats::default(),
             memory_context: ctx,
@@ -136,9 +137,8 @@ impl Thread {
     }
 
     pub fn new_idle() -> Self {
-        let mut thread = Self::new(None, None, Priority::default_idle());
+        let thread = Self::new(None, None, Priority::IDLE);
         thread.flags.fetch_or(THREAD_PROC_IDLE, Ordering::SeqCst);
-        thread.priority.class = PriorityClass::Idle;
         thread.switch_lock.store(1, Ordering::SeqCst);
         thread
     }
