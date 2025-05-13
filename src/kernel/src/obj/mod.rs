@@ -26,6 +26,7 @@ use crate::{
     },
     mutex::{LockGuard, Mutex},
     once::Once,
+    random::getrandom,
 };
 
 pub mod control;
@@ -153,10 +154,10 @@ fn backup_id_gen() -> ObjID {
     ((OID.fetch_add(1, Ordering::SeqCst) as u128) | (1u128 << 64)).into()
 }
 
-fn gen_id(nonce: ObjID, kuid: ObjID, flags: MetaFlags) -> ObjID {
+fn gen_id(nonce: u128, kuid: ObjID, flags: MetaFlags) -> ObjID {
     #[repr(C)]
     struct Ids {
-        nonce: ObjID,
+        nonce: u128,
         kuid: ObjID,
         flags: MetaFlags,
     }
@@ -172,13 +173,8 @@ fn gen_id(nonce: ObjID, kuid: ObjID, flags: MetaFlags) -> ObjID {
     u128::from_ne_bytes(id_buf).into()
 }
 
-pub fn calculate_new_id(kuid: ObjID, flags: MetaFlags) -> ObjID {
-    let mut buf = [0u8; 16];
-    if !crate::random::getrandom(&mut buf, true) {
-        return backup_id_gen();
-    }
-    let nonce = u128::from_ne_bytes(buf);
-    gen_id(nonce.into(), kuid, flags)
+pub fn calculate_new_id(kuid: ObjID, flags: MetaFlags, nonce: u128) -> ObjID {
+    gen_id(nonce, kuid, flags)
 }
 
 impl Object {
@@ -258,8 +254,13 @@ impl Object {
     }
 
     pub fn new_kernel() -> Self {
+        let mut bytes = [0; 16];
+        if !getrandom(&mut bytes, true) {
+            return Self::new(backup_id_gen(), LifetimeType::Volatile, &[]);
+        }
+        let nonce = u128::from_ne_bytes(bytes);
         Self::new(
-            calculate_new_id(0.into(), MetaFlags::default()),
+            calculate_new_id(0.into(), MetaFlags::default(), nonce),
             LifetimeType::Volatile,
             &[],
         )

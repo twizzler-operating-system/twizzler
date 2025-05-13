@@ -1,5 +1,7 @@
 //! Functions for handling upcalls from the kernel.
 
+use twizzler_rt_abi::error::RawTwzError;
+
 pub use crate::arch::upcall::UpcallFrame;
 use crate::object::ObjID;
 
@@ -59,6 +61,8 @@ pub enum ObjectMemoryError {
     NullPageAccess,
     /// Tried to access outside of an object
     OutOfBounds(usize),
+    /// Failed to satisfy fault due to backing storage failure
+    BackingFailed(RawTwzError),
 }
 
 /// Information about a non-object-related memory access violation.
@@ -86,6 +90,16 @@ pub enum MemoryAccessKind {
     InstructionFetch,
 }
 
+/// Information about a non-object-related memory access violation.
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(C)]
+pub struct SecurityViolationInfo {
+    /// The virtual address that caused the violation.
+    pub address: u64,
+    /// The kind of memory access.
+    pub access_kind: MemoryAccessKind,
+}
+
 /// Possible upcall reasons and info.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
@@ -93,6 +107,7 @@ pub enum UpcallInfo {
     Exception(ExceptionInfo),
     ObjectMemoryFault(ObjectMemoryFaultInfo),
     MemoryContextViolation(MemoryContextViolationInfo),
+    SecurityViolation(SecurityViolationInfo),
 }
 
 impl UpcallInfo {
@@ -104,6 +119,7 @@ impl UpcallInfo {
             UpcallInfo::Exception(_) => 0,
             UpcallInfo::ObjectMemoryFault(_) => 1,
             UpcallInfo::MemoryContextViolation(_) => 2,
+            UpcallInfo::SecurityViolation(_) => 3,
         }
     }
 }

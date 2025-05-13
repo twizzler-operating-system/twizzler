@@ -4,9 +4,10 @@ use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
-        UpcallInfo,
+        SecurityViolationInfo, UpcallInfo,
     },
 };
+use twizzler_rt_abi::error::{IoError, RawTwzError, TwzError};
 
 use super::{region::MapRegion, PageFaultFlags, Slot};
 use crate::{
@@ -101,14 +102,15 @@ fn check_object_addr(
 
 fn check_security(
     ctx: &ContextRef,
+    user_sctx: ObjID,
     id: ObjID,
-    _addr: VirtAddr,
+    addr: VirtAddr,
     cause: MemoryAccessKind,
     ip: VirtAddr,
 ) -> Result<PermsInfo, UpcallInfo> {
     if ip.is_kernel() {
         return Ok(PermsInfo {
-            ctx: KERNEL_SCTX,
+            ctx: user_sctx,
             prot: Protections::all(),
         });
     }
@@ -131,9 +133,13 @@ fn check_security(
         }
         let perms = ct.secctx.search_access(&access_info);
         if perms.prot & access_kind != access_kind {
-            todo!();
+            Err(UpcallInfo::SecurityViolation(SecurityViolationInfo {
+                address: addr.raw(),
+                access_kind: cause,
+            }))
+        } else {
+            Ok(perms)
         }
-        Ok(perms)
     } else {
         Ok(PermsInfo {
             ctx: KERNEL_SCTX,
@@ -148,23 +154,24 @@ fn page_fault_to_region(
     _flags: PageFaultFlags,
     ip: VirtAddr,
     ctx: ContextRef,
-    sctx_id: ObjID,
+    mut sctx_id: ObjID,
     info: MapRegion,
 ) -> Result<(), UpcallInfo> {
     let id = info.object.id();
     let page_number = PageNumber::from_address(addr);
     let is_kern_obj = addr.is_kernel_object_memory();
 
+    // Step 1: Check for address validity and check for security violations.
     check_object_addr(page_number, id, cause, addr)?;
-    let perms = check_security(&ctx, id, addr, cause, ip)?;
+    let perms = check_security(&ctx, sctx_id, id, addr, cause, ip)?;
 
+    // Do we need to switch contexts?
     if perms.ctx != sctx_id {
-        // TODO
-        //logln!("switch {} {}", perms.ctx, sctx_id);
-        //current_thread_ref().map(|ct| ct.secctx.switch_context(perms.ctx));
-        //sctx_id = perms.ctx;
+        current_thread_ref().map(|ct| ct.secctx.switch_context(perms.ctx));
+        sctx_id = perms.ctx;
     }
 
+    // Step 2: Ensure the backing pages are present if the object needs the pager.
     let mut obj_page_tree = info.object.lock_page_tree();
     if info.object.use_pager() {
         if matches!(obj_page_tree.try_get_page(page_number), PageStatus::NoPage) {
@@ -179,9 +186,11 @@ fn page_fault_to_region(
         PHYS_LEVEL_LAYOUTS[0],
     );
 
+    // Mapping helper
     let do_map = |page: Arc<Page>, cow: bool| {
         let settings = info.mapping_settings(cow, is_kern_obj);
         let settings = MappingSettings::new(
+            // Mapping protections, restricted by the permissions.
             settings.perms() & perms.prot,
             settings.cache(),
             settings.flags(),
@@ -193,9 +202,9 @@ fn page_fault_to_region(
         });
     };
 
+    // Step 3: get the page, creating one if it's not present and we're backing with zero'd DRAM.
     let mut status =
         obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write, Some(&mut fa));
-
     if matches!(status, PageStatus::NoPage) && !info.object.use_pager() {
         let page = Page::new(fa.try_allocate().unwrap());
         obj_page_tree.add_page(page_number, page, Some(&mut fa));
@@ -203,11 +212,19 @@ fn page_fault_to_region(
             obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write, Some(&mut fa));
     }
 
+    // Step 4: do the mapping. If the page isn't present by now, report data loss.
     if let PageStatus::Ready(page, cow) = status {
         do_map(page, cow);
         Ok(())
     } else {
-        todo!();
+        Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
+            id,
+            ObjectMemoryError::BackingFailed(RawTwzError::new(
+                TwzError::Io(IoError::DataLoss).raw(),
+            )),
+            cause,
+            addr.raw() as usize,
+        )))
     }
 }
 
