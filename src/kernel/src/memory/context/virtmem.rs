@@ -269,14 +269,12 @@ impl UserContext for VirtContext {
             object: object_info.object().clone(),
             offset: 0,
             range: slot.range(),
+            shadow: None,
         };
         object_info.object().add_context(self);
         let mut slots = self.regions.lock();
-        if let Some(info) = slots.lookup_region(slot.start_vaddr()) {
-            if info != &new_slot_info {
-                return Err(ResourceError::Busy.into());
-            }
-            return Ok(());
+        if slots.lookup_region(slot.start_vaddr()).is_some() {
+            return Err(ResourceError::Busy.into());
         }
         slots.insert_region(new_slot_info);
         Ok(())
@@ -479,6 +477,7 @@ impl KernelMemoryContext for VirtContext {
             offset: 0,
             prot: info.prot(),
             cache_type: info.cache(),
+            shadow: None,
         };
         slots.insert_region(new_slot_info);
         KernelObjectVirtHandle {
@@ -604,7 +603,7 @@ impl StableId for VirtContext {
 }
 
 bitflags::bitflags! {
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy)]
     pub struct PageFaultFlags : u32 {
         const USER = 1;
         const INVALID = 2;
