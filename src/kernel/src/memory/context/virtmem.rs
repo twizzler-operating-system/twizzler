@@ -1,20 +1,17 @@
 //! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use core::{marker::PhantomData, mem::size_of, ptr::NonNull};
+use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull};
 
+use region::{MapRegion, RegionManager};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    upcall::{
-        MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
-        UpcallInfo,
-    },
 };
+use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 use super::{
-    kernel_context, InsertError, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo,
-    UserContext,
+    kernel_context, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo, UserContext,
 };
 use crate::{
     arch::{
@@ -23,21 +20,25 @@ use crate::{
     },
     idcounter::{Id, IdCounter, StableId},
     memory::{
-        frame::PHYS_LEVEL_LAYOUTS,
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
             PhysAddrProvider, Table, ZeroPageProvider,
         },
-        tracker::{FrameAllocFlags, FrameAllocator},
+        tracker::FrameAllocFlags,
         PhysAddr,
     },
     mutex::Mutex,
-    obj::{self, pages::Page, range::PageStatus, ObjectRef, PageNumber},
+    obj::{self, pages::Page, ObjectRef, PageNumber},
     once::Once,
     security::KERNEL_SCTX,
     spinlock::Spinlock,
-    thread::{current_memory_context, current_thread_ref},
 };
+
+pub mod fault;
+pub mod region;
+mod tests;
+
+pub use fault::page_fault;
 
 /// A type that implements [Context] for virtual memory systems.
 pub struct VirtContext {
@@ -46,7 +47,7 @@ pub struct VirtContext {
     // during switch_to. Unfortunately, it's still kinda hairy, since this is a spinlock of a
     // memory-allocating collection. See register_sctx for details.
     target_cache: Spinlock<BTreeMap<ObjID, ArchContextTarget>>,
-    slots: Mutex<SlotMgr>,
+    regions: Mutex<RegionManager>,
     id: Id<'static>,
     is_kernel: bool,
 }
@@ -56,12 +57,6 @@ static CONTEXT_IDS: IdCounter = IdCounter::new();
 struct KernelSlotCounter {
     cur_kernel_slot: usize,
     kernel_slots_nums: Vec<Slot>,
-}
-
-#[derive(Default)]
-struct SlotMgr {
-    slots: BTreeMap<Slot, VirtContextSlot>,
-    objs: BTreeMap<ObjID, Vec<Slot>>,
 }
 
 static KERNEL_SLOT_COUNTER: Once<Mutex<KernelSlotCounter>> = Once::new();
@@ -90,6 +85,10 @@ impl Slot {
     fn raw(&self) -> usize {
         self.0
     }
+
+    fn range(&self) -> Range<VirtAddr> {
+        self.start_vaddr()..self.start_vaddr().offset(MAX_SIZE).unwrap()
+    }
 }
 
 impl TryFrom<usize> for Slot {
@@ -113,33 +112,6 @@ impl TryFrom<VirtAddr> for Slot {
     }
 }
 
-impl SlotMgr {
-    fn get(&self, slot: &Slot) -> Option<&VirtContextSlot> {
-        self.slots.get(slot)
-    }
-
-    fn insert(&mut self, slot: Slot, id: ObjID, info: VirtContextSlot) {
-        self.slots.insert(slot, info);
-        let list = self.objs.entry(id).or_default();
-        list.push(slot);
-    }
-
-    fn remove(&mut self, slot: Slot) -> Option<VirtContextSlot> {
-        if let Some(info) = self.slots.remove(&slot) {
-            let v = self.objs.get_mut(&info.obj.id()).unwrap();
-            let pos = v.iter().position(|item| *item == slot).unwrap();
-            v.remove(pos);
-            Some(info)
-        } else {
-            None
-        }
-    }
-
-    fn obj_to_slots(&self, id: ObjID) -> Option<&[Slot]> {
-        self.objs.get(&id).map(|x| x.as_slice())
-    }
-}
-
 struct ObjectPageProvider<'a> {
     page: &'a Page,
 }
@@ -155,7 +127,7 @@ impl<'a> PhysAddrProvider for ObjectPageProvider<'a> {
 impl VirtContext {
     fn __new(is_kernel: bool) -> Self {
         Self {
-            slots: Mutex::new(SlotMgr::default()),
+            regions: Mutex::new(RegionManager::default()),
             is_kernel,
             id: CONTEXT_IDS.next(),
             secctx: Mutex::new(BTreeMap::new()),
@@ -186,9 +158,13 @@ impl VirtContext {
     }
 
     pub fn print_objects(&self) {
-        let slots = self.slots.lock();
-        for obj in &slots.objs {
-            logln!("{} => {:?}", obj.0, obj.1);
+        let mut slots = self.regions.lock();
+        for obj in slots.objects().copied().collect::<Vec<_>>().iter() {
+            log!("{} => ", obj);
+            for mapping in slots.object_mappings(*obj) {
+                log!("{:?}, ", mapping.range);
+            }
+            logln!("");
         }
     }
 
@@ -259,8 +235,12 @@ impl VirtContext {
         self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys, &settings));
     }
 
-    pub fn lookup_slot(&self, slot: usize) -> Option<VirtContextSlot> {
-        self.slots.lock().get(&Slot::try_from(slot).ok()?).cloned()
+    pub fn lookup_slot(&self, slot: usize) -> Option<MapRegion> {
+        let slot = &Slot::try_from(slot).ok()?;
+        self.regions
+            .lock()
+            .lookup_region(slot.start_vaddr())
+            .cloned()
     }
 }
 
@@ -282,22 +262,23 @@ impl UserContext for VirtContext {
         self: &Arc<Self>,
         slot: Slot,
         object_info: &ObjectContextInfo,
-    ) -> Result<(), InsertError> {
-        let new_slot_info = VirtContextSlot {
-            obj: object_info.object().clone(),
-            slot,
+    ) -> Result<(), TwzError> {
+        let new_slot_info = MapRegion {
             prot: object_info.prot(),
-            cache: object_info.cache(),
+            cache_type: object_info.cache(),
+            object: object_info.object().clone(),
+            offset: 0,
+            range: slot.range(),
         };
         object_info.object().add_context(self);
-        let mut slots = self.slots.lock();
-        if let Some(info) = slots.get(&slot) {
+        let mut slots = self.regions.lock();
+        if let Some(info) = slots.lookup_region(slot.start_vaddr()) {
             if info != &new_slot_info {
-                return Err(InsertError::Occupied);
+                return Err(ResourceError::Busy.into());
             }
             return Ok(());
         }
-        slots.insert(slot, object_info.object().id(), new_slot_info);
+        slots.insert_region(new_slot_info);
         Ok(())
     }
 
@@ -305,8 +286,10 @@ impl UserContext for VirtContext {
         if info.start_vaddr().is_kernel_object_memory() && !self.is_kernel {
             kernel_context().lookup_object(info)
         } else {
-            let slots = self.slots.lock();
-            slots.get(&info).map(|info| info.into())
+            let mut slots = self.regions.lock();
+            slots
+                .lookup_region(info.start_vaddr())
+                .map(|info| info.into())
         }
     }
 
@@ -318,24 +301,19 @@ impl UserContext for VirtContext {
     ) {
         let start = range.start.as_byte_offset();
         let len = range.end.as_byte_offset() - start;
-        let slots = self.slots.lock();
+        let mut slots = self.regions.lock();
         let arches = self.secctx.lock();
         for arch in arches.values() {
-            if let Some(maps) = slots.obj_to_slots(obj) {
-                for map in maps {
-                    let info = slots
-                        .get(map)
-                        .expect("invalid slot info for a mapped object");
-                    match mode {
-                        obj::InvalidateMode::Full => {
-                            arch.unmap(info.mapping_cursor(start, len));
-                        }
-                        obj::InvalidateMode::WriteProtect => {
-                            arch.change(
-                                info.mapping_cursor(start, len),
-                                &info.mapping_settings(true, self.is_kernel),
-                            );
-                        }
+            for info in slots.object_mappings(obj) {
+                match mode {
+                    obj::InvalidateMode::Full => {
+                        arch.unmap(info.mapping_cursor(start, len));
+                    }
+                    obj::InvalidateMode::WriteProtect => {
+                        arch.change(
+                            info.mapping_cursor(start, len),
+                            &info.mapping_settings(true, self.is_kernel),
+                        );
                     }
                 }
             }
@@ -343,13 +321,13 @@ impl UserContext for VirtContext {
     }
 
     fn remove_object(&self, info: Self::MappingInfo) {
-        let mut slots = self.slots.lock();
-        if let Some(slot) = slots.remove(info) {
+        let mut slots = self.regions.lock();
+        if let Some(slot) = slots.remove_region(info.start_vaddr()) {
             let arches = self.secctx.lock();
             for arch in arches.values() {
                 arch.unmap(slot.mapping_cursor(0, MAX_SIZE));
             }
-            slot.obj.remove_context(self.id.value());
+            slot.object.remove_context(self.id.value());
         }
     }
 }
@@ -368,42 +346,12 @@ impl From<&VirtContextSlot> for ObjectContextInfo {
     }
 }
 
-impl VirtContextSlot {
-    fn mapping_cursor(&self, start: usize, len: usize) -> MappingCursor {
-        MappingCursor::new(self.slot.start_vaddr().offset(start).unwrap(), len)
-    }
-
-    pub fn mapping_settings(&self, wp: bool, is_kern_obj: bool) -> MappingSettings {
-        let mut prot = self.prot;
-        if wp {
-            prot.remove(Protections::WRITE);
-        }
-        MappingSettings::new(
-            prot,
-            self.cache,
-            if is_kern_obj {
-                MappingFlags::GLOBAL
-            } else {
-                MappingFlags::USER
-            },
-        )
-    }
-
-    pub fn object(&self) -> &ObjectRef {
-        &self.obj
-    }
-
-    fn phys_provider<'a>(&self, page: &'a Page) -> ObjectPageProvider<'a> {
-        ObjectPageProvider { page }
-    }
-}
-
 impl Drop for VirtContext {
     fn drop(&mut self) {
         let id = self.id().value();
         // cleanup and object's context info
-        for info in self.slots.get_mut().slots.values() {
-            info.obj.remove_context(id)
+        for info in self.regions.get_mut().mappings() {
+            info.object.remove_context(id)
         }
     }
 }
@@ -505,7 +453,7 @@ impl KernelMemoryContext for VirtContext {
     type Handle<T> = KernelObjectVirtHandle<T>;
 
     fn insert_kernel_object<T>(&self, info: ObjectContextInfo) -> Self::Handle<T> {
-        let mut slots = self.slots.lock();
+        let mut slots = self.regions.lock();
         let mut kernel_slots_counter = kernel_slot_counter().lock();
         let slot = kernel_slots_counter
             .kernel_slots_nums
@@ -525,13 +473,14 @@ impl KernelMemoryContext for VirtContext {
                 }
                 Slot(cur)
             });
-        let new_slot_info = VirtContextSlot {
-            obj: info.object().clone(),
-            slot,
+        let new_slot_info = MapRegion {
+            object: info.object().clone(),
+            range: slot.range(),
+            offset: 0,
             prot: info.prot(),
-            cache: info.cache(),
+            cache_type: info.cache(),
         };
-        slots.insert(slot, info.object().id(), new_slot_info);
+        slots.insert_region(new_slot_info);
         KernelObjectVirtHandle {
             info,
             slot,
@@ -573,10 +522,10 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
     fn drop(&mut self) {
         let kctx = kernel_context();
         {
-            let mut slots = kctx.slots.lock();
+            let mut slots = kctx.regions.lock();
             // We don't need to tell the object that it's no longer mapped in the kernel context,
             // since object invalidation always informs the kernel context.
-            slots.remove(self.slot);
+            slots.remove_region(self.slot.start_vaddr());
         }
         kctx.with_arch(KERNEL_SCTX, |arch| {
             arch.unmap(MappingCursor::new(self.start_addr(), MAX_SIZE));
@@ -660,190 +609,5 @@ bitflags::bitflags! {
         const USER = 1;
         const INVALID = 2;
         const PRESENT = 4;
-    }
-}
-
-pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
-    //logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
-    if flags.contains(PageFaultFlags::INVALID) {
-        panic!("page table contains invalid bits for address {:?}", addr);
-    }
-    if !flags.contains(PageFaultFlags::USER) && cause == MemoryAccessKind::InstructionFetch {
-        panic!(
-            "kernel page-fault at IP {:?} caused by {:?} to/from {:?} with flags {:?}",
-            ip, cause, addr, flags
-        );
-    }
-    if !flags.contains(PageFaultFlags::USER) && addr.is_kernel() && !addr.is_kernel_object_memory()
-    {
-        panic!(
-            "kernel page-fault at IP {:?} caused by {:?} to/from {:?} with flags {:?}",
-            ip, cause, addr, flags
-        );
-    } else {
-        if flags.contains(PageFaultFlags::USER) && addr.is_kernel() {
-            current_thread_ref()
-                .unwrap()
-                .send_upcall(UpcallInfo::MemoryContextViolation(
-                    MemoryContextViolationInfo::new(addr.raw(), cause),
-                ));
-            return;
-        }
-
-        let mut sctx_id = current_thread_ref()
-            .map(|ct| ct.secctx.active_id())
-            .unwrap_or(KERNEL_SCTX);
-        let user_ctx = current_memory_context();
-        let (ctx, is_kern_obj) = if addr.is_kernel_object_memory() {
-            assert!(!flags.contains(PageFaultFlags::USER));
-            sctx_id = KERNEL_SCTX;
-            (kernel_context(), true)
-        } else {
-            (user_ctx.as_ref().unwrap_or_else(||
-            panic!("page fault in userland with no memory context at IP {:?} caused by {:?} to/from {:?} with flags {:?}, thread {}", ip, cause, addr, flags, current_thread_ref().map_or(0, |t| t.id()))), false)
-        };
-        let slot = match addr.try_into() {
-            Ok(s) => s,
-            Err(_) => {
-                current_thread_ref()
-                    .unwrap()
-                    .send_upcall(UpcallInfo::MemoryContextViolation(
-                        MemoryContextViolationInfo::new(addr.raw(), cause),
-                    ));
-                return;
-            }
-        };
-
-        let page_number = PageNumber::from_address(addr);
-        let slot_mgr = ctx.slots.lock();
-        let info = slot_mgr.get(&slot).cloned();
-        drop(slot_mgr);
-        if let Some(info) = info {
-            let id = info.obj.id();
-            let null_upcall = UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
-                id,
-                ObjectMemoryError::NullPageAccess,
-                cause,
-                addr.into(),
-            ));
-
-            let oob_upcall = UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
-                id,
-                ObjectMemoryError::OutOfBounds(page_number.as_byte_offset()),
-                cause,
-                addr.into(),
-            ));
-
-            if info.obj.use_pager() {
-                let mut obj_page_tree = info.obj.lock_page_tree();
-                if matches!(obj_page_tree.try_get_page(page_number), PageStatus::NoPage) {
-                    drop(obj_page_tree);
-                    crate::pager::get_object_page(&info.obj, page_number);
-                }
-            }
-
-            let mut obj_page_tree = info.obj.lock_page_tree();
-            if page_number.is_zero() {
-                // drop these mutexes in case upcall sending generetes a page fault.
-                drop(obj_page_tree);
-                current_thread_ref().unwrap().send_upcall(null_upcall);
-                return;
-            }
-            if page_number.as_byte_offset() >= MAX_SIZE {
-                // drop these mutexes in case upcall sending generetes a page fault.
-                drop(obj_page_tree);
-                current_thread_ref().unwrap().send_upcall(oob_upcall);
-                return;
-            }
-            let mut fa = FrameAllocator::new(
-                FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
-                PHYS_LEVEL_LAYOUTS[0],
-            );
-            let status = obj_page_tree.get_page(
-                page_number,
-                cause == MemoryAccessKind::Write,
-                Some(&mut fa),
-            );
-            if let PageStatus::Ready(page, cow) = status {
-                ctx.with_arch(sctx_id, |arch| {
-                    // TODO: don't need all three every time.
-                    arch.unmap(
-                        info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
-                    );
-                    arch.map(
-                        info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
-                        &mut info.phys_provider(&page),
-                        &info.mapping_settings(cow, is_kern_obj),
-                    );
-                    arch.change(
-                        info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
-                        &info.mapping_settings(cow, is_kern_obj),
-                    );
-                });
-            } else if matches!(status, PageStatus::NoPage) {
-                let page = Page::new(fa.try_allocate().unwrap());
-                obj_page_tree.add_page(page_number, page, Some(&mut fa));
-                let PageStatus::Ready(page, cow) = obj_page_tree.get_page(
-                    page_number,
-                    cause == MemoryAccessKind::Write,
-                    Some(&mut fa),
-                ) else {
-                    panic!("unreachable");
-                };
-                ctx.with_arch(sctx_id, |arch| {
-                    // TODO: don't need all three every time.
-                    arch.unmap(
-                        info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
-                    );
-                    arch.map(
-                        info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
-                        &mut info.phys_provider(&page),
-                        &info.mapping_settings(cow, is_kern_obj),
-                    );
-                    arch.change(
-                        info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE),
-                        &info.mapping_settings(cow, is_kern_obj),
-                    );
-                });
-            }
-        } else {
-            current_thread_ref()
-                .unwrap()
-                .send_upcall(UpcallInfo::MemoryContextViolation(
-                    MemoryContextViolationInfo::new(addr.raw(), cause),
-                ));
-        }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use alloc::sync::Arc;
-
-    use twizzler_abi::object::Protections;
-    use twizzler_kernel_macros::kernel_test;
-
-    use crate::memory::context::{
-        kernel_context, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo,
-    };
-
-    struct Foo {
-        x: u32,
-    }
-
-    #[kernel_test]
-    fn test_kernel_object() {
-        let obj = crate::obj::Object::new_kernel();
-        let obj = Arc::new(obj);
-        crate::obj::register_object(obj.clone());
-
-        let ctx = kernel_context();
-        let mut handle = ctx.insert_kernel_object(ObjectContextInfo::new(
-            obj,
-            Protections::READ | Protections::WRITE,
-            twizzler_abi::device::CacheType::WriteBack,
-        ));
-
-        *handle.base_mut() = Foo { x: 42 };
     }
 }
