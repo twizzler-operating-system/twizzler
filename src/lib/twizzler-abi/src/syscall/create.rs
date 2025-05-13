@@ -70,6 +70,7 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
     pub struct ObjectCreateFlags: u32 {
         const DELETE = 1;
+        const NO_NONCE = 2;
     }
 }
 

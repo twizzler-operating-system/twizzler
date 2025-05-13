@@ -353,7 +353,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let hi = context.arg0();
             let lo = context.arg1();
             let slot = context.arg2::<u64>() as usize;
-            let prot = Protections::from_bits(context.arg3::<u64>() as u32);
+            let prot = Protections::from_bits(context.arg3::<u64>() as u16);
             let id = ObjID::from_parts([hi, lo]);
             let handle = context.arg5();
             let handle = unsafe { create_user_ptr(handle) };

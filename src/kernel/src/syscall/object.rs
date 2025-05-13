@@ -26,19 +26,34 @@ use crate::{
     mutex::Mutex,
     obj::{calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef},
     once::Once,
+    random::getrandom,
     security::get_sctx,
     thread::{current_memory_context, current_thread_ref},
 };
+
+fn new_nonce() -> Result<u128> {
+    let mut bytes = [0; 16];
+    if !getrandom(&mut bytes, false) {
+        Err(todo!())
+    } else {
+        Ok(u128::from_ne_bytes(bytes))
+    }
+}
 
 pub fn sys_object_create(
     create: &ObjectCreate,
     srcs: &[ObjectSource],
     ties: &[CreateTieSpec],
 ) -> Result<ObjID> {
-    let id = calculate_new_id(create.kuid, MetaFlags::default());
+    let nonce = if create.flags.contains(ObjectCreateFlags::NO_NONCE) {
+        0
+    } else {
+        new_nonce()?
+    };
+    let id = calculate_new_id(create.kuid, MetaFlags::default(), nonce);
     let obj = Arc::new(Object::new(id, create.lt, ties));
     if obj.use_pager() {
-        crate::pager::create_object(id);
+        crate::pager::create_object(id, create, nonce);
         if create.flags.contains(ObjectCreateFlags::DELETE) {
             object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()));
         }

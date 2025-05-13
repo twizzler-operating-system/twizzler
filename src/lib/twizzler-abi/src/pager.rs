@@ -135,13 +135,17 @@ pub struct PageDataReq {
 pub struct ObjectInfo {
     pub lifetime: LifetimeType,
     pub backing: BackingType,
+    pub kuid: ObjID,
+    pub nonce: u128,
 }
 
 impl ObjectInfo {
-    pub fn new(lifetime: LifetimeType) -> Self {
+    pub fn new(lifetime: LifetimeType, backing: BackingType, kuid: ObjID, nonce: u128) -> Self {
         Self {
             lifetime,
-            backing: BackingType::Normal,
+            backing,
+            kuid,
+            nonce,
         }
     }
 }

@@ -12,7 +12,7 @@ use stable_vec::StableVec;
 use twizzler::object::ObjID;
 use twizzler_abi::{
     pager::{ObjectInfo, ObjectRange, PhysRange},
-    syscall::LifetimeType,
+    syscall::{BackingType, LifetimeType},
 };
 use twizzler_rt_abi::{
     error::{ArgumentError, ResourceError},
@@ -409,10 +409,20 @@ impl PagerData {
         let mut b = [];
         if objid_to_ino(id.raw()).is_some() {
             ctx.paged_ostore.find_external(id.raw())?;
-            return Ok(ObjectInfo::new(LifetimeType::Persistent));
+            return Ok(ObjectInfo::new(
+                LifetimeType::Persistent,
+                BackingType::Normal,
+                0.into(),
+                0,
+            ));
         }
         ctx.paged_ostore.read_object(id.raw(), 0, &mut b)?;
-        Ok(ObjectInfo::new(LifetimeType::Persistent))
+        Ok(ObjectInfo::new(
+            LifetimeType::Persistent,
+            BackingType::Normal,
+            0.into(),
+            0,
+        ))
     }
 
     pub async fn sync(&self, ctx: &'static PagerContext, id: ObjID) {
