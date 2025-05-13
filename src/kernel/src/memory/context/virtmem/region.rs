@@ -1,4 +1,4 @@
-use alloc::{collections::btree_map::BTreeMap, vec::Vec};
+use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use core::ops::Range;
 
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
@@ -14,12 +14,13 @@ use crate::{
         context::ObjectContextInfo,
         pagetables::{MappingCursor, MappingFlags, MappingSettings},
     },
-    obj::{pages::Page, ObjectRef},
+    obj::{pages::Page, range::PageRangeTree, ObjectRef},
 };
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct MapRegion {
     pub object: ObjectRef,
+    pub shadow: Option<Arc<Shadow>>,
     pub offset: u64,
     pub cache_type: CacheType,
     pub prot: Protections,
@@ -120,4 +121,8 @@ impl RegionManager {
     pub fn objects(&self) -> impl Iterator<Item = &ObjID> {
         self.objects.keys().into_iter()
     }
+}
+
+pub struct Shadow {
+    tree: PageRangeTree,
 }
