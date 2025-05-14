@@ -1,5 +1,8 @@
 use bitflags::bitflags;
-use twizzler_rt_abi::{error::RawTwzError, object::ObjID};
+use twizzler_rt_abi::{
+    error::RawTwzError,
+    object::{ObjID, Protections},
+};
 
 use crate::{
     object::NULLPAGE_SIZE,
@@ -137,15 +140,23 @@ pub struct ObjectInfo {
     pub backing: BackingType,
     pub kuid: ObjID,
     pub nonce: u128,
+    pub def_prot: Protections,
 }
 
 impl ObjectInfo {
-    pub fn new(lifetime: LifetimeType, backing: BackingType, kuid: ObjID, nonce: u128) -> Self {
+    pub fn new(
+        lifetime: LifetimeType,
+        backing: BackingType,
+        kuid: ObjID,
+        nonce: u128,
+        def_prot: Protections,
+    ) -> Self {
         Self {
             lifetime,
             backing,
             kuid,
             nonce,
+            def_prot,
         }
     }
 }

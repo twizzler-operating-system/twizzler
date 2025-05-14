@@ -240,6 +240,7 @@ impl Space {
                 LifetimeType::Volatile,
                 Some(instance),
                 ObjectCreateFlags::DELETE,
+                Protections::all(),
             ),
             &[],
             &[CreateTieSpec::new(instance, CreateTieFlags::empty())],

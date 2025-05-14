@@ -4,7 +4,7 @@ use alloc::{
 };
 
 use twizzler_abi::{
-    meta::MetaFlags,
+    meta::{MetaFlags, MetaInfo},
     object::{ObjID, Protections},
     syscall::{
         CreateTieSpec, DeleteFlags, HandleType, MapFlags, MapInfo, ObjectControlCmd, ObjectCreate,
@@ -13,6 +13,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{
     error::{ArgumentError, NamingError, ObjectError, ResourceError, TwzError},
+    object::Nonce,
     Result,
 };
 
@@ -51,7 +52,7 @@ pub fn sys_object_create(
     } else {
         new_nonce()?
     };
-    let id = calculate_new_id(create.kuid, MetaFlags::default(), nonce);
+    let id = calculate_new_id(create.kuid, MetaFlags::default(), nonce, create.def_prot);
     let obj = Arc::new(Object::new(id, create.lt, ties));
     if obj.use_pager() {
         crate::pager::create_object(id, create, nonce);
@@ -79,6 +80,17 @@ pub fn sys_object_create(
                 &mut fa,
             )
         }
+    }
+    let meta = MetaInfo {
+        nonce: Nonce(nonce),
+        kuid: create.kuid,
+        default_prot: Protections::all(),
+        flags: MetaFlags::empty(),
+        fotcount: 0,
+        extcount: 0,
+    };
+    while !obj.write_meta(meta, true) {
+        logln!("failed to write object metadata -- retrying");
     }
     crate::obj::register_object(obj.clone());
     if create.flags.contains(ObjectCreateFlags::DELETE) {

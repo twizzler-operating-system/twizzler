@@ -1,9 +1,9 @@
-use twizzler::object::ObjID;
+use twizzler::object::{MetaFlags, MetaInfo, ObjID};
 use twizzler_abi::pager::{
     CompletionToKernel, KernelCommand, KernelCompletionData, KernelCompletionFlags, ObjectInfo,
     ObjectRange, PhysRange, RequestFromKernel,
 };
-use twizzler_rt_abi::{error::TwzError, Result};
+use twizzler_rt_abi::{error::TwzError, object::Nonce, Result};
 
 use crate::PagerContext;
 
@@ -55,7 +55,29 @@ pub async fn handle_kernel_request(
         KernelCommand::ObjectCreate(id, object_info) => {
             let _ = ctx.paged_ostore.delete_object(id.raw());
             match ctx.paged_ostore.create_object(id.raw()) {
-                Ok(_) => KernelCompletionData::ObjectInfoCompletion(id, object_info),
+                Ok(_) => {
+                    let mut buffer = [0; 0x1000];
+                    let meta = MetaInfo {
+                        nonce: Nonce(object_info.nonce),
+                        kuid: object_info.kuid,
+                        default_prot: object_info.def_prot,
+                        flags: MetaFlags::empty(),
+                        fotcount: 0,
+                        extcount: 0,
+                    };
+                    unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
+                        ::core::slice::from_raw_parts(
+                            (p as *const T) as *const u8,
+                            ::core::mem::size_of::<T>(),
+                        )
+                    }
+                    unsafe {
+                        buffer[0..size_of::<MetaInfo>()].copy_from_slice(any_as_u8_slice(&meta));
+                    }
+                    ctx.paged_ostore.write_object(id.raw(), 0, &buffer).unwrap();
+
+                    KernelCompletionData::ObjectInfoCompletion(id, object_info)
+                }
                 Err(e) => {
                     tracing::warn!("failed to create object {}: {}", id, e);
                     KernelCompletionData::Error(TwzError::from(e).into())
@@ -68,10 +90,12 @@ pub async fn handle_kernel_request(
             KernelCompletionData::Okay
         }
         KernelCommand::ObjectEvict(info) => {
+            tracing::debug!("got evict type sync");
             ctx.data.sync(ctx, info.obj_id).await;
             KernelCompletionData::Okay
         }
     };
 
+    tracing::debug!("done; sending response: {:?}", data);
     CompletionToKernel::new(data, KernelCompletionFlags::DONE)
 }

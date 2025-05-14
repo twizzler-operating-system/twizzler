@@ -107,11 +107,13 @@ fn check_security(
     addr: VirtAddr,
     cause: MemoryAccessKind,
     ip: VirtAddr,
+    default_prot: Protections,
 ) -> Result<PermsInfo, UpcallInfo> {
     if ip.is_kernel() {
         return Ok(PermsInfo {
             ctx: user_sctx,
-            prot: Protections::all(),
+            provide: Protections::all(),
+            restrict: Protections::empty(),
         });
     }
     let exec_info = get_map_region(ip, ctx, MemoryAccessKind::InstructionFetch)?;
@@ -128,11 +130,11 @@ fn check_security(
     };
     if let Some(ct) = current_thread_ref() {
         let perms = ct.secctx.check_active_access(&access_info);
-        if perms.prot & access_kind == access_kind {
+        if (perms.provide | default_prot) & !perms.restrict & access_kind == access_kind {
             return Ok(perms);
         }
         let perms = ct.secctx.search_access(&access_info);
-        if perms.prot & access_kind != access_kind {
+        if (perms.provide | default_prot) & !perms.restrict & access_kind != access_kind {
             Err(UpcallInfo::SecurityViolation(SecurityViolationInfo {
                 address: addr.raw(),
                 access_kind: cause,
@@ -143,7 +145,8 @@ fn check_security(
     } else {
         Ok(PermsInfo {
             ctx: KERNEL_SCTX,
-            prot: Protections::all(),
+            provide: Protections::all(),
+            restrict: Protections::empty(),
         })
     }
 }
@@ -163,16 +166,23 @@ fn page_fault_to_region(
 
     // Step 1: Check for address validity and check for security violations.
     check_object_addr(page_number, id, cause, addr)?;
-    let perms = check_security(&ctx, sctx_id, id, addr, cause, ip)?;
+
+    let (id_ok, default_prot) = info.object.check_id();
+    if !id_ok && !info.object().is_kernel_id() {
+        logln!(
+            "id verification failed ({} {}) {:?}",
+            info.object.use_pager(),
+            info.object.is_kernel_id(),
+            info.object.id(),
+        );
+    }
+
+    let perms = check_security(&ctx, sctx_id, id, addr, cause, ip, default_prot)?;
 
     // Do we need to switch contexts?
     if perms.ctx != sctx_id {
         current_thread_ref().map(|ct| ct.secctx.switch_context(perms.ctx));
         sctx_id = perms.ctx;
-    }
-
-    if !info.object().check_id() {
-        logln!("id verification failed");
     }
 
     // Step 2: Ensure the backing pages are present if the object needs the pager.
@@ -189,8 +199,8 @@ fn page_fault_to_region(
     let do_map = |page: Arc<Page>, cow: bool| {
         let settings = info.mapping_settings(cow, is_kern_obj);
         let settings = MappingSettings::new(
-            // Mapping protections, restricted by the permissions.
-            settings.perms() & perms.prot,
+            // Provided permissions, restricted by mapping.
+            (perms.provide | default_prot) & !perms.restrict & settings.perms(),
             settings.cache(),
             settings.flags(),
         );

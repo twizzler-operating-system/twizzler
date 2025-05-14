@@ -1,12 +1,12 @@
-
 use object_store::ExternalFile;
 use secgate::{
     secure_gate,
     util::{Descriptor, SimpleBuffer},
 };
 use twizzler::object::ObjID;
-use twizzler_abi::syscall::{
-    sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
+use twizzler_abi::{
+    object::Protections,
+    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
@@ -32,6 +32,7 @@ impl PagerClient {
                 LifetimeType::Volatile,
                 None,
                 ObjectCreateFlags::empty(),
+                Protections::all(),
             ),
             &[],
             &[],

@@ -46,7 +46,13 @@ impl Inflight {
             ReqKind::Del(obj_id) => KernelCommand::ObjectDel(obj_id),
             ReqKind::Create(obj_id, create, nonce) => KernelCommand::ObjectCreate(
                 obj_id,
-                ObjectInfo::new(LifetimeType::Persistent, create.bt, create.kuid, nonce),
+                ObjectInfo::new(
+                    LifetimeType::Persistent,
+                    create.bt,
+                    create.kuid,
+                    nonce,
+                    create.def_prot,
+                ),
             ),
             ReqKind::Pages(phys_range) => KernelCommand::DramPages(phys_range),
         };

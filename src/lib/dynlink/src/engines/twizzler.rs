@@ -1,6 +1,6 @@
 use itertools::{Either, Itertools};
 use twizzler_abi::{
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
         sys_object_create, BackingType, CreateTieFlags, CreateTieSpec, LifetimeType, ObjectCreate,
         ObjectCreateFlags, ObjectSource,
@@ -29,6 +29,7 @@ pub fn load_segments(
         LifetimeType::Volatile,
         None,
         ObjectCreateFlags::DELETE,
+        Protections::all(),
     );
 
     let build_copy_cmd = |directive: &LoadDirective| {
