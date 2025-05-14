@@ -25,12 +25,13 @@ use crate::{
         PhysAddr, VirtAddr,
     },
     mutex::{LockGuard, Mutex},
-    once::Once,
+    once::{Once, OnceWait},
     random::getrandom,
 };
 
 pub mod control;
 pub mod copy;
+pub mod id;
 pub mod pages;
 pub mod pagevec;
 pub mod range;
@@ -47,6 +48,7 @@ pub struct Object {
     contexts: Mutex<ContextInfo>,
     lifetime_type: LifetimeType,
     ties: Vec<CreateTieSpec>,
+    verified_id: OnceWait<bool>,
 }
 
 #[derive(Default)]
@@ -148,35 +150,6 @@ impl From<usize> for PageNumber {
     }
 }
 
-static OID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-
-fn backup_id_gen() -> ObjID {
-    ((OID.fetch_add(1, Ordering::SeqCst) as u128) | (1u128 << 64)).into()
-}
-
-fn gen_id(nonce: u128, kuid: ObjID, flags: MetaFlags) -> ObjID {
-    #[repr(C)]
-    struct Ids {
-        nonce: u128,
-        kuid: ObjID,
-        flags: MetaFlags,
-    }
-    let mut ids = Ids { nonce, kuid, flags };
-    let ptr = core::ptr::addr_of_mut!(ids).cast::<u8>();
-    let slice = unsafe { core::slice::from_raw_parts_mut(ptr, size_of::<Ids>()) };
-    let hash = crate::crypto::sha256(slice);
-    let mut id_buf = [0u8; 16];
-    id_buf.copy_from_slice(&hash[0..16]);
-    for i in 0..16 {
-        id_buf[i] ^= hash[i + 16];
-    }
-    u128::from_ne_bytes(id_buf).into()
-}
-
-pub fn calculate_new_id(kuid: ObjID, flags: MetaFlags, nonce: u128) -> ObjID {
-    gen_id(nonce, kuid, flags)
-}
-
 impl Object {
     pub fn is_pending_delete(&self) -> bool {
         self.flags.load(Ordering::SeqCst) & OBJ_DELETED != 0
@@ -249,6 +222,7 @@ impl Object {
             pin_info: Mutex::new(PinInfo::default()),
             contexts: Mutex::new(ContextInfo::default()),
             ties: ties.to_vec(),
+            verified_id: OnceWait::new(),
             lifetime_type,
         }
     }
@@ -256,11 +230,11 @@ impl Object {
     pub fn new_kernel() -> Self {
         let mut bytes = [0; 16];
         if !getrandom(&mut bytes, true) {
-            return Self::new(backup_id_gen(), LifetimeType::Volatile, &[]);
+            return Self::new(id::backup_id_gen(), LifetimeType::Volatile, &[]);
         }
         let nonce = u128::from_ne_bytes(bytes);
         Self::new(
-            calculate_new_id(0.into(), MetaFlags::default(), nonce),
+            id::calculate_new_id(0.into(), MetaFlags::default(), nonce),
             LifetimeType::Volatile,
             &[],
         )

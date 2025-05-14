@@ -12,7 +12,7 @@ use twizzler_abi::{
     },
 };
 use twizzler_rt_abi::{
-    error::{ArgumentError, NamingError, ObjectError, ResourceError},
+    error::{ArgumentError, NamingError, ObjectError, ResourceError, TwzError},
     Result,
 };
 
@@ -24,7 +24,7 @@ use crate::{
         tracker::{FrameAllocFlags, FrameAllocator},
     },
     mutex::Mutex,
-    obj::{calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef},
+    obj::{id::calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef},
     once::Once,
     random::getrandom,
     security::get_sctx,
@@ -34,7 +34,8 @@ use crate::{
 fn new_nonce() -> Result<u128> {
     let mut bytes = [0; 16];
     if !getrandom(&mut bytes, false) {
-        Err(todo!())
+        let e = TwzError::Resource(ResourceError::OutOfResources);
+        Err(e)
     } else {
         Ok(u128::from_ne_bytes(bytes))
     }
