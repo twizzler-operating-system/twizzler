@@ -10,10 +10,11 @@ use core::{
 
 use range::PageStatus;
 use twizzler_abi::{
-    meta::MetaFlags,
-    object::{ObjID, MAX_SIZE},
+    meta::{MetaFlags, MetaInfo},
+    object::{ObjID, Protections, MAX_SIZE},
     syscall::{CreateTieSpec, LifetimeType},
 };
+use twizzler_rt_abi::object::Nonce;
 
 use self::{pages::Page, thread_sync::SleepInfo};
 use crate::{
@@ -48,7 +49,7 @@ pub struct Object {
     contexts: Mutex<ContextInfo>,
     lifetime_type: LifetimeType,
     ties: Vec<CreateTieSpec>,
-    verified_id: OnceWait<bool>,
+    verified_id: OnceWait<(bool, Protections)>,
 }
 
 #[derive(Default)]
@@ -159,6 +160,10 @@ impl Object {
         self.lifetime_type == LifetimeType::Persistent
     }
 
+    pub fn is_kernel_id(&self) -> bool {
+        self.id.parts()[0] == 1
+    }
+
     pub fn mark_for_delete(&self) {
         self.flags.fetch_or(OBJ_DELETED, Ordering::SeqCst);
     }
@@ -230,14 +235,38 @@ impl Object {
     pub fn new_kernel() -> Self {
         let mut bytes = [0; 16];
         if !getrandom(&mut bytes, true) {
-            return Self::new(id::backup_id_gen(), LifetimeType::Volatile, &[]);
+            let meta = MetaInfo {
+                nonce: Nonce(0),
+                kuid: 0.into(),
+                default_prot: Protections::all(),
+                flags: MetaFlags::empty(),
+                fotcount: 0,
+                extcount: 0,
+            };
+            let obj = Self::new(id::backup_id_gen(), LifetimeType::Volatile, &[]);
+            while !obj.write_meta(meta, true) {
+                logln!("failed to write object metadata -- retrying");
+            }
+            return obj;
         }
         let nonce = u128::from_ne_bytes(bytes);
-        Self::new(
-            id::calculate_new_id(0.into(), MetaFlags::default(), nonce),
+        let obj = Self::new(
+            id::calculate_new_id(0.into(), MetaFlags::default(), nonce, Protections::all()),
             LifetimeType::Volatile,
             &[],
-        )
+        );
+        let meta = MetaInfo {
+            nonce: Nonce(nonce),
+            kuid: 0.into(),
+            default_prot: Protections::all(),
+            flags: MetaFlags::empty(),
+            fotcount: 0,
+            extcount: 0,
+        };
+        while !obj.write_meta(meta, true) {
+            logln!("failed to write object metadata -- retrying");
+        }
+        obj
     }
 
     pub fn add_context(&self, ctx: &ContextRef) {

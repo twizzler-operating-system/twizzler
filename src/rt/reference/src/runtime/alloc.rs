@@ -88,6 +88,7 @@ fn create_and_map() -> Option<(usize, ObjID)> {
             LifetimeType::Volatile,
             None,
             ObjectCreateFlags::empty(),
+            Protections::all(),
         ),
         &[],
         &[],

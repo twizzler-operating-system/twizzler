@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use twizzler_rt_abi::Result;
+use twizzler_rt_abi::{object::Protections, Result};
 
 use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::{arch::syscall::raw_syscall, object::ObjID};
@@ -81,7 +81,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Default)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 /// Full object creation specification, minus ties.
 pub struct ObjectCreate {
@@ -89,6 +89,7 @@ pub struct ObjectCreate {
     pub bt: BackingType,
     pub lt: LifetimeType,
     pub flags: ObjectCreateFlags,
+    pub def_prot: Protections,
 }
 impl ObjectCreate {
     /// Build a new object create specification.
@@ -97,13 +98,27 @@ impl ObjectCreate {
         lt: LifetimeType,
         kuid: Option<ObjID>,
         flags: ObjectCreateFlags,
+        def_prot: Protections,
     ) -> Self {
         Self {
             kuid: kuid.unwrap_or_else(|| ObjID::new(0)),
             bt,
             lt,
             flags,
+            def_prot,
         }
+    }
+}
+
+impl Default for ObjectCreate {
+    fn default() -> Self {
+        Self::new(
+            BackingType::Normal,
+            LifetimeType::Volatile,
+            None,
+            ObjectCreateFlags::empty(),
+            Protections::all(),
+        )
     }
 }
 

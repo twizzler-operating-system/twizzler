@@ -37,6 +37,7 @@ impl OomHandler for MinimalOomHandler {
                 LifetimeType::Volatile,
                 None,
                 ObjectCreateFlags::empty(),
+                Protections::all(),
             ),
             &[],
             &[],

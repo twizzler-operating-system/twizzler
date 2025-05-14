@@ -38,6 +38,7 @@ impl<T> InternalObject<T> {
                 LifetimeType::Volatile,
                 None,
                 ObjectCreateFlags::empty(),
+                Protections::all(),
             ),
             &[],
             &[],
