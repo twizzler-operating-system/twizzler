@@ -171,16 +171,15 @@ fn page_fault_to_region(
         sctx_id = perms.ctx;
     }
 
-    // Step 2: Ensure the backing pages are present if the object needs the pager.
-    let mut obj_page_tree = info.object.lock_page_tree();
-    if info.object.use_pager() {
-        if matches!(obj_page_tree.try_get_page(page_number), PageStatus::NoPage) {
-            drop(obj_page_tree);
-            crate::pager::get_object_page(&info.object, page_number);
-            obj_page_tree = info.object.lock_page_tree();
-        }
+    if !info.object().check_id() {
+        logln!("id verification failed");
     }
 
+    // Step 2: Ensure the backing pages are present if the object needs the pager.
+    let mut obj_page_tree = info.object.lock_page_tree();
+    // note: this is a 'best effort' call, since in principle the page could be evicted before
+    // this returns, hence the extra check at the end of this function.
+    obj_page_tree = info.object.ensure_in_core(obj_page_tree, page_number);
     let mut fa = FrameAllocator::new(
         FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
         PHYS_LEVEL_LAYOUTS[0],
@@ -206,10 +205,16 @@ fn page_fault_to_region(
     let mut status =
         obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write, Some(&mut fa));
     if matches!(status, PageStatus::NoPage) && !info.object.use_pager() {
-        let page = Page::new(fa.try_allocate().unwrap());
-        obj_page_tree.add_page(page_number, page, Some(&mut fa));
+        if let Some(frame) = fa.try_allocate() {
+            let page = Page::new(frame);
+            obj_page_tree.add_page(page_number, page, Some(&mut fa));
+        }
         status =
             obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write, Some(&mut fa));
+        if matches!(status, PageStatus::NoPage) {
+            logln!("spuriously failed to back volatile object with DRAM -- retrying fault");
+            return Ok(());
+        }
     }
 
     // Step 4: do the mapping. If the page isn't present by now, report data loss.
