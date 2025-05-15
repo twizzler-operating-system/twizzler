@@ -112,6 +112,7 @@ impl Cap {
     }
 
     /// verifies signature inside capability
+
     pub fn verify_sig(&self, verifying_key: VerifyingKey) -> Result<(), SecurityError> {
         let hash_arr = Self::serialize(
             self.accessor,

@@ -6643,6 +6643,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.9.0",
  "blake3",
+ "getrandom 0.2.16",
  "log",
  "p256",
  "sha2",

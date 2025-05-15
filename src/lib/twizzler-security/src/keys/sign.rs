@@ -5,6 +5,16 @@ use log::{debug, error};
 //     SIGNATURE_LENGTH,
 // };
 use p256::ecdsa::{signature::Signer, Signature as EcdsaSignature, SigningKey as EcdsaSigningKey};
+#[cfg(feature = "user")]
+use twizzler::{
+    marker::BaseType,
+    object::{Object, ObjectBuilder},
+};
+use twizzler_rt_abi::error::TwzError;
+// 256 / 8 => 32 bytes for secret key length, since we are using curve p256, 256 bit curve
+const ECDSA_SECRET_KEY_LENGTH: usize = 32;
+
+use twizzler_abi::syscall::ObjectCreate;
 
 use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
 use crate::{SecurityError, SigningScheme};
@@ -18,11 +28,62 @@ pub struct SigningKey {
 }
 
 impl SigningKey {
-    pub fn new(_scheme: &SigningScheme) -> (Self, VerifyingKey) {
-        #[cfg(feature = "log")]
-        debug!("Creating new signing key with scheme: {:?}", _scheme);
+    #[cfg(feature = "user")]
+    /// Creates a new SigningKey / VerifyingKey object pairs.
+    pub fn new_keypair(
+        scheme: &SigningScheme,
+        obj_create_spec: ObjectCreate,
+    ) -> Result<(Object<Self>, Object<VerifyingKey>), TwzError> {
+        use alloc::borrow::ToOwned;
 
-        todo!("do something :sob:")
+        use getrandom::getrandom;
+
+        #[cfg(feature = "log")]
+        debug!("Creating new signing key with scheme: {:?}", scheme);
+
+        // first create the key using the signing scheme
+        let (signing_key, verifying_key): (SigningKey, VerifyingKey) = match scheme {
+            SigningScheme::Ed25519 => {
+                unimplemented!("still need to fix creating ed25519 keys")
+            }
+
+            SigningScheme::Ecdsa => {
+                let mut rand_buf = [0_u8; ECDSA_SECRET_KEY_LENGTH];
+
+                if let Err(e) = getrandom(&mut rand_buf) {
+                    #[cfg(feature = "log")]
+                    error!(
+                        "Failed to initialize buffer with random bytes, terminating
+                        key creation. Underlying error: {}",
+                        e
+                    );
+
+                    return Err(TwzError::Generic(
+                        twizzler_rt_abi::error::GenericError::Internal,
+                    ));
+                }
+
+                let Ok(ecdsa_signing_key) = EcdsaSigningKey::from_slice(&rand_buf) else {
+                    #[cfg(feature = "log")]
+                    error!("Failed to create ecdsa signing key from bytes");
+
+                    return Err(TwzError::Generic(
+                        twizzler_rt_abi::error::GenericError::Internal,
+                    ));
+                };
+
+                let binding = ecdsa_signing_key.clone();
+
+                let ecdsa_verifying_key = binding.verifying_key().to_owned();
+
+                (ecdsa_signing_key.into(), ecdsa_verifying_key.into())
+            }
+        };
+
+        let s_object = ObjectBuilder::new(obj_create_spec.clone()).build(signing_key)?;
+        let v_object = ObjectBuilder::new(obj_create_spec).build(verifying_key)?;
+
+        return Ok((s_object, v_object));
     }
 
     /// Builds up a signing key from a slice of bytes and a specified signing scheme.
@@ -121,5 +182,97 @@ impl TryFrom<&SigningKey> for EcdsaSigningKey {
             error!("Cannot build EcdsaSigningKey from slice due to: {:?}", _e);
             SecurityError::InvalidKey
         })?)
+    }
+}
+
+impl From<EcdsaSigningKey> for SigningKey {
+    fn from(value: EcdsaSigningKey) -> Self {
+        let binding = value.to_bytes();
+        let slice = binding.as_slice();
+
+        let mut buf = [0; MAX_KEY_SIZE];
+
+        buf[0..slice.len()].copy_from_slice(slice);
+
+        SigningKey {
+            key: buf,
+            len: slice.len(),
+            scheme: SigningScheme::Ecdsa,
+        }
+    }
+}
+
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "user")]
+    extern crate test;
+
+    #[cfg(feature = "user")]
+    use test::Bencher;
+
+    #[test]
+    #[cfg(feature = "user")]
+    fn test_key_creation() {
+        let object_create_spec = ObjectCreate::new(
+            Default::default(),
+            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
+            Default::default(),
+        );
+        let (skey, vkey) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
+            .expect("keys should be generated properly");
+    }
+
+    #[test]
+    #[cfg(feature = "user")]
+    fn test_signing_and_verification() {
+        use twizzler::object::TypedObject;
+
+        let object_create_spec = ObjectCreate::new(
+            Default::default(),
+            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
+            Default::default(),
+        );
+
+        let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
+            .expect("Keys should be generated properly");
+        let message = "deadbeef".as_bytes();
+
+        let sig = s_obj
+            .base()
+            .sign(message)
+            .expect("Signature should succeed");
+
+        v_obj
+            .base()
+            .verify(message, &sig)
+            .expect("Should be verified properly");
+    }
+
+    #[bench]
+    //NOTE: currently we can only bench in user space, need to benchmark this in kernel space as
+    // well
+    #[cfg(feature = "user")]
+    fn bench_keypair_creation(b: &mut Bencher) {
+        let object_create_spec = ObjectCreate::new(
+            Default::default(),
+            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
+            Default::default(),
+        );
+        b.iter(|| {
+            let (skey, vkey) =
+                SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec.clone())
+                    .expect("Keys should be generated properly.");
+        });
+    }
+}
+
+#[cfg(feature = "user")]
+impl BaseType for SigningKey {
+    fn fingerprint() -> u64 {
+        return 6;
     }
 }
