@@ -28,7 +28,7 @@ impl SigningKey {
 
         // first create the key using the signing scheme
 
-        let (signing_key: SigningKey, verifying_key: VerifyingKey) = match scheme {
+        let (signing_key, verifying_key): (SigningKey, VerifyingKey) = match scheme {
             SigningScheme::Ed25519 => {
                 unimplemented!("still need to fix creating ed25519 keys")
             }
@@ -58,7 +58,7 @@ impl SigningKey {
 
                 let ecdsa_verifying_key = ecdsa_signing_key.verifying_key();
 
-                (ecdsa_signing_key.into(), ecdsa_verifying_key.into()) 
+                (ecdsa_signing_key.into(), ecdsa_verifying_key.into())
             }
         };
 
@@ -181,10 +181,12 @@ impl From<&EcdsaSigningKey> for SigningKey {
 
         let mut buf = [0; MAX_KEY_SIZE];
 
-        buf[slice.len()].copy_from_slice(slice);
+        buf[0..slice.len()].copy_from_slice(slice);
 
-        SigningKey { key: buf, len: slice.len(), scheme: SigningScheme::Ecdsa}
-        
+        SigningKey {
+            key: buf,
+            len: slice.len(),
+            scheme: SigningScheme::Ecdsa,
+        }
     }
-    
 }

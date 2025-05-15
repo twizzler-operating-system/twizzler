@@ -199,7 +199,7 @@ impl From<&EcdsaVerifyingKey> for VerifyingKey {
 
         let mut buf = [0; MAX_KEY_SIZE];
 
-        buf[bytes.len()].copy_from_slice(bytes);
+        buf[0..bytes.len()].copy_from_slice(bytes);
 
         VerifyingKey {
             key: buf,
