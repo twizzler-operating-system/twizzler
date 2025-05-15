@@ -195,3 +195,13 @@ impl From<EcdsaSigningKey> for SigningKey {
         }
     }
 }
+
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "user")]
+    fn test_key_creation() {
+        let (skey, vkey) = SigningKey::new(&SigningScheme::Ecdsa);
+    }
+}
