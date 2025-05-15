@@ -5,7 +5,7 @@ use log::{debug, error};
 //     SIGNATURE_LENGTH,
 // };
 use p256::ecdsa::{signature::Signer, Signature as EcdsaSignature, SigningKey as EcdsaSigningKey};
-
+use twizzler_rt_abi::error::TwzError;
 // 256 / 8 => 32 bytes for secret key length, since we are using curve p256, 256 bit curve
 const ECDSA_SECRET_KEY_LENGTH: usize = 32;
 
@@ -22,14 +22,16 @@ pub struct SigningKey {
 
 impl SigningKey {
     #[cfg(feature = "user")]
-    pub fn new(scheme: &SigningScheme) -> (Self, VerifyingKey) {
+    pub fn new(scheme: &SigningScheme) -> Result<(Self, VerifyingKey), TwzError> {
         use alloc::borrow::ToOwned;
 
         use getrandom::getrandom;
         use twizzler::object::ObjectBuilder;
 
-        // first create the key using the signing scheme
+        #[cfg(feature = "log")]
+        debug!("Creating new signing key with scheme: {:?}", scheme);
 
+        // first create the key using the signing scheme
         let (signing_key, verifying_key): (SigningKey, VerifyingKey) = match scheme {
             SigningScheme::Ed25519 => {
                 unimplemented!("still need to fix creating ed25519 keys")
@@ -46,16 +48,22 @@ impl SigningKey {
                         e
                     );
 
+                    return Err(TwzError::Generic(
+                        twizzler_rt_abi::error::GenericError::Internal,
+                    ));
+
                     // panic-ing is appropriate due to bad state of program, if random
                     // number generation is failing its a catastrophic situation already
-                    panic!("Key creation failed due to {}", e)
+                    // panic!("Key creation failed due to {}", e)
                 }
 
                 let Ok(ecdsa_signing_key) = EcdsaSigningKey::from_slice(&rand_buf) else {
                     #[cfg(feature = "log")]
                     error!("Failed to create ecdsa signing key from bytes");
 
-                    panic!("Key creation failed")
+                    return Err(TwzError::Generic(
+                        twizzler_rt_abi::error::GenericError::Internal,
+                    ));
                 };
 
                 let binding = ecdsa_signing_key.clone();
@@ -66,18 +74,15 @@ impl SigningKey {
             }
         };
 
-        // get the verifying key for it too
-        //
+        let s_object = ObjectBuilder::default().build(signing_key)?;
+        let v_object = ObjectBuilder::default().build(verifying_key)?;
+
+        return Ok((signing_key, verifying_key));
         // store both keys into their respective objects
         //
         // return the keys as well as their object id's
 
         // let obj = ObjectBuilder::default().build(SigningKey);
-
-        #[cfg(feature = "log")]
-        debug!("Creating new signing key with scheme: {:?}", scheme);
-
-        todo!("do something :sob:")
     }
 
     /// Builds up a signing key from a slice of bytes and a specified signing scheme.
@@ -202,6 +207,7 @@ mod tests {
     #[test]
     #[cfg(feature = "user")]
     fn test_key_creation() {
-        let (skey, vkey) = SigningKey::new(&SigningScheme::Ecdsa);
+        let (skey, vkey) =
+            SigningKey::new(&SigningScheme::Ecdsa).expect("keys should be generated properly");
     }
 }
