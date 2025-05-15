@@ -53,7 +53,7 @@ extern crate alloc;
 extern crate bitflags;
 
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use ::log::Level;
 use arch::BootInfoSystemTable;
@@ -81,6 +81,13 @@ pub trait BootInfo {
 static TEST_MODE: AtomicBool = AtomicBool::new(false);
 pub fn is_test_mode() -> bool {
     TEST_MODE.load(Ordering::SeqCst)
+}
+
+const BENCH_MODE_ALL: u32 = 1;
+const BENCH_MODE_USER: u32 = 2;
+static BENCH_MODE: AtomicU32 = AtomicU32::new(0);
+pub fn is_bench_mode() -> bool {
+    BENCH_MODE.load(Ordering::SeqCst) > 0
 }
 
 static BOOT_INFO: Once<Box<dyn BootInfo + Send + Sync>> = Once::new();
@@ -124,6 +131,12 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     for opt in cmdline.split(" ") {
         if opt == "--tests" {
             TEST_MODE.store(true, Ordering::SeqCst);
+        }
+        if opt == "--benches" {
+            BENCH_MODE.store(BENCH_MODE_ALL, Ordering::SeqCst);
+        }
+        if opt == "--bench" {
+            BENCH_MODE.store(BENCH_MODE_USER, Ordering::SeqCst);
         }
     }
 
