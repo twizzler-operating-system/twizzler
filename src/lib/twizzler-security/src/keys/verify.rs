@@ -191,8 +191,8 @@ impl TryFrom<&VerifyingKey> for EcdsaVerifyingKey {
     }
 }
 
-impl From<&EcdsaVerifyingKey> for VerifyingKey {
-    fn from(value: &EcdsaVerifyingKey) -> Self {
+impl From<EcdsaVerifyingKey> for VerifyingKey {
+    fn from(value: EcdsaVerifyingKey) -> Self {
         let point = value.to_encoded_point(false);
 
         let bytes = point.as_bytes();

@@ -23,6 +23,8 @@ pub struct SigningKey {
 impl SigningKey {
     #[cfg(feature = "user")]
     pub fn new(scheme: &SigningScheme) -> (Self, VerifyingKey) {
+        use alloc::borrow::ToOwned;
+
         use getrandom::getrandom;
         use twizzler::object::ObjectBuilder;
 
@@ -56,7 +58,9 @@ impl SigningKey {
                     panic!("Key creation failed")
                 };
 
-                let ecdsa_verifying_key = ecdsa_signing_key.clone().verifying_key();
+                let binding = ecdsa_signing_key.clone();
+
+                let ecdsa_verifying_key = binding.verifying_key().to_owned();
 
                 (ecdsa_signing_key.into(), ecdsa_verifying_key.into())
             }
