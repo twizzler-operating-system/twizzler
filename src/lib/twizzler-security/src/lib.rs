@@ -1,3 +1,4 @@
+#![feature(test)]
 #![no_std]
 //NOTE: temporary, remove later
 #![allow(dead_code)]
