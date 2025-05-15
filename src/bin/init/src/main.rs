@@ -5,8 +5,7 @@ use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCom
 use tracing::{info, warn};
 use twizzler::object::RawObject;
 use twizzler_abi::{
-    aux::KernelInitInfo,
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    object::ObjID,
     pager::{CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager},
     syscall::{sys_new_handle, NewHandleFlags},
 };
@@ -149,9 +148,10 @@ fn main() {
     .unwrap();
 
     let mut autostart = None;
+    let mut start_unittest = false;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
-            "--tests" => {}
+            "--tests" | "--bench" | "--benches" => start_unittest = true,
             _ => autostart = Some(arg),
         }
     }
@@ -182,9 +182,10 @@ fn main() {
     let _ = monitor_api::set_nameroot(root_id)
         .inspect_err(|_| tracing::warn!("failed to set nameroot for monitor"));
 
-    // Load and wait for tests to complete
-    run_tests("test_bins", false);
-    run_tests("bench_bins", true);
+    if start_unittest {
+        // Load and wait for tests to complete
+        run_tests();
+    }
 
     let utils = [
         "ls", "cat", "base64", "base32", "basename", "basenc", "cksum", "comm", "csplit", "cut",
@@ -247,6 +248,7 @@ fn main() {
     }
 }
 
+/*
 fn get_kernel_init_info() -> &'static KernelInitInfo {
     unsafe {
         (((twizzler_abi::slot::RESERVED_KERNEL_INIT * MAX_SIZE) + NULLPAGE_SIZE)
@@ -265,23 +267,20 @@ fn find_init_name(name: &str) -> Option<ObjID> {
     }
     None
 }
+*/
 
-fn run_tests(test_list_name: &str, _benches: bool) {
-    if let Some(_id) = find_init_name(test_list_name) {
-        println!("=== found init test list ===");
-
-        let comp = CompartmentLoader::new("unittest", "unittest", NewCompartmentFlags::empty())
-            .args(&["unittest"])
-            .load()
-            .expect("failed to start unittest");
-        let mut flags = comp.info().flags;
-        while !flags.contains(CompartmentFlags::EXITED) {
-            flags = comp.wait(flags);
-        }
-
-        println!("unittests finished");
-
-        #[allow(deprecated)]
-        twizzler_abi::syscall::sys_debug_shutdown(0);
+fn run_tests() {
+    let comp = CompartmentLoader::new("unittest", "unittest", NewCompartmentFlags::empty())
+        .args(&["unittest"])
+        .load()
+        .expect("failed to start unittest");
+    let mut flags = comp.info().flags;
+    while !flags.contains(CompartmentFlags::EXITED) {
+        flags = comp.wait(flags);
     }
+
+    println!("unittests finished");
+
+    #[allow(deprecated)]
+    twizzler_abi::syscall::sys_debug_shutdown(0);
 }
