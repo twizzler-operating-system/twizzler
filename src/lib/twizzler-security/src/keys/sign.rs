@@ -218,6 +218,8 @@ mod tests {
     #[test]
     #[cfg(feature = "user")]
     fn test_signing_and_verification() {
+        use twizzler::object::TypedObject;
+
         let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa)
             .expect("Keys should be generated properly");
         let message = "deadbeef";
