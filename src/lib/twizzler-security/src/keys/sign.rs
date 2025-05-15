@@ -6,7 +6,10 @@ use log::{debug, error};
 // };
 use p256::ecdsa::{signature::Signer, Signature as EcdsaSignature, SigningKey as EcdsaSigningKey};
 #[cfg(feature = "user")]
-use twizzler::marker::BaseType;
+use twizzler::{
+    marker::BaseType,
+    object::{Object, ObjectBuilder},
+};
 use twizzler_rt_abi::error::TwzError;
 // 256 / 8 => 32 bytes for secret key length, since we are using curve p256, 256 bit curve
 const ECDSA_SECRET_KEY_LENGTH: usize = 32;
@@ -24,11 +27,12 @@ pub struct SigningKey {
 
 impl SigningKey {
     #[cfg(feature = "user")]
-    pub fn new(scheme: &SigningScheme) -> Result<(Self, VerifyingKey), TwzError> {
+    pub fn new_keypair(
+        scheme: &SigningScheme,
+    ) -> Result<(Object<Self>, Object<VerifyingKey>), TwzError> {
         use alloc::borrow::ToOwned;
 
         use getrandom::getrandom;
-        use twizzler::object::ObjectBuilder;
 
         #[cfg(feature = "log")]
         debug!("Creating new signing key with scheme: {:?}", scheme);
@@ -53,10 +57,6 @@ impl SigningKey {
                     return Err(TwzError::Generic(
                         twizzler_rt_abi::error::GenericError::Internal,
                     ));
-
-                    // panic-ing is appropriate due to bad state of program, if random
-                    // number generation is failing its a catastrophic situation already
-                    // panic!("Key creation failed due to {}", e)
                 }
 
                 let Ok(ecdsa_signing_key) = EcdsaSigningKey::from_slice(&rand_buf) else {
@@ -79,12 +79,7 @@ impl SigningKey {
         let s_object = ObjectBuilder::default().build(signing_key)?;
         let v_object = ObjectBuilder::default().build(verifying_key)?;
 
-        return Ok((signing_key, verifying_key));
-        // store both keys into their respective objects
-        //
-        // return the keys as well as their object id's
-
-        // let obj = ObjectBuilder::default().build(SigningKey);
+        return Ok((s_object, v_object));
     }
 
     /// Builds up a signing key from a slice of bytes and a specified signing scheme.

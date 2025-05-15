@@ -57,6 +57,8 @@ pub struct Cap {
 
     /// The signature inside the capability
     sig: Signature,
+    // what if you just stored the object id of the verifying key here, couldnt you just
+    // do an O(1) lookup then?
 }
 
 const CAP_SERIALIZED_LEN: usize = 78;
