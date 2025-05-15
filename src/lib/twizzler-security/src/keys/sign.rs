@@ -7,7 +7,7 @@ use log::{debug, error};
 use p256::ecdsa::{signature::Signer, Signature as EcdsaSignature, SigningKey as EcdsaSigningKey};
 
 // 256 / 8 => 32 bytes for secret key length, since we are using curve p256, 256 bit curve
-const ECDSA_SECRET_KEY_LENGTH: u8 = 32;
+const ECDSA_SECRET_KEY_LENGTH: usize = 32;
 
 use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
 use crate::{SecurityError, SigningScheme};
@@ -36,7 +36,7 @@ impl SigningKey {
             SigningScheme::Ecdsa => {
                 let mut rand_buf = [0_u8; ECDSA_SECRET_KEY_LENGTH];
 
-                if Err(e) = getrandom(&mut rand_buf) {
+                if let Err(e) = getrandom(&mut rand_buf) {
                     #[cfg(feature = "log")]
                     error!(
                         "Failed to initialize buffer with random bytes, terminating
@@ -68,10 +68,10 @@ impl SigningKey {
         //
         // return the keys as well as their object id's
 
-        let obj = ObjectBuilder::default().build(SigningKey);
+        // let obj = ObjectBuilder::default().build(SigningKey);
 
         #[cfg(feature = "log")]
-        debug!("Creating new signing key with scheme: {:?}", _scheme);
+        debug!("Creating new signing key with scheme: {:?}", scheme);
 
         todo!("do something :sob:")
     }
