@@ -202,8 +202,14 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
                 file.write_all(testlist.as_bytes())?;
                 initrd_files.push(test_file_path);
             }
+            if let Some(bench) = &cli.bench {
+                let test_file_path = get_genfile_path(comp, "bench_bin");
+                let mut file = File::create(&test_file_path)?;
+                file.write_all(bench.as_bytes())?;
+                initrd_files.push(test_file_path);
+            }
         } else {
-            assert!(!cli.tests && !cli.benches);
+            assert!(!cli.tests && !cli.benches && !cli.bench.is_some());
         }
 
         let montest = comp
@@ -275,7 +281,7 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     if cli.tests {
         cmdline.push_str("--tests ");
     }
-    if cli.benches {
+    if cli.benches || cli.bench.is_some() {
         cmdline.push_str("--benches ");
     }
     if let Some(autostart) = cli.autostart {
@@ -287,14 +293,15 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     };
     let image_path = get_genfile_path(&comp, "disk.img");
     println!(
-        "kernel: {:?}",
-        comp.get_kernel_image(cli.tests || cli.benches)
+        "kernel: {:?}, cmdline: {}",
+        comp.get_kernel_image(cli.tests || cli.benches || cli.bench.is_some()),
+        cmdline
     );
     let status = Command::new(get_tool_path(&comp, "image_builder")?)
         .arg("--disk-path")
         .arg(&image_path)
         .arg("--kernel-path")
-        .arg(comp.get_kernel_image(cli.tests || cli.benches))
+        .arg(comp.get_kernel_image(cli.tests || cli.benches || cli.bench.is_some()))
         .arg("--initrd-path")
         .arg(initrd_path)
         .arg(format!("--cmdline={}", cmdline.trim()))

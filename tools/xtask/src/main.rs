@@ -128,8 +128,10 @@ struct ImageOptions {
     pub config: BuildConfig,
     #[clap(long, short, help = "Build tests-enabled system.")]
     tests: bool,
-    #[clap(long, short, help = "Build benchmark-enabled system.")]
+    #[clap(long, help = "Build benchmark-enabled system.")]
     benches: bool,
+    #[clap(long, short, help = "Select a single program to bench.")]
+    bench: Option<String>,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
     #[clap(long, short, help = "Share a file/directory with Twizzler")]
@@ -142,7 +144,7 @@ impl From<ImageOptions> for BuildOptions {
     fn from(io: ImageOptions) -> Self {
         Self {
             config: io.config,
-            tests: io.tests || io.benches,
+            tests: io.tests || io.benches || io.bench.is_some(),
             kernel: io.kernel,
         }
     }
@@ -162,10 +164,11 @@ struct QemuOptions {
     tests: bool,
     #[clap(
         long,
-        short,
         help = "Run benchmarks instead of booting normally. Can be used with --tests."
     )]
     benches: bool,
+    #[clap(long, short, help = "Select a single program to bench.")]
+    bench: Option<String>,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
     #[clap(long, short, help = "Share a file/directory with Twizzler")]
@@ -189,6 +192,7 @@ impl From<&QemuOptions> for ImageOptions {
             kernel: qo.kernel,
             data: qo.data.clone(),
             autostart: qo.autostart.clone(),
+            bench: qo.bench.clone(),
         }
     }
 }
