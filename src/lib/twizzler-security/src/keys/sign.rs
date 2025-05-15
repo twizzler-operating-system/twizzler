@@ -229,7 +229,14 @@ mod tests {
     fn test_signing_and_verification() {
         use twizzler::object::TypedObject;
 
-        let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa)
+        let object_create_spec = ObjectCreate::new(
+            Default::default(),
+            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
+            Default::default(),
+        );
+
+        let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
             .expect("Keys should be generated properly");
         let message = "deadbeef".as_bytes();
 
