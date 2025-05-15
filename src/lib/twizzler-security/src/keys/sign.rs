@@ -27,6 +27,7 @@ pub struct SigningKey {
 
 impl SigningKey {
     #[cfg(feature = "user")]
+    /// Creates a new SigningKey / VerifyingKey object pairs.
     pub fn new_keypair(
         scheme: &SigningScheme,
     ) -> Result<(Object<Self>, Object<VerifyingKey>), TwzError> {
@@ -201,11 +202,46 @@ impl From<EcdsaSigningKey> for SigningKey {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "user")]
+    extern crate test;
+
+    #[cfg(feature = "user")]
+    use test::Bencher;
+
     #[test]
     #[cfg(feature = "user")]
     fn test_key_creation() {
         let (skey, vkey) = SigningKey::new_keypair(&SigningScheme::Ecdsa)
             .expect("keys should be generated properly");
+    }
+
+    #[test]
+    #[cfg(feature = "user")]
+    fn test_signing_and_verification() {
+        let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa)
+            .expect("Keys should be generated properly");
+        let message = "deadbeef";
+
+        let sig = s_obj
+            .base()
+            .sign(message)
+            .expect("Signature should succeed");
+
+        v_obj
+            .base()
+            .verify(message, &sig)
+            .expect("Should be verified properly");
+    }
+
+    #[bench]
+    //NOTE: currently we can only bench in user space, need to benchmark this in kernel space as
+    // well
+    #[cfg(feature = "user")]
+    fn bench_keypair_creation(b: &mut Bencher) {
+        b.iter(|| {
+            let (skey, vkey) = SigningKey::new_keypair(&SigningScheme::Ecdsa)
+                .expect("Keys should be generated properly.");
+        });
     }
 }
 

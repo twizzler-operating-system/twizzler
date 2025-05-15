@@ -25,7 +25,6 @@ pub struct VerifyingKey {
     key: [u8; MAX_KEY_SIZE],
     len: usize,
     pub scheme: SigningScheme,
-
 }
 
 impl VerifyingKey {
