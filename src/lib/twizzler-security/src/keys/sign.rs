@@ -49,7 +49,7 @@ impl SigningKey {
                     panic!("Key creation failed due to {}", e)
                 }
 
-                let Ok(ecdsa_signing_key) = EcdsaSigningKey::from_bytes(rand_buf) else {
+                let Ok(ecdsa_signing_key) = EcdsaSigningKey::from_slice(&rand_buf) else {
                     #[cfg(feature = "log")]
                     error!("Failed to create ecdsa signing key from bytes");
 
