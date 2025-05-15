@@ -177,7 +177,8 @@ impl TryFrom<&SigningKey> for EcdsaSigningKey {
 
 impl From<&EcdsaSigningKey> for SigningKey {
     fn from(value: &EcdsaSigningKey) -> Self {
-        let slice = value.to_bytes().as_slice();
+        let binding = value.to_bytes();
+        let slice = binding.as_slice();
 
         let mut buf = [0; MAX_KEY_SIZE];
 
