@@ -56,7 +56,7 @@ impl SigningKey {
                     panic!("Key creation failed")
                 };
 
-                let ecdsa_verifying_key = ecdsa_signing_key.verifying_key();
+                let ecdsa_verifying_key = ecdsa_signing_key.clone().verifying_key();
 
                 (ecdsa_signing_key.into(), ecdsa_verifying_key.into())
             }
