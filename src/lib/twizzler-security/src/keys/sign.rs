@@ -204,8 +204,8 @@ mod tests {
     #[test]
     #[cfg(feature = "user")]
     fn test_key_creation() {
-        let (skey, vkey) =
-            SigningKey::new(&SigningScheme::Ecdsa).expect("keys should be generated properly");
+        let (skey, vkey) = SigningKey::new_keypair(&SigningScheme::Ecdsa)
+            .expect("keys should be generated properly");
     }
 }
 
