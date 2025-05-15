@@ -57,8 +57,6 @@ pub struct Cap {
 
     /// The signature inside the capability
     sig: Signature,
-    // what if you just stored the object id of the verifying key here, couldnt you just
-    // do an O(1) lookup then?
 }
 
 const CAP_SERIALIZED_LEN: usize = 78;
@@ -114,7 +112,7 @@ impl Cap {
     }
 
     /// verifies signature inside capability
-    
+
     pub fn verify_sig(&self, verifying_key: VerifyingKey) -> Result<(), SecurityError> {
         let hash_arr = Self::serialize(
             self.accessor,
