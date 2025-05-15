@@ -6,6 +6,9 @@ use log::{debug, error};
 // };
 use p256::ecdsa::{signature::Signer, Signature as EcdsaSignature, SigningKey as EcdsaSigningKey};
 
+// 256 / 8 => 32 bytes for secret key length, since we are using curve p256, 256 bit curve
+const ECDSA_SECRET_KEY_LENGTH: u8 = 32;
+
 use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
 use crate::{SecurityError, SigningScheme};
 
@@ -18,7 +21,55 @@ pub struct SigningKey {
 }
 
 impl SigningKey {
-    pub fn new(_scheme: &SigningScheme) -> (Self, VerifyingKey) {
+    #[cfg(feature = "user")]
+    pub fn new(scheme: &SigningScheme) -> (Self, VerifyingKey) {
+        use getrandom::getrandom;
+        use twizzler::object::ObjectBuilder;
+
+        // first create the key using the signing scheme
+
+        let (signing_key: SigningKey, verifying_key: VerifyingKey) = match scheme {
+            SigningScheme::Ed25519 => {
+                unimplemented!("still need to fix creating ed25519 keys")
+            }
+
+            SigningScheme::Ecdsa => {
+                let mut rand_buf = [0_u8; ECDSA_SECRET_KEY_LENGTH];
+
+                if Err(e) = getrandom(&mut rand_buf) {
+                    #[cfg(feature = "log")]
+                    error!(
+                        "Failed to initialize buffer with random bytes, terminating
+                        key creation. Underlying error: {}",
+                        e
+                    );
+
+                    // panic-ing is appropriate due to bad state of program, if random
+                    // number generation is failing its a catastrophic situation already
+                    panic!("Key creation failed due to {}", e)
+                }
+
+                let Ok(ecdsa_signing_key) = EcdsaSigningKey::from_bytes(rand_buf) else {
+                    #[cfg(feature = "log")]
+                    error!("Failed to create ecdsa signing key from bytes");
+
+                    panic!("Key creation failed")
+                };
+
+                let ecdsa_verifying_key = ecdsa_signing_key.verifying_key();
+
+                (ecdsa_signing_key.into(), ecdsa_verifying_key.into()) 
+            }
+        };
+
+        // get the verifying key for it too
+        //
+        // store both keys into their respective objects
+        //
+        // return the keys as well as their object id's
+
+        let obj = ObjectBuilder::default().build(SigningKey);
+
         #[cfg(feature = "log")]
         debug!("Creating new signing key with scheme: {:?}", _scheme);
 
@@ -122,4 +173,18 @@ impl TryFrom<&SigningKey> for EcdsaSigningKey {
             SecurityError::InvalidKey
         })?)
     }
+}
+
+impl From<&EcdsaSigningKey> for SigningKey {
+    fn from(value: &EcdsaSigningKey) -> Self {
+        let slice = value.to_bytes().as_slice();
+
+        let mut buf = [0; MAX_KEY_SIZE];
+
+        buf[slice.len()].copy_from_slice(slice);
+
+        SigningKey { key: buf, len: slice.len(), scheme: SigningScheme::Ecdsa}
+        
+    }
+    
 }

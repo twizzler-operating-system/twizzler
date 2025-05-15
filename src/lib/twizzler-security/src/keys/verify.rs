@@ -190,3 +190,21 @@ impl TryFrom<&VerifyingKey> for EcdsaVerifyingKey {
         Ok(key)
     }
 }
+
+impl From<&EcdsaVerifyingKey> for VerifyingKey {
+    fn from(value: &EcdsaVerifyingKey) -> Self {
+        let point = value.to_encoded_point(false);
+
+        let bytes = point.as_bytes();
+
+        let mut buf = [0; MAX_KEY_SIZE];
+
+        buf[bytes.len()].copy_from_slice(bytes);
+
+        VerifyingKey {
+            key: buf,
+            len: bytes.len(),
+            scheme: SigningScheme::Ecdsa,
+        }
+    }
+}
