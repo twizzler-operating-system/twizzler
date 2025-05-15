@@ -14,6 +14,8 @@ use twizzler_rt_abi::error::TwzError;
 // 256 / 8 => 32 bytes for secret key length, since we are using curve p256, 256 bit curve
 const ECDSA_SECRET_KEY_LENGTH: usize = 32;
 
+use twizzler_abi::syscall::ObjectCreate;
+
 use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
 use crate::{SecurityError, SigningScheme};
 
@@ -30,6 +32,7 @@ impl SigningKey {
     /// Creates a new SigningKey / VerifyingKey object pairs.
     pub fn new_keypair(
         scheme: &SigningScheme,
+        obj_create_spec: ObjectCreate,
     ) -> Result<(Object<Self>, Object<VerifyingKey>), TwzError> {
         use alloc::borrow::ToOwned;
 
@@ -77,8 +80,8 @@ impl SigningKey {
             }
         };
 
-        let s_object = ObjectBuilder::default().build(signing_key)?;
-        let v_object = ObjectBuilder::default().build(verifying_key)?;
+        let s_object = ObjectBuilder::new(obj_create_spec.clone()).build(signing_key)?;
+        let v_object = ObjectBuilder::new(obj_create_spec).build(verifying_key)?;
 
         return Ok((s_object, v_object));
     }
@@ -211,7 +214,13 @@ mod tests {
     #[test]
     #[cfg(feature = "user")]
     fn test_key_creation() {
-        let (skey, vkey) = SigningKey::new_keypair(&SigningScheme::Ecdsa)
+        let object_create_spec = ObjectCreate::new(
+            Default::default(),
+            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
+            Default::default(),
+        );
+        let (skey, vkey) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
             .expect("keys should be generated properly");
     }
 
@@ -240,9 +249,16 @@ mod tests {
     // well
     #[cfg(feature = "user")]
     fn bench_keypair_creation(b: &mut Bencher) {
+        let object_create_spec = ObjectCreate::new(
+            Default::default(),
+            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
+            Default::default(),
+        );
         b.iter(|| {
-            let (skey, vkey) = SigningKey::new_keypair(&SigningScheme::Ecdsa)
-                .expect("Keys should be generated properly.");
+            let (skey, vkey) =
+                SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec.clone())
+                    .expect("Keys should be generated properly.");
         });
     }
 }
