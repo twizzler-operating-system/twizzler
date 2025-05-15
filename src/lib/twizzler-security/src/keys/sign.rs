@@ -5,6 +5,8 @@ use log::{debug, error};
 //     SIGNATURE_LENGTH,
 // };
 use p256::ecdsa::{signature::Signer, Signature as EcdsaSignature, SigningKey as EcdsaSigningKey};
+#[cfg(feature = "user")]
+use twizzler::marker::BaseType;
 use twizzler_rt_abi::error::TwzError;
 // 256 / 8 => 32 bytes for secret key length, since we are using curve p256, 256 bit curve
 const ECDSA_SECRET_KEY_LENGTH: usize = 32;
@@ -209,5 +211,12 @@ mod tests {
     fn test_key_creation() {
         let (skey, vkey) =
             SigningKey::new(&SigningScheme::Ecdsa).expect("keys should be generated properly");
+    }
+}
+
+#[cfg(feature = "user")]
+impl BaseType for SigningKey {
+    fn fingerprint() -> u64 {
+        return 6;
     }
 }
