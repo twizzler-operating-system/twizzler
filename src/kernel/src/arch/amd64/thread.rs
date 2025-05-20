@@ -379,22 +379,21 @@ impl Thread {
         self.arch.user_fs.store(tls, Ordering::SeqCst);
     }
 
-    pub extern "C" fn arch_switch_to(&self, old_thread: &Thread) {
-        assert!(!crate::interrupt::get());
+    fn save_extended_state(&self) {
+        let do_xsave = use_xsave();
         unsafe {
-            set_kernel_stack(
-                VirtAddr::new(self.kernel_stack.as_ref() as *const u8 as u64)
-                    .unwrap()
-                    .offset(KERNEL_STACK_SIZE)
-                    .unwrap(),
-            );
-            let do_xsave = use_xsave();
             if do_xsave {
-                core::arch::asm!("xsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr(), in("rax") 7, in("rdx") 0);
+                core::arch::asm!("xsave [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") 7, in("rdx") 0);
             } else {
-                core::arch::asm!("fxsave [{}]", in(reg) old_thread.arch.xsave_region.0.as_ptr());
+                core::arch::asm!("fxsave [{}]", in(reg) self.arch.xsave_region.0.as_ptr());
             }
-            old_thread.arch.xsave_inited.store(true, Ordering::SeqCst);
+        }
+        self.arch.xsave_inited.store(true, Ordering::SeqCst);
+    }
+
+    fn restore_extended_state(&self) {
+        let do_xsave = use_xsave();
+        unsafe {
             if self.arch.xsave_inited.load(Ordering::SeqCst) {
                 if do_xsave {
                     core::arch::asm!("xrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") 7, in("rdx") 0);
@@ -405,6 +404,31 @@ impl Thread {
                 super::processor::init_fpu_state();
             }
         }
+    }
+
+    pub fn with_saved_extended_state<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.do_critical(move |_| {
+            self.save_extended_state();
+            let ret = f();
+            self.restore_extended_state();
+            ret
+        })
+    }
+
+    pub extern "C" fn arch_switch_to(&self, old_thread: &Thread) {
+        assert!(!crate::interrupt::get());
+        unsafe {
+            set_kernel_stack(
+                VirtAddr::new(self.kernel_stack.as_ref() as *const u8 as u64)
+                    .unwrap()
+                    .offset(KERNEL_STACK_SIZE)
+                    .unwrap(),
+            );
+        }
+
+        old_thread.save_extended_state();
+        self.restore_extended_state();
+
         let old_stack_save = old_thread.arch.rsp.get();
         let new_stack_save = self.arch.rsp.get();
         assert!(old_thread.switch_lock.load(Ordering::SeqCst) != 0);
@@ -433,5 +457,18 @@ impl Thread {
 
     pub unsafe fn init(&mut self, f: extern "C" fn()) {
         self.init_va(f as usize as u64);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use twizzler_kernel_macros::kernel_test;
+
+    use crate::thread::current_thread_ref;
+
+    #[kernel_test]
+    fn test_with_saved_extended() {
+        let thread = current_thread_ref().unwrap();
+        thread.with_saved_extended_state(|| { /* TODO: SIMD test */ })
     }
 }
