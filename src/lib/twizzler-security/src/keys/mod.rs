@@ -5,4 +5,4 @@ pub use sig::*;
 pub use sign::*;
 pub use verify::*;
 
-const MAX_KEY_SIZE: usize = 512;
+const MAX_KEY_SIZE: usize = 128;

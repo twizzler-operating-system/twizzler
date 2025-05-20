@@ -1,9 +1,5 @@
 #[cfg(feature = "log")]
 use log::{debug, error};
-// use ed25519_dalek::{
-//     ed25519, Signature as EdSignature, SigningKey as EdSigningKey, Verifier,
-//     VerifyingKey as EdVerifyingKey, PUBLIC_KEY_LENGTH,
-// };
 use p256::{
     ecdsa::{
         signature::Verifier, Signature as EcdsaSignature, SigningKey as EcdsaSigningKey,
@@ -12,6 +8,12 @@ use p256::{
     elliptic_curve::sec1::EncodedPoint,
     NistP256,
 };
+// use ed25519_dalek::{
+//     ed25519, Signature as EdSignature, SigningKey as EdSigningKey, Verifier,
+//     VerifyingKey as EdVerifyingKey, PUBLIC_KEY_LENGTH,
+// };
+#[cfg(feature = "user")]
+use twizzler::marker::BaseType;
 
 use super::{Signature, SigningKey, MAX_KEY_SIZE};
 use crate::{SecurityError, SigningScheme};
@@ -188,5 +190,29 @@ impl TryFrom<&VerifyingKey> for EcdsaVerifyingKey {
         })?;
 
         Ok(key)
+    }
+}
+
+impl From<EcdsaVerifyingKey> for VerifyingKey {
+    fn from(value: EcdsaVerifyingKey) -> Self {
+        let point = value.to_encoded_point(false);
+
+        let bytes = point.as_bytes();
+
+        let mut buf = [0; MAX_KEY_SIZE];
+
+        buf[0..bytes.len()].copy_from_slice(bytes);
+
+        VerifyingKey {
+            key: buf,
+            len: bytes.len(),
+            scheme: SigningScheme::Ecdsa,
+        }
+    }
+}
+#[cfg(feature = "user")]
+impl BaseType for VerifyingKey {
+    fn fingerprint() -> u64 {
+        return 6;
     }
 }
