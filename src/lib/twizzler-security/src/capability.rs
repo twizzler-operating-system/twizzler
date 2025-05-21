@@ -158,7 +158,7 @@ impl Cap {
         // `align` to 1.
 
         // the pointer is less than the actual offset
-        if ptr < self.gates.offset {
+        if ptr_offset < self.gates.offset {
             return Err(SecurityError::GateDenied);
         }
 
