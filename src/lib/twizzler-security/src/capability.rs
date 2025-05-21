@@ -215,6 +215,7 @@ mod tests {
     use super::*;
 
     extern crate test;
+
     use alloc::vec::Vec;
 
     use test::Bencher;
@@ -277,7 +278,7 @@ mod tests {
 
         // yeah i dont need an enum for this but honestly just makes it clear when im writing
         // the table / makes it clear when reading the table.
-        #[derive(PartialEq, PartialOrd, Ord, Eq)]
+        #[derive(PartialEq, PartialOrd, Ord, Eq, Debug)]
         enum Expected {
             Fail,
             Pass,
@@ -285,7 +286,7 @@ mod tests {
 
         use Expected::*;
 
-        let table: [(Input, Output); _] = [
+        let table: Vec<(Input, Expected)> = vec![
             (
                 Input {
                     capability_gates: Gates::new(0, 100, 1),
@@ -378,7 +379,7 @@ mod tests {
             assert_eq!(
                 actual, expected,
                 "Failed for capability gates ={}, where
-                test passed in: offset={}, length={}, algin={}})",
+                test passed in: offset={}, length={}, algin={})",
                 input.capability_gates, input.offset, input.length, input.align
             )
         }
