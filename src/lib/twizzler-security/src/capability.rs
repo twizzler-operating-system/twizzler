@@ -361,8 +361,8 @@ mod tests {
             assert_eq!(
                 actual, expected,
                 "Failed for capability gates ={:#?}, where
-                testing against: offset={}, length={}, algin={})",
-                input.capability_gates, input.offset, input.length, input.align
+                testing against: ptr_offset={}, algin={})",
+                input.capability_gates, input.ptr_offset, input.align
             )
         }
     }
