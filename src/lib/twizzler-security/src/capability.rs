@@ -232,6 +232,23 @@ mod tests {
             .expect("capability should have been verified.")
     }
 
-    // #[bench]
-    // fn bench_capability_creation() {}
+    #[bench]
+    fn bench_capability_creation(b: &mut Bencher) {
+        let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
+            .expect("keypair creation should not have errored!");
+
+        b.iter(|| {
+            let cap = Cap::new(
+                0x123.into(),
+                0x321.into(),
+                Protections::all(),
+                s.base(),
+                Revoc::default(),
+                Gates::default(),
+                HashingAlgo::Sha256,
+                SigningScheme::Ecdsa,
+            )
+            .expect("Capability should have been created.");
+        })
+    }
 }
