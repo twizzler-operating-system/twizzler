@@ -281,6 +281,14 @@ mod tests {
             ),
             (
                 Input {
+                    capability_gates: Gates::new(0, 100, 1),
+                    ptr_offset: 100,
+                    align: 1,
+                },
+                Pass,
+            ),
+            (
+                Input {
                     capability_gates: Gates::new(0, 10_000, 1),
                     ptr_offset: 5_000,
                     align: 1,
@@ -316,14 +324,6 @@ mod tests {
                     capability_gates: Gates::new(0, 100, 1),
                     ptr_offset: 66,
                     align: 4, // bad alignment
-                },
-                Fail,
-            ),
-            (
-                Input {
-                    capability_gates: Gates::new(0, 100, 1),
-                    ptr_offset: 100,
-                    align: 1,
                 },
                 Fail,
             ),
