@@ -6,7 +6,7 @@ pub struct Gates {
 }
 
 //NOTE: ask daniel about this
-static MAX_LEN: u64 = 1e9;
+static MAX_LEN: u64 = 1e9 as u64;
 
 pub enum GatesError {
     OutsideBounds,
@@ -29,7 +29,7 @@ impl Default for Gates {
         Gates {
             offset: 0,
             length: MAX_LEN,
-            align: 0,
+            align: 1,
         }
     }
 }

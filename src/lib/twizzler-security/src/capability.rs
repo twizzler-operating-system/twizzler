@@ -153,6 +153,16 @@ impl Cap {
         // it checks to see if the instruction pointer is in a valid gate for the object it points
         // to. The instruction pointer must reside within the region specified by offset and
         // length and must be aligned on a value specified by align.
+        //
+        // The `offset` and `length` fields specify a region within the object. When the
+        // kernel switches a thread's active context, in addition to the validity checks described
+        // in section 3.x, it checks to see if the instruction pointer is in a valid gate
+        // for the object it points to. The instruction pointer must reside within the
+        // region specified by `offset` and `length`, and must be aligned on a value specified
+        // by `align`. If either of these is not true, the kernel will not consider that security
+        // context valid to switch to. Note that we can recover the original sematics where we did
+        // not perform this check by setting `offset` and `length` to cover the entire object, and
+        // `align` to 1.
 
         //  assuming the layout is something like
         // ||||||||||||||||||||||||||||||||||||||||||||||||||||
@@ -267,7 +277,6 @@ mod tests {
 
         // yeah i dont need an enum for this but honestly just makes it clear when im writing
         // the table / makes it clear when reading the table.
-
         #[derive(PartialEq, PartialOrd, Ord, Eq)]
         enum Expected {
             Fail,
@@ -279,47 +288,64 @@ mod tests {
         let table: [(Input, Output); _] = [
             (
                 Input {
-                    capability_gates: Gates::new(0, 100, 4),
+                    capability_gates: Gates::new(0, 100, 1),
                     offset: 1,
                     length: 5,
-                    align: 4,
+                    align: 1,
                 },
                 Pass,
             ),
-            // Additional test cases
             (
                 Input {
-                    capability_gates: Gates::new(0, 100, 4),
-                    offset: 0,
-                    length: 100,
-                    align: 4,
+                    capability_gates: Gates::new(0, 100, 1),
+                    offset: 50,
+                    length: 50,
+                    align: 1,
+                },
+                Pass,
+            ),
+            (
+                Input {
+                    capability_gates: Gates::new(5, 10000, 1),
+                    offset: 0, // offset too small
+                    length: 999,
+                    align: 1,
                 },
                 Fail,
             ),
             (
                 Input {
-                    capability_gates: Gates::new(0, 100, 4),
+                    capability_gates: Gates::new(0, 100, 1),
+                    offset: 105, // offset too large
+                    length: 100,
+                    align: 1,
+                },
+                Fail,
+            ),
+            (
+                Input {
+                    capability_gates: Gates::new(0, 100, 1),
+                    offset: 1,
+                    length: 5,
+                    align: 4, // bad alignment
+                },
+                Fail,
+            ),
+            (
+                Input {
+                    capability_gates: Gates::new(0, 100, 1),
                     offset: 0,
                     length: 101, // exceeds gate length
-                    align: 4,
+                    align: 1,
                 },
                 Fail,
             ),
             (
                 Input {
-                    capability_gates: Gates::new(0, 100, 4),
+                    capability_gates: Gates::new(0, 100, 1),
                     offset: 50,
                     length: 60, // would go beyond gate bounds
-                    align: 4,
-                },
-                Fail,
-            ),
-            (
-                Input {
-                    capability_gates: Gates::new(0, 100, 4),
-                    offset: 3, // misaligned
-                    length: 10,
-                    align: 4,
+                    align: 1,
                 },
                 Fail,
             ),
