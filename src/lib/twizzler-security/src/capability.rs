@@ -216,8 +216,6 @@ mod tests {
 
     extern crate test;
 
-    use alloc::vec::{self, Vec};
-
     use test::Bencher;
     use twizzler::object::TypedObject;
     use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate};
@@ -286,7 +284,7 @@ mod tests {
 
         use Expected::*;
 
-        let table: Vec<(Input, Expected)> = vec![
+        let table: [(Input, Expected); 7] = [
             (
                 Input {
                     capability_gates: Gates::new(0, 100, 1),
