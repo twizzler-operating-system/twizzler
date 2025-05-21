@@ -376,7 +376,7 @@ mod tests {
 
             assert_eq!(
                 actual, expected,
-                "Failed for capability gates ={}, where
+                "Failed for capability gates ={:#?}, where
                 test passed in: offset={}, length={}, algin={})",
                 input.capability_gates, input.offset, input.length, input.align
             )
