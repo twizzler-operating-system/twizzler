@@ -353,10 +353,7 @@ mod tests {
             )
             .expect("Capability should have been created properly.");
 
-            let actual = match cap
-                .check_gate(input.offset, input.length, input.align)
-                .is_ok()
-            {
+            let actual = match cap.check_gate(input.ptr_offset, input.align).is_ok() {
                 true => Pass,
                 false => Fail,
             };
