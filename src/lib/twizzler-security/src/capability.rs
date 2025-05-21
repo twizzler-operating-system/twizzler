@@ -163,7 +163,7 @@ impl Cap {
         }
 
         // the access is beyond the "end" of the gate
-        if ptr_offset > self.gates.offset + self.gates.length {
+        if self.gates.offset + self.gates.length < ptr_offset {
             return Err(SecurityError::GateDenied);
         }
 
@@ -360,11 +360,11 @@ mod tests {
 
             assert_eq!(
                 actual, expected,
-                "expected: {expected}
-                 actual: {actual},
+                "expected: {:?}
+                 actual: {:?},
                  Failed for capability gates = {:#?}, where
                  testing against: ptr_offset = {}, align = {})",
-                input.capability_gates, input.ptr_offset, input.align
+                expected, actual, input.capability_gates, input.ptr_offset, input.align
             )
         }
     }
