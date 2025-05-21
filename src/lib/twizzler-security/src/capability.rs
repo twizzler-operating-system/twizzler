@@ -205,6 +205,8 @@ mod tests {
     use super::*;
 
     extern crate test;
+    use alloc::vec::Vec;
+
     use test::Bencher;
     use twizzler::object::TypedObject;
     use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate};
@@ -227,9 +229,133 @@ mod tests {
             SigningScheme::Ecdsa,
         )
         .expect("Capability should have been created.");
+    }
+
+    #[test]
+    fn test_capability_verification() {
+        // just simple thang
+        let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
+            .expect("keypair creation should not have errored!");
+
+        let cap = Cap::new(
+            0x123.into(),
+            0x321.into(),
+            Protections::all(),
+            s.base(),
+            Revoc::default(),
+            Gates::default(),
+            HashingAlgo::Sha256,
+            SigningScheme::Ecdsa,
+        )
+        .expect("Capability should have been created properly.");
 
         cap.verify_sig(v.base())
             .expect("capability should have been verified.")
+    }
+
+    #[test]
+    fn test_capability_gates() {
+        use crate::Gates;
+        struct Input {
+            /// gates that the capability will hold
+            capability_gates: Gates,
+            /// values you test
+            offset: u64,
+            length: u64,
+            align: u64,
+        }
+
+        // yeah i dont need an enum for this but honestly just makes it clear when im writing
+        // the table / makes it clear when reading the table.
+
+        #[derive(PartialEq, PartialOrd, Ord, Eq)]
+        enum Expected {
+            Fail,
+            Pass,
+        }
+
+        use Expected::*;
+
+        let table: [(Input, Output); _] = [
+            (
+                Input {
+                    capability_gates: Gates::new(0, 100, 4),
+                    offset: 1,
+                    length: 5,
+                    align: 4,
+                },
+                Pass,
+            ),
+            // Additional test cases
+            (
+                Input {
+                    capability_gates: Gates::new(0, 100, 4),
+                    offset: 0,
+                    length: 100,
+                    align: 4,
+                },
+                Fail,
+            ),
+            (
+                Input {
+                    capability_gates: Gates::new(0, 100, 4),
+                    offset: 0,
+                    length: 101, // exceeds gate length
+                    align: 4,
+                },
+                Fail,
+            ),
+            (
+                Input {
+                    capability_gates: Gates::new(0, 100, 4),
+                    offset: 50,
+                    length: 60, // would go beyond gate bounds
+                    align: 4,
+                },
+                Fail,
+            ),
+            (
+                Input {
+                    capability_gates: Gates::new(0, 100, 4),
+                    offset: 3, // misaligned
+                    length: 10,
+                    align: 4,
+                },
+                Fail,
+            ),
+        ];
+
+        let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
+            .expect("keypair creation should not have errored!");
+
+        for (input, expected) in table.into_iter() {
+            let cap = Cap::new(
+                0x123.into(),
+                0x321.into(),
+                Protections::all(),
+                s.base(),
+                Revoc::default(),
+                input.capability_gates,
+                HashingAlgo::Sha256,
+                SigningScheme::Ecdsa,
+            )
+            .expect("Capability should have been created properly.");
+
+            let actual = match cap
+                .check_gate(input.offset, input.length, input.align)
+                .is_ok()
+            {
+                true => Pass,
+                false => Fail,
+            };
+
+            assert_eq!(
+                actual, expected,
+                "Failed for capability gates ={}, where
+                test passed in: offset={}, length={}, algin={}})",
+                input.capability_gates, input.offset, input.length, input.align
+            )
+        }
     }
 
     #[bench]
@@ -249,6 +375,29 @@ mod tests {
                 SigningScheme::Ecdsa,
             )
             .expect("Capability should have been created.");
+        })
+    }
+
+    #[bench]
+    fn bench_capability_verification(b: &mut Bencher) {
+        let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
+            .expect("keypair creation should not have errored!");
+
+        let cap = Cap::new(
+            0x123.into(),
+            0x321.into(),
+            Protections::all(),
+            s.base(),
+            Revoc::default(),
+            Gates::default(),
+            HashingAlgo::Sha256,
+            SigningScheme::Ecdsa,
+        )
+        .expect("Capability should have been created.");
+
+        b.iter(|| {
+            cap.verify_sig(v.base())
+                .expect("capability should have been verified.");
         })
     }
 }
