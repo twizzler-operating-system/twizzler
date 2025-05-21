@@ -210,6 +210,7 @@ impl From<EcdsaVerifyingKey> for VerifyingKey {
         }
     }
 }
+
 #[cfg(feature = "user")]
 impl BaseType for VerifyingKey {
     fn fingerprint() -> u64 {

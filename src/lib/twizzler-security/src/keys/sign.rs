@@ -202,17 +202,17 @@ impl From<EcdsaSigningKey> for SigningKey {
     }
 }
 
+// currently these tests can only run in user space, would have to write their own
+// tests written inside kernel to run.
+#[cfg(feature = "user")]
 mod tests {
     use super::*;
 
-    #[cfg(feature = "user")]
     extern crate test;
 
-    #[cfg(feature = "user")]
     use test::Bencher;
 
     #[test]
-    #[cfg(feature = "user")]
     fn test_key_creation() {
         let object_create_spec = ObjectCreate::new(
             Default::default(),
@@ -225,7 +225,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "user")]
     fn test_signing_and_verification() {
         use twizzler::object::TypedObject;
 
@@ -254,7 +253,6 @@ mod tests {
     #[bench]
     //NOTE: currently we can only bench in user space, need to benchmark this in kernel space as
     // well
-    #[cfg(feature = "user")]
     fn bench_keypair_creation(b: &mut Bencher) {
         let object_create_spec = ObjectCreate::new(
             Default::default(),

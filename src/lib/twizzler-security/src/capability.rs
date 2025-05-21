@@ -67,7 +67,7 @@ impl Cap {
         target: ObjID,
         accessor: ObjID,
         prots: Protections,
-        target_priv_key: SigningKey,
+        target_priv_key: &SigningKey,
         revocation: Revoc,
         gates: Gates,
         hashing_algo: HashingAlgo,
@@ -113,7 +113,7 @@ impl Cap {
 
     /// verifies signature inside capability
 
-    pub fn verify_sig(&self, verifying_key: VerifyingKey) -> Result<(), SecurityError> {
+    pub fn verify_sig(&self, verifying_key: &VerifyingKey) -> Result<(), SecurityError> {
         let hash_arr = Self::serialize(
             self.accessor,
             self.target,
@@ -198,4 +198,40 @@ impl Cap {
         hash_arr[70..78].copy_from_slice(&gates.align.to_le_bytes());
         hash_arr
     }
+}
+
+#[cfg(feature = "user")]
+mod tests {
+    use super::*;
+
+    extern crate test;
+    use test::Bencher;
+    use twizzler::object::TypedObject;
+    use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate};
+
+    #[test]
+    // NOTE: would be nice to do table testing here
+    fn test_capability_creation() {
+        // just simple thang
+        let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
+            .expect("keypair creation should not have errored!");
+
+        let cap = Cap::new(
+            0x123,
+            0x321,
+            Protections::all(),
+            s.base(),
+            Revoc::default(),
+            Gates::default(),
+            HashingAlgo::Sha256,
+            SigningScheme::Ecdsa,
+        )
+        .expect("Capability should have been created.");
+
+        cap.verify_sig(v.base())
+            .expect("capability should have been verified.")
+    }
+
+    // #[bench]
+    // fn bench_capability_creation() {}
 }
