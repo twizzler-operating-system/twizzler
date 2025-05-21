@@ -217,8 +217,8 @@ mod tests {
             .expect("keypair creation should not have errored!");
 
         let cap = Cap::new(
-            0x123,
-            0x321,
+            0x123.into(),
+            0x321.into(),
             Protections::all(),
             s.base(),
             Revoc::default(),
