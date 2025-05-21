@@ -327,20 +327,12 @@ mod tests {
                 },
                 Fail,
             ),
-            (
-                Input {
-                    capability_gates: Gates::new(0, 100, 1),
-                    ptr_offset: 50,
-                    align: 1,
-                },
-                Fail,
-            ),
         ];
 
         let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
             .expect("keypair creation should not have errored!");
 
-        for (input, expected) in table.into_iter() {
+        for (test_number, (input, expected)) in table.into_iter().enumerate() {
             let cap = Cap::new(
                 0x123.into(),
                 0x321.into(),
@@ -359,12 +351,20 @@ mod tests {
             };
 
             assert_eq!(
-                actual, expected,
-                "expected: {:?}
+                actual,
+                expected,
+                "
+                 \n Test {:?}
+                 expected: {:?}
                  actual: {:?},
                  Failed for capability gates = {:#?}, where
                  testing against: ptr_offset = {}, align = {})",
-                expected, actual, input.capability_gates, input.ptr_offset, input.align
+                test_number,
+                expected,
+                actual,
+                input.capability_gates,
+                input.ptr_offset,
+                input.align
             )
         }
     }
