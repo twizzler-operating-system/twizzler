@@ -360,8 +360,10 @@ mod tests {
 
             assert_eq!(
                 actual, expected,
-                "Failed for capability gates ={:#?}, where
-                testing against: ptr_offset={}, algin={})",
+                "expected: {expected}
+                 actual: {actual},
+                 Failed for capability gates = {:#?}, where
+                 testing against: ptr_offset = {}, align = {})",
                 input.capability_gates, input.ptr_offset, input.align
             )
         }
