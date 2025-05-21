@@ -216,7 +216,7 @@ mod tests {
 
     extern crate test;
 
-    use alloc::vec::Vec;
+    use alloc::vec::{self, Vec};
 
     use test::Bencher;
     use twizzler::object::TypedObject;
