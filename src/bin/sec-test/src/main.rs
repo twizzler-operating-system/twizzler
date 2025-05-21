@@ -104,7 +104,7 @@ fn main() {
                 target,
                 accessor,
                 prots,
-                target_priv_key,
+                &target_priv_key,
                 Default::default(),
                 Default::default(),
                 Default::default(),
