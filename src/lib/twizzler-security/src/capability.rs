@@ -270,7 +270,7 @@ mod tests {
 
         use Expected::*;
 
-        let table: [(Input, Expected); 8] = [
+        let table: [(Input, Expected); 7] = [
             (
                 Input {
                     capability_gates: Gates::new(0, 100, 1),
