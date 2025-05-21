@@ -145,15 +145,8 @@ impl Cap {
         }
     }
 
-    /// pass in proposed gates values, verifies that they fall within the range
-    /// specified by this capability
-    pub fn check_gate(&self, offset: u64, length: u64, align: u64) -> Result<(), SecurityError> {
-        // the offset and length fields specify a region within the object. when the kernel switches
-        // a threads active context in addition to the validity checks described in sec 3.1,
-        // it checks to see if the instruction pointer is in a valid gate for the object it points
-        // to. The instruction pointer must reside within the region specified by offset and
-        // length and must be aligned on a value specified by align.
-        //
+    /// checks to see if the specified ptr_offset falls in the capability's gate.
+    pub fn check_gate(&self, ptr_offset: u64, align: u64) -> Result<(), SecurityError> {
         // The `offset` and `length` fields specify a region within the object. When the
         // kernel switches a thread's active context, in addition to the validity checks described
         // in section 3.x, it checks to see if the instruction pointer is in a valid gate
@@ -164,25 +157,19 @@ impl Cap {
         // not perform this check by setting `offset` and `length` to cover the entire object, and
         // `align` to 1.
 
-        //  assuming the layout is something like
-        // ||||||||||||||||||||||||||||||||||||||||||||||||||||
-        // offset |                                       | length
-        //        {                                       }
-        // the proposed offset must lay in this region
+        // the pointer is less than the actual offset
+        if ptr < self.gates.offset {
+            return Err(SecurityError::GateDenied);
+        }
 
-        //TODO: this needs to be fixed so that any 'chunk' inside of the reigion is valid too
-        // if self.gates.offset < offset || offset > self.gates.offset + length {
-        //     return Err(SecurityError::OutsideBounds);
-        // }
-
-        //TODO: make sure this is correct
-        if !(offset + length < self.gates.length && offset > self.gates.offset) {
+        // the access is beyond the "end" of the gate
+        if ptr_offset > self.gates.offset + self.gates.length {
             return Err(SecurityError::GateDenied);
         }
 
         //NOTE: not completely sure this is how you check alignment.
         if self.gates.align != align {
-            return Err(SecurityError::InvalidGate);
+            return Err(SecurityError::GateDenied);
         }
 
         Ok(())
@@ -269,8 +256,7 @@ mod tests {
             /// gates that the capability will hold
             capability_gates: Gates,
             /// values you test
-            offset: u64,
-            length: u64,
+            ptr_offset: u64,
             align: u64,
         }
 
@@ -284,12 +270,19 @@ mod tests {
 
         use Expected::*;
 
-        let table: [(Input, Expected); 7] = [
+        let table: [(Input, Expected); 8] = [
             (
                 Input {
                     capability_gates: Gates::new(0, 100, 1),
-                    offset: 1,
-                    length: 5,
+                    ptr_offset: 3,
+                    align: 1,
+                },
+                Pass,
+            ),
+            (
+                Input {
+                    capability_gates: Gates::new(0, 10_000, 1),
+                    ptr_offset: 5_000,
                     align: 1,
                 },
                 Pass,
@@ -297,8 +290,7 @@ mod tests {
             (
                 Input {
                     capability_gates: Gates::new(0, 100, 1),
-                    offset: 50,
-                    length: 50,
+                    ptr_offset: 50,
                     align: 1,
                 },
                 Pass,
@@ -306,8 +298,7 @@ mod tests {
             (
                 Input {
                     capability_gates: Gates::new(5, 10000, 1),
-                    offset: 0, // offset too small
-                    length: 999,
+                    ptr_offset: 0, // ptr_offset too small
                     align: 1,
                 },
                 Fail,
@@ -315,8 +306,7 @@ mod tests {
             (
                 Input {
                     capability_gates: Gates::new(0, 100, 1),
-                    offset: 105, // offset too large
-                    length: 100,
+                    ptr_offset: 105, // ptr_offset too large
                     align: 1,
                 },
                 Fail,
@@ -324,8 +314,7 @@ mod tests {
             (
                 Input {
                     capability_gates: Gates::new(0, 100, 1),
-                    offset: 1,
-                    length: 5,
+                    ptr_offset: 66,
                     align: 4, // bad alignment
                 },
                 Fail,
@@ -333,8 +322,7 @@ mod tests {
             (
                 Input {
                     capability_gates: Gates::new(0, 100, 1),
-                    offset: 0,
-                    length: 101, // exceeds gate length
+                    ptr_offset: 100,
                     align: 1,
                 },
                 Fail,
@@ -342,8 +330,7 @@ mod tests {
             (
                 Input {
                     capability_gates: Gates::new(0, 100, 1),
-                    offset: 50,
-                    length: 60, // would go beyond gate bounds
+                    ptr_offset: 50,
                     align: 1,
                 },
                 Fail,
@@ -377,7 +364,7 @@ mod tests {
             assert_eq!(
                 actual, expected,
                 "Failed for capability gates ={:#?}, where
-                test passed in: offset={}, length={}, algin={})",
+                testing against: offset={}, length={}, algin={})",
                 input.capability_gates, input.offset, input.length, input.align
             )
         }
