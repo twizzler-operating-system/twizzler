@@ -54,7 +54,7 @@ pub struct CtxMapItem {
     /// Type of the Map Item
     item_type: CtxMapItemType,
     /// The offset into the object
-    offset: u32,
+    offset: usize,
 }
 
 /// The base of a Security Context, holding a map to the capabilities and delegations stored inside,
@@ -67,7 +67,7 @@ pub struct SecCtxBase {
     global_mask: Protections,
 
     // the running offset into the object where a new entry can be inserted
-    offset: u32,
+    offset: usize,
 }
 
 const OBJECT_ROOT_OFFSET: usize = size_of::<SecCtxBase>() + NULLPAGE_SIZE;
@@ -88,7 +88,7 @@ impl SecCtxBase {
     }
 
     /// inserts the specified capability or delegation into the object
-    pub unsafe fn insert(
+    pub fn insert(
         sec_obj: &Object<Self>,
         target_id: ObjID,
         insert_type: InsertType,
@@ -99,7 +99,7 @@ impl SecCtxBase {
         // construct the map item with the proper offset into the object
         let mut map_item = match insert_type {
             InsertType::Cap(_) => {
-                base.offset += size_of::<Cap>() as u32;
+                base.offset += size_of::<Cap>();
 
                 CtxMapItem {
                     item_type: CtxMapItemType::Cap,
@@ -107,7 +107,7 @@ impl SecCtxBase {
                 }
             }
             InsertType::Del(_) => {
-                base.offset += size_of::<Del>() as u32;
+                base.offset += size_of::<Del>();
                 CtxMapItem {
                     item_type: CtxMapItemType::Del,
                     offset: base.offset + OBJECT_ROOT_OFFSET,
