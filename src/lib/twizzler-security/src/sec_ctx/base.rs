@@ -12,9 +12,9 @@ use twizzler_rt_abi::error::TwzError;
 use crate::{Cap, Del};
 
 /// completely arbitrary amount of mask entries in a security context
-const MASKS_MAX: usize = 15;
-const SEC_CTX_MAP_LEN: usize = 10;
-const MAP_ITEMS_PER_OBJ: usize = 10;
+const MASKS_MAX: usize = 16;
+const SEC_CTX_MAP_LEN: usize = 16;
+const MAP_ITEMS_PER_OBJ: usize = 16;
 
 #[derive(Debug)]
 struct Mask {
