@@ -1,23 +1,29 @@
+use alloc::collections::btree_map::BTreeMap;
 use core::fmt::Display;
 
 use base::{InsertType, SecCtxBase};
 use log::debug;
 use twizzler::object::{Object, ObjectBuilder, TypedObject};
-use twizzler_abi::object::ObjID;
+use twizzler_abi::object::{ObjID, Protections};
 use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
 use crate::Cap;
 
 pub mod base;
 // pub mod map;
+/// Information about protections for a given object within a context.
+#[derive(Clone, Copy)]
+pub struct PermsInfo {
+    ctx: ObjID,
+    prot: Protections,
+}
+
+
 
 pub struct SecCtx {
     uobj: Object<SecCtxBase>,
+    cache: BTreeMap<ObjID, PermsInfo>,
 }
-
-// a security context should have an undetachable bit,
-// and mask entries
-// as well as ana override mask
 
 impl Default for SecCtx {
     fn default() -> Self {
@@ -25,7 +31,10 @@ impl Default for SecCtx {
             .build(SecCtxBase::default())
             .unwrap();
 
-        Self { uobj: obj }
+        Self {
+            uobj: obj,
+            cache: BTreeMap::new(),
+        }
     }
 }
 
@@ -45,8 +54,6 @@ impl TryFrom<ObjID> for SecCtx {
 
     fn try_from(value: ObjID) -> Result<Self, Self::Error> {
         let uobj = Object::<SecCtxBase>::map(value, MapFlags::READ | MapFlags::WRITE)?;
-
-        Ok(Self { uobj })
     }
 }
 

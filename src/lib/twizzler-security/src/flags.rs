@@ -15,7 +15,6 @@ bitflags! {
         const Blake3 =   2;
         const Sha256 = 4;
         const Ecdsa = 8;
-        // non removable tag here
     }
 }
 

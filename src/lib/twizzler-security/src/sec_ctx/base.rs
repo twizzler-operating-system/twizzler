@@ -57,6 +57,14 @@ pub struct CtxMapItem {
     offset: usize,
 }
 
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct SecCtxFlags: u16 {
+        // a security context should have an undetachable bit,
+        const UNDETACHABLE = 1;
+    }
+}
+
 /// The base of a Security Context, holding a map to the capabilities and delegations stored inside,
 /// masks on targets
 #[derive(Debug)]
@@ -65,9 +73,10 @@ pub struct SecCtxBase {
     map: FnvIndexMap<ObjID, Vec<CtxMapItem, MAP_ITEMS_PER_OBJ>, SEC_CTX_MAP_LEN>,
     masks: FnvIndexMap<ObjID, Mask, MASKS_MAX>,
     global_mask: Protections,
-
     // the running offset into the object where a new entry can be inserted
     offset: usize,
+    // possible flags specific to this security context
+    flags: SecCtxFlags,
 }
 
 const OBJECT_ROOT_OFFSET: usize = size_of::<SecCtxBase>() + NULLPAGE_SIZE;
@@ -78,12 +87,13 @@ pub enum InsertType {
 }
 
 impl SecCtxBase {
-    fn new(global_mask: Protections) -> Self {
+    fn new(global_mask: Protections, flags: SecCtxFlags) -> Self {
         Self {
             map: FnvIndexMap::<ObjID, Vec<CtxMapItem, MAP_ITEMS_PER_OBJ>, SEC_CTX_MAP_LEN>::new(),
             masks: FnvIndexMap::<ObjID, Mask, MASKS_MAX>::new(),
             global_mask,
             offset: 0,
+            flags,
         }
     }
 
@@ -201,6 +211,6 @@ impl Display for CtxMapItem {
 
 impl Default for SecCtxBase {
     fn default() -> Self {
-        Self::new(Protections::all())
+        Self::new(Protections::all(), SecCtxFlags::empty())
     }
 }
