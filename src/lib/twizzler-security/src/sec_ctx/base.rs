@@ -1,26 +1,17 @@
-// security contexts may limit permissions by including mask entries
-//
-//
-/*
+use core::fmt::Display;
 
-MASK := {
-    target: ObjID, // refers to an object whose permissions
-                   // are being masked in this context using the `mask` field
-    mask: BitField
-    ovrmask : BitField // mask entries can also indicicate on
-                       // a per-object basis which permissions are exempt
-                       // forom the context's global mask.
-    flags: BitField
-}
-*/
+use heapless::{FnvIndexMap, Vec};
+use log::debug;
+use twizzler::object::{ObjID, Object, RawObject};
+use twizzler_abi::object::{ObjID, Protections, NULLPAGE_SIZE};
+use twizzler_rt_abi::error::TwzError;
 
-use twizzler::object::ObjID;
-use twizzler_abi::object::Protections;
-
-use super::map::SecCtxMap;
+use crate::{Cap, Del};
 
 /// completely arbitrary amount of mask entries in a security context
 const MASKS_MAX: usize = 15;
+const SEC_CTX_MAP_LEN: usize = 10;
+const MAP_ITEMS_PER_OBJ: usize = 10;
 
 #[derive(Debug)]
 struct Mask {
@@ -45,30 +36,168 @@ impl Mask {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub enum CtxMapItemType {
+    #[default]
+    Cap,
+    Del,
+}
+
 // holds the masks
 // ideally should be a `HashMap` but we dont have those yet so this will have to do...
-struct MaskMap {
-    buf: [Mask; MASKS_MAX],
-    len: usize,
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CtxMapItem {
+    /// Type of the Map Item
+    item_type: CtxMapItemType,
+    /// The offset into the object
+    offset: u32,
 }
 
 /// The base of a Security Context, holding a map to the capabilities and delegations stored inside,
 /// masks on targets
 #[derive(Debug)]
 pub struct SecCtxBase {
-    map: SecCtxMap,
-    masks: [Mask; MASKS_MAX],
+    // a single object can have multiple Capabilities or Delegations
+    map: FnvIndexMap<ObjId, Vec<CtxMapItem, MAP_ITEMS_PER_OBJ>, SEC_CTX_MAP_LEN>,
+    masks: FnvIndexMap<ObjID, Mask, MASKS_MAX>,
     global_mask: Protections,
+
+    // the running offset into the object where a new entry can be inserted
+    offset: u32,
 }
 
-// impl Default for SecCtxBase {
-//     fn default() -> Self {
-//         let masks = [MASKS_MAX];
-//         Self {
-//             map: Default::default(),
-//             masks: [],
+const OBJECT_ROOT_OFFSET: usize = size_of::<SecCtxBase>() + NULLPAGE_SIZE;
 
-//             global_mask: Protections::all(),
-//         }
-//     }
-// }
+pub enum InsertType {
+    Cap(Cap),
+    Del(Del),
+}
+
+impl SecCtxBase {
+    fn new(global_mask: Protections) -> Self {
+        Self {
+            map: FnvIndexMap::<ObjID, Vec<CtxMapItem, MAP_ITEMS_PER_OBJ>, SEC_CTX_MAP_LEN>::new(),
+            masks: FnvIndexMap::<ObjID, Mask, MASKS_MAX>::new(),
+            global_mask,
+            offset: 0,
+        }
+    }
+
+    /// inserts the specified capability or delegation into the object
+    pub unsafe fn insert(
+        sec_obj: &Object<Self>,
+        target_id: ObjID,
+        insert_type: InsertType,
+    ) -> Result<(), TwzError> {
+        let mut tx = sec_obj.clone().tx().unwrap();
+        let mut base = tx.base_mut();
+
+        // construct the map item with the proper offset into the object
+        let mut map_item = match insert_type {
+            InsertType::Cap(_) => {
+                base.offset += size_of::<Cap>() as u32;
+
+                CtxMapItem {
+                    item_type: CtxMapItemType::Cap,
+                    offset: base.offset + OBJECT_ROOT_OFFSET,
+                }
+            }
+            InsertType::Del(_) => {
+                base.offset += size_of::<Del>() as u32;
+                CtxMapItem {
+                    item_type: CtxMapItemType::Del,
+                    offset: base.offset + OBJECT_ROOT_OFFSET,
+                }
+            }
+        };
+
+        debug!("write offset into object for entry: {:#X}", write_offset);
+
+        // fix alignment of pointer
+        let alignment = 0x10 - (map_item.offset % 0x10);
+        map_item.offset += alignment;
+        // also have to fix the length in the offset
+        base.offset += alignment;
+
+        // push new entry into map
+        if let Some(vec) = base.map.get_mut(&target_id) {
+            vec.push(map_item);
+        } else {
+            let mut new_vec = Vec::<CtxMapItem, MAP_ITEMS_PER_OBJ>::new();
+            new_vec.push(map_item);
+            base.map.insert(target_id, new_vec);
+        };
+
+        // place entry into the object
+        match insert_type {
+            InsertType::Cap(cap) => {
+                let ptr = tx
+                    .lea_mut(write_offset, size_of::<Cap>())
+                    .expect("Write offset should not result in a pointer outside of the object")
+                    .cast::<Cap>();
+
+                unsafe {
+                    *ptr = cap;
+                }
+
+                tx.commit()?;
+                debug!("Added capability at ptr: {:#?}", ptr);
+            }
+            InsertType::Del(del) => {
+                let ptr = tx
+                    .lea_mut(write_offset, size_of::<Del>())
+                    .expect("Write offset should not result in a pointer outside of the object")
+                    .cast::<Del>();
+
+                unsafe {
+                    *ptr = del;
+                }
+
+                tx.commit()?;
+                debug!("Added delegation at ptr: {:#?}", ptr);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn lookup(
+        sec_obj: &Object<Self>,
+        target_id: ObjID,
+    ) -> Option<Vec<CtxMapItem, MAP_ITEMS_PER_OBJ>> {
+        // assuming this tx objects waits on a lock? therefore preventing race conditions, check w
+        // daniel
+        let mut tx = sec_obj.clone().tx().unwrap();
+        let mut base = tx.base_mut();
+
+        let results = base.map.get(&target_id).map(|v| v.clone());
+        tx.commit();
+
+        results
+    }
+
+    pub fn remove() {
+        todo!()
+    }
+}
+impl BaseType for SecCtxBase {
+    //NOTE: unsure if this is what the fingerprint "should" be, just chose a random number.
+    fn fingerprint() -> u64 {
+        16
+    }
+}
+
+impl Display for CtxMapItem {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Item Type: {:?}\n", self.item_type)?;
+        write!(f, "Offset: {:#X}\n", self.offset)?;
+        Ok(())
+    }
+}
+
+impl Default for SecCtxBase {
+    fn default() -> Self {
+        Self::new(Protections::all())
+    }
+}

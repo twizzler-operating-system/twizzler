@@ -1,5 +1,6 @@
 use core::fmt::Display;
 
+use base::InsertType;
 use log::debug;
 use map::{CtxMapItemType, SecCtxMap};
 use twizzler::object::{Object, ObjectBuilder, TypedObject};
@@ -9,10 +10,10 @@ use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 use crate::Cap;
 
 pub mod base;
-pub mod map;
+// pub mod map;
 
 pub struct SecCtx {
-    uobj: Object<SecCtxMap>,
+    uobj: Object<SecCtxBase>,
 }
 
 // a security context should have an undetachable bit,
@@ -22,7 +23,7 @@ pub struct SecCtx {
 impl Default for SecCtx {
     fn default() -> Self {
         let obj = ObjectBuilder::default()
-            .build(SecCtxMap::default())
+            .build(SecCtxBase::default())
             .unwrap();
 
         Self { uobj: obj }
@@ -33,11 +34,12 @@ impl Display for SecCtx {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let binding = self.uobj.clone();
         let map = binding.base();
+        tood!("do this");
 
-        write!(f, "Sec Ctx ObjID: {} {{\n", self.uobj.id())?;
-        for (i, entry) in map.buf.into_iter().enumerate().take(map.len as usize) {
-            write!(f, "Entry {}: {}\n", i, entry)?;
-        }
+        // write!(f, "Sec Ctx ObjID: {} {{\n", self.uobj.id())?;
+        // for (i, entry) in map.buf.into_iter().enumerate().take(map.len as usize) {
+        //     write!(f, "Entry {}: {}\n", i, entry)?;
+        // }
 
         Ok(())
     }
@@ -60,23 +62,17 @@ impl SecCtx {
         todo!("unsure how to get attached sec_ctx as of rn")
     }
 
-    pub fn add_cap(&self, cap: Cap) {
-        let ptr = SecCtxMap::insert(&self.uobj, cap.target, CtxMapItemType::Cap);
+    pub fn add_cap(&self, cap: Cap) -> Result<(), TwzError> {
+        SecCtxBase::insert(&self.uobj, cap.target, InsertType::Cap(cap))?;
 
-        let tx = self.uobj.clone().tx().unwrap();
-
-        unsafe {
-            *ptr = cap;
-        }
-
-        tx.commit().unwrap();
-
-        debug!("Added capability at ptr: {:#?}", ptr);
+        Ok(())
     }
 
     pub fn id(&self) -> ObjID {
         self.uobj.id()
     }
 
-    pub fn remove_cap(&mut self) {}
+    pub fn remove_cap(&mut self) {
+        todo!("implement later")
+    }
 }

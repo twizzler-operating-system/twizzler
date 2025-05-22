@@ -1,131 +1,135 @@
-use core::fmt::Display;
+// use core::fmt::Display;
 
-use log::debug;
-use twizzler::{
-    marker::BaseType,
-    object::{Object, RawObject, TypedObject},
-};
-use twizzler_abi::object::{ObjID, NULLPAGE_SIZE};
+// use heapless::Vec;
+// use log::debug;
+// use twizzler::{
+//     marker::BaseType,
+//     object::{Object, RawObject, TypedObject},
+// };
+// use twizzler_abi::object::{ObjID, NULLPAGE_SIZE};
 
-use crate::{Cap, Del};
+// use crate::{Cap, Del};
 
-const MAX_SEC_CTX_MAP_LEN: usize = 5;
+// const MAX_SEC_CTX_MAP_LEN: usize = 5;
 
-#[derive(Clone, Copy, Debug, Default)]
-/// The *header* of a Security Context Object, holding
-/// metadata about the security primitives
-/// {Capabilities, Delegations} inside the object
-pub struct SecCtxMap {
-    /// buffer of map items
-    pub buf: [CtxMapItem; MAX_SEC_CTX_MAP_LEN as usize],
-    /// internal length to keep track of how full map is
-    pub len: u32,
-}
+// #[derive(Clone, Copy, Debug, Default)]
+// /// The *header* of a Security Context Object, holding
+// /// metadata about the security primitives
+// /// {Capabilities, Delegations} inside the object
+// pub struct SecCtxMap {
+//     /// buffer of map items
+//     pub buf: [CtxMapItem; MAX_SEC_CTX_MAP_LEN as usize],
+//     /// internal length to keep track of how full map is
+//     pub len: u32,
+// }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct CtxMapItem {
-    /// The target object id
-    target_id: ObjID,
-    /// Type of the Map Item
-    item_type: CtxMapItemType,
-    /// The offset into the object
-    offset: u32,
-}
+// #[derive(Clone, Copy, Debug, Default)]
+// pub struct CtxMapItem {
+//     /// The target object id
+//     target_id: ObjID,
+//     /// Type of the Map Item
+//     item_type: CtxMapItemType,
+//     /// The offset into the object
+//     offset: u32,
+// }
 
+// #[derive(Clone, Copy, Debug, Default)]
+// pub enum CtxMapItemType {
+//     #[default]
+//     Cap,
+//     Del,
+// }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub enum CtxMapItemType {
-    #[default]
-    Cap,
-    Del,
-}
+// #[derive(Clone, Copy, Debug, Default)]
+// pub struct SecCtxMapLookupResult {
+//     pub len: usize,
+//     pub items: [CtxMapItem; MAX_SEC_CTX_MAP_LEN],
+// }
 
-const OBJECT_ROOT_OFFSET: usize = size_of::<SecCtxMap>() + NULLPAGE_SIZE;
+// impl SecCtxMap {
+//     /// inserts a CtxMapItemType into the SecCtxMap and returns the pointer into the object
+//     /// TODO: there exists an error where you run out of map entries lol
+//     pub fn insert(sec_obj: &Object<Self>, target_id: ObjID, item_type: CtxMapItemType) -> *mut
+// Cap {         let mut tx = sec_obj.clone().tx().unwrap();
+//         let mut base = tx.base_mut();
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SecCtxMapLookupResult {
-    pub len: usize,
-    pub items: [CtxMapItem; MAX_SEC_CTX_MAP_LEN],
-}
+//         //TODO: Find a way to map the write offset into  object so it doesnt overwrite
+//         // other data
+//         let mut write_offset = match item_type {
+//             CtxMapItemType::Cap => base.len as usize + size_of::<Cap>(),
+//             CtxMapItemType::Del => base.len as usize + size_of::<Del>(),
+//         } + OBJECT_ROOT_OFFSET;
 
-impl SecCtxMap {
-    /// inserts a CtxMapItemType into the SecCtxMap and returns the pointer into the object
-    /// TODO: there exists an error where you run out of map entries lol
-    pub fn insert(sec_obj: &Object<Self>, target_id: ObjID, item_type: CtxMapItemType) -> *mut Cap {
-        let mut tx = sec_obj.clone().tx().unwrap();
-        let mut base = tx.base_mut();
+//         debug!("write offset into object for entry: {:#X}", write_offset);
 
-        //TODO: Find a way to map the write offset into  object so it doesnt overwrite
-        // other data
-        let mut write_offset = match item_type {
-            CtxMapItemType::Cap => base.len as usize + size_of::<Cap>(),
-            CtxMapItemType::Del => base.len as usize + size_of::<Del>(),
-        } + OBJECT_ROOT_OFFSET;
+//         let alignment = write_offset % 0x10;
 
-        debug!("write offset into object for entry: {:#X}", write_offset);
+//         write_offset += 0x10 - alignment;
 
-        let alignment = write_offset % 0x10;
+//         let binding = base.len as usize;
 
-        write_offset += 0x10 - alignment;
+//         base.buf[binding] = CtxMapItem {
+//             target_id,
+//             item_type,
+//             offset: write_offset as u32,
+//         };
 
-        let binding = base.len as usize;
+//         base.len += 1;
 
-        base.buf[binding] = CtxMapItem {
-            target_id,
-            item_type,
-            offset: write_offset as u32,
-        };
+//         let ptr = tx.lea_mut(write_offset, size_of::<Cap>()).expect(
+//             "Write offset
+//             should not result in a pointer outside of the object",
+//         );
 
-        base.len += 1;
+//         // we are forcibly casting into a capability, not giving one or the other.
+//         ptr.cast::<Cap>()
+//     }
 
-        let ptr = tx.lea_mut(write_offset, size_of::<Cap>()).expect(
-            "Write offset
-            should not result in a pointer outside of the object",
-        );
+//     /// Looks up whether or not there exists a map entry for the given target object
+//     /// inside of the sec_obj
+//     pub fn lookup(
+//         sec_obj: &Object<Self>,
+//         target_id: ObjID,
+//     ) -> Vec<CtxMapItem, MAX_SEC_CTX_MAP_LEN> {
+//         // let mut buf = [CtxMapItem::default(); MAX_SEC_CTX_MAP_LEN];
+//         // let mut len = 0;
+//         //
+//         let results = Vec::<CtxMapItem, MAX_SEC_CTX_MAP_LEN>::new();
 
-        ptr.cast::<Cap>()
-    }
+//         let base = sec_obj.base();
 
-    /// Looks up whether or not there exists a map entry for the given target object
-    /// inside of the sec_obj
-    pub fn lookup(sec_obj: &Object<Self>, target_id: ObjID) -> SecCtxMapLookupResult {
-        let mut buf = [CtxMapItem::default(); MAX_SEC_CTX_MAP_LEN];
-        let mut len = 0;
+//         for (i, item) in base.clone().buf.into_iter().enumerate() {
+//             if i > base.len as usize {
+//                 break;
+//             }
 
-        let base = sec_obj.base();
+//             if item.target_id == target_id {
+//                 buf[len] = item;
+//                 len += 1;
+//             }
+//         }
 
-        for (i, item) in base.clone().buf.into_iter().enumerate() {
-            if i > base.len as usize {
-                break;
-            }
+//         SecCtxMapLookupResult { len, items: buf }
+//     }
 
-            if item.target_id == target_id {
-                buf[len] = item;
-                len += 1;
-            }
-        }
+//     // lowkey dont know what the semantics for removal are
+//     pub fn remove() {
+//         todo!()
+//     }
+// }
 
-        SecCtxMapLookupResult { len, items: buf }
-    }
+// impl BaseType for SecCtxMap {
+//     //NOTE: unsure if this is what the fingerprint "should" be, just chose a random number.
+//     fn fingerprint() -> u64 {
+//         15
+//     }
+// }
 
-    // lowkey dont know what the semantics for removal are
-    pub fn remove() {
-        todo!()
-    }
-}
-
-impl BaseType for SecCtxMap {
-    //NOTE: unsure if this is what the fingerprint "should" be, just chose a random number.
-    fn fingerprint() -> u64 {
-        15
-    }
-}
-
-impl Display for CtxMapItem {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Target Id: {:?}\n", self.target_id)?;
-        write!(f, "Item Type: {:?}\n", self.item_type)?;
-        write!(f, "Offset: {:#X}\n", self.offset)?;
-        Ok(())
-    }
-}
+// impl Display for CtxMapItem {
+//     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+//         write!(f, "Target Id: {:?}\n", self.target_id)?;
+//         write!(f, "Item Type: {:?}\n", self.item_type)?;
+//         write!(f, "Offset: {:#X}\n", self.offset)?;
+//         Ok(())
+//     }
+// }
