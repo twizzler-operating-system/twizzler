@@ -8,8 +8,8 @@ use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
 use crate::Cap;
 
-mod base;
-mod map;
+pub mod base;
+pub mod map;
 
 pub struct SecCtx {
     uobj: Object<SecCtxMap>,
