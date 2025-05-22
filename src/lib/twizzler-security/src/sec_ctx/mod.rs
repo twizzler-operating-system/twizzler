@@ -35,7 +35,7 @@ impl Display for SecCtx {
         let base = binding.base();
 
         write!(f, "Sec Ctx ObjID: {} {{\n", self.uobj.id())?;
-        write!("base: {:?}", base)?;
+        write!(f, "base: {:?}", base)?;
         Ok(())
     }
 }
