@@ -22,6 +22,7 @@ use super::map::SecCtxMap;
 /// completely arbitrary amount of mask entries in a security context
 const MASKS_MAX: usize = 15;
 
+#[derive(Debug)]
 struct Mask {
     /// object whose permissions will be masked.
     target: ObjID,
@@ -60,14 +61,14 @@ pub struct SecCtxBase {
     global_mask: Protections,
 }
 
-impl Default for SecCtxBase {
-    fn default() -> Self {
-        let masks = [MASKS_MAX];
-        Self {
-            map: Default::default(),
-            masks: [],
+// impl Default for SecCtxBase {
+//     fn default() -> Self {
+//         let masks = [MASKS_MAX];
+//         Self {
+//             map: Default::default(),
+//             masks: [],
 
-            global_mask: Protections::all,
-        }
-    }
-}
+//             global_mask: Protections::all(),
+//         }
+//     }
+// }
