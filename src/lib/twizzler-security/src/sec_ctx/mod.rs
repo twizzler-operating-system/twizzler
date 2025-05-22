@@ -48,7 +48,7 @@ impl TryFrom<ObjID> for SecCtx {
     type Error = TwzError;
 
     fn try_from(value: ObjID) -> Result<Self, Self::Error> {
-        let uobj = Object::<SecCtxMap>::map(value, MapFlags::READ | MapFlags::WRITE)?;
+        let uobj = Object::<SecCtxBase>::map(value, MapFlags::READ | MapFlags::WRITE)?;
 
         Ok(Self { uobj })
     }
