@@ -16,6 +16,15 @@ mod tests {
     extern crate test;
 
     use test::Bencher;
+    use twizzler::{
+        marker::BaseType,
+        object::{Object, ObjectBuilder},
+    };
+    use twizzler_abi::syscall::ObjectCreate;
+    use twizzler_rt_abi::error::TwzError;
+
+    use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
+    use crate::{SecurityError, SigningScheme};
 
     #[test]
     fn test_key_creation() {
@@ -93,4 +102,3 @@ mod tests {
         });
     }
 }
-
