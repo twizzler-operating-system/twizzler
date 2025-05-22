@@ -8,16 +8,16 @@ use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
 use crate::Cap;
 
-pub mod map;
+mod base;
+mod map;
 
-// ok we have access to an object, now what the fuck do we do.
-//
-
-// im assuming that there is some way for a process to
-// get the object id for the security context its attached to?
 pub struct SecCtx {
     uobj: Object<SecCtxMap>,
 }
+
+// a security context should have an undetachable bit,
+// and mask entries
+// as well as ana override mask
 
 impl Default for SecCtx {
     fn default() -> Self {

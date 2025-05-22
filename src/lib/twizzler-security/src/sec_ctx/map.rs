@@ -32,6 +32,7 @@ pub struct CtxMapItem {
     offset: u32,
 }
 
+
 #[derive(Clone, Copy, Debug, Default)]
 pub enum CtxMapItemType {
     #[default]
@@ -114,9 +115,9 @@ impl SecCtxMap {
 }
 
 impl BaseType for SecCtxMap {
+    //NOTE: unsure if this is what the fingerprint "should" be, just chose a random number.
     fn fingerprint() -> u64 {
-        // lol
-        69
+        15
     }
 }
 
