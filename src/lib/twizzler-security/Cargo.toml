@@ -22,6 +22,7 @@ twizzler-abi = { path = "../twizzler-abi"}
 twizzler = { path = "../twizzler" , optional = true}
 twizzler-rt-abi = {version = "0.99", default-features = false}
 log = {version = "0.4.27", optional = true}
+heapless = "0.8.0"
 
 [features]
 default = ["user"]
