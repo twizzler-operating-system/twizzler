@@ -1,8 +1,7 @@
 use core::fmt::Display;
 
-use base::InsertType;
+use base::{InsertType, SecCtxBase};
 use log::debug;
-use map::{CtxMapItemType, SecCtxMap};
 use twizzler::object::{Object, ObjectBuilder, TypedObject};
 use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::{error::TwzError, object::MapFlags};
@@ -34,7 +33,7 @@ impl Display for SecCtx {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let binding = self.uobj.clone();
         let map = binding.base();
-        tood!("do this");
+        todo!("do this");
 
         // write!(f, "Sec Ctx ObjID: {} {{\n", self.uobj.id())?;
         // for (i, entry) in map.buf.into_iter().enumerate().take(map.len as usize) {

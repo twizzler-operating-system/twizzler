@@ -2,7 +2,10 @@ use core::fmt::Display;
 
 use heapless::{FnvIndexMap, Vec};
 use log::debug;
-use twizzler::object::{ObjID, Object, RawObject};
+use twizzler::{
+    marker::BaseType,
+    object::{Object, RawObject},
+};
 use twizzler_abi::object::{ObjID, Protections, NULLPAGE_SIZE};
 use twizzler_rt_abi::error::TwzError;
 
@@ -59,7 +62,7 @@ pub struct CtxMapItem {
 #[derive(Debug)]
 pub struct SecCtxBase {
     // a single object can have multiple Capabilities or Delegations
-    map: FnvIndexMap<ObjId, Vec<CtxMapItem, MAP_ITEMS_PER_OBJ>, SEC_CTX_MAP_LEN>,
+    map: FnvIndexMap<ObjID, Vec<CtxMapItem, MAP_ITEMS_PER_OBJ>, SEC_CTX_MAP_LEN>,
     masks: FnvIndexMap<ObjID, Mask, MASKS_MAX>,
     global_mask: Protections,
 
@@ -112,13 +115,13 @@ impl SecCtxBase {
             }
         };
 
-        debug!("write offset into object for entry: {:#X}", write_offset);
-
         // fix alignment of pointer
         let alignment = 0x10 - (map_item.offset % 0x10);
         map_item.offset += alignment;
         // also have to fix the length in the offset
         base.offset += alignment;
+
+        debug!("write offset into object for entry: {:#X}", map_item.offset);
 
         // push new entry into map
         if let Some(vec) = base.map.get_mut(&target_id) {
@@ -133,7 +136,7 @@ impl SecCtxBase {
         match insert_type {
             InsertType::Cap(cap) => {
                 let ptr = tx
-                    .lea_mut(write_offset, size_of::<Cap>())
+                    .lea_mut(map_item.offset, size_of::<Cap>())
                     .expect("Write offset should not result in a pointer outside of the object")
                     .cast::<Cap>();
 
@@ -146,7 +149,7 @@ impl SecCtxBase {
             }
             InsertType::Del(del) => {
                 let ptr = tx
-                    .lea_mut(write_offset, size_of::<Del>())
+                    .lea_mut(map_item.offset, size_of::<Del>())
                     .expect("Write offset should not result in a pointer outside of the object")
                     .cast::<Del>();
 
