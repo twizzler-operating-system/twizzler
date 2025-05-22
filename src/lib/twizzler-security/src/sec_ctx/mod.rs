@@ -32,14 +32,10 @@ impl Default for SecCtx {
 impl Display for SecCtx {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let binding = self.uobj.clone();
-        let map = binding.base();
-        todo!("do this");
+        let base = binding.base();
 
-        // write!(f, "Sec Ctx ObjID: {} {{\n", self.uobj.id())?;
-        // for (i, entry) in map.buf.into_iter().enumerate().take(map.len as usize) {
-        //     write!(f, "Entry {}: {}\n", i, entry)?;
-        // }
-
+        write!(f, "Sec Ctx ObjID: {} {{\n", self.uobj.id())?;
+        write!("base: {:?}", base)?;
         Ok(())
     }
 }

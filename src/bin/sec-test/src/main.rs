@@ -4,13 +4,7 @@ use log::LevelFilter;
 use twizzler::object::{Object, ObjectBuilder, TypedObject};
 use twizzler_abi::object::Protections;
 use twizzler_rt_abi::object::MapFlags;
-use twizzler_security::{
-    sec_ctx::{
-        map::{CtxMapItemType, SecCtxMap},
-        SecCtx,
-    },
-    Cap, SigningKey, SigningScheme,
-};
+use twizzler_security::{sec_ctx::SecCtx, Cap, SigningKey, SigningScheme};
 
 fn main() {
     let mut builder = default_builder();
