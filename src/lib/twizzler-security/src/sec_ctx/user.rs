@@ -1,7 +1,7 @@
 use alloc::collections::btree_map::BTreeMap;
 use core::fmt::Display;
 
-use base::{CtxMapItemType, InsertType, SecCtxBase, SecCtxFlags};
+use heapless::Vec;
 use log::debug;
 use twizzler::object::{Object, ObjectBuilder, RawObject, TypedObject};
 use twizzler_abi::{
@@ -10,11 +10,11 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
-use super::{
-    base::{CtxMapItemType, SecCtxBase},
-    CtxMapItem, PermsInfo,
+use super::{CtxMapItem, CtxMapItemType, PermsInfo, SecCtxBase};
+use crate::{
+    sec_ctx::{MAP_ITEMS_PER_OBJ, OBJECT_ROOT_OFFSET},
+    Cap, Del, VerifyingKey,
 };
-use crate::{Cap, VerifyingKey};
 
 pub struct SecCtx {
     uobj: Object<SecCtxBase>,
@@ -65,7 +65,7 @@ impl SecCtx {
     }
 
     pub fn insert_cap(&self, cap: Cap) -> Result<(), TwzError> {
-        let mut obj = self.uobj.tx()?;
+        let mut tx = self.uobj.tx()?;
         let mut base = obj.base_mut();
 
         let mut map_item = {
@@ -86,15 +86,15 @@ impl SecCtx {
         debug!("write offset into object for entry: {:#X}", map_item.offset);
 
         // seeing if a vec already exists for target obj, else create new
-        if let Some(vec) = base.map.get_mut(&target_id) {
+        if let Some(vec) = base.map.get_mut(&cap.target) {
             vec.push(map_item);
         } else {
             let mut new_vec = Vec::<CtxMapItem, MAP_ITEMS_PER_OBJ>::new();
             new_vec.push(map_item);
-            base.map.insert(target_id, new_vec);
+            base.map.insert(cap.target, new_vec);
         };
 
-        let ptr = obj
+        let ptr = tx
             .lea_mut(map_item.offset, size_of::<Cap>())
             .expect("Write offset should not result in a pointer outside of the object")
             .cast::<Cap>();

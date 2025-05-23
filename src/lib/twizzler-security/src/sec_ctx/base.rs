@@ -7,11 +7,11 @@ use twizzler_rt_abi::error::TwzError;
 use crate::{Cap, Del};
 
 /// completely arbitrary amount of mask entries in a security context
-const MASKS_MAX: usize = 16;
+pub const MASKS_MAX: usize = 16;
 /// completely arbitrary amount of capabilites and delegations in a security context
-const SEC_CTX_MAP_LEN: usize = 16;
+pub const SEC_CTX_MAP_LEN: usize = 16;
 /// arbitrary number of map items per target object
-const MAP_ITEMS_PER_OBJ: usize = 16;
+pub const MAP_ITEMS_PER_OBJ: usize = 16;
 
 #[derive(Debug)]
 struct Mask {
@@ -30,7 +30,7 @@ impl Mask {
     fn new(target: ObjID, permmask: Protections, ovrmask: Protections) -> Self {
         Mask {
             target,
-            permmask: mask,
+            permmask,
             ovrmask,
         }
     }
@@ -73,7 +73,7 @@ pub struct SecCtxBase {
     pub flags: SecCtxFlags,
 }
 
-const OBJECT_ROOT_OFFSET: usize = size_of::<SecCtxBase>() + NULLPAGE_SIZE;
+pub const OBJECT_ROOT_OFFSET: usize = size_of::<SecCtxBase>() + NULLPAGE_SIZE;
 
 pub enum InsertType {
     Cap(Cap),
