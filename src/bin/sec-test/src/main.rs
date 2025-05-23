@@ -38,7 +38,8 @@ fn main() {
     let id = sec_ctx.id();
     drop(sec_ctx);
 
-    let sec_ctx: SecCtx = id.try_into().unwrap();
+    let sec_ctx = SecCtx::from_id(id).expect("should be found");
+    let x = sec_ctx.base();
 
-    println!("just read: {}", sec_ctx)
+    println!("just read: {}", x)
 }

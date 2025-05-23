@@ -18,8 +18,6 @@ pub struct PermsInfo {
     prot: Protections,
 }
 
-
-
 pub struct SecCtx {
     uobj: Object<SecCtxBase>,
     cache: BTreeMap<ObjID, PermsInfo>,
@@ -49,14 +47,6 @@ impl Display for SecCtx {
     }
 }
 
-impl TryFrom<ObjID> for SecCtx {
-    type Error = TwzError;
-
-    fn try_from(value: ObjID) -> Result<Self, Self::Error> {
-        let uobj = Object::<SecCtxBase>::map(value, MapFlags::READ | MapFlags::WRITE)?;
-    }
-}
-
 impl SecCtx {
     //NOTE: maybe im misunderstanding somethign here but im assuming this
     // is how a process knows what ctx its attached to rn?
@@ -77,4 +67,12 @@ impl SecCtx {
     pub fn remove_cap(&mut self) {
         todo!("implement later")
     }
+
+    pub fn from_id(id: ObjID) -> Result<Object<Self>, TwzError> {
+        Object::<SecCtxBase>::map(id, MapFlags::READ | MapFlags::WRITE)
+    }
 }
+
+
+
+
