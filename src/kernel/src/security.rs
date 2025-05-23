@@ -2,7 +2,7 @@ use alloc::{collections::BTreeMap, sync::Arc};
 
 use twizzler_abi::object::{ObjID, Protections};
 use twizzler_rt_abi::error::{NamingError, ObjectError};
-use twizzler_security::sec_ctx::SecCtxBase;
+use twizzler_security::SecCtxBase;
 
 use crate::{
     memory::context::{KernelMemoryContext, KernelObject, ObjectContextInfo, UserContext},
