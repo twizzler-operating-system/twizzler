@@ -39,7 +39,6 @@ fn main() {
     drop(sec_ctx);
 
     let sec_ctx = SecCtx::try_from(id).expect("should be found");
-    let x = sec_ctx.base();
 
-    println!("just read: {}", x)
+    println!("just read: {}", sec_ctx)
 }
