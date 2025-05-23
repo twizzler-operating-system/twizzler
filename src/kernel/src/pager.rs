@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use inflight::InflightManager;
 use request::ReqKind;
-use twizzler_abi::{object::ObjID, pager::PhysRange};
+use twizzler_abi::{object::ObjID, pager::PhysRange, syscall::ObjectCreate};
 
 use crate::{
     memory::{frame::PHYS_LEVEL_LAYOUTS, tracker::FrameAllocFlags},
@@ -102,8 +102,8 @@ pub fn del_object(id: ObjID) {
     cmd_object(ReqKind::new_del(id));
 }
 
-pub fn create_object(id: ObjID) {
-    cmd_object(ReqKind::new_create(id));
+pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
+    cmd_object(ReqKind::new_create(id, create, nonce));
 }
 
 pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize) {

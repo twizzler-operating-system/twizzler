@@ -45,7 +45,9 @@ rand_jitter = "0.5.0"
 # [dev-dependencies] # kernel doesn't include dev dependencies when testing
 # for testing crypto
 hex-literal = { version = "0.4", default-features = false }
-twizzler-security = {path = "../lib/twizzler-security", features = ["kernel"],default-features = false}
+twizzler-security = { path = "../lib/twizzler-security", features = [
+    "kernel",
+], default-features = false }
 
 [target.x86_64-unknown-none.dependencies]
 rdrand = { version = "0.8.3", default-features = false }

@@ -1,6 +1,6 @@
 use alloc::{collections::btree_set::BTreeSet, vec::Vec};
 
-use twizzler_abi::{object::ObjID, pager::PhysRange};
+use twizzler_abi::{object::ObjID, pager::PhysRange, syscall::ObjectCreate};
 
 use crate::{
     sched::schedule_thread,
@@ -13,7 +13,7 @@ pub enum ReqKind {
     PageData(ObjID, usize, usize),
     Sync(ObjID),
     Del(ObjID),
-    Create(ObjID),
+    Create(ObjID, ObjectCreate, u128),
     Pages(PhysRange),
 }
 
@@ -34,8 +34,8 @@ impl ReqKind {
         ReqKind::Del(obj_id)
     }
 
-    pub fn new_create(obj_id: ObjID) -> Self {
-        ReqKind::Create(obj_id)
+    pub fn new_create(obj_id: ObjID, create: &ObjectCreate, nonce: u128) -> Self {
+        ReqKind::Create(obj_id, *create, nonce)
     }
 
     pub fn new_pager_memory(range: PhysRange) -> Self {
@@ -50,7 +50,7 @@ impl ReqKind {
     }
 
     pub fn needs_info(&self) -> bool {
-        matches!(self, ReqKind::Info(_)) || matches!(self, ReqKind::Create(_))
+        matches!(self, ReqKind::Info(_)) || matches!(self, ReqKind::Create(_, _, _))
     }
 
     pub fn needs_sync(&self) -> bool {
@@ -67,7 +67,7 @@ impl ReqKind {
             ReqKind::PageData(obj_id, _, _) => *obj_id,
             ReqKind::Sync(obj_id) => *obj_id,
             ReqKind::Del(obj_id) => *obj_id,
-            ReqKind::Create(obj_id) => *obj_id,
+            ReqKind::Create(obj_id, _, _) => *obj_id,
             ReqKind::Pages(_) => return None,
         })
     }

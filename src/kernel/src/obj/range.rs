@@ -133,6 +133,7 @@ pub enum PageStatus {
     Ready(PageRef, bool),
     NoPage,
     AllocFail,
+    DataFail,
 }
 
 impl PageRangeTree {
