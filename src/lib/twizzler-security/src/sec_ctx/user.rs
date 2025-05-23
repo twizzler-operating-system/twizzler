@@ -3,9 +3,7 @@ use core::fmt::Display;
 
 use base::{CtxMapItemType, InsertType, SecCtxBase, SecCtxFlags};
 use log::debug;
-use twizzler::
-    object::{Object, ObjectBuilder, RawObject, TypedObject}
-;
+use twizzler::object::{Object, ObjectBuilder, RawObject, TypedObject};
 use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::ObjectCreate,
@@ -130,20 +128,13 @@ impl SecCtx {
     }
 
     // looks up permission info for requested object
-    pub fn lookup(&self, target_id: ObjID, v_key: &VerifyingKey) -> PermsInfo {
+    pub fn lookup(&mut self, target_id: ObjID, v_key: &VerifyingKey) -> PermsInfo {
         // first just check cache
         if let Some(cache_entry) = self.cache.get(&target_id) {
             return *cache_entry;
         };
 
-        // check for possible items
-        let Some(results) = self.uobj.base().lookup(target_id) else {
-            // no permissions granted, there are no entries in this security context
-            return PermsInfo {
-                ctx: self.id(),
-                prot: Protections::empty(),
-            };
-        };
+        let base = self.uobj.base();
 
         // NOTE: Objects, afaik, dont have default permissions in their metadata yet, so cannot
         // perform this step.
@@ -155,13 +146,22 @@ impl SecCtx {
         //     let metadata = *target_object;
         //     metadata.flags;
         // }
+        let mut target_obj_default_perms = Protections::empty();
 
         // step 1, add up all the permissions granted by VERIFIED capabilities and delegations
-        let mut granted_perms = Protections::empty(); // ideally thiswould start with the default perms for that object instead of starting off
-                                                      // with empty
+        let mut granted_perms = PermsInfo {
+            ctx: self.id(),
+            prot: target_obj_default_perms,
+        };
 
-        // open obj outside loop
-        let base = self.uobj.base();
+        // check for possible items
+        let Some(results) = base.map.get(&target_id) else {
+            // only default permissions granted, there are no entries in this security context
+            return PermsInfo {
+                ctx: self.id(),
+                prot: granted_perms,
+            };
+        };
 
         for entry in results {
             match entry.item_type {
@@ -183,7 +183,7 @@ impl SecCtx {
                         let cap = *ptr;
 
                         if cap.verify_sig(v_key).is_ok() {
-                            granted_perms = granted_perms | cap.protections;
+                            granted_perms.prot = granted_perms.prot | cap.protections;
                         }
                     }
                 }
@@ -192,21 +192,21 @@ impl SecCtx {
 
         let Some(mask) = base.masks.get(&target_id) else {
             // no mask inside
-            //
             // final perms are granted_perms (intersection) global_mask
-            return PermsInfo {
-                ctx: self.id(),
-                prot: granted_perms & base.global_mask,
-            };
+
+            granted_perms.prot &= base.global_mask;
+
+            self.cache.insert(target_id, granted_perms.clone());
+            return granted_perms;
         };
 
         // mask exists, final perms are
         // granted_perms & permmask & (global_mask | override_mask)
 
-        PermsInfo {
-            ctx: self.id(),
-            prot: granted_perms & mask.permmask & (base.global_mask | mask.ovrmask),
-        }
+        granted_perms.prot = granted_perms.prot & mask.permmask & (base.global_mask | mask.ovrmask);
+
+        self.cache.insert(target_id, granted_perms.clone());
+        granted_perms
     }
 }
 
