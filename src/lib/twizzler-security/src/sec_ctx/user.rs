@@ -10,7 +10,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
-use super::{CtxMapItem, CtxMapItemType, PermsInfo, SecCtxBase};
+use super::{CtxMapItem, CtxMapItemType, PermsInfo, SecCtxBase, SecCtxFlags};
 use crate::{
     sec_ctx::{MAP_ITEMS_PER_OBJ, OBJECT_ROOT_OFFSET},
     Cap, Del, VerifyingKey,
@@ -56,7 +56,7 @@ impl SecCtx {
         flags: SecCtxFlags,
     ) -> Result<Self, TwzError> {
         let new_obj = ObjectBuilder::new(object_create_spec)
-            .build(SecCtxBase::new(global_mask, SecCtxFlags))?;
+            .build(SecCtxBase::new(global_mask, SecCtxFlags::empty()))?;
 
         Ok(Self {
             uobj: new_obj,
@@ -66,7 +66,7 @@ impl SecCtx {
 
     pub fn insert_cap(&self, cap: Cap) -> Result<(), TwzError> {
         let mut tx = self.uobj.tx()?;
-        let mut base = obj.base_mut();
+        let mut base = tx.base_mut();
 
         let mut map_item = {
             base.offset += size_of::<Cap>();
@@ -222,6 +222,7 @@ impl TryFrom<ObjID> for SecCtx {
 
 mod tests {
     use super::*;
+    use crate::sec_ctx::SecCtxFlags;
 
     extern crate test;
 
