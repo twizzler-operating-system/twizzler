@@ -1,15 +1,22 @@
+use alloc::collections::btree_map::BTreeMap;
+use core::fmt::Display;
+
+use base::{CtxMapItemType, InsertType, SecCtxBase, SecCtxFlags};
 use log::debug;
-use twizzler::{
-    marker::BaseType,
-    object::{Object, RawObject, TypedObject},
+use twizzler::
+    object::{Object, ObjectBuilder, RawObject, TypedObject}
+;
+use twizzler_abi::{
+    object::{ObjID, Protections},
+    syscall::ObjectCreate,
 };
-use twizzler_abi::object::{ObjID, Protections, NULLPAGE_SIZE};
+use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
 use super::{
     base::{CtxMapItemType, SecCtxBase},
     CtxMapItem, PermsInfo,
 };
-use crate::Cap;
+use crate::{Cap, VerifyingKey};
 
 pub struct SecCtx {
     uobj: Object<SecCtxBase>,
