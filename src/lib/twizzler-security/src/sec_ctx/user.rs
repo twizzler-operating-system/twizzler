@@ -157,10 +157,8 @@ impl SecCtx {
         // check for possible items
         let Some(results) = base.map.get(&target_id) else {
             // only default permissions granted, there are no entries in this security context
-            return PermsInfo {
-                ctx: self.id(),
-                prot: granted_perms,
-            };
+            // not even worth adding to cache
+            return granted_perms;
         };
 
         for entry in results {
