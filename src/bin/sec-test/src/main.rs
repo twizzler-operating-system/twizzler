@@ -14,7 +14,7 @@ fn main() {
 
     let target = 0x123.into();
     let accessor = 0x321.into();
-    let prots = Protections::all();
+    let prots = Protections::READ;
 
     let (s_key, v_key) = SigningKey::new_keypair(&SigningScheme::Ecdsa, Default::default())
         .expect("should have worked");
@@ -40,5 +40,8 @@ fn main() {
 
     let sec_ctx = SecCtx::try_from(id).expect("should be found");
 
-    println!("just read: {}", sec_ctx)
+    let perms = sec_ctx.lookup(target, v_key);
+
+    println!("just read: {}", sec_ctx);
+    println!("perms: {:?}", perms);
 }
