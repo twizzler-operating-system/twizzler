@@ -38,7 +38,7 @@ fn main() {
     let id = sec_ctx.id();
     drop(sec_ctx);
 
-    let sec_ctx = SecCtx::try_from(id).expect("should be found");
+    let mut sec_ctx = SecCtx::try_from(id).expect("should be found");
 
     let perms = sec_ctx.lookup(target, v_key.base());
 
