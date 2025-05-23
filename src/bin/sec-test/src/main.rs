@@ -40,7 +40,7 @@ fn main() {
 
     let sec_ctx = SecCtx::try_from(id).expect("should be found");
 
-    let perms = sec_ctx.lookup(target, v_key);
+    let perms = sec_ctx.lookup(target, v_key.base());
 
     println!("just read: {}", sec_ctx);
     println!("perms: {:?}", perms);
