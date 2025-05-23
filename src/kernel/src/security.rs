@@ -2,6 +2,7 @@ use alloc::{collections::BTreeMap, sync::Arc};
 
 use twizzler_abi::object::{ObjID, Protections};
 use twizzler_rt_abi::error::{NamingError, ObjectError};
+use twizzler_security::sec_ctx::SecCtxBase;
 
 use crate::{
     memory::context::{KernelMemoryContext, KernelObject, ObjectContextInfo, UserContext},
@@ -27,7 +28,7 @@ pub struct SecCtxMgr {
 
 /// A single security context.
 pub struct SecurityContext {
-    kobj: Option<KernelObject<()>>,
+    kobj: Option<KernelObject<SecCtxBase>>,
     cache: BTreeMap<ObjID, PermsInfo>,
 }
 
@@ -71,7 +72,7 @@ impl SecurityContext {
         todo!()
     }
 
-    pub fn new(kobj: Option<KernelObject<()>>) -> Self {
+    pub fn new(kobj: Option<KernelObject<SecCtxBase>>) -> Self {
         Self {
             kobj,
             cache: Default::default(),
