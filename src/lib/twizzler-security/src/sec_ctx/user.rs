@@ -1,0 +1,228 @@
+use log::debug;
+use twizzler::{
+    marker::BaseType,
+    object::{Object, RawObject, TypedObject},
+};
+use twizzler_abi::object::{ObjID, Protections, NULLPAGE_SIZE};
+
+use super::{
+    base::{CtxMapItemType, SecCtxBase},
+    CtxMapItem, PermsInfo,
+};
+use crate::Cap;
+
+pub struct SecCtx {
+    uobj: Object<SecCtxBase>,
+    cache: BTreeMap<ObjID, PermsInfo>,
+}
+
+impl Default for SecCtx {
+    fn default() -> Self {
+        let obj = ObjectBuilder::default()
+            .build(SecCtxBase::default())
+            .unwrap();
+
+        Self {
+            uobj: obj,
+            cache: BTreeMap::new(),
+        }
+    }
+}
+
+impl Display for SecCtx {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let binding = self.uobj.clone();
+        let base = binding.base();
+
+        write!(f, "Sec Ctx ObjID: {} {{\n", self.uobj.id())?;
+        write!(f, "base: {:?}", base)?;
+        Ok(())
+    }
+}
+
+impl SecCtx {
+    pub fn attached_ctx() -> SecCtx {
+        todo!("unsure how to get attached sec_ctx as of rn")
+    }
+
+    pub fn new(
+        object_create_spec: ObjectCreate,
+        global_mask: Protections,
+        flags: SecCtxFlags,
+    ) -> Result<Self, TwzError> {
+        let new_obj = ObjectBuilder::new(object_create_spec)
+            .build(SecCtxBase::new(global_mask, SecCtxFlags))?;
+
+        Ok(Self {
+            uobj: new_obj,
+            cache: BTreeMap::new(),
+        })
+    }
+
+    pub fn insert_cap(&self, cap: Cap) -> Result<(), TwzError> {
+        let mut obj = self.uobj.tx()?;
+        let mut base = obj.base_mut();
+
+        let mut map_item = {
+            base.offset += size_of::<Cap>();
+
+            CtxMapItem {
+                item_type: CtxMapItemType::Cap,
+                offset: base.offset + OBJECT_ROOT_OFFSET,
+            }
+        };
+
+        let alignment = 0x10 - (map_item.offset % 0x10);
+        map_item.offset += alignment;
+        // also have to fix the length in the offset
+        base.offset += alignment;
+
+        #[cfg(feature = "log")]
+        debug!("write offset into object for entry: {:#X}", map_item.offset);
+
+        // seeing if a vec already exists for target obj, else create new
+        if let Some(vec) = base.map.get_mut(&target_id) {
+            vec.push(map_item);
+        } else {
+            let mut new_vec = Vec::<CtxMapItem, MAP_ITEMS_PER_OBJ>::new();
+            new_vec.push(map_item);
+            base.map.insert(target_id, new_vec);
+        };
+
+        let ptr = obj
+            .lea_mut(map_item.offset, size_of::<Cap>())
+            .expect("Write offset should not result in a pointer outside of the object")
+            .cast::<Cap>();
+
+        // SAFETY: copies the capability into the object, we check that the pointer is valid above
+        unsafe {
+            *ptr = cap;
+        }
+
+        tx.commit()?;
+
+        #[cfg(feature = "log")]
+        debug!("Added capability at ptr: {:#?}", ptr);
+        Ok(())
+    }
+
+    pub fn insert_del(&self, del: Del) -> Result<(), TwzError> {
+        todo!("implement later")
+    }
+
+    pub fn id(&self) -> ObjID {
+        self.uobj.id()
+    }
+
+    pub fn remove_cap(&mut self) {
+        todo!("implement later")
+    }
+
+    pub fn remove_del(&mut self) {
+        todo!("implement later")
+    }
+
+    // looks up permission info for requested object
+    pub fn lookup(&self, target_id: ObjID, v_key: &VerifyingKey) -> PermsInfo {
+        // first just check cache
+        if let Some(cache_entry) = self.cache.get(&target_id) {
+            return *cache_entry;
+        };
+
+        // check for possible items
+        let Some(results) = self.uobj.base().lookup(target_id) else {
+            // no permissions granted, there are no entries in this security context
+            return PermsInfo {
+                ctx: self.id(),
+                prot: Protections::empty(),
+            };
+        };
+
+        // NOTE: Objects, afaik, dont have default permissions in their metadata yet, so cannot
+        // perform this step.
+        // let target_object = Object::map(target_id, MapFlags::READ)
+        //     .expect("target object should exist!")
+        //     .meta_ptr();
+
+        // unsafe {
+        //     let metadata = *target_object;
+        //     metadata.flags;
+        // }
+
+        // step 1, add up all the permissions granted by VERIFIED capabilities and delegations
+        let mut granted_perms = Protections::empty(); // ideally thiswould start with the default perms for that object instead of starting off
+                                                      // with empty
+
+        // open obj outside loop
+        let base = self.uobj.base();
+
+        for entry in results {
+            match entry.item_type {
+                CtxMapItemType::Del => {
+                    //TODO: skip over for now!! finish up later
+                    todo!("Delegations not supported yet for lookup")
+                }
+
+                CtxMapItemType::Cap => {
+                    // pull capability out of the object
+
+                    let ptr = self
+                        .uobj
+                        .lea(entry.offset, size_of::<Cap>())
+                        .expect("address should be inside of object!")
+                        .cast::<Cap>();
+
+                    unsafe {
+                        let cap = *ptr;
+
+                        if cap.verify_sig(v_key).is_ok() {
+                            granted_perms = granted_perms | cap.protections;
+                        }
+                    }
+                }
+            }
+        }
+
+        let Some(mask) = base.masks.get(&target_id) else {
+            // no mask inside
+            //
+            // final perms are granted_perms (intersection) global_mask
+            return PermsInfo {
+                ctx: self.id(),
+                prot: granted_perms & base.global_mask,
+            };
+        };
+
+        // mask exists, final perms are
+        // granted_perms & permmask & (global_mask | override_mask)
+
+        PermsInfo {
+            ctx: self.id(),
+            prot: granted_perms & mask.permmask & (base.global_mask | mask.ovrmask),
+        }
+    }
+}
+
+impl TryFrom<ObjID> for SecCtx {
+    type Error = TwzError;
+    fn try_from(value: ObjID) -> Result<Self, Self::Error> {
+        let uobj = Object::<SecCtxBase>::map(value, MapFlags::READ | MapFlags::WRITE)?;
+
+        Ok(Self {
+            uobj,
+            cache: BTreeMap::new(),
+        })
+    }
+}
+
+mod tests {
+    use super::*;
+
+    extern crate test;
+
+    fn test_security_context_creation() {
+        let default_sec_ctx = SecCtx::default();
+        let new_sec_ctx = SecCtx::new(Default::default(), Protections::all(), SecCtxFlags::empty())
+            .expect("new context should have been created!");
+    }
+}
