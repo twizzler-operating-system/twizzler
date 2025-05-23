@@ -31,7 +31,7 @@ fn main() {
     )
     .unwrap();
 
-    sec_ctx.add_cap(cap);
+    sec_ctx.insert_cap(cap);
 
     println!("{}", sec_ctx);
 
