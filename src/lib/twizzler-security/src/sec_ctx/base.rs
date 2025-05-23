@@ -14,7 +14,7 @@ pub const SEC_CTX_MAP_LEN: usize = 16;
 pub const MAP_ITEMS_PER_OBJ: usize = 16;
 
 #[derive(Debug)]
-struct Mask {
+pub struct Mask {
     /// object whose permissions will be masked.
     pub target: ObjID,
     /// Specifies a mask on the permissions granted by capabilties and delegations in this security
@@ -27,7 +27,7 @@ struct Mask {
 }
 
 impl Mask {
-    fn new(target: ObjID, permmask: Protections, ovrmask: Protections) -> Self {
+    pub fn new(target: ObjID, permmask: Protections, ovrmask: Protections) -> Self {
         Mask {
             target,
             permmask,
