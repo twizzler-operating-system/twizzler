@@ -16,9 +16,7 @@ mod flags;
 mod gates;
 mod keys;
 mod revocation;
-
-#[cfg(feature = "user")]
-pub mod sec_ctx;
+mod sec_ctx;
 
 pub use capability::*;
 pub use delegation::*;
@@ -26,3 +24,4 @@ pub use flags::*;
 pub use gates::*;
 pub use keys::*;
 pub use revocation::*;
+pub use sec_ctx::*;
