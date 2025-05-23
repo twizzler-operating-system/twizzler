@@ -67,12 +67,16 @@ impl SecCtx {
     pub fn remove_cap(&mut self) {
         todo!("implement later")
     }
-
-    pub fn from_id(id: ObjID) -> Result<Object<Self>, TwzError> {
-        Object::<SecCtxBase>::map(id, MapFlags::READ | MapFlags::WRITE)
-    }
 }
 
+impl TryFrom<ObjID> for SecCtx {
+    type Error = TwzError;
+    fn try_from(value: ObjID) -> Result<Self, Self::Error> {
+        let uobj = Object::<SecCtxBase>::map(id, MapFlags::READ | MapFlags::WRITE)?;
 
-
-
+        Ok(Self {
+            uobj,
+            cache: BTreeMap::new(),
+        })
+    }
+}
