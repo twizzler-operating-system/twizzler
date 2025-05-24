@@ -4,7 +4,7 @@ use alloc::{
 };
 
 use twizzler_abi::{
-    meta::MetaFlags,
+    meta::{MetaFlags, MetaInfo},
     object::{ObjID, Protections},
     syscall::{
         CreateTieSpec, DeleteFlags, HandleType, MapFlags, MapInfo, ObjectControlCmd, ObjectCreate,
@@ -12,7 +12,8 @@ use twizzler_abi::{
     },
 };
 use twizzler_rt_abi::{
-    error::{ArgumentError, NamingError, ObjectError, ResourceError},
+    error::{ArgumentError, NamingError, ObjectError, ResourceError, TwzError},
+    object::Nonce,
     Result,
 };
 
@@ -24,21 +25,37 @@ use crate::{
         tracker::{FrameAllocFlags, FrameAllocator},
     },
     mutex::Mutex,
-    obj::{calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef},
+    obj::{id::calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef},
     once::Once,
+    random::getrandom,
     security::get_sctx,
     thread::{current_memory_context, current_thread_ref},
 };
+
+fn new_nonce() -> Result<u128> {
+    let mut bytes = [0; 16];
+    if !getrandom(&mut bytes, false) {
+        let e = TwzError::Resource(ResourceError::OutOfResources);
+        Err(e)
+    } else {
+        Ok(u128::from_ne_bytes(bytes))
+    }
+}
 
 pub fn sys_object_create(
     create: &ObjectCreate,
     srcs: &[ObjectSource],
     ties: &[CreateTieSpec],
 ) -> Result<ObjID> {
-    let id = calculate_new_id(create.kuid, MetaFlags::default());
+    let nonce = if create.flags.contains(ObjectCreateFlags::NO_NONCE) {
+        0
+    } else {
+        new_nonce()?
+    };
+    let id = calculate_new_id(create.kuid, MetaFlags::default(), nonce, create.def_prot);
     let obj = Arc::new(Object::new(id, create.lt, ties));
     if obj.use_pager() {
-        crate::pager::create_object(id);
+        crate::pager::create_object(id, create, nonce);
         if create.flags.contains(ObjectCreateFlags::DELETE) {
             object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()));
         }
@@ -63,6 +80,17 @@ pub fn sys_object_create(
                 &mut fa,
             )
         }
+    }
+    let meta = MetaInfo {
+        nonce: Nonce(nonce),
+        kuid: create.kuid,
+        default_prot: Protections::all(),
+        flags: MetaFlags::empty(),
+        fotcount: 0,
+        extcount: 0,
+    };
+    while !obj.write_meta(meta, true) {
+        logln!("failed to write object metadata -- retrying");
     }
     crate::obj::register_object(obj.clone());
     if create.flags.contains(ObjectCreateFlags::DELETE) {

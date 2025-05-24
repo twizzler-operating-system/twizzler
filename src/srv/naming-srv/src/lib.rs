@@ -15,7 +15,7 @@ use secgate::{
 use tracing::Level;
 use twizzler_abi::{
     aux::KernelInitInfo,
-    object::{MAX_SIZE, NULLPAGE_SIZE},
+    object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_rt_abi::{
@@ -37,6 +37,7 @@ impl<'a> NamespaceClient<'a> {
                 LifetimeType::Volatile,
                 None,
                 ObjectCreateFlags::empty(),
+                Protections::all(),
             ),
             &[],
             &[],

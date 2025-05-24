@@ -48,8 +48,9 @@ pub const KERNEL_SCTX: ObjID = ObjID::new(0);
 /// Information about protections for a given object within a context.
 #[derive(Clone, Copy)]
 pub struct PermsInfo {
-    ctx: ObjID,
-    prot: Protections,
+    pub ctx: ObjID,
+    pub provide: Protections,
+    pub restrict: Protections,
 }
 
 /// Information about how we want to access an object for perms checking.
@@ -104,12 +105,16 @@ impl SecCtxMgr {
     }
 
     /// Check access rights in the active context.
-    pub fn check_active_access(&self, _access_info: AccessInfo) -> &PermsInfo {
-        todo!()
+    pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
+        PermsInfo {
+            ctx: self.active_id(),
+            provide: Protections::all(),
+            restrict: Protections::empty(),
+        }
     }
 
     /// Search all attached contexts for access.
-    pub fn search_access(&self, _access_info: AccessInfo) -> &PermsInfo {
+    pub fn search_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         todo!()
     }
 

@@ -15,7 +15,7 @@ use naming_core::{
 use raw_file::RawFile;
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
-    object::ObjID,
+    object::{ObjID, Protections},
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_rt_abi::{
@@ -214,6 +214,7 @@ impl ReferenceRuntime {
             LifetimeType::Persistent,
             None,
             ObjectCreateFlags::empty(),
+            Protections::all(),
         );
         let flags = match (
             open_opt.contains(OperationOptions::OPEN_FLAG_READ),

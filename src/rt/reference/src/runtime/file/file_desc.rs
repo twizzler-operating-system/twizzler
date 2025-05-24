@@ -6,7 +6,7 @@ use std::{
 
 use lru::LruCache;
 use twizzler_abi::{
-    object::{ObjID, NULLPAGE_SIZE},
+    object::{ObjID, Protections, NULLPAGE_SIZE},
     syscall::{
         sys_object_create, BackingType, LifetimeType, ObjectControlCmd, ObjectCreate,
         ObjectCreateFlags,
@@ -309,6 +309,7 @@ impl Write for FileDesc {
                             LifetimeType::Persistent,
                             None,
                             ObjectCreateFlags::empty(),
+                            Protections::all(),
                         );
                         let new_id = sys_object_create(create, &[], &[]).unwrap();
                         unsafe {

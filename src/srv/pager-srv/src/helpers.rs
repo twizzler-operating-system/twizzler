@@ -3,7 +3,7 @@ use std::ops::Add;
 use object_store::{objid_to_ino, PageRequest, PagingImp};
 use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_SIZED};
 use twizzler_abi::{
-    object::MAX_SIZE,
+    object::{Protections, MAX_SIZE},
     pager::{ObjectRange, PhysRange},
 };
 use twizzler_rt_abi::{object::Nonce, Result};
@@ -72,7 +72,8 @@ pub async fn page_in(
             let meta = MetaInfo {
                 nonce: Nonce(0),
                 kuid: ObjID::new(0),
-                flags: MetaFlags(0),
+                flags: MetaFlags::empty(),
+                default_prot: Protections::all(),
                 fotcount: 0,
                 extcount: 1,
             };
