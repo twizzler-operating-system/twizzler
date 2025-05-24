@@ -2,7 +2,7 @@ use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, sync::Arc};
 
 use twizzler_abi::{
     meta::{MetaExt, MetaFlags, MetaInfo, MEXT_SIZED},
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
 };
 use twizzler_rt_abi::object::Nonce;
 
@@ -80,7 +80,8 @@ pub fn init(modules: &[BootModule]) {
             let meta = MetaInfo {
                 nonce: Nonce(0),
                 kuid: ObjID::new(0),
-                flags: MetaFlags(0),
+                default_prot: Protections::all(),
+                flags: MetaFlags::empty(),
                 fotcount: 0,
                 extcount: 1,
             };

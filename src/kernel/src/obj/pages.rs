@@ -1,16 +1,24 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use twizzler_abi::device::{CacheType, MMIO_OFFSET};
+use twizzler_abi::{
+    device::{CacheType, MMIO_OFFSET},
+    meta::MetaInfo,
+    object::{MAX_SIZE, NULLPAGE_SIZE},
+};
 
-use super::{range::PageStatus, Object, PageNumber};
+use super::{
+    range::{PageRangeTree, PageStatus},
+    Object, ObjectRef, PageNumber,
+};
 use crate::{
     arch::memory::{frame::FRAME_SIZE, phys_to_virt},
     memory::{
-        frame::FrameRef,
-        tracker::{alloc_frame, free_frame, FrameAllocFlags},
+        frame::{FrameRef, PHYS_LEVEL_LAYOUTS},
+        tracker::{alloc_frame, free_frame, FrameAllocFlags, FrameAllocator},
         PhysAddr, VirtAddr,
     },
+    mutex::LockGuard,
 };
 
 /// An object page can be either a physical frame (allocatable memory) or a static physical address
@@ -140,6 +148,85 @@ impl Object {
             (*t).load(Ordering::SeqCst)
         } else {
             0
+        }
+    }
+
+    pub fn ensure_in_core<'a>(
+        self: &'a Arc<Object>,
+        mut page_tree: LockGuard<'a, PageRangeTree>,
+        page_number: PageNumber,
+    ) -> LockGuard<'a, PageRangeTree> {
+        if matches!(page_tree.try_get_page(page_number), PageStatus::NoPage) {
+            if self.use_pager() {
+                drop(page_tree);
+                crate::pager::get_object_page(self, page_number);
+                page_tree = self.lock_page_tree();
+            } else {
+                let flags = FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK;
+                let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[0]);
+                if let Some(frame) = frame_allocator.try_allocate() {
+                    let page = Page::new(frame);
+                    page_tree.add_page(page_number, page, Some(&mut frame_allocator));
+                }
+            }
+        }
+        page_tree
+    }
+
+    pub fn read_meta(self: &ObjectRef, can_wait: bool) -> Option<MetaInfo> {
+        let mut obj_page_tree = self.lock_page_tree();
+        let page_number = PageNumber::from_offset(MAX_SIZE - NULLPAGE_SIZE);
+
+        if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true, None) {
+            unsafe {
+                let t = page.get_mut_to_val::<MetaInfo>(0);
+                Some(t.read())
+            }
+        } else {
+            if !can_wait {
+                return None;
+            }
+            obj_page_tree = self.ensure_in_core(obj_page_tree, page_number);
+            drop(obj_page_tree);
+            self.read_meta(can_wait)
+        }
+    }
+
+    pub fn write_meta(&self, meta: MetaInfo, can_wait: bool) -> bool {
+        assert!(!self.use_pager());
+        let mut obj_page_tree = self.lock_page_tree();
+        let page_number = PageNumber::from_offset(MAX_SIZE - NULLPAGE_SIZE);
+
+        if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true, None) {
+            unsafe {
+                let t = page.get_mut_to_val::<MetaInfo>(0);
+                t.write(meta);
+            }
+            true
+        } else {
+            let mut flags = FrameAllocFlags::ZEROED;
+            if can_wait {
+                flags.insert(FrameAllocFlags::WAIT_OK);
+            }
+            let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[0]);
+
+            if let Some(frame) = frame_allocator.try_allocate() {
+                let page = Page::new(frame);
+                unsafe {
+                    let t = page.get_mut_to_val::<MetaInfo>(0);
+                    t.write(meta);
+                }
+                if obj_page_tree
+                    .add_page(page_number, page, Some(&mut frame_allocator))
+                    .is_some()
+                {
+                    return true;
+                }
+            }
+            if !can_wait {
+                return false;
+            }
+            self.write_meta(meta, can_wait)
         }
     }
 

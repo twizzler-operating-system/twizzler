@@ -1,6 +1,9 @@
 use std::{marker::PhantomData, mem::MaybeUninit};
 
-use twizzler_abi::syscall::{LifetimeType, ObjectCreate};
+use twizzler_abi::{
+    object::Protections,
+    syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+};
 use twizzler_rt_abi::object::MapFlags;
 
 use super::Object;
@@ -76,7 +79,13 @@ impl<Base: BaseType> ObjectBuilder<Base> {
 
 impl<Base: BaseType> Default for ObjectBuilder<Base> {
     fn default() -> Self {
-        Self::new(ObjectCreate::default())
+        Self::new(ObjectCreate::new(
+            BackingType::Normal,
+            LifetimeType::Volatile,
+            None,
+            ObjectCreateFlags::empty(),
+            Protections::all(),
+        ))
     }
 }
 

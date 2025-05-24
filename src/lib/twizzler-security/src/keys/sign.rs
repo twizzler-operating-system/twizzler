@@ -10,7 +10,7 @@ use twizzler::{
     marker::BaseType,
     object::{Object, ObjectBuilder},
 };
-use twizzler_rt_abi::error::TwzError;
+use twizzler_rt_abi::{error::TwzError, object::Protections};
 // 256 / 8 => 32 bytes for secret key length, since we are using curve p256, 256 bit curve
 const ECDSA_SECRET_KEY_LENGTH: usize = 32;
 
@@ -214,11 +214,14 @@ mod tests {
     #[test]
     #[cfg(feature = "user")]
     fn test_key_creation() {
+        use twizzler_abi::object::Protections;
+
         let object_create_spec = ObjectCreate::new(
             Default::default(),
             twizzler_abi::syscall::LifetimeType::Persistent,
             Default::default(),
             Default::default(),
+            Protections::all(),
         );
         let (skey, vkey) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
             .expect("keys should be generated properly");
@@ -234,6 +237,7 @@ mod tests {
             twizzler_abi::syscall::LifetimeType::Persistent,
             Default::default(),
             Default::default(),
+            Protections::all(),
         );
 
         let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
@@ -261,6 +265,7 @@ mod tests {
             twizzler_abi::syscall::LifetimeType::Persistent,
             Default::default(),
             Default::default(),
+            Protections::all(),
         );
         b.iter(|| {
             let (skey, vkey) =

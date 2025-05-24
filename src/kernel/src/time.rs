@@ -42,3 +42,7 @@ where
         clock_list.push(clk.clone());
     }
 }
+
+pub fn bench_clock() -> Option<Arc<dyn ClockHardware + Send + Sync>> {
+    TICK_SOURCES.lock().get(0).cloned()
+}

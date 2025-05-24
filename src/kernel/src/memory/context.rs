@@ -12,6 +12,7 @@ use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections},
 };
+use twizzler_rt_abi::error::TwzError;
 
 use self::virtmem::KernelObjectVirtHandle;
 use crate::{
@@ -49,7 +50,7 @@ pub trait UserContext {
         self: &Arc<Self>,
         mapping_info: Self::MappingInfo,
         object_info: &ObjectContextInfo,
-    ) -> Result<(), InsertError>;
+    ) -> Result<(), TwzError>;
     /// Lookup an object within this context. Once this function returns, no guarantees are made
     /// about if the object remains mapped as is.
     fn lookup_object(&self, info: Self::MappingInfo) -> Option<ObjectContextInfo>;
@@ -90,11 +91,6 @@ impl ObjectContextInfo {
     pub fn cache(&self) -> CacheType {
         self.cache
     }
-}
-
-/// Errors for inserting objects into a [Context].
-pub enum InsertError {
-    Occupied,
 }
 
 /// A trait for kernel-related memory context actions.

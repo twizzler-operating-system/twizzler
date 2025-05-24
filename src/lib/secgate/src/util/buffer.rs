@@ -101,8 +101,9 @@ impl SimpleBuffer {
 
 #[cfg(test)]
 mod test {
-    use twizzler_abi::syscall::{
-        sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags,
+    use twizzler_abi::{
+        object::Protections,
+        syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
     };
     use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
@@ -115,6 +116,7 @@ mod test {
                 LifetimeType::Volatile,
                 None,
                 ObjectCreateFlags::empty(),
+                Protections::all(),
             ),
             &[],
             &[],

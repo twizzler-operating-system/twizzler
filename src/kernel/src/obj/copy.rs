@@ -82,6 +82,7 @@ fn copy_single(
             Some(allocator),
         )?,
         PageStatus::AllocFail => return None,
+        PageStatus::DataFail => return None,
     };
 
     if let PageStatus::Ready(src_page, _) = src_page {
@@ -288,6 +289,7 @@ fn copy_bytes(
                 Some(allocator),
             )?,
             PageStatus::AllocFail => return None,
+            PageStatus::DataFail => return None,
         };
 
         let count_sofar = byte_length - remaining;
@@ -559,6 +561,7 @@ mod test {
                     )
                     .unwrap(),
                 PageStatus::AllocFail => panic!("out of memory"),
+                PageStatus::DataFail => panic!("data loss in copy"),
             };
             sp.as_mut_slice().fill(p);
         }
