@@ -70,7 +70,7 @@ pub struct AccessInfo {
 impl SecurityContext {
     /// Lookup the permission info for an object, and maybe cache it.
     pub fn lookup(&self, _id: ObjID) -> PermsInfo {
-        if let Some(cache_entry) = self.cache.get(&_id) {
+        if let Some(cache_entry) = self.cache.lock().get(&_id) {
             return *cache_entry;
         }
 
