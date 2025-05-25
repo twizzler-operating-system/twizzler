@@ -37,7 +37,7 @@ pub struct SecCtxMgr {
 /// A single security context.
 pub struct SecurityContext {
     kobj: Option<KernelObject<SecCtxBase>>,
-    cache: BTreeMap<ObjID, PermsInfo>,
+    cache: Mutex<BTreeMap<ObjID, PermsInfo>>,
 }
 
 impl core::fmt::Debug for SecurityContext {
@@ -137,7 +137,7 @@ impl SecurityContext {
                         return granted_perms;
                     };
 
-                    if cap.verify_sig(verifying_key).is_ok() {
+                    if cap.verify_sig(v_key).is_ok() {
                         granted_perms.provide = granted_perms.provide | cap.protections;
                     };
                 }
@@ -149,7 +149,7 @@ impl SecurityContext {
             // no mask for target object
             // final perms are granted_perms & global_mask
             granted_perms.provide &= base.global_mask;
-            self.cache.insert(_id, granted_perms.clone());
+            self.cache.lock().insert(_id, granted_perms.clone());
             return granted_perms;
         };
 
@@ -157,6 +157,8 @@ impl SecurityContext {
         // granted_perms & permmask & (global_mask | override_mask)
         granted_perms.provide =
             granted_perms.provide & mask.permmask & (base.global_mask | mask.ovrmask);
+
+        self.cache.lock().insert(_id, granted_perms.clone());
 
         granted_perms
     }
