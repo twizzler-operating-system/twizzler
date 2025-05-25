@@ -101,7 +101,7 @@ impl SecurityContext {
 
             let Some(meta) = target_obj.read_meta(true) else {
                 // failed to read meta, no perms granted
-                return PermsInfo::new(self.id, Protections::empty(), Protections::empty());
+                return PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
             };
             match lookup_object(meta.kuid, LookupFlags::empty()) {
                 LookupResult::Found(v_obj) => {
@@ -135,7 +135,7 @@ impl SecurityContext {
                     };
 
                     if cap.verify_sig(verifying_key).is_ok() {
-                        granted_perms.prot = granted_perms | cap.protections;
+                        granted_perms.provide = granted_perms.provide | cap.protections;
                     };
                 }
             }
@@ -145,14 +145,15 @@ impl SecurityContext {
         let Some(mask) = base.masks.get(&_id) else {
             // no mask for target object
             // final perms are granted_perms & global_mask
-            granted_perms &= base.global_mask;
+            granted_perms.provide &= base.global_mask;
             self.cache.insert(_id, granted_perms.clone());
             return granted_perms;
         };
 
         // final permissions will be ,
         // granted_perms & permmask & (global_mask | override_mask)
-        granted_perms.provide = granted_perms & mask.permmask & (base.global_mask | mask.ovrmask);
+        granted_perms.provide =
+            granted_perms.provide & mask.permmask & (base.global_mask | mask.ovrmask);
 
         granted_perms
     }
@@ -175,7 +176,7 @@ impl SecurityContext {
 impl SecCtxMgr {
     /// Lookup the permission info for an object in the active context, and maybe cache it.
     pub fn lookup(&self, id: ObjID) -> PermsInfo {
-        *self.inner.lock().active.lookup(id)
+        self.inner.lock().active.lookup(id)
     }
 
     /// Get the active context.

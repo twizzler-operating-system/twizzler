@@ -149,7 +149,8 @@ impl SecCtx {
         let mut target_obj_default_prots = Protections::empty();
 
         // step 1, add up all the permissions granted by VERIFIED capabilities and delegations
-        let mut granted_perms = PermsInfo::new(self.id(), target_obj_default_prots);
+        let mut granted_perms =
+            PermsInfo::new(self.id(), target_obj_default_prots, Protections::empty());
 
         // check for possible items
         let Some(results) = base.map.get(&target_id) else {
@@ -178,7 +179,7 @@ impl SecCtx {
                         let cap = *ptr;
 
                         if cap.verify_sig(v_key).is_ok() {
-                            granted_perms.prot = granted_perms.prot | cap.protections;
+                            granted_perms.provide |= cap.protections;
                         }
                     }
                 }
@@ -189,7 +190,7 @@ impl SecCtx {
             // no mask inside
             // final perms are granted_perms (intersection) global_mask
 
-            granted_perms.prot &= base.global_mask;
+            granted_perms.provide &= base.global_mask;
 
             self.cache.insert(target_id, granted_perms.clone());
             return granted_perms;
@@ -198,7 +199,8 @@ impl SecCtx {
         // mask exists, final perms are
         // granted_perms & permmask & (global_mask | override_mask)
 
-        granted_perms.prot = granted_perms.prot & mask.permmask & (base.global_mask | mask.ovrmask);
+        granted_perms.provide =
+            granted_perms.provide & mask.permmask & (base.global_mask | mask.ovrmask);
 
         self.cache.insert(target_id, granted_perms.clone());
         granted_perms
