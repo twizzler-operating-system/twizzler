@@ -107,7 +107,7 @@ mod tests {
 
     #[bench]
     fn bench_something_else(b: &mut Bencher) {
-        b.tier(|| {
+        b.iter(|| {
             let x = black_box(5 * 10);
         })
     }
