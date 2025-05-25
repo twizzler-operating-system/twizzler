@@ -16,6 +16,12 @@ bitflags! {
     }
 }
 
+impl From<twizzler_rt_abi::object::MapFlags> for MapFlags {
+    fn from(_: twizzler_rt_abi::object::MapFlags) -> Self {
+        Self::empty()
+    }
+}
+
 /// Map an object into the address space with the specified protections.
 pub fn sys_object_map(
     handle: Option<ObjID>,

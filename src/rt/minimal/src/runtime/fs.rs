@@ -10,7 +10,7 @@ use lru::LruCache;
 use rustc_alloc::sync::Arc;
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     simple_mutex::Mutex,
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
@@ -308,6 +308,7 @@ impl MinimalRuntime {
                             LifetimeType::Volatile,
                             None,
                             ObjectCreateFlags::empty(),
+                            Protections::all(),
                         );
                         let new_id = sys_object_create(create, &[], &[]).unwrap();
                         unsafe {

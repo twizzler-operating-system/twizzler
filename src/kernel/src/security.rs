@@ -2,7 +2,7 @@ use alloc::{collections::BTreeMap, sync::Arc};
 
 use twizzler_abi::object::{ObjID, Protections};
 use twizzler_rt_abi::error::{NamingError, ObjectError};
-use twizzler_security::{Cap, CtxMapItemType, PermsInfo, SecCtxBase};
+use twizzler_security::{Cap, CtxMapItemType, SecCtxBase};
 
 use crate::{
     memory::context::{
@@ -48,6 +48,14 @@ pub type SecurityContextRef = Arc<SecurityContext>;
 /// The kernel gets a special, reserved sctx ID.
 pub const KERNEL_SCTX: ObjID = ObjID::new(0);
 
+/// Information about protections for a given object within a context.
+#[derive(Clone, Copy)]
+pub struct PermsInfo {
+    pub ctx: ObjID,
+    pub provide: Protections,
+    pub restrict: Protections,
+}
+
 /// Information about how we want to access an object for perms checking.
 #[derive(Clone, Copy)]
 pub struct AccessInfo {
@@ -90,7 +98,7 @@ impl SecurityContext {
 
         // TODO: i have no idea how to get the verifying key from the id
         // let x = _id.raw();
-        
+
         // TODO need to map in the verifying key to verify the signature
 
         for entry in results {
@@ -150,12 +158,16 @@ impl SecCtxMgr {
     }
 
     /// Check access rights in the active context.
-    pub fn check_active_access(&self, _access_info: AccessInfo) -> &PermsInfo {
-        todo!()
+    pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
+        PermsInfo {
+            ctx: self.active_id(),
+            provide: Protections::all(),
+            restrict: Protections::empty(),
+        }
     }
 
     /// Search all attached contexts for access.
-    pub fn search_access(&self, _access_info: AccessInfo) -> &PermsInfo {
+    pub fn search_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         todo!()
     }
 

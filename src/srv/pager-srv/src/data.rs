@@ -11,8 +11,9 @@ use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
 use twizzler::object::ObjID;
 use twizzler_abi::{
+    object::{Protections, MAX_SIZE},
     pager::{ObjectInfo, ObjectRange, PhysRange},
-    syscall::LifetimeType,
+    syscall::{BackingType, LifetimeType},
 };
 use twizzler_rt_abi::{
     error::{ArgumentError, ResourceError},
@@ -45,9 +46,13 @@ impl PerObjectInner {
     pub fn track(&mut self, obj_range: ObjectRange, phys_range: PhysRange) {
         assert_eq!(obj_range.len(), PAGE as usize);
         assert_eq!(phys_range.len(), PAGE as usize);
+        let mut start = obj_range.start;
+        if start == MAX_SIZE as u64 - PAGE {
+            start = 0;
+        }
 
         if let Some(old) = self.page_map.insert(
-            obj_range.start / PAGE,
+            start / PAGE,
             PerPageData {
                 paddr: phys_range.start,
             },
@@ -71,7 +76,11 @@ impl PerObjectInner {
     }
 
     pub fn lookup(&self, obj_range: ObjectRange) -> Option<PhysRange> {
-        let key = obj_range.start / PAGE;
+        let mut start = obj_range.start;
+        if start == MAX_SIZE as u64 - PAGE {
+            start = 0;
+        }
+        let key = start / PAGE;
         self.page_map
             .get(&key)
             .map(|ppd| PhysRange::new(ppd.paddr, PAGE))
@@ -409,10 +418,22 @@ impl PagerData {
         let mut b = [];
         if objid_to_ino(id.raw()).is_some() {
             ctx.paged_ostore.find_external(id.raw())?;
-            return Ok(ObjectInfo::new(LifetimeType::Persistent));
+            return Ok(ObjectInfo::new(
+                LifetimeType::Persistent,
+                BackingType::Normal,
+                0.into(),
+                0,
+                Protections::empty(),
+            ));
         }
         ctx.paged_ostore.read_object(id.raw(), 0, &mut b)?;
-        Ok(ObjectInfo::new(LifetimeType::Persistent))
+        Ok(ObjectInfo::new(
+            LifetimeType::Persistent,
+            BackingType::Normal,
+            0.into(),
+            0,
+            Protections::empty(),
+        ))
     }
 
     pub async fn sync(&self, ctx: &'static PagerContext, id: ObjID) {

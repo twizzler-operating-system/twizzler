@@ -7,7 +7,7 @@ use secgate::{
     util::{Descriptor, HandleMgr, SimpleBuffer},
 };
 use twizzler_abi::{
-    object::ObjID,
+    object::{ObjID, Protections},
     syscall::{
         sys_kernel_console_write, sys_object_create, BackingType, KernelConsoleWriteFlags,
         LifetimeType, ObjectCreate, ObjectCreateFlags,
@@ -38,6 +38,7 @@ impl LogClient {
                 LifetimeType::Volatile,
                 None,
                 ObjectCreateFlags::empty(),
+                Protections::all(),
             ),
             &[],
             &[],

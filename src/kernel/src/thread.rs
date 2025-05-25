@@ -157,9 +157,9 @@ impl Thread {
         self.arch_switch_to(current)
     }
 
-    pub fn do_critical<F, T>(&self, mut f: F) -> T
+    pub fn do_critical<F, T>(&self, f: F) -> T
     where
-        F: FnMut(&Self) -> T,
+        F: FnOnce(&Self) -> T,
     {
         self.critical_counter.fetch_add(1, Ordering::SeqCst);
         let res = f(self);

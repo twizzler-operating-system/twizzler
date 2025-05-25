@@ -10,7 +10,7 @@ use twizzler::{
     marker::BaseType,
     object::{Object, ObjectBuilder},
 };
-use twizzler_rt_abi::error::TwzError;
+use twizzler_rt_abi::{error::TwzError, object::Protections};
 // 256 / 8 => 32 bytes for secret key length, since we are using curve p256, 256 bit curve
 const ECDSA_SECRET_KEY_LENGTH: usize = 32;
 
@@ -199,6 +199,79 @@ impl From<EcdsaSigningKey> for SigningKey {
             len: slice.len(),
             scheme: SigningScheme::Ecdsa,
         }
+    }
+}
+
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "user")]
+    extern crate test;
+
+    #[cfg(feature = "user")]
+    use test::Bencher;
+
+    #[test]
+    #[cfg(feature = "user")]
+    fn test_key_creation() {
+        use twizzler_abi::object::Protections;
+
+        let object_create_spec = ObjectCreate::new(
+            Default::default(),
+            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
+            Default::default(),
+            Protections::all(),
+        );
+        let (skey, vkey) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
+            .expect("keys should be generated properly");
+    }
+
+    #[test]
+    #[cfg(feature = "user")]
+    fn test_signing_and_verification() {
+        use twizzler::object::TypedObject;
+
+        let object_create_spec = ObjectCreate::new(
+            Default::default(),
+            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
+            Default::default(),
+            Protections::all(),
+        );
+
+        let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
+            .expect("Keys should be generated properly");
+        let message = "deadbeef".as_bytes();
+
+        let sig = s_obj
+            .base()
+            .sign(message)
+            .expect("Signature should succeed");
+
+        v_obj
+            .base()
+            .verify(message, &sig)
+            .expect("Should be verified properly");
+    }
+
+    #[bench]
+    //NOTE: currently we can only bench in user space, need to benchmark this in kernel space as
+    // well
+    #[cfg(feature = "user")]
+    fn bench_keypair_creation(b: &mut Bencher) {
+        let object_create_spec = ObjectCreate::new(
+            Default::default(),
+            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
+            Default::default(),
+            Protections::all(),
+        );
+        b.iter(|| {
+            let (skey, vkey) =
+                SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec.clone())
+                    .expect("Keys should be generated properly.");
+        });
     }
 }
 

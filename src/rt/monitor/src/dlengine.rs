@@ -9,7 +9,7 @@ use dynlink::{
 use naming_core::{GetFlags, NameStore, NsNodeKind};
 use twizzler_abi::{
     aux::KernelInitInfo,
-    object::{MAX_SIZE, NULLPAGE_SIZE},
+    object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{BackingType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_rt_abi::{
@@ -29,6 +29,7 @@ fn get_new_sctx_instance(_sctx: ObjID) -> ObjID {
             twizzler_abi::syscall::LifetimeType::Volatile,
             None,
             ObjectCreateFlags::empty(),
+            Protections::all(),
         ),
         &[],
         &[],
