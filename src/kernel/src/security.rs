@@ -49,6 +49,7 @@ impl core::fmt::Debug for SecurityContext {
 }
 
 pub type SecurityContextRef = Arc<SecurityContext>;
+pub use PermsInfo;
 
 /// The kernel gets a special, reserved sctx ID.
 pub const KERNEL_SCTX: ObjID = ObjID::new(0);
