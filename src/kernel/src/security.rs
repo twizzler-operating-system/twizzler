@@ -71,13 +71,14 @@ impl SecurityContext {
     /// Lookup the permission info for an object, and maybe cache it.
     pub fn lookup(&self, _id: ObjID) -> PermsInfo {
         if let Some(cache_entry) = self.cache.get(&_id) {
-            return cache_entry;
+            return *cache_entry;
         }
 
         // TODO: unsure how to get an objects default permissions as of now
         let mut target_obj_default_prots = Protections::empty();
 
-        let mut granted_perms = PermsInfo::new(self.id(), target_obj_default_prots);
+        let mut granted_perms =
+            PermsInfo::new(self.id(), target_obj_default_prots, Protections::empty());
 
         let Some(obj) = self.kobj else {
             // if there is no object underneath the kobj, return the default permissions of the
