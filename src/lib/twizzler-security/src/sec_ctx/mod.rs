@@ -10,7 +10,7 @@ mod user;
 pub use user::*;
 
 /// Information about protections for a given object within a context.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct PermsInfo {
     pub ctx: ObjID,
     pub provide: Protections,
