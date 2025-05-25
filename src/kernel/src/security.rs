@@ -80,7 +80,7 @@ impl SecurityContext {
         let mut granted_perms =
             PermsInfo::new(self.id(), target_obj_default_prots, Protections::empty());
 
-        let Some(obj) = self.kobj else {
+        let Some(ref obj) = self.kobj.clone() else {
             // if there is no object underneath the kobj, return the default permissions of the
             // object?
             return granted_perms;
@@ -95,7 +95,7 @@ impl SecurityContext {
             return granted_perms;
         };
 
-        let verifying_key = {
+        let v_obj = {
             let target_obj = match lookup_object(_id, LookupFlags::empty()) {
                 LookupResult::Found(obj) => obj,
                 _ => return PermsInfo::new(self.id(), Protections::empty(), Protections::empty()),
@@ -112,13 +112,14 @@ impl SecurityContext {
                     let handle = k_ctx.insert_kernel_object::<VerifyingKey>(
                         ObjectContextInfo::new(v_obj, Protections::READ, CacheType::WriteBack),
                     );
-
-                    handle.base()
+                    handle
                 }
                 // verifying key wasnt found, return no perms
                 _ => return PermsInfo::new(self.id(), Protections::empty(), Protections::empty()),
             }
         };
+
+        let v_key = v_obj.base();
 
         for entry in results {
             match entry.item_type {
