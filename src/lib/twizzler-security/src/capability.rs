@@ -187,12 +187,12 @@ impl Cap {
         let mut hash_arr: [u8; CAP_SERIALIZED_LEN] = [0; CAP_SERIALIZED_LEN];
         hash_arr[0..16].copy_from_slice(&accessor.raw().to_le_bytes());
         hash_arr[16..32].copy_from_slice(&target.raw().to_le_bytes());
-        hash_arr[32..36].copy_from_slice(&prots.bits().to_le_bytes());
-        hash_arr[36..38].copy_from_slice(&flags.bits().to_le_bytes());
-        hash_arr[38..54].copy_from_slice(&revocation.to_bytes());
-        hash_arr[54..62].copy_from_slice(&gates.offset.to_le_bytes());
-        hash_arr[62..70].copy_from_slice(&gates.length.to_le_bytes());
-        hash_arr[70..78].copy_from_slice(&gates.align.to_le_bytes());
+        hash_arr[32..34].copy_from_slice(&prots.bits().to_le_bytes());
+        hash_arr[34..36].copy_from_slice(&flags.bits().to_le_bytes());
+        hash_arr[36..52].copy_from_slice(&revocation.to_bytes());
+        hash_arr[52..60].copy_from_slice(&gates.offset.to_le_bytes());
+        hash_arr[60..68].copy_from_slice(&gates.length.to_le_bytes());
+        hash_arr[68..76].copy_from_slice(&gates.align.to_le_bytes());
         hash_arr
     }
 }
