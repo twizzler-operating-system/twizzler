@@ -5,7 +5,8 @@ use twizzler_abi::{
     object::{ObjID, Protections},
 };
 use twizzler_rt_abi::error::{NamingError, ObjectError};
-use twizzler_security::{Cap, CtxMapItemType, PermsInfo, SecCtxBase, VerifyingKey};
+pub use twizzler_security::PermsInfo;
+use twizzler_security::{Cap, CtxMapItemType, SecCtxBase, VerifyingKey};
 
 use crate::{
     memory::context::{
@@ -49,7 +50,6 @@ impl core::fmt::Debug for SecurityContext {
 }
 
 pub type SecurityContextRef = Arc<SecurityContext>;
-pub use PermsInfo;
 
 /// The kernel gets a special, reserved sctx ID.
 pub const KERNEL_SCTX: ObjID = ObjID::new(0);
