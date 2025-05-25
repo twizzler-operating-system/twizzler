@@ -11,6 +11,8 @@ const MAX_KEY_SIZE: usize = 128;
 // tests written inside kernel to run.
 #[cfg(feature = "user")]
 mod tests {
+    use core::hint::black_box;
+
     use super::*;
 
     extern crate test;
@@ -87,19 +89,26 @@ mod tests {
 
     //NOTE: currently we can only bench in user space, need to benchmark this in kernel space as
     // well
-    #[bench]
-    fn bench_keypair_creation(b: &mut Bencher) {
-        let object_create_spec = ObjectCreate::new(
-            Default::default(),
-            twizzler_abi::syscall::LifetimeType::Persistent,
-            Default::default(),
-            Default::default(),
-            Protections::all(),
-        );
+    // #[bench]
+    // fn bench_keypair_creation(b: &mut Bencher) {
+    //     let object_create_spec = ObjectCreate::new(
+    //         Default::default(),
+    //         twizzler_abi::syscall::LifetimeType::Persistent,
+    //         Default::default(),
+    //         Default::default(),
+    //         Protections::all(),
+    //     );
 
-        b.iter(|| {
-            let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
-                .expect("Keys should be generated properly");
-        });
+    //     b.iter(|| {
+    //         let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa,
+    // object_create_spec)             .expect("Keys should be generated properly");
+    //     });
+    // }
+
+    #[bench]
+    fn bench_something_else(b: &mut Bencher) {
+        b.tier(|| {
+            let x = black_box(5 * 10);
+        })
     }
 }
