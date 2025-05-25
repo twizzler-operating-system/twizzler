@@ -244,7 +244,7 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
         if heartbeat {
             let mut i = 0;
             loop {
-                if let Some(es) = child.wait_timeout(Duration::from_secs(15))? {
+                if let Some(es) = child.wait_timeout(Duration::from_secs(60))? {
                     break Some(es);
                 }
                 child_stdin
