@@ -2,14 +2,14 @@ use alloc::{collections::BTreeMap, sync::Arc};
 
 use twizzler_abi::object::{ObjID, Protections};
 use twizzler_rt_abi::error::{NamingError, ObjectError};
-use twizzler_security::{Cap, CtxMapItemType, SecCtxBase};
+use twizzler_security::{Cap, CtxMapItemType, PermsInfo, SecCtxBase};
 
 use crate::{
     memory::context::{
         KernelMemoryContext, KernelObject, KernelObjectHandle, ObjectContextInfo, UserContext,
     },
     mutex::Mutex,
-    obj::LookupFlags,
+    obj::{lookup_object, LookupFlags, LookupResult},
     once::Once,
     spinlock::Spinlock,
     thread::current_memory_context,
@@ -47,14 +47,6 @@ pub type SecurityContextRef = Arc<SecurityContext>;
 
 /// The kernel gets a special, reserved sctx ID.
 pub const KERNEL_SCTX: ObjID = ObjID::new(0);
-
-/// Information about protections for a given object within a context.
-#[derive(Clone, Copy)]
-pub struct PermsInfo {
-    pub ctx: ObjID,
-    pub provide: Protections,
-    pub restrict: Protections,
-}
 
 /// Information about how we want to access an object for perms checking.
 #[derive(Clone, Copy)]
@@ -94,6 +86,11 @@ impl SecurityContext {
         let Some(results) = base.map.get(&_id) else {
             // if no entries for the target, return already granted perms
             return granted_perms;
+        };
+
+        let obj = match lookup_object(_id, LookupFlags::empty()) {
+            LookupResult::Found(obj) => obj,
+            _ => return PermsInfo::new(self.id(), Protections::empty(), Protections::empty()),
         };
 
         // TODO: i have no idea how to get the verifying key from the id
