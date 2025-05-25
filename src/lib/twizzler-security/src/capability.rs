@@ -207,24 +207,27 @@ mod tests {
     use twizzler::object::TypedObject;
     use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate};
 
+    fn default_capability(s_key: &SigningKey) -> Cap {
+        Cap::new(
+            0x123.into(),
+            0x321.into(),
+            Protections::all(),
+            s_key,
+            Revoc::default(),
+            Gates::default(),
+            HashingAlgo::Sha256,
+            SigningScheme::Ecdsa,
+        )
+        .expect("Capability should have been created.")
+    }
+
     #[test]
     // NOTE: would be nice to do table testing here
     fn test_capability_creation() {
         // just simple thang
         let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
             .expect("keypair creation should not have errored!");
-
-        let cap = Cap::new(
-            0x123.into(),
-            0x321.into(),
-            Protections::all(),
-            s.base(),
-            Revoc::default(),
-            Gates::default(),
-            HashingAlgo::Sha256,
-            SigningScheme::Ecdsa,
-        )
-        .expect("Capability should have been created.");
+        let cap = default_capability(s.base());
     }
 
     #[test]
@@ -233,17 +236,7 @@ mod tests {
         let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
             .expect("keypair creation should not have errored!");
 
-        let cap = Cap::new(
-            0x123.into(),
-            0x321.into(),
-            Protections::all(),
-            s.base(),
-            Revoc::default(),
-            Gates::default(),
-            HashingAlgo::Sha256,
-            SigningScheme::Ecdsa,
-        )
-        .expect("Capability should have been created properly.");
+        let cap = default_capability(s.base());
 
         cap.verify_sig(v.base())
             .expect("capability should have been verified.")
