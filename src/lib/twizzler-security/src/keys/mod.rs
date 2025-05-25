@@ -20,7 +20,7 @@ mod tests {
         marker::BaseType,
         object::{Object, ObjectBuilder},
     };
-    use twizzler_abi::syscall::ObjectCreate;
+    use twizzler_abi::{object::Protections, syscall::ObjectCreate};
     use twizzler_rt_abi::error::TwzError;
 
     use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
@@ -33,24 +33,31 @@ mod tests {
             twizzler_abi::syscall::LifetimeType::Persistent,
             Default::default(),
             Default::default(),
+            Protections::all(),
         );
         let (skey, vkey) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
             .expect("keys should be generated properly");
+    }
+
+    fn create_default_key_pair() -> (Object<SigningKey>, Object<VerifyingKey>) {
+        let object_create_spec = ObjectCreate::new(
+            Default::default(),
+            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
+            Default::default(),
+            Protections::all(),
+        );
+
+        SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
+            .expect("Keys should be generated properly")
     }
 
     #[test]
     fn test_signing() {
         use twizzler::object::TypedObject;
 
-        let object_create_spec = ObjectCreate::new(
-            Default::default(),
-            twizzler_abi::syscall::LifetimeType::Persistent,
-            Default::default(),
-            Default::default(),
-        );
+        let (s_key, v_key) = create_default_key_pair();
 
-        let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
-            .expect("Keys should be generated properly");
         let message = "deadbeef".as_bytes();
 
         let sig = s_obj
@@ -63,15 +70,8 @@ mod tests {
     fn test_verifying() {
         use twizzler::object::TypedObject;
 
-        let object_create_spec = ObjectCreate::new(
-            Default::default(),
-            twizzler_abi::syscall::LifetimeType::Persistent,
-            Default::default(),
-            Default::default(),
-        );
+        let (s_key, v_key) = create_default_key_pair();
 
-        let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
-            .expect("Keys should be generated properly");
         let message = "deadbeef".as_bytes();
 
         let sig = s_obj
@@ -89,16 +89,8 @@ mod tests {
     // well
     #[bench]
     fn bench_keypair_creation(b: &mut Bencher) {
-        let object_create_spec = ObjectCreate::new(
-            Default::default(),
-            twizzler_abi::syscall::LifetimeType::Persistent,
-            Default::default(),
-            Default::default(),
-        );
         b.iter(|| {
-            let (skey, vkey) =
-                SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec.clone())
-                    .expect("Keys should be generated properly.");
+            let (s_key, v_key) = create_default_key_pair();
         });
     }
 }
