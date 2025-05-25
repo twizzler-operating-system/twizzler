@@ -1,16 +1,21 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use twizzler_abi::object::{ObjID, Protections};
+use twizzler_abi::{
+    device::CacheType,
+    object::{ObjID, Protections},
+};
 use twizzler_rt_abi::error::{NamingError, ObjectError};
-use twizzler_security::{Cap, CtxMapItemType, PermsInfo, SecCtxBase};
+use twizzler_security::{Cap, CtxMapItemType, PermsInfo, SecCtxBase, VerifyingKey};
 
 use crate::{
     memory::context::{
-        KernelMemoryContext, KernelObject, KernelObjectHandle, ObjectContextInfo, UserContext,
+        kernel_context, virtmem::VirtContext, KernelMemoryContext, KernelObject,
+        KernelObjectHandle, ObjectContextInfo, UserContext,
     },
     mutex::Mutex,
     obj::{lookup_object, LookupFlags, LookupResult},
     once::Once,
+    operations::map_object_into_context,
     spinlock::Spinlock,
     thread::current_memory_context,
 };
@@ -88,15 +93,30 @@ impl SecurityContext {
             return granted_perms;
         };
 
-        let obj = match lookup_object(_id, LookupFlags::empty()) {
-            LookupResult::Found(obj) => obj,
-            _ => return PermsInfo::new(self.id(), Protections::empty(), Protections::empty()),
+        let verifying_key = {
+            let target_obj = match lookup_object(_id, LookupFlags::empty()) {
+                LookupResult::Found(obj) => obj,
+                _ => return PermsInfo::new(self.id(), Protections::empty(), Protections::empty()),
+            };
+
+            let Some(meta) = target_obj.read_meta(true) else {
+                // failed to read meta, no perms granted
+                return PermsInfo::new(self.id, Protections::empty(), Protections::empty());
+            };
+            match lookup_object(meta.kuid, LookupFlags::empty()) {
+                LookupResult::Found(v_obj) => {
+                    let k_ctx = kernel_context();
+
+                    let handle = k_ctx.insert_kernel_object::<VerifyingKey>(
+                        ObjectContextInfo::new(v_obj, Protections::READ, CacheType::WriteBack),
+                    );
+
+                    handle.base()
+                }
+                // verifying key wasnt found, return no perms
+                _ => return PermsInfo::new(self.id(), Protections::empty(), Protections::empty()),
+            }
         };
-
-        // TODO: i have no idea how to get the verifying key from the id
-        // let x = _id.raw();
-
-        // TODO need to map in the verifying key to verify the signature
 
         for entry in results {
             match entry.item_type {
@@ -120,6 +140,21 @@ impl SecurityContext {
                 }
             }
         }
+
+        // lookup mask for obj in base
+        let Some(mask) = base.masks.get(&_id) else {
+            // no mask for target object
+            // final perms are granted_perms & global_mask
+            granted_perms &= base.global_mask;
+            self.cache.insert(_id, granted_perms.clone());
+            return granted_perms;
+        };
+
+        // final permissions will be ,
+        // granted_perms & permmask & (global_mask | override_mask)
+        granted_perms.provide = granted_perms & mask.permmask & (base.global_mask | mask.ovrmask);
+
+        granted_perms
     }
 
     pub fn new(kobj: Option<KernelObject<SecCtxBase>>) -> Self {
