@@ -56,7 +56,7 @@ mod tests {
     fn test_signing() {
         use twizzler::object::TypedObject;
 
-        let (s_key, v_key) = create_default_key_pair();
+        let (s_obj, v_obj) = create_default_key_pair();
 
         let message = "deadbeef".as_bytes();
 
@@ -70,7 +70,7 @@ mod tests {
     fn test_verifying() {
         use twizzler::object::TypedObject;
 
-        let (s_key, v_key) = create_default_key_pair();
+        let (s_obj, v_obj) = create_default_key_pair();
 
         let message = "deadbeef".as_bytes();
 
@@ -90,7 +90,7 @@ mod tests {
     #[bench]
     fn bench_keypair_creation(b: &mut Bencher) {
         b.iter(|| {
-            let (s_key, v_key) = create_default_key_pair();
+            let (s_obj, v_obj) = create_default_key_pair();
         });
     }
 }
