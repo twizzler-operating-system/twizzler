@@ -2,10 +2,12 @@ use alloc::{collections::BTreeMap, sync::Arc};
 
 use twizzler_abi::object::{ObjID, Protections};
 use twizzler_rt_abi::error::{NamingError, ObjectError};
-use twizzler_security::SecCtxBase;
+use twizzler_security::{Cap, CtxMapItemType, PermsInfo, SecCtxBase};
 
 use crate::{
-    memory::context::{KernelMemoryContext, KernelObject, ObjectContextInfo, UserContext},
+    memory::context::{
+        KernelMemoryContext, KernelObject, KernelObjectHandle, ObjectContextInfo, UserContext,
+    },
     mutex::Mutex,
     obj::LookupFlags,
     once::Once,
@@ -46,13 +48,6 @@ pub type SecurityContextRef = Arc<SecurityContext>;
 /// The kernel gets a special, reserved sctx ID.
 pub const KERNEL_SCTX: ObjID = ObjID::new(0);
 
-/// Information about protections for a given object within a context.
-#[derive(Clone, Copy)]
-pub struct PermsInfo {
-    ctx: ObjID,
-    prot: Protections,
-}
-
 /// Information about how we want to access an object for perms checking.
 #[derive(Clone, Copy)]
 pub struct AccessInfo {
@@ -68,8 +63,58 @@ pub struct AccessInfo {
 
 impl SecurityContext {
     /// Lookup the permission info for an object, and maybe cache it.
-    pub fn lookup(&self, _id: ObjID) -> &PermsInfo {
-        todo!()
+    pub fn lookup(&self, _id: ObjID) -> PermsInfo {
+        if let Some(cache_entry) = self.cache.get(&_id) {
+            return cache_entry;
+        }
+
+        // TODO: unsure how to get an objects default permissions as of now
+        let mut target_obj_default_prots = Protections::empty();
+
+        let mut granted_perms = PermsInfo::new(self.id(), target_obj_default_prots);
+
+        let Some(obj) = self.kobj else {
+            // if there is no object underneath the kobj, return the default permissions of the
+            // object?
+            return granted_perms;
+        };
+
+        let base = obj.base();
+
+        // check for possible items
+
+        let Some(results) = base.map.get(&_id) else {
+            // if no entries for the target, return already granted perms
+            return granted_perms;
+        };
+
+        // TODO: i have no idea how to get the verifying key from the id
+        // let x = _id.raw();
+        
+        // TODO need to map in the verifying key to verify the signature
+
+        for entry in results {
+            match entry.item_type {
+                CtxMapItemType::Del => {
+                    todo!("Delegations not supported yet for lookup")
+                }
+
+                CtxMapItemType::Cap => {
+                    //NOTE: is this going to return the same as Object.lea?
+                    let Some(cap) = obj.lea_raw(entry.offset as *const Cap) else {
+                        // something weird going on, entry offset not inside object bounds,
+                        // return already granted perms to avoid panic
+
+                        //NOTE: maybe add tracing here later
+                        return granted_perms;
+                    };
+
+                    if cap.verify_sig(verifying_key).is_ok() {
+                        granted_perms.prot = granted_perms | cap.protections;
+                    };
+                }
+            }
+        }
     }
 
     pub fn new(kobj: Option<KernelObject<SecCtxBase>>) -> Self {

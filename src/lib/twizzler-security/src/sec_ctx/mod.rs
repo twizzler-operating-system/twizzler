@@ -12,6 +12,12 @@ pub use user::*;
 /// Information about protections for a given object within a context.
 #[derive(Clone, Copy, Debug)]
 pub struct PermsInfo {
-    ctx: ObjID,
-    prot: Protections,
+    pub ctx_id: ObjID,
+    pub prot: Protections,
+}
+
+impl PermsInfo {
+    pub fn new(ctx_id: ObjID, prot: Protections) -> Self {
+        Self { ctx_id, prot }
+    }
 }

@@ -146,13 +146,10 @@ impl SecCtx {
         //     let metadata = *target_object;
         //     metadata.flags;
         // }
-        let mut target_obj_default_perms = Protections::empty();
+        let mut target_obj_default_prots = Protections::empty();
 
         // step 1, add up all the permissions granted by VERIFIED capabilities and delegations
-        let mut granted_perms = PermsInfo {
-            ctx: self.id(),
-            prot: target_obj_default_perms,
-        };
+        let mut granted_perms = PermsInfo::new(self.id(), target_obj_default_prots);
 
         // check for possible items
         let Some(results) = base.map.get(&target_id) else {
