@@ -96,6 +96,7 @@ mod tests {
             Default::default(),
             Protections::all(),
         );
+
         b.iter(|| {
             let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
                 .expect("Keys should be generated properly");
