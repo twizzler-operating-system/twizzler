@@ -1,7 +1,11 @@
+use alloc::{collections::btree_map::ValuesMut, vec::Vec};
+use core::fmt::Display;
+
 use crate::{
     mutex::{LockGuard, Mutex},
     processor::current_processor,
     spinlock::{self, GenericSpinlock, RelaxStrategy},
+    time::bench_clock,
 };
 
 pub fn align<T: From<usize> + Into<usize>>(val: T, align: usize) -> T {
@@ -76,4 +80,122 @@ pub fn quick_random() -> u32 {
         RAND_STATE = newstate;
     }
     newstate >> 16
+}
+
+// benchmarking stuff
+struct BenchResult {
+    iterations: u64,
+    total_ns: u64,
+    avg_ns: u64,
+    min_ns: u64,
+    max_ns: u64,
+    std_dev: f64,
+}
+
+impl Display for BenchResult {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        writeln!(f, " Iterations: {}", self.iterations)?;
+        writeln!(
+            f,
+            " Total time: {:.3} ms",
+            self.total_ns as f64 / 1_000_000.0
+        )?;
+        writeln!(
+            f,
+            " Average:    {:.3} ns/iter (+/- {:.3})",
+            self.avg_ns, self.std_dev
+        )?;
+        writeln!(f, " Min:        {:.3} ns/iter", self.min_ns)?;
+        writeln!(f, " Max:        {:.3} ns/iter", self.max_ns)?;
+        Ok(())
+    }
+}
+
+fn calculate_std_dev(values: &[u64], mean: f64) -> f64 {
+    let variance: f64 = values
+        .iter()
+        .map(|&x| {
+            let diff = x as f64 - mean;
+            diff * diff
+        })
+        .sum::<f64>()
+        / values.len() as f64;
+
+    variance.sqrt()
+}
+
+fn benchmark_w_iter<F>(mut f: F, iterations: u64) -> BenchResult
+where
+    F: FnMut(),
+{
+    let mut times = Vec::with_capacity(iterations as usize);
+
+    // warm up the bench
+    for _ in 0..10 {
+        f();
+    }
+
+    let clock = bench_clock().unwrap();
+
+    for _ in 0..iterations {
+        let start = clock.read();
+        f();
+
+        let end = clock.read();
+
+        // NOTE: times are in nanos
+        times.push(end.value - start.value);
+    }
+
+    let total_ns: u64 = times.iter().sum();
+    let avg_ns = total_ns / iterations;
+    let min_ns = *times.iter().min().unwrap();
+    let max_ns = *times.iter().max().unwrap();
+
+    let std_dev = calculate_std_dev(times.as_slice(), avg_ns);
+
+    BenchResult {
+        iterations,
+        total_ns,
+        avg_ns,
+        min_ns,
+        max_ns,
+        std_dev,
+    }
+}
+
+pub fn benchmark<F>(mut f: F) -> BenchResult
+where
+    F: FnMut(),
+{
+    let mut iterations = 100u128;
+    // 1 second
+    let target_duration_ns = 1_000_000_000;
+
+    let clock = bench_clock().unwrap();
+
+    // scale till we figure out proper iterations
+    loop {
+        let start = clock.read();
+        for _ in 0..iterations {
+            f();
+        }
+
+        let end = clock.read();
+        let duration = ((end.value - start.value) * end.rate).as_nanos();
+
+        if duration >= target_duration_ns / 10 {
+            iterations = (iterations * target_duration_ns) / duration;
+            break;
+        }
+
+        iterations *= 10;
+
+        // just in case
+        if iterations > 10_000_000 {
+            break;
+        }
+    }
+
+    benchmark_w_iter(f, iterations.min(10_000_000))
 }

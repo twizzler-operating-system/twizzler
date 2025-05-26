@@ -29,7 +29,7 @@ mod test {
     use twizzler_kernel_macros::kernel_test;
 
     use super::*;
-    use crate::{is_bench_mode, time::bench_clock};
+    use crate::{is_bench_mode, time::bench_clock, utils::benchmark};
 
     #[kernel_test]
     fn test_hashing() {
@@ -54,6 +54,18 @@ mod test {
                 let ns = ((end.value - start.value) * end.rate).as_nanos();
                 logln!("raw sample {}: {} ns per 1000 iterations", i, ns);
             }
+        }
+    }
+
+    #[kernel_test]
+    fn bench_hashing_w_framework() {
+        let clock = bench_clock().unwrap();
+        if is_bench_mode() {
+            let result = benchmark(|| {
+                let hash = sha256(b"hello, world");
+                core::hint::black_box(hash);
+            });
+            logln!("{}", result);
         }
     }
 
