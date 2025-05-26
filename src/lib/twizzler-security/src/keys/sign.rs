@@ -27,6 +27,8 @@ pub struct SigningKey {
     pub scheme: SigningScheme,
 }
 
+// maybe implement rsa so there is some other key?
+
 impl SigningKey {
     #[cfg(feature = "user")]
     /// Creates a new SigningKey / VerifyingKey object pairs.
