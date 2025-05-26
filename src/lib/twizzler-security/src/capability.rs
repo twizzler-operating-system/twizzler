@@ -383,6 +383,12 @@ mod tests {
     }
 
     #[bench]
+    fn bench_something_else(b: &mut Bencher) {
+        b.iter(|| {
+            let x = black_box(5 * 10);
+        })
+    }
+    #[bench]
     fn bench_capability_verification(b: &mut Bencher) {
         let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
             .expect("keypair creation should not have errored!");
