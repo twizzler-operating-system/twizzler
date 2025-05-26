@@ -129,19 +129,23 @@ fn check_security(
         exec_off: ip - exec_info.range.start,
     };
     if let Some(ct) = current_thread_ref() {
-        let perms = ct.secctx.check_active_access(&access_info);
-        if (perms.provide | default_prot) & !perms.restrict & access_kind == access_kind {
-            return Ok(perms);
-        }
-        let perms = ct.secctx.search_access(&access_info);
-        if (perms.provide | default_prot) & !perms.restrict & access_kind != access_kind {
-            Err(UpcallInfo::SecurityViolation(SecurityViolationInfo {
-                address: addr.raw(),
-                access_kind: cause,
-            }))
-        } else {
-            Ok(perms)
-        }
+        // let perms = ct.secctx.check_active_access(&access_info);
+        // if (perms.provide | default_prot) & !perms.restrict & access_kind == access_kind {
+        //     return Ok(perms);
+        // }
+        // let perms = ct.secctx.search_access(&access_info);
+        // if (perms.provide | default_prot) & !perms.restrict & access_kind != access_kind {
+        //     Err(UpcallInfo::SecurityViolation(SecurityViolationInfo {
+        //         address: addr.raw(),
+        //         access_kind: cause,
+        //     }))
+        // } else {
+        //     Ok(perms)
+        // }
+        Err(UpcallInfo::SecurityViolation(SecurityViolationInfo {
+            address: addr.raw(),
+            access_kind: cause,
+        }))
     } else {
         Ok(PermsInfo {
             ctx: KERNEL_SCTX,
