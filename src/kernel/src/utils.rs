@@ -97,16 +97,16 @@ impl Display for BenchResult {
         writeln!(f, "\nIterations: {}", self.iterations)?;
         writeln!(
             f,
-            "Total time: {:.3} ms",
+            "Total time: {:.2} ms",
             self.total_ns as f64 / 1_000_000.0
         )?;
         writeln!(
             f,
-            "Average:    {:.3} ns/iter (+/- {:.3})",
+            "Average:    {:.2} ns/iter (+/- {:.2})",
             self.avg_ns, self.std_dev
         )?;
-        writeln!(f, "Min:        {:.3} ns/iter", self.min_ns)?;
-        writeln!(f, "Max:        {:.3} ns/iter", self.max_ns)?;
+        writeln!(f, "Min:        {:.2} ns/iter", self.min_ns)?;
+        writeln!(f, "Max:        {:.2} ns/iter", self.max_ns)?;
         Ok(())
     }
 }
@@ -153,7 +153,7 @@ where
         let end = clock.read();
 
         // NOTE: times are in nanos
-        times.push(end.value - start.value);
+        times.push((end.value - start.value) * end.rate);
     }
 
     let total_ns: u64 = times.iter().sum();

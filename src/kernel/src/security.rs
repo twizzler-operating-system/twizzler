@@ -375,7 +375,7 @@ mod tests {
 
         if is_bench_mode() {
             let res = benchmark(|| {
-                let x = black_box((cap.verify_sig(&v_key).expect("should succeed")));
+                let x = black_box(cap.verify_sig(&v_key).expect("should succeed"));
             });
 
             logln!("{}", res);
