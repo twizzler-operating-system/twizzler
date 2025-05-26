@@ -169,12 +169,7 @@ fn page_fault_to_region(
 
     let (id_ok, default_prot) = info.object.check_id();
     if !id_ok && !info.object().is_kernel_id() {
-        logln!(
-            "
-                default protections: {:?}
-            ",
-            default_prot
-        );
+        logln!("ObjId: {:?}, default protections: {:?} ", id, default_prot);
         logln!(
             "id verification failed ({} {}) {:?}",
             info.object.use_pager(),

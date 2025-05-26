@@ -33,15 +33,18 @@ fn main() {
         .expect("should have worked");
 
     // lets create an object and try to access it
-    let target_obj = ObjectBuilder::new(ObjectCreate::new(
+    let spec = ObjectCreate::new(
         Default::default(),
         Default::default(),
         Some(v_key.id()),
         Default::default(),
         Protections::empty(),
-    ))
-    .build(DumbBase { payload: 123456789 })
-    .unwrap();
+    );
+    info!("creating target object with spec: {:?}");
+
+    let target_obj = ObjectBuilder::new(spec)
+        .build(DumbBase { payload: 123456789 })
+        .unwrap();
 
     let target_id = target_obj.id().clone();
     drop(target_obj);
@@ -77,7 +80,7 @@ fn main() {
     )
     .unwrap();
 
-    // info!("Capability: :{:#?}", cap);
+    info!("Capability: :{:#?}", cap);
 
     sec_ctx.insert_cap(cap);
     // attach to this sec_ctx
