@@ -10,6 +10,9 @@ compile_error!("feature \"kernel\" and feature \"user\" cannot be enabled at the
 
 pub(crate) use twizzler_rt_abi::error::SecurityError;
 
+#[cfg(feature = "user")]
+mod benches;
+
 mod capability;
 mod delegation;
 mod flags;
