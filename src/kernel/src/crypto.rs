@@ -58,15 +58,11 @@ mod test {
     }
 
     #[kernel_test]
-    fn bench_hashing_w_framework() {
-        let clock = bench_clock().unwrap();
-        if is_bench_mode() {
-            let result = benchmark(|| {
-                let hash = sha256(b"hello, world");
-                core::hint::black_box(hash);
-            });
-            logln!("{}", result);
-        }
+    fn bench_hashing() {
+        benchmark(|| {
+            let hash = sha256(b"hello, world");
+            core::hint::black_box(hash);
+        });
     }
 
     #[kernel_test]

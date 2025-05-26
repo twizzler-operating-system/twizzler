@@ -144,8 +144,8 @@ where
 }
 
 /// Benchmarks the passed in function, printing the results to console.
-///
-/// NOTE: will do nothing if kernel is not in bench mode!
+/// Limitation: you have to supply --tests as well for now to get
+/// kernel benches to run.
 pub fn benchmark<F>(mut f: F)
 where
     F: FnMut(),
