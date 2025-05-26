@@ -194,12 +194,12 @@ impl SecCtxMgr {
     /// Check access rights in the active context.
     pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         //TODO: will probably have to hook up the gate check here as well?
-        // self.lookup(_access_info.target_id);
-        PermsInfo {
-            ctx: self.active_id(),
-            provide: Protections::empty(),
-            restrict: Protections::empty(),
-        }
+        self.lookup(_access_info.target_id)
+        // PermsInfo {
+        //     ctx: self.active_id(),
+        //     provide: Protections::empty(),
+        //     restrict: Protections::empty(),
+        // }
     }
 
     /// Search all attached contexts for access.
