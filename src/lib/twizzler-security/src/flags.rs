@@ -1,4 +1,4 @@
-use core::fmt::Display;
+use core::fmt::Debug;
 
 use bitflags::bitflags;
 
