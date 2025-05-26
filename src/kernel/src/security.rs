@@ -195,7 +195,12 @@ impl SecCtxMgr {
     pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         //TODO: will probably have to hook up the gate check here as well?
         logln!("active id: {:?}", self.active_id.lock().clone());
-        let perms = self.lookup(_access_info.target_id);
+        // let perms = self.lookup(_access_info.target_id);
+        let perms = PermsInfo {
+            ctx: self.active_id(),
+            provide: Protections::empty(),
+            restrict: Protections::empty(),
+        };
         logln!("granted perms: {:?}", perms);
 
         perms
