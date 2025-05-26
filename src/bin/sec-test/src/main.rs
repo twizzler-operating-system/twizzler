@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use colog::default_builder;
 use log::LevelFilter;
 use twizzler::object::{Object, ObjectBuilder, TypedObject};
-use twizzler_abi::object::Protections;
+use twizzler_abi::{object::Protections, syscall::sys_sctx_attach};
 use twizzler_rt_abi::object::MapFlags;
 use twizzler_security::{Cap, SecCtx, SigningKey, SigningScheme};
 
@@ -37,6 +37,9 @@ fn main() {
 
     let id = sec_ctx.id();
     drop(sec_ctx);
+
+    // ideally attach to this security context?
+    sys_sctx_attach(id);
 
     let mut sec_ctx = SecCtx::try_from(id).expect("should be found");
 
