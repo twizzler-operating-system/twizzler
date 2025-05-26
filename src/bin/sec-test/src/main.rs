@@ -72,7 +72,7 @@ fn main() {
     let prots = Protections::READ;
 
     let cap = Cap::new(
-        target_obj.id(),
+        target_id,
         sec_ctx.id(),
         prots,
         s_key.base(),
