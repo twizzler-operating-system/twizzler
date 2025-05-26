@@ -43,6 +43,7 @@ fn main() {
     .build(DumbBase { payload: 123456789 })
     .unwrap();
 
+    let target_id = target_obj.id().clone();
     drop(target_obj);
 
     let uobj = ObjectBuilder::new(ObjectCreate::new(
@@ -81,8 +82,6 @@ fn main() {
         Default::default(),
     )
     .unwrap();
-
-    let target_id = cap.target.clone();
 
     sec_ctx.insert_cap(cap);
     // attach to this sec_ctx
