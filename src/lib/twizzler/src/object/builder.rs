@@ -1,5 +1,6 @@
 use std::{marker::PhantomData, mem::MaybeUninit};
 
+use tracing::info;
 use twizzler_abi::{
     object::Protections,
     syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
@@ -9,6 +10,7 @@ use twizzler_rt_abi::object::MapFlags;
 use super::Object;
 use crate::{
     marker::{BaseType, StoreCopy},
+    object::RawObject,
     tx::TxObject,
 };
 
