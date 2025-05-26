@@ -4,7 +4,7 @@ use bitflags::bitflags;
 
 use crate::SecurityError;
 
-#[derive(PartialEq, Copy, Clone, Debug, Eq, Ord, PartialOrd)]
+#[derive(PartialEq, Copy, Clone, Eq, Ord, PartialOrd)]
 pub struct CapFlags(u16);
 
 #[rustfmt::skip] // so the bits are all nice and neat
@@ -35,6 +35,12 @@ impl Display for CapFlags {
         f.write_str("}")?;
 
         Ok(())
+    }
+}
+
+impl Debug for CapFlags {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_set().entries(self.iter()).finish()
     }
 }
 

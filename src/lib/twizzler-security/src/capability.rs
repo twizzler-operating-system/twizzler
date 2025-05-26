@@ -1,5 +1,3 @@
-use core::fmt::Display;
-
 // use ed25519_dalek::SIGNATURE_LENGTH;
 #[cfg(feature = "log")]
 use log::debug;
