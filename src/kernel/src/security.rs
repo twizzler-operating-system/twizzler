@@ -156,7 +156,6 @@ impl SecurityContext {
 
         self.cache.lock().insert(_id, granted_perms.clone());
 
-        logln!("granted perms: {:?}", granted_perms);
         granted_perms
     }
 
@@ -196,7 +195,8 @@ impl SecCtxMgr {
     pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         //TODO: will probably have to hook up the gate check here as well?
         logln!("active id: {:?}", self.active_id.lock().clone());
-        self.lookup(_access_info.target_id)
+        let perms = self.lookup(_access_info.target_id);
+        logln!("granted perms: {:?}", perms);
         // PermsInfo {
         //     ctx: self.active_id(),
         //     provide: Protections::empty(),
