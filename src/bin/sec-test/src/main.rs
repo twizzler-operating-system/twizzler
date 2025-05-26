@@ -80,7 +80,7 @@ fn main() {
     )
     .unwrap();
 
-    info!("Capability: :{:#?}", cap);
+    info!("Capability: :{:?}", cap);
 
     sec_ctx.insert_cap(cap);
     // attach to this sec_ctx
