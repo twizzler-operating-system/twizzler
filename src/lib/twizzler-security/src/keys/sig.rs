@@ -27,7 +27,8 @@ impl Debug for Signature {
         f.debug_struct("Signature")
             .field("bytes", &self.buf[self.len])
             .field("len", &self.len)
-            .field("scheme", &self.scheme)
+            .field("scheme", &self.scheme)?;
+        Ok(())
     }
 }
 
