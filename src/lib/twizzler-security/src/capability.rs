@@ -199,6 +199,8 @@ impl Cap {
 
 #[cfg(feature = "user")]
 mod tests {
+    use core::hint::black_box;
+
     use super::*;
 
     extern crate test;
