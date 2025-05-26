@@ -198,13 +198,13 @@ impl SecCtxMgr {
     /// Check access rights in the active context.
     pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         //TODO: will probably have to hook up the gate check here as well?
-        self.lookup(_access_info)
+        self.lookup(_access_info.target_id)
     }
 
     /// Search all attached contexts for access.
     pub fn search_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         //TODO: need to actually look through all the contexts, this is just temporary
-        self.lookup(_access_info)
+        self.lookup(_access_info.target_id)
     }
 
     /// Build a new SctxMgr for user threads.
