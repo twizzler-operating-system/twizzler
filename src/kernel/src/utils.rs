@@ -121,7 +121,16 @@ fn calculate_std_dev(values: &[u64], mean: f64) -> f64 {
         .sum::<f64>()
         / values.len() as f64;
 
-    variance.sqrt()
+    // manually have to compute square root
+    let mut guess = variance;
+
+    // Newton's method: x_new = (x_old + n/x_old) / 2
+    for _ in 0..10 {
+        // 10 iterations is usually enough for good precision
+        guess = (guess + x / guess) * 0.5;
+    }
+
+    guess
 }
 
 fn benchmark_w_iter<F>(mut f: F, iterations: u64) -> BenchResult
@@ -148,7 +157,7 @@ where
     }
 
     let total_ns: u64 = times.iter().sum();
-    let avg_ns = total_ns / iterations;
+    let avg_ns = total_ns as f64 / iterations as f64;
     let min_ns = *times.iter().min().unwrap();
     let max_ns = *times.iter().max().unwrap();
 
@@ -197,5 +206,5 @@ where
         }
     }
 
-    benchmark_w_iter(f, iterations.min(10_000_000))
+    benchmark_w_iter(f, iterations.min(10_000_000_u64))
 }
