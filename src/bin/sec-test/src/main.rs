@@ -32,24 +32,7 @@ fn main() {
     let (s_key, v_key) = SigningKey::new_keypair(&SigningScheme::Ecdsa, Default::default())
         .expect("should have worked");
 
-    // lets create an object and try to access it
-    let spec = ObjectCreate::new(
-        Default::default(),
-        Default::default(),
-        Some(v_key.id()),
-        Default::default(),
-        Protections::empty(),
-    );
     info!("creating target object with spec: {:?}", spec);
-
-    let target_obj = ObjectBuilder::new(spec)
-        .build(DumbBase { payload: 123456789 })
-        .unwrap();
-
-    let target_id = target_obj.id().clone();
-    drop(target_obj);
-
-    info!("target_id :{:?}", target_id);
 
     let sec_ctx = SecCtx::new(
         ObjectCreate::new(
@@ -63,7 +46,25 @@ fn main() {
         SecCtxFlags::empty(),
     )
     .unwrap();
+    sys_sctx_attach(sec_ctx.id()).unwrap();
 
+    // lets create an object and try to access it
+    let spec = ObjectCreate::new(
+        Default::default(),
+        Default::default(),
+        Some(v_key.id()),
+        Default::default(),
+        Protections::empty(),
+    );
+
+    let target_obj = ObjectBuilder::new(spec)
+        .build(DumbBase { payload: 123456789 })
+        .unwrap();
+
+    let target_id = target_obj.id().clone();
+    drop(target_obj);
+
+    info!("target_id :{:?}", target_id);
     info!("sec_ctx id:{:?}", sec_ctx.id());
 
     let prots = Protections::empty();
@@ -83,8 +84,6 @@ fn main() {
     sec_ctx.insert_cap(cap).unwrap();
     println!("Inserted Capability!");
     // attach to this sec_ctx
-
-    sys_sctx_attach(sec_ctx.id()).unwrap();
 
     // time to try accessing this object
 
