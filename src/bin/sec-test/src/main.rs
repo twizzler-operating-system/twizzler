@@ -48,16 +48,6 @@ fn main() {
 
     info!("target_id :{:?}", target_id);
 
-    let uobj = ObjectBuilder::new(ObjectCreate::new(
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Protections::empty(),
-    ))
-    .build(SecCtxBase::new(Protections::all(), SecCtxFlags::empty()))
-    .unwrap();
-
     let sec_ctx = SecCtx::new(
         ObjectCreate::new(
             Default::default(),
@@ -70,6 +60,8 @@ fn main() {
         SecCtxFlags::empty(),
     )
     .unwrap();
+
+    info!("sec_ctx id:{:?}", sec_ctx.id());
 
     let prots = Protections::empty();
 
@@ -85,9 +77,11 @@ fn main() {
     )
     .unwrap();
 
+    info!("Capability: :{:?}", cap);
+
     sec_ctx.insert_cap(cap);
     // attach to this sec_ctx
-    
+
     sys_sctx_attach(sec_ctx.id());
 
     // time to try accessing this object

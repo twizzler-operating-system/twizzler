@@ -1,3 +1,5 @@
+use core::fmt::Debug;
+
 // use ed25519_dalek::{Signature as EdSignature, SIGNATURE_LENGTH};
 #[cfg(feature = "log")]
 use log::error;
@@ -7,7 +9,7 @@ use crate::{SecurityError, SigningScheme};
 
 const MAX_SIG_SIZE: usize = 128;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Signature {
     buf: [u8; MAX_SIG_SIZE],
     pub len: usize,
@@ -17,6 +19,15 @@ pub struct Signature {
 impl Signature {
     fn as_bytes(&self) -> &[u8] {
         &self.buf[0..self.len]
+    }
+}
+
+impl Debug for Signature {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Signature")
+            .field("bytes", &self.buf[self.len])
+            .field("len", &self.len)
+            .field("scheme", &self.scheme)
     }
 }
 
