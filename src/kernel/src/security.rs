@@ -197,6 +197,8 @@ impl SecCtxMgr {
         logln!("active id: {:?}", self.active_id.lock().clone());
         let perms = self.lookup(_access_info.target_id);
         logln!("granted perms: {:?}", perms);
+
+        perms
         // PermsInfo {
         //     ctx: self.active_id(),
         //     provide: Protections::empty(),
