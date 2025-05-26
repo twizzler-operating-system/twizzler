@@ -197,17 +197,14 @@ impl SecCtxMgr {
 
     /// Check access rights in the active context.
     pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
-        // what if i just nuke this?
-        PermsInfo {
-            ctx: self.active_id(),
-            provide: Protections::empty(),
-            restrict: Protections::empty(),
-        }
+        //TODO: will probably have to hook up the gate check here as well?
+        self.lookup(_access_info)
     }
 
     /// Search all attached contexts for access.
     pub fn search_access(&self, _access_info: &AccessInfo) -> PermsInfo {
-        todo!()
+        //TODO: need to actually look through all the contexts, this is just temporary
+        self.lookup(_access_info)
     }
 
     /// Build a new SctxMgr for user threads.
