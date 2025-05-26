@@ -12,7 +12,7 @@ use twizzler_abi::{
 use twizzler_rt_abi::object::MapFlags;
 use twizzler_security::{Cap, SecCtx, SecCtxBase, SecCtxFlags, SigningKey, SigningScheme};
 
-#[derive(debug)]
+#[derive(Debug)]
 struct DumbBase {
     payload: u128,
 }
