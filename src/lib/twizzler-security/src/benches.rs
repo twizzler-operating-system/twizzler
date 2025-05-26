@@ -1,6 +1,7 @@
 mod benches {
     extern crate test;
     use test::Bencher;
+    use twizzler::object::TypedObject;
     use twizzler_abi::object::Protections;
 
     use crate::*;
