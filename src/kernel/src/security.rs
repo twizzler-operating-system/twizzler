@@ -207,7 +207,7 @@ impl SecCtxMgr {
         //TODO: need to actually look through all the contexts, this is just temporary
         let mut greatest_perms = self.lookup(_access_info.target_id);
 
-        for (id, ctx) in self.inner.lock().inactive {
+        for (id, ctx) in &self.inner.lock().inactive {
             let perms = ctx.lookup(_access_info.target_id);
             // how do you determine what prots is more expressive? like more
             // lets just return if its anything other than empty
