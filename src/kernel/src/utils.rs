@@ -86,7 +86,7 @@ pub fn quick_random() -> u32 {
 struct BenchResult {
     iterations: u64,
     total_ns: u64,
-    avg_ns: u64,
+    avg_ns: f64,
     min_ns: u64,
     max_ns: u64,
     std_dev: f64,
