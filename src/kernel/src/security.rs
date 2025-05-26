@@ -24,6 +24,7 @@ use crate::{
 #[derive(Clone)]
 struct SecCtxMgrInner {
     active: SecurityContextRef,
+    //ObjID here refers to the security contexts ID
     inactive: BTreeMap<ObjID, SecurityContextRef>,
 }
 
@@ -204,7 +205,18 @@ impl SecCtxMgr {
     /// Search all attached contexts for access.
     pub fn search_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         //TODO: need to actually look through all the contexts, this is just temporary
-        self.lookup(_access_info.target_id)
+        let mut greatest_perms = self.lookup(_access_info.target_id);
+
+        for (id, ctx) in self.inner.lock().inactive {
+            let perms = ctx.lookup(_access_info.target_id);
+            // how do you determine what prots is more expressive? like more
+            // lets just return if its anything other than empty
+            if perms.provide & !perms.restrict != Protections::empty() {
+                greatest_perms = perms
+            }
+        }
+
+        greatest_perms
     }
 
     /// Build a new SctxMgr for user threads.
