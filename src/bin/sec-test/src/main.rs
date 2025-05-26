@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use colog::default_builder;
-use log::LevelFilter;
+use log::{info, LevelFilter};
 use twizzler::{
     marker::BaseType,
     object::{Object, ObjectBuilder, RawObject, TypedObject},
