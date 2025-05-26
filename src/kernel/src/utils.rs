@@ -126,7 +126,6 @@ where
 
         let end = clock.read();
 
-        // NOTE: times are in nanos
         times.push(((end.value - start.value) * end.rate).as_nanos() as u64);
     }
 

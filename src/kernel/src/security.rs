@@ -197,6 +197,7 @@ impl SecCtxMgr {
 
     /// Check access rights in the active context.
     pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
+        // what if i just nuke this?
         PermsInfo {
             ctx: self.active_id(),
             provide: Protections::all(),
@@ -333,22 +334,23 @@ impl Drop for SecCtxMgr {
 }
 
 mod tests {
+    use alloc::sync::Arc;
     use core::hint::black_box;
 
     use twizzler_abi::{object::Protections, syscall::ObjectCreate};
     use twizzler_kernel_macros::kernel_test;
-    use twizzler_security::{Cap, SigningKey, SigningScheme};
+    use twizzler_security::{Cap, SecCtxBase, SigningKey, SigningScheme};
 
+    use super::SecurityContext;
     use crate::{
-        is_bench_mode,
+        memory::context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+        obj::Object,
         random::getrandom,
         time::bench_clock,
-        utils::{benchmark, quick_random},
+        utils::benchmark,
     };
     #[kernel_test]
     fn bench_capability_verification() {
-        let clock = bench_clock().unwrap();
-
         // uhhhhh, how i do dis
         let mut rand_bytes = [0; 32];
 
