@@ -108,7 +108,7 @@ impl SigningKey {
 
                 let binding = ecdsa_signing_key.clone();
 
-                let ecdsa_verifying_key = binding.verifying_key().to_owned();
+                let ecdsa_verifying_key = binding.verifying_key().clone();
 
                 Ok((ecdsa_signing_key.into(), ecdsa_verifying_key.into()))
             }
