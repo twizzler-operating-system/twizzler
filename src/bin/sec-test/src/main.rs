@@ -53,7 +53,7 @@ fn main() {
         Default::default(),
         Default::default(),
         Default::default(),
-        Protections::all(),
+        Protections::empty(),
     ))
     .build(SecCtxBase::new(Protections::all(), SecCtxFlags::empty()))
     .unwrap();
@@ -87,6 +87,7 @@ fn main() {
 
     sec_ctx.insert_cap(cap);
     // attach to this sec_ctx
+    
     sys_sctx_attach(sec_ctx.id());
 
     // time to try accessing this object

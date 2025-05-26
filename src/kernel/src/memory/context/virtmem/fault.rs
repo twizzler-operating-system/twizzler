@@ -179,8 +179,6 @@ fn page_fault_to_region(
 
     let perms = check_security(&ctx, sctx_id, id.clone(), addr, cause, ip, default_prot)?;
 
-    logln!("perms granted by the kernel for {:?}: {:?}", id, perms);
-
     // Do we need to switch contexts?
     if perms.ctx != sctx_id {
         current_thread_ref().map(|ct| ct.secctx.switch_context(perms.ctx));
