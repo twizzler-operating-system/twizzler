@@ -46,10 +46,12 @@ fn main() {
     let target_id = target_obj.id().clone();
     drop(target_obj);
 
+    info!("target_id :{:?}", target_id);
+
     let uobj = ObjectBuilder::new(ObjectCreate::new(
         Default::default(),
         Default::default(),
-        Some(v_key.id()),
+        Default::default(),
         Default::default(),
         Protections::all(),
     ))
