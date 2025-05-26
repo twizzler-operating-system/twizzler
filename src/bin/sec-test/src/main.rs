@@ -52,7 +52,7 @@ fn main() {
         Default::default(),
         Some(v_key.id()),
         Default::default(),
-        Protections::empty(),
+        Protections::READ,
     );
     info!("creating target object with spec: {:?}", spec);
 
