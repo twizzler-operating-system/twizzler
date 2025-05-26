@@ -25,13 +25,12 @@ impl Signature {
 impl Debug for Signature {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Signature")
-            .field("bytes", &&self.buf[0..self.len])
+            .field("bytes", &format!("{:02x?}", &self.buf[0..self.len]))
             .field("len", &self.len)
             .field("scheme", &self.scheme)
             .finish()
     }
 }
-
 // impl From<EdSignature> for Signature {
 //     fn from(value: EdSignature) -> Self {
 //         let mut buf = [0_u8; MAX_SIG_SIZE];
