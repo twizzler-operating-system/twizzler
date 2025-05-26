@@ -80,12 +80,11 @@ fn main() {
     )
     .unwrap();
 
-    info!("Capability: :{:?}", cap);
-
-    sec_ctx.insert_cap(cap);
+    sec_ctx.insert_cap(cap).unwrap();
+    println!("Inserted Capability!");
     // attach to this sec_ctx
 
-    sys_sctx_attach(sec_ctx.id());
+    sys_sctx_attach(sec_ctx.id()).unwrap();
 
     // time to try accessing this object
 
