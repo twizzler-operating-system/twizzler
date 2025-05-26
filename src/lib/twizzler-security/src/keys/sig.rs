@@ -25,7 +25,7 @@ impl Signature {
 impl Debug for Signature {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Signature")
-            .field("bytes", self.buf[0..self.len])
+            .field("bytes", &self.buf[0..self.len])
             .field("len", &self.len)
             .field("scheme", &self.scheme)
             .finish()
