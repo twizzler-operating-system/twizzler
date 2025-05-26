@@ -153,7 +153,7 @@ where
         let end = clock.read();
 
         // NOTE: times are in nanos
-        times.push(((end.value - start.value) * end.rate).as_nanos());
+        times.push(((end.value - start.value) * end.rate).as_nanos() as u64);
     }
 
     let total_ns: u64 = times.iter().sum();
