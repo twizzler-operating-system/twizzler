@@ -200,7 +200,7 @@ impl SecCtxMgr {
         // what if i just nuke this?
         PermsInfo {
             ctx: self.active_id(),
-            provide: Protections::all(),
+            provide: Protections::empty(),
             restrict: Protections::empty(),
         }
     }

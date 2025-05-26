@@ -69,7 +69,7 @@ fn main() {
     )
     .unwrap();
 
-    let prots = Protections::READ;
+    let prots = Protections::empty();
 
     let cap = Cap::new(
         target_id,
