@@ -374,9 +374,11 @@ mod tests {
         .expect("capability creation shouldnt have errored");
 
         if is_bench_mode() {
-            benchmark(|| {
+            let res = benchmark(|| {
                 let x = black_box((cap.verify_sig(&v_key).expect("should succeed")));
-            })
+            });
+
+            logln!("{}", res);
         }
     }
 }
