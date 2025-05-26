@@ -339,7 +339,12 @@ mod tests {
     use twizzler_kernel_macros::kernel_test;
     use twizzler_security::{Cap, SigningKey, SigningScheme};
 
-    use crate::{is_bench_mode, random::getrandom, time::bench_clock, utils::quick_random};
+    use crate::{
+        is_bench_mode,
+        random::getrandom,
+        time::bench_clock,
+        utils::{benchmark, quick_random},
+    };
     #[kernel_test]
     fn bench_capability_verification() {
         let clock = bench_clock().unwrap();
@@ -369,17 +374,9 @@ mod tests {
         .expect("capability creation shouldnt have errored");
 
         if is_bench_mode() {
-            for i in 0..100 {
-                let start = clock.read();
-                for _ in 0..10 {
-                    let res = cap.verify_sig(&v_key).expect("should have been verified");
-                    black_box(res);
-                }
-                let end = clock.read();
-
-                let ns = ((end.value - start.value) * end.rate).as_nanos();
-                logln!("raw sample {}: {} ns per 10 iterations", i, ns)
-            }
+            benchmark(|| {
+                let x = black_box((cap.verify_sig(&v_key).expect("should succeed")));
+            })
         }
     }
 }

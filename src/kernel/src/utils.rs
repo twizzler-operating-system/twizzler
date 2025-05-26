@@ -94,19 +94,19 @@ pub struct BenchResult {
 
 impl Display for BenchResult {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        writeln!(f, " Iterations: {}", self.iterations)?;
+        writeln!(f, "\nIterations: {}", self.iterations)?;
         writeln!(
             f,
-            " Total time: {:.3} ms",
+            "Total time: {:.3} ms",
             self.total_ns as f64 / 1_000_000.0
         )?;
         writeln!(
             f,
-            " Average:    {:.3} ns/iter (+/- {:.3})",
+            "Average:    {:.3} ns/iter (+/- {:.3})",
             self.avg_ns, self.std_dev
         )?;
-        writeln!(f, " Min:        {:.3} ns/iter", self.min_ns)?;
-        writeln!(f, " Max:        {:.3} ns/iter", self.max_ns)?;
+        writeln!(f, "Min:        {:.3} ns/iter", self.min_ns)?;
+        writeln!(f, "Max:        {:.3} ns/iter", self.max_ns)?;
         Ok(())
     }
 }
