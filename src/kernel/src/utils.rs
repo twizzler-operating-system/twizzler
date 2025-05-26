@@ -2,6 +2,7 @@ use alloc::{collections::btree_map::ValuesMut, vec::Vec};
 use core::fmt::Display;
 
 use crate::{
+    is_bench_mode,
     mutex::{LockGuard, Mutex},
     processor::current_processor,
     spinlock::{self, GenericSpinlock, RelaxStrategy},

@@ -39,25 +39,6 @@ mod test {
     }
 
     #[kernel_test]
-    // Limitation: you have to supply --tests as well for now to get
-    // kernel benches to run.
-    fn bench_hashing() {
-        let clock = bench_clock().unwrap();
-        if is_bench_mode() {
-            for i in 0..100 {
-                let start = clock.read();
-                for _ in 0..1000 {
-                    let hash = sha256(b"hello, world");
-                    core::hint::black_box(hash);
-                }
-                let end = clock.read();
-                let ns = ((end.value - start.value) * end.rate).as_nanos();
-                logln!("raw sample {}: {} ns per 1000 iterations", i, ns);
-            }
-        }
-    }
-
-    #[kernel_test]
     fn bench_hashing() {
         benchmark(|| {
             let hash = sha256(b"hello, world");
