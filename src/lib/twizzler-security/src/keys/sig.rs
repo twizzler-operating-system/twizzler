@@ -1,3 +1,4 @@
+use alloc::fmt::format;
 use core::fmt::Debug;
 
 // use ed25519_dalek::{Signature as EdSignature, SIGNATURE_LENGTH};
