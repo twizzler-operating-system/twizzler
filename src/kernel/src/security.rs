@@ -75,22 +75,17 @@ impl SecurityContext {
             return *cache_entry;
         }
 
-        // TODO: unsure how to get an objects default permissions as of now
-        let mut target_obj_default_prots = Protections::empty();
-
         let mut granted_perms =
-            PermsInfo::new(self.id(), target_obj_default_prots, Protections::empty());
+            PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
 
         let Some(ref obj) = self.kobj.clone() else {
-            // if there is no object underneath the kobj, return the default permissions of the
-            // object?
+            // if there is no object underneath the kobj, return nothing;
             return granted_perms;
         };
 
         let base = obj.base();
 
         // check for possible items
-
         let Some(results) = base.map.get(&_id) else {
             // if no entries for the target, return already granted perms
             return granted_perms;
