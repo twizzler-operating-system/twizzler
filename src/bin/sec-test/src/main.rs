@@ -1,10 +1,17 @@
 use clap::{Parser, Subcommand};
 use colog::default_builder;
 use log::LevelFilter;
-use twizzler::object::{Object, ObjectBuilder, TypedObject};
-use twizzler_abi::{object::Protections, syscall::sys_sctx_attach};
+use twizzler::object::{Object, ObjectBuilder, RawObject, TypedObject};
+use twizzler_abi::{
+    object::Protections,
+    syscall::{sys_sctx_attach, ObjectCreate, ObjectCreateFlags},
+};
 use twizzler_rt_abi::object::MapFlags;
-use twizzler_security::{Cap, SecCtx, SigningKey, SigningScheme};
+use twizzler_security::{Cap, SecCtx, SecCtxBase, SecCtxFlags, SigningKey, SigningScheme};
+
+struct DumbBase {
+    payload: u128,
+}
 
 fn main() {
     let mut builder = default_builder();
@@ -12,16 +19,50 @@ fn main() {
     builder.init();
     let sec_ctx = SecCtx::default();
 
-    let target = 0x123.into();
-    let accessor = 0x321.into();
-    let prots = Protections::READ;
-
     let (s_key, v_key) = SigningKey::new_keypair(&SigningScheme::Ecdsa, Default::default())
         .expect("should have worked");
 
+    // lets create an object and try to access it
+    let target_obj = ObjectBuilder::new(ObjectCreate::new(
+        Default::default(),
+        Default::default(),
+        Some(v_key.id()),
+        Default::default(),
+        Protections::empty(),
+    ))
+    .build(DumbBase { payload: 123456789 })
+    .unwrap();
+
+    drop(target_obj);
+
+    let uobj = ObjectBuilder::new(ObjectCreate::new(
+        Default::default(),
+        Default::default(),
+        Some(v_key.id()),
+        Default::default(),
+        Protections::all(),
+    ))
+    .build(SecCtxBase::new(Protections::all(), SecCtxFlags::empty()))
+    .unwrap();
+
+    let sec_ctx = SecCtx::new(
+        ObjectCreate::new(
+            Default::default(),
+            Default::default(),
+            Some(v_key.id()),
+            Default::default(),
+            Protections::all(),
+        ),
+        Protections::all(),
+        SecCtxFlags::empty(),
+    )
+    .unwrap();
+
+    let prots = Protections::READ;
+
     let cap = Cap::new(
-        target,
-        accessor,
+        target_obj.id(),
+        sec_ctx.id(),
         prots,
         s_key.base(),
         Default::default(),
@@ -31,20 +72,18 @@ fn main() {
     )
     .unwrap();
 
+    let target_id = cap.target.clone();
+
     sec_ctx.insert_cap(cap);
+    // attach to this sec_ctx
+    sys_sctx_attach(sec_ctx.id());
 
-    println!("{}", sec_ctx);
+    // time to try accessing this object
 
-    let id = sec_ctx.id();
-    drop(sec_ctx);
-
-    // ideally attach to this security context?
-    sys_sctx_attach(id);
-
-    let mut sec_ctx = SecCtx::try_from(id).expect("should be found");
-
-    let perms = sec_ctx.lookup(target, v_key.base());
-
-    println!("just read: {}", sec_ctx);
-    println!("perms: {:?}", perms);
+    let target = Object::<DumbBase>::map(target_id, MapFlags::READ | MapFlags::WRITE).unwrap();
+    let payload = target.base_ptr().cast::<DumbBase>();
+    unsafe {
+        let payload = *payload;
+        println!("payload: {}", payload);
+    }
 }
