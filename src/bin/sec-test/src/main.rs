@@ -38,7 +38,7 @@ fn main() {
         Default::default(),
         Some(v_key.id()),
         Default::default(),
-        Protections::empty(),
+        Protections::all(),
     ))
     .build(DumbBase { payload: 123456789 })
     .unwrap();
