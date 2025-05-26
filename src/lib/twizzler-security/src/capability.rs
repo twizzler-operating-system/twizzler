@@ -390,6 +390,23 @@ mod tests {
             let x = black_box(5 * 10);
         })
     }
+
+    #[bench]
+    fn bench_keypair_creation(b: &mut Bencher) {
+        let object_create_spec = ObjectCreate::new(
+            Default::default(),
+            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
+            Default::default(),
+            Protections::all(),
+        );
+
+        b.iter(|| {
+            let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
+                .expect("Keys should be generated properly");
+        });
+    }
+
     #[bench]
     fn bench_capability_verification(b: &mut Bencher) {
         let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
