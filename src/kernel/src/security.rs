@@ -331,3 +331,57 @@ impl Drop for SecCtxMgr {
         }
     }
 }
+
+mod tests {
+    use core::hint::black_box;
+
+    use twizzler_abi::{object::Protections, syscall::ObjectCreate};
+    use twizzler_kernel_macros::kernel_test;
+    use twizzler_security::{Cap, SigningKey, SigningScheme};
+
+    use crate::{is_bench_mode, random::getrandom, time::bench_clock, utils::quick_random};
+    #[kernel_test]
+    fn bench_capability_verification() {
+        let clock = bench_clock().unwrap();
+
+        let key = SigningKey::from_slice(slice, scheme);
+
+        // uhhhhh, how i do dis
+        let mut rand_bytes = [0; 32];
+
+        getrandom(&mut rand_bytes, false);
+
+        let (s_key, v_key) = SigningKey::new_kernel_keypair(
+            &SigningScheme::Ecdsa,
+            ObjectCreate::default(),
+            rand_bytes,
+        )
+        .expect("shouldnt have errored");
+
+        let cap = Cap::new(
+            0x123.into(),
+            0x100.into(),
+            Protections::all(),
+            &s_key,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            SigningScheme::Ecdsa,
+        )
+        .expect("capability creation shouldnt have errored");
+
+        if is_bench_mode() {
+            for i in 0..100 {
+                let start = clock.read();
+                for _ in 0..10 {
+                    let res = cap.verify_sig(&v_key).expect("should have been verified");
+                    black_box(res);
+                }
+                let end = clock.read();
+
+                let ns = ((end.value - start.value) * end.rate).as_nanos();
+                logln!("raw sample {}: {} ns per 10 iterations", i, ns)
+            }
+        }
+    }
+}

@@ -86,6 +86,35 @@ impl SigningKey {
         return Ok((s_object, v_object));
     }
 
+    #[cfg(feature = "kernel")]
+    pub fn new_kernel_keypair(
+        scheme: &SigningScheme,
+        obj_create_spec: ObjectCreate,
+        random_bytes: [u8; 32],
+    ) -> Result<(SigningKey, VerifyingKey), TwzError> {
+        match scheme {
+            SigningScheme::Ed25519 => {
+                todo!("unsupported as of yet")
+            }
+            SigningScheme::Ecdsa => {
+                let Ok(ecdsa_signing_key) = EcdsaSigningKey::from_slice(&random_bytes) else {
+                    #[cfg(feature = "log")]
+                    error!("Failed to create ecdsa signing key from bytes");
+
+                    return Err(TwzError::Generic(
+                        twizzler_rt_abi::error::GenericError::Internal,
+                    ));
+                };
+
+                let binding = ecdsa_signing_key.clone();
+
+                let ecdsa_verifying_key = binding.verifying_key().to_owned();
+
+                Ok((ecdsa_signing_key.into(), ecdsa_verifying_key.into()))
+            }
+        }
+    }
+
     /// Builds up a signing key from a slice of bytes and a specified signing scheme.
     pub fn from_slice(slice: &[u8], scheme: SigningScheme) -> Result<Self, SecurityError> {
         match scheme {
