@@ -51,6 +51,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     where
         F: FnOnce(TxObject<MaybeUninit<Base>>) -> crate::tx::Result<TxObject<Base>>,
     {
+        info!("SPEC: {:?}", self.spec);
         let id = twizzler_abi::syscall::sys_object_create(self.spec, &[], &[])?;
         let mut flags = MapFlags::READ | MapFlags::WRITE;
         if self.spec.lt == LifetimeType::Persistent {
