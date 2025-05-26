@@ -25,6 +25,8 @@ pub fn verify(
 
 mod test {
 
+    use core::hint::black_box;
+
     use hex_literal::hex;
     use twizzler_kernel_macros::kernel_test;
 
@@ -42,7 +44,7 @@ mod test {
     fn bench_hashing() {
         benchmark(|| {
             let hash = sha256(b"hello, world");
-            core::hint::black_box(hash);
+            black_box(hash);
         });
     }
 
@@ -59,5 +61,38 @@ mod test {
 
         let pub_key: VerifyingKey = private_key.into();
         verify(&pub_key, message, signature).expect("should be a valid signature");
+    }
+
+    #[kernel_test]
+    fn bench_signing() {
+        let key = [
+            168, 182, 114, 184, 168, 191, 237, 9, 90, 139, 135, 141, 26, 180, 247, 51, 86, 17, 197,
+            11, 229, 2, 25, 252, 9, 84, 135, 246, 235, 97, 11, 60,
+        ];
+        let private_key = SigningKey::from_slice(&key).unwrap();
+        let message =
+            b"ECDSA proves knowledge of a secret number in the context of a single message";
+
+        benchmark(|| {
+            let signature: Signature = black_box(sign(&private_key, message));
+        });
+    }
+    #[kernel_test]
+    fn bench_verifying() {
+        let key = [
+            168, 182, 114, 184, 168, 191, 237, 9, 90, 139, 135, 141, 26, 180, 247, 51, 86, 17, 197,
+            11, 229, 2, 25, 252, 9, 84, 135, 246, 235, 97, 11, 60,
+        ];
+        let private_key = SigningKey::from_slice(&key).unwrap();
+        let message =
+            b"ECDSA proves knowledge of a secret number in the context of a single message";
+        let signature: Signature = black_box(sign(&private_key, message));
+        let pub_key: VerifyingKey = private_key.into();
+
+        benchmark(|| {
+            let ver = black_box(
+                verify(&pub_key, message, signature).expect("should be a valid signature"),
+            );
+        });
     }
 }

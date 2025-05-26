@@ -144,7 +144,8 @@ where
     }
 }
 
-/// Benchmarks the passed in function, printing the results to console.
+/// Benchmarks the closure, runs it for a scaled iteration count and
+/// prints the results to console.
 /// Limitation: you have to supply --tests as well for now to get
 /// kernel benches to run.
 pub fn benchmark<F>(mut f: F)
