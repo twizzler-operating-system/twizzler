@@ -89,7 +89,6 @@ pub struct BenchResult {
     avg_ns: f64,
     min_ns: u64,
     max_ns: u64,
-    std_dev: f64,
 }
 
 impl Display for BenchResult {
@@ -100,37 +99,11 @@ impl Display for BenchResult {
             "Total time: {:.2} ms",
             self.total_ns as f64 / 1_000_000.0
         )?;
-        writeln!(
-            f,
-            "Average:    {:.2} ns/iter (+/- {:.2})",
-            self.avg_ns, self.std_dev
-        )?;
+        writeln!(f, "Average:    {:.2} ns/iter", self.avg_ns)?;
         writeln!(f, "Min:        {:.2} ns/iter", self.min_ns)?;
         writeln!(f, "Max:        {:.2} ns/iter", self.max_ns)?;
         Ok(())
     }
-}
-
-fn calculate_std_dev(values: &[u64], mean: f64) -> f64 {
-    let variance: f64 = values
-        .iter()
-        .map(|&x| {
-            let diff = x as f64 - mean;
-            diff * diff
-        })
-        .sum::<f64>()
-        / values.len() as f64;
-
-    // manually have to compute square root
-    let mut guess = variance;
-
-    // Newton's method: x_new = (x_old + n/x_old) / 2
-    for _ in 0..10 {
-        // 10 iterations is usually enough for good precision
-        guess = (guess + variance / guess) * 0.5;
-    }
-
-    guess
 }
 
 fn benchmark_w_iter<F>(mut f: F, iterations: u64) -> BenchResult
@@ -161,22 +134,25 @@ where
     let min_ns = *times.iter().min().unwrap();
     let max_ns = *times.iter().max().unwrap();
 
-    let std_dev = calculate_std_dev(times.as_slice(), avg_ns);
-
     BenchResult {
         iterations,
         total_ns,
         avg_ns,
         min_ns,
         max_ns,
-        std_dev,
     }
 }
 
-pub fn benchmark<F>(mut f: F) -> BenchResult
+/// Benchmarks the passed in function, printing the results to console.
+///
+/// NOTE: will do nothing if kernel is not in bench mode!
+pub fn benchmark<F>(mut f: F)
 where
     F: FnMut(),
 {
+    if !is_bench_mode() {
+        return;
+    }
     let mut iterations = 100u64;
     // 1 second
     let target_duration_ns = 1_000_000_000_u64;
@@ -206,5 +182,6 @@ where
         }
     }
 
-    benchmark_w_iter(f, iterations.min(10_000_000_u64))
+    let res = benchmark_w_iter(f, iterations.min(10_000_000_u64));
+    logln!("{}", res);
 }
