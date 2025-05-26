@@ -127,7 +127,7 @@ fn calculate_std_dev(values: &[u64], mean: f64) -> f64 {
     // Newton's method: x_new = (x_old + n/x_old) / 2
     for _ in 0..10 {
         // 10 iterations is usually enough for good precision
-        guess = (guess + x / guess) * 0.5;
+        guess = (guess + variance / guess) * 0.5;
     }
 
     guess
@@ -177,9 +177,9 @@ pub fn benchmark<F>(mut f: F) -> BenchResult
 where
     F: FnMut(),
 {
-    let mut iterations = 100u128;
+    let mut iterations = 100u64;
     // 1 second
-    let target_duration_ns = 1_000_000_000;
+    let target_duration_ns = 1_000_000_000_u64;
 
     let clock = bench_clock().unwrap();
 
@@ -191,7 +191,7 @@ where
         }
 
         let end = clock.read();
-        let duration = ((end.value - start.value) * end.rate).as_nanos();
+        let duration = ((end.value - start.value) * end.rate).as_nanos() as u64;
 
         if duration >= target_duration_ns / 10 {
             iterations = (iterations * target_duration_ns) / duration;
