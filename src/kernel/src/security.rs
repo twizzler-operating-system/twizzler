@@ -199,24 +199,30 @@ impl SecCtxMgr {
     /// Check access rights in the active context.
     pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         //TODO: will probably have to hook up the gate check here as well?
-        self.lookup(_access_info.target_id)
+        // self.lookup(_access_info.target_id);
+        PermsInfo {
+            ctx: self.active_id(),
+            provide: Protections::empty(),
+            restrict: Protections::empty(),
+        }
     }
 
     /// Search all attached contexts for access.
     pub fn search_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         //TODO: need to actually look through all the contexts, this is just temporary
-        let mut greatest_perms = self.lookup(_access_info.target_id);
+        // let mut greatest_perms = self.lookup(_access_info.target_id);
 
-        for (id, ctx) in &self.inner.lock().inactive {
-            let perms = ctx.lookup(_access_info.target_id);
-            // how do you determine what prots is more expressive? like more
-            // lets just return if its anything other than empty
-            if perms.provide & !perms.restrict != Protections::empty() {
-                greatest_perms = perms
-            }
-        }
+        // for (id, ctx) in &self.inner.lock().inactive {
+        //     let perms = ctx.lookup(_access_info.target_id);
+        //     // how do you determine what prots is more expressive? like more
+        //     // lets just return if its anything other than empty
+        //     if perms.provide & !perms.restrict != Protections::empty() {
+        //         greatest_perms = perms
+        //     }
+        // }
 
-        greatest_perms
+        // greatest_perms
+        todo!()
     }
 
     /// Build a new SctxMgr for user threads.
