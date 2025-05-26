@@ -1,7 +1,10 @@
 use clap::{Parser, Subcommand};
 use colog::default_builder;
 use log::LevelFilter;
-use twizzler::object::{Object, ObjectBuilder, RawObject, TypedObject};
+use twizzler::{
+    marker::BaseType,
+    object::{Object, ObjectBuilder, RawObject, TypedObject},
+};
 use twizzler_abi::{
     object::Protections,
     syscall::{sys_sctx_attach, ObjectCreate, ObjectCreateFlags},
@@ -9,8 +12,15 @@ use twizzler_abi::{
 use twizzler_rt_abi::object::MapFlags;
 use twizzler_security::{Cap, SecCtx, SecCtxBase, SecCtxFlags, SigningKey, SigningScheme};
 
+#[derive(debug)]
 struct DumbBase {
     payload: u128,
+}
+
+impl BaseType for DumbBase {
+    fn fingerprint() -> u64 {
+        11234
+    }
 }
 
 fn main() {
@@ -81,9 +91,6 @@ fn main() {
     // time to try accessing this object
 
     let target = Object::<DumbBase>::map(target_id, MapFlags::READ | MapFlags::WRITE).unwrap();
-    let payload = target.base_ptr().cast::<DumbBase>();
-    unsafe {
-        let payload = *payload;
-        println!("payload: {}", payload);
-    }
+    let base = target.base();
+    println!("base: {:?}", base)
 }
