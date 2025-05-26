@@ -32,8 +32,6 @@ fn main() {
     let (s_key, v_key) = SigningKey::new_keypair(&SigningScheme::Ecdsa, Default::default())
         .expect("should have worked");
 
-    info!("creating target object with spec: {:?}", spec);
-
     let sec_ctx = SecCtx::new(
         ObjectCreate::new(
             Default::default(),
@@ -56,6 +54,7 @@ fn main() {
         Default::default(),
         Protections::empty(),
     );
+    info!("creating target object with spec: {:?}", spec);
 
     let target_obj = ObjectBuilder::new(spec)
         .build(DumbBase { payload: 123456789 })
