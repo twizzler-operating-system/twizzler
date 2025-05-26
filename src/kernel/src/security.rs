@@ -344,8 +344,6 @@ mod tests {
     fn bench_capability_verification() {
         let clock = bench_clock().unwrap();
 
-        let key = SigningKey::from_slice(slice, scheme);
-
         // uhhhhh, how i do dis
         let mut rand_bytes = [0; 32];
 
