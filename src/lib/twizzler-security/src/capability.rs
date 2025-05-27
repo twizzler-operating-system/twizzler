@@ -100,7 +100,7 @@ impl Cap {
             accessor,
             target,
             protections: prots,
-            flags,
+            flags: cf_hashing_algo,
             revocation,
             gates,
             sig,
