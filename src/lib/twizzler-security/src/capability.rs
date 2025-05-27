@@ -74,7 +74,6 @@ impl Cap {
     ) -> Result<Self, SecurityError> {
         let cf_hashing_algo: CapFlags = hashing_algo.into();
 
-
         #[cfg(feature = "log")]
         debug!(
             "Using flags: {} to create capability for target: {:?}",
@@ -215,7 +214,6 @@ mod tests {
             Revoc::default(),
             Gates::default(),
             HashingAlgo::Sha256,
-            SigningScheme::Ecdsa,
         )
         .expect("Capability should have been created.")
     }
@@ -333,7 +331,6 @@ mod tests {
                 Revoc::default(),
                 input.capability_gates,
                 HashingAlgo::Sha256,
-                SigningScheme::Ecdsa,
             )
             .expect("Capability should have been created properly.");
 

@@ -11,11 +11,12 @@ pub struct CapFlags(u16);
 bitflags! {
     impl CapFlags: u16 {
         //NOTE: flags here indicate which algorithm was used for hashing
-        const Ed25519=  1;
-        const Blake3 =   2;
+        const Blake3 =   1;
         // we dont really need this
-        // const Sha256 = 4;
+        const Sha256 = 2;
+        // dont need these anymore
         // const Ecdsa = 8;
+        // const Ed25519=  1;
     }
 }
 
@@ -110,15 +111,6 @@ impl TryFrom<CapFlags> for SigningScheme {
         }
 
         result.ok_or(SecurityError::InvalidScheme)
-    }
-}
-
-impl From<SigningScheme> for CapFlags {
-    fn from(value: SigningScheme) -> Self {
-        match value {
-            SigningScheme::Ed25519 => CapFlags::Ed25519,
-            SigningScheme::Ecdsa => CapFlags::Ecdsa,
-        }
     }
 }
 

@@ -78,7 +78,6 @@ fn main() {
         Default::default(),
         Default::default(),
         Default::default(),
-        Default::default(),
     )
     .unwrap();
 
