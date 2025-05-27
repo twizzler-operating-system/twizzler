@@ -25,8 +25,8 @@ impl Display for CapFlags {
         f.write_str("CapFlags {")?;
         for flag in self.iter() {
             match flag {
-                CapFlags::Ed25519 => f.write_str(" ED25519 ")?,
-                CapFlags::Ecdsa => f.write_str(" Ecdsa ")?,
+                // CapFlags::Ed25519 => f.write_str(" ED25519 ")?,
+                // CapFlags::Ecdsa => f.write_str(" Ecdsa ")?,
                 CapFlags::Blake3 => f.write_str(" Blake3 ")?,
                 CapFlags::Sha256 => f.write_str(" SHA256 ")?,
                 // have to do this due to how bitflags work
@@ -60,14 +60,14 @@ pub enum HashingAlgo {
     Sha256,
 }
 
-impl CapFlags {
-    pub(crate) fn parse(&self) -> Result<(HashingAlgo, SigningScheme), SecurityError> {
-        let hashing_algo: HashingAlgo = self.clone().try_into()?;
-        let signing_scheme: SigningScheme = self.clone().try_into()?;
+// impl CapFlags {
+//     pub(crate) fn parse(&self) -> Result<(HashingAlgo, SigningScheme), SecurityError> {
+//         let hashing_algo: HashingAlgo = self.clone().try_into()?;
+//         // let signing_scheme: SigningScheme = self.clone().try_into()?;
 
-        Ok((hashing_algo, signing_scheme))
-    }
-}
+//         Ok((hashing_algo, signing_scheme))
+//     }
+// }
 
 impl TryFrom<CapFlags> for HashingAlgo {
     type Error = SecurityError;
