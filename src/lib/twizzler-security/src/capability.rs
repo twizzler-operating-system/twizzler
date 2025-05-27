@@ -80,7 +80,7 @@ impl Cap {
             flags, target
         );
 
-        let hash_arr = Cap::serialize(accessor, target, prots, flags, revocation, gates);
+        let hash_arr = Cap::serialize(accessor, target, prots, cf_hashing_algo, revocation, gates);
 
         let sig = match hashing_algo {
             HashingAlgo::Blake3 => {
