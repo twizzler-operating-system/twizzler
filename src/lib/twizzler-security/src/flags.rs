@@ -91,28 +91,28 @@ impl TryFrom<CapFlags> for HashingAlgo {
         result.ok_or(SecurityError::InvalidScheme)
     }
 }
-impl TryFrom<CapFlags> for SigningScheme {
-    type Error = SecurityError;
-    fn try_from(value: CapFlags) -> Result<Self, Self::Error> {
-        let mut result = None;
+// impl TryFrom<CapFlags> for SigningScheme {
+//     type Error = SecurityError;
+//     fn try_from(value: CapFlags) -> Result<Self, Self::Error> {
+//         let mut result = None;
 
-        for flag in value.iter() {
-            if let Some(algo) = match flag {
-                CapFlags::Ed25519 => Some(SigningScheme::Ed25519),
-                CapFlags::Ecdsa => Some(SigningScheme::Ecdsa),
-                _ => None,
-            } {
-                if result.is_some() {
-                    return Err(SecurityError::InvalidScheme);
-                }
+//         for flag in value.iter() {
+//             if let Some(algo) = match flag {
+//                 CapFlags::Ed25519 => Some(SigningScheme::Ed25519),
+//                 CapFlags::Ecdsa => Some(SigningScheme::Ecdsa),
+//                 _ => None,
+//             } {
+//                 if result.is_some() {
+//                     return Err(SecurityError::InvalidScheme);
+//                 }
 
-                result = Some(algo);
-            }
-        }
+//                 result = Some(algo);
+//             }
+//         }
 
-        result.ok_or(SecurityError::InvalidScheme)
-    }
-}
+//         result.ok_or(SecurityError::InvalidScheme)
+//     }
+// }
 
 impl From<HashingAlgo> for CapFlags {
     fn from(value: HashingAlgo) -> Self {
