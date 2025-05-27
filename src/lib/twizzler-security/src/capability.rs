@@ -71,12 +71,9 @@ impl Cap {
         revocation: Revoc,
         gates: Gates,
         hashing_algo: HashingAlgo,
-        signing_scheme: SigningScheme,
     ) -> Result<Self, SecurityError> {
         let cf_hashing_algo: CapFlags = hashing_algo.into();
-        let cf_signing_scheme: CapFlags = signing_scheme.into();
 
-        let flags = cf_hashing_algo | cf_signing_scheme; // set flags
 
         #[cfg(feature = "log")]
         debug!(

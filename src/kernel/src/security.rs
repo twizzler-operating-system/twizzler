@@ -194,21 +194,15 @@ impl SecCtxMgr {
     /// Check access rights in the active context.
     pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         //TODO: will probably have to hook up the gate check here as well?
-        logln!("active id: {:?}", self.active_id.lock().clone());
-        // let perms = self.lookup(_access_info.target_id);
+        // WARN: actually doing the lookup is causing the kernel to die so just passing empty for
+        // now for some reason let perms = self.lookup(_access_info.target_id);
         let perms = PermsInfo {
             ctx: self.active_id(),
             provide: Protections::empty(),
             restrict: Protections::empty(),
         };
-        logln!("granted perms: {:?}", perms);
 
         perms
-        // PermsInfo {
-        //     ctx: self.active_id(),
-        //     provide: Protections::empty(),
-        //     restrict: Protections::empty(),
-        // }
     }
 
     /// Search all attached contexts for access.

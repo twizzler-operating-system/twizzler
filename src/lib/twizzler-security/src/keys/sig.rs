@@ -11,6 +11,7 @@ const MAX_SIG_SIZE: usize = 128;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Signature {
+    //TODO: could just replace this as a heapless vec
     buf: [u8; MAX_SIG_SIZE],
     pub len: usize,
     scheme: SigningScheme,

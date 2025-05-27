@@ -10,11 +10,12 @@ pub struct CapFlags(u16);
 #[rustfmt::skip] // so the bits are all nice and neat
 bitflags! {
     impl CapFlags: u16 {
-        //NOTE: flags here indicate which algorithm was used for signature generation.
+        //NOTE: flags here indicate which algorithm was used for hashing
         const Ed25519=  1;
         const Blake3 =   2;
-        const Sha256 = 4;
-        const Ecdsa = 8;
+        // we dont really need this
+        // const Sha256 = 4;
+        // const Ecdsa = 8;
     }
 }
 
