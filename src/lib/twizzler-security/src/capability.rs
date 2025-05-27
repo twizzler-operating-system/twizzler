@@ -72,12 +72,11 @@ impl Cap {
         gates: Gates,
         hashing_algo: HashingAlgo,
     ) -> Result<Self, SecurityError> {
-        let cf_hashing_algo: CapFlags = hashing_algo.into();
-
         #[cfg(feature = "log")]
         debug!(
             "Using flags: {} to create capability for target: {:?}",
-            flags, target
+            hashing_algo.clone().into::<CapFlags>(),
+            target
         );
 
         let hash_arr = Cap::serialize(accessor, target, prots, cf_hashing_algo, revocation, gates);
@@ -100,7 +99,7 @@ impl Cap {
             accessor,
             target,
             protections: prots,
-            flags: cf_hashing_algo,
+            flags: hashing_algo.into(),
             revocation,
             gates,
             sig,
