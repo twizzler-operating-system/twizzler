@@ -384,7 +384,6 @@ mod tests {
             Default::default(),
             Default::default(),
             Default::default(),
-            SigningScheme::Ecdsa,
         )
         .expect("capability creation shouldnt have errored");
 
