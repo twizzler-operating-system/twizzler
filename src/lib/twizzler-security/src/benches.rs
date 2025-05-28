@@ -35,7 +35,7 @@ fn capability_creation(b: &mut Bencher) {
 fn keypair_creation(b: &mut Bencher) {
     let object_create_spec = ObjectCreate::new(
         Default::default(),
-        LifetimeType::Volatile,
+        Default::default(),
         Default::default(),
         Default::default(),
         Protections::all(),
