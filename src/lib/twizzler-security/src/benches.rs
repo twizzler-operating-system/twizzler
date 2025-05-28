@@ -33,10 +33,12 @@ fn something_else(b: &mut Bencher) {
 }
 
 #[bench]
-fn capability_signing_key_creation(b: &mut Bencher) {
+// Something about this specific benchmark causes twizzler to die while trying to bench it,
+// honestly have no iea why
+fn keypair_creation(b: &mut Bencher) {
     let object_create_spec = ObjectCreate::new(
         Default::default(),
-        twizzler_abi::syscall::LifetimeType::Persistent,
+        Default::default(),
         Default::default(),
         Default::default(),
         Protections::all(),
