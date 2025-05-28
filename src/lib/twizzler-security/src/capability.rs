@@ -197,13 +197,13 @@ impl Cap {
 mod tests {
     use core::hint::black_box;
 
-    use super::*;
+    use crate::*;
 
     extern crate test;
 
     use test::Bencher;
     use twizzler::object::TypedObject;
-    use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate};
+    use twizzler_abi::syscall::ObjectCreate;
 
     fn default_capability(s_key: &SigningKey) -> Cap {
         Cap::new(

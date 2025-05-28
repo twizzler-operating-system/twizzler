@@ -14,8 +14,6 @@ use twizzler_rt_abi::error::TwzError;
 // 256 / 8 => 32 bytes for secret key length, since we are using curve p256, 256 bit curve
 const ECDSA_SECRET_KEY_LENGTH: usize = 32;
 
-use twizzler_abi::syscall::ObjectCreate;
-
 use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
 use crate::{SecurityError, SigningScheme};
 
@@ -39,6 +37,7 @@ impl SigningKey {
         use alloc::borrow::ToOwned;
 
         use getrandom::getrandom;
+        use twizzler_abi::syscall::ObjectCreate;
 
         #[cfg(feature = "log")]
         debug!("Creating new signing key with scheme: {:?}", scheme);
