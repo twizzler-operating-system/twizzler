@@ -3,7 +3,10 @@ use core::fmt::Display;
 
 use heapless::Vec;
 use log::debug;
-use twizzler::object::{Object, ObjectBuilder, RawObject, TypedObject};
+use twizzler::{
+    marker::BaseType,
+    object::{Object, ObjectBuilder, RawObject, TypedObject},
+};
 use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::ObjectCreate,
@@ -90,14 +93,14 @@ impl SecCtx {
 
         // seeing if a vec already exists for target obj, else create new
         if let Some(vec) = base.map.get_mut(&cap.target) {
-            vec.push(map_item).map_err(|_e| {
+            vec.push(map_item).map_err(|_| {
                 // only possible error case is it being full
                 TwzError::Resource(ResourceError::OutOfResources)
             })?;
         } else {
             let mut new_vec = Vec::<CtxMapItem, MAP_ITEMS_PER_OBJ>::new();
             let _ = new_vec.push(map_item);
-            let _ = base.map.insert(cap.target, new_vec).map_err(|e| {
+            let _ = base.map.insert(cap.target, new_vec).map_err(|_| {
                 // only possible error case is it being full
                 TwzError::Resource(ResourceError::OutOfResources)
             })?;
@@ -137,7 +140,7 @@ impl SecCtx {
     }
 
     // looks up permission info for requested object
-    pub fn lookup(&mut self, target_id: ObjID, v_key: &VerifyingKey) -> PermsInfo {
+    pub fn lookup<T: BaseType>(&mut self, target_id: ObjID, v_key: &VerifyingKey) -> PermsInfo {
         // first just check cache
         if let Some(cache_entry) = self.cache.get(&target_id) {
             return *cache_entry;
@@ -146,7 +149,7 @@ impl SecCtx {
         let base = self.uobj.base();
 
         // fetch default protections
-        let target_object = Object::map(target_id, MapFlags::READ)
+        let target_object = Object::<T>::map(target_id, MapFlags::READ)
             .expect("target object should exist!")
             .meta_ptr();
 
