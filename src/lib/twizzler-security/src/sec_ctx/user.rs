@@ -111,7 +111,8 @@ impl SecCtx {
             .expect("Write offset should not result in a pointer outside of the object")
             .cast::<Cap>();
 
-        // SAFETY: copies the capability into the object, we check that the pointer is valid above
+        // SAFETY: copies the capability into the object, we check that the pointer is valid above /
+        // fixing its alignment
         unsafe {
             *ptr = cap;
         }
@@ -139,8 +140,8 @@ impl SecCtx {
         todo!("implement later")
     }
 
-    // looks up permission info for requested object
-    pub fn lookup<T: BaseType>(&mut self, target_id: ObjID, v_key: &VerifyingKey) -> PermsInfo {
+    /// looks up permission info for requested object
+    pub fn lookup<T: BaseType>(&mut self, target_id: ObjID) -> PermsInfo {
         // first just check cache
         if let Some(cache_entry) = self.cache.get(&target_id) {
             return *cache_entry;
@@ -154,11 +155,18 @@ impl SecCtx {
             .meta_ptr();
 
         let target_obj_default_prot;
+        let v_key_obj_id;
 
         unsafe {
             let metadata = *target_object;
+            v_key_obj_id = metadata.kuid;
+
             target_obj_default_prot = metadata.default_prot;
         }
+
+        let v_obj = Object::<VerifyingKey>::map(v_key_obj_id, MapFlags::READ | MapFlags::WRITE)
+            .expect("failed to open verifying key for this object");
+        let v_key = v_obj.base();
 
         // step 1, add up all the permissions granted by VERIFIED capabilities and delegations
         let mut granted_perms =

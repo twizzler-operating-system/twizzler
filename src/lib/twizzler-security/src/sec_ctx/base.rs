@@ -62,13 +62,16 @@ bitflags::bitflags! {
 /// masks on targets
 #[derive(Debug)]
 pub struct SecCtxBase {
-    // a single object can have multiple Capabilities or Delegations
+    /// A map that holds the mapping from an ObjID to the capabilities and delegations stored
+    /// inside this context that apply to that target ObjID.
     pub map: FnvIndexMap<ObjID, Vec<CtxMapItem, MAP_ITEMS_PER_OBJ>, SEC_CTX_MAP_LEN>,
+    /// A map holding masks that apply for a target ObjID.
     pub masks: FnvIndexMap<ObjID, Mask, MASKS_MAX>,
+    /// The global mask that applies to all protections gratned by this Security Context.
     pub global_mask: Protections,
-    // the running offset into the object where a new entry can be inserted
-    pub offset: usize,
-    // possible flags specific to this security context
+    /// The running offset into the object where a new entry can be inserted.
+    offset: usize,
+    /// Flags specific to this security context.
     pub flags: SecCtxFlags,
 }
 
