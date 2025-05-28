@@ -1,8 +1,8 @@
 use std::{marker::PhantomData, mem::MaybeUninit};
 
 use twizzler_abi::{
-    object::Protections,
-    syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+    object::{ObjID, Protections},
+    syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, ObjectSource},
 };
 use twizzler_rt_abi::object::MapFlags;
 
@@ -16,6 +16,7 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub struct ObjectBuilder<Base: BaseType> {
     spec: ObjectCreate,
+    src_objs: Vec<ObjectSource>,
     _pd: PhantomData<Base>,
 }
 
@@ -25,6 +26,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         Self {
             spec,
             _pd: PhantomData,
+            src_objs: Vec::new(),
         }
     }
 
@@ -37,6 +39,12 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     /// Cast the base type.
     pub fn cast<U: BaseType>(self) -> ObjectBuilder<U> {
         ObjectBuilder::<U>::new(self.spec)
+    }
+
+    /// Add a Source Object that this new object will copy from
+    pub fn add_src(self, obj_src: ObjectSource) -> Self {
+        self.src_objs.push(src);
+        self
     }
 }
 
@@ -51,7 +59,8 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     where
         F: FnOnce(TxObject<MaybeUninit<Base>>) -> crate::tx::Result<TxObject<Base>>,
     {
-        let id = twizzler_abi::syscall::sys_object_create(self.spec, &[], &[])?;
+        let id =
+            twizzler_abi::syscall::sys_object_create(self.spec, self.src_objs.as_slice(), &[])?;
         let mut flags = MapFlags::READ | MapFlags::WRITE;
         if self.spec.lt == LifetimeType::Persistent {
             flags.insert(MapFlags::PERSIST);
@@ -65,7 +74,8 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     where
         F: FnOnce(&mut TxObject<MaybeUninit<Base>>),
     {
-        let id = twizzler_abi::syscall::sys_object_create(self.spec, &[], &[])?;
+        let id =
+            twizzler_abi::syscall::sys_object_create(self.spec, self.src_objs.as_slice(), &[])?;
         let mut flags = MapFlags::READ | MapFlags::WRITE;
         if self.spec.lt == LifetimeType::Persistent {
             flags.insert(MapFlags::PERSIST);
