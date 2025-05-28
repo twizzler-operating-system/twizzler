@@ -53,10 +53,11 @@ impl<Base> ControlObjectCacher<Base> {
             ));
             QuickOrKernel::Kernel(kobj)
         } else {
+            // TODO: this should probably use the frame Page variant.
             let frame = alloc_frame(
                 FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK | FrameAllocFlags::KERNEL,
             );
-            let page = Page::new_wired(frame.start_address(), CacheType::WriteBack);
+            let page = Page::new_wired(frame.start_address(), frame.size(), CacheType::WriteBack);
             let base_ptr = unsafe {
                 let ptr = page.get_mut_to_val::<Base>(0);
                 ptr.write(base);

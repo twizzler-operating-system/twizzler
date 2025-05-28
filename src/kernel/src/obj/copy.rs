@@ -74,8 +74,8 @@ fn copy_single(
 ) -> Option<()> {
     let src_page = src_tree.get_page(src_point, false, None);
     let dest_page = dest_tree.get_page(dest_point, true, Some(allocator));
-    let dest_page = match dest_page {
-        PageStatus::Ready(page, _) => page,
+    let (dest_page, dpnum) = match dest_page {
+        PageStatus::Ready(page, pnum, _) => (page, pnum),
         PageStatus::NoPage => dest_tree.add_page(
             dest_point,
             Page::new(allocator.try_allocate()?),
@@ -85,12 +85,13 @@ fn copy_single(
         PageStatus::DataFail => return None,
     };
 
-    if let PageStatus::Ready(src_page, _) = src_page {
-        dest_page.as_mut_slice()[offset..max].copy_from_slice(&src_page.as_slice()[offset..max]);
+    if let PageStatus::Ready(src_page, spnum, _) = src_page {
+        dest_page.as_mut_slice(dpnum)[offset..max]
+            .copy_from_slice(&src_page.as_slice(spnum)[offset..max]);
     } else {
         // TODO: could skip this on freshly created page, if we can detect that. That's just an
         // optimization, though.
-        dest_page.as_mut_slice()[offset..max].fill(0);
+        dest_page.as_mut_slice(dpnum)[offset..max].fill(0);
     }
     Some(())
 }
@@ -103,8 +104,8 @@ fn zero_single(
     max: usize,
 ) {
     // if there's no page here, our work is done
-    if let PageStatus::Ready(dest_page, _) = dest_tree.get_page(dest_point, true, None) {
-        dest_page.as_mut_slice()[offset..max].fill(0);
+    if let PageStatus::Ready(dest_page, pnum, _) = dest_tree.get_page(dest_point, true, None) {
+        dest_page.as_mut_slice(pnum)[offset..max].fill(0);
     }
 }
 /// Copy page ranges from one object to another, preferring to share page vectors if possible.
@@ -281,8 +282,8 @@ fn copy_bytes(
     while remaining > 0 {
         let src_page = src_tree.get_page(src_point, false, None);
         let dest_page = dest_tree.get_page(dest_point, true, Some(allocator));
-        let dest_page = match dest_page {
-            PageStatus::Ready(page, _) => page,
+        let (dest_page, dpnum) = match dest_page {
+            PageStatus::Ready(page, pnum, _) => (page, pnum),
             PageStatus::NoPage => dest_tree.add_page(
                 dest_point,
                 Page::new(allocator.try_allocate()?),
@@ -297,7 +298,7 @@ fn copy_bytes(
         let this_src_offset = (src_off + count_sofar) % PageNumber::PAGE_SIZE;
         let this_dest_offset = (dest_off + count_sofar) % PageNumber::PAGE_SIZE;
 
-        let this_length = if let PageStatus::Ready(src_page, _) = src_page {
+        let this_length = if let PageStatus::Ready(src_page, spnum, _) = src_page {
             let this_length = core::cmp::min(
                 core::cmp::min(
                     PageNumber::PAGE_SIZE - this_src_offset,
@@ -305,16 +306,17 @@ fn copy_bytes(
                 ),
                 remaining,
             );
-            dest_page.as_mut_slice()[this_dest_offset..(this_dest_offset + this_length)]
+            dest_page.as_mut_slice(dpnum)[this_dest_offset..(this_dest_offset + this_length)]
                 .copy_from_slice(
-                    &src_page.as_slice()[this_src_offset..(this_src_offset + this_length)],
+                    &src_page.as_slice(spnum)[this_src_offset..(this_src_offset + this_length)],
                 );
             this_length
         } else {
             let this_length = core::cmp::min(PageNumber::PAGE_SIZE - this_dest_offset, remaining);
             // TODO: could skip this on freshly created page, if we can detect that. That's just an
             // optimization, though.
-            dest_page.as_mut_slice()[this_dest_offset..(this_dest_offset + this_length)].fill(0);
+            dest_page.as_mut_slice(dpnum)[this_dest_offset..(this_dest_offset + this_length)]
+                .fill(0);
             this_length
         };
 
@@ -551,8 +553,8 @@ mod test {
                 src.lock_page_tree();
             let pn = PageNumber::from_offset((p as usize) * PageNumber::PAGE_SIZE);
             let sp = tree.get_page(pn, true, Some(&mut allocator));
-            let sp = match sp {
-                PageStatus::Ready(page, _) => page,
+            let (sp, spnum) = match sp {
+                PageStatus::Ready(page, pnum, _) => (page, pnum),
                 PageStatus::NoPage => tree
                     .add_page(
                         pn,
@@ -563,7 +565,7 @@ mod test {
                 PageStatus::AllocFail => panic!("out of memory"),
                 PageStatus::DataFail => panic!("data loss in copy"),
             };
-            sp.as_mut_slice().fill(p);
+            sp.as_mut_slice(spnum).fill(p);
         }
 
         let ps = PageNumber::PAGE_SIZE;

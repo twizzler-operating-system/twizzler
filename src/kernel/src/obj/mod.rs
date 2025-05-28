@@ -201,8 +201,12 @@ impl Object {
         for i in 0..len {
             // TODO: we'll need to handle failures here when we expand the paging system.
             let p = tree.get_page(start.offset(i), true, None);
-            if let PageStatus::Ready(p, _) = p {
-                v.push(p.physical_address());
+            if let PageStatus::Ready(p, pagenum, _) = p {
+                v.push(
+                    p.physical_address()
+                        .offset(pagenum * PageNumber::PAGE_SIZE)
+                        .unwrap(),
+                );
             } else {
                 let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK);
                 let page = Page::new(frame);
