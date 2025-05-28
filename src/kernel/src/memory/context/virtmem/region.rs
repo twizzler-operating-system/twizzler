@@ -19,7 +19,7 @@ use crate::{
         tracker::{FrameAllocFlags, FrameAllocator},
     },
     obj::{
-        pages::Page,
+        pages::{Page, PageRef},
         range::{PageRangeTree, PageStatus},
         ObjectRef, PageNumber,
     },
@@ -93,7 +93,12 @@ impl MapRegion {
         if matches!(status, PageStatus::NoPage) && !self.object.use_pager() {
             if let Some(frame) = fa.try_allocate() {
                 let page = Page::new(frame);
-                obj_page_tree.add_page(page_number, page, Some(&mut fa));
+                logln!("adding page {}", page_number);
+                obj_page_tree.add_page(
+                    page_number,
+                    PageRef::new(Arc::new(page), 0, 1),
+                    Some(&mut fa),
+                );
             }
             status = obj_page_tree.get_page(
                 page_number,
@@ -107,17 +112,15 @@ impl MapRegion {
         }
 
         // Step 4: do the mapping. If the page isn't present by now, report data loss.
-        if let PageStatus::Ready(page, offset, cow) = status {
-            let settings = self.mapping_settings(cow, is_kern_obj);
+        if let PageStatus::Ready(page, shared) = status {
+            let settings = self.mapping_settings(shared, is_kern_obj);
             let settings = MappingSettings::new(
                 // Provided permissions, restricted by mapping.
                 (perms.provide | default_prot) & !perms.restrict & settings.perms(),
                 settings.cache(),
                 settings.flags(),
             );
-            mapper(ObjectPageProvider::new(Vec::from([(
-                page, offset, settings,
-            )])))
+            mapper(ObjectPageProvider::new(Vec::from([(page, settings)])))
         } else {
             Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
                 self.object().id(),
