@@ -99,7 +99,7 @@ impl SecCtx {
             let _ = new_vec.push(map_item);
             let _ = base.map.insert(cap.target, new_vec).map_err(|e| {
                 // only possible error case is it being full
-                TwzError::Generic(ResourceError::OutOfResources)
+                TwzError::Resource(ResourceError::OutOfResources)
             })?;
         };
 
