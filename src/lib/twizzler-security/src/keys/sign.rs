@@ -232,6 +232,7 @@ impl From<EcdsaSigningKey> for SigningKey {
 }
 
 #[cfg(feature = "user")]
+#[allow(unused_imports)]
 mod tests {
 
     use twizzler_abi::{object::Protections, syscall::ObjectCreate};

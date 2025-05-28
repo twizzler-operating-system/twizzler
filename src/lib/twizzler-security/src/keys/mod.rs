@@ -10,6 +10,7 @@ const MAX_KEY_SIZE: usize = 128;
 // currently these tests can only run in user space, would have to write their own
 // tests written inside kernel to run.
 #[cfg(feature = "user")]
+#[allow(unused_imports)]
 mod tests {
 
     use super::*;
