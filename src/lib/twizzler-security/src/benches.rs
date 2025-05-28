@@ -26,15 +26,7 @@ fn capability_creation(b: &mut Bencher) {
 }
 
 #[bench]
-fn something_else(b: &mut Bencher) {
-    b.iter(|| {
-        let x = black_box(5 * 10);
-    })
-}
-
-#[bench]
-// Something about this specific benchmark causes twizzler to die while trying to bench it,
-// honestly have no iea why
+//WARN: passing in the LifetimeType as Persistent will cause the test to just hang permanently
 fn keypair_creation(b: &mut Bencher) {
     let object_create_spec = ObjectCreate::new(
         Default::default(),
