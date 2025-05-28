@@ -194,6 +194,7 @@ impl Cap {
 }
 
 #[cfg(feature = "user")]
+#[allow(unused_imports)]
 mod tests {
 
     use crate::*;
