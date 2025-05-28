@@ -76,7 +76,9 @@ fn main() {
         Some(v_key.id()),
         Default::default(),
         Protections::READ,
-    )).build(base);
+    ))
+    .build(DumbBase { payload: 123456789 })
+    .unwrap();
 
     let target_obj = ObjectBuilder::new(spec)
         .build(DumbBase { payload: 123456789 })
