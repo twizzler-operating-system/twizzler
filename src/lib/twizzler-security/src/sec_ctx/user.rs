@@ -154,7 +154,7 @@ impl SecCtx {
 
         unsafe {
             let metadata = *target_object;
-            default_prot = metadata.default_prot;
+            target_obj_default_prot = metadata.default_prot;
         }
 
         // step 1, add up all the permissions granted by VERIFIED capabilities and delegations
