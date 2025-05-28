@@ -232,6 +232,7 @@ impl From<EcdsaSigningKey> for SigningKey {
     }
 }
 
+#[cfg(feature = "user")]
 mod tests {
 
     use twizzler::object::TypedObject;
@@ -239,14 +240,11 @@ mod tests {
 
     use crate::*;
 
-    #[cfg(feature = "user")]
     extern crate test;
 
-    #[cfg(feature = "user")]
     use test::Bencher;
 
     #[test]
-    #[cfg(feature = "user")]
     fn test_key_creation() {
         let object_create_spec = ObjectCreate::new(
             Default::default(),
@@ -260,7 +258,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "user")]
     fn test_signing_and_verification() {
         let object_create_spec = ObjectCreate::new(
             Default::default(),
@@ -288,7 +285,6 @@ mod tests {
     #[bench]
     //NOTE: currently we can only bench in user space, need to benchmark this in kernel space as
     // well
-    #[cfg(feature = "user")]
     fn bench_keypair_creation(b: &mut Bencher) {
         let object_create_spec = ObjectCreate::new(
             Default::default(),
