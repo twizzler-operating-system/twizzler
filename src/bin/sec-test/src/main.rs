@@ -1,22 +1,19 @@
-use std::ops::Sub;
-
-use clap::{Parser, Subcommand};
 use colog::default_builder;
 use log::{info, LevelFilter};
 use twizzler::{
     marker::BaseType,
-    object::{Object, ObjectBuilder, RawObject, TypedObject},
+    object::{Object, ObjectBuilder, TypedObject},
 };
 use twizzler_abi::{
     object::Protections,
-    syscall::{sys_sctx_attach, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+    syscall::{sys_sctx_attach, ObjectCreate},
 };
 use twizzler_rt_abi::object::MapFlags;
-use twizzler_security::{Cap, SecCtx, SecCtxBase, SecCtxFlags, SigningKey, SigningScheme};
+use twizzler_security::{Cap, SecCtx, SecCtxFlags, SigningKey, SigningScheme};
 
 #[derive(Debug)]
 struct DumbBase {
-    payload: u128,
+    _payload: u128,
 }
 
 impl BaseType for DumbBase {
@@ -29,7 +26,6 @@ fn main() {
     let mut builder = default_builder();
     builder.filter_level(LevelFilter::Trace);
     builder.init();
-    let sec_ctx = SecCtx::default();
 
     let (s_key, v_key) = SigningKey::new_keypair(&SigningScheme::Ecdsa, Default::default())
         .expect("should have worked");
@@ -38,7 +34,7 @@ fn main() {
         ObjectCreate::new(
             Default::default(),
             Default::default(),
-            Some(v_key.id()),
+            None,
             Default::default(),
             Protections::all(),
         ),
@@ -46,6 +42,7 @@ fn main() {
         SecCtxFlags::empty(),
     )
     .unwrap();
+
     sys_sctx_attach(sec_ctx.id()).unwrap();
 
     // lets create an object and try to access it
@@ -60,28 +57,22 @@ fn main() {
     );
     info!("creating target object with spec: {:?}", spec);
 
-    let template_obj = ObjectBuilder::new(ObjectCreate::new(
+    let _template_obj = ObjectBuilder::new(ObjectCreate::new(
         Default::default(),
         Default::default(),
         Default::default(),
         Default::default(),
         Protections::all(),
     ))
-    .build(DumbBase { payload: 123456789 })
-    .unwrap();
-
-    let target_obj = ObjectBuilder::new(ObjectCreate::new(
-        BackingType::Normal,
-        LifetimeType::Volatile,
-        Some(v_key.id()),
-        Default::default(),
-        Protections::READ,
-    ))
-    .build(DumbBase { payload: 123456789 })
+    .build(DumbBase {
+        _payload: 123456789,
+    })
     .unwrap();
 
     let target_obj = ObjectBuilder::new(spec)
-        .build(DumbBase { payload: 123456789 })
+        .build(DumbBase {
+            _payload: 123456789,
+        })
         .unwrap();
 
     let target_id = target_obj.id().clone();

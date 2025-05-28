@@ -11,21 +11,15 @@ const MAX_KEY_SIZE: usize = 128;
 // tests written inside kernel to run.
 #[cfg(feature = "user")]
 mod tests {
-    use core::hint::black_box;
 
     use super::*;
 
     extern crate test;
 
-    use test::Bencher;
-    use twizzler::{
-        marker::BaseType,
-        object::{Object, ObjectBuilder},
-    };
+    use twizzler::object::Object;
     use twizzler_abi::{object::Protections, syscall::ObjectCreate};
-    use twizzler_rt_abi::error::TwzError;
 
-    use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
+    use super::VerifyingKey;
     use crate::{SecurityError, SigningScheme};
 
     #[test]
@@ -37,7 +31,8 @@ mod tests {
             Default::default(),
             Protections::all(),
         );
-        let (skey, vkey) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
+
+        SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
             .expect("keys should be generated properly");
     }
 
@@ -58,11 +53,11 @@ mod tests {
     fn test_signing() {
         use twizzler::object::TypedObject;
 
-        let (s_obj, v_obj) = create_default_key_pair();
+        let (s_obj, _) = create_default_key_pair();
 
         let message = "deadbeef".as_bytes();
 
-        let sig = s_obj
+        s_obj
             .base()
             .sign(message)
             .expect("Signature should succeed");
@@ -104,5 +99,4 @@ mod tests {
     // object_create_spec)             .expect("Keys should be generated properly");
     //     });
     // }
-
 }

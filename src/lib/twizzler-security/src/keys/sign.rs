@@ -234,14 +234,14 @@ impl From<EcdsaSigningKey> for SigningKey {
 #[cfg(feature = "user")]
 mod tests {
 
-    use twizzler::object::TypedObject;
     use twizzler_abi::{object::Protections, syscall::ObjectCreate};
-
-    use crate::*;
 
     extern crate test;
 
     use test::Bencher;
+
+    use super::SigningKey;
+    use crate::SigningScheme;
 
     #[test]
     fn test_key_creation() {
@@ -252,12 +252,13 @@ mod tests {
             Default::default(),
             Protections::all(),
         );
-        let (skey, vkey) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
+        let (_skey, _vkey) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
             .expect("keys should be generated properly");
     }
 
     #[test]
     fn test_signing_and_verification() {
+        use twizzler::object::TypedObject;
         let object_create_spec = ObjectCreate::new(
             Default::default(),
             Default::default(),
@@ -293,7 +294,7 @@ mod tests {
             Protections::all(),
         );
         b.iter(|| {
-            let (skey, vkey) =
+            let (_skey, _vkey) =
                 SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec.clone())
                     .expect("Keys should be generated properly.");
         });

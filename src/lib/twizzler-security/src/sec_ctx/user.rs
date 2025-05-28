@@ -8,7 +8,10 @@ use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::ObjectCreate,
 };
-use twizzler_rt_abi::{error::TwzError, object::MapFlags};
+use twizzler_rt_abi::{
+    error::{ResourceError, TwzError},
+    object::MapFlags,
+};
 
 use super::{CtxMapItem, CtxMapItemType, PermsInfo, SecCtxBase, SecCtxFlags};
 use crate::{
@@ -55,8 +58,8 @@ impl SecCtx {
         global_mask: Protections,
         flags: SecCtxFlags,
     ) -> Result<Self, TwzError> {
-        let new_obj = ObjectBuilder::new(object_create_spec)
-            .build(SecCtxBase::new(global_mask, SecCtxFlags::empty()))?;
+        let new_obj =
+            ObjectBuilder::new(object_create_spec).build(SecCtxBase::new(global_mask, flags))?;
 
         Ok(Self {
             uobj: new_obj,
@@ -87,11 +90,17 @@ impl SecCtx {
 
         // seeing if a vec already exists for target obj, else create new
         if let Some(vec) = base.map.get_mut(&cap.target) {
-            vec.push(map_item);
+            vec.push(map_item).map_err(|_e| {
+                // only possible error case is it being full
+                TwzError::Generic(ResourceError::OutOfResources)
+            })?;
         } else {
             let mut new_vec = Vec::<CtxMapItem, MAP_ITEMS_PER_OBJ>::new();
-            new_vec.push(map_item);
-            base.map.insert(cap.target, new_vec);
+            let _ = new_vec.push(map_item);
+            let _ = base.map.insert(cap.target, new_vec).map_err(|e| {
+                // only possible error case is it being full
+                TwzError::Generic(ResourceError::OutOfResources)
+            })?;
         };
 
         let ptr = tx
@@ -111,7 +120,7 @@ impl SecCtx {
         Ok(())
     }
 
-    pub fn insert_del(&self, del: Del) -> Result<(), TwzError> {
+    pub fn insert_del(&self, _del: Del) -> Result<(), TwzError> {
         todo!("implement later")
     }
 
@@ -136,21 +145,21 @@ impl SecCtx {
 
         let base = self.uobj.base();
 
-        // NOTE: Objects, afaik, dont have default permissions in their metadata yet, so cannot
-        // perform this step.
-        // let target_object = Object::map(target_id, MapFlags::READ)
-        //     .expect("target object should exist!")
-        //     .meta_ptr();
+        // fetch default protections
+        let target_object = Object::map(target_id, MapFlags::READ)
+            .expect("target object should exist!")
+            .meta_ptr();
 
-        // unsafe {
-        //     let metadata = *target_object;
-        //     metadata.flags;
-        // }
-        let mut target_obj_default_prots = Protections::empty();
+        let target_obj_default_prot;
+
+        unsafe {
+            let metadata = *target_object;
+            default_prot = metadata.default_prot;
+        }
 
         // step 1, add up all the permissions granted by VERIFIED capabilities and delegations
         let mut granted_perms =
-            PermsInfo::new(self.id(), target_obj_default_prots, Protections::empty());
+            PermsInfo::new(self.id(), target_obj_default_prot, Protections::empty());
 
         // check for possible items
         let Some(results) = base.map.get(&target_id) else {
@@ -198,7 +207,6 @@ impl SecCtx {
 
         // mask exists, final perms are
         // granted_perms & permmask & (global_mask | override_mask)
-
         granted_perms.provide =
             granted_perms.provide & mask.permmask & (base.global_mask | mask.ovrmask);
 
@@ -226,8 +234,9 @@ mod tests {
     extern crate test;
 
     fn test_security_context_creation() {
-        let default_sec_ctx = SecCtx::default();
-        let new_sec_ctx = SecCtx::new(Default::default(), Protections::all(), SecCtxFlags::empty())
-            .expect("new context should have been created!");
+        let _default_sec_ctx = SecCtx::default();
+        let _new_sec_ctx =
+            SecCtx::new(Default::default(), Protections::all(), SecCtxFlags::empty())
+                .expect("new context should have been created!");
     }
 }

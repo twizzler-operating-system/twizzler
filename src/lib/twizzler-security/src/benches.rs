@@ -8,11 +8,11 @@ use crate::*;
 
 #[bench]
 fn capability_creation(b: &mut Bencher) {
-    let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
+    let (s, _v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
         .expect("keypair creation should not have errored!");
 
     b.iter(|| {
-        let cap = Cap::new(
+        let _cap = Cap::new(
             0x123.into(),
             0x321.into(),
             Protections::all(),
@@ -37,7 +37,7 @@ fn keypair_creation(b: &mut Bencher) {
     );
 
     b.iter(|| {
-        let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
+        let (_s_obj, _v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
             .expect("Keys should be generated properly");
     });
 }

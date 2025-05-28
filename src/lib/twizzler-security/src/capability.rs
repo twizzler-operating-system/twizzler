@@ -195,7 +195,6 @@ impl Cap {
 
 #[cfg(feature = "user")]
 mod tests {
-    use core::hint::black_box;
 
     use crate::*;
 
@@ -317,7 +316,7 @@ mod tests {
             ),
         ];
 
-        let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
+        let (s, _v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
             .expect("keypair creation should not have errored!");
 
         for (test_number, (input, expected)) in table.into_iter().enumerate() {
