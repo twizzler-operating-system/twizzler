@@ -25,6 +25,9 @@ pub struct SigningKey {
     pub scheme: SigningScheme,
 }
 
+#[cfg(feature = "user")]
+use twizzler_abi::syscall::ObjectCreate;
+
 // maybe implement rsa so there is some other key?
 
 impl SigningKey {
@@ -37,7 +40,6 @@ impl SigningKey {
         use alloc::borrow::ToOwned;
 
         use getrandom::getrandom;
-        use twizzler_abi::syscall::ObjectCreate;
 
         #[cfg(feature = "log")]
         debug!("Creating new signing key with scheme: {:?}", scheme);
