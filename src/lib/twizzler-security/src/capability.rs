@@ -200,7 +200,6 @@ mod tests {
 
     extern crate test;
 
-    use test::Bencher;
     use twizzler::object::TypedObject;
     use twizzler_abi::{object::Protections, syscall::ObjectCreate};
     fn default_capability(s_key: &SigningKey) -> Cap {
