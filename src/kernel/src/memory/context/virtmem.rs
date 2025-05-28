@@ -28,7 +28,7 @@ use crate::{
         PhysAddr,
     },
     mutex::Mutex,
-    obj::{self, pages::Page, ObjectRef, PageNumber},
+    obj::{self, pages::PageRef, ObjectRef, PageNumber},
     once::Once,
     security::KERNEL_SCTX,
     spinlock::Spinlock,
@@ -114,11 +114,11 @@ impl TryFrom<VirtAddr> for Slot {
 
 struct ObjectPageProvider {
     pos: usize,
-    pages: Vec<(Arc<Page>, usize, MappingSettings)>,
+    pages: Vec<(PageRef, MappingSettings)>,
 }
 
 impl ObjectPageProvider {
-    pub fn new(pages: Vec<(Arc<Page>, usize, MappingSettings)>) -> Self {
+    pub fn new(pages: Vec<(PageRef, MappingSettings)>) -> Self {
         Self { pages, pos: 0 }
     }
 
@@ -133,7 +133,7 @@ impl PhysAddrProvider for ObjectPageProvider {
         Some(PhysMapInfo {
             addr: page.0.physical_address(),
             len: PageNumber::PAGE_SIZE,
-            settings: page.2,
+            settings: page.1,
         })
     }
 

@@ -22,7 +22,11 @@ use crate::{
         tracker::start_reclaim_thread,
     },
     mutex::Mutex,
-    obj::{lookup_object, pages::Page, LookupFlags, Object, PageNumber},
+    obj::{
+        lookup_object,
+        pages::{Page, PageRef},
+        LookupFlags, Object, PageNumber,
+    },
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},
     thread::{
@@ -121,11 +125,9 @@ fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range
             let pn = PageNumber::from(objpage_nr as usize);
             let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
             // TODO: will need to supply allocator
-            object_tree.add_page(
-                pn,
-                Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack),
-                None,
-            );
+            let page = Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack);
+            let page = PageRef::new(Arc::new(page), 0, 1);
+            object_tree.add_page(pn, page, None);
         }
         drop(object_tree);
 

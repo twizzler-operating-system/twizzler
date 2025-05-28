@@ -11,7 +11,11 @@ use crate::{
         tracker::{alloc_frame, FrameAllocFlags},
         VirtAddr,
     },
-    obj::{self, pages::Page, ObjectRef, PageNumber},
+    obj::{
+        self,
+        pages::{Page, PageRef},
+        ObjectRef, PageNumber,
+    },
     once::Once,
 };
 pub struct BootModule {
@@ -71,6 +75,7 @@ pub fn init(modules: &[BootModule]) {
                 unsafe {
                     va.copy_from(data.as_ptr().add(total), thislen);
                 }
+                let page = PageRef::new(Arc::new(page), 0, 1);
                 obj.add_page(pagenr.into(), page, None);
                 total += thislen;
                 pagenr += 1;
@@ -101,6 +106,7 @@ pub fn init(modules: &[BootModule]) {
             unsafe {
                 va.copy_from(buffer.as_ptr(), 0x1000);
             }
+            let page = PageRef::new(Arc::new(page), 0, 1);
             obj.add_page(
                 PageNumber::from_offset(MAX_SIZE - NULLPAGE_SIZE),
                 page,
