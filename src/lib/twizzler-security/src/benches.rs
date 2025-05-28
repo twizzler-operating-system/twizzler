@@ -6,7 +6,7 @@ use test::Bencher;
 use twizzler::object::TypedObject;
 use twizzler_abi::{object::Protections, syscall::ObjectCreate};
 
-use crate::{Gates, HashingAlgo, Revoc, SigningKey, SigningScheme};
+use crate::*;
 
 #[bench]
 fn capability_creation(b: &mut Bencher) {
