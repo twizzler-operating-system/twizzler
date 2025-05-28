@@ -146,11 +146,6 @@ impl SigningKey {
 
     pub fn sign(&self, msg: &[u8]) -> Result<Signature, SecurityError> {
         match self.scheme {
-            SigningScheme::Ed25519 => {
-                // let mut signing_key: EdSigningKey = self.try_into()?;
-                // Ok(signing_key.sign(msg).into())
-                unimplemented!("until we figure out whats wrong with data layout")
-            }
             SigningScheme::Ecdsa => {
                 let signing_key: EcdsaSigningKey = self.try_into()?;
                 let sig: EcdsaSignature = signing_key.sign(msg);
