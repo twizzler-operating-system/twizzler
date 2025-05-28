@@ -20,7 +20,6 @@ fn capability_creation(b: &mut Bencher) {
             Revoc::default(),
             Gates::default(),
             HashingAlgo::Sha256,
-            SigningScheme::Ecdsa,
         )
         .expect("Capability should have been created.");
     })
@@ -33,21 +32,21 @@ fn something_else(b: &mut Bencher) {
     })
 }
 
-// #[bench]
-// fn keypair_creation(b: &mut Bencher) {
-//     let object_create_spec = ObjectCreate::new(
-//         Default::default(),
-//         twizzler_abi::syscall::LifetimeType::Persistent,
-//         Default::default(),
-//         Default::default(),
-//         Protections::all(),
-//     );
+#[bench]
+fn keypair_creation(b: &mut Bencher) {
+    let object_create_spec = ObjectCreate::new(
+        Default::default(),
+        twizzler_abi::syscall::LifetimeType::Persistent,
+        Default::default(),
+        Default::default(),
+        Protections::all(),
+    );
 
-//     b.iter(|| {
-//         let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
-//             .expect("Keys should be generated properly");
-//     });
-// }
+    b.iter(|| {
+        let (s_obj, v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
+            .expect("Keys should be generated properly");
+    });
+}
 
 #[bench]
 fn capability_verification(b: &mut Bencher) {
@@ -62,7 +61,6 @@ fn capability_verification(b: &mut Bencher) {
         Revoc::default(),
         Gates::default(),
         HashingAlgo::Sha256,
-        SigningScheme::Ecdsa,
     )
     .expect("Capability should have been created.");
 

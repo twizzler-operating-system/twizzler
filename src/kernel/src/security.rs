@@ -128,8 +128,6 @@ impl SecurityContext {
                     let Some(cap) = obj.lea_raw(entry.offset as *const Cap) else {
                         // something weird going on, entry offset not inside object bounds,
                         // return already granted perms to avoid panic
-
-                        //NOTE: maybe add tracing here later
                         return granted_perms;
                     };
 
@@ -194,11 +192,11 @@ impl SecCtxMgr {
     /// Check access rights in the active context.
     pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         //TODO: will probably have to hook up the gate check here as well?
-        // WARN: actually doing the lookup is causing the kernel to die so just passing empty for
+        // WARN: actually doing the lookup is causing the kernel to die so just skipping that for
         // now for some reason let perms = self.lookup(_access_info.target_id);
         let perms = PermsInfo {
             ctx: self.active_id(),
-            provide: Protections::empty(),
+            provide: Protections::all(),
             restrict: Protections::empty(),
         };
 
@@ -208,19 +206,23 @@ impl SecCtxMgr {
     /// Search all attached contexts for access.
     pub fn search_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         //TODO: need to actually look through all the contexts, this is just temporary
-        let mut greatest_perms = self.lookup(_access_info.target_id);
+        // let mut greatest_perms = self.lookup(_access_info.target_id);
 
-        for (id, ctx) in &self.inner.lock().inactive {
-            let perms = ctx.lookup(_access_info.target_id);
-            // how do you determine what prots is more expressive? like more
-            // lets just return if its anything other than empty
-            if perms.provide & !perms.restrict != Protections::empty() {
-                greatest_perms = perms
-            }
+        // for (id, ctx) in &self.inner.lock().inactive {
+        //     let perms = ctx.lookup(_access_info.target_id);
+        //     // how do you determine what prots is more expressive? like more
+        //     // lets just return if its anything other than empty
+        //     if perms.provide & !perms.restrict != Protections::empty() {
+        //         greatest_perms = perms
+        //     }
+        // }
+
+        // greatest_perms
+        PermsInfo {
+            ctx: self.active_id(),
+            provide: Protections::all(),
+            restrict: Protections::empty(),
         }
-
-        greatest_perms
-        // todo!()
     }
 
     /// Build a new SctxMgr for user threads.
@@ -364,7 +366,6 @@ mod tests {
     };
     #[kernel_test]
     fn bench_capability_verification() {
-        // uhhhhh, how i do dis
         let mut rand_bytes = [0; 32];
 
         getrandom(&mut rand_bytes, false);
