@@ -1,5 +1,6 @@
 // i cant make it stop complaining
-#[allow(unused_imports)]
+#![allow(unused_imports)]
+
 extern crate test;
 use test::Bencher;
 use twizzler::object::TypedObject;
