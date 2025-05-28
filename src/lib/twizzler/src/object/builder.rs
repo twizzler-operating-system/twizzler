@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// An object builder, for constructing objects using a builder API.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub struct ObjectBuilder<Base: BaseType> {
     spec: ObjectCreate,
     src_objs: Vec<ObjectSource>,
@@ -41,9 +41,9 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         ObjectBuilder::<U>::new(self.spec)
     }
 
-    /// Add a Source Object that this new object will copy from
-    pub fn add_src(self, obj_src: ObjectSource) -> Self {
-        self.src_objs.push(src);
+    /// Add a Source Object that this new object will copy from.
+    pub fn add_src(mut self, obj_src: ObjectSource) -> Self {
+        self.src_objs.push(obj_src);
         self
     }
 }
