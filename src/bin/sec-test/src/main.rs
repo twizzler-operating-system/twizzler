@@ -1,3 +1,5 @@
+use std::ops::Sub;
+
 use clap::{Parser, Subcommand};
 use colog::default_builder;
 use log::{info, LevelFilter};
@@ -7,7 +9,7 @@ use twizzler::{
 };
 use twizzler_abi::{
     object::Protections,
-    syscall::{sys_sctx_attach, ObjectCreate, ObjectCreateFlags},
+    syscall::{sys_sctx_attach, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_rt_abi::object::MapFlags;
 use twizzler_security::{Cap, SecCtx, SecCtxBase, SecCtxFlags, SigningKey, SigningScheme};
@@ -57,6 +59,24 @@ fn main() {
         Protections::READ,
     );
     info!("creating target object with spec: {:?}", spec);
+
+    let template_obj = ObjectBuilder::new(ObjectCreate::new(
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Protections::all(),
+    ))
+    .build(DumbBase { payload: 123456789 })
+    .unwrap();
+
+    let target_obj = ObjectBuilder::new(ObjectCreate::new(
+        BackingType::Normal,
+        LifetimeType::Volatile,
+        Some(v_key.id()),
+        Default::default(),
+        Protections::READ,
+    )).build(base);
 
     let target_obj = ObjectBuilder::new(spec)
         .build(DumbBase { payload: 123456789 })
