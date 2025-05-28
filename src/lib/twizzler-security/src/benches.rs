@@ -1,10 +1,12 @@
 extern crate test;
 
-use test::Bencher;
-use twizzler::object::TypedObject;
-use twizzler_abi::{object::Protections, syscall::ObjectCreate};
-
-use crate::*;
+#[cfg(feature = "user")]
+use {
+    crate::{Gates, HashingAlgo, Revoc, SigningKey, SigningScheme},
+    test::Bencher,
+    twizzler::object::TypedObject,
+    twizzler_abi::{object::Protections, syscall::ObjectCreate},
+};
 
 #[bench]
 fn capability_creation(b: &mut Bencher) {
