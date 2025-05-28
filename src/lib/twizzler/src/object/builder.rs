@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, mem::MaybeUninit};
 
 use twizzler_abi::{
-    object::{ObjID, Protections},
+    object::Protections,
     syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, ObjectSource},
 };
 use twizzler_rt_abi::object::MapFlags;
