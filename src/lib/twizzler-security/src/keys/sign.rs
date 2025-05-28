@@ -1,18 +1,19 @@
 #[cfg(feature = "log")]
 use log::{debug, error};
-// use ed25519_dalek::{
-//     ed25519::signature::SignerMut, SecretKey, SigningKey as EdSigningKey, SECRET_KEY_LENGTH,
-//     SIGNATURE_LENGTH,
-// };
-use p256::ecdsa::{signature::Signer, Signature as EcdsaSignature, SigningKey as EcdsaSigningKey};
 #[cfg(feature = "user")]
-use twizzler::{
-    marker::BaseType,
-    object::{Object, ObjectBuilder},
+use {
+    twizzler::{
+        marker::BaseType,
+        object::{Object, ObjectBuilder},
+    },
+    twizzler_abi::syscall::ObjectCreate,
 };
-use twizzler_rt_abi::error::TwzError;
+
 // 256 / 8 => 32 bytes for secret key length, since we are using curve p256, 256 bit curve
 const ECDSA_SECRET_KEY_LENGTH: usize = 32;
+
+use p256::ecdsa::{signature::Signer, Signature as EcdsaSignature, SigningKey as EcdsaSigningKey};
+use twizzler_rt_abi::error::TwzError;
 
 use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
 use crate::{SecurityError, SigningScheme};
@@ -24,9 +25,6 @@ pub struct SigningKey {
     len: usize,
     pub scheme: SigningScheme,
 }
-
-#[cfg(feature = "user")]
-use twizzler_abi::syscall::ObjectCreate;
 
 // maybe implement rsa so there is some other key?
 
