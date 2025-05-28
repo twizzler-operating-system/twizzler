@@ -273,7 +273,7 @@ impl DmaPool {
     }
 
     fn new_object(&self) -> Result<Arc<AllocatableDmaObject>, AllocationError> {
-        let obj = Arc::new(AllocatableDmaObject::new(self.spec)?);
+        let obj = Arc::new(AllocatableDmaObject::new(self.spec.clone())?);
         Ok(obj)
     }
 
