@@ -220,9 +220,9 @@ mod tests {
     // NOTE: would be nice to do table testing here
     fn test_capability_creation() {
         // just simple thang
-        let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
+        let (s, _v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
             .expect("keypair creation should not have errored!");
-        let cap = default_capability(s.base());
+        let _cap = default_capability(s.base());
     }
 
     #[test]
