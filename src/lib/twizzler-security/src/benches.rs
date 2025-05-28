@@ -1,11 +1,11 @@
 extern crate test;
-use core::hint::black_box;
 
 use test::Bencher;
 use twizzler::object::TypedObject;
 use twizzler_abi::{object::Protections, syscall::ObjectCreate};
 
 use crate::*;
+
 #[bench]
 fn capability_creation(b: &mut Bencher) {
     let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())

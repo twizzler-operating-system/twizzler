@@ -203,8 +203,7 @@ mod tests {
 
     use test::Bencher;
     use twizzler::object::TypedObject;
-    use twizzler_abi::syscall::ObjectCreate;
-
+    use twizzler_abi::{object::Protections, syscall::ObjectCreate};
     fn default_capability(s_key: &SigningKey) -> Cap {
         Cap::new(
             0x123.into(),
@@ -241,7 +240,6 @@ mod tests {
 
     #[test]
     fn test_capability_gates() {
-        use crate::Gates;
         struct Input {
             /// gates that the capability will hold
             capability_gates: Gates,

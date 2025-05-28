@@ -350,7 +350,7 @@ impl Drop for SecCtxMgr {
 mod tests {
     use core::hint::black_box;
 
-    use twizzler_abi::{object::Protections, syscall::ObjectCreate};
+    use twizzler_abi::object::Protections;
     use twizzler_kernel_macros::kernel_test;
     use twizzler_security::{Cap, SigningKey, SigningScheme};
 
