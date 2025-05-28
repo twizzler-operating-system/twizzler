@@ -70,7 +70,7 @@ pub struct SecCtxBase {
     /// The global mask that applies to all protections gratned by this Security Context.
     pub global_mask: Protections,
     /// The running offset into the object where a new entry can be inserted.
-    offset: usize,
+    pub offset: usize,
     /// Flags specific to this security context.
     pub flags: SecCtxFlags,
 }
