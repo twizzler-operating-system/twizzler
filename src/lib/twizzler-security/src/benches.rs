@@ -42,8 +42,10 @@ fn keypair_creation(b: &mut Bencher) {
     );
 
     b.iter(|| {
-        let _ = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
-            .expect("Keys should be generated properly");
+        let _ = core::hint::black_box(
+            SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
+                .expect("Keys should be generated properly"),
+        );
     });
 }
 
