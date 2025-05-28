@@ -4,7 +4,10 @@
 extern crate test;
 use test::Bencher;
 use twizzler::object::TypedObject;
-use twizzler_abi::{object::Protections, syscall::ObjectCreate};
+use twizzler_abi::{
+    object::Protections,
+    syscall::{LifetimeType, ObjectCreate},
+};
 
 use crate::*;
 
@@ -32,14 +35,14 @@ fn capability_creation(b: &mut Bencher) {
 fn keypair_creation(b: &mut Bencher) {
     let object_create_spec = ObjectCreate::new(
         Default::default(),
-        Default::default(),
+        LifetimeType::Volatile,
         Default::default(),
         Default::default(),
         Protections::all(),
     );
 
     b.iter(|| {
-        let (_s_obj, _v_obj) = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
+        let _ = SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec)
             .expect("Keys should be generated properly");
     });
 }
