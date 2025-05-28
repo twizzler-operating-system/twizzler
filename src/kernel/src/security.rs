@@ -10,13 +10,12 @@ use twizzler_security::{Cap, CtxMapItemType, SecCtxBase, VerifyingKey};
 
 use crate::{
     memory::context::{
-        kernel_context, virtmem::VirtContext, KernelMemoryContext, KernelObject,
-        KernelObjectHandle, ObjectContextInfo, UserContext,
+        kernel_context, KernelMemoryContext, KernelObject, KernelObjectHandle, ObjectContextInfo,
+        UserContext,
     },
     mutex::Mutex,
     obj::{lookup_object, LookupFlags, LookupResult},
     once::Once,
-    operations::map_object_into_context,
     spinlock::Spinlock,
     thread::current_memory_context,
 };
@@ -349,33 +348,21 @@ impl Drop for SecCtxMgr {
 }
 
 mod tests {
-    use alloc::sync::Arc;
     use core::hint::black_box;
 
     use twizzler_abi::{object::Protections, syscall::ObjectCreate};
     use twizzler_kernel_macros::kernel_test;
-    use twizzler_security::{Cap, SecCtxBase, SigningKey, SigningScheme};
+    use twizzler_security::{Cap, SigningKey, SigningScheme};
 
-    use super::SecurityContext;
-    use crate::{
-        memory::context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
-        obj::Object,
-        random::getrandom,
-        time::bench_clock,
-        utils::benchmark,
-    };
+    use crate::{random::getrandom, utils::benchmark};
     #[kernel_test]
     fn bench_capability_verification() {
         let mut rand_bytes = [0; 32];
 
         getrandom(&mut rand_bytes, false);
 
-        let (s_key, v_key) = SigningKey::new_kernel_keypair(
-            &SigningScheme::Ecdsa,
-            ObjectCreate::default(),
-            rand_bytes,
-        )
-        .expect("shouldnt have errored");
+        let (s_key, v_key) = SigningKey::new_kernel_keypair(&SigningScheme::Ecdsa, rand_bytes)
+            .expect("shouldnt have errored");
 
         let cap = Cap::new(
             0x123.into(),
@@ -389,7 +376,9 @@ mod tests {
         .expect("capability creation shouldnt have errored");
 
         benchmark(|| {
-            let x = black_box(cap.verify_sig(&v_key).expect("should succeed"));
+            let _x = black_box(cap.verify_sig(&v_key).expect("should succeed"));
         });
     }
+
+    //TODO: write a thorough security context test when that stuff is implemented
 }

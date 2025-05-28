@@ -10,7 +10,7 @@ use twizzler::{
     marker::BaseType,
     object::{Object, ObjectBuilder},
 };
-use twizzler_rt_abi::{error::TwzError, object::Protections};
+use twizzler_rt_abi::error::TwzError;
 // 256 / 8 => 32 bytes for secret key length, since we are using curve p256, 256 bit curve
 const ECDSA_SECRET_KEY_LENGTH: usize = 32;
 
@@ -91,7 +91,6 @@ impl SigningKey {
     #[cfg(feature = "kernel")]
     pub fn new_kernel_keypair(
         scheme: &SigningScheme,
-        obj_create_spec: ObjectCreate,
         random_bytes: [u8; 32],
     ) -> Result<(SigningKey, VerifyingKey), TwzError> {
         match scheme {
@@ -234,7 +233,11 @@ impl From<EcdsaSigningKey> for SigningKey {
 }
 
 mod tests {
-    use super::*;
+
+    use twizzler::object::TypedObject;
+    use twizzler_abi::{object::Protections, syscall::ObjectCreate};
+
+    use crate::*;
 
     #[cfg(feature = "user")]
     extern crate test;
@@ -245,11 +248,9 @@ mod tests {
     #[test]
     #[cfg(feature = "user")]
     fn test_key_creation() {
-        use twizzler_abi::object::Protections;
-
         let object_create_spec = ObjectCreate::new(
             Default::default(),
-            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
             Default::default(),
             Default::default(),
             Protections::all(),
@@ -261,11 +262,9 @@ mod tests {
     #[test]
     #[cfg(feature = "user")]
     fn test_signing_and_verification() {
-        use twizzler::object::TypedObject;
-
         let object_create_spec = ObjectCreate::new(
             Default::default(),
-            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
             Default::default(),
             Default::default(),
             Protections::all(),
@@ -293,7 +292,7 @@ mod tests {
     fn bench_keypair_creation(b: &mut Bencher) {
         let object_create_spec = ObjectCreate::new(
             Default::default(),
-            twizzler_abi::syscall::LifetimeType::Persistent,
+            Default::default(),
             Default::default(),
             Default::default(),
             Protections::all(),

@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use twizzler_abi::object::{ObjID, Protections};
 
 use crate::{
-    flags::{CapFlags, HashingAlgo, SigningScheme},
+    flags::{CapFlags, HashingAlgo},
     Gates, Revoc, SecurityError, Signature, SigningKey, VerifyingKey,
 };
 

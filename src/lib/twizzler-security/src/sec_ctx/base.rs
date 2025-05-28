@@ -2,7 +2,6 @@ use core::fmt::Display;
 
 use heapless::{FnvIndexMap, Vec};
 use twizzler_abi::object::{ObjID, Protections, NULLPAGE_SIZE};
-use twizzler_rt_abi::error::TwzError;
 
 use crate::{Cap, Del};
 
@@ -50,8 +49,6 @@ pub struct CtxMapItem {
     /// The offset into the object
     pub offset: usize,
 }
-
-
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

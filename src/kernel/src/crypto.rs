@@ -31,7 +31,7 @@ mod test {
     use twizzler_kernel_macros::kernel_test;
 
     use super::*;
-    use crate::{is_bench_mode, time::bench_clock, utils::benchmark};
+    use crate::utils::benchmark;
 
     #[kernel_test]
     fn test_hashing() {
@@ -74,7 +74,7 @@ mod test {
             b"ECDSA proves knowledge of a secret number in the context of a single message";
 
         benchmark(|| {
-            let signature: Signature = black_box(sign(&private_key, message));
+            let _signature: Signature = black_box(sign(&private_key, message));
         });
     }
     #[kernel_test]
@@ -90,7 +90,7 @@ mod test {
         let pub_key: VerifyingKey = private_key.into();
 
         benchmark(|| {
-            let ver = black_box(
+            let _ver = black_box(
                 verify(&pub_key, message, signature).expect("should be a valid signature"),
             );
         });
