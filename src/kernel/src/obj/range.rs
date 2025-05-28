@@ -36,13 +36,13 @@ impl PageRange {
         }
     }
 
-    fn try_get_page(&self, pn: PageNumber) -> Option<PageRef> {
+    fn try_get_page(&self, pn: PageNumber) -> Option<(PageRef, usize)> {
         assert!(pn >= self.start);
         let off = pn - self.start;
         self.pv.lock().try_get_page(self.offset + off)
     }
 
-    fn add_page(&self, pn: PageNumber, page: Page) -> Arc<Page> {
+    fn add_page(&self, pn: PageNumber, page: Page) -> (Arc<Page>, usize) {
         assert!(pn >= self.start);
         assert!(pn < self.start.offset(self.length));
         let off = pn - self.start;
@@ -68,8 +68,7 @@ impl PageRange {
         }
 
         let mut pv = self.pv.lock();
-        pv.truncate_and_drain(self.offset, self.length);
-        self.offset = 0;
+        self.offset = pv.truncate_and_drain(self.offset, self.length);
     }
 
     pub fn split_at(&self, pn: PageNumber) -> (Option<PageRange>, PageRange, Option<PageRange>) {
@@ -130,7 +129,7 @@ pub struct PageRangeTree {
 
 #[derive(Debug)]
 pub enum PageStatus {
-    Ready(PageRef, bool),
+    Ready(PageRef, usize, bool),
     NoPage,
     AllocFail,
     DataFail,
@@ -167,8 +166,8 @@ impl PageRangeTree {
         };
         let (r1, mut r2, r3) = range.split_at(pn);
         /* r2 is always the one we want */
-        let pv = if discard {
-            PageVec::new()
+        let (pv, off) = if discard {
+            (PageVec::new(), 0)
         } else {
             let Some(pv) = r2
                 .pv
@@ -183,7 +182,7 @@ impl PageRangeTree {
         };
 
         r2.pv = Arc::new(Mutex::new(pv));
-        r2.offset = 0;
+        r2.offset = off;
 
         if let Some(r1) = r1 {
             let res = self.insert_replace(r1.range(), r1);
@@ -200,11 +199,11 @@ impl PageRangeTree {
         true
     }
 
-    fn try_do_get_page(&self, pn: PageNumber) -> Option<(PageRef, bool)> {
+    fn try_do_get_page(&self, pn: PageNumber) -> Option<(PageRef, usize, bool)> {
         let range = self.get(pn)?;
         let page = range.try_get_page(pn)?;
         let shared = range.is_shared();
-        Some((page, shared))
+        Some((page.0, page.1, shared))
     }
 
     pub fn get_page(
@@ -213,29 +212,29 @@ impl PageRangeTree {
         is_write: bool,
         allocator: Option<&mut FrameAllocator>,
     ) -> PageStatus {
-        let Some((page, shared)) = self.try_do_get_page(pn) else {
+        let Some((page, offset, shared)) = self.try_do_get_page(pn) else {
             return PageStatus::NoPage;
         };
         if !shared || !is_write {
-            return PageStatus::Ready(page, shared);
+            return PageStatus::Ready(page, offset, shared);
         }
         if let Some(allocator) = allocator {
             if !self.split_into_three(pn, false, allocator) {
                 return PageStatus::AllocFail;
             }
         }
-        let Some((page, shared)) = self.try_do_get_page(pn) else {
+        let Some((page, offset, shared)) = self.try_do_get_page(pn) else {
             return PageStatus::NoPage;
         };
         assert!(!shared);
-        PageStatus::Ready(page, false)
+        PageStatus::Ready(page, offset, false)
     }
 
     pub fn try_get_page(&mut self, pn: PageNumber) -> PageStatus {
-        let Some((page, shared)) = self.try_do_get_page(pn) else {
+        let Some((page, offset, shared)) = self.try_do_get_page(pn) else {
             return PageStatus::NoPage;
         };
-        PageStatus::Ready(page, shared)
+        PageStatus::Ready(page, offset, shared)
     }
 
     pub fn insert_replace(
@@ -279,7 +278,7 @@ impl PageRangeTree {
         pn: PageNumber,
         page: Page,
         allocator: Option<&mut FrameAllocator>,
-    ) -> Option<Arc<Page>> {
+    ) -> Option<(Arc<Page>, usize)> {
         const MAX_EXTENSION_ALLOWED: usize = 16;
         let range = self.tree.get(&pn);
         if let Some(mut range) = range {

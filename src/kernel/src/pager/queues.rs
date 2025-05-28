@@ -121,7 +121,11 @@ fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range
             let pn = PageNumber::from(objpage_nr as usize);
             let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
             // TODO: will need to supply allocator
-            object_tree.add_page(pn, Page::new_wired(pa, CacheType::WriteBack), None);
+            object_tree.add_page(
+                pn,
+                Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack),
+                None,
+            );
         }
         drop(object_tree);
 

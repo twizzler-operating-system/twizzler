@@ -441,7 +441,7 @@ impl Frame {
 
     /// Copy contents of one frame into another. If the other frame is marked as zeroed, copying
     /// will not happen. Both frames are locked first.
-    pub fn copy_contents_from(&self, other: &Frame) {
+    pub fn copy_contents_from(&self, other: &Frame, offset: usize) {
         self.lock();
         // We don't need to lock the other frame, since if its contents aren't synchronized with
         // this operation, it could have reordered to before or after.
@@ -468,7 +468,7 @@ impl Frame {
         let ptr: *mut u8 = virt.as_mut_ptr();
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
 
-        let othervirt = phys_to_virt(other.pa);
+        let othervirt = phys_to_virt(other.pa.offset(offset).unwrap());
         let otherptr: *mut u8 = othervirt.as_mut_ptr();
         let otherslice = unsafe { core::slice::from_raw_parts_mut(otherptr, self.size()) };
 
