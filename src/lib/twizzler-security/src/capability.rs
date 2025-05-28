@@ -1,4 +1,3 @@
-// use ed25519_dalek::SIGNATURE_LENGTH;
 #[cfg(feature = "log")]
 use log::debug;
 use sha2::{Digest, Sha256};
@@ -217,9 +216,7 @@ mod tests {
     }
 
     #[test]
-    // NOTE: would be nice to do table testing here
     fn test_capability_creation() {
-        // just simple thang
         let (s, _v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
             .expect("keypair creation should not have errored!");
         let _cap = default_capability(s.base());
@@ -227,7 +224,6 @@ mod tests {
 
     #[test]
     fn test_capability_verification() {
-        // just simple thang
         let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
             .expect("keypair creation should not have errored!");
 
