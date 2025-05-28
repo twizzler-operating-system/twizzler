@@ -92,7 +92,7 @@ impl SecCtx {
         if let Some(vec) = base.map.get_mut(&cap.target) {
             vec.push(map_item).map_err(|_e| {
                 // only possible error case is it being full
-                TwzError::Generic(ResourceError::OutOfResources)
+                TwzError::Resource(ResourceError::OutOfResources)
             })?;
         } else {
             let mut new_vec = Vec::<CtxMapItem, MAP_ITEMS_PER_OBJ>::new();
