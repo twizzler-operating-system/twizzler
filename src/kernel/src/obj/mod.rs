@@ -9,7 +9,7 @@ use core::{
 };
 
 use pages::PageRef;
-use range::PageStatus;
+use range::{GetPageFlags, PageStatus};
 use twizzler_abi::{
     meta::{MetaFlags, MetaInfo},
     object::{ObjID, Protections, MAX_SIZE},
@@ -196,7 +196,7 @@ impl Object {
         let mut v = Vec::new();
         for i in 0..len {
             // TODO: we'll need to handle failures here when we expand the paging system.
-            let p = tree.get_page(start.offset(i), true, None);
+            let p = tree.get_page(start.offset(i), GetPageFlags::empty(), None);
             if let PageStatus::Ready(p, _) = p {
                 v.push(p.physical_address());
             } else {

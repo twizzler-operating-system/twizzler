@@ -23,6 +23,7 @@ use crate::{
         PhysAddr, VirtAddr,
     },
     mutex::LockGuard,
+    obj::range::GetPageFlags,
 };
 
 /// An object page can be either a physical frame (allocatable memory) or a static physical address
@@ -247,7 +248,9 @@ impl Object {
             let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
             let page_offset = offset % PageNumber::PAGE_SIZE;
 
-            if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true, None) {
+            if let PageStatus::Ready(page, _) =
+                obj_page_tree.get_page(page_number, GetPageFlags::WRITE, None)
+            {
                 let t = page.get_mut_to_val::<T>(page_offset);
                 *t = val;
             }
@@ -262,7 +265,9 @@ impl Object {
         let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
         let page_offset = offset % PageNumber::PAGE_SIZE;
 
-        if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true, None) {
+        if let PageStatus::Ready(page, _) =
+            obj_page_tree.get_page(page_number, GetPageFlags::empty(), None)
+        {
             let t = page.get_mut_to_val::<AtomicU64>(page_offset);
             (*t).load(Ordering::SeqCst)
         } else {
@@ -275,7 +280,10 @@ impl Object {
         mut page_tree: LockGuard<'a, PageRangeTree>,
         page_number: PageNumber,
     ) -> LockGuard<'a, PageRangeTree> {
-        if matches!(page_tree.try_get_page(page_number), PageStatus::NoPage) {
+        if matches!(
+            page_tree.try_get_page(page_number, GetPageFlags::empty()),
+            PageStatus::NoPage
+        ) {
             if self.use_pager() {
                 drop(page_tree);
                 crate::pager::get_object_page(self, page_number);
@@ -297,7 +305,9 @@ impl Object {
         let mut obj_page_tree = self.lock_page_tree();
         let page_number = PageNumber::from_offset(MAX_SIZE - NULLPAGE_SIZE);
 
-        if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true, None) {
+        if let PageStatus::Ready(page, _) =
+            obj_page_tree.get_page(page_number, GetPageFlags::empty(), None)
+        {
             unsafe {
                 let t = page.get_mut_to_val::<MetaInfo>(0);
                 Some(t.read())
@@ -317,7 +327,9 @@ impl Object {
         let mut obj_page_tree = self.lock_page_tree();
         let page_number = PageNumber::from_offset(MAX_SIZE - NULLPAGE_SIZE);
 
-        if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true, None) {
+        if let PageStatus::Ready(page, _) =
+            obj_page_tree.get_page(page_number, GetPageFlags::WRITE, None)
+        {
             unsafe {
                 let t = page.get_mut_to_val::<MetaInfo>(0);
                 t.write(meta);
@@ -357,7 +369,9 @@ impl Object {
         let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
         let page_offset = offset % PageNumber::PAGE_SIZE;
 
-        if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true, None) {
+        if let PageStatus::Ready(page, _) =
+            obj_page_tree.get_page(page_number, GetPageFlags::empty(), None)
+        {
             let t = page.get_mut_to_val::<AtomicU32>(page_offset);
             (*t).load(Ordering::SeqCst)
         } else {
@@ -377,7 +391,8 @@ impl Object {
                 let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
                 let thislen = core::cmp::min(0x1000, len - count);
 
-                if let PageStatus::Ready(page, _) = obj_page_tree.get_page(page_number, true, None)
+                if let PageStatus::Ready(page, _) =
+                    obj_page_tree.get_page(page_number, GetPageFlags::WRITE, None)
                 {
                     let dest = &mut page.as_mut_slice()[0..thislen];
                     dest.copy_from_slice(&bytes[count..(count + thislen)]);

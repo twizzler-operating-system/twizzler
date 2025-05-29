@@ -20,7 +20,7 @@ use crate::{
     },
     obj::{
         pages::{Page, PageRef},
-        range::{PageRangeTree, PageStatus},
+        range::{GetPageFlags, PageRangeTree, PageStatus},
         ObjectRef, PageNumber,
     },
     security::PermsInfo,
@@ -88,8 +88,12 @@ impl MapRegion {
 
         let mut obj_page_tree = self.object.lock_page_tree();
         obj_page_tree = self.object.ensure_in_core(obj_page_tree, page_number);
-        let mut status =
-            obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write, Some(&mut fa));
+        let get_page_flags = if cause == MemoryAccessKind::Write {
+            GetPageFlags::WRITE
+        } else {
+            GetPageFlags::empty()
+        };
+        let mut status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));
         if matches!(status, PageStatus::NoPage) && !self.object.use_pager() {
             if let Some(frame) = fa.try_allocate() {
                 let page = Page::new(frame);
@@ -100,15 +104,17 @@ impl MapRegion {
                     Some(&mut fa),
                 );
             }
-            status = obj_page_tree.get_page(
-                page_number,
-                cause == MemoryAccessKind::Write,
-                Some(&mut fa),
-            );
+            status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));
             if matches!(status, PageStatus::NoPage) {
                 logln!("spuriously failed to back volatile object with DRAM -- retrying fault");
                 return Ok(());
             }
+        }
+
+        if let PageStatus::Locked(sleeper) = status {
+            drop(obj_page_tree);
+            sleeper.wait();
+            return self.map(addr, cause, perms, default_prot, mapper);
         }
 
         // Step 4: do the mapping. If the page isn't present by now, report data loss.
