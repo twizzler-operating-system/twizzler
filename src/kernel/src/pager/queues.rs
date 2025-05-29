@@ -8,6 +8,7 @@ use twizzler_abi::{
         ObjectRange, PagerCompletionData, PagerRequest, PhysRange, RequestFromKernel,
         RequestFromPager,
     },
+    syscall::MapFlags,
 };
 use twizzler_rt_abi::error::{ObjectError, TwzError};
 
@@ -64,6 +65,7 @@ fn pager_request_copy_user_phys(
         object,
         Protections::READ | Protections::WRITE,
         CacheType::WriteBack,
+        MapFlags::empty(),
     ));
     let Ok(vaddr) = ko.start_addr().offset(offset) else {
         return CompletionToPager::new(PagerCompletionData::Error(

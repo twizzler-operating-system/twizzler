@@ -13,6 +13,7 @@ bitflags! {
     /// Flags to pass to [sys_object_map].
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct MapFlags: u32 {
+        const STABLE = 1;
     }
 }
 

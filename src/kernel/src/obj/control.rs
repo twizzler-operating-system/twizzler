@@ -6,7 +6,7 @@
 use alloc::sync::Arc;
 use core::ptr::NonNull;
 
-use twizzler_abi::{device::CacheType, object::Protections};
+use twizzler_abi::{device::CacheType, object::Protections, syscall::MapFlags};
 
 use super::pages::PageRef;
 use crate::{
@@ -52,6 +52,7 @@ impl<Base> ControlObjectCacher<Base> {
                 object.clone(),
                 Protections::READ | Protections::WRITE,
                 CacheType::WriteBack,
+                MapFlags::empty(),
             ));
             QuickOrKernel::Kernel(kobj)
         } else {
