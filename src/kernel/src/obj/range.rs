@@ -23,7 +23,7 @@ impl RangeSleep {
         }
     }
 
-    fn wait(&self) {
+    pub fn wait(&self) {
         loop {
             let guard = self.locked.lock();
             if !*guard {
@@ -33,11 +33,11 @@ impl RangeSleep {
         }
     }
 
-    fn set_lock(&self) {
+    pub fn set_lock(&self) {
         *self.locked.lock() = true;
     }
 
-    fn reset_lock(&self) {
+    pub fn reset_lock(&self) {
         *self.locked.lock() = false;
         self.wait.signal();
     }
@@ -182,6 +182,14 @@ pub enum PageStatus {
     Locked(Arc<RangeSleep>),
 }
 
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    pub struct GetPageFlags : u32 {
+        const WRITE = 1;
+        const STABLE = 2;
+    }
+}
+
 impl PageRangeTree {
     pub fn new() -> Self {
         Self {
@@ -254,17 +262,17 @@ impl PageRangeTree {
     pub fn get_page(
         &mut self,
         pn: PageNumber,
-        is_write: bool,
+        flags: GetPageFlags,
         allocator: Option<&mut FrameAllocator>,
     ) -> PageStatus {
         let Some((page, shared, locked)) = self.try_do_get_page(pn) else {
             return PageStatus::NoPage;
         };
-        if locked {
+        if locked && flags.contains(GetPageFlags::STABLE) {
             let range = self.get_mut(pn).unwrap();
             return PageStatus::Locked(range.sleeper());
         }
-        if !shared || !is_write {
+        if !shared || !flags.contains(GetPageFlags::WRITE) {
             return PageStatus::Ready(page, shared);
         }
         if let Some(allocator) = allocator {
@@ -279,11 +287,11 @@ impl PageRangeTree {
         PageStatus::Ready(page, shared)
     }
 
-    pub fn try_get_page(&mut self, pn: PageNumber) -> PageStatus {
+    pub fn try_get_page(&mut self, pn: PageNumber, flags: GetPageFlags) -> PageStatus {
         let Some((page, shared, locked)) = self.try_do_get_page(pn) else {
             return PageStatus::NoPage;
         };
-        if locked {
+        if locked && flags.contains(GetPageFlags::STABLE) {
             let range = self.get_mut(pn).unwrap();
             return PageStatus::Locked(range.sleeper());
         }

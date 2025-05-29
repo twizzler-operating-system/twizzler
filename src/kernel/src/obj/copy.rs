@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use super::{
     pages::{Page, PageRef},
-    range::{PageRange, PageRangeTree, PageStatus},
+    range::{GetPageFlags, PageRange, PageRangeTree, PageStatus},
     InvalidateMode, ObjectRef, PageNumber,
 };
 use crate::{memory::tracker::FrameAllocator, mutex::LockGuard};
@@ -74,8 +74,8 @@ fn copy_single(
     max: usize,
     allocator: &mut FrameAllocator,
 ) -> Option<()> {
-    let src_page = src_tree.get_page(src_point, false, None);
-    let dest_page = dest_tree.get_page(dest_point, true, Some(allocator));
+    let src_page = src_tree.get_page(src_point, GetPageFlags::empty(), None);
+    let dest_page = dest_tree.get_page(dest_point, GetPageFlags::WRITE, Some(allocator));
     let dest_page = match dest_page {
         PageStatus::Ready(page, _) => page,
         PageStatus::NoPage => dest_tree.add_page(
@@ -104,7 +104,9 @@ fn zero_single(
     max: usize,
 ) {
     // if there's no page here, our work is done
-    if let PageStatus::Ready(dest_page, _) = dest_tree.get_page(dest_point, true, None) {
+    if let PageStatus::Ready(dest_page, _) =
+        dest_tree.get_page(dest_point, GetPageFlags::WRITE, None)
+    {
         dest_page.as_mut_slice()[offset..max].fill(0);
     }
 }
@@ -280,8 +282,8 @@ fn copy_bytes(
     let mut remaining = byte_length;
 
     while remaining > 0 {
-        let src_page = src_tree.get_page(src_point, false, None);
-        let dest_page = dest_tree.get_page(dest_point, true, Some(allocator));
+        let src_page = src_tree.get_page(src_point, GetPageFlags::empty(), None);
+        let dest_page = dest_tree.get_page(dest_point, GetPageFlags::WRITE, Some(allocator));
         let dest_page = match dest_page {
             PageStatus::Ready(page, _) => page,
             PageStatus::NoPage => dest_tree.add_page(
@@ -466,7 +468,7 @@ mod test {
         obj::{
             copy::zero_ranges,
             pages::{Page, PageRef},
-            range::PageStatus,
+            range::{GetPageFlags, PageStatus},
             ObjectRef, PageNumber,
         },
         userinit::create_blank_object,
@@ -559,7 +561,7 @@ mod test {
             let mut tree: crate::mutex::LockGuard<'_, crate::obj::range::PageRangeTree> =
                 src.lock_page_tree();
             let pn = PageNumber::from_offset((p as usize) * PageNumber::PAGE_SIZE);
-            let sp = tree.get_page(pn, true, Some(&mut allocator));
+            let sp = tree.get_page(pn, GetPageFlags::WRITE, Some(&mut allocator));
             let sp = match sp {
                 PageStatus::Ready(page, _) => page,
                 PageStatus::NoPage => tree
