@@ -5,7 +5,7 @@ use twizzler_abi::{
     device::CacheType,
     object::Protections,
     syscall::{
-        ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
+        MapFlags, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
         ThreadSyncWake,
     },
 };
@@ -122,6 +122,7 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
                 obj,
                 Protections::READ | Protections::WRITE,
                 CacheType::WriteBack,
+                MapFlags::empty(),
             ));
         let base = handle.base();
         let sub = unsafe {

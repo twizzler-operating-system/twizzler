@@ -7,6 +7,7 @@ use region::{MapRegion, RegionManager};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::MapFlags,
 };
 use twizzler_rt_abi::error::{ResourceError, TwzError};
 
@@ -297,6 +298,7 @@ impl UserContext for VirtContext {
             offset: 0,
             range: slot.range(),
             shadow: None,
+            flags: object_info.flags,
         };
         object_info.object().add_context(self);
         let mut slots = self.regions.lock();
@@ -363,11 +365,12 @@ pub struct VirtContextSlot {
     slot: Slot,
     prot: Protections,
     cache: CacheType,
+    flags: MapFlags,
 }
 
 impl From<&VirtContextSlot> for ObjectContextInfo {
     fn from(info: &VirtContextSlot) -> Self {
-        ObjectContextInfo::new(info.obj.clone(), info.prot, info.cache)
+        ObjectContextInfo::new(info.obj.clone(), info.prot, info.cache, info.flags)
     }
 }
 
@@ -507,6 +510,7 @@ impl KernelMemoryContext for VirtContext {
             prot: info.prot(),
             cache_type: info.cache(),
             shadow: None,
+            flags: info.flags,
         };
         slots.insert_region(new_slot_info);
         KernelObjectVirtHandle {

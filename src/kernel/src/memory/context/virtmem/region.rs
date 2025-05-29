@@ -5,6 +5,7 @@ use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections},
+    syscall::MapFlags,
     upcall::{MemoryAccessKind, ObjectMemoryError, ObjectMemoryFaultInfo, UpcallInfo},
 };
 use twizzler_rt_abi::error::{IoError, RawTwzError, TwzError};
@@ -33,6 +34,7 @@ pub struct MapRegion {
     pub offset: u64,
     pub cache_type: CacheType,
     pub prot: Protections,
+    pub flags: MapFlags,
     pub range: Range<VirtAddr>,
 }
 
@@ -42,6 +44,7 @@ impl From<&MapRegion> for ObjectContextInfo {
             object: value.object.clone(),
             cache: value.cache_type,
             perms: value.prot,
+            flags: value.flags,
         }
     }
 }
@@ -97,7 +100,6 @@ impl MapRegion {
         if matches!(status, PageStatus::NoPage) && !self.object.use_pager() {
             if let Some(frame) = fa.try_allocate() {
                 let page = Page::new(frame);
-                logln!("adding page {}", page_number);
                 obj_page_tree.add_page(
                     page_number,
                     PageRef::new(Arc::new(page), 0, 1),

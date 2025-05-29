@@ -190,8 +190,25 @@ impl PageRef {
         }
     }
 
+    pub fn trimmed(&self, count: usize) -> Self {
+        assert!(count <= self.count);
+        Self {
+            page: self.page.clone(),
+            pn: self.pn,
+            count,
+        }
+    }
+
     pub fn nr_pages(&self) -> usize {
         self.count
+    }
+
+    pub fn page_offset(&self) -> usize {
+        self.pn
+    }
+
+    pub fn ref_count(&self) -> usize {
+        Arc::strong_count(&self.page)
     }
 
     pub fn as_virtaddr(&self) -> VirtAddr {

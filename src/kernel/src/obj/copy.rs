@@ -456,7 +456,7 @@ pub fn zero_ranges(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
 mod test {
     use alloc::sync::Arc;
 
-    use twizzler_abi::{device::CacheType, object::Protections};
+    use twizzler_abi::{device::CacheType, object::Protections, syscall::MapFlags};
 
     use super::copy_ranges;
     use crate::{
@@ -485,6 +485,7 @@ mod test {
             dest.clone(),
             Protections::READ,
             CacheType::WriteBack,
+            MapFlags::empty(),
         ));
         let dptr = dko.start_addr();
 
@@ -492,6 +493,7 @@ mod test {
             src.clone(),
             Protections::READ,
             CacheType::WriteBack,
+            MapFlags::empty(),
         ));
         let sptr = sko.start_addr();
 
@@ -524,6 +526,7 @@ mod test {
                 dest.clone(),
                 Protections::READ,
                 CacheType::WriteBack,
+                MapFlags::empty(),
             ));
             let dptr = dko.start_addr();
             let dest_slice = unsafe {
@@ -539,6 +542,7 @@ mod test {
             dest.clone(),
             Protections::READ,
             CacheType::WriteBack,
+            MapFlags::empty(),
         ));
         let dptr = dko.start_addr();
         let dest_slice = unsafe {
