@@ -1,11 +1,15 @@
-use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{
+    collections::{btree_map::BTreeMap, btree_set::BTreeSet},
+    sync::Arc,
+    vec::Vec,
+};
 use core::ops::Range;
 
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
     device::CacheType,
-    object::{ObjID, Protections},
-    syscall::MapFlags,
+    object::{ObjID, Protections, MAX_SIZE},
+    syscall::{MapControlCmd, MapFlags},
     upcall::{MemoryAccessKind, ObjectMemoryError, ObjectMemoryFaultInfo, UpcallInfo},
 };
 use twizzler_rt_abi::error::{IoError, RawTwzError, TwzError};
@@ -19,12 +23,15 @@ use crate::{
         pagetables::{MappingCursor, MappingFlags, MappingSettings},
         tracker::{FrameAllocFlags, FrameAllocator},
     },
+    mutex::Mutex,
     obj::{
+        copy::copy_range_to_shadow,
         pages::{Page, PageRef},
         range::{GetPageFlags, PageRangeTree, PageStatus},
         ObjectRef, PageNumber,
     },
     security::PermsInfo,
+    thread::{current_memory_context, current_thread_ref},
 };
 
 #[derive(Clone)]
@@ -36,6 +43,7 @@ pub struct MapRegion {
     pub prot: Protections,
     pub flags: MapFlags,
     pub range: Range<VirtAddr>,
+    pub dirty_set: DirtySet,
 }
 
 impl From<&MapRegion> for ObjectContextInfo {
@@ -88,14 +96,28 @@ impl MapRegion {
             FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
             PHYS_LEVEL_LAYOUTS[0],
         );
-
-        let mut obj_page_tree = self.object.lock_page_tree();
-        obj_page_tree = self.object.ensure_in_core(obj_page_tree, page_number);
         let get_page_flags = if cause == MemoryAccessKind::Write {
             GetPageFlags::WRITE
         } else {
             GetPageFlags::empty()
         };
+
+        if let Some(shadow) = &self.shadow {
+            if let Some(page) = shadow.get_page(page_number, get_page_flags) {
+                let settings = self.mapping_settings(true, is_kern_obj);
+                let settings = MappingSettings::new(
+                    // Provided permissions, restricted by mapping.
+                    (perms.provide | default_prot) & !perms.restrict & settings.perms(),
+                    settings.cache(),
+                    settings.flags(),
+                );
+                return mapper(ObjectPageProvider::new(Vec::from([(page, settings)])));
+            }
+        }
+
+        let mut obj_page_tree = self.object.lock_page_tree();
+        obj_page_tree = self.object.ensure_in_core(obj_page_tree, page_number);
+
         let mut status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));
         if matches!(status, PageStatus::NoPage) && !self.object.use_pager() {
             if let Some(frame) = fa.try_allocate() {
@@ -128,6 +150,9 @@ impl MapRegion {
                 settings.cache(),
                 settings.flags(),
             );
+            if settings.perms().contains(Protections::WRITE) {
+                self.dirty_set.add_dirty(page_number);
+            }
             mapper(ObjectPageProvider::new(Vec::from([(page, settings)])))
         } else {
             Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
@@ -138,6 +163,42 @@ impl MapRegion {
                 cause,
                 addr.raw() as usize,
             )))
+        }
+    }
+
+    pub fn ctrl(&self, cmd: MapControlCmd, _opts: u64) -> Result<u64, TwzError> {
+        match cmd {
+            MapControlCmd::Sync(_sync_flags) => {
+                for d in self.dirty_set.drain_all() {
+                    logln!("sync: dirty page {}", d);
+                }
+                Ok(0)
+            }
+            MapControlCmd::Invalidate => {
+                let ctx = current_memory_context().unwrap();
+                ctx.with_arch(current_thread_ref().unwrap().secctx.active_id(), |arch| {
+                    let cursor = self.mapping_cursor(0, MAX_SIZE);
+                    arch.unmap(cursor);
+                });
+                Ok(0)
+            }
+            MapControlCmd::Update => {
+                let info = ObjectContextInfo {
+                    object: self.object.clone(),
+                    perms: self.prot,
+                    cache: self.cache_type,
+                    flags: self.flags,
+                };
+                if let Some(shadow) = &self.shadow {
+                    shadow.update(&info);
+                }
+                let ctx = current_memory_context().unwrap();
+                ctx.with_arch(current_thread_ref().unwrap().secctx.active_id(), |arch| {
+                    let cursor = self.mapping_cursor(0, MAX_SIZE);
+                    arch.unmap(cursor);
+                });
+                Ok(0)
+            }
         }
     }
 }
@@ -199,5 +260,58 @@ impl RegionManager {
 }
 
 pub struct Shadow {
-    tree: PageRangeTree,
+    tree: Mutex<PageRangeTree>,
+}
+
+impl Shadow {
+    pub fn new(info: &ObjectContextInfo) -> Self {
+        let mut tree = PageRangeTree::new();
+        copy_range_to_shadow(&info.object, 0, &mut tree, 0, MAX_SIZE);
+        Self {
+            tree: Mutex::new(tree),
+        }
+    }
+
+    pub fn update(&self, info: &ObjectContextInfo) {
+        let mut tree = self.tree.lock();
+        tree.clear();
+        copy_range_to_shadow(&info.object, 0, &mut *tree, 0, MAX_SIZE);
+    }
+
+    pub fn get_page(&self, pn: PageNumber, flags: GetPageFlags) -> Option<PageRef> {
+        match self.tree.lock().try_get_page(pn, flags) {
+            PageStatus::Ready(page_ref, _) => Some(page_ref),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct DirtySet {
+    set: Arc<Mutex<BTreeSet<PageNumber>>>,
+}
+
+impl DirtySet {
+    pub fn new() -> Self {
+        Self {
+            set: Arc::new(Mutex::new(BTreeSet::new())),
+        }
+    }
+
+    fn drain_all(&self) -> Vec<PageNumber> {
+        let dirty = self.set.lock().extract_if(|_| true).collect::<Vec<_>>();
+        dirty
+    }
+
+    fn is_dirty(&self, pn: PageNumber) -> bool {
+        self.set.lock().contains(&pn)
+    }
+
+    fn add_dirty(&self, pn: PageNumber) {
+        self.set.lock().insert(pn);
+    }
+
+    fn reset_dirty(&self, pn: PageNumber) {
+        self.set.lock().remove(&pn);
+    }
 }

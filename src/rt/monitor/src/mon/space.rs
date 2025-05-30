@@ -88,7 +88,7 @@ impl Space {
                     info.id,
                     slot,
                     mapflags_into_prot(info.flags),
-                    twizzler_abi::syscall::MapFlags::empty(),
+                    info.flags.into(),
                 );
                 let Ok(_) = res else {
                     unsafe {

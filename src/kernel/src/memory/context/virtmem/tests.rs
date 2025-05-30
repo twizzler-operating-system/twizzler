@@ -2,7 +2,7 @@
 mod test {
     use alloc::sync::Arc;
 
-    use twizzler_abi::object::Protections;
+    use twizzler_abi::{object::Protections, syscall::MapFlags};
     use twizzler_kernel_macros::kernel_test;
 
     use crate::memory::context::{
@@ -24,6 +24,7 @@ mod test {
             obj,
             Protections::READ | Protections::WRITE,
             twizzler_abi::device::CacheType::WriteBack,
+            MapFlags::empty(),
         ));
 
         *handle.base_mut() = Foo { x: 42 };

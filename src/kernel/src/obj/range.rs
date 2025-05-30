@@ -244,6 +244,10 @@ impl PageRangeTree {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.tree.clear();
+    }
+
     pub fn get(&self, pn: PageNumber) -> Option<&PageRange> {
         self.tree.get(&pn)
     }

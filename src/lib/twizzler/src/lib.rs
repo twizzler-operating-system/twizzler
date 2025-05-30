@@ -13,3 +13,6 @@ pub mod ptr;
 pub mod tx;
 
 mod pager;
+
+#[cfg(test)]
+mod tests;
