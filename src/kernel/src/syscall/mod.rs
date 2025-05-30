@@ -1,12 +1,12 @@
 use core::mem::MaybeUninit;
 
-use object::object_ctrl;
+use object::{map_ctrl, object_ctrl};
 use twizzler_abi::{
     kso::{KactionCmd, KactionValue},
     object::{ObjID, Protections},
     syscall::{
         ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, GetRandomFlags, HandleType,
-        KernelConsoleReadSource, ReadClockListFlags, SysInfo, Syscall,
+        KernelConsoleReadSource, MapFlags, ReadClockListFlags, SysInfo, Syscall,
     },
 };
 use twizzler_rt_abi::{
@@ -354,12 +354,15 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let lo = context.arg1();
             let slot = context.arg2::<u64>() as usize;
             let prot = Protections::from_bits(context.arg3::<u64>() as u16);
+            let flags = MapFlags::from_bits(context.arg4::<u64>() as u32);
             let id = ObjID::from_parts([hi, lo]);
             let handle = context.arg5();
             let handle = unsafe { create_user_ptr(handle) };
             let result = if let Some(handle) = handle {
                 prot.map_or(Err(ArgumentError::InvalidArgument.into()), |prot| {
-                    object::sys_object_map(id, slot, prot, *handle)
+                    flags.map_or(Err(ArgumentError::InvalidArgument.into()), |flags| {
+                        object::sys_object_map(id, slot, prot, *handle, flags)
+                    })
                 })
                 .map(|r| r as u64)
             } else {
@@ -424,6 +427,20 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let cmd = (context.arg2::<u64>(), context.arg3::<u64>()).try_into();
             if let Ok(cmd) = cmd {
                 let (code, val) = object_ctrl(id, cmd);
+                context.set_return_values(code, val);
+            } else {
+                context.set_return_values(1u64, 0u64);
+            }
+            return;
+        }
+        Syscall::MapCtrl => {
+            let start = context.arg0::<u64>() as usize;
+            let len = context.arg1::<u64>() as usize;
+            let cmd = (context.arg2::<u64>(), context.arg3::<u64>()).try_into();
+            let opts = context.arg4::<u64>();
+            if let Ok(cmd) = cmd {
+                let result = map_ctrl(start, len, cmd, opts);
+                let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
                 context.set_return_values(code, val);
             } else {
                 context.set_return_values(1u64, 0u64);

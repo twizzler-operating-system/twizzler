@@ -33,7 +33,7 @@ fn split_range(
 // subrange within that range (specified by offset and length), and a point to insert this into
 // (dest_point).
 fn copy_range_to_object_tree(
-    dest_tree: &mut LockGuard<PageRangeTree>,
+    dest_tree: &mut PageRangeTree,
     dest_point: PageNumber,
     range: &PageRange,
     offset: usize,
@@ -218,7 +218,7 @@ pub fn copy_ranges(
                 // If the hole is bigger than our copy region, just break.
                 // Note: I don't think this will ever be true, given the way we select the ranges
                 // from the tree, but I haven't proven it yet.
-                if diff > remaining_vec_pages {
+                if diff >= remaining_vec_pages {
                     dest_point = dest_point.offset(remaining_vec_pages);
                     remaining_vec_pages = 0;
                     break;
@@ -257,6 +257,67 @@ pub fn copy_ranges(
             end_offset,
             allocator,
         );
+    }
+}
+
+pub fn copy_range_to_shadow(
+    src: &ObjectRef,
+    src_off: usize,
+    dest_tree: &mut PageRangeTree,
+    dest_off: usize,
+    byte_length: usize,
+) {
+    let src_start = PageNumber::from_offset(src_off);
+    let dest_start = PageNumber::from_offset(dest_off);
+
+    let start_offset = src_off % PageNumber::PAGE_SIZE;
+    let end_offset = (src_off + byte_length) % PageNumber::PAGE_SIZE;
+    assert_eq!(start_offset, 0);
+    assert_eq!(end_offset, 0);
+
+    let nr_pages: usize = byte_length / PageNumber::PAGE_SIZE;
+    crate::pager::ensure_in_core(src, src_start, nr_pages);
+
+    let src_tree = src.range_tree.lock();
+    src.invalidate(
+        src_start..src_start.offset(nr_pages),
+        InvalidateMode::WriteProtect,
+    );
+
+    let mut dest_point = dest_start;
+    let mut src_point = src_start;
+
+    let mut remaining_vec_pages = nr_pages;
+    if nr_pages > 0 {
+        let ranges = src_tree.range(src_point..src_point.offset(nr_pages));
+        for range in ranges {
+            // If the source point is below the range's start, then there's a hole in the source
+            // page tree. We don't have to copy at all, just shift up the dest point to
+            // where it needs to be for this range (since we will be copying from it).
+            if src_point < *range.0 {
+                let diff = *range.0 - src_point;
+                // If the hole is bigger than our copy region, just break.
+                // Note: I don't think this will ever be true, given the way we select the ranges
+                // from the tree, but I haven't proven it yet.
+                if diff >= remaining_vec_pages {
+                    break;
+                }
+                // TODO: we'll need to either ensure everything is present, or interface with the
+                // pager. We'll probably do the later in the future.
+                dest_point = dest_point.offset(diff);
+                remaining_vec_pages -= diff;
+            }
+
+            // Okay, finally, we can calculate the subrange from the source range that we'll be
+            // using for our destination region.
+            let offset = src_point.num().saturating_sub(range.0.num());
+            let len = core::cmp::min(range.1.value().length - offset, remaining_vec_pages);
+            copy_range_to_object_tree(dest_tree, dest_point, range.1.value(), offset, len);
+
+            dest_point = dest_point.offset(len);
+            src_point = src_point.offset(len);
+            remaining_vec_pages -= len;
+        }
     }
 }
 

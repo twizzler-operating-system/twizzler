@@ -18,8 +18,12 @@ bitflags! {
 }
 
 impl From<twizzler_rt_abi::object::MapFlags> for MapFlags {
-    fn from(_: twizzler_rt_abi::object::MapFlags) -> Self {
-        Self::empty()
+    fn from(of: twizzler_rt_abi::object::MapFlags) -> Self {
+        let mut this = Self::empty();
+        if of.contains(twizzler_rt_abi::object::MapFlags::INDIRECT) {
+            this.insert(MapFlags::STABLE);
+        }
+        this
     }
 }
 
