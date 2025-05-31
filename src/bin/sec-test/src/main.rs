@@ -57,18 +57,6 @@ fn main() {
     );
     info!("creating target object with spec: {:?}", spec);
 
-    let _template_obj = ObjectBuilder::new(ObjectCreate::new(
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Protections::all(),
-    ))
-    .build(DumbBase {
-        _payload: 123456789,
-    })
-    .unwrap();
-
     let target_obj = ObjectBuilder::new(spec)
         .build(DumbBase {
             _payload: 123456789,
