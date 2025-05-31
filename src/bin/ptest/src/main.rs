@@ -1,0 +1,36 @@
+use naming::GetFlags;
+use twizzler::{
+    collections::vec::{VecObject, VecObjectAlloc},
+    object::{Object, ObjectBuilder},
+};
+use twizzler_rt_abi::object::MapFlags;
+
+fn main() {
+    let mut nh = naming::static_naming_factory().unwrap();
+    let mut vo = if let Ok(node) = nh.get("/data/ptest-obj", GetFlags::empty()) {
+        println!("reopened: {:?}", node);
+        VecObject::from(
+            Object::map(
+                node.id,
+                MapFlags::PERSIST | MapFlags::READ | MapFlags::WRITE,
+            )
+            .unwrap(),
+        )
+    } else {
+        let obj = ObjectBuilder::default().persist();
+        let vo = VecObject::<u64, VecObjectAlloc>::new(obj).unwrap();
+
+        println!("new: {:?}", vo.object().id());
+        nh.put("/data/ptest-obj", vo.object().id()).unwrap();
+        vo
+    };
+    for e in &vo {
+        println!("current contents: {:?}", e);
+    }
+    println!("pushing!");
+    vo.push(64).unwrap();
+    println!("done!");
+    for e in &vo {
+        println!("current contents: {:?}", e);
+    }
+}

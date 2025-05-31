@@ -276,7 +276,6 @@ pub fn copy_range_to_shadow(
     assert_eq!(end_offset, 0);
 
     let nr_pages: usize = byte_length / PageNumber::PAGE_SIZE;
-    crate::pager::ensure_in_core(src, src_start, nr_pages);
 
     let src_tree = src.range_tree.lock();
     src.invalidate(
