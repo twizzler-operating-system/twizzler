@@ -1,5 +1,9 @@
-use std::{marker::PhantomData, mem::MaybeUninit};
+use std::{marker::PhantomData, mem::MaybeUninit, ptr::addr_of, sync::atomic::AtomicU64};
 
+use twizzler_abi::{
+    object::MAX_SIZE,
+    syscall::{sys_map_ctrl, MapControlCmd, SyncFlags, SyncInfo},
+};
 use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
 use super::{Result, TxHandle};
@@ -28,7 +32,22 @@ impl<T> TxObject<T> {
         let handle = self.handle;
         let flags = handle.map_flags();
         if flags.contains(MapFlags::PERSIST) {
-            crate::pager::sync_object(handle.id());
+            let release = AtomicU64::new(0);
+            let release_ptr = addr_of!(release);
+            let sync_info = SyncInfo {
+                release: release_ptr,
+                release_compare: 0,
+                release_set: 1,
+                durable: core::ptr::null(),
+                flags: SyncFlags::DURABLE | SyncFlags::ASYNC_DURABLE,
+            };
+            let sync_info_ptr = addr_of!(sync_info);
+            sys_map_ctrl(
+                handle.start(),
+                MAX_SIZE,
+                MapControlCmd::Sync(sync_info_ptr),
+                0,
+            )?;
         }
         let new_obj = unsafe { Object::map_unchecked(handle.id(), flags) }?;
         // TODO: commit tx

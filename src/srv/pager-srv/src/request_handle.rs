@@ -1,7 +1,7 @@
 use twizzler::object::{MetaFlags, MetaInfo, ObjID};
 use twizzler_abi::pager::{
-    CompletionToKernel, KernelCommand, KernelCompletionData, KernelCompletionFlags, ObjectInfo,
-    ObjectRange, PhysRange, RequestFromKernel,
+    CompletionToKernel, KernelCommand, KernelCompletionData, KernelCompletionFlags,
+    ObjectEvictFlags, ObjectEvictInfo, ObjectInfo, ObjectRange, PhysRange, RequestFromKernel,
 };
 use twizzler_rt_abi::{error::TwzError, object::Nonce, Result};
 
@@ -20,6 +20,19 @@ async fn handle_page_data_request(
 
 fn object_info_req(ctx: &PagerContext, id: ObjID) -> Result<ObjectInfo> {
     ctx.data.lookup_object(ctx, id)
+}
+
+async fn handle_sync_region(
+    ctx: &'static PagerContext,
+    info: ObjectEvictInfo,
+) -> CompletionToKernel {
+    if !info.flags.contains(ObjectEvictFlags::SYNC) {
+        return CompletionToKernel::new(
+            KernelCompletionData::Error(TwzError::NOT_SUPPORTED.into()),
+            KernelCompletionFlags::DONE,
+        );
+    }
+    ctx.data.sync_region(ctx, &info).await
 }
 
 pub async fn handle_kernel_request(
@@ -91,8 +104,7 @@ pub async fn handle_kernel_request(
         }
         KernelCommand::ObjectEvict(info) => {
             tracing::debug!("got evict type sync");
-            ctx.data.sync(ctx, info.obj_id).await;
-            KernelCompletionData::Okay
+            return handle_sync_region(ctx, info).await;
         }
     };
 

@@ -1,6 +1,8 @@
+use std::{ptr::addr_of, sync::atomic::AtomicU64};
+
 use twizzler_abi::{
     object::MAX_SIZE,
-    syscall::{sys_map_ctrl, MapControlCmd, SyncFlags},
+    syscall::{sys_map_ctrl, MapControlCmd, SyncFlags, SyncInfo},
 };
 use twizzler_rt_abi::object::MapFlags;
 
@@ -23,10 +25,24 @@ fn test_stable_read() {
         let value = map_write.base_ptr::<u64>().read_volatile();
         assert_eq!(value, 128);
     }
+
+    let release = AtomicU64::new(0);
+    let release_ptr = addr_of!(release);
+
+    let sync_info = SyncInfo {
+        release: release_ptr,
+        release_compare: 0,
+        release_set: 1,
+        durable: core::ptr::null(),
+        flags: SyncFlags::DURABLE,
+    };
+
+    let sync_info_ptr = addr_of!(sync_info);
+
     sys_map_ctrl(
         map_write.base_ptr::<u8>(),
         MAX_SIZE,
-        MapControlCmd::Sync(SyncFlags::empty()),
+        MapControlCmd::Sync(sync_info_ptr),
         0,
     )
     .unwrap();

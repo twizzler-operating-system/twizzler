@@ -3,13 +3,13 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use core::ops::Range;
+use core::{fmt::Debug, ops::Range, usize};
 
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, MAX_SIZE},
-    syscall::{MapControlCmd, MapFlags},
+    syscall::{MapControlCmd, MapFlags, SyncFlags, ThreadSyncReference, ThreadSyncWake},
     upcall::{MemoryAccessKind, ObjectMemoryError, ObjectMemoryFaultInfo, UpcallInfo},
 };
 use twizzler_rt_abi::error::{IoError, RawTwzError, TwzError};
@@ -31,6 +31,7 @@ use crate::{
         ObjectRef, PageNumber,
     },
     security::PermsInfo,
+    syscall::sync::wakeup,
     thread::{current_memory_context, current_thread_ref},
 };
 
@@ -135,11 +136,13 @@ impl MapRegion {
             }
         }
 
+        /*
         if let PageStatus::Locked(sleeper) = status {
             drop(obj_page_tree);
             sleeper.wait();
             return self.map(addr, cause, perms, default_prot, mapper);
         }
+        */
 
         // Step 4: do the mapping. If the page isn't present by now, report data loss.
         if let PageStatus::Ready(page, shared) = status {
@@ -168,11 +171,36 @@ impl MapRegion {
 
     pub fn ctrl(&self, cmd: MapControlCmd, _opts: u64) -> Result<u64, TwzError> {
         match cmd {
-            MapControlCmd::Sync(_sync_flags) => {
-                for d in self.dirty_set.drain_all() {
-                    logln!("sync: dirty page {}", d);
+            MapControlCmd::Sync(sync_info_ptr) => {
+                // TODO: validation
+                let sync_info = unsafe { sync_info_ptr.read() };
+
+                let ctx = current_memory_context().unwrap();
+                let dirty_pages = self.dirty_set.drain_all();
+                logln!("sync: dirty pages: {:?}", dirty_pages);
+                ctx.with_arch(current_thread_ref().unwrap().secctx.active_id(), |arch| {
+                    let cursor = self.mapping_cursor(0, MAX_SIZE);
+                    // TODO: remap readonly
+                    arch.unmap(cursor);
+                });
+
+                if sync_info.flags.contains(SyncFlags::DURABLE) {
+                    crate::pager::sync_region(self, dirty_pages, sync_info);
                 }
+
+                if sync_info.flags.contains(SyncFlags::ASYNC_DURABLE) {
+                    unsafe { sync_info.try_release() }?;
+                    let wake = ThreadSyncWake::new(
+                        ThreadSyncReference::Virtual(sync_info.release),
+                        usize::MAX,
+                    );
+                    wakeup(&wake)?;
+                }
+
                 Ok(0)
+            }
+            MapControlCmd::Discard => {
+                todo!()
             }
             MapControlCmd::Invalidate => {
                 let ctx = current_memory_context().unwrap();
@@ -263,6 +291,12 @@ pub struct Shadow {
     tree: Mutex<PageRangeTree>,
 }
 
+impl Debug for Shadow {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Shadow {{..}}")
+    }
+}
+
 impl Shadow {
     pub fn new(info: &ObjectContextInfo) -> Self {
         let mut tree = PageRangeTree::new();
@@ -283,6 +317,10 @@ impl Shadow {
             PageStatus::Ready(page_ref, _) => Some(page_ref),
             _ => None,
         }
+    }
+
+    pub fn with_page_tree<R>(&self, f: impl FnOnce(&mut PageRangeTree) -> R) -> R {
+        f(&mut *self.tree.lock())
     }
 }
 
@@ -313,5 +351,12 @@ impl DirtySet {
 
     fn reset_dirty(&self, pn: PageNumber) {
         self.set.lock().remove(&pn);
+    }
+}
+
+impl From<&MapRegion> for Shadow {
+    fn from(value: &MapRegion) -> Self {
+        let info: ObjectContextInfo = value.into();
+        Shadow::new(&info)
     }
 }

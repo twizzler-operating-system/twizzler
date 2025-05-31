@@ -213,6 +213,22 @@ pub struct ObjectEvictInfo {
     pub flags: ObjectEvictFlags,
 }
 
+impl ObjectEvictInfo {
+    pub fn new(
+        obj_id: ObjID,
+        range: ObjectRange,
+        phys: PhysRange,
+        flags: ObjectEvictFlags,
+    ) -> Self {
+        Self {
+            obj_id,
+            range,
+            phys,
+            flags,
+        }
+    }
+}
+
 bitflags::bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
     pub struct ObjectEvictFlags: u32 {
