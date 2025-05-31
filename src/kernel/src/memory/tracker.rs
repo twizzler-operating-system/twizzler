@@ -133,7 +133,7 @@ impl MemoryTracker {
         if let Some(reclaim) = self.reclaim.poll() {
             reclaim.cv.signal();
         } else {
-            logln!("warning -- cannot trigger reclaim thread before it is started");
+            //logln!("warning -- cannot trigger reclaim thread before it is started");
         }
     }
 

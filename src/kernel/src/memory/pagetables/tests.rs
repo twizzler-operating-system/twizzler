@@ -7,15 +7,23 @@ mod test {
     use crate::{
         arch::{address::VirtAddr, memory::pagetables::Table},
         memory::{
-            pagetables::{phys_provider, Mapper, MappingCursor, MappingFlags, MappingSettings},
+            pagetables::{
+                phys_provider, Mapper, MappingCursor, MappingFlags, MappingSettings, PhysMapInfo,
+            },
             tracker::{alloc_frame, FrameAllocFlags},
         },
     };
 
-    struct StaticProvider {}
+    struct StaticProvider {
+        settings: MappingSettings,
+    }
     impl PhysAddrProvider for StaticProvider {
-        fn peek(&mut self) -> Option<(crate::arch::address::PhysAddr, usize)> {
-            Some((crate::arch::address::PhysAddr::new(0).unwrap(), usize::MAX))
+        fn peek(&mut self) -> Option<PhysMapInfo> {
+            Some(PhysMapInfo {
+                addr: crate::arch::address::PhysAddr::new(0).unwrap(),
+                len: usize::MAX,
+                settings: self.settings,
+            })
         }
 
         fn consume(&mut self, _len: usize) {}
@@ -56,13 +64,13 @@ mod test {
 
         let len = page_size;
         let cur = MappingCursor::new(VirtAddr::new(0).unwrap(), len);
-        let mut phys = StaticProvider {};
         let settings = MappingSettings::new(
             Protections::WRITE | Protections::READ,
             CacheType::WriteBack,
             MappingFlags::empty(),
         );
-        let _ = m.map(cur, &mut phys, &settings);
+        let mut phys = StaticProvider { settings };
+        let _ = m.map(cur, &mut phys);
 
         let mut reader = m.readmap(cur);
         let read = reader.nth(0).unwrap();

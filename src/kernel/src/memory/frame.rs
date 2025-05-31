@@ -441,7 +441,7 @@ impl Frame {
 
     /// Copy contents of one frame into another. If the other frame is marked as zeroed, copying
     /// will not happen. Both frames are locked first.
-    pub fn copy_contents_from(&self, other: &Frame) {
+    pub fn copy_contents_from(&self, other: &Frame, doff: usize, soff: usize, len: usize) {
         self.lock();
         // We don't need to lock the other frame, since if its contents aren't synchronized with
         // this operation, it could have reordered to before or after.
@@ -454,7 +454,7 @@ impl Frame {
             // if other is zero and we aren't, just zero instead of copy
             let virt = phys_to_virt(self.pa);
             let ptr: *mut u8 = virt.as_mut_ptr();
-            let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
+            let slice = unsafe { core::slice::from_raw_parts_mut(ptr.add(doff), len) };
             slice.fill(0);
             self.flags
                 .fetch_or(PhysicalFrameFlags::ZEROED.bits(), Ordering::SeqCst);
@@ -466,28 +466,28 @@ impl Frame {
             .fetch_and(!PhysicalFrameFlags::ZEROED.bits(), Ordering::SeqCst);
         let virt = phys_to_virt(self.pa);
         let ptr: *mut u8 = virt.as_mut_ptr();
-        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr.add(doff), len) };
 
         let othervirt = phys_to_virt(other.pa);
         let otherptr: *mut u8 = othervirt.as_mut_ptr();
-        let otherslice = unsafe { core::slice::from_raw_parts_mut(otherptr, self.size()) };
+        let otherslice = unsafe { core::slice::from_raw_parts_mut(otherptr.add(soff), len) };
 
         slice.copy_from_slice(otherslice);
         self.unlock();
     }
 
     /// Copy from another physical address into this frame.
-    pub fn copy_contents_from_physaddr(&self, other: PhysAddr) {
+    pub fn copy_contents_from_physaddr(&self, doff: usize, other: PhysAddr, len: usize) {
         self.lock();
         self.flags
             .fetch_and(!PhysicalFrameFlags::ZEROED.bits(), Ordering::SeqCst);
         let virt = phys_to_virt(self.pa);
         let ptr: *mut u8 = virt.as_mut_ptr();
-        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr.add(doff), len) };
 
         let othervirt = phys_to_virt(other);
         let otherptr: *mut u8 = othervirt.as_mut_ptr();
-        let otherslice = unsafe { core::slice::from_raw_parts_mut(otherptr, self.size()) };
+        let otherslice = unsafe { core::slice::from_raw_parts_mut(otherptr, len) };
 
         slice.copy_from_slice(otherslice);
         self.unlock();

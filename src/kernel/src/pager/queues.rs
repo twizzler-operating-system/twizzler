@@ -8,6 +8,7 @@ use twizzler_abi::{
         ObjectRange, PagerCompletionData, PagerRequest, PhysRange, RequestFromKernel,
         RequestFromPager,
     },
+    syscall::MapFlags,
 };
 use twizzler_rt_abi::error::{ObjectError, TwzError};
 
@@ -22,7 +23,11 @@ use crate::{
         tracker::start_reclaim_thread,
     },
     mutex::Mutex,
-    obj::{lookup_object, pages::Page, LookupFlags, Object, PageNumber},
+    obj::{
+        lookup_object,
+        pages::{Page, PageRef},
+        LookupFlags, Object, PageNumber,
+    },
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},
     thread::{
@@ -60,6 +65,7 @@ fn pager_request_copy_user_phys(
         object,
         Protections::READ | Protections::WRITE,
         CacheType::WriteBack,
+        MapFlags::empty(),
     ));
     let Ok(vaddr) = ko.start_addr().offset(offset) else {
         return CompletionToPager::new(PagerCompletionData::Error(
@@ -121,7 +127,9 @@ fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range
             let pn = PageNumber::from(objpage_nr as usize);
             let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
             // TODO: will need to supply allocator
-            object_tree.add_page(pn, Page::new_wired(pa, CacheType::WriteBack), None);
+            let page = Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack);
+            let page = PageRef::new(Arc::new(page), 0, 1);
+            object_tree.add_page(pn, page, None);
         }
         drop(object_tree);
 

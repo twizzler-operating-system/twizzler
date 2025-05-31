@@ -1,6 +1,9 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use twizzler_abi::object::{ObjID, Protections};
+use twizzler_abi::{
+    object::{ObjID, Protections},
+    syscall::MapFlags,
+};
 use twizzler_rt_abi::error::{NamingError, ObjectError};
 
 use crate::{
@@ -217,6 +220,7 @@ pub fn get_sctx(id: ObjID) -> twizzler_rt_abi::Result<SecurityContextRef> {
                 obj,
                 Protections::READ,
                 twizzler_abi::device::CacheType::WriteBack,
+                MapFlags::empty(),
             ));
         Arc::new(SecurityContext::new(Some(kobj)))
     });

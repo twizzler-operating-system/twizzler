@@ -130,7 +130,7 @@ fn undo_sleep(sleep: SleepEvent) {
     sleep.obj.remove_from_sleep_word(sleep.offset);
 }
 
-fn wakeup(wake: &ThreadSyncWake) -> Result<usize> {
+pub fn wakeup(wake: &ThreadSyncWake) -> Result<usize> {
     let (obj, offset) = get_obj(wake.reference)?;
     Ok(obj.wakeup_word(offset, wake.count))
 }

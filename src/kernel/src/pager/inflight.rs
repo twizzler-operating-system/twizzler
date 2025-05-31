@@ -27,36 +27,42 @@ impl Inflight {
         Self { id, rk, needs_send }
     }
 
-    pub(super) fn pager_req(&self) -> Option<RequestFromKernel> {
+    pub(super) fn for_each_pager_req(&self, mut f: impl FnMut(RequestFromKernel)) {
         if !self.needs_send {
-            return None;
+            return;
         }
-        let cmd = match self.rk {
-            ReqKind::Info(obj_id) => KernelCommand::ObjectInfoReq(obj_id),
+        let cmd = match &self.rk {
+            ReqKind::Info(obj_id) => KernelCommand::ObjectInfoReq(*obj_id),
             ReqKind::PageData(obj_id, s, l) => KernelCommand::PageDataReq(
-                obj_id,
+                *obj_id,
                 ObjectRange::new((s * NULLPAGE_SIZE) as u64, ((s + l) * NULLPAGE_SIZE) as u64),
             ),
             ReqKind::Sync(obj_id) => KernelCommand::ObjectEvict(ObjectEvictInfo {
-                obj_id,
+                obj_id: *obj_id,
                 range: ObjectRange::new(0, 0),
                 phys: PhysRange::new(0, 0),
                 flags: ObjectEvictFlags::SYNC | ObjectEvictFlags::FENCE,
             }),
-            ReqKind::Del(obj_id) => KernelCommand::ObjectDel(obj_id),
+            ReqKind::Del(obj_id) => KernelCommand::ObjectDel(*obj_id),
             ReqKind::Create(obj_id, create, nonce) => KernelCommand::ObjectCreate(
-                obj_id,
+                *obj_id,
                 ObjectInfo::new(
                     LifetimeType::Persistent,
                     create.bt,
                     create.kuid,
-                    nonce,
+                    *nonce,
                     create.def_prot,
                 ),
             ),
-            ReqKind::Pages(phys_range) => KernelCommand::DramPages(phys_range),
+            ReqKind::Pages(phys_range) => KernelCommand::DramPages(*phys_range),
+            ReqKind::SyncRegion(info) => {
+                for e in &**info.reqs {
+                    f(*e);
+                }
+                return;
+            }
         };
-        Some(RequestFromKernel::new(cmd))
+        f(RequestFromKernel::new(cmd))
     }
 }
 
@@ -80,7 +86,7 @@ impl PerObjectData {
         }
     }
 
-    fn remove_all(&mut self, rk: ReqKind, id: usize) {
+    fn remove_all(&mut self, rk: &ReqKind, id: usize) {
         for page in rk.pages() {
             self.page_map.entry(page).or_default().remove(&id);
         }
@@ -115,15 +121,15 @@ impl InflightManager {
             return Inflight::new(*id, rk, false);
         }
         let id = self.requests.next_push_index();
-        let request = Request::new(id, rk);
+        let request = Request::new(id, rk.clone());
         self.requests.push(request);
-        self.req_map.insert(rk, id);
+        self.req_map.insert(rk.clone(), id);
         if let Some(objid) = rk.objid() {
             let per_obj = self
                 .per_object
                 .entry(objid)
                 .or_insert_with(|| PerObjectData::default());
-            per_obj.insert(rk, id);
+            per_obj.insert(rk.clone(), id);
         }
         Inflight::new(id, rk, true)
     }

@@ -1,20 +1,63 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
 use core::fmt::Display;
 
 use nonoverlapping_interval_tree::{IntervalValue, NonOverlappingIntervalTree};
 
-use super::{
-    pages::{Page, PageRef},
-    pagevec::{PageVec, PageVecRef},
-    PageNumber,
+use super::{pages::PageRef, pagevec::PageVecRef, PageNumber};
+use crate::{
+    condvar::CondVar,
+    memory::tracker::FrameAllocator,
+    mutex::Mutex,
+    obj::{pages::Page, pagevec::PageVec},
+    spinlock::Spinlock,
 };
-use crate::{memory::tracker::FrameAllocator, mutex::Mutex};
+
+pub struct RangeSleep {
+    wait: CondVar,
+    locked: Spinlock<bool>,
+}
+
+impl RangeSleep {
+    fn new() -> Self {
+        Self {
+            wait: CondVar::new(),
+            locked: Spinlock::new(false),
+        }
+    }
+
+    pub fn wait(&self) {
+        loop {
+            let guard = self.locked.lock();
+            if !*guard {
+                break;
+            }
+            self.wait.wait(guard);
+        }
+    }
+
+    pub fn set_lock(&self) {
+        *self.locked.lock() = true;
+    }
+
+    pub fn reset_lock(&self) {
+        *self.locked.lock() = false;
+        self.wait.signal();
+    }
+}
+
+#[derive(Clone)]
+enum BackingPages {
+    Nothing,
+    Single(PageRef),
+    Many(PageVecRef),
+}
 
 pub struct PageRange {
     pub start: PageNumber,
     pub length: usize,
     pub offset: usize,
-    pv: PageVecRef,
+    backing: BackingPages,
+    sleep: Option<Arc<RangeSleep>>,
 }
 
 impl PageRange {
@@ -23,7 +66,8 @@ impl PageRange {
             start,
             length: 0,
             offset: 0,
-            pv: Arc::new(Mutex::new(PageVec::new())),
+            backing: BackingPages::Nothing,
+            sleep: None,
         }
     }
 
@@ -32,25 +76,57 @@ impl PageRange {
             start: new_start,
             length: new_length,
             offset: new_offset,
-            pv: self.pv.clone(),
+            backing: self.backing.clone(),
+            sleep: None,
         }
     }
 
-    fn try_get_page(&self, pn: PageNumber) -> Option<PageRef> {
+    fn try_get_page(&self, pn: PageNumber) -> Option<(PageRef, bool)> {
         assert!(pn >= self.start);
         let off = pn - self.start;
-        self.pv.lock().try_get_page(self.offset + off)
+        let shared = self.is_shared();
+        Some((
+            match &self.backing {
+                BackingPages::Nothing => None,
+                BackingPages::Single(page_ref) => {
+                    assert!(off < page_ref.nr_pages());
+                    Some(page_ref.clone())
+                }
+                BackingPages::Many(pv_ref) => pv_ref.lock().try_get_page(self.offset + off),
+            }?,
+            shared,
+        ))
     }
 
-    fn add_page(&self, pn: PageNumber, page: Page) -> Arc<Page> {
+    fn add_page(&mut self, pn: PageNumber, page: PageRef) -> PageRef {
         assert!(pn >= self.start);
         assert!(pn < self.start.offset(self.length));
         let off = pn - self.start;
-        self.pv.lock().add_page(self.offset + off, page)
+        let max = self.start.offset(self.length) - pn;
+        let count = max.min(page.nr_pages());
+        match &self.backing {
+            BackingPages::Nothing => {
+                self.backing = BackingPages::Single(page.clone());
+                page
+            }
+            BackingPages::Single(page_ref) => {
+                let mut pv = PageVec::new();
+                pv.add_page(0, page_ref.clone());
+                let r = pv.add_page(off, page.trimmed(count));
+                self.backing = BackingPages::Many(Arc::new(Mutex::new(pv)));
+                self.offset = 0;
+                r
+            }
+            BackingPages::Many(pv_ref) => pv_ref.lock().add_page(self.offset + off, page),
+        }
     }
 
     pub fn pv_ref_count(&self) -> usize {
-        Arc::strong_count(&self.pv)
+        match &self.backing {
+            BackingPages::Nothing => 1,
+            BackingPages::Single(page_ref) => page_ref.ref_count(),
+            BackingPages::Many(pv_ref) => Arc::strong_count(pv_ref),
+        }
     }
 
     pub fn is_shared(&self) -> bool {
@@ -67,9 +143,10 @@ impl PageRange {
             return;
         }
 
-        let mut pv = self.pv.lock();
-        pv.truncate_and_drain(self.offset, self.length);
-        self.offset = 0;
+        match &self.backing {
+            BackingPages::Many(pv) => pv.lock().truncate_and_drain(self.offset, self.length),
+            _ => {}
+        }
     }
 
     pub fn split_at(&self, pn: PageNumber) -> (Option<PageRange>, PageRange, Option<PageRange>) {
@@ -99,18 +176,34 @@ impl PageRange {
         (r1, r2, r3)
     }
 
-    pub fn copy_pv(&mut self) {
-        let new_pv = PageVec::new();
-        self.pv = Arc::new(Mutex::new(new_pv));
-    }
-
     pub fn range(&self) -> core::ops::Range<PageNumber> {
         self.start..self.start.offset(self.length)
+    }
+
+    pub fn sleeper(&mut self) -> Arc<RangeSleep> {
+        if self.sleep.is_none() {
+            self.sleep = Some(Arc::new(RangeSleep::new()));
+        }
+        self.sleep.as_ref().cloned().unwrap()
+    }
+
+    pub fn is_locked(&self) -> bool {
+        self.sleep.as_ref().is_some_and(|s| *s.locked.lock())
     }
 }
 
 impl Display for PageRange {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let bs = match &self.backing {
+            BackingPages::Nothing => "empty".to_owned(),
+            BackingPages::Single(page_ref) => alloc::format!(
+                "{:x}:{}:{}",
+                page_ref.physical_address(),
+                page_ref.page_offset(),
+                page_ref.nr_pages()
+            ),
+            BackingPages::Many(pv) => pv.lock().show_part(self),
+        };
         write!(
             f,
             "{{{}, {}, {}}} -> {} {}",
@@ -118,7 +211,7 @@ impl Display for PageRange {
             self.length,
             self.offset,
             if self.is_shared() { "s" } else { "p" },
-            self.pv.lock().show_part(self)
+            bs
         )
     }
 }
@@ -128,12 +221,20 @@ pub struct PageRangeTree {
     tree: NonOverlappingIntervalTree<PageNumber, PageRange>,
 }
 
-#[derive(Debug)]
 pub enum PageStatus {
     Ready(PageRef, bool),
     NoPage,
     AllocFail,
     DataFail,
+    Locked(Arc<RangeSleep>),
+}
+
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    pub struct GetPageFlags : u32 {
+        const WRITE = 1;
+        const STABLE = 2;
+    }
 }
 
 impl PageRangeTree {
@@ -141,6 +242,10 @@ impl PageRangeTree {
         Self {
             tree: NonOverlappingIntervalTree::new(),
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.tree.clear();
     }
 
     pub fn get(&self, pn: PageNumber) -> Option<&PageRange> {
@@ -167,23 +272,34 @@ impl PageRangeTree {
         };
         let (r1, mut r2, r3) = range.split_at(pn);
         /* r2 is always the one we want */
-        let pv = if discard {
-            PageVec::new()
+        let backing = if discard {
+            BackingPages::Nothing
         } else {
-            let Some(pv) = r2
-                .pv
-                .lock()
-                .clone_pages_limited(r2.offset, r2.length, allocator)
-            else {
+            let mut clone = |backing: &BackingPages| -> Option<BackingPages> {
+                Some(match backing {
+                    BackingPages::Nothing => BackingPages::Nothing,
+                    BackingPages::Single(page_ref) => {
+                        let new_page = Arc::new(Page::new(allocator.try_allocate()?));
+                        let mut new_page = PageRef::new(new_page, 0, page_ref.nr_pages());
+                        new_page.copy_from(&page_ref);
+                        BackingPages::Single(new_page)
+                    }
+                    BackingPages::Many(pv) => BackingPages::Many(Arc::new(Mutex::new(
+                        pv.lock()
+                            .clone_pages_limited(r2.offset, r2.length, allocator)?,
+                    ))),
+                })
+            };
+
+            let Some(backing) = clone(&r2.backing) else {
                 // Failed to allocate pages, restore the tree.
                 self.tree.insert(range.range(), range);
                 return false;
             };
-            pv
+            backing
         };
 
-        r2.pv = Arc::new(Mutex::new(pv));
-        r2.offset = 0;
+        r2.backing = backing;
 
         if let Some(r1) = r1 {
             let res = self.insert_replace(r1.range(), r1);
@@ -200,23 +316,26 @@ impl PageRangeTree {
         true
     }
 
-    fn try_do_get_page(&self, pn: PageNumber) -> Option<(PageRef, bool)> {
+    fn try_do_get_page(&self, pn: PageNumber) -> Option<(PageRef, bool, bool)> {
         let range = self.get(pn)?;
-        let page = range.try_get_page(pn)?;
-        let shared = range.is_shared();
-        Some((page, shared))
+        let (page, shared) = range.try_get_page(pn)?;
+        Some((page, shared, range.is_locked()))
     }
 
     pub fn get_page(
         &mut self,
         pn: PageNumber,
-        is_write: bool,
+        flags: GetPageFlags,
         allocator: Option<&mut FrameAllocator>,
     ) -> PageStatus {
-        let Some((page, shared)) = self.try_do_get_page(pn) else {
+        let Some((page, shared, locked)) = self.try_do_get_page(pn) else {
             return PageStatus::NoPage;
         };
-        if !shared || !is_write {
+        if locked && flags.contains(GetPageFlags::STABLE) {
+            let range = self.get_mut(pn).unwrap();
+            return PageStatus::Locked(range.sleeper());
+        }
+        if !shared || !flags.contains(GetPageFlags::WRITE) {
             return PageStatus::Ready(page, shared);
         }
         if let Some(allocator) = allocator {
@@ -224,17 +343,21 @@ impl PageRangeTree {
                 return PageStatus::AllocFail;
             }
         }
-        let Some((page, shared)) = self.try_do_get_page(pn) else {
+        let Some((page, shared, _)) = self.try_do_get_page(pn) else {
             return PageStatus::NoPage;
         };
         assert!(!shared);
-        PageStatus::Ready(page, false)
+        PageStatus::Ready(page, shared)
     }
 
-    pub fn try_get_page(&mut self, pn: PageNumber) -> PageStatus {
-        let Some((page, shared)) = self.try_do_get_page(pn) else {
+    pub fn try_get_page(&mut self, pn: PageNumber, flags: GetPageFlags) -> PageStatus {
+        let Some((page, shared, locked)) = self.try_do_get_page(pn) else {
             return PageStatus::NoPage;
         };
+        if locked && flags.contains(GetPageFlags::STABLE) {
+            let range = self.get_mut(pn).unwrap();
+            return PageStatus::Locked(range.sleeper());
+        }
         PageStatus::Ready(page, shared)
     }
 
@@ -277,11 +400,11 @@ impl PageRangeTree {
     pub fn add_page(
         &mut self,
         pn: PageNumber,
-        page: Page,
+        page: PageRef,
         allocator: Option<&mut FrameAllocator>,
-    ) -> Option<Arc<Page>> {
+    ) -> Option<PageRef> {
         const MAX_EXTENSION_ALLOWED: usize = 16;
-        let range = self.tree.get(&pn);
+        let range = self.tree.get_mut(&pn);
         if let Some(mut range) = range {
             if range.is_shared() {
                 if let Some(allocator) = allocator {
@@ -289,7 +412,7 @@ impl PageRangeTree {
                         return None;
                     }
                 }
-                range = self.tree.get(&pn).unwrap();
+                range = self.tree.get_mut(&pn).unwrap();
             }
             Some(range.add_page(pn, page))
         } else {

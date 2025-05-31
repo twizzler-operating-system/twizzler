@@ -1,0 +1,10 @@
+[package]
+name = "ptest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+twizzler = { path = "../../lib/twizzler" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-runtime = { path = "../../rt" }
+naming = { path = "../../lib/naming" }
