@@ -1,133 +1,96 @@
-use clap::{Parser, Subcommand};
 use colog::default_builder;
-use log::LevelFilter;
-use twizzler::object::{Object, ObjectBuilder};
-use twizzler_abi::object::Protections;
-use twizzler_rt_abi::object::MapFlags;
-use twizzler_security::{
-    sec_ctx::{
-        map::{CtxMapItemType, SecCtxMap},
-        SecCtx,
-    },
-    Cap, SigningKey,
+use log::{info, LevelFilter};
+use twizzler::{
+    marker::BaseType,
+    object::{Object, ObjectBuilder, TypedObject},
 };
+use twizzler_abi::{
+    object::Protections,
+    syscall::{sys_sctx_attach, ObjectCreate},
+};
+use twizzler_rt_abi::object::MapFlags;
+use twizzler_security::{Cap, SecCtx, SecCtxFlags, SigningKey, SigningScheme};
 
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-pub struct Args {
-    #[command(subcommand)]
-    command: Option<Commands>,
+#[derive(Debug)]
+struct DumbBase {
+    _payload: u128,
 }
 
-#[derive(Subcommand, Debug)]
-#[command(args_conflicts_with_subcommands = true)]
-pub enum Commands {
-    Read {
-        #[arg(short, long, value_parser)]
-        id: String,
-    },
-    /// Search various aspects within the service.
-    Write {
-        #[arg(short, long, value_parser)]
-        id: String,
-    },
+impl BaseType for DumbBase {
+    fn fingerprint() -> u64 {
+        11234
+    }
 }
 
-// sec-test read --id 0x274b9675a25837a7446a419c68df8fc7
-//
 fn main() {
-    let args = Args::parse();
     let mut builder = default_builder();
     builder.filter_level(LevelFilter::Trace);
     builder.init();
 
-    match args.command {
-        Some(command) => match command {
-            Commands::Read { id } => {
-                let id = id.trim_start_matches("0x");
+    let (s_key, v_key) = SigningKey::new_keypair(&SigningScheme::Ecdsa, Default::default())
+        .expect("should have worked");
 
-                let sec_ctx_id = u128::from_str_radix(id, 16).unwrap().into();
+    let sec_ctx = SecCtx::new(
+        ObjectCreate::new(
+            Default::default(),
+            Default::default(),
+            None,
+            Default::default(),
+            Protections::all(),
+        ),
+        Protections::all(),
+        SecCtxFlags::empty(),
+    )
+    .unwrap();
 
-                let id: u128 = 0x1000000000000a;
+    sys_sctx_attach(sec_ctx.id()).unwrap();
 
-                let map =
-                    Object::<SecCtxMap>::map(sec_ctx_id, MapFlags::READ | MapFlags::WRITE).unwrap();
+    // lets create an object and try to access it
+    let spec = ObjectCreate::new(
+        Default::default(),
+        Default::default(),
+        Some(v_key.id()),
+        Default::default(),
+        // Protections::all(),
+        // Protections::READ | Protections::WRITE,
+        Protections::READ,
+    );
+    info!("creating target object with spec: {:?}", spec);
 
-                println!("Object Id: {:#?}", map.id());
+    let target_obj = ObjectBuilder::new(spec)
+        .build(DumbBase {
+            _payload: 123456789,
+        })
+        .unwrap();
 
-                let res = SecCtxMap::lookup(&map, id.into());
-                println!("lookup results {:#?}", res);
-            }
+    let target_id = target_obj.id().clone();
+    drop(target_obj);
 
-            Commands::Write { id } => {
-                // how to build a persistent object
-                let id: u128 = id.parse().expect("id should be valid u128");
-                let vobj = ObjectBuilder::<SecCtxMap>::default()
-                    // .persist()
-                    .build(SecCtxMap::default())
-                    .unwrap();
+    info!("target_id :{:?}", target_id);
+    info!("sec_ctx id:{:?}", sec_ctx.id());
 
-                println!("SecCtxObjId: {}", vobj.id());
+    let prots = Protections::empty();
 
-                let vobj_id = vobj.id();
+    let cap = Cap::new(
+        target_id,
+        sec_ctx.id(),
+        prots,
+        s_key.base(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    )
+    .unwrap();
 
-                let cap_ptr = SecCtxMap::insert(&vobj, id.into(), CtxMapItemType::Cap);
+    sec_ctx.insert_cap(cap).unwrap();
+    println!("Inserted Capability!");
+    // attach to this sec_ctx
 
-                println!("Ptr: {:#?}", cap_ptr);
-                println!("SecCtxObjId: {}", vobj_id);
+    // time to try accessing this object
 
-                let res = SecCtxMap::lookup(&vobj, id.into());
-                println!("lookup results {:#?}", res);
+    let target = Object::<DumbBase>::map(target_id, MapFlags::READ | MapFlags::WRITE).unwrap();
+    let base = target.base();
+    println!("base: {:?}", base);
 
-                println!("\n\n\n============================\n\n\n");
-
-                let map =
-                    Object::<SecCtxMap>::map(vobj_id, MapFlags::READ | MapFlags::WRITE).unwrap();
-
-                println!("Object Id: {:#?}", map.id());
-
-                let res = SecCtxMap::lookup(&map, id.into());
-                println!("lookup results {:#?}", res);
-            }
-        },
-
-        None => {
-            let sec_ctx = SecCtx::default();
-
-            let target = 0x123.into();
-            let accessor = 0x321.into();
-            let prots = Protections::all();
-            let target_priv_key =
-                SigningKey::from_slice(&rand_32(), Default::default()).expect("should work");
-
-            let cap = Cap::new(
-                target,
-                accessor,
-                prots,
-                target_priv_key,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            )
-            .unwrap();
-
-            sec_ctx.add_cap(cap);
-
-            println!("{}", sec_ctx);
-
-            let id = sec_ctx.id();
-            drop(sec_ctx);
-
-            let sec_ctx: SecCtx = id.try_into().unwrap();
-
-            println!("just read: {}", sec_ctx)
-        }
-    }
-}
-
-pub fn rand_32() -> [u8; 32] {
-    let mut dest = [0 as u8; 32];
-    getrandom::getrandom(&mut dest).unwrap();
-    dest
+    println!("")
 }
