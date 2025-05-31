@@ -25,7 +25,7 @@ use crate::{
 
 #[allow(unused_variables)]
 fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
-    //logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
+    logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
 }
 
 fn assert_valid(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
@@ -277,6 +277,7 @@ pub fn do_page_fault(
 pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
     let res = do_page_fault(addr, cause, flags, ip);
     if let Err(upcall) = res {
+        logln!("UpCall:{:?}", upcall);
         current_thread_ref().unwrap().send_upcall(upcall);
     }
 }
