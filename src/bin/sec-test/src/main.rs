@@ -90,5 +90,7 @@ fn main() {
 
     let target = Object::<DumbBase>::map(target_id, MapFlags::READ | MapFlags::WRITE).unwrap();
     let base = target.base();
-    println!("base: {:?}", base)
+    println!("base: {:?}", base);
+
+    println!("")
 }
