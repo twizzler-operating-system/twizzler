@@ -8,7 +8,7 @@ use twizzler_rt_abi::object::MapFlags;
 fn main() {
     let mut nh = naming::static_naming_factory().unwrap();
     let mut vo = if let Ok(node) = nh.get("/data/ptest-obj", GetFlags::empty()) {
-        println!("reopened: {:?}", node);
+        println!("reopened: {:?}", node.id);
         VecObject::from(
             Object::map(
                 node.id,
@@ -28,8 +28,12 @@ fn main() {
         println!("current contents: {:?}", e);
     }
     println!("pushing!");
-    vo.push(64).unwrap();
-    println!("done!");
+    let start = std::time::Instant::now();
+    for i in 0..1000 {
+        vo.push(64).unwrap();
+    }
+    let end = std::time::Instant::now();
+    println!("done!: {:?}", end - start);
     for e in &vo {
         println!("current contents: {:?}", e);
     }

@@ -226,6 +226,7 @@ pub fn copy_ranges(
                 // TODO: we'll need to either ensure everything is present, or interface with the
                 // pager. We'll probably do the later in the future.
                 dest_point = dest_point.offset(diff);
+                src_point = src_point.offset(diff);
                 remaining_vec_pages -= diff;
             }
 
@@ -304,6 +305,7 @@ pub fn copy_range_to_shadow(
                 // TODO: we'll need to either ensure everything is present, or interface with the
                 // pager. We'll probably do the later in the future.
                 dest_point = dest_point.offset(diff);
+                src_point = src_point.offset(diff);
                 remaining_vec_pages -= diff;
             }
 

@@ -3,7 +3,7 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull};
 
-use region::{DirtySet, MapRegion, RegionManager, Shadow};
+use region::{MapRegion, RegionManager, Shadow};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -304,7 +304,6 @@ impl UserContext for VirtContext {
             range: slot.range(),
             shadow,
             flags: object_info.flags,
-            dirty_set: DirtySet::new(),
         };
         object_info.object().add_context(self);
         let mut slots = self.regions.lock();
@@ -517,7 +516,6 @@ impl KernelMemoryContext for VirtContext {
             cache_type: info.cache(),
             shadow: None,
             flags: info.flags,
-            dirty_set: DirtySet::new(),
         };
         slots.insert_region(new_slot_info);
         KernelObjectVirtHandle {

@@ -1,8 +1,4 @@
-use alloc::{
-    collections::{btree_map::BTreeMap, btree_set::BTreeSet},
-    sync::Arc,
-    vec::Vec,
-};
+use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use core::{fmt::Debug, ops::Range, usize};
 
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
@@ -44,7 +40,6 @@ pub struct MapRegion {
     pub prot: Protections,
     pub flags: MapFlags,
     pub range: Range<VirtAddr>,
-    pub dirty_set: DirtySet,
 }
 
 impl From<&MapRegion> for ObjectContextInfo {
@@ -136,13 +131,11 @@ impl MapRegion {
             }
         }
 
-        /*
         if let PageStatus::Locked(sleeper) = status {
             drop(obj_page_tree);
             sleeper.wait();
             return self.map(addr, cause, perms, default_prot, mapper);
         }
-        */
 
         // Step 4: do the mapping. If the page isn't present by now, report data loss.
         if let PageStatus::Ready(page, shared) = status {
@@ -154,7 +147,7 @@ impl MapRegion {
                 settings.flags(),
             );
             if settings.perms().contains(Protections::WRITE) {
-                self.dirty_set.add_dirty(page_number);
+                self.object().dirty_set().add_dirty(page_number);
             }
             mapper(ObjectPageProvider::new(Vec::from([(page, settings)])))
         } else {
@@ -176,8 +169,7 @@ impl MapRegion {
                 let sync_info = unsafe { sync_info_ptr.read() };
 
                 let ctx = current_memory_context().unwrap();
-                let dirty_pages = self.dirty_set.drain_all();
-                logln!("sync: dirty pages: {:?}", dirty_pages);
+                let dirty_pages = self.object().dirty_set().drain_all();
                 ctx.with_arch(current_thread_ref().unwrap().secctx.active_id(), |arch| {
                     let cursor = self.mapping_cursor(0, MAX_SIZE);
                     // TODO: remap readonly
@@ -321,36 +313,6 @@ impl Shadow {
 
     pub fn with_page_tree<R>(&self, f: impl FnOnce(&mut PageRangeTree) -> R) -> R {
         f(&mut *self.tree.lock())
-    }
-}
-
-#[derive(Clone)]
-pub struct DirtySet {
-    set: Arc<Mutex<BTreeSet<PageNumber>>>,
-}
-
-impl DirtySet {
-    pub fn new() -> Self {
-        Self {
-            set: Arc::new(Mutex::new(BTreeSet::new())),
-        }
-    }
-
-    fn drain_all(&self) -> Vec<PageNumber> {
-        let dirty = self.set.lock().extract_if(|_| true).collect::<Vec<_>>();
-        dirty
-    }
-
-    fn is_dirty(&self, pn: PageNumber) -> bool {
-        self.set.lock().contains(&pn)
-    }
-
-    fn add_dirty(&self, pn: PageNumber) {
-        self.set.lock().insert(pn);
-    }
-
-    fn reset_dirty(&self, pn: PageNumber) {
-        self.set.lock().remove(&pn);
     }
 }
 
