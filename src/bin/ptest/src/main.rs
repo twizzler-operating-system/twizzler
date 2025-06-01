@@ -27,14 +27,17 @@ fn main() {
     for e in &vo {
         println!("current contents: {:?}", e);
     }
-    println!("pushing!");
+    println!("pushing items");
     let start = std::time::Instant::now();
-    for i in 0..1000 {
-        vo.push(64).unwrap();
+    for i in 0..100000 {
+        //println!("pushing: {}", i);
+        vo.push(i).unwrap();
     }
     let end = std::time::Instant::now();
     println!("done!: {:?}", end - start);
+    /*
     for e in &vo {
         println!("current contents: {:?}", e);
     }
+    */
 }

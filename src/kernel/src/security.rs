@@ -105,9 +105,13 @@ impl SecurityContext {
                 LookupResult::Found(v_obj) => {
                     let k_ctx = kernel_context();
 
-                    let handle = k_ctx.insert_kernel_object::<VerifyingKey>(
-                        ObjectContextInfo::new(v_obj, Protections::READ, CacheType::WriteBack),
-                    );
+                    let handle =
+                        k_ctx.insert_kernel_object::<VerifyingKey>(ObjectContextInfo::new(
+                            v_obj,
+                            Protections::READ,
+                            CacheType::WriteBack,
+                            MapFlags::STABLE,
+                        ));
                     handle
                 }
                 // verifying key wasnt found, return no perms

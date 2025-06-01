@@ -147,6 +147,13 @@ impl MapRegion {
                 settings.flags(),
             );
             if settings.perms().contains(Protections::WRITE) {
+                if self.object().use_pager() {
+                    log::debug!(
+                        "adding persist dirty page {} to region {:?}",
+                        page_number,
+                        self.range
+                    );
+                }
                 self.object().dirty_set().add_dirty(page_number);
             }
             mapper(ObjectPageProvider::new(Vec::from([(page, settings)])))
@@ -168,19 +175,13 @@ impl MapRegion {
                 // TODO: validation
                 let sync_info = unsafe { sync_info_ptr.read() };
 
-                let ctx = current_memory_context().unwrap();
-                let dirty_pages = self.object().dirty_set().drain_all();
-                ctx.with_arch(current_thread_ref().unwrap().secctx.active_id(), |arch| {
-                    let cursor = self.mapping_cursor(0, MAX_SIZE);
-                    // TODO: remap readonly
-                    arch.unmap(cursor);
-                });
-
-                if sync_info.flags.contains(SyncFlags::DURABLE) {
+                if sync_info.flags.contains(SyncFlags::DURABLE) && false {
+                    let dirty_pages = self.object().dirty_set().drain_all();
+                    log::debug!("sync region with dirty pages {:?}", dirty_pages);
                     crate::pager::sync_region(self, dirty_pages, sync_info);
                 }
 
-                if sync_info.flags.contains(SyncFlags::ASYNC_DURABLE) {
+                if sync_info.flags.contains(SyncFlags::ASYNC_DURABLE) && false {
                     unsafe { sync_info.try_release() }?;
                     let wake = ThreadSyncWake::new(
                         ThreadSyncReference::Virtual(sync_info.release),
@@ -292,6 +293,7 @@ impl Debug for Shadow {
 impl Shadow {
     pub fn new(info: &ObjectContextInfo) -> Self {
         let mut tree = PageRangeTree::new();
+        log::debug!("copy range to shadow {:?}", info.object().id());
         copy_range_to_shadow(&info.object, 0, &mut tree, 0, MAX_SIZE);
         Self {
             tree: Mutex::new(tree),

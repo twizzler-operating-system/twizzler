@@ -145,6 +145,13 @@ impl ReqKind {
                 } else {
                     ObjectEvictFlags::SYNC
                 };
+                log::debug!(
+                    "sync object {:?} pages {:?} => {:?} (is last: {})",
+                    id,
+                    range,
+                    phys,
+                    is_last
+                );
                 RequestFromKernel::new(KernelCommand::ObjectEvict(ObjectEvictInfo::new(
                     id, range, phys, flags,
                 )))
