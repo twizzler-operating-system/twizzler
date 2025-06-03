@@ -193,12 +193,12 @@ impl SecCtxMgr {
         //TODO: will probably have to hook up the gate check here as well?
         // WARN: actually doing the lookup is causing the kernel to die so just skipping that for
         // now for some reason
-        let perms = self.lookup(_access_info.target_id);
-        // let perms = PermsInfo {
-        //     ctx: self.active_id(),
-        //     provide: Protections::all(),
-        //     restrict: Protections::empty(),
-        // };
+        // let perms = self.lookup(_access_info.target_id);
+        let perms = PermsInfo {
+            ctx: self.active_id(),
+            provide: Protections::all(),
+            restrict: Protections::empty(),
+        };
 
         perms
     }
@@ -206,23 +206,23 @@ impl SecCtxMgr {
     /// Search all attached contexts for access.
     pub fn search_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         //TODO: need to actually look through all the contexts, this is just temporary
-        let mut greatest_perms = self.lookup(_access_info.target_id);
+        // let mut greatest_perms = self.lookup(_access_info.target_id);
 
-        for (id, ctx) in &self.inner.lock().inactive {
-            let perms = ctx.lookup(_access_info.target_id);
-            // how do you determine what prots is more expressive? like more
-            // lets just return if its anything other than empty
-            if perms.provide & !perms.restrict != Protections::empty() {
-                greatest_perms = perms
-            }
-        }
-
-        greatest_perms
-        // PermsInfo {
-        //     ctx: self.active_id(),
-        //     provide: Protections::all(),
-        //     restrict: Protections::empty(),
+        // for (_, ctx) in &self.inner.lock().inactive {
+        //     let perms = ctx.lookup(_access_info.target_id);
+        //     // how do you determine what prots is more expressive? like more
+        //     // lets just return if its anything other than empty
+        //     if perms.provide & !perms.restrict != Protections::empty() {
+        //         greatest_perms = perms
+        //     }
         // }
+        // greatest_perms
+
+        PermsInfo {
+            ctx: self.active_id(),
+            provide: Protections::all(),
+            restrict: Protections::empty(),
+        }
     }
 
     /// Build a new SctxMgr for user threads.
