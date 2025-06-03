@@ -1,7 +1,12 @@
+use alloc::vec::Vec;
+use core::fmt::Display;
+
 use crate::{
+    is_bench_mode,
     mutex::{LockGuard, Mutex},
     processor::current_processor,
     spinlock::{self, GenericSpinlock, RelaxStrategy},
+    time::bench_clock,
 };
 
 pub fn align<T: From<usize> + Into<usize>>(val: T, align: usize) -> T {
@@ -76,4 +81,108 @@ pub fn quick_random() -> u32 {
         RAND_STATE = newstate;
     }
     newstate >> 16
+}
+
+// benchmarking stuff
+pub struct BenchResult {
+    iterations: u64,
+    total_ns: u64,
+    avg_ns: f64,
+    min_ns: u64,
+    max_ns: u64,
+}
+
+impl Display for BenchResult {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        writeln!(f, "\nIterations: {}", self.iterations)?;
+        writeln!(
+            f,
+            "Total time: {:.2} ms",
+            self.total_ns as f64 / 1_000_000.0
+        )?;
+        writeln!(f, "Average:    {:.2} ns/iter", self.avg_ns)?;
+        writeln!(f, "Min:        {:.2} ns/iter", self.min_ns)?;
+        writeln!(f, "Max:        {:.2} ns/iter", self.max_ns)?;
+        Ok(())
+    }
+}
+
+fn benchmark_w_iter<F>(mut f: F, iterations: u64) -> BenchResult
+where
+    F: FnMut(),
+{
+    let mut times = Vec::with_capacity(iterations as usize);
+
+    // warm up the bench
+    for _ in 0..10 {
+        f();
+    }
+
+    let clock = bench_clock().unwrap();
+
+    for _ in 0..iterations {
+        let start = clock.read();
+        f();
+
+        let end = clock.read();
+
+        times.push(((end.value - start.value) * end.rate).as_nanos() as u64);
+    }
+
+    let total_ns: u64 = times.iter().sum();
+    let avg_ns = total_ns as f64 / iterations as f64;
+    let min_ns = *times.iter().min().unwrap();
+    let max_ns = *times.iter().max().unwrap();
+
+    BenchResult {
+        iterations,
+        total_ns,
+        avg_ns,
+        min_ns,
+        max_ns,
+    }
+}
+
+/// Benchmarks the closure, runs it for a scaled iteration count and
+/// prints the results to console.
+/// Limitation: you have to supply --tests as well for now to get
+/// kernel benches to run.
+pub fn benchmark<F>(mut f: F)
+where
+    F: FnMut(),
+{
+    if !is_bench_mode() {
+        return;
+    }
+    let mut iterations = 100u64;
+    // 1 second
+    let target_duration_ns = 1_000_000_000_u64;
+
+    let clock = bench_clock().unwrap();
+
+    // scale till we figure out proper iterations
+    loop {
+        let start = clock.read();
+        for _ in 0..iterations {
+            f();
+        }
+
+        let end = clock.read();
+        let duration = ((end.value - start.value) * end.rate).as_nanos() as u64;
+
+        if duration >= target_duration_ns / 10 {
+            iterations = (iterations * target_duration_ns) / duration;
+            break;
+        }
+
+        iterations *= 10;
+
+        // just in case
+        if iterations > 10_000_000 {
+            break;
+        }
+    }
+
+    let res = benchmark_w_iter(f, iterations.min(10_000_000_u64));
+    logln!("{}", res);
 }

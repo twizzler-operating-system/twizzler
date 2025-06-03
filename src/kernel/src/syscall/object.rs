@@ -84,7 +84,7 @@ pub fn sys_object_create(
     let meta = MetaInfo {
         nonce: Nonce(nonce),
         kuid: create.kuid,
-        default_prot: Protections::all(),
+        default_prot: create.def_prot,
         flags: MetaFlags::empty(),
         fotcount: 0,
         extcount: 0,

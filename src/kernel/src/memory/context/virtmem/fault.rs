@@ -25,7 +25,7 @@ use crate::{
 
 #[allow(unused_variables)]
 fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
-    //logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
+    // logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
 }
 
 fn assert_valid(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
@@ -169,6 +169,7 @@ fn page_fault_to_region(
 
     let (id_ok, default_prot) = info.object.check_id();
     if !id_ok && !info.object().is_kernel_id() {
+        logln!("ObjId: {:?}, default protections: {:?} ", id, default_prot);
         logln!(
             "id verification failed ({} {}) {:?}",
             info.object.use_pager(),
@@ -177,10 +178,10 @@ fn page_fault_to_region(
         );
     }
 
-    let perms = check_security(&ctx, sctx_id, id, addr, cause, ip, default_prot)?;
+    let perms = check_security(&ctx, sctx_id, id.clone(), addr, cause, ip, default_prot)?;
 
     // Do we need to switch contexts?
-    if perms.ctx != sctx_id {
+    if perms.ctx != sctx_id && !addr.is_kernel() {
         current_thread_ref().map(|ct| ct.secctx.switch_context(perms.ctx));
         sctx_id = perms.ctx;
     }
@@ -276,6 +277,7 @@ pub fn do_page_fault(
 pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
     let res = do_page_fault(addr, cause, flags, ip);
     if let Err(upcall) = res {
+        logln!("UpCall:{:?}", upcall);
         current_thread_ref().unwrap().send_upcall(upcall);
     }
 }
