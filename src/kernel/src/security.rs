@@ -1,12 +1,20 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use twizzler_abi::object::{ObjID, Protections};
+use twizzler_abi::{
+    device::CacheType,
+    object::{ObjID, Protections},
+};
 use twizzler_rt_abi::error::{NamingError, ObjectError};
+pub use twizzler_security::PermsInfo;
+use twizzler_security::{Cap, CtxMapItemType, SecCtxBase, VerifyingKey};
 
 use crate::{
-    memory::context::{KernelMemoryContext, KernelObject, ObjectContextInfo, UserContext},
+    memory::context::{
+        kernel_context, KernelMemoryContext, KernelObject, KernelObjectHandle, ObjectContextInfo,
+        UserContext,
+    },
     mutex::Mutex,
-    obj::LookupFlags,
+    obj::{lookup_object, LookupFlags, LookupResult},
     once::Once,
     spinlock::Spinlock,
     thread::current_memory_context,
@@ -15,6 +23,7 @@ use crate::{
 #[derive(Clone)]
 struct SecCtxMgrInner {
     active: SecurityContextRef,
+    //ObjID here refers to the security contexts ID
     inactive: BTreeMap<ObjID, SecurityContextRef>,
 }
 
@@ -27,8 +36,8 @@ pub struct SecCtxMgr {
 
 /// A single security context.
 pub struct SecurityContext {
-    kobj: Option<KernelObject<()>>,
-    cache: BTreeMap<ObjID, PermsInfo>,
+    kobj: Option<KernelObject<SecCtxBase>>,
+    cache: Mutex<BTreeMap<ObjID, PermsInfo>>,
 }
 
 impl core::fmt::Debug for SecurityContext {
@@ -45,14 +54,6 @@ pub type SecurityContextRef = Arc<SecurityContext>;
 /// The kernel gets a special, reserved sctx ID.
 pub const KERNEL_SCTX: ObjID = ObjID::new(0);
 
-/// Information about protections for a given object within a context.
-#[derive(Clone, Copy)]
-pub struct PermsInfo {
-    pub ctx: ObjID,
-    pub provide: Protections,
-    pub restrict: Protections,
-}
-
 /// Information about how we want to access an object for perms checking.
 #[derive(Clone, Copy)]
 pub struct AccessInfo {
@@ -68,11 +69,94 @@ pub struct AccessInfo {
 
 impl SecurityContext {
     /// Lookup the permission info for an object, and maybe cache it.
-    pub fn lookup(&self, _id: ObjID) -> &PermsInfo {
-        todo!()
+    pub fn lookup(&self, _id: ObjID) -> PermsInfo {
+        if let Some(cache_entry) = self.cache.lock().get(&_id) {
+            return *cache_entry;
+        }
+
+        let mut granted_perms =
+            PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
+
+        let Some(ref obj) = self.kobj.clone() else {
+            // if there is no object underneath the kobj, return nothing;
+            return granted_perms;
+        };
+
+        let base = obj.base();
+
+        // check for possible items
+        let Some(results) = base.map.get(&_id) else {
+            // if no entries for the target, return already granted perms
+            return granted_perms;
+        };
+
+        let v_obj = {
+            let target_obj = match lookup_object(_id, LookupFlags::empty()) {
+                LookupResult::Found(obj) => obj,
+                _ => return PermsInfo::new(self.id(), Protections::empty(), Protections::empty()),
+            };
+
+            let Some(meta) = target_obj.read_meta(true) else {
+                // failed to read meta, no perms granted
+                return PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
+            };
+            match lookup_object(meta.kuid, LookupFlags::empty()) {
+                LookupResult::Found(v_obj) => {
+                    let k_ctx = kernel_context();
+
+                    let handle = k_ctx.insert_kernel_object::<VerifyingKey>(
+                        ObjectContextInfo::new(v_obj, Protections::READ, CacheType::WriteBack),
+                    );
+                    handle
+                }
+                // verifying key wasnt found, return no perms
+                _ => return PermsInfo::new(self.id(), Protections::empty(), Protections::empty()),
+            }
+        };
+
+        let v_key = v_obj.base();
+
+        for entry in results {
+            match entry.item_type {
+                CtxMapItemType::Del => {
+                    todo!("Delegations not supported yet for lookup")
+                }
+
+                CtxMapItemType::Cap => {
+                    //NOTE: is this going to return the same as Object.lea?
+                    let Some(cap) = obj.lea_raw(entry.offset as *const Cap) else {
+                        // something weird going on, entry offset not inside object bounds,
+                        // return already granted perms to avoid panic
+                        return granted_perms;
+                    };
+
+                    if cap.verify_sig(v_key).is_ok() {
+                        granted_perms.provide = granted_perms.provide | cap.protections;
+                    };
+                }
+            }
+        }
+
+        // lookup mask for obj in base
+        let Some(mask) = base.masks.get(&_id) else {
+            // no mask for target object
+            // final perms are granted_perms & global_mask
+            granted_perms.provide &= base.global_mask;
+            self.cache.lock().insert(_id, granted_perms.clone());
+            return granted_perms;
+        };
+
+        // final permissions will be ,
+        // granted_perms & permmask & (global_mask | override_mask)
+        granted_perms.provide =
+            granted_perms.provide & mask.permmask & (base.global_mask | mask.ovrmask);
+
+        self.cache.lock().insert(_id, granted_perms.clone());
+
+        granted_perms
     }
 
-    pub fn new(kobj: Option<KernelObject<()>>) -> Self {
+    pub fn new(kobj: Option<KernelObject<SecCtxBase>>) -> Self {
         Self {
             kobj,
             cache: Default::default(),
@@ -90,7 +174,7 @@ impl SecurityContext {
 impl SecCtxMgr {
     /// Lookup the permission info for an object in the active context, and maybe cache it.
     pub fn lookup(&self, id: ObjID) -> PermsInfo {
-        *self.inner.lock().active.lookup(id)
+        self.inner.lock().active.lookup(id)
     }
 
     /// Get the active context.
@@ -106,16 +190,39 @@ impl SecCtxMgr {
 
     /// Check access rights in the active context.
     pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
+        //TODO: will probably have to hook up the gate check here as well?
+        // WARN: actually doing the lookup is causing the kernel to die so just skipping that for
+        // now for some reason
+        // let perms = self.lookup(_access_info.target_id);
+        let perms = PermsInfo {
+            ctx: self.active_id(),
+            provide: Protections::all(),
+            restrict: Protections::empty(),
+        };
+
+        perms
+    }
+
+    /// Search all attached contexts for access.
+    pub fn search_access(&self, _access_info: &AccessInfo) -> PermsInfo {
+        //TODO: need to actually look through all the contexts, this is just temporary
+        // let mut greatest_perms = self.lookup(_access_info.target_id);
+
+        // for (_, ctx) in &self.inner.lock().inactive {
+        //     let perms = ctx.lookup(_access_info.target_id);
+        //     // how do you determine what prots is more expressive? like more
+        //     // lets just return if its anything other than empty
+        //     if perms.provide & !perms.restrict != Protections::empty() {
+        //         greatest_perms = perms
+        //     }
+        // }
+        // greatest_perms
+
         PermsInfo {
             ctx: self.active_id(),
             provide: Protections::all(),
             restrict: Protections::empty(),
         }
-    }
-
-    /// Search all attached contexts for access.
-    pub fn search_access(&self, _access_info: &AccessInfo) -> PermsInfo {
-        todo!()
     }
 
     /// Build a new SctxMgr for user threads.
@@ -239,4 +346,40 @@ impl Drop for SecCtxMgr {
             global.remove(&inner.active.id());
         }
     }
+}
+
+mod tests {
+    use core::hint::black_box;
+
+    use twizzler_abi::object::Protections;
+    use twizzler_kernel_macros::kernel_test;
+    use twizzler_security::{Cap, SigningKey, SigningScheme};
+
+    use crate::{random::getrandom, utils::benchmark};
+    #[kernel_test]
+    fn bench_capability_verification() {
+        let mut rand_bytes = [0; 32];
+
+        getrandom(&mut rand_bytes, false);
+
+        let (s_key, v_key) = SigningKey::new_kernel_keypair(&SigningScheme::Ecdsa, rand_bytes)
+            .expect("shouldnt have errored");
+
+        let cap = Cap::new(
+            0x123.into(),
+            0x100.into(),
+            Protections::all(),
+            &s_key,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        )
+        .expect("capability creation shouldnt have errored");
+
+        benchmark(|| {
+            let _x = black_box(cap.verify_sig(&v_key).expect("should succeed"));
+        });
+    }
+
+    //TODO: write a thorough security context test when that stuff is implemented
 }

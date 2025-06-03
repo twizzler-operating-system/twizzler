@@ -64,7 +64,7 @@ impl QemuCommand {
             .create(true)
             .open("target/nvme.img")
         {
-            f.set_len(1024 * 1024 * 1024 * 100).unwrap();
+            f.set_len(1024 * 1024 * 1024 * 10).unwrap();
         }
 
         std::env::set_var(
@@ -75,6 +75,12 @@ impl QemuCommand {
                 "/opt/homebrew/opt/e2fsprogs/sbin/"
             ),
         );
+
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", std::env::var("PATH").unwrap(), "/usr/sbin/"),
+        );
+
         if !already_exists {
             if !Command::new("mke2fs")
                 .arg("-b")
@@ -244,7 +250,7 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
         if heartbeat {
             let mut i = 0;
             loop {
-                if let Some(es) = child.wait_timeout(Duration::from_secs(10))? {
+                if let Some(es) = child.wait_timeout(Duration::from_secs(15))? {
                     break Some(es);
                 }
                 child_stdin

@@ -67,17 +67,17 @@ pub fn calculate_new_id(
 
 fn verify_id(id: ObjID, nonce: u128, kuid: ObjID, flags: MetaFlags, def_prot: Protections) -> bool {
     let generated = gen_id(nonce, kuid, flags, def_prot);
-    /*
-    logln!(
-        "verify: {} {:?} {:?} {:?} => {:?} :: {:?}",
-        nonce,
-        kuid,
-        flags,
-        def_prot,
-        generated,
-        id
-    );
-    */
+
+    // logln!(
+    //     "verify: {} {:?} {:?} {:?} => {:?} :: {:?}",
+    //     nonce,
+    //     kuid,
+    //     flags,
+    //     def_prot,
+    //     generated,
+    //     id
+    // );
+
     id == generated
 }
 
