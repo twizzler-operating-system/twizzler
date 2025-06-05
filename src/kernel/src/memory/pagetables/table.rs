@@ -112,7 +112,6 @@ impl Table {
         mut cursor: MappingCursor,
         level: usize,
         phys: &mut impl PhysAddrProvider,
-        settings: &MappingSettings,
     ) -> Option<()> {
         let start_index = Self::get_index(cursor.start(), level);
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
@@ -129,13 +128,19 @@ impl Table {
             }
 
             let paddr = phys.peek()?;
-            if Self::can_map_at(cursor.start(), paddr.0, cursor.remaining(), paddr.1, level) {
+            if Self::can_map_at(
+                cursor.start(),
+                paddr.addr,
+                cursor.remaining(),
+                paddr.len,
+                level,
+            ) {
                 self.update_entry(
                     consist,
                     idx,
                     Entry::new(
-                        paddr.0,
-                        EntryFlags::from(settings)
+                        paddr.addr,
+                        EntryFlags::from(&paddr.settings)
                             | if level != Self::last_level() {
                                 EntryFlags::huge()
                             } else {
@@ -151,7 +156,7 @@ impl Table {
                 assert_ne!(level, Self::last_level());
                 self.populate(idx, EntryFlags::intermediate())?;
                 let next_table = self.next_table_mut(idx).unwrap();
-                next_table.map(consist, cursor, Self::next_level(level), phys, settings);
+                next_table.map(consist, cursor, Self::next_level(level), phys);
             }
 
             if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {

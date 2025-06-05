@@ -11,6 +11,7 @@ use core::{alloc::Layout, ops::Range, ptr::NonNull};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections},
+    syscall::MapFlags,
 };
 use twizzler_rt_abi::error::TwzError;
 
@@ -66,14 +67,16 @@ pub struct ObjectContextInfo {
     object: ObjectRef,
     perms: Protections,
     cache: CacheType,
+    flags: MapFlags,
 }
 
 impl ObjectContextInfo {
-    pub fn new(object: ObjectRef, perms: Protections, cache: CacheType) -> Self {
+    pub fn new(object: ObjectRef, perms: Protections, cache: CacheType, flags: MapFlags) -> Self {
         Self {
             object,
             perms,
             cache,
+            flags,
         }
     }
 

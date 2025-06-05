@@ -7,6 +7,7 @@ mod handle;
 mod info;
 mod kaction;
 mod map;
+mod map_control;
 mod object_control;
 mod object_stat;
 mod random;
@@ -60,6 +61,8 @@ pub enum Syscall {
     SctxAttach,
     /// Gets random bytes
     GetRandom,
+    /// Manipulate mappings
+    MapCtrl,
     NumSyscalls,
 }
 
@@ -85,6 +88,7 @@ pub use handle::*;
 pub use info::*;
 pub use kaction::*;
 pub use map::*;
+pub use map_control::*;
 pub use object_control::*;
 pub use object_stat::*;
 pub use random::*;

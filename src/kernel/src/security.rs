@@ -3,6 +3,7 @@ use alloc::{collections::BTreeMap, sync::Arc};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections},
+    syscall::MapFlags,
 };
 use twizzler_rt_abi::error::{NamingError, ObjectError};
 pub use twizzler_security::PermsInfo;
@@ -104,9 +105,13 @@ impl SecurityContext {
                 LookupResult::Found(v_obj) => {
                     let k_ctx = kernel_context();
 
-                    let handle = k_ctx.insert_kernel_object::<VerifyingKey>(
-                        ObjectContextInfo::new(v_obj, Protections::READ, CacheType::WriteBack),
-                    );
+                    let handle =
+                        k_ctx.insert_kernel_object::<VerifyingKey>(ObjectContextInfo::new(
+                            v_obj,
+                            Protections::READ,
+                            CacheType::WriteBack,
+                            MapFlags::STABLE,
+                        ));
                     handle
                 }
                 // verifying key wasnt found, return no perms
@@ -324,6 +329,7 @@ pub fn get_sctx(id: ObjID) -> twizzler_rt_abi::Result<SecurityContextRef> {
                 obj,
                 Protections::READ,
                 twizzler_abi::device::CacheType::WriteBack,
+                MapFlags::empty(),
             ));
         Arc::new(SecurityContext::new(Some(kobj)))
     });

@@ -3,10 +3,12 @@
 //! for the base, we optimize a bit by avoiding creating a kernel object handle if the base
 //! type fits in one page.
 
+use alloc::sync::Arc;
 use core::ptr::NonNull;
 
-use twizzler_abi::{device::CacheType, object::Protections};
+use twizzler_abi::{device::CacheType, object::Protections, syscall::MapFlags};
 
+use super::pages::PageRef;
 use crate::{
     memory::{
         context::{
@@ -50,18 +52,21 @@ impl<Base> ControlObjectCacher<Base> {
                 object.clone(),
                 Protections::READ | Protections::WRITE,
                 CacheType::WriteBack,
+                MapFlags::empty(),
             ));
             QuickOrKernel::Kernel(kobj)
         } else {
+            // TODO: this should probably use the frame Page variant.
             let frame = alloc_frame(
                 FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK | FrameAllocFlags::KERNEL,
             );
-            let page = Page::new_wired(frame.start_address(), CacheType::WriteBack);
+            let page = Page::new_wired(frame.start_address(), frame.size(), CacheType::WriteBack);
             let base_ptr = unsafe {
                 let ptr = page.get_mut_to_val::<Base>(0);
                 ptr.write(base);
                 ptr
             };
+            let page = PageRef::new(Arc::new(page), 0, 1);
             object.add_page(PageNumber::base_page(), page, None);
             QuickOrKernel::Quick(QuickBase {
                 base_ptr: NonNull::new(base_ptr).unwrap(),

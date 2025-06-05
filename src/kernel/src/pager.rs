@@ -2,10 +2,18 @@ use alloc::vec::Vec;
 
 use inflight::InflightManager;
 use request::ReqKind;
-use twizzler_abi::{object::ObjID, pager::PhysRange, syscall::ObjectCreate};
+use twizzler_abi::{
+    object::ObjID,
+    pager::PhysRange,
+    syscall::{ObjectCreate, SyncInfo},
+};
 
 use crate::{
-    memory::{frame::PHYS_LEVEL_LAYOUTS, tracker::FrameAllocFlags},
+    memory::{
+        context::virtmem::region::{MapRegion, Shadow},
+        frame::PHYS_LEVEL_LAYOUTS,
+        tracker::FrameAllocFlags,
+    },
     mutex::Mutex,
     obj::{LookupFlags, ObjectRef, PageNumber},
     once::Once,
@@ -43,9 +51,9 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
         }
         let inflight = mgr.add_request(ReqKind::new_info(id));
         drop(mgr);
-        if let Some(pager_req) = inflight.pager_req() {
+        inflight.for_each_pager_req(|pager_req| {
             queues::submit_pager_request(pager_req);
-        }
+        });
 
         let mut mgr = inflight_mgr().lock();
         let thread = current_thread_ref().unwrap();
@@ -63,9 +71,9 @@ pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
     }
     let inflight = mgr.add_request(ReqKind::new_page_data(id, page.num(), 1));
     drop(mgr);
-    if let Some(pager_req) = inflight.pager_req() {
+    inflight.for_each_pager_req(|pager_req| {
         queues::submit_pager_request(pager_req);
-    }
+    });
 
     let mut mgr = inflight_mgr().lock();
     let thread = current_thread_ref().unwrap();
@@ -82,9 +90,9 @@ fn cmd_object(req: ReqKind) {
     }
     let inflight = mgr.add_request(req);
     drop(mgr);
-    if let Some(pager_req) = inflight.pager_req() {
+    inflight.for_each_pager_req(|pager_req| {
         queues::submit_pager_request(pager_req);
-    }
+    });
 
     let mut mgr = inflight_mgr().lock();
     let thread = current_thread_ref().unwrap();
@@ -104,6 +112,27 @@ pub fn del_object(id: ObjID) {
 
 pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
     cmd_object(ReqKind::new_create(id, create, nonce));
+}
+
+pub fn sync_region(region: &MapRegion, dirty_set: Vec<PageNumber>, sync_info: SyncInfo) {
+    let shadow = Shadow::from(region);
+    let req = ReqKind::new_sync_region(region.object().id(), shadow, dirty_set, sync_info);
+    let mut mgr = inflight_mgr().lock();
+    if !mgr.is_ready() {
+        return;
+    }
+    let inflight = mgr.add_request(req);
+    drop(mgr);
+    inflight.for_each_pager_req(|pager_req| {
+        queues::submit_pager_request(pager_req);
+    });
+
+    let mut mgr = inflight_mgr().lock();
+    let thread = current_thread_ref().unwrap();
+    if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
+        drop(mgr);
+        finish_blocking(guard);
+    };
 }
 
 pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize) {
@@ -189,9 +218,9 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
     drop(mgr);
 
     for inflight in &inflights {
-        if let Some(pager_req) = inflight.pager_req() {
+        inflight.for_each_pager_req(|pager_req| {
             queues::submit_pager_request(pager_req);
-        }
+        });
     }
 
     if wait {

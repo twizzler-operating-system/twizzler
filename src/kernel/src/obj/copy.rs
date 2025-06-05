@@ -1,6 +1,8 @@
+use alloc::sync::Arc;
+
 use super::{
-    pages::Page,
-    range::{PageRange, PageRangeTree, PageStatus},
+    pages::{Page, PageRef},
+    range::{GetPageFlags, PageRange, PageRangeTree, PageStatus},
     InvalidateMode, ObjectRef, PageNumber,
 };
 use crate::{memory::tracker::FrameAllocator, mutex::LockGuard};
@@ -31,7 +33,7 @@ fn split_range(
 // subrange within that range (specified by offset and length), and a point to insert this into
 // (dest_point).
 fn copy_range_to_object_tree(
-    dest_tree: &mut LockGuard<PageRangeTree>,
+    dest_tree: &mut PageRangeTree,
     dest_point: PageNumber,
     range: &PageRange,
     offset: usize,
@@ -72,17 +74,16 @@ fn copy_single(
     max: usize,
     allocator: &mut FrameAllocator,
 ) -> Option<()> {
-    let src_page = src_tree.get_page(src_point, false, None);
-    let dest_page = dest_tree.get_page(dest_point, true, Some(allocator));
+    let src_page = src_tree.get_page(src_point, GetPageFlags::empty(), None);
+    let dest_page = dest_tree.get_page(dest_point, GetPageFlags::WRITE, Some(allocator));
     let dest_page = match dest_page {
         PageStatus::Ready(page, _) => page,
         PageStatus::NoPage => dest_tree.add_page(
             dest_point,
-            Page::new(allocator.try_allocate()?),
+            PageRef::new(Arc::new(Page::new(allocator.try_allocate()?)), 0, 1),
             Some(allocator),
         )?,
-        PageStatus::AllocFail => return None,
-        PageStatus::DataFail => return None,
+        _ => return None,
     };
 
     if let PageStatus::Ready(src_page, _) = src_page {
@@ -103,7 +104,9 @@ fn zero_single(
     max: usize,
 ) {
     // if there's no page here, our work is done
-    if let PageStatus::Ready(dest_page, _) = dest_tree.get_page(dest_point, true, None) {
+    if let PageStatus::Ready(dest_page, _) =
+        dest_tree.get_page(dest_point, GetPageFlags::WRITE, None)
+    {
         dest_page.as_mut_slice()[offset..max].fill(0);
     }
 }
@@ -215,7 +218,7 @@ pub fn copy_ranges(
                 // If the hole is bigger than our copy region, just break.
                 // Note: I don't think this will ever be true, given the way we select the ranges
                 // from the tree, but I haven't proven it yet.
-                if diff > remaining_vec_pages {
+                if diff >= remaining_vec_pages {
                     dest_point = dest_point.offset(remaining_vec_pages);
                     remaining_vec_pages = 0;
                     break;
@@ -223,6 +226,7 @@ pub fn copy_ranges(
                 // TODO: we'll need to either ensure everything is present, or interface with the
                 // pager. We'll probably do the later in the future.
                 dest_point = dest_point.offset(diff);
+                src_point = src_point.offset(diff);
                 remaining_vec_pages -= diff;
             }
 
@@ -257,6 +261,67 @@ pub fn copy_ranges(
     }
 }
 
+pub fn copy_range_to_shadow(
+    src: &ObjectRef,
+    src_off: usize,
+    dest_tree: &mut PageRangeTree,
+    dest_off: usize,
+    byte_length: usize,
+) {
+    let src_start = PageNumber::from_offset(src_off);
+    let dest_start = PageNumber::from_offset(dest_off);
+
+    let start_offset = src_off % PageNumber::PAGE_SIZE;
+    let end_offset = (src_off + byte_length) % PageNumber::PAGE_SIZE;
+    assert_eq!(start_offset, 0);
+    assert_eq!(end_offset, 0);
+
+    let nr_pages: usize = byte_length / PageNumber::PAGE_SIZE;
+
+    let src_tree = src.range_tree.lock();
+    src.invalidate(
+        src_start..src_start.offset(nr_pages),
+        InvalidateMode::WriteProtect,
+    );
+
+    let mut dest_point = dest_start;
+    let mut src_point = src_start;
+
+    let mut remaining_vec_pages = nr_pages;
+    if nr_pages > 0 {
+        let ranges = src_tree.range(src_point..src_point.offset(nr_pages));
+        for range in ranges {
+            // If the source point is below the range's start, then there's a hole in the source
+            // page tree. We don't have to copy at all, just shift up the dest point to
+            // where it needs to be for this range (since we will be copying from it).
+            if src_point < *range.0 {
+                let diff = *range.0 - src_point;
+                // If the hole is bigger than our copy region, just break.
+                // Note: I don't think this will ever be true, given the way we select the ranges
+                // from the tree, but I haven't proven it yet.
+                if diff >= remaining_vec_pages {
+                    break;
+                }
+                // TODO: we'll need to either ensure everything is present, or interface with the
+                // pager. We'll probably do the later in the future.
+                dest_point = dest_point.offset(diff);
+                src_point = src_point.offset(diff);
+                remaining_vec_pages -= diff;
+            }
+
+            // Okay, finally, we can calculate the subrange from the source range that we'll be
+            // using for our destination region.
+            let offset = src_point.num().saturating_sub(range.0.num());
+            let len = core::cmp::min(range.1.value().length - offset, remaining_vec_pages);
+            copy_range_to_object_tree(dest_tree, dest_point, range.1.value(), offset, len);
+
+            dest_point = dest_point.offset(len);
+            src_point = src_point.offset(len);
+            remaining_vec_pages -= len;
+        }
+    }
+}
+
 fn copy_bytes(
     src_tree: &mut PageRangeTree,
     src_off: usize,
@@ -279,17 +344,18 @@ fn copy_bytes(
     let mut remaining = byte_length;
 
     while remaining > 0 {
-        let src_page = src_tree.get_page(src_point, false, None);
-        let dest_page = dest_tree.get_page(dest_point, true, Some(allocator));
+        let src_page = src_tree.get_page(src_point, GetPageFlags::empty(), None);
+        let dest_page = dest_tree.get_page(dest_point, GetPageFlags::WRITE, Some(allocator));
         let dest_page = match dest_page {
             PageStatus::Ready(page, _) => page,
             PageStatus::NoPage => dest_tree.add_page(
                 dest_point,
-                Page::new(allocator.try_allocate()?),
+                PageRef::new(Arc::new(Page::new(allocator.try_allocate()?)), 0, 1),
                 Some(allocator),
             )?,
             PageStatus::AllocFail => return None,
             PageStatus::DataFail => return None,
+            _ => return None,
         };
 
         let count_sofar = byte_length - remaining;
@@ -450,7 +516,9 @@ pub fn zero_ranges(dest: &ObjectRef, dest_off: usize, byte_length: usize) {
 
 #[cfg(test)]
 mod test {
-    use twizzler_abi::{device::CacheType, object::Protections};
+    use alloc::sync::Arc;
+
+    use twizzler_abi::{device::CacheType, object::Protections, syscall::MapFlags};
 
     use super::copy_ranges;
     use crate::{
@@ -459,7 +527,12 @@ mod test {
             frame::PHYS_LEVEL_LAYOUTS,
             tracker::{FrameAllocFlags, FrameAllocator},
         },
-        obj::{copy::zero_ranges, pages::Page, range::PageStatus, ObjectRef, PageNumber},
+        obj::{
+            copy::zero_ranges,
+            pages::{Page, PageRef},
+            range::{GetPageFlags, PageStatus},
+            ObjectRef, PageNumber,
+        },
         userinit::create_blank_object,
     };
 
@@ -474,6 +547,7 @@ mod test {
             dest.clone(),
             Protections::READ,
             CacheType::WriteBack,
+            MapFlags::empty(),
         ));
         let dptr = dko.start_addr();
 
@@ -481,6 +555,7 @@ mod test {
             src.clone(),
             Protections::READ,
             CacheType::WriteBack,
+            MapFlags::empty(),
         ));
         let sptr = sko.start_addr();
 
@@ -513,6 +588,7 @@ mod test {
                 dest.clone(),
                 Protections::READ,
                 CacheType::WriteBack,
+                MapFlags::empty(),
             ));
             let dptr = dko.start_addr();
             let dest_slice = unsafe {
@@ -528,6 +604,7 @@ mod test {
             dest.clone(),
             Protections::READ,
             CacheType::WriteBack,
+            MapFlags::empty(),
         ));
         let dptr = dko.start_addr();
         let dest_slice = unsafe {
@@ -550,18 +627,19 @@ mod test {
             let mut tree: crate::mutex::LockGuard<'_, crate::obj::range::PageRangeTree> =
                 src.lock_page_tree();
             let pn = PageNumber::from_offset((p as usize) * PageNumber::PAGE_SIZE);
-            let sp = tree.get_page(pn, true, Some(&mut allocator));
+            let sp = tree.get_page(pn, GetPageFlags::WRITE, Some(&mut allocator));
             let sp = match sp {
                 PageStatus::Ready(page, _) => page,
                 PageStatus::NoPage => tree
                     .add_page(
                         pn,
-                        Page::new(allocator.try_allocate().unwrap()),
+                        PageRef::new(Arc::new(Page::new(allocator.try_allocate().unwrap())), 0, 1),
                         Some(&mut allocator),
                     )
                     .unwrap(),
                 PageStatus::AllocFail => panic!("out of memory"),
                 PageStatus::DataFail => panic!("data loss in copy"),
+                PageStatus::Locked(_) => panic!("page lock during test"),
             };
             sp.as_mut_slice().fill(p);
         }

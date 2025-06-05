@@ -1,5 +1,3 @@
-use alloc::sync::Arc;
-
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE},
     upcall::{
@@ -7,18 +5,12 @@ use twizzler_abi::{
         SecurityViolationInfo, UpcallInfo,
     },
 };
-use twizzler_rt_abi::error::{IoError, RawTwzError, TwzError};
 
-use super::{region::MapRegion, PageFaultFlags, Slot};
+use super::{region::MapRegion, ObjectPageProvider, PageFaultFlags, Slot};
 use crate::{
     arch::VirtAddr,
-    memory::{
-        context::{kernel_context, ContextRef},
-        frame::PHYS_LEVEL_LAYOUTS,
-        pagetables::MappingSettings,
-        tracker::{FrameAllocFlags, FrameAllocator},
-    },
-    obj::{pages::Page, range::PageStatus, PageNumber},
+    memory::context::{kernel_context, ContextRef},
+    obj::PageNumber,
     security::{AccessInfo, PermsInfo, KERNEL_SCTX},
     thread::{current_memory_context, current_thread_ref},
 };
@@ -162,7 +154,6 @@ fn page_fault_to_region(
 ) -> Result<(), UpcallInfo> {
     let id = info.object.id();
     let page_number = PageNumber::from_address(addr);
-    let is_kern_obj = addr.is_kernel_object_memory();
 
     // Step 1: Check for address validity and check for security violations.
     check_object_addr(page_number, id, cause, addr)?;
@@ -186,62 +177,19 @@ fn page_fault_to_region(
         sctx_id = perms.ctx;
     }
 
-    // Step 2: Ensure the backing pages are present if the object needs the pager.
-    let mut obj_page_tree = info.object.lock_page_tree();
-    // note: this is a 'best effort' call, since in principle the page could be evicted before
-    // this returns, hence the extra check at the end of this function.
-    obj_page_tree = info.object.ensure_in_core(obj_page_tree, page_number);
-    let mut fa = FrameAllocator::new(
-        FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
-        PHYS_LEVEL_LAYOUTS[0],
-    );
-
-    // Mapping helper
-    let do_map = |page: Arc<Page>, cow: bool| {
-        let settings = info.mapping_settings(cow, is_kern_obj);
-        let settings = MappingSettings::new(
-            // Provided permissions, restricted by mapping.
-            (perms.provide | default_prot) & !perms.restrict & settings.perms(),
-            settings.cache(),
-            settings.flags(),
+    let mapper = |mut provider: ObjectPageProvider| {
+        let cursor = info.mapping_cursor(
+            page_number.as_byte_offset(),
+            PageNumber::PAGE_SIZE * provider.count(),
         );
-        let cursor = info.mapping_cursor(page_number.as_byte_offset(), PageNumber::PAGE_SIZE);
         ctx.with_arch(sctx_id, |arch| {
             arch.unmap(cursor);
-            arch.map(cursor, &mut info.phys_provider(&page), &settings);
+            arch.map(cursor, &mut provider);
         });
+        Ok(())
     };
 
-    // Step 3: get the page, creating one if it's not present and we're backing with zero'd DRAM.
-    let mut status =
-        obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write, Some(&mut fa));
-    if matches!(status, PageStatus::NoPage) && !info.object.use_pager() {
-        if let Some(frame) = fa.try_allocate() {
-            let page = Page::new(frame);
-            obj_page_tree.add_page(page_number, page, Some(&mut fa));
-        }
-        status =
-            obj_page_tree.get_page(page_number, cause == MemoryAccessKind::Write, Some(&mut fa));
-        if matches!(status, PageStatus::NoPage) {
-            logln!("spuriously failed to back volatile object with DRAM -- retrying fault");
-            return Ok(());
-        }
-    }
-
-    // Step 4: do the mapping. If the page isn't present by now, report data loss.
-    if let PageStatus::Ready(page, cow) = status {
-        do_map(page, cow);
-        Ok(())
-    } else {
-        Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
-            id,
-            ObjectMemoryError::BackingFailed(RawTwzError::new(
-                TwzError::Io(IoError::DataLoss).raw(),
-            )),
-            cause,
-            addr.raw() as usize,
-        )))
-    }
+    info.map(addr, cause, perms, default_prot, mapper)
 }
 
 fn get_map_region(

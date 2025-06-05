@@ -73,15 +73,11 @@ impl Mapper {
         &mut self,
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
-        settings: &MappingSettings,
     ) -> Result<(), DeferredUnmappingOps> {
         let mut consist = Consistency::new(self.root);
         let level = self.start_level;
         let root = self.root_mut();
-        if root
-            .map(&mut consist, cursor, level, phys, settings)
-            .is_none()
-        {
+        if root.map(&mut consist, cursor, level, phys).is_none() {
             drop(consist);
             let mut consist = Consistency::new(self.root);
             let root = self.root_mut();

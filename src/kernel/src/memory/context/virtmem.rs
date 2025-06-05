@@ -3,10 +3,11 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull};
 
-use region::{MapRegion, RegionManager};
+use region::{MapRegion, RegionManager, Shadow};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::MapFlags,
 };
 use twizzler_rt_abi::error::{ResourceError, TwzError};
 
@@ -22,13 +23,13 @@ use crate::{
     memory::{
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
-            PhysAddrProvider, Table, ZeroPageProvider,
+            PhysAddrProvider, PhysMapInfo, Table, ZeroPageProvider,
         },
         tracker::FrameAllocFlags,
         PhysAddr,
     },
     mutex::Mutex,
-    obj::{self, pages::Page, ObjectRef, PageNumber},
+    obj::{self, pages::PageRef, ObjectRef, PageNumber},
     once::Once,
     security::KERNEL_SCTX,
     spinlock::Spinlock,
@@ -112,16 +113,41 @@ impl TryFrom<VirtAddr> for Slot {
     }
 }
 
-struct ObjectPageProvider<'a> {
-    page: &'a Page,
+struct ObjectPageProvider {
+    pos: usize,
+    pages: Vec<(PageRef, MappingSettings)>,
 }
 
-impl<'a> PhysAddrProvider for ObjectPageProvider<'a> {
-    fn peek(&mut self) -> Option<(crate::arch::address::PhysAddr, usize)> {
-        Some((self.page.physical_address(), PageNumber::PAGE_SIZE))
+impl ObjectPageProvider {
+    pub fn new(pages: Vec<(PageRef, MappingSettings)>) -> Self {
+        Self { pages, pos: 0 }
     }
 
-    fn consume(&mut self, _len: usize) {}
+    pub fn count(&self) -> usize {
+        self.pages.len()
+    }
+}
+
+impl PhysAddrProvider for ObjectPageProvider {
+    fn peek(&mut self) -> Option<PhysMapInfo> {
+        let page = self.pages.get(self.pos)?;
+        Some(PhysMapInfo {
+            addr: page.0.physical_address(),
+            len: PageNumber::PAGE_SIZE,
+            settings: page.1,
+        })
+    }
+
+    fn consume(&mut self, mut len: usize) {
+        assert_eq!(len, PageNumber::PAGE_SIZE);
+        while len > 0 {
+            len = len.saturating_sub(PageNumber::PAGE_SIZE);
+            self.pos += 1;
+            if self.pos == self.pages.len() {
+                return;
+            }
+        }
+    }
 }
 
 impl VirtContext {
@@ -197,13 +223,13 @@ impl VirtContext {
         ));
         for map in rm.coalesce() {
             let cursor = MappingCursor::new(map.vaddr(), map.len());
-            let mut phys = ContiguousProvider::new(map.paddr(), map.len());
             let settings = MappingSettings::new(
                 map.settings().perms(),
                 map.settings().cache(),
                 map.settings().flags() | MappingFlags::GLOBAL,
             );
-            self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys, &settings));
+            let mut phys = ContiguousProvider::new(map.paddr(), map.len(), settings);
+            self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys));
         }
 
         // ID-map the lower memory. This is needed by some systems to boot secondary CPUs. This
@@ -218,6 +244,11 @@ impl VirtContext {
             .unwrap(),
             id_len,
         );
+        let settings = MappingSettings::new(
+            Protections::READ | Protections::WRITE | Protections::EXEC,
+            CacheType::WriteBack,
+            MappingFlags::empty(),
+        );
         let mut phys = ContiguousProvider::new(
             PhysAddr::new(
                 Table::level_to_page_size(Table::last_level())
@@ -226,13 +257,10 @@ impl VirtContext {
             )
             .unwrap(),
             id_len,
+            settings,
         );
-        let settings = MappingSettings::new(
-            Protections::READ | Protections::WRITE | Protections::EXEC,
-            CacheType::WriteBack,
-            MappingFlags::empty(),
-        );
-        self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys, &settings));
+
+        self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys));
     }
 
     pub fn lookup_slot(&self, slot: usize) -> Option<MapRegion> {
@@ -263,13 +291,19 @@ impl UserContext for VirtContext {
         slot: Slot,
         object_info: &ObjectContextInfo,
     ) -> Result<(), TwzError> {
+        let shadow = if object_info.flags.contains(MapFlags::STABLE) {
+            Some(Arc::new(Shadow::new(object_info)))
+        } else {
+            None
+        };
         let new_slot_info = MapRegion {
             prot: object_info.prot(),
             cache_type: object_info.cache(),
             object: object_info.object().clone(),
             offset: 0,
             range: slot.range(),
-            shadow: None,
+            shadow,
+            flags: object_info.flags,
         };
         object_info.object().add_context(self);
         let mut slots = self.regions.lock();
@@ -336,11 +370,12 @@ pub struct VirtContextSlot {
     slot: Slot,
     prot: Protections,
     cache: CacheType,
+    flags: MapFlags,
 }
 
 impl From<&VirtContextSlot> for ObjectContextInfo {
     fn from(info: &VirtContextSlot) -> Self {
-        ObjectContextInfo::new(info.obj.clone(), info.prot, info.cache)
+        ObjectContextInfo::new(info.obj.clone(), info.prot, info.cache, info.flags)
     }
 }
 
@@ -365,14 +400,15 @@ impl GlobalPageAlloc {
     fn extend(&mut self, len: usize, mapper: &VirtContext) {
         let cursor = MappingCursor::new(self.end, len);
         // TODO: wait-ok?
-        let mut phys = ZeroPageProvider::new(FrameAllocFlags::KERNEL);
         let settings = MappingSettings::new(
             Protections::READ | Protections::WRITE,
             CacheType::WriteBack,
             MappingFlags::GLOBAL,
         );
+        let mut phys = ZeroPageProvider::new(FrameAllocFlags::KERNEL, settings);
+
         mapper.with_arch(KERNEL_SCTX, |arch| {
-            arch.map(cursor, &mut phys, &settings);
+            arch.map(cursor, &mut phys);
         });
         self.end = self.end.offset(len).unwrap();
         // Safety: the extension is backed by memory that is directly after the previous call to
@@ -385,14 +421,15 @@ impl GlobalPageAlloc {
     fn init(&mut self, mapper: &VirtContext) {
         let len = 2 * 1024 * 1024;
         let cursor = MappingCursor::new(self.end, len);
-        let mut phys = ZeroPageProvider::new(FrameAllocFlags::KERNEL);
         let settings = MappingSettings::new(
             Protections::READ | Protections::WRITE,
             CacheType::WriteBack,
             MappingFlags::GLOBAL,
         );
+        let mut phys = ZeroPageProvider::new(FrameAllocFlags::KERNEL, settings);
+
         mapper.with_arch(KERNEL_SCTX, |arch| {
-            arch.map(cursor, &mut phys, &settings);
+            arch.map(cursor, &mut phys);
         });
         self.end = self.end.offset(len).unwrap();
         // Safety: the initial is backed by memory.
@@ -478,6 +515,7 @@ impl KernelMemoryContext for VirtContext {
             prot: info.prot(),
             cache_type: info.cache(),
             shadow: None,
+            flags: info.flags,
         };
         slots.insert_region(new_slot_info);
         KernelObjectVirtHandle {

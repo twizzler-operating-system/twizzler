@@ -146,6 +146,7 @@ trait Namespace {
 
 pub struct NameStore {
     nameroot: Arc<dyn Namespace>,
+    dataroot: ObjID,
 }
 
 unsafe impl Send for NameStore {}
@@ -155,6 +156,7 @@ impl NameStore {
     pub fn new() -> NameStore {
         let this = NameStore {
             nameroot: Arc::new(NamespaceObject::new(false, None, None).unwrap()),
+            dataroot: 0.into(),
         };
         this.nameroot
             .insert(NsNode::ns("ext", NSID_EXTERNAL).unwrap());
@@ -163,8 +165,9 @@ impl NameStore {
 
     // Loads in an existing object store from an Object ID
     pub fn new_with(id: ObjID) -> Result<NameStore> {
-        let this = Self::new();
+        let mut this = Self::new();
         this.nameroot.insert(NsNode::ns("data", id).unwrap());
+        this.dataroot = id;
         tracing::debug!(
             "new_with: data={}, data={:?}, root={}",
             id,
@@ -179,6 +182,7 @@ impl NameStore {
         let namespace = NamespaceObject::open(id, false, None)?;
         Ok(Self {
             nameroot: Arc::new(namespace),
+            dataroot: id,
         })
     }
 
@@ -219,10 +223,15 @@ impl NameSession<'_> {
         persist: bool,
         parent_info: Option<ParentInfo>,
     ) -> Result<Arc<dyn Namespace>> {
+        let is_dataroot = id == self.store.dataroot;
         Ok(if id == NSID_EXTERNAL || objid_to_ino(id.raw()).is_some() {
             Arc::new(ExtNamespace::open(id, persist, parent_info)?)
         } else {
-            Arc::new(NamespaceObject::open(id, persist, parent_info)?)
+            Arc::new(NamespaceObject::open(
+                id,
+                persist || is_dataroot,
+                parent_info,
+            )?)
         })
     }
 

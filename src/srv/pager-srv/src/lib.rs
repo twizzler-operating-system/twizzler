@@ -67,6 +67,7 @@ fn attach_queue<T: std::marker::Copy, U: std::marker::Copy, Q>(
         Object::<QueueBase<T, U>>::map_unchecked(obj_id, MapFlags::READ | MapFlags::WRITE).unwrap()
     };
 
+    tracing::debug!("queue mapped; constructing...");
     // Ensure the object is cast or transformed to match the expected `Queue` type
     let queue: twizzler_queue::Queue<T, U> = twizzler_queue::Queue::from(object.into_handle());
     Ok(queue_constructor(queue))
@@ -120,10 +121,9 @@ fn pager_init(
     &'static Executor<'static>,
 ) {
     tracing_init();
-    tracing::debug!("init start");
     let data = data_structure_init();
-    let (rq, sq) = queue_init(q1, q2);
     let ex = async_runtime_init(4);
+    let (rq, sq) = queue_init(q1, q2);
 
     tracing::debug!("init complete");
     return (rq, sq, data, ex);

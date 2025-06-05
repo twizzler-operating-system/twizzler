@@ -12,7 +12,7 @@ mod table;
 pub use consistency::DeferredUnmappingOps;
 pub use cursor::MappingCursor;
 pub use mapper::Mapper;
-pub use phys_provider::{ContiguousProvider, PhysAddrProvider, ZeroPageProvider};
+pub use phys_provider::{ContiguousProvider, PhysAddrProvider, PhysMapInfo, ZeroPageProvider};
 pub use reader::{MapInfo, MapReader};
 pub use settings::{MappingFlags, MappingSettings};
 

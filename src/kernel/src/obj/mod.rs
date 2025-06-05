@@ -8,7 +8,8 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use range::PageStatus;
+use pages::PageRef;
+use range::{GetPageFlags, PageStatus};
 use twizzler_abi::{
     meta::{MetaFlags, MetaInfo},
     object::{ObjID, Protections, MAX_SIZE},
@@ -50,6 +51,7 @@ pub struct Object {
     lifetime_type: LifetimeType,
     ties: Vec<CreateTieSpec>,
     verified_id: OnceWait<(bool, Protections)>,
+    dirty_set: DirtySet,
 }
 
 #[derive(Default)]
@@ -172,12 +174,7 @@ impl Object {
         self.range_tree.lock()
     }
 
-    pub fn add_page(
-        &self,
-        pn: PageNumber,
-        page: pages::Page,
-        allocator: Option<&mut FrameAllocator>,
-    ) {
+    pub fn add_page(&self, pn: PageNumber, page: PageRef, allocator: Option<&mut FrameAllocator>) {
         let mut range_tree = self.range_tree.lock();
         range_tree.add_page(pn, page, allocator);
     }
@@ -200,13 +197,14 @@ impl Object {
         let mut v = Vec::new();
         for i in 0..len {
             // TODO: we'll need to handle failures here when we expand the paging system.
-            let p = tree.get_page(start.offset(i), true, None);
+            let p = tree.get_page(start.offset(i), GetPageFlags::empty(), None);
             if let PageStatus::Ready(p, _) = p {
                 v.push(p.physical_address());
             } else {
                 let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK);
                 let page = Page::new(frame);
                 v.push(page.physical_address());
+                let page = PageRef::new(Arc::new(page), 0, 1);
                 tree.add_page(start.offset(i), page, None);
             }
         }
@@ -229,6 +227,7 @@ impl Object {
             ties: ties.to_vec(),
             verified_id: OnceWait::new(),
             lifetime_type,
+            dirty_set: DirtySet::new(),
         }
     }
 
@@ -290,6 +289,10 @@ impl Object {
     pub fn print_page_tree(&self) {
         logln!("=== PAGE TREE OBJECT {} ===", self.id());
         self.range_tree.lock().print_tree();
+    }
+
+    pub fn dirty_set(&self) -> &DirtySet {
+        &self.dirty_set
     }
 }
 
@@ -451,4 +454,34 @@ pub fn register_object(obj: Arc<Object>) {
 
 pub fn no_exist(id: ObjID) {
     obj_manager().no_exist.lock().insert(id);
+}
+
+#[derive(Clone)]
+pub struct DirtySet {
+    set: Arc<Mutex<BTreeSet<PageNumber>>>,
+}
+
+impl DirtySet {
+    pub fn new() -> Self {
+        Self {
+            set: Arc::new(Mutex::new(BTreeSet::new())),
+        }
+    }
+
+    pub fn drain_all(&self) -> Vec<PageNumber> {
+        let dirty = self.set.lock().extract_if(|_| true).collect::<Vec<_>>();
+        dirty
+    }
+
+    fn is_dirty(&self, pn: PageNumber) -> bool {
+        self.set.lock().contains(&pn)
+    }
+
+    pub fn add_dirty(&self, pn: PageNumber) {
+        self.set.lock().insert(pn);
+    }
+
+    fn reset_dirty(&self, pn: PageNumber) {
+        self.set.lock().remove(&pn);
+    }
 }

@@ -84,16 +84,11 @@ impl ArchContext {
         }
     }
 
-    pub fn map(
-        &self,
-        cursor: MappingCursor,
-        phys: &mut impl PhysAddrProvider,
-        settings: &MappingSettings,
-    ) {
+    pub fn map(&self, cursor: MappingCursor, phys: &mut impl PhysAddrProvider) {
         let ops = if cursor.start().is_kernel() {
-            kernel_mapper().lock().map(cursor, phys, settings)
+            kernel_mapper().lock().map(cursor, phys)
         } else {
-            self.inner.lock().map(cursor, phys, settings)
+            self.inner.lock().map(cursor, phys)
         };
         if let Err(ops) = ops {
             ops.run_all();
@@ -146,9 +141,8 @@ impl ArchContextInner {
         &mut self,
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
-        settings: &MappingSettings,
     ) -> Result<(), DeferredUnmappingOps> {
-        self.mapper.map(cursor, phys, settings)
+        self.mapper.map(cursor, phys)
     }
 
     fn change(&mut self, cursor: MappingCursor, settings: &MappingSettings) {

@@ -11,7 +11,7 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, PartialOrd, Clone, Eq)]
+#[derive(Debug, PartialEq, PartialOrd, Clone, Eq, Copy)]
 /// A collection of all the settings for a given mapping.
 pub struct MappingSettings {
     perms: Protections,
@@ -42,5 +42,21 @@ impl MappingSettings {
     /// Get the setting's flags.
     pub fn flags(&self) -> MappingFlags {
         self.flags
+    }
+
+    pub fn default_user() -> Self {
+        Self::new(Protections::all(), CacheType::WriteBack, MappingFlags::USER)
+    }
+
+    pub fn default_kernel() -> Self {
+        Self::new(
+            Protections::all(),
+            CacheType::WriteBack,
+            MappingFlags::GLOBAL,
+        )
+    }
+
+    pub fn default_cachetype(cache: CacheType) -> Self {
+        Self::new(Protections::all(), cache, MappingFlags::USER)
     }
 }
