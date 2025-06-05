@@ -55,7 +55,7 @@ extern crate bitflags;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use ::log::Level;
+use ::log::LevelFilter;
 use arch::BootInfoSystemTable;
 use initrd::BootModule;
 use memory::{MemoryRegion, VirtAddr};
@@ -99,8 +99,8 @@ pub fn get_boot_info() -> &'static dyn BootInfo {
 struct Logger {}
 
 impl ::log::Log for Logger {
-    fn enabled(&self, metadata: &::log::Metadata) -> bool {
-        metadata.level() <= Level::Trace
+    fn enabled(&self, _metadata: &::log::Metadata) -> bool {
+        true
     }
 
     fn log(&self, record: &::log::Record) {
@@ -108,12 +108,13 @@ impl ::log::Log for Logger {
             return;
         }
 
-        logln!(
-            "{}:{} -- {}",
-            record.level(),
-            record.target(),
-            record.args()
-        );
+        // most messages come from the kernel, so keep it short.
+        let target = record
+            .target()
+            .strip_prefix("twizzler_")
+            .unwrap_or(record.target());
+
+        logln!("[{}] {} -- {}", target, record.level(), record.args(),);
     }
 
     fn flush(&self) {}
@@ -122,9 +123,10 @@ impl ::log::Log for Logger {
 static LOGGER: Logger = Logger {};
 
 fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
-    ::log::set_logger(&LOGGER).unwrap();
     let boot_info = &**BOOT_INFO.call_once(|| Box::new(boot_info));
     arch::init(boot_info);
+    ::log::set_logger(&LOGGER).unwrap();
+    ::log::set_max_level(LevelFilter::Info);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
     ::log::warn!("TEST LOG");
     let cmdline = boot_info.get_cmd_line();

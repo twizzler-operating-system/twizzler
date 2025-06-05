@@ -23,10 +23,6 @@ pub fn serial() -> &'static PL011 {
         };
         // configure mapping settings for this region of memory
         let cursor = MappingCursor::new(uart_mmio_base, mmio.length as usize);
-        let mut phys = ContiguousProvider::new(
-            unsafe { PhysAddr::new_unchecked(mmio.info) },
-            mmio.length as usize,
-        );
         // Device memory only prevetns speculative data accesses, so we must not
         // make this region executable to prevent speculative instruction accesses.
         let settings = MappingSettings::new(
@@ -34,10 +30,15 @@ pub fn serial() -> &'static PL011 {
             mmio.cache_type,
             MappingFlags::GLOBAL,
         );
+        let mut phys = ContiguousProvider::new(
+            unsafe { PhysAddr::new_unchecked(mmio.info) },
+            mmio.length as usize,
+            settings,
+        );
         // map in with curent memory context
         unsafe {
             let mut mapper = Mapper::current();
-            mapper.map(cursor, &mut phys, &settings);
+            mapper.map(cursor, &mut phys);
         }
 
         // create instance of the PL011 UART driver

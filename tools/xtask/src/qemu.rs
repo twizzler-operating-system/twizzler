@@ -75,12 +75,10 @@ impl QemuCommand {
                 "/opt/homebrew/opt/e2fsprogs/sbin/"
             ),
         );
-
         std::env::set_var(
             "PATH",
             format!("{}:{}", std::env::var("PATH").unwrap(), "/usr/sbin/"),
         );
-
         if !already_exists {
             if !Command::new("mke2fs")
                 .arg("-b")
@@ -89,7 +87,7 @@ impl QemuCommand {
                 .arg("-E")
                 .arg("test_fs")
                 .arg("target/nvme.img")
-                .arg("10000000")
+                .arg("1000000")
                 .status()
                 .expect("failed to create disk image")
                 .success()

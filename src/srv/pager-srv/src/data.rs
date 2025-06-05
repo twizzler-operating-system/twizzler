@@ -12,7 +12,10 @@ use stable_vec::StableVec;
 use twizzler::object::ObjID;
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
-    pager::{ObjectInfo, ObjectRange, PhysRange},
+    pager::{
+        CompletionToKernel, KernelCompletionData, KernelCompletionFlags, ObjectEvictFlags,
+        ObjectEvictInfo, ObjectInfo, ObjectRange, PhysRange,
+    },
     syscall::{BackingType, LifetimeType},
 };
 use twizzler_rt_abi::{
@@ -34,12 +37,22 @@ pub struct PerPageData {
     paddr: u64,
 }
 
+impl PerPageData {
+    fn new_vec(phys: PhysRange) -> Vec<Self> {
+        (phys.start..phys.end)
+            .step_by(PAGE as usize)
+            .map(|paddr| Self { paddr })
+            .collect()
+    }
+}
+
 #[derive(Default)]
 pub struct PerObjectInner {
     #[allow(dead_code)]
     id: ObjID,
     page_map: HashMap<PageNum, PerPageData>,
     meta_page_map: HashMap<PageNum, PerPageData>,
+    pending_syncs: Vec<ObjectEvictInfo>,
 }
 
 impl PerObjectInner {
@@ -98,6 +111,10 @@ impl PerObjectInner {
             .map(|(x, y)| (ObjectRange::new(*x * PAGE, (*x + 1) * PAGE), *y))
     }
 
+    fn drain_pending_syncs(&mut self) -> impl Iterator<Item = ObjectEvictInfo> + '_ {
+        self.pending_syncs.drain(..)
+    }
+
     pub fn new(id: ObjID) -> Self {
         Self {
             id,
@@ -119,6 +136,70 @@ impl PerObject {
 
     pub fn lookup(&self, obj_range: ObjectRange) -> Option<PhysRange> {
         self.inner.lock().unwrap().lookup(obj_range)
+    }
+
+    async fn do_sync_region(&self, ctx: &'static PagerContext) -> CompletionToKernel {
+        let pages = {
+            let mut inner = self.inner.lock().unwrap();
+            let mut pages = inner
+                .drain_pending_syncs()
+                .map(|p| (p.range, PerPageData::new_vec(p.phys)))
+                .collect::<Vec<_>>();
+            pages.sort_by_key(|p| p.0);
+            tracing::debug!("drained {:?}", pages);
+            let pages = pages
+                .into_iter()
+                .coalesce(|mut x, y| {
+                    if x.0.end == y.0.start {
+                        x.1.extend(y.1);
+                        Ok((ObjectRange::new(x.0.start, y.0.end), x.1))
+                    } else {
+                        Err((x, y))
+                    }
+                })
+                .collect::<Vec<_>>();
+            pages
+        };
+        let reqs = pages
+            .into_iter()
+            .map(|p| {
+                let start_page = p.0.pages().next().unwrap();
+                let nr_pages = p.1.len();
+                assert_eq!(nr_pages, p.0.pages().count());
+                PageRequest::new(
+                    ctx.disk
+                        .new_paging_request::<DiskPageRequest>(p.1.into_iter().map(|pd| pd.paddr)),
+                    start_page as i64,
+                    nr_pages as u32,
+                )
+            })
+            .collect_vec();
+
+        if let Err(e) = page_out_many(ctx, self.id, reqs).await {
+            return CompletionToKernel::new(
+                KernelCompletionData::Error(e.into()),
+                KernelCompletionFlags::DONE,
+            );
+        }
+
+        CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE)
+    }
+
+    pub async fn sync_region(
+        &self,
+        ctx: &'static PagerContext,
+        info: &ObjectEvictInfo,
+    ) -> CompletionToKernel {
+        tracing::debug!("push pending sync: {:?}", info);
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.pending_syncs.push(*info);
+        }
+        if info.flags.contains(ObjectEvictFlags::FENCE) {
+            self.do_sync_region(ctx).await
+        } else {
+            CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::empty())
+        }
     }
 
     pub async fn sync(&self, ctx: &'static PagerContext) -> Result<()> {
@@ -445,6 +526,19 @@ impl PagerData {
             tracing::warn!("sync failed for {}: {}", id, e);
         });
         ctx.paged_ostore.flush().unwrap();
+    }
+
+    pub async fn sync_region(
+        &self,
+        ctx: &'static PagerContext,
+        info: &ObjectEvictInfo,
+    ) -> CompletionToKernel {
+        let po = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.get_per_object(info.obj_id).clone()
+        };
+
+        po.sync_region(ctx, info).await
     }
 
     pub fn with_handle<R>(

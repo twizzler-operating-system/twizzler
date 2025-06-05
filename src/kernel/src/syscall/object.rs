@@ -5,10 +5,10 @@ use alloc::{
 
 use twizzler_abi::{
     meta::{MetaFlags, MetaInfo},
-    object::{ObjID, Protections},
+    object::{ObjID, Protections, MAX_SIZE},
     syscall::{
-        CreateTieSpec, DeleteFlags, HandleType, MapFlags, MapInfo, ObjectControlCmd, ObjectCreate,
-        ObjectCreateFlags, ObjectSource,
+        CreateTieSpec, DeleteFlags, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
+        ObjectCreate, ObjectCreateFlags, ObjectSource,
     },
 };
 use twizzler_rt_abi::{
@@ -104,6 +104,7 @@ pub fn sys_object_map(
     slot: usize,
     prot: Protections,
     handle: Option<ObjID>,
+    flags: MapFlags,
 ) -> Result<usize> {
     let vm = if let Some(handle) = handle {
         get_vmcontext_from_handle(handle).ok_or(ObjectError::NoSuchObject)?
@@ -120,7 +121,7 @@ pub fn sys_object_map(
         },
     };
     // TODO
-    let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into());
+    let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into(), flags);
     Ok(slot)
 }
 
@@ -268,4 +269,12 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
         _ => {}
     }
     (0, 0)
+}
+
+pub fn map_ctrl(start: usize, _len: usize, cmd: MapControlCmd, opts: u64) -> Result<u64> {
+    let map = current_memory_context()
+        .ok_or(TwzError::NOT_SUPPORTED)?
+        .lookup_slot(start / MAX_SIZE)
+        .ok_or(TwzError::INVALID_ARGUMENT)?;
+    map.ctrl(cmd, opts)
 }

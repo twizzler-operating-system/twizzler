@@ -17,6 +17,7 @@ members = [
     "src/lib/dynlink",
     "src/lib/secgate",
     "src/lib/twizzler",
+    "src/lib/twizzler/twizzler-derive",
     "src/rt/monitor",
     "src/rt/monitor-api",
     "src/rt/monitor/tests/montest",
@@ -38,7 +39,7 @@ members = [
     "src/bin/unittest/unittest-report",
     "src/lib/pager/pager-dynamic",
     "src/bin/uuhelper",
-    "src/ports/hw-c"
+    "src/ports/hw-c",
 
 
     #"src/bin/etl_twizzler",
@@ -50,6 +51,7 @@ members = [
     #"src/bin/ls",
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
+    "src/bin/ptest",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -71,7 +73,8 @@ initrd = [
     "crate:uuhelper",
 
     "crate:sec-test",
-    "crate:hw-c"
+    "crate:hw-c",
+    "crate:ptest",
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",
@@ -113,4 +116,3 @@ iana-time-zone = { git = "https://github.com/twizzler-operating-system/iana-time
 hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", branch = "twizzler" }
 ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }
 memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
-

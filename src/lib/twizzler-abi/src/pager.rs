@@ -1,3 +1,5 @@
+use core::fmt::Debug;
+
 use bitflags::bitflags;
 use twizzler_rt_abi::{
     error::RawTwzError,
@@ -161,18 +163,28 @@ impl ObjectInfo {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 pub struct PhysRange {
     pub start: u64,
     pub end: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 pub struct ObjectRange {
     pub start: u64,
     pub end: u64,
 }
 
+impl Debug for ObjectRange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ObjRange[{:x} - {:x})", self.start, self.end)
+    }
+}
+impl Debug for PhysRange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "PhyRange[{:x} - {:x})", self.start, self.end)
+    }
+}
 impl PhysRange {
     pub fn new(start: u64, end: u64) -> Self {
         Self { start, end }
@@ -211,6 +223,22 @@ pub struct ObjectEvictInfo {
     pub range: ObjectRange,
     pub phys: PhysRange,
     pub flags: ObjectEvictFlags,
+}
+
+impl ObjectEvictInfo {
+    pub fn new(
+        obj_id: ObjID,
+        range: ObjectRange,
+        phys: PhysRange,
+        flags: ObjectEvictFlags,
+    ) -> Self {
+        Self {
+            obj_id,
+            range,
+            phys,
+            flags,
+        }
+    }
 }
 
 bitflags::bitflags! {

@@ -8,6 +8,7 @@ use twizzler_abi::{
         ObjectRange, PagerCompletionData, PagerRequest, PhysRange, RequestFromKernel,
         RequestFromPager,
     },
+    syscall::MapFlags,
 };
 use twizzler_rt_abi::error::{ObjectError, TwzError};
 
@@ -22,7 +23,11 @@ use crate::{
         tracker::start_reclaim_thread,
     },
     mutex::Mutex,
-    obj::{lookup_object, pages::Page, LookupFlags, Object, PageNumber},
+    obj::{
+        lookup_object,
+        pages::{Page, PageRef},
+        LookupFlags, Object, PageNumber,
+    },
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},
     thread::{
@@ -60,6 +65,7 @@ fn pager_request_copy_user_phys(
         object,
         Protections::READ | Protections::WRITE,
         CacheType::WriteBack,
+        MapFlags::empty(),
     ));
     let Ok(vaddr) = ko.start_addr().offset(offset) else {
         return CompletionToPager::new(PagerCompletionData::Error(
@@ -89,10 +95,12 @@ pub(super) fn pager_request_handler_main() {
     loop {
         receiver.handle_request(|_id, req| match req.cmd() {
             PagerRequest::Ready => {
+                log::debug!("pager ready");
                 inflight_mgr().lock().set_ready();
                 provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
 
                 start_reclaim_thread();
+                log::debug!("reclaim thread started");
                 // TODO
                 if is_test_mode() && false {
                     run_closure_in_new_thread(Priority::USER, || {
@@ -121,7 +129,9 @@ fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range
             let pn = PageNumber::from(objpage_nr as usize);
             let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
             // TODO: will need to supply allocator
-            object_tree.add_page(pn, Page::new_wired(pa, CacheType::WriteBack), None);
+            let page = Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack);
+            let page = PageRef::new(Arc::new(page), 0, 1);
+            object_tree.add_page(pn, page, None);
         }
         drop(object_tree);
 
@@ -196,6 +206,7 @@ pub(super) fn pager_compl_handler_main() {
 }
 
 pub fn submit_pager_request(item: RequestFromKernel) {
+    //log::debug!("submitting pager request: {:?}", item);
     let sender = SENDER.wait();
     let id = sender.0.next_simple().value() as u32;
     let old = sender.2.lock().insert(id, item);
@@ -223,7 +234,7 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
         crate::obj::LookupResult::Found(o) => o,
         _ => panic!("pager queue not found"),
     };
-    logln!(
+    log::debug!(
         "[kernel::pager] registered {} pager queue: {}",
         if outgoing { "sender" } else { "receiver" },
         id
@@ -240,5 +251,6 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
         // TODO: these should be higher?
         start_new_kernel(Priority::USER, pager_compl_handler_entry, 0);
         start_new_kernel(Priority::USER, pager_request_handler_entry, 0);
+        log::debug!("pager queues and handlers initialized");
     }
 }

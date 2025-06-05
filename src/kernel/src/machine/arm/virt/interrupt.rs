@@ -37,15 +37,6 @@ pub fn interrupt_controller() -> &'static GICv2 {
         };
         // configure mapping settings for this region of memory
         let gicc_region = MappingCursor::new(gicc_mmio_base, cpu_interface_mmio.length as usize);
-        let mut gicc_phys = ContiguousProvider::new(
-            unsafe { PhysAddr::new_unchecked(cpu_interface_mmio.info) },
-            cpu_interface_mmio.length as usize,
-        );
-        let gicd_region = MappingCursor::new(gicd_mmio_base, distributor_mmio.length as usize);
-        let mut gicd_phys = ContiguousProvider::new(
-            unsafe { PhysAddr::new_unchecked(distributor_mmio.info) },
-            distributor_mmio.length as usize,
-        );
         // Device memory only prevetns speculative data accesses, so we must not
         // make this region executable to prevent speculative instruction accesses.
         let settings = MappingSettings::new(
@@ -53,11 +44,23 @@ pub fn interrupt_controller() -> &'static GICv2 {
             CacheType::MemoryMappedIO,
             MappingFlags::GLOBAL,
         );
+        let mut gicc_phys = ContiguousProvider::new(
+            unsafe { PhysAddr::new_unchecked(cpu_interface_mmio.info) },
+            cpu_interface_mmio.length as usize,
+            settings,
+        );
+        let gicd_region = MappingCursor::new(gicd_mmio_base, distributor_mmio.length as usize);
+        let mut gicd_phys = ContiguousProvider::new(
+            unsafe { PhysAddr::new_unchecked(distributor_mmio.info) },
+            distributor_mmio.length as usize,
+            settings,
+        );
+
         // map in with curent memory context
         unsafe {
             let mut mapper = Mapper::current();
-            mapper.map(gicc_region, &mut gicc_phys, &settings);
-            mapper.map(gicd_region, &mut gicd_phys, &settings);
+            mapper.map(gicc_region, &mut gicc_phys);
+            mapper.map(gicd_region, &mut gicd_phys);
         }
         GICv2::new(
             // TODO: might need to lock global distributor state,

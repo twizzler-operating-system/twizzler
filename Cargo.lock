@@ -5107,6 +5107,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ptest"
+version = "0.1.0"
+dependencies = [
+ "naming",
+ "twizzler",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6525,6 +6535,16 @@ dependencies = [
  "thiserror-no-std",
  "twizzler-rt-abi",
  "volatile",
+]
+
+[[package]]
+name = "twizzler-derive"
+version = "0.1.0"
+dependencies = [
+ "darling",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
 ]
 
 [[package]]
