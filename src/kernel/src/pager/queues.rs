@@ -95,10 +95,12 @@ pub(super) fn pager_request_handler_main() {
     loop {
         receiver.handle_request(|_id, req| match req.cmd() {
             PagerRequest::Ready => {
+                log::debug!("pager ready");
                 inflight_mgr().lock().set_ready();
                 provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
 
                 start_reclaim_thread();
+                log::debug!("reclaim thread started");
                 // TODO
                 if is_test_mode() && false {
                     run_closure_in_new_thread(Priority::USER, || {
@@ -204,6 +206,7 @@ pub(super) fn pager_compl_handler_main() {
 }
 
 pub fn submit_pager_request(item: RequestFromKernel) {
+    //log::debug!("submitting pager request: {:?}", item);
     let sender = SENDER.wait();
     let id = sender.0.next_simple().value() as u32;
     let old = sender.2.lock().insert(id, item);
@@ -231,7 +234,7 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
         crate::obj::LookupResult::Found(o) => o,
         _ => panic!("pager queue not found"),
     };
-    logln!(
+    log::debug!(
         "[kernel::pager] registered {} pager queue: {}",
         if outgoing { "sender" } else { "receiver" },
         id
@@ -248,5 +251,6 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
         // TODO: these should be higher?
         start_new_kernel(Priority::USER, pager_compl_handler_entry, 0);
         start_new_kernel(Priority::USER, pager_request_handler_entry, 0);
+        log::debug!("pager queues and handlers initialized");
     }
 }

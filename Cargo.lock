@@ -6538,6 +6538,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "twizzler-derive"
+version = "0.1.0"
+dependencies = [
+ "darling",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
+]
+
+[[package]]
 name = "twizzler-driver"
 version = "0.1.0"
 dependencies = [
