@@ -4876,6 +4876,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3148f5046208a5d56bcfc03053e3ca6334e51da8dfb19b6cdc8b306fae3283e"
 
 [[package]]
+name = "persistent-hashmap-test"
+version = "0.1.0"
+dependencies = [
+ "naming",
+ "twizzler",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "pest"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6514,6 +6524,7 @@ name = "twizzler"
 version = "0.99.0"
 dependencies = [
  "bitflags 2.9.0",
+ "foldhash",
  "monitor-api",
  "secgate",
  "thiserror 2.0.12",

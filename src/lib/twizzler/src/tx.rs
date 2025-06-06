@@ -55,7 +55,7 @@ impl<T: Clone> Clone for TxCell<T> {
 }
 
 impl<T> TxCell<T> {
-    pub fn new(inner: T) -> Self {
+    pub const fn new(inner: T) -> Self {
         Self(UnsafeCell::new(inner))
     }
 

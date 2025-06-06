@@ -61,11 +61,11 @@ impl<T: Invariant> InvPtr<T> {
         Ref::from_handle(re, ptr)
     }
 
-    pub fn null() -> Self {
+    pub const fn null() -> Self {
         Self::from_raw_parts(0, 0)
     }
 
-    pub fn from_raw_parts(idx: u32, offset: u64) -> Self {
+    pub const fn from_raw_parts(idx: u32, offset: u64) -> Self {
         Self {
             value: ((idx as u64) << 48) | offset,
             _pse: PhantomStoreEffect,
