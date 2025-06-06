@@ -330,8 +330,8 @@ impl<T: Invariant, A: Allocator> RawTable<T, A> {
 /*
  * The seperation between RawTableInner and RawTable is that 
  * RawTableInner performs allocation and access control without any comprehension of the data
- * inside the table. Meaning that it can find and select logical data and control elements,
- * but doesn't actually change them. 
+ * inside the table. Meaning that it can find, or remove logical data and control elements,
+ * but doesn't understand what the data actually means.
  *
  * This means that different implementations of RawTable can operate on the same underlying data structure.
  * 
@@ -339,7 +339,7 @@ impl<T: Invariant, A: Allocator> RawTable<T, A> {
  * So I don't know if this abstraction is necessary or natural, but I spent a week on this already and want to just
  * code and not think. 
  * 
-*/
+ */
 pub struct RawTableInner {
     data: InvPtr<u8>,
     bucket_mask: usize, 
