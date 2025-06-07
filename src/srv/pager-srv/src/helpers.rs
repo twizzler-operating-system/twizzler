@@ -123,10 +123,10 @@ pub async fn page_out_many(
     //blocking::unblock(move || {
     let mut reqslice = &reqs[..];
     while reqslice.len() > 0 {
-        let donecount = ctx
-            .paged_ostore
-            .page_out_object(obj_id.raw(), &reqs)
-            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
+        let donecount =
+            blocking::unblock(move || ctx.paged_ostore.page_out_object(obj_id.raw(), reqslice))
+                .await
+                .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
         reqslice = &reqslice[donecount..];
     }
     Ok(reqs.len())

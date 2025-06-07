@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     cell::OnceCell,
     marker::PhantomData,
+    mem::MaybeUninit,
     ops::{Deref, DerefMut, Index, IndexMut, RangeBounds},
 };
 
@@ -186,6 +187,16 @@ impl<'obj, T> RefMut<'obj, T> {
     }
 }
 
+impl<'a, T> RefMut<'a, MaybeUninit<T>> {
+    pub fn write(self, val: T) -> RefMut<'a, T> {
+        unsafe {
+            let ptr = self.ptr.as_mut().unwrap_unchecked();
+            ptr.write(val);
+            self.cast()
+        }
+    }
+}
+
 impl<'obj, T: core::fmt::Debug> core::fmt::Debug for RefMut<'obj, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.deref())
@@ -277,6 +288,10 @@ impl<'a, T> RefSlice<'a, T> {
         self.len
     }
 
+    pub fn handle(&self) -> &ObjectHandle {
+        self.ptr.handle()
+    }
+
     pub fn tx(
         self,
         range: impl RangeBounds<usize>,
@@ -354,6 +369,10 @@ impl<'a, T> RefSliceMut<'a, T> {
     pub fn len(&self) -> usize {
         self.len
     }
+
+    pub fn handle(&self) -> &ObjectHandle {
+        self.ptr.handle()
+    }
 }
 
 impl<'a, T> Index<usize> for RefSliceMut<'a, T> {
@@ -369,5 +388,53 @@ impl<'a, T> IndexMut<usize> for RefSliceMut<'a, T> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         let slice = self.as_slice_mut();
         &mut slice[index]
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for RefMut<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for &RefMut<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for Ref<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for &Ref<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for RefSlice<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for &RefSlice<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for RefSliceMut<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for &RefSliceMut<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
     }
 }

@@ -6,8 +6,7 @@ use twizzler_rt_abi::object::ObjectHandle;
 use super::{GlobalPtr, Ref};
 use crate::{
     marker::{Invariant, PhantomStoreEffect},
-    object::RawObject,
-    tx::TxObject,
+    object::{FotEntry, RawObject},
 };
 
 #[repr(C)]
@@ -93,12 +92,18 @@ impl<T: Invariant> InvPtr<T> {
         self.value
     }
 
-    pub fn new<B>(tx: &TxObject<B>, gp: impl Into<GlobalPtr<T>>) -> crate::tx::Result<Self> {
+    pub fn new(
+        tx: impl Into<ObjectHandle>,
+        gp: impl Into<GlobalPtr<T>>,
+    ) -> crate::tx::Result<Self> {
         let gp = gp.into();
+        let tx: ObjectHandle = tx.into();
         if gp.id() == tx.id() {
             return Ok(Self::from_raw_parts(0, gp.offset()));
         }
-        let fote = tx.insert_fot(&gp.into())?;
+        let fote: FotEntry = gp.into();
+        let fote =
+            twizzler_rt_abi::object::twz_rt_insert_fot(&tx, (&fote as *const FotEntry).cast())?;
         Ok(Self::from_raw_parts(fote, gp.offset()))
     }
 }

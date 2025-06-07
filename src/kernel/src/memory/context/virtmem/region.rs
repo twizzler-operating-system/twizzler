@@ -175,13 +175,13 @@ impl MapRegion {
                 // TODO: validation
                 let sync_info = unsafe { sync_info_ptr.read() };
 
-                if sync_info.flags.contains(SyncFlags::DURABLE) && false {
+                if sync_info.flags.contains(SyncFlags::DURABLE) {
                     let dirty_pages = self.object().dirty_set().drain_all();
                     log::debug!("sync region with dirty pages {:?}", dirty_pages);
                     crate::pager::sync_region(self, dirty_pages, sync_info);
                 }
 
-                if sync_info.flags.contains(SyncFlags::ASYNC_DURABLE) && false {
+                if sync_info.flags.contains(SyncFlags::ASYNC_DURABLE) {
                     unsafe { sync_info.try_release() }?;
                     let wake = ThreadSyncWake::new(
                         ThreadSyncReference::Virtual(sync_info.release),

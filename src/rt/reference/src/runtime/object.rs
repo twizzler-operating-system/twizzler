@@ -1,14 +1,19 @@
-use std::{ffi::c_void, sync::atomic::AtomicU64};
+use std::{
+    ffi::c_void,
+    mem::MaybeUninit,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use handlecache::HandleCache;
 use tracing::warn;
 use twizzler_abi::{
+    meta::{FotEntry, FotFlags},
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{sys_object_create, CreateTieFlags, CreateTieSpec, ObjectCreate},
 };
 use twizzler_rt_abi::{
     bindings::object_handle,
-    error::{ArgumentError, TwzError},
+    error::{ArgumentError, ObjectError, ResourceError, TwzError},
     object::{MapFlags, ObjID, ObjectHandle},
     Result,
 };
@@ -92,23 +97,75 @@ impl ReferenceRuntime {
         })
     }
 
-    pub fn insert_fot(&self, _handle: *mut object_handle, _fot: *const u8) -> Result<u32> {
-        tracing::warn!("TODO: insert FOT entry");
-        Err(TwzError::NOT_SUPPORTED)
+    pub fn insert_fot(&self, handle: *mut object_handle, fot: *const u8) -> Result<u32> {
+        //tracing::warn!("TODO: insert FOT entry");
+        let handle = unsafe { &*handle };
+        // TODO: track max FOT entry
+        let _meta = unsafe { &*handle.meta };
+        for i in 1..u32::MAX {
+            let ptr = unsafe { &mut *handle.meta.cast::<FotEntry>().sub((i + 1) as usize) };
+            let flags = FotFlags::from_bits_truncate(ptr.flags.load(Ordering::SeqCst));
+            if flags.contains(FotFlags::DELETED)
+                || (!flags.contains(FotFlags::ACTIVE) && !flags.contains(FotFlags::ALLOCATED))
+            {
+                if let Ok(_) = ptr.flags.compare_exchange(
+                    flags.bits(),
+                    FotFlags::ALLOCATED.bits(),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    let new_fot = unsafe { fot.cast::<FotEntry>().read() };
+                    let mut flags =
+                        FotFlags::from_bits_truncate(new_fot.flags.load(Ordering::SeqCst));
+                    flags.set(FotFlags::DELETED, false);
+                    flags.set(FotFlags::ALLOCATED, true);
+                    flags.set(FotFlags::ACTIVE, true);
+                    ptr.values = new_fot.values;
+                    ptr.resolver = new_fot.resolver;
+                    ptr.flags.store(flags.bits(), Ordering::SeqCst);
+                    return Ok(i);
+                }
+            }
+        }
+        Err(ResourceError::OutOfResources.into())
     }
 
     pub fn resolve_fot(
         &self,
-        _handle: *mut object_handle,
-        _idx: u64,
+        handle: *mut object_handle,
+        idx: u64,
         _valid_len: usize,
     ) -> Result<ObjectHandle> {
-        tracing::warn!("TODO: resolve FOT entry");
-        Err(TwzError::NOT_SUPPORTED)
+        if idx == 0 || handle.is_null() {
+            return Err(TwzError::INVALID_ARGUMENT);
+        }
+        let handle = unsafe { &*handle };
+        let ptr = unsafe { &*handle.meta.cast::<FotEntry>().sub((idx + 1) as usize) };
+        let flags = FotFlags::from_bits_truncate(ptr.flags.load(Ordering::SeqCst));
+        if flags.contains(FotFlags::DELETED)
+            || !flags.contains(FotFlags::ACTIVE)
+            || !flags.contains(FotFlags::ALLOCATED)
+        {
+            return Err(ObjectError::InvalidFote.into());
+        }
+        if flags.contains(FotFlags::RESOLVER) {
+            return Err(TwzError::NOT_SUPPORTED);
+        }
+        let id = ObjID::from_parts(ptr.values);
+
+        let flags = FotFlags::from_bits_truncate(ptr.flags.load(Ordering::SeqCst));
+        if flags.contains(FotFlags::DELETED)
+            || !flags.contains(FotFlags::ACTIVE)
+            || !flags.contains(FotFlags::ALLOCATED)
+        {
+            return Err(ObjectError::InvalidFote.into());
+        }
+
+        self.map_object(id, MapFlags::READ | MapFlags::INDIRECT)
     }
 
     pub fn resolve_fot_local(&self, _ptr: *mut u8, _idx: u64, _valid_len: usize) -> *mut u8 {
-        tracing::warn!("TODO: resolve local FOT entry");
+        //tracing::warn!("TODO: resolve local FOT entry");
         core::ptr::null_mut()
     }
 

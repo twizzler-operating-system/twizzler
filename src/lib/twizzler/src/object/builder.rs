@@ -2,7 +2,9 @@ use std::{marker::PhantomData, mem::MaybeUninit};
 
 use twizzler_abi::{
     object::Protections,
-    syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, ObjectSource},
+    syscall::{
+        BackingType, CreateTieSpec, LifetimeType, ObjectCreate, ObjectCreateFlags, ObjectSource,
+    },
 };
 use twizzler_rt_abi::object::MapFlags;
 
@@ -13,10 +15,11 @@ use crate::{
 };
 
 /// An object builder, for constructing objects using a builder API.
-#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Clone)]
 pub struct ObjectBuilder<Base: BaseType> {
     spec: ObjectCreate,
     src_objs: Vec<ObjectSource>,
+    ties: Vec<CreateTieSpec>,
     _pd: PhantomData<Base>,
 }
 
@@ -27,6 +30,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
             spec,
             _pd: PhantomData,
             src_objs: Vec::new(),
+            ties: Vec::new(),
         }
     }
 
@@ -46,6 +50,12 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         self.src_objs.push(obj_src);
         self
     }
+
+    /// Add a tie specification for this object creation.
+    pub fn add_tie(mut self, tie: CreateTieSpec) -> Self {
+        self.ties.push(tie);
+        self
+    }
 }
 
 impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
@@ -59,8 +69,11 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     where
         F: FnOnce(TxObject<MaybeUninit<Base>>) -> crate::tx::Result<TxObject<Base>>,
     {
-        let id =
-            twizzler_abi::syscall::sys_object_create(self.spec, self.src_objs.as_slice(), &[])?;
+        let id = twizzler_abi::syscall::sys_object_create(
+            self.spec,
+            self.src_objs.as_slice(),
+            self.ties.as_slice(),
+        )?;
         let mut flags = MapFlags::READ | MapFlags::WRITE;
         if self.spec.lt == LifetimeType::Persistent {
             flags.insert(MapFlags::PERSIST);
@@ -74,8 +87,11 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     where
         F: FnOnce(&mut TxObject<MaybeUninit<Base>>),
     {
-        let id =
-            twizzler_abi::syscall::sys_object_create(self.spec, self.src_objs.as_slice(), &[])?;
+        let id = twizzler_abi::syscall::sys_object_create(
+            self.spec,
+            self.src_objs.as_slice(),
+            self.ties.as_slice(),
+        )?;
         let mut flags = MapFlags::READ | MapFlags::WRITE;
         if self.spec.lt == LifetimeType::Persistent {
             flags.insert(MapFlags::PERSIST);
@@ -128,7 +144,7 @@ mod tests {
         let obj = builder
             .build_inplace(|mut tx| {
                 let foo = Foo {
-                    ptr: InvPtr::new(&mut tx, base)?,
+                    ptr: InvPtr::new(&tx, base)?,
                 };
                 tx.write(foo)
             })

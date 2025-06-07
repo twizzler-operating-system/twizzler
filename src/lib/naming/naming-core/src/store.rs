@@ -30,7 +30,7 @@ unsafe impl Invariant for NsNodeKind {}
 
 const NSID_EXTERNAL: ObjID = ObjID::new(1);
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, twizzler::Invariant)]
 #[repr(C)]
 pub struct NsNode {
     name: [u8; MAX_KEY_SIZE],
@@ -39,7 +39,6 @@ pub struct NsNode {
     name_len: u32,
     link_len: u32,
 }
-unsafe impl Invariant for NsNode {}
 
 impl NsNode {
     pub fn new<P: AsRef<Path>, L: AsRef<Path>>(

@@ -9,7 +9,7 @@ use twizzler_rt_abi::error::{ArgumentError, ResourceError};
 
 use crate::{
     alloc::{Allocator, SingleObjectAllocator},
-    marker::{BaseType, Invariant, StoreCopy},
+    marker::{Invariant, StoreCopy},
     ptr::{GlobalPtr, InvPtr, Ref, RefMut, RefSlice, RefSliceMut},
     tx::{Result, TxCell, TxHandle, TxObject, TxRef},
 };
@@ -118,11 +118,13 @@ impl<T: Invariant> VecInner<T> {
     }
 }
 
+#[derive(twizzler_derive::BaseType)]
 pub struct Vec<T: Invariant, Alloc: Allocator> {
     inner: TxCell<VecInner<T>>,
     alloc: Alloc,
 }
 
+#[derive(Clone)]
 pub struct VecObjectAlloc;
 
 impl Allocator for VecObjectAlloc {
@@ -144,7 +146,7 @@ impl Allocator for VecObjectAlloc {
 
 impl SingleObjectAllocator for VecObjectAlloc {}
 
-impl<T: Invariant, A: Allocator> BaseType for Vec<T, A> {}
+//impl<T: Invariant, A: Allocator> BaseType for Vec<T, A> {}
 
 impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
     fn maybe_uninit_slice<'a>(r: RefMut<'a, T>, cap: usize) -> RefSliceMut<'a, MaybeUninit<T>> {
@@ -363,7 +365,7 @@ mod tests {
             mut place: TxRef<MaybeUninit<Self>>,
             ptr: impl Into<GlobalPtr<Simple>>,
         ) -> crate::tx::Result<TxRef<Self>> {
-            let ptr = InvPtr::new(place.tx_mut(), ptr)?;
+            let ptr = InvPtr::new(&place, ptr)?;
             place.write(Self { ptr })
         }
     }
@@ -480,7 +482,7 @@ mod tests {
         let vo = VecObject::new(ObjectBuilder::default()).unwrap();
         vo.push_ctor(|mut place| {
             let node = Node {
-                ptr: InvPtr::new(place.tx_mut(), simple_obj.base_ref())?,
+                ptr: InvPtr::new(&place, simple_obj.base_ref())?,
             };
             place.write(node)
         })

@@ -1,8 +1,11 @@
+use std::{alloc::Layout, mem::MaybeUninit};
+
+use twizzler_rt_abi::object::ObjectHandle;
+
 use super::{Allocator, OwnedGlobalPtr};
 use crate::{
     marker::Invariant,
     ptr::{GlobalPtr, InvPtr, Ref},
-    tx::TxObject,
 };
 
 pub struct InvBox<T: Invariant, Alloc: Allocator> {
@@ -15,8 +18,25 @@ impl<T: Invariant, Alloc: Allocator> InvBox<T, Alloc> {
         Self { raw, alloc }
     }
 
-    pub fn new<B>(_tx: &TxObject<B>, _ogp: OwnedGlobalPtr<T, Alloc>) -> Self {
-        todo!()
+    pub fn new_in(tx: impl Into<ObjectHandle>, val: T, alloc: Alloc) -> crate::tx::Result<Self> {
+        let layout = Layout::new::<T>();
+        let p = alloc.alloc(layout)?;
+        let p = p.cast::<MaybeUninit<T>>();
+        let p = unsafe { p.resolve().mutable() };
+        let p = p.write(val);
+        let ogp = unsafe { OwnedGlobalPtr::from_global(p.global(), alloc) };
+        Self::from_in(tx, ogp)
+    }
+
+    pub fn from_in(
+        tx: impl Into<ObjectHandle>,
+        ogp: OwnedGlobalPtr<T, Alloc>,
+    ) -> crate::tx::Result<Self> {
+        let raw = InvPtr::new(tx, ogp.global())?;
+        Ok(Self {
+            raw,
+            alloc: ogp.allocator().clone(),
+        })
     }
 
     pub fn resolve(&self) -> Ref<'_, T> {
@@ -38,6 +58,8 @@ impl<T: Invariant, Alloc: Allocator> InvBox<T, Alloc> {
 
 #[cfg(test)]
 mod tests {
+    use twizzler_derive::BaseType;
+
     use super::InvBox;
     use crate::{
         alloc::arena::{ArenaAllocator, ArenaObject},
@@ -45,18 +67,19 @@ mod tests {
         object::{ObjectBuilder, TypedObject},
     };
 
+    #[derive(BaseType)]
     struct Foo {
         x: InvBox<u32, ArenaAllocator>,
     }
-    impl BaseType for Foo {}
 
     #[test]
     fn box_simple() {
-        let alloc = ArenaObject::new().unwrap();
-        let arena = alloc.tx().unwrap();
-        let foo = arena
+        let arena = ArenaObject::new(ObjectBuilder::default()).unwrap();
+        let alloc = arena.allocator();
+        let tx = arena.tx().unwrap();
+        let foo = tx
             .alloc(Foo {
-                x: InvBox::new(&arena, arena.alloc(3).unwrap()),
+                x: InvBox::new_in(&tx, 3, alloc).unwrap(),
             })
             .unwrap();
 
@@ -65,12 +88,27 @@ mod tests {
     }
 
     #[test]
+    fn box_alloc_builder() {
+        let alloc = ArenaObject::new(ObjectBuilder::default()).unwrap();
+        let foo = alloc
+            .alloc_inplace(|tx| {
+                let foo = Foo {
+                    x: InvBox::new_in(&tx, 3, alloc.allocator()).unwrap(),
+                };
+                Ok(tx.write(foo))
+            })
+            .unwrap();
+        let foo = foo.resolve();
+        assert_eq!(*foo.x.resolve(), 3);
+    }
+
+    #[test]
     fn box_simple_builder() {
         let builder = ObjectBuilder::<Foo>::default();
-        let alloc = ArenaObject::new().unwrap();
+        let alloc = ArenaObject::new(ObjectBuilder::default()).unwrap();
         let obj = builder
             .build_inplace(|tx| {
-                let x = InvBox::new(&tx, alloc.alloc(3).unwrap());
+                let x = InvBox::new_in(&tx, 3, alloc.allocator()).unwrap();
                 tx.write(Foo { x })
             })
             .unwrap();

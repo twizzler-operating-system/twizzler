@@ -5,7 +5,7 @@ use twizzler_abi::pager::{
 };
 use twizzler_rt_abi::{error::TwzError, object::Nonce, Result};
 
-use crate::PagerContext;
+use crate::{PagerContext, EXECUTOR};
 
 async fn handle_page_data_request(
     ctx: &'static PagerContext,
@@ -66,7 +66,9 @@ pub async fn handle_kernel_request(
             Err(e) => KernelCompletionData::Error(TwzError::from(e).into()),
         },
         KernelCommand::ObjectCreate(id, object_info) => {
-            let _ = ctx.paged_ostore.delete_object(id.raw());
+            tracing::warn!("A");
+            let _ = blocking::unblock(move || ctx.paged_ostore.delete_object(id.raw())).await;
+            tracing::warn!("B");
             match ctx.paged_ostore.create_object(id.raw()) {
                 Ok(_) => {
                     let mut buffer = [0; 0x1000];
@@ -87,6 +89,7 @@ pub async fn handle_kernel_request(
                     unsafe {
                         buffer[0..size_of::<MetaInfo>()].copy_from_slice(any_as_u8_slice(&meta));
                     }
+                    tracing::warn!("C");
                     ctx.paged_ostore.write_object(id.raw(), 0, &buffer).unwrap();
 
                     KernelCompletionData::ObjectInfoCompletion(id, object_info)

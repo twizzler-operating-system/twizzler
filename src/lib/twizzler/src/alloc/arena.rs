@@ -10,7 +10,7 @@ use super::{Allocator, OwnedGlobalPtr, SingleObjectAllocator};
 use crate::{
     marker::BaseType,
     object::{Object, ObjectBuilder, RawObject},
-    ptr::GlobalPtr,
+    ptr::{GlobalPtr, RefMut},
     tx::{TxCell, TxHandle, TxObject, UnsafeTxHandle},
 };
 
@@ -19,8 +19,8 @@ pub struct ArenaObject {
 }
 
 impl ArenaObject {
-    pub fn new() -> crate::tx::Result<Self> {
-        let obj = ObjectBuilder::default().build(ArenaBase {
+    pub fn new(builder: ObjectBuilder<ArenaBase>) -> crate::tx::Result<Self> {
+        let obj = builder.build(ArenaBase {
             next: TxCell::new((NULLPAGE_SIZE * 2) as u64),
         })?;
         Ok(Self { obj })
@@ -37,10 +37,17 @@ impl ArenaObject {
     }
 
     pub fn alloc<T>(&self, value: T) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
+        self.alloc_inplace(|p| Ok(p.write(value)))
+    }
+
+    pub fn alloc_inplace<T>(
+        &self,
+        f: impl FnOnce(RefMut<MaybeUninit<T>>) -> crate::tx::Result<RefMut<T>>,
+    ) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
         let layout = Layout::new::<T>();
         let alloc = self.allocator().alloc(layout)?.cast::<MaybeUninit<T>>();
-        let mut ptr = unsafe { alloc.resolve().mutable() };
-        ptr.write(value);
+        let ptr = unsafe { alloc.resolve().mutable() };
+        let ptr = f(ptr)?;
         Ok(unsafe { OwnedGlobalPtr::from_global(ptr.global().cast(), self.allocator()) })
     }
 }
@@ -97,13 +104,20 @@ impl Allocator for ArenaAllocator {
 
 impl TxObject<ArenaBase> {
     pub fn alloc<T>(&self, value: T) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
+        self.alloc_inplace(|p| Ok(p.write(value)))
+    }
+
+    pub fn alloc_inplace<T>(
+        &self,
+        f: impl FnOnce(RefMut<MaybeUninit<T>>) -> crate::tx::Result<RefMut<T>>,
+    ) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
         let layout = Layout::new::<T>();
         let alloc = ArenaAllocator {
             ptr: GlobalPtr::new(self.id(), NULLPAGE_SIZE as u64),
         };
         let allocation = alloc.alloc(layout)?.cast::<MaybeUninit<T>>();
-        let mut ptr = unsafe { allocation.resolve().mutable() };
-        ptr.write(value);
+        let ptr = unsafe { allocation.resolve().mutable() };
+        let ptr = f(ptr)?;
         Ok(unsafe { OwnedGlobalPtr::from_global(ptr.global().cast(), alloc) })
     }
 }
