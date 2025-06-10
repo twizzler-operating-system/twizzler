@@ -3200,13 +3200,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b112acc8b3adf4b107a8ec20977da0273a8c386765a3ec0229bd500a1443f9f"
 
 [[package]]
-name = "hw-c"
-version = "0.1.0"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "hyper"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4010,6 +4003,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "lwext4-rs"
+version = "0.1.0"
+
+[[package]]
 name = "matchers"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4469,6 +4466,7 @@ dependencies = [
  "fatfs 0.4.0",
  "intervaltree",
  "lru 0.13.0",
+ "lwext4-rs",
  "obliviate-core",
  "rand 0.8.5",
  "tracing",

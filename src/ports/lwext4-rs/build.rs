@@ -1,8 +1,6 @@
 use std::io::stderr;
 
 fn main() {
-    cc::Build::new().file("src/hw.c").compile("hw");
-
     let outdir = std::env::var("OUT_DIR").unwrap();
     let target = std::env::var("TARGET").unwrap();
     let cflags = std::env::var("CFLAGS").unwrap_or("".to_owned());
@@ -34,24 +32,10 @@ fn main() {
     assert!(status.success());
 
     let mut proc = std::process::Command::new("bindgen");
-    eprintln!("==> {}", outdir);
     proc.stdout(stderr())
-        .arg("lwext4/include/ext4.h")
+        .arg("src/lwext4.h")
         .arg("-o")
-        .arg("src/ext4.rs")
-        .arg("--")
-        .arg(format!("-I{}/cmake-build/include", outdir))
-        .arg("-Ilwext4/include")
-        .args(cflags.split_whitespace());
-
-    let status = proc.status().unwrap();
-    assert!(status.success());
-
-    let mut proc = std::process::Command::new("bindgen");
-    proc.stdout(stderr())
-        .arg("lwext4/include/ext4_fs.h")
-        .arg("-o")
-        .arg("src/ext4_fs.rs")
+        .arg("src/lwext4.rs")
         .arg("--")
         .arg(format!("-I{}/cmake-build/include", outdir))
         .arg("-Ilwext4/include")

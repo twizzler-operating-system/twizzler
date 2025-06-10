@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 use async_executor::Executor;
 use async_io::block_on;
 use disk::{Disk, DiskPageRequest};
-use object_store::{ExternalFile, LetheIoWrapper, PagedObjectStore};
+use object_store::{Ext4Store, ExternalFile, LetheIoWrapper, PagedObjectStore};
 use tracing_subscriber::fmt::format::FmtSpan;
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
@@ -224,6 +224,11 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data, ex) = pager_init(q1, q2);
     let disk = block_on(ex.run(Disk::new(ex))).unwrap();
     let diskc = disk.clone();
+    let diskc2 = disk.clone();
+
+    let ext4_store = Ext4Store::<DiskPageRequest>::new(diskc2, "/").unwrap();
+
+    /*
     let disk = LetheIoWrapper::new(disk);
     let ostore = object_store::LetheObjectStore::open(disk.clone(), [0; 32]);
     let (name, ostore): (
@@ -237,11 +242,12 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
         ),
     };
     tracing::info!("opened object store as {}", name);
+    */
     let sq = Arc::new(sq);
     let _ = PAGER_CTX.set(PagerContext {
         data,
         sender: sq,
-        paged_ostore: ostore,
+        paged_ostore: Box::new(ext4_store),
         disk: diskc,
     });
     let ctx = PAGER_CTX.get().unwrap();
