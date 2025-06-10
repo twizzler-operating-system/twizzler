@@ -19,7 +19,12 @@ use super::{
     CompConfigObject, CompartmentMgr, RunComp, StackObject, COMP_DESTRUCTED, COMP_EXITED,
     COMP_IS_BINARY, COMP_READY,
 };
-use crate::mon::{get_monitor, space::MapHandle, thread::DEFAULT_STACK_SIZE, Monitor};
+use crate::mon::{
+    get_monitor,
+    space::{MapHandle, Space},
+    thread::DEFAULT_STACK_SIZE,
+    Monitor,
+};
 
 /// Tracks info for loaded, but not yet running, compartments.
 #[derive(Debug)]
@@ -217,11 +222,11 @@ impl RunCompLoader {
         dynlink: &mut Context,
     ) -> miette::Result<ObjID> {
         let make_new_handle = |id| {
-            get_monitor()
-                .space
-                .lock()
-                .unwrap()
-                .safe_create_and_map_runtime_object(id, MapFlags::READ | MapFlags::WRITE)
+            Space::safe_create_and_map_runtime_object(
+                &get_monitor().space,
+                id,
+                MapFlags::READ | MapFlags::WRITE,
+            )
         };
 
         let root_rc = self.root_comp.build_runcomp(

@@ -17,7 +17,10 @@ use twizzler_rt_abi::{
     object::{MapFlags, ObjID},
 };
 
-use crate::mon::{get_monitor, space::MapInfo};
+use crate::mon::{
+    get_monitor,
+    space::{MapInfo, Space},
+};
 
 pub struct Engine;
 
@@ -99,15 +102,14 @@ impl ContextEngine for Engine {
 
     fn load_object(&mut self, unlib: &UnloadedLibrary) -> Result<Backing, DynlinkError> {
         let id = name_resolver(&unlib.name)?;
-        let mapping = get_monitor()
-            .space
-            .lock()
-            .unwrap()
-            .map(MapInfo {
+        let mapping = Space::map(
+            &get_monitor().space,
+            MapInfo {
                 id,
                 flags: MapFlags::READ,
-            })
-            .map_err(|_err| DynlinkErrorKind::NewBackingFail)?;
+            },
+        )
+        .map_err(|_err| DynlinkErrorKind::NewBackingFail)?;
         Ok(unsafe {
             Backing::new_owned(
                 mapping.monitor_data_start(),

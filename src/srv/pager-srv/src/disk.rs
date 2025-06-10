@@ -198,8 +198,7 @@ impl Read for Disk {
                 read_buffer.copy_from_slice(&cached[0..4096]);
             } else {
                 self.ctrl
-                    .blocking_read_page(lba as u64, &mut read_buffer, 0)
-                    .map_err(|_| ErrorKind::Other)?;
+                    .blocking_read_page(lba as u64, &mut read_buffer, 0)?;
                 self.cache.insert(lba as u64, Box::new(read_buffer));
             }
 
@@ -247,8 +246,7 @@ impl Write for Disk {
 
             self.cache.insert(lba as u64, Box::new(write_buffer));
             self.ctrl
-                .blocking_write_page(lba as u64, &mut write_buffer, 0)
-                .map_err(|_| ErrorKind::Other)?;
+                .blocking_write_page(lba as u64, &mut write_buffer, 0)?;
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 

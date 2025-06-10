@@ -551,6 +551,7 @@ dependencies = [
  "futures-io",
  "futures-lite",
  "piper",
+ "tracing",
 ]
 
 [[package]]

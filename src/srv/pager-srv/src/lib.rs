@@ -7,6 +7,7 @@ use async_executor::Executor;
 use async_io::block_on;
 use disk::{Disk, DiskPageRequest};
 use object_store::{ExternalFile, LetheIoWrapper, PagedObjectStore};
+use tracing_subscriber::fmt::format::FmtSpan;
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
     object::{ObjID, Object, ObjectBuilder},
@@ -38,6 +39,7 @@ fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::DEBUG)
+            .with_span_events(FmtSpan::ENTER)
             .without_time()
             .finish(),
     )
@@ -200,13 +202,19 @@ struct PagerContext {
 }
 
 impl PagerContext {
-    pub fn enumerate_external(&self, id: ObjID) -> Result<Vec<ExternalFile>, TwzError> {
-        Ok(self
-            .paged_ostore
-            .enumerate_external(id.raw())?
-            .iter()
-            .cloned()
-            .collect())
+    pub async fn enumerate_external(
+        &'static self,
+        id: ObjID,
+    ) -> Result<Vec<ExternalFile>, TwzError> {
+        blocking::unblock(move || {
+            Ok(self
+                .paged_ostore
+                .enumerate_external(id.raw())?
+                .iter()
+                .cloned()
+                .collect())
+        })
+        .await
     }
 }
 

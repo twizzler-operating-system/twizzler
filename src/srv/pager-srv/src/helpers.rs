@@ -66,7 +66,8 @@ pub async fn page_in(
                     ::core::mem::size_of::<T>(),
                 )
             }
-            let len = ctx.paged_ostore.find_external(obj_id.raw())?;
+            let len =
+                blocking::unblock(move || ctx.paged_ostore.find_external(obj_id.raw())).await?;
             tracing::debug!("building meta page for external file, len: {}", len);
             let mut buffer = [0; PAGE as usize];
             let meta = MetaInfo {
@@ -120,18 +121,22 @@ pub async fn page_out_many(
     obj_id: ObjID,
     reqs: Vec<PageRequest<DiskPageRequest>>,
 ) -> Result<usize> {
-    //blocking::unblock(move || {
-    let mut reqslice = &reqs[..];
-    while reqslice.len() > 0 {
-        let donecount =
-            blocking::unblock(move || ctx.paged_ostore.page_out_object(obj_id.raw(), reqslice))
-                .await
+    tracing::warn!("POM: {}", reqs.len());
+    blocking::unblock(move || {
+        let mut reqslice = &reqs[..];
+        while reqslice.len() > 0 {
+            tracing::warn!("  iter {}", reqslice.len());
+            let donecount = ctx
+                .paged_ostore
+                .page_out_object(obj_id.raw(), reqslice)
                 .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
-        reqslice = &reqslice[donecount..];
-    }
-    Ok(reqs.len())
-    //})
-    //.await
+            tracing::warn!("==> {}", donecount);
+            reqslice = &reqslice[donecount..];
+        }
+        tracing::warn!("POM: done");
+        Ok(reqs.len())
+    })
+    .await
 }
 
 pub async fn page_in_many(
@@ -139,13 +144,13 @@ pub async fn page_in_many(
     obj_id: ObjID,
     mut reqs: Vec<PageRequest<DiskPageRequest>>,
 ) -> Result<usize> {
-    //blocking::unblock(move || {
-    Ok(ctx
-        .paged_ostore
-        .page_in_object(obj_id.raw(), &mut reqs)
-        .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?)
-    //})
-    //.await
+    blocking::unblock(move || {
+        Ok(ctx
+            .paged_ostore
+            .page_in_object(obj_id.raw(), &mut reqs)
+            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?)
+    })
+    .await
 }
 
 #[cfg(test)]

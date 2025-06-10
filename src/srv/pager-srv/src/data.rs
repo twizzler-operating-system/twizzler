@@ -495,10 +495,10 @@ impl PagerData {
         return Ok(phys_range);
     }
 
-    pub fn lookup_object(&self, ctx: &PagerContext, id: ObjID) -> Result<ObjectInfo> {
+    pub async fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
         let mut b = [];
         if objid_to_ino(id.raw()).is_some() {
-            ctx.paged_ostore.find_external(id.raw())?;
+            blocking::unblock(move || ctx.paged_ostore.find_external(id.raw())).await?;
             return Ok(ObjectInfo::new(
                 LifetimeType::Persistent,
                 BackingType::Normal,
@@ -507,7 +507,14 @@ impl PagerData {
                 Protections::empty(),
             ));
         }
-        ctx.paged_ostore.read_object(id.raw(), 0, &mut b)?;
+        tracing::warn!("ub: 0");
+        blocking::unblock(move || {
+            twizzler_abi::klog_println!("HERE");
+            tracing::warn!("here");
+            ctx.paged_ostore.read_object(id.raw(), 0, &mut b)
+        })
+        .await?;
+        tracing::warn!("ub: 1");
         Ok(ObjectInfo::new(
             LifetimeType::Persistent,
             BackingType::Normal,
@@ -525,7 +532,9 @@ impl PagerData {
         let _ = po.sync(ctx).await.inspect_err(|e| {
             tracing::warn!("sync failed for {}: {}", id, e);
         });
-        ctx.paged_ostore.flush().unwrap();
+        blocking::unblock(move || ctx.paged_ostore.flush())
+            .await
+            .unwrap();
     }
 
     pub async fn sync_region(
