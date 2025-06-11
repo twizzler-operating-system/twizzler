@@ -114,9 +114,14 @@ pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
     cmd_object(ReqKind::new_create(id, create, nonce));
 }
 
-pub fn sync_region(region: &MapRegion, dirty_set: Vec<PageNumber>, sync_info: SyncInfo) {
+pub fn sync_region(
+    region: &MapRegion,
+    dirty_set: Vec<PageNumber>,
+    sync_info: SyncInfo,
+    version: u64,
+) {
     let shadow = Shadow::from(region);
-    let req = ReqKind::new_sync_region(region.object().id(), shadow, dirty_set, sync_info);
+    let req = ReqKind::new_sync_region(region.object().id(), shadow, dirty_set, sync_info, version);
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;

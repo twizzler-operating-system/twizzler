@@ -174,11 +174,12 @@ impl MapRegion {
             MapControlCmd::Sync(sync_info_ptr) => {
                 // TODO: validation
                 let sync_info = unsafe { sync_info_ptr.read() };
+                let version = sync_info.release_compare;
 
                 if sync_info.flags.contains(SyncFlags::DURABLE) {
                     let dirty_pages = self.object().dirty_set().drain_all();
                     log::debug!("sync region with dirty pages {:?}", dirty_pages);
-                    crate::pager::sync_region(self, dirty_pages, sync_info);
+                    crate::pager::sync_region(self, dirty_pages, sync_info, version);
                 }
 
                 if sync_info.flags.contains(SyncFlags::ASYNC_DURABLE) {

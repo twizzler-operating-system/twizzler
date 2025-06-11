@@ -38,7 +38,7 @@ pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
+            .with_max_level(tracing::Level::DEBUG)
             .with_span_events(FmtSpan::ENTER)
             .without_time()
             .finish(),
@@ -274,17 +274,6 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
 #[secgate::secure_gate]
 pub fn pager_start(q1: ObjID, q2: ObjID) -> Result<ObjID, TwzError> {
     Ok(do_pager_start(q1, q2))
-}
-
-#[secgate::secure_gate]
-pub fn full_object_sync(id: ObjID) -> Result<(), TwzError> {
-    let task = EXECUTOR.get().unwrap().spawn(async move {
-        let pager = PAGER_CTX.get().unwrap();
-        tracing::debug!("starting full object sync for {:?}", id);
-        pager.data.sync(&pager, id).await;
-    });
-    block_on(EXECUTOR.get().unwrap().run(async { task.await }));
-    Ok(())
 }
 
 #[secgate::secure_gate]

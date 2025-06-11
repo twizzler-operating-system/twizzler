@@ -11,7 +11,7 @@ use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
 use twizzler::object::ObjID;
 use twizzler_abi::{
-    object::{Protections, MAX_SIZE},
+    object::Protections,
     pager::{
         CompletionToKernel, KernelCompletionData, KernelCompletionFlags, ObjectEvictFlags,
         ObjectEvictInfo, ObjectInfo, ObjectRange, PhysRange,
@@ -26,7 +26,7 @@ use twizzler_rt_abi::{
 use crate::{
     disk::DiskPageRequest,
     handle::PagerClient,
-    helpers::{page_in, page_out, page_out_many, PAGE},
+    helpers::{page_in, page_out_many, PAGE},
     PagerContext,
 };
 
@@ -35,85 +35,46 @@ type PageNum = u64;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PerPageData {
     paddr: u64,
-}
-
-impl PerPageData {
-    fn new_vec(phys: PhysRange) -> Vec<Self> {
-        (phys.start..phys.end)
-            .step_by(PAGE as usize)
-            .map(|paddr| Self { paddr })
-            .collect()
-    }
+    version: u64,
 }
 
 #[derive(Default)]
 pub struct PerObjectInner {
     #[allow(dead_code)]
     id: ObjID,
-    page_map: HashMap<PageNum, PerPageData>,
-    meta_page_map: HashMap<PageNum, PerPageData>,
-    pending_syncs: Vec<ObjectEvictInfo>,
+    sync_map: HashMap<PageNum, PerPageData>,
     syncing: bool,
 }
 
 impl PerObjectInner {
-    pub fn track(&mut self, obj_range: ObjectRange, phys_range: PhysRange) {
-        assert_eq!(obj_range.len(), PAGE as usize);
-        assert_eq!(phys_range.len(), PAGE as usize);
-        let mut start = obj_range.start;
-        if start == MAX_SIZE as u64 - PAGE {
-            start = 0;
-        }
-
-        if let Some(old) = self.page_map.insert(
-            start / PAGE,
-            PerPageData {
-                paddr: phys_range.start,
-            },
-        ) {
-            tracing::debug!("todo: release old: {:?}", old);
+    pub fn track(&mut self, obj_range: ObjectRange, phys_range: PhysRange, version: u64) {
+        assert_eq!(obj_range.len(), phys_range.len());
+        for (op, pp) in obj_range.pages().zip(phys_range.pages()) {
+            let entry = self.sync_map.entry(op).or_default();
+            if entry.version <= version {
+                entry.paddr = pp * PAGE;
+            }
         }
     }
 
-    pub fn _track_meta(&mut self, obj_range: ObjectRange, phys_range: PhysRange) {
-        assert_eq!(obj_range.len(), PAGE as usize);
-        assert_eq!(phys_range.len(), PAGE as usize);
-
-        if let Some(old) = self.meta_page_map.insert(
-            obj_range.start / PAGE,
-            PerPageData {
-                paddr: phys_range.start,
-            },
-        ) {
-            tracing::debug!("todo: release old: {:?}", old);
-        }
+    pub fn pages(&self, obj_page: u64) -> Option<(ObjectRange, PhysRange, u64)> {
+        self.sync_map.get(&obj_page).map(|pp| {
+            (
+                ObjectRange::new(obj_page * PAGE, (obj_page + 1) * PAGE),
+                PhysRange::new(pp.paddr, pp.paddr + PAGE),
+                pp.version,
+            )
+        })
     }
 
-    pub fn lookup(&self, obj_range: ObjectRange) -> Option<PhysRange> {
-        let mut start = obj_range.start;
-        if start == MAX_SIZE as u64 - PAGE {
-            start = 0;
-        }
-        let key = start / PAGE;
-        self.page_map
-            .get(&key)
-            .map(|ppd| PhysRange::new(ppd.paddr, PAGE))
-    }
-
-    pub fn pages(&self) -> impl Iterator<Item = (ObjectRange, PerPageData)> + '_ {
-        self.page_map
-            .iter()
-            .map(|(x, y)| (ObjectRange::new(*x * PAGE, (*x + 1) * PAGE), *y))
-    }
-
-    pub fn meta_pages(&self) -> impl Iterator<Item = (ObjectRange, PerPageData)> + '_ {
-        self.meta_page_map
-            .iter()
-            .map(|(x, y)| (ObjectRange::new(*x * PAGE, (*x + 1) * PAGE), *y))
-    }
-
-    fn drain_pending_syncs(&mut self) -> impl Iterator<Item = ObjectEvictInfo> + '_ {
-        self.pending_syncs.drain(..)
+    fn drain_pending_syncs(&mut self) -> impl Iterator<Item = (ObjectRange, PhysRange, u64)> + '_ {
+        self.sync_map.drain().map(|(obj_page, pp)| {
+            (
+                ObjectRange::new(obj_page * PAGE, (obj_page + 1) * PAGE),
+                PhysRange::new(pp.paddr, pp.paddr + PAGE),
+                pp.version,
+            )
+        })
     }
 
     pub fn new(id: ObjID) -> Self {
@@ -134,17 +95,14 @@ pub struct PerObject {
 }
 
 impl PerObject {
-    pub async fn track(&self, obj_range: ObjectRange, phys_range: PhysRange) {
-        self.inner.1.lock().await.track(obj_range, phys_range);
-    }
-
-    pub async fn lookup(&self, obj_range: ObjectRange) -> Option<PhysRange> {
-        self.inner.1.lock().await.lookup(obj_range)
-    }
-
-    async fn do_sync_region(&self, ctx: &'static PagerContext) -> CompletionToKernel {
+    async fn do_sync_region(
+        &self,
+        ctx: &'static PagerContext,
+        info: &ObjectEvictInfo,
+    ) -> CompletionToKernel {
         let pages = {
             let mut inner = self.inner.1.lock().await;
+            inner.track(info.range, info.phys, info.version);
             while inner.syncing {
                 self.inner.0.wait_no_relock(inner).await;
                 inner = self.inner.1.lock().await;
@@ -152,7 +110,7 @@ impl PerObject {
             inner.syncing = true;
             let mut pages = inner
                 .drain_pending_syncs()
-                .map(|p| (p.range, PerPageData::new_vec(p.phys)))
+                .map(|p| (p.0, vec![p.1]))
                 .collect::<Vec<_>>();
             pages.sort_by_key(|p| p.0);
             tracing::debug!("drained {:?}", pages);
@@ -177,7 +135,7 @@ impl PerObject {
                 assert_eq!(nr_pages, p.0.pages().count());
                 PageRequest::new(
                     ctx.disk
-                        .new_paging_request::<DiskPageRequest>(p.1.into_iter().map(|pd| pd.paddr)),
+                        .new_paging_request::<DiskPageRequest>(p.1.into_iter().map(|pd| pd.start)),
                     start_page as i64,
                     nr_pages as u32,
                 )
@@ -206,65 +164,13 @@ impl PerObject {
         info: &ObjectEvictInfo,
     ) -> CompletionToKernel {
         tracing::debug!("push pending sync: {:?}", info);
-        {
-            let mut inner = self.inner.1.lock().await;
-            inner.pending_syncs.push(*info);
-        }
         if info.flags.contains(ObjectEvictFlags::FENCE) {
-            self.do_sync_region(ctx).await
+            self.do_sync_region(ctx, info).await
         } else {
+            let mut inner = self.inner.1.lock().await;
+            inner.track(info.range, info.phys, info.version);
             CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::empty())
         }
-    }
-
-    pub async fn sync(&self, ctx: &'static PagerContext) -> Result<()> {
-        tracing::debug!("sync: {}", self.id);
-        let (pages, mpages) = {
-            let inner = self.inner.1.lock().await;
-            let total = inner.page_map.len() + inner.meta_page_map.len();
-            tracing::debug!("syncing {}: {} pages", self.id, total);
-            let mut pages = inner.pages().map(|p| (p.0, vec![p.1])).collect::<Vec<_>>();
-            pages.sort_by_key(|p| p.0);
-            let pages = pages
-                .into_iter()
-                .coalesce(|mut x, y| {
-                    if x.0.end == y.0.start {
-                        x.1.extend(y.1);
-                        Ok((ObjectRange::new(x.0.start, y.0.end), x.1))
-                    } else {
-                        Err((x, y))
-                    }
-                })
-                .collect::<Vec<_>>();
-            let mut mpages = inner.meta_pages().collect::<Vec<_>>();
-            mpages.sort_by_key(|p| p.0);
-            (pages, mpages)
-        };
-
-        let reqs = pages
-            .into_iter()
-            .map(|p| {
-                let start_page = p.0.pages().next().unwrap();
-                let nr_pages = p.1.len();
-                assert_eq!(nr_pages, p.0.pages().count());
-                PageRequest::new(
-                    ctx.disk
-                        .new_paging_request::<DiskPageRequest>(p.1.into_iter().map(|pd| pd.paddr)),
-                    start_page as i64,
-                    nr_pages as u32,
-                )
-            })
-            .collect_vec();
-
-        page_out_many(ctx, self.id, reqs).await?;
-
-        for p in mpages {
-            let phys_range = PhysRange::new(p.1.paddr, p.1.paddr + PAGE);
-            tracing::trace!("sync: meta page: {:?} {:?}", p, phys_range);
-            page_out(ctx, self.id, p.0, phys_range).await?;
-        }
-
-        Ok(())
     }
 }
 
@@ -472,21 +378,6 @@ impl PagerData {
         id: ObjID,
         obj_range: ObjectRange,
     ) -> Result<PhysRange> {
-        {
-            // See if we already allocated
-            let po = {
-                let mut inner = self.inner.lock().unwrap();
-                inner.get_per_object(id).clone()
-            };
-            if let Some(phys_range) = po.lookup(obj_range).await {
-                tracing::debug!(
-                    "already paged memory page for ObjID {:?}, ObjectRange {:?}",
-                    id,
-                    obj_range
-                );
-                return Ok(phys_range);
-            }
-        }
         tracing::debug!(
             "allocating memory page for ObjID {:?}, ObjectRange {:?}",
             id,
@@ -503,8 +394,6 @@ impl PagerData {
                 }
             };
             let phys_range = PhysRange::new(page, page + PAGE);
-            let po = { self.inner.lock().unwrap().get_per_object_mut(id).clone() };
-            po.track(obj_range, phys_range).await;
             phys_range
         };
         page_in(ctx, id, obj_range, phys_range).await?;
@@ -532,19 +421,6 @@ impl PagerData {
             0,
             Protections::empty(),
         ))
-    }
-
-    pub async fn sync(&self, ctx: &'static PagerContext, id: ObjID) {
-        let po = {
-            let mut inner = self.inner.lock().unwrap();
-            inner.get_per_object(id).clone()
-        };
-        let _ = po.sync(ctx).await.inspect_err(|e| {
-            tracing::warn!("sync failed for {}: {}", id, e);
-        });
-        blocking::unblock(move || ctx.paged_ostore.flush())
-            .await
-            .unwrap();
     }
 
     pub async fn sync_region(

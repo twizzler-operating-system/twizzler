@@ -40,7 +40,7 @@ pub async fn handle_kernel_request(
     ctx: &'static PagerContext,
     request: RequestFromKernel,
 ) -> CompletionToKernel {
-    tracing::debug!("handling kernel request {:?}", request);
+    tracing::trace!("handling kernel request {:?}", request);
 
     let data = match request.cmd() {
         KernelCommand::PageDataReq(obj_id, range) => {
