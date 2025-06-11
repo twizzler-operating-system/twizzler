@@ -113,7 +113,6 @@ impl PerObject {
                 .map(|p| (p.0, vec![p.1]))
                 .collect::<Vec<_>>();
             pages.sort_by_key(|p| p.0);
-            tracing::debug!("drained {:?}", pages);
             let pages = pages
                 .into_iter()
                 .coalesce(|mut x, y| {
@@ -125,6 +124,7 @@ impl PerObject {
                     }
                 })
                 .collect::<Vec<_>>();
+            tracing::debug!("drained {:?}", pages);
             pages
         };
         let reqs = pages

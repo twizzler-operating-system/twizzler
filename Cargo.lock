@@ -5122,6 +5122,8 @@ dependencies = [
 name = "ptest"
 version = "0.1.0"
 dependencies = [
+ "clap",
+ "miette",
  "naming",
  "twizzler",
  "twizzler-rt-abi",

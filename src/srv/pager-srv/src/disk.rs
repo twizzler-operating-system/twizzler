@@ -106,7 +106,7 @@ impl PagingImp for DiskPageRequest {
             .zip(self.phys_addrs())
             .filter_map(|(x, y)| if let Some(x) = x { Some((x, y)) } else { None })
             .collect::<Vec<_>>();
-        tracing::debug!("page-out: pairs: {:?}", pairs);
+        tracing::trace!("page-out: pairs: {:?}", pairs);
         pairs.sort_by_key(|p| p.0);
         let (dp, pp): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
         let mut offset = 0;
