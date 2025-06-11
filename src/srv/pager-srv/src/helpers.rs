@@ -121,19 +121,15 @@ pub async fn page_out_many(
     obj_id: ObjID,
     reqs: Vec<PageRequest<DiskPageRequest>>,
 ) -> Result<usize> {
-    tracing::warn!("POM: {}", reqs.len());
     blocking::unblock(move || {
         let mut reqslice = &reqs[..];
         while reqslice.len() > 0 {
-            tracing::warn!("  iter {}", reqslice.len());
             let donecount = ctx
                 .paged_ostore
                 .page_out_object(obj_id.raw(), reqslice)
                 .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
-            tracing::warn!("==> {}", donecount);
             reqslice = &reqslice[donecount..];
         }
-        tracing::warn!("POM: done");
         Ok(reqs.len())
     })
     .await

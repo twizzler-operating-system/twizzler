@@ -126,7 +126,7 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     let boot_info = &**BOOT_INFO.call_once(|| Box::new(boot_info));
     arch::init(boot_info);
     ::log::set_logger(&LOGGER).unwrap();
-    ::log::set_max_level(LevelFilter::Debug);
+    ::log::set_max_level(LevelFilter::Info);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
     ::log::warn!("TEST LOG");
     let cmdline = boot_info.get_cmd_line();

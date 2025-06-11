@@ -5,7 +5,9 @@ use twizzler_rt_abi::object::ObjectHandle;
 use super::{Allocator, OwnedGlobalPtr};
 use crate::{
     marker::Invariant,
+    object::Object,
     ptr::{GlobalPtr, InvPtr, Ref},
+    tx::TxObject,
 };
 
 pub struct InvBox<T: Invariant, Alloc: Allocator> {
@@ -23,7 +25,10 @@ impl<T: Invariant, Alloc: Allocator> InvBox<T, Alloc> {
         let p = alloc.alloc(layout)?;
         let p = p.cast::<MaybeUninit<T>>();
         let p = unsafe { p.resolve().mutable() };
+        let txo =
+            TxObject::new(unsafe { Object::<()>::from_handle_unchecked(p.handle().clone()) })?;
         let p = p.write(val);
+        txo.commit()?;
         let ogp = unsafe { OwnedGlobalPtr::from_global(p.global(), alloc) };
         Self::from_in(tx, ogp)
     }

@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 use async_executor::Executor;
 use async_io::block_on;
 use disk::{Disk, DiskPageRequest};
-use object_store::{Ext4Store, ExternalFile, LetheIoWrapper, PagedObjectStore};
+use object_store::{Ext4Store, ExternalFile, PagedObjectStore};
 use tracing_subscriber::fmt::format::FmtSpan;
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
@@ -38,7 +38,7 @@ pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
+            .with_max_level(tracing::Level::INFO)
             .with_span_events(FmtSpan::ENTER)
             .without_time()
             .finish(),

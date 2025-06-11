@@ -74,9 +74,7 @@ pub async fn handle_kernel_request(
         }
         KernelCommand::ObjectCreate(id, object_info) => {
             blocking::unblock(move || {
-                tracing::warn!("A");
                 let _ = ctx.paged_ostore.delete_object(id.raw());
-                tracing::warn!("B");
                 match ctx.paged_ostore.create_object(id.raw()) {
                     Ok(_) => {
                         let mut buffer = [0; 0x1000];
@@ -98,7 +96,6 @@ pub async fn handle_kernel_request(
                             buffer[0..size_of::<MetaInfo>()]
                                 .copy_from_slice(any_as_u8_slice(&meta));
                         }
-                        tracing::warn!("C");
                         ctx.paged_ostore.write_object(id.raw(), 0, &buffer).unwrap();
 
                         KernelCompletionData::ObjectInfoCompletion(id, object_info)

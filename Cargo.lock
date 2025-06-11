@@ -269,6 +269,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-condvar-fair"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "295cd7b1012ff38050caca55808d99972b6c6ce92fefaa8d98b6571e7d5eff38"
+dependencies = [
+ "dlv-list",
+ "parking_lot",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "async-executor"
 version = "1.9.1"
 source = "git+https://github.com/twizzler-operating-system/async-executor.git?branch=twizzler#6db91013bf7ec4590a2fd60973cb579501ee3c52"
@@ -4720,8 +4731,10 @@ dependencies = [
 name = "pager-srv"
 version = "0.1.0"
 dependencies = [
+ "async-condvar-fair",
  "async-executor",
  "async-io",
+ "async-lock",
  "async-trait",
  "bitvec",
  "blocking",

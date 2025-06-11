@@ -53,6 +53,7 @@ pub struct PerObjectInner {
     page_map: HashMap<PageNum, PerPageData>,
     meta_page_map: HashMap<PageNum, PerPageData>,
     pending_syncs: Vec<ObjectEvictInfo>,
+    syncing: bool,
 }
 
 impl PerObjectInner {
@@ -126,21 +127,29 @@ impl PerObjectInner {
 #[derive(Clone)]
 pub struct PerObject {
     id: ObjID,
-    inner: Arc<Mutex<PerObjectInner>>,
+    inner: Arc<(
+        async_condvar_fair::Condvar,
+        async_lock::Mutex<PerObjectInner>,
+    )>,
 }
 
 impl PerObject {
-    pub fn track(&self, obj_range: ObjectRange, phys_range: PhysRange) {
-        self.inner.lock().unwrap().track(obj_range, phys_range);
+    pub async fn track(&self, obj_range: ObjectRange, phys_range: PhysRange) {
+        self.inner.1.lock().await.track(obj_range, phys_range);
     }
 
-    pub fn lookup(&self, obj_range: ObjectRange) -> Option<PhysRange> {
-        self.inner.lock().unwrap().lookup(obj_range)
+    pub async fn lookup(&self, obj_range: ObjectRange) -> Option<PhysRange> {
+        self.inner.1.lock().await.lookup(obj_range)
     }
 
     async fn do_sync_region(&self, ctx: &'static PagerContext) -> CompletionToKernel {
         let pages = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.1.lock().await;
+            while inner.syncing {
+                self.inner.0.wait_no_relock(inner).await;
+                inner = self.inner.1.lock().await;
+            }
+            inner.syncing = true;
             let mut pages = inner
                 .drain_pending_syncs()
                 .map(|p| (p.range, PerPageData::new_vec(p.phys)))
@@ -176,11 +185,17 @@ impl PerObject {
             .collect_vec();
 
         if let Err(e) = page_out_many(ctx, self.id, reqs).await {
+            let mut inner = self.inner.1.lock().await;
+            inner.syncing = false;
+            self.inner.0.notify_all();
             return CompletionToKernel::new(
                 KernelCompletionData::Error(e.into()),
                 KernelCompletionFlags::DONE,
             );
         }
+        let mut inner = self.inner.1.lock().await;
+        inner.syncing = false;
+        self.inner.0.notify_all();
 
         CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE)
     }
@@ -192,7 +207,7 @@ impl PerObject {
     ) -> CompletionToKernel {
         tracing::debug!("push pending sync: {:?}", info);
         {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.1.lock().await;
             inner.pending_syncs.push(*info);
         }
         if info.flags.contains(ObjectEvictFlags::FENCE) {
@@ -205,7 +220,7 @@ impl PerObject {
     pub async fn sync(&self, ctx: &'static PagerContext) -> Result<()> {
         tracing::debug!("sync: {}", self.id);
         let (pages, mpages) = {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.1.lock().await;
             let total = inner.page_map.len() + inner.meta_page_map.len();
             tracing::debug!("syncing {}: {} pages", self.id, total);
             let mut pages = inner.pages().map(|p| (p.0, vec![p.1])).collect::<Vec<_>>();
@@ -257,7 +272,10 @@ impl PerObject {
     pub fn new(id: ObjID) -> Self {
         Self {
             id,
-            inner: Arc::new(Mutex::new(PerObjectInner::new(id))),
+            inner: Arc::new((
+                async_condvar_fair::Condvar::new(),
+                async_lock::Mutex::new(PerObjectInner::new(id)),
+            )),
         }
     }
 }
@@ -456,9 +474,11 @@ impl PagerData {
     ) -> Result<PhysRange> {
         {
             // See if we already allocated
-            let mut inner = self.inner.lock().unwrap();
-            let po = inner.get_per_object(id);
-            if let Some(phys_range) = po.lookup(obj_range) {
+            let po = {
+                let mut inner = self.inner.lock().unwrap();
+                inner.get_per_object(id).clone()
+            };
+            if let Some(phys_range) = po.lookup(obj_range).await {
                 tracing::debug!(
                     "already paged memory page for ObjID {:?}, ObjectRange {:?}",
                     id,
@@ -483,11 +503,8 @@ impl PagerData {
                 }
             };
             let phys_range = PhysRange::new(page, page + PAGE);
-            self.inner
-                .lock()
-                .unwrap()
-                .get_per_object_mut(id)
-                .track(obj_range, phys_range);
+            let po = { self.inner.lock().unwrap().get_per_object_mut(id).clone() };
+            po.track(obj_range, phys_range).await;
             phys_range
         };
         page_in(ctx, id, obj_range, phys_range).await?;
@@ -507,14 +524,7 @@ impl PagerData {
                 Protections::empty(),
             ));
         }
-        tracing::warn!("ub: 0");
-        blocking::unblock(move || {
-            twizzler_abi::klog_println!("HERE");
-            tracing::warn!("here");
-            ctx.paged_ostore.read_object(id.raw(), 0, &mut b)
-        })
-        .await?;
-        tracing::warn!("ub: 1");
+        blocking::unblock(move || ctx.paged_ostore.read_object(id.raw(), 0, &mut b)).await?;
         Ok(ObjectInfo::new(
             LifetimeType::Persistent,
             BackingType::Normal,

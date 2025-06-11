@@ -36,9 +36,11 @@ impl<T> GlobalPtr<T> {
     /// the underlying type is Sync + Send. The memory referenced by the pointer
     /// must have an valid representation of the type.
     pub unsafe fn resolve(&self) -> Ref<'_, T> {
-        let handle =
-            twizzler_rt_abi::object::twz_rt_map_object(self.id(), MapFlags::READ | MapFlags::WRITE)
-                .expect("failed to map global pointer object");
+        let handle = twizzler_rt_abi::object::twz_rt_map_object(
+            self.id(),
+            MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST,
+        )
+        .expect("failed to map global pointer object");
         let ptr = handle
             .lea(self.offset() as usize, size_of::<T>())
             .expect("failed to resolve global pointer");

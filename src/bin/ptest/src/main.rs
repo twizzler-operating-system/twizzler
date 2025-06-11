@@ -49,6 +49,7 @@ fn main() {
     for e in &vo {
         println!("current contents: {:?}", e);
     }
+    let len = vo.iter().count();
     println!("pushing items");
     let start = std::time::Instant::now();
     let alloc = ArenaObject::new(ObjectBuilder::default().persist()).unwrap();
@@ -57,7 +58,7 @@ fn main() {
         //vo.push(i).unwrap();
         vo.push_ctor(|tx| {
             let foo = Foo {
-                local_data: i,
+                local_data: i + len as u32,
                 data: InvBox::new_in(&tx, i, alloc.allocator()).unwrap(),
             };
 
