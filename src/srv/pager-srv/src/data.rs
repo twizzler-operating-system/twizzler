@@ -57,16 +57,6 @@ impl PerObjectInner {
         }
     }
 
-    pub fn pages(&self, obj_page: u64) -> Option<(ObjectRange, PhysRange, u64)> {
-        self.sync_map.get(&obj_page).map(|pp| {
-            (
-                ObjectRange::new(obj_page * PAGE, (obj_page + 1) * PAGE),
-                PhysRange::new(pp.paddr, pp.paddr + PAGE),
-                pp.version,
-            )
-        })
-    }
-
     fn drain_pending_syncs(&mut self) -> impl Iterator<Item = (ObjectRange, PhysRange, u64)> + '_ {
         self.sync_map.drain().map(|(obj_page, pp)| {
             (
@@ -340,10 +330,6 @@ impl PagerDataInner {
     }
 
     pub fn get_per_object(&mut self, id: ObjID) -> &PerObject {
-        self.per_obj.entry(id).or_insert_with(|| PerObject::new(id))
-    }
-
-    pub fn get_per_object_mut(&mut self, id: ObjID) -> &mut PerObject {
         self.per_obj.entry(id).or_insert_with(|| PerObject::new(id))
     }
 }

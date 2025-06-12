@@ -1,6 +1,5 @@
 use std::{
     ffi::c_void,
-    mem::MaybeUninit,
     sync::atomic::{AtomicU64, Ordering},
 };
 

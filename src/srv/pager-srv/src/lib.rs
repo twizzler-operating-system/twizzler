@@ -224,25 +224,9 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data, ex) = pager_init(q1, q2);
     let disk = block_on(ex.run(Disk::new(ex))).unwrap();
     let diskc = disk.clone();
-    let diskc2 = disk.clone();
 
-    let ext4_store = Ext4Store::<DiskPageRequest>::new(diskc2, "/").unwrap();
+    let ext4_store = Ext4Store::<DiskPageRequest>::new(disk, "/").unwrap();
 
-    /*
-    let disk = LetheIoWrapper::new(disk);
-    let ostore = object_store::LetheObjectStore::open(disk.clone(), [0; 32]);
-    let (name, ostore): (
-        &str,
-        Box<dyn PagedObjectStore<DiskPageRequest> + Send + Sync + 'static>,
-    ) = match ostore {
-        Ok(o) => ("lethe", Box::new(o)),
-        Err(_) => (
-            "ext2",
-            Box::new(object_store::Ext2ObjectStore::new(disk.into_inner(), 0).unwrap()),
-        ),
-    };
-    tracing::info!("opened object store as {}", name);
-    */
     let sq = Arc::new(sq);
     let _ = PAGER_CTX.set(PagerContext {
         data,

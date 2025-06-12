@@ -2,18 +2,16 @@ use std::fmt::Debug;
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
-use naming::{GetFlags, StaticNamingAPI};
+use naming::GetFlags;
 use twizzler::{
     Invariant,
-    alloc::{
-        arena::{ArenaAllocator, ArenaObject},
-        invbox::InvBox,
-    },
+    alloc::{arena::ArenaAllocator, invbox::InvBox},
     collections::vec::{VecObject, VecObjectAlloc},
     marker::Invariant,
     object::{MapFlags, ObjID, Object, ObjectBuilder},
 };
 
+#[allow(dead_code)]
 #[derive(Invariant)]
 struct Foo {
     data: InvBox<u32, ArenaAllocator>,

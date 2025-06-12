@@ -52,6 +52,16 @@ unsafe extern "C" fn bd_close(bd: *mut ext4_blockdev) -> i32 {
     result_to_errno(iface.close())
 }
 
+unsafe extern "C" fn bd_lock(bd: *mut ext4_blockdev) -> i32 {
+    let iface = get_iface(bd);
+    result_to_errno(iface.lock())
+}
+
+unsafe extern "C" fn bd_unlock(bd: *mut ext4_blockdev) -> i32 {
+    let iface = get_iface(bd);
+    result_to_errno(iface.unlock())
+}
+
 unsafe extern "C" fn bd_bread(
     bd: *mut ext4_blockdev,
     buf: *mut c_void,
@@ -127,8 +137,8 @@ impl Ext4Blockdev {
             bread: Some(bd_bread),
             bwrite: Some(bd_bwrite),
             close: Some(bd_close),
-            lock: None,
-            unlock: None,
+            lock: Some(bd_lock),
+            unlock: Some(bd_unlock),
             ph_bsize: psz,
             ph_bcnt: pcount,
             ph_bbuf: buf.as_mut_ptr(),
