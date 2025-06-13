@@ -15,6 +15,7 @@ pub trait Allocator {
     fn alloc_tx(&self, layout: Layout, _tx: &impl TxHandle) -> crate::tx::Result<GlobalPtr<u8>> {
         self.alloc(layout).map_err(|e| e.into())
     }
+    
     unsafe fn dealloc_tx(
         &self,
         ptr: GlobalPtr<u8>,

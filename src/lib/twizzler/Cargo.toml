@@ -12,3 +12,4 @@ monitor-api = { path = "../../rt/monitor-api" }
 secgate = { path = "../../lib/secgate" }
 tracing = "*"
 foldhash = { version = "0.1.2", default-features = false }
+equivalent = "1.0.2"

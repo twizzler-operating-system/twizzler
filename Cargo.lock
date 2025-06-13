@@ -6524,6 +6524,7 @@ name = "twizzler"
 version = "0.99.0"
 dependencies = [
  "bitflags 2.9.0",
+ "equivalent",
  "foldhash",
  "monitor-api",
  "secgate",

@@ -11,7 +11,7 @@ use crate::{
 };
 
 #[repr(C)]
-#[derive(Debug, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Clone, Copy)]
 pub struct InvPtr<T: Invariant> {
     value: u64,
     _pse: PhantomStoreEffect,
@@ -74,22 +74,22 @@ impl<T: Invariant> InvPtr<T> {
     }
 
     #[inline(always)]
-    pub fn fot_index(&self) -> u64 {
+    pub const fn fot_index(&self) -> u64 {
         self.value >> 48
     }
 
     #[inline(always)]
-    pub fn is_local(&self) -> bool {
+    pub const fn is_local(&self) -> bool {
         self.fot_index() == 0
     }
 
     #[inline(always)]
-    pub fn offset(&self) -> u64 {
+    pub const fn offset(&self) -> u64 {
         self.value & ((1 << 48) - 1)
     }
 
     #[inline]
-    pub fn raw(&self) -> u64 {
+    pub const fn raw(&self) -> u64 {
         self.value
     }
 
@@ -100,5 +100,33 @@ impl<T: Invariant> InvPtr<T> {
         }
         let fote = tx.insert_fot(&gp.into())?;
         Ok(Self::from_raw_parts(fote, gp.offset()))
+    }
+
+    pub const fn cast<U: Invariant>(self) -> InvPtr<U> {
+        unsafe { InvPtr::from_raw_parts(self.fot_index() as u32, self.offset()) }
+    }
+    
+    pub const unsafe fn add(self, count: usize) -> Self {
+        self.byte_add(count * size_of::<T>())
+    }
+
+    pub const unsafe fn byte_add(self, count: usize) -> Self {
+        Self::from_raw_parts(self.fot_index() as u32, self.offset() + count as u64)
+    }
+
+    pub const unsafe fn sub(self, count: usize) -> Self {
+        self.byte_sub(count * size_of::<T>())
+    }
+
+    pub const unsafe fn byte_sub(self, count: usize) -> Self {
+        Self::from_raw_parts(self.fot_index() as u32, self.offset() - count as u64)
+    }
+    
+    pub const unsafe fn make_offset(self, count: isize) -> Self {
+        self.make_byte_offset(count * size_of::<T>() as isize)
+    }
+
+    pub const unsafe fn make_byte_offset(self, count: isize) -> Self {
+        Self::from_raw_parts(self.fot_index() as u32, (self.offset() as isize + count) as u64)
     }
 }
