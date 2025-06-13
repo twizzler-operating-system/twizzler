@@ -11,3 +11,4 @@ twizzler-abi = { path = "../../lib/twizzler-abi" }
 monitor-api = { path = "../../rt/monitor-api" }
 secgate = { path = "../../lib/secgate" }
 tracing = "*"
+twizzler-derive = { path = "twizzler-derive" }

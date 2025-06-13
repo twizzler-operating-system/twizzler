@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use miette::IntoDiagnostic;
 use monitor_api::MappedObjectAddrs;
@@ -72,9 +75,10 @@ impl Space {
     }
 
     /// Map an object into the space.
-    pub fn map(&mut self, info: MapInfo) -> Result<MapHandle, TwzError> {
+    pub fn map<'a>(this: &Mutex<Self>, info: MapInfo) -> Result<MapHandle, TwzError> {
         // Can't use the entry API here because the closure may fail.
-        let item = match self.maps.get_mut(&info) {
+        let mut guard = this.lock().unwrap();
+        let item = match guard.maps.get_mut(&info) {
             Some(item) => item,
             None => {
                 // Not yet mapped, so allocate a slot and map it.
@@ -83,6 +87,7 @@ impl Space {
                     .ok()
                     .ok_or(ResourceError::OutOfResources)?;
 
+                drop(guard);
                 let res = sys_object_map(
                     None,
                     info.id,
@@ -90,6 +95,7 @@ impl Space {
                     mapflags_into_prot(info.flags),
                     info.flags.into(),
                 );
+                guard = this.lock().unwrap();
                 let Ok(_) = res else {
                     unsafe {
                         __monitor_release_slot(slot);
@@ -101,9 +107,9 @@ impl Space {
                     addrs: MappedObjectAddrs::new(slot),
                     handle_count: 0,
                 };
-                self.maps.insert(info, map);
+                guard.maps.insert(info, map);
                 // Unwrap-Ok: just inserted.
-                self.maps.get_mut(&info).unwrap()
+                guard.maps.get_mut(&info).unwrap()
             }
         };
 
@@ -205,7 +211,7 @@ impl Space {
 
     /// Utility function for creating an object and mapping it, deleting it if the mapping fails.
     pub(crate) fn safe_create_and_map_object(
-        &mut self,
+        this: &Mutex<Self>,
         spec: ObjectCreate,
         sources: &[ObjectSource],
         ties: &[CreateTieSpec],
@@ -213,10 +219,13 @@ impl Space {
     ) -> miette::Result<MapHandle> {
         let id = sys_object_create(spec, sources, ties).into_diagnostic()?;
 
-        match self.map(MapInfo {
-            id,
-            flags: map_flags,
-        }) {
+        match Space::map(
+            this,
+            MapInfo {
+                id,
+                flags: map_flags,
+            },
+        ) {
             Ok(mh) => Ok(mh),
             Err(me) => {
                 if let Err(e) = sys_object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()))
@@ -230,11 +239,12 @@ impl Space {
     }
 
     pub(crate) fn safe_create_and_map_runtime_object(
-        &mut self,
+        this: &Mutex<Self>,
         instance: ObjID,
         map_flags: MapFlags,
     ) -> miette::Result<MapHandle> {
-        self.safe_create_and_map_object(
+        Space::safe_create_and_map_object(
+            this,
             ObjectCreate::new(
                 BackingType::Normal,
                 LifetimeType::Volatile,

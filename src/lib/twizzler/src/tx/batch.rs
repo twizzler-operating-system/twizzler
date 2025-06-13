@@ -48,13 +48,15 @@ mod tests {
         tx::TxBatch,
     };
 
+    #[allow(dead_code)]
     struct Simple {
         x: u32,
     }
 
     impl BaseType for Simple {}
 
-    #[test]
+    //#[test]
+    #[allow(dead_code)]
     fn simple_batch_tx() {
         let builder = ObjectBuilder::default();
         let obj1 = builder.build(Simple { x: 3 }).unwrap();

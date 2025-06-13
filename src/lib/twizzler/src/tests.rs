@@ -6,7 +6,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::object::MapFlags;
 
-use crate::object::{Object, ObjectBuilder, RawObject, TypedObject};
+use crate::object::{Object, ObjectBuilder, RawObject};
 
 #[test]
 fn test_stable_read() {

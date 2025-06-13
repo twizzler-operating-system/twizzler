@@ -24,7 +24,11 @@ impl<T, A: Allocator> OwnedGlobalPtr<T, A> {
         Self { global, alloc }
     }
 
-    pub fn resolve<'a>(&self) -> Ref<'a, T> {
-        todo!()
+    pub fn resolve<'a>(&'a self) -> Ref<'a, T> {
+        unsafe { self.global.resolve() }
+    }
+
+    pub fn allocator(&self) -> &A {
+        &self.alloc
     }
 }

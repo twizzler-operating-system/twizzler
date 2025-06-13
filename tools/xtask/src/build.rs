@@ -296,6 +296,7 @@ fn maybe_build_tests_dynamic<'a>(
                 "twizzler-net" => None,
                 "twizzler-futures" => None,
                 "twizzler-async" => None,
+                "twizzler-derive" => None,
                 "tiny_http" => None,
                 "test-tiny-http" => None,
                 "object-store" => None,
@@ -308,8 +309,6 @@ fn maybe_build_tests_dynamic<'a>(
                 "uuhelper" => None,
                 "unittest" => None,
                 "unittest-report" => None,
-                // for now -- tests aren't ready in this crate to run. Too many todo!()'s still.
-                //"twizzler" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),
