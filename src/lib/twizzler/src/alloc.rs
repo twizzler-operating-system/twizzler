@@ -8,7 +8,7 @@ pub mod invbox;
 
 pub use global::OwnedGlobalPtr;
 
-pub trait Allocator {
+pub trait Allocator: Clone {
     fn alloc(&self, layout: Layout) -> Result<GlobalPtr<u8>, AllocError>;
     unsafe fn dealloc(&self, ptr: GlobalPtr<u8>, layout: Layout);
 
@@ -46,7 +46,6 @@ pub trait Allocator {
         }
         Ok(new_alloc)
     }
-
     fn realloc_tx(
         &self,
         ptr: GlobalPtr<u8>,

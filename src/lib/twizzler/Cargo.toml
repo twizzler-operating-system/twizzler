@@ -13,3 +13,4 @@ secgate = { path = "../../lib/secgate" }
 tracing = "*"
 foldhash = { version = "0.1.2", default-features = false }
 equivalent = "1.0.2"
+twizzler-derive = { path = "twizzler-derive" }

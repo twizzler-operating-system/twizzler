@@ -13,6 +13,7 @@ use monitor_api::{
     CompartmentFlags, RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo, MONITOR_INSTANCE_ID,
 };
 use secgate::util::HandleMgr;
+use space::Space;
 use thread::DEFAULT_STACK_SIZE;
 use twizzler_abi::{syscall::sys_thread_exit, upcall::UpcallFrame};
 use twizzler_rt_abi::{
@@ -82,7 +83,7 @@ impl Monitor {
     /// Build a new monitor state from the initial dynamic linker context.
     pub fn new(init: InitDynlinkContext) -> Self {
         let mut comp_mgr = compartment::CompartmentMgr::default();
-        let mut space = space::Space::default();
+        let space = Mutex::new(space::Space::default());
 
         let ctx = init.get_safe_context();
         // Build our TLS region, and create a template for the monitor compartment.
@@ -98,18 +99,18 @@ impl Monitor {
         // Set up the monitor's compartment.
         let monitor_scc =
             SharedCompConfig::new(MONITOR_INSTANCE_ID, template as *const _ as *mut _);
-        let cc_handle = space
-            .safe_create_and_map_runtime_object(
-                MONITOR_INSTANCE_ID,
-                MapFlags::READ | MapFlags::WRITE,
-            )
-            .unwrap();
-        let stack_handle = space
-            .safe_create_and_map_runtime_object(
-                MONITOR_INSTANCE_ID,
-                MapFlags::READ | MapFlags::WRITE,
-            )
-            .unwrap();
+        let cc_handle = Space::safe_create_and_map_runtime_object(
+            &space,
+            MONITOR_INSTANCE_ID,
+            MapFlags::READ | MapFlags::WRITE,
+        )
+        .unwrap();
+        let stack_handle = Space::safe_create_and_map_runtime_object(
+            &space,
+            MONITOR_INSTANCE_ID,
+            MapFlags::READ | MapFlags::WRITE,
+        )
+        .unwrap();
         comp_mgr.insert(RunComp::new(
             MONITOR_INSTANCE_ID,
             MONITOR_INSTANCE_ID,
@@ -126,7 +127,7 @@ impl Monitor {
 
         // Allocate and leak all the locks (they are global and eternal, so we can do this to safely
         // and correctly get &'static lifetime)
-        let space = Box::leak(Box::new(Mutex::new(space)));
+        let space = Box::leak(Box::new(space));
         let thread_mgr = Box::leak(Box::new(RwLock::new(thread::ThreadMgr::default())));
         let comp_mgr = Box::leak(Box::new(RwLock::new(comp_mgr)));
         let dynlink = Box::leak(Box::new(RwLock::new(ctx)));
@@ -196,7 +197,7 @@ impl Monitor {
     /// Map an object into a given compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn map_object(&self, sctx: ObjID, info: MapInfo) -> Result<MapHandle, TwzError> {
-        let handle = self.space.lock().unwrap().map(info)?;
+        let handle = Space::map(&self.space, info)?;
 
         let mut comp_mgr = self.comp_mgr.write(ThreadKey::get().unwrap());
         let rc = comp_mgr.get_mut(sctx)?;

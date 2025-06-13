@@ -3,26 +3,26 @@
 use core::{alloc::GlobalAlloc, ffi::c_char, mem::MaybeUninit, ptr};
 
 use twizzler_abi::{
-    syscall::{sys_get_random, GetRandomFlags},
+    syscall::{GetRandomFlags, sys_get_random},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
 use twizzler_rt_abi::{
-    core::{BasicAux, BasicReturn, RuntimeInfo, RUNTIME_INIT_MIN},
+    core::{BasicAux, BasicReturn, RUNTIME_INIT_MIN, RuntimeInfo},
     info::SystemInfo,
     time::Monotonicity,
 };
 
 use super::{
-    alloc::MinimalAllocator,
-    phdrs::{process_phdrs, Phdr},
-    tls::init_tls,
     MinimalRuntime,
+    alloc::MinimalAllocator,
+    phdrs::{Phdr, process_phdrs},
+    tls::init_tls,
 };
 
 // Just keep a single, simple global allocator.
 static GLOBAL_ALLOCATOR: MinimalAllocator = MinimalAllocator::new();
 
-extern "C" {
+unsafe extern "C" {
     // These are defined in the linker script.
     static __preinit_array_start: extern "C" fn();
     static __preinit_array_end: extern "C" fn();

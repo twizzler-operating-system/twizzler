@@ -6,7 +6,8 @@ use std::sync::{Arc, OnceLock};
 use async_executor::Executor;
 use async_io::block_on;
 use disk::{Disk, DiskPageRequest};
-use object_store::{ExternalFile, LetheIoWrapper, PagedObjectStore};
+use object_store::{Ext4Store, ExternalFile, PagedObjectStore};
+use tracing_subscriber::fmt::format::FmtSpan;
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
     object::{ObjID, Object, ObjectBuilder},
@@ -38,6 +39,7 @@ fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
+            .with_span_events(FmtSpan::ENTER)
             .without_time()
             .finish(),
     )
@@ -200,13 +202,19 @@ struct PagerContext {
 }
 
 impl PagerContext {
-    pub fn enumerate_external(&self, id: ObjID) -> Result<Vec<ExternalFile>, TwzError> {
-        Ok(self
-            .paged_ostore
-            .enumerate_external(id.raw())?
-            .iter()
-            .cloned()
-            .collect())
+    pub async fn enumerate_external(
+        &'static self,
+        id: ObjID,
+    ) -> Result<Vec<ExternalFile>, TwzError> {
+        blocking::unblock(move || {
+            Ok(self
+                .paged_ostore
+                .enumerate_external(id.raw())?
+                .iter()
+                .cloned()
+                .collect())
+        })
+        .await
     }
 }
 
@@ -216,24 +224,14 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data, ex) = pager_init(q1, q2);
     let disk = block_on(ex.run(Disk::new(ex))).unwrap();
     let diskc = disk.clone();
-    let disk = LetheIoWrapper::new(disk);
-    let ostore = object_store::LetheObjectStore::open(disk.clone(), [0; 32]);
-    let (name, ostore): (
-        &str,
-        Box<dyn PagedObjectStore<DiskPageRequest> + Send + Sync + 'static>,
-    ) = match ostore {
-        Ok(o) => ("lethe", Box::new(o)),
-        Err(_) => (
-            "ext2",
-            Box::new(object_store::Ext2ObjectStore::new(disk.into_inner(), 0).unwrap()),
-        ),
-    };
-    tracing::info!("opened object store as {}", name);
+
+    let ext4_store = Ext4Store::<DiskPageRequest>::new(disk, "/").unwrap();
+
     let sq = Arc::new(sq);
     let _ = PAGER_CTX.set(PagerContext {
         data,
         sender: sq,
-        paged_ostore: ostore,
+        paged_ostore: Box::new(ext4_store),
         disk: diskc,
     });
     let ctx = PAGER_CTX.get().unwrap();
@@ -260,17 +258,6 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
 #[secgate::secure_gate]
 pub fn pager_start(q1: ObjID, q2: ObjID) -> Result<ObjID, TwzError> {
     Ok(do_pager_start(q1, q2))
-}
-
-#[secgate::secure_gate]
-pub fn full_object_sync(id: ObjID) -> Result<(), TwzError> {
-    let task = EXECUTOR.get().unwrap().spawn(async move {
-        let pager = PAGER_CTX.get().unwrap();
-        tracing::debug!("starting full object sync for {:?}", id);
-        pager.data.sync(&pager, id).await;
-    });
-    block_on(EXECUTOR.get().unwrap().run(async { task.await }));
-    Ok(())
 }
 
 #[secgate::secure_gate]

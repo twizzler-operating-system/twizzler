@@ -74,6 +74,7 @@ impl ReqKind {
         shadow: Shadow,
         mut dirty_set: Vec<PageNumber>,
         sync_info: SyncInfo,
+        version: u64,
     ) -> Self {
         dirty_set.sort();
 
@@ -153,7 +154,7 @@ impl ReqKind {
                     is_last
                 );
                 RequestFromKernel::new(KernelCommand::ObjectEvict(ObjectEvictInfo::new(
-                    id, range, phys, flags,
+                    id, range, phys, version, flags,
                 )))
             });
 

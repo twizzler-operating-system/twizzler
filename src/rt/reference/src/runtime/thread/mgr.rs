@@ -185,7 +185,7 @@ impl ReferenceRuntime {
         let stack_size = args.stack_size;
         let arg_raw = Box::into_raw(args) as usize;
 
-        tracing::trace!(
+        tracing::debug!(
             "spawning thread {} with stack {:x}, entry {:x}, and TLS {:p}",
             id.id,
             stack_raw,

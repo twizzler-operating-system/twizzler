@@ -1,3 +1,4 @@
+use async_io::block_on;
 use object_store::ExternalFile;
 use secgate::{
     secure_gate,
@@ -10,7 +11,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
-use crate::PAGER_CTX;
+use crate::{EXECUTOR, PAGER_CTX};
 
 // Per-client metadata.
 pub(crate) struct PagerClient {
@@ -71,7 +72,7 @@ pub fn pager_enumerate_external(
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap();
 
-    let items = pager.enumerate_external(id)?;
+    let items = block_on(EXECUTOR.get().unwrap().run(pager.enumerate_external(id)))?;
 
     pager
         .data

@@ -6,7 +6,10 @@ use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, MAX_SIZE},
     syscall::{MapControlCmd, MapFlags, SyncFlags, ThreadSyncReference, ThreadSyncWake},
-    upcall::{MemoryAccessKind, ObjectMemoryError, ObjectMemoryFaultInfo, UpcallInfo},
+    upcall::{
+        MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
+        UpcallInfo,
+    },
 };
 use twizzler_rt_abi::error::{IoError, RawTwzError, TwzError};
 
@@ -51,6 +54,36 @@ impl From<&MapRegion> for ObjectContextInfo {
             flags: value.flags,
         }
     }
+}
+
+fn check_settings(
+    addr: VirtAddr,
+    settings: &MappingSettings,
+    kind: MemoryAccessKind,
+) -> Result<(), UpcallInfo> {
+    if !settings.flags().contains(MappingFlags::USER) {
+        return Ok(());
+    }
+    let upcall =
+        UpcallInfo::MemoryContextViolation(MemoryContextViolationInfo::new(addr.raw(), kind));
+    match kind {
+        MemoryAccessKind::Read => {
+            if !settings.perms().contains(Protections::READ) {
+                return Err(upcall);
+            }
+        }
+        MemoryAccessKind::Write => {
+            if !settings.perms().contains(Protections::WRITE) {
+                return Err(upcall);
+            }
+        }
+        MemoryAccessKind::InstructionFetch => {
+            if !settings.perms().contains(Protections::EXEC) {
+                return Err(upcall);
+            }
+        }
+    }
+    Ok(())
 }
 
 impl MapRegion {
@@ -107,6 +140,7 @@ impl MapRegion {
                     settings.cache(),
                     settings.flags(),
                 );
+                check_settings(addr, &settings, cause)?;
                 return mapper(ObjectPageProvider::new(Vec::from([(page, settings)])));
             }
         }
@@ -146,6 +180,7 @@ impl MapRegion {
                 settings.cache(),
                 settings.flags(),
             );
+            check_settings(addr, &settings, cause)?;
             if settings.perms().contains(Protections::WRITE) {
                 if self.object().use_pager() {
                     log::debug!(
@@ -174,14 +209,17 @@ impl MapRegion {
             MapControlCmd::Sync(sync_info_ptr) => {
                 // TODO: validation
                 let sync_info = unsafe { sync_info_ptr.read() };
+                let version = sync_info.release_compare;
 
-                if sync_info.flags.contains(SyncFlags::DURABLE) && false {
+                if sync_info.flags.contains(SyncFlags::DURABLE) {
                     let dirty_pages = self.object().dirty_set().drain_all();
                     log::debug!("sync region with dirty pages {:?}", dirty_pages);
-                    crate::pager::sync_region(self, dirty_pages, sync_info);
+                    if self.object().use_pager() {
+                        crate::pager::sync_region(self, dirty_pages, sync_info, version);
+                    }
                 }
 
-                if sync_info.flags.contains(SyncFlags::ASYNC_DURABLE) && false {
+                if sync_info.flags.contains(SyncFlags::ASYNC_DURABLE) {
                     unsafe { sync_info.try_release() }?;
                     let wake = ThreadSyncWake::new(
                         ThreadSyncReference::Virtual(sync_info.release),

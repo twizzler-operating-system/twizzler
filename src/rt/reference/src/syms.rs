@@ -1,5 +1,6 @@
 #![allow(unused_variables)]
 #![allow(non_snake_case)]
+#![allow(improper_ctypes_definitions)]
 
 // This macro checks that our definition of a function is the same as that
 // defined by the bindings generated from bindgen. Thus the whole ABI
@@ -737,17 +738,20 @@ check_ffi_type!(twz_rt_get_random, _, _, _);
 
 // additional definitions for C
 
+#[linkage = "weak"]
 #[no_mangle]
 pub unsafe extern "C-unwind" fn malloc(len: usize) -> *mut core::ffi::c_void {
     warn!("called c:malloc with len = {}: not yet implemented", len);
     core::ptr::null_mut()
 }
 
+#[linkage = "weak"]
 #[no_mangle]
 pub unsafe extern "C-unwind" fn free(ptr: *mut core::ffi::c_void) {
     warn!("called c:free with ptr = {:p}: not yet implemented", ptr);
 }
 
+#[linkage = "weak"]
 #[no_mangle]
 pub unsafe extern "C-unwind" fn getenv(name: *const core::ffi::c_char) -> *const core::ffi::c_char {
     let n = unsafe { CStr::from_ptr(name.cast()) };
@@ -768,6 +772,7 @@ pub unsafe extern "C-unwind" fn dl_iterate_phdr(
     twz_rt_iter_phdr(cb, data)
 }
 
+#[linkage = "weak"]
 #[no_mangle]
 pub unsafe extern "C-unwind" fn fwrite(
     ptr: *const core::ffi::c_void,
@@ -779,6 +784,7 @@ pub unsafe extern "C-unwind" fn fwrite(
     len * nitems
 }
 
+#[linkage = "weak"]
 #[no_mangle]
 pub unsafe extern "C-unwind" fn fprintf(
     file: *const core::ffi::c_void,
