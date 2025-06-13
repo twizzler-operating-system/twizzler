@@ -1,5 +1,6 @@
 #![allow(unused_variables)]
 #![allow(non_snake_case)]
+#![allow(improper_ctypes_definitions)]
 
 // This macro checks that our definition of a function is the same as that
 // defined by the bindings generated from bindgen. Thus the whole ABI

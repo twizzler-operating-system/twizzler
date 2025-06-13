@@ -114,7 +114,6 @@ pub async fn handle_kernel_request(
             KernelCompletionData::Okay
         }
         KernelCommand::ObjectEvict(info) => {
-            tracing::debug!("got evict type sync");
             return handle_sync_region(ctx, info).await;
         }
     };

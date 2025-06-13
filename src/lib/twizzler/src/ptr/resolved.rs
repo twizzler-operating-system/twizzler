@@ -6,7 +6,7 @@ use std::{
     ops::{Deref, DerefMut, Index, IndexMut, RangeBounds},
 };
 
-use twizzler_rt_abi::object::ObjectHandle;
+use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
 use super::GlobalPtr;
 use crate::{object::RawObject, tx::TxHandle};
@@ -83,7 +83,7 @@ impl<'obj, T> Ref<'obj, T> {
 
     #[inline]
     unsafe fn mutable_to(self, ptr: *mut T) -> RefMut<'obj, T> {
-        RefMut::new(ptr, self.lazy_handle)
+        RefMut::from_handle(self.handle().clone(), ptr)
     }
 
     #[inline]
@@ -137,6 +137,25 @@ pub struct RefMut<'obj, T> {
     _pd: PhantomData<&'obj mut T>,
 }
 
+fn maybe_remap<T>(handle: ObjectHandle, ptr: *mut T) -> (ObjectHandle, *mut T) {
+    if !handle.map_flags().contains(MapFlags::WRITE) {
+        let new_handle = twizzler_rt_abi::object::twz_rt_map_object(
+            handle.id(),
+            MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST,
+        )
+        .expect("failed to remap object handle for writing");
+        let offset = handle
+            .ptr_local(ptr.cast())
+            .expect("tried to remap a handle with a non-local pointer");
+        let ptr = new_handle
+            .lea_mut(offset, size_of::<T>())
+            .expect("failed to remap pointer");
+        (new_handle, ptr.cast())
+    } else {
+        (handle, ptr)
+    }
+}
+
 impl<'obj, T> RefMut<'obj, T> {
     fn new(ptr: *mut T, lazy_handle: LazyHandle<'obj>) -> Self {
         Self {
@@ -156,6 +175,7 @@ impl<'obj, T> RefMut<'obj, T> {
     }
 
     pub fn from_handle(handle: ObjectHandle, ptr: *mut T) -> Self {
+        let (handle, ptr) = maybe_remap(handle, ptr);
         Self::new(ptr, LazyHandle::new_owned(handle))
     }
 

@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use twizzler_abi::object::MAX_SIZE;
 use twizzler_rt_abi::object::ObjectHandle;
 
-use super::{GlobalPtr, Ref};
+use super::{GlobalPtr, Ref, RefMut};
 use crate::{
     marker::{Invariant, PhantomStoreEffect},
     object::{FotEntry, RawObject},
@@ -46,6 +46,18 @@ impl<T: Invariant> InvPtr<T> {
         } else {
             self.slow_resolve()
         }
+    }
+
+    #[inline]
+    pub unsafe fn resolve_mut(&self) -> RefMut<'_, T> {
+        let fote = self.fot_index();
+        let obj = Self::get_this(self);
+        let re = twizzler_rt_abi::object::twz_rt_resolve_fot(&obj, fote, MAX_SIZE).unwrap();
+        let ptr = re
+            .lea_mut(self.offset() as usize, size_of::<T>())
+            .unwrap()
+            .cast();
+        RefMut::from_handle(re, ptr)
     }
 
     #[inline(never)]

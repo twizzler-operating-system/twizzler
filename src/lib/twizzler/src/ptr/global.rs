@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::object::MapFlags;
 
-use super::Ref;
+use super::{Ref, RefMut};
 use crate::object::RawObject;
 
 #[derive(Debug, Default, PartialEq, PartialOrd, Ord, Eq, Hash)]
@@ -35,14 +35,50 @@ impl<T> GlobalPtr<T> {
     /// The underlying object must not mutate while the reference exists, unless
     /// the underlying type is Sync + Send. The memory referenced by the pointer
     /// must have an valid representation of the type.
-    pub unsafe fn resolve(&self) -> Ref<'_, T> {
-        let handle =
-            twizzler_rt_abi::object::twz_rt_map_object(self.id(), MapFlags::READ | MapFlags::WRITE)
-                .expect("failed to map global pointer object");
+    pub unsafe fn resolve_stable(&self) -> Ref<'_, T> {
+        let handle = twizzler_rt_abi::object::twz_rt_map_object(
+            self.id(),
+            MapFlags::READ | MapFlags::INDIRECT,
+        )
+        .expect("failed to map global pointer object");
         let ptr = handle
             .lea(self.offset() as usize, size_of::<T>())
             .expect("failed to resolve global pointer");
         Ref::from_handle(handle, ptr.cast())
+    }
+
+    /// Resolve a global pointer into a reference.
+    ///
+    /// # Safety
+    /// The underlying object must not mutate while the reference exists, unless
+    /// the underlying type is Sync + Send. The memory referenced by the pointer
+    /// must have an valid representation of the type.
+    pub unsafe fn resolve(&self) -> Ref<'_, T> {
+        let handle = twizzler_rt_abi::object::twz_rt_map_object(self.id(), MapFlags::READ)
+            .expect("failed to map global pointer object");
+        let ptr = handle
+            .lea(self.offset() as usize, size_of::<T>())
+            .expect("failed to resolve global pointer");
+        Ref::from_handle(handle, ptr.cast())
+    }
+
+    /// Resolve a global pointer into a reference.
+    ///
+    /// # Safety
+    /// The underlying object must not mutate while the reference exists, unless
+    /// the underlying type is Sync + Send. The memory referenced by the pointer
+    /// must have an valid representation of the type. No other references may be
+    /// alive referring to the underlying data.
+    pub unsafe fn resolve_mut(&self) -> RefMut<'_, T> {
+        let handle = twizzler_rt_abi::object::twz_rt_map_object(
+            self.id(),
+            MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST,
+        )
+        .expect("failed to map global pointer object");
+        let ptr = handle
+            .lea_mut(self.offset() as usize, size_of::<T>())
+            .expect("failed to resolve global pointer");
+        RefMut::from_handle(handle, ptr.cast())
     }
 
     /// Returns true if the global pointer is null.

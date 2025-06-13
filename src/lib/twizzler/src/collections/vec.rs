@@ -362,7 +362,7 @@ mod tests {
 
     impl Node {
         pub fn new_inplace(
-            mut place: TxRef<MaybeUninit<Self>>,
+            place: TxRef<MaybeUninit<Self>>,
             ptr: impl Into<GlobalPtr<Simple>>,
         ) -> crate::tx::Result<TxRef<Self>> {
             let ptr = InvPtr::new(&place, ptr)?;
@@ -480,7 +480,7 @@ mod tests {
     fn vec_object() {
         let simple_obj = ObjectBuilder::default().build(Simple { x: 3 }).unwrap();
         let vo = VecObject::new(ObjectBuilder::default()).unwrap();
-        vo.push_ctor(|mut place| {
+        vo.push_ctor(|place| {
             let node = Node {
                 ptr: InvPtr::new(&place, simple_obj.base_ref())?,
             };

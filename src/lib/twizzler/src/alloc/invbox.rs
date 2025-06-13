@@ -68,7 +68,6 @@ mod tests {
     use super::InvBox;
     use crate::{
         alloc::arena::{ArenaAllocator, ArenaObject},
-        marker::BaseType,
         object::{ObjectBuilder, TypedObject},
     };
 

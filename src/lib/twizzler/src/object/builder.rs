@@ -142,7 +142,7 @@ mod tests {
 
         let builder = ObjectBuilder::<Foo>::default();
         let obj = builder
-            .build_inplace(|mut tx| {
+            .build_inplace(|tx| {
                 let foo = Foo {
                     ptr: InvPtr::new(&tx, base)?,
                 };

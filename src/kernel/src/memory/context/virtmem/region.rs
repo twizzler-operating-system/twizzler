@@ -6,7 +6,10 @@ use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, MAX_SIZE},
     syscall::{MapControlCmd, MapFlags, SyncFlags, ThreadSyncReference, ThreadSyncWake},
-    upcall::{MemoryAccessKind, ObjectMemoryError, ObjectMemoryFaultInfo, UpcallInfo},
+    upcall::{
+        MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
+        UpcallInfo,
+    },
 };
 use twizzler_rt_abi::error::{IoError, RawTwzError, TwzError};
 
@@ -51,6 +54,36 @@ impl From<&MapRegion> for ObjectContextInfo {
             flags: value.flags,
         }
     }
+}
+
+fn check_settings(
+    addr: VirtAddr,
+    settings: &MappingSettings,
+    kind: MemoryAccessKind,
+) -> Result<(), UpcallInfo> {
+    if !settings.flags().contains(MappingFlags::USER) {
+        return Ok(());
+    }
+    let upcall =
+        UpcallInfo::MemoryContextViolation(MemoryContextViolationInfo::new(addr.raw(), kind));
+    match kind {
+        MemoryAccessKind::Read => {
+            if !settings.perms().contains(Protections::READ) {
+                return Err(upcall);
+            }
+        }
+        MemoryAccessKind::Write => {
+            if !settings.perms().contains(Protections::WRITE) {
+                return Err(upcall);
+            }
+        }
+        MemoryAccessKind::InstructionFetch => {
+            if !settings.perms().contains(Protections::EXEC) {
+                return Err(upcall);
+            }
+        }
+    }
+    Ok(())
 }
 
 impl MapRegion {
@@ -107,6 +140,7 @@ impl MapRegion {
                     settings.cache(),
                     settings.flags(),
                 );
+                check_settings(addr, &settings, cause)?;
                 return mapper(ObjectPageProvider::new(Vec::from([(page, settings)])));
             }
         }
@@ -146,6 +180,7 @@ impl MapRegion {
                 settings.cache(),
                 settings.flags(),
             );
+            check_settings(addr, &settings, cause)?;
             if settings.perms().contains(Protections::WRITE) {
                 if self.object().use_pager() {
                     log::debug!(

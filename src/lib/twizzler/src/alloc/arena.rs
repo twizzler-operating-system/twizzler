@@ -45,9 +45,13 @@ impl ArenaObject {
         f: impl FnOnce(RefMut<MaybeUninit<T>>) -> crate::tx::Result<RefMut<T>>,
     ) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
         let layout = Layout::new::<T>();
+        twizzler_abi::klog_println!("A");
         let alloc = self.allocator().alloc(layout)?.cast::<MaybeUninit<T>>();
+        twizzler_abi::klog_println!("B");
         let ptr = unsafe { alloc.resolve().mutable() };
+        twizzler_abi::klog_println!("C");
         let ptr = f(ptr)?;
+        twizzler_abi::klog_println!("D");
         Ok(unsafe { OwnedGlobalPtr::from_global(ptr.global().cast(), self.allocator()) })
     }
 }
@@ -91,7 +95,7 @@ impl ArenaBase {
 impl Allocator for ArenaAllocator {
     fn alloc(&self, layout: std::alloc::Layout) -> Result<GlobalPtr<u8>, std::alloc::AllocError> {
         // TODO: use try_resolve
-        let allocator = unsafe { self.ptr.resolve() };
+        let allocator = unsafe { self.ptr.resolve_mut() };
         let reserve = allocator
             .reserve(layout, &unsafe { UnsafeTxHandle::new() })
             .map_err(|_| AllocError)?;
