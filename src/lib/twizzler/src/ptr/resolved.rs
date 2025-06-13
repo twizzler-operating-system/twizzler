@@ -2,10 +2,11 @@ use std::{
     borrow::Cow,
     cell::OnceCell,
     marker::PhantomData,
+    mem::MaybeUninit,
     ops::{Deref, DerefMut, Index, IndexMut, RangeBounds},
 };
 
-use twizzler_rt_abi::object::ObjectHandle;
+use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
 use super::GlobalPtr;
 use crate::{object::RawObject, tx::TxHandle};
@@ -82,7 +83,7 @@ impl<'obj, T> Ref<'obj, T> {
 
     #[inline]
     unsafe fn mutable_to(self, ptr: *mut T) -> RefMut<'obj, T> {
-        RefMut::new(ptr, self.lazy_handle)
+        RefMut::from_handle(self.handle().clone(), ptr)
     }
 
     #[inline]
@@ -136,6 +137,25 @@ pub struct RefMut<'obj, T> {
     _pd: PhantomData<&'obj mut T>,
 }
 
+fn maybe_remap<T>(handle: ObjectHandle, ptr: *mut T) -> (ObjectHandle, *mut T) {
+    if !handle.map_flags().contains(MapFlags::WRITE) {
+        let new_handle = twizzler_rt_abi::object::twz_rt_map_object(
+            handle.id(),
+            MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST,
+        )
+        .expect("failed to remap object handle for writing");
+        let offset = handle
+            .ptr_local(ptr.cast())
+            .expect("tried to remap a handle with a non-local pointer");
+        let ptr = new_handle
+            .lea_mut(offset, size_of::<T>())
+            .expect("failed to remap pointer");
+        (new_handle, ptr.cast())
+    } else {
+        (handle, ptr)
+    }
+}
+
 impl<'obj, T> RefMut<'obj, T> {
     fn new(ptr: *mut T, lazy_handle: LazyHandle<'obj>) -> Self {
         Self {
@@ -155,6 +175,7 @@ impl<'obj, T> RefMut<'obj, T> {
     }
 
     pub fn from_handle(handle: ObjectHandle, ptr: *mut T) -> Self {
+        let (handle, ptr) = maybe_remap(handle, ptr);
         Self::new(ptr, LazyHandle::new_owned(handle))
     }
 
@@ -183,6 +204,16 @@ impl<'obj, T> RefMut<'obj, T> {
     // Note: takes ownership to avoid aliasing
     pub fn owned<'b>(self) -> RefMut<'b, T> {
         RefMut::from_handle(self.handle().clone(), self.ptr)
+    }
+}
+
+impl<'a, T> RefMut<'a, MaybeUninit<T>> {
+    pub fn write(self, val: T) -> RefMut<'a, T> {
+        unsafe {
+            let ptr = self.ptr.as_mut().unwrap_unchecked();
+            ptr.write(val);
+            self.cast()
+        }
     }
 }
 
@@ -277,6 +308,10 @@ impl<'a, T> RefSlice<'a, T> {
         self.len
     }
 
+    pub fn handle(&self) -> &ObjectHandle {
+        self.ptr.handle()
+    }
+
     pub fn tx(
         self,
         range: impl RangeBounds<usize>,
@@ -354,6 +389,10 @@ impl<'a, T> RefSliceMut<'a, T> {
     pub fn len(&self) -> usize {
         self.len
     }
+
+    pub fn handle(&self) -> &ObjectHandle {
+        self.ptr.handle()
+    }
 }
 
 impl<'a, T> Index<usize> for RefSliceMut<'a, T> {
@@ -369,5 +408,53 @@ impl<'a, T> IndexMut<usize> for RefSliceMut<'a, T> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         let slice = self.as_slice_mut();
         &mut slice[index]
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for RefMut<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for &RefMut<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for Ref<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for &Ref<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for RefSlice<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for &RefSlice<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for RefSliceMut<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+}
+
+impl<'a, T> Into<ObjectHandle> for &RefSliceMut<'a, T> {
+    fn into(self) -> ObjectHandle {
+        self.handle().clone()
     }
 }

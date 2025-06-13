@@ -8,3 +8,5 @@ twizzler = { path = "../../lib/twizzler" }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
 twizzler-runtime = { path = "../../rt" }
 naming = { path = "../../lib/naming" }
+clap = { version = "*", features = ["derive"] }
+miette = "*"

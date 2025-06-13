@@ -78,4 +78,5 @@ pub extern "C" fn __register_frame_info() {}
 #[no_mangle]
 pub extern "C" fn __deregister_frame_info() {}
 #[no_mangle]
+#[linkage = "weak"]
 pub extern "C" fn __cxa_finalize() {}

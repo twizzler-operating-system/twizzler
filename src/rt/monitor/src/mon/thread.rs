@@ -22,7 +22,7 @@ use super::{
     get_monitor,
     space::{MapHandle, MapInfo},
 };
-use crate::gates::ThreadMgrStats;
+use crate::{gates::ThreadMgrStats, mon::space::Space};
 
 mod cleaner;
 pub(crate) use cleaner::ThreadCleaner;
@@ -164,15 +164,14 @@ impl ThreadMgr {
                 arg,
             )?
         };
-        let repr = get_monitor()
-            .space
-            .lock()
-            .unwrap()
-            .map(MapInfo {
+        let repr = Space::map(
+            &get_monitor().space,
+            MapInfo {
                 id,
                 flags: MapFlags::READ,
-            })
-            .unwrap();
+            },
+        )
+        .unwrap();
         Ok(Arc::new(ManagedThreadInner {
             id,
             super_tid,

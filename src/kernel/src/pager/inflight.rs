@@ -2,6 +2,7 @@ use alloc::{
     collections::{btree_map::BTreeMap, btree_set::BTreeSet},
     vec::Vec,
 };
+use core::u64;
 
 use stable_vec::StableVec;
 use twizzler_abi::{
@@ -41,6 +42,7 @@ impl Inflight {
                 obj_id: *obj_id,
                 range: ObjectRange::new(0, 0),
                 phys: PhysRange::new(0, 0),
+                version: 0,
                 flags: ObjectEvictFlags::SYNC | ObjectEvictFlags::FENCE,
             }),
             ReqKind::Del(obj_id) => KernelCommand::ObjectDel(*obj_id),

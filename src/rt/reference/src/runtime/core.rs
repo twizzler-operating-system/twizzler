@@ -120,11 +120,23 @@ impl ReferenceRuntime {
             }
         }
 
+        let mut null_env: [*mut c_char; 4] = [
+            b"RUST_BACKTRACE=1\0".as_ptr() as *mut c_char,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ];
+        let env_ptr = if rtinfo.envp.is_null() {
+            (&mut null_env).as_mut_ptr()
+        } else {
+            rtinfo.envp
+        };
+
         // Step 3: call into libstd to finish setting up the standard library and call main
         let ba = BasicAux {
             argc: rtinfo.argc,
             args: rtinfo.args,
-            env: rtinfo.envp,
+            env: env_ptr,
         };
         let ret = unsafe { std_entry(ba) };
         self.exit(ret.code);

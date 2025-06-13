@@ -512,12 +512,7 @@ impl NvmeController {
             let (inflight, dma) = self
                 .send_identify_namespace(NamespaceId::new(1u32))
                 .unwrap();
-            let cc = loop {
-                inflight.req.get_completion();
-                if let Ok(cc) = inflight.poll() {
-                    break cc;
-                }
-            };
+            let cc = inflight.wait().unwrap();
             if cc.status().is_error() {
                 panic!("error on ident ns")
             }
@@ -574,6 +569,7 @@ impl NvmeController {
         }
     }
 
+    /*
     pub async fn read_page(
         &self,
         lba_start: u64,
@@ -603,6 +599,7 @@ impl NvmeController {
             Ok(())
         })
     }
+    */
 
     pub fn blocking_read_page(
         &self,
@@ -624,6 +621,7 @@ impl NvmeController {
             .send_read_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
 
+        /*
         let cc = loop {
             inflight.req.get_completion();
             if let Ok(cc) = inflight.poll() {
@@ -632,6 +630,8 @@ impl NvmeController {
                 }
             }
         };
+        */
+        let cc = inflight.wait()?;
 
         if cc.status().is_error() {
             return Err(ErrorKind::Other.into());
@@ -663,6 +663,7 @@ impl NvmeController {
             .send_write_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
 
+        /*
         let cc = loop {
             inflight.req.get_completion();
             if let Ok(cc) = inflight.poll() {
@@ -671,6 +672,8 @@ impl NvmeController {
                 }
             }
         };
+        */
+        let cc = inflight.wait()?;
 
         if cc.status().is_error() {
             return Err(ErrorKind::Other.into());
@@ -699,6 +702,7 @@ impl NvmeController {
         let inflight = self
             .send_write_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
+        /*
         let cc = loop {
             inflight.req.get_completion();
             if let Ok(cc) = inflight.poll() {
@@ -707,6 +711,8 @@ impl NvmeController {
                 }
             }
         };
+        */
+        let cc = inflight.wait()?;
 
         if cc.status().is_error() {
             tracing::warn!("got nvme error: {:?}", cc);
@@ -736,6 +742,7 @@ impl NvmeController {
         let inflight = self
             .send_read_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
+        /*
         let cc = loop {
             inflight.req.get_completion();
             if let Ok(cc) = inflight.poll() {
@@ -744,6 +751,8 @@ impl NvmeController {
                 }
             }
         };
+        */
+        let cc = inflight.wait()?;
 
         if cc.status().is_error() {
             tracing::warn!("got nvme error: {:?}", cc);
@@ -776,6 +785,7 @@ impl NvmeController {
             .send_write_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
 
+        /*
         let cc = loop {
             inflight.req.get_completion();
             if let Ok(cc) = inflight.poll() {
@@ -784,6 +794,8 @@ impl NvmeController {
                 }
             }
         };
+        */
+        let cc = inflight.wait()?;
 
         if cc.status().is_error() {
             return Err(ErrorKind::Other.into());

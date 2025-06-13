@@ -1,6 +1,4 @@
-use std::{any::type_name, hash::BuildHasher};
-
-use proc_macro2::{Ident, Span};
+use proc_macro2::Ident;
 use quote::quote;
 use syn::{parse_macro_input, spanned::Spanned, DeriveInput, Error};
 
@@ -28,7 +26,7 @@ pub fn new_storer(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     }
 }
 
-fn handle_invariant(item: DeriveInput, copy: bool) -> Result<proc_macro2::TokenStream, Error> {
+fn handle_invariant(item: DeriveInput, _copy: bool) -> Result<proc_macro2::TokenStream, Error> {
     let type_name = item.ident.clone();
     /*
     //let mut in_place_vec = vec![];
@@ -77,7 +75,7 @@ fn handle_invariant(item: DeriveInput, copy: bool) -> Result<proc_macro2::TokenS
     */
     let (impl_gens, type_gens, where_clause) = item.generics.split_for_impl();
     Ok(quote::quote! {
-       unsafe impl #impl_gens twizzler::marker::Invariant for #type_name #type_gens #where_clause {}
+       unsafe impl #impl_gens ::twizzler::marker::Invariant for #type_name #type_gens #where_clause {}
     })
 }
 
@@ -86,7 +84,7 @@ fn handle_base_type(item: DeriveInput) -> Result<proc_macro2::TokenStream, Error
 
     let (impl_gens, type_gens, where_clause) = item.generics.split_for_impl();
     Ok(quote::quote! {
-       impl #impl_gens twizzler::marker::BaseType for #type_name #type_gens #where_clause {}
+       impl #impl_gens ::twizzler::marker::BaseType for #type_name #type_gens #where_clause {}
     })
 }
 

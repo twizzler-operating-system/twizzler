@@ -1,9 +1,8 @@
 [package]
-name = "hw-c"
+name = "lwext4-rs"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 
 [build-dependencies]
-cc = "*"

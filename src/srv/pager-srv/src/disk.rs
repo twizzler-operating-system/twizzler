@@ -106,7 +106,7 @@ impl PagingImp for DiskPageRequest {
             .zip(self.phys_addrs())
             .filter_map(|(x, y)| if let Some(x) = x { Some((x, y)) } else { None })
             .collect::<Vec<_>>();
-        tracing::debug!("page-out: pairs: {:?}", pairs);
+        tracing::trace!("page-out: pairs: {:?}", pairs);
         pairs.sort_by_key(|p| p.0);
         let (dp, pp): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
         let mut offset = 0;
@@ -198,8 +198,7 @@ impl Read for Disk {
                 read_buffer.copy_from_slice(&cached[0..4096]);
             } else {
                 self.ctrl
-                    .blocking_read_page(lba as u64, &mut read_buffer, 0)
-                    .map_err(|_| ErrorKind::Other)?;
+                    .blocking_read_page(lba as u64, &mut read_buffer, 0)?;
                 self.cache.insert(lba as u64, Box::new(read_buffer));
             }
 
@@ -247,8 +246,7 @@ impl Write for Disk {
 
             self.cache.insert(lba as u64, Box::new(write_buffer));
             self.ctrl
-                .blocking_write_page(lba as u64, &mut write_buffer, 0)
-                .map_err(|_| ErrorKind::Other)?;
+                .blocking_write_page(lba as u64, &mut write_buffer, 0)?;
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 

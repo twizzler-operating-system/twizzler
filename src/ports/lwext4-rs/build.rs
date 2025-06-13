@@ -1,10 +1,9 @@
 use std::io::stderr;
 
 fn main() {
-    cc::Build::new().file("src/hw.c").compile("hw");
-
     let outdir = std::env::var("OUT_DIR").unwrap();
     let target = std::env::var("TARGET").unwrap();
+    let cflags = std::env::var("CFLAGS").unwrap_or("".to_owned());
     let arch = target.split("-").next().unwrap();
     let cmake_build = format!("{}/cmake-build", outdir);
 
@@ -32,5 +31,20 @@ fn main() {
     let status = proc.status().unwrap();
     assert!(status.success());
 
+    let mut proc = std::process::Command::new("bindgen");
+    proc.stdout(stderr())
+        .arg("src/lwext4.h")
+        .arg("-o")
+        .arg("src/lwext4.rs")
+        .arg("--")
+        .arg(format!("-I{}/cmake-build/include", outdir))
+        .arg("-Ilwext4/include")
+        .args(cflags.split_whitespace());
+
+    let status = proc.status().unwrap();
+    assert!(status.success());
+
     println!("cargo::rustc-link-lib=c");
+    println!("cargo::rustc-link-search={}/cmake-build/src/", outdir);
+    println!("cargo::rustc-link-lib=lwext4");
 }

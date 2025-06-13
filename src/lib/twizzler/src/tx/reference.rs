@@ -1,5 +1,7 @@
 use std::{mem::MaybeUninit, ops::Deref};
 
+use twizzler_rt_abi::object::ObjectHandle;
+
 use super::TxObject;
 use crate::{object::RawObject, ptr::RefMut};
 
@@ -60,5 +62,17 @@ impl<T> Drop for TxRef<T> {
     #[track_caller]
     fn drop(&mut self) {
         let _ = self.tx.take().map(|tx| tx.commit());
+    }
+}
+
+impl<T> Into<ObjectHandle> for TxRef<T> {
+    fn into(self) -> ObjectHandle {
+        self.tx().handle().clone()
+    }
+}
+
+impl<T> Into<ObjectHandle> for &TxRef<T> {
+    fn into(self) -> ObjectHandle {
+        self.tx().handle().clone()
     }
 }

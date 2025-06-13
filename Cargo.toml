@@ -39,7 +39,7 @@ members = [
     "src/bin/unittest/unittest-report",
     "src/lib/pager/pager-dynamic",
     "src/bin/uuhelper",
-    "src/ports/hw-c",
+    "src/ports/lwext4-rs",
 
 
     #"src/bin/etl_twizzler",
@@ -73,7 +73,6 @@ initrd = [
     "crate:uuhelper",
 
     "crate:sec-test",
-    "crate:hw-c",
     "crate:ptest",
 
     #"third-party:hello-world-rs"

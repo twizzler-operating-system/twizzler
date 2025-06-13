@@ -23,7 +23,7 @@ use twizzler_rt_abi::{
 use super::{compconfig::CompConfigObject, compthread::CompThread, StackObject};
 use crate::mon::{
     get_monitor,
-    space::{MapHandle, MapInfo},
+    space::{MapHandle, MapInfo, Space},
     thread::ThreadMgr,
 };
 
@@ -96,12 +96,12 @@ impl PerThread {
     /// will just forego having one. This may cause a failure down the line, but it's the best we
     /// can do without panicing.
     fn new(instance: ObjID, _th: ObjID) -> Self {
-        let handle = get_monitor()
-            .space
-            .lock()
-            .unwrap()
-            .safe_create_and_map_runtime_object(instance, MapFlags::READ | MapFlags::WRITE)
-            .ok();
+        let handle = Space::safe_create_and_map_runtime_object(
+            &get_monitor().space,
+            instance,
+            MapFlags::READ | MapFlags::WRITE,
+        )
+        .ok();
 
         Self {
             simple_buffer: handle

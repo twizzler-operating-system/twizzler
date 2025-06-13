@@ -222,6 +222,7 @@ pub struct ObjectEvictInfo {
     pub obj_id: ObjID,
     pub range: ObjectRange,
     pub phys: PhysRange,
+    pub version: u64,
     pub flags: ObjectEvictFlags,
 }
 
@@ -230,12 +231,14 @@ impl ObjectEvictInfo {
         obj_id: ObjID,
         range: ObjectRange,
         phys: PhysRange,
+        version: u64,
         flags: ObjectEvictFlags,
     ) -> Self {
         Self {
             obj_id,
             range,
             phys,
+            version,
             flags,
         }
     }

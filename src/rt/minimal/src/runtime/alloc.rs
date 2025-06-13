@@ -5,11 +5,11 @@ use core::{alloc::GlobalAlloc, ptr::NonNull};
 
 use talc::{OomHandler, Span};
 use twizzler_abi::{
-    object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
+    object::{MAX_SIZE, NULLPAGE_SIZE, Protections},
     simple_mutex::Mutex,
     syscall::{
-        sys_object_create, sys_object_map, BackingType, LifetimeType, ObjectCreate,
-        ObjectCreateFlags,
+        BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, sys_object_create,
+        sys_object_map,
     },
 };
 
@@ -86,16 +86,20 @@ impl MinimalAllocator {
 
 unsafe impl GlobalAlloc for MinimalAllocator {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        self.imp
-            .lock()
-            .malloc(layout)
-            .expect("memory allocation failed")
-            .as_ptr()
+        unsafe {
+            self.imp
+                .lock()
+                .malloc(layout)
+                .expect("memory allocation failed")
+                .as_ptr()
+        }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
-        if let Some(ptr) = NonNull::new(ptr) {
-            self.imp.lock().free(ptr, layout)
+        unsafe {
+            if let Some(ptr) = NonNull::new(ptr) {
+                self.imp.lock().free(ptr, layout)
+            }
         }
     }
 }

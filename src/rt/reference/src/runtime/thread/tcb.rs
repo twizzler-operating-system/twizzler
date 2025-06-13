@@ -9,7 +9,6 @@ use std::{alloc::GlobalAlloc, collections::BTreeMap, panic::catch_unwind, sync::
 
 use dynlink::tls::Tcb;
 use monitor_api::{RuntimeThreadControl, TlsTemplateInfo, THREAD_STARTED};
-use tracing::trace;
 use twizzler_abi::simple_mutex::Mutex;
 
 use crate::runtime::OUR_RUNTIME;
@@ -33,7 +32,6 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
         with_current_thread(|cur| {
             // Needs an acq barrier here for the ID, but also a release for the flags.
             cur.flags.fetch_or(THREAD_STARTED, Ordering::SeqCst);
-            trace!("thread {} started", cur.id());
         });
         // Find the arguments. arg is a pointer to a Box::into_raw of a Box of ThreadSpawnArgs.
         let arg = unsafe {

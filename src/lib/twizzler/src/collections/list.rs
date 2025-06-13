@@ -1,7 +1,8 @@
+use twizzler_rt_abi::object::ObjectHandle;
+
 use crate::{
     alloc::{invbox::InvBox, Allocator, OwnedGlobalPtr},
     marker::{BaseType, Invariant},
-    tx::TxObject,
 };
 
 #[allow(dead_code)]
@@ -16,14 +17,14 @@ unsafe impl<T: Invariant, A: Allocator> Invariant for ListNode<T, A> {}
 
 impl<T: Invariant, A: Allocator + Clone> ListNode<T, A> {
     pub fn new(
-        tx: impl AsRef<TxObject>,
+        tx: impl Into<ObjectHandle>,
         value: T,
         next: Option<OwnedGlobalPtr<Self, A>>,
         alloc: A,
     ) -> crate::tx::Result<Self> {
         Ok(Self {
             value,
-            next: next.map(|n| InvBox::new(tx.as_ref(), n)),
+            next: next.map(|n| InvBox::from_in(tx, n).unwrap()),
             alloc,
         })
     }
@@ -32,11 +33,14 @@ impl<T: Invariant, A: Allocator + Clone> ListNode<T, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::alloc::arena::{ArenaAllocator, ArenaObject};
+    use crate::{
+        alloc::arena::{ArenaAllocator, ArenaObject},
+        object::ObjectBuilder,
+    };
 
     #[test]
     fn simple() {
-        let arena = ArenaObject::new().unwrap();
+        let arena = ArenaObject::new(ObjectBuilder::default()).unwrap();
         let alloc = arena.allocator();
         let tx = arena.tx().unwrap();
         let node0 = tx
@@ -64,17 +68,19 @@ mod tests {
 
         impl Node {
             fn new(
-                _tx: impl AsRef<TxObject>,
-                _value: u32,
-                _alloc: ArenaAllocator,
+                tx: impl Into<ObjectHandle>,
+                val: u32,
+                alloc: ArenaAllocator,
             ) -> crate::tx::Result<Self> {
-                todo!()
+                Ok(Self {
+                    data: InvBox::new_in(tx, val, alloc).unwrap(),
+                })
             }
         }
         // This would come from derive(Invariant)
         unsafe impl Invariant for Node {}
 
-        let arena = ArenaObject::new().unwrap();
+        let arena = ArenaObject::new(ObjectBuilder::default()).unwrap();
         let alloc = arena.allocator();
         let _data0 = arena.alloc(3);
         let tx = arena.tx().unwrap();

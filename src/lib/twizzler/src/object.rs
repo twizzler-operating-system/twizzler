@@ -3,10 +3,7 @@
 use std::marker::PhantomData;
 
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_rt_abi::{
-    error::TwzError,
-    object::{MapFlags, ObjectHandle},
-};
+use twizzler_rt_abi::{error::TwzError, object::ObjectHandle};
 
 use crate::{marker::BaseType, ptr::Ref, tx::TxObject};
 
@@ -17,7 +14,7 @@ mod meta;
 pub use builder::*;
 pub use fot::*;
 pub use meta::*;
-pub use twizzler_rt_abi::object::ObjID;
+pub use twizzler_rt_abi::object::{MapFlags, ObjID};
 
 /// Operations common to structured objects.
 pub trait TypedObject {
@@ -147,6 +144,7 @@ impl<Base> Object<Base> {
     }
 
     pub fn map(id: ObjID, flags: MapFlags) -> Result<Self, TwzError> {
+        // TODO: check base fingerprint
         let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
         tracing::debug!("map: {} {:?} => {:?}", id, flags, handle.start());
         Self::from_handle(handle)

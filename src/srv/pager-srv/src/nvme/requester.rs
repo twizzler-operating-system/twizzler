@@ -16,7 +16,8 @@ use nvme::{
 };
 use slab::Slab;
 use twizzler_abi::syscall::{
-    ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+    sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep,
+    ThreadSyncWake,
 };
 use twizzler_driver::device::MmioObject;
 use twizzler_futures::TwizzlerWaitable;
@@ -48,6 +49,24 @@ pub struct InflightRequest<'a> {
 impl<'a> InflightRequest<'a> {
     pub fn poll(&self) -> std::io::Result<CommonCompletion> {
         self.req.poll(self)
+    }
+
+    pub fn wait(&self) -> std::io::Result<CommonCompletion> {
+        loop {
+            let wait = self.wait_item_read();
+            for _ in 0..100 {
+                let req = self.req.poll(self);
+                if req.is_ok() {
+                    return req;
+                }
+                let kind = req.as_ref().unwrap_err().kind();
+                if kind != ErrorKind::WouldBlock {
+                    return req;
+                }
+            }
+
+            sys_thread_sync(&mut [ThreadSync::new_sleep(wait)], None)?;
+        }
     }
 }
 
