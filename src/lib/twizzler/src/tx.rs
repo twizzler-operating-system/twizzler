@@ -14,6 +14,7 @@ pub use unsafetx::*;
 use crate::{
     alloc::{invbox::InvBox, Allocator},
     marker::Invariant,
+    object::Object,
 };
 
 /// A trait for implementing per-object transaction handles.
@@ -67,6 +68,13 @@ impl<T> TxCell<T> {
         let inner = self.0.get();
         let ptr = tx.tx_mut(inner.cast(), size_of::<T>())?;
         unsafe { Ok(ptr.cast::<T>().as_mut().unwrap_unchecked()) }
+    }
+
+    pub fn get(&self) -> Result<TxRef<T>> {
+        let inner = self.0.get();
+        let handle = twizzler_rt_abi::object::twz_rt_get_object_handle(inner.cast())?;
+        let tx = TxObject::new(unsafe { Object::<()>::from_handle_unchecked(handle) })?;
+        Ok(unsafe { TxRef::from_raw_parts(tx, inner) })
     }
 }
 

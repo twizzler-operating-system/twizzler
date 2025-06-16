@@ -1,4 +1,7 @@
-use std::{mem::MaybeUninit, ops::Deref};
+use std::{
+    mem::MaybeUninit,
+    ops::{Deref, DerefMut},
+};
 
 use twizzler_rt_abi::object::ObjectHandle;
 
@@ -55,6 +58,12 @@ impl<T> Deref for TxRef<T> {
 
     fn deref(&self) -> &Self::Target {
         unsafe { self.ptr.as_ref().unwrap_unchecked() }
+    }
+}
+
+impl<T> DerefMut for TxRef<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { self.ptr.as_mut().unwrap_unchecked() }
     }
 }
 

@@ -458,3 +458,27 @@ impl<'a, T> Into<ObjectHandle> for &RefSliceMut<'a, T> {
         self.handle().clone()
     }
 }
+
+impl<'a, T> AsRef<ObjectHandle> for Ref<'a, T> {
+    fn as_ref(&self) -> &ObjectHandle {
+        self.handle()
+    }
+}
+
+impl<'a, T> AsRef<ObjectHandle> for RefMut<'a, T> {
+    fn as_ref(&self) -> &ObjectHandle {
+        self.handle()
+    }
+}
+
+impl<'a, T> AsRef<ObjectHandle> for RefSlice<'a, T> {
+    fn as_ref(&self) -> &ObjectHandle {
+        self.handle()
+    }
+}
+
+impl<'a, T> AsRef<ObjectHandle> for RefSliceMut<'a, T> {
+    fn as_ref(&self) -> &ObjectHandle {
+        self.handle()
+    }
+}

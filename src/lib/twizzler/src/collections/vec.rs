@@ -25,11 +25,10 @@ pub struct VecInner<T: Invariant> {
 
 impl<T: Invariant> VecInner<T> {
     fn do_realloc<Alloc: Allocator>(
-        &mut self,
+        self: &mut TxRef<Self>,
         newcap: usize,
         newlen: usize,
         alloc: &Alloc,
-        tx: &TxObject<()>,
     ) -> crate::tx::Result<RefMut<T>> {
         if newcap <= self.cap {
             // TODO: shrinking.
@@ -40,9 +39,9 @@ impl<T: Invariant> VecInner<T> {
         let old_layout = Layout::array::<T>(self.cap).map_err(|_| AllocError)?;
 
         let old_global = self.start.global().cast();
-        let new_alloc = alloc.realloc_tx(old_global, old_layout, new_layout.size(), tx)?;
-
-        self.start = InvPtr::new(tx, new_alloc.cast())?;
+        let new_alloc = alloc.realloc(old_global, old_layout, new_layout.size())?;
+        let new_start = InvPtr::new(&self, new_alloc.cast())?;
+        self.start = new_start;
         self.cap = newcap;
         self.len = newlen;
         tracing::trace!(
@@ -186,10 +185,7 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         }
     }
 
-    fn get_slice_grow(
-        &self,
-        tx: impl AsRef<TxObject>,
-    ) -> crate::tx::Result<RefMut<'_, MaybeUninit<T>>> {
+    fn get_slice_grow(&self) -> crate::tx::Result<RefMut<'_, MaybeUninit<T>>> {
         let oldlen = self.inner.len;
         tracing::trace!("len: {}, cap: {}", self.inner.len, self.inner.cap);
         if self.inner.len == self.inner.cap {
@@ -199,15 +195,15 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
                 return Err(ResourceError::OutOfMemory.into());
             }
             let newcap = std::cmp::max(self.inner.cap, 1) * 2;
-            let inner = self.inner.get_mut(tx.as_ref())?;
-            let r = inner.do_realloc(newcap, oldlen + 1, &self.alloc, tx.as_ref())?;
+            let mut inner = self.inner.get()?;
+            let r = inner.do_realloc(newcap, oldlen + 1, &self.alloc)?;
             tracing::trace!("grow {:p}", r.raw());
             Ok(Self::maybe_uninit_slice(r, newcap)
                 .get_mut(oldlen)
                 .unwrap()
                 .owned())
         } else {
-            self.inner.get_mut(tx.as_ref())?.len += 1;
+            self.inner.get()?.as_mut().len += 1;
             let resptr = unsafe { self.inner.start.resolve().mutable() };
             tracing::trace!("no grow {:p}", resptr.raw());
             Ok(Self::maybe_uninit_slice(resptr, self.inner.cap)
@@ -217,11 +213,11 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         }
     }
 
-    fn do_push(&self, item: T, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
-        let mut r = self.get_slice_grow(&tx)?;
+    fn do_push(&self, item: T) -> crate::tx::Result<()> {
+        let r = self.get_slice_grow()?;
         // write item, tracking in tx
         tracing::trace!("store value: {:p}", r.raw());
-        tx.as_ref().write_uninit(&mut *r, item)?;
+        r.write(item);
         Ok(())
     }
 
@@ -233,9 +229,9 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         self.inner.cap
     }
 
-    pub fn reserve(&self, additional: usize, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
-        inner.do_realloc(inner.cap + additional, inner.len, &self.alloc, tx.as_ref())?;
+    pub fn reserve(&self, additional: usize) -> crate::tx::Result<()> {
+        let mut inner = self.inner.get()?;
+        inner.do_realloc(inner.cap + additional, inner.len, &self.alloc)?;
         Ok(())
     }
 
@@ -294,17 +290,18 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
 }
 
 impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
-    pub fn push(&self, item: T, tx: impl AsRef<TxObject>) -> Result<()> {
-        self.do_push(item, tx)
+    pub fn push(&self, item: T) -> Result<()> {
+        self.do_push(item)
     }
 
     pub fn pop(&self, tx: impl AsRef<TxObject>) -> Result<Option<T>> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
-        if inner.len == 0 {
+        let mut inner = self.inner.get()?;
+        if inner.as_mut().len == 0 {
             return Ok(None);
         }
-        let val = inner.with_slice(|slice| unsafe { ((&slice[inner.len - 1]) as *const T).read() });
-        inner.do_remove(inner.len - 1, tx)?;
+        let new_len = inner.len - 1;
+        let val = inner.with_slice(|slice| unsafe { ((&slice[new_len]) as *const T).read() });
+        inner.do_remove(new_len, tx)?;
         Ok(Some(val))
     }
 
@@ -320,15 +317,15 @@ impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
 }
 
 impl<T: Invariant, Alloc: Allocator + SingleObjectAllocator> Vec<T, Alloc> {
-    pub fn push_inplace(&self, item: T, tx: impl AsRef<TxObject>) -> Result<()> {
-        self.do_push(item, tx)
+    pub fn push_inplace(&self, item: T) -> Result<()> {
+        self.do_push(item)
     }
 
     fn push_ctor<B, F>(&self, tx: TxObject<B>, ctor: F) -> crate::tx::Result<()>
     where
         F: FnOnce(TxRef<MaybeUninit<T>>) -> crate::tx::Result<TxRef<T>>,
     {
-        let mut r = self.get_slice_grow(&tx)?;
+        let mut r = self.get_slice_grow()?;
         let txref = unsafe { TxRef::from_raw_parts(tx, &mut *r) };
         let val = ctor(txref)?;
         val.into_tx().commit()?;
@@ -378,8 +375,8 @@ mod tests {
             .unwrap();
 
         let tx = vobj.tx().unwrap();
-        tx.base().push(Simple { x: 42 }, &tx).unwrap();
-        tx.base().push(Simple { x: 43 }, &tx).unwrap();
+        tx.base().push(Simple { x: 42 }).unwrap();
+        tx.base().push(Simple { x: 43 }).unwrap();
         let vobj = tx.commit().unwrap();
 
         let base = vobj.base();
@@ -460,12 +457,9 @@ mod tests {
 
         let tx = vobj.tx().unwrap();
         let base = tx.base_ref().owned();
-        base.push_inplace(
-            Node {
-                ptr: InvPtr::new(&tx, simple_obj.base_ref()).unwrap(),
-            },
-            &tx,
-        )
+        base.push_inplace(Node {
+            ptr: InvPtr::new(&tx, simple_obj.base_ref()).unwrap(),
+        })
         .unwrap();
         let vobj = tx.commit().unwrap();
 

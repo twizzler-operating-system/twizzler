@@ -72,7 +72,7 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
     pub fn reserve(&mut self, additional: usize) -> crate::tx::Result<()> {
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref().owned();
-        base.reserve(additional, &tx)?;
+        base.reserve(additional)?;
         self.obj = tx.commit()?;
         Ok(())
     }
@@ -118,7 +118,7 @@ impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
     pub fn push(&mut self, val: T) -> crate::tx::Result<()> {
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref().owned();
-        base.push(val, &tx)?;
+        base.push(val)?;
         self.obj = tx.commit()?;
         Ok(())
     }
@@ -127,7 +127,7 @@ impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref().owned();
         for val in vals {
-            base.push(val, &tx)?;
+            base.push(val)?;
         }
         self.obj = tx.commit()?;
         Ok(())
@@ -182,7 +182,7 @@ impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
     pub fn push_inplace(&mut self, val: T) -> crate::tx::Result<()> {
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref();
-        base.push_inplace(val, &tx)?;
+        base.push_inplace(val)?;
         drop(base);
         self.obj = tx.commit()?;
         Ok(())
@@ -192,7 +192,7 @@ impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref();
         for val in vals {
-            base.push_inplace(val, &tx)?;
+            base.push_inplace(val)?;
         }
         drop(base);
         self.obj = tx.commit()?;

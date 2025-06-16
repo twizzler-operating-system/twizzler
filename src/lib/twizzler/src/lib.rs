@@ -4,6 +4,7 @@
 #![feature(allocator_api)]
 #![allow(internal_features)]
 #![feature(core_intrinsics)]
+#![feature(arbitrary_self_types)]
 
 // This is required so we can use our derive macros in this crate.
 extern crate self as twizzler;

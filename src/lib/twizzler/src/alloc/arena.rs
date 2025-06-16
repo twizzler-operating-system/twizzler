@@ -4,7 +4,10 @@ use std::{
 };
 
 use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_rt_abi::{error::ResourceError, object::MapFlags};
+use twizzler_rt_abi::{
+    error::ResourceError,
+    object::{MapFlags, ObjectHandle},
+};
 
 use super::{Allocator, OwnedGlobalPtr, SingleObjectAllocator};
 use crate::{
@@ -137,5 +140,11 @@ impl TxObject<ArenaBase> {
         let ptr = unsafe { allocation.resolve().mutable() };
         let ptr = f(ptr)?;
         Ok(unsafe { OwnedGlobalPtr::from_global(ptr.global().cast(), alloc) })
+    }
+}
+
+impl AsRef<ObjectHandle> for ArenaObject {
+    fn as_ref(&self) -> &ObjectHandle {
+        self.obj.handle()
     }
 }

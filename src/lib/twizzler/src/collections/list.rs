@@ -68,7 +68,7 @@ mod tests {
 
         impl Node {
             fn new(
-                tx: impl Into<ObjectHandle>,
+                tx: impl AsRef<ObjectHandle>,
                 val: u32,
                 alloc: ArenaAllocator,
             ) -> crate::tx::Result<Self> {
