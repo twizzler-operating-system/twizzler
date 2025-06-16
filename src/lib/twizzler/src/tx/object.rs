@@ -151,6 +151,12 @@ impl<B> Into<ObjectHandle> for &TxObject<B> {
     }
 }
 
+impl<B> AsRef<ObjectHandle> for TxObject<B> {
+    fn as_ref(&self) -> &ObjectHandle {
+        &self.handle
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{

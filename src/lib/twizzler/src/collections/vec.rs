@@ -60,9 +60,7 @@ impl<T: Invariant> VecInner<T> {
         let mut rslice =
             unsafe { RefSliceMut::from_ref(self.start.resolve().mutable().cast::<u8>(), self.cap) };
         let slice = rslice.as_slice_mut();
-        let ptr = tx
-            .as_ref()
-            .tx_mut(slice.as_ptr(), slice.len() * size_of::<T>())?;
+        let ptr = tx.tx_mut(slice.as_ptr(), slice.len() * size_of::<T>())?;
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr, slice.len() * size_of::<T>()) };
         let byte_idx_start = (idx + 1) * size_of::<T>();
         let byte_idx = idx * size_of::<T>();

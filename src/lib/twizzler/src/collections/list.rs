@@ -17,7 +17,7 @@ unsafe impl<T: Invariant, A: Allocator> Invariant for ListNode<T, A> {}
 
 impl<T: Invariant, A: Allocator + Clone> ListNode<T, A> {
     pub fn new(
-        tx: impl Into<ObjectHandle>,
+        tx: impl AsRef<ObjectHandle>,
         value: T,
         next: Option<OwnedGlobalPtr<Self, A>>,
         alloc: A,

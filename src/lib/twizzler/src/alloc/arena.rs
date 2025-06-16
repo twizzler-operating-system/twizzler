@@ -3,8 +3,8 @@ use std::{
     mem::MaybeUninit,
 };
 
-use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_rt_abi::error::ResourceError;
+use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_rt_abi::{error::ResourceError, object::MapFlags};
 
 use super::{Allocator, OwnedGlobalPtr, SingleObjectAllocator};
 use crate::{
@@ -19,6 +19,20 @@ pub struct ArenaObject {
 }
 
 impl ArenaObject {
+    pub fn object(&self) -> &Object<ArenaBase> {
+        &self.obj
+    }
+
+    pub fn from_allocator(alloc: ArenaAllocator) -> crate::tx::Result<Self> {
+        Self::from_objid(alloc.ptr.id())
+    }
+
+    pub fn from_objid(id: ObjID) -> crate::tx::Result<Self> {
+        Ok(Self {
+            obj: Object::map(id, MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST)?,
+        })
+    }
+
     pub fn new(builder: ObjectBuilder<ArenaBase>) -> crate::tx::Result<Self> {
         let obj = builder.build(ArenaBase {
             next: TxCell::new((NULLPAGE_SIZE * 2) as u64),

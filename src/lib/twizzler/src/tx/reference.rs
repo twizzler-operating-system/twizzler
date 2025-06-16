@@ -76,3 +76,9 @@ impl<T> Into<ObjectHandle> for &TxRef<T> {
         self.tx().handle().clone()
     }
 }
+
+impl<T> AsRef<ObjectHandle> for TxRef<T> {
+    fn as_ref(&self) -> &ObjectHandle {
+        self.tx().handle()
+    }
+}
