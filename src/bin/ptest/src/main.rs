@@ -119,15 +119,16 @@ impl Foo {
     }
 }
 
-fn do_push_foo(vo: VecObject<Foo, VecObjectAlloc>, arena: ArenaObject) {
+fn do_push_foo(mut vo: VecObject<Foo, VecObjectAlloc>, arena: ArenaObject) {
+    let val = vo.len() as u32;
     vo.push_ctor(|r| {
-        let foo = Foo::new_in(&r, vo.len() as u32, arena.allocator())?;
+        let foo = Foo::new_in(&r, val, arena.allocator())?;
         r.write(foo)
     })
     .unwrap();
 }
 
-fn do_append_foo(vo: VecObject<Foo, VecObjectAlloc>, arena: ArenaObject) {
+fn do_append_foo(mut vo: VecObject<Foo, VecObjectAlloc>, arena: ArenaObject) {
     for i in 0..100 {
         vo.push_ctor(|r| {
             let foo = Foo::new_in(&r, i, arena.allocator())?;

@@ -6,13 +6,13 @@ use super::{Vec, VecObjectAlloc};
 use crate::{
     alloc::{Allocator, SingleObjectAllocator},
     marker::{Invariant, StoreCopy},
-    object::{Object, ObjectBuilder, TypedObject},
+    object::{MutObject, Object, ObjectBuilder, TypedObject},
     ptr::{Ref, RefSlice},
     tx::TxRef,
 };
 
 pub struct VecObject<T: Invariant, A: Allocator> {
-    obj: Object<Vec<T, A>>,
+    obj: MutObject<Vec<T, A>>,
 }
 
 impl<T: Invariant, A: Allocator> Clone for VecObject<T, A> {
@@ -25,16 +25,18 @@ impl<T: Invariant, A: Allocator> Clone for VecObject<T, A> {
 
 impl<T: Invariant, A: Allocator> From<Object<Vec<T, A>>> for VecObject<T, A> {
     fn from(value: Object<Vec<T, A>>) -> Self {
-        Self { obj: value }
+        Self {
+            obj: value.as_mut().unwrap(),
+        }
     }
 }
 
 impl<T: Invariant, A: Allocator> VecObject<T, A> {
-    pub fn object(&self) -> &Object<Vec<T, A>> {
+    pub fn object(&self) -> &MutObject<Vec<T, A>> {
         &self.obj
     }
 
-    pub fn into_object(self) -> Object<Vec<T, A>> {
+    pub fn into_object(self) -> MutObject<Vec<T, A>> {
         self.obj
     }
 
@@ -70,26 +72,23 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
     }
 
     pub fn reserve(&mut self, additional: usize) -> crate::tx::Result<()> {
-        let tx = self.obj.clone().tx()?;
-        let base = tx.base_ref().owned();
+        let base = self.obj.base_mut();
         base.reserve(additional)?;
-        self.obj = tx.commit()?;
+        self.obj.sync()?;
         Ok(())
     }
 
     pub fn shrink_to_fit(&mut self) -> crate::tx::Result<()> {
-        let tx = self.obj.clone().tx()?;
-        let base = tx.base_ref().owned();
+        let base = self.obj.base_mut();
         base.shrink_to_fit()?;
-        self.obj = tx.commit()?;
+        self.obj.sync()?;
         Ok(())
     }
 
     pub fn truncate(&mut self, len: usize) -> crate::tx::Result<()> {
-        let tx = self.obj.clone().tx()?;
-        let base = tx.base_ref().owned();
+        let base = self.obj.base_mut();
         base.truncate(len)?;
-        self.obj = tx.commit()?;
+        self.obj.sync()?;
         Ok(())
     }
 
@@ -106,30 +105,27 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
         range: impl RangeBounds<usize>,
         f: impl FnOnce(&mut [T]) -> crate::tx::Result<R>,
     ) -> crate::tx::Result<R> {
-        let tx = self.obj.clone().tx()?;
-        let base = tx.base_ref().owned();
+        let base = self.obj.base_mut();
         let ret = base.with_mut_slice(range, f)?;
-        self.obj = tx.commit()?;
+        self.obj.sync()?;
         Ok(ret)
     }
 }
 
 impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
     pub fn push(&mut self, val: T) -> crate::tx::Result<()> {
-        let tx = self.obj.clone().tx()?;
-        let base = tx.base_ref().owned();
+        let base = self.obj.base_mut();
         base.push(val)?;
-        self.obj = tx.commit()?;
+        self.obj.sync()?;
         Ok(())
     }
 
     pub fn append(&mut self, vals: impl IntoIterator<Item = T>) -> crate::tx::Result<()> {
-        let tx = self.obj.clone().tx()?;
-        let base = tx.base_ref().owned();
+        let base = self.obj.base_mut();
         for val in vals {
             base.push(val)?;
         }
-        self.obj = tx.commit()?;
+        self.obj.sync()?;
         Ok(())
     }
 
@@ -144,10 +140,9 @@ impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
         if idx >= self.len() {
             return Err(ArgumentError::InvalidArgument.into());
         }
-        let mut tx = self.obj.clone().tx()?;
-        let mut base = tx.base_mut().owned();
+        let mut base = self.obj.base_mut();
         let val = base.remove(idx)?;
-        self.obj = tx.commit()?;
+        self.obj.sync()?;
         Ok(val)
     }
 
@@ -163,7 +158,9 @@ impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
 impl<T: Invariant> VecObject<T, VecObjectAlloc> {
     pub fn new(builder: ObjectBuilder<Vec<T, VecObjectAlloc>>) -> crate::tx::Result<Self> {
         Ok(Self {
-            obj: builder.build_inplace(|tx| tx.write(Vec::new_in(VecObjectAlloc)))?,
+            obj: builder
+                .build_inplace(|tx| tx.write(Vec::new_in(VecObjectAlloc)))?
+                .as_mut()?,
         })
     }
 
@@ -180,31 +177,29 @@ impl<T: Invariant> VecObject<T, VecObjectAlloc> {
 
 impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
     pub fn push_inplace(&mut self, val: T) -> crate::tx::Result<()> {
-        let tx = self.obj.clone().tx()?;
-        let base = tx.base_ref();
+        let base = self.obj.base_mut();
         base.push_inplace(val)?;
         drop(base);
-        self.obj = tx.commit()?;
+        self.obj.sync()?;
         Ok(())
     }
 
     pub fn append_inplace(&mut self, vals: impl IntoIterator<Item = T>) -> crate::tx::Result<()> {
-        let tx = self.obj.clone().tx()?;
-        let base = tx.base_ref();
+        let base = self.obj.base_mut();
         for val in vals {
             base.push_inplace(val)?;
         }
-        drop(base);
-        self.obj = tx.commit()?;
+        self.obj.sync()?;
         Ok(())
     }
 
-    pub fn push_ctor<F>(&self, ctor: F) -> crate::tx::Result<()>
+    pub fn push_ctor<F>(&mut self, ctor: F) -> crate::tx::Result<()>
     where
         F: FnOnce(TxRef<MaybeUninit<T>>) -> crate::tx::Result<TxRef<T>>,
     {
-        let tx = self.obj.clone().tx()?;
-        let base = tx.base_ref().owned();
+        let base = self.obj.base_mut().owned();
+        let tx =
+            unsafe { Object::<()>::from_handle_unchecked(self.obj.clone().into_handle()) }.tx()?;
         base.push_ctor(tx, ctor)
     }
 
@@ -212,10 +207,9 @@ impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
         if idx >= self.len() {
             return Err(ArgumentError::InvalidArgument.into());
         }
-        let tx = self.obj.clone().tx()?;
-        let base = tx.base_ref().owned();
+        let base = self.obj.base_mut();
         base.remove_inplace(idx)?;
-        self.obj = tx.commit()?;
+        self.obj.sync()?;
         Ok(())
     }
 

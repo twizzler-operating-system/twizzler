@@ -62,9 +62,6 @@ impl<T: Invariant> VecInner<T> {
             )
         };
         let slice = rslice.as_slice_mut();
-        let slice = unsafe {
-            core::slice::from_raw_parts_mut(slice.as_mut_ptr().cast(), slice.len() * size_of::<T>())
-        };
         let byte_idx_start = (idx + 1) * size_of::<T>();
         let byte_idx = idx * size_of::<T>();
         let byte_end = self.len * size_of::<T>();
@@ -473,7 +470,7 @@ mod tests {
     #[test]
     fn vec_object() {
         let simple_obj = ObjectBuilder::default().build(Simple { x: 3 }).unwrap();
-        let vo = VecObject::new(ObjectBuilder::default()).unwrap();
+        let mut vo = VecObject::new(ObjectBuilder::default()).unwrap();
         vo.push_ctor(|place| {
             let node = Node {
                 ptr: InvPtr::new(&place, simple_obj.base_ref())?,
