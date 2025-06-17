@@ -85,3 +85,9 @@ impl<T> std::ops::Deref for TxCell<T> {
         unsafe { self.0.get().as_ref().unwrap() }
     }
 }
+
+impl<T> std::ops::DerefMut for TxCell<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { self.0.get().as_mut().unwrap() }
+    }
+}

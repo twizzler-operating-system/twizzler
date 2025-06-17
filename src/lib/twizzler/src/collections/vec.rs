@@ -11,7 +11,7 @@ use crate::{
     alloc::{Allocator, SingleObjectAllocator},
     marker::{Invariant, StoreCopy},
     ptr::{GlobalPtr, InvPtr, Ref, RefMut, RefSlice, RefSliceMut},
-    tx::{Result, TxCell, TxHandle, TxObject, TxRef},
+    tx::{Result, TxCell, TxObject, TxRef},
 };
 
 mod vec_object;
@@ -54,13 +54,17 @@ impl<T: Invariant> VecInner<T> {
         Ok(unsafe { new_alloc.cast::<T>().resolve().owned().mutable() })
     }
 
-    fn do_remove(&mut self, idx: usize, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
-        let tx = tx.as_ref();
-        let mut rslice =
-            unsafe { RefSliceMut::from_ref(self.start.resolve().mutable().cast::<u8>(), self.cap) };
+    fn do_remove(&mut self, idx: usize) -> crate::tx::Result<()> {
+        let mut rslice = unsafe {
+            RefSliceMut::from_ref(
+                self.start.resolve().mutable().cast::<u8>(),
+                self.cap * size_of::<T>(),
+            )
+        };
         let slice = rslice.as_slice_mut();
-        let ptr = tx.tx_mut(slice.as_ptr(), slice.len() * size_of::<T>())?;
-        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, slice.len() * size_of::<T>()) };
+        let slice = unsafe {
+            core::slice::from_raw_parts_mut(slice.as_mut_ptr().cast(), slice.len() * size_of::<T>())
+        };
         let byte_idx_start = (idx + 1) * size_of::<T>();
         let byte_idx = idx * size_of::<T>();
         let byte_end = self.len * size_of::<T>();
@@ -92,25 +96,22 @@ impl<T: Invariant> VecInner<T> {
 
     fn with_mut_slice<R>(
         &mut self,
-        tx: &impl TxHandle,
         range: impl RangeBounds<usize>,
         f: impl FnOnce(&mut [T]) -> crate::tx::Result<R>,
     ) -> crate::tx::Result<R> {
-        let r = unsafe { self.start.resolve() };
-        let mut slice = unsafe { RefSlice::from_ref(r, self.len).tx(range, tx)? };
-        f(slice.as_slice_mut())
+        let r = unsafe { self.start.resolve().mutable() };
+        let slice = unsafe { RefSliceMut::from_ref(r, self.len) };
+        f(slice.slice(range).as_slice_mut())
     }
 
     fn with_mut<R>(
         &mut self,
         idx: usize,
-        tx: &impl TxHandle,
         f: impl FnOnce(&mut T) -> crate::tx::Result<R>,
     ) -> crate::tx::Result<R> {
-        let r = unsafe { self.start.resolve() };
-        let slice = unsafe { RefSlice::from_ref(r, self.len) };
-        let item = slice.get_ref(idx).unwrap();
-        let mut item = item.tx(tx)?;
+        let r = unsafe { self.start.resolve().mutable() };
+        let mut slice = unsafe { RefSliceMut::from_ref(r, self.len) };
+        let mut item = slice.get_mut(idx).unwrap();
         f(&mut *item)
     }
 }
@@ -242,26 +243,26 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         slice
     }
 
-    pub fn remove_inplace(&self, idx: usize, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
+    pub fn remove_inplace(&self, idx: usize) -> crate::tx::Result<()> {
+        let mut inner = self.inner.get()?;
         if idx >= inner.len {
             return Err(ArgumentError::InvalidArgument.into());
         }
-        inner.with_mut(idx, tx.as_ref(), |item| {
+        inner.with_mut(idx, |item| {
             unsafe { core::ptr::drop_in_place(item) };
             Ok(())
         })?;
-        inner.do_remove(idx, tx)?;
+        inner.do_remove(idx)?;
         Ok(())
     }
 
-    pub fn truncate(&self, newlen: usize, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
+    pub fn truncate(&self, newlen: usize) -> crate::tx::Result<()> {
+        let mut inner = self.inner.get()?;
         let oldlen = inner.len;
         if newlen >= oldlen {
             return Ok(());
         }
-        inner.with_mut_slice(tx.as_ref(), newlen..oldlen, |slice| {
+        inner.with_mut_slice(newlen..oldlen, |slice| {
             for item in slice {
                 unsafe { core::ptr::drop_in_place(item) };
             }
@@ -271,8 +272,8 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         Ok(())
     }
 
-    pub fn shrink_to_fit(&self, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
+    pub fn shrink_to_fit(&self) -> crate::tx::Result<()> {
+        let mut inner = self.inner.get()?;
         inner.cap = inner.len;
         // TODO: release memory
         Ok(())
@@ -281,11 +282,10 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
     pub fn with_mut_slice<R>(
         &self,
         range: impl RangeBounds<usize>,
-        tx: impl AsRef<TxObject>,
         f: impl FnOnce(&mut [T]) -> crate::tx::Result<R>,
     ) -> crate::tx::Result<R> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
-        inner.with_mut_slice(tx.as_ref(), range, f)
+        let mut inner = self.inner.get()?;
+        inner.with_mut_slice(range, f)
     }
 }
 
@@ -294,24 +294,26 @@ impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
         self.do_push(item)
     }
 
-    pub fn pop(&self, tx: impl AsRef<TxObject>) -> Result<Option<T>> {
+    pub fn pop(&self) -> Result<Option<T>> {
         let mut inner = self.inner.get()?;
         if inner.as_mut().len == 0 {
             return Ok(None);
         }
         let new_len = inner.len - 1;
         let val = inner.with_slice(|slice| unsafe { ((&slice[new_len]) as *const T).read() });
-        inner.do_remove(new_len, tx)?;
+        inner.do_remove(new_len)?;
         Ok(Some(val))
     }
 
-    pub fn remove(&self, idx: usize, tx: impl AsRef<TxObject>) -> Result<T> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
-        if idx >= inner.len {
+    pub fn remove(&mut self, idx: usize) -> Result<T> {
+        //let mut inner = self.inner.get()?;
+        if idx >= self.inner.len {
             return Err(ArgumentError::InvalidArgument.into());
         }
-        let val = inner.with_slice(|slice| unsafe { ((&slice[idx]) as *const T).read() });
-        inner.do_remove(idx, tx)?;
+        let val = self
+            .inner
+            .with_slice(|slice| unsafe { ((&slice[idx]) as *const T).read() });
+        self.inner.do_remove(idx)?;
         Ok(val)
     }
 }

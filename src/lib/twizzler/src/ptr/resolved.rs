@@ -393,6 +393,17 @@ impl<'a, T> RefSliceMut<'a, T> {
     pub fn handle(&self) -> &ObjectHandle {
         self.ptr.handle()
     }
+
+    #[inline]
+    pub fn slice(mut self, range: impl RangeBounds<usize>) -> Self {
+        let (start, end) = range_bounds_to_start_and_end(self.len, range);
+        let len = end - start;
+        if let Some(r) = self.get_mut(start) {
+            unsafe { Self::from_ref(r, len) }
+        } else {
+            unsafe { Self::from_ref(self.ptr, 0) }
+        }
+    }
 }
 
 impl<'a, T> Index<usize> for RefSliceMut<'a, T> {

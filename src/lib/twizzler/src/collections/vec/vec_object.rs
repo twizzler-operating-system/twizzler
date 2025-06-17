@@ -80,7 +80,7 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
     pub fn shrink_to_fit(&mut self) -> crate::tx::Result<()> {
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref().owned();
-        base.shrink_to_fit(&tx)?;
+        base.shrink_to_fit()?;
         self.obj = tx.commit()?;
         Ok(())
     }
@@ -88,7 +88,7 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
     pub fn truncate(&mut self, len: usize) -> crate::tx::Result<()> {
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref().owned();
-        base.truncate(len, &tx)?;
+        base.truncate(len)?;
         self.obj = tx.commit()?;
         Ok(())
     }
@@ -108,7 +108,7 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
     ) -> crate::tx::Result<R> {
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref().owned();
-        let ret = base.with_mut_slice(range, &tx, f)?;
+        let ret = base.with_mut_slice(range, f)?;
         self.obj = tx.commit()?;
         Ok(ret)
     }
@@ -144,9 +144,9 @@ impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
         if idx >= self.len() {
             return Err(ArgumentError::InvalidArgument.into());
         }
-        let tx = self.obj.clone().tx()?;
-        let base = tx.base_ref().owned();
-        let val = base.remove(idx, &tx)?;
+        let mut tx = self.obj.clone().tx()?;
+        let mut base = tx.base_mut().owned();
+        let val = base.remove(idx)?;
         self.obj = tx.commit()?;
         Ok(val)
     }
@@ -214,7 +214,7 @@ impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
         }
         let tx = self.obj.clone().tx()?;
         let base = tx.base_ref().owned();
-        base.remove_inplace(idx, &tx)?;
+        base.remove_inplace(idx)?;
         self.obj = tx.commit()?;
         Ok(())
     }
