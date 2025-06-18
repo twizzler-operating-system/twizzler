@@ -1,25 +1,20 @@
-use std::{
-    alloc::Layout, marker::PhantomData, mem::MaybeUninit, ptr::addr_of, sync::atomic::AtomicU64,
-};
+use std::{alloc::Layout, mem::MaybeUninit};
 
-use twizzler_abi::{
-    object::{MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{sys_map_ctrl, MapControlCmd, SyncFlags, SyncInfo},
-};
-use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
+use twizzler_abi::object::NULLPAGE_SIZE;
+use twizzler_rt_abi::object::ObjectHandle;
 
 use crate::{
     marker::BaseType,
-    object::{Object, RawObject, TypedObject},
+    object::{MutObject, Object, RawObject, TypedObject},
     ptr::{GlobalPtr, RefMut},
     Result,
 };
 
 #[repr(C)]
 pub struct TxObject<T = ()> {
-    handle: ObjectHandle,
+    obj: MutObject<T>,
     static_alloc: usize,
-    _pd: PhantomData<*mut T>,
+    sync_on_drop: bool,
 }
 
 impl<T> TxObject<T> {
@@ -27,42 +22,24 @@ impl<T> TxObject<T> {
     pub fn new(object: Object<T>) -> Result<Self> {
         // TODO: start tx
         Ok(Self {
-            handle: object.into_handle(),
+            obj: unsafe { object.as_mut()? },
             static_alloc: (size_of::<T>() + align_of::<T>()).next_multiple_of(Self::MIN_ALIGN)
                 + NULLPAGE_SIZE,
-            _pd: PhantomData,
+            sync_on_drop: true,
         })
     }
 
-    pub fn commit(self) -> Result<Object<T>> {
-        let handle = self.handle;
-        let flags = handle.map_flags();
-        if flags.contains(MapFlags::PERSIST) {
-            let release = AtomicU64::new(0);
-            let release_ptr = addr_of!(release);
-            let sync_info = SyncInfo {
-                release: release_ptr,
-                release_compare: 0,
-                release_set: 1,
-                durable: core::ptr::null(),
-                flags: SyncFlags::DURABLE | SyncFlags::ASYNC_DURABLE,
-            };
-            let sync_info_ptr = addr_of!(sync_info);
-            sys_map_ctrl(
-                handle.start(),
-                MAX_SIZE,
-                MapControlCmd::Sync(sync_info_ptr),
-                0,
-            )?;
-        }
-        let new_obj = unsafe { Object::map_unchecked(handle.id(), flags) }?;
-        // TODO: commit tx
+    pub fn commit(mut self) -> Result<Object<T>> {
+        self.sync_on_drop = false;
+        self.obj.sync()?;
+        let new_obj = unsafe { Object::from_handle_unchecked(self.handle().clone()) };
         Ok(new_obj)
     }
 
-    pub fn abort(self) -> Object<T> {
+    pub fn abort(mut self) -> Object<T> {
         // TODO: abort tx
-        unsafe { Object::from_handle_unchecked(self.handle) }
+        self.sync_on_drop = false;
+        unsafe { Object::from_handle_unchecked(self.obj.handle().clone()) }
     }
 
     pub fn base_mut(&mut self) -> RefMut<'_, T> {
@@ -70,12 +47,17 @@ impl<T> TxObject<T> {
         unsafe { RefMut::from_raw_parts(self.base_mut_ptr(), self.handle()) }
     }
 
-    pub fn into_unit(self) -> TxObject<()> {
+    pub unsafe fn cast<U>(mut self) -> TxObject<U> {
+        self.sync_on_drop = false;
         TxObject {
-            handle: self.handle,
+            obj: unsafe { self.obj.clone().cast() },
             static_alloc: self.static_alloc,
-            _pd: PhantomData,
+            sync_on_drop: self.sync_on_drop,
         }
+    }
+
+    pub fn into_unit(self) -> TxObject<()> {
+        unsafe { self.cast() }
     }
 }
 
@@ -83,7 +65,7 @@ impl<B> TxObject<MaybeUninit<B>> {
     pub fn write(self, baseval: B) -> Result<TxObject<B>> {
         let base = unsafe { self.base_mut_ptr::<MaybeUninit<B>>().as_mut().unwrap() };
         base.write(baseval);
-        TxObject::new(unsafe { Object::from_handle_unchecked(self.handle) })
+        Ok(unsafe { self.cast() })
     }
 
     pub fn static_alloc_inplace<T>(
@@ -94,10 +76,16 @@ impl<B> TxObject<MaybeUninit<B>> {
         let start = self.static_alloc.next_multiple_of(layout.align());
         let next_start = (start + layout.size() + layout.align()).next_multiple_of(Self::MIN_ALIGN);
         self.static_alloc = next_start;
-        let ptr = unsafe { self.handle.start().add(start).cast::<MaybeUninit<T>>() };
+        let ptr = unsafe {
+            self.obj
+                .handle()
+                .start()
+                .add(start)
+                .cast::<MaybeUninit<T>>()
+        };
         let mu = unsafe { &mut *ptr };
         f(mu)?;
-        let gp = GlobalPtr::new(self.handle.id(), start as u64);
+        let gp = GlobalPtr::new(self.obj.id(), start as u64);
         Ok(gp)
     }
 
@@ -108,7 +96,7 @@ impl<B> TxObject<MaybeUninit<B>> {
 
 impl<T> RawObject for TxObject<T> {
     fn handle(&self) -> &twizzler_rt_abi::object::ObjectHandle {
-        &self.handle
+        self.obj.handle()
     }
 }
 
@@ -124,6 +112,17 @@ impl<B: BaseType> TypedObject for TxObject<B> {
     }
 }
 
+impl<B> Drop for TxObject<B> {
+    fn drop(&mut self) {
+        if self.sync_on_drop {
+            let _ = self
+                .obj
+                .sync()
+                .inspect_err(|e| tracing::error!("TxObject sync on drop failed: {}", e));
+        }
+    }
+}
+
 impl<B> AsRef<TxObject<()>> for TxObject<B> {
     fn as_ref(&self) -> &TxObject<()> {
         let this = self as *const Self;
@@ -134,19 +133,19 @@ impl<B> AsRef<TxObject<()>> for TxObject<B> {
 
 impl<B> Into<ObjectHandle> for TxObject<B> {
     fn into(self) -> ObjectHandle {
-        self.handle
+        self.obj.handle().clone()
     }
 }
 
 impl<B> Into<ObjectHandle> for &TxObject<B> {
     fn into(self) -> ObjectHandle {
-        self.handle.clone()
+        self.obj.handle().clone()
     }
 }
 
 impl<B> AsRef<ObjectHandle> for TxObject<B> {
     fn as_ref(&self) -> &ObjectHandle {
-        &self.handle
+        self.obj.handle()
     }
 }
 
@@ -171,7 +170,7 @@ mod tests {
         assert_eq!(base.x, 3);
         drop(base);
 
-        let mut tx = obj.tx().unwrap();
+        let mut tx = obj.into_tx().unwrap();
         let mut base = tx.base_mut();
         base.x = 42;
         drop(base);

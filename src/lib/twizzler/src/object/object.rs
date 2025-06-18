@@ -32,11 +32,12 @@ impl<Base> Object<Base> {
     }
 
     pub fn as_tx(&self) -> Result<TxObject<Base>> {
-        todo!()
+        TxObject::new(self.clone())
     }
 
     pub fn with_tx<R>(&mut self, f: impl FnOnce(&mut TxObject<Base>) -> Result<R>) -> Result<R> {
-        todo!()
+        let mut tx = self.as_tx()?;
+        f(&mut tx)
     }
 
     pub unsafe fn as_mut(&self) -> Result<MutObject<Base>> {

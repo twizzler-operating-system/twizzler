@@ -68,11 +68,7 @@ mod tests {
         }
 
         impl Node {
-            fn new(
-                tx: impl AsRef<ObjectHandle>,
-                val: u32,
-                alloc: ArenaAllocator,
-            ) -> crate::tx::Result<Self> {
+            fn new(tx: impl AsRef<ObjectHandle>, val: u32, alloc: ArenaAllocator) -> Result<Self> {
                 Ok(Self {
                     data: InvBox::new_in(tx, val, alloc).unwrap(),
                 })

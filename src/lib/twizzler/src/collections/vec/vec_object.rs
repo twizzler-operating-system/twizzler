@@ -6,9 +6,8 @@ use super::{Vec, VecObjectAlloc};
 use crate::{
     alloc::{Allocator, SingleObjectAllocator},
     marker::{Invariant, StoreCopy},
-    object::{MutObject, Object, ObjectBuilder, TypedObject},
-    ptr::{Ref, RefSlice},
-    tx::TxRef,
+    object::{Object, ObjectBuilder, TypedObject},
+    ptr::{Ref, RefMut, RefSlice},
     Result,
 };
 
@@ -174,10 +173,9 @@ impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
 
     pub fn push_ctor<F>(&mut self, ctor: F) -> Result<()>
     where
-        F: FnOnce(TxRef<MaybeUninit<T>>) -> Result<TxRef<T>>,
+        F: FnOnce(RefMut<MaybeUninit<T>>) -> Result<RefMut<T>>,
     {
-        todo!()
-        //self.obj.with_tx(|tx| tx.base_mut().push_ctor(tx, ctor))
+        self.obj.with_tx(|tx| tx.base_mut().push_ctor(ctor))
     }
 
     pub fn remove_inplace(&mut self, idx: usize) -> Result<()> {
