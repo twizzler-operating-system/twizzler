@@ -9,10 +9,11 @@ use crate::{
     object::{MutObject, Object, ObjectBuilder, TypedObject},
     ptr::{Ref, RefSlice},
     tx::TxRef,
+    Result,
 };
 
 pub struct VecObject<T: Invariant, A: Allocator> {
-    obj: MutObject<Vec<T, A>>,
+    obj: Object<Vec<T, A>>,
 }
 
 impl<T: Invariant, A: Allocator> Clone for VecObject<T, A> {
@@ -25,18 +26,16 @@ impl<T: Invariant, A: Allocator> Clone for VecObject<T, A> {
 
 impl<T: Invariant, A: Allocator> From<Object<Vec<T, A>>> for VecObject<T, A> {
     fn from(value: Object<Vec<T, A>>) -> Self {
-        Self {
-            obj: value.as_mut().unwrap(),
-        }
+        Self { obj: value }
     }
 }
 
 impl<T: Invariant, A: Allocator> VecObject<T, A> {
-    pub fn object(&self) -> &MutObject<Vec<T, A>> {
+    pub fn object(&self) -> &Object<Vec<T, A>> {
         &self.obj
     }
 
-    pub fn into_object(self) -> MutObject<Vec<T, A>> {
+    pub fn into_object(self) -> Object<Vec<T, A>> {
         self.obj
     }
 
@@ -71,25 +70,19 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
         self.obj.base().capacity()
     }
 
-    pub fn reserve(&mut self, additional: usize) -> crate::tx::Result<()> {
-        let base = self.obj.base_mut();
-        base.reserve(additional)?;
-        self.obj.sync()?;
-        Ok(())
+    pub fn reserve(&mut self, additional: usize) -> Result<()> {
+        self.obj.with_tx(|tx| {
+            let mut base = tx.base_mut();
+            base.reserve(additional)
+        })
     }
 
-    pub fn shrink_to_fit(&mut self) -> crate::tx::Result<()> {
-        let base = self.obj.base_mut();
-        base.shrink_to_fit()?;
-        self.obj.sync()?;
-        Ok(())
+    pub fn shrink_to_fit(&mut self) -> Result<()> {
+        self.obj.with_tx(|tx| tx.base_mut().shrink_to_fit())
     }
 
-    pub fn truncate(&mut self, len: usize) -> crate::tx::Result<()> {
-        let base = self.obj.base_mut();
-        base.truncate(len)?;
-        self.obj.sync()?;
-        Ok(())
+    pub fn truncate(&mut self, len: usize) -> Result<()> {
+        self.obj.with_tx(|tx| tx.base_mut().truncate(len))
     }
 
     pub fn as_slice(&self) -> RefSlice<'_, T> {
@@ -103,64 +96,54 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
     pub fn with_mut_slice<R>(
         &mut self,
         range: impl RangeBounds<usize>,
-        f: impl FnOnce(&mut [T]) -> crate::tx::Result<R>,
-    ) -> crate::tx::Result<R> {
-        let base = self.obj.base_mut();
-        let ret = base.with_mut_slice(range, f)?;
-        self.obj.sync()?;
-        Ok(ret)
+        f: impl FnOnce(&mut [T]) -> Result<R>,
+    ) -> Result<R> {
+        self.obj
+            .with_tx(|tx| tx.base_mut().with_mut_slice(range, f))
     }
 }
 
 impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
-    pub fn push(&mut self, val: T) -> crate::tx::Result<()> {
-        let base = self.obj.base_mut();
-        base.push(val)?;
-        self.obj.sync()?;
-        Ok(())
+    pub fn push(&mut self, val: T) -> Result<()> {
+        self.obj.with_tx(|tx| tx.base_mut().push(val))
     }
 
-    pub fn append(&mut self, vals: impl IntoIterator<Item = T>) -> crate::tx::Result<()> {
-        let base = self.obj.base_mut();
-        for val in vals {
-            base.push(val)?;
-        }
-        self.obj.sync()?;
-        Ok(())
+    pub fn append(&mut self, vals: impl IntoIterator<Item = T>) -> Result<()> {
+        self.obj.with_tx(|tx| {
+            for val in vals {
+                tx.base_mut().push(val)?;
+            }
+            Ok(())
+        })
     }
 
-    pub fn pop(&mut self) -> crate::tx::Result<Option<T>> {
+    pub fn pop(&mut self) -> Result<Option<T>> {
         if self.is_empty() {
             return Ok(None);
         }
         Ok(Some(self.remove(self.len() - 1)?))
     }
 
-    pub fn remove(&mut self, idx: usize) -> crate::tx::Result<T> {
+    pub fn remove(&mut self, idx: usize) -> Result<T> {
         if idx >= self.len() {
             return Err(ArgumentError::InvalidArgument.into());
         }
-        let mut base = self.obj.base_mut();
-        let val = base.remove(idx)?;
-        self.obj.sync()?;
-        Ok(val)
+        self.obj.with_tx(|tx| tx.base_mut().remove(idx))
     }
 
-    pub fn split_off(&mut self, _point: usize) -> crate::tx::Result<Self> {
+    pub fn split_off(&mut self, _point: usize) -> Result<Self> {
         todo!()
     }
 
-    pub fn swap_remove(&mut self, _idx: usize) -> crate::tx::Result<T> {
+    pub fn swap_remove(&mut self, _idx: usize) -> Result<T> {
         todo!()
     }
 }
 
 impl<T: Invariant> VecObject<T, VecObjectAlloc> {
-    pub fn new(builder: ObjectBuilder<Vec<T, VecObjectAlloc>>) -> crate::tx::Result<Self> {
+    pub fn new(builder: ObjectBuilder<Vec<T, VecObjectAlloc>>) -> Result<Self> {
         Ok(Self {
-            obj: builder
-                .build_inplace(|tx| tx.write(Vec::new_in(VecObjectAlloc)))?
-                .as_mut()?,
+            obj: builder.build_inplace(|tx| tx.write(Vec::new_in(VecObjectAlloc)))?,
         })
     }
 
@@ -176,44 +159,35 @@ impl<T: Invariant> VecObject<T, VecObjectAlloc> {
 }
 
 impl<T: Invariant, A: Allocator + SingleObjectAllocator> VecObject<T, A> {
-    pub fn push_inplace(&mut self, val: T) -> crate::tx::Result<()> {
-        let base = self.obj.base_mut();
-        base.push_inplace(val)?;
-        drop(base);
-        self.obj.sync()?;
-        Ok(())
+    pub fn push_inplace(&mut self, val: T) -> Result<()> {
+        self.obj.with_tx(|tx| tx.base_mut().push_inplace(val))
     }
 
-    pub fn append_inplace(&mut self, vals: impl IntoIterator<Item = T>) -> crate::tx::Result<()> {
-        let base = self.obj.base_mut();
-        for val in vals {
-            base.push_inplace(val)?;
-        }
-        self.obj.sync()?;
-        Ok(())
+    pub fn append_inplace(&mut self, vals: impl IntoIterator<Item = T>) -> Result<()> {
+        self.obj.with_tx(|tx| {
+            for val in vals {
+                tx.base_mut().push_inplace(val)?;
+            }
+            Ok(())
+        })
     }
 
-    pub fn push_ctor<F>(&mut self, ctor: F) -> crate::tx::Result<()>
+    pub fn push_ctor<F>(&mut self, ctor: F) -> Result<()>
     where
-        F: FnOnce(TxRef<MaybeUninit<T>>) -> crate::tx::Result<TxRef<T>>,
+        F: FnOnce(TxRef<MaybeUninit<T>>) -> Result<TxRef<T>>,
     {
-        let base = self.obj.base_mut().owned();
-        let tx =
-            unsafe { Object::<()>::from_handle_unchecked(self.obj.clone().into_handle()) }.tx()?;
-        base.push_ctor(tx, ctor)
+        todo!()
+        //self.obj.with_tx(|tx| tx.base_mut().push_ctor(tx, ctor))
     }
 
-    pub fn remove_inplace(&mut self, idx: usize) -> crate::tx::Result<()> {
+    pub fn remove_inplace(&mut self, idx: usize) -> Result<()> {
         if idx >= self.len() {
             return Err(ArgumentError::InvalidArgument.into());
         }
-        let base = self.obj.base_mut();
-        base.remove_inplace(idx)?;
-        self.obj.sync()?;
-        Ok(())
+        self.obj.with_tx(|tx| tx.base_mut().remove_inplace(idx))
     }
 
-    pub fn swap_remove_inplace(&mut self, _idx: usize) -> crate::tx::Result<()> {
+    pub fn swap_remove_inplace(&mut self, _idx: usize) -> Result<()> {
         todo!()
     }
 }

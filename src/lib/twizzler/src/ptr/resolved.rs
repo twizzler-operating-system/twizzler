@@ -9,7 +9,11 @@ use std::{
 use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
 use super::GlobalPtr;
-use crate::{object::RawObject, tx::TxHandle};
+use crate::{
+    object::RawObject,
+    tx::{TxRef, TxRefSlice},
+    util::range_bounds_to_start_and_end,
+};
 
 #[derive(Default, Clone)]
 struct LazyHandle<'obj> {
@@ -104,9 +108,12 @@ impl<'obj, T> Ref<'obj, T> {
         Self::new(ptr, LazyHandle::new_owned(handle))
     }
 
-    pub fn tx(self, tx: &(impl TxHandle + 'obj)) -> crate::tx::Result<RefMut<'obj, T>> {
-        let ptr = tx.tx_mut(self.ptr.cast(), size_of::<T>())?;
-        Ok(unsafe { self.mutable_to(ptr.cast()) })
+    pub fn into_tx(self) -> crate::Result<TxRef<T>> {
+        todo!()
+    }
+
+    pub unsafe fn into_mut(self) -> crate::Result<RefMut<'obj, T>> {
+        todo!()
     }
 }
 
@@ -244,20 +251,6 @@ impl<'a, T> From<RefMut<'a, T>> for GlobalPtr<T> {
     }
 }
 
-fn range_bounds_to_start_and_end(len: usize, range: impl RangeBounds<usize>) -> (usize, usize) {
-    let start = match range.start_bound() {
-        std::ops::Bound::Included(n) => *n,
-        std::ops::Bound::Excluded(n) => n.saturating_add(1),
-        std::ops::Bound::Unbounded => 0,
-    };
-    let end = match range.start_bound() {
-        std::ops::Bound::Included(n) => n.saturating_add(1),
-        std::ops::Bound::Excluded(n) => *n,
-        std::ops::Bound::Unbounded => len,
-    };
-    (start, end)
-}
-
 pub struct RefSlice<'a, T> {
     ptr: Ref<'a, T>,
     len: usize,
@@ -312,27 +305,12 @@ impl<'a, T> RefSlice<'a, T> {
         self.ptr.handle()
     }
 
-    pub fn tx(
-        self,
-        range: impl RangeBounds<usize>,
-        tx: &(impl TxHandle + 'a),
-    ) -> crate::tx::Result<RefSliceMut<'a, T>> {
-        let start = match range.start_bound() {
-            std::ops::Bound::Included(n) => *n,
-            std::ops::Bound::Excluded(n) => n.saturating_add(1),
-            std::ops::Bound::Unbounded => 0,
-        };
-        let end = match range.start_bound() {
-            std::ops::Bound::Included(n) => n.saturating_add(1),
-            std::ops::Bound::Excluded(n) => *n,
-            std::ops::Bound::Unbounded => self.len,
-        };
-        let len = end - start;
-        unsafe {
-            let ptr = tx.tx_mut(self.ptr.ptr.add(start).cast(), size_of::<T>() * len)?;
-            let r = self.ptr.mutable_to(ptr.cast());
-            Ok(RefSliceMut::from_ref(r, len))
-        }
+    pub fn into_tx(self) -> crate::Result<TxRefSlice<T>> {
+        todo!()
+    }
+
+    pub unsafe fn into_mut(self) -> crate::Result<RefSliceMut<'a, T>> {
+        todo!()
     }
 }
 

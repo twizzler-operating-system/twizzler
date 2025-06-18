@@ -3,6 +3,7 @@ use twizzler_rt_abi::object::ObjectHandle;
 use crate::{
     alloc::{invbox::InvBox, Allocator, OwnedGlobalPtr},
     marker::{BaseType, Invariant},
+    Result,
 };
 
 #[allow(dead_code)]
@@ -21,7 +22,7 @@ impl<T: Invariant, A: Allocator + Clone> ListNode<T, A> {
         value: T,
         next: Option<OwnedGlobalPtr<Self, A>>,
         alloc: A,
-    ) -> crate::tx::Result<Self> {
+    ) -> Result<Self> {
         Ok(Self {
             value,
             next: next.map(|n| InvBox::from_in(tx, n).unwrap()),

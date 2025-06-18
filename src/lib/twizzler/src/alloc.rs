@@ -1,6 +1,6 @@
 use std::alloc::{AllocError, Layout};
 
-use crate::{ptr::GlobalPtr, tx::TxHandle};
+use crate::ptr::GlobalPtr;
 
 pub mod arena;
 mod global;
@@ -11,20 +11,6 @@ pub use global::OwnedGlobalPtr;
 pub trait Allocator: Clone {
     fn alloc(&self, layout: Layout) -> Result<GlobalPtr<u8>, AllocError>;
     unsafe fn dealloc(&self, ptr: GlobalPtr<u8>, layout: Layout);
-
-    fn alloc_tx(&self, layout: Layout, _tx: &impl TxHandle) -> crate::tx::Result<GlobalPtr<u8>> {
-        self.alloc(layout).map_err(|e| e.into())
-    }
-    unsafe fn dealloc_tx(
-        &self,
-        ptr: GlobalPtr<u8>,
-        layout: Layout,
-        _tx: &impl TxHandle,
-    ) -> crate::tx::Result<()> {
-        self.dealloc(ptr, layout);
-        Ok(())
-    }
-
     fn realloc(
         &self,
         ptr: GlobalPtr<u8>,
@@ -44,15 +30,6 @@ pub trait Allocator: Clone {
             }
         }
         Ok(new_alloc)
-    }
-    fn realloc_tx(
-        &self,
-        ptr: GlobalPtr<u8>,
-        layout: Layout,
-        newsize: usize,
-        _tx: &impl TxHandle,
-    ) -> Result<GlobalPtr<u8>, AllocError> {
-        self.realloc(ptr, layout, newsize)
     }
 }
 

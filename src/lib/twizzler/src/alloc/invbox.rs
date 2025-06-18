@@ -20,7 +20,7 @@ impl<T: Invariant, Alloc: Allocator> InvBox<T, Alloc> {
         Self { raw, alloc }
     }
 
-    pub fn new_in(tx: impl AsRef<ObjectHandle>, val: T, alloc: Alloc) -> crate::tx::Result<Self> {
+    pub fn new_in(tx: impl AsRef<ObjectHandle>, val: T, alloc: Alloc) -> crate::Result<Self> {
         let layout = Layout::new::<T>();
         let p = alloc.alloc(layout)?;
         let p = p.cast::<MaybeUninit<T>>();
@@ -36,7 +36,7 @@ impl<T: Invariant, Alloc: Allocator> InvBox<T, Alloc> {
     pub fn from_in(
         tx: impl AsRef<ObjectHandle>,
         ogp: OwnedGlobalPtr<T, Alloc>,
-    ) -> crate::tx::Result<Self> {
+    ) -> crate::Result<Self> {
         let raw = InvPtr::new(tx, ogp.global())?;
         Ok(Self {
             raw,

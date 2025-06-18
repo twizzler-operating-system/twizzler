@@ -71,7 +71,7 @@ impl SecCtx {
     }
 
     pub fn insert_cap(&self, cap: Cap) -> Result<(), TwzError> {
-        let mut tx = self.uobj.clone().tx()?;
+        let mut tx = self.uobj.clone().into_tx()?;
         let mut base = tx.base_mut();
 
         let mut map_item = {

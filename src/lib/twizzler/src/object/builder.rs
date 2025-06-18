@@ -12,6 +12,7 @@ use super::Object;
 use crate::{
     marker::{BaseType, StoreCopy},
     tx::TxObject,
+    Result,
 };
 
 /// An object builder, for constructing objects using a builder API.
@@ -59,15 +60,15 @@ impl<Base: BaseType> ObjectBuilder<Base> {
 }
 
 impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
-    pub fn build(&self, base: Base) -> crate::tx::Result<Object<Base>> {
+    pub fn build(&self, base: Base) -> Result<Object<Base>> {
         self.build_inplace(|tx| tx.write(base))
     }
 }
 
 impl<Base: BaseType> ObjectBuilder<Base> {
-    pub fn build_inplace<F>(&self, ctor: F) -> crate::tx::Result<Object<Base>>
+    pub fn build_inplace<F>(&self, ctor: F) -> Result<Object<Base>>
     where
-        F: FnOnce(TxObject<MaybeUninit<Base>>) -> crate::tx::Result<TxObject<Base>>,
+        F: FnOnce(TxObject<MaybeUninit<Base>>) -> Result<TxObject<Base>>,
     {
         let id = twizzler_abi::syscall::sys_object_create(
             self.spec,
@@ -79,11 +80,11 @@ impl<Base: BaseType> ObjectBuilder<Base> {
             flags.insert(MapFlags::PERSIST);
         }
         let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
-        let object = ctor(mu_object.tx()?)?;
+        let object = ctor(mu_object.into_tx()?)?;
         object.commit()
     }
 
-    pub fn build_ctor<F>(&self, ctor: F) -> crate::tx::Result<Object<Base>>
+    pub fn build_ctor<F>(&self, ctor: F) -> Result<Object<Base>>
     where
         F: FnOnce(&mut TxObject<MaybeUninit<Base>>),
     {
@@ -97,7 +98,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
             flags.insert(MapFlags::PERSIST);
         }
         let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
-        let mut tx = mu_object.tx()?;
+        let mut tx = mu_object.into_tx()?;
         ctor(&mut tx);
         Ok(unsafe { tx.commit()?.cast() })
     }

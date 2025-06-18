@@ -14,7 +14,8 @@ use crate::{
     marker::BaseType,
     object::{Object, ObjectBuilder, RawObject},
     ptr::{GlobalPtr, RefMut},
-    tx::{TxCell, TxHandle, TxObject, UnsafeTxHandle},
+    tx::{TxCell, TxObject},
+    Result,
 };
 
 pub struct ArenaObject {
@@ -26,25 +27,25 @@ impl ArenaObject {
         &self.obj
     }
 
-    pub fn from_allocator(alloc: ArenaAllocator) -> crate::tx::Result<Self> {
+    pub fn from_allocator(alloc: ArenaAllocator) -> Result<Self> {
         Self::from_objid(alloc.ptr.id())
     }
 
-    pub fn from_objid(id: ObjID) -> crate::tx::Result<Self> {
+    pub fn from_objid(id: ObjID) -> Result<Self> {
         Ok(Self {
             obj: Object::map(id, MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST)?,
         })
     }
 
-    pub fn new(builder: ObjectBuilder<ArenaBase>) -> crate::tx::Result<Self> {
+    pub fn new(builder: ObjectBuilder<ArenaBase>) -> Result<Self> {
         let obj = builder.build(ArenaBase {
             next: TxCell::new((NULLPAGE_SIZE * 2) as u64),
         })?;
         Ok(Self { obj })
     }
 
-    pub fn tx(self) -> crate::tx::Result<TxObject<ArenaBase>> {
-        self.obj.tx()
+    pub fn tx(self) -> Result<TxObject<ArenaBase>> {
+        self.obj.into_tx()
     }
 
     pub fn allocator(&self) -> ArenaAllocator {
@@ -53,22 +54,18 @@ impl ArenaObject {
         }
     }
 
-    pub fn alloc<T>(&self, value: T) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
+    pub fn alloc<T>(&self, value: T) -> Result<OwnedGlobalPtr<T, ArenaAllocator>> {
         self.alloc_inplace(|p| Ok(p.write(value)))
     }
 
     pub fn alloc_inplace<T>(
         &self,
-        f: impl FnOnce(RefMut<MaybeUninit<T>>) -> crate::tx::Result<RefMut<T>>,
-    ) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
+        f: impl FnOnce(RefMut<MaybeUninit<T>>) -> Result<RefMut<T>>,
+    ) -> Result<OwnedGlobalPtr<T, ArenaAllocator>> {
         let layout = Layout::new::<T>();
-        twizzler_abi::klog_println!("A");
         let alloc = self.allocator().alloc(layout)?.cast::<MaybeUninit<T>>();
-        twizzler_abi::klog_println!("B");
         let ptr = unsafe { alloc.resolve().mutable() };
-        twizzler_abi::klog_println!("C");
         let ptr = f(ptr)?;
-        twizzler_abi::klog_println!("D");
         Ok(unsafe { OwnedGlobalPtr::from_global(ptr.global().cast(), self.allocator()) })
     }
 }
@@ -95,10 +92,10 @@ impl BaseType for ArenaBase {}
 
 impl ArenaBase {
     const MIN_ALIGN: usize = 16;
-    fn reserve(&self, layout: Layout, tx: &impl TxHandle) -> crate::tx::Result<u64> {
+    fn reserve(&self, layout: Layout) -> Result<u64> {
         let align = std::cmp::max(layout.align(), Self::MIN_ALIGN);
         let len = std::cmp::max(layout.size(), Self::MIN_ALIGN) as u64;
-        let next_cell = self.next.get_mut(tx)?;
+        let mut next_cell = self.next.get()?;
         let next = next_cell.next_multiple_of(align as u64);
         if next + len > MAX_SIZE as u64 {
             return Err(ResourceError::OutOfMemory.into());
@@ -110,12 +107,13 @@ impl ArenaBase {
 }
 
 impl Allocator for ArenaAllocator {
-    fn alloc(&self, layout: std::alloc::Layout) -> Result<GlobalPtr<u8>, std::alloc::AllocError> {
+    fn alloc(
+        &self,
+        layout: std::alloc::Layout,
+    ) -> core::result::Result<GlobalPtr<u8>, std::alloc::AllocError> {
         // TODO: use try_resolve
         let allocator = unsafe { self.ptr.resolve_mut() };
-        let reserve = allocator
-            .reserve(layout, &unsafe { UnsafeTxHandle::new() })
-            .map_err(|_| AllocError)?;
+        let reserve = allocator.reserve(layout).map_err(|_| AllocError)?;
         let gp = GlobalPtr::new(allocator.handle().id(), reserve);
         Ok(gp)
     }
@@ -124,14 +122,14 @@ impl Allocator for ArenaAllocator {
 }
 
 impl TxObject<ArenaBase> {
-    pub fn alloc<T>(&self, value: T) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
+    pub fn alloc<T>(&self, value: T) -> Result<OwnedGlobalPtr<T, ArenaAllocator>> {
         self.alloc_inplace(|p| Ok(p.write(value)))
     }
 
     pub fn alloc_inplace<T>(
         &self,
-        f: impl FnOnce(RefMut<MaybeUninit<T>>) -> crate::tx::Result<RefMut<T>>,
-    ) -> crate::tx::Result<OwnedGlobalPtr<T, ArenaAllocator>> {
+        f: impl FnOnce(RefMut<MaybeUninit<T>>) -> Result<RefMut<T>>,
+    ) -> Result<OwnedGlobalPtr<T, ArenaAllocator>> {
         let layout = Layout::new::<T>();
         let alloc = ArenaAllocator {
             ptr: GlobalPtr::new(self.id(), NULLPAGE_SIZE as u64),

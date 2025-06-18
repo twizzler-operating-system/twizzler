@@ -8,11 +8,11 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
-use super::{Result, TxHandle};
 use crate::{
     marker::BaseType,
     object::{Object, RawObject, TypedObject},
     ptr::{GlobalPtr, RefMut},
+    Result,
 };
 
 #[repr(C)]
@@ -80,7 +80,7 @@ impl<T> TxObject<T> {
 }
 
 impl<B> TxObject<MaybeUninit<B>> {
-    pub fn write(self, baseval: B) -> crate::tx::Result<TxObject<B>> {
+    pub fn write(self, baseval: B) -> Result<TxObject<B>> {
         let base = unsafe { self.base_mut_ptr::<MaybeUninit<B>>().as_mut().unwrap() };
         base.write(baseval);
         TxObject::new(unsafe { Object::from_handle_unchecked(self.handle) })
@@ -88,8 +88,8 @@ impl<B> TxObject<MaybeUninit<B>> {
 
     pub fn static_alloc_inplace<T>(
         &mut self,
-        f: impl FnOnce(&mut MaybeUninit<T>) -> crate::tx::Result<&mut T>,
-    ) -> crate::tx::Result<GlobalPtr<T>> {
+        f: impl FnOnce(&mut MaybeUninit<T>) -> Result<&mut T>,
+    ) -> Result<GlobalPtr<T>> {
         let layout = Layout::new::<T>();
         let start = self.static_alloc.next_multiple_of(layout.align());
         let next_start = (start + layout.size() + layout.align()).next_multiple_of(Self::MIN_ALIGN);
@@ -101,15 +101,8 @@ impl<B> TxObject<MaybeUninit<B>> {
         Ok(gp)
     }
 
-    pub fn static_alloc<T>(&mut self, value: T) -> crate::tx::Result<GlobalPtr<T>> {
+    pub fn static_alloc<T>(&mut self, value: T) -> Result<GlobalPtr<T>> {
         self.static_alloc_inplace(|mu| Ok(mu.write(value)))
-    }
-}
-
-impl<B> TxHandle for TxObject<B> {
-    fn tx_mut(&self, data: *const u8, _len: usize) -> super::Result<*mut u8> {
-        // TODO
-        Ok(data as *mut u8)
     }
 }
 

@@ -17,6 +17,14 @@ pub mod object;
 pub mod ptr;
 pub mod tx;
 
+pub(crate) mod util;
+
+pub mod error {
+    pub use twizzler_rt_abi::error::*;
+}
+
+pub use twizzler_rt_abi::Result;
+
 //mod pager;
 
 #[cfg(test)]

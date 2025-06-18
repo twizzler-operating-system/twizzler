@@ -104,10 +104,7 @@ impl<T: Invariant> InvPtr<T> {
         self.value
     }
 
-    pub fn new(
-        tx: impl AsRef<ObjectHandle>,
-        gp: impl Into<GlobalPtr<T>>,
-    ) -> crate::tx::Result<Self> {
+    pub fn new(tx: impl AsRef<ObjectHandle>, gp: impl Into<GlobalPtr<T>>) -> crate::Result<Self> {
         let gp = gp.into();
         let tx = tx.as_ref();
         if gp.id() == tx.id() {
