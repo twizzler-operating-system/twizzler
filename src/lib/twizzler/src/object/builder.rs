@@ -81,26 +81,17 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         }
         let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
         let object = ctor(mu_object.into_tx()?)?;
-        object.commit()
+        object.into_object()
     }
 
-    pub fn build_ctor<F>(&self, ctor: F) -> Result<Object<Base>>
+    pub unsafe fn build_ctor<F>(&self, ctor: F) -> Result<Object<Base>>
     where
         F: FnOnce(&mut TxObject<MaybeUninit<Base>>),
     {
-        let id = twizzler_abi::syscall::sys_object_create(
-            self.spec,
-            self.src_objs.as_slice(),
-            self.ties.as_slice(),
-        )?;
-        let mut flags = MapFlags::READ | MapFlags::WRITE;
-        if self.spec.lt == LifetimeType::Persistent {
-            flags.insert(MapFlags::PERSIST);
-        }
-        let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
-        let mut tx = mu_object.into_tx()?;
-        ctor(&mut tx);
-        Ok(unsafe { tx.commit()?.cast() })
+        self.build_inplace(|mut tx| {
+            ctor(&mut tx);
+            Ok(tx.assume_init())
+        })
     }
 }
 

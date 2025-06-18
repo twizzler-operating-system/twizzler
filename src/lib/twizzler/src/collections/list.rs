@@ -43,7 +43,7 @@ mod tests {
     fn simple() {
         let arena = ArenaObject::new(ObjectBuilder::default()).unwrap();
         let alloc = arena.allocator();
-        let tx = arena.tx().unwrap();
+        let tx = arena.into_tx().unwrap();
         let node0 = tx
             .alloc(ListNode::new(&tx, 3, None, alloc).unwrap())
             .unwrap();
@@ -80,7 +80,7 @@ mod tests {
         let arena = ArenaObject::new(ObjectBuilder::default()).unwrap();
         let alloc = arena.allocator();
         let _data0 = arena.alloc(3);
-        let tx = arena.tx().unwrap();
+        let tx = arena.into_tx().unwrap();
         let node0 = ListNode::new(&tx, Node::new(&tx, 3, alloc).unwrap(), None, alloc).unwrap();
         let node0 = tx.alloc(node0).unwrap();
         let node1 = tx

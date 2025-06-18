@@ -9,7 +9,7 @@ use twizzler_rt_abi::{
     object::{MapFlags, ObjectHandle},
 };
 
-use super::{RawObject, TypedObject};
+use super::{Object, RawObject, TypedObject};
 use crate::{
     marker::BaseType,
     ptr::{Ref, RefMut},
@@ -63,14 +63,6 @@ impl<Base> MutObject<Base> {
         Self::from_handle(handle)
     }
 
-    pub fn update(self) -> crate::Result<Self> {
-        let id = self.id();
-        let flags = self.handle().map_flags();
-        drop(self);
-
-        Self::map(id, flags)
-    }
-
     pub unsafe fn map_unchecked(id: ObjID, flags: MapFlags) -> Result<Self, TwzError> {
         let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
         unsafe { Ok(Self::from_handle_unchecked(handle)) }
@@ -78,6 +70,10 @@ impl<Base> MutObject<Base> {
 
     pub fn id(&self) -> ObjID {
         self.handle.id()
+    }
+
+    pub fn update(&mut self) -> crate::Result<()> {
+        sys_map_ctrl(self.handle.start(), MAX_SIZE, MapControlCmd::Update, 0)
     }
 
     pub fn base_mut(&mut self) -> RefMut<'_, Base> {
@@ -106,6 +102,14 @@ impl<Base> MutObject<Base> {
         }
         Ok(())
     }
+
+    pub fn into_object(self) -> Object<Base> {
+        unsafe { Object::from_handle_unchecked(self.into_handle()) }
+    }
+
+    pub fn as_object(&self) -> Object<Base> {
+        unsafe { Object::from_handle_unchecked(self.handle().clone()) }
+    }
 }
 
 impl<Base> RawObject for MutObject<Base> {
@@ -131,5 +135,11 @@ impl<Base: BaseType> TypedObject for MutObject<Base> {
 impl<T> AsRef<ObjectHandle> for MutObject<T> {
     fn as_ref(&self) -> &ObjectHandle {
         self.handle()
+    }
+}
+
+impl<B> From<MutObject<B>> for Object<B> {
+    fn from(mut_obj: MutObject<B>) -> Self {
+        unsafe { Object::from_handle_unchecked(mut_obj.into_handle()) }
     }
 }

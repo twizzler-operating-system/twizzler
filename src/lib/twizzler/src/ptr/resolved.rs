@@ -6,13 +6,13 @@ use std::{
     ops::{Deref, DerefMut, Index, IndexMut, RangeBounds},
 };
 
-use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
+use twizzler_rt_abi::object::ObjectHandle;
 
 use super::GlobalPtr;
 use crate::{
-    object::RawObject,
-    tx::{TxRef, TxRefSlice},
-    util::range_bounds_to_start_and_end,
+    object::{MutObject, RawObject},
+    tx::{TxObject, TxRef, TxRefSlice},
+    util::{maybe_remap, range_bounds_to_start_and_end},
 };
 
 #[derive(Default, Clone)]
@@ -91,9 +91,15 @@ impl<'obj, T> Ref<'obj, T> {
     }
 
     #[inline]
-    pub unsafe fn mutable(self) -> RefMut<'obj, T> {
+    pub unsafe fn into_mut(self) -> RefMut<'obj, T> {
         let ptr = self.ptr as *mut T;
         self.mutable_to(ptr)
+    }
+
+    #[inline]
+    pub unsafe fn as_mut(&self) -> RefMut<'obj, T> {
+        let ptr = self.ptr as *mut T;
+        RefMut::from_handle(self.handle().clone(), ptr)
     }
 
     pub fn global(&self) -> GlobalPtr<T> {
@@ -109,11 +115,15 @@ impl<'obj, T> Ref<'obj, T> {
     }
 
     pub fn into_tx(self) -> crate::Result<TxRef<T>> {
-        todo!()
+        self.as_tx()
     }
 
-    pub unsafe fn into_mut(self) -> crate::Result<RefMut<'obj, T>> {
-        todo!()
+    pub fn as_tx(&self) -> crate::Result<TxRef<T>> {
+        let (handle, ptr) = maybe_remap(self.handle().clone(), self.ptr as *mut T);
+
+        let mo = unsafe { MutObject::<()>::from_handle_unchecked(handle) };
+        let tx = unsafe { TxObject::from_mut_object(mo) };
+        Ok(unsafe { TxRef::from_raw_parts(tx, ptr) })
     }
 }
 
@@ -142,25 +152,6 @@ pub struct RefMut<'obj, T> {
     ptr: *mut T,
     lazy_handle: LazyHandle<'obj>,
     _pd: PhantomData<&'obj mut T>,
-}
-
-fn maybe_remap<T>(handle: ObjectHandle, ptr: *mut T) -> (ObjectHandle, *mut T) {
-    if !handle.map_flags().contains(MapFlags::WRITE) {
-        let new_handle = twizzler_rt_abi::object::twz_rt_map_object(
-            handle.id(),
-            MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST,
-        )
-        .expect("failed to remap object handle for writing");
-        let offset = handle
-            .ptr_local(ptr.cast())
-            .expect("tried to remap a handle with a non-local pointer");
-        let ptr = new_handle
-            .lea_mut(offset, size_of::<T>())
-            .expect("failed to remap pointer");
-        (new_handle, ptr.cast())
-    } else {
-        (handle, ptr)
-    }
 }
 
 impl<'obj, T> RefMut<'obj, T> {
@@ -211,6 +202,14 @@ impl<'obj, T> RefMut<'obj, T> {
     // Note: takes ownership to avoid aliasing
     pub fn owned<'b>(self) -> RefMut<'b, T> {
         RefMut::from_handle(self.handle().clone(), self.ptr)
+    }
+
+    pub fn as_ref(&self) -> Ref<'obj, T> {
+        Ref::new(self.ptr, self.lazy_handle.clone())
+    }
+
+    pub fn into_ref(self) -> Ref<'obj, T> {
+        Ref::new(self.ptr, self.lazy_handle)
     }
 }
 
@@ -306,11 +305,21 @@ impl<'a, T> RefSlice<'a, T> {
     }
 
     pub fn into_tx(self) -> crate::Result<TxRefSlice<T>> {
-        todo!()
+        self.as_tx()
+    }
+
+    pub fn as_tx(&self) -> crate::Result<TxRefSlice<T>> {
+        let len = self.len();
+        Ok(unsafe { TxRefSlice::from_ref(self.ptr.as_tx()?, len) })
     }
 
     pub unsafe fn into_mut(self) -> crate::Result<RefSliceMut<'a, T>> {
-        todo!()
+        self.as_mut()
+    }
+
+    pub unsafe fn as_mut(&self) -> crate::Result<RefSliceMut<'a, T>> {
+        let len = self.len();
+        Ok(unsafe { RefSliceMut::from_ref(self.ptr.as_mut(), len) })
     }
 }
 
@@ -381,6 +390,15 @@ impl<'a, T> RefSliceMut<'a, T> {
         } else {
             unsafe { Self::from_ref(self.ptr, 0) }
         }
+    }
+
+    pub fn into_ref_slice(self) -> RefSlice<'a, T> {
+        let len = self.len();
+        unsafe { RefSlice::from_ref(self.ptr.into_ref(), len) }
+    }
+
+    pub fn as_ref_slice(&self) -> RefSlice<'a, T> {
+        unsafe { RefSlice::from_ref(self.ptr.as_ref().owned(), self.len()) }
     }
 }
 

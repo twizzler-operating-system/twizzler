@@ -8,7 +8,7 @@ use twizzler_rt_abi::object::ObjectHandle;
 use super::TxObject;
 use crate::{
     object::RawObject,
-    ptr::{Ref, RefMut},
+    ptr::{GlobalPtr, Ref, RefMut},
     util::range_bounds_to_start_and_end,
 };
 
@@ -30,6 +30,11 @@ impl<T> TxRef<T> {
         }
     }
 
+    #[inline]
+    pub fn offset(&self) -> u64 {
+        self.handle().ptr_local(self.ptr.cast()).unwrap() as u64
+    }
+
     pub fn tx(&self) -> &TxObject<()> {
         self.tx.as_ref().unwrap()
     }
@@ -48,6 +53,10 @@ impl<T> TxRef<T> {
 
     pub fn handle(&self) -> &ObjectHandle {
         self.tx().handle()
+    }
+
+    pub fn global(&self) -> GlobalPtr<T> {
+        GlobalPtr::new(self.handle().id(), self.offset())
     }
 }
 
@@ -78,7 +87,7 @@ impl<T> DerefMut for TxRef<T> {
 impl<T> Drop for TxRef<T> {
     #[track_caller]
     fn drop(&mut self) {
-        let _ = self.tx.take().map(|tx| tx.commit());
+        let _ = self.tx.take().map(|mut tx| tx.commit());
     }
 }
 

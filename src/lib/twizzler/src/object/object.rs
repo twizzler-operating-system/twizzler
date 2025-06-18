@@ -1,13 +1,16 @@
 use std::marker::PhantomData;
 
-use twizzler_abi::object::ObjID;
+use twizzler_abi::{
+    object::{ObjID, MAX_SIZE},
+    syscall::{sys_map_ctrl, MapControlCmd},
+};
 use twizzler_rt_abi::{
     object::{MapFlags, ObjectHandle},
     Result,
 };
 
 use super::{MutObject, RawObject, TypedObject};
-use crate::{marker::BaseType, ptr::Ref, tx::TxObject};
+use crate::{marker::BaseType, ptr::Ref, tx::TxObject, util::maybe_remap};
 
 pub struct Object<Base> {
     handle: ObjectHandle,
@@ -41,7 +44,13 @@ impl<Base> Object<Base> {
     }
 
     pub unsafe fn as_mut(&self) -> Result<MutObject<Base>> {
-        Ok(unsafe { MutObject::from_handle_unchecked(self.handle.clone()) })
+        let (handle, _) = maybe_remap(self.handle().clone(), core::ptr::null_mut::<()>());
+        Ok(unsafe { MutObject::from_handle_unchecked(handle) })
+    }
+
+    pub unsafe fn into_mut(self) -> Result<MutObject<Base>> {
+        let (handle, _) = maybe_remap(self.into_handle(), core::ptr::null_mut::<()>());
+        Ok(unsafe { MutObject::from_handle_unchecked(handle) })
     }
 
     pub unsafe fn from_handle_unchecked(handle: ObjectHandle) -> Self {
@@ -74,14 +83,6 @@ impl<Base> Object<Base> {
         Self::from_handle(handle)
     }
 
-    pub fn update(self) -> Result<Self> {
-        let id = self.id();
-        let flags = self.handle().map_flags();
-        drop(self);
-
-        Self::map(id, flags)
-    }
-
     pub unsafe fn map_unchecked(id: ObjID, flags: MapFlags) -> Result<Self> {
         let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
         unsafe { Ok(Self::from_handle_unchecked(handle)) }
@@ -89,6 +90,10 @@ impl<Base> Object<Base> {
 
     pub fn id(&self) -> ObjID {
         self.handle.id()
+    }
+
+    pub fn update(&mut self) -> Result<()> {
+        sys_map_ctrl(self.handle.start(), MAX_SIZE, MapControlCmd::Update, 0)
     }
 }
 

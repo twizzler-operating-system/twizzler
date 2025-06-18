@@ -29,21 +29,23 @@ impl<T> TxObject<T> {
         })
     }
 
-    pub fn commit(mut self) -> Result<Object<T>> {
-        self.sync_on_drop = false;
-        self.obj.sync()?;
-        let new_obj = unsafe { Object::from_handle_unchecked(self.handle().clone()) };
-        Ok(new_obj)
+    pub fn commit(&mut self) -> Result<()> {
+        self.obj.sync()
     }
 
-    pub fn abort(mut self) -> Object<T> {
-        // TODO: abort tx
+    pub fn abort(&mut self) {
         self.sync_on_drop = false;
-        unsafe { Object::from_handle_unchecked(self.obj.handle().clone()) }
+    }
+
+    pub fn into_object(mut self) -> Result<Object<T>> {
+        if self.sync_on_drop {
+            self.obj.sync()?;
+            self.sync_on_drop = false;
+        }
+        unsafe { Ok(Object::from_handle_unchecked(self.handle().clone())) }
     }
 
     pub fn base_mut(&mut self) -> RefMut<'_, T> {
-        // TODO: track base in tx
         unsafe { RefMut::from_raw_parts(self.base_mut_ptr(), self.handle()) }
     }
 
@@ -59,6 +61,27 @@ impl<T> TxObject<T> {
     pub fn into_unit(self) -> TxObject<()> {
         unsafe { self.cast() }
     }
+
+    pub fn as_mut(&mut self) -> &mut MutObject<T> {
+        &mut self.obj
+    }
+
+    pub fn as_ref(&mut self) -> &MutObject<T> {
+        &self.obj
+    }
+
+    pub fn into_handle(self) -> ObjectHandle {
+        self.handle().clone()
+    }
+
+    pub(crate) unsafe fn from_mut_object(mo: MutObject<T>) -> Self {
+        Self {
+            obj: mo,
+            static_alloc: (size_of::<T>() + align_of::<T>()).next_multiple_of(Self::MIN_ALIGN)
+                + NULLPAGE_SIZE,
+            sync_on_drop: true,
+        }
+    }
 }
 
 impl<B> TxObject<MaybeUninit<B>> {
@@ -66,6 +89,10 @@ impl<B> TxObject<MaybeUninit<B>> {
         let base = unsafe { self.base_mut_ptr::<MaybeUninit<B>>().as_mut().unwrap() };
         base.write(baseval);
         Ok(unsafe { self.cast() })
+    }
+
+    pub unsafe fn assume_init(self) -> TxObject<B> {
+        self.cast()
     }
 
     pub fn static_alloc_inplace<T>(
@@ -174,7 +201,8 @@ mod tests {
         let mut base = tx.base_mut();
         base.x = 42;
         drop(base);
-        let obj = tx.commit().unwrap();
+        tx.commit().unwrap();
+        let obj = tx.into_object().unwrap();
         assert_eq!(obj.base().x, 42);
     }
 }

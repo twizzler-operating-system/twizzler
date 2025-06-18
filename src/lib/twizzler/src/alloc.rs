@@ -23,7 +23,7 @@ pub trait Allocator: Clone {
         let new_alloc = self.alloc(new_layout)?;
         unsafe {
             if !ptr.is_null() {
-                let new_res = new_alloc.resolve().mutable();
+                let new_res = new_alloc.resolve().into_mut();
                 let old_res = ptr.resolve();
                 let copy_len = std::cmp::min(layout.size(), new_layout.size());
                 new_res.raw().copy_from(old_res.raw(), copy_len);

@@ -77,11 +77,11 @@ fn open_or_create_arena() -> Result<ArenaObject> {
     let mut nh = naming::static_naming_factory().unwrap();
     let name = format!("/data/ptest-arena");
     let vo = if let Ok(node) = nh.get(&name, GetFlags::empty()) {
-        println!("reopened: {:?}", node.id);
+        println!("reopened-arena: {:?}", node.id);
         open_arena(node.id)
     } else {
         let vo = create_arena()?;
-        println!("new: {:?}", vo.object().id());
+        println!("new-arena: {:?}", vo.object().id());
         let _ = nh.remove(&name);
         nh.put(&name, vo.object().id()).into_diagnostic()?;
         Ok(vo)
@@ -181,20 +181,23 @@ fn main() {
                 nh.put("/data/ptest-arena", vo.object().id()).unwrap();
             }
         },
-        SubCommand::Push => {
-            let vo = open_or_create_vector_object::<u32>("u32").unwrap();
-            let start = std::time::Instant::now();
-            match cli.ty {
-                VecTy::U32 => do_push(vo),
-                VecTy::Foo => {
-                    let vo = open_or_create_vector_object::<Foo>("foo").unwrap();
-                    let arena = open_or_create_arena().unwrap();
-                    do_push_foo(vo, arena)
-                }
+        SubCommand::Push => match cli.ty {
+            VecTy::U32 => {
+                let vo = open_or_create_vector_object::<u32>("u32").unwrap();
+                let start = std::time::Instant::now();
+                do_push(vo);
+                let end = std::time::Instant::now();
+                println!("done!: {:?}", end - start);
             }
-            let end = std::time::Instant::now();
-            println!("done!: {:?}", end - start);
-        }
+            VecTy::Foo => {
+                let vo = open_or_create_vector_object::<Foo>("foo").unwrap();
+                let arena = open_or_create_arena().unwrap();
+                let start = std::time::Instant::now();
+                do_push_foo(vo, arena);
+                let end = std::time::Instant::now();
+                println!("done!: {:?}", end - start);
+            }
+        },
         SubCommand::Append => {
             let vo = open_or_create_vector_object::<u32>("u32").unwrap();
             let start = std::time::Instant::now();
