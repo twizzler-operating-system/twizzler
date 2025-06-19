@@ -115,32 +115,4 @@ impl<T: Invariant> InvPtr<T> {
             twizzler_rt_abi::object::twz_rt_insert_fot(&tx, (&fote as *const FotEntry).cast())?;
         Ok(Self::from_raw_parts(fote, gp.offset()))
     }
-
-    pub const fn cast<U: Invariant>(self) -> InvPtr<U> {
-        unsafe { InvPtr::from_raw_parts(self.fot_index() as u32, self.offset()) }
-    }
-    
-    pub const unsafe fn add(self, count: usize) -> Self {
-        self.byte_add(count * size_of::<T>())
-    }
-
-    pub const unsafe fn byte_add(self, count: usize) -> Self {
-        Self::from_raw_parts(self.fot_index() as u32, self.offset() + count as u64)
-    }
-
-    pub const unsafe fn sub(self, count: usize) -> Self {
-        self.byte_sub(count * size_of::<T>())
-    }
-
-    pub const unsafe fn byte_sub(self, count: usize) -> Self {
-        Self::from_raw_parts(self.fot_index() as u32, self.offset() - count as u64)
-    }
-    
-    pub const unsafe fn make_offset(self, count: isize) -> Self {
-        self.make_byte_offset(count * size_of::<T>() as isize)
-    }
-
-    pub const unsafe fn make_byte_offset(self, count: isize) -> Self {
-        Self::from_raw_parts(self.fot_index() as u32, (self.offset() as isize + count) as u64)
-    }
 }

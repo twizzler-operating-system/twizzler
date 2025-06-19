@@ -53,6 +53,30 @@ impl<'obj, T> Ref<'obj, T> {
         Ref::new(self.ptr.cast(), self.lazy_handle)
     }
 
+    pub unsafe fn get_offset(self, count: isize) -> Self {
+        Ref::new(self.ptr.offset(count), self.lazy_handle)
+    }
+
+    pub unsafe fn byte_offset(self, count: isize) -> Self {
+        Ref::new(self.ptr.byte_offset(count), self.lazy_handle)
+    }
+
+    pub unsafe fn add(self, count : usize) -> Self {
+        Ref::new(self.ptr.add(count), self.lazy_handle)
+    }
+
+    pub unsafe fn byte_add(self, count : usize) -> Self {
+        Ref::new(self.ptr.byte_add(count), self.lazy_handle)
+    }
+
+    pub unsafe fn sub(self, count : usize) -> Self {
+        Ref::new(self.ptr.sub(count), self.lazy_handle)
+    }
+
+    pub unsafe fn byte_sub(self, count : usize) -> Self {
+        Ref::new(self.ptr.byte_sub(count), self.lazy_handle)
+    }
+
     #[inline]
     unsafe fn mutable_to(self, ptr: *mut T) -> RefMut<'obj, T> {
         RefMut::from_handle(self.handle().clone(), ptr)

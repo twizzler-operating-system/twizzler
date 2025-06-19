@@ -3,16 +3,15 @@ use core::hash;
 use crate::collections::hachage::raw::*;
 use crate::collections::hachage::{DefaultHashBuilder};
 use crate::object::RawObject;
-use crate::tx::TxCell;
 use crate::{
     alloc::{Allocator, SingleObjectAllocator},
     marker::{Invariant, StoreCopy},
     object::{Object, ObjectBuilder, TypedObject},
     ptr::{Ref, RefSlice},
-    tx::TxRef,
 };
 use std::hash::{BuildHasher, Hash};
 use equivalent::Equivalent;
+/*
 
 pub(crate) fn make_hasher<Q, V, S>(hash_builder: &S) -> impl Fn(&(Q, V)) -> u64 + '_
 where
@@ -160,7 +159,6 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher, A: Allocator> Persi
     }
 }
 
-/*
     pub fn insert(&mut self, k: K, v: V) -> Option<V> {
         let hash = make_hash::<K, S>(&self.hash_builder, &k);
         match self.find_or_find_insert_slot(hash, &k) {
