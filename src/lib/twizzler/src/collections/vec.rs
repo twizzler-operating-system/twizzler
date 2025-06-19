@@ -147,12 +147,6 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
     }
 
     #[inline]
-    pub fn get(&self, idx: usize) -> Option<&T> {
-        let slice = self.as_slice();
-        slice.as_slice().get(idx)
-    }
-
-    #[inline]
     pub fn get_ref(&self, idx: usize) -> Option<Ref<'_, T>> {
         let slice = self.as_slice();
         slice.get_ref(idx)
@@ -315,18 +309,6 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         }
     }
 
-    pub fn first(&self) -> Option<&T> {
-        self.get(0)
-    }
-
-    pub fn last(&self) -> Option<&T> {
-        if self.inner.len == 0 {
-            None
-        } else {
-            self.get(self.inner.len - 1)
-        }
-    }
-
     pub fn first_ref(&self) -> Option<Ref<'_, T>> {
         self.get_ref(0)
     }
@@ -336,19 +318,6 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
             None
         } else {
             self.get_ref(self.inner.len - 1)
-        }
-    }
-
-    pub unsafe fn first_mut(&mut self) -> Option<RefMut<'_, T>> {
-        self.get_mut(0)
-    }
-
-    pub unsafe fn last_mut(&mut self) -> Option<RefMut<'_, T>> {
-        if self.inner.len == 0 {
-            None
-        } else {
-            let last_idx = self.inner.len - 1;
-            self.get_mut(last_idx)
         }
     }
 

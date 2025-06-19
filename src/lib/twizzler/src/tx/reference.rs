@@ -1,4 +1,5 @@
 use std::{
+    borrow::{Borrow, BorrowMut},
     mem::MaybeUninit,
     ops::{Deref, DerefMut, Index, IndexMut, RangeBounds},
 };
@@ -201,5 +202,43 @@ impl<T> Into<ObjectHandle> for &TxRefSlice<T> {
 impl<T> AsRef<ObjectHandle> for TxRefSlice<T> {
     fn as_ref(&self) -> &ObjectHandle {
         self.handle()
+    }
+}
+
+impl<T> Deref for TxRefSlice<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl<T> DerefMut for TxRefSlice<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_slice_mut()
+    }
+}
+
+impl<T> AsRef<[T]> for TxRefSlice<T> {
+    fn as_ref(&self) -> &[T] {
+        &*self
+    }
+}
+
+impl<T> AsMut<[T]> for TxRefSlice<T> {
+    fn as_mut(&mut self) -> &mut [T] {
+        &mut *self
+    }
+}
+
+impl<T> Borrow<[T]> for TxRefSlice<T> {
+    fn borrow(&self) -> &[T] {
+        &*self
+    }
+}
+
+impl<T> BorrowMut<[T]> for TxRefSlice<T> {
+    fn borrow_mut(&mut self) -> &mut [T] {
+        &mut *self
     }
 }

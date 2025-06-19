@@ -1,5 +1,5 @@
 use std::{
-    borrow::Cow,
+    borrow::{Borrow, BorrowMut, Cow},
     cell::OnceCell,
     marker::PhantomData,
     mem::MaybeUninit,
@@ -332,6 +332,26 @@ impl<'a, T> Index<usize> for RefSlice<'a, T> {
     }
 }
 
+impl<'a, T> Deref for RefSlice<'a, T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl<'a, T> AsRef<[T]> for RefSlice<'a, T> {
+    fn as_ref(&self) -> &[T] {
+        &*self
+    }
+}
+
+impl<'a, T> Borrow<[T]> for RefSlice<'a, T> {
+    fn borrow(&self) -> &[T] {
+        &*self
+    }
+}
+
 pub struct RefSliceMut<'a, T> {
     ptr: RefMut<'a, T>,
     len: usize,
@@ -415,6 +435,44 @@ impl<'a, T> IndexMut<usize> for RefSliceMut<'a, T> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         let slice = self.as_slice_mut();
         &mut slice[index]
+    }
+}
+
+impl<'a, T> Deref for RefSliceMut<'a, T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl<'a, T> DerefMut for RefSliceMut<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_slice_mut()
+    }
+}
+
+impl<'a, T> AsRef<[T]> for RefSliceMut<'a, T> {
+    fn as_ref(&self) -> &[T] {
+        &*self
+    }
+}
+
+impl<'a, T> AsMut<[T]> for RefSliceMut<'a, T> {
+    fn as_mut(&mut self) -> &mut [T] {
+        &mut *self
+    }
+}
+
+impl<'a, T> Borrow<[T]> for RefSliceMut<'a, T> {
+    fn borrow(&self) -> &[T] {
+        &*self
+    }
+}
+
+impl<'a, T> BorrowMut<[T]> for RefSliceMut<'a, T> {
+    fn borrow_mut(&mut self) -> &mut [T] {
+        &mut *self
     }
 }
 

@@ -102,8 +102,8 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
     }
 
     #[inline]
-    pub fn get(&self, index: usize) -> Option<&T> {
-        self.obj.base().get(index)
+    pub fn get_ref(&self, idx: usize) -> Option<Ref<'_, T>> {
+        self.object().base().get_ref(idx)
     }
 
     /*
@@ -178,19 +178,19 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
     }
     */
 
-    pub fn first(&self) -> Option<&T> {
+    pub fn first_ref(&self) -> Option<Ref<'_, T>> {
         if self.is_empty() {
             None
         } else {
-            self.get(0)
+            self.get_ref(0)
         }
     }
 
-    pub fn last(&self) -> Option<&T> {
+    pub fn last_ref(&self) -> Option<Ref<'_, T>> {
         if self.is_empty() {
             None
         } else {
-            self.get(self.len() - 1)
+            self.get_ref(self.len() - 1)
         }
     }
 
@@ -328,11 +328,6 @@ impl<T: Invariant> VecObject<T, VecObjectAlloc> {
         Ok(Self {
             obj: builder.build_inplace(|tx| tx.write(Vec::new_in(VecObjectAlloc)))?,
         })
-    }
-
-    #[inline]
-    pub fn get_ref(&self, idx: usize) -> Option<Ref<'_, T>> {
-        self.object().base().get_ref(idx)
     }
 }
 
