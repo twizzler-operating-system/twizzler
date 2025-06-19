@@ -100,6 +100,190 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
         self.obj
             .with_tx(|tx| tx.base_mut().with_mut_slice(range, f))
     }
+
+    #[inline]
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.obj.base().get(index)
+    }
+
+    /*
+    pub fn insert(&mut self, index: usize, element: T) -> Result<()>
+    where
+        T: StoreCopy,
+    {
+        if index > self.len() {
+            return Err(ArgumentError::InvalidArgument.into());
+        }
+        self.obj.with_tx(|tx| tx.base_mut().insert(index, element))
+    }
+    */
+
+    pub fn swap(&mut self, a: usize, b: usize) -> Result<()> {
+        if a >= self.len() || b >= self.len() {
+            return Err(ArgumentError::InvalidArgument.into());
+        }
+        self.obj.with_tx(|tx| Ok(tx.base_mut().swap(a, b)))
+    }
+
+    pub fn clear(&mut self) -> Result<()> {
+        self.obj.with_tx(|tx| tx.base_mut().clear())
+    }
+
+    pub fn retain<F>(&mut self, f: F) -> Result<()>
+    where
+        F: FnMut(&T) -> bool,
+        T: StoreCopy,
+    {
+        self.obj.with_tx(|tx| tx.base_mut().retain(f))
+    }
+
+    /*
+    pub fn resize(&mut self, new_len: usize, value: T) -> Result<()>
+    where
+        T: StoreCopy + Clone,
+    {
+        self.obj.with_tx(|tx| tx.base_mut().resize(new_len, value))
+    }
+
+    pub fn resize_with<F>(&mut self, new_len: usize, f: F) -> Result<()>
+    where
+        F: FnMut() -> T,
+        T: StoreCopy,
+    {
+        self.obj.with_tx(|tx| tx.base_mut().resize_with(new_len, f))
+    }
+
+    pub fn dedup(&mut self) -> Result<()>
+    where
+        T: PartialEq + StoreCopy,
+    {
+        self.obj.with_tx(|tx| tx.base_mut().dedup())
+    }
+
+    pub fn dedup_by<F>(&mut self, same_bucket: F) -> Result<()>
+    where
+        F: FnMut(&mut T, &mut T) -> bool,
+        T: StoreCopy,
+    {
+        self.obj.with_tx(|tx| tx.base_mut().dedup_by(same_bucket))
+    }
+
+    pub fn dedup_by_key<F, K>(&mut self, mut key: F) -> Result<()>
+    where
+        F: FnMut(&mut T) -> K,
+        K: PartialEq,
+        T: StoreCopy,
+    {
+        self.obj.with_tx(|tx| tx.base_mut().dedup_by_key(key))
+    }
+    */
+
+    pub fn first(&self) -> Option<&T> {
+        if self.is_empty() {
+            None
+        } else {
+            self.get(0)
+        }
+    }
+
+    pub fn last(&self) -> Option<&T> {
+        if self.is_empty() {
+            None
+        } else {
+            self.get(self.len() - 1)
+        }
+    }
+
+    pub fn binary_search(&self, x: &T) -> core::result::Result<usize, usize>
+    where
+        T: Ord,
+    {
+        self.as_slice().as_slice().binary_search(x)
+    }
+
+    pub fn binary_search_by<F>(&self, f: F) -> core::result::Result<usize, usize>
+    where
+        F: FnMut(&T) -> core::cmp::Ordering,
+    {
+        self.as_slice().as_slice().binary_search_by(f)
+    }
+
+    pub fn binary_search_by_key<B, F>(&self, b: &B, f: F) -> core::result::Result<usize, usize>
+    where
+        F: FnMut(&T) -> B,
+        B: Ord,
+    {
+        self.as_slice().as_slice().binary_search_by_key(b, f)
+    }
+
+    pub fn sort(&mut self) -> Result<()>
+    where
+        T: Ord,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort();
+            Ok(())
+        })
+    }
+
+    pub fn sort_by<F>(&mut self, compare: F) -> Result<()>
+    where
+        F: FnMut(&T, &T) -> core::cmp::Ordering,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort_by(compare);
+            Ok(())
+        })
+    }
+
+    pub fn sort_by_key<K, F>(&mut self, f: F) -> Result<()>
+    where
+        F: FnMut(&T) -> K,
+        K: Ord,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort_by_key(f);
+            Ok(())
+        })
+    }
+
+    pub fn sort_unstable(&mut self) -> Result<()>
+    where
+        T: Ord,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort_unstable();
+            Ok(())
+        })
+    }
+
+    pub fn sort_unstable_by<F>(&mut self, compare: F) -> Result<()>
+    where
+        F: FnMut(&T, &T) -> core::cmp::Ordering,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort_unstable_by(compare);
+            Ok(())
+        })
+    }
+
+    pub fn sort_unstable_by_key<K, F>(&mut self, f: F) -> Result<()>
+    where
+        F: FnMut(&T) -> K,
+        K: Ord,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort_unstable_by_key(f);
+            Ok(())
+        })
+    }
+
+    pub fn reverse(&mut self) -> Result<()> {
+        self.with_mut_slice(.., |slice| {
+            slice.reverse();
+            Ok(())
+        })
+    }
 }
 
 impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
@@ -144,11 +328,6 @@ impl<T: Invariant> VecObject<T, VecObjectAlloc> {
         Ok(Self {
             obj: builder.build_inplace(|tx| tx.write(Vec::new_in(VecObjectAlloc)))?,
         })
-    }
-
-    #[inline]
-    pub fn get(&self, idx: usize) -> Option<&T> {
-        self.object().base().get(idx)
     }
 
     #[inline]
@@ -204,6 +383,7 @@ pub struct VecIter<'a, T> {
 }
 
 impl<'a, T> VecIter<'a, T> {
+    #[inline]
     pub fn slice(&self) -> &'a [T] {
         unsafe { core::slice::from_raw_parts(self.data, self.len) }
     }

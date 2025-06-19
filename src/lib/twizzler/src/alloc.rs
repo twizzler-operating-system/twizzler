@@ -8,10 +8,28 @@ pub mod invbox;
 
 pub use global::OwnedGlobalPtr;
 
+/// Basic allocation trait.
 pub trait Allocator: Clone {
+    /// Allocate based on layout within this allocator. Returns a global pointer
+    /// to the start of the allocation.
+    ///
+    /// Note: Using this function by itself can leak memory, particularly on failure.
+    /// Users should consider using InvBox instead.
     fn alloc(&self, layout: Layout) -> Result<GlobalPtr<u8>, AllocError>;
+
+    /// Free an allocation.
+    ///
+    /// # Safety
+    /// Caller must ensure that the pointer is valid and was allocated by this allocator, and
+    /// refers to memory that matches the provided layout.
     unsafe fn dealloc(&self, ptr: GlobalPtr<u8>, layout: Layout);
-    fn realloc(
+
+    /// Reallocate an allocation.
+    ///
+    /// # Safety
+    /// Caller must ensure that the pointer is valid and was allocated by this allocator, and
+    /// refers to memory that matches the provided layout.
+    unsafe fn realloc(
         &self,
         ptr: GlobalPtr<u8>,
         layout: Layout,
@@ -33,4 +51,5 @@ pub trait Allocator: Clone {
     }
 }
 
+/// Allocator ensures that all allocations will take place within one object.
 pub trait SingleObjectAllocator {}

@@ -131,7 +131,7 @@ impl<T> QueueEntry<T> {
 }
 
 /// The base info structure stored in a Twizzler queue object. Used to open Twizzler queue objects
-/// and create a [Queue].
+/// and create a Queue.
 #[repr(C)]
 pub struct QueueBase<S, C> {
     pub sub_hdr: usize,

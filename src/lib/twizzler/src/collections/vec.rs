@@ -41,7 +41,7 @@ impl<T: Invariant> VecInner<T> {
         let old_layout = Layout::array::<T>(self.cap).map_err(|_| AllocError)?;
 
         let old_global = self.start.global().cast();
-        let new_alloc = alloc.realloc(old_global, old_layout, new_layout.size())?;
+        let new_alloc = unsafe { alloc.realloc(old_global, old_layout, new_layout.size()) }?;
         let new_start = InvPtr::new(place, new_alloc.cast())?;
         self.start = new_start;
         self.cap = newcap;
@@ -284,12 +284,172 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         Ok(())
     }
 
+    pub fn with_slice<R>(&self, f: impl FnOnce(&[T]) -> R) -> R {
+        self.inner.with_slice(f)
+    }
+
     pub fn with_mut_slice<R>(
         &mut self,
         range: impl RangeBounds<usize>,
         f: impl FnOnce(&mut [T]) -> Result<R>,
     ) -> Result<R> {
         self.inner.with_mut_slice(range, f)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn clear(&mut self) -> Result<()> {
+        self.truncate(0)
+    }
+
+    pub fn swap(&mut self, a: usize, b: usize) {
+        if a == b {
+            return;
+        }
+        unsafe {
+            let mut slice = self.as_mut_slice();
+            let slice_mut = slice.as_slice_mut();
+            slice_mut.swap(a, b);
+        }
+    }
+
+    pub fn first(&self) -> Option<&T> {
+        self.get(0)
+    }
+
+    pub fn last(&self) -> Option<&T> {
+        if self.inner.len == 0 {
+            None
+        } else {
+            self.get(self.inner.len - 1)
+        }
+    }
+
+    pub fn first_ref(&self) -> Option<Ref<'_, T>> {
+        self.get_ref(0)
+    }
+
+    pub fn last_ref(&self) -> Option<Ref<'_, T>> {
+        if self.inner.len == 0 {
+            None
+        } else {
+            self.get_ref(self.inner.len - 1)
+        }
+    }
+
+    pub unsafe fn first_mut(&mut self) -> Option<RefMut<'_, T>> {
+        self.get_mut(0)
+    }
+
+    pub unsafe fn last_mut(&mut self) -> Option<RefMut<'_, T>> {
+        if self.inner.len == 0 {
+            None
+        } else {
+            let last_idx = self.inner.len - 1;
+            self.get_mut(last_idx)
+        }
+    }
+
+    pub fn contains(&self, item: &T) -> bool
+    where
+        T: PartialEq,
+    {
+        self.with_slice(|slice| slice.contains(item))
+    }
+
+    pub fn starts_with(&self, needle: &[T]) -> bool
+    where
+        T: PartialEq,
+    {
+        self.with_slice(|slice| slice.starts_with(needle))
+    }
+
+    pub fn ends_with(&self, needle: &[T]) -> bool
+    where
+        T: PartialEq,
+    {
+        self.with_slice(|slice| slice.ends_with(needle))
+    }
+
+    pub fn binary_search(&self, x: &T) -> std::result::Result<usize, usize>
+    where
+        T: Ord,
+    {
+        self.with_slice(|slice| slice.binary_search(x))
+    }
+
+    pub fn binary_search_by<F>(&self, f: F) -> std::result::Result<usize, usize>
+    where
+        F: FnMut(&T) -> std::cmp::Ordering,
+    {
+        self.with_slice(|slice| slice.binary_search_by(f))
+    }
+
+    pub fn reverse(&mut self) -> Result<()> {
+        self.with_mut_slice(.., |slice| {
+            slice.reverse();
+            Ok(())
+        })
+    }
+
+    pub fn sort(&mut self) -> Result<()>
+    where
+        T: Ord,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort();
+            Ok(())
+        })
+    }
+
+    pub fn sort_by<F>(&mut self, compare: F) -> Result<()>
+    where
+        F: FnMut(&T, &T) -> std::cmp::Ordering,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort_by(compare);
+            Ok(())
+        })
+    }
+
+    pub fn sort_unstable(&mut self) -> Result<()>
+    where
+        T: Ord,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort_unstable();
+            Ok(())
+        })
+    }
+
+    pub fn sort_unstable_by<F>(&mut self, compare: F) -> Result<()>
+    where
+        F: FnMut(&T, &T) -> std::cmp::Ordering,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort_unstable_by(compare);
+            Ok(())
+        })
+    }
+
+    pub fn retain<F>(&mut self, mut f: F) -> Result<()>
+    where
+        F: FnMut(&T) -> bool,
+    {
+        let mut del = 0;
+        let len = self.len();
+
+        for i in 0..len {
+            let should_retain = self.with_slice(|slice| f(&slice[i - del]));
+            if !should_retain {
+                self.remove_inplace(i - del)?;
+                del += 1;
+            }
+        }
+
+        Ok(())
     }
 }
 

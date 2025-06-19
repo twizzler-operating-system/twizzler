@@ -60,12 +60,29 @@ impl<Base: BaseType> ObjectBuilder<Base> {
 }
 
 impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
+    /// Build an object using the provided base vale.
+    /// # Example
+    /// ```
+    /// # use twizzler::object::ObjectBuilder;
+    /// let builder = ObjectBuilder::default();
+    /// let obj = builder.build(42u32).unwrap();
+    /// ```
     pub fn build(&self, base: Base) -> Result<Object<Base>> {
         self.build_inplace(|tx| tx.write(base))
     }
 }
 
 impl<Base: BaseType> ObjectBuilder<Base> {
+    /// Build an object using the provided constructor function.
+    ///
+    /// The constructor should call the .write() method on the TxObject, and
+    /// return the result.
+    /// # Example
+    /// ```
+    /// # use twizzler::object::ObjectBuilder;
+    /// let builder = ObjectBuilder::default();
+    /// let obj = builder.build_inplace(|tx| tx.write(42u32)).unwrap();
+    /// ```
     pub fn build_inplace<F>(&self, ctor: F) -> Result<Object<Base>>
     where
         F: FnOnce(TxObject<MaybeUninit<Base>>) -> Result<TxObject<Base>>,
@@ -84,6 +101,27 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         object.into_object()
     }
 
+    /// Build an object using the provided constructor function.
+    ///
+    /// The constructor should call the .write() method on the TxObject or
+    /// otherwise ensure that it is safe to call .assume_init on the underlying
+    /// MaybeUninit.
+    ///
+    /// # Safety
+    /// The caller must ensure that the base is initialized, see MaybeUninit::assume_init.
+    ///
+    /// # Example
+    /// ```
+    /// # use twizzler::object::ObjectBuilder;
+    /// let builder = ObjectBuilder::default();
+    /// let obj = unsafe {
+    ///     builder
+    ///         .build_ctor(|tx| {
+    ///             tx.write(42u32);
+    ///         })
+    ///         .unwrap()
+    /// };
+    /// ```
     pub unsafe fn build_ctor<F>(&self, ctor: F) -> Result<Object<Base>>
     where
         F: FnOnce(&mut TxObject<MaybeUninit<Base>>),

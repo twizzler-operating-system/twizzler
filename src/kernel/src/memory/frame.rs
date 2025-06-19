@@ -35,7 +35,7 @@
 //! that stores the list's link data inside the nodes (`struct Foo {link: Link, ...}`) as opposed to
 //! storing the objects in the list (`struct ListItem<T> {item: T, link: Link}`). They are useful
 //! here because they can form arbitrary containers while ensuring no memory is allocated to store
-//! the list, something that is very important inside an allocator for physical pages. For more information, see: [https://docs.rs/intrusive-collections/latest/intrusive_collections/].
+//! the list, something that is very important inside an allocator for physical pages. For more information, see: [<https://docs.rs/intrusive-collections/latest/intrusive_collections/>].
 
 use alloc::vec::Vec;
 use core::{
