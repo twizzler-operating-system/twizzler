@@ -55,7 +55,7 @@ impl Thread {
         self.flags.load(Ordering::SeqCst) & THREAD_MUST_SUSPEND != 0
     }
 
-    /// Consider suspending ourselves. If someone called [Self::start_suspend], then we will.
+    /// Consider suspending ourselves. If someone called [Self::suspend], then we will.
     pub fn maybe_suspend_self(self: &ThreadRef) {
         assert_eq!(self.id(), current_thread_ref().unwrap().id());
         if self.flags.load(Ordering::SeqCst) & THREAD_MUST_SUSPEND == 0 {

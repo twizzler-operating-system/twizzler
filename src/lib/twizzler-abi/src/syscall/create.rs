@@ -7,8 +7,9 @@ use crate::{arch::syscall::raw_syscall, object::ObjID};
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Default)]
 #[repr(C)]
 /// Specifications for an object-copy from a source object. The specified ranges are
-/// source:[src_start, src_start + len) copied to <some unspecified destination object>:[dest_start,
-/// dest_start + len). Each range must start within an object, and end within the object.
+/// source:[src_start, src_start + len) copied to `<some unspecified destination
+/// object>:[dest_start, dest_start + len)`. Each range must start within an object, and end within
+/// the object.
 pub struct ObjectSource {
     /// The ID of the source object, or zero for filling destination with zero.
     pub id: ObjID,

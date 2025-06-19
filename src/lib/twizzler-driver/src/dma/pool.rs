@@ -257,7 +257,7 @@ impl AllocatableDmaObject {
 
 impl DmaPool {
     /// Create a new DmaPool with access and DMA options, where each created underlying Twizzler
-    /// object is created using the provided [CreateSpec]. If default (volatile) options are
+    /// object is created using the provided [ObjectBuilder]. If default (volatile) options are
     /// acceptable for the create spec, use the [crate::dma::DmaPool::default_spec] function.
     pub fn new(spec: ObjectBuilder<()>, access: Access, opts: DmaOptions) -> Self {
         Self {
@@ -296,7 +296,7 @@ impl DmaPool {
         self.do_allocate(len)
     }
 
-    /// Allocate a new [DmaRegion<T>] from the pool. The region will be initialized with the
+    /// Allocate a new `[DmaRegion]` from the pool. The region will be initialized with the
     /// provided initial value.
     pub fn allocate<'a, T: DeviceSync>(&'a self, init: T) -> Result<DmaRegion<T>, AllocationError> {
         let len = core::mem::size_of::<T>();
@@ -312,7 +312,7 @@ impl DmaPool {
         Ok(reg)
     }
 
-    /// Allocate a new [DmaSliceRegion<T>] from the pool. Each entry in the region's slice will
+    /// Allocate a new `[DmaSliceRegion]` from the pool. Each entry in the region's slice will
     /// be initialized with the provided initial value.
     pub fn allocate_array<'a, T: DeviceSync + Clone>(
         &'a self,
@@ -333,7 +333,7 @@ impl DmaPool {
         Ok(reg)
     }
 
-    /// Allocate a new [DmaSliceRegion<T>] from the pool. Each entry in the region's slice will
+    /// Allocate a new `[DmaSliceRegion]` from the pool. Each entry in the region's slice will
     /// be initialized by running the provided closure.
     pub fn allocate_array_with<'a, T: DeviceSync>(
         &'a self,

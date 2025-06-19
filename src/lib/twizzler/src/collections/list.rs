@@ -3,6 +3,7 @@ use twizzler_rt_abi::object::ObjectHandle;
 use crate::{
     alloc::{invbox::InvBox, Allocator, OwnedGlobalPtr},
     marker::{BaseType, Invariant},
+    Result,
 };
 
 #[allow(dead_code)]
@@ -17,11 +18,11 @@ unsafe impl<T: Invariant, A: Allocator> Invariant for ListNode<T, A> {}
 
 impl<T: Invariant, A: Allocator + Clone> ListNode<T, A> {
     pub fn new(
-        tx: impl Into<ObjectHandle>,
+        tx: impl AsRef<ObjectHandle>,
         value: T,
         next: Option<OwnedGlobalPtr<Self, A>>,
         alloc: A,
-    ) -> crate::tx::Result<Self> {
+    ) -> Result<Self> {
         Ok(Self {
             value,
             next: next.map(|n| InvBox::from_in(tx, n).unwrap()),
@@ -42,7 +43,7 @@ mod tests {
     fn simple() {
         let arena = ArenaObject::new(ObjectBuilder::default()).unwrap();
         let alloc = arena.allocator();
-        let tx = arena.tx().unwrap();
+        let tx = arena.into_tx().unwrap();
         let node0 = tx
             .alloc(ListNode::new(&tx, 3, None, alloc).unwrap())
             .unwrap();
@@ -67,11 +68,7 @@ mod tests {
         }
 
         impl Node {
-            fn new(
-                tx: impl Into<ObjectHandle>,
-                val: u32,
-                alloc: ArenaAllocator,
-            ) -> crate::tx::Result<Self> {
+            fn new(tx: impl AsRef<ObjectHandle>, val: u32, alloc: ArenaAllocator) -> Result<Self> {
                 Ok(Self {
                     data: InvBox::new_in(tx, val, alloc).unwrap(),
                 })
@@ -83,7 +80,7 @@ mod tests {
         let arena = ArenaObject::new(ObjectBuilder::default()).unwrap();
         let alloc = arena.allocator();
         let _data0 = arena.alloc(3);
-        let tx = arena.tx().unwrap();
+        let tx = arena.into_tx().unwrap();
         let node0 = ListNode::new(&tx, Node::new(&tx, 3, alloc).unwrap(), None, alloc).unwrap();
         let node0 = tx.alloc(node0).unwrap();
         let node1 = tx

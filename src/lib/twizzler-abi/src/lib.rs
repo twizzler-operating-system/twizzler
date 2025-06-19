@@ -1,9 +1,8 @@
 //! This library provides a common interface for applications that want to talk to the Twizzler
 //! kernel, and defines that interface for both applications and the kernel to follow. It's made of
 //! several parts:
-//!   1. The Runtime -- see [runtime].
-//!   2. System Calls -- see [syscall] and [arch::syscall].
-//!   3. Other Application-Kernel ABI definitions (e.g. pager queue entries).
+//!   1. System Calls -- see [syscall] and [arch::syscall].
+//!   2. Other Application-Kernel ABI definitions (e.g. pager queue entries).
 //!
 //! # Should I use these APIs?
 //! All of these interfaces are potentially unstable and should not be used directly by most

@@ -184,9 +184,10 @@ impl MapRegion {
             if settings.perms().contains(Protections::WRITE) {
                 if self.object().use_pager() {
                     log::debug!(
-                        "adding persist dirty page {} to region {:?}",
+                        "adding persist dirty page {} to region {:?}, obj {:?}",
                         page_number,
-                        self.range
+                        self.range,
+                        self.object().id(),
                     );
                 }
                 self.object().dirty_set().add_dirty(page_number);
@@ -213,8 +214,12 @@ impl MapRegion {
 
                 if sync_info.flags.contains(SyncFlags::DURABLE) {
                     let dirty_pages = self.object().dirty_set().drain_all();
-                    log::debug!("sync region with dirty pages {:?}", dirty_pages);
-                    if self.object().use_pager() {
+                    log::debug!(
+                        "sync region {:?} with dirty pages {:?}",
+                        self.range,
+                        dirty_pages
+                    );
+                    if self.object().use_pager() && !dirty_pages.is_empty() {
                         crate::pager::sync_region(self, dirty_pages, sync_info, version);
                     }
                 }
