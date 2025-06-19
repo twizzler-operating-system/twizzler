@@ -12,9 +12,8 @@ use twizzler_rt_abi::{
 use super::{Allocator, OwnedGlobalPtr, SingleObjectAllocator};
 use crate::{
     marker::BaseType,
-    object::{Object, ObjectBuilder, RawObject},
+    object::{Object, ObjectBuilder, RawObject, TxObject},
     ptr::{GlobalPtr, RefMut},
-    tx::TxObject,
     Result,
 };
 

@@ -9,6 +9,7 @@ mod fot;
 mod meta;
 mod mutable;
 mod object;
+mod tx;
 
 pub use builder::*;
 pub use fot::*;
@@ -16,6 +17,7 @@ pub use meta::*;
 pub use mutable::MutObject;
 pub use object::Object;
 pub use twizzler_rt_abi::object::{MapFlags, ObjID, ObjectHandle};
+pub use tx::TxObject;
 
 /// Operations common to structured objects.
 pub trait TypedObject {

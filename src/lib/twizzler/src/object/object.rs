@@ -9,8 +9,8 @@ use twizzler_rt_abi::{
     Result,
 };
 
-use super::{MutObject, RawObject, TypedObject};
-use crate::{marker::BaseType, ptr::Ref, tx::TxObject, util::maybe_remap};
+use super::{MutObject, RawObject, TxObject, TypedObject};
+use crate::{marker::BaseType, ptr::Ref, util::maybe_remap};
 
 pub struct Object<Base> {
     handle: ObjectHandle,

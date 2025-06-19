@@ -10,8 +10,7 @@ use twizzler_rt_abi::error::{ArgumentError, ResourceError};
 use crate::{
     alloc::{Allocator, SingleObjectAllocator},
     marker::{Invariant, StoreCopy},
-    ptr::{GlobalPtr, InvPtr, Ref, RefMut, RefSlice, RefSliceMut},
-    tx::{TxRef, TxRefSlice},
+    ptr::{GlobalPtr, InvPtr, Ref, RefMut, RefSlice, RefSliceMut, TxRef, TxRefSlice},
     Result,
 };
 
@@ -516,9 +515,9 @@ mod tests {
         let vobj = tx.into_object().unwrap();
         let base = vobj.base();
         assert_eq!(base.len(), 2);
-        let item = base.get(0).unwrap();
+        let item = base.get_ref(0).unwrap();
         assert_eq!(item.x, 42);
-        let item2 = base.get(1).unwrap();
+        let item2 = base.get_ref(1).unwrap();
         assert_eq!(item2.x, 43);
     }
 
@@ -527,7 +526,7 @@ mod tests {
         let mut vec_obj = VecObject::new(ObjectBuilder::default()).unwrap();
         vec_obj.push(Simple { x: 42 }).unwrap();
 
-        let item = vec_obj.get(0).unwrap();
+        let item = vec_obj.get_ref(0).unwrap();
         assert_eq!(item.x, 42);
     }
 
@@ -536,7 +535,7 @@ mod tests {
         let mut vec_obj = VecObject::new(ObjectBuilder::default()).unwrap();
         vec_obj.push(Simple { x: 42 }).unwrap();
 
-        let item = vec_obj.get(0).unwrap();
+        let item = vec_obj.get_ref(0).unwrap();
         assert_eq!(item.x, 42);
         let ritem = vec_obj.remove(0).unwrap();
 
@@ -550,23 +549,23 @@ mod tests {
         vec_obj.push(Simple { x: 43 }).unwrap();
         vec_obj.push(Simple { x: 44 }).unwrap();
 
-        let item = vec_obj.get(0).unwrap();
+        let item = vec_obj.get_ref(0).unwrap();
         assert_eq!(item.x, 42);
-        let item = vec_obj.get(1).unwrap();
+        let item = vec_obj.get_ref(1).unwrap();
         assert_eq!(item.x, 43);
-        let item = vec_obj.get(2).unwrap();
+        let item = vec_obj.get_ref(2).unwrap();
         assert_eq!(item.x, 44);
-        let item = vec_obj.get(3);
+        let item = vec_obj.get_ref(3);
         assert!(item.is_none());
 
         let ritem = vec_obj.remove(1).unwrap();
         assert_eq!(ritem.x, 43);
 
-        let item = vec_obj.get(0).unwrap();
+        let item = vec_obj.get_ref(0).unwrap();
         assert_eq!(item.x, 42);
-        let item = vec_obj.get(1).unwrap();
+        let item = vec_obj.get_ref(1).unwrap();
         assert_eq!(item.x, 44);
-        let item = vec_obj.get(2);
+        let item = vec_obj.get_ref(2);
         assert!(item.is_none());
     }
 
@@ -578,7 +577,7 @@ mod tests {
         }
 
         for i in 0..100 {
-            let item = vec_obj.get(i as usize).unwrap();
+            let item = vec_obj.get_ref(i as usize).unwrap();
             assert_eq!(item.x, i * i);
         }
     }
@@ -600,7 +599,7 @@ mod tests {
 
         let vobj = tx.into_object().unwrap();
         let rbase = vobj.base();
-        let item = rbase.get(0).unwrap();
+        let item = rbase.get_ref(0).unwrap();
         assert_eq!(unsafe { item.ptr.resolve() }.x, 3);
     }
 
@@ -620,7 +619,7 @@ mod tests {
             .unwrap();
 
         let base = vo.object().base();
-        let item = base.get(0).unwrap();
+        let item = base.get_ref(0).unwrap();
         assert_eq!(unsafe { item.ptr.resolve().x }, 3);
     }
 }

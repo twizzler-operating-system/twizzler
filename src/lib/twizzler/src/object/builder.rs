@@ -8,10 +8,9 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::object::MapFlags;
 
-use super::Object;
+use super::{Object, TxObject};
 use crate::{
     marker::{BaseType, StoreCopy},
-    tx::TxObject,
     Result,
 };
 

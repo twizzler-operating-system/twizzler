@@ -5,9 +5,8 @@ use twizzler_rt_abi::object::ObjectHandle;
 use super::{Allocator, OwnedGlobalPtr};
 use crate::{
     marker::Invariant,
-    object::Object,
+    object::{Object, TxObject},
     ptr::{GlobalPtr, InvPtr, Ref},
-    tx::TxObject,
 };
 
 pub struct InvBox<T: Invariant, Alloc: Allocator> {
